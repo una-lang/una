@@ -1,6 +1,7 @@
 //! `una report [path]` (`spec/13 §6`): the build report of a package that checks at tier 1.
 //!
 //! DECISION D-122: what each section lists. DECISION D-123: trivial `ensures` and coverage.
+//! DECISION D-132: the report is assembled here, beside the package and analysis it reads.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
