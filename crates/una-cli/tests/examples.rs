@@ -66,6 +66,7 @@ const RUNS: &[(&str, &str)] = &[
         "lending",
         "Ana borrowed the ladder for 14 days\nreturned 20 days later, it is 6 days late\n",
     ),
+    ("pantry", "to buy: rice, oil\ngrams in stock: 700\n"),
 ];
 
 #[test]

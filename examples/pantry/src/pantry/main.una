@@ -1,0 +1,16 @@
+module pantry.main
+
+import pantry.stock (Grams, Item, Milliliters, Pieces, shopping_list, total)
+
+--- What the pantry holds this morning.
+stock() -> List[Item] = [Item(name: "rice", amount: 0, measure: Grams), Item(name: "flour", amount: 700, measure: Grams), Item(name: "eggs", amount: 6, measure: Pieces), Item(name: "oil", amount: 0, measure: Milliliters)]
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let items = stock()
+  let needed = shopping_list(items)
+  let line = needed.fold(initial: "", step: fn(line, name) -> if line == "" then name else "{line}, {name}")
+  @console.print("to buy: {line}")
+  let grams = total(items, measure: Grams)
+  @console.print("grams in stock: {grams}")
