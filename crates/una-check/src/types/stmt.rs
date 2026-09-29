@@ -15,6 +15,7 @@ use super::check::{Checker, Ctx, Rl, Role};
 use super::closest;
 use super::env::KindDef;
 use super::label::Label;
+use super::records::Res;
 use super::ty::{KindId, Ty};
 use super::unify::Origin;
 
@@ -144,6 +145,7 @@ impl<'a> Checker<'_, 'a, '_> {
         // The local keeps the labels its value has now; later unifications do not change them
         // (DECISION D-088).
         let bound = declared.map_or_else(|| self.labeled(&ty), |declared| declared.base);
+        self.typed(stmt.name.span, &bound);
         self.bind(name, bound);
     }
 
@@ -431,6 +433,13 @@ impl<'a> Checker<'_, 'a, '_> {
                     };
                     match found {
                         Some((kind, index, targs)) => {
+                            self.resolved(
+                                pattern,
+                                Res::Ctor {
+                                    kind,
+                                    variant: Some(index),
+                                },
+                            );
                             let variants = self.env.kinds.get(kind).map_or(0, |k| k.variants.len());
                             covered.resize(variants, None);
                             match covered.get(index).copied().flatten() {
@@ -458,7 +467,7 @@ impl<'a> Checker<'_, 'a, '_> {
                                 Ty::Kind(id, args) if *id == kind => args.clone(),
                                 _ => targs,
                             };
-                            self.bind_fields(kind, index, &targs, binds, &label);
+                            self.bind_fields(kind, index, &targs, binds, &label, pattern);
                         }
                         None => {
                             problem = true;
@@ -604,6 +613,7 @@ impl<'a> Checker<'_, 'a, '_> {
         targs: &[Ty],
         binds: &[Bind],
         label: &Label,
+        pattern: Span,
     ) {
         let Some(variant) = self
             .env
@@ -631,6 +641,7 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         let names: Vec<&str> = variant.fields.iter().map(|f| f.name).collect();
         let mut bound: Vec<Option<Span>> = variant.fields.iter().map(|_| None).collect();
+        let mut order: Vec<Option<usize>> = Vec::new();
         for (position, bind) in binds.iter().enumerate() {
             let field = self.name(&bind.field);
             let found = match names.iter().position(|n| *n == field) {
@@ -672,10 +683,14 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
                 None => Ty::Error,
             };
-            let local = bind.local.as_ref().unwrap_or(&bind.field);
-            let local = self.name(local);
+            order.push(found);
+            let local_ident = bind.local.as_ref().unwrap_or(&bind.field);
+            self.typed(local_ident.span, &ty);
+            let local = self.name(local_ident);
             self.bind(local, ty);
         }
+        // DECISION D-098: the field of each binding.
+        self.ordered(pattern, order);
     }
 }
 

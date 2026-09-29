@@ -64,7 +64,8 @@ pub(crate) struct FnUse {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Refinement {
     Alias(AliasId, Vec<Ty>),
-    Range,
+    /// Range sugar, as written: `in 0..5000` or `in 1..<20`.
+    Range(String),
 }
 
 /// A written type: its base, the refinements it carries and whether it has a label.

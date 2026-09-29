@@ -1,0 +1,30 @@
+---
+source: crates/una-cli/tests/cli.rs
+expression: stdout(&output)
+---
+module events.types
+
+type Phone = Text
+
+data PhoneError = Malformed
+
+pred opaque valid_phone(t: Text) =
+  let %t0: Int = len(t) in
+  let %t1: Bool = ==(%t0, 11) in
+  let %t3: Bool =
+    if %t1 then
+      let %t2: Bool = prelude.is_digits(t) in
+      %t2
+    else
+      false
+  in
+  %t3
+
+fun parse_phone(raw: Text) : {Text | Phone} fails PhoneError =
+  let %t1: Text =
+    checked(raw, λ(it).
+      let %t0: Bool = events.types.valid_phone(it) in
+      %t0
+    , Malformed)
+  in
+  %t1

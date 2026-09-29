@@ -1,0 +1,53 @@
+---
+source: crates/una-cli/tests/cli.rs
+expression: stdout(&output)
+---
+module events.seating
+
+type Seats = {Int | in 0..5000}
+
+data Availability = SoldOut | Few | Open
+
+data Event = Event(name: Text, remaining: {Int | in 0..5000})
+
+data Registration = Registration(name: Text, event: Event)
+
+fun availability(e: Event) : Availability =
+  let %t0: Int = e.remaining in
+  let %t10: Bool = <=(0, %t0) in
+  let %t12: Bool =
+    if %t10 then
+      let %t11: Bool = <=(%t0, 0) in
+      %t11
+    else
+      false
+  in
+  if %t12 then
+    let %t9: Availability = SoldOut in
+    %t9
+  else
+    let %t6: Bool = <=(1, %t0) in
+    let %t8: Bool =
+      if %t6 then
+        let %t7: Bool = <(%t0, 20) in
+        %t7
+      else
+        false
+    in
+    if %t8 then
+      let %t5: Availability = Few in
+      %t5
+    else
+      let %t1: Availability = Open in
+      %t1
+
+fun clamp_seats(raw: Int) : {Int | in 0..5000} =
+  let %t0: Bool = <(raw, 0) in
+  if %t0 then
+    0
+  else
+    let %t1: Bool = >(raw, 5000) in
+    if %t1 then
+      5000
+    else
+      raw

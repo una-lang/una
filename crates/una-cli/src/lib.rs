@@ -57,13 +57,16 @@ pub enum Tier {
     One,
 }
 
-/// The outcome of [`check`]: its diagnostics and the sources they point into.
+/// The outcome of [`check`]: its diagnostics, the sources they point into, and the Core IR of
+/// the declarations without diagnostics.
 #[derive(Debug)]
 pub struct Checked {
     /// The diagnostics, in reporting order.
     pub diagnostics: Vec<Diagnostic>,
     /// The loaded sources.
     pub sources: SourceDb,
+    /// The Core IR (`spec/09`).
+    pub program: una_core::Program,
 }
 
 /// Loads and checks the file or package at `path` (`spec/13 §5`).
@@ -72,10 +75,14 @@ pub struct Checked {
 /// tier 1 differs from tier 0 once proof obligations exist (M8).
 pub fn check(path: &Path, _tier: Tier) -> Result<Checked, LoadError> {
     let package = load(path)?;
-    let diagnostics = on_large_stack(|| analyze(&package).diagnostics);
+    let (diagnostics, program) = on_large_stack(|| {
+        let analysis = analyze(&package);
+        (analysis.diagnostics, analysis.program)
+    });
     Ok(Checked {
         diagnostics,
         sources: package.sources,
+        program,
     })
 }
 
@@ -86,6 +93,7 @@ struct Analysis {
     trees: Vec<(FileId, File)>,
     interner: Interner,
     headers: Vec<Header>,
+    program: una_core::Program,
 }
 
 fn analyze(package: &Package) -> Analysis {
@@ -125,6 +133,7 @@ fn analyze(package: &Package) -> Analysis {
         trees: trees.into_iter().map(|(id, tree, _)| (id, tree)).collect(),
         interner,
         headers: types.headers,
+        program: types.program,
     }
 }
 
@@ -199,7 +208,11 @@ where
 {
     let status = match Cli::try_parse_from(args) {
         Ok(cli) => match cli.command {
-            Command::Check { path, tier } => {
+            Command::Check {
+                path,
+                tier,
+                dump_core,
+            } => {
                 let options = CheckOptions {
                     tier: match tier {
                         TierArg::Zero => Tier::Zero,
@@ -208,7 +221,7 @@ where
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
                 };
-                check_command(&path, options, stdout, stderr)
+                check_command(&path, options, dump_core.as_deref(), stdout, stderr)
             }
             Command::Fmt { path, check } => {
                 let options = FmtOptions {
@@ -256,6 +269,7 @@ struct CheckOptions {
 fn check_command(
     path: &Path,
     options: CheckOptions,
+    dump_core: Option<&str>,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
@@ -268,6 +282,16 @@ fn check_command(
             return Ok(ExitStatus::Usage);
         }
     };
+    // DECISION D-099: the Core IR of the module's declarations without diagnostics, on stdout.
+    if let Some(module) = dump_core {
+        match checked.program.modules.iter().find(|m| m.path == module) {
+            Some(core) => write!(stdout, "{}", una_core::print_module(core))?,
+            None => {
+                writeln!(stderr, "error: the package has no module `{module}`")?;
+                return Ok(ExitStatus::Usage);
+            }
+        }
+    }
     report(
         &checked.diagnostics,
         &checked.sources,

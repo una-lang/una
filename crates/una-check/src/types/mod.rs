@@ -15,11 +15,13 @@
 mod authority;
 mod call;
 mod check;
+mod elab;
 mod env;
 mod expr;
 mod facts;
 mod flow;
 mod label;
+mod records;
 mod stmt;
 mod ty;
 mod unify;
@@ -91,6 +93,8 @@ pub struct TypeCheck {
     pub selfified: Vec<Location>,
     /// The headers of the functions of the modules checked, by module, then declaration.
     pub headers: Vec<Header>,
+    /// The Core IR of the declarations without diagnostics (`spec/09`).
+    pub program: una_core::Program,
 }
 
 /// Type-checks the modules of `package` that have no syntax errors.
@@ -167,8 +171,10 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
         .obligations
         .sort_by_key(|(kind, span, _)| (span.file, span.start, span.end, *kind));
     let headers = headers(&env);
+    let program = elab::program(&env, &findings, package.sources);
     TypeCheck {
         headers,
+        program,
         obligations: findings
             .obligations
             .iter()
@@ -240,6 +246,10 @@ pub(crate) struct Findings {
     pub(crate) compared: std::collections::BTreeMap<usize, std::collections::BTreeSet<usize>>,
     /// The uses of `checked`, by module, in order (`spec/06 §6`).
     pub(crate) checked: Vec<(usize, Span)>,
+    /// What pass 2 resolves, for elaboration (DECISION D-098).
+    pub(crate) records: records::Records,
+    /// The declarations of pass 2 with a diagnostic, by the span of their name.
+    pub(crate) failed: std::collections::BTreeSet<Span>,
 }
 
 /// The parsed standard modules.

@@ -612,3 +612,32 @@ fn contract_reports_unknown_names_and_diagnostics() {
     assert_eq!(codes(&output), ["U2001"]);
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn dump_core_prints_the_core_ir_of_the_reference_example() {
+    // M7 acceptance criterion: snapshots of Core dumps (`spec/09 §4`, DECISION D-099).
+    for module in [
+        "events.checkin",
+        "events.keys",
+        "events.main",
+        "events.seating",
+        "events.types",
+    ] {
+        let output = una(&[
+            "check",
+            "--tier",
+            "0",
+            "--dump-core",
+            module,
+            "examples/events",
+        ]);
+        assert_eq!(output.status.code(), Some(0), "{module}");
+        assert_eq!(stderr(&output), "", "{module}");
+        insta::assert_snapshot!(
+            format!("core_{}", module.replace('.', "_")),
+            stdout(&output)
+        );
+    }
+    let output = una(&["check", "--dump-core", "events.nothing", "examples/events"]);
+    assert_eq!(output.status.code(), Some(2));
+}

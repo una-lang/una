@@ -14,6 +14,7 @@ use super::check::{Checker, Ctx, Rl, Role, Site};
 use super::closest;
 use super::env::{Entity, FnKind, KindDef};
 use super::label::Label;
+use super::records::Res;
 use super::ty::{FnTy, FnUse, KindId, Ty};
 use super::unify::Origin;
 
@@ -44,6 +45,7 @@ impl<'a> Checker<'_, 'a, '_> {
         };
         let ty = self.infer_kind(expr, expected, site);
         self.ctx.rl = rl;
+        self.typed(expr.span, &ty);
         ty
     }
 
@@ -298,6 +300,13 @@ impl<'a> Checker<'_, 'a, '_> {
             self.instances.push((id, args.clone(), span));
         }
         self.edge(id, span);
+        self.resolved(
+            span,
+            Res::Function {
+                id,
+                type_args: args.clone(),
+            },
+        );
         Ty::Fn(Box::new(FnTy {
             params: def
                 .params
@@ -339,6 +348,13 @@ impl<'a> Checker<'_, 'a, '_> {
                 if fields.is_empty() {
                     let (params, kind_name) = self.kind_params(kind);
                     let args = self.instantiate(&params, kind_name, span);
+                    self.resolved(
+                        span,
+                        Res::Ctor {
+                            kind,
+                            variant: Some(index),
+                        },
+                    );
                     return Ty::Kind(kind, args);
                 }
                 (
@@ -586,7 +602,17 @@ impl<'a> Checker<'_, 'a, '_> {
         let tested = match target {
             IsTarget::Variant(ident) => {
                 let ty = self.expr(value, None);
-                self.variant_of(&ty, ident, value.span, "`is` tests a variant of a sum kind");
+                if let Some((kind, index, _)) =
+                    self.variant_of(&ty, ident, value.span, "`is` tests a variant of a sum kind")
+                {
+                    self.resolved(
+                        ident.span,
+                        Res::Ctor {
+                            kind,
+                            variant: Some(index),
+                        },
+                    );
+                }
                 ty
             }
             // DECISION D-061: `is` with a literal is outside the refinement language.
@@ -865,6 +891,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
             };
             types.push(param_ty);
+            self.typed(param.name.span, &ty);
             self.bind(name, ty);
         }
         let result = shape.as_ref().map(|f| f.result.clone());
@@ -1037,6 +1064,13 @@ impl<'a> Checker<'_, 'a, '_> {
         match found {
             Some((id, index, args)) => {
                 self.fail_site(&variant.name, Some(id));
+                self.resolved(
+                    variant.span,
+                    Res::Ctor {
+                        kind: id,
+                        variant: Some(index),
+                    },
+                );
                 self.construct(
                     id,
                     Some(index),

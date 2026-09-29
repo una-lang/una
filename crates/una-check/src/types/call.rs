@@ -11,6 +11,7 @@ use super::check::{Checker, Role, Site};
 use super::closest;
 use super::env::{Entity, FieldDef, FnDef, FnKind, ParamDef};
 use super::expr::count;
+use super::records::Res;
 use super::ty::{FnUse, KindId, Ty};
 
 /// A checked argument: where it is, its type, the type of its parameter, and the parameter.
@@ -28,9 +29,13 @@ impl<'a> Checker<'_, 'a, '_> {
         let labeled = self.labeled(&target_ty);
         let top = labeled.top_label();
         if field == "len" && matches!(resolved, Ty::Text | Ty::List(_)) {
+            self.resolved(span, Res::Len);
             return Ty::Int.with_label(&top);
         }
         if let Some(ty) = self.record_field(labeled.unlabeled(), field) {
+            if let Some((kind, index)) = self.field_index(&resolved, field) {
+                self.resolved(span, Res::Field { kind, index });
+            }
             return ty.with_label(&top);
         }
         match resolved {
@@ -62,6 +67,15 @@ impl<'a> Checker<'_, 'a, '_> {
                 Ty::Error
             }
         }
+    }
+
+    /// The kind and position of field `field` of a value of record type `ty`.
+    fn field_index(&self, ty: &Ty, field: &str) -> Option<(KindId, usize)> {
+        let Ty::Kind(id, _) = ty else {
+            return None;
+        };
+        let fields = self.env.kinds.get(*id)?.record.as_ref()?;
+        Some((*id, fields.iter().position(|f| f.name == field)?))
     }
 
     /// The type of field `field` of a value of record type `ty`, when it has one.
@@ -126,7 +140,11 @@ impl<'a> Checker<'_, 'a, '_> {
             && matches!(self.resolve(&field_ty), Ty::Fn(_))
         {
             self.outside_rl(span, || format!("call of field `{method}`"));
-            return self.call_value(&field_ty, args, span, &format!("field `{method}`"), site);
+            let ty = self.call_value(&field_ty, args, span, &format!("field `{method}`"), site);
+            if let Some((kind, index)) = self.field_index(&resolved, method) {
+                self.resolved(span, Res::FieldFn { kind, index });
+            }
+            return ty;
         }
         match self.env.lower(self.module, method) {
             Some(Entity::Function(id)) => {
@@ -252,6 +270,8 @@ impl<'a> Checker<'_, 'a, '_> {
             self.unchecked(args);
             return function.result;
         }
+        self.resolved(span, Res::Value);
+        self.ordered(span, (0..args.len()).map(Some).collect());
         let mut flows = Vec::new();
         for (arg, param) in args.iter().zip(&function.params) {
             self.ctx.argument = true;
@@ -396,12 +416,26 @@ impl<'a> Checker<'_, 'a, '_> {
             site.handled,
         );
         if def.kind == FnKind::Policy {
+            self.resolved(
+                span,
+                Res::Function {
+                    id,
+                    type_args: Vec::new(),
+                },
+            );
             return self.call_policy(&def, &callee, receiver, args, span);
         }
         let subst = self.instantiate(&def.type_params, def.name, span);
         if !subst.is_empty() {
             self.instances.push((id, subst.clone(), span));
         }
+        self.resolved(
+            span,
+            Res::Function {
+                id,
+                type_args: subst.clone(),
+            },
+        );
         let checked = self.arguments(
             &callee,
             &def.params,
@@ -446,6 +480,8 @@ impl<'a> Checker<'_, 'a, '_> {
     ) -> Ty {
         let from = def.params.first().map(|p| p.ty.clone());
         let expected = from.as_ref().map_or(Ty::Error, |from| from.base.clone());
+        // DECISION D-098: the one argument, or the receiver, is the `from` value.
+        self.ordered(span, vec![Some(0)]);
         let origin = def
             .params
             .first()
@@ -561,6 +597,14 @@ impl<'a> Checker<'_, 'a, '_> {
             self.unchecked(args);
             return Ty::Error;
         };
+        if let Some((capability_id, _)) = self.op_index(cap_name, op_name) {
+            self.resolved(
+                span,
+                Res::Op {
+                    capability: capability_id,
+                },
+            );
+        }
         let callee = format!("operation `{}.{op_name}`", capability.name);
         let checked = self.arguments(
             &callee,
@@ -598,6 +642,23 @@ impl<'a> Checker<'_, 'a, '_> {
             site.handled,
         );
         def.result.base
+    }
+
+    /// The capability bound to `@cap` and the position of its operation `op`.
+    fn op_index(&self, cap: &str, op: &str) -> Option<(usize, usize)> {
+        let capability = match self.resolve_cap(cap) {
+            super::authority::Resolved::Cap { capability, .. }
+            | super::authority::Resolved::Handler { capability, .. } => capability?,
+            super::authority::Resolved::Missing { .. } => return None,
+        };
+        let index = self
+            .env
+            .capabilities
+            .get(capability)?
+            .ops
+            .iter()
+            .position(|o| o.name == op)?;
+        Some((capability, index))
     }
 
     /// The parameter an unlabeled argument names by punning (`spec/04 §3` rule 3): a bare name
@@ -704,6 +765,14 @@ impl<'a> Checker<'_, 'a, '_> {
             problem |= target.is_none();
             targets.push(target);
         }
+        // DECISION D-098: the parameter of each argument, the receiver first.
+        let order: Vec<Option<usize>> = receiver
+            .as_ref()
+            .map(|_| Some(0))
+            .into_iter()
+            .chain(targets.iter().copied())
+            .collect();
+        self.ordered(span, order);
         // Lambdas are checked last, so the other arguments fix the types their parameters
         // take (`spec/03 §7`).
         for (arg, target) in lambdas_last(args, &targets) {
@@ -818,12 +887,26 @@ impl<'a> Checker<'_, 'a, '_> {
             Some(Entity::Variant(kind, index)) => {
                 let (params, kind_name) = self.kind_params(kind);
                 let targs = self.instantiate(&params, kind_name, ident.span);
+                self.resolved(
+                    span,
+                    Res::Ctor {
+                        kind,
+                        variant: Some(index),
+                    },
+                );
                 self.construct(kind, Some(index), &targs, args, ident.span, span);
                 return Ty::Kind(kind, targs);
             }
             Some(Entity::Kind(id)) if self.env.kinds.get(id).is_some_and(|k| !k.is_sum()) => {
                 let (params, kind_name) = self.kind_params(id);
                 let targs = self.instantiate(&params, kind_name, ident.span);
+                self.resolved(
+                    span,
+                    Res::Ctor {
+                        kind: id,
+                        variant: None,
+                    },
+                );
                 self.construct(id, None, &targs, args, ident.span, span);
                 return Ty::Kind(id, targs);
             }
@@ -964,6 +1047,7 @@ impl<'a> Checker<'_, 'a, '_> {
             problem |= target.is_none();
             targets.push(target);
         }
+        self.ordered(span, targets.clone());
         let mut flows = Vec::new();
         for (arg, target) in lambdas_last(args, &targets) {
             let Some(field) = target.and_then(|target| fields.get(target)) else {

@@ -447,6 +447,7 @@ dependencies = [
  "serde",
  "serde_json",
  "una-check",
+ "una-core",
  "una-diag",
  "una-fmt",
  "una-project",
@@ -459,6 +460,7 @@ name = "una-core"
 version = "0.1.0"
 dependencies = [
  "una-diag",
+ "una-syntax",
 ]
 
 [[package]]
