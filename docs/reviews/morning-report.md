@@ -7,7 +7,7 @@ Updated after every milestone of the overnight run (`OVERNIGHT.md`, C.8).
 - Language name: Una (ADR 0025; previously Troth, codenamed Vera).
 - Last completed milestone: M8 (verification): `una check` proves every obligation with Z3 5.1.0, refuted ones come with counterexamples, and `una obligations` lists them; `una run` and `una test` check at tier 1, ending ADR 0027's interim runs. Next: M9 (Agent ABI and build report), on the way to usage checkpoint 4 after M10 (`docs/plan/roadmap.md §4`).
 - Repository: una-lang/una (private until launch), branch `dev/v0.1`; its history starts at the initial public import `25d865b` (ADR 0030). Earlier commit hashes in this report refer to the legacy repository.
-- Last green CI runs: https://github.com/una-lang/una/actions/runs/36618844273 (`dev/v0.1`, Linux, at `511b4eb`, M7), https://github.com/una-lang/una/actions/runs/36610873278 (`dev/v0.1`, Linux, at `b37eaa2`, M6), https://github.com/una-lang/una/actions/runs/36606305565 (`dev/v0.1`, Linux, at `79b7a2c`, M5) and https://github.com/una-lang/una/actions/runs/36580294816 (`main`, Linux and macOS, at `25d865b`). macOS runs only on pull requests and pushes to `main` (D-083); local checks on the owner's Mac pass. Before the import: run 36578625540 of the legacy repository (`a5c8d3d`, M4).
+- Last green CI runs: https://github.com/una-lang/una/actions/runs/36625239354 (`dev/v0.1`, Linux, at `74afc16`, M8), https://github.com/una-lang/una/actions/runs/36618844273 (`dev/v0.1`, Linux, at `511b4eb`, M7), https://github.com/una-lang/una/actions/runs/36610873278 (`dev/v0.1`, Linux, at `b37eaa2`, M6), https://github.com/una-lang/una/actions/runs/36606305565 (`dev/v0.1`, Linux, at `79b7a2c`, M5) and https://github.com/una-lang/una/actions/runs/36580294816 (`main`, Linux and macOS, at `25d865b`). macOS runs only on pull requests and pushes to `main` (D-083); local checks on the owner's Mac pass. Before the import: run 36578625540 of the legacy repository (`a5c8d3d`, M4).
 
 ## 2. Consolidated instructions: Una, neutral examples, checkpoints, license
 
@@ -121,7 +121,7 @@ docs/compiler/testing.md:105:## 5. Coverage expectations for v0.1
 | M5 Capabilities, effects and failures | done | `9d34aab`, `3be9490`, `08260d3`, `58dd14d`, `0ded2b9`, `4f959a7`, `ce6f46b`, `79b7a2c` (plan and ADRs 0028, 0029 in the initial import `25d865b`) | 259 | 144 cases: 142 passed, 2 pending (M6, M8), 0 failures |
 | M6 Information flow | done | `2348672`, `d519fbb`, `78ad11e`, `e763556`, `0241e93`, `906bd9e` (an M5 fix), `a40584d`, and the self-review | 274 | 160 cases: 159 passed, 1 pending (M8), 0 failures |
 | M7 Core IR and interpreter | done | `6c648fb` (plan, ADR 0032), `59a481d`, `d81f200`, `c3d2041`, `54d30c8`, `685bc36`, `bdc7889`, `511b4eb` (self-review) | 296 | 173 cases: 172 passed, 1 pending (M8), 0 failures |
-| M8 Verification | done | `3146132` (plan, ADR 0033), `d8d3db6`, `02bb2d5`, `49c73e9`, `ec853fa`, `048cbfa`, `3f10ac5`, `4b212fb`, `a715ff0`, and the self-review | 305 | 190 cases: 190 passed, 0 pending, 0 failures |
+| M8 Verification | done | `3146132` (plan, ADR 0033), `d8d3db6`, `02bb2d5`, `49c73e9`, `ec853fa`, `048cbfa`, `3f10ac5`, `4b212fb`, `a715ff0`, `74afc16` (self-review) | 305 | 190 cases: 190 passed, 0 pending, 0 failures |
 | M9 Agent ABI and build report | not started | | | |
 | M10 Gate 1 readiness | not started | | | |
 
