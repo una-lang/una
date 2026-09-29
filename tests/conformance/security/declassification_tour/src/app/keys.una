@@ -1,0 +1,17 @@
+trusted module app.keys
+
+import app.types (Phone)
+
+pub policy phone_key
+  from secret[PII] Phone
+  to internal Hashed
+  via hmac_phone
+  purpose "lookup by phone"
+  owner privacy
+
+hmac_phone(phone: secret[PII] Phone) -> internal Hashed
+  uses @keys: Keys[hmac]
+  fails KeyError
+=
+  @keys.hmac(key_name: "pepper", data: phone)
+    if error pass
