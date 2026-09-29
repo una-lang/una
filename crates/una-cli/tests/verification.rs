@@ -292,3 +292,69 @@ pub first() -> Int = book(4321)
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert!(Path::new(&root).exists());
 }
+
+#[test]
+fn the_verifier_generates_every_obligation_the_checker_found() {
+    // `spec/12 §3` over Core IR agrees with the sites the type checker records since M4: the
+    // site of each obligation, or each return path of a return obligation (DECISION D-113).
+    let root = repository().join("tests/conformance");
+    let mut targets: Vec<PathBuf> = vec![
+        repository().join("examples/events"),
+        repository().join("examples/hello"),
+    ];
+    for area in ["types", "authority", "security", "verification", "runtime"] {
+        let mut entries: Vec<PathBuf> = std::fs::read_dir(root.join(area))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| !p.file_name().unwrap().to_string_lossy().starts_with('.'))
+            .collect();
+        entries.sort();
+        targets.extend(entries);
+    }
+    let mut compared = 0;
+    for target in targets {
+        let checked = una_cli::check(&target, Tier::One).unwrap();
+        let Some(verification) = checked.verification else {
+            continue;
+        };
+        let key = |kind: una_diag::ObligationKind, file: &str, line: u32, col: u32| {
+            format!("{} {file}:{line}:{col}", kind.as_str())
+        };
+        let mut pending: Vec<String> = checked
+            .pending
+            .iter()
+            .map(|p| {
+                key(
+                    p.kind,
+                    &p.location.file,
+                    p.location.start.line,
+                    p.location.start.col,
+                )
+            })
+            .collect();
+        let mut generated: Vec<String> = Vec::new();
+        for obligation in &verification.obligations {
+            let spans = if obligation.paths.is_empty() {
+                vec![obligation.source]
+            } else {
+                obligation.paths.clone()
+            };
+            for span in spans {
+                let location = checked.sources.location(span);
+                generated.push(key(
+                    obligation.kind,
+                    &location.file,
+                    location.start.line,
+                    location.start.col,
+                ));
+            }
+        }
+        pending.sort();
+        pending.dedup();
+        generated.sort();
+        generated.dedup();
+        assert_eq!(generated, pending, "{}", target.display());
+        compared += 1;
+    }
+    assert!(compared > 30, "{compared}");
+}

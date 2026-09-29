@@ -18,7 +18,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use clap::Parser;
-use una_check::{Header, ModuleInput, PackageInput, RunInput, check_names, check_types};
+use una_check::{
+    Header, ModuleInput, PackageInput, PendingObligation, RunInput, check_names, check_types,
+};
 use una_diag::{Code, Diagnostic, render_human, render_json};
 use una_syntax::ast::File;
 use una_syntax::{FileId, Interner, SourceDb, SourceFile, lex, parse};
@@ -73,6 +75,9 @@ pub struct Checked {
     pub program: una_core::Program,
     /// The obligations and their outcomes, when tier 1 ran.
     pub verification: Option<Verification>,
+    /// The obligation sites that the type checker found, which the verifier generates over
+    /// Core IR (`spec/12 §3`).
+    pub pending: Vec<PendingObligation>,
 }
 
 /// Loads and checks the file or package at `path` (`spec/13 §5`, `spec/12 §1`), with the
@@ -85,9 +90,9 @@ pub fn check(path: &Path, tier: Tier) -> Result<Checked, LoadError> {
 /// reports nothing, every proof obligation (DECISION D-112).
 pub fn check_with(path: &Path, tier: Tier, wallclock: Duration) -> Result<Checked, LoadError> {
     let package = load(path)?;
-    let (mut diagnostics, program) = on_large_stack(|| {
+    let (mut diagnostics, program, pending) = on_large_stack(|| {
         let analysis = analyze(&package, None);
-        (analysis.diagnostics, analysis.program)
+        (analysis.diagnostics, analysis.program, analysis.pending)
     });
     let mut verification = None;
     if tier == Tier::One && diagnostics.is_empty() {
@@ -100,6 +105,7 @@ pub fn check_with(path: &Path, tier: Tier, wallclock: Duration) -> Result<Checke
         sources: package.sources,
         program,
         verification,
+        pending,
     })
 }
 
@@ -113,6 +119,7 @@ struct Analysis {
     headers: Vec<Header>,
     program: una_core::Program,
     entry: Option<String>,
+    pending: Vec<PendingObligation>,
 }
 
 /// Checks `package`; with `run_grants`, for `una run`, whose grants are final (U3012).
@@ -175,6 +182,7 @@ fn analyze(package: &Package, run_grants: Option<&[String]>) -> Analysis {
         headers: types.headers,
         program: types.program,
         entry,
+        pending: types.obligations,
     }
 }
 
