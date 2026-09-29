@@ -18,10 +18,12 @@ una-fmt.workspace = true
 una-project.workspace = true
 una-report.workspace = true
 una-syntax.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
+insta.workspace = true
 pretty_assertions.workspace = true
-serde_json.workspace = true
 
 [lints]
 workspace = true

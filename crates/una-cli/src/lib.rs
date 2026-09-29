@@ -7,6 +7,7 @@
 #![deny(missing_docs)]
 
 mod args;
+mod contract;
 mod package;
 
 use std::ffi::OsString;
@@ -14,7 +15,7 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use clap::Parser;
-use una_check::{ModuleInput, PackageInput, check_names, check_types};
+use una_check::{Header, ModuleInput, PackageInput, check_names, check_types};
 use una_diag::{Code, Diagnostic, render_human, render_json};
 use una_syntax::ast::File;
 use una_syntax::{FileId, Interner, SourceDb, SourceFile, lex, parse};
@@ -71,14 +72,23 @@ pub struct Checked {
 /// tier 1 differs from tier 0 once proof obligations exist (M8).
 pub fn check(path: &Path, _tier: Tier) -> Result<Checked, LoadError> {
     let package = load(path)?;
-    let diagnostics = on_large_stack(|| diagnose(&package));
+    let diagnostics = on_large_stack(|| analyze(&package).diagnostics);
     Ok(Checked {
         diagnostics,
         sources: package.sources,
     })
 }
 
-fn diagnose(package: &Package) -> Vec<Diagnostic> {
+/// What checking a package finds: its diagnostics, the tree of each module, the names of the
+/// trees, and the headers of its functions after inference.
+struct Analysis {
+    diagnostics: Vec<Diagnostic>,
+    trees: Vec<(FileId, File)>,
+    interner: Interner,
+    headers: Vec<Header>,
+}
+
+fn analyze(package: &Package) -> Analysis {
     let (manifest, mut diagnostics) = package::project(package);
     let mut interner = Interner::new();
     let mut trees = Vec::new();
@@ -108,8 +118,14 @@ fn diagnose(package: &Package) -> Vec<Diagnostic> {
         settings: &manifest,
     };
     diagnostics.extend(check_names(&input));
-    diagnostics.extend(check_types(&input).diagnostics);
-    diagnostics
+    let types = check_types(&input);
+    diagnostics.extend(types.diagnostics);
+    Analysis {
+        diagnostics,
+        trees: trees.into_iter().map(|(id, tree, _)| (id, tree)).collect(),
+        interner,
+        headers: types.headers,
+    }
 }
 
 /// The syntax diagnostics of one file, its tree, and its canonical form when it has no
@@ -201,6 +217,10 @@ where
                     color: use_color(cli.color, stderr_is_terminal),
                 };
                 fmt_command(&path, options, stdout, stderr)
+            }
+            Command::Contract { name } => {
+                let color = use_color(cli.color, stderr_is_terminal);
+                contract_command(&name, cli.json, color, stdout, stderr)
             }
             Command::Explain { code } => explain_command(&code, cli.json, stdout, stderr),
         },
@@ -380,6 +400,70 @@ fn write_through_rename(target: &Path, text: &str) -> io::Result<()> {
         std::fs::set_permissions(&temporary, metadata.permissions())?;
     }
     std::fs::rename(&temporary, target)
+}
+
+/// `una contract <qualified.name>` (`spec/13 §5`, ADR 0029): checks the package in the current
+/// directory at tier 0 and prints the contract of the function, or the diagnostics as
+/// `una check` does when there are any. An unknown name is a usage error.
+fn contract_command(
+    name: &str,
+    json: bool,
+    color: bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> io::Result<ExitStatus> {
+    let package = match load(Path::new(".")) {
+        Ok(package) => package,
+        Err(error) => {
+            writeln!(stderr, "error: {error}")?;
+            return Ok(ExitStatus::Usage);
+        }
+    };
+    let analysis = on_large_stack(|| analyze(&package));
+    let modules = contract::Modules {
+        sources: &package.sources,
+        interner: &analysis.interner,
+        trees: &analysis.trees,
+    };
+    let Some((module, decl, function)) = modules.function(name) else {
+        writeln!(
+            stderr,
+            "error: the package has no function `{name}`; name it by module path and name, as in `events.checkin.check_in`"
+        )?;
+        return Ok(ExitStatus::Usage);
+    };
+    if !analysis.diagnostics.is_empty() {
+        return report(
+            &analysis.diagnostics,
+            &package.sources,
+            json,
+            color,
+            stdout,
+            stderr,
+        );
+    }
+    let function_name = analysis.interner.resolve(function.name.name);
+    let header = analysis
+        .headers
+        .iter()
+        .find(|h| h.module == module && h.name == function_name);
+    let contract = contract::contract(&modules, &module, decl, function, header);
+    if json {
+        match serde_json::to_string(&contract) {
+            Ok(document) => writeln!(stdout, "{document}")?,
+            Err(error) => {
+                writeln!(
+                    stderr,
+                    "internal compiler error (U8001): rendering the contract as JSON failed: {error}"
+                )?;
+                return Ok(ExitStatus::Internal);
+            }
+        }
+    } else {
+        write!(stdout, "{}", contract.human())?;
+    }
+    stdout.flush()?;
+    Ok(ExitStatus::Success)
 }
 
 /// `una explain <code>`: prints the explanation of a registered code (`spec/13 §4`).

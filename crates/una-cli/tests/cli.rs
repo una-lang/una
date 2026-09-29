@@ -503,3 +503,104 @@ fn check_reports_project_file_errors_and_still_checks_the_modules() {
     assert_eq!(found, expected);
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+/// Runs the `una` binary in `dir`, a directory relative to the repository root, or absolute.
+fn una_in(dir: &std::path::Path, args: &[&str]) -> Output {
+    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    Command::new(env!("CARGO_BIN_EXE_una"))
+        .args(args)
+        .current_dir(repository.join(dir))
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn contract_prints_the_header_of_the_reference_example() {
+    // M5 acceptance criterion: a snapshot of `una contract --json events.checkin.check_in`.
+    let events = std::path::Path::new("examples/events");
+    let output = una_in(events, &["contract", "--json", "events.checkin.check_in"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stderr(&output), "");
+    insta::assert_snapshot!("contract_check_in_json", stdout(&output));
+    let document: Value = serde_json::from_str(stdout(&output)).unwrap();
+    assert_eq!(document["schema"], "una.contract/1");
+    let output = una_in(events, &["contract", "events.checkin.check_in"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stderr(&output), "");
+    insta::assert_snapshot!("contract_check_in_human", stdout(&output));
+    let output = una_in(events, &["contract", "events.seating.availability"]);
+    assert_eq!(output.status.code(), Some(0));
+    insta::assert_snapshot!("contract_availability_human", stdout(&output));
+}
+
+#[test]
+fn contract_marks_inferred_clauses() {
+    // DECISION D-081: inferred clauses end with `-- inferred` and carry `"inferred": true`.
+    let root = scratch("contract-inferred");
+    std::fs::create_dir_all(root.join("src/app")).unwrap();
+    std::fs::write(root.join("una.toml"), MANIFEST).unwrap();
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../verification.lock"),
+        root.join("verification.lock"),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/app/log.una"),
+        "module app.log\n\nkind LookupError = Missing | Unavailable\n\ncapability Log\n  op write(line: Text) -> Unit\n  op flush() -> Unit\n\n--- Writes a line and flushes.\nhelper(line: Text) -> Int\n=\n  @log.write(line)\n  @log.flush()\n  if line.len > 0 then 1 else fail Missing\n\npub run() -> Int\n  uses @log: Log\n  fails LookupError\n=\n  helper(\"x\")\n    if error pass\n",
+    )
+    .unwrap();
+    let output = una_in(&root, &["contract", "app.log.helper"]);
+    assert_eq!(stderr(&output), "");
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        stdout(&output),
+        "--- Writes a line and flushes.\nhelper(line: Text) -> Int\n  uses @log: Log[write, flush] -- inferred\n  fails LookupError -- inferred\n"
+    );
+    let output = una_in(&root, &["contract", "--json", "app.log.helper"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        stdout(&output),
+        "{\"schema\":\"una.contract/1\",\"function\":\"app.log.helper\",\"public\":false,\"docs\":[\"Writes a line and flushes.\"],\"header\":\"helper(line: Text) -> Int\",\"requires\":[],\"ensures\":[],\"uses\":[{\"cap\":\"log\",\"capability\":\"Log\",\"ops\":[\"write\",\"flush\"],\"inferred\":true}],\"fails\":{\"kind\":\"LookupError\",\"inferred\":true},\"derived_from\":[]}\n"
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn contract_reports_unknown_names_and_diagnostics() {
+    let events = std::path::Path::new("examples/events");
+    for name in [
+        "events.checkin.nothing",
+        "check_in",
+        "events.seating.EVENTS_3",
+    ] {
+        let output = una_in(events, &["contract", name]);
+        assert_eq!(output.status.code(), Some(2), "{name}");
+        assert_eq!(stdout(&output), "", "{name}");
+        assert!(
+            stderr(&output).starts_with("error: the package has no function"),
+            "{name}"
+        );
+    }
+    // Outside a package, `una contract` is a usage error, like `una check`.
+    let output = una_in(std::path::Path::new("docs"), &["contract", "a.b"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(stdout(&output), "");
+    // A package with diagnostics reports them as `una check` does.
+    let root = scratch("contract-diagnostics");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("una.toml"), MANIFEST).unwrap();
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../verification.lock"),
+        root.join("verification.lock"),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/a.una"),
+        "module a\n\npub one() -> Int = true\n",
+    )
+    .unwrap();
+    let output = una_in(&root, &["contract", "--json", "a.one"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(codes(&output), ["U2001"]);
+    std::fs::remove_dir_all(&root).unwrap();
+}

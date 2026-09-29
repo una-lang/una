@@ -48,6 +48,35 @@ pub struct PendingObligation {
     pub origin: Option<Location>,
 }
 
+/// A capability that a header uses: `uses @cap: capability[ops]`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeaderUse {
+    /// The reference, without `@`.
+    pub cap: String,
+    /// The capability's name.
+    pub capability: String,
+    /// The operations, in the capability's declaration order.
+    pub ops: Vec<String>,
+}
+
+/// The authority and failure contract of a function of the package after inference
+/// (`spec/04 §5`), which `una contract` prints.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Header {
+    /// The module path, for example `events.checkin`.
+    pub module: String,
+    /// The function's name.
+    pub name: String,
+    /// Its `uses`, declared or inferred, in order.
+    pub uses: Vec<HeaderUse>,
+    /// Whether its `uses` are inferred: a private function without `uses` clauses.
+    pub uses_inferred: bool,
+    /// The name of its error kind, declared or inferred, when it can fail.
+    pub fails: Option<String>,
+    /// Whether its `fails` is inferred: a private function without a `fails` clause.
+    pub fails_inferred: bool,
+}
+
 /// The outcome of [`check_types`].
 #[derive(Clone, Debug, Default)]
 pub struct TypeCheck {
@@ -58,6 +87,8 @@ pub struct TypeCheck {
     /// Where each `let` whose right-hand side is in the refinement language binds its name.
     /// Such a binding has the selfified type `{v: B | v == e}` (`spec/03 §7`).
     pub selfified: Vec<Location>,
+    /// The headers of the functions of the modules checked, by module, then declaration.
+    pub headers: Vec<Header>,
 }
 
 /// Type-checks the modules of `package` that have no syntax errors.
@@ -126,7 +157,9 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
     findings
         .obligations
         .sort_by_key(|(kind, span, _)| (span.file, span.start, span.end, *kind));
+    let headers = headers(&env);
     TypeCheck {
+        headers,
         obligations: findings
             .obligations
             .iter()
@@ -143,6 +176,41 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
             .collect(),
         diagnostics: report.diagnostics,
     }
+}
+
+/// The headers of the functions of the modules that report, after inference.
+fn headers(env: &Env<'_>) -> Vec<Header> {
+    env.functions
+        .iter()
+        .filter(|f| f.kind == env::FnKind::Function && env.reports(f.module))
+        .map(|f| Header {
+            module: env
+                .modules
+                .get(f.module)
+                .map(|m| m.path.clone())
+                .unwrap_or_default(),
+            name: f.name.to_owned(),
+            uses: f
+                .uses
+                .iter()
+                .map(|need| HeaderUse {
+                    cap: need.usage.name.clone(),
+                    capability: need
+                        .usage
+                        .capability
+                        .and_then(|c| env.capabilities.get(c))
+                        .map_or_else(String::new, |c| c.name.to_owned()),
+                    ops: need.usage.ops.clone(),
+                })
+                .collect(),
+            uses_inferred: f.infer_uses,
+            fails: match &f.fails {
+                Some(ty::Ty::Kind(id, _)) => Some(env.kind_name(*id).to_owned()),
+                _ => None,
+            },
+            fails_inferred: f.infer_fails,
+        })
+        .collect()
 }
 
 /// What checking the bodies finds besides diagnostics.

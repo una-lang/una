@@ -60,6 +60,12 @@ pub(crate) enum Command {
         #[arg(long)]
         check: bool,
     },
+    /// Print the full header of a function, declared or inferred, with doc comments and
+    /// requirements
+    Contract {
+        /// The module path followed by the function's name, for example events.checkin.check_in
+        name: String,
+    },
     /// Explain a diagnostic code
     Explain {
         /// A diagnostic code, for example U0001
