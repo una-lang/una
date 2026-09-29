@@ -61,6 +61,7 @@ U4001 at the value that flows, or at the condition of the construct whose label 
 ## 7. Known gaps
 
 - Label polymorphism is not in v0.1: a function with public parameters cannot take labeled arguments, even when its result would carry their label.
+- A lambda's body is checked once, with the labels its parameters have then; a `fold` over labeled values whose initial value is `public` is rejected, and a labeled initial value fixes it.
 - The build report's Information section (policy call sites) is M9.
 - Trace redaction by static argument labels is M7 (`spec/11 §5`).
 

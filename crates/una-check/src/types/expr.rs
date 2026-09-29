@@ -789,8 +789,9 @@ impl<'a> Checker<'_, 'a, '_> {
         site: Site,
     ) -> Ty {
         self.outside_rl(span, || "a lambda".to_owned());
-        // Parameters take the labels of the expected function type (DECISION D-088).
-        let mut shape = match expected.map(|ty| self.labeled(ty)) {
+        // The expected function type, whose result may still be a variable that the body's
+        // labels join (DECISION D-088).
+        let mut shape = match expected.map(|ty| self.vars.head(ty)) {
             Some(Ty::Fn(function)) => Some(*function),
             Some(Ty::Labeled(_, inner)) => match *inner {
                 Ty::Fn(function) => Some(*function),
@@ -843,7 +844,13 @@ impl<'a> Checker<'_, 'a, '_> {
                         _ => (lowered.clone(), lowered),
                     }
                 }
-                (None, Some(from_shape)) => (from_shape.clone(), from_shape),
+                // The body assumes the labels the parameter has now; the lambda's type records
+                // them, so a parameter whose label rises later fails the flow of the lambda
+                // into its parameter, contravariantly (DECISION D-089).
+                (None, Some(from_shape)) => {
+                    let assumed = self.labeled(&from_shape);
+                    (assumed.clone(), assumed)
+                }
                 (None, None) => {
                     if !mismatch {
                         self.report.error(

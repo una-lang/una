@@ -413,3 +413,19 @@ fn predicate_results_are_checked() {
         ]
     );
 }
+
+#[test]
+fn lambda_bodies_keep_the_labels_they_assume_for_their_parameters() {
+    // DECISION D-089: `fold`'s accumulator starts `public` here and becomes `secret`, so the
+    // body, checked with a `public` accumulator, could branch on a secret.
+    assert_eq!(
+        single(
+            "pub summed(xs: List[secret Int]) -> secret Int = xs.fold(initial: 0, step: fn(total, x) -> total + x)\n\
+             \n\
+             pub started(xs: List[secret Int]) -> secret Int\n=\n  let zero: secret Int = 0\n  xs.fold(initial: zero, step: fn(total, x) -> total + x)\n"
+        ),
+        [
+            "U4001 t.una:3:76 parameter `step` of `fold` is `fn(secret Int, secret Int) -> secret Int`, and this value is `fn(Int, secret Int) -> secret Int`: a flow from `secret` to `public`",
+        ]
+    );
+}

@@ -80,6 +80,15 @@ impl Vars {
         }
     }
 
+    /// `ty` with the variables at its top replaced by their values, labels kept; its
+    /// components stay as they are, so later unifications still reach their variables.
+    pub(crate) fn head(&self, ty: &Ty) -> Ty {
+        match self.shallow(ty) {
+            Ty::Labeled(label, inner) => self.head(&inner).with_label(&label),
+            other => other,
+        }
+    }
+
     /// The labels of `a` and `b` joined position by position; they have one shape, as after
     /// unification. Function parameters meet, since they are contravariant.
     pub(crate) fn join(&self, a: &Ty, b: &Ty) -> Ty {
