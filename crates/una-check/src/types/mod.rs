@@ -18,6 +18,8 @@ mod check;
 mod env;
 mod expr;
 mod facts;
+mod flow;
+mod label;
 mod stmt;
 mod ty;
 mod unify;
@@ -104,10 +106,17 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
             reports: !module.broken,
         })
         .collect();
+    let categories = package
+        .settings
+        .categories
+        .iter()
+        .map(|category| category.value.clone())
+        .collect();
     let mut env = Env::build(
         sources,
         standard.source(&standard.prelude),
         standard.source(&standard.testing),
+        categories,
         &mut report,
     );
     let facts = facts::KindFacts::new(&env);

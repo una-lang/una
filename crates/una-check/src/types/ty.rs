@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use super::label::Label;
+
 /// An index into the kinds (records and sums) of the environment.
 pub(crate) type KindId = usize;
 /// An index into the aliases (aliases and refinements) of the environment.
@@ -31,6 +33,9 @@ pub(crate) enum Ty {
     /// The type of something that failed to type; compatible with everything, so one mistake
     /// yields one diagnostic.
     Error,
+    /// A type whose top position carries a label above `public` (`spec/03 §5`, `spec/09 §2`).
+    /// Type equality ignores labels (DECISION D-088).
+    Labeled(Label, Box<Ty>),
 }
 
 /// A function type `fn(params) -> result uses ... fails ...`.
@@ -88,9 +93,77 @@ impl Declared {
 }
 
 impl Ty {
+    /// `self` with its top label raised by `label`; `Error` and `Never` carry no label.
+    pub(crate) fn with_label(self, label: &Label) -> Ty {
+        if label.is_public() {
+            return self;
+        }
+        match self {
+            Ty::Labeled(own, inner) => Ty::Labeled(own.join(label), inner),
+            Ty::Error | Ty::Never => self,
+            other => Ty::Labeled(label.clone(), Box::new(other)),
+        }
+    }
+
+    /// The label of the top position, `public` when it has none.
+    pub(crate) fn top_label(&self) -> Label {
+        match self {
+            Ty::Labeled(label, _) => label.clone(),
+            _ => Label::public(),
+        }
+    }
+
+    /// The type without its top label.
+    pub(crate) fn unlabeled(&self) -> &Ty {
+        match self {
+            Ty::Labeled(_, inner) => inner,
+            other => other,
+        }
+    }
+
+    /// The join of the labels of every position that holds data: the top, list elements and
+    /// kind arguments. A function type holds its top label only.
+    pub(crate) fn deep_label(&self) -> Label {
+        match self {
+            Ty::Labeled(label, inner) => label.join(&inner.deep_label()),
+            Ty::List(element) => element.deep_label(),
+            Ty::Kind(_, args) => args
+                .iter()
+                .fold(Label::public(), |label, arg| label.join(&arg.deep_label())),
+            _ => Label::public(),
+        }
+    }
+
+    /// `self` with every position that holds data raised by `label`.
+    pub(crate) fn raise_deep(&self, label: &Label) -> Ty {
+        let inner = match self.unlabeled() {
+            Ty::List(element) => Ty::List(Box::new(element.raise_deep(label))),
+            Ty::Kind(id, args) => Ty::Kind(*id, args.iter().map(|a| a.raise_deep(label)).collect()),
+            other => other.clone(),
+        };
+        inner.with_label(&self.top_label().join(label))
+    }
+
+    /// `self` without any label.
+    pub(crate) fn erase(&self) -> Ty {
+        match self {
+            Ty::Labeled(_, inner) => inner.erase(),
+            Ty::List(element) => Ty::List(Box::new(element.erase())),
+            Ty::Kind(id, args) => Ty::Kind(*id, args.iter().map(Ty::erase).collect()),
+            Ty::Fn(function) => Ty::Fn(Box::new(FnTy {
+                params: function.params.iter().map(Ty::erase).collect(),
+                result: function.result.erase(),
+                uses: function.uses.clone(),
+                fails: function.fails.as_ref().map(Ty::erase),
+            })),
+            other => other.clone(),
+        }
+    }
+
     /// Replaces each type parameter by the matching argument.
     pub(crate) fn substitute(&self, args: &[Ty]) -> Ty {
         match self {
+            Ty::Labeled(label, inner) => inner.substitute(args).with_label(label),
             Ty::Param(index) => args.get(*index).cloned().unwrap_or(Ty::Error),
             Ty::List(element) => Ty::List(Box::new(element.substitute(args))),
             Ty::Kind(id, kind_args) => Ty::Kind(
@@ -110,6 +183,7 @@ impl Ty {
     /// Adds the indices of the type parameters that occur in the type to `params`.
     pub(crate) fn params(&self, params: &mut Vec<usize>) {
         match self {
+            Ty::Labeled(_, inner) => inner.params(params),
             Ty::Param(index) => params.push(*index),
             Ty::List(element) => element.params(params),
             Ty::Kind(_, args) => args.iter().for_each(|arg| arg.params(params)),
@@ -138,6 +212,8 @@ impl<N: Names> fmt::Display for Show<'_, '_, N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let names = self.1;
         match self.0 {
+            // Messages about types name their bases; labels have messages of their own.
+            Ty::Labeled(_, inner) => write!(f, "{}", Show(inner, names)),
             Ty::Int => write!(f, "Int"),
             Ty::Bool => write!(f, "Bool"),
             Ty::Text => write!(f, "Text"),
@@ -172,6 +248,41 @@ impl<N: Names> fmt::Display for Show<'_, '_, N> {
             Ty::Var(_) => write!(f, "_"),
             Ty::Never => write!(f, "Never"),
             Ty::Error => write!(f, "?"),
+        }
+    }
+}
+
+/// A type printed with its labels, as in `secret[PII] Text` or `Option[internal Text]`, for
+/// information-flow messages.
+pub(crate) struct ShowLabeled<'t, 'n, N: Names>(pub(crate) &'t Ty, pub(crate) &'n N);
+
+impl<N: Names> fmt::Display for ShowLabeled<'_, '_, N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let names = self.1;
+        match self.0 {
+            Ty::Labeled(label, inner) => write!(f, "{label} {}", ShowLabeled(inner, names)),
+            Ty::List(element) => write!(f, "List[{}]", ShowLabeled(element, names)),
+            Ty::Kind(id, args) if !args.is_empty() => {
+                let args: Vec<String> = args
+                    .iter()
+                    .map(|arg| ShowLabeled(arg, names).to_string())
+                    .collect();
+                write!(f, "{}[{}]", names.kind_name(*id), args.join(", "))
+            }
+            Ty::Fn(function) => {
+                let params: Vec<String> = function
+                    .params
+                    .iter()
+                    .map(|param| ShowLabeled(param, names).to_string())
+                    .collect();
+                write!(
+                    f,
+                    "fn({}) -> {}",
+                    params.join(", "),
+                    ShowLabeled(&function.result, names)
+                )
+            }
+            other => write!(f, "{}", Show(other, names)),
         }
     }
 }

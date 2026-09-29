@@ -25,7 +25,7 @@ Decision log entries: D-048 to D-055 and D-061 to D-069 (`docs/reviews/open-deci
 11. **Equality on type parameters.** A generic function that compares values of a type parameter, directly or through the generic functions it calls, cannot be instantiated with a type whose values hold functions (U2001 at the instantiation).
 12. **Labels, in detail.** A bare name equal to a parameter's name is labeled with it, even as the first argument. A constructor with several fields reports an unlabeled argument as U2004; extra arguments of a constructor with one field, and parentheses after a variant without fields, are U2009.
 13. **Predicates.** A cycle of calls that contains a predicate, through predicates or functions, reflect or opaque, is U2015 once per cycle; a predicate whose result type is not `Bool` is U2001.
-14. **Policies.** The `via` function takes the base type of `from` and returns the base type of `to` (U2001 otherwise). A policy call takes one argument without a label.
+14. **Policies.** The `via` function takes the base type of `from` and returns the base type of `to` (U2001 otherwise, until M6; U4005 since, as `spec/07 §5` rule 4 requires, ADR 0031 rule 7). A policy call takes one argument without a label.
 15. **Argument counts.** Too many arguments, and a parameter that receives none, are U2001.
 
 ### Changes to other documents on acceptance
