@@ -1,8 +1,8 @@
 # 0021. Packages and project files
 
-- Status: Provisional (implemented, pending human review)
+- Status: Accepted
 - Date: 2026-09-29
-- Deciders: Claude (overnight run), pending review by Leonardo
+- Deciders: Leonardo (accepted on 2026-09-29), on a proposal by Claude (overnight run)
 
 ## Context
 
@@ -25,7 +25,7 @@ Decision log entries: D-032 to D-035 (`docs/reviews/open-decisions.md`).
 3. **`verification.lock`.** A TOML document with exactly the keys of `spec/12 §9`: `encoding_version = "una-smt-1"`, `solver = "z3"`, `solver_version` a non-empty string, `logic = "QF_UFLIA"`, `step_budget` an integer of at least 1, and `random_seed` an integer of at least 0. A missing file, a TOML syntax error, a missing or unknown key and a wrong value are U7004. Whether the installed solver matches is U5003 (M8). A single file uses the default lock, which holds the values of the repository's `verification.lock`.
 4. **Best effort.** Project errors do not stop checking: the modules are still checked, with the default settings in place of an invalid `una.toml`.
 
-### Changes to other documents on acceptance
+### Changes to other documents on acceptance (made on 2026-09-29)
 
 - `spec/13 §7` states rules 1 to 3; ADR 0015 D3 is marked expired, as it foresaw.
 

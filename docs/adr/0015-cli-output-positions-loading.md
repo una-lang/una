@@ -32,7 +32,7 @@ Columns count Unicode scalar values after decoding:
 4. After U0001 the lexer continues, reading each invalid sequence as U+FFFD.
 5. The conformance runner validates expected positions with the same rule.
 
-### D3. Interim loading until M3
+### D3. Interim loading until M3 (expired in M3, as it foresaw; see ADR 0021)
 
 Until M3 replaces it with package loading, `una check [path]` accepts a file, which is parsed alone, or a directory, whose `src/**/*.una` files are parsed in sorted path order, with no project checks. The path defaults to the current directory. A missing path, or a directory without `src/`, is a usage error (exit code 2). This decision expires in M3 and changes no specification text.
 
