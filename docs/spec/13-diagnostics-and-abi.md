@@ -173,7 +173,26 @@ Global flags: `--json` (machine output on stdout, nothing else on stdout), `--co
 
 Output streams (ADR 0015): human-mode diagnostics go to stderr; command results go to stdout (the explain text, contracts, reports, obligation listings and the program output of `una run`). With `--json`, the JSON document goes to stdout and stderr stays empty, except for internal compiler errors (U8001). A failure to write output exits with code 2.
 
-Grant specs: `console`, `clock`, `env`, `keys:<keyfile>`, `files:<path>:read`, `files:<path>:write`, `files:<path>:read,write`.
+Grant specs: `console`, `clock`, `env`, `keys:<keyfile>`, `files:<path>:read`, `files:<path>:write`, `files:<path>:read,write`. They grant `Console[print]`, `Clock[now]`, `Env[get]`, `Keys[hmac]`, and the `Files` operations of the modes. When `una.toml` names a `[run] entry`, `una check` reports each `uses` clause of that module's `main` whose capability is not a host capability, since no grant can provide it (U3012); when `una.toml` also lists `[run] grants`, a host operation of `main` that no grant allows is U3012 at its `uses` clause. `una run` checks `main` against `[run] grants` and `--grant` flags together before the program starts (ADR 0028).
+
+`una contract <qualified.name>` reads the package in the current directory and checks it at tier 0 (ADR 0029). The name is the module path followed by the function's name, as in `events.checkin.check_in`, and names a function; an unknown name is a usage error (exit code 2). When the package has diagnostics, `una contract` reports them as `una check` does and exits with code 1, since an inferred header is defined only for a package that checks. Otherwise it prints the doc comments, then the header in canonical form with every clause, declared or inferred, in canonical order, each inferred clause followed by the comment `-- inferred`, then one line per requirement of `derived from`: `-- requirement ID (status): "text"`. With `--json` it prints `una.contract/1`, compact, with keys in this order:
+
+```json
+{
+  "schema": "una.contract/1",
+  "function": "events.checkin.check_in",
+  "public": true,
+  "docs": ["Looks up a registration by phone, shows its availability, and records it."],
+  "header": "pub check_in(phone: secret[PII] Phone) -> Availability",
+  "requires": [],
+  "ensures": [],
+  "uses": [ { "cap": "registrations", "capability": "Registrations", "ops": ["find"], "inferred": false } ],
+  "fails": { "kind": "CheckInError", "inferred": false },
+  "derived_from": [ { "id": "EVENTS_3", "status": "active", "text": "..." } ]
+}
+```
+
+`fails` is `null` for a function that cannot fail, `ops` lists the operations in the declaration order of the capability, and `docs` holds the doc comments without their `---` marker.
 
 ## 6. Build report
 

@@ -62,7 +62,7 @@ The operand of `attempt` MUST be one call (U2001 otherwise). `attempt` counts as
 - Otherwise the function fails with `V`.
 - `p` MUST be in RL or a call to an opaque predicate, so it is executable (U2014).
 
-`checked` is an escape hatch: it replaces a static proof with a runtime test. Each use is counted per module against `[escape_budget] checked_per_module` in `una.toml` (U7003 when exceeded) and listed in the build report.
+`checked` is an escape hatch: it replaces a static proof with a runtime test. A module uses `checked` at most `[escape_budget] checked_per_module` times (0 by default, and for a single file); the first use beyond the budget is U7003, with the later uses as related spans (ADR 0028). Every use is listed in the build report.
 
 ## 7. What is not a failure
 
