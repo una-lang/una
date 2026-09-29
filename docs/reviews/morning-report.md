@@ -5,7 +5,7 @@ Updated after every milestone of the overnight run (`OVERNIGHT.md`, C.8).
 ## 1. Status
 
 - Language name: Una (ADR 0025; previously Troth, codenamed Vera).
-- Last completed milestone: M8 (verification): `una check` proves every obligation with Z3 5.1.0, refuted ones come with counterexamples, and `una obligations` lists them; `una run` and `una test` check at tier 1, ending ADR 0027's interim runs. Next: M9 (Agent ABI and build report), on the way to usage checkpoint 4 after M10 (`docs/plan/roadmap.md §4`).
+- Last completed milestone: M9 (Agent ABI and build report): `una report` prints the build report of `spec/13 §6`, with trivial `ensures` found by the solver, `una trace` follows a requirement to its obligations, and every command prints one JSON document with its schema. Next: M10 (Gate 1 readiness), after which usage checkpoint 4 gets its demo (`docs/plan/roadmap.md §4`).
 - Repository: una-lang/una (private until launch), branch `dev/v0.1`; its history starts at the initial public import `25d865b` (ADR 0030). Earlier commit hashes in this report refer to the legacy repository.
 - Last green CI runs: https://github.com/una-lang/una/actions/runs/36625239354 (`dev/v0.1`, Linux, at `74afc16`, M8), https://github.com/una-lang/una/actions/runs/36618844273 (`dev/v0.1`, Linux, at `511b4eb`, M7), https://github.com/una-lang/una/actions/runs/36610873278 (`dev/v0.1`, Linux, at `b37eaa2`, M6), https://github.com/una-lang/una/actions/runs/36606305565 (`dev/v0.1`, Linux, at `79b7a2c`, M5) and https://github.com/una-lang/una/actions/runs/36580294816 (`main`, Linux and macOS, at `25d865b`). macOS runs only on pull requests and pushes to `main` (D-083); local checks on the owner's Mac pass. Before the import: run 36578625540 of the legacy repository (`a5c8d3d`, M4).
 
@@ -122,7 +122,7 @@ docs/compiler/testing.md:105:## 5. Coverage expectations for v0.1
 | M6 Information flow | done | `2348672`, `d519fbb`, `78ad11e`, `e763556`, `0241e93`, `906bd9e` (an M5 fix), `a40584d`, and the self-review | 274 | 160 cases: 159 passed, 1 pending (M8), 0 failures |
 | M7 Core IR and interpreter | done | `6c648fb` (plan, ADR 0032), `59a481d`, `d81f200`, `c3d2041`, `54d30c8`, `685bc36`, `bdc7889`, `511b4eb` (self-review) | 296 | 173 cases: 172 passed, 1 pending (M8), 0 failures |
 | M8 Verification | done | `3146132` (plan, ADR 0033), `d8d3db6`, `02bb2d5`, `49c73e9`, `ec853fa`, `048cbfa`, `3f10ac5`, `4b212fb`, `a715ff0`, `74afc16` (self-review) | 305 | 190 cases: 190 passed, 0 pending, 0 failures |
-| M9 Agent ABI and build report | not started | | | |
+| M9 Agent ABI and build report | done | `fa8c4de` (plan, ADR 0034), `61f8f05`, `d57857b`, `92f6b9b`, `fd899f2`, and the self-review | 314 | 190 cases: 190 passed, 0 pending, 0 failures |
 | M10 Gate 1 readiness | not started | | | |
 
 M1 evidence, per acceptance criterion (`docs/plan/runs/M1-plan.md §5, §7`):
@@ -184,6 +184,15 @@ M8 evidence (`docs/plan/runs/M8-plan.md §7`):
 - `una run` and `una test` check at tier 1 without the note of ADR 0027.
 - The self-review checklist is in the M8 plan §7. The milestone found that Z3 drops a nonlinear assertion with an error, which could have passed for a status, and that `expect` lines were not verified; both are handled (D-115, D-112).
 
+M9 evidence (`docs/plan/runs/M9-plan.md §7`):
+- `una report` checks a package at tier 1 and prints `una.report/1` in the key order of `spec/13 §6`: the reference example has 11 proven obligations, the policy call at `src/events/checkin.una` 30:13 with its purpose and owner, one `checked` against a budget of 1, `events.keys` with 17 lines, the host capabilities `Console` and `Keys`, `EVENTS_3` derived by `availability`, and 5 public functions of which 1 has `ensures` (D-122).
+- Trivial `ensures` clauses are found by one more query each, with no hypothesis: `ensures result == result` and `ensures result >= 0 or result < 0` count as missing contracts (D-123).
+- `una trace EVENTS_3` prints the requirement, `availability` with its `ensures` clause and its two proven obligations, in human form and as `una.trace/1`; an unknown identifier is a usage error (D-124).
+- Every command prints one JSON document with its schema first and nothing on stderr, `una explain` included (`una.explain/1`, D-125); the documents are byte-identical across runs and with one thread. U8001 has its full explain text, without examples (D-126); every other code keeps its checked failing and fixed examples.
+- The obligation listing reads as Una: hypotheses show temporaries through their definitions and call texts, with the parentheses of `spec/01 §7` (`not e.remaining in 0..0`); a `let` bound to a branching expression is selfified as `spec/03 §7` asks, which simplified the queries without changing a status.
+- Snapshots: the report, the obligation listing and the trace of the reference example, reviewed.
+- The self-review checklist is in the M9 plan §7. The milestone found that the report ignored a solver failure on the trivial queries; it now reports U5003 or U8001.
+
 ## 5. Decisions needing review
 
 The top ten entries of `docs/reviews/open-decisions.md`, each answerable in one line.
@@ -215,6 +224,7 @@ Deviations and additions, all logged:
 - Two tour cases of M1 and M3 passed second arguments without labels, which `spec/04 §3` rule 2 forbids; their inputs gained the labels (D-068).
 - ADR 0028 (Provisional) fills the authority rules the specification leaves open, rules 1 to 12, and ADR 0029 (Provisional) defines the output of `una contract`. Additions to review first: `una check` reports U3012 from `[run] grants` and for capabilities of `main` that are not host capabilities (D-076); function values and parameters of effectful function types are second-class like lambdas (D-079); S-Fun violations are U3003 and U3009 (D-085); a capability reference bound twice is U1002 (D-087).
 - The M4 unit tests compare only the M4 codes from M5 on (D-084): one M4 input uses `checked` twice in a single file, which M5 reports as U7003; no M4 expectation changed in M5. In M6 one line left the M4 policy test: a `via` function of another type is U4005, as `spec/07 §5` rule 4 requires, not the interim U2001 of D-066; `flow.rs` tests it.
+- ADR 0034 (Provisional) fills the build report and ABI details the specification leaves open, rules 1 to 5. Readings to review first: the report lists every function with `uses`, private ones included, and only the host capabilities the package uses (D-122); a trivial `ensures` is one the solver proves with no hypothesis (D-123); `una explain` gained a JSON document, replacing M1's usage error (D-125); U8001's text has no examples (D-126).
 - ADR 0033 (Provisional) fills the verification details the specification leaves open, rules 1 to 11. One deviates from the text of `spec/12 §2`: a division by a variable is an uninterpreted function, since QF_UFLIA has no nonlinear terms and Z3 rejects them (D-115). Readings to review first: one obligation per `ensures` clause over every return path (D-113), record field refinements as ground facts (D-114), and tier 1 only after a clean tier 0 (D-112).
 - ADR 0032 (Provisional) fills the runtime details the specification leaves open, rules 1 to 11: elaboration, the Core dump, values in traces, the output of `una run` and `una test`, grants, the prelude, the call depth, examples, the entry and faults. Readings to review first: a `do` line that fails with no `expect fails` line fails its example (D-106); labeled fields and results are redacted beyond the arguments of `spec/11 §5` (D-107); a division by zero before tier 1 is U8001 (D-108); `una run` checks `main` against `[run] grants` and `--grant` together, and runs the module of a single file (D-109).
 - ADR 0031 (Provisional) fills the information-flow rules the specification leaves open, rules 1 to 10. Readings to review first: `checked` on a labeled value is U4002, stricter than T-Checked's premise `pc = ⊥` alone (D-091); an operation's arguments are bounded by its `accepts` only, not by the labels of its parameter types, which the prelude's `Files.write` needs (D-092); a `via` function may be used only through its policy (D-094); a lambda records the labels its body assumed for its parameters, so a `fold` over labeled values needs a labeled initial value (D-089).
@@ -234,7 +244,8 @@ Deviations and additions, all logged:
 - Hindsight (M7): redaction by argument labels looked complete until a record test carried a `secret` field; writing the redaction test with nested data first would have shown it at once. Likewise a fixed stack estimate per call held for simple recursion only, so the evaluator now measures the stack it uses.
 - Hindsight (M8): the specification generates obligations from Core IR, and M7's Core had neither formulas nor enough spans; carrying terms and spans into Core cost a commit of its own, and made the verifier independent of the checker. Comparing the verifier's sites with the checker's, recorded since M4, then gave a cheap test of both.
 - Hindsight (M8): probing the pinned Z3 before writing the driver showed that it drops a nonlinear assertion after an error; without the probe, a wrong encoding could have passed for a proof.
-- Next: M9 (Agent ABI and build report), then M10 (release readiness), after which usage checkpoint 4 gets its demo.
+- Hindsight (M9): the snapshot review of the obligation listing, not a test, showed hypotheses full of temporaries and a missing selfification; reading the documents an agent will read, before accepting them, is the review that catches what assertions do not state.
+- Next: M10 (Gate 1 readiness): example packages across the charter's scope, the guide for agents with tested snippets, release binaries and usage checkpoint 4.
 
 ## 8. Checkpoint demo
 

@@ -631,7 +631,7 @@ None.
 - Chosen: A, because the report is the reviewer's view of the whole package's authority, trust and assumptions; B would hide private code with effects.
 - Confidence: medium
 - Reversal cost: low
-- Implemented in: M9 commits, tag `DECISION D-122`
+- Implemented in: `92f6b9b`, `crates/una-cli/src/report.rs`, tag `DECISION D-122`
 - ADR: `docs/adr/0034-report-and-abi-details-left-open.md` (Provisional), rule 1
 - Answer needed: Keep A? Or switch to B?
 
@@ -642,7 +642,7 @@ None.
 - Chosen: A, because the solver catches every valid clause (`result == result`, `x >= x`), and a function whose only clauses are trivial has no contract.
 - Confidence: medium
 - Reversal cost: low
-- Implemented in: M9 commits, tag `DECISION D-123`
+- Implemented in: `92f6b9b`, `crates/una-cli/src/report.rs` and `crates/una-verify/src/generate.rs`, tag `DECISION D-123`
 - ADR: `docs/adr/0034-report-and-abi-details-left-open.md` (Provisional), rule 2
 - Answer needed: Keep A? Or switch to B?
 
@@ -653,7 +653,7 @@ None.
 - Chosen: A, because `spec/13 §5` gives the command no path, as for `una contract`.
 - Confidence: medium
 - Reversal cost: low
-- Implemented in: M9 commits, tag `DECISION D-124`
+- Implemented in: `92f6b9b`, `crates/una-cli/src/trace.rs`, tag `DECISION D-124`
 - ADR: `docs/adr/0034-report-and-abi-details-left-open.md` (Provisional), rule 3
 - Answer needed: Keep A? Or switch to B?
 
@@ -664,7 +664,7 @@ None.
 - Chosen: A, because an agent can then drive every command headlessly (`plan/milestones-v0.1.md` M10), and each command prints exactly one document. The M1 test that expected the usage error now expects the document.
 - Confidence: medium
 - Reversal cost: low
-- Implemented in: M9 commits, tag `DECISION D-125`
+- Implemented in: `d57857b`, `crates/una-cli/src/lib.rs`, tag `DECISION D-125`
 - ADR: `docs/adr/0034-report-and-abi-details-left-open.md` (Provisional), rule 4
 - Answer needed: Keep A? Or switch to B?
 
@@ -1247,7 +1247,7 @@ None.
 - Chosen: A, because a program that makes the compiler fail is a bug to fix, not an example to keep.
 - Confidence: high
 - Reversal cost: low
-- Implemented in: M9 commits, tag `DECISION D-126`
+- Implemented in: `d57857b`, `crates/una-cli/tests/explain_examples.rs` and `crates/una-diag/explain/U8001.md`, tag `DECISION D-126`
 - ADR: `docs/adr/0034-report-and-abi-details-left-open.md` (Provisional), rule 5
 - Answer needed: Keep A?
 
