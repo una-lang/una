@@ -135,6 +135,53 @@ pub fn obligations(program: &Program, sources: &SourceDb) -> Vec<Obligation> {
     all
 }
 
+/// For each `ensures` clause of a public function, a query without any hypothesis, its
+/// parameters and `result` unconstrained: a clause the solver proves this way is trivial, a
+/// missing contract (`spec/13 §6`, DECISION D-123).
+pub fn trivial_ensures(program: &Program, sources: &SourceDb) -> Vec<Obligation> {
+    let index = Index::new(program);
+    let mut all = Vec::new();
+    for module in &program.modules {
+        for decl in &module.decls {
+            let Decl::Fun(fun) = decl else {
+                continue;
+            };
+            if !fun.public || fun.ensures.is_empty() {
+                continue;
+            }
+            let mut walker = Walker::new(&index, sources, &module.path);
+            walker.declaration = format!("{}.{}", module.path, fun.name);
+            let mut ctx = Ctx::default();
+            for (name, ty) in &fun.params {
+                ctx.types.insert(name.clone(), ty.clone());
+            }
+            ctx.types.insert("result".to_owned(), fun.result.clone());
+            let result = own(&ctx, "result");
+            for clause in &fun.ensures {
+                let goal = {
+                    let vars = |name: &str| Some(own(&ctx, name));
+                    let env = Env {
+                        vars: &vars,
+                        it: None,
+                        result: Some(result.clone()),
+                    };
+                    walker.term(&clause.term, &env)
+                };
+                walker.site(
+                    ObligationKind::Postcondition,
+                    &ctx,
+                    goal.map(|g| g.f),
+                    clause.text.clone(),
+                    clause.span.unwrap_or(fun.span),
+                    None,
+                );
+            }
+            all.extend(walker.obligations);
+        }
+    }
+    all
+}
+
 // ----- declarations -----
 
 /// The contract of a callee: a function of the package or of the standard library.

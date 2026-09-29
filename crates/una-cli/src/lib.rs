@@ -9,7 +9,9 @@
 mod args;
 mod contract;
 mod package;
+mod report;
 mod runtime;
+mod trace;
 mod verification;
 
 use std::ffi::OsString;
@@ -279,6 +281,28 @@ where
                     wallclock: Duration::from_secs(solver_wallclock),
                 };
                 check_command(&path, options, dump_core.as_deref(), stdout, stderr)
+            }
+            Command::Trace {
+                requirement,
+                solver_wallclock,
+            } => {
+                let options = trace::TraceOptions {
+                    json: cli.json,
+                    color: use_color(cli.color, stderr_is_terminal),
+                    wallclock: Duration::from_secs(solver_wallclock),
+                };
+                trace::trace_command(&requirement, options, stdout, stderr)
+            }
+            Command::Report {
+                path,
+                solver_wallclock,
+            } => {
+                let options = report::ReportOptions {
+                    json: cli.json,
+                    color: use_color(cli.color, stderr_is_terminal),
+                    wallclock: Duration::from_secs(solver_wallclock),
+                };
+                report::report_command(&path, options, stdout, stderr)
             }
             Command::Obligations {
                 path,

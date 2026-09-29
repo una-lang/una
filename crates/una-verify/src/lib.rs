@@ -10,6 +10,6 @@ mod run;
 mod smt;
 mod solver;
 
-pub use generate::{Obligation, obligations};
+pub use generate::{Obligation, obligations, trivial_ensures};
 pub use report::diagnostics;
 pub use run::{Lock, Outcome, Problem, Settings, queries, verify};
