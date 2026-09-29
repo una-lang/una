@@ -141,6 +141,7 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         if let Some(declared) = &declared {
             self.flow(value, &ty, &declared.base, &format!("`{name}`"));
+            self.annotated(stmt.name.span, declared);
         }
         // The local keeps the labels its value has now; later unifications do not change them
         // (DECISION D-088).

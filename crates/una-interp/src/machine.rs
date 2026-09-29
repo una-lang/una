@@ -461,12 +461,20 @@ impl<'p, 'w> Machine<'p, 'w> {
         let mut caps = caps.clone();
         loop {
             match expr {
-                Expr::Atom(atom) => return self.atom(env, atom),
+                Expr::Atom { atom, .. } => return self.atom(env, atom),
+                // DECISION D-111: the `exhaustive` obligation proves this branch is never
+                // taken; reaching it is a fault.
+                Expr::Unreachable { goal, .. } => {
+                    return Err(fault(format!(
+                        "no arm of a `when` matches, which the obligation `{goal}` excludes"
+                    )));
+                }
                 Expr::Let {
                     name,
                     ty,
                     value,
                     body,
+                    ..
                 } => {
                     let value = match value.as_ref() {
                         Bound::Rhs(rhs) => self.rhs(env, &caps, rhs, ty)?,
@@ -563,6 +571,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                 handler,
                 args,
                 given,
+                ..
             } => {
                 let values = self.atoms(env, args)?;
                 let info = self
@@ -615,7 +624,7 @@ impl<'p, 'w> Machine<'p, 'w> {
     fn rhs(&mut self, env: &Env<'p>, caps: &Caps<'p>, rhs: &'p Rhs, ty: &Type) -> Flow<'p> {
         match rhs {
             Rhs::Atom(atom) => self.atom(env, atom),
-            Rhs::Prim { prim, args } => prim_apply(*prim, &self.atoms(env, args)?),
+            Rhs::Prim { prim, args, .. } => prim_apply(*prim, &self.atoms(env, args)?),
             Rhs::Call {
                 function,
                 args,
@@ -625,7 +634,9 @@ impl<'p, 'w> Machine<'p, 'w> {
                 let args = self.atoms(env, args)?;
                 self.call(function, args, caps, *span)
             }
-            Rhs::Apply { callee, args, span } => {
+            Rhs::Apply {
+                callee, args, span, ..
+            } => {
                 let callee = self.atom(env, callee)?;
                 let args = self.atoms(env, args)?;
                 self.apply(&callee, args, *span)
@@ -637,6 +648,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                 args,
                 labels,
                 span,
+                ..
             } => {
                 let args = self.atoms(env, args)?;
                 let request = Request {
@@ -649,7 +661,9 @@ impl<'p, 'w> Machine<'p, 'w> {
                 };
                 self.op(caps, &request, args)
             }
-            Rhs::Construct { ctor, args } => Ok(Value::data(ctor.clone(), self.atoms(env, args)?)),
+            Rhs::Construct { ctor, args, .. } => {
+                Ok(Value::data(ctor.clone(), self.atoms(env, args)?))
+            }
             Rhs::Field { value, index, .. } => match self.atom(env, value)? {
                 Value::Data(data) => data
                     .fields

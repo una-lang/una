@@ -115,7 +115,8 @@ run 1 "shop.una:11: expect result == 27" "it is false, with \`result\` = \`30\`"
     test "$demo/shop.una"
 
 echo "-- The Core IR that the interpreter runs"
-run 0 "fun availability(e: Event) : Availability =" "let %t0: Int = e.remaining in" \
+run 0 "fun availability(e: Event) : Availability ensures e.remaining < 1 implies result is SoldOut =" \
+    "let %t0: Int = e.remaining in" \
     check --dump-core events.seating examples/events
 
 echo "-- Explanations"

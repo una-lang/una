@@ -492,6 +492,13 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         }
     }
 
+    /// Records, in pass 2, the written type of the annotated `let` whose name is at `span`.
+    pub(crate) fn annotated(&mut self, span: Span, declared: &Declared) {
+        if self.pass == Pass::Check {
+            self.records.annotations.insert(span, declared.clone());
+        }
+    }
+
     /// Records, in pass 2, the type of the expression or binder at `span`.
     pub(crate) fn typed(&mut self, span: Span, ty: &Ty) {
         if self.pass == Pass::Check {

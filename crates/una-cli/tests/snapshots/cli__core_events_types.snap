@@ -4,7 +4,7 @@ expression: stdout(&output)
 ---
 module events.types
 
-type Phone = Text
+type Phone = {Text | Phone}
 
 data PhoneError = Malformed
 

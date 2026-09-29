@@ -27,12 +27,12 @@ impl Path {
 /// A type: a refined, labeled base, or a function type (`spec/09 §2`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Type {
-    /// `{ν: b | φ}^ℓ`, with the refinements named by the kinds or range they come from.
+    /// `{ν: b | φ}^ℓ`, with the refinements of the kinds or range it comes from.
     Base {
         /// The base type.
         base: Base,
-        /// The refinements, as written: alias names and ranges.
-        refinements: Vec<String>,
+        /// The refinements, conjoined (`spec/03 §2` rule 3).
+        refinements: Vec<Refinement>,
         /// The label.
         label: Label,
     },
@@ -86,6 +86,156 @@ pub struct Use {
     pub capability: String,
     /// The operations.
     pub ops: Vec<String>,
+}
+
+/// A term of the refinement language (`spec/03 §3`): a tree over binders, `it` and
+/// `result`, since formulas are not A-normal (DECISION D-111).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Term {
+    /// A binder: a parameter, a local or a pattern variable.
+    Var(Name),
+    /// `it`, the refined value.
+    It,
+    /// `result`, the value a function returns.
+    Result,
+    /// An integer literal, in decimal, with an optional `-`.
+    Int(String),
+    /// `true` or `false`.
+    Bool(bool),
+    /// A text literal.
+    Text(String),
+    /// `unit`.
+    Unit,
+    /// A variant without fields, as a value.
+    Ctor(Ctor),
+    /// `a.f`, a field of a record.
+    Field {
+        /// The record.
+        value: Box<Term>,
+        /// The record's kind.
+        kind: Path,
+        /// The field's name.
+        field: String,
+        /// The field's position.
+        index: usize,
+    },
+    /// `a.len`.
+    Len(Box<Term>),
+    /// `-a`.
+    Neg(Box<Term>),
+    /// `not a`.
+    Not(Box<Term>),
+    /// `a op b`.
+    Binary {
+        /// The operator.
+        op: BinOp,
+        /// The left operand.
+        left: Box<Term>,
+        /// The right operand.
+        right: Box<Term>,
+    },
+    /// `a is C`.
+    Is {
+        /// The value tested.
+        value: Box<Term>,
+        /// The variant.
+        ctor: Ctor,
+    },
+    /// `a in low..high` or `a in low..<high`.
+    In {
+        /// The value tested.
+        value: Box<Term>,
+        /// The low bound, in decimal.
+        low: String,
+        /// The high bound, in decimal.
+        high: String,
+        /// Whether the high bound is excluded.
+        exclusive: bool,
+    },
+    /// `p(a, ...)`, a predicate.
+    Call {
+        /// The predicate.
+        predicate: Path,
+        /// The arguments, in parameter order.
+        args: Vec<Term>,
+    },
+}
+
+/// A binary operator of the refinement language.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BinOp {
+    /// `+`.
+    Add,
+    /// `-`.
+    Sub,
+    /// `*`.
+    Mul,
+    /// `/`, Euclidean.
+    Div,
+    /// `mod`, Euclidean.
+    Mod,
+    /// `==`.
+    Eq,
+    /// `!=`.
+    Ne,
+    /// `<`.
+    Lt,
+    /// `<=`.
+    Le,
+    /// `>`.
+    Gt,
+    /// `>=`.
+    Ge,
+    /// `and`.
+    And,
+    /// `or`.
+    Or,
+    /// `implies`.
+    Implies,
+}
+
+impl BinOp {
+    /// How the operator is written in Una.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BinOp::Add => "+",
+            BinOp::Sub => "-",
+            BinOp::Mul => "*",
+            BinOp::Div => "/",
+            BinOp::Mod => "mod",
+            BinOp::Eq => "==",
+            BinOp::Ne => "!=",
+            BinOp::Lt => "<",
+            BinOp::Le => "<=",
+            BinOp::Gt => ">",
+            BinOp::Ge => ">=",
+            BinOp::And => "and",
+            BinOp::Or => "or",
+            BinOp::Implies => "implies",
+        }
+    }
+}
+
+/// A formula with its source: a `requires` or `ensures` clause, or the predicate of a
+/// refinement.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Clause {
+    /// The formula.
+    pub term: Term,
+    /// The formula as written.
+    pub text: String,
+    /// Where it is written; `None` in the standard library, whose source is part of the
+    /// compiler and never reported.
+    pub span: Option<Span>,
+}
+
+/// A refinement of a type: the predicate `it` satisfies (`spec/03 §2, §3`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Refinement {
+    /// How it is written: an alias kind's name, or a range such as `in 0..5000`.
+    pub name: String,
+    /// The predicate over `it`, and the `where` clause or range that declares it.
+    pub clause: Clause,
 }
 
 /// An atom (`spec/09 §2`).
@@ -187,6 +337,10 @@ pub enum Rhs {
         prim: Prim,
         /// Its operands.
         args: Vec<Atom>,
+        /// The source of each operand.
+        arg_spans: Vec<Span>,
+        /// The expression in the source.
+        span: Span,
     },
     /// `f[τ*](a, ...)`: a call of a declared function or predicate.
     Call {
@@ -196,6 +350,8 @@ pub enum Rhs {
         type_args: Vec<Type>,
         /// The arguments, in parameter order.
         args: Vec<Atom>,
+        /// The source of each argument.
+        arg_spans: Vec<Span>,
         /// The call in the source.
         span: Span,
     },
@@ -205,6 +361,8 @@ pub enum Rhs {
         callee: Atom,
         /// The arguments.
         args: Vec<Atom>,
+        /// The source of each argument.
+        arg_spans: Vec<Span>,
         /// The call in the source.
         span: Span,
     },
@@ -219,6 +377,8 @@ pub enum Rhs {
         op: String,
         /// The arguments, in parameter order.
         args: Vec<Atom>,
+        /// The source of each argument.
+        arg_spans: Vec<Span>,
         /// The static labels of the arguments.
         labels: Vec<Label>,
         /// The operation in the source.
@@ -230,6 +390,8 @@ pub enum Rhs {
         ctor: Ctor,
         /// The fields.
         args: Vec<Atom>,
+        /// The source of each field.
+        arg_spans: Vec<Span>,
     },
     /// `a.f`.
     Field {
@@ -249,7 +411,8 @@ pub enum Rhs {
         /// The body.
         body: Box<Expr>,
     },
-    /// `checked(a, φ, C(a, ...))`, with `φ` as an expression over the binder `it`.
+    /// `checked(a, φ, C(a, ...))`, with `φ` as an expression over the binder `it`, which
+    /// the interpreter runs, and as a term, which the verifier assumes.
     Checked {
         /// The value checked.
         value: Atom,
@@ -257,10 +420,14 @@ pub enum Rhs {
         it: Name,
         /// The predicate.
         predicate: Box<Expr>,
+        /// The predicate as a term over `it`.
+        formula: Term,
         /// The failure.
         ctor: Ctor,
         /// Its fields.
         args: Vec<Atom>,
+        /// The source of each field.
+        arg_spans: Vec<Span>,
         /// `checked` in the source.
         span: Span,
     },
@@ -272,6 +439,8 @@ pub enum Rhs {
         via: Path,
         /// The value.
         arg: Atom,
+        /// The source of the value.
+        arg_span: Span,
         /// The call in the source.
         span: Span,
     },
@@ -309,6 +478,8 @@ pub enum Source {
         handler: Path,
         /// Its arguments.
         args: Vec<Atom>,
+        /// The source of each argument.
+        arg_spans: Vec<Span>,
         /// Whether a `given` line installs it (`spec/11 §5`).
         given: bool,
     },
@@ -317,8 +488,13 @@ pub enum Source {
 /// An expression (`spec/09 §2`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Expr {
-    /// An atom.
-    Atom(Atom),
+    /// An atom, returned by the enclosing expression.
+    Atom {
+        /// The atom.
+        atom: Atom,
+        /// The returned expression in the source.
+        span: Span,
+    },
     /// `let x: τ = b in e`.
     Let {
         /// The binder.
@@ -329,6 +505,11 @@ pub enum Expr {
         value: Box<Bound>,
         /// The rest.
         body: Box<Expr>,
+        /// The source of the value.
+        span: Span,
+        /// Whether the source writes the binder's type, whose refinements are then an
+        /// obligation (`spec/12 §3`).
+        written: bool,
     },
     /// `if a then e else e`.
     If {
@@ -354,6 +535,8 @@ pub enum Expr {
         ctor: Ctor,
         /// Its fields.
         args: Vec<Atom>,
+        /// The source of each field.
+        arg_spans: Vec<Span>,
         /// The failure in the source.
         span: Span,
     },
@@ -377,6 +560,14 @@ pub enum Expr {
         /// The expression it scopes over.
         body: Box<Expr>,
     },
+    /// The branch after the last arm of a `when` over literals or ranges without `else`,
+    /// which the `exhaustive` obligation proves is never taken (DECISION D-111).
+    Unreachable {
+        /// The `when` keyword.
+        span: Span,
+        /// The disjunction of the arms' conditions, as text.
+        goal: String,
+    },
 }
 
 /// A variant of a data declaration, or the single constructor of a record.
@@ -399,6 +590,10 @@ pub struct CapOp {
     pub result: Type,
     /// The error kind.
     pub fails: Option<String>,
+    /// The `requires` clauses, over the parameters.
+    pub requires: Vec<Clause>,
+    /// The `ensures` clauses, over the parameters and `result`.
+    pub ensures: Vec<Clause>,
     /// The sink label; `None` accepts every label.
     pub accepts: Accepts,
 }
@@ -429,10 +624,34 @@ pub struct Fun {
     pub uses: Vec<Use>,
     /// The error kind.
     pub fails: Option<String>,
+    /// The `requires` clauses, over the parameters.
+    pub requires: Vec<Clause>,
+    /// The `ensures` clauses, over the parameters and `result`.
+    pub ensures: Vec<Clause>,
     /// The body.
     pub body: Expr,
     /// The function's name in the source.
     pub span: Span,
+    /// Whether the function is `pub`.
+    pub public: bool,
+}
+
+/// The contract of a function of the standard library, whose body is native: its `ensures`
+/// are hypotheses for callers (`spec/14 §1`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Signature {
+    /// The function.
+    pub path: Path,
+    /// The type parameters.
+    pub type_params: Vec<String>,
+    /// The parameters.
+    pub params: Vec<(Name, Type)>,
+    /// The result type.
+    pub result: Type,
+    /// The `requires` clauses.
+    pub requires: Vec<Clause>,
+    /// The `ensures` clauses.
+    pub ensures: Vec<Clause>,
 }
 
 /// A declaration (`spec/09 §2`).
@@ -466,8 +685,12 @@ pub enum Decl {
         reflect: bool,
         /// The parameters.
         params: Vec<(Name, Type)>,
-        /// The body.
+        /// The body, which the interpreter runs.
         body: Expr,
+        /// The body of a reflect predicate as a term, which the verifier defines it by.
+        formula: Option<Term>,
+        /// The predicate's name in the source.
+        span: Span,
     },
     /// `cap K { op ... }`.
     Cap {
@@ -565,9 +788,12 @@ pub struct Module {
     pub examples: Vec<Example>,
 }
 
-/// The Core IR of a package: its modules, in path order.
+/// The Core IR of a package: its modules, in path order, and the contracts of the standard
+/// library.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Program {
     /// The modules.
     pub modules: Vec<Module>,
+    /// The functions of the prelude and `std.testing`.
+    pub library: Vec<Signature>,
 }

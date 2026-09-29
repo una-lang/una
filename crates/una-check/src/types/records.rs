@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use una_syntax::Span;
 
-use super::ty::{CapId, KindId, Ty};
+use super::ty::{CapId, Declared, KindId, Ty};
 
 /// What an expression or pattern resolves to.
 #[derive(Clone, Debug)]
@@ -42,6 +42,9 @@ pub(crate) struct Records {
     /// For each call, constructor and pattern, the parameter or field of each argument or
     /// binding, in written order; a method call's receiver comes first.
     pub(crate) args: BTreeMap<Span, Vec<Option<usize>>>,
+    /// The written type of each annotated `let`, by the span of its name, with its
+    /// refinements (DECISION D-111).
+    pub(crate) annotations: BTreeMap<Span, Declared>,
 }
 
 impl Records {
@@ -61,5 +64,14 @@ impl Records {
             self.res.insert(span, res);
         }
         self.args.extend(other.args);
+        self.annotations.extend(other.annotations);
+    }
+
+    /// Adds records whose types are already resolved.
+    pub(crate) fn merge(&mut self, other: Records) {
+        self.types.extend(other.types);
+        self.res.extend(other.res);
+        self.args.extend(other.args);
+        self.annotations.extend(other.annotations);
     }
 }
