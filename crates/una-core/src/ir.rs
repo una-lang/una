@@ -66,6 +66,8 @@ pub enum Base {
     Hashed,
     /// A kind with its type arguments, `List` and `Option` included.
     Named {
+        /// The module that declares the kind: `prelude` for `List`, `Option` and `Result`.
+        module: String,
         /// The kind's name.
         name: String,
         /// Its type arguments.
@@ -550,7 +552,12 @@ pub enum Expr {
         handler: Box<Expr>,
     },
     /// `attempt e`.
-    Attempt(Box<Expr>),
+    Attempt {
+        /// The expression attempted.
+        body: Box<Expr>,
+        /// `attempt` in the source.
+        span: Span,
+    },
     /// `with c = s in e`.
     With {
         /// The capability reference bound.

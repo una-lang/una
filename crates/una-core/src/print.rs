@@ -41,6 +41,33 @@ pub fn print_term_with(term: &Term, replace: &dyn Fn(&Term) -> Option<String>) -
     out
 }
 
+/// Whether source text is a single primary or postfix expression: no white space outside
+/// brackets and text literals, and no leading minus, so it needs no parentheses.
+fn atomic(text: &str) -> bool {
+    let mut depth = 0usize;
+    let mut quoted = false;
+    let mut escaped = false;
+    for c in text.chars() {
+        if quoted {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => quoted = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => quoted = true,
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
+            c if c.is_whitespace() && depth == 0 => return false,
+            _ => {}
+        }
+    }
+    !text.is_empty() && !text.starts_with('-')
+}
+
 /// How tightly a term binds, from `implies` (1) to a primary (10), after `spec/02 §7`.
 fn precedence(term: &Term) -> u8 {
     match term {
@@ -68,11 +95,7 @@ fn write_term(
     replace: &dyn Fn(&Term) -> Option<String>,
 ) {
     if let Some(text) = replace(term) {
-        let simple = !text.is_empty()
-            && text
-                .chars()
-                .all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == '"');
-        if simple || at_least <= 1 {
+        if atomic(&text) || at_least <= 1 {
             out.push_str(&text);
         } else {
             let _ = write!(out, "({text})");
@@ -248,7 +271,7 @@ fn write_base(out: &mut String, base: &Base) {
         Base::Text => out.push_str("Text"),
         Base::Unit => out.push_str("Unit"),
         Base::Hashed => out.push_str("Hashed"),
-        Base::Named { name, args } => {
+        Base::Named { name, args, .. } => {
             out.push_str(name);
             if !args.is_empty() {
                 out.push('[');
@@ -541,7 +564,7 @@ impl Printer {
                 self.line(indent, &format!("with {error} ⇒"));
                 self.expr(indent + 1, handler);
             }
-            Expr::Attempt(body) => {
+            Expr::Attempt { body, .. } => {
                 self.line(indent, "attempt");
                 self.expr(indent + 1, body);
             }
@@ -697,5 +720,7 @@ mod tests {
         let sum_value = |term: &Term| matches!(term, Term::It).then(|| "a + 1".to_owned());
         let less = binary(BinOp::Lt, Box::new(Term::It), var("b"));
         assert_eq!(print_term_with(&less, &sum_value), "(a + 1) < b");
+        let call = |term: &Term| matches!(term, Term::It).then(|| "clamp(f(x), y)".to_owned());
+        assert_eq!(print_term_with(&it, &call), "clamp(f(x), y) in 0..5000");
     }
 }
