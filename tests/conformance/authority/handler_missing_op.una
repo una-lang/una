@@ -1,0 +1,11 @@
+-- test: a handler implements every operation of its capability
+-- spec: spec/05 §5
+-- expect: error U3011 at 10:9
+module handler_missing_op
+
+capability Log
+  op write(line: Text) -> Unit
+  op flush() -> Unit
+
+handler partial() for Log
+  op write(line) = unit

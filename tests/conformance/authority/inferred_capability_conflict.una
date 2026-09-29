@@ -1,0 +1,22 @@
+-- test: callers of a private function bind its reference to one capability
+-- spec: spec/04 §5
+-- expect: error U3001 at 12:30
+module inferred_capability_conflict
+
+capability Log
+  op write(line: Text) -> Unit
+
+capability Audit
+  op write(line: Text) -> Unit
+
+helper(line: Text) -> Unit = @sink.write(line)
+
+pub to_log() -> Unit
+  uses @sink: Log[write]
+=
+  helper("a")
+
+pub to_audit() -> Unit
+  uses @sink: Audit[write]
+=
+  helper("b")

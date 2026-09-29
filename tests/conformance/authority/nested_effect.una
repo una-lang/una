@@ -1,0 +1,12 @@
+-- test: an operation cannot be nested inside another expression
+-- spec: spec/04 §4
+-- expect: error U3013 at 12:7
+module nested_effect
+
+capability Clock
+  op now() -> Int
+
+pub later() -> Int
+  uses @clock: Clock[now]
+=
+  1 + @clock.now()
