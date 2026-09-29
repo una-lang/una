@@ -1,0 +1,13 @@
+-- test: capability operation must be permitted by the uses clause
+-- spec: spec/05 §3
+-- expect: error U3002 at 13:8
+module op_not_permitted
+
+capability Log
+  op write(line: Text) -> Unit
+  op flush() -> Unit
+
+pub finish() -> Unit
+  uses @log: Log[write]
+=
+  @log.flush()
