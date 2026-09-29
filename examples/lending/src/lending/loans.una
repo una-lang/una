@@ -1,0 +1,119 @@
+module lending.loans
+
+requirement LENDING_1
+  text "A member holds at most three tools at a time"
+  source human
+  owner front_desk
+  status active
+
+requirement LENDING_2
+  text "A loan lasts from one to twenty-eight days"
+  source policy "Tool Library Rules 3"
+  owner front_desk
+  status active
+
+--- The number of days a loan lasts.
+pub kind LoanDays = Int in 1..28
+
+--- A day, counted from the Unix epoch.
+pub kind Day = Int
+
+pub kind Tool
+  name: Text
+  deposit: Nat
+
+pub kind Member
+  name: Text
+  holding: Int in 0..3
+
+pub kind Loan
+  tool: Tool
+  member: Member
+  due: Day
+
+pub kind LendError = NotOnShelf(tool: Text) | ShelfDown
+
+pub kind ShelfError = | Offline
+
+--- The shelf the tools are kept on.
+pub capability Shelf
+  op pick(name: Text) -> Option[Tool]
+    fails ShelfError
+  op give_back(tool: Tool) -> Unit
+    fails ShelfError
+
+--- A member may take one more tool.
+pub predicate reflect can_borrow(m: Member) -> Bool = m.holding < 3
+
+--- A loan is overdue after its due day.
+pub predicate reflect overdue(loan: Loan, today: Day) -> Bool = today > loan.due
+
+--- Takes a tool from the shelf and lends it for `days` days from `today`.
+pub lend(member: Member, name: Text, today: Day, days: LoanDays) -> Loan
+  requires can_borrow(member)
+  ensures result.due == today + days
+  ensures result.member.holding == member.holding + 1
+  uses @shelf: Shelf[pick]
+  fails LendError
+  derived from LENDING_1, LENDING_2
+=
+  let tool = @shelf.pick(name)
+    if error fail ShelfDown
+    if none fail NotOnShelf(tool: name)
+  Loan(tool, member: Member(name: member.name, holding: member.holding + 1), due: today + days)
+
+--- Puts a lent tool back on the shelf.
+pub give_back(loan: Loan) -> Member
+  requires loan.member.holding > 0
+  ensures result.holding == loan.member.holding - 1
+  uses @shelf: Shelf[give_back]
+  fails LendError
+  derived from LENDING_1
+=
+  @shelf.give_back(loan.tool)
+    if error fail ShelfDown
+  Member(name: loan.member.name, holding: loan.member.holding - 1)
+
+--- The days a returned tool is late, zero when it is on time.
+pub late_days(loan: Loan, today: Day) -> Nat
+  ensures overdue(loan, today) implies result > 0
+  ensures not overdue(loan, today) implies result == 0
+=
+  if today > loan.due then today - loan.due else 0
+
+--- A shelf holding `tools`.
+pub handler shelf_with(tools: List[Tool]) for Shelf
+  op pick(name) = tools.first_where(keep: fn(t) -> t.name == name)
+  op give_back(tool) = unit
+
+--- A shelf that cannot be reached.
+pub handler offline_shelf() for Shelf
+  op pick(name) = fail Offline
+  op give_back(tool) = fail Offline
+
+example "a member with room borrows a tool for a week"
+  given @shelf = shelf_with(tools: [Tool(name: "drill", deposit: 20)])
+  do lend(Member(name: "Ana", holding: 1), name: "drill", today: 100, days: 7)
+  expect result.due == 107
+  expect result.member.holding == 2
+  expect performed @shelf.pick
+
+example "a tool that is not on the shelf is not lent"
+  given @shelf = shelf_with(tools: [])
+  do lend(Member(name: "Ana", holding: 0), name: "saw", today: 100, days: 7)
+  expect fails NotOnShelf
+
+example "a shelf that is offline stops the loan"
+  given @shelf = offline_shelf()
+  do lend(Member(name: "Bo", holding: 0), name: "saw", today: 100, days: 3)
+  expect fails ShelfDown
+
+example "giving a tool back frees a place"
+  given @shelf = shelf_with(tools: [])
+  do give_back(Loan(tool: Tool(name: "saw", deposit: 15), member: Member(name: "Bo", holding: 3), due: 10))
+  expect result.holding == 2
+  expect performed @shelf.give_back
+
+example "a tool returned three days after its due day is three days late"
+  do late_days(Loan(tool: Tool(name: "saw", deposit: 15), member: Member(name: "Bo", holding: 1), due: 10), today: 13)
+  expect result == 3

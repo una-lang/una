@@ -1,0 +1,32 @@
+---
+source: crates/una-syntax/tests/examples.rs
+expression: "dump(&parsed.file, &interner, db.file(id).text())"
+---
+(module lending.main)
+(import lending.loans LendError Member Tool late_days lend shelf_with)
+(fn catalog
+  (doc "--- The tools of the community shelf.")
+  ()
+  {List[Tool]}
+  (list
+    (call Tool (name: "drill") (deposit: 20))
+    (call Tool (name: "ladder") (deposit: 35))
+    (call Tool (name: "saw") (deposit: 15))))
+(fn pub main
+  ()
+  {Unit}
+  (uses @console {Console[print]})
+  (uses @clock {Clock[now]})
+  (fails LendError)
+  (block
+    (let now (@clock.now))
+    (let today (/ now 86400000))
+    (let loan
+      (handled
+        (call lend (call Member (name: "Ana") (holding: 0)) (name: "ladder") today (days: 14))
+        (with (= @shelf (call shelf_with (tools: (call catalog)))))
+        (if-error-pass)))
+    (@console.print
+      (text (. (. loan member) name) " borrowed the " (. (. loan tool) name) " for 14 days"))
+    (let late (call late_days loan (today: (+ today 20))))
+    (@console.print (text "returned 20 days later, it is " late " days late"))))

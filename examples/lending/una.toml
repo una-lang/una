@@ -1,0 +1,8 @@
+[package]
+name = "lending-example"
+version = "0.1.0"
+edition = "0.1"
+
+[run]
+entry = "lending.main"
+grants = ["console", "clock"]
