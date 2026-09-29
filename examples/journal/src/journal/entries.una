@@ -1,0 +1,53 @@
+module journal.entries
+
+--- A day's entry. Its text is private to the writer.
+pub kind Entry
+  day: Int
+  body: confidential[Private] Text
+
+pub kind Mood = Calm | Busy
+
+pub kind DiaryError = | Unavailable
+
+--- Where entries are kept. They hold private text, so the store accepts it.
+pub capability Diary
+  op keep(entry: Entry) -> Unit
+    fails DiaryError
+    accepts confidential[Private]
+
+--- A long entry means a busy day. The answer depends on the text, so it is as private.
+pub mood(entry: Entry) -> confidential[Private] Mood = if entry.body.len > 280 then Busy else Calm
+
+--- Writes an entry for `day` and keeps it.
+pub write(day: Int, body: confidential[Private] Text) -> Entry
+  ensures result.day == day
+  uses @diary: Diary[keep]
+  fails DiaryError
+=
+  let entry = Entry(day, body)
+  @diary.keep(entry)
+    if error pass
+  entry
+
+--- A diary kept in memory for the examples.
+handler memory_diary() for Diary
+  op keep(entry) = unit
+
+--- A diary with no room left.
+handler full_diary() for Diary
+  op keep(entry) = fail Unavailable
+
+example "an entry is kept"
+  given @diary = memory_diary()
+  do write(1, body: "Planted tomatoes.")
+  expect result.day == 1
+  expect performed @diary.keep
+
+example "a full diary reports it"
+  given @diary = full_diary()
+  do write(2, body: "Read two chapters.")
+  expect fails Unavailable
+
+example "a short entry is a calm day"
+  do mood(Entry(day: 3, body: "Quiet."))
+  expect result is Calm
