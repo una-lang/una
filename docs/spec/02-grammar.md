@@ -47,6 +47,8 @@ range           = signed_int ( ".." | "..<" ) signed_int ;
 signed_int      = [ "-" ] int_lit ;
 ```
 
+After a `level`, `[` always starts the label's categories. A labeled list type is written with the named form, `secret List[Int]`, or after the categories, `secret[PII] [Int]`. A label with categories that is not followed by a type is U0101 (ADR 0018).
+
 ## 3. Predicates and functions
 
 ```ebnf
@@ -198,3 +200,9 @@ These rules are enforced after parsing and reported with the listed codes.
 | `policy` appears only in `trusted` modules | U4004 |
 | `given` handlers and `with` handler instances name a `handler` for the capability of the bound reference | U3010 |
 | An `else` arm is the last arm of a `when` | U2008 |
+
+## 9. Limits
+
+An implementation MUST accept nesting up to 256 levels, and MUST reject deeper nesting with U0101 at the token where the limit is exceeded (ADR 0019). One level is each nested line expression (parentheses, arguments, list items, interpolations, branches, lambda bodies), each prefix `not` or `-`, each operator of a chain (`a + b + c` counts two), each call, field or method in a postfix chain, each nested type, and each nested block, including each `else if`. The rest of the declaration is skipped by the usual recovery.
+
+A text literal nested in an interpolation, which is U0006, has no interpolation of its own: `{` and `}` inside it are text.

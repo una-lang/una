@@ -1,8 +1,8 @@
 # 0034. The build report and the ABI details the specification leaves open
 
-- Status: Provisional (implemented, pending human review)
+- Status: Accepted
 - Date: 2026-09-29
-- Deciders: Claude (overnight run), pending review by Leonardo
+- Deciders: Leonardo (accepted on 2026-09-29), on a proposal by Claude (overnight run)
 
 ## Context
 
@@ -30,7 +30,7 @@ Decision log entries: D-122 to D-126 (`docs/reviews/open-decisions.md`).
 4. **`--json` for every command.** Every command prints one JSON document with a `schema` field. `una explain --json <code>` prints `{"schema":"una.explain/1","code":...,"domain":...,"meaning":...,"text":...}`. When the checks reject the package, `una contract`, `una trace`, `una obligations` and `una report` print the diagnostic list of `una check` (ADR 0012), and `una run` and `una test` print their own documents, which carry the diagnostics. Usage errors stay on stderr (D-010).
 5. **U8001's explain text** has no failing or fixed example: an internal error is a bug of the compiler, and the text says how to report it. Every other code has both examples.
 
-### Changes to other documents on acceptance
+### Changes to other documents on acceptance (made on 2026-09-29)
 
 - `spec/13 §6` states rules 1 and 2; `spec/08 §1` rule 3; `spec/13 §5` rule 4, with the two schemas; `spec/13 §4` rule 5.
 

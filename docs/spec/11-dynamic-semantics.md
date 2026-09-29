@@ -91,6 +91,8 @@ $$
 
 The remaining rules are standard: `handle` passes through `ok`; `if` and `case` select a branch; `declassify_p(a)` evaluates the policy's `via` function on `a`; `div` and `mod` are Euclidean (the remainder is non-negative), matching SMT-LIB `div` and `mod`; `and`, `or` and `implies` do not exist in Core (`spec/09 §2`). Evaluating an opaque predicate inside `checked` runs its body; evaluating a reflect predicate runs its RL definition.
 
+A fault that a checked and verified program cannot reach aborts the run with U8001 and exit code 3, at the name of the function in progress, or at 1:1 of the package root (ADR 0032, ADR 0022).
+
 ## 5. Traces
 
 Each operation invocation appends one event:
@@ -111,10 +113,12 @@ Each operation invocation appends one event:
 - Handler events appear before the events produced inside the handler body (E-OpHandler).
 - Host operation results are recorded in full (subject to redaction), so a future `una replay` can substitute them (`plan/backlog.md`).
 
+Values in traces and outputs are JSON strings holding their Una form: `"42"`, `"\"Ana\""`, `"true"`, `"unit"`, `"Open"`, `"Some(3)"`, `"Registration(name: \"Ana\", event: ...)"`, `"[1, 2]"`; a `Hashed` value is `"hashed:<hex>"`, and a function `"<function>"`. Inside any rendered value, a field whose declared type is labeled above `public` is `<redacted:level>`, with the label's level only; an operation's outcome is redacted by the label of the binder of its result; `unit` carries no information and is never redacted. An event's outcome is `{"kind":"ok","value":...}`, `{"kind":"fail","variant":...,"value":...}` or `{"kind":"aborted"}` (ADR 0032).
+
 ## 6. Example harness
 
 For each example, the harness builds `H0` from its `given` lines (one fresh instance per line), evaluates the desugared `do` expression with an empty environment and an empty world, then evaluates the expectations against the result and trace (`spec/08 §2`). Examples cannot reach host capabilities, so they are deterministic.
 
 ## 7. Limits
 
-The interpreter enforces a maximum call depth (default 10,000 frames, `--max-depth`). Exceeding it aborts with runtime diagnostic U6003. This is outside the noninterference model (`spec/07 §1`).
+The interpreter enforces a maximum call depth (default 10,000 frames, `--max-depth`). Exceeding it aborts with runtime diagnostic U6003. This is outside the noninterference model (`spec/07 §1`). The depth counts the calls of functions, predicates, lambdas, policies and handler operations in progress. The evaluator runs with a stack sized from the maximum depth, and aborts with U6003 when that stack runs short before the depth does, so it never overflows (ADR 0032).

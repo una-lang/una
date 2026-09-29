@@ -117,7 +117,7 @@ $$
 ## 7. Escape hatches
 
 $$
-\frac{\Gamma \vdash a : \{\nu{:}b \mid \varphi_0\}^{\ell} \qquad \varphi \in \mathrm{RL} \cup \mathrm{Opaque} \qquad C \in \mathrm{variants}(F) \qquad pc = \bot}
+\frac{\Gamma \vdash a : \{\nu{:}b \mid \varphi_0\}^{\ell} \qquad \varphi \in \mathrm{RL} \cup \mathrm{Opaque} \qquad C \in \mathrm{variants}(F) \qquad pc \sqcup \ell^{*}(a) = \bot}
      {\Gamma;K;pc \vdash \mathtt{checked}(a, \varphi, C) : \{\nu{:}b \mid \varphi_0 \wedge \varphi\}^{\ell} \;!\; \emptyset;F}\;(\textsf{T-Checked})
 $$
 
@@ -125,6 +125,8 @@ $$
 \frac{\mathtt{policy}\; p : \tau_{\mathit{from}} \leadsto \tau_{\mathit{to}} \;\mathtt{via}\; f \in \Sigma \qquad \Gamma \vdash a <: \tau_{\mathit{from}} \qquad pc \sqsubseteq \ell(\tau_{\mathit{to}}) \qquad K_f \le K}
      {\Gamma;K;pc \vdash \mathtt{declassify}_p(a) : \tau_{\mathit{to}} \;!\; \mathrm{eff}(K_f);F_f}\;(\textsf{T-Declassify})
 $$
+
+In T-Checked, $\ell^{*}(a)$ joins every label of the type of $a$: a failure of `checked` reveals whether $\varphi$ holds of $a$, so `checked` on a labeled value, or under a raised program counter, is U4002 (ADR 0031).
 
 ## 8. Declarations
 
@@ -154,3 +156,34 @@ These theorems define what `proven` means. They are stated here and mechanized i
 | T5 | Refinement soundness | If $\vdash v : \{\nu{:}b \mid \varphi\}$ and all obligations are proven, then $\varphi[v/\nu]$ holds (opaque facts: established by `checked` or an operation `ensures`, an assumption) |
 | T6 | Noninterference | Termination-insensitive noninterference up to declassification, for the channels in `spec/07 §1` |
 | T7 | Decidability | Type checking is decidable; obligation checking is decidable for RL (`spec/12 §2`) |
+
+## 11. Names
+
+Names resolve before typing, by these rules (ADR 0023).
+
+1. **Namespaces.** Each module has a lower-case namespace (functions, predicates, handlers, policies) and an upper-case one (kinds, their variants, capabilities). Requirement identifiers form one namespace per package, example names one per module, and module paths one per package plus `std.testing`.
+2. **Scopes.** From innermost to outermost: locals (parameters, type parameters, `let`, pattern bindings, lambda parameters, handler and handler-operation parameters); the module's own declarations; its explicit imports; the variants of the sum kinds it imports, since importing a sum kind brings its variants; the prelude (`spec/14 §1, §3`). A name resolves if some scope holds it, and the innermost holder wins. When one scope holds several candidates, such as variants of two imported kinds with the same name, the type checker chooses by type; a name that stays ambiguous is U1001.
+3. **Variants in context.** A variant whose kind the context gives is resolved by that kind, whether or not any scope holds it: in a `when` pattern or an `is` test (the kind of the value tested), after `fail` in an expression, a handling clause or `checked` (the error kind of the function), and after `expect fails` (the error kind of the `do` expression).
+4. **Unresolved names.** U1001 reports a name that no scope holds: in expressions, callees, constructors outside the contexts of rule 3, type names and type parameters, capability names in `uses` and `for`, handler names in `with` and `given`, the `via` function of a policy, and imports (a module of neither the package nor `std`, or a name the module does not declare). U2002 reports a name that resolves to something that is not a type, or an ill-formed type. Field names, method names and argument labels depend on types (§12), capability references `@x` on capability contexts, and label categories on `una.toml` (U4007).
+5. **Duplicates.** U1002 reports: two declarations of a module with the same name in one namespace, variants included; an explicit import with the name of a declaration of the module or of another explicit import; a local that rebinds a local of an enclosing scope; two parameters, type parameters, fields, variant fields, operations, handler operations, pattern bindings or lambda parameters of one construct with the same name; two requirements of a package or two examples of a module with the same name; two label categories in `una.toml`. A declaration or import MAY reuse a prelude name, and a local MAY reuse any non-local name: the inner one wins.
+6. **Imports.** An imported name MUST be public (U1004, with an edit that adds `pub` to the declaration). An import cycle is U1003, reported once per cycle at the first import of the cycle's first module, in path order.
+7. **Syntax errors.** In a module with syntax errors, the declarations that parsed are registered and checked for U1002, U1005 and U1008, but bodies are not resolved and imports from that module are not checked, so no diagnostic cascades from a declaration that failed to parse.
+8. **Conventions (U1005)**, checked where a name is defined: lower-case names (declarations, parameters, locals, fields, operations, module path segments, owners) contain no `__` and do not end with `_`; kinds, variants, capabilities, type parameters and label categories are UpperCamelCase (`[A-Z][a-zA-Z0-9]*`); requirement identifiers match `[A-Z][A-Z0-9]*(_[A-Z0-9]+)*_[0-9]+` (`spec/01 §4`).
+
+## 12. Surface typing
+
+The rules of §3 to §8 act on Core IR; these rules fix what the surface syntax elaborates to, and what it reports (ADR 0024).
+
+1. **Variants in context.** In a `when` pattern or an `is` test, the variant is looked up in the kind of the tested value: U1001 if the kind has no such variant, U2001 if the value is not of a sum kind. After `fail` (in an expression, a handling clause or `checked`), the variant is looked up in the function's declared error kind, and through the scopes of §11 when the function declares none; a variant outside the declared kind is U3009. After `expect fails`, the variant is looked up in the error kind of the `do` expression.
+2. **Branches and `fail`.** `fail` has a type below every type, so a branch that fails joins any other. The branches of `if` and `when` otherwise have one base type; a target type, when known, is checked in each branch.
+3. **Unreachable and repeated arms.** U2008 reports an arm after an `else` arm, a variant or literal arm that repeats an earlier one, and an `else` arm that no value reaches because the arms before it cover every variant.
+4. **Field access and method calls.** `e.f` is `.len` on `Text` and `List`, then field `f` of `e`'s record, then a call of a function `f` of one parameter in scope (`spec/04 §3`); if none applies, U1001. `e.f(args)` follows `spec/04 §3`: a field of function type, else a function `f` in scope called with `e` first; if neither exists, U1001.
+5. **Function values** (parameters and locals of function type, lambdas) are called with positional arguments; a label is U2005.
+6. **Constructors are not values.** A variant or record kind that has fields MUST be applied to arguments; using its name alone is U2009.
+7. **Inference.** A type that is still unknown when its declaration has been checked, such as the element type of an empty list that nothing constrains, is U2001 with a hint to annotate it. Lambda arguments are checked after the other arguments of a call, so their parameter types come from the other arguments whatever the order of labels; a value whose type is still unknown where a field, a method or a call needs it is U2001.
+8. **Recursive kinds.** A record or sum kind that contains itself anywhere except under `List` or `Option`, including through a variant, a type argument of another kind or a function type, is U2002, once per cycle, at the first field that leads back into it (`spec/03 §2` rule 5).
+9. **Equality on type parameters.** A generic function that compares values of a type parameter, directly or through the generic functions it calls, cannot be instantiated with a type whose values hold functions (U2001 at the instantiation).
+10. **Labels, in detail.** A bare name equal to a parameter's name is labeled with it, even as the first argument. A constructor with several fields reports an unlabeled argument as U2004; extra arguments of a constructor with one field, and parentheses after a variant without fields, are U2009.
+11. **Predicates.** A cycle of calls that contains a predicate, through predicates or functions, reflect or opaque, is U2015 once per cycle; a predicate whose result type is not `Bool` is U2001.
+12. **Policies.** The `via` function takes the base type of `from` and returns the base type of `to` (U4005, `spec/07 §5` rule 4). A policy call takes one argument without a label.
+13. **Argument counts.** Too many arguments, and a parameter that receives none, are U2001.

@@ -19,7 +19,7 @@ pub availability(e: Event) -> Availability             -- long form
     in 20..5000 -> Open
 ```
 
-The short form is canonical when there are no clauses and the body is a single-line expression; otherwise the long form is canonical (`una fmt` converts). The v0.1 formatter does not enforce a maximum line width.
+The short form is canonical when there are no clauses and the body is a single-line expression; otherwise the long form is canonical (`una fmt` converts). The v0.1 formatter does not enforce a maximum line width. The whole canonical form is defined in `spec/15`.
 
 ## 2. Clauses
 

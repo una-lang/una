@@ -5,15 +5,38 @@ use una_syntax::ast::File;
 use una_syntax::{Comment, Interner, Lexed, SourceFile, Token, TokenKind};
 
 use crate::lines::{Line, SourceLines, logical_lines};
-use crate::rewrite::{Rewrites, collect};
+use crate::rewrite::{Constructors, Rewrites, collect};
 use crate::spacing::Spacer;
 
-/// The canonical form of a file that lexed and parsed without errors (ADR 0020).
+/// The canonical form of a file that lexed and parsed without errors (ADR 0020), on its own:
+/// constructors of other modules keep their order.
 ///
 /// Formatting the result again gives the same text.
 pub fn format(source: &SourceFile, lexed: &Lexed, file: &File, interner: &Interner) -> String {
+    format_with(source, lexed, file, interner, &Constructors::default())
+}
+
+/// The canonical form of a file of a package whose modules declare `constructors`, so that the
+/// arguments of an imported constructor follow the declaration of its fields too (ADR 0020
+/// rule 6, DECISION D-026).
+///
+/// Formatting the result again, with the same constructors, gives the same text.
+pub fn format_with(
+    source: &SourceFile,
+    lexed: &Lexed,
+    file: &File,
+    interner: &Interner,
+    constructors: &Constructors,
+) -> String {
     let lines = logical_lines(&lexed.tokens);
-    let rewrites = collect(file, &lexed.tokens, &lexed.comments, &lines, interner);
+    let rewrites = collect(
+        file,
+        &lexed.tokens,
+        &lexed.comments,
+        &lines,
+        interner,
+        constructors,
+    );
     let layout = Layout {
         text: source.text(),
         source: SourceLines::new(source.text(), source.line_starts()),

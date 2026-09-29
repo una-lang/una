@@ -35,6 +35,8 @@ The prelude is imported into every module.
 
 Higher-order prelude functions accept only pure, non-failing lambdas in v0.1 (effect polymorphism is deferred).
 
+Text works on Unicode scalar values: `.len` counts them; `is_digits` holds when every character is an ASCII digit, so it holds of the empty text; `trim` removes Unicode whitespace at both ends; `to_int` reads an optional `-` followed by ASCII digits; `starts_with` compares scalar values; `contains` and `==` are structural; `Text` orders by scalar values (ADR 0032).
+
 ## 2. Built-in operations
 
 `.len` on `Text` and `List`, arithmetic, comparisons, equality and text interpolation are built in (`spec/09 §2`). `Hashed` supports only `==` and `!=`; it cannot be interpolated or converted to `Text` (U2001).
@@ -61,7 +63,7 @@ kind KeyError = | UnknownKey
 
 ## 4. `std.testing`
 
-Usable only inside handler bodies and example lines (U3015).
+Usable only inside handler bodies and example lines: a call of, or reference to, a function of `std.testing` outside a handler operation body or an example is U3015 (ADR 0028).
 
 | Signature | Purpose |
 | --- | --- |
