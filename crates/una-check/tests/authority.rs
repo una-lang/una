@@ -325,6 +325,23 @@ fn private_functions_infer_one_error_kind() {
     );
 }
 
+#[test]
+fn inferred_error_kinds_include_passed_operation_failures() {
+    // The operation's capability is inferred in the same pass as the error kind.
+    assert_eq!(
+        with_caps(
+            "record(key: Int) -> Int\n=\n  let found = @store.find(key)\n    if error pass\n  found.or_else(default: 0)\n\
+             \n\
+             pub total(key: Int) -> Int\n  uses @store: Store[find]\n  fails StoreError\n=\n  record(key)\n    if error pass\n\
+             \n\
+             pub wrong(key: Int) -> Int\n  uses @store: Store[find]\n  fails LookupError\n=\n  record(key)\n    if error pass\n"
+        ),
+        [
+            "U3008 t.una:33:5 `if error pass` passes a `StoreError` failure, and this code fails with `LookupError`; use `if error fail` with a variant of `LookupError`",
+        ]
+    );
+}
+
 // ----- handlers (U3008 to U3011; `spec/05 §5`) -----
 
 #[test]

@@ -530,6 +530,13 @@ impl<'a> Checker<'_, 'a, '_> {
             .and_then(|id| self.env.capabilities.get(id))
             .cloned();
         let Some(capability) = capability else {
+            // In pass 1, inference decides the capability of an inferred reference; its
+            // failure is resolved then (DECISION D-072).
+            if self.base == super::authority::Base::Inferring
+                && let super::authority::Resolved::Missing { name, .. } = self.resolve_cap(cap_name)
+            {
+                self.pending_ops.insert(span, (name, op_name.to_owned()));
+            }
             self.unchecked(args);
             return Ty::Error;
         };

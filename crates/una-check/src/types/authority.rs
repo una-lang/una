@@ -135,6 +135,9 @@ pub(crate) enum Raised {
     Kind(Ty),
     /// The failure of this function, whose `fails` is inferred too, is passed.
     Pass(usize),
+    /// The failure of operation `op` on reference `@cap` of the function's own context, whose
+    /// capability inference decides, is passed.
+    Op { cap: String, op: String },
 }
 
 /// The capability of each inferred reference of a function: one, or two that conflict.
@@ -631,6 +634,11 @@ impl<'a> Checker<'_, 'a, '_> {
                 self.raised_fact(Raised::Pass(callee), span);
             }
             (_, Some(kind)) => self.raised_fact(Raised::Kind(kind.clone()), span),
+            (None, None) => {
+                if let Some((cap, op)) = self.pending_ops.get(&inner.span).cloned() {
+                    self.raised_fact(Raised::Op { cap, op }, span);
+                }
+            }
             _ => {}
         }
         if !self.authority() {
@@ -1142,6 +1150,15 @@ fn infer_fails(env: &mut Env<'_>, collected: &Collected) {
                     kinds.get(*callee).cloned().flatten()
                 }
                 Raised::Pass(callee) => env.functions.get(*callee).and_then(|f| f.fails.clone()),
+                // The capability of `@cap` is inferred by now.
+                Raised::Op { cap, op } => env
+                    .functions
+                    .get(*function)
+                    .and_then(|f| f.uses.iter().find(|need| need.usage.name == *cap))
+                    .and_then(|need| need.usage.capability)
+                    .and_then(|capability| env.capabilities.get(capability))
+                    .and_then(|capability| capability.ops.iter().find(|o| o.name == op))
+                    .and_then(|op| op.fails.clone()),
             };
             if let (Some(kind), Some(slot)) = (kind, kinds.get_mut(*function))
                 && slot.is_none()
