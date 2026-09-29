@@ -375,7 +375,7 @@ None.
 - Question: `spec/10` compares labels through subtyping (S-Refine, S-Fun) wherever a value meets a type, without listing the places or saying where an implicit flow into a result is reported.
 - Context: `spec/07 §3`, `spec/10 §2, §4, §8`; ADR 0031 rule 2.
 - Options: A) arguments, constructor fields, annotated `let`s, return paths, a policy's `from` and a lambda's result, covariant through data and contravariant through function parameters, arguments compared after the whole call is typed, and an implicit flow into a result reported once at the condition in return position; B) compare at every unification; C) report implicit flows at each return path.
-- Chosen: A, because these are the places where a declared type meets a value; B would compare types that inference joins, such as branches, and C repeats one cause at every branch.
+- Chosen: A, because these are the places where a declared type meets a value; B would compare types that inference joins, such as branches, and C repeats one cause at every branch. A lambda's type records the labels its body assumed for its parameters, which keeps a body from branching on a parameter whose label rises later (a `fold` over labeled values needs a labeled initial value); a `Unit` value carries no information.
 - Confidence: medium
 - Reversal cost: low
 - Implemented in: M6 information-flow commits, tag `DECISION D-089`
