@@ -64,6 +64,30 @@ pub(crate) enum Command {
         #[arg(long)]
         check: bool,
     },
+    /// Run `main` of the `[run] entry` module
+    Run {
+        /// The package directory, or a single file
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Grant a host capability: console, clock, env, keys:<file> or files:<path>:<access>
+        #[arg(long = "grant", value_name = "SPEC")]
+        grants: Vec<String>,
+
+        /// The maximum call depth
+        #[arg(long, value_name = "N", default_value_t = una_interp::DEFAULT_MAX_DEPTH)]
+        max_depth: usize,
+    },
+    /// Run every example
+    Test {
+        /// The package directory, or a single file
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// The maximum call depth
+        #[arg(long, value_name = "N", default_value_t = una_interp::DEFAULT_MAX_DEPTH)]
+        max_depth: usize,
+    },
     /// Print the full header of a function, declared or inferred, with doc comments and
     /// requirements
     Contract {

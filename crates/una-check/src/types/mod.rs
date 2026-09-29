@@ -164,7 +164,7 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
     }
     facts::predicate_recursion(&env, &findings, &mut report);
     facts::generic_equality(&env, &facts, &findings, &mut report);
-    authority::grants(&env, package.settings, &mut report);
+    authority::grants(&env, package.settings, package.run, &mut report);
     authority::budget(&env, &findings, package.settings, &mut report);
     // DECISION D-070: pending obligations by position, then kind.
     findings

@@ -1,21 +1,22 @@
 //! Command implementations of the `una` binary (`spec/13 §5`), the only crate that does I/O to
 //! the terminal.
 //!
-//! The binary hands its arguments and standard streams to [`run`]; nothing here reads the
-//! process environment, so every command also runs in-process.
+//! The binary hands its arguments, standard streams and environment variables to [`run`];
+//! nothing here reads the process environment, so every command also runs in-process.
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
 mod args;
 mod contract;
 mod package;
+mod runtime;
 
 use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::Path;
 
 use clap::Parser;
-use una_check::{Header, ModuleInput, PackageInput, check_names, check_types};
+use una_check::{Header, ModuleInput, PackageInput, RunInput, check_names, check_types};
 use una_diag::{Code, Diagnostic, render_human, render_json};
 use una_syntax::ast::File;
 use una_syntax::{FileId, Interner, SourceDb, SourceFile, lex, parse};
@@ -76,7 +77,7 @@ pub struct Checked {
 pub fn check(path: &Path, _tier: Tier) -> Result<Checked, LoadError> {
     let package = load(path)?;
     let (diagnostics, program) = on_large_stack(|| {
-        let analysis = analyze(&package);
+        let analysis = analyze(&package, None);
         (analysis.diagnostics, analysis.program)
     });
     Ok(Checked {
@@ -87,16 +88,19 @@ pub fn check(path: &Path, _tier: Tier) -> Result<Checked, LoadError> {
 }
 
 /// What checking a package finds: its diagnostics, the tree of each module, the names of the
-/// trees, and the headers of its functions after inference.
+/// trees, the headers of its functions after inference, its Core IR, and the module that
+/// `una run` runs.
 struct Analysis {
     diagnostics: Vec<Diagnostic>,
     trees: Vec<(FileId, File)>,
     interner: Interner,
     headers: Vec<Header>,
     program: una_core::Program,
+    entry: Option<String>,
 }
 
-fn analyze(package: &Package) -> Analysis {
+/// Checks `package`; with `run_grants`, for `una run`, whose grants are final (U3012).
+fn analyze(package: &Package, run_grants: Option<&[String]>) -> Analysis {
     let (manifest, mut diagnostics) = package::project(package);
     let mut interner = Interner::new();
     let mut trees = Vec::new();
@@ -110,6 +114,25 @@ fn analyze(package: &Package) -> Analysis {
         }
         trees.push((id, checked.tree, broken));
     }
+    // DECISION D-109: the entry is `[run] entry`, or the module of a single file.
+    let entry = if package.single {
+        trees.first().and_then(|(_, tree, _)| {
+            let header = tree.module.as_ref()?;
+            let path: Vec<&str> = header
+                .path
+                .segments
+                .iter()
+                .map(|segment| interner.resolve(segment.name))
+                .collect();
+            Some(path.join("."))
+        })
+    } else {
+        manifest.entry.as_ref().map(|entry| entry.value.clone())
+    };
+    let run = match (run_grants, entry.as_deref()) {
+        (Some(grants), Some(entry)) => Some(RunInput { entry, grants }),
+        _ => None,
+    };
     let input = PackageInput {
         sources: &package.sources,
         interner: &interner,
@@ -124,6 +147,7 @@ fn analyze(package: &Package) -> Analysis {
             .collect(),
         manifest: package.manifest,
         settings: &manifest,
+        run,
     };
     diagnostics.extend(check_names(&input));
     let types = check_types(&input);
@@ -134,6 +158,7 @@ fn analyze(package: &Package) -> Analysis {
         interner,
         headers: types.headers,
         program: types.program,
+        entry,
     }
 }
 
@@ -192,6 +217,11 @@ fn on_large_stack<T: Send>(work: impl Fn() -> T + Sync) -> T {
     })
 }
 
+/// The environment variables of the process, by name, which `una run` gives to programs that
+/// use `Env.get` (`spec/14 §3`). The binary passes the real ones; the library never reads them
+/// (`compiler/conventions.md §1`).
+pub type Environment<'a> = &'a (dyn Fn(&str) -> Option<String> + Sync);
+
 /// Runs the `una` command line. `args` starts with the program name; `stderr_is_terminal`
 /// decides `--color auto`, since human diagnostics go to stderr (ADR 0015 D1).
 ///
@@ -201,6 +231,7 @@ pub fn run<I, T>(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
     stderr_is_terminal: bool,
+    environment: Environment<'_>,
 ) -> ExitStatus
 where
     I: IntoIterator<Item = T>,
@@ -234,6 +265,30 @@ where
             Command::Contract { name } => {
                 let color = use_color(cli.color, stderr_is_terminal);
                 contract_command(&name, cli.json, color, stdout, stderr)
+            }
+            Command::Run {
+                path,
+                grants,
+                max_depth,
+            } => {
+                let options = runtime::RunOptions {
+                    grants: &grants,
+                    max_depth,
+                    json: cli.json,
+                    color: use_color(cli.color, stderr_is_terminal),
+                    environment,
+                };
+                runtime::run_command(&path, options, stdout, stderr)
+            }
+            Command::Test { path, max_depth } => {
+                let options = runtime::RunOptions {
+                    grants: &[],
+                    max_depth,
+                    json: cli.json,
+                    color: use_color(cli.color, stderr_is_terminal),
+                    environment,
+                };
+                runtime::test_command(&path, options, stdout, stderr)
             }
             Command::Explain { code } => explain_command(&code, cli.json, stdout, stderr),
         },
@@ -443,7 +498,7 @@ fn contract_command(
             return Ok(ExitStatus::Usage);
         }
     };
-    let analysis = on_large_stack(|| analyze(&package));
+    let analysis = on_large_stack(|| analyze(&package, None));
     let modules = contract::Modules {
         sources: &package.sources,
         interner: &analysis.interner,
