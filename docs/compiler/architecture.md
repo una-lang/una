@@ -24,7 +24,7 @@ crates/
   una-check/              resolution, types, effects, capabilities, labels, inference, elaboration to Core
   una-verify/             obligation generation, SMT-LIB encoding, solver driver, cache, counterexamples
   una-interp/             Una Abstract Machine, host capabilities, traces, example harness
-  una-report/             build report assembly
+  una-report/             reserved for build report assembly; v0.1 assembles the report in una-cli (D-132)
   una-cli/                the `una` binary (only crate that does I/O to the terminal)
 tests/conformance/         language conformance suite (`testing.md`)
 examples/                  reference programs
@@ -45,7 +45,7 @@ source files
                   elaborate to Core IR (spans preserved)             ─── tier 0
   → una-verify   generate obligations over Core → encode → Z3 → statuses ─ tier 1
   → una-interp   run main or examples over Core IR
-  → una-report   assemble report from check, verify and interp results
+  → una-cli      assemble the report from check, verify and interp results (una-report is reserved for it)
 ```
 
 A declaration with tier 0 errors is not elaborated and produces no obligations. Other declarations continue, so one run reports as many independent problems as possible.

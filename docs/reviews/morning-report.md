@@ -5,7 +5,8 @@ Updated after every milestone of the overnight run (`OVERNIGHT.md`, C.8).
 ## 1. Status
 
 - Language name: Una (ADR 0025; previously Troth, codenamed Vera).
-- Last completed milestone: M10 (Gate 1 readiness), the last of v0.1: five more example packages cover every construct of the charter's scope, `docs/guide/una-for-agents.md` is a reference for agents with every block tested, release archives build in CI, and usage checkpoint 4 has its demo. Next: the owner's review of the Provisional ADRs and the decision log, the merge of `dev/v0.1` into `main`, and the tag `v0.1.0`, which starts the release workflow (D-130).
+- Last completed milestone: M10 (Gate 1 readiness), the last of v0.1: five more example packages cover every construct of the charter's scope, `docs/guide/una-for-agents.md` is a reference for agents with every block tested, release archives build in CI, and usage checkpoint 4 has its demo.
+- Review: on 2026-09-29 the owner kept every decision of the log and asked for the merge. `dev/v0.1` is merged into `main` (`6c583aa`, CI run 36643222714 green on Linux and macOS); ADRs 0018 to 0024, 0028, 0029 and 0031 to 0035 are Accepted, and the specification states their rules, with the canonical form as the new `spec/15`. Next: the tag `v0.1.0`, which the owner pushes and which starts the release workflow (D-130), then Gate 1.
 - Repository: una-lang/una (private until launch), branch `dev/v0.1`; its history starts at the initial public import `25d865b` (ADR 0030). Earlier commit hashes in this report refer to the legacy repository.
 - Last green CI runs: https://github.com/una-lang/una/actions/runs/36633617255 (`dev/v0.1`, Linux, at `08abf15`, M10 self-review), https://github.com/una-lang/una/actions/runs/36632878216 (`dev/v0.1`, Linux, at `58f7a07`, M10, with the Linux release archive), https://github.com/una-lang/una/actions/runs/36628713460 (`dev/v0.1`, Linux, at `4dca6d1`, M9), https://github.com/una-lang/una/actions/runs/36625239354 (`dev/v0.1`, Linux, at `74afc16`, M8), https://github.com/una-lang/una/actions/runs/36618844273 (`dev/v0.1`, Linux, at `511b4eb`, M7), https://github.com/una-lang/una/actions/runs/36610873278 (`dev/v0.1`, Linux, at `b37eaa2`, M6), https://github.com/una-lang/una/actions/runs/36606305565 (`dev/v0.1`, Linux, at `79b7a2c`, M5) and https://github.com/una-lang/una/actions/runs/36580294816 (`main`, Linux and macOS, at `25d865b`). macOS runs only on pull requests and pushes to `main` (D-083); local checks on the owner's Mac pass. Before the import: run 36578625540 of the legacy repository (`a5c8d3d`, M4).
 
@@ -204,26 +205,26 @@ M10 evidence (`docs/plan/runs/M10-plan.md §7`):
 
 ## 5. Decisions needing review
 
-The top ten entries of `docs/reviews/open-decisions.md`, each answerable in one line.
+The top ten entries of `docs/reviews/open-decisions.md`, each answerable in one line. Answered on 2026-09-29: the owner kept every chosen option, these ten included.
 
 | Decision | Choice made | Answer |
 | --- | --- | --- |
-| D-023 | The canonical form of ADR 0020 (Provisional): one line per logical line, fixed spacing, one blank line between items, comments never moved, LF only | Keep, switch to B (author's layout), or change one rule |
-| D-037 | Scopes: locals, the module, explicit imports, the variants of imported kinds, the prelude; the innermost wins (ADR 0023) | Keep, or switch to B (only listed imports) or C |
-| D-046 | Variants in patterns, `is`, after `fail` and `expect fails` take their kind from the context, in M4 | Keep, or switch to B (scopes only) |
-| D-048 | Where each contextual variant is looked up: the tested value's kind, the declared error kind, the error kinds of the `do` line (ADR 0024 rule 1) | Keep, or switch to B (scopes only) |
-| D-063 | A generic function that compares values of a type parameter cannot be instantiated with a type that holds functions (ADR 0024 rule 11) | Keep, or switch to B (no function type arguments) or C (run time) |
-| D-071 | U3004 for `@` in pure code, U3001 for a missing binding or another capability, U3002 for fewer operations, U3003 for effects beyond an empty `uses` (ADR 0028 rule 1) | Keep, or switch to B (U3001 for every missing capability) |
-| D-072 | Private headers are inferred; a reference's capability comes from the headers it calls, then its callers' bindings, then installed handlers (ADR 0028 rule 2) | Keep, or switch to B (from the operation's name) or C (callers only) |
-| D-088 | Labels at every position of the checker's types, joined on type variables (ADR 0031 rule 1) | Keep, or switch to B (one label per value) or C (a separate pass) |
-| D-098 | Pass 2 of the checker records its resolutions by span, and the elaborator builds Core IR from them (ADR 0032 rule 1) | Keep, or switch to B (an elaborator that resolves again) |
-| D-111 | Core IR carries refinement-language terms for refinements and contracts, spans for obligation sites, and `unreachable` after a `when` without `else` (ADR 0033 rule 1) | Keep, or switch to B (formulas as A-normal expressions) or C (obligations from the syntax tree) |
+| D-023 | The canonical form of ADR 0020 (Provisional): one line per logical line, fixed spacing, one blank line between items, comments never moved, LF only | Kept |
+| D-037 | Scopes: locals, the module, explicit imports, the variants of imported kinds, the prelude; the innermost wins (ADR 0023) | Kept |
+| D-046 | Variants in patterns, `is`, after `fail` and `expect fails` take their kind from the context, in M4 | Kept |
+| D-048 | Where each contextual variant is looked up: the tested value's kind, the declared error kind, the error kinds of the `do` line (ADR 0024 rule 1) | Kept |
+| D-063 | A generic function that compares values of a type parameter cannot be instantiated with a type that holds functions (ADR 0024 rule 11) | Kept |
+| D-071 | U3004 for `@` in pure code, U3001 for a missing binding or another capability, U3002 for fewer operations, U3003 for effects beyond an empty `uses` (ADR 0028 rule 1) | Kept |
+| D-072 | Private headers are inferred; a reference's capability comes from the headers it calls, then its callers' bindings, then installed handlers (ADR 0028 rule 2) | Kept |
+| D-088 | Labels at every position of the checker's types, joined on type variables (ADR 0031 rule 1) | Kept |
+| D-098 | Pass 2 of the checker records its resolutions by span, and the elaborator builds Core IR from them (ADR 0032 rule 1) | Kept |
+| D-111 | Core IR carries refinement-language terms for refinements and contracts, spans for obligation sites, and `unreachable` after a `when` without `else` (ADR 0033 rule 1) | Kept |
 
 ## 6. Blockers and deviations from the spec
 
 No blockers.
 
-Deviations and additions, all logged:
+Deviations and additions, all logged, and all kept by the owner on 2026-09-29; the ADRs below are now Accepted, and the specification states their rules:
 - Six Provisional ADRs fill spec gaps: 0018 (a `[` after a label level), 0019 (nesting limit), 0020 (the canonical form), 0021 (packages and project files), 0022 (diagnostics without a source position) and 0023 (name resolution). The spec is unchanged until they are accepted; each ADR lists what to add.
 - ADR 0015 D3 (interim loading) expired in M3 as it foresaw; three CLI tests that built `src/` without `una.toml` now write one (D-032).
 - U0102 for handling clauses (`spec/06 §3`) is checked in M1 rather than M6 (D-020).
@@ -256,7 +257,8 @@ Deviations and additions, all logged:
 - Hindsight (M8): probing the pinned Z3 before writing the driver showed that it drops a nonlinear assertion after an error; without the probe, a wrong encoding could have passed for a proof.
 - Hindsight (M9): the snapshot review of the obligation listing, not a test, showed hypotheses full of temporaries and a missing selfification; reading the documents an agent will read, before accepting them, is the review that catches what assertions do not state.
 - Hindsight (M10): writing five programs the way users will found two verifier bugs that 190 conformance cases had missed, both at the meeting point of features (a discarded statement before a return, `attempt` with a contract). Realistic programs belong in every milestone, not only the last.
-- Next: the owner's review. The ten decisions above and the Provisional ADRs 0018 to 0024, 0028, 0029 and 0031 to 0035 are the questions; once they are answered, merge `dev/v0.1` into `main` and push the tag `v0.1.0`, and the release workflow attaches the Linux and macOS archives to a draft release. Then Gate 1 (`plan/roadmap.md §3`), with the examples and the guide as the starting material of its tasks.
+- Hindsight (review): writing the readme found two gaps that no test caught, the report assembled outside the crate the architecture names (D-132) and constructor order for imported kinds that M3 never added (D-026, fixed in `c99e638`); the guide test now checks the readme's code too.
+- Next: the owner pushes the tag `v0.1.0` on `main`, and the release workflow attaches the Linux and macOS archives to a draft release. Then Gate 1 (`plan/roadmap.md §3`), with the examples and the guide as the starting material of its tasks.
 
 ## 8. Checkpoint demo
 
