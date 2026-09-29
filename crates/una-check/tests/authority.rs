@@ -633,3 +633,67 @@ fn checked_is_counted_against_the_escape_budget() {
         .collect();
     assert_eq!(related, ["18:3 another use beyond the budget"]);
 }
+
+// ----- repairs (ADR 0028) -----
+
+/// The mechanical edits of the diagnostics of a single file, as
+/// "code: description [start-end -> replacement]".
+fn repairs(body: &str) -> Vec<String> {
+    let (_, types) = run(&[("t.una", &format!("module t\n\n{body}"))], true);
+    types
+        .diagnostics
+        .iter()
+        .flat_map(|d| {
+            d.repairs.iter().filter_map(move |repair| {
+                repair.edit.as_ref().map(|edit| {
+                    format!(
+                        "{}: {} [{}:{}-{}:{} -> {:?}]",
+                        d.code,
+                        repair.description,
+                        edit.location.start.line,
+                        edit.location.start.col,
+                        edit.location.end.line,
+                        edit.location.end.col,
+                        edit.replacement
+                    )
+                })
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn authority_diagnostics_carry_mechanical_edits_to_the_header() {
+    assert_eq!(
+        repairs(
+            "kind LookupError = Missing | Unavailable\n\
+             \n\
+             capability Log\n  op write(line: Text) -> Unit\n  op flush() -> Unit\n\
+             \n\
+             pub note(line: Text) -> Unit\n  uses @log: Log[write, flush]\n=\n  @log.write(line)\n\
+             \n\
+             pub flushes() -> Unit\n  uses @log: Log[write]\n=\n  @log.flush()\n\
+             \n\
+             pub calls_note() -> Unit\n  uses @primary: Log[write]\n=\n  note(\"x\") with @log = @primary\n\
+             \n\
+             pub short_pure() -> Unit = note(\"x\")\n\
+             \n\
+             pub long_pure() -> Unit\n=\n  note(\"x\")\n  unit\n\
+             \n\
+             pub declared_other() -> Unit\n  uses @other: Log[write]\n  fails LookupError\n=\n  note(\"x\")\n  unit\n\
+             \n\
+             pub no_fails() -> Int = fail Missing\n\
+             \n\
+             pub with_ensures(x: Int) -> Int\n  ensures result == x\n=\n  if x > 0 then x else fail Missing\n"
+        ),
+        [
+            "U3002: add `flush` to the `uses` clause of `@log` [15:3-15:24 -> \"uses @log: Log[write, flush]\"]",
+            "U3002: add `flush` to the `uses` clause of `@primary` [20:3-20:28 -> \"uses @primary: Log[write, flush]\"]",
+            "U3003: declare `uses @log: Log[write, flush]` in the header [24:25-24:28 -> \"\\n  uses @log: Log[write, flush]\\n=\\n  \"]",
+            "U3003: declare `uses @log: Log[write, flush]` in the header [26:24-26:24 -> \"\\n  uses @log: Log[write, flush]\"]",
+            "U3001: declare `uses @log: Log[write, flush]` in the header [33:3-33:3 -> \"uses @log: Log[write, flush]\\n  \"]",
+            "U3009: declare `fails LookupError` in the header [38:22-38:25 -> \"\\n  fails LookupError\\n=\\n  \"]",
+            "U3009: declare `fails LookupError` in the header [41:22-41:22 -> \"\\n  fails LookupError\"]",
+        ]
+    );
+}

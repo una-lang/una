@@ -785,6 +785,7 @@ impl<'a> Checker<'_, 'a, '_> {
                             Bound::Cap {
                                 capability: need.capability,
                                 ops: need.capability.map(|_| need.ops.clone()),
+                                clause: None,
                             },
                         )
                     })
