@@ -1,0 +1,9 @@
+module greenhouse.main
+
+import greenhouse.climate (fixed_sensor, printed_vent, regulate_warmest)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let wanted = regulate_warmest() with @north = fixed_sensor(degrees: 24), @south = fixed_sensor(degrees: 31), @vent = printed_vent()
+  @console.print("the warmer side asks for {wanted}% open")

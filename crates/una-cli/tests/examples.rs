@@ -61,6 +61,10 @@ fn sources(dir: &std::path::Path) -> Vec<String> {
 /// What `una run` prints for each package with a `[run]` table, with its own grants.
 const RUNS: &[(&str, &str)] = &[
     ("events", "availability of Launch: open\n"),
+    (
+        "greenhouse",
+        "vent at 66%\nthe warmer side asks for 66% open\n",
+    ),
     ("hello", "Hello, Una\n"),
     (
         "lending",
