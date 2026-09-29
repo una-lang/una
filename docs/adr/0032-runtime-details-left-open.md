@@ -1,8 +1,8 @@
 # 0032. Runtime details the specification leaves open
 
-- Status: Provisional (implemented, pending human review)
+- Status: Accepted
 - Date: 2026-09-29
-- Deciders: Claude (overnight run), pending review by Leonardo
+- Deciders: Leonardo (accepted on 2026-09-29), on a proposal by Claude (overnight run)
 
 ## Context
 
@@ -24,7 +24,7 @@ Decision log entries: D-098 to D-109 (`docs/reviews/open-decisions.md`).
 10. **Entry and startup.** The entry of `una run` is `[run] entry`, or the module of a single file. `una run` checks the package with the grants of `[run] grants` and `--grant` together as final grants, even when there are none, so U3012 reports before execution every `uses` of `main` that they do not grant. A package without `[run] entry`, an entry without `pub main() -> Unit`, a `--grant` value that is not a grant spec, an unreadable or invalid key file, and a `--max-depth` whose stack cannot be allocated are usage errors (exit code 2).
 11. **Faults.** A fault that a checked and verified program cannot reach, such as a division by zero while obligations are not verified yet (ADR 0027), aborts the run with U8001 and exit code 3, at the name of the function in progress, or at 1:1 of the package root (ADR 0022).
 
-### Changes to other documents on acceptance
+### Changes to other documents on acceptance (made on 2026-09-29)
 
 - `spec/09 §3` states the Core `let` and `when` of rule 1; `spec/09 §4` rule 2; `spec/11 §5` rule 3; `spec/13 §5` rules 4 to 6, rule 10 and the two schemas; `spec/14 §1` rule 7; `spec/11 §7` rule 8; `spec/08 §2` rule 9; `spec/11 §4` rule 11.
 

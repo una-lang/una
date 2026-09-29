@@ -1,8 +1,8 @@
 # 0031. Information-flow rules the specification leaves open
 
-- Status: Provisional (implemented, pending human review)
+- Status: Accepted
 - Date: 2026-09-29
-- Deciders: Claude (overnight run), pending review by Leonardo
+- Deciders: Leonardo (accepted on 2026-09-29), on a proposal by Claude (overnight run)
 
 ## Context
 
@@ -23,7 +23,7 @@ Decision log entries: D-088 to D-097 (`docs/reviews/open-decisions.md`).
 9. **Categories.** A category in a type's label or an `accepts` clause that `[labels] categories` does not declare is U4007 at the category; a single file declares no category.
 10. **Sites.** U4002 names the condition that raised the program counter as a related location. U4003 points at the argument that exceeds `accepts`, or at the operation when the program counter alone exceeds it.
 
-### Changes to other documents on acceptance
+### Changes to other documents on acceptance (made on 2026-09-29)
 
 - `spec/07` gains a section "Checking" that states rules 1 to 3 and 6 to 10; `spec/10 §7` completes T-Checked with rule 4; ADR 0024 rule 14 changes its code to U4005.
 

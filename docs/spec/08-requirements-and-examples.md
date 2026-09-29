@@ -61,3 +61,4 @@ Rules:
 4. Examples are type-checked, information-flow checked and verified like any other code, except for the sink exemption in `spec/07 §4`.
 5. The one-effect-per-line rule (U3013) does not apply to `do` lines: they may nest fallible and effectful calls, evaluated left to right, and any failure ends the example.
 6. Each example runs in a fresh abstract machine. `una test --json` reports, per example, the outcome, the failed expectation if any and the full effect trace (`spec/11 §5`).
+7. The expectations of an example are checked in order, and the first that does not hold fails it; then a `do` line that failed with no `expect fails` line fails it too. An `expect` line that does not mention `result` runs even when `do` failed. `expect performed @x.op` holds when the trace has a completed or failed `op` event of the instance of `given @x`, and `expect not performed @x.op` when it has none. An example whose run aborts fails (ADR 0032).
