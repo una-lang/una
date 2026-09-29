@@ -1,8 +1,8 @@
 # 0029. The output of `una contract`
 
-- Status: Provisional (implemented, pending human review)
+- Status: Accepted
 - Date: 2026-09-29
-- Deciders: Claude (overnight run), pending review by Leonardo
+- Deciders: Leonardo (accepted on 2026-09-29), on a proposal by Claude (overnight run)
 
 ## Context
 
@@ -34,7 +34,7 @@ Decision log entries: D-081 (`docs/reviews/open-decisions.md`).
    `fails` is `null` for a function that cannot fail; `ops` lists the operations in declaration order of the capability; `docs` holds the doc comments without their `---` marker.
 4. The schema follows the versioning rule of `spec/13`: a change of shape bumps `una.contract/1`.
 
-### Changes to other documents on acceptance
+### Changes to other documents on acceptance (made on 2026-09-29)
 
 - `spec/13 §5` gains the rules above and the schema.
 

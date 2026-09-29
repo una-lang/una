@@ -1,8 +1,8 @@
 # 0028. Authority rules the specification leaves open
 
-- Status: Provisional (implemented, pending human review)
+- Status: Accepted
 - Date: 2026-09-29
-- Deciders: Claude (overnight run), pending review by Leonardo
+- Deciders: Leonardo (accepted on 2026-09-29), on a proposal by Claude (overnight run)
 
 ## Context
 
@@ -25,7 +25,7 @@ Decision log entries: D-071 to D-080, D-085 and D-087 (`docs/reviews/open-decisi
 11. **Function arguments.** A function value passed where a function type is expected (`spec/10 §2`, S-Fun) has no `uses` that the expected type lacks (U3003) and fails only with the expected type's error kind (U3009).
 12. **References bound twice.** A capability reference bound twice in one construct, the `uses` of a header, a handler or a function type, the `given` lines of an example or one `with` clause, is U1002 at the second binding, as ADR 0023 rule 5 reports other names defined twice in one construct; the first binding wins.
 
-### Changes to other documents on acceptance
+### Changes to other documents on acceptance (made on 2026-09-29)
 
 - `spec/05` gains a section "Reporting" that states rules 1 to 5, 9, 11 and 12; `spec/06 §6` states rule 8; `spec/14 §4` states rule 7; `spec/13 §5` states rule 6.
 
