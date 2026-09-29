@@ -1,0 +1,25 @@
+-- test: checked returns the value when the predicate holds and fails with its variant otherwise
+-- spec: spec/11 §4
+-- grant: console
+-- expect: run-output "good: true, bad: false"
+module phones
+
+pub kind Phone = Text where valid_phone(it)
+
+pub kind PhoneError = | Malformed
+
+pub predicate opaque valid_phone(t: Text) -> Bool = t.len == 11 and is_digits(t)
+
+pub parse_phone(raw: Text) -> Phone
+  fails PhoneError
+=
+  checked(raw, valid_phone(it)) else fail Malformed
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let good = attempt parse_phone("12345678901")
+  let bad = attempt parse_phone("123")
+  let g = good.is_ok()
+  let b = bad.is_ok()
+  @console.print("good: {g}, bad: {b}")

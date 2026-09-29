@@ -107,6 +107,7 @@ fn check_json_is_byte_identical_across_runs() {
         "types",
         "authority",
         "security",
+        "runtime",
     ] {
         let mut cases: Vec<String> =
             std::fs::read_dir(repository.join("tests/conformance").join(area))
