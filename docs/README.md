@@ -8,6 +8,7 @@
 4. `adr/`: why key decisions were made.
 5. `plan/`: roadmap, v0.1 milestones, deferred backlog.
 6. `reviews/`: triage of external design reviews.
+7. `guide/una-for-agents.md`: a compact reference for agents writing Una, with every block tested.
 
 ## Normative status
 
@@ -16,7 +17,7 @@
 | `spec/` | Normative. Uses RFC 2119 keywords. |
 | `adr/` | Normative once `Accepted`. |
 | `compiler/` | Normative for the reference implementation, not for the language. |
-| `plan/`, `reviews/` | Informative. |
+| `plan/`, `reviews/`, `guide/` | Informative. |
 
 ## Specification files
 
@@ -39,6 +40,6 @@
 
 ## Conventions
 
-- Code blocks tagged `una` in the spec are illustrative fragments and may omit module headers or surrounding declarations. Complete, tested programs live in `examples/` and `tests/conformance/`.
+- Code blocks tagged `una` in the spec are illustrative fragments and may omit module headers or surrounding declarations. Complete, tested programs live in `examples/`, `tests/conformance/` and `guide/una-for-agents.md`.
 - Formal rules use LaTeX in `$$` blocks.
 - Section references use the form `spec/03 §4`.

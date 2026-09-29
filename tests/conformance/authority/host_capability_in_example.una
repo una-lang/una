@@ -1,0 +1,13 @@
+-- test: examples cannot use host capabilities
+-- spec: spec/08 §2
+-- expect: error U3014 at 12:6
+module host_capability_in_example
+
+pub greet() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("hello")
+
+example "greeting"
+  do greet()
+  expect true

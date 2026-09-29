@@ -67,22 +67,66 @@ None.
 - Question: `spec/05 §4` reports a capability that a callee needs and the caller lacks as U3001, `spec/04 §2, §5` reports effects beyond declared `uses` as U3003, and `spec/04 §2` rule 4 reports `@` in a function without `uses` as U3004. Which code applies where?
 - Context: `spec/04 §2, §5`, `spec/05 §3, §4`, `spec/10 §2` (Suff); ADR 0028 rule 1.
 - Options: A) U3004 for `@c` in a body whose `uses` are declared empty; U3001 for `@c` that no binding holds, and for a callee requirement whose name is absent or bound to another capability; U3002 for fewer operations; U3003 for a call with effects from a body whose `uses` are declared empty; B) U3001 for every missing capability.
-- Chosen: A, because each statement of the specification keeps a case of its own, and every code gets one site.
+- Chosen: A, because each statement of the specification keeps a case of its own, and every code gets one site. A rebinding `with @x = @y` whose `@y` is not held is reported once, at `@y`, and not again where `@x` is used; clauses are in the refinement language, so U2014 reports an operation there and the authority codes do not.
 - Confidence: medium
 - Reversal cost: medium, the sites in `crates/una-check/src/types/` that report these codes
-- Implemented in: M5 authority commits, tag `DECISION D-071`
+- Implemented in: `9d34aab`, `0ded2b9` (edits), `crates/una-check/src/types/authority.rs`, tag `DECISION D-071`
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 1
 - Answer needed: Keep A? Or switch to B?
 
 ### D-072: Inferring the headers of private functions (M5)
 - Question: ADR 0007 infers the `uses` and `fails` of private functions over the module's call graph, but a body's `@x.op` does not say which capability `@x` is, and a function may declare some clauses and omit others.
 - Context: `spec/04 §5`, `spec/05 §4`; ADR 0007; ADR 0028 rule 2.
-- Options: A) a private function with no `uses` clause infers them, one with any declares them all, and likewise for `fails`; an inferred reference takes the capability its callers bind to its name, after `with`; a reference that no caller binds, or that callers bind differently, is U3001 with a hint to declare `uses`; the inferred error kind is the one kind of the variants raised and the kinds passed, a second kind being U3009; B) infer a reference's capability from its operation's name.
-- Chosen: A, because capabilities flow downward by name (`spec/05 §4`), so the callers define what a reference is; B is ambiguous when two capabilities share an operation name.
+- Options: A) a private function with no `uses` clause infers them, one with any declares them all, and likewise for `fails`; an inferred reference takes its capability from the first of three sources that decides it: the declared requirements of the code the function calls (a callee's `uses`, a function type's, a handler's), then the bindings of its callers after `with`, then the handlers its callers install around the call; a caller or handler that disagrees with the decision is reported at its call (U3001, U3010); sources of the deciding kind that disagree, or no source at all, are U3001 at the function with a hint; the inferred error kind is the kind of the first variant raised or failure passed, and every other kind is reported where it is raised (U3009) or passed (U3008); B) infer a reference's capability from its operation's name; C) take the capability from callers only, reporting every disagreement as a conflict at the function.
+- Chosen: A, because capabilities flow downward by name (`spec/05 §4`): a callee's declared requirement fixes what the name is, and the callers must then provide it; ranking the sources reports each disagreement at the call an agent edits, and lets a private helper without callers yet infer a complete header. B is ambiguous when two capabilities share an operation name; C reports a wrong handler or binding far from where it is written.
 - Confidence: medium
 - Reversal cost: medium, the inference pass and the second checking pass
-- Implemented in: M5 authority commits, tag `DECISION D-072`
+- Implemented in: `9d34aab`, `crates/una-check/src/types/authority.rs` (`infer`, `flow`), `env.rs`, tag `DECISION D-072`
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 2
+- Answer needed: Keep A? Or switch to B?
+
+### D-088: Structural labels in the checker's types (M6)
+- Question: Labels can sit at any position of a type (`Option[internal Text]`, `List[secret Int]`), and a generic call must carry the labels of its arguments; how does the checker represent them?
+- Context: `spec/03 §5`, `spec/07 §2`, `spec/09 §2`, `spec/10 §2`; ADR 0031 rule 1.
+- Options: A) labels at every position of the checker's types, ignored by type equality and joined on type variables by unification; B) one label per value, the join of every label in its type; C) a separate information-flow pass over the typed program.
+- Chosen: A, because it is the model of Core IR (`spec/09 §2`) and keeps `Option[internal Text]` precise; B rejects a public-topped option of internal text wherever it flows, and C repeats the type checker's resolution of fields, methods and instantiations.
+- Confidence: medium
+- Reversal cost: medium, the labeled node of `Ty` and the unifier in `crates/una-check/src/types/`
+- Implemented in: `d519fbb`, `78ad11e`, `crates/una-check/src/types/label.rs`, `ty.rs`, `unify.rs`, tag `DECISION D-088`
+- ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 1
+- Answer needed: Keep A? Or switch to B or C?
+
+### D-098: Elaboration from the checker's resolutions (M7)
+- Question: Core IR needs every call resolved, arguments positional and every binder typed (`spec/09 §1`); the checker computes all of this but keeps none of it.
+- Context: `spec/09`, `compiler/architecture.md §2, §3`; ADR 0032 rule 1.
+- Options: A) pass 2 records its resolutions by span and the elaborator reads them; B) an elaborator that resolves names and types again.
+- Chosen: A, because one set of resolution rules cannot disagree with itself; the records cost memory only.
+- Confidence: medium
+- Reversal cost: medium, the records of `crates/una-check/src/types/` and the elaborator
+- Implemented in: `59a481d`, `crates/una-check/src/types/records.rs`, `elab.rs`, tag `DECISION D-098`
+- ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 1
+- Answer needed: Keep A? Or switch to B?
+
+### D-111: Formulas and spans in Core IR (M8)
+- Question: `spec/12 §3` generates obligations from Core IR, but M7's Core names refinements without their predicates, has no `requires` or `ensures`, keeps spans on few nodes, and drops the condition of the last arm of a `when` without `else`.
+- Context: `spec/09 §2`, `spec/10` preamble, `spec/12 §3`; ADR 0032 rule 1; ADR 0033 rule 1.
+- Options: A) terms of the refinement language for refinements, clauses, reflect bodies and `checked`, with text and spans; library signatures; spans on returned atoms, `let` values, arguments and divisions; an `unreachable` branch after the last arm of a `when` without `else`; B) formulas as A-normal Core expressions; C) obligations from the syntax tree, as M4 records them.
+- Chosen: A, because obligations then come from Core IR as the specification requires, goals print as written, and the exhaustiveness obligation keeps every arm's condition; C would verify something other than what runs.
+- Confidence: medium
+- Reversal cost: medium, `crates/una-core`, the elaborator and the verifier
+- Implemented in: `d8d3db6`, `02bb2d5`, `crates/una-core/src/ir.rs`, `print.rs`, `crates/una-check/src/types/elab.rs`, tag `DECISION D-111`
+- ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 1
+- Answer needed: Keep A? Or switch to B or C?
+
+### D-113: One obligation per `ensures` clause over every return path (M8)
+- Question: `spec/12 §3` generates a postcondition at "each normal return path", and `§8` gives an obligation an id from its declaration, kind and goal, so the paths of one clause would share an id; `spec/13 §2` lists a postcondition with the clause as its `source`.
+- Context: `spec/12 §3, §6, §8`, `spec/13 §1, §2`; ADR 0033 rule 3.
+- Options: A) one obligation per clause, `Π ∧ (path₁ ∨ … ∨ pathₙ) ∧ ¬goal`, whose diagnostic points at the returned expression of the path the model takes; the refinement of a declared result type alike; B) one obligation per path, with the path in the id.
+- Chosen: A, because ids stay as `spec/12 §8` defines them and unique, the listing matches `spec/13 §2`, and the diagnostic still points at the failing return as `spec/12 §3` asks.
+- Confidence: medium
+- Reversal cost: medium, the generation of return obligations and their ids
+- Implemented in: `49c73e9`, `crates/una-verify/src/generate.rs` (`returns`), `report.rs`, tag `DECISION D-113`
+- ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 3
 - Answer needed: Keep A? Or switch to B?
 
 ### D-018: `[` right after a label level (M1)
@@ -312,41 +356,316 @@ None.
 - Chosen: A, so that U3014 has its own case: a `do` line that would reach the host.
 - Confidence: medium
 - Reversal cost: low
-- Implemented in: M5 authority commits, tag `DECISION D-075`
+- Implemented in: `9d34aab`, `crates/una-check/src/types/check.rs` (`example`, `performed`), tag `DECISION D-075`
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 5
 - Answer needed: Keep A? Or switch to B?
 
 ### D-076: Grants checked by `una check` (M5)
 - Question: U3012 is reported when `main` uses a host capability that `una run` does not grant; `[run] grants` is in `una.toml`, while `--grant` flags come only with `una run` (M7).
 - Context: `spec/04 §8`, `spec/05 §7`, `spec/13 §5`; ADR 0028 rule 6.
-- Options: A) when `una.toml` lists `[run] grants`, `una check` reports a host operation of `main`'s `uses` that no grant allows (U3012 at the clause), and `una run` checks its own grants in M7; B) only `una run` reports U3012.
-- Chosen: A, because the manifest's grants are known statically, and checking early is stricter; a package without `[run] grants` is left to `una run`.
+- Options: A) when `una.toml` lists `[run] grants`, `una check` reports a host operation of `main`'s `uses` that no grant allows (U3012 at the clause), and when it names a `[run] entry`, a capability of `main`'s `uses` that is not a host capability, which no grant can provide; `una run` checks its own grants in M7; B) only `una run` reports U3012.
+- Chosen: A, because the manifest's grants are known statically, and checking early is stricter; a package without `[run] grants` leaves the host capabilities to `una run`, while a capability that is not a host capability is ungranted whatever the grants (`spec/05 §7` rule 2).
 - Confidence: medium
 - Reversal cost: low
-- Implemented in: M5 authority commits, tag `DECISION D-076`
+- Implemented in: `9d34aab`, `4f959a7` (capabilities that are not host capabilities), `crates/una-check/src/types/authority.rs` (`grants`), tag `DECISION D-076`
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 6
 - Answer needed: Keep A? Or switch to B?
 
 ### D-079: Escaping lambdas and function values with effects (M5)
 - Question: `spec/05 §6` and `spec/10 §9` rule 2 let an effectful or failing lambda appear only directly as a call argument (U3006). Does the rule cover named functions used as values, and fields of such function types?
 - Context: `spec/03 §1`, `spec/05 §6`, `spec/10 §9`; ADR 0028 rule 9.
-- Options: A) a lambda whose expected type has `uses` or `fails`, and a function value of a function with `uses` or `fails`, appear only directly as call arguments, and a kind field of such a type is U3006 at the type; B) lambdas only.
-- Chosen: A, because a function value with effects carries the same authority as a lambda with them, and `spec/03 §1` rules such values out of kinds.
+- Options: A) a lambda whose expected type has `uses` or `fails`, a function value of a function with `uses` or `fails`, and a parameter or local of such a function type appear only directly as call arguments or as the callee, and a kind field of such a type is U3006 at the type; B) lambdas only.
+- Chosen: A, because a function value with effects carries the same authority as a lambda with them, a parameter that receives such a lambda would otherwise let it escape by being returned or stored, and `spec/03 §1` rules such values out of kinds.
 - Confidence: medium
 - Reversal cost: low
-- Implemented in: M5 authority commits, tag `DECISION D-079`
+- Implemented in: `9d34aab`, `4f959a7` (parameters and locals), `crates/una-check/src/types/expr.rs`, `authority.rs` (`stored_effects`), tag `DECISION D-079`
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 9
 - Answer needed: Keep A? Or switch to B?
 
 ### D-081: The output of `una contract` (M5)
 - Question: `spec/13 §5` defines `una contract <qualified.name>` without a JSON shape, without saying which package it reads, or how inferred clauses appear; M5 requires a `--json` snapshot.
 - Context: `spec/13 §5`; ADR 0029.
-- Options: A) the package in the current directory; human output as canonical header syntax with `-- inferred` after inferred clauses and a line per requirement; JSON schema `una.contract/1`; B) add a path argument.
-- Chosen: A, because it adds no command-line syntax and keeps the human output valid Una.
+- Options: A) the package in the current directory, checked at tier 0, whose diagnostics are reported instead of the contract; human output as canonical header syntax with `-- inferred` after inferred clauses and a line per requirement; JSON schema `una.contract/1`; B) add a path argument; C) print the contract even when the package has diagnostics.
+- Chosen: A, because it adds no command-line syntax, keeps the human output valid Una, and never shows a header whose inferred clauses may be incomplete.
 - Confidence: medium
 - Reversal cost: low, `crates/una-cli/src/contract.rs` and the schema
-- Implemented in: M5 contract commit, tag `DECISION D-081`
+- Implemented in: `3be9490`, `crates/una-cli/src/contract.rs`, tag `DECISION D-081`
 - ADR: `docs/adr/0029-contract-output.md` (Provisional)
+- Answer needed: Keep A? Or switch to B?
+
+### D-085: Function values with more effects or failures than the expected type (M5)
+- Question: `spec/10 §2` (S-Fun) lets a function value stand for a function type only when its `uses` are sufficient for the expected type's and its error kind is included in the expected one, without naming the code of a violation, for example `write`, which uses `@log`, passed as the pure `each` of `map`.
+- Context: `spec/10 §2`, `spec/04 §2, §6`; ADR 0028 rule 11.
+- Options: A) U3003 when the value uses a capability that the expected type does not allow, U3009 when it can fail with a kind that the expected type does not declare; B) U2001, as a type mismatch.
+- Chosen: A, because the codes then say which part of the expected contract is exceeded, as they do for a body that exceeds its header; both options reject the same programs.
+- Confidence: medium
+- Reversal cost: low, `function_argument` in `crates/una-check/src/types/call.rs`
+- Implemented in: `9d34aab`, `crates/una-check/src/types/call.rs` (`function_argument`), tag `DECISION D-085`
+- ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 11
+- Answer needed: Keep A? Or switch to B?
+
+### D-089: Where flows are checked, and implicit flows into a result (M6)
+- Question: `spec/10` compares labels through subtyping (S-Refine, S-Fun) wherever a value meets a type, without listing the places or saying where an implicit flow into a result is reported.
+- Context: `spec/07 §3`, `spec/10 §2, §4, §8`; ADR 0031 rule 2.
+- Options: A) arguments, constructor fields, annotated `let`s, return paths, a policy's `from` and a lambda's result, covariant through data and contravariant through function parameters, arguments compared after the whole call is typed, and an implicit flow into a result reported once at the condition in return position; B) compare at every unification; C) report implicit flows at each return path.
+- Chosen: A, because these are the places where a declared type meets a value; B would compare types that inference joins, such as branches, and C repeats one cause at every branch. A lambda's type records the labels its body assumed for its parameters, which keeps a body from branching on a parameter whose label rises later (a `fold` over labeled values needs a labeled initial value); a `Unit` value carries no information.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: `d519fbb`, `78ad11e`, `crates/una-check/src/types/flow.rs` (`flow`, `implicit_result`), `call.rs`, `stmt.rs`, tag `DECISION D-089`
+- ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 2
+- Answer needed: Keep A? Or switch to C?
+
+### D-090: The labels of values (M6)
+- Question: `spec/07 §3` rule 1 and `spec/10 §3` give operators the join of their operands, but not what `.len`, `is`, field access or pattern bindings take from structured values.
+- Context: `spec/07 §3`, `spec/10 §3, §4`; ADR 0031 rule 3.
+- Options: A) operators, equality and interpolation join every label of their operands; `.len`, `is` and `in` take the top label; fields and bindings take their declared type raised by the top label of the record or scrutinee; B) the top label everywhere.
+- Chosen: A, because an equality of two lists or an interpolation reads the whole value, while `.len`, `is` and a field read only the structure the top label covers.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: `d519fbb`, `crates/una-check/src/types/expr.rs`, `call.rs`, `stmt.rs`, tag `DECISION D-090`
+- ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 3
+- Answer needed: Keep A? Or switch to B?
+
+### D-091: `checked` branches on its value (M6)
+- Question: T-Checked requires `pc = ⊥`, yet the failure of `checked(v, p) else fail V` reveals whether `p` holds of `v`, and failures are observable (`spec/07 §1`).
+- Context: `spec/07 §1, §3`, `spec/10 §7`; ADR 0031 rule 4.
+- Options: A) U4002 when `pc ⊔ ℓ(v)` is above `⊥`, with every label of `v`'s type; B) T-Checked's premise only.
+- Chosen: A, because `spec/07 §3` rules 2 and 3 make the failure of a branch on a labeled value an implicit flow, and B would let a secret leak through `checked`.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: `d519fbb`, `crates/una-check/src/types/expr.rs` (`checked`), tag `DECISION D-091`
+- ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 4
+- Answer needed: Keep A? Or switch to B?
+
+### D-092: Operation arguments are sinks (M6)
+- Question: T-Op both types the arguments against the parameter types, labels included, and bounds them by `accepts`; `Files.write` declares `content: Text` and accepts `internal`, and `Keys.hmac` accepts "any label" without a way to write it.
+- Context: `spec/05 §2`, `spec/07 §4`, `spec/10 §5`, `spec/14 §3`; ADR 0031 rule 6.
+- Options: A) arguments are bounded by `accepts` only (U4003); handler operation parameters are raised by `accepts`; `Keys.hmac` accepts `⊤`; B) both bounds, so `accepts` above a parameter's label is unreachable.
+- Chosen: A, because `accepts` is the sink label of `spec/07 §4`, and the prelude's declarations only make sense with it; raising the parameters inside handlers keeps what callers pass labeled.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: `d519fbb`, `crates/una-check/src/types/env.rs` (`accepts`), `flow.rs` (`sink`), `check.rs` (`handler`), tag `DECISION D-092`
+- ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 6
+- Answer needed: Keep A? Or switch to B?
+
+### D-094: Policies, trusted modules and `via` functions (M6)
+- Question: `spec/07 §5, §6` require a trusted module (U4004) and a private `via` of matching types (U4005); ADR 0024 rule 14 reported the types as U2001 before M6, and nothing says whether other code may call the `via` function.
+- Context: `spec/07 §5, §6`, `spec/02 §8`; ADR 0024 rule 14, D-066; ADR 0031 rule 7.
+- Options: A) U4004 when the header does not say `trusted` (U7005 covers a missing listing); U4005 for a `via` that is not a private function of the module, for its types, and for any other use of it; B) allow other code of the trusted module to call the `via` function.
+- Chosen: A, because the policy is "the only entry point" (`spec/07 §5` rule 3), and a direct call would lower labels without the policy's audit trail.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: `d519fbb`, `crates/una-check/src/types/check.rs` (`policy`), `flow.rs` (`via_site`), tag `DECISION D-094`
+- ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 7
+- Answer needed: Keep A? Or switch to B?
+
+### D-100: Values in traces and outputs (M7)
+- Question: `spec/11 §5` shows trace values as JSON strings (`"Open"`, `"unit"`) without defining the representation, and `Hashed` has no text form.
+- Context: `spec/11 §5`, `spec/14 §2`; ADR 0032 rule 3.
+- Options: A) a JSON string with the Una form of the value, `"hashed:<hex>"` for `Hashed`, `"<redacted:level>"` for labeled arguments; B) JSON objects per value kind.
+- Chosen: A, because it matches the example of `spec/11 §5` and needs no second representation.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: `d81f200`, `c3d2041`, `crates/una-interp/src/machine.rs`, `crates/una-cli/src/runtime.rs`, tag `DECISION D-100`
+- ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 3
+- Answer needed: Keep A? Or switch to B?
+
+### D-101: The output of `una run` (M7)
+- Question: `spec/13 §5` defines `una run` and its streams, but no JSON shape, and not how U6001 and U6003 are reported.
+- Context: `spec/04 §8`, `spec/11 §7`, `spec/13 §5`; ADR 0027; ADR 0032 rule 4.
+- Options: A) printed lines on stdout as the program prints them, U6001 and U6003 as diagnostics on stderr, and `una.run/1` with `--json`, whose `status` is `ok`, `failed`, `aborted` or `rejected` (the checks reported errors, so nothing ran) and whose `diagnostics` hold the diagnostics of the checks or of the run; B) a trace on stdout in human mode too.
+- Chosen: A, because the program's output belongs on stdout, and agents get everything, the trace included, with `--json`.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: `c3d2041`, `crates/una-cli/src/runtime.rs`, `crates/una-cli/tests/runtime.rs`, tag `DECISION D-101`
+- ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 4
+- Answer needed: Keep A? Or switch to B?
+
+### D-102: The output of `una test` (M7)
+- Question: `spec/08 §2` rule 6 lists what `una test --json` reports per example without a shape.
+- Context: `spec/08 §2`, `spec/11 §6`, `spec/13 §5`; ADR 0032 rule 5.
+- Options: A) `una.test/1` with the diagnostics of the checks and of aborted examples, and, per example, the module, name, outcome, the reason it fails, the first expectation that does not hold (file, line and text), the result and the trace; human mode prints one line per example, the expectation and the reason under a failed one, and a summary; B) one JSON document per example.
+- Chosen: A, because one document keeps `--json` to one value on stdout, as `spec/13 §5` requires.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: `d81f200`, `c3d2041`, `crates/una-interp/src/harness.rs`, `crates/una-cli/src/runtime.rs`, tag `DECISION D-102`
+- ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 5
+- Answer needed: Keep A? Or switch to B?
+
+### D-103: Grants: how they combine, and where their paths resolve (M7)
+- Question: `spec/05 §7` and `spec/14 §3` confine `Files` to a prefix and load keys from a file, without saying how `una.toml` grants and `--grant` flags combine, where relative paths resolve, how paths normalize or what the key file holds.
+- Context: `spec/04 §8`, `spec/05 §7`, `spec/13 §5, §7`, `spec/14 §3`; ADR 0032 rule 6.
+- Options: A) the grants add up; `una.toml` paths resolve against the package root and flag paths against the current directory; `Files` paths normalize lexically and through the file system, and any path outside the prefix is `Denied`; the key file is a TOML table of base64 keys; B) flags replace `[run] grants`; C) lexical normalization only.
+- Chosen: A, because a flag then adds what a run needs without restating the manifest, and resolving existing paths closes the escape through links that C leaves open.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: `d81f200`, `c3d2041`, `crates/una-interp/src/host.rs`, `machine.rs`, `crates/una-cli/src/runtime.rs`, tag `DECISION D-103`
+- ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 6
+- Answer needed: Keep A? Or switch to B or C?
+
+### D-104: Semantics the prelude leaves open (M7)
+- Question: `spec/14 §1` gives the prelude's signatures and contracts, but not what `.len` counts, whether the empty text `is_digits`, what `trim` removes or what `to_int` accepts.
+- Context: `spec/14 §1, §2`; ADR 0032 rule 7.
+- Options: A) scalar values; `is_digits("")` holds; Unicode whitespace; an optional `-` and ASCII digits; B) bytes, and `is_digits("")` false.
+- Chosen: A, because columns are counted in scalar values (`spec/13 §1`), and "every character is a digit" holds of the empty text.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: `d81f200`, `crates/una-interp/src/machine.rs`, `value.rs`; conformance case `runtime/prelude_functions`, tag `DECISION D-104`
+- ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 7
+- Answer needed: Keep A? Or switch to B?
+
+### D-106: When an example fails beyond its expectations (M7)
+- Question: `spec/08 §2` defines each expectation and says that `expect` lines with `result` fail when `do` failed, but not what happens when `do` fails and no `expect fails` line expects it, whether `expect` lines without `result` still run then, or which events `performed` counts.
+- Context: `spec/08 §2`, `spec/11 §5, §6`; ADR 0032 rule 9.
+- Options: A) the expectations are checked in order and the first that does not hold fails the example; then a `do` line that failed with no `expect fails` line fails it too; an `expect` line that does not mention `result` runs even when `do` failed; `performed` counts the completed or failed events of the `given` instance, and `not performed` any event of it; an abort fails the example; B) an example passes whenever its expectations hold.
+- Chosen: A, because a failure nobody expected is what an example exists to catch; with B, `do` lines with only `performed` lines would pass whatever happened after the operation.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: `d81f200`, `crates/una-interp/src/harness.rs`; conformance cases `runtime/examples_pass`, `runtime/examples_fail`, tag `DECISION D-106`
+- ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 9
+- Answer needed: Keep A? Or switch to B?
+
+### D-107: Redaction beyond the labels of arguments (M7)
+- Question: `spec/11 §5` redacts arguments whose static label is above `public`, and records host results "subject to redaction", but a record argument whose own label is `public` can hold a field declared `secret`, and an operation's result has a label too.
+- Context: `spec/07 §3` rule 1, `spec/11 §5`; ADR 0032 rule 3.
+- Options: A) every rendered value shows a field whose declared type is labeled above `public` as `<redacted:level>`; an operation's outcome is redacted by the label of the binder of its result; `unit` is never redacted; B) redact arguments only, as the example of `spec/11 §5` shows.
+- Chosen: A, because a trace must never show labeled data, and field labels are part of the static information the redaction rule uses; B would print a `secret` field of a public record in full.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: `d81f200`, `crates/una-interp/src/machine.rs`; CLI test `traces_never_show_labeled_arguments`, tag `DECISION D-107`
+- ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 3
+- Answer needed: Keep A? Or switch to B?
+
+### D-108: Runtime faults before tier 1 (M7)
+- Question: Until M8 verifies proof obligations, `una run` and `una test` run programs whose divisors are not proven nonzero (ADR 0027). What does a division by zero do, and what reports a fault that a checked program cannot reach?
+- Context: `spec/11 §4`, `spec/12 §3`, `spec/13 §4`; ADR 0027; ADR 0032 rule 11.
+- Options: A) the run aborts with U8001 at the name of the function in progress, or at 1:1 of the package root (ADR 0022), and exit code 3; B) a new runtime code for division by zero.
+- Chosen: A, because once tier 1 runs first, reaching such a fault is a compiler bug, and a new code needs the specification (`CLAUDE.md`); until then the message says that a proof obligation excludes it.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: `d81f200`, `c3d2041`, `crates/una-interp/src/machine.rs`, `crates/una-cli/src/runtime.rs`, tag `DECISION D-108`
+- ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 11
+- Answer needed: Keep A? Or switch to B?
+
+### D-109: The entry of `una run`, and U3012 at startup (M7)
+- Question: `spec/04 §8` runs `main` of the module that `una run` names and reports ungranted capabilities with U3012 before execution, but `una check` (D-076) only compares `main` with `[run] grants`, which `--grant` flags extend, and a single file has no `una.toml`.
+- Context: `spec/04 §8`, `spec/05 §7`, `spec/13 §5`; ADR 0021; ADR 0032 rule 10.
+- Options: A) `una run` checks the package with the grants of `[run] grants` and `--grant` together as final grants, even when there are none, and U3012 then says that neither grants the operation; the entry is `[run] entry`, or the module of a single file; a package without `[run] entry`, an entry without `pub main() -> Unit`, a grant flag that is not a grant spec and an unreadable key file are usage errors (exit code 2); B) keep D-076 and check the flags at run time without a source position.
+- Chosen: A, because the checker already locates U3012 on the `uses` clause, and conformance cases are single files that `una run` must run.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: `c3d2041`, `crates/una-check/src/names/mod.rs`, `types/authority.rs`, `crates/una-cli/src/lib.rs`, `runtime.rs`, tag `DECISION D-109`
+- ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 10
+- Answer needed: Keep A? Or switch to B?
+
+### D-112: What is verified, and when (M8)
+- Question: `spec/12 §1` makes tier 1 "tier 0 plus every proof obligation", and `spec/08 §2` rule 4 verifies examples, but nothing says whether tier 1 runs when tier 0 fails, or whether the standard library's bodies are verified.
+- Context: `spec/08 §2`, `spec/12 §1`, `spec/14` preamble (the Trusted zone); ADR 0033 rule 2.
+- Options: A) functions, handler operations, opaque predicate bodies, and the `do` and `expect` lines of examples (an `expect` line with `result` the value of one of the `do` line's paths), once tier 0 reports nothing; the standard library trusted; B) verify the declarations without diagnostics even when others have some.
+- Chosen: A, because a declaration with errors has no Core IR, so obligations that depend on its contract would be refuted for the wrong reason; tier 0 errors come first either way.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: `ec853fa`, `a715ff0`, `crates/una-cli/src/verification.rs`, `crates/una-verify/src/generate.rs`, tag `DECISION D-112`
+- ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 2
+- Answer needed: Keep A? Or switch to B?
+
+### D-114: Ground facts beyond the hypothesis table (M8)
+- Question: `spec/12 §3` lists the hypotheses of a path context and `§4` the ground facts for `len` and `tag`, but a record's field refinements, which construction obligations guarantee, and the shape of constructed values are not listed; the example listing of `spec/13 §2` shows `0 <= e.remaining` for a parameter `e: Event`.
+- Context: `spec/12 §2 to §4`, `spec/13 §2`; ADR 0033 rule 4.
+- Options: A) for every term in a query, the refinements of record fields (under the variant's tag for a sum); constructor tag and field equations, list and text literal lengths; B) the table only.
+- Chosen: A, because every added fact is guaranteed by an obligation proven elsewhere or by evaluation, and without them `spec/13 §2`'s own example could not be proven.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: `49c73e9`, `048cbfa`, `crates/una-verify/src/generate.rs` (`ground_facts`), tag `DECISION D-114`
+- ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 4
+- Answer needed: Keep A? Or switch to B?
+
+### D-118: Goals, hypotheses and ids as text (M8)
+- Question: `spec/12 §8` hashes a "normalized goal text", and `spec/13 §1, §2` show goals and hypotheses as text, without saying how terms print or what `source` is.
+- Context: `spec/12 §8`, `spec/13 §1, §2`; ADR 0033 rule 8.
+- Options: A) terms print in the surface syntax with `it` replaced by the value's source text, normalized by collapsing white space; `source` is the clause of a return obligation and the site otherwise; hypotheses are the path context at the site, or at entry for return obligations; B) goals as SMT-LIB text.
+- Chosen: A, because agents read and write the surface syntax, and the id then survives edits that do not change the goal.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: `49c73e9`, `02bb2d5`, `048cbfa`, `crates/una-verify/src/generate.rs`, `crates/una-core/src/print.rs`, tag `DECISION D-118`
+- ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 8
+- Answer needed: Keep A? Or switch to B? And a question on `spec/12 §8` itself: two obligations of the same kind and goal in one declaration, such as two calls of `lend` in `examples/lending` (`can_borrow(member)`), get one id from its formula; `una obligations` lists both with their positions. Keep the formula, or add an occurrence number?
+
+### D-119: What a counterexample shows (M8)
+- Question: `spec/12 §7` maps a model to source names and shows uninterpreted values "as opaque identities with their known projections", without naming which names appear or the form of an identity.
+- Context: `spec/12 §7`, `spec/13 §1`; ADR 0033 rule 9.
+- Options: A) parameters, `result`, named `let`s and pattern variables, and the field and `len` terms over them in the query, by name; a sum shows its variant, a text equal to a literal of the query that literal, another value `<Kind>#<n>`; B) every constant of the model, temporaries included.
+- Chosen: A, because temporaries have no source name, and the projections are what the goal talks about.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: `49c73e9`, `048cbfa`, `crates/una-verify/src/run.rs`, `generate.rs` (`shown`), tag `DECISION D-119`
+- ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 9
+- Answer needed: Keep A? Or switch to B?
+
+### D-120: The repairs proposed for each kind (M8)
+- Question: `spec/13 §3` lists four candidates "when applicable", without saying when each applies.
+- Context: `spec/13 §3`; ADR 0033 rule 10.
+- Options: A) refinement and precondition: a stronger parameter type when the value is a parameter, a `requires` clause for a private function, a guard, `checked`; postcondition: a guard or a changed `ensures`; division: a guard; exhaustive: an `else` arm; all without edits; B) only mechanical edits.
+- Chosen: A, because each candidate follows the table's order and cost, and edits for them would guess the author's intent.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: `49c73e9`, `crates/una-verify/src/report.rs`, tag `DECISION D-120`
+- ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 10
+- Answer needed: Keep A? Or switch to B?
+
+### D-121: The output of `una obligations` (M8)
+- Question: `spec/13 §2` defines `una.obligations/1`, but not the human output or the exit code.
+- Context: `spec/13 §2, §5`; ADR 0033 rule 11.
+- Options: A) one line per obligation with status, id, kind, position and goal, `(cached)` when cached; exit code 1 when an obligation is not proven or tier 0 reports diagnostics; `domain` in the JSON is `semantic`, the only one `spec/13 §2` shows; B) exit code 0 whenever the listing prints.
+- Chosen: A, because the exit codes of `spec/13 §5` mean errors in the program, which an unproven obligation is.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: `ec853fa`, `crates/una-cli/src/verification.rs`, tag `DECISION D-121`
+- ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 11
+- Answer needed: Keep A? Or switch to B?
+
+### D-122: What the build report lists (M9)
+- Question: `spec/13 §6` shows one `una.report/1` without saying which functions, policy calls, escapes, capabilities and host capabilities its sections list, how the lock is hashed, or how a single file names its package.
+- Context: `spec/13 §6`, `spec/07 §5` rule 5, `spec/07 §6`, `spec/06 §6`; ADR 0034 rule 1.
+- Options: A) every function with `uses`, every policy call, every module that uses `checked`, every declared capability with its `ensures`, the host capabilities the package uses, the SHA-256 of the lock's contents, a single file named after its module with version `0.0.0`; the report after a clean tier 0, exit code 1 with unproven obligations; B) only public functions and only the capabilities `main` uses.
+- Chosen: A, because the report is the reviewer's view of the whole package's authority, trust and assumptions; B would hide private code with effects.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: `92f6b9b`, `crates/una-cli/src/report.rs`, tag `DECISION D-122`
+- ADR: `docs/adr/0034-report-and-abi-details-left-open.md` (Provisional), rule 1
+- Answer needed: Keep A? Or switch to B?
+
+### D-123: Trivial `ensures` and the coverage counts (M9)
+- Question: `spec/13 §6` counts "ensures clauses the solver proves valid without any hypothesis" and reports them as missing contracts, without saying which clauses or how coverage counts functions.
+- Context: `spec/13 §6`, `spec/12 §5`; ADR 0034 rule 2.
+- Options: A) one query per `ensures` clause of a public function, with its parameters and `result` unconstrained; `with_ensures` counts public functions with a clause that is not trivial; B) detect `ensures true` syntactically.
+- Chosen: A, because the solver catches every valid clause (`result == result`, `x >= x`), and a function whose only clauses are trivial has no contract.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: `92f6b9b`, `crates/una-cli/src/report.rs` and `crates/una-verify/src/generate.rs`, tag `DECISION D-123`
+- ADR: `docs/adr/0034-report-and-abi-details-left-open.md` (Provisional), rule 2
+- Answer needed: Keep A? Or switch to B?
+
+### D-124: The output of `una trace` (M9)
+- Question: `spec/08 §1` says `una trace` "lists every function deriving from the requirement, its contract clauses and the verification status of each obligation", without a shape or exit codes.
+- Context: `spec/08 §1`, `spec/13 §5`; ADR 0029; ADR 0034 rule 3.
+- Options: A) the package in the current directory at tier 1, as `una contract`; the requirement, then each derived function with its clauses and obligations; `una.trace/1` with `--json`; an unknown identifier is a usage error; B) a path argument.
+- Chosen: A, because `spec/13 §5` gives the command no path, as for `una contract`.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: `92f6b9b`, `crates/una-cli/src/trace.rs`, tag `DECISION D-124`
+- ADR: `docs/adr/0034-report-and-abi-details-left-open.md` (Provisional), rule 3
+- Answer needed: Keep A? Or switch to B?
+
+### D-125: `--json` for every command (M9)
+- Question: `spec/13 §5` makes `--json` a global flag, but `una explain` has answered it with a usage error since M1, and commands differ on what they print for a package that does not check.
+- Context: `spec/13 §4, §5`, ADR 0012, ADR 0015 D1, D-010; ADR 0034 rule 4.
+- Options: A) `una.explain/1` for `una explain --json`; the diagnostic list for `contract`, `trace`, `obligations` and `report` on a rejected package, the diagnostics inside the documents of `run` and `test`; B) keep the usage error of `una explain --json`.
+- Chosen: A, because an agent can then drive every command headlessly (`plan/milestones-v0.1.md` M10), and each command prints exactly one document. The M1 test that expected the usage error now expects the document.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: `d57857b`, `crates/una-cli/src/lib.rs`, tag `DECISION D-125`
+- ADR: `docs/adr/0034-report-and-abi-details-left-open.md` (Provisional), rule 4
 - Answer needed: Keep A? Or switch to B?
 
 ### D-002: Title of the historical design exploration in the charter (Part A)
@@ -403,6 +722,50 @@ None.
 - Implemented in: M1 lexer commit (`a7313bf`), `crates/una-syntax/src/lexer.rs`, `crates/una-syntax/tests/lexer.rs`, tag `DECISION D-017`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B or C?
+
+### D-127: The example packages and what "every construct" means (M10)
+- Question: M10 asks for at least five more example packages "covering every construct in the charter scope", without naming them or saying how coverage is shown.
+- Context: `plan/milestones-v0.1.md` M10; charter §5; `plan/roadmap.md §3`; ADR 0026 (neutral examples).
+- Options: A) five packages with domain-neutral themes (`lending`, `pantry`, `journal`, `greenhouse`, `shortlinks`), each passing fmt, tier 1, `una test` and the report with no trivial `ensures`, and a test that finds every construct of charter §5's language list in some example by a source pattern; B) one small package per charter bullet; C) the same five packages with a coverage table in the plan instead of a test.
+- Chosen: A, because the examples are the code evaluation tasks start from (roadmap §3), so each should be a small program rather than a fragment, and a test keeps the coverage claim true as the examples change.
+- Confidence: medium
+- Reversal cost: low, the packages under `examples/` and the construct list of `crates/una-cli/tests/examples.rs`
+- Implemented in: `05c174f`, `cc9cca2`, `e13533e`, `5f5955c`, `bf640f2`, `examples/`, `crates/una-cli/tests/examples.rs`, tag `DECISION D-127`
+- ADR: `docs/adr/0035-examples-guide-and-release.md` (Provisional), rule 1
+- Answer needed: Keep A? Or switch to B or C, or change a theme?
+
+### D-128: How the guide's snippets are tested (M10)
+- Question: "Every snippet is tested", but M10 does not say what a snippet is or what its test asserts.
+- Context: `plan/milestones-v0.1.md` M10; `spec/13 §4` (explain examples, which D-043 tests the same way); `spec/13 §5`.
+- Options: A) every `una` fence is a whole module that checks clean at tier 1, or yields only the code named by a first line `-- fails with U####`; fences after file paths form a package that checks clean; `json` fences parse and name a schema the CLI prints; every `una` line of a `sh` fence runs from the repository root, or the directory of its `# in <dir>`, and exits with 0 or its `# exit N`; B) `una` fences only, all clean; C) fragments completed by a template module.
+- Chosen: A, because agents copy snippets verbatim, so each must check on its own; failing snippets show the codes agents will meet; and commands and documents are the ABI usage the guide teaches.
+- Confidence: medium
+- Reversal cost: low, `crates/una-cli/tests/guide.rs` and the fences of the guide
+- Implemented in: `877b6bd`, `docs/guide/una-for-agents.md`, `crates/una-cli/tests/guide.rs`, tag `DECISION D-128`
+- ADR: `docs/adr/0035-examples-guide-and-release.md` (Provisional), rule 2
+- Answer needed: Keep A? Or switch to B or C?
+
+### D-129: Release artifacts (M10)
+- Question: M10 asks for release binaries for Linux and macOS built in CI, without naming targets, contents or workflows, while D-083 runs macOS only on pull requests and on `main`.
+- Context: `plan/milestones-v0.1.md` M10; D-083; `compiler/architecture.md §7`; `OVERNIGHT.md` C.5.
+- Options: A) `scripts/release.sh <target>` packs `una`, `LICENSE` and `README.md` into `una-<version>-<target>.tar.gz` with a `.sha256` file, and `scripts/check-release.sh <target>` checks the digest, the contents and the packed binary on the examples; `release.yml` builds `x86_64-unknown-linux-gnu` and `aarch64-apple-darwin` on a pushed tag `v*` into a draft release; `ci.yml` packs and checks the Linux archive on every push; B) both archives on every push; C) a third-party release tool.
+- Chosen: A, because it proves on every push that the archive builds and runs, keeps macOS within D-083, and needs no tool beyond cargo, tar and the preinstalled `gh`.
+- Confidence: medium
+- Reversal cost: low, `scripts/release.sh` and the two workflows
+- Implemented in: `9b23b9f`, `scripts/release.sh`, `scripts/check-release.sh`, `.github/workflows/release.yml` and `ci.yml`, tag `DECISION D-129`
+- ADR: `docs/adr/0035-examples-guide-and-release.md` (Provisional), rule 3
+- Answer needed: Keep A? Or add targets, or switch to B?
+
+### D-131: What an `attempt` that succeeded tells the verifier (M10)
+- Question: `spec/12 §3` adds the callee's `ensures` after `let x = f(ā)`, but says nothing of `let x = attempt f(ā)`, so a program that attempts a call lost what the callee proves about its result.
+- Context: `spec/12 §3`; `spec/06 §5` (`attempt` returns `Result`); `spec/04 §2` rule 2 (`ensures` describes normal returns); found by `examples/lending` in M10.
+- Options: A) the hypothesis `x is Ok implies P`, with `P` one of the attempted call's normal return paths, its facts and `ensures`, and `x.value` its value; nothing for `Err`; B) no hypothesis for `attempt`, so contracts cannot be used through it; C) A for `let` only.
+- Chosen: A, because `Ok` is exactly a normal return of the call, so the hypothesis is true in every run and weakens nothing, while B pushes programs away from handling failures; the same rule serves every place the value flows (a `let`, a return, an example's `do` line).
+- Confidence: medium
+- Reversal cost: low, `attempted` and `path` in `crates/una-verify/src/generate.rs`
+- Implemented in: `de9ab73`, `crates/una-verify/src/generate.rs`, tag `DECISION D-131`
+- ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 12
+- Answer needed: Keep A? Or switch to B?
 
 ### D-001: The abstract machine acronym follows the rename (Part A)
 - Question: "Vera Abstract Machine (VAM)" appears in the spec, ADR 0002, the plan and the backlog. The rename table covers the language name but not the acronym.
@@ -661,7 +1024,7 @@ None.
 - Question: `spec/10 §7` types a policy call `p(v)` as a declassification from `from` to `to`, computed by the `via` function. Nothing checks that the function takes `from` and returns `to`, or says how `p(v)` passes its argument.
 - Context: `spec/07 §5`, `spec/09 §3`, `spec/10 §7`; ADR 0024 rule 14.
 - Options: A) the `via` function takes one parameter of the base type of `from` and returns the base type of `to` (U2001 at `via` otherwise); a policy call takes one argument without a label (U2005 for a label) and fails and uses capabilities as its `via` function does; B) no check until M6.
-- Chosen: A, because a mismatch would make the declassified value ill-typed at run time; labels stay with M6.
+- Chosen: A, because a mismatch would make the declassified value ill-typed at run time; labels stay with M6. Since M6 the mismatch is U4005, as `spec/07 §5` rule 4 requires (D-094).
 - Confidence: high
 - Reversal cost: low, `Checker::policy` and `Checker::call_policy`
 - Implemented in: `0c07912` (M4 type checker), tag `DECISION D-066`
@@ -716,10 +1079,10 @@ None.
 - Question: `spec/05 §5` requires every operation (U3011) with a matching parameter count and types from the capability (U3010). Where do these point, and what reports `for` naming something other than a capability?
 - Context: `spec/05 §5`; ADR 0028 rule 3.
 - Options: A) U3010 at `for` for a name that is not a capability, at an operation the capability lacks or with another parameter count; U3011 at the handler's name listing the missing operations; operation bodies fail only with the operation's error kind (U3009, U3008 for `pass`); B) one diagnostic per handler.
-- Chosen: A, because each problem gets the site an agent edits.
+- Chosen: A, because each problem gets the site an agent edits. An operation body whose type differs from the operation's result type is U2001, as for any body, since the types come from the capability declaration.
 - Confidence: high
 - Reversal cost: low
-- Implemented in: M5 authority commits, tag `DECISION D-073`
+- Implemented in: `9d34aab`, `crates/una-check/src/types/check.rs` (`handler_rules`), tag `DECISION D-073`
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 3
 - Answer needed: Keep A?
 
@@ -727,10 +1090,10 @@ None.
 - Question: `with @x = h(args)` and `given @x = h(args)` must name a handler for the capability expected at `@x` (U3010), and the handler's own `uses` must be held by the caller (`spec/05 §4` rule 2), without a code.
 - Context: `spec/02 §8`, `spec/05 §4`, `spec/08 §2`; ADR 0028 rule 4.
 - Options: A) U3010 when `h` is not a handler or implements another capability than the one the statement's expression or the `do` line needs at `@x`; the handler's `uses` are checked like a callee's requirements (U3001, U3002); B) no check of the handler's `uses`.
-- Chosen: A, because a handler with effects would otherwise act with authority its installer lacks.
+- Chosen: A, because a handler with effects would otherwise act with authority its installer lacks. `given` lines install their handlers in order, so a handler's `uses` are held by the `given` lines before it, and the handlers of one `with` clause are installed in the context outside the statement.
 - Confidence: high
 - Reversal cost: low
-- Implemented in: M5 authority commits, tag `DECISION D-074`
+- Implemented in: `9d34aab`, `crates/una-check/src/types/check.rs` (`install`), tag `DECISION D-074`
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 4
 - Answer needed: Keep A?
 
@@ -741,7 +1104,7 @@ None.
 - Chosen: A, because modules mix handlers and functions, and the import serves the handlers.
 - Confidence: high
 - Reversal cost: low
-- Implemented in: M5 authority commits, tag `DECISION D-077`
+- Implemented in: `9d34aab`, `crates/una-check/src/types/authority.rs` (`testing_site`), tag `DECISION D-077`
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 7
 - Answer needed: Keep A?
 
@@ -752,7 +1115,7 @@ None.
 - Chosen: A, one diagnostic per module, which a change of the budget or of the code resolves.
 - Confidence: high
 - Reversal cost: low
-- Implemented in: M5 authority commits, tag `DECISION D-078`
+- Implemented in: `9d34aab`, `crates/una-check/src/types/authority.rs` (`budget`), tag `DECISION D-078`
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 8
 - Answer needed: Keep A?
 
@@ -763,7 +1126,7 @@ None.
 - Chosen: A, because a function value with effects is as effectful as a named function.
 - Confidence: high
 - Reversal cost: low
-- Implemented in: M5 authority commits, tag `DECISION D-080`
+- Implemented in: `9d34aab`, `crates/una-check/src/types/authority.rs` (`position_site`), tag `DECISION D-080`
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 10
 - Answer needed: Keep A?
 
@@ -774,8 +1137,162 @@ None.
 - Chosen: A, because method calls and function values need types to resolve, and the cost of a second pass is small.
 - Confidence: high
 - Reversal cost: low
-- Implemented in: M5 authority commits, tag `DECISION D-082`
+- Implemented in: `9d34aab`, `crates/una-check/src/types/mod.rs`, `check.rs`, tag `DECISION D-082`
 - ADR: none (minor)
+- Answer needed: Keep A?
+
+### D-084: The M4 unit tests leave out the codes of later milestones (M5)
+- Question: `crates/una-check/tests/types.rs` compares every name and type diagnostic of its inputs, and M5 adds codes that some M4 inputs trigger: a single file that uses `checked` twice now also gets U7003, since the budget of a single file is 0.
+- Context: `OVERNIGHT.md` C.5 (tests and expectations), `spec/06 §6`, `compiler/testing.md`.
+- Options: A) the M4 helper `check()` leaves out the authority codes and U7003, which `crates/una-check/tests/authority.rs` covers; B) add the U7003 line to the M4 expectation, and the codes of each later milestone as they arrive; C) give the M4 inputs a manifest with a larger budget.
+- Chosen: A, because each unit-test file then states the rules of its own milestone and no M4 expectation changes; the conformance suite still checks complete outputs. From M6 on, the helper also leaves out the security codes, which `crates/una-check/tests/flow.rs` covers; one M4 expectation, U2001 for a `via` function of another type, left the M4 test because `spec/07 §5` rule 4 makes it U4005 (D-094), which `flow.rs` tests.
+- Confidence: high
+- Reversal cost: low, the `later` filter in `crates/una-check/tests/types.rs`
+- Implemented in: `9d34aab`, `crates/una-check/tests/types.rs`, tag `DECISION D-084`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-086: Mechanical edits of authority diagnostics (M5)
+- Question: `spec/13 §3` lets diagnostics other than U5001 and U5002 include repairs. Which authority diagnostics carry a mechanical edit, and which edit?
+- Context: `spec/13 §1, §3`, `spec/02 §3` (clause order); ADR 0028, Consequences.
+- Options: A) edits only where one fix follows from the diagnostic: widen the declaring `uses` clause (U3002); add the callee's requirements as `uses` clauses of the caller's header (U3001 at a call, U3003); add `fails E` to a function without `fails` (U3009, U3008), inserted in canonical clause order and turning a short-form function into the long form; B) also guess a capability for `@c.op` in a pure function from the operation's name; C) no edits, the messages only.
+- Chosen: A, because each edit is the only repair that keeps the program's meaning, and applying it removes the diagnostic and keeps the file canonical; B guesses when two capabilities share an operation name, and C leaves agents to rebuild clauses the compiler already knows.
+- Confidence: high
+- Reversal cost: low, `widen` and `add_clause` in `crates/una-check/src/types/authority.rs`
+- Implemented in: `0ded2b9`, `crates/una-check/src/types/authority.rs` (`widen`, `add_clause`), tag `DECISION D-086`
+- ADR: none (minor)
+- Answer needed: Keep A?
+
+### D-087: A capability reference bound twice (M5)
+- Question: A capability context maps each name to one capability (`spec/05 §1`), but nothing reports a header with two `uses @log` clauses, two `given @log` lines or `with @log = @a, @log = @b`; ADR 0023 rule 5 left capability references to M5.
+- Context: `spec/05 §1, §3, §4`, `spec/08 §2`; ADR 0023 rule 5; ADR 0028 rule 12.
+- Options: A) U1002 at the second binding in one construct, the first binding winning, as for other names defined twice; B) merge the two bindings; C) accept them, the last one winning.
+- Chosen: A, because a duplicate is almost always a mistake, merging would hide which capability a name has, and U1002 already means a name defined twice.
+- Confidence: high
+- Reversal cost: low, `duplicate_refs` in `crates/una-check/src/types/authority.rs` and `first_of_each` in `env.rs`
+- Implemented in: `ce6f46b`, `crates/una-check/src/types/authority.rs` (`duplicate_refs`), `env.rs` (`first_of_each`), tag `DECISION D-087`
+- ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 12
+- Answer needed: Keep A?
+
+### D-093: Calls under the program counter (M6)
+- Question: `spec/10 §5` states `pc ⊑ bound(f)` for named functions; function values and handler installations also run effects and failures.
+- Context: `spec/07 §3` rule 4, `spec/10 §5, §6`; ADR 0031 rule 5.
+- Options: A) the same bound for function values, from their type, and for handler installations, from the handler's `uses`; the result of a function value is raised by the value's label; B) named functions only.
+- Chosen: A, because a function value or an installed handler performs the same effects as a named function.
+- Confidence: high
+- Reversal cost: low
+- Implemented in: `d519fbb`, `crates/una-check/src/types/flow.rs` (`bound`, `call_under_pc`), `call.rs`, `check.rs` (`install`), tag `DECISION D-093`
+- ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 5
+- Answer needed: Keep A?
+
+### D-095: What is not checked for labels (M6)
+- Question: `spec/07 §4, §5` exempt `expect` lines and `via` bodies; clauses are in the refinement language, whose labels the verifier erases (`spec/12 §4`).
+- Context: `spec/07 §4, §5`, `spec/10 §9` rule 3, `spec/12 §4`; ADR 0031 rule 8.
+- Options: A) `expect` lines, `via` bodies and clauses are not checked, and `do` lines are checked at `pc = ⊥`; B) check clauses too.
+- Chosen: A, because clauses produce no value at run time, and checking them would only reject specifications.
+- Confidence: high
+- Reversal cost: low
+- Implemented in: `d519fbb`, `crates/una-check/src/types/check.rs`, `flow.rs` (`labels`), tag `DECISION D-095`
+- ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 8
+- Answer needed: Keep A?
+
+### D-096: Undeclared label categories (M6)
+- Question: `spec/07 §2` makes an undeclared category U4007 without a site; a single file has no `una.toml`.
+- Context: `spec/07 §2`, `spec/13 §7`; ADR 0031 rule 9.
+- Options: A) U4007 at each undeclared category, in type labels and `accepts` clauses, a single file declaring none; B) one diagnostic per module.
+- Chosen: A, because each category is a separate edit.
+- Confidence: high
+- Reversal cost: low
+- Implemented in: `d519fbb`, `crates/una-check/src/types/env.rs` (`lower_label`), tag `DECISION D-096`
+- ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 9
+- Answer needed: Keep A?
+
+### D-097: Where information-flow diagnostics point (M6)
+- Question: The specification gives no primary spans for U4001 to U4005.
+- Context: `spec/13 §1`; ADR 0031 rule 10.
+- Options: A) U4001 at the value, or at the condition for an implicit flow into a result; U4002 at the `fail`, clause, `checked` or call, with the condition that raised the program counter as a related location; U4003 at the exceeding argument, or at the operation when the program counter alone exceeds; U4004 at the policy's name; U4005 at `via`'s name or the use; U4007 at the category; B) every diagnostic at the enclosing declaration.
+- Chosen: A, because each points at the code an agent edits, and the related condition explains an implicit flow.
+- Confidence: high
+- Reversal cost: low
+- Implemented in: `d519fbb`, `crates/una-check/src/types/flow.rs`, tag `DECISION D-097`
+- ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 10
+- Answer needed: Keep A?
+
+### D-099: The text of the Core dump (M7)
+- Question: `spec/09 §4` makes `--dump-core <module>` print Core IR "deterministically", without a layout or saying what happens with diagnostics.
+- Context: `spec/09 §2, §4`, `spec/13 §5`; ADR 0032 rule 2.
+- Options: A) the module's declarations in the syntax of `spec/09 §2`, one per block, with every binder's type, label and refinements, and the package's diagnostics on stderr; B) no dump when there are diagnostics.
+- Chosen: A, because the dump is a debugging aid, and declarations without diagnostics are still worth seeing.
+- Confidence: high
+- Reversal cost: low
+- Implemented in: `59a481d`, `crates/una-core/src/print.rs`, `crates/una-cli/src/lib.rs`, tag `DECISION D-099`
+- ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 2
+- Answer needed: Keep A?
+
+### D-105: What the call depth counts (M7)
+- Question: `spec/11 §7` limits the call depth to 10,000 frames without saying which calls are frames.
+- Context: `spec/04 §7`, `spec/11 §7`; ADR 0032 rule 8.
+- Options: A) calls of functions, predicates, lambdas, policies and handler operations; the evaluator runs on a thread whose stack is sized from the maximum depth (32 KiB per call and 16 MiB more), and aborts with U6003 when that stack runs short before the depth does, so it never overflows; B) function calls only.
+- Chosen: A, because each of them recurses the same way, and nested expressions inside a recursive function use stack that the depth alone does not bound.
+- Confidence: high
+- Reversal cost: low
+- Implemented in: `d81f200`, `c3d2041`, `crates/una-interp/src/machine.rs`, `lib.rs`, `crates/una-cli/src/runtime.rs`, tag `DECISION D-105`
+- ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 8
+- Answer needed: Keep A?
+
+### D-110: How the conformance runner evaluates `una run` and `una test` (M7)
+- Question: `compiler/testing.md §2` defines `run-output`, `test-pass`, `test-fail` and `-- grant:`, but not how the runner obtains them, whether errors reported by `una run` count toward `error` expectations, or where the relative paths of grants resolve.
+- Context: `compiler/testing.md §2`; ADR 0013.
+- Options: A) the runner calls `una run --json` and `una test --json` in-process; `una run` runs when a case expects output, grants a capability or expects an error of the runtime domain, and the errors of both documents join those of `una check`; relative `files:` and `keys:` paths resolve against the case's directory; B) a separate expectation for runtime errors.
+- Chosen: A, because a case then states every error it expects in one form, and a case does not depend on the directory the tests run in.
+- Confidence: high
+- Reversal cost: low
+- Implemented in: `54d30c8`, `crates/una-cli/tests/conformance/main.rs`, `outcome.rs`, `docs/compiler/testing.md`, tag `DECISION D-110`
+- ADR: none (`compiler/testing.md §2` gains the rules)
+- Answer needed: Keep A?
+
+### D-115: Encoding details (M8)
+- Question: `spec/12 §4` gives examples of sort names and the shape of field, `len` and `tag` functions, but not the names of every sort, how binders become symbols, or how `Unit`, text ordering, `concat` and `to_text` are encoded.
+- Context: `spec/12 §2, §4`; ADR 0033 rule 5.
+- Options: A) the names of ADR 0033 rule 5, binders as quoted symbols (with a `!` suffix on `_`, `as`, `xor` and `distinct`, which Z3 5.1.0 rejects even quoted; found in M10 by an example whose discarded statement is the binder `_`), text ordering, `concat` and `to_text` as uninterpreted functions, and multiplication of two non-literals and division or remainder by a non-literal as the uninterpreted `mul!Int`, `div!Int` and `mod!Int`; B) no encoding for text ordering, which would make such refinements unverifiable; C) SMT-LIB `div` and `mod` for a division by a variable, as `spec/12 §2` says.
+- Chosen: A, because uninterpreted functions add no axioms (ADR 0010's reasoning), and doubled underscores keep sort names distinct for distinct module paths. C is not possible: QF_UFLIA has no nonlinear terms, and Z3 5.1.0 answers such an assertion with an error and drops it, which would make an obligation pass or fail for the wrong reason. This deviates from the text of `spec/12 §2`, whose change the ADR lists.
+- Confidence: high
+- Reversal cost: low
+- Implemented in: `49c73e9`, `3b83602` (the symbols of M10), `crates/una-verify/src/smt.rs` (`symbol`), `generate.rs` (`arithmetic`, `order`), tag `DECISION D-115`
+- ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 5
+- Answer needed: Keep A?
+
+### D-116: The solver protocol (M8)
+- Question: `spec/12 §5` gives the preamble and says the compiler issues `(get-model)` or `(get-info :reason-unknown)`, without saying how processes, models and the version check are handled.
+- Context: `spec/12 §5, §7`, ADR 0003, ADR 0022 rule 4; ADR 0033 rule 6.
+- Options: A) one process per query, the whole script written at once with `(get-model)`, `(get-value ...)` for the source-level terms and `(get-info :reason-unknown)`; the wall-clock guard kills the process; the version read once per run; B) one interactive session per run.
+- Chosen: A, because queries stay independent and parallel, a hang affects one query, and the script is the query the cache keys.
+- Confidence: high
+- Reversal cost: low
+- Implemented in: `49c73e9`, `ec853fa`, `crates/una-verify/src/solver.rs`, `run.rs`, tag `DECISION D-116`
+- ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 6
+- Answer needed: Keep A?
+
+### D-117: The proof cache (M8)
+- Question: `spec/12 §9` fixes the directory, the key and the value of the cache, but not the files, concurrency or what is not cached.
+- Context: `spec/12 §5, §9`; ADR 0033 rule 7.
+- Options: A) one JSON file per query named by its key, written through a rename; unreadable entries solved again; wall-clock unknowns not cached; B) one database file per package.
+- Chosen: A, because parallel runs and tests then never corrupt the cache, and a result that depends on time must not be reused.
+- Confidence: high
+- Reversal cost: low
+- Implemented in: `49c73e9`, `crates/una-verify/src/cache.rs`, tag `DECISION D-117`
+- ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 7
+- Answer needed: Keep A?
+
+### D-126: U8001's explain text has no examples (M9)
+- Question: `spec/13 §4` asks a failing and a fixed example of every code, and U8001 is "Internal compiler error (always a bug)".
+- Context: `spec/13 §4`; ADR 0034 rule 5.
+- Options: A) a text without examples, saying how to report the bug; B) an example that triggers the error, which would be a known bug left in the compiler.
+- Chosen: A, because a program that makes the compiler fail is a bug to fix, not an example to keep.
+- Confidence: high
+- Reversal cost: low
+- Implemented in: `d57857b`, `crates/una-cli/tests/explain_examples.rs` and `crates/una-diag/explain/U8001.md`, tag `DECISION D-126`
+- ADR: `docs/adr/0034-report-and-abi-details-left-open.md` (Provisional), rule 5
 - Answer needed: Keep A?
 
 ### D-083: CI runners for the private repository (Part 5)
@@ -920,3 +1437,14 @@ None.
 - Implemented in: `OVERNIGHT.md` progress notes; T0007 repairs (M1)
 - ADR: none (minor)
 - Answer needed: Keep A?
+
+### D-130: The tag `v0.1.0` is left to the owner (M10)
+- Question: M10 asks for the tag `v0.1.0`, but the run never pushes to `main`, where the owner merges after review; a tag on `dev/v0.1` would name a release the owner has not reviewed.
+- Context: `plan/milestones-v0.1.md` M10; `OVERNIGHT.md` C.5 and D.1.
+- Options: A) prepare everything the tag triggers, but leave creating and pushing it to the owner, after the merge; B) tag `dev/v0.1` now; C) tag locally without pushing.
+- Chosen: A, because a release is outward-facing and should point at reviewed history on `main`; the release workflow then builds and attaches the archives without further work.
+- Confidence: high
+- Reversal cost: low, pushing the tag
+- Implemented in: `9b23b9f`, `.github/workflows/release.yml`, tag `DECISION D-130`
+- ADR: `docs/adr/0035-examples-guide-and-release.md` (Provisional), rule 4
+- Answer needed: Keep A? Or tag `dev/v0.1` before the merge?

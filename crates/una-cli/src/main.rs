@@ -15,6 +15,15 @@ fn main() -> ExitCode {
         &mut stdout.lock(),
         &mut stderr.lock(),
         stderr_is_terminal,
+        &environment,
     );
     ExitCode::from(status.code())
+}
+
+/// A variable of the process environment, for programs that `una run` grants `env`
+/// (`spec/14 §3`). The binary reads it, so that the library never does
+/// (`compiler/conventions.md §1`).
+#[allow(clippy::disallowed_methods)]
+fn environment(name: &str) -> Option<String> {
+    std::env::var(name).ok()
 }

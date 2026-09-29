@@ -7,6 +7,24 @@ use una_diag::Diagnostic;
 
 use crate::directives::{Case, CheckExpectation, ExpectedError, TestExpectation};
 
+/// What `una run --json` reported for a case.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct RunResult {
+    /// Whether the checks rejected the package, so that nothing ran.
+    pub rejected: bool,
+    /// The lines the program printed.
+    pub output: Vec<String>,
+}
+
+/// What `una test --json` reported for a case.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct TestResult {
+    /// Whether the checks rejected the package, so that no example ran.
+    pub rejected: bool,
+    /// The names of the examples that failed.
+    pub failed: BTreeSet<String>,
+}
+
 /// The result of one case.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Verdict {
@@ -21,14 +39,17 @@ pub enum Verdict {
     },
 }
 
-/// The mismatches between a case's expectations and the diagnostics of `una check`; empty when
-/// the outcome matches every expectation. Errors match on code, file and start position; a
-/// single-module case is its own package root, so its errors are in the case file (ADR 0015).
-/// Expectations on `una run` and `una test` cannot be evaluated before those commands exist,
-/// so they never match yet.
-pub fn mismatches(case: &Case, diagnostics: &[Diagnostic]) -> Vec<String> {
+/// The mismatches between a case's expectations and the errors reported by `una check`,
+/// `una run` and `una test`, and what those commands did; empty when the outcome matches every
+/// expectation. Errors match on code, file and start position; a single-module case is its own
+/// package root, so its errors are in the case file (ADR 0015).
+pub fn mismatches(
+    case: &Case,
+    reported: &BTreeSet<ExpectedError>,
+    run: Option<&RunResult>,
+    test: Option<&TestResult>,
+) -> Vec<String> {
     let mut mismatches = Vec::new();
-    let reported = reported(diagnostics);
     match &case.check {
         CheckExpectation::Unspecified => {}
         // `una check` has no tiers yet, so both expectations compare with the same diagnostics.
@@ -42,7 +63,7 @@ pub fn mismatches(case: &Case, diagnostics: &[Diagnostic]) -> Vec<String> {
             }
         }
         CheckExpectation::Errors(expected) => {
-            for missing in expected.difference(&reported) {
+            for missing in expected.difference(reported) {
                 mismatches.push(format!("missing error {missing}"));
             }
             for unexpected in reported.difference(expected) {
@@ -51,18 +72,41 @@ pub fn mismatches(case: &Case, diagnostics: &[Diagnostic]) -> Vec<String> {
         }
     }
     if !case.run_output.is_empty() {
-        mismatches.push("`run-output` needs `una run`, which does not exist yet".to_owned());
+        match run {
+            None => mismatches.push("`una run` did not run".to_owned()),
+            Some(run) if run.rejected => {
+                mismatches.push("`una run` ran nothing: the checks reported errors".to_owned());
+            }
+            Some(run) if run.output != case.run_output => mismatches.push(format!(
+                "expected the output {:?}, found {:?}",
+                case.run_output, run.output
+            )),
+            Some(_) => {}
+        }
     }
-    if case.test_outcome != TestExpectation::Unspecified {
-        mismatches.push(
-            "`test-pass` and `test-fail` need `una test`, which does not exist yet".to_owned(),
-        );
+    let expected_failures = match &case.test_outcome {
+        TestExpectation::Unspecified => None,
+        TestExpectation::Pass => Some(BTreeSet::new()),
+        TestExpectation::Fail(names) => Some(names.clone()),
+    };
+    if let Some(expected) = expected_failures {
+        match test {
+            None => mismatches.push("`una test` did not run".to_owned()),
+            Some(test) if test.rejected => {
+                mismatches.push("`una test` ran nothing: the checks reported errors".to_owned());
+            }
+            Some(test) if test.failed != expected => mismatches.push(format!(
+                "expected the failing examples {expected:?}, found {:?}",
+                test.failed
+            )),
+            Some(_) => {}
+        }
     }
     mismatches
 }
 
 /// The reported diagnostics in the form of expectations: code, file and start position.
-fn reported(diagnostics: &[Diagnostic]) -> BTreeSet<ExpectedError> {
+pub fn reported(diagnostics: &[Diagnostic]) -> BTreeSet<ExpectedError> {
     diagnostics
         .iter()
         .map(|diagnostic| ExpectedError {
@@ -124,13 +168,17 @@ mod tests {
         }
     }
 
+    fn check_only(case: &Case, diagnostics: &[Diagnostic]) -> Vec<String> {
+        mismatches(case, &reported(diagnostics), None, None)
+    }
+
     #[test]
     fn ok_matches_only_the_absence_of_diagnostics() {
         for check in [CheckExpectation::Ok, CheckExpectation::Tier0Ok] {
             let case = expecting(check);
-            assert_eq!(mismatches(&case, &[]), Vec::<String>::new());
+            assert_eq!(check_only(&case, &[]), Vec::<String>::new());
             assert_eq!(
-                mismatches(&case, &[diagnostic(Code::U0101, "c.una", 2, 4)]),
+                check_only(&case, &[diagnostic(Code::U0101, "c.una", 2, 4)]),
                 ["expected no diagnostics, found U0101 at c.una:2:4"]
             );
         }
@@ -147,9 +195,9 @@ mod tests {
             diagnostic(Code::U3005, "c.una", 13, 11),
             diagnostic(Code::U3005, "c.una", 13, 11),
         ];
-        assert_eq!(mismatches(&case, &reported), Vec::<String>::new());
+        assert_eq!(check_only(&case, &reported), Vec::<String>::new());
         assert_eq!(
-            mismatches(&case, &[diagnostic(Code::U3005, "c.una", 13, 12)]),
+            check_only(&case, &[diagnostic(Code::U3005, "c.una", 13, 12)]),
             [
                 "missing error U0101 at c.una:2:1",
                 "missing error U3005 at c.una:13:11",
@@ -167,7 +215,7 @@ mod tests {
             11,
         )])));
         assert_eq!(
-            mismatches(
+            check_only(
                 &case,
                 &[diagnostic(Code::U3005, "src/cap_as_value.una", 13, 11)]
             ),
@@ -179,18 +227,71 @@ mod tests {
     }
 
     #[test]
-    fn run_and_test_expectations_do_not_match_yet() {
+    fn run_output_matches_the_printed_lines_in_order() {
         let case = Case {
-            run_output: vec!["Hello, Una".to_owned()],
+            run_output: vec!["one".to_owned(), "two".to_owned()],
+            ..Case::default()
+        };
+        let printed = |lines: &[&str]| RunResult {
+            rejected: false,
+            output: lines.iter().map(|line| (*line).to_owned()).collect(),
+        };
+        let none = BTreeSet::new();
+        let run = printed(&["one", "two"]);
+        assert_eq!(
+            mismatches(&case, &none, Some(&run), None),
+            Vec::<String>::new()
+        );
+        let run = printed(&["two", "one"]);
+        assert_eq!(
+            mismatches(&case, &none, Some(&run), None),
+            [r#"expected the output ["one", "two"], found ["two", "one"]"#]
+        );
+        let run = RunResult {
+            rejected: true,
+            output: Vec::new(),
+        };
+        assert_eq!(
+            mismatches(&case, &none, Some(&run), None),
+            ["`una run` ran nothing: the checks reported errors"]
+        );
+    }
+
+    #[test]
+    fn test_outcomes_match_the_set_of_failing_examples() {
+        let none = BTreeSet::new();
+        let passing = TestResult::default();
+        let failing = TestResult {
+            rejected: false,
+            failed: BTreeSet::from(["slow".to_owned()]),
+        };
+        let pass = Case {
             test_outcome: TestExpectation::Pass,
             ..Case::default()
         };
         assert_eq!(
-            mismatches(&case, &[]),
-            [
-                "`run-output` needs `una run`, which does not exist yet",
-                "`test-pass` and `test-fail` need `una test`, which does not exist yet",
-            ]
+            mismatches(&pass, &none, None, Some(&passing)),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            mismatches(&pass, &none, None, Some(&failing)),
+            [r#"expected the failing examples {}, found {"slow"}"#]
+        );
+        let fail = Case {
+            test_outcome: TestExpectation::Fail(BTreeSet::from(["slow".to_owned()])),
+            ..Case::default()
+        };
+        assert_eq!(
+            mismatches(&fail, &none, None, Some(&failing)),
+            Vec::<String>::new()
+        );
+        let rejected = TestResult {
+            rejected: true,
+            failed: BTreeSet::new(),
+        };
+        assert_eq!(
+            mismatches(&pass, &none, None, Some(&rejected)),
+            ["`una test` ran nothing: the checks reported errors"]
         );
     }
 

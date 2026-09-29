@@ -1,0 +1,8 @@
+[package]
+name = "greenhouse-example"
+version = "0.1.0"
+edition = "0.1"
+
+[run]
+entry = "greenhouse.main"
+grants = ["console"]

@@ -1,0 +1,5 @@
+---
+source: crates/una-cli/tests/abi.rs
+expression: stdout(&output)
+---
+{"schema":"una.trace/1","requirement":{"id":"EVENTS_3","status":"active","text":"An event with no remaining seats is always shown as sold out","source":"policy \"Box Office Handbook 2.1\"","owner":"box_office"},"functions":[{"function":"events.seating.availability","requires":[],"ensures":["e.remaining < 1 implies result is SoldOut"],"obligations":[{"id":"ob-5632dc1b5e02","kind":"postcondition","status":"proven","goal":"e.remaining < 1 implies result is SoldOut"},{"id":"ob-27be13c10f2e","kind":"exhaustive","status":"proven","goal":"e.remaining in 0..0 or e.remaining in 1..<20 or e.remaining in 20..5000"}]}]}

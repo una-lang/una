@@ -1,0 +1,13 @@
+-- test: an argument above the accepts label of an operation
+-- spec: spec/07 §4
+-- expect: error U4003 at 13:17
+module argument_above_accepts
+
+capability Archive
+  op keep(note: Text) -> Unit
+    accepts internal
+
+pub archive(note: secret Text) -> Unit
+  uses @archive: Archive[keep]
+=
+  @archive.keep(note)

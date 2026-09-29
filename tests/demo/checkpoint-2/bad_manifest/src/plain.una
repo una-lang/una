@@ -1,0 +1,3 @@
+module plain
+
+pub one() -> Int = 1

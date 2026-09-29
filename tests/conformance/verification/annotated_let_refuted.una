@@ -1,0 +1,11 @@
+-- test: a let whose written type is refined is an obligation at its value
+-- spec: spec/12 §3
+-- expect: error U5001 at 10:22
+module annotated_let_refuted
+
+pub kind Seats = Int in 0..5000
+
+pub shrink(raw: Int) -> Int
+=
+  let seats: Seats = raw - 1
+  seats

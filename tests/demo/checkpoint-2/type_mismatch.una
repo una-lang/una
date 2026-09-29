@@ -1,0 +1,3 @@
+module type_mismatch
+
+pub label(count: Int) -> Text = count

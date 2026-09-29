@@ -1,0 +1,326 @@
+//! Runs of `main` (`spec/04 §8`) and of examples (`spec/08 §2`, `spec/11 §6`).
+
+use std::collections::BTreeMap;
+
+use una_core::{Atom, Bound, Example, Expectation, Expr, Program, Rhs, Source};
+
+use crate::host::{Grant, NoWorld, World};
+use crate::machine::{Abort, Env, Event, EventOutcome, Flow, Index, Machine, Stop, variant};
+use crate::value::Value;
+
+/// What `una run` grants: the grants, with the keys of the key files of `keys:` grants loaded
+/// (`spec/14 §3`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Host {
+    /// The grants.
+    pub grants: Vec<Grant>,
+    /// The keys of `keys:` grants, by name.
+    pub keys: BTreeMap<String, Vec<u8>>,
+}
+
+/// How `main`, or the `do` line of an example, ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Completion {
+    /// It returned this value, in its Una form.
+    Ok(String),
+    /// It failed.
+    Failed {
+        /// The variant.
+        variant: String,
+        /// The failure in its Una form.
+        value: String,
+        /// Its fields whose labels are `public`, by name, in their Una form (`spec/04 §8`).
+        public: Vec<(String, String)>,
+    },
+    /// It aborted.
+    Aborted(Abort),
+}
+
+/// A run of `main`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Run {
+    /// How it ended.
+    pub completion: Completion,
+    /// Its trace.
+    pub trace: Vec<Event>,
+}
+
+/// Runs `main` of module `module` with the host capabilities of `host`, in `world`, with a
+/// maximum call depth. `None` when the module has no function `main`.
+pub fn run_main(
+    program: &Program,
+    module: &str,
+    world: &mut dyn World,
+    host: &Host,
+    max_depth: usize,
+) -> Option<Run> {
+    let index = Index::new(program);
+    let main = index.function(module, "main")?;
+    let mut machine = Machine::new(&index, world, &host.grants, &host.keys, max_depth);
+    let result = machine.run_main(main);
+    let completion = completion(&index, result);
+    Some(Run {
+        completion,
+        trace: machine.trace,
+    })
+}
+
+fn completion(index: &Index<'_>, result: Flow<'_>) -> Completion {
+    match result {
+        Ok(value) => Completion::Ok(index.render(&value)),
+        Err(Stop::Fail(failure)) => Completion::Failed {
+            variant: variant(&failure),
+            value: index.render(&failure),
+            public: index.public_fields(&failure),
+        },
+        Err(Stop::Abort(abort)) => Completion::Aborted(abort),
+    }
+}
+
+/// The run of one example.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExampleRun {
+    /// The path of its module.
+    pub module: String,
+    /// Its name.
+    pub name: String,
+    /// Why it fails; `None` when it passes.
+    pub failure: Option<ExampleFailure>,
+    /// How its `do` line ended.
+    pub completion: Completion,
+    /// Its trace.
+    pub trace: Vec<Event>,
+}
+
+/// Why an example fails.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExampleFailure {
+    /// The first expectation that does not hold, as its line and its text; `None` when the
+    /// `do` line failed with no `expect fails` line, or aborted.
+    pub expectation: Option<(u32, String)>,
+    /// Why, in one sentence without a trailing period.
+    pub reason: String,
+}
+
+/// Runs every example of `program`, by module in path order, then in source order, each in a
+/// fresh machine with an empty environment and an empty world (`spec/11 §6`).
+pub fn run_examples(program: &Program, max_depth: usize) -> Vec<ExampleRun> {
+    let index = Index::new(program);
+    program
+        .modules
+        .iter()
+        .flat_map(|module| {
+            module
+                .examples
+                .iter()
+                .map(|example| (module.path.as_str(), example))
+        })
+        .map(|(module, example)| run_example(&index, module, example, max_depth))
+        .collect()
+}
+
+fn run_example<'p>(
+    index: &Index<'p>,
+    module: &str,
+    example: &'p Example,
+    max_depth: usize,
+) -> ExampleRun {
+    let mut world = NoWorld;
+    let grants: Vec<Grant> = Vec::new();
+    let keys = BTreeMap::new();
+    let mut machine = Machine::new(index, &mut world, &grants, &keys, max_depth);
+    let result = machine.eval_closed(&mut Env::new(), &example.body);
+    let failure = match &result {
+        Err(Stop::Abort(_)) => Some(ExampleFailure {
+            expectation: None,
+            reason: "the `do` line aborted".to_owned(),
+        }),
+        _ => judge(&mut machine, index, example, &result),
+    };
+    let trace = std::mem::take(&mut machine.trace);
+    ExampleRun {
+        module: module.to_owned(),
+        name: example.name.clone(),
+        failure,
+        completion: completion(index, result),
+        trace,
+    }
+}
+
+/// The first expectation of `example` that does not hold against the result and trace of its
+/// `do` line; then, when the `do` line failed and no `expect fails` line expects a failure,
+/// that failure (DECISION D-106).
+fn judge<'p>(
+    machine: &mut Machine<'p, '_>,
+    index: &Index<'p>,
+    example: &'p Example,
+    result: &Flow<'p>,
+) -> Option<ExampleFailure> {
+    for expectation in &example.expectations {
+        if let Some((line, text, reason)) = check(machine, index, expectation, result) {
+            return Some(ExampleFailure {
+                expectation: Some((line, text.to_owned())),
+                reason,
+            });
+        }
+    }
+    let expects_failure = example
+        .expectations
+        .iter()
+        .any(|e| matches!(e, Expectation::Fails { .. }));
+    match result {
+        Err(Stop::Fail(failure)) if !expects_failure => Some(ExampleFailure {
+            expectation: None,
+            reason: format!(
+                "the `do` line failed with `{}`, and no `expect fails` line expects a failure",
+                index.render(failure)
+            ),
+        }),
+        _ => None,
+    }
+}
+
+/// Whether `expectation` holds; when it does not, its line, text and the reason.
+fn check<'p, 'e>(
+    machine: &mut Machine<'p, '_>,
+    index: &Index<'p>,
+    expectation: &'p Expectation,
+    result: &Flow<'p>,
+) -> Option<(u32, &'e str, String)>
+where
+    'p: 'e,
+{
+    match expectation {
+        Expectation::Holds {
+            result: binder,
+            check,
+            text,
+            line,
+        } => {
+            let mentions_result = mentions(check, binder);
+            let mut env = Env::new();
+            match result {
+                Ok(value) => env.push((binder.as_str(), value.clone())),
+                Err(Stop::Fail(failure)) if mentions_result => {
+                    let reason = format!(
+                        "the `do` line failed with `{}`, so `result` has no value",
+                        index.render(failure)
+                    );
+                    return Some((*line, text, reason));
+                }
+                _ => {}
+            }
+            let reason = match machine.eval_closed(&mut env, check) {
+                Ok(Value::Bool(true)) => return None,
+                Ok(_) => match result {
+                    Ok(value) if mentions_result => {
+                        format!("it is false, with `result` = `{}`", index.render(value))
+                    }
+                    _ => "it is false".to_owned(),
+                },
+                Err(Stop::Fail(failure)) => {
+                    format!("it failed with `{}`", index.render(&failure))
+                }
+                Err(Stop::Abort(_)) => "it aborted".to_owned(),
+            };
+            Some((*line, text, reason))
+        }
+        Expectation::Fails {
+            variant: expected,
+            text,
+            line,
+        } => {
+            let reason = match result {
+                Err(Stop::Fail(failure)) if variant(failure) == *expected => return None,
+                Err(Stop::Fail(failure)) => {
+                    format!("the `do` line failed with `{}`", index.render(failure))
+                }
+                Ok(value) => format!("the `do` line completed with `{}`", index.render(value)),
+                Err(Stop::Abort(_)) => "the `do` line aborted".to_owned(),
+            };
+            Some((*line, text, reason))
+        }
+        Expectation::Performed {
+            cap,
+            op,
+            negated,
+            text,
+            line,
+        } => {
+            let instance = format!("given:{cap}");
+            let mut events = machine
+                .trace
+                .iter()
+                .filter(|e| e.instance == instance && e.op == *op);
+            if *negated {
+                let event = events.next()?;
+                let reason = format!("the trace has `@{cap}.{op}` at event {}", event.seq);
+                Some((*line, text, reason))
+            } else if events.any(|e| e.outcome != EventOutcome::Aborted) {
+                None
+            } else {
+                Some((*line, text, format!("the trace has no `@{cap}.{op}`")))
+            }
+        }
+    }
+}
+
+/// Whether `expr` reads the binder `name`.
+fn mentions(expr: &Expr, name: &str) -> bool {
+    let atom = |a: &Atom| matches!(a, Atom::Var(v) if v == name);
+    match expr {
+        Expr::Atom { atom: a, .. } => atom(a),
+        Expr::Unreachable { .. } => false,
+        Expr::Let { value, body, .. } => {
+            (match value.as_ref() {
+                Bound::Rhs(rhs) => rhs_mentions(rhs, name),
+                Bound::Expr(inner) => mentions(inner, name),
+            }) || mentions(body, name)
+        }
+        Expr::If {
+            cond,
+            then,
+            otherwise,
+        } => atom(cond) || mentions(then, name) || mentions(otherwise, name),
+        Expr::Case {
+            scrutinee,
+            arms,
+            otherwise,
+        } => {
+            atom(scrutinee)
+                || arms.iter().any(|arm| mentions(&arm.body, name))
+                || otherwise.as_deref().is_some_and(|e| mentions(e, name))
+        }
+        Expr::Fail { args, .. } => args.iter().any(atom),
+        Expr::Handle { body, handler, .. } => mentions(body, name) || mentions(handler, name),
+        Expr::Attempt { body, .. } => mentions(body, name),
+        Expr::With { source, body, .. } => {
+            (match source {
+                Source::Rebind(_) => false,
+                Source::Handler { args, .. } => args.iter().any(atom),
+            }) || mentions(body, name)
+        }
+    }
+}
+
+fn rhs_mentions(rhs: &Rhs, name: &str) -> bool {
+    let atom = |a: &Atom| matches!(a, Atom::Var(v) if v == name);
+    match rhs {
+        Rhs::Atom(a) => atom(a),
+        Rhs::Prim { args, .. }
+        | Rhs::Call { args, .. }
+        | Rhs::Op { args, .. }
+        | Rhs::Construct { args, .. }
+        | Rhs::List(args) => args.iter().any(atom),
+        Rhs::Apply { callee, args, .. } => atom(callee) || args.iter().any(atom),
+        Rhs::Field { value, .. } => atom(value),
+        Rhs::Lambda { body, .. } => mentions(body, name),
+        Rhs::Checked {
+            value,
+            predicate,
+            args,
+            ..
+        } => atom(value) || mentions(predicate, name) || args.iter().any(atom),
+        Rhs::Declassify { arg, .. } => atom(arg),
+    }
+}

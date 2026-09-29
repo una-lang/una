@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use pretty_assertions::assert_eq;
 use una_check::{ModuleInput, PackageInput, TypeCheck, check_names, check_types};
-use una_diag::Diagnostic;
+use una_diag::{Code, Diagnostic, Domain};
 use una_project::{Manifest, parse_manifest};
 use una_syntax::ast::DeclKind;
 use una_syntax::{Interner, SourceDb, lex, parse};
@@ -51,16 +51,29 @@ fn run(files: &[(&str, &str)], single: bool) -> (Vec<Diagnostic>, TypeCheck) {
             .collect(),
         manifest,
         settings: &settings,
+        run: None,
     };
     let names = check_names(&input);
     let types = check_types(&input);
     (names, types)
 }
 
-/// The name and type diagnostics of `files`, as "code file:line:col message" in output order.
+/// Whether `code` belongs to a later milestone than M4: the authority codes and the escape
+/// budget of M5, which `authority.rs` tests, and the security codes of M6, which `flow.rs`
+/// tests (DECISION D-084).
+fn later(code: Code) -> bool {
+    matches!(code.domain(), Domain::Authority | Domain::Security) || code == Code::U7003
+}
+
+/// The name and type diagnostics of `files`, as "code file:line:col message" in output order,
+/// without the codes of later milestones.
 fn check(files: &[(&str, &str)], single: bool) -> Vec<String> {
     let (names, types) = run(files, single);
-    let mut diagnostics: Vec<Diagnostic> = names.into_iter().chain(types.diagnostics).collect();
+    let mut diagnostics: Vec<Diagnostic> = names
+        .into_iter()
+        .chain(types.diagnostics)
+        .filter(|d| !later(d.code))
+        .collect();
     diagnostics.sort_by(|a, b| {
         (&a.primary.file, a.primary.start, a.code).cmp(&(&b.primary.file, b.primary.start, b.code))
     });
@@ -502,7 +515,6 @@ fn policies_take_one_argument_and_check_their_via_function() {
         )]),
         [
             "U7005 src/k.una:1:1 module `k` is `trusted` in its header but not listed in una.toml [trusted] modules",
-            "U2001 src/k.una:13:7 `via` function `hash_it` must take a `Text` and return a `Int`; it is `fn(Text) -> Hashed`",
             "U2005 src/k.una:21:37 policy `digest` takes one argument without a label",
             "U2001 src/k.una:23:18 policy `digest` is not a value; call it as `digest(value)`",
         ]

@@ -1,0 +1,20 @@
+-- test: the payload of an attempt that succeeded carries the ensures of the attempted call, a normal return (spec/06 §5; DECISION D-131)
+-- spec: spec/12 §3
+-- expect: ok
+module attempt_ensures_proven
+
+pub kind Oops = | TooLarge
+
+pub bump(n: Int) -> Int
+  ensures result > n
+  fails Oops
+=
+  if n > 100 then fail TooLarge else n + 1
+
+pub bump_or_same(n: Int) -> Int
+  ensures result >= n
+=
+  let outcome = attempt bump(n)
+  when outcome
+    is Ok(value) -> value
+    is Err -> n

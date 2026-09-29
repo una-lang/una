@@ -1,0 +1,23 @@
+module journal.main
+
+import journal.release (length_band)
+
+--- Prints how long today's entry is, never what it says, and copies it where
+--- `JOURNAL_COPY` names when that is set and the grant allows writing.
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @files: Files[read, write]
+  uses @env: Env[get]
+  fails FileError
+=
+  let text = @files.read("today.txt")
+    if error pass
+  let hundreds = length_band(text)
+  @console.print("today's entry runs to about {hundreds} hundred characters")
+  let copy_to = @env.get("JOURNAL_COPY")
+    if none use ""
+  if copy_to == ""
+    unit
+  else
+    @files.write(copy_to, content: text)
+      if error use unit

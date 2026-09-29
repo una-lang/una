@@ -4,14 +4,24 @@
 //! (U2014), predicates (U2015) and lambdas (U2010), following `spec/03`, `spec/04`, `spec/06`,
 //! `spec/10` and ADR 0024.
 //!
+//! Capabilities, effects and failures (M5): capability contexts, sufficiency, inference of the
+//! headers of private functions, handlers, failures, one effect per line and the second-class
+//! rules (U3001 to U3015, U7003), following `spec/05`, `spec/06`, `spec/10 §5, §6, §9` and
+//! ADR 0028.
+//!
 //! The checker also records the proof obligations that refinement subsumption and the other
 //! rules of `spec/12 §3` create. They stay pending until the verifier (M8) discharges them.
 
+mod authority;
 mod call;
 mod check;
+mod elab;
 mod env;
 mod expr;
 mod facts;
+mod flow;
+mod label;
+mod records;
 mod stmt;
 mod ty;
 mod unify;
@@ -42,6 +52,35 @@ pub struct PendingObligation {
     pub origin: Option<Location>,
 }
 
+/// A capability that a header uses: `uses @cap: capability[ops]`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeaderUse {
+    /// The reference, without `@`.
+    pub cap: String,
+    /// The capability's name.
+    pub capability: String,
+    /// The operations, in the capability's declaration order.
+    pub ops: Vec<String>,
+}
+
+/// The authority and failure contract of a function of the package after inference
+/// (`spec/04 §5`), which `una contract` prints.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Header {
+    /// The module path, for example `events.checkin`.
+    pub module: String,
+    /// The function's name.
+    pub name: String,
+    /// Its `uses`, declared or inferred, in order.
+    pub uses: Vec<HeaderUse>,
+    /// Whether its `uses` are inferred: a private function without `uses` clauses.
+    pub uses_inferred: bool,
+    /// The name of its error kind, declared or inferred, when it can fail.
+    pub fails: Option<String>,
+    /// Whether its `fails` is inferred: a private function without a `fails` clause.
+    pub fails_inferred: bool,
+}
+
 /// The outcome of [`check_types`].
 #[derive(Clone, Debug, Default)]
 pub struct TypeCheck {
@@ -52,6 +91,10 @@ pub struct TypeCheck {
     /// Where each `let` whose right-hand side is in the refinement language binds its name.
     /// Such a binding has the selfified type `{v: B | v == e}` (`spec/03 §7`).
     pub selfified: Vec<Location>,
+    /// The headers of the functions of the modules checked, by module, then declaration.
+    pub headers: Vec<Header>,
+    /// The Core IR of the declarations without diagnostics (`spec/09`).
+    pub program: una_core::Program,
 }
 
 /// Type-checks the modules of `package` that have no syntax errors.
@@ -67,27 +110,89 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
             reports: !module.broken,
         })
         .collect();
+    let categories = package
+        .settings
+        .categories
+        .iter()
+        .map(|category| category.value.clone())
+        .collect();
     let mut env = Env::build(
         sources,
         standard.source(&standard.prelude),
         standard.source(&standard.testing),
+        categories,
         &mut report,
     );
     let facts = facts::KindFacts::new(&env);
     facts::kind_recursion(&env, &mut report);
+    authority::stored_effects(&env, &mut report);
+    // DECISION D-082: pass 1 collects what inference needs, and its diagnostics are dropped;
+    // pass 2 checks with the inferred headers.
+    let mut collected = authority::Collected::default();
+    {
+        let mut scratch = Report::new(package.sources);
+        let mut findings = Findings::default();
+        for module in 0..package.modules.len() {
+            if env.reports(module) {
+                check::module(
+                    &mut env,
+                    &facts,
+                    &mut scratch,
+                    &mut findings,
+                    &mut collected,
+                    authority::Pass::Collect,
+                    module,
+                );
+            }
+        }
+    }
+    authority::infer(&mut env, &collected, &mut report);
     let mut findings = Findings::default();
+    let mut unused = authority::Collected::default();
     for module in 0..package.modules.len() {
         if env.reports(module) {
-            check::module(&mut env, &facts, &mut report, &mut findings, module);
+            check::module(
+                &mut env,
+                &facts,
+                &mut report,
+                &mut findings,
+                &mut unused,
+                authority::Pass::Check,
+                module,
+            );
         }
+    }
+    // DECISION D-111: the standard modules are checked silently, for the records that their
+    // contracts are elaborated from.
+    {
+        let mut scratch = Report::new(&standard.sources);
+        let mut standard_findings = Findings::default();
+        for module in env.prelude..env.modules.len() {
+            check::module(
+                &mut env,
+                &facts,
+                &mut scratch,
+                &mut standard_findings,
+                &mut unused,
+                authority::Pass::Check,
+                module,
+            );
+        }
+        findings.records.merge(standard_findings.records);
     }
     facts::predicate_recursion(&env, &findings, &mut report);
     facts::generic_equality(&env, &facts, &findings, &mut report);
+    authority::grants(&env, package.settings, package.run, &mut report);
+    authority::budget(&env, &findings, package.settings, &mut report);
     // DECISION D-070: pending obligations by position, then kind.
     findings
         .obligations
         .sort_by_key(|(kind, span, _)| (span.file, span.start, span.end, *kind));
+    let headers = headers(&env);
+    let program = elab::program(&env, &findings, package.sources, &standard.sources);
     TypeCheck {
+        headers,
+        program,
         obligations: findings
             .obligations
             .iter()
@@ -106,6 +211,41 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
     }
 }
 
+/// The headers of the functions of the modules that report, after inference.
+fn headers(env: &Env<'_>) -> Vec<Header> {
+    env.functions
+        .iter()
+        .filter(|f| f.kind == env::FnKind::Function && env.reports(f.module))
+        .map(|f| Header {
+            module: env
+                .modules
+                .get(f.module)
+                .map(|m| m.path.clone())
+                .unwrap_or_default(),
+            name: f.name.to_owned(),
+            uses: f
+                .uses
+                .iter()
+                .map(|need| HeaderUse {
+                    cap: need.usage.name.clone(),
+                    capability: need
+                        .usage
+                        .capability
+                        .and_then(|c| env.capabilities.get(c))
+                        .map_or_else(String::new, |c| c.name.to_owned()),
+                    ops: need.usage.ops.clone(),
+                })
+                .collect(),
+            uses_inferred: f.infer_uses,
+            fails: match &f.fails {
+                Some(ty::Ty::Kind(id, _)) => Some(env.kind_name(*id).to_owned()),
+                _ => None,
+            },
+            fails_inferred: f.infer_fails,
+        })
+        .collect()
+}
+
 /// What checking the bodies finds besides diagnostics.
 #[derive(Default)]
 pub(crate) struct Findings {
@@ -122,10 +262,17 @@ pub(crate) struct Findings {
     /// For each generic function, the type parameters whose values its body compares with
     /// `==` or `!=`.
     pub(crate) compared: std::collections::BTreeMap<usize, std::collections::BTreeSet<usize>>,
+    /// The uses of `checked`, by module, in order (`spec/06 §6`).
+    pub(crate) checked: Vec<(usize, Span)>,
+    /// What pass 2 resolves, for elaboration (DECISION D-098).
+    pub(crate) records: records::Records,
+    /// The declarations of pass 2 with a diagnostic, by the span of their name.
+    pub(crate) failed: std::collections::BTreeSet<Span>,
 }
 
 /// The parsed standard modules.
 struct Standard {
+    sources: SourceDb,
     interner: Interner,
     prelude: File,
     testing: File,
@@ -143,6 +290,7 @@ impl Standard {
         let prelude = parse_standard(&sources, prelude, &mut interner);
         let testing = parse_standard(&sources, testing, &mut interner);
         Standard {
+            sources,
             interner,
             prelude,
             testing,

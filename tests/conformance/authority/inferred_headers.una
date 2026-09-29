@@ -1,0 +1,61 @@
+-- test: private functions infer uses and fails from their bodies, their callees and their callers
+-- spec: spec/04 §5
+-- expect: tier0-ok
+module inferred_headers
+
+kind StoreError = Timeout | Corrupted
+
+kind LookupError = Missing | Unavailable
+
+capability Store
+  op find(key: Int) -> Option[Int]
+    fails StoreError
+
+capability Log
+  op write(line: Text) -> Unit
+
+handler quiet() for Log
+  op write(line) = unit
+
+pub note(line: Text) -> Unit
+  uses @log: Log[write]
+=
+  @log.write(line)
+
+find_or_fail(key: Int) -> Int
+=
+  let value = @store.find(key)
+    if error fail Unavailable
+    if none fail Missing
+  value
+
+find_and_note(key: Int) -> Int
+=
+  let value = find_or_fail(key)
+    if error pass
+  note("found {value}")
+  value
+
+wraps(line: Text) -> Unit = note(line)
+
+silenced(line: Text) -> Unit
+=
+  wraps(line) with @log = quiet()
+
+pub lookup(key: Int) -> Int
+  uses @store: Store[find]
+  uses @log: Log[write]
+  fails LookupError
+=
+  let value = find_and_note(key)
+    if error pass
+  silenced("done")
+  value
+
+pub renamed(key: Int) -> Int
+  uses @primary: Store[find]
+  uses @log: Log[write]
+  fails LookupError
+=
+  find_and_note(key) with @store = @primary
+    if error pass

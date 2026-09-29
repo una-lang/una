@@ -1,6 +1,6 @@
 # Overnight run
 
-Source of truth for the autonomous run on branch `overnight/v0.1`. Parts B and C below are copied verbatim from the owner's instructions of 2026-09-29, with the mechanical rename of ADR 0025 applied (Una, codes `U####`, `.una` files). Part D records the consolidated instructions that the owner gave later the same day. Re-read this file at the start of every milestone and after any context compaction or restart.
+Source of truth for the autonomous run, now on branch `dev/v0.1` of una-lang/una (until the public import, `overnight/v0.1` of the legacy repository). Parts B and C below are copied verbatim from the owner's instructions of 2026-09-29, with the mechanical rename of ADR 0025 applied (Una, codes `U####`, `.una` files). Part D records the consolidated instructions that the owner gave later the same day. Re-read this file at the start of every milestone and after any context compaction or restart.
 
 ## Part B. Answers to your M1 plan
 
@@ -208,8 +208,10 @@ The owner's consolidated instructions take precedence over Parts B and C where t
 
 - **Name.** The final name of the language is Una (ADR 0025, which supersedes ADR 0016). "Vera" and "Troth" remain only as history: `docs/reviews/triage.md §5`, ADRs 0016 and 0025, and the process files (this file, the morning report, the decision log and `docs/plan/runs/`). Prose never puts an article directly before the name ("not a keyword in Una").
 - **Examples.** The reference example is `examples/events` (ADR 0026). Every example, specification fragment, test fixture and explain text stays domain-neutral, and documents refer to the example it replaced only as "the previous reference example".
-- **Publication (Part 5).** Deferred by the owner until checkpoint 3 is reached; the owner will ask for it. Until then, work continues on `overnight/v0.1`, pushed to the current remote for CI. When Part 5 runs, the canonical remote becomes `origin` = una-lang/una, the working branch becomes `dev/v0.1`, and everything Parts B and C say about `overnight/v0.1` applies to `dev/v0.1`. Nothing is ever pushed directly to `main`; the owner merges after review.
-- **Hard rule after Part 5.** Never push to `origin` any branch whose history includes commits from before the initial public import, including the old `main` and `overnight/v0.1`. Never push to `legacy` again.
+- **Publication (Part 5).** Done on 2026-09-29, after the owner withdrew the deferral: the canonical remote is `origin` = una-lang/una, private until launch, whose history starts at the initial public import `25d865b`; the earlier history stays in the `legacy` remote (ADR 0030). The working branch is `dev/v0.1`, and everything Parts B and C say about `overnight/v0.1` applies to `dev/v0.1`. Nothing is ever pushed directly to `main`; the owner merges after review.
+- **Hard rule.** Never push to `origin` any branch whose history includes commits from before the initial public import, including the old `main` and `overnight/v0.1`. Never push to `legacy` again.
+- **CI quota.** Linux runs on every push; macOS only on pull requests and on pushes to `main` (D-083). Local checks on the owner's Mac cover macOS during the run.
+- **Scope of the run.** The owner is not launching yet: after checkpoint 3, continue through M10 as far as quality allows.
 - **Reminder for M8.** The M8 plan records that M8 removes the interim run behavior of ADR 0027.
 
 ### D.2 Part 3, verbatim
@@ -271,6 +273,12 @@ Newest entries last. Reading notes on the instructions above:
 | 2026-09-29 | Part 2 | done | `9101398` neutral reference example `examples/events` (ADR 0026, D-059, D-060); domain audit empty |
 | 2026-09-29 | Part 3 | done | `a3ac631` usage checkpoints (roadmap §4), checkpoint 1 demo and its end-to-end test, ADR 0027; 205 tests |
 | 2026-09-29 | Part 4 | done | `580882e` Apache-2.0 license |
-| 2026-09-29 | Part 5 | deferred | the owner asked to skip it until checkpoint 3 |
+| 2026-09-29 | Part 5 | deferred, then done | first deferred by the owner; then, on the owner's correction, `25d865b` imported to una-lang/una (`main` and `dev/v0.1`), remotes `origin` and `legacy`, ADR 0030; CI quota rule D-083 |
 | 2026-09-29 | Part 6 | done | `002b22d`, this file and the morning report updated; CI run 36574885457 green on Linux and macOS; M4 resumes |
 | 2026-09-29 | M4 | done | `fc9301b`, `0c07912` to `a5c8d3d`; CI run 36578625540 green on Linux and macOS; 236 tests; conformance 116 cases: 113 passed, 3 pending (M5, M6, M8); ADR 0024 rules 1 to 15; decisions D-047 to D-057 and D-061 to D-070 |
+| 2026-09-29 | M5 | done | plan and ADRs 0028, 0029 in the initial import `25d865b`; `9d34aab` to `79b7a2c` on `dev/v0.1`, across a restart of the session; CI run 36606305565 green on Linux (macOS by local checks, D-083); 259 tests; conformance 144 cases: 142 passed, 2 pending (M6, M8); ADR 0028 rules 1 to 12; decisions D-071 to D-082 and D-084 to D-087 |
+| 2026-09-29 | M6 | done | `2348672` to `b37eaa2`; CI run 36610873278 green on Linux (macOS by local checks, D-083); 274 tests; conformance 160 cases: 159 passed, 1 pending (M8); ADR 0031 rules 1 to 10; decisions D-088 to D-097; usage checkpoint 2 reached, with its demo; an M5 fix (`906bd9e`) |
+| 2026-09-29 | M7 | done | `6c648fb` to `511b4eb`; CI run 36618844273 green on Linux (macOS by local checks, D-083); 296 tests; conformance 173 cases: 172 passed, 1 pending (M8); ADR 0032 rules 1 to 11; decisions D-098 to D-110; usage checkpoint 3 reached, with its demo |
+| 2026-09-29 | M8 | done | `3146132` to `74afc16`; CI run 36625239354 green on Linux (macOS by local checks, D-083); 305 tests; conformance 190 cases: 190 passed, 0 pending; ADR 0033 rules 1 to 11; decisions D-111 to D-121; ADR 0027's interim runs removed; the pinned Z3 installed locally in `target/z3` by `scripts/install-z3.sh` |
+| 2026-09-29 | M9 | done | `fa8c4de` to `4dca6d1`; CI run 36628713460 green on Linux (macOS by local checks, D-083); 314 tests; conformance 190 cases: 190 passed, 0 pending; ADR 0034 rules 1 to 5; decisions D-122 to D-126; `una report`, `una trace` and `una.explain/1`; selfified branching `let`s and hypotheses printed as Una |
+| 2026-09-29 | M10 | done | `0d65eff` to `08abf15`; CI run 36633617255 green on Linux, with the Linux release archive packed and checked (macOS by local checks, D-083, and the macOS archive built locally); 319 tests; conformance 193 cases: 193 passed, 0 pending; ADR 0035 rules 1 to 4 and ADR 0033 rule 12; decisions D-127 to D-131; five example packages covering the charter's scope, the guide for agents, release archives, usage checkpoint 4 reached; the tag `v0.1.0` left to the owner (D-130) |

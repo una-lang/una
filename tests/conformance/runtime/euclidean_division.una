@@ -1,0 +1,27 @@
+-- test: division and remainder are Euclidean, so the remainder is never negative
+-- spec: spec/11 §4
+-- grant: console
+-- expect: run-output "7 / 2 = 3, 7 mod 2 = 1"
+-- expect: run-output "-7 / 2 = -4, -7 mod 2 = 1"
+-- expect: run-output "7 / -2 = -3, 7 mod -2 = 1"
+-- expect: run-output "-7 / -2 = 4, -7 mod -2 = 1"
+module conformance.runtime.euclidean_division
+
+pub show(a: Int, b: Int) -> Text
+  requires b != 0
+=
+  let q = a / b
+  let r = a mod b
+  "{a} / {b} = {q}, {a} mod {b} = {r}"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let first = show(7, b: 2)
+  @console.print(first)
+  let second = show(-7, b: 2)
+  @console.print(second)
+  let third = show(7, b: -2)
+  @console.print(third)
+  let fourth = show(-7, b: -2)
+  @console.print(fourth)
