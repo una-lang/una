@@ -723,6 +723,39 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B or C?
 
+### D-127: The example packages and what "every construct" means (M10)
+- Question: M10 asks for at least five more example packages "covering every construct in the charter scope", without naming them or saying how coverage is shown.
+- Context: `plan/milestones-v0.1.md` M10; charter §5; `plan/roadmap.md §3`; ADR 0026 (neutral examples).
+- Options: A) five packages with domain-neutral themes (`redacted`, `pantry`, `journal`, `greenhouse`, `shortlinks`), each passing fmt, tier 1, `una test` and the report with no trivial `ensures`, and a test that finds every construct of charter §5's language list in some example by a source pattern; B) one small package per charter bullet; C) the same five packages with a coverage table in the plan instead of a test.
+- Chosen: A, because the examples are the code evaluation tasks start from (roadmap §3), so each should be a small program rather than a fragment, and a test keeps the coverage claim true as the examples change.
+- Confidence: medium
+- Reversal cost: low, the packages under `examples/` and the construct list of `crates/una-cli/tests/examples.rs`
+- Implemented in: M10 commits, tag `DECISION D-127`
+- ADR: `docs/adr/0035-examples-guide-and-release.md` (Provisional), rule 1
+- Answer needed: Keep A? Or switch to B or C, or change a theme?
+
+### D-128: How the guide's snippets are tested (M10)
+- Question: "Every snippet is tested", but M10 does not say what a snippet is or what its test asserts.
+- Context: `plan/milestones-v0.1.md` M10; `spec/13 §4` (explain examples, which D-043 tests the same way); `spec/13 §5`.
+- Options: A) every `una` fence is a whole module that checks clean at tier 1, or yields exactly the code named by a first line `-- fails with U####`; `json` fences parse and name a schema the CLI prints; every `una` line of a `sh` fence runs from the repository root and exits with 0 or its `# exit N`; B) `una` fences only, all clean; C) fragments completed by a template module.
+- Chosen: A, because agents copy snippets verbatim, so each must check on its own; failing snippets show the codes agents will meet; and commands and documents are the ABI usage the guide teaches.
+- Confidence: medium
+- Reversal cost: low, `crates/una-cli/tests/guide.rs` and the fences of the guide
+- Implemented in: M10 commits, tag `DECISION D-128`
+- ADR: `docs/adr/0035-examples-guide-and-release.md` (Provisional), rule 2
+- Answer needed: Keep A? Or switch to B or C?
+
+### D-129: Release artifacts (M10)
+- Question: M10 asks for release binaries for Linux and macOS built in CI, without naming targets, contents or workflows, while D-083 runs macOS only on pull requests and on `main`.
+- Context: `plan/milestones-v0.1.md` M10; D-083; `compiler/architecture.md §7`; `OVERNIGHT.md` C.5.
+- Options: A) `scripts/release.sh <target>` packs `una`, `LICENSE` and `README.md` into `una-<version>-<target>.tar.gz` with a `.sha256` file; `release.yml` builds `x86_64-unknown-linux-gnu` and `aarch64-apple-darwin` on a pushed tag `v*` into a draft release; `ci.yml` builds and runs the Linux archive on every push; B) both archives on every push; C) a third-party release tool.
+- Chosen: A, because it proves on every push that the archive builds and runs, keeps macOS within D-083, and needs no tool beyond cargo, tar and the preinstalled `gh`.
+- Confidence: medium
+- Reversal cost: low, `scripts/release.sh` and the two workflows
+- Implemented in: M10 commits, tag `DECISION D-129`
+- ADR: `docs/adr/0035-examples-guide-and-release.md` (Provisional), rule 3
+- Answer needed: Keep A? Or add targets, or switch to B?
+
 ### D-001: The abstract machine acronym follows the rename (Part A)
 - Question: "Vera Abstract Machine (VAM)" appears in the spec, ADR 0002, the plan and the backlog. The rename table covers the language name but not the acronym.
 - Context: Part A.2; `spec/11`, ADR 0002, `plan/milestones-v0.1.md` M7, `plan/backlog.md`, `plan/roadmap.md`.
@@ -1393,3 +1426,14 @@ None.
 - Implemented in: `OVERNIGHT.md` progress notes; T0007 repairs (M1)
 - ADR: none (minor)
 - Answer needed: Keep A?
+
+### D-130: The tag `v0.1.0` is left to the owner (M10)
+- Question: M10 asks for the tag `v0.1.0`, but the run never pushes to `main`, where the owner merges after review; a tag on `dev/v0.1` would name a release the owner has not reviewed.
+- Context: `plan/milestones-v0.1.md` M10; `OVERNIGHT.md` C.5 and D.1.
+- Options: A) prepare everything the tag triggers, but leave creating and pushing it to the owner, after the merge; B) tag `dev/v0.1` now; C) tag locally without pushing.
+- Chosen: A, because a release is outward-facing and should point at reviewed history on `main`; the release workflow then builds and attaches the archives without further work.
+- Confidence: high
+- Reversal cost: low, pushing the tag
+- Implemented in: M10 commits, `.github/workflows/release.yml`, tag `DECISION D-130`
+- ADR: `docs/adr/0035-examples-guide-and-release.md` (Provisional), rule 4
+- Answer needed: Keep A? Or tag `dev/v0.1` before the merge?
