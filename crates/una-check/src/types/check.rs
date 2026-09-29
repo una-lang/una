@@ -158,6 +158,9 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) call_targets: BTreeMap<Span, usize>,
     /// The types of the operands of the binary operations being checked (DECISION D-090).
     pub(crate) operands: Vec<Ty>,
+    /// In pass 1, the operations on references whose capability inference decides, by the
+    /// span of the operation: the reference and the operation (DECISION D-072).
+    pub(crate) pending_ops: BTreeMap<Span, (String, String)>,
     pub(crate) ctx: Ctx,
     pub(crate) returning: Option<Returning>,
     /// The error kinds of the calls checked so far, by the span of the call.
@@ -233,6 +236,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             lambda_depth: 0,
             call_targets: BTreeMap::new(),
             operands: Vec::new(),
+            pending_ops: BTreeMap::new(),
             ctx: Ctx::plain(),
             returning: None,
             call_fails: BTreeMap::new(),
