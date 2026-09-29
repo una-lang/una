@@ -7,7 +7,7 @@ Updated after every milestone of the overnight run (`OVERNIGHT.md`, C.8).
 - Language name: Una (ADR 0025; previously Troth, codenamed Vera).
 - Last completed milestone: M6 (information flow), which completes usage checkpoint 2. Next: M7 (Core IR and interpreter), the last milestone on the critical path to checkpoint 3 (`docs/plan/roadmap.md §4`).
 - Repository: una-lang/una (private until launch), branch `dev/v0.1`; its history starts at the initial public import `25d865b` (ADR 0030). Earlier commit hashes in this report refer to the legacy repository.
-- Last green CI runs: https://github.com/una-lang/una/actions/runs/36606305565 (`dev/v0.1`, Linux, at `79b7a2c`, M5) and https://github.com/una-lang/una/actions/runs/36580294816 (`main`, Linux and macOS, at `25d865b`). macOS runs only on pull requests and pushes to `main` (D-083); local checks on the owner's Mac pass. Before the import: run 36578625540 of the legacy repository (`a5c8d3d`, M4).
+- Last green CI runs: https://github.com/una-lang/una/actions/runs/36610873278 (`dev/v0.1`, Linux, at `b37eaa2`, M6), https://github.com/una-lang/una/actions/runs/36606305565 (`dev/v0.1`, Linux, at `79b7a2c`, M5) and https://github.com/una-lang/una/actions/runs/36580294816 (`main`, Linux and macOS, at `25d865b`). macOS runs only on pull requests and pushes to `main` (D-083); local checks on the owner's Mac pass. Before the import: run 36578625540 of the legacy repository (`a5c8d3d`, M4).
 
 ## 2. Consolidated instructions: Una, neutral examples, checkpoints, license
 
