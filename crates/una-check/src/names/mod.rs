@@ -39,6 +39,18 @@ pub struct PackageInput<'a> {
     pub manifest: Option<FileId>,
     /// The settings of `una.toml`, or the defaults.
     pub settings: &'a Manifest,
+    /// The entry module and grants of `una run`, when the package is checked to run it.
+    pub run: Option<RunInput<'a>>,
+}
+
+/// What `una run` adds to a check: the module whose `main` runs, and the grants of
+/// `[run] grants` and `--grant` together, which are final (`spec/04 §8`, DECISION D-109).
+#[derive(Clone, Copy, Debug)]
+pub struct RunInput<'a> {
+    /// The path of the entry module.
+    pub entry: &'a str,
+    /// The grant specs.
+    pub grants: &'a [String],
 }
 
 /// The name diagnostics of `package`.

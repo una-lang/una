@@ -277,7 +277,7 @@ struct Wire<'a> {
 
 /// Diagnostics in output order: by file, start position, then code (`spec/13 §1`). The sort is
 /// stable, so equal keys keep their reporting order.
-pub(crate) fn in_output_order(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> {
+pub fn in_output_order(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> {
     let mut sorted: Vec<&Diagnostic> = diagnostics.iter().collect();
     sorted.sort_by(|a, b| {
         (a.primary.file.as_str(), a.primary.start, a.code).cmp(&(

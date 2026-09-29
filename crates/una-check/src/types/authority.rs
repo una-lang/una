@@ -14,6 +14,7 @@ use super::check::Checker;
 use super::env::{Entity, Env, FnAst};
 use super::ty::{CapId, FnUse, Ty};
 use super::{Findings, Report};
+use crate::names::RunInput;
 
 /// Which pass of the checker runs (DECISION D-082).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1209,13 +1210,21 @@ fn granted(grants: &[String]) -> BTreeMap<&'static str, BTreeSet<&'static str>> 
 /// U3012: the capabilities that `main` of the `[run] entry` module uses must be granted
 /// (`spec/04 §8`, `spec/05 §7`, DECISION D-076). A capability that is not a host capability
 /// can never be granted; host capabilities are compared with `[run] grants` when `una.toml`
-/// lists grants.
-pub(crate) fn grants(env: &Env<'_>, settings: &Manifest, report: &mut Report<'_>) {
-    let Some(entry) = &settings.entry else {
-        return;
+/// lists grants, and with the final grants of `una run` when it checks the package to run it
+/// (DECISION D-109).
+pub(crate) fn grants(
+    env: &Env<'_>,
+    settings: &Manifest,
+    run: Option<RunInput<'_>>,
+    report: &mut Report<'_>,
+) {
+    let entry = match (run, &settings.entry) {
+        (Some(run), _) => run.entry,
+        (None, Some(entry)) => entry.value.as_str(),
+        (None, None) => return,
     };
     let Some(module) =
-        (0..env.prelude).find(|m| env.modules.get(*m).is_some_and(|m| m.path == entry.value))
+        (0..env.prelude).find(|m| env.modules.get(*m).is_some_and(|m| m.path == entry))
     else {
         return;
     };
@@ -1232,7 +1241,10 @@ pub(crate) fn grants(env: &Env<'_>, settings: &Manifest, report: &mut Report<'_>
     let Some(def) = env.functions.get(main) else {
         return;
     };
-    let strings: Vec<String> = settings.grants.iter().map(|g| g.value.clone()).collect();
+    let strings: Vec<String> = match run {
+        Some(run) => run.grants.to_vec(),
+        None => settings.grants.iter().map(|g| g.value.clone()).collect(),
+    };
     let granted = granted(&strings);
     for need in &def.uses {
         let Some(capability) = need.usage.capability.and_then(|c| env.capabilities.get(c)) else {
@@ -1249,7 +1261,7 @@ pub(crate) fn grants(env: &Env<'_>, settings: &Manifest, report: &mut Report<'_>
             );
             continue;
         }
-        if settings.grants.is_empty() {
+        if run.is_none() && settings.grants.is_empty() {
             continue;
         }
         let allowed = granted.get(capability.name);
@@ -1261,11 +1273,16 @@ pub(crate) fn grants(env: &Env<'_>, settings: &Manifest, report: &mut Report<'_>
             .map(|op| format!("`{op}`"))
             .collect();
         if !missing.is_empty() {
+            let granter = if run.is_some() {
+                "neither `[run] grants` nor a `--grant` flag grants"
+            } else {
+                "`[run] grants` does not grant"
+            };
             report.error(
                 Code::U3012,
                 need.span,
                 format!(
-                    "`main` uses {} of `{}`, which `[run] grants` does not grant",
+                    "`main` uses {} of `{}`, which {granter}",
                     missing.join(", "),
                     capability.name
                 ),
