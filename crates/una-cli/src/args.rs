@@ -49,6 +49,10 @@ pub(crate) enum Command {
         /// The tier to check: 0 skips the solver, 1 also proves every obligation
         #[arg(long, value_enum, value_name = "TIER", default_value_t = TierArg::One)]
         tier: TierArg,
+
+        /// Print the Core IR of this module on stdout
+        #[arg(long, value_name = "MODULE")]
+        dump_core: Option<String>,
     },
     /// Rewrite files in canonical form, or report where they differ from it
     Fmt {

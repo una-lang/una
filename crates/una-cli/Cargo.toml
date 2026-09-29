@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 clap.workspace = true
 una-check.workspace = true
+una-core.workspace = true
 una-diag.workspace = true
 una-fmt.workspace = true
 una-project.workspace = true

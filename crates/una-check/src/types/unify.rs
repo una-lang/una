@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn variables_keep_the_join_of_the_labels_they_meet() {
-        use super::super::label::{Label, Level};
+        use una_core::{Label, Level};
         let secret = Label {
             level: Level::Secret,
             categories: std::collections::BTreeSet::new(),

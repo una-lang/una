@@ -14,6 +14,7 @@ use super::authority::{Base, Bound, Collected, Frame, Pass};
 use super::env::{Entity, Env, FnDef, FnKind, HandlerDef};
 use super::facts::KindFacts;
 use super::label::Label;
+use super::records::{Records, Res};
 use super::ty::{CapId, Declared, KindId, Names, Show, Ty};
 use super::unify::{Origin, Vars};
 use super::{Findings, Report};
@@ -161,6 +162,10 @@ pub(crate) struct Checker<'c, 'a, 's> {
     /// In pass 1, the operations on references whose capability inference decides, by the
     /// span of the operation: the reference and the operation (DECISION D-072).
     pub(crate) pending_ops: BTreeMap<Span, (String, String)>,
+    /// In pass 2, what this declaration resolves (DECISION D-098).
+    pub(crate) records: Records,
+    /// The span of the declaration's name, where its failure is recorded.
+    pub(crate) decl_span: Option<Span>,
     pub(crate) ctx: Ctx,
     pub(crate) returning: Option<Returning>,
     /// The error kinds of the calls checked so far, by the span of the call.
@@ -204,6 +209,7 @@ pub(crate) fn module<'a>(
     };
     for (decl, entity) in tree.decls.iter().zip(entities) {
         let mut checker = Checker::new(env, facts, report, findings, collected, pass, module);
+        checker.decl_span = Some(decl.span);
         checker.decl(&decl.kind, entity);
         checker.finish();
     }
@@ -237,6 +243,8 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             call_targets: BTreeMap::new(),
             operands: Vec::new(),
             pending_ops: BTreeMap::new(),
+            records: Records::default(),
+            decl_span: None,
             ctx: Ctx::plain(),
             returning: None,
             call_fails: BTreeMap::new(),
@@ -426,6 +434,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         let name = self.name(&call.name);
         match self.env.lower(self.module, name) {
             Some(Entity::Handler(id)) => {
+                self.resolved(call.span, Res::Handler { id });
                 let (params, capability, module, uses) = match self.env.handlers.get(id) {
                     Some(handler) => (
                         handler.params.clone(),
@@ -468,6 +477,28 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         }
     }
 
+    /// Records, in pass 2, what the expression or pattern at `span` resolves to
+    /// (DECISION D-098).
+    pub(crate) fn resolved(&mut self, span: Span, res: Res) {
+        if self.pass == Pass::Check {
+            self.records.res.insert(span, res);
+        }
+    }
+
+    /// Records, in pass 2, the parameter or field of each argument of the call at `span`.
+    pub(crate) fn ordered(&mut self, span: Span, order: Vec<Option<usize>>) {
+        if self.pass == Pass::Check {
+            self.records.args.insert(span, order);
+        }
+    }
+
+    /// Records, in pass 2, the type of the expression or binder at `span`.
+    pub(crate) fn typed(&mut self, span: Span, ty: &Ty) {
+        if self.pass == Pass::Check {
+            self.records.types.insert(span, ty.clone());
+        }
+    }
+
     /// Records a normal return path at `span` (`spec/12 §3`).
     pub(crate) fn returned(&mut self, span: Span) {
         let Some(returning) = &self.returning else {
@@ -497,8 +528,21 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             compared,
             current,
             started,
+            records,
+            decl_span,
+            pass,
             ..
         } = self;
+        if pass == Pass::Check {
+            findings
+                .records
+                .absorb(records, |ty| vars.resolve_labeled(ty));
+            if report.count() != started
+                && let Some(span) = decl_span
+            {
+                findings.failed.insert(span);
+            }
+        }
         for (callee, args, span) in instances {
             let args: Vec<Ty> = args.iter().map(|arg| vars.resolve(arg)).collect();
             findings.instances.push((current, callee, args, span));

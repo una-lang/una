@@ -1016,7 +1016,15 @@ impl<'a> Env<'a> {
         };
         if let Some(range) = &ty.range {
             if matches!(declared.base.unlabeled(), Ty::Int | Ty::Error) {
-                declared.refinements.push(Refinement::Range);
+                let bound = |i: &una_syntax::ast::SignedInt| {
+                    format!("{}{}", if i.negative { "-" } else { "" }, i.digits)
+                };
+                let dots = if range.exclusive { "..<" } else { ".." };
+                declared.refinements.push(Refinement::Range(format!(
+                    "in {}{dots}{}",
+                    bound(&range.low),
+                    bound(&range.high)
+                )));
             } else if self.reports(module) {
                 report.error(Code::U2002, range.span, "range sugar applies only to `Int`");
             }
@@ -1191,7 +1199,7 @@ impl<'a> Env<'a> {
                     *inner,
                     inner_args.iter().map(|arg| arg.substitute(args)).collect(),
                 ),
-                Refinement::Range => Refinement::Range,
+                Refinement::Range(text) => Refinement::Range(text.clone()),
             })
             .collect();
         if alias.refinement.is_some() {
