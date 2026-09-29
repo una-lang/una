@@ -66,6 +66,10 @@ const RUNS: &[(&str, &str)] = &[
         "lending",
         "Ana borrowed the ladder for 14 days\nreturned 20 days later, it is 6 days late\n",
     ),
+    (
+        "journal",
+        "today's entry runs to about 2 hundred characters\n",
+    ),
     ("pantry", "to buy: rice, oil\ngrams in stock: 700\n"),
 ];
 
@@ -119,7 +123,13 @@ fn every_example_package_is_canonical_verified_and_tested() {
             "{name}: a package with `[run]` has its output in RUNS"
         );
         if let Some((_, output)) = expected {
-            let run = una(&["run", &path]);
+            // `examples/journal` copies its entry only when `JOURNAL_COPY` is set.
+            let run = Command::new(env!("CARGO_BIN_EXE_una"))
+                .args(["run", &path])
+                .env_remove("JOURNAL_COPY")
+                .current_dir(repository())
+                .output()
+                .unwrap();
             assert_eq!(run.status.code(), Some(0), "{name}: {}", text(&run.stderr));
             assert_eq!(text(&run.stdout), *output, "{name}");
         }
