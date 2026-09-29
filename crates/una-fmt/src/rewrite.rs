@@ -34,19 +34,91 @@ pub(crate) struct Rewrites {
     pub(crate) regions: BTreeMap<usize, Region>,
 }
 
-/// The rewrites of `file`, whose tokens, comments and logical lines are given.
+/// The constructors that the modules of a package declare, so that a file can order the
+/// arguments of the constructors it imports: by module path, the fields of each record kind
+/// and variant declared once in its module, and the variants of each sum kind (ADR 0020 rule 6,
+/// DECISION D-026).
+#[derive(Clone, Debug, Default)]
+pub struct Constructors {
+    modules: BTreeMap<Vec<Symbol>, Declared>,
+}
+
+/// The constructors of one module.
+#[derive(Clone, Debug, Default)]
+struct Declared {
+    /// The fields of each record kind and variant, by its name.
+    fields: BTreeMap<Symbol, Vec<Symbol>>,
+    /// The variants of each sum kind, by the kind's name.
+    variants: BTreeMap<Symbol, Vec<Symbol>>,
+}
+
+impl Constructors {
+    /// The constructors of `files`, the modules of one package that parsed without errors,
+    /// named with one interner. A module path that two files claim is left out.
+    pub fn new<'f>(files: impl IntoIterator<Item = &'f File>) -> Constructors {
+        let mut modules: BTreeMap<Vec<Symbol>, Declared> = BTreeMap::new();
+        let mut claimed: BTreeMap<Vec<Symbol>, usize> = BTreeMap::new();
+        for file in files {
+            let Some(header) = &file.module else {
+                continue;
+            };
+            let path: Vec<Symbol> = header.path.segments.iter().map(|s| s.name).collect();
+            *claimed.entry(path.clone()).or_default() += 1;
+            let mut count: BTreeMap<Symbol, usize> = BTreeMap::new();
+            let mut declared = Declared::default();
+            for decl in &file.decls {
+                let DeclKind::Kind(kind) = &decl.kind else {
+                    continue;
+                };
+                *count.entry(kind.name.name).or_default() += 1;
+                match &kind.body {
+                    KindBody::Record(record) => {
+                        declared.fields.insert(
+                            kind.name.name,
+                            record.iter().map(|field| field.name.name).collect(),
+                        );
+                    }
+                    KindBody::Sum(variants) => {
+                        declared.variants.insert(
+                            kind.name.name,
+                            variants.iter().map(|variant| variant.name.name).collect(),
+                        );
+                        for variant in variants {
+                            *count.entry(variant.name.name).or_default() += 1;
+                            declared.fields.insert(
+                                variant.name.name,
+                                variant.fields.iter().map(|field| field.name.name).collect(),
+                            );
+                        }
+                    }
+                    KindBody::Alias { .. } => {}
+                }
+            }
+            declared
+                .fields
+                .retain(|name, _| count.get(name) == Some(&1));
+            modules.insert(path, declared);
+        }
+        modules.retain(|path, _| claimed.get(path) == Some(&1));
+        Constructors { modules }
+    }
+}
+
+/// The rewrites of `file`, whose tokens, comments and logical lines are given, with the
+/// constructors of its package.
 pub(crate) fn collect(
     file: &File,
     tokens: &[Token],
     comments: &[Comment],
     lines: &[Line],
     interner: &Interner,
+    package: &Constructors,
 ) -> Rewrites {
     let mut collector = Collector {
         index: TokenIndex::new(tokens),
         comments,
         lines,
-        constructors: constructors(file),
+        constructors: constructors(file, package),
         rewrites: Rewrites::default(),
     };
     for import in &file.imports {
@@ -67,14 +139,29 @@ pub(crate) fn collect(
     collector.rewrites
 }
 
-/// The fields of the constructors declared in `file`: record kinds and variants with fields,
-/// whose name is declared once and not imported (ADR 0020 rule 6, DECISION D-026).
-fn constructors(file: &File) -> BTreeMap<Symbol, Vec<Symbol>> {
+/// The fields of the constructors `file` can name: the record kinds and variants it declares,
+/// those it imports, and the variants of the sum kinds it imports, when each name comes from
+/// exactly one of them (ADR 0020 rule 6, DECISION D-026).
+fn constructors(file: &File, package: &Constructors) -> BTreeMap<Symbol, Vec<Symbol>> {
     let mut declared: BTreeMap<Symbol, usize> = BTreeMap::new();
     let mut fields: BTreeMap<Symbol, Vec<Symbol>> = BTreeMap::new();
     for import in &file.imports {
+        let path: Vec<Symbol> = import.module.segments.iter().map(|s| s.name).collect();
+        let module = package.modules.get(&path);
         for name in &import.names {
-            *declared.entry(name.name).or_default() += 2;
+            *declared.entry(name.name).or_default() += 1;
+            let Some(module) = module else {
+                continue;
+            };
+            if let Some(known) = module.fields.get(&name.name) {
+                fields.insert(name.name, known.clone());
+            }
+            for variant in module.variants.get(&name.name).into_iter().flatten() {
+                *declared.entry(*variant).or_default() += 1;
+                if let Some(known) = module.fields.get(variant) {
+                    fields.insert(*variant, known.clone());
+                }
+            }
         }
     }
     for decl in &file.decls {
