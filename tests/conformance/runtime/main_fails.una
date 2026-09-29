@@ -1,0 +1,15 @@
+-- test: a failure of main is reported with its public fields, after the lines printed before it
+-- spec: spec/04 §8
+-- grant: console
+-- expect: run-output "starting"
+-- expect: error U6001 at 10:5
+module conformance.runtime.main_fails
+
+pub kind Refusal = | Blocked(reason: Text, code: secret Int)
+
+pub main() -> Unit
+  uses @console: Console[print]
+  fails Refusal
+=
+  @console.print("starting")
+  fail Blocked(reason: "maintenance", code: 4242)
