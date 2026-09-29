@@ -69,8 +69,10 @@ prim            ::= + | - | * | div | mod | neg | == | != | < | <= | > | >= | no
 | Short and long function forms | The same `fun` declaration |
 | Statement sequence `s1; s2; e` | `let _: Unit = s1 in ...` for Unit statements |
 
+A Core `let` binds a right-hand side or an expression, so the value of a handled statement or of a branching construct can be bound. The checker records its resolutions by the span of each expression (callees and their type arguments, the parameter of each argument, fields, operations, variants, capability bindings, and the labeled type of each expression and binder), and the desugaring applies to the syntax tree with these records; only declarations without diagnostics are elaborated (ADR 0032).
+
 Examples are not Core IR declarations. The test harness (`spec/11 §6`) runs their `do` expression, desugared, inside nested `with` bindings for their `given` lines.
 
 ## 4. Debug output
 
-`una check --dump-core <module>` prints Core IR in the text syntax above, deterministically. It is used by snapshot tests and is not a stable interface.
+`una check --dump-core <module> [path]` prints the Core IR of the module's declarations on stdout, in the text syntax above, with every binder's type, label and refinements, deterministically (ADR 0032). The diagnostics of the package still go to stderr, and the exit code follows them. The dump is used by snapshot tests and is not a stable interface.

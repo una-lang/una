@@ -117,7 +117,7 @@ $$
 ## 7. Escape hatches
 
 $$
-\frac{\Gamma \vdash a : \{\nu{:}b \mid \varphi_0\}^{\ell} \qquad \varphi \in \mathrm{RL} \cup \mathrm{Opaque} \qquad C \in \mathrm{variants}(F) \qquad pc = \bot}
+\frac{\Gamma \vdash a : \{\nu{:}b \mid \varphi_0\}^{\ell} \qquad \varphi \in \mathrm{RL} \cup \mathrm{Opaque} \qquad C \in \mathrm{variants}(F) \qquad pc \sqcup \ell^{*}(a) = \bot}
      {\Gamma;K;pc \vdash \mathtt{checked}(a, \varphi, C) : \{\nu{:}b \mid \varphi_0 \wedge \varphi\}^{\ell} \;!\; \emptyset;F}\;(\textsf{T-Checked})
 $$
 
@@ -125,6 +125,8 @@ $$
 \frac{\mathtt{policy}\; p : \tau_{\mathit{from}} \leadsto \tau_{\mathit{to}} \;\mathtt{via}\; f \in \Sigma \qquad \Gamma \vdash a <: \tau_{\mathit{from}} \qquad pc \sqsubseteq \ell(\tau_{\mathit{to}}) \qquad K_f \le K}
      {\Gamma;K;pc \vdash \mathtt{declassify}_p(a) : \tau_{\mathit{to}} \;!\; \mathrm{eff}(K_f);F_f}\;(\textsf{T-Declassify})
 $$
+
+In T-Checked, $\ell^{*}(a)$ joins every label of the type of $a$: a failure of `checked` reveals whether $\varphi$ holds of $a$, so `checked` on a labeled value, or under a raised program counter, is U4002 (ADR 0031).
 
 ## 8. Declarations
 
