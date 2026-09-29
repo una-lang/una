@@ -28,7 +28,7 @@ Rules:
 3. Every identifier in a `derived from` clause MUST be declared in the package (U1006).
 4. Functions derived from `proposed` requirements compile normally and are flagged in the build report.
 
-`una trace EVENTS_3` lists every function deriving from the requirement, its contract clauses and the verification status of each obligation.
+`una trace EVENTS_3` lists every function deriving from the requirement, its contract clauses and the verification status of each obligation. It reads the package in the current directory and checks it at tier 1, then prints the requirement (identifier, status, text, source, owner) and every function derived from it, by qualified name, with its `requires` and `ensures` clauses and the status of each of its obligations. With `--json` it prints `{"schema":"una.trace/1","requirement":{...},"functions":[{"function":...,"requires":[...],"ensures":[...],"obligations":[{"id":...,"kind":...,"status":...,"goal":...}]}]}`. An unknown identifier is a usage error (exit code 2), and an obligation that is not proven gives exit code 1 (ADR 0034).
 
 ## 2. Examples
 

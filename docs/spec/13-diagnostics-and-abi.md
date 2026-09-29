@@ -70,6 +70,8 @@ With `--json`, `una check` and `una fmt --check` print their diagnostics as one 
 }
 ```
 
+`source` is the declaring clause for a return obligation, and the site otherwise. `hypotheses` are the refinements of record fields that the query assumes, then the path context at the site, or at the function's entry for a return obligation, printed in the surface syntax. `domain` is `semantic` for every obligation of v0.1 (ADR 0033).
+
 ## 3. Repair candidates
 
 For U5001 and U5002 the compiler proposes, when applicable, in this order:
@@ -80,6 +82,8 @@ For U5001 and U5002 the compiler proposes, when applicable, in this order:
 | Add a `requires` clause equal to the missing hypothesis (only for non-`pub` functions or with a note that callers change) | 0 |
 | Add a guard (`if` or `when` arm) that handles the failing case | 0 |
 | Replace the value with `checked(value, goal) else fail <Variant>` | 1 |
+
+By kind (ADR 0033): a refuted or unknown `refinement` or `precondition` proposes, in order, a stronger parameter type when the value is a parameter, a `requires` clause for a private function, a guard, and `checked`; a `postcondition` proposes a guard or a changed `ensures` clause; a `division` a guard; an `exhaustive` an `else` arm. These repairs have no mechanical edit (`edit` is `null`).
 
 Other diagnostics MAY include repairs (for example, a missing label with its mechanical edit). Repairs are never applied automatically.
 
@@ -153,7 +157,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U7005 | project | Trusted module not declared in both header and `una.toml` |
 | U8001 | internal | Internal compiler error (always a bug) |
 
-Codes are never reused. Retired codes stay in this table marked retired. Gaps in the numbering, such as U4006 and U6002, are unassigned numbers, not retired codes (ADR 0012). `una explain <code>` prints a paragraph and a minimal failing and fixed example for every code.
+Codes are never reused. Retired codes stay in this table marked retired. Gaps in the numbering, such as U4006 and U6002, are unassigned numbers, not retired codes (ADR 0012). `una explain <code>` prints a paragraph and a minimal failing and fixed example for every code, but U8001: an internal error is a bug of the compiler, so its text has no example and says how to report it (ADR 0034).
 
 ## 5. Command line
 
@@ -180,6 +184,10 @@ Grant specs: `console`, `clock`, `env`, `keys:<keyfile>`, `files:<path>:read`, `
 In human mode, the lines the program prints go to stdout as it prints them, and U6001 and U6003 go to stderr, with exit code 1. U6001 points at the name of `main` and names the variant, with the payload fields whose labels are `public`; U6003 points at the call that exceeds the depth. With `--json`, `una run` prints `{"schema":"una.run/1","tier":...,"status":...,"output":[...],"failure":...,"diagnostics":[...],"trace":[...]}` with keys in that order: `tier` is the tier the checks ran at; `status` is `ok`, `failed` (U6001), `aborted` (U6003 or U8001) or `rejected` (the checks reported errors, which `diagnostics` holds, and nothing ran); `failure` is `null` or `{"variant":...,"fields":{...}}` with the `public` fields only.
 
 `una test [path]` prints, in human mode, one line per example on stdout, `example <module> "<name>" ... ok` or `... FAILED`, followed for a failed example by the file, line and text of the expectation to blame, when there is one, and the reason; then a blank line and `<n> examples: <p> passed, <f> failed`. It exits with code 1 when an example fails. With `--json` it prints `{"schema":"una.test/1","tier":...,"diagnostics":[...],"examples":[...],"passed":p,"failed":f}`: `diagnostics` holds the errors of the checks when nothing ran, or U6003 and U8001 of aborted examples; each example has `module`, `name`, `outcome` (`pass` or `fail`), `reason` (`null`, or why it fails), `expectation` (`null`, or `{"file":...,"line":...,"text":...}`), `result` (`{"kind":"ok","value":...}`, `{"kind":"fail","variant":...,"value":...}` or `{"kind":"aborted"}`) and `trace` (`spec/11 §5`).
+
+`una obligations [path]` prints one line per obligation, `<status> <id> <kind> <file>:<line>:<col> <goal>`, with `(cached)` for a cached result, and exits with code 1 when an obligation is not proven (ADR 0033).
+
+Every command prints one JSON document with `--json`, its `schema` key first (ADR 0034). `una explain --json <code>` prints `{"schema":"una.explain/1","code":...,"domain":...,"meaning":...,"text":...}`. When the checks reject the package, `una contract`, `una trace`, `una obligations` and `una report` print the diagnostic list of `una check` and exit with code 1; `una run` and `una test` carry the diagnostics in their own documents. Usage errors stay on stderr, with exit code 2.
 
 `una contract <qualified.name>` reads the package in the current directory and checks it at tier 0 (ADR 0029). The name is the module path followed by the function's name, as in `events.checkin.check_in`, and names a function; an unknown name is a usage error (exit code 2). When the package has diagnostics, `una contract` reports them as `una check` does and exits with code 1, since an inferred header is defined only for a package that checks. Otherwise it prints the doc comments, then the header in canonical form with every clause, declared or inferred, in canonical order, each inferred clause followed by the comment `-- inferred`, then one line per requirement of `derived from`: `-- requirement ID (status): "text"`. With `--json` it prints `una.contract/1`, compact, with keys in this order:
 
@@ -223,6 +231,22 @@ In human mode, the lines the program prints go to stdout as it prints them, and 
 ```
 
 `trivial_ensures` counts `ensures` clauses the solver proves valid without any hypothesis (for example `ensures true`); they are reported as missing contracts.
+
+`una report [path]` checks the package at tier 1. When the checks report diagnostics, it prints them as `una check` does; otherwise it prints the report, and exits with code 1 when an obligation is not proven. Its sections, in the order of the example (ADR 0034):
+
+- `package`: the name and version of `una.toml`; a single file is named after its module, with version `0.0.0`.
+- `lock`: the solver version, and the hex SHA-256 of the lock's contents (for a single file, of the default lock's text).
+- `proven`: the number of proven obligations as `semantic`; `security` and `authority` are `"by typing"`. `obligations`: the counts by status.
+- `authority`: every function of the package with `uses`, by qualified name, with `public`, its `uses` as written in a header, and whether they are inferred.
+- `information.policy_calls`: every call of a policy, in source order, with the policy, its purpose and owner, and the site.
+- `escapes.checked`: every module that uses `checked`, with the count and the budget of `una.toml`.
+- `assumptions`: every capability the package declares, with its operations and their `ensures` clauses as `op: clause`.
+- `tcb`: the trusted modules with their line counts, the host capabilities the package's functions use, and the solver as `z3 <version>`.
+- `requirements`: every requirement, by identifier, with its status and the functions derived from it.
+- `coverage`: `pub_functions` counts the public functions, `with_ensures` those with at least one `ensures` clause that is not trivial, `with_derived_from` those with a `derived from` clause, and `trivial_ensures` the trivial clauses of public functions. An `ensures` clause is trivial when the solver proves it with no hypothesis, its parameters and `result` unconstrained: one more query per clause of a public function, cached like the others; a solver that cannot answer these queries gives U5003 or U8001 instead of the report.
+- `out_of_model`: timing, termination, resource consumption, and external systems beyond their declared signatures.
+
+Without `--json`, the same sections print as labeled lines.
 
 ## 7. Project files
 

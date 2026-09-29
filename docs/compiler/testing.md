@@ -10,7 +10,7 @@ Status: Normative for the reference implementation.
 | Conformance | `tests/conformance/` | One file per spec rule, positive and negative |
 | Snapshot | `crates/*/tests/snapshots/` (insta) | Full JSON diagnostics, Core IR dumps, SMT queries, reports |
 | Property | `crates/una-fmt/tests/` | Formatter idempotence and parse round-trip over every `.una` file in the repository |
-| End to end | `tests/e2e/` | `una check`, `una test`, `una run` on `examples/` |
+| End to end | `crates/una-cli/tests/` | The CLI and the ABI documents, the runtime, verification, determinism, the explain examples, the checkpoint demos, the example packages and the guide |
 
 ## 2. Conformance case format
 
@@ -106,3 +106,8 @@ Tests that reach tier 1 require Z3 at the version in the repository's `verificat
 
 - Every code in `spec/13 §4` except U8001 is produced by at least one conformance case.
 - Every typing rule in `spec/10` and evaluation rule in `spec/11` is exercised by at least one positive case.
+
+## 6. Examples and the guide
+
+- `crates/una-cli/tests/examples.rs` checks every package of `examples/`: canonical form, tier 1 with every obligation proven, every declared example passing, no trivial `ensures` in the report, and the output of `una run` for a package with `[run]`. It also checks that the examples together contain every construct of the language list of charter §5, one source pattern per construct, and that each pattern tells programs apart (ADR 0035 rule 1).
+- `crates/una-cli/tests/guide.rs` checks every block of `docs/guide/una-for-agents.md`: a `una` block is a whole module that checks clean at tier 1, or yields only the code its first line names (`-- fails with U####`); blocks after file paths form a package that checks clean; a `json` block parses and names a schema the CLI prints; each `una` line of a `sh` block exits with 0, or with the code of its `# exit N`, from the repository root or the directory of its `# in <dir>` (ADR 0035 rule 2). It also checks that every `una` block of `README.md` is copied from a checked file or checks clean.
