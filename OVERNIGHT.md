@@ -1,6 +1,6 @@
 # Overnight run
 
-Source of truth for the autonomous run on branch `overnight/v0.1`. Parts B and C below are copied verbatim from the owner's instructions of 2026-09-29, with the mechanical rename of ADR 0025 applied (Una, codes `U####`, `.una` files). Part D records the consolidated instructions that the owner gave later the same day. Re-read this file at the start of every milestone and after any context compaction or restart.
+Source of truth for the autonomous run, now on branch `dev/v0.1` of una-lang/una (until the public import, `overnight/v0.1` of the legacy repository). Parts B and C below are copied verbatim from the owner's instructions of 2026-09-29, with the mechanical rename of ADR 0025 applied (Una, codes `U####`, `.una` files). Part D records the consolidated instructions that the owner gave later the same day. Re-read this file at the start of every milestone and after any context compaction or restart.
 
 ## Part B. Answers to your M1 plan
 
@@ -208,8 +208,10 @@ The owner's consolidated instructions take precedence over Parts B and C where t
 
 - **Name.** The final name of the language is Una (ADR 0025, which supersedes ADR 0016). "Vera" and "Troth" remain only as history: `docs/reviews/triage.md §5`, ADRs 0016 and 0025, and the process files (this file, the morning report, the decision log and `docs/plan/runs/`). Prose never puts an article directly before the name ("not a keyword in Una").
 - **Examples.** The reference example is `examples/events` (ADR 0026). Every example, specification fragment, test fixture and explain text stays domain-neutral, and documents refer to the example it replaced only as "the previous reference example".
-- **Publication (Part 5).** Deferred by the owner until checkpoint 3 is reached; the owner will ask for it. Until then, work continues on `overnight/v0.1`, pushed to the current remote for CI. When Part 5 runs, the canonical remote becomes `origin` = una-lang/una, the working branch becomes `dev/v0.1`, and everything Parts B and C say about `overnight/v0.1` applies to `dev/v0.1`. Nothing is ever pushed directly to `main`; the owner merges after review.
-- **Hard rule after Part 5.** Never push to `origin` any branch whose history includes commits from before the initial public import, including the old `main` and `overnight/v0.1`. Never push to `legacy` again.
+- **Publication (Part 5).** Done on 2026-09-29, after the owner withdrew the deferral: the canonical remote is `origin` = una-lang/una, private until launch, whose history starts at the initial public import `25d865b`; the earlier history stays in the `legacy` remote (ADR 0030). The working branch is `dev/v0.1`, and everything Parts B and C say about `overnight/v0.1` applies to `dev/v0.1`. Nothing is ever pushed directly to `main`; the owner merges after review.
+- **Hard rule.** Never push to `origin` any branch whose history includes commits from before the initial public import, including the old `main` and `overnight/v0.1`. Never push to `legacy` again.
+- **CI quota.** Linux runs on every push; macOS only on pull requests and on pushes to `main` (D-083). Local checks on the owner's Mac cover macOS during the run.
+- **Scope of the run.** The owner is not launching yet: after checkpoint 3, continue through M10 as far as quality allows.
 - **Reminder for M8.** The M8 plan records that M8 removes the interim run behavior of ADR 0027.
 
 ### D.2 Part 3, verbatim
@@ -271,6 +273,6 @@ Newest entries last. Reading notes on the instructions above:
 | 2026-09-29 | Part 2 | done | `9101398` neutral reference example `examples/events` (ADR 0026, D-059, D-060); domain audit empty |
 | 2026-09-29 | Part 3 | done | `a3ac631` usage checkpoints (roadmap §4), checkpoint 1 demo and its end-to-end test, ADR 0027; 205 tests |
 | 2026-09-29 | Part 4 | done | `580882e` Apache-2.0 license |
-| 2026-09-29 | Part 5 | deferred | the owner asked to skip it until checkpoint 3 |
+| 2026-09-29 | Part 5 | deferred, then done | first deferred by the owner; then, on the owner's correction, `25d865b` imported to una-lang/una (`main` and `dev/v0.1`), remotes `origin` and `legacy`, ADR 0030; CI quota rule D-083 |
 | 2026-09-29 | Part 6 | done | `002b22d`, this file and the morning report updated; CI run 36574885457 green on Linux and macOS; M4 resumes |
 | 2026-09-29 | M4 | done | `fc9301b`, `0c07912` to `a5c8d3d`; CI run 36578625540 green on Linux and macOS; 236 tests; conformance 116 cases: 113 passed, 3 pending (M5, M6, M8); ADR 0024 rules 1 to 15; decisions D-047 to D-057 and D-061 to D-070 |

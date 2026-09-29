@@ -6,8 +6,8 @@ Updated after every milestone of the overnight run (`OVERNIGHT.md`, C.8).
 
 - Language name: Una (ADR 0025; previously Troth, codenamed Vera).
 - Last completed milestone: M4 (types). Next: M5 (capabilities, effects and failures), on the critical path to checkpoint 3 (`docs/plan/roadmap.md §4`).
-- Branch: `overnight/v0.1`, pushed to the current remote for CI; publication to una-lang/una is deferred by the owner until checkpoint 3 (§2).
-- Last green CI run before the public import: run 36578625540 of the legacy repository (`a5c8d3d`, Linux and macOS), M4. The commits of §2 went green in run 36574885457 (`002b22d`).
+- Repository: una-lang/una (private until launch), branch `dev/v0.1`; its history starts at the initial public import `25d865b` (ADR 0030). Earlier commit hashes in this report refer to the legacy repository.
+- Last green CI runs: https://github.com/una-lang/una/actions/runs/36580294816 (`main`, Linux and macOS) and https://github.com/una-lang/una/actions/runs/36580295703 (`dev/v0.1`, Linux), both at `25d865b`. Before the import: run 36578625540 of the legacy repository (`a5c8d3d`, M4).
 
 ## 2. Consolidated instructions: Una, neutral examples, checkpoints, license
 
@@ -20,8 +20,8 @@ Carried out in order on 2026-09-29, on `overnight/v0.1`.
 | 2. Neutral reference examples | done | `9101398`; ADR 0026 (Accepted); `examples/events`; D-059, D-060 |
 | 3. Usage checkpoints | done | `a3ac631`; `docs/plan/roadmap.md §4`; checkpoint 1 demo (§8); ADR 0027 (Accepted) |
 | 4. License | done | `580882e`; Apache-2.0 |
-| 5. Publish to una-lang/una | skipped | deferred by the owner until checkpoint 3 is reached; it was not blocked (see below) |
-| 6. Resume the run | done | `002b22d`; `OVERNIGHT.md` Part D and Progress; CI run 36574885457 green on Linux and macOS; M4 resumes |
+| 5. Publish to una-lang/una | done | first deferred by the owner, then run on the owner's correction: `25d865b` imported as a root commit and pushed without force to `main` and `dev/v0.1`; remotes `origin` (una-lang/una) and `legacy`; ADR 0030 (Accepted); CI quota rule D-083 |
+| 6. Resume the run | done | `OVERNIGHT.md` Part D and Progress, before and after the publication; M4 completed, M5 resumes on `dev/v0.1` |
 
 **Part 0 inventory**, taken before any change:
 - Branch `overnight/v0.1`, last commit `fc9301b` ("docs(plan): M4 plan, ADR 0024 on typing rules, decisions D-047 to D-057"); `37b5309` and `fc9301b` were not yet pushed.
@@ -55,7 +55,13 @@ The counts grow as this report quotes the names. Tests that check that the codes
 
 **Part 2.5 audit.** The whole-word domain search returns nothing, and no hit sits inside third-party license text. No document names a company, an employer or a real policy document; the only external links point to prior-art projects, the Z3 releases and the owner's own repository.
 
-**Part 5.3 audit and the new repository:** not run, since Part 5 is deferred. una-lang/una exists and is empty; it has no CI runs yet.
+**Part 5.3 audits**, on the staged tree of the initial import, after `git checkout --orphan public-main`:
+- `git grep --cached -liwE "vera|troth"`: `OVERNIGHT.md`, `docs/adr/0016-final-name-troth.md`, `docs/adr/0025-final-name-una.md`, `docs/reviews/morning-report.md`, `docs/reviews/open-decisions.md`, `docs/reviews/triage.md`, all allowed by Part 1.3.
+- The code-shape audit of Part 1.4: `docs/adr/0016-final-name-troth.md`, `docs/reviews/morning-report.md`, `docs/reviews/open-decisions.md`, all allowed.
+- The domain audit of Part 2.5: no output.
+- `git grep -n "owner/vera"` on the staged tree: no output. The two references in this report became "the legacy repository" before the import.
+
+**The new repository:** https://github.com/una-lang/una, private. GitHub Actions runs there: the push to `main` ran Linux and macOS (run 36580294816), the push to `dev/v0.1` Linux only (run 36580295703), both green, as D-083 intends. `Cargo.toml` names it as `repository`, and the README's build section clones it.
 
 **Notes.**
 - The rename applied mechanically to accepted ADRs and the charter (names, codes, fences), and the neutral example replaced identifiers in accepted ADRs where they appeared; no substantive content of an accepted ADR changed, except that ADR 0016 is now `Superseded by 0025`, as Part 1.1 allows.
