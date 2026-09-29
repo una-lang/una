@@ -70,7 +70,7 @@ None.
 - Chosen: A, because each statement of the specification keeps a case of its own, and every code gets one site. A rebinding `with @x = @y` whose `@y` is not held is reported once, at `@y`, and not again where `@x` is used; clauses are in the refinement language, so U2014 reports an operation there and the authority codes do not.
 - Confidence: medium
 - Reversal cost: medium, the sites in `crates/una-check/src/types/` that report these codes
-- Implemented in: M5 authority commits, tag `DECISION D-071`
+- Implemented in: `9d34aab`, `0ded2b9` (edits), `crates/una-check/src/types/authority.rs`, tag `DECISION D-071`
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 1
 - Answer needed: Keep A? Or switch to B?
 
@@ -81,7 +81,7 @@ None.
 - Chosen: A, because capabilities flow downward by name (`spec/05 §4`): a callee's declared requirement fixes what the name is, and the callers must then provide it; ranking the sources reports each disagreement at the call an agent edits, and lets a private helper without callers yet infer a complete header. B is ambiguous when two capabilities share an operation name; C reports a wrong handler or binding far from where it is written.
 - Confidence: medium
 - Reversal cost: medium, the inference pass and the second checking pass
-- Implemented in: M5 authority commits, tag `DECISION D-072`
+- Implemented in: `9d34aab`, `crates/una-check/src/types/authority.rs` (`infer`, `flow`), `env.rs`, tag `DECISION D-072`
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 2
 - Answer needed: Keep A? Or switch to B?
 
@@ -312,7 +312,7 @@ None.
 - Chosen: A, so that U3014 has its own case: a `do` line that would reach the host.
 - Confidence: medium
 - Reversal cost: low
-- Implemented in: M5 authority commits, tag `DECISION D-075`
+- Implemented in: `9d34aab`, `crates/una-check/src/types/check.rs` (`example`, `performed`), tag `DECISION D-075`
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 5
 - Answer needed: Keep A? Or switch to B?
 
@@ -323,7 +323,7 @@ None.
 - Chosen: A, because the manifest's grants are known statically, and checking early is stricter; a package without `[run] grants` leaves the host capabilities to `una run`, while a capability that is not a host capability is ungranted whatever the grants (`spec/05 §7` rule 2).
 - Confidence: medium
 - Reversal cost: low
-- Implemented in: M5 authority commits, tag `DECISION D-076`
+- Implemented in: `9d34aab`, `4f959a7` (capabilities that are not host capabilities), `crates/una-check/src/types/authority.rs` (`grants`), tag `DECISION D-076`
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 6
 - Answer needed: Keep A? Or switch to B?
 
@@ -334,7 +334,7 @@ None.
 - Chosen: A, because a function value with effects carries the same authority as a lambda with them, a parameter that receives such a lambda would otherwise let it escape by being returned or stored, and `spec/03 §1` rules such values out of kinds.
 - Confidence: medium
 - Reversal cost: low
-- Implemented in: M5 authority commits, tag `DECISION D-079`
+- Implemented in: `9d34aab`, `4f959a7` (parameters and locals), `crates/una-check/src/types/expr.rs`, `authority.rs` (`stored_effects`), tag `DECISION D-079`
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 9
 - Answer needed: Keep A? Or switch to B?
 
@@ -345,8 +345,19 @@ None.
 - Chosen: A, because it adds no command-line syntax, keeps the human output valid Una, and never shows a header whose inferred clauses may be incomplete.
 - Confidence: medium
 - Reversal cost: low, `crates/una-cli/src/contract.rs` and the schema
-- Implemented in: M5 contract commit, tag `DECISION D-081`
+- Implemented in: `3be9490`, `crates/una-cli/src/contract.rs`, tag `DECISION D-081`
 - ADR: `docs/adr/0029-contract-output.md` (Provisional)
+- Answer needed: Keep A? Or switch to B?
+
+### D-085: Function values with more effects or failures than the expected type (M5)
+- Question: `spec/10 §2` (S-Fun) lets a function value stand for a function type only when its `uses` are sufficient for the expected type's and its error kind is included in the expected one, without naming the code of a violation, for example `write`, which uses `@log`, passed as the pure `each` of `map`.
+- Context: `spec/10 §2`, `spec/04 §2, §6`; ADR 0028 rule 11.
+- Options: A) U3003 when the value uses a capability that the expected type does not allow, U3009 when it can fail with a kind that the expected type does not declare; B) U2001, as a type mismatch.
+- Chosen: A, because the codes then say which part of the expected contract is exceeded, as they do for a body that exceeds its header; both options reject the same programs.
+- Confidence: medium
+- Reversal cost: low, `function_argument` in `crates/una-check/src/types/call.rs`
+- Implemented in: `9d34aab`, `crates/una-check/src/types/call.rs` (`function_argument`), tag `DECISION D-085`
+- ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 11
 - Answer needed: Keep A? Or switch to B?
 
 ### D-002: Title of the historical design exploration in the charter (Part A)
@@ -712,25 +723,14 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A?
 
-### D-085: Function values with more effects or failures than the expected type (M5)
-- Question: `spec/10 §2` (S-Fun) lets a function value stand for a function type only when its `uses` are sufficient for the expected type's and its error kind is included in the expected one, without naming the code of a violation, for example `write`, which uses `@log`, passed as the pure `each` of `map`.
-- Context: `spec/10 §2`, `spec/04 §2, §6`; ADR 0028 rule 11.
-- Options: A) U3003 when the value uses a capability that the expected type does not allow, U3009 when it can fail with a kind that the expected type does not declare; B) U2001, as a type mismatch.
-- Chosen: A, because the codes then say which part of the expected contract is exceeded, as they do for a body that exceeds its header; both options reject the same programs.
-- Confidence: medium
-- Reversal cost: low, `function_argument` in `crates/una-check/src/types/call.rs`
-- Implemented in: M5 authority commits, tag `DECISION D-085`
-- ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 11
-- Answer needed: Keep A? Or switch to B?
-
 ### D-073: Where handler problems are reported (M5)
 - Question: `spec/05 §5` requires every operation (U3011) with a matching parameter count and types from the capability (U3010). Where do these point, and what reports `for` naming something other than a capability?
 - Context: `spec/05 §5`; ADR 0028 rule 3.
 - Options: A) U3010 at `for` for a name that is not a capability, at an operation the capability lacks or with another parameter count; U3011 at the handler's name listing the missing operations; operation bodies fail only with the operation's error kind (U3009, U3008 for `pass`); B) one diagnostic per handler.
-- Chosen: A, because each problem gets the site an agent edits.
+- Chosen: A, because each problem gets the site an agent edits. An operation body whose type differs from the operation's result type is U2001, as for any body, since the types come from the capability declaration.
 - Confidence: high
 - Reversal cost: low
-- Implemented in: M5 authority commits, tag `DECISION D-073`
+- Implemented in: `9d34aab`, `crates/una-check/src/types/check.rs` (`handler_rules`), tag `DECISION D-073`
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 3
 - Answer needed: Keep A?
 
@@ -738,10 +738,10 @@ None.
 - Question: `with @x = h(args)` and `given @x = h(args)` must name a handler for the capability expected at `@x` (U3010), and the handler's own `uses` must be held by the caller (`spec/05 §4` rule 2), without a code.
 - Context: `spec/02 §8`, `spec/05 §4`, `spec/08 §2`; ADR 0028 rule 4.
 - Options: A) U3010 when `h` is not a handler or implements another capability than the one the statement's expression or the `do` line needs at `@x`; the handler's `uses` are checked like a callee's requirements (U3001, U3002); B) no check of the handler's `uses`.
-- Chosen: A, because a handler with effects would otherwise act with authority its installer lacks.
+- Chosen: A, because a handler with effects would otherwise act with authority its installer lacks. `given` lines install their handlers in order, so a handler's `uses` are held by the `given` lines before it, and the handlers of one `with` clause are installed in the context outside the statement.
 - Confidence: high
 - Reversal cost: low
-- Implemented in: M5 authority commits, tag `DECISION D-074`
+- Implemented in: `9d34aab`, `crates/una-check/src/types/check.rs` (`install`), tag `DECISION D-074`
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 4
 - Answer needed: Keep A?
 
@@ -752,7 +752,7 @@ None.
 - Chosen: A, because modules mix handlers and functions, and the import serves the handlers.
 - Confidence: high
 - Reversal cost: low
-- Implemented in: M5 authority commits, tag `DECISION D-077`
+- Implemented in: `9d34aab`, `crates/una-check/src/types/authority.rs` (`testing_site`), tag `DECISION D-077`
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 7
 - Answer needed: Keep A?
 
@@ -763,7 +763,7 @@ None.
 - Chosen: A, one diagnostic per module, which a change of the budget or of the code resolves.
 - Confidence: high
 - Reversal cost: low
-- Implemented in: M5 authority commits, tag `DECISION D-078`
+- Implemented in: `9d34aab`, `crates/una-check/src/types/authority.rs` (`budget`), tag `DECISION D-078`
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 8
 - Answer needed: Keep A?
 
@@ -774,7 +774,7 @@ None.
 - Chosen: A, because a function value with effects is as effectful as a named function.
 - Confidence: high
 - Reversal cost: low
-- Implemented in: M5 authority commits, tag `DECISION D-080`
+- Implemented in: `9d34aab`, `crates/una-check/src/types/authority.rs` (`position_site`), tag `DECISION D-080`
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 10
 - Answer needed: Keep A?
 
@@ -785,7 +785,7 @@ None.
 - Chosen: A, because method calls and function values need types to resolve, and the cost of a second pass is small.
 - Confidence: high
 - Reversal cost: low
-- Implemented in: M5 authority commits, tag `DECISION D-082`
+- Implemented in: `9d34aab`, `crates/una-check/src/types/mod.rs`, `check.rs`, tag `DECISION D-082`
 - ADR: none (minor)
 - Answer needed: Keep A?
 
@@ -796,7 +796,7 @@ None.
 - Chosen: A, because each unit-test file then states the rules of its own milestone and no M4 expectation changes; the conformance suite still checks complete outputs.
 - Confidence: high
 - Reversal cost: low, the `later` filter in `crates/una-check/tests/types.rs`
-- Implemented in: M5 authority commits, `crates/una-check/tests/types.rs`, tag `DECISION D-084`
+- Implemented in: `9d34aab`, `crates/una-check/tests/types.rs`, tag `DECISION D-084`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
 
@@ -807,7 +807,7 @@ None.
 - Chosen: A, because each edit is the only repair that keeps the program's meaning, and applying it removes the diagnostic and keeps the file canonical; B guesses when two capabilities share an operation name, and C leaves agents to rebuild clauses the compiler already knows.
 - Confidence: high
 - Reversal cost: low, `widen` and `add_clause` in `crates/una-check/src/types/authority.rs`
-- Implemented in: M5 repair commit, tag `DECISION D-086`
+- Implemented in: `0ded2b9`, `crates/una-check/src/types/authority.rs` (`widen`, `add_clause`), tag `DECISION D-086`
 - ADR: none (minor)
 - Answer needed: Keep A?
 
@@ -818,7 +818,7 @@ None.
 - Chosen: A, because a duplicate is almost always a mistake, merging would hide which capability a name has, and U1002 already means a name defined twice.
 - Confidence: high
 - Reversal cost: low, `duplicate_refs` in `crates/una-check/src/types/authority.rs` and `first_of_each` in `env.rs`
-- Implemented in: M5 duplicate-reference commit, tag `DECISION D-087`
+- Implemented in: `ce6f46b`, `crates/una-check/src/types/authority.rs` (`duplicate_refs`), `env.rs` (`first_of_each`), tag `DECISION D-087`
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 12
 - Answer needed: Keep A?
 

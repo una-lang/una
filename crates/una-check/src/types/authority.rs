@@ -247,8 +247,8 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// `@c.op` (`spec/05 §3`): U3004 in a body whose `uses` are declared empty, U3001 when no
-    /// binding holds `@c`, U3002 when its capability type does not permit `op` (DECISION
-    /// D-071). Returns the capability, for typing (DECISION D-047).
+    /// binding holds `@c`, U3002 when its capability type does not permit `op`. Returns the
+    /// capability, for typing (DECISION D-047). DECISION D-071.
     pub(crate) fn op_site(&mut self, cap: &Ident, op: &Ident) -> Option<CapId> {
         let name = self.name(cap);
         let op_name = self.name(op);

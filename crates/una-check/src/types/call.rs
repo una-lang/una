@@ -267,8 +267,8 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// A function passed where a function type is expected has no more effects or failures than
-    /// that type allows (`spec/10 §2`, S-Fun): U3003 for effects, U3009 for failures (DECISION
-    /// D-085).
+    /// that type allows (`spec/10 §2`, S-Fun): U3003 for effects, U3009 for failures.
+    /// DECISION D-085.
     fn function_argument(&mut self, span: Span, expected: &Ty, found: &Ty) {
         if self.pass != super::authority::Pass::Check {
             return;
