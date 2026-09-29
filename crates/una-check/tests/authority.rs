@@ -192,6 +192,26 @@ fn with_rebinds_names_and_installs_handlers() {
     );
 }
 
+#[test]
+fn a_capability_reference_is_bound_once_per_construct() {
+    assert_eq!(
+        with_caps(
+            "handler quiet() for Log\n  op write(line) = unit\n  op flush() = unit\n\
+             \n\
+             pub note(line: Text) -> Unit\n  uses @log: Log[write]\n  uses @log: Log[flush]\n=\n  @log.write(line)\n\
+             \n\
+             pub rebinds() -> Unit\n  uses @x: Log[write]\n=\n  note(\"a\") with @log = @x, @log = @x\n\
+             \n\
+             example \"given twice\"\n  given @log = quiet()\n  given @log = quiet()\n  do note(\"x\")\n  expect true\n"
+        ),
+        [
+            "U1002 t.una:21:8 capability reference `@log` is bound twice",
+            "U1002 t.una:28:29 capability reference `@log` is bound twice",
+            "U1002 t.una:32:9 capability reference `@log` is bound twice",
+        ]
+    );
+}
+
 // ----- inference of private headers (U3001, U3008, U3009, U3010; `spec/04 §5`, ADR 0007) -----
 
 #[test]

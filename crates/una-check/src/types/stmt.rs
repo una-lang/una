@@ -171,9 +171,19 @@ impl<'a> Checker<'_, 'a, '_> {
                     span: call.name.span,
                 },
             };
-            frame
-                .bindings
-                .push((self.name(&binding.cap).to_owned(), bound));
+            // DECISION D-087: the first binding of a name wins.
+            let name = self.name(&binding.cap);
+            if !frame.bindings.iter().any(|(bound, _)| bound == name) {
+                frame.bindings.push((name.to_owned(), bound));
+            }
+        }
+        if self.pass == super::authority::Pass::Check {
+            let names: Vec<(&str, Span)> = handled
+                .with
+                .iter()
+                .map(|binding| (self.name(&binding.cap), binding.cap.span))
+                .collect();
+            super::authority::duplicate_refs(self.report, &names);
         }
         let framed = !frame.bindings.is_empty();
         if framed {

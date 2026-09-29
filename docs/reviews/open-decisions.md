@@ -811,6 +811,17 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A?
 
+### D-087: A capability reference bound twice (M5)
+- Question: A capability context maps each name to one capability (`spec/05 §1`), but nothing reports a header with two `uses @log` clauses, two `given @log` lines or `with @log = @a, @log = @b`; ADR 0023 rule 5 left capability references to M5.
+- Context: `spec/05 §1, §3, §4`, `spec/08 §2`; ADR 0023 rule 5; ADR 0028 rule 12.
+- Options: A) U1002 at the second binding in one construct, the first binding winning, as for other names defined twice; B) merge the two bindings; C) accept them, the last one winning.
+- Chosen: A, because a duplicate is almost always a mistake, merging would hide which capability a name has, and U1002 already means a name defined twice.
+- Confidence: high
+- Reversal cost: low, `duplicate_refs` in `crates/una-check/src/types/authority.rs` and `first_of_each` in `env.rs`
+- Implemented in: M5 duplicate-reference commit, tag `DECISION D-087`
+- ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 12
+- Answer needed: Keep A?
+
 ### D-083: CI runners for the private repository (Part 5)
 - Question: The repository una-lang/una stays private until launch, and a private repository has a limited GitHub Actions quota, which macOS runners use fastest. When does each job run?
 - Context: the owner's instructions of 2026-09-29 (publication); `.github/workflows/ci.yml`; ADR 0030.

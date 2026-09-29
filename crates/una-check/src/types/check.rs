@@ -557,6 +557,17 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             self.bind(param.name, param.ty.base.clone());
         }
         self.enter_function(&def);
+        if self.pass == Pass::Check {
+            let names: Vec<(&str, Span)> = function
+                .clauses
+                .iter()
+                .filter_map(|clause| match &clause.kind {
+                    ClauseKind::Uses(uses) => Some((self.name(&uses.cap), uses.cap.span)),
+                    _ => None,
+                })
+                .collect();
+            super::authority::duplicate_refs(self.report, &names);
+        }
         // Clauses are in the refinement language, where U2014 reports effects and failures.
         let base = std::mem::replace(&mut self.base, Base::Quiet);
         for clause in &function.clauses {
@@ -738,10 +749,9 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             bindings: def
                 .uses
                 .iter()
-                .zip(&handler.uses)
-                .map(|(need, uses)| {
+                .map(|need| {
                     (
-                        self.name(&uses.cap).to_owned(),
+                        need.usage.name.clone(),
                         Bound::Cap {
                             capability: need.usage.capability,
                             ops: need.usage.capability.map(|_| need.usage.ops.clone()),
@@ -752,6 +762,14 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 .collect(),
         }];
         self.handler_rules(handler, &def);
+        if self.pass == Pass::Check {
+            let names: Vec<(&str, Span)> = handler
+                .uses
+                .iter()
+                .map(|uses| (self.name(&uses.cap), uses.cap.span))
+                .collect();
+            super::authority::duplicate_refs(self.report, &names);
+        }
         let capability = def
             .capability
             .and_then(|capability| self.env.capabilities.get(capability))
@@ -795,10 +813,21 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         self.base = Base::Example;
         self.ctx.testing = true;
         self.frames = vec![Frame::default()];
+        if self.pass == Pass::Check {
+            let names: Vec<(&str, Span)> = example
+                .givens
+                .iter()
+                .map(|given| (self.name(&given.cap), given.cap.span))
+                .collect();
+            super::authority::duplicate_refs(self.report, &names);
+        }
         for given in &example.givens {
             let capability = self.install(&given.handler);
             let name = self.name(&given.cap);
-            if let Some(frame) = self.frames.first_mut() {
+            // DECISION D-087: the first `given` of a name wins.
+            if let Some(frame) = self.frames.first_mut()
+                && !frame.bindings.iter().any(|(bound, _)| bound == name)
+            {
                 frame.bindings.push((
                     name.to_owned(),
                     Bound::Handler {

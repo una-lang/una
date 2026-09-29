@@ -8,7 +8,7 @@
 
 M5 implements capabilities, effects and failures (`spec/05`, `spec/06 §3 to §6`, `spec/04 §4, §5, §8`, `spec/10 §5, §6, §9`, `spec/14 §3, §4`, ADRs 0005 to 0007 and 0009) with the codes U3001 to U3015 and U7003. The specification gives the rules but leaves some open: `spec/05 §4` reports a capability that a callee needs and the caller lacks as U3001, while `spec/04 §2, §5` reports effects beyond a function's declared `uses` as U3003 and `@` in a function without `uses` as U3004; ADR 0007 infers the `uses` of private functions, but a reference's capability cannot be read from the body alone; handlers, `with` and `given` must "match" a capability without saying where each check points; examples must not use host capabilities (U3014) yet take every capability from `given` (U3001); `una check` knows `[run] grants` but not the grants of a later `una run`; and the escape budget, `std.testing` and escaping lambdas need a reporting site.
 
-Decision log entries: D-071 to D-080 and D-085 (`docs/reviews/open-decisions.md`).
+Decision log entries: D-071 to D-080, D-085 and D-087 (`docs/reviews/open-decisions.md`).
 
 ## Decision
 
@@ -23,10 +23,11 @@ Decision log entries: D-071 to D-080 and D-085 (`docs/reviews/open-decisions.md`
 9. **Escaping lambdas.** A lambda whose expected type has `uses` or `fails`, a function value of a function with `uses` or `fails`, and a parameter or local whose type is such a function type, appear only directly as call arguments, or as the callee (U3006 at the lambda or the name). A field of a kind whose type is such a function type is U3006 at the type.
 10. **One effect per line.** A capability operation, or a call of a function, policy or function value with `uses` or `fails`, declared or inferred, that is not the whole expression of a statement, `let` or final expression, optionally inside `attempt` and parentheses, is U3013 at the call. Example `do` lines are exempt; `checked` is not a call.
 11. **Function arguments.** A function value passed where a function type is expected (`spec/10 §2`, S-Fun) has no `uses` that the expected type lacks (U3003) and fails only with the expected type's error kind (U3009).
+12. **References bound twice.** A capability reference bound twice in one construct, the `uses` of a header, a handler or a function type, the `given` lines of an example or one `with` clause, is U1002 at the second binding, as ADR 0023 rule 5 reports other names defined twice in one construct; the first binding wins.
 
 ### Changes to other documents on acceptance
 
-- `spec/05` gains a section "Reporting" that states rules 1 to 5, 9 and 11; `spec/06 §6` states rule 8; `spec/14 §4` states rule 7; `spec/13 §5` states rule 6.
+- `spec/05` gains a section "Reporting" that states rules 1 to 5, 9, 11 and 12; `spec/06 §6` states rule 8; `spec/14 §4` states rule 7; `spec/13 §5` states rule 6.
 
 ## Consequences
 

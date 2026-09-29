@@ -845,6 +845,29 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 }
 
+/// U1002 for a capability reference bound twice in one construct: the `uses` of a header, a
+/// handler or a function type, the `given` lines of an example, or one `with` clause, since a
+/// capability context maps each name to one capability (`spec/05 §1`; ADR 0023 rule 5,
+/// DECISION D-087).
+pub(crate) fn duplicate_refs(report: &mut Report<'_>, names: &[(&str, Span)]) {
+    let mut seen: BTreeMap<&str, Span> = BTreeMap::new();
+    for (name, span) in names {
+        if let Some(first) = seen.get(name) {
+            let mut diagnostic = report.make(
+                Code::U1002,
+                *span,
+                format!("capability reference `@{name}` is bound twice"),
+            );
+            diagnostic
+                .related
+                .push(report.related(*first, "first bound here"));
+            report.push(diagnostic);
+        } else {
+            seen.insert(name, *span);
+        }
+    }
+}
+
 /// Whether a new `uses` clause goes before a clause of this kind (`spec/02 §3`).
 fn before_uses(kind: &ClauseKind) -> bool {
     matches!(kind, ClauseKind::Fails(_) | ClauseKind::DerivedFrom(_))
