@@ -1,8 +1,8 @@
 # 0018. A bracket after a label level starts its categories
 
-- Status: Provisional (implemented, pending human review)
+- Status: Accepted
 - Date: 2026-09-29
-- Deciders: Claude (overnight run), pending review by Leonardo
+- Deciders: Leonardo (accepted on 2026-09-29), on a proposal by Claude (overnight run)
 
 ## Context
 
@@ -16,7 +16,7 @@ After a level, `[` always starts the label's categories. A labeled list type is 
 
 When a label with categories is not followed by a type, U0101 reports it with a hint: "unexpected `)`, expected a type after the label; a labeled list type is written `secret List[T]`".
 
-### Changes to other documents on acceptance
+### Changes to other documents on acceptance (made on 2026-09-29)
 
 - `spec/02 §2` gains: "After a `level`, `[` always starts the label's categories; a labeled list type is written `secret List[T]` (ADR 0018)."
 

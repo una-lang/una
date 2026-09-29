@@ -37,6 +37,7 @@
 | `spec/12-verification.md` | Obligations, decidable fragment, SMT encoding, statuses, lock |
 | `spec/13-diagnostics-and-abi.md` | Diagnostic codes, JSON schemas, CLI, build report |
 | `spec/14-standard-library.md` | Prelude and host capabilities available in v0.1 |
+| `spec/15-canonical-form.md` | The canonical form: lines, spacing, blank lines, comments, U7001 |
 
 ## Conventions
 
