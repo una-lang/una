@@ -1,0 +1,294 @@
+//! End-to-end tests of tier 1 (`spec/12`): `una check` with the solver, `una obligations`, the
+//! proof cache, the queries' determinism and U5003. They need Z3 at the version of
+//! `verification.lock` on the path (`compiler/testing.md §3`).
+
+// Tests may unwrap freely (compiler/conventions.md §1).
+#![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+use pretty_assertions::assert_eq;
+use serde_json::{Value, json};
+use una_cli::Tier;
+
+fn repository() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+fn una(args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_una"))
+        .args(args)
+        .current_dir(repository())
+        .output()
+        .unwrap()
+}
+
+fn stdout(output: &Output) -> &str {
+    std::str::from_utf8(&output.stdout).unwrap()
+}
+
+fn stderr(output: &Output) -> &str {
+    std::str::from_utf8(&output.stderr).unwrap()
+}
+
+/// A package under the test's temporary directory with the repository's lock.
+fn package(name: &str, files: &[(&str, &str)]) -> PathBuf {
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("verification")
+        .join(name);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"0.1\"\n"),
+    )
+    .unwrap();
+    std::fs::copy(
+        repository().join("verification.lock"),
+        root.join("verification.lock"),
+    )
+    .unwrap();
+    for (path, text) in files {
+        std::fs::write(root.join(path), text).unwrap();
+    }
+    root
+}
+
+#[test]
+fn the_examples_verify_with_every_obligation_proven() {
+    // M8 acceptance criterion: all examples verify, with zero refuted and zero unknown.
+    for example in ["examples/events", "examples/hello"] {
+        let output = una(&["check", example]);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{example}: {}",
+            stderr(&output)
+        );
+        assert_eq!(stderr(&output), "", "{example}");
+    }
+    let output = una(&["--json", "obligations", "examples/events"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let document: Value = serde_json::from_str(stdout(&output)).unwrap();
+    assert_eq!(document["schema"], "una.obligations/1");
+    let obligations = document["obligations"].as_array().unwrap();
+    assert_eq!(obligations.len(), 11);
+    assert!(obligations.iter().all(|o| o["status"] == "proven"));
+    let postcondition = obligations
+        .iter()
+        .find(|o| o["kind"] == "postcondition")
+        .unwrap();
+    assert_eq!(postcondition["declaration"], "events.seating.availability");
+    assert_eq!(
+        postcondition["goal"],
+        "e.remaining < 1 implies result is SoldOut"
+    );
+    assert_eq!(
+        postcondition["source"],
+        json!({
+            "file": "src/events/seating.una",
+            "start": {"line": 23, "col": 11},
+            "end": {"line": 23, "col": 52}
+        })
+    );
+    assert_eq!(
+        postcondition["hypotheses"],
+        json!(["0 <= e.remaining", "e.remaining <= 5000"])
+    );
+    assert_eq!(postcondition["domain"], "semantic");
+    assert!(
+        postcondition["id"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("ob-")
+            .is_some_and(|hex| hex.len() == 12)
+    );
+}
+
+#[test]
+fn a_second_run_reports_every_obligation_as_cached() {
+    // M8 acceptance criterion: the second run of the examples is answered by the cache.
+    let first = una(&["--json", "obligations", "examples/events"]);
+    assert_eq!(first.status.code(), Some(0), "{}", stderr(&first));
+    let second = una(&["--json", "obligations", "examples/events"]);
+    let document: Value = serde_json::from_str(stdout(&second)).unwrap();
+    let obligations = document["obligations"].as_array().unwrap();
+    assert!(!obligations.is_empty());
+    assert!(
+        obligations.iter().all(|o| o["cached"] == true),
+        "{}",
+        stdout(&second)
+    );
+    let human = una(&["obligations", "examples/events"]);
+    assert_eq!(human.status.code(), Some(0));
+    let lines: Vec<&str> = stdout(&human).lines().collect();
+    assert_eq!(lines.len(), 11);
+    assert!(lines.iter().all(|line| line.starts_with("proven ")));
+    assert!(lines.iter().all(|line| line.ends_with(" (cached)")));
+    assert!(
+        lines.iter().any(|line| line.contains(
+            "postcondition src/events/seating.una:23:11 e.remaining < 1 implies result is SoldOut"
+        )),
+        "{}",
+        stdout(&human)
+    );
+}
+
+#[test]
+fn the_queries_of_the_examples_are_byte_identical_across_runs() {
+    // M8 acceptance criterion and `spec/12 §4`: declarations sorted by name, assertions in
+    // generation order.
+    let queries = || {
+        let checked = una_cli::check(&repository().join("examples/events"), Tier::One).unwrap();
+        assert_eq!(checked.diagnostics, []);
+        let verification = checked.verification.unwrap();
+        let text = std::fs::read_to_string(repository().join("examples/events/verification.lock"))
+            .unwrap();
+        let (lock, _) = una_project::parse_lock(&text);
+        let lock = una_verify::Lock {
+            text,
+            solver_version: lock.solver_version,
+            step_budget: lock.step_budget,
+            random_seed: lock.random_seed,
+        };
+        let queries = una_verify::queries(&verification.obligations, &lock);
+        let mut out = String::new();
+        for (obligation, query) in verification.obligations.iter().zip(queries) {
+            out.push_str(&format!(
+                "; {} {} {} {}\n{query}\n",
+                obligation.id,
+                obligation.kind.as_str(),
+                obligation.declaration,
+                obligation.goal
+            ));
+        }
+        out
+    };
+    let first = queries();
+    assert_eq!(first, queries());
+    insta::assert_snapshot!("queries_events", first);
+}
+
+#[test]
+fn a_refuted_obligation_shows_its_counterexample_and_repairs() {
+    // `spec/13 §1`: the obligation, the counterexample and ranked repairs.
+    let root = package(
+        "availability",
+        &[(
+            "src/seating.una",
+            "module seating
+
+pub kind Seats = Int in 0..5000
+
+pub kind Availability = SoldOut | Few | Open
+
+pub availability(remaining: Seats) -> Availability
+  ensures remaining < 1 implies result is SoldOut
+=
+  when remaining
+    in 1..<20 -> Few
+    in 0..0 -> SoldOut
+    in 20..5000 -> Open
+",
+        )],
+    );
+    let output = una(&["check", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let broken = package(
+        "availability-broken",
+        &[(
+            "src/seating.una",
+            "module seating
+
+pub kind Seats = Int in 0..5000
+
+pub kind Availability = SoldOut | Few | Open
+
+pub availability(remaining: Seats) -> Availability
+  ensures remaining < 1 implies result is SoldOut
+=
+  when remaining
+    in 0..<20 -> Few
+    in 20..5000 -> Open
+",
+        )],
+    );
+    let output = una(&["--json", "check", broken.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1));
+    let document: Value = serde_json::from_str(stdout(&output)).unwrap();
+    let diagnostic = &document["diagnostics"][0];
+    assert_eq!(diagnostic["code"], "U5001");
+    assert_eq!(
+        diagnostic["message"],
+        "postcondition of `availability` is refuted"
+    );
+    assert_eq!(
+        diagnostic["primary"],
+        json!({"file": "src/seating.una", "start": {"line": 11, "col": 18}, "end": {"line": 11, "col": 21}})
+    );
+    assert_eq!(diagnostic["related"][0]["message"], "ensures clause");
+    assert_eq!(diagnostic["obligation"]["kind"], "postcondition");
+    assert_eq!(diagnostic["obligation"]["status"], "refuted");
+    assert_eq!(
+        diagnostic["counterexample"],
+        json!({"bindings": [
+            {"name": "remaining", "value": 0},
+            {"name": "result", "value": "Few"}
+        ]})
+    );
+    let repairs = diagnostic["repairs"].as_array().unwrap();
+    assert_eq!(repairs[0]["rank"], 1);
+    assert_eq!(repairs[0]["escape_cost"], 0);
+}
+
+#[test]
+fn a_missing_solver_is_u5003_and_never_a_silent_pass() {
+    // `spec/12 §5`, `compiler/testing.md §3`: without the pinned solver, tier 1 fails.
+    let root = package(
+        "no-solver",
+        &[(
+            "src/app.una",
+            "module app
+
+pub kind Seats = Int in 0..5000
+
+pub book(seats: Seats) -> Int = seats
+
+pub first() -> Int = book(4321)
+",
+        )],
+    );
+    let empty = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("no-solver-path");
+    std::fs::create_dir_all(&empty).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_una"))
+        .args(["--json", "check", root.to_str().unwrap()])
+        .env("PATH", &empty)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let document: Value = serde_json::from_str(stdout(&output)).unwrap();
+    let diagnostic = &document["diagnostics"][0];
+    assert_eq!(diagnostic["code"], "U5003");
+    assert_eq!(diagnostic["primary"]["file"], "verification.lock");
+    assert_eq!(
+        diagnostic["primary"]["start"],
+        json!({"line": 3, "col": 20})
+    );
+    assert!(
+        diagnostic["message"]
+            .as_str()
+            .unwrap()
+            .contains("install it with scripts/install-z3.sh"),
+        "{}",
+        stdout(&output)
+    );
+    // Tier 0 needs no solver.
+    let output = Command::new(env!("CARGO_BIN_EXE_una"))
+        .args(["check", "--tier", "0", root.to_str().unwrap()])
+        .env("PATH", &empty)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(Path::new(&root).exists());
+}

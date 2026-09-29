@@ -1,0 +1,6 @@
+-- test: a division by a value that a condition proves nonzero is accepted
+-- spec: spec/12 §3
+-- expect: ok
+module division_guarded_proven
+
+pub average(total: Int, count: Int) -> Int = if count == 0 then 0 else total / count
