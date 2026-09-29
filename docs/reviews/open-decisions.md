@@ -85,6 +85,17 @@ None.
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 2
 - Answer needed: Keep A? Or switch to B?
 
+### D-088: Structural labels in the checker's types (M6)
+- Question: Labels can sit at any position of a type (`Option[internal Text]`, `List[secret Int]`), and a generic call must carry the labels of its arguments; how does the checker represent them?
+- Context: `spec/03 §5`, `spec/07 §2`, `spec/09 §2`, `spec/10 §2`; ADR 0031 rule 1.
+- Options: A) labels at every position of the checker's types, ignored by type equality and joined on type variables by unification; B) one label per value, the join of every label in its type; C) a separate information-flow pass over the typed program.
+- Chosen: A, because it is the model of Core IR (`spec/09 §2`) and keeps `Option[internal Text]` precise; B rejects a public-topped option of internal text wherever it flows, and C repeats the type checker's resolution of fields, methods and instantiations.
+- Confidence: medium
+- Reversal cost: medium, the labeled node of `Ty` and the unifier in `crates/una-check/src/types/`
+- Implemented in: M6 information-flow commits, tag `DECISION D-088`
+- ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 1
+- Answer needed: Keep A? Or switch to B or C?
+
 ### D-018: `[` right after a label level (M1)
 - Question: After a level such as `secret`, `[` can start the label's categories (`secret[PII] Phone`) or a list type (`secret [Int]`). The grammar of `spec/02 §2` allows both readings, and telling them apart needs unbounded lookahead.
 - Context: `spec/02` introduction (LL(2) except kind bodies) and §2; `spec/03 §1`, `spec/07 §2`, `spec/14` (`List[T]`).
@@ -358,6 +369,61 @@ None.
 - Reversal cost: low, `function_argument` in `crates/una-check/src/types/call.rs`
 - Implemented in: `9d34aab`, `crates/una-check/src/types/call.rs` (`function_argument`), tag `DECISION D-085`
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 11
+- Answer needed: Keep A? Or switch to B?
+
+### D-089: Where flows are checked, and implicit flows into a result (M6)
+- Question: `spec/10` compares labels through subtyping (S-Refine, S-Fun) wherever a value meets a type, without listing the places or saying where an implicit flow into a result is reported.
+- Context: `spec/07 §3`, `spec/10 §2, §4, §8`; ADR 0031 rule 2.
+- Options: A) arguments, constructor fields, annotated `let`s, return paths, a policy's `from` and a lambda's result, covariant through data and contravariant through function parameters, arguments compared after the whole call is typed, and an implicit flow into a result reported once at the condition in return position; B) compare at every unification; C) report implicit flows at each return path.
+- Chosen: A, because these are the places where a declared type meets a value; B would compare types that inference joins, such as branches, and C repeats one cause at every branch.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: M6 information-flow commits, tag `DECISION D-089`
+- ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 2
+- Answer needed: Keep A? Or switch to C?
+
+### D-090: The labels of values (M6)
+- Question: `spec/07 §3` rule 1 and `spec/10 §3` give operators the join of their operands, but not what `.len`, `is`, field access or pattern bindings take from structured values.
+- Context: `spec/07 §3`, `spec/10 §3, §4`; ADR 0031 rule 3.
+- Options: A) operators, equality and interpolation join every label of their operands; `.len`, `is` and `in` take the top label; fields and bindings take their declared type raised by the top label of the record or scrutinee; B) the top label everywhere.
+- Chosen: A, because an equality of two lists or an interpolation reads the whole value, while `.len`, `is` and a field read only the structure the top label covers.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: M6 information-flow commits, tag `DECISION D-090`
+- ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 3
+- Answer needed: Keep A? Or switch to B?
+
+### D-091: `checked` branches on its value (M6)
+- Question: T-Checked requires `pc = ⊥`, yet the failure of `checked(v, p) else fail V` reveals whether `p` holds of `v`, and failures are observable (`spec/07 §1`).
+- Context: `spec/07 §1, §3`, `spec/10 §7`; ADR 0031 rule 4.
+- Options: A) U4002 when `pc ⊔ ℓ(v)` is above `⊥`, with every label of `v`'s type; B) T-Checked's premise only.
+- Chosen: A, because `spec/07 §3` rules 2 and 3 make the failure of a branch on a labeled value an implicit flow, and B would let a secret leak through `checked`.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: M6 information-flow commits, tag `DECISION D-091`
+- ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 4
+- Answer needed: Keep A? Or switch to B?
+
+### D-092: Operation arguments are sinks (M6)
+- Question: T-Op both types the arguments against the parameter types, labels included, and bounds them by `accepts`; `Files.write` declares `content: Text` and accepts `internal`, and `Keys.hmac` accepts "any label" without a way to write it.
+- Context: `spec/05 §2`, `spec/07 §4`, `spec/10 §5`, `spec/14 §3`; ADR 0031 rule 6.
+- Options: A) arguments are bounded by `accepts` only (U4003); handler operation parameters are raised by `accepts`; `Keys.hmac` accepts `⊤`; B) both bounds, so `accepts` above a parameter's label is unreachable.
+- Chosen: A, because `accepts` is the sink label of `spec/07 §4`, and the prelude's declarations only make sense with it; raising the parameters inside handlers keeps what callers pass labeled.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: M6 information-flow commits, tag `DECISION D-092`
+- ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 6
+- Answer needed: Keep A? Or switch to B?
+
+### D-094: Policies, trusted modules and `via` functions (M6)
+- Question: `spec/07 §5, §6` require a trusted module (U4004) and a private `via` of matching types (U4005); ADR 0024 rule 14 reported the types as U2001 before M6, and nothing says whether other code may call the `via` function.
+- Context: `spec/07 §5, §6`, `spec/02 §8`; ADR 0024 rule 14, D-066; ADR 0031 rule 7.
+- Options: A) U4004 when the header does not say `trusted` (U7005 covers a missing listing); U4005 for a `via` that is not a private function of the module, for its types, and for any other use of it; B) allow other code of the trusted module to call the `via` function.
+- Chosen: A, because the policy is "the only entry point" (`spec/07 §5` rule 3), and a direct call would lower labels without the policy's audit trail.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: M6 information-flow commits, tag `DECISION D-094`
+- ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 7
 - Answer needed: Keep A? Or switch to B?
 
 ### D-002: Title of the historical design exploration in the charter (Part A)
@@ -820,6 +886,50 @@ None.
 - Reversal cost: low, `duplicate_refs` in `crates/una-check/src/types/authority.rs` and `first_of_each` in `env.rs`
 - Implemented in: `ce6f46b`, `crates/una-check/src/types/authority.rs` (`duplicate_refs`), `env.rs` (`first_of_each`), tag `DECISION D-087`
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 12
+- Answer needed: Keep A?
+
+### D-093: Calls under the program counter (M6)
+- Question: `spec/10 §5` states `pc ⊑ bound(f)` for named functions; function values and handler installations also run effects and failures.
+- Context: `spec/07 §3` rule 4, `spec/10 §5, §6`; ADR 0031 rule 5.
+- Options: A) the same bound for function values, from their type, and for handler installations, from the handler's `uses`; the result of a function value is raised by the value's label; B) named functions only.
+- Chosen: A, because a function value or an installed handler performs the same effects as a named function.
+- Confidence: high
+- Reversal cost: low
+- Implemented in: M6 information-flow commits, tag `DECISION D-093`
+- ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 5
+- Answer needed: Keep A?
+
+### D-095: What is not checked for labels (M6)
+- Question: `spec/07 §4, §5` exempt `expect` lines and `via` bodies; clauses are in the refinement language, whose labels the verifier erases (`spec/12 §4`).
+- Context: `spec/07 §4, §5`, `spec/10 §9` rule 3, `spec/12 §4`; ADR 0031 rule 8.
+- Options: A) `expect` lines, `via` bodies and clauses are not checked, and `do` lines are checked at `pc = ⊥`; B) check clauses too.
+- Chosen: A, because clauses produce no value at run time, and checking them would only reject specifications.
+- Confidence: high
+- Reversal cost: low
+- Implemented in: M6 information-flow commits, tag `DECISION D-095`
+- ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 8
+- Answer needed: Keep A?
+
+### D-096: Undeclared label categories (M6)
+- Question: `spec/07 §2` makes an undeclared category U4007 without a site; a single file has no `una.toml`.
+- Context: `spec/07 §2`, `spec/13 §7`; ADR 0031 rule 9.
+- Options: A) U4007 at each undeclared category, in type labels and `accepts` clauses, a single file declaring none; B) one diagnostic per module.
+- Chosen: A, because each category is a separate edit.
+- Confidence: high
+- Reversal cost: low
+- Implemented in: M6 information-flow commits, tag `DECISION D-096`
+- ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 9
+- Answer needed: Keep A?
+
+### D-097: Where information-flow diagnostics point (M6)
+- Question: The specification gives no primary spans for U4001 to U4005.
+- Context: `spec/13 §1`; ADR 0031 rule 10.
+- Options: A) U4001 at the value, or at the condition for an implicit flow into a result; U4002 at the `fail`, clause, `checked` or call, with the condition that raised the program counter as a related location; U4003 at the exceeding argument, or at the operation when the program counter alone exceeds; U4004 at the policy's name; U4005 at `via`'s name or the use; U4007 at the category; B) every diagnostic at the enclosing declaration.
+- Chosen: A, because each points at the code an agent edits, and the related condition explains an implicit flow.
+- Confidence: high
+- Reversal cost: low
+- Implemented in: M6 information-flow commits, tag `DECISION D-097`
+- ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 10
 - Answer needed: Keep A?
 
 ### D-083: CI runners for the private repository (Part 5)
