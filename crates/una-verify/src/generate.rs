@@ -101,6 +101,33 @@ pub fn obligations(program: &Program, sources: &SourceDb) -> Vec<Obligation> {
                 format!("{}.example {}", module.path, una_core::quote(&example.name));
             let mut leaves = Vec::new();
             walker.walk(&example.body, &Ctx::default(), &mut leaves);
+            // `spec/08 §2` rule 4: `expect` lines are verified too, with `result` the value of
+            // one of the `do` line's paths.
+            for expectation in &example.expectations {
+                if let una_core::Expectation::Holds { result, check, .. } = expectation {
+                    let mut ctx = Ctx::default();
+                    if let Some(ty) = leaves.iter().find_map(|l| l.value.as_ref().map(|v| &v.ty)) {
+                        ctx.types.insert(result.clone(), ty.clone());
+                        let x = own(&ctx, result);
+                        let paths: Vec<F> = leaves
+                            .iter()
+                            .map(|leaf| {
+                                let mut parts: Vec<F> =
+                                    leaf.hyps.iter().map(|h| h.f.clone()).collect();
+                                if let Some(value) = &leaf.value
+                                    && value.f.sort() == x.f.sort()
+                                {
+                                    parts.push(F::eq(x.f.clone(), value.f.clone()));
+                                }
+                                F::and(parts)
+                            })
+                            .collect();
+                        ctx.define(F::or(paths));
+                    }
+                    let mut discarded = Vec::new();
+                    walker.walk(check, &ctx, &mut discarded);
+                }
+            }
             all.extend(walker.obligations);
         }
     }
