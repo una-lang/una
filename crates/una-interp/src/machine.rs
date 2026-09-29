@@ -1,0 +1,1200 @@
+//! The evaluation of Core IR: the rules of `spec/11 §4`, big-step, call-by-value, left to
+//! right, with the capability environment, the world and the trace.
+
+use std::collections::BTreeMap;
+use std::rc::Rc;
+
+use num_bigint::{BigInt, Sign};
+use una_core::{
+    Atom, Base, Bound, CapOp, Ctor, Decl, Expr, Fun, HandlerOp, Label, Level, Path, Prim, Program,
+    Rhs, Source, Type, Use,
+};
+use una_syntax::Span;
+
+use crate::host::{self, FileFault, Grant, World};
+use crate::value::{Closure, Value, compare, equal};
+
+/// The environment `ρ`: binders and their values, innermost last. Core binders are unique
+/// within a function (`spec/09 §1`), so the last binding of a name is the one in scope.
+pub(crate) type Env<'p> = Vec<(&'p str, Value<'p>)>;
+
+/// The capability environment `H`: bindings and their instances.
+pub(crate) type Caps<'p> = Rc<BTreeMap<&'p str, Rc<Instance<'p>>>>;
+
+/// An instance of a capability (`spec/11 §2`), with its stable id.
+#[derive(Debug)]
+pub(crate) enum Instance<'p> {
+    /// `host(C, grant, id)`, with the id `host:<Capability>`.
+    Host { id: String },
+    /// `handled(h, v̄, H_h, id)`, with the id `given:<name>` or `with:<handler>#<n>`.
+    Handled {
+        handler: HandlerInfo<'p>,
+        values: Vec<Value<'p>>,
+        caps: Caps<'p>,
+        id: String,
+    },
+}
+
+impl Instance<'_> {
+    fn id(&self) -> &str {
+        match self {
+            Instance::Host { id } | Instance::Handled { id, .. } => id,
+        }
+    }
+}
+
+/// A handler of the program.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct HandlerInfo<'p> {
+    name: &'p str,
+    params: &'p [(String, Type)],
+    uses: &'p [Use],
+    ops: &'p [HandlerOp],
+}
+
+/// One event of a trace (`spec/11 §5`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Event {
+    /// Its position in the trace, from 1.
+    pub seq: usize,
+    /// The instance: `given:<name>`, `host:<Capability>` or `with:<handler>#<n>`.
+    pub instance: String,
+    /// The capability.
+    pub capability: String,
+    /// The operation.
+    pub op: String,
+    /// The arguments by parameter name, in parameter order, in their Una form or as
+    /// `<redacted:level>`.
+    pub args: Vec<(String, String)>,
+    /// How the operation ended.
+    pub outcome: EventOutcome,
+}
+
+/// How an operation ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EventOutcome {
+    /// It returned this value, in its Una form or as `<redacted:level>`.
+    Ok(String),
+    /// It failed.
+    Fail {
+        /// The variant.
+        variant: String,
+        /// The failure in its Una form.
+        value: String,
+    },
+    /// The run aborted before it ended.
+    Aborted,
+}
+
+/// Why a run stops without a value or a failure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Abort {
+    /// The call at this span exceeds the maximum depth (U6003, `spec/11 §7`).
+    Depth {
+        /// The call.
+        span: Span,
+        /// The maximum depth.
+        limit: usize,
+    },
+    /// A fault that a checked and verified program cannot reach, such as a division by zero
+    /// while proof obligations are not verified yet (ADR 0027).
+    Fault {
+        /// What happened.
+        message: String,
+        /// The name of the function it happened in, when there is one.
+        span: Option<Span>,
+    },
+}
+
+/// Why evaluation stops early: a failure, which `handle` and `attempt` catch, or an abort.
+pub(crate) enum Stop<'p> {
+    /// `fail(C(v, ...))`.
+    Fail(Value<'p>),
+    /// An abort.
+    Abort(Abort),
+}
+
+/// The result of evaluating an expression.
+pub(crate) type Flow<'p> = Result<Value<'p>, Stop<'p>>;
+
+fn fault<'p>(message: impl Into<String>) -> Stop<'p> {
+    Stop::Abort(Abort::Fault {
+        message: message.into(),
+        span: None,
+    })
+}
+
+/// A qualified name: a module path and a declaration's name.
+type Qualified<'p> = (&'p str, &'p str);
+
+/// A predicate: its parameters and its body.
+type Predicate<'p> = (&'p [(String, Type)], &'p Expr);
+
+/// The fields of each variant of a kind, by name, with their declared types.
+type Variants<'p> = Vec<Vec<(&'p str, &'p Type)>>;
+
+/// The declarations of a program, by qualified name.
+pub(crate) struct Index<'p> {
+    functions: BTreeMap<Qualified<'p>, &'p Fun>,
+    predicates: BTreeMap<Qualified<'p>, Predicate<'p>>,
+    handlers: BTreeMap<Qualified<'p>, HandlerInfo<'p>>,
+    capabilities: BTreeMap<&'p str, &'p [CapOp]>,
+    data: BTreeMap<Qualified<'p>, Variants<'p>>,
+}
+
+impl<'p> Index<'p> {
+    /// Indexes the declarations of `program`.
+    pub(crate) fn new(program: &'p Program) -> Index<'p> {
+        let mut index = Index {
+            functions: BTreeMap::new(),
+            predicates: BTreeMap::new(),
+            handlers: BTreeMap::new(),
+            capabilities: BTreeMap::new(),
+            data: BTreeMap::new(),
+        };
+        for module in &program.modules {
+            let path = module.path.as_str();
+            for decl in &module.decls {
+                match decl {
+                    Decl::Fun(fun) => {
+                        index.functions.insert((path, fun.name.as_str()), fun);
+                    }
+                    Decl::Pred {
+                        name, params, body, ..
+                    } => {
+                        index
+                            .predicates
+                            .insert((path, name.as_str()), (params.as_slice(), body));
+                    }
+                    Decl::Handler {
+                        name,
+                        params,
+                        uses,
+                        ops,
+                        ..
+                    } => {
+                        let info = HandlerInfo {
+                            name,
+                            params,
+                            uses,
+                            ops,
+                        };
+                        index.handlers.insert((path, name.as_str()), info);
+                    }
+                    Decl::Cap { name, ops } => {
+                        index.capabilities.entry(name.as_str()).or_insert(ops);
+                    }
+                    Decl::Data { name, variants, .. } => {
+                        let fields = variants
+                            .iter()
+                            .map(|v| v.fields.iter().map(|(f, t)| (f.as_str(), t)).collect())
+                            .collect();
+                        index.data.insert((path, name.as_str()), fields);
+                    }
+                    Decl::Alias { .. } | Decl::Policy { .. } => {}
+                }
+            }
+        }
+        index
+    }
+
+    /// The function `name` of module `module`.
+    pub(crate) fn function(&self, module: &str, name: &str) -> Option<&'p Fun> {
+        self.functions.get(&(module, name)).copied()
+    }
+
+    /// The names of the fields of `ctor`, with their declared types when they are known.
+    fn fields(&self, ctor: &Ctor) -> Vec<(&'p str, Option<&'p Type>)> {
+        if ctor.kind.module == "prelude" {
+            let name = match (ctor.kind.name.as_str(), ctor.name.as_str()) {
+                ("Option", "Some") | ("Result", "Ok") => "value",
+                ("Result", "Err") => "failure",
+                _ => return Vec::new(),
+            };
+            return vec![(name, None)];
+        }
+        self.data
+            .get(&(ctor.kind.module.as_str(), ctor.kind.name.as_str()))
+            .and_then(|variants| variants.get(ctor.index))
+            .map(|fields| fields.iter().map(|(f, t)| (*f, Some(*t))).collect())
+            .unwrap_or_default()
+    }
+
+    /// The Una form of `value` (DECISION D-100). A field whose declared type is labeled above
+    /// `public` is `<redacted:level>` (DECISION D-107).
+    pub(crate) fn render(&self, value: &Value<'_>) -> String {
+        match value {
+            Value::Int(n) => n.to_string(),
+            Value::Bool(b) => b.to_string(),
+            Value::Text(t) => una_core::quote(t),
+            Value::Unit => "unit".to_owned(),
+            Value::Hashed(bytes) => format!("hashed:{}", host::hex(bytes)),
+            Value::Closure(_) => "<function>".to_owned(),
+            Value::List(items) => {
+                let items: Vec<String> = items.iter().map(|v| self.render(v)).collect();
+                format!("[{}]", items.join(", "))
+            }
+            Value::Data(data) => {
+                let names = self.fields(&data.ctor);
+                let shown: Vec<(&str, String)> = data
+                    .fields
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| {
+                        let (name, ty) = names.get(i).copied().unwrap_or(("?", None));
+                        let label = ty.map_or_else(Label::public, deep_label);
+                        (name, self.redacted(v, &label))
+                    })
+                    .collect();
+                match shown.as_slice() {
+                    [] => data.ctor.name.clone(),
+                    [(_, only)] => format!("{}({only})", data.ctor.name),
+                    _ => {
+                        let fields: Vec<String> = shown
+                            .iter()
+                            .map(|(name, value)| format!("{name}: {value}"))
+                            .collect();
+                        format!("{}({})", data.ctor.name, fields.join(", "))
+                    }
+                }
+            }
+        }
+    }
+
+    /// `value` in its Una form, or `<redacted:level>` when `label` is above `public`. `unit`
+    /// carries no information and is never redacted.
+    pub(crate) fn redacted(&self, value: &Value<'_>, label: &Label) -> String {
+        if label.is_public() || matches!(value, Value::Unit) {
+            self.render(value)
+        } else {
+            format!("<redacted:{}>", level_name(label.level))
+        }
+    }
+
+    /// The variant of a failure and its fields whose declared labels are `public`, in their Una
+    /// form (`spec/04 §8`). A field of a type parameter is not shown, since its label is not
+    /// known at run time.
+    pub(crate) fn public_fields(&self, value: &Value<'_>) -> Vec<(String, String)> {
+        let Value::Data(data) = value else {
+            return Vec::new();
+        };
+        let names = self.fields(&data.ctor);
+        data.fields
+            .iter()
+            .zip(names)
+            .filter(|(_, (_, ty))| {
+                ty.is_some_and(|ty| !has_param(ty) && deep_label(ty).is_public())
+            })
+            .map(|(v, (name, _))| (name.to_owned(), self.render(v)))
+            .collect()
+    }
+}
+
+/// The join of the labels at every position of `ty` that holds data.
+pub(crate) fn deep_label(ty: &Type) -> Label {
+    match ty {
+        Type::Base { base, label, .. } => match base {
+            Base::Named { args, .. } => args
+                .iter()
+                .fold(label.clone(), |acc, arg| acc.join(&deep_label(arg))),
+            _ => label.clone(),
+        },
+        Type::Fn { label, .. } => label.clone(),
+    }
+}
+
+fn has_param(ty: &Type) -> bool {
+    match ty {
+        Type::Base { base, .. } => match base {
+            Base::Param(_) | Base::Unknown => true,
+            Base::Named { args, .. } => args.iter().any(has_param),
+            _ => false,
+        },
+        Type::Fn { .. } => false,
+    }
+}
+
+fn level_name(level: Level) -> &'static str {
+    match level {
+        Level::Public => "public",
+        Level::Internal => "internal",
+        Level::Confidential => "confidential",
+        Level::Secret => "secret",
+        Level::Restricted => "restricted",
+    }
+}
+
+fn prelude_ctor(kind: &str, name: &str, index: usize) -> Ctor {
+    Ctor {
+        kind: Path {
+            module: "prelude".to_owned(),
+            name: kind.to_owned(),
+        },
+        name: name.to_owned(),
+        index,
+    }
+}
+
+fn some(value: Value<'_>) -> Value<'_> {
+    Value::data(prelude_ctor("Option", "Some", 0), vec![value])
+}
+
+fn none<'p>() -> Value<'p> {
+    Value::data(prelude_ctor("Option", "None", 1), Vec::new())
+}
+
+/// The parameter names of the operations of host capabilities (`spec/14 §3`).
+fn host_params(capability: &str, op: &str) -> &'static [&'static str] {
+    match (capability, op) {
+        ("Console", "print") => &["line"],
+        ("Env", "get") => &["name"],
+        ("Files", "read") => &["path"],
+        ("Files", "write") => &["path", "content"],
+        ("Keys", "hmac") => &["key_name", "data"],
+        _ => &[],
+    }
+}
+
+/// The Una Abstract Machine: one run of `main` or of one example.
+pub(crate) struct Machine<'p, 'w> {
+    index: &'w Index<'p>,
+    world: &'w mut dyn World,
+    grants: &'w [Grant],
+    keys: &'w BTreeMap<String, Vec<u8>>,
+    /// The trace so far.
+    pub(crate) trace: Vec<Event>,
+    depth: usize,
+    max_depth: usize,
+    /// Where the evaluator's stack starts, and how much of it evaluation may use.
+    stack_base: usize,
+    stack_budget: usize,
+    installs: BTreeMap<String, usize>,
+    /// The name spans of the functions in progress, innermost last, to locate faults.
+    frames: Vec<Span>,
+}
+
+impl<'p, 'w> Machine<'p, 'w> {
+    /// A machine over `index`, with `world`, `grants` and the keys of `keys:` grants for host
+    /// capabilities, and a maximum call depth.
+    pub(crate) fn new(
+        index: &'w Index<'p>,
+        world: &'w mut dyn World,
+        grants: &'w [Grant],
+        keys: &'w BTreeMap<String, Vec<u8>>,
+        max_depth: usize,
+    ) -> Machine<'p, 'w> {
+        Machine {
+            index,
+            world,
+            grants,
+            keys,
+            trace: Vec::new(),
+            depth: 0,
+            max_depth,
+            stack_base: stack_position(&max_depth),
+            stack_budget: crate::stack_bytes(max_depth)
+                .map_or(usize::MAX, |bytes| bytes.saturating_sub(STACK_RESERVE)),
+            installs: BTreeMap::new(),
+            frames: Vec::new(),
+        }
+    }
+
+    /// Calls `main` with no arguments and a host instance for each of its `uses`.
+    pub(crate) fn run_main(&mut self, main: &'p Fun) -> Flow<'p> {
+        let caps: BTreeMap<&'p str, Rc<Instance<'p>>> = main
+            .uses
+            .iter()
+            .map(|u| {
+                let id = format!("host:{}", u.capability);
+                (u.cap.as_str(), Rc::new(Instance::Host { id }))
+            })
+            .collect();
+        self.frames.push(main.span);
+        let result = self.eval(&mut Env::new(), &Rc::new(caps), &main.body);
+        let result = self.locate(result);
+        self.frames.pop();
+        result
+    }
+
+    /// Evaluates `expr` in `env` without capabilities: an example's body, whose `given` lines
+    /// install its instances, or an expectation.
+    pub(crate) fn eval_closed(&mut self, env: &mut Env<'p>, expr: &'p Expr) -> Flow<'p> {
+        self.eval(env, &Rc::new(BTreeMap::new()), expr)
+    }
+
+    /// Gives a fault without a location the innermost function in progress.
+    fn locate(&self, result: Flow<'p>) -> Flow<'p> {
+        match result {
+            Err(Stop::Abort(Abort::Fault {
+                message,
+                span: None,
+            })) => Err(Stop::Abort(Abort::Fault {
+                message,
+                span: self.frames.last().copied(),
+            })),
+            other => other,
+        }
+    }
+
+    /// Enters a call: past the maximum depth, or when the stack the evaluator was given runs
+    /// short before it, the run aborts with U6003 rather than overflow the stack
+    /// (DECISION D-105).
+    fn enter(&mut self, span: Span) -> Result<(), Stop<'p>> {
+        let used = self.stack_base.abs_diff(stack_position(&span));
+        if self.depth >= self.max_depth || used > self.stack_budget {
+            return Err(Stop::Abort(Abort::Depth {
+                span,
+                limit: self.max_depth,
+            }));
+        }
+        self.depth += 1;
+        Ok(())
+    }
+
+    fn leave(&mut self, result: Flow<'p>) -> Flow<'p> {
+        self.depth = self.depth.saturating_sub(1);
+        result
+    }
+
+    fn eval(&mut self, env: &mut Env<'p>, caps: &Caps<'p>, expr: &'p Expr) -> Flow<'p> {
+        let mut expr = expr;
+        let mut caps = caps.clone();
+        loop {
+            match expr {
+                Expr::Atom(atom) => return self.atom(env, atom),
+                Expr::Let {
+                    name,
+                    ty,
+                    value,
+                    body,
+                } => {
+                    let value = match value.as_ref() {
+                        Bound::Rhs(rhs) => self.rhs(env, &caps, rhs, ty)?,
+                        Bound::Expr(inner) => self.eval(env, &caps, inner)?,
+                    };
+                    env.push((name.as_str(), value));
+                    expr = body;
+                }
+                Expr::If {
+                    cond,
+                    then,
+                    otherwise,
+                } => {
+                    expr = match self.atom(env, cond)? {
+                        Value::Bool(true) => then,
+                        Value::Bool(false) => otherwise,
+                        _ => return Err(fault("`if` on a value that is not a `Bool`")),
+                    };
+                }
+                Expr::Case {
+                    scrutinee,
+                    arms,
+                    otherwise,
+                } => {
+                    let Value::Data(data) = self.atom(env, scrutinee)? else {
+                        return Err(fault("`case` on a value that is not a variant"));
+                    };
+                    let arm = arms.iter().find(|arm| {
+                        arm.ctor.kind == data.ctor.kind && arm.ctor.index == data.ctor.index
+                    });
+                    match (arm, otherwise) {
+                        (Some(arm), _) => {
+                            for (bind, field) in arm.binds.iter().zip(&data.fields) {
+                                if let Some(name) = bind {
+                                    env.push((name.as_str(), field.clone()));
+                                }
+                            }
+                            expr = &arm.body;
+                        }
+                        (None, Some(otherwise)) => expr = otherwise,
+                        (None, None) => return Err(fault("no arm of `case` matches")),
+                    }
+                }
+                Expr::Fail { ctor, args, .. } => {
+                    let fields = self.atoms(env, args)?;
+                    return Err(Stop::Fail(Value::data(ctor.clone(), fields)));
+                }
+                Expr::Handle {
+                    body,
+                    error,
+                    handler,
+                } => match self.eval(env, &caps, body) {
+                    Err(Stop::Fail(failure)) => {
+                        env.push((error.as_str(), failure));
+                        expr = handler;
+                    }
+                    other => return other,
+                },
+                Expr::Attempt(body) => {
+                    return match self.eval(env, &caps, body) {
+                        Ok(value) => Ok(Value::data(prelude_ctor("Result", "Ok", 0), vec![value])),
+                        Err(Stop::Fail(failure)) => {
+                            Ok(Value::data(prelude_ctor("Result", "Err", 1), vec![failure]))
+                        }
+                        Err(abort) => Err(abort),
+                    };
+                }
+                Expr::With { cap, source, body } => {
+                    let instance = self.instance(env, &caps, cap, source)?;
+                    let mut inner = (*caps).clone();
+                    inner.insert(cap.as_str(), instance);
+                    caps = Rc::new(inner);
+                    expr = body;
+                }
+            }
+        }
+    }
+
+    /// E-Rebind shares the instance; E-Handler builds a fresh one over the handler's own
+    /// capabilities.
+    fn instance(
+        &mut self,
+        env: &Env<'p>,
+        caps: &Caps<'p>,
+        cap: &str,
+        source: &'p Source,
+    ) -> Result<Rc<Instance<'p>>, Stop<'p>> {
+        match source {
+            Source::Rebind(other) => caps
+                .get(other.as_str())
+                .cloned()
+                .ok_or_else(|| fault(format!("no capability `@{other}` to rebind"))),
+            Source::Handler {
+                handler,
+                args,
+                given,
+            } => {
+                let values = self.atoms(env, args)?;
+                let info = self
+                    .index
+                    .handlers
+                    .get(&(handler.module.as_str(), handler.name.as_str()))
+                    .copied()
+                    .ok_or_else(|| fault(format!("no handler `{}`", handler.qualified())))?;
+                let id = if *given {
+                    format!("given:{cap}")
+                } else {
+                    let count = self.installs.entry(handler.name.clone()).or_insert(0);
+                    *count += 1;
+                    format!("with:{}#{count}", handler.name)
+                };
+                Ok(Rc::new(Instance::Handled {
+                    handler: info,
+                    values,
+                    caps: restrict(caps, info.uses),
+                    id,
+                }))
+            }
+        }
+    }
+
+    fn atom(&self, env: &Env<'p>, atom: &'p Atom) -> Flow<'p> {
+        Ok(match atom {
+            Atom::Var(name) => env
+                .iter()
+                .rev()
+                .find(|(n, _)| *n == name)
+                .map(|(_, v)| v.clone())
+                .ok_or_else(|| fault(format!("`{name}` is not bound")))?,
+            Atom::Int(digits) => Value::Int(
+                digits
+                    .parse::<BigInt>()
+                    .map_err(|_| fault(format!("`{digits}` is not an integer")))?,
+            ),
+            Atom::Bool(b) => Value::Bool(*b),
+            Atom::Text(text) => Value::text(text),
+            Atom::Unit => Value::Unit,
+        })
+    }
+
+    fn atoms(&self, env: &Env<'p>, atoms: &'p [Atom]) -> Result<Vec<Value<'p>>, Stop<'p>> {
+        atoms.iter().map(|a| self.atom(env, a)).collect()
+    }
+
+    /// A right-hand side, bound to a binder of type `ty`.
+    fn rhs(&mut self, env: &Env<'p>, caps: &Caps<'p>, rhs: &'p Rhs, ty: &Type) -> Flow<'p> {
+        match rhs {
+            Rhs::Atom(atom) => self.atom(env, atom),
+            Rhs::Prim { prim, args } => prim_apply(*prim, &self.atoms(env, args)?),
+            Rhs::Call {
+                function,
+                args,
+                span,
+                ..
+            } => {
+                let args = self.atoms(env, args)?;
+                self.call(function, args, caps, *span)
+            }
+            Rhs::Apply { callee, args, span } => {
+                let callee = self.atom(env, callee)?;
+                let args = self.atoms(env, args)?;
+                self.apply(&callee, args, *span)
+            }
+            Rhs::Op {
+                cap,
+                capability,
+                op,
+                args,
+                labels,
+                span,
+            } => {
+                let args = self.atoms(env, args)?;
+                let request = Request {
+                    cap,
+                    capability,
+                    op,
+                    labels,
+                    result: deep_label(ty),
+                    span: *span,
+                };
+                self.op(caps, &request, args)
+            }
+            Rhs::Construct { ctor, args } => Ok(Value::data(ctor.clone(), self.atoms(env, args)?)),
+            Rhs::Field { value, index, .. } => match self.atom(env, value)? {
+                Value::Data(data) => data
+                    .fields
+                    .get(*index)
+                    .cloned()
+                    .ok_or_else(|| fault("a field that the record does not have")),
+                _ => Err(fault("a field of a value that is not a record")),
+            },
+            Rhs::List(items) => Ok(Value::List(Rc::new(self.atoms(env, items)?))),
+            Rhs::Lambda { params, body } => Ok(Value::Closure(Rc::new(Closure {
+                params: params.iter().map(|(name, _)| name).collect(),
+                body,
+                env: env.clone(),
+                caps: caps.clone(),
+            }))),
+            Rhs::Checked {
+                value,
+                it,
+                predicate,
+                ctor,
+                args,
+                ..
+            } => {
+                let value = self.atom(env, value)?;
+                let mut inner = env.clone();
+                inner.push((it.as_str(), value.clone()));
+                match self.eval(&mut inner, caps, predicate)? {
+                    Value::Bool(true) => Ok(value),
+                    Value::Bool(false) => Err(Stop::Fail(Value::data(
+                        ctor.clone(),
+                        self.atoms(env, args)?,
+                    ))),
+                    _ => Err(fault("a `checked` predicate that is not a `Bool`")),
+                }
+            }
+            Rhs::Declassify { via, arg, span, .. } => {
+                let arg = self.atom(env, arg)?;
+                self.call(via, vec![arg], caps, *span)
+            }
+        }
+    }
+
+    /// E-Call: a declared function or predicate, or a function of the prelude or of
+    /// `std.testing`.
+    fn call(
+        &mut self,
+        function: &'p Path,
+        args: Vec<Value<'p>>,
+        caps: &Caps<'p>,
+        span: Span,
+    ) -> Flow<'p> {
+        match function.module.as_str() {
+            "prelude" => return self.prelude(&function.name, args, span),
+            "std.testing" if function.name == "fake_hash" => {
+                return match args.first() {
+                    Some(Value::Int(seed)) => {
+                        Ok(Value::Hashed(Rc::from(host::fake_hash(&seed.to_string()))))
+                    }
+                    _ => Err(fault("`fake_hash` without an `Int` seed")),
+                };
+            }
+            _ => {}
+        }
+        let key = (function.module.as_str(), function.name.as_str());
+        let (params, body, uses, frame): (Vec<&'p str>, &'p Expr, &'p [Use], Option<Span>) =
+            if let Some(fun) = self.index.functions.get(&key) {
+                let params = fun.params.iter().map(|(n, _)| n.as_str()).collect();
+                (params, &fun.body, &fun.uses, Some(fun.span))
+            } else if let Some((params, body)) = self.index.predicates.get(&key) {
+                let params = params.iter().map(|(n, _)| n.as_str()).collect();
+                (params, *body, &[], None)
+            } else {
+                return Err(fault(format!("no function `{}`", function.qualified())));
+            };
+        self.enter(span)?;
+        if let Some(frame) = frame {
+            self.frames.push(frame);
+        }
+        let mut env: Env<'p> = params.into_iter().zip(args).collect();
+        let result = self.eval(&mut env, &restrict(caps, uses), body);
+        let result = self.locate(result);
+        if frame.is_some() {
+            self.frames.pop();
+        }
+        self.leave(result)
+    }
+
+    /// A call of a function value.
+    fn apply(&mut self, callee: &Value<'p>, args: Vec<Value<'p>>, span: Span) -> Flow<'p> {
+        let Value::Closure(closure) = callee else {
+            return Err(fault("a call of a value that is not a function"));
+        };
+        self.enter(span)?;
+        let mut env = closure.env.clone();
+        env.extend(closure.params.iter().map(|p| p.as_str()).zip(args));
+        let result = self.eval(&mut env, &closure.caps, closure.body);
+        self.leave(result)
+    }
+
+    /// E-OpHost and E-OpHandler: the operation's event comes first, then the events of a
+    /// handler's body; its outcome is filled in when the operation ends.
+    fn op(&mut self, caps: &Caps<'p>, request: &Request<'_>, args: Vec<Value<'p>>) -> Flow<'p> {
+        let Request {
+            cap,
+            capability,
+            op,
+            labels,
+            span,
+            ..
+        } = *request;
+        let instance = caps
+            .get(cap)
+            .cloned()
+            .ok_or_else(|| fault(format!("no capability `@{cap}`")))?;
+        let names: Vec<String> = match self.index.capabilities.get(capability) {
+            Some(ops) => ops
+                .iter()
+                .find(|o| o.name == op)
+                .map(|o| o.params.iter().map(|(n, _)| n.clone()).collect())
+                .unwrap_or_default(),
+            None => host_params(capability, op)
+                .iter()
+                .map(|n| (*n).to_owned())
+                .collect(),
+        };
+        let shown: Vec<(String, String)> = args
+            .iter()
+            .enumerate()
+            .map(|(i, value)| {
+                let name = names.get(i).cloned().unwrap_or_else(|| format!("arg{i}"));
+                // DECISION D-100: an argument labeled above `public` is redacted.
+                let label = labels.get(i).cloned().unwrap_or_else(Label::public);
+                (name, self.index.redacted(value, &label))
+            })
+            .collect();
+        let slot = self.trace.len();
+        self.trace.push(Event {
+            seq: slot + 1,
+            instance: instance.id().to_owned(),
+            capability: capability.to_owned(),
+            op: op.to_owned(),
+            args: shown,
+            outcome: EventOutcome::Aborted,
+        });
+        let result = match instance.as_ref() {
+            Instance::Host { .. } => self.host(capability, op, &args),
+            Instance::Handled {
+                handler,
+                values,
+                caps: own,
+                ..
+            } => {
+                let Some(implementation) = handler.ops.iter().find(|o| o.name == op) else {
+                    return Err(fault(format!(
+                        "handler `{}` has no operation `{op}`",
+                        handler.name
+                    )));
+                };
+                self.enter(span)?;
+                let mut env: Env<'p> = handler
+                    .params
+                    .iter()
+                    .map(|(n, _)| n.as_str())
+                    .zip(values.iter().cloned())
+                    .collect();
+                env.extend(implementation.params.iter().map(String::as_str).zip(args));
+                let result = self.eval(&mut env, own, &implementation.body);
+                self.leave(result)
+            }
+        };
+        let outcome = match &result {
+            Ok(value) => EventOutcome::Ok(self.index.redacted(value, &request.result)),
+            Err(Stop::Fail(failure)) => EventOutcome::Fail {
+                variant: variant(failure),
+                value: self.index.render(failure),
+            },
+            Err(Stop::Abort(_)) => EventOutcome::Aborted,
+        };
+        if let Some(event) = self.trace.get_mut(slot) {
+            event.outcome = outcome;
+        }
+        result
+    }
+
+    /// A host operation, within the grants (`spec/14 §3`, DECISION D-103).
+    fn host(&mut self, capability: &str, op: &str, args: &[Value<'p>]) -> Flow<'p> {
+        let text = |i: usize| match args.get(i) {
+            Some(Value::Text(t)) => t.to_string(),
+            _ => String::new(),
+        };
+        let file_error = |name: &str, index: usize| {
+            Stop::Fail(Value::data(
+                prelude_ctor("FileError", name, index),
+                Vec::new(),
+            ))
+        };
+        match (capability, op) {
+            ("Console", "print") => {
+                self.world.print(&text(0));
+                Ok(Value::Unit)
+            }
+            ("Clock", "now") => Ok(Value::int(self.world.now())),
+            ("Env", "get") => Ok(match self.world.env_var(&text(0)) {
+                Some(value) => some(Value::text(&value)),
+                None => none(),
+            }),
+            ("Files", "read" | "write") => {
+                let writing = op == "write";
+                let path = text(0);
+                let mut target = None;
+                for grant in self.grants {
+                    if let Grant::Files {
+                        prefix,
+                        read,
+                        write,
+                    } = grant
+                        && (if writing { *write } else { *read })
+                    {
+                        target = host::confine(self.world, prefix, &path);
+                        if target.is_some() {
+                            break;
+                        }
+                    }
+                }
+                let Some(target) = target else {
+                    return Err(file_error("Denied", 1));
+                };
+                let done = if writing {
+                    self.world
+                        .write_file(&target, &text(1))
+                        .map(|()| Value::Unit)
+                } else {
+                    self.world.read_file(&target).map(|t| Value::text(&t))
+                };
+                done.map_err(|problem| match problem {
+                    FileFault::NotFound => file_error("NotFound", 0),
+                    FileFault::Io => file_error("Io", 2),
+                })
+            }
+            ("Keys", "hmac") => match self.keys.get(&text(0)) {
+                Some(key) => Ok(Value::Hashed(Rc::from(host::hmac_sha256(
+                    key,
+                    text(1).as_bytes(),
+                )))),
+                None => Err(Stop::Fail(Value::data(
+                    prelude_ctor("KeyError", "UnknownKey", 0),
+                    Vec::new(),
+                ))),
+            },
+            _ => Err(fault(format!("no host operation `{capability}.{op}`"))),
+        }
+    }
+
+    /// The functions of the prelude (`spec/14 §1`, DECISION D-104).
+    fn prelude(&mut self, name: &str, args: Vec<Value<'p>>, span: Span) -> Flow<'p> {
+        let bad = || fault(format!("`{name}` applied to values of the wrong types"));
+        let int = |i: usize| match args.get(i) {
+            Some(Value::Int(n)) => Ok(n.clone()),
+            _ => Err(bad()),
+        };
+        let text = |i: usize| match args.get(i) {
+            Some(Value::Text(t)) => Ok(t.clone()),
+            _ => Err(bad()),
+        };
+        let list = |i: usize| match args.get(i) {
+            Some(Value::List(items)) => Ok(items.clone()),
+            _ => Err(bad()),
+        };
+        let arg = |i: usize| args.get(i).cloned().ok_or_else(bad);
+        Ok(match name {
+            "abs" => Value::Int(BigInt::from_biguint(
+                Sign::Plus,
+                int(0)?.magnitude().clone(),
+            )),
+            "min" => Value::Int(int(0)?.min(int(1)?)),
+            "max" => Value::Int(int(0)?.max(int(1)?)),
+            "is_digits" => Value::Bool(text(0)?.chars().all(|c| c.is_ascii_digit())),
+            "starts_with" => Value::Bool(text(0)?.starts_with(text(1)?.as_ref())),
+            "trim" => Value::text(text(0)?.trim()),
+            "to_int" => {
+                let t = text(0)?;
+                let digits = t.strip_prefix('-').unwrap_or(&t);
+                match t.parse::<BigInt>() {
+                    Ok(n) if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) => {
+                        some(Value::Int(n))
+                    }
+                    _ => none(),
+                }
+            }
+            "is_empty" => Value::Bool(list(0)?.is_empty()),
+            "first" => list(0)?.first().cloned().map_or_else(none, some),
+            "at" => {
+                let items = list(0)?;
+                let index = int(1)?;
+                usize::try_from(&index)
+                    .ok()
+                    .and_then(|i| items.get(i).cloned())
+                    .map_or_else(none, some)
+            }
+            "append" => {
+                let mut items = list(0)?.as_ref().clone();
+                items.push(arg(1)?);
+                Value::List(Rc::new(items))
+            }
+            "contains" => {
+                let item = arg(1)?;
+                Value::Bool(list(0)?.iter().any(|v| equal(v, &item)))
+            }
+            "map" => {
+                let (items, each) = (list(0)?, arg(1)?);
+                let mut out = Vec::with_capacity(items.len());
+                for item in items.iter() {
+                    out.push(self.apply(&each, vec![item.clone()], span)?);
+                }
+                Value::List(Rc::new(out))
+            }
+            "filter" => {
+                let (items, keep) = (list(0)?, arg(1)?);
+                let mut out = Vec::new();
+                for item in items.iter() {
+                    if matches!(
+                        self.apply(&keep, vec![item.clone()], span)?,
+                        Value::Bool(true)
+                    ) {
+                        out.push(item.clone());
+                    }
+                }
+                Value::List(Rc::new(out))
+            }
+            "first_where" => {
+                let (items, keep) = (list(0)?, arg(1)?);
+                let mut found = none();
+                for item in items.iter() {
+                    if matches!(
+                        self.apply(&keep, vec![item.clone()], span)?,
+                        Value::Bool(true)
+                    ) {
+                        found = some(item.clone());
+                        break;
+                    }
+                }
+                found
+            }
+            "fold" => {
+                let (items, step) = (list(0)?, arg(2)?);
+                let mut acc = arg(1)?;
+                for item in items.iter() {
+                    acc = self.apply(&step, vec![acc, item.clone()], span)?;
+                }
+                acc
+            }
+            "sum" => {
+                let mut total = BigInt::from(0);
+                for item in list(0)?.iter() {
+                    match item {
+                        Value::Int(n) => total += n,
+                        _ => return Err(bad()),
+                    }
+                }
+                Value::Int(total)
+            }
+            "is_some" | "is_ok" => match arg(0)? {
+                Value::Data(data) => Value::Bool(data.ctor.index == 0),
+                _ => return Err(bad()),
+            },
+            "or_else" => match arg(0)? {
+                Value::Data(data) if data.ctor.index == 0 => {
+                    data.fields.first().cloned().ok_or_else(bad)?
+                }
+                _ => arg(1)?,
+            },
+            _ => return Err(fault(format!("no prelude function `{name}`"))),
+        })
+    }
+}
+
+/// The stack kept free below the evaluation budget, for the recursion between two calls: a
+/// function body's nested expressions, and rendering values.
+const STACK_RESERVE: usize = 8 * 1024 * 1024;
+
+/// The address of `local`, a variable of the caller's frame: a measure of the stack in use.
+fn stack_position<T>(local: &T) -> usize {
+    std::ptr::from_ref(local).addr()
+}
+
+/// An operation call: what its event records.
+struct Request<'a> {
+    cap: &'a str,
+    capability: &'a str,
+    op: &'a str,
+    labels: &'a [Label],
+    /// The label of the binder of its result, which redacts its outcome.
+    result: Label,
+    span: Span,
+}
+
+/// The variant of a failure.
+pub(crate) fn variant(failure: &Value<'_>) -> String {
+    match failure {
+        Value::Data(data) => data.ctor.name.clone(),
+        _ => "?".to_owned(),
+    }
+}
+
+/// `H|dom(K)`: the instances of `caps` bound to the names of `uses`.
+fn restrict<'p>(caps: &Caps<'p>, uses: &'p [Use]) -> Caps<'p> {
+    Rc::new(
+        uses.iter()
+            .filter_map(|u| {
+                caps.get(u.cap.as_str())
+                    .map(|instance| (u.cap.as_str(), instance.clone()))
+            })
+            .collect(),
+    )
+}
+
+/// Euclidean division and remainder: `a = b * q + r` with `0 <= r < |b|` (ADR 0004).
+fn div_euclid(a: &BigInt, b: &BigInt) -> (BigInt, BigInt) {
+    let q = a / b;
+    let r = a % b;
+    if r.sign() == Sign::Minus {
+        if b.sign() == Sign::Plus {
+            (q - 1, r + b)
+        } else {
+            (q + 1, r - b)
+        }
+    } else {
+        (q, r)
+    }
+}
+
+fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
+    let int = |i: usize| match args.get(i) {
+        Some(Value::Int(n)) => Ok(n),
+        _ => Err(fault(format!(
+            "`{}` applied to a value that is not an `Int`",
+            prim.as_str()
+        ))),
+    };
+    let arg = |i: usize| {
+        args.get(i)
+            .ok_or_else(|| fault(format!("`{}` without its operands", prim.as_str())))
+    };
+    Ok(match prim {
+        Prim::Add => Value::Int(int(0)? + int(1)?),
+        Prim::Sub => Value::Int(int(0)? - int(1)?),
+        Prim::Mul => Value::Int(int(0)? * int(1)?),
+        Prim::Div | Prim::Mod => {
+            let (a, b) = (int(0)?, int(1)?);
+            if b.sign() == Sign::NoSign {
+                // DECISION D-108: tier 1 proves divisors nonzero; until it runs, zero aborts.
+                return Err(fault(format!(
+                    "`{}` by zero, which a proof obligation excludes once tier 1 verifies it",
+                    prim.as_str()
+                )));
+            }
+            let (q, r) = div_euclid(a, b);
+            Value::Int(if prim == Prim::Div { q } else { r })
+        }
+        Prim::Neg => Value::Int(-int(0)?.clone()),
+        Prim::Not => match arg(0)? {
+            Value::Bool(b) => Value::Bool(!b),
+            _ => return Err(fault("`not` applied to a value that is not a `Bool`")),
+        },
+        Prim::Eq => Value::Bool(equal(arg(0)?, arg(1)?)),
+        Prim::Ne => Value::Bool(!equal(arg(0)?, arg(1)?)),
+        Prim::Lt => Value::Bool(compare(arg(0)?, arg(1)?).is_lt()),
+        Prim::Le => Value::Bool(compare(arg(0)?, arg(1)?).is_le()),
+        Prim::Gt => Value::Bool(compare(arg(0)?, arg(1)?).is_gt()),
+        Prim::Ge => Value::Bool(compare(arg(0)?, arg(1)?).is_ge()),
+        Prim::Len => match arg(0)? {
+            Value::Text(t) => Value::Int(BigInt::from(t.chars().count())),
+            Value::List(items) => Value::Int(BigInt::from(items.len())),
+            _ => return Err(fault("`len` of a value that is neither a text nor a list")),
+        },
+        Prim::Concat => {
+            let mut out = String::new();
+            for value in args {
+                match value {
+                    Value::Text(t) => out.push_str(t),
+                    _ => return Err(fault("`concat` of a value that is not a `Text`")),
+                }
+            }
+            Value::text(&out)
+        }
+        Prim::ToText => match arg(0)? {
+            Value::Int(n) => Value::text(&n.to_string()),
+            Value::Bool(b) => Value::text(&b.to_string()),
+            Value::Text(t) => Value::Text(t.clone()),
+            _ => {
+                return Err(fault(
+                    "`to_text` of a value other than an `Int`, `Bool` or `Text`",
+                ));
+            }
+        },
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn calls_stop_at_the_maximum_depth_or_when_the_stack_runs_short() {
+        let program = Program::default();
+        let index = Index::new(&program);
+        let mut world = crate::host::NoWorld;
+        let keys = BTreeMap::new();
+        let mut sources = una_syntax::SourceDb::new();
+        let span = Span::at(sources.add("a.una", b"module a\n"), 0);
+        let mut machine = Machine::new(&index, &mut world, &[], &keys, 3);
+        for _ in 0..3 {
+            assert!(machine.enter(span).is_ok());
+        }
+        assert!(matches!(
+            machine.enter(span),
+            Err(Stop::Abort(Abort::Depth { limit: 3, .. }))
+        ));
+        // A stack used beyond the budget aborts in the same way, below the maximum depth.
+        let mut world = crate::host::NoWorld;
+        let mut machine = Machine::new(&index, &mut world, &[], &keys, 3);
+        machine.stack_base = stack_position(&span).wrapping_add(4096);
+        machine.stack_budget = 1024;
+        assert!(matches!(
+            machine.enter(span),
+            Err(Stop::Abort(Abort::Depth { limit: 3, .. }))
+        ));
+        machine.stack_budget = 1024 * 1024;
+        assert!(machine.enter(span).is_ok());
+    }
+
+    #[test]
+    fn division_is_euclidean() {
+        let check = |a: i64, b: i64, q: i64, r: i64| {
+            assert_eq!(
+                div_euclid(&BigInt::from(a), &BigInt::from(b)),
+                (BigInt::from(q), BigInt::from(r)),
+                "{a} div {b}"
+            );
+        };
+        check(7, 2, 3, 1);
+        check(-7, 2, -4, 1);
+        check(7, -2, -3, 1);
+        check(-7, -2, 4, 1);
+        check(6, 3, 2, 0);
+        check(0, -5, 0, 0);
+    }
+}
