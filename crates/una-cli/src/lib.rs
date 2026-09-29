@@ -10,10 +10,12 @@ mod args;
 mod contract;
 mod package;
 mod runtime;
+mod verification;
 
 use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::Path;
+use std::time::Duration;
 
 use clap::Parser;
 use una_check::{Header, ModuleInput, PackageInput, RunInput, check_names, check_types};
@@ -23,6 +25,7 @@ use una_syntax::{FileId, Interner, SourceDb, SourceFile, lex, parse};
 
 use crate::args::{Cli, ColorChoice, Command, TierArg};
 pub use crate::package::{LoadError, Package, load};
+pub use crate::verification::{DEFAULT_WALLCLOCK, Verification};
 
 /// The exit status of a `una` command (`spec/13 §5`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,8 +61,8 @@ pub enum Tier {
     One,
 }
 
-/// The outcome of [`check`]: its diagnostics, the sources they point into, and the Core IR of
-/// the declarations without diagnostics.
+/// The outcome of [`check`]: its diagnostics, the sources they point into, the Core IR of
+/// the declarations without diagnostics, and at tier 1 the obligations.
 #[derive(Debug)]
 pub struct Checked {
     /// The diagnostics, in reporting order.
@@ -68,22 +71,35 @@ pub struct Checked {
     pub sources: SourceDb,
     /// The Core IR (`spec/09`).
     pub program: una_core::Program,
+    /// The obligations and their outcomes, when tier 1 ran.
+    pub verification: Option<Verification>,
 }
 
-/// Loads and checks the file or package at `path` (`spec/13 §5`).
-///
-/// Loading follows ADR 0015 D3 until M3. Each file is lexed and parsed (`spec/01`, `spec/02`);
-/// tier 1 differs from tier 0 once proof obligations exist (M8).
-pub fn check(path: &Path, _tier: Tier) -> Result<Checked, LoadError> {
+/// Loads and checks the file or package at `path` (`spec/13 §5`, `spec/12 §1`), with the
+/// default wall-clock guard of the solver.
+pub fn check(path: &Path, tier: Tier) -> Result<Checked, LoadError> {
+    check_with(path, tier, DEFAULT_WALLCLOCK)
+}
+
+/// Loads and checks the file or package at `path`: tier 0, then, at tier 1 and when tier 0
+/// reports nothing, every proof obligation (DECISION D-112).
+pub fn check_with(path: &Path, tier: Tier, wallclock: Duration) -> Result<Checked, LoadError> {
     let package = load(path)?;
-    let (diagnostics, program) = on_large_stack(|| {
+    let (mut diagnostics, program) = on_large_stack(|| {
         let analysis = analyze(&package, None);
         (analysis.diagnostics, analysis.program)
     });
+    let mut verification = None;
+    if tier == Tier::One && diagnostics.is_empty() {
+        let found = verification::tier_one(&package, &program, wallclock);
+        diagnostics.extend(found.diagnostics);
+        verification = found.verification;
+    }
     Ok(Checked {
         diagnostics,
         sources: package.sources,
         program,
+        verification,
     })
 }
 
@@ -243,6 +259,7 @@ where
                 path,
                 tier,
                 dump_core,
+                solver_wallclock,
             } => {
                 let options = CheckOptions {
                     tier: match tier {
@@ -251,8 +268,20 @@ where
                     },
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
+                    wallclock: Duration::from_secs(solver_wallclock),
                 };
                 check_command(&path, options, dump_core.as_deref(), stdout, stderr)
+            }
+            Command::Obligations {
+                path,
+                solver_wallclock,
+            } => {
+                let options = verification::ObligationsOptions {
+                    json: cli.json,
+                    color: use_color(cli.color, stderr_is_terminal),
+                    wallclock: Duration::from_secs(solver_wallclock),
+                };
+                verification::obligations_command(&path, options, stdout, stderr)
             }
             Command::Fmt { path, check } => {
                 let options = FmtOptions {
@@ -270,6 +299,7 @@ where
                 path,
                 grants,
                 max_depth,
+                solver_wallclock,
             } => {
                 let options = runtime::RunOptions {
                     grants: &grants,
@@ -277,16 +307,22 @@ where
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
                     environment,
+                    wallclock: Duration::from_secs(solver_wallclock),
                 };
                 runtime::run_command(&path, options, stdout, stderr)
             }
-            Command::Test { path, max_depth } => {
+            Command::Test {
+                path,
+                max_depth,
+                solver_wallclock,
+            } => {
                 let options = runtime::RunOptions {
                     grants: &[],
                     max_depth,
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
                     environment,
+                    wallclock: Duration::from_secs(solver_wallclock),
                 };
                 runtime::test_command(&path, options, stdout, stderr)
             }
@@ -317,6 +353,7 @@ struct CheckOptions {
     tier: Tier,
     json: bool,
     color: bool,
+    wallclock: Duration,
 }
 
 /// `una check [path]`: prints the diagnostics of [`check`], as JSON on stdout (ADR 0012) or
@@ -328,7 +365,7 @@ fn check_command(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
-    let checked = match check(path, options.tier) {
+    let checked = match check_with(path, options.tier, options.wallclock) {
         Ok(checked) => checked,
         // DECISION D-010: a usage error goes to stderr even with --json; it happens before the
         // command runs, like the usage errors clap reports.

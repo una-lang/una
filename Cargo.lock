@@ -604,6 +604,7 @@ dependencies = [
  "una-project",
  "una-report",
  "una-syntax",
+ "una-verify",
 ]
 
 [[package]]

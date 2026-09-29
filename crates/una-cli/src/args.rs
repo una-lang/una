@@ -53,6 +53,20 @@ pub(crate) enum Command {
         /// Print the Core IR of this module on stdout
         #[arg(long, value_name = "MODULE")]
         dump_core: Option<String>,
+
+        /// Stop a solver query after this many seconds; the obligation is then unknown
+        #[arg(long, value_name = "SECONDS", default_value_t = 60)]
+        solver_wallclock: u64,
+    },
+    /// List every proof obligation with its status
+    Obligations {
+        /// The package directory, or a single file
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Stop a solver query after this many seconds; the obligation is then unknown
+        #[arg(long, value_name = "SECONDS", default_value_t = 60)]
+        solver_wallclock: u64,
     },
     /// Rewrite files in canonical form, or report where they differ from it
     Fmt {
@@ -77,6 +91,10 @@ pub(crate) enum Command {
         /// The maximum call depth
         #[arg(long, value_name = "N", default_value_t = una_interp::DEFAULT_MAX_DEPTH)]
         max_depth: usize,
+
+        /// Stop a solver query after this many seconds; the obligation is then unknown
+        #[arg(long, value_name = "SECONDS", default_value_t = 60)]
+        solver_wallclock: u64,
     },
     /// Run every example
     Test {
@@ -87,6 +105,10 @@ pub(crate) enum Command {
         /// The maximum call depth
         #[arg(long, value_name = "N", default_value_t = una_interp::DEFAULT_MAX_DEPTH)]
         max_depth: usize,
+
+        /// Stop a solver query after this many seconds; the obligation is then unknown
+        #[arg(long, value_name = "SECONDS", default_value_t = 60)]
+        solver_wallclock: u64,
     },
     /// Print the full header of a function, declared or inferred, with doc comments and
     /// requirements
