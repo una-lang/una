@@ -1,7 +1,6 @@
 -- test: refuted postcondition is reported on the returned expression
 -- spec: spec/12 §3, §6
--- expect: error U5001 at 11:3
--- pending: M8
+-- expect: error U5001 at 10:3
 module postcondition_refuted
 
 pub sold_out(remaining: Int) -> Bool

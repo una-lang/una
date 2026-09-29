@@ -1,4 +1,5 @@
-//! End-to-end tests of `una run` and `una test` (`spec/11`, `spec/13 §5`, ADR 0027, ADR 0032).
+//! End-to-end tests of `una run` and `una test` (`spec/11`, `spec/13 §5`, ADR 0032). Both check
+//! at tier 1 first (`spec/12 §1`), so they need the solver of `verification.lock`.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
@@ -8,9 +9,6 @@ use std::process::{Command, Output};
 
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
-
-/// The note of ADR 0027 rule 2, on stderr in human mode.
-const NOTE: &str = "note: proof obligations are not verified yet (tier 1 arrives in M8)\n";
 
 fn repository() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -72,7 +70,7 @@ fn test_runs_the_examples_of_the_reference_example() {
     // M7 acceptance criterion: `una test examples/events` passes.
     let output = una(&["test", "examples/events"]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    assert_eq!(stderr(&output), NOTE);
+    assert_eq!(stderr(&output), "");
     assert_eq!(
         stdout(&output),
         "example events.checkin \"a registered attendee is checked in and audited\" ... ok\n\
@@ -92,15 +90,16 @@ fn run_prints_the_greeting() {
     let output = una(&["run", "examples/hello", "--grant", "console"]);
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(stdout(&output), "Hello, Una\n");
-    assert_eq!(stderr(&output), NOTE);
+    assert_eq!(stderr(&output), "");
     let output = una(&["run", "examples/events"]);
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(stdout(&output), "availability of Launch: open\n");
 }
 
 #[test]
-fn json_documents_carry_the_tier_and_no_note() {
-    // ADR 0027 rule 3; ADR 0032 rules 4 and 5.
+fn json_documents_carry_the_tier() {
+    // ADR 0032 rules 4 and 5; since M8, `una run` and `una test` check at tier 1 (ADR 0027
+    // rule 4).
     let output = una(&["--json", "run", "examples/hello"]);
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(stderr(&output), "");
@@ -109,7 +108,7 @@ fn json_documents_carry_the_tier_and_no_note() {
         json(&output),
         json!({
             "schema": "una.run/1",
-            "tier": 0,
+            "tier": 1,
             "status": "ok",
             "output": ["Hello, Una"],
             "failure": null,
@@ -132,7 +131,7 @@ fn json_documents_carry_the_tier_and_no_note() {
     insta::assert_snapshot!("test_events_json", stdout(&output));
     let document = json(&output);
     assert_eq!(document["schema"], "una.test/1");
-    assert_eq!(document["tier"], 0);
+    assert_eq!(document["tier"], 1);
     assert_eq!(document["passed"], 6);
     assert_eq!(document["failed"], 0);
 }
@@ -247,7 +246,11 @@ pub main() -> Unit
     let output = una_in(&root, &["run", "--color", "never"]);
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(stdout(&output), "starting\n");
-    assert!(stderr(&output).starts_with(NOTE));
+    assert!(
+        stderr(&output).starts_with("[U6001]"),
+        "{}",
+        stderr(&output)
+    );
     assert!(
         stderr(&output)
             .contains("[U6001] Error: `main` failed with `Blocked(reason: \"maintenance\")`"),

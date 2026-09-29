@@ -1,5 +1,5 @@
-//! `una run` and `una test` (`spec/13 §5`, `spec/11`): they check the package at tier 0 until
-//! M8 (ADR 0027), then evaluate it on the Una Abstract Machine.
+//! `una run` and `una test` (`spec/13 §5`, `spec/11`): they check the package at tier 1
+//! (`spec/12 §1`), then evaluate it on the Una Abstract Machine.
 //!
 //! DECISION D-101 and DECISION D-102: the human output of both commands, and their JSON
 //! documents `una.run/1` and `una.test/1`.
@@ -20,7 +20,17 @@ use una_interp::{
 use una_syntax::{SourceDb, Span};
 
 use crate::contract::Modules;
+use crate::verification::tier_one;
 use crate::{Analysis, Environment, ExitStatus, Package, analyze, load, on_large_stack};
+
+/// The exit status of a package that the checks reject: 3 for an internal error, 1 otherwise.
+fn rejected_status(diagnostics: &[Diagnostic]) -> ExitStatus {
+    if diagnostics.iter().any(|d| d.code == Code::U8001) {
+        ExitStatus::Internal
+    } else {
+        ExitStatus::Errors
+    }
+}
 
 /// The JSON schema of `una run --json` (ADR 0032).
 const RUN_SCHEMA: &str = "una.run/1";
@@ -28,11 +38,9 @@ const RUN_SCHEMA: &str = "una.run/1";
 /// The JSON schema of `una test --json` (ADR 0032).
 const TEST_SCHEMA: &str = "una.test/1";
 
-/// The tier that `una run` and `una test` check before evaluating, until M8 (ADR 0027).
-const TIER: u8 = 0;
-
-/// The note of ADR 0027 rule 2.
-const TIER_NOTE: &str = "note: proof obligations are not verified yet (tier 1 arrives in M8)";
+/// The tier that `una run` and `una test` check before evaluating: tier 1, since M8 ended the
+/// interim tier 0 of ADR 0027 (rule 4).
+const TIER: u8 = 1;
 
 /// What `una run` needs besides the package.
 #[derive(Clone, Copy)]
@@ -47,6 +55,8 @@ pub(crate) struct RunOptions<'a> {
     pub(crate) color: bool,
     /// The environment variables for `Env.get`.
     pub(crate) environment: Environment<'a>,
+    /// The wall-clock guard of the solver.
+    pub(crate) wallclock: std::time::Duration,
 }
 
 /// The world of `una run`: printed lines go to the thread that writes stdout, environment
@@ -141,16 +151,21 @@ pub(crate) fn run_command(
         specs.push(spec.clone());
         grants.push(grant);
     }
-    let analysis = on_large_stack(|| analyze(&package, Some(&specs)));
+    let mut analysis = on_large_stack(|| analyze(&package, Some(&specs)));
+    if analysis.diagnostics.is_empty() {
+        let found = tier_one(&package, &analysis.program, options.wallclock);
+        analysis.diagnostics = found.diagnostics;
+    }
     if !analysis.diagnostics.is_empty() {
         let document = RunDocument::rejected(&analysis.diagnostics);
+        let status = rejected_status(&analysis.diagnostics);
         return finish(
             &document,
             &analysis.diagnostics,
             &package.sources,
             options,
             (stdout, stderr),
-            ExitStatus::Errors,
+            status,
         );
     }
     // DECISION D-109: the entry is `[run] entry`, or the module of a single file.
@@ -184,9 +199,6 @@ pub(crate) fn run_command(
         )?;
         return Ok(ExitStatus::Usage);
     };
-    if !options.json {
-        writeln!(stderr, "{TIER_NOTE}")?;
-    }
     let (sender, receiver) = channel::<String>();
     let program = &analysis.program;
     let entry_path = entry.as_str();
@@ -439,7 +451,11 @@ pub(crate) fn test_command(
             return Ok(ExitStatus::Usage);
         }
     };
-    let analysis = on_large_stack(|| analyze(&package, None));
+    let mut analysis = on_large_stack(|| analyze(&package, None));
+    if analysis.diagnostics.is_empty() {
+        let found = tier_one(&package, &analysis.program, options.wallclock);
+        analysis.diagnostics = found.diagnostics;
+    }
     if !analysis.diagnostics.is_empty() {
         let document = TestDocument {
             schema: TEST_SCHEMA,
@@ -449,13 +465,14 @@ pub(crate) fn test_command(
             passed: 0,
             failed: 0,
         };
+        let status = rejected_status(&analysis.diagnostics);
         return finish(
             &document,
             &analysis.diagnostics,
             &package.sources,
             options,
             (stdout, stderr),
-            ExitStatus::Errors,
+            status,
         );
     }
     let Some(stack) = una_interp::stack_bytes(options.max_depth) else {
@@ -466,9 +483,6 @@ pub(crate) fn test_command(
         )?;
         return Ok(ExitStatus::Usage);
     };
-    if !options.json {
-        writeln!(stderr, "{TIER_NOTE}")?;
-    }
     let program = &analysis.program;
     let max_depth = options.max_depth;
     let evaluated = std::thread::scope(|scope| {
