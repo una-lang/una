@@ -756,6 +756,17 @@ None.
 - ADR: `docs/adr/0035-examples-guide-and-release.md` (Provisional), rule 3
 - Answer needed: Keep A? Or add targets, or switch to B?
 
+### D-131: What an `attempt` that succeeded tells the verifier (M10)
+- Question: `spec/12 §3` adds the callee's `ensures` after `let x = f(ā)`, but says nothing of `let x = attempt f(ā)`, so a program that attempts a call lost what the callee proves about its result.
+- Context: `spec/12 §3`; `spec/06 §5` (`attempt` returns `Result`); `spec/04 §2` rule 2 (`ensures` describes normal returns); found by `examples/redacted` in M10.
+- Options: A) the hypothesis `x is Ok implies P`, with `P` one of the attempted call's normal return paths, its facts and `ensures`, and `x.value` its value; nothing for `Err`; B) no hypothesis for `attempt`, so contracts cannot be used through it; C) A for `let` only.
+- Chosen: A, because `Ok` is exactly a normal return of the call, so the hypothesis is true in every run and weakens nothing, while B pushes programs away from handling failures; the same rule serves every place the value flows (a `let`, a return, an example's `do` line).
+- Confidence: medium
+- Reversal cost: low, `attempted` and `path` in `crates/una-verify/src/generate.rs`
+- Implemented in: M10 commits, `crates/una-verify/src/generate.rs`, tag `DECISION D-131`
+- ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 12
+- Answer needed: Keep A? Or switch to B?
+
 ### D-001: The abstract machine acronym follows the rename (Part A)
 - Question: "Vera Abstract Machine (VAM)" appears in the spec, ADR 0002, the plan and the backlog. The rename table covers the language name but not the acronym.
 - Context: Part A.2; `spec/11`, ADR 0002, `plan/milestones-v0.1.md` M7, `plan/backlog.md`, `plan/roadmap.md`.
