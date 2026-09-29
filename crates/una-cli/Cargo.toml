@@ -23,6 +23,7 @@ una-syntax.workspace = true
 una-verify.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 insta.workspace = true

@@ -47,7 +47,74 @@ pub(crate) fn tier_one(
             verification: Some(Verification::default()),
         };
     }
-    let (lock_text, lock) = match package.lock {
+    let settings = settings(package, wallclock);
+    match una_verify::verify(&obligations, &settings) {
+        Ok(outcomes) => TierOne {
+            diagnostics: una_verify::diagnostics(&obligations, &outcomes, &package.sources),
+            verification: Some(Verification {
+                obligations,
+                outcomes,
+            }),
+        },
+        Err(problem) => TierOne {
+            diagnostics: vec![problem_diagnostic(package, problem)],
+            verification: None,
+        },
+    }
+}
+
+/// The diagnostic of a solver that cannot run (U5003) or of a query it rejects (U8001).
+pub(crate) fn problem_diagnostic(package: &Package, problem: Problem) -> Diagnostic {
+    match problem {
+        Problem::Solver(message) => {
+            Diagnostic::error(Code::U5003, message, solver_version_location(package))
+        }
+        Problem::Query { id, message } => Diagnostic::error(
+            Code::U8001,
+            format!("internal error: obligation {id} could not be encoded: {message}"),
+            root_location(package),
+        ),
+    }
+}
+
+/// Prints the diagnostics of a tier 1 that could not run: exit code 3 for an internal error
+/// (`spec/13 §5`), 1 otherwise.
+pub(crate) fn report_unverified(
+    diagnostics: &[Diagnostic],
+    package: &Package,
+    json: bool,
+    color: bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> io::Result<ExitStatus> {
+    let printed = report(diagnostics, &package.sources, json, color, stdout, stderr)?;
+    Ok(if diagnostics.iter().any(|d| d.code == Code::U8001) {
+        ExitStatus::Internal
+    } else {
+        printed
+    })
+}
+
+/// The solver settings of a package: its lock, or the default lock of a single file, and its
+/// proof cache.
+pub(crate) fn settings(package: &Package, wallclock: Duration) -> Settings {
+    let (text, lock) = lock_of(package);
+    Settings {
+        solver: PathBuf::from("z3"),
+        lock: una_verify::Lock {
+            text,
+            solver_version: lock.solver_version.clone(),
+            step_budget: lock.step_budget,
+            random_seed: lock.random_seed,
+        },
+        wallclock,
+        cache: package_root(package).map(|root| root.join(".una").join("cache").join("proofs")),
+    }
+}
+
+/// The text and the settings of the package's lock, or of the default lock.
+pub(crate) fn lock_of(package: &Package) -> (String, una_project::Lock) {
+    match package.lock {
         Some(id) => {
             let text = package.sources.file(id).text().to_owned();
             let (lock, _) = parse_lock(&text);
@@ -57,42 +124,6 @@ pub(crate) fn tier_one(
             let lock = una_project::Lock::default();
             (default_lock_text(&lock), lock)
         }
-    };
-    let settings = Settings {
-        solver: PathBuf::from("z3"),
-        lock: una_verify::Lock {
-            text: lock_text,
-            solver_version: lock.solver_version.clone(),
-            step_budget: lock.step_budget,
-            random_seed: lock.random_seed,
-        },
-        wallclock,
-        cache: package_root(package).map(|root| root.join(".una").join("cache").join("proofs")),
-    };
-    match una_verify::verify(&obligations, &settings) {
-        Ok(outcomes) => TierOne {
-            diagnostics: una_verify::diagnostics(&obligations, &outcomes, &package.sources),
-            verification: Some(Verification {
-                obligations,
-                outcomes,
-            }),
-        },
-        Err(Problem::Solver(message)) => TierOne {
-            diagnostics: vec![Diagnostic::error(
-                Code::U5003,
-                message,
-                solver_version_location(package),
-            )],
-            verification: None,
-        },
-        Err(Problem::Query { id, message }) => TierOne {
-            diagnostics: vec![Diagnostic::error(
-                Code::U8001,
-                format!("internal error: obligation {id} could not be encoded: {message}"),
-                root_location(package),
-            )],
-            verification: None,
-        },
     }
 }
 
@@ -209,20 +240,14 @@ pub(crate) fn obligations_command(
     }
     let found = tier_one(&package, &analysis.program, options.wallclock);
     let Some(verification) = found.verification else {
-        let status = if found.diagnostics.iter().any(|d| d.code == Code::U8001) {
-            ExitStatus::Internal
-        } else {
-            ExitStatus::Errors
-        };
-        report(
+        return report_unverified(
             &found.diagnostics,
-            &package.sources,
+            &package,
             options.json,
             options.color,
             stdout,
             stderr,
-        )?;
-        return Ok(status);
+        );
     };
     let unproven = verification
         .outcomes

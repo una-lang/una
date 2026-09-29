@@ -58,6 +58,25 @@ pub(crate) enum Command {
         #[arg(long, value_name = "SECONDS", default_value_t = 60)]
         solver_wallclock: u64,
     },
+    /// List the functions derived from a requirement, their contracts and their obligations
+    Trace {
+        /// The requirement's identifier, for example EVENTS_3
+        requirement: String,
+
+        /// Stop a solver query after this many seconds; the obligation is then unknown
+        #[arg(long, value_name = "SECONDS", default_value_t = 60)]
+        solver_wallclock: u64,
+    },
+    /// Print the build report: proofs, authority, information flow, trust and coverage
+    Report {
+        /// The package directory, or a single file
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Stop a solver query after this many seconds; the obligation is then unknown
+        #[arg(long, value_name = "SECONDS", default_value_t = 60)]
+        solver_wallclock: u64,
+    },
     /// List every proof obligation with its status
     Obligations {
         /// The package directory, or a single file

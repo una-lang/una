@@ -66,7 +66,8 @@ pub(crate) struct Modules<'p> {
 }
 
 impl Modules<'_> {
-    fn text(&self, span: Span) -> &str {
+    /// The source text at `span`.
+    pub(crate) fn text(&self, span: Span) -> &str {
         self.sources
             .file(span.file)
             .text()
@@ -74,12 +75,13 @@ impl Modules<'_> {
             .unwrap_or("")
     }
 
-    fn name(&self, symbol: una_syntax::Symbol) -> &str {
+    /// The text of a name.
+    pub(crate) fn name(&self, symbol: una_syntax::Symbol) -> &str {
         self.interner.resolve(symbol)
     }
 
     /// The module path of `tree`.
-    fn path(&self, tree: &File) -> Option<String> {
+    pub(crate) fn path(&self, tree: &File) -> Option<String> {
         let header = tree.module.as_ref()?;
         let segments: Vec<&str> = header
             .path
