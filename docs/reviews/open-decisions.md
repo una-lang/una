@@ -737,7 +737,7 @@ None.
 ### D-128: How the guide's snippets are tested (M10)
 - Question: "Every snippet is tested", but M10 does not say what a snippet is or what its test asserts.
 - Context: `plan/milestones-v0.1.md` M10; `spec/13 §4` (explain examples, which D-043 tests the same way); `spec/13 §5`.
-- Options: A) every `una` fence is a whole module that checks clean at tier 1, or yields exactly the code named by a first line `-- fails with U####`; `json` fences parse and name a schema the CLI prints; every `una` line of a `sh` fence runs from the repository root and exits with 0 or its `# exit N`; B) `una` fences only, all clean; C) fragments completed by a template module.
+- Options: A) every `una` fence is a whole module that checks clean at tier 1, or yields only the code named by a first line `-- fails with U####`; fences after file paths form a package that checks clean; `json` fences parse and name a schema the CLI prints; every `una` line of a `sh` fence runs from the repository root, or the directory of its `# in <dir>`, and exits with 0 or its `# exit N`; B) `una` fences only, all clean; C) fragments completed by a template module.
 - Chosen: A, because agents copy snippets verbatim, so each must check on its own; failing snippets show the codes agents will meet; and commands and documents are the ABI usage the guide teaches.
 - Confidence: medium
 - Reversal cost: low, `crates/una-cli/tests/guide.rs` and the fences of the guide
