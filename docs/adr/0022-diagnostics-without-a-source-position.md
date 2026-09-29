@@ -1,8 +1,8 @@
 # 0022. Diagnostics without a source position
 
-- Status: Provisional (implemented, pending human review)
+- Status: Accepted
 - Date: 2026-09-29
-- Deciders: Claude (overnight run), pending review by Leonardo
+- Deciders: Leonardo (accepted on 2026-09-29), on a proposal by Claude (overnight run)
 
 ## Context
 
@@ -17,7 +17,7 @@ Decision log entry: D-036 (`docs/reviews/open-decisions.md`).
 3. So a missing `verification.lock` is U7004 at `una.toml` 1:1. When a file exists but a key is wrong or missing, the diagnostic points into that file: at the key or value, or at 1:1 of the file for a missing key.
 4. Later codes follow the same rule; for example, U5003 points at the `solver_version` value of `verification.lock` when the file exists.
 
-### Changes to other documents on acceptance
+### Changes to other documents on acceptance (made on 2026-09-29)
 
 - `spec/13 §1` gains rules 1 and 2 in the `primary` row.
 

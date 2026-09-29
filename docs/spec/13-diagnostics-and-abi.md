@@ -30,6 +30,7 @@ Every problem the toolchain reports is a diagnostic with a registered code (§4)
 | --- | --- |
 | `severity` | `error`, `warning` or `note`. v0.1 defines errors only. |
 | `domain` | `syntax`, `names`, `types`, `authority`, `security`, `verification`, `runtime`, `project`, `internal` |
+| `primary` | Required. A diagnostic about something that has no position in any file is located at the empty range at line 1, column 1 of the file that declares what is checked: the package's `una.toml`, or the checked file itself for a package of one file (ADR 0022). A missing `verification.lock` is thus U7004 at `una.toml` 1:1 |
 | `file` | Relative to the package root, with `/` separators. A file checked on its own, such as a single-module conformance case, has its directory as package root, so `file` is its bare name (ADR 0015) |
 | Positions | 1-based line, 1-based column counted in Unicode scalar values after decoding; `end` is exclusive. Each maximal ill-formed subsequence of invalid UTF-8 counts as one column (Unicode §3.9); a byte order mark and a tab count as one column each (ADR 0015) |
 | `obligation`, `counterexample` | Present only for U5001 and U5002 |
@@ -222,4 +223,21 @@ entry = "events.main"
 grants = ["console"]
 ```
 
-Unknown keys are U7002.
+Commands take a file or a directory, `.` by default (ADR 0021):
+
+- A directory is a package only if it contains `una.toml` and `src/`; otherwise the command stops with a usage error (exit code 2). Its modules are the files `src/**/*.una`, hidden entries excepted, and the module in `src/a/b/c.una` MUST be declared `module a.b.c` (U1008).
+- A file is a package of one module, whose root is the file's directory. It has the default settings, the default lock and no module path check.
+
+`una.toml` is a TOML document with these tables and keys, and no others (U7002):
+
+- `[package]`, required: `name`, `version` and `edition`, non-empty strings; `edition` is `"0.1"`.
+- `[labels]`: `categories`, an array of category names (UpperCamelCase, U1005; unique, U1002).
+- `[trusted]`: `modules`, an array of module paths, each a module of the package whose header says `trusted module` (U7005).
+- `[escape_budget]`: `checked_per_module`, an integer of at least 0 (default 0).
+- `[run]`: `entry`, the path of a module of the package, and `grants`, an array of the grant specs of §5.
+
+A TOML syntax error, a missing required key, and a value of the wrong type or outside its range are U7002. The default settings are empty `[labels]`, `[trusted]` and `[run]` tables and a budget of 0.
+
+`verification.lock` is a TOML document with exactly the keys of `spec/12 §9`: `encoding_version = "una-smt-1"`, `solver = "z3"`, `solver_version` a non-empty string, `logic = "QF_UFLIA"`, `step_budget` an integer of at least 1, and `random_seed` an integer of at least 0. A missing file, a TOML syntax error, a missing or unknown key and a wrong value are U7004; a solver of another version is U5003. A single file uses the default lock, which holds the values of the repository's `verification.lock`.
+
+Project errors do not stop checking: the modules are still checked, with the default settings in place of an invalid `una.toml`.
