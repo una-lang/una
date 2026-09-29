@@ -1648,12 +1648,25 @@ impl<'p, 'i> Walker<'p, 'i> {
             assertions,
             definitions: BTreeMap::new(),
         };
-        let facts = self.ground_facts(&query);
+        let (facts, listed) = self.ground_facts(&query);
         if !facts.is_empty() {
             let mut all = facts;
             all.append(&mut query.assertions);
             query.assertions = all;
         }
+        // The refinements of record fields are listed first: `spec/13 §2` shows them.
+        let mut hypotheses = hypotheses;
+        let mut shown_facts: Vec<String> = Vec::new();
+        for fact in &listed {
+            for part in conjuncts(fact) {
+                let text = self.show_formula(part);
+                if !shown_facts.contains(&text) && !hypotheses.contains(&text) {
+                    shown_facts.push(text);
+                }
+            }
+        }
+        shown_facts.append(&mut hypotheses);
+        let hypotheses = shown_facts;
         self.add_definitions(&mut query);
         let shown = self.shown(&query, ctx);
         let normalized: String = goal.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -1676,8 +1689,9 @@ impl<'p, 'i> Walker<'p, 'i> {
     /// The facts about the terms of a query that no quantifier states (`spec/12 §2, §4`,
     /// DECISION D-114): lengths are at least 0, tags are in range, and fields satisfy their
     /// declared refinements.
-    fn ground_facts(&mut self, query: &Query) -> Vec<F> {
+    fn ground_facts(&mut self, query: &Query) -> (Vec<F>, Vec<F>) {
         let mut facts: Vec<F> = Vec::new();
+        let mut listed: Vec<F> = Vec::new();
         let mut seen: BTreeSet<F> = BTreeSet::new();
         let mut pending: Vec<F> = query.applications().into_iter().collect();
         let mut rounds = 0;
@@ -1728,6 +1742,9 @@ impl<'p, 'i> Walker<'p, 'i> {
                                     else {
                                         continue;
                                     };
+                                    if *variants <= 1 {
+                                        listed.push(fact.f.clone());
+                                    }
                                     let fact = match (&owner, *variants > 1) {
                                         (Some(owner), true) => {
                                             let tag = F::App {
@@ -1787,7 +1804,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             }
             pending = next;
         }
-        facts
+        (facts, listed)
     }
 
     /// Adds the definitions of the reflect predicates the query uses, and of those they use.
@@ -1896,9 +1913,11 @@ impl<'p, 'i> Walker<'p, 'i> {
     /// The source name of a shown term: a named binder or a field of one.
     fn term_name(&self, f: &F) -> Option<String> {
         match f {
-            F::Const(Const { name, .. })
-                if !name.starts_with('%') && !name.starts_with("path!") =>
-            {
+            F::Const(Const {
+                name,
+                role: ConstRole::Plain,
+                ..
+            }) if !name.starts_with('%') && !name.starts_with("path!") && name != "unit" => {
                 Some(source_name(name))
             }
             F::App { fun, args } if matches!(fun.role, FunRole::Field { .. }) => {

@@ -300,7 +300,7 @@ impl Query {
             let names: Vec<String> = texts.iter().map(|name| format!("|{name}|")).collect();
             let _ = writeln!(out, "(assert (distinct {}))", names.join(" "));
         }
-        for assertion in &self.assertions {
+        for assertion in self.assertions.iter().filter(|a| **a != F::Bool(true)) {
             let _ = writeln!(out, "(assert {})", assertion.text());
         }
         out
