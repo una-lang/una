@@ -1,6 +1,7 @@
 //! The example packages (`plan/milestones-v0.1.md` M10, DECISION D-127): every package of
 //! `examples/` is canonical, checks at tier 1 with every obligation proven, passes its examples,
-//! reports no trivial `ensures`, and runs when it has an entry. Tier 1 needs Z3 at the version of
+//! reports no trivial `ensures`, and runs when it has an entry; together they contain every
+//! construct of the language list of charter §5. Tier 1 needs Z3 at the version of
 //! `verification.lock` on the path.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
@@ -75,7 +76,293 @@ const RUNS: &[(&str, &str)] = &[
         "today's entry runs to about 2 hundred characters\n",
     ),
     ("pantry", "to buy: rice, oil\ngrams in stock: 700\n"),
+    (
+        "shortlinks",
+        "docs leads to https://example.org/docs\nblog leads to /\n",
+    ),
 ];
+
+/// A `kind` declaration line: its name and what follows it.
+fn kind_line(line: &str) -> Option<&str> {
+    line.strip_prefix("pub kind ")
+        .or_else(|| line.strip_prefix("kind "))
+}
+
+/// Whether `line` calls a function in method form, `value.name(...)`, on something other than
+/// a capability reference.
+fn method_call(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    for (dot, _) in line.match_indices('.') {
+        let name: String = line[dot + 1..]
+            .chars()
+            .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_')
+            .collect();
+        let before = dot.checked_sub(1).and_then(|i| bytes.get(i)).copied();
+        let after = bytes.get(dot + 1 + name.len()).copied();
+        let receiver = line[..dot]
+            .rsplit(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '@'))
+            .next()
+            .unwrap_or("");
+        if !name.is_empty()
+            && after == Some(b'(')
+            && before.is_some_and(|b| b.is_ascii_alphanumeric() || b == b')' || b == b']')
+            && !receiver.starts_with('@')
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether the sources of every example contain a construct.
+type Found = fn(&str) -> bool;
+
+/// The constructs of charter §5's language list, each with a test over the sources of every
+/// example, each file introduced by a line break (ADR 0035 rule 1).
+fn constructs() -> Vec<(&'static str, Found)> {
+    vec![
+        ("modules", |all| all.contains("\nmodule ")),
+        ("imports", |all| all.contains("\nimport ")),
+        ("`pub` visibility", |all| all.contains("\npub ")),
+        ("an alias", |all| {
+            all.lines().any(|line| {
+                kind_line(line)
+                    .and_then(|rest| rest.split_once(" = "))
+                    .is_some_and(|(_, body)| {
+                        !body.contains('|') && !body.contains(" where ") && !body.contains(" in ")
+                    })
+            })
+        }),
+        ("a record", |all| {
+            let lines: Vec<&str> = all.lines().collect();
+            lines.windows(2).any(|pair| {
+                kind_line(pair[0]).is_some_and(|rest| !rest.contains('='))
+                    && pair[1].starts_with("  ")
+                    && pair[1]
+                        .trim_start()
+                        .starts_with(|c: char| c.is_ascii_lowercase())
+                    && pair[1].contains(": ")
+            })
+        }),
+        ("a sum with payloads", |all| {
+            all.lines().any(|line| {
+                kind_line(line).is_some_and(|rest| rest.contains('|') && rest.contains('('))
+            })
+        }),
+        ("a generic kind", |all| {
+            all.lines().any(|line| {
+                kind_line(line).is_some_and(|rest| {
+                    rest.split([' ', '='])
+                        .next()
+                        .is_some_and(|name| name.contains('['))
+                })
+            })
+        }),
+        ("a generic function", |all| {
+            all.lines().any(|line| {
+                let line = line.strip_prefix("pub ").unwrap_or(line);
+                line.starts_with(|c: char| c.is_ascii_lowercase())
+                    && line
+                        .split('(')
+                        .next()
+                        .is_some_and(|name| name.ends_with(']') && name.contains('['))
+            })
+        }),
+        ("a `where` refinement", |all| {
+            all.lines()
+                .any(|line| kind_line(line).is_some_and(|rest| rest.contains(" where ")))
+        }),
+        ("range sugar", |all| {
+            all.lines().any(|line| {
+                kind_line(line).is_some_and(|rest| rest.contains(" in ") && rest.contains(".."))
+            })
+        }),
+        ("a reflect predicate", |all| {
+            all.contains("predicate reflect ")
+        }),
+        ("an opaque predicate", |all| {
+            all.contains("predicate opaque ")
+        }),
+        ("`requires`", |all| all.contains("\n  requires ")),
+        ("`ensures`", |all| all.contains("\n  ensures ")),
+        ("`uses`", |all| all.contains("\n  uses @")),
+        ("`fails`", |all| all.contains("\n  fails ")),
+        ("`derived from`", |all| all.contains("\n  derived from ")),
+        ("labeled arguments", |all| {
+            all.lines().any(|line| {
+                line.match_indices(", ").any(|(at, _)| {
+                    let rest = &line[at + 2..];
+                    let name: String = rest
+                        .chars()
+                        .take_while(|c| c.is_ascii_lowercase() || *c == '_')
+                        .collect();
+                    !name.is_empty() && rest[name.len()..].starts_with(": ")
+                })
+            })
+        }),
+        ("method calls", |all| all.lines().any(method_call)),
+        ("lambdas", |all| {
+            all.match_indices("fn(")
+                .any(|(at, _)| all[at + 3..].starts_with(|c: char| c.is_ascii_lowercase()))
+        }),
+        ("function types", |all| {
+            all.match_indices("fn(")
+                .any(|(at, _)| all[at + 3..].starts_with(|c: char| c.is_ascii_uppercase()))
+        }),
+        ("`Int`", |all| all.contains(" Int")),
+        ("`Nat`", |all| all.contains(" Nat")),
+        ("`Bool`", |all| all.contains(" Bool")),
+        ("`Text`", |all| all.contains(" Text")),
+        ("`Unit`", |all| all.contains(" Unit")),
+        ("`List`", |all| all.contains("List[")),
+        ("`Option`", |all| all.contains("Option[")),
+        ("`Result`", |all| all.contains("Result[")),
+        ("`Hashed`", |all| all.contains(" Hashed")),
+        ("a capability declaration", |all| {
+            all.contains("\npub capability ") || all.contains("\ncapability ")
+        }),
+        ("`with` rebinding", |all| {
+            all.lines().any(|line| {
+                line.split_once(" with @")
+                    .is_some_and(|(_, binding)| binding.contains(" = @"))
+            })
+        }),
+        ("`with` a handler instance", |all| {
+            all.lines().any(|line| {
+                line.split_once(" with @").is_some_and(|(_, binding)| {
+                    binding.split_once(" = ").is_some_and(|(_, source)| {
+                        source.starts_with(|c: char| c.is_ascii_lowercase())
+                    })
+                })
+            })
+        }),
+        ("a handler", |all| {
+            all.contains("\npub handler ") || all.contains("\nhandler ")
+        }),
+        ("a handler with `uses`", |all| {
+            let lines: Vec<&str> = all.lines().collect();
+            lines.windows(3).any(|w| {
+                (w[0].starts_with("handler ") || w[0].starts_with("pub handler "))
+                    && (w[1].starts_with("  uses @") || w[2].starts_with("  uses @"))
+            })
+        }),
+        ("`Console`", |all| all.contains("Console[")),
+        ("`Clock`", |all| all.contains("Clock[")),
+        ("`Env`", |all| all.contains("Env[")),
+        ("`Files`", |all| all.contains("Files[")),
+        ("`Keys`", |all| all.contains("Keys[")),
+        ("`fail`", |all| {
+            all.contains("= fail ")
+                || all
+                    .lines()
+                    .any(|line| line.trim_start().starts_with("fail "))
+        }),
+        ("`if error fail`", |all| all.contains("if error fail ")),
+        ("`if error pass`", |all| all.contains("if error pass")),
+        ("`if error use`", |all| all.contains("if error use ")),
+        ("`if none fail`", |all| all.contains("if none fail ")),
+        ("`if none use`", |all| all.contains("if none use ")),
+        ("`attempt`", |all| all.contains("attempt ")),
+        ("`checked`", |all| all.contains("checked(")),
+        ("label levels", |all| {
+            ["internal ", "confidential", "secret"]
+                .iter()
+                .all(|level| all.contains(level))
+        }),
+        ("label categories", |all| {
+            ["internal[", "confidential[", "secret[", "restricted["]
+                .iter()
+                .any(|level| all.contains(level))
+        }),
+        ("`accepts`", |all| all.contains("\n    accepts ")),
+        ("a trusted module", |all| all.contains("\ntrusted module ")),
+        ("a policy", |all| {
+            all.contains("\npub policy ") || all.contains("\npolicy ")
+        }),
+        ("a requirement from a person", |all| {
+            all.contains("\n  source human\n")
+        }),
+        ("a requirement from a policy", |all| {
+            all.contains("\n  source policy \"")
+        }),
+        ("a requirement from a regulation", |all| {
+            all.contains("\n  source regulation \"")
+        }),
+        ("a generated requirement, proposed", |all| {
+            all.contains("\n  source generated \"") && all.contains("\n  status proposed\n")
+        }),
+        ("an active requirement", |all| {
+            all.contains("\n  status active\n")
+        }),
+        ("examples", |all| all.contains("\nexample \"")),
+        ("`given`", |all| all.contains("\n  given @")),
+        ("`do`", |all| all.contains("\n  do ")),
+        ("`expect`", |all| all.contains("\n  expect result")),
+        ("`expect fails`", |all| all.contains("\n  expect fails ")),
+        ("`expect performed`", |all| {
+            all.contains("\n  expect performed @")
+        }),
+        ("`expect not performed`", |all| {
+            all.contains("\n  expect not performed @")
+        }),
+        ("`when` over variants", |all| all.contains("\n    is ")),
+        ("`when` over ranges", |all| all.contains("\n    in ")),
+        ("`if` expressions", |all| {
+            all.contains(" then ") && all.contains(" else ")
+        }),
+        ("text interpolation", |all| {
+            all.lines().any(|line| {
+                line.split('"')
+                    .skip(1)
+                    .step_by(2)
+                    .any(|inside| inside.contains('{'))
+            })
+        }),
+        ("doc comments", |all| all.contains("\n--- ")),
+        ("an entry point", |all| {
+            all.contains("\npub main() -> Unit\n")
+        }),
+    ]
+}
+
+#[test]
+fn the_examples_contain_every_construct_of_the_charter_scope() {
+    // Charter §5, DECISION D-127: at least five packages beside `events` and `hello`.
+    let packages = packages();
+    assert!(packages.len() >= 7, "{packages:?}");
+    let mut all = String::new();
+    for name in &packages {
+        for source in sources(&repository().join("examples").join(name).join("src")) {
+            all.push('\n');
+            all.push_str(&source);
+        }
+    }
+    let missing: Vec<&str> = constructs()
+        .into_iter()
+        .filter(|(_, found)| !found(&all))
+        .map(|(construct, _)| construct)
+        .collect();
+    assert_eq!(missing, Vec::<&str>::new(), "constructs without an example");
+    // Each pattern tells programs apart: `hello` has only what these six name.
+    let mut hello = String::from("\n");
+    hello.push_str(&sources(&repository().join("examples/hello/src")).concat());
+    let in_hello: Vec<&str> = constructs()
+        .into_iter()
+        .filter(|(_, found)| found(&hello))
+        .map(|(construct, _)| construct)
+        .collect();
+    assert_eq!(
+        in_hello,
+        [
+            "modules",
+            "`pub` visibility",
+            "`uses`",
+            "`Unit`",
+            "`Console`",
+            "an entry point"
+        ]
+    );
+}
 
 #[test]
 fn every_example_package_is_canonical_verified_and_tested() {
