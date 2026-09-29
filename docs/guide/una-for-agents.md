@@ -137,6 +137,7 @@ pub three() -> Int = add(1, 2)
 
 `requires` and `ensures` are written in the refinement language: literals, parameters, `result`, fields, `.len`, `+`, `-`, `*` by a literal, `/` and `mod` by a nonzero literal, comparisons, `in`, `is`, `and`, `or`, `not`, `implies` and predicate calls. Every call proves the callee's `requires`, every return proves the `ensures`, every value that flows into a refined type proves the refinement, and every division by a variable proves a nonzero divisor. The solver answers `proven`, `refuted` (U5001, with a counterexample) or `unknown` (U5002).
 
+- The solver knows a call only through its contract. Prelude functions without one, such as `fold`, `sum` and `to_int`, tell it nothing, and refinements are not inferred through generic calls: a `fold` that adds naturals still returns an `Int`.
 - `predicate reflect` bodies are in the refinement language; the solver sees their definition.
 - `predicate opaque` bodies may call any pure function; the solver sees only the name, and `checked(value, p(it)) else fail V` establishes one at run time. Each `checked` counts against the module's escape budget.
 

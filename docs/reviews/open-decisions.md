@@ -730,7 +730,7 @@ None.
 - Chosen: A, because the examples are the code evaluation tasks start from (roadmap §3), so each should be a small program rather than a fragment, and a test keeps the coverage claim true as the examples change.
 - Confidence: medium
 - Reversal cost: low, the packages under `examples/` and the construct list of `crates/una-cli/tests/examples.rs`
-- Implemented in: M10 commits, tag `DECISION D-127`
+- Implemented in: `05c174f`, `cc9cca2`, `e13533e`, `5f5955c`, `bf640f2`, `examples/`, `crates/una-cli/tests/examples.rs`, tag `DECISION D-127`
 - ADR: `docs/adr/0035-examples-guide-and-release.md` (Provisional), rule 1
 - Answer needed: Keep A? Or switch to B or C, or change a theme?
 
@@ -741,7 +741,7 @@ None.
 - Chosen: A, because agents copy snippets verbatim, so each must check on its own; failing snippets show the codes agents will meet; and commands and documents are the ABI usage the guide teaches.
 - Confidence: medium
 - Reversal cost: low, `crates/una-cli/tests/guide.rs` and the fences of the guide
-- Implemented in: M10 commits, tag `DECISION D-128`
+- Implemented in: `877b6bd`, `docs/guide/una-for-agents.md`, `crates/una-cli/tests/guide.rs`, tag `DECISION D-128`
 - ADR: `docs/adr/0035-examples-guide-and-release.md` (Provisional), rule 2
 - Answer needed: Keep A? Or switch to B or C?
 
@@ -752,7 +752,7 @@ None.
 - Chosen: A, because it proves on every push that the archive builds and runs, keeps macOS within D-083, and needs no tool beyond cargo, tar and the preinstalled `gh`.
 - Confidence: medium
 - Reversal cost: low, `scripts/release.sh` and the two workflows
-- Implemented in: M10 commits, `scripts/release.sh`, `scripts/check-release.sh`, `.github/workflows/release.yml` and `ci.yml`, tag `DECISION D-129`
+- Implemented in: `9b23b9f`, `scripts/release.sh`, `scripts/check-release.sh`, `.github/workflows/release.yml` and `ci.yml`, tag `DECISION D-129`
 - ADR: `docs/adr/0035-examples-guide-and-release.md` (Provisional), rule 3
 - Answer needed: Keep A? Or add targets, or switch to B?
 
@@ -763,7 +763,7 @@ None.
 - Chosen: A, because `Ok` is exactly a normal return of the call, so the hypothesis is true in every run and weakens nothing, while B pushes programs away from handling failures; the same rule serves every place the value flows (a `let`, a return, an example's `do` line).
 - Confidence: medium
 - Reversal cost: low, `attempted` and `path` in `crates/una-verify/src/generate.rs`
-- Implemented in: M10 commits, `crates/una-verify/src/generate.rs`, tag `DECISION D-131`
+- Implemented in: `de9ab73`, `crates/una-verify/src/generate.rs`, tag `DECISION D-131`
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 12
 - Answer needed: Keep A? Or switch to B?
 
@@ -1258,7 +1258,7 @@ None.
 - Chosen: A, because uninterpreted functions add no axioms (ADR 0010's reasoning), and doubled underscores keep sort names distinct for distinct module paths. C is not possible: QF_UFLIA has no nonlinear terms, and Z3 5.1.0 answers such an assertion with an error and drops it, which would make an obligation pass or fail for the wrong reason. This deviates from the text of `spec/12 §2`, whose change the ADR lists.
 - Confidence: high
 - Reversal cost: low
-- Implemented in: `49c73e9`, the M10 fix of the symbols, `crates/una-verify/src/smt.rs` (`symbol`), `generate.rs` (`arithmetic`, `order`), tag `DECISION D-115`
+- Implemented in: `49c73e9`, `3b83602` (the symbols of M10), `crates/una-verify/src/smt.rs` (`symbol`), `generate.rs` (`arithmetic`, `order`), tag `DECISION D-115`
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 5
 - Answer needed: Keep A?
 
@@ -1445,6 +1445,6 @@ None.
 - Chosen: A, because a release is outward-facing and should point at reviewed history on `main`; the release workflow then builds and attaches the archives without further work.
 - Confidence: high
 - Reversal cost: low, pushing the tag
-- Implemented in: M10 commits, `.github/workflows/release.yml`, tag `DECISION D-130`
+- Implemented in: `9b23b9f`, `.github/workflows/release.yml`, tag `DECISION D-130`
 - ADR: `docs/adr/0035-examples-guide-and-release.md` (Provisional), rule 4
 - Answer needed: Keep A? Or tag `dev/v0.1` before the merge?

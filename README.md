@@ -12,7 +12,8 @@ Una is a verification-first programming language for machine-generated software.
 | `docs/README.md` | Documentation map and reading order |
 | `docs/plan/milestones-v0.1.md` | Implementation plan with acceptance criteria |
 | `CLAUDE.md` | Rules for AI-assisted implementation |
-| `examples/` | Reference v0.1 programs |
+| `docs/guide/una-for-agents.md` | Compact reference for agents writing Una |
+| `examples/` | Reference v0.1 programs: `events`, `hello`, `lending`, `pantry`, `journal`, `greenhouse`, `shortlinks` |
 
 ## Build
 

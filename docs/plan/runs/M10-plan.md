@@ -64,4 +64,33 @@ None: M10 adds no rule. The examples, the guide and the demo are checked by CLI 
 
 ## 7. Self-review checklist
 
-Appended when the milestone is complete.
+The milestone's sources, charter §5 and §7 and roadmap §3 and §4, state no MUST, MUST NOT or MAY; the table lists what they and the milestone ask. Evidence names tests of `crates/una-cli/tests/examples.rs` (E), `guide.rs` (G), `headless.rs` (H), `abi.rs` (A), `cli.rs` (L) and `demo_scripts.rs` (D).
+
+### Tasks and rules
+
+| Rule | Status | Evidence |
+| --- | --- | --- |
+| M10 task 1: at least five additional example packages | done: `lending`, `pantry`, `journal`, `greenhouse`, `shortlinks` (D-127) | E `every_example_package_is_canonical_verified_and_tested`: each canonical, tier 1 with every obligation proven, every declared example passing, no trivial `ensures`, and the output of `una run` |
+| Charter §5: the examples cover every construct of the language list | done: 71 source patterns, each false on `hello` except the six it contains | E `the_examples_contain_every_construct_of_the_charter_scope` |
+| M10 task 2: the guide, every snippet tested | done (D-128) | G `every_block_of_the_guide_is_checked`: 15 modules (8 clean, 7 failing with U0103, U2004, U5001, U3007, U3013, U3003 and U4003), 2 packages, 3 JSON documents, 11 commands with their exit codes |
+| M10 task 3: release binaries for Linux and macOS | done (D-129): `scripts/release.sh`, `scripts/check-release.sh`, `.github/workflows/release.yml` | CI run 36632878216 at `58f7a07`, step "Pack and check the Linux release archive"; the macOS arm64 archive packed and checked on the owner's Mac |
+| M10 task 3: the tag `v0.1.0` | left to the owner, after review and the merge to `main` (D-130) | `release.yml` runs on a pushed tag `v*` |
+| Roadmap §3: the evaluation track drives `una` headlessly | done | H `an_agent_repairs_and_verifies_a_package_through_json_alone`; A `every_command_prints_one_json_document_with_its_schema` |
+| Roadmap §4: usage checkpoint 4 has its demo | done | D `every_demo_script_finds_its_expected_outcomes` runs `scripts/demo/checkpoint-4.sh` |
+| `compiler/testing.md §4`: determinism on each example | done: the test lists `examples/` | L `check_json_is_byte_identical_across_runs`; A `json_outputs_are_byte_identical_across_runs_and_thread_counts` |
+
+### Acceptance criteria
+
+| Criterion | Evidence |
+| --- | --- |
+| The guide's snippets compile | G, over every block of `docs/guide/una-for-agents.md` |
+| Release artifacts build in CI | CI run 36632878216: `una-0.1.0-x86_64-unknown-linux-gnu.tar.gz: OK`, and the packed binary checks, tests and runs the examples |
+| The evaluation track can drive `una` headlessly through `--json` | H and A, as above |
+
+### Found during the milestone
+
+- Z3 5.1.0 rejects the quoted symbols `|_|` and `|as|`, and constants named `xor` or `distinct`; a discarded statement, Core's binder `_`, made every return obligation after it U8001. Four names now gain a suffix (`3b83602`, D-115), with a conformance case.
+- `spec/12 §3` gave no hypothesis for `attempt`, so a successful attempt lost the callee's `ensures`. The `Ok` payload now keeps them, the `Err` path nothing (`de9ab73`, D-131, ADR 0033 rule 12), with a proven and a refuted case.
+- Two obligations of the same kind and goal in one declaration share an id under the formula of `spec/12 §8`; the decision log asks the owner (D-118).
+- `fold` carries no contract and refinements are not inferred through generics (`spec/03 §7`), so `pantry.stock.total` returns `Int`; the guide says so.
+- The conformance runner: 193 cases, 193 passed, 0 pending.
