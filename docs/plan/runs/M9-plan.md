@@ -52,4 +52,37 @@ The report and the trace are package outputs, tested by CLI snapshots rather tha
 
 ## 7. Self-review checklist
 
-Appended when the milestone is complete.
+Every rule of the milestone's sections. `spec/13 §4` to `§6` and `spec/08 §1` state no MUST, MUST NOT or MAY that M9 implements (the MAY of `spec/13 §3` is M8's), so the table lists their rules. Evidence names tests of `crates/una-cli/tests/abi.rs` (A), `crates/una-cli/tests/cli.rs` (L), the explain test `crates/una-cli/tests/explain_examples.rs` (E) and unit tests of `crates/una-verify` (U).
+
+### Rules of the sections
+
+| Rule | Status | Evidence |
+| --- | --- | --- |
+| `spec/13 §1`: compact JSON with object keys in the order shown; deterministic output | done: every document is a struct serialized in the order of its section, `schema` first | A `every_command_prints_one_json_document_with_its_schema`, `json_outputs_are_byte_identical_across_runs_and_thread_counts` |
+| `spec/13 §1`: exit codes do not depend on `--json` | done | A `report_and_trace_exit_with_1_on_an_unproven_obligation` |
+| `spec/13 §2`: `una obligations --json`, hypotheses as in the example | done: hypotheses read as source, temporaries through their definitions or source text, with the precedence of `spec/01 §7` | A `the_obligations_of_the_events_example` (snapshot); U `formulas_show_as_source_with_the_parentheses_of_the_precedence_table` |
+| `spec/13 §4`: `una explain <code>` prints a paragraph and a minimal failing and fixed example for every code | done for every code but U8001, whose text has no example (D-126) | E `failing_examples_yield_their_code_and_fixed_examples_yield_nothing` |
+| `spec/13 §5`: `una trace` and `una report` | done (D-122, D-124) | A |
+| `spec/13 §5`: `--json` for every command, nothing else on stdout, stderr empty but for U8001 | done, with `una.explain/1` (D-125) | A `every_command_prints_one_json_document_with_its_schema`; L `explain_json_prints_its_document` |
+| `spec/13 §5`: exit codes 0, 1, 2 and 3 | done: 1 with an unproven obligation or a rejected package, 2 for an unknown requirement, 3 for U8001 | A `report_and_trace_exit_with_1_on_an_unproven_obligation`, `trace_lists_the_functions_derived_from_a_requirement` |
+| `spec/13 §6`: `una.report/1` with its sections in order | done (D-122) | A `the_report_of_the_events_example` (snapshot), `a_single_file_is_named_after_its_module` |
+| `spec/13 §6`: `trivial_ensures` counts clauses the solver proves without any hypothesis, reported as missing contracts | done: one query per clause of a public function (D-123) | A `trivial_ensures_count_as_missing_contracts` |
+| `spec/13 §7`: `[package] name` and `version` | done: the manifest keeps them for the report | A `trivial_ensures_count_as_missing_contracts` |
+| `spec/07 §5` rule 5: every policy call site in the Information section, with the policy name, purpose and owner | done | A `the_report_of_the_events_example` (the call at 30:13) |
+| `spec/07 §6`: trusted modules and their line counts in the TCB section | done | A `the_report_of_the_events_example` (`events.keys`, 17 lines) |
+| `spec/06 §6`: the escape budget | done: `checked` per module against `checked_per_module` | A `the_report_of_the_events_example` |
+| `spec/08 §1`: `una trace` lists every function deriving from the requirement, its contract clauses and the status of each obligation | done (D-124) | A `trace_lists_the_functions_derived_from_a_requirement` (snapshot) |
+| `compiler/testing.md §4`: identical output twice and with one thread | done for every document | A `json_outputs_are_byte_identical_across_runs_and_thread_counts`; L the determinism test of `una check --json` |
+
+### Acceptance criteria
+
+| Criterion | Evidence |
+| --- | --- |
+| The conformance runner compiles every `explain` example, which fails with its code, and its fixed version passes | E, over every registered code but U8001 (D-126); conformance runner: 190 cases, 190 passed, 0 pending |
+| Report and obligations JSON snapshots for the events example | A `abi__report_events_json.snap` and `abi__obligations_events_json.snap`, reviewed |
+
+### Found during the milestone
+
+- A `let` bound to `and`, `or`, `implies`, `in` or `is` held only the disjunction of its paths, since Core lowers them to branches; `spec/03 §7` selfifies such bindings, and they now hold `x = ite(...)`. The queries of the reference example got simpler, and no status changed.
+- The listing showed temporaries (`%t0.remaining`, `valid_phone(%t2)`) and dropped the parentheses under `not`; hypotheses now print through definitions and source text, with the precedence of `spec/01 §7`.
+- The report ignored a solver failure on the trivial `ensures` queries, which would have understated the missing contracts; it reports U5003 or U8001 now, as tier 1 does.
