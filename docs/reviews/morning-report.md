@@ -5,7 +5,7 @@ Updated after every milestone of the overnight run (`OVERNIGHT.md`, C.8).
 ## 1. Status
 
 - Language name: Una (ADR 0025; previously Troth, codenamed Vera).
-- Last completed milestone: M7 (Core IR and interpreter), which completes usage checkpoint 3, the first usable version: `una run` and `una test` run programs and examples, with effect traces (`docs/plan/roadmap.md §4`). Next: M8 (verification), which also ends the interim tier 0 runs of ADR 0027.
+- Last completed milestone: M8 (verification): `una check` proves every obligation with Z3 5.1.0, refuted ones come with counterexamples, and `una obligations` lists them; `una run` and `una test` check at tier 1, ending ADR 0027's interim runs. Next: M9 (Agent ABI and build report), on the way to usage checkpoint 4 after M10 (`docs/plan/roadmap.md §4`).
 - Repository: una-lang/una (private until launch), branch `dev/v0.1`; its history starts at the initial public import `25d865b` (ADR 0030). Earlier commit hashes in this report refer to the legacy repository.
 - Last green CI runs: https://github.com/una-lang/una/actions/runs/36618844273 (`dev/v0.1`, Linux, at `511b4eb`, M7), https://github.com/una-lang/una/actions/runs/36610873278 (`dev/v0.1`, Linux, at `b37eaa2`, M6), https://github.com/una-lang/una/actions/runs/36606305565 (`dev/v0.1`, Linux, at `79b7a2c`, M5) and https://github.com/una-lang/una/actions/runs/36580294816 (`main`, Linux and macOS, at `25d865b`). macOS runs only on pull requests and pushes to `main` (D-083); local checks on the owner's Mac pass. Before the import: run 36578625540 of the legacy repository (`a5c8d3d`, M4).
 
@@ -121,7 +121,7 @@ docs/compiler/testing.md:105:## 5. Coverage expectations for v0.1
 | M5 Capabilities, effects and failures | done | `9d34aab`, `3be9490`, `08260d3`, `58dd14d`, `0ded2b9`, `4f959a7`, `ce6f46b`, `79b7a2c` (plan and ADRs 0028, 0029 in the initial import `25d865b`) | 259 | 144 cases: 142 passed, 2 pending (M6, M8), 0 failures |
 | M6 Information flow | done | `2348672`, `d519fbb`, `78ad11e`, `e763556`, `0241e93`, `906bd9e` (an M5 fix), `a40584d`, and the self-review | 274 | 160 cases: 159 passed, 1 pending (M8), 0 failures |
 | M7 Core IR and interpreter | done | `6c648fb` (plan, ADR 0032), `59a481d`, `d81f200`, `c3d2041`, `54d30c8`, `685bc36`, `bdc7889`, `511b4eb` (self-review) | 296 | 173 cases: 172 passed, 1 pending (M8), 0 failures |
-| M8 Verification | not started | | | |
+| M8 Verification | done | `3146132` (plan, ADR 0033), `d8d3db6`, `02bb2d5`, `49c73e9`, `ec853fa`, `048cbfa`, `3f10ac5`, `4b212fb`, `a715ff0`, and the self-review | 305 | 190 cases: 190 passed, 0 pending, 0 failures |
 | M9 Agent ABI and build report | not started | | | |
 | M10 Gate 1 readiness | not started | | | |
 
@@ -176,6 +176,14 @@ M7 evidence (`docs/plan/runs/M7-plan.md §7`):
 - Usage checkpoint 3 is reached: `scripts/demo/checkpoint-3.sh` runs a program, shows U3012 before a run and the grant that fixes it, U6001 with public fields only, U6003, the examples with their redacted traces, a failed expectation and the Core IR.
 - The self-review checklist is in the M7 plan §7. The milestone found that argument redaction alone would print a `secret` field of a public record, and that a fixed stack estimate could overflow; both are fixed (D-107, D-105).
 
+M8 evidence (`docs/plan/runs/M8-plan.md §7`):
+- Core IR carries the refinement language: refinements, `requires` and `ensures` as terms, the contracts of the standard library, and the spans every obligation points at (D-111); the verifier generates obligations from it alone, and its sites equal the ones the type checker has recorded since M4, over 39 packages and cases.
+- The reference example verifies: 11 obligations of all five kinds' sites, all proven; its queries are byte-identical across runs (a snapshot), and a second run answers every one from the proof cache.
+- A refuted postcondition points at the failing return with a counterexample (`remaining = 0, result = false` in the case pending since M1), related to its `ensures` clause, with ranked repairs; a step budget of 1 gives U5002; a lock pinning another version, and a path without `z3`, give U5003 at the lock's `solver_version`.
+- 17 conformance cases in `tests/conformance/verification`, and the pending case of M1 passes: no case is pending any more.
+- `una run` and `una test` check at tier 1 without the note of ADR 0027.
+- The self-review checklist is in the M8 plan §7. The milestone found that Z3 drops a nonlinear assertion with an error, which could have passed for a status, and that `expect` lines were not verified; both are handled (D-115, D-112).
+
 ## 5. Decisions needing review
 
 The top ten entries of `docs/reviews/open-decisions.md`, each answerable in one line.
@@ -191,7 +199,7 @@ The top ten entries of `docs/reviews/open-decisions.md`, each answerable in one 
 | D-072 | Private headers are inferred; a reference's capability comes from the headers it calls, then its callers' bindings, then installed handlers (ADR 0028 rule 2) | Keep, or switch to B (from the operation's name) or C (callers only) |
 | D-088 | Labels at every position of the checker's types, joined on type variables (ADR 0031 rule 1) | Keep, or switch to B (one label per value) or C (a separate pass) |
 | D-098 | Pass 2 of the checker records its resolutions by span, and the elaborator builds Core IR from them (ADR 0032 rule 1) | Keep, or switch to B (an elaborator that resolves again) |
-| D-018 | After a label level, `[` starts the categories; a labeled list is written `secret List[T]` (ADR 0018) | Keep, or switch to B (backtrack) or C |
+| D-111 | Core IR carries refinement-language terms for refinements and contracts, spans for obligation sites, and `unreachable` after a `when` without `else` (ADR 0033 rule 1) | Keep, or switch to B (formulas as A-normal expressions) or C (obligations from the syntax tree) |
 
 ## 6. Blockers and deviations from the spec
 
@@ -207,6 +215,7 @@ Deviations and additions, all logged:
 - Two tour cases of M1 and M3 passed second arguments without labels, which `spec/04 §3` rule 2 forbids; their inputs gained the labels (D-068).
 - ADR 0028 (Provisional) fills the authority rules the specification leaves open, rules 1 to 12, and ADR 0029 (Provisional) defines the output of `una contract`. Additions to review first: `una check` reports U3012 from `[run] grants` and for capabilities of `main` that are not host capabilities (D-076); function values and parameters of effectful function types are second-class like lambdas (D-079); S-Fun violations are U3003 and U3009 (D-085); a capability reference bound twice is U1002 (D-087).
 - The M4 unit tests compare only the M4 codes from M5 on (D-084): one M4 input uses `checked` twice in a single file, which M5 reports as U7003; no M4 expectation changed in M5. In M6 one line left the M4 policy test: a `via` function of another type is U4005, as `spec/07 §5` rule 4 requires, not the interim U2001 of D-066; `flow.rs` tests it.
+- ADR 0033 (Provisional) fills the verification details the specification leaves open, rules 1 to 11. One deviates from the text of `spec/12 §2`: a division by a variable is an uninterpreted function, since QF_UFLIA has no nonlinear terms and Z3 rejects them (D-115). Readings to review first: one obligation per `ensures` clause over every return path (D-113), record field refinements as ground facts (D-114), and tier 1 only after a clean tier 0 (D-112).
 - ADR 0032 (Provisional) fills the runtime details the specification leaves open, rules 1 to 11: elaboration, the Core dump, values in traces, the output of `una run` and `una test`, grants, the prelude, the call depth, examples, the entry and faults. Readings to review first: a `do` line that fails with no `expect fails` line fails its example (D-106); labeled fields and results are redacted beyond the arguments of `spec/11 §5` (D-107); a division by zero before tier 1 is U8001 (D-108); `una run` checks `main` against `[run] grants` and `--grant` together, and runs the module of a single file (D-109).
 - ADR 0031 (Provisional) fills the information-flow rules the specification leaves open, rules 1 to 10. Readings to review first: `checked` on a labeled value is U4002, stricter than T-Checked's premise `pc = ⊥` alone (D-091); an operation's arguments are bounded by its `accepts` only, not by the labels of its parameter types, which the prelude's `Files.write` needs (D-092); a `via` function may be used only through its policy (D-094); a lambda records the labels its body assumed for its parameters, so a `fold` over labeled values needs a labeled initial value (D-089).
 
@@ -223,7 +232,9 @@ Deviations and additions, all logged:
 - Hindsight (M6): the demo programs caught an M5 inference bug that no unit test covered, since those programs mix features the way users will.
 - Hindsight (M7): recording the checker's resolutions by span made elaboration a translation rather than a second checker, and the interpreter could follow `spec/11 §4` rule by rule. Checking the conformance programs against outputs worked out by hand found no interpreter bug; the failures were in the test programs, which the checker explained precisely.
 - Hindsight (M7): redaction by argument labels looked complete until a record test carried a `secret` field; writing the redaction test with nested data first would have shown it at once. Likewise a fixed stack estimate per call held for simple recursion only, so the evaluator now measures the stack it uses.
-- Next: M8 (verification): Z3 at the version of `verification.lock`, proof obligations with counterexamples, and the end of ADR 0027's interim tier 0 runs.
+- Hindsight (M8): the specification generates obligations from Core IR, and M7's Core had neither formulas nor enough spans; carrying terms and spans into Core cost a commit of its own, and made the verifier independent of the checker. Comparing the verifier's sites with the checker's, recorded since M4, then gave a cheap test of both.
+- Hindsight (M8): probing the pinned Z3 before writing the driver showed that it drops a nonlinear assertion after an error; without the probe, a wrong encoding could have passed for a proof.
+- Next: M9 (Agent ABI and build report), then M10 (release readiness), after which usage checkpoint 4 gets its demo.
 
 ## 8. Checkpoint demo
 

@@ -64,8 +64,57 @@ Proven: refinements at arguments, annotated lets, constructor fields and returns
 ## 6. Known gaps
 
 - Tiers 2 and 3 (quantified laws, property tests) are deferred (`spec/12 §1`, backlog).
-- An `unknown` caused by the wall-clock guard is not deterministic, and is reported as such (`spec/12 §5`).
+- An `unknown` caused by the wall-clock guard is not deterministic, and is not cached; the build report that marks it arrives in M9 (`spec/12 §5`).
+- A return path whose value is an `attempt`, and the failure a `handle` binds, carry no facts: obligations about them may be refuted where a proof exists, never proven where none does.
+- The parameters of a lambda get no refinements, since Core function types carry none; the same holds for refinements inside type arguments, such as `List[Seats]`, which the checker does not track either.
+- Division by a variable is an uninterpreted function (D-115): the solver knows that the divisor is not zero where the division obligation holds, but nothing about the quotient.
 
 ## 7. Self-review checklist
 
-Appended when the milestone is complete.
+Every MUST, MUST NOT and MAY of the milestone's sections, then the other rules they state. Evidence names tests of `crates/una-cli/tests/verification.rs` (V), unit tests of `crates/una-verify` (U), cases of `tests/conformance/verification/` (C), and the explain test (E).
+
+### MUST, MUST NOT and MAY
+
+| Rule | Status | Evidence |
+| --- | --- | --- |
+| `spec/12 §5` rule 5: obligations MAY run in parallel; results are reported in the order file, start offset, kind | done: rayon runs the queries not in the cache, and outcomes follow the obligations' order | V `the_examples_verify_with_every_obligation_proven`, `the_queries_of_the_examples_are_byte_identical_across_runs` |
+| `spec/13 §3`: other diagnostics MAY include repairs; repairs are never applied automatically | done: U5001 and U5002 propose repairs with `edit: null`, and nothing applies them (D-120) | V `a_refuted_obligation_shows_its_counterexample_and_repairs` |
+
+### Other rules of the sections
+
+| Rule | Status | Evidence |
+| --- | --- | --- |
+| `spec/12 §1`: tier 1 is tier 0 plus every obligation, the default of `una check`; `--tier 0` skips the solver | done; tier 1 after a clean tier 0 (D-112) | V `a_missing_solver_is_u5003_and_never_a_silent_pass` (tier 0 without a solver); C every case |
+| `spec/12 §2`: QF_UFLIA, no quantifier; ground facts instead of axioms | done; nonlinear terms uninterpreted (D-115, a deviation the ADR records) | U `queries_declare_sorted_symbols_and_keep_assertions_in_order`; the query snapshot |
+| `spec/12 §3`: the hypotheses of Π: binder refinements, `requires`, branches, `case` arms, callee and operation `ensures`, `checked`, selfified lets | done, from Core IR (D-111), with record field refinements as ground facts (D-114) | C `callee_ensures_proven`, `precondition_proven`, `division_guarded_proven`, `refinement_argument_proven`; the reference example |
+| `spec/12 §3`: the five kinds at their sites, and the primary spans of their diagnostics | done; one return obligation per clause over every path (D-113) | C `*_refuted` cases, one per kind and site; V `the_verifier_generates_every_obligation_the_checker_found` |
+| `spec/12 §4`: sorts per instantiated type, field, `len` and `tag` functions, distinct text literals, reflect `define-fun`, opaque `declare-fun`, Euclidean `div` and `mod` by literals, labels erased, sorted declarations | done (D-115) | the query snapshot `verification__queries_events.snap` |
+| `spec/12 §5`: the pinned Z3 as a subprocess, U5003 on a missing binary or another version; the preamble; `unsat`, `sat` with `(get-model)`, `unknown` with its reason; the wall-clock guard | done (D-116) | C `solver_version_mismatch`, `step_budget_unknown`; V `a_missing_solver_is_u5003_and_never_a_silent_pass`; U `answers_are_read_from_the_solver_output` |
+| `spec/12 §6`: `proven`, `refuted` (U5001 with counterexample), `unknown` (U5002 with reason), both errors with repairs (ADR 0008) | done | C `postcondition_refuted`, `step_budget_unknown`; V `a_refuted_obligation_shows_its_counterexample_and_repairs` |
+| `spec/12 §7`: models mapped to source names; `Int` and `Bool` directly, uninterpreted values as identities | done (D-119) | V `a_refuted_obligation_shows_its_counterexample_and_repairs` |
+| `spec/12 §8`: `ob-` and 12 hex digits of SHA-256 over module, declaration, kind and normalized goal | done (D-118) | V `the_examples_verify_with_every_obligation_proven` |
+| `spec/12 §9`: `.una/cache/proofs/` keyed by the lock and the query; changing the lock invalidates it | done (D-117) | V `a_second_run_reports_every_obligation_as_cached` |
+| `spec/12 §10`: identical inputs give identical diagnostics and statuses | done; queries byte-identical | V `the_queries_of_the_examples_are_byte_identical_across_runs`; the determinism test of `cli.rs` |
+| `spec/13 §1`: `obligation` and `counterexample` only for U5001 and U5002, `repairs` sorted | done | V `a_refuted_obligation_shows_its_counterexample_and_repairs` |
+| `spec/13 §2`: `una obligations --json`, `una.obligations/1` with every obligation | done (D-121) | V `the_examples_verify_with_every_obligation_proven`, `a_second_run_reports_every_obligation_as_cached` |
+| `spec/13 §4`: explain texts with failing and fixed examples for U5001 to U5003 | done | E, which runs verification codes at tier 1 |
+| `spec/10`: the obligation premises of S-Refine, T-Arith, T-Let, T-Call, T-Op, T-Checked and T-Fun | done: each is a site of `spec/12 §3` | C, V as above |
+| `spec/08 §2` rule 4: examples are verified like other code | done, `do` and `expect` lines (D-112) | C `expect_line_proven`, `expect_line_refuted` |
+| ADR 0027 rule 4: M8 removes the interim tier 0 of `una run` and `una test` | done: tier 1 first, no note, `"tier": 1` | `crates/una-cli/tests/runtime.rs` `json_documents_carry_the_tier`, `run_prints_the_greeting` |
+
+### Acceptance criteria
+
+| Criterion | Evidence |
+| --- | --- |
+| Proven, refuted (with counterexample) and unknown outcomes; U5001 to U5003 | 17 cases in `tests/conformance/verification`; runner: 190 cases, 190 passed, 0 pending, 0 failures |
+| SMT queries of the examples byte-identical across runs | V `the_queries_of_the_examples_are_byte_identical_across_runs`, with its snapshot |
+| A second run of the examples reports every obligation as cached | V `a_second_run_reports_every_obligation_as_cached` |
+| All examples verify with zero refuted and zero unknown | V `the_examples_verify_with_every_obligation_proven`: 11 obligations of `examples/events`, all proven |
+| No pending case left for M8 | the runner reports 0 pending |
+
+### Found during the milestone
+
+- Z3 answers a nonlinear assertion under QF_UFLIA with an error and goes on without it, so an encoding error could have looked like a status; the driver now treats any error before the status as U8001, and nonlinear terms are uninterpreted (D-115).
+- The standard modules' spans live in a database of their own, and read against the package's they pointed at the wrong file; standard clauses now carry no span, and their texts come from their own database.
+- The listing's hypotheses missed the field refinements that `spec/13 §2` shows for `availability`, which queries hold as ground facts; they are listed first now (D-114, D-118).
+- `expect` lines of examples were not walked; the cross-check against the checker's sites passed only because no case had an obligation in one. Two cases cover them now (D-112).
