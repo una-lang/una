@@ -9,10 +9,11 @@ use una_syntax::ast::{
     VariantExpr,
 };
 
-use super::check::{Checker, Ctx, Rl, Role};
+use super::authority::{Base, Bound, Frame, Pass};
+use super::check::{Checker, Ctx, Rl, Role, Site};
 use super::closest;
 use super::env::{Entity, FnKind, KindDef};
-use super::ty::{FnTy, KindId, Ty};
+use super::ty::{FnTy, FnUse, KindId, Ty};
 use super::unify::Origin;
 
 impl<'a> Checker<'_, 'a, '_> {
@@ -35,21 +36,32 @@ impl<'a> Checker<'_, 'a, '_> {
     /// and `handled` applies to this expression only.
     pub(crate) fn infer(&mut self, expr: &Expr, expected: Option<&Ty>) -> Ty {
         let rl = self.ctx.rl;
-        let handled = std::mem::replace(&mut self.ctx.handled, false);
-        let ty = self.infer_kind(expr, expected, handled);
+        let site = Site {
+            top: std::mem::replace(&mut self.ctx.top, false),
+            handled: std::mem::replace(&mut self.ctx.handled, false),
+            argument: std::mem::replace(&mut self.ctx.argument, false),
+        };
+        let ty = self.infer_kind(expr, expected, site);
         self.ctx.rl = rl;
         ty
     }
 
-    fn infer_kind(&mut self, expr: &Expr, expected: Option<&Ty>, handled: bool) -> Ty {
+    /// Hands `site` to the next expression checked, which parentheses and `attempt` pass on.
+    pub(crate) fn pass_site(&mut self, site: Site) {
+        self.ctx.top = site.top;
+        self.ctx.handled = site.handled;
+        self.ctx.argument = site.argument;
+    }
+
+    fn infer_kind(&mut self, expr: &Expr, expected: Option<&Ty>, site: Site) -> Ty {
         let span = expr.span;
         match &expr.kind {
             ExprKind::Literal(literal) => self.literal(literal, span),
             ExprKind::Paren(inner) => {
-                self.ctx.handled = handled;
+                self.pass_site(site);
                 self.infer(inner, expected)
             }
-            ExprKind::Name(ident) => self.name_value(ident),
+            ExprKind::Name(ident) => self.name_value(ident, site),
             ExprKind::UpperName(ident) => self.upper_value(ident, expected),
             ExprKind::List(items) => self.list(items, span, expected),
             ExprKind::Binary { op, left, right } => self.binary(*op, left, right, span),
@@ -80,28 +92,37 @@ impl<'a> Checker<'_, 'a, '_> {
                 self.condition(condition, "the condition of `if`");
                 self.branches(&[then, otherwise], expected, Role::Plain, false)
             }
-            ExprKind::Lambda { params, body } => self.lambda(params, body, span, expected),
+            ExprKind::Lambda { params, body } => self.lambda(params, body, span, expected, site),
             ExprKind::Checked {
                 value,
                 predicate,
                 failure,
             } => self.checked(value, predicate, failure, span),
-            ExprKind::Attempt(operand) => self.attempt(operand, span),
+            ExprKind::Attempt(operand) => self.attempt(operand, span, site),
             ExprKind::Fail(variant) => {
                 self.outside_rl(span, || "`fail`".to_owned());
                 self.impure(span, || "`fail`".to_owned());
                 self.raise(variant);
                 Ty::Never
             }
-            ExprKind::Field { target, name } => self.field(target, name, span),
+            ExprKind::Field { target, name } => self.field(target, name, span, site),
             ExprKind::MethodCall { target, name, args } => {
-                self.method(target, name, args, span, handled)
+                self.method(target, name, args, span, site)
             }
-            ExprKind::Call { callee, args } => self.call(callee, args, span, handled, expected),
-            ExprKind::CapOp { cap, op, args } => self.cap_op(cap, op, args, span, handled),
-            // A capability reference as a value is U3005 (M5).
-            ExprKind::CapRef(_) => {
+            ExprKind::Call { callee, args } => self.call(callee, args, span, site, expected),
+            ExprKind::CapOp { cap, op, args } => self.cap_op(cap, op, args, span, site),
+            ExprKind::CapRef(cap) => {
                 self.outside_rl(span, || "a capability reference".to_owned());
+                if self.pass == Pass::Check && self.base != Base::Quiet {
+                    let name = self.name(cap);
+                    self.report.error(
+                        Code::U3005,
+                        span,
+                        format!(
+                            "capability `@{name}` is used as a value; capabilities pass by name, through `uses` and `with`"
+                        ),
+                    );
+                }
                 Ty::Error
             }
             ExprKind::Result => match self.ctx.result.clone() {
@@ -191,7 +212,7 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// A lower-case name: a local, or a function used as a value.
-    fn name_value(&mut self, ident: &Ident) -> Ty {
+    fn name_value(&mut self, ident: &Ident, site: Site) -> Ty {
         let name = self.name(ident);
         if let Some(ty) = self.local(name) {
             return ty;
@@ -199,6 +220,22 @@ impl<'a> Checker<'_, 'a, '_> {
         match self.env.lower(self.module, name) {
             Some(Entity::Function(id)) => {
                 self.outside_rl(ident.span, || format!("function `{name}` used as a value"));
+                let (module, effects) = self.env.functions.get(id).map_or((0, false), |f| {
+                    (f.module, !f.uses.is_empty() || f.fails.is_some())
+                });
+                self.testing_site(module, name, ident.span);
+                // DECISION D-079: a function with effects or failures is a value only as an
+                // argument.
+                if effects && !site.argument && self.pass == Pass::Check && self.base != Base::Quiet
+                {
+                    self.report.error(
+                        Code::U3006,
+                        ident.span,
+                        format!(
+                            "`{name}` uses capabilities or can fail, so as a value it may only be passed directly as an argument"
+                        ),
+                    );
+                }
                 self.function_value(id, ident.span)
             }
             Some(Entity::Handler(_)) => {
@@ -242,6 +279,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 .map(|p| p.ty.base.substitute(&args))
                 .collect(),
             result: def.result.base.substitute(&args),
+            uses: def.uses.iter().map(|need| need.usage.clone()).collect(),
             fails: def.fails.clone(),
         }))
     }
@@ -614,6 +652,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// An expression in a return position: each normal return path records the obligations
     /// of the result type and the `ensures` (`spec/12 §3`).
     pub(crate) fn tail_expr(&mut self, expr: &Expr, expected: Option<&Ty>, role: Role<'_>) -> Ty {
+        let top = std::mem::replace(&mut self.ctx.top, false);
         match &expr.kind {
             ExprKind::IfLine {
                 condition,
@@ -623,9 +662,16 @@ impl<'a> Checker<'_, 'a, '_> {
                 self.condition(condition, "the condition of `if`");
                 self.branches(&[then, otherwise], expected, role, true)
             }
-            ExprKind::Paren(inner) => self.tail_expr(inner, expected, role),
-            ExprKind::Fail(_) => self.expr_as(expr, expected, role),
+            ExprKind::Paren(inner) => {
+                self.ctx.top = top;
+                self.tail_expr(inner, expected, role)
+            }
+            ExprKind::Fail(_) => {
+                self.ctx.top = top;
+                self.expr_as(expr, expected, role)
+            }
             _ => {
+                self.ctx.top = top;
                 let ty = self.expr_as(expr, expected, role);
                 self.returned(expr.span);
                 ty
@@ -641,6 +687,7 @@ impl<'a> Checker<'_, 'a, '_> {
         body: &Expr,
         span: Span,
         expected: Option<&Ty>,
+        site: Site,
     ) -> Ty {
         self.outside_rl(span, || "a lambda".to_owned());
         let mut shape = match expected.map(|ty| self.resolve(ty)) {
@@ -711,11 +758,57 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         let result = shape.as_ref().map(|f| f.result.clone());
         let fails = shape.as_ref().and_then(|f| f.fails.clone());
+        let uses: Vec<FnUse> = shape.as_ref().map(|f| f.uses.clone()).unwrap_or_default();
+        // The capabilities a lambda uses are captured where it is written (`spec/04 §6` rule 3);
+        // with effects or failures it may only be an argument (DECISION D-079).
+        let level = self.frames.len();
+        self.needs_site("this lambda", &uses, span, level);
+        if (!uses.is_empty() || fails.is_some())
+            && !site.argument
+            && self.pass == Pass::Check
+            && self.base != Base::Quiet
+        {
+            self.report.error(
+                Code::U3006,
+                span,
+                "a lambda that uses capabilities or can fail may only be passed directly as an argument",
+            );
+        }
+        let frames = std::mem::replace(
+            &mut self.frames,
+            vec![Frame {
+                bindings: uses
+                    .iter()
+                    .map(|need| {
+                        (
+                            need.name.clone(),
+                            Bound::Cap {
+                                capability: need.capability,
+                                ops: need.capability.map(|_| need.ops.clone()),
+                            },
+                        )
+                    })
+                    .collect(),
+            }],
+        );
+        let base = self.base;
+        if self.base != Base::Quiet {
+            self.base = if uses.is_empty() {
+                Base::Pure
+            } else {
+                Base::Declared
+            };
+        }
+        self.lambda_depth += 1;
         let ctx = Ctx {
             fails: fails.clone(),
+            top: true,
             ..self.ctx.clone()
         };
         let body_ty = self.within(ctx, |checker| checker.expr(body, result.as_ref()));
+        self.lambda_depth -= 1;
+        self.base = base;
+        self.frames = frames;
         self.locals.truncate(mark);
         if mismatch {
             return Ty::Error;
@@ -723,6 +816,7 @@ impl<'a> Checker<'_, 'a, '_> {
         Ty::Fn(Box::new(FnTy {
             params: types,
             result: result.unwrap_or(body_ty),
+            uses,
             fails,
         }))
     }
@@ -731,6 +825,9 @@ impl<'a> Checker<'_, 'a, '_> {
     fn checked(&mut self, value: &Expr, predicate: &Expr, failure: &VariantExpr, span: Span) -> Ty {
         self.outside_rl(span, || "`checked`".to_owned());
         self.impure(span, || "`checked`, which can fail,".to_owned());
+        if self.pass == Pass::Check && self.base != Base::Quiet {
+            self.findings.checked.push((self.module, span));
+        }
         let ty = self.expr(value, None);
         let ctx = Ctx {
             it: Some(ty.clone()),
@@ -745,7 +842,7 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// `attempt` applies to one call and gives `Result[T, E]` (`spec/06 §5`).
-    fn attempt(&mut self, operand: &Expr, span: Span) -> Ty {
+    fn attempt(&mut self, operand: &Expr, span: Span, site: Site) -> Ty {
         self.outside_rl(span, || "`attempt`".to_owned());
         let mut inner = operand;
         while let ExprKind::Paren(next) = &inner.kind {
@@ -765,7 +862,11 @@ impl<'a> Checker<'_, 'a, '_> {
             self.expr(operand, None);
             return Ty::Error;
         }
-        self.ctx.handled = true;
+        self.pass_site(Site {
+            top: site.top,
+            handled: true,
+            argument: false,
+        });
         let ty = self.expr(operand, None);
         let error = self
             .call_fails
@@ -810,6 +911,7 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         match found {
             Some((id, index, args)) => {
+                self.fail_site(&variant.name, Some(id));
                 self.construct(
                     id,
                     Some(index),

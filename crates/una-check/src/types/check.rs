@@ -6,11 +6,12 @@ use std::collections::BTreeMap;
 use una_diag::{Code, ObligationKind, Repair};
 use una_syntax::Span;
 use una_syntax::ast::{
-    CapType, CapabilityDecl, ClauseKind, DeclKind, ExampleDecl, ExpectationKind, Expr,
-    FunctionDecl, HandlerCall, HandlerDecl, Ident, OpClauseKind, PolicyDecl, PredicateDecl,
+    CapabilityDecl, ClauseKind, DeclKind, ExampleDecl, ExpectationKind, Expr, FunctionDecl,
+    HandlerCall, HandlerDecl, Ident, OpClauseKind, PolicyDecl, PredicateDecl,
 };
 
-use super::env::{Entity, Env, FnKind};
+use super::authority::{Base, Bound, Collected, Frame, Pass};
+use super::env::{Entity, Env, FnDef, FnKind, HandlerDef};
 use super::facts::KindFacts;
 use super::ty::{CapId, Declared, KindId, Names, Show, Ty};
 use super::unify::{Origin, Vars};
@@ -44,8 +45,19 @@ pub(crate) struct Ctx {
     pub(crate) rl: Rl,
     /// Inside the body of an opaque predicate, which is pure and cannot fail (U2015).
     pub(crate) opaque: bool,
-    /// The failure of the call about to be checked is handled, by `attempt` or `if error use`.
+    /// The failure of the call about to be checked is handled, by `attempt` or `if error`.
     pub(crate) handled: bool,
+    /// The expression about to be checked is the whole expression of a statement, `let` or
+    /// final expression (`spec/04 §4`).
+    pub(crate) top: bool,
+    /// The expression about to be checked is directly an argument of a call (`spec/10 §9`).
+    pub(crate) argument: bool,
+    /// Inside the `do` line of an example, where effects and failures need no handling and
+    /// may nest (`spec/08 §2` rule 5).
+    pub(crate) in_do: bool,
+    /// Inside a handler operation body or an example, where `std.testing` may be used
+    /// (`spec/14 §4`).
+    pub(crate) testing: bool,
 }
 
 impl Ctx {
@@ -58,8 +70,21 @@ impl Ctx {
             rl: Rl::Off,
             opaque: false,
             handled: false,
+            top: false,
+            argument: false,
+            in_do: false,
+            testing: false,
         }
     }
+}
+
+/// Where an expression stands, as far as calls care: the whole expression of its statement,
+/// with its failure handled, or directly a call argument. Each flag applies to one expression.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Site {
+    pub(crate) top: bool,
+    pub(crate) handled: bool,
+    pub(crate) argument: bool,
 }
 
 /// How a mismatch is described.
@@ -109,9 +134,19 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) vars: Vars,
     pub(crate) type_params: Vec<&'a str>,
     pub(crate) locals: Vec<Local<'a>>,
-    /// Capability references in scope and their capabilities (DECISION D-047), innermost
-    /// last. `None` when the capability's name does not resolve.
-    pub(crate) caps: Vec<(&'a str, Option<CapId>)>,
+    /// Capability frames: the body's own context first, then the `with` bindings of the
+    /// statements around the expression checked (DECISION D-047).
+    pub(crate) frames: Vec<Frame>,
+    /// What the body's own context is.
+    pub(crate) base: Base,
+    /// Which pass runs (DECISION D-082).
+    pub(crate) pass: Pass,
+    /// The facts that pass 1 collects for inference.
+    pub(crate) collected: &'c mut Collected,
+    /// How many lambdas enclose the expression checked.
+    pub(crate) lambda_depth: usize,
+    /// The functions that calls resolve to, by the span of the call.
+    pub(crate) call_targets: BTreeMap<Span, usize>,
     pub(crate) ctx: Ctx,
     pub(crate) returning: Option<Returning>,
     /// The error kinds of the calls checked so far, by the span of the call.
@@ -140,19 +175,21 @@ impl Names for Checker<'_, '_, '_> {
     }
 }
 
-/// Checks every declaration of module `module`.
-pub(crate) fn module(
-    env: &mut Env<'_>,
+/// Checks every declaration of module `module` in `pass`.
+pub(crate) fn module<'a>(
+    env: &mut Env<'a>,
     facts: &KindFacts,
     report: &mut Report<'_>,
     findings: &mut Findings,
+    collected: &mut Collected,
+    pass: Pass,
     module: usize,
 ) {
     let Some((tree, entities)) = env.modules.get(module).map(|m| (m.tree, m.decls.clone())) else {
         return;
     };
     for (decl, entity) in tree.decls.iter().zip(entities) {
-        let mut checker = Checker::new(env, facts, report, findings, module);
+        let mut checker = Checker::new(env, facts, report, findings, collected, pass, module);
         checker.decl(&decl.kind, entity);
         checker.finish();
     }
@@ -164,6 +201,8 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         facts: &'c KindFacts,
         report: &'c mut Report<'s>,
         findings: &'c mut Findings,
+        collected: &'c mut Collected,
+        pass: Pass,
         module: usize,
     ) -> Checker<'c, 'a, 's> {
         let started = report.count();
@@ -176,7 +215,12 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             vars: Vars::default(),
             type_params: Vec::new(),
             locals: Vec::new(),
-            caps: Vec::new(),
+            frames: Vec::new(),
+            base: Base::Quiet,
+            pass,
+            collected,
+            lambda_depth: 0,
+            call_targets: BTreeMap::new(),
             ctx: Ctx::plain(),
             returning: None,
             call_fails: BTreeMap::new(),
@@ -354,42 +398,40 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         self.env.in_package(module).then_some(span)
     }
 
-    /// The capability that a capability type names (DECISION D-047).
-    pub(crate) fn capability(&self, cap_type: &CapType) -> Option<CapId> {
-        let name = self.name(&cap_type.name);
-        self.env
-            .upper(self.module, name)
-            .into_iter()
-            .find_map(|entity| match entity {
-                Entity::Capability(id) => Some(id),
-                _ => None,
-            })
-    }
-
-    /// The capability bound to `@name`.
-    pub(crate) fn cap(&self, name: &str) -> Option<CapId> {
-        self.caps
-            .iter()
-            .rev()
-            .find(|(cap, _)| *cap == name)
-            .and_then(|(_, id)| *id)
-    }
-
     /// Checks the arguments of a handler instance and returns the capability it implements.
     pub(crate) fn install(&mut self, call: &HandlerCall) -> Option<CapId> {
         let name = self.name(&call.name);
         match self.env.lower(self.module, name) {
             Some(Entity::Handler(id)) => {
-                let (params, capability, module) = match self.env.handlers.get(id) {
-                    Some(handler) => (handler.params.clone(), handler.capability, handler.module),
-                    None => (Vec::new(), None, self.module),
+                let (params, capability, module, uses) = match self.env.handlers.get(id) {
+                    Some(handler) => (
+                        handler.params.clone(),
+                        handler.capability,
+                        handler.module,
+                        handler
+                            .uses
+                            .iter()
+                            .map(|n| n.usage.clone())
+                            .collect::<Vec<_>>(),
+                    ),
+                    None => (Vec::new(), None, self.module, Vec::new()),
                 };
                 let callee = format!("handler `{name}`");
                 self.arguments(&callee, &params, &[], None, &call.args, call.span, module);
+                // DECISION D-074: the handler's own `uses` are held where it is installed.
+                let level = self.frames.len();
+                self.needs_site(&callee, &uses, call.span, level);
                 capability
             }
-            // A name that is not a handler is U3010 (M5); an unknown one is U1001 (M3).
-            _ => {
+            other => {
+                // An unknown name is U1001 (M3); another name is U3010 (DECISION D-074).
+                if other.is_some() && self.pass == Pass::Check {
+                    self.report.error(
+                        Code::U3010,
+                        call.name.span,
+                        format!("`{name}` is not a handler; `with` and `given` install handlers"),
+                    );
+                }
                 for arg in &call.args {
                     self.expr(&arg.value, None);
                 }
@@ -514,12 +556,9 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         for param in &def.params {
             self.bind(param.name, param.ty.base.clone());
         }
-        for clause in &function.clauses {
-            if let ClauseKind::Uses(uses) = &clause.kind {
-                let capability = self.capability(&uses.cap_type);
-                self.caps.push((self.name(&uses.cap), capability));
-            }
-        }
+        self.enter_function(&def);
+        // Clauses are in the refinement language, where U2014 reports effects and failures.
+        let base = std::mem::replace(&mut self.base, Base::Quiet);
         for clause in &function.clauses {
             match &clause.kind {
                 ClauseKind::Requires(expr) => {
@@ -544,6 +583,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 ClauseKind::Uses(_) | ClauseKind::Fails(_) | ClauseKind::DerivedFrom(_) => {}
             }
         }
+        self.base = base;
         self.returning = Some(Returning {
             result: def.result.clone(),
             origin: self.origin(def.module, def.result_span),
@@ -693,10 +733,24 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         let Some(def) = self.env.handlers.get(id).cloned() else {
             return;
         };
-        for uses in &handler.uses {
-            let capability = self.capability(&uses.cap_type);
-            self.caps.push((self.name(&uses.cap), capability));
-        }
+        self.base = Base::Declared;
+        self.frames = vec![Frame {
+            bindings: def
+                .uses
+                .iter()
+                .zip(&handler.uses)
+                .map(|(need, uses)| {
+                    (
+                        self.name(&uses.cap).to_owned(),
+                        Bound::Cap {
+                            capability: need.usage.capability,
+                            ops: need.usage.capability.map(|_| need.usage.ops.clone()),
+                        },
+                    )
+                })
+                .collect(),
+        }];
+        self.handler_rules(handler, &def);
         let capability = def
             .capability
             .and_then(|capability| self.env.capabilities.get(capability))
@@ -724,6 +778,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             });
             let ctx = Ctx {
                 fails: op_def.and_then(|o| o.fails.clone()),
+                testing: true,
                 ..Ctx::plain()
             };
             let expected = op_def.map(|o| o.result.base.clone());
@@ -736,11 +791,25 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     }
 
     fn example(&mut self, example: &'a ExampleDecl) {
+        self.base = Base::Example;
+        self.ctx.testing = true;
+        self.frames = vec![Frame::default()];
         for given in &example.givens {
             let capability = self.install(&given.handler);
-            self.caps.push((self.name(&given.cap), capability));
+            let name = self.name(&given.cap);
+            if let Some(frame) = self.frames.first_mut() {
+                frame.bindings.push((
+                    name.to_owned(),
+                    Bound::Handler {
+                        capability,
+                        span: given.handler.name.span,
+                    },
+                ));
+            }
         }
+        self.ctx.in_do = true;
         let ty = self.expr(&example.action, None);
+        self.ctx.in_do = false;
         let action = example.action.span;
         let fails: Vec<Ty> = self
             .call_fails
@@ -755,13 +824,158 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 ExpectationKind::Holds(expr) => {
                     let ctx = Ctx {
                         result: Some(ty.clone()),
+                        testing: true,
                         ..Ctx::plain()
                     };
                     self.within(ctx, |checker| checker.condition(expr, "an `expect` line"));
                 }
                 ExpectationKind::Fails(variant) => self.expected_failure(variant, &fails),
-                ExpectationKind::Performed { .. } => {}
+                ExpectationKind::Performed { cap, op, .. } => self.performed(cap, op),
             }
+        }
+    }
+
+    /// The own context of a function's body (DECISION D-071, D-072): its `uses`, declared, or
+    /// inferred in pass 2; being inferred in pass 1; or empty for a public function without
+    /// `uses`, which is pure.
+    fn enter_function(&mut self, def: &FnDef<'a>) {
+        self.base = if def.infer_uses {
+            if self.pass == Pass::Collect {
+                Base::Inferring
+            } else {
+                Base::Declared
+            }
+        } else if def.uses.is_empty() && def.public {
+            Base::Pure
+        } else {
+            Base::Declared
+        };
+        self.frames = vec![Frame {
+            bindings: def
+                .uses
+                .iter()
+                .map(|need| {
+                    (
+                        need.usage.name.clone(),
+                        Bound::Cap {
+                            capability: need.usage.capability,
+                            ops: need.usage.capability.map(|_| need.usage.ops.clone()),
+                        },
+                    )
+                })
+                .collect(),
+        }];
+    }
+
+    /// U3010 and U3011 for a handler declaration (`spec/05 §5`, DECISION D-073).
+    fn handler_rules(&mut self, handler: &'a HandlerDecl, def: &HandlerDef<'a>) {
+        if self.pass != Pass::Check {
+            return;
+        }
+        let for_name = self.name(&handler.capability);
+        let Some(capability) = def
+            .capability
+            .and_then(|c| self.env.capabilities.get(c))
+            .cloned()
+        else {
+            // An unknown name is U1001 (M3).
+            if !self.env.upper(self.module, for_name).is_empty() {
+                self.report.error(
+                    Code::U3010,
+                    handler.capability.span,
+                    format!("`{for_name}` is not a capability; `for` names the capability that a handler implements"),
+                );
+            }
+            return;
+        };
+        let implemented: Vec<&str> = handler.ops.iter().map(|op| self.name(&op.name)).collect();
+        let missing: Vec<String> = capability
+            .ops
+            .iter()
+            .filter(|op| !implemented.contains(&op.name))
+            .map(|op| format!("`{}`", op.name))
+            .collect();
+        if !missing.is_empty() {
+            let what = if missing.len() == 1 {
+                "operation"
+            } else {
+                "operations"
+            };
+            let handler_name = self.name(&handler.name);
+            self.report.error(
+                Code::U3011,
+                handler.name.span,
+                format!(
+                    "handler `{handler_name}` does not implement the {what} {} of `{}`",
+                    missing.join(", "),
+                    capability.name
+                ),
+            );
+        }
+        for op in &handler.ops {
+            let name = self.name(&op.name);
+            match capability.ops.iter().find(|o| o.name == name) {
+                None => {
+                    let names: Vec<&str> = capability.ops.iter().map(|o| o.name).collect();
+                    let mut diagnostic = self.report.make(
+                        Code::U3010,
+                        op.name.span,
+                        format!("capability `{}` has no operation `{name}`", capability.name),
+                    );
+                    if let Some(close) = super::closest(name, names) {
+                        diagnostic.repairs.push(self.report.edit(
+                            format!("write `{close}`"),
+                            op.name.span,
+                            close,
+                        ));
+                    }
+                    self.report.push(diagnostic);
+                }
+                Some(declared) if declared.params.len() != op.params.len() => {
+                    self.report.error(
+                        Code::U3010,
+                        op.name.span,
+                        format!(
+                            "operation `{name}` of `{}` takes {}, and this implementation names {}",
+                            capability.name,
+                            super::expr::count(declared.params.len(), "parameter"),
+                            op.params.len()
+                        ),
+                    );
+                }
+                Some(_) => {}
+            }
+        }
+    }
+
+    /// `expect performed @x.op`: `@x` is bound by a `given` line, and `op` is an operation of
+    /// its capability (DECISION D-075).
+    fn performed(&mut self, cap: &Ident, op: &Ident) {
+        if self.pass != Pass::Check {
+            return;
+        }
+        let name = self.name(cap);
+        let op_name = self.name(op);
+        match self.resolve_cap(name) {
+            super::authority::Resolved::Handler { capability, .. } => {
+                if let Some(capability) = capability.and_then(|c| self.env.capabilities.get(c))
+                    && !capability.ops.iter().any(|o| o.name == op_name)
+                {
+                    self.report.error(
+                        Code::U3002,
+                        op.span,
+                        format!(
+                            "capability `{}` has no operation `{op_name}`",
+                            capability.name
+                        ),
+                    );
+                }
+            }
+            _ => self.report.error(
+                Code::U3001,
+                cap.span,
+                format!("no `given` line binds `@{name}`"),
+            ),
         }
     }
 

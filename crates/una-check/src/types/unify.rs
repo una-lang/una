@@ -59,6 +59,7 @@ impl Vars {
             Ty::Fn(function) => Ty::Fn(Box::new(FnTy {
                 params: function.params.iter().map(|p| self.resolve(p)).collect(),
                 result: self.resolve(&function.result),
+                uses: function.uses.clone(),
                 fails: function.fails.as_ref().map(|f| self.resolve(f)),
             })),
             other => other,

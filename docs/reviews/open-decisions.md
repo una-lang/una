@@ -67,7 +67,7 @@ None.
 - Question: `spec/05 §4` reports a capability that a callee needs and the caller lacks as U3001, `spec/04 §2, §5` reports effects beyond declared `uses` as U3003, and `spec/04 §2` rule 4 reports `@` in a function without `uses` as U3004. Which code applies where?
 - Context: `spec/04 §2, §5`, `spec/05 §3, §4`, `spec/10 §2` (Suff); ADR 0028 rule 1.
 - Options: A) U3004 for `@c` in a body whose `uses` are declared empty; U3001 for `@c` that no binding holds, and for a callee requirement whose name is absent or bound to another capability; U3002 for fewer operations; U3003 for a call with effects from a body whose `uses` are declared empty; B) U3001 for every missing capability.
-- Chosen: A, because each statement of the specification keeps a case of its own, and every code gets one site.
+- Chosen: A, because each statement of the specification keeps a case of its own, and every code gets one site. A rebinding `with @x = @y` whose `@y` is not held is reported once, at `@y`, and not again where `@x` is used; clauses are in the refinement language, so U2014 reports an operation there and the authority codes do not.
 - Confidence: medium
 - Reversal cost: medium, the sites in `crates/una-check/src/types/` that report these codes
 - Implemented in: M5 authority commits, tag `DECISION D-071`
@@ -77,8 +77,8 @@ None.
 ### D-072: Inferring the headers of private functions (M5)
 - Question: ADR 0007 infers the `uses` and `fails` of private functions over the module's call graph, but a body's `@x.op` does not say which capability `@x` is, and a function may declare some clauses and omit others.
 - Context: `spec/04 §5`, `spec/05 §4`; ADR 0007; ADR 0028 rule 2.
-- Options: A) a private function with no `uses` clause infers them, one with any declares them all, and likewise for `fails`; an inferred reference takes the capability its callers bind to its name, after `with`; a reference that no caller binds, or that callers bind differently, is U3001 with a hint to declare `uses`; the inferred error kind is the one kind of the variants raised and the kinds passed, a second kind being U3009; B) infer a reference's capability from its operation's name.
-- Chosen: A, because capabilities flow downward by name (`spec/05 §4`), so the callers define what a reference is; B is ambiguous when two capabilities share an operation name.
+- Options: A) a private function with no `uses` clause infers them, one with any declares them all, and likewise for `fails`; an inferred reference takes its capability from the first of three sources that decides it: the declared requirements of the code the function calls (a callee's `uses`, a function type's, a handler's), then the bindings of its callers after `with`, then the handlers its callers install around the call; a caller or handler that disagrees with the decision is reported at its call (U3001, U3010); sources of the deciding kind that disagree, or no source at all, are U3001 at the function with a hint; the inferred error kind is the kind of the first variant raised or failure passed, and every other kind is reported where it is raised (U3009) or passed (U3008); B) infer a reference's capability from its operation's name; C) take the capability from callers only, reporting every disagreement as a conflict at the function.
+- Chosen: A, because capabilities flow downward by name (`spec/05 §4`): a callee's declared requirement fixes what the name is, and the callers must then provide it; ranking the sources reports each disagreement at the call an agent edits, and lets a private helper without callers yet infer a complete header. B is ambiguous when two capabilities share an operation name; C reports a wrong handler or binding far from where it is written.
 - Confidence: medium
 - Reversal cost: medium, the inference pass and the second checking pass
 - Implemented in: M5 authority commits, tag `DECISION D-072`
@@ -712,6 +712,17 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A?
 
+### D-085: Function values with more effects or failures than the expected type (M5)
+- Question: `spec/10 §2` (S-Fun) lets a function value stand for a function type only when its `uses` are sufficient for the expected type's and its error kind is included in the expected one, without naming the code of a violation, for example `write`, which uses `@log`, passed as the pure `each` of `map`.
+- Context: `spec/10 §2`, `spec/04 §2, §6`; ADR 0028 rule 11.
+- Options: A) U3003 when the value uses a capability that the expected type does not allow, U3009 when it can fail with a kind that the expected type does not declare; B) U2001, as a type mismatch.
+- Chosen: A, because the codes then say which part of the expected contract is exceeded, as they do for a body that exceeds its header; both options reject the same programs.
+- Confidence: medium
+- Reversal cost: low, `function_argument` in `crates/una-check/src/types/call.rs`
+- Implemented in: M5 authority commits, tag `DECISION D-085`
+- ADR: `docs/adr/0028-authority-rules-left-open.md` (Provisional), rule 11
+- Answer needed: Keep A? Or switch to B?
+
 ### D-073: Where handler problems are reported (M5)
 - Question: `spec/05 §5` requires every operation (U3011) with a matching parameter count and types from the capability (U3010). Where do these point, and what reports `for` naming something other than a capability?
 - Context: `spec/05 §5`; ADR 0028 rule 3.
@@ -777,6 +788,17 @@ None.
 - Implemented in: M5 authority commits, tag `DECISION D-082`
 - ADR: none (minor)
 - Answer needed: Keep A?
+
+### D-084: The M4 unit tests leave out the codes of later milestones (M5)
+- Question: `crates/una-check/tests/types.rs` compares every name and type diagnostic of its inputs, and M5 adds codes that some M4 inputs trigger: a single file that uses `checked` twice now also gets U7003, since the budget of a single file is 0.
+- Context: `OVERNIGHT.md` C.5 (tests and expectations), `spec/06 §6`, `compiler/testing.md`.
+- Options: A) the M4 helper `check()` leaves out the authority codes and U7003, which `crates/una-check/tests/authority.rs` covers; B) add the U7003 line to the M4 expectation, and the codes of each later milestone as they arrive; C) give the M4 inputs a manifest with a larger budget.
+- Chosen: A, because each unit-test file then states the rules of its own milestone and no M4 expectation changes; the conformance suite still checks complete outputs.
+- Confidence: high
+- Reversal cost: low, the `later` filter in `crates/una-check/tests/types.rs`
+- Implemented in: M5 authority commits, `crates/una-check/tests/types.rs`, tag `DECISION D-084`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
 
 ### D-083: CI runners for the private repository (Part 5)
 - Question: The repository una-lang/una stays private until launch, and a private repository has a limited GitHub Actions quota, which macOS runners use fastest. When does each job run?
