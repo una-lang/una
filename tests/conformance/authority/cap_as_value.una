@@ -1,7 +1,6 @@
 -- test: capability reference cannot be bound with let
 -- spec: spec/05 §6
--- expect: error U3005 at 13:11
--- pending: M5
+-- expect: error U3005 at 12:11
 module cap_as_value
 
 capability Log

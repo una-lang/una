@@ -4,9 +4,15 @@
 //! (U2014), predicates (U2015) and lambdas (U2010), following `spec/03`, `spec/04`, `spec/06`,
 //! `spec/10` and ADR 0024.
 //!
+//! Capabilities, effects and failures (M5): capability contexts, sufficiency, inference of the
+//! headers of private functions, handlers, failures, one effect per line and the second-class
+//! rules (U3001 to U3015, U7003), following `spec/05`, `spec/06`, `spec/10 §5, §6, §9` and
+//! ADR 0028.
+//!
 //! The checker also records the proof obligations that refinement subsumption and the other
 //! rules of `spec/12 §3` create. They stay pending until the verifier (M8) discharges them.
 
+mod authority;
 mod call;
 mod check;
 mod env;
@@ -75,14 +81,47 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
     );
     let facts = facts::KindFacts::new(&env);
     facts::kind_recursion(&env, &mut report);
+    authority::stored_effects(&env, &mut report);
+    // DECISION D-082: pass 1 collects what inference needs, and its diagnostics are dropped;
+    // pass 2 checks with the inferred headers.
+    let mut collected = authority::Collected::default();
+    {
+        let mut scratch = Report::new(package.sources);
+        let mut findings = Findings::default();
+        for module in 0..package.modules.len() {
+            if env.reports(module) {
+                check::module(
+                    &mut env,
+                    &facts,
+                    &mut scratch,
+                    &mut findings,
+                    &mut collected,
+                    authority::Pass::Collect,
+                    module,
+                );
+            }
+        }
+    }
+    authority::infer(&mut env, &collected, &mut report);
     let mut findings = Findings::default();
+    let mut unused = authority::Collected::default();
     for module in 0..package.modules.len() {
         if env.reports(module) {
-            check::module(&mut env, &facts, &mut report, &mut findings, module);
+            check::module(
+                &mut env,
+                &facts,
+                &mut report,
+                &mut findings,
+                &mut unused,
+                authority::Pass::Check,
+                module,
+            );
         }
     }
     facts::predicate_recursion(&env, &findings, &mut report);
     facts::generic_equality(&env, &facts, &findings, &mut report);
+    authority::grants(&env, package.settings, &mut report);
+    authority::budget(&env, &findings, package.settings, &mut report);
     // DECISION D-070: pending obligations by position, then kind.
     findings
         .obligations
@@ -122,6 +161,8 @@ pub(crate) struct Findings {
     /// For each generic function, the type parameters whose values its body compares with
     /// `==` or `!=`.
     pub(crate) compared: std::collections::BTreeMap<usize, std::collections::BTreeSet<usize>>,
+    /// The uses of `checked`, by module, in order (`spec/06 §6`).
+    pub(crate) checked: Vec<(usize, Span)>,
 }
 
 /// The parsed standard modules.

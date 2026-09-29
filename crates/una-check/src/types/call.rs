@@ -7,17 +7,17 @@ use una_syntax::Span;
 use una_syntax::ast::{Arg, Expr, ExprKind, Ident};
 
 use super::Report;
-use super::check::{Checker, Role};
+use super::check::{Checker, Role, Site};
 use super::closest;
 use super::env::{Entity, FieldDef, FnDef, FnKind, ParamDef};
 use super::expr::count;
-use super::ty::{KindId, Ty};
+use super::ty::{FnUse, KindId, Ty};
 
 impl<'a> Checker<'_, 'a, '_> {
     /// `e.f`: `.len` of `Text` and `List`, a field of `e`'s record, or a call `f(e)` of a
     /// function of one parameter declared in scope (`spec/04 §3`, DECISION D-052); U1001 when
     /// none applies.
-    pub(crate) fn field(&mut self, target: &Expr, name: &Ident, span: Span) -> Ty {
+    pub(crate) fn field(&mut self, target: &Expr, name: &Ident, span: Span, site: Site) -> Ty {
         let target_ty = self.expr(target, None);
         let field = self.name(name);
         let resolved = self.resolve(&target_ty);
@@ -39,13 +39,7 @@ impl<'a> Checker<'_, 'a, '_> {
             Some(Entity::Function(id)) => {
                 let params = self.env.functions.get(id).map_or(0, |f| f.params.len());
                 if params == 1 {
-                    return self.call_function(
-                        id,
-                        Some((target.span, target_ty)),
-                        &[],
-                        span,
-                        false,
-                    );
+                    return self.call_function(id, Some((target.span, target_ty)), &[], span, site);
                 }
                 self.report.error(
                     Code::U2001,
@@ -114,7 +108,7 @@ impl<'a> Checker<'_, 'a, '_> {
         name: &Ident,
         args: &[Arg],
         span: Span,
-        handled: bool,
+        site: Site,
     ) -> Ty {
         let target_ty = self.expr(target, None);
         let method = self.name(name);
@@ -123,11 +117,11 @@ impl<'a> Checker<'_, 'a, '_> {
             && matches!(self.resolve(&field_ty), Ty::Fn(_))
         {
             self.outside_rl(span, || format!("call of field `{method}`"));
-            return self.call_value(&field_ty, args, span, &format!("field `{method}`"));
+            return self.call_value(&field_ty, args, span, &format!("field `{method}`"), site);
         }
         match self.env.lower(self.module, method) {
             Some(Entity::Function(id)) => {
-                self.call_function(id, Some((target.span, target_ty)), args, span, handled)
+                self.call_function(id, Some((target.span, target_ty)), args, span, site)
             }
             _ => {
                 match resolved {
@@ -154,7 +148,7 @@ impl<'a> Checker<'_, 'a, '_> {
         callee: &Expr,
         args: &[Arg],
         span: Span,
-        handled: bool,
+        site: Site,
         expected: Option<&Ty>,
     ) -> Ty {
         match &callee.kind {
@@ -162,10 +156,10 @@ impl<'a> Checker<'_, 'a, '_> {
                 let name = self.name(ident);
                 if let Some(ty) = self.local(name) {
                     self.outside_rl(span, || format!("call of local function `{name}`"));
-                    return self.call_value(&ty, args, span, &format!("`{name}`"));
+                    return self.call_value(&ty, args, span, &format!("`{name}`"), site);
                 }
                 match self.env.lower(self.module, name) {
-                    Some(Entity::Function(id)) => self.call_function(id, None, args, span, handled),
+                    Some(Entity::Function(id)) => self.call_function(id, None, args, span, site),
                     Some(Entity::Handler(_)) => {
                         self.report.error(
                             Code::U2001,
@@ -188,13 +182,13 @@ impl<'a> Checker<'_, 'a, '_> {
             _ => {
                 self.outside_rl(span, || "call of a function value".to_owned());
                 let ty = self.expr(callee, None);
-                self.call_value(&ty, args, span, "this function")
+                self.call_value(&ty, args, span, "this function", site)
             }
         }
     }
 
     /// A call of a function value: positional arguments only (DECISION D-053).
-    fn call_value(&mut self, ty: &Ty, args: &[Arg], span: Span, what: &str) -> Ty {
+    fn call_value(&mut self, ty: &Ty, args: &[Arg], span: Span, what: &str, site: Site) -> Ty {
         let function = match self.resolve(ty) {
             Ty::Fn(function) => *function,
             Ty::Error | Ty::Never => {
@@ -244,7 +238,8 @@ impl<'a> Checker<'_, 'a, '_> {
             return function.result;
         }
         for (arg, param) in args.iter().zip(&function.params) {
-            self.expr_as(
+            self.ctx.argument = true;
+            let found = self.expr_as(
                 &arg.value,
                 Some(param),
                 Role::Argument {
@@ -252,8 +247,71 @@ impl<'a> Checker<'_, 'a, '_> {
                     callee: what,
                 },
             );
+            self.function_argument(arg.value.span, param, &found);
+        }
+        // Calling a function value needs the capabilities of its type (`spec/10 §2`, S-Fun).
+        let level = self.frames.len();
+        self.needs_site(what, &function.uses, span, level);
+        self.position_site(
+            what,
+            span,
+            !function.uses.is_empty(),
+            function.fails.as_ref(),
+            site.top,
+            site.handled,
+        );
+        if let Some(fails) = &function.fails {
+            self.call_fails.insert(span, fails.clone());
         }
         function.result
+    }
+
+    /// A function passed where a function type is expected has no more effects or failures than
+    /// that type allows (`spec/10 §2`, S-Fun): U3003 for effects, U3009 for failures (DECISION
+    /// D-085).
+    fn function_argument(&mut self, span: Span, expected: &Ty, found: &Ty) {
+        if self.pass != super::authority::Pass::Check {
+            return;
+        }
+        let (Ty::Fn(expected), Ty::Fn(found)) = (self.resolve(expected), self.resolve(found))
+        else {
+            return;
+        };
+        let extra: Vec<&FnUse> = found
+            .uses
+            .iter()
+            .filter(|need| {
+                !expected.uses.iter().any(|allowed| {
+                    allowed.name == need.name
+                        && allowed.capability == need.capability
+                        && need.ops.iter().all(|op| allowed.ops.contains(op))
+                })
+            })
+            .collect();
+        if let Some(need) = extra.first() {
+            self.report.error(
+                Code::U3003,
+                span,
+                format!(
+                    "this function uses `{}`, which the expected function type does not allow",
+                    self.show_need(need)
+                ),
+            );
+        }
+        if let Some(kind) = &found.fails
+            && expected
+                .fails
+                .as_ref()
+                .is_none_or(|allowed| allowed != kind)
+            && *kind != Ty::Error
+        {
+            let kind = self.show(kind);
+            self.report.error(
+                Code::U3009,
+                span,
+                format!("this function can fail with `{kind}`, which the expected function type does not allow"),
+            );
+        }
     }
 
     /// A call of a declared function, predicate or policy, with `receiver` as its first
@@ -264,7 +322,7 @@ impl<'a> Checker<'_, 'a, '_> {
         receiver: Option<(Span, Ty)>,
         args: &[Arg],
         span: Span,
-        handled: bool,
+        site: Site,
     ) -> Ty {
         let Some(def) = self.env.functions.get(id).cloned() else {
             return Ty::Error;
@@ -288,15 +346,29 @@ impl<'a> Checker<'_, 'a, '_> {
             );
         }
         // DECISION D-056: declared effects and failures in an opaque predicate.
-        if def.uses {
+        if !def.uses.is_empty() {
             self.impure(span, || {
                 format!("call of {callee}, which uses capabilities,")
             });
         }
-        if def.fails.is_some() && !handled {
+        if def.fails.is_some() && !site.handled {
             self.impure(span, || format!("call of {callee}, which can fail,"));
         }
         self.edge(id, span);
+        self.call_targets.insert(span, id);
+        self.testing_site(def.module, def.name, span);
+        let needs: Vec<FnUse> = def.uses.iter().map(|need| need.usage.clone()).collect();
+        let level = self.frames.len();
+        self.needs_site(&callee, &needs, span, level);
+        self.call_fact(id, span);
+        self.position_site(
+            &callee,
+            span,
+            !needs.is_empty(),
+            def.fails.as_ref(),
+            site.top,
+            site.handled,
+        );
         if def.kind == FnKind::Policy {
             return self.call_policy(&def, &callee, receiver, args, span);
         }
@@ -360,6 +432,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     diagnostic.repairs.push(repair);
                     self.report.push(diagnostic);
                 }
+                self.ctx.argument = true;
                 self.expr_as(
                     &arg.value,
                     Some(&expected),
@@ -393,14 +466,14 @@ impl<'a> Checker<'_, 'a, '_> {
         op: &Ident,
         args: &[Arg],
         span: Span,
-        _handled: bool,
+        site: Site,
     ) -> Ty {
         let cap_name = self.name(cap);
         let op_name = self.name(op);
         self.outside_rl(span, || format!("operation `@{cap_name}.{op_name}`"));
         self.impure(span, || format!("operation `@{cap_name}.{op_name}`"));
         let capability = self
-            .cap(cap_name)
+            .op_site(cap, op)
             .and_then(|id| self.env.capabilities.get(id))
             .cloned();
         let Some(capability) = capability else {
@@ -444,6 +517,15 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(fails) = &def.fails {
             self.call_fails.insert(span, fails.clone());
         }
+        let what = format!("`@{cap_name}.{op_name}`");
+        self.position_site(
+            &what,
+            span,
+            true,
+            def.fails.as_ref(),
+            site.top,
+            site.handled,
+        );
         def.result.base
     }
 
@@ -561,7 +643,9 @@ impl<'a> Checker<'_, 'a, '_> {
                 param: param.name,
                 callee,
             };
-            self.expr_as(&arg.value, Some(&expected), role);
+            self.ctx.argument = true;
+            let found = self.expr_as(&arg.value, Some(&expected), role);
+            self.function_argument(arg.value.span, &expected, &found);
             if param.ty.is_refined() {
                 let origin = self.origin(module, param.span);
                 self.obligation(ObligationKind::Refinement, arg.value.span, origin);

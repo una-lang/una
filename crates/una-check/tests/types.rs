@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use pretty_assertions::assert_eq;
 use una_check::{ModuleInput, PackageInput, TypeCheck, check_names, check_types};
-use una_diag::Diagnostic;
+use una_diag::{Code, Diagnostic, Domain};
 use una_project::{Manifest, parse_manifest};
 use una_syntax::ast::DeclKind;
 use una_syntax::{Interner, SourceDb, lex, parse};
@@ -57,10 +57,21 @@ fn run(files: &[(&str, &str)], single: bool) -> (Vec<Diagnostic>, TypeCheck) {
     (names, types)
 }
 
-/// The name and type diagnostics of `files`, as "code file:line:col message" in output order.
+/// Whether `code` belongs to a later milestone than M4: the authority codes and the escape
+/// budget of M5, which `authority.rs` tests (DECISION D-084).
+fn later(code: Code) -> bool {
+    code.domain() == Domain::Authority || code == Code::U7003
+}
+
+/// The name and type diagnostics of `files`, as "code file:line:col message" in output order,
+/// without the codes of later milestones.
 fn check(files: &[(&str, &str)], single: bool) -> Vec<String> {
     let (names, types) = run(files, single);
-    let mut diagnostics: Vec<Diagnostic> = names.into_iter().chain(types.diagnostics).collect();
+    let mut diagnostics: Vec<Diagnostic> = names
+        .into_iter()
+        .chain(types.diagnostics)
+        .filter(|d| !later(d.code))
+        .collect();
     diagnostics.sort_by(|a, b| {
         (&a.primary.file, a.primary.start, a.code).cmp(&(&b.primary.file, b.primary.start, b.code))
     });

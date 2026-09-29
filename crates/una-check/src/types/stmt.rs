@@ -10,6 +10,7 @@ use una_syntax::ast::{
 };
 
 use super::Report;
+use super::authority::{Bound, Frame};
 use super::check::{Checker, Ctx, Rl, Role};
 use super::closest;
 use super::env::KindDef;
@@ -27,8 +28,15 @@ impl<'a> Checker<'_, 'a, '_> {
         tail: bool,
     ) -> Ty {
         match body {
-            Body::Line(expr) if tail => self.tail_expr(expr, expected, role),
-            Body::Line(expr) => self.expr_as(expr, expected, role),
+            // A body on one line is its own final expression (`spec/04 §4`).
+            Body::Line(expr) if tail => {
+                self.ctx.top = true;
+                self.tail_expr(expr, expected, role)
+            }
+            Body::Line(expr) => {
+                self.ctx.top = true;
+                self.expr_as(expr, expected, role)
+            }
             Body::Block(block) => self.block(block, expected, role, tail),
         }
     }
@@ -147,17 +155,29 @@ impl<'a> Checker<'_, 'a, '_> {
         if !handled.handlings.is_empty() {
             self.outside_rl(handled.span, || "a handling clause".to_owned());
         }
-        let caps = self.caps.len();
+        // The `with` bindings of a statement form one frame over its expression (`spec/10 §6`);
+        // their right-hand sides resolve outside it.
+        let mut frame = Frame::default();
         for binding in &handled.with {
-            let capability = match &binding.value {
+            let bound = match &binding.value {
                 CapBindingValue::Cap(other) => {
-                    let other = self.name(other);
-                    self.cap(other)
+                    self.rebind_site(other);
+                    Bound::Rebound {
+                        target: self.name(other).to_owned(),
+                    }
                 }
-                CapBindingValue::Handler(call) => self.install(call),
+                CapBindingValue::Handler(call) => Bound::Handler {
+                    capability: self.install(call),
+                    span: call.name.span,
+                },
             };
-            let name = self.name(&binding.cap);
-            self.caps.push((name, capability));
+            frame
+                .bindings
+                .push((self.name(&binding.cap).to_owned(), bound));
+        }
+        let framed = !frame.bindings.is_empty();
+        if framed {
+            self.frames.push(frame);
         }
         let unwraps = handled
             .handlings
@@ -174,12 +194,14 @@ impl<'a> Checker<'_, 'a, '_> {
         // precise diagnostic.
         let value_expected = if unwraps { None } else { expected.cloned() };
         self.ctx.handled = catches;
+        self.ctx.top = true;
         let ty = if tail && handled.handlings.is_empty() {
             self.tail_expr(&handled.expr, value_expected.as_ref(), role)
         } else {
             self.expr_as(&handled.expr, value_expected.as_ref(), role)
         };
         self.ctx.handled = false;
+        self.ctx.top = false;
         let error = self.fails_of(&handled.expr).unwrap_or(Ty::Error);
         let mut current = ty;
         for handling in &handled.handlings {
@@ -194,6 +216,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
                 HandlingKind::ErrorPass => {
                     self.impure(handling.span, || "`if error pass`".to_owned());
+                    self.pass_clause(handling.span, &handled.expr);
                 }
                 HandlingKind::ErrorUse(value) => {
                     let ctx = Ctx {
@@ -217,7 +240,9 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
             }
         }
-        self.caps.truncate(caps);
+        if framed {
+            self.frames.pop();
+        }
         if unwraps && let Some(expected) = expected {
             self.unify_at(handled.expr.span, expected, &current, role);
         }

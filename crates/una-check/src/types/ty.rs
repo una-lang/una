@@ -38,8 +38,20 @@ pub(crate) enum Ty {
 pub(crate) struct FnTy {
     pub(crate) params: Vec<Ty>,
     pub(crate) result: Ty,
-    /// The error kind of `fails`, for M5.
+    /// The capabilities of its `uses` clauses: calling a value of this type needs them.
+    pub(crate) uses: Vec<FnUse>,
+    /// The error kind of `fails`.
     pub(crate) fails: Option<Ty>,
+}
+
+/// A capability that a function type or a function requires, `uses @name: C[ops]`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FnUse {
+    pub(crate) name: String,
+    /// The capability, when its name resolves to one.
+    pub(crate) capability: Option<CapId>,
+    /// The operations it needs, in the capability's declaration order.
+    pub(crate) ops: Vec<String>,
 }
 
 /// A refinement contributed by an alias kind, with the alias's type arguments, or by range
@@ -88,6 +100,7 @@ impl Ty {
             Ty::Fn(function) => Ty::Fn(Box::new(FnTy {
                 params: function.params.iter().map(|p| p.substitute(args)).collect(),
                 result: function.result.substitute(args),
+                uses: function.uses.clone(),
                 fails: function.fails.as_ref().map(|f| f.substitute(args)),
             })),
             other => other.clone(),
