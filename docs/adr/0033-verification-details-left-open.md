@@ -1,8 +1,8 @@
 # 0033. Verification details the specification leaves open
 
-- Status: Provisional (implemented, pending human review)
+- Status: Accepted
 - Date: 2026-09-29
-- Deciders: Claude (overnight run), pending review by Leonardo
+- Deciders: Leonardo (accepted on 2026-09-29), on a proposal by Claude (overnight run)
 
 ## Context
 
@@ -25,7 +25,7 @@ Decision log entries: D-111 to D-121, and D-131 from M10 (`docs/reviews/open-dec
 11. **`una obligations`.** Human output prints one line per obligation, `<status> <id> <kind> <file>:<line>:<col> <goal>`, with `(cached)` for cached results; the exit code is 1 when an obligation is not proven or tier 0 reports diagnostics, which it prints as `una check` does. In `una.obligations/1`, `domain` is `semantic` for every obligation of v0.1.
 12. **`attempt`** (added in M10). The value `x` of an `attempt` gets the hypothesis `x is Ok implies P`, where `P` says that one of the normal return paths of the attempted call was taken, with its facts, among them the callee's `ensures`, and with `x.value` equal to its value. `x is Err` carries nothing, since failures have no postcondition (`spec/04 §2` rule 2). This holds wherever the value of an `attempt` flows: a `let`, a return, the `do` line of an example.
 
-### Changes to other documents on acceptance
+### Changes to other documents on acceptance (made on 2026-09-29)
 
 - `spec/09 §2` gains the terms, clauses, spans and `unreachable` of rule 1; `spec/12 §3` rules 2 to 4; `spec/12 §4` rule 5, and `spec/12 §2` models division by a variable as rule 5 does; `spec/12 §5` rule 6; `spec/12 §9` rule 7; `spec/12 §8` and `spec/13 §2` rule 8; `spec/12 §7` rule 9; `spec/13 §3` rule 10; `spec/13 §5` rule 11; `spec/12 §3` gains a row for `let x = attempt f(ā)` from rule 12.
 

@@ -30,6 +30,7 @@ Every problem the toolchain reports is a diagnostic with a registered code (§4)
 | --- | --- |
 | `severity` | `error`, `warning` or `note`. v0.1 defines errors only. |
 | `domain` | `syntax`, `names`, `types`, `authority`, `security`, `verification`, `runtime`, `project`, `internal` |
+| `primary` | Required. A diagnostic about something that has no position in any file is located at the empty range at line 1, column 1 of the file that declares what is checked: the package's `una.toml`, or the checked file itself for a package of one file (ADR 0022). A missing `verification.lock` is thus U7004 at `una.toml` 1:1 |
 | `file` | Relative to the package root, with `/` separators. A file checked on its own, such as a single-module conformance case, has its directory as package root, so `file` is its bare name (ADR 0015) |
 | Positions | 1-based line, 1-based column counted in Unicode scalar values after decoding; `end` is exclusive. Each maximal ill-formed subsequence of invalid UTF-8 counts as one column (Unicode §3.9); a byte order mark and a tab count as one column each (ADR 0015) |
 | `obligation`, `counterexample` | Present only for U5001 and U5002 |
@@ -69,6 +70,8 @@ With `--json`, `una check` and `una fmt --check` print their diagnostics as one 
 }
 ```
 
+`source` is the declaring clause for a return obligation, and the site otherwise. `hypotheses` are the refinements of record fields that the query assumes, then the path context at the site, or at the function's entry for a return obligation, printed in the surface syntax. `domain` is `semantic` for every obligation of v0.1 (ADR 0033).
+
 ## 3. Repair candidates
 
 For U5001 and U5002 the compiler proposes, when applicable, in this order:
@@ -79,6 +82,8 @@ For U5001 and U5002 the compiler proposes, when applicable, in this order:
 | Add a `requires` clause equal to the missing hypothesis (only for non-`pub` functions or with a note that callers change) | 0 |
 | Add a guard (`if` or `when` arm) that handles the failing case | 0 |
 | Replace the value with `checked(value, goal) else fail <Variant>` | 1 |
+
+By kind (ADR 0033): a refuted or unknown `refinement` or `precondition` proposes, in order, a stronger parameter type when the value is a parameter, a `requires` clause for a private function, a guard, and `checked`; a `postcondition` proposes a guard or a changed `ensures` clause; a `division` a guard; an `exhaustive` an `else` arm. These repairs have no mechanical edit (`edit` is `null`).
 
 Other diagnostics MAY include repairs (for example, a missing label with its mechanical edit). Repairs are never applied automatically.
 
@@ -152,7 +157,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U7005 | project | Trusted module not declared in both header and `una.toml` |
 | U8001 | internal | Internal compiler error (always a bug) |
 
-Codes are never reused. Retired codes stay in this table marked retired. Gaps in the numbering, such as U4006 and U6002, are unassigned numbers, not retired codes (ADR 0012). `una explain <code>` prints a paragraph and a minimal failing and fixed example for every code.
+Codes are never reused. Retired codes stay in this table marked retired. Gaps in the numbering, such as U4006 and U6002, are unassigned numbers, not retired codes (ADR 0012). `una explain <code>` prints a paragraph and a minimal failing and fixed example for every code, but U8001: an internal error is a bug of the compiler, so its text has no example and says how to report it (ADR 0034).
 
 ## 5. Command line
 
@@ -172,7 +177,36 @@ Global flags: `--json` (machine output on stdout, nothing else on stdout), `--co
 
 Output streams (ADR 0015): human-mode diagnostics go to stderr; command results go to stdout (the explain text, contracts, reports, obligation listings and the program output of `una run`). With `--json`, the JSON document goes to stdout and stderr stays empty, except for internal compiler errors (U8001). A failure to write output exits with code 2.
 
-Grant specs: `console`, `clock`, `env`, `keys:<keyfile>`, `files:<path>:read`, `files:<path>:write`, `files:<path>:read,write`.
+Grant specs: `console`, `clock`, `env`, `keys:<keyfile>`, `files:<path>:read`, `files:<path>:write`, `files:<path>:read,write`. They grant `Console[print]`, `Clock[now]`, `Env[get]`, `Keys[hmac]`, and the `Files` operations of the modes. When `una.toml` names a `[run] entry`, `una check` reports each `uses` clause of that module's `main` whose capability is not a host capability, since no grant can provide it (U3012); when `una.toml` also lists `[run] grants`, a host operation of `main` that no grant allows is U3012 at its `uses` clause. `una run` checks `main` against `[run] grants` and `--grant` flags together before the program starts (ADR 0028).
+
+`una run [path]` runs `pub main() -> Unit` of the entry module: `[run] entry`, or the module of a single file (ADR 0032). It checks the package first, at tier 1, with the grants of `[run] grants` and of `--grant` flags together as final grants, so U3012 reports before execution every `uses` of `main` that they do not grant. A package without an entry, an entry without `pub main() -> Unit`, a `--grant` value that is not a grant spec, an unreadable or invalid key file, and a `--max-depth` whose stack cannot be allocated are usage errors (exit code 2). Relative paths of `una.toml` grants resolve against the package root, and those of flags against the current directory. A `Files` path is relative to the grant's prefix: it is normalized lexically, its existing part is resolved through the file system, and a path that ends outside the prefix, absolute, through `..` or through a link, fails with `FileError.Denied`, as does an operation that the grant's mode does not allow. The key file of `keys:<file>` is a TOML table of key names to base64 keys, loaded before the run starts; the first grant that names a key wins, and an unknown name fails with `KeyError.UnknownKey`.
+
+In human mode, the lines the program prints go to stdout as it prints them, and U6001 and U6003 go to stderr, with exit code 1. U6001 points at the name of `main` and names the variant, with the payload fields whose labels are `public`; U6003 points at the call that exceeds the depth. With `--json`, `una run` prints `{"schema":"una.run/1","tier":...,"status":...,"output":[...],"failure":...,"diagnostics":[...],"trace":[...]}` with keys in that order: `tier` is the tier the checks ran at; `status` is `ok`, `failed` (U6001), `aborted` (U6003 or U8001) or `rejected` (the checks reported errors, which `diagnostics` holds, and nothing ran); `failure` is `null` or `{"variant":...,"fields":{...}}` with the `public` fields only.
+
+`una test [path]` prints, in human mode, one line per example on stdout, `example <module> "<name>" ... ok` or `... FAILED`, followed for a failed example by the file, line and text of the expectation to blame, when there is one, and the reason; then a blank line and `<n> examples: <p> passed, <f> failed`. It exits with code 1 when an example fails. With `--json` it prints `{"schema":"una.test/1","tier":...,"diagnostics":[...],"examples":[...],"passed":p,"failed":f}`: `diagnostics` holds the errors of the checks when nothing ran, or U6003 and U8001 of aborted examples; each example has `module`, `name`, `outcome` (`pass` or `fail`), `reason` (`null`, or why it fails), `expectation` (`null`, or `{"file":...,"line":...,"text":...}`), `result` (`{"kind":"ok","value":...}`, `{"kind":"fail","variant":...,"value":...}` or `{"kind":"aborted"}`) and `trace` (`spec/11 §5`).
+
+`una obligations [path]` prints one line per obligation, `<status> <id> <kind> <file>:<line>:<col> <goal>`, with `(cached)` for a cached result, and exits with code 1 when an obligation is not proven (ADR 0033).
+
+Every command prints one JSON document with `--json`, its `schema` key first (ADR 0034). `una explain --json <code>` prints `{"schema":"una.explain/1","code":...,"domain":...,"meaning":...,"text":...}`. When the checks reject the package, `una contract`, `una trace`, `una obligations` and `una report` print the diagnostic list of `una check` and exit with code 1; `una run` and `una test` carry the diagnostics in their own documents. Usage errors stay on stderr, with exit code 2.
+
+`una contract <qualified.name>` reads the package in the current directory and checks it at tier 0 (ADR 0029). The name is the module path followed by the function's name, as in `events.checkin.check_in`, and names a function; an unknown name is a usage error (exit code 2). When the package has diagnostics, `una contract` reports them as `una check` does and exits with code 1, since an inferred header is defined only for a package that checks. Otherwise it prints the doc comments, then the header in canonical form with every clause, declared or inferred, in canonical order, each inferred clause followed by the comment `-- inferred`, then one line per requirement of `derived from`: `-- requirement ID (status): "text"`. With `--json` it prints `una.contract/1`, compact, with keys in this order:
+
+```json
+{
+  "schema": "una.contract/1",
+  "function": "events.checkin.check_in",
+  "public": true,
+  "docs": ["Looks up a registration by phone, shows its availability, and records it."],
+  "header": "pub check_in(phone: secret[PII] Phone) -> Availability",
+  "requires": [],
+  "ensures": [],
+  "uses": [ { "cap": "registrations", "capability": "Registrations", "ops": ["find"], "inferred": false } ],
+  "fails": { "kind": "CheckInError", "inferred": false },
+  "derived_from": [ { "id": "EVENTS_3", "status": "active", "text": "..." } ]
+}
+```
+
+`fails` is `null` for a function that cannot fail, `ops` lists the operations in the declaration order of the capability, and `docs` holds the doc comments without their `---` marker.
 
 ## 6. Build report
 
@@ -198,6 +232,22 @@ Grant specs: `console`, `clock`, `env`, `keys:<keyfile>`, `files:<path>:read`, `
 
 `trivial_ensures` counts `ensures` clauses the solver proves valid without any hypothesis (for example `ensures true`); they are reported as missing contracts.
 
+`una report [path]` checks the package at tier 1. When the checks report diagnostics, it prints them as `una check` does; otherwise it prints the report, and exits with code 1 when an obligation is not proven. Its sections, in the order of the example (ADR 0034):
+
+- `package`: the name and version of `una.toml`; a single file is named after its module, with version `0.0.0`.
+- `lock`: the solver version, and the hex SHA-256 of the lock's contents (for a single file, of the default lock's text).
+- `proven`: the number of proven obligations as `semantic`; `security` and `authority` are `"by typing"`. `obligations`: the counts by status.
+- `authority`: every function of the package with `uses`, by qualified name, with `public`, its `uses` as written in a header, and whether they are inferred.
+- `information.policy_calls`: every call of a policy, in source order, with the policy, its purpose and owner, and the site.
+- `escapes.checked`: every module that uses `checked`, with the count and the budget of `una.toml`.
+- `assumptions`: every capability the package declares, with its operations and their `ensures` clauses as `op: clause`.
+- `tcb`: the trusted modules with their line counts, the host capabilities the package's functions use, and the solver as `z3 <version>`.
+- `requirements`: every requirement, by identifier, with its status and the functions derived from it.
+- `coverage`: `pub_functions` counts the public functions, `with_ensures` those with at least one `ensures` clause that is not trivial, `with_derived_from` those with a `derived from` clause, and `trivial_ensures` the trivial clauses of public functions. An `ensures` clause is trivial when the solver proves it with no hypothesis, its parameters and `result` unconstrained: one more query per clause of a public function, cached like the others; a solver that cannot answer these queries gives U5003 or U8001 instead of the report.
+- `out_of_model`: timing, termination, resource consumption, and external systems beyond their declared signatures.
+
+Without `--json`, the same sections print as labeled lines.
+
 ## 7. Project files
 
 Package layout: `una.toml` and `verification.lock` at the root, sources under `src/`. Module `a.b.c` lives in `src/a/b/c.una` (U1008).
@@ -222,4 +272,21 @@ entry = "events.main"
 grants = ["console"]
 ```
 
-Unknown keys are U7002.
+Commands take a file or a directory, `.` by default (ADR 0021):
+
+- A directory is a package only if it contains `una.toml` and `src/`; otherwise the command stops with a usage error (exit code 2). Its modules are the files `src/**/*.una`, hidden entries excepted, and the module in `src/a/b/c.una` MUST be declared `module a.b.c` (U1008).
+- A file is a package of one module, whose root is the file's directory. It has the default settings, the default lock and no module path check.
+
+`una.toml` is a TOML document with these tables and keys, and no others (U7002):
+
+- `[package]`, required: `name`, `version` and `edition`, non-empty strings; `edition` is `"0.1"`.
+- `[labels]`: `categories`, an array of category names (UpperCamelCase, U1005; unique, U1002).
+- `[trusted]`: `modules`, an array of module paths, each a module of the package whose header says `trusted module` (U7005).
+- `[escape_budget]`: `checked_per_module`, an integer of at least 0 (default 0).
+- `[run]`: `entry`, the path of a module of the package, and `grants`, an array of the grant specs of §5.
+
+A TOML syntax error, a missing required key, and a value of the wrong type or outside its range are U7002. The default settings are empty `[labels]`, `[trusted]` and `[run]` tables and a budget of 0.
+
+`verification.lock` is a TOML document with exactly the keys of `spec/12 §9`: `encoding_version = "una-smt-1"`, `solver = "z3"`, `solver_version` a non-empty string, `logic = "QF_UFLIA"`, `step_budget` an integer of at least 1, and `random_seed` an integer of at least 0. A missing file, a TOML syntax error, a missing or unknown key and a wrong value are U7004; a solver of another version is U5003. A single file uses the default lock, which holds the values of the repository's `verification.lock`.
+
+Project errors do not stop checking: the modules are still checked, with the default settings in place of an invalid `una.toml`.

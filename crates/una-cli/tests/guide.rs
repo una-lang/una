@@ -237,3 +237,55 @@ fn every_block_of_the_guide_is_checked() {
     // Every kind of block is present: modules, documents, commands and packages.
     assert!(checked.iter().all(|n| *n > 0), "{checked:?}");
 }
+
+/// Every `.una` file under `dir`, read.
+fn una_files(dir: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            out.extend(una_files(&path));
+        } else if path.extension().is_some_and(|e| e == "una") {
+            out.push(std::fs::read_to_string(&path).unwrap());
+        }
+    }
+    out
+}
+
+#[test]
+fn the_readme_shows_only_checked_code() {
+    // `compiler/testing.md §6`: every `una` block of `README.md` is copied from a file that the
+    // other tests check (the examples, the demo programs, the guide), or checks clean on its
+    // own; every `json` block parses and names a schema the CLI prints.
+    let readme = std::fs::read_to_string(repository().join("README.md")).unwrap();
+    let mut checked = una_files(&repository().join("examples"));
+    checked.extend(una_files(&repository().join("tests/demo")));
+    checked
+        .push(std::fs::read_to_string(repository().join("docs/guide/una-for-agents.md")).unwrap());
+    let mut blocks_seen = 0;
+    for block in blocks(&readme) {
+        let at = block.line;
+        match block.lang.as_str() {
+            "una" if checked.iter().any(|source| source.contains(&block.body)) => {}
+            "una" => {
+                let file = scratch(100_000 + at).join("readme.una");
+                std::fs::write(&file, &block.body).unwrap();
+                let (_, found) = check(&file);
+                assert_eq!(found, Vec::<String>::new(), "readme block at line {at}");
+            }
+            "json" => {
+                let document: Value = serde_json::from_str(&block.body)
+                    .map_err(|e| format!("readme block at line {at}: {e}"))
+                    .unwrap();
+                let schema = document["schema"].as_str().unwrap_or("");
+                assert!(
+                    SCHEMAS.contains(&schema),
+                    "readme block at line {at}: {schema}"
+                );
+            }
+            _ => continue,
+        }
+        blocks_seen += 1;
+    }
+    assert!(blocks_seen > 0, "the readme shows no code");
+}

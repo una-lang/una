@@ -1,8 +1,8 @@
 # 0023. Name resolution
 
-- Status: Provisional (implemented, pending human review)
+- Status: Accepted
 - Date: 2026-09-29
-- Deciders: Claude (overnight run), pending review by Leonardo
+- Deciders: Leonardo (accepted on 2026-09-29), on a proposal by Claude (overnight run)
 
 ## Context
 
@@ -21,9 +21,9 @@ Decision log entries: D-037 to D-042 and D-046 (`docs/reviews/open-decisions.md`
 7. **Syntax errors.** In a module with syntax errors, declarations that parsed are registered and checked for U1002, U1005 and U1008, but bodies are not resolved, and imports from that module are not checked, so no diagnostic cascades from a declaration that failed to parse.
 8. **Conventions (U1005)**, checked where a name is defined: lower-case names (declarations, parameters, locals, fields, operations, module path segments, owners) contain no `__` and do not end with `_`; kinds, variants, capabilities, type parameters and label categories are UpperCamelCase (`[A-Z][a-zA-Z0-9]*`); requirement identifiers match `[A-Z][A-Z0-9]*(_[A-Z0-9]+)*_[0-9]+`.
 
-### Changes to other documents on acceptance
+### Changes to other documents on acceptance (made on 2026-09-29)
 
-- `spec/10` gains a section "Names" stating rules 1 to 8.
+- `spec/10` gains a section "Names" stating rules 1 to 8: `spec/10 §11`.
 
 ## Consequences
 

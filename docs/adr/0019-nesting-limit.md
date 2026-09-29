@@ -1,8 +1,8 @@
 # 0019. Nesting limit
 
-- Status: Provisional (implemented, pending human review)
+- Status: Accepted
 - Date: 2026-09-29
-- Deciders: Claude (overnight run), pending review by Leonardo
+- Deciders: Leonardo (accepted on 2026-09-29), on a proposal by Claude (overnight run)
 
 ## Context
 
@@ -18,7 +18,7 @@ Decision log entry: D-022 (`docs/reviews/open-decisions.md`).
 2. **A text literal nested in an interpolation**, already U0006, has no interpolation of its own: `{` and `}` inside it are text. This bounds the lexer's recursion.
 3. **`una check` runs its passes on a thread with a 64 MiB stack.** Library callers that parse deeply nested input do the same; `una_syntax::parse` documents it.
 
-### Changes to other documents on acceptance
+### Changes to other documents on acceptance (made on 2026-09-29)
 
 - `spec/02` gains a section "Limits": "An implementation MUST accept nesting up to 256 levels, counted as in ADR 0019, and MUST reject deeper nesting with U0101."
 

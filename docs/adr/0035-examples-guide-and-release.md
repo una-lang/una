@@ -1,8 +1,8 @@
 # 0035. Examples, guide and release for Gate 1
 
-- Status: Provisional (implemented, pending human review)
+- Status: Accepted
 - Date: 2026-09-29
-- Deciders: Claude (overnight run), pending review by Leonardo
+- Deciders: Leonardo (accepted on 2026-09-29), on a proposal by Claude (overnight run)
 
 ## Context
 
@@ -17,7 +17,7 @@ Decision log entries: D-127 to D-130 (`docs/reviews/open-decisions.md`).
 3. **Release artifacts.** `scripts/release.sh <target>` builds `una` with `--release --locked` and writes `una-<version>-<target>.tar.gz`, holding `una`, `LICENSE` and `README.md` in a directory of the same name, and its `.sha256` file; `<version>` is the workspace version, and each target builds natively. `scripts/check-release.sh <target>` checks an archive: its digest, its contents, and the packed binary on the examples. `.github/workflows/release.yml` runs it for `x86_64-unknown-linux-gnu` and `aarch64-apple-darwin` when a tag `v*` is pushed and attaches the archives to a draft release. The CI workflow packs and checks the Linux archive on every push; macOS archives build in the release workflow only (D-083), and locally.
 4. **The tag.** The run does not create or push `v0.1.0`. The owner tags the reviewed commit on `main`, which starts the release workflow.
 
-### Changes to other documents on acceptance
+### Changes to other documents on acceptance (made on 2026-09-29)
 
 - `plan/milestones-v0.1.md` M10 names the five packages and the targets; `compiler/testing.md` describes the example and guide tests.
 

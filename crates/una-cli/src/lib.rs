@@ -25,7 +25,7 @@ use una_check::{
 };
 use una_diag::{Code, Diagnostic, render_human, render_json};
 use una_syntax::ast::File;
-use una_syntax::{FileId, Interner, SourceDb, SourceFile, lex, parse};
+use una_syntax::{FileId, Interner, Lexed, SourceDb, lex, parse};
 
 use crate::args::{Cli, ColorChoice, Command, TierArg};
 pub use crate::package::{LoadError, Package, load};
@@ -129,15 +129,17 @@ fn analyze(package: &Package, run_grants: Option<&[String]>) -> Analysis {
     let (manifest, mut diagnostics) = package::project(package);
     let mut interner = Interner::new();
     let mut trees = Vec::new();
-    for &id in &package.modules {
-        let file = package.sources.file(id);
-        let checked = check_file(&package.sources, id, file, &mut interner);
+    for checked in check_files(&package.sources, &package.modules, &mut interner) {
         let broken = !checked.syntax.is_empty();
         diagnostics.extend(checked.syntax);
         if let Some(canonical) = checked.canonical {
-            diagnostics.extend(una_fmt::differences(&package.sources, id, &canonical));
+            diagnostics.extend(una_fmt::differences(
+                &package.sources,
+                checked.id,
+                &canonical,
+            ));
         }
-        trees.push((id, checked.tree, broken));
+        trees.push((checked.id, checked.tree, broken));
     }
     // DECISION D-109: the entry is `[run] entry`, or the module of a single file.
     let entry = if package.single {
@@ -191,34 +193,51 @@ fn analyze(package: &Package, run_grants: Option<&[String]>) -> Analysis {
 /// The syntax diagnostics of one file, its tree, and its canonical form when it has no
 /// syntax error.
 struct FileCheck {
+    id: FileId,
     syntax: Vec<Diagnostic>,
     tree: File,
     canonical: Option<String>,
 }
 
-fn check_file(
-    sources: &SourceDb,
-    id: FileId,
-    file: &SourceFile,
-    interner: &mut Interner,
-) -> FileCheck {
-    let lexed = lex(file, id, interner);
-    let parsed = parse(&lexed, id, interner);
-    let syntax: Vec<Diagnostic> = lexed
-        .errors
+/// Lexes and parses the files `modules` of a package, then prints each one that parsed in its
+/// canonical form, knowing the constructors that every such file declares (ADR 0020 rule 6,
+/// DECISION D-026).
+fn check_files(sources: &SourceDb, modules: &[FileId], interner: &mut Interner) -> Vec<FileCheck> {
+    let parsed: Vec<(FileId, Lexed, File, Vec<Diagnostic>)> = modules
         .iter()
-        .chain(&parsed.errors)
-        .map(|error| error.to_diagnostic(sources))
+        .map(|&id| {
+            let lexed = lex(sources.file(id), id, interner);
+            let parsed = parse(&lexed, id, interner);
+            let syntax: Vec<Diagnostic> = lexed
+                .errors
+                .iter()
+                .chain(&parsed.errors)
+                .map(|error| error.to_diagnostic(sources))
+                .collect();
+            (id, lexed, parsed.file, syntax)
+        })
         .collect();
-    // DECISION D-027: a file with syntax errors has no canonical form.
-    let canonical = syntax
-        .is_empty()
-        .then(|| una_fmt::format(file, &lexed, &parsed.file, interner));
-    FileCheck {
-        syntax,
-        tree: parsed.file,
-        canonical,
-    }
+    let constructors = una_fmt::Constructors::new(
+        parsed
+            .iter()
+            .filter(|(_, _, _, syntax)| syntax.is_empty())
+            .map(|(_, _, tree, _)| tree),
+    );
+    parsed
+        .into_iter()
+        .map(|(id, lexed, tree, syntax)| {
+            // DECISION D-027: a file with syntax errors has no canonical form.
+            let canonical = syntax.is_empty().then(|| {
+                una_fmt::format_with(sources.file(id), &lexed, &tree, interner, &constructors)
+            });
+            FileCheck {
+                id,
+                syntax,
+                tree,
+                canonical,
+            }
+        })
+        .collect()
 }
 
 /// The stack of the thread that checks a package. The passes recurse over the syntax tree,
@@ -493,14 +512,11 @@ fn fmt_command(
     let sources = &package.sources;
     let checks = on_large_stack(|| {
         let mut interner = Interner::new();
-        package
-            .modules
-            .iter()
-            .map(|&id| (id, check_file(sources, id, sources.file(id), &mut interner)))
-            .collect::<Vec<_>>()
+        check_files(sources, &package.modules, &mut interner)
     });
     let mut diagnostics = Vec::new();
-    for (id, checked) in checks {
+    for checked in checks {
+        let id = checked.id;
         diagnostics.extend(checked.syntax);
         let Some(canonical) = checked.canonical else {
             continue;

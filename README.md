@@ -40,7 +40,7 @@ This repository holds the language specification, the design record and **Una Co
 
 ## Project status
 
-**v0.1, Una Core, is feature-complete** on the `dev/v0.1` branch: every milestone of `docs/plan/milestones-v0.1.md` is implemented and meets its acceptance criteria, and CI is green. The branch awaits review before it is merged into `main` and tagged `v0.1.0`, which publishes the first release archives. Choices the specification leaves open are recorded as Provisional ADRs in `docs/adr/` and in the decision log `docs/reviews/open-decisions.md`, each waiting for a keep-or-switch answer.
+**v0.1, Una Core, is complete, reviewed and merged into `main`**: every milestone of `docs/plan/milestones-v0.1.md` is implemented and meets its acceptance criteria, and CI is green on Linux and macOS. The choices the specification left open were reviewed and kept on 2026-09-29: the ADRs that record them in `docs/adr/` are Accepted, the specification states their rules, and `docs/reviews/open-decisions.md` keeps each decision with its answer. The tag `v0.1.0`, which publishes the first release archives, comes next.
 
 Una is a research language built to test a thesis (see [Roadmap](#roadmap)). It is not ready for production use.
 
@@ -61,9 +61,9 @@ Una is a research language built to test a thesis (see [Roadmap](#roadmap)). It 
 | At a glance | |
 | --- | --- |
 | Rust crates | 10, about 33,000 lines of Rust |
-| Specification | 14 normative chapters, 35 architecture decision records |
+| Specification | 15 normative chapters, 35 architecture decision records |
 | Diagnostic codes | 65, each with an explanation, and all but the internal error with a failing and a fixed example |
-| Tests | 319 Rust tests, 193 conformance cases, all passing |
+| Tests | 320 Rust tests, 194 conformance cases, all passing |
 | Example packages | 7, each verified at tier 1 with every obligation proven |
 | Usage checkpoints | 4 of 4 reached, each with a demo script run in CI |
 
@@ -540,7 +540,7 @@ Tests that reach tier 1 need the pinned Z3 on `PATH`; without it they fail with 
 | Conformance | `tests/conformance/` | Each rule of the specification, positive and negative, with expectations in directive comments (`docs/compiler/testing.md`) |
 | Snapshots | `crates/*/tests/snapshots/` | Syntax trees of the examples, Core IR, SMT queries, JSON documents; review each change, never accept one blindly |
 | Properties | `crates/una-fmt/tests/` | Formatting is idempotent and preserves every `.una` file of the repository |
-| End to end | `crates/una-cli/tests/` | The CLI, the ABI documents, the runtime, verification, the examples, the guide, the explain examples, determinism, the checkpoint demos |
+| End to end | `crates/una-cli/tests/` | The CLI, the ABI documents, the runtime, verification, the examples, the guide and this readme's code, the explain examples, determinism, the checkpoint demos |
 
 CI (`.github/workflows/ci.yml`) runs formatting, clippy and the tests on Linux for every push, and also on macOS for pull requests and pushes to `main`; each push also packs the Linux release archive and runs it on the examples. Pushing a tag `v*` starts `.github/workflows/release.yml`, which builds the Linux and macOS archives with `scripts/release.sh`, checks them with `scripts/check-release.sh`, and attaches them to a draft release.
 
@@ -559,7 +559,7 @@ scripts/demo/checkpoint-4.sh    # trust: proofs, counterexamples, obligations, t
 | Document | Purpose |
 | --- | --- |
 | [`docs/00-charter.md`](docs/00-charter.md) | What Una is, what it proves and assumes, the v0.1 scope. Read first |
-| [`docs/spec/`](docs/spec/) | The normative specification, 14 chapters, with RFC 2119 keywords |
+| [`docs/spec/`](docs/spec/) | The normative specification, 15 chapters, with RFC 2119 keywords |
 | [`docs/guide/una-for-agents.md`](docs/guide/una-for-agents.md) | A compact, tested reference for agents writing Una |
 | [`docs/adr/`](docs/adr/) | Architecture decision records: why each key decision was made |
 | [`docs/compiler/`](docs/compiler/) | Architecture, conventions and testing of the reference compiler |
@@ -583,6 +583,7 @@ scripts/demo/checkpoint-4.sh    # trust: proofs, counterexamples, obligations, t
 | [`12-verification`](docs/spec/12-verification.md) | Obligations, the decidable fragment, the SMT encoding, statuses, the lock |
 | [`13-diagnostics-and-abi`](docs/spec/13-diagnostics-and-abi.md) | Diagnostic codes, JSON schemas, the command line, the build report |
 | [`14-standard-library`](docs/spec/14-standard-library.md) | The prelude and the host capabilities of v0.1 |
+| [`15-canonical-form`](docs/spec/15-canonical-form.md) | The canonical form: lines, spacing, blank lines, comments, U7001 |
 
 When documents disagree, the specification wins, then accepted ADRs, then the compiler documents, then the plans.
 

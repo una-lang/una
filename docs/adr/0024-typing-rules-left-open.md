@@ -1,8 +1,8 @@
 # 0024. Typing rules the specification leaves open
 
-- Status: Provisional (implemented, pending human review)
+- Status: Accepted
 - Date: 2026-09-29
-- Deciders: Claude (overnight run), pending review by Leonardo
+- Deciders: Leonardo (accepted on 2026-09-29), on a proposal by Claude (overnight run)
 
 ## Context
 
@@ -28,9 +28,9 @@ Decision log entries: D-048 to D-055 and D-061 to D-069 (`docs/reviews/open-deci
 14. **Policies.** The `via` function takes the base type of `from` and returns the base type of `to` (U2001 otherwise, until M6; U4005 since, as `spec/07 §5` rule 4 requires, ADR 0031 rule 7). A policy call takes one argument without a label.
 15. **Argument counts.** Too many arguments, and a parameter that receives none, are U2001.
 
-### Changes to other documents on acceptance
+### Changes to other documents on acceptance (made on 2026-09-29)
 
-- `spec/10` gains a section on surface typing that states rules 1, 2, 4 to 8 and 10 to 15; `spec/03 §3` lists text literals among the RL atoms and the forms of rule 9 as outside the language.
+- `spec/10` gains a section on surface typing that states rules 1, 2, 4 to 8 and 10 to 15; `spec/03 §3` lists text literals among the RL atoms and the forms of rule 9 as outside the language. The section is `spec/10 §12`, where rules 1, 2, 4 to 8 and 10 to 15 are numbered 1 to 13.
 
 ## Consequences
 

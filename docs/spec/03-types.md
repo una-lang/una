@@ -46,7 +46,7 @@ Rules:
 
 A refinement predicate is written in the **refinement language** RL, a subset of expressions that the verifier can reason about (`spec/12 §2`):
 
-- integer and boolean literals;
+- integer, boolean and text literals (text literals are distinct constants, `spec/12 §4`);
 - `it`, parameters of the enclosing function, and field access on them (`it.remaining`, `a.b.c`);
 - `.len` on `Text` and `List` values;
 - `+`, `-`, unary `-`; `*` where at least one operand is a literal; `/` and `mod` by a nonzero literal;
@@ -54,7 +54,7 @@ A refinement predicate is written in the **refinement language** RL, a subset of
 - `and`, `or`, `not`, `implies`;
 - calls to predicates (§4).
 
-An expression outside RL in a `where`, `requires` or `ensures` clause is an error (U2014), reported with the offending sub-expression.
+An expression outside RL in a `where`, `requires` or `ensures` clause is an error (U2014), reported at the outermost offending sub-expression. Outside RL, in particular, are the ordering of `Text`, `is` with a literal, comparing with a variant by `==`, `unit` and interpolated text; the diagnostic carries an edit from `x == V` to `x is V` and from `x is 1` to `x == 1` (ADR 0024).
 
 Range sugar: `T in a..b` means `T where a <= it and it <= b`; `T in a..<b` means `T where a <= it and it < b`.
 
