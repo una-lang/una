@@ -1,0 +1,11 @@
+-- test: checked on a secret value reveals it through its failure
+-- spec: spec/07 §3
+-- expect: error U4002 at src/app/parse.una:11:3
+module app.parse
+
+kind ParseError = | Empty
+
+pub nonempty(raw: secret Text) -> secret Text
+  fails ParseError
+=
+  checked(raw, raw.len > 0) else fail Empty
