@@ -227,10 +227,18 @@ impl<'e, 'a> Fx<'e, 'a> {
             Ty::Unit => Base::Unit,
             Ty::Hashed => Base::Hashed,
             Ty::List(element) => Base::Named {
+                module: "prelude".to_owned(),
                 name: "List".to_owned(),
                 args: vec![self.ty(element)],
             },
             Ty::Kind(id, args) => Base::Named {
+                module: self
+                    .env
+                    .kinds
+                    .get(*id)
+                    .and_then(|kind| self.env.modules.get(kind.module))
+                    .map(|module| module.path.clone())
+                    .unwrap_or_default(),
                 name: self.env.kind_name(*id).to_owned(),
                 args: args.iter().map(|a| self.ty(a)).collect(),
             },
@@ -1339,7 +1347,10 @@ impl<'e, 'a> Fx<'e, 'a> {
                 )
             }
             ExprKind::Fail(variant) => self.fail(variant),
-            ExprKind::Attempt(operand) => CoreExpr::Attempt(Box::new(self.expr(operand))),
+            ExprKind::Attempt(operand) => CoreExpr::Attempt {
+                body: Box::new(self.expr(operand)),
+                span: expr.span,
+            },
             _ => {
                 let mut lets = Vec::new();
                 let atom = self.atom(&mut lets, expr);

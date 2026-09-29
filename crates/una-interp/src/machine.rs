@@ -533,7 +533,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                     }
                     other => return other,
                 },
-                Expr::Attempt(body) => {
+                Expr::Attempt { body, .. } => {
                     return match self.eval(env, &caps, body) {
                         Ok(value) => Ok(Value::data(prelude_ctor("Result", "Ok", 0), vec![value])),
                         Err(Stop::Fail(failure)) => {

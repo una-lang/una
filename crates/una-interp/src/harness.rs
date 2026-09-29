@@ -293,7 +293,7 @@ fn mentions(expr: &Expr, name: &str) -> bool {
         }
         Expr::Fail { args, .. } => args.iter().any(atom),
         Expr::Handle { body, handler, .. } => mentions(body, name) || mentions(handler, name),
-        Expr::Attempt(body) => mentions(body, name),
+        Expr::Attempt { body, .. } => mentions(body, name),
         Expr::With { source, body, .. } => {
             (match source {
                 Source::Rebind(_) => false,
