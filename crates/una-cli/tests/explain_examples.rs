@@ -129,12 +129,14 @@ fn failing_examples_yield_their_code_and_fixed_examples_yield_nothing() {
         assert_eq!(codes(code, "fixed", &fixed), [], "{code}: fixed example");
         checked.push(code.as_str());
     }
-    // The codes of M1 to M4 have their texts (the milestone plans).
+    // The codes of M1 to M5 have their texts (the milestone plans).
     for code in [
         "U0001", "U0002", "U0003", "U0004", "U0005", "U0006", "U0007", "U0101", "U0102", "U0103",
         "U7001", "U1001", "U1002", "U1003", "U1004", "U1005", "U1006", "U1007", "U1008", "U7002",
         "U7004", "U7005", "U2001", "U2002", "U2003", "U2004", "U2005", "U2006", "U2007", "U2008",
-        "U2009", "U2010", "U2011", "U2012", "U2013", "U2014", "U2015",
+        "U2009", "U2010", "U2011", "U2012", "U2013", "U2014", "U2015", "U3001", "U3002", "U3003",
+        "U3004", "U3005", "U3006", "U3007", "U3008", "U3009", "U3010", "U3011", "U3012", "U3013",
+        "U3014", "U3015", "U7003",
     ] {
         assert!(checked.contains(&code), "{code} has no examples");
     }
