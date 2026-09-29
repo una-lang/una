@@ -1,0 +1,13 @@
+-- test: a lambda that uses capabilities cannot be bound with let
+-- spec: spec/10 §9
+-- expect: error U3006 at 12:55
+module effectful_lambda_escapes
+
+capability Log
+  op write(line: Text) -> Unit
+
+pub run() -> Unit
+  uses @log: Log[write]
+=
+  let write: fn(Text) -> Unit uses @log: Log[write] = fn(t) -> @log.write(t)
+  unit

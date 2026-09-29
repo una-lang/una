@@ -7,13 +7,15 @@ use std::collections::BTreeMap;
 use una_diag::Code;
 use una_syntax::ast::{
     CapabilityDecl, ClauseKind, DeclKind, Expr, Field, File, FnTypeClause, FunctionDecl,
-    HandlerDecl, Ident, KindBody, KindDecl, OpClauseKind, Param, PolicyDecl, PredicateDecl, Type,
-    TypeCore,
+    HandlerDecl, Ident, KindBody, KindDecl, Label as LabelAst, OpClauseKind, Param, PolicyDecl,
+    PredicateDecl, Type, TypeCore, UsesClause,
 };
 use una_syntax::{Interner, Span, Symbol};
 
 use super::Report;
-use super::ty::{AliasId, CapId, Declared, FnTy, KindId, Refinement, Ty};
+use super::closest;
+use super::label::{Accepts, Label};
+use super::ty::{AliasId, CapId, Declared, FnTy, FnUse, KindId, Refinement, Ty};
 
 /// A module the checker knows: a package module, the prelude or `std.testing`.
 pub(crate) struct Module<'a> {
@@ -143,6 +145,15 @@ pub(crate) struct ParamDef<'a> {
     pub(crate) span: Span,
 }
 
+/// A capability that a header or a handler requires, `uses @name: C[ops]`, declared or
+/// inferred (`spec/05 §3`).
+#[derive(Clone, Debug)]
+pub(crate) struct Need {
+    pub(crate) usage: FnUse,
+    /// Where the clause is written, or where an inferred requirement first arises.
+    pub(crate) span: Span,
+}
+
 /// A function, predicate or policy, with its signature.
 #[derive(Clone, Debug)]
 pub(crate) struct FnDef<'a> {
@@ -156,8 +167,14 @@ pub(crate) struct FnDef<'a> {
     pub(crate) result_span: Span,
     /// The declared error kind (`fails E`); for a policy, that of its `via` function.
     pub(crate) fails: Option<Ty>,
-    /// Whether it declares `uses`; for a policy, whether its `via` function does.
-    pub(crate) uses: bool,
+    /// Whether it is `pub`.
+    pub(crate) public: bool,
+    /// Its `uses`, declared or inferred; for a policy, those of its `via` function.
+    pub(crate) uses: Vec<Need>,
+    /// Whether its `uses` are inferred: a private function without `uses` (ADR 0007).
+    pub(crate) infer_uses: bool,
+    /// Whether its `fails` is inferred: a private function without `fails` (ADR 0007).
+    pub(crate) infer_fails: bool,
     pub(crate) requires: bool,
     pub(crate) ensures: bool,
     pub(crate) ast: FnAst<'a>,
@@ -174,6 +191,8 @@ pub(crate) struct OpDef<'a> {
     pub(crate) fails: Option<Ty>,
     pub(crate) requires: bool,
     pub(crate) ensures: bool,
+    /// The sink label of its arguments (`spec/05 §2`, `spec/07 §4`).
+    pub(crate) accepts: Accepts,
 }
 
 /// A capability.
@@ -189,6 +208,8 @@ pub(crate) struct CapDef<'a> {
 #[derive(Clone, Debug)]
 pub(crate) struct HandlerDef<'a> {
     pub(crate) module: usize,
+    /// Its own `uses`, which the context installing it holds (`spec/05 §4` rule 2).
+    pub(crate) uses: Vec<Need>,
     pub(crate) params: Vec<ParamDef<'a>>,
     /// The capability it implements, when its name resolves to one.
     pub(crate) capability: Option<CapId>,
@@ -220,6 +241,10 @@ pub(crate) struct Env<'a> {
     pub(crate) handlers: Vec<HandlerDef<'a>>,
     /// The index of the prelude in `modules`; `std.testing` follows it.
     pub(crate) prelude: usize,
+    /// The label categories that `una.toml` declares (`spec/07 §2`).
+    pub(crate) categories: Vec<String>,
+    /// The `via` function of each policy, and the policy (`spec/07 §5`).
+    pub(crate) vias: BTreeMap<usize, usize>,
     alias_state: Vec<AliasState>,
 }
 
@@ -230,6 +255,7 @@ impl<'a> Env<'a> {
         package: Vec<Source<'a>>,
         prelude: Source<'a>,
         testing: Source<'a>,
+        categories: Vec<String>,
         report: &mut Report<'_>,
     ) -> Env<'a> {
         let count = package.len();
@@ -241,6 +267,8 @@ impl<'a> Env<'a> {
             capabilities: Vec::new(),
             handlers: Vec::new(),
             prelude: count,
+            categories,
+            vias: BTreeMap::new(),
             alias_state: Vec::new(),
         };
         for source in package.into_iter().chain([prelude, testing]) {
@@ -254,6 +282,17 @@ impl<'a> Env<'a> {
         env.imports(count);
         env.alias_state = vec![AliasState::Pending; env.aliases.len()];
         env.signatures(report);
+        for id in 0..env.functions.len() {
+            let Some((module, FnAst::Policy(policy))) =
+                env.functions.get(id).map(|f| (f.module, f.ast))
+            else {
+                continue;
+            };
+            let via = env.text(module, policy.via.name);
+            if let Some(Entity::Function(target)) = env.lower(module, via) {
+                env.vias.entry(target).or_insert(id);
+            }
+        }
         env
     }
 
@@ -384,6 +423,7 @@ impl<'a> Env<'a> {
                 DeclKind::Handler(handler) => {
                     self.handlers.push(HandlerDef {
                         module: index,
+                        uses: Vec::new(),
                         params: Vec::new(),
                         capability: None,
                         ast: handler,
@@ -420,7 +460,14 @@ impl<'a> Env<'a> {
             result: Declared::error(),
             result_span,
             fails: None,
-            uses: false,
+            public: match ast {
+                FnAst::Function(function) => function.public,
+                FnAst::Predicate(predicate) => predicate.public,
+                FnAst::Policy(policy) => policy.public,
+            },
+            uses: Vec::new(),
+            infer_uses: false,
+            infer_fails: false,
             requires: false,
             ensures: false,
             ast,
@@ -535,10 +582,14 @@ impl<'a> Env<'a> {
         self.kinds.get(id).map_or("?", |kind| kind.name)
     }
 
-    /// Lowers every signature: aliases, kinds, capabilities, functions and handlers.
+    /// Lowers every signature: aliases, capabilities, kinds, functions and handlers. Capabilities
+    /// come before kinds, whose fields may have function types with `uses`.
     fn signatures(&mut self, report: &mut Report<'_>) {
         for id in 0..self.aliases.len() {
             self.lower_alias(id, report);
+        }
+        for id in 0..self.capabilities.len() {
+            self.capability_signature(id, report);
         }
         for id in 0..self.kinds.len() {
             let Some((module, params, ast)) = self
@@ -569,9 +620,6 @@ impl<'a> Env<'a> {
                 KindBody::Alias { .. } => {}
             }
         }
-        for id in 0..self.capabilities.len() {
-            self.capability_signature(id, report);
-        }
         for id in 0..self.functions.len() {
             self.function_signature(id, report);
         }
@@ -587,7 +635,7 @@ impl<'a> Env<'a> {
                 let (fails, uses) = self
                     .functions
                     .get(via)
-                    .map_or((None, false), |f| (f.fails.clone(), f.uses));
+                    .map_or((None, Vec::new()), |f| (f.fails.clone(), f.uses.clone()));
                 if let Some(def) = self.functions.get_mut(id) {
                     def.fails = fails;
                     def.uses = uses;
@@ -599,6 +647,12 @@ impl<'a> Env<'a> {
                 continue;
             };
             let params = self.params(module, &ast.params, &[], report);
+            let uses: Vec<Need> = first_of_each(
+                ast.uses
+                    .iter()
+                    .map(|uses| self.lower_uses(module, uses, report))
+                    .collect(),
+            );
             let name = self.text(module, ast.capability.name);
             let capability = self.upper(module, name).into_iter().find_map(|e| match e {
                 Entity::Capability(id) => Some(id),
@@ -606,6 +660,7 @@ impl<'a> Env<'a> {
             });
             if let Some(def) = self.handlers.get_mut(id) {
                 def.params = params;
+                def.uses = uses;
                 def.capability = capability;
             }
         }
@@ -622,6 +677,23 @@ impl<'a> Env<'a> {
                 _ => None,
             });
             let has = |pick: fn(&OpClauseKind) -> bool| op.clauses.iter().any(|c| pick(&c.kind));
+            let op_name = self.text(module, op.name.name);
+            let written = op.clauses.iter().find_map(|clause| match &clause.kind {
+                OpClauseKind::Accepts(label) => Some(label),
+                _ => None,
+            });
+            // DECISION D-092: `Keys.hmac` accepts every label (`spec/14 §3`); an operation
+            // without `accepts` accepts `public`.
+            let accepts = match written {
+                Some(label) => Some(self.lower_label(module, label, report)),
+                None if module == self.prelude
+                    && ast_name(self, module, ast) == "Keys"
+                    && op_name == "hmac" =>
+                {
+                    None
+                }
+                None => Some(Label::public()),
+            };
             ops.push(OpDef {
                 name: self.text(module, op.name.name),
                 params: self.params(module, &op.params, &[], report),
@@ -630,6 +702,7 @@ impl<'a> Env<'a> {
                 fails: fails.map(|kind| self.error_kind(module, kind, report)),
                 requires: has(|kind| matches!(kind, OpClauseKind::Requires(_))),
                 ensures: has(|kind| matches!(kind, OpClauseKind::Ensures(_))),
+                accepts,
             });
         }
         if let Some(def) = self.capabilities.get_mut(id) {
@@ -662,7 +735,19 @@ impl<'a> Env<'a> {
                     |pick: fn(&ClauseKind) -> bool| function.clauses.iter().any(|c| pick(&c.kind));
                 let requires = has(|kind| matches!(kind, ClauseKind::Requires(_)));
                 let ensures = has(|kind| matches!(kind, ClauseKind::Ensures(_)));
-                let uses = has(|kind| matches!(kind, ClauseKind::Uses(_)));
+                let declares_uses = has(|kind| matches!(kind, ClauseKind::Uses(_)));
+                let declares_fails = has(|kind| matches!(kind, ClauseKind::Fails(_)));
+                let uses: Vec<Need> = first_of_each(
+                    function
+                        .clauses
+                        .iter()
+                        .filter_map(|clause| match &clause.kind {
+                            ClauseKind::Uses(uses) => Some(uses),
+                            _ => None,
+                        })
+                        .map(|uses| self.lower_uses(module, uses, report))
+                        .collect(),
+                );
                 if let Some(def) = self.functions.get_mut(id) {
                     def.type_params = type_params;
                     def.params = params;
@@ -670,6 +755,9 @@ impl<'a> Env<'a> {
                     def.fails = fails;
                     def.requires = requires;
                     def.ensures = ensures;
+                    // DECISION D-072: a private function without `uses` or `fails` infers them.
+                    def.infer_uses = !function.public && !declares_uses;
+                    def.infer_fails = !function.public && !declares_fails;
                     def.uses = uses;
                 }
             }
@@ -729,6 +817,81 @@ impl<'a> Env<'a> {
                 span: param.ty.span,
             })
             .collect()
+    }
+
+    /// `uses @name: C[ops]`: the capability, and the operations it permits, all of them when
+    /// none is listed, in the capability's declaration order. A name that is not a capability
+    /// is U3001, and an operation that the capability lacks U1001 (DECISION D-071).
+    pub(crate) fn lower_uses(
+        &mut self,
+        module: usize,
+        uses: &UsesClause,
+        report: &mut Report<'_>,
+    ) -> Need {
+        let name = self.text(module, uses.cap.name).to_owned();
+        let cap_name = self.text(module, uses.cap_type.name.name);
+        let reports = self.reports(module);
+        let capability = match self.upper(module, cap_name).first().copied() {
+            Some(Entity::Capability(id)) => Some(id),
+            Some(_) => {
+                if reports {
+                    report.error(
+                        Code::U3001,
+                        uses.cap_type.name.span,
+                        format!("`{cap_name}` is not a capability"),
+                    );
+                }
+                None
+            }
+            // An unknown name is U1001, reported by M3.
+            None => None,
+        };
+        let declared: Vec<&'a str> = capability
+            .and_then(|id| self.capabilities.get(id))
+            .map(|c| c.ops.iter().map(|op| op.name).collect())
+            .unwrap_or_default();
+        let listed: Vec<&'a str> = uses
+            .cap_type
+            .ops
+            .iter()
+            .map(|op| self.text(module, op.name))
+            .collect();
+        let ops: Vec<String> = if capability.is_none() {
+            listed.iter().map(|op| (*op).to_owned()).collect()
+        } else if listed.is_empty() {
+            declared.iter().map(|op| (*op).to_owned()).collect()
+        } else {
+            for (op, ident) in listed.iter().zip(&uses.cap_type.ops) {
+                if reports && !declared.contains(op) {
+                    let mut diagnostic = report.make(
+                        Code::U1001,
+                        ident.span,
+                        format!("capability `{cap_name}` has no operation `{op}`"),
+                    );
+                    if let Some(close) = closest(op, declared.iter().copied()) {
+                        diagnostic.repairs.push(report.edit(
+                            format!("write `{close}`"),
+                            ident.span,
+                            close,
+                        ));
+                    }
+                    report.push(diagnostic);
+                }
+            }
+            declared
+                .iter()
+                .filter(|op| listed.contains(op))
+                .map(|op| (*op).to_owned())
+                .collect()
+        };
+        Need {
+            usage: FnUse {
+                name,
+                capability,
+                ops,
+            },
+            span: uses.span,
+        }
     }
 
     /// The kind named by `fails E`: a sum kind without type parameters (U2002).
@@ -820,21 +983,93 @@ impl<'a> Env<'a> {
                     FnTypeClause::Uses(_) => None,
                 });
                 let fails = fails.map(|kind| self.error_kind(module, kind, report));
+                let clauses: Vec<&UsesClause> = clauses
+                    .iter()
+                    .filter_map(|clause| match clause {
+                        FnTypeClause::Uses(uses) => Some(uses),
+                        FnTypeClause::Fails(_) => None,
+                    })
+                    .collect();
+                if self.reports(module) {
+                    let names: Vec<(&str, Span)> = clauses
+                        .iter()
+                        .map(|uses| (self.text(module, uses.cap.name), uses.cap.span))
+                        .collect();
+                    super::authority::duplicate_refs(report, &names);
+                }
+                let uses: Vec<FnUse> = first_of_each(
+                    clauses
+                        .into_iter()
+                        .map(|uses| self.lower_uses(module, uses, report))
+                        .collect(),
+                )
+                .into_iter()
+                .map(|need| need.usage)
+                .collect();
                 Declared::plain(Ty::Fn(Box::new(FnTy {
                     params,
                     result,
+                    uses,
                     fails,
                 })))
             }
         };
         if let Some(range) = &ty.range {
-            if matches!(declared.base, Ty::Int | Ty::Error) {
-                declared.refinements.push(Refinement::Range);
+            if matches!(declared.base.unlabeled(), Ty::Int | Ty::Error) {
+                let bound = |i: &una_syntax::ast::SignedInt| {
+                    format!("{}{}", if i.negative { "-" } else { "" }, i.digits)
+                };
+                let dots = if range.exclusive { "..<" } else { ".." };
+                declared.refinements.push(Refinement::Range(
+                    format!("in {}{dots}{}", bound(&range.low), bound(&range.high)),
+                    range.span,
+                ));
             } else if self.reports(module) {
                 report.error(Code::U2002, range.span, "range sugar applies only to `Int`");
             }
         }
+        if let Some(label) = &ty.label {
+            let label = self.lower_label(module, label, report);
+            declared.base = declared.base.with_label(&label);
+        }
         declared
+    }
+
+    /// A written label: its level and categories; a category that `una.toml` does not
+    /// declare is U4007 and left out (`spec/07 §2`, DECISION D-096).
+    pub(crate) fn lower_label(
+        &self,
+        module: usize,
+        label: &LabelAst,
+        report: &mut Report<'_>,
+    ) -> Label {
+        let mut lowered = Label {
+            level: label.level,
+            categories: std::collections::BTreeSet::new(),
+        };
+        for category in &label.categories {
+            let name = self.text(module, category.name);
+            if self.categories.iter().any(|declared| declared == name) {
+                lowered.categories.insert(name.to_owned());
+            } else if self.reports(module) {
+                let mut diagnostic = report.make(
+                    Code::U4007,
+                    category.span,
+                    format!(
+                        "label category `{name}` is not declared in `[labels] categories` of `una.toml`"
+                    ),
+                );
+                if let Some(close) = closest(name, self.categories.iter().map(String::as_str)) {
+                    diagnostic.repairs.push(report.edit(
+                        format!("write `{close}`"),
+                        category.span,
+                        close,
+                    ));
+                }
+                report.push(diagnostic);
+            }
+        }
+        lowered
     }
 
     /// Lowers `name[args]`.
@@ -963,7 +1198,7 @@ impl<'a> Env<'a> {
                     *inner,
                     inner_args.iter().map(|arg| arg.substitute(args)).collect(),
                 ),
-                Refinement::Range => Refinement::Range,
+                Refinement::Range(text, span) => Refinement::Range(text.clone(), *span),
             })
             .collect();
         if alias.refinement.is_some() {
@@ -974,4 +1209,21 @@ impl<'a> Env<'a> {
             refinements,
         }
     }
+}
+
+/// The first requirement of each name: a reference bound twice is U1002, and the first binding
+/// wins, as the first of two declarations does (DECISION D-087).
+fn first_of_each(needs: Vec<Need>) -> Vec<Need> {
+    let mut kept: Vec<Need> = Vec::new();
+    for need in needs {
+        if !kept.iter().any(|k| k.usage.name == need.usage.name) {
+            kept.push(need);
+        }
+    }
+    kept
+}
+
+/// The name of a capability declaration.
+fn ast_name<'a>(env: &Env<'a>, module: usize, ast: &'a CapabilityDecl) -> &'a str {
+    env.text(module, ast.name.name)
 }

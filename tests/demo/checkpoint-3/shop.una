@@ -1,0 +1,11 @@
+module shop
+
+pub total(prices: List[Int]) -> Int = prices.sum()
+
+example "a basket adds up"
+  do total([3, 4, 5])
+  expect result == 12
+
+example "a discount is applied"
+  do total([10, 20])
+  expect result == 27

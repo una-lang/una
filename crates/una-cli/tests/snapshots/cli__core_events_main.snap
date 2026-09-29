@@ -1,0 +1,25 @@
+---
+source: crates/una-cli/tests/cli.rs
+expression: stdout(&output)
+---
+module events.main
+
+fun main() : Unit uses {console ↦ Console[print]} =
+  let %t0: Int = events.seating.clamp_seats(820) in
+  let event: Event = Event("Launch", %t0) in
+  let status: Availability = events.seating.availability(event) in
+  let label: Text =
+    case status of
+      SoldOut ⇒
+        "sold out"
+      Few ⇒
+        "few seats left"
+      Open ⇒
+        "open"
+  in
+  let %t3: Text = event.name in
+  let %t4: Text = to_text(%t3) in
+  let %t5: Text = to_text(label) in
+  let %t6: Text = concat("availability of ", %t4, ": ", %t5) in
+  let %t7: Unit = console.print(%t6) in
+  %t7

@@ -1,0 +1,67 @@
+-- test: an example fails when an expectation does not hold, or when its do line fails and no expect fails line expects it
+-- spec: spec/08 §2
+-- expect: test-fail "a false expectation"
+-- expect: test-fail "the wrong variant"
+-- expect: test-fail "a missing operation"
+-- expect: test-fail "an operation that should not happen"
+-- expect: test-fail "an unexpected failure"
+-- expect: test-fail "a result after a failure"
+module conformance.runtime.examples_fail
+
+pub kind StoreError = Offline | Full
+
+pub capability Store
+  op put(key: Int) -> Unit
+    fails StoreError
+
+pub handler memory() for Store
+  op put(key) = unit
+
+pub handler offline() for Store
+  op put(key) = fail Offline
+
+pub save(key: Int) -> Int
+  uses @store: Store[put]
+  fails StoreError
+=
+  @store.put(key)
+    if error pass
+  key + 1
+
+pub skip(key: Int) -> Int = key
+
+example "a true expectation"
+  given @store = memory()
+  do save(4)
+  expect result == 5
+
+example "a false expectation"
+  given @store = memory()
+  do save(4)
+  expect result == 6
+
+example "the wrong variant"
+  given @store = offline()
+  do save(4)
+  expect fails Full
+
+example "a missing operation"
+  given @store = memory()
+  do skip(4)
+  expect performed @store.put
+
+example "an operation that should not happen"
+  given @store = memory()
+  do save(4)
+  expect not performed @store.put
+
+example "an unexpected failure"
+  given @store = offline()
+  do save(4)
+  expect performed @store.put
+
+example "a result after a failure"
+  given @store = offline()
+  do save(4)
+  expect fails Offline
+  expect result == 5

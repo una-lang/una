@@ -1,0 +1,11 @@
+trusted module journal.release
+
+--- How long a text is, in whole hundreds of characters, and nothing of what it says.
+pub policy length_band
+  from confidential[Private] Text
+  to public Nat
+  via hundreds
+  purpose "show how much was written without showing what"
+  owner journal_owner
+
+hundreds(text: confidential[Private] Text) -> public Nat = text.len / 100

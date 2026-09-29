@@ -1,0 +1,11 @@
+-- test: the host capabilities of main are granted by [run] grants
+-- spec: spec/05 §7
+-- expect: error U3012 at src/app/main.una:8:3
+module app.main
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @clock: Clock[now]
+=
+  let now = @clock.now()
+  @console.print("now: {now}")

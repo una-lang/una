@@ -1,0 +1,15 @@
+-- test: a call in an expect line whose precondition the do line's value may break is refuted
+-- spec: spec/08 §2
+-- expect: error U5001 at 15:10
+module expect_line_refuted
+
+pub half(n: Int) -> Int
+  requires n >= 0
+=
+  n / 2
+
+pub minus(n: Int) -> Int = n - 10
+
+example "half of a smaller number"
+  do minus(3)
+  expect half(result) == -4

@@ -1,0 +1,9 @@
+-- test: labeled text printed to Console
+-- spec: spec/07 §4
+-- expect: error U4003 at 9:18
+module labeled_text_to_console
+
+pub greet(name: secret Text) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("hello {name}")

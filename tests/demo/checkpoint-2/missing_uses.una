@@ -1,0 +1,14 @@
+module missing_uses
+
+pub capability Log
+  op write(line: Text) -> Unit
+
+pub note(line: Text) -> Unit
+  uses @log: Log[write]
+=
+  @log.write(line)
+
+pub report() -> Unit
+  uses @audit: Log[write]
+=
+  note("done")

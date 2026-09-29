@@ -1,26 +1,35 @@
 //! Command implementations of the `una` binary (`spec/13 §5`), the only crate that does I/O to
 //! the terminal.
 //!
-//! The binary hands its arguments and standard streams to [`run`]; nothing here reads the
-//! process environment, so every command also runs in-process.
+//! The binary hands its arguments, standard streams and environment variables to [`run`];
+//! nothing here reads the process environment, so every command also runs in-process.
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
 mod args;
+mod contract;
 mod package;
+mod report;
+mod runtime;
+mod trace;
+mod verification;
 
 use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::Path;
+use std::time::Duration;
 
 use clap::Parser;
-use una_check::{ModuleInput, PackageInput, check_names, check_types};
+use una_check::{
+    Header, ModuleInput, PackageInput, PendingObligation, RunInput, check_names, check_types,
+};
 use una_diag::{Code, Diagnostic, render_human, render_json};
 use una_syntax::ast::File;
 use una_syntax::{FileId, Interner, SourceDb, SourceFile, lex, parse};
 
 use crate::args::{Cli, ColorChoice, Command, TierArg};
 pub use crate::package::{LoadError, Package, load};
+pub use crate::verification::{DEFAULT_WALLCLOCK, Verification};
 
 /// The exit status of a `una` command (`spec/13 §5`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,29 +65,67 @@ pub enum Tier {
     One,
 }
 
-/// The outcome of [`check`]: its diagnostics and the sources they point into.
+/// The outcome of [`check`]: its diagnostics, the sources they point into, the Core IR of
+/// the declarations without diagnostics, and at tier 1 the obligations.
 #[derive(Debug)]
 pub struct Checked {
     /// The diagnostics, in reporting order.
     pub diagnostics: Vec<Diagnostic>,
     /// The loaded sources.
     pub sources: SourceDb,
+    /// The Core IR (`spec/09`).
+    pub program: una_core::Program,
+    /// The obligations and their outcomes, when tier 1 ran.
+    pub verification: Option<Verification>,
+    /// The obligation sites that the type checker found, which the verifier generates over
+    /// Core IR (`spec/12 §3`).
+    pub pending: Vec<PendingObligation>,
 }
 
-/// Loads and checks the file or package at `path` (`spec/13 §5`).
-///
-/// Loading follows ADR 0015 D3 until M3. Each file is lexed and parsed (`spec/01`, `spec/02`);
-/// tier 1 differs from tier 0 once proof obligations exist (M8).
-pub fn check(path: &Path, _tier: Tier) -> Result<Checked, LoadError> {
+/// Loads and checks the file or package at `path` (`spec/13 §5`, `spec/12 §1`), with the
+/// default wall-clock guard of the solver.
+pub fn check(path: &Path, tier: Tier) -> Result<Checked, LoadError> {
+    check_with(path, tier, DEFAULT_WALLCLOCK)
+}
+
+/// Loads and checks the file or package at `path`: tier 0, then, at tier 1 and when tier 0
+/// reports nothing, every proof obligation (DECISION D-112).
+pub fn check_with(path: &Path, tier: Tier, wallclock: Duration) -> Result<Checked, LoadError> {
     let package = load(path)?;
-    let diagnostics = on_large_stack(|| diagnose(&package));
+    let (mut diagnostics, program, pending) = on_large_stack(|| {
+        let analysis = analyze(&package, None);
+        (analysis.diagnostics, analysis.program, analysis.pending)
+    });
+    let mut verification = None;
+    if tier == Tier::One && diagnostics.is_empty() {
+        let found = verification::tier_one(&package, &program, wallclock);
+        diagnostics.extend(found.diagnostics);
+        verification = found.verification;
+    }
     Ok(Checked {
         diagnostics,
         sources: package.sources,
+        program,
+        verification,
+        pending,
     })
 }
 
-fn diagnose(package: &Package) -> Vec<Diagnostic> {
+/// What checking a package finds: its diagnostics, the tree of each module, the names of the
+/// trees, the headers of its functions after inference, its Core IR, and the module that
+/// `una run` runs.
+struct Analysis {
+    diagnostics: Vec<Diagnostic>,
+    trees: Vec<(FileId, File)>,
+    interner: Interner,
+    headers: Vec<Header>,
+    program: una_core::Program,
+    entry: Option<String>,
+    pending: Vec<PendingObligation>,
+}
+
+/// Checks `package`; with `run_grants`, for `una run`, whose grants are final (U3012).
+fn analyze(package: &Package, run_grants: Option<&[String]>) -> Analysis {
     let (manifest, mut diagnostics) = package::project(package);
     let mut interner = Interner::new();
     let mut trees = Vec::new();
@@ -92,6 +139,25 @@ fn diagnose(package: &Package) -> Vec<Diagnostic> {
         }
         trees.push((id, checked.tree, broken));
     }
+    // DECISION D-109: the entry is `[run] entry`, or the module of a single file.
+    let entry = if package.single {
+        trees.first().and_then(|(_, tree, _)| {
+            let header = tree.module.as_ref()?;
+            let path: Vec<&str> = header
+                .path
+                .segments
+                .iter()
+                .map(|segment| interner.resolve(segment.name))
+                .collect();
+            Some(path.join("."))
+        })
+    } else {
+        manifest.entry.as_ref().map(|entry| entry.value.clone())
+    };
+    let run = match (run_grants, entry.as_deref()) {
+        (Some(grants), Some(entry)) => Some(RunInput { entry, grants }),
+        _ => None,
+    };
     let input = PackageInput {
         sources: &package.sources,
         interner: &interner,
@@ -106,10 +172,20 @@ fn diagnose(package: &Package) -> Vec<Diagnostic> {
             .collect(),
         manifest: package.manifest,
         settings: &manifest,
+        run,
     };
     diagnostics.extend(check_names(&input));
-    diagnostics.extend(check_types(&input).diagnostics);
-    diagnostics
+    let types = check_types(&input);
+    diagnostics.extend(types.diagnostics);
+    Analysis {
+        diagnostics,
+        trees: trees.into_iter().map(|(id, tree, _)| (id, tree)).collect(),
+        interner,
+        headers: types.headers,
+        program: types.program,
+        entry,
+        pending: types.obligations,
+    }
 }
 
 /// The syntax diagnostics of one file, its tree, and its canonical form when it has no
@@ -167,6 +243,11 @@ fn on_large_stack<T: Send>(work: impl Fn() -> T + Sync) -> T {
     })
 }
 
+/// The environment variables of the process, by name, which `una run` gives to programs that
+/// use `Env.get` (`spec/14 §3`). The binary passes the real ones; the library never reads them
+/// (`compiler/conventions.md §1`).
+pub type Environment<'a> = &'a (dyn Fn(&str) -> Option<String> + Sync);
+
 /// Runs the `una` command line. `args` starts with the program name; `stderr_is_terminal`
 /// decides `--color auto`, since human diagnostics go to stderr (ADR 0015 D1).
 ///
@@ -176,6 +257,7 @@ pub fn run<I, T>(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
     stderr_is_terminal: bool,
+    environment: Environment<'_>,
 ) -> ExitStatus
 where
     I: IntoIterator<Item = T>,
@@ -183,7 +265,12 @@ where
 {
     let status = match Cli::try_parse_from(args) {
         Ok(cli) => match cli.command {
-            Command::Check { path, tier } => {
+            Command::Check {
+                path,
+                tier,
+                dump_core,
+                solver_wallclock,
+            } => {
                 let options = CheckOptions {
                     tier: match tier {
                         TierArg::Zero => Tier::Zero,
@@ -191,8 +278,42 @@ where
                     },
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
+                    wallclock: Duration::from_secs(solver_wallclock),
                 };
-                check_command(&path, options, stdout, stderr)
+                check_command(&path, options, dump_core.as_deref(), stdout, stderr)
+            }
+            Command::Trace {
+                requirement,
+                solver_wallclock,
+            } => {
+                let options = trace::TraceOptions {
+                    json: cli.json,
+                    color: use_color(cli.color, stderr_is_terminal),
+                    wallclock: Duration::from_secs(solver_wallclock),
+                };
+                trace::trace_command(&requirement, options, stdout, stderr)
+            }
+            Command::Report {
+                path,
+                solver_wallclock,
+            } => {
+                let options = report::ReportOptions {
+                    json: cli.json,
+                    color: use_color(cli.color, stderr_is_terminal),
+                    wallclock: Duration::from_secs(solver_wallclock),
+                };
+                report::report_command(&path, options, stdout, stderr)
+            }
+            Command::Obligations {
+                path,
+                solver_wallclock,
+            } => {
+                let options = verification::ObligationsOptions {
+                    json: cli.json,
+                    color: use_color(cli.color, stderr_is_terminal),
+                    wallclock: Duration::from_secs(solver_wallclock),
+                };
+                verification::obligations_command(&path, options, stdout, stderr)
             }
             Command::Fmt { path, check } => {
                 let options = FmtOptions {
@@ -201,6 +322,41 @@ where
                     color: use_color(cli.color, stderr_is_terminal),
                 };
                 fmt_command(&path, options, stdout, stderr)
+            }
+            Command::Contract { name } => {
+                let color = use_color(cli.color, stderr_is_terminal);
+                contract_command(&name, cli.json, color, stdout, stderr)
+            }
+            Command::Run {
+                path,
+                grants,
+                max_depth,
+                solver_wallclock,
+            } => {
+                let options = runtime::RunOptions {
+                    grants: &grants,
+                    max_depth,
+                    json: cli.json,
+                    color: use_color(cli.color, stderr_is_terminal),
+                    environment,
+                    wallclock: Duration::from_secs(solver_wallclock),
+                };
+                runtime::run_command(&path, options, stdout, stderr)
+            }
+            Command::Test {
+                path,
+                max_depth,
+                solver_wallclock,
+            } => {
+                let options = runtime::RunOptions {
+                    grants: &[],
+                    max_depth,
+                    json: cli.json,
+                    color: use_color(cli.color, stderr_is_terminal),
+                    environment,
+                    wallclock: Duration::from_secs(solver_wallclock),
+                };
+                runtime::test_command(&path, options, stdout, stderr)
             }
             Command::Explain { code } => explain_command(&code, cli.json, stdout, stderr),
         },
@@ -229,6 +385,7 @@ struct CheckOptions {
     tier: Tier,
     json: bool,
     color: bool,
+    wallclock: Duration,
 }
 
 /// `una check [path]`: prints the diagnostics of [`check`], as JSON on stdout (ADR 0012) or
@@ -236,10 +393,11 @@ struct CheckOptions {
 fn check_command(
     path: &Path,
     options: CheckOptions,
+    dump_core: Option<&str>,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
-    let checked = match check(path, options.tier) {
+    let checked = match check_with(path, options.tier, options.wallclock) {
         Ok(checked) => checked,
         // DECISION D-010: a usage error goes to stderr even with --json; it happens before the
         // command runs, like the usage errors clap reports.
@@ -248,6 +406,16 @@ fn check_command(
             return Ok(ExitStatus::Usage);
         }
     };
+    // DECISION D-099: the Core IR of the module's declarations without diagnostics, on stdout.
+    if let Some(module) = dump_core {
+        match checked.program.modules.iter().find(|m| m.path == module) {
+            Some(core) => write!(stdout, "{}", una_core::print_module(core))?,
+            None => {
+                writeln!(stderr, "error: the package has no module `{module}`")?;
+                return Ok(ExitStatus::Usage);
+            }
+        }
+    }
     report(
         &checked.diagnostics,
         &checked.sources,
@@ -382,18 +550,111 @@ fn write_through_rename(target: &Path, text: &str) -> io::Result<()> {
     std::fs::rename(&temporary, target)
 }
 
-/// `una explain <code>`: prints the explanation of a registered code (`spec/13 §4`).
+/// `una contract <qualified.name>` (`spec/13 §5`, ADR 0029): checks the package in the current
+/// directory at tier 0 and prints the contract of the function, or the diagnostics as
+/// `una check` does when there are any. An unknown name is a usage error.
+fn contract_command(
+    name: &str,
+    json: bool,
+    color: bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> io::Result<ExitStatus> {
+    let package = match load(Path::new(".")) {
+        Ok(package) => package,
+        Err(error) => {
+            writeln!(stderr, "error: {error}")?;
+            return Ok(ExitStatus::Usage);
+        }
+    };
+    let analysis = on_large_stack(|| analyze(&package, None));
+    let modules = contract::Modules {
+        sources: &package.sources,
+        interner: &analysis.interner,
+        trees: &analysis.trees,
+    };
+    let Some((module, decl, function)) = modules.function(name) else {
+        writeln!(
+            stderr,
+            "error: the package has no function `{name}`; name it by module path and name, as in `events.checkin.check_in`"
+        )?;
+        return Ok(ExitStatus::Usage);
+    };
+    if !analysis.diagnostics.is_empty() {
+        return report(
+            &analysis.diagnostics,
+            &package.sources,
+            json,
+            color,
+            stdout,
+            stderr,
+        );
+    }
+    let function_name = analysis.interner.resolve(function.name.name);
+    let header = analysis
+        .headers
+        .iter()
+        .find(|h| h.module == module && h.name == function_name);
+    let contract = contract::contract(&modules, &module, decl, function, header);
+    if json {
+        match serde_json::to_string(&contract) {
+            Ok(document) => writeln!(stdout, "{document}")?,
+            Err(error) => {
+                writeln!(
+                    stderr,
+                    "internal compiler error (U8001): rendering the contract as JSON failed: {error}"
+                )?;
+                return Ok(ExitStatus::Internal);
+            }
+        }
+    } else {
+        write!(stdout, "{}", contract.human())?;
+    }
+    stdout.flush()?;
+    Ok(ExitStatus::Success)
+}
+
+/// `una.explain/1`, with keys in this order (ADR 0034 rule 4).
+#[derive(serde::Serialize)]
+struct ExplainDocument {
+    schema: &'static str,
+    code: &'static str,
+    domain: &'static str,
+    meaning: &'static str,
+    text: &'static str,
+}
+
+/// `una explain <code>`: prints the explanation of a registered code (`spec/13 §4`), or with
+/// `--json` the document `una.explain/1`.
 fn explain_command(
     code: &str,
     json: bool,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
-    if json {
-        writeln!(stderr, "error: una explain has no --json output")?;
-        return Ok(ExitStatus::Usage);
-    }
     match code.parse::<Code>() {
+        // DECISION D-125: `una.explain/1` with `--json`, as every command has a document.
+        Ok(code) if json => {
+            let document = ExplainDocument {
+                schema: "una.explain/1",
+                code: code.as_str(),
+                domain: code.domain().as_str(),
+                meaning: code.meaning(),
+                text: code.explain_text(),
+            };
+            match serde_json::to_string(&document) {
+                Ok(text) => writeln!(stdout, "{text}")?,
+                Err(error) => {
+                    writeln!(
+                        stderr,
+                        "internal compiler error (U8001): rendering the explanation as JSON failed: {error}"
+                    )?;
+                    return Ok(ExitStatus::Internal);
+                }
+            }
+            stdout.flush()?;
+            Ok(ExitStatus::Success)
+        }
         Ok(code) => {
             write!(stdout, "{}", code.explain_text())?;
             stdout.flush()?;

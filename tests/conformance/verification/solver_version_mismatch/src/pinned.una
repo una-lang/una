@@ -1,0 +1,10 @@
+-- test: a lock that pins another solver version stops tier 1 at its solver_version
+-- spec: spec/12 §5
+-- expect: error U5003 at verification.lock:3:20
+module pinned
+
+pub kind Seats = Int in 0..5000
+
+pub book(seats: Seats) -> Int = seats
+
+pub first() -> Int = book(1)

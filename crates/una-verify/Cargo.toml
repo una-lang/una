@@ -7,8 +7,17 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
-una-diag.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 una-core.workspace = true
+una-diag.workspace = true
+una-syntax.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+pretty_assertions.workspace = true
 
 [lints]
 workspace = true

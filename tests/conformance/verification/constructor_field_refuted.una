@@ -1,0 +1,12 @@
+-- test: a constructor field whose declared type is refined is an obligation at the field's value
+-- spec: spec/12 §3
+-- expect: error U5001 at 12:72
+module constructor_field_refuted
+
+pub kind Seats = Int in 0..5000
+
+pub kind Event
+  name: Text
+  remaining: Seats
+
+pub open(name: Text, raw: Int) -> Event = Event(name: name, remaining: raw)

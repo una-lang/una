@@ -10,6 +10,10 @@ use crate::{Located, ProjectError};
 /// The settings of a package's `una.toml`, or their defaults (ADR 0021 rule 2).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Manifest {
+    /// `[package] name`.
+    pub name: Option<Located>,
+    /// `[package] version`.
+    pub version: Option<Located>,
     /// `[labels] categories`: the label categories of the package (`spec/07 §2`).
     pub categories: Vec<Located>,
     /// `[trusted] modules`: the module paths declared trusted (`spec/07 §6`).
@@ -42,7 +46,7 @@ pub fn parse_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
         match key.get_ref().as_ref() {
             "package" => {
                 package = true;
-                package_table(&table, &mut errors);
+                package_table(&table, &mut manifest, &mut errors);
             }
             "labels" => labels(&table, &mut manifest, &mut errors),
             "trusted" => trusted(&table, &mut manifest, &mut errors),
@@ -65,7 +69,7 @@ pub fn parse_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
     (manifest, errors)
 }
 
-fn package_table(table: &Table<'_, '_>, errors: &mut Vec<ProjectError>) {
+fn package_table(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Vec<ProjectError>) {
     let mut seen = Vec::new();
     for (key, value) in table.entries.iter() {
         let name = key.get_ref().as_ref();
@@ -90,6 +94,10 @@ fn package_table(table: &Table<'_, '_>, errors: &mut Vec<ProjectError>) {
                             located.value
                         ),
                     ));
+                } else if name == "name" {
+                    manifest.name = Some(located);
+                } else if name == "version" {
+                    manifest.version = Some(located);
                 }
             }
             _ => errors.push(table.unknown(key, Code::U7002)),

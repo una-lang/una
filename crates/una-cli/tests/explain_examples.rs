@@ -96,6 +96,21 @@ fn codes(code: Code, name: &str, example: &Example) -> Vec<Code> {
             dir.clone()
         }
     };
+    // Runtime codes come from `una run`, whose JSON document lists them with the diagnostics
+    // of the checks.
+    if code.domain() == Domain::Runtime {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let args = ["una", "--json", "run", target.to_str().unwrap()];
+        una_cli::run(args, &mut stdout, &mut stderr, false, &|_| None);
+        let document: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+        return document["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|diagnostic| diagnostic["code"].as_str().unwrap().parse().unwrap())
+            .collect();
+    }
     // Obligations need tier 1; every other code is checked at tier 0.
     let tier = if code.domain() == Domain::Verification {
         Tier::One
@@ -129,13 +144,16 @@ fn failing_examples_yield_their_code_and_fixed_examples_yield_nothing() {
         assert_eq!(codes(code, "fixed", &fixed), [], "{code}: fixed example");
         checked.push(code.as_str());
     }
-    // The codes of M1 to M4 have their texts (the milestone plans).
-    for code in [
-        "U0001", "U0002", "U0003", "U0004", "U0005", "U0006", "U0007", "U0101", "U0102", "U0103",
-        "U7001", "U1001", "U1002", "U1003", "U1004", "U1005", "U1006", "U1007", "U1008", "U7002",
-        "U7004", "U7005", "U2001", "U2002", "U2003", "U2004", "U2005", "U2006", "U2007", "U2008",
-        "U2009", "U2010", "U2011", "U2012", "U2013", "U2014", "U2015",
-    ] {
-        assert!(checked.contains(&code), "{code} has no examples");
+    // DECISION D-126: every code has its examples, but U8001, an internal error, which no
+    // program should cause.
+    for code in Code::ALL {
+        if code == Code::U8001 {
+            assert!(
+                !code.explain_text().contains("Stub explanation."),
+                "U8001 has its text"
+            );
+            continue;
+        }
+        assert!(checked.contains(&code.as_str()), "{code} has no examples");
     }
 }

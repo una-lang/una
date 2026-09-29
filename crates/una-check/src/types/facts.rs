@@ -56,6 +56,7 @@ impl KindFacts {
     /// the type parameters whose values they hold to `params`.
     fn walk(&self, ty: &Ty, params: &mut BTreeSet<usize>) -> bool {
         match ty {
+            Ty::Labeled(_, inner) => self.walk(inner, params),
             Ty::Fn(_) => true,
             Ty::Param(index) => {
                 params.insert(*index);
@@ -88,6 +89,7 @@ impl KindFacts {
 /// (DECISION D-062).
 fn contained(ty: &Ty, option: Option<KindId>, out: &mut Vec<KindId>) {
     match ty {
+        Ty::Labeled(_, inner) => contained(inner, option, out),
         Ty::Kind(kind, args) => {
             if Some(*kind) == option {
                 return;

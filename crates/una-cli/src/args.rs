@@ -49,6 +49,43 @@ pub(crate) enum Command {
         /// The tier to check: 0 skips the solver, 1 also proves every obligation
         #[arg(long, value_enum, value_name = "TIER", default_value_t = TierArg::One)]
         tier: TierArg,
+
+        /// Print the Core IR of this module on stdout
+        #[arg(long, value_name = "MODULE")]
+        dump_core: Option<String>,
+
+        /// Stop a solver query after this many seconds; the obligation is then unknown
+        #[arg(long, value_name = "SECONDS", default_value_t = 60)]
+        solver_wallclock: u64,
+    },
+    /// List the functions derived from a requirement, their contracts and their obligations
+    Trace {
+        /// The requirement's identifier, for example EVENTS_3
+        requirement: String,
+
+        /// Stop a solver query after this many seconds; the obligation is then unknown
+        #[arg(long, value_name = "SECONDS", default_value_t = 60)]
+        solver_wallclock: u64,
+    },
+    /// Print the build report: proofs, authority, information flow, trust and coverage
+    Report {
+        /// The package directory, or a single file
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Stop a solver query after this many seconds; the obligation is then unknown
+        #[arg(long, value_name = "SECONDS", default_value_t = 60)]
+        solver_wallclock: u64,
+    },
+    /// List every proof obligation with its status
+    Obligations {
+        /// The package directory, or a single file
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Stop a solver query after this many seconds; the obligation is then unknown
+        #[arg(long, value_name = "SECONDS", default_value_t = 60)]
+        solver_wallclock: u64,
     },
     /// Rewrite files in canonical form, or report where they differ from it
     Fmt {
@@ -59,6 +96,44 @@ pub(crate) enum Command {
         /// Report non-canonical code (U7001) without writing any file
         #[arg(long)]
         check: bool,
+    },
+    /// Run `main` of the `[run] entry` module
+    Run {
+        /// The package directory, or a single file
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Grant a host capability: console, clock, env, keys:<file> or files:<path>:<access>
+        #[arg(long = "grant", value_name = "SPEC")]
+        grants: Vec<String>,
+
+        /// The maximum call depth
+        #[arg(long, value_name = "N", default_value_t = una_interp::DEFAULT_MAX_DEPTH)]
+        max_depth: usize,
+
+        /// Stop a solver query after this many seconds; the obligation is then unknown
+        #[arg(long, value_name = "SECONDS", default_value_t = 60)]
+        solver_wallclock: u64,
+    },
+    /// Run every example
+    Test {
+        /// The package directory, or a single file
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// The maximum call depth
+        #[arg(long, value_name = "N", default_value_t = una_interp::DEFAULT_MAX_DEPTH)]
+        max_depth: usize,
+
+        /// Stop a solver query after this many seconds; the obligation is then unknown
+        #[arg(long, value_name = "SECONDS", default_value_t = 60)]
+        solver_wallclock: u64,
+    },
+    /// Print the full header of a function, declared or inferred, with doc comments and
+    /// requirements
+    Contract {
+        /// The module path followed by the function's name, for example events.checkin.check_in
+        name: String,
     },
     /// Explain a diagnostic code
     Explain {
