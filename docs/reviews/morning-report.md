@@ -5,7 +5,7 @@ Updated after every milestone of the overnight run (`OVERNIGHT.md`, C.8).
 ## 1. Status
 
 - Language name: Una (ADR 0025; previously Troth, codenamed Vera).
-- Last completed milestone: M5 (capabilities, effects and failures). Next: M6 (information flow), which completes checkpoint 2, then M7, the last milestone on the critical path to checkpoint 3 (`docs/plan/roadmap.md §4`).
+- Last completed milestone: M6 (information flow), which completes usage checkpoint 2. Next: M7 (Core IR and interpreter), the last milestone on the critical path to checkpoint 3 (`docs/plan/roadmap.md §4`).
 - Repository: una-lang/una (private until launch), branch `dev/v0.1`; its history starts at the initial public import `25d865b` (ADR 0030). Earlier commit hashes in this report refer to the legacy repository.
 - Last green CI runs: https://github.com/una-lang/una/actions/runs/36606305565 (`dev/v0.1`, Linux, at `79b7a2c`, M5) and https://github.com/una-lang/una/actions/runs/36580294816 (`main`, Linux and macOS, at `25d865b`). macOS runs only on pull requests and pushes to `main` (D-083); local checks on the owner's Mac pass. Before the import: run 36578625540 of the legacy repository (`a5c8d3d`, M4).
 
@@ -119,7 +119,7 @@ docs/compiler/testing.md:105:## 5. Coverage expectations for v0.1
 | M3 Project and names | done | `0e8030c`, `457ca92`, `9915290`, `b723bd2`, `e3ab28f`, `f98912a` | 204 | 92 cases: 89 passed, 3 pending (M5, M6, M8), 0 failures |
 | M4 Types | done | `fc9301b`, `0c07912`, `cafb07b`, `a5c8d3d` | 236 | 116 cases: 113 passed, 3 pending (M5, M6, M8), 0 failures |
 | M5 Capabilities, effects and failures | done | `9d34aab`, `3be9490`, `08260d3`, `58dd14d`, `0ded2b9`, `4f959a7`, `ce6f46b`, `79b7a2c` (plan and ADRs 0028, 0029 in the initial import `25d865b`) | 259 | 144 cases: 142 passed, 2 pending (M6, M8), 0 failures |
-| M6 Information flow | not started | | | |
+| M6 Information flow | done | `2348672`, `d519fbb`, `78ad11e`, `e763556`, `0241e93`, `906bd9e` (an M5 fix), `a40584d`, and the self-review | 274 | 160 cases: 159 passed, 1 pending (M8), 0 failures |
 | M7 Core IR and interpreter | not started | | | |
 | M8 Verification | not started | | | |
 | M9 Agent ABI and build report | not started | | | |
@@ -159,6 +159,14 @@ M5 evidence (`docs/plan/runs/M5-plan.md §8`):
 - Diagnostics with one mechanical repair carry its edit (D-086): widening a `uses` clause, adding `uses` or `fails` clauses in canonical order; each applied edit removes its diagnostic and keeps the file canonical.
 - The self-review checklist of every MUST and MUST NOT of `spec/05`, `spec/06 §2 to §6`, `spec/04 §2, §4 to §8` and `spec/08 §2` is in the M5 plan §8. Labels, the program counter and sinks are M6; `--grant` and running examples are M7.
 
+M6 evidence (`docs/plan/runs/M6-plan.md §8`):
+- Conformance cases for U4001 to U4005 and U4007: 17 cases in `tests/conformance/security`, including the classic implicit flow, the failure under a secret condition that was pending since M1, and labeled text printed to `Console`; passing cases for labels through generics, fields, patterns, lambdas and sinks, and a declassification package in the shape of the reference example. Six explain texts with checked examples.
+- Labels live at every position of the checker's types, as Core IR's binder types will (`spec/09 §2`), and unification joins them on type variables, so `first`, `map` and `Option` keep secrets secret without annotations (D-088).
+- The reference example passes tier 0, its `via` function unchecked as `spec/07 §5` requires, and its policy call at a `public` program counter.
+- Usage checkpoint 2 is reached: `scripts/demo/checkpoint-2.sh` shows a name, a type, two authority, an information-flow and a project error, a mechanical edit in JSON, and `una contract` with inferred clauses.
+- 12 unit tests in `crates/una-check/tests/flow.rs`, one per rule; the M4 unit tests leave out the security codes (D-084).
+- The self-review checklist is in the M6 plan §8. It found no rule left out; the milestone found an M5 bug (inferred `fails` through an operation on an inferred reference) and a soundness gap in lambdas, both fixed.
+
 ## 5. Decisions needing review
 
 The top ten entries of `docs/reviews/open-decisions.md`, each answerable in one line.
@@ -172,9 +180,9 @@ The top ten entries of `docs/reviews/open-decisions.md`, each answerable in one 
 | D-063 | A generic function that compares values of a type parameter cannot be instantiated with a type that holds functions (ADR 0024 rule 11) | Keep, or switch to B (no function type arguments) or C (run time) |
 | D-071 | U3004 for `@` in pure code, U3001 for a missing binding or another capability, U3002 for fewer operations, U3003 for effects beyond an empty `uses` (ADR 0028 rule 1) | Keep, or switch to B (U3001 for every missing capability) |
 | D-072 | Private headers are inferred; a reference's capability comes from the headers it calls, then its callers' bindings, then installed handlers (ADR 0028 rule 2) | Keep, or switch to B (from the operation's name) or C (callers only) |
+| D-088 | Labels at every position of the checker's types, joined on type variables (ADR 0031 rule 1) | Keep, or switch to B (one label per value) or C (a separate pass) |
 | D-018 | After a label level, `[` starts the categories; a labeled list is written `secret List[T]` (ADR 0018) | Keep, or switch to B (backtrack) or C |
 | D-022 | Nesting deeper than 256 levels, counting chained operators, is U0101; `una check` runs on a 64 MiB stack (ADR 0019) | Keep, change the limit, or count only true recursion (D) |
-| D-019 | A lexical error suppresses the parser's U0101 later in the same declaration | Keep, or switch to A or C |
 
 ## 6. Blockers and deviations from the spec
 
@@ -189,7 +197,8 @@ Deviations and additions, all logged:
 - ADR 0024 (Provisional) fills the typing rules the specification leaves open, rules 1 to 15, with decisions D-048 to D-055 and D-061 to D-069. The strict readings to review first: recursion only through `List` or `Option` (D-062), equality on type parameters (D-063), punning of the first argument (D-064), recursion of every predicate (D-065).
 - Two tour cases of M1 and M3 passed second arguments without labels, which `spec/04 §3` rule 2 forbids; their inputs gained the labels (D-068).
 - ADR 0028 (Provisional) fills the authority rules the specification leaves open, rules 1 to 12, and ADR 0029 (Provisional) defines the output of `una contract`. Additions to review first: `una check` reports U3012 from `[run] grants` and for capabilities of `main` that are not host capabilities (D-076); function values and parameters of effectful function types are second-class like lambdas (D-079); S-Fun violations are U3003 and U3009 (D-085); a capability reference bound twice is U1002 (D-087).
-- The M4 unit tests compare only the M4 codes from M5 on (D-084): one M4 input uses `checked` twice in a single file, which M5 reports as U7003; no M4 expectation changed.
+- The M4 unit tests compare only the M4 codes from M5 on (D-084): one M4 input uses `checked` twice in a single file, which M5 reports as U7003; no M4 expectation changed in M5. In M6 one line left the M4 policy test: a `via` function of another type is U4005, as `spec/07 §5` rule 4 requires, not the interim U2001 of D-066; `flow.rs` tests it.
+- ADR 0031 (Provisional) fills the information-flow rules the specification leaves open, rules 1 to 10. Readings to review first: `checked` on a labeled value is U4002, stricter than T-Checked's premise `pc = ⊥` alone (D-091); an operation's arguments are bounded by its `accepts` only, not by the labels of its parameter types, which the prelude's `Files.write` needs (D-092); a `via` function may be used only through its policy (D-094); a lambda records the labels its body assumed for its parameters, so a `fold` over labeled values needs a labeled initial value (D-089).
 
 ## 7. Hindsight and next steps
 
@@ -200,7 +209,9 @@ Deviations and additions, all logged:
 - Hindsight: M4 restarted after the consolidated instructions; writing exploratory probes before the unit tests caught a dozen message and cascade problems cheaply, but the plan's small commits became three larger ones.
 - Hindsight (M5): the run moved to a new session in the middle of the milestone, with the implementation uncommitted; a saved note of the next steps made the restart cheap, but committing a compiling checkpoint before the move would have been safer.
 - Hindsight (M5): the first inference took a reference's capability from its callers only, so a wrong handler or binding showed up as a conflict far from where it was written, and a helper without callers could not be inferred. Probing with small programs before writing the unit tests exposed both, and ranking the sources fixed them (D-072). Writing the unit tests then exposed four more holes: `std.testing` in `expect` lines, parameters that let effectful lambdas escape, capabilities of `main` that no grant can provide, and references bound twice.
-- Next: M6 (information flow), which completes checkpoint 2 and its demo, then M7, the rest of the critical path to checkpoint 3 (`docs/plan/roadmap.md §4`), which matters more than starting M8.
+- Hindsight (M6): choosing labels inside the checker's types rather than one label per value cost a careful change to the unifier, but every M4 and M5 test passed unchanged once `resolve` erased labels, and generic code needs no annotations. The places that build a result type from a resolved one lost labels silently; a list of them, made before writing the code, found them all.
+- Hindsight (M6): the demo programs caught an M5 inference bug that no unit test covered, since those programs mix features the way users will.
+- Next: M7 (Core IR and interpreter), the rest of the critical path to checkpoint 3 (`docs/plan/roadmap.md §4`), which matters more than starting M8; its plan records the interim run behavior of ADR 0027.
 
 ## 8. Checkpoint demo
 
@@ -209,8 +220,8 @@ The v0.1 usage checkpoints are in `docs/plan/roadmap.md §4`. Each checkpoint wh
 | Checkpoint | Reached | Script | Programs |
 | --- | --- | --- | --- |
 | 1. Read (M1, M2) | yes | `scripts/demo/checkpoint-1.sh` | `tests/demo/checkpoint-1/`: a clean module, U0101, U0103, U0007 and U7001, plus `--json`, `una fmt` and `una explain U0101` |
-| 2. Understand (M3 to M6) | no | | |
+| 2. Understand (M3 to M6) | yes | `scripts/demo/checkpoint-2.sh` | `tests/demo/checkpoint-2/`: a clean module, U1001, U2001, U3001 with its JSON edit, U3004, U4003 and U7002, plus `una contract` in human and JSON form and `una explain U4003` |
 | 3. Run (M7) | no | | |
 | 4. Trust (M8 to M10) | no | | |
 
-To run checkpoint 1: `cargo build -p una-cli && scripts/demo/checkpoint-1.sh`.
+To run checkpoint 1: `cargo build -p una-cli && scripts/demo/checkpoint-1.sh`; checkpoint 2 likewise with `scripts/demo/checkpoint-2.sh`.

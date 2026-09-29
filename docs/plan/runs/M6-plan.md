@@ -67,4 +67,47 @@ U4001 at the value that flows, or at the condition of the construct whose label 
 
 ## 8. Self-review checklist
 
-Appended when the milestone is complete.
+Every MUST and MUST NOT of the milestone's sections, then the other rules they state. Evidence names tests of `crates/una-check/tests/flow.rs` (T), cases of `tests/conformance/security/` (C), and the checkpoint 2 demo (D).
+
+### MUST and MUST NOT
+
+| Rule | Status | Evidence |
+| --- | --- | --- |
+| `spec/07 §3` rule 5: a function body's result label MUST be below the declared return type's (U4001) | done, per return path, with implicit flows at the condition in return position (D-089) | T `values_flow_into_declared_types_below_their_labels`, `branches_on_labeled_values_raise_their_result`; C `explicit_flow`, `classic_implicit_flow` |
+| `spec/07 §5` rule 3: the `via` function MUST be private to the trusted module (U4005) | done, with its module and its single entry point (D-094) | T `policies_live_in_trusted_modules_and_own_their_via_functions`; C `public_via`, `via_called_directly` |
+| `spec/07 §5` rule 4: types other than labels MUST match between a policy and its `via` function (U4005) | done; M4's U2001 became U4005 (D-066, D-094) | T `policies_live_in_trusted_modules_and_own_their_via_functions`; C `via_of_another_type` |
+
+### Other rules of the sections
+
+| Rule | Status | Evidence |
+| --- | --- | --- |
+| `spec/07 §2`: labels are a level and categories, ordered componentwise; undeclared categories are U4007 | done (D-096) | unit tests of `label.rs`; T `label_categories_are_declared_in_una_toml`; C `undeclared_category` |
+| `spec/03 §5`, `spec/09 §2`: any type position carries a label, `public` when unwritten | done, labels at every position of the checker's types, joined on type variables (D-088) | unit test `variables_keep_the_join_of_the_labels_they_meet`; T `values_flow_into_declared_types_below_their_labels` (generics) |
+| `spec/07 §3` rule 1: operators join their operands; field access joins the record's label | done, deep joins for operators, equality and interpolation, top labels for `.len`, `is`, `in` (D-090) | T `operators_fields_and_patterns_take_the_labels_they_read` |
+| `spec/07 §3` rule 2: `if`, `when` and `if none` on a labeled value raise the pc and their value | done (T-If, T-Case) | T `branches_on_labeled_values_raise_their_result`; C `classic_implicit_flow` |
+| `spec/07 §3` rule 3: `fail` and failing handling clauses only under a `public` pc (U4002) | done, with `if error pass`, `if none fail` and `checked` on labeled values (D-091) | T `failures_and_calls_under_a_raised_program_counter_are_implicit_flows`, `checked_reveals_its_value_through_its_failure`; C `fail_under_secret_pc`, `if_none_fail_on_secret`, `checked_on_secret` |
+| `spec/07 §3` rule 4: operations need `pc ⊔ ℓ(args) ⊑ accepts` (U4003); calls need `pc ⊑ bound(f)` (U4002) | done, also for function values and handler installations (D-093) | T `operation_arguments_are_sinks_bounded_by_accepts`, `failures_and_calls_under_a_raised_program_counter_are_implicit_flows`; C `operation_under_secret_pc`, `failing_call_under_secret_pc` |
+| `spec/07 §4`: operation arguments are sinks; interpolation propagates labels; `expect` lines are exempt | done; arguments bounded by `accepts` only, handler parameters raised by it (D-092, D-095) | T `operation_arguments_are_sinks_bounded_by_accepts`, `expect_lines_clauses_and_via_bodies_are_not_checked_for_labels`; C `labeled_text_to_console`, `argument_above_accepts`; D |
+| `spec/07 §5` rules 1 and 2: a policy call takes `v` into `from` and needs `pc ⊑ ℓ(to)` (U4002) | done | T `policies_live_in_trusted_modules_and_own_their_via_functions`; C `declassification_tour` |
+| `spec/07 §5` rule 3: no label checks inside `via` functions | done (D-095) | C `declassification_tour`; the reference example |
+| `spec/07 §5` rule 5, `§6`: policy call sites and trusted modules in the build report | M9 | |
+| `spec/07 §6`: policies only in trusted modules (U4004) | done; a missing listing stays U7005 (D-094) | T `policies_live_in_trusted_modules_and_own_their_via_functions`; C `policy_outside_trusted` |
+| `spec/10 §2`: S-Refine labels and S-Fun variance | done, contravariant parameters, lambdas recording the labels their bodies assume (D-089) | T `lambdas_and_function_values_carry_labels`, `lambda_bodies_keep_the_labels_they_assume_for_their_parameters` |
+| `spec/10 §5`: T-Call's `bound(f)`, T-Op's `accepts`, T-Fail's `pc = ⊥`; §7: T-Checked, T-Declassify | done | T above |
+| `spec/10 §9` rule 3: no label premises inside `via` functions | done | as above |
+| `spec/14 §3`: host sinks: `Console`, `Clock`, `Env` accept `public`, `Files.write` `internal`, `Keys.hmac` any label | done; `Keys.hmac` accepts `⊤` (D-092) | T `operation_arguments_are_sinks_bounded_by_accepts`; probes of `Files.write` and `Env.get` |
+
+### Acceptance criteria
+
+| Criterion | Evidence |
+| --- | --- |
+| Conformance cases for U4001 to U4007, including the classic implicit flow, failure under pc and labeled text printed to `Console` | runner: 160 cases, 159 passed, 1 pending (M8), 0 failures; C `classic_implicit_flow`, `fail_under_secret_pc`, `labeled_text_to_console` |
+| The whole reference example passes tier 0 | CLI `check_without_diagnostics_prints_nothing` (`examples/events`) |
+| Checkpoint 2 demo | `scripts/demo/checkpoint-2.sh`, run by `crates/una-cli/tests/demo_scripts.rs` |
+| Explain texts for U4001 to U4005 and U4007 | `crates/una-cli/tests/explain_examples.rs` |
+| Determinism on the security cases | CLI `check_json_is_byte_identical_across_runs` |
+
+### Found during the milestone
+
+- An M5 bug: a private function passing the failure of an operation on an inferred reference got no inferred `fails` (fixed in `906bd9e`, found by the checkpoint 2 demo).
+- A lambda checked against a snapshot of its expected type let `fold`'s accumulator variable miss the body's label (fixed in `78ad11e`, found by the tour case).

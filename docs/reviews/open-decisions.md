@@ -92,7 +92,7 @@ None.
 - Chosen: A, because it is the model of Core IR (`spec/09 §2`) and keeps `Option[internal Text]` precise; B rejects a public-topped option of internal text wherever it flows, and C repeats the type checker's resolution of fields, methods and instantiations.
 - Confidence: medium
 - Reversal cost: medium, the labeled node of `Ty` and the unifier in `crates/una-check/src/types/`
-- Implemented in: M6 information-flow commits, tag `DECISION D-088`
+- Implemented in: `d519fbb`, `78ad11e`, `crates/una-check/src/types/label.rs`, `ty.rs`, `unify.rs`, tag `DECISION D-088`
 - ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 1
 - Answer needed: Keep A? Or switch to B or C?
 
@@ -378,7 +378,7 @@ None.
 - Chosen: A, because these are the places where a declared type meets a value; B would compare types that inference joins, such as branches, and C repeats one cause at every branch. A lambda's type records the labels its body assumed for its parameters, which keeps a body from branching on a parameter whose label rises later (a `fold` over labeled values needs a labeled initial value); a `Unit` value carries no information.
 - Confidence: medium
 - Reversal cost: low
-- Implemented in: M6 information-flow commits, tag `DECISION D-089`
+- Implemented in: `d519fbb`, `78ad11e`, `crates/una-check/src/types/flow.rs` (`flow`, `implicit_result`), `call.rs`, `stmt.rs`, tag `DECISION D-089`
 - ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 2
 - Answer needed: Keep A? Or switch to C?
 
@@ -389,7 +389,7 @@ None.
 - Chosen: A, because an equality of two lists or an interpolation reads the whole value, while `.len`, `is` and a field read only the structure the top label covers.
 - Confidence: medium
 - Reversal cost: low
-- Implemented in: M6 information-flow commits, tag `DECISION D-090`
+- Implemented in: `d519fbb`, `crates/una-check/src/types/expr.rs`, `call.rs`, `stmt.rs`, tag `DECISION D-090`
 - ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 3
 - Answer needed: Keep A? Or switch to B?
 
@@ -400,7 +400,7 @@ None.
 - Chosen: A, because `spec/07 §3` rules 2 and 3 make the failure of a branch on a labeled value an implicit flow, and B would let a secret leak through `checked`.
 - Confidence: medium
 - Reversal cost: low
-- Implemented in: M6 information-flow commits, tag `DECISION D-091`
+- Implemented in: `d519fbb`, `crates/una-check/src/types/expr.rs` (`checked`), tag `DECISION D-091`
 - ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 4
 - Answer needed: Keep A? Or switch to B?
 
@@ -411,7 +411,7 @@ None.
 - Chosen: A, because `accepts` is the sink label of `spec/07 §4`, and the prelude's declarations only make sense with it; raising the parameters inside handlers keeps what callers pass labeled.
 - Confidence: medium
 - Reversal cost: low
-- Implemented in: M6 information-flow commits, tag `DECISION D-092`
+- Implemented in: `d519fbb`, `crates/una-check/src/types/env.rs` (`accepts`), `flow.rs` (`sink`), `check.rs` (`handler`), tag `DECISION D-092`
 - ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 6
 - Answer needed: Keep A? Or switch to B?
 
@@ -422,7 +422,7 @@ None.
 - Chosen: A, because the policy is "the only entry point" (`spec/07 §5` rule 3), and a direct call would lower labels without the policy's audit trail.
 - Confidence: medium
 - Reversal cost: low
-- Implemented in: M6 information-flow commits, tag `DECISION D-094`
+- Implemented in: `d519fbb`, `crates/una-check/src/types/check.rs` (`policy`), `flow.rs` (`via_site`), tag `DECISION D-094`
 - ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 7
 - Answer needed: Keep A? Or switch to B?
 
@@ -895,7 +895,7 @@ None.
 - Chosen: A, because a function value or an installed handler performs the same effects as a named function.
 - Confidence: high
 - Reversal cost: low
-- Implemented in: M6 information-flow commits, tag `DECISION D-093`
+- Implemented in: `d519fbb`, `crates/una-check/src/types/flow.rs` (`bound`, `call_under_pc`), `call.rs`, `check.rs` (`install`), tag `DECISION D-093`
 - ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 5
 - Answer needed: Keep A?
 
@@ -906,7 +906,7 @@ None.
 - Chosen: A, because clauses produce no value at run time, and checking them would only reject specifications.
 - Confidence: high
 - Reversal cost: low
-- Implemented in: M6 information-flow commits, tag `DECISION D-095`
+- Implemented in: `d519fbb`, `crates/una-check/src/types/check.rs`, `flow.rs` (`labels`), tag `DECISION D-095`
 - ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 8
 - Answer needed: Keep A?
 
@@ -917,7 +917,7 @@ None.
 - Chosen: A, because each category is a separate edit.
 - Confidence: high
 - Reversal cost: low
-- Implemented in: M6 information-flow commits, tag `DECISION D-096`
+- Implemented in: `d519fbb`, `crates/una-check/src/types/env.rs` (`lower_label`), tag `DECISION D-096`
 - ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 9
 - Answer needed: Keep A?
 
@@ -928,7 +928,7 @@ None.
 - Chosen: A, because each points at the code an agent edits, and the related condition explains an implicit flow.
 - Confidence: high
 - Reversal cost: low
-- Implemented in: M6 information-flow commits, tag `DECISION D-097`
+- Implemented in: `d519fbb`, `crates/una-check/src/types/flow.rs`, tag `DECISION D-097`
 - ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 10
 - Answer needed: Keep A?
 

@@ -129,6 +129,7 @@ impl Checker<'_, '_, '_> {
 
     /// U4002: `what` fails, which is allowed only under a `public` program counter
     /// (`spec/07 §3` rule 3). `extra` is the label of a value it also branches on.
+    /// DECISION D-097: at the construct, with the labeled condition as a related location.
     pub(crate) fn fail_under_pc(&mut self, span: Span, what: &str, extra: Option<(&Label, Span)>) {
         if !self.labels() {
             return;
@@ -277,8 +278,9 @@ impl Checker<'_, '_, '_> {
     }
 
     /// U4003: operation `what`, whose arguments are sinks with label `accepts`, under the
-    /// program counter, with `args` (`spec/07 §3` rule 4, `spec/07 §4`; DECISION D-092,
-    /// D-097).
+    /// program counter, with `args` (`spec/07 §3` rule 4, `spec/07 §4`). DECISION D-092.
+    /// DECISION D-097: at the argument that exceeds `accepts`, or at the operation when the
+    /// program counter alone exceeds it.
     pub(crate) fn sink(&mut self, span: Span, what: &str, accepts: &Accepts, args: &[(Span, Ty)]) {
         if !self.labels() {
             return;
