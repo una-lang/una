@@ -8,7 +8,7 @@
 
 M8 generates proof obligations from Core IR (`spec/12 §3`), encodes them in SMT-LIB (`§4`), runs Z3 (`§5`), maps models back to source names (`§7`), caches results (`§9`) and reports U5001 to U5003 with repairs (`spec/13 §1 to §3`). The specification fixes the kinds, the hypotheses, the logic, the preamble, the statuses and the shapes, but not how Core IR carries formulas and the spans that diagnostics need, which declarations are verified, how an obligation over several return paths is formed, which ground facts a query holds, several encoding and protocol details, the cache layout, how goals and hypotheses become text, how counterexamples show values of uninterpreted sorts, which repairs are proposed, or the output of `una obligations`.
 
-Decision log entries: D-111 to D-121 (`docs/reviews/open-decisions.md`).
+Decision log entries: D-111 to D-121, and D-131 from M10 (`docs/reviews/open-decisions.md`).
 
 ## Decision
 
@@ -23,10 +23,11 @@ Decision log entries: D-111 to D-121 (`docs/reviews/open-decisions.md`).
 9. **Counterexamples.** Bindings for the parameters, `result`, named `let`s and pattern variables, and for the field and `len` terms over them that occur in the query, by name; a value of a sum shows its variant, a text equal to a literal of the query shows as that literal, and another uninterpreted value shows as `<Kind>#<n>`.
 10. **Repairs.** A refuted or unknown `refinement` or `precondition` proposes, in order, a stronger parameter type when the value is a parameter (cost 0), a `requires` clause for a private function (cost 0), a guard (cost 0) and `checked` (cost 1); a `postcondition` proposes a guard or a changed `ensures` clause (cost 0); a `division` a guard (cost 0); an `exhaustive` an `else` arm (cost 0). Edits are `null`.
 11. **`una obligations`.** Human output prints one line per obligation, `<status> <id> <kind> <file>:<line>:<col> <goal>`, with `(cached)` for cached results; the exit code is 1 when an obligation is not proven or tier 0 reports diagnostics, which it prints as `una check` does. In `una.obligations/1`, `domain` is `semantic` for every obligation of v0.1.
+12. **`attempt`** (added in M10). The value `x` of an `attempt` gets the hypothesis `x is Ok implies P`, where `P` says that one of the normal return paths of the attempted call was taken, with its facts, among them the callee's `ensures`, and with `x.value` equal to its value. `x is Err` carries nothing, since failures have no postcondition (`spec/04 §2` rule 2). This holds wherever the value of an `attempt` flows: a `let`, a return, the `do` line of an example.
 
 ### Changes to other documents on acceptance
 
-- `spec/09 §2` gains the terms, clauses, spans and `unreachable` of rule 1; `spec/12 §3` rules 2 to 4; `spec/12 §4` rule 5, and `spec/12 §2` models division by a variable as rule 5 does; `spec/12 §5` rule 6; `spec/12 §9` rule 7; `spec/12 §8` and `spec/13 §2` rule 8; `spec/12 §7` rule 9; `spec/13 §3` rule 10; `spec/13 §5` rule 11.
+- `spec/09 §2` gains the terms, clauses, spans and `unreachable` of rule 1; `spec/12 §3` rules 2 to 4; `spec/12 §4` rule 5, and `spec/12 §2` models division by a variable as rule 5 does; `spec/12 §5` rule 6; `spec/12 §9` rule 7; `spec/12 §8` and `spec/13 §2` rule 8; `spec/12 §7` rule 9; `spec/13 §3` rule 10; `spec/13 §5` rule 11; `spec/12 §3` gains a row for `let x = attempt f(ā)` from rule 12.
 
 ## Consequences
 

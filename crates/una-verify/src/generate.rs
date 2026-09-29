@@ -109,19 +109,8 @@ pub fn obligations(program: &Program, sources: &SourceDb) -> Vec<Obligation> {
                     if let Some(ty) = leaves.iter().find_map(|l| l.value.as_ref().map(|v| &v.ty)) {
                         ctx.types.insert(result.clone(), ty.clone());
                         let x = own(&ctx, result);
-                        let paths: Vec<F> = leaves
-                            .iter()
-                            .map(|leaf| {
-                                let mut parts: Vec<F> =
-                                    leaf.hyps.iter().map(|h| h.f.clone()).collect();
-                                if let Some(value) = &leaf.value
-                                    && value.f.sort() == x.f.sort()
-                                {
-                                    parts.push(F::eq(x.f.clone(), value.f.clone()));
-                                }
-                                F::and(parts)
-                            })
-                            .collect();
+                        let paths: Vec<F> =
+                            leaves.iter().map(|leaf| walker.path(leaf, 0, &x)).collect();
                         ctx.define(F::or(paths));
                     }
                     let mut discarded = Vec::new();
@@ -481,6 +470,8 @@ struct Leaf {
     hyps: Vec<Hyp>,
     value: Option<Tv>,
     span: Span,
+    /// For the value of an `attempt`, the normal returns of the attempted call.
+    returns: Vec<Leaf>,
 }
 
 /// How the terms of a clause are replaced: its binders, `it` and `result`.
@@ -741,6 +732,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                         hyps: ctx.hyps.clone(),
                         value: Some(self.atom(atom, &ctx)),
                         span: *span,
+                        returns: Vec::new(),
                     });
                     return;
                 }
@@ -786,20 +778,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                                 let base = ctx.hyps.len();
                                 let paths: Vec<F> = inner_leaves
                                     .iter()
-                                    .map(|leaf| {
-                                        let mut parts: Vec<F> = leaf
-                                            .hyps
-                                            .iter()
-                                            .skip(base)
-                                            .map(|h| h.f.clone())
-                                            .collect();
-                                        if let Some(value) = &leaf.value
-                                            && value.f.sort() == x.f.sort()
-                                        {
-                                            parts.push(F::eq(x.f.clone(), value.f.clone()));
-                                        }
-                                        F::and(parts)
-                                    })
+                                    .map(|leaf| self.path(leaf, base, &x))
                                     .collect();
                                 ctx.define(F::or(paths));
                             }
@@ -908,12 +887,13 @@ impl<'p, 'i> Walker<'p, 'i> {
                     expr = handler;
                 }
                 Expr::Attempt { body, span } => {
-                    let mut inner = Vec::new();
-                    self.walk(body, &ctx, &mut inner);
+                    let mut returns = Vec::new();
+                    self.walk(body, &ctx, &mut returns);
                     leaves.push(Leaf {
                         hyps: ctx.hyps.clone(),
                         value: None,
                         span: *span,
+                        returns,
                     });
                     return;
                 }
@@ -935,6 +915,43 @@ impl<'p, 'i> Walker<'p, 'i> {
                 }
             }
         }
+    }
+
+    /// `x is Ok implies ...` for the value `x` of an `attempt`: `Ok` is a normal return of the
+    /// attempted call (`spec/06 §5`), so the facts of one of its return paths hold, among them
+    /// the callee's `ensures`, and `x.value` is its value; `Err` carries nothing, as failures
+    /// have no postcondition (`spec/04 §2`). DECISION D-131.
+    fn attempted(&self, x: &Tv, leaf: &Leaf) -> Option<F> {
+        if leaf.returns.is_empty() {
+            return None;
+        }
+        let tag = self.tag(x)?;
+        let payload = self.field(x, 0, 0)?;
+        let base = leaf.hyps.len();
+        let paths: Vec<F> = leaf
+            .returns
+            .iter()
+            .map(|path| self.path(path, base, &payload))
+            .collect();
+        Some(F::op(
+            "=>",
+            vec![F::eq(tag, F::Int("0".to_owned())), F::or(paths)],
+        ))
+    }
+
+    /// One path of an expression as a formula: its facts after the first `base` hypotheses,
+    /// and `x` equal to its value, or for an `attempt`, to what the call returned.
+    fn path(&self, leaf: &Leaf, base: usize, x: &Tv) -> F {
+        let mut parts: Vec<F> = leaf.hyps.iter().skip(base).map(|h| h.f.clone()).collect();
+        if let Some(value) = &leaf.value
+            && value.f.sort() == x.f.sort()
+        {
+            parts.push(F::eq(x.f.clone(), value.f.clone()));
+        }
+        if let Some(ok) = self.attempted(x, leaf) {
+            parts.push(ok);
+        }
+        F::and(parts)
     }
 
     /// A pure expression of Core as one term, when it is one: atoms, primitives and fields
@@ -1771,13 +1788,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 sort: "Bool".to_owned(),
                 role: ConstRole::Plain,
             });
-            let mut parts: Vec<F> = leaf.hyps.iter().skip(base).map(|h| h.f.clone()).collect();
-            if let Some(value) = &leaf.value
-                && value.f.sort() == result.f.sort()
-            {
-                parts.push(F::eq(result.f.clone(), value.f.clone()));
-            }
-            assertions.push(F::eq(selector.clone(), F::and(parts)));
+            assertions.push(F::eq(selector.clone(), self.path(leaf, base, result)));
             selectors.push(selector);
         }
         assertions.push(F::or(selectors));
