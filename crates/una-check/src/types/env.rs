@@ -626,11 +626,12 @@ impl<'a> Env<'a> {
                 continue;
             };
             let params = self.params(module, &ast.params, &[], report);
-            let uses: Vec<Need> = ast
-                .uses
-                .iter()
-                .map(|uses| self.lower_uses(module, uses, report))
-                .collect();
+            let uses: Vec<Need> = first_of_each(
+                ast.uses
+                    .iter()
+                    .map(|uses| self.lower_uses(module, uses, report))
+                    .collect(),
+            );
             let name = self.text(module, ast.capability.name);
             let capability = self.upper(module, name).into_iter().find_map(|e| match e {
                 Entity::Capability(id) => Some(id),
@@ -697,15 +698,17 @@ impl<'a> Env<'a> {
                 let ensures = has(|kind| matches!(kind, ClauseKind::Ensures(_)));
                 let declares_uses = has(|kind| matches!(kind, ClauseKind::Uses(_)));
                 let declares_fails = has(|kind| matches!(kind, ClauseKind::Fails(_)));
-                let uses: Vec<Need> = function
-                    .clauses
-                    .iter()
-                    .filter_map(|clause| match &clause.kind {
-                        ClauseKind::Uses(uses) => Some(uses),
-                        _ => None,
-                    })
-                    .map(|uses| self.lower_uses(module, uses, report))
-                    .collect();
+                let uses: Vec<Need> = first_of_each(
+                    function
+                        .clauses
+                        .iter()
+                        .filter_map(|clause| match &clause.kind {
+                            ClauseKind::Uses(uses) => Some(uses),
+                            _ => None,
+                        })
+                        .map(|uses| self.lower_uses(module, uses, report))
+                        .collect(),
+                );
                 if let Some(def) = self.functions.get_mut(id) {
                     def.type_params = type_params;
                     def.params = params;
@@ -941,14 +944,29 @@ impl<'a> Env<'a> {
                     FnTypeClause::Uses(_) => None,
                 });
                 let fails = fails.map(|kind| self.error_kind(module, kind, report));
-                let uses: Vec<FnUse> = clauses
+                let clauses: Vec<&UsesClause> = clauses
                     .iter()
                     .filter_map(|clause| match clause {
                         FnTypeClause::Uses(uses) => Some(uses),
                         FnTypeClause::Fails(_) => None,
                     })
-                    .map(|uses| self.lower_uses(module, uses, report).usage)
                     .collect();
+                if self.reports(module) {
+                    let names: Vec<(&str, Span)> = clauses
+                        .iter()
+                        .map(|uses| (self.text(module, uses.cap.name), uses.cap.span))
+                        .collect();
+                    super::authority::duplicate_refs(report, &names);
+                }
+                let uses: Vec<FnUse> = first_of_each(
+                    clauses
+                        .into_iter()
+                        .map(|uses| self.lower_uses(module, uses, report))
+                        .collect(),
+                )
+                .into_iter()
+                .map(|need| need.usage)
+                .collect();
                 Declared::plain(Ty::Fn(Box::new(FnTy {
                     params,
                     result,
@@ -1104,4 +1122,16 @@ impl<'a> Env<'a> {
             refinements,
         }
     }
+}
+
+/// The first requirement of each name: a reference bound twice is U1002, and the first binding
+/// wins, as the first of two declarations does (DECISION D-087).
+fn first_of_each(needs: Vec<Need>) -> Vec<Need> {
+    let mut kept: Vec<Need> = Vec::new();
+    for need in needs {
+        if !kept.iter().any(|k| k.usage.name == need.usage.name) {
+            kept.push(need);
+        }
+    }
+    kept
 }
