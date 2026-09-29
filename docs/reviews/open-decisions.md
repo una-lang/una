@@ -624,6 +624,50 @@ None.
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 11
 - Answer needed: Keep A? Or switch to B?
 
+### D-122: What the build report lists (M9)
+- Question: `spec/13 §6` shows one `una.report/1` without saying which functions, policy calls, escapes, capabilities and host capabilities its sections list, how the lock is hashed, or how a single file names its package.
+- Context: `spec/13 §6`, `spec/07 §5` rule 5, `spec/07 §6`, `spec/06 §6`; ADR 0034 rule 1.
+- Options: A) every function with `uses`, every policy call, every module that uses `checked`, every declared capability with its `ensures`, the host capabilities the package uses, the SHA-256 of the lock's contents, a single file named after its module with version `0.0.0`; the report after a clean tier 0, exit code 1 with unproven obligations; B) only public functions and only the capabilities `main` uses.
+- Chosen: A, because the report is the reviewer's view of the whole package's authority, trust and assumptions; B would hide private code with effects.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: M9 commits, tag `DECISION D-122`
+- ADR: `docs/adr/0034-report-and-abi-details-left-open.md` (Provisional), rule 1
+- Answer needed: Keep A? Or switch to B?
+
+### D-123: Trivial `ensures` and the coverage counts (M9)
+- Question: `spec/13 §6` counts "ensures clauses the solver proves valid without any hypothesis" and reports them as missing contracts, without saying which clauses or how coverage counts functions.
+- Context: `spec/13 §6`, `spec/12 §5`; ADR 0034 rule 2.
+- Options: A) one query per `ensures` clause of a public function, with its parameters and `result` unconstrained; `with_ensures` counts public functions with a clause that is not trivial; B) detect `ensures true` syntactically.
+- Chosen: A, because the solver catches every valid clause (`result == result`, `x >= x`), and a function whose only clauses are trivial has no contract.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: M9 commits, tag `DECISION D-123`
+- ADR: `docs/adr/0034-report-and-abi-details-left-open.md` (Provisional), rule 2
+- Answer needed: Keep A? Or switch to B?
+
+### D-124: The output of `una trace` (M9)
+- Question: `spec/08 §1` says `una trace` "lists every function deriving from the requirement, its contract clauses and the verification status of each obligation", without a shape or exit codes.
+- Context: `spec/08 §1`, `spec/13 §5`; ADR 0029; ADR 0034 rule 3.
+- Options: A) the package in the current directory at tier 1, as `una contract`; the requirement, then each derived function with its clauses and obligations; `una.trace/1` with `--json`; an unknown identifier is a usage error; B) a path argument.
+- Chosen: A, because `spec/13 §5` gives the command no path, as for `una contract`.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: M9 commits, tag `DECISION D-124`
+- ADR: `docs/adr/0034-report-and-abi-details-left-open.md` (Provisional), rule 3
+- Answer needed: Keep A? Or switch to B?
+
+### D-125: `--json` for every command (M9)
+- Question: `spec/13 §5` makes `--json` a global flag, but `una explain` has answered it with a usage error since M1, and commands differ on what they print for a package that does not check.
+- Context: `spec/13 §4, §5`, ADR 0012, ADR 0015 D1, D-010; ADR 0034 rule 4.
+- Options: A) `una.explain/1` for `una explain --json`; the diagnostic list for `contract`, `trace`, `obligations` and `report` on a rejected package, the diagnostics inside the documents of `run` and `test`; B) keep the usage error of `una explain --json`.
+- Chosen: A, because an agent can then drive every command headlessly (`plan/milestones-v0.1.md` M10), and each command prints exactly one document. The M1 test that expected the usage error now expects the document.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: M9 commits, tag `DECISION D-125`
+- ADR: `docs/adr/0034-report-and-abi-details-left-open.md` (Provisional), rule 4
+- Answer needed: Keep A? Or switch to B?
+
 ### D-002: Title of the historical design exploration in the charter (Part A)
 - Question: The charter supersedes the design exploration "Vera Language Specification v0.3". Should that historical title keep the codename?
 - Context: Part A.2 and A.3 (Vera stays only in `reviews/triage.md §5` and ADR 0016); A.5 (mechanical edits only); charter status line.
@@ -1194,6 +1238,17 @@ None.
 - Reversal cost: low
 - Implemented in: `49c73e9`, `crates/una-verify/src/cache.rs`, tag `DECISION D-117`
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 7
+- Answer needed: Keep A?
+
+### D-126: U8001's explain text has no examples (M9)
+- Question: `spec/13 §4` asks a failing and a fixed example of every code, and U8001 is "Internal compiler error (always a bug)".
+- Context: `spec/13 §4`; ADR 0034 rule 5.
+- Options: A) a text without examples, saying how to report the bug; B) an example that triggers the error, which would be a known bug left in the compiler.
+- Chosen: A, because a program that makes the compiler fail is a bug to fix, not an example to keep.
+- Confidence: high
+- Reversal cost: low
+- Implemented in: M9 commits, tag `DECISION D-126`
+- ADR: `docs/adr/0034-report-and-abi-details-left-open.md` (Provisional), rule 5
 - Answer needed: Keep A?
 
 ### D-083: CI runners for the private repository (Part 5)
