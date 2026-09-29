@@ -1,0 +1,11 @@
+module shortlinks.main
+
+import shortlinks.links (one_link, resolve_or_home)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let docs = resolve_or_home("docs") with @links = one_link(saved: "docs", leads_to: "https://example.org/docs")
+  @console.print("docs leads to {docs}")
+  let blog = resolve_or_home("blog") with @links = one_link(saved: "docs", leads_to: "https://example.org/docs")
+  @console.print("blog leads to {blog}")
