@@ -1243,11 +1243,11 @@ None.
 ### D-115: Encoding details (M8)
 - Question: `spec/12 §4` gives examples of sort names and the shape of field, `len` and `tag` functions, but not the names of every sort, how binders become symbols, or how `Unit`, text ordering, `concat` and `to_text` are encoded.
 - Context: `spec/12 §2, §4`; ADR 0033 rule 5.
-- Options: A) the names of ADR 0033 rule 5, binders as quoted symbols, text ordering, `concat` and `to_text` as uninterpreted functions, and multiplication of two non-literals and division or remainder by a non-literal as the uninterpreted `mul!Int`, `div!Int` and `mod!Int`; B) no encoding for text ordering, which would make such refinements unverifiable; C) SMT-LIB `div` and `mod` for a division by a variable, as `spec/12 §2` says.
+- Options: A) the names of ADR 0033 rule 5, binders as quoted symbols (with a `!` suffix on `_`, `as`, `xor` and `distinct`, which Z3 5.1.0 rejects even quoted; found in M10 by an example whose discarded statement is the binder `_`), text ordering, `concat` and `to_text` as uninterpreted functions, and multiplication of two non-literals and division or remainder by a non-literal as the uninterpreted `mul!Int`, `div!Int` and `mod!Int`; B) no encoding for text ordering, which would make such refinements unverifiable; C) SMT-LIB `div` and `mod` for a division by a variable, as `spec/12 §2` says.
 - Chosen: A, because uninterpreted functions add no axioms (ADR 0010's reasoning), and doubled underscores keep sort names distinct for distinct module paths. C is not possible: QF_UFLIA has no nonlinear terms, and Z3 5.1.0 answers such an assertion with an error and drops it, which would make an obligation pass or fail for the wrong reason. This deviates from the text of `spec/12 §2`, whose change the ADR lists.
 - Confidence: high
 - Reversal cost: low
-- Implemented in: `49c73e9`, `crates/una-verify/src/smt.rs`, `generate.rs` (`arithmetic`, `order`), tag `DECISION D-115`
+- Implemented in: `49c73e9`, the M10 fix of the symbols, `crates/una-verify/src/smt.rs` (`symbol`), `generate.rs` (`arithmetic`, `order`), tag `DECISION D-115`
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 5
 - Answer needed: Keep A?
 

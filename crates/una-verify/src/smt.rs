@@ -166,12 +166,8 @@ impl F {
                 None => out.push_str(digits),
             },
             F::Bool(value) => out.push_str(if *value { "true" } else { "false" }),
-            F::Const(c) => {
-                let _ = write!(out, "|{}|", c.name);
-            }
-            F::Local { name, .. } => {
-                let _ = write!(out, "|{name}|");
-            }
+            F::Const(c) => out.push_str(&symbol(&c.name)),
+            F::Local { name, .. } => out.push_str(&symbol(name)),
             F::App { fun, args } => {
                 let _ = write!(out, "({}", fun.name);
                 for arg in args {
@@ -279,7 +275,7 @@ impl Query {
             let _ = writeln!(out, "(declare-sort {sort} 0)");
         }
         for (name, sort) in &constants {
-            let _ = writeln!(out, "(declare-fun |{name}| () {sort})");
+            let _ = writeln!(out, "(declare-fun {} () {sort})", symbol(name));
         }
         for (name, (args, result)) in &functions {
             let _ = writeln!(out, "(declare-fun {name} ({}) {result})", args.join(" "));
@@ -291,7 +287,7 @@ impl Query {
             let params: Vec<String> = definition
                 .params
                 .iter()
-                .map(|(param, sort)| format!("(|{param}| {sort})"))
+                .map(|(param, sort)| format!("({} {sort})", symbol(param)))
                 .collect();
             let _ = writeln!(
                 out,
@@ -301,7 +297,7 @@ impl Query {
             );
         }
         if texts.len() > 1 {
-            let names: Vec<String> = texts.iter().map(|name| format!("|{name}|")).collect();
+            let names: Vec<String> = texts.iter().map(|name| symbol(name)).collect();
             let _ = writeln!(out, "(assert (distinct {}))", names.join(" "));
         }
         for assertion in self.assertions.iter().filter(|a| **a != F::Bool(true)) {
@@ -363,6 +359,16 @@ impl Query {
     }
 }
 
+/// A binder's quoted symbol. Z3 5.1.0 rejects `_` and `as` even quoted, and a constant named
+/// after its variadic `xor` or `distinct`; these names gain a `!` suffix, which ends no other
+/// symbol (ADR 0033 rule 5, DECISION D-115).
+fn symbol(name: &str) -> String {
+    match name {
+        "_" | "as" | "xor" | "distinct" => format!("|{name}!|"),
+        _ => format!("|{name}|"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -373,6 +379,17 @@ mod tests {
             sort: sort.to_owned(),
             role: ConstRole::Plain,
         })
+    }
+
+    #[test]
+    fn names_the_solver_rejects_gain_a_suffix() {
+        // ADR 0033 rule 5: Z3 5.1.0 rejects these four even as quoted symbols.
+        for name in ["_", "as", "xor", "distinct"] {
+            assert_eq!(symbol(name), format!("|{name}!|"));
+        }
+        assert_eq!(symbol("e"), "|e|");
+        assert_eq!(symbol("%t0"), "|%t0|");
+        assert_eq!(symbol("x%2"), "|x%2|");
     }
 
     #[test]
