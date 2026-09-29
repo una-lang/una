@@ -1,0 +1,7 @@
+module shapes.point
+
+pub kind Point
+  x: Int
+  y: Int
+
+pub kind Shape = Dot(at: Point, size: Int) | Blank

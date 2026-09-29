@@ -2,7 +2,8 @@
 //!
 //! [`format`] prints a file that lexed and parsed without errors in its canonical form, and
 //! [`differences`] reports U7001 wherever a file differs from it. A file with syntax errors has
-//! no canonical form (DECISION D-027).
+//! no canonical form (DECISION D-027). [`format_with`] also knows the [`Constructors`] of the
+//! file's package, whose imported constructors it orders like its own.
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
@@ -13,4 +14,5 @@ mod rewrite;
 mod spacing;
 
 pub use diff::differences;
-pub use layout::format;
+pub use layout::{format, format_with};
+pub use rewrite::Constructors;
