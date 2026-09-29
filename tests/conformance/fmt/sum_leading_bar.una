@@ -1,0 +1,6 @@
+-- test: a sum with two or more variants has no leading bar
+-- spec: spec/02 §2
+-- expect: error U7001 at 6:1
+module sum_leading_bar
+
+pub kind Size = | Small | Large

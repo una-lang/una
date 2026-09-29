@@ -1,0 +1,6 @@
+-- test: a single file cannot declare a trusted module
+-- spec: spec/07 §6
+-- expect: error U7005 at 4:1
+trusted module trusted_header_not_listed
+
+pub pepper() -> Int = 7

@@ -1,0 +1,108 @@
+# Testing strategy
+
+Status: Normative for the reference implementation.
+
+## 1. Layers
+
+| Layer | Location | Purpose |
+| --- | --- | --- |
+| Unit | `crates/*/src/**` | Small functions: lexer states, unification, formula normalization |
+| Conformance | `tests/conformance/` | One file per spec rule, positive and negative |
+| Snapshot | `crates/*/tests/snapshots/` (insta) | Full JSON diagnostics, Core IR dumps, SMT queries, reports |
+| Property | `crates/una-fmt/tests/` | Formatter idempotence and parse round-trip over every `.una` file in the repository |
+| End to end | `tests/e2e/` | `una check`, `una test`, `una run` on `examples/` |
+
+## 2. Conformance case format
+
+Single-module cases are one file, compiled as a package containing only that module, with default `una.toml` settings and without the module path check (U1008). Multi-module cases are a directory with `una.toml` and `src/`.
+
+```text
+tests/conformance/<area>/<case>.una
+tests/conformance/<area>/<case>/una.toml
+```
+
+Areas: `syntax`, `fmt`, `names`, `types`, `authority`, `security`, `verification`, `runtime`, `examples`, `project`.
+
+Each case starts with directive comments:
+
+```una
+-- test: capability reference cannot be bound with let
+-- spec: spec/05 §6
+-- expect: error U3005 at 7:13
+module conformance.authority.cap_let
+
+...
+```
+
+| Directive | Meaning |
+| --- | --- |
+| `-- test: <text>` | Required. One-line description |
+| `-- spec: <ref>` | Required. The rule under test |
+| `-- expect: ok` | No diagnostics at tier 1 |
+| `-- expect: error <code> at <line>:<col>` | Repeatable. The set of reported errors MUST equal the set of expect lines |
+| `-- expect: tier0-ok` | No diagnostics at tier 0; tier 1 not run |
+| `-- expect: run-output "<text>"` | `una run` prints exactly this (repeatable, one per line) |
+| `-- expect: test-pass` / `-- expect: test-fail "<example>"` | Outcome of `una test` |
+| `-- grant: <spec>` | Grant passed to `una run` |
+| `-- pending: M<n>` | Optional. The case is expected to fail until milestone `M<n>` (see "Pending cases") |
+
+The runner (`cargo test -p una-cli --test conformance`) discovers cases, runs the compiler in-process and compares results. A case whose directives are malformed fails. The rules below define well-formedness and pending cases (ADR 0013); they fill gaps and change none of the meanings above.
+
+### Directive block
+
+1. The directives of a file are its leading lines of the form `-- <name>: <value>`: no indentation, one space after `--`, one space after the colon, no trailing whitespace. The block ends at the first line of any other form.
+2. The names are `test`, `spec`, `expect`, `grant` and `pending`. Any other name inside the block is malformed. An unindented line starting with `-- <name>: ` for one of these names after the block is malformed, so a misplaced directive is never silently ignored.
+3. The runner reads cases as bytes and requires the directive block to be valid UTF-8. A leading byte order mark and `\r\n` line endings do not affect directive parsing.
+
+### Values and cardinality
+
+| Directive | Per case | Value |
+| --- | --- | --- |
+| `test` | exactly 1 | non-empty text |
+| `spec` | exactly 1 | `spec/NN §a`, optionally followed by `, §b` and further sections; the file `docs/spec/NN-*.md` and a heading `## a.` for each section MUST exist |
+| `expect` | at least 1 | one of the forms in the table above |
+| `grant` | any number | a grant spec of `spec/13 §5` |
+| `pending` | at most 1 | `M1` to `M10` |
+
+- `ok`, `tier0-ok` and `test-pass` appear at most once each.
+- In `error <code> at <line>:<col>`, `<code>` is registered in `spec/13 §4`; `<line>` and `<col>` are 1-based decimal integers, the column counted in Unicode scalar values with the rule of `spec/13 §1` (ADR 0015), and they MUST denote a position of the file: an existing line, and a column at most one past its last character. Two identical `error` lines are malformed, because expectations form a set.
+- A single-module case is its own package root (ADR 0015), so its expected errors match diagnostics whose `file` is the case's file name, for example `cap_as_value.una`.
+- `run-output` directives are compared in order, one per printed line; repeats are allowed.
+- `test-fail` names a non-empty example; two identical `test-fail` lines are malformed.
+- Quoted values accept `\"` and `\\` as their only escapes.
+- `ok`, `tier0-ok` and `error` are mutually exclusive, and so are `test-pass` and `test-fail`.
+
+### Multi-module cases
+
+Exactly one `.una` file under the case's `src/` carries the directive block; the other files MUST NOT contain directives. In a multi-module case, `error` expectations name the file: `error <code> at <path>:<line>:<col>`, where `<path>` is relative to the case directory (for example `src/a/b.una` or `una.toml`), MUST exist, and MUST NOT contain `:`. Single-module cases keep `at <line>:<col>`.
+
+### Discovery
+
+Every directory directly under `tests/conformance/` MUST be one of the areas above; files there (such as `README.md`) are not cases. Inside an area, every `.una` file is a single-module case and every directory containing `una.toml` is a multi-module case; any other entry is malformed. A run that discovers no case fails. Entries whose names start with `.` are ignored everywhere: at the root, inside areas and among the files of a multi-module case (ADR 0013, D6).
+
+### Pending cases
+
+`-- pending: M<n>` declares that the case is expected to fail until milestone `M<n>` of `plan/milestones-v0.1.md`, with `n` from 1 to 10. The runner validates every directive of a pending case and runs it like any other case, then classifies it:
+
+| `pending` | Outcome matches all expectations | Result |
+| --- | --- | --- |
+| absent | yes | pass |
+| absent | no | fail |
+| present | no | pending: listed in the runner summary, does not fail the run |
+| present | yes | fail, with the message `pending case passes; remove -- pending: M<n>` |
+
+An expectation the compiler cannot evaluate yet (for example `run-output` before `una run` exists) does not match. A milestone is complete only when no case names it in `pending`, and no case may be pending at release (M10).
+
+## 3. Solver tests
+
+Tests that reach tier 1 require Z3 at the version in the repository's `verification.lock`. If the binary is missing or mismatched, they fail with U5003 and a message explaining how to install the pinned version. They are never skipped.
+
+## 4. Determinism tests
+
+- Running `una check --json` twice on each example produces byte-identical output.
+- Running with `RAYON_NUM_THREADS=1` and with the default thread count produces identical output.
+
+## 5. Coverage expectations for v0.1
+
+- Every code in `spec/13 §4` except U8001 is produced by at least one conformance case.
+- Every typing rule in `spec/10` and evaluation rule in `spec/11` is exercised by at least one positive case.

@@ -1,0 +1,6 @@
+-- test: a word reserved for a later version cannot be a name
+-- spec: spec/01 §5
+-- expect: error U0103 at 6:5
+module reserved_keyword_as_name
+
+pub table() -> Int = 1

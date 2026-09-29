@@ -1,0 +1,15 @@
+-- test: unicode escapes must name a scalar value in braces
+-- spec: spec/01 §6
+-- expect: error U0005 at 9:24
+-- expect: error U0005 at 11:28
+-- expect: error U0005 at 13:24
+-- expect: error U0005 at 15:23
+module invalid_unicode_escapes
+
+pub above() -> Text = "\u{110000}"
+
+pub surrogate() -> Text = "\u{D800}"
+
+pub empty() -> Text = "\u{}"
+
+pub bare() -> Text = "\u0041"

@@ -1,0 +1,27 @@
+[package]
+name = "una-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "una"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+una-check.workspace = true
+una-diag.workspace = true
+una-fmt.workspace = true
+una-project.workspace = true
+una-report.workspace = true
+una-syntax.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,14 @@
+-- test: capability reference cannot be bound with let
+-- spec: spec/05 §6
+-- expect: error U3005 at 13:11
+-- pending: M5
+module cap_as_value
+
+capability Log
+  op write(line: Text) -> Unit
+
+leak() -> Unit
+  uses @log: Log[write]
+=
+  let l = @log
+  unit

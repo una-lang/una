@@ -1,0 +1,10 @@
+-- test: a generated requirement stays proposed
+-- spec: spec/08 §1
+-- expect: error U1007 at 10:10
+module generated_requirement_active
+
+requirement EVENTS_3
+  text "Events without seats are shown as sold out"
+  source generated "task 41"
+  owner box_office
+  status active

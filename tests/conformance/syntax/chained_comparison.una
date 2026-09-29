@@ -1,0 +1,6 @@
+-- test: comparisons do not chain
+-- spec: spec/01 §7
+-- expect: error U0101 at 6:37
+module chained_comparison
+
+pub between(x: Int) -> Bool = 0 < x < 10

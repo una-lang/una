@@ -1,0 +1,10 @@
+-- test: header clauses follow the canonical order
+-- spec: spec/02 §3
+-- expect: error U0102 at 8:3
+module clause_out_of_order
+
+pub double(x: Int) -> Int
+  ensures result == x * 2
+  requires x >= 0
+=
+  x * 2

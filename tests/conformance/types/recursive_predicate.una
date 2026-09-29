@@ -1,0 +1,6 @@
+-- test: a reflect predicate does not call itself
+-- spec: spec/03 §4
+-- expect: error U2015 at 6:19
+module recursive_predicate
+
+predicate reflect even(n: Int) -> Bool = n == 0 or even(n - 2)

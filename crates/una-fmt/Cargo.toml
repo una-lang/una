@@ -1,0 +1,17 @@
+[package]
+name = "una-fmt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+una-diag.workspace = true
+una-syntax.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,10 @@
+-- test: modules cannot import each other in a cycle
+-- spec: spec/02 §1
+-- expect: error U1003 at src/a.una:6:8
+module a
+
+import b (two)
+
+pub one() -> Int = 1
+
+pub three() -> Int = two() + 1

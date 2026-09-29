@@ -1,0 +1,10 @@
+-- test: constructor arguments follow the declaration of the fields
+-- spec: spec/04 §3
+-- expect: error U7001 at 10:1
+module constructor_field_order
+
+pub kind Point
+  x: Int
+  y: Int
+
+pub origin() -> Point = Point(y: 0, x: 0)

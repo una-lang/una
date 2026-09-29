@@ -1,0 +1,903 @@
+//! Expressions (`spec/02 §7`, `spec/03`, `spec/10 §3, §4`, ADR 0024): literals, names, lists,
+//! operators, `is`, `in`, `if`, lambdas, `checked`, `attempt` and `fail`, with the refinement
+//! language (U2014) and the positions of `result`, `it` and `error` (U2012, U2013).
+
+use una_diag::{Code, ObligationKind};
+use una_syntax::Span;
+use una_syntax::ast::{
+    BinaryOp, Expr, ExprKind, Ident, IsTarget, LambdaParam, Literal, TextLit, TextPart, UnaryOp,
+    VariantExpr,
+};
+
+use super::check::{Checker, Ctx, Rl, Role};
+use super::closest;
+use super::env::{Entity, FnKind, KindDef};
+use super::ty::{FnTy, KindId, Ty};
+use super::unify::Origin;
+
+impl<'a> Checker<'_, 'a, '_> {
+    /// Checks `expr` against `expected` when given, and returns its type.
+    pub(crate) fn expr(&mut self, expr: &Expr, expected: Option<&Ty>) -> Ty {
+        self.expr_as(expr, expected, Role::Plain)
+    }
+
+    /// Checks `expr` against `expected`, describing a mismatch by `role`.
+    pub(crate) fn expr_as(&mut self, expr: &Expr, expected: Option<&Ty>, role: Role<'_>) -> Ty {
+        let ty = self.infer(expr, expected);
+        match expected {
+            Some(expected) if !self.unify_at(expr.span, expected, &ty, role) => expected.clone(),
+            _ => ty,
+        }
+    }
+
+    /// The type of `expr`, with `expected` as a hint for lambdas, lists, variants and branches;
+    /// the caller unifies. The restriction to the refinement language is restored afterwards,
+    /// and `handled` applies to this expression only.
+    pub(crate) fn infer(&mut self, expr: &Expr, expected: Option<&Ty>) -> Ty {
+        let rl = self.ctx.rl;
+        let handled = std::mem::replace(&mut self.ctx.handled, false);
+        let ty = self.infer_kind(expr, expected, handled);
+        self.ctx.rl = rl;
+        ty
+    }
+
+    fn infer_kind(&mut self, expr: &Expr, expected: Option<&Ty>, handled: bool) -> Ty {
+        let span = expr.span;
+        match &expr.kind {
+            ExprKind::Literal(literal) => self.literal(literal, span),
+            ExprKind::Paren(inner) => {
+                self.ctx.handled = handled;
+                self.infer(inner, expected)
+            }
+            ExprKind::Name(ident) => self.name_value(ident),
+            ExprKind::UpperName(ident) => self.upper_value(ident, expected),
+            ExprKind::List(items) => self.list(items, span, expected),
+            ExprKind::Binary { op, left, right } => self.binary(*op, left, right, span),
+            ExprKind::Unary { op, operand } => {
+                let (ty, symbol) = match op {
+                    UnaryOp::Neg => (Ty::Int, "-"),
+                    UnaryOp::Not => (Ty::Bool, "not"),
+                };
+                let what = format!("the operand of `{symbol}`");
+                self.expr_as(operand, Some(&ty), Role::Condition(&what));
+                ty
+            }
+            ExprKind::Is { value, target } => self.is(value, target, span),
+            ExprKind::In { value, .. } => {
+                self.expr_as(
+                    value,
+                    Some(&Ty::Int),
+                    Role::Condition("the value tested by `in`"),
+                );
+                Ty::Bool
+            }
+            ExprKind::IfLine {
+                condition,
+                then,
+                otherwise,
+            } => {
+                self.outside_rl(span, || "`if ... then ... else`".to_owned());
+                self.condition(condition, "the condition of `if`");
+                self.branches(&[then, otherwise], expected, Role::Plain, false)
+            }
+            ExprKind::Lambda { params, body } => self.lambda(params, body, span, expected),
+            ExprKind::Checked {
+                value,
+                predicate,
+                failure,
+            } => self.checked(value, predicate, failure, span),
+            ExprKind::Attempt(operand) => self.attempt(operand, span),
+            ExprKind::Fail(variant) => {
+                self.outside_rl(span, || "`fail`".to_owned());
+                self.impure(span, || "`fail`".to_owned());
+                self.raise(variant);
+                Ty::Never
+            }
+            ExprKind::Field { target, name } => self.field(target, name, span),
+            ExprKind::MethodCall { target, name, args } => {
+                self.method(target, name, args, span, handled)
+            }
+            ExprKind::Call { callee, args } => self.call(callee, args, span, handled, expected),
+            ExprKind::CapOp { cap, op, args } => self.cap_op(cap, op, args, span, handled),
+            // A capability reference as a value is U3005 (M5).
+            ExprKind::CapRef(_) => {
+                self.outside_rl(span, || "a capability reference".to_owned());
+                Ty::Error
+            }
+            ExprKind::Result => match self.ctx.result.clone() {
+                Some(ty) => ty,
+                None => {
+                    self.report.error(
+                        Code::U2012,
+                        span,
+                        "`result` is allowed only in `ensures` clauses and `expect` lines",
+                    );
+                    Ty::Error
+                }
+            },
+            ExprKind::It => match self.ctx.it.clone() {
+                Some(ty) => ty,
+                None => {
+                    self.report.error(
+                        Code::U2013,
+                        span,
+                        "`it` is allowed only in `where` clauses and the predicate of `checked`",
+                    );
+                    Ty::Error
+                }
+            },
+            ExprKind::Error => {
+                self.outside_rl(span, || "`error`".to_owned());
+                match self.ctx.error.clone() {
+                    Some(ty) => ty,
+                    None => {
+                        self.report.error(
+                            Code::U2013,
+                            span,
+                            "`error` is allowed only in the `fail` or `use` part of an `if error` clause",
+                        );
+                        Ty::Error
+                    }
+                }
+            }
+        }
+    }
+
+    fn literal(&mut self, literal: &Literal, span: Span) -> Ty {
+        match literal {
+            Literal::Int(_) => Ty::Int,
+            Literal::Bool(_) => Ty::Bool,
+            Literal::Unit => {
+                self.outside_rl(span, || "`unit`".to_owned());
+                Ty::Unit
+            }
+            Literal::Text(text) => {
+                self.text(text);
+                Ty::Text
+            }
+        }
+    }
+
+    /// A text literal. Interpolation converts `Int`, `Bool` and `Text` only (`spec/09 §3`,
+    /// `spec/14 §2`); a literal without interpolation is in the refinement language
+    /// (DECISION D-050).
+    pub(crate) fn text(&mut self, text: &TextLit) {
+        let interpolated = text
+            .parts
+            .iter()
+            .any(|part| matches!(part, TextPart::Interpolation(_)));
+        if interpolated {
+            self.outside_rl(text.span, || "text interpolation".to_owned());
+        }
+        for part in &text.parts {
+            let TextPart::Interpolation(expr) = part else {
+                continue;
+            };
+            let ty = self.expr(expr, None);
+            match self.resolve(&ty) {
+                Ty::Int | Ty::Bool | Ty::Text | Ty::Error | Ty::Never | Ty::Var(_) => {}
+                other => {
+                    let shown = self.show(&other);
+                    self.report.error(
+                        Code::U2001,
+                        expr.span,
+                        format!(
+                            "interpolation converts `Int`, `Bool` and `Text` to text, and this value is `{shown}`"
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    /// A lower-case name: a local, or a function used as a value.
+    fn name_value(&mut self, ident: &Ident) -> Ty {
+        let name = self.name(ident);
+        if let Some(ty) = self.local(name) {
+            return ty;
+        }
+        match self.env.lower(self.module, name) {
+            Some(Entity::Function(id)) => {
+                self.outside_rl(ident.span, || format!("function `{name}` used as a value"));
+                self.function_value(id, ident.span)
+            }
+            Some(Entity::Handler(_)) => {
+                self.report.error(
+                    Code::U2001,
+                    ident.span,
+                    format!("handler `{name}` is not a value; install it with `with` or `given`"),
+                );
+                Ty::Error
+            }
+            // An unknown name is U1001, reported by M3.
+            _ => Ty::Error,
+        }
+    }
+
+    /// The function type of function `id`, instantiated at `span`.
+    pub(crate) fn function_value(&mut self, id: usize, span: Span) -> Ty {
+        let Some(def) = self.env.functions.get(id).cloned() else {
+            return Ty::Error;
+        };
+        if def.kind == FnKind::Policy {
+            self.report.error(
+                Code::U2001,
+                span,
+                format!(
+                    "policy `{}` is not a value; call it as `{}(value)`",
+                    def.name, def.name
+                ),
+            );
+            return Ty::Error;
+        }
+        let args = self.instantiate(&def.type_params, def.name, span);
+        if !args.is_empty() {
+            self.instances.push((id, args.clone(), span));
+        }
+        self.edge(id, span);
+        Ty::Fn(Box::new(FnTy {
+            params: def
+                .params
+                .iter()
+                .map(|p| p.ty.base.substitute(&args))
+                .collect(),
+            result: def.result.base.substitute(&args),
+            fails: def.fails.clone(),
+        }))
+    }
+
+    /// Records that the body being checked calls or refers to function `callee`.
+    pub(crate) fn edge(&mut self, callee: usize, span: Span) {
+        if let Some(current) = self.current {
+            self.findings.edges.push((current, callee, span));
+        }
+    }
+
+    /// An upper-case name used as a value: a variant without fields (DECISION D-053).
+    fn upper_value(&mut self, ident: &Ident, expected: Option<&Ty>) -> Ty {
+        let name = self.name(ident);
+        let span = ident.span;
+        self.outside_rl(span, || format!("constructor `{name}`"));
+        if self.type_params.contains(&name) {
+            self.report.error(
+                Code::U2001,
+                span,
+                format!("type parameter `{name}` is not a value"),
+            );
+            return Ty::Error;
+        }
+        let Some(entity) = self.choose_upper(ident, expected) else {
+            return Ty::Error;
+        };
+        let problem = match entity {
+            Entity::Variant(kind, index) => {
+                let fields = self.variant_fields(kind, index);
+                if fields.is_empty() {
+                    let (params, kind_name) = self.kind_params(kind);
+                    let args = self.instantiate(&params, kind_name, span);
+                    return Ty::Kind(kind, args);
+                }
+                (
+                    Code::U2009,
+                    format!("variant `{name}` needs its fields: {}", fields.join(", ")),
+                )
+            }
+            Entity::Kind(id) => match self.env.kinds.get(id).and_then(|k| k.record.clone()) {
+                Some(fields) => {
+                    let fields: Vec<String> =
+                        fields.iter().map(|f| format!("`{}`", f.name)).collect();
+                    (
+                        Code::U2009,
+                        format!("record `{name}` needs its fields: {}", fields.join(", ")),
+                    )
+                }
+                None => (
+                    Code::U2001,
+                    format!("`{name}` is a kind, not a value; its values are its variants"),
+                ),
+            },
+            Entity::Alias(_) | Entity::Builtin(_) => {
+                (Code::U2001, format!("`{name}` is a type, not a value"))
+            }
+            Entity::Capability(_) => (Code::U2001, format!("capability `{name}` is not a value")),
+            Entity::Function(_) | Entity::Handler(_) => return Ty::Error,
+        };
+        self.report.error(problem.0, span, problem.1);
+        Ty::Error
+    }
+
+    /// The names of the fields of a variant, quoted, for messages.
+    fn variant_fields(&self, kind: KindId, index: usize) -> Vec<String> {
+        self.env
+            .kinds
+            .get(kind)
+            .and_then(|k| k.variants.get(index))
+            .map(|v| v.fields.iter().map(|f| format!("`{}`", f.name)).collect())
+            .unwrap_or_default()
+    }
+
+    /// The type parameters and the name of kind `id`.
+    pub(crate) fn kind_params(&self, id: KindId) -> (Vec<&'a str>, &'a str) {
+        match self.env.kinds.get(id) {
+            Some(kind) => (kind.params.clone(), kind.name),
+            None => (Vec::new(), "?"),
+        }
+    }
+
+    /// The entity of an upper-case name. Several candidates, variants of imported kinds, are
+    /// told apart by the expected type; a name that stays ambiguous is U1001 (ADR 0023 rule 2).
+    pub(crate) fn choose_upper(&mut self, ident: &Ident, expected: Option<&Ty>) -> Option<Entity> {
+        let name = self.name(ident);
+        let candidates = self.env.upper(self.module, name);
+        if candidates.len() <= 1 {
+            return candidates.first().copied();
+        }
+        if let Some(Ty::Kind(kind, _)) = expected.map(|ty| self.resolve(ty))
+            && let Some(found) = candidates
+                .iter()
+                .find(|c| matches!(c, Entity::Variant(k, _) if *k == kind))
+        {
+            return Some(*found);
+        }
+        let kinds: Vec<String> = candidates
+            .iter()
+            .filter_map(|candidate| match candidate {
+                Entity::Variant(kind, _) => Some(format!("`{}`", self.env.kind_name(*kind))),
+                _ => None,
+            })
+            .collect();
+        self.report.error(
+            Code::U1001,
+            ident.span,
+            format!(
+                "`{name}` is ambiguous: it is a variant of {}",
+                kinds.join(" and ")
+            ),
+        );
+        None
+    }
+
+    fn list(&mut self, items: &[Expr], span: Span, expected: Option<&Ty>) -> Ty {
+        self.outside_rl(span, || "a list literal".to_owned());
+        let element = match expected.map(|ty| self.resolve(ty)) {
+            Some(Ty::List(element)) => *element,
+            _ => self.vars.fresh(Origin::Element, span),
+        };
+        for item in items {
+            self.expr(item, Some(&element));
+        }
+        Ty::List(Box::new(element))
+    }
+
+    fn binary(&mut self, op: BinaryOp, left: &Expr, right: &Expr, span: Span) -> Ty {
+        let symbol = op_symbol(op);
+        let operand = format!("an operand of `{symbol}`");
+        match op {
+            BinaryOp::And | BinaryOp::Or | BinaryOp::Implies => {
+                for side in [left, right] {
+                    self.expr_as(side, Some(&Ty::Bool), Role::Condition(&operand));
+                }
+                Ty::Bool
+            }
+            BinaryOp::Eq | BinaryOp::NotEq => {
+                self.variant_equality(op, left, right, span);
+                let left_ty = self.expr(left, None);
+                let right_ty = self.infer(right, Some(&left_ty));
+                if self.same(span, &left_ty, &right_ty, symbol) {
+                    let resolved = self.resolve(&left_ty);
+                    if self.facts.has_function(&resolved) {
+                        let shown = self.show(&resolved);
+                        self.report.error(
+                            Code::U2001,
+                            span,
+                            format!("`{symbol}` cannot compare values of `{shown}`, which hold functions"),
+                        );
+                    }
+                }
+                self.compared.push(left_ty);
+                Ty::Bool
+            }
+            BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
+                let left_ty = self.expr(left, None);
+                let right_ty = self.infer(right, Some(&left_ty));
+                if self.same(span, &left_ty, &right_ty, symbol) {
+                    match self.resolve(&left_ty) {
+                        Ty::Int | Ty::Error | Ty::Never | Ty::Var(_) => {}
+                        // DECISION D-061: ordering of text has no encoding in `spec/12 §4`.
+                        Ty::Text => self.outside_rl(span, || "ordering of `Text`".to_owned()),
+                        Ty::Kind(id, _) if self.fieldless_sum(id) => {}
+                        other => {
+                            let shown = self.show(&other);
+                            self.report.error(
+                                Code::U2001,
+                                span,
+                                format!(
+                                    "`{symbol}` orders `Int`, `Text` and variants without fields, not `{shown}`"
+                                ),
+                            );
+                        }
+                    }
+                }
+                Ty::Bool
+            }
+            BinaryOp::Add | BinaryOp::Sub => self.ints(left, right, &operand),
+            BinaryOp::Mul => {
+                if int_literal(left).is_none() && int_literal(right).is_none() {
+                    self.outside_rl(span, || {
+                        "`*` of two operands that are not literals".to_owned()
+                    });
+                }
+                self.ints(left, right, &operand)
+            }
+            BinaryOp::Div | BinaryOp::Mod => {
+                if int_literal(right) != Some(true) {
+                    self.outside_rl(span, || {
+                        format!("`{symbol}` by a divisor that is not a nonzero literal")
+                    });
+                    self.obligation(ObligationKind::Division, span, None);
+                }
+                self.ints(left, right, &operand)
+            }
+        }
+    }
+
+    fn ints(&mut self, left: &Expr, right: &Expr, operand: &str) -> Ty {
+        for side in [left, right] {
+            self.expr_as(side, Some(&Ty::Int), Role::Condition(operand));
+        }
+        Ty::Int
+    }
+
+    /// Whether two operands have one type; U2001 at the operation otherwise.
+    fn same(&mut self, span: Span, left: &Ty, right: &Ty, symbol: &str) -> bool {
+        if self.vars.unify(left, right) {
+            return true;
+        }
+        let (left, right) = (self.show(left), self.show(right));
+        self.report.error(
+            Code::U2001,
+            span,
+            format!("`{symbol}` needs operands of one type, and these are `{left}` and `{right}`"),
+        );
+        false
+    }
+
+    /// Whether kind `id` is a sum whose variants have no fields, which are ordered.
+    fn fieldless_sum(&self, id: KindId) -> bool {
+        self.env
+            .kinds
+            .get(id)
+            .is_some_and(|kind| kind.is_sum() && kind.variants.iter().all(|v| v.fields.is_empty()))
+    }
+
+    /// In the refinement language a variant is tested with `is`, not compared: `x == V` is
+    /// outside it, with an edit to `x is V` (DECISION D-061).
+    fn variant_equality(&mut self, op: BinaryOp, left: &Expr, right: &Expr, span: Span) {
+        if !matches!(self.ctx.rl, Rl::Clause | Rl::Reflect) {
+            return;
+        }
+        let ExprKind::UpperName(ident) = &right.kind else {
+            return;
+        };
+        let name = self.name(ident);
+        let left_text = self.report.text(left.span);
+        let replacement = match op {
+            BinaryOp::Eq => format!("{left_text} is {name}"),
+            _ => format!("not ({left_text} is {name})"),
+        };
+        let repair = self
+            .report
+            .edit(format!("write `{replacement}`"), span, replacement);
+        self.outside_rl_with(
+            span,
+            || format!("comparing with variant `{name}`"),
+            Some(repair),
+        );
+    }
+
+    fn is(&mut self, value: &Expr, target: &IsTarget, span: Span) -> Ty {
+        match target {
+            IsTarget::Variant(ident) => {
+                let ty = self.expr(value, None);
+                self.variant_of(&ty, ident, value.span, "`is` tests a variant of a sum kind");
+            }
+            // DECISION D-061: `is` with a literal is outside the refinement language.
+            IsTarget::Literal(literal) => {
+                let full = self.report.text(span);
+                let value_text = self.report.text(value.span);
+                let repair = full
+                    .strip_prefix(value_text)
+                    .and_then(|rest| rest.strip_prefix(" is "))
+                    .map(|rest| {
+                        let replacement = format!("{value_text} == {rest}");
+                        self.report
+                            .edit(format!("write `{replacement}`"), span, replacement)
+                    });
+                self.outside_rl_with(span, || "`is` with a literal".to_owned(), repair);
+                let ty = self.expr(value, None);
+                let literal_ty = self.literal(literal, span);
+                if !self.vars.unify(&ty, &literal_ty) {
+                    let (ty, literal_ty) = (self.show(&ty), self.show(&literal_ty));
+                    self.report.error(
+                        Code::U2001,
+                        span,
+                        format!("`is` cannot test a `{ty}` value against a `{literal_ty}` literal"),
+                    );
+                }
+            }
+        }
+        Ty::Bool
+    }
+
+    /// The variant `ident` of the sum kind of a value of type `ty`: U1001 when the kind has no
+    /// such variant, U2001 when `ty` is not a sum kind (ADR 0024 rule 1, DECISION D-048).
+    pub(crate) fn variant_of(
+        &mut self,
+        ty: &Ty,
+        ident: &Ident,
+        value: Span,
+        what: &str,
+    ) -> Option<(KindId, usize, Vec<Ty>)> {
+        let name = self.name(ident);
+        match self.resolve(ty) {
+            Ty::Kind(id, args) if self.env.kinds.get(id).is_some_and(KindDef::is_sum) => {
+                if let Some(index) = self.variant_index(id, name) {
+                    return Some((id, index, args));
+                }
+                let kind = self.env.kind_name(id);
+                let variants: Vec<&str> = self
+                    .env
+                    .kinds
+                    .get(id)
+                    .map(|k| k.variants.iter().map(|v| v.name).collect())
+                    .unwrap_or_default();
+                let mut diagnostic = self.report.make(
+                    Code::U1001,
+                    ident.span,
+                    format!("`{kind}` has no variant `{name}`"),
+                );
+                if let Some(close) = closest(name, variants) {
+                    diagnostic.repairs.push(self.report.edit(
+                        format!("write `{close}`"),
+                        ident.span,
+                        close,
+                    ));
+                }
+                self.report.push(diagnostic);
+                None
+            }
+            Ty::Var(_) => match self.choose_upper(ident, None) {
+                Some(Entity::Variant(id, index)) => {
+                    let (params, kind) = self.kind_params(id);
+                    let args = self.instantiate(&params, kind, ident.span);
+                    self.vars.unify(ty, &Ty::Kind(id, args.clone()));
+                    Some((id, index, args))
+                }
+                _ => None,
+            },
+            Ty::Error | Ty::Never => None,
+            other => {
+                let shown = self.show(&other);
+                self.report.error(
+                    Code::U2001,
+                    value,
+                    format!("{what}, and this value is `{shown}`"),
+                );
+                None
+            }
+        }
+    }
+
+    /// The branches of `if` or `when`: one type, or that of the expected type; a branch that
+    /// fails joins any other (DECISION D-049).
+    pub(crate) fn branches(
+        &mut self,
+        branches: &[&Expr],
+        expected: Option<&Ty>,
+        role: Role<'_>,
+        tail: bool,
+    ) -> Ty {
+        let mut joined = expected.cloned();
+        for branch in branches {
+            let ty = if tail {
+                self.tail_expr(branch, joined.as_ref(), role)
+            } else {
+                self.expr_as(branch, joined.as_ref(), role)
+            };
+            if joined.is_none() && self.resolve(&ty) != Ty::Never {
+                joined = Some(ty);
+            }
+        }
+        joined.unwrap_or(Ty::Never)
+    }
+
+    /// An expression in a return position: each normal return path records the obligations
+    /// of the result type and the `ensures` (`spec/12 §3`).
+    pub(crate) fn tail_expr(&mut self, expr: &Expr, expected: Option<&Ty>, role: Role<'_>) -> Ty {
+        match &expr.kind {
+            ExprKind::IfLine {
+                condition,
+                then,
+                otherwise,
+            } if self.ctx.rl == Rl::Off => {
+                self.condition(condition, "the condition of `if`");
+                self.branches(&[then, otherwise], expected, role, true)
+            }
+            ExprKind::Paren(inner) => self.tail_expr(inner, expected, role),
+            ExprKind::Fail(_) => self.expr_as(expr, expected, role),
+            _ => {
+                let ty = self.expr_as(expr, expected, role);
+                self.returned(expr.span);
+                ty
+            }
+        }
+    }
+
+    /// A lambda: parameter types come from the expected function type or from annotations
+    /// (U2010, `spec/03 §7`).
+    fn lambda(
+        &mut self,
+        params: &[LambdaParam],
+        body: &Expr,
+        span: Span,
+        expected: Option<&Ty>,
+    ) -> Ty {
+        self.outside_rl(span, || "a lambda".to_owned());
+        let mut shape = match expected.map(|ty| self.resolve(ty)) {
+            Some(Ty::Fn(function)) => Some(*function),
+            _ => None,
+        };
+        let mut mismatch = false;
+        if let Some(function) = &shape
+            && function.params.len() != params.len()
+        {
+            self.report.error(
+                Code::U2001,
+                span,
+                format!(
+                    "expected a function of {}, found a lambda of {}",
+                    count(function.params.len(), "parameter"),
+                    count(params.len(), "parameter")
+                ),
+            );
+            shape = None;
+            mismatch = true;
+        }
+        let mark = self.locals.len();
+        let mut types = Vec::new();
+        for (index, param) in params.iter().enumerate() {
+            let from_shape = shape.as_ref().and_then(|f| f.params.get(index).cloned());
+            let name = self.name(&param.name);
+            // A parameter's own annotation types the body; the lambda keeps the expected
+            // parameter type, so a contradicting annotation is reported once.
+            let (ty, param_ty) = match (&param.ty, from_shape) {
+                (Some(written), from_shape) => {
+                    let type_params = self.type_params.clone();
+                    let lowered = self
+                        .env
+                        .lower_type(self.module, written, &type_params, self.report)
+                        .base;
+                    match from_shape {
+                        Some(from_shape) if !self.vars.unify(&from_shape, &lowered) => {
+                            let (declared, given) = (self.show(&lowered), self.show(&from_shape));
+                            self.report.error(
+                                Code::U2001,
+                                written.span,
+                                format!(
+                                    "lambda parameter `{name}` is declared as `{declared}`, and the expected function type gives it `{given}`"
+                                ),
+                            );
+                            (lowered, from_shape)
+                        }
+                        _ => (lowered.clone(), lowered),
+                    }
+                }
+                (None, Some(from_shape)) => (from_shape.clone(), from_shape),
+                (None, None) => {
+                    if !mismatch {
+                        self.report.error(
+                            Code::U2010,
+                            param.name.span,
+                            format!(
+                                "cannot infer the type of lambda parameter `{name}`; annotate it, as in `{name}: Int`"
+                            ),
+                        );
+                    }
+                    (Ty::Error, Ty::Error)
+                }
+            };
+            types.push(param_ty);
+            self.bind(name, ty);
+        }
+        let result = shape.as_ref().map(|f| f.result.clone());
+        let fails = shape.as_ref().and_then(|f| f.fails.clone());
+        let ctx = Ctx {
+            fails: fails.clone(),
+            ..self.ctx.clone()
+        };
+        let body_ty = self.within(ctx, |checker| checker.expr(body, result.as_ref()));
+        self.locals.truncate(mark);
+        if mismatch {
+            return Ty::Error;
+        }
+        Ty::Fn(Box::new(FnTy {
+            params: types,
+            result: result.unwrap_or(body_ty),
+            fails,
+        }))
+    }
+
+    /// `checked(v, p) else fail V` (`spec/06 §6`): `p` is in the refinement language, over `it`.
+    fn checked(&mut self, value: &Expr, predicate: &Expr, failure: &VariantExpr, span: Span) -> Ty {
+        self.outside_rl(span, || "`checked`".to_owned());
+        self.impure(span, || "`checked`, which can fail,".to_owned());
+        let ty = self.expr(value, None);
+        let ctx = Ctx {
+            it: Some(ty.clone()),
+            rl: Rl::Clause,
+            ..self.ctx.clone()
+        };
+        self.within(ctx, |checker| {
+            checker.condition(predicate, "the predicate of `checked`");
+        });
+        self.raise(failure);
+        ty
+    }
+
+    /// `attempt` applies to one call and gives `Result[T, E]` (`spec/06 §5`).
+    fn attempt(&mut self, operand: &Expr, span: Span) -> Ty {
+        self.outside_rl(span, || "`attempt`".to_owned());
+        let mut inner = operand;
+        while let ExprKind::Paren(next) = &inner.kind {
+            inner = next;
+        }
+        let call = match &inner.kind {
+            ExprKind::Call { callee, .. } => !matches!(callee.kind, ExprKind::UpperName(_)),
+            ExprKind::MethodCall { .. } | ExprKind::CapOp { .. } => true,
+            _ => false,
+        };
+        if !call {
+            self.report.error(
+                Code::U2001,
+                operand.span,
+                "`attempt` applies to one call of a function or capability operation",
+            );
+            self.expr(operand, None);
+            return Ty::Error;
+        }
+        self.ctx.handled = true;
+        let ty = self.expr(operand, None);
+        let error = self
+            .call_fails
+            .get(&inner.span)
+            .cloned()
+            .unwrap_or(Ty::Error);
+        match self.env.prelude_kind("Result") {
+            Some(result) => Ty::Kind(result, vec![ty, error]),
+            None => Ty::Error,
+        }
+    }
+
+    /// `fail V(args)`, also after `if error`, `if none` and in `checked` (DECISION D-048): `V`
+    /// is a variant of the error kind in context, or of a kind in scope when the context has
+    /// none or lacks `V`. A variant outside the declared kind is U3009 (M5).
+    pub(crate) fn raise(&mut self, variant: &VariantExpr) {
+        let name = self.name(&variant.name);
+        let declared = self.ctx.fails.clone().map(|kind| self.resolve(&kind));
+        let mut found = match &declared {
+            Some(Ty::Kind(id, args)) => self
+                .variant_index(*id, name)
+                .map(|index| (*id, index, args.clone())),
+            _ => None,
+        };
+        if found.is_none() {
+            let candidates = self.env.upper(self.module, name);
+            match self.choose_upper(&variant.name, declared.as_ref()) {
+                Some(Entity::Variant(id, index)) => {
+                    let (params, kind) = self.kind_params(id);
+                    let args = self.instantiate(&params, kind, variant.name.span);
+                    found = Some((id, index, args));
+                }
+                Some(_) => self.report.error(
+                    Code::U2001,
+                    variant.name.span,
+                    format!("`{name}` is not a variant; `fail` raises a variant of an error kind"),
+                ),
+                None if candidates.is_empty() => self.unknown_variant(variant, declared.as_ref()),
+                // An ambiguous name was reported by `choose_upper`.
+                None => {}
+            }
+        }
+        match found {
+            Some((id, index, args)) => {
+                self.construct(
+                    id,
+                    Some(index),
+                    &args,
+                    &variant.args,
+                    variant.name.span,
+                    variant.span,
+                );
+            }
+            None => {
+                for arg in &variant.args {
+                    self.expr(&arg.value, None);
+                }
+            }
+        }
+    }
+
+    /// U1001 for a variant after `fail` that neither the error kind nor any scope has.
+    fn unknown_variant(&mut self, variant: &VariantExpr, declared: Option<&Ty>) {
+        let name = self.name(&variant.name);
+        let kind = match declared {
+            Some(Ty::Kind(id, _)) => Some(*id),
+            _ => None,
+        };
+        let message = match kind {
+            Some(id) => format!(
+                "cannot find variant `{name}` in error kind `{}` or in scope",
+                self.env.kind_name(id)
+            ),
+            None => {
+                format!("cannot find variant `{name}` in this module, its imports or the prelude")
+            }
+        };
+        let mut diagnostic = self.report.make(Code::U1001, variant.name.span, message);
+        let variants: Vec<&str> = kind
+            .and_then(|id| self.env.kinds.get(id))
+            .map(|k| k.variants.iter().map(|v| v.name).collect())
+            .unwrap_or_default();
+        if let Some(close) = closest(name, variants) {
+            diagnostic.repairs.push(self.report.edit(
+                format!("write `{close}`"),
+                variant.name.span,
+                close,
+            ));
+        }
+        self.report.push(diagnostic);
+    }
+}
+
+/// Whether `expr` is an integer literal, possibly negated or in parentheses, and then whether
+/// it is nonzero.
+fn int_literal(expr: &Expr) -> Option<bool> {
+    match &expr.kind {
+        ExprKind::Literal(Literal::Int(digits)) => Some(digits != "0"),
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            operand,
+        }
+        | ExprKind::Paren(operand) => int_literal(operand),
+        _ => None,
+    }
+}
+
+/// How an operator is written.
+fn op_symbol(op: BinaryOp) -> &'static str {
+    match op {
+        BinaryOp::Implies => "implies",
+        BinaryOp::Or => "or",
+        BinaryOp::And => "and",
+        BinaryOp::Eq => "==",
+        BinaryOp::NotEq => "!=",
+        BinaryOp::Lt => "<",
+        BinaryOp::Le => "<=",
+        BinaryOp::Gt => ">",
+        BinaryOp::Ge => ">=",
+        BinaryOp::Add => "+",
+        BinaryOp::Sub => "-",
+        BinaryOp::Mul => "*",
+        BinaryOp::Div => "/",
+        BinaryOp::Mod => "mod",
+    }
+}
+
+/// `n` things, in words: "1 parameter", "2 parameters".
+pub(crate) fn count(n: usize, thing: &str) -> String {
+    if n == 1 {
+        format!("1 {thing}")
+    } else {
+        format!("{n} {thing}s")
+    }
+}

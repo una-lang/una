@@ -1,0 +1,13 @@
+[package]
+name = "una-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+una-diag.workspace = true
+
+[lints]
+workspace = true

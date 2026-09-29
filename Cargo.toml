@@ -1,0 +1,49 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/una-lang/una"
+publish = false
+
+[workspace.dependencies]
+# Workspace crates, in the dependency direction of compiler/architecture.md §2.
+una-check = { path = "crates/una-check" }
+una-core = { path = "crates/una-core" }
+una-diag = { path = "crates/una-diag" }
+una-fmt = { path = "crates/una-fmt" }
+una-interp = { path = "crates/una-interp" }
+una-project = { path = "crates/una-project" }
+una-report = { path = "crates/una-report" }
+una-syntax = { path = "crates/una-syntax" }
+una-verify = { path = "crates/una-verify" }
+# External crates, only from the allowlist of compiler/architecture.md §7.
+ariadne = "0.6.0"
+clap = { version = "4.6.7", features = ["derive"] }
+indexmap = "2.14.2"
+insta = "1.48.0"
+pretty_assertions = "1.4.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+toml = "1.1.6"
+
+# The Rust rules of compiler/conventions.md §1, enforced for every target of
+# every crate. clippy.toml relaxes them inside tests, which may unwrap freely.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+exit = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+panic = "deny"
+print_stderr = "deny"
+print_stdout = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+unwrap_used = "deny"

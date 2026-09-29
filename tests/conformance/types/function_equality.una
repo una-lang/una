@@ -1,0 +1,6 @@
+-- test: values of function type cannot be compared
+-- spec: spec/03 §1
+-- expect: error U2001 at 6:39
+module function_equality
+
+pub same(f: fn(Int) -> Int) -> Bool = f == f

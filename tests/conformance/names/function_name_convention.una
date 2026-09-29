@@ -1,0 +1,6 @@
+-- test: lower-case names do not end with an underscore
+-- spec: spec/01 §4
+-- expect: error U1005 at 6:5
+module function_name_convention
+
+pub total_(x: Int) -> Int = x

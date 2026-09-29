@@ -1,0 +1,977 @@
+//! The environment of the type checker: every kind, alias, function, capability and handler of
+//! the package, the prelude and `std.testing`, the scopes of each module (ADR 0023), and the
+//! lowering of written types (U2002, U2003).
+
+use std::collections::BTreeMap;
+
+use una_diag::Code;
+use una_syntax::ast::{
+    CapabilityDecl, ClauseKind, DeclKind, Expr, Field, File, FnTypeClause, FunctionDecl,
+    HandlerDecl, Ident, KindBody, KindDecl, OpClauseKind, Param, PolicyDecl, PredicateDecl, Type,
+    TypeCore,
+};
+use una_syntax::{Interner, Span, Symbol};
+
+use super::Report;
+use super::ty::{AliasId, CapId, Declared, FnTy, KindId, Refinement, Ty};
+
+/// A module the checker knows: a package module, the prelude or `std.testing`.
+pub(crate) struct Module<'a> {
+    pub(crate) tree: &'a File,
+    pub(crate) interner: &'a Interner,
+    /// Whether problems in it are reported: a package module without syntax errors (ADR 0023
+    /// rule 7). The standard modules are never reported.
+    pub(crate) reports: bool,
+    /// Its path, from its header.
+    pub(crate) path: String,
+    pub(crate) upper: BTreeMap<&'a str, Entity>,
+    pub(crate) lower: BTreeMap<&'a str, Entity>,
+    /// Names imported explicitly.
+    pub(crate) imports: BTreeMap<&'a str, Entity>,
+    /// Variants of the sum kinds it imports (ADR 0023 rule 2).
+    pub(crate) imported_variants: BTreeMap<&'a str, Vec<Entity>>,
+    /// What each of `tree.decls` defines, repeats included; `None` for requirements and
+    /// examples.
+    pub(crate) decls: Vec<Option<Entity>>,
+}
+
+/// What a name refers to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Entity {
+    Kind(KindId),
+    Variant(KindId, usize),
+    Alias(AliasId),
+    Capability(CapId),
+    Function(usize),
+    Handler(usize),
+    Builtin(Builtin),
+}
+
+/// The built-in types (`spec/03 §1`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Builtin {
+    Int,
+    Bool,
+    Text,
+    Unit,
+    Hashed,
+    List,
+}
+
+const BUILTINS: [(&str, Builtin); 6] = [
+    ("Int", Builtin::Int),
+    ("Bool", Builtin::Bool),
+    ("Text", Builtin::Text),
+    ("Unit", Builtin::Unit),
+    ("Hashed", Builtin::Hashed),
+    ("List", Builtin::List),
+];
+
+/// A field of a record or of a variant.
+#[derive(Clone, Debug)]
+pub(crate) struct FieldDef<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) ty: Declared,
+    /// Where its type is written.
+    pub(crate) span: Span,
+}
+
+/// A variant of a sum kind.
+#[derive(Clone, Debug)]
+pub(crate) struct VariantDef<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) fields: Vec<FieldDef<'a>>,
+}
+
+/// A record or sum kind.
+#[derive(Clone, Debug)]
+pub(crate) struct KindDef<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) module: usize,
+    pub(crate) params: Vec<&'a str>,
+    /// `Some` for a record, with its fields.
+    pub(crate) record: Option<Vec<FieldDef<'a>>>,
+    /// The variants of a sum.
+    pub(crate) variants: Vec<VariantDef<'a>>,
+    pub(crate) ast: &'a KindDecl,
+}
+
+impl KindDef<'_> {
+    pub(crate) fn is_sum(&self) -> bool {
+        self.record.is_none()
+    }
+}
+
+/// An alias or refinement kind, structural over its base (`spec/03 §2` rule 2).
+#[derive(Clone, Debug)]
+pub(crate) struct AliasDef<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) module: usize,
+    pub(crate) params: Vec<&'a str>,
+    pub(crate) base: Declared,
+    /// The `where` predicate, over `it` of the base type.
+    pub(crate) refinement: Option<&'a Expr>,
+    /// The base type as written.
+    pub(crate) ty: &'a Type,
+}
+
+/// What kind of callable a function definition is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FnKind {
+    Function,
+    Predicate {
+        reflect: bool,
+    },
+    /// A policy, called as `p(v)` (`spec/09 §3`).
+    Policy,
+}
+
+/// The declaration of a function definition.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum FnAst<'a> {
+    Function(&'a FunctionDecl),
+    Predicate(&'a PredicateDecl),
+    Policy(&'a PolicyDecl),
+}
+
+/// A parameter of a function, operation or handler.
+#[derive(Clone, Debug)]
+pub(crate) struct ParamDef<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) ty: Declared,
+    /// Where its type is written.
+    pub(crate) span: Span,
+}
+
+/// A function, predicate or policy, with its signature.
+#[derive(Clone, Debug)]
+pub(crate) struct FnDef<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) module: usize,
+    pub(crate) kind: FnKind,
+    pub(crate) type_params: Vec<&'a str>,
+    pub(crate) params: Vec<ParamDef<'a>>,
+    pub(crate) result: Declared,
+    /// Where the result type is written.
+    pub(crate) result_span: Span,
+    /// The declared error kind (`fails E`); for a policy, that of its `via` function.
+    pub(crate) fails: Option<Ty>,
+    /// Whether it declares `uses`; for a policy, whether its `via` function does.
+    pub(crate) uses: bool,
+    pub(crate) requires: bool,
+    pub(crate) ensures: bool,
+    pub(crate) ast: FnAst<'a>,
+}
+
+/// An operation of a capability.
+#[derive(Clone, Debug)]
+pub(crate) struct OpDef<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) params: Vec<ParamDef<'a>>,
+    pub(crate) result: Declared,
+    /// Where the result type is written.
+    pub(crate) result_span: Span,
+    pub(crate) fails: Option<Ty>,
+    pub(crate) requires: bool,
+    pub(crate) ensures: bool,
+}
+
+/// A capability.
+#[derive(Clone, Debug)]
+pub(crate) struct CapDef<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) module: usize,
+    pub(crate) ops: Vec<OpDef<'a>>,
+    pub(crate) ast: &'a CapabilityDecl,
+}
+
+/// A handler.
+#[derive(Clone, Debug)]
+pub(crate) struct HandlerDef<'a> {
+    pub(crate) module: usize,
+    pub(crate) params: Vec<ParamDef<'a>>,
+    /// The capability it implements, when its name resolves to one.
+    pub(crate) capability: Option<CapId>,
+    pub(crate) ast: &'a HandlerDecl,
+}
+
+/// A module for [`Env::build`].
+pub(crate) struct Source<'a> {
+    pub(crate) tree: &'a File,
+    pub(crate) interner: &'a Interner,
+    pub(crate) reports: bool,
+}
+
+/// How far the base of an alias has been lowered, to find aliases defined through themselves.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AliasState {
+    Pending,
+    Lowering,
+    Done,
+}
+
+/// The environment.
+pub(crate) struct Env<'a> {
+    pub(crate) modules: Vec<Module<'a>>,
+    pub(crate) kinds: Vec<KindDef<'a>>,
+    pub(crate) aliases: Vec<AliasDef<'a>>,
+    pub(crate) functions: Vec<FnDef<'a>>,
+    pub(crate) capabilities: Vec<CapDef<'a>>,
+    pub(crate) handlers: Vec<HandlerDef<'a>>,
+    /// The index of the prelude in `modules`; `std.testing` follows it.
+    pub(crate) prelude: usize,
+    alias_state: Vec<AliasState>,
+}
+
+impl<'a> Env<'a> {
+    /// Builds the environment of the package modules, then the prelude and `std.testing`, and
+    /// lowers every signature.
+    pub(crate) fn build(
+        package: Vec<Source<'a>>,
+        prelude: Source<'a>,
+        testing: Source<'a>,
+        report: &mut Report<'_>,
+    ) -> Env<'a> {
+        let count = package.len();
+        let mut env = Env {
+            modules: Vec::new(),
+            kinds: Vec::new(),
+            aliases: Vec::new(),
+            functions: Vec::new(),
+            capabilities: Vec::new(),
+            handlers: Vec::new(),
+            prelude: count,
+            alias_state: Vec::new(),
+        };
+        for source in package.into_iter().chain([prelude, testing]) {
+            env.register(source);
+        }
+        if let Some(module) = env.modules.get_mut(count) {
+            for (name, builtin) in BUILTINS {
+                module.upper.entry(name).or_insert(Entity::Builtin(builtin));
+            }
+        }
+        env.imports(count);
+        env.alias_state = vec![AliasState::Pending; env.aliases.len()];
+        env.signatures(report);
+        env
+    }
+
+    /// The text of `symbol`, interned by module `module`.
+    pub(crate) fn text(&self, module: usize, symbol: Symbol) -> &'a str {
+        match self.modules.get(module) {
+            Some(module) => module.interner.resolve(symbol),
+            None => "",
+        }
+    }
+
+    /// Whether problems in module `module` are reported.
+    pub(crate) fn reports(&self, module: usize) -> bool {
+        self.modules.get(module).is_some_and(|m| m.reports)
+    }
+
+    /// Whether module `module` belongs to the package, so its spans can be reported.
+    pub(crate) fn in_package(&self, module: usize) -> bool {
+        module < self.prelude
+    }
+
+    /// Registers the declarations of a module. The first of two declarations with one name
+    /// wins, as in ADR 0023 (the second is U1002).
+    fn register(&mut self, source: Source<'a>) {
+        let index = self.modules.len();
+        let interner = source.interner;
+        let name = |ident: &Ident| -> &'a str { interner.resolve(ident.name) };
+        let path = source
+            .tree
+            .module
+            .as_ref()
+            .map_or_else(String::new, |header| {
+                let segments: Vec<&str> = header.path.segments.iter().map(name).collect();
+                segments.join(".")
+            });
+        let mut module = Module {
+            tree: source.tree,
+            interner,
+            reports: source.reports,
+            path,
+            upper: BTreeMap::new(),
+            lower: BTreeMap::new(),
+            imports: BTreeMap::new(),
+            imported_variants: BTreeMap::new(),
+            decls: Vec::new(),
+        };
+        for decl in &source.tree.decls {
+            let entity = match &decl.kind {
+                DeclKind::Kind(kind) => {
+                    let params: Vec<&'a str> = kind.params.iter().map(name).collect();
+                    match &kind.body {
+                        KindBody::Alias { ty, refinement } => {
+                            self.aliases.push(AliasDef {
+                                name: name(&kind.name),
+                                module: index,
+                                params,
+                                base: Declared::error(),
+                                refinement: refinement.as_deref(),
+                                ty,
+                            });
+                            Some((name(&kind.name), Entity::Alias(self.aliases.len() - 1)))
+                        }
+                        KindBody::Sum(variants) => {
+                            let id = self.kinds.len();
+                            self.kinds.push(KindDef {
+                                name: name(&kind.name),
+                                module: index,
+                                params,
+                                record: None,
+                                variants: variants
+                                    .iter()
+                                    .map(|variant| VariantDef {
+                                        name: name(&variant.name),
+                                        fields: Vec::new(),
+                                    })
+                                    .collect(),
+                                ast: kind,
+                            });
+                            for (position, variant) in variants.iter().enumerate() {
+                                module
+                                    .upper
+                                    .entry(name(&variant.name))
+                                    .or_insert(Entity::Variant(id, position));
+                            }
+                            Some((name(&kind.name), Entity::Kind(id)))
+                        }
+                        KindBody::Record(_) => {
+                            self.kinds.push(KindDef {
+                                name: name(&kind.name),
+                                module: index,
+                                params,
+                                record: Some(Vec::new()),
+                                variants: Vec::new(),
+                                ast: kind,
+                            });
+                            Some((name(&kind.name), Entity::Kind(self.kinds.len() - 1)))
+                        }
+                    }
+                }
+                DeclKind::Capability(capability) => {
+                    self.capabilities.push(CapDef {
+                        name: name(&capability.name),
+                        module: index,
+                        ops: Vec::new(),
+                        ast: capability,
+                    });
+                    let id = self.capabilities.len() - 1;
+                    Some((name(&capability.name), Entity::Capability(id)))
+                }
+                DeclKind::Function(function) => {
+                    let ast = FnAst::Function(function);
+                    let id = self.function(index, name(&function.name), FnKind::Function, ast);
+                    Some((name(&function.name), Entity::Function(id)))
+                }
+                DeclKind::Predicate(predicate) => {
+                    let kind = FnKind::Predicate {
+                        reflect: predicate.reflect,
+                    };
+                    let ast = FnAst::Predicate(predicate);
+                    let id = self.function(index, name(&predicate.name), kind, ast);
+                    Some((name(&predicate.name), Entity::Function(id)))
+                }
+                DeclKind::Policy(policy) => {
+                    let ast = FnAst::Policy(policy);
+                    let id = self.function(index, name(&policy.name), FnKind::Policy, ast);
+                    Some((name(&policy.name), Entity::Function(id)))
+                }
+                DeclKind::Handler(handler) => {
+                    self.handlers.push(HandlerDef {
+                        module: index,
+                        params: Vec::new(),
+                        capability: None,
+                        ast: handler,
+                    });
+                    let id = self.handlers.len() - 1;
+                    Some((name(&handler.name), Entity::Handler(id)))
+                }
+                DeclKind::Requirement(_) | DeclKind::Example(_) => None,
+            };
+            if let Some((text, entity)) = entity {
+                let space = match entity {
+                    Entity::Function(_) | Entity::Handler(_) => &mut module.lower,
+                    _ => &mut module.upper,
+                };
+                space.entry(text).or_insert(entity);
+            }
+            module.decls.push(entity.map(|(_, entity)| entity));
+        }
+        self.modules.push(module);
+    }
+
+    fn function(&mut self, module: usize, name: &'a str, kind: FnKind, ast: FnAst<'a>) -> usize {
+        let result_span = match ast {
+            FnAst::Function(function) => function.result.span,
+            FnAst::Predicate(predicate) => predicate.result.span,
+            FnAst::Policy(policy) => policy.to.span,
+        };
+        self.functions.push(FnDef {
+            name,
+            module,
+            kind,
+            type_params: Vec::new(),
+            params: Vec::new(),
+            result: Declared::error(),
+            result_span,
+            fails: None,
+            uses: false,
+            requires: false,
+            ensures: false,
+            ast,
+        });
+        self.functions.len() - 1
+    }
+
+    /// Resolves the imports of the package modules, the first `count` modules. Imports that
+    /// resolve to nothing were reported by M3 and are skipped.
+    fn imports(&mut self, count: usize) {
+        let mut paths: BTreeMap<String, usize> = BTreeMap::new();
+        for (index, module) in self.modules.iter().enumerate().take(count) {
+            paths.entry(module.path.clone()).or_insert(index);
+        }
+        paths.insert("std.testing".to_owned(), count + 1);
+        for index in 0..count {
+            let Some(module) = self.modules.get(index) else {
+                continue;
+            };
+            let mut imports: BTreeMap<&'a str, Entity> = BTreeMap::new();
+            let mut variants: BTreeMap<&'a str, Vec<Entity>> = BTreeMap::new();
+            for import in &module.tree.imports {
+                let path: Vec<&str> = import
+                    .module
+                    .segments
+                    .iter()
+                    .map(|segment| module.interner.resolve(segment.name))
+                    .collect();
+                let Some(target) = paths
+                    .get(&path.join("."))
+                    .and_then(|&t| self.modules.get(t))
+                else {
+                    continue;
+                };
+                for ident in &import.names {
+                    let name = module.interner.resolve(ident.name);
+                    let Some(&entity) = target.upper.get(name).or_else(|| target.lower.get(name))
+                    else {
+                        continue;
+                    };
+                    let own = module.upper.contains_key(name) || module.lower.contains_key(name);
+                    if own || imports.contains_key(name) {
+                        continue;
+                    }
+                    imports.insert(name, entity);
+                    if let Entity::Kind(kind) = entity
+                        && let Some(def) = self.kinds.get(kind)
+                    {
+                        for (position, variant) in def.variants.iter().enumerate() {
+                            variants
+                                .entry(variant.name)
+                                .or_default()
+                                .push(Entity::Variant(kind, position));
+                        }
+                    }
+                }
+            }
+            if let Some(module) = self.modules.get_mut(index) {
+                module.imports = imports;
+                module.imported_variants = variants;
+            }
+        }
+    }
+
+    /// The candidates for an upper-case name in `module`, from the innermost scope that holds
+    /// any (ADR 0023 rule 2). Several candidates are variants of imported kinds.
+    pub(crate) fn upper(&self, module: usize, name: &str) -> Vec<Entity> {
+        let Some(scope) = self.modules.get(module) else {
+            return Vec::new();
+        };
+        if let Some(&entity) = scope.upper.get(name).or_else(|| scope.imports.get(name)) {
+            return vec![entity];
+        }
+        if let Some(variants) = scope.imported_variants.get(name) {
+            return variants.clone();
+        }
+        match self
+            .modules
+            .get(self.prelude)
+            .and_then(|p| p.upper.get(name))
+        {
+            Some(&entity) => vec![entity],
+            None => Vec::new(),
+        }
+    }
+
+    /// The entity of a lower-case name in `module`, outside locals.
+    pub(crate) fn lower(&self, module: usize, name: &str) -> Option<Entity> {
+        let scope = self.modules.get(module)?;
+        scope
+            .lower
+            .get(name)
+            .or_else(|| scope.imports.get(name))
+            .or_else(|| {
+                self.modules
+                    .get(self.prelude)
+                    .and_then(|p| p.lower.get(name))
+            })
+            .copied()
+    }
+
+    /// The kind `name` of the prelude, such as `Option` or `Result`.
+    pub(crate) fn prelude_kind(&self, name: &str) -> Option<KindId> {
+        match self.modules.get(self.prelude)?.upper.get(name)? {
+            Entity::Kind(id) => Some(*id),
+            _ => None,
+        }
+    }
+
+    /// The name of a kind, for messages.
+    pub(crate) fn kind_name(&self, id: KindId) -> &'a str {
+        self.kinds.get(id).map_or("?", |kind| kind.name)
+    }
+
+    /// Lowers every signature: aliases, kinds, capabilities, functions and handlers.
+    fn signatures(&mut self, report: &mut Report<'_>) {
+        for id in 0..self.aliases.len() {
+            self.lower_alias(id, report);
+        }
+        for id in 0..self.kinds.len() {
+            let Some((module, params, ast)) = self
+                .kinds
+                .get(id)
+                .map(|k| (k.module, k.params.clone(), k.ast))
+            else {
+                continue;
+            };
+            match &ast.body {
+                KindBody::Sum(variants) => {
+                    let lowered: Vec<Vec<FieldDef<'a>>> = variants
+                        .iter()
+                        .map(|variant| self.fields(module, &variant.fields, &params, report))
+                        .collect();
+                    if let Some(def) = self.kinds.get_mut(id) {
+                        for (variant, fields) in def.variants.iter_mut().zip(lowered) {
+                            variant.fields = fields;
+                        }
+                    }
+                }
+                KindBody::Record(fields) => {
+                    let lowered = self.fields(module, fields, &params, report);
+                    if let Some(def) = self.kinds.get_mut(id) {
+                        def.record = Some(lowered);
+                    }
+                }
+                KindBody::Alias { .. } => {}
+            }
+        }
+        for id in 0..self.capabilities.len() {
+            self.capability_signature(id, report);
+        }
+        for id in 0..self.functions.len() {
+            self.function_signature(id, report);
+        }
+        // A policy fails and uses capabilities as its `via` function does (`spec/10 §7`).
+        for id in 0..self.functions.len() {
+            let Some((module, FnAst::Policy(policy))) =
+                self.functions.get(id).map(|f| (f.module, f.ast))
+            else {
+                continue;
+            };
+            let via = self.text(module, policy.via.name);
+            if let Some(Entity::Function(via)) = self.lower(module, via) {
+                let (fails, uses) = self
+                    .functions
+                    .get(via)
+                    .map_or((None, false), |f| (f.fails.clone(), f.uses));
+                if let Some(def) = self.functions.get_mut(id) {
+                    def.fails = fails;
+                    def.uses = uses;
+                }
+            }
+        }
+        for id in 0..self.handlers.len() {
+            let Some((module, ast)) = self.handlers.get(id).map(|h| (h.module, h.ast)) else {
+                continue;
+            };
+            let params = self.params(module, &ast.params, &[], report);
+            let name = self.text(module, ast.capability.name);
+            let capability = self.upper(module, name).into_iter().find_map(|e| match e {
+                Entity::Capability(id) => Some(id),
+                _ => None,
+            });
+            if let Some(def) = self.handlers.get_mut(id) {
+                def.params = params;
+                def.capability = capability;
+            }
+        }
+    }
+
+    fn capability_signature(&mut self, id: CapId, report: &mut Report<'_>) {
+        let Some((module, ast)) = self.capabilities.get(id).map(|c| (c.module, c.ast)) else {
+            return;
+        };
+        let mut ops = Vec::new();
+        for op in &ast.ops {
+            let fails = op.clauses.iter().find_map(|clause| match &clause.kind {
+                OpClauseKind::Fails(kind) => Some(kind),
+                _ => None,
+            });
+            let has = |pick: fn(&OpClauseKind) -> bool| op.clauses.iter().any(|c| pick(&c.kind));
+            ops.push(OpDef {
+                name: self.text(module, op.name.name),
+                params: self.params(module, &op.params, &[], report),
+                result: self.lower_type(module, &op.result, &[], report),
+                result_span: op.result.span,
+                fails: fails.map(|kind| self.error_kind(module, kind, report)),
+                requires: has(|kind| matches!(kind, OpClauseKind::Requires(_))),
+                ensures: has(|kind| matches!(kind, OpClauseKind::Ensures(_))),
+            });
+        }
+        if let Some(def) = self.capabilities.get_mut(id) {
+            def.ops = ops;
+        }
+    }
+
+    fn function_signature(&mut self, id: usize, report: &mut Report<'_>) {
+        let Some((module, ast)) = self.functions.get(id).map(|f| (f.module, f.ast)) else {
+            return;
+        };
+        match ast {
+            FnAst::Function(function) => {
+                let type_params: Vec<&'a str> = function
+                    .type_params
+                    .iter()
+                    .map(|p| self.text(module, p.name))
+                    .collect();
+                let params = self.params(module, &function.params, &type_params, report);
+                let result = self.lower_type(module, &function.result, &type_params, report);
+                let fails = function
+                    .clauses
+                    .iter()
+                    .find_map(|clause| match &clause.kind {
+                        ClauseKind::Fails(kind) => Some(kind),
+                        _ => None,
+                    });
+                let fails = fails.map(|kind| self.error_kind(module, kind, report));
+                let has =
+                    |pick: fn(&ClauseKind) -> bool| function.clauses.iter().any(|c| pick(&c.kind));
+                let requires = has(|kind| matches!(kind, ClauseKind::Requires(_)));
+                let ensures = has(|kind| matches!(kind, ClauseKind::Ensures(_)));
+                let uses = has(|kind| matches!(kind, ClauseKind::Uses(_)));
+                if let Some(def) = self.functions.get_mut(id) {
+                    def.type_params = type_params;
+                    def.params = params;
+                    def.result = result;
+                    def.fails = fails;
+                    def.requires = requires;
+                    def.ensures = ensures;
+                    def.uses = uses;
+                }
+            }
+            FnAst::Predicate(predicate) => {
+                let params = self.params(module, &predicate.params, &[], report);
+                let result = self.lower_type(module, &predicate.result, &[], report);
+                if let Some(def) = self.functions.get_mut(id) {
+                    def.params = params;
+                    def.result = result;
+                }
+            }
+            FnAst::Policy(policy) => {
+                let from = self.lower_type(module, &policy.from, &[], report);
+                let to = self.lower_type(module, &policy.to, &[], report);
+                if let Some(def) = self.functions.get_mut(id) {
+                    def.params = vec![ParamDef {
+                        name: "",
+                        ty: from,
+                        span: policy.from.span,
+                    }];
+                    def.result = to;
+                }
+            }
+        }
+    }
+
+    fn fields(
+        &mut self,
+        module: usize,
+        fields: &[Field],
+        params: &[&'a str],
+        report: &mut Report<'_>,
+    ) -> Vec<FieldDef<'a>> {
+        fields
+            .iter()
+            .map(|field| FieldDef {
+                name: self.text(module, field.name.name),
+                ty: self.lower_type(module, &field.ty, params, report),
+                span: field.ty.span,
+            })
+            .collect()
+    }
+
+    /// Lowers parameters with `type_params` in scope.
+    pub(crate) fn params(
+        &mut self,
+        module: usize,
+        params: &[Param],
+        type_params: &[&'a str],
+        report: &mut Report<'_>,
+    ) -> Vec<ParamDef<'a>> {
+        params
+            .iter()
+            .map(|param| ParamDef {
+                name: self.text(module, param.name.name),
+                ty: self.lower_type(module, &param.ty, type_params, report),
+                span: param.ty.span,
+            })
+            .collect()
+    }
+
+    /// The kind named by `fails E`: a sum kind without type parameters (U2002).
+    pub(crate) fn error_kind(
+        &mut self,
+        module: usize,
+        ident: &Ident,
+        report: &mut Report<'_>,
+    ) -> Ty {
+        let name = self.text(module, ident.name);
+        let problem = match self.upper(module, name).first() {
+            // Unknown names are U1001, reported by M3.
+            None => return Ty::Error,
+            Some(Entity::Kind(id)) => match self.kinds.get(*id) {
+                Some(kind) if kind.is_sum() && kind.params.is_empty() => {
+                    return Ty::Kind(*id, Vec::new());
+                }
+                Some(kind) if kind.is_sum() => {
+                    format!("error kind `{name}` has type parameters, which `fails` cannot give")
+                }
+                _ => format!("`fails` names a sum kind, and `{name}` is a record"),
+            },
+            Some(_) => format!("`fails` names a sum kind, and `{name}` is not one"),
+        };
+        if self.reports(module) {
+            report.error(Code::U2002, ident.span, problem);
+        }
+        Ty::Error
+    }
+
+    /// Lowers the base of an alias; an alias reached again while its own base is lowered is
+    /// defined through itself (U2002).
+    fn lower_alias(&mut self, id: AliasId, report: &mut Report<'_>) {
+        if self.alias_state.get(id) != Some(&AliasState::Pending) {
+            return;
+        }
+        if let Some(state) = self.alias_state.get_mut(id) {
+            *state = AliasState::Lowering;
+        }
+        let Some((module, params, ty)) = self
+            .aliases
+            .get(id)
+            .map(|a| (a.module, a.params.clone(), a.ty))
+        else {
+            return;
+        };
+        let base = self.lower_type(module, ty, &params, report);
+        if let Some(alias) = self.aliases.get_mut(id) {
+            alias.base = base;
+        }
+        if let Some(state) = self.alias_state.get_mut(id) {
+            *state = AliasState::Done;
+        }
+    }
+
+    /// Lowers a written type of module `module`, with `type_params` in scope. Labels wait for
+    /// M6 (DECISION D-057).
+    pub(crate) fn lower_type(
+        &mut self,
+        module: usize,
+        ty: &Type,
+        type_params: &[&'a str],
+        report: &mut Report<'_>,
+    ) -> Declared {
+        let mut declared = match &ty.core {
+            TypeCore::Named { name, args } => {
+                let lowered: Vec<Declared> = args
+                    .iter()
+                    .map(|arg| self.lower_type(module, arg, type_params, report))
+                    .collect();
+                self.named(module, name, lowered, ty.span, type_params, report)
+            }
+            TypeCore::List(element) => {
+                let element = self.lower_type(module, element, type_params, report);
+                Declared::plain(Ty::List(Box::new(element.base)))
+            }
+            TypeCore::Function {
+                params,
+                result,
+                clauses,
+            } => {
+                let params: Vec<Ty> = params
+                    .iter()
+                    .map(|param| self.lower_type(module, param, type_params, report).base)
+                    .collect();
+                let result = self.lower_type(module, result, type_params, report).base;
+                let fails = clauses.iter().find_map(|clause| match clause {
+                    FnTypeClause::Fails(kind) => Some(kind),
+                    FnTypeClause::Uses(_) => None,
+                });
+                let fails = fails.map(|kind| self.error_kind(module, kind, report));
+                Declared::plain(Ty::Fn(Box::new(FnTy {
+                    params,
+                    result,
+                    fails,
+                })))
+            }
+        };
+        if let Some(range) = &ty.range {
+            if matches!(declared.base, Ty::Int | Ty::Error) {
+                declared.refinements.push(Refinement::Range);
+            } else if self.reports(module) {
+                report.error(Code::U2002, range.span, "range sugar applies only to `Int`");
+            }
+        }
+        declared
+    }
+
+    /// Lowers `name[args]`.
+    fn named(
+        &mut self,
+        module: usize,
+        ident: &Ident,
+        args: Vec<Declared>,
+        span: Span,
+        type_params: &[&'a str],
+        report: &mut Report<'_>,
+    ) -> Declared {
+        let name = self.text(module, ident.name);
+        let reports = self.reports(module);
+        let mut arity = |expected: usize, found: usize| {
+            if reports {
+                let takes = match expected {
+                    0 => "takes no type arguments".to_owned(),
+                    1 => "takes 1 type argument".to_owned(),
+                    n => format!("takes {n} type arguments"),
+                };
+                let given = match found {
+                    0 => "none is given".to_owned(),
+                    1 => "1 is given".to_owned(),
+                    n => format!("{n} are given"),
+                };
+                report.error(
+                    Code::U2003,
+                    span,
+                    format!("type `{name}` {takes}, but {given}"),
+                );
+            }
+            Declared::error()
+        };
+        if let Some(index) = type_params.iter().position(|param| *param == name) {
+            if !args.is_empty() {
+                return arity(0, args.len());
+            }
+            return Declared::plain(Ty::Param(index));
+        }
+        let bases: Vec<Ty> = args.into_iter().map(|arg| arg.base).collect();
+        let problem = match self.upper(module, name).first().copied() {
+            Some(Entity::Builtin(builtin)) => {
+                let expected = usize::from(builtin == Builtin::List);
+                if bases.len() != expected {
+                    return arity(expected, bases.len());
+                }
+                let base = match builtin {
+                    Builtin::Int => Ty::Int,
+                    Builtin::Bool => Ty::Bool,
+                    Builtin::Text => Ty::Text,
+                    Builtin::Unit => Ty::Unit,
+                    Builtin::Hashed => Ty::Hashed,
+                    Builtin::List => {
+                        Ty::List(Box::new(bases.into_iter().next().unwrap_or(Ty::Error)))
+                    }
+                };
+                return Declared::plain(base);
+            }
+            Some(Entity::Kind(id)) => {
+                let expected = self.kinds.get(id).map_or(0, |k| k.params.len());
+                if bases.len() != expected {
+                    return arity(expected, bases.len());
+                }
+                return Declared::plain(Ty::Kind(id, bases));
+            }
+            Some(Entity::Alias(id)) => {
+                let expected = self.aliases.get(id).map_or(0, |a| a.params.len());
+                if bases.len() != expected {
+                    return arity(expected, bases.len());
+                }
+                return self.alias(id, &bases, ident, reports, report);
+            }
+            Some(Entity::Variant(kind, _)) => {
+                format!(
+                    "`{name}` is a variant of `{}`, not a type",
+                    self.kind_name(kind)
+                )
+            }
+            Some(Entity::Capability(_)) => {
+                format!("`{name}` is a capability, not a type; capabilities are not values")
+            }
+            // Unknown names are U1001, reported by M3 (DECISION D-038).
+            Some(Entity::Function(_) | Entity::Handler(_)) | None => return Declared::error(),
+        };
+        if reports {
+            report.error(Code::U2002, ident.span, problem);
+        }
+        Declared::error()
+    }
+
+    /// The type an alias denotes with arguments `args`: its base, refined by its own predicate
+    /// and those of the aliases it goes through (`spec/03 §2` rule 3).
+    fn alias(
+        &mut self,
+        id: AliasId,
+        args: &[Ty],
+        ident: &Ident,
+        reports: bool,
+        report: &mut Report<'_>,
+    ) -> Declared {
+        match self.alias_state.get(id) {
+            Some(AliasState::Lowering) => {
+                if reports {
+                    let name = self.aliases.get(id).map_or("?", |a| a.name);
+                    report.error(
+                        Code::U2002,
+                        ident.span,
+                        format!("kind `{name}` is defined in terms of itself"),
+                    );
+                }
+                return Declared::error();
+            }
+            Some(AliasState::Pending) => self.lower_alias(id, report),
+            _ => {}
+        }
+        let Some(alias) = self.aliases.get(id) else {
+            return Declared::error();
+        };
+        let mut refinements: Vec<Refinement> = alias
+            .base
+            .refinements
+            .iter()
+            .map(|refinement| match refinement {
+                Refinement::Alias(inner, inner_args) => Refinement::Alias(
+                    *inner,
+                    inner_args.iter().map(|arg| arg.substitute(args)).collect(),
+                ),
+                Refinement::Range => Refinement::Range,
+            })
+            .collect();
+        if alias.refinement.is_some() {
+            refinements.push(Refinement::Alias(id, args.to_vec()));
+        }
+        Declared {
+            base: alias.base.base.substitute(args),
+            refinements,
+        }
+    }
+}

@@ -1,0 +1,9 @@
+-- test: a product in the refinement language has a literal operand
+-- spec: spec/03 §3
+-- expect: error U2014 at 7:21
+module product_in_ensures
+
+pub square(x: Int) -> Int
+  ensures result == x * x
+=
+  x * x

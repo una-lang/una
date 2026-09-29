@@ -1,0 +1,88 @@
+# 04. Functions and contracts
+
+Status: Normative, v0.1.
+
+## 1. Declaration forms
+
+A function is written as `header = body`. The header is the contract; the body is the implementation.
+
+```una
+double(x: Int) -> Int = x * 2                          -- short form: no clauses
+
+pub availability(e: Event) -> Availability             -- long form
+  ensures e.remaining < 1 implies result is SoldOut
+  derived from EVENTS_3
+=
+  when e.remaining
+    in 0..0 -> SoldOut
+    in 1..<20 -> Few
+    in 20..5000 -> Open
+```
+
+The short form is canonical when there are no clauses and the body is a single-line expression; otherwise the long form is canonical (`una fmt` converts). The v0.1 formatter does not enforce a maximum line width.
+
+## 2. Clauses
+
+| Clause | Meaning | Verification |
+| --- | --- | --- |
+| `requires p` | Precondition over parameters | Obligation at every call site; hypothesis inside the body |
+| `ensures q` | Postcondition over parameters and `result` | Obligation on every normal return path; hypothesis for callers after the call |
+| `uses @c: C[ops]` | The function may perform operations `ops` through capability `@c` | Effects of the body MUST be included (U3003) |
+| `fails E` | The function may fail with variants of sum kind `E` | Failures of the body MUST be variants of `E` (U3009) |
+| `derived from R1, R2` | Traceability to requirements | Each `Ri` MUST be declared (U1006) |
+
+Rules:
+
+1. `requires` and `ensures` MUST be in RL (`spec/03 §3`), U2014 otherwise.
+2. `ensures` describes normal returns only. Failures carry no postcondition in v0.1.
+3. Contracts express **partial correctness**: `ensures` holds if the function returns. Termination is not checked in v0.1.
+4. A function without `fails` cannot fail. A function without `uses` is pure: it cannot contain any `@` (U3004).
+
+## 3. Calls and labeled arguments
+
+1. A call with one argument MAY omit the label.
+2. A call with two or more arguments MAY omit the label of the first argument and MUST label all others (U2004). Unknown labels are U2005; duplicates U2006.
+3. **Punning:** an argument that is a bare identifier equal to the parameter name counts as labeled: `record(key, decision)` is `record(key: key, decision: decision)` when those are the parameter names.
+4. Record and variant constructors with two or more fields require every field labeled (punning allowed), in any order; missing or unknown fields are U2009. The formatter orders them by declaration. A constructor with exactly one field MAY omit the label (`Some(a)`), and a pattern on a single-field variant MAY bind the field under any name (`is Some(a)`).
+5. Arguments are evaluated left to right in source order.
+
+**Method-call syntax.** `e.f(args)` means field access followed by a call if the type of `e` has a field `f` of function type; otherwise it means `f(e, args)` with `f` resolved in scope, `e` taking the first parameter unlabeled. `e.f` without arguments is field access, or `f(e)` if no field `f` exists and `f` is a function with one parameter. `xs.len` and `t.len` are built in.
+
+## 4. One effect per line
+
+A capability operation, or a call to a function that uses capabilities or can fail, MUST be the entire expression of a statement, a `let` right-hand side or a block's final expression, optionally wrapped in `attempt` (U3013). It cannot be nested inside other expressions or arguments. This fixes evaluation order, gives every failure a handling site and makes every effect visible on its own line.
+
+```una
+let registration = @registrations.find(key)     -- allowed
+  if error fail Unavailable(reason: "registrations")
+  if none fail NotRegistered
+show(@registrations.find(key))                  -- U3013
+```
+
+## 5. Visibility and inference
+
+1. Declarations are private to their module unless marked `pub`.
+2. A `pub` function MUST declare every `uses` and its `fails` explicitly (U3003, U3009).
+3. A private function MAY omit `uses` and `fails`. The compiler infers them as the least fixed point over the module's call graph. `una contract` prints the inferred header, and the build report marks it as inferred.
+4. Types of parameters and results are never inferred.
+
+## 6. Lambdas
+
+```una
+let adults = people.filter(keep: fn(p) -> adult(p.age))
+```
+
+1. A lambda is pure unless its expected type declares `uses` or `fails` (`spec/02 §2`, `fn_type_clause`).
+2. A lambda that uses capabilities or can fail is **second-class** (`spec/05 §6`): it can be passed as an argument but not returned, stored in a kind or bound with `let` to escape its scope.
+3. Lambdas capture variables by value. They cannot capture capability references unless their type declares the corresponding `uses`.
+
+## 7. Recursion
+
+Direct and mutual recursion are allowed. There is no tail-call guarantee in the reference interpreter; the interpreter reports stack exhaustion as runtime diagnostic U6003.
+
+## 8. Entry point
+
+A program's entry point is `pub main() -> Unit` in the module named by `una run`. It MAY declare `uses` over host capabilities (`spec/14 §3`) and a `fails` clause.
+
+- `una run` grants only the capabilities listed in `--grant` flags or `[run] grants` in `una.toml`. A `uses` clause on `main` for a capability not granted is U3012 before execution starts.
+- If `main` fails, the runtime prints the variant name to stderr and exits with code 1. Payload fields are printed only if their labels are `public`.

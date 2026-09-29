@@ -1,0 +1,5 @@
+# DECISION D-031: .una files keep LF line breaks on checkout (ADR 0020 rule 1); the
+# syntax and fmt conformance cases are byte-exact.
+*.una text eol=lf
+tests/conformance/syntax/*.una -text
+tests/conformance/fmt/*.una -text

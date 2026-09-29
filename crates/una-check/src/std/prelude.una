@@ -1,0 +1,115 @@
+-- The prelude of Una v0.1 (spec/14 §1, §3), imported into every module.
+-- Signatures and contracts are normative. Bodies are placeholders that the type
+-- checker never reads: the interpreter implements these functions (M7).
+module prelude
+
+pub kind Nat = Int where it >= 0
+
+pub kind Option[T] = Some(value: T) | None
+
+pub kind Result[T, E] = Ok(value: T) | Err(failure: E)
+
+pub kind FileError = NotFound | Denied | Io
+
+pub kind KeyError = | UnknownKey
+
+pub capability Console
+  op print(line: Text) -> Unit
+    accepts public
+
+pub capability Clock
+  op now() -> Int
+    accepts public
+
+pub capability Env
+  op get(name: Text) -> Option[internal Text]
+    accepts public
+
+pub capability Files
+  op read(path: Text) -> internal Text
+    fails FileError
+    accepts public
+  op write(path: Text, content: Text) -> Unit
+    fails FileError
+    accepts internal
+
+-- `hmac` accepts any label; host implementations only (spec/14 §3).
+pub capability Keys
+  op hmac(key_name: Text, data: Text) -> internal Hashed
+    fails KeyError
+
+pub abs(x: Int) -> Int
+  ensures result >= 0 and (result == x or result == -x)
+=
+  x
+
+pub min(a: Int, b: Int) -> Int
+  ensures result <= a and result <= b and (result == a or result == b)
+=
+  a
+
+pub max(a: Int, b: Int) -> Int
+  ensures result >= a and result >= b and (result == a or result == b)
+=
+  a
+
+pub is_digits(t: Text) -> Bool = true
+
+pub starts_with(t: Text, prefix: Text) -> Bool = true
+
+pub trim(t: Text) -> Text
+  ensures result.len <= t.len
+=
+  t
+
+pub to_int(t: Text) -> Option[Int] = None
+
+pub is_empty[T](xs: List[T]) -> Bool
+  ensures result == (xs.len == 0)
+=
+  true
+
+pub first[T](xs: List[T]) -> Option[T]
+  ensures (result is None) == (xs.len == 0)
+=
+  None
+
+pub at[T](xs: List[T], index: Int) -> Option[T]
+  ensures (result is None) == (index < 0 or index >= xs.len)
+=
+  None
+
+pub append[T](xs: List[T], item: T) -> List[T]
+  ensures result.len == xs.len + 1
+=
+  xs
+
+pub contains[T](xs: List[T], item: T) -> Bool = true
+
+pub map[T, U](xs: List[T], each: fn(T) -> U) -> List[U]
+  ensures result.len == xs.len
+=
+  []
+
+pub filter[T](xs: List[T], keep: fn(T) -> Bool) -> List[T]
+  ensures result.len <= xs.len
+=
+  xs
+
+pub first_where[T](xs: List[T], keep: fn(T) -> Bool) -> Option[T] = None
+
+pub fold[T, U](xs: List[T], initial: U, step: fn(U, T) -> U) -> U = initial
+
+pub sum(xs: List[Int]) -> Int = 0
+
+pub is_some[T](o: Option[T]) -> Bool
+  ensures result == (o is Some)
+=
+  true
+
+pub or_else[T](o: Option[T], default: T) -> T = default
+
+pub is_ok[T, E](r: Result[T, E]) -> Bool
+  ensures result == (r is Ok)
+=
+  true

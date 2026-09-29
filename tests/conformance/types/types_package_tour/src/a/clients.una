@@ -1,0 +1,27 @@
+-- test: variants take their kind from the value tested, fail and expect fails take the error kind, and imported generic kinds instantiate
+-- spec: spec/10 §4, §5
+-- expect: tier0-ok
+module a.clients
+
+import a.shapes (Box, Failure, level, risky)
+
+pub describe(x: Int) -> Text
+=
+  when level(x)
+    is Low -> "low"
+    is High -> "high"
+
+pub low(x: Int) -> Bool = level(x) is Low
+
+pub unwrap(b: Box[Int]) -> Int = b.item + b.label.len
+
+pub retry(x: Int) -> Int
+  fails Failure
+=
+  let first = risky(x)
+    if error fail Lost
+  first
+
+example "a failure of the do line"
+  do risky(0)
+  expect fails Broken

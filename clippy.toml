@@ -1,0 +1,15 @@
+# compiler/conventions.md §1: tests may unwrap freely.
+allow-dbg-in-tests = true
+allow-expect-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-panic-in-tests = true
+allow-print-in-tests = true
+allow-unwrap-in-tests = true
+
+# compiler/conventions.md §1: library crates never read environment variables.
+disallowed-methods = [
+    { path = "std::env::var", reason = "library crates never read environment variables (compiler/conventions.md §1)" },
+    { path = "std::env::var_os", reason = "library crates never read environment variables (compiler/conventions.md §1)" },
+    { path = "std::env::vars", reason = "library crates never read environment variables (compiler/conventions.md §1)" },
+    { path = "std::env::vars_os", reason = "library crates never read environment variables (compiler/conventions.md §1)" },
+]

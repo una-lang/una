@@ -1,0 +1,9 @@
+module tour.types
+
+requirement TOUR_1
+  text "Positive counts are open"
+  source human
+  owner tour_team
+  status active
+
+pub kind Availability = SoldOut | Open

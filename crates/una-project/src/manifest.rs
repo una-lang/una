@@ -1,0 +1,271 @@
+//! `una.toml` (`spec/13 §7`, ADR 0021 rule 2).
+
+use std::collections::BTreeMap;
+
+use una_diag::Code;
+
+use crate::document::{Table, integer, parse, string, strings};
+use crate::{Located, ProjectError};
+
+/// The settings of a package's `una.toml`, or their defaults (ADR 0021 rule 2).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Manifest {
+    /// `[labels] categories`: the label categories of the package (`spec/07 §2`).
+    pub categories: Vec<Located>,
+    /// `[trusted] modules`: the module paths declared trusted (`spec/07 §6`).
+    pub trusted: Vec<Located>,
+    /// `[escape_budget] checked_per_module` (`spec/06 §6`).
+    pub checked_per_module: u64,
+    /// `[run] entry`: the module whose `main` `una run` runs.
+    pub entry: Option<Located>,
+    /// `[run] grants`: the capabilities `una run` grants (`spec/13 §5`).
+    pub grants: Vec<Located>,
+}
+
+/// The only edition of v0.1.
+const EDITION: &str = "0.1";
+
+/// Parses `una.toml`. DECISION D-033: the tables and keys of ADR 0021 rule 2 and no others;
+/// every problem is U7002, except a category's naming convention (U1005) and a repeated
+/// category (U1002).
+pub fn parse_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
+    let mut manifest = Manifest::default();
+    let mut errors = Vec::new();
+    let Some(document) = parse(text, Code::U7002, &mut errors) else {
+        return (manifest, errors);
+    };
+    let mut package = false;
+    for (key, value) in document.get_ref().iter() {
+        let Some(table) = Table::of(key, value, Code::U7002, &mut errors) else {
+            continue;
+        };
+        match key.get_ref().as_ref() {
+            "package" => {
+                package = true;
+                package_table(&table, &mut errors);
+            }
+            "labels" => labels(&table, &mut manifest, &mut errors),
+            "trusted" => trusted(&table, &mut manifest, &mut errors),
+            "escape_budget" => escape_budget(&table, &mut manifest, &mut errors),
+            "run" => run(&table, &mut manifest, &mut errors),
+            other => errors.push(ProjectError::new(
+                Code::U7002,
+                key.span(),
+                format!("unknown table [{other}] in una.toml"),
+            )),
+        }
+    }
+    if !package {
+        errors.push(ProjectError::new(
+            Code::U7002,
+            0..0,
+            "una.toml has no [package] table",
+        ));
+    }
+    (manifest, errors)
+}
+
+fn package_table(table: &Table<'_, '_>, errors: &mut Vec<ProjectError>) {
+    let mut seen = Vec::new();
+    for (key, value) in table.entries.iter() {
+        let name = key.get_ref().as_ref();
+        match name {
+            "name" | "version" | "edition" => {
+                seen.push(name.to_owned());
+                let Some(located) = string(name, value, Code::U7002, errors) else {
+                    continue;
+                };
+                if located.value.trim().is_empty() {
+                    errors.push(ProjectError::new(
+                        Code::U7002,
+                        located.range,
+                        format!("`{name}` must not be empty"),
+                    ));
+                } else if name == "edition" && located.value != EDITION {
+                    errors.push(ProjectError::new(
+                        Code::U7002,
+                        located.range,
+                        format!(
+                            "edition `{}` is not supported; v0.1 is edition \"{EDITION}\"",
+                            located.value
+                        ),
+                    ));
+                }
+            }
+            _ => errors.push(table.unknown(key, Code::U7002)),
+        }
+    }
+    for required in ["name", "version", "edition"] {
+        if !seen.iter().any(|name| name == required) {
+            errors.push(table.missing(required, Code::U7002));
+        }
+    }
+}
+
+fn labels(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Vec<ProjectError>) {
+    for (key, value) in table.entries.iter() {
+        if key.get_ref().as_ref() != "categories" {
+            errors.push(table.unknown(key, Code::U7002));
+            continue;
+        }
+        let mut first: BTreeMap<String, usize> = BTreeMap::new();
+        for category in strings("categories", value, Code::U7002, errors) {
+            if !is_upper_camel(&category.value) {
+                errors.push(ProjectError::new(
+                    Code::U1005,
+                    category.range.clone(),
+                    format!(
+                        "label category `{}` must be UpperCamelCase, as in `{}`",
+                        category.value,
+                        upper_camel(&category.value)
+                    ),
+                ));
+            }
+            if first.contains_key(&category.value) {
+                errors.push(ProjectError::new(
+                    Code::U1002,
+                    category.range.clone(),
+                    format!("label category `{}` is declared twice", category.value),
+                ));
+            } else {
+                first.insert(category.value.clone(), category.range.start);
+            }
+            manifest.categories.push(category);
+        }
+    }
+}
+
+fn trusted(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Vec<ProjectError>) {
+    for (key, value) in table.entries.iter() {
+        if key.get_ref().as_ref() != "modules" {
+            errors.push(table.unknown(key, Code::U7002));
+            continue;
+        }
+        for module in strings("modules", value, Code::U7002, errors) {
+            if is_module_path(&module.value) {
+                manifest.trusted.push(module);
+            } else {
+                errors.push(ProjectError::new(
+                    Code::U7002,
+                    module.range,
+                    format!("`{}` is not a module path", module.value),
+                ));
+            }
+        }
+    }
+}
+
+fn escape_budget(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Vec<ProjectError>) {
+    for (key, value) in table.entries.iter() {
+        if key.get_ref().as_ref() != "checked_per_module" {
+            errors.push(table.unknown(key, Code::U7002));
+            continue;
+        }
+        if let Some(budget) = integer("checked_per_module", value, Code::U7002, errors) {
+            match u64::try_from(budget) {
+                Ok(budget) => manifest.checked_per_module = budget,
+                Err(_) => errors.push(ProjectError::new(
+                    Code::U7002,
+                    value.span(),
+                    "`checked_per_module` must be 0 or more",
+                )),
+            }
+        }
+    }
+}
+
+fn run(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Vec<ProjectError>) {
+    for (key, value) in table.entries.iter() {
+        match key.get_ref().as_ref() {
+            "entry" => {
+                let Some(entry) = string("entry", value, Code::U7002, errors) else {
+                    continue;
+                };
+                if is_module_path(&entry.value) {
+                    manifest.entry = Some(entry);
+                } else {
+                    errors.push(ProjectError::new(
+                        Code::U7002,
+                        entry.range,
+                        format!("`{}` is not a module path", entry.value),
+                    ));
+                }
+            }
+            "grants" => {
+                for grant in strings("grants", value, Code::U7002, errors) {
+                    if is_grant(&grant.value) {
+                        manifest.grants.push(grant);
+                    } else {
+                        errors.push(ProjectError::new(
+                            Code::U7002,
+                            grant.range,
+                            format!(
+                                "`{}` is not a grant; grants are console, clock, env, keys:<file> and files:<path>:<access>",
+                                grant.value
+                            ),
+                        ));
+                    }
+                }
+            }
+            _ => errors.push(table.unknown(key, Code::U7002)),
+        }
+    }
+}
+
+/// Whether `text` is a module path: lower-case identifiers joined by dots (`spec/02 §1`).
+pub fn is_module_path(text: &str) -> bool {
+    !text.is_empty()
+        && text.split('.').all(|segment| {
+            let mut chars = segment.chars();
+            chars.next().is_some_and(|first| first.is_ascii_lowercase())
+                && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        })
+}
+
+/// Whether `text` is a grant spec of `spec/13 §5`: `console`, `clock`, `env`, `keys:<keyfile>`,
+/// or `files:<path>:read`, `:write` or `:read,write`.
+pub fn is_grant(text: &str) -> bool {
+    match text {
+        "console" | "clock" | "env" => true,
+        _ => {
+            if let Some(file) = text.strip_prefix("keys:") {
+                return !file.is_empty();
+            }
+            let Some(rest) = text.strip_prefix("files:") else {
+                return false;
+            };
+            match rest.rsplit_once(':') {
+                Some((path, access)) => {
+                    !path.is_empty() && matches!(access, "read" | "write" | "read,write")
+                }
+                None => false,
+            }
+        }
+    }
+}
+
+/// Whether `name` is UpperCamelCase (`spec/01 §4`).
+fn is_upper_camel(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|first| first.is_ascii_uppercase())
+        && chars.all(|c| c.is_ascii_alphanumeric())
+}
+
+/// A suggestion in UpperCamelCase for `name`.
+fn upper_camel(name: &str) -> String {
+    let mut out = String::new();
+    let mut upper = true;
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            if upper {
+                out.extend(c.to_uppercase());
+            } else {
+                out.push(c);
+            }
+            upper = false;
+        } else {
+            upper = true;
+        }
+    }
+    out
+}

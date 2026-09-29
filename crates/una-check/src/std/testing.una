@@ -1,0 +1,5 @@
+-- `std.testing` (spec/14 §4), usable only in handler bodies and examples (U3015).
+-- The body is a placeholder that type-checks; the interpreter implements it (M7).
+module std.testing
+
+pub fake_hash(seed: Int) -> internal Hashed = fake_hash(seed)

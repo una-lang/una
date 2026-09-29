@@ -1,0 +1,6 @@
+module hello
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("Hello, Una")

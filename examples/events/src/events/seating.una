@@ -1,0 +1,44 @@
+module events.seating
+
+requirement EVENTS_3
+  text "An event with no remaining seats is always shown as sold out"
+  source policy "Box Office Handbook 2.1"
+  owner box_office
+  status active
+
+pub kind Seats = Int in 0..5000
+
+pub kind Availability = SoldOut | Few | Open
+
+pub kind Event
+  name: Text
+  remaining: Seats
+
+pub kind Registration
+  name: Text
+  event: Event
+
+--- Availability bands from the Box Office Handbook 2.1.
+pub availability(e: Event) -> Availability
+  ensures e.remaining < 1 implies result is SoldOut
+  derived from EVENTS_3
+=
+  when e.remaining
+    in 0..0 -> SoldOut
+    in 1..<20 -> Few
+    in 20..5000 -> Open
+
+--- Clamps a raw seat count into the seat range.
+pub clamp_seats(raw: Int) -> Seats = if raw < 0 then 0 else if raw > 5000 then 5000 else raw
+
+example "an event without seats is sold out"
+  do availability(Event(name: "Launch", remaining: 0))
+  expect result is SoldOut
+
+example "an event with many seats is open"
+  do availability(Event(name: "Workshop", remaining: 820))
+  expect result is Open
+
+example "raw seat counts are clamped"
+  do clamp_seats(9000)
+  expect result == 5000

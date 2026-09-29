@@ -1,0 +1,6 @@
+-- test: a parameter receives one argument
+-- spec: spec/04 §3
+-- expect: error U2006 at 6:39
+module duplicate_argument
+
+pub larger(x: Int) -> Int = max(a: x, a: 10)

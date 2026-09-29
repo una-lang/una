@@ -1,0 +1,6 @@
+-- test: trailing whitespace is not canonical
+-- spec: spec/01 §2
+-- expect: error U7001 at 6:1
+module trailing_whitespace
+
+pub one() -> Int = 1   

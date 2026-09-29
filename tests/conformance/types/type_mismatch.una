@@ -1,0 +1,6 @@
+-- test: a value of one type where another is expected is a mismatch
+-- spec: spec/10 §3
+-- expect: error U2001 at 6:33
+module type_mismatch
+
+pub label(count: Int) -> Text = count

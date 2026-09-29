@@ -1,0 +1,6 @@
+-- test: an unknown escape sequence is rejected
+-- spec: spec/01 §6
+-- expect: error U0005 at 6:27
+module unknown_escape
+
+pub folder() -> Text = "C:\data"

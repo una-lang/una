@@ -1,0 +1,51 @@
+# Milestone M0, task 5: fmt, clippy and tests on Linux and macOS, with the Z3 release pinned in
+# verification.lock installed for the tests that reach tier 1 (compiler/testing.md §3).
+# DECISION D-083: to spare the Actions quota of the private repository, Linux runs on every
+# push, and macOS only on pull requests and on pushes to main.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON((github.event_name == 'pull_request' || github.ref == 'refs/heads/main') && '["ubuntu-24.04", "macos-26"]' || '["ubuntu-24.04"]') }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the Rust toolchain pinned in rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          rustc --version
+          cargo --version
+
+      - name: Install the Z3 release pinned in verification.lock
+        run: |
+          scripts/install-z3.sh "$RUNNER_TEMP/z3"
+          echo "$RUNNER_TEMP/z3/bin" >> "$GITHUB_PATH"
+
+      - name: Check the solver version
+        run: scripts/check-solver.sh
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --locked

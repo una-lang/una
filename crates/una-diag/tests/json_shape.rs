@@ -1,0 +1,236 @@
+//! The JSON shape of diagnostics is exactly that of `spec/13 §1` and ADR 0012.
+
+// Tests may unwrap freely (compiler/conventions.md §1).
+#![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
+
+use std::path::PathBuf;
+
+use pretty_assertions::assert_eq;
+use serde_json::{Value, json};
+use una_diag::{
+    Binding, Code, Counterexample, Diagnostic, DiagnosticList, Edit, Location, ObligationKind,
+    ObligationRef, ObligationStatus, Position, Related, Repair, render_json,
+};
+
+/// The JSON code blocks of `spec/13 §1`, in document order.
+fn spec_section_1_json_blocks() -> Vec<String> {
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/spec/13-diagnostics-and-abi.md");
+    let spec = std::fs::read_to_string(path).unwrap();
+    let section = spec
+        .split("\n## 1. Diagnostic model\n")
+        .nth(1)
+        .expect("spec/13 has a section 1, Diagnostic model")
+        .split("\n## ")
+        .next()
+        .unwrap();
+    section
+        .split("```json\n")
+        .skip(1)
+        .map(|block| block.split("\n```").next().unwrap().to_owned())
+        .collect()
+}
+
+fn at(line: u32, col: u32) -> Position {
+    Position { line, col }
+}
+
+fn location(file: &str, start: Position, end: Position) -> Location {
+    Location {
+        file: file.to_owned(),
+        start,
+        end,
+    }
+}
+
+/// The example diagnostic of `spec/13 §1`, built through the public API.
+fn spec_example() -> Diagnostic {
+    let file = "src/events/seating.una";
+    let mut diagnostic = Diagnostic::error(
+        Code::U5001,
+        "postcondition of availability is refuted",
+        location(file, at(27, 18), at(27, 21)),
+    );
+    diagnostic.related.push(Related {
+        location: location(file, at(23, 11), at(23, 52)),
+        message: "ensures clause".to_owned(),
+    });
+    diagnostic.obligation = Some(ObligationRef {
+        id: "ob-3f09a1c2e7b4".to_owned(),
+        kind: ObligationKind::Postcondition,
+        goal: "e.remaining < 1 implies result is SoldOut".to_owned(),
+        status: ObligationStatus::Refuted,
+    });
+    diagnostic.counterexample = Some(Counterexample {
+        bindings: vec![
+            Binding {
+                name: "e.remaining".to_owned(),
+                value: json!(0),
+            },
+            Binding {
+                name: "result".to_owned(),
+                value: json!("Few"),
+            },
+        ],
+    });
+    diagnostic.repairs.push(Repair {
+        rank: 1,
+        escape_cost: 0,
+        description:
+            "add the arm 'in 0..0 -> SoldOut' before 'in 0..<20' or adjust the ensures clause"
+                .to_owned(),
+        edit: None,
+    });
+    diagnostic
+}
+
+fn minimal(code: Code, file: &str, line: u32) -> Diagnostic {
+    Diagnostic::error(code, "message", location(file, at(line, 1), at(line, 2)))
+}
+
+#[test]
+fn spec_example_serializes_exactly_as_in_spec_13_section_1() {
+    let expected: Value = serde_json::from_str(&spec_section_1_json_blocks()[0]).unwrap();
+    assert_eq!(serde_json::to_value(spec_example()).unwrap(), expected);
+}
+
+#[test]
+fn empty_list_matches_spec_13_section_1() {
+    let expected: Value = serde_json::from_str(&spec_section_1_json_blocks()[1]).unwrap();
+    let rendered: Value = serde_json::from_str(&render_json(&[]).unwrap()).unwrap();
+    assert_eq!(rendered, expected);
+}
+
+#[test]
+fn empty_list_is_compact() {
+    assert_eq!(
+        render_json(&[]).unwrap(),
+        r#"{"schema":"una.diagnostics/1","diagnostics":[]}"#
+    );
+}
+
+#[test]
+fn listed_diagnostic_shape_is_pinned() {
+    let list = [spec_example()];
+    let pretty = serde_json::to_string_pretty(&DiagnosticList::new(&list)).unwrap();
+    insta::assert_snapshot!("list_with_spec_example", pretty);
+}
+
+#[test]
+fn minimal_diagnostic_is_exact_and_omits_absent_fields() {
+    let diagnostic = Diagnostic::error(
+        Code::U3005,
+        "capability @log is used as a value",
+        location("cap_as_value.una", at(12, 11), at(12, 15)),
+    );
+    assert_eq!(
+        serde_json::to_string(&diagnostic).unwrap(),
+        concat!(
+            r#"{"schema":"una.diagnostic/1","code":"U3005","severity":"error","domain":"authority","#,
+            r#""message":"capability @log is used as a value","#,
+            r#""primary":{"file":"cap_as_value.una","start":{"line":12,"col":11},"end":{"line":12,"col":15}},"#,
+            r#""related":[],"repairs":[],"explain":"una explain U3005"}"#,
+        )
+    );
+}
+
+#[test]
+fn edit_is_null_or_a_located_replacement() {
+    let mut diagnostic = minimal(Code::U7001, "src/a.una", 3);
+    diagnostic.repairs.push(Repair {
+        rank: 2,
+        escape_cost: 0,
+        description: "reindent the line".to_owned(),
+        edit: Some(Edit {
+            location: location("src/a.una", at(3, 1), at(3, 4)),
+            replacement: "  ".to_owned(),
+        }),
+    });
+    diagnostic.repairs.push(Repair {
+        rank: 1,
+        escape_cost: 0,
+        description: "run una fmt".to_owned(),
+        edit: None,
+    });
+    let value = serde_json::to_value(&diagnostic).unwrap();
+    assert_eq!(value["repairs"][0]["edit"], Value::Null);
+    assert_eq!(
+        value["repairs"][1]["edit"],
+        json!({
+            "file": "src/a.una",
+            "start": { "line": 3, "col": 1 },
+            "end": { "line": 3, "col": 4 },
+            "replacement": "  "
+        })
+    );
+}
+
+#[test]
+fn repairs_are_ordered_by_escape_cost_then_rank() {
+    let mut diagnostic = minimal(Code::U5002, "src/a.una", 1);
+    for (rank, escape_cost) in [(2, 1), (1, 1), (2, 0), (1, 0)] {
+        diagnostic.repairs.push(Repair {
+            rank,
+            escape_cost,
+            description: format!("rank {rank}, cost {escape_cost}"),
+            edit: None,
+        });
+    }
+    let value = serde_json::to_value(&diagnostic).unwrap();
+    let order: Vec<(u64, u64)> = value["repairs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|repair| {
+            (
+                repair["escape_cost"].as_u64().unwrap(),
+                repair["rank"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(order, [(0, 1), (0, 2), (1, 1), (1, 2)]);
+}
+
+#[test]
+fn list_is_ordered_by_file_then_start_position_then_code() {
+    let mut late_column = minimal(Code::U0101, "src/a.una", 2);
+    late_column.primary.start.col = 9;
+    let diagnostics = [
+        minimal(Code::U2001, "src/b.una", 1),
+        late_column,
+        minimal(Code::U0102, "src/a.una", 2),
+        minimal(Code::U0101, "src/a.una", 2),
+        minimal(Code::U1001, "src/a.una", 1),
+    ];
+    let value: Value = serde_json::from_str(&render_json(&diagnostics).unwrap()).unwrap();
+    let order: Vec<(String, u64, u64, String)> = value["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|diagnostic| {
+            (
+                diagnostic["primary"]["file"].as_str().unwrap().to_owned(),
+                diagnostic["primary"]["start"]["line"].as_u64().unwrap(),
+                diagnostic["primary"]["start"]["col"].as_u64().unwrap(),
+                diagnostic["code"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    let expected = [
+        ("src/a.una", 1, 1, "U1001"),
+        ("src/a.una", 2, 1, "U0101"),
+        ("src/a.una", 2, 1, "U0102"),
+        ("src/a.una", 2, 9, "U0101"),
+        ("src/b.una", 1, 1, "U2001"),
+    ]
+    .map(|(file, line, col, code)| (file.to_owned(), line, col, code.to_owned()));
+    assert_eq!(order, expected);
+}
+
+#[test]
+fn every_element_keeps_its_own_schema() {
+    let diagnostics = [minimal(Code::U0001, "src/a.una", 1)];
+    let value: Value = serde_json::from_str(&render_json(&diagnostics).unwrap()).unwrap();
+    assert_eq!(value["schema"], "una.diagnostics/1");
+    assert_eq!(value["diagnostics"][0]["schema"], "una.diagnostic/1");
+}

@@ -1,0 +1,19 @@
+module events.types
+
+--- A phone number of 11 digits, validated once at the boundary.
+pub kind Phone = Text where valid_phone(it)
+
+pub kind PhoneError = | Malformed
+
+--- Format check only: eleven digits.
+pub predicate opaque valid_phone(t: Text) -> Bool = t.len == 11 and is_digits(t)
+
+--- The only way to obtain a Phone from untrusted text.
+pub parse_phone(raw: Text) -> Phone
+  fails PhoneError
+=
+  checked(raw, valid_phone(it)) else fail Malformed
+
+example "malformed input is rejected"
+  do parse_phone("123")
+  expect fails Malformed

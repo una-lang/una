@@ -1,0 +1,12 @@
+-- test: an else arm is the last arm of a when
+-- spec: spec/02 §8
+-- expect: error U2008 at 12:5
+module arm_after_else
+
+pub kind Level = Low | High
+
+pub rank(level: Level) -> Int
+=
+  when level
+    else -> 0
+    is High -> 2

@@ -1,0 +1,6 @@
+-- test: an interpolation without its closing brace leaves the literal unterminated
+-- spec: spec/01 §6
+-- expect: error U0004 at 6:36
+module unterminated_interpolation
+
+pub greeting(name: Text) -> Text = "hello {name"
