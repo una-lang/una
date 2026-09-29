@@ -453,6 +453,8 @@ struct Walker<'p, 'i> {
     definitions: BTreeMap<String, Definition>,
     /// How each temporary shows in listed hypotheses.
     temps: BTreeMap<String, String>,
+    /// The term each temporary is defined as, where it is one: how it shows.
+    defs: BTreeMap<String, F>,
 }
 
 impl<'p, 'i> Walker<'p, 'i> {
@@ -465,6 +467,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             obligations: Vec::new(),
             definitions: BTreeMap::new(),
             temps: BTreeMap::new(),
+            defs: BTreeMap::new(),
         }
     }
 
@@ -721,7 +724,17 @@ impl<'p, 'i> Walker<'p, 'i> {
                             self.walk(inner, &ctx, &mut inner_leaves);
                             ctx.types.insert(name.clone(), ty.clone());
                             let x = own(&ctx, name);
-                            if !inner_leaves.is_empty() {
+                            // `spec/03 §7`: a value in the refinement language is selfified;
+                            // `and`, `or`, `implies`, `in` and `is` are branches in Core.
+                            let mut locals = BTreeMap::new();
+                            if let Some(value) = self.pure(inner, &ctx, &mut locals)
+                                && value.sort() == x.f.sort()
+                            {
+                                ctx.define(F::eq(x.f.clone(), value.clone()));
+                                if name.starts_with('%') {
+                                    self.defs.insert(name.clone(), value);
+                                }
+                            } else if !inner_leaves.is_empty() {
                                 // The binder is the value of one of the paths.
                                 let base = ctx.hyps.len();
                                 let paths: Vec<F> = inner_leaves
@@ -744,6 +757,10 @@ impl<'p, 'i> Walker<'p, 'i> {
                                 ctx.define(F::or(paths));
                             }
                         }
+                    }
+                    if name.starts_with('%') && !self.temps.contains_key(name.as_str()) {
+                        let text = self.text(*span);
+                        self.temps.insert(name.clone(), text);
                     }
                     let x = own(&ctx, name);
                     if *written {
@@ -873,6 +890,79 @@ impl<'p, 'i> Walker<'p, 'i> {
         }
     }
 
+    /// A pure expression of Core as one term, when it is one: atoms, primitives and fields
+    /// bound by `let`, `if`, and `case` on a single variant without bindings, which is how
+    /// `and`, `or`, `implies`, `in` and `is` elaborate.
+    fn pure(&mut self, expr: &Expr, ctx: &Ctx, locals: &mut BTreeMap<String, Tv>) -> Option<F> {
+        let value = |walker: &mut Self, atom: &Atom, locals: &BTreeMap<String, Tv>| match atom {
+            Atom::Var(name) => locals.get(name).cloned().unwrap_or_else(|| own(ctx, name)),
+            other => walker.atom(other, ctx),
+        };
+        match expr {
+            Expr::Atom { atom, .. } => Some(value(self, atom, locals).f),
+            Expr::Let {
+                name,
+                ty,
+                value: bound,
+                body,
+                ..
+            } => {
+                let Bound::Rhs(rhs) = bound.as_ref() else {
+                    return None;
+                };
+                let bound_value = match rhs {
+                    Rhs::Atom(atom) => value(self, atom, locals),
+                    Rhs::Prim { prim, args, .. } => {
+                        let values: Vec<Tv> = args.iter().map(|a| value(self, a, locals)).collect();
+                        Tv {
+                            f: self.prim(*prim, &values)?,
+                            ty: ty.clone(),
+                        }
+                    }
+                    Rhs::Field {
+                        value: record,
+                        index,
+                        ..
+                    } => {
+                        let record = value(self, record, locals);
+                        self.field(&record, 0, *index)?
+                    }
+                    _ => return None,
+                };
+                locals.insert(name.clone(), bound_value);
+                self.pure(body, ctx, locals)
+            }
+            Expr::If {
+                cond,
+                then,
+                otherwise,
+            } => {
+                let condition = value(self, cond, locals).f;
+                let then = self.pure(then, ctx, locals)?;
+                let otherwise = self.pure(otherwise, ctx, locals)?;
+                Some(F::op("ite", vec![condition, then, otherwise]))
+            }
+            Expr::Case {
+                scrutinee,
+                arms,
+                otherwise: Some(otherwise),
+            } => {
+                let [arm] = arms.as_slice() else {
+                    return None;
+                };
+                if arm.binds.iter().any(Option::is_some) {
+                    return None;
+                }
+                let scrutinee = value(self, scrutinee, locals);
+                let test = F::eq(self.tag(&scrutinee)?, F::Int(arm.ctor.index.to_string()));
+                let then = self.pure(&arm.body, ctx, locals)?;
+                let otherwise = self.pure(otherwise, ctx, locals)?;
+                Some(F::op("ite", vec![test, then, otherwise]))
+            }
+            _ => None,
+        }
+    }
+
     /// `let x: ty = rhs`: the obligations of the right-hand side, then its facts.
     fn rhs(&mut self, name: &str, ty: &Type, rhs: &'p Rhs, ctx: &mut Ctx) {
         ctx.types.insert(name.to_owned(), ty.clone());
@@ -881,7 +971,10 @@ impl<'p, 'i> Walker<'p, 'i> {
             Rhs::Atom(atom) => {
                 let value = self.atom(atom, ctx);
                 if value.f.sort() == x.f.sort() {
-                    ctx.define(F::eq(x.f.clone(), value.f));
+                    ctx.define(F::eq(x.f.clone(), value.f.clone()));
+                    if name.starts_with('%') {
+                        self.defs.insert(name.to_owned(), value.f);
+                    }
                 }
                 self.show_temp(name, atom);
             }
@@ -912,7 +1005,10 @@ impl<'p, 'i> Walker<'p, 'i> {
                 if let Some(value) = self.prim(*prim, &values)
                     && value.sort() == x.f.sort()
                 {
-                    ctx.define(F::eq(x.f.clone(), value));
+                    ctx.define(F::eq(x.f.clone(), value.clone()));
+                    if name.starts_with('%') {
+                        self.defs.insert(name.to_owned(), value);
+                    }
                     let texts: Vec<String> = arg_spans.iter().map(|s| self.text(*s)).collect();
                     if name.starts_with('%') {
                         self.temps
@@ -982,22 +1078,14 @@ impl<'p, 'i> Walker<'p, 'i> {
                     }
                 }
             }
-            Rhs::Field {
-                value,
-                index,
-                field,
-            } => {
+            Rhs::Field { value, index, .. } => {
                 let record = self.atom(value, ctx);
                 if let Some(projection) = self.field(&record, 0, *index)
                     && projection.f.sort() == x.f.sort()
                 {
-                    ctx.define(F::eq(x.f.clone(), projection.f));
-                    if name.starts_with('%')
-                        && let Atom::Var(record_name) = value
-                    {
-                        let shown = self.show_name(record_name);
-                        self.temps
-                            .insert(name.to_owned(), format!("{shown}.{field}"));
+                    ctx.define(F::eq(x.f.clone(), projection.f.clone()));
+                    if name.starts_with('%') {
+                        self.defs.insert(name.to_owned(), projection.f);
                     }
                 }
             }
@@ -1227,6 +1315,8 @@ impl<'p, 'i> Walker<'p, 'i> {
                 args: vec![sort],
                 result: "Int".to_owned(),
                 role: FunRole::Tag {
+                    module: module.clone(),
+                    kind: name.clone(),
                     variants: names.len(),
                 },
             },
@@ -1735,7 +1825,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                         FunRole::Len => {
                             new.push(F::op(">=", vec![term.clone(), F::Int("0".to_owned())]));
                         }
-                        FunRole::Tag { variants } => new.push(F::and(vec![
+                        FunRole::Tag { variants, .. } => new.push(F::and(vec![
                             F::op("<=", vec![F::Int("0".to_owned()), term.clone()]),
                             F::op("<", vec![term.clone(), F::Int(variants.to_string())]),
                         ])),
@@ -1780,6 +1870,8 @@ impl<'p, 'i> Walker<'p, 'i> {
                                                     args: vec![owner.sort()],
                                                     result: "Int".to_owned(),
                                                     role: FunRole::Tag {
+                                                        module: module.clone(),
+                                                        kind: kind.clone(),
                                                         variants: *variants,
                                                     },
                                                 },
@@ -1979,11 +2071,19 @@ impl<'p, 'i> Walker<'p, 'i> {
         Show::Opaque(sort)
     }
 
+    /// How a binder shows: a temporary through its definition or its source text.
     fn show_name(&self, name: &str) -> String {
-        self.temps
-            .get(name)
-            .cloned()
-            .unwrap_or_else(|| source_name(name))
+        self.show_binder(name).0
+    }
+
+    fn show_binder(&self, name: &str) -> (String, u8) {
+        if let Some(def) = self.defs.get(name) {
+            return self.show(def);
+        }
+        match self.temps.get(name) {
+            Some(text) => (text.clone(), text_level(text)),
+            None => (source_name(name), 1),
+        }
     }
 
     fn show_temp(&mut self, name: &str, atom: &Atom) {
@@ -2011,73 +2111,235 @@ impl<'p, 'i> Walker<'p, 'i> {
 
     /// A formula in a readable form of the surface syntax.
     fn show_formula(&self, f: &F) -> String {
+        self.show(f).0
+    }
+
+    /// A formula as surface syntax, and its level in the precedence table of `spec/01 §7`:
+    /// 1 binds tightest, 9 is `implies` and 10 an `if`. An operand shows in parentheses when
+    /// its level is above the one its position allows.
+    fn show(&self, f: &F) -> (String, u8) {
+        let operand = |f: &F, max: u8| self.operand(f, max);
+        let binary = |a: &F, op: &str, b: &F, level: u8| self.show_binary(a, op, b, level);
         match f {
-            F::Int(digits) => digits.clone(),
-            F::Bool(value) => value.to_string(),
+            F::Int(digits) => (digits.clone(), if digits.starts_with('-') { 2 } else { 1 }),
+            F::Bool(value) => (value.to_string(), 1),
             F::Const(Const { name, role, .. }) => match role {
-                ConstRole::Text(text) => una_core::quote(text),
-                _ => self.show_name(name),
+                ConstRole::Text(text) => (una_core::quote(text), 1),
+                _ => self.show_binder(name),
             },
-            F::Local { name, .. } => source_name(name),
+            F::Local { name, .. } => (source_name(name), 1),
             F::App { fun, args } => {
-                let arg = |i: usize| {
-                    args.get(i)
-                        .map_or_else(String::new, |a| self.show_formula(a))
-                };
+                let first = || args.first().map_or_else(String::new, |a| operand(a, 1));
                 let base = fun.name.split('!').next().unwrap_or(&fun.name);
-                match fun.role {
-                    FunRole::Field { .. } => format!("{}.{base}", arg(0)),
-                    FunRole::Len => format!("{}.len", arg(0)),
-                    FunRole::Tag { .. } => format!("tag({})", arg(0)),
+                match &fun.role {
+                    FunRole::Field { .. } => (format!("{}.{base}", first()), 1),
+                    FunRole::Len => (format!("{}.len", first()), 1),
+                    FunRole::Tag { .. } => (format!("tag({})", first()), 1),
                     FunRole::Predicate => {
-                        let shown: Vec<String> =
-                            args.iter().map(|a| self.show_formula(a)).collect();
+                        let shown: Vec<String> = args.iter().map(|a| operand(a, 10)).collect();
                         let short = base.rsplit('.').next().unwrap_or(base);
-                        format!("{short}({})", shown.join(", "))
+                        (format!("{short}({})", shown.join(", ")), 1)
                     }
                     FunRole::Other => {
-                        let op = match base {
-                            "mul" => "*",
-                            "div" => "/",
-                            "mod" => "mod",
-                            "lt" => "<",
-                            "le" => "<=",
-                            "gt" => ">",
-                            _ => ">=",
+                        let (op, level) = match base {
+                            "mul" => ("*", 3),
+                            "div" => ("/", 3),
+                            "mod" => ("mod", 3),
+                            "lt" => ("<", 5),
+                            "le" => ("<=", 5),
+                            "gt" => (">", 5),
+                            _ => (">=", 5),
                         };
-                        format!("{} {op} {}", arg(0), arg(1))
-                    }
-                }
-            }
-            F::Op { op, args } => {
-                let shown: Vec<String> = args
-                    .iter()
-                    .map(|a| {
-                        let text = self.show_formula(a);
-                        if matches!(a, F::Op { args, .. } if args.len() > 1) {
-                            format!("({text})")
-                        } else {
-                            text
+                        match args.as_slice() {
+                            [a, b] => binary(a, op, b, level),
+                            _ => (format!("{base}(..)"), 1),
                         }
-                    })
-                    .collect();
-                match (*op, shown.as_slice()) {
-                    ("not", [a]) => format!("not {a}"),
-                    ("-", [a]) => format!("-{a}"),
-                    ("=", [a, b]) => format!("{a} == {b}"),
-                    ("=>", [a, b]) => format!("{a} implies {b}"),
-                    ("ite", [c, a, b]) => format!("if {c} then {a} else {b}"),
-                    (op, parts) => {
-                        let op = match op {
-                            "div" => "/",
-                            other => other,
-                        };
-                        parts.join(&format!(" {op} "))
                     }
                 }
             }
+            F::Op { op, args } => match (*op, self.resolved(args).as_slice()) {
+                ("not", [F::Op { op: "=", args }]) if args.len() == 2 => {
+                    match self.resolved(args).as_slice() {
+                        [a, b] => self.show_equal(a, b, true),
+                        _ => (String::new(), 1),
+                    }
+                }
+                ("not", [a]) => (format!("not {}", operand(a, 6)), 6),
+                ("-", [a]) => (format!("-{}", operand(a, 1)), 2),
+                ("=", [a, b]) => self.show_equal(a, b, false),
+                ("=>", [a, b]) => (format!("{} implies {}", operand(a, 8), operand(b, 9)), 9),
+                ("ite", [c, a, F::Bool(false)]) | ("and", [c, a])
+                    if let Some(range) = self.show_range(c, a) =>
+                {
+                    range
+                }
+                ("ite", [c, a, b]) => match (a, b) {
+                    (F::Bool(true), F::Bool(false)) => self.show(c),
+                    (F::Bool(false), F::Bool(true)) => (format!("not {}", operand(c, 6)), 6),
+                    (_, F::Bool(false)) => (format!("{} and {}", operand(c, 7), operand(a, 7)), 7),
+                    (F::Bool(true), _) => (format!("{} or {}", operand(c, 8), operand(b, 8)), 8),
+                    (_, F::Bool(true)) => {
+                        (format!("{} implies {}", operand(c, 8), operand(a, 9)), 9)
+                    }
+                    _ => (
+                        format!(
+                            "if {} then {} else {}",
+                            operand(c, 10),
+                            operand(a, 9),
+                            operand(b, 10)
+                        ),
+                        10,
+                    ),
+                },
+                ("and" | "or", parts) => {
+                    let level = if *op == "and" { 7 } else { 8 };
+                    let shown: Vec<String> = parts.iter().map(|p| operand(p, level)).collect();
+                    (shown.join(&format!(" {op} ")), level)
+                }
+                ("+" | "-" | "*" | "div" | "mod" | "<" | "<=" | ">" | ">=", [a, b]) => {
+                    let (op, level) = match *op {
+                        "+" => ("+", 4),
+                        "-" => ("-", 4),
+                        "*" => ("*", 3),
+                        "div" => ("/", 3),
+                        "mod" => ("mod", 3),
+                        other => (other, 5),
+                    };
+                    binary(a, op, b, level)
+                }
+                (op, parts) => {
+                    let shown: Vec<String> = parts.iter().map(|p| operand(p, 4)).collect();
+                    (shown.join(&format!(" {op} ")), 5)
+                }
+            },
         }
     }
+
+    /// The formulas, each temporary replaced by its definition.
+    fn resolved<'f>(&'f self, fs: &'f [F]) -> Vec<&'f F> {
+        fs.iter().map(|f| self.resolve(f)).collect()
+    }
+
+    /// A temporary's definition, followed to a formula that is not one.
+    fn resolve<'f>(&'f self, f: &'f F) -> &'f F {
+        let mut f = f;
+        while let F::Const(Const { name, .. }) = f
+            && let Some(def) = self.defs.get(name)
+        {
+            f = def;
+        }
+        f
+    }
+
+    /// `lo <= x and x <= hi` as `x in lo..hi`, and `x in lo..<hi` with `<`.
+    fn show_range(&self, low: &F, high: &F) -> Option<(String, u8)> {
+        let (
+            F::Op {
+                op: "<=",
+                args: lower,
+            },
+            F::Op {
+                op: upper,
+                args: higher,
+            },
+        ) = (self.resolve(low), self.resolve(high))
+        else {
+            return None;
+        };
+        let (lower, higher) = (self.resolved(lower), self.resolved(higher));
+        let ([F::Int(lo), x], [y, F::Int(hi)]) = (lower.as_slice(), higher.as_slice()) else {
+            return None;
+        };
+        let range = match *upper {
+            "<=" => "..",
+            "<" => "..<",
+            _ => return None,
+        };
+        if x != y {
+            return None;
+        }
+        let shown = self.operand(x, 4);
+        Some((format!("{shown} in {lo}{range}{hi}"), 5))
+    }
+
+    /// `a == b` or `a != b`; the variant of a value against a literal shows as `is`.
+    fn show_equal(&self, a: &F, b: &F, negated: bool) -> (String, u8) {
+        if let (
+            F::App {
+                fun:
+                    SmtFun {
+                        role: FunRole::Tag { module, kind, .. },
+                        ..
+                    },
+                args,
+            },
+            F::Int(digits),
+        ) = (a, b)
+            && let [value] = args.as_slice()
+            && let Ok(index) = digits.parse::<usize>()
+            && let Some(variant) = self.index.variant_names(module, kind).get(index).cloned()
+        {
+            let is = format!("{} is {variant}", self.operand(value, 4));
+            return if negated {
+                (format!("not {is}"), 6)
+            } else {
+                (is, 5)
+            };
+        }
+        self.show_binary(a, if negated { "!=" } else { "==" }, b, 5)
+    }
+
+    /// An operand at a position that allows levels up to `max`, in parentheses above it.
+    fn operand(&self, f: &F, max: u8) -> String {
+        let (text, level) = self.show(f);
+        if level > max {
+            format!("({text})")
+        } else {
+            text
+        }
+    }
+
+    /// `a op b` at `level`: `*`, `/`, `mod`, `+` and `-` associate to the left, and
+    /// comparisons do not chain.
+    fn show_binary(&self, a: &F, op: &str, b: &F, level: u8) -> (String, u8) {
+        let (left, right) = if level == 5 {
+            (4, 4)
+        } else {
+            (level, level - 1)
+        };
+        (
+            format!("{} {op} {}", self.operand(a, left), self.operand(b, right)),
+            level,
+        )
+    }
+}
+
+/// The precedence level of a temporary's source text: 1 when it reads as one operand, with
+/// no space outside brackets and text literals; 2 for a negation; 10 otherwise.
+fn text_level(text: &str) -> u8 {
+    let mut depth = 0usize;
+    let mut quoted = false;
+    let mut escaped = false;
+    for c in text.chars() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                quoted = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => quoted = true,
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
+            c if c.is_whitespace() && depth == 0 => return 10,
+            _ => {}
+        }
+    }
+    if text.starts_with('-') { 2 } else { 1 }
 }
 
 /// The value of a binder in scope.
@@ -2187,4 +2449,113 @@ fn obligation_id(module: &str, declaration: &str, kind: ObligationKind, goal: &s
         Sha256::digest(format!("{module}\n{declaration}\n{}\n{goal}", kind.as_str()).as_bytes());
     let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
     format!("ob-{}", hex.get(..12).unwrap_or(&hex))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn int(digits: &str) -> F {
+        F::Int(digits.to_owned())
+    }
+
+    fn var(name: &str, sort: &str) -> F {
+        F::Const(Const {
+            name: name.to_owned(),
+            sort: sort.to_owned(),
+            role: ConstRole::Plain,
+        })
+    }
+
+    #[test]
+    fn formulas_show_as_source_with_the_parentheses_of_the_precedence_table() {
+        // `spec/01 §7`: the hypotheses of `una obligations` read as Una.
+        let program = Program::default();
+        let index = Index::new(&program);
+        let sources = SourceDb::new();
+        let mut walker = Walker::new(&index, &sources, "m");
+        let (a, b, c) = (var("a", "Int"), var("b", "Int"), var("c", "Int"));
+        let low = F::op("<=", vec![int("0"), a.clone()]);
+        let high = F::op("<", vec![a.clone(), int("20")]);
+        walker
+            .defs
+            .insert("%t0".to_owned(), F::op("+", vec![a.clone(), int("1")]));
+        walker
+            .temps
+            .insert("%t1".to_owned(), "f(x, \"a b\")".to_owned());
+        walker.temps.insert("%t2".to_owned(), "g(x) + 1".to_owned());
+        let option = kind_sort("prelude", "Option", &["Int".to_owned()]);
+        let tag = F::App {
+            fun: SmtFun {
+                name: format!("tag!{option}"),
+                args: vec![option.clone()],
+                result: "Int".to_owned(),
+                role: FunRole::Tag {
+                    module: "prelude".to_owned(),
+                    kind: "Option".to_owned(),
+                    variants: 2,
+                },
+            },
+            args: vec![var("o", &option)],
+        };
+        let cases = [
+            (
+                F::op("*", vec![F::op("+", vec![a.clone(), b.clone()]), int("2")]),
+                "(a + b) * 2",
+            ),
+            (
+                F::op("-", vec![a.clone(), F::op("-", vec![b.clone(), c.clone()])]),
+                "a - (b - c)",
+            ),
+            (
+                F::op("-", vec![F::op("-", vec![a.clone(), b.clone()]), c.clone()]),
+                "a - b - c",
+            ),
+            (F::op("-", vec![int("-1")]), "-(-1)"),
+            (F::not(F::eq(a.clone(), b.clone())), "a != b"),
+            (
+                F::not(F::op(
+                    "ite",
+                    vec![low.clone(), high.clone(), F::Bool(false)],
+                )),
+                "not a in 0..<20",
+            ),
+            (
+                F::op("ite", vec![low.clone(), F::Bool(true), high.clone()]),
+                "0 <= a or a < 20",
+            ),
+            (
+                F::not(F::op("ite", vec![low.clone(), F::Bool(true), high.clone()])),
+                "not (0 <= a or a < 20)",
+            ),
+            (
+                F::op(
+                    "=>",
+                    vec![F::op("=>", vec![low.clone(), high.clone()]), low.clone()],
+                ),
+                "(0 <= a implies a < 20) implies 0 <= a",
+            ),
+            (
+                F::op(
+                    "ite",
+                    vec![
+                        low.clone(),
+                        F::op("+", vec![a.clone(), b.clone()]),
+                        c.clone(),
+                    ],
+                ),
+                "if 0 <= a then a + b else c",
+            ),
+            (F::eq(tag.clone(), int("1")), "o is None"),
+            (F::not(F::eq(tag, int("0"))), "not o is Some"),
+            (F::op("*", vec![var("%t0", "Int"), int("2")]), "(a + 1) * 2"),
+            (
+                F::op("*", vec![var("%t1", "Int"), var("%t2", "Int")]),
+                "f(x, \"a b\") * (g(x) + 1)",
+            ),
+        ];
+        for (formula, shown) in cases {
+            assert_eq!(walker.show_formula(&formula), shown);
+        }
+    }
 }

@@ -76,8 +76,12 @@ pub(crate) enum FunRole {
     },
     /// `.len`: at least 0.
     Len,
-    /// The variant of a value of a sum: between 0 and `variants`.
-    Tag { variants: usize },
+    /// The variant of a value of the sum at `kind` (module, name): between 0 and `variants`.
+    Tag {
+        module: String,
+        kind: String,
+        variants: usize,
+    },
     /// A predicate; a reflect one has a definition.
     Predicate,
     /// Any other function, without facts: nonlinear arithmetic, text ordering.
