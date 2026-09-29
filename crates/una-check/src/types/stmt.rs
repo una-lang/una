@@ -14,6 +14,7 @@ use super::authority::{Bound, Frame};
 use super::check::{Checker, Ctx, Rl, Role};
 use super::closest;
 use super::env::KindDef;
+use super::label::Label;
 use super::ty::{KindId, Ty};
 use super::unify::Origin;
 
@@ -137,7 +138,12 @@ impl<'a> Checker<'_, 'a, '_> {
         {
             self.obligation(ObligationKind::Refinement, value, Some(written.span));
         }
-        let bound = declared.map_or(ty, |declared| declared.base);
+        if let Some(declared) = &declared {
+            self.flow(value, &ty, &declared.base, &format!("`{name}`"));
+        }
+        // The local keeps the labels its value has now; later unifications do not change them
+        // (DECISION D-088).
+        let bound = declared.map_or_else(|| self.labeled(&ty), |declared| declared.base);
         self.bind(name, bound);
     }
 
@@ -218,6 +224,7 @@ impl<'a> Checker<'_, 'a, '_> {
             match &handling.kind {
                 HandlingKind::ErrorFail(variant) => {
                     self.impure(handling.span, || "`if error fail`".to_owned());
+                    self.fail_under_pc(handling.span, "`if error fail`", None);
                     let ctx = Ctx {
                         error: Some(error.clone()),
                         ..self.ctx.clone()
@@ -226,6 +233,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
                 HandlingKind::ErrorPass => {
                     self.impure(handling.span, || "`if error pass`".to_owned());
+                    self.fail_under_pc(handling.span, "`if error pass`", None);
                     self.pass_clause(handling.span, &handled.expr);
                 }
                 HandlingKind::ErrorUse(value) => {
@@ -234,19 +242,33 @@ impl<'a> Checker<'_, 'a, '_> {
                         ..self.ctx.clone()
                     };
                     let expected = current.clone();
-                    self.within(ctx, |checker| {
-                        checker.expr_as(value, Some(&expected), Role::Plain);
+                    let used = self.within(ctx, |checker| {
+                        checker.expr_as(value, Some(&expected), Role::Plain)
                     });
+                    current = self.vars.join(&current, &used);
                 }
                 HandlingKind::NoneFail(variant) => {
                     self.impure(handling.span, || "`if none fail`".to_owned());
-                    current = self.unwrap_option(&current, handled.expr.span);
+                    // `if none` branches on the option (`spec/07 §3` rule 2).
+                    let option = self.labeled(&current).top_label();
+                    self.fail_under_pc(
+                        handling.span,
+                        "`if none fail`",
+                        Some((&option, handled.expr.span)),
+                    );
+                    current = self
+                        .unwrap_option(&current, handled.expr.span)
+                        .with_label(&option);
                     self.raise(variant);
                 }
                 HandlingKind::NoneUse(value) => {
+                    let option = self.labeled(&current).top_label();
                     current = self.unwrap_option(&current, handled.expr.span);
                     let expected = current.clone();
-                    self.expr_as(value, Some(&expected), Role::Plain);
+                    let saved = self.raise_pc(&option, handled.expr.span);
+                    let used = self.expr_as(value, Some(&expected), Role::Plain);
+                    self.restore_pc(saved);
+                    current = self.vars.join(&current, &used).with_label(&option);
                 }
             }
         }
@@ -257,7 +279,7 @@ impl<'a> Checker<'_, 'a, '_> {
             self.unify_at(handled.expr.span, expected, &current, role);
         }
         if tail && !handled.handlings.is_empty() {
-            self.returned(handled.expr.span);
+            self.returned_value(handled.expr.span, &current, expected, role);
         }
         current
     }
@@ -276,7 +298,8 @@ impl<'a> Checker<'_, 'a, '_> {
         let Some(option) = self.env.prelude_kind("Option") else {
             return Ty::Error;
         };
-        match self.resolve(ty) {
+        let labeled = self.labeled(ty);
+        match labeled.unlabeled().clone() {
             Ty::Kind(id, args) if id == option => args.into_iter().next().unwrap_or(Ty::Error),
             Ty::Error | Ty::Never => Ty::Error,
             Ty::Var(_) => {
@@ -321,20 +344,32 @@ impl<'a> Checker<'_, 'a, '_> {
         tail: bool,
     ) -> Ty {
         self.outside_rl(block.span, || "`if` with blocks".to_owned());
-        self.condition(&block.condition, "the condition of `if`");
+        let label = self.condition_label(&block.condition, "the condition of `if`");
+        if tail {
+            self.implicit_return(block.condition.span, &label, expected, role);
+        }
+        let saved = self.raise_pc(&label, block.condition.span);
         let mut joined = expected.cloned();
         let then_ty = self.block(&block.then_block, joined.as_ref(), role, tail);
         if joined.is_none() && self.resolve(&then_ty) != Ty::Never {
-            joined = Some(then_ty);
+            joined = Some(then_ty.clone());
         }
         let else_ty = match block.otherwise.as_ref() {
             ElseBranch::Block(otherwise) => self.block(otherwise, joined.as_ref(), role, tail),
             ElseBranch::If(next) => self.if_block(next, joined.as_ref(), role, tail),
         };
-        if joined.is_none() && self.resolve(&else_ty) != Ty::Never {
-            joined = Some(else_ty);
-        }
-        joined.unwrap_or(Ty::Never)
+        self.restore_pc(saved);
+        // DECISION D-088: the value joins both branches, raised by the condition (T-If).
+        let value = match (
+            self.resolve(&then_ty) == Ty::Never,
+            self.resolve(&else_ty) == Ty::Never,
+        ) {
+            (false, false) => self.vars.join(&then_ty, &else_ty),
+            (false, true) => then_ty,
+            (true, false) => else_ty,
+            (true, true) => joined.unwrap_or(Ty::Never),
+        };
+        value.with_label(&label)
     }
 
     /// The sum kind of a type, with its arguments.
@@ -353,6 +388,13 @@ impl<'a> Checker<'_, 'a, '_> {
     fn when(&mut self, when: &WhenExpr, expected: Option<&Ty>, role: Role<'_>, tail: bool) -> Ty {
         self.outside_rl(when.span, || "`when`".to_owned());
         let scrutinee = self.expr(&when.scrutinee, None);
+        // `when` branches on its scrutinee's top label (`spec/07 §3` rule 2).
+        let label = self.labeled(&scrutinee).top_label();
+        if tail {
+            self.implicit_return(when.scrutinee.span, &label, expected, role);
+        }
+        let saved = self.raise_pc(&label, when.scrutinee.span);
+        let mut value: Option<Ty> = None;
         let mut covered: Vec<Option<Span>> = Vec::new();
         let mut literals: Vec<(String, Span)> = Vec::new();
         let mut else_arm: Option<Span> = None;
@@ -410,7 +452,13 @@ impl<'a> Checker<'_, 'a, '_> {
                                     }
                                 }
                             }
-                            self.bind_fields(kind, index, &targs, binds);
+                            // DECISION D-090: the fields take the labels of the scrutinee's
+                            // arguments, raised by its top label.
+                            let targs = match self.labeled(&scrutinee).unlabeled() {
+                                Ty::Kind(id, args) if *id == kind => args.clone(),
+                                _ => targs,
+                            };
+                            self.bind_fields(kind, index, &targs, binds, &label);
                         }
                         None => {
                             problem = true;
@@ -487,11 +535,18 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
             }
             let ty = self.body(&arm.body, joined.as_ref(), role, tail);
-            if joined.is_none() && self.resolve(&ty) != Ty::Never {
-                joined = Some(ty);
+            if self.resolve(&ty) != Ty::Never {
+                if joined.is_none() {
+                    joined = Some(ty.clone());
+                }
+                value = Some(match value {
+                    Some(value) => self.vars.join(&value, &ty),
+                    None => ty,
+                });
             }
             self.locals.truncate(mark);
         }
+        self.restore_pc(saved);
         if !problem && else_arm.is_none() {
             if variant_arms && let Some((kind, _)) = self.sum_of(&scrutinee) {
                 self.exhaustive(when, kind, &covered);
@@ -500,7 +555,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 self.obligation(ObligationKind::Exhaustive, when.keyword, None);
             }
         }
-        joined.unwrap_or(Ty::Never)
+        value.or(joined).unwrap_or(Ty::Never).with_label(&label)
     }
 
     /// U2007: a `when` with variant arms and no `else` matches every variant.
@@ -542,7 +597,14 @@ impl<'a> Checker<'_, 'a, '_> {
     /// Binds the fields a variant pattern names (`spec/02 §6`, `spec/04 §3` rule 4): a field
     /// of a variant with one field may be bound under any name; other names must be fields
     /// (U2009), and a field is bound at most once (U2006).
-    fn bind_fields(&mut self, kind: KindId, index: usize, targs: &[Ty], binds: &[Bind]) {
+    fn bind_fields(
+        &mut self,
+        kind: KindId,
+        index: usize,
+        targs: &[Ty],
+        binds: &[Bind],
+        label: &Label,
+    ) {
         let Some(variant) = self
             .env
             .kinds
@@ -606,7 +668,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     variant
                         .fields
                         .get(found)
-                        .map_or(Ty::Error, |f| f.ty.base.substitute(targs))
+                        .map_or(Ty::Error, |f| f.ty.base.substitute(targs).with_label(label))
                 }
                 None => Ty::Error,
             };

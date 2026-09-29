@@ -7,13 +7,14 @@ use std::collections::BTreeMap;
 use una_diag::Code;
 use una_syntax::ast::{
     CapabilityDecl, ClauseKind, DeclKind, Expr, Field, File, FnTypeClause, FunctionDecl,
-    HandlerDecl, Ident, KindBody, KindDecl, OpClauseKind, Param, PolicyDecl, PredicateDecl, Type,
-    TypeCore, UsesClause,
+    HandlerDecl, Ident, KindBody, KindDecl, Label as LabelAst, OpClauseKind, Param, PolicyDecl,
+    PredicateDecl, Type, TypeCore, UsesClause,
 };
 use una_syntax::{Interner, Span, Symbol};
 
 use super::Report;
 use super::closest;
+use super::label::{Accepts, Label};
 use super::ty::{AliasId, CapId, Declared, FnTy, FnUse, KindId, Refinement, Ty};
 
 /// A module the checker knows: a package module, the prelude or `std.testing`.
@@ -190,6 +191,8 @@ pub(crate) struct OpDef<'a> {
     pub(crate) fails: Option<Ty>,
     pub(crate) requires: bool,
     pub(crate) ensures: bool,
+    /// The sink label of its arguments (`spec/05 §2`, `spec/07 §4`).
+    pub(crate) accepts: Accepts,
 }
 
 /// A capability.
@@ -238,6 +241,10 @@ pub(crate) struct Env<'a> {
     pub(crate) handlers: Vec<HandlerDef<'a>>,
     /// The index of the prelude in `modules`; `std.testing` follows it.
     pub(crate) prelude: usize,
+    /// The label categories that `una.toml` declares (`spec/07 §2`).
+    pub(crate) categories: Vec<String>,
+    /// The `via` function of each policy, and the policy (`spec/07 §5`).
+    pub(crate) vias: BTreeMap<usize, usize>,
     alias_state: Vec<AliasState>,
 }
 
@@ -248,6 +255,7 @@ impl<'a> Env<'a> {
         package: Vec<Source<'a>>,
         prelude: Source<'a>,
         testing: Source<'a>,
+        categories: Vec<String>,
         report: &mut Report<'_>,
     ) -> Env<'a> {
         let count = package.len();
@@ -259,6 +267,8 @@ impl<'a> Env<'a> {
             capabilities: Vec::new(),
             handlers: Vec::new(),
             prelude: count,
+            categories,
+            vias: BTreeMap::new(),
             alias_state: Vec::new(),
         };
         for source in package.into_iter().chain([prelude, testing]) {
@@ -272,6 +282,17 @@ impl<'a> Env<'a> {
         env.imports(count);
         env.alias_state = vec![AliasState::Pending; env.aliases.len()];
         env.signatures(report);
+        for id in 0..env.functions.len() {
+            let Some((module, FnAst::Policy(policy))) =
+                env.functions.get(id).map(|f| (f.module, f.ast))
+            else {
+                continue;
+            };
+            let via = env.text(module, policy.via.name);
+            if let Some(Entity::Function(target)) = env.lower(module, via) {
+                env.vias.entry(target).or_insert(id);
+            }
+        }
         env
     }
 
@@ -656,6 +677,23 @@ impl<'a> Env<'a> {
                 _ => None,
             });
             let has = |pick: fn(&OpClauseKind) -> bool| op.clauses.iter().any(|c| pick(&c.kind));
+            let op_name = self.text(module, op.name.name);
+            let written = op.clauses.iter().find_map(|clause| match &clause.kind {
+                OpClauseKind::Accepts(label) => Some(label),
+                _ => None,
+            });
+            // DECISION D-092: `Keys.hmac` accepts every label (`spec/14 §3`); an operation
+            // without `accepts` accepts `public`.
+            let accepts = match written {
+                Some(label) => Some(self.lower_label(module, label, report)),
+                None if module == self.prelude
+                    && ast_name(self, module, ast) == "Keys"
+                    && op_name == "hmac" =>
+                {
+                    None
+                }
+                None => Some(Label::public()),
+            };
             ops.push(OpDef {
                 name: self.text(module, op.name.name),
                 params: self.params(module, &op.params, &[], report),
@@ -664,6 +702,7 @@ impl<'a> Env<'a> {
                 fails: fails.map(|kind| self.error_kind(module, kind, report)),
                 requires: has(|kind| matches!(kind, OpClauseKind::Requires(_))),
                 ensures: has(|kind| matches!(kind, OpClauseKind::Ensures(_))),
+                accepts,
             });
         }
         if let Some(def) = self.capabilities.get_mut(id) {
@@ -976,13 +1015,54 @@ impl<'a> Env<'a> {
             }
         };
         if let Some(range) = &ty.range {
-            if matches!(declared.base, Ty::Int | Ty::Error) {
+            if matches!(declared.base.unlabeled(), Ty::Int | Ty::Error) {
                 declared.refinements.push(Refinement::Range);
             } else if self.reports(module) {
                 report.error(Code::U2002, range.span, "range sugar applies only to `Int`");
             }
         }
+        if let Some(label) = &ty.label {
+            let label = self.lower_label(module, label, report);
+            declared.base = declared.base.with_label(&label);
+        }
         declared
+    }
+
+    /// A written label: its level and categories; a category that `una.toml` does not
+    /// declare is U4007 and left out (`spec/07 §2`, DECISION D-096).
+    pub(crate) fn lower_label(
+        &self,
+        module: usize,
+        label: &LabelAst,
+        report: &mut Report<'_>,
+    ) -> Label {
+        let mut lowered = Label {
+            level: label.level,
+            categories: std::collections::BTreeSet::new(),
+        };
+        for category in &label.categories {
+            let name = self.text(module, category.name);
+            if self.categories.iter().any(|declared| declared == name) {
+                lowered.categories.insert(name.to_owned());
+            } else if self.reports(module) {
+                let mut diagnostic = report.make(
+                    Code::U4007,
+                    category.span,
+                    format!(
+                        "label category `{name}` is not declared in `[labels] categories` of `una.toml`"
+                    ),
+                );
+                if let Some(close) = closest(name, self.categories.iter().map(String::as_str)) {
+                    diagnostic.repairs.push(report.edit(
+                        format!("write `{close}`"),
+                        category.span,
+                        close,
+                    ));
+                }
+                report.push(diagnostic);
+            }
+        }
+        lowered
     }
 
     /// Lowers `name[args]`.
@@ -1134,4 +1214,9 @@ fn first_of_each(needs: Vec<Need>) -> Vec<Need> {
         }
     }
     kept
+}
+
+/// The name of a capability declaration.
+fn ast_name<'a>(env: &Env<'a>, module: usize, ast: &'a CapabilityDecl) -> &'a str {
+    env.text(module, ast.name.name)
 }

@@ -13,6 +13,9 @@ use super::env::{Entity, FieldDef, FnDef, FnKind, ParamDef};
 use super::expr::count;
 use super::ty::{FnUse, KindId, Ty};
 
+/// A checked argument: where it is, its type, the type of its parameter, and the parameter.
+pub(crate) type Checked<'a> = (Span, Ty, Ty, &'a str);
+
 impl<'a> Checker<'_, 'a, '_> {
     /// `e.f`: `.len` of `Text` and `List`, a field of `e`'s record, or a call `f(e)` of a
     /// function of one parameter declared in scope (`spec/04 §3`, DECISION D-052); U1001 when
@@ -21,11 +24,14 @@ impl<'a> Checker<'_, 'a, '_> {
         let target_ty = self.expr(target, None);
         let field = self.name(name);
         let resolved = self.resolve(&target_ty);
+        // DECISION D-090: `.len` and fields take the target's top label.
+        let labeled = self.labeled(&target_ty);
+        let top = labeled.top_label();
         if field == "len" && matches!(resolved, Ty::Text | Ty::List(_)) {
-            return Ty::Int;
+            return Ty::Int.with_label(&top);
         }
-        if let Some(ty) = self.record_field(&resolved, field) {
-            return ty;
+        if let Some(ty) = self.record_field(labeled.unlabeled(), field) {
+            return ty.with_label(&top);
         }
         match resolved {
             Ty::Error | Ty::Never => return Ty::Error,
@@ -113,7 +119,10 @@ impl<'a> Checker<'_, 'a, '_> {
         let target_ty = self.expr(target, None);
         let method = self.name(name);
         let resolved = self.resolve(&target_ty);
-        if let Some(field_ty) = self.record_field(&resolved, method)
+        let labeled = self.labeled(&target_ty);
+        if let Some(field_ty) = self
+            .record_field(labeled.unlabeled(), method)
+            .map(|ty| ty.with_label(&labeled.top_label()))
             && matches!(self.resolve(&field_ty), Ty::Fn(_))
         {
             self.outside_rl(span, || format!("call of field `{method}`"));
@@ -189,8 +198,14 @@ impl<'a> Checker<'_, 'a, '_> {
 
     /// A call of a function value: positional arguments only (DECISION D-053).
     fn call_value(&mut self, ty: &Ty, args: &[Arg], span: Span, what: &str, site: Site) -> Ty {
-        let function = match self.resolve(ty) {
+        let labeled = self.labeled(ty);
+        let value_label = labeled.top_label();
+        let function = match labeled.unlabeled().clone() {
             Ty::Fn(function) => *function,
+            Ty::Labeled(..) => {
+                self.unchecked(args);
+                return Ty::Error;
+            }
             Ty::Error | Ty::Never => {
                 self.unchecked(args);
                 return Ty::Error;
@@ -237,6 +252,7 @@ impl<'a> Checker<'_, 'a, '_> {
             self.unchecked(args);
             return function.result;
         }
+        let mut flows = Vec::new();
         for (arg, param) in args.iter().zip(&function.params) {
             self.ctx.argument = true;
             let found = self.expr_as(
@@ -248,10 +264,16 @@ impl<'a> Checker<'_, 'a, '_> {
                 },
             );
             self.function_argument(arg.value.span, param, &found);
+            flows.push((arg.value.span, found, param.clone()));
+        }
+        for (arg_span, found, param) in flows {
+            self.flow(arg_span, &found, &param, &format!("the argument of {what}"));
         }
         // Calling a function value needs the capabilities of its type (`spec/10 §2`, S-Fun).
         let level = self.frames.len();
         self.needs_site(what, &function.uses, span, level);
+        let bound = self.bound(&function.uses, function.fails.is_some());
+        self.call_under_pc(span, what, bound, function.fails.is_some(), false);
         self.position_site(
             what,
             span,
@@ -263,7 +285,8 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(fails) = &function.fails {
             self.call_fails.insert(span, fails.clone());
         }
-        function.result
+        // DECISION D-093: the result of a function value carries the value's label.
+        function.result.with_label(&value_label)
     }
 
     /// A function passed where a function type is expected has no more effects or failures than
@@ -361,6 +384,9 @@ impl<'a> Checker<'_, 'a, '_> {
         let level = self.frames.len();
         self.needs_site(&callee, &needs, span, level);
         self.call_fact(id, span);
+        self.via_site(id, span);
+        let bound = self.bound(&needs, def.fails.is_some());
+        self.call_under_pc(span, &callee, bound, def.fails.is_some(), false);
         self.position_site(
             &callee,
             span,
@@ -376,7 +402,7 @@ impl<'a> Checker<'_, 'a, '_> {
         if !subst.is_empty() {
             self.instances.push((id, subst.clone(), span));
         }
-        self.arguments(
+        let checked = self.arguments(
             &callee,
             &def.params,
             &subst,
@@ -385,6 +411,7 @@ impl<'a> Checker<'_, 'a, '_> {
             span,
             def.module,
         );
+        self.argument_flows(&callee, checked);
         if def.requires {
             self.obligation(ObligationKind::Precondition, span, None);
         }
@@ -392,6 +419,19 @@ impl<'a> Checker<'_, 'a, '_> {
             self.call_fails.insert(span, fails.clone());
         }
         def.result.base.substitute(&subst)
+    }
+
+    /// U4001 for the arguments of a call, once the whole call is typed so that type variables
+    /// have their final labels (DECISION D-089).
+    pub(crate) fn argument_flows(&mut self, callee: &str, checked: Vec<Checked<'a>>) {
+        for (span, found, expected, param) in checked {
+            self.flow(
+                span,
+                &found,
+                &expected,
+                &format!("parameter `{param}` of {callee}"),
+            );
+        }
     }
 
     /// `p(v)`, a declassification (`spec/10 §7`): one argument, without a label, that flows
@@ -410,6 +450,7 @@ impl<'a> Checker<'_, 'a, '_> {
             .params
             .first()
             .and_then(|p| self.origin(def.module, p.span));
+        let mut found = None;
         let value = match (receiver, args) {
             (Some((receiver_span, receiver_ty)), []) => {
                 self.unify_at(
@@ -418,6 +459,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     &receiver_ty,
                     Role::Argument { param: "", callee },
                 );
+                found = Some(receiver_ty);
                 Some(receiver_span)
             }
             (None, [arg]) => {
@@ -433,11 +475,11 @@ impl<'a> Checker<'_, 'a, '_> {
                     self.report.push(diagnostic);
                 }
                 self.ctx.argument = true;
-                self.expr_as(
+                found = Some(self.expr_as(
                     &arg.value,
                     Some(&expected),
                     Role::Argument { param: "", callee },
-                );
+                ));
                 Some(arg.value.span)
             }
             _ => {
@@ -447,11 +489,22 @@ impl<'a> Checker<'_, 'a, '_> {
                 None
             }
         };
-        if let (Some(value), Some(from)) = (value, from)
+        if let (Some(value), Some(from)) = (value, &from)
             && from.is_refined()
         {
             self.obligation(ObligationKind::Refinement, value, origin);
         }
+        if let (Some(value), Some(from), Some(found)) = (value, &from, found) {
+            self.flow(
+                value,
+                &found,
+                &from.base,
+                &format!("the `from` type of {callee}"),
+            );
+        }
+        // T-Declassify: `pc ⊑ ℓ(to)` (`spec/07 §5` rule 2).
+        let to = def.result.base.top_label();
+        self.declassify_under_pc(span, callee, &to);
         if let Some(fails) = &def.fails {
             self.call_fails.insert(span, fails.clone());
         }
@@ -502,7 +555,7 @@ impl<'a> Checker<'_, 'a, '_> {
             return Ty::Error;
         };
         let callee = format!("operation `{}.{op_name}`", capability.name);
-        self.arguments(
+        let checked = self.arguments(
             &callee,
             &def.params,
             &[],
@@ -510,6 +563,17 @@ impl<'a> Checker<'_, 'a, '_> {
             args,
             span,
             capability.module,
+        );
+        // DECISION D-092: an operation's arguments are sinks bounded by `accepts`.
+        let sinks: Vec<(Span, Ty)> = checked
+            .into_iter()
+            .map(|(arg_span, found, _, _)| (arg_span, found))
+            .collect();
+        self.sink(
+            span,
+            &format!("`@{cap_name}.{op_name}`"),
+            &def.accepts,
+            &sinks,
         );
         if def.requires {
             self.obligation(ObligationKind::Precondition, span, None);
@@ -557,7 +621,8 @@ impl<'a> Checker<'_, 'a, '_> {
         args: &[Arg],
         span: Span,
         module: usize,
-    ) {
+    ) -> Vec<Checked<'a>> {
+        let mut checked: Vec<Checked<'a>> = Vec::new();
         let names: Vec<&str> = params.iter().map(|p| p.name).collect();
         let offset = usize::from(receiver.is_some());
         let given_count = args.len() + offset;
@@ -572,7 +637,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 ),
             );
             self.unchecked(args);
-            return;
+            return checked;
         }
         if let (Some((receiver_span, receiver_ty)), Some(first)) = (&receiver, params.first()) {
             let expected = first.ty.base.substitute(subst);
@@ -581,6 +646,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 callee,
             };
             self.unify_at(*receiver_span, &expected, receiver_ty, role);
+            checked.push((*receiver_span, receiver_ty.clone(), expected, first.name));
             if first.ty.is_refined() {
                 let origin = self.origin(module, first.span);
                 self.obligation(ObligationKind::Refinement, *receiver_span, origin);
@@ -650,6 +716,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 let origin = self.origin(module, param.span);
                 self.obligation(ObligationKind::Refinement, arg.value.span, origin);
             }
+            checked.push((arg.value.span, found, expected, param.name));
         }
         if !problem {
             let missing: Vec<String> = params
@@ -671,6 +738,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 );
             }
         }
+        checked
     }
 
     /// U2005: a label that names no parameter.
@@ -889,6 +957,7 @@ impl<'a> Checker<'_, 'a, '_> {
             problem |= target.is_none();
             targets.push(target);
         }
+        let mut flows = Vec::new();
         for (arg, target) in lambdas_last(args, &targets) {
             let Some(field) = target.and_then(|target| fields.get(target)) else {
                 self.expr(&arg.value, None);
@@ -899,11 +968,21 @@ impl<'a> Checker<'_, 'a, '_> {
                 field: field.name,
                 kind: constructor,
             };
-            self.expr_as(&arg.value, Some(&expected), role);
+            let found = self.expr_as(&arg.value, Some(&expected), role);
             if field.ty.is_refined() {
                 let origin = self.origin(module, field.span);
                 self.obligation(ObligationKind::Refinement, arg.value.span, origin);
             }
+            flows.push((arg.value.span, found, expected, field.name));
+        }
+        // DECISION D-089: fields flow once the whole constructor is typed.
+        for (arg_span, found, expected, field) in flows {
+            self.flow(
+                arg_span,
+                &found,
+                &expected,
+                &format!("field `{field}` of `{constructor}`"),
+            );
         }
         if !problem {
             let missing: Vec<String> = fields

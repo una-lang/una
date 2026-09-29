@@ -13,6 +13,7 @@ use super::authority::{Base, Bound, Frame, Pass};
 use super::check::{Checker, Ctx, Rl, Role, Site};
 use super::closest;
 use super::env::{Entity, FnKind, KindDef};
+use super::label::Label;
 use super::ty::{FnTy, FnUse, KindId, Ty};
 use super::unify::Origin;
 
@@ -71,17 +72,19 @@ impl<'a> Checker<'_, 'a, '_> {
                     UnaryOp::Not => (Ty::Bool, "not"),
                 };
                 let what = format!("the operand of `{symbol}`");
-                self.expr_as(operand, Some(&ty), Role::Condition(&what));
-                ty
+                let found = self.expr_as(operand, Some(&ty), Role::Condition(&what));
+                // DECISION D-090: an operator's result joins every label of its operands.
+                let label = self.labeled(&found).deep_label();
+                ty.with_label(&label)
             }
             ExprKind::Is { value, target } => self.is(value, target, span),
             ExprKind::In { value, .. } => {
-                self.expr_as(
+                let found = self.expr_as(
                     value,
                     Some(&Ty::Int),
                     Role::Condition("the value tested by `in`"),
                 );
-                Ty::Bool
+                Ty::Bool.with_label(&self.labeled(&found).top_label())
             }
             ExprKind::IfLine {
                 condition,
@@ -89,8 +92,11 @@ impl<'a> Checker<'_, 'a, '_> {
                 otherwise,
             } => {
                 self.outside_rl(span, || "`if ... then ... else`".to_owned());
-                self.condition(condition, "the condition of `if`");
-                self.branches(&[then, otherwise], expected, Role::Plain, false)
+                let label = self.condition_label(condition, "the condition of `if`");
+                let saved = self.raise_pc(&label, condition.span);
+                let value = self.branches(&[then, otherwise], expected, Role::Plain, false);
+                self.restore_pc(saved);
+                value.with_label(&label)
             }
             ExprKind::Lambda { params, body } => self.lambda(params, body, span, expected, site),
             ExprKind::Checked {
@@ -102,6 +108,7 @@ impl<'a> Checker<'_, 'a, '_> {
             ExprKind::Fail(variant) => {
                 self.outside_rl(span, || "`fail`".to_owned());
                 self.impure(span, || "`fail`".to_owned());
+                self.fail_under_pc(span, "this `fail`", None);
                 self.raise(variant);
                 Ty::Never
             }
@@ -173,16 +180,17 @@ impl<'a> Checker<'_, 'a, '_> {
                 Ty::Unit
             }
             Literal::Text(text) => {
-                self.text(text);
-                Ty::Text
+                let label = self.text(text);
+                Ty::Text.with_label(&label)
             }
         }
     }
 
-    /// A text literal. Interpolation converts `Int`, `Bool` and `Text` only (`spec/09 §3`,
+    /// A text literal, and its label: the join of every label of its interpolated values
+    /// (`spec/07 §4`). Interpolation converts `Int`, `Bool` and `Text` only (`spec/09 §3`,
     /// `spec/14 §2`); a literal without interpolation is in the refinement language
     /// (DECISION D-050).
-    pub(crate) fn text(&mut self, text: &TextLit) {
+    pub(crate) fn text(&mut self, text: &TextLit) -> Label {
         let interpolated = text
             .parts
             .iter()
@@ -190,11 +198,13 @@ impl<'a> Checker<'_, 'a, '_> {
         if interpolated {
             self.outside_rl(text.span, || "text interpolation".to_owned());
         }
+        let mut label = Label::public();
         for part in &text.parts {
             let TextPart::Interpolation(expr) = part else {
                 continue;
             };
             let ty = self.expr(expr, None);
+            label = label.join(&self.labeled(&ty).deep_label());
             match self.resolve(&ty) {
                 Ty::Int | Ty::Bool | Ty::Text | Ty::Error | Ty::Never | Ty::Var(_) => {}
                 other => {
@@ -209,6 +219,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
             }
         }
+        label
     }
 
     /// A lower-case name: a local, or a function used as a value.
@@ -238,6 +249,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     (f.module, !f.uses.is_empty() || f.fails.is_some())
                 });
                 self.testing_site(module, name, ident.span);
+                self.via_site(id, ident.span);
                 // DECISION D-079: a function with effects or failures is a value only as an
                 // argument.
                 if effects && !site.argument && self.pass == Pass::Check && self.base != Base::Quiet
@@ -411,23 +423,40 @@ impl<'a> Checker<'_, 'a, '_> {
 
     fn list(&mut self, items: &[Expr], span: Span, expected: Option<&Ty>) -> Ty {
         self.outside_rl(span, || "a list literal".to_owned());
-        let element = match expected.map(|ty| self.resolve(ty)) {
-            Some(Ty::List(element)) => *element,
-            _ => self.vars.fresh(Origin::Element, span),
-        };
+        // The element variable takes the expected element type, and the labels of every item
+        // (DECISION D-088).
+        let element = self.vars.fresh(Origin::Element, span);
+        if let Some(Ty::List(expected)) = expected.map(|ty| self.resolve(ty)) {
+            self.vars.unify(&element, &expected);
+        }
         for item in items {
             self.expr(item, Some(&element));
         }
         Ty::List(Box::new(element))
     }
 
+    /// A binary operation; its result joins every label of its operands (DECISION D-090).
     fn binary(&mut self, op: BinaryOp, left: &Expr, right: &Expr, span: Span) -> Ty {
+        let mark = self.operands.len();
+        let ty = self.binary_type(op, left, right, span);
+        let label = self
+            .operands
+            .split_off(mark)
+            .iter()
+            .fold(Label::public(), |label, operand| {
+                label.join(&self.labeled(operand).deep_label())
+            });
+        ty.with_label(&label)
+    }
+
+    fn binary_type(&mut self, op: BinaryOp, left: &Expr, right: &Expr, span: Span) -> Ty {
         let symbol = op_symbol(op);
         let operand = format!("an operand of `{symbol}`");
         match op {
             BinaryOp::And | BinaryOp::Or | BinaryOp::Implies => {
                 for side in [left, right] {
-                    self.expr_as(side, Some(&Ty::Bool), Role::Condition(&operand));
+                    let found = self.expr_as(side, Some(&Ty::Bool), Role::Condition(&operand));
+                    self.operands.push(found);
                 }
                 Ty::Bool
             }
@@ -435,6 +464,8 @@ impl<'a> Checker<'_, 'a, '_> {
                 self.variant_equality(op, left, right, span);
                 let left_ty = self.expr(left, None);
                 let right_ty = self.infer(right, Some(&left_ty));
+                self.operands.push(left_ty.clone());
+                self.operands.push(right_ty.clone());
                 if self.same(span, &left_ty, &right_ty, symbol) {
                     let resolved = self.resolve(&left_ty);
                     if self.facts.has_function(&resolved) {
@@ -452,6 +483,8 @@ impl<'a> Checker<'_, 'a, '_> {
             BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
                 let left_ty = self.expr(left, None);
                 let right_ty = self.infer(right, Some(&left_ty));
+                self.operands.push(left_ty.clone());
+                self.operands.push(right_ty.clone());
                 if self.same(span, &left_ty, &right_ty, symbol) {
                     match self.resolve(&left_ty) {
                         Ty::Int | Ty::Error | Ty::Never | Ty::Var(_) => {}
@@ -495,7 +528,8 @@ impl<'a> Checker<'_, 'a, '_> {
 
     fn ints(&mut self, left: &Expr, right: &Expr, operand: &str) -> Ty {
         for side in [left, right] {
-            self.expr_as(side, Some(&Ty::Int), Role::Condition(operand));
+            let found = self.expr_as(side, Some(&Ty::Int), Role::Condition(operand));
+            self.operands.push(found);
         }
         Ty::Int
     }
@@ -547,11 +581,13 @@ impl<'a> Checker<'_, 'a, '_> {
         );
     }
 
+    /// `v is V` and `v is literal`; the result takes `v`'s top label (DECISION D-090).
     fn is(&mut self, value: &Expr, target: &IsTarget, span: Span) -> Ty {
-        match target {
+        let tested = match target {
             IsTarget::Variant(ident) => {
                 let ty = self.expr(value, None);
                 self.variant_of(&ty, ident, value.span, "`is` tests a variant of a sum kind");
+                ty
             }
             // DECISION D-061: `is` with a literal is outside the refinement language.
             IsTarget::Literal(literal) => {
@@ -576,9 +612,10 @@ impl<'a> Checker<'_, 'a, '_> {
                         format!("`is` cannot test a `{ty}` value against a `{literal_ty}` literal"),
                     );
                 }
+                ty
             }
-        }
-        Ty::Bool
+        };
+        Ty::Bool.with_label(&self.labeled(&tested).top_label())
     }
 
     /// The variant `ident` of the sum kind of a value of type `ty`: U1001 when the kind has no
@@ -642,6 +679,9 @@ impl<'a> Checker<'_, 'a, '_> {
 
     /// The branches of `if` or `when`: one type, or that of the expected type; a branch that
     /// fails joins any other (DECISION D-049).
+    /// The branches of `if` or `when`: one type, or that of the expected type; a branch that
+    /// fails joins any other (DECISION D-049). The value joins the labels of every branch
+    /// (DECISION D-088).
     pub(crate) fn branches(
         &mut self,
         branches: &[&Expr],
@@ -650,17 +690,24 @@ impl<'a> Checker<'_, 'a, '_> {
         tail: bool,
     ) -> Ty {
         let mut joined = expected.cloned();
+        let mut value: Option<Ty> = None;
         for branch in branches {
             let ty = if tail {
                 self.tail_expr(branch, joined.as_ref(), role)
             } else {
                 self.expr_as(branch, joined.as_ref(), role)
             };
-            if joined.is_none() && self.resolve(&ty) != Ty::Never {
-                joined = Some(ty);
+            if self.resolve(&ty) != Ty::Never {
+                if joined.is_none() {
+                    joined = Some(ty.clone());
+                }
+                value = Some(match value {
+                    Some(value) => self.vars.join(&value, &ty),
+                    None => ty,
+                });
             }
         }
-        joined.unwrap_or(Ty::Never)
+        value.or(joined).unwrap_or(Ty::Never)
     }
 
     /// An expression in a return position: each normal return path records the obligations
@@ -673,8 +720,12 @@ impl<'a> Checker<'_, 'a, '_> {
                 then,
                 otherwise,
             } if self.ctx.rl == Rl::Off => {
-                self.condition(condition, "the condition of `if`");
-                self.branches(&[then, otherwise], expected, role, true)
+                let label = self.condition_label(condition, "the condition of `if`");
+                self.implicit_return(condition.span, &label, expected, role);
+                let saved = self.raise_pc(&label, condition.span);
+                let value = self.branches(&[then, otherwise], expected, role, true);
+                self.restore_pc(saved);
+                value.with_label(&label)
             }
             ExprKind::Paren(inner) => {
                 self.ctx.top = top;
@@ -687,9 +738,43 @@ impl<'a> Checker<'_, 'a, '_> {
             _ => {
                 self.ctx.top = top;
                 let ty = self.expr_as(expr, expected, role);
-                self.returned(expr.span);
+                self.returned_value(expr.span, &ty, expected, role);
                 ty
             }
+        }
+    }
+
+    /// A normal return path at `span` of a value of type `ty`: its obligations (`spec/12 §3`),
+    /// and its flow into the declared result (U4001).
+    pub(crate) fn returned_value(
+        &mut self,
+        span: Span,
+        ty: &Ty,
+        expected: Option<&Ty>,
+        role: Role<'_>,
+    ) {
+        self.returned(span);
+        if let (Some(expected), Role::Return(name)) = (expected, role) {
+            self.flow(span, ty, expected, &format!("the result of `{name}`"));
+        }
+    }
+
+    /// U4001 for a branching construct in a return position whose condition, labeled
+    /// `label`, decides the value returned (DECISION D-089).
+    pub(crate) fn implicit_return(
+        &mut self,
+        condition: Span,
+        label: &Label,
+        expected: Option<&Ty>,
+        role: Role<'_>,
+    ) {
+        if let (Some(expected), Role::Return(name)) = (expected, role) {
+            self.implicit_result(
+                condition,
+                label,
+                expected,
+                &format!("the result of `{name}`"),
+            );
         }
     }
 
@@ -704,8 +789,13 @@ impl<'a> Checker<'_, 'a, '_> {
         site: Site,
     ) -> Ty {
         self.outside_rl(span, || "a lambda".to_owned());
-        let mut shape = match expected.map(|ty| self.resolve(ty)) {
+        // Parameters take the labels of the expected function type (DECISION D-088).
+        let mut shape = match expected.map(|ty| self.labeled(ty)) {
             Some(Ty::Fn(function)) => Some(*function),
+            Some(Ty::Labeled(_, inner)) => match *inner {
+                Ty::Fn(function) => Some(*function),
+                _ => None,
+            },
             _ => None,
         };
         let mut mismatch = false;
@@ -815,12 +905,21 @@ impl<'a> Checker<'_, 'a, '_> {
             };
         }
         self.lambda_depth += 1;
+        // A lambda's body starts at a `public` program counter (ADR 0031 rule 4).
         let ctx = Ctx {
             fails: fails.clone(),
             top: true,
+            pc: Label::public(),
+            pc_from: None,
             ..self.ctx.clone()
         };
-        let body_ty = self.within(ctx, |checker| checker.expr(body, result.as_ref()));
+        let body_ty = self.within(ctx, |checker| {
+            let found = checker.expr(body, result.as_ref());
+            if let Some(result) = &result {
+                checker.flow(body.span, &found, result, "the result of this lambda");
+            }
+            found
+        });
         self.lambda_depth -= 1;
         self.base = base;
         self.frames = frames;
@@ -844,9 +943,13 @@ impl<'a> Checker<'_, 'a, '_> {
             self.findings.checked.push((self.module, span));
         }
         let ty = self.expr(value, None);
+        // DECISION D-091: the failure of `checked` reveals whether the predicate holds.
+        let label = self.labeled(&ty).deep_label();
+        self.fail_under_pc(span, "`checked`", Some((&label, value.span)));
         let ctx = Ctx {
             it: Some(ty.clone()),
             rl: Rl::Clause,
+            labels: false,
             ..self.ctx.clone()
         };
         self.within(ctx, |checker| {

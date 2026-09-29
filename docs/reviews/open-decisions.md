@@ -738,7 +738,7 @@ None.
 - Question: `spec/10 §7` types a policy call `p(v)` as a declassification from `from` to `to`, computed by the `via` function. Nothing checks that the function takes `from` and returns `to`, or says how `p(v)` passes its argument.
 - Context: `spec/07 §5`, `spec/09 §3`, `spec/10 §7`; ADR 0024 rule 14.
 - Options: A) the `via` function takes one parameter of the base type of `from` and returns the base type of `to` (U2001 at `via` otherwise); a policy call takes one argument without a label (U2005 for a label) and fails and uses capabilities as its `via` function does; B) no check until M6.
-- Chosen: A, because a mismatch would make the declassified value ill-typed at run time; labels stay with M6.
+- Chosen: A, because a mismatch would make the declassified value ill-typed at run time; labels stay with M6. Since M6 the mismatch is U4005, as `spec/07 §5` rule 4 requires (D-094).
 - Confidence: high
 - Reversal cost: low, `Checker::policy` and `Checker::call_policy`
 - Implemented in: `0c07912` (M4 type checker), tag `DECISION D-066`
@@ -859,7 +859,7 @@ None.
 - Question: `crates/una-check/tests/types.rs` compares every name and type diagnostic of its inputs, and M5 adds codes that some M4 inputs trigger: a single file that uses `checked` twice now also gets U7003, since the budget of a single file is 0.
 - Context: `OVERNIGHT.md` C.5 (tests and expectations), `spec/06 §6`, `compiler/testing.md`.
 - Options: A) the M4 helper `check()` leaves out the authority codes and U7003, which `crates/una-check/tests/authority.rs` covers; B) add the U7003 line to the M4 expectation, and the codes of each later milestone as they arrive; C) give the M4 inputs a manifest with a larger budget.
-- Chosen: A, because each unit-test file then states the rules of its own milestone and no M4 expectation changes; the conformance suite still checks complete outputs.
+- Chosen: A, because each unit-test file then states the rules of its own milestone and no M4 expectation changes; the conformance suite still checks complete outputs. From M6 on, the helper also leaves out the security codes, which `crates/una-check/tests/flow.rs` covers; one M4 expectation, U2001 for a `via` function of another type, left the M4 test because `spec/07 §5` rule 4 makes it U4005 (D-094), which `flow.rs` tests.
 - Confidence: high
 - Reversal cost: low, the `later` filter in `crates/una-check/tests/types.rs`
 - Implemented in: `9d34aab`, `crates/una-check/tests/types.rs`, tag `DECISION D-084`
