@@ -59,11 +59,12 @@ The counts grow as this report quotes the names. Tests that check that the codes
 - `git grep --cached -liwE "vera|troth"`: `OVERNIGHT.md`, `docs/adr/0016-final-name-troth.md`, `docs/adr/0025-final-name-una.md`, `docs/reviews/morning-report.md`, `docs/reviews/open-decisions.md`, `docs/reviews/triage.md`, all allowed by Part 1.3.
 - The code-shape audit of Part 1.4: `docs/adr/0016-final-name-troth.md`, `docs/reviews/morning-report.md`, `docs/reviews/open-decisions.md`, all allowed.
 - The domain audit of Part 2.5: no output.
-- `git grep -n "LeoFerCardoso/vera"` on the staged tree: no output. The two references in this report became "the legacy repository" before the import.
+- The search of Part 5.3 for the path of the legacy repository, on the staged tree: no output. The two references in this report became "the legacy repository" before the import.
 
 **The new repository:** https://github.com/una-lang/una, private. GitHub Actions runs there: the push to `main` ran Linux and macOS (run 36580294816), the push to `dev/v0.1` Linux only (run 36580295703), both green, as D-083 intends. `Cargo.toml` names it as `repository`, and the README's build section clones it.
 
 **Notes.**
+- A slip after the import: commit `83c7ff4` quoted the Part 5.3 search command, which contains the legacy repository's path, in this report. The next commit reworded the line; published history is not rewritten, so `83c7ff4` keeps it.
 - The rename applied mechanically to accepted ADRs and the charter (names, codes, fences), and the neutral example replaced identifiers in accepted ADRs where they appeared; no substantive content of an accepted ADR changed, except that ADR 0016 is now `Superseded by 0025`, as Part 1.1 allows.
 - Snapshots: the reference example's five syntax-tree snapshots and the three snapshots of the `spec/13 §1` diagnostic sample were regenerated once and reviewed line by line (D-059).
 - Conformance counts are unchanged through Parts 1 to 4: 92 cases, 89 passed, 3 pending (M5, M6, M8). Tests: 204, plus the end-to-end test of the demo scripts, 205.
