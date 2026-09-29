@@ -103,7 +103,7 @@ None.
 - Chosen: A, because one set of resolution rules cannot disagree with itself; the records cost memory only.
 - Confidence: medium
 - Reversal cost: medium, the records of `crates/una-check/src/types/` and the elaborator
-- Implemented in: M7 commits, tag `DECISION D-098`
+- Implemented in: `59a481d`, `crates/una-check/src/types/records.rs`, `elab.rs`, tag `DECISION D-098`
 - ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 1
 - Answer needed: Keep A? Or switch to B?
 
@@ -444,29 +444,29 @@ None.
 - Chosen: A, because it matches the example of `spec/11 §5` and needs no second representation.
 - Confidence: medium
 - Reversal cost: low
-- Implemented in: M7 commits, tag `DECISION D-100`
+- Implemented in: `d81f200`, `c3d2041`, `crates/una-interp/src/machine.rs`, `crates/una-cli/src/runtime.rs`, tag `DECISION D-100`
 - ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 3
 - Answer needed: Keep A? Or switch to B?
 
 ### D-101: The output of `una run` (M7)
 - Question: `spec/13 §5` defines `una run` and its streams, but no JSON shape, and not how U6001 and U6003 are reported.
 - Context: `spec/04 §8`, `spec/11 §7`, `spec/13 §5`; ADR 0027; ADR 0032 rule 4.
-- Options: A) printed lines on stdout, U6001 and U6003 as diagnostics on stderr, and `una.run/1` with `--json`; B) a trace on stdout in human mode too.
+- Options: A) printed lines on stdout as the program prints them, U6001 and U6003 as diagnostics on stderr, and `una.run/1` with `--json`, whose `status` is `ok`, `failed`, `aborted` or `rejected` (the checks reported errors, so nothing ran) and whose `diagnostics` hold the diagnostics of the checks or of the run; B) a trace on stdout in human mode too.
 - Chosen: A, because the program's output belongs on stdout, and agents get everything, the trace included, with `--json`.
 - Confidence: medium
 - Reversal cost: low
-- Implemented in: M7 commits, tag `DECISION D-101`
+- Implemented in: `c3d2041`, `crates/una-cli/src/runtime.rs`, `crates/una-cli/tests/runtime.rs`, tag `DECISION D-101`
 - ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 4
 - Answer needed: Keep A? Or switch to B?
 
 ### D-102: The output of `una test` (M7)
 - Question: `spec/08 §2` rule 6 lists what `una test --json` reports per example without a shape.
 - Context: `spec/08 §2`, `spec/11 §6`, `spec/13 §5`; ADR 0032 rule 5.
-- Options: A) `una.test/1` with, per example, the module, name, outcome, first failed expectation, result and trace; B) one JSON document per example.
+- Options: A) `una.test/1` with the diagnostics of the checks and of aborted examples, and, per example, the module, name, outcome, the reason it fails, the first expectation that does not hold (file, line and text), the result and the trace; human mode prints one line per example, the expectation and the reason under a failed one, and a summary; B) one JSON document per example.
 - Chosen: A, because one document keeps `--json` to one value on stdout, as `spec/13 §5` requires.
 - Confidence: medium
 - Reversal cost: low
-- Implemented in: M7 commits, tag `DECISION D-102`
+- Implemented in: `d81f200`, `c3d2041`, `crates/una-interp/src/harness.rs`, `crates/una-cli/src/runtime.rs`, tag `DECISION D-102`
 - ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 5
 - Answer needed: Keep A? Or switch to B?
 
@@ -477,7 +477,7 @@ None.
 - Chosen: A, because a flag then adds what a run needs without restating the manifest, and resolving existing paths closes the escape through links that C leaves open.
 - Confidence: medium
 - Reversal cost: low
-- Implemented in: M7 commits, tag `DECISION D-103`
+- Implemented in: `d81f200`, `c3d2041`, `crates/una-interp/src/host.rs`, `machine.rs`, `crates/una-cli/src/runtime.rs`, tag `DECISION D-103`
 - ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 6
 - Answer needed: Keep A? Or switch to B or C?
 
@@ -488,8 +488,52 @@ None.
 - Chosen: A, because columns are counted in scalar values (`spec/13 §1`), and "every character is a digit" holds of the empty text.
 - Confidence: medium
 - Reversal cost: low
-- Implemented in: M7 commits, tag `DECISION D-104`
+- Implemented in: `d81f200`, `crates/una-interp/src/machine.rs`, `value.rs`; conformance case `runtime/prelude_functions`, tag `DECISION D-104`
 - ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 7
+- Answer needed: Keep A? Or switch to B?
+
+### D-106: When an example fails beyond its expectations (M7)
+- Question: `spec/08 §2` defines each expectation and says that `expect` lines with `result` fail when `do` failed, but not what happens when `do` fails and no `expect fails` line expects it, whether `expect` lines without `result` still run then, or which events `performed` counts.
+- Context: `spec/08 §2`, `spec/11 §5, §6`; ADR 0032 rule 9.
+- Options: A) the expectations are checked in order and the first that does not hold fails the example; then a `do` line that failed with no `expect fails` line fails it too; an `expect` line that does not mention `result` runs even when `do` failed; `performed` counts the completed or failed events of the `given` instance, and `not performed` any event of it; an abort fails the example; B) an example passes whenever its expectations hold.
+- Chosen: A, because a failure nobody expected is what an example exists to catch; with B, `do` lines with only `performed` lines would pass whatever happened after the operation.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: `d81f200`, `crates/una-interp/src/harness.rs`; conformance cases `runtime/examples_pass`, `runtime/examples_fail`, tag `DECISION D-106`
+- ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 9
+- Answer needed: Keep A? Or switch to B?
+
+### D-107: Redaction beyond the labels of arguments (M7)
+- Question: `spec/11 §5` redacts arguments whose static label is above `public`, and records host results "subject to redaction", but a record argument whose own label is `public` can hold a field declared `secret`, and an operation's result has a label too.
+- Context: `spec/07 §3` rule 1, `spec/11 §5`; ADR 0032 rule 3.
+- Options: A) every rendered value shows a field whose declared type is labeled above `public` as `<redacted:level>`; an operation's outcome is redacted by the label of the binder of its result; `unit` is never redacted; B) redact arguments only, as the example of `spec/11 §5` shows.
+- Chosen: A, because a trace must never show labeled data, and field labels are part of the static information the redaction rule uses; B would print a `secret` field of a public record in full.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: `d81f200`, `crates/una-interp/src/machine.rs`; CLI test `traces_never_show_labeled_arguments`, tag `DECISION D-107`
+- ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 3
+- Answer needed: Keep A? Or switch to B?
+
+### D-108: Runtime faults before tier 1 (M7)
+- Question: Until M8 verifies proof obligations, `una run` and `una test` run programs whose divisors are not proven nonzero (ADR 0027). What does a division by zero do, and what reports a fault that a checked program cannot reach?
+- Context: `spec/11 §4`, `spec/12 §3`, `spec/13 §4`; ADR 0027; ADR 0032 rule 11.
+- Options: A) the run aborts with U8001 at the name of the function in progress, or at 1:1 of the package root (ADR 0022), and exit code 3; B) a new runtime code for division by zero.
+- Chosen: A, because once tier 1 runs first, reaching such a fault is a compiler bug, and a new code needs the specification (`CLAUDE.md`); until then the message says that a proof obligation excludes it.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: `d81f200`, `c3d2041`, `crates/una-interp/src/machine.rs`, `crates/una-cli/src/runtime.rs`, tag `DECISION D-108`
+- ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 11
+- Answer needed: Keep A? Or switch to B?
+
+### D-109: The entry of `una run`, and U3012 at startup (M7)
+- Question: `spec/04 §8` runs `main` of the module that `una run` names and reports ungranted capabilities with U3012 before execution, but `una check` (D-076) only compares `main` with `[run] grants`, which `--grant` flags extend, and a single file has no `una.toml`.
+- Context: `spec/04 §8`, `spec/05 §7`, `spec/13 §5`; ADR 0021; ADR 0032 rule 10.
+- Options: A) `una run` checks the package with the grants of `[run] grants` and `--grant` together as final grants, even when there are none, and U3012 then says that neither grants the operation; the entry is `[run] entry`, or the module of a single file; a package without `[run] entry`, an entry without `pub main() -> Unit`, a grant flag that is not a grant spec and an unreadable key file are usage errors (exit code 2); B) keep D-076 and check the flags at run time without a source position.
+- Chosen: A, because the checker already locates U3012 on the `uses` clause, and conformance cases are single files that `una run` must run.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: `c3d2041`, `crates/una-check/src/names/mod.rs`, `types/authority.rs`, `crates/una-cli/src/lib.rs`, `runtime.rs`, tag `DECISION D-109`
+- ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 10
 - Answer needed: Keep A? Or switch to B?
 
 ### D-002: Title of the historical design exploration in the charter (Part A)
@@ -1005,19 +1049,30 @@ None.
 - Chosen: A, because the dump is a debugging aid, and declarations without diagnostics are still worth seeing.
 - Confidence: high
 - Reversal cost: low
-- Implemented in: M7 commits, tag `DECISION D-099`
+- Implemented in: `59a481d`, `crates/una-core/src/print.rs`, `crates/una-cli/src/lib.rs`, tag `DECISION D-099`
 - ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 2
 - Answer needed: Keep A?
 
 ### D-105: What the call depth counts (M7)
 - Question: `spec/11 §7` limits the call depth to 10,000 frames without saying which calls are frames.
 - Context: `spec/04 §7`, `spec/11 §7`; ADR 0032 rule 8.
-- Options: A) calls of functions, predicates, lambdas, policies and handler operations; B) function calls only.
-- Chosen: A, because each of them recurses the same way.
+- Options: A) calls of functions, predicates, lambdas, policies and handler operations; the evaluator runs on a thread whose stack is sized from the maximum depth (32 KiB per call and 16 MiB more), and aborts with U6003 when that stack runs short before the depth does, so it never overflows; B) function calls only.
+- Chosen: A, because each of them recurses the same way, and nested expressions inside a recursive function use stack that the depth alone does not bound.
 - Confidence: high
 - Reversal cost: low
-- Implemented in: M7 commits, tag `DECISION D-105`
+- Implemented in: `d81f200`, `c3d2041`, `crates/una-interp/src/machine.rs`, `lib.rs`, `crates/una-cli/src/runtime.rs`, tag `DECISION D-105`
 - ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 8
+- Answer needed: Keep A?
+
+### D-110: How the conformance runner evaluates `una run` and `una test` (M7)
+- Question: `compiler/testing.md §2` defines `run-output`, `test-pass`, `test-fail` and `-- grant:`, but not how the runner obtains them, whether errors reported by `una run` count toward `error` expectations, or where the relative paths of grants resolve.
+- Context: `compiler/testing.md §2`; ADR 0013.
+- Options: A) the runner calls `una run --json` and `una test --json` in-process; `una run` runs when a case expects output, grants a capability or expects an error of the runtime domain, and the errors of both documents join those of `una check`; relative `files:` and `keys:` paths resolve against the case's directory; B) a separate expectation for runtime errors.
+- Chosen: A, because a case then states every error it expects in one form, and a case does not depend on the directory the tests run in.
+- Confidence: high
+- Reversal cost: low
+- Implemented in: `54d30c8`, `crates/una-cli/tests/conformance/main.rs`, `outcome.rs`, `docs/compiler/testing.md`, tag `DECISION D-110`
+- ADR: none (`compiler/testing.md §2` gains the rules)
 - Answer needed: Keep A?
 
 ### D-083: CI runners for the private repository (Part 5)
