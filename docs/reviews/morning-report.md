@@ -5,9 +5,9 @@ Updated after every milestone of the overnight run (`OVERNIGHT.md`, C.8).
 ## 1. Status
 
 - Language name: Una (ADR 0025; previously Troth, codenamed Vera).
-- Last completed milestone: M4 (types). Next: M5 (capabilities, effects and failures), on the critical path to checkpoint 3 (`docs/plan/roadmap.md §4`).
+- Last completed milestone: M5 (capabilities, effects and failures). Next: M6 (information flow), which completes checkpoint 2, then M7, the last milestone on the critical path to checkpoint 3 (`docs/plan/roadmap.md §4`).
 - Repository: una-lang/una (private until launch), branch `dev/v0.1`; its history starts at the initial public import `25d865b` (ADR 0030). Earlier commit hashes in this report refer to the legacy repository.
-- Last green CI runs: https://github.com/una-lang/una/actions/runs/36580294816 (`main`, Linux and macOS) and https://github.com/una-lang/una/actions/runs/36580295703 (`dev/v0.1`, Linux), both at `25d865b`. Before the import: run 36578625540 of the legacy repository (`a5c8d3d`, M4).
+- Last green CI runs: https://github.com/una-lang/una/actions/runs/36606305565 (`dev/v0.1`, Linux, at `79b7a2c`, M5) and https://github.com/una-lang/una/actions/runs/36580294816 (`main`, Linux and macOS, at `25d865b`). macOS runs only on pull requests and pushes to `main` (D-083); local checks on the owner's Mac pass. Before the import: run 36578625540 of the legacy repository (`a5c8d3d`, M4).
 
 ## 2. Consolidated instructions: Una, neutral examples, checkpoints, license
 
@@ -118,7 +118,7 @@ docs/compiler/testing.md:105:## 5. Coverage expectations for v0.1
 | M2 Formatter | done | `8a59109`, `95c1ef3`, `697cd2e`, `acf4ec2`, `77e4d5d` | 178 | 63 cases: 60 passed, 3 pending (M5, M6, M8), 0 failures |
 | M3 Project and names | done | `0e8030c`, `457ca92`, `9915290`, `b723bd2`, `e3ab28f`, `f98912a` | 204 | 92 cases: 89 passed, 3 pending (M5, M6, M8), 0 failures |
 | M4 Types | done | `fc9301b`, `0c07912`, `cafb07b`, `a5c8d3d` | 236 | 116 cases: 113 passed, 3 pending (M5, M6, M8), 0 failures |
-| M5 Capabilities, effects and failures | not started | | | |
+| M5 Capabilities, effects and failures | done | `9d34aab`, `3be9490`, `08260d3`, `58dd14d`, `0ded2b9`, `4f959a7`, `ce6f46b`, `79b7a2c` (plan and ADRs 0028, 0029 in the initial import `25d865b`) | 259 | 144 cases: 142 passed, 2 pending (M6, M8), 0 failures |
 | M6 Information flow | not started | | | |
 | M7 Core IR and interpreter | not started | | | |
 | M8 Verification | not started | | | |
@@ -150,6 +150,15 @@ M4 evidence (`docs/plan/runs/M4-plan.md §8`):
 - 26 unit tests in `crates/una-check/tests/types.rs` cover each rule, the pending obligations of `spec/12 §3` and selfified `let`s; the standard modules type-check as ordinary modules, and their names equal `spec/14`.
 - The self-review checklist of every MUST and MUST NOT of `spec/03`, `spec/04 §1 to §3, §6, §7`, `spec/06 §1, §2, §5` and `spec/10 §3, §4` is in the M4 plan §8. Effects, failures, one effect per line and capability sufficiency are M5; labels M6; obligations are recorded, not proven, until M8.
 
+M5 evidence (`docs/plan/runs/M5-plan.md §8`):
+- Conformance cases for U3001 to U3015 and U7003: 29 cases in `tests/conformance/authority`, at least one failing case per code, U3012 and U7003 as package cases, and passing cases for uses and handlers, inferred headers, examples with `given`, grants and the escape budget; the sixteen explain texts carry failing and fixed examples, checked by the explain test.
+- `una contract` (ADR 0029): human output and the JSON schema `una.contract/1`, with reviewed insta snapshots of `events.checkin.check_in` in both forms.
+- The whole reference example stays free of diagnostics; the determinism test covers the authority cases.
+- 20 unit tests in `crates/una-check/tests/authority.rs`, one per rule; the M4 unit tests leave out the new codes (D-084).
+- Inference (ADR 0028 rule 2, D-072) decides a private function's capability references by the declared headers it calls, then its callers' bindings, then the handlers they install, so each disagreement is reported where it is written; `una contract` prints the result with `-- inferred`.
+- Diagnostics with one mechanical repair carry its edit (D-086): widening a `uses` clause, adding `uses` or `fails` clauses in canonical order; each applied edit removes its diagnostic and keeps the file canonical.
+- The self-review checklist of every MUST and MUST NOT of `spec/05`, `spec/06 §2 to §6`, `spec/04 §2, §4 to §8` and `spec/08 §2` is in the M5 plan §8. Labels, the program counter and sinks are M6; `--grant` and running examples are M7.
+
 ## 5. Decisions needing review
 
 The top ten entries of `docs/reviews/open-decisions.md`, each answerable in one line.
@@ -161,11 +170,11 @@ The top ten entries of `docs/reviews/open-decisions.md`, each answerable in one 
 | D-046 | Variants in patterns, `is`, after `fail` and `expect fails` take their kind from the context, in M4 | Keep, or switch to B (scopes only) |
 | D-048 | Where each contextual variant is looked up: the tested value's kind, the declared error kind, the error kinds of the `do` line (ADR 0024 rule 1) | Keep, or switch to B (scopes only) |
 | D-063 | A generic function that compares values of a type parameter cannot be instantiated with a type that holds functions (ADR 0024 rule 11) | Keep, or switch to B (no function type arguments) or C (run time) |
+| D-071 | U3004 for `@` in pure code, U3001 for a missing binding or another capability, U3002 for fewer operations, U3003 for effects beyond an empty `uses` (ADR 0028 rule 1) | Keep, or switch to B (U3001 for every missing capability) |
+| D-072 | Private headers are inferred; a reference's capability comes from the headers it calls, then its callers' bindings, then installed handlers (ADR 0028 rule 2) | Keep, or switch to B (from the operation's name) or C (callers only) |
 | D-018 | After a label level, `[` starts the categories; a labeled list is written `secret List[T]` (ADR 0018) | Keep, or switch to B (backtrack) or C |
 | D-022 | Nesting deeper than 256 levels, counting chained operators, is U0101; `una check` runs on a 64 MiB stack (ADR 0019) | Keep, change the limit, or count only true recursion (D) |
 | D-019 | A lexical error suppresses the parser's U0101 later in the same declaration | Keep, or switch to A or C |
-| D-021 | Doc comments attach across blank lines and plain comments | Keep, or switch to B (only directly above) |
-| D-024 | Predicates, handler operations and arms also put a one-line body on their line | Keep, or switch to B (functions only) |
 
 ## 6. Blockers and deviations from the spec
 
@@ -179,6 +188,8 @@ Deviations and additions, all logged:
 - The previous reference example sorted its imports (D-025), which changed two reviewed syntax-tree snapshots in their import lines only.
 - ADR 0024 (Provisional) fills the typing rules the specification leaves open, rules 1 to 15, with decisions D-048 to D-055 and D-061 to D-069. The strict readings to review first: recursion only through `List` or `Option` (D-062), equality on type parameters (D-063), punning of the first argument (D-064), recursion of every predicate (D-065).
 - Two tour cases of M1 and M3 passed second arguments without labels, which `spec/04 §3` rule 2 forbids; their inputs gained the labels (D-068).
+- ADR 0028 (Provisional) fills the authority rules the specification leaves open, rules 1 to 12, and ADR 0029 (Provisional) defines the output of `una contract`. Additions to review first: `una check` reports U3012 from `[run] grants` and for capabilities of `main` that are not host capabilities (D-076); function values and parameters of effectful function types are second-class like lambdas (D-079); S-Fun violations are U3003 and U3009 (D-085); a capability reference bound twice is U1002 (D-087).
+- The M4 unit tests compare only the M4 codes from M5 on (D-084): one M4 input uses `checked` twice in a single file, which M5 reports as U7003; no M4 expectation changed.
 
 ## 7. Hindsight and next steps
 
@@ -187,7 +198,9 @@ Deviations and additions, all logged:
 - Hindsight: running the reference examples early caught two name rules that the specification never states (D-039, D-046). Checking the examples first, before writing the rules, would have saved a revision of ADR 0023.
 - The conformance runner now fails any case, pending or not, that reports an implemented code it does not expect (D-044).
 - Hindsight: M4 restarted after the consolidated instructions; writing exploratory probes before the unit tests caught a dozen message and cascade problems cheaply, but the plan's small commits became three larger ones.
-- Next: M5 (capabilities, effects and failures), then M7, the rest of the critical path to checkpoint 3 (`docs/plan/roadmap.md §4`), which matters more than starting M8. M5 extends the type checker: capability contexts, inferred effects and failures, one effect per line.
+- Hindsight (M5): the run moved to a new session in the middle of the milestone, with the implementation uncommitted; a saved note of the next steps made the restart cheap, but committing a compiling checkpoint before the move would have been safer.
+- Hindsight (M5): the first inference took a reference's capability from its callers only, so a wrong handler or binding showed up as a conflict far from where it was written, and a helper without callers could not be inferred. Probing with small programs before writing the unit tests exposed both, and ranking the sources fixed them (D-072). Writing the unit tests then exposed four more holes: `std.testing` in `expect` lines, parameters that let effectful lambdas escape, capabilities of `main` that no grant can provide, and references bound twice.
+- Next: M6 (information flow), which completes checkpoint 2 and its demo, then M7, the rest of the critical path to checkpoint 3 (`docs/plan/roadmap.md §4`), which matters more than starting M8.
 
 ## 8. Checkpoint demo
 
