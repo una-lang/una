@@ -590,18 +590,47 @@ fn contract_command(
     Ok(ExitStatus::Success)
 }
 
-/// `una explain <code>`: prints the explanation of a registered code (`spec/13 §4`).
+/// `una.explain/1`, with keys in this order (ADR 0034 rule 4).
+#[derive(serde::Serialize)]
+struct ExplainDocument {
+    schema: &'static str,
+    code: &'static str,
+    domain: &'static str,
+    meaning: &'static str,
+    text: &'static str,
+}
+
+/// `una explain <code>`: prints the explanation of a registered code (`spec/13 §4`), or with
+/// `--json` the document `una.explain/1`.
 fn explain_command(
     code: &str,
     json: bool,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
-    if json {
-        writeln!(stderr, "error: una explain has no --json output")?;
-        return Ok(ExitStatus::Usage);
-    }
     match code.parse::<Code>() {
+        // DECISION D-125: `una.explain/1` with `--json`, as every command has a document.
+        Ok(code) if json => {
+            let document = ExplainDocument {
+                schema: "una.explain/1",
+                code: code.as_str(),
+                domain: code.domain().as_str(),
+                meaning: code.meaning(),
+                text: code.explain_text(),
+            };
+            match serde_json::to_string(&document) {
+                Ok(text) => writeln!(stdout, "{text}")?,
+                Err(error) => {
+                    writeln!(
+                        stderr,
+                        "internal compiler error (U8001): rendering the explanation as JSON failed: {error}"
+                    )?;
+                    return Ok(ExitStatus::Internal);
+                }
+            }
+            stdout.flush()?;
+            Ok(ExitStatus::Success)
+        }
         Ok(code) => {
             write!(stdout, "{}", code.explain_text())?;
             stdout.flush()?;
