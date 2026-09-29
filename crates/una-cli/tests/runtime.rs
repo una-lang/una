@@ -660,3 +660,50 @@ fn run_and_test_do_not_run_rejected_packages() {
     assert_eq!(document["examples"], json!([]));
     assert_eq!(document["diagnostics"][0]["code"], "U2001");
 }
+
+#[test]
+fn handler_instances_keep_their_ids_and_come_before_their_bodies() {
+    // `spec/11 §2`: rebinding shares the instance; §4 E-OpHandler: the operation's event comes
+    // before the events of the handler's body; §5: `with:<handler>#<n>` counts installations.
+    let output = una(&[
+        "--json",
+        "run",
+        "tests/conformance/runtime/handlers.una",
+        "--grant",
+        "console",
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let document = json(&output);
+    let events: Vec<(String, String)> = document["trace"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| {
+            (
+                event["instance"].as_str().unwrap().to_owned(),
+                format!("{}.{}", event["capability"], event["op"]).replace('"', ""),
+            )
+        })
+        .collect();
+    let expected = [
+        ("with:starting_at#1", "Counter.next"),
+        ("host:Console", "Console.print"),
+        ("with:console_log#1", "Log.write"),
+        ("host:Console", "Console.print"),
+        ("with:console_log#1", "Log.write"),
+        ("host:Console", "Console.print"),
+        ("with:console_log#2", "Log.write"),
+        ("host:Console", "Console.print"),
+        ("with:console_log#2", "Log.write"),
+        ("host:Console", "Console.print"),
+    ];
+    let expected: Vec<(String, String)> = expected
+        .iter()
+        .map(|(instance, op)| ((*instance).to_owned(), (*op).to_owned()))
+        .collect();
+    assert_eq!(events, expected);
+    assert_eq!(
+        document["trace"][0]["outcome"],
+        json!({"kind": "ok", "value": "42"})
+    );
+}
