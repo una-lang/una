@@ -96,6 +96,17 @@ None.
 - ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 1
 - Answer needed: Keep A? Or switch to B or C?
 
+### D-098: Elaboration from the checker's resolutions (M7)
+- Question: Core IR needs every call resolved, arguments positional and every binder typed (`spec/09 §1`); the checker computes all of this but keeps none of it.
+- Context: `spec/09`, `compiler/architecture.md §2, §3`; ADR 0032 rule 1.
+- Options: A) pass 2 records its resolutions by span and the elaborator reads them; B) an elaborator that resolves names and types again.
+- Chosen: A, because one set of resolution rules cannot disagree with itself; the records cost memory only.
+- Confidence: medium
+- Reversal cost: medium, the records of `crates/una-check/src/types/` and the elaborator
+- Implemented in: M7 commits, tag `DECISION D-098`
+- ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 1
+- Answer needed: Keep A? Or switch to B?
+
 ### D-018: `[` right after a label level (M1)
 - Question: After a level such as `secret`, `[` can start the label's categories (`secret[PII] Phone`) or a list type (`secret [Int]`). The grammar of `spec/02 §2` allows both readings, and telling them apart needs unbounded lookahead.
 - Context: `spec/02` introduction (LL(2) except kind bodies) and §2; `spec/03 §1`, `spec/07 §2`, `spec/14` (`List[T]`).
@@ -424,6 +435,61 @@ None.
 - Reversal cost: low
 - Implemented in: `d519fbb`, `crates/una-check/src/types/check.rs` (`policy`), `flow.rs` (`via_site`), tag `DECISION D-094`
 - ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 7
+- Answer needed: Keep A? Or switch to B?
+
+### D-100: Values in traces and outputs (M7)
+- Question: `spec/11 §5` shows trace values as JSON strings (`"Open"`, `"unit"`) without defining the representation, and `Hashed` has no text form.
+- Context: `spec/11 §5`, `spec/14 §2`; ADR 0032 rule 3.
+- Options: A) a JSON string with the Una form of the value, `"hashed:<hex>"` for `Hashed`, `"<redacted:level>"` for labeled arguments; B) JSON objects per value kind.
+- Chosen: A, because it matches the example of `spec/11 §5` and needs no second representation.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: M7 commits, tag `DECISION D-100`
+- ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 3
+- Answer needed: Keep A? Or switch to B?
+
+### D-101: The output of `una run` (M7)
+- Question: `spec/13 §5` defines `una run` and its streams, but no JSON shape, and not how U6001 and U6003 are reported.
+- Context: `spec/04 §8`, `spec/11 §7`, `spec/13 §5`; ADR 0027; ADR 0032 rule 4.
+- Options: A) printed lines on stdout, U6001 and U6003 as diagnostics on stderr, and `una.run/1` with `--json`; B) a trace on stdout in human mode too.
+- Chosen: A, because the program's output belongs on stdout, and agents get everything, the trace included, with `--json`.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: M7 commits, tag `DECISION D-101`
+- ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 4
+- Answer needed: Keep A? Or switch to B?
+
+### D-102: The output of `una test` (M7)
+- Question: `spec/08 §2` rule 6 lists what `una test --json` reports per example without a shape.
+- Context: `spec/08 §2`, `spec/11 §6`, `spec/13 §5`; ADR 0032 rule 5.
+- Options: A) `una.test/1` with, per example, the module, name, outcome, first failed expectation, result and trace; B) one JSON document per example.
+- Chosen: A, because one document keeps `--json` to one value on stdout, as `spec/13 §5` requires.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: M7 commits, tag `DECISION D-102`
+- ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 5
+- Answer needed: Keep A? Or switch to B?
+
+### D-103: Grants: how they combine, and where their paths resolve (M7)
+- Question: `spec/05 §7` and `spec/14 §3` confine `Files` to a prefix and load keys from a file, without saying how `una.toml` grants and `--grant` flags combine, where relative paths resolve, how paths normalize or what the key file holds.
+- Context: `spec/04 §8`, `spec/05 §7`, `spec/13 §5, §7`, `spec/14 §3`; ADR 0032 rule 6.
+- Options: A) the grants add up; `una.toml` paths resolve against the package root and flag paths against the current directory; `Files` paths normalize lexically and through the file system, and any path outside the prefix is `Denied`; the key file is a TOML table of base64 keys; B) flags replace `[run] grants`; C) lexical normalization only.
+- Chosen: A, because a flag then adds what a run needs without restating the manifest, and resolving existing paths closes the escape through links that C leaves open.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: M7 commits, tag `DECISION D-103`
+- ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 6
+- Answer needed: Keep A? Or switch to B or C?
+
+### D-104: Semantics the prelude leaves open (M7)
+- Question: `spec/14 §1` gives the prelude's signatures and contracts, but not what `.len` counts, whether the empty text `is_digits`, what `trim` removes or what `to_int` accepts.
+- Context: `spec/14 §1, §2`; ADR 0032 rule 7.
+- Options: A) scalar values; `is_digits("")` holds; Unicode whitespace; an optional `-` and ASCII digits; B) bytes, and `is_digits("")` false.
+- Chosen: A, because columns are counted in scalar values (`spec/13 §1`), and "every character is a digit" holds of the empty text.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: M7 commits, tag `DECISION D-104`
+- ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 7
 - Answer needed: Keep A? Or switch to B?
 
 ### D-002: Title of the historical design exploration in the charter (Part A)
@@ -930,6 +996,28 @@ None.
 - Reversal cost: low
 - Implemented in: `d519fbb`, `crates/una-check/src/types/flow.rs`, tag `DECISION D-097`
 - ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Provisional), rule 10
+- Answer needed: Keep A?
+
+### D-099: The text of the Core dump (M7)
+- Question: `spec/09 §4` makes `--dump-core <module>` print Core IR "deterministically", without a layout or saying what happens with diagnostics.
+- Context: `spec/09 §2, §4`, `spec/13 §5`; ADR 0032 rule 2.
+- Options: A) the module's declarations in the syntax of `spec/09 §2`, one per block, with every binder's type, label and refinements, and the package's diagnostics on stderr; B) no dump when there are diagnostics.
+- Chosen: A, because the dump is a debugging aid, and declarations without diagnostics are still worth seeing.
+- Confidence: high
+- Reversal cost: low
+- Implemented in: M7 commits, tag `DECISION D-099`
+- ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 2
+- Answer needed: Keep A?
+
+### D-105: What the call depth counts (M7)
+- Question: `spec/11 §7` limits the call depth to 10,000 frames without saying which calls are frames.
+- Context: `spec/04 §7`, `spec/11 §7`; ADR 0032 rule 8.
+- Options: A) calls of functions, predicates, lambdas, policies and handler operations; B) function calls only.
+- Chosen: A, because each of them recurses the same way.
+- Confidence: high
+- Reversal cost: low
+- Implemented in: M7 commits, tag `DECISION D-105`
+- ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 8
 - Answer needed: Keep A?
 
 ### D-083: CI runners for the private repository (Part 5)
