@@ -589,7 +589,7 @@ None.
 - Reversal cost: low
 - Implemented in: `49c73e9`, `02bb2d5`, `048cbfa`, `crates/una-verify/src/generate.rs`, `crates/una-core/src/print.rs`, tag `DECISION D-118`
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 8
-- Answer needed: Keep A? Or switch to B?
+- Answer needed: Keep A? Or switch to B? And a question on `spec/12 §8` itself: two obligations of the same kind and goal in one declaration, such as two calls of `lend` in `examples/redacted` (`can_borrow(member)`), get one id from its formula; `una obligations` lists both with their positions. Keep the formula, or add an occurrence number?
 
 ### D-119: What a counterexample shows (M8)
 - Question: `spec/12 §7` maps a model to source names and shows uninterpreted values "as opaque identities with their known projections", without naming which names appear or the form of an identity.

@@ -110,7 +110,13 @@ fn check_json_is_byte_identical_across_runs() {
     // compiler/testing.md §4: every example, and every case of the finished areas with its
     // diagnostics, twice and with one worker thread.
     let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let mut targets = vec!["examples/events".to_owned(), "examples/hello".to_owned()];
+    let mut targets: Vec<String> = std::fs::read_dir(repository.join("examples"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| !name.starts_with('.'))
+        .map(|name| format!("examples/{name}"))
+        .collect();
+    targets.sort();
     for area in [
         "syntax",
         "fmt",
