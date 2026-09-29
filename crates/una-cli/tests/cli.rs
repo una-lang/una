@@ -67,11 +67,23 @@ fn explain_rejects_text_that_is_not_a_registered_code() {
 }
 
 #[test]
-fn explain_has_no_json_output() {
+fn explain_json_prints_its_document() {
+    // DECISION D-125: every command has a JSON document; M1 answered with a usage error.
     let output = una(&["explain", "U0001", "--json"]);
-    assert_eq!(output.status.code(), Some(2));
-    assert_eq!(stdout(&output), "");
-    assert_eq!(stderr(&output), "error: una explain has no --json output\n");
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stderr(&output), "");
+    let document: Value = serde_json::from_str(stdout(&output)).unwrap();
+    assert_eq!(
+        document,
+        json!({
+            "schema": "una.explain/1",
+            "code": "U0001",
+            "domain": "syntax",
+            "meaning": Code::U0001.meaning(),
+            "text": Code::U0001.explain_text(),
+        })
+    );
+    assert!(stdout(&output).starts_with("{\"schema\":\"una.explain/1\""));
 }
 
 #[test]
