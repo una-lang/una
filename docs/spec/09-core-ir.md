@@ -46,6 +46,8 @@ prim            ::= + | - | * | div | mod | neg | == | != | < | <= | > | >= | no
 
 `and`, `or` and `implies` are not primitives: they desugar to `if` so that short-circuit evaluation and path conditions coincide.
 
+Refinements, `requires` and `ensures` clauses, the bodies of reflect predicates and the predicates of `checked` are terms of the refinement language (`spec/03 §3`): trees over binders, `it` and `result`, not A-normal expressions. A clause keeps its source text and span, and the contracts of the standard library are signatures in the program. Returned atoms, the value of each `let` (with whether its type is written), each argument, each division and each exhaustiveness check carry their source spans. A `when` over literals or ranges without `else` ends in an `unreachable` branch, whose `exhaustive` obligation proves it cannot be taken; reaching it at run time is a fault (ADR 0033).
+
 ## 3. Desugaring
 
 | Surface | Core IR |
@@ -57,7 +59,7 @@ prim            ::= + | - | * | div | mod | neg | == | != | < | <= | > | >= | no
 | `a or b` | `if a then true else b` |
 | `a implies b` | `if a then b else true` |
 | `x in lo..hi` / `x in lo..<hi` | `lo <= x and x <= hi` / `lo <= x and x < hi`, then as above |
-| `when x` with `is C(..)`, `is literal`, `in range`, `else` arms | `case` for variant arms; `if` chains for literal and range arms; `else` as the final branch |
+| `when x` with `is C(..)`, `is literal`, `in range`, `else` arms | `case` for variant arms; `if` chains for literal and range arms; `else` as the final branch, or `unreachable` without one |
 | `if error fail V(args)` | `handle e with error ⇒ fail V(args)` |
 | `if error pass` | `e` (typing requires equal error kinds) |
 | `if error use u` | `handle e with error ⇒ u` |
