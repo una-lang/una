@@ -200,6 +200,74 @@ pub next(x: Int) -> Int
 }
 
 #[test]
+fn report_and_trace_exit_with_1_on_an_unproven_obligation() {
+    // `spec/13 §5` exit codes, DECISIONS D-122 and D-124: the document still prints.
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("abi-refuted");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        "[package]\nname = \"refuted\"\nversion = \"0.1.0\"\nedition = \"0.1\"\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        repository().join("verification.lock"),
+        root.join("verification.lock"),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/numbers.una"),
+        "module numbers
+
+requirement NUM_1
+  text \"Doubling never shrinks a number\"
+  source human
+  owner math
+  status active
+
+pub double(x: Int) -> Int
+  ensures result >= x
+  derived from NUM_1
+=
+  x * 2
+",
+    )
+    .unwrap();
+    let path = root.to_str().unwrap();
+    let output = una(&["--json", "report", path]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert_eq!(stderr(&output), "");
+    assert_eq!(
+        json(&output)["obligations"],
+        json!({"proven": 0, "refuted": 1, "unknown": 0})
+    );
+    let output = una(&["report", path]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stdout(&output).contains("\nobligations: 0 proven, 1 refuted, 0 unknown\n"));
+    assert!(stderr(&output).contains("U5001"), "{}", stderr(&output));
+    let output = Command::new(env!("CARGO_BIN_EXE_una"))
+        .args(["--json", "trace", "NUM_1"])
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let document = json(&output);
+    assert_eq!(
+        document["functions"][0]["obligations"][0]["status"],
+        "refuted"
+    );
+    // A package that tier 0 rejects gets the diagnostic list of `una check`.
+    std::fs::write(
+        root.join("src/numbers.una"),
+        "module numbers\n\npub double(x: Int) -> Int = \"two\"\n",
+    )
+    .unwrap();
+    let output = una(&["--json", "report", path]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(json(&output)["schema"], "una.diagnostics/1");
+}
+
+#[test]
 fn trace_lists_the_functions_derived_from_a_requirement() {
     // `spec/08 §1`, DECISION D-124.
     let events = Path::new("examples/events");
