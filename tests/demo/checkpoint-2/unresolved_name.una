@@ -1,0 +1,3 @@
+module unresolved_name
+
+pub total(xs: List[Int]) -> Int = summ(xs)
