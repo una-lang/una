@@ -748,11 +748,11 @@ None.
 ### D-129: Release artifacts (M10)
 - Question: M10 asks for release binaries for Linux and macOS built in CI, without naming targets, contents or workflows, while D-083 runs macOS only on pull requests and on `main`.
 - Context: `plan/milestones-v0.1.md` M10; D-083; `compiler/architecture.md §7`; `OVERNIGHT.md` C.5.
-- Options: A) `scripts/release.sh <target>` packs `una`, `LICENSE` and `README.md` into `una-<version>-<target>.tar.gz` with a `.sha256` file; `release.yml` builds `x86_64-unknown-linux-gnu` and `aarch64-apple-darwin` on a pushed tag `v*` into a draft release; `ci.yml` builds and runs the Linux archive on every push; B) both archives on every push; C) a third-party release tool.
+- Options: A) `scripts/release.sh <target>` packs `una`, `LICENSE` and `README.md` into `una-<version>-<target>.tar.gz` with a `.sha256` file, and `scripts/check-release.sh <target>` checks the digest, the contents and the packed binary on the examples; `release.yml` builds `x86_64-unknown-linux-gnu` and `aarch64-apple-darwin` on a pushed tag `v*` into a draft release; `ci.yml` packs and checks the Linux archive on every push; B) both archives on every push; C) a third-party release tool.
 - Chosen: A, because it proves on every push that the archive builds and runs, keeps macOS within D-083, and needs no tool beyond cargo, tar and the preinstalled `gh`.
 - Confidence: medium
 - Reversal cost: low, `scripts/release.sh` and the two workflows
-- Implemented in: M10 commits, tag `DECISION D-129`
+- Implemented in: M10 commits, `scripts/release.sh`, `scripts/check-release.sh`, `.github/workflows/release.yml` and `ci.yml`, tag `DECISION D-129`
 - ADR: `docs/adr/0035-examples-guide-and-release.md` (Provisional), rule 3
 - Answer needed: Keep A? Or add targets, or switch to B?
 

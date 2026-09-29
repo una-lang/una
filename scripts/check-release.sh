@@ -1,0 +1,44 @@
+#!/bin/sh
+# Checks the archive that scripts/release.sh packed for TARGET: its SHA-256 digest, its contents,
+# and the packed binary on the examples, which needs the pinned Z3 on PATH (ADR 0035 rule 3,
+# DECISION D-129).
+#
+# Usage: scripts/check-release.sh TARGET
+set -eu
+
+if [ "$#" -ne 1 ]; then
+    echo "usage: scripts/check-release.sh TARGET" >&2
+    exit 2
+fi
+target=$1
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$root"
+version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version *= *"\([^"]*\)"$/\1/p' Cargo.toml)
+name="una-$version-$target"
+out="$root/target/release-archives"
+
+(
+    cd "$out"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum --check "$name.tar.gz.sha256"
+    else
+        shasum -a 256 --check "$name.tar.gz.sha256"
+    fi
+)
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+tar -xzf "$out/$name.tar.gz" -C "$tmp"
+contents=$(cd "$tmp/$name" && ls | tr '\n' ' ')
+if [ "$contents" != "LICENSE README.md una " ]; then
+    echo "error: $name.tar.gz holds $contents; expected LICENSE README.md una" >&2
+    exit 1
+fi
+una="$tmp/$name/una"
+"$una" check examples/events
+"$una" test examples/events > /dev/null
+greeting=$("$una" run examples/hello)
+if [ "$greeting" != "Hello, Una" ]; then
+    echo "error: the packed una printed \"$greeting\" for examples/hello" >&2
+    exit 1
+fi
+echo "ok: $name.tar.gz checks and runs the examples"
