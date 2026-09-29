@@ -319,8 +319,8 @@ None.
 ### D-076: Grants checked by `una check` (M5)
 - Question: U3012 is reported when `main` uses a host capability that `una run` does not grant; `[run] grants` is in `una.toml`, while `--grant` flags come only with `una run` (M7).
 - Context: `spec/04 §8`, `spec/05 §7`, `spec/13 §5`; ADR 0028 rule 6.
-- Options: A) when `una.toml` lists `[run] grants`, `una check` reports a host operation of `main`'s `uses` that no grant allows (U3012 at the clause), and `una run` checks its own grants in M7; B) only `una run` reports U3012.
-- Chosen: A, because the manifest's grants are known statically, and checking early is stricter; a package without `[run] grants` is left to `una run`.
+- Options: A) when `una.toml` lists `[run] grants`, `una check` reports a host operation of `main`'s `uses` that no grant allows (U3012 at the clause), and when it names a `[run] entry`, a capability of `main`'s `uses` that is not a host capability, which no grant can provide; `una run` checks its own grants in M7; B) only `una run` reports U3012.
+- Chosen: A, because the manifest's grants are known statically, and checking early is stricter; a package without `[run] grants` leaves the host capabilities to `una run`, while a capability that is not a host capability is ungranted whatever the grants (`spec/05 §7` rule 2).
 - Confidence: medium
 - Reversal cost: low
 - Implemented in: M5 authority commits, tag `DECISION D-076`
@@ -330,8 +330,8 @@ None.
 ### D-079: Escaping lambdas and function values with effects (M5)
 - Question: `spec/05 §6` and `spec/10 §9` rule 2 let an effectful or failing lambda appear only directly as a call argument (U3006). Does the rule cover named functions used as values, and fields of such function types?
 - Context: `spec/03 §1`, `spec/05 §6`, `spec/10 §9`; ADR 0028 rule 9.
-- Options: A) a lambda whose expected type has `uses` or `fails`, and a function value of a function with `uses` or `fails`, appear only directly as call arguments, and a kind field of such a type is U3006 at the type; B) lambdas only.
-- Chosen: A, because a function value with effects carries the same authority as a lambda with them, and `spec/03 §1` rules such values out of kinds.
+- Options: A) a lambda whose expected type has `uses` or `fails`, a function value of a function with `uses` or `fails`, and a parameter or local of such a function type appear only directly as call arguments or as the callee, and a kind field of such a type is U3006 at the type; B) lambdas only.
+- Chosen: A, because a function value with effects carries the same authority as a lambda with them, a parameter that receives such a lambda would otherwise let it escape by being returned or stored, and `spec/03 §1` rules such values out of kinds.
 - Confidence: medium
 - Reversal cost: low
 - Implemented in: M5 authority commits, tag `DECISION D-079`
