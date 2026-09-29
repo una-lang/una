@@ -215,6 +215,20 @@ impl<'a> Checker<'_, 'a, '_> {
     fn name_value(&mut self, ident: &Ident, site: Site) -> Ty {
         let name = self.name(ident);
         if let Some(ty) = self.local(name) {
+            // DECISION D-079: so is a parameter or local of such a function type.
+            let effects = match self.resolve(&ty) {
+                Ty::Fn(function) => !function.uses.is_empty() || function.fails.is_some(),
+                _ => false,
+            };
+            if effects && !site.argument && self.pass == Pass::Check && self.base != Base::Quiet {
+                self.report.error(
+                    Code::U3006,
+                    ident.span,
+                    format!(
+                        "`{name}` has a function type with `uses` or `fails`, so it may only be called or passed directly as an argument"
+                    ),
+                );
+            }
             return ty;
         }
         match self.env.lower(self.module, name) {

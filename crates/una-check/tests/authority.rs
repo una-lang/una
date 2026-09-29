@@ -467,6 +467,23 @@ fn effectful_functions_are_values_only_as_arguments() {
 }
 
 #[test]
+fn parameters_of_effectful_function_types_are_second_class_too() {
+    assert_eq!(
+        with_caps(
+            "pub each(xs: List[Text], f: fn(Text) -> Unit uses @log: Log[write]) -> Unit\n  uses @log: Log[write]\n=\n  f(\"first\")\n  each(xs, f)\n\
+             \n\
+             pub same(f: fn(Text) -> Unit uses @log: Log[write]) -> fn(Text) -> Unit uses @log: Log[write] = f\n\
+             \n\
+             pub boxed(f: fn(Text) -> Unit fails StoreError) -> Option[fn(Text) -> Unit fails StoreError] = Some(f)\n"
+        ),
+        [
+            "U3006 t.una:21:97 `f` has a function type with `uses` or `fails`, so it may only be called or passed directly as an argument",
+            "U3006 t.una:23:101 `f` has a function type with `uses` or `fails`, so it may only be called or passed directly as an argument",
+        ]
+    );
+}
+
+#[test]
 fn lambdas_capture_the_capabilities_their_type_declares() {
     assert_eq!(
         with_caps(
@@ -576,6 +593,21 @@ fn run_grants_cover_the_host_capabilities_of_main() {
             &[("src/app/main.una", main)]
         ),
         [""; 0]
+    );
+    // A capability that is not a host capability can never be granted.
+    let custom = "module app.main\n\
+                  \n\
+                  capability Store\n  op get() -> Int\n\
+                  \n\
+                  pub main() -> Unit\n  uses @store: Store\n=\n  let n = @store.get()\n  unit\n";
+    assert_eq!(
+        package(
+            "\n[run]\nentry = \"app.main\"\n",
+            &[("src/app/main.una", custom)]
+        ),
+        [
+            "U3012 src/app/main.una:7:3 `main` uses `@store: Store`, which is not a host capability, so no grant can provide it; install a handler for it with `with` inside `main`",
+        ]
     );
 }
 
