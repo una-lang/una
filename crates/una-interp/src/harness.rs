@@ -269,7 +269,8 @@ where
 fn mentions(expr: &Expr, name: &str) -> bool {
     let atom = |a: &Atom| matches!(a, Atom::Var(v) if v == name);
     match expr {
-        Expr::Atom(a) => atom(a),
+        Expr::Atom { atom: a, .. } => atom(a),
+        Expr::Unreachable { .. } => false,
         Expr::Let { value, body, .. } => {
             (match value.as_ref() {
                 Bound::Rhs(rhs) => rhs_mentions(rhs, name),

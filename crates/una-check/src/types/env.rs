@@ -1020,11 +1020,10 @@ impl<'a> Env<'a> {
                     format!("{}{}", if i.negative { "-" } else { "" }, i.digits)
                 };
                 let dots = if range.exclusive { "..<" } else { ".." };
-                declared.refinements.push(Refinement::Range(format!(
-                    "in {}{dots}{}",
-                    bound(&range.low),
-                    bound(&range.high)
-                )));
+                declared.refinements.push(Refinement::Range(
+                    format!("in {}{dots}{}", bound(&range.low), bound(&range.high)),
+                    range.span,
+                ));
             } else if self.reports(module) {
                 report.error(Code::U2002, range.span, "range sugar applies only to `Int`");
             }
@@ -1199,7 +1198,7 @@ impl<'a> Env<'a> {
                     *inner,
                     inner_args.iter().map(|arg| arg.substitute(args)).collect(),
                 ),
-                Refinement::Range(text) => Refinement::Range(text.clone()),
+                Refinement::Range(text, span) => Refinement::Range(text.clone(), *span),
             })
             .collect();
         if alias.refinement.is_some() {

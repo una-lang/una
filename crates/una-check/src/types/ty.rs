@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use una_syntax::Span;
+
 use super::label::Label;
 
 /// An index into the kinds (records and sums) of the environment.
@@ -64,8 +66,8 @@ pub(crate) struct FnUse {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Refinement {
     Alias(AliasId, Vec<Ty>),
-    /// Range sugar, as written: `in 0..5000` or `in 1..<20`.
-    Range(String),
+    /// Range sugar, as written: `in 0..5000` or `in 1..<20`, and where it is written.
+    Range(String, Span),
 }
 
 /// A written type: its base, the refinements it carries and whether it has a label.

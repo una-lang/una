@@ -12,7 +12,7 @@ data Event = Event(name: Text, remaining: {Int | in 0..5000})
 
 data Registration = Registration(name: Text, event: Event)
 
-fun availability(e: Event) : Availability =
+fun availability(e: Event) : Availability ensures e.remaining < 1 implies result is SoldOut =
   let %t0: Int = e.remaining in
   let %t10: Bool = <=(0, %t0) in
   let %t12: Bool =
@@ -38,8 +38,19 @@ fun availability(e: Event) : Availability =
       let %t5: Availability = Few in
       %t5
     else
-      let %t1: Availability = Open in
-      %t1
+      let %t2: Bool = <=(20, %t0) in
+      let %t4: Bool =
+        if %t2 then
+          let %t3: Bool = <=(%t0, 5000) in
+          %t3
+        else
+          false
+      in
+      if %t4 then
+        let %t1: Availability = Open in
+        %t1
+      else
+        unreachable
 
 fun clamp_seats(raw: Int) : {Int | in 0..5000} =
   let %t0: Bool = <(raw, 0) in

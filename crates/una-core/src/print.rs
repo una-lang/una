@@ -6,7 +6,8 @@
 use std::fmt::Write as _;
 
 use crate::ir::{
-    Arm, Atom, Base, Bound, CapOp, Ctor, Decl, Expr, Fun, HandlerOp, Module, Rhs, Source, Type, Use,
+    Arm, Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, Decl, Expr, Fun, HandlerOp, Module, Rhs,
+    Source, Term, Type, Use,
 };
 
 /// The text of a module's Core IR, newline-terminated.
@@ -25,6 +26,135 @@ pub fn print_type(ty: &Type) -> String {
     let mut out = String::new();
     write_type(&mut out, ty);
     out
+}
+
+/// A term in the surface syntax of the refinement language (`spec/03 §3`).
+pub fn print_term(term: &Term) -> String {
+    print_term_with(term, &|_| None)
+}
+
+/// A term in the surface syntax, with each subterm for which `replace` gives a text printed
+/// as that text, parenthesized when it is not a single name: `it` as the value it stands for.
+pub fn print_term_with(term: &Term, replace: &dyn Fn(&Term) -> Option<String>) -> String {
+    let mut out = String::new();
+    write_term(&mut out, term, 0, replace);
+    out
+}
+
+/// How tightly a term binds, from `implies` (1) to a primary (10), after `spec/02 §7`.
+fn precedence(term: &Term) -> u8 {
+    match term {
+        Term::Binary { op, .. } => match op {
+            BinOp::Implies => 1,
+            BinOp::Or => 2,
+            BinOp::And => 3,
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => 5,
+            BinOp::Add | BinOp::Sub => 6,
+            BinOp::Mul | BinOp::Div | BinOp::Mod => 7,
+        },
+        Term::Not(_) => 4,
+        Term::Is { .. } | Term::In { .. } => 5,
+        Term::Neg(_) => 8,
+        Term::Int(digits) if digits.starts_with('-') => 8,
+        Term::Field { .. } | Term::Len(_) | Term::Call { .. } => 9,
+        _ => 10,
+    }
+}
+
+fn write_term(
+    out: &mut String,
+    term: &Term,
+    at_least: u8,
+    replace: &dyn Fn(&Term) -> Option<String>,
+) {
+    if let Some(text) = replace(term) {
+        let simple = !text.is_empty()
+            && text
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == '"');
+        if simple || at_least <= 1 {
+            out.push_str(&text);
+        } else {
+            let _ = write!(out, "({text})");
+        }
+        return;
+    }
+    let own = precedence(term);
+    let parens = own < at_least;
+    if parens {
+        out.push('(');
+    }
+    match term {
+        // A renamed binder, `x%2`, prints as its source name `x`.
+        Term::Var(name) => match name.split_once('%') {
+            Some((source, _)) if !source.is_empty() => out.push_str(source),
+            _ => out.push_str(name),
+        },
+        Term::It => out.push_str("it"),
+        Term::Result => out.push_str("result"),
+        Term::Int(digits) => out.push_str(digits),
+        Term::Bool(value) => out.push_str(if *value { "true" } else { "false" }),
+        Term::Text(text) => out.push_str(&quote(text)),
+        Term::Unit => out.push_str("unit"),
+        Term::Ctor(ctor) => out.push_str(&ctor.name),
+        Term::Field { value, field, .. } => {
+            write_term(out, value, 9, replace);
+            let _ = write!(out, ".{field}");
+        }
+        Term::Len(value) => {
+            write_term(out, value, 9, replace);
+            out.push_str(".len");
+        }
+        Term::Neg(value) => {
+            out.push('-');
+            write_term(out, value, 8, replace);
+        }
+        Term::Not(value) => {
+            out.push_str("not ");
+            write_term(out, value, 4, replace);
+        }
+        Term::Binary { op, left, right } => {
+            // `implies` groups to the right; comparisons do not chain.
+            let (left_at, right_at) = match op {
+                BinOp::Implies => (own + 1, own),
+                BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                    (own + 1, own + 1)
+                }
+                _ => (own, own + 1),
+            };
+            write_term(out, left, left_at, replace);
+            let _ = write!(out, " {} ", op.as_str());
+            write_term(out, right, right_at, replace);
+        }
+        Term::Is { value, ctor } => {
+            write_term(out, value, 6, replace);
+            let _ = write!(out, " is {}", ctor.name);
+        }
+        Term::In {
+            value,
+            low,
+            high,
+            exclusive,
+        } => {
+            write_term(out, value, 6, replace);
+            let dots = if *exclusive { "..<" } else { ".." };
+            let _ = write!(out, " in {low}{dots}{high}");
+        }
+        Term::Call { predicate, args } => {
+            out.push_str(&predicate.name);
+            out.push('(');
+            for (index, arg) in args.iter().enumerate() {
+                if index > 0 {
+                    out.push_str(", ");
+                }
+                write_term(out, arg, 1, replace);
+            }
+            out.push(')');
+        }
+    }
+    if parens {
+        out.push(')');
+    }
 }
 
 /// An atom as written in Core IR.
@@ -78,7 +208,8 @@ fn write_type(out: &mut String, ty: &Type) {
             } else {
                 out.push('{');
                 write_base(out, base);
-                let _ = write!(out, " | {}}}", refinements.join(", "));
+                let names: Vec<&str> = refinements.iter().map(|r| r.name.as_str()).collect();
+                let _ = write!(out, " | {}}}", names.join(", "));
             }
         }
         Type::Fn {
@@ -142,6 +273,18 @@ fn print_uses(uses: &[Use]) -> String {
         .map(|u| format!("{} ↦ {}[{}]", u.cap, u.capability, u.ops.join(", ")))
         .collect();
     format!("{{{}}}", entries.join(", "))
+}
+
+/// The `requires` and `ensures` clauses of a header, each with its source text.
+fn clauses(requires: &[Clause], ensures: &[Clause]) -> String {
+    let mut out = String::new();
+    for clause in requires {
+        let _ = write!(out, " requires {}", clause.text);
+    }
+    for clause in ensures {
+        let _ = write!(out, " ensures {}", clause.text);
+    }
+    out
 }
 
 fn atoms(atoms: &[Atom]) -> String {
@@ -223,6 +366,7 @@ impl Printer {
                 reflect,
                 params,
                 body,
+                ..
             } => {
                 let kind = if *reflect { "reflect" } else { "opaque" };
                 self.line(
@@ -292,6 +436,7 @@ impl Printer {
         if let Some(fails) = &op.fails {
             let _ = write!(text, " fails {fails}");
         }
+        text.push_str(&clauses(&op.requires, &op.ensures));
         match &op.accepts {
             Some(label) => {
                 let _ = write!(text, " accepts {label}");
@@ -324,6 +469,7 @@ impl Printer {
         if let Some(fails) = &fun.fails {
             let _ = write!(header, " fails {fails}");
         }
+        header.push_str(&clauses(&fun.requires, &fun.ensures));
         header.push_str(" =");
         self.line(0, &header);
         self.expr(1, &fun.body);
@@ -331,12 +477,14 @@ impl Printer {
 
     fn expr(&mut self, indent: usize, expr: &Expr) {
         match expr {
-            Expr::Atom(atom) => self.line(indent, &print_atom(atom)),
+            Expr::Atom { atom, .. } => self.line(indent, &print_atom(atom)),
+            Expr::Unreachable { .. } => self.line(indent, "unreachable"),
             Expr::Let {
                 name,
                 ty,
                 value,
                 body,
+                ..
             } => {
                 let head = format!("let {name}: {} =", print_type(ty));
                 match value.as_ref() {
@@ -404,6 +552,7 @@ impl Printer {
                         handler,
                         args,
                         given,
+                        ..
                     } => {
                         let given = if *given { " (given)" } else { "" };
                         format!("{}({}){given}", handler.qualified(), atoms(args))
@@ -458,7 +607,7 @@ impl Printer {
 fn rhs_line(rhs: &Rhs) -> String {
     match rhs {
         Rhs::Atom(atom) => print_atom(atom),
-        Rhs::Prim { prim, args } => format!("{}({})", prim.as_str(), atoms(args)),
+        Rhs::Prim { prim, args, .. } => format!("{}({})", prim.as_str(), atoms(args)),
         Rhs::Call {
             function,
             type_args,
@@ -475,7 +624,7 @@ fn rhs_line(rhs: &Rhs) -> String {
         }
         Rhs::Apply { callee, args, .. } => format!("{}({})", print_atom(callee), atoms(args)),
         Rhs::Op { cap, op, args, .. } => format!("{cap}.{op}({})", atoms(args)),
-        Rhs::Construct { ctor: c, args } => ctor(c, args),
+        Rhs::Construct { ctor: c, args, .. } => ctor(c, args),
         Rhs::Field { value, field, .. } => format!("{}.{field}", print_atom(value)),
         Rhs::List(items) => format!("[{}]", atoms(items)),
         Rhs::Declassify { policy, arg, .. } => {
@@ -483,5 +632,70 @@ fn rhs_line(rhs: &Rhs) -> String {
         }
         Rhs::Lambda { params, .. } => format!("λ({}). ...", Printer::params(params)),
         Rhs::Checked { value, .. } => format!("checked({}, ...)", print_atom(value)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn var(name: &str) -> Box<Term> {
+        Box::new(Term::Var(name.to_owned()))
+    }
+
+    fn binary(op: BinOp, left: Box<Term>, right: Box<Term>) -> Box<Term> {
+        Box::new(Term::Binary { op, left, right })
+    }
+
+    #[test]
+    fn terms_print_with_the_parentheses_that_precedence_needs() {
+        let sum = binary(BinOp::Add, var("a"), var("b"));
+        assert_eq!(
+            print_term(&binary(BinOp::Mul, sum.clone(), var("c"))),
+            "(a + b) * c"
+        );
+        assert_eq!(
+            print_term(&binary(
+                BinOp::Add,
+                var("a"),
+                binary(BinOp::Mul, var("b"), var("c"))
+            )),
+            "a + b * c"
+        );
+        assert_eq!(
+            print_term(&binary(
+                BinOp::Sub,
+                var("a"),
+                binary(BinOp::Sub, var("b"), var("c"))
+            )),
+            "a - (b - c)"
+        );
+        let implies = binary(
+            BinOp::Implies,
+            var("x"),
+            binary(BinOp::Implies, var("y"), var("z")),
+        );
+        assert_eq!(print_term(&implies), "x implies y implies z");
+        let grouped = binary(
+            BinOp::Implies,
+            binary(BinOp::Implies, var("x"), var("y")),
+            var("z"),
+        );
+        assert_eq!(print_term(&grouped), "(x implies y) implies z");
+        let not = Term::Not(binary(BinOp::And, var("a"), var("b")));
+        assert_eq!(print_term(&not), "not (a and b)");
+        let renamed = Term::Len(var("name%2"));
+        assert_eq!(print_term(&renamed), "name.len");
+        let it = Term::In {
+            value: Box::new(Term::It),
+            low: "0".to_owned(),
+            high: "5000".to_owned(),
+            exclusive: false,
+        };
+        let value = |term: &Term| matches!(term, Term::It).then(|| "e.remaining".to_owned());
+        assert_eq!(print_term_with(&it, &value), "e.remaining in 0..5000");
+        let sum_value = |term: &Term| matches!(term, Term::It).then(|| "a + 1".to_owned());
+        let less = binary(BinOp::Lt, Box::new(Term::It), var("b"));
+        assert_eq!(print_term_with(&less, &sum_value), "(a + 1) < b");
     }
 }

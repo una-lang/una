@@ -162,6 +162,24 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
             );
         }
     }
+    // DECISION D-111: the standard modules are checked silently, for the records that their
+    // contracts are elaborated from.
+    {
+        let mut scratch = Report::new(&standard.sources);
+        let mut standard_findings = Findings::default();
+        for module in env.prelude..env.modules.len() {
+            check::module(
+                &mut env,
+                &facts,
+                &mut scratch,
+                &mut standard_findings,
+                &mut unused,
+                authority::Pass::Check,
+                module,
+            );
+        }
+        findings.records.merge(standard_findings.records);
+    }
     facts::predicate_recursion(&env, &findings, &mut report);
     facts::generic_equality(&env, &facts, &findings, &mut report);
     authority::grants(&env, package.settings, package.run, &mut report);
@@ -171,7 +189,7 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
         .obligations
         .sort_by_key(|(kind, span, _)| (span.file, span.start, span.end, *kind));
     let headers = headers(&env);
-    let program = elab::program(&env, &findings, package.sources);
+    let program = elab::program(&env, &findings, package.sources, &standard.sources);
     TypeCheck {
         headers,
         program,
@@ -254,6 +272,7 @@ pub(crate) struct Findings {
 
 /// The parsed standard modules.
 struct Standard {
+    sources: SourceDb,
     interner: Interner,
     prelude: File,
     testing: File,
@@ -271,6 +290,7 @@ impl Standard {
         let prelude = parse_standard(&sources, prelude, &mut interner);
         let testing = parse_standard(&sources, testing, &mut interner);
         Standard {
+            sources,
             interner,
             prelude,
             testing,
