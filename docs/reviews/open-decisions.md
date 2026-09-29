@@ -114,7 +114,7 @@ None.
 - Chosen: A, because obligations then come from Core IR as the specification requires, goals print as written, and the exhaustiveness obligation keeps every arm's condition; C would verify something other than what runs.
 - Confidence: medium
 - Reversal cost: medium, `crates/una-core`, the elaborator and the verifier
-- Implemented in: M8 commits, tag `DECISION D-111`
+- Implemented in: `d8d3db6`, `02bb2d5`, `crates/una-core/src/ir.rs`, `print.rs`, `crates/una-check/src/types/elab.rs`, tag `DECISION D-111`
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 1
 - Answer needed: Keep A? Or switch to B or C?
 
@@ -125,7 +125,7 @@ None.
 - Chosen: A, because ids stay as `spec/12 §8` defines them and unique, the listing matches `spec/13 §2`, and the diagnostic still points at the failing return as `spec/12 §3` asks.
 - Confidence: medium
 - Reversal cost: medium, the generation of return obligations and their ids
-- Implemented in: M8 commits, tag `DECISION D-113`
+- Implemented in: `49c73e9`, `crates/una-verify/src/generate.rs` (`returns`), `report.rs`, tag `DECISION D-113`
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 3
 - Answer needed: Keep A? Or switch to B?
 
@@ -561,11 +561,11 @@ None.
 ### D-112: What is verified, and when (M8)
 - Question: `spec/12 §1` makes tier 1 "tier 0 plus every proof obligation", and `spec/08 §2` rule 4 verifies examples, but nothing says whether tier 1 runs when tier 0 fails, or whether the standard library's bodies are verified.
 - Context: `spec/08 §2`, `spec/12 §1`, `spec/14` preamble (the Trusted zone); ADR 0033 rule 2.
-- Options: A) functions, handler operations, opaque predicate bodies and example `do` lines, once tier 0 reports nothing; the standard library trusted; B) verify the declarations without diagnostics even when others have some.
+- Options: A) functions, handler operations, opaque predicate bodies, and the `do` and `expect` lines of examples (an `expect` line with `result` the value of one of the `do` line's paths), once tier 0 reports nothing; the standard library trusted; B) verify the declarations without diagnostics even when others have some.
 - Chosen: A, because a declaration with errors has no Core IR, so obligations that depend on its contract would be refuted for the wrong reason; tier 0 errors come first either way.
 - Confidence: medium
 - Reversal cost: low
-- Implemented in: M8 commits, tag `DECISION D-112`
+- Implemented in: `ec853fa`, `a715ff0`, `crates/una-cli/src/verification.rs`, `crates/una-verify/src/generate.rs`, tag `DECISION D-112`
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 2
 - Answer needed: Keep A? Or switch to B?
 
@@ -576,7 +576,7 @@ None.
 - Chosen: A, because every added fact is guaranteed by an obligation proven elsewhere or by evaluation, and without them `spec/13 §2`'s own example could not be proven.
 - Confidence: medium
 - Reversal cost: low
-- Implemented in: M8 commits, tag `DECISION D-114`
+- Implemented in: `49c73e9`, `048cbfa`, `crates/una-verify/src/generate.rs` (`ground_facts`), tag `DECISION D-114`
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 4
 - Answer needed: Keep A? Or switch to B?
 
@@ -587,18 +587,18 @@ None.
 - Chosen: A, because agents read and write the surface syntax, and the id then survives edits that do not change the goal.
 - Confidence: medium
 - Reversal cost: low
-- Implemented in: M8 commits, tag `DECISION D-118`
+- Implemented in: `49c73e9`, `02bb2d5`, `048cbfa`, `crates/una-verify/src/generate.rs`, `crates/una-core/src/print.rs`, tag `DECISION D-118`
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 8
 - Answer needed: Keep A? Or switch to B?
 
 ### D-119: What a counterexample shows (M8)
 - Question: `spec/12 §7` maps a model to source names and shows uninterpreted values "as opaque identities with their known projections", without naming which names appear or the form of an identity.
 - Context: `spec/12 §7`, `spec/13 §1`; ADR 0033 rule 9.
-- Options: A) parameters, `result`, named `let`s and pattern variables, and the field and `len` terms over them in the query, by name; a sum shows its variant, another value `<Kind>#<n>`; B) every constant of the model, temporaries included.
+- Options: A) parameters, `result`, named `let`s and pattern variables, and the field and `len` terms over them in the query, by name; a sum shows its variant, a text equal to a literal of the query that literal, another value `<Kind>#<n>`; B) every constant of the model, temporaries included.
 - Chosen: A, because temporaries have no source name, and the projections are what the goal talks about.
 - Confidence: medium
 - Reversal cost: low
-- Implemented in: M8 commits, tag `DECISION D-119`
+- Implemented in: `49c73e9`, `048cbfa`, `crates/una-verify/src/run.rs`, `generate.rs` (`shown`), tag `DECISION D-119`
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 9
 - Answer needed: Keep A? Or switch to B?
 
@@ -609,18 +609,18 @@ None.
 - Chosen: A, because each candidate follows the table's order and cost, and edits for them would guess the author's intent.
 - Confidence: medium
 - Reversal cost: low
-- Implemented in: M8 commits, tag `DECISION D-120`
+- Implemented in: `49c73e9`, `crates/una-verify/src/report.rs`, tag `DECISION D-120`
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 10
 - Answer needed: Keep A? Or switch to B?
 
 ### D-121: The output of `una obligations` (M8)
 - Question: `spec/13 §2` defines `una.obligations/1`, but not the human output or the exit code.
 - Context: `spec/13 §2, §5`; ADR 0033 rule 11.
-- Options: A) one line per obligation with status, id, kind, position and goal, `(cached)` when cached; exit code 1 when an obligation is not proven or tier 0 reports diagnostics; B) exit code 0 whenever the listing prints.
+- Options: A) one line per obligation with status, id, kind, position and goal, `(cached)` when cached; exit code 1 when an obligation is not proven or tier 0 reports diagnostics; `domain` in the JSON is `semantic`, the only one `spec/13 §2` shows; B) exit code 0 whenever the listing prints.
 - Chosen: A, because the exit codes of `spec/13 §5` mean errors in the program, which an unproven obligation is.
 - Confidence: medium
 - Reversal cost: low
-- Implemented in: M8 commits, tag `DECISION D-121`
+- Implemented in: `ec853fa`, `crates/una-cli/src/verification.rs`, tag `DECISION D-121`
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 11
 - Answer needed: Keep A? Or switch to B?
 
@@ -1166,11 +1166,11 @@ None.
 ### D-115: Encoding details (M8)
 - Question: `spec/12 §4` gives examples of sort names and the shape of field, `len` and `tag` functions, but not the names of every sort, how binders become symbols, or how `Unit`, text ordering, `concat` and `to_text` are encoded.
 - Context: `spec/12 §2, §4`; ADR 0033 rule 5.
-- Options: A) the names of ADR 0033 rule 5, binders as quoted symbols, text ordering, `concat` and `to_text` as uninterpreted functions; B) no encoding for text ordering, which would make such refinements unverifiable.
-- Chosen: A, because uninterpreted functions add no axioms (ADR 0010's reasoning), and doubled underscores keep sort names distinct for distinct module paths.
+- Options: A) the names of ADR 0033 rule 5, binders as quoted symbols, text ordering, `concat` and `to_text` as uninterpreted functions, and multiplication of two non-literals and division or remainder by a non-literal as the uninterpreted `mul!Int`, `div!Int` and `mod!Int`; B) no encoding for text ordering, which would make such refinements unverifiable; C) SMT-LIB `div` and `mod` for a division by a variable, as `spec/12 §2` says.
+- Chosen: A, because uninterpreted functions add no axioms (ADR 0010's reasoning), and doubled underscores keep sort names distinct for distinct module paths. C is not possible: QF_UFLIA has no nonlinear terms, and Z3 5.1.0 answers such an assertion with an error and drops it, which would make an obligation pass or fail for the wrong reason. This deviates from the text of `spec/12 §2`, whose change the ADR lists.
 - Confidence: high
 - Reversal cost: low
-- Implemented in: M8 commits, tag `DECISION D-115`
+- Implemented in: `49c73e9`, `crates/una-verify/src/smt.rs`, `generate.rs` (`arithmetic`, `order`), tag `DECISION D-115`
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 5
 - Answer needed: Keep A?
 
@@ -1181,7 +1181,7 @@ None.
 - Chosen: A, because queries stay independent and parallel, a hang affects one query, and the script is the query the cache keys.
 - Confidence: high
 - Reversal cost: low
-- Implemented in: M8 commits, tag `DECISION D-116`
+- Implemented in: `49c73e9`, `ec853fa`, `crates/una-verify/src/solver.rs`, `run.rs`, tag `DECISION D-116`
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 6
 - Answer needed: Keep A?
 
@@ -1192,7 +1192,7 @@ None.
 - Chosen: A, because parallel runs and tests then never corrupt the cache, and a result that depends on time must not be reused.
 - Confidence: high
 - Reversal cost: low
-- Implemented in: M8 commits, tag `DECISION D-117`
+- Implemented in: `49c73e9`, `crates/una-verify/src/cache.rs`, tag `DECISION D-117`
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 7
 - Answer needed: Keep A?
 
