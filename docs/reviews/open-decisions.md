@@ -107,6 +107,28 @@ None.
 - ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 1
 - Answer needed: Keep A? Or switch to B?
 
+### D-111: Formulas and spans in Core IR (M8)
+- Question: `spec/12 §3` generates obligations from Core IR, but M7's Core names refinements without their predicates, has no `requires` or `ensures`, keeps spans on few nodes, and drops the condition of the last arm of a `when` without `else`.
+- Context: `spec/09 §2`, `spec/10` preamble, `spec/12 §3`; ADR 0032 rule 1; ADR 0033 rule 1.
+- Options: A) terms of the refinement language for refinements, clauses, reflect bodies and `checked`, with text and spans; library signatures; spans on returned atoms, `let` values, arguments and divisions; an `unreachable` branch after the last arm of a `when` without `else`; B) formulas as A-normal Core expressions; C) obligations from the syntax tree, as M4 records them.
+- Chosen: A, because obligations then come from Core IR as the specification requires, goals print as written, and the exhaustiveness obligation keeps every arm's condition; C would verify something other than what runs.
+- Confidence: medium
+- Reversal cost: medium, `crates/una-core`, the elaborator and the verifier
+- Implemented in: M8 commits, tag `DECISION D-111`
+- ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 1
+- Answer needed: Keep A? Or switch to B or C?
+
+### D-113: One obligation per `ensures` clause over every return path (M8)
+- Question: `spec/12 §3` generates a postcondition at "each normal return path", and `§8` gives an obligation an id from its declaration, kind and goal, so the paths of one clause would share an id; `spec/13 §2` lists a postcondition with the clause as its `source`.
+- Context: `spec/12 §3, §6, §8`, `spec/13 §1, §2`; ADR 0033 rule 3.
+- Options: A) one obligation per clause, `Π ∧ (path₁ ∨ … ∨ pathₙ) ∧ ¬goal`, whose diagnostic points at the returned expression of the path the model takes; the refinement of a declared result type alike; B) one obligation per path, with the path in the id.
+- Chosen: A, because ids stay as `spec/12 §8` defines them and unique, the listing matches `spec/13 §2`, and the diagnostic still points at the failing return as `spec/12 §3` asks.
+- Confidence: medium
+- Reversal cost: medium, the generation of return obligations and their ids
+- Implemented in: M8 commits, tag `DECISION D-113`
+- ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 3
+- Answer needed: Keep A? Or switch to B?
+
 ### D-018: `[` right after a label level (M1)
 - Question: After a level such as `secret`, `[` can start the label's categories (`secret[PII] Phone`) or a list type (`secret [Int]`). The grammar of `spec/02 §2` allows both readings, and telling them apart needs unbounded lookahead.
 - Context: `spec/02` introduction (LL(2) except kind bodies) and §2; `spec/03 §1`, `spec/07 §2`, `spec/14` (`List[T]`).
@@ -534,6 +556,72 @@ None.
 - Reversal cost: low
 - Implemented in: `c3d2041`, `crates/una-check/src/names/mod.rs`, `types/authority.rs`, `crates/una-cli/src/lib.rs`, `runtime.rs`, tag `DECISION D-109`
 - ADR: `docs/adr/0032-runtime-details-left-open.md` (Provisional), rule 10
+- Answer needed: Keep A? Or switch to B?
+
+### D-112: What is verified, and when (M8)
+- Question: `spec/12 §1` makes tier 1 "tier 0 plus every proof obligation", and `spec/08 §2` rule 4 verifies examples, but nothing says whether tier 1 runs when tier 0 fails, or whether the standard library's bodies are verified.
+- Context: `spec/08 §2`, `spec/12 §1`, `spec/14` preamble (the Trusted zone); ADR 0033 rule 2.
+- Options: A) functions, handler operations, opaque predicate bodies and example `do` lines, once tier 0 reports nothing; the standard library trusted; B) verify the declarations without diagnostics even when others have some.
+- Chosen: A, because a declaration with errors has no Core IR, so obligations that depend on its contract would be refuted for the wrong reason; tier 0 errors come first either way.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: M8 commits, tag `DECISION D-112`
+- ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 2
+- Answer needed: Keep A? Or switch to B?
+
+### D-114: Ground facts beyond the hypothesis table (M8)
+- Question: `spec/12 §3` lists the hypotheses of a path context and `§4` the ground facts for `len` and `tag`, but a record's field refinements, which construction obligations guarantee, and the shape of constructed values are not listed; the example listing of `spec/13 §2` shows `0 <= e.remaining` for a parameter `e: Event`.
+- Context: `spec/12 §2 to §4`, `spec/13 §2`; ADR 0033 rule 4.
+- Options: A) for every term in a query, the refinements of record fields (under the variant's tag for a sum); constructor tag and field equations, list and text literal lengths; B) the table only.
+- Chosen: A, because every added fact is guaranteed by an obligation proven elsewhere or by evaluation, and without them `spec/13 §2`'s own example could not be proven.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: M8 commits, tag `DECISION D-114`
+- ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 4
+- Answer needed: Keep A? Or switch to B?
+
+### D-118: Goals, hypotheses and ids as text (M8)
+- Question: `spec/12 §8` hashes a "normalized goal text", and `spec/13 §1, §2` show goals and hypotheses as text, without saying how terms print or what `source` is.
+- Context: `spec/12 §8`, `spec/13 §1, §2`; ADR 0033 rule 8.
+- Options: A) terms print in the surface syntax with `it` replaced by the value's source text, normalized by collapsing white space; `source` is the clause of a return obligation and the site otherwise; hypotheses are the path context at the site, or at entry for return obligations; B) goals as SMT-LIB text.
+- Chosen: A, because agents read and write the surface syntax, and the id then survives edits that do not change the goal.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: M8 commits, tag `DECISION D-118`
+- ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 8
+- Answer needed: Keep A? Or switch to B?
+
+### D-119: What a counterexample shows (M8)
+- Question: `spec/12 §7` maps a model to source names and shows uninterpreted values "as opaque identities with their known projections", without naming which names appear or the form of an identity.
+- Context: `spec/12 §7`, `spec/13 §1`; ADR 0033 rule 9.
+- Options: A) parameters, `result`, named `let`s and pattern variables, and the field and `len` terms over them in the query, by name; a sum shows its variant, another value `<Kind>#<n>`; B) every constant of the model, temporaries included.
+- Chosen: A, because temporaries have no source name, and the projections are what the goal talks about.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: M8 commits, tag `DECISION D-119`
+- ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 9
+- Answer needed: Keep A? Or switch to B?
+
+### D-120: The repairs proposed for each kind (M8)
+- Question: `spec/13 §3` lists four candidates "when applicable", without saying when each applies.
+- Context: `spec/13 §3`; ADR 0033 rule 10.
+- Options: A) refinement and precondition: a stronger parameter type when the value is a parameter, a `requires` clause for a private function, a guard, `checked`; postcondition: a guard or a changed `ensures`; division: a guard; exhaustive: an `else` arm; all without edits; B) only mechanical edits.
+- Chosen: A, because each candidate follows the table's order and cost, and edits for them would guess the author's intent.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: M8 commits, tag `DECISION D-120`
+- ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 10
+- Answer needed: Keep A? Or switch to B?
+
+### D-121: The output of `una obligations` (M8)
+- Question: `spec/13 §2` defines `una.obligations/1`, but not the human output or the exit code.
+- Context: `spec/13 §2, §5`; ADR 0033 rule 11.
+- Options: A) one line per obligation with status, id, kind, position and goal, `(cached)` when cached; exit code 1 when an obligation is not proven or tier 0 reports diagnostics; B) exit code 0 whenever the listing prints.
+- Chosen: A, because the exit codes of `spec/13 §5` mean errors in the program, which an unproven obligation is.
+- Confidence: medium
+- Reversal cost: low
+- Implemented in: M8 commits, tag `DECISION D-121`
+- ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 11
 - Answer needed: Keep A? Or switch to B?
 
 ### D-002: Title of the historical design exploration in the charter (Part A)
@@ -1073,6 +1161,39 @@ None.
 - Reversal cost: low
 - Implemented in: `54d30c8`, `crates/una-cli/tests/conformance/main.rs`, `outcome.rs`, `docs/compiler/testing.md`, tag `DECISION D-110`
 - ADR: none (`compiler/testing.md §2` gains the rules)
+- Answer needed: Keep A?
+
+### D-115: Encoding details (M8)
+- Question: `spec/12 §4` gives examples of sort names and the shape of field, `len` and `tag` functions, but not the names of every sort, how binders become symbols, or how `Unit`, text ordering, `concat` and `to_text` are encoded.
+- Context: `spec/12 §2, §4`; ADR 0033 rule 5.
+- Options: A) the names of ADR 0033 rule 5, binders as quoted symbols, text ordering, `concat` and `to_text` as uninterpreted functions; B) no encoding for text ordering, which would make such refinements unverifiable.
+- Chosen: A, because uninterpreted functions add no axioms (ADR 0010's reasoning), and doubled underscores keep sort names distinct for distinct module paths.
+- Confidence: high
+- Reversal cost: low
+- Implemented in: M8 commits, tag `DECISION D-115`
+- ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 5
+- Answer needed: Keep A?
+
+### D-116: The solver protocol (M8)
+- Question: `spec/12 §5` gives the preamble and says the compiler issues `(get-model)` or `(get-info :reason-unknown)`, without saying how processes, models and the version check are handled.
+- Context: `spec/12 §5, §7`, ADR 0003, ADR 0022 rule 4; ADR 0033 rule 6.
+- Options: A) one process per query, the whole script written at once with `(get-model)`, `(get-value ...)` for the source-level terms and `(get-info :reason-unknown)`; the wall-clock guard kills the process; the version read once per run; B) one interactive session per run.
+- Chosen: A, because queries stay independent and parallel, a hang affects one query, and the script is the query the cache keys.
+- Confidence: high
+- Reversal cost: low
+- Implemented in: M8 commits, tag `DECISION D-116`
+- ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 6
+- Answer needed: Keep A?
+
+### D-117: The proof cache (M8)
+- Question: `spec/12 §9` fixes the directory, the key and the value of the cache, but not the files, concurrency or what is not cached.
+- Context: `spec/12 §5, §9`; ADR 0033 rule 7.
+- Options: A) one JSON file per query named by its key, written through a rename; unreadable entries solved again; wall-clock unknowns not cached; B) one database file per package.
+- Chosen: A, because parallel runs and tests then never corrupt the cache, and a result that depends on time must not be reused.
+- Confidence: high
+- Reversal cost: low
+- Implemented in: M8 commits, tag `DECISION D-117`
+- ADR: `docs/adr/0033-verification-details-left-open.md` (Provisional), rule 7
 - Answer needed: Keep A?
 
 ### D-083: CI runners for the private repository (Part 5)
