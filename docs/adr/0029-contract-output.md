@@ -12,7 +12,7 @@ Decision log entries: D-081 (`docs/reviews/open-decisions.md`).
 
 ## Decision
 
-1. **Package.** `una contract` reads the package in the current directory, as `una check` does without a path. The qualified name is the module path followed by the function's name, as in `events.checkin.check_in`. An unknown name is a usage error (exit code 2).
+1. **Package.** `una contract` reads the package in the current directory, as `una check` does without a path, and checks it at tier 0. The qualified name is the module path followed by the function's name, as in `events.checkin.check_in`; it names a function, not a predicate or policy. An unknown name is a usage error (exit code 2). When the package has diagnostics, `una contract` reports them as `una check` does and exits with code 1, since an inferred header is only defined for a package that checks; otherwise its sources are in canonical form, and the contract quotes them.
 2. **Human output**, on stdout: the doc comments, then the header in canonical form with every clause, declared or inferred, in canonical order; each inferred clause ends with the comment `-- inferred`; then one line per requirement of `derived from`: `-- requirement ID (status): "text"`.
 3. **JSON output**, on stdout, compact, with keys in this order:
 
@@ -47,3 +47,4 @@ Decision log entries: D-081 (`docs/reviews/open-decisions.md`).
 
 - **A path argument:** `spec/13 §5` defines none, and adding one extends the command line.
 - **Marking inferred clauses in a separate section:** separates the clause from its function, while a trailing comment keeps the header readable in place.
+- **Printing the contract of a package with diagnostics:** the inferred clauses of such a package can be incomplete, and a contract that looks complete would mislead.

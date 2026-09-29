@@ -341,8 +341,8 @@ None.
 ### D-081: The output of `una contract` (M5)
 - Question: `spec/13 §5` defines `una contract <qualified.name>` without a JSON shape, without saying which package it reads, or how inferred clauses appear; M5 requires a `--json` snapshot.
 - Context: `spec/13 §5`; ADR 0029.
-- Options: A) the package in the current directory; human output as canonical header syntax with `-- inferred` after inferred clauses and a line per requirement; JSON schema `una.contract/1`; B) add a path argument.
-- Chosen: A, because it adds no command-line syntax and keeps the human output valid Una.
+- Options: A) the package in the current directory, checked at tier 0, whose diagnostics are reported instead of the contract; human output as canonical header syntax with `-- inferred` after inferred clauses and a line per requirement; JSON schema `una.contract/1`; B) add a path argument; C) print the contract even when the package has diagnostics.
+- Chosen: A, because it adds no command-line syntax, keeps the human output valid Una, and never shows a header whose inferred clauses may be incomplete.
 - Confidence: medium
 - Reversal cost: low, `crates/una-cli/src/contract.rs` and the schema
 - Implemented in: M5 contract commit, tag `DECISION D-081`
