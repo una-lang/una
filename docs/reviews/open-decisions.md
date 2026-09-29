@@ -800,6 +800,17 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
 
+### D-086: Mechanical edits of authority diagnostics (M5)
+- Question: `spec/13 §3` lets diagnostics other than U5001 and U5002 include repairs. Which authority diagnostics carry a mechanical edit, and which edit?
+- Context: `spec/13 §1, §3`, `spec/02 §3` (clause order); ADR 0028, Consequences.
+- Options: A) edits only where one fix follows from the diagnostic: widen the declaring `uses` clause (U3002); add the callee's requirements as `uses` clauses of the caller's header (U3001 at a call, U3003); add `fails E` to a function without `fails` (U3009, U3008), inserted in canonical clause order and turning a short-form function into the long form; B) also guess a capability for `@c.op` in a pure function from the operation's name; C) no edits, the messages only.
+- Chosen: A, because each edit is the only repair that keeps the program's meaning, and applying it removes the diagnostic and keeps the file canonical; B guesses when two capabilities share an operation name, and C leaves agents to rebuild clauses the compiler already knows.
+- Confidence: high
+- Reversal cost: low, `widen` and `add_clause` in `crates/una-check/src/types/authority.rs`
+- Implemented in: M5 repair commit, tag `DECISION D-086`
+- ADR: none (minor)
+- Answer needed: Keep A?
+
 ### D-083: CI runners for the private repository (Part 5)
 - Question: The repository una-lang/una stays private until launch, and a private repository has a limited GitHub Actions quota, which macOS runners use fastest. When does each job run?
 - Context: the owner's instructions of 2026-09-29 (publication); `.github/workflows/ci.yml`; ADR 0030.

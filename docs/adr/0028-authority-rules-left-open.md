@@ -30,7 +30,7 @@ Decision log entries: D-071 to D-080 and D-085 (`docs/reviews/open-decisions.md`
 
 ## Consequences
 
-- Every authority diagnostic has one code and one site, so agents can repair them mechanically: most carry an edit that adds or widens a `uses` clause.
+- Every authority diagnostic has one code and one site, and those with a mechanical repair carry its edit (`spec/13 §3`, D-086): U3002 widens the `uses` clause that declares the binding; U3001 at a call and U3003 add the callee's requirements as `uses` clauses of the function's header; U3009 and U3008 in a function without `fails` add the `fails` clause. A short-form function becomes long-form. The other diagnostics name their repair in the message.
 - Inference gives private functions typed operations without headers, at the cost of a second pass over the bodies.
 - Rule 6 lets `una check` catch a missing grant before `una run`; a program run with extra `--grant` flags is checked again then.
 

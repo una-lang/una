@@ -745,6 +745,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                         Bound::Cap {
                             capability: need.usage.capability,
                             ops: need.usage.capability.map(|_| need.usage.ops.clone()),
+                            clause: Some(need.span),
                         },
                     )
                 })
@@ -860,6 +861,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                         Bound::Cap {
                             capability: need.usage.capability,
                             ops: need.usage.capability.map(|_| need.usage.ops.clone()),
+                            clause: (!def.infer_uses).then_some(need.span),
                         },
                     )
                 })

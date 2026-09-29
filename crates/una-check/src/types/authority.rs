@@ -5,10 +5,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use una_diag::Code;
+use una_diag::{Code, Repair};
 use una_project::Manifest;
 use una_syntax::Span;
-use una_syntax::ast::{Expr, ExprKind, Ident};
+use una_syntax::ast::{Body, ClauseKind, Expr, ExprKind, Ident};
 
 use super::check::Checker;
 use super::env::{Entity, Env, FnAst};
@@ -28,9 +28,12 @@ pub(crate) enum Pass {
 #[derive(Clone, Debug)]
 pub(crate) enum Bound {
     /// A capability and the operations it permits; unknown when its name did not resolve.
+    /// `clause` is the `uses` clause that declares it, when the declaration being checked
+    /// writes one, for repairs.
     Cap {
         capability: Option<CapId>,
         ops: Option<Vec<String>>,
+        clause: Option<Span>,
     },
     /// `with @x = @y`: `@y` of the enclosing frames.
     Rebound { target: String },
@@ -67,9 +70,12 @@ pub(crate) enum Base {
 /// What resolving a capability reference finds.
 #[derive(Clone, Debug)]
 pub(crate) enum Resolved {
+    /// `name` is the name that the rebindings lead to.
     Cap {
+        name: String,
         capability: Option<CapId>,
         ops: Option<Vec<String>>,
+        clause: Option<Span>,
     },
     Handler {
         capability: Option<CapId>,
@@ -164,10 +170,16 @@ pub(crate) fn resolve_in(frames: &[Frame], level: usize, name: &str) -> Resolved
             continue;
         };
         match bound {
-            Bound::Cap { capability, ops } => {
+            Bound::Cap {
+                capability,
+                ops,
+                clause,
+            } => {
                 return Resolved::Cap {
+                    name,
                     capability: *capability,
                     ops: ops.clone(),
+                    clause: *clause,
                 };
             }
             Bound::Handler { capability, span } => {
@@ -241,7 +253,12 @@ impl<'a> Checker<'_, 'a, '_> {
         let name = self.name(cap);
         let op_name = self.name(op);
         match self.resolve_cap(name) {
-            Resolved::Cap { capability, ops } => {
+            Resolved::Cap {
+                name: declared,
+                capability,
+                ops,
+                clause,
+            } => {
                 if self.authority()
                     && let Some(ops) = ops
                     && !ops.iter().any(|o| o == op_name)
@@ -253,13 +270,18 @@ impl<'a> Checker<'_, 'a, '_> {
                     } else {
                         permitted.join(", ")
                     };
-                    self.report.error(
+                    let mut diagnostic = self.report.make(
                         Code::U3002,
                         op.span,
                         format!(
                             "`@{name}` permits {permitted}, not `{op_name}`; add `{op_name}` to its `uses` clause"
                         ),
                     );
+                    let extra = [op_name.to_owned()];
+                    diagnostic
+                        .repairs
+                        .extend(self.widen(clause, &declared, capability, &ops, &extra));
+                    self.report.push(diagnostic);
                 }
                 capability
             }
@@ -329,7 +351,12 @@ impl<'a> Checker<'_, 'a, '_> {
         // inferred (U1001, U3001).
         for need in needs.iter().filter(|need| need.capability.is_some()) {
             match resolve_in(&self.frames, level, &need.name) {
-                Resolved::Cap { capability, ops } => {
+                Resolved::Cap {
+                    name: declared,
+                    capability,
+                    ops,
+                    clause,
+                } => {
                     if !self.authority() {
                         continue;
                     }
@@ -352,18 +379,24 @@ impl<'a> Checker<'_, 'a, '_> {
                             .ops
                             .iter()
                             .filter(|op| !ops.contains(op))
-                            .map(|op| format!("`{op}`"))
+                            .cloned()
                             .collect();
                         if !missing.is_empty() {
-                            self.report.error(
+                            let listed: Vec<String> =
+                                missing.iter().map(|op| format!("`{op}`")).collect();
+                            let mut diagnostic = self.report.make(
                                 Code::U3002,
                                 span,
                                 format!(
                                     "{callee} needs `@{}` to permit {}, which it does not here",
                                     need.name,
-                                    missing.join(", ")
+                                    listed.join(", ")
                                 ),
                             );
+                            diagnostic.repairs.extend(self.widen(
+                                clause, &declared, capability, &ops, &missing,
+                            ));
+                            self.report.push(diagnostic);
                         }
                     }
                 }
@@ -407,7 +440,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     Base::Pure => {
                         if !pure_reported {
                             pure_reported = true;
-                            self.report.error(
+                            let mut diagnostic = self.report.make(
                                 Code::U3003,
                                 span,
                                 format!(
@@ -415,6 +448,13 @@ impl<'a> Checker<'_, 'a, '_> {
                                     self.show_need(need)
                                 ),
                             );
+                            let clauses: Vec<String> = needs
+                                .iter()
+                                .filter(|n| n.capability.is_some())
+                                .map(|n| self.uses_text(&n.name, n.capability, &n.ops))
+                                .collect();
+                            diagnostic.repairs.extend(self.add_clause(&clauses, before_uses));
+                            self.report.push(diagnostic);
                         }
                     }
                     Base::Example if self.host(need.capability) => self.report.error(
@@ -433,17 +473,101 @@ impl<'a> Checker<'_, 'a, '_> {
                             self.show_need(need)
                         ),
                     ),
-                    Base::Declared | Base::Quiet => self.report.error(
-                        Code::U3001,
-                        span,
-                        format!(
-                            "{callee} needs `{}`, which is not in scope here; declare it with `uses`",
-                            self.show_need(need)
-                        ),
-                    ),
+                    Base::Declared | Base::Quiet => {
+                        let mut diagnostic = self.report.make(
+                            Code::U3001,
+                            span,
+                            format!(
+                                "{callee} needs `{}`, which is not in scope here; declare it with `uses`",
+                                self.show_need(need)
+                            ),
+                        );
+                        let clause = [self.uses_text(&need.name, need.capability, &need.ops)];
+                        diagnostic.repairs.extend(self.add_clause(&clause, before_uses));
+                        self.report.push(diagnostic);
+                    }
                 },
             }
         }
+    }
+
+    /// `uses @name: C[ops]`, with the operations in the capability's declaration order.
+    fn uses_text(&self, name: &str, capability: Option<CapId>, ops: &[String]) -> String {
+        let order: Vec<&str> = capability
+            .and_then(|c| self.env.capabilities.get(c))
+            .map(|c| c.ops.iter().map(|o| o.name).collect())
+            .unwrap_or_default();
+        let ops: Vec<&str> = order
+            .into_iter()
+            .filter(|op| ops.iter().any(|o| o == op))
+            .collect();
+        format!(
+            "uses @{name}: {}[{}]",
+            self.cap_name(capability),
+            ops.join(", ")
+        )
+    }
+
+    /// An edit of the `uses` clause at `clause`, which declares `@name` with `ops`, that
+    /// permits `extra` too (U3002, DECISION D-086).
+    fn widen(
+        &self,
+        clause: Option<Span>,
+        name: &str,
+        capability: Option<CapId>,
+        ops: &[String],
+        extra: &[String],
+    ) -> Option<Repair> {
+        let clause = clause?;
+        capability?;
+        let all: Vec<String> = ops.iter().chain(extra).cloned().collect();
+        let listed: Vec<String> = extra.iter().map(|op| format!("`{op}`")).collect();
+        Some(self.report.edit(
+            format!(
+                "add {} to the `uses` clause of `@{name}`",
+                listed.join(", ")
+            ),
+            clause,
+            self.uses_text(name, capability, &all),
+        ))
+    }
+
+    /// An edit that adds `clauses` to the header of the function being checked, in canonical
+    /// clause order: before the first clause that `before` accepts, or after the last clause
+    /// (`spec/02 §3`). A short-form function becomes long-form. Lambdas and other declarations
+    /// get no edit (DECISION D-086).
+    fn add_clause(&self, clauses: &[String], before: fn(&ClauseKind) -> bool) -> Option<Repair> {
+        if clauses.is_empty() || self.lambda_depth != 0 {
+            return None;
+        }
+        let def = self.env.functions.get(self.current?)?;
+        let FnAst::Function(function) = def.ast else {
+            return None;
+        };
+        let lines = clauses.join("\n  ");
+        let description = format!("declare `{}` in the header", clauses.join("` and `"));
+        let (span, replacement) =
+            if let Some(next) = function.clauses.iter().find(|c| before(&c.kind)) {
+                (
+                    Span::at(next.span.file, next.span.start),
+                    format!("{lines}\n  "),
+                )
+            } else if let Some(last) = function.clauses.last() {
+                (
+                    Span::at(last.span.file, last.span.end),
+                    format!("\n  {lines}"),
+                )
+            } else {
+                let end = function.result.span;
+                match &function.body {
+                    Body::Line(expr) => (
+                        Span::new(end.file, end.end, expr.span.start),
+                        format!("\n  {lines}\n=\n  "),
+                    ),
+                    Body::Block(_) => (Span::at(end.file, end.end), format!("\n  {lines}")),
+                }
+            };
+        Some(self.report.edit(description, span, replacement))
     }
 
     /// U3015: `std.testing` serves handler operation bodies and examples only (`spec/14 §4`,
@@ -531,13 +655,20 @@ impl<'a> Checker<'_, 'a, '_> {
             }
             None => {
                 if !self.infers_fails() {
-                    self.report.error(
+                    let mut diagnostic = self.report.make(
                         Code::U3008,
                         span,
                         format!(
                             "`if error pass` passes a `{shown}` failure, and this code declares no error kind; declare `fails {shown}`, or handle the failure"
                         ),
                     );
+                    if matches!(passed, Ty::Kind(..)) {
+                        let clause = [format!("fails {shown}")];
+                        diagnostic
+                            .repairs
+                            .extend(self.add_clause(&clause, before_fails));
+                    }
+                    self.report.push(diagnostic);
                 }
             }
         }
@@ -646,13 +777,20 @@ impl<'a> Checker<'_, 'a, '_> {
                 if self.infers_fails() {
                     return;
                 }
-                self.report.error(
+                let mut diagnostic = self.report.make(
                     Code::U3009,
                     variant.span,
                     format!(
                         "this code declares no error kind, so it cannot fail with `{name}`; declare `fails` in its header"
                     ),
                 );
+                if let Some(kind) = kind {
+                    let clause = [format!("fails {}", self.env.kind_name(kind))];
+                    diagnostic
+                        .repairs
+                        .extend(self.add_clause(&clause, before_fails));
+                }
+                self.report.push(diagnostic);
             }
         }
     }
@@ -705,6 +843,16 @@ impl<'a> Checker<'_, 'a, '_> {
             );
         }
     }
+}
+
+/// Whether a new `uses` clause goes before a clause of this kind (`spec/02 §3`).
+fn before_uses(kind: &ClauseKind) -> bool {
+    matches!(kind, ClauseKind::Fails(_) | ClauseKind::DerivedFrom(_))
+}
+
+/// Whether a new `fails` clause goes before a clause of this kind (`spec/02 §3`).
+fn before_fails(kind: &ClauseKind) -> bool {
+    matches!(kind, ClauseKind::DerivedFrom(_))
 }
 
 /// Infers the `uses` and `fails` of private functions that omit them, as least fixed points
