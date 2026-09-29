@@ -1,0 +1,12 @@
+-- test: range arms that cover every value of a refined scrutinee need no else
+-- spec: spec/12 §3
+-- expect: ok
+module exhaustive_proven
+
+pub kind redacted = Int in 0..100
+
+pub grade(redacted: redacted) -> Text
+=
+  when redacted
+    in 0..<50 -> "fail"
+    in 50..100 -> "pass"

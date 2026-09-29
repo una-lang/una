@@ -1,0 +1,10 @@
+-- test: an argument proven to satisfy its parameter's range on every path is accepted
+-- spec: spec/12 §3
+-- expect: ok
+module refinement_argument_proven
+
+pub kind Seats = Int in 0..5000
+
+pub book(seats: Seats) -> Int = seats
+
+pub clamp(raw: Int) -> Int = if raw < 0 then book(0) else if raw > 5000 then book(5000) else book(raw)
