@@ -1,0 +1,14 @@
+trusted module release
+
+pub kind Slug = Text where valid_slug(it)
+
+pub predicate opaque valid_slug(t: Text) -> Bool = t.len >= 3
+
+pub policy as_slug
+  from internal Text
+  to public Slug
+  via copy
+  purpose "publish a slug"
+  owner web
+
+copy(t: internal Text) -> public Text = t

@@ -1,0 +1,15 @@
+-- test: a via function whose result satisfies the refinement of the policy's to type verifies (R-007)
+-- spec: spec/12 §3
+-- expect: ok
+module app
+
+import release (Pos, lower)
+
+recip(p: Pos) -> Int = 100 / p
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let p = lower(0)
+  let q = recip(p)
+  @console.print("q = {q}")
