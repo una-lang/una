@@ -267,7 +267,7 @@ Where each program lives in the test suite:
 | Milestone | Criterion | Status | Evidence |
 | --- | --- | --- | --- |
 | M0 | `cargo test --workspace` passes | Pass | 348 passed (above) |
-| M0 | CI is green | Pass | the pull request's CI run, Linux and macOS |
+| M0 | CI is green | Pass | pull request #1, CI run 36759795381 on `c12a72f`: `ubuntu-24.04` and `macos-26` pass (Z3 5.1.0, every test binary ok) |
 | M0 | `una explain U0001` prints text | Pass | `# U0001: Invalid character, byte order mark or lone carriage return` |
 | M0 | `una check --json` prints an empty list with schema `una.diagnostics/1` | Pass | `una --json check examples/hello` |
 | M0 | a snapshot pins the JSON shape | Pass | `json_shape.rs`, in the suite |
@@ -297,7 +297,7 @@ Where each program lives in the test suite:
 | M9 | report and obligations JSON snapshots | Pass | `abi__report_events_json.snap` (with `obligations.cached`, ADR 0041), `abi__obligations_events_json.snap` |
 | M10 | five more example packages | Pass | `greenhouse`, `journal`, `pantry`, `shortlinks`, `toolshelf` (renamed, R-022) |
 | M10 | the guide's snippets compile | Pass | `guide.rs`, both tests |
-| M10 | release artifacts build in CI | Pass | `ci.yml` packs and checks the archive of each runner: Linux on every push, macOS on the pull request (R-035) |
+| M10 | release artifacts build in CI | Pass | CI run 36759795381: `una-0.1.0-x86_64-unknown-linux-gnu.tar.gz` and `una-0.1.0-aarch64-apple-darwin.tar.gz` packed and checked, each running the examples (R-035) |
 | M10 | the evaluation track drives `una` headlessly | Pass | `headless.rs` |
 
 The review's recommendation to treat M5, M6 and M8 as not done until the Critical findings were fixed is met. Each Critical finding has a rule in ADR 0038 and regression cases in the suite, and each program above is rejected.
