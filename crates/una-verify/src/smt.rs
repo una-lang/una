@@ -184,7 +184,7 @@ impl F {
     }
 
     /// Every function application in the term, and every constant, depth first.
-    fn visit<'a>(&'a self, out: &mut Vec<&'a F>) {
+    pub(crate) fn visit<'a>(&'a self, out: &mut Vec<&'a F>) {
         match self {
             F::App { args, .. } | F::Op { args, .. } => {
                 for arg in args {

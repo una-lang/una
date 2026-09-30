@@ -169,7 +169,7 @@ Every guarantee has the form: *the implementation satisfies its specification, a
 | Zone | Contents in v0.1 | Who is responsible |
 | --- | --- | --- |
 | **Proven** | Type safety, effect and capability confinement, information-flow noninterference (termination-insensitive), refinement and contract obligations | The compiler and the verifier |
-| **Trusted** | The compiler, the reference interpreter, the SMT solver, the standard library, `trusted` modules, host capability implementations | Una maintainers and module owners |
+| **Trusted** | The compiler, the reference interpreter, the SMT solver, the standard library, `trusted` modules, host capability implementations, the proof cache of the package | Una maintainers and module owners |
 | **Assumed** | The behavior of external systems as declared in `capability` signatures | Capability authors |
 | **Human** | That requirements and contracts capture the intent | Requirement owners and reviewers |
 
@@ -347,7 +347,7 @@ $ una report examples/events
 package events-example 0.1.0
 lock: z3 5.1.0, sha256 3ae01f54b3b40760c00b7537ac3ba510a2288a5a4dd42a583dab76ea66719c3c
 proven: 11 semantic obligations; security and authority by typing
-obligations: 11 proven, 0 refuted, 0 unknown
+obligations: 11 proven, 0 refuted, 0 unknown; 11 cached
 authority:
   events.checkin.check_in (pub): @registrations: Registrations[find], @audit: Audit[record], @keys: Keys[hmac]
   events.keys.hmac_phone (private): @keys: Keys[hmac]
@@ -363,6 +363,7 @@ tcb:
   trusted modules: events.keys (17 lines)
   host capabilities: Console, Keys
   solver: z3 5.1.0
+  proof cache: .una/cache/
 requirements:
   EVENTS_3 (active): events.seating.availability
 coverage: 5 pub functions, 1 with ensures, 1 with derived from, 0 trivial ensures

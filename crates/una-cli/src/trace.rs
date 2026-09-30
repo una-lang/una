@@ -77,15 +77,8 @@ pub(crate) fn trace_command(
         }
     };
     let analysis = on_large_stack(|| analyze(&package, None));
-    let modules = Modules {
-        sources: &package.sources,
-        interner: &analysis.interner,
-        trees: &analysis.trees,
-    };
-    let Some(requirement) = find(&modules, id) else {
-        writeln!(stderr, "error: the package has no requirement `{id}`")?;
-        return Ok(ExitStatus::Usage);
-    };
+    // R-027, ADR 0036: the package's diagnostics, those of its project files included, come
+    // before the identifier is resolved, so that an unknown one never hides them.
     if !analysis.diagnostics.is_empty() {
         return report(
             &analysis.diagnostics,
@@ -96,6 +89,15 @@ pub(crate) fn trace_command(
             stderr,
         );
     }
+    let modules = Modules {
+        sources: &package.sources,
+        interner: &analysis.interner,
+        trees: &analysis.trees,
+    };
+    let Some(requirement) = find(&modules, id) else {
+        writeln!(stderr, "error: the package has no requirement `{id}`")?;
+        return Ok(ExitStatus::Usage);
+    };
     let found = tier_one(&package, &analysis.program, options.wallclock);
     let Some(verification) = found.verification else {
         return report_unverified(

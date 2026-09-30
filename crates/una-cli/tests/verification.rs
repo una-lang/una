@@ -477,3 +477,223 @@ fn the_verifier_generates_every_obligation_the_checker_found() {
     }
     assert!(compared > 30, "{compared}");
 }
+
+/// The single diagnostic of `una --json check` on a package of one module, which must fail.
+fn only_diagnostic(name: &str, source: &str) -> Value {
+    let root = package(name, &[("src/app.una", source)]);
+    let output = una(&["--json", "check", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let document: Value = serde_json::from_str(stdout(&output)).unwrap();
+    let diagnostics = document["diagnostics"].as_array().unwrap();
+    assert_eq!(diagnostics.len(), 1, "{}", stdout(&output));
+    diagnostics[0].clone()
+}
+
+/// The descriptions of a diagnostic's repairs, in order.
+fn repair_descriptions(diagnostic: &Value) -> Vec<String> {
+    diagnostic["repairs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|repair| repair["description"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn repairs_of_a_precondition_at_a_parameter_of_a_private_function() {
+    // R-021, `spec/13 §3`: a stronger parameter type when the value is a parameter, a
+    // `requires` clause for a private function, a guard, and `checked`.
+    let diagnostic = only_diagnostic(
+        "repairs-private-parameter",
+        "module app
+
+pub half(n: Int) -> Int
+  requires n >= 0
+=
+  n / 2
+
+halve(n: Int) -> Int = half(n)
+
+pub run() -> Int = halve(4)
+",
+    );
+    assert_eq!(diagnostic["code"], "U5001");
+    assert_eq!(
+        repair_descriptions(&diagnostic),
+        [
+            "strengthen the type of the parameter `n` to a refined kind that implies `n >= 0`",
+            "add `requires n >= 0` to the enclosing function; its callers then prove it",
+            "add a guard (`if` or a `when` arm) that handles the values where `n >= 0` does not hold",
+            "check the value with `checked(value, n >= 0) else fail <Variant>`",
+        ]
+    );
+    let costs: Vec<&Value> = diagnostic["repairs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|repair| &repair["escape_cost"])
+        .collect();
+    assert_eq!(costs, [&json!(0), &json!(0), &json!(0), &json!(1)]);
+}
+
+#[test]
+fn a_refuted_refinement_at_a_value_that_is_not_a_parameter_has_no_parameter_repair() {
+    // R-021, `spec/13 §3`: the stronger parameter type applies only when the value is a
+    // parameter; `raw - 1` is not one, and a private function may still require it.
+    let diagnostic = only_diagnostic(
+        "repairs-not-a-parameter",
+        "module app
+
+pub kind Seats = Int in 0..5000
+
+pub book(seats: Seats) -> Int = seats
+
+unguarded(raw: Int) -> Int = book(raw - 1)
+
+pub run() -> Int = unguarded(4)
+",
+    );
+    assert_eq!(diagnostic["code"], "U5001");
+    let repairs = repair_descriptions(&diagnostic);
+    assert_eq!(repairs.len(), 3, "{repairs:?}");
+    assert!(repairs[0].starts_with("add `requires "), "{repairs:?}");
+    assert!(repairs[1].starts_with("add a guard"), "{repairs:?}");
+    assert!(
+        repairs[2].starts_with("check the value with"),
+        "{repairs:?}"
+    );
+}
+
+#[test]
+fn a_refuted_precondition_inside_a_pub_function_has_no_requires_repair() {
+    // R-021, `spec/13 §3`: a `requires` clause is proposed for a private function only.
+    let diagnostic = only_diagnostic(
+        "repairs-pub-function",
+        "module app
+
+pub half(n: Int) -> Int
+  requires n >= 0
+=
+  n / 2
+
+pub halve(n: Int) -> Int = half(n)
+",
+    );
+    assert_eq!(diagnostic["code"], "U5001");
+    assert_eq!(
+        repair_descriptions(&diagnostic),
+        [
+            "strengthen the type of the parameter `n` to a refined kind that implies `n >= 0`",
+            "add a guard (`if` or a `when` arm) that handles the values where `n >= 0` does not hold",
+            "check the value with `checked(value, n >= 0) else fail <Variant>`",
+        ]
+    );
+}
+
+#[test]
+fn a_refuted_precondition_on_an_example_do_line_has_no_requires_repair() {
+    // R-021, `spec/13 §3`: an example has no `requires` clause, and no parameters.
+    let diagnostic = only_diagnostic(
+        "repairs-example",
+        "module app
+
+pub half(n: Int) -> Int
+  requires n >= 0
+=
+  n / 2
+
+pub minus(n: Int) -> Int = n - 10
+
+example \"half of a smaller number\"
+  do half(minus(3))
+  expect result == 0
+",
+    );
+    assert_eq!(diagnostic["code"], "U5001");
+    let repairs = repair_descriptions(&diagnostic);
+    assert_eq!(repairs.len(), 2, "{repairs:?}");
+    assert!(repairs[0].starts_with("add a guard"), "{repairs:?}");
+    assert!(
+        repairs[1].starts_with("check the value with"),
+        "{repairs:?}"
+    );
+}
+
+#[test]
+fn a_ground_goal_has_no_repair_and_no_counterexample() {
+    // R-021, `spec/13 §3` ("when applicable"): `0 != 0` has no free binder, so no guard,
+    // `requires` or type can make it hold, and a counterexample would bind nothing.
+    let source = "module app
+
+pub f(x: Int) -> Int = x / 0
+";
+    let diagnostic = only_diagnostic("repairs-ground", source);
+    assert_eq!(diagnostic["code"], "U5001");
+    assert_eq!(diagnostic["obligation"]["goal"], "0 != 0");
+    assert_eq!(diagnostic["repairs"], json!([]));
+    assert_eq!(diagnostic.get("counterexample"), None, "{diagnostic}");
+    let root = package("repairs-ground-human", &[("src/app.una", source)]);
+    let output = una(&["check", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("U5001"), "{}", stderr(&output));
+    assert!(
+        !stderr(&output).contains("counterexample:"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn a_forged_proof_cache_entry_is_trusted_and_counted_as_cached() {
+    // R-018, ADR 0041, adversarial `escape-proof-cache-forgery`: the proof cache is part of
+    // the Trusted zone in v0.1. A forged entry turns a refuted query into proven, as the
+    // boundary states, and the report counts that result as one from the cache.
+    let root = package(
+        "escape-proof-cache-forgery",
+        &[(
+            "src/div0.una",
+            "module div0\n\npub f(x: Int) -> Int = x / 0\n",
+        )],
+    );
+    let path = root.to_str().unwrap();
+    let output = una(&["--json", "report", path]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let report: Value = serde_json::from_str(stdout(&output)).unwrap();
+    assert_eq!(
+        report["obligations"],
+        json!({"proven": 0, "refuted": 1, "unknown": 0, "cached": 0})
+    );
+    assert_eq!(report["tcb"]["proof_cache"], ".una/cache/");
+    let output = una(&["check", path]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("U5001"), "{}", stderr(&output));
+    let entries: Vec<PathBuf> = std::fs::read_dir(root.join(".una/cache/proofs"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    std::fs::write(
+        &entries[0],
+        r#"{"status":"proven","reason":null,"values":[]}"#,
+    )
+    .unwrap();
+    let output = una(&["check", path]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let output = una(&["--json", "report", path]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let report: Value = serde_json::from_str(stdout(&output)).unwrap();
+    assert_eq!(
+        report["obligations"],
+        json!({"proven": 1, "refuted": 0, "unknown": 0, "cached": 1})
+    );
+    let output = una(&["obligations", path]);
+    assert!(
+        stdout(&output).trim_end().ends_with(" (cached)"),
+        "{}",
+        stdout(&output)
+    );
+    // A clean cache verifies everything again.
+    std::fs::remove_dir_all(root.join(".una")).unwrap();
+    let output = una(&["check", path]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+}
