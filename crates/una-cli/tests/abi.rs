@@ -120,7 +120,8 @@ fn the_report_of_the_events_example() {
 #[test]
 fn the_out_of_model_list_is_the_one_of_the_spec() {
     // R-041: `spec/07 §1`, `spec/13 §6` (the JSON example and the prose) and the report give
-    // one list, in one order; ADR 0038 D9 rule 4 adds path races to it.
+    // one list, in one order; ADR 0038 D9 rule 4 adds path races to it, and ADR 0048 hard
+    // links.
     let output = una(&["--json", "report", "examples/events"]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let channels: Vec<String> = json(&output)["out_of_model"]
@@ -138,6 +139,7 @@ fn the_out_of_model_list_is_the_one_of_the_spec() {
             "interpreter stack exhaustion",
             "external systems beyond declared signatures",
             "races between the check and the use of a file path",
+            "hard links",
         ]
     );
     let (last, first) = channels.split_last().unwrap();

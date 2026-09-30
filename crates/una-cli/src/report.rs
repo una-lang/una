@@ -27,13 +27,14 @@ const PROOF_CACHE: &str = ".una/cache/";
 
 /// What the verification model does not cover: the one list of `spec/07 §1` and `spec/13 §6`,
 /// in their order (R-041; the last entry is ADR 0038 D9 rule 4).
-const OUT_OF_MODEL: [&str; 6] = [
+const OUT_OF_MODEL: [&str; 7] = [
     "timing",
     "termination and divergence",
     "resource consumption and allocation",
     "interpreter stack exhaustion",
     "external systems beyond declared signatures",
     "races between the check and the use of a file path",
+    "hard links",
 ];
 
 /// The capabilities of the prelude, whose implementations the host provides (`spec/14 §3`).
@@ -54,7 +55,7 @@ struct Report {
     tcb: TcbDoc,
     requirements: Vec<RequirementDoc>,
     coverage: CoverageDoc,
-    out_of_model: [&'static str; 6],
+    out_of_model: [&'static str; 7],
 }
 
 #[derive(Serialize)]
