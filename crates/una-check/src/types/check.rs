@@ -935,15 +935,20 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 .as_ref()
                 .and_then(|capability| capability.ops.iter().find(|o| o.name == name));
             // DECISION D-092: callers may pass anything up to `accepts`.
-            // DECISION D-141: an operation that accepts every label, as `Keys.hmac` does, has
-            // the effect floor `⊤` (ADR 0038 D4).
+            // DECISION D-141: an operation that accepts every label has the effect floor `⊤`
+            // (ADR 0038 D4). `Keys.hmac` accepts `public`; its `data` is carried (ADR 0039).
             let accepts = op_def
                 .and_then(|o| o.accepts.clone())
                 .unwrap_or_else(|| self.top());
+            // ADR 0039: a carried parameter (`data` of `Keys.hmac`) may be of every label,
+            // and the result may carry it.
+            let top = self.top();
+            let carried = |index: usize| op_def.is_some_and(|o| o.carried.contains(&index));
             for (index, param) in op.params.iter().enumerate() {
+                let raise = if carried(index) { &top } else { &accepts };
                 let ty = op_def
                     .and_then(|o| o.params.get(index))
-                    .map_or(Ty::Error, |p| p.ty.base.raise_deep(&accepts));
+                    .map_or(Ty::Error, |p| p.ty.base.raise_deep(raise));
                 self.bind(self.name(param), ty);
             }
             let module = capability.as_ref().map_or(0, |c| c.module);
@@ -959,7 +964,13 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 floor: Some(accepts.clone()),
                 ..Ctx::plain()
             };
-            let expected = op_def.map(|o| o.result.base.clone());
+            let expected = op_def.map(|o| {
+                if o.carried.is_empty() {
+                    o.result.base.clone()
+                } else {
+                    o.result.base.clone().with_label(&top)
+                }
+            });
             self.within(ctx, |checker| {
                 checker.body(&op.body, expected.as_ref(), Role::Return(name), true);
             });

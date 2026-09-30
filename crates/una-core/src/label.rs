@@ -129,7 +129,7 @@ fn write_concrete(f: &mut fmt::Formatter<'_>, label: &Label) -> fmt::Result {
     Ok(())
 }
 
-/// The sink label of an operation: `None` when it accepts every label (`Keys.hmac`).
+/// The sink label of an operation: `None` when it accepts every label.
 pub type Accepts = Option<Label>;
 
 #[cfg(test)]
