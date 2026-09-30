@@ -814,3 +814,8 @@ pub struct Program {
 
 /// The module that declares the host capabilities (`spec/14 §3`, `spec/10 §11` rule 8).
 pub const HOST_MODULE: &str = "std.host";
+
+/// The module path of the prelude's kinds and functions (`spec/14 §1`). No package module has
+/// it: a module path whose first segment is `prelude` is reserved (U1009, `spec/10 §11`
+/// rule 8), and tier 1 and the interpreter only see packages without diagnostics.
+pub const PRELUDE_MODULE: &str = "prelude";
