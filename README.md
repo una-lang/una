@@ -366,7 +366,7 @@ tcb:
 requirements:
   EVENTS_3 (active): events.seating.availability
 coverage: 5 pub functions, 1 with ensures, 1 with derived from, 0 trivial ensures
-out of model: timing, termination, resource consumption, external systems beyond declared signatures
+out of model: timing, termination and divergence, resource consumption and allocation, interpreter stack exhaustion, external systems beyond declared signatures, races between the check and the use of a file path
 ```
 
 ## Quick start
