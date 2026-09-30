@@ -389,11 +389,20 @@ impl<'p, 'a> Checker<'p, 'a> {
             self.duplicate(
                 ident.span,
                 first_span,
-                format!(
-                    "`{name}` is defined twice in this module: as a {} and as a {}",
-                    first_what.word(),
-                    what.word()
-                ),
+                // R-034: the construct is named once when both definitions are of one kind
+                // (DECISION D-TBD-p3).
+                if first_what == what {
+                    format!(
+                        "`{name}` is defined twice in this module, both times as a {}",
+                        what.word()
+                    )
+                } else {
+                    format!(
+                        "`{name}` is defined twice in this module: as a {} and as a {}",
+                        first_what.word(),
+                        what.word()
+                    )
+                },
             );
             return;
         }

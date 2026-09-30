@@ -267,12 +267,16 @@ fn operation_arguments_are_sinks_bounded_by_accepts() {
              \n\
              pub under(c: secret Bool) -> Unit\n  uses @log: Log[write]\n=\n  if c\n    @log.write(\"yes\")\n  else\n    unit\n\
              \n\
+             pub inner(c: internal Bool) -> Unit\n  uses @log: Log[write]\n=\n  if c\n    @log.write(\"yes\")\n  else\n    unit\n\
+             \n\
              pub hashed(name: secret Text) -> secret Hashed\n  uses @keys: Keys[hmac]\n  fails KeyError\n=\n  @keys.hmac(key_name: \"k\", data: name)\n    if error pass\n"
         ),
         [
             "U4003 t.una:12:21 `@log.write` accepts `public` data, and it runs in an operation body whose callers may pass `secret` data, which it would reveal",
             "U4003 t.una:17:18 `@console.print` accepts `public` data, and this argument is `secret`; declassify it through a policy first",
             "U4003 t.una:28:5 `@log.write` accepts `public` data, and it runs under a `secret` condition, which it would reveal",
+            // R-034: the article follows the label.
+            "U4003 t.una:36:5 `@log.write` accepts `public` data, and it runs under an `internal` condition, which it would reveal",
         ]
     );
 }
