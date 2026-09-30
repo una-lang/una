@@ -10,8 +10,8 @@ mod print;
 
 pub use ir::{
     Arm, Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, DataVariant, Decl, Example, Expectation,
-    Expr, Fun, HOST_MODULE, HandlerOp, Module, Name, Path, Prim, Program, Refinement, Rhs,
-    Signature, Source, Term, Type, Use,
+    Expr, Fun, HOST_MODULE, HandlerOp, Module, Name, PRELUDE_MODULE, Path, Prim, Program,
+    Refinement, Rhs, Signature, Source, Term, Type, Use,
 };
 pub use label::{Accepts, Label, Level};
 pub use print::{print_atom, print_module, print_term, print_term_with, print_type, quote};

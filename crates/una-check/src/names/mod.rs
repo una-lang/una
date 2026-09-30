@@ -258,6 +258,7 @@ impl<'p, 'a> Checker<'p, 'a> {
                 self.lower_convention(segment, "module path segment");
             }
             self.module_path(module, header.path.span);
+            self.reserved_module(header);
         }
         let mut examples: BTreeMap<String, Span> = BTreeMap::new();
         for decl in &tree.decls {
@@ -405,6 +406,32 @@ impl<'p, 'a> Checker<'p, 'a> {
                 start,
                 variants,
             },
+        );
+    }
+
+    /// U1009: a module path whose first segment is `std` or `prelude` is reserved for the
+    /// standard library, in a package and in a single file (ADR 0038 D7, `spec/10 §11` rule 8).
+    fn reserved_module(&mut self, header: &una_syntax::ast::ModuleHeader) {
+        let Some(first) = header.path.segments.first() else {
+            return;
+        };
+        let segment = self.name(first);
+        if !prelude::RESERVED_SEGMENTS.contains(&segment) {
+            return;
+        }
+        let names: Vec<&str> = header
+            .path
+            .segments
+            .iter()
+            .map(|segment| self.name(segment))
+            .collect();
+        let path = names.join(".");
+        self.error(
+            Code::U1009,
+            header.span,
+            format!(
+                "module `{path}` starts with `{segment}`, a segment that only the standard library may use"
+            ),
         );
     }
 

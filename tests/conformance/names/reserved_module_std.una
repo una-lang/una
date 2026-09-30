@@ -1,0 +1,8 @@
+-- test: a user module whose path starts with std is reserved (R-010)
+-- spec: spec/10 §11
+-- expect: error U1009 at 4:1
+module std.host
+
+pub capability Files
+  op read(path: Text) -> internal Text
+    ensures result.len > 0

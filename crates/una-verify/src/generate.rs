@@ -204,6 +204,16 @@ pub(crate) struct Index<'p> {
     vias: BTreeMap<(&'p str, &'p str), Vec<&'p Type>>,
 }
 
+/// Whether `module` is the prelude's (`spec/14 §1`). The prelude is identified by its module
+/// path, which no module of a package that reaches the verifier can have: a user module path
+/// whose first segment is `prelude` is U1009 at tier 0 (ADR 0038 D7), and tier 1 runs only
+/// when tier 0 reports nothing (DECISION D-112). DECISION D-TBD-b1: the reserved path is the
+/// prelude's identity, rather than a new Core IR path that no source can spell, and a kind the
+/// package declares is never taken for a prelude kind ([`Index::prelude_kind`]).
+fn is_prelude(module: &str) -> bool {
+    module == una_core::PRELUDE_MODULE
+}
+
 /// The variants of the prelude's kinds, which the program does not declare: names and field
 /// counts (`spec/14 §1, §3`).
 fn prelude_variants(kind: &str) -> Option<&'static [(&'static str, &'static [&'static str])]> {
@@ -336,9 +346,15 @@ impl<'p> Index<'p> {
         out
     }
 
+    /// Whether the kind at (`module`, `name`) is a kind of the prelude. A kind the package
+    /// declares never is, whatever its module is called.
+    fn prelude_kind(&self, module: &str, name: &str) -> bool {
+        is_prelude(module) && !self.kinds.contains_key(&(module, name))
+    }
+
     /// The number of variants of the kind at (`module`, `name`), and their names.
     fn variant_names(&self, module: &str, name: &str) -> Vec<String> {
-        if module == "prelude"
+        if self.prelude_kind(module, name)
             && let Some(variants) = prelude_variants(name)
         {
             return variants.iter().map(|(v, _)| (*v).to_owned()).collect();
@@ -352,7 +368,7 @@ impl<'p> Index<'p> {
     /// Whether the kind is a sum whose variants have no fields, so that equality and order
     /// are those of its tags (`spec/03 §1`).
     fn payload_free(&self, module: &str, name: &str) -> bool {
-        if module == "prelude" {
+        if self.prelude_kind(module, name) {
             return prelude_variants(name)
                 .is_some_and(|variants| variants.iter().all(|(_, fields)| fields.is_empty()));
         }
@@ -371,7 +387,7 @@ impl<'p> Index<'p> {
         else {
             return None;
         };
-        if module == "prelude" {
+        if self.prelude_kind(module, name) {
             // `Some(value: T)`, `Ok(value: T)`, `Err(failure: E)`.
             return match (name.as_str(), variant) {
                 ("Option" | "Result", 0) | ("Result", 1) if index == 0 => {
@@ -460,7 +476,7 @@ pub(crate) fn sort(ty: &Type) -> Sort {
             Base::Hashed => "Hashed".to_owned(),
             Base::Named { module, name, args } => {
                 let args: Vec<Sort> = args.iter().map(sort).collect();
-                if module == "prelude" && matches!(name.as_str(), "List" | "Option" | "Result") {
+                if is_prelude(module) && matches!(name.as_str(), "List" | "Option" | "Result") {
                     let mut sort = name.clone();
                     for arg in &args {
                         sort.push('_');
@@ -1333,7 +1349,7 @@ impl<'p, 'i> Walker<'p, 'i> {
 
     /// The fields of a constructed value or a failure: refinement obligations at each.
     fn fields(&mut self, ctor: &Ctor, args: &[Atom], arg_spans: &[Span], ctx: &Ctx) {
-        let variants = if ctor.kind.module == "prelude" {
+        let variants = if self.index.prelude_kind(&ctor.kind.module, &ctor.kind.name) {
             None
         } else {
             self.index
@@ -1456,7 +1472,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             return None;
         };
         let field_ty = self.index.field_type(&value.ty, variant, index)?;
-        let field_name = if module == "prelude" {
+        let field_name = if self.index.prelude_kind(module, name) {
             prelude_variants(name)
                 .and_then(|variants| variants.get(variant))
                 .and_then(|(_, fields)| fields.get(index))
@@ -2581,6 +2597,42 @@ mod tests {
             sort: sort.to_owned(),
             role: ConstRole::Plain,
         })
+    }
+
+    #[test]
+    fn a_kind_the_package_declares_is_never_a_prelude_kind() {
+        // R-010: tier 0 rejects a module named `prelude` (U1009); the verifier still takes the
+        // variants of a kind the package declares from the declaration.
+        let variant = |name: &str| DataVariant {
+            name: name.to_owned(),
+            fields: Vec::new(),
+        };
+        let program = Program {
+            modules: vec![una_core::Module {
+                path: una_core::PRELUDE_MODULE.to_owned(),
+                decls: vec![Decl::Data {
+                    name: "KeyError".to_owned(),
+                    params: Vec::new(),
+                    variants: vec![
+                        variant("UnknownKey"),
+                        variant("Revoked"),
+                        variant("Expired"),
+                    ],
+                    record: false,
+                }],
+                examples: Vec::new(),
+            }],
+            ..Program::default()
+        };
+        let index = Index::new(&program);
+        assert_eq!(index.variant_names("prelude", "KeyError").len(), 3);
+        assert_eq!(index.variant_names("prelude", "FileError").len(), 3);
+        let empty = Program::default();
+        let index = Index::new(&empty);
+        assert_eq!(
+            index.variant_names("prelude", "KeyError"),
+            vec!["UnknownKey"]
+        );
     }
 
     #[test]

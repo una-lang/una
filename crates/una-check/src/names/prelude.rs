@@ -53,6 +53,10 @@ pub(crate) const LOWER: [&str; 20] = [
     "is_ok",
 ];
 
+/// The first segments of the module paths reserved for the standard library (ADR 0038 D7,
+/// `spec/10 §11` rule 8).
+pub(crate) const RESERVED_SEGMENTS: [&str; 2] = ["std", "prelude"];
+
 /// The path of the only standard module outside the prelude (`spec/14 §4`).
 pub(crate) const STD_TESTING: &str = "std.testing";
 
