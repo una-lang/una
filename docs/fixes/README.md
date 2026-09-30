@@ -27,4 +27,4 @@ Status values for a file: `Open`, `In progress`, `Done`. An item is done only wh
 
 | File | Title | Status |
 | --- | --- | --- |
-| [0001-syntax-guide-review.md](0001-syntax-guide-review.md) | Review of the syntax reference guide against the v0.1 compiler | In progress |
+| [0001-syntax-guide-review.md](0001-syntax-guide-review.md) | Review of the syntax reference guide against the v0.1 compiler | Done |

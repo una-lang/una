@@ -1,6 +1,6 @@
 # 0001. Review of the syntax reference guide against the v0.1 compiler
 
-- **Status:** In progress
+- **Status:** Done (closed by the v0.1 closure run on 2026-09-30; the questions R-1, R-3 and R-5 and ADR 0045 for R-2 are open questions of the closure pull request)
 - **Date:** 2026-09-29
 - **Found at:** commit `3301b05` on `dev/v0.1`, with Z3 at the version of `verification.lock`
 - **Source:** the owner's "Una Language Guide: Syntax Reference (v0.1)", checked against the compiler and `docs/spec/`
