@@ -1753,3 +1753,14 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `342fe7b`, `crates/una-interp/src/host.rs`, tag `DECISION D-134`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+
+### D-135: How the verifier recognizes the prelude (closure, R-010)
+- Question: ADR 0038 D7 asks that prelude kinds be identified by an identity user code cannot spell. The Core path of the prelude is `prelude`.
+- Context: `spec/10 §11` rule 8, ADR 0038 D7.
+- Options: A) keep the Core path `prelude` as the identity, which U1009 now reserves, since tier 1 runs only when tier 0 reports nothing (D-112), and let a kind the package declares always win; B) a new Core path that no source can spell, which changes the interpreter and the elaborator.
+- Chosen: A, because U1009 makes the path unspellable in any program that reaches the verifier, and the change stays in one function.
+- Confidence: medium
+- Reversal cost: low, `is_prelude` in `crates/una-verify/src/generate.rs` and `una_core::PRELUDE_MODULE`
+- Implemented in: `eab57c7`, `crates/una-verify/src/generate.rs`, tag `DECISION D-135`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?

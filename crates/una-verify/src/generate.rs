@@ -210,7 +210,7 @@ pub(crate) struct Index<'p> {
 /// Whether `module` is the prelude's (`spec/14 §1`). The prelude is identified by its module
 /// path, which no module of a package that reaches the verifier can have: a user module path
 /// whose first segment is `prelude` is U1009 at tier 0 (ADR 0038 D7), and tier 1 runs only
-/// when tier 0 reports nothing (DECISION D-112). DECISION D-TBD-b1: the reserved path is the
+/// when tier 0 reports nothing (DECISION D-112). DECISION D-135: the reserved path is the
 /// prelude's identity, rather than a new Core IR path that no source can spell, and a kind the
 /// package declares is never taken for a prelude kind ([`Index::prelude_kind`]).
 fn is_prelude(module: &str) -> bool {
