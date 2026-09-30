@@ -1,0 +1,20 @@
+-- test: `Option` is covariant at a branch join (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 15:3
+module sweep_variance_option_join
+
+kind Box[T]
+  value: T
+
+kind Sink[T]
+  eat: fn(T) -> Int
+
+pub join_0(c: Bool, v: Option[secret Int], w: Option[Int]) -> Option[Int]
+=
+  let j = if c then w else v
+  j
+
+pub join_1(c: Bool, v: Option[Int], w: Option[secret Int]) -> Option[secret Int]
+=
+  let j = if c then w else v
+  j

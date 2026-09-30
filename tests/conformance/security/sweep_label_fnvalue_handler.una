@@ -1,0 +1,23 @@
+-- test: function values: a handler result that is a function value keeps its labels (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 20:32
+-- expect: error U4001 at 23:21
+module sweep_label_fnvalue_handler
+
+low(x: Int) -> Int = x
+
+high(x: Int) -> Int = x + 1
+
+pick(pin: secret Int) -> secret fn(Int) -> Int = if pin > 0 then low else high
+
+is_pin[T](x: T, y: T) -> Int = if x == y then 1 else 0
+
+capability Maker
+  op make(pin: Int) -> fn(Int) -> Int
+    accepts secret
+
+handler closing() for Maker
+  op make(pin) = fn(x: Int) -> x + pin
+
+handler choosing() for Maker
+  op make(pin) = if pin > 0 then low else high

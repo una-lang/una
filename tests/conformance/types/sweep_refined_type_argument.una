@@ -1,0 +1,29 @@
+-- test: a refined type never instantiates List, Option, Result, a covariant or an invariant user kind, so their variance for refinements is rejected by construction (label sweep)
+-- spec: spec/03 §3
+-- expect: error U2002 at 19:21
+-- expect: error U2002 at 21:24
+-- expect: error U2002 at 23:24
+-- expect: error U2002 at 25:18
+-- expect: error U2002 at 27:18
+-- expect: error U2002 at 29:19
+module sweep_refined_type_argument
+
+kind Positive = Int where it > 0
+
+kind Box[T]
+  value: T
+
+kind Sink[T]
+  eat: fn(T) -> Int
+
+pub listed(xs: List[Positive]) -> Int = xs.len
+
+pub optional(o: Option[Positive]) -> Int = 0
+
+pub resulted(r: Result[Positive, Int]) -> Int = 0
+
+pub boxed(b: Box[Positive]) -> Int = 0
+
+pub sunk(s: Sink[Positive]) -> Int = 0
+
+pub ranged(b: Box[Int in 0..5]) -> Int = 0
