@@ -1,5 +1,7 @@
 # Adversarial programs
 
+> Note added by the v0.1 closure run (re-review finding N-017): the "Observed" column and the headers of these programs describe the reviewed tree, `c2f3386`. Every program has since been promoted into the test suite with its correct expectation; `docs/history/v0.1/runs/v0.1-closure-plan.md` §10 maps each one to its case.
+
 There are 143 programs, each written to get an unsound program accepted or to catch the runtime departing from spec/11. Each file (or the main source file of each package) starts with a comment header stating the attack, the expected diagnostic and the observed result. All programs pass `una fmt --check`, so U7001 never masks a result.
 
 Run a single-file program with `una check <file>` and a package with `una check <dir>`. Runtime demos need the grants in their header or `una.toml`, and `PIN` or other environment variables where the header says so.
