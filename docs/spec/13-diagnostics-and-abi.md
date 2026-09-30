@@ -109,6 +109,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U1006 | names | Undeclared requirement in `derived from` |
 | U1007 | names | Generated requirement marked active |
 | U1008 | names | Module path does not match file path |
+| U1009 | names | Reserved module name |
 | U2001 | types | Type mismatch |
 | U2002 | types | Unknown or ill-formed type |
 | U2003 | types | Wrong number of type arguments |
@@ -250,7 +251,7 @@ Without `--json`, the same sections print as labeled lines.
 
 ## 7. Project files
 
-Package layout: `una.toml` and `verification.lock` at the root, sources under `src/`. Module `a.b.c` lives in `src/a/b/c.una` (U1008).
+Package layout: `una.toml` and `verification.lock` at the root, sources under `src/`. Module `a.b.c` lives in `src/a/b/c.una` (U1008). Module paths whose first segment is `std` or `prelude` are reserved for the standard library, in a package and in a single file (U1009, `spec/10 §11` rule 8).
 
 ```toml
 [package]

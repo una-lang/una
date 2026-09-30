@@ -133,6 +133,9 @@ pub(crate) struct Returning {
     /// The written result type, when it is in the package.
     pub(crate) origin: Option<Span>,
     pub(crate) ensures: bool,
+    /// For a policy's `via` function, whether the policy's `to` type is refined: its result is
+    /// a `refinement` obligation too (ADR 0038 D5, `spec/12 §3`).
+    pub(crate) via_refined: bool,
 }
 
 pub(crate) struct Checker<'c, 'a, 's> {
@@ -512,7 +515,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             return;
         };
         let (refined, origin, ensures) = (
-            returning.result.is_refined(),
+            returning.result.is_refined() || returning.via_refined,
             returning.origin,
             returning.ensures,
         );
@@ -677,10 +680,17 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             }
         }
         self.base = base;
+        let via_refined = self
+            .env
+            .vias
+            .get(&id)
+            .and_then(|policy| self.env.functions.get(*policy))
+            .is_some_and(|policy| policy.result.is_refined());
         self.returning = Some(Returning {
             result: def.result.clone(),
             origin: self.origin(def.module, def.result_span),
             ensures: def.ensures,
+            via_refined,
         });
         // DECISION D-095: the body of a `via` function is not checked for labels.
         let ctx = Ctx {
@@ -925,6 +935,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 result: o.result.clone(),
                 origin: self.origin(module, o.result_span),
                 ensures: o.ensures,
+                via_refined: false,
             });
             let ctx = Ctx {
                 fails: op_def.and_then(|o| o.fails.clone()),

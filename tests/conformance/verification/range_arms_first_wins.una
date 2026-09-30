@@ -1,0 +1,18 @@
+-- test: the verifier and the interpreter agree that the first of overlapping range arms wins (review control)
+-- spec: spec/12 §3
+-- expect: ok
+-- expect: test-pass
+module range_arms_first_wins
+
+pub kind Level = Low | High
+
+pub classify(n: Int in 0..10) -> Level
+  ensures n == 4 implies result is Low
+=
+  when n
+    in 0..5 -> Low
+    in 3..10 -> High
+
+example "first arm wins"
+  do classify(4)
+  expect result is Low

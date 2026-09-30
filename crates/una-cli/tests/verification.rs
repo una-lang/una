@@ -294,6 +294,125 @@ pub first() -> Int = book(4321)
 }
 
 #[test]
+fn host_capabilities_are_declared_in_std_host_with_their_signatures() {
+    // ADR 0038 D6, `spec/14 §3`: the verifier sees the host capabilities as declarations of
+    // `std.host`, and operations name their capability by that identity.
+    let checked = una_cli::check(&repository().join("examples/hello"), Tier::Zero).unwrap();
+    let host: Vec<(String, Vec<String>)> = checked
+        .program
+        .host
+        .iter()
+        .filter_map(|decl| match decl {
+            una_core::Decl::Cap { name, ops } => Some((
+                name.clone(),
+                ops.iter()
+                    .map(|op| format!("{}/{}", op.name, op.params.len()))
+                    .collect(),
+            )),
+            _ => None,
+        })
+        .collect();
+    let expected: Vec<(String, Vec<String>)> = [
+        ("Console", vec!["print/1"]),
+        ("Clock", vec!["now/0"]),
+        ("Env", vec!["get/1"]),
+        ("Files", vec!["read/1", "write/2"]),
+        ("Keys", vec!["hmac/2"]),
+    ]
+    .into_iter()
+    .map(|(name, ops)| {
+        (
+            name.to_owned(),
+            ops.into_iter().map(str::to_owned).collect(),
+        )
+    })
+    .collect();
+    assert_eq!(host, expected);
+    let mut paths = Vec::new();
+    for module in &checked.program.modules {
+        for decl in &module.decls {
+            if let una_core::Decl::Fun(fun) = decl {
+                collect_op_paths(&fun.body, &mut paths);
+            }
+        }
+    }
+    assert!(!paths.is_empty());
+    assert!(paths.iter().all(|p| p == "std.host.Console"), "{paths:?}");
+}
+
+/// The qualified capability of every operation in `expr`.
+fn collect_op_paths(expr: &una_core::Expr, out: &mut Vec<String>) {
+    use una_core::{Bound, Expr, Rhs};
+    match expr {
+        Expr::Let { value, body, .. } => {
+            match value.as_ref() {
+                Bound::Rhs(Rhs::Op {
+                    capability_path, ..
+                }) => out.push(capability_path.qualified()),
+                Bound::Expr(inner) => collect_op_paths(inner, out),
+                Bound::Rhs(_) => {}
+            }
+            collect_op_paths(body, out);
+        }
+        Expr::If {
+            then, otherwise, ..
+        } => {
+            collect_op_paths(then, out);
+            collect_op_paths(otherwise, out);
+        }
+        Expr::Case {
+            arms, otherwise, ..
+        } => {
+            for arm in arms {
+                collect_op_paths(&arm.body, out);
+            }
+            if let Some(otherwise) = otherwise {
+                collect_op_paths(otherwise, out);
+            }
+        }
+        Expr::Handle { body, handler, .. } => {
+            collect_op_paths(body, out);
+            collect_op_paths(handler, out);
+        }
+        Expr::Attempt { body, .. } | Expr::With { body, .. } => collect_op_paths(body, out),
+        Expr::Atom { .. } | Expr::Fail { .. } | Expr::Unreachable { .. } => {}
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_query_the_solver_rejects_is_u8001_and_exits_with_3() {
+    // `spec/13 §5`: an internal compiler error exits with 3 (R-019). A stand-in solver of the
+    // pinned version rejects every query, as Z3 does for a query that is not valid SMT-LIB.
+    use std::os::unix::fs::PermissionsExt;
+    let root = package(
+        "rejected-query",
+        &[(
+            "src/app.una",
+            "module app\n\npub half(x: Int, y: Int) -> Int = x / y\n",
+        )],
+    );
+    let bin = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("rejecting-solver");
+    std::fs::create_dir_all(&bin).unwrap();
+    let solver = bin.join("z3");
+    std::fs::write(
+        &solver,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'Z3 version 5.1.0 - 64 bit'; exit 0; fi\ncat > /dev/null\necho '(error \"line 1 column 1: rejected\")'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&solver, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _ = std::fs::remove_dir_all(root.join(".una"));
+    let output = Command::new(env!("CARGO_BIN_EXE_una"))
+        .args(["--json", "check", root.to_str().unwrap()])
+        .env("PATH", &bin)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3), "{}", stdout(&output));
+    let document: Value = serde_json::from_str(stdout(&output)).unwrap();
+    assert_eq!(document["diagnostics"][0]["code"], "U8001");
+}
+
+#[test]
 fn the_verifier_generates_every_obligation_the_checker_found() {
     // `spec/12 §3` over Core IR agrees with the sites the type checker records since M4: the
     // site of each obligation, or each return path of a return obligation (DECISION D-113).

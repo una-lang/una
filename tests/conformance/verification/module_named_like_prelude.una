@@ -1,0 +1,14 @@
+-- test: a module path that only resembles the prelude is an ordinary module (R-010)
+-- spec: spec/12 §3
+-- expect: error U5001 at 13:11
+module prelude_twin
+
+pub kind KeyError = UnknownKey | Revoked | Expired
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let e = Expired
+  let zero = 0
+  let q = 100 / zero
+  @console.print("q = {q}")
