@@ -1,0 +1,44 @@
+-- test: nested effects on do lines run left to right, and a short-circuited and or or skips its right operand (review control)
+-- spec: spec/08 §2
+-- expect: test-pass
+-- Promoted from the v0.1 review, adversarial `runtime-evaluation-order`.
+module evaluation_order_do_lines
+
+pub kind Oops = | Boom
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub handler log() for Log
+  op write(n) = unit
+
+pub tick(n: Int) -> Int
+  uses @log: Log[write]
+=
+  @log.write(n)
+  n
+
+pub boom(n: Int) -> Bool
+  uses @log: Log[write]
+  fails Oops
+=
+  @log.write(n)
+  fail Boom
+
+pub combine(a: Int, b: Int) -> Int = a * 10 + b
+
+example "arguments run left to right"
+  given @log = log()
+  do combine(tick(1), b: tick(2))
+  expect result == 12
+
+example "and short-circuits in a do line"
+  given @log = log()
+  do tick(0) == 1 and boom(9)
+  expect result == false
+  expect performed @log.write
+
+example "or short-circuits"
+  given @log = log()
+  do tick(1) == 1 or boom(9)
+  expect result == true

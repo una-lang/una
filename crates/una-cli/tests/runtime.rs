@@ -919,3 +919,149 @@ fn no_trace_key_carries_a_binder_suffix() {
         );
     }
 }
+
+/// The trace of each example of a conformance case under `una --json test`, as the `args` of
+/// its events.
+fn case_traces(case: &str) -> Vec<Value> {
+    let output = una(&["--json", "test", &format!("tests/conformance/{case}")]);
+    assert_eq!(output.status.code(), Some(0), "{}", stdout(&output));
+    json(&output)["examples"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|example| {
+            Value::Array(
+                example["trace"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|event| event["args"].clone())
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn the_review_traces_run_left_to_right_and_redact_every_labeled_position() {
+    // Review controls `runtime-evaluation-order` and `runtime-trace-redaction`: nested effects
+    // on a `do` line run left to right and a short-circuited `and` or `or` skips its right
+    // operand (`spec/08 §2`); a secret argument is redacted directly and inside a record, a
+    // list and an option (`spec/11 §5`).
+    assert_eq!(
+        case_traces("runtime/evaluation_order_do_lines.una"),
+        [
+            json!([{"n": "1"}, {"n": "2"}]),
+            json!([{"n": "0"}]),
+            json!([{"n": "1"}]),
+        ]
+    );
+    let traces = case_traces("runtime/trace_redaction.una");
+    assert_eq!(
+        traces,
+        [json!([{
+            "tag": "\"t\"",
+            "card": "Card(owner: \"Ana\", number: <redacted:secret>)",
+            "extra": "<redacted:secret>",
+            "maybe": "<redacted:secret>",
+            "raw": "<redacted:secret>"
+        }])]
+    );
+    assert!(!traces[0].to_string().contains("4111-SECRET"));
+}
+
+/// The program of the review's `runtime-host-trace-redaction`: an `internal` value from `Env`
+/// written to a file, read back and carried by the failure of `main`.
+const HOST_REDACTION: &str = "module rr
+
+pub kind Oops = Leak(detail: internal Text) | Plain
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+  uses @files: Files[read, write]
+  fails Oops
+=
+  let token = @env.get(\"UNA_SECRET_TOKEN\")
+    if none use \"none\"
+  @files.write(\"out.txt\", content: token)
+    if error fail Plain
+  let back = @files.read(\"out.txt\")
+    if error fail Plain
+  @console.print(\"wrote and read a file\")
+  fail Leak(detail: back)
+";
+
+#[test]
+fn host_values_stay_redacted_through_files_and_the_failure_of_main() {
+    // Review control `runtime-host-trace-redaction` (`spec/11 §5`, `spec/04 §8`): the value
+    // of an environment variable is `internal`, so neither the trace of `Env.get`,
+    // `Files.write` and `Files.read` nor the fields of `main`'s failure show it.
+    let root = package(
+        "host-redaction",
+        "\n[run]\nentry = \"rr\"\ngrants = [\"console\", \"env\", \"files:./data:read,write\"]\n",
+        &[("src/rr.una", HOST_REDACTION), ("data/.keep", "")],
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_una"))
+        .args(["--json", "run"])
+        .env("UNA_SECRET_TOKEN", "hunter2")
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{}", stdout(&output));
+    assert!(!stdout(&output).contains("hunter2"), "{}", stdout(&output));
+    assert!(!stderr(&output).contains("hunter2"), "{}", stderr(&output));
+    assert_eq!(
+        std::fs::read_to_string(root.join("data/out.txt")).unwrap(),
+        "hunter2"
+    );
+    let document = json(&output);
+    assert_eq!(document["output"], json!(["wrote and read a file"]));
+    assert_eq!(
+        document["failure"],
+        json!({"variant": "Leak", "fields": {}})
+    );
+    let events: Vec<(String, Value, Value)> = document["trace"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| {
+            (
+                format!(
+                    "{}.{}",
+                    event["capability"].as_str().unwrap(),
+                    event["op"].as_str().unwrap()
+                ),
+                event["args"].clone(),
+                event["outcome"].clone(),
+            )
+        })
+        .collect();
+    let redacted = json!({"kind": "ok", "value": "<redacted:internal>"});
+    let unit = json!({"kind": "ok", "value": "unit"});
+    assert_eq!(
+        events,
+        [
+            (
+                "Env.get".to_owned(),
+                json!({"name": "\"UNA_SECRET_TOKEN\""}),
+                redacted.clone()
+            ),
+            (
+                "Files.write".to_owned(),
+                json!({"path": "\"out.txt\"", "content": "<redacted:internal>"}),
+                unit.clone()
+            ),
+            (
+                "Files.read".to_owned(),
+                json!({"path": "\"out.txt\""}),
+                redacted
+            ),
+            (
+                "Console.print".to_owned(),
+                json!({"line": "\"wrote and read a file\""}),
+                unit
+            ),
+        ]
+    );
+}
