@@ -3,10 +3,10 @@
 -- expect: ok
 module exhaustive_proven
 
-pub kind Score = Int in 0..100
+pub kind Percent = Int in 0..100
 
-pub grade(score: Score) -> Text
+pub band(percent: Percent) -> Text
 =
-  when score
+  when percent
     in 0..<50 -> "fail"
     in 50..100 -> "pass"

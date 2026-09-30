@@ -2,116 +2,120 @@
 source: crates/una-syntax/tests/examples.rs
 expression: "dump(&parsed.file, &interner, db.file(id).text())"
 ---
-(module lending.loans)
-(requirement LENDING_1
+(module toolshelf.tools)
+(requirement SHELF_1
   (text "A member holds at most three tools at a time")
   (source human)
   (owner front_desk)
   (status active))
-(requirement LENDING_2
-  (text "A loan lasts from one to twenty-eight days")
-  (source policy "Tool Library Rules 3")
+(requirement SHELF_2
+  (text "A checkout lasts from one to twenty-eight days")
+  (source policy "Tool Shelf Rules 3")
   (owner front_desk)
   (status active))
-(kind pub LoanDays (doc "--- The number of days a loan lasts.") (alias {Int in 1..28}))
+(kind pub KeepDays (doc "--- The number of days a member keeps a tool.") (alias {Int in 1..28}))
 (kind pub Day (doc "--- A day, counted from the Unix epoch.") (alias {Int}))
 (kind pub Tool (record (name {Text}) (deposit {Nat})))
 (kind pub Member (record (name {Text}) (holding {Int in 0..3})))
-(kind pub Loan (record (tool {Tool}) (member {Member}) (due {Day})))
-(kind pub LendError (sum (NotOnShelf (tool {Text})) ShelfDown))
+(kind pub Checkout (record (tool {Tool}) (member {Member}) (due {Day})))
+(kind pub CheckoutError (sum (NotOnShelf (tool {Text})) ShelfDown))
 (kind pub ShelfError (sum Offline))
 (capability pub Shelf
   (doc "--- The shelf the tools are kept on.")
   (op pick ((name {Text})) {Option[Tool]} (fails ShelfError))
-  (op give_back ((tool {Tool})) {Unit} (fails ShelfError)))
-(predicate pub reflect can_borrow
+  (op bring_back ((tool {Tool})) {Unit} (fails ShelfError)))
+(predicate pub reflect can_check_out
   (doc "--- A member may take one more tool.")
   ((m {Member}))
   {Bool}
   (< (. m holding) 3))
 (predicate pub reflect overdue
-  (doc "--- A loan is overdue after its due day.")
-  ((loan {Loan}) (today {Day}))
+  (doc "--- A checkout is overdue after its due day.")
+  ((checkout {Checkout}) (today {Day}))
   {Bool}
-  (> today (. loan due)))
-(fn pub lend
-  (doc "--- Takes a tool from the shelf and lends it for `days` days from `today`.")
-  ((member {Member}) (name {Text}) (today {Day}) (days {LoanDays}))
-  {Loan}
-  (requires (call can_borrow member))
+  (> today (. checkout due)))
+(fn pub check_out
+  (doc "--- Checks a tool out from the shelf for `days` days from `today`.")
+  ((member {Member}) (name {Text}) (today {Day}) (days {KeepDays}))
+  {Checkout}
+  (requires (call can_check_out member))
   (ensures (== (. result due) (+ today days)))
   (ensures (== (. (. result member) holding) (+ (. member holding) 1)))
   (uses @shelf {Shelf[pick]})
-  (fails LendError)
-  (derived-from LENDING_1 LENDING_2)
+  (fails CheckoutError)
+  (derived-from SHELF_1 SHELF_2)
   (block
     (let tool
       (handled
         (@shelf.pick name)
         (if-error-fail ShelfDown)
         (if-none-fail (NotOnShelf (tool: name)))))
-    (call Loan tool
+    (call Checkout tool
       (member: (call Member (name: (. member name)) (holding: (+ (. member holding) 1))))
       (due: (+ today days)))))
-(fn pub give_back
-  (doc "--- Puts a lent tool back on the shelf.")
-  ((loan {Loan}))
+(fn pub bring_back
+  (doc "--- Brings a taken tool back to the shelf.")
+  ((checkout {Checkout}))
   {Member}
-  (requires (> (. (. loan member) holding) 0))
-  (ensures (== (. result holding) (- (. (. loan member) holding) 1)))
-  (uses @shelf {Shelf[give_back]})
-  (fails LendError)
-  (derived-from LENDING_1)
+  (requires (> (. (. checkout member) holding) 0))
+  (ensures (== (. result holding) (- (. (. checkout member) holding) 1)))
+  (uses @shelf {Shelf[bring_back]})
+  (fails CheckoutError)
+  (derived-from SHELF_1)
   (block
-    (handled (@shelf.give_back (. loan tool)) (if-error-fail ShelfDown))
-    (call Member (name: (. (. loan member) name)) (holding: (- (. (. loan member) holding) 1)))))
+    (handled (@shelf.bring_back (. checkout tool)) (if-error-fail ShelfDown))
+    (call Member
+      (name: (. (. checkout member) name))
+      (holding: (- (. (. checkout member) holding) 1)))))
 (fn pub late_days
   (doc "--- The days a returned tool is late, zero when it is on time.")
-  ((loan {Loan}) (today {Day}))
+  ((checkout {Checkout}) (today {Day}))
   {Nat}
-  (ensures (implies (call overdue loan today) (> result 0)))
-  (ensures (implies (not (call overdue loan today)) (== result 0)))
-  (block (if (> today (. loan due)) (- today (. loan due)) 0)))
+  (ensures (implies (call overdue checkout today) (> result 0)))
+  (ensures (implies (not (call overdue checkout today)) (== result 0)))
+  (block (if (> today (. checkout due)) (- today (. checkout due)) 0)))
 (handler pub shelf_with
   (doc "--- A shelf holding `tools`.")
   ((tools {List[Tool]}))
   (for Shelf)
   (op pick (name) (method tools first_where (keep: (fn (t) (== (. t name) name)))))
-  (op give_back (tool) unit))
+  (op bring_back (tool) unit))
 (handler pub offline_shelf
   (doc "--- A shelf that cannot be reached.")
   ()
   (for Shelf)
   (op pick (name) (fail Offline))
-  (op give_back (tool) (fail Offline)))
-(example "a member with room borrows a tool for a week"
+  (op bring_back (tool) (fail Offline)))
+(example "a member with room takes a tool for a week"
   (given @shelf (call shelf_with (tools: (list (call Tool (name: "drill") (deposit: 20))))))
-  (do (call lend (call Member (name: "Ana") (holding: 1)) (name: "drill") (today: 100) (days: 7)))
+  (do
+    (call check_out (call Member (name: "Ana") (holding: 1)) (name: "drill") (today: 100) (days: 7)))
   (expect (== (. result due) 107))
   (expect (== (. (. result member) holding) 2))
   (expect-performed @shelf.pick))
-(example "a tool that is not on the shelf is not lent"
-  (given @shelf (call shelf_with (tools: (list))))
-  (do (call lend (call Member (name: "Ana") (holding: 0)) (name: "saw") (today: 100) (days: 7)))
-  (expect-fails NotOnShelf))
-(example "a shelf that is offline stops the loan"
-  (given @shelf (call offline_shelf))
-  (do (call lend (call Member (name: "Bo") (holding: 0)) (name: "saw") (today: 100) (days: 3)))
-  (expect-fails ShelfDown))
-(example "giving a tool back frees a place"
+(example "a tool that is not on the shelf cannot be taken"
   (given @shelf (call shelf_with (tools: (list))))
   (do
-    (call give_back
-      (call Loan
+    (call check_out (call Member (name: "Ana") (holding: 0)) (name: "saw") (today: 100) (days: 7)))
+  (expect-fails NotOnShelf))
+(example "a shelf that is offline stops the checkout"
+  (given @shelf (call offline_shelf))
+  (do (call check_out (call Member (name: "Bo") (holding: 0)) (name: "saw") (today: 100) (days: 3)))
+  (expect-fails ShelfDown))
+(example "bringing a tool back frees a place"
+  (given @shelf (call shelf_with (tools: (list))))
+  (do
+    (call bring_back
+      (call Checkout
         (tool: (call Tool (name: "saw") (deposit: 15)))
         (member: (call Member (name: "Bo") (holding: 3)))
         (due: 10))))
   (expect (== (. result holding) 2))
-  (expect-performed @shelf.give_back))
+  (expect-performed @shelf.bring_back))
 (example "a tool returned three days after its due day is three days late"
   (do
     (call late_days
-      (call Loan
+      (call Checkout
         (tool: (call Tool (name: "saw") (deposit: 15)))
         (member: (call Member (name: "Bo") (holding: 1)))
         (due: 10))

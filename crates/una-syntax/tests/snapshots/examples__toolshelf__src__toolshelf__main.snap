@@ -2,8 +2,8 @@
 source: crates/una-syntax/tests/examples.rs
 expression: "dump(&parsed.file, &interner, db.file(id).text())"
 ---
-(module lending.main)
-(import lending.loans LendError Member Tool late_days lend shelf_with)
+(module toolshelf.main)
+(import toolshelf.tools CheckoutError Member Tool check_out late_days shelf_with)
 (fn catalog
   (doc "--- The tools of the community shelf.")
   ()
@@ -17,16 +17,16 @@ expression: "dump(&parsed.file, &interner, db.file(id).text())"
   {Unit}
   (uses @console {Console[print]})
   (uses @clock {Clock[now]})
-  (fails LendError)
+  (fails CheckoutError)
   (block
     (let now (@clock.now))
     (let today (/ now 86400000))
-    (let loan
+    (let checkout
       (handled
-        (call lend (call Member (name: "Ana") (holding: 0)) (name: "ladder") today (days: 14))
+        (call check_out (call Member (name: "Ana") (holding: 0)) (name: "ladder") today (days: 14))
         (with (= @shelf (call shelf_with (tools: (call catalog)))))
         (if-error-pass)))
     (@console.print
-      (text (. (. loan member) name) " borrowed the " (. (. loan tool) name) " for 14 days"))
-    (let late (call late_days loan (today: (+ today 20))))
+      (text (. (. checkout member) name) " took the " (. (. checkout tool) name) " for 14 days"))
+    (let late (call late_days checkout (today: (+ today 20))))
     (@console.print (text "returned 20 days later, it is " late " days late"))))
