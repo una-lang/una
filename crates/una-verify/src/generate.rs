@@ -199,6 +199,8 @@ pub(crate) struct Index<'p> {
     handlers: BTreeMap<(&'p str, &'p str), &'p [(Name, Type)]>,
     kinds: BTreeMap<(&'p str, &'p str), Kind<'p>>,
     policies: BTreeMap<(&'p str, &'p str), (&'p Type, &'p Type)>,
+    /// The `to` type of each policy, by its `via` function.
+    vias: BTreeMap<(&'p str, &'p str), Vec<&'p Type>>,
 }
 
 /// The variants of the prelude's kinds, which the program does not declare: names and field
@@ -222,6 +224,7 @@ impl<'p> Index<'p> {
             handlers: BTreeMap::new(),
             kinds: BTreeMap::new(),
             policies: BTreeMap::new(),
+            vias: BTreeMap::new(),
         };
         for signature in &program.library {
             index.contracts.insert(
@@ -280,14 +283,40 @@ impl<'p> Index<'p> {
                             },
                         );
                     }
-                    Decl::Policy { name, from, to, .. } => {
+                    Decl::Policy {
+                        name,
+                        from,
+                        to,
+                        via,
+                    } => {
                         index.policies.insert((path, name.as_str()), (from, to));
+                        index
+                            .vias
+                            .entry((via.module.as_str(), via.name.as_str()))
+                            .or_default()
+                            .push(to);
                     }
                     Decl::Alias { .. } => {}
                 }
             }
         }
         index
+    }
+
+    /// The refinements of the `to` types of the policies whose `via` function is `name` of
+    /// `module`, except those of `result`, the via function's own result type, which its own
+    /// result obligations prove already.
+    fn via_refinements(&self, module: &str, name: &str, result: &Type) -> Vec<&'p Refinement> {
+        let own = refinements(result);
+        let mut out: Vec<&'p Refinement> = Vec::new();
+        for to in self.vias.get(&(module, name)).into_iter().flatten() {
+            for refinement in refinements(to) {
+                if !own.contains(refinement) && !out.contains(&refinement) {
+                    out.push(refinement);
+                }
+            }
+        }
+        out
     }
 
     /// The number of variants of the kind at (`module`, `name`), and their names.
@@ -544,31 +573,15 @@ impl<'p, 'i> Walker<'p, 'i> {
             ty: fun.result.clone(),
         };
         for refinement in refinements(&fun.result) {
-            let goal = {
-                let vars = |name: &str| Some(own(&ctx, name));
-                let env = Env {
-                    vars: &vars,
-                    it: Some(result.clone()),
-                    result: Some(result.clone()),
-                };
-                self.term(&refinement.clause.term, &env)
-            };
-            let text = print_term_with(&refinement.clause.term, &|term| {
-                matches!(term, Term::It).then(|| "result".to_owned())
-            });
-            self.returns(
-                ObligationKind::Refinement,
-                &ctx,
-                &leaves,
-                &result,
-                goal,
-                text,
-                fun.span,
-                refinement
-                    .clause
-                    .span
-                    .map(|span| (span, clause_role(refinement))),
-            );
+            self.result_refinement(&ctx, &leaves, &result, refinement, fun.span);
+        }
+        // ADR 0038 D5: the result of a policy's `via` function satisfies the refinement of the
+        // policy's `to` type, which T-Declassify assumes (`spec/12 §3`, `spec/07 §5` rule 3).
+        for refinement in self
+            .index
+            .via_refinements(self.module, &fun.name, &fun.result)
+        {
+            self.result_refinement(&ctx, &leaves, &result, refinement, fun.span);
         }
         for clause in &fun.ensures {
             let goal = {
@@ -592,6 +605,42 @@ impl<'p, 'i> Walker<'p, 'i> {
                 clause.span.map(|span| (span, "ensures clause")),
             );
         }
+    }
+
+    /// A `refinement` obligation over every return path: `result` satisfies `refinement`.
+    fn result_refinement(
+        &mut self,
+        ctx: &Ctx,
+        leaves: &[Leaf],
+        result: &Tv,
+        refinement: &Refinement,
+        source: Span,
+    ) {
+        let goal = {
+            let vars = |name: &str| Some(own(ctx, name));
+            let env = Env {
+                vars: &vars,
+                it: Some(result.clone()),
+                result: Some(result.clone()),
+            };
+            self.term(&refinement.clause.term, &env)
+        };
+        let text = print_term_with(&refinement.clause.term, &|term| {
+            matches!(term, Term::It).then(|| "result".to_owned())
+        });
+        self.returns(
+            ObligationKind::Refinement,
+            ctx,
+            leaves,
+            result,
+            goal,
+            text,
+            source,
+            refinement
+                .clause
+                .span
+                .map(|span| (span, clause_role(refinement))),
+        );
     }
 
     /// An operation of a handler, checked against the contract of its capability's operation
