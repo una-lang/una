@@ -68,10 +68,6 @@ const RUNS: &[(&str, &str)] = &[
     ),
     ("hello", "Hello, Una\n"),
     (
-        "redacted",
-        "Ana borrowed the ladder for 14 days\nreturned 20 days later, it is 6 days late\n",
-    ),
-    (
         "journal",
         "today's entry runs to about 2 hundred characters\n",
     ),
@@ -79,6 +75,10 @@ const RUNS: &[(&str, &str)] = &[
     (
         "shortlinks",
         "docs leads to https://example.org/docs\nblog leads to /\n",
+    ),
+    (
+        "toolshelf",
+        "Ana took the ladder for 14 days\nreturned 20 days later, it is 6 days late\n",
     ),
 ];
 

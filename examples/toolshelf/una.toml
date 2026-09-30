@@ -1,8 +1,8 @@
 [package]
-name = "redacted-example"
+name = "toolshelf-example"
 version = "0.1.0"
 edition = "0.1"
 
 [run]
-entry = "redacted.main"
+entry = "toolshelf.main"
 grants = ["console", "clock"]

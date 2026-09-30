@@ -3,8 +3,8 @@
 -- expect: error U5001 at 8:3
 module exhaustive_refuted
 
-pub grade(redacted: Int) -> Text
+pub band(percent: Int) -> Text
 =
-  when redacted
+  when percent
     in 0..<50 -> "fail"
     in 50..100 -> "pass"

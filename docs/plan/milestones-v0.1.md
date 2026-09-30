@@ -151,7 +151,7 @@ Acceptance:
 Read: `00-charter.md §7`, `plan/roadmap.md §3`.
 
 Tasks:
-1. At least five additional example packages covering every construct in the charter scope: `redacted`, `pantry`, `journal`, `greenhouse` and `shortlinks` (ADR 0035).
+1. At least five additional example packages covering every construct in the charter scope: `toolshelf`, `pantry`, `journal`, `greenhouse` and `shortlinks` (ADR 0035).
 2. `docs/guide/una-for-agents.md`: a compact reference an agent can hold in context (syntax, headers, handling, capabilities, ABI usage). Every snippet is tested.
 3. Release binaries for Linux (x86_64) and macOS (arm64); tag `v0.1.0`, which the owner pushes after the merge into `main` (ADR 0035).
 

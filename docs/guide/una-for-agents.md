@@ -14,7 +14,7 @@ How to read the blocks: every `una` block is a whole module that `una check` acc
 
 ```sh
 una check examples/events
-una --json check examples/redacted
+una --json check examples/toolshelf
 una fmt --check examples/pantry
 una --json test examples/journal
 una --json obligations examples/greenhouse
@@ -68,7 +68,7 @@ pub kind Tool
   deposit: Nat
 
 --- Sums, with and without payloads. A sum of one variant starts with `|`.
-pub kind LendError = NotOnShelf(tool: Text) | ShelfDown
+pub kind CheckoutError = NotOnShelf(tool: Text) | ShelfDown
 
 pub kind Oops = | TooLarge
 
@@ -148,16 +148,16 @@ pub kind Member
   name: Text
   holding: Int in 0..3
 
-pub predicate reflect can_borrow(m: Member) -> Bool = m.holding < 3
+pub predicate reflect can_check_out(m: Member) -> Bool = m.holding < 3
 
-pub borrow(m: Member) -> Member
-  requires can_borrow(m)
+pub check_out(m: Member) -> Member
+  requires can_check_out(m)
   ensures result.holding == m.holding + 1
 =
   Member(name: m.name, holding: m.holding + 1)
 
 --- A caller proves the precondition: here, from the literal.
-pub first_loan() -> Member = borrow(Member(name: "Ana", holding: 0))
+pub first_checkout() -> Member = check_out(Member(name: "Ana", holding: 0))
 ```
 
 A false contract is refuted, with the path and the values that break it:
@@ -319,7 +319,7 @@ module demo
 
 pub kind StoreError = | Offline
 
-pub kind LendError = NotOnShelf | ShelfDown
+pub kind CheckoutError = NotOnShelf | ShelfDown
 
 pub kind Tool
   name: Text
@@ -328,9 +328,9 @@ pub capability Shelf
   op pick(name: Text) -> Option[Tool]
     fails StoreError
 
-pub lend(name: Text) -> Tool
+pub check_out(name: Text) -> Tool
   uses @shelf: Shelf[pick]
-  fails LendError
+  fails CheckoutError
 =
   let tool = @shelf.pick(name)
     if error fail ShelfDown
@@ -338,25 +338,25 @@ pub lend(name: Text) -> Tool
   tool
 
 --- Tries the main shelf, then the backup one.
-pub lend_anywhere(name: Text) -> Tool
+pub check_out_anywhere(name: Text) -> Tool
   uses @main_shelf: Shelf[pick]
   uses @backup: Shelf[pick]
-  fails LendError
+  fails CheckoutError
 =
-  let outcome = attempt lend(name) with @shelf = @main_shelf
+  let outcome = attempt check_out(name) with @shelf = @main_shelf
   when outcome
     is Ok(tool) -> tool
     is Err ->
-      lend(name) with @shelf = @backup
+      check_out(name) with @shelf = @backup
         if error pass
 
 pub handler shelf_with(tools: List[Tool]) for Shelf
   op pick(name) = tools.first_where(keep: fn(t) -> t.name == name)
 
-example "the backup shelf lends what the main one lacks"
+example "the backup shelf has what the main one lacks"
   given @main_shelf = shelf_with(tools: [])
   given @backup = shelf_with(tools: [Tool(name: "saw")])
-  do lend_anywhere("saw")
+  do check_out_anywhere("saw")
   expect result.name == "saw"
   expect performed @backup.pick
 ```
