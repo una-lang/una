@@ -1184,10 +1184,10 @@ una [--json] [--color never|auto|always] <COMMAND>
 **`una contract <module.function>`**
 
 - It reads the package in the current directory and checks it at tier 0. The name is the module path and the function's name, as in `events.checkin.check_in`.
-- An unknown name is a usage error, with exit code 2.
-- A package with diagnostics is reported as `una check` reports it, with exit code 1, since an inferred header is defined only for a package that checks.
+- A package with diagnostics, those of `una.toml` and `verification.lock` included, is reported as `una check` reports it, with exit code 1, before the name is looked up, since an inferred header is defined only for a package that checks.
+- In a package without diagnostics, an unknown name is a usage error, with exit code 2.
 
-**`una trace <REQUIREMENT_ID>`** also reads the package in the current directory, and checks it at tier 1. An unknown identifier is a usage error (exit code 2).
+**`una trace <REQUIREMENT_ID>`** also reads the package in the current directory, and checks it at tier 1. It reports the package's diagnostics first, as `una contract` does; in a package without diagnostics, an unknown identifier is a usage error (exit code 2).
 
 **Output streams.** In human mode, diagnostics go to stderr and command results to stdout. With `--json`, the document goes to stdout and stderr stays empty, except for an internal compiler error.
 
