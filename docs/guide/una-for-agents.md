@@ -26,7 +26,7 @@ una trace EVENTS_3  # in examples/events
 una contract events.checkin.check_in  # in examples/events
 ```
 
-Exit codes: `0` success; `1` errors in the program, an unproven obligation or a failed example; `2` a usage or configuration error; `3` an internal compiler error (U8001), which is a bug to report. With `--json`, stdout holds exactly one JSON document and stderr stays empty.
+Exit codes: `0` success; `1` errors in the program, an unproven obligation or a failed example; `2` a usage or configuration error; `3` an internal compiler error (U8001), which is a bug to report. Problems of `una.toml` (U7002) and `verification.lock` (U7004) are diagnostics and exit with `1`. With `--json`, stdout holds exactly one JSON document and stderr stays empty.
 
 ## 2. Files and packages
 
@@ -37,7 +37,7 @@ Exit codes: `0` success; `1` errors in the program, an unproven obligation or a 
 
 ## 3. Syntax in brief
 
-- Indentation is significant: two spaces per level, no tabs. Brackets join lines.
+- Indentation is significant: two spaces per level, no tabs. A line break inside brackets continues the line, but the canonical form joins such lines, so `una check` reports the split as U7001 (and `una fmt` joins it) unless a comment sits inside the brackets. Write each call on one line.
 - `--` starts a comment, `---` a doc comment attached to the next declaration.
 - Names: `lower_snake` for values, functions, fields, modules, handlers and operations; `UpperCamel` for kinds, variants, capabilities and label categories; `@name` for capability references; `UPPER_SNAKE_1` for requirements.
 - Literals: integers without leading zeros (`1_000` is fine), `true`, `false`, `unit`, and single-line text with `{expression}` interpolation; a literal `}` in text is `\}`.
