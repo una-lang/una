@@ -3,10 +3,10 @@
 -- expect: ok
 module exhaustive_proven
 
-pub kind redacted = Int in 0..100
+pub kind Percent = Int in 0..100
 
-pub grade(redacted: redacted) -> Text
+pub band(percent: Percent) -> Text
 =
-  when redacted
+  when percent
     in 0..<50 -> "fail"
     in 50..100 -> "pass"
