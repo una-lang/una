@@ -83,7 +83,7 @@ impl FnRefinements {
     /// a join accepts what both accept, so its parameters carry the refinements of either and
     /// its result those both share; a meet the other way round. Every value of either type is
     /// then of the join, and the flows the verifier checks are trivially implied.
-    /// DECISION D-TBD-f1: ADR 0037 does not say how branches join; this join never assumes a
+    /// DECISION D-150: ADR 0037 does not say how branches join; this join never assumes a
     /// refinement that one branch lacks.
     pub(crate) fn combine(&self, other: &FnRefinements, join: bool) -> FnRefinements {
         let count = self.params.len().max(other.params.len());

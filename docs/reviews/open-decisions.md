@@ -1918,3 +1918,58 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `b832ee9`, tag `DECISION D-149`; ADR 0042 rules 1 and 2 state it
 - ADR: `docs/adr/0042-opaque-predicates-only-in-checked.md` (Accepted)
 - Answer needed: Keep A? Or switch to B?
+
+### D-150: Joins of refined function types (closure, F-0001-02)
+- Question: ADR 0037 rule 1 carries refinements in function types; branches of `if` and `when` join their types.
+- Context: ADR 0037.
+- Options: A) a joined function type keeps, for each parameter, the refinements of either branch, and for the result only those both branches share; B) drop every refinement of a join.
+- Chosen: A, because it is the strongest type that both branches satisfy (contravariant parameters, covariant result).
+- Confidence: medium
+- Reversal cost: low, the join in `crates/una-check/src/types/unify.rs`
+- Implemented in: `9cf2b99`, tag `DECISION D-150`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-151: The repair of a refuted result refinement (closure, F-0001-02)
+- Question: ADR 0037 rule 6 names the expected function type's position for a parameter; for the result it gives no wording.
+- Context: ADR 0037.
+- Options: A) the repair names the value's function type ("strengthen the result of `fn(...)`..."); B) no repair.
+- Chosen: A, because the result is the value's own declaration, which the agent edits.
+- Confidence: medium
+- Reversal cost: low, `crates/una-verify/src/report.rs`
+- Implemented in: `9cf2b99`, tag `DECISION D-151`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-152: A lambda's result against its expected type (closure, F-0001-02)
+- Question: ADR 0037 rule 2 gives a covariant result goal; a lambda has no declared result.
+- Context: ADR 0037.
+- Options: A) the lambda's body paths are checked against the expected result, reported in the body, with a guard repair; B) one goal over the lambda value.
+- Chosen: A, because the checker already checks lambda results on their body paths, and the guard is the edit that applies.
+- Confidence: medium
+- Reversal cost: low, `crates/una-verify/src/generate.rs`
+- Implemented in: `9cf2b99`, tag `DECISION D-152`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-153: When a refinement counts as carried (closure, F-0001-02)
+- Question: ADR 0037 rule 2: "a goal that is trivially implied (no refinement in the target, or the same refined kind) gives no obligation".
+- Context: ADR 0037.
+- Options: A) one obligation per refinement the target lacks; a refinement is carried when it is the same refined kind or the same range; B) one obligation per position.
+- Chosen: A, because it follows the rule's wording and keeps each goal a single refinement.
+- Confidence: high
+- Reversal cost: low, `crates/una-verify/src/generate.rs`
+- Implemented in: `9cf2b99`, tag `DECISION D-153`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-154: Names of nested positions in goal text (closure, F-0001-02)
+- Question: ADR 0037 rule 4 names the flowing function; a function type nested in a parameter has no name of its own.
+- Context: ADR 0037.
+- Options: A) nested positions are named after their parent (`parameter arg1 of parameter g of takes_fn_int`), and other values by their source text; B) `the value`.
+- Chosen: A, because the agent can find the position from the text.
+- Confidence: high
+- Reversal cost: low, `crates/una-verify/src/generate.rs`
+- Implemented in: `9cf2b99`, tag `DECISION D-154`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?

@@ -1726,9 +1726,9 @@ impl<'p, 'i> Walker<'p, 'i> {
     /// result of `target` that the result of `source` does not carry (covariant), at `span`,
     /// under the path context `ctx`. Function types nested in parameters, results and type
     /// arguments are compared the same way. The binders are fresh (rule 9).
-    /// DECISION D-TBD-f4: one obligation per refinement the target position lacks, as for
+    /// DECISION D-153: one obligation per refinement the target position lacks, as for
     /// any flow, and a refinement is carried when the same refined kind or range is.
-    /// DECISION D-TBD-f5: a position nested in a parameter or result is named after it
+    /// DECISION D-154: a position nested in a parameter or result is named after it
     /// (`parameter arg1 of parameter g of takes_fn`), and a value that is neither a named
     /// function nor a lambda by its source text.
     fn fn_flow(&mut self, source: &Type, target: &Type, who: &Who, span: Span, ctx: &Ctx) {
@@ -1803,7 +1803,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                         continue;
                     }
                     let shown = instantiate(&goal.clause.term, "result");
-                    // DECISION D-TBD-f2: rule 6 names the expected type's position for a
+                    // DECISION D-151: rule 6 names the expected type's position for a
                     // parameter; for the result, the position to strengthen is the value's.
                     let repair = format!(
                         "strengthen the result of `{}` to a refined kind that implies `{shown}`",
@@ -1940,7 +1940,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                     .span
                     .map(|span| (span, clause_role(refinement))),
             );
-            // DECISION D-TBD-f3: the repair of a lambda's result, which has no written type,
+            // DECISION D-152: the repair of a lambda's result, which has no written type,
             // is a guard in its body.
             for obligation in self.obligations.iter_mut().skip(before) {
                 obligation.site.parameter = None;
