@@ -1,8 +1,8 @@
 # 0044. `expect fails` after a `do` line that cannot fail
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-09-30
-- Deciders: pending, Leonardo; proposed by Claude (v0.1 closure run)
+- Deciders: Leonardo (answer E5 A to the re-review, 2026-09-30), on a proposal by Claude (v0.1 closure run)
 - Source: review finding R-020, decision D-048
 
 ## Context
@@ -11,7 +11,7 @@
 
 The spec has no rule for a `do` expression that cannot fail. Such an expression has no error kind, so the lookup has nothing to look in, and no registered code names the case. `expect fails V` can then never hold, so the example always fails.
 
-## Decision (proposed)
+## Decision
 
 1. `expect fails V` after a `do` expression that cannot fail is U1001 at `V`, with the message "the `do` expression cannot fail, so `expect fails V` never holds". The help proposes removing the line.
 2. `spec/10 §12` rule 1 states it.
@@ -19,7 +19,6 @@ The spec has no rule for a `do` expression that cannot fail. Such an expression 
 ## Consequences
 
 - An example that expects a failure its `do` line cannot produce is rejected by `una check`, before `una test` runs it.
-- Until this ADR is decided, the compiler keeps its current behavior for this one case.
 
 ## Alternatives considered
 
