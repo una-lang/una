@@ -227,12 +227,13 @@ impl Checker<'_, '_, '_> {
             return;
         }
         let pc = self.ctx.pc.join(value);
+        let a = article(&pc.to_string());
         let action = if installed { "installed" } else { "called" };
         if fails && !pc.is_public() {
             self.under_pc(
                 span,
                 format!(
-                    "{callee} can fail, and it is {action} under a `{pc}` condition, which would be revealed"
+                    "{callee} can fail, and it is {action} under {a} `{pc}` condition, which would be revealed"
                 ),
             );
             return;
@@ -249,7 +250,7 @@ impl Checker<'_, '_, '_> {
             self.under_pc(
                 span,
                 format!(
-                    "{callee} has effects, and it is {action} under a `{pc}` condition on a value of a type parameter, whose label is known only at each call"
+                    "{callee} has effects, and it is {action} under {a} `{pc}` condition on a value of a type parameter, whose label is known only at each call"
                 ),
             );
             return;
@@ -265,7 +266,7 @@ impl Checker<'_, '_, '_> {
                 "{callee} has effects that accept at most `{bound}` data, and it is {action} in an operation body whose callers may pass `{floor}` data, which it would reveal"
             ),
             _ => format!(
-                "{callee} has effects that accept at most `{bound}` data, and it is {action} under a `{pc}` condition, which would be revealed"
+                "{callee} has effects that accept at most `{bound}` data, and it is {action} under {a} `{pc}` condition, which would be revealed"
             ),
         };
         self.under_pc(span, message);
@@ -289,11 +290,12 @@ impl Checker<'_, '_, '_> {
             return;
         }
         let pc = self.ctx.pc.clone();
+        let a = article(&pc.to_string());
         let mut diagnostic = self.report.make(
             Code::U4002,
             span,
             format!(
-                "{callee} lowers data to `{to}`, and it is called under a `{pc}` condition, which its result would reveal"
+                "{callee} lowers data to `{to}`, and it is called under {a} `{pc}` condition, which its result would reveal"
             ),
         );
         if let Some(from) = self.ctx.pc_from {
@@ -338,10 +340,11 @@ impl Checker<'_, '_, '_> {
         // ADR 0038 D3.3: no capability operation under a symbolic program counter.
         if symbolic(&self.ctx.pc) {
             let pc = self.ctx.pc.clone();
+            let a = article(&pc.to_string());
             self.under_pc(
                 span,
                 format!(
-                    "{what} runs under a `{pc}` condition on a value of a type parameter, whose label is known only at each call, so its sink cannot be checked here"
+                    "{what} runs under {a} `{pc}` condition on a value of a type parameter, whose label is known only at each call, so its sink cannot be checked here"
                 ),
             );
             return;
@@ -361,7 +364,8 @@ impl Checker<'_, '_, '_> {
                     "{what} accepts `{accepts}` data, and it runs in an operation body whose callers may pass `{floor}` data, which it would reveal"
                 ),
                 _ => format!(
-                    "{what} accepts `{accepts}` data, and it runs under a `{pc}` condition, which it would reveal"
+                    "{what} accepts `{accepts}` data, and it runs under {} `{pc}` condition, which it would reveal",
+                    article(&pc.to_string())
                 ),
             };
             let mut diagnostic = self.report.make(Code::U4003, span, message);
@@ -385,5 +389,14 @@ impl Checker<'_, '_, '_> {
                 );
             }
         }
+    }
+}
+
+/// The indefinite article before a label written in a message: `an internal`, `a secret`
+/// (R-034).
+fn article(label: &str) -> &'static str {
+    match label.chars().next() {
+        Some('a' | 'e' | 'i' | 'o' | 'u' | 'A' | 'E' | 'I' | 'O' | 'U') => "an",
+        _ => "a",
     }
 }
