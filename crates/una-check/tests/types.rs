@@ -649,6 +649,19 @@ fn unknown_label_repairs_suggest_only_what_is_not_given() {
     );
 }
 
+#[test]
+fn an_unknown_field_far_from_every_open_one_lists_them() {
+    // Re-review N-016: U2009 gives the help D-157 describes for U2005.
+    assert_eq!(
+        repairs(
+            "kind P\n  x: Int\n  y: Int\n\
+             \n\
+             f() -> P = P(x: 1, zzzzz: 3)\n"
+        ),
+        ["U2009: the fields that no other argument gives are `y`"]
+    );
+}
+
 // ----- when and patterns (U2007, U2008, `spec/10 §4`) -----
 
 #[test]
