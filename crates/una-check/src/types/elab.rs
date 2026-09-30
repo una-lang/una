@@ -89,13 +89,28 @@ fn host(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>) -> Vec<Decl> {
         if let (DeclKind::Capability(_), Some(entity @ Entity::Capability(_))) =
             (&decl.kind, entity)
         {
-            let mut fx = Fx::new(env, &findings.records, dbs, env.prelude);
+            let mut fx = Fx::new(
+                env,
+                records_of(env, findings, env.prelude),
+                dbs,
+                env.prelude,
+            );
             if let Some(core) = fx.decl(&decl.kind, entity) {
                 out.push(core);
             }
         }
     }
     out
+}
+
+/// The records of module `module`: those of the package, or those of the standard modules,
+/// whose spans are those of another source database.
+fn records_of<'f>(env: &Env<'_>, findings: &'f Findings, module: usize) -> &'f Records {
+    if module >= env.prelude {
+        &findings.standard_records
+    } else {
+        &findings.records
+    }
 }
 
 /// The sources of the package, and those of the standard modules, which have a database of
@@ -128,7 +143,7 @@ fn elaborate_module(
         if findings.failed.contains(&decl.span) {
             continue;
         }
-        let mut fx = Fx::new(env, &findings.records, dbs, module);
+        let mut fx = Fx::new(env, records_of(env, findings, module), dbs, module);
         match (&decl.kind, entity) {
             (DeclKind::Example(example), _) => {
                 if let Some(example) = fx.example(example) {
@@ -155,7 +170,7 @@ fn library(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>, module: usize) -> V
     let mut out = Vec::new();
     for (decl, entity) in m.tree.decls.iter().zip(m.decls.clone()) {
         if let (DeclKind::Function(function), Some(Entity::Function(id))) = (&decl.kind, entity) {
-            let mut fx = Fx::new(env, &findings.records, dbs, module);
+            let mut fx = Fx::new(env, records_of(env, findings, module), dbs, module);
             if let Some(signature) = fx.signature(function, id) {
                 out.push(signature);
             }
