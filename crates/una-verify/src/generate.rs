@@ -826,6 +826,9 @@ impl<'p, 'i> Walker<'p, 'i> {
         let Some(signature) = signature else {
             return;
         };
+        // ADR 0037 rule 2: a function value returned by a handler operation flows into the
+        // operation's declared result, as a function's does into its own (flow sweep).
+        self.returned_functions(&ctx, &leaves, &signature.result, None);
         let result = Tv {
             f: constant("result", &signature.result),
             ty: signature.result.clone(),
