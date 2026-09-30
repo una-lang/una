@@ -1173,7 +1173,7 @@ const PRELUDE_LABELED: [&str; 17] = [
 ];
 
 /// Whether `def` is a prelude function whose result carries the labels of its arguments.
-/// DECISION D-TBD-a1: its parameters that are not functions accept arguments of any label,
+/// DECISION D-136: its parameters that are not functions accept arguments of any label,
 /// since the result is raised by all of them; the other prelude functions keep the labels of
 /// their parameter types.
 fn prelude_labeled(prelude: usize, def: &FnDef<'_>) -> bool {
@@ -1184,7 +1184,7 @@ fn prelude_labeled(prelude: usize, def: &FnDef<'_>) -> bool {
 /// body returns may carry the symbolic labels of its type parameters, which the call replaces
 /// by `ℓ*(σ)`, the join of every label of each type argument (`spec/10 §5`, generic
 /// instantiation, rule 3).
-/// DECISION D-TBD-a2: every position of the result that holds data is raised by the join of
+/// DECISION D-137: every position of the result that holds data is raised by the join of
 /// `ℓ*(σ)` over all the type arguments, since the checker does not record which symbolic
 /// labels, at which positions, the body's result carries.
 fn generic_result(prelude: usize, def: &FnDef<'_>, subst: &[Ty], result: Ty) -> Ty {
