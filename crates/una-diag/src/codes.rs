@@ -100,6 +100,8 @@ pub enum Code {
     U1007,
     /// Module path does not match file path.
     U1008,
+    /// Reserved module name.
+    U1009,
     /// Type mismatch.
     U2001,
     /// Unknown or ill-formed type.
@@ -198,7 +200,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 65] = [
+    pub const ALL: [Code; 66] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -217,6 +219,7 @@ impl Code {
         Code::U1006,
         Code::U1007,
         Code::U1008,
+        Code::U1009,
         Code::U2001,
         Code::U2002,
         Code::U2003,
@@ -395,6 +398,12 @@ impl Code {
                 domain: Domain::Names,
                 meaning: "Module path does not match file path",
                 explain: include_str!("../explain/U1008.md"),
+            },
+            Code::U1009 => &Entry {
+                code: "U1009",
+                domain: Domain::Names,
+                meaning: "Reserved module name",
+                explain: include_str!("../explain/U1009.md"),
             },
             Code::U2001 => &Entry {
                 code: "U2001",

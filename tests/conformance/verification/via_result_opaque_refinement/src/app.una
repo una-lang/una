@@ -1,0 +1,13 @@
+-- test: an opaque refinement of a policy's to type is not established by its via function without checked (R-007)
+-- spec: spec/12 §3
+-- expect: error U5001 at src/release.una:14:41
+module app
+
+import release (Slug, as_slug)
+
+pub publish(raw: internal Text) -> Slug = as_slug(raw)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("ok")

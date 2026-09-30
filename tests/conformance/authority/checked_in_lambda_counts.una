@@ -1,0 +1,22 @@
+-- test: a checked inside a lambda counts against the escape budget (review control)
+-- spec: spec/06 §6
+-- expect: error U7003 at 20:31
+module checked_in_lambda_counts
+
+pub kind Bad = | Nope
+
+pub f(xs: List[Int]) -> List[Int] = xs.map(each: fn(x) -> x + 1)
+
+priv_apply(g: fn(Int) -> Int fails Bad) -> Int
+  fails Bad
+=
+  let v = g(3)
+    if error pass
+  v
+
+pub h() -> Int
+  fails Bad
+=
+  let v = priv_apply(fn(x) -> checked(x, it > 0) else fail Nope)
+    if error pass
+  v

@@ -161,10 +161,12 @@ fn std_source(name: &str) -> String {
 fn the_standard_modules_type_check_as_ordinary_modules() {
     for name in ["prelude.una", "testing.una"] {
         let text = std_source(name);
-        assert_eq!(
-            check(&[(name, &text)], true),
-            Vec::<String>::new(),
-            "{name}"
+        // ADR 0038 D7: checked as a user module, a standard module's path is reserved
+        // (U1009), and nothing else is reported.
+        let found = check(&[(name, &text)], true);
+        assert!(
+            found.len() == 1 && found[0].starts_with("U1009 "),
+            "{name}: {found:?}"
         );
     }
 }

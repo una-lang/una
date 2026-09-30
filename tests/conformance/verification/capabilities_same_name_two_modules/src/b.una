@@ -1,0 +1,13 @@
+module b
+
+pub capability Store
+  op get() -> Int
+
+pub handler zero() for Store
+  op get() = 0
+
+pub ratio() -> Int
+  uses @store: Store[get]
+=
+  let n = @store.get()
+  100 / n

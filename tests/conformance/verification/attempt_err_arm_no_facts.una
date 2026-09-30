@@ -1,0 +1,19 @@
+-- test: the Err arm of an attempt carries no fact of the callee's ensures (review control)
+-- spec: spec/06 §5
+-- expect: error U5001 at 19:15
+module attempt_err_arm_no_facts
+
+pub kind Oops = | Bad
+
+g(x: Int) -> Int
+  ensures result > 0
+  fails Oops
+=
+  if x > 5 then fail Bad else 1
+
+pub f(x: Int) -> Int
+=
+  let r = attempt g(x)
+  when r
+    is Ok(v) -> 100 / v
+    is Err -> 100 / x

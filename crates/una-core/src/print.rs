@@ -411,6 +411,7 @@ impl Printer {
                 capability,
                 uses,
                 ops,
+                ..
             } => {
                 let uses = if uses.is_empty() {
                     String::new()

@@ -1,0 +1,14 @@
+-- test: a user module whose path starts with prelude is reserved (R-010)
+-- spec: spec/10 §11
+-- expect: error U1009 at 4:1
+module prelude
+
+pub kind KeyError = UnknownKey | Revoked | Expired
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let e = Expired
+  let zero = 0
+  let q = 100 / zero
+  @console.print("q = {q}")

@@ -65,7 +65,31 @@ pub(crate) fn program(
     let library = (env.prelude..env.modules.len())
         .flat_map(|module| library(env, findings, dbs, module))
         .collect();
-    Program { modules, library }
+    let host = host(env, findings, dbs);
+    Program {
+        modules,
+        library,
+        host,
+    }
+}
+
+/// The host capabilities, which the prelude declares for `std.host` (`spec/14 §3`).
+fn host(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>) -> Vec<Decl> {
+    let Some(m) = env.modules.get(env.prelude) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (decl, entity) in m.tree.decls.iter().zip(m.decls.clone()) {
+        if let (DeclKind::Capability(_), Some(entity @ Entity::Capability(_))) =
+            (&decl.kind, entity)
+        {
+            let mut fx = Fx::new(env, &findings.records, dbs, env.prelude);
+            if let Some(core) = fx.decl(&decl.kind, entity) {
+                out.push(core);
+            }
+        }
+    }
+    out
 }
 
 /// The sources of the package, and those of the standard modules, which have a database of
@@ -310,6 +334,30 @@ impl<'e, 'a> Fx<'e, 'a> {
             Ty::Kind(id, _) => self.env.kind_name(*id).to_owned(),
             Ty::Labeled(_, inner) => self.kind_name(inner),
             _ => "?".to_owned(),
+        }
+    }
+
+    /// The qualified identity of capability `id` (`spec/10 §11` rule 8): the capabilities of
+    /// the prelude are the host capabilities, declared in `std.host` (`spec/14 §3`).
+    fn capability_path(&self, id: Option<usize>) -> Path {
+        let Some(def) = id.and_then(|id| self.env.capabilities.get(id)) else {
+            return Path {
+                module: String::new(),
+                name: "?".to_owned(),
+            };
+        };
+        let module = if def.module == self.env.prelude {
+            una_core::HOST_MODULE.to_owned()
+        } else {
+            self.env
+                .modules
+                .get(def.module)
+                .map(|m| m.path.clone())
+                .unwrap_or_default()
+        };
+        Path {
+            module,
+            name: def.name.to_owned(),
         }
     }
 
@@ -768,6 +816,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     name: self.name(&handler.name).to_owned(),
                     params,
                     capability: capability.map_or_else(|| "?".to_owned(), |c| c.name.to_owned()),
+                    capability_path: self.capability_path(def.capability),
                     uses: self.needs(&def.uses),
                     ops,
                 }
@@ -1665,6 +1714,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                                 .map_or_else(Label::public, Ty::deep_label)
                         })
                         .collect();
+                    let capability_path = self.capability_path(Some(capability));
                     let capability = self
                         .env
                         .capabilities
@@ -1677,6 +1727,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                         Rhs::Op {
                             cap: self.name(cap).to_owned(),
                             capability,
+                            capability_path,
                             op: self.name(op).to_owned(),
                             args: values,
                             arg_spans,
