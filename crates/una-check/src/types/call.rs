@@ -1049,7 +1049,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// are checked, so that `Feed(get: fn() -> 2)` is a `Feed[secret Int]` where one is
     /// expected (ADR 0046). An expected argument that still holds a type variable is left to
     /// the flow that follows the constructor, since the variable may take labels later.
-    /// DECISION D-TBD-l4: ADR 0046 fixes the flow, not how a constructor infers its
+    /// DECISION D-163: ADR 0046 fixes the flow, not how a constructor infers its
     /// arguments; this uses the expected type only where it is already known.
     fn expected_invariant(&mut self, kind: KindId, targs: &[Ty], expected: Option<&Ty>) {
         let Some(expected) = expected else {

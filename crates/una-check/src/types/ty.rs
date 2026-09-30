@@ -15,7 +15,7 @@ pub(crate) type CapId = usize;
 
 /// What the label rules need to know of each record and sum kind, from the types of its fields
 /// and variant fields (re-review N-001, ADR 0046).
-/// DECISION D-TBD-l9: the labels a kind's fields declare count at positions that hold data, as
+/// DECISION D-168: the labels a kind's fields declare count at positions that hold data, as
 /// in [`Ty::deep_label`]; the labels inside a field of function type do not, since every use of
 /// the field's function reads them from its declared type. The type arguments of a kind count
 /// whatever positions their parameters occupy, as before.
@@ -314,7 +314,7 @@ impl Ty {
     /// [`Ty::deep_label`] without the labels that kinds' fields declare: what Core IR records
     /// for the arguments of an operation and interpolated values, since the runtime redacts
     /// the fields of a kind value by their own declared labels (`spec/11 §5`).
-    /// DECISION D-TBD-l6: traces keep redacting field by field, as before N-001.
+    /// DECISION D-165: traces keep redacting field by field, as before N-001.
     pub(crate) fn argument_label(&self) -> Label {
         self.deep_label(&KindLabels::default())
     }
@@ -324,7 +324,7 @@ impl Ty {
     /// arguments are sinks with every label of their types (`spec/07 §7` rule 4), since the
     /// declared parameter types do not bound them: a function value whose result carries a
     /// label would otherwise reach a handler as a function of the declared, lower, type.
-    /// DECISION D-TBD-l5: "every label" includes the labels of function parameters, which is
+    /// DECISION D-164: "every label" includes the labels of function parameters, which is
     /// conservative, since a value flows into a parameter from the handler, not out of it.
     pub(crate) fn every_label(&self, kinds: &KindLabels) -> Label {
         match self {
