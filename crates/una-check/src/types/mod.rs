@@ -20,6 +20,7 @@ mod env;
 mod expr;
 mod facts;
 mod flow;
+mod generic;
 mod label;
 mod records;
 mod stmt;
@@ -189,7 +190,19 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
         .obligations
         .sort_by_key(|(kind, span, _)| (span.file, span.start, span.end, *kind));
     let headers = headers(&env);
-    let program = elab::program(&env, &findings, package.sources, &standard.sources);
+    let (program, lost) = elab::program(&env, &findings, package.sources, &standard.sources);
+    // ADR 0038 D1: a component of a checker type that Core IR lost is an internal error, never
+    // a silent pass (`spec/10 §2`). DECISION D-TBD-a9: the check runs in debug builds, as the
+    // ADR says, and reports at the declaration.
+    for (span, what) in lost {
+        report.error(
+            Code::U8001,
+            span,
+            format!(
+                "internal error: the Core IR of this declaration lost {what} of its checked types"
+            ),
+        );
+    }
     TypeCheck {
         headers,
         program,

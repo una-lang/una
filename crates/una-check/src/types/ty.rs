@@ -183,6 +183,63 @@ impl Ty {
         }
     }
 
+    /// `self` with every label, at every position, replaced by `f` of it.
+    pub(crate) fn map_labels(&self, f: &dyn Fn(&Label) -> Label) -> Ty {
+        match self {
+            Ty::Labeled(label, inner) => inner.map_labels(f).with_label(&f(label)),
+            Ty::List(element) => Ty::List(Box::new(element.map_labels(f))),
+            Ty::Kind(id, args) => Ty::Kind(*id, args.iter().map(|a| a.map_labels(f)).collect()),
+            Ty::Fn(function) => Ty::Fn(Box::new(FnTy {
+                params: function.params.iter().map(|p| p.map_labels(f)).collect(),
+                result: function.result.map_labels(f),
+                uses: function.uses.clone(),
+                fails: function.fails.clone(),
+            })),
+            other => other.clone(),
+        }
+    }
+
+    /// `self` with the value of each type parameter labeled with its symbolic label `ℓ_T`
+    /// (`spec/07 §7` rule 8, ADR 0038 D3.2): the type of a value in the body of a generic
+    /// function whose type parameters are `names`.
+    pub(crate) fn symbolic(&self, names: &[&str]) -> Ty {
+        match self {
+            Ty::Labeled(label, inner) => inner.symbolic(names).with_label(label),
+            Ty::Param(index) => match names.get(*index) {
+                Some(name) => Ty::Param(*index).with_label(&Label::symbol(*name)),
+                None => Ty::Param(*index),
+            },
+            Ty::List(element) => Ty::List(Box::new(element.symbolic(names))),
+            Ty::Kind(id, args) => Ty::Kind(*id, args.iter().map(|a| a.symbolic(names)).collect()),
+            Ty::Fn(function) => Ty::Fn(Box::new(FnTy {
+                params: function.params.iter().map(|p| p.symbolic(names)).collect(),
+                result: function.result.symbolic(names),
+                uses: function.uses.clone(),
+                fails: function.fails.clone(),
+            })),
+            other => other.clone(),
+        }
+    }
+
+    /// Whether the type is second-class or contains a second-class type: a function type with
+    /// `uses` or `fails` at any position (`spec/05 §6`, ADR 0038 D2).
+    /// DECISION D-TBD-a4: a function type whose parameter or result holds a second-class type
+    /// holds one too, as `fn(fn() -> Unit uses @log: Log[write]) -> Unit` does.
+    pub(crate) fn second_class(&self) -> bool {
+        match self {
+            Ty::Labeled(_, inner) => inner.second_class(),
+            Ty::List(element) => element.second_class(),
+            Ty::Kind(_, args) => args.iter().any(Ty::second_class),
+            Ty::Fn(function) => {
+                !function.uses.is_empty()
+                    || function.fails.is_some()
+                    || function.params.iter().any(Ty::second_class)
+                    || function.result.second_class()
+            }
+            _ => false,
+        }
+    }
+
     /// Adds the indices of the type parameters that occur in the type to `params`.
     pub(crate) fn params(&self, params: &mut Vec<usize>) {
         match self {

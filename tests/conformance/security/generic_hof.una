@@ -1,0 +1,9 @@
+-- test: secret test through a generic higher-order function (lambda result) (review control)
+-- spec: spec/07 §7
+-- expect: error U4001 at 9:37
+-- expect: error U4001 at 9:63
+module generic_hof
+
+test[T](x: T, check: fn(T) -> Bool) -> Bool = check(x)
+
+pub leak(pin: secret Int) -> Bool = test(pin, check: fn(p) -> p == 1234)

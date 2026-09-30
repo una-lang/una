@@ -11,8 +11,10 @@ use super::check::{Checker, Role, Site};
 use super::closest;
 use super::env::{Entity, FieldDef, FnDef, FnKind, ParamDef};
 use super::expr::count;
+use super::label::Label;
 use super::records::Res;
 use super::ty::{FnUse, KindId, Ty};
+use super::unify::Vars;
 
 /// A checked argument: where it is, its type, the type of its parameter, and the parameter.
 pub(crate) type Checked<'a> = (Span, Ty, Ty, &'a str);
@@ -283,7 +285,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     callee: what,
                 },
             );
-            self.function_argument(arg.value.span, param, &found);
+            self.fn_flow(arg.value.span, param, &found);
             flows.push((arg.value.span, found, param.clone()));
         }
         for (arg_span, found, param) in flows {
@@ -292,8 +294,16 @@ impl<'a> Checker<'_, 'a, '_> {
         // Calling a function value needs the capabilities of its type (`spec/10 §2`, S-Fun).
         let level = self.frames.len();
         self.needs_site(what, &function.uses, span, level);
-        let bound = self.bound(&function.uses, function.fails.is_some());
-        self.call_under_pc(span, what, bound, function.fails.is_some(), false);
+        // T-App (ADR 0038 D1): which function runs depends on the value, so its label raises
+        // the program counter of the call and its result.
+        self.call_under_pc(
+            span,
+            what,
+            &function.uses,
+            function.fails.is_some(),
+            false,
+            &value_label,
+        );
         self.position_site(
             what,
             span,
@@ -309,52 +319,51 @@ impl<'a> Checker<'_, 'a, '_> {
         function.result.with_label(&value_label)
     }
 
-    /// A function passed where a function type is expected has no more effects or failures than
-    /// that type allows (`spec/10 §2`, S-Fun): U3003 for effects, U3009 for failures.
-    /// DECISION D-085.
-    fn function_argument(&mut self, span: Span, expected: &Ty, found: &Ty) {
+    /// S-Fun at a flow of a value of type `found` into the declared type `expected`
+    /// (`spec/10 §2`, `spec/05 §9` rule 7, ADR 0038 D1; DECISION D-085): every function type in
+    /// the value's type, directly or under `List`, `Option`, `Result` and kind arguments, has no
+    /// `uses` that the expected function type at its position lacks (U3003) and fails only with
+    /// its error kind (U3009); function parameters are compared the other way round. One flow
+    /// has at most one such diagnostic.
+    pub(crate) fn fn_flow(&mut self, span: Span, expected: &Ty, found: &Ty) {
+        self.fn_flow_as(span, expected, found, false);
+    }
+
+    /// [`Checker::fn_flow`] for the written type of a lambda parameter, `expected`, which the
+    /// values of `found`, from the expected function type, flow into.
+    pub(crate) fn fn_flow_param(&mut self, span: Span, expected: &Ty, found: &Ty) {
+        self.fn_flow_as(span, expected, found, true);
+    }
+
+    fn fn_flow_as(&mut self, span: Span, expected: &Ty, found: &Ty, param: bool) {
         if self.pass != super::authority::Pass::Check {
             return;
         }
-        let (Ty::Fn(expected), Ty::Fn(found)) = (self.resolve(expected), self.resolve(found))
-        else {
+        let (expected, found) = (self.resolve(expected), self.resolve(found));
+        let direct = matches!(expected, Ty::Fn(_));
+        let Some((problem, given)) = fn_problem(&expected, &found, false) else {
             return;
         };
-        let extra: Vec<&FnUse> = found
-            .uses
-            .iter()
-            .filter(|need| {
-                !expected.uses.iter().any(|allowed| {
-                    allowed.name == need.name
-                        && allowed.capability == need.capability
-                        && need.ops.iter().all(|op| allowed.ops.contains(op))
-                })
-            })
-            .collect();
-        if let Some(need) = extra.first() {
-            self.report.error(
-                Code::U3003,
-                span,
-                format!(
-                    "this function uses `{}`, which the expected function type does not allow",
-                    self.show_need(need)
-                ),
-            );
-        }
-        if let Some(kind) = &found.fails
-            && expected
-                .fails
-                .as_ref()
-                .is_none_or(|allowed| allowed != kind)
-            && *kind != Ty::Error
-        {
-            let kind = self.show(kind);
-            self.report.error(
-                Code::U3009,
-                span,
-                format!("this function can fail with `{kind}`, which the expected function type does not allow"),
-            );
-        }
+        let (code, what) = match &problem {
+            FnProblem::Uses(need) => (Code::U3003, format!("uses `{}`", self.show_need(need))),
+            FnProblem::Fails(kind) => (Code::U3009, format!("can fail with `{}`", self.show(kind))),
+        };
+        let message = if param {
+            format!(
+                "the expected function type gives this lambda parameter a function that {what}, which its written type does not allow"
+            )
+        } else if given {
+            format!(
+                "the expected type gives this function a function that {what}, which its own type does not allow"
+            )
+        } else if direct {
+            format!("this function {what}, which the expected function type does not allow")
+        } else {
+            format!(
+                "this value holds a function that {what}, which the expected type does not allow"
+            )
+        };
+        self.report.error(code, span, message);
     }
 
     /// A call of a declared function, predicate or policy, with `receiver` as its first
@@ -405,8 +414,14 @@ impl<'a> Checker<'_, 'a, '_> {
         self.needs_site(&callee, &needs, span, level);
         self.call_fact(id, span);
         self.via_site(id, span);
-        let bound = self.bound(&needs, def.fails.is_some());
-        self.call_under_pc(span, &callee, bound, def.fails.is_some(), false);
+        self.call_under_pc(
+            span,
+            &callee,
+            &needs,
+            def.fails.is_some(),
+            false,
+            &Label::public(),
+        );
         self.position_site(
             &callee,
             span,
@@ -445,14 +460,42 @@ impl<'a> Checker<'_, 'a, '_> {
             span,
             def.module,
         );
-        self.argument_flows(&callee, checked);
+        let values = declared_args(&def.params, &checked);
+        let result = def.result.base.substitute(&subst);
+        let result = if prelude_labeled(self.env.prelude, &def) {
+            self.prelude_result(&callee, checked, result)
+        } else {
+            self.argument_flows(&callee, checked);
+            generic_result(self.env.prelude, &def, &subst, result)
+        };
+        if !subst.is_empty() {
+            self.instantiation(def.name, &def.type_params, subst, values, span);
+        }
         if def.requires {
             self.obligation(ObligationKind::Precondition, span, None);
         }
         if let Some(fails) = &def.fails {
             self.call_fails.insert(span, fails.clone());
         }
-        def.result.base.substitute(&subst)
+        result
+    }
+
+    /// The result of a call of a prelude function of `spec/14 §1` "Result labels": its
+    /// parameters that are not functions accept arguments of any label, and its result is
+    /// labeled with the join of every label of every argument, element types included
+    /// (ADR 0038 D3.4). The arguments of function type flow into their parameters as usual,
+    /// so a lambda's result stays below the label its parameter type declares.
+    fn prelude_result(&mut self, callee: &str, checked: Vec<Checked<'a>>, result: Ty) -> Ty {
+        let mut label = Label::public();
+        let mut functions = Vec::new();
+        for (span, found, expected, param) in checked {
+            label = label.join(&self.labeled(&found).deep_label());
+            if matches!(self.resolve(&expected), Ty::Fn(_)) {
+                functions.push((span, found, expected, param));
+            }
+        }
+        self.argument_flows(callee, functions);
+        result.with_label(&label)
     }
 
     /// U4001 for the arguments of a call, once the whole call is typed so that type variables
@@ -714,6 +757,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 callee,
             };
             self.unify_at(*receiver_span, &expected, receiver_ty, role);
+            self.fn_flow(*receiver_span, &expected, receiver_ty);
             checked.push((*receiver_span, receiver_ty.clone(), expected, first.name));
             if first.ty.is_refined() {
                 let origin = self.origin(module, first.span);
@@ -787,7 +831,7 @@ impl<'a> Checker<'_, 'a, '_> {
             };
             self.ctx.argument = true;
             let found = self.expr_as(&arg.value, Some(&expected), role);
-            self.function_argument(arg.value.span, &expected, &found);
+            self.fn_flow(arg.value.span, &expected, &found);
             if param.ty.is_refined() {
                 let origin = self.origin(module, param.span);
                 self.obligation(ObligationKind::Refinement, arg.value.span, origin);
@@ -1049,6 +1093,7 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         self.ordered(span, targets.clone());
         let mut flows = Vec::new();
+        let mut values = Vec::new();
         for (arg, target) in lambdas_last(args, &targets) {
             let Some(field) = target.and_then(|target| fields.get(target)) else {
                 self.expr(&arg.value, None);
@@ -1060,11 +1105,17 @@ impl<'a> Checker<'_, 'a, '_> {
                 kind: constructor,
             };
             let found = self.expr_as(&arg.value, Some(&expected), role);
+            self.fn_flow(arg.value.span, &expected, &found);
             if field.ty.is_refined() {
                 let origin = self.origin(module, field.span);
                 self.obligation(ObligationKind::Refinement, arg.value.span, origin);
             }
+            values.push((arg.value.span, field.ty.base.clone()));
             flows.push((arg.value.span, found, expected, field.name));
+        }
+        if !targs.is_empty() {
+            let (params, kind_name) = self.kind_params(kind);
+            self.instantiation(kind_name, &params, targs.to_vec(), values, span);
         }
         // DECISION D-089: fields flow once the whole constructor is typed.
         for (arg_span, found, expected, field) in flows {
@@ -1095,6 +1146,112 @@ impl<'a> Checker<'_, 'a, '_> {
                 );
             }
         }
+    }
+}
+
+/// The prelude functions whose results carry the labels of their arguments, as `spec/14 §1`
+/// "Result labels" lists them (ADR 0038 D3.4): their native implementations declare these
+/// labels, which the prelude's Una signatures cannot write.
+const PRELUDE_LABELED: [&str; 17] = [
+    "abs",
+    "at",
+    "contains",
+    "filter",
+    "first",
+    "first_where",
+    "fold",
+    "is_digits",
+    "is_empty",
+    "map",
+    "max",
+    "min",
+    "or_else",
+    "starts_with",
+    "sum",
+    "to_int",
+    "trim",
+];
+
+/// Whether `def` is a prelude function whose result carries the labels of its arguments.
+/// DECISION D-TBD-a1: its parameters that are not functions accept arguments of any label,
+/// since the result is raised by all of them; the other prelude functions keep the labels of
+/// their parameter types.
+fn prelude_labeled(prelude: usize, def: &FnDef<'_>) -> bool {
+    def.module == prelude && def.kind == FnKind::Function && PRELUDE_LABELED.contains(&def.name)
+}
+
+/// The result of a call of a generic function declared outside the prelude: the value its
+/// body returns may carry the symbolic labels of its type parameters, which the call replaces
+/// by `ℓ*(σ)`, the join of every label of each type argument (`spec/10 §5`, generic
+/// instantiation, rule 3).
+/// DECISION D-TBD-a2: every position of the result that holds data is raised by the join of
+/// `ℓ*(σ)` over all the type arguments, since the checker does not record which symbolic
+/// labels, at which positions, the body's result carries.
+fn generic_result(prelude: usize, def: &FnDef<'_>, subst: &[Ty], result: Ty) -> Ty {
+    if subst.is_empty() || def.module == prelude {
+        return result;
+    }
+    result.raise_deep(&Vars::label_of(subst))
+}
+
+/// The declared type of the parameter of each checked argument, with where the argument is.
+fn declared_args(params: &[ParamDef<'_>], checked: &[Checked<'_>]) -> Vec<(Span, Ty)> {
+    checked
+        .iter()
+        .filter_map(|(span, _, _, name)| {
+            params
+                .iter()
+                .find(|p| p.name == *name)
+                .map(|p| (*span, p.ty.base.clone()))
+        })
+        .collect()
+}
+
+/// What a function type in a value's type has beyond the expected function type at its
+/// position.
+enum FnProblem {
+    Uses(FnUse),
+    Fails(Ty),
+}
+
+/// The first function type in `found` that exceeds the one at its position in `expected`,
+/// both resolved (S-Fun, ADR 0038 D1), and whether that position is a function parameter's,
+/// where the expected type gives the value its functions (`flipped` says whether the current
+/// position is one).
+fn fn_problem(expected: &Ty, found: &Ty, flipped: bool) -> Option<(FnProblem, bool)> {
+    match (expected, found) {
+        (Ty::Fn(e), Ty::Fn(f)) => {
+            let extra = f.uses.iter().find(|need| {
+                !e.uses.iter().any(|allowed| {
+                    allowed.name == need.name
+                        && allowed.capability == need.capability
+                        && need.ops.iter().all(|op| allowed.ops.contains(op))
+                })
+            });
+            if let Some(need) = extra {
+                return Some((FnProblem::Uses(need.clone()), flipped));
+            }
+            if let Some(kind) = &f.fails
+                && *kind != Ty::Error
+                && e.fails
+                    .as_ref()
+                    .is_none_or(|allowed| allowed != kind && *allowed != Ty::Error)
+            {
+                return Some((FnProblem::Fails(kind.clone()), flipped));
+            }
+            // Parameters are contravariant: the expected type's arguments flow into the value.
+            e.params
+                .iter()
+                .zip(&f.params)
+                .find_map(|(e, f)| fn_problem(f, e, !flipped))
+                .or_else(|| fn_problem(&e.result, &f.result, flipped))
+        }
+        (Ty::List(e), Ty::List(f)) => fn_problem(e, f, flipped),
+        (Ty::Kind(i, es), Ty::Kind(j, fs)) if i == j => es
+            .iter()
+            .zip(fs)
+            .find_map(|(e, f)| fn_problem(e, f, flipped)),
+        _ => None,
     }
 }
 

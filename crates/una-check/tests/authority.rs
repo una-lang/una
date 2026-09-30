@@ -516,6 +516,7 @@ fn parameters_of_effectful_function_types_are_second_class_too() {
         ),
         [
             "U3006 t.una:21:97 `f` has a function type with `uses` or `fails`, so it may only be called or passed directly as an argument",
+            "U3016 t.una:23:59 this type argument is, or holds, a function type with `uses` or `fails`, which is second-class and cannot instantiate a type parameter; take the function as a parameter of function type instead",
             "U3006 t.una:23:101 `f` has a function type with `uses` or `fails`, so it may only be called or passed directly as an argument",
         ]
     );

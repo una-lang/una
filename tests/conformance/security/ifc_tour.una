@@ -18,7 +18,7 @@ pub total(accounts: List[Account]) -> secret Int
   let zero: secret Int = 0
   accounts.map(each: fn(a) -> a.balance).fold(initial: zero, step: fn(sum, x) -> sum + x)
 
-pub first_balance(accounts: List[Account]) -> Option[secret Int] = accounts.map(each: fn(a) -> a.balance).first()
+pub first_balance(accounts: List[Account]) -> secret Option[secret Int] = accounts.map(each: fn(a) -> a.balance).first()
 
 pub owners(accounts: List[Account]) -> List[Text] = accounts.map(each: fn(a) -> a.owner)
 

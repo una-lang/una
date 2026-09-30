@@ -1,0 +1,11 @@
+-- test: secret `if` block returning a list (review control)
+-- spec: spec/07 §7
+-- expect: error U4001 at 8:6
+module nested_if_block
+
+pub leak(flag: secret Bool) -> List[Int]
+=
+  if flag
+    [1]
+  else
+    []

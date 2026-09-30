@@ -962,11 +962,15 @@ impl<'a> Env<'a> {
                     .iter()
                     .map(|arg| self.lower_type(module, arg, type_params, report))
                     .collect();
+                for (arg, lowered) in args.iter().zip(&lowered) {
+                    self.type_argument(module, arg.span, &lowered.base, report);
+                }
                 self.named(module, name, lowered, ty.span, type_params, report)
             }
             TypeCore::List(element) => {
-                let element = self.lower_type(module, element, type_params, report);
-                Declared::plain(Ty::List(Box::new(element.base)))
+                let lowered = self.lower_type(module, element, type_params, report);
+                self.type_argument(module, element.span, &lowered.base, report);
+                Declared::plain(Ty::List(Box::new(lowered.base)))
             }
             TypeCore::Function {
                 params,
@@ -1035,6 +1039,20 @@ impl<'a> Env<'a> {
         declared
     }
 
+    /// U3016: a written type argument that is, or contains, a second-class type, a function
+    /// type with `uses` or `fails` (`spec/05 §6`, ADR 0038 D2). DECISION D-TBD-a7: it is
+    /// reported at the innermost
+    /// type argument that is a function type, once.
+    fn type_argument(&self, module: usize, span: Span, ty: &Ty, report: &mut Report<'_>) {
+        if self.reports(module) && matches!(ty.unlabeled(), Ty::Fn(_)) && ty.second_class() {
+            report.error(
+                Code::U3016,
+                span,
+                "this type argument is, or holds, a function type with `uses` or `fails`, which is second-class and cannot instantiate a type parameter; take the function as a parameter of function type instead",
+            );
+        }
+    }
+
     /// A written label: its level and categories; a category that `una.toml` does not
     /// declare is U4007 and left out (`spec/07 §2`, DECISION D-096).
     pub(crate) fn lower_label(
@@ -1046,6 +1064,7 @@ impl<'a> Env<'a> {
         let mut lowered = Label {
             level: label.level,
             categories: std::collections::BTreeSet::new(),
+            symbols: std::collections::BTreeSet::new(),
         };
         for category in &label.categories {
             let name = self.text(module, category.name);

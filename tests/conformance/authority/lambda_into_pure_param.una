@@ -1,0 +1,15 @@
+-- test: effectful lambda into a pure function parameter (review control)
+-- spec: spec/05 §9
+-- expect: error U3004 at 15:18
+module lambda_into_pure_param
+
+capability Log
+  op write(line: Text) -> Unit
+  op flush() -> Unit
+
+apply(f: fn(Text) -> Unit, x: Text) -> Unit = f(x)
+
+pub run() -> Unit
+  uses @log: Log[write]
+=
+  apply(fn(t) -> @log.write(t), x: "x")

@@ -1,0 +1,13 @@
+-- test: capability interpolated (review control)
+-- spec: spec/05 §6
+-- expect: error U3005 at 13:5
+module cap_interpolated
+
+capability Log
+  op write(line: Text) -> Unit
+  op flush() -> Unit
+
+leak() -> Text
+  uses @log: Log[write]
+=
+  "{@log}"

@@ -1,0 +1,25 @@
+-- test: failing function laundered into a non-failing `fn(Int) -> Int`; `main` without `fails` fails with `Exploded` (R-001)
+-- spec: spec/05 §9, §6
+-- expect: error U3009 at 24:17
+-- expect: error U3016 at 24:31
+module escape_failure
+
+kind Boom = | Exploded
+
+kind Box[T]
+  value: T
+
+id[T](x: T) -> T = x
+
+explode(n: Int) -> Int
+  fails Boom
+=
+  fail Exploded
+
+pub total(b: Box[fn(Int) -> Int]) -> Int = b.value(1) + 1
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let n = total(Box(value: id(explode)))
+  @console.print("total is {n}")

@@ -1,0 +1,13 @@
+-- test: effectful lambda returned (review control)
+-- spec: spec/05 §6
+-- expect: error U3006 at 13:3
+module lambda_returned
+
+capability Log
+  op write(line: Text) -> Unit
+  op flush() -> Unit
+
+pub make() -> fn(Text) -> Unit uses @log: Log[write]
+  uses @log: Log[write]
+=
+  fn(t) -> @log.write(t)

@@ -1,0 +1,17 @@
+-- test: two effects in one `if` line (review control)
+-- spec: spec/04 §4
+-- expect: error U3013 at 17:13
+-- expect: error U3013 at 17:33
+module two_effects_if_line
+
+kind StoreError = | Timeout
+
+capability Store
+  op find(key: Int) -> Option[Int]
+    fails StoreError
+  op count() -> Int
+
+pub run(c: Bool) -> Int
+  uses @store: Store[count]
+=
+  if c then @store.count() else @store.count()

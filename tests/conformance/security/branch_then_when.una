@@ -1,0 +1,14 @@
+-- test: sum chosen by a secret branch, then a `when` in a `let` (review control)
+-- spec: spec/07 §7
+-- expect: error U4001 at 14:3
+module branch_then_when
+
+kind Tier = Low | High
+
+pub leak(flag: secret Bool) -> Int
+=
+  let t = if flag then High else Low
+  let n = when t
+    is Low -> 0
+    is High -> 1
+  n + 0
