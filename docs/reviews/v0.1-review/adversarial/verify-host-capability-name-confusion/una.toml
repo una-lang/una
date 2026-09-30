@@ -1,0 +1,8 @@
+[package]
+name = "verify_host_capability_name_confusion"
+version = "0.1.0"
+edition = "0.1"
+
+[run]
+entry = "app"
+grants = ["console", "files:./data:read"]

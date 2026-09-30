@@ -1,0 +1,4 @@
+[package]
+name = "verify_shared_field_name_sorts"
+version = "0.1.0"
+edition = "0.1"

@@ -1,0 +1,11 @@
+-- Adversarial: same with a pub function
+-- Expected: U3003
+-- Observed: U3003 at 11:79
+-- Verdict: Pass
+module auth_pub_fn_param_without_uses
+
+capability Log
+  op write(line: Text) -> Unit
+  op flush() -> Unit
+
+pub each(line: Text, write: fn(Text) -> Unit uses @log: Log[write]) -> Unit = write(line)

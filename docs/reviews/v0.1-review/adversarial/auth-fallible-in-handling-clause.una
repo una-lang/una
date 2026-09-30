@@ -1,0 +1,19 @@
+-- Adversarial: fallible op inside an 'if error use' clause
+-- Expected: U3013
+-- Observed: U3013 at 18:18
+-- Verdict: Pass
+module auth_fallible_in_handling_clause
+
+kind StoreError = | Timeout
+
+capability Store
+  op find(key: Int) -> Option[Int]
+    fails StoreError
+  op count() -> Int
+
+pub run() -> Option[Int]
+  uses @store: Store[find]
+=
+  let v = @store.find(1)
+    if error use @store.find(2)
+  v

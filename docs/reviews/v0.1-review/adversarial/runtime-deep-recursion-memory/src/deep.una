@@ -1,0 +1,14 @@
+-- Adversarial: a recursion 5,000,000 deep with `--max-depth 10000000` (and 50,000,000 deep with
+-- `--max-depth 100000000`).
+-- Expected: a result, or U6003 when resources run short (spec/06 §7, spec/11 §7).
+-- Observed: 5M deep succeeds using 17 GB resident memory (debug build); 50M deep is killed by
+-- the OS (exit 137), no U6003.
+module deep
+
+count(n: Int) -> Int = if n <= 0 then 0 else 1 + count(n - 1)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let c = count(5000000)
+  @console.print("depth {c}")

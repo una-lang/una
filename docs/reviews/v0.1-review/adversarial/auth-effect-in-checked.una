@@ -1,0 +1,18 @@
+-- Adversarial: effect inside 'checked'
+-- Expected: U3013
+-- Observed: U7003 at 18:3; U3013 at 18:11
+-- Verdict: Pass
+module auth_effect_in_checked
+
+kind StoreError = | Timeout
+
+capability Store
+  op find(key: Int) -> Option[Int]
+    fails StoreError
+  op count() -> Int
+
+pub run() -> Int
+  uses @store: Store[count]
+  fails StoreError
+=
+  checked(@store.count(), it > 0) else fail Timeout

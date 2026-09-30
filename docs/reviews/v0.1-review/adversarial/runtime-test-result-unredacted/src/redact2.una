@@ -1,0 +1,33 @@
+-- Adversarial: an example whose `do` result is `secret Text`.
+-- Expected: spec/11 §5 redacts labeled arguments and outcomes in traces; whether the `do`
+-- result is redacted in `una.test/1` is not stated.
+-- Observed: the trace shows `<redacted:secret>` for the operation outcome, while the example's
+-- `result.value` prints `"PIN-1234"` in `una --json test` (exit 0).
+module redact2
+
+pub kind VaultError = Locked(hint: secret Text) | Gone(code: Text)
+
+pub capability Vault
+  op open(name: Text) -> secret Text
+    fails VaultError
+
+pub handler vault(pin: secret Text) for Vault
+  op open(name) = if name == "bad" then fail Locked(hint: pin) else pin
+
+pub reveal(name: Text) -> secret Text
+  uses @vault: Vault[open]
+  fails VaultError
+=
+  let v = @vault.open(name)
+    if error pass
+  v
+
+example "ok"
+  given @vault = vault(pin: "PIN-1234")
+  do reveal("good")
+  expect result == "PIN-1234"
+
+example "fail"
+  given @vault = vault(pin: "PIN-5678")
+  do reveal("bad")
+  expect fails Locked

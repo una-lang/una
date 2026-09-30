@@ -1,0 +1,16 @@
+-- Adversarial: 'via' function passed as a value to 'map'
+-- Expected: U4005 (spec/07 §7.5)
+-- Observed: U4005 at src/app/keys.una:16:68
+-- Verdict: Pass
+trusted module app.keys
+
+pub policy mask
+  from secret[PII] Text
+  to Text
+  via masked
+  purpose "show the last digits"
+  owner privacy
+
+masked(t: secret[PII] Text) -> Text = t
+
+pub every(ts: List[secret[PII] Text]) -> List[Text] = ts.map(each: masked)

@@ -1,0 +1,6 @@
+module aaa
+
+pub capability Files
+  op read(path: Text) -> internal Text
+    ensures result.len > 0
+    fails FileError

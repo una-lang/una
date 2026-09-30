@@ -1,0 +1,22 @@
+-- Adversarial: effect nested in an 'attempt' argument
+-- Expected: U3013
+-- Observed: U3013 at 22:18
+-- Verdict: Pass
+module auth_effect_in_attempt_arg
+
+kind StoreError = | Timeout
+
+capability Store
+  op find(key: Int) -> Option[Int]
+    fails StoreError
+  op count() -> Int
+
+double(n: Int) -> Int
+  fails StoreError
+=
+  n * 2
+
+pub run() -> Result[Int, StoreError]
+  uses @store: Store[count]
+=
+  attempt double(@store.count())

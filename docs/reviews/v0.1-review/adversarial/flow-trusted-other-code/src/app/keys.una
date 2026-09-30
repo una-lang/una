@@ -1,0 +1,7 @@
+-- Adversarial: ordinary leak in a trusted module
+-- Expected: U4001 (spec/07 §6)
+-- Observed: U4001 at src/app/keys.una:7:41
+-- Verdict: Pass
+trusted module app.keys
+
+pub leak(t: secret[PII] Text) -> Text = t

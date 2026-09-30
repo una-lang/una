@@ -1,0 +1,17 @@
+-- Adversarial: capability stored in a record
+-- Expected: U3005
+-- Observed: U3005 at 17:16
+-- Verdict: Pass
+module auth_cap_in_record
+
+capability Log
+  op write(line: Text) -> Unit
+  op flush() -> Unit
+
+kind Holder
+  sink: Text
+
+leak() -> Holder
+  uses @log: Log[write]
+=
+  Holder(sink: @log)
