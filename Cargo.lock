@@ -661,10 +661,7 @@ dependencies = [
 name = "una-report"
 version = "0.1.0"
 dependencies = [
- "una-check",
  "una-diag",
- "una-interp",
- "una-verify",
 ]
 
 [[package]]

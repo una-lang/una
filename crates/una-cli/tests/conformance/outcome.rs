@@ -52,7 +52,8 @@ pub fn mismatches(
     let mut mismatches = Vec::new();
     match &case.check {
         CheckExpectation::Unspecified => {}
-        // `una check` has no tiers yet, so both expectations compare with the same diagnostics.
+        // The runner checks an `ok` case at tier 1 and a `tier0-ok` case at tier 0 (`main.rs`);
+        // both expect no diagnostics from the tier they ran.
         CheckExpectation::Ok | CheckExpectation::Tier0Ok => {
             if !reported.is_empty() {
                 let found: Vec<String> = reported.iter().map(ToString::to_string).collect();

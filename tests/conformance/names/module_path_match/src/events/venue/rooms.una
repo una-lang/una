@@ -1,0 +1,3 @@
+module events.venue.rooms
+
+pub capacity() -> Int = 40

@@ -459,6 +459,40 @@ fn fmt_converts_line_breaks_to_line_feeds() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
+/// Review finding R-024: formatting a symbolic link rewrites the file it points to and keeps
+/// the link.
+#[cfg(unix)]
+#[test]
+fn fmt_writes_through_a_symbolic_link_onto_its_target() {
+    let root = scratch("fmt-symlink");
+    std::fs::create_dir_all(root.join("real")).unwrap();
+    let target = root.join("real/linked.una");
+    let link = root.join("linked.una");
+    std::fs::write(&target, "module linked\n\npub one() -> Int\n=\n  1+1\n").unwrap();
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let fmt = una(&["fmt", link.to_str().unwrap()]);
+    assert_eq!(fmt.status.code(), Some(0), "{}", stderr(&fmt));
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the link is kept"
+    );
+    assert_eq!(std::fs::read_link(&link).unwrap(), target);
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "module linked\n\npub one() -> Int = 1 + 1\n"
+    );
+    assert_eq!(
+        std::fs::read_dir(root.join("real")).unwrap().count(),
+        1,
+        "no temporary file is left behind"
+    );
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 2);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
 #[test]
 fn check_reports_t7001_with_a_mechanical_edit() {
     let output = una(&[

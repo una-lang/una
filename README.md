@@ -543,7 +543,7 @@ Tests that reach tier 1 need the pinned Z3 on `PATH`; without it they fail with 
 | Properties | `crates/una-fmt/tests/` | Formatting is idempotent and preserves every `.una` file of the repository |
 | End to end | `crates/una-cli/tests/` | The CLI, the ABI documents, the runtime, verification, the examples, the guide and this readme's code, the explain examples, determinism, the checkpoint demos |
 
-CI (`.github/workflows/ci.yml`) runs formatting, clippy and the tests on Linux for every push, and also on macOS for pull requests and pushes to `main`; each push also packs the Linux release archive and runs it on the examples. Pushing a tag `v*` starts `.github/workflows/release.yml`, which builds the Linux and macOS archives with `scripts/release.sh`, checks them with `scripts/check-release.sh`, and attaches them to a draft release.
+CI (`.github/workflows/ci.yml`) runs formatting, clippy and the tests on Linux for every push, and also on macOS for pull requests and pushes to `main`; each run also packs the release archive of its runner's target and runs it on the examples, so the Linux archive is checked on every push and the macOS one on pull requests and pushes to `main`. Pushing a tag `v*` starts `.github/workflows/release.yml`, which builds the Linux and macOS archives with `scripts/release.sh`, checks them with `scripts/check-release.sh`, and attaches them to a draft release.
 
 Each usage checkpoint has a demo script that prints every command with its expected and actual outcome:
 
