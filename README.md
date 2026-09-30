@@ -40,7 +40,7 @@ This repository holds the language specification, the design record and **Una Co
 
 ## Project status
 
-**v0.1, Una Core, is complete, reviewed and merged into `main`**: every milestone of `docs/plan/milestones-v0.1.md` is implemented and meets its acceptance criteria, and CI is green on Linux and macOS. The choices the specification left open were reviewed and kept on 2026-09-29: the ADRs that record them in `docs/adr/` are Accepted, the specification states their rules, and `docs/history/v0.1/open-decisions.md` keeps each decision with its answer. The tag `v0.1.0`, which publishes the first release archives, comes next.
+**Version 0.1.0, Una Core.** Every milestone of `docs/plan/milestones-v0.1.md` is implemented and meets its acceptance criteria, and CI is green on Linux and macOS. An independent review of v0.1 (`docs/reviews/v0.1-review/`) found soundness gaps, and the closure run fixed every Critical and Major finding, each with a regression test, and 140 of its 143 adversarial programs are now part of the test suite (the other 3 belong to findings deferred to the backlog). The choices the specification left open are recorded in the ADRs of `docs/adr/` and the decision log in `docs/history/v0.1/open-decisions.md`. Release archives for Linux and macOS come from the tag `v0.1.0`; the changes are listed in [`CHANGELOG.md`](CHANGELOG.md).
 
 Una is a research language built to test a thesis (see [Roadmap](#roadmap)). It is not ready for production use.
 
@@ -60,10 +60,10 @@ Una is a research language built to test a thesis (see [Roadmap](#roadmap)). It 
 
 | At a glance | |
 | --- | --- |
-| Rust crates | 10, about 33,000 lines of Rust |
-| Specification | 15 normative chapters, 35 architecture decision records |
-| Diagnostic codes | 65, each with an explanation, and all but the internal error with a failing and a fixed example |
-| Tests | 320 Rust tests, 194 conformance cases, all passing |
+| Rust crates | 10, about 36,000 lines of Rust |
+| Specification | 15 normative chapters, 45 architecture decision records |
+| Diagnostic codes | 68, each with an explanation, and all but the internal error with a failing and a fixed example |
+| Tests | 348 Rust tests, 374 conformance cases, all passing |
 | Example packages | 7, each verified at tier 1 with every obligation proven |
 | Usage checkpoints | 4 of 4 reached, each with a demo script run in CI |
 
@@ -372,7 +372,45 @@ out of model: timing, termination and divergence, resource consumption and alloc
 
 ## Quick start
 
-### Requirements
+### Install from a release
+
+Each release on the [releases page](https://github.com/una-lang/una/releases) has an archive per platform, with a `.sha256` digest beside it:
+
+| Platform | Archive |
+| --- | --- |
+| Linux, x86_64 | `una-0.1.0-x86_64-unknown-linux-gnu.tar.gz` |
+| macOS, arm64 | `una-0.1.0-aarch64-apple-darwin.tar.gz` |
+
+Each archive holds the `una` binary, this readme and the license. Proofs need Z3 at the version pinned in `verification.lock` (5.1.0) on `PATH`; `scripts/install-z3.sh DIR` installs it. Without it, `una check` fails with U5003, and verification never passes silently.
+
+```bash
+tar -xzf una-0.1.0-aarch64-apple-darwin.tar.gz
+export PATH="$PWD/una-0.1.0-aarch64-apple-darwin:$PATH"
+```
+
+### Hello, world
+
+A single `.una` file is a package with default settings. This is `examples/hello/src/hello.una`:
+
+```una
+module hello
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("Hello, Una")
+```
+
+```text
+$ una run hello.una --grant console
+Hello, Una
+```
+
+`main` declares the one capability it needs, `Console[print]`, and `una run` grants it explicitly; without `--grant console` the program does not start (U3012).
+
+### Build from source
+
+The requirements:
 
 - The Rust toolchain pinned in `rust-toolchain.toml` (1.98.1), installed through [rustup](https://rustup.rs).
 - Z3 at the exact version pinned in `verification.lock` (5.1.0). `scripts/install-z3.sh DIR` downloads that release for Linux (x86_64, aarch64) or macOS (arm64, x86_64), checks its SHA-256 digest and installs it as `DIR/bin/z3`. Without the pinned Z3 on `PATH`, proofs fail with U5003: verification never passes silently.
@@ -392,8 +430,6 @@ una obligations examples/toolshelf  # every proof obligation and its status
 una report examples/journal         # the build report
 una explain U5001                   # what a code means, with examples
 ```
-
-Once `v0.1.0` is released, the archives `una-0.1.0-x86_64-unknown-linux-gnu.tar.gz` and `una-0.1.0-aarch64-apple-darwin.tar.gz` each hold the `una` binary, this readme and the license, with a `.sha256` digest beside them; Z3 is still installed with `scripts/install-z3.sh`.
 
 ### Your first package
 
@@ -561,11 +597,14 @@ scripts/demo/checkpoint-4.sh    # trust: proofs, counterexamples, obligations, t
 | --- | --- |
 | [`docs/00-charter.md`](docs/00-charter.md) | What Una is, what it proves and assumes, the v0.1 scope. Read first |
 | [`docs/spec/`](docs/spec/) | The normative specification, 15 chapters, with RFC 2119 keywords |
+| [`docs/guide/syntax-reference.md`](docs/guide/syntax-reference.md) | The language guide: every construct, with its diagnostics |
 | [`docs/guide/una-for-agents.md`](docs/guide/una-for-agents.md) | A compact, tested reference for agents writing Una |
 | [`docs/adr/`](docs/adr/) | Architecture decision records: why each key decision was made |
 | [`docs/compiler/`](docs/compiler/) | Architecture, conventions and testing of the reference compiler |
 | [`docs/plan/`](docs/plan/) | Roadmap, v0.1 milestones, deferred backlog, milestone plans |
-| [`docs/reviews/`](docs/reviews/) | Design review triage, the decision log, the status report |
+| [`docs/reviews/`](docs/reviews/) | Design review triage, and the independent review of v0.1 |
+| [`docs/history/v0.1/`](docs/history/v0.1/) | How v0.1 was built: the run instructions, the plans, the decision log |
+| [`CHANGELOG.md`](CHANGELOG.md) | The changes of each release |
 | [`docs/README.md`](docs/README.md) | The documentation map and reading order |
 
 | Specification chapter | Defines |
