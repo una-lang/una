@@ -80,7 +80,7 @@ impl Checker<'_, '_, '_> {
 /// U3016 for each instantiation whose solved type argument is or contains a second-class type:
 /// at the first value whose declared type mentions the type parameter and whose own type is
 /// second-class, else at the first value whose declared type mentions it, or at the
-/// instantiation when none does (re-review N-011, DECISION D-TBD-l8). Instantiations are
+/// instantiation when none does (re-review N-011, DECISION D-167). Instantiations are
 /// judged in the order they were checked, inner ones first, and one whose site contains a site already reported is not reported
 /// again, so that `Box(value: id(note))` yields one diagnostic, at `note`.
 /// DECISION D-138: the site is the first value whose declared type mentions the type

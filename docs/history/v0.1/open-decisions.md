@@ -2030,3 +2030,102 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `73f90b9` (merge), `tests/conformance/runtime/euclidean_division_signs.una` (no tag: the case is left out, and the backlog row records it)
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+
+### D-160: Branch joins at an invariant kind argument (re-review, N-002)
+- Question: ADR 0046 makes some kind arguments invariant for labels; a branch join must pick one type.
+- Context: the v0.1 re-review; ADR 0038 D3, ADR 0046.
+- Options: A) the join takes the first branch's labels, and a later branch that differs is U4001 at that branch; B) the join fails at the construct.
+- Chosen: A, because the diagnostic points at the branch to change.
+- Confidence: medium
+- Reversal cost: low, `crates/una-check/src/types/`
+- Implemented in: `d16e779` (merge of track L), tag `DECISION D-160`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-161: Unification under an invariant argument (re-review, N-002)
+- Question: A type variable solved under an invariant kind argument could be raised by a later unification.
+- Context: the v0.1 re-review; ADR 0038 D3, ADR 0046.
+- Options: A) unification does not raise a solved variable under an invariant argument; B) raise it and check at the flow.
+- Chosen: A, because raising would silently change the invariant label.
+- Confidence: medium
+- Reversal cost: low, `crates/una-check/src/types/`
+- Implemented in: `d16e779` (merge of track L), tag `DECISION D-161`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-162: A `let`-bound generic function value (re-review, N-003)
+- Question: `let f = is_pin` binds a generic function whose type variables are unsolved.
+- Context: the v0.1 re-review; ADR 0038 D3, ADR 0046.
+- Options: A) the local keeps the label of each unsolved type variable and is not generalized, so each call's labels count; B) generalize the local.
+- Chosen: A, because v0.1 has no let-polymorphism, and it keeps D-137 sound for function values.
+- Confidence: medium
+- Reversal cost: low, `crates/una-check/src/types/`
+- Implemented in: `d16e779` (merge of track L), tag `DECISION D-162`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-163: Constructors at invariant kind parameters (re-review, ADR 0046)
+- Question: `Feed(get: fn() -> 2)` built without an expected type gets public labels, which an invariant parameter then refuses.
+- Context: the v0.1 re-review; ADR 0038 D3, ADR 0046.
+- Options: A) a constructor takes the expected arguments at invariant parameters when those arguments contain no type variable; B) always infer from the fields.
+- Chosen: A, because the value is built for that type, and no label is lost.
+- Confidence: medium
+- Reversal cost: low, `crates/una-check/src/types/`
+- Implemented in: `d16e779` (merge of track L), tag `DECISION D-163`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-164: Sink labels of function-typed arguments (re-review, label sweep)
+- Question: `spec/07 §7` rule 4 bounds an operation argument by "every label of the argument's type".
+- Context: the v0.1 re-review; ADR 0038 D3, ADR 0046.
+- Options: A) include the labels of function parameters and results; B) only data positions.
+- Chosen: A, because a function value's labels are observable when the handler calls it; conservative.
+- Confidence: medium
+- Reversal cost: low, `crates/una-check/src/types/`
+- Implemented in: `d16e779` (merge of track L), tag `DECISION D-164`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-165: Labels in Core IR and traces (re-review, N-001)
+- Question: Deep labels now include kind-field labels; Core IR and the trace redaction use labels too.
+- Context: the v0.1 re-review; ADR 0038 D3, ADR 0046.
+- Options: A) Core IR and traces keep the previous label, so traces still redact field by field; B) redact whole values by the deep label.
+- Chosen: A, because field-by-field redaction already hides every labeled field and shows more.
+- Confidence: medium
+- Reversal cost: low, `crates/una-check/src/types/`
+- Implemented in: `d16e779` (merge of track L), tag `DECISION D-165`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-166: The return flow of a generic function (re-review, label sweep)
+- Question: A generic function's value and its declared result may both carry its own symbolic labels (`spec/07 §7` rule 8).
+- Context: the v0.1 re-review; ADR 0038 D3, ADR 0046.
+- Options: A) remove the function's own symbolic labels from both sides of the return flow; B) only from the value.
+- Chosen: A, because B rejected `mk3[T](s: Sink[T]) -> Sink[T] = s`, which is sound.
+- Confidence: medium
+- Reversal cost: low, `crates/una-check/src/types/`
+- Implemented in: `d16e779` (merge of track L), tag `DECISION D-166`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-167: Where U3016 is reported (re-review, N-011)
+- Question: The re-review found U3016 at a pure value and at the generic function itself.
+- Context: the v0.1 re-review; ADR 0038 D3, ADR 0046.
+- Options: A) at the first value whose own type is second-class, including arguments of a call of a generic function value, with one wording; B) at the call.
+- Chosen: A, because that value is what the agent must change.
+- Confidence: medium
+- Reversal cost: low, `crates/una-check/src/types/`
+- Implemented in: `d16e779` (merge of track L), tag `DECISION D-167`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-168: Labels inside a function-typed field and the deep label (re-review, N-001)
+- Question: The deep label of a kind now joins its fields' labels.
+- Context: the v0.1 re-review; ADR 0038 D3, ADR 0046.
+- Options: A) labels inside a field of function type do not count in the kind's deep label, while type arguments count wherever they occur; B) count them too.
+- Chosen: A, because a function field's labels bound its calls, which T-App checks, and B would label every record holding a callback.
+- Confidence: medium
+- Reversal cost: low, `crates/una-check/src/types/`
+- Implemented in: `d16e779` (merge of track L), tag `DECISION D-168`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?

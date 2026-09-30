@@ -839,7 +839,7 @@ impl<'a> Checker<'_, 'a, '_> {
             // type parameters (`spec/07 §7` rule 8). They are removed from both sides, so that
             // a position where the declared result has them and the value must match it, a
             // function parameter or an invariant kind argument (ADR 0046), still compares
-            // (DECISION D-TBD-l7).
+            // (DECISION D-166).
             let found = self.labeled(ty);
             let found = self.without_own_symbols(&found);
             let declared = self.labeled(expected);
