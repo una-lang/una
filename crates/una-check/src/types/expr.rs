@@ -15,7 +15,7 @@ use super::closest;
 use super::env::{Entity, FnKind, KindDef};
 use super::label::Label;
 use super::records::Res;
-use super::ty::{FnTy, FnUse, KindId, Ty};
+use super::ty::{FnRefinements, FnTy, FnUse, KindId, Refinement, Ty};
 use super::unify::Origin;
 
 impl<'a> Checker<'_, 'a, '_> {
@@ -329,6 +329,15 @@ impl<'a> Checker<'_, 'a, '_> {
             },
             uses: def.uses.iter().map(|need| need.usage.clone()).collect(),
             fails: def.fails.clone(),
+            // ADR 0037 rule 1: the refinements of the function's header.
+            refinements: FnRefinements {
+                params: def
+                    .params
+                    .iter()
+                    .map(|p| p.ty.refinements.clone())
+                    .collect(),
+                result: def.result.refinements.clone(),
+            },
         }))
     }
 
@@ -458,8 +467,19 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(Ty::List(expected)) = expected.map(|ty| self.resolve(ty)) {
             self.vars.unify(&element, &expected);
         }
+        let mut found = Vec::new();
         for item in items {
-            self.expr(item, Some(&element));
+            found.push(self.expr(item, Some(&element)));
+        }
+        // ADR 0037 rule 2: each function value of the list flows into the element type.
+        if self.pass == Pass::Check {
+            let resolved = self.resolve(&element);
+            if found
+                .iter()
+                .any(|item| super::call::refinement_flow(&resolved, &self.resolve(item)))
+            {
+                self.obligation(ObligationKind::Refinement, span, None);
+            }
         }
         // ADR 0038 D2: the element type instantiates the type parameter of `List`.
         // DECISION D-140: so a list literal of second-class values is U3016 at its first
@@ -870,19 +890,34 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         let mark = self.locals.len();
         let mut types = Vec::new();
+        // The parameter types the body assumes, and their refinements.
+        let mut own_types = Vec::new();
+        let mut own_refinements: Vec<Vec<Refinement>> = Vec::new();
+        // ADR 0037 rule 1: the lambda's type keeps the refinements of the expected function
+        // type, or without one those of its annotations.
+        let mut refinements = FnRefinements {
+            params: Vec::new(),
+            result: shape
+                .as_ref()
+                .map(|f| f.refinements.result.clone())
+                .unwrap_or_default(),
+        };
         for (index, param) in params.iter().enumerate() {
             let from_shape = shape.as_ref().and_then(|f| f.params.get(index).cloned());
+            let shape_refinements: Option<Vec<Refinement>> =
+                shape.as_ref().map(|f| f.refinements.param(index).to_vec());
+            let mut written_refinements: Option<Vec<Refinement>> = None;
             let name = self.name(&param.name);
             // A parameter's own annotation types the body; the lambda keeps the expected
             // parameter type, so a contradicting annotation is reported once.
             let (ty, param_ty) = match (&param.ty, from_shape) {
                 (Some(written), from_shape) => {
                     let type_params = self.type_params.clone();
-                    let lowered = self
-                        .env
-                        .lower_type(self.module, written, &type_params, self.report)
-                        .base;
-                    let lowered = self.symbolic(&lowered);
+                    let lowered =
+                        self.env
+                            .lower_type(self.module, written, &type_params, self.report);
+                    written_refinements = Some(lowered.refinements);
+                    let lowered = self.symbolic(&lowered.base);
                     match from_shape {
                         Some(from_shape) if !self.vars.unify(&from_shape, &lowered) => {
                             let (declared, given) = (self.show(&lowered), self.show(&from_shape));
@@ -933,6 +968,20 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
             };
             types.push(param_ty);
+            own_types.push(ty.clone());
+            // The body assumes the refinements of the annotation, or of the expected
+            // parameter type when there is none; the lambda's type records the expected ones.
+            let own = written_refinements
+                .clone()
+                .or_else(|| shape_refinements.clone())
+                .unwrap_or_default();
+            refinements.params.push(
+                shape_refinements
+                    .or(written_refinements)
+                    .unwrap_or_default(),
+            );
+            own_refinements.push(own.clone());
+            self.lambda_refinements(param.name.span, own);
             self.typed(param.name.span, &ty);
             self.bind(name, ty);
         }
@@ -1005,12 +1054,53 @@ impl<'a> Checker<'_, 'a, '_> {
         if mismatch {
             return Ty::Error;
         }
-        Ty::Fn(Box::new(FnTy {
+        let result = result.unwrap_or(body_ty);
+        let lambda = Ty::Fn(Box::new(FnTy {
             params: types,
-            result: result.unwrap_or(body_ty),
-            uses,
-            fails,
-        }))
+            result: result.clone(),
+            uses: uses.clone(),
+            fails: fails.clone(),
+            refinements,
+        }));
+        if self.pass == Pass::Check && shape.is_some() {
+            // ADR 0037 rule 2: the lambda's own type, with the parameter types its body
+            // assumes, flows into the type it is given.
+            let own = Ty::Fn(Box::new(FnTy {
+                params: own_types,
+                result,
+                uses,
+                fails,
+                refinements: FnRefinements {
+                    params: own_refinements,
+                    result: Vec::new(),
+                },
+            }));
+            let (expected, own) = (self.resolve(&lambda), self.resolve(&own));
+            let own = match own {
+                Ty::Fn(mut function) => {
+                    if let Ty::Fn(expected) = &expected {
+                        function
+                            .refinements
+                            .result
+                            .clone_from(&expected.refinements.result);
+                    }
+                    Ty::Fn(function)
+                }
+                other => other,
+            };
+            if super::call::refinement_flow(&expected, &own) {
+                self.obligation(ObligationKind::Refinement, span, None);
+            }
+            // The result the lambda is given is a return of its body (`spec/12 §3`).
+            if let Ty::Fn(expected) = &expected
+                && !expected.refinements.result.is_empty()
+            {
+                for path in return_paths(body) {
+                    self.obligation(ObligationKind::Refinement, path, None);
+                }
+            }
+        }
+        lambda
     }
 
     /// `checked(v, p) else fail V` (`spec/06 §6`): `p` is in the refinement language, over `it`.
@@ -1205,5 +1295,22 @@ pub(crate) fn count(n: usize, thing: &str) -> String {
         format!("1 {thing}")
     } else {
         format!("{n} {thing}s")
+    }
+}
+
+/// The normal return paths of a lambda's body, as [`Checker::tail_expr`] finds them in a
+/// function's: the branches of `if`, through parentheses, except a `fail`.
+fn return_paths(expr: &Expr) -> Vec<Span> {
+    match &expr.kind {
+        ExprKind::IfLine {
+            then, otherwise, ..
+        } => {
+            let mut paths = return_paths(then);
+            paths.extend(return_paths(otherwise));
+            paths
+        }
+        ExprKind::Paren(inner) => return_paths(inner),
+        ExprKind::Fail(_) => Vec::new(),
+        _ => vec![expr.span],
     }
 }

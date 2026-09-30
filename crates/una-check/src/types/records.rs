@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use una_syntax::Span;
 
-use super::ty::{CapId, Declared, KindId, Ty};
+use super::ty::{CapId, Declared, KindId, Refinement, Ty};
 
 /// What an expression or pattern resolves to.
 #[derive(Clone, Debug)]
@@ -45,6 +45,9 @@ pub(crate) struct Records {
     /// The written type of each annotated `let`, by the span of its name, with its
     /// refinements (DECISION D-111).
     pub(crate) annotations: BTreeMap<Span, Declared>,
+    /// The refinements of each lambda parameter, by the span of its name: its annotation's,
+    /// or the expected parameter type's (ADR 0037 rule 1).
+    pub(crate) lambda_params: BTreeMap<Span, Vec<Refinement>>,
 }
 
 impl Records {
@@ -65,6 +68,7 @@ impl Records {
         }
         self.args.extend(other.args);
         self.annotations.extend(other.annotations);
+        self.lambda_params.extend(other.lambda_params);
     }
 
     /// Adds records whose types are already resolved.
@@ -73,5 +77,6 @@ impl Records {
         self.res.extend(other.res);
         self.args.extend(other.args);
         self.annotations.extend(other.annotations);
+        self.lambda_params.extend(other.lambda_params);
     }
 }

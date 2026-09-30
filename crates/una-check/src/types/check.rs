@@ -15,7 +15,7 @@ use super::env::{Entity, Env, FnDef, FnKind, HandlerDef};
 use super::facts::KindFacts;
 use super::label::Label;
 use super::records::{Records, Res};
-use super::ty::{CapId, Declared, KindId, Names, Show, Ty};
+use super::ty::{CapId, Declared, KindId, Names, Refinement, Show, Ty};
 use super::unify::{Origin, Vars};
 use super::{Findings, Report};
 
@@ -517,6 +517,14 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     pub(crate) fn annotated(&mut self, span: Span, declared: &Declared) {
         if self.pass == Pass::Check {
             self.records.annotations.insert(span, declared.clone());
+        }
+    }
+
+    /// Records, in pass 2, the refinements of the lambda parameter whose name is at `span`
+    /// (ADR 0037 rule 1).
+    pub(crate) fn lambda_refinements(&mut self, span: Span, refinements: Vec<Refinement>) {
+        if self.pass == Pass::Check && !refinements.is_empty() {
+            self.records.lambda_params.insert(span, refinements);
         }
     }
 

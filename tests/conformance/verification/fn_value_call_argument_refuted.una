@@ -1,0 +1,8 @@
+-- test: a call through a function value proves the refinements of its parameters at the arguments (ADR 0037 rule 7)
+-- spec: spec/12 §3
+-- expect: error U5001 at 8:49
+module fn_value_call_argument_refuted
+
+pub kind Pos = Int where it > 0
+
+pub apply(f: fn(Pos) -> Int, x: Int) -> Int = f(x)

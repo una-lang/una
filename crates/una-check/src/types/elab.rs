@@ -257,9 +257,19 @@ impl<'e, 'a> Fx<'e, 'a> {
     fn convert(&self, ty: &Ty) -> Type {
         match ty {
             Ty::Labeled(label, inner) => with_label(self.convert(inner), label),
+            // ADR 0037 rule 1: the parameters and the result keep their refinements.
             Ty::Fn(function) => Type::Fn {
-                params: function.params.iter().map(|p| self.convert(p)).collect(),
-                result: Box::new(self.convert(&function.result)),
+                params: function
+                    .params
+                    .iter()
+                    .enumerate()
+                    .map(|(index, p)| {
+                        self.refined(self.convert(p), function.refinements.param(index))
+                    })
+                    .collect(),
+                result: Box::new(
+                    self.refined(self.convert(&function.result), &function.refinements.result),
+                ),
                 uses: self.uses_of(&function.uses),
                 fails: function.fails.as_ref().map(|f| self.kind_name(f)),
                 label: Label::public(),
@@ -305,21 +315,59 @@ impl<'e, 'a> Fx<'e, 'a> {
         }
     }
 
-    /// A declared type, with the refinements of the kinds and ranges it names.
+    /// A declared type, with the refinements of the kinds and ranges it names. Core IR has no
+    /// room for the refinement of a function-typed value (`spec/09 §2`), as of an alias kind
+    /// of a function type with a `where` clause: in debug builds it is recorded as lost, for
+    /// U8001 (ADR 0037 rule 11), never dropped silently.
     fn declared(&mut self, declared: &Declared) -> Type {
-        let mut ty = self.ty(&declared.base);
-        let refinements: Vec<CoreRefinement> = declared
-            .refinements
+        let ty = self.ty(&declared.base);
+        self.refined_kept(ty, &declared.refinements)
+    }
+
+    /// [`Fx::refined`], recording in debug builds a refinement that Core IR cannot hold.
+    fn refined_kept(&self, ty: Type, refinements: &[Refinement]) -> Type {
+        let ty = self.refined(ty, refinements);
+        let kept = match &ty {
+            Type::Base { refinements, .. } => refinements.len(),
+            Type::Fn { .. } => 0,
+        };
+        if cfg!(debug_assertions) && kept < refinements.len() {
+            self.lost
+                .borrow_mut()
+                .push("the refinement of a declared type".to_owned());
+        }
+        ty
+    }
+
+    /// `ty` with `refinements` elaborated into its refinements; a function type has no room
+    /// for them, and [`lost`] or [`Fx::declared`] report what is left out.
+    fn refined(&self, mut ty: Type, refinements: &[Refinement]) -> Type {
+        if refinements.is_empty() {
+            return ty;
+        }
+        let mut fx = Fx::new(self.env, self.records, self.dbs, self.module);
+        fx.type_params.clone_from(&self.type_params);
+        let core: Vec<CoreRefinement> = refinements
             .iter()
-            .filter_map(|refinement| self.refinement(refinement))
+            .filter_map(|refinement| fx.refinement(refinement))
             .collect();
         if let Type::Base {
             refinements: slot, ..
         } = &mut ty
         {
-            *slot = refinements;
+            *slot = core;
         }
         ty
+    }
+
+    /// The Core IR type of the lambda parameter whose name is at `span`, with the refinements
+    /// the checker recorded for it (ADR 0037 rule 1).
+    fn lambda_param(&self, span: Span) -> Type {
+        let ty = self.type_at(span);
+        match self.records.lambda_params.get(&span) {
+            Some(refinements) => self.refined_kept(ty, refinements),
+            None => ty,
+        }
     }
 
     /// A refinement with its predicate over `it`: a range, or the `where` clause of an alias
@@ -467,6 +515,39 @@ impl<'e, 'a> Fx<'e, 'a> {
                     .to_owned(),
             ),
             None => (self.path(self.module, "?"), "?".to_owned()),
+        }
+    }
+
+    /// The Core IR type of field `index` of record kind `kind`, a function type, read from the
+    /// record at `record`: the declared type at the record's type arguments, with its label.
+    fn field_fn_type(&mut self, kind: usize, index: usize, record: Span) -> Type {
+        let record = self
+            .records
+            .types
+            .get(&record)
+            .cloned()
+            .unwrap_or(Ty::Error);
+        let args = match record.unlabeled() {
+            Ty::Kind(_, args) => args.clone(),
+            _ => Vec::new(),
+        };
+        let declared = self
+            .env
+            .kinds
+            .get(kind)
+            .and_then(|def| def.record.as_ref())
+            .and_then(|fields| fields.get(index))
+            .map(|field| Declared {
+                base: field
+                    .ty
+                    .base
+                    .substitute(&args)
+                    .with_label(&record.top_label()),
+                refinements: field.ty.refinements.clone(),
+            });
+        match declared {
+            Some(declared) => self.declared(&declared),
+            None => unknown(),
         }
     }
 
@@ -1578,7 +1659,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                 let params: Vec<(Name, Type)> = params
                     .iter()
                     .map(|p| {
-                        let ty = self.type_at(p.name.span);
+                        let ty = self.lambda_param(p.name.span);
                         (self.bind(self.name(&p.name)), ty)
                     })
                     .collect();
@@ -1591,6 +1672,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     Rhs::Lambda {
                         params,
                         body: Box::new(body),
+                        function: None,
                     },
                 )
             }
@@ -1666,10 +1748,13 @@ impl<'e, 'a> Fx<'e, 'a> {
                 Some(Res::FieldFn { kind, index }) => {
                     let value = self.atom(lets, target);
                     let (_, field) = self.field(kind, index);
+                    // ADR 0037 rule 7: the field's declared function type, refinements
+                    // included, at the record's type arguments and label.
+                    let field_ty = self.field_fn_type(kind, index, target.span);
                     let f = self.temp();
                     lets.push(Let::inferred(
                         f.clone(),
-                        unknown(),
+                        field_ty,
                         Bound::Rhs(Rhs::Field {
                             value,
                             field,
@@ -1994,25 +2079,34 @@ impl<'e, 'a> Fx<'e, 'a> {
         slots.into_iter().flatten().unzip()
     }
 
-    /// A function used as a value at `span`: `λ(x, ...). f[τ*](x, ...)`.
+    /// A function used as a value at `span`: `λ(x, ...). f[τ*](x, ...)`, whose parameters keep
+    /// the declared names and types, refinements included (ADR 0037 rule 1).
     fn function_value(&mut self, id: usize, type_args: &[Ty], span: Span) -> Rhs {
         let Some(def) = self.env.functions.get(id) else {
             self.broken = true;
             return Rhs::Atom(Atom::Unit);
         };
+        let mark = self.scope.len();
         let params: Vec<(Name, Type)> = def
             .params
             .iter()
             .map(|p| {
-                let ty = self.ty(&p.ty.base.substitute(type_args));
-                let t = self.temp();
-                (t, ty)
+                let declared = Declared {
+                    base: p.ty.base.substitute(type_args),
+                    refinements: p.ty.refinements.clone(),
+                };
+                let ty = self.declared(&declared);
+                (self.bind(p.name), ty)
             })
             .collect();
+        self.scope.truncate(mark);
         let args: Vec<Atom> = params.iter().map(|(n, _)| Atom::Var(n.clone())).collect();
         let arg_spans = vec![span; args.len()];
         let t = self.temp();
-        let result = self.ty(&def.result.base.substitute(type_args));
+        let result = self.declared(&Declared {
+            base: def.result.base.substitute(type_args),
+            refinements: def.result.refinements.clone(),
+        });
         let body = CoreExpr::Let {
             name: t.clone(),
             ty: result,
@@ -2033,6 +2127,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         Rhs::Lambda {
             params,
             body: Box::new(body),
+            function: Some(self.function_path(id)),
         }
     }
 }
@@ -2198,11 +2293,29 @@ fn lost(ty: &Ty, core: &Type) -> Option<String> {
             if function.fails.is_some() != fails.is_some() {
                 return Some("the `fails` of a function type".to_owned());
             }
-            // ADR 0037 hook: function types of the checker carry no refinements in v0.1, so
-            // there is nothing to compare with the refinements of `params` and `result` yet;
-            // F-0001-02 compares them here once they are kept.
             if params.len() != function.params.len() {
                 return Some("a parameter of a function type".to_owned());
+            }
+            // ADR 0037 rule 11: every refinement of a parameter or the result is in Core IR.
+            let dropped = |refinements: &[Refinement], core: &Type| {
+                let kept = match core {
+                    Type::Base { refinements, .. } => refinements.len(),
+                    Type::Fn { .. } => 0,
+                };
+                kept < refinements.len()
+            };
+            if let Some(index) = (0..params.len()).find(|index| {
+                params
+                    .get(*index)
+                    .is_some_and(|core| dropped(function.refinements.param(*index), core))
+            }) {
+                return Some(format!(
+                    "a refinement of parameter {} of a function type",
+                    index + 1
+                ));
+            }
+            if dropped(&function.refinements.result, result) {
+                return Some("a refinement of the result of a function type".to_owned());
             }
             function
                 .params
@@ -2328,6 +2441,7 @@ mod tests {
             result: Ty::Unit,
             uses: vec![logging()],
             fails: Some(Ty::Kind(0, Vec::new())),
+            refinements: super::super::ty::FnRefinements::default(),
         }));
         let kept = core_fn(
             vec![Use {
@@ -2362,5 +2476,52 @@ mod tests {
             label: Label::public(),
         };
         assert!(lost(&listed, &dropped).is_some());
+    }
+
+    #[test]
+    fn the_consistency_check_finds_a_lost_refinement_of_a_function_type() {
+        // ADR 0037 rule 11: `fn(Small) -> Pos` keeps both refinements.
+        let alias = |id: usize| super::super::ty::Refinement::Alias(id, Vec::new());
+        let function = Ty::Fn(Box::new(super::super::ty::FnTy {
+            params: vec![Ty::Int],
+            result: Ty::Int,
+            uses: Vec::new(),
+            fails: None,
+            refinements: super::super::ty::FnRefinements {
+                params: vec![vec![alias(0)]],
+                result: vec![alias(1)],
+            },
+        }));
+        let refined = |text: &str| Type::Base {
+            base: Base::Int,
+            refinements: vec![CoreRefinement {
+                name: text.to_owned(),
+                clause: CoreClause {
+                    term: Term::Bool(true),
+                    text: text.to_owned(),
+                    span: None,
+                },
+            }],
+            label: Label::public(),
+        };
+        let core = |param: Type, result: Type| Type::Fn {
+            params: vec![param],
+            result: Box::new(result),
+            uses: Vec::new(),
+            fails: None,
+            label: Label::public(),
+        };
+        let kept = core(refined("Small"), refined("Pos"));
+        assert_eq!(lost(&function, &kept), None);
+        let no_param = core(plain(Base::Int), refined("Pos"));
+        assert_eq!(
+            lost(&function, &no_param).as_deref(),
+            Some("a refinement of parameter 1 of a function type")
+        );
+        let no_result = core(refined("Small"), plain(Base::Int));
+        assert_eq!(
+            lost(&function, &no_result).as_deref(),
+            Some("a refinement of the result of a function type")
+        );
     }
 }
