@@ -24,7 +24,7 @@ pub fn diagnostics(
             ObligationStatus::Refuted => Code::U5001,
             ObligationStatus::Unknown => Code::U5002,
         };
-        // DECISION D-113: a return obligation points at the returned expression of the path
+        // A return obligation points at the returned expression of the path
         // that the model takes.
         let primary = outcome
             .path
@@ -89,7 +89,7 @@ fn message(obligation: &Obligation, outcome: &Outcome) -> String {
 }
 
 /// The repair candidates of `spec/13 §3` that apply to the obligation's kind and site, ranked
-/// (DECISION D-120, R-021): a stronger parameter type only when the value is a parameter, a
+/// (R-021): a stronger parameter type only when the value is a parameter, a
 /// `requires` clause only in a private function and over its parameters, and no candidate for
 /// a ground goal.
 fn repairs(obligation: &Obligation) -> Vec<Repair> {

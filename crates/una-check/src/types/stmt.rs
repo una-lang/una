@@ -148,8 +148,7 @@ impl<'a> Checker<'_, 'a, '_> {
             self.fn_flow(value, &declared.base, &ty);
             self.annotated(stmt.name.span, declared);
         }
-        // The local keeps the labels its value has now; later unifications do not change them
-        // (DECISION D-088).
+        // The local keeps the labels its value has now; later unifications do not change them.
         let bound = declared.map_or_else(|| self.labeled(&ty), |declared| declared.base);
         self.typed(stmt.name.span, &bound);
         self.bind(name, bound);
@@ -194,7 +193,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     }
                 }
             };
-            // DECISION D-087: the first binding of a name wins.
+            // The first binding of a name wins.
             let name = self.name(&binding.cap);
             if !frame.bindings.iter().any(|(bound, _)| bound == name) {
                 frame.bindings.push((name.to_owned(), bound));
@@ -376,7 +375,7 @@ impl<'a> Checker<'_, 'a, '_> {
             ElseBranch::If(next) => self.if_block(next, joined.as_ref(), role, tail),
         };
         self.restore_pc(saved);
-        // DECISION D-088: the value joins both branches, raised by the condition (T-If).
+        // The value joins both branches, raised by the condition (T-If).
         let value = match (
             self.resolve(&then_ty) == Ty::Never,
             self.resolve(&else_ty) == Ty::Never,
@@ -400,7 +399,7 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// `when`: variant arms over a sum kind are exhaustive or end with `else` (U2007); arms
-    /// that no value reaches are U2008 (DECISION D-051); range and literal arms without `else`
+    /// that no value reaches are U2008; range and literal arms without `else`
     /// leave an `exhaustive` obligation (`spec/10 §4`, `spec/12 §3`).
     fn when(&mut self, when: &WhenExpr, expected: Option<&Ty>, role: Role<'_>, tail: bool) -> Ty {
         self.outside_rl(when.span, || "`when`".to_owned());
@@ -476,7 +475,7 @@ impl<'a> Checker<'_, 'a, '_> {
                                     }
                                 }
                             }
-                            // DECISION D-090: the fields take the labels of the scrutinee's
+                            // The fields take the labels of the scrutinee's
                             // arguments, raised by its top label.
                             let targs = match self.labeled(&scrutinee).unlabeled() {
                                 Ty::Kind(id, args) if *id == kind => args.clone(),
@@ -711,7 +710,7 @@ impl<'a> Checker<'_, 'a, '_> {
             let local = self.name(local_ident);
             self.bind(local, ty);
         }
-        // DECISION D-098: the field of each binding.
+        // The field of each binding.
         self.ordered(pattern, order);
     }
 }

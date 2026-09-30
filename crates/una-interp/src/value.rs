@@ -91,7 +91,7 @@ pub(crate) fn equal(a: &Value<'_>, b: &Value<'_>) -> bool {
 }
 
 /// The order of `<`: integers, texts by scalar values, and variants without fields by
-/// declaration (`spec/03 §1`, DECISION D-104).
+/// declaration (`spec/03 §1`).
 pub(crate) fn compare(a: &Value<'_>, b: &Value<'_>) -> Ordering {
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => x.cmp(y),

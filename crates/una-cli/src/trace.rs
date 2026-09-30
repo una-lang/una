@@ -1,7 +1,7 @@
 //! `una trace <REQUIREMENT_ID>` (`spec/08 §1`): a requirement, the functions derived from it,
 //! their contracts and the status of their obligations.
 //!
-//! DECISION D-124: the package in the current directory, checked at tier 1, as `una contract`
+//! The package in the current directory, checked at tier 1, as `una contract`
 //! reads it; human lines, or `una.trace/1`.
 
 use std::io::{self, Write};

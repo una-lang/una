@@ -1,6 +1,6 @@
 //! The text of Core IR (`spec/09 §2, §4`): what `una check --dump-core` prints.
 //!
-//! DECISION D-099: declarations in source order, one block each; every binder with its type,
+//! Declarations in source order, one block each; every binder with its type,
 //! label and refinements; primitives in prefix form; qualified callees.
 
 use std::fmt::Write as _;

@@ -1,7 +1,6 @@
 #!/bin/sh
 # Checks the archive that scripts/release.sh packed for TARGET: its SHA-256 digest, its contents,
-# and the packed binary on the examples, which needs the pinned Z3 on PATH (ADR 0035 rule 3,
-# DECISION D-129).
+# and the packed binary on the examples, which needs the pinned Z3 on PATH (ADR 0035 rule 3).
 #
 # Usage: scripts/check-release.sh TARGET
 set -eu

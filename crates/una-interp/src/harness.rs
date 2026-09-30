@@ -149,7 +149,7 @@ fn run_example<'p>(
 
 /// The first expectation of `example` that does not hold against the result and trace of its
 /// `do` line; then, when the `do` line failed and no `expect fails` line expects a failure,
-/// that failure (DECISION D-106).
+/// that failure.
 fn judge<'p>(
     machine: &mut Machine<'p, '_>,
     index: &Index<'p>,

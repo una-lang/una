@@ -29,18 +29,18 @@ pub struct Obligation {
     pub declaration: String,
     /// The goal, as text.
     pub goal: String,
-    /// The site of the obligation, or the clause of a return obligation (DECISION D-118).
+    /// The site of the obligation, or the clause of a return obligation.
     pub source: Span,
     /// The declaring clause, and what it is.
     pub related: Option<(Span, &'static str)>,
     /// For a return obligation, the returned expression of each path, in the order of the
-    /// query's path selectors (DECISION D-113).
+    /// query's path selectors.
     pub paths: Vec<Span>,
     /// The hypotheses of the path context, as text.
     pub hypotheses: Vec<String>,
     /// The query: `Π ∧ ¬goal`.
     pub(crate) query: Query,
-    /// The terms whose values a counterexample shows (DECISION D-119).
+    /// The terms whose values a counterexample shows.
     pub(crate) shown: Vec<Shown>,
     /// Where the obligation arises, which decides its repairs (`spec/13 §3`).
     pub site: Site,
@@ -167,7 +167,7 @@ pub fn obligations(program: &Program, sources: &SourceDb) -> Vec<Obligation> {
 
 /// For each `ensures` clause of a public function, a query without any hypothesis, its
 /// parameters and `result` unconstrained: a clause the solver proves this way is trivial, a
-/// missing contract (`spec/13 §6`, DECISION D-123).
+/// missing contract (`spec/13 §6`).
 pub fn trivial_ensures(program: &Program, sources: &SourceDb) -> Vec<Obligation> {
     let index = Index::new(program);
     let mut all = Vec::new();
@@ -251,7 +251,7 @@ pub(crate) struct Index<'p> {
 /// Whether `module` is the prelude's (`spec/14 §1`). The prelude is identified by its module
 /// path, which no module of a package that reaches the verifier can have: a user module path
 /// whose first segment is `prelude` is U1009 at tier 0 (ADR 0038 D7), and tier 1 runs only
-/// when tier 0 reports nothing (DECISION D-112). DECISION D-135: the reserved path is the
+/// when tier 0 reports nothing. DECISION D-135: the reserved path is the
 /// prelude's identity, rather than a new Core IR path that no source can spell, and a kind the
 /// package declares is never taken for a prelude kind ([`Index::prelude_kind`]).
 fn is_prelude(module: &str) -> bool {
@@ -523,7 +523,7 @@ fn base_type(base: Base) -> Type {
     }
 }
 
-/// The sort of a Una type (`spec/12 §4`, DECISION D-115), in the namespaces of ADR 0038 D8:
+/// The sort of a Una type (`spec/12 §4`), in the namespaces of ADR 0038 D8:
 /// `Int` and `Bool` are SMT-LIB's, the other built-in types and the kinds of the prelude are
 /// the encoder's (`i!Text`, `i!List_<T>`, `i!Option_<T>`, `i!FileError`), and the kinds and
 /// type parameters of the program are the user's (`u!Kind_<module>_<Name>`, `u!Param_<name>`).
@@ -929,7 +929,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                     return;
                 }
                 Expr::Unreachable { span, goal } => {
-                    // DECISION D-111: the path after the last arm is infeasible.
+                    // The path after the last arm is infeasible.
                     self.site(
                         ObligationKind::Exhaustive,
                         &ctx,
@@ -1115,7 +1115,7 @@ impl<'p, 'i> Walker<'p, 'i> {
     /// `x is Ok implies ...` for the value `x` of an `attempt`: `Ok` is a normal return of the
     /// attempted call (`spec/06 §5`), so the facts of one of its return paths hold, among them
     /// the callee's `ensures`, and `x.value` is its value; `Err` carries nothing, as failures
-    /// have no postcondition (`spec/04 §2`). DECISION D-131.
+    /// have no postcondition (`spec/04 §2`).
     fn attempted(&self, x: &Tv, leaf: &Leaf) -> Option<F> {
         if leaf.returns.is_empty() {
             return None;
@@ -2121,7 +2121,7 @@ impl<'p, 'i> Walker<'p, 'i> {
     }
 
     /// Order of two values: `Int` natively, a sum without payloads by its tags, `Text` by an
-    /// uninterpreted relation (DECISION D-115).
+    /// uninterpreted relation.
     fn order(&self, op: BinOp, a: &Tv, b: &Tv) -> Option<F> {
         let symbol = match op {
             BinOp::Lt => "<",
@@ -2387,7 +2387,7 @@ impl<'p, 'i> Walker<'p, 'i> {
     }
 
     /// An obligation over every normal return path: `Π ∧ (path₁ ∨ … ∨ pathₙ) ⊢ goal`, where
-    /// each path fixes `result` (DECISION D-113).
+    /// each path fixes `result`.
     #[allow(clippy::too_many_arguments)]
     fn returns(
         &mut self,
@@ -2533,8 +2533,7 @@ impl<'p, 'i> Walker<'p, 'i> {
         }
     }
 
-    /// The facts about the terms of a query that no quantifier states (`spec/12 §2, §4`,
-    /// DECISION D-114): lengths are at least 0, tags are in range, and fields satisfy their
+    /// The facts about the terms of a query that no quantifier states (`spec/12 §2, §4`): lengths are at least 0, tags are in range, and fields satisfy their
     /// declared refinements.
     fn ground_facts(&mut self, query: &Query) -> (Vec<F>, Vec<F>) {
         let mut facts: Vec<F> = Vec::new();
@@ -2667,7 +2666,7 @@ impl<'p, 'i> Walker<'p, 'i> {
     }
 
     /// The terms a counterexample shows: named binders, `result`, and the fields and lengths
-    /// over them, by name (DECISION D-119).
+    /// over them, by name.
     fn shown(&self, query: &Query, ctx: &Ctx) -> Vec<Shown> {
         let mut out: BTreeMap<String, Shown> = BTreeMap::new();
         for term in query.applications() {
@@ -3145,7 +3144,7 @@ fn source_symbol(fun: &SmtFun) -> &str {
 
 /// Arithmetic in QF_UFLIA: multiplication, division and remainder stay linear only with a
 /// literal operand (a nonzero divisor); otherwise they are uninterpreted functions, since the
-/// logic has no nonlinear terms (`spec/12 §2`, DECISION D-115).
+/// logic has no nonlinear terms (`spec/12 §2`).
 fn arithmetic(op: BinOp, left: F, right: F) -> F {
     let literal = |f: &F| matches!(f, F::Int(_));
     let nonzero = |f: &F| matches!(f, F::Int(d) if d.trim_start_matches('-') != "0");

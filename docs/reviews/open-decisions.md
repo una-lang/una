@@ -2,7 +2,7 @@
 
 Decision log of the autonomous run (`OVERNIGHT.md`, C.4). Every choice not literally dictated by the specification is recorded here. Entries are sorted by review priority: low confidence combined with high reversal cost first. Code and tests implementing a decision carry the comment `DECISION D-NNN`.
 
-**Reviewed on 2026-09-30.** The independent review of v0.1 (`docs/reviews/v0.1-review/decisions.md`) recommended keeping 131 decisions and escalated D-093; the owner kept all 131 and resolved D-093 through ADR 0038 D4. Each entry records it on a `- Review` line. The decisions are final, so the `DECISION D-NNN` tags were removed from the code: the entries and their ADRs are the record. Decisions from D-133 on belong to the v0.1 closure run.
+**Reviewed on 2026-09-30.** The independent review of v0.1 (`docs/reviews/v0.1-review/decisions.md`) recommended keeping 131 decisions and escalated D-093; the owner kept all 131 and resolved D-093 through ADR 0038 D4. Each entry records it on a `- Review` line. D-001 to D-132 are final, so their `DECISION D-NNN` tags were removed from the code and tests: the entries and their ADRs are the record. Decisions from D-133 on belong to the v0.1 closure run, await the owner's answer, and keep their tags until then.
 
 **Answered on 2026-09-29.** The owner reviewed the log and kept every chosen option, so each entry below records its answer, and the Provisional ADRs became Accepted, with their rules stated in the specification (`OVERNIGHT.md` C.9).
 

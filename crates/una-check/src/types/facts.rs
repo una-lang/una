@@ -85,8 +85,7 @@ impl KindFacts {
     }
 }
 
-/// The kinds that values of `ty` contain directly: not through `List` or `Option`
-/// (DECISION D-062).
+/// The kinds that values of `ty` contain directly: not through `List` or `Option`.
 fn contained(ty: &Ty, option: Option<KindId>, out: &mut Vec<KindId>) {
     match ty {
         Ty::Labeled(_, inner) => contained(inner, option, out),
@@ -209,7 +208,7 @@ pub(crate) fn kind_recursion(env: &Env<'_>, report: &mut Report<'_>) {
 }
 
 /// U2015: a predicate calls itself, directly or through other predicates and functions
-/// (`spec/03 §4`, DECISION D-065). One diagnostic per cycle, at its first predicate's name.
+/// (`spec/03 §4`). One diagnostic per cycle, at its first predicate's name.
 pub(crate) fn predicate_recursion(env: &Env<'_>, findings: &Findings, report: &mut Report<'_>) {
     let mut calls: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
     for (caller, callee, _) in &findings.edges {
@@ -273,7 +272,7 @@ pub(crate) fn predicate_recursion(env: &Env<'_>, findings: &Findings, report: &m
 
 /// U2001: a generic function that compares values of a type parameter with `==` or `!=`,
 /// directly or through the functions it calls, cannot be instantiated with a type whose values
-/// hold functions (`spec/03 §1`, DECISION D-063).
+/// hold functions (`spec/03 §1`).
 pub(crate) fn generic_equality(
     env: &Env<'_>,
     facts: &KindFacts,

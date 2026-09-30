@@ -6,8 +6,7 @@ use una_syntax::Span;
 use super::label::Label;
 use super::ty::{FnTy, FnUse, Ty};
 
-/// Why a unification variable exists, for the diagnostic when inference leaves it unknown
-/// (DECISION D-054).
+/// Why a unification variable exists, for the diagnostic when inference leaves it unknown.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Origin {
     /// The element type of an empty list.
@@ -58,7 +57,7 @@ impl Vars {
         self.resolve_shape(ty).erase()
     }
 
-    /// `ty` with every solved variable replaced by its value, labels included (DECISION D-088),
+    /// `ty` with every solved variable replaced by its value, labels included,
     /// and the label of each variable that a label names (see [`Vars::label_of`]) replaced by
     /// the join of every label of the variable's value, as it is now.
     pub(crate) fn resolve_labeled(&self, ty: &Ty) -> Ty {
@@ -200,7 +199,7 @@ impl Vars {
     /// and `Never` agree with every type (ADR 0024 rule 2); a variable meeting `Never` stays
     /// unsolved. Labels do not take part in equality: a variable takes the labels of the type
     /// it is solved with, and a solved variable keeps the join of the labels of every type it
-    /// meets (DECISION D-088).
+    /// meets.
     pub(crate) fn unify(&mut self, a: &Ty, b: &Ty) -> bool {
         if !self.unify_shapes(a, b) {
             return false;

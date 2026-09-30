@@ -1,7 +1,7 @@
 //! `una report [path]` (`spec/13 §6`): the build report of a package that checks at tier 1.
 //!
-//! DECISION D-122: what each section lists. DECISION D-123: trivial `ensures` and coverage.
-//! DECISION D-132: the report is assembled here, beside the package and analysis it reads.
+//! What each section lists. trivial `ensures` and coverage.
+//! The report is assembled here, beside the package and analysis it reads.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
@@ -206,7 +206,7 @@ pub(crate) fn report_command(
             stderr,
         );
     };
-    // DECISION D-123: a clause the solver proves without any hypothesis is trivial.
+    // A clause the solver proves without any hypothesis is trivial.
     let trivial_queries =
         on_large_stack(|| una_verify::trivial_ensures(&analysis.program, &package.sources));
     let trivial: BTreeSet<(String, Span)> =

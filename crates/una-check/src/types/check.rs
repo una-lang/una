@@ -42,7 +42,7 @@ pub(crate) struct Ctx {
     pub(crate) it: Option<Ty>,
     /// The type of `error`, where `error` is allowed (U2013).
     pub(crate) error: Option<Ty>,
-    /// The error kind in which `fail` finds its variant (DECISION D-048).
+    /// The error kind in which `fail` finds its variant.
     pub(crate) fails: Option<Ty>,
     pub(crate) rl: Rl,
     /// Inside the body of an opaque predicate, which is pure and cannot fail (U2015).
@@ -67,7 +67,7 @@ pub(crate) struct Ctx {
     /// The program counter label (`spec/07 §3`), and the condition that raised it last.
     pub(crate) pc: Label,
     pub(crate) pc_from: Option<Span>,
-    /// Whether labels are checked: not in `via` bodies or `expect` lines (DECISION D-095).
+    /// Whether labels are checked: not in `via` bodies or `expect` lines.
     pub(crate) labels: bool,
     /// In a handler operation body, the operation's `accepts` label: the effect floor that
     /// raises the program counter of every effect in the body (ADR 0038 D4, `spec/07 §7`
@@ -158,11 +158,11 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) type_params: Vec<&'a str>,
     pub(crate) locals: Vec<Local<'a>>,
     /// Capability frames: the body's own context first, then the `with` bindings of the
-    /// statements around the expression checked (DECISION D-047).
+    /// statements around the expression checked.
     pub(crate) frames: Vec<Frame>,
     /// What the body's own context is.
     pub(crate) base: Base,
-    /// Which pass runs (DECISION D-082).
+    /// Which pass runs.
     pub(crate) pass: Pass,
     /// The facts that pass 1 collects for inference.
     pub(crate) collected: &'c mut Collected,
@@ -170,12 +170,12 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) lambda_depth: usize,
     /// The functions that calls resolve to, by the span of the call.
     pub(crate) call_targets: BTreeMap<Span, usize>,
-    /// The types of the operands of the binary operations being checked (DECISION D-090).
+    /// The types of the operands of the binary operations being checked.
     pub(crate) operands: Vec<Ty>,
     /// In pass 1, the operations on references whose capability inference decides, by the
-    /// span of the operation: the reference and the operation (DECISION D-072).
+    /// span of the operation: the reference and the operation.
     pub(crate) pending_ops: BTreeMap<Span, (String, String)>,
-    /// In pass 2, what this declaration resolves (DECISION D-098).
+    /// In pass 2, what this declaration resolves.
     pub(crate) records: Records,
     /// The span of the declaration's name, where its failure is recorded.
     pub(crate) decl_span: Option<Span>,
@@ -420,7 +420,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     }
 
     /// Something impure or failing at `span`, which the body of an opaque predicate cannot
-    /// contain (U2015, DECISION D-056).
+    /// contain (U2015).
     pub(crate) fn impure(&mut self, span: Span, what: impl FnOnce() -> String) {
         if self.ctx.opaque {
             let message = format!(
@@ -432,7 +432,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     }
 
     /// U2001 for a value whose type inference has not determined where its type is needed,
-    /// for a field, a method or a call (DECISION D-069).
+    /// for a field, a method or a call.
     pub(crate) fn unknown_type(&mut self, span: Span) {
         self.report.error(
             Code::U2001,
@@ -474,15 +474,15 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 let checked =
                     self.arguments(&callee, &params, &[], None, &call.args, call.span, module);
                 self.argument_flows(&callee, checked);
-                // DECISION D-074: the handler's own `uses` are held where it is installed.
+                // The handler's own `uses` are held where it is installed.
                 let level = self.frames.len();
                 self.needs_site(&callee, &uses, call.span, level);
-                // DECISION D-093: its effects run under the program counter of the statement.
+                // Its effects run under the program counter of the statement.
                 self.call_under_pc(call.span, &callee, &uses, false, true, &Label::public());
                 capability
             }
             other => {
-                // An unknown name is U1001 (M3); another name is U3010 (DECISION D-074).
+                // An unknown name is U1001 (M3); another name is U3010.
                 if other.is_some() && self.pass == Pass::Check {
                     self.report.error(
                         Code::U3010,
@@ -498,8 +498,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         }
     }
 
-    /// Records, in pass 2, what the expression or pattern at `span` resolves to
-    /// (DECISION D-098).
+    /// Records, in pass 2, what the expression or pattern at `span` resolves to.
     pub(crate) fn resolved(&mut self, span: Span, res: Res) {
         if self.pass == Pass::Check {
             self.records.res.insert(span, res);
@@ -554,7 +553,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     }
 
     /// Ends the declaration: records generic instantiations and comparisons, and reports
-    /// types that inference left unknown when nothing else was reported (DECISION D-054).
+    /// types that inference left unknown when nothing else was reported.
     fn finish(self) {
         let Checker {
             report,
@@ -723,7 +722,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             ensures: def.ensures,
             via_refined,
         });
-        // DECISION D-095: the body of a `via` function is not checked for labels.
+        // The body of a `via` function is not checked for labels.
         let ctx = Ctx {
             fails: def.fails.clone(),
             labels: !self.env.vias.contains_key(&id),
@@ -749,7 +748,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             self.bind(param.name, param.ty.base.clone());
         }
         if !matches!(def.result.base.unlabeled(), Ty::Bool | Ty::Error) {
-            // DECISION D-065: a predicate returns `Bool`.
+            // A predicate returns `Bool`.
             let found = self.show(&def.result.base);
             self.report.error(
                 Code::U2001,
@@ -786,12 +785,12 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     }
 
     /// The `via` function of a policy takes its `from` type and returns its `to` type
-    /// (`spec/10 §7`, DECISION D-066); labels are M6.
+    /// (`spec/10 §7`); labels are M6.
     fn policy(&mut self, policy: &'a PolicyDecl, id: usize) {
         let Some(def) = self.env.functions.get(id).cloned() else {
             return;
         };
-        // DECISION D-094: a policy lives in a module whose header says `trusted`; a header
+        // A policy lives in a module whose header says `trusted`; a header
         // without the listing in `una.toml` is U7005.
         let trusted = self
             .env
@@ -861,7 +860,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 params.join(", "),
                 self.show(&target.result.base)
             );
-            // DECISION D-094: types other than labels match between a policy and its `via`
+            // Types other than labels match between a policy and its `via`
             // function (`spec/07 §5` rule 4).
             self.report.error(Code::U4005, policy.via.span, message);
         }
@@ -954,7 +953,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             let op_def = capability
                 .as_ref()
                 .and_then(|capability| capability.ops.iter().find(|o| o.name == name));
-            // DECISION D-092: callers may pass anything up to `accepts`.
+            // Callers may pass anything up to `accepts`.
             // DECISION D-141: an operation that accepts every label has the effect floor `⊤`
             // (ADR 0038 D4). `Keys.hmac` accepts `public`; its `data` is carried (ADR 0039).
             let accepts = op_def
@@ -1015,7 +1014,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         for given in &example.givens {
             let capability = self.install(&given.handler);
             let name = self.name(&given.cap);
-            // DECISION D-087: the first `given` of a name wins.
+            // The first `given` of a name wins.
             if let Some(frame) = self.frames.first_mut()
                 && !frame.bindings.iter().any(|(bound, _)| bound == name)
             {
@@ -1043,7 +1042,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         for expectation in &example.expectations {
             match &expectation.kind {
                 ExpectationKind::Holds(expr) => {
-                    // DECISION D-095: `expect` lines are not checked for labels.
+                    // `expect` lines are not checked for labels.
                     let ctx = Ctx {
                         result: Some(ty.clone()),
                         testing: true,
@@ -1058,7 +1057,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         }
     }
 
-    /// The own context of a function's body (DECISION D-071, D-072): its `uses`, declared, or
+    /// The own context of a function's body (D-072): its `uses`, declared, or
     /// inferred in pass 2; being inferred in pass 1; or empty for a public function without
     /// `uses`, which is pure.
     fn enter_function(&mut self, def: &FnDef<'a>) {
@@ -1091,7 +1090,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         }];
     }
 
-    /// U3010 and U3011 for a handler declaration (`spec/05 §5`, DECISION D-073).
+    /// U3010 and U3011 for a handler declaration (`spec/05 §5`).
     fn handler_rules(&mut self, handler: &'a HandlerDecl, def: &HandlerDef<'a>) {
         if self.pass != Pass::Check {
             return;
@@ -1173,7 +1172,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     }
 
     /// `expect performed @x.op`: `@x` is bound by a `given` line, and `op` is an operation of
-    /// its capability (DECISION D-075).
+    /// its capability.
     fn performed(&mut self, cap: &Ident, op: &Ident) {
         if self.pass != Pass::Check {
             return;
@@ -1205,7 +1204,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
 
     /// `expect fails V`: `V` is a variant of an error kind of the `do` expression, and U1001
     /// otherwise (`spec/10 §12` rule 1, R-020). When the `do` expression cannot fail, any
-    /// variant in scope is accepted, as before, until ADR 0044 is decided (DECISION D-048).
+    /// variant in scope is accepted, as before, until ADR 0044 is decided.
     fn expected_failure(&mut self, variant: &Ident, fails: &[Ty]) {
         let name = self.name(variant);
         let in_kind = fails.iter().any(|kind| match self.resolve(kind) {

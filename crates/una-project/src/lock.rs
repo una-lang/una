@@ -47,7 +47,7 @@ const FIXED: [(&str, &str); 3] = [
     ("logic", "QF_UFLIA"),
 ];
 
-/// Parses `verification.lock`. DECISION D-034: exactly the six keys of `spec/12 §9`, with the
+/// Parses `verification.lock`. exactly the six keys of `spec/12 §9`, with the
 /// values v0.1 implements; every problem is U7004.
 pub fn parse_lock(text: &str) -> (Lock, Vec<ProjectError>) {
     let mut lock = Lock::default();

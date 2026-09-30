@@ -688,7 +688,7 @@ impl<'a> Env<'a> {
                 _ => None,
             });
             // ADR 0039: `Keys.hmac` accepts `public` for `key_name` and every label for
-            // `data`, whose label its result carries (`spec/14 §3`). DECISION D-092: an
+            // `data`, whose label its result carries (`spec/14 §3`). an
             // operation without `accepts` accepts `public`.
             let hmac = module == self.prelude
                 && ast_name(self, module, ast) == "Keys"
@@ -768,7 +768,7 @@ impl<'a> Env<'a> {
                     def.fails = fails;
                     def.requires = requires;
                     def.ensures = ensures;
-                    // DECISION D-072: a private function without `uses` or `fails` infers them.
+                    // A private function without `uses` or `fails` infers them.
                     def.infer_uses = !function.public && !declares_uses;
                     def.infer_fails = !function.public && !declares_fails;
                     def.uses = uses;
@@ -834,7 +834,7 @@ impl<'a> Env<'a> {
 
     /// `uses @name: C[ops]`: the capability, and the operations it permits, all of them when
     /// none is listed, in the capability's declaration order. A name that is not a capability
-    /// is U3001, and an operation that the capability lacks U1001 (DECISION D-071).
+    /// is U3001, and an operation that the capability lacks U1001.
     pub(crate) fn lower_uses(
         &mut self,
         module: usize,
@@ -961,7 +961,7 @@ impl<'a> Env<'a> {
     }
 
     /// Lowers a written type of module `module`, with `type_params` in scope. Labels wait for
-    /// M6 (DECISION D-057).
+    /// M6.
     pub(crate) fn lower_type(
         &mut self,
         module: usize,
@@ -1127,7 +1127,7 @@ impl<'a> Env<'a> {
     }
 
     /// A written label: its level and categories; a category that `una.toml` does not
-    /// declare is U4007 and left out (`spec/07 §2`, DECISION D-096).
+    /// declare is U4007 and left out (`spec/07 §2`).
     pub(crate) fn lower_label(
         &self,
         module: usize,
@@ -1244,7 +1244,7 @@ impl<'a> Env<'a> {
             Some(Entity::Capability(_)) => {
                 format!("`{name}` is a capability, not a type; capabilities are not values")
             }
-            // Unknown names are U1001, reported by M3 (DECISION D-038).
+            // Unknown names are U1001, reported by M3.
             Some(Entity::Function(_) | Entity::Handler(_)) | None => return Declared::error(),
         };
         if reports {
@@ -1322,7 +1322,7 @@ impl Names for LowerNames<'_, '_> {
 }
 
 /// The first requirement of each name: a reference bound twice is U1002, and the first binding
-/// wins, as the first of two declarations does (DECISION D-087).
+/// wins, as the first of two declarations does.
 fn first_of_each(needs: Vec<Need>) -> Vec<Need> {
     let mut kept: Vec<Need> = Vec::new();
     for need in needs {

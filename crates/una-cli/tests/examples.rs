@@ -1,4 +1,4 @@
-//! The example packages (`plan/milestones-v0.1.md` M10, DECISION D-127): every package of
+//! The example packages (`plan/milestones-v0.1.md` M10): every package of
 //! `examples/` is canonical, checks at tier 1 with every obligation proven, passes its examples,
 //! reports no trivial `ensures`, and runs when it has an entry; together they contain every
 //! construct of the language list of charter §5. Tier 1 needs Z3 at the version of
@@ -327,7 +327,7 @@ fn constructs() -> Vec<(&'static str, Found)> {
 
 #[test]
 fn the_examples_contain_every_construct_of_the_charter_scope() {
-    // Charter §5, DECISION D-127: at least five packages beside `events` and `hello`.
+    // Charter §5, at least five packages beside `events` and `hello`.
     let packages = packages();
     assert!(packages.len() >= 7, "{packages:?}");
     let mut all = String::new();

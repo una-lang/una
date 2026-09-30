@@ -44,8 +44,7 @@ fn una(args: &[String]) -> String {
     String::from_utf8(stdout).unwrap()
 }
 
-/// A grant of `-- grant:` with its relative path resolved against the case's directory
-/// (DECISION D-110).
+/// A grant of `-- grant:` with its relative path resolved against the case's directory.
 fn anchored(spec: &str, dir: &Path) -> String {
     if let Some(file) = spec.strip_prefix("keys:") {
         return format!("keys:{}", dir.join(file).display());
@@ -183,7 +182,7 @@ fn conformance_suite() {
             errors.extend(test_errors);
             test
         });
-        // DECISION D-044: a case fails when it reports an implemented code that it does not
+        // A case fails when it reports an implemented code that it does not
         // expect, even while it is pending on a later milestone. A code is implemented once
         // its explain text is no longer a stub.
         let expected: Vec<Code> = match &case.check {

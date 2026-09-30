@@ -1,5 +1,5 @@
 //! The solver protocol of `spec/12 §5`: Z3 at the version of `verification.lock`, one
-//! `z3 -in -smt2` process per query with its whole script (DECISION D-116).
+//! `z3 -in -smt2` process per query with its whole script.
 
 use std::io::{Read, Write};
 use std::path::Path;

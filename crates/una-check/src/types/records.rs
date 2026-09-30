@@ -1,5 +1,4 @@
-//! What pass 2 of the checker resolves, recorded for elaboration to Core IR (`spec/09`,
-//! DECISION D-098).
+//! What pass 2 of the checker resolves, recorded for elaboration to Core IR (`spec/09`).
 
 use std::collections::BTreeMap;
 
@@ -43,7 +42,7 @@ pub(crate) struct Records {
     /// binding, in written order; a method call's receiver comes first.
     pub(crate) args: BTreeMap<Span, Vec<Option<usize>>>,
     /// The written type of each annotated `let`, by the span of its name, with its
-    /// refinements (DECISION D-111).
+    /// refinements.
     pub(crate) annotations: BTreeMap<Span, Declared>,
     /// The refinements of each lambda parameter, by the span of its name: its annotation's,
     /// or the expected parameter type's (ADR 0037 rule 1).

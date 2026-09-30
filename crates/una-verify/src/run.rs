@@ -70,7 +70,7 @@ pub enum Problem {
 }
 
 /// The full script of an obligation's query: the preamble of `spec/12 §5`, the query, and the
-/// commands that read the answer (DECISION D-116).
+/// commands that read the answer.
 fn script(obligation: &Obligation, lock: &Lock) -> (String, Vec<F>) {
     let mut out = String::new();
     let _ = writeln!(out, "(set-option :produce-models true)");

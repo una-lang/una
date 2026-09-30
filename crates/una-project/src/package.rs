@@ -97,7 +97,7 @@ pub fn discover(path: &Path) -> Result<Loaded, LoadError> {
     if !path.is_dir() {
         return Err(LoadError::Missing(path.to_path_buf()));
     }
-    // DECISION D-032: a directory is a package only with `una.toml` and `src/`.
+    // A directory is a package only with `una.toml` and `src/`.
     let manifest = path.join("una.toml");
     if !manifest.is_file() {
         return Err(LoadError::NotAPackage(path.to_path_buf()));
@@ -158,7 +158,7 @@ fn collect(dir: &Path, prefix: &str, files: &mut Vec<(String, PathBuf)>) -> Resu
     Ok(())
 }
 
-/// DECISION D-009: hidden entries under `src/` (names starting with `.`, such as editor lock
+/// Hidden entries under `src/` (names starting with `.`, such as editor lock
 /// files) are not sources, as for conformance discovery (ADR 0013 D6).
 fn is_hidden(name: &str) -> bool {
     name.starts_with('.')

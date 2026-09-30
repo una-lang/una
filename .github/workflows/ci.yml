@@ -1,6 +1,6 @@
 # Milestone M0, task 5: fmt, clippy and tests on Linux and macOS, with the Z3 release pinned in
 # verification.lock installed for the tests that reach tier 1 (compiler/testing.md §3).
-# DECISION D-083: to spare the Actions quota of the private repository, Linux runs on every
+# To spare the Actions quota of the private repository, Linux runs on every
 # push, and macOS only on pull requests and on pushes to main.
 name: CI
 
@@ -50,7 +50,7 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
-      # DECISION D-129: each runner packs and checks the release archive of its own target, the
+      # Each runner packs and checks the release archive of its own target, the
       # targets of the release workflow: the Linux one on every push, and the macOS one on pull
       # requests and on pushes to main, within the runner rule of D-083 (review finding R-035).
       - name: Pack and check the release archive of the runner's target
