@@ -103,7 +103,7 @@ pub(crate) enum Command {
         #[arg(default_value = ".")]
         path: PathBuf,
 
-        /// Grant a host capability: console, clock, env, keys:<file> or files:<path>:<access>
+        /// Grant a host capability: `console`, `clock`, `env`, `keys:<file>` or `files:<path>:<access>`
         #[arg(long = "grant", value_name = "SPEC")]
         grants: Vec<String>,
 

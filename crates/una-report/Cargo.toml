@@ -8,9 +8,6 @@ publish.workspace = true
 
 [dependencies]
 una-diag.workspace = true
-una-check.workspace = true
-una-verify.workspace = true
-una-interp.workspace = true
 
 [lints]
 workspace = true

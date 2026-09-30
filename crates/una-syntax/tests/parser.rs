@@ -801,3 +801,46 @@ fn an_error_at_the_end_of_the_file_points_one_past_the_last_character() {
         ["U0101 5:1 unexpected end of file, expected an indented block"]
     );
 }
+
+#[test]
+fn nested_patterns_are_not_supported() {
+    // Benchmark finding B-001: `spec/02 §6` allows only names in the fields of a variant
+    // pattern, and a nested pattern gets a message that says so.
+    let message = "nested patterns are not supported in v0.1";
+    for (pattern, column) in [
+        ("is Some(Pair(x: a, y: b))", 13),
+        ("is Ok(Some(v))", 11),
+        ("is Ok(value: Some(v))", 18),
+        ("is Some(0)", 13),
+        ("is Some(value: is 0)", 20),
+        ("is Pair(x, y: \"a\")", 19),
+    ] {
+        assert_eq!(
+            errors(&format!(
+                "f(v: T) -> Int\n=\n  when v\n    {pattern} -> 1\n"
+            )),
+            [format!("U0101 6:{column} {message}")],
+            "{pattern}"
+        );
+    }
+    let mut db = SourceDb::new();
+    let id = db.add(
+        "t.una",
+        b"module t\n\nf(v: T) -> Int\n=\n  when v\n    is Ok(Some(v)) -> 1\n",
+    );
+    let mut interner = Interner::new();
+    let lexed = lex(db.file(id), id, &mut interner);
+    let parsed = parse(&lexed, id, &interner);
+    assert_eq!(parsed.errors.len(), 1);
+    assert_eq!(parsed.errors[0].repairs.len(), 1);
+    let repair = &parsed.errors[0].repairs[0];
+    assert_eq!(
+        repair.description,
+        "bind the field to a name, as in `is Ok(inner)`, then match that name in a second `when` inside the arm"
+    );
+    assert_eq!(repair.edit, None);
+    // The two-step shape the repair describes parses.
+    tree(
+        "f(v: T) -> Int\n=\n  when v\n    is Ok(inner) ->\n      when inner\n        is Some(w) -> w\n        else -> 0\n    else -> 0\n",
+    );
+}

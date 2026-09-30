@@ -14,7 +14,7 @@ use crate::ast::{
     PredicateDecl, Range, RequirementDecl, RequirementSource, SignedInt, Stmt, TextLit, TextPart,
     Type, TypeCore, UnaryOp, UsesClause, Variant, VariantExpr, WhenExpr,
 };
-use crate::error::SyntaxError;
+use crate::error::{SyntaxError, SyntaxRepair};
 use crate::intern::Interner;
 use crate::lexer::{Lexed, starts_declaration};
 use crate::source::{FileId, Span};
@@ -297,6 +297,12 @@ impl<'a> Parser<'a> {
 
     /// Records a U0101 at `span` and stops the current declaration.
     fn report(&mut self, span: Span, message: String) -> Stop {
+        self.report_error(SyntaxError::new(Code::U0101, span, message))
+    }
+
+    /// Records `error`, a U0101 that may carry repairs, and stops the current declaration.
+    fn report_error(&mut self, error: SyntaxError) -> Stop {
+        let span = error.span;
         // DECISION D-019: a lexical error earlier in the same declaration explains the parse
         // error, which the lexer's recovery (a skipped character, a snapped indentation, a
         // closed bracket, a skipped reserved word) may have caused.
@@ -305,13 +311,12 @@ impl<'a> Parser<'a> {
             .iter()
             .any(|start| (self.unit_start..=span.start).contains(start));
         if !explained {
-            self.errors
-                .push(SyntaxError::new(Code::U0101, span, message));
+            self.errors.push(error);
         }
         Stop
     }
 
-    /// U0101 at the current token: "unexpected <found>, expected <expected>".
+    /// U0101 at the current token: "unexpected `<found>`, expected `<expected>`".
     fn unexpected(&mut self, expected: &str) -> Stop {
         let found = match self.peek() {
             TokenKind::Keyword(keyword) => format!("keyword `{}`", keyword.as_str()),
@@ -1609,9 +1614,9 @@ impl<'a> Parser<'a> {
                 let name = self.upper_name("a variant")?;
                 let mut binds = Vec::new();
                 if self.eat(&TokenKind::LParen) {
-                    binds.push(self.bind()?);
+                    binds.push(self.bind(name)?);
                     while self.eat(&TokenKind::Comma) {
-                        binds.push(self.bind()?);
+                        binds.push(self.bind(name)?);
                     }
                     self.expect(&TokenKind::RParen, "`,` or `)`")?;
                 }
@@ -1632,14 +1637,50 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn bind(&mut self) -> Parse<Bind> {
+    /// One `bind` of the variant pattern on `variant`.
+    fn bind(&mut self, variant: Ident) -> Parse<Bind> {
+        self.no_nested_pattern(variant)?;
         let field = self.lower_name("a field name")?;
         let local = if self.eat(&TokenKind::Colon) {
+            self.no_nested_pattern(variant)?;
             Some(self.lower_name("a local name")?)
         } else {
             None
         };
         Ok(Bind { field, local })
+    }
+
+    /// U0101 for a pattern where `spec/02 §6` allows only a name in a field of a variant
+    /// pattern, such as `is Some(Circle(radius))` or `is Ok(value: is 0)` (benchmark finding
+    /// B-001). DECISION D-TBD-k1: a variant, `is`, `in` or a literal where a field or local name
+    /// is expected starts a nested pattern; the repair has no mechanical edit, because moving the
+    /// arm body under a second `when` also regroups the arms that share the outer variant.
+    fn no_nested_pattern(&mut self, variant: Ident) -> Parse<()> {
+        let nested = matches!(
+            self.peek(),
+            TokenKind::UpperIdent(_)
+                | TokenKind::Int(_)
+                | TokenKind::TextStart
+                | TokenKind::Minus
+                | TokenKind::Keyword(Keyword::Is | Keyword::In | Keyword::True | Keyword::False)
+        );
+        if !nested {
+            return Ok(());
+        }
+        let span = self.span();
+        let outer = self.interner.resolve(variant.name).to_owned();
+        let mut error = SyntaxError::new(
+            Code::U0101,
+            span,
+            "nested patterns are not supported in v0.1",
+        );
+        error.repairs.push(SyntaxRepair {
+            description: format!(
+                "bind the field to a name, as in `is {outer}(inner)`, then match that name in a second `when` inside the arm"
+            ),
+            edit: None,
+        });
+        Err(self.report_error(error))
     }
 
     /// An `if` in a statement or `let`, whose form is decided after its condition: `then` makes
