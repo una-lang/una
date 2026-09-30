@@ -1249,6 +1249,9 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     /// otherwise (`spec/10 §12` rule 1, R-020). When the `do` expression cannot fail,
     /// `expect fails V` never holds, and it is U1001 too (ADR 0044). `action` is the type of
     /// the `do` expression: one that failed to type reports nothing more.
+    /// DECISION D-TBD-f22: "cannot fail" means that the `do` expression calls nothing that
+    /// can fail; a failing call whose failure a handling clause absorbs still counts as able
+    /// to fail, so no example is rejected for a failure it might observe.
     fn expected_failure(&mut self, variant: &Ident, fails: &[Ty], action: &Ty) {
         let name = self.name(variant);
         if fails.is_empty() {
@@ -1350,6 +1353,10 @@ fn predicate_body_span(body: &una_syntax::ast::Body) -> Span {
 /// Whether two written types carry the same refinements (ADR 0047 rule 1): the same refined
 /// kinds and ranges, in order, and the same refinements of the function types they contain.
 /// A range compares by its text, wherever it is written.
+/// DECISION D-TBD-f21: ADR 0047 does not say whether an alias without a `where` clause of
+/// its own, `kind P2 = Pos`, is another refined kind than `Pos`; it carries exactly the
+/// refinements of `Pos`, so the policy call's check against `from` still meets every
+/// assumption of the `via` body, and it matches.
 fn same_refinements(a: &Declared, b: &Declared) -> bool {
     let same = |x: &Refinement, y: &Refinement| match (x, y) {
         (Refinement::Range(x, _), Refinement::Range(y, _)) => x == y,
