@@ -1,0 +1,26 @@
+-- test: a kind whose parameter is inside a function type is invariant at a lambda result (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 15:45
+-- expect: error U4001 at 20:38
+module sweep_variance_sink_lambda
+
+kind Box[T]
+  value: T
+
+kind Sink[T]
+  eat: fn(T) -> Int
+
+pub lam_0(v: Sink[Int]) -> Int
+=
+  let f: fn() -> Sink[secret Int] = fn() -> v
+  0
+
+pub lam_1(v: Sink[secret Int]) -> Int
+=
+  let f: fn() -> Sink[Int] = fn() -> v
+  0
+
+pub lam_2(v: Sink[secret Int]) -> Int
+=
+  let f: fn() -> Sink[secret Int] = fn() -> v
+  0

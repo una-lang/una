@@ -1,0 +1,31 @@
+-- test: a function type is contravariant in its parameters and covariant in its result at a lambda result (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 15:43
+-- expect: error U4001 at 20:50
+module sweep_variance_fn_lambda
+
+kind Box[T]
+  value: T
+
+kind Sink[T]
+  eat: fn(T) -> Int
+
+pub lam_0(v: fn(Int) -> secret Int) -> Int
+=
+  let f: fn() -> fn(Int) -> Int = fn() -> v
+  0
+
+pub lam_1(v: fn(Int) -> Int) -> Int
+=
+  let f: fn() -> fn(secret Int) -> Int = fn() -> v
+  0
+
+pub lam_2(v: fn(secret Int) -> Int) -> Int
+=
+  let f: fn() -> fn(Int) -> Int = fn() -> v
+  0
+
+pub lam_3(v: fn(Int) -> Int) -> Int
+=
+  let f: fn() -> fn(Int) -> secret Int = fn() -> v
+  0

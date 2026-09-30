@@ -1,0 +1,29 @@
+-- test: a sum kind with a secret variant field: `==` and `!=` are labeled with the declared field labels (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 25:28
+-- expect: error U4001 at 27:28
+module sweep_label_sum_eq
+
+kind Acct
+  id: Int
+  pin: secret Int
+
+kind Guess = Hit(pin: secret Int) | Miss
+
+kind Box[T]
+  value: T
+
+kind Wallet
+  acct: Acct
+
+grab(x: Guess) -> secret Int
+=
+  when x
+    is Hit(pin) -> pin
+    is Miss -> 0
+
+pub eq(x: Guess) -> Bool = x == Hit(pin: 2)
+
+pub ne(x: Guess) -> Bool = x != Hit(pin: 2)
+
+pub eq_twin(x: Guess) -> secret Bool = x == Hit(pin: 2)

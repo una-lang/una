@@ -1,0 +1,21 @@
+-- test: a kind whose field is a function type: a generic function over a kind with a function field returns the field's label (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 19:27
+-- expect: error U4001 at 21:39
+module sweep_label_fnfield_generic
+
+kind Src
+  get: fn() -> secret Int
+
+kind Feed[T]
+  get: fn() -> T
+
+make(pin: secret Int) -> Src = Src(get: fn() -> pin)
+
+id[T](x: T) -> T = x
+
+run[T](f: Feed[T]) -> T = f.get()
+
+pub ided(s: Src) -> Int = id(s).get()
+
+pub ran(f: Feed[secret Int]) -> Int = run(f)

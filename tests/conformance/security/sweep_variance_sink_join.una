@@ -1,0 +1,26 @@
+-- test: a kind whose parameter is inside a function type is invariant at a branch join (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 15:28
+-- expect: error U4001 at 20:28
+module sweep_variance_sink_join
+
+kind Box[T]
+  value: T
+
+kind Sink[T]
+  eat: fn(T) -> Int
+
+pub join_0(c: Bool, v: Sink[Int], w: Sink[secret Int]) -> Sink[secret Int]
+=
+  let j = if c then w else v
+  j
+
+pub join_1(c: Bool, v: Sink[secret Int], w: Sink[Int]) -> Sink[Int]
+=
+  let j = if c then w else v
+  j
+
+pub join_2(c: Bool, v: Sink[secret Int], w: Sink[secret Int]) -> Sink[secret Int]
+=
+  let j = if c then w else v
+  j

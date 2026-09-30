@@ -1,0 +1,38 @@
+-- test: a sum kind with a secret variant field: as a capability operation argument it exceeds a public sink (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4003 at 33:15
+module sweep_label_sum_sink
+
+kind Acct
+  id: Int
+  pin: secret Int
+
+kind Guess = Hit(pin: secret Int) | Miss
+
+kind Box[T]
+  value: T
+
+kind Wallet
+  acct: Acct
+
+grab(x: Guess) -> secret Int
+=
+  when x
+    is Hit(pin) -> pin
+    is Miss -> 0
+
+capability Audit
+  op note(x: Guess) -> Unit
+    accepts public
+  op keep(x: Guess) -> Unit
+    accepts secret
+
+pub sunk(x: Guess) -> Unit
+  uses @audit: Audit[note]
+=
+  @audit.note(x)
+
+pub kept(x: Guess) -> Unit
+  uses @audit: Audit[keep]
+=
+  @audit.keep(x)

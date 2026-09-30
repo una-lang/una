@@ -20,7 +20,7 @@ pub total(accounts: List[Account]) -> secret Int
 
 pub first_balance(accounts: List[Account]) -> secret Option[secret Int] = accounts.map(each: fn(a) -> a.balance).first()
 
-pub owners(accounts: List[Account]) -> List[Text] = accounts.map(each: fn(a) -> a.owner)
+pub owners(accounts: List[Account]) -> secret List[Text] = accounts.map(each: fn(a) -> a.owner)
 
 pub band(amount: secret Int) -> secret Band = if amount > 1000 then High(amount) else Low
 
