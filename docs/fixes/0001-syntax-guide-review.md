@@ -346,7 +346,7 @@ Section numbers refer to the owner's guide, `docs/spec/`-relative references to 
 | --- | --- | --- | --- | --- |
 | F-0001-01 | compiler | Binder suffix in trace argument keys | Done | see `git log --grep F-0001-01` |
 | F-0001-02 | investigate | Obligation for a refined parameter of a function value | Open | |
-| F-0001-03 | investigate | Exit code of U7002 and U7004 | Open | |
+| F-0001-03 | investigate | Exit code of U7002 and U7004 | ADR 0036 Proposed, waiting for the owner | see `git log --grep F-0001-03` |
 | F-0001-04 | docs | §17 package import order | Open | |
 | F-0001-05 | docs | §1.2 line breaks inside brackets | Open | |
 | F-0001-06 | docs | §1.1 `\r\n` and U7001 | Open | |
