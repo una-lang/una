@@ -1,0 +1,9 @@
+-- Adversarial: policy passed as a function value (unaudited)
+-- Expected: rejected
+-- Observed: U2001 at src/app/caller.una:9:68
+-- Verdict: Pass (U2001)
+module app.caller
+
+import app.keys (mask)
+
+pub every(ts: List[secret[PII] Text]) -> List[Text] = ts.map(each: mask)

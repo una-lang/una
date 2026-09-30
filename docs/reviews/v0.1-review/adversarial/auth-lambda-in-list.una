@@ -1,0 +1,15 @@
+-- Adversarial: effectful lambda in a list literal
+-- Expected: U3006 or U3004
+-- Observed: U3004 at 14:28
+-- Verdict: Pass (U3004)
+module auth_lambda_in_list
+
+capability Log
+  op write(line: Text) -> Unit
+  op flush() -> Unit
+
+pub make() -> Unit
+  uses @log: Log[write]
+=
+  let fs = [fn(t: Text) -> @log.write(t)]
+  unit

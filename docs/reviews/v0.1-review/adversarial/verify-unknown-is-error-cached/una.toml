@@ -1,0 +1,8 @@
+[package]
+name = "verify_unknown_is_error_cached"
+version = "0.1.0"
+edition = "0.1"
+
+[run]
+entry = "unk"
+grants = ["console"]

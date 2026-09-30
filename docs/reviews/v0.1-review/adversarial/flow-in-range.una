@@ -1,0 +1,7 @@
+-- Adversarial: 'in' range test on a secret
+-- Expected: U4001 (spec/07 §7.3)
+-- Observed: U4001 at 7:38
+-- Verdict: Pass
+module flow_in_range
+
+pub small(pin: secret Int) -> Bool = pin in 0..10

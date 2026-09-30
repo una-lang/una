@@ -1,0 +1,21 @@
+-- Adversarial: refinements inside type arguments. `wrap` returns `Some(x)` as `Option[Pos]`
+-- for any `x`, and `boxed` returns `[x]` as `List[Pos]`, with no obligation generated.
+-- Expected: error U5001 at `Some(x)` and at `[x]` (spec/03 §6, spec/12 §3 refinement at every
+-- subsumption point), or a rejection of refined type arguments.
+-- Observed: `una check` reports no diagnostic for `wrap` and `boxed`. Sound but incomplete:
+-- the refinement is never assumed either, so `inv(p)` after unwrapping is refuted (U5001).
+module verify_refinement_type_arguments
+
+pub kind Pos = Int where it > 0
+
+pub wrap(x: Int) -> Option[Pos] = Some(x)
+
+pub boxed(x: Int) -> List[Pos] = [x]
+
+pub inv(p: Pos) -> Int = 100 / p
+
+pub go(x: Int) -> Int
+=
+  when wrap(x)
+    is Some(p) -> inv(p)
+    is None -> 0

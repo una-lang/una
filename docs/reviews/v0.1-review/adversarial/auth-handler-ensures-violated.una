@@ -1,0 +1,12 @@
+-- Adversarial: handler violates an op 'ensures'
+-- Expected: U5001 (spec/05 §5.2)
+-- Observed: U5001 at 12:15
+-- Verdict: Pass
+module auth_handler_ensures_violated
+
+capability Counter
+  op next() -> Int
+    ensures result > 0
+
+handler zero() for Counter
+  op next() = 0

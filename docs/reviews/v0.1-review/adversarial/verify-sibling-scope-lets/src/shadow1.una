@@ -1,0 +1,19 @@
+-- Adversarial: two sibling blocks bind `t`; the first gets `t in {7, -7}` from `abs`. If both
+-- shared one SMT symbol, `100 / t` in the second would be proven.
+-- Expected: U5001 division obligation `t != 0` (spec/12 §3).
+-- Observed: U5001 (Core renames the second binder `t%2`). Held.
+module shadow1
+
+pub f(y: Int) -> Int
+=
+  let a = if true
+    let t = abs(7)
+    t
+  else
+    0
+  let b = if true
+    let t = y
+    100 / t
+  else
+    0
+  a + b
