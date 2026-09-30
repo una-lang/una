@@ -414,6 +414,10 @@ pub enum Rhs {
         params: Vec<(Name, Type)>,
         /// The body.
         body: Box<Expr>,
+        /// The declared function this lambda stands for, when a function is used as a value:
+        /// its parameters keep their declared names and types, and its body calls the
+        /// function (ADR 0037, `spec/12 §3`). `None` for a lambda of the source.
+        function: Option<Path>,
     },
     /// `checked(a, φ, C(a, ...))`, with `φ` as an expression over the binder `it`, which
     /// the interpreter runs, and as a term, which the verifier assumes.

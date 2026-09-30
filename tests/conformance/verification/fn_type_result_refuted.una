@@ -1,0 +1,12 @@
+-- test: a function whose result is less refined than the expected result is refuted, and a call through the value assumes the expected result (ADR 0037 rule 12, case 5)
+-- spec: spec/12 §3
+-- expect: error U5001 at 12:33
+module fn_type_result_refuted
+
+pub kind Pos = Int where it > 0
+
+pub apply_pos(f: fn(Int) -> Pos, x: Int) -> Pos = f(x)
+
+pub gives_int(x: Int) -> Int = x
+
+pub use_it() -> Int = apply_pos(gives_int, x: 0)

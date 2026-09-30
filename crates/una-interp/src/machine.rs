@@ -682,7 +682,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                 _ => Err(fault("a field of a value that is not a record")),
             },
             Rhs::List(items) => Ok(Value::List(Rc::new(self.atoms(env, items)?))),
-            Rhs::Lambda { params, body } => Ok(Value::Closure(Rc::new(Closure {
+            Rhs::Lambda { params, body, .. } => Ok(Value::Closure(Rc::new(Closure {
                 params: params.iter().map(|(name, _)| name).collect(),
                 body,
                 env: env.clone(),

@@ -49,6 +49,63 @@ pub(crate) struct FnTy {
     pub(crate) uses: Vec<FnUse>,
     /// The error kind of `fails`.
     pub(crate) fails: Option<Ty>,
+    /// The refinements of the parameters and the result (ADR 0037 rule 1).
+    pub(crate) refinements: FnRefinements,
+}
+
+/// The refinements of a function type's parameters and result, from its written form, the
+/// header of a named function used as a value, or a lambda's annotations (ADR 0037 rule 1).
+/// They sit beside the base types, as in [`Declared`]: type equality compares bases, so two
+/// function types are equal whatever their refinements, and the verifier proves the flows
+/// between them (`spec/12 §3`).
+#[derive(Clone, Debug, Default, Eq)]
+pub(crate) struct FnRefinements {
+    /// The refinements of each parameter, by position; a missing entry has none.
+    pub(crate) params: Vec<Vec<Refinement>>,
+    /// The refinements of the result.
+    pub(crate) result: Vec<Refinement>,
+}
+
+impl PartialEq for FnRefinements {
+    /// Always equal: refinements are not part of the base that type checking compares.
+    fn eq(&self, _: &FnRefinements) -> bool {
+        true
+    }
+}
+
+impl FnRefinements {
+    /// The refinements of parameter `index`.
+    pub(crate) fn param(&self, index: usize) -> &[Refinement] {
+        self.params.get(index).map_or(&[], Vec::as_slice)
+    }
+
+    /// The refinements of a join (`join`) or a meet (not `join`) of two function types:
+    /// a join accepts what both accept, so its parameters carry the refinements of either and
+    /// its result those both share; a meet the other way round. Every value of either type is
+    /// then of the join, and the flows the verifier checks are trivially implied.
+    /// DECISION D-TBD-f1: ADR 0037 does not say how branches join; this join never assumes a
+    /// refinement that one branch lacks.
+    pub(crate) fn combine(&self, other: &FnRefinements, join: bool) -> FnRefinements {
+        let count = self.params.len().max(other.params.len());
+        let params = (0..count)
+            .map(|index| mix(self.param(index), other.param(index), !join))
+            .collect();
+        FnRefinements {
+            params,
+            result: mix(&self.result, &other.result, join),
+        }
+    }
+}
+
+/// The refinements that `a` and `b` share (`common`), or those of either, in order.
+fn mix(a: &[Refinement], b: &[Refinement], common: bool) -> Vec<Refinement> {
+    if common {
+        a.iter().filter(|r| b.contains(r)).cloned().collect()
+    } else {
+        let mut out = a.to_vec();
+        out.extend(b.iter().filter(|r| !a.contains(r)).cloned());
+        out
+    }
 }
 
 /// A capability that a function type or a function requires, `uses @name: C[ops]`.
@@ -158,6 +215,7 @@ impl Ty {
                 result: function.result.erase(),
                 uses: function.uses.clone(),
                 fails: function.fails.as_ref().map(Ty::erase),
+                refinements: function.refinements.clone(),
             })),
             other => other.clone(),
         }
@@ -178,6 +236,7 @@ impl Ty {
                 result: function.result.substitute(args),
                 uses: function.uses.clone(),
                 fails: function.fails.as_ref().map(|f| f.substitute(args)),
+                refinements: function.refinements.clone(),
             })),
             other => other.clone(),
         }
@@ -194,6 +253,7 @@ impl Ty {
                 result: function.result.map_labels(f),
                 uses: function.uses.clone(),
                 fails: function.fails.clone(),
+                refinements: function.refinements.clone(),
             })),
             other => other.clone(),
         }
@@ -216,6 +276,7 @@ impl Ty {
                 result: function.result.symbolic(names),
                 uses: function.uses.clone(),
                 fails: function.fails.clone(),
+                refinements: function.refinements.clone(),
             })),
             other => other.clone(),
         }
