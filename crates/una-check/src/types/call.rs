@@ -1243,8 +1243,9 @@ impl<'a> Checker<'_, 'a, '_> {
 /// The prelude functions whose results carry the labels of their arguments, as `spec/14 §1`
 /// "Result labels" lists them (ADR 0038 D3.4): their native implementations declare these
 /// labels, which the prelude's Una signatures cannot write.
-const PRELUDE_LABELED: [&str; 17] = [
+const PRELUDE_LABELED: [&str; 20] = [
     "abs",
+    "append",
     "at",
     "contains",
     "filter",
@@ -1253,6 +1254,8 @@ const PRELUDE_LABELED: [&str; 17] = [
     "fold",
     "is_digits",
     "is_empty",
+    "is_ok",
+    "is_some",
     "map",
     "max",
     "min",
