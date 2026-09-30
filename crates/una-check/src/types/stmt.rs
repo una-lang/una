@@ -656,6 +656,13 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         let names: Vec<&str> = variant.fields.iter().map(|f| f.name).collect();
         let mut bound: Vec<Option<Span>> = variant.fields.iter().map(|_| None).collect();
+        // R-030: the repair of an unknown field suggests only a field that no other binder
+        // names, so applying it cannot bind a field twice (U2006).
+        let open: Vec<&str> = names
+            .iter()
+            .copied()
+            .filter(|name| binds.iter().all(|bind| self.name(&bind.field) != *name))
+            .collect();
         let mut order: Vec<Option<usize>> = Vec::new();
         for (position, bind) in binds.iter().enumerate() {
             let field = self.name(&bind.field);
@@ -668,7 +675,7 @@ impl<'a> Checker<'_, 'a, '_> {
                         bind.field.span,
                         format!("variant `{}` has no field `{field}`", variant.name),
                     );
-                    if let Some(close) = closest(field, names.iter().copied()) {
+                    if let Some(close) = closest(field, open.iter().copied()) {
                         diagnostic.repairs.push(self.report.edit(
                             format!("write `{close}`"),
                             bind.field.span,
