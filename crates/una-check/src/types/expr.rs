@@ -836,10 +836,14 @@ impl<'a> Checker<'_, 'a, '_> {
         self.returned(span);
         if let (Some(expected), Role::Return(name)) = (expected, role) {
             // The declared result of a generic function may carry the symbolic labels of its
-            // type parameters (`spec/07 §7` rule 8).
+            // type parameters (`spec/07 §7` rule 8). They are removed from both sides, so that
+            // a position where the declared result has them and the value must match it, a
+            // function parameter or an invariant kind argument (ADR 0046), still compares.
             let found = self.labeled(ty);
             let found = self.without_own_symbols(&found);
-            self.flow(span, &found, expected, &format!("the result of `{name}`"));
+            let declared = self.labeled(expected);
+            let declared = self.without_own_symbols(&declared);
+            self.flow(span, &found, &declared, &format!("the result of `{name}`"));
             self.fn_flow(span, expected, ty);
         }
     }
