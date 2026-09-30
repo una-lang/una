@@ -1,0 +1,12 @@
+-- test: contracts with products by a literal and calls of predicates are in the refinement language (U2014 twin)
+-- spec: spec/03 §3
+-- expect: ok
+module refinement_language
+
+predicate reflect small(x: Int) -> Bool = x < 100 and x > -100
+
+pub double(x: Int) -> Int
+  requires small(x)
+  ensures result == 2 * x
+=
+  x * 2
