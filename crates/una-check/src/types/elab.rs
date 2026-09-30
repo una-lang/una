@@ -2173,10 +2173,16 @@ fn bind_expr(lets: &mut Vec<Let>, name: Name, ty: Type, expr: CoreExpr, span: Sp
                 });
                 current = *body;
             }
+            // ADR 0037 rule 2: an annotated binder whose function type differs from the type
+            // of the value keeps the temporary, so the flow from one to the other is an
+            // `Atom::Var` right side that the verifier checks, whatever the value is (N-005).
             CoreExpr::Atom {
                 atom: Atom::Var(var),
                 ..
-            } if lets.last().is_some_and(|last| last.name == var) => {
+            } if lets.last().is_some_and(|last| {
+                last.name == var && !(written && last.ty != ty && has_fn_type(&ty))
+            }) =>
+            {
                 if let Some(last) = lets.pop() {
                     lets.push(Let {
                         name,
@@ -2209,6 +2215,18 @@ fn bind_expr(lets: &mut Vec<Let>, name: Name, ty: Type, expr: CoreExpr, span: Sp
                 return;
             }
         }
+    }
+}
+
+/// Whether a Core type is or contains a function type, under type arguments.
+fn has_fn_type(ty: &Type) -> bool {
+    match ty {
+        Type::Fn { .. } => true,
+        Type::Base {
+            base: Base::Named { args, .. },
+            ..
+        } => args.iter().any(has_fn_type),
+        Type::Base { .. } => false,
     }
 }
 
