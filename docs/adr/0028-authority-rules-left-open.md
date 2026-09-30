@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-09-29
 - Deciders: Leonardo (accepted on 2026-09-29), on a proposal by Claude (overnight run)
+- Amended by: ADR 0038 D1 and D2 (rule 9, escaping lambdas: second-class type arguments; rule 11, function arguments: S-Fun at every flow and T-App), on 2026-09-30
 
 ## Context
 
