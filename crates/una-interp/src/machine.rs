@@ -343,6 +343,15 @@ fn none<'p>() -> Value<'p> {
     Value::data(prelude_ctor("Option", "None", 1), Vec::new())
 }
 
+/// A binder's source name: Core renames a binder that shares a name with another, and `k%2`
+/// is keyed as `k` in traces (`spec/11 §5`).
+fn source_name(name: &str) -> String {
+    match name.split_once('%') {
+        Some((source, _)) if !source.is_empty() => source.to_owned(),
+        _ => name.to_owned(),
+    }
+}
+
 /// The parameter names of the operations of host capabilities (`spec/14 §3`).
 fn host_params(capability: &str, op: &str) -> &'static [&'static str] {
     match (capability, op) {
@@ -782,7 +791,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             Some(ops) => ops
                 .iter()
                 .find(|o| o.name == op)
-                .map(|o| o.params.iter().map(|(n, _)| n.clone()).collect())
+                .map(|o| o.params.iter().map(|(n, _)| source_name(n)).collect())
                 .unwrap_or_default(),
             None => host_params(capability, op)
                 .iter()

@@ -710,3 +710,82 @@ fn handler_instances_keep_their_ids_and_come_before_their_bodies() {
         json!({"kind": "ok", "value": "42"})
     );
 }
+
+/// The keys of every trace event's `args` in a `una.run/1` or `una.test/1` document.
+fn trace_keys(document: &Value) -> Vec<String> {
+    let mut traces = vec![&document["trace"]];
+    if let Some(examples) = document["examples"].as_array() {
+        traces.extend(examples.iter().map(|example| &example["trace"]));
+    }
+    traces
+        .into_iter()
+        .filter_map(Value::as_array)
+        .flatten()
+        .filter_map(|event| event["args"].as_object())
+        .flat_map(|args| args.keys().cloned())
+        .collect()
+}
+
+#[test]
+fn trace_arguments_are_keyed_by_source_names() {
+    // `spec/11 §5`: each entry of `args` is keyed by the operation parameter's source name,
+    // even when Core renamed the binder because two operations share a parameter name.
+    let case = "tests/conformance/runtime/op_arg_names";
+    let run = una_in(Path::new(case), &["--json", "run", "--grant", "console"]);
+    let test = una_in(Path::new(case), &["--json", "test"]);
+    for (output, trace) in [
+        (&run, json(&run)["trace"].clone()),
+        (&test, json(&test)["examples"][0]["trace"].clone()),
+    ] {
+        assert_eq!(output.status.code(), Some(0), "{}", stdout(output));
+        let args: Vec<(Value, Value)> = trace
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["capability"] == "Store")
+            .map(|event| (event["op"].clone(), event["args"].clone()))
+            .collect();
+        assert_eq!(
+            args,
+            vec![
+                (json!("put"), json!({"k": "<redacted:secret>", "v": "3"})),
+                (json!("get"), json!({"k": "3"})),
+            ]
+        );
+    }
+}
+
+#[test]
+fn no_trace_key_carries_a_binder_suffix() {
+    // `spec/11 §5`: trace keys are source names, so none contains Core's `%` suffix.
+    let mut targets: Vec<PathBuf> = std::fs::read_dir(repository().join("examples"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    targets.extend(
+        std::fs::read_dir(repository().join("tests/conformance/runtime"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path()),
+    );
+    // Entries starting with `.` are not cases (`compiler/testing.md` §2).
+    targets.retain(|path| !path.file_name().unwrap().to_string_lossy().starts_with('.'));
+    targets.sort();
+    for target in targets {
+        let (dir, args): (PathBuf, Vec<String>) = if target.is_dir() {
+            (target.clone(), vec!["--json".into(), "test".into()])
+        } else {
+            let file = target.to_string_lossy().into_owned();
+            (repository(), vec!["--json".into(), "test".into(), file])
+        };
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let output = una_in(&dir, &args);
+        let document: Value = serde_json::from_str(stdout(&output))
+            .unwrap_or_else(|_| panic!("{}: {}", target.display(), stderr(&output)));
+        let keys = trace_keys(&document);
+        assert!(
+            keys.iter().all(|key| !key.contains('%')),
+            "{}: {keys:?}",
+            target.display()
+        );
+    }
+}
