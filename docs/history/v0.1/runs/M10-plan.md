@@ -9,7 +9,7 @@ Codes: none new. Acceptance (`plan/milestones-v0.1.md`): the guide's snippets co
 ## 1. Design
 
 - **Example packages.** Five packages join `examples/events` and `examples/hello`, each a small program in a domain-neutral setting that an evaluation task could start from (roadmap §3), and each checking at tier 1 with every obligation proven and every example passing:
-  - `examples/lending`, a community tool-lending shelf: records, a sum with payloads, range refinements, a reflect predicate, `requires` and `ensures`, a user capability with handlers, `if none fail`, `if error fail` and `pass`, `attempt` with `Result`, `with` rebinding and handler instances, `Clock`, requirements from a human and from a policy, and examples with `expect performed`.
+  - the example package later replaced under R-022, a community tool shelf: records, a sum with payloads, range refinements, a reflect predicate, `requires` and `ensures`, a user capability with handlers, `if none fail`, `if error fail` and `pass`, `attempt` with `Result`, `with` rebinding and handler instances, `Clock`, requirements from a human and from a policy, and examples with `expect performed`.
   - `examples/pantry`, the stock of a shared kitchen: generic kinds and functions, a generic refinement, lambdas with `map`, `filter`, `fold` and `first_where`, method-call syntax, `List`, `Option` and `Nat`, and contracts over list lengths.
   - `examples/journal`, a private journal: label levels and a declared category, the program-counter label, sink labels on a capability, a declassification policy in a trusted module, and `Files`, `Env` and `Console` in `main`.
   - `examples/greenhouse`, a vent controller: capability operations with `requires` and `ensures`, handlers verified against them and handlers with their own `uses`, `with @x = @y` rebinding, an inferred private header, and a requirement from a regulation.
@@ -31,7 +31,7 @@ ADR 0035 (Provisional), "examples, guide and release for Gate 1", records:
 ## 3. Tasks and commits
 
 1. **Plan and ADR 0035** (`docs(plan)`).
-2. **The example test and `examples/lending`** (`test(examples)`, `feat(examples)`): the per-package test first, over every directory of `examples/`, then the package.
+2. **The example test and the example package later replaced under R-022** (`test(examples)`, `feat(examples)`): the per-package test first, over every directory of `examples/`, then the package.
 3. **`examples/pantry`**, **`examples/journal`**, **`examples/greenhouse`** (`feat(examples)`), one commit each.
 4. **`examples/shortlinks` and the coverage test** (`feat(examples)`), once every construct has an example.
 5. **The guide** (`docs(guide)`), with its snippet test.
@@ -70,7 +70,7 @@ The milestone's sources, charter §5 and §7 and roadmap §3 and §4, state no M
 
 | Rule | Status | Evidence |
 | --- | --- | --- |
-| M10 task 1: at least five additional example packages | done: `lending`, `pantry`, `journal`, `greenhouse`, `shortlinks` (D-127) | E `every_example_package_is_canonical_verified_and_tested`: each canonical, tier 1 with every obligation proven, every declared example passing, no trivial `ensures`, and the output of `una run` |
+| M10 task 1: at least five additional example packages | done: the example package later replaced under R-022, `pantry`, `journal`, `greenhouse`, `shortlinks` (D-127) | E `every_example_package_is_canonical_verified_and_tested`: each canonical, tier 1 with every obligation proven, every declared example passing, no trivial `ensures`, and the output of `una run` |
 | Charter §5: the examples cover every construct of the language list | done: 71 source patterns, each false on `hello` except the six it contains | E `the_examples_contain_every_construct_of_the_charter_scope` |
 | M10 task 2: the guide, every snippet tested | done (D-128) | G `every_block_of_the_guide_is_checked`: 15 modules (8 clean, 7 failing with U0103, U2004, U5001, U3007, U3013, U3003 and U4003), 2 packages, 3 JSON documents, 11 commands with their exit codes |
 | M10 task 3: release binaries for Linux and macOS | done (D-129): `scripts/release.sh`, `scripts/check-release.sh`, `.github/workflows/release.yml` | CI run 36632878216 at `58f7a07`, step "Pack and check the Linux release archive"; the macOS arm64 archive packed and checked on the owner's Mac |

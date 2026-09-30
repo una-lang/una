@@ -697,7 +697,7 @@ None.
 - Reversal cost: low
 - Implemented in: `49c73e9`, `02bb2d5`, `048cbfa`, `crates/una-verify/src/generate.rs`, `crates/una-core/src/print.rs`, tag `DECISION D-118`
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Accepted), rule 8
-- Answer needed: Keep A? Or switch to B? And a question on `spec/12 §8` itself: two obligations of the same kind and goal in one declaration, such as two calls of `lend` in `examples/lending` (`can_borrow(member)`), get one id from its formula; `una obligations` lists both with their positions. Keep the formula, or add an occurrence number?
+- Answer needed: Keep A? Or switch to B? And a question on `spec/12 §8` itself: two obligations of the same kind and goal in one declaration, such as two calls of `lend` in the example package later replaced under R-022 (`can_borrow(member)`), get one id from its formula; `una obligations` lists both with their positions. Keep the formula, or add an occurrence number?
 - Answer: kept A, and the formula of `spec/12 §8`, under which such obligations share an id (Leonardo, 2026-09-29)
 - Review (2026-09-30): Keep
 
@@ -860,7 +860,7 @@ None.
 ### D-127: The example packages and what "every construct" means (M10)
 - Question: M10 asks for at least five more example packages "covering every construct in the charter scope", without naming them or saying how coverage is shown.
 - Context: `plan/milestones-v0.1.md` M10; charter §5; `plan/roadmap.md §3`; ADR 0026 (neutral examples).
-- Options: A) five packages with domain-neutral themes (`lending`, `pantry`, `journal`, `greenhouse`, `shortlinks`), each passing fmt, tier 1, `una test` and the report with no trivial `ensures`, and a test that finds every construct of charter §5's language list in some example by a source pattern; B) one small package per charter bullet; C) the same five packages with a coverage table in the plan instead of a test.
+- Options: A) five packages with domain-neutral themes (the example package later replaced under R-022, `pantry`, `journal`, `greenhouse`, `shortlinks`), each passing fmt, tier 1, `una test` and the report with no trivial `ensures`, and a test that finds every construct of charter §5's language list in some example by a source pattern; B) one small package per charter bullet; C) the same five packages with a coverage table in the plan instead of a test.
 - Chosen: A, because the examples are the code evaluation tasks start from (roadmap §3), so each should be a small program rather than a fragment, and a test keeps the coverage claim true as the examples change.
 - Confidence: medium
 - Reversal cost: low, the packages under `examples/` and the construct list of `crates/una-cli/tests/examples.rs`
@@ -898,7 +898,7 @@ None.
 
 ### D-131: What an `attempt` that succeeded tells the verifier (M10)
 - Question: `spec/12 §3` adds the callee's `ensures` after `let x = f(ā)`, but says nothing of `let x = attempt f(ā)`, so a program that attempts a call lost what the callee proves about its result.
-- Context: `spec/12 §3`; `spec/06 §5` (`attempt` returns `Result`); `spec/04 §2` rule 2 (`ensures` describes normal returns); found by `examples/lending` in M10.
+- Context: `spec/12 §3`; `spec/06 §5` (`attempt` returns `Result`); `spec/04 §2` rule 2 (`ensures` describes normal returns); found by the example package later replaced under R-022 in M10.
 - Options: A) the hypothesis `x is Ok implies P`, with `P` one of the attempted call's normal return paths, its facts and `ensures`, and `x.value` its value; nothing for `Err`; B) no hypothesis for `attempt`, so contracts cannot be used through it; C) A for `let` only.
 - Chosen: A, because `Ok` is exactly a normal return of the call, so the hypothesis is true in every run and weakens nothing, while B pushes programs away from handling failures; the same rule serves every place the value flows (a `let`, a return, an example's `do` line).
 - Confidence: medium
