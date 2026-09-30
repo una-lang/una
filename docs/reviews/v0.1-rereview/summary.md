@@ -80,6 +80,46 @@ Two notes on the rows marked `4ea31cf`:
 - They were not rerun at `85787d7`, because commit `3a5f4e9` changes only the prelude label list, one conformance case and docs. The full test suite, which includes the example, demo and determinism tests, passes at `85787d7`.
 - The debug build is what the tests use. N-006 shows one place where a release build behaves differently.
 
+## Heads each result was checked on
+
+| Result | `4ea31cf` | `85787d7` |
+| --- | --- | --- |
+| Build, fmt, clippy, `cargo test` (default and 1 thread), conformance, CI | yes | yes |
+| Examples, demo scripts, determinism, no-Z3 run, rustdoc, hard-limit diff audit | yes | covered by `cargo test` only (see the note above) |
+| Status of R-001 to R-022 (reproductions and variants) | yes | yes: all 143 first-review programs rerun, with identical codes at both heads |
+| 89 new adversarial programs | yes | yes: identical codes at both heads except `rv-gen-prelude-option-labels`, whose header records both |
+| New Criticals N-001 to N-005 | yes | yes, reproduced by the lead with a cold cache |
+| N-006 (release build) | no | yes (`cargo build --release`) |
+| Decisions D-133 to D-159, ADRs 0039 to 0045 | yes | D-136 and D-148 checked against the owner's answers in `3a5f4e9` |
+
+## Origin and root cause of the new Criticals
+
+The origin was checked by running each program, or a minimal variant, on the `c2f3386` binary.
+
+| Finding | Origin | Root cause | Needs an ADR |
+| --- | --- | --- | --- |
+| N-001 kind-field labels | Predates `c2f3386`: the old binary accepts it. The first review missed it. | Implementation: `Ty::deep_label` ignores declared field labels. spec/07 §7 rule 3 ("every label of its operands' types") already covers them. A one-line clarification in spec/07 §7 is advisable, but no ADR is needed. | No |
+| N-002 generic kind variance | Predates `c2f3386`: a variant without `to_int` is accepted by the old binary and prints the PIN. | **Spec**: spec/07 §7 rule 2 makes kind arguments covariant, which is unsound when the parameter appears in a function parameter. | **Yes** (escalation E1) |
+| N-003 generic function value | Predates `c2f3386`, in the R-004 class. The closure's fix covered direct calls but not function values. | Implementation: ADR 0038 D3.2 and D-137 already state the rule. | No |
+| N-004 `via` contract | Predates `c2f3386`, in the R-007 class. The closure's fix covered the result, not the parameter or precondition. | **Mixed.** The refined-parameter case is an implementation gap, since spec/07 §5 rule 4 already requires "types other than labels" to match. A `via` with `requires` is a spec gap. | **Yes**, for the `requires` case (escalation E2) |
+| N-005 annotated `let` of a refined function type | **Introduced by the closure**, as a regression of the R-013 fix. The old binary refutes the same program, since it never assumed such refinements. | Implementation: ADR 0037 rules 2 and 7 already require the obligation at every flow. | No |
+
+## Scope of the next re-review
+
+Recommendation: a **limited** re-review, not a full one. It should cover:
+1. The five Criticals, N-006, and ADRs 0044 and 0045 if accepted: rerun their programs, and check the new ADRs for E1 and E2.
+2. A class-level sweep of the two root causes behind all five Criticals:
+   - **Label computation** (N-001, N-002, N-003): the deep label of every type form, meaning kinds with labeled fields, generic kinds, nested generics and function values. Check it at every consumer: equality, sinks, generic results, prelude results, handler results and function values. Check the variance of every type constructor (`List`, `Option`, `Result`, user kinds, function types) for labels, `uses`, `fails` and refinements.
+   - **Flow-site coverage** (N-004, N-005): every flow site crossed with every value source. The sites are annotated `let`, return, argument, constructor field, list element, lambda result, branch join and handler result. The sources are literal, call, field read, generic call, lambda, function value, and policy or `via` call.
+3. Automated reruns: the full baseline, and all 232 adversarial programs of both reviews, compared by diagnostic codes.
+
+Why limited is enough:
+- The 16 fixed findings and the new rules for identity, solver namespaces and file links held against about 150 variants.
+- All five new Criticals trace to these two root causes.
+- The rest of the baseline is unchanged and machine-checked.
+
+A full re-review would be warranted if the fixes touch more than `una-check` types and flow, the ADR 0037 obligation generation in `una-verify`, and the policy rules.
+
 ## Files
 
 - `findings.md`: the status of R-001 to R-022, and the new findings N-001 to N-024.
