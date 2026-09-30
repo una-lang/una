@@ -1,0 +1,19 @@
+-- test: an opaque predicate used as a function value is U2016 at each use (N-008)
+-- spec: spec/03 §4
+-- expect: error U2016 at 14:11
+-- expect: error U2016 at 17:57
+-- expect: error U2016 at 19:75
+module opaque_predicate_as_value
+
+predicate opaque valid_slug(t: Text) -> Bool = t.len >= 3
+
+pub kind Slug = Text where valid_slug(it)
+
+pub by_let(raw: Text) -> Bool
+=
+  let f = valid_slug
+  f(raw)
+
+pub by_map(xs: List[Text]) -> List[Bool] = xs.map(each: valid_slug)
+
+pub by_first_where(xs: List[Text]) -> Option[Text] = xs.first_where(keep: valid_slug)

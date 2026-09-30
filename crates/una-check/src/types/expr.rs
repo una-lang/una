@@ -296,6 +296,27 @@ impl<'a> Checker<'_, 'a, '_> {
             );
             return Ty::Error;
         }
+        // ADR 0042 rule 2: an opaque predicate used as a value would be called outside
+        // `checked` (re-review N-008).
+        if def.kind == (FnKind::Predicate { reflect: false })
+            && !self.ctx.opaque
+            && !self.ctx.opaque_calls
+            && self.pass == super::authority::Pass::Check
+        {
+            let mut diagnostic = self.report.make(
+                Code::U2016,
+                span,
+                format!(
+                    "opaque predicate `{}` is used as a value, so it would be called outside `checked`",
+                    def.name
+                ),
+            );
+            diagnostic.repairs.push(super::Report::advice(format!(
+                "call it inside `checked(value, {}(it)) else fail <Variant>` instead",
+                def.name
+            )));
+            self.report.push(diagnostic);
+        }
         let args = self.instantiate(&def.type_params, def.name, span);
         if !args.is_empty() {
             self.instances.push((id, args.clone(), span));
