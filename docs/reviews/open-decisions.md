@@ -1727,3 +1727,29 @@ None.
 - Answer needed: Keep A? Or tag `dev/v0.1` before the merge?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
 - Review (2026-09-30): Keep
+
+## Decisions of the v0.1 closure run
+
+Choices of the closure run that neither the specification nor an ADR dictates (`docs/plan/runs/v0.1-closure-plan.md` §5). They await the owner's review, like the entries above did.
+
+### D-133: A `Files` path that names the grant prefix itself (closure, R-011)
+- Question: ADR 0038 D9 rule 3 opens the final component without following a link. A path such as `""`, `.` or `sub/..` normalizes to the prefix itself and has no final component.
+- Context: `spec/14 §3`, ADR 0038 D9.
+- Options: A) deny it (`FileError.Denied`); B) let the operation act on the prefix directory, which fails with `Io`.
+- Chosen: A, because a file operation on the grant directory itself is never meaningful, and denying it keeps rule 3 total.
+- Confidence: high
+- Reversal cost: low, `crates/una-interp/src/host.rs` (`confine`)
+- Implemented in: `342fe7b`, `crates/una-interp/src/host.rs`, `crates/una-cli/tests/runtime.rs`, tag `DECISION D-133`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-134: Every intermediate directory of a `Files` path stays inside the prefix (closure, R-011)
+- Question: ADR 0038 D9 rule 2 says the resolved directory lies inside the canonical prefix. A path can pass through a directory outside the prefix and come back inside, for example through a link and `..`.
+- Context: `spec/14 §3`, ADR 0038 D9.
+- Options: A) check every intermediate directory; B) check only the directory that holds the final component.
+- Chosen: A, because it is stricter, and a path that passes outside the grant reveals whether directories outside it exist.
+- Confidence: high
+- Reversal cost: low, `crates/una-interp/src/host.rs` (`confine`)
+- Implemented in: `342fe7b`, `crates/una-interp/src/host.rs`, tag `DECISION D-134`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
