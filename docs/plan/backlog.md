@@ -18,7 +18,7 @@ Status: Informative. Nothing in this file may be implemented before its target v
 | Traits or constraints on generics | v0.2 | Unconstrained generics suffice for v0.1 | D |
 | Language server (LSP) | v0.2 | Tooling after semantics stabilize | D |
 | Authenticate or re-validate proof cache entries | v0.2 | ADR 0041: the proof cache is part of the Trusted zone in v0.1, and the report counts cached results | v0.1 review R-018 |
-| Bound the interpreter heap and report exhaustion as U6003 | v0.2 | Not a small change; review finding R-033 | review |
+| Bound the interpreter heap and report exhaustion as U6003 | v0.2 | Not a small change; `--max-depth` scales memory until then (`spec/13 §5`) | v0.1 review R-033 |
 | Laws with quantifiers (tier 2), triggers, proof hints | v0.3 | Undecidable fragment; needs budgets and caching experience | D, R1 |
 | Property-based tests and benchmarks (tier 3) | v0.3 | Empirical evidence layer | D |
 | Semantic diff (`una diff`) over requirements, contracts, capabilities, information, escapes, TCB | v0.3 | Needs stable report and ABI | D, R3 |
@@ -37,3 +37,14 @@ Status: Informative. Nothing in this file may be implemented before its target v
 | TCB risk profile beyond line counts (FFI surface, unsafe operations, audit status, provenance) | v0.4 | Meaningful only once FFI exists | R3 |
 | Proof certificates checked by a small kernel | v1 | Reduces TCB; large effort | R3 |
 | Task envelope ABI (goal, constraints, budgets in one request) | v1 | Obligations-based ABI first; revisit with Gate 1 data | R3 |
+| Evaluation order of constructor arguments, stated in `spec/04 §3`, so `una fmt` cannot change an example's outcome by reordering them | v0.1.x | Needs a spec rule; decide with the owner | v0.1 review R-023 |
+| Redaction of labeled `do` results in `una test --json` | v0.1.x | `spec/11 §5` does not say whether example results are redacted; decide with the owner | v0.1 review R-025 |
+| One code for an undeclared operation after `expect performed` and in a body | v0.2 | `spec/05 §9` rules 2 and 5 give U3002 and U1001 on purpose; changing it amends ADR 0028 | v0.1 review R-028 |
+| `-k` as a literal in the refinement language and the encoding | v0.1.x | Sound today but incomplete (`x * -2` is nonlinear); needs a line in `spec/12 §2` | v0.1 review R-031 |
+| Positive conformance twins for the remaining codes without one in the same section, and cases for the wall-clock guard and cache robustness | v0.1.x | Coverage work with no known defect | v0.1 review R-037 |
+| Precise messages for `0x1F`, `1e5` and `3.14` | v0.1.x | Generic "unexpected" messages today; ergonomics | v0.1 review R-045 |
+| Distinguish a module capability that shadows a prelude name, such as `Console`, in diagnostics | v0.1.x | Ergonomics | v0.1 review R-045 |
+| Handlers with `uses` in the report's authority section | v0.1.x | `spec/13 §6` lists "every function"; extending it changes the report | v0.1 review R-045 |
+| Recursive kinds with a base variant | v0.2 | `spec/03 §2` rule 5 rejects them in v0.1 | v0.1 review R-045 |
+| Refined elements of collections (`List[Pos]`, `Option[Pos]`) with obligations at construction and facts on access | v0.2 | Needs quantifiers or per-term facts; ADR 0040 rejects them in v0.1 | v0.1 review R-012 |
+| Label polymorphism beyond symbolic labels on type parameters, with inferred label constraints in signatures | v0.2 | ADR 0038 D3; only if Gate 1 shows agents need it | ADR 0038 |
