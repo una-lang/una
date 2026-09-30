@@ -156,7 +156,7 @@ fn duplicates_are_t1002() {
         ),
         [
             "U1002 t.una:5:19 `f` is defined twice in this module: as a function and as a predicate",
-            "U1002 t.una:9:10 `X` is defined twice in this module: as a variant and as a variant",
+            "U1002 t.una:9:10 `X` is defined twice in this module, both times as a variant",
             "U1002 t.una:11:12 `A` is defined twice in this module: as a kind and as a capability",
         ]
     );
@@ -358,8 +358,6 @@ fn modules_with_syntax_errors_are_not_resolved() {
     let user = "module b\n\nimport a (g, f)\n\nuse_it() -> Int = g()\n";
     assert_eq!(
         package(&[("src/a.una", broken), ("src/b.una", user)]),
-        [
-            "U1002 src/a.una:9:5 `h` is defined twice in this module: as a function and as a function"
-        ]
+        ["U1002 src/a.una:9:5 `h` is defined twice in this module, both times as a function"]
     );
 }

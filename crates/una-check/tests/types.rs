@@ -570,6 +570,36 @@ fn constructors_label_their_fields() {
     );
 }
 
+#[test]
+fn unknown_label_repairs_suggest_only_what_is_not_given() {
+    // R-030: an unknown label close to a parameter or field that another argument already
+    // gives suggests one that is still missing, so applying the repair cannot give it twice
+    // (U2006); when nothing is missing, the advice says so.
+    assert_eq!(
+        repairs(
+            "kind Point\n  value: Int\n  values: Int\n\
+             \n\
+             kind Shape = Rect(width: Int, widths: Int) | Dot\n\
+             \n\
+             pick(value: Int, values: Int) -> Int = value\n\
+             \n\
+             a(x: Int) -> Int = pick(value: x, valuex: 1)\n\
+             \n\
+             b(x: Int) -> Point = Point(value: 1, valuex: 2)\n\
+             \n\
+             c(s: Shape) -> Int\n=\n  when s\n    is Rect(width, widthx: h) -> h\n    else -> 0\n\
+             \n\
+             d() -> Point = Point(value: 1, values: 2, valuex: 3)\n"
+        ),
+        [
+            "U2005: write `values` [11:35 -> \"values\"]",
+            "U2009: write `values` [13:38 -> \"values\"]",
+            "U2009: write `widths` [18:20 -> \"widths\"]",
+            "U2009: every field is given by another argument; remove this one",
+        ]
+    );
+}
+
 // ----- when and patterns (U2007, U2008, `spec/10 §4`) -----
 
 #[test]

@@ -138,13 +138,12 @@ fn a_second_run_reports_every_obligation_as_cached() {
 #[test]
 fn the_queries_of_the_examples_are_byte_identical_across_runs() {
     // M8 acceptance criterion and `spec/12 §4`: declarations sorted by name, assertions in
-    // generation order.
-    let queries = || {
-        let checked = una_cli::check(&repository().join("examples/events"), Tier::One).unwrap();
-        assert_eq!(checked.diagnostics, []);
+    // generation order. Every package under `examples/` has its own snapshot (R-036).
+    let queries = |example: &Path| {
+        let checked = una_cli::check(example, Tier::One).unwrap();
+        assert_eq!(checked.diagnostics, [], "{}", example.display());
         let verification = checked.verification.unwrap();
-        let text = std::fs::read_to_string(repository().join("examples/events/verification.lock"))
-            .unwrap();
+        let text = std::fs::read_to_string(example.join("verification.lock")).unwrap();
         let (lock, _) = una_project::parse_lock(&text);
         let lock = una_verify::Lock {
             text,
@@ -165,9 +164,19 @@ fn the_queries_of_the_examples_are_byte_identical_across_runs() {
         }
         out
     };
-    let first = queries();
-    assert_eq!(first, queries());
-    insta::assert_snapshot!("queries_events", first);
+    let mut examples: Vec<PathBuf> = std::fs::read_dir(repository().join("examples"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.join("una.toml").is_file())
+        .collect();
+    examples.sort();
+    assert!(examples.len() >= 7, "{examples:?}");
+    for example in &examples {
+        let name = example.file_name().unwrap().to_string_lossy().into_owned();
+        let first = queries(example);
+        assert_eq!(first, queries(example), "{name}");
+        insta::assert_snapshot!(format!("queries_{name}"), first);
+    }
 }
 
 #[test]
@@ -820,4 +829,156 @@ pub use_it(c: Bool) -> Int = apply(fn(x) -> if c then 1 else 0)
             "add a guard or an arm so that the failing path of the lambda returns a value for which `result > 0` holds"
         ]
     );
+}
+
+/// The goals of the diagnostics of a conformance case, as "code line:col goal".
+fn case_goals(case: &str) -> Vec<String> {
+    let output = una(&["--json", "check", &format!("tests/conformance/{case}")]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let document: Value = serde_json::from_str(stdout(&output)).unwrap();
+    document["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| {
+            format!(
+                "{} {}:{} {}",
+                d["code"].as_str().unwrap(),
+                d["primary"]["start"]["line"],
+                d["primary"]["start"]["col"],
+                d["obligation"]["goal"].as_str().unwrap()
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn goal_texts_name_the_parameters_of_a_function_value_and_print_literals_as_values() {
+    // R-032: the precondition of a function used as a value is instantiated at the
+    // parameters of the lambda that stands for it, and a literal arm prints its value.
+    assert_eq!(
+        case_goals("verification/fn_value_precondition_goal_text.una"),
+        ["U5001 19:17 x == y", "U5001 20:18 needs > 0"]
+    );
+    assert_eq!(
+        case_goals("verification/literal_arms_goal_text.una"),
+        ["U5001 10:3 n == 0 or n == 2"]
+    );
+}
+
+/// The program of the review's `verify-unknown-is-error-cached`: three obligations, which a
+/// step budget of 1 leaves unknown.
+const UNKNOWN: &str = "module unk
+
+recip(x: Int) -> Int
+  requires x > 0
+=
+  100 / x
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let q = recip(0 - 0)
+  @console.print(\"q = {q}\")
+
+example \"zero\"
+  do recip(0)
+  expect result == 1
+";
+
+/// The codes of a JSON document's diagnostics, and whether each obligation came from the
+/// cache.
+fn codes_and_cached(output: &Output) -> (Vec<String>, Vec<bool>) {
+    let document: Value = serde_json::from_str(stdout(output)).unwrap();
+    let codes = document["diagnostics"]
+        .as_array()
+        .map(|d| {
+            d.iter()
+                .map(|d| d["code"].as_str().unwrap().to_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    let cached = document["obligations"]
+        .as_array()
+        .map(|o| o.iter().map(|o| o["cached"] == true).collect())
+        .unwrap_or_default();
+    (codes, cached)
+}
+
+#[test]
+fn an_unknown_obligation_is_an_error_every_run_and_only_a_wallclock_unknown_is_not_cached() {
+    // Review control `verify-unknown-is-error-cached` (ADR 0008, ADR 0033, `spec/12 §6`):
+    // with `step_budget = 1` every obligation is unknown, U5002 on the first run and again on
+    // the second, answered by the cache; `una run` and `una test` refuse to run (exit 1).
+    let root = package("unknown-cached", &[("src/unk.una", UNKNOWN)]);
+    std::fs::write(
+        root.join("una.toml"),
+        "[package]\nname = \"unknown_cached\"\nversion = \"0.1.0\"\nedition = \"0.1\"\n\n[run]\nentry = \"unk\"\n",
+    )
+    .unwrap();
+    let lock = std::fs::read_to_string(root.join("verification.lock")).unwrap();
+    let lock = lock.replace("step_budget      = 5000000", "step_budget      = 1");
+    assert!(lock.contains("step_budget      = 1\n"), "{lock}");
+    std::fs::write(root.join("verification.lock"), lock).unwrap();
+    let path = root.to_str().unwrap();
+    for (run, cached) in [(1, false), (2, true)] {
+        let obligations = una(&["--json", "obligations", path]);
+        assert_eq!(obligations.status.code(), Some(1), "run {run}");
+        let document: Value = serde_json::from_str(stdout(&obligations)).unwrap();
+        let listed = document["obligations"].as_array().unwrap();
+        assert_eq!(listed.len(), 3, "run {run}");
+        assert!(
+            listed
+                .iter()
+                .all(|o| o["status"] == "unknown" && o["cached"] == cached),
+            "run {run}: {}",
+            stdout(&obligations)
+        );
+        let check = una(&["--json", "check", path]);
+        assert_eq!(check.status.code(), Some(1), "run {run}");
+        assert_eq!(
+            codes_and_cached(&check).0,
+            ["U5002", "U5002", "U5002"],
+            "run {run}"
+        );
+    }
+    for args in [
+        ["--json", "run", "--grant", "console", path].as_slice(),
+        ["--json", "test", path].as_slice(),
+    ] {
+        let output = una(args);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{args:?}: {}",
+            stdout(&output)
+        );
+        assert!(stdout(&output).contains("U5002"), "{args:?}");
+        assert!(!stdout(&output).contains("q = "), "{args:?}");
+    }
+    // `--solver-wallclock 0` stops every query: unknown with reason `wallclock`, which the
+    // cache never keeps, so the second run asks the solver again.
+    let root = package("unknown-wallclock", &[("src/unk.una", UNKNOWN)]);
+    let path = root.to_str().unwrap();
+    for run in 1..=2 {
+        let output = una(&["--json", "obligations", "--solver-wallclock", "0", path]);
+        assert_eq!(output.status.code(), Some(1), "run {run}");
+        let (_, cached) = codes_and_cached(&output);
+        assert_eq!(cached, [false, false, false], "run {run}");
+        let check = una(&["--json", "check", "--solver-wallclock", "0", path]);
+        let document: Value = serde_json::from_str(stdout(&check)).unwrap();
+        let messages: Vec<&str> = document["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["message"].as_str().unwrap())
+            .collect();
+        assert_eq!(messages.len(), 3, "run {run}");
+        assert!(
+            messages
+                .iter()
+                .all(|m| m.ends_with("could not be proven (wallclock)")),
+            "run {run}: {messages:?}"
+        );
+    }
 }

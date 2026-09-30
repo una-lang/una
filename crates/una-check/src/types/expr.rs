@@ -310,6 +310,11 @@ impl<'a> Checker<'_, 'a, '_> {
                 type_args: args.clone(),
             },
         );
+        // The lambda that stands for the value calls the function, so its `requires` is a
+        // precondition at the value (`spec/10 §2`, S-Fun; R-032).
+        if def.requires {
+            self.obligation(ObligationKind::Precondition, span, None);
+        }
         Ty::Fn(Box::new(FnTy {
             params: def
                 .params
