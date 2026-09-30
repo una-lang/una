@@ -192,7 +192,8 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
     let headers = headers(&env);
     let (program, lost) = elab::program(&env, &findings, package.sources, &standard.sources);
     // ADR 0038 D1: a component of a checker type that Core IR lost is an internal error, never
-    // a silent pass (`spec/10 §2`).
+    // a silent pass (`spec/10 §2`). DECISION D-TBD-a9: the check runs in debug builds, as the
+    // ADR says, and reports at the declaration.
     for (span, what) in lost {
         report.error(
             Code::U8001,
