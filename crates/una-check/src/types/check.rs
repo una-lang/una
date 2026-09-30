@@ -65,6 +65,10 @@ pub(crate) struct Ctx {
     pub(crate) pc_from: Option<Span>,
     /// Whether labels are checked: not in `via` bodies or `expect` lines (DECISION D-095).
     pub(crate) labels: bool,
+    /// In a handler operation body, the operation's `accepts` label: the effect floor that
+    /// raises the program counter of every effect in the body (ADR 0038 D4, `spec/07 §7`
+    /// rule 4).
+    pub(crate) floor: Option<Label>,
 }
 
 impl Ctx {
@@ -84,6 +88,7 @@ impl Ctx {
             pc: Label::public(),
             pc_from: None,
             labels: true,
+            floor: None,
         }
     }
 }
@@ -178,6 +183,10 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) compared: Vec<Ty>,
     /// Set when an expression checked under [`Rl::Probe`] is outside the refinement language.
     pub(crate) probe_failed: bool,
+    /// The instantiations of type parameters, judged when the declaration ends (U3016).
+    pub(crate) instantiations: Vec<super::generic::Instantiation>,
+    /// Where U3006 reports a function value that escapes; U3016 is not reported there again.
+    pub(crate) escaped: Vec<Span>,
     /// The number of diagnostics when the declaration started.
     started: usize,
 }
@@ -252,6 +261,8 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             instances: Vec::new(),
             compared: Vec::new(),
             probe_failed: false,
+            instantiations: Vec::new(),
+            escaped: Vec::new(),
             started,
         }
     }
@@ -456,8 +467,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 let level = self.frames.len();
                 self.needs_site(&callee, &uses, call.span, level);
                 // DECISION D-093: its effects run under the program counter of the statement.
-                let bound = self.bound(&uses, false);
-                self.call_under_pc(call.span, &callee, bound, false, true);
+                self.call_under_pc(call.span, &callee, &uses, false, true, &Label::public());
                 capability
             }
             other => {
@@ -538,9 +548,12 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             records,
             decl_span,
             pass,
+            instantiations,
+            mut escaped,
             ..
         } = self;
         if pass == Pass::Check {
+            super::generic::second_class(report, &vars, &instantiations, &mut escaped);
             findings
                 .records
                 .absorb(records, |ty| vars.resolve_labeled(ty));
@@ -634,7 +647,8 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         self.current = Some(id);
         self.type_params = def.type_params.clone();
         for param in &def.params {
-            self.bind(param.name, param.ty.base.clone());
+            let ty = self.symbolic(&param.ty.base);
+            self.bind(param.name, ty);
         }
         self.enter_function(&def);
         if self.pass == Pass::Check {
@@ -688,7 +702,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             labels: !self.env.vias.contains_key(&id),
             ..Ctx::plain()
         };
-        let expected = def.result.base.clone();
+        let expected = self.symbolic(&def.result.base);
         self.within(ctx, |checker| {
             checker.body(
                 &function.body,
@@ -929,6 +943,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             let ctx = Ctx {
                 fails: op_def.and_then(|o| o.fails.clone()),
                 testing: true,
+                floor: Some(accepts.clone()),
                 ..Ctx::plain()
             };
             let expected = op_def.map(|o| o.result.base.clone());
@@ -1177,6 +1192,30 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             .kinds
             .get(id)
             .and_then(|kind| kind.variants.iter().position(|v| v.name == name))
+    }
+
+    /// `ty`, a type written in the declaration being checked, with the values of its type
+    /// parameters labeled with their symbolic labels (ADR 0038 D3.2).
+    pub(crate) fn symbolic(&self, ty: &Ty) -> Ty {
+        if self.type_params.is_empty() {
+            return ty.clone();
+        }
+        ty.symbolic(&self.type_params)
+    }
+
+    /// `ty` without the symbolic labels of the type parameters of the declaration being
+    /// checked: the declared result of a generic function may carry them, since each call
+    /// replaces them by the labels of its type arguments (`spec/07 §7` rule 8).
+    pub(crate) fn without_own_symbols(&self, ty: &Ty) -> Ty {
+        if self.type_params.is_empty() {
+            return ty.clone();
+        }
+        let names = self.type_params.clone();
+        ty.map_labels(&|label| {
+            let mut kept = label.clone();
+            kept.symbols.retain(|s| !names.iter().any(|n| n == s));
+            kept
+        })
     }
 
     /// Fresh variables for the type parameters of a generic kind or function.

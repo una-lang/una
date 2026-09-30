@@ -1,0 +1,16 @@
+-- test: `via` function passed as a value to `map` (review control)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/app/keys.una:16:55
+-- expect: error U4005 at src/app/keys.una:16:68
+trusted module app.keys
+
+pub policy mask
+  from secret[PII] Text
+  to Text
+  via masked
+  purpose "show the last digits"
+  owner privacy
+
+masked(t: secret[PII] Text) -> Text = t
+
+pub every(ts: List[secret[PII] Text]) -> List[Text] = ts.map(each: masked)

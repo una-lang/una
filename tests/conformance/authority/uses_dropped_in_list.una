@@ -1,0 +1,15 @@
+-- test: List[fn(Text) -> Unit uses @log: Log[write]] passed where List[fn(Text) -> Unit] is expected: uses dropped by subtyping under List (no generic needed) (R-001)
+-- spec: spec/05 §9, §6
+-- expect: error U3016 at 12:17
+-- expect: error U3003 at 15:13
+module uses_dropped_in_list
+
+capability Log
+  op write(line: Text) -> Unit
+
+pure_fire(fs: List[fn(Text) -> Unit]) -> Int = fs.map(each: fn(f) -> f("hello")).len
+
+impure(fs: List[fn(Text) -> Unit uses @log: Log[write]]) -> Int
+  uses @log: Log[write]
+=
+  pure_fire(fs)
