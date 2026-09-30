@@ -865,3 +865,120 @@ fn goal_texts_name_the_parameters_of_a_function_value_and_print_literals_as_valu
         ["U5001 10:3 n == 0 or n == 2"]
     );
 }
+
+/// The program of the review's `verify-unknown-is-error-cached`: three obligations, which a
+/// step budget of 1 leaves unknown.
+const UNKNOWN: &str = "module unk
+
+recip(x: Int) -> Int
+  requires x > 0
+=
+  100 / x
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let q = recip(0 - 0)
+  @console.print(\"q = {q}\")
+
+example \"zero\"
+  do recip(0)
+  expect result == 1
+";
+
+/// The codes of a JSON document's diagnostics, and whether each obligation came from the
+/// cache.
+fn codes_and_cached(output: &Output) -> (Vec<String>, Vec<bool>) {
+    let document: Value = serde_json::from_str(stdout(output)).unwrap();
+    let codes = document["diagnostics"]
+        .as_array()
+        .map(|d| {
+            d.iter()
+                .map(|d| d["code"].as_str().unwrap().to_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    let cached = document["obligations"]
+        .as_array()
+        .map(|o| o.iter().map(|o| o["cached"] == true).collect())
+        .unwrap_or_default();
+    (codes, cached)
+}
+
+#[test]
+fn an_unknown_obligation_is_an_error_every_run_and_only_a_wallclock_unknown_is_not_cached() {
+    // Review control `verify-unknown-is-error-cached` (ADR 0008, ADR 0033, `spec/12 §6`):
+    // with `step_budget = 1` every obligation is unknown, U5002 on the first run and again on
+    // the second, answered by the cache; `una run` and `una test` refuse to run (exit 1).
+    let root = package("unknown-cached", &[("src/unk.una", UNKNOWN)]);
+    std::fs::write(
+        root.join("una.toml"),
+        "[package]\nname = \"unknown_cached\"\nversion = \"0.1.0\"\nedition = \"0.1\"\n\n[run]\nentry = \"unk\"\n",
+    )
+    .unwrap();
+    let lock = std::fs::read_to_string(root.join("verification.lock")).unwrap();
+    let lock = lock.replace("step_budget      = 5000000", "step_budget      = 1");
+    assert!(lock.contains("step_budget      = 1\n"), "{lock}");
+    std::fs::write(root.join("verification.lock"), lock).unwrap();
+    let path = root.to_str().unwrap();
+    for (run, cached) in [(1, false), (2, true)] {
+        let obligations = una(&["--json", "obligations", path]);
+        assert_eq!(obligations.status.code(), Some(1), "run {run}");
+        let document: Value = serde_json::from_str(stdout(&obligations)).unwrap();
+        let listed = document["obligations"].as_array().unwrap();
+        assert_eq!(listed.len(), 3, "run {run}");
+        assert!(
+            listed
+                .iter()
+                .all(|o| o["status"] == "unknown" && o["cached"] == cached),
+            "run {run}: {}",
+            stdout(&obligations)
+        );
+        let check = una(&["--json", "check", path]);
+        assert_eq!(check.status.code(), Some(1), "run {run}");
+        assert_eq!(
+            codes_and_cached(&check).0,
+            ["U5002", "U5002", "U5002"],
+            "run {run}"
+        );
+    }
+    for args in [
+        ["--json", "run", "--grant", "console", path].as_slice(),
+        ["--json", "test", path].as_slice(),
+    ] {
+        let output = una(args);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{args:?}: {}",
+            stdout(&output)
+        );
+        assert!(stdout(&output).contains("U5002"), "{args:?}");
+        assert!(!stdout(&output).contains("q = "), "{args:?}");
+    }
+    // `--solver-wallclock 0` stops every query: unknown with reason `wallclock`, which the
+    // cache never keeps, so the second run asks the solver again.
+    let root = package("unknown-wallclock", &[("src/unk.una", UNKNOWN)]);
+    let path = root.to_str().unwrap();
+    for run in 1..=2 {
+        let output = una(&["--json", "obligations", "--solver-wallclock", "0", path]);
+        assert_eq!(output.status.code(), Some(1), "run {run}");
+        let (_, cached) = codes_and_cached(&output);
+        assert_eq!(cached, [false, false, false], "run {run}");
+        let check = una(&["--json", "check", "--solver-wallclock", "0", path]);
+        let document: Value = serde_json::from_str(stdout(&check)).unwrap();
+        let messages: Vec<&str> = document["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["message"].as_str().unwrap())
+            .collect();
+        assert_eq!(messages.len(), 3, "run {run}");
+        assert!(
+            messages
+                .iter()
+                .all(|m| m.ends_with("could not be proven (wallclock)")),
+            "run {run}: {messages:?}"
+        );
+    }
+}
