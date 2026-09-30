@@ -30,6 +30,7 @@ Obligations are generated from Core IR by a traversal that maintains a **path co
 | `if a` branch / `else` branch | `a` / `not a` |
 | `case a` arm `C(x̄)` | `tag(a) = k_C` and field equations `f(a) = x_i` |
 | `let x = f(ā)` or `let x = c.o(ā)` | callee or operation `ensures`, instantiated |
+| `let x = a(ā)`, a call of a value of type `fn(B1, ..., Bn) -> S` | the refinements of `S` instantiated at `x` (ADR 0037) |
 | `let x = checked(a, φ, _)` | `φ[a/it]` and `x = a` |
 | Selfified `let x = r` with `r` in RL | `x = r` |
 | `let x = attempt f(ā)` | `x is Ok` implies that a normal return path of `f(ā)` was taken, with its facts, among them the callee's `ensures`, and `x.value` its value; `x is Err` carries nothing (ADR 0033) |
@@ -39,6 +40,7 @@ Obligations are generated from Core IR by a traversal that maintains a **path co
 | Kind | Generated at | Goal |
 | --- | --- | --- |
 | `refinement` | Every subsumption point: argument passing, `let` with annotation, constructor fields, returns, and the result of a policy's `via` function against the refinement of its `to` type (ADR 0038 D5) | target refinement instantiated at the value |
+| `refinement`, function value flowing into a function type (ADR 0037) | Every subsumption point above where a value of type `fn(A1, ..., An) -> R` flows into a position of type `fn(B1, ..., Bn) -> S`, directly or at the same position of a type argument, and the arguments of a call of a function value | a refinement of a parameter or the result, over a fresh binder; see "Function types" below |
 | `precondition` | Calls and operation invocations | callee `requires` instantiated |
 | `postcondition` | Each normal return path of a function or handler operation | `ensures` instantiated with `result` |
 | `division` | `div`, `mod` with non-literal divisor | divisor ≠ 0 |
@@ -48,7 +50,17 @@ Each obligation is `Π ⊢ goal`, sent to the solver as the satisfiability check
 
 Besides the hypotheses above, a query holds ground facts for every term in it: `len ≥ 0`; `0 ≤ tag < n`; and the refinement of a record field applied to the field's term, under the tag of its variant for a sum. Constructors add their tag and field equations, list literals their length, and text literals their length (ADR 0033).
 
-**Refinements are top-level.** A type argument is never refined (ADR 0040, `spec/03 §3`), so no obligation or hypothesis concerns the elements of a list, an option or a value of a generic kind.
+**Refinements are top-level.** A type argument is never refined (ADR 0040, `spec/03 §3`), so no obligation or hypothesis concerns the elements of a list, an option or a value of a generic kind. The obligations of a function type under a type argument, below, concern the type, not the elements.
+
+**Function types** (ADR 0037). A function type carries the refinements of its parameters and result: from its written form, from the header of a named function used as a value, whose parameters keep their declared names and types, and from a lambda's parameter annotations. These are the refined premises of S-Fun (`spec/10 §2`):
+
+1. **Obligations.** When a value of type `fn(A1, ..., An) -> R` flows into a position of type `fn(B1, ..., Bn) -> S`, each refinement of `Ai` that `Bi` does not carry is one `refinement` obligation, with the refinements of `Bi` as hypotheses (contravariant), and each refinement of `S` that `R` does not carry is one, with the refinements of `B1` to `Bn` and of `R` as hypotheses (covariant). A refinement both carry, that is the same refined kind or range, gives none. The obligations are at the value's span, under the path context of the flow, and function types nested in parameters, results and type arguments are compared the same way. A lambda's annotation that is stronger than the parameter type it is given is such a flow, at the lambda.
+2. **Binders.** The binder of parameter `i` is its name in the function that flows: the declared name for a named function, the written name for a lambda; a function-typed parameter or local that flows on has no names of its own, and its binders are `arg1` to `argN`, since a function type names no parameters. The result's binder is `result`. Every binder is a fresh variable of the query, never bound by a quantifier, so the obligation stays in QF_UFLIA (§4).
+3. **Goal.** The goal is the refinement instantiated at the binder, prefixed with the position: `parameter x of takes_pos: x > 0`, `result of gives_int: result > 0`; a lambda is named `the lambda`, and another value by its source text. The message is "refinement `<goal>` is refuted".
+4. **Counterexample.** The binders are source names in the encoder's name table, so the counterexample binds them by name (§7).
+5. **Repairs.** The only repair is a stronger type at the position (`spec/13 §3`).
+6. **Calls of function values.** Calling a value of type `fn(B1, ..., Bn) -> S` proves the refinements of `Bi` at the arguments, as for any call, and assumes the refinements of `S` of the result (T-App).
+7. **Lambdas.** A lambda takes its result type from the expected function type (`spec/03 §7`), and its body's normal return paths flow into it, as returns: one obligation over every path per refinement, with the goal `result of the lambda: <refinement>`.
 
 **Diagnostic spans.** The primary span of an obligation diagnostic is: for `refinement`, the value expression; for `precondition`, the call; for `postcondition`, the returned expression on the failing path; for `division`, the division expression; for `exhaustive`, the `when` keyword. The declaring clause (`where`, `requires`, `ensures`) is the related span.
 
@@ -131,7 +143,7 @@ A `sat` model is mapped back to source names through the encoder's name table. V
 }
 ```
 
-The bindings cover the parameters, `result`, named `let`s and pattern variables, and the field and `len` terms over them that occur in the query, by name. A value of a sum shows its variant, a text equal to a literal of the query shows as that literal, and another uninterpreted value shows as `<Kind>#<n>` (ADR 0033).
+The bindings cover the parameters, `result`, named `let`s, pattern variables and the binders of function-type obligations (§3), and the field and `len` terms over them that occur in the query, by name. A value of a sum shows its variant, a text equal to a literal of the query shows as that literal, and another uninterpreted value shows as `<Kind>#<n>` (ADR 0033).
 
 ## 8. Obligation identity
 

@@ -34,6 +34,8 @@ $$
      {\Gamma \vdash (\mathrm{fn}(\bar\tau_1) \to \tau_r \;\mathrm{uses}\; K_1 \;\mathrm{fails}\; F_1)^{\ell} <: (\mathrm{fn}(\bar\tau_2) \to \tau_r' \;\mathrm{uses}\; K_2 \;\mathrm{fails}\; F_2)^{\ell'}}\;(\textsf{S-Fun})
 $$
 
+The refined premises of S-Fun, $\bar\tau_2 <: \bar\tau_1$ and $\tau_r <: \tau_r'$ over refined parameters and results, are the `refinement` obligations of function types of `spec/12 §3` (ADR 0037): the type checker compares bases, and the verifier discharges the refinements.
+
 A function type's `uses`, `fails`, refinements and label are part of the type in every position: parameters and results, record and variant fields, type arguments, pattern bindings and lambda annotations (ADR 0038 D1). Unification, matching, S-Fun and elaboration never drop any of them, and S-Fun applies wherever a value flows into a declared type, recursively under `List`, `Option`, `Result` and kind arguments. As an internal invariant, the compiler compares the types of the checker with the binder types of Core IR; a component that was lost is U8001, never a silent pass.
 
 ## 3. Atoms and primitives

@@ -96,6 +96,7 @@ impl Vars {
                 result: self.resolve_shape(&function.result),
                 uses: function.uses.clone(),
                 fails: function.fails.as_ref().map(|f| self.resolve(f)),
+                refinements: function.refinements.clone(),
             })),
             other => other,
         }
@@ -314,6 +315,8 @@ fn combine(a: &Ty, b: &Ty, join: bool) -> Ty {
             // ADR 0038 D1: a joined function type keeps the `uses` and `fails` of both.
             uses: union_uses(&f.uses, &g.uses),
             fails: f.fails.clone().or_else(|| g.fails.clone()),
+            // ADR 0037 rule 1: the refinements of a join, position by position.
+            refinements: f.refinements.combine(&g.refinements, join),
         })),
         (Ty::Var(_), other) if !matches!(other, Ty::Var(_)) => other.clone(),
         (same, _) => same.clone(),

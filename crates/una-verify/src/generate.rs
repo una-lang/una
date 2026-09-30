@@ -60,6 +60,9 @@ pub struct Site {
     pub over_parameters: bool,
     /// Whether the goal has no free binder: no type, `requires` or guard can make it hold.
     pub ground: bool,
+    /// For an obligation of a function value flowing into a function type, or of a lambda's
+    /// result, its only repair (ADR 0037 rule 6).
+    pub flow: Option<String>,
 }
 
 /// The kind of declaration that encloses an obligation.
@@ -113,6 +116,7 @@ pub fn obligations(program: &Program, sources: &SourceDb) -> Vec<Obligation> {
                 } => {
                     for op in ops {
                         walker.declaration = format!("{}.{name}.{}", module.path, op.name);
+                        walker.lambdas.clear();
                         walker.handler_op(params, capability_path, op);
                     }
                 }
@@ -124,6 +128,7 @@ pub fn obligations(program: &Program, sources: &SourceDb) -> Vec<Obligation> {
                     ..
                 } => {
                     walker.declaration = format!("{}.{name}", module.path);
+                    walker.lambdas.clear();
                     walker.opaque(params, body);
                 }
                 _ => {}
@@ -176,6 +181,7 @@ pub fn trivial_ensures(program: &Program, sources: &SourceDb) -> Vec<Obligation>
             }
             let mut walker = Walker::new(&index, sources, &module.path);
             walker.declaration = format!("{}.{}", module.path, fun.name);
+            walker.lambdas.clear();
             let mut ctx = Ctx::default();
             for (name, ty) in &fun.params {
                 ctx.types.insert(name.clone(), ty.clone());
@@ -211,6 +217,8 @@ pub fn trivial_ensures(program: &Program, sources: &SourceDb) -> Vec<Obligation>
 
 /// The contract of a callee: a function of the package or of the standard library.
 struct Contract<'p> {
+    /// The type parameters of a generic callee.
+    type_params: &'p [String],
     params: &'p [(Name, Type)],
     result: &'p Type,
     requires: &'p [Clause],
@@ -277,6 +285,7 @@ impl<'p> Index<'p> {
             index.contracts.insert(
                 (signature.path.module.as_str(), signature.path.name.as_str()),
                 Contract {
+                    type_params: &signature.type_params,
                     params: &signature.params,
                     result: &signature.result,
                     requires: &signature.requires,
@@ -300,6 +309,7 @@ impl<'p> Index<'p> {
                         index.contracts.insert(
                             (path, fun.name.as_str()),
                             Contract {
+                                type_params: &fun.type_params,
                                 params: &fun.params,
                                 result: &fun.result,
                                 requires: &fun.requires,
@@ -480,6 +490,19 @@ fn substitute(ty: &Type, params: &[String], args: &[Type]) -> Type {
             refinements: refinements.clone(),
             label: label.clone(),
         },
+        Type::Fn {
+            params: own,
+            result,
+            uses,
+            fails,
+            label,
+        } => Type::Fn {
+            params: own.iter().map(|p| substitute(p, params, args)).collect(),
+            result: Box::new(substitute(result, params, args)),
+            uses: uses.clone(),
+            fails: fails.clone(),
+            label: label.clone(),
+        },
         other => other.clone(),
     }
 }
@@ -615,6 +638,26 @@ struct Walker<'p, 'i> {
     within: Within,
     /// The parameters of the function being walked.
     parameters: BTreeSet<String>,
+    /// How each temporary bound to a lambda names it in the obligations of its flows
+    /// (ADR 0037 rules 3 and 4).
+    lambdas: BTreeMap<Name, Who>,
+    /// The number of fresh binders introduced so far for function-type flows (rule 9).
+    fresh: usize,
+    /// Whether the walk is in the body of a lambda that stands for a declared function, whose
+    /// call passes each parameter at its declared type: the refinements of its arguments
+    /// hold by the parameters' own, and give no obligation.
+    eta: bool,
+}
+
+/// How the obligations of a function value flowing into a function type name the value and
+/// the binders of its parameters (ADR 0037 rules 3 and 4).
+#[derive(Clone, Debug)]
+struct Who {
+    /// `takes_pos` for a named function, `the lambda`, or the value's source text.
+    name: String,
+    /// The binders of its parameters: the declared or written names; empty when the value
+    /// has no names of its own, and the binders are then `arg1` to `argN`.
+    params: Vec<String>,
 }
 
 impl<'p, 'i> Walker<'p, 'i> {
@@ -630,6 +673,9 @@ impl<'p, 'i> Walker<'p, 'i> {
             defs: BTreeMap::new(),
             within: Within::Other,
             parameters: BTreeSet::new(),
+            lambdas: BTreeMap::new(),
+            fresh: 0,
+            eta: false,
         }
     }
 
@@ -646,6 +692,7 @@ impl<'p, 'i> Walker<'p, 'i> {
 
     fn function(&mut self, fun: &'p Fun) {
         self.declaration = format!("{}.{}", self.module, fun.name);
+        self.lambdas.clear();
         self.within = Within::Function { public: fun.public };
         self.parameters = fun.params.iter().map(|(name, _)| name.clone()).collect();
         let mut ctx = Ctx::default();
@@ -665,6 +712,8 @@ impl<'p, 'i> Walker<'p, 'i> {
         }
         let mut leaves = Vec::new();
         self.walk(&fun.body, &ctx, &mut leaves);
+        // ADR 0037 rule 2: a function value returned into a declared function type.
+        self.returned_functions(&ctx, &leaves, &fun.result, None);
         let result = Tv {
             f: constant("result", &fun.result),
             ty: fun.result.clone(),
@@ -899,10 +948,13 @@ impl<'p, 'i> Walker<'p, 'i> {
                     written,
                 } => {
                     match value.as_ref() {
-                        Bound::Rhs(rhs) => self.rhs(name, ty, rhs, &mut ctx),
+                        Bound::Rhs(rhs) => self.rhs(name, ty, rhs, *span, &mut ctx),
                         Bound::Expr(inner) => {
                             let mut inner_leaves = Vec::new();
                             self.walk(inner, &ctx, &mut inner_leaves);
+                            // ADR 0037 rule 2: the value of each path flows into the binder,
+                            // at the bound expression.
+                            self.returned_functions(&ctx, &inner_leaves, ty, Some(*span));
                             ctx.types.insert(name.clone(), ty.clone());
                             let x = own(&ctx, name);
                             // `spec/03 §7`: a value in the refinement language is selfified;
@@ -1170,7 +1222,15 @@ impl<'p, 'i> Walker<'p, 'i> {
     }
 
     /// `let x: ty = rhs`: the obligations of the right-hand side, then its facts.
-    fn rhs(&mut self, name: &str, ty: &Type, rhs: &'p Rhs, ctx: &mut Ctx) {
+    fn rhs(&mut self, name: &str, ty: &Type, rhs: &'p Rhs, span: Span, ctx: &mut Ctx) {
+        // ADR 0037 rule 2: a function value bound to a binder flows into the binder's type.
+        if let Rhs::Atom(atom @ Atom::Var(_)) = rhs
+            && contains_fn(ty)
+        {
+            let value = self.atom(atom, ctx);
+            let who = self.who(&value);
+            self.fn_flow(&value.ty, ty, &who, span, ctx);
+        }
         ctx.types.insert(name.to_owned(), ty.clone());
         let x = own(ctx, name);
         match rhs {
@@ -1224,15 +1284,31 @@ impl<'p, 'i> Walker<'p, 'i> {
             }
             Rhs::Call {
                 function,
+                type_args,
                 args,
                 arg_spans,
                 span,
-                ..
             } => {
                 let values: Vec<Tv> = args.iter().map(|a| self.atom(a, ctx)).collect();
                 let key = (function.module.as_str(), function.name.as_str());
                 if let Some(contract) = self.index.contracts.get(&key) {
-                    self.call(contract, &values, arg_spans, *span, &x, ctx);
+                    // A generic callee's parameters, at its type arguments, for the flows of
+                    // function values (ADR 0037 rule 2).
+                    let params: Vec<(Name, Type)> = contract
+                        .params
+                        .iter()
+                        .map(|(name, ty)| {
+                            (
+                                name.clone(),
+                                substitute(ty, contract.type_params, type_args),
+                            )
+                        })
+                        .collect();
+                    let contract = Contract {
+                        params: &params,
+                        ..*contract
+                    };
+                    self.call(&contract, &values, arg_spans, *span, &x, ctx);
                 } else if let Some((params, formula)) = self.index.predicates.get(&key) {
                     self.arguments(params, args, arg_spans, ctx);
                     let predicate = self.predicate(function, params, *formula, &values);
@@ -1241,7 +1317,27 @@ impl<'p, 'i> Walker<'p, 'i> {
                     }
                 }
             }
-            Rhs::Apply { .. } => {}
+            // ADR 0037 rule 7: a call through a function value proves the refinements of its
+            // parameters at the arguments and assumes those of its result (T-App).
+            Rhs::Apply {
+                callee,
+                args,
+                arg_spans,
+                ..
+            } => {
+                let callee = self.atom(callee, ctx);
+                if let Type::Fn { params, result, .. } = &callee.ty {
+                    for ((param, atom), arg_span) in params.iter().zip(args).zip(arg_spans) {
+                        let value = self.atom(atom, ctx);
+                        self.refinement_sites(param, &value, *arg_span, ctx);
+                    }
+                    let value = Tv {
+                        f: x.f.clone(),
+                        ty: (**result).clone(),
+                    };
+                    self.assume_refinements(ctx, &value);
+                }
+            }
             Rhs::Op {
                 capability_path,
                 op,
@@ -1254,6 +1350,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 let signature = self.index.operation(capability_path, op);
                 if let Some(signature) = signature {
                     let contract = Contract {
+                        type_params: &[],
                         params: &signature.params,
                         result: &signature.result,
                         requires: &signature.requires,
@@ -1268,6 +1365,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 arg_spans,
             } => {
                 self.fields(ctor, args, arg_spans, ctx);
+                self.field_functions(&x.ty, ctor, args, arg_spans, ctx);
                 if let Some(tag) = self.tag(&x) {
                     ctx.define(F::eq(tag, F::Int(ctor.index.to_string())));
                 }
@@ -1292,17 +1390,79 @@ impl<'p, 'i> Walker<'p, 'i> {
                 }
             }
             Rhs::List(items) => {
+                // ADR 0037 rule 2: each function value of a list flows into its element type.
+                if let Type::Base {
+                    base: Base::Named { args, .. },
+                    ..
+                } = ty
+                    && let Some(element) = args.first()
+                    && contains_fn(element)
+                {
+                    for item in items {
+                        let value = self.atom(item, ctx);
+                        let who = self.who(&value);
+                        self.fn_flow(&value.ty, element, &who, span, ctx);
+                    }
+                }
                 if let Some(len) = self.len(&x) {
                     ctx.define(F::eq(len, F::Int(items.len().to_string())));
                 }
             }
-            Rhs::Lambda { params, body } => {
+            Rhs::Lambda {
+                params,
+                body,
+                function,
+            } => {
                 let mut inner = ctx.clone();
                 for (param, ty) in params {
                     self.bind(&mut inner, param, ty);
                 }
                 let mut leaves = Vec::new();
+                let eta = std::mem::replace(&mut self.eta, function.is_some());
                 self.walk(body, &inner, &mut leaves);
+                self.eta = eta;
+                let who = Who {
+                    name: function
+                        .as_ref()
+                        .map_or_else(|| "the lambda".to_owned(), |f| f.name.clone()),
+                    params: params.iter().map(|(p, _)| source_name(p)).collect(),
+                };
+                // The lambda's own type: its parameters, and the result of the function it
+                // stands for, or for a lambda of the source the result its binder expects,
+                // which its body's paths flow into (`spec/12 §3`, returns).
+                let expected = match ty {
+                    Type::Fn { result, .. } => Some(result.as_ref()),
+                    Type::Base { .. } => None,
+                };
+                let result = match (function, body.as_ref()) {
+                    (Some(_), Expr::Let { ty: result, .. }) => Some(result),
+                    (Some(_), _) => None,
+                    (None, _) => {
+                        if let Some(expected) = expected {
+                            self.lambda_result(&inner, &leaves, expected, &who, span);
+                        }
+                        expected
+                    }
+                };
+                if let (
+                    Type::Fn {
+                        uses, fails, label, ..
+                    },
+                    Some(result),
+                ) = (ty, result)
+                {
+                    let own_ty = Type::Fn {
+                        params: params.iter().map(|(_, t)| t.clone()).collect(),
+                        result: Box::new(result.clone()),
+                        uses: uses.clone(),
+                        fails: fails.clone(),
+                        label: label.clone(),
+                    };
+                    self.fn_flow(&own_ty, ty, &who, span, ctx);
+                }
+                if name.starts_with('%') {
+                    self.lambdas.insert(name.to_owned(), who);
+                }
             }
             Rhs::Checked {
                 value,
@@ -1359,7 +1519,9 @@ impl<'p, 'i> Walker<'p, 'i> {
     ) {
         for (((_, param_ty), value), arg_span) in contract.params.iter().zip(values).zip(arg_spans)
         {
-            self.refinement_sites(param_ty, value, *arg_span, ctx);
+            if !self.eta {
+                self.refinement_sites(param_ty, value, *arg_span, ctx);
+            }
         }
         let by_name: BTreeMap<&str, Tv> = contract
             .params
@@ -1442,8 +1604,13 @@ impl<'p, 'i> Walker<'p, 'i> {
     }
 
     /// A value flowing into `target`: one `refinement` obligation per refinement, at the
-    /// value (`spec/12 §3`).
+    /// value (`spec/12 §3`), and for a function value, the obligations of its function type
+    /// (ADR 0037 rule 2).
     fn refinement_sites(&mut self, target: &Type, value: &Tv, span: Span, ctx: &Ctx) {
+        if contains_fn(target) {
+            let who = self.who(value);
+            self.fn_flow(&value.ty, target, &who, span, ctx);
+        }
         let value_text = self.text(span);
         for refinement in refinements(target) {
             let env = Env {
@@ -1464,6 +1631,325 @@ impl<'p, 'i> Walker<'p, 'i> {
                     .span
                     .map(|span| (span, clause_role(refinement))),
             );
+        }
+    }
+
+    // ----- function types (ADR 0037) -----
+
+    /// The values of the normal return paths `leaves` flowing into `target`, a declared result
+    /// or a binder, when it holds a function type (ADR 0037 rule 2): at each returned
+    /// expression, or at `at`, the expression a binder is bound to.
+    fn returned_functions(
+        &mut self,
+        entry: &Ctx,
+        leaves: &[Leaf],
+        target: &Type,
+        at: Option<Span>,
+    ) {
+        if !contains_fn(target) {
+            return;
+        }
+        for leaf in leaves {
+            let Some(value) = &leaf.value else {
+                continue;
+            };
+            let mut ctx = entry.clone();
+            ctx.hyps.clone_from(&leaf.hyps);
+            let who = self.who(value);
+            self.fn_flow(&value.ty, target, &who, at.unwrap_or(leaf.span), &ctx);
+        }
+    }
+
+    /// The fields of a constructed value of type `owner` that hold function types, at the
+    /// kind's type arguments, the prelude's `Some`, `Ok` and `Err` included (ADR 0037 rule 2).
+    /// The fields of a kind without type arguments are [`Walker::fields`]'s.
+    fn field_functions(
+        &mut self,
+        owner: &Type,
+        ctor: &Ctor,
+        args: &[Atom],
+        arg_spans: &[Span],
+        ctx: &Ctx,
+    ) {
+        let generic = match owner {
+            Type::Base {
+                base: Base::Named { module, name, args },
+                ..
+            } => self.index.prelude_kind(module, name) || !args.is_empty(),
+            Type::Base { .. } | Type::Fn { .. } => false,
+        };
+        if !generic {
+            return;
+        }
+        for (index, (atom, span)) in args.iter().zip(arg_spans).enumerate() {
+            let Some(field) = self.index.field_type(owner, ctor.index, index) else {
+                continue;
+            };
+            if contains_fn(&field) {
+                let value = self.atom(atom, ctx);
+                let who = self.who(&value);
+                self.fn_flow(&value.ty, &field, &who, *span, ctx);
+            }
+        }
+    }
+
+    /// How the obligations of a flowing value name it (ADR 0037 rules 3 and 4): a lambda or
+    /// a named function by what it is, another value by its source name, with no names of its
+    /// own for its parameters.
+    fn who(&self, value: &Tv) -> Who {
+        let name = match &value.f {
+            F::Const(Const {
+                name,
+                role: ConstRole::Plain,
+                ..
+            }) => name.clone(),
+            _ => String::new(),
+        };
+        if let Some(who) = self.lambdas.get(&name) {
+            return who.clone();
+        }
+        Who {
+            name: self.show_name(&name),
+            params: Vec::new(),
+        }
+    }
+
+    /// A fresh binder of a function-type flow, which shows as `name` (ADR 0037 rules 5, 9).
+    fn fresh_binder(&mut self, name: &str) -> Name {
+        self.fresh += 1;
+        format!("{name}%f{}", self.fresh)
+    }
+
+    /// A value of type `source` flowing into `target` (ADR 0037 rule 2, S-Fun): for function
+    /// types, one `refinement` obligation per refinement of a parameter of `source` that the
+    /// same parameter of `target` does not carry (contravariant), and per refinement of the
+    /// result of `target` that the result of `source` does not carry (covariant), at `span`,
+    /// under the path context `ctx`. Function types nested in parameters, results and type
+    /// arguments are compared the same way. The binders are fresh (rule 9).
+    /// DECISION D-TBD-f4: one obligation per refinement the target position lacks, as for
+    /// any flow, and a refinement is carried when the same refined kind or range is.
+    /// DECISION D-TBD-f5: a position nested in a parameter or result is named after it
+    /// (`parameter arg1 of parameter g of takes_fn`), and a value that is neither a named
+    /// function nor a lambda by its source text.
+    fn fn_flow(&mut self, source: &Type, target: &Type, who: &Who, span: Span, ctx: &Ctx) {
+        match (source, target) {
+            (
+                Type::Fn {
+                    params: from,
+                    result: from_result,
+                    ..
+                },
+                Type::Fn {
+                    params: to,
+                    result: to_result,
+                    ..
+                },
+            ) if from.len() == to.len() => {
+                let names: Vec<String> = (0..from.len())
+                    .map(|index| {
+                        who.params
+                            .get(index)
+                            .cloned()
+                            .unwrap_or_else(|| format!("arg{}", index + 1))
+                    })
+                    .collect();
+                let binders: Vec<Name> = names.iter().map(|n| self.fresh_binder(n)).collect();
+                // Parameters: the hypotheses are the target's, the goals the source's.
+                for (index, ((a, b), (name, binder))) in from
+                    .iter()
+                    .zip(to)
+                    .zip(names.iter().zip(&binders))
+                    .enumerate()
+                {
+                    let mut at = ctx.clone();
+                    let value = self.flow_binder(&mut at, binder, b);
+                    let position = format!("parameter {name} of {}", who.name);
+                    for goal in refinements(a) {
+                        if refinements(b).contains(goal) {
+                            continue;
+                        }
+                        let shown = instantiate(&goal.clause.term, name);
+                        let repair = format!(
+                            "strengthen parameter {} of `{}` to a refined kind that implies `{shown}`",
+                            index + 1,
+                            show_type(target)
+                        );
+                        self.flow_obligation(
+                            &at,
+                            goal,
+                            &value,
+                            format!("{position}: {shown}"),
+                            span,
+                            repair,
+                        );
+                    }
+                    let nested = Who {
+                        name: position,
+                        params: Vec::new(),
+                    };
+                    self.fn_flow(b, a, &nested, span, ctx);
+                }
+                // The result: the hypotheses are the target's parameters and the source's
+                // result, the goals the target's result.
+                let mut at = ctx.clone();
+                for (binder, b) in binders.iter().zip(to) {
+                    self.flow_binder(&mut at, binder, b);
+                }
+                let result_binder = self.fresh_binder("result");
+                let value = self.flow_binder(&mut at, &result_binder, from_result);
+                let position = format!("result of {}", who.name);
+                for goal in refinements(to_result) {
+                    if refinements(from_result).contains(goal) {
+                        continue;
+                    }
+                    let shown = instantiate(&goal.clause.term, "result");
+                    // DECISION D-TBD-f2: rule 6 names the expected type's position for a
+                    // parameter; for the result, the position to strengthen is the value's.
+                    let repair = format!(
+                        "strengthen the result of `{}` to a refined kind that implies `{shown}`",
+                        show_type(source)
+                    );
+                    self.flow_obligation(
+                        &at,
+                        goal,
+                        &value,
+                        format!("{position}: {shown}"),
+                        span,
+                        repair,
+                    );
+                }
+                let nested = Who {
+                    name: position,
+                    params: Vec::new(),
+                };
+                self.fn_flow(from_result, to_result, &nested, span, ctx);
+            }
+            (
+                Type::Base {
+                    base:
+                        Base::Named {
+                            module,
+                            name,
+                            args: from,
+                        },
+                    ..
+                },
+                Type::Base {
+                    base:
+                        Base::Named {
+                            module: to_module,
+                            name: to_name,
+                            args: to,
+                        },
+                    ..
+                },
+            ) if module == to_module && name == to_name && from.len() == to.len() => {
+                for (a, b) in from.iter().zip(to) {
+                    self.fn_flow(a, b, who, span, ctx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Brings the fresh binder `binder` of type `ty` into `ctx`, with its refinements as
+    /// hypotheses, and returns its value.
+    fn flow_binder(&mut self, ctx: &mut Ctx, binder: &str, ty: &Type) -> Tv {
+        ctx.types.insert(binder.to_owned(), ty.clone());
+        let value = own(ctx, binder);
+        self.assume_refinements(ctx, &value);
+        value
+    }
+
+    /// One obligation of a function-type flow: `goal` holds of `value` under `ctx`, with the
+    /// repair of ADR 0037 rule 6 only.
+    fn flow_obligation(
+        &mut self,
+        ctx: &Ctx,
+        goal: &Refinement,
+        value: &Tv,
+        text: String,
+        span: Span,
+        repair: String,
+    ) {
+        let env = Env {
+            vars: &|_| None,
+            it: Some(value.clone()),
+            result: None,
+        };
+        let formula = self.term(&goal.clause.term, &env).map(|g| g.f);
+        let mut assertions: Vec<F> = ctx.hyps.iter().map(|h| h.f.clone()).collect();
+        let mut place = self.place(ObligationKind::Refinement, formula.as_ref());
+        place.parameter = None;
+        place.over_parameters = false;
+        place.ground = false;
+        place.flow = Some(repair);
+        assertions.push(F::not(formula.unwrap_or(F::Bool(false))));
+        let hypotheses = self.shown_hypotheses(&ctx.hyps);
+        let related = goal.clause.span.map(|span| (span, clause_role(goal)));
+        self.push(
+            ObligationKind::Refinement,
+            text,
+            span,
+            related,
+            Vec::new(),
+            hypotheses,
+            assertions,
+            ctx,
+            place,
+        );
+    }
+
+    /// The paths of a lambda's body flowing into the result its binder expects (`spec/12 §3`,
+    /// returns): an obligation over every path per refinement, named `result of the lambda`
+    /// (ADR 0037 rule 4), and the flows of the function values it returns.
+    fn lambda_result(
+        &mut self,
+        entry: &Ctx,
+        leaves: &[Leaf],
+        expected: &Type,
+        who: &Who,
+        span: Span,
+    ) {
+        self.returned_functions(entry, leaves, expected, None);
+        let result = Tv {
+            f: constant("result", expected),
+            ty: expected.clone(),
+        };
+        for refinement in refinements(expected) {
+            let goal = {
+                let env = Env {
+                    vars: &|_| None,
+                    it: Some(result.clone()),
+                    result: Some(result.clone()),
+                };
+                self.term(&refinement.clause.term, &env)
+            };
+            let shown = instantiate(&refinement.clause.term, "result");
+            let before = self.obligations.len();
+            self.returns(
+                ObligationKind::Refinement,
+                entry,
+                leaves,
+                &result,
+                goal,
+                format!("result of {}: {shown}", who.name),
+                span,
+                refinement
+                    .clause
+                    .span
+                    .map(|span| (span, clause_role(refinement))),
+            );
+            // DECISION D-TBD-f3: the repair of a lambda's result, which has no written type,
+            // is a guard in its body.
+            for obligation in self.obligations.iter_mut().skip(before) {
+                obligation.site.parameter = None;
+                obligation.site.over_parameters = false;
+                obligation.site.ground = false;
+                obligation.site.flow = Some(format!(
+                    "add a guard or an arm so that the failing path of the lambda returns a value for which `{shown}` holds"
+                ));
+            }
         }
     }
 
@@ -1999,6 +2485,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 parameter: None,
                 over_parameters: false,
                 ground: false,
+                flow: None,
             };
         };
         let direct = binders(goal);
@@ -2028,6 +2515,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 && !free.is_empty()
                 && free.iter().all(|name| self.parameters.contains(name)),
             ground: free.is_empty(),
+            flow: None,
         }
     }
 
@@ -2674,6 +3162,46 @@ fn conjuncts(f: &F) -> Vec<&F> {
     match f {
         F::Op { op: "and", args } => args.iter().flat_map(conjuncts).collect(),
         other => vec![other],
+    }
+}
+
+/// Whether a type holds a function type, at its top or in a type argument (ADR 0037).
+fn contains_fn(ty: &Type) -> bool {
+    match ty {
+        Type::Fn { .. } => true,
+        Type::Base {
+            base: Base::Named { args, .. },
+            ..
+        } => args.iter().any(contains_fn),
+        Type::Base { .. } => false,
+    }
+}
+
+/// A type as Una writes it, for repairs: a refined position by its kind or range.
+fn show_type(ty: &Type) -> String {
+    match ty {
+        Type::Fn { params, result, .. } => {
+            let params: Vec<String> = params.iter().map(show_type).collect();
+            format!("fn({}) -> {}", params.join(", "), show_type(result))
+        }
+        Type::Base {
+            base, refinements, ..
+        } => {
+            let plain = match base {
+                Base::Named { name, args, .. } if !args.is_empty() => {
+                    let args: Vec<String> = args.iter().map(show_type).collect();
+                    format!("{name}[{}]", args.join(", "))
+                }
+                _ => type_name(ty),
+            };
+            match refinements.last() {
+                Some(refinement) if refinement.name.starts_with("in ") => {
+                    format!("{plain} {}", refinement.name)
+                }
+                Some(refinement) => refinement.name.clone(),
+                None => plain,
+            }
+        }
     }
 }
 
