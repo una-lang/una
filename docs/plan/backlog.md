@@ -40,7 +40,7 @@ Status: Informative. Nothing in this file may be implemented before its target v
 | Evaluation order of constructor arguments, stated in `spec/04 §3`, so `una fmt` cannot change an example's outcome by reordering them | v0.1.x | Needs a spec rule; decide with the owner | v0.1 review R-023 |
 | Redaction of labeled `do` results in `una test --json` | v0.1.x | `spec/11 §5` does not say whether example results are redacted; decide with the owner | v0.1 review R-025 |
 | One code for an undeclared operation after `expect performed` and in a body | v0.2 | `spec/05 §9` rules 2 and 5 give U3002 and U1001 on purpose; changing it amends ADR 0028 | v0.1 review R-028 |
-| `-k` as a literal in the refinement language and the encoding | v0.1.x | Sound today but incomplete (`x * -2` is nonlinear); needs a line in `spec/12 §2` | v0.1 review R-031 |
+| `-k` as a literal in the refinement language and the encoding | v0.1.x | Sound today but incomplete (`x * -2` is nonlinear); needs a line in `spec/12 §2`. The verifier also generates division obligations at negative literal divisors that the checker does not record, which the obligation-agreement test catches (D-159) | v0.1 review R-031 |
 | Positive conformance twins for the remaining codes without one in the same section, and cases for the wall-clock guard and cache robustness | v0.1.x | Coverage work with no known defect | v0.1 review R-037 |
 | Precise messages for `0x1F`, `1e5` and `3.14` | v0.1.x | Generic "unexpected" messages today; ergonomics | v0.1 review R-045 |
 | Distinguish a module capability that shadows a prelude name, such as `Console`, in diagnostics | v0.1.x | Ergonomics | v0.1 review R-045 |
