@@ -104,6 +104,53 @@ fn the_report_of_the_events_example() {
 }
 
 #[test]
+fn the_out_of_model_list_is_the_one_of_the_spec() {
+    // R-041: `spec/07 §1`, `spec/13 §6` (the JSON example and the prose) and the report give
+    // one list, in one order; ADR 0038 D9 rule 4 adds path races to it.
+    let output = una(&["--json", "report", "examples/events"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let channels: Vec<String> = json(&output)["out_of_model"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|channel| channel.as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        channels,
+        [
+            "timing",
+            "termination and divergence",
+            "resource consumption and allocation",
+            "interpreter stack exhaustion",
+            "external systems beyond declared signatures",
+            "races between the check and the use of a file path",
+        ]
+    );
+    let (last, first) = channels.split_last().unwrap();
+    let prose = format!("{}, and {last}", first.join(", "));
+    let spec07 =
+        std::fs::read_to_string(repository().join("docs/spec/07-information-flow.md")).unwrap();
+    assert!(spec07.contains(&prose), "spec/07 §1 lacks: {prose}");
+    let spec13 =
+        std::fs::read_to_string(repository().join("docs/spec/13-diagnostics-and-abi.md")).unwrap();
+    assert!(spec13.contains(&prose), "spec/13 §6 lacks: {prose}");
+    let example = format!(
+        "\"out_of_model\": {}",
+        serde_json::to_string(&channels).unwrap()
+    );
+    assert!(
+        spec13.contains(&example.replace("\",\"", "\", \"")),
+        "spec/13 §6 example lacks: {example}"
+    );
+    let output = una(&["report", "examples/events"]);
+    assert!(
+        stdout(&output).contains(&format!("\nout of model: {}\n", channels.join(", "))),
+        "{}",
+        stdout(&output)
+    );
+}
+
+#[test]
 fn the_obligations_of_the_events_example() {
     // M9 acceptance criterion: a snapshot of `una obligations --json`, with a warm cache.
     let _ = una(&["--json", "obligations", "examples/events"]);
