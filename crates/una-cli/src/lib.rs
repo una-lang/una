@@ -498,7 +498,8 @@ struct FmtOptions {
 ///
 /// DECISION D-029: files with syntax errors are reported and left untouched; the others are
 /// rewritten when they differ from their canonical form, each through a temporary file and a
-/// rename, and nothing is printed on success. `--check` reports U7001 instead of writing.
+/// rename onto the file itself or, for a symbolic link, onto its resolved target, and nothing is
+/// printed on success. `--check` reports U7001 instead of writing.
 fn fmt_command(
     path: &Path,
     options: FmtOptions,
@@ -556,7 +557,17 @@ fn fmt_command(
 
 /// Replaces the file `target` with `text`, writing a hidden temporary file next to it first so
 /// that an interrupted write never leaves a truncated source.
+///
+/// A symbolic link is resolved first, so the rename lands on the file the link points to and
+/// the link itself is kept (review finding R-024).
 fn write_through_rename(target: &Path, text: &str) -> io::Result<()> {
+    let resolved;
+    let target = if std::fs::symlink_metadata(target)?.file_type().is_symlink() {
+        resolved = std::fs::canonicalize(target)?;
+        resolved.as_path()
+    } else {
+        target
+    };
     let name = target
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
