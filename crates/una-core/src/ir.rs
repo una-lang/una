@@ -91,7 +91,7 @@ pub struct Use {
 }
 
 /// A term of the refinement language (`spec/03 §3`): a tree over binders, `it` and
-/// `result`, since formulas are not A-normal (DECISION D-111).
+/// `result`, since formulas are not A-normal.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Term {
     /// A binder: a parameter, a local or a pattern variable.
@@ -455,7 +455,7 @@ pub enum Rhs {
 }
 
 /// What a `let` binds: a right-hand side, or an expression, as the value of a handled
-/// statement or a branching construct is (DECISION D-098).
+/// statement or a branching construct is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Bound {
     /// A right-hand side.
@@ -574,7 +574,7 @@ pub enum Expr {
         body: Box<Expr>,
     },
     /// The branch after the last arm of a `when` over literals or ranges without `else`,
-    /// which the `exhaustive` obligation proves is never taken (DECISION D-111).
+    /// which the `exhaustive` obligation proves is never taken.
     Unreachable {
         /// The `when` keyword.
         span: Span,

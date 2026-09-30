@@ -75,7 +75,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 };
                 let what = format!("the operand of `{symbol}`");
                 let found = self.expr_as(operand, Some(&ty), Role::Condition(&what));
-                // DECISION D-090: an operator's result joins every label of its operands.
+                // An operator's result joins every label of its operands.
                 let label = self.labeled(&found).deep_label();
                 ty.with_label(&label)
             }
@@ -190,8 +190,7 @@ impl<'a> Checker<'_, 'a, '_> {
 
     /// A text literal, and its label: the join of every label of its interpolated values
     /// (`spec/07 §4`). Interpolation converts `Int`, `Bool` and `Text` only (`spec/09 §3`,
-    /// `spec/14 §2`); a literal without interpolation is in the refinement language
-    /// (DECISION D-050).
+    /// `spec/14 §2`); a literal without interpolation is in the refinement language.
     pub(crate) fn text(&mut self, text: &TextLit) -> Label {
         let interpolated = text
             .parts
@@ -228,7 +227,7 @@ impl<'a> Checker<'_, 'a, '_> {
     fn name_value(&mut self, ident: &Ident, site: Site) -> Ty {
         let name = self.name(ident);
         if let Some(ty) = self.local(name) {
-            // DECISION D-079: so is a parameter or local of such a function type.
+            // So is a parameter or local of such a function type.
             let effects = match self.resolve(&ty) {
                 Ty::Fn(function) => !function.uses.is_empty() || function.fails.is_some(),
                 _ => false,
@@ -253,7 +252,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 });
                 self.testing_value_site(module, name, ident.span);
                 self.via_site(id, ident.span);
-                // DECISION D-079: a function with effects or failures is a value only as an
+                // A function with effects or failures is a value only as an
                 // argument.
                 if effects && !site.argument && self.pass == Pass::Check && self.base != Base::Quiet
                 {
@@ -353,7 +352,7 @@ impl<'a> Checker<'_, 'a, '_> {
         }
     }
 
-    /// An upper-case name used as a value: a variant without fields (DECISION D-053).
+    /// An upper-case name used as a value: a variant without fields.
     fn upper_value(&mut self, ident: &Ident, expected: Option<&Ty>) -> Ty {
         let name = self.name(ident);
         let span = ident.span;
@@ -466,8 +465,7 @@ impl<'a> Checker<'_, 'a, '_> {
 
     fn list(&mut self, items: &[Expr], span: Span, expected: Option<&Ty>) -> Ty {
         self.outside_rl(span, || "a list literal".to_owned());
-        // The element variable takes the expected element type, and the labels of every item
-        // (DECISION D-088).
+        // The element variable takes the expected element type, and the labels of every item.
         let element = self.vars.fresh(Origin::Element, span);
         if let Some(Ty::List(expected)) = expected.map(|ty| self.resolve(ty)) {
             self.vars.unify(&element, &expected);
@@ -494,7 +492,7 @@ impl<'a> Checker<'_, 'a, '_> {
         Ty::List(Box::new(element))
     }
 
-    /// A binary operation; its result joins every label of its operands (DECISION D-090).
+    /// A binary operation; its result joins every label of its operands.
     fn binary(&mut self, op: BinaryOp, left: &Expr, right: &Expr, span: Span) -> Ty {
         let mark = self.operands.len();
         let ty = self.binary_type(op, left, right, span);
@@ -547,7 +545,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 if self.same(span, &left_ty, &right_ty, symbol) {
                     match self.resolve(&left_ty) {
                         Ty::Int | Ty::Error | Ty::Never | Ty::Var(_) => {}
-                        // DECISION D-061: ordering of text has no encoding in `spec/12 §4`.
+                        // Ordering of text has no encoding in `spec/12 §4`.
                         Ty::Text => self.outside_rl(span, || "ordering of `Text`".to_owned()),
                         Ty::Kind(id, _) if self.fieldless_sum(id) => {}
                         other => {
@@ -616,7 +614,7 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// In the refinement language a variant is tested with `is`, not compared: `x == V` is
-    /// outside it, with an edit to `x is V` (DECISION D-061).
+    /// outside it, with an edit to `x is V`.
     fn variant_equality(&mut self, op: BinaryOp, left: &Expr, right: &Expr, span: Span) {
         if !matches!(self.ctx.rl, Rl::Clause | Rl::Reflect) {
             return;
@@ -640,7 +638,7 @@ impl<'a> Checker<'_, 'a, '_> {
         );
     }
 
-    /// `v is V` and `v is literal`; the result takes `v`'s top label (DECISION D-090).
+    /// `v is V` and `v is literal`; the result takes `v`'s top label.
     fn is(&mut self, value: &Expr, target: &IsTarget, span: Span) -> Ty {
         let tested = match target {
             IsTarget::Variant(ident) => {
@@ -658,7 +656,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
                 ty
             }
-            // DECISION D-061: `is` with a literal is outside the refinement language.
+            // `is` with a literal is outside the refinement language.
             IsTarget::Literal(literal) => {
                 let full = self.report.text(span);
                 let value_text = self.report.text(value.span);
@@ -688,7 +686,7 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// The variant `ident` of the sum kind of a value of type `ty`: U1001 when the kind has no
-    /// such variant, U2001 when `ty` is not a sum kind (ADR 0024 rule 1, DECISION D-048).
+    /// such variant, U2001 when `ty` is not a sum kind (ADR 0024 rule 1).
     pub(crate) fn variant_of(
         &mut self,
         ty: &Ty,
@@ -747,10 +745,9 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// The branches of `if` or `when`: one type, or that of the expected type; a branch that
-    /// fails joins any other (DECISION D-049).
+    /// fails joins any other.
     /// The branches of `if` or `when`: one type, or that of the expected type; a branch that
-    /// fails joins any other (DECISION D-049). The value joins the labels of every branch
-    /// (DECISION D-088).
+    /// fails joins any other. The value joins the labels of every branch.
     pub(crate) fn branches(
         &mut self,
         branches: &[&Expr],
@@ -834,7 +831,7 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// U4001 for a branching construct in a return position whose condition, labeled
-    /// `label`, decides the value returned (DECISION D-089).
+    /// `label`, decides the value returned.
     pub(crate) fn implicit_return(
         &mut self,
         condition: Span,
@@ -868,7 +865,7 @@ impl<'a> Checker<'_, 'a, '_> {
     ) -> Ty {
         self.outside_rl(span, || "a lambda".to_owned());
         // The expected function type, whose result may still be a variable that the body's
-        // labels join (DECISION D-088).
+        // labels join.
         let mut shape = match expected.map(|ty| self.vars.head(ty)) {
             Some(Ty::Fn(function)) => Some(*function),
             Some(Ty::Labeled(_, inner)) => match *inner {
@@ -954,7 +951,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
                 // The body assumes the labels the parameter has now; the lambda's type records
                 // them, so a parameter whose label rises later fails the flow of the lambda
-                // into its parameter, contravariantly (DECISION D-089).
+                // into its parameter, contravariantly.
                 (None, Some(from_shape)) => {
                     let assumed = self.labeled(&from_shape);
                     (assumed.clone(), assumed)
@@ -994,7 +991,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let fails = shape.as_ref().and_then(|f| f.fails.clone());
         let uses: Vec<FnUse> = shape.as_ref().map(|f| f.uses.clone()).unwrap_or_default();
         // The capabilities a lambda uses are captured where it is written (`spec/04 §6` rule 3);
-        // with effects or failures it may only be an argument (DECISION D-079).
+        // with effects or failures it may only be an argument.
         let level = self.frames.len();
         self.needs_site("this lambda", &uses, span, level);
         if (!uses.is_empty() || fails.is_some())
@@ -1116,7 +1113,7 @@ impl<'a> Checker<'_, 'a, '_> {
             self.findings.checked.push((self.module, span));
         }
         let ty = self.expr(value, None);
-        // DECISION D-091: the failure of `checked` reveals whether the predicate holds.
+        // The failure of `checked` reveals whether the predicate holds.
         let label = self.labeled(&ty).deep_label();
         self.fail_under_pc(span, "`checked`", Some((&label, value.span)));
         let ctx = Ctx {
@@ -1171,7 +1168,7 @@ impl<'a> Checker<'_, 'a, '_> {
         }
     }
 
-    /// `fail V(args)`, also after `if error`, `if none` and in `checked` (DECISION D-048): `V`
+    /// `fail V(args)`, also after `if error`, `if none` and in `checked`: `V`
     /// is a variant of the error kind in context, or of a kind in scope when the context has
     /// none or lacks `V`. A variant outside the declared kind is U3009 (M5).
     pub(crate) fn raise(&mut self, variant: &VariantExpr) {

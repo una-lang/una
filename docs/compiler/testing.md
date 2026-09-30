@@ -46,7 +46,7 @@ module conformance.authority.cap_let
 | `-- grant: <spec>` | Grant passed to `una run` |
 | `-- pending: M<n>` | Optional. The case is expected to fail until milestone `M<n>` (see "Pending cases") |
 
-The runner (`cargo test -p una-cli --test conformance`) discovers cases, runs the compiler in-process and compares results. It runs `una run --json` when a case expects output, grants a capability or expects an error of the runtime domain, and `una test --json` when it expects `test-pass` or `test-fail`; the errors these commands report join those of `una check` for `error` expectations, and the relative paths of `files:` and `keys:` grants resolve against the case's directory (DECISION D-110). A case whose directives are malformed fails. The rules below define well-formedness and pending cases (ADR 0013); they fill gaps and change none of the meanings above.
+The runner (`cargo test -p una-cli --test conformance`) discovers cases, runs the compiler in-process and compares results. It runs `una run --json` when a case expects output, grants a capability or expects an error of the runtime domain, and `una test --json` when it expects `test-pass` or `test-fail`; the errors these commands report join those of `una check` for `error` expectations, and the relative paths of `files:` and `keys:` grants resolve against the case's directory. A case whose directives are malformed fails. The rules below define well-formedness and pending cases (ADR 0013); they fill gaps and change none of the meanings above.
 
 ### Directive block
 

@@ -1,7 +1,7 @@
 # Milestone M10, task 3: release archives for Linux and macOS, built when a tag v* is pushed and
 # attached to a draft release that the owner publishes (ADR 0035 rules 3 and 4).
-# DECISION D-129: one native runner per target, with the scripts the CI workflow also runs.
-# DECISION D-130: the owner pushes the tag, from main after review; the autonomous run never does.
+# One native runner per target, with the scripts the CI workflow also runs.
+# The owner pushes the tag, from main after review; the autonomous run never does.
 name: Release
 
 on:

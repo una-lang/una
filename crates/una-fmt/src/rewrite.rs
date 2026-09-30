@@ -36,8 +36,7 @@ pub(crate) struct Rewrites {
 
 /// The constructors that the modules of a package declare, so that a file can order the
 /// arguments of the constructors it imports: by module path, the fields of each record kind
-/// and variant declared once in its module, and the variants of each sum kind (ADR 0020 rule 6,
-/// DECISION D-026).
+/// and variant declared once in its module, and the variants of each sum kind (ADR 0020 rule 6).
 #[derive(Clone, Debug, Default)]
 pub struct Constructors {
     modules: BTreeMap<Vec<Symbol>, Declared>,
@@ -128,7 +127,7 @@ pub(crate) fn collect(
             .map(|name| (interner.resolve(name.name), name.span))
             .collect();
         let spans: Vec<Span> = names.iter().map(|(_, span)| *span).collect();
-        // DECISION D-025: the names of an import are sorted bytewise.
+        // The names of an import are sorted bytewise.
         names.sort_by(|left, right| left.0.cmp(right.0));
         let sorted: Vec<Span> = names.iter().map(|(_, span)| *span).collect();
         collector.region(&spans, &sorted);
@@ -141,7 +140,7 @@ pub(crate) fn collect(
 
 /// The fields of the constructors `file` can name: the record kinds and variants it declares,
 /// those it imports, and the variants of the sum kinds it imports, when each name comes from
-/// exactly one of them (ADR 0020 rule 6, DECISION D-026).
+/// exactly one of them (ADR 0020 rule 6).
 fn constructors(file: &File, package: &Constructors) -> BTreeMap<Symbol, Vec<Symbol>> {
     let mut declared: BTreeMap<Symbol, usize> = BTreeMap::new();
     let mut fields: BTreeMap<Symbol, Vec<Symbol>> = BTreeMap::new();
@@ -262,7 +261,7 @@ fn plain_line(block: &Block) -> Option<&Expr> {
 
 impl Collector<'_> {
     /// Whether a comment starts in `start..end`. The formatter never moves a comment to another
-    /// line, so no rewrite joins, merges or reorders across one (DECISION D-023).
+    /// line, so no rewrite joins, merges or reorders across one.
     fn comment_within(&self, start: usize, end: usize) -> bool {
         let position = self
             .comments
@@ -493,7 +492,7 @@ impl Collector<'_> {
     }
 
     /// A body after `=` or `->` on the line starting at `start`: one plain line in a block is
-    /// merged with that line (ADR 0020 rule 4, DECISION D-024).
+    /// merged with that line (ADR 0020 rule 4).
     fn body(&mut self, body: &Body, start: usize) {
         match body {
             Body::Line(expr) => self.expr(expr),

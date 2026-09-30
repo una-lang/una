@@ -52,7 +52,7 @@ pub fn load(path: &Path) -> Result<Package, LoadError> {
 
 /// The settings of the package and the diagnostics of its project files. A single file has
 /// the default settings and lock (ADR 0021); an invalid `una.toml` still yields its settings
-/// that parsed (DECISION D-035).
+/// that parsed.
 pub fn project(package: &Package) -> (Manifest, Vec<Diagnostic>) {
     let mut diagnostics = Vec::new();
     let mut located = |file: FileId, errors: Vec<ProjectError>| {
@@ -75,7 +75,7 @@ pub fn project(package: &Package) -> (Manifest, Vec<Diagnostic>) {
     };
     match (package.lock, package.manifest) {
         (Some(id), _) => located(id, parse_lock(package.sources.file(id).text()).1),
-        // DECISION D-036: a missing lock is located at the start of the package manifest.
+        // A missing lock is located at the start of the package manifest.
         (None, Some(manifest)) => diagnostics.push(Diagnostic::error(
             Code::U7004,
             "the package has no verification.lock; add one next to una.toml",

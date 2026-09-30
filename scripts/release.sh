@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds `una` in release mode and packs it with the license and the readme into
 # target/release-archives/una-<version>-<target>.tar.gz, with its SHA-256 digest beside it in
-# a .sha256 file (ADR 0035 rule 3, DECISION D-129). Each target builds natively on its own
+# a .sha256 file (ADR 0035 rule 3). Each target builds natively on its own
 # runner, so TARGET must be the host's.
 #
 # Usage: scripts/release.sh TARGET

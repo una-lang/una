@@ -424,7 +424,7 @@ fn predicate_results_are_checked() {
 
 #[test]
 fn lambda_bodies_keep_the_labels_they_assume_for_their_parameters() {
-    // DECISION D-089: `fold`'s accumulator starts `public` here and becomes `secret`, so the
+    // `fold`'s accumulator starts `public` here and becomes `secret`, so the
     // body, checked with a `public` accumulator, could branch on a secret.
     assert_eq!(
         single(

@@ -175,7 +175,7 @@ fn the_obligations_of_the_events_example() {
 
 #[test]
 fn trivial_ensures_count_as_missing_contracts() {
-    // `spec/13 §6`, DECISION D-123: an `ensures` clause valid without any hypothesis.
+    // `spec/13 §6`, an `ensures` clause valid without any hypothesis.
     let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("abi-trivial");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("src")).unwrap();
@@ -226,7 +226,7 @@ pub bounded(x: Int) -> Int
 
 #[test]
 fn a_single_file_is_named_after_its_module() {
-    // DECISION D-122: a single file has no `una.toml`; its lock is the default one.
+    // A single file has no `una.toml`; its lock is the default one.
     let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("abi-single");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
@@ -262,7 +262,7 @@ pub next(x: Int) -> Int
 
 #[test]
 fn report_and_trace_exit_with_1_on_an_unproven_obligation() {
-    // `spec/13 §5` exit codes, DECISIONS D-122 and D-124: the document still prints.
+    // `spec/13 §5` exit codes, the document still prints.
     let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("abi-refuted");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("src")).unwrap();
@@ -330,7 +330,7 @@ pub double(x: Int) -> Int
 
 #[test]
 fn trace_lists_the_functions_derived_from_a_requirement() {
-    // `spec/08 §1`, DECISION D-124.
+    // `spec/08 §1`,
     let events = Path::new("examples/events");
     let output = una_in(events, &["trace", "EVENTS_3"]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
@@ -363,7 +363,7 @@ fn trace_lists_the_functions_derived_from_a_requirement() {
 
 #[test]
 fn every_command_prints_one_json_document_with_its_schema() {
-    // `spec/13 §5`, DECISION D-125: `--json` for every command, one document on stdout and
+    // `spec/13 §5`, `--json` for every command, one document on stdout and
     // nothing on stderr.
     let events = Path::new("examples/events");
     let cases: Vec<(&Path, Vec<&str>, &str)> = vec![

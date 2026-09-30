@@ -1,7 +1,7 @@
 //! `una run` and `una test` (`spec/13 §5`, `spec/11`): they check the package at tier 1
 //! (`spec/12 §1`), then evaluate it on the Una Abstract Machine.
 //!
-//! DECISION D-101 and DECISION D-102: the human output of both commands, and their JSON
+//! The human output of both commands, and their JSON
 //! documents `una.run/1` and `una.test/1`.
 
 use std::collections::BTreeMap;
@@ -138,7 +138,7 @@ pub(crate) fn run_command(
             return Ok(ExitStatus::Usage);
         }
     };
-    // DECISION D-103: `[run] grants` resolve against the package root, `--grant` flags against
+    // `[run] grants` resolve against the package root, `--grant` flags against
     // the current directory, and they add up.
     let (manifest, _) = crate::package::project(&package);
     let root = package
@@ -183,7 +183,7 @@ pub(crate) fn run_command(
             status,
         );
     }
-    // DECISION D-109: the entry is `[run] entry`, or the module of a single file.
+    // The entry is `[run] entry`, or the module of a single file.
     let Some(entry) = analysis.entry.clone() else {
         writeln!(
             stderr,
@@ -369,8 +369,7 @@ fn main_of<'a>(program: &'a Program, entry: &str) -> Option<&'a Fun> {
     })
 }
 
-/// The keys of the key files of `keys:` grants; the first grant of a name wins
-/// (DECISION D-103).
+/// The keys of the key files of `keys:` grants; the first grant of a name wins.
 fn load_keys(grants: &[Grant]) -> Result<BTreeMap<String, Vec<u8>>, String> {
     let mut keys = BTreeMap::new();
     for grant in grants {

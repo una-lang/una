@@ -2,7 +2,7 @@
 //! nothing else, and its fixed example yields nothing, at tier 1, so with the solver
 //! (`spec/13 §4`, approved M1 plan §5, review finding R-037).
 //!
-//! DECISION D-043: an example is one `una` block, or a package whose files are fenced blocks
+//! An example is one `una` block, or a package whose files are fenced blocks
 //! each introduced by its path in backticks on its own line; the test completes a package with
 //! a default `una.toml` and the repository's `verification.lock` unless it gives its own.
 
@@ -151,7 +151,7 @@ fn failing_examples_yield_their_code_and_fixed_examples_yield_nothing() {
         );
         checked.push(code.as_str());
     }
-    // DECISION D-126: every code has its examples, but U8001, an internal error, which no
+    // Every code has its examples, but U8001, an internal error, which no
     // program should cause.
     for code in Code::ALL {
         if code == Code::U8001 {

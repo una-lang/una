@@ -1,4 +1,4 @@
--- test: a failed attempt carries no ensures, as failures have no postcondition (spec/04 §2), so the error path is refuted (DECISION D-131)
+-- test: a failed attempt carries no ensures, as failures have no postcondition (spec/04 §2), so the error path is refuted
 -- spec: spec/12 §3
 -- expect: error U5001 at 20:15
 module attempt_ensures_refuted

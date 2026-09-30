@@ -1,5 +1,5 @@
 //! The SMT-LIB encoding of `spec/12 §4`: formulas of QF_UFLIA, the names of sorts and
-//! symbols, and queries emitted as deterministic text (DECISION D-115).
+//! symbols, and queries emitted as deterministic text.
 //!
 //! Namespaces (ADR 0038 D8): every symbol derived from user content starts with `u!` and every
 //! symbol the encoder introduces with `i!`; only `Int`, `Bool` and the operators of SMT-LIB are
@@ -81,7 +81,7 @@ impl Const {
     }
 }
 
-/// The path selector `number` of a return obligation (DECISION D-113).
+/// The path selector `number` of a return obligation.
 pub(crate) fn path_selector(number: usize) -> F {
     F::Const(Const {
         name: format!("path!{number}"),

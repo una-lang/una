@@ -171,7 +171,7 @@ fn types() {
 
 #[test]
 fn a_bracket_after_a_level_starts_label_categories() {
-    // DECISION D-018: `secret [Int]` reads `[Int]` as the label's categories.
+    // `secret [Int]` reads `[Int]` as the label's categories.
     assert_eq!(
         errors("f(xs: secret [Int]) -> Int = 0\n"),
         [
@@ -408,7 +408,7 @@ fn statements_and_handling_clauses() {
 
 #[test]
 fn handling_clauses_follow_the_canonical_order() {
-    // DECISION D-020: `spec/06 §3` orders handling clauses, checked by the parser.
+    // `spec/06 §3` orders handling clauses, checked by the parser.
     assert_eq!(
         errors(
             "f() -> Int\n=\n  let a = g()\n    if none use 0\n    if error pass\n    if none use 1\n  let b = g()\n    if error pass\n    if error use 0\n  a\n"
@@ -691,7 +691,7 @@ fn recovery_resumes_only_at_a_line_that_starts_a_declaration() {
 
 #[test]
 fn a_lexical_error_explains_the_parse_errors_of_its_declaration() {
-    // DECISION D-019: the parser's U0101 after a lexical error in the same declaration is not
+    // The parser's U0101 after a lexical error in the same declaration is not
     // reported; a later declaration still reports its own.
     assert_eq!(
         errors("f(a: Bool, b: Bool) -> Bool = a & b\n\ng() -> Int = 1 1\n"),
@@ -714,7 +714,7 @@ fn a_lexical_error_explains_the_parse_errors_of_its_declaration() {
 
 #[test]
 fn doc_comments_attach_to_the_next_declaration() {
-    // DECISION D-021: every doc comment between the previous token and the declaration
+    // Every doc comment between the previous token and the declaration
     // attaches, even across blank lines and plain comments.
     let parsed = parse_source(
         "--- Orphan: before the module header.\nmodule t\n\n--- One.\n--- Two.\n\n-- plain\n--- Three.\npub f() -> Int\n=\n  --- Orphan: inside a body.\n  1\n\npub g() -> Int = 2\n--- Orphan: at the end of the file.\n",

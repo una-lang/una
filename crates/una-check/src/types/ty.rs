@@ -36,7 +36,7 @@ pub(crate) enum Ty {
     /// yields one diagnostic.
     Error,
     /// A type whose top position carries a label above `public` (`spec/03 §5`, `spec/09 §2`).
-    /// Type equality ignores labels (DECISION D-088).
+    /// Type equality ignores labels.
     Labeled(Label, Box<Ty>),
 }
 

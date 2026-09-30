@@ -21,8 +21,7 @@ pub const DEFAULT_MAX_DEPTH: usize = 10_000;
 /// The stack of the thread that evaluates calls up to `max_depth` deep, or `None` when it does
 /// not fit in the address space. The evaluator recurses once per call in progress; unoptimized
 /// builds use about 13 KiB of stack per call, so 32 KiB leaves room for nested expressions.
-/// Evaluation never uses more than this, since it aborts with U6003 when the stack runs short
-/// (DECISION D-105).
+/// Evaluation never uses more than this, since it aborts with U6003 when the stack runs short.
 pub fn stack_bytes(max_depth: usize) -> Option<usize> {
     const BASE: usize = 16 * 1024 * 1024;
     const PER_CALL: usize = 32 * 1024;

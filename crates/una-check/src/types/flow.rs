@@ -22,7 +22,7 @@ pub(crate) fn below(from: &Label, to: &Label, top: &Label) -> bool {
 /// The first position where a value's type does not flow into a declared type: the label
 /// found there and the label allowed there. `top` is `⊤`.
 fn violation(found: &Ty, expected: &Ty, covariant: bool, top: &Label) -> Option<(Label, Label)> {
-    // A `Unit` value has one inhabitant, so it carries no information (DECISION D-089).
+    // A `Unit` value has one inhabitant, so it carries no information.
     if matches!(expected.unlabeled(), Ty::Unit) {
         return None;
     }
@@ -57,12 +57,12 @@ pub(crate) fn symbolic(label: &Label) -> bool {
 
 impl Checker<'_, '_, '_> {
     /// Whether labels are checked here: in pass 2, outside clauses, `via` bodies and `expect`
-    /// lines, whose contexts turn them off (DECISION D-095).
+    /// lines, whose contexts turn them off.
     pub(crate) fn labels(&self) -> bool {
         self.pass == Pass::Check && self.ctx.labels
     }
 
-    /// `ty` with its solved variables replaced, labels included (DECISION D-088).
+    /// `ty` with its solved variables replaced, labels included.
     pub(crate) fn labeled(&self, ty: &Ty) -> Ty {
         self.vars.resolve_labeled(ty)
     }
@@ -73,7 +73,7 @@ impl Checker<'_, '_, '_> {
     }
 
     /// U4001: the value at `span`, of type `found`, flows into `expected`, a declared type
-    /// described by `into` (`spec/07 §3` rule 5, `spec/10 §2`; DECISION D-089).
+    /// described by `into` (`spec/07 §3` rule 5, `spec/10 §2`).
     pub(crate) fn flow(&mut self, span: Span, found: &Ty, expected: &Ty, into: &str) {
         if !self.labels() {
             return;
@@ -97,7 +97,7 @@ impl Checker<'_, '_, '_> {
     }
 
     /// U4001 for an implicit flow into a result: a branching construct in a return position
-    /// whose condition, labeled `label`, exceeds the result's top label (DECISION D-089).
+    /// whose condition, labeled `label`, exceeds the result's top label.
     pub(crate) fn implicit_result(
         &mut self,
         condition: Span,
@@ -144,7 +144,7 @@ impl Checker<'_, '_, '_> {
 
     /// U4002: `what` fails, which is allowed only under a `public` program counter
     /// (`spec/07 §3` rule 3). `extra` is the label of a value it also branches on.
-    /// DECISION D-097: at the construct, with the labeled condition as a related location.
+    /// At the construct, with the labeled condition as a related location.
     pub(crate) fn fail_under_pc(&mut self, span: Span, what: &str, extra: Option<(&Label, Span)>) {
         if !self.labels() {
             return;
@@ -206,7 +206,7 @@ impl Checker<'_, '_, '_> {
 
     /// U4002: a call of `callee`, or the installation of a handler (`installed`), with the
     /// effects of `uses` and failures when `fails`, under the program counter (`spec/07 §3`
-    /// rule 4, `spec/10 §5`; DECISION D-093). `value` is the label of the function value called,
+    /// rule 4, `spec/10 §5`). `value` is the label of the function value called,
     /// which raises the program counter of the call (T-App, ADR 0038 D1).
     /// - A callee that can fail is allowed only under a `public` program counter, that of the
     ///   body itself in a handler operation (ADR 0038 D4).
@@ -307,7 +307,7 @@ impl Checker<'_, '_, '_> {
     }
 
     /// U4005: the `via` function `id` of a policy is used at `span` other than through its
-    /// policy, which is its only entry point (`spec/07 §5` rule 3, DECISION D-094).
+    /// policy, which is its only entry point (`spec/07 §5` rule 3).
     pub(crate) fn via_site(&mut self, id: usize, span: Span) {
         // A `via` function may call itself.
         if self.pass != Pass::Check || self.base == Base::Quiet || self.current == Some(id) {
@@ -330,8 +330,8 @@ impl Checker<'_, '_, '_> {
     }
 
     /// U4003: operation `what`, whose arguments are sinks with label `accepts`, under the
-    /// program counter, with `args` (`spec/07 §3` rule 4, `spec/07 §4`). DECISION D-092.
-    /// DECISION D-097: at the argument that exceeds `accepts`, or at the operation when the
+    /// program counter, with `args` (`spec/07 §3` rule 4, `spec/07 §4`).
+    /// At the argument that exceeds `accepts`, or at the operation when the
     /// program counter alone exceeds it.
     pub(crate) fn sink(&mut self, span: Span, what: &str, accepts: &Accepts, args: &[(Span, Ty)]) {
         if !self.labels() {

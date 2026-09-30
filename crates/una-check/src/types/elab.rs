@@ -1,6 +1,6 @@
 //! Elaboration to Core IR (`spec/09 §3`): the desugaring of the declarations that checked
-//! without diagnostics, from what pass 2 resolved (DECISION D-098), with the formulas and
-//! spans that verification needs (DECISION D-111).
+//! without diagnostics, from what pass 2 resolved, with the formulas and
+//! spans that verification needs.
 
 use std::collections::BTreeMap;
 
@@ -147,7 +147,7 @@ fn elaborate_module(
     out
 }
 
-/// The signatures of the functions of a standard module (DECISION D-111).
+/// The signatures of the functions of a standard module.
 fn library(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>, module: usize) -> Vec<Signature> {
     let Some(m) = env.modules.get(module) else {
         return Vec::new();
@@ -589,7 +589,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         (requires, ensures)
     }
 
-    /// An expression of the refinement language as a term (`spec/03 §3`, DECISION D-111).
+    /// An expression of the refinement language as a term (`spec/03 §3`).
     /// The checker has already rejected every other form (U2014).
     fn term(&mut self, expr: &Expr) -> Term {
         match &expr.kind {
@@ -1292,7 +1292,7 @@ impl<'e, 'a> Fx<'e, 'a> {
 
     /// `when`: `case` for variant arms, `if` chains for literal and range arms, `else` as the
     /// final branch. Without `else`, the chain ends in `unreachable`, which the `exhaustive`
-    /// obligation proves is never taken (`spec/12 §3`, DECISION D-111).
+    /// obligation proves is never taken (`spec/12 §3`).
     fn when(&mut self, when: &WhenExpr) -> CoreExpr {
         let mut lets = Vec::new();
         let scrutinee = self.atom(&mut lets, &when.scrutinee);

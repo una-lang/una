@@ -94,7 +94,7 @@ const OPERATION_CLAUSES: Order = Order {
     description: "operation clauses go in the order requires, ensures, fails, accepts",
 };
 
-/// `spec/06 §3` (DECISION D-020).
+/// `spec/06 §3`.
 const HANDLING_CLAUSES: Order = Order {
     names: &["if error", "if none"],
     unique: &[0, 1],
@@ -104,7 +104,7 @@ const HANDLING_CLAUSES: Order = Order {
 static EOF: TokenKind = TokenKind::Eof;
 
 /// The deepest nesting the parser accepts, counting each nested expression, block and type and
-/// each operator of a chain (DECISION D-022, ADR 0019). It bounds the recursion of every pass
+/// each operator of a chain (ADR 0019). It bounds the recursion of every pass
 /// over the tree, including the parser's own.
 pub const MAX_NESTING: usize = 256;
 
@@ -123,7 +123,7 @@ struct Parser<'a> {
     last_end: Option<Span>,
     /// Where the current declaration, import or module header starts.
     unit_start: usize,
-    /// The nesting depth of the construct being parsed (DECISION D-022).
+    /// The nesting depth of the construct being parsed.
     nesting: usize,
     errors: Vec<SyntaxError>,
 }
@@ -303,7 +303,7 @@ impl<'a> Parser<'a> {
     /// Records `error`, a U0101 that may carry repairs, and stops the current declaration.
     fn report_error(&mut self, error: SyntaxError) -> Stop {
         let span = error.span;
-        // DECISION D-019: a lexical error earlier in the same declaration explains the parse
+        // A lexical error earlier in the same declaration explains the parse
         // error, which the lexer's recovery (a skipped character, a snapped indentation, a
         // closed bracket, a skipped reserved word) may have caused.
         let explained = self
@@ -632,7 +632,7 @@ impl<'a> Parser<'a> {
     }
 
     /// The doc comments between the token at `first` and the token before it (`spec/01 §3`,
-    /// ADR 0017 decision 6). DECISION D-021: every doc comment in that gap attaches, even when
+    /// ADR 0017 decision 6). every doc comment in that gap attaches, even when
     /// blank lines or plain comments separate it from the declaration.
     fn docs_before(&self, first: usize) -> Vec<Comment> {
         let Some(token) = self.tokens.get(first) else {
@@ -797,7 +797,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `level [ "[" upper_ident { "," upper_ident } "]" ]`. DECISION D-018: after a level, `[`
+    /// `level [ "[" upper_ident { "," upper_ident } "]" ]`. after a level, `[`
     /// always starts the label's categories, so a labeled list type is written
     /// `secret List[T]`.
     fn label(&mut self, level: Level) -> Parse<Label> {
@@ -866,7 +866,7 @@ impl<'a> Parser<'a> {
                     clauses,
                 })
             }
-            // DECISION D-018: the hint for a labeled list type written `secret [T]`.
+            // The hint for a labeled list type written `secret [T]`.
             _ if label.is_some_and(|label| !label.categories.is_empty()) => Err(self.unexpected(
                 "a type after the label; a labeled list type is written `secret List[T]`",
             )),

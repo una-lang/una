@@ -60,7 +60,7 @@ fn run(files: &[(&str, &str)], single: bool) -> (Vec<Diagnostic>, TypeCheck) {
 
 /// Whether `code` belongs to a later milestone than M4: the authority codes and the escape
 /// budget of M5, which `authority.rs` tests, and the security codes of M6, which `flow.rs`
-/// tests (DECISION D-084).
+/// tests.
 fn later(code: Code) -> bool {
     matches!(code.domain(), Domain::Authority | Domain::Security) || code == Code::U7003
 }
@@ -155,7 +155,7 @@ fn std_source(name: &str) -> String {
     std::fs::read_to_string(path).unwrap()
 }
 
-// ----- the prelude and std.testing (spec/14, DECISION D-055) -----
+// ----- the prelude and std.testing (spec/14) -----
 
 #[test]
 fn the_standard_modules_type_check_as_ordinary_modules() {
@@ -274,7 +274,7 @@ fn written_types_name_types_with_their_arguments() {
 
 #[test]
 fn a_kind_contains_itself_only_through_list_or_option() {
-    // DECISION D-062: through any other kind, a type argument or a function type, it is U2002.
+    // Through any other kind, a type argument or a function type, it is U2002.
     assert_eq!(
         types(
             "kind Node\n  next: Node\n\
@@ -379,7 +379,6 @@ fn equality_ordering_and_interpolation_follow_spec_03() {
 
 #[test]
 fn a_type_that_inference_leaves_unknown_is_reported() {
-    // DECISION D-054.
     assert_eq!(
         types(
             "a() -> Int\n=\n  let xs = []\n  0\n\
@@ -439,7 +438,6 @@ fn calls_label_every_argument_after_the_first() {
 
 #[test]
 fn function_values_take_positional_arguments() {
-    // DECISION D-053.
     assert_eq!(
         types(
             "a(f: fn(Int, Int) -> Int) -> Int = f(1, 2)\n\
@@ -463,7 +461,6 @@ fn function_values_take_positional_arguments() {
 
 #[test]
 fn fields_and_methods_resolve_by_type() {
-    // DECISION D-052.
     assert_eq!(
         types(
             "kind Point\n  x: Int\n  y: Int\n\
@@ -527,7 +524,7 @@ fn policies_take_one_argument_and_check_their_via_function() {
 
 #[test]
 fn constructors_label_their_fields() {
-    // DECISION D-064 for the unlabeled argument of a constructor with several fields.
+    // The unlabeled argument of a constructor with several fields.
     assert_eq!(
         types(
             "kind Point\n  x: Int\n  y: Int\n\
@@ -604,7 +601,6 @@ fn unknown_label_repairs_suggest_only_what_is_not_given() {
 
 #[test]
 fn when_over_a_sum_is_exhaustive_and_every_arm_is_reachable() {
-    // DECISION D-051.
     assert_eq!(
         types(
             "kind Level = Low | Mid | High\n\
@@ -781,7 +777,7 @@ fn clauses_are_in_the_refinement_language() {
 
 #[test]
 fn predicates_are_pure_total_and_not_recursive() {
-    // DECISION D-056 and D-065; `helper` calls an opaque predicate outside `checked` (ADR 0042).
+    // `helper` calls an opaque predicate outside `checked` (ADR 0042).
     assert_eq!(
         types(
             "kind Failure = | Oops\n\
@@ -855,7 +851,7 @@ fn lambda_parameters_take_their_types_from_the_expected_function_type() {
     );
 }
 
-// ----- generics (`spec/03 §2` rule 4, DECISION D-063) -----
+// ----- generics (`spec/03 §2` rule 4) -----
 
 #[test]
 fn type_parameters_are_rigid_and_compared_values_hold_no_functions() {
@@ -886,7 +882,7 @@ fn type_parameters_are_rigid_and_compared_values_hold_no_functions() {
     );
 }
 
-// ----- variants in context (ADR 0024 rule 1, DECISION D-048) -----
+// ----- variants in context (ADR 0024 rule 1) -----
 
 #[test]
 fn variants_take_their_kind_from_the_context() {
@@ -952,7 +948,7 @@ fn a_variant_that_two_imported_kinds_share_is_chosen_by_type() {
     );
 }
 
-// ----- capability operations (DECISION D-047) -----
+// ----- capability operations -----
 
 #[test]
 fn capability_operations_take_their_types_from_the_bound_capability() {

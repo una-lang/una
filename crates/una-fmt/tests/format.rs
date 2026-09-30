@@ -163,7 +163,6 @@ fn a_function_without_clauses_whose_body_is_one_line_uses_the_short_form() {
 
 #[test]
 fn predicates_handler_operations_and_arms_put_a_one_line_body_on_their_line() {
-    // DECISION D-024.
     assert_eq!(
         decls("predicate reflect small(n: Int) -> Bool =\n  n < 10\n"),
         "predicate reflect small(n: Int) -> Bool = n < 10\n"
@@ -195,7 +194,7 @@ fn a_sum_has_a_leading_bar_only_with_one_variant() {
 
 #[test]
 fn constructor_arguments_follow_the_declaration() {
-    // spec/04 §3.4; DECISION D-026: kinds and variants declared in the same file.
+    // spec/04 §3.4; kinds and variants declared in the same file.
     let kinds = "kind Point\n  x: Int\n  y: Int\n\nkind Shape = Rect(w: Int, h: Int) | Dot\n\n";
     let cases = [
         (
@@ -251,7 +250,6 @@ fn constructor_arguments_follow_the_declaration() {
 
 #[test]
 fn imports_are_sorted() {
-    // DECISION D-025.
     assert_eq!(
         fmt(
             "module t\n\nimport std.testing (fake_hash)\nimport events.types (parse_phone, Phone)\nimport events.keys (b, A, a)\n"
@@ -262,7 +260,6 @@ fn imports_are_sorted() {
 
 #[test]
 fn comments_keep_their_text_and_place() {
-    // DECISION D-023.
     let text = "-- test: a directive block\n-- spec: spec/01 §3\nmodule t\n\n--- Doc for f.\n--- Second line.\npub f(x: Int) -> Int -- trailing\n  requires x > 0\n=\n  -- inside the body\n  let y = x\n\n  -- before the result\n  y\n\n-- A section header.\n\ng() -> Int = 1\n-- The end.\n";
     assert_eq!(fmt(text), text);
 }
@@ -293,7 +290,7 @@ fn a_comment_at_level_zero_leads_the_next_declaration() {
 
 #[test]
 fn a_comment_inside_a_line_keeps_its_breaks_and_blocks_rewrites() {
-    // DECISION D-023: the formatter never moves a comment to another line. A line with a
+    // The formatter never moves a comment to another line. A line with a
     // comment inside keeps its breaks, continuation lines one level deeper.
     assert_eq!(
         decls("f() -> Int = g(1, -- first\n        2,\n    3)\n"),

@@ -117,7 +117,7 @@ fn every_file_is_formatted_idempotently_and_keeps_its_tree_and_comments() {
 }
 
 // ----- normalization: the rewrites of ADR 0020 rules 4, 6 and 7, applied to both trees, so
-// the comparison holds whether or not the formatter applied them (DECISION D-030) -----
+// the comparison holds whether or not the formatter applied them -----
 
 fn normalize(file: &mut File, interner: &Interner) {
     let name = |symbol| interner.resolve(symbol).to_owned();

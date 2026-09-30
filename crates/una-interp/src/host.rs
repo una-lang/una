@@ -68,7 +68,7 @@ impl World for NoWorld {
     }
 }
 
-/// A grant of `una run` (`spec/13 §5`), with its paths already resolved (DECISION D-103).
+/// A grant of `una run` (`spec/13 §5`), with its paths already resolved.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Grant {
     /// `console`.
@@ -153,7 +153,7 @@ pub fn normalize(path: &Path) -> PathBuf {
 }
 
 /// The path that a `Files` operation on `relative` opens under `prefix`, or `None` when the
-/// operation is `Denied` (`spec/14 §3`, ADR 0038 D9, DECISION D-103):
+/// operation is `Denied` (`spec/14 §3`, ADR 0038 D9):
 ///
 /// 1. `relative` is normalized lexically, without following links; an absolute path, a `..`
 ///    that leaves the prefix, and a path with no final component are denied;
@@ -219,7 +219,7 @@ fn missing(
     Some(out)
 }
 
-/// The keys of a key file: a TOML table of key names to base64 keys (DECISION D-103). The
+/// The keys of a key file: a TOML table of key names to base64 keys. The
 /// error names what is wrong, in one sentence.
 pub fn parse_keys(text: &str) -> Result<BTreeMap<String, Vec<u8>>, String> {
     let table: BTreeMap<String, toml::Value> = toml::from_str(text)

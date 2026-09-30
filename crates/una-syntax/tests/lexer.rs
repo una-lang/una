@@ -275,7 +275,7 @@ fn integers_and_malformed_integers() {
             vec!["\"00\" -> \"0\"".to_owned()],
         ]
     );
-    // DECISION D-016: letters after digits start a new token.
+    // Letters after digits start a new token.
     assert_eq!(tokens("12abc\n"), ["int:12", "id:abc", "NL", "EOF"]);
 }
 
@@ -507,7 +507,7 @@ fn a_tab_in_indentation_reports_only_t0002_with_an_edit() {
     );
     assert_eq!(
         lexed.tokens,
-        // DECISION D-017: a tab counts two columns when choosing the recovery level, so
+        // A tab counts two columns when choosing the recovery level, so
         // `  \t` (4) opens a deeper level after a line at 2.
         [
             "id:f", "(", ")", "->", "Id:Int", "NL", "=", "NL", "IN", "int:1", "NL", "IN", "id:x",
@@ -518,7 +518,7 @@ fn a_tab_in_indentation_reports_only_t0002_with_an_edit() {
 
 #[test]
 fn a_tab_leading_a_comment_or_a_joined_line_is_t0002_without_layout() {
-    // DECISION D-013: rule 1 of `spec/01 §2` applies to every line.
+    // Rule 1 of `spec/01 §2` applies to every line.
     let lexed = lex_text("x = f(\n\t1)\n\t-- note\ny = 2\n");
     assert_eq!(
         lexed.errors,
@@ -591,7 +591,7 @@ fn brackets_left_open_close_at_the_next_declaration() {
         errors("x = f(1\n"),
         ["U0101 1:6 unclosed `(` before the end of the file"]
     );
-    // DECISION D-015: a generic function signature is a declaration start too.
+    // A generic function signature is a declaration start too.
     assert_eq!(
         errors("x = f(1\nfirst[T](xs: List[T]) -> T = xs\n"),
         ["U0101 1:6 unclosed `(` before the next declaration"]
@@ -620,7 +620,7 @@ fn capability_references() {
         tokens("@audit.record(x)\n"),
         ["@audit", ".", "id:record", "(", "id:x", ")", "NL", "EOF"]
     );
-    // DECISION D-014: a keyword cannot name a capability.
+    // A keyword cannot name a capability.
     assert_eq!(
         errors("@if\n"),
         ["U0101 1:2 keyword `if` cannot name a capability"]

@@ -68,7 +68,7 @@ fn explain_rejects_text_that_is_not_a_registered_code() {
 
 #[test]
 fn explain_json_prints_its_document() {
-    // DECISION D-125: every command has a JSON document; M1 answered with a usage error.
+    // Every command has a JSON document; M1 answered with a usage error.
     let output = una(&["explain", "U0001", "--json"]);
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(stderr(&output), "");
@@ -88,7 +88,7 @@ fn explain_json_prints_its_document() {
 
 #[test]
 fn check_json_prints_an_empty_diagnostic_list() {
-    // DECISION D-011: the repository root has no `src/` (ADR 0015 D3), so check a package.
+    // The repository root has no `src/` (ADR 0015 D3), so check a package.
     let output = una(&["check", "--json", "examples/hello"]);
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(stdout(&output), EMPTY_LIST);
@@ -155,7 +155,7 @@ fn check_json_is_byte_identical_across_runs() {
 
 #[test]
 fn check_without_diagnostics_prints_nothing() {
-    // DECISION D-011: every invocation names a package or a file (ADR 0015 D3).
+    // Every invocation names a package or a file (ADR 0015 D3).
     for args in [
         &["check", "examples/events"][..],
         &["check", "--color", "always", "examples/hello"],
@@ -227,7 +227,7 @@ fn check_reports_a_missing_path_as_a_usage_error() {
 
 #[test]
 fn check_requires_a_package() {
-    // DECISION D-032: a directory is a package only with `una.toml` and `src/`.
+    // A directory is a package only with `una.toml` and `src/`.
     let output = una(&["check", "docs"]);
     assert_eq!(output.status.code(), Some(2));
     assert_eq!(stdout(&output), "");
@@ -287,7 +287,7 @@ fn a_single_file_is_its_own_package_root() {
 
 #[test]
 fn hidden_entries_and_other_files_under_src_are_not_loaded() {
-    // DECISION D-009: hidden entries under `src/` are skipped.
+    // Hidden entries under `src/` are skipped.
     let root = scratch("load-hidden");
     std::fs::write(root.join("una.toml"), MANIFEST).unwrap();
     std::fs::create_dir_all(root.join("src/.cache")).unwrap();
@@ -350,7 +350,7 @@ fn json_diagnostics_go_to_stdout() {
 
 #[test]
 fn deep_nesting_is_a_diagnostic_even_on_a_small_stack() {
-    // DECISION D-022: `check` runs on a thread with a large stack, so a test thread's small
+    // `check` runs on a thread with a large stack, so a test thread's small
     // stack is enough, and the nesting limit turns the input into one U0101.
     let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("deep-nesting");
     std::fs::create_dir_all(&root).unwrap();
@@ -395,7 +395,7 @@ fn codes(output: &Output) -> Vec<String> {
 
 #[test]
 fn fmt_rewrites_non_canonical_files_and_leaves_files_with_syntax_errors() {
-    // DECISION D-029: syntax errors are reported and their files left untouched.
+    // Syntax errors are reported and their files left untouched.
     let root = scratch("fmt-package");
     std::fs::write(root.join("una.toml"), MANIFEST).unwrap();
     std::fs::create_dir_all(root.join("src/a")).unwrap();
@@ -521,7 +521,7 @@ fn check_reports_t7001_with_a_mechanical_edit() {
 
 #[test]
 fn check_reports_project_file_errors_and_still_checks_the_modules() {
-    // ADR 0021; DECISION D-036: a missing lock is U7004 at `una.toml` 1:1; DECISION D-035:
+    // ADR 0021; a missing lock is U7004 at `una.toml` 1:1;
     // the modules are still checked.
     let root = scratch("project-errors");
     std::fs::create_dir_all(root.join("src")).unwrap();
@@ -596,7 +596,7 @@ fn contract_prints_the_header_of_the_reference_example() {
 
 #[test]
 fn contract_marks_inferred_clauses() {
-    // DECISION D-081: inferred clauses end with `-- inferred` and carry `"inferred": true`.
+    // Inferred clauses end with `-- inferred` and carry `"inferred": true`.
     let root = scratch("contract-inferred");
     std::fs::create_dir_all(root.join("src/app")).unwrap();
     std::fs::write(root.join("una.toml"), MANIFEST).unwrap();
@@ -742,7 +742,7 @@ fn contract_and_trace_report_package_diagnostics_before_the_name() {
 
 #[test]
 fn dump_core_prints_the_core_ir_of_the_reference_example() {
-    // M7 acceptance criterion: snapshots of Core dumps (`spec/09 §4`, DECISION D-099).
+    // M7 acceptance criterion: snapshots of Core dumps (`spec/09 §4`).
     for module in [
         "events.checkin",
         "events.keys",

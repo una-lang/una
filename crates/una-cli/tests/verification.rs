@@ -424,7 +424,7 @@ fn a_query_the_solver_rejects_is_u8001_and_exits_with_3() {
 #[test]
 fn the_verifier_generates_every_obligation_the_checker_found() {
     // `spec/12 §3` over Core IR agrees with the sites the type checker records since M4: the
-    // site of each obligation, or each return path of a return obligation (DECISION D-113).
+    // site of each obligation, or each return path of a return obligation.
     let root = repository().join("tests/conformance");
     let mut targets: Vec<PathBuf> = vec![
         repository().join("examples/events"),

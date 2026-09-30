@@ -1,7 +1,7 @@
 //! Tier 1 (`spec/12`): the proof obligations of a checked package, discharged by the solver
 //! pinned in `verification.lock`, and `una obligations` (`spec/13 §2`).
 //!
-//! DECISION D-112: tier 1 runs once tier 0 reports nothing. DECISION D-121: the output of
+//! Tier 1 runs once tier 0 reports nothing. the output of
 //! `una obligations`.
 
 use std::io::{self, Write};

@@ -90,7 +90,7 @@ fn names_resolve_through_locals_declarations_imports_and_the_prelude() {
 
 #[test]
 fn a_name_no_scope_holds_is_t1001() {
-    // DECISION D-038: type names too.
+    // Type names too.
     assert_eq!(
         single("f(x: Amount) -> Int = g(x)\n"),
         [
@@ -122,7 +122,7 @@ fn a_name_no_scope_holds_is_t1001() {
 
 #[test]
 fn variants_in_context_wait_for_their_kind() {
-    // DECISION D-046: patterns, `is`, `fail` and `expect fails` take the kind from context.
+    // Patterns, `is`, `fail` and `expect fails` take the kind from context.
     let body = "f(x: Int) -> Int\n  fails Oops\n=\n  when x\n    is Anything -> 1\n    else -> fail Whatever\n\ng(x: Int) -> Bool = x is Something\n\nexample \"e\"\n  do f(1)\n  expect fails Whatever\n";
     assert_eq!(
         single(body),
@@ -139,7 +139,6 @@ fn variants_in_context_wait_for_their_kind() {
 
 #[test]
 fn declarations_may_reuse_prelude_names() {
-    // DECISION D-039.
     assert_eq!(
         single(
             "kind LookupError = NotFound | Unavailable\n\nsum(xs: List[Int]) -> Int = 0\n\nf() -> LookupError = NotFound\n"
@@ -183,7 +182,6 @@ fn duplicates_are_t1002() {
 
 #[test]
 fn a_local_cannot_rebind_another() {
-    // DECISION D-039.
     assert_eq!(
         single(
             "f(x: Int) -> Int\n=\n  let y = x\n  if y > 0\n    let y = 1\n    y\n  else\n    let x = 2\n    fold([1], 0, fn(acc, x) -> acc + x)\n"
@@ -205,7 +203,7 @@ fn a_local_cannot_rebind_another() {
 
 #[test]
 fn naming_conventions_are_t1005() {
-    // spec/01 §4; DECISION D-042.
+    // spec/01 §4;
     assert_eq!(
         single(
             "kind Seat_Count = Int\n\ntotal_(a__b: Int) -> Int = a__b\n\ng[My_T](x: My_T) -> Int = 1\n\nrequirement EVENTS3\n  text \"a\"\n  source human\n  owner box_office_\n  status active\n"
@@ -286,7 +284,6 @@ fn imported_names_must_not_repeat_declarations_or_imports() {
 
 #[test]
 fn import_cycles_are_one_t1003_each() {
-    // DECISION D-040.
     let a = "module a\n\nimport b (y)\n\npub x() -> Int = 1\n";
     let b = "module b\n\nimport c (z)\n\npub y() -> Int = 2\n";
     let c = "module c\n\nimport a (x)\n\npub z() -> Int = 3\n";
@@ -319,7 +316,7 @@ fn module_paths_follow_file_paths() {
 
 #[test]
 fn trusted_modules_are_declared_twice() {
-    // spec/07 §6; DECISION D-045.
+    // spec/07 §6;
     let keys = "trusted module keys\n\nf() -> Int = 1\n";
     assert_eq!(
         check(&[("keys.una", keys)], true),
@@ -353,7 +350,7 @@ fn trusted_modules_are_declared_twice() {
 
 #[test]
 fn modules_with_syntax_errors_are_not_resolved() {
-    // DECISION D-041: declarations that parsed are still checked for U1002 and U1005.
+    // Declarations that parsed are still checked for U1002 and U1005.
     let broken = "module a\n\npub f() -> Int = missing(1)\n\npub g() Int = 2\n\npub h() -> Int = 3\n\npub h() -> Int = 4\n";
     let user = "module b\n\nimport a (g, f)\n\nuse_it() -> Int = g()\n";
     assert_eq!(

@@ -16,7 +16,7 @@ use super::ty::{CapId, FnUse, Ty};
 use super::{Findings, Report};
 use crate::names::RunInput;
 
-/// Which pass of the checker runs (DECISION D-082).
+/// Which pass of the checker runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Pass {
     /// Pass 1: check, and collect the facts that inference needs; diagnostics are discarded.
@@ -87,7 +87,7 @@ pub(crate) enum Resolved {
     Missing { name: String, rebound: bool },
 }
 
-/// The facts that pass 1 collects for inference (DECISION D-072, D-082).
+/// The facts that pass 1 collects for inference (D-082).
 #[derive(Default)]
 pub(crate) struct Collected {
     /// Requirements that the bodies of inferring functions put on their own context.
@@ -252,7 +252,7 @@ impl<'a> Checker<'_, 'a, '_> {
 
     /// `@c.op` (`spec/05 §3`): U3004 in a body whose `uses` are declared empty, U3001 when no
     /// binding holds `@c`, U3002 when its capability type does not permit `op`. Returns the
-    /// capability, for typing (DECISION D-047). DECISION D-071.
+    /// capability, for typing.
     pub(crate) fn op_site(&mut self, cap: &Ident, op: &Ident) -> Option<CapId> {
         let name = self.name(cap);
         let op_name = self.name(op);
@@ -347,7 +347,7 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// The requirements `needs` of `callee` at `span`, resolved in the frames below `level`
-    /// (sufficiency, `spec/05 §4`, `spec/10 §2`; DECISION D-071). In pass 1, requirements that
+    /// (sufficiency, `spec/05 §4`, `spec/10 §2`). In pass 1, requirements that
     /// an inferring body cannot resolve become its own.
     pub(crate) fn needs_site(&mut self, callee: &str, needs: &[FnUse], span: Span, level: usize) {
         let mut pure_reported = false;
@@ -513,7 +513,7 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// An edit of the `uses` clause at `clause`, which declares `@name` with `ops`, that
-    /// permits `extra` too (U3002, DECISION D-086).
+    /// permits `extra` too (U3002).
     fn widen(
         &self,
         clause: Option<Span>,
@@ -539,7 +539,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// An edit that adds `clauses` to the header of the function being checked, in canonical
     /// clause order: before the first clause that `before` accepts, or after the last clause
     /// (`spec/02 §3`). A short-form function becomes long-form. Lambdas and other declarations
-    /// get no edit (DECISION D-086).
+    /// get no edit.
     fn add_clause(&self, clauses: &[String], before: fn(&ClauseKind) -> bool) -> Option<Repair> {
         if clauses.is_empty() || self.lambda_depth != 0 {
             return None;
@@ -574,8 +574,7 @@ impl<'a> Checker<'_, 'a, '_> {
         Some(self.report.edit(description, span, replacement))
     }
 
-    /// U3015: `std.testing` serves handler operation bodies and examples only (`spec/14 §4`,
-    /// DECISION D-077).
+    /// U3015: `std.testing` serves handler operation bodies and examples only (`spec/14 §4`).
     pub(crate) fn testing_site(&mut self, module: usize, name: &str, span: Span) {
         if module != self.env.prelude + 1 {
             return;
@@ -622,7 +621,7 @@ impl<'a> Checker<'_, 'a, '_> {
         }
     }
 
-    /// `with @x = @y`: `@y` is bound where the statement is (DECISION D-071); a rebinding of
+    /// `with @x = @y`: `@y` is bound where the statement is; a rebinding of
     /// an outer statement that leads nowhere was reported there.
     pub(crate) fn rebind_site(&mut self, other: &Ident) {
         let name = self.name(other);
@@ -849,7 +848,7 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// U3007 and U3013 at a call or operation with `effects` or failure `fails` (`spec/04 §4`,
-    /// `spec/06 §3`; DECISION D-080). `top` tells whether it is the whole expression of its
+    /// `spec/06 §3`). `top` tells whether it is the whole expression of its
     /// statement, and `handled` whether `attempt` or `if error` handles its failure.
     pub(crate) fn position_site(
         &mut self,
@@ -911,8 +910,7 @@ impl<'a> Checker<'_, 'a, '_> {
 
 /// U1002 for a capability reference bound twice in one construct: the `uses` of a header, a
 /// handler or a function type, the `given` lines of an example, or one `with` clause, since a
-/// capability context maps each name to one capability (`spec/05 §1`; ADR 0023 rule 5,
-/// DECISION D-087).
+/// capability context maps each name to one capability (`spec/05 §1`; ADR 0023 rule 5).
 pub(crate) fn duplicate_refs(report: &mut Report<'_>, names: &[(&str, Span)]) {
     let mut seen: BTreeMap<&str, Span> = BTreeMap::new();
     for (name, span) in names {
@@ -943,7 +941,7 @@ fn before_fails(kind: &ClauseKind) -> bool {
 }
 
 /// Infers the `uses` and `fails` of private functions that omit them, as least fixed points
-/// over the call graph (ADR 0007, DECISION D-072). Requirements flow from callees to callers.
+/// over the call graph (ADR 0007). Requirements flow from callees to callers.
 /// The capability of an inferred reference is decided, in order, by the headers of the code
 /// its function calls, by the bindings of its callers, and by the handlers that its callers
 /// install around the call, so that a disagreement is reported at the call that disagrees.
@@ -1191,7 +1189,7 @@ fn cap_label<'e>(env: &'e Env<'_>, id: CapId) -> &'e str {
 }
 
 /// Infers the error kind of private functions without `fails`: the kind of the first variant
-/// they raise or failure they pass (ADR 0006, DECISION D-072). Pass 2 reports every other
+/// they raise or failure they pass (ADR 0006). Pass 2 reports every other
 /// kind where it is raised (U3009) or passed (U3008).
 fn infer_fails(env: &mut Env<'_>, collected: &Collected) {
     let count = env.functions.len();
@@ -1237,7 +1235,7 @@ fn infer_fails(env: &mut Env<'_>, collected: &Collected) {
     }
 }
 
-/// The operations that `[run] grants` give to each host capability (DECISION D-076). The
+/// The operations that `[run] grants` give to each host capability. The
 /// grants are well formed: `una.toml` rejects others (U7002).
 fn granted(grants: &[String]) -> BTreeMap<&'static str, BTreeSet<&'static str>> {
     let mut granted: BTreeMap<&'static str, BTreeSet<&'static str>> = BTreeMap::new();
@@ -1263,10 +1261,9 @@ fn granted(grants: &[String]) -> BTreeMap<&'static str, BTreeSet<&'static str>> 
 }
 
 /// U3012: the capabilities that `main` of the `[run] entry` module uses must be granted
-/// (`spec/04 §8`, `spec/05 §7`, DECISION D-076). A capability that is not a host capability
+/// (`spec/04 §8`, `spec/05 §7`). A capability that is not a host capability
 /// can never be granted; host capabilities are compared with `[run] grants` when `una.toml`
-/// lists grants, and with the final grants of `una run` when it checks the package to run it
-/// (DECISION D-109).
+/// lists grants, and with the final grants of `una run` when it checks the package to run it.
 pub(crate) fn grants(
     env: &Env<'_>,
     settings: &Manifest,
@@ -1347,8 +1344,7 @@ pub(crate) fn grants(
 }
 
 /// U7003: each module uses `checked` at most `[escape_budget] checked_per_module` times; the
-/// first use beyond the budget is reported, with the later ones related (`spec/06 §6`,
-/// DECISION D-078).
+/// first use beyond the budget is reported, with the later ones related (`spec/06 §6`).
 pub(crate) fn budget(
     env: &Env<'_>,
     findings: &Findings,
@@ -1388,8 +1384,8 @@ pub(crate) fn budget(
     }
 }
 
-/// U3006: a field of a kind whose type is a function type with `uses` or `fails` (`spec/03 §1`,
-/// DECISION D-079). DECISION D-143: such a type under a type argument, as in `List[...]`,
+/// U3006: a field of a kind whose type is a function type with `uses` or `fails` (`spec/03 §1`).
+/// DECISION D-143: such a type under a type argument, as in `List[...]`,
 /// is U3016 at the type argument instead (ADR 0038 D2), and not U3006 too.
 pub(crate) fn stored_effects(env: &Env<'_>, report: &mut Report<'_>) {
     fn holds(ty: &Ty) -> bool {

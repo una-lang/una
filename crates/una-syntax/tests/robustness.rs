@@ -11,7 +11,7 @@ use una_syntax::{Interner, MAX_NESTING, SourceDb, lex, parse};
 /// The diagnostics of `text` as "code line:col message", and the number of declarations.
 ///
 /// Parsing at the nesting limit needs more stack than a test thread has in unoptimized builds,
-/// so it runs on a thread with the stack `una check` gives it (DECISION D-022).
+/// so it runs on a thread with the stack `una check` gives it.
 fn check(text: &str) -> (Vec<String>, usize) {
     std::thread::Builder::new()
         .stack_size(64 * 1024 * 1024)
@@ -54,7 +54,7 @@ fn nesting_error(line: usize, col: usize) -> String {
     )
 }
 
-// DECISION D-022: deep nesting and long operator chains are reported, not a stack overflow.
+// Deep nesting and long operator chains are reported, not a stack overflow.
 #[test]
 fn deep_nesting_is_one_error_and_the_next_declaration_still_parses() {
     let depth = 20_000;
@@ -148,7 +148,7 @@ fn nesting_up_to_the_limit_parses() {
 
 #[test]
 fn text_nested_in_interpolations_is_bounded() {
-    // DECISION D-022: a literal nested in an interpolation is U0006 and has no interpolation of
+    // A literal nested in an interpolation is U0006 and has no interpolation of
     // its own, so `{` inside it is text.
     let depth = 5_000;
     let text = format!(

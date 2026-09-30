@@ -402,7 +402,7 @@ pub main() -> Unit
 
 #[test]
 fn files_grants_confine_paths_to_their_prefix() {
-    // `spec/14 §3`, DECISION D-103: relative to the prefix; `..`, absolute paths and links
+    // `spec/14 §3`, relative to the prefix; `..`, absolute paths and links
     // that lead outside are `Denied`.
     let root = package(
         "files",
@@ -585,7 +585,7 @@ pub main() -> Unit
 
 #[test]
 fn keys_grants_load_their_key_file() {
-    // `spec/14 §3`, DECISION D-103: a TOML table of names to base64 keys; key material never
+    // `spec/14 §3`, a TOML table of names to base64 keys; key material never
     // enters Una values or traces.
     let root = package(
         "keys",
@@ -628,7 +628,7 @@ fn keys_grants_load_their_key_file() {
 #[test]
 fn grants_are_checked_before_running() {
     // `spec/04 §8`: U3012 before execution starts, against `[run] grants` and `--grant`
-    // together (DECISION D-109).
+    // together.
     let root = package(
         "clock",
         "\n[run]\nentry = \"clock\"\ngrants = [\"console\"]\n",
@@ -726,7 +726,7 @@ example \"an unexpected failure\"
 
 #[test]
 fn test_reports_the_expectations_that_do_not_hold() {
-    // `spec/08 §2`; DECISION D-102 and DECISION D-106.
+    // `spec/08 §2`.
     let root = package("doubling", "", &[("src/doubling.una", DOUBLING)]);
     let output = una_in(&root, &["test"]);
     assert_eq!(output.status.code(), Some(1));

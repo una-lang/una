@@ -34,10 +34,10 @@ use una_syntax::{FileId, Interner, SourceDb, Span, lex, parse};
 use crate::names::PackageInput;
 use env::{Env, Source};
 
-/// The prelude (`spec/14 §1, §3`) as Una source (DECISION D-055).
+/// The prelude (`spec/14 §1, §3`) as Una source.
 const PRELUDE: &str = include_str!("../std/prelude.una");
 
-/// `std.testing` (`spec/14 §4`) as Una source (DECISION D-055).
+/// `std.testing` (`spec/14 §4`) as Una source.
 const TESTING: &str = include_str!("../std/testing.una");
 
 /// A proof obligation that the type checker found (`spec/12 §3`). It stays pending until the
@@ -127,7 +127,7 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
     let facts = facts::KindFacts::new(&env);
     facts::kind_recursion(&env, &mut report);
     authority::stored_effects(&env, &mut report);
-    // DECISION D-082: pass 1 collects what inference needs, and its diagnostics are dropped;
+    // Pass 1 collects what inference needs, and its diagnostics are dropped;
     // pass 2 checks with the inferred headers.
     let mut collected = authority::Collected::default();
     {
@@ -163,7 +163,7 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
             );
         }
     }
-    // DECISION D-111: the standard modules are checked silently, for the records that their
+    // The standard modules are checked silently, for the records that their
     // contracts are elaborated from.
     {
         let mut scratch = Report::new(&standard.sources);
@@ -186,7 +186,7 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
     facts::generic_equality(&env, &facts, &findings, &mut report);
     authority::grants(&env, package.settings, package.run, &mut report);
     authority::budget(&env, &findings, package.settings, &mut report);
-    // DECISION D-070: pending obligations by position, then kind.
+    // Pending obligations by position, then kind.
     findings
         .obligations
         .sort_by_key(|(kind, span, _)| (span.file, span.start, span.end, *kind));
@@ -278,7 +278,7 @@ pub(crate) struct Findings {
     pub(crate) compared: std::collections::BTreeMap<usize, std::collections::BTreeSet<usize>>,
     /// The uses of `checked`, by module, in order (`spec/06 §6`).
     pub(crate) checked: Vec<(usize, Span)>,
-    /// What pass 2 resolves, for elaboration (DECISION D-098).
+    /// What pass 2 resolves, for elaboration.
     pub(crate) records: records::Records,
     /// The declarations of pass 2 with a diagnostic, by the span of their name.
     pub(crate) failed: std::collections::BTreeSet<Span>,
