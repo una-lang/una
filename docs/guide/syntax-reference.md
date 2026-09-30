@@ -954,20 +954,22 @@ When proving an obligation, the compiler may assume:
 | `refuted` | a counterexample exists | error U5001, with the counterexample |
 | `unknown` | the solver could not decide | error U5002: in v0.1, unknown is never accepted |
 
-Every U5001 and U5002 comes with ranked repair candidates, each with an escape cost. None has a mechanical edit, and none is applied automatically. For a `refinement` or `precondition` obligation, with goal `G`, the compiler words them:
+A U5001 or U5002 comes with the ranked repair candidates that apply at its site, each with an escape cost. None has a mechanical edit, and none is applied automatically. For a `refinement` or `precondition` obligation, with goal `G`, the compiler words them, in this order:
 
-| Rank | Repair | Escape cost |
+| Repair | When it is proposed | Escape cost |
 | --- | --- | --- |
-| 1 | strengthen the type of the value to a refined kind that implies `G` | 0 |
-| 2 | add `requires G` to the enclosing function, if it is not `pub`; its callers then prove it | 0 |
-| 3 | add a guard (`if` or a `when` arm) that handles the values where `G` does not hold | 0 |
-| 4 | check the value with `checked(value, G) else fail <Variant>` | 1 |
+| strengthen the type of the parameter `p` to a refined kind that implies `G` | the value is the parameter `p` of the enclosing function | 0 |
+| add `requires G` to the enclosing function; its callers then prove it | the enclosing function is not `pub`, and `G` names only its parameters | 0 |
+| add a guard (`if` or a `when` arm) that handles the values where `G` does not hold | always | 0 |
+| check the value with `checked(value, G) else fail <Variant>` | always | 1 |
 
-The other kinds have their own repairs, all with escape cost 0:
+Inside an example there is no parameter and no `requires`, so only the guard and `checked` remain. The other kinds have their own repairs, all with escape cost 0:
 
 - a `postcondition`: add a guard or an arm so that the failing path returns a value for which the `ensures` holds, or adjust the `ensures` clause;
-- a `division`: guard the division with `if b != 0`, or add `requires b != 0` to the enclosing function, if it is not `pub`;
+- a `division`: guard the division with `if b != 0`;
 - an `exhaustive` obligation: add an `else` arm, or arms for the values the others miss.
+
+A goal that names no value, such as the `0 != 0` of `x / 0`, is false whatever the values: it has no repair and no counterexample, and the code itself has to change.
 
 `checked` is the last resort: it replaces a proof with a runtime test and counts against the escape budget (§6.5).
 

@@ -42,6 +42,38 @@ pub struct Obligation {
     pub(crate) query: Query,
     /// The terms whose values a counterexample shows (DECISION D-119).
     pub(crate) shown: Vec<Shown>,
+    /// Where the obligation arises, which decides its repairs (`spec/13 §3`).
+    pub site: Site,
+}
+
+/// Where an obligation arises: what decides which repair candidates of `spec/13 §3` apply
+/// ("when applicable", R-021).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Site {
+    /// The declaration that encloses the obligation.
+    pub within: Within,
+    /// The parameter of the enclosing function that the value is, when the goal's only free
+    /// binder is that parameter.
+    pub parameter: Option<String>,
+    /// Whether the goal has free binders, all of them parameters of the enclosing function,
+    /// so that a `requires` clause can state it.
+    pub over_parameters: bool,
+    /// Whether the goal has no free binder: no type, `requires` or guard can make it hold.
+    pub ground: bool,
+}
+
+/// The kind of declaration that encloses an obligation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Within {
+    /// A function, public or not.
+    Function {
+        /// Whether it is `pub`.
+        public: bool,
+    },
+    /// An example.
+    Example,
+    /// An operation of a handler, or the body of an opaque predicate.
+    Other,
 }
 
 /// A term that a counterexample shows, by source name.
@@ -102,6 +134,7 @@ pub fn obligations(program: &Program, sources: &SourceDb) -> Vec<Obligation> {
             let mut walker = Walker::new(&index, sources, &module.path);
             walker.declaration =
                 format!("{}.example {}", module.path, una_core::quote(&example.name));
+            walker.within = Within::Example;
             let mut leaves = Vec::new();
             walker.walk(&example.body, &Ctx::default(), &mut leaves);
             // `spec/08 §2` rule 4: `expect` lines are verified too, with `result` the value of
@@ -578,6 +611,10 @@ struct Walker<'p, 'i> {
     temps: BTreeMap<String, String>,
     /// The term each temporary is defined as, where it is one: how it shows.
     defs: BTreeMap<String, F>,
+    /// The declaration being walked, for the repairs of its obligations.
+    within: Within,
+    /// The parameters of the function being walked.
+    parameters: BTreeSet<String>,
 }
 
 impl<'p, 'i> Walker<'p, 'i> {
@@ -591,6 +628,8 @@ impl<'p, 'i> Walker<'p, 'i> {
             definitions: BTreeMap::new(),
             temps: BTreeMap::new(),
             defs: BTreeMap::new(),
+            within: Within::Other,
+            parameters: BTreeSet::new(),
         }
     }
 
@@ -607,6 +646,8 @@ impl<'p, 'i> Walker<'p, 'i> {
 
     fn function(&mut self, fun: &'p Fun) {
         self.declaration = format!("{}.{}", self.module, fun.name);
+        self.within = Within::Function { public: fun.public };
+        self.parameters = fun.params.iter().map(|(name, _)| name.clone()).collect();
         let mut ctx = Ctx::default();
         for (name, ty) in &fun.params {
             self.bind(&mut ctx, name, ty);
@@ -1827,6 +1868,7 @@ impl<'p, 'i> Walker<'p, 'i> {
         related: Option<(Span, &'static str)>,
     ) {
         let mut assertions: Vec<F> = ctx.hyps.iter().map(|h| h.f.clone()).collect();
+        let place = self.place(kind, goal.as_ref());
         // A goal outside the encoding is not assumed proven: its query has no negated goal
         // and stays satisfiable, so the obligation is refuted, never silently proven.
         assertions.push(F::not(goal.unwrap_or(F::Bool(false))));
@@ -1840,6 +1882,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             hypotheses,
             assertions,
             ctx,
+            place,
         );
     }
 
@@ -1869,6 +1912,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             selectors.push(selector);
         }
         assertions.push(F::or(selectors));
+        let place = self.place(kind, goal.as_ref().map(|g| &g.f));
         assertions.push(F::not(goal.map_or(F::Bool(false), |g| g.f)));
         let hypotheses = self.shown_hypotheses(&entry.hyps);
         let paths = leaves.iter().map(|leaf| leaf.span).collect();
@@ -1880,7 +1924,7 @@ impl<'p, 'i> Walker<'p, 'i> {
         }
         ctx.types.insert("result".to_owned(), result.ty.clone());
         self.push(
-            kind, text, source, related, paths, hypotheses, assertions, &ctx,
+            kind, text, source, related, paths, hypotheses, assertions, &ctx, place,
         );
     }
 
@@ -1895,6 +1939,7 @@ impl<'p, 'i> Walker<'p, 'i> {
         hypotheses: Vec<String>,
         assertions: Vec<F>,
         ctx: &Ctx,
+        site: Site,
     ) {
         let mut query = Query {
             assertions,
@@ -1935,7 +1980,55 @@ impl<'p, 'i> Walker<'p, 'i> {
             hypotheses,
             query,
             shown,
+            site,
         });
+    }
+
+    /// Where an obligation with `goal` arises (R-021). The free binders of the goal are its
+    /// program constants; a temporary that stands for a pure term counts as the binders of
+    /// that term, since the goal's text shows the term. DECISION D-TBD-n1: a goal outside the
+    /// encoding, and the `false` of an exhaustiveness obligation, are never ground, and the
+    /// value is a parameter only when the goal's only constant, before any temporary is
+    /// expanded, is a parameter of the enclosing function. A `requires` clause can state the
+    /// goal only when its free binders are all parameters of that function; a handler's
+    /// operation and an opaque predicate are not functions, so neither repair applies there.
+    fn place(&self, kind: ObligationKind, goal: Option<&F>) -> Site {
+        let Some(goal) = goal.filter(|_| kind != ObligationKind::Exhaustive) else {
+            return Site {
+                within: self.within,
+                parameter: None,
+                over_parameters: false,
+                ground: false,
+            };
+        };
+        let direct = binders(goal);
+        let mut free = BTreeSet::new();
+        let mut pending: Vec<String> = direct.iter().cloned().collect();
+        let mut seen = BTreeSet::new();
+        while let Some(name) = pending.pop() {
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            match self.defs.get(&name) {
+                Some(term) if name.starts_with('%') => pending.extend(binders(term)),
+                _ => {
+                    free.insert(name);
+                }
+            }
+        }
+        let is_function = matches!(self.within, Within::Function { .. });
+        let parameter = match direct.iter().collect::<Vec<_>>().as_slice() {
+            [only] if is_function && self.parameters.contains(*only) => Some((*only).clone()),
+            _ => None,
+        };
+        Site {
+            within: self.within,
+            parameter,
+            over_parameters: is_function
+                && !free.is_empty()
+                && free.iter().all(|name| self.parameters.contains(name)),
+            ground: free.is_empty(),
+        }
     }
 
     /// The facts about the terms of a query that no quantifier states (`spec/12 §2, §4`,
@@ -2453,6 +2546,23 @@ fn text_level(text: &str) -> u8 {
 }
 
 /// The value of a binder in scope.
+/// The program binders a term mentions: its constants of role `Plain`.
+fn binders(term: &F) -> BTreeSet<String> {
+    let mut terms = Vec::new();
+    term.visit(&mut terms);
+    terms
+        .into_iter()
+        .filter_map(|t| match t {
+            F::Const(Const {
+                name,
+                role: ConstRole::Plain,
+                ..
+            }) => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 fn own(ctx: &Ctx, name: &str) -> Tv {
     let ty = ctx
         .types
