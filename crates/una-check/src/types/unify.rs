@@ -80,6 +80,8 @@ impl Vars {
     /// settled as they are now, and the label of a variable still unsolved is kept, so that
     /// the call that later solves it, like the call of a generic function bound with `let`,
     /// counts its labels (ADR 0038 D3.2, DECISION D-137, re-review N-003).
+    /// DECISION D-TBD-l3: a variable left unsolved by the `let` keeps its label, and the local
+    /// is not generalized: every call of it solves the same variable, whose labels join.
     pub(crate) fn resolve_bound(&self, ty: &Ty) -> Ty {
         self.settle(&self.resolve_shape(ty), &[], true)
     }
@@ -237,6 +239,8 @@ impl Vars {
     /// [`Vars::unify`]; under an invariant parameter of a kind (`fixed`), a solved variable
     /// keeps its labels, since values of the kind at one label do not flow into it at another
     /// (ADR 0046 rule 2): the flow that follows compares them.
+    /// DECISION D-TBD-l2: ADR 0046 fixes the flow, not unification; a join here would raise
+    /// the argument after the flows that fixed it were checked.
     fn unify_in(&mut self, a: &Ty, b: &Ty, fixed: bool) -> bool {
         if !self.unify_shapes(a, b, fixed) {
             return false;
@@ -335,7 +339,7 @@ impl Vars {
 /// `a` and `b`, of one shape, with their labels joined (`join`) or met (not `join`) position
 /// by position; function parameters take the other operation. An argument of an invariant
 /// parameter of a kind keeps the labels of `a` (ADR 0046 rule 2): a value of `b` flows into
-/// it only at equal labels, which the flow that follows checks.
+/// it only at equal labels, which the flow that follows checks (DECISION D-TBD-l1).
 fn combine(a: &Ty, b: &Ty, join: bool, kinds: &KindLabels) -> Ty {
     let (la, lb) = (a.top_label(), b.top_label());
     let label = if join { la.join(&lb) } else { la.meet(&lb) };
