@@ -35,6 +35,8 @@ The prelude is imported into every module.
 
 Higher-order prelude functions accept only pure, non-failing lambdas in v0.1 (effect polymorphism is deferred).
 
+**Result labels** (ADR 0038 D3). Every function of this table whose result depends on element or argument values returns a result labeled with the join of the labels of those arguments and of their element types: `contains`, `first`, `at`, `first_where`, `filter`, `map`, `fold`, `sum`, `is_empty`, `or_else`, `min`, `max`, `abs` and the text functions `is_digits`, `starts_with`, `trim` and `to_int`. The native implementations declare these labels explicitly (`spec/07 §7` rule 8).
+
 Text works on Unicode scalar values: `.len` counts them; `is_digits` holds when every character is an ASCII digit, so it holds of the empty text; `trim` removes Unicode whitespace at both ends; `to_int` reads an optional `-` followed by ASCII digits; `starts_with` compares scalar values; `contains` and `==` are structural; `Text` orders by scalar values (ADR 0032).
 
 ## 2. Built-in operations
@@ -42,6 +44,8 @@ Text works on Unicode scalar values: `.len` counts them; `is_digits` holds when 
 `.len` on `Text` and `List`, arithmetic, comparisons, equality and text interpolation are built in (`spec/09 §2`). `Hashed` supports only `==` and `!=`; it cannot be interpolated or converted to `Text` (U2001).
 
 ## 3. Host capabilities (part of the prelude)
+
+The host capabilities are declared in the module `std.host` and are in scope in every module through the prelude (`spec/10 §11` rule 8).
 
 | Capability | Operation | Fails | Accepts | Notes |
 | --- | --- | --- | --- | --- |
@@ -57,7 +61,11 @@ kind FileError = NotFound | Denied | Io
 kind KeyError = | UnknownKey
 ```
 
-- `Files` resolves paths against the prefix fixed by the grant and rejects any path that normalizes outside it with `Denied`.
+- `Files` resolves a path against the prefix fixed by the grant (ADR 0038 D9):
+  1. **Normalize without following links.** An absolute path, and a `..` segment that leaves the prefix, fail with `Denied`.
+  2. **Resolve intermediate components.** Every intermediate directory is resolved with its symbolic links followed, and the resolved directory MUST lie inside the canonical grant prefix (`Denied` otherwise).
+  3. **Never follow the final component.** The final component is opened without following a link: if it is a symbolic link, dangling or not, the operation fails with `Denied`. A write never creates a file through a link.
+  4. **Races are out of the model.** A race between the check and the use of a path is outside the v0.1 model, since the interpreter is single-threaded and host capabilities are trusted; the build report lists it (`spec/13 §6`).
 - `Keys` loads keys from the file given in the grant (`--grant keys:./keys.toml`, a table of `name = "<base64>"`). Key material never enters Una values.
 - User code MAY write handlers for host capabilities (for example, a fake `Keys` in examples). Host implementations are used only by `una run`.
 

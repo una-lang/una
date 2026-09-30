@@ -38,7 +38,7 @@ Obligations are generated from Core IR by a traversal that maintains a **path co
 
 | Kind | Generated at | Goal |
 | --- | --- | --- |
-| `refinement` | Every subsumption point: argument passing, `let` with annotation, constructor fields, returns | target refinement instantiated at the value |
+| `refinement` | Every subsumption point: argument passing, `let` with annotation, constructor fields, returns, and the result of a policy's `via` function against the refinement of its `to` type (ADR 0038 D5) | target refinement instantiated at the value |
 | `precondition` | Calls and operation invocations | callee `requires` instantiated |
 | `postcondition` | Each normal return path of a function or handler operation | `ensures` instantiated with `result` |
 | `division` | `div`, `mod` with non-literal divisor | divisor ≠ 0 |
@@ -66,7 +66,24 @@ Besides the hypotheses above, a query holds ground facts for every term in it: `
 | `predicate opaque p` | `declare-fun` (no definition, no axioms) |
 | `a div k`, `a mod k` | SMT-LIB `div`, `mod` (Euclidean); by a value that is not a literal, the uninterpreted `div!Int`, `mod!Int` (§2) |
 
-Sorts are named `Int`, `Bool`, `Text`, `Hashed`, `Unit`, `List_<T>`, `Option_<T>`, `Result_<T>_<E>`, `Kind_<module>_<Name>[_<args>]` with each `_` of a module segment doubled, and `Param_<name>` for a type parameter; field, `len` and `tag` functions are named `<field>!<Sort>`, `len!<Sort>` and `tag!<Sort>`, and predicates by their qualified name. Binders are quoted symbols; `_`, `as`, `xor` and `distinct`, which Z3 5.1.0 rejects even quoted, gain a `!` suffix. Ordering on `Text`, `concat` and `to_text` are uninterpreted functions without axioms (ADR 0033).
+**Namespaces** (ADR 0038 D8). Every SMT symbol derived from user content carries the prefix `u!`, and every symbol the encoder introduces carries the prefix `i!`, so the two cannot collide by construction, whatever names a program declares. Only the SMT-LIB sorts `Int` and `Bool` and the SMT-LIB operators are unprefixed.
+
+| Symbol | Name |
+| --- | --- |
+| Sort of a user kind | `u!Kind_<module>_<Name>[_<args>]`, with each `_` of a module segment doubled |
+| Sort of a type parameter | `u!Param_<name>` |
+| Built-in sorts | `i!Text`, `i!Hashed`, `i!Unit`, `i!List_<T>`, `i!Option_<T>`, `i!Result_<T>_<E>` |
+| Field of a record kind | `u!f!<field>!<Sort>` |
+| Field of a variant of a sum kind | `u!f!<field>!<Variant>!<Sort>`, so variants that share a field name with different types have distinct functions |
+| Variant tag, length | `i!tag!<Sort>`, `i!len!<Sort>` |
+| Prelude fields (`value`, `failure`) | `i!f!<field>!<Sort>` |
+| Uninterpreted arithmetic and text functions | `i!div!Int`, `i!mod!Int`, `i!mul!Int`, `i!lt!Text` (and the other orderings), `i!concat`, `i!to_text` |
+| Text literal constants | `i!lit!<n>`, numbered in order of first occurrence |
+| Predicates | `u!p!<qualified name>` |
+| Binders of the program (parameters, `result`, `let`s, pattern variables) | `u!v!<name>` |
+| Binders the encoder introduces | `i!v!<name>` |
+
+Binders are quoted symbols. Counterexamples (§7) map the `u!v!` binders back to their source names. A test of the reference implementation declares user names equal to every internal symbol and checks that no two declarations of a query share a symbol. Ordering on `Text`, `concat` and `to_text` are uninterpreted functions without axioms (ADR 0033).
 
 Labels are erased: information flow is enforced by the type system, not the solver.
 
