@@ -2025,6 +2025,6 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Chosen: A, because R-031 needs a spec line first (`spec/12 §2`).
 - Confidence: high
 - Reversal cost: low, add the line back when R-031 is done
-- Implemented in: `73f90b9` (merge), tag `DECISION D-159`
+- Implemented in: `73f90b9` (merge), `tests/conformance/runtime/euclidean_division_signs.una` (no tag: the case is left out, and the backlog row records it)
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
