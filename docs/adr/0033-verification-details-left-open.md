@@ -8,7 +8,7 @@
 
 M8 generates proof obligations from Core IR (`spec/12 §3`), encodes them in SMT-LIB (`§4`), runs Z3 (`§5`), maps models back to source names (`§7`), caches results (`§9`) and reports U5001 to U5003 with repairs (`spec/13 §1 to §3`). The specification fixes the kinds, the hypotheses, the logic, the preamble, the statuses and the shapes, but not how Core IR carries formulas and the spans that diagnostics need, which declarations are verified, how an obligation over several return paths is formed, which ground facts a query holds, several encoding and protocol details, the cache layout, how goals and hypotheses become text, how counterexamples show values of uninterpreted sorts, which repairs are proposed, or the output of `una obligations`.
 
-Decision log entries: D-111 to D-121, and D-131 from M10 (`docs/reviews/open-decisions.md`).
+Decision log entries: D-111 to D-121, and D-131 from M10 (`docs/history/v0.1/open-decisions.md`).
 
 ## Decision
 

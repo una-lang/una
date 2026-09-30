@@ -8,7 +8,7 @@
 
 M4 implements the type checker (`spec/03`, `spec/04 §1 to §3, §6, §7`, `spec/06 §1, §2, §5`, `spec/10 §3, §4`). The specification defines the types, the judgments and the codes U2001 to U2015, but leaves some rules implicit: how a variant after `fail` or in a pattern is found (ADR 0023 rule 3 defers it to M4), what `fail` joins with, whether text literals belong to the refinement language (`spec/03 §3` omits them, `spec/12 §4` encodes them), what U2008 "Unreachable arm or misplaced `else`" covers, how `e.f` is resolved when `e` has no field `f`, whether calls of function values take labels, whether constructors are values, and what happens when inference leaves a type unknown.
 
-Decision log entries: D-048 to D-055 and D-061 to D-069 (`docs/reviews/open-decisions.md`).
+Decision log entries: D-048 to D-055 and D-061 to D-069 (`docs/history/v0.1/open-decisions.md`).
 
 ## Decision
 

@@ -8,7 +8,7 @@
 
 `spec/03 §6` makes function types contravariant in their parameters and covariant in their result, and `spec/10 §2` states it as rule S-Fun, whose premises are `Γ ⊢ τ̄2 <: τ̄1` for the parameters and `Γ ⊢ τ_r <: τ_r'` for the result. For refined types, `{v: B | p} <: {v: B | q}` is the obligation `p implies q` (`spec/03 §6`), a `refinement` obligation at a subsumption point (`spec/12 §3`). The spec does not say what that obligation looks like when the refined types sit inside function types: which binder stands for the parameter or the result, what the goal text is, what the counterexample binds (`spec/12 §7`), or which repairs of `spec/13 §3` apply.
 
-The reference compiler does not implement these premises. It drops every refinement inside a function type before Core IR (a known gap of `docs/plan/runs/M8-plan.md` §6):
+The reference compiler does not implement these premises. It drops every refinement inside a function type before Core IR (a known gap of `docs/history/v0.1/runs/M8-plan.md` §6):
 
 - the checker lowers `fn(Pos) -> Int` to `fn(Int) -> Int` (`crates/una-check/src/types/env.rs`, `lower_type`), and the type of a named function used as a value keeps only the bases of its parameters and result (`types/expr.rs`);
 - a named function used as a value is elaborated to `λ(%t0: Int). f(%t0)` (`types/elab.rs`, `function_value`), so the call inside the lambda yields a `refinement` obligation over the internal binder `%t0`;

@@ -7,9 +7,9 @@
 
 ## Context
 
-M10 (`plan/milestones-v0.1.md`) prepares Gate 1 (`plan/roadmap.md §3`): at least five more example packages "covering every construct in the charter scope", a guide for agents whose every snippet is tested, and release binaries for Linux and macOS with the tag `v0.1.0`. The plan names neither the examples nor how coverage and snippets are checked, nor the targets and contents of the release. D-083 runs macOS jobs only on pull requests and pushes to `main`, and `OVERNIGHT.md` C.5 forbids pushing to `main`, where the owner merges after review.
+M10 (`plan/milestones-v0.1.md`) prepares Gate 1 (`plan/roadmap.md §3`): at least five more example packages "covering every construct in the charter scope", a guide for agents whose every snippet is tested, and release binaries for Linux and macOS with the tag `v0.1.0`. The plan names neither the examples nor how coverage and snippets are checked, nor the targets and contents of the release. D-083 runs macOS jobs only on pull requests and pushes to `main`, and `docs/history/v0.1/OVERNIGHT.md` C.5 forbids pushing to `main`, where the owner merges after review.
 
-Decision log entries: D-127 to D-130 (`docs/reviews/open-decisions.md`).
+Decision log entries: D-127 to D-130 (`docs/history/v0.1/open-decisions.md`).
 
 ## Decision
 

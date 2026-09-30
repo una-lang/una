@@ -8,7 +8,7 @@
 
 M7 elaborates checked programs to Core IR (`spec/09`), runs them on the Una Abstract Machine (`spec/11`) with the host capabilities of `spec/14 §3`, and adds `una run` and `una test` (`spec/13 §5`). The specification defines Core IR, the evaluation rules and the traces, but not how elaboration obtains the checker's resolutions, the text of `--dump-core`, how values appear in traces and outputs, the JSON of `una run` and `una test`, how grants combine and where their paths resolve, how `Files` normalizes paths, the format of the `Keys` key file, a few semantics of the prelude, or what the call depth counts.
 
-Decision log entries: D-098 to D-109 (`docs/reviews/open-decisions.md`).
+Decision log entries: D-098 to D-109 (`docs/history/v0.1/open-decisions.md`).
 
 ## Decision
 
