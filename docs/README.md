@@ -7,8 +7,10 @@
 3. `compiler/`: how the reference compiler is built.
 4. `adr/`: why key decisions were made.
 5. `plan/`: roadmap, v0.1 milestones, deferred backlog.
-6. `reviews/`: triage of external design reviews.
-7. `guide/una-for-agents.md`: a compact reference for agents writing Una, with every block tested.
+6. `reviews/`: triage of external design reviews, and the independent review of v0.1 (`reviews/v0.1-review/`).
+7. `guide/syntax-reference.md`: the language guide; `guide/una-for-agents.md`: a compact reference for agents writing Una, with every block tested.
+8. `fixes/`: fix requests and their progress.
+9. `history/v0.1/`: the record of how v0.1 was built: the run instructions, the milestone and closure plans, the decision log and the status report.
 
 ## Normative status
 
@@ -17,7 +19,7 @@
 | `spec/` | Normative. Uses RFC 2119 keywords. |
 | `adr/` | Normative once `Accepted`. |
 | `compiler/` | Normative for the reference implementation, not for the language. |
-| `plan/`, `reviews/`, `guide/` | Informative. |
+| `plan/`, `reviews/`, `guide/`, `fixes/`, `history/` | Informative. |
 
 ## Specification files
 

@@ -9,7 +9,7 @@
 
 M5 implements capabilities, effects and failures (`spec/05`, `spec/06 §3 to §6`, `spec/04 §4, §5, §8`, `spec/10 §5, §6, §9`, `spec/14 §3, §4`, ADRs 0005 to 0007 and 0009) with the codes U3001 to U3015 and U7003. The specification gives the rules but leaves some open: `spec/05 §4` reports a capability that a callee needs and the caller lacks as U3001, while `spec/04 §2, §5` reports effects beyond a function's declared `uses` as U3003 and `@` in a function without `uses` as U3004; ADR 0007 infers the `uses` of private functions, but a reference's capability cannot be read from the body alone; handlers, `with` and `given` must "match" a capability without saying where each check points; examples must not use host capabilities (U3014) yet take every capability from `given` (U3001); `una check` knows `[run] grants` but not the grants of a later `una run`; and the escape budget, `std.testing` and escaping lambdas need a reporting site.
 
-Decision log entries: D-071 to D-080, D-085 and D-087 (`docs/reviews/open-decisions.md`).
+Decision log entries: D-071 to D-080, D-085 and D-087 (`docs/history/v0.1/open-decisions.md`).
 
 ## Decision
 

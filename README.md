@@ -40,7 +40,7 @@ This repository holds the language specification, the design record and **Una Co
 
 ## Project status
 
-**v0.1, Una Core, is complete, reviewed and merged into `main`**: every milestone of `docs/plan/milestones-v0.1.md` is implemented and meets its acceptance criteria, and CI is green on Linux and macOS. The choices the specification left open were reviewed and kept on 2026-09-29: the ADRs that record them in `docs/adr/` are Accepted, the specification states their rules, and `docs/reviews/open-decisions.md` keeps each decision with its answer. The tag `v0.1.0`, which publishes the first release archives, comes next.
+**v0.1, Una Core, is complete, reviewed and merged into `main`**: every milestone of `docs/plan/milestones-v0.1.md` is implemented and meets its acceptance criteria, and CI is green on Linux and macOS. The choices the specification left open were reviewed and kept on 2026-09-29: the ADRs that record them in `docs/adr/` are Accepted, the specification states their rules, and `docs/history/v0.1/open-decisions.md` keeps each decision with its answer. The tag `v0.1.0`, which publishes the first release archives, comes next.
 
 Una is a research language built to test a thesis (see [Roadmap](#roadmap)). It is not ready for production use.
 

@@ -10,7 +10,7 @@ The grammar of `spec/02` puts no bound on nesting: parentheses, arguments, prefi
 
 The limit must be deterministic, the same in every build, so it counts syntax, not bytes of stack. Measured stack use in unoptimized builds is about 34 KiB per level of nested parentheses, so no useful limit fits the 2 MiB of a default thread in every build.
 
-Decision log entry: D-022 (`docs/reviews/open-decisions.md`).
+Decision log entry: D-022 (`docs/history/v0.1/open-decisions.md`).
 
 ## Decision
 

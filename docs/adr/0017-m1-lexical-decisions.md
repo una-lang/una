@@ -20,7 +20,7 @@ Implementing the lexer and parser of M1 (`spec/01`, `spec/02`) raised questions 
 6. **A doc comment not followed by a declaration** is a plain comment, without error.
 7. **The M1 robustness criterion** reads: for every example and every line boundary, parsing the prefix never panics and every reported position lies inside the prefix; a prefix that ends right after the first line of a multi-line declaration, or right after the `=` line of a long-form function, yields at least one diagnostic.
 
-The design choices of the approved M1 plan (`plan/runs/M1-plan.md` §6) apply: positions and recovery per code, mechanical edits for U0002 and U0003, the explain file format, and `--tier` values 0 and 1.
+The design choices of the approved M1 plan (`history/v0.1/runs/M1-plan.md` §6) apply: positions and recovery per code, mechanical edits for U0002 and U0003, the explain file format, and `--tier` values 0 and 1.
 
 ### Changes to other documents
 

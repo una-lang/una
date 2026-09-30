@@ -8,7 +8,7 @@
 
 M9 completes the Agent ABI of `spec/13`: the build report of `§6`, `una trace` of `spec/08 §1`, `--json` for every command, and explain texts for every code. `spec/13 §6` gives one example of `una.report/1` without saying which functions, calls, escapes and capabilities each section lists, how the lock is hashed or what a trivial `ensures` query is; `spec/08 §1` names `una trace` without an output; `spec/13 §5` makes `--json` a global flag, while `una explain` has had no JSON output since M1; and `spec/13 §4` asks a failing example of every code, which an internal error cannot have.
 
-Decision log entries: D-122 to D-126 (`docs/reviews/open-decisions.md`).
+Decision log entries: D-122 to D-126 (`docs/history/v0.1/open-decisions.md`).
 
 ## Decision
 

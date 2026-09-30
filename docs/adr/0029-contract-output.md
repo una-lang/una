@@ -8,7 +8,7 @@
 
 `spec/13 §5` defines `una contract <qualified.name>`, which prints "the full header, declared or inferred, with doc comments and requirements", and M5 requires a snapshot of `una contract --json`. `spec/13` defines no JSON shape for it, although the JSON shapes of `spec/13` are the Agent ABI, and says neither which package is read nor how an inferred clause is shown.
 
-Decision log entries: D-081 (`docs/reviews/open-decisions.md`).
+Decision log entries: D-081 (`docs/history/v0.1/open-decisions.md`).
 
 ## Decision
 

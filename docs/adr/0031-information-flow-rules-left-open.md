@@ -9,7 +9,7 @@
 
 M6 implements information flow (`spec/07`, the label premises of `spec/10`, the sinks of `spec/14 §3`) with the codes U4001 to U4005 and U4007. The specification states the lattice, the typing rules and the guarantee (T6), but leaves open how labels live in the checker's types and flow through generic instantiations, which boundaries a value's label is compared at, the labels of the values of operators, how `checked` interacts with the program counter, how an operation's `accepts` relates to the labels of its parameter types, how `Keys.hmac` "accepts any label", and where each diagnostic points.
 
-Decision log entries: D-088 to D-097 (`docs/reviews/open-decisions.md`).
+Decision log entries: D-088 to D-097 (`docs/history/v0.1/open-decisions.md`).
 
 ## Decision
 

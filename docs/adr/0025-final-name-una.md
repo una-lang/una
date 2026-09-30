@@ -39,7 +39,7 @@ Prose never puts an article directly before the name: it says "not a keyword in 
 
 Published package names, if any, use `una-lang` or `unalang`. Both were free on crates.io, PyPI and npm on 2026-09-29.
 
-"Vera" and "Troth" remain only as history: in `reviews/triage.md §5`, in ADR 0016, in this ADR, and in the process files of the autonomous run (`OVERNIGHT.md`, `reviews/morning-report.md`, `reviews/open-decisions.md`, `plan/runs/`). The rename is mechanical and changes no semantics. Git history is not rewritten.
+"Vera" and "Troth" remain only as history: in `reviews/triage.md §5`, in ADR 0016, in this ADR, and in the process files of the autonomous run (`history/v0.1/OVERNIGHT.md`, `history/v0.1/morning-report.md`, `history/v0.1/open-decisions.md`, `history/v0.1/runs/`). The rename is mechanical and changes no semantics. Git history is not rewritten.
 
 ## Consequences
 
