@@ -1155,6 +1155,13 @@ impl<'a> Checker<'_, 'a, '_> {
                         diagnostic.repairs.push(Report::advice(
                             "every field is given by another argument; remove this one",
                         ));
+                    } else {
+                        // DECISION D-157, as for U2005 (re-review N-016).
+                        let listed: Vec<String> = open.iter().map(|n| format!("`{n}`")).collect();
+                        diagnostic.repairs.push(Report::advice(format!(
+                            "the fields that no other argument gives are {}",
+                            listed.join(", ")
+                        )));
                     }
                     self.report.push(diagnostic);
                 }
