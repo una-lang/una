@@ -293,6 +293,39 @@ pub first() -> Int = book(4321)
     assert!(Path::new(&root).exists());
 }
 
+#[cfg(unix)]
+#[test]
+fn a_query_the_solver_rejects_is_u8001_and_exits_with_3() {
+    // `spec/13 §5`: an internal compiler error exits with 3 (R-019). A stand-in solver of the
+    // pinned version rejects every query, as Z3 does for a query that is not valid SMT-LIB.
+    use std::os::unix::fs::PermissionsExt;
+    let root = package(
+        "rejected-query",
+        &[(
+            "src/app.una",
+            "module app\n\npub half(x: Int, y: Int) -> Int = x / y\n",
+        )],
+    );
+    let bin = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("rejecting-solver");
+    std::fs::create_dir_all(&bin).unwrap();
+    let solver = bin.join("z3");
+    std::fs::write(
+        &solver,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'Z3 version 5.1.0 - 64 bit'; exit 0; fi\ncat > /dev/null\necho '(error \"line 1 column 1: rejected\")'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&solver, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _ = std::fs::remove_dir_all(root.join(".una"));
+    let output = Command::new(env!("CARGO_BIN_EXE_una"))
+        .args(["--json", "check", root.to_str().unwrap()])
+        .env("PATH", &bin)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3), "{}", stdout(&output));
+    let document: Value = serde_json::from_str(stdout(&output)).unwrap();
+    assert_eq!(document["diagnostics"][0]["code"], "U8001");
+}
+
 #[test]
 fn the_verifier_generates_every_obligation_the_checker_found() {
     // `spec/12 §3` over Core IR agrees with the sites the type checker records since M4: the
