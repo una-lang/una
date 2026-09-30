@@ -1092,7 +1092,9 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                     };
                     self.within(ctx, |checker| checker.condition(expr, "an `expect` line"));
                 }
-                ExpectationKind::Fails(variant) => self.expected_failure(variant, &fails),
+                ExpectationKind::Fails(variant) => {
+                    self.expected_failure(variant, &fails, &ty);
+                }
                 ExpectationKind::Performed { cap, op, .. } => self.performed(cap, op),
             }
         }
@@ -1244,32 +1246,38 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     }
 
     /// `expect fails V`: `V` is a variant of an error kind of the `do` expression, and U1001
-    /// otherwise (`spec/10 §12` rule 1, R-020). When the `do` expression cannot fail, any
-    /// variant in scope is accepted, as before, until ADR 0044 is decided.
-    fn expected_failure(&mut self, variant: &Ident, fails: &[Ty]) {
+    /// otherwise (`spec/10 §12` rule 1, R-020). When the `do` expression cannot fail,
+    /// `expect fails V` never holds, and it is U1001 too (ADR 0044). `action` is the type of
+    /// the `do` expression: one that failed to type reports nothing more.
+    fn expected_failure(&mut self, variant: &Ident, fails: &[Ty], action: &Ty) {
         let name = self.name(variant);
+        if fails.is_empty() {
+            if self.resolve(action) == Ty::Error {
+                return;
+            }
+            let mut diagnostic = self.report.make(
+                Code::U1001,
+                variant.span,
+                format!("the `do` expression cannot fail, so `expect fails {name}` never holds"),
+            );
+            diagnostic.repairs.push(Report::advice(format!(
+                "remove the line `expect fails {name}`, or make the `do` line call what fails with `{name}`"
+            )));
+            self.report.push(diagnostic);
+            return;
+        }
         let in_kind = fails.iter().any(|kind| match self.resolve(kind) {
             Ty::Kind(id, _) => self.variant_index(id, name).is_some(),
             _ => false,
         });
-        let in_scope = fails.is_empty()
-            && self
-                .env
-                .upper(self.module, name)
-                .iter()
-                .any(|entity| matches!(entity, Entity::Variant(..)));
-        if in_kind || in_scope || fails.iter().any(|kind| self.resolve(kind) == Ty::Error) {
+        if in_kind || fails.iter().any(|kind| self.resolve(kind) == Ty::Error) {
             return;
         }
         let kinds: Vec<String> = fails
             .iter()
             .map(|kind| format!("`{}`", self.show(kind)))
             .collect();
-        let message = if kinds.is_empty() {
-            format!("cannot find variant `{name}` in this module, its imports or the prelude")
-        } else {
-            format!("cannot find variant `{name}` in {}", kinds.join(" or "))
-        };
+        let message = format!("cannot find variant `{name}` in {}", kinds.join(" or "));
         self.report.error(Code::U1001, variant.span, message);
     }
 
