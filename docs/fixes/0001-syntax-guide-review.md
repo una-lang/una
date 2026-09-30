@@ -346,6 +346,13 @@ Disagreements between the spec, the implementation and the owner's rulings, foun
 
 - **R-1. Exit code 1 without a diagnostic (ADR 0036).** The owner's rule says exit `1` means the output contains at least one error diagnostic with a code. But `una obligations`, `una trace` and `una report` exit with `1` for an obligation that is not proven, and `una test` for a failed example, with no diagnostic in their output: their documents carry the status instead. `spec/13 §5`, `spec/08 §1` and ADRs 0033 and 0034 require this, and `spec/13 §5` now states it as part of the rule. Should these outcomes also carry a diagnostic, or does the rule keep them as stated?
 - **R-2. The code for an unsupported refinement in a function type (ADR 0037, rule 10).** The owner requires an explicit diagnostic, but `CLAUDE.md` forbids diagnostic codes the spec does not define, and no registered code of `spec/13 §4` names this case. Is it an existing code (for example a type error of the `types` domain), or does the closure run register a new one in `spec/13 §4` under ADR 0037?
+- **R-3. Argument count before labels (F-0001-15).** `spec/04 §3` rule 2 makes a duplicate label U2006, and `spec/10 §12` rule 13 makes too many arguments U2001; neither says which is checked first. For `f(1, b: 2, b: 3)` with a two-parameter `f`, the compiler reports only U2001. The guide (§4.4) now describes that behavior. Should the spec state the order, or should both codes be reported?
+- **R-4. Repair candidates differ from `spec/13 §3` (F-0001-18).** ADR 0033, in `spec/13 §3`: "a refuted or unknown `refinement` or `precondition` proposes, in order, a stronger parameter type when the value is a parameter, a `requires` clause for a private function, a guard, and `checked`; ... a `division` a guard". The compiler instead:
+  - proposes "strengthen the type of the value" when the value is not a parameter (for example a call's result, or a function passed as a value);
+  - proposes "add `requires G` to the enclosing function, if it is not `pub`" inside `pub` functions too;
+  - proposes, for a `division`, "add `requires b != 0` to the enclosing function, if it is not `pub`" after the guard.
+  The guide (§11.2) quotes the compiler's wording. Depending on the answer, the compiler or the spec changes, and the guide follows.
+- **R-5. `--solver-wallclock` is not in the command table of `spec/13 §5`.** `spec/12 §5` defines the flag (default 60 s); the compiler accepts it on `check`, `run`, `test`, `obligations`, `trace` and `report`, which the guide (§15) lists. Should `spec/13 §5` list it with those commands?
 
 ## Closure run
 
@@ -361,20 +368,20 @@ Items scheduled for the v0.1 closure run, after the review freeze ends. They cha
 | F-0001-01 | compiler | Binder suffix in trace argument keys | Done | see `git log --grep F-0001-01` |
 | F-0001-02 | investigate | Obligation for a refined parameter of a function value | ADR 0037 Accepted; implementation scheduled for the closure run | see `git log --grep F-0001-02` |
 | F-0001-03 | investigate | Exit code of U7002 and U7004 | Done: ADR 0036 Accepted, `spec/13 §5` updated; one code gap in the closure run | see `git log --grep F-0001-03` |
-| F-0001-04 | docs | §17 package import order | Open | |
-| F-0001-05 | docs | §1.2 line breaks inside brackets | Open | |
-| F-0001-06 | docs | §1.1 `\r\n` and U7001 | Open | |
-| F-0001-07 | docs | §13 missing canonical-form rules | Open | |
-| F-0001-08 | docs | §15 stale interim note | Open | |
-| F-0001-09 | docs | §15 missing flags, statuses and rules | Open | |
-| F-0001-10 | docs | §1.4 U0101 versus U1005 | Open | |
-| F-0001-11 | docs | §1.5 `macro` message | Open | |
-| F-0001-12 | docs | §3.2 number of kind forms | Open | |
-| F-0001-13 | docs | §3.4 variants use `is` | Open | |
-| F-0001-14 | docs | §4.4 constructor field order and U2004 | Open | |
-| F-0001-15 | docs | §4.4 U2006 versus U2001 | Open | |
-| F-0001-16 | docs | §4.6, §7.6 fallible lambdas | Open | |
-| F-0001-17 | docs | §7.4 handler `uses` and `with` in the short form | Open | |
-| F-0001-18 | docs | §11.2 repair wording | Open | |
-| F-0001-19 | docs | Consistency pass | Open | |
+| F-0001-04 | docs | §17 package import order | Done | see `git log --grep F-0001-04` |
+| F-0001-05 | docs | §1.2 line breaks inside brackets | Done | see `git log --grep F-0001-05` |
+| F-0001-06 | docs | §1.1 `\r\n` and U7001 | Done | see `git log --grep F-0001-06` |
+| F-0001-07 | docs | §13 missing canonical-form rules | Done | see `git log --grep F-0001-07` |
+| F-0001-08 | docs | §15 stale interim note | Done | see `git log --grep F-0001-08` |
+| F-0001-09 | docs | §15 missing flags, statuses and rules | Done; `--solver-wallclock` listing under R-5 | see `git log --grep F-0001-09` |
+| F-0001-10 | docs | §1.4 U0101 versus U1005 | Done | see `git log --grep F-0001-10` |
+| F-0001-11 | docs | §1.5 `macro` message | Done | see `git log --grep F-0001-11` |
+| F-0001-12 | docs | §3.2 number of kind forms | Done | see `git log --grep F-0001-12` |
+| F-0001-13 | docs | §3.4 variants use `is` | Done | see `git log --grep F-0001-13` |
+| F-0001-14 | docs | §4.4 constructor field order and U2004 | Done | see `git log --grep F-0001-14` |
+| F-0001-15 | docs | §4.4 U2006 versus U2001 | Done; order of checks under R-3 | see `git log --grep F-0001-15` |
+| F-0001-16 | docs | §4.6, §7.6 fallible lambdas | Done | see `git log --grep F-0001-16` |
+| F-0001-17 | docs | §7.4 handler `uses` and `with` in the short form | Done | see `git log --grep F-0001-17` |
+| F-0001-18 | docs | §11.2 repair wording | Done; compiler wording quoted, differences under R-4 | see `git log --grep F-0001-18` |
+| F-0001-19 | docs | Consistency pass | Done | see `git log --grep F-0001-19` |
 | F-0001-20 | docs | Sweep of `README.md` and `una-for-agents.md` | Done | see `git log --grep F-0001-20` |
