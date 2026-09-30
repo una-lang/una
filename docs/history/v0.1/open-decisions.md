@@ -2129,3 +2129,25 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `d16e779` (merge of track L), tag `DECISION D-168`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+
+### D-169: A `via` type written as an alias of the `to` kind (re-review, N-004)
+- Question: ADR 0047 makes a `via` function's types equal `from` and `to` except for labels, refinements included.
+- Context: the v0.1 re-review.
+- Options: A) an alias with no `where` of its own, such as `kind P2 = Pos`, matches `Pos`, since it carries exactly the same refinements; B) only the same kind name matches.
+- Chosen: A, because the refinements, which are what the rule protects, are identical.
+- Confidence: medium
+- Reversal cost: low, `crates/una-check/src/types/`
+- Implemented in: `de9530a` (merge of track F), tag `DECISION D-169`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-170: When a `do` expression cannot fail (re-review, N-007)
+- Question: ADR 0044 makes `expect fails V` after a `do` that cannot fail U1001.
+- Context: the v0.1 re-review.
+- Options: A) a `do` cannot fail only when it calls nothing that can fail, so a failing call whose failure a handling clause absorbs still counts as able to fail; B) use the error kind after handling clauses.
+- Chosen: A, because it never rejects an example whose `do` can in fact fail; lenient where the rule is unclear.
+- Confidence: medium
+- Reversal cost: low, `crates/una-check/src/types/`
+- Implemented in: `de9530a` (merge of track F), tag `DECISION D-170`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
