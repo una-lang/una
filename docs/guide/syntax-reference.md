@@ -1,6 +1,6 @@
 # Una Language Guide: Syntax Reference (v0.1)
 
-**Status.** Informative summary of the normative specification in `docs/spec/`, as of 2026-09-29. It includes the accepted decisions on reserved keywords, lexical rules and the final name (Una). Decisions the implementation agent took provisionally after that date are not reflected. If this guide and `docs/spec/` disagree, the spec wins.
+**Status.** Informative summary of the normative specification in `docs/spec/`, as of 2026-09-29, including ADR 0036, and checked against the v0.1 reference compiler (`docs/fixes/0001-syntax-guide-review.md`). If this guide and `docs/spec/` disagree, the spec wins.
 
 **Conventions.** Code blocks tagged `una` are Una source. Diagnostic codes use the form `U####` (see §16). Where this guide says "error", the compiler rejects the program with the code shown.
 
@@ -72,7 +72,7 @@ The compiler proves the `ensures` clause and that the three ranges cover every p
 | Rule | Detail | Error |
 | --- | --- | --- |
 | Encoding | UTF-8, with no byte order mark | U0001 |
-| Line endings | `\n` or `\r\n` (normalized to `\n`); a lone `\r` is rejected | U0001 |
+| Line endings | The lexer accepts `\n` and `\r\n` (read as `\n`); a lone `\r` is rejected. Only `\n` is canonical: `una check` reports a file with `\r\n` as one U7001 at the first of them, without an edit, and `una fmt` rewrites the file with `\n` (§13). | U0001, U7001 |
 | One module per file | Extension `.una` | |
 | ASCII outside literals and comments | Identifiers, keywords and punctuation are ASCII. Other characters (accents, CJK, emoji) may appear only inside text literals and comments. | U0001 |
 | Control characters | U+0000 to U+001F (except tab and line feed) and U+007F are forbidden everywhere, including literals and comments | U0001 |
@@ -87,16 +87,14 @@ Una uses significant indentation.
 - **Spaces only.** A tab in leading whitespace is an error (U0002). Tabs inside literals and comments are allowed.
 - **Exactly 2 spaces per level.** Any other depth is an error (U0003), and so is dedenting to a column no enclosing block uses.
 - **Blank and comment-only lines** do not affect indentation.
-- **Inside `( )` and `[ ]`**, line breaks and indentation are ignored, so long argument lists can span lines.
+- **Inside `( )` and `[ ]`**, the parser accepts line breaks and ignores the indentation of continued lines. The canonical form has no line width, so it joins continued lines into one: `una fmt` joins them, and `una check` reports the split as U7001. The only exception is a line with a comment inside its brackets, whose line breaks are kept, each continuation line one level deeper (§13).
 - **Brackets must be balanced** within a declaration (U0101).
 
 ```una
 pub total(a: Int, b: Int) -> Int
   requires a >= 0
 =
-  let sum = add_all(
-    first: a,
-    second: b)
+  let sum = add_all(first: a, second: b)
   sum
 ```
 
@@ -118,10 +116,23 @@ pub total(a: Int, b: Int) -> Int
 | upper identifier | `[A-Z][A-Za-z0-9_]*` | kinds, variants, capabilities, label categories, requirement IDs |
 | capability reference | `@` followed by a lower identifier | `@audit`, `@console` |
 
-Convention checks (U1005):
-- lower identifiers use `snake_case`, without `__` and without a trailing `_`;
-- kinds, variants, capabilities and categories use `UpperCamelCase`;
-- requirement IDs use upper snake case ending in a number: `EVENTS_3`, `CHECKIN_12`.
+Naming problems fall into two cases.
+
+**Wrong case class: a parse error (U0101).** Where the grammar expects an upper identifier, a lower one is not a name at all, and the reverse:
+
+| You wrote | Message |
+| --- | --- |
+| `kind bad_kind = Int` | unexpected `bad_kind`, expected a kind name |
+| a variant written in lowercase, as in `kind K = \| open` | unexpected `open`, expected a variant name |
+| `requirement events3` | unexpected `events3`, expected a requirement identifier |
+
+**Right case class, wrong convention: U1005.** The name has the right first letter, but breaks the convention of its class:
+
+- lower identifiers use `snake_case`, without `__` and without a trailing `_` (`f__x`, `g_`);
+- kinds, variants, capabilities and categories use `UpperCamelCase` (`Bad_Name`);
+- requirement IDs use upper snake case ending in `_` and a number: `EVENTS_3`, `CHECKIN_12` (not `Events_3`).
+
+The message names the construct and suggests a fix: "kind `Bad_Name` must be UpperCamelCase, as in `BadName`".
 
 Names cannot start with `_` (U0001, with the hint "names start with a letter").
 
@@ -143,7 +154,7 @@ result secret then true trusted unit use uses when where with
 active generated human owner proposed purpose regulation source status text to via
 ```
 
-**Reserved for later, or deliberately absent** (U0103). The message names the plan or the Una alternative:
+**Reserved for later, or deliberately absent** (U0103). The message is "`<word>` is <text>", with the text below, as in "`macro` is not supported (charter §6)", and names the plan or the Una alternative:
 
 | Word | Message |
 | --- | --- |
@@ -161,7 +172,7 @@ active generated human owner proposed purpose regulation source status text to v
 | `while`, `loop` | not a keyword in Una; use recursion or `fold` |
 | `type` | not a keyword in Una; use `kind` |
 | `unsafe` | not a keyword in Una; use a `trusted` module |
-| `macro` | not supported |
+| `macro` | not supported (charter §6) |
 | `async`, `await` | not supported; see structured concurrency in v0.2 |
 
 ### 1.6 Literals
@@ -248,8 +259,8 @@ Characters with no meaning in Una are U0001. Some messages carry a hint:
 ```una
 module events.checkin
 
-import events.seating (Availability, Event, availability)
 import events.keys (attendee_key)
+import events.seating (Availability, Event, availability)
 import std.testing (fake_hash)
 ```
 
@@ -281,18 +292,22 @@ import std.testing (fake_hash)
 
 ### 3.2 Declaring kinds
 
-A `kind` declaration takes one of five forms:
+A `kind` declaration takes one of four forms: an alias, a refinement, a sum and a record. Any of them may take type parameters (§3.3).
 
 ```una
-kind Seats = Int in 0..5000                                  -- range refinement (sugar)
+kind Label = Text                                            -- alias
+
 kind Phone = Text where valid_phone(it)                      -- refinement
+kind Seats = Int in 0..5000                                  -- refinement, with range sugar
+
 kind Availability = SoldOut | Few | Open                     -- sum
-kind Lookup = Found(registration: Registration) | Missing    -- sum with payload
-kind NonEmpty[T] = List[T] where it.len > 0                  -- generic refinement
+kind Lookup = Found(registration: Registration) | Missing    -- sum, with a payload
 
 kind Event                                                   -- record
   name: Text
   remaining: Seats
+
+kind NonEmpty[T] = List[T] where it.len > 0                  -- a generic refinement
 ```
 
 Rules:
@@ -324,11 +339,12 @@ Type arguments are inferred at call sites.
 | `it`, parameters, `result`, and field access on them | `it.remaining`, `e.remaining` |
 | Length of `Text` and `List` | `it.len`, `xs.len` |
 | Linear arithmetic | `a + b`, `a - b`, `-a`, `3 * a`; `/` and `mod` only by a nonzero literal |
-| Comparisons, ranges and variant tests | `==`, `!=`, `<`, `<=`, `>`, `>=`, `x in 1..10`, `result is SoldOut` |
+| Comparisons and ranges | `==`, `!=`, `<`, `<=`, `>`, `>=`, `x in 1..10` |
+| Variant tests, with `is` only | `result is SoldOut`, `not (result is Open)`; `==` or `!=` against a variant, as in `result != Open`, is U2014 |
 | Boolean connectives | `and`, `or`, `not`, `implies` |
 | Predicate calls | `valid_phone(it)`, `adult(age)` |
 
-Anything else, such as calls to ordinary functions or `a * b` with two variables, is U2014, reported on the offending sub-expression.
+Anything else, such as calls to ordinary functions or `a * b` with two variables, is U2014, reported on the outermost offending sub-expression. Also outside RL: the ordering of `Text`, `is` with a literal, `==` or `!=` against a variant, `unit` and interpolated text. For `x == V` the diagnostic carries an edit to `x is V`, and for `x is 1` an edit to `x == 1`.
 
 ### 3.5 Predicates
 
@@ -381,7 +397,7 @@ pub availability(e: Event) -> Availability         -- long form
     in 20..5000 -> Open
 ```
 
-- **Short form:** no clauses, and a body that is a single-line expression.
+- **Short form:** no clauses, and a body that is a single-line expression. A `with` clause belongs to a statement, not an expression, so a body with `with` needs the long form (U0101 otherwise, §7.4).
 - **Long form:** the signature, then the indented clauses, then `=` alone on a line, then the indented body.
 
 `una fmt` converts between them: a long form with no clauses and a one-line body becomes the short form.
@@ -430,13 +446,16 @@ The compiler proves that `e.remaining - count` fits `Seats` (between 0 and 5000)
 | One argument: the label is optional | `double(4)` |
 | Two or more: the first may be unlabeled, the rest must be labeled (U2004) | `seats_after(event, count: 2)` |
 | Punning: a bare identifier equal to the parameter name counts as labeled | `record(key, status)` |
-| Unknown label: U2005; duplicate argument: U2006 | |
+| Argument count: too many arguments, or a parameter that receives none, is U2001. The count is checked before the labels. | `f(1, b: 2, b: 3)` for a two-parameter `f`: U2001 "`f` takes 2 arguments, but 3 are given", and no U2006 |
+| Unknown label: U2005 | `f(1, c: 2)` |
+| Duplicate argument, with the right count: U2006 | `f(a: 1, a: 2)` |
 | Arguments are evaluated left to right | |
 
 Constructors follow related rules:
 
-- Records and variants with two or more fields need every field labeled, in any order; the formatter sorts them into declaration order. Missing or unknown fields are U2009.
-- A single-field constructor may omit the label: `Some(r)`, `Ok(v)`.
+- Records and variants with two or more fields need every field labeled (punning allowed). An unlabeled field is U2004 ("`P` has 2 fields, so every argument needs its field's label"); missing or unknown fields are U2009.
+- Any order of labeled fields type-checks, but the canonical form is declaration order (§13): `una check` reports another order as U7001, and `una fmt` rewrites it.
+- A single-field constructor may omit the label: `Some(r)`, `Ok(v)`. Extra arguments to a single-field constructor, and parentheses after a variant without fields, are U2009.
 
 ```una
 let e = Event(name: "Meetup", remaining: 120)
@@ -466,8 +485,10 @@ fn(x: Int) -> x + 1               -- explicit annotation (required without an ex
 - Function types are written `fn(A, B) -> C`, optionally with `uses` and `fails`: `fn(Text) -> Unit uses @log: Log[write]`.
 - A lambda is **pure** unless its expected type declares `uses` or `fails`.
 - An effectful or fallible lambda is **second-class**: it may be passed as an argument, but not returned, stored or bound with `let` (U3006).
+- **A lambda body is one expression, with no room for a handling clause.** So a lambda cannot call an operation or a function that can fail: `fn(k) -> @audit.record(k)`, where `record` declares `fails`, is U3007. An effectful lambda passed as an argument can call only operations that cannot fail. A lambda may still fail directly, as in `fn(k) -> if k > 0 then k else fail Bad`, when its expected type declares `fails`.
+- Put fallible work in a named function with handling clauses, and pass the function by name: `run_it(1, act: parse)`.
 - Lambdas capture variables by value.
-- The prelude's higher-order functions (`map`, `filter`, `fold`, `first_where`) accept only pure lambdas in v0.1.
+- The prelude's higher-order functions (`map`, `filter`, `fold`, `first_where`) accept only pure, non-failing lambdas in v0.1: a lambda that uses a capability, passed to `map`, is U3004, since the lambda's expected type has no `uses`.
 
 ### 4.7 Recursion and the entry point
 
@@ -714,8 +735,11 @@ let status = check_in(phone) with @registrations = in_memory(rows: rows)   -- ha
 ```
 
 - **`@x = @y`** makes the callee's `@x` the caller's `@y`. Both must be the same capability.
-- **`@x = h(args)`** installs handler `h` as `@x`. The handler's own `uses` must be available to the caller.
+- **`@x = h(args)`** installs handler `h` as `@x`. The handler's own `uses` become effects of the caller. What happens when the caller lacks them depends on the caller:
+  - a `pub` caller that does not declare them gets U3003 at the statement: "handler `h` uses `@inner: Inner[ping]`, but this code declares no `uses`, so its effects would exceed its header";
+  - a private caller has them inferred, and the error appears where the capability is really missing. In an example, for instance, it is U3001: "`g` needs `@inner: Inner[ping]`, which no `given` line binds".
 - **Scope:** the binding covers only that statement's expression.
+- **Statements only.** `with` is part of a statement, so it cannot appear in the short function form: `g() -> Unit = f() with @a = h()` is U0101. Use the long form, with the statement in the body.
 - **Several bindings** are separated by commas: `with @a = @b, @c = h()`.
 
 ### 7.5 Handlers
@@ -746,7 +770,7 @@ Capability references are **not values**. `@x` cannot be:
 - stored in a kind;
 - compared or interpolated.
 
-Any of these is U3005. A bare `@x` is allowed only on either side of a `with` binding or in `given`. Effectful or fallible lambdas follow the same restrictions, except that they can be passed as arguments (U3006).
+Any of these is U3005. A bare `@x` is allowed only on either side of a `with` binding or in `given`. Effectful or fallible lambdas follow the same restrictions, except that they can be passed as arguments (U3006). Such a lambda cannot handle a failure, so it calls only operations that cannot fail (U3007 otherwise, §4.6).
 
 Consequence: authority only flows downward through calls, and every function's reachable authority is visible in headers.
 
@@ -930,11 +954,22 @@ When proving an obligation, the compiler may assume:
 | `refuted` | a counterexample exists | error U5001, with the counterexample |
 | `unknown` | the solver could not decide | error U5002: in v0.1, unknown is never accepted |
 
-Every error comes with ranked repairs:
-- strengthen a type;
-- add a `requires`;
-- add a guard;
-- as a last resort, `checked`, which carries an escape cost.
+Every U5001 and U5002 comes with ranked repair candidates, each with an escape cost. None has a mechanical edit, and none is applied automatically. For a `refinement` or `precondition` obligation, with goal `G`, the compiler words them:
+
+| Rank | Repair | Escape cost |
+| --- | --- | --- |
+| 1 | strengthen the type of the value to a refined kind that implies `G` | 0 |
+| 2 | add `requires G` to the enclosing function, if it is not `pub`; its callers then prove it | 0 |
+| 3 | add a guard (`if` or a `when` arm) that handles the values where `G` does not hold | 0 |
+| 4 | check the value with `checked(value, G) else fail <Variant>` | 1 |
+
+The other kinds have their own repairs, all with escape cost 0:
+
+- a `postcondition`: add a guard or an arm so that the failing path returns a value for which the `ensures` holds, or adjust the `ensures` clause;
+- a `division`: guard the division with `if b != 0`, or add `requires b != 0` to the enclosing function, if it is not `pub`;
+- an `exhaustive` obligation: add an `else` arm, or arms for the values the others miss.
+
+`checked` is the last resort: it replaces a proof with a runtime test and counts against the escape budget (§6.5).
 
 ### 11.3 Tiers
 
@@ -974,16 +1009,68 @@ Verification is reproducible:
 
 ## 13. Canonical form
 
-`una fmt` defines the one valid layout, and `una check` reports deviations as U7001.
+Every file has one canonical form. `una fmt` rewrites a file into it, and `una check` reports every difference as U7001. A file with a syntax error has no canonical form: it is neither formatted nor checked for U7001. The rules, from `spec/15`:
 
-- 2-space indentation and no trailing whitespace.
-- Header clauses and op clauses in canonical order (§4.2, §7.1).
-- The short function form when there are no clauses and the body is one line; the long form otherwise.
-- Constructor fields in declaration order.
-- One `uses` clause per capability.
-- Handling clauses on their own indented lines, directly below the statement.
+**File**
 
-The v0.1 formatter enforces no maximum line width.
+- Line breaks are `\n` only.
+- The file ends with exactly one line break.
+- No line has trailing whitespace.
+- The file neither starts nor ends with a blank line.
+
+**Lines and indentation**
+
+- Two spaces per indentation level.
+- Every logical line is one line. The formatter has no maximum line width, so lines continued inside brackets are joined (§1.2).
+- The exception is a line with a comment inside its brackets: its line breaks are kept, and each continuation line is indented one level deeper than the line.
+- Every token keeps its source spelling: integer literals keep their `_` groups (`1_000`), and text literals their escapes.
+
+**Spacing.** Tokens are separated by one space, except:
+
+- no space after `(`, `[` or `.`, and none before `)`, `]`, `,`, `:` or `.`;
+- no space around `..` and `..<`;
+- no space after a unary `-`, unless another `-` follows;
+- no space between a name and a following `(` or `[`, and none in `fn(` and `checked(`, but one space between an import's module path and its `(`;
+- no space inside a text literal outside its interpolations, and none just inside the braces of an interpolation.
+
+**Functions and bodies**
+
+- Header clauses and op clauses are in canonical order (§4.2, §7.1), with one `uses` clause per capability.
+- A function with no clauses and a body of one plain line uses the short form (§4.1). The same holds for the body of a predicate or handler operation after its `=`, and of a `when` arm after its `->`.
+- A plain line has no `with` clause and no handling clause, and is not a `when` or an `if` with blocks. Otherwise the long form stays, and it also stays when a comment sits between the head and the end of the body.
+- Handling clauses sit on their own indented lines, directly below the statement.
+
+**Sums.** A sum with two or more variants has no leading `|`. A sum with one variant keeps it, since the grammar requires it: `kind PhoneError = | Malformed`.
+
+**Constructors**
+
+- When every argument of a record or variant constructor is labeled or punned, the arguments follow the order in which the fields are declared (§4.4).
+- This applies to the records and variants the file declares or imports, and to the variants of the sum kinds it imports, when the name comes from exactly one of them and is declared once in its module.
+- Arguments are not reordered on a line with a comment inside.
+
+**Imports**
+
+- Imports are sorted bytewise by module path, each keeping the comments that lead it: `events.keys` before `events.seating` before `std.testing`.
+- The names inside each import are sorted bytewise too (`Availability, Event, availability`: uppercase letters sort before lowercase), unless a comment sits inside the import.
+
+**Blank lines**
+
+- Top-level items (the module header, each import and each declaration) are separated by exactly one blank line, except consecutive imports, which have none.
+- Elsewhere, a run of blank lines becomes one blank line.
+- No blank line follows a line that opens a block, and none precedes or follows the `=` line of the long form.
+
+**Comments**
+
+- The formatter never moves a comment to another line, and it removes trailing whitespace from the comment's text.
+- A comment at the end of a line of code stays there, after one space.
+- A comment on its own line stays in place, at the indentation level nearest to its column (ties go deeper) among the levels of the lines around it.
+- A comment on its own line at level 0 between two top-level items belongs to the next item, and the item's blank line goes before it.
+
+**How U7001 is reported**
+
+- `una check` compares each file with its canonical form line by line, and reports one U7001 per changed region, at its first source line.
+- Each U7001 carries a mechanical edit that replaces the region with its canonical text, and its message names the difference: trailing whitespace, a missing or extra blank line, a missing final line break, or lines that are not in canonical form.
+- A file with `\r\n` line breaks gets a single U7001 at the first of them, without an edit (§1.1). Run `una fmt` to fix it.
 
 ---
 
@@ -1039,23 +1126,79 @@ Unknown keys in `una.toml` are U7002. A missing or invalid lock is U7004.
 
 ## 15. Command line
 
+```text
+una [--json] [--color never|auto|always] <COMMAND>
+```
+
 | Command | Purpose |
 | --- | --- |
 | `una check [path]` | tiers 0 and 1; `--tier 0` skips the solver; `--dump-core <module>` prints the Core IR |
-| `una fmt [path]` | rewrite to canonical form; `--check` only reports |
-| `una run [path] --grant console` | run `main` of the `[run] entry` module |
-| `una test [path]` | run all examples |
+| `una fmt [path]` | rewrite to canonical form; `--check` reports U7001 without writing |
+| `una run [path]` | run `main` of the `[run] entry` module; `--grant <spec>`, repeatable; `--max-depth <n>` |
+| `una test [path]` | run all examples; `--max-depth <n>` |
 | `una obligations [path]` | list every obligation and its status |
 | `una contract <module.function>` | full header, declared or inferred |
 | `una trace <REQUIREMENT_ID>` | requirement → contracts → proof status |
 | `una report [path]` | build report: proofs, authority, policies, escapes, assumptions, trusted code |
 | `una explain <code>` | explanation of a diagnostic, with a failing and a fixed example |
 
-Output and exit codes:
+`[path]` is a package directory or a single `.una` file, and defaults to the current directory.
 
-- **Output streams.** `--json` prints machine output on stdout and leaves stderr empty. In human mode, diagnostics go to stderr and command results to stdout.
-- **Exit codes:** `0` success; `1` program errors or failed tests; `2` usage or configuration error; `3` internal compiler error.
-- **Interim behavior before tier 1 lands.** Until proof checking is implemented (milestone M8), `una run` and `una test` perform tier 0 checks only and print a note saying so.
+**Global flags**
+
+- `--json` prints one JSON document on stdout, and nothing else there.
+- `--color never|auto|always` sets colors in human output; `auto`, the default, uses them when the output is a terminal.
+
+**Checking before running**
+
+- `una run` and `una test` first check the package at tier 1, like `una check`, so Z3 at the exact version of `verification.lock` must be on the path.
+- If the solver is missing or has another version, they stop with U5003. If the checks report errors, nothing runs.
+
+**Solver flag.** The commands that check at tier 1 (`check`, `run`, `test`, `obligations`, `trace`, `report`) take `--solver-wallclock <seconds>`.
+
+- It is a wall-clock guard against a hanging solver query, 60 seconds by default.
+- A query that hits it is `unknown` with reason `wallclock` (U5002), marked non-deterministic in the build report.
+
+**`una run`**
+
+- It runs `pub main() -> Unit` of the `[run] entry` module, or of the module of a single file.
+- **Grants.**
+  - `--grant` may repeat, and the flags are combined with `[run] grants` of `una.toml` into the final grants.
+  - Grant specs: `console`, `clock`, `env`, `keys:<keyfile>`, `files:<path>:read`, `files:<path>:write` and the combined `files:<path>:read,write`.
+  - Relative paths in grants resolve against the package root when they come from `una.toml`, and against the current directory when they come from `--grant`.
+  - A `uses` of `main` that the final grants do not cover is U3012, before anything runs.
+- **Depth.** `--max-depth <n>` sets the maximum call depth, 10,000 by default. Exceeding it aborts with U6003.
+- **Usage errors (exit code 2):**
+  - a package without an entry, or an entry without `pub main() -> Unit`;
+  - a `--grant` value that is not a grant spec;
+  - an unreadable or invalid key file;
+  - a `--max-depth` whose stack cannot be allocated.
+- **`--json` output.** `una run` prints a `una.run/1` document whose `status` is one of:
+  - `ok`;
+  - `failed`: `main` failed, U6001;
+  - `aborted`: U6003 or U8001;
+  - `rejected`: the checks reported errors, which the document's `diagnostics` holds, and nothing ran.
+
+**`una contract <module.function>`**
+
+- It reads the package in the current directory and checks it at tier 0. The name is the module path and the function's name, as in `events.checkin.check_in`.
+- An unknown name is a usage error, with exit code 2.
+- A package with diagnostics is reported as `una check` reports it, with exit code 1, since an inferred header is defined only for a package that checks.
+
+**`una trace <REQUIREMENT_ID>`** also reads the package in the current directory, and checks it at tier 1. An unknown identifier is a usage error (exit code 2).
+
+**Output streams.** In human mode, diagnostics go to stderr and command results to stdout. With `--json`, the document goes to stdout and stderr stays empty, except for an internal compiler error.
+
+**Exit codes**
+
+| Code | Meaning |
+| --- | --- |
+| `0` | success |
+| `1` | the output holds at least one error diagnostic with a code, or reports an obligation that is not proven (`una obligations`, `una trace`, `una report`) or a failed example (`una test`) |
+| `2` | a usage error: a problem of the invocation (its flags, grants, paths or names), printed to stderr without a code, with no diagnostic document on stdout |
+| `3` | an internal compiler error (U8001) |
+
+Problems in the project files are diagnostics like any other, in human and `--json` output: an invalid `una.toml` (U7002) and a missing or invalid `verification.lock` (U7004) exit with `1`.
 
 ---
 
@@ -1092,7 +1235,7 @@ Every problem has a stable code, precise positions (1-based line and column, col
 | `@` inside a function with no `uses` | U3004 | declare the capability |
 | `let db = @db` | U3005 | pass it by name through `uses` |
 | a fallible call with no `if error` | U3007 | add a handling clause or `attempt` |
-| `decide(@store.get(k))` | U3013 | bind the effect on its own line |
+| `classify(@store.get(k))` | U3013 | bind the effect on its own line |
 | `fail` inside a branch on secret data | U4002 | return a labeled value |
 | printing a secret value | U4003 | declassify through a policy, or don't print |
 | `ensures` the code does not satisfy | U5001 | read the counterexample |
@@ -1107,7 +1250,7 @@ Every problem has a stable code, precise positions (1-based line and column, col
 ```una
 module events.types
 
---- A Brazilian mobile number: 11 digits, validated once at the boundary.
+--- A phone number of 11 digits, validated once at the boundary.
 pub kind Phone = Text where valid_phone(it)
 
 pub kind PhoneError = | Malformed
@@ -1182,9 +1325,9 @@ example "raw counts are clamped"
 ```una
 module events.checkin
 
-import events.types (Phone, parse_phone)
-import events.seating (Availability, Event, Registration, availability)
 import events.keys (attendee_key)
+import events.seating (Availability, Event, Registration, availability)
+import events.types (Phone, parse_phone)
 import std.testing (fake_hash)
 
 pub kind CheckInError = NotRegistered | Unavailable
