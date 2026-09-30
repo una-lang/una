@@ -1,0 +1,6 @@
+-- test: text ordering on a secret (review control)
+-- spec: spec/07 §7
+-- expect: error U4001 at 6:36
+module comparison_text
+
+pub leak(t: secret Text) -> Bool = t < "m"

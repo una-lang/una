@@ -1,0 +1,12 @@
+-- test: secret record field interpolated and printed (review control)
+-- spec: spec/07 §4
+-- expect: error U4003 at 12:18
+module interpolate_field
+
+kind Card
+  pin: secret Int
+
+pub show(c: Card) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("card {c.pin}")

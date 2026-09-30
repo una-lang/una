@@ -1,0 +1,14 @@
+-- test: handler fails depending on its secret-raised parameter (review control)
+-- spec: spec/07 §3
+-- expect: error U4002 at 14:42
+module handler_fail_pc
+
+kind VaultError = | Refused
+
+capability Vault
+  op note(flag: Bool) -> Unit
+    fails VaultError
+    accepts secret
+
+handler picky() for Vault
+  op note(flag) = if flag then unit else fail Refused

@@ -1,0 +1,16 @@
+-- test: opaque predicate calls a helper with inferred effects (review control)
+-- spec: spec/03 §4
+-- expect: error U3001 at 14:20
+-- expect: error U2015 at 16:44
+module effect_in_opaque_predicate
+
+kind StoreError = | Timeout
+
+capability Store
+  op find(key: Int) -> Option[Int]
+    fails StoreError
+  op count() -> Int
+
+counter() -> Int = @store.count()
+
+predicate opaque big(n: Int) -> Bool = n > counter()

@@ -1,0 +1,13 @@
+-- test: `via` is a public function imported from an untrusted module (review control)
+-- spec: spec/07 §7
+-- expect: error U4005 at src/app/keys.una:11:7
+trusted module app.keys
+
+import app.util (masked)
+
+pub policy mask
+  from secret[PII] Text
+  to Text
+  via masked
+  purpose "show the last digits"
+  owner privacy

@@ -1,0 +1,19 @@
+-- test: second effect inside an `if none use` clause (review control)
+-- spec: spec/04 §4
+-- expect: error U3013 at 18:17
+module two_effects_handling_clause
+
+kind StoreError = | Timeout
+
+capability Store
+  op find(key: Int) -> Option[Int]
+    fails StoreError
+  op count() -> Int
+
+pub run() -> Int
+  uses @store: Store[find, count]
+=
+  let v = @store.find(1)
+    if error use None
+    if none use @store.count()
+  v
