@@ -1195,19 +1195,21 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         }
     }
 
-    /// `expect fails V`: `V` is a variant of an error kind of the `do` expression, or of a
-    /// kind in scope when none has it (DECISION D-048).
+    /// `expect fails V`: `V` is a variant of an error kind of the `do` expression, and U1001
+    /// otherwise (`spec/10 §12` rule 1, R-020). When the `do` expression cannot fail, any
+    /// variant in scope is accepted, as before, until ADR 0044 is decided (DECISION D-048).
     fn expected_failure(&mut self, variant: &Ident, fails: &[Ty]) {
         let name = self.name(variant);
         let in_kind = fails.iter().any(|kind| match self.resolve(kind) {
             Ty::Kind(id, _) => self.variant_index(id, name).is_some(),
             _ => false,
         });
-        let in_scope = self
-            .env
-            .upper(self.module, name)
-            .iter()
-            .any(|entity| matches!(entity, Entity::Variant(..)));
+        let in_scope = fails.is_empty()
+            && self
+                .env
+                .upper(self.module, name)
+                .iter()
+                .any(|entity| matches!(entity, Entity::Variant(..)));
         if in_kind || in_scope || fails.iter().any(|kind| self.resolve(kind) == Ty::Error) {
             return;
         }
