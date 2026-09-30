@@ -72,13 +72,13 @@ pub fn obligations(program: &Program, sources: &SourceDb) -> Vec<Obligation> {
                 Decl::Handler {
                     name,
                     params,
-                    capability,
+                    capability_path,
                     ops,
                     ..
                 } => {
                     for op in ops {
                         walker.declaration = format!("{}.{name}.{}", module.path, op.name);
-                        walker.handler_op(params, capability, op);
+                        walker.handler_op(params, capability_path, op);
                     }
                 }
                 Decl::Pred {
@@ -195,7 +195,8 @@ struct Kind<'p> {
 pub(crate) struct Index<'p> {
     contracts: BTreeMap<(&'p str, &'p str), Contract<'p>>,
     predicates: BTreeMap<(&'p str, &'p str), Predicate<'p>>,
-    capabilities: BTreeMap<&'p str, &'p [CapOp]>,
+    /// Capabilities by qualified identity (`spec/10 §11` rule 8), the host ones included.
+    capabilities: BTreeMap<(&'p str, &'p str), &'p [CapOp]>,
     handlers: BTreeMap<(&'p str, &'p str), &'p [(Name, Type)]>,
     kinds: BTreeMap<(&'p str, &'p str), Kind<'p>>,
     policies: BTreeMap<(&'p str, &'p str), (&'p Type, &'p Type)>,
@@ -237,6 +238,14 @@ impl<'p> Index<'p> {
                 },
             );
         }
+        // `spec/14 §3`: the host capabilities, declared in `std.host`.
+        for decl in &program.host {
+            if let Decl::Cap { name, ops } = decl {
+                index
+                    .capabilities
+                    .insert((una_core::HOST_MODULE, name.as_str()), ops);
+            }
+        }
         for module in &program.modules {
             let path = module.path.as_str();
             for decl in &module.decls {
@@ -263,7 +272,7 @@ impl<'p> Index<'p> {
                             .insert((path, name.as_str()), (params, formula.as_ref()));
                     }
                     Decl::Cap { name, ops } => {
-                        index.capabilities.entry(name.as_str()).or_insert(ops);
+                        index.capabilities.insert((path, name.as_str()), ops);
                     }
                     Decl::Handler { name, params, .. } => {
                         index.handlers.insert((path, name.as_str()), params);
@@ -301,6 +310,14 @@ impl<'p> Index<'p> {
             }
         }
         index
+    }
+
+    /// The operation `op` of the capability declared as `capability`, looked up by resolved
+    /// identity, never by bare name (ADR 0038 D6, `spec/10 §11` rule 8).
+    fn operation(&self, capability: &una_core::Path, op: &str) -> Option<&'p CapOp> {
+        self.capabilities
+            .get(&(capability.module.as_str(), capability.name.as_str()))
+            .and_then(|ops| ops.iter().find(|o| o.name == op))
     }
 
     /// The refinements of the `to` types of the policies whose `via` function is `name` of
@@ -648,18 +665,14 @@ impl<'p, 'i> Walker<'p, 'i> {
     fn handler_op(
         &mut self,
         handler_params: &'p [(Name, Type)],
-        capability: &str,
+        capability: &una_core::Path,
         op: &'p una_core::HandlerOp,
     ) {
         let mut ctx = Ctx::default();
         for (name, ty) in handler_params {
             self.bind(&mut ctx, name, ty);
         }
-        let signature = self
-            .index
-            .capabilities
-            .get(capability)
-            .and_then(|ops| ops.iter().find(|o| o.name == op.name));
+        let signature = self.index.operation(capability, &op.name);
         let mut renames: BTreeMap<&str, &str> = BTreeMap::new();
         if let Some(signature) = signature {
             for ((name, ty), binder) in signature.params.iter().zip(&op.params) {
@@ -1150,7 +1163,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             }
             Rhs::Apply { .. } => {}
             Rhs::Op {
-                capability,
+                capability_path,
                 op,
                 args,
                 arg_spans,
@@ -1158,11 +1171,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 ..
             } => {
                 let values: Vec<Tv> = args.iter().map(|a| self.atom(a, ctx)).collect();
-                let signature = self
-                    .index
-                    .capabilities
-                    .get(capability.as_str())
-                    .and_then(|ops| ops.iter().find(|o| o.name == *op));
+                let signature = self.index.operation(capability_path, op);
                 if let Some(signature) = signature {
                     let contract = Contract {
                         params: &signature.params,
@@ -2572,6 +2581,58 @@ mod tests {
             sort: sort.to_owned(),
             role: ConstRole::Plain,
         })
+    }
+
+    #[test]
+    fn capabilities_are_looked_up_by_qualified_identity() {
+        // ADR 0038 D6: a user capability `Files` is not `std.host.Files`, and two capabilities
+        // of one name in two modules keep their own contracts.
+        let read = |ensures: Vec<Clause>| CapOp {
+            name: "read".to_owned(),
+            params: vec![("path".to_owned(), base_type(Base::Text))],
+            result: base_type(Base::Text),
+            fails: None,
+            requires: Vec::new(),
+            ensures,
+            accepts: None,
+        };
+        let nonempty = Clause {
+            term: Term::Bool(true),
+            text: "result.len > 0".to_owned(),
+            span: None,
+        };
+        let files = |ensures| Decl::Cap {
+            name: "Files".to_owned(),
+            ops: vec![read(ensures)],
+        };
+        let program = Program {
+            modules: vec![
+                una_core::Module {
+                    path: "aaa".to_owned(),
+                    decls: vec![files(vec![nonempty])],
+                    examples: Vec::new(),
+                },
+                una_core::Module {
+                    path: "bbb".to_owned(),
+                    decls: vec![files(Vec::new())],
+                    examples: Vec::new(),
+                },
+            ],
+            library: Vec::new(),
+            host: vec![files(Vec::new())],
+        };
+        let index = Index::new(&program);
+        let ensures = |module: &str| {
+            let path = una_core::Path {
+                module: module.to_owned(),
+                name: "Files".to_owned(),
+            };
+            index.operation(&path, "read").map(|op| op.ensures.len())
+        };
+        assert_eq!(ensures(una_core::HOST_MODULE), Some(0));
+        assert_eq!(ensures("aaa"), Some(1));
+        assert_eq!(ensures("bbb"), Some(0));
+        assert_eq!(ensures("ccc"), None);
     }
 
     #[test]
