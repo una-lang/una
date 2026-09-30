@@ -10,9 +10,18 @@ use super::check::Checker;
 use super::label::{Accepts, Label};
 use super::ty::{FnUse, ShowLabeled, Ty};
 
+/// `from ⊑ to`, where a symbolic label is below `to` only if `to` contains it or is `⊤`
+/// (`spec/07 §7` rule 8, ADR 0038 D3.2).
+pub(crate) fn below(from: &Label, to: &Label, top: &Label) -> bool {
+    if from.flows_to(to) {
+        return true;
+    }
+    top.concrete().flows_to(to) && from.concrete().flows_to(to)
+}
+
 /// The first position where a value's type does not flow into a declared type: the label
-/// found there and the label allowed there.
-fn violation(found: &Ty, expected: &Ty, covariant: bool) -> Option<(Label, Label)> {
+/// found there and the label allowed there. `top` is `⊤`.
+fn violation(found: &Ty, expected: &Ty, covariant: bool, top: &Label) -> Option<(Label, Label)> {
     // A `Unit` value has one inhabitant, so it carries no information (DECISION D-089).
     if matches!(expected.unlabeled(), Ty::Unit) {
         return None;
@@ -22,23 +31,28 @@ fn violation(found: &Ty, expected: &Ty, covariant: bool) -> Option<(Label, Label
     } else {
         (expected.top_label(), found.top_label())
     };
-    if !from.flows_to(&to) {
+    if !below(&from, &to, top) {
         return Some((from, to));
     }
     match (found.unlabeled(), expected.unlabeled()) {
-        (Ty::List(x), Ty::List(y)) => violation(x, y, covariant),
+        (Ty::List(x), Ty::List(y)) => violation(x, y, covariant, top),
         (Ty::Kind(i, xs), Ty::Kind(j, ys)) if i == j => xs
             .iter()
             .zip(ys)
-            .find_map(|(x, y)| violation(x, y, covariant)),
+            .find_map(|(x, y)| violation(x, y, covariant, top)),
         (Ty::Fn(f), Ty::Fn(g)) => f
             .params
             .iter()
             .zip(&g.params)
-            .find_map(|(x, y)| violation(x, y, !covariant))
-            .or_else(|| violation(&f.result, &g.result, covariant)),
+            .find_map(|(x, y)| violation(x, y, !covariant, top))
+            .or_else(|| violation(&f.result, &g.result, covariant, top)),
         _ => None,
     }
+}
+
+/// Whether `label` contains the symbolic label of a type parameter.
+pub(crate) fn symbolic(label: &Label) -> bool {
+    label.symbols.iter().any(|symbol| !symbol.starts_with('?'))
 }
 
 impl Checker<'_, '_, '_> {
@@ -65,7 +79,8 @@ impl Checker<'_, '_, '_> {
             return;
         }
         let (found_ty, expected_ty) = (self.labeled(found), self.labeled(expected));
-        let Some((from, to)) = violation(&found_ty, &expected_ty, true) else {
+        let top = self.top();
+        let Some((from, to)) = violation(&found_ty, &expected_ty, true, &top) else {
             return;
         };
         let (found_shown, expected_shown) = (
@@ -98,7 +113,7 @@ impl Checker<'_, '_, '_> {
             return;
         }
         let allowed = expected.top_label();
-        if label.flows_to(&allowed) {
+        if below(label, &allowed, &self.top()) {
             return;
         }
         self.report.error(
@@ -162,12 +177,11 @@ impl Checker<'_, '_, '_> {
         self.report.push(diagnostic);
     }
 
-    /// The meet of the `accepts` labels of the operations in `uses`, `⊥` when `fails`, and
-    /// `⊤` (`None`) for pure code that cannot fail (`spec/10 §5`).
-    pub(crate) fn bound(&self, uses: &[FnUse], fails: bool) -> Option<Label> {
-        if fails {
-            return Some(Label::public());
-        }
+    /// The meet of the `accepts` labels of the operations in `uses`, `bound_eff` of
+    /// `spec/07 §7` rule 4, and `⊤` (`None`) when none of them bounds its arguments
+    /// (`spec/10 §5`). A callee that can fail is bounded by `⊥` besides, which
+    /// [`Checker::call_under_pc`] checks at the program counter of the call.
+    pub(crate) fn bound(&self, uses: &[FnUse]) -> Option<Label> {
         let mut bound: Option<Label> = None;
         for need in uses {
             let Some(capability) = need.capability.and_then(|c| self.env.capabilities.get(c))
@@ -190,40 +204,77 @@ impl Checker<'_, '_, '_> {
         bound
     }
 
-    /// U4002: a call of `callee`, or the installation of a handler (`installed`), whose effects
-    /// and failures are bounded by `bound`, under the program counter (`spec/07 §3` rule 4,
-    /// `spec/10 §5`; DECISION D-093). `fails` tells whether the callee can fail.
+    /// U4002: a call of `callee`, or the installation of a handler (`installed`), with the
+    /// effects of `uses` and failures when `fails`, under the program counter (`spec/07 §3`
+    /// rule 4, `spec/10 §5`; DECISION D-093). `value` is the label of the function value called,
+    /// which raises the program counter of the call (T-App, ADR 0038 D1).
+    /// - A callee that can fail is allowed only under a `public` program counter, that of the
+    ///   body itself in a handler operation (ADR 0038 D4).
+    /// - Effects are allowed only when the program counter, raised by the effect floor of a
+    ///   handler operation body (ADR 0038 D4), is below `bound_eff`, and never under a
+    ///   symbolic program counter (ADR 0038 D3.3).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn call_under_pc(
         &mut self,
         span: Span,
         callee: &str,
-        bound: Option<Label>,
+        uses: &[FnUse],
         fails: bool,
         installed: bool,
+        value: &Label,
     ) {
-        if !self.labels() || self.ctx.pc.is_public() {
+        if !self.labels() {
             return;
         }
-        let Some(bound) = bound else {
-            return;
-        };
-        if self.ctx.pc.flows_to(&bound) {
-            return;
-        }
-        let pc = self.ctx.pc.clone();
-        let reason = if fails {
-            "can fail".to_owned()
-        } else {
-            format!("has effects that accept at most `{bound}` data")
-        };
+        let pc = self.ctx.pc.join(value);
         let action = if installed { "installed" } else { "called" };
-        let mut diagnostic = self.report.make(
-            Code::U4002,
-            span,
-            format!(
-                "{callee} {reason}, and it is {action} under a `{pc}` condition, which would be revealed"
+        if fails && !pc.is_public() {
+            self.under_pc(
+                span,
+                format!(
+                    "{callee} can fail, and it is {action} under a `{pc}` condition, which would be revealed"
+                ),
+            );
+            return;
+        }
+        if uses.is_empty() {
+            return;
+        }
+        let floor = self.ctx.floor.clone();
+        let effect_pc = floor.as_ref().map_or_else(|| pc.clone(), |f| pc.join(f));
+        if effect_pc.is_public() {
+            return;
+        }
+        if symbolic(&effect_pc) {
+            self.under_pc(
+                span,
+                format!(
+                    "{callee} has effects, and it is {action} under a `{pc}` condition on a value of a type parameter, whose label is known only at each call"
+                ),
+            );
+            return;
+        }
+        let Some(bound) = self.bound(uses) else {
+            return;
+        };
+        if effect_pc.flows_to(&bound) {
+            return;
+        }
+        let message = match floor {
+            Some(floor) if pc.flows_to(&bound) => format!(
+                "{callee} has effects that accept at most `{bound}` data, and it is {action} in an operation body whose callers may pass `{floor}` data, which it would reveal"
             ),
-        );
+            _ => format!(
+                "{callee} has effects that accept at most `{bound}` data, and it is {action} under a `{pc}` condition, which would be revealed"
+            ),
+        };
+        self.under_pc(span, message);
+    }
+
+    /// U4002 at `span`, with the condition that raised the program counter as a related
+    /// location.
+    fn under_pc(&mut self, span: Span, message: String) {
+        let mut diagnostic = self.report.make(Code::U4002, span, message);
         if let Some(from) = self.ctx.pc_from {
             diagnostic
                 .related
@@ -231,7 +282,6 @@ impl Checker<'_, '_, '_> {
         }
         self.report.push(diagnostic);
     }
-
     /// U4002: a policy that lowers data to `to`, called under a program counter above it
     /// (`spec/07 §5` rule 2, T-Declassify).
     pub(crate) fn declassify_under_pc(&mut self, span: Span, callee: &str, to: &Label) {
@@ -285,18 +335,36 @@ impl Checker<'_, '_, '_> {
         if !self.labels() {
             return;
         }
+        // ADR 0038 D3.3: no capability operation under a symbolic program counter.
+        if symbolic(&self.ctx.pc) {
+            let pc = self.ctx.pc.clone();
+            self.under_pc(
+                span,
+                format!(
+                    "{what} runs under a `{pc}` condition on a value of a type parameter, whose label is known only at each call, so its sink cannot be checked here"
+                ),
+            );
+            return;
+        }
         let Some(accepts) = accepts else {
             return;
         };
-        if !self.ctx.pc.flows_to(accepts) {
-            let pc = self.ctx.pc.clone();
-            let mut diagnostic = self.report.make(
-                Code::U4003,
-                span,
-                format!(
+        // ADR 0038 D4: in a handler operation body, the effect floor raises the program
+        // counter to the operation's `accepts`.
+        let floor = self.ctx.floor.clone();
+        let pc = floor
+            .as_ref()
+            .map_or_else(|| self.ctx.pc.clone(), |f| self.ctx.pc.join(f));
+        if !pc.flows_to(accepts) {
+            let message = match floor {
+                Some(floor) if self.ctx.pc.flows_to(accepts) => format!(
+                    "{what} accepts `{accepts}` data, and it runs in an operation body whose callers may pass `{floor}` data, which it would reveal"
+                ),
+                _ => format!(
                     "{what} accepts `{accepts}` data, and it runs under a `{pc}` condition, which it would reveal"
                 ),
-            );
+            };
+            let mut diagnostic = self.report.make(Code::U4003, span, message);
             if let Some(from) = self.ctx.pc_from {
                 diagnostic
                     .related
@@ -307,7 +375,7 @@ impl Checker<'_, '_, '_> {
         }
         for (arg_span, ty) in args {
             let label = self.labeled(ty).deep_label();
-            if !label.flows_to(accepts) {
+            if !below(&label, accepts, &self.top()) {
                 self.report.error(
                     Code::U4003,
                     *arg_span,

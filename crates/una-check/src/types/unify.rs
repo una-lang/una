@@ -3,7 +3,8 @@
 
 use una_syntax::Span;
 
-use super::ty::{FnTy, Ty};
+use super::label::Label;
+use super::ty::{FnTy, FnUse, Ty};
 
 /// Why a unification variable exists, for the diagnostic when inference leaves it unknown
 /// (DECISION D-054).
@@ -54,30 +55,90 @@ impl Vars {
     /// `ty` with every solved variable replaced by its value, and without labels: what type
     /// checking compares.
     pub(crate) fn resolve(&self, ty: &Ty) -> Ty {
-        self.resolve_labeled(ty).erase()
+        self.resolve_shape(ty).erase()
     }
 
-    /// `ty` with every solved variable replaced by its value, labels included (DECISION D-088).
+    /// `ty` with every solved variable replaced by its value, labels included (DECISION D-088),
+    /// and the label of each variable that a label names (see [`Vars::label_of`]) replaced by
+    /// the join of every label of the variable's value, as it is now.
     pub(crate) fn resolve_labeled(&self, ty: &Ty) -> Ty {
+        self.settle(&self.resolve_shape(ty), &[])
+    }
+
+    /// The symbolic label that stands for `ℓ*(σ)` of the variables among `tys`, the join of every
+    /// label of their values, resolved lazily by [`Vars::resolve_labeled`] so that labels the
+    /// variables take later count (ADR 0038 D3, generic instantiation).
+    pub(crate) fn label_of(tys: &[Ty]) -> Label {
+        let mut label = Label::public();
+        for ty in tys {
+            if let Ty::Var(var) = ty {
+                label.symbols.insert(format!("?{var}"));
+            }
+        }
+        label
+    }
+
+    /// `ty` with every solved variable replaced by its value, labels included, and the labels
+    /// of variables left symbolic.
+    fn resolve_shape(&self, ty: &Ty) -> Ty {
         match self.shallow(ty) {
-            Ty::Labeled(label, inner) => self.resolve_labeled(&inner).with_label(&label),
-            Ty::List(element) => Ty::List(Box::new(self.resolve_labeled(&element))),
-            Ty::Kind(id, args) => Ty::Kind(
-                id,
-                args.iter().map(|arg| self.resolve_labeled(arg)).collect(),
-            ),
+            Ty::Labeled(label, inner) => self.resolve_shape(&inner).with_label(&label),
+            Ty::List(element) => Ty::List(Box::new(self.resolve_shape(&element))),
+            Ty::Kind(id, args) => {
+                Ty::Kind(id, args.iter().map(|arg| self.resolve_shape(arg)).collect())
+            }
             Ty::Fn(function) => Ty::Fn(Box::new(FnTy {
                 params: function
                     .params
                     .iter()
-                    .map(|p| self.resolve_labeled(p))
+                    .map(|p| self.resolve_shape(p))
                     .collect(),
-                result: self.resolve_labeled(&function.result),
+                result: self.resolve_shape(&function.result),
                 uses: function.uses.clone(),
                 fails: function.fails.as_ref().map(|f| self.resolve(f)),
             })),
             other => other,
         }
+    }
+
+    /// `ty`, already resolved, with the labels of variables replaced; `visiting` holds the
+    /// variables being replaced, whose labels are not counted twice.
+    fn settle(&self, ty: &Ty, visiting: &[usize]) -> Ty {
+        ty.map_labels(&|label| self.settle_label(label, &mut visiting.to_vec()))
+    }
+
+    fn settle_label(&self, label: &Label, visiting: &mut Vec<usize>) -> Label {
+        if !label.symbols.iter().any(|s| s.starts_with('?')) {
+            return label.clone();
+        }
+        let mut settled = label.clone();
+        settled.symbols.retain(|s| !s.starts_with('?'));
+        for symbol in &label.symbols {
+            let Some(var) = symbol
+                .strip_prefix('?')
+                .and_then(|n| n.parse::<usize>().ok())
+            else {
+                continue;
+            };
+            if visiting.contains(&var) {
+                continue;
+            }
+            visiting.push(var);
+            let value = self.resolve_shape(&Ty::Var(var));
+            let value = self.settle(&value, visiting);
+            settled = settled.join(&value.deep_label());
+            visiting.pop();
+        }
+        settled
+    }
+
+    /// `ty` with the variables and labels at its top removed: its shape at the top.
+    fn bare(&self, ty: &Ty) -> Ty {
+        let mut current = self.shallow(ty);
+        while let Ty::Labeled(_, inner) = current {
+            current = self.shallow(&inner);
+        }
+        current
     }
 
     /// `ty` with the variables at its top replaced by their values, labels kept; its
@@ -92,7 +153,7 @@ impl Vars {
     /// The labels of `a` and `b` joined position by position; they have one shape, as after
     /// unification. Function parameters meet, since they are contravariant.
     pub(crate) fn join(&self, a: &Ty, b: &Ty) -> Ty {
-        combine(&self.resolve_labeled(a), &self.resolve_labeled(b), true)
+        combine(&self.resolve_shape(a), &self.resolve_shape(b), true)
     }
 
     fn occurs(&self, var: usize, ty: &Ty) -> bool {
@@ -159,7 +220,7 @@ impl Vars {
         let b = self.shallow(b);
         // Top labels do not take part in equality; an unsolved variable takes the other side
         // with its labels.
-        let (a_bare, b_bare) = (self.shallow(a.unlabeled()), self.shallow(b.unlabeled()));
+        let (a_bare, b_bare) = (self.bare(&a), self.bare(&b));
         match (&a_bare, &b_bare) {
             (Ty::Var(x), Ty::Var(y)) if x == y => return true,
             (Ty::Var(_), Ty::Never) | (Ty::Never, Ty::Var(_)) => return true,
@@ -250,13 +311,36 @@ fn combine(a: &Ty, b: &Ty, join: bool) -> Ty {
                 .map(|(x, y)| combine(x, y, !join))
                 .collect(),
             result: combine(&f.result, &g.result, join),
-            uses: f.uses.clone(),
-            fails: f.fails.clone(),
+            // ADR 0038 D1: a joined function type keeps the `uses` and `fails` of both.
+            uses: union_uses(&f.uses, &g.uses),
+            fails: f.fails.clone().or_else(|| g.fails.clone()),
         })),
         (Ty::Var(_), other) if !matches!(other, Ty::Var(_)) => other.clone(),
         (same, _) => same.clone(),
     };
     base.with_label(&label)
+}
+
+/// The capabilities of `a` and those of `b`: a reference both name keeps the operations of
+/// both, in the order of `a`, then `b`.
+fn union_uses(a: &[FnUse], b: &[FnUse]) -> Vec<FnUse> {
+    let mut uses = a.to_vec();
+    for need in b {
+        match uses
+            .iter_mut()
+            .find(|u| u.name == need.name && u.capability == need.capability)
+        {
+            Some(known) => {
+                for op in &need.ops {
+                    if !known.ops.contains(op) {
+                        known.ops.push(op.clone());
+                    }
+                }
+            }
+            None => uses.push(need.clone()),
+        }
+    }
+    uses
 }
 
 #[cfg(test)]
@@ -298,6 +382,7 @@ mod tests {
         let secret = Label {
             level: Level::Secret,
             categories: std::collections::BTreeSet::new(),
+            symbols: std::collections::BTreeSet::new(),
         };
         let mut vars = Vars::default();
         let t = vars.fresh(Origin::Element, span());

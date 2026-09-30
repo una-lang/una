@@ -234,6 +234,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 _ => false,
             };
             if effects && !site.argument && self.pass == Pass::Check && self.base != Base::Quiet {
+                self.escaped.push(ident.span);
                 self.report.error(
                     Code::U3006,
                     ident.span,
@@ -256,6 +257,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 // argument.
                 if effects && !site.argument && self.pass == Pass::Check && self.base != Base::Quiet
                 {
+                    self.escaped.push(ident.span);
                     self.report.error(
                         Code::U3006,
                         ident.span,
@@ -298,6 +300,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let args = self.instantiate(&def.type_params, def.name, span);
         if !args.is_empty() {
             self.instances.push((id, args.clone(), span));
+            self.instantiation(def.name, &def.type_params, args.clone(), Vec::new(), span);
         }
         self.edge(id, span);
         self.resolved(
@@ -313,7 +316,17 @@ impl<'a> Checker<'_, 'a, '_> {
                 .iter()
                 .map(|p| p.ty.base.substitute(&args))
                 .collect(),
-            result: def.result.base.substitute(&args),
+            // The result of a generic function carries the labels of its type arguments, which
+            // the value's type records lazily, since they are known only once the value flows
+            // somewhere (`spec/10 §5`, generic instantiation; DECISION D-TBD-a2).
+            result: if args.is_empty() {
+                def.result.base.substitute(&args)
+            } else {
+                def.result
+                    .base
+                    .substitute(&args)
+                    .raise_deep(&super::unify::Vars::label_of(&args))
+            },
             uses: def.uses.iter().map(|need| need.usage.clone()).collect(),
             fails: def.fails.clone(),
         }))
@@ -448,6 +461,9 @@ impl<'a> Checker<'_, 'a, '_> {
         for item in items {
             self.expr(item, Some(&element));
         }
+        // ADR 0038 D2: the element type instantiates the type parameter of `List`.
+        let values = items.iter().map(|item| (item.span, Ty::Param(0))).collect();
+        self.instantiation("List", &["T"], vec![element.clone()], values, span);
         Ty::List(Box::new(element))
     }
 
@@ -781,7 +797,12 @@ impl<'a> Checker<'_, 'a, '_> {
     ) {
         self.returned(span);
         if let (Some(expected), Role::Return(name)) = (expected, role) {
-            self.flow(span, ty, expected, &format!("the result of `{name}`"));
+            // The declared result of a generic function may carry the symbolic labels of its
+            // type parameters (`spec/07 §7` rule 8).
+            let found = self.labeled(ty);
+            let found = self.without_own_symbols(&found);
+            self.flow(span, &found, expected, &format!("the result of `{name}`"));
+            self.fn_flow(span, expected, ty);
         }
     }
 
@@ -795,9 +816,13 @@ impl<'a> Checker<'_, 'a, '_> {
         role: Role<'_>,
     ) {
         if let (Some(expected), Role::Return(name)) = (expected, role) {
+            let mut label = label.clone();
+            label
+                .symbols
+                .retain(|s| !self.type_params.iter().any(|p| p == s));
             self.implicit_result(
                 condition,
-                label,
+                &label,
                 expected,
                 &format!("the result of `{name}`"),
             );
@@ -855,6 +880,7 @@ impl<'a> Checker<'_, 'a, '_> {
                         .env
                         .lower_type(self.module, written, &type_params, self.report)
                         .base;
+                    let lowered = self.symbolic(&lowered);
                     match from_shape {
                         Some(from_shape) if !self.vars.unify(&from_shape, &lowered) => {
                             let (declared, given) = (self.show(&lowered), self.show(&from_shape));
@@ -867,7 +893,20 @@ impl<'a> Checker<'_, 'a, '_> {
                             );
                             (lowered, from_shape)
                         }
-                        _ => (lowered.clone(), lowered),
+                        Some(from_shape) => {
+                            // ADR 0038 D1: the values the lambda receives flow into the type
+                            // its body assumes for the parameter.
+                            self.fn_flow_param(written.span, &lowered, &from_shape);
+                            let given = self.labeled(&from_shape);
+                            self.flow(
+                                written.span,
+                                &given,
+                                &lowered,
+                                &format!("lambda parameter `{name}`"),
+                            );
+                            (lowered, from_shape)
+                        }
+                        None => (lowered.clone(), lowered),
                     }
                 }
                 // The body assumes the labels the parameter has now; the lambda's type records
@@ -906,6 +945,7 @@ impl<'a> Checker<'_, 'a, '_> {
             && self.pass == Pass::Check
             && self.base != Base::Quiet
         {
+            self.escaped.push(span);
             self.report.error(
                 Code::U3006,
                 span,
@@ -951,6 +991,7 @@ impl<'a> Checker<'_, 'a, '_> {
             let found = checker.expr(body, result.as_ref());
             if let Some(result) = &result {
                 checker.flow(body.span, &found, result, "the result of this lambda");
+                checker.fn_flow(body.span, result, &found);
             }
             found
         });

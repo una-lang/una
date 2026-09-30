@@ -50,22 +50,25 @@ impl Let {
 
 /// Elaborates the package's modules, in path order, and the contracts of the standard
 /// library; a declaration with a diagnostic, or with a resolution missing, is left out.
+/// Returns the program, and in debug builds the components of checker types that a Core IR
+/// binder type lost, with the span of their declaration ([`lost`]).
 pub(crate) fn program(
     env: &Env<'_>,
     findings: &Findings,
     sources: &SourceDb,
     standard: &SourceDb,
-) -> Program {
+) -> (Program, Vec<(Span, String)>) {
     let dbs = Dbs { sources, standard };
+    let mut lost = Vec::new();
     let mut modules: Vec<CoreModule> = (0..env.prelude)
         .filter(|module| env.reports(*module))
-        .map(|module| elaborate_module(env, findings, dbs, module))
+        .map(|module| elaborate_module(env, findings, dbs, module, &mut lost))
         .collect();
     modules.sort_by(|a, b| a.path.cmp(&b.path));
     let library = (env.prelude..env.modules.len())
         .flat_map(|module| library(env, findings, dbs, module))
         .collect();
-    Program { modules, library }
+    (Program { modules, library }, lost)
 }
 
 /// The sources of the package, and those of the standard modules, which have a database of
@@ -76,7 +79,13 @@ struct Dbs<'e> {
     standard: &'e SourceDb,
 }
 
-fn elaborate_module(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>, module: usize) -> CoreModule {
+fn elaborate_module(
+    env: &Env<'_>,
+    findings: &Findings,
+    dbs: Dbs<'_>,
+    module: usize,
+    lost: &mut Vec<(Span, String)>,
+) -> CoreModule {
     let mut out = CoreModule {
         path: env
             .modules
@@ -106,6 +115,7 @@ fn elaborate_module(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>, module: us
             }
             _ => {}
         }
+        lost.extend(fx.lost.take().into_iter().map(|what| (decl.span, what)));
     }
     out
 }
@@ -145,6 +155,9 @@ struct Fx<'e, 'a> {
     result: Option<Name>,
     /// A resolution was missing: the declaration is not elaborated.
     broken: bool,
+    /// What the Core IR types of this declaration lost of the checker types they come from
+    /// (ADR 0038 D1, the consistency check of `spec/10 §2`).
+    lost: std::cell::RefCell<Vec<String>>,
 }
 
 impl<'e, 'a> Fx<'e, 'a> {
@@ -162,6 +175,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             it: None,
             result: None,
             broken: false,
+            lost: std::cell::RefCell::new(Vec::new()),
         }
     }
 
@@ -201,12 +215,24 @@ impl<'e, 'a> Fx<'e, 'a> {
 
     // ----- types -----
 
+    /// The Core IR type of a checker type. In debug builds, the result is compared with `ty`,
+    /// and a component that it lost is recorded, for U8001 (ADR 0038 D1).
     fn ty(&self, ty: &Ty) -> Type {
+        let core = self.convert(ty);
+        if cfg!(debug_assertions)
+            && let Some(what) = lost(ty, &core)
+        {
+            self.lost.borrow_mut().push(what);
+        }
+        core
+    }
+
+    fn convert(&self, ty: &Ty) -> Type {
         match ty {
-            Ty::Labeled(label, inner) => with_label(self.ty(inner), label),
+            Ty::Labeled(label, inner) => with_label(self.convert(inner), label),
             Ty::Fn(function) => Type::Fn {
-                params: function.params.iter().map(|p| self.ty(p)).collect(),
-                result: Box::new(self.ty(&function.result)),
+                params: function.params.iter().map(|p| self.convert(p)).collect(),
+                result: Box::new(self.convert(&function.result)),
                 uses: self.uses_of(&function.uses),
                 fails: function.fails.as_ref().map(|f| self.kind_name(f)),
                 label: Label::public(),
@@ -229,7 +255,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             Ty::List(element) => Base::Named {
                 module: "prelude".to_owned(),
                 name: "List".to_owned(),
-                args: vec![self.ty(element)],
+                args: vec![self.convert(element)],
             },
             Ty::Kind(id, args) => Base::Named {
                 module: self
@@ -240,7 +266,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     .map(|module| module.path.clone())
                     .unwrap_or_default(),
                 name: self.env.kind_name(*id).to_owned(),
-                args: args.iter().map(|a| self.ty(a)).collect(),
+                args: args.iter().map(|a| self.convert(a)).collect(),
             },
             Ty::Param(index) => Base::Param(
                 self.type_params
@@ -2082,6 +2108,79 @@ fn bin_op(op: BinaryOp) -> BinOp {
     }
 }
 
+/// The first component of the checker type `ty` that the Core IR type `core` lost: a label, the
+/// `uses` or `fails` of a function type, or a type argument, at any position (ADR 0038 D1).
+/// Unification variables, `Never` and the error type have no Core IR form and are skipped.
+fn lost(ty: &Ty, core: &Type) -> Option<String> {
+    let label = match core {
+        Type::Base { label, .. } | Type::Fn { label, .. } => label,
+    };
+    if matches!(ty.unlabeled(), Ty::Var(_) | Ty::Never | Ty::Error) {
+        return None;
+    }
+    if *label != ty.top_label() {
+        return Some(format!("the label `{}` became `{label}`", ty.top_label()));
+    }
+    match (ty.unlabeled(), core) {
+        (
+            Ty::Fn(function),
+            Type::Fn {
+                params,
+                result,
+                uses,
+                fails,
+                ..
+            },
+        ) => {
+            let same_uses = function.uses.len() == uses.len()
+                && function
+                    .uses
+                    .iter()
+                    .zip(uses)
+                    .all(|(need, core)| need.name == core.cap && need.ops == core.ops);
+            if !same_uses {
+                return Some("the `uses` of a function type".to_owned());
+            }
+            if function.fails.is_some() != fails.is_some() {
+                return Some("the `fails` of a function type".to_owned());
+            }
+            // ADR 0037 hook: function types of the checker carry no refinements in v0.1, so
+            // there is nothing to compare with the refinements of `params` and `result` yet;
+            // F-0001-02 compares them here once they are kept.
+            if params.len() != function.params.len() {
+                return Some("a parameter of a function type".to_owned());
+            }
+            function
+                .params
+                .iter()
+                .zip(params)
+                .find_map(|(ty, core)| lost(ty, core))
+                .or_else(|| lost(&function.result, result))
+        }
+        (Ty::Fn(_), Type::Base { .. }) => Some("a function type".to_owned()),
+        (
+            Ty::List(element),
+            Type::Base {
+                base: Base::Named { args, .. },
+                ..
+            },
+        ) => args.first().and_then(|core| lost(element, core)),
+        (
+            Ty::Kind(_, args),
+            Type::Base {
+                base: Base::Named { args: core, .. },
+                ..
+            },
+        ) => {
+            if args.len() != core.len() {
+                return Some("a type argument".to_owned());
+            }
+            args.iter().zip(core).find_map(|(ty, core)| lost(ty, core))
+        }
+        _ => None,
+    }
+}
+
 fn with_label(ty: Type, label: &Label) -> Type {
     match ty {
         Type::Base {
@@ -2138,5 +2237,76 @@ fn signed(value: &SignedInt) -> String {
         format!("-{}", value.digits)
     } else {
         value.digits.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn logging() -> FnUse {
+        FnUse {
+            name: "log".to_owned(),
+            capability: Some(0),
+            ops: vec!["write".to_owned()],
+        }
+    }
+
+    fn core_fn(uses: Vec<Use>, fails: Option<String>, label: Label) -> Type {
+        Type::Fn {
+            params: vec![plain(Base::Text)],
+            result: Box::new(unit()),
+            uses,
+            fails,
+            label,
+        }
+    }
+
+    #[test]
+    fn the_consistency_check_finds_lost_uses_fails_and_labels() {
+        let secret = Label {
+            level: una_core::Level::Secret,
+            categories: std::collections::BTreeSet::new(),
+            symbols: std::collections::BTreeSet::new(),
+        };
+        let function = Ty::Fn(Box::new(super::super::ty::FnTy {
+            params: vec![Ty::Text],
+            result: Ty::Unit,
+            uses: vec![logging()],
+            fails: Some(Ty::Kind(0, Vec::new())),
+        }));
+        let kept = core_fn(
+            vec![Use {
+                cap: "log".to_owned(),
+                capability: "Log".to_owned(),
+                ops: vec!["write".to_owned()],
+            }],
+            Some("Boom".to_owned()),
+            Label::public(),
+        );
+        assert_eq!(lost(&function, &kept), None);
+        let no_uses = core_fn(Vec::new(), Some("Boom".to_owned()), Label::public());
+        assert!(lost(&function, &no_uses).is_some());
+        let no_fails = core_fn(
+            vec![Use {
+                cap: "log".to_owned(),
+                capability: "Log".to_owned(),
+                ops: vec!["write".to_owned()],
+            }],
+            None,
+            Label::public(),
+        );
+        assert!(lost(&function, &no_fails).is_some());
+        let listed = Ty::List(Box::new(function.clone().with_label(&secret)));
+        let dropped = Type::Base {
+            base: Base::Named {
+                module: "prelude".to_owned(),
+                name: "List".to_owned(),
+                args: vec![kept.clone()],
+            },
+            refinements: Vec::new(),
+            label: Label::public(),
+        };
+        assert!(lost(&listed, &dropped).is_some());
     }
 }

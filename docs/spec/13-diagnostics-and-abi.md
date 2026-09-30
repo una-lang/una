@@ -139,6 +139,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U3013 | authority | Effectful or fallible call nested inside an expression |
 | U3014 | authority | Host capability used in an example |
 | U3015 | authority | `std.testing` used outside a handler or example |
+| U3016 | authority | Second-class type used as a type argument |
 | U4001 | security | Flow to a lower label |
 | U4002 | security | Implicit flow through control, failure or call under raised pc |
 | U4003 | security | Sink label exceeded |
