@@ -811,6 +811,26 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(first) = taken.first_mut() {
             *first = receiver.is_some();
         }
+        // R-030: a repair of an unknown label suggests only a parameter that no other
+        // argument gives, so applying it cannot make the argument a duplicate (U2006).
+        let mut given_params = taken.clone();
+        for (index, arg) in args.iter().enumerate() {
+            let target = match &arg.label {
+                Some(label) => names.iter().position(|name| *name == self.name(label)),
+                None => self
+                    .punned(arg, &names)
+                    .or((index + offset == 0).then_some(0)),
+            };
+            if let Some(slot) = target.and_then(|target| given_params.get_mut(target)) {
+                *slot = true;
+            }
+        }
+        let open: Vec<&str> = names
+            .iter()
+            .zip(&given_params)
+            .filter(|(_, given)| !**given)
+            .map(|(name, _)| *name)
+            .collect();
         let mut targets: Vec<Option<usize>> = Vec::new();
         let mut problem = false;
         for (index, arg) in args.iter().enumerate() {
@@ -820,7 +840,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 match names.iter().position(|name| *name == label_name) {
                     Some(target) => Some(target),
                     None => {
-                        self.unknown_label(callee, &names, label);
+                        self.unknown_label(callee, &open, label);
                         None
                     }
                 }
@@ -904,7 +924,8 @@ impl<'a> Checker<'_, 'a, '_> {
         checked
     }
 
-    /// U2005: a label that names no parameter.
+    /// U2005: a label that names no parameter; `names` are the parameters that no other
+    /// argument gives, which the repair may suggest.
     fn unknown_label(&mut self, callee: &str, names: &[&str], label: &Ident) {
         let label_name = self.name(label);
         let mut diagnostic = self.report.make(
@@ -918,10 +939,13 @@ impl<'a> Checker<'_, 'a, '_> {
                 label.span,
                 close,
             )),
+            None if names.is_empty() => diagnostic.repairs.push(Report::advice(
+                "every parameter is given by another argument; remove this one",
+            )),
             None => {
                 let listed: Vec<String> = names.iter().map(|n| format!("`{n}`")).collect();
                 diagnostic.repairs.push(Report::advice(format!(
-                    "the parameters are {}",
+                    "the parameters that no other argument gives are {}",
                     listed.join(", ")
                 )));
             }
@@ -1058,6 +1082,26 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         let names: Vec<&str> = fields.iter().map(|f| f.name).collect();
         let mut taken: Vec<bool> = fields.iter().map(|_| false).collect();
+        // R-030: the repair of an unknown field suggests only a field that no other argument
+        // gives, so applying it cannot make the argument a duplicate (U2006; DECISION D-TBD-p2).
+        let mut given_fields = taken.clone();
+        for (position, arg) in args.iter().enumerate() {
+            let target = match &arg.label {
+                Some(label) => names.iter().position(|n| *n == self.name(label)),
+                None => self
+                    .punned(arg, &names)
+                    .or((fields.len() == 1 && position == 0).then_some(0)),
+            };
+            if let Some(slot) = target.and_then(|target| given_fields.get_mut(target)) {
+                *slot = true;
+            }
+        }
+        let open: Vec<&str> = names
+            .iter()
+            .zip(&given_fields)
+            .filter(|(_, given)| !**given)
+            .map(|(name, _)| *name)
+            .collect();
         let mut targets: Vec<Option<usize>> = Vec::new();
         let mut problem = false;
         for (position, arg) in args.iter().enumerate() {
@@ -1070,11 +1114,15 @@ impl<'a> Checker<'_, 'a, '_> {
                         label.span,
                         format!("`{constructor}` has no field `{label_name}`"),
                     );
-                    if let Some(close) = closest(label_name, names.iter().copied()) {
+                    if let Some(close) = closest(label_name, open.iter().copied()) {
                         diagnostic.repairs.push(self.report.edit(
                             format!("write `{close}`"),
                             label.span,
                             close,
+                        ));
+                    } else if open.is_empty() {
+                        diagnostic.repairs.push(Report::advice(
+                            "every field is given by another argument; remove this one",
                         ));
                     }
                     self.report.push(diagnostic);
