@@ -2,11 +2,18 @@
 
 Answer each with its letter. The recommended option comes first. Your earlier answer to E1 of the first review still applies: no tag until every Critical is fixed and re-reviewed.
 
-**E1. How do user generic kinds carry labels?** (N-002)
+Two of the five new Criticals have a cause in the spec, so each needs an ADR:
+- N-002, answered by E1;
+- the `requires` case of N-004, answered by E2.
+
+N-001, N-003 and N-005, and the refined-parameter case of N-004, are implementation bugs under rules that already exist (see "Origin and root cause" in `summary.md`), so they have no escalation.
+
+**E1. How do user generic kinds carry labels?** (N-002, spec/07 §7 rule 2)
 - A (recommended): each kind parameter gets a variance computed from its fields. It is covariant where the parameter appears only in data positions, and invariant where it appears inside a function type. This amends spec/07 §7 rule 2 through an ADR, and rejects `Sink[Int]` as `Sink[secret Int]`.
 - B: compare kind values structurally, field by field, as is done for `List`. Precise, but more code, and diagnostics would point at fields instead of the type argument.
+- C: make every user kind argument invariant for labels. This is the simplest and strictest option, but it rejects ordinary upgrades such as passing a `Box[Int]` where a `Box[secret Int]` is expected. Use it only if A cannot land before the tag.
 
-**E2. What may a policy's `via` function require?** (N-004)
+**E2. What may a policy's `via` function require?** (N-004. spec/07 §5 rule 4 already covers the parameter-type case; the spec is silent on `requires`.)
 - A (recommended): nothing beyond `from`. Its parameter type must equal `from` except for labels (spec/07 §5 rule 4 already says so), and a `via` with `requires` is U4005. Simple and strict.
 - B: allow both, and generate the `via`'s precondition and parameter refinements as obligations at every policy call. More permissive, and more verifier code.
 
