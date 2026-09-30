@@ -336,7 +336,7 @@ Each diagnostic has a registered code (65 in nine domains: syntax, names, types,
 }
 ```
 
-Exit codes: `0` success; `1` errors in the program, an unproven obligation or a failed example; `2` a usage or configuration error; `3` an internal compiler error (U8001), which is always a bug. Problems of `una.toml` (U7002) and `verification.lock` (U7004) are diagnostics and exit with `1`.
+Exit codes: `0` success; `1` errors in the program, an unproven obligation or a failed example; `2` a usage error, a problem of the invocation reported on stderr without a diagnostic document; `3` an internal compiler error (U8001), which is always a bug. Problems of `una.toml` (U7002) and `verification.lock` (U7004) are diagnostics and exit with `1`.
 
 ### The build report
 

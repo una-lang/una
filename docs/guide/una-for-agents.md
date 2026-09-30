@@ -26,7 +26,7 @@ una trace EVENTS_3  # in examples/events
 una contract events.checkin.check_in  # in examples/events
 ```
 
-Exit codes: `0` success; `1` errors in the program, an unproven obligation or a failed example; `2` a usage or configuration error; `3` an internal compiler error (U8001), which is a bug to report. Problems of `una.toml` (U7002) and `verification.lock` (U7004) are diagnostics and exit with `1`. With `--json`, stdout holds exactly one JSON document and stderr stays empty.
+Exit codes: `0` success; `1` errors in the program, an unproven obligation or a failed example; `2` a usage error, a problem of the invocation reported on stderr without a diagnostic document; `3` an internal compiler error (U8001), which is a bug to report. Problems of `una.toml` (U7002) and `verification.lock` (U7004) are diagnostics and exit with `1`. With `--json`, stdout holds exactly one JSON document and stderr stays empty.
 
 ## 2. Files and packages
 
