@@ -218,9 +218,12 @@ impl<'a> Checker<'_, 'a, '_> {
 
     /// A call of a function value: positional arguments only.
     fn call_value(&mut self, ty: &Ty, args: &[Arg], span: Span, what: &str, site: Site) -> Ty {
-        let labeled = self.labeled(ty);
-        let value_label = labeled.top_label();
-        let function = match labeled.unlabeled().clone() {
+        let value_label = self.labeled(ty).top_label();
+        // The function type is taken before its labels are settled: the result of a generic
+        // function value carries the labels of type arguments that the arguments of this call
+        // may still solve (ADR 0038 D3.2, DECISION D-137, re-review N-003).
+        let head = self.vars.head(ty);
+        let function = match head.unlabeled().clone() {
             Ty::Fn(function) => *function,
             Ty::Labeled(..) => {
                 self.unchecked(args);
@@ -294,6 +297,7 @@ impl<'a> Checker<'_, 'a, '_> {
             flows.push((arg.value.span, found, param.clone()));
         }
         for (arg_span, found, param) in flows {
+            self.instantiated_by(arg_span, &param, &found);
             self.flow(arg_span, &found, &param, &format!("the argument of {what}"));
         }
         // Calling a function value needs the capabilities of its type (`spec/10 §2`, S-Fun).
@@ -522,7 +526,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let mut label = Label::public();
         let mut functions = Vec::new();
         for (span, found, expected, param) in checked {
-            label = label.join(&self.labeled(&found).deep_label());
+            label = label.join(&self.deep(&found));
             if matches!(self.resolve(&expected), Ty::Fn(_)) {
                 functions.push((span, found, expected, param));
             }
@@ -701,7 +705,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 .iter()
                 .any(|&i| def.params.get(i).is_some_and(|p| p.name == param));
             if is_carried {
-                carried = carried.join(&self.labeled(&found).deep_label());
+                carried = carried.join(&self.deep(&found));
             } else {
                 sinks.push((arg_span, found));
             }
@@ -1201,7 +1205,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 let origin = self.origin(module, field.span);
                 self.obligation(ObligationKind::Refinement, arg.value.span, origin);
             }
-            values.push((arg.value.span, field.ty.base.clone()));
+            values.push((arg.value.span, field.ty.base.clone(), found.clone()));
             flows.push((arg.value.span, found, expected, field.name));
         }
         if !targs.is_empty() {
@@ -1288,15 +1292,16 @@ fn generic_result(prelude: usize, def: &FnDef<'_>, subst: &[Ty], result: Ty) -> 
     result.raise_deep(&Vars::label_of(subst))
 }
 
-/// The declared type of the parameter of each checked argument, with where the argument is.
-fn declared_args(params: &[ParamDef<'_>], checked: &[Checked<'_>]) -> Vec<(Span, Ty)> {
+/// The declared type of the parameter of each checked argument, with where the argument is
+/// and its own type.
+fn declared_args(params: &[ParamDef<'_>], checked: &[Checked<'_>]) -> Vec<(Span, Ty, Ty)> {
     checked
         .iter()
-        .filter_map(|(span, _, _, name)| {
+        .filter_map(|(span, found, _, name)| {
             params
                 .iter()
                 .find(|p| p.name == *name)
-                .map(|p| (*span, p.ty.base.clone()))
+                .map(|p| (*span, p.ty.base.clone(), found.clone()))
         })
         .collect()
 }

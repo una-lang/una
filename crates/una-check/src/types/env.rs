@@ -3,6 +3,7 @@
 //! lowering of written types (U2002, U2003).
 
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use una_diag::Code;
 use una_syntax::ast::{
@@ -16,7 +17,8 @@ use super::Report;
 use super::closest;
 use super::label::{Accepts, Label};
 use super::ty::{
-    AliasId, CapId, Declared, FnRefinements, FnTy, FnUse, KindId, Names, Refinement, Show, Ty,
+    AliasId, CapId, Declared, FnRefinements, FnTy, FnUse, KindId, KindLabels, Names, Refinement,
+    Show, Ty,
 };
 
 /// A module the checker knows: a package module, the prelude or `std.testing`.
@@ -250,6 +252,9 @@ pub(crate) struct Env<'a> {
     pub(crate) categories: Vec<String>,
     /// The `via` function of each policy, and the policy (`spec/07 §5`).
     pub(crate) vias: BTreeMap<usize, usize>,
+    /// The labels that each kind's fields declare and the variance of its type parameters
+    /// (re-review N-001, ADR 0046), computed once the signatures are lowered.
+    pub(crate) kind_labels: Rc<KindLabels>,
     alias_state: Vec<AliasState>,
 }
 
@@ -274,6 +279,7 @@ impl<'a> Env<'a> {
             prelude: count,
             categories,
             vias: BTreeMap::new(),
+            kind_labels: Rc::new(KindLabels::default()),
             alias_state: Vec::new(),
         };
         for source in package.into_iter().chain([prelude, testing]) {
@@ -298,6 +304,20 @@ impl<'a> Env<'a> {
                 env.vias.entry(target).or_insert(id);
             }
         }
+        let fields: Vec<Vec<&Ty>> = env
+            .kinds
+            .iter()
+            .map(|kind| {
+                kind.record
+                    .iter()
+                    .flatten()
+                    .chain(kind.variants.iter().flat_map(|v| v.fields.iter()))
+                    .map(|field| &field.ty.base)
+                    .collect()
+            })
+            .collect();
+        let params: Vec<usize> = env.kinds.iter().map(|kind| kind.params.len()).collect();
+        env.kind_labels = Rc::new(KindLabels::new(&fields, &params));
         env
     }
 
@@ -1074,7 +1094,7 @@ impl<'a> Env<'a> {
             report.error(
                 Code::U3016,
                 span,
-                "this type argument is, or holds, a function type with `uses` or `fails`, which is second-class and cannot instantiate a type parameter; take the function as a parameter of function type instead",
+                "this type argument is, or holds, a function type with `uses` or `fails`, which is second-class, so it cannot instantiate a type parameter; take the function as a parameter of function type instead",
             );
         }
     }

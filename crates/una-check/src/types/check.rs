@@ -245,13 +245,14 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         module: usize,
     ) -> Checker<'c, 'a, 's> {
         let started = report.count();
+        let kinds = env.kind_labels.clone();
         Checker {
             env,
             facts,
             report,
             findings,
             module,
-            vars: Vars::default(),
+            vars: Vars::new(kinds),
             type_params: Vec::new(),
             locals: Vec::new(),
             frames: Vec::new(),

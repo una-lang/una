@@ -8,7 +8,7 @@ use una_syntax::Span;
 use super::authority::{Base, Pass};
 use super::check::Checker;
 use super::label::{Accepts, Label};
-use super::ty::{FnUse, ShowLabeled, Ty};
+use super::ty::{FnUse, KindLabels, ShowLabeled, Ty};
 
 /// `from ⊑ to`, where a symbolic label is below `to` only if `to` contains it or is `⊤`
 /// (`spec/07 §7` rule 8, ADR 0038 D3.2).
@@ -20,8 +20,16 @@ pub(crate) fn below(from: &Label, to: &Label, top: &Label) -> bool {
 }
 
 /// The first position where a value's type does not flow into a declared type: the label
-/// found there and the label allowed there. `top` is `⊤`.
-fn violation(found: &Ty, expected: &Ty, covariant: bool, top: &Label) -> Option<(Label, Label)> {
+/// found there and the label allowed there. `top` is `⊤`. Kind arguments are compared by the
+/// variance of their parameters (ADR 0046 rule 2): a covariant one as data, an invariant one
+/// in both directions, so that its labels are equal at every position.
+fn violation(
+    found: &Ty,
+    expected: &Ty,
+    covariant: bool,
+    top: &Label,
+    kinds: &KindLabels,
+) -> Option<(Label, Label)> {
     // A `Unit` value has one inhabitant, so it carries no information.
     if matches!(expected.unlabeled(), Ty::Unit) {
         return None;
@@ -35,17 +43,24 @@ fn violation(found: &Ty, expected: &Ty, covariant: bool, top: &Label) -> Option<
         return Some((from, to));
     }
     match (found.unlabeled(), expected.unlabeled()) {
-        (Ty::List(x), Ty::List(y)) => violation(x, y, covariant, top),
-        (Ty::Kind(i, xs), Ty::Kind(j, ys)) if i == j => xs
-            .iter()
-            .zip(ys)
-            .find_map(|(x, y)| violation(x, y, covariant, top)),
+        (Ty::List(x), Ty::List(y)) => violation(x, y, covariant, top, kinds),
+        (Ty::Kind(i, xs), Ty::Kind(j, ys)) if i == j => {
+            xs.iter().zip(ys).enumerate().find_map(|(index, (x, y))| {
+                violation(x, y, covariant, top, kinds).or_else(|| {
+                    if kinds.is_invariant(*i, index) {
+                        violation(x, y, !covariant, top, kinds)
+                    } else {
+                        None
+                    }
+                })
+            })
+        }
         (Ty::Fn(f), Ty::Fn(g)) => f
             .params
             .iter()
             .zip(&g.params)
-            .find_map(|(x, y)| violation(x, y, !covariant, top))
-            .or_else(|| violation(&f.result, &g.result, covariant, top)),
+            .find_map(|(x, y)| violation(x, y, !covariant, top, kinds))
+            .or_else(|| violation(&f.result, &g.result, covariant, top, kinds)),
         _ => None,
     }
 }
@@ -67,6 +82,13 @@ impl Checker<'_, '_, '_> {
         self.vars.resolve_labeled(ty)
     }
 
+    /// The deep label of `ty`, its solved variables replaced: the join of every label at a
+    /// position that holds data, the labels its kinds' fields declare included (`spec/07 §7`
+    /// rule 3, re-review N-001).
+    pub(crate) fn deep(&self, ty: &Ty) -> Label {
+        self.labeled(ty).deep_label(&self.env.kind_labels)
+    }
+
     /// `⊤`: `restricted` with every declared category.
     pub(crate) fn top(&self) -> Label {
         Label::top(&self.env.categories)
@@ -80,7 +102,9 @@ impl Checker<'_, '_, '_> {
         }
         let (found_ty, expected_ty) = (self.labeled(found), self.labeled(expected));
         let top = self.top();
-        let Some((from, to)) = violation(&found_ty, &expected_ty, true, &top) else {
+        let Some((from, to)) =
+            violation(&found_ty, &expected_ty, true, &top, &self.env.kind_labels)
+        else {
             return;
         };
         let (found_shown, expected_shown) = (
@@ -94,6 +118,18 @@ impl Checker<'_, '_, '_> {
                 "{into} is `{expected_shown}`, and this value is `{found_shown}`: a flow from `{from}` to `{to}`"
             ),
         );
+    }
+
+    /// U4001: each branch of a construct, at its span and of its type, flows into the value
+    /// that joins them (ADR 0046 rule 3). The join is above every branch except at an
+    /// invariant parameter of a kind, where it keeps the labels of the first branch.
+    pub(crate) fn join_flows(&mut self, joined: &Ty, branches: Vec<(Span, Ty)>) {
+        if branches.len() < 2 {
+            return;
+        }
+        for (span, ty) in branches {
+            self.flow(span, &ty, joined, "the value that joins the branches");
+        }
     }
 
     /// U4001 for an implicit flow into a result: a branching construct in a return position
@@ -378,7 +414,7 @@ impl Checker<'_, '_, '_> {
             return;
         }
         for (arg_span, ty) in args {
-            let label = self.labeled(ty).deep_label();
+            let label = self.labeled(ty).every_label(&self.env.kind_labels);
             if !below(&label, accepts, &self.top()) {
                 self.report.error(
                     Code::U4003,

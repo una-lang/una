@@ -149,7 +149,7 @@ impl<'a> Checker<'_, 'a, '_> {
             self.annotated(stmt.name.span, declared);
         }
         // The local keeps the labels its value has now; later unifications do not change them.
-        let bound = declared.map_or_else(|| self.labeled(&ty), |declared| declared.base);
+        let bound = declared.map_or_else(|| self.vars.resolve_bound(&ty), |declared| declared.base);
         self.typed(stmt.name.span, &bound);
         self.bind(name, bound);
     }
@@ -261,7 +261,12 @@ impl<'a> Checker<'_, 'a, '_> {
                     let used = self.within(ctx, |checker| {
                         checker.expr_as(value, Some(&expected), Role::Plain)
                     });
-                    current = self.vars.join(&current, &used);
+                    let before = current;
+                    current = self.vars.join(&before, &used);
+                    self.join_flows(
+                        &current,
+                        vec![(handled.expr.span, before), (value.span, used)],
+                    );
                 }
                 HandlingKind::NoneFail(variant) => {
                     self.impure(handling.span, || "`if none fail`".to_owned());
@@ -284,7 +289,12 @@ impl<'a> Checker<'_, 'a, '_> {
                     let saved = self.raise_pc(&option, handled.expr.span);
                     let used = self.expr_as(value, Some(&expected), Role::Plain);
                     self.restore_pc(saved);
-                    current = self.vars.join(&current, &used).with_label(&option);
+                    let joined = self.vars.join(&current, &used);
+                    self.join_flows(
+                        &joined,
+                        vec![(handled.expr.span, current), (value.span, used)],
+                    );
+                    current = joined.with_label(&option);
                 }
             }
         }
@@ -380,7 +390,21 @@ impl<'a> Checker<'_, 'a, '_> {
             self.resolve(&then_ty) == Ty::Never,
             self.resolve(&else_ty) == Ty::Never,
         ) {
-            (false, false) => self.vars.join(&then_ty, &else_ty),
+            (false, false) => {
+                let value = self.vars.join(&then_ty, &else_ty);
+                let else_span = match block.otherwise.as_ref() {
+                    ElseBranch::Block(otherwise) => value_span(otherwise),
+                    ElseBranch::If(next) => next.span,
+                };
+                self.join_flows(
+                    &value,
+                    vec![
+                        (value_span(&block.then_block), then_ty),
+                        (else_span, else_ty),
+                    ],
+                );
+                value
+            }
             (false, true) => then_ty,
             (true, false) => else_ty,
             (true, true) => joined.unwrap_or(Ty::Never),
@@ -418,6 +442,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let mut value_arms = false;
         let mut problem = false;
         let mut joined = expected.cloned();
+        let mut arms = Vec::new();
         for arm in &when.arms {
             let pattern = arm.pattern.span;
             if let Some(otherwise) = else_arm {
@@ -562,6 +587,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 if joined.is_none() {
                     joined = Some(ty.clone());
                 }
+                arms.push((body_span(&arm.body), ty.clone()));
                 value = Some(match value {
                     Some(value) => self.vars.join(&value, &ty),
                     None => ty,
@@ -570,6 +596,9 @@ impl<'a> Checker<'_, 'a, '_> {
             self.locals.truncate(mark);
         }
         self.restore_pc(saved);
+        if let Some(value) = &value {
+            self.join_flows(value, arms);
+        }
         if !problem && else_arm.is_none() {
             if variant_arms && let Some((kind, _)) = self.sum_of(&scrutinee) {
                 self.exhaustive(when, kind, &covered);
@@ -712,6 +741,23 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         // The field of each binding.
         self.ordered(pattern, order);
+    }
+}
+
+/// The span of the value of a block: its final statement, or the block.
+fn value_span(block: &Block) -> Span {
+    match block.stmts.last() {
+        Some(Stmt::Handled(handled)) => handled.expr.span,
+        Some(Stmt::BlockExpr(expr)) => block_expr_span(expr),
+        _ => block.span,
+    }
+}
+
+/// The span of the value of a body.
+fn body_span(body: &Body) -> Span {
+    match body {
+        Body::Line(expr) => expr.span,
+        Body::Block(block) => value_span(block),
     }
 }
 
