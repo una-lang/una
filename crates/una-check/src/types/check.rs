@@ -11,7 +11,7 @@ use una_syntax::ast::{
 };
 
 use super::authority::{Base, Bound, Collected, Frame, Pass};
-use super::env::{Entity, Env, FnDef, FnKind, HandlerDef};
+use super::env::{Entity, Env, FnAst, FnDef, FnKind, HandlerDef};
 use super::facts::KindFacts;
 use super::label::Label;
 use super::records::{Records, Res};
@@ -290,6 +290,20 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     pub(crate) fn show(&self, ty: &Ty) -> String {
         let resolved = self.vars.resolve(ty);
         Show(&resolved, self).to_string()
+    }
+
+    /// A written type as Una names it: a refined type by its refined kind or range, without
+    /// its label.
+    pub(crate) fn show_declared(&self, declared: &Declared) -> String {
+        match declared.refinements.last() {
+            Some(Refinement::Alias(id, _)) => self
+                .env
+                .aliases
+                .get(*id)
+                .map_or_else(|| self.show(&declared.base), |alias| alias.name.to_owned()),
+            Some(Refinement::Range(range, _)) => format!("{} {range}", self.show(&declared.base)),
+            None => self.show(&declared.base),
+        }
     }
 
     /// `ty` with its solved variables replaced.
@@ -838,32 +852,59 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 ),
             );
         }
-        let from = def.params.first().map_or(Ty::Error, |p| p.ty.base.clone());
-        let to = def.result.base.clone();
+        let from = def
+            .params
+            .first()
+            .map_or_else(|| Declared::plain(Ty::Error), |p| p.ty.clone());
+        let to = def.result.clone();
         let fits = target.kind == FnKind::Function
             && target.type_params.is_empty()
             && target.params.len() == 1
             && target
                 .params
                 .iter()
-                .all(|p| self.vars.unify(&p.ty.base, &from))
-            && self.vars.unify(&target.result.base, &to);
-        if !fits {
+                .all(|p| self.vars.unify(&p.ty.base, &from.base))
+            && self.vars.unify(&target.result.base, &to.base);
+        // ADR 0047 rule 1: the types match except for labels, refinements included, so the
+        // argument of a policy call, checked against `from`, meets every assumption of the
+        // `via` body, and its result is the `to` type.
+        let refined = fits
+            && target.params.iter().all(|p| same_refinements(&p.ty, &from))
+            && same_refinements(&target.result, &to);
+        if !fits || !refined {
             let params: Vec<String> = target
                 .params
                 .iter()
-                .map(|p| self.show(&p.ty.base))
+                .map(|p| self.show_declared(&p.ty))
                 .collect();
             let message = format!(
                 "`via` function `{via}` must take a `{}` and return a `{}`; it is `fn({}) -> {}`",
-                self.show(&from),
-                self.show(&to),
+                self.show_declared(&from),
+                self.show_declared(&to),
                 params.join(", "),
-                self.show(&target.result.base)
+                self.show_declared(&target.result)
             );
             // Types other than labels match between a policy and its `via`
             // function (`spec/07 §5` rule 4).
             self.report.error(Code::U4005, policy.via.span, message);
+        }
+        // ADR 0047 rule 2: a policy call checks its argument against `from` only, so a `via`
+        // function has no precondition.
+        if let FnAst::Function(decl) = target.ast
+            && self.pass == Pass::Check
+        {
+            for clause in &decl.clauses {
+                if matches!(clause.kind, ClauseKind::Requires(_)) {
+                    self.report.error(
+                        Code::U4005,
+                        clause.span,
+                        format!(
+                            "`via` function `{via}` of policy `{}` has a `requires` clause, which a policy call never checks; remove it and handle every value of the `from` type",
+                            def.name
+                        ),
+                    );
+                }
+            }
         }
     }
 
@@ -1052,7 +1093,9 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                     };
                     self.within(ctx, |checker| checker.condition(expr, "an `expect` line"));
                 }
-                ExpectationKind::Fails(variant) => self.expected_failure(variant, &fails),
+                ExpectationKind::Fails(variant) => {
+                    self.expected_failure(variant, &fails, &ty);
+                }
                 ExpectationKind::Performed { cap, op, .. } => self.performed(cap, op),
             }
         }
@@ -1204,32 +1247,41 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     }
 
     /// `expect fails V`: `V` is a variant of an error kind of the `do` expression, and U1001
-    /// otherwise (`spec/10 §12` rule 1, R-020). When the `do` expression cannot fail, any
-    /// variant in scope is accepted, as before, until ADR 0044 is decided.
-    fn expected_failure(&mut self, variant: &Ident, fails: &[Ty]) {
+    /// otherwise (`spec/10 §12` rule 1, R-020). When the `do` expression cannot fail,
+    /// `expect fails V` never holds, and it is U1001 too (ADR 0044). `action` is the type of
+    /// the `do` expression: one that failed to type reports nothing more.
+    /// DECISION D-TBD-f22: "cannot fail" means that the `do` expression calls nothing that
+    /// can fail; a failing call whose failure a handling clause absorbs still counts as able
+    /// to fail, so no example is rejected for a failure it might observe.
+    fn expected_failure(&mut self, variant: &Ident, fails: &[Ty], action: &Ty) {
         let name = self.name(variant);
+        if fails.is_empty() {
+            if self.resolve(action) == Ty::Error {
+                return;
+            }
+            let mut diagnostic = self.report.make(
+                Code::U1001,
+                variant.span,
+                format!("the `do` expression cannot fail, so `expect fails {name}` never holds"),
+            );
+            diagnostic.repairs.push(Report::advice(format!(
+                "remove the line `expect fails {name}`, or make the `do` line call what fails with `{name}`"
+            )));
+            self.report.push(diagnostic);
+            return;
+        }
         let in_kind = fails.iter().any(|kind| match self.resolve(kind) {
             Ty::Kind(id, _) => self.variant_index(id, name).is_some(),
             _ => false,
         });
-        let in_scope = fails.is_empty()
-            && self
-                .env
-                .upper(self.module, name)
-                .iter()
-                .any(|entity| matches!(entity, Entity::Variant(..)));
-        if in_kind || in_scope || fails.iter().any(|kind| self.resolve(kind) == Ty::Error) {
+        if in_kind || fails.iter().any(|kind| self.resolve(kind) == Ty::Error) {
             return;
         }
         let kinds: Vec<String> = fails
             .iter()
             .map(|kind| format!("`{}`", self.show(kind)))
             .collect();
-        let message = if kinds.is_empty() {
-            format!("cannot find variant `{name}` in this module, its imports or the prelude")
-        } else {
-            format!("cannot find variant `{name}` in {}", kinds.join(" or "))
-        };
+        let message = format!("cannot find variant `{name}` in {}", kinds.join(" or "));
         self.report.error(Code::U1001, variant.span, message);
     }
 
@@ -1297,4 +1349,25 @@ fn predicate_body_span(body: &una_syntax::ast::Body) -> Span {
         una_syntax::ast::Body::Line(expr) => expr.span,
         una_syntax::ast::Body::Block(block) => block.span,
     }
+}
+
+/// Whether two written types carry the same refinements (ADR 0047 rule 1): the same refined
+/// kinds and ranges, in order, and the same refinements of the function types they contain.
+/// A range compares by its text, wherever it is written.
+/// DECISION D-TBD-f21: ADR 0047 does not say whether an alias without a `where` clause of
+/// its own, `kind P2 = Pos`, is another refined kind than `Pos`; it carries exactly the
+/// refinements of `Pos`, so the policy call's check against `from` still meets every
+/// assumption of the `via` body, and it matches.
+fn same_refinements(a: &Declared, b: &Declared) -> bool {
+    let same = |x: &Refinement, y: &Refinement| match (x, y) {
+        (Refinement::Range(x, _), Refinement::Range(y, _)) => x == y,
+        (x, y) => x == y,
+    };
+    a.refinements.len() == b.refinements.len()
+        && a.refinements
+            .iter()
+            .zip(&b.refinements)
+            .all(|(x, y)| same(x, y))
+        && !super::call::refinement_flow(&a.base, &b.base)
+        && !super::call::refinement_flow(&b.base, &a.base)
 }

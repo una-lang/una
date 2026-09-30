@@ -50,8 +50,8 @@ impl Let {
 
 /// Elaborates the package's modules, in path order, and the contracts of the standard
 /// library; a declaration with a diagnostic, or with a resolution missing, is left out.
-/// Returns the program, and in debug builds the components of checker types that a Core IR
-/// binder type lost, with the span of their declaration ([`lost`]).
+/// Returns the program, and the components of checker types that a Core IR binder type
+/// lost, with the span of their declaration ([`lost`]).
 pub(crate) fn program(
     env: &Env<'_>,
     findings: &Findings,
@@ -89,13 +89,28 @@ fn host(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>) -> Vec<Decl> {
         if let (DeclKind::Capability(_), Some(entity @ Entity::Capability(_))) =
             (&decl.kind, entity)
         {
-            let mut fx = Fx::new(env, &findings.records, dbs, env.prelude);
+            let mut fx = Fx::new(
+                env,
+                records_of(env, findings, env.prelude),
+                dbs,
+                env.prelude,
+            );
             if let Some(core) = fx.decl(&decl.kind, entity) {
                 out.push(core);
             }
         }
     }
     out
+}
+
+/// The records of module `module`: those of the package, or those of the standard modules,
+/// whose spans are those of another source database.
+fn records_of<'f>(env: &Env<'_>, findings: &'f Findings, module: usize) -> &'f Records {
+    if module >= env.prelude {
+        &findings.standard_records
+    } else {
+        &findings.records
+    }
 }
 
 /// The sources of the package, and those of the standard modules, which have a database of
@@ -128,7 +143,7 @@ fn elaborate_module(
         if findings.failed.contains(&decl.span) {
             continue;
         }
-        let mut fx = Fx::new(env, &findings.records, dbs, module);
+        let mut fx = Fx::new(env, records_of(env, findings, module), dbs, module);
         match (&decl.kind, entity) {
             (DeclKind::Example(example), _) => {
                 if let Some(example) = fx.example(example) {
@@ -155,7 +170,7 @@ fn library(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>, module: usize) -> V
     let mut out = Vec::new();
     for (decl, entity) in m.tree.decls.iter().zip(m.decls.clone()) {
         if let (DeclKind::Function(function), Some(Entity::Function(id))) = (&decl.kind, entity) {
-            let mut fx = Fx::new(env, &findings.records, dbs, module);
+            let mut fx = Fx::new(env, records_of(env, findings, module), dbs, module);
             if let Some(signature) = fx.signature(function, id) {
                 out.push(signature);
             }
@@ -242,13 +257,11 @@ impl<'e, 'a> Fx<'e, 'a> {
 
     // ----- types -----
 
-    /// The Core IR type of a checker type. In debug builds, the result is compared with `ty`,
-    /// and a component that it lost is recorded, for U8001 (ADR 0038 D1).
+    /// The Core IR type of a checker type. In every build, the result is compared with `ty`,
+    /// and a component that it lost is recorded, for U8001 (ADR 0038 D1, ADR 0045 rule 3).
     fn ty(&self, ty: &Ty) -> Type {
         let core = self.convert(ty);
-        if cfg!(debug_assertions)
-            && let Some(what) = lost(ty, &core)
-        {
+        if let Some(what) = lost(ty, &core) {
             self.lost.borrow_mut().push(what);
         }
         core
@@ -316,22 +329,22 @@ impl<'e, 'a> Fx<'e, 'a> {
     }
 
     /// A declared type, with the refinements of the kinds and ranges it names. Core IR has no
-    /// room for the refinement of a function-typed value (`spec/09 §2`), as of an alias kind
-    /// of a function type with a `where` clause: in debug builds it is recorded as lost, for
-    /// U8001 (ADR 0037 rule 11), never dropped silently.
+    /// room for the refinement of a function-typed value (`spec/09 §2`); such a `where` clause
+    /// is U2002 (ADR 0045), and one that still reaches here is recorded as lost in every
+    /// build, for U8001 (ADR 0037 rule 11), never dropped silently.
     fn declared(&mut self, declared: &Declared) -> Type {
         let ty = self.ty(&declared.base);
         self.refined_kept(ty, &declared.refinements)
     }
 
-    /// [`Fx::refined`], recording in debug builds a refinement that Core IR cannot hold.
+    /// [`Fx::refined`], recording in every build a refinement that Core IR cannot hold.
     fn refined_kept(&self, ty: Type, refinements: &[Refinement]) -> Type {
         let ty = self.refined(ty, refinements);
         let kept = match &ty {
             Type::Base { refinements, .. } => refinements.len(),
             Type::Fn { .. } => 0,
         };
-        if cfg!(debug_assertions) && kept < refinements.len() {
+        if kept < refinements.len() {
             self.lost
                 .borrow_mut()
                 .push("the refinement of a declared type".to_owned());
@@ -2173,10 +2186,16 @@ fn bind_expr(lets: &mut Vec<Let>, name: Name, ty: Type, expr: CoreExpr, span: Sp
                 });
                 current = *body;
             }
+            // ADR 0037 rule 2: an annotated binder whose function type differs from the type
+            // of the value keeps the temporary, so the flow from one to the other is an
+            // `Atom::Var` right side that the verifier checks, whatever the value is (N-005).
             CoreExpr::Atom {
                 atom: Atom::Var(var),
                 ..
-            } if lets.last().is_some_and(|last| last.name == var) => {
+            } if lets.last().is_some_and(|last| {
+                last.name == var && !(written && last.ty != ty && has_fn_type(&ty))
+            }) =>
+            {
                 if let Some(last) = lets.pop() {
                     lets.push(Let {
                         name,
@@ -2209,6 +2228,18 @@ fn bind_expr(lets: &mut Vec<Let>, name: Name, ty: Type, expr: CoreExpr, span: Sp
                 return;
             }
         }
+    }
+}
+
+/// Whether a Core type is or contains a function type, under type arguments.
+fn has_fn_type(ty: &Type) -> bool {
+    match ty {
+        Type::Fn { .. } => true,
+        Type::Base {
+            base: Base::Named { args, .. },
+            ..
+        } => args.iter().any(has_fn_type),
+        Type::Base { .. } => false,
     }
 }
 

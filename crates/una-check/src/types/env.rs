@@ -972,6 +972,29 @@ impl<'a> Env<'a> {
             return;
         };
         let base = self.lower_type(module, ty, &params, report);
+        // ADR 0045 rules 1 and 2: Core IR has no refinement over a function base, so a `where`
+        // clause on a kind whose base is a function type is ill-formed, at the clause. The
+        // clause is dropped after the report, so an alias of the kind is not reported again
+        // and no refinement is lost later.
+        let fn_base = matches!(base.base.unlabeled(), Ty::Fn(_));
+        let where_clause = self
+            .aliases
+            .get(id)
+            .and_then(|alias| alias.refinement.map(|expr| (alias.name, expr.span)));
+        if fn_base && let Some((name, span)) = where_clause {
+            if self.reports(module) {
+                report.error(
+                    Code::U2002,
+                    span,
+                    format!(
+                        "kind `{name}` refines a function type, which cannot be refined; remove the `where` clause, or refine the parameters or the result of the function type"
+                    ),
+                );
+            }
+            if let Some(alias) = self.aliases.get_mut(id) {
+                alias.refinement = None;
+            }
+        }
         if let Some(alias) = self.aliases.get_mut(id) {
             alias.base = base;
         }
@@ -1121,13 +1144,22 @@ impl<'a> Env<'a> {
             },
         )
         .to_string();
-        let what = match lowered.refinements.last() {
-            Some(Refinement::Alias(id, _)) => {
+        // N-010: a refined kind is named as written, not by the kind or range its alias goes
+        // through.
+        let written = match (&arg.core, &arg.range) {
+            (TypeCore::Named { name, .. }, None) => Some(self.text(module, name.name)),
+            _ => None,
+        };
+        let what = match (lowered.refinements.last(), written) {
+            (None, _) => return,
+            (Some(_), Some(name)) => format!("the refined kind `{name}`"),
+            (Some(Refinement::Alias(id, _)), None) => {
                 let name = self.aliases.get(*id).map_or("?", |a| a.name);
                 format!("the refined kind `{name}`")
             }
-            Some(Refinement::Range(range, _)) => format!("the refined type `{base} {range}`"),
-            None => return,
+            (Some(Refinement::Range(range, _)), None) => {
+                format!("the refined type `{base} {range}`")
+            }
         };
         let mut diagnostic = report.make(
             Code::U2002,
