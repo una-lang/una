@@ -1,0 +1,19 @@
+-- Adversarial: effect as a 'when' scrutinee
+-- Expected: U3013
+-- Observed: U3013 at 17:8
+-- Verdict: Pass
+module auth_effect_in_when_scrutinee
+
+kind StoreError = | Timeout
+
+capability Store
+  op find(key: Int) -> Option[Int]
+    fails StoreError
+  op count() -> Int
+
+pub run() -> Int
+  uses @store: Store[count]
+=
+  when @store.count()
+    is 0 -> 0
+    else -> 1

@@ -1,0 +1,32 @@
+-- Adversarial: effectful calls in 'expect' lines, one needing a host capability
+-- Expected: U3013/U3014
+-- Observed: U3013 at 31:20; U3013 at 32:10; U3014 at 32:10
+-- Verdict: Pass
+module auth_effect_in_expect
+
+kind StoreError = | Timeout
+
+capability Store
+  op find(key: Int) -> Option[Int]
+    fails StoreError
+  op count() -> Int
+
+handler rows(n: Int) for Store
+  op find(key) = None
+  op count() = n
+
+pub counted() -> Int
+  uses @store: Store[count]
+=
+  @store.count()
+
+pub greet() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("hi")
+
+example "an expect line with effects"
+  given @store = rows(n: 3)
+  do counted()
+  expect result == counted()
+  expect greet() == unit

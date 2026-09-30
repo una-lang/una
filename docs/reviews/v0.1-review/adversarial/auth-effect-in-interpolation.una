@@ -1,0 +1,17 @@
+-- Adversarial: effect inside interpolation
+-- Expected: U3013
+-- Observed: U3013 at 17:9
+-- Verdict: Pass
+module auth_effect_in_interpolation
+
+kind StoreError = | Timeout
+
+capability Store
+  op find(key: Int) -> Option[Int]
+    fails StoreError
+  op count() -> Int
+
+pub run() -> Text
+  uses @store: Store[count]
+=
+  "n = {@store.count()}"

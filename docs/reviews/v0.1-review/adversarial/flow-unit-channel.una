@@ -1,0 +1,12 @@
+-- Adversarial: Unit exemption abused around a secret branch
+-- Expected: U4001
+-- Observed: U4001 at 12:6
+-- Verdict: Pass
+module flow_unit_channel
+
+kind Flag = On | Off
+
+pub leak(flag: secret Bool) -> Flag
+=
+  let u: Unit = if flag then unit else unit
+  if flag then On else Off

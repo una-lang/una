@@ -1,0 +1,12 @@
+-- Adversarial: 'Keys.hmac' lowers secret data to internal Hashed with no policy and no report entry
+-- Expected: spec gap vs spec/07 §5 (labels lowered only through policies)
+-- Observed: accepted (exit 0)
+-- Verdict: MAJOR (spec, needs ADR)
+module flow_hmac_without_policy
+
+pub launder(phone: secret Text) -> internal Hashed
+  uses @keys: Keys[hmac]
+  fails KeyError
+=
+  @keys.hmac(key_name: "pepper", data: phone)
+    if error pass

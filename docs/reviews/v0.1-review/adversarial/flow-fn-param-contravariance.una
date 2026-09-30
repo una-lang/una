@@ -1,0 +1,9 @@
+-- Adversarial: lambda capturing a secret passed to a fn(Int) -> Int parameter
+-- Expected: U4001 (S-Fun)
+-- Observed: U4001 at 9:51
+-- Verdict: Pass
+module flow_fn_param_contravariance
+
+apply(f: fn(Int) -> Int, x: Int) -> Int = f(x)
+
+pub leak(pin: secret Int) -> Int = apply(fn(x) -> x + pin, x: 0)

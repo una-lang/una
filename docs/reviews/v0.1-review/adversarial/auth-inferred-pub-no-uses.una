@@ -1,0 +1,13 @@
+-- Adversarial: pub function without uses calls a private helper that uses a capability
+-- Expected: U3001/U3003
+-- Observed: U3001 at 11:20
+-- Verdict: Pass (U3001)
+module auth_inferred_pub_no_uses
+
+capability Log
+  op write(line: Text) -> Unit
+  op flush() -> Unit
+
+helper() -> Unit = @log.write("x")
+
+pub run() -> Unit = helper()

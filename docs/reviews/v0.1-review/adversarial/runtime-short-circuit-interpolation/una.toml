@@ -1,0 +1,8 @@
+[package]
+name = "runtime_short_circuit_interpolation"
+version = "0.1.0"
+edition = "0.1"
+
+[run]
+entry = "rt2"
+grants = ["console"]

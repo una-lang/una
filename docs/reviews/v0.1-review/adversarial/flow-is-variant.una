@@ -1,0 +1,7 @@
+-- Adversarial: 'is' test on a secret Option
+-- Expected: U4001 (spec/07 §7.3)
+-- Observed: U4001 at 7:46
+-- Verdict: Pass
+module flow_is_variant
+
+pub present(o: secret Option[Int]) -> Bool = o is Some
