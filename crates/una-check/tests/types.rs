@@ -751,7 +751,7 @@ fn clauses_are_in_the_refinement_language() {
 
 #[test]
 fn predicates_are_pure_total_and_not_recursive() {
-    // DECISION D-056 and D-065.
+    // DECISION D-056 and D-065; `helper` calls an opaque predicate outside `checked` (ADR 0042).
     assert_eq!(
         types(
             "kind Failure = | Oops\n\
@@ -787,6 +787,7 @@ fn predicates_are_pure_total_and_not_recursive() {
             "U2015 t.una:10:19 reflect predicate `again` calls itself; predicates are not recursive",
             "U2015 t.una:12:19 reflect predicate `ping` calls itself through `pong`; predicates are not recursive",
             "U2015 t.una:16:18 opaque predicate `via_function` calls itself through `helper`; predicates are not recursive",
+            "U2016 t.una:18:26 opaque predicate `via_function` is called outside `checked`, so its fact would bypass the escape budget",
             "U2015 t.una:20:44 `fail` in the body of a predicate, which must be pure and cannot fail",
             "U2015 t.una:23:11 `checked`, which can fail, in the body of a predicate, which must be pure and cannot fail",
             "U2015 t.una:26:50 call of `risky`, which can fail, in the body of a predicate, which must be pure and cannot fail",

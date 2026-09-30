@@ -125,6 +125,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U2013 | types | `it` or `error` outside its allowed position |
 | U2014 | types | Expression outside the refinement language |
 | U2015 | types | Invalid predicate body (impure, failing, recursive or outside RL for `reflect`) |
+| U2016 | types | Opaque predicate called outside `checked` |
 | U3001 | authority | Capability not in scope |
 | U3002 | authority | Operation not permitted by capability type |
 | U3003 | authority | Effects exceed declared `uses` |

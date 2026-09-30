@@ -1,0 +1,21 @@
+-- test: refined kinds as written type arguments of Option and List are rejected, so no unchecked signature remains (R-012)
+-- spec: spec/03 §3
+-- expect: error U2002 at 11:28
+-- expect: error U2002 at 13:27
+module refinement_type_arguments
+
+-- Promoted from the v0.1 review, adversarial `verify-refinement-type-arguments.una`.
+
+pub kind Pos = Int where it > 0
+
+pub wrap(x: Int) -> Option[Pos] = Some(x)
+
+pub boxed(x: Int) -> List[Pos] = [x]
+
+pub inv(p: Pos) -> Int = 100 / p
+
+pub go(x: Int) -> Int
+=
+  when wrap(x)
+    is Some(p) -> inv(p)
+    is None -> 0

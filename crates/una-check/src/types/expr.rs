@@ -251,7 +251,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 let (module, effects) = self.env.functions.get(id).map_or((0, false), |f| {
                     (f.module, !f.uses.is_empty() || f.fails.is_some())
                 });
-                self.testing_site(module, name, ident.span);
+                self.testing_value_site(module, name, ident.span);
                 self.via_site(id, ident.span);
                 // DECISION D-079: a function with effects or failures is a value only as an
                 // argument.
@@ -1028,6 +1028,7 @@ impl<'a> Checker<'_, 'a, '_> {
             it: Some(ty.clone()),
             rl: Rl::Clause,
             labels: false,
+            opaque_calls: true,
             ..self.ctx.clone()
         };
         self.within(ctx, |checker| {

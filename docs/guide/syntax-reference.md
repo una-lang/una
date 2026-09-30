@@ -785,7 +785,7 @@ The runtime implements these; they are part of the prelude.
 | `Env` | `get(name: Text) -> Option[internal Text]` | | `public` |
 | `Files` | `read(path: Text) -> internal Text` | `FileError` | `public` |
 | `Files` | `write(path: Text, content: Text) -> Unit` | `FileError` | `internal` |
-| `Keys` | `hmac(key_name: Text, data: Text) -> internal Hashed` | `KeyError` | any label |
+| `Keys` | `hmac(key_name: Text, data: Text) -> internal Hashed` | `KeyError` | `public` for `key_name`, any label for `data`; the result carries the label of `data` |
 
 - **Entry.** Host capabilities enter only through `main`'s `uses`, and only if `una run` grants them. An ungranted capability is U3012 before execution starts.
 - **Grant syntax:** `console`, `clock`, `env`, `keys:<keyfile>`, `files:<path>:read`, `files:<path>:write`.
@@ -922,7 +922,7 @@ example "an unknown attendee fails and is not audited"
 - **`do` lines** may nest fallible and effectful calls, and any failure ends the example. They need no handling clauses.
 - **Names** are unique per module.
 - **Isolation.** Each example runs in a fresh abstract machine. `una test --json` reports the outcome and the full effect trace, with labeled arguments redacted.
-- **`std.testing`** (`fake_hash`) is usable only in handlers and examples (U3015).
+- **`std.testing`** (`fake_hash`) is usable only in examples and in handlers installed only by `given`, and only by calling it, never as a function value (U3015).
 
 ---
 
@@ -1212,7 +1212,7 @@ Every problem has a stable code, precise positions (1-based line and column, col
 | --- | --- |
 | U0001 to U0103 | syntax: characters, indentation, literals, tokens, clause order, reserved words |
 | U1001 to U1008 | names: resolution, duplicates, cycles, visibility, conventions, requirements, file paths |
-| U2001 to U2015 | types: mismatches, labels, exhaustiveness, constructors, RL, predicates |
+| U2001 to U2016 | types: mismatches, labels, exhaustiveness, constructors, RL, predicates |
 | U3001 to U3015 | authority: capabilities, effects, failures, handlers, one effect per line |
 | U4001 to U4007 | security: flows, implicit flows, sinks, policies, categories |
 | U5001 to U5003 | verification: refuted, unknown, solver missing |

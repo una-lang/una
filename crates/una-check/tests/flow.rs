@@ -267,7 +267,7 @@ fn operation_arguments_are_sinks_bounded_by_accepts() {
              \n\
              pub under(c: secret Bool) -> Unit\n  uses @log: Log[write]\n=\n  if c\n    @log.write(\"yes\")\n  else\n    unit\n\
              \n\
-             pub hashed(name: secret Text) -> internal Hashed\n  uses @keys: Keys[hmac]\n  fails KeyError\n=\n  @keys.hmac(key_name: \"k\", data: name)\n    if error pass\n"
+             pub hashed(name: secret Text) -> secret Hashed\n  uses @keys: Keys[hmac]\n  fails KeyError\n=\n  @keys.hmac(key_name: \"k\", data: name)\n    if error pass\n"
         ),
         [
             "U4003 t.una:12:21 `@log.write` accepts `public` data, and it runs in an operation body whose callers may pass `secret` data, which it would reveal",

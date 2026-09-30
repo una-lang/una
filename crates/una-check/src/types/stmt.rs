@@ -180,10 +180,19 @@ impl<'a> Checker<'_, 'a, '_> {
                         target: self.name(other).to_owned(),
                     }
                 }
-                CapBindingValue::Handler(call) => Bound::Handler {
-                    capability: self.install(call),
-                    span: call.name.span,
-                },
+                CapBindingValue::Handler(call) => {
+                    // ADR 0043: a handler installed by `with` may not use `std.testing`.
+                    if self.pass == super::authority::Pass::Check
+                        && let Some(super::env::Entity::Handler(id)) =
+                            self.env.lower(self.module, self.name(&call.name))
+                    {
+                        self.findings.with_installs.push((id, binding.span));
+                    }
+                    Bound::Handler {
+                        capability: self.install(call),
+                        span: call.name.span,
+                    }
+                }
             };
             // DECISION D-087: the first binding of a name wins.
             let name = self.name(&binding.cap);
