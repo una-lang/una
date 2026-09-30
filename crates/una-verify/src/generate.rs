@@ -11,7 +11,10 @@ use una_core::{
 use una_diag::ObligationKind;
 use una_syntax::{SourceDb, Span};
 
-use crate::smt::{Const, ConstRole, Definition, F, Fun as SmtFun, FunRole, Query, Sort, kind_sort};
+use crate::smt::{
+    Const, ConstRole, Definition, F, Fun as SmtFun, FunRole, HASHED, LIST, Query, Sort, TEXT, UNIT,
+    kind_sort, path_selector,
+};
 
 /// A proof obligation of `spec/12 §3`, with its query.
 #[derive(Clone, Debug)]
@@ -464,20 +467,23 @@ fn base_type(base: Base) -> Type {
     }
 }
 
-/// The sort of a Una type (`spec/12 §4`, DECISION D-115).
+/// The sort of a Una type (`spec/12 §4`, DECISION D-115), in the namespaces of ADR 0038 D8:
+/// `Int` and `Bool` are SMT-LIB's, the other built-in types and the kinds of the prelude are
+/// the encoder's (`i!Text`, `i!List_<T>`, `i!Option_<T>`, `i!FileError`), and the kinds and
+/// type parameters of the program are the user's (`u!Kind_<module>_<Name>`, `u!Param_<name>`).
 pub(crate) fn sort(ty: &Type) -> Sort {
     match ty {
-        Type::Fn { .. } => "Fn".to_owned(),
+        Type::Fn { .. } => "i!Fn".to_owned(),
         Type::Base { base, .. } => match base {
             Base::Int => "Int".to_owned(),
             Base::Bool => "Bool".to_owned(),
-            Base::Text => "Text".to_owned(),
-            Base::Unit => "Unit".to_owned(),
-            Base::Hashed => "Hashed".to_owned(),
+            Base::Text => TEXT.to_owned(),
+            Base::Unit => UNIT.to_owned(),
+            Base::Hashed => HASHED.to_owned(),
             Base::Named { module, name, args } => {
                 let args: Vec<Sort> = args.iter().map(sort).collect();
-                if is_prelude(module) && matches!(name.as_str(), "List" | "Option" | "Result") {
-                    let mut sort = name.clone();
+                if is_prelude(module) {
+                    let mut sort = format!("i!{name}");
                     for arg in &args {
                         sort.push('_');
                         sort.push_str(arg);
@@ -487,7 +493,24 @@ pub(crate) fn sort(ty: &Type) -> Sort {
                     kind_sort(module, name, &args)
                 }
             }
-            Base::Param(name) => format!("Param_{name}"),
+            Base::Param(name) => format!("u!Param_{name}"),
+            Base::Unknown => "i!Unknown".to_owned(),
+        },
+    }
+}
+
+/// How the values of a type show in a counterexample that cannot print them, `<name>#<n>`
+/// (`spec/12 §7`): by the type's source name, never its sort.
+fn type_name(ty: &Type) -> String {
+    match ty {
+        Type::Fn { .. } => "Fn".to_owned(),
+        Type::Base { base, .. } => match base {
+            Base::Int => "Int".to_owned(),
+            Base::Bool => "Bool".to_owned(),
+            Base::Text => "Text".to_owned(),
+            Base::Unit => "Unit".to_owned(),
+            Base::Hashed => "Hashed".to_owned(),
+            Base::Named { name, .. } | Base::Param(name) => name.clone(),
             Base::Unknown => "Unknown".to_owned(),
         },
     }
@@ -1420,15 +1443,15 @@ impl<'p, 'i> Walker<'p, 'i> {
             Atom::Unit => Tv {
                 f: F::Const(Const {
                     name: "unit".to_owned(),
-                    sort: "Unit".to_owned(),
-                    role: ConstRole::Plain,
+                    sort: UNIT.to_owned(),
+                    role: ConstRole::Internal,
                 }),
                 ty: base_type(Base::Unit),
             },
         }
     }
 
-    /// The tag of a value of a kind, `tag!<Sort>`, when its kind is a sum.
+    /// The tag of a value of a kind, `i!tag!<Sort>`, when its kind is a sum.
     fn tag(&self, value: &Tv) -> Option<F> {
         let Type::Base {
             base: Base::Named { module, name, .. },
@@ -1446,23 +1469,13 @@ impl<'p, 'i> Walker<'p, 'i> {
         if names.is_empty() || record {
             return None;
         }
-        let sort = value.f.sort();
-        Some(F::App {
-            fun: SmtFun {
-                name: format!("tag!{sort}"),
-                args: vec![sort],
-                result: "Int".to_owned(),
-                role: FunRole::Tag {
-                    module: module.clone(),
-                    kind: name.clone(),
-                    variants: names.len(),
-                },
-            },
-            args: vec![value.f.clone()],
-        })
+        Some(tag_of(&value.f, module, name, names.len()))
     }
 
-    /// Field `index` of `variant` of a value, `<field>!<Sort>`.
+    /// Field `index` of `variant` of a value: `u!f!<field>!<Sort>` for a record,
+    /// `u!f!<field>!<Variant>!<Sort>` for a variant of a sum, so that variants sharing a field
+    /// name with different types have distinct functions, and `i!f!<field>!<Sort>` for the
+    /// fields of the prelude's kinds (ADR 0038 D8).
     fn field(&self, value: &Tv, variant: usize, index: usize) -> Option<Tv> {
         let Type::Base {
             base: Base::Named { module, name, .. },
@@ -1472,25 +1485,27 @@ impl<'p, 'i> Walker<'p, 'i> {
             return None;
         };
         let field_ty = self.index.field_type(&value.ty, variant, index)?;
-        let field_name = if self.index.prelude_kind(module, name) {
-            prelude_variants(name)
+        let sort = value.f.sort();
+        let symbol = if self.index.prelude_kind(module, name) {
+            let field = prelude_variants(name)
                 .and_then(|variants| variants.get(variant))
-                .and_then(|(_, fields)| fields.get(index))
-                .map(|f| (*f).to_owned())?
+                .and_then(|(_, fields)| fields.get(index))?;
+            format!("i!f!{field}!{sort}")
         } else {
             let kind = self.index.kinds.get(&(module.as_str(), name.as_str()))?;
-            kind.variants
-                .get(variant)?
-                .fields
-                .get(index)
-                .map(|(f, _)| f.clone())?
+            let declared = kind.variants.get(variant)?;
+            let (field, _) = declared.fields.get(index)?;
+            if kind.record {
+                format!("u!f!{field}!{sort}")
+            } else {
+                format!("u!f!{field}!{}!{sort}", declared.name)
+            }
         };
         let variants = self.index.variant_names(module, name).len();
-        let sort = value.f.sort();
         Some(Tv {
             f: F::App {
                 fun: SmtFun {
-                    name: format!("{field_name}!{sort}"),
+                    name: symbol,
                     args: vec![sort],
                     result: self::sort(&field_ty),
                     role: FunRole::Field {
@@ -1507,19 +1522,11 @@ impl<'p, 'i> Walker<'p, 'i> {
         })
     }
 
-    /// `.len` of a text or list, `len!<Sort>`.
+    /// `.len` of a text or list, `i!len!<Sort>`.
     fn len(&self, value: &Tv) -> Option<F> {
         let sort = value.f.sort();
-        let is_text_or_list = sort == "Text" || sort.starts_with("List_");
-        is_text_or_list.then(|| F::App {
-            fun: SmtFun {
-                name: format!("len!{sort}"),
-                args: vec![sort],
-                result: "Int".to_owned(),
-                role: FunRole::Len,
-            },
-            args: vec![value.f.clone()],
-        })
+        let is_text_or_list = sort == TEXT || sort.starts_with(LIST);
+        is_text_or_list.then(|| len_of(&value.f))
     }
 
     /// A primitive of code as a term, when it is one of the refinement language (`spec/10 §3`:
@@ -1585,17 +1592,17 @@ impl<'p, 'i> Walker<'p, 'i> {
         if sort == "Int" {
             return Some(F::op(symbol, vec![a.f.clone(), b.f.clone()]));
         }
-        if sort == "Text" {
+        if sort == TEXT {
             let name = match op {
-                BinOp::Lt => "lt!Text",
-                BinOp::Le => "le!Text",
-                BinOp::Gt => "gt!Text",
-                _ => "ge!Text",
+                BinOp::Lt => "i!lt!Text",
+                BinOp::Le => "i!le!Text",
+                BinOp::Gt => "i!gt!Text",
+                _ => "i!ge!Text",
             };
             return Some(F::App {
                 fun: SmtFun {
                     name: name.to_owned(),
-                    args: vec!["Text".to_owned(), "Text".to_owned()],
+                    args: vec![TEXT.to_owned(), TEXT.to_owned()],
                     result: "Bool".to_owned(),
                     role: FunRole::Other,
                 },
@@ -1614,7 +1621,7 @@ impl<'p, 'i> Walker<'p, 'i> {
         formula: Option<&Term>,
         args: &[Tv],
     ) -> Option<F> {
-        let name = path.qualified();
+        let name = format!("u!p!{}", path.qualified());
         let sorts: Vec<Sort> = args.iter().map(|a| a.f.sort()).collect();
         if let Some(formula) = formula
             && !self.definitions.contains_key(&name)
@@ -1857,11 +1864,7 @@ impl<'p, 'i> Walker<'p, 'i> {
         let mut assertions: Vec<F> = entry.hyps.iter().map(|h| h.f.clone()).collect();
         let mut selectors = Vec::new();
         for (number, leaf) in leaves.iter().enumerate() {
-            let selector = F::Const(Const {
-                name: format!("path!{}", number + 1),
-                sort: "Bool".to_owned(),
-                role: ConstRole::Plain,
-            });
+            let selector = path_selector(number + 1);
             assertions.push(F::eq(selector.clone(), self.path(leaf, base, result)));
             selectors.push(selector);
         }
@@ -1996,19 +1999,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                                     }
                                     let fact = match (&owner, *variants > 1) {
                                         (Some(owner), true) => {
-                                            let tag = F::App {
-                                                fun: SmtFun {
-                                                    name: format!("tag!{}", owner.sort()),
-                                                    args: vec![owner.sort()],
-                                                    result: "Int".to_owned(),
-                                                    role: FunRole::Tag {
-                                                        module: module.clone(),
-                                                        kind: kind.clone(),
-                                                        variants: *variants,
-                                                    },
-                                                },
-                                                args: vec![owner.clone()],
-                                            };
+                                            let tag = tag_of(owner, module, kind, *variants);
                                             F::op(
                                                 "=>",
                                                 vec![
@@ -2030,15 +2021,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                         ..
                     }) => {
                         new.push(F::eq(
-                            F::App {
-                                fun: SmtFun {
-                                    name: "len!Text".to_owned(),
-                                    args: vec!["Text".to_owned()],
-                                    result: "Int".to_owned(),
-                                    role: FunRole::Len,
-                                },
-                                args: vec![term.clone()],
-                            },
+                            len_of(&term),
                             F::Int(text.chars().count().to_string()),
                         ));
                     }
@@ -2098,7 +2081,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                     name,
                     role: ConstRole::Plain,
                     ..
-                }) if !name.starts_with('%') && !name.starts_with("path!") && name != "unit" => {
+                }) if !name.starts_with('%') => {
                     let Some(ty) = ctx.types.get(name) else {
                         continue;
                     };
@@ -2130,7 +2113,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                             index,
                             ..
                         } => {
-                            let field = fun.name.split('!').next().unwrap_or("?");
+                            let field = source_symbol(fun);
                             let ty = self
                                 .index
                                 .kinds
@@ -2168,15 +2151,10 @@ impl<'p, 'i> Walker<'p, 'i> {
                 name,
                 role: ConstRole::Plain,
                 ..
-            }) if !name.starts_with('%') && !name.starts_with("path!") && name != "unit" => {
-                Some(source_name(name))
-            }
+            }) if !name.starts_with('%') => Some(source_name(name)),
             F::App { fun, args } if matches!(fun.role, FunRole::Field { .. }) => {
                 let owner = self.term_name(args.first()?)?;
-                Some(format!(
-                    "{owner}.{}",
-                    fun.name.split('!').next().unwrap_or("?")
-                ))
+                Some(format!("{owner}.{}", source_symbol(fun)))
             }
             _ => None,
         }
@@ -2200,7 +2178,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             }
             return Show::Opaque(name.clone());
         }
-        Show::Opaque(sort)
+        Show::Opaque(type_name(&value.ty))
     }
 
     /// How a binder shows: a temporary through its definition or its source text.
@@ -2262,7 +2240,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             F::Local { name, .. } => (source_name(name), 1),
             F::App { fun, args } => {
                 let first = || args.first().map_or_else(String::new, |a| operand(a, 1));
-                let base = fun.name.split('!').next().unwrap_or(&fun.name);
+                let base = source_symbol(fun);
                 match &fun.role {
                     FunRole::Field { .. } => (format!("{}.{base}", first()), 1),
                     FunRole::Len => (format!("{}.len", first()), 1),
@@ -2495,16 +2473,61 @@ fn constant(name: &str, ty: &Type) -> F {
     })
 }
 
-/// A text literal: one constant per distinct text, named by its bytes (`spec/12 §4`).
+/// A text literal: one constant per distinct text, `i!lit!<hex>` by its bytes (`spec/12 §4`).
 fn text_literal(text: &str) -> Tv {
     let hex: String = text.bytes().map(|b| format!("{b:02x}")).collect();
     Tv {
         f: F::Const(Const {
-            name: format!("text!{hex}"),
-            sort: "Text".to_owned(),
+            name: hex,
+            sort: TEXT.to_owned(),
             role: ConstRole::Text(text.to_owned()),
         }),
         ty: base_type(Base::Text),
+    }
+}
+
+/// The tag of `value`, of the sum at (`module`, `kind`) with `variants` variants,
+/// `i!tag!<Sort>`.
+fn tag_of(value: &F, module: &str, kind: &str, variants: usize) -> F {
+    let sort = value.sort();
+    F::App {
+        fun: SmtFun {
+            name: format!("i!tag!{sort}"),
+            args: vec![sort],
+            result: "Int".to_owned(),
+            role: FunRole::Tag {
+                module: module.to_owned(),
+                kind: kind.to_owned(),
+                variants,
+            },
+        },
+        args: vec![value.clone()],
+    }
+}
+
+/// The length of a text or a list, `i!len!<Sort>`.
+fn len_of(value: &F) -> F {
+    let sort = value.sort();
+    F::App {
+        fun: SmtFun {
+            name: format!("i!len!{sort}"),
+            args: vec![sort],
+            result: "Int".to_owned(),
+            role: FunRole::Len,
+        },
+        args: vec![value.clone()],
+    }
+}
+
+/// The source name in a function's symbol: the field of `u!f!<field>!...` and
+/// `i!f!<field>!...`, the predicate of `u!p!<qualified name>`, and the operation of
+/// `i!<op>!<Sort>`.
+fn source_symbol(fun: &SmtFun) -> &str {
+    let name = fun.name.as_str();
+    match fun.role {
+        FunRole::Predicate => name.strip_prefix("u!p!").unwrap_or(name),
+        FunRole::Field { .. } => name.split('!').nth(2).unwrap_or(name),
+        _ => name.split('!').nth(1).unwrap_or(name),
     }
 }
 
@@ -2526,7 +2549,7 @@ fn arithmetic(op: BinOp, left: F, right: F) -> F {
     } else {
         F::App {
             fun: SmtFun {
-                name: format!("{name}!Int"),
+                name: format!("i!{name}!Int"),
                 args: vec!["Int".to_owned(), "Int".to_owned()],
                 result: "Int".to_owned(),
                 role: FunRole::Other,
@@ -2597,6 +2620,362 @@ mod tests {
             sort: sort.to_owned(),
             role: ConstRole::Plain,
         })
+    }
+
+    /// A package whose user names include `names`: parameters of `f`, fields of its record
+    /// kind and kinds of their own, all of them in its clauses, next to a sum whose variants
+    /// share a field name with different types and have a field named `tag`.
+    fn namespace_program(names: &[String], span: Span) -> Program {
+        let int = || base_type(Base::Int);
+        let text = || base_type(Base::Text);
+        let named = |name: &str| {
+            base_type(Base::Named {
+                module: "m".to_owned(),
+                name: name.to_owned(),
+                args: Vec::new(),
+            })
+        };
+        let option = base_type(Base::Named {
+            module: una_core::PRELUDE_MODULE.to_owned(),
+            name: "Option".to_owned(),
+            args: vec![int()],
+        });
+        let kind = |name: &str| una_core::Path {
+            module: "m".to_owned(),
+            name: name.to_owned(),
+        };
+        let var = |name: &str| Term::Var(name.to_owned());
+        let eq = |left: Term, right: Term| Term::Binary {
+            op: BinOp::Eq,
+            left: Box::new(left),
+            right: Box::new(right),
+        };
+        let clause = |term: Term| Clause {
+            term,
+            text: String::new(),
+            span: Some(span),
+        };
+        // User names that equal the encoder's names, with and without their prefixes.
+        let mut user: Vec<String> = [
+            "tag",
+            "len",
+            "lit",
+            "path!1",
+            "unit",
+            "value",
+            "failure",
+            "div",
+            "mod",
+            "mul",
+            "lt",
+            "result",
+            "Text",
+            "Unit",
+            "Hashed",
+            "Fn",
+            "Unknown",
+            "List_Int",
+            "Option_Int",
+        ]
+        .iter()
+        .map(|n| (*n).to_owned())
+        .collect();
+        user.extend(names.iter().cloned());
+        let record_fields: Vec<(String, Type)> = user.iter().map(|n| (n.clone(), int())).collect();
+        let mut decls = vec![
+            Decl::Data {
+                name: "K".to_owned(),
+                params: Vec::new(),
+                variants: vec![
+                    DataVariant {
+                        name: "Stamp".to_owned(),
+                        fields: vec![("tag".to_owned(), int())],
+                    },
+                    DataVariant {
+                        name: "Label".to_owned(),
+                        fields: vec![("size".to_owned(), text())],
+                    },
+                    DataVariant {
+                        name: "Circle".to_owned(),
+                        fields: vec![("size".to_owned(), int())],
+                    },
+                ],
+                record: false,
+            },
+            Decl::Data {
+                name: "Rec".to_owned(),
+                params: Vec::new(),
+                variants: vec![DataVariant {
+                    name: "Rec".to_owned(),
+                    fields: record_fields,
+                }],
+                record: true,
+            },
+        ];
+        // Predicates named like the encoder's functions, one opaque and one reflect.
+        for (name, formula) in [("tag", None), ("len", Some(eq(var("unit"), var("unit"))))] {
+            decls.push(Decl::Pred {
+                name: name.to_owned(),
+                reflect: formula.is_some(),
+                params: vec![("unit".to_owned(), int())],
+                body: Expr::Atom {
+                    atom: Atom::Bool(true),
+                    span,
+                },
+                formula,
+                span,
+            });
+        }
+        // Kinds named like the encoder's sorts.
+        for name in ["Text", "Unit", "Hashed", "Fn", "Unknown", "Option"] {
+            decls.push(Decl::Data {
+                name: name.to_owned(),
+                params: Vec::new(),
+                variants: vec![DataVariant {
+                    name: name.to_owned(),
+                    fields: Vec::new(),
+                }],
+                record: false,
+            });
+        }
+        let mut params: Vec<(Name, Type)> = user.iter().map(|n| (n.clone(), int())).collect();
+        params.push(("r".to_owned(), named("Rec")));
+        params.push(("k".to_owned(), named("K")));
+        params.push(("o".to_owned(), option));
+        params.push(("s".to_owned(), text()));
+        params.push(("h".to_owned(), base_type(Base::Hashed)));
+        for name in ["Text", "Unit", "Hashed", "Fn", "Unknown", "Option"] {
+            params.push((format!("v{name}"), named(name)));
+        }
+        let mut requires: Vec<Term> = user.iter().map(|n| eq(var(n), var(n))).collect();
+        for (index, name) in user.iter().enumerate() {
+            let field = Term::Field {
+                value: Box::new(var("r")),
+                kind: kind("Rec"),
+                field: name.clone(),
+                index,
+            };
+            requires.push(eq(field.clone(), field));
+        }
+        for name in ["Text", "Unit", "Hashed", "Fn", "Unknown", "Option"] {
+            let value = var(&format!("v{name}"));
+            requires.push(Term::Is {
+                value: Box::new(value),
+                ctor: Ctor {
+                    kind: kind(name),
+                    name: name.to_owned(),
+                    index: 0,
+                },
+            });
+        }
+        requires.push(eq(Term::Len(Box::new(var("s"))), Term::Int("3".to_owned())));
+        requires.push(eq(var("s"), Term::Text("tag".to_owned())));
+        requires.push(Term::Binary {
+            op: BinOp::Lt,
+            left: Box::new(var("s")),
+            right: Box::new(Term::Text("lit".to_owned())),
+        });
+        requires.push(eq(
+            Term::Binary {
+                op: BinOp::Mul,
+                left: Box::new(var("mul")),
+                right: Box::new(var("lt")),
+            },
+            var("mod"),
+        ));
+        let some = Ctor {
+            kind: una_core::Path {
+                module: una_core::PRELUDE_MODULE.to_owned(),
+                name: "Option".to_owned(),
+            },
+            name: "Some".to_owned(),
+            index: 0,
+        };
+        let payload = Term::Field {
+            value: Box::new(var("o")),
+            kind: some.kind.clone(),
+            field: "value".to_owned(),
+            index: 0,
+        };
+        requires.push(Term::Is {
+            value: Box::new(var("o")),
+            ctor: some,
+        });
+        requires.push(eq(payload.clone(), payload));
+        requires.push(eq(var("h"), var("h")));
+        for predicate in ["tag", "len"] {
+            requires.push(Term::Call {
+                predicate: kind(predicate),
+                args: vec![var("unit")],
+            });
+        }
+        let arm = |index: usize, bind: &str, body: Expr| una_core::Arm {
+            ctor: Ctor {
+                kind: kind("K"),
+                name: String::new(),
+                index,
+            },
+            binds: vec![Some(bind.to_owned())],
+            body,
+        };
+        let returned = |atom: Atom| Expr::Atom { atom, span };
+        let divide = Expr::Let {
+            name: "q".to_owned(),
+            ty: int(),
+            value: Box::new(Bound::Rhs(Rhs::Prim {
+                prim: Prim::Div,
+                args: vec![Atom::Var("div".to_owned()), Atom::Var("mod".to_owned())],
+                arg_spans: vec![span, span],
+                span,
+            })),
+            body: Box::new(Expr::Let {
+                name: "u".to_owned(),
+                ty: base_type(Base::Unit),
+                value: Box::new(Bound::Rhs(Rhs::Atom(Atom::Unit))),
+                body: Box::new(returned(Atom::Var("q".to_owned()))),
+                span,
+                written: false,
+            }),
+            span,
+            written: false,
+        };
+        let body = Expr::Case {
+            scrutinee: Atom::Var("k".to_owned()),
+            arms: vec![
+                arm(0, "tag%2", returned(Atom::Var("tag%2".to_owned()))),
+                arm(1, "size", returned(Atom::Int("1".to_owned()))),
+                arm(2, "size%2", divide),
+            ],
+            otherwise: None,
+        };
+        let positive = Term::Binary {
+            op: BinOp::Gt,
+            left: Box::new(Term::Result),
+            right: Box::new(Term::Int("0".to_owned())),
+        };
+        decls.push(Decl::Fun(Fun {
+            name: "f".to_owned(),
+            type_params: Vec::new(),
+            params,
+            result: int(),
+            uses: Vec::new(),
+            fails: None,
+            requires: requires.into_iter().map(clause).collect(),
+            ensures: vec![clause(positive)],
+            body,
+            span,
+            public: true,
+        }));
+        Program {
+            modules: vec![una_core::Module {
+                path: "m".to_owned(),
+                decls,
+                examples: Vec::new(),
+            }],
+            ..Program::default()
+        }
+    }
+
+    /// The symbols a query declares or defines, in order.
+    fn declared(query: &str) -> Vec<String> {
+        query
+            .lines()
+            .filter_map(|line| {
+                let rest = line
+                    .strip_prefix("(declare-sort ")
+                    .or_else(|| line.strip_prefix("(declare-fun "))
+                    .or_else(|| line.strip_prefix("(define-fun "))?;
+                rest.split(' ')
+                    .next()
+                    .map(|s| s.trim_matches('|').to_owned())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn user_names_never_share_a_symbol_with_the_encoder() {
+        // ADR 0038 D8 and `spec/12 §4`: user symbols start with `u!` and the encoder's with
+        // `i!`. The first program collects the encoder's symbols; the second declares user
+        // names equal to every one of them, and no query declares one symbol twice.
+        let mut sources = SourceDb::new();
+        let file = sources.add("m.una", b"module m\n");
+        let span = Span::new(file, 0, 6);
+        let first = namespace_program(&[], span);
+        let mut internal: BTreeSet<String> = BTreeSet::new();
+        let obligations = super::obligations(&first, &sources);
+        assert!(obligations.len() >= 2, "{}", obligations.len());
+        for obligation in &obligations {
+            for symbol in declared(&obligation.query.text()) {
+                if symbol.starts_with("i!") {
+                    internal.insert(symbol);
+                }
+            }
+        }
+        for expected in [
+            "i!Text",
+            "i!Hashed",
+            "i!Unit",
+            "i!Option_Int",
+            "i!tag!u!Kind_m_K",
+            "i!tag!i!Option_Int",
+            "i!f!value!i!Option_Int",
+            "i!len!i!Text",
+            "i!lt!Text",
+            "i!mul!Int",
+            "i!div!Int",
+            "i!lit!746167",
+            "i!v!path!1",
+            "i!v!unit",
+        ] {
+            assert!(internal.contains(expected), "{expected} in {internal:?}");
+        }
+        let names: Vec<String> = internal.iter().cloned().collect();
+        let second = namespace_program(&names, span);
+        let obligations = super::obligations(&second, &sources);
+        let mut users = 0;
+        for obligation in &obligations {
+            // No symbol stands for two things: a declaration is emitted once per symbol, so two
+            // functions or constants sharing one would be merged silently (R-009, R-019).
+            let mut meaning: BTreeMap<String, String> = BTreeMap::new();
+            for term in obligation.query.applications() {
+                let (symbol, what) = match &term {
+                    F::App { fun, .. } => (
+                        fun.name.clone(),
+                        format!("fun {:?} {:?} {:?}", fun.args, fun.result, fun.role),
+                    ),
+                    F::Const(c) => (c.symbol(), format!("const {} {:?}", c.sort, c.role)),
+                    _ => continue,
+                };
+                if let Some(first) = meaning.insert(symbol.clone(), what.clone()) {
+                    assert_eq!(first, what, "{symbol} stands for two things");
+                }
+            }
+            let text = obligation.query.text();
+            let symbols = declared(&text);
+            let unique: BTreeSet<&String> = symbols.iter().collect();
+            assert_eq!(unique.len(), symbols.len(), "{text}");
+            for symbol in &symbols {
+                assert!(
+                    symbol.starts_with("u!") || symbol.starts_with("i!"),
+                    "{symbol} has no namespace in {text}"
+                );
+            }
+            users += symbols
+                .iter()
+                .filter(|s| {
+                    names
+                        .iter()
+                        .any(|n| s.ends_with(n.as_str()) && s.starts_with("u!"))
+                })
+                .count();
+        }
+        // Every internal symbol reappears as a user binder or field, in the user namespace.
+        assert!(users >= names.len(), "{users} < {}", names.len());
+        // Variants sharing the field `size` with two types have two functions (R-019).
+        let all: String = obligations.iter().map(|o| o.query.text()).collect();
+        assert!(all.contains("u!f!size!Label!u!Kind_m_K"), "{all}");
+        assert!(all.contains("u!f!size!Circle!u!Kind_m_K"), "{all}");
+        assert!(all.contains("u!f!tag!Stamp!u!Kind_m_K"), "{all}");
     }
 
     #[test]

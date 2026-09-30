@@ -13,7 +13,7 @@ Tiers 2 (quantified laws) and 3 (property tests, benchmarks) are deferred (`plan
 
 ## 2. The decidable fragment
 
-Every v0.1 query is in **QF_UFLIA**: quantifier-free linear integer arithmetic with uninterpreted functions and Booleans. `div` and `mod` appear only with nonzero literal divisors in RL. General division by a variable is allowed in code and produces a nonzero obligation; since QF_UFLIA has no nonlinear terms, its result is the uninterpreted function `div!Int` or `mod!Int`, as the product of two values that are not literals is `mul!Int` (ADR 0033).
+Every v0.1 query is in **QF_UFLIA**: quantifier-free linear integer arithmetic with uninterpreted functions and Booleans. `div` and `mod` appear only with nonzero literal divisors in RL. General division by a variable is allowed in code and produces a nonzero obligation; since QF_UFLIA has no nonlinear terms, its result is the uninterpreted function `i!div!Int` or `i!mod!Int`, as the product of two values that are not literals is `i!mul!Int` (ADR 0033, §4).
 
 No query ever contains a quantifier. Axioms that would need quantifiers are instantiated as ground facts for the terms that occur in the query (§4).
 
@@ -56,15 +56,15 @@ Besides the hypotheses above, a query holds ground facts for every term in it: `
 | --- | --- |
 | `Int` | `Int` |
 | `Bool` | `Bool` |
-| `Text`, `Hashed`, `List[T]`, records, sums, type parameters | One `declare-sort` per distinct instantiated type, named by a deterministic mangling (`List_Int`, `Kind_events_seating_Event`) |
-| Field access `a.f` on kind `T` | `declare-fun f!T (T) S` |
-| `x.len` | `declare-fun len!T (T) Int`, plus ground fact `(>= (len!T x) 0)` for each occurring term |
-| Variant test `a is C` | `declare-fun tag!T (T) Int`, `(= (tag!T a) k_C)` with `k_C` the declaration index, plus ground fact `0 <= tag < n` per occurring term |
+| `Text`, `Hashed`, `List[T]`, records, sums, type parameters | One `declare-sort` per distinct instantiated type, named by a deterministic mangling (`i!List_Int`, `u!Kind_events_seating_Event`) |
+| Field access `a.f` on kind `T` | `declare-fun u!f!f!T (T) S`, one per variant for a sum (Namespaces below) |
+| `x.len` | `declare-fun i!len!T (T) Int`, plus ground fact `(>= (i!len!T x) 0)` for each occurring term |
+| Variant test `a is C` | `declare-fun i!tag!T (T) Int`, `(= (i!tag!T a) k_C)` with `k_C` the declaration index, plus ground fact `0 <= tag < n` per occurring term |
 | Ordering on payload-free sums | Comparison of tags |
 | Text literals | One constant per distinct literal, with a `distinct` assertion over all literal constants in the query |
 | `predicate reflect p` | `define-fun` (non-recursive, so expandable) |
 | `predicate opaque p` | `declare-fun` (no definition, no axioms) |
-| `a div k`, `a mod k` | SMT-LIB `div`, `mod` (Euclidean); by a value that is not a literal, the uninterpreted `div!Int`, `mod!Int` (§2) |
+| `a div k`, `a mod k` | SMT-LIB `div`, `mod` (Euclidean); by a value that is not a literal, the uninterpreted `i!div!Int`, `i!mod!Int` (§2) |
 
 **Namespaces** (ADR 0038 D8). Every SMT symbol derived from user content carries the prefix `u!`, and every symbol the encoder introduces carries the prefix `i!`, so the two cannot collide by construction, whatever names a program declares. Only the SMT-LIB sorts `Int` and `Bool` and the SMT-LIB operators are unprefixed.
 
@@ -72,16 +72,16 @@ Besides the hypotheses above, a query holds ground facts for every term in it: `
 | --- | --- |
 | Sort of a user kind | `u!Kind_<module>_<Name>[_<args>]`, with each `_` of a module segment doubled |
 | Sort of a type parameter | `u!Param_<name>` |
-| Built-in sorts | `i!Text`, `i!Hashed`, `i!Unit`, `i!List_<T>`, `i!Option_<T>`, `i!Result_<T>_<E>` |
+| Built-in sorts and the prelude's kinds | `i!Text`, `i!Hashed`, `i!Unit`, `i!Fn` (function values), `i!List_<T>`, `i!Option_<T>`, `i!Result_<T>_<E>`, `i!FileError`, `i!KeyError` |
 | Field of a record kind | `u!f!<field>!<Sort>` |
 | Field of a variant of a sum kind | `u!f!<field>!<Variant>!<Sort>`, so variants that share a field name with different types have distinct functions |
 | Variant tag, length | `i!tag!<Sort>`, `i!len!<Sort>` |
 | Prelude fields (`value`, `failure`) | `i!f!<field>!<Sort>` |
-| Uninterpreted arithmetic and text functions | `i!div!Int`, `i!mod!Int`, `i!mul!Int`, `i!lt!Text` (and the other orderings), `i!concat`, `i!to_text` |
-| Text literal constants | `i!lit!<n>`, numbered in order of first occurrence |
+| Uninterpreted arithmetic and text functions | `i!div!Int`, `i!mod!Int`, `i!mul!Int`, `i!lt!Text`, `i!le!Text`, `i!gt!Text`, `i!ge!Text` |
+| Text literal constants | `i!lit!<hex>`, the UTF-8 bytes of the literal in hexadecimal |
 | Predicates | `u!p!<qualified name>` |
-| Binders of the program (parameters, `result`, `let`s, pattern variables) | `u!v!<name>` |
-| Binders the encoder introduces | `i!v!<name>` |
+| Binders of the program (parameters, `result`, `let`s, pattern variables, the temporaries of Core IR) | `u!v!<name>` |
+| Binders the encoder introduces (path selectors, `unit`) | `i!v!<name>`: `i!v!path!<n>`, `i!v!unit` |
 
 Binders are quoted symbols. Counterexamples (§7) map the `u!v!` binders back to their source names. A test of the reference implementation declares user names equal to every internal symbol and checks that no two declarations of a query share a symbol. Ordering on `Text`, `concat` and `to_text` are uninterpreted functions without axioms (ADR 0033).
 
