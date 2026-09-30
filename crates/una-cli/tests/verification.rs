@@ -138,13 +138,12 @@ fn a_second_run_reports_every_obligation_as_cached() {
 #[test]
 fn the_queries_of_the_examples_are_byte_identical_across_runs() {
     // M8 acceptance criterion and `spec/12 §4`: declarations sorted by name, assertions in
-    // generation order.
-    let queries = || {
-        let checked = una_cli::check(&repository().join("examples/events"), Tier::One).unwrap();
-        assert_eq!(checked.diagnostics, []);
+    // generation order. Every package under `examples/` has its own snapshot (R-036).
+    let queries = |example: &Path| {
+        let checked = una_cli::check(example, Tier::One).unwrap();
+        assert_eq!(checked.diagnostics, [], "{}", example.display());
         let verification = checked.verification.unwrap();
-        let text = std::fs::read_to_string(repository().join("examples/events/verification.lock"))
-            .unwrap();
+        let text = std::fs::read_to_string(example.join("verification.lock")).unwrap();
         let (lock, _) = una_project::parse_lock(&text);
         let lock = una_verify::Lock {
             text,
@@ -165,9 +164,19 @@ fn the_queries_of_the_examples_are_byte_identical_across_runs() {
         }
         out
     };
-    let first = queries();
-    assert_eq!(first, queries());
-    insta::assert_snapshot!("queries_events", first);
+    let mut examples: Vec<PathBuf> = std::fs::read_dir(repository().join("examples"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.join("una.toml").is_file())
+        .collect();
+    examples.sort();
+    assert!(examples.len() >= 7, "{examples:?}");
+    for example in &examples {
+        let name = example.file_name().unwrap().to_string_lossy().into_owned();
+        let first = queries(example);
+        assert_eq!(first, queries(example), "{name}");
+        insta::assert_snapshot!(format!("queries_{name}"), first);
+    }
 }
 
 #[test]
