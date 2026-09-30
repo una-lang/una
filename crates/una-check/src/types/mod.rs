@@ -179,7 +179,7 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
                 module,
             );
         }
-        findings.records.merge(standard_findings.records);
+        findings.standard_records = standard_findings.records;
     }
     authority::testing_installs(&findings, &mut report);
     facts::predicate_recursion(&env, &findings, &mut report);
@@ -278,8 +278,12 @@ pub(crate) struct Findings {
     pub(crate) compared: std::collections::BTreeMap<usize, std::collections::BTreeSet<usize>>,
     /// The uses of `checked`, by module, in order (`spec/06 §6`).
     pub(crate) checked: Vec<(usize, Span)>,
-    /// What pass 2 resolves, for elaboration.
+    /// What pass 2 resolves in the package's modules, for elaboration.
     pub(crate) records: records::Records,
+    /// What the silent check of the standard modules resolves, for the elaboration of their
+    /// contracts. The standard modules have a source database of their own, whose file ids
+    /// coincide with the package's, so their records by span are kept apart (flow sweep).
+    pub(crate) standard_records: records::Records,
     /// The declarations of pass 2 with a diagnostic, by the span of their name.
     pub(crate) failed: std::collections::BTreeSet<Span>,
     /// For each handler whose operation bodies use `std.testing`, the first use (ADR 0043).
