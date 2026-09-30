@@ -455,7 +455,10 @@ fn report(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
-    let status = if diagnostics.is_empty() {
+    // `spec/13 §5`: an internal compiler error (U8001) exits with 3, whatever else is reported.
+    let status = if diagnostics.iter().any(|d| d.code == Code::U8001) {
+        ExitStatus::Internal
+    } else if diagnostics.is_empty() {
         ExitStatus::Success
     } else {
         ExitStatus::Errors
