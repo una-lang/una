@@ -185,3 +185,119 @@ Run in the copy with the `[run] grants` of each `una.toml` (no extra `--grant` n
 - Reference: `spec/12 §6` and §9 (version read only when a query misses the cache); `CLAUDE.md` rule on U5003.
 - Evidence: with a warm `.una/cache`, `PATH=/usr/bin:/bin una check examples/events` exits 0. With a cold cache it gives U5003, and a cold test run without Z3 fails 22 cases with U5003. This follows the spec, but a developer's local test run can pass without Z3 because of committed-ignored caches from earlier runs.
 - Recommended fix: none required; optionally clear per-package `.una/` caches in solver tests.
+
+## After closure
+
+Tree: `dev/v0.1` at the head of the closure pull request, after the v0.1 closure run (`docs/history/v0.1/runs/v0.1-closure-plan.md`). The commands ran on the owner's Mac (macOS, arm64) with Z3 5.1.0 from `scripts/install-z3.sh`. The adversarial programs ran against a copy of `adversarial/`.
+
+**Summary:** 28 criteria; 28 pass. The Linux and macOS release archives are packed and checked in CI on the pull request (R-035). The regression tests of every Critical and Major finding are part of the suite. There are no pending conformance cases.
+
+### Baseline (section 3.1 of the review)
+
+| Command | Result |
+| --- | --- |
+| `cargo build --workspace --locked` | exit 0 |
+| `cargo fmt --all --check` | exit 0 |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | exit 0 |
+| `cargo test --workspace --locked` | 348 passed, 0 failed, 0 ignored |
+| `RAYON_NUM_THREADS=1 cargo test --workspace --locked` | 348 passed, 0 failed |
+| Conformance runner | 374 cases: 374 passed, 0 pending, 0 failures |
+| Conformance without Z3 on `PATH`, cold cache | 64 cases fail with U5003, and none are skipped, as `CLAUDE.md` requires |
+| Determinism tests (`byte_identical`, `cached` in `cli`, `abi`, `verification`), default and with `RAYON_NUM_THREADS=1` | 1 + 1 + 4 passed in both runs |
+| Cold `una --json obligations`, default and with `RAYON_NUM_THREADS=1` | byte-identical for all 7 examples |
+| `cargo doc --workspace --no-deps --document-private-items` | 0 warnings (6 at review, R-039) |
+| Examples: `una check`, `una test`, `una run` | all 7 exit 0 for all three commands; tests: events 6/6, greenhouse 3/3, hello 0, journal 3/3, pantry 7/7, shortlinks 6/6, toolshelf 7/7 |
+| `scripts/demo/checkpoint-1.sh` to `-4.sh`, with an absolute path to `una` | all exit 0, 42 outcomes, none different |
+
+### Audits
+
+| Audit | Result (counts only) |
+| --- | --- |
+| Naming, whole word | hits only in the files ADR 0025 allows: ADR 0016, ADR 0025, `docs/reviews/triage.md` and the history files under `docs/history/v0.1/` |
+| Code shape `[VT][0-9]{4}` | hits only in ADR 0016 and two history files |
+| Neutrality (R-022) | 0 hits outside the history and review files; 9 lines inside them (`docs/history/` 7, `docs/reviews/v0.1-review/` 1, `docs/reviews/triage.md` 1); 0 file or directory names |
+
+### The adversarial programs
+
+All 143 programs were rerun with `una check`. 127 are rejected. The 16 that are accepted are the valid programs of the review's table: controls, runtime programs whose run behavior is the point, and R-019's program, which must now pass:
+`auth-fn-param-without-uses.una`, `flow-main-failure-payload.una`, `flow-policy-method-call`, `runtime-checked-environment`, `runtime-deep-recursion-memory`, `runtime-euclidean-division`, `runtime-evaluation-order`, `runtime-files-dangling-link`, `runtime-host-trace-redaction`, `runtime-prelude-contracts`, `runtime-short-circuit-interpolation`, `runtime-test-result-unredacted`, `runtime-trace-redaction`, `verify-host-capability-shadow`, `verify-range-overlap-first-wins`, `verify-shared-field-name-sorts`.
+
+The Critical findings:
+
+| Program | Finding | Exit | Codes |
+| --- | --- | --- | --- |
+| `auth-escape-failure.una` | R-001 | 1 | U3009 U3016 |
+| `auth-escape-through-generic.una` | R-002 | 1 | U3016x3 |
+| `auth-escape-to-pure.una` | R-001 | 1 | U3003x2 U3016x3 |
+| `auth-uses-dropped-in-list.una` | R-001 | 1 | U3003 U3016 |
+| `escape-policy-opaque-fact` | R-007 | 1 | U5001 |
+| `flow-generic-equality.una` | R-004 | 1 | U4001 U4003 |
+| `flow-generic-filter-count.una` | R-004 | 1 | U4001x2 |
+| `flow-generic-first-where.una` | R-004 | 1 | U4001x3 |
+| `flow-handler-pc.una` | R-003 | 1 | U4003 |
+| `flow-prelude-contains.una` | R-005 | 1 | U4001 U4003 |
+| `flow-secret-fn-param-call.una` | R-006 | 1 | U4002 |
+| `flow-secret-fn-value-effect.una` | R-006 | 1 | U3016x2 U4002x2 |
+| `runtime-files-dangling-link` | R-011 | 0 at check; `una run` after its setup prints `false` and creates nothing outside the grant | none |
+| `verify-host-capability-name-confusion` | R-008 | 1 | U5001 |
+| `verify-policy-to-refinement` | R-007 | 1 | U5001 |
+| `verify-prelude-module-variants` | R-010 | 1 | U1009 |
+| `verify-tag-field-collision` | R-009 | 1 | U5001 |
+
+The Major findings with a program:
+
+| Program | Finding | Exit | Codes |
+| --- | --- | --- | --- |
+| `escape-opaque-predicate-in-if` | R-016 | 1 | U2016 |
+| `escape-proof-cache-forgery` | R-018 | 1 | U5001 |
+| `escape-testing-via-handler` | R-017 | 1 | U3015x2 |
+| `flow-hmac-without-policy.una` | R-014 | 1 | U4001 |
+| `flow-host-op-fails-on-secret.una` | R-015 | 1 | U4003 |
+| `verify-fn-type-refinement-erased` | R-013 | 1 | U5001x2 |
+| `verify-generic-sum-refinement` | R-012 | 1 | U2002 |
+| `verify-refinement-type-arguments.una` | R-012 | 1 | U2002x2 |
+| `verify-shared-field-name-sorts` | R-019 | 0 | none |
+
+Where each program lives in the test suite:
+- 140 programs are conformance cases or CLI tests. The table is in the closure plan's progress section, and each case's `-- test:` line names its finding or says `review control`.
+- 3 are not promoted, because their findings are deferred to the backlog: `verify-negative-literal-operands` (R-031), `runtime-deep-recursion-memory` (R-033) and `runtime-test-result-unredacted` (R-025).
+
+### Acceptance criteria, M0 to M10
+
+| Milestone | Criterion | Status | Evidence |
+| --- | --- | --- | --- |
+| M0 | `cargo test --workspace` passes | Pass | 348 passed (above) |
+| M0 | CI is green | Pass | the pull request's CI run, Linux and macOS |
+| M0 | `una explain U0001` prints text | Pass | `# U0001: Invalid character, byte order mark or lone carriage return` |
+| M0 | `una check --json` prints an empty list with schema `una.diagnostics/1` | Pass | `una --json check examples/hello` |
+| M0 | a snapshot pins the JSON shape | Pass | `json_shape.rs`, in the suite |
+| M1 | conformance cases for U0001 to U0007 and U0101 to U0103 | Pass | failing cases: U0001 7, U0002 2, U0003 3, U0004 3, U0005 2, U0006 1, U0007 4, U0101 8 (with B-001), U0102 7, U0103 2 |
+| M1 | every `.una` file under `examples/` parses | Pass | `every_example_parses_without_diagnostics` |
+| M1 | robustness over every prefix | Pass | `every_prefix_of_every_example_is_parsed_safely` |
+| M2 | idempotence, round trip | Pass | `crates/una-fmt/tests/properties.rs` |
+| M2 | all examples are canonical | Pass | `una fmt --check` exit 0 for all 7 |
+| M3 | conformance cases for every listed code | Pass | U1001 7, U1002 7, U1003 1, U1004 1, U1005 3, U1006 1, U1007 1, U1008 1, U1009 2 (new), U7002 3, U7004 2, U7005 4 |
+| M3 | all examples resolve | Pass | `una check --tier 0` exit 0 for all 7 |
+| M4 | conformance cases for U2001 to U2015 | Pass | each has 1 to 5 failing cases, and U2016 (new) has 2 |
+| M4 | `seating.una` passes tier 0 | Pass | exit 0 |
+| M5 | conformance cases for U3001 to U3015 and U7003 | Pass | each has 1 to 13 failing cases; U3016 (new) has 8; U7003 4 |
+| M5 | `una contract --json` snapshot | Pass | `cli__contract_check_in_json.snap` |
+| M6 | conformance cases for U4001 to U4007 | Pass | U4001 49, U4002 14, U4003 13, U4004 2, U4005 6, U4007 1 |
+| M6 | classic implicit flow, failure under pc, labeled text to Console | Pass | `security/classic_implicit_flow`, `fail_under_secret_pc`, `labeled_text_to_console` |
+| M6 | the events example passes tier 0 | Pass | `una --json check --tier 0 examples/events`: empty list |
+| M7 | `una test examples/events` passes | Pass | 6 examples: 6 passed |
+| M7 | `una run examples/hello --grant console` | Pass | prints `Hello, Una` |
+| M7 | snapshots of Core dumps and trace JSON; redaction test | Pass | in the suite, with the redaction CLI tests of the adversarial runtime programs |
+| M7 | every `run-output` case matches | Pass | conformance, 374 of 374 |
+| M8 | proven, refuted and unknown cases; U5001 to U5003 | Pass | U5001 40 cases, U5002 1, U5003 1, and 8 new function-type cases (ADR 0037) |
+| M8 | SMT queries byte-identical (snapshot) | Pass | one query snapshot per example package (R-036) |
+| M8 | a second run reports every obligation as cached | Pass | events 11/11, greenhouse 19/19, journal 2/2, pantry 27/27, shortlinks 5/5, toolshelf 42/42, hello 0 |
+| M8 | all examples verify with zero refuted and zero unknown | Pass | every obligation `proven` in all 7 |
+| M9 | every explain example fails with its code, and its fixed version passes | Pass | `explain_examples.rs`, now at tier 1 for fixed examples (R-037) |
+| M9 | report and obligations JSON snapshots | Pass | `abi__report_events_json.snap` (with `obligations.cached`, ADR 0041), `abi__obligations_events_json.snap` |
+| M10 | five more example packages | Pass | `greenhouse`, `journal`, `pantry`, `shortlinks`, `toolshelf` (renamed, R-022) |
+| M10 | the guide's snippets compile | Pass | `guide.rs`, both tests |
+| M10 | release artifacts build in CI | Pass | `ci.yml` packs and checks the archive of each runner: Linux on every push, macOS on the pull request (R-035) |
+| M10 | the evaluation track drives `una` headlessly | Pass | `headless.rs` |
+
+The review's recommendation to treat M5, M6 and M8 as not done until the Critical findings were fixed is met. Each Critical finding has a rule in ADR 0038 and regression cases in the suite, and each program above is rejected.
