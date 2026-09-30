@@ -1028,6 +1028,7 @@ impl<'a> Checker<'_, 'a, '_> {
             it: Some(ty.clone()),
             rl: Rl::Clause,
             labels: false,
+            opaque_calls: true,
             ..self.ctx.clone()
         };
         self.within(ctx, |checker| {

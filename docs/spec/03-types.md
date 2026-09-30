@@ -77,6 +77,8 @@ predicate opaque valid_phone(t: Text) -> Bool = t.len == 11 and is_digits(t)
 
 Opaque predicates are sound by construction: the solver knows nothing about them beyond facts established at runtime, so they cannot introduce inconsistency. Their bodies run in the interpreter when `checked` evaluates them.
 
+**Where an opaque predicate is called** (ADR 0042). An opaque predicate is called only as the predicate of `checked` (`spec/06 §6`) and in the bodies of other opaque predicates. The `where` clause of a kind and the `requires` and `ensures` clauses of a capability operation MAY name it, since they state the fact without establishing it. Any other call, in code, in a clause of a function or handler, in the body of a `reflect` predicate or in an example, is U2016 at the call; the help proposes `checked(value, p(it)) else fail <Variant>`. Every opaque fact of code is thus counted against the escape budget and listed in the build report.
+
 ## 5. Labeled types
 
 Any type may carry a label prefix: `secret[PII] Phone`, `internal Hashed`. An unlabeled type is `public`. Labels, the lattice and flow rules are defined in `spec/07`.

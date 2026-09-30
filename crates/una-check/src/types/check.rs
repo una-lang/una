@@ -47,6 +47,10 @@ pub(crate) struct Ctx {
     pub(crate) rl: Rl,
     /// Inside the body of an opaque predicate, which is pure and cannot fail (U2015).
     pub(crate) opaque: bool,
+    /// Opaque predicates may be called here besides opaque bodies: the predicate of `checked`,
+    /// the `where` clause of a kind and the clauses of a capability operation (ADR 0042,
+    /// U2016).
+    pub(crate) opaque_calls: bool,
     /// The failure of the call about to be checked is handled, by `attempt` or `if error`.
     pub(crate) handled: bool,
     /// The expression about to be checked is the whole expression of a statement, `let` or
@@ -80,6 +84,7 @@ impl Ctx {
             fails: None,
             rl: Rl::Off,
             opaque: false,
+            opaque_calls: false,
             handled: false,
             top: false,
             argument: false,
@@ -636,6 +641,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             it: Some(alias.base.base.clone()),
             rl: Rl::Clause,
             labels: false,
+            opaque_calls: true,
             ..Ctx::plain()
         };
         self.within(ctx, |checker| {
@@ -865,6 +871,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                         let ctx = Ctx {
                             rl: Rl::Clause,
                             labels: false,
+                            opaque_calls: true,
                             ..Ctx::plain()
                         };
                         self.within(ctx, |checker| {
@@ -875,6 +882,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                         let ctx = Ctx {
                             rl: Rl::Clause,
                             labels: false,
+                            opaque_calls: true,
                             result: Some(op_def.result.base.clone()),
                             ..Ctx::plain()
                         };
