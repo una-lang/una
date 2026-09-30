@@ -1986,7 +1986,7 @@ impl<'p, 'i> Walker<'p, 'i> {
 
     /// Where an obligation with `goal` arises (R-021). The free binders of the goal are its
     /// program constants; a temporary that stands for a pure term counts as the binders of
-    /// that term, since the goal's text shows the term. DECISION D-TBD-n1: a goal outside the
+    /// that term, since the goal's text shows the term. DECISION D-147: a goal outside the
     /// encoding, and the `false` of an exhaustiveness obligation, are never ground, and the
     /// value is a parameter only when the goal's only constant, before any temporary is
     /// expanded, is a parameter of the enclosing function. A `requires` clause can state the

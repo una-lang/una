@@ -352,6 +352,7 @@ Disagreements between the spec, the implementation and the owner's rulings, foun
   - proposes "add `requires G` to the enclosing function, if it is not `pub`" inside `pub` functions too;
   - proposes, for a `division`, "add `requires b != 0` to the enclosing function, if it is not `pub`" after the guard.
   The guide (§11.2) quotes the compiler's wording. Depending on the answer, the compiler or the spec changes, and the guide follows.
+  - **Resolved** by the v0.1 closure run (R-021, `dd116aa`): the compiler now follows `spec/13 §3`, and the guide follows it.
 - **R-5. `--solver-wallclock` is not in the command table of `spec/13 §5`.** `spec/12 §5` defines the flag (default 60 s); the compiler accepts it on `check`, `run`, `test`, `obligations`, `trace` and `report`, which the guide (§15) lists. Should `spec/13 §5` list it with those commands?
 
 ## Closure run

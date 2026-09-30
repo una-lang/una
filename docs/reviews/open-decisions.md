@@ -1885,3 +1885,25 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `cf9a0a5` (spec text), `c4aea7c` (track a)
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+
+### D-147: When a verification repair applies (closure, R-021)
+- Question: `spec/13 §3` proposes "a stronger parameter type when the value is a parameter, a `requires` clause for a private function, a guard, and `checked`", each "when applicable", without defining when the value is a parameter or when a `requires` can reach the goal.
+- Context: `spec/13 §3`, ADR 0033.
+- Options: A) the value is a parameter when the goal's only binder, before temporaries are expanded, is a parameter of the enclosing function; `requires` only when every free binder of the goal is such a parameter; handler operations and opaque predicates get neither; a goal outside the encoding, and the `false` goal of an exhaustiveness obligation, are never ground; B) propose every repair of the kind, as before.
+- Chosen: A, because each proposed repair must be one an agent can apply at that site.
+- Confidence: medium
+- Reversal cost: low, `place()` in `crates/una-verify/src/generate.rs` and `crates/una-verify/src/report.rs`
+- Implemented in: `dd116aa`, tag `DECISION D-147`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-148: The report keeps the schema `una.report/1` with two new fields (closure, R-018)
+- Question: ADR 0041 adds `obligations.cached` and `tcb.proof_cache` to the build report. `spec/13` says that changes to the Agent ABI "follow the ADR process and bump the version in the `schema` strings".
+- Context: `spec/13` preamble and §6, ADR 0041.
+- Options: A) keep `una.report/1`, since no release has published the ABI yet (`v0.1.0` is not tagged) and the new fields only add to the shape; B) bump to `una.report/2` now.
+- Chosen: A, because version 1 is first published by the `v0.1.0` release, which includes these fields; the bump rule protects consumers of a published ABI.
+- Confidence: medium
+- Reversal cost: low, the schema string in `crates/una-cli/src/report.rs`, spec/13 §6 and the report snapshots
+- Implemented in: `fe90186`, `crates/una-cli/src/report.rs`
+- ADR: `docs/adr/0041-proof-cache-trusted.md` (Accepted), consequences
+- Answer needed: Keep A? Or switch to B?
