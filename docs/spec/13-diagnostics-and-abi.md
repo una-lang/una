@@ -220,12 +220,12 @@ Every command prints one JSON document with `--json`, its `schema` key first (AD
   "package": { "name": "events-example", "version": "0.1.0" },
   "lock": { "solver_version": "...", "hash": "..." },
   "proven": { "semantic": 14, "security": "by typing", "authority": "by typing" },
-  "obligations": { "proven": 14, "refuted": 0, "unknown": 0 },
+  "obligations": { "proven": 14, "refuted": 0, "unknown": 0, "cached": 14 },
   "authority": [ { "function": "events.checkin.check_in", "public": true, "uses": ["@registrations: Registrations[find]", "@audit: Audit[record]", "@keys: Keys[hmac]"], "inferred": false } ],
   "information": { "policy_calls": [ { "policy": "events.keys.attendee_key", "purpose": "...", "owner": "privacy", "site": { "file": "...", "start": { "line": 30, "col": 13 } } } ] },
   "escapes": { "checked": [ { "module": "events.types", "count": 1, "budget": 1 } ] },
   "assumptions": [ { "capability": "events.checkin.Registrations", "operations": ["find"], "ensures": [] } ],
-  "tcb": { "trusted_modules": [ { "module": "events.keys", "lines": 17 } ], "host_capabilities": ["Keys"], "solver": "z3 <version>" },
+  "tcb": { "trusted_modules": [ { "module": "events.keys", "lines": 17 } ], "host_capabilities": ["Keys"], "solver": "z3 <version>", "proof_cache": ".una/cache/" },
   "requirements": [ { "id": "EVENTS_3", "status": "active", "derived": ["events.seating.availability"] } ],
   "coverage": { "pub_functions": 3, "with_ensures": 1, "with_derived_from": 1, "trivial_ensures": 0 },
   "out_of_model": ["timing", "termination and divergence", "resource consumption and allocation", "interpreter stack exhaustion", "external systems beyond declared signatures", "races between the check and the use of a file path"]
@@ -238,12 +238,12 @@ Every command prints one JSON document with `--json`, its `schema` key first (AD
 
 - `package`: the name and version of `una.toml`; a single file is named after its module, with version `0.0.0`.
 - `lock`: the solver version, and the hex SHA-256 of the lock's contents (for a single file, of the default lock's text).
-- `proven`: the number of proven obligations as `semantic`; `security` and `authority` are `"by typing"`. `obligations`: the counts by status.
+- `proven`: the number of proven obligations as `semantic`; `security` and `authority` are `"by typing"`. `obligations`: the counts by status, then `cached`, how many of these results came from the proof cache of `spec/12 §9` rather than from the solver (ADR 0041).
 - `authority`: every function of the package with `uses`, by qualified name, with `public`, its `uses` as written in a header, and whether they are inferred.
 - `information.policy_calls`: every call of a policy, in source order, with the policy, its purpose and owner, and the site.
 - `escapes.checked`: every module that uses `checked`, with the count and the budget of `una.toml`.
 - `assumptions`: every capability the package declares, with its operations and their `ensures` clauses as `op: clause`.
-- `tcb`: the trusted modules with their line counts, the host capabilities the package's functions use, and the solver as `z3 <version>`.
+- `tcb`: the trusted modules with their line counts, the host capabilities the package's functions use, the solver as `z3 <version>`, and `proof_cache`, the proof cache of the package, `.una/cache/`: in v0.1 its entries are trusted, not authenticated (ADR 0041).
 - `requirements`: every requirement, by identifier, with its status and the functions derived from it.
 - `coverage`: `pub_functions` counts the public functions, `with_ensures` those with at least one `ensures` clause that is not trivial, `with_derived_from` those with a `derived from` clause, and `trivial_ensures` the trivial clauses of public functions. An `ensures` clause is trivial when the solver proves it with no hypothesis, its parameters and `result` unconstrained: one more query per clause of a public function, cached like the others; a solver that cannot answer these queries gives U5003 or U8001 instead of the report.
 - `out_of_model`: the channels outside the model of `spec/07 §1`, in this order: timing, termination and divergence, resource consumption and allocation, interpreter stack exhaustion, external systems beyond declared signatures, and races between the check and the use of a file path (`spec/14 §3`).

@@ -642,3 +642,58 @@ pub f(x: Int) -> Int = x / 0
         stderr(&output)
     );
 }
+
+#[test]
+fn a_forged_proof_cache_entry_is_trusted_and_counted_as_cached() {
+    // R-018, ADR 0041, adversarial `escape-proof-cache-forgery`: the proof cache is part of
+    // the Trusted zone in v0.1. A forged entry turns a refuted query into proven, as the
+    // boundary states, and the report counts that result as one from the cache.
+    let root = package(
+        "escape-proof-cache-forgery",
+        &[(
+            "src/div0.una",
+            "module div0\n\npub f(x: Int) -> Int = x / 0\n",
+        )],
+    );
+    let path = root.to_str().unwrap();
+    let output = una(&["--json", "report", path]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let report: Value = serde_json::from_str(stdout(&output)).unwrap();
+    assert_eq!(
+        report["obligations"],
+        json!({"proven": 0, "refuted": 1, "unknown": 0, "cached": 0})
+    );
+    assert_eq!(report["tcb"]["proof_cache"], ".una/cache/");
+    let output = una(&["check", path]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("U5001"), "{}", stderr(&output));
+    let entries: Vec<PathBuf> = std::fs::read_dir(root.join(".una/cache/proofs"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    std::fs::write(
+        &entries[0],
+        r#"{"status":"proven","reason":null,"values":[]}"#,
+    )
+    .unwrap();
+    let output = una(&["check", path]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let output = una(&["--json", "report", path]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let report: Value = serde_json::from_str(stdout(&output)).unwrap();
+    assert_eq!(
+        report["obligations"],
+        json!({"proven": 1, "refuted": 0, "unknown": 0, "cached": 1})
+    );
+    let output = una(&["obligations", path]);
+    assert!(
+        stdout(&output).trim_end().ends_with(" (cached)"),
+        "{}",
+        stdout(&output)
+    );
+    // A clean cache verifies everything again.
+    std::fs::remove_dir_all(root.join(".una")).unwrap();
+    let output = una(&["check", path]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+}
