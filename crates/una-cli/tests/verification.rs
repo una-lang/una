@@ -653,6 +653,37 @@ pub f(x: Int) -> Int = x / 0
 }
 
 #[test]
+fn a_closed_goal_without_bindings_has_no_counterexample_n009() {
+    // N-009, `spec/13 §3` ("when applicable"): `zero(1) > 0` has no free binder but is not a
+    // literal, so the model binds nothing, and no empty counterexample is shown.
+    let source = "module app
+
+pub kind Pos = Int where it > 0
+
+pub inv(p: Pos) -> Int = 100 / p
+
+pub zero(x: Int) -> Int = 0
+
+pub closed_call() -> Int = inv(zero(1))
+";
+    let diagnostic = only_diagnostic("counterexample-closed-goal", source);
+    assert_eq!(diagnostic["code"], "U5001");
+    assert_eq!(diagnostic.get("counterexample"), None, "{diagnostic}");
+    let root = package(
+        "counterexample-closed-goal-human",
+        &[("src/app.una", source)],
+    );
+    let output = una(&["check", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("U5001"), "{}", stderr(&output));
+    assert!(
+        !stderr(&output).contains("counterexample:"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
 fn a_forged_proof_cache_entry_is_trusted_and_counted_as_cached() {
     // R-018, ADR 0041, adversarial `escape-proof-cache-forgery`: the proof cache is part of
     // the Trusted zone in v0.1. A forged entry turns a refuted query into proven, as the

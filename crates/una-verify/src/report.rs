@@ -48,8 +48,12 @@ pub fn diagnostics(
             goal: obligation.goal.clone(),
             status: outcome.status,
         });
-        // R-021: a ground goal has no binder to show.
-        if outcome.status == ObligationStatus::Refuted && !obligation.site.ground {
+        // R-021: a ground goal has no binder to show; N-009: nor has a model without
+        // bindings, as for a closed goal that is not a literal (`zero(1) > 0`).
+        if outcome.status == ObligationStatus::Refuted
+            && !obligation.site.ground
+            && !outcome.bindings.is_empty()
+        {
             diagnostic.counterexample = Some(Counterexample {
                 bindings: outcome.bindings.clone(),
             });
