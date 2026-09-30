@@ -2,34 +2,38 @@
 source: crates/una-syntax/tests/examples.rs
 expression: "dump(&parsed.file, &interner, db.file(id).text())"
 ---
-(module lending.desk)
-(import lending.loans Day LendError Loan LoanDays Member Shelf Tool can_borrow lend shelf_with)
-(fn pub lend_anywhere
-  (doc "--- Lends from the main shelf, or from the backup shelf when the main one cannot.")
-  ((member {Member}) (name {Text}) (today {Day}) (days {LoanDays}))
-  {Loan}
-  (requires (call can_borrow member))
+(module toolshelf.desk)
+(import toolshelf.tools Checkout CheckoutError Day KeepDays Member Shelf Tool can_check_out check_out shelf_with)
+(fn pub check_out_anywhere
+  (doc "--- Checks out from the main shelf, or from the backup shelf when the main one cannot.")
+  ((member {Member}) (name {Text}) (today {Day}) (days {KeepDays}))
+  {Checkout}
+  (requires (call can_check_out member))
   (ensures (== (. result due) (+ today days)))
   (uses @main_shelf {Shelf[pick]})
   (uses @backup_shelf {Shelf[pick]})
-  (fails LendError)
+  (fails CheckoutError)
   (block
     (let first_try
-      (handled (attempt (call lend member name today days)) (with (= @shelf @main_shelf))))
+      (handled (attempt (call check_out member name today days)) (with (= @shelf @main_shelf))))
     (when first_try
-      (arm (is Ok loan) loan)
+      (arm (is Ok checkout) checkout)
       (arm
         (is Err)
         (block
           (handled
-            (call lend member name today days)
+            (call check_out member name today days)
             (with (= @shelf @backup_shelf))
             (if-error-pass)))))))
-(example "the backup shelf lends what the main shelf lacks"
+(example "the backup shelf has what the main shelf lacks"
   (given @main_shelf (call shelf_with (tools: (list))))
   (given @backup_shelf (call shelf_with (tools: (list (call Tool (name: "saw") (deposit: 15))))))
   (do
-    (call lend_anywhere (call Member (name: "Bo") (holding: 2)) (name: "saw") (today: 10) (days: 3)))
+    (call check_out_anywhere
+      (call Member (name: "Bo") (holding: 2))
+      (name: "saw")
+      (today: 10)
+      (days: 3)))
   (expect (== (. (. result tool) name) "saw"))
   (expect (== (. result due) 13))
   (expect-performed @backup_shelf.pick))
@@ -37,7 +41,7 @@ expression: "dump(&parsed.file, &interner, db.file(id).text())"
   (given @main_shelf (call shelf_with (tools: (list (call Tool (name: "drill") (deposit: 20))))))
   (given @backup_shelf (call shelf_with (tools: (list))))
   (do
-    (call lend_anywhere
+    (call check_out_anywhere
       (call Member (name: "Ana") (holding: 0))
       (name: "drill")
       (today: 10)

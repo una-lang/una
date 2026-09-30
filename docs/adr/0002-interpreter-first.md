@@ -19,4 +19,4 @@ v0.1 executes programs with a direct interpreter of Core IR that implements the 
 ## Alternatives considered
 
 - **Cranelift from day one:** faster programs, but doubles the surface to get right before the thesis is tested.
-- **Transpiling to Rust or C:** borrows another language's semantics and hides UAM mismatches.
+- **Transpiling to Rust or C:** adopts another language's semantics and hides UAM mismatches.

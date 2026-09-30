@@ -1,8 +1,8 @@
 [package]
-name = "lending-example"
+name = "toolshelf-example"
 version = "0.1.0"
 edition = "0.1"
 
 [run]
-entry = "lending.main"
+entry = "toolshelf.main"
 grants = ["console", "clock"]

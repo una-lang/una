@@ -205,22 +205,22 @@ With it, `pub average(counts: NonEmpty[Int]) -> Int = counts.sum() / counts.len`
 
 ### Capabilities and effects
 
-There is no ambient authority. A function acts outside the program only through a capability it declares in `uses`; capabilities pass down to callees by name, `with` rebinds them or installs a handler for one statement, and they are never values. From `examples/lending`:
+There is no ambient authority. A function acts outside the program only through a capability it declares in `uses`; capabilities pass down to callees by name, `with` rebinds them or installs a handler for one statement, and they are never values. From `examples/toolshelf`:
 
 ```una
---- Lends from the main shelf, or from the backup shelf when the main one cannot.
-pub lend_anywhere(member: Member, name: Text, today: Day, days: LoanDays) -> Loan
-  requires can_borrow(member)
+--- Checks out from the main shelf, or from the backup shelf when the main one cannot.
+pub check_out_anywhere(member: Member, name: Text, today: Day, days: KeepDays) -> Checkout
+  requires can_check_out(member)
   ensures result.due == today + days
   uses @main_shelf: Shelf[pick]
   uses @backup_shelf: Shelf[pick]
-  fails LendError
+  fails CheckoutError
 =
-  let first_try = attempt lend(member, name, today, days) with @shelf = @main_shelf
+  let first_try = attempt check_out(member, name, today, days) with @shelf = @main_shelf
   when first_try
-    is Ok(loan) -> loan
+    is Ok(checkout) -> checkout
     is Err ->
-      lend(member, name, today, days) with @shelf = @backup_shelf
+      check_out(member, name, today, days) with @shelf = @backup_shelf
         if error pass
 ```
 
@@ -388,7 +388,7 @@ cargo build --release -p una-cli && export PATH="$PWD/target/release:$PATH"
 una check examples/events           # tiers 0 and 1: every check and every proof
 una test examples/events            # run the examples, with effect traces
 una run examples/hello              # prints "Hello, Una"
-una obligations examples/lending    # every proof obligation and its status
+una obligations examples/toolshelf  # every proof obligation and its status
 una report examples/journal         # the build report
 una explain U5001                   # what a code means, with examples
 ```
@@ -473,7 +473,7 @@ Every package under `examples/` is canonical, checks at tier 1 with every obliga
 | --- | --- | --- |
 | [`hello`](examples/hello) | A greeting | The smallest program: `main` with `Console` |
 | [`events`](examples/events) | Event check-in (the reference example) | Range refinements, a postcondition derived from a requirement, capabilities with handlers, a `secret[PII]` phone number that leaves only as a keyed hash through a policy in a trusted module, an opaque predicate established by `checked` |
-| [`lending`](examples/lending) | A community tool-lending shelf | Records and sums with payloads, reflect predicates in `requires` and `ensures`, `attempt` under a `with` rebinding, a handler instance in `main`, `Clock` |
+| [`toolshelf`](examples/toolshelf) | A shared tool shelf where members check tools out and bring them back | Records and sums with payloads, reflect predicates in `requires` and `ensures`, `attempt` under a `with` rebinding, a handler instance in `main`, `Clock` |
 | [`pantry`](examples/pantry) | The stock of a shared kitchen | Generic kinds and functions, a generic refinement proving a division, lambdas through method calls (`filter`, `map`, `fold`, `first_where`) |
 | [`journal`](examples/journal) | A private journal | A label category, the program counter, a sink label, a declassification policy, `Files` and `Env` under an `internal` program counter |
 | [`greenhouse`](examples/greenhouse) | A roof vent controller | Operation contracts, handlers verified against them, a handler with its own `uses`, `with @x = @y`, an inferred private header, a requirement from a regulation |
