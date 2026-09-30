@@ -316,7 +316,7 @@ impl<'a> Parser<'a> {
         Stop
     }
 
-    /// U0101 at the current token: "unexpected <found>, expected <expected>".
+    /// U0101 at the current token: "unexpected `<found>`, expected `<expected>`".
     fn unexpected(&mut self, expected: &str) -> Stop {
         let found = match self.peek() {
             TokenKind::Keyword(keyword) => format!("keyword `{}`", keyword.as_str()),
