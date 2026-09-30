@@ -1,0 +1,23 @@
+-- test: kinds, generic kinds and recursion through List or Option fields are types (U2002 twin)
+-- spec: spec/03 §2
+-- expect: ok
+module kinds_as_types
+
+pub kind Shape = Circle(radius: Int) | Dot
+
+pub kind Node
+  value: Int
+  next: Option[Node]
+  children: List[Node]
+
+pub kind NonEmpty[T] = List[T] where it.len > 0
+
+pub radius(shape: Shape) -> Int
+=
+  when shape
+    is Circle(radius) -> radius
+    is Dot -> 0
+
+pub value(node: Node) -> Int = node.value
+
+pub size(items: NonEmpty[Int]) -> Int = items.len

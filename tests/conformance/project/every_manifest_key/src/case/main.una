@@ -1,0 +1,11 @@
+-- test: una.toml with every table and key is accepted (U7002 twin)
+-- spec: spec/13 §7
+-- expect: ok
+module case.main
+
+import case.keys (greeting)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(greeting())
