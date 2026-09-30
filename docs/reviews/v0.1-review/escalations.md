@@ -42,3 +42,22 @@ Only what the owner must decide. Answer each with its letter. The recommended op
 **E10. Neutrality: rename the fifth example package?** (R-022)
 - A (recommended): rename the package, its modules, identifiers and snapshots, and the identifiers in the two exhaustiveness cases, in one change. History files keep their references, as ADR 0025 allows.
 - B: keep it and narrow the audit list. Consequence: the repository keeps vocabulary from a regulated domain.
+
+## Leonardo's answers
+
+Given on 2026-09-30, outside this file, and recorded here by the closure run. The owner's words: "Accept the reviewer's recommendation for every escalation, except: E1: do not tag v0.1.0 until every Critical is fixed and re-reviewed. D-093: resolved by the soundness ADR (effect floor at accepts; failures and results by data flow)."
+
+| Escalation | Answer | Where it is applied |
+| --- | --- | --- |
+| E1 | Do not tag `v0.1.0` until every Critical is fixed and re-reviewed. `main` holds v0.1 as a pre-release until the owner merges the closure pull request and asks for the tag. | closure run; no tag |
+| E2 (D-093) | Resolved by ADR 0038 D4: the effect floor at `accepts`; failures and results by data flow. | ADR 0038 D4, `spec/05`, `spec/07` |
+| E3 | A (recommended), in the form ADR 0038 D3 states: symbolic labels on type parameters and labeled prelude results. The ADR wins where it differs from the finding. | ADR 0038 D3 |
+| E4 | A: the result of `Keys.hmac` carries the label of `data`, and `key_name` must be `public`. | ADR 0039 |
+| E5 | A: refined types as type arguments are rejected in v0.1. | ADR 0040 |
+| E6 | A: the proof cache is part of the trusted base for v0.1, and the report counts cached results. | ADR 0041 |
+| E7 | A, with the code of ADR 0038 D2: a second-class type used as a type argument is U3016. | ADR 0038 D2 |
+| E8 | A: an opaque predicate may be called only inside `checked` and in other opaque bodies. | ADR 0042 |
+| E9 | A: `std.testing` only in handlers that are installed only with `given`, and never as a function value. | ADR 0043 |
+| E10 | A: rename the fifth example package and the identifiers of the two exhaustiveness cases, in one change. | R-022 |
+
+The ADR numbers above for E4, E5, E6, E8 and E9 are those the closure run assigned; `docs/plan/runs/v0.1-closure-plan.md` is the index.
