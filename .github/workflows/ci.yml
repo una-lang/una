@@ -50,10 +50,15 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
-      # DECISION D-129: the Linux release archive builds and runs on every push; the macOS one
-      # builds in the release workflow, within the runner rule of D-083.
-      - name: Pack and check the Linux release archive
-        if: runner.os == 'Linux'
+      # DECISION D-129: each runner packs and checks the release archive of its own target, the
+      # targets of the release workflow: the Linux one on every push, and the macOS one on pull
+      # requests and on pushes to main, within the runner rule of D-083 (review finding R-035).
+      - name: Pack and check the release archive of the runner's target
         run: |
-          scripts/release.sh x86_64-unknown-linux-gnu
-          scripts/check-release.sh x86_64-unknown-linux-gnu
+          case "$RUNNER_OS" in
+            Linux) target=x86_64-unknown-linux-gnu ;;
+            macOS) target=aarch64-apple-darwin ;;
+            *) echo "error: no release target for $RUNNER_OS" >&2; exit 1 ;;
+          esac
+          scripts/release.sh "$target"
+          scripts/check-release.sh "$target"
