@@ -1,0 +1,22 @@
+-- test: a kind whose parameter is only in data positions is covariant at a handler result (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 16:16
+module sweep_variance_box_handler
+
+kind Box[T]
+  value: T
+
+kind Sink[T]
+  eat: fn(T) -> Int
+
+capability Give0
+  op give(v: Box[secret Int]) -> Box[Int]
+
+handler giving0() for Give0
+  op give(v) = v
+
+capability Give1
+  op give(v: Box[Int]) -> Box[secret Int]
+
+handler giving1() for Give1
+  op give(v) = v

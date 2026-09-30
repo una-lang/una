@@ -1,0 +1,32 @@
+-- test: a sum kind with a secret variant field: an interpolation of a comparison of it is a secret argument of Console (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4003 at 27:18
+module sweep_label_sum_interp
+
+kind Acct
+  id: Int
+  pin: secret Int
+
+kind Guess = Hit(pin: secret Int) | Miss
+
+kind Box[T]
+  value: T
+
+kind Wallet
+  acct: Acct
+
+grab(x: Guess) -> secret Int
+=
+  when x
+    is Hit(pin) -> pin
+    is Miss -> 0
+
+pub shown(x: Guess) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("same {x == Hit(pin: 2)}")
+
+pub shown_twin(x: Guess) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("fixed")

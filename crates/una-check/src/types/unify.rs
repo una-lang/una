@@ -1,10 +1,12 @@
 //! Unification variables, for generic instantiations, empty lists and lambda parameters
 //! (`spec/03 §7`).
 
+use std::rc::Rc;
+
 use una_syntax::Span;
 
 use super::label::Label;
-use super::ty::{FnTy, FnUse, Ty};
+use super::ty::{FnTy, FnUse, KindLabels, Ty};
 
 /// Why a unification variable exists, for the diagnostic when inference leaves it unknown.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,9 +28,19 @@ struct Slot {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Vars {
     slots: Vec<Slot>,
+    /// The labels of the kinds' fields, for the deep labels of the variables' values.
+    kinds: Rc<KindLabels>,
 }
 
 impl Vars {
+    /// No variables yet, over the kinds described by `kinds`.
+    pub(crate) fn new(kinds: Rc<KindLabels>) -> Vars {
+        Vars {
+            slots: Vec::new(),
+            kinds,
+        }
+    }
+
     /// A new variable.
     pub(crate) fn fresh(&mut self, origin: Origin, span: Span) -> Ty {
         self.slots.push(Slot {
@@ -61,7 +73,17 @@ impl Vars {
     /// and the label of each variable that a label names (see [`Vars::label_of`]) replaced by
     /// the join of every label of the variable's value, as it is now.
     pub(crate) fn resolve_labeled(&self, ty: &Ty) -> Ty {
-        self.settle(&self.resolve_shape(ty), &[])
+        self.settle(&self.resolve_shape(ty), &[], false)
+    }
+
+    /// [`Vars::resolve_labeled`] for a local bound by `let`: the labels of solved variables are
+    /// settled as they are now, and the label of a variable still unsolved is kept, so that
+    /// the call that later solves it, like the call of a generic function bound with `let`,
+    /// counts its labels (ADR 0038 D3.2, DECISION D-137, re-review N-003).
+    /// DECISION D-TBD-l3: a variable left unsolved by the `let` keeps its label, and the local
+    /// is not generalized: every call of it solves the same variable, whose labels join.
+    pub(crate) fn resolve_bound(&self, ty: &Ty) -> Ty {
+        self.settle(&self.resolve_shape(ty), &[], true)
     }
 
     /// The symbolic label that stands for `ℓ*(σ)` of the variables among `tys`, the join of every
@@ -103,11 +125,12 @@ impl Vars {
 
     /// `ty`, already resolved, with the labels of variables replaced; `visiting` holds the
     /// variables being replaced, whose labels are not counted twice.
-    fn settle(&self, ty: &Ty, visiting: &[usize]) -> Ty {
-        ty.map_labels(&|label| self.settle_label(label, &mut visiting.to_vec()))
+    /// `keep` keeps the labels of unsolved variables (see [`Vars::resolve_bound`]).
+    fn settle(&self, ty: &Ty, visiting: &[usize], keep: bool) -> Ty {
+        ty.map_labels(&|label| self.settle_label(label, &mut visiting.to_vec(), keep))
     }
 
-    fn settle_label(&self, label: &Label, visiting: &mut Vec<usize>) -> Label {
+    fn settle_label(&self, label: &Label, visiting: &mut Vec<usize>, keep: bool) -> Label {
         if !label.symbols.iter().any(|s| s.starts_with('?')) {
             return label.clone();
         }
@@ -123,10 +146,14 @@ impl Vars {
             if visiting.contains(&var) {
                 continue;
             }
-            visiting.push(var);
             let value = self.resolve_shape(&Ty::Var(var));
-            let value = self.settle(&value, visiting);
-            settled = settled.join(&value.deep_label());
+            if keep && let Ty::Var(unsolved) = value {
+                settled.symbols.insert(format!("?{unsolved}"));
+                continue;
+            }
+            visiting.push(var);
+            let value = self.settle(&value, visiting, keep);
+            settled = settled.join(&value.deep_label(&self.kinds));
             visiting.pop();
         }
         settled
@@ -153,7 +180,12 @@ impl Vars {
     /// The labels of `a` and `b` joined position by position; they have one shape, as after
     /// unification. Function parameters meet, since they are contravariant.
     pub(crate) fn join(&self, a: &Ty, b: &Ty) -> Ty {
-        combine(&self.resolve_shape(a), &self.resolve_shape(b), true)
+        combine(
+            &self.resolve_shape(a),
+            &self.resolve_shape(b),
+            true,
+            &self.kinds,
+        )
     }
 
     fn occurs(&self, var: usize, ty: &Ty) -> bool {
@@ -201,8 +233,20 @@ impl Vars {
     /// it is solved with, and a solved variable keeps the join of the labels of every type it
     /// meets.
     pub(crate) fn unify(&mut self, a: &Ty, b: &Ty) -> bool {
-        if !self.unify_shapes(a, b) {
+        self.unify_in(a, b, false)
+    }
+
+    /// [`Vars::unify`]; under an invariant parameter of a kind (`fixed`), a solved variable
+    /// keeps its labels, since values of the kind at one label do not flow into it at another
+    /// (ADR 0046 rule 2): the flow that follows compares them.
+    /// DECISION D-TBD-l2: ADR 0046 fixes the flow, not unification; a join here would raise
+    /// the argument after the flows that fixed it were checked.
+    fn unify_in(&mut self, a: &Ty, b: &Ty, fixed: bool) -> bool {
+        if !self.unify_shapes(a, b, fixed) {
             return false;
+        }
+        if fixed {
+            return true;
         }
         for (target, other) in [(a, b), (b, a)] {
             if let Some(var) = self.solved_head(target)
@@ -215,7 +259,7 @@ impl Vars {
         true
     }
 
-    fn unify_shapes(&mut self, a: &Ty, b: &Ty) -> bool {
+    fn unify_shapes(&mut self, a: &Ty, b: &Ty, fixed: bool) -> bool {
         let a = self.shallow(a);
         let b = self.shallow(b);
         // Top labels do not take part in equality; an unsolved variable takes the other side
@@ -255,14 +299,19 @@ impl Vars {
             | (Ty::Text, Ty::Text)
             | (Ty::Unit, Ty::Unit)
             | (Ty::Hashed, Ty::Hashed) => true,
-            (Ty::List(x), Ty::List(y)) => self.unify(x, y),
+            (Ty::List(x), Ty::List(y)) => self.unify_in(x, y, fixed),
             (Ty::Kind(i, xs), Ty::Kind(j, ys)) => {
+                let kinds = self.kinds.clone();
                 i == j
                     && xs.len() == ys.len()
                     && xs
                         .iter()
                         .zip(ys)
-                        .fold(true, |ok, (x, y)| self.unify(x, y) && ok)
+                        .enumerate()
+                        .fold(true, |ok, (index, (x, y))| {
+                            let fixed = fixed || kinds.is_invariant(*i, index);
+                            self.unify_in(x, y, fixed) && ok
+                        })
             }
             (Ty::Param(i), Ty::Param(j)) => i == j,
             (Ty::Fn(f), Ty::Fn(g)) => {
@@ -270,8 +319,8 @@ impl Vars {
                     && f.params
                         .iter()
                         .zip(&g.params)
-                        .fold(true, |ok, (x, y)| self.unify(x, y) && ok)
-                    && self.unify(&f.result, &g.result)
+                        .fold(true, |ok, (x, y)| self.unify_in(x, y, fixed) && ok)
+                    && self.unify_in(&f.result, &g.result, fixed)
             }
             _ => false,
         }
@@ -288,19 +337,28 @@ impl Vars {
 }
 
 /// `a` and `b`, of one shape, with their labels joined (`join`) or met (not `join`) position
-/// by position; function parameters take the other operation.
-fn combine(a: &Ty, b: &Ty, join: bool) -> Ty {
+/// by position; function parameters take the other operation. An argument of an invariant
+/// parameter of a kind keeps the labels of `a` (ADR 0046 rule 2): a value of `b` flows into
+/// it only at equal labels, which the flow that follows checks (DECISION D-TBD-l1).
+fn combine(a: &Ty, b: &Ty, join: bool, kinds: &KindLabels) -> Ty {
     let (la, lb) = (a.top_label(), b.top_label());
     let label = if join { la.join(&lb) } else { la.meet(&lb) };
     let base = match (a.unlabeled(), b.unlabeled()) {
         (Ty::Never, other) | (other, Ty::Never) => return other.clone().with_label(&label),
         (Ty::Error, _) | (_, Ty::Error) => return Ty::Error,
-        (Ty::List(x), Ty::List(y)) => Ty::List(Box::new(combine(x, y, join))),
+        (Ty::List(x), Ty::List(y)) => Ty::List(Box::new(combine(x, y, join, kinds))),
         (Ty::Kind(i, xs), Ty::Kind(j, ys)) if i == j && xs.len() == ys.len() => Ty::Kind(
             *i,
             xs.iter()
                 .zip(ys)
-                .map(|(x, y)| combine(x, y, join))
+                .enumerate()
+                .map(|(index, (x, y))| {
+                    if kinds.is_invariant(*i, index) {
+                        x.clone()
+                    } else {
+                        combine(x, y, join, kinds)
+                    }
+                })
                 .collect(),
         ),
         (Ty::Fn(f), Ty::Fn(g)) if f.params.len() == g.params.len() => Ty::Fn(Box::new(FnTy {
@@ -308,9 +366,9 @@ fn combine(a: &Ty, b: &Ty, join: bool) -> Ty {
                 .params
                 .iter()
                 .zip(&g.params)
-                .map(|(x, y)| combine(x, y, !join))
+                .map(|(x, y)| combine(x, y, !join, kinds))
                 .collect(),
-            result: combine(&f.result, &g.result, join),
+            result: combine(&f.result, &g.result, join, kinds),
             // ADR 0038 D1: a joined function type keeps the `uses` and `fails` of both.
             uses: union_uses(&f.uses, &g.uses),
             fails: f.fails.clone().or_else(|| g.fails.clone()),
