@@ -577,12 +577,46 @@ impl<'a> Checker<'_, 'a, '_> {
     /// U3015: `std.testing` serves handler operation bodies and examples only (`spec/14 §4`,
     /// DECISION D-077).
     pub(crate) fn testing_site(&mut self, module: usize, name: &str, span: Span) {
-        if module == self.env.prelude + 1 && !self.ctx.testing && self.authority() {
+        if module != self.env.prelude + 1 {
+            return;
+        }
+        // ADR 0043: a handler that uses `std.testing` may be installed only by `given`.
+        if let Some(handler) = self.handler
+            && self.pass == Pass::Check
+        {
+            let first = self
+                .findings
+                .testing_handlers
+                .entry(handler)
+                .or_insert(span);
+            if (span.file, span.start) < (first.file, first.start) {
+                *first = span;
+            }
+        }
+        if !self.ctx.testing && self.authority() {
             self.report.error(
                 Code::U3015,
                 span,
                 format!(
                     "`{name}` belongs to `std.testing`, which only handler operations and examples may use"
+                ),
+            );
+        }
+    }
+
+    /// U3015: a function of `std.testing` used as a value, not called, anywhere (ADR 0043
+    /// rule 3); in a handler it is also a use of `std.testing` by the handler.
+    pub(crate) fn testing_value_site(&mut self, module: usize, name: &str, span: Span) {
+        if module != self.env.prelude + 1 {
+            return;
+        }
+        self.testing_site(module, name, span);
+        if self.ctx.testing && self.authority() {
+            self.report.error(
+                Code::U3015,
+                span,
+                format!(
+                    "`{name}` belongs to `std.testing`, whose functions may only be called, not used as values"
                 ),
             );
         }
@@ -1365,5 +1399,28 @@ pub(crate) fn stored_effects(env: &Env<'_>, report: &mut Report<'_>) {
                 );
             }
         }
+    }
+}
+
+/// U3015: a `with` binding that installs a handler whose operation bodies use `std.testing`,
+/// with the first use as a related span (ADR 0043 rule 2). Such a handler is installed only by
+/// `given` lines of examples.
+pub(crate) fn testing_installs(findings: &Findings, report: &mut Report<'_>) {
+    let mut installs: Vec<&(usize, Span)> = findings.with_installs.iter().collect();
+    installs.sort_by_key(|(_, span)| (span.file, span.start, span.end));
+    installs.dedup();
+    for (handler, span) in installs {
+        let Some(used) = findings.testing_handlers.get(handler) else {
+            continue;
+        };
+        let mut diagnostic = report.make(
+            Code::U3015,
+            *span,
+            "this `with` binding installs a handler that uses `std.testing`, which only `given` lines of examples may install",
+        );
+        diagnostic
+            .related
+            .push(report.related(*used, "the use of `std.testing`"));
+        report.push(diagnostic);
     }
 }

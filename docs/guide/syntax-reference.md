@@ -922,7 +922,7 @@ example "an unknown attendee fails and is not audited"
 - **`do` lines** may nest fallible and effectful calls, and any failure ends the example. They need no handling clauses.
 - **Names** are unique per module.
 - **Isolation.** Each example runs in a fresh abstract machine. `una test --json` reports the outcome and the full effect trace, with labeled arguments redacted.
-- **`std.testing`** (`fake_hash`) is usable only in handlers and examples (U3015).
+- **`std.testing`** (`fake_hash`) is usable only in examples and in handlers installed only by `given`, and only by calling it, never as a function value (U3015).
 
 ---
 

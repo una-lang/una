@@ -1,0 +1,27 @@
+-- test: std.testing cannot reach production code through a handler installed with with, nor as a function value (R-017)
+-- spec: spec/14 §4
+-- expect: error U3015 at src/ex_testing3.una:15:14
+-- expect: error U3015 at src/ex_testing3.una:26:26
+module ex_testing3
+
+-- Promoted from the v0.1 review, adversarial package `escape-testing-via-handler`.
+
+import std.testing (fake_hash)
+
+pub capability Maker
+  op get() -> fn(Int) -> internal Hashed
+
+pub handler leak() for Maker
+  op get() = fake_hash
+
+pub digest(seed: Int) -> internal Hashed
+  uses @maker: Maker[get]
+=
+  let make = @maker.get()
+  make(seed)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let d = digest(7) with @maker = leak()
+  @console.print("made a digest")
