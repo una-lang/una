@@ -1169,7 +1169,7 @@ una [--json] [--color never|auto|always] <COMMAND>
   - Grant specs: `console`, `clock`, `env`, `keys:<keyfile>`, `files:<path>:read`, `files:<path>:write` and the combined `files:<path>:read,write`.
   - Relative paths in grants resolve against the package root when they come from `una.toml`, and against the current directory when they come from `--grant`.
   - A `uses` of `main` that the final grants do not cover is U3012, before anything runs.
-- **Depth.** `--max-depth <n>` sets the maximum call depth, 10,000 by default. Exceeding it aborts with U6003.
+- **Depth.** `--max-depth <n>` sets the maximum call depth, 10,000 by default. Exceeding it aborts with U6003. The interpreter's stack is sized from the depth, so a larger depth also lets a run use more memory.
 - **Usage errors (exit code 2):**
   - a package without an entry, or an entry without `pub main() -> Unit`;
   - a `--grant` value that is not a grant spec;
