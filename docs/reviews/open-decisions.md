@@ -1984,3 +1984,47 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `9902633`, tag `DECISION D-155`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+
+### D-156: U3013 in predicate bodies (closure, R-029)
+- Question: `spec/04 §4` puts one effect on each line; a predicate body is pure, and U2015 already reports effects and unhandled failures there.
+- Context: the v0.1 review.
+- Options: A) U3013 in a predicate body only for a nested fallible call that `attempt` handles, everything else staying with U2015; B) U3013 for every nested call.
+- Chosen: A, because each problem gets exactly one code.
+- Confidence: high
+- Reversal cost: low, `position_site` in `crates/una-check/src/types/authority.rs`
+- Implemented in: `73f90b9` (merge), tag `DECISION D-156`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-157: The U2005 and U2009 advice when nothing is left to suggest (closure, R-030)
+- Question: The repairs now suggest only parameters or fields that no other argument gives.
+- Context: the v0.1 review.
+- Options: A) advice to remove the argument when every name is given, and a list of the open names when none is close; B) no repair.
+- Chosen: A, because it tells the agent the next step.
+- Confidence: high
+- Reversal cost: low, `crates/una-check/src/types/call.rs`, `stmt.rs`
+- Implemented in: `73f90b9` (merge), tag `DECISION D-157`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-158: U1002 when both definitions have the same kind (closure, R-034)
+- Question: The message named the construct twice ("as a function and as a function").
+- Context: the v0.1 review.
+- Options: A) "defined twice in this module, both times as a <construct>"; B) drop the construct.
+- Chosen: A, because it keeps the construct in the message, as `CLAUDE.md` asks.
+- Confidence: high
+- Reversal cost: low, `crates/una-check/src/names/`
+- Implemented in: `73f90b9` (merge), tag `DECISION D-158`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-159: A case left out of the promoted Euclidean division program (closure, adversarial)
+- Question: The adversarial `runtime-euclidean-division` has a line with negative literal divisors, on which the verifier and the checker disagree about division obligations (R-031).
+- Context: the v0.1 review.
+- Options: A) leave that line out of `runtime/euclidean_division_signs.una` and record the mismatch in the R-031 backlog row; B) fix R-031 now.
+- Chosen: A, because R-031 needs a spec line first (`spec/12 §2`).
+- Confidence: high
+- Reversal cost: low, add the line back when R-031 is done
+- Implemented in: `73f90b9` (merge), tag `DECISION D-159`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?

@@ -866,7 +866,7 @@ impl<'a> Checker<'_, 'a, '_> {
         if !self.authority() {
             // The body of an opaque predicate is a line too (`spec/04 §4`, R-029). U2015
             // already reports effects and unhandled failures there, so U3013 names only a
-            // nested call whose failure `attempt` handles (DECISION D-TBD-p1).
+            // nested call whose failure `attempt` handles (DECISION D-156).
             if self.pass == Pass::Check
                 && self.ctx.opaque
                 && !top

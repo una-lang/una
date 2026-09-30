@@ -1083,7 +1083,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let names: Vec<&str> = fields.iter().map(|f| f.name).collect();
         let mut taken: Vec<bool> = fields.iter().map(|_| false).collect();
         // R-030: the repair of an unknown field suggests only a field that no other argument
-        // gives, so applying it cannot make the argument a duplicate (U2006; DECISION D-TBD-p2).
+        // gives, so applying it cannot make the argument a duplicate (U2006; DECISION D-157).
         let mut given_fields = taken.clone();
         for (position, arg) in args.iter().enumerate() {
             let target = match &arg.label {

@@ -390,7 +390,7 @@ impl<'p, 'a> Checker<'p, 'a> {
                 ident.span,
                 first_span,
                 // R-034: the construct is named once when both definitions are of one kind
-                // (DECISION D-TBD-p3).
+                // (DECISION D-158).
                 if first_what == what {
                     format!(
                         "`{name}` is defined twice in this module, both times as a {}",
