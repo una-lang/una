@@ -1,0 +1,35 @@
+-- test: text literals with escapes have their true lengths and equal literals are one value (review control)
+-- spec: spec/12 §4
+-- expect: error U5001 at 11:3
+-- expect: error U5001 at 16:3
+-- expect: error U5001 at 26:3
+module text_literal_escapes
+
+pub a() -> Int
+  ensures result == 4
+=
+  "q\"t".len
+
+pub b() -> Int
+  ensures result == 6
+=
+  "\u{1F44D}\n\t\\".len
+
+pub c() -> Int
+  ensures result == 2
+=
+  "\{\}".len
+
+pub distinct() -> Bool
+  ensures result == false
+=
+  "\u{41}" == "A"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let x = a()
+  let y = b()
+  let z = c()
+  let d = distinct()
+  @console.print("{x} {y} {z} {d}")
