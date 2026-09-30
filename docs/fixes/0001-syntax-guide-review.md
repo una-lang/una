@@ -361,6 +361,7 @@ Items scheduled for the v0.1 closure run, after the review freeze ends. They cha
 
 - **F-0001-02.** Implement ADR 0037 (Accepted), with its conditions: quantifier-free obligations over fresh variables, an explicit diagnostic for any refinement in a function type that cannot be supported, an internal check that no refinement is dropped between the checker and Core IR, and conformance cases for the correct program accepted, the mismatched lambda annotation rejected, and the covariant result with a counterexample.
 - **C-1. `una contract` and `una trace` hide project-file diagnostics (ADR 0036).** With an invalid `una.toml` or no `verification.lock`, an unknown name exits with `2` ("the package has no function ...", "the package has no requirement ...") and U7002 or U7004 is never reported. Every other command reports them with exit `1`. Load and check the project files before resolving the name, so that the diagnostics come first, and add a CLI test for both commands.
+  - **Done** by the v0.1 closure run (R-027, `e3980db`).
 
 ## Progress
 
