@@ -398,7 +398,7 @@ impl<'a> Checker<'_, 'a, '_> {
             );
         }
         // ADR 0042: an opaque predicate is called only as the predicate of `checked` and in
-        // opaque bodies. DECISION D-TBD-m1: also in the `where` clause of a kind and in the
+        // opaque bodies. DECISION D-149: also in the `where` clause of a kind and in the
         // clauses of a capability operation, which name the fact without establishing it.
         if def.kind == (FnKind::Predicate { reflect: false })
             && !self.ctx.opaque

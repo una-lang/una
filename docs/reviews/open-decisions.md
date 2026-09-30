@@ -1907,3 +1907,14 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `fe90186`, `crates/una-cli/src/report.rs`
 - ADR: `docs/adr/0041-proof-cache-trusted.md` (Accepted), consequences
 - Answer needed: Keep A? Or switch to B?
+
+### D-149: Which clauses may name an opaque predicate (closure, R-016)
+- Question: ADR 0042 allows an opaque predicate only inside `checked` and opaque bodies, and makes "any other call, in code, a clause or an example" U2016. But `spec/03 §4` defines opaque refined kinds such as `kind Slug = Text where valid_slug(it)`, and an operation's `ensures` may establish an opaque fact.
+- Context: `spec/03 §4`, `spec/06 §6`, ADR 0042.
+- Options: A) a kind's `where` clause and a capability operation's `requires` and `ensures` may name an opaque predicate, since they name the fact without establishing it; function `requires` and `ensures` and `reflect` bodies may not (U2016); B) U2016 in every clause, which rejects the opaque kinds of `spec/03 §4`.
+- Chosen: A, because B contradicts `spec/03 §4`, and A is the strictest reading that keeps it.
+- Confidence: medium
+- Reversal cost: low, `crates/una-check/src/types/call.rs`
+- Implemented in: `b832ee9`, tag `DECISION D-149`; ADR 0042 rules 1 and 2 state it
+- ADR: `docs/adr/0042-opaque-predicates-only-in-checked.md` (Accepted)
+- Answer needed: Keep A? Or switch to B?
