@@ -1,0 +1,15 @@
+-- Adversarial: a dangling symbolic link inside the granted directory. The grant confines
+-- `Files` to `./box`, but `box/evil` links to a file outside it that does not exist yet.
+-- The confinement walk (una-interp host.rs, `confine`) stops at the link because it does not
+-- resolve, accepts the path, and `std::fs::write` then follows the link.
+-- Setup (from this directory): `mkdir -p box outside && ln -sf "$PWD/outside/escaped.txt" box/evil`
+-- Expected: the write fails with `FileError.Denied` (spec/13 §5 grants, spec/14 §3, spec/05 §7).
+-- Observed: prints `true`, and `outside/escaped.txt` is created with the text `dangling`.
+module esc
+
+pub main() -> Unit
+  uses @files: Files[write]
+  uses @console: Console[print]
+=
+  let a = attempt @files.write(path: "evil", content: "dangling")
+  @console.print("{a is Ok}")

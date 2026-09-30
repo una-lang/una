@@ -1,0 +1,18 @@
+-- Adversarial: handler op fails with another kind
+-- Expected: U3009
+-- Observed: U3009 at 17:23
+-- Verdict: Pass
+module auth_handler_wrong_fails
+
+kind StoreError = | Timeout
+
+capability Store
+  op find(key: Int) -> Option[Int]
+    fails StoreError
+  op count() -> Int
+
+kind Other = | Nope
+
+handler bad() for Store
+  op find(key) = fail Nope
+  op count() = 0

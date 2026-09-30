@@ -1,0 +1,10 @@
+-- Adversarial: list chosen by a secret branch in a 'let', then '.len'
+-- Expected: U4001
+-- Observed: U4001 at 10:3
+-- Verdict: Pass
+module flow_branch_then_len
+
+pub leak(flag: secret Bool) -> Int
+=
+  let xs = if flag then [1] else []
+  xs.len

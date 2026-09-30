@@ -1,0 +1,12 @@
+-- Adversarial: literal arms `is 0` and `is 2` over `Int in 0..2` leave 1 uncovered.
+-- Expected: U5001 exhaustive at the `when` keyword, goal `n == 0 or n == 2` (spec/12 §3).
+-- Observed: U5001 at `when`, correct, but the goal text is `n == is 0 or n == is 2`.
+module gaplit
+
+pub kind Level = Low | High
+
+pub classify(n: Int in 0..2) -> Level
+=
+  when n
+    is 0 -> Low
+    is 2 -> High

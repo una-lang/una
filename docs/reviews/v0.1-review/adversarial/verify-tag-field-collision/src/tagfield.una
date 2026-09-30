@@ -1,0 +1,18 @@
+-- Adversarial: a sum kind with a field named `tag`. The field's SMT function is `tag!<Sort>`,
+-- which is also the name of the variant-tag function (spec/12 §4), so `Stamp(tag: 5)` asserts
+-- `tag(m) = 0` and `tag(m) = 5`: the path context is contradictory and every later obligation is
+-- proven, here `100 / zero`.
+-- Expected: error U5001, division obligation `zero != 0` (spec/12 §3). Twin with the
+-- field renamed to `label` gives exactly that.
+-- Observed: `una check` accepted (exit 0); `una run` aborts with U8001 `div` by zero (exit 3).
+module tagfield
+
+pub kind Marker = Stamp(tag: Int) | Blank
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let m = Stamp(tag: 5)
+  let zero = 0
+  let q = 100 / zero
+  @console.print("q = {q}")

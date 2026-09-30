@@ -1,0 +1,14 @@
+-- Adversarial: private helper with inferred 'fails' passed to 'map'
+-- Expected: U3009 (spec/05 §9.7)
+-- Observed: U3009 at 14:16
+-- Verdict: Pass
+module auth_inferred_fails_into_map
+
+kind E = | Bad
+
+helper(x: Int) -> Int = if x > 0 then x else fail Bad
+
+pub run(xs: List[Int]) -> List[Int]
+  fails E
+=
+  xs.map(each: helper)

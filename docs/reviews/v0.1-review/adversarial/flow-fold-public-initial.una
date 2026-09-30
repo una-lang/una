@@ -1,0 +1,7 @@
+-- Adversarial: 'fold' over secret values from a public initial accumulator
+-- Expected: U4001 (spec/07 §7.2)
+-- Observed: U4001 at 7:42; U4001 at 7:68
+-- Verdict: Pass
+module flow_fold_public_initial
+
+pub total(xs: List[secret Int]) -> Int = xs.fold(initial: 0, step: fn(acc, x) -> acc + x)
