@@ -645,8 +645,9 @@ struct Walker<'p, 'i> {
     fresh: usize,
     /// Whether the walk is in the body of a lambda that stands for a declared function, whose
     /// call passes each parameter at its declared type: the refinements of its arguments
-    /// hold by the parameters' own, and give no obligation.
-    eta: bool,
+    /// hold by the parameters' own, and give no obligation. It holds the source names of
+    /// the lambda's parameters, which the goal text of the call's `requires` prints (R-032).
+    eta: Option<Vec<String>>,
 }
 
 /// How the obligations of a function value flowing into a function type name the value and
@@ -675,7 +676,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             parameters: BTreeSet::new(),
             lambdas: BTreeMap::new(),
             fresh: 0,
-            eta: false,
+            eta: None,
         }
     }
 
@@ -1418,7 +1419,10 @@ impl<'p, 'i> Walker<'p, 'i> {
                     self.bind(&mut inner, param, ty);
                 }
                 let mut leaves = Vec::new();
-                let eta = std::mem::replace(&mut self.eta, function.is_some());
+                let names = function
+                    .as_ref()
+                    .map(|_| params.iter().map(|(p, _)| source_name(p)).collect());
+                let eta = std::mem::replace(&mut self.eta, names);
                 self.walk(body, &inner, &mut leaves);
                 self.eta = eta;
                 let who = Who {
@@ -1519,7 +1523,7 @@ impl<'p, 'i> Walker<'p, 'i> {
     ) {
         for (((_, param_ty), value), arg_span) in contract.params.iter().zip(values).zip(arg_spans)
         {
-            if !self.eta {
+            if self.eta.is_none() {
                 self.refinement_sites(param_ty, value, *arg_span, ctx);
             }
         }
@@ -1529,11 +1533,21 @@ impl<'p, 'i> Walker<'p, 'i> {
             .zip(values)
             .map(|((name, _), value)| (name.as_str(), value.clone()))
             .collect();
+        // In the lambda that stands for a function value, every argument spans the value's
+        // name, so the goal text names the lambda's parameters instead (R-032).
         let texts: BTreeMap<&str, String> = contract
             .params
             .iter()
             .zip(arg_spans)
-            .map(|((name, _), span)| (name.as_str(), self.text(*span)))
+            .enumerate()
+            .map(|(index, ((name, _), span))| {
+                let text = self
+                    .eta
+                    .as_ref()
+                    .and_then(|names| names.get(index).cloned())
+                    .unwrap_or_else(|| self.text(*span));
+                (name.as_str(), text)
+            })
             .collect();
         let vars = |name: &str| by_name.get(name).cloned();
         for clause in contract.requires {
