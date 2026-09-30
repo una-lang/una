@@ -226,7 +226,7 @@ Every command prints one JSON document with `--json`, its `schema` key first (AD
   "tcb": { "trusted_modules": [ { "module": "events.keys", "lines": 17 } ], "host_capabilities": ["Keys"], "solver": "z3 <version>" },
   "requirements": [ { "id": "EVENTS_3", "status": "active", "derived": ["events.seating.availability"] } ],
   "coverage": { "pub_functions": 3, "with_ensures": 1, "with_derived_from": 1, "trivial_ensures": 0 },
-  "out_of_model": ["timing", "termination", "resource consumption", "external systems beyond declared signatures"]
+  "out_of_model": ["timing", "termination and divergence", "resource consumption and allocation", "interpreter stack exhaustion", "external systems beyond declared signatures", "races between the check and the use of a file path"]
 }
 ```
 
@@ -244,7 +244,7 @@ Every command prints one JSON document with `--json`, its `schema` key first (AD
 - `tcb`: the trusted modules with their line counts, the host capabilities the package's functions use, and the solver as `z3 <version>`.
 - `requirements`: every requirement, by identifier, with its status and the functions derived from it.
 - `coverage`: `pub_functions` counts the public functions, `with_ensures` those with at least one `ensures` clause that is not trivial, `with_derived_from` those with a `derived from` clause, and `trivial_ensures` the trivial clauses of public functions. An `ensures` clause is trivial when the solver proves it with no hypothesis, its parameters and `result` unconstrained: one more query per clause of a public function, cached like the others; a solver that cannot answer these queries gives U5003 or U8001 instead of the report.
-- `out_of_model`: timing, termination, resource consumption, and external systems beyond their declared signatures.
+- `out_of_model`: the channels outside the model of `spec/07 §1`, in this order: timing, termination and divergence, resource consumption and allocation, interpreter stack exhaustion, external systems beyond declared signatures, and races between the check and the use of a file path (`spec/14 §3`).
 
 Without `--json`, the same sections print as labeled lines.
 
