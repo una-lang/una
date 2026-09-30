@@ -76,7 +76,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 let what = format!("the operand of `{symbol}`");
                 let found = self.expr_as(operand, Some(&ty), Role::Condition(&what));
                 // An operator's result joins every label of its operands.
-                let label = self.labeled(&found).deep_label();
+                let label = self.deep(&found);
                 ty.with_label(&label)
             }
             ExprKind::Is { value, target } => self.is(value, target, span),
@@ -205,7 +205,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 continue;
             };
             let ty = self.expr(expr, None);
-            label = label.join(&self.labeled(&ty).deep_label());
+            label = label.join(&self.deep(&ty));
             match self.resolve(&ty) {
                 Ty::Int | Ty::Bool | Ty::Text | Ty::Error | Ty::Never | Ty::Var(_) => {}
                 other => {
@@ -474,6 +474,11 @@ impl<'a> Checker<'_, 'a, '_> {
         for item in items {
             found.push(self.expr(item, Some(&element)));
         }
+        // ADR 0046 rule 3: each item flows into the element type, which keeps the labels of
+        // the first item at an invariant parameter of a kind.
+        for (item, ty) in items.iter().zip(&found) {
+            self.flow(item.span, ty, &element, "the element type of this list");
+        }
         // ADR 0037 rule 2: each function value of the list flows into the element type.
         if self.pass == Pass::Check {
             let resolved = self.resolve(&element);
@@ -487,7 +492,11 @@ impl<'a> Checker<'_, 'a, '_> {
         // ADR 0038 D2: the element type instantiates the type parameter of `List`.
         // DECISION D-140: so a list literal of second-class values is U3016 at its first
         // such element.
-        let values = items.iter().map(|item| (item.span, Ty::Param(0))).collect();
+        let values = items
+            .iter()
+            .zip(found)
+            .map(|(item, found)| (item.span, Ty::Param(0), found))
+            .collect();
         self.instantiation("List", &["T"], vec![element.clone()], values, span);
         Ty::List(Box::new(element))
     }
@@ -501,7 +510,7 @@ impl<'a> Checker<'_, 'a, '_> {
             .split_off(mark)
             .iter()
             .fold(Label::public(), |label, operand| {
-                label.join(&self.labeled(operand).deep_label())
+                label.join(&self.deep(operand))
             });
         ty.with_label(&label)
     }
@@ -757,6 +766,7 @@ impl<'a> Checker<'_, 'a, '_> {
     ) -> Ty {
         let mut joined = expected.cloned();
         let mut value: Option<Ty> = None;
+        let mut found = Vec::new();
         for branch in branches {
             let ty = if tail {
                 self.tail_expr(branch, joined.as_ref(), role)
@@ -767,11 +777,15 @@ impl<'a> Checker<'_, 'a, '_> {
                 if joined.is_none() {
                     joined = Some(ty.clone());
                 }
+                found.push((branch.span, ty.clone()));
                 value = Some(match value {
                     Some(value) => self.vars.join(&value, &ty),
                     None => ty,
                 });
             }
+        }
+        if let Some(value) = &value {
+            self.join_flows(value, found);
         }
         value.or(joined).unwrap_or(Ty::Never)
     }
@@ -1114,7 +1128,7 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         let ty = self.expr(value, None);
         // The failure of `checked` reveals whether the predicate holds.
-        let label = self.labeled(&ty).deep_label();
+        let label = self.deep(&ty);
         self.fail_under_pc(span, "`checked`", Some((&label, value.span)));
         let ctx = Ctx {
             it: Some(ty.clone()),

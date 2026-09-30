@@ -1829,7 +1829,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                             self.records
                                 .types
                                 .get(arg)
-                                .map_or_else(Label::public, Ty::deep_label)
+                                .map_or_else(Label::public, Ty::argument_label)
                         })
                         .collect();
                     let capability_path = self.capability_path(Some(capability));
@@ -1895,7 +1895,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                         .records
                         .types
                         .get(&expr.span)
-                        .map_or_else(Label::public, Ty::deep_label);
+                        .map_or_else(Label::public, Ty::argument_label);
                     lets.push(Let::inferred(
                         t.clone(),
                         with_label(text_ty(), &label),

@@ -1,0 +1,20 @@
+-- test: a Sink[Int] whose parameter is in a function parameter does not flow into Sink[secret Int] (N-002)
+-- spec: spec/07 §7
+-- expect: error U4001 at 19:24
+module rv_gen_kind_contravariant
+
+kind Sink[T]
+  eat: fn(T) -> Int
+
+use_sink(s: Sink[secret Int], pin: secret Int) -> Int = s.eat(pin)
+
+pub main() -> Unit
+  uses @env: Env[get]
+  uses @console: Console[print]
+=
+  let raw = @env.get("PIN")
+    if none use ""
+  let pin: secret Int = to_int(raw)
+    if none use 0
+  let shown = use_sink(Sink(eat: fn(x: Int) -> x), pin: pin)
+  @console.print("pin is {shown}")
