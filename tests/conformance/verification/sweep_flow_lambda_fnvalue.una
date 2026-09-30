@@ -1,0 +1,36 @@
+-- test: a lambda result fed by a function value parameter checks every flow (function result refinement, function parameter refinement, refinement); each _bad probe is rejected and each _ok twin accepted (flow sweep)
+-- spec: spec/12 §3
+-- expect: error U5001 at 26:224
+-- expect: error U5001 at 30:224
+-- expect: error U5001 at 34:224
+module sweep_flow_lambda_fnvalue
+
+pub kind Pos = Int where it > 0
+
+pub kind Holder
+  n: Int
+  p: Pos
+  s: secret Int
+  run: fn(Int) -> Int
+  pos: fn(Int) -> Pos
+  pinv: fn(Pos) -> Int
+
+pub kind Boom = | Bang
+
+pub apply_r(f: fn(Int) -> Pos) -> Int = 0
+
+pub apply_f(f: fn(Int) -> fn(Int) -> Pos) -> Int = 0
+
+pub apply_e(f: fn(Int) -> fn(Int) -> Int) -> Int = 0
+
+pub r_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int = apply_r(fn(x: Int) -> g(1))
+
+pub r_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int = apply_r(fn(x: Int) -> k(1))
+
+pub f_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int = apply_f(fn(x: Int) -> g)
+
+pub f_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int = apply_f(fn(x: Int) -> k)
+
+pub p_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int = apply_e(fn(x: Int) -> w)
+
+pub p_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int = apply_e(fn(x: Int) -> g)

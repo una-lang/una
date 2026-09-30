@@ -403,7 +403,9 @@ pub main() -> Unit
 #[test]
 fn files_grants_confine_paths_to_their_prefix() {
     // `spec/14 §3`, relative to the prefix; `..`, absolute paths and links
-    // that lead outside are `Denied`.
+    // that lead outside are `Denied`. Hard links are outside the v0.1 model
+    // (ADR 0048, `spec/14 §3` rule 5): a hard link is an ordinary entry, so no
+    // case here expects it to be denied.
     let root = package(
         "files",
         "\n[run]\nentry = \"files\"\ngrants = [\"console\", \"files:data:read\", \"files:out:write\"]\n",

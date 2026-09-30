@@ -69,13 +69,4 @@ impl Records {
         self.annotations.extend(other.annotations);
         self.lambda_params.extend(other.lambda_params);
     }
-
-    /// Adds records whose types are already resolved.
-    pub(crate) fn merge(&mut self, other: Records) {
-        self.types.extend(other.types);
-        self.res.extend(other.res);
-        self.args.extend(other.args);
-        self.annotations.extend(other.annotations);
-        self.lambda_params.extend(other.lambda_params);
-    }
 }
