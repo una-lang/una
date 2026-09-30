@@ -58,6 +58,8 @@ An expression outside RL in a `where`, `requires` or `ensures` clause is an erro
 
 Range sugar: `T in a..b` means `T where a <= it and it <= b`; `T in a..<b` means `T where a <= it and it < b`.
 
+**Refined type arguments** (ADR 0040). A refined kind, or a type with range sugar, written as a type argument is ill-formed (U2002), including inside a kind definition or a function type: `Option[Pos]`, `List[Int in 0..5]`, `Result[Pos, E]` and `Box[Pos]` are rejected, and a type that contains one, as `Option[List[Pos]]`, is reported at the innermost refined type argument. A type argument inferred from a value of a refined kind is the base of that kind, so the result does not carry the refinement. The parameters and result of a function type are not type arguments: `fn(Pos) -> Int` is well-formed (ADR 0037).
+
 ## 4. Predicates
 
 Predicates are named, pure, total boolean functions usable in RL.

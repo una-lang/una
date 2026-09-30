@@ -15,7 +15,7 @@ use una_syntax::{Interner, Span, Symbol};
 use super::Report;
 use super::closest;
 use super::label::{Accepts, Label};
-use super::ty::{AliasId, CapId, Declared, FnTy, FnUse, KindId, Refinement, Ty};
+use super::ty::{AliasId, CapId, Declared, FnTy, FnUse, KindId, Names, Refinement, Show, Ty};
 
 /// A module the checker knows: a package module, the prelude or `std.testing`.
 pub(crate) struct Module<'a> {
@@ -975,12 +975,14 @@ impl<'a> Env<'a> {
                     .collect();
                 for (arg, lowered) in args.iter().zip(&lowered) {
                     self.type_argument(module, arg.span, &lowered.base, report);
+                    self.refined_argument(module, arg, lowered, type_params, report);
                 }
                 self.named(module, name, lowered, ty.span, type_params, report)
             }
             TypeCore::List(element) => {
                 let lowered = self.lower_type(module, element, type_params, report);
                 self.type_argument(module, element.span, &lowered.base, report);
+                self.refined_argument(module, element, &lowered, type_params, report);
                 Declared::plain(Ty::List(Box::new(lowered.base)))
             }
             TypeCore::Function {
@@ -1062,6 +1064,53 @@ impl<'a> Env<'a> {
                 "this type argument is, or holds, a function type with `uses` or `fails`, which is second-class and cannot instantiate a type parameter; take the function as a parameter of function type instead",
             );
         }
+    }
+
+    /// U2002: a written type argument of a refined kind, or with range sugar (ADR 0040). A type
+    /// that contains one is reported at the innermost refined type argument, once, since the
+    /// lowered argument keeps only its base.
+    fn refined_argument(
+        &self,
+        module: usize,
+        arg: &Type,
+        lowered: &Declared,
+        type_params: &[&'a str],
+        report: &mut Report<'_>,
+    ) {
+        if !self.reports(module) || !lowered.is_refined() {
+            return;
+        }
+        let base = Show(
+            &lowered.base,
+            &LowerNames {
+                env: self,
+                type_params,
+            },
+        )
+        .to_string();
+        let what = match lowered.refinements.last() {
+            Some(Refinement::Alias(id, _)) => {
+                let name = self.aliases.get(*id).map_or("?", |a| a.name);
+                format!("the refined kind `{name}`")
+            }
+            Some(Refinement::Range(range, _)) => format!("the refined type `{base} {range}`"),
+            None => return,
+        };
+        let mut diagnostic = report.make(
+            Code::U2002,
+            arg.span,
+            format!(
+                "this type argument is {what}, and a refined type cannot instantiate a type parameter in v0.1; write its base type `{base}` and check the refinement where the value is used"
+            ),
+        );
+        if arg.label.is_none() {
+            diagnostic.repairs.push(report.edit(
+                format!("write the base type `{base}`"),
+                arg.span,
+                base.clone(),
+            ));
+        }
+        report.push(diagnostic);
     }
 
     /// A written label: its level and categories; a category that `una.toml` does not
@@ -1238,6 +1287,24 @@ impl<'a> Env<'a> {
             base: alias.base.base.substitute(args),
             refinements,
         }
+    }
+}
+
+/// Names for printing lowered types in messages of the environment.
+struct LowerNames<'e, 'a> {
+    env: &'e Env<'a>,
+    type_params: &'e [&'a str],
+}
+
+impl Names for LowerNames<'_, '_> {
+    fn kind_name(&self, id: KindId) -> String {
+        self.env.kind_name(id).to_owned()
+    }
+
+    fn param_name(&self, index: usize) -> String {
+        self.type_params
+            .get(index)
+            .map_or_else(|| "?".to_owned(), |name| (*name).to_owned())
     }
 }
 
