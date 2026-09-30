@@ -433,6 +433,136 @@ fn files_grants_confine_paths_to_their_prefix() {
     assert!(!root.join("escape.txt").exists());
 }
 
+/// The program of the link cases: `main` performs each `(operation, path)` of `cases` in order
+/// and prints `<operation> <path>: <outcome>` for each, with the helpers of [`FILES`].
+#[cfg(unix)]
+fn files_program(cases: &[(&str, &str)]) -> String {
+    let helpers = FILES.split("pub main()").next().unwrap();
+    let mut program = format!(
+        "{helpers}pub main() -> Unit\n  uses @console: Console[print]\n  uses @files: Files[read, write]\n=\n"
+    );
+    for (index, (operation, path)) in cases.iter().enumerate() {
+        let call = if *operation == "read" { "show" } else { "save" };
+        program.push_str(&format!(
+            "  let r{index} = {call}(\"{path}\")\n  @console.print(\"{operation} {path}: {{r{index}}}\")\n"
+        ));
+    }
+    program
+}
+
+#[cfg(unix)]
+#[test]
+fn files_grants_never_follow_a_final_link_and_keep_directories_inside_r011() {
+    // R-011, ADR 0038 D9, `spec/14 §3`: (1) paths normalize without following links, and an
+    // absolute path or a `..` that leaves the prefix is `Denied`; (2) every intermediate
+    // directory resolves, links followed, inside the canonical prefix; (3) the final component
+    // is never followed: a link there, dangling or not, inside or outside, is `Denied`, and a
+    // write never creates a file through a link. DECISION D-TBD-c1: a path naming the prefix
+    // itself (`.`, `sub/..`) has no final component and is `Denied`.
+    use std::os::unix::fs::symlink;
+    let absolute = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("runtime")
+        .join("files-links")
+        .join("box/note.txt");
+    let absolute = absolute.to_str().unwrap();
+    let cases = [
+        ("write", "dangling"),
+        ("read", "dangling"),
+        ("read", "out_link"),
+        ("write", "out_link"),
+        ("read", "in_link"),
+        ("write", "in_link"),
+        ("read", "out_dir/secret.txt"),
+        ("write", "out_dir/new.txt"),
+        ("write", "dangling_dir/new.txt"),
+        ("read", "in_dir/inner.txt"),
+        ("write", "in_dir/new.txt"),
+        ("read", "in_dir/../note.txt"),
+        ("read", "sub/../note.txt"),
+        ("read", "../outside/secret.txt"),
+        ("write", "../outside/new.txt"),
+        ("read", absolute),
+        ("read", "."),
+        ("write", "sub/.."),
+        ("write", "missing/new.txt"),
+        ("write", "note.txt"),
+        ("write", "fresh.txt"),
+    ];
+    let program = files_program(&cases);
+    let root = package(
+        "files-links",
+        "\n[run]\nentry = \"files\"\ngrants = [\"console\", \"files:box:read,write\"]\n",
+        &[
+            ("src/files.una", &program),
+            ("box/note.txt", "inside\n"),
+            ("box/sub/inner.txt", "inner\n"),
+            ("outside/secret.txt", "secret\n"),
+        ],
+    );
+    let outside = root.join("outside");
+    symlink(outside.join("escaped.txt"), root.join("box/dangling")).unwrap();
+    symlink(outside.join("secret.txt"), root.join("box/out_link")).unwrap();
+    symlink("note.txt", root.join("box/in_link")).unwrap();
+    symlink(&outside, root.join("box/out_dir")).unwrap();
+    symlink(outside.join("newdir"), root.join("box/dangling_dir")).unwrap();
+    symlink("sub", root.join("box/in_dir")).unwrap();
+    let output = una_in(&root, &["run"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        format!(
+            "write dangling: denied\n\
+             read dangling: denied\n\
+             read out_link: denied\n\
+             write out_link: denied\n\
+             read in_link: denied\n\
+             write in_link: denied\n\
+             read out_dir/secret.txt: denied\n\
+             write out_dir/new.txt: denied\n\
+             write dangling_dir/new.txt: denied\n\
+             read in_dir/inner.txt: read\n\
+             write in_dir/new.txt: written\n\
+             read in_dir/../note.txt: read\n\
+             read sub/../note.txt: read\n\
+             read ../outside/secret.txt: denied\n\
+             write ../outside/new.txt: denied\n\
+             read {absolute}: denied\n\
+             read .: denied\n\
+             write sub/..: denied\n\
+             write missing/new.txt: not found\n\
+             write note.txt: written\n\
+             write fresh.txt: written\n"
+        )
+    );
+    // Nothing outside the grant was created or changed.
+    assert!(!outside.join("escaped.txt").exists());
+    assert!(!outside.join("new.txt").exists());
+    assert!(!outside.join("newdir").exists());
+    assert_eq!(
+        std::fs::read_to_string(outside.join("secret.txt")).unwrap(),
+        "secret\n"
+    );
+    // Writes inside the grant land where the path says; a link is never written through.
+    assert_eq!(
+        std::fs::read_to_string(root.join("box/sub/new.txt")).unwrap(),
+        "entry"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("box/note.txt")).unwrap(),
+        "entry"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("box/fresh.txt")).unwrap(),
+        "entry"
+    );
+    assert!(
+        std::fs::symlink_metadata(root.join("box/in_link"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
 const KEYS: &str = "module keys
 
 pub known(name: Text) -> Text
