@@ -123,6 +123,9 @@ impl Checker<'_, '_, '_> {
     /// U4001: each branch of a construct, at its span and of its type, flows into the value
     /// that joins them (ADR 0046 rule 3). The join is above every branch except at an
     /// invariant parameter of a kind, where it keeps the labels of the first branch.
+    /// DECISION D-TBD-l1: ADR 0046 rule 3 makes a branch join a flow site without saying which
+    /// type the join has; it is the first branch's at an invariant argument, so a later
+    /// branch that differs there is U4001 at that branch.
     pub(crate) fn join_flows(&mut self, joined: &Ty, branches: Vec<(Span, Ty)>) {
         if branches.len() < 2 {
             return;
