@@ -1,5 +1,6 @@
 //! Every explain text with examples is checked: its failing example yields its own code and
-//! nothing else, and its fixed example yields nothing (`spec/13 §4`, approved M1 plan §5).
+//! nothing else, and its fixed example yields nothing, at tier 1, so with the solver
+//! (`spec/13 §4`, approved M1 plan §5, review finding R-037).
 //!
 //! DECISION D-043: an example is one `una` block, or a package whose files are fenced blocks
 //! each introduced by its path in backticks on its own line; the test completes a package with
@@ -66,7 +67,8 @@ fn example(text: &str, heading: &str) -> Option<Example> {
 }
 
 /// The codes `check` reports for `example`, written under a directory named after the code.
-fn codes(code: Code, name: &str, example: &Example) -> Vec<Code> {
+/// A fixed example is checked at tier 1, a failing one at the tier of its code.
+fn codes(code: Code, name: &str, example: &Example, fixed: bool) -> Vec<Code> {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
         .join("explain-examples")
         .join(code.as_str())
@@ -111,8 +113,9 @@ fn codes(code: Code, name: &str, example: &Example) -> Vec<Code> {
             .map(|diagnostic| diagnostic["code"].as_str().unwrap().parse().unwrap())
             .collect();
     }
-    // Obligations need tier 1; every other code is checked at tier 0.
-    let tier = if code.domain() == Domain::Verification {
+    // Obligations need tier 1; every other failing example is checked at tier 0, where a
+    // refuted obligation of the example cannot add a second code.
+    let tier = if fixed || code.domain() == Domain::Verification {
         Tier::One
     } else {
         Tier::Zero
@@ -136,12 +139,16 @@ fn failing_examples_yield_their_code_and_fixed_examples_yield_nothing() {
         ) else {
             continue;
         };
-        let reported = codes(code, "failing", &failing);
+        let reported = codes(code, "failing", &failing, false);
         assert!(
             !reported.is_empty() && reported.iter().all(|found| *found == code),
             "{code}: the failing example reports {reported:?}"
         );
-        assert_eq!(codes(code, "fixed", &fixed), [], "{code}: fixed example");
+        assert_eq!(
+            codes(code, "fixed", &fixed, true),
+            [],
+            "{code}: fixed example"
+        );
         checked.push(code.as_str());
     }
     // DECISION D-126: every code has its examples, but U8001, an internal error, which no
