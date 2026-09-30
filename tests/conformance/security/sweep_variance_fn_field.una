@@ -1,0 +1,31 @@
+-- test: a function type is contravariant in its parameters and covariant in its result at a constructor field (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 16:59
+-- expect: error U4001 at 21:52
+module sweep_variance_fn_field
+
+kind Box[T]
+  value: T
+
+kind Sink[T]
+  eat: fn(T) -> Int
+
+kind Hold0
+  w: fn(Int) -> Int
+
+pub field_0(v: fn(Int) -> secret Int) -> Hold0 = Hold0(w: v)
+
+kind Hold1
+  w: fn(secret Int) -> Int
+
+pub field_1(v: fn(Int) -> Int) -> Hold1 = Hold1(w: v)
+
+kind Hold2
+  w: fn(Int) -> Int
+
+pub field_2(v: fn(secret Int) -> Int) -> Hold2 = Hold2(w: v)
+
+kind Hold3
+  w: fn(Int) -> secret Int
+
+pub field_3(v: fn(Int) -> Int) -> Hold3 = Hold3(w: v)
