@@ -397,6 +397,28 @@ impl<'a> Checker<'_, 'a, '_> {
                 "; the refinement language calls only predicates",
             );
         }
+        // ADR 0042: an opaque predicate is called only as the predicate of `checked` and in
+        // opaque bodies. DECISION D-TBD-m1: also in the `where` clause of a kind and in the
+        // clauses of a capability operation, which name the fact without establishing it.
+        if def.kind == (FnKind::Predicate { reflect: false })
+            && !self.ctx.opaque
+            && !self.ctx.opaque_calls
+            && self.pass == super::authority::Pass::Check
+        {
+            let mut diagnostic = self.report.make(
+                Code::U2016,
+                span,
+                format!(
+                    "opaque predicate `{}` is called outside `checked`, so its fact would bypass the escape budget",
+                    def.name
+                ),
+            );
+            diagnostic.repairs.push(super::Report::advice(format!(
+                "check the value with `checked(value, {}(it)) else fail <Variant>`",
+                def.name
+            )));
+            self.report.push(diagnostic);
+        }
         // DECISION D-056: declared effects and failures in an opaque predicate.
         if !def.uses.is_empty() {
             self.impure(span, || {

@@ -1,0 +1,21 @@
+-- test: an opaque predicate in a plain if condition is U2016, so its fact never bypasses checked and the escape budget (R-016)
+-- spec: spec/03 §4
+-- expect: error U2016 at src/opaque_if.una:17:6
+module opaque_if
+
+-- Promoted from the v0.1 review, adversarial package `escape-opaque-predicate-in-if`.
+
+pub kind Slug = Text where valid_slug(it)
+
+pub kind SlugError = | Malformed
+
+pub predicate opaque valid_slug(t: Text) -> Bool = t.len >= 3 and not starts_with(t, prefix: "-")
+
+pub parse_slug(raw: Text) -> Slug
+  fails SlugError
+=
+  if valid_slug(raw) then raw else fail Malformed
+
+example "a slug with a leading dash is rejected"
+  do parse_slug("-x")
+  expect fails Malformed

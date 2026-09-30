@@ -1210,7 +1210,7 @@ Every problem has a stable code, precise positions (1-based line and column, col
 | --- | --- |
 | U0001 to U0103 | syntax: characters, indentation, literals, tokens, clause order, reserved words |
 | U1001 to U1008 | names: resolution, duplicates, cycles, visibility, conventions, requirements, file paths |
-| U2001 to U2015 | types: mismatches, labels, exhaustiveness, constructors, RL, predicates |
+| U2001 to U2016 | types: mismatches, labels, exhaustiveness, constructors, RL, predicates |
 | U3001 to U3015 | authority: capabilities, effects, failures, handlers, one effect per line |
 | U4001 to U4007 | security: flows, implicit flows, sinks, policies, categories |
 | U5001 to U5003 | verification: refuted, unknown, solver missing |

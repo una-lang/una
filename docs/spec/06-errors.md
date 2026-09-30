@@ -61,6 +61,7 @@ The operand of `attempt` MUST be one call (U2001 otherwise). `attempt` counts as
 - If `p` holds, the result is `v` with type refined by `p`. This is how opaque facts are established (`spec/03 §4`).
 - Otherwise the function fails with `V`.
 - `p` MUST be in RL or a call to an opaque predicate, so it is executable (U2014).
+- `checked` is the only place in code where an opaque predicate is called: a call outside the predicate of `checked` and outside opaque bodies is U2016 (`spec/03 §4`, ADR 0042).
 
 `checked` is an escape hatch: it replaces a static proof with a runtime test. A module uses `checked` at most `[escape_budget] checked_per_module` times (0 by default, and for a single file); the first use beyond the budget is U7003, with the later uses as related spans (ADR 0028). Every use is listed in the build report.
 
