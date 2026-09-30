@@ -1,0 +1,53 @@
+-- test: an opaque predicate is called only as the predicate of checked and in opaque bodies; elsewhere it is U2016 (R-016)
+-- spec: spec/03 §4
+-- expect: error U2016 at src/opaque_predicate_outside_checked.una:37:34
+-- expect: error U2016 at src/opaque_predicate_outside_checked.una:41:12
+-- expect: error U2016 at src/opaque_predicate_outside_checked.una:45:12
+-- expect: error U2016 at src/opaque_predicate_outside_checked.una:49:57
+-- expect: error U2016 at src/opaque_predicate_outside_checked.una:52:6
+module opaque_predicate_outside_checked
+
+pub kind SlugError = | Malformed
+
+predicate opaque short(t: Text) -> Bool = t.len < 20
+
+predicate opaque valid_slug(t: Text) -> Bool = t.len >= 3 and short(t)
+
+pub kind Slug = Text where valid_slug(it)
+
+capability Slugs
+  op next() -> Text
+    ensures valid_slug(result)
+
+pub parse(raw: Text) -> Slug
+  fails SlugError
+=
+  checked(raw, valid_slug(it)) else fail Malformed
+
+pub parse_short(raw: Text) -> Text
+  fails SlugError
+=
+  checked(raw, short(it) and it.len > 0) else fail Malformed
+
+pub fresh() -> Text
+  uses @slugs: Slugs[next]
+=
+  @slugs.next()
+
+pub in_if(raw: Text) -> Int = if valid_slug(raw) then 1 else 0
+
+pub in_let(raw: Text) -> Bool
+=
+  let ok = valid_slug(raw)
+  ok
+
+pub guarded(raw: Text) -> Int
+  requires short(raw)
+=
+  raw.len
+
+predicate reflect both(t: Text) -> Bool = t.len > 1 and short(t)
+
+example "a slug is recognized"
+  do short("abc")
+  expect result == true

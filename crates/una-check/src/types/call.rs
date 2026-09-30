@@ -397,6 +397,28 @@ impl<'a> Checker<'_, 'a, '_> {
                 "; the refinement language calls only predicates",
             );
         }
+        // ADR 0042: an opaque predicate is called only as the predicate of `checked` and in
+        // opaque bodies. DECISION D-TBD-m1: also in the `where` clause of a kind and in the
+        // clauses of a capability operation, which name the fact without establishing it.
+        if def.kind == (FnKind::Predicate { reflect: false })
+            && !self.ctx.opaque
+            && !self.ctx.opaque_calls
+            && self.pass == super::authority::Pass::Check
+        {
+            let mut diagnostic = self.report.make(
+                Code::U2016,
+                span,
+                format!(
+                    "opaque predicate `{}` is called outside `checked`, so its fact would bypass the escape budget",
+                    def.name
+                ),
+            );
+            diagnostic.repairs.push(super::Report::advice(format!(
+                "check the value with `checked(value, {}(it)) else fail <Variant>`",
+                def.name
+            )));
+            self.report.push(diagnostic);
+        }
         // DECISION D-056: declared effects and failures in an opaque predicate.
         if !def.uses.is_empty() {
             self.impure(span, || {
@@ -658,11 +680,21 @@ impl<'a> Checker<'_, 'a, '_> {
             span,
             capability.module,
         );
-        // DECISION D-092: an operation's arguments are sinks bounded by `accepts`.
-        let sinks: Vec<(Span, Ty)> = checked
-            .into_iter()
-            .map(|(arg_span, found, _, _)| (arg_span, found))
-            .collect();
+        // DECISION D-092: an operation's arguments are sinks bounded by `accepts`, except
+        // the carried ones, which accept every label and raise the result (ADR 0039).
+        let mut carried = Label::public();
+        let mut sinks: Vec<(Span, Ty)> = Vec::new();
+        for (arg_span, found, _, param) in checked {
+            let is_carried = def
+                .carried
+                .iter()
+                .any(|&i| def.params.get(i).is_some_and(|p| p.name == param));
+            if is_carried {
+                carried = carried.join(&self.labeled(&found).deep_label());
+            } else {
+                sinks.push((arg_span, found));
+            }
+        }
         self.sink(
             span,
             &format!("`@{cap_name}.{op_name}`"),
@@ -684,7 +716,7 @@ impl<'a> Checker<'_, 'a, '_> {
             site.top,
             site.handled,
         );
-        def.result.base
+        def.result.base.with_label(&carried)
     }
 
     /// The capability bound to `@cap` and the position of its operation `op`.

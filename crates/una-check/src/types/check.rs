@@ -47,6 +47,10 @@ pub(crate) struct Ctx {
     pub(crate) rl: Rl,
     /// Inside the body of an opaque predicate, which is pure and cannot fail (U2015).
     pub(crate) opaque: bool,
+    /// Opaque predicates may be called here besides opaque bodies: the predicate of `checked`,
+    /// the `where` clause of a kind and the clauses of a capability operation (ADR 0042,
+    /// U2016).
+    pub(crate) opaque_calls: bool,
     /// The failure of the call about to be checked is handled, by `attempt` or `if error`.
     pub(crate) handled: bool,
     /// The expression about to be checked is the whole expression of a statement, `let` or
@@ -80,6 +84,7 @@ impl Ctx {
             fails: None,
             rl: Rl::Off,
             opaque: false,
+            opaque_calls: false,
             handled: false,
             top: false,
             argument: false,
@@ -180,6 +185,8 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) call_fails: BTreeMap<Span, Ty>,
     /// The function or predicate whose body is checked.
     pub(crate) current: Option<usize>,
+    /// The handler whose operation bodies are checked (ADR 0043).
+    pub(crate) handler: Option<usize>,
     /// Instantiations of generic functions: callee, type arguments and where.
     pub(crate) instances: Vec<(usize, Vec<Ty>, Span)>,
     /// The operand types of `==` and `!=`.
@@ -261,6 +268,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             returning: None,
             call_fails: BTreeMap::new(),
             current: None,
+            handler: None,
             instances: Vec::new(),
             compared: Vec::new(),
             probe_failed: false,
@@ -636,6 +644,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             it: Some(alias.base.base.clone()),
             rl: Rl::Clause,
             labels: false,
+            opaque_calls: true,
             ..Ctx::plain()
         };
         self.within(ctx, |checker| {
@@ -865,6 +874,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                         let ctx = Ctx {
                             rl: Rl::Clause,
                             labels: false,
+                            opaque_calls: true,
                             ..Ctx::plain()
                         };
                         self.within(ctx, |checker| {
@@ -875,6 +885,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                         let ctx = Ctx {
                             rl: Rl::Clause,
                             labels: false,
+                            opaque_calls: true,
                             result: Some(op_def.result.base.clone()),
                             ..Ctx::plain()
                         };
@@ -895,6 +906,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         let Some(def) = self.env.handlers.get(id).cloned() else {
             return;
         };
+        self.handler = Some(id);
         self.base = Base::Declared;
         self.frames = vec![Frame {
             bindings: def
@@ -935,15 +947,20 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 .as_ref()
                 .and_then(|capability| capability.ops.iter().find(|o| o.name == name));
             // DECISION D-092: callers may pass anything up to `accepts`.
-            // DECISION D-141: an operation that accepts every label, as `Keys.hmac` does, has
-            // the effect floor `⊤` (ADR 0038 D4).
+            // DECISION D-141: an operation that accepts every label has the effect floor `⊤`
+            // (ADR 0038 D4). `Keys.hmac` accepts `public`; its `data` is carried (ADR 0039).
             let accepts = op_def
                 .and_then(|o| o.accepts.clone())
                 .unwrap_or_else(|| self.top());
+            // ADR 0039: a carried parameter (`data` of `Keys.hmac`) may be of every label,
+            // and the result may carry it.
+            let top = self.top();
+            let carried = |index: usize| op_def.is_some_and(|o| o.carried.contains(&index));
             for (index, param) in op.params.iter().enumerate() {
+                let raise = if carried(index) { &top } else { &accepts };
                 let ty = op_def
                     .and_then(|o| o.params.get(index))
-                    .map_or(Ty::Error, |p| p.ty.base.raise_deep(&accepts));
+                    .map_or(Ty::Error, |p| p.ty.base.raise_deep(raise));
                 self.bind(self.name(param), ty);
             }
             let module = capability.as_ref().map_or(0, |c| c.module);
@@ -959,13 +976,20 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 floor: Some(accepts.clone()),
                 ..Ctx::plain()
             };
-            let expected = op_def.map(|o| o.result.base.clone());
+            let expected = op_def.map(|o| {
+                if o.carried.is_empty() {
+                    o.result.base.clone()
+                } else {
+                    o.result.base.clone().with_label(&top)
+                }
+            });
             self.within(ctx, |checker| {
                 checker.body(&op.body, expected.as_ref(), Role::Return(name), true);
             });
             self.returning = None;
             self.locals.truncate(mark);
         }
+        self.handler = None;
     }
 
     fn example(&mut self, example: &'a ExampleDecl) {
@@ -1171,19 +1195,21 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         }
     }
 
-    /// `expect fails V`: `V` is a variant of an error kind of the `do` expression, or of a
-    /// kind in scope when none has it (DECISION D-048).
+    /// `expect fails V`: `V` is a variant of an error kind of the `do` expression, and U1001
+    /// otherwise (`spec/10 §12` rule 1, R-020). When the `do` expression cannot fail, any
+    /// variant in scope is accepted, as before, until ADR 0044 is decided (DECISION D-048).
     fn expected_failure(&mut self, variant: &Ident, fails: &[Ty]) {
         let name = self.name(variant);
         let in_kind = fails.iter().any(|kind| match self.resolve(kind) {
             Ty::Kind(id, _) => self.variant_index(id, name).is_some(),
             _ => false,
         });
-        let in_scope = self
-            .env
-            .upper(self.module, name)
-            .iter()
-            .any(|entity| matches!(entity, Entity::Variant(..)));
+        let in_scope = fails.is_empty()
+            && self
+                .env
+                .upper(self.module, name)
+                .iter()
+                .any(|entity| matches!(entity, Entity::Variant(..)));
         if in_kind || in_scope || fails.iter().any(|kind| self.resolve(kind) == Ty::Error) {
             return;
         }
