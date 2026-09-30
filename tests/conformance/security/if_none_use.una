@@ -1,0 +1,10 @@
+-- test: `if none use` on a secret Option returned as public (review control)
+-- spec: spec/07 §7
+-- expect: error U4001 at 10:3
+module if_none_use
+
+pub present(o: secret Option[Int]) -> Int
+=
+  let v = o
+    if none use 0
+  v

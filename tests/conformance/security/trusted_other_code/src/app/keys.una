@@ -1,0 +1,6 @@
+-- test: ordinary leak in a trusted module (review control)
+-- spec: spec/07 §6
+-- expect: error U4001 at src/app/keys.una:6:41
+trusted module app.keys
+
+pub leak(t: secret[PII] Text) -> Text = t

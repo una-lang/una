@@ -1,0 +1,15 @@
+-- test: pub header `Log[write]`, private helper infers `flush` (review control)
+-- spec: spec/05 §9
+-- expect: error U3002 at 15:3
+module inferred_op_exceeds_header
+
+capability Log
+  op write(line: Text) -> Unit
+  op flush() -> Unit
+
+helper() -> Unit = @log.flush()
+
+pub run() -> Unit
+  uses @log: Log[write]
+=
+  helper()

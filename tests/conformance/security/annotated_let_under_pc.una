@@ -1,0 +1,9 @@
+-- test: annotated public `let` from a secret `if` line (review control)
+-- spec: spec/07 §7
+-- expect: error U4001 at 8:16
+module annotated_let_under_pc
+
+pub leak(flag: secret Bool) -> Int
+=
+  let x: Int = if flag then 1 else 0
+  x
