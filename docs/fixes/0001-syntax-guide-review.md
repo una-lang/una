@@ -363,4 +363,4 @@ Section numbers refer to the owner's guide, `docs/spec/`-relative references to 
 | F-0001-17 | docs | §7.4 handler `uses` and `with` in the short form | Open | |
 | F-0001-18 | docs | §11.2 repair wording | Open | |
 | F-0001-19 | docs | Consistency pass | Open | |
-| F-0001-20 | docs | Sweep of `README.md` and `una-for-agents.md` | Open | |
+| F-0001-20 | docs | Sweep of `README.md` and `una-for-agents.md` | Done | see `git log --grep F-0001-20` |
