@@ -8,7 +8,7 @@ Una enforces **termination-insensitive noninterference up to declassification** 
 
 Observable channels in the model: return values, failure variants and payloads, capability operation arguments, the occurrence of effects.
 
-Outside the model in v0.1, and reported as such in the build report: timing, termination and divergence, resource consumption and allocation, interpreter stack exhaustion.
+Outside the model in v0.1, and reported as such in the build report (`spec/13 §6`, `out_of_model`): timing, termination and divergence, resource consumption and allocation, interpreter stack exhaustion, external systems beyond declared signatures, and races between the check and the use of a file path (`spec/14 §3`).
 
 ## 2. Labels
 

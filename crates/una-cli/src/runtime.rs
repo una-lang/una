@@ -92,11 +92,26 @@ impl World for HostWorld<'_> {
     }
 
     fn write_file(&mut self, path: &Path, content: &str) -> Result<(), FileFault> {
-        std::fs::write(path, content).map_err(file_fault)
+        // `spec/14 §3`, ADR 0038 D9 rule 3: a file that does not exist is created with
+        // `create_new` (`O_CREAT | O_EXCL`), which fails on a symbolic link, dangling or not,
+        // so a write never creates a file through a link. An existing file is truncated and
+        // never created.
+        let exists = std::fs::symlink_metadata(path).is_ok();
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(exists)
+            .create_new(!exists)
+            .open(path)
+            .map_err(file_fault)?;
+        file.write_all(content.as_bytes()).map_err(file_fault)
     }
 
     fn canonical(&mut self, path: &Path) -> Option<PathBuf> {
         std::fs::canonicalize(path).ok()
+    }
+
+    fn is_link(&mut self, path: &Path) -> bool {
+        std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink())
     }
 }
 

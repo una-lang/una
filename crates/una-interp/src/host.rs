@@ -26,11 +26,14 @@ pub trait World {
     fn env_var(&mut self, name: &str) -> Option<String>;
     /// Reads a file as text.
     fn read_file(&mut self, path: &Path) -> Result<String, FileFault>;
-    /// Writes a file.
+    /// Writes a file. It never creates a file through a symbolic link (`spec/14 §3`): a file
+    /// that does not exist is created only as a new file at `path` itself.
     fn write_file(&mut self, path: &Path, content: &str) -> Result<(), FileFault>;
     /// The canonical form of an existing path, following links; `None` when it does not
     /// exist.
     fn canonical(&mut self, path: &Path) -> Option<PathBuf>;
+    /// Whether `path` itself is a symbolic link, dangling or not, without following it.
+    fn is_link(&mut self, path: &Path) -> bool;
 }
 
 /// The world of examples: they cannot reach host capabilities (`spec/11 §6`), so nothing here
@@ -58,6 +61,10 @@ impl World for NoWorld {
 
     fn canonical(&mut self, _path: &Path) -> Option<PathBuf> {
         None
+    }
+
+    fn is_link(&mut self, _path: &Path) -> bool {
+        false
     }
 }
 
@@ -145,42 +152,71 @@ pub fn normalize(path: &Path) -> PathBuf {
     out
 }
 
-/// The path of `relative` under `prefix`, or `None` when it leads outside the prefix:
-/// absolute, through `..`, or through a link (`spec/14 §3`, DECISION D-103).
+/// The path that a `Files` operation on `relative` opens under `prefix`, or `None` when the
+/// operation is `Denied` (`spec/14 §3`, ADR 0038 D9, DECISION D-103):
+///
+/// 1. `relative` is normalized lexically, without following links; an absolute path, a `..`
+///    that leaves the prefix, and a path with no final component are denied;
+/// 2. every intermediate directory, the prefix included, is resolved with its links followed
+///    and must lie inside the canonical prefix; a dangling link there is denied, and a
+///    component that does not exist leaves the rest to the operation, which fails with
+///    `NotFound`;
+/// 3. the final component is never followed: a symbolic link there, dangling or not, is
+///    denied. The world opens the returned path without creating a file through a link.
+///
+/// Races between this check and the operation are outside the v0.1 model (D9 rule 4).
 pub fn confine(world: &mut dyn World, prefix: &Path, relative: &str) -> Option<PathBuf> {
-    let relative = Path::new(relative);
-    let mut out = prefix.to_path_buf();
-    let mut depth = 0usize;
-    for component in relative.components() {
+    // Rule 1: lexical normalization.
+    let mut parts: Vec<&std::ffi::OsStr> = Vec::new();
+    for component in Path::new(relative).components() {
         match component {
-            Component::Normal(part) => {
-                out.push(part);
-                depth += 1;
-            }
+            Component::Normal(part) => parts.push(part),
             Component::CurDir => {}
             Component::ParentDir => {
-                if depth == 0 {
-                    return None;
-                }
-                out.pop();
-                depth -= 1;
+                parts.pop()?;
             }
             Component::RootDir | Component::Prefix(_) => return None,
         }
     }
-    // The existing part of the path, resolved through links, stays inside the prefix.
-    let root = world
-        .canonical(prefix)
-        .unwrap_or_else(|| prefix.to_path_buf());
-    let mut existing = out.clone();
-    loop {
-        if let Some(resolved) = world.canonical(&existing) {
-            return resolved.starts_with(&root).then_some(out);
-        }
-        if existing == prefix || !existing.pop() {
-            return Some(out);
+    // DECISION D-TBD-c1: a path that names the prefix itself (``, `.`, `a/..`) has no final
+    // component to open, and is denied.
+    let (last, directories) = parts.split_last()?;
+    // Rule 2: every intermediate directory resolves inside the canonical prefix. DECISION
+    // D-TBD-c2: each one is checked, not only the last, so a path never passes through a
+    // directory outside the prefix even when it comes back inside.
+    let mut lexical = prefix.to_path_buf();
+    let Some(root) = world.canonical(prefix) else {
+        return missing(world, &lexical, prefix, &parts);
+    };
+    let mut resolved = root.clone();
+    for part in directories {
+        lexical.push(part);
+        match world.canonical(&lexical) {
+            Some(directory) if directory.starts_with(&root) => resolved = directory,
+            Some(_) => return None,
+            None => return missing(world, &lexical, prefix, &parts),
         }
     }
+    // Rule 3: the final component is never followed.
+    let target = resolved.join(last);
+    (!world.is_link(&target)).then_some(target)
+}
+
+/// The outcome of [`confine`] when the intermediate directory `lexical` does not resolve: a
+/// dangling link is denied, and a missing directory yields the lexical path, whose operation
+/// then fails with `NotFound` without touching anything outside the prefix.
+fn missing(
+    world: &mut dyn World,
+    lexical: &Path,
+    prefix: &Path,
+    parts: &[&std::ffi::OsStr],
+) -> Option<PathBuf> {
+    if world.is_link(lexical) {
+        return None;
+    }
+    let mut out = prefix.to_path_buf();
+    out.extend(parts);
+    Some(out)
 }
 
 /// The keys of a key file: a TOML table of key names to base64 keys (DECISION D-103). The
