@@ -1,6 +1,6 @@
 # 13. Diagnostics, Agent ABI and project files
 
-Status: Normative, v0.1. The JSON shapes in this file are the Agent ABI, schema version 1: agents consume them, so changes follow the ADR process and bump the version in the `schema` strings.
+Status: Normative, v0.1. The JSON shapes in this file are the Agent ABI, schema version 1: agents consume them, so changes follow the ADR process and bump the version in the `schema` strings. Schema versions freeze at the `v0.1.0` tag: before it, the shapes of version 1 may still change, and after it, any change bumps the version.
 
 ## 1. Diagnostic model
 

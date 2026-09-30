@@ -1,0 +1,20 @@
+-- test: is_some, is_ok and append accept labeled arguments and join their labels into the result (ADR 0038 D3.4)
+-- spec: spec/14 §1
+-- expect: error U4001 at 16:48
+-- expect: error U4001 at 18:55
+-- expect: error U4001 at 20:62
+module prelude_option_result_list_labels
+
+pub kind Missing = | NotThere
+
+pub has_first(xs: List[secret Int]) -> secret Bool = xs.first().is_some()
+
+pub worked(r: Result[secret Int, Missing]) -> secret Bool = r.is_ok()
+
+pub grown(xs: List[Int], x: secret Int) -> secret List[secret Int] = xs.append(item: x)
+
+pub leak_some(o: Option[secret Int]) -> Bool = o.is_some()
+
+pub leak_ok(r: Result[secret Int, Missing]) -> Bool = r.is_ok()
+
+pub leak_append(xs: List[Int], x: secret Int) -> List[Int] = xs.append(item: x)

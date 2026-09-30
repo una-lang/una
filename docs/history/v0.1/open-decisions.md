@@ -1775,6 +1775,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `c4aea7c` (track a), tag `DECISION D-136`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer (Leonardo, 2026-09-30): add `is_some`, `is_ok` and `append` to the functions whose results join the labels of their arguments, as ADR 0038 D3.4 requires for any result that depends on its arguments; `spec/14 §1` lists them.
 
 ### D-137: Which positions of a generic call's result are raised (closure, R-004)
 - Question: `spec/10 §5` (generic instantiation) replaces each symbolic label of the result by the labels of the instantiating type.
@@ -1907,6 +1908,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `fe90186`, `crates/una-cli/src/report.rs`
 - ADR: `docs/adr/0041-proof-cache-trusted.md` (Accepted), consequences
 - Answer needed: Keep A? Or switch to B?
+- Answer (Leonardo, 2026-09-30): kept A. No schema has been released yet; schema versions freeze at the `v0.1.0` tag, and any change after that bumps the version (`spec/13`, preamble).
 
 ### D-149: Which clauses may name an opaque predicate (closure, R-016)
 - Question: ADR 0042 allows an opaque predicate only inside `checked` and opaque bodies, and makes "any other call, in code, a clause or an example" U2016. But `spec/03 §4` defines opaque refined kinds such as `kind Slug = Text where valid_slug(it)`, and an operation's `ensures` may establish an opaque fact.
