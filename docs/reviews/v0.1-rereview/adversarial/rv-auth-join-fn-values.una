@@ -1,0 +1,46 @@
+-- Adversarial: effectful or failing function joined with a pure one by `if` and `when`, then passed where a pure function is expected
+-- Expected: U3003/U3009 (S-Fun) and U3006
+-- Observed: U3003 at 32:13, 37:19; U3009 at 40:41; U3006 at 32:35, 37:19, 40:62; held
+module a07_join
+
+kind Boom = | Exploded
+
+capability Log
+  op write(line: Text) -> Unit
+
+note(line: Text) -> Unit
+  uses @log: Log[write]
+=
+  @log.write(line)
+
+silent(line: Text) -> Unit = unit
+
+boom(x: Int) -> Int
+  fails Boom
+=
+  fail Exploded
+
+plain(x: Int) -> Int = x
+
+pure_only(g: fn(Text) -> Unit) -> Unit = g("x")
+
+safe(f: fn(Int) -> Int) -> Int = f(1)
+
+pub joined(c: Bool) -> Unit
+  uses @log: Log[write]
+=
+  pure_only(if c then silent else note)
+
+pub picked(o: Option[Int]) -> fn(Text) -> Unit
+=
+  when o
+    is Some(v) -> note
+    is None -> silent
+
+pub joined_fails(c: Bool) -> Int = safe(if c then plain else boom)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let n = joined_fails(true)
+  @console.print("{n}")

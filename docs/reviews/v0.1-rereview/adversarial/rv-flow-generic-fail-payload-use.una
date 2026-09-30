@@ -1,0 +1,38 @@
+-- Adversarial: symbolic label of `a == b` placed in a failure payload of a generic function, recovered by `attempt`
+-- Expected: U4001 at the payload field
+-- Observed: U4001 at 11:23 and at 37:21; held
+module g04_generic_fail_payload
+
+kind Check = | Mismatch(same: Bool)
+
+compare[T](a: T, b: T) -> Int
+  fails Check
+=
+  fail Mismatch(same: a == b)
+
+pub leak(pin: secret Int) -> Bool
+=
+  let r = attempt compare(pin, b: 1234)
+  when r
+    is Ok(n) -> false
+    is Err(failure) ->
+      when failure
+        is Mismatch(same) -> same
+
+reveal(pin: Text) -> Bool
+=
+  let r = attempt compare(pin, b: "1234")
+  when r
+    is Ok(n) -> false
+    is Err(failure) ->
+      when failure
+        is Mismatch(same) -> same
+
+pub main() -> Unit
+  uses @env: Env[get]
+  uses @console: Console[print]
+=
+  let pin = @env.get("PIN")
+    if none use ""
+  let same = reveal(pin)
+  @console.print("pin is 1234: {same}")

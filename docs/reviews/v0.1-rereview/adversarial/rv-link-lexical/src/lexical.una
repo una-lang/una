@@ -1,0 +1,64 @@
+-- Adversarial: lexical edges of rule 1 (ADR 0038 D9): empty path, `.`, absolute paths,
+-- `..` that leaves and re-enters the prefix, trailing slashes and `.` after a final link,
+-- doubled slashes, a trailing slash after a regular file.
+-- Setup (from this directory): `mkdir -p box/sub outside && echo top > box/a.txt &&
+-- echo inside > box/sub/f.txt && echo secret > outside/secret.txt &&
+-- ln -s ../outside/secret.txt box/evil && ln -s ../outside box/evildir`
+-- Expected: ``, `.`, `sub/..` name the prefix itself and are `Denied` (D-133); absolute paths
+-- and `..` that leaves the prefix are `Denied` even when a later segment re-enters it; `evil/`,
+-- `evil/.` and `evildir/` still name a final link and are `Denied`.
+-- Observed (`una run`): `` denied, `.` denied, `sub/..` denied, `/etc/hosts` denied, write
+-- `/tmp/rv-link-abs.txt` denied (not created), `../box/a.txt` denied, `sub/../../box/a.txt`
+-- denied, `evil/` denied, `evil/.` denied, `evildir/` denied, write `evil/` denied, `./a.txt`
+-- ok, `sub//f.txt` ok, `a.txt/` ok (POSIX would say ENOTDIR; harmless), `sub/./f.txt` ok,
+-- `sub/` io.
+-- Verdict: Held
+module lexical
+
+describe(e: FileError) -> Text
+=
+  when e
+    is NotFound -> "notfound"
+    is Denied -> "denied"
+    is Io -> "io"
+
+show_read(path: Text) -> Unit
+  uses @console: Console[print]
+  uses @files: Files[read]
+=
+  let a = attempt @files.read(path)
+  let status = when a
+    is Ok(t) -> "ok"
+    is Err(e) -> describe(e)
+  @console.print("read [{path}]: {status}")
+
+show_write(path: Text) -> Unit
+  uses @console: Console[print]
+  uses @files: Files[write]
+=
+  let a = attempt @files.write(path, content: "written by probe")
+  let status = when a
+    is Ok(u) -> "ok"
+    is Err(e) -> describe(e)
+  @console.print("write [{path}]: {status}")
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @files: Files[read, write]
+=
+  show_read("")
+  show_read(".")
+  show_read("sub/..")
+  show_read("/etc/hosts")
+  show_write("/tmp/rv-link-abs.txt")
+  show_read("../box/a.txt")
+  show_read("sub/../../box/a.txt")
+  show_read("evil/")
+  show_read("evil/.")
+  show_read("evildir/")
+  show_write("evil/")
+  show_read("./a.txt")
+  show_read("sub//f.txt")
+  show_read("a.txt/")
+  show_read("sub/./f.txt")
+  show_read("sub/")

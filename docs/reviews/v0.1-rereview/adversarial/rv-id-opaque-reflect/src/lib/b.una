@@ -1,0 +1,7 @@
+module lib.b
+
+pub kind Good = Int where valid(it)
+
+pub predicate reflect valid(x: Int) -> Bool = x > 0
+
+pub inv(x: Good) -> Int = 100 / x
