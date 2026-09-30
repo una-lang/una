@@ -587,6 +587,18 @@ fn contract_command(
         }
     };
     let analysis = on_large_stack(|| analyze(&package, None));
+    // R-027, ADR 0036: the package's diagnostics, those of its project files included, come
+    // before the name is resolved, so that an unknown name never hides them.
+    if !analysis.diagnostics.is_empty() {
+        return report(
+            &analysis.diagnostics,
+            &package.sources,
+            json,
+            color,
+            stdout,
+            stderr,
+        );
+    }
     let modules = contract::Modules {
         sources: &package.sources,
         interner: &analysis.interner,
@@ -599,16 +611,6 @@ fn contract_command(
         )?;
         return Ok(ExitStatus::Usage);
     };
-    if !analysis.diagnostics.is_empty() {
-        return report(
-            &analysis.diagnostics,
-            &package.sources,
-            json,
-            color,
-            stdout,
-            stderr,
-        );
-    }
     let function_name = analysis.interner.resolve(function.name.name);
     let header = analysis
         .headers
