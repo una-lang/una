@@ -1,0 +1,40 @@
+-- Adversarial: effectful function laundered through prelude `fold` initial value, `or_else` default and a `map` lambda result
+-- Expected: U3016 or U3006 at each
+-- Observed: U3016 at 17:29, U3006 at 17:55, U3016 at 26:19, U2004 at 33:20, U2010 at 33:23, U3006 at 33:29, U3006 at 39:14 (`Ok(note)`); held
+module a04_prelude_hof_second_class
+
+capability Log
+  op write(line: Text) -> Unit
+
+note(line: Text) -> Unit
+  uses @log: Log[write]
+=
+  @log.write(line)
+
+pub folded() -> Int
+  uses @log: Log[write]
+=
+  let g = [1].fold(initial: note, step: fn(acc, x) -> acc)
+  g("x")
+  1
+
+pub defaulted() -> Int
+  uses @log: Log[write]
+=
+  let o: Option[Int] = None
+  let n = o.or_else(default: 1)
+  let g = or_else(None, default: note)
+  g("x")
+  n
+
+pub mapped() -> Int
+  uses @log: Log[write]
+=
+  let gs = [1].map(fn(x) -> note)
+  gs.len
+
+pub ok_wrapped() -> Int
+  uses @log: Log[write]
+=
+  let r = Ok(note)
+  1

@@ -1,0 +1,23 @@
+-- Adversarial: equality on a record whose declared field is `internal` returns a public Bool, directly, through a generic `same[T]` and through prelude `contains`; runtime prints the comparison of the PIN env var to Console
+-- Expected: U4001 or U4003 at each comparison (spec/07 §7 rule 3 'every label of its operands' types', ADR 0038 D3.2, D3.4, T6)
+-- Observed: accepted (exit 0); `PIN=1234 una run --grant env --grant console` prints `direct true generic true listed true`, `PIN=9999` prints `direct false generic false listed false`
+module g06_record_equality_demo
+
+kind Login
+  user: Text
+  pin: internal Text
+
+same[T](a: T, b: T) -> Bool = a == b
+
+pub main() -> Unit
+  uses @env: Env[get]
+  uses @console: Console[print]
+=
+  let pin = @env.get("PIN")
+    if none use ""
+  let mine = Login(user: "ada", pin: pin)
+  let guess = Login(user: "ada", pin: "1234")
+  let direct = mine == guess
+  let generic = same(mine, b: guess)
+  let listed = [mine].contains(item: guess)
+  @console.print("direct {direct} generic {generic} listed {listed}")

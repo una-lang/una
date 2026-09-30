@@ -1,0 +1,7 @@
+[package]
+name = "rv_hdl_categories"
+version = "0.1.0"
+edition = "0.1"
+
+[labels]
+categories = ["PII", "Location"]

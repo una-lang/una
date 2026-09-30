@@ -1,0 +1,6 @@
+module lib.f
+
+pub big(x: Int) -> Bool
+  ensures result == (x > 0)
+=
+  x > 0

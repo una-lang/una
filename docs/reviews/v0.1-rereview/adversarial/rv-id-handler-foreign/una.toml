@@ -1,0 +1,8 @@
+[package]
+name = "rv_id_handler_foreign"
+version = "0.1.0"
+edition = "0.1"
+
+[run]
+entry = "app"
+grants = ["console"]

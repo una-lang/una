@@ -1,0 +1,19 @@
+-- Adversarial: `lib.a` and `lib.b` both declare a policy `release` with the same `from` and
+-- different `to` refinements (`1..10` and `0..10`), and via functions both named `squeeze`.
+-- `app` imports `lib.b.release` and divides by its result; T-Declassify must assume the `to`
+-- type of the policy actually called.
+-- Expected: U5001 `release(n) != 0` (spec/07 §5, ADR 0038 D5, D6). The twin
+-- rv-id-policy-twins-ok imports `lib.a.release` and is accepted.
+-- Observed: U5001 at src/app.una:5 (exit 1).
+-- Verdict: Held
+module app
+
+import lib.b (release)
+
+band(n: internal Int) -> Int = 100 / release(n)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let q = band(0)
+  @console.print("q = {q}")

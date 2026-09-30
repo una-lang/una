@@ -1,0 +1,8 @@
+[package]
+name = "rv_link_case"
+version = "0.1.0"
+edition = "0.1"
+
+[run]
+entry = "casefold"
+grants = ["console", "files:./BOX:read,write"]

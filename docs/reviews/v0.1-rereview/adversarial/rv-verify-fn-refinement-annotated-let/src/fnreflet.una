@@ -1,0 +1,51 @@
+-- Adversarial: a function value whose result is `Int` is bound by a `let` annotated
+-- `fn(Int) -> Pos` when the right-hand side is a call or a field access. ADR 0037 rule 2 and
+-- spec/12 §3 require a refinement obligation on the result; the call `f(1)` then assumes `Pos`
+-- (rule 7), so the division in `inv` is proven.
+-- Expected: U5001 "refinement `result of ...: result > 0` is refuted" at each annotated `let`,
+-- as for the same values returned, passed as arguments or stored in fields, which are reported.
+-- Observed: `una check` exits 0 and `una obligations` lists `f(1) > 0` as proven. `una run`
+-- stops with U8001 "`div` by zero" in `inv`, exit 3. The same holds for `id(zero)`,
+-- `[g].first().or_else(default: g)` and `Box(value: zero).value`, and for the contravariant
+-- case `by_param`, where `f(0)` reaches `inv(0)`.
+module fnreflet
+
+pub kind Pos = Int where it > 0
+
+pub kind Holder
+  run: fn(Int) -> Int
+
+pub inv(p: Pos) -> Int = 100 / p
+
+pub zero(x: Int) -> Int = 0
+
+pub make() -> fn(Int) -> Int = zero
+
+pub id[T](x: T) -> T = x
+
+pub by_call() -> Int
+=
+  let f: fn(Int) -> Pos = make()
+  inv(f(1))
+
+pub by_field(h: Holder) -> Int
+=
+  let f: fn(Int) -> Pos = h.run
+  inv(f(1))
+
+pub by_generic(g: fn(Int) -> Int) -> Int
+=
+  let f: fn(Int) -> Pos = id(g)
+  inv(f(1))
+
+pub taker() -> fn(Pos) -> Int = inv
+
+pub by_param() -> Int
+=
+  let f: fn(Int) -> Int = taker()
+  f(0)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("result: {by_call()}")
