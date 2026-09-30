@@ -952,6 +952,29 @@ impl<'a> Env<'a> {
             return;
         };
         let base = self.lower_type(module, ty, &params, report);
+        // ADR 0045 rules 1 and 2: Core IR has no refinement over a function base, so a `where`
+        // clause on a kind whose base is a function type is ill-formed, at the clause. The
+        // clause is dropped after the report, so an alias of the kind is not reported again
+        // and no refinement is lost later.
+        let fn_base = matches!(base.base.unlabeled(), Ty::Fn(_));
+        let where_clause = self
+            .aliases
+            .get(id)
+            .and_then(|alias| alias.refinement.map(|expr| (alias.name, expr.span)));
+        if fn_base && let Some((name, span)) = where_clause {
+            if self.reports(module) {
+                report.error(
+                    Code::U2002,
+                    span,
+                    format!(
+                        "kind `{name}` refines a function type, which cannot be refined; remove the `where` clause, or refine the parameters or the result of the function type"
+                    ),
+                );
+            }
+            if let Some(alias) = self.aliases.get_mut(id) {
+                alias.refinement = None;
+            }
+        }
         if let Some(alias) = self.aliases.get_mut(id) {
             alias.base = base;
         }
