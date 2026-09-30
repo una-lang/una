@@ -2,6 +2,8 @@
 
 Decision log of the autonomous run (`OVERNIGHT.md`, C.4). Every choice not literally dictated by the specification is recorded here. Entries are sorted by review priority: low confidence combined with high reversal cost first. Code and tests implementing a decision carry the comment `DECISION D-NNN`.
 
+**Reviewed on 2026-09-30.** The independent review of v0.1 (`docs/reviews/v0.1-review/decisions.md`) recommended keeping 131 decisions and escalated D-093; the owner kept all 131 and resolved D-093 through ADR 0038 D4. Each entry records it on a `- Review` line. The decisions are final, so the `DECISION D-NNN` tags were removed from the code: the entries and their ADRs are the record. Decisions from D-133 on belong to the v0.1 closure run.
+
 **Answered on 2026-09-29.** The owner reviewed the log and kept every chosen option, so each entry below records its answer, and the Provisional ADRs became Accepted, with their rules stated in the specification (`OVERNIGHT.md` C.9).
 
 ## Blockers
@@ -21,6 +23,7 @@ None.
 - ADR: `docs/adr/0020-canonical-form.md` (Accepted)
 - Answer needed: Keep A? Or switch to B, or change a specific rule?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-037: What an import brings, and which scope wins (M3)
 - Question: `spec/02 §1` makes a module's top-level names visible throughout it and `spec/14 §1` imports the prelude into every module, but nothing says what an import of a kind brings or which of two visible names wins. The previous reference example used a variant after importing only its kind, and declared a variant `NotFound` that the prelude kind `FileError` also has.
@@ -33,6 +36,7 @@ None.
 - ADR: `docs/adr/0023-name-resolution.md` (Accepted)
 - Answer needed: Keep A? Or switch to B or C?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-046: Variants in patterns and after `fail` take their kind from the context (M3)
 - Question: `examples/events/src/events/main.una` matches `is SoldOut`, `is Few` and `is Open` without importing `Availability` or its variants. How are such variants resolved?
@@ -45,6 +49,7 @@ None.
 - ADR: `docs/adr/0023-name-resolution.md` (Accepted)
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-048: Variants after `fail`, in patterns and after `expect fails` (M4)
 - Question: ADR 0023 rule 3 leaves contextual variants to M4. Where is each looked up, and which code reports a miss?
@@ -57,6 +62,7 @@ None.
 - ADR: `docs/adr/0024-typing-rules-left-open.md` (Accepted)
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep; the implementation is fixed for R-020 (`expect fails` looks only in the error kind of the `do` expression).
 
 ### D-063: Equality on type parameters instantiated with function types (M4)
 - Question: `spec/03 §1` forbids `==` on function types, and `spec/03 §2` rule 4 allows `==` on type parameters. A generic function that compares values of `T`, called with a function type for `T`, would compare functions at run time.
@@ -69,6 +75,7 @@ None.
 - ADR: `docs/adr/0024-typing-rules-left-open.md` (Accepted), rule 11
 - Answer needed: Keep A? Or switch to B or C?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-071: Which code reports a missing capability (M5)
 - Question: `spec/05 §4` reports a capability that a callee needs and the caller lacks as U3001, `spec/04 §2, §5` reports effects beyond declared `uses` as U3003, and `spec/04 §2` rule 4 reports `@` in a function without `uses` as U3004. Which code applies where?
@@ -81,6 +88,7 @@ None.
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Accepted), rule 1
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-072: Inferring the headers of private functions (M5)
 - Question: ADR 0007 infers the `uses` and `fails` of private functions over the module's call graph, but a body's `@x.op` does not say which capability `@x` is, and a function may declare some clauses and omit others.
@@ -93,6 +101,7 @@ None.
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Accepted), rule 2
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-088: Structural labels in the checker's types (M6)
 - Question: Labels can sit at any position of a type (`Option[internal Text]`, `List[secret Int]`), and a generic call must carry the labels of its arguments; how does the checker represent them?
@@ -105,6 +114,7 @@ None.
 - ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Accepted), rule 1
 - Answer needed: Keep A? Or switch to B or C?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-098: Elaboration from the checker's resolutions (M7)
 - Question: Core IR needs every call resolved, arguments positional and every binder typed (`spec/09 §1`); the checker computes all of this but keeps none of it.
@@ -117,6 +127,7 @@ None.
 - ADR: `docs/adr/0032-runtime-details-left-open.md` (Accepted), rule 1
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-111: Formulas and spans in Core IR (M8)
 - Question: `spec/12 §3` generates obligations from Core IR, but M7's Core names refinements without their predicates, has no `requires` or `ensures`, keeps spans on few nodes, and drops the condition of the last arm of a `when` without `else`.
@@ -129,6 +140,7 @@ None.
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Accepted), rule 1
 - Answer needed: Keep A? Or switch to B or C?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-113: One obligation per `ensures` clause over every return path (M8)
 - Question: `spec/12 §3` generates a postcondition at "each normal return path", and `§8` gives an obligation an id from its declaration, kind and goal, so the paths of one clause would share an id; `spec/13 §2` lists a postcondition with the clause as its `source`.
@@ -141,6 +153,7 @@ None.
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Accepted), rule 3
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-018: `[` right after a label level (M1)
 - Question: After a level such as `secret`, `[` can start the label's categories (`secret[PII] Phone`) or a list type (`secret [Int]`). The grammar of `spec/02 §2` allows both readings, and telling them apart needs unbounded lookahead.
@@ -153,6 +166,7 @@ None.
 - ADR: `docs/adr/0018-label-bracket-starts-categories.md` (Accepted)
 - Answer needed: Keep A? Or switch to B or C?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-022: Nesting limit (M1)
 - Question: `una check` aborted with a stack overflow on 20 000 nested parentheses, a sum of 200 000 terms, and 5 000 text literals nested in interpolations. The grammar sets no bound on nesting. What should happen?
@@ -165,6 +179,7 @@ None.
 - ADR: `docs/adr/0019-nesting-limit.md` (Accepted)
 - Answer needed: Keep A with 256? Or change the limit, or switch to D?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-019: Parse errors after a lexical error in the same declaration (M1)
 - Question: The lexer's recovery (skipping a character, snapping an indentation, closing brackets, skipping a reserved word) can leave tokens the grammar rejects, as in `a & b` read as `a b`. Does the parser report U0101 for them?
@@ -177,6 +192,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep B? Or switch to A or C?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-021: Doc comments separated from their declaration (M1)
 - Question: `spec/01 §3` attaches consecutive doc comment lines to the next declaration. Does a doc comment attach when blank lines or plain comments separate it from the declaration?
@@ -189,6 +205,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-024: One-line bodies for predicates, handler operations and arms (M2)
 - Question: `spec/04 §1` makes the short form canonical for a function without clauses whose body is one line. Predicate bodies, handler operation bodies and `when` arms have the same `= line | block` choice. Is the rule the same for them?
@@ -201,6 +218,7 @@ None.
 - ADR: `docs/adr/0020-canonical-form.md` (Accepted)
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-025: Imports are sorted (M2)
 - Question: Does the canonical form order imports, and the names inside an import?
@@ -213,6 +231,7 @@ None.
 - ADR: `docs/adr/0020-canonical-form.md` (Accepted)
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-028: The shape of U7001 (M2)
 - Question: How does U7001 report a non-canonical file: once per file, per line, or per changed region? With which edit?
@@ -225,6 +244,7 @@ None.
 - ADR: `docs/adr/0020-canonical-form.md` (Accepted)
 - Answer needed: Keep A? Or switch to B or C?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-029: What `una fmt` does (M2)
 - Question: `spec/13 §5` says `una fmt [path]` rewrites to canonical form and `--check` reports U7001 without writing. What happens with syntax errors, what is printed, and how are files written?
@@ -237,6 +257,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B or C?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-030: Reading the round-trip criterion (M2)
 - Question: M2 requires that `parse(fmt(x))` equals `parse(x)` modulo spans, but the formatter itself rewrites the tree by design: short forms (`spec/04 §1`), constructor order (`spec/04 §3.4`) and sorted imports.
@@ -249,6 +270,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-039: Shadowing (M3)
 - Question: May a local rebind another local (`let x` after a parameter `x`), and may declarations, imports and locals reuse prelude or module names?
@@ -261,6 +283,7 @@ None.
 - ADR: `docs/adr/0023-name-resolution.md` (Accepted)
 - Answer needed: Keep A? Or switch to B or C?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-033: The keys and values of `una.toml` (M3)
 - Question: `spec/13 §7` shows an example and says unknown keys are U7002, but not which keys are required or which values are valid.
@@ -273,6 +296,7 @@ None.
 - ADR: `docs/adr/0021-packages-and-project-files.md` (Accepted)
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-036: Locating diagnostics that have no source position (M3)
 - Question: A missing `verification.lock` (U7004) has no position in any file, yet every diagnostic has a required `primary` location (M0 decision, ADR 0012). The owner asked for this ADR when U7004 is implemented.
@@ -285,6 +309,7 @@ None.
 - ADR: `docs/adr/0022-diagnostics-without-a-source-position.md` (Accepted)
 - Answer needed: Keep A? Or switch to B or C?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-038: Where U1001 ends and U2002 begins, and what M3 resolves (M3)
 - Question: An undeclared type name is both an "Unresolved name" (U1001) and an "Unknown ... type" (U2002). Which code, and which names can M3 resolve before types exist?
@@ -297,6 +322,7 @@ None.
 - ADR: `docs/adr/0023-name-resolution.md` (Accepted)
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-043: Explain texts with package examples (M3)
 - Question: The approved explain format has one `una` block per example (M1 plan §6). U1003, U1004, U1008, U7002, U7004 and U7005 cannot be shown in a single file.
@@ -309,6 +335,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-050: Text literals in the refinement language (M4)
 - Question: `spec/03 §3` lists integer and boolean literals among RL atoms but not text literals, while `spec/12 §4` encodes text literals. Is `it != ""` a valid refinement?
@@ -321,6 +348,7 @@ None.
 - ADR: `docs/adr/0024-typing-rules-left-open.md` (Accepted)
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-051: What U2008 covers (M4)
 - Question: U2008 is "Unreachable arm or misplaced `else`". Which arms are unreachable?
@@ -333,6 +361,7 @@ None.
 - ADR: `docs/adr/0024-typing-rules-left-open.md` (Accepted)
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-062: Reading the recursion restriction of kinds (M4)
 - Question: `spec/03 §2` rule 5 allows recursive kinds "only through `List` or `Option` fields". Is a sum with a variant without fields (`Tree = Leaf | Branch(left: Tree, right: Tree)`), a type argument (`inner: Pair[Wrapped, Int]`) or a function type (`make: fn() -> Deferred`) recursion through something else?
@@ -345,6 +374,7 @@ None.
 - ADR: `docs/adr/0024-typing-rules-left-open.md` (Accepted), rule 10
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-064: Punning of the first argument, and unlabeled constructor arguments (M4)
 - Question: `spec/04 §3` rule 3 makes a bare name equal to a parameter name count as labeled. Does that hold for the first argument, which may go unlabeled anyway? Which code reports an unlabeled argument of a constructor with several fields, extra arguments of a constructor with one field, and a variant without fields called with parentheses?
@@ -357,6 +387,7 @@ None.
 - ADR: `docs/adr/0024-typing-rules-left-open.md` (Accepted), rule 12
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-065: Recursion and results of predicates (M4)
 - Question: `spec/03 §4` forbids a `reflect` predicate from calling itself "directly or indirectly", and the title of U2015 lists "recursive" for every predicate. Does the rule cover opaque predicates and cycles through functions? What reports a predicate whose result is not `Bool`?
@@ -369,6 +400,7 @@ None.
 - ADR: `docs/adr/0024-typing-rules-left-open.md` (Accepted), rule 13
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-061: Details of the refinement language (M4)
 - Question: `spec/03 §3` lists the forms of the refinement language. Are `<` on `Text`, `is` with a literal, comparing with a variant by `==`, `unit` and interpolated text inside it?
@@ -381,6 +413,7 @@ None.
 - ADR: `docs/adr/0024-typing-rules-left-open.md` (Accepted), rule 9
 - Answer needed: Keep A? Or accept some of the forms (B)?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-075: Host capabilities in examples (M5)
 - Question: `spec/08 §2` rule 1 forbids host capabilities in examples (U3014) and takes every capability of the `do` line from `given` (U3001 if missing). Which applies to a missing `given`?
@@ -393,6 +426,7 @@ None.
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Accepted), rule 5
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-076: Grants checked by `una check` (M5)
 - Question: U3012 is reported when `main` uses a host capability that `una run` does not grant; `[run] grants` is in `una.toml`, while `--grant` flags come only with `una run` (M7).
@@ -405,6 +439,7 @@ None.
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Accepted), rule 6
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-079: Escaping lambdas and function values with effects (M5)
 - Question: `spec/05 §6` and `spec/10 §9` rule 2 let an effectful or failing lambda appear only directly as a call argument (U3006). Does the rule cover named functions used as values, and fields of such function types?
@@ -417,6 +452,7 @@ None.
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Accepted), rule 9
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep; the implementation is fixed for R-002 (ADR 0038 D2, U3016 for second-class type arguments).
 
 ### D-081: The output of `una contract` (M5)
 - Question: `spec/13 §5` defines `una contract <qualified.name>` without a JSON shape, without saying which package it reads, or how inferred clauses appear; M5 requires a `--json` snapshot.
@@ -429,6 +465,7 @@ None.
 - ADR: `docs/adr/0029-contract-output.md` (Accepted)
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-085: Function values with more effects or failures than the expected type (M5)
 - Question: `spec/10 §2` (S-Fun) lets a function value stand for a function type only when its `uses` are sufficient for the expected type's and its error kind is included in the expected one, without naming the code of a violation, for example `write`, which uses `@log`, passed as the pure `each` of `map`.
@@ -441,6 +478,7 @@ None.
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Accepted), rule 11
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep; the implementation is fixed for R-001 (ADR 0038 D1: S-Fun at every flow, and T-App).
 
 ### D-089: Where flows are checked, and implicit flows into a result (M6)
 - Question: `spec/10` compares labels through subtyping (S-Refine, S-Fun) wherever a value meets a type, without listing the places or saying where an implicit flow into a result is reported.
@@ -453,6 +491,7 @@ None.
 - ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Accepted), rule 2
 - Answer needed: Keep A? Or switch to C?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-090: The labels of values (M6)
 - Question: `spec/07 §3` rule 1 and `spec/10 §3` give operators the join of their operands, but not what `.len`, `is`, field access or pattern bindings take from structured values.
@@ -465,6 +504,7 @@ None.
 - ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Accepted), rule 3
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-091: `checked` branches on its value (M6)
 - Question: T-Checked requires `pc = ⊥`, yet the failure of `checked(v, p) else fail V` reveals whether `p` holds of `v`, and failures are observable (`spec/07 §1`).
@@ -477,6 +517,7 @@ None.
 - ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Accepted), rule 4
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-092: Operation arguments are sinks (M6)
 - Question: T-Op both types the arguments against the parameter types, labels included, and bounds them by `accepts`; `Files.write` declares `content: Text` and accepts `internal`, and `Keys.hmac` accepts "any label" without a way to write it.
@@ -489,6 +530,7 @@ None.
 - ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Accepted), rule 6
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-094: Policies, trusted modules and `via` functions (M6)
 - Question: `spec/07 §5, §6` require a trusted module (U4004) and a private `via` of matching types (U4005); ADR 0024 rule 14 reported the types as U2001 before M6, and nothing says whether other code may call the `via` function.
@@ -501,6 +543,7 @@ None.
 - ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Accepted), rule 7
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-100: Values in traces and outputs (M7)
 - Question: `spec/11 §5` shows trace values as JSON strings (`"Open"`, `"unit"`) without defining the representation, and `Hashed` has no text form.
@@ -513,6 +556,7 @@ None.
 - ADR: `docs/adr/0032-runtime-details-left-open.md` (Accepted), rule 3
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-101: The output of `una run` (M7)
 - Question: `spec/13 §5` defines `una run` and its streams, but no JSON shape, and not how U6001 and U6003 are reported.
@@ -525,6 +569,7 @@ None.
 - ADR: `docs/adr/0032-runtime-details-left-open.md` (Accepted), rule 4
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-102: The output of `una test` (M7)
 - Question: `spec/08 §2` rule 6 lists what `una test --json` reports per example without a shape.
@@ -537,6 +582,7 @@ None.
 - ADR: `docs/adr/0032-runtime-details-left-open.md` (Accepted), rule 5
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-103: Grants: how they combine, and where their paths resolve (M7)
 - Question: `spec/05 §7` and `spec/14 §3` confine `Files` to a prefix and load keys from a file, without saying how `una.toml` grants and `--grant` flags combine, where relative paths resolve, how paths normalize or what the key file holds.
@@ -549,6 +595,7 @@ None.
 - ADR: `docs/adr/0032-runtime-details-left-open.md` (Accepted), rule 6
 - Answer needed: Keep A? Or switch to B or C?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep; the implementation is fixed for R-011 (ADR 0038 D9: the final component is never followed).
 
 ### D-104: Semantics the prelude leaves open (M7)
 - Question: `spec/14 §1` gives the prelude's signatures and contracts, but not what `.len` counts, whether the empty text `is_digits`, what `trim` removes or what `to_int` accepts.
@@ -561,6 +608,7 @@ None.
 - ADR: `docs/adr/0032-runtime-details-left-open.md` (Accepted), rule 7
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-106: When an example fails beyond its expectations (M7)
 - Question: `spec/08 §2` defines each expectation and says that `expect` lines with `result` fail when `do` failed, but not what happens when `do` fails and no `expect fails` line expects it, whether `expect` lines without `result` still run then, or which events `performed` counts.
@@ -573,6 +621,7 @@ None.
 - ADR: `docs/adr/0032-runtime-details-left-open.md` (Accepted), rule 9
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-107: Redaction beyond the labels of arguments (M7)
 - Question: `spec/11 §5` redacts arguments whose static label is above `public`, and records host results "subject to redaction", but a record argument whose own label is `public` can hold a field declared `secret`, and an operation's result has a label too.
@@ -585,6 +634,7 @@ None.
 - ADR: `docs/adr/0032-runtime-details-left-open.md` (Accepted), rule 3
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-108: Runtime faults before tier 1 (M7)
 - Question: Until M8 verifies proof obligations, `una run` and `una test` run programs whose divisors are not proven nonzero (ADR 0027). What does a division by zero do, and what reports a fault that a checked program cannot reach?
@@ -597,6 +647,7 @@ None.
 - ADR: `docs/adr/0032-runtime-details-left-open.md` (Accepted), rule 11
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-109: The entry of `una run`, and U3012 at startup (M7)
 - Question: `spec/04 §8` runs `main` of the module that `una run` names and reports ungranted capabilities with U3012 before execution, but `una check` (D-076) only compares `main` with `[run] grants`, which `--grant` flags extend, and a single file has no `una.toml`.
@@ -609,6 +660,7 @@ None.
 - ADR: `docs/adr/0032-runtime-details-left-open.md` (Accepted), rule 10
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-112: What is verified, and when (M8)
 - Question: `spec/12 §1` makes tier 1 "tier 0 plus every proof obligation", and `spec/08 §2` rule 4 verifies examples, but nothing says whether tier 1 runs when tier 0 fails, or whether the standard library's bodies are verified.
@@ -621,6 +673,7 @@ None.
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Accepted), rule 2
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-114: Ground facts beyond the hypothesis table (M8)
 - Question: `spec/12 §3` lists the hypotheses of a path context and `§4` the ground facts for `len` and `tag`, but a record's field refinements, which construction obligations guarantee, and the shape of constructed values are not listed; the example listing of `spec/13 §2` shows `0 <= e.remaining` for a parameter `e: Event`.
@@ -633,6 +686,7 @@ None.
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Accepted), rule 4
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-118: Goals, hypotheses and ids as text (M8)
 - Question: `spec/12 §8` hashes a "normalized goal text", and `spec/13 §1, §2` show goals and hypotheses as text, without saying how terms print or what `source` is.
@@ -645,6 +699,7 @@ None.
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Accepted), rule 8
 - Answer needed: Keep A? Or switch to B? And a question on `spec/12 §8` itself: two obligations of the same kind and goal in one declaration, such as two calls of `lend` in `examples/lending` (`can_borrow(member)`), get one id from its formula; `una obligations` lists both with their positions. Keep the formula, or add an occurrence number?
 - Answer: kept A, and the formula of `spec/12 §8`, under which such obligations share an id (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-119: What a counterexample shows (M8)
 - Question: `spec/12 §7` maps a model to source names and shows uninterpreted values "as opaque identities with their known projections", without naming which names appear or the form of an identity.
@@ -657,6 +712,7 @@ None.
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Accepted), rule 9
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-120: The repairs proposed for each kind (M8)
 - Question: `spec/13 §3` lists four candidates "when applicable", without saying when each applies.
@@ -669,6 +725,7 @@ None.
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Accepted), rule 10
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-121: The output of `una obligations` (M8)
 - Question: `spec/13 §2` defines `una.obligations/1`, but not the human output or the exit code.
@@ -681,6 +738,7 @@ None.
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Accepted), rule 11
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-122: What the build report lists (M9)
 - Question: `spec/13 §6` shows one `una.report/1` without saying which functions, policy calls, escapes, capabilities and host capabilities its sections list, how the lock is hashed, or how a single file names its package.
@@ -693,6 +751,7 @@ None.
 - ADR: `docs/adr/0034-report-and-abi-details-left-open.md` (Accepted), rule 1
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-123: Trivial `ensures` and the coverage counts (M9)
 - Question: `spec/13 §6` counts "ensures clauses the solver proves valid without any hypothesis" and reports them as missing contracts, without saying which clauses or how coverage counts functions.
@@ -705,6 +764,7 @@ None.
 - ADR: `docs/adr/0034-report-and-abi-details-left-open.md` (Accepted), rule 2
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-124: The output of `una trace` (M9)
 - Question: `spec/08 §1` says `una trace` "lists every function deriving from the requirement, its contract clauses and the verification status of each obligation", without a shape or exit codes.
@@ -717,6 +777,7 @@ None.
 - ADR: `docs/adr/0034-report-and-abi-details-left-open.md` (Accepted), rule 3
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-125: `--json` for every command (M9)
 - Question: `spec/13 §5` makes `--json` a global flag, but `una explain` has answered it with a usage error since M1, and commands differ on what they print for a package that does not check.
@@ -729,6 +790,7 @@ None.
 - ADR: `docs/adr/0034-report-and-abi-details-left-open.md` (Accepted), rule 4
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-002: Title of the historical design exploration in the charter (Part A)
 - Question: The charter supersedes the design exploration "Vera Language Specification v0.3". Should that historical title keep the codename?
@@ -741,6 +803,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-010: Usage errors with `--json` (M1)
 - Question: ADR 0015 D1 keeps stderr empty with `--json` except for internal errors. Where does a usage error such as a missing path go when `--json` is given?
@@ -753,6 +816,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B or C?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-014: A keyword after `@` (M1)
 - Question: `cap_ref` is `@` followed by a `lower_ident` (`spec/01 §4`), and keywords are not identifiers. What does `@if` produce?
@@ -765,6 +829,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B or C?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-016: Letters right after digits (M1)
 - Question: What does `12abc` lex as? ADR 0017 lists the integer malformations U0007 covers (leading zero, doubled, leading or trailing underscore); letters after digits are not among them.
@@ -777,6 +842,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B (extend U0007)?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-017: Width of a tab when choosing the recovery level (M1)
 - Question: A line whose indentation contains a tab reports U0002 and continues at "the nearest valid level" (approved M1 plan). How wide is the tab for that choice?
@@ -789,6 +855,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B or C?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-127: The example packages and what "every construct" means (M10)
 - Question: M10 asks for at least five more example packages "covering every construct in the charter scope", without naming them or saying how coverage is shown.
@@ -801,6 +868,7 @@ None.
 - ADR: `docs/adr/0035-examples-guide-and-release.md` (Accepted), rule 1
 - Answer needed: Keep A? Or switch to B or C, or change a theme?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-128: How the guide's snippets are tested (M10)
 - Question: "Every snippet is tested", but M10 does not say what a snippet is or what its test asserts.
@@ -813,6 +881,7 @@ None.
 - ADR: `docs/adr/0035-examples-guide-and-release.md` (Accepted), rule 2
 - Answer needed: Keep A? Or switch to B or C?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-129: Release artifacts (M10)
 - Question: M10 asks for release binaries for Linux and macOS built in CI, without naming targets, contents or workflows, while D-083 runs macOS only on pull requests and on `main`.
@@ -825,6 +894,7 @@ None.
 - ADR: `docs/adr/0035-examples-guide-and-release.md` (Accepted), rule 3
 - Answer needed: Keep A? Or add targets, or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-131: What an `attempt` that succeeded tells the verifier (M10)
 - Question: `spec/12 §3` adds the callee's `ensures` after `let x = f(ā)`, but says nothing of `let x = attempt f(ā)`, so a program that attempts a call lost what the callee proves about its result.
@@ -837,6 +907,7 @@ None.
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Accepted), rule 12
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-132: Where the build report is assembled (M9)
 - Question: `compiler/architecture.md §2` gives build report assembly to `una-report`, but the report needs the loaded package, the syntax trees, the analysis and the solver settings, which live in `una-cli`, the crate that depends on all the others.
@@ -849,6 +920,7 @@ None.
 - ADR: `docs/adr/0034-report-and-abi-details-left-open.md` (Accepted), rule 1
 - Answer needed: Keep A? Or switch to B or C?
 - Answer: kept A, with `compiler/architecture.md` updated (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-001: The abstract machine acronym follows the rename (Part A)
 - Question: "Vera Abstract Machine (VAM)" appears in the spec, ADR 0002, the plan and the backlog. The rename table covers the language name but not the acronym.
@@ -861,6 +933,7 @@ None.
 - ADR: `docs/adr/0016-final-name-troth.md` (Accepted, mentions it as a derived name)
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-013: Tabs leading lines without layout (M1)
 - Question: Is a tab that leads a comment-only line, or a line joined inside brackets, U0002? Such lines produce no layout tokens.
@@ -873,6 +946,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-015: A generic function start is a declaration start (M1)
 - Question: Recovery resumes "at the next line with zero indentation that starts a declaration keyword, `pub`, or a lower identifier followed by `(`" (`compiler/architecture.md §5`). A generic function starts with `name[T](`.
@@ -885,6 +959,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-020: Handling clause order is checked by the M1 parser (M1)
 - Question: `spec/06 §3` says each handling clause appears at most once per statement, `if error` before `if none` (U0102). The approved M1 plan listed U0102 only for function and operation clauses. Is the handling rule checked in M1, and does "each clause" mean each of the five forms or each of `if error` and `if none`?
@@ -897,6 +972,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-026: Constructor order for kinds declared in the same file (M2)
 - Question: `spec/04 §3.4` has the formatter order constructor arguments by declaration, which needs the declaration. Imported kinds need name resolution, which arrives in M3.
@@ -909,6 +985,7 @@ None.
 - ADR: `docs/adr/0020-canonical-form.md` (Accepted)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-027: Files with syntax errors have no canonical form (M2)
 - Question: Does `una check` report U7001, and does `una fmt` rewrite, a file that has syntax errors?
@@ -921,6 +998,7 @@ None.
 - ADR: `docs/adr/0020-canonical-form.md` (Accepted)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-031: `.una` files are checked out with line feeds (M2)
 - Question: With `core.autocrlf`, a Windows checkout would give every `.una` file `\r\n` line breaks, which U7001 rejects.
@@ -933,6 +1011,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-032: A directory is a package only with `una.toml` and `src/` (M3)
 - Question: ADR 0015 D3 (interim loading) expires in M3. What does a directory without `una.toml` or `src/` mean now?
@@ -945,6 +1024,7 @@ None.
 - ADR: `docs/adr/0021-packages-and-project-files.md` (Accepted)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-034: The values of `verification.lock`, and the default lock (M3)
 - Question: `spec/12 §9` lists six keys. Which values are valid, and which lock does a single file use?
@@ -957,6 +1037,7 @@ None.
 - ADR: `docs/adr/0021-packages-and-project-files.md` (Accepted)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-035: Project errors do not stop checking (M3)
 - Question: When `una.toml` or `verification.lock` is invalid, are the modules still checked?
@@ -969,6 +1050,7 @@ None.
 - ADR: `docs/adr/0021-packages-and-project-files.md` (Accepted)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-040: How U1003 and U1004 are reported (M3)
 - Question: Where does an import cycle point, and what repair does a private import get?
@@ -981,6 +1063,7 @@ None.
 - ADR: `docs/adr/0023-name-resolution.md` (Accepted)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-041: Modules with syntax errors are not resolved (M3)
 - Question: How do name checks treat a module whose parse lost declarations?
@@ -993,6 +1076,7 @@ None.
 - ADR: `docs/adr/0023-name-resolution.md` (Accepted)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-042: Naming conventions for type parameters, owners and module paths (M3)
 - Question: `spec/01 §4` lists the conventions of kinds, variants, capabilities, categories, lower-case names and requirement identifiers, but not of type parameters, owners or module path segments.
@@ -1005,6 +1089,7 @@ None.
 - ADR: `docs/adr/0023-name-resolution.md` (Accepted)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-044: Pending cases cannot hide implemented codes (M3)
 - Question: A pending case (for example on M5) may start reporting codes of M3 by mistake; the runner would still classify it as pending.
@@ -1017,6 +1102,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-045: A single file with a `trusted module` header (M3)
 - Question: `spec/07 §6` requires a trusted module to be declared in its header and in `una.toml`. A single file has no `una.toml`.
@@ -1029,6 +1115,7 @@ None.
 - ADR: `docs/adr/0021-packages-and-project-files.md` (Accepted)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-047: Typing capability operations before M5 (M4)
 - Question: M4 types every expression, but capability contexts belong to M5. How is `@c.op(args)` typed in M4?
@@ -1041,6 +1128,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-049: What `fail` joins with, and how branches combine (M4)
 - Question: `fail` ends the function; `spec/10 §5` gives it any type τ. How do `if` and `when` branches combine when one fails or when their refinements differ?
@@ -1053,6 +1141,7 @@ None.
 - ADR: `docs/adr/0024-typing-rules-left-open.md` (Accepted)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-052: Resolving `e.f` and `e.f(args)` (M4)
 - Question: `spec/04 §3` resolves `e.f(args)` as a field of function type or a function `f` in scope, and `e.f` as a field or a one-parameter function. What if neither exists, and in which order?
@@ -1065,6 +1154,7 @@ None.
 - ADR: `docs/adr/0024-typing-rules-left-open.md` (Accepted)
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-053: Calls of function values and constructors as values (M4)
 - Question: Function types carry no parameter names, and the Core IR of `spec/09` has no constructor values. Can a function value be called with labels, and can `Some` be passed as a function?
@@ -1077,6 +1167,7 @@ None.
 - ADR: `docs/adr/0024-typing-rules-left-open.md` (Accepted)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-054: A type that inference leaves unknown (M4)
 - Question: An empty list that nothing constrains, or a generic call whose parameter nothing fixes, leaves a unification variable unsolved. Core IR needs every type explicit (`spec/09 §1`).
@@ -1089,6 +1180,7 @@ None.
 - ADR: `docs/adr/0024-typing-rules-left-open.md` (Accepted)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-055: The prelude as Una sources (M4)
 - Question: M4 needs the signatures and contracts of `spec/14 §1, §3, §4`. How are they written?
@@ -1101,6 +1193,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-056: U2015 for opaque predicates before effect inference (M4)
 - Question: `spec/03 §4` requires opaque predicate bodies to be pure and non-failing (U2015). Calls to effectful or failing functions need the effect inference of M5.
@@ -1113,6 +1206,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-057: Labels are not compared by the type checker (M4)
 - Question: Types carry labels (`spec/03 §5`), but label rules are M6. Does M4 compare them?
@@ -1125,6 +1219,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-066: Policies: the `via` signature and the calls (M4)
 - Question: `spec/10 §7` types a policy call `p(v)` as a declassification from `from` to `to`, computed by the `via` function. Nothing checks that the function takes `from` and returns `to`, or says how `p(v)` passes its argument.
@@ -1137,6 +1232,7 @@ None.
 - ADR: `docs/adr/0024-typing-rules-left-open.md` (Accepted), rule 14
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-067: Wrong numbers of arguments (M4)
 - Question: U2004 to U2006 cover labels. Which code reports too many arguments, or a parameter that receives none?
@@ -1149,6 +1245,7 @@ None.
 - ADR: `docs/adr/0024-typing-rules-left-open.md` (Accepted), rule 15
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-069: Values whose type is not known yet (M4)
 - Question: With unification, a value's type can still be unknown where a field, a method or a call needs it, for example `fn(x) -> x.len` passed where the element type is not fixed yet.
@@ -1161,6 +1258,7 @@ None.
 - ADR: `docs/adr/0024-typing-rules-left-open.md` (Accepted), rule 8
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-070: What M4 records of obligations and selfification (M4)
 - Question: M4 records pending obligations (task 7) and selfified `let`s (task 3) before M7 elaborates to Core IR and M8 generates the obligations. What exactly is recorded?
@@ -1173,6 +1271,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-068: Two tour cases broke the labeled-argument rule (M4)
 - Question: `tests/conformance/syntax/grammar_tour.una` (M1) and `tests/conformance/names/resolution_tour.una` (M3) expect no diagnostics, but pass second arguments without labels (`map(xs, fn(...) -> ...)`, `fold(items, 0, fn(...) -> ...)`, `max(best, size(item))`), which `spec/04 §3` rule 2 makes U2004.
@@ -1185,6 +1284,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-073: Where handler problems are reported (M5)
 - Question: `spec/05 §5` requires every operation (U3011) with a matching parameter count and types from the capability (U3010). Where do these point, and what reports `for` naming something other than a capability?
@@ -1197,6 +1297,7 @@ None.
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Accepted), rule 3
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-074: Installing handlers with `with` and `given` (M5)
 - Question: `with @x = h(args)` and `given @x = h(args)` must name a handler for the capability expected at `@x` (U3010), and the handler's own `uses` must be held by the caller (`spec/05 §4` rule 2), without a code.
@@ -1209,6 +1310,7 @@ None.
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Accepted), rule 4
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-077: Where `std.testing` may appear (M5)
 - Question: `spec/14 §4` allows `std.testing` only in handler bodies and example lines (U3015). Is an import outside them an error, or only a use?
@@ -1221,6 +1323,7 @@ None.
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Accepted), rule 7
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-078: Reporting the escape budget (M5)
 - Question: `spec/06 §6` counts `checked` per module against `[escape_budget] checked_per_module` (U7003 when exceeded) without a site.
@@ -1233,6 +1336,7 @@ None.
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Accepted), rule 8
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-080: Positions for one effect per line (M5)
 - Question: `spec/04 §4` allows an effectful or fallible call only as the entire expression of a statement, `let` or final expression, "optionally wrapped in `attempt`". What about parentheses, `checked`, and function values?
@@ -1245,6 +1349,7 @@ None.
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Accepted), rule 10
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-082: Two checking passes for inference (M5)
 - Question: Inferred headers need the call graph and the operations of every body, while typing the operations of a private function needs its inferred capabilities.
@@ -1257,6 +1362,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-084: The M4 unit tests leave out the codes of later milestones (M5)
 - Question: `crates/una-check/tests/types.rs` compares every name and type diagnostic of its inputs, and M5 adds codes that some M4 inputs trigger: a single file that uses `checked` twice now also gets U7003, since the budget of a single file is 0.
@@ -1269,6 +1375,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-086: Mechanical edits of authority diagnostics (M5)
 - Question: `spec/13 §3` lets diagnostics other than U5001 and U5002 include repairs. Which authority diagnostics carry a mechanical edit, and which edit?
@@ -1281,6 +1388,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-087: A capability reference bound twice (M5)
 - Question: A capability context maps each name to one capability (`spec/05 §1`), but nothing reports a header with two `uses @log` clauses, two `given @log` lines or `with @log = @a, @log = @b`; ADR 0023 rule 5 left capability references to M5.
@@ -1293,6 +1401,7 @@ None.
 - ADR: `docs/adr/0028-authority-rules-left-open.md` (Accepted), rule 12
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-093: Calls under the program counter (M6)
 - Question: `spec/10 §5` states `pc ⊑ bound(f)` for named functions; function values and handler installations also run effects and failures.
@@ -1305,6 +1414,7 @@ None.
 - ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Accepted), rule 5
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Escalated (E2), resolved by the owner through ADR 0038 D4: handler operation bodies have an effect floor at the operation's `accepts`, and failures and results follow data flow. This amends ADR 0031 rules 4 and 5; the installation-site check of this entry stays.
 
 ### D-095: What is not checked for labels (M6)
 - Question: `spec/07 §4, §5` exempt `expect` lines and `via` bodies; clauses are in the refinement language, whose labels the verifier erases (`spec/12 §4`).
@@ -1317,6 +1427,7 @@ None.
 - ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Accepted), rule 8
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-096: Undeclared label categories (M6)
 - Question: `spec/07 §2` makes an undeclared category U4007 without a site; a single file has no `una.toml`.
@@ -1329,6 +1440,7 @@ None.
 - ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Accepted), rule 9
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-097: Where information-flow diagnostics point (M6)
 - Question: The specification gives no primary spans for U4001 to U4005.
@@ -1341,6 +1453,7 @@ None.
 - ADR: `docs/adr/0031-information-flow-rules-left-open.md` (Accepted), rule 10
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-099: The text of the Core dump (M7)
 - Question: `spec/09 §4` makes `--dump-core <module>` print Core IR "deterministically", without a layout or saying what happens with diagnostics.
@@ -1353,6 +1466,7 @@ None.
 - ADR: `docs/adr/0032-runtime-details-left-open.md` (Accepted), rule 2
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-105: What the call depth counts (M7)
 - Question: `spec/11 §7` limits the call depth to 10,000 frames without saying which calls are frames.
@@ -1365,6 +1479,7 @@ None.
 - ADR: `docs/adr/0032-runtime-details-left-open.md` (Accepted), rule 8
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-110: How the conformance runner evaluates `una run` and `una test` (M7)
 - Question: `compiler/testing.md §2` defines `run-output`, `test-pass`, `test-fail` and `-- grant:`, but not how the runner obtains them, whether errors reported by `una run` count toward `error` expectations, or where the relative paths of grants resolve.
@@ -1377,6 +1492,7 @@ None.
 - ADR: none (`compiler/testing.md §2` gains the rules)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-115: Encoding details (M8)
 - Question: `spec/12 §4` gives examples of sort names and the shape of field, `len` and `tag` functions, but not the names of every sort, how binders become symbols, or how `Unit`, text ordering, `concat` and `to_text` are encoded.
@@ -1389,6 +1505,7 @@ None.
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Accepted), rule 5
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-116: The solver protocol (M8)
 - Question: `spec/12 §5` gives the preamble and says the compiler issues `(get-model)` or `(get-info :reason-unknown)`, without saying how processes, models and the version check are handled.
@@ -1401,6 +1518,7 @@ None.
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Accepted), rule 6
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-117: The proof cache (M8)
 - Question: `spec/12 §9` fixes the directory, the key and the value of the cache, but not the files, concurrency or what is not cached.
@@ -1413,6 +1531,7 @@ None.
 - ADR: `docs/adr/0033-verification-details-left-open.md` (Accepted), rule 7
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-126: U8001's explain text has no examples (M9)
 - Question: `spec/13 §4` asks a failing and a fixed example of every code, and U8001 is "Internal compiler error (always a bug)".
@@ -1425,6 +1544,7 @@ None.
 - ADR: `docs/adr/0034-report-and-abi-details-left-open.md` (Accepted), rule 5
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-083: CI runners for the private repository (Part 5)
 - Question: The repository una-lang/una stays private until launch, and a private repository has a limited GitHub Actions quota, which macOS runners use fastest. When does each job run?
@@ -1437,6 +1557,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep. The entry's "`on.push` filter" does not exist: `ci.yml` runs Linux on every push and macOS on pull requests and pushes to `main` (R-044).
 
 ### D-009: Hidden entries under `src/` are not sources (M1)
 - Question: Interim loading reads `src/**/*.una` (ADR 0015 D3). Are hidden entries, such as editor lock files `.#name.una`, sources?
@@ -1449,6 +1570,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-011: M0 CLI tests that checked the repository root (M1)
 - Question: Two M0 tests ran `una check` in the repository root and expected success; ADR 0015 D3 (Accepted) makes a directory without `src/` a usage error.
@@ -1461,6 +1583,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-012: `--color auto` looks at stderr (M1)
 - Question: Which stream decides `--color auto`?
@@ -1473,6 +1596,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-060: Choices beyond the renaming map of the neutral reference example (ADR 0026)
 - Question: The owner's renaming map fixes most names of `examples/events`, but a few choices remain: the map gives `CheckInError = NotRegistered | Unavailable`, while the required coverage includes a sum with payload, which the previous reference example lacked; the parameter of `Audit.record`; and the neutral names of test fixtures.
@@ -1485,6 +1609,7 @@ None.
 - ADR: `docs/adr/0026-neutral-reference-examples.md` (Accepted)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-059: One snapshot regeneration for the neutral reference example (ADR 0026)
 - Question: ADR 0026 replaces the reference example, whose syntax trees are insta snapshots, and the diagnostic sample of `spec/13 §1`, which two snapshot tests mirror. Snapshots are otherwise never regenerated to make tests pass.
@@ -1497,6 +1622,7 @@ None.
 - ADR: `docs/adr/0026-neutral-reference-examples.md` (Accepted)
 - Answer needed: none (recorded as a consequence of ADR 0026)
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-058: Test inputs probing the earlier code shapes (Una rename)
 - Question: After the rename to Una (ADR 0025), tests still check that the codes of the earlier names are rejected, but the rename audit requires that no `T####` or `V####` code remains in the repository outside the history files.
@@ -1509,6 +1635,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-003: English words that contain "vera" (Part A)
 - Question: `grep -rni vera` (A.7) also matches "coverage" and "several", which contain the letters but are not the codename.
@@ -1521,6 +1648,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-004: Test inputs probing the old code shape (Part A)
 - Question: Tests fed `v0001` (lowercase) and `V00001` (five digits) to check that non-codes are rejected; the prefix rule of A.4 only matches four-digit `V####`.
@@ -1533,6 +1661,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep; superseded by D-058.
 
 ### D-005: CI trigger for the overnight branch (setup)
 - Question: `ci.yml` ran on pushes to `main` only, so pushes to `overnight/v0.1` would not be checked.
@@ -1545,6 +1674,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B, or remove the entry after the run?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep; superseded by D-083.
 
 ### D-006: Temporary files of tests stay inside the repository (setup)
 - Question: A runner test created a directory under the system temporary directory, outside the repository, which C.5 forbids for this run.
@@ -1557,6 +1687,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-007: Where the codename line goes in triage.md (Part A)
 - Question: A.3 asks for one line in `triage.md §5`; the section ends with a "Naming consequence" paragraph that says a final name is still to be chosen.
@@ -1569,6 +1700,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-008: Reading "`007` �7`" in B.2.1 (setup)
 - Question: One character of B.2.1 was lost: "Attach a mechanical edit when the fix is unambiguous: `007` �7`".
@@ -1581,6 +1713,7 @@ None.
 - ADR: none (minor)
 - Answer needed: Keep A?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
 
 ### D-130: The tag `v0.1.0` is left to the owner (M10)
 - Question: M10 asks for the tag `v0.1.0`, but the run never pushes to `main`, where the owner merges after review; a tag on `dev/v0.1` would name a release the owner has not reviewed.
@@ -1593,3 +1726,4 @@ None.
 - ADR: `docs/adr/0035-examples-guide-and-release.md` (Accepted), rule 4
 - Answer needed: Keep A? Or tag `dev/v0.1` before the merge?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
+- Review (2026-09-30): Keep
