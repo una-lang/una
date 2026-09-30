@@ -48,3 +48,7 @@ Status: Informative. Nothing in this file may be implemented before its target v
 | Recursive kinds with a base variant | v0.2 | `spec/03 §2` rule 5 rejects them in v0.1 | v0.1 review R-045 |
 | Refined elements of collections (`List[Pos]`, `Option[Pos]`) with obligations at construction and facts on access | v0.2 | Needs quantifiers or per-term facts; ADR 0040 rejects them in v0.1 | v0.1 review R-012 |
 | Label polymorphism beyond symbolic labels on type parameters, with inferred label constraints in signatures | v0.2 | ADR 0038 D3; only if Gate 1 shows agents need it | ADR 0038 |
+| Resolve capability operations in the clauses of a kind alias of an effectful function type | v0.1.x | Gives a false U1001 today; U3016 still rejects every use, so nothing unsound passes | v0.1 re-review N-012 |
+| Name which standard modules can be imported (`import std.host (Files)`), and correct the U1001 message that says `std.host` is not a module | v0.1.x | Needs a line in `spec/10 §11` | v0.1 re-review N-014 |
+| Print qualified names in messages when two declarations have the same bare name | v0.1.x | Ergonomics; the rules hold | v0.1 re-review N-015 |
+| Let `filter` and `first_where` take lambdas over labeled elements, raising the result by the element label | v0.2 | Sound but incomplete today (U4001 at the lambda) | v0.1 re-review N-018 |
