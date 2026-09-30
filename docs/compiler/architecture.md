@@ -30,7 +30,7 @@ tests/conformance/         language conformance suite (`testing.md`)
 examples/                  reference programs
 ```
 
-Dependency direction (no cycles): `diag` ← everything; `syntax` ← `fmt`, `check`; `project` ← `check`, `cli`; `core` ← `check`, `verify`, `interp`; `check`, `verify`, `interp` ← `report` ← `cli`.
+Dependency direction, as the crates' `Cargo.toml` files declare it, where `a` ← `b` means that `b` depends on `a` (no cycles): `diag` ← every other crate; `syntax` ← `fmt`, `core`, `check`, `verify`, `interp`, `cli`; `project` ← `check`, `cli`; `core` ← `check`, `verify`, `interp`, `cli`; `fmt`, `check`, `verify`, `interp`, `report` ← `cli`. `check`, `verify` and `interp` do not depend on one another: `cli` runs them in turn and passes each one the Core IR that `check` elaborates. `report` is a stub that depends only on `diag` (D-132).
 
 ## 3. Pipeline
 
