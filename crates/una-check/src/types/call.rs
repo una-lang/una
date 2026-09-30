@@ -13,7 +13,7 @@ use super::env::{Entity, FieldDef, FnDef, FnKind, ParamDef};
 use super::expr::count;
 use super::label::Label;
 use super::records::Res;
-use super::ty::{FnUse, KindId, Ty};
+use super::ty::{FnUse, KindId, Refinement, Ty};
 use super::unify::Vars;
 
 /// A checked argument: where it is, its type, the type of its parameter, and the parameter.
@@ -286,6 +286,11 @@ impl<'a> Checker<'_, 'a, '_> {
                 },
             );
             self.fn_flow(arg.value.span, param, &found);
+            // ADR 0037 rule 7: the refinements of the value's parameter are proven at the
+            // argument.
+            if !function.refinements.param(flows.len()).is_empty() {
+                self.obligation(ObligationKind::Refinement, arg.value.span, None);
+            }
             flows.push((arg.value.span, found, param.clone()));
         }
         for (arg_span, found, param) in flows {
@@ -340,6 +345,12 @@ impl<'a> Checker<'_, 'a, '_> {
             return;
         }
         let (expected, found) = (self.resolve(expected), self.resolve(found));
+        // ADR 0037 rule 2: a refinement of a function type that the flow does not carry over
+        // is a pending `refinement` obligation at the value. A lambda's written parameter types
+        // are the lambda's own flow, recorded by [`Checker::lambda`].
+        if !param && refinement_flow(&expected, &found) {
+            self.obligation(ObligationKind::Refinement, span, None);
+        }
         let direct = matches!(expected, Ty::Fn(_));
         let Some((problem, given)) = fn_problem(&expected, &found, false) else {
             return;
@@ -1284,6 +1295,35 @@ fn fn_problem(expected: &Ty, found: &Ty, flipped: bool) -> Option<(FnProblem, bo
             .zip(fs)
             .find_map(|(e, f)| fn_problem(e, f, flipped)),
         _ => None,
+    }
+}
+
+/// Whether a value of type `found` flowing into `expected` is a `refinement` obligation of
+/// ADR 0037 rule 2: a function type at the same position, directly or under type arguments,
+/// whose parameter carries a refinement that the expected parameter does not (contravariant),
+/// or whose result lacks a refinement of the expected result (covariant). Both are resolved.
+pub(crate) fn refinement_flow(expected: &Ty, found: &Ty) -> bool {
+    match (expected.unlabeled(), found.unlabeled()) {
+        (Ty::Fn(e), Ty::Fn(f)) if e.params.len() == f.params.len() => {
+            let lacks = |target: &[Refinement], source: &[Refinement]| {
+                source.iter().any(|refinement| !target.contains(refinement))
+            };
+            let params = (0..e.params.len()).any(|index| {
+                lacks(e.refinements.param(index), f.refinements.param(index))
+                    || matches!(
+                        (f.params.get(index), e.params.get(index)),
+                        (Some(target), Some(source)) if refinement_flow(target, source)
+                    )
+            });
+            params
+                || lacks(&f.refinements.result, &e.refinements.result)
+                || refinement_flow(&e.result, &f.result)
+        }
+        (Ty::List(e), Ty::List(f)) => refinement_flow(e, f),
+        (Ty::Kind(i, es), Ty::Kind(j, fs)) if i == j && es.len() == fs.len() => {
+            es.iter().zip(fs).any(|(e, f)| refinement_flow(e, f))
+        }
+        _ => false,
     }
 }
 

@@ -98,6 +98,17 @@ fn repairs(obligation: &Obligation) -> Vec<Repair> {
     if site.ground {
         return Vec::new();
     }
+    // ADR 0037 rule 6: a function value flowing into a function type has one repair, a
+    // stronger type at a position of a function type; no `requires`, guard or `checked`
+    // reaches a value that exists only when the function is called.
+    if let Some(flow) = &site.flow {
+        return vec![Repair {
+            rank: 1,
+            escape_cost: 0,
+            description: flow.clone(),
+            edit: None,
+        }];
+    }
     let requires = site.over_parameters && site.within == Within::Function { public: false };
     let mut candidates: Vec<(u32, String)> = Vec::new();
     match obligation.kind {

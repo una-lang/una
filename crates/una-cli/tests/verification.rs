@@ -697,3 +697,127 @@ fn a_forged_proof_cache_entry_is_trusted_and_counted_as_cached() {
     let output = una(&["check", path]);
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
 }
+
+#[test]
+fn a_function_value_flowing_into_a_function_type_names_its_obligation() {
+    // ADR 0037 rules 2 to 6 (F-0001-02, R-013): the goal names the position and the binder,
+    // the counterexample binds the binder by its source name, and the only repair is a
+    // stronger type at a position of a function type.
+    let parameter = only_diagnostic(
+        "fn-type-parameter",
+        "module app
+
+pub kind Pos = Int where it > 0
+
+pub apply(f: fn(Int) -> Int, x: Int) -> Int = f(x)
+
+pub takes_pos(x: Pos) -> Int = x
+
+pub use_it() -> Int = apply(takes_pos, x: 0)
+",
+    );
+    assert_eq!(parameter["code"], "U5001");
+    assert_eq!(
+        parameter["message"],
+        "refinement `parameter x of takes_pos: x > 0` is refuted"
+    );
+    assert_eq!(
+        parameter["counterexample"],
+        json!({"bindings": [{"name": "x", "value": 0}]})
+    );
+    assert_eq!(
+        repair_descriptions(&parameter),
+        ["strengthen parameter 1 of `fn(Int) -> Int` to a refined kind that implies `x > 0`"]
+    );
+    // Rule 12: a lambda whose annotation is stronger than the expected parameter type.
+    let lambda = only_diagnostic(
+        "fn-type-lambda",
+        "module app
+
+pub kind Pos = Int where it > 0
+
+pub apply(f: fn(Int) -> Int, x: Int) -> Int = f(x)
+
+pub use_it() -> Int = apply(fn(y: Pos) -> y, x: 0)
+",
+    );
+    assert_eq!(
+        lambda["message"],
+        "refinement `parameter y of the lambda: y > 0` is refuted"
+    );
+    assert_eq!(
+        lambda["primary"],
+        json!({"file": "src/app.una", "start": {"line": 7, "col": 29}, "end": {"line": 7, "col": 44}})
+    );
+    assert_eq!(
+        lambda["counterexample"],
+        json!({"bindings": [{"name": "y", "value": 0}]})
+    );
+    // Rule 12: a function whose result is less refined than the expected result, with a
+    // named obligation and a non-empty counterexample; the call through the value assumes
+    // the expected result, so `apply_pos` itself is proven (rule 7).
+    let result = only_diagnostic(
+        "fn-type-result",
+        "module app
+
+pub kind Pos = Int where it > 0
+
+pub apply_pos(f: fn(Int) -> Pos, x: Int) -> Pos = f(x)
+
+pub gives_int(x: Int) -> Int = x
+
+pub use_it() -> Int = apply_pos(gives_int, x: 0)
+",
+    );
+    assert_eq!(
+        result["message"],
+        "refinement `result of gives_int: result > 0` is refuted"
+    );
+    assert_eq!(result["obligation"]["kind"], "refinement");
+    assert_eq!(
+        result["obligation"]["goal"],
+        "result of gives_int: result > 0"
+    );
+    assert_eq!(result["related"][0]["message"], "where clause");
+    let bindings = result["counterexample"]["bindings"].as_array().unwrap();
+    assert!(
+        bindings
+            .iter()
+            .any(|b| b["name"] == "result" && b["value"].as_i64().is_some_and(|v| v <= 0)),
+        "{bindings:?}"
+    );
+    assert_eq!(
+        repair_descriptions(&result),
+        ["strengthen the result of `fn(Int) -> Int` to a refined kind that implies `result > 0`"]
+    );
+}
+
+#[test]
+fn a_lambda_given_a_refined_result_proves_it_on_its_paths() {
+    // `spec/12 §3`, returns: a lambda's body flows into the result its expected type gives it.
+    let diagnostic = only_diagnostic(
+        "fn-type-lambda-result",
+        "module app
+
+pub kind Pos = Int where it > 0
+
+pub apply(g: fn(Int) -> Pos) -> Int = 100 / g(0)
+
+pub use_it(c: Bool) -> Int = apply(fn(x) -> if c then 1 else 0)
+",
+    );
+    assert_eq!(
+        diagnostic["message"],
+        "refinement `result of the lambda: result > 0` is refuted"
+    );
+    assert_eq!(
+        diagnostic["primary"]["start"],
+        json!({"line": 7, "col": 62})
+    );
+    assert_eq!(
+        repair_descriptions(&diagnostic),
+        [
+            "add a guard or an arm so that the failing path of the lambda returns a value for which `result > 0` holds"
+        ]
+    );
+}

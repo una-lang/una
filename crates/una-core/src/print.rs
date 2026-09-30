@@ -606,7 +606,7 @@ impl Printer {
     /// A right-hand side that takes more than a line: a lambda or `checked`.
     fn rhs_block(&mut self, indent: usize, rhs: &Rhs) {
         match rhs {
-            Rhs::Lambda { params, body } => {
+            Rhs::Lambda { params, body, .. } => {
                 self.line(indent, &format!("λ({}).", Printer::params(params)));
                 self.expr(indent + 1, body);
             }

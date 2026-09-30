@@ -15,7 +15,9 @@ use una_syntax::{Interner, Span, Symbol};
 use super::Report;
 use super::closest;
 use super::label::{Accepts, Label};
-use super::ty::{AliasId, CapId, Declared, FnTy, FnUse, KindId, Names, Refinement, Show, Ty};
+use super::ty::{
+    AliasId, CapId, Declared, FnRefinements, FnTy, FnUse, KindId, Names, Refinement, Show, Ty,
+};
 
 /// A module the checker knows: a package module, the prelude or `std.testing`.
 pub(crate) struct Module<'a> {
@@ -990,11 +992,21 @@ impl<'a> Env<'a> {
                 result,
                 clauses,
             } => {
-                let params: Vec<Ty> = params
+                // ADR 0037 rule 1: the refinements of the parameters and the result are part
+                // of the function type.
+                let (params, param_refinements): (Vec<Ty>, Vec<Vec<Refinement>>) = params
                     .iter()
-                    .map(|param| self.lower_type(module, param, type_params, report).base)
-                    .collect();
-                let result = self.lower_type(module, result, type_params, report).base;
+                    .map(|param| {
+                        let lowered = self.lower_type(module, param, type_params, report);
+                        (lowered.base, lowered.refinements)
+                    })
+                    .unzip();
+                let result = self.lower_type(module, result, type_params, report);
+                let refinements = FnRefinements {
+                    params: param_refinements,
+                    result: result.refinements,
+                };
+                let result = result.base;
                 let fails = clauses.iter().find_map(|clause| match clause {
                     FnTypeClause::Fails(kind) => Some(kind),
                     FnTypeClause::Uses(_) => None,
@@ -1028,6 +1040,7 @@ impl<'a> Env<'a> {
                     result,
                     uses,
                     fails,
+                    refinements,
                 })))
             }
         };
