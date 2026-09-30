@@ -205,5 +205,5 @@ The rules of §3 to §8 act on Core IR; these rules fix what the surface syntax 
 9. **Equality on type parameters.** A generic function that compares values of a type parameter, directly or through the generic functions it calls, cannot be instantiated with a type whose values hold functions (U2001 at the instantiation).
 10. **Labels, in detail.** A bare name equal to a parameter's name is labeled with it, even as the first argument. A constructor with several fields reports an unlabeled argument as U2004; extra arguments of a constructor with one field, and parentheses after a variant without fields, are U2009.
 11. **Predicates.** A cycle of calls that contains a predicate, through predicates or functions, reflect or opaque, is U2015 once per cycle; a predicate whose result type is not `Bool` is U2001.
-12. **Policies.** The `via` function takes the base type of `from` and returns the base type of `to` (U4005, `spec/07 §5` rule 4). A policy call takes one argument without a label.
+12. **Policies.** The `via` function takes the type of `from` and returns the type of `to`, except for labels and with the same refinements, and has no `requires` clause (U4005, `spec/07 §5` rule 4, ADR 0047). A policy call takes one argument without a label.
 13. **Argument counts.** Too many arguments, and a parameter that receives none, are U2001.

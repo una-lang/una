@@ -9,4 +9,4 @@ pub policy lower
   purpose "show a count"
   owner ops
 
-pass_through(n: internal Int) -> public Int = n
+pass_through(n: internal Int) -> public Pos = n
