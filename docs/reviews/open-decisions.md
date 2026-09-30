@@ -1764,3 +1764,124 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `eab57c7`, `crates/una-verify/src/generate.rs`, tag `DECISION D-135`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+
+### D-136: Labeled arguments of prelude functions (closure, R-005)
+- Question: ADR 0038 D3.4 labels the results of the listed prelude functions by their arguments; it does not say whether those arguments may carry any label.
+- Context: ADR 0038.
+- Options: A) the listed functions accept arguments of any label, except function-typed parameters, which keep S-Fun, and `is_some`, `is_ok` and `append`, which spec/14 §1 does not list, keep strict parameters; B) every prelude parameter keeps its declared label.
+- Chosen: A, because the result label now carries the argument labels, so accepting them loses nothing, and B would reject `abs(x)` on a labeled `x` whose result the rule labels anyway.
+- Confidence: medium
+- Reversal cost: low, `prelude_result_labels` in `crates/una-check/src/types/call.rs`
+- Implemented in: `c4aea7c` (track a), tag `DECISION D-136`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-137: Which positions of a generic call's result are raised (closure, R-004)
+- Question: `spec/10 §5` (generic instantiation) replaces each symbolic label of the result by the labels of the instantiating type.
+- Context: ADR 0038.
+- Options: A) raise every data position of the result by the join of the labels of all type arguments, lazily for function values; B) a per-function summary of which type parameters reach the result.
+- Chosen: A, because it is sound and simple; B is more precise and can replace it without rejecting more programs.
+- Confidence: medium
+- Reversal cost: medium, `crates/una-check/src/types/call.rs` and `expr.rs`
+- Implemented in: `c4aea7c` (track a), tag `DECISION D-137`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-138: Where an inferred U3016 is reported (closure, R-002)
+- Question: `spec/05 §9` rule 6: at the value whose type instantiates the type parameter.
+- Context: ADR 0038.
+- Options: A) the first argument whose declared type mentions the parameter, skipping sites already reported by U3016 or U3006; B) every such argument.
+- Chosen: A, because one diagnostic per instantiation is enough to repair it.
+- Confidence: high
+- Reversal cost: low, `crates/una-check/src/types/generic.rs`
+- Implemented in: `c4aea7c` (track a), tag `DECISION D-138`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-139: A function type with a second-class parameter or result (closure, R-002)
+- Question: ADR 0038 D2: a type that contains a second-class type is not a type argument.
+- Context: ADR 0038.
+- Options: A) a function type whose parameter or result holds a second-class type counts as containing one; B) only data positions count.
+- Chosen: A, because such a function value, stored, lets the second-class value escape through its parameter or result.
+- Confidence: high
+- Reversal cost: low, `crates/una-check/src/types/ty.rs`
+- Implemented in: `c4aea7c` (track a), tag `DECISION D-139`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-140: List literals instantiate `List` (closure, R-002)
+- Question: ADR 0038 D2 names type parameters; a list literal fills the element type of `List`.
+- Context: ADR 0038.
+- Options: A) a list literal of second-class values is U3016 at its first element; B) only U3006 applies.
+- Chosen: A, because `[note]` stores `note` exactly like `List[...]` does.
+- Confidence: high
+- Reversal cost: low, `crates/una-check/src/types/expr.rs`
+- Implemented in: `c4aea7c` (track a), tag `DECISION D-140`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-141: The effect floor of an operation that accepts every label (closure, R-003)
+- Question: ADR 0038 D4 checks handler bodies at the operation's `accepts`; `Keys.hmac` accepts every label.
+- Context: ADR 0038.
+- Options: A) its floor is `⊤`, so a handler body for it performs no effects of lower bound; B) no floor.
+- Chosen: A, because the worst caller may pass anything, and handlers of `Keys` return fixed values.
+- Confidence: high
+- Reversal cost: low, `crates/una-check/src/types/check.rs`
+- Implemented in: `c4aea7c` (track a), tag `DECISION D-141`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-142: Where a written U3016 is reported (closure, R-002)
+- Question: `spec/05 §9` rule 6: at the written type argument.
+- Context: ADR 0038.
+- Options: A) once, at the innermost function-type argument; B) at every enclosing type argument.
+- Chosen: A, because one edit repairs it.
+- Confidence: high
+- Reversal cost: low, `crates/una-check/src/types/env.rs`
+- Implemented in: `c4aea7c` (track a), tag `DECISION D-142`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-143: U3006 or U3016 for a field under a type argument (closure, R-002)
+- Question: `spec/05 §9` rule 6 gives U3006 for a field whose type is an effectful function type, and U3016 for a type argument.
+- Context: ADR 0038.
+- Options: A) U3006 only when the field's type is directly a function type, U3016 when a function type is under a type argument (`List[fn ...]`); B) U3006 for both.
+- Chosen: A, because each code then names the construct to change.
+- Confidence: high
+- Reversal cost: low, `crates/una-check/src/types/authority.rs`
+- Implemented in: `c4aea7c` (track a), tag `DECISION D-143`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-144: The Core consistency check runs in debug builds (closure, R-001)
+- Question: ADR 0038 D1: "A debug-build consistency check compares checker types with Core IR binder types."
+- Context: ADR 0038.
+- Options: A) debug builds only, reported at the declaration; B) every build.
+- Chosen: A, as the ADR says, since the check costs a second walk of Core IR.
+- Confidence: high
+- Reversal cost: low, `crates/una-check/src/types/mod.rs`
+- Implemented in: `c4aea7c` (track a), tag `DECISION D-144`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-145: A lambda annotation weaker than the expected parameter (closure, R-001)
+- Question: S-Fun makes a lambda's written parameter type bound what it receives.
+- Context: ADR 0038.
+- Options: A) an annotation that drops a label, `uses` or `fails` of the expected type is reported at the annotation; B) at the call.
+- Chosen: A, because the annotation is what the agent edits.
+- Confidence: high
+- Reversal cost: low, `crates/una-check/src/types/expr.rs`
+- Implemented in: `c4aea7c` (track a), tag `DECISION D-145`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
+
+### D-146: The effect floor of calls in handler bodies (closure, R-003)
+- Question: ADR 0038 D4: "Every call inside must satisfy accepts ⊔ pc ⊑ bound(f)", and failures follow data flow with the body at `pc = ⊥`; `bound(f)` is `⊥` for a failing `f` (`spec/10 §5`), so the literal rule forbids every failing call in a handler of an operation that accepts a label above `public`.
+- Context: ADR 0038.
+- Options: A) the floor uses `bound_eff(f)`, the meet of the `accepts` labels of `f`'s effects, and a failing callee is checked against its full `bound(f)` at the body's own pc (`spec/07 §7` rule 4); B) the literal rule.
+- Chosen: A, because the owner's answer says failures follow data flow, and B would reject the fake stores that fail, which the ADR keeps valid.
+- Confidence: medium
+- Reversal cost: low, `spec/07 §7` rule 4 and `crates/una-check/src/types/check.rs`
+- Implemented in: `cf9a0a5` (spec text), `c4aea7c` (track a)
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?
