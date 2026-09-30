@@ -223,6 +223,8 @@ impl Ty {
 
     /// Whether the type is second-class or contains a second-class type: a function type with
     /// `uses` or `fails` at any position (`spec/05 §6`, ADR 0038 D2).
+    /// DECISION D-TBD-a4: a function type whose parameter or result holds a second-class type
+    /// holds one too, as `fn(fn() -> Unit uses @log: Log[write]) -> Unit` does.
     pub(crate) fn second_class(&self) -> bool {
         match self {
             Ty::Labeled(_, inner) => inner.second_class(),

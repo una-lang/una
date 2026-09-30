@@ -1334,8 +1334,8 @@ pub(crate) fn budget(
 }
 
 /// U3006: a field of a kind whose type is a function type with `uses` or `fails` (`spec/03 §1`,
-/// DECISION D-079). Such a type under a type argument, as in `List[...]`, is U3016 at the type
-/// argument instead (ADR 0038 D2).
+/// DECISION D-079). DECISION D-TBD-a8: such a type under a type argument, as in `List[...]`,
+/// is U3016 at the type argument instead (ADR 0038 D2), and not U3006 too.
 pub(crate) fn stored_effects(env: &Env<'_>, report: &mut Report<'_>) {
     fn holds(ty: &Ty) -> bool {
         match ty {

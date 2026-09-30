@@ -925,6 +925,8 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 .as_ref()
                 .and_then(|capability| capability.ops.iter().find(|o| o.name == name));
             // DECISION D-092: callers may pass anything up to `accepts`.
+            // DECISION D-TBD-a6: an operation that accepts every label, as `Keys.hmac` does, has
+            // the effect floor `⊤` (ADR 0038 D4).
             let accepts = op_def
                 .and_then(|o| o.accepts.clone())
                 .unwrap_or_else(|| self.top());

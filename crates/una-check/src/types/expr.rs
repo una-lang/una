@@ -462,6 +462,8 @@ impl<'a> Checker<'_, 'a, '_> {
             self.expr(item, Some(&element));
         }
         // ADR 0038 D2: the element type instantiates the type parameter of `List`.
+        // DECISION D-TBD-a5: so a list literal of second-class values is U3016 at its first
+        // such element.
         let values = items.iter().map(|item| (item.span, Ty::Param(0))).collect();
         self.instantiation("List", &["T"], vec![element.clone()], values, span);
         Ty::List(Box::new(element))
@@ -895,7 +897,8 @@ impl<'a> Checker<'_, 'a, '_> {
                         }
                         Some(from_shape) => {
                             // ADR 0038 D1: the values the lambda receives flow into the type
-                            // its body assumes for the parameter.
+                            // its body assumes for the parameter. DECISION D-TBD-a10: a label
+                            // or function type the written type drops is U4001 or U3003 at it.
                             self.fn_flow_param(written.span, &lowered, &from_shape);
                             let given = self.labeled(&from_shape);
                             self.flow(

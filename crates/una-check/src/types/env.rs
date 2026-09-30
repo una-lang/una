@@ -1040,7 +1040,8 @@ impl<'a> Env<'a> {
     }
 
     /// U3016: a written type argument that is, or contains, a second-class type, a function
-    /// type with `uses` or `fails` (`spec/05 §6`, ADR 0038 D2). It is reported at the innermost
+    /// type with `uses` or `fails` (`spec/05 §6`, ADR 0038 D2). DECISION D-TBD-a7: it is
+    /// reported at the innermost
     /// type argument that is a function type, once.
     fn type_argument(&self, module: usize, span: Span, ty: &Ty, report: &mut Report<'_>) {
         if self.reports(module) && matches!(ty.unlabeled(), Ty::Fn(_)) && ty.second_class() {
