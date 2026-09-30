@@ -1,6 +1,6 @@
 -- test: an invariant kind argument at an annotated let, a return, a constructor field and a list element (N-002)
 -- spec: spec/07 §7
--- expect: error U4001 at 18:34
+-- expect: error U4001 at 18:50
 -- expect: error U4001 at 22:29
 -- expect: error U4001 at 32:21
 -- expect: error U4001 at 37:36
