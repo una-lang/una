@@ -1,0 +1,18 @@
+-- test: effect inside `checked` (review control)
+-- spec: spec/04 §4
+-- expect: error U7003 at 18:3
+-- expect: error U3013 at 18:11
+module effect_in_checked
+
+kind StoreError = | Timeout
+
+capability Store
+  op find(key: Int) -> Option[Int]
+    fails StoreError
+  op count() -> Int
+
+pub run() -> Int
+  uses @store: Store[count]
+  fails StoreError
+=
+  checked(@store.count(), it > 0) else fail Timeout

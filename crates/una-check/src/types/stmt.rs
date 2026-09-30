@@ -108,6 +108,10 @@ impl<'a> Checker<'_, 'a, '_> {
             self.env
                 .lower_type(self.module, written, &type_params, self.report)
         });
+        let declared = declared.map(|mut declared| {
+            declared.base = self.symbolic(&declared.base);
+            declared
+        });
         let expected = declared.as_ref().map(|declared| declared.base.clone());
         let role = Role::Annotation(name);
         let (ty, value) = match &stmt.value {
@@ -141,6 +145,7 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         if let Some(declared) = &declared {
             self.flow(value, &ty, &declared.base, &format!("`{name}`"));
+            self.fn_flow(value, &declared.base, &ty);
             self.annotated(stmt.name.span, declared);
         }
         // The local keeps the labels its value has now; later unifications do not change them

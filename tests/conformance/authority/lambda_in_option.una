@@ -1,0 +1,19 @@
+-- test: effectful function stored with `Some(note)` (review control)
+-- spec: spec/05 §6
+-- expect: error U3016 at 16:22
+-- expect: error U3006 at 19:8
+module lambda_in_option
+
+capability Log
+  op write(line: Text) -> Unit
+  op flush() -> Unit
+
+note(line: Text) -> Unit
+  uses @log: Log[write]
+=
+  @log.write(line)
+
+pub make() -> Option[fn(Text) -> Unit uses @log: Log[write]]
+  uses @log: Log[write]
+=
+  Some(note)

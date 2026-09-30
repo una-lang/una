@@ -1,0 +1,10 @@
+trusted module app.keys
+
+pub policy mask
+  from secret[PII] Text
+  to internal Text
+  via masked
+  purpose "show the last digits"
+  owner privacy
+
+masked(t: secret[PII] Text) -> internal Text = t

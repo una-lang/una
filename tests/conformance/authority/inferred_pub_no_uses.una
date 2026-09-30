@@ -1,0 +1,12 @@
+-- test: pub function without uses calls a private helper that uses a capability (review control)
+-- spec: spec/05 §9
+-- expect: error U3001 at 10:20
+module inferred_pub_no_uses
+
+capability Log
+  op write(line: Text) -> Unit
+  op flush() -> Unit
+
+helper() -> Unit = @log.write("x")
+
+pub run() -> Unit = helper()

@@ -1,0 +1,11 @@
+-- test: handler returns its secret-raised parameter as the op's public result (review control)
+-- spec: spec/07 §7
+-- expect: error U4001 at 11:20
+module handler_result
+
+capability Echo
+  op back(value: Int) -> Int
+    accepts secret
+
+handler mirror() for Echo
+  op back(value) = value
