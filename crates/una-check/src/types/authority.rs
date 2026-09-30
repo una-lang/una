@@ -860,7 +860,28 @@ impl<'a> Checker<'_, 'a, '_> {
         top: bool,
         handled: bool,
     ) {
-        if !self.authority() || self.ctx.in_do {
+        if self.ctx.in_do {
+            return;
+        }
+        if !self.authority() {
+            // The body of an opaque predicate is a line too (`spec/04 §4`, R-029). U2015
+            // already reports effects and unhandled failures there, so U3013 names only a
+            // nested call whose failure `attempt` handles (DECISION D-TBD-p1).
+            if self.pass == Pass::Check
+                && self.ctx.opaque
+                && !top
+                && !effects
+                && fails.is_some()
+                && handled
+            {
+                self.report.error(
+                    Code::U3013,
+                    span,
+                    format!(
+                        "{what} can fail, so it must be the whole expression of a statement or `let`; bind its result with `let` first"
+                    ),
+                );
+            }
             return;
         }
         if !top && (effects || fails.is_some()) {
