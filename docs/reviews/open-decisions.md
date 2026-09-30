@@ -1973,3 +1973,14 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `9cf2b99`, tag `DECISION D-154`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+
+### D-155: The nested-pattern repair is a help, not an edit (closure, B-001)
+- Question: the owner asked that a nested pattern report that nested patterns are not supported in v0.1, "with a repair that binds and matches in two steps". A repair can be a help text or a mechanical edit (`spec/13 §3`).
+- Context: `spec/02 §6`, `spec/13 §3`.
+- Options: A) a help that shows the two-step shape (bind the field, then match it in a second `when` inside the arm); B) a mechanical edit that rewrites the arms.
+- Chosen: A, because the edit would also have to regroup every arm that shares the outer variant, which no local edit can do safely.
+- Confidence: high
+- Reversal cost: low, `crates/una-syntax/src/parser.rs`
+- Implemented in: `9902633`, tag `DECISION D-155`
+- ADR: none (minor)
+- Answer needed: Keep A? Or switch to B?

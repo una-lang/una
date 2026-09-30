@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-09-29
 - Deciders: Leonardo (accepted on 2026-09-29), on a proposal by Claude (overnight run)
+- Amended by: the owner's closure instruction of 2026-09-30 ("the macOS release archive must build in CI on the closure pull request"): rule 3's archives are also packed and checked by `ci.yml` on each runner, Linux on every push and macOS on pull requests and pushes to `main` (R-035)
 
 ## Context
 
