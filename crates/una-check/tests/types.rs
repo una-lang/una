@@ -237,6 +237,31 @@ fn the_prelude_declares_exactly_the_names_of_spec_14() {
 // ----- kinds and written types (U2002, U2003) -----
 
 #[test]
+fn a_refined_type_argument_is_named_as_written_n010() {
+    // N-010: a type argument names the refined kind written, not the kind or range its alias
+    // goes through; range sugar on the argument itself names the refined type.
+    assert_eq!(
+        types(
+            "kind Small = Int in 0..5\n\
+             \n\
+             kind S2 = Small\n\
+             \n\
+             kind Pos = Int where it > 0\n\
+             \n\
+             kind P2 = Pos\n\
+             \n\
+             f(a: List[S2], b: List[P2], c: List[Int in 0..5], d: List[Small]) -> Int = 0\n"
+        ),
+        [
+            "U2002 t.una:11:11 this type argument is the refined kind `S2`, and a refined type cannot instantiate a type parameter in v0.1; write its base type `Int` and check the refinement where the value is used",
+            "U2002 t.una:11:24 this type argument is the refined kind `P2`, and a refined type cannot instantiate a type parameter in v0.1; write its base type `Int` and check the refinement where the value is used",
+            "U2002 t.una:11:37 this type argument is the refined type `Int in 0..5`, and a refined type cannot instantiate a type parameter in v0.1; write its base type `Int` and check the refinement where the value is used",
+            "U2002 t.una:11:59 this type argument is the refined kind `Small`, and a refined type cannot instantiate a type parameter in v0.1; write its base type `Int` and check the refinement where the value is used",
+        ]
+    );
+}
+
+#[test]
 fn written_types_name_types_with_their_arguments() {
     assert_eq!(
         types(

@@ -1124,13 +1124,22 @@ impl<'a> Env<'a> {
             },
         )
         .to_string();
-        let what = match lowered.refinements.last() {
-            Some(Refinement::Alias(id, _)) => {
+        // N-010: a refined kind is named as written, not by the kind or range its alias goes
+        // through.
+        let written = match (&arg.core, &arg.range) {
+            (TypeCore::Named { name, .. }, None) => Some(self.text(module, name.name)),
+            _ => None,
+        };
+        let what = match (lowered.refinements.last(), written) {
+            (None, _) => return,
+            (Some(_), Some(name)) => format!("the refined kind `{name}`"),
+            (Some(Refinement::Alias(id, _)), None) => {
                 let name = self.aliases.get(*id).map_or("?", |a| a.name);
                 format!("the refined kind `{name}`")
             }
-            Some(Refinement::Range(range, _)) => format!("the refined type `{base} {range}`"),
-            None => return,
+            (Some(Refinement::Range(range, _)), None) => {
+                format!("the refined type `{base} {range}`")
+            }
         };
         let mut diagnostic = report.make(
             Code::U2002,
