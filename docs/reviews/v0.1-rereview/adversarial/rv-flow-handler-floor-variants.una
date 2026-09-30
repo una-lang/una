@@ -1,0 +1,52 @@
+-- Adversarial: handlers for an op that `accepts secret`: nested `with` of a printing handler, helper with effects, handler parameter of effectful function type, `Clock.now`, print under a branch on the parameter
+-- Expected: U4002 or U4003 at each (ADR 0038 D4)
+-- Observed: U4002 at 25:5, 25:29, 34:19, 38:19; U4001 at 25:11; U4003 at 43:13, 50:7; held
+module h01_handler_variants
+
+capability Vault
+  op note(line: Text) -> Unit
+    accepts secret
+
+capability Log
+  op write(line: Text) -> Unit
+
+handler printing() for Log
+  uses @console: Console[print]
+  op write(line) = @console.print("ping")
+
+shout(line: Text) -> Unit
+  uses @log: Log[write]
+=
+  @log.write("x")
+
+handler nested() for Vault
+  uses @console: Console[print]
+  op note(line) =
+    shout(line) with @log = printing()
+
+helper() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("ping")
+
+handler inferred() for Vault
+  uses @console: Console[print]
+  op note(line) = helper()
+
+handler relay(f: fn(Text) -> Unit uses @console: Console[print]) for Vault
+  uses @console: Console[print]
+  op note(line) = f("ping")
+
+handler timed() for Vault
+  uses @clock: Clock[now]
+  op note(line) =
+    let t = @clock.now()
+    unit
+
+handler branching() for Vault
+  uses @console: Console[print]
+  op note(line) =
+    if line == "1234"
+      @console.print("ping")
+    else
+      unit

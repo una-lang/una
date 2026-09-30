@@ -1,0 +1,28 @@
+-- Adversarial: S-Fun at an `if` branch join: a pure and an effectful function joined into one local, then passed to a pure parameter, and the same join under an internal condition directly as the argument
+-- Expected: U3006 at the effectful function value and U3003 at the argument; U4001 for the internal choice (spec/05 §9 rules 6, 7; spec/07 §7 rule 3; ADR 0038 D1)
+-- Observed: U3006 and U3003 in main; U3003, U3006 and U4001 in chosen (4ea31cf and 85787d7)
+-- Verdict: Held
+module rv_gen_sfun_branch_join
+
+quiet(line: Text) -> Unit = unit
+
+loud(line: Text) -> Unit
+  uses @console: Console[print]
+=
+  @console.print(line)
+
+run(f: fn(Text) -> Unit) -> Unit = f("hi")
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let f = if true then quiet else loud
+  run(f)
+
+pub chosen() -> Unit
+  uses @env: Env[get]
+  uses @console: Console[print]
+=
+  let v = @env.get("MODE")
+    if none use ""
+  run(if v == "x" then quiet else loud)

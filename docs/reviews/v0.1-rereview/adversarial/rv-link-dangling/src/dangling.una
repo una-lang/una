@@ -1,0 +1,52 @@
+-- Adversarial: dangling links, final and intermediate, relative and absolute, pointing
+-- outside and inside the grant (R-011, ADR 0038 D9 rule 3: "dangling or not").
+-- Setup (from this directory): `mkdir -p box outside && ln -s ../outside/made.txt box/dang &&
+-- ln -s "$PWD/outside/made2.txt" box/dangabs && ln -s ../outside/nodir box/dd &&
+-- ln -s newdir box/di && ln -s later.txt box/din`
+-- Expected: every write through a dangling link is `Denied` and creates nothing, in `outside/`
+-- or in `box/`; a write under a missing plain directory is `NotFound`.
+-- Observed (`una run`): write dang denied, write dangabs denied, read dang denied, write
+-- dd/x.txt denied, write di/x.txt denied, write din denied, write nodir/x.txt notfound, write
+-- fresh.txt ok. Only box/fresh.txt was created; no made.txt, made2.txt, newdir or later.txt.
+-- Verdict: Held
+module dangling
+
+describe(e: FileError) -> Text
+=
+  when e
+    is NotFound -> "notfound"
+    is Denied -> "denied"
+    is Io -> "io"
+
+show_read(path: Text) -> Unit
+  uses @console: Console[print]
+  uses @files: Files[read]
+=
+  let a = attempt @files.read(path)
+  let status = when a
+    is Ok(t) -> "ok"
+    is Err(e) -> describe(e)
+  @console.print("read [{path}]: {status}")
+
+show_write(path: Text) -> Unit
+  uses @console: Console[print]
+  uses @files: Files[write]
+=
+  let a = attempt @files.write(path, content: "written by probe")
+  let status = when a
+    is Ok(u) -> "ok"
+    is Err(e) -> describe(e)
+  @console.print("write [{path}]: {status}")
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @files: Files[read, write]
+=
+  show_write("dang")
+  show_write("dangabs")
+  show_read("dang")
+  show_write("dd/x.txt")
+  show_write("di/x.txt")
+  show_write("din")
+  show_write("nodir/x.txt")
+  show_write("fresh.txt")

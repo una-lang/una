@@ -1,0 +1,50 @@
+-- Adversarial: the covariant kind-argument flow of `Sink[Int]` into `Sink[secret Int]` at every flow site: annotated let, return, constructor field, list element, call argument; each function then returns the secret as a public Int
+-- Expected: U4001 at each flow (spec/07 §7 rule 2; ADR 0038 D1); a positive twin with `List[fn(secret Int) -> Int]` and `Option[...]` is rejected, so only user kinds are affected
+-- Observed: accepted (exit 0) at 4ea31cf and 85787d7
+-- Verdict: Critical
+module rv_gen_kind_contravariant_flows
+
+kind Sink[T]
+  eat: fn(T) -> Int
+
+kind Holder
+  s: Sink[secret Int]
+
+made() -> Sink[Int] = Sink(eat: fn(x: Int) -> x)
+
+returned() -> Sink[secret Int] = Sink(eat: fn(x: Int) -> x)
+
+pub by_let(pin: secret Int) -> Int
+=
+  let s: Sink[secret Int] = made()
+  s.eat(pin)
+
+pub by_return(pin: secret Int) -> Int
+=
+  let s = returned()
+  s.eat(pin)
+
+pub by_field(pin: secret Int) -> Int
+=
+  let h = Holder(s: made())
+  h.s.eat(pin)
+
+pub by_list(pin: secret Int) -> Int
+=
+  let ss: List[Sink[secret Int]] = [made()]
+  let s = ss.first()
+    if none use made()
+  0
+
+pub main() -> Unit
+  uses @env: Env[get]
+  uses @console: Console[print]
+=
+  let raw = @env.get("PIN")
+    if none use ""
+  let pin: secret Int = to_int(raw)
+    if none use 0
+  let a = by_let(pin)
+  let b = by_return(pin)
+  let c = by_field(pin)
+  @console.print("pin is {a} {b} {c}")

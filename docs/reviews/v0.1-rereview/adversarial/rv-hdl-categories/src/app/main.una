@@ -1,0 +1,25 @@
+-- Adversarial: effect floor with categories: a handler of an op that accepts `internal[Location]` forwards its parameter to, or branches on it before, an op that accepts `secret[PII]` (higher level, other category)
+-- Expected: U4003 at each `@ledger.keep` (spec/07 §2 order on categories, §7 rule 4; ADR 0038 D4)
+-- Observed: U4003 at each `@ledger.keep` (4ea31cf and 85787d7)
+-- Verdict: Held
+module app.main
+
+capability Vault
+  op note(place: Text) -> Unit
+    accepts internal[Location]
+
+capability Ledger
+  op keep(line: Text) -> Unit
+    accepts secret[PII]
+
+handler forward() for Vault
+  uses @ledger: Ledger[keep]
+  op note(place) = @ledger.keep(place)
+
+handler forward_pc() for Vault
+  uses @ledger: Ledger[keep]
+  op note(place) =
+    if place == "home"
+      @ledger.keep("a")
+    else
+      @ledger.keep("b")

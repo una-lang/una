@@ -1,0 +1,14 @@
+-- Adversarial: a generic kind with a field of type `fn(T) -> T`, built at `Step[Int]` from an identity lambda and read at `Step[secret Int]`; T also sits in the result, so the covariant kind flow raises the result and the secret cannot come back as public
+-- Expected: U4001 at the annotated let of `n` (spec/07 §7 rule 2)
+-- Observed: U4001 at 12:16, as expected
+-- Verdict: Held
+module rv_gen_kind_fn_field_step
+
+kind Step[T]
+  go: fn(T) -> T
+
+pub by_step(pin: secret Int) -> Int
+=
+  let st: Step[secret Int] = Step(go: fn(x: Int) -> x)
+  let n: Int = st.go(pin)
+  n
