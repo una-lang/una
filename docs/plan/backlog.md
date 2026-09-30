@@ -17,6 +17,7 @@ Status: Informative. Nothing in this file may be implemented before its target v
 | Effect polymorphism (effectful lambdas in prelude higher-order functions) | v0.2 | Typing complexity; v0.1 prelude takes pure lambdas | D |
 | Traits or constraints on generics | v0.2 | Unconstrained generics suffice for v0.1 | D |
 | Language server (LSP) | v0.2 | Tooling after semantics stabilize | D |
+| Authenticate or re-validate proof cache entries | v0.2 | ADR 0041: the proof cache is part of the Trusted zone in v0.1, and the report counts cached results | v0.1 review R-018 |
 | Laws with quantifiers (tier 2), triggers, proof hints | v0.3 | Undecidable fragment; needs budgets and caching experience | D, R1 |
 | Property-based tests and benchmarks (tier 3) | v0.3 | Empirical evidence layer | D |
 | Semantic diff (`una diff`) over requirements, contracts, capabilities, information, escapes, TCB | v0.3 | Needs stable report and ABI | D, R3 |

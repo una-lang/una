@@ -633,6 +633,80 @@ fn contract_reports_unknown_names_and_diagnostics() {
 }
 
 #[test]
+fn contract_and_trace_report_package_diagnostics_before_the_name() {
+    // R-027, F-0001 C-1, ADR 0036: a problem of the project files or of a module is a
+    // diagnostic with exit code 1, reported before the name given to `una contract` or
+    // `una trace` is resolved, so an unknown name never hides it behind a usage error.
+    let lock = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../verification.lock");
+    let cases: [(&str, String, bool, &str, &str); 3] = [
+        (
+            "invalid-manifest",
+            format!("{MANIFEST}license = \"MIT\"\n"),
+            true,
+            "module a\n\npub one() -> Int = 1\n",
+            "U7002",
+        ),
+        (
+            "missing-lock",
+            MANIFEST.to_owned(),
+            false,
+            "module a\n\npub one() -> Int = 1\n",
+            "U7004",
+        ),
+        (
+            "syntax-error",
+            MANIFEST.to_owned(),
+            true,
+            "module a\n\npub one() -> Int = 1;\n",
+            "U0001",
+        ),
+    ];
+    for (case, manifest, with_lock, module, code) in cases {
+        let root = scratch(&format!("names-after-diagnostics-{case}"));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("una.toml"), manifest).unwrap();
+        if with_lock {
+            std::fs::copy(&lock, root.join("verification.lock")).unwrap();
+        }
+        std::fs::write(root.join("src/a.una"), module).unwrap();
+        for args in [
+            ["contract", "--json", "a.nothing"],
+            ["contract", "--json", "a.one"],
+            ["trace", "--json", "NOTHING_1"],
+        ] {
+            let output = una_in(&root, &args);
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "{case} {args:?}: {}",
+                stderr(&output)
+            );
+            assert_eq!(stderr(&output), "", "{case} {args:?}");
+            assert!(
+                codes(&output).iter().any(|found| found == code),
+                "{case} {args:?}: {}",
+                stdout(&output)
+            );
+        }
+        for args in [["contract", "a.nothing"], ["trace", "NOTHING_1"]] {
+            let output = una_in(&root, &args);
+            assert_eq!(output.status.code(), Some(1), "{case} {args:?}");
+            assert!(
+                stderr(&output).contains(code),
+                "{case} {args:?}: {}",
+                stderr(&output)
+            );
+            assert!(
+                !stderr(&output).contains("error: the package has no"),
+                "{case} {args:?}: {}",
+                stderr(&output)
+            );
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+}
+
+#[test]
 fn dump_core_prints_the_core_ir_of_the_reference_example() {
     // M7 acceptance criterion: snapshots of Core dumps (`spec/09 §4`, DECISION D-099).
     for module in [

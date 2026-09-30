@@ -8,7 +8,7 @@ use una_diag::{
 };
 use una_syntax::SourceDb;
 
-use crate::generate::Obligation;
+use crate::generate::{Obligation, Within};
 use crate::run::Outcome;
 
 /// The diagnostics of the obligations that are not proven.
@@ -48,7 +48,8 @@ pub fn diagnostics(
             goal: obligation.goal.clone(),
             status: outcome.status,
         });
-        if outcome.status == ObligationStatus::Refuted {
+        // R-021: a ground goal has no binder to show.
+        if outcome.status == ObligationStatus::Refuted && !obligation.site.ground {
             diagnostic.counterexample = Some(Counterexample {
                 bindings: outcome.bindings.clone(),
             });
@@ -87,54 +88,65 @@ fn message(obligation: &Obligation, outcome: &Outcome) -> String {
     }
 }
 
-/// The repair candidates of `spec/13 §3` that apply to the obligation's kind, ranked
-/// (DECISION D-120).
+/// The repair candidates of `spec/13 §3` that apply to the obligation's kind and site, ranked
+/// (DECISION D-120, R-021): a stronger parameter type only when the value is a parameter, a
+/// `requires` clause only in a private function and over its parameters, and no candidate for
+/// a ground goal.
 fn repairs(obligation: &Obligation) -> Vec<Repair> {
     let goal = &obligation.goal;
-    let candidates: Vec<(u32, String)> = match obligation.kind {
-        ObligationKind::Refinement | ObligationKind::Precondition => vec![
-            (
-                0,
-                format!("strengthen the type of the value to a refined kind that implies `{goal}`"),
-            ),
-            (
-                0,
-                format!(
-                    "add `requires {goal}` to the enclosing function, if it is not `pub`; its callers then prove it"
-                ),
-            ),
-            (
+    let site = &obligation.site;
+    if site.ground {
+        return Vec::new();
+    }
+    let requires = site.over_parameters && site.within == Within::Function { public: false };
+    let mut candidates: Vec<(u32, String)> = Vec::new();
+    match obligation.kind {
+        ObligationKind::Refinement | ObligationKind::Precondition => {
+            if let Some(parameter) = &site.parameter {
+                candidates.push((
+                    0,
+                    format!(
+                        "strengthen the type of the parameter `{parameter}` to a refined kind that implies `{goal}`"
+                    ),
+                ));
+            }
+            if requires {
+                candidates.push((
+                    0,
+                    format!(
+                        "add `requires {goal}` to the enclosing function; its callers then prove it"
+                    ),
+                ));
+            }
+            candidates.push((
                 0,
                 format!(
                     "add a guard (`if` or a `when` arm) that handles the values where `{goal}` does not hold"
                 ),
-            ),
-            (
+            ));
+            candidates.push((
                 1,
                 format!("check the value with `checked(value, {goal}) else fail <Variant>`"),
-            ),
-        ],
-        ObligationKind::Postcondition => vec![
-            (
+            ));
+        }
+        ObligationKind::Postcondition => {
+            candidates.push((
                 0,
                 format!(
                     "add a guard or an arm so that the failing path returns a value for which `{goal}` holds"
                 ),
-            ),
-            (0, "adjust the `ensures` clause".to_owned()),
-        ],
-        ObligationKind::Division => vec![
-            (0, format!("guard the division with `if {goal}`")),
-            (
-                0,
-                format!("add `requires {goal}` to the enclosing function, if it is not `pub`"),
-            ),
-        ],
-        ObligationKind::Exhaustive => vec![(
+            ));
+            candidates.push((0, "adjust the `ensures` clause".to_owned()));
+        }
+        // `spec/13 §3`: a `division` proposes a guard.
+        ObligationKind::Division => {
+            candidates.push((0, format!("guard the division with `if {goal}`")));
+        }
+        ObligationKind::Exhaustive => candidates.push((
             0,
             "add an `else` arm, or arms for the values the others miss".to_owned(),
-        )],
-    };
+        )),
+    }
     candidates
         .into_iter()
         .enumerate()

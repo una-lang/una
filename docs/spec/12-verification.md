@@ -148,7 +148,7 @@ step_budget      = 5000000
 random_seed      = 0
 ```
 
-The proof cache lives in `.una/cache/proofs/` (not committed). The key is SHA-256 over the lock file contents and the exact query text; the value is the status, reason and model. Changing the lock invalidates the cache. Each entry is one JSON file named by the key in hex, written through a temporary file and a rename; an unreadable entry is solved again, and `unknown` with reason `wallclock` is never cached (ADR 0033).
+The proof cache lives in `.una/cache/proofs/` (not committed). The key is SHA-256 over the lock file contents and the exact query text; the value is the status, reason and model. Changing the lock invalidates the cache. Each entry is one JSON file named by the key in hex, written through a temporary file and a rename; an unreadable entry is solved again, and `unknown` with reason `wallclock` is never cached (ADR 0033). In v0.1 the proof cache is part of the Trusted zone (`00-charter.md §3`): an entry is not authenticated, a readable one is the answer without asking the solver, and the build report counts the results that came from it (ADR 0041). Removing `.una/` verifies every obligation again.
 
 ## 10. Determinism guarantee
 

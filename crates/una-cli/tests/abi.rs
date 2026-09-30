@@ -41,7 +41,9 @@ fn json(output: &Output) -> Value {
 
 #[test]
 fn the_report_of_the_events_example() {
-    // M9 acceptance criterion: a snapshot of `una report --json` for the events example.
+    // M9 acceptance criterion: a snapshot of `una report --json` for the events example, with
+    // a warm cache so that every result comes from it (ADR 0041).
+    let _ = una(&["--json", "report", "examples/events"]);
     let output = una(&["--json", "report", "examples/events"]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert_eq!(stderr(&output), "");
@@ -54,7 +56,7 @@ fn the_report_of_the_events_example() {
     );
     assert_eq!(
         report["obligations"],
-        json!({"proven": 11, "refuted": 0, "unknown": 0})
+        json!({"proven": 11, "refuted": 0, "unknown": 0, "cached": 11})
     );
     assert_eq!(
         report["proven"],
@@ -77,6 +79,8 @@ fn the_report_of_the_events_example() {
         report["tcb"]["trusted_modules"],
         json!([{"module": "events.keys", "lines": 17}])
     );
+    // ADR 0041: the proof cache is part of the Trusted zone.
+    assert_eq!(report["tcb"]["proof_cache"], ".una/cache/");
     assert_eq!(
         report["requirements"],
         json!([{"id": "EVENTS_3", "status": "active", "derived": ["events.seating.availability"]}])
@@ -98,6 +102,16 @@ fn the_report_of_the_events_example() {
         stdout(&output).contains(
             "\ncoverage: 5 pub functions, 1 with ensures, 1 with derived from, 0 trivial ensures\n"
         ),
+        "{}",
+        stdout(&output)
+    );
+    assert!(
+        stdout(&output).contains("\nobligations: 11 proven, 0 refuted, 0 unknown; 11 cached\n"),
+        "{}",
+        stdout(&output)
+    );
+    assert!(
+        stdout(&output).contains("\n  proof cache: .una/cache/\n"),
         "{}",
         stdout(&output)
     );
@@ -237,7 +251,7 @@ pub next(x: Int) -> Int
     );
     assert_eq!(
         report["obligations"],
-        json!({"proven": 1, "refuted": 0, "unknown": 0})
+        json!({"proven": 1, "refuted": 0, "unknown": 0, "cached": 0})
     );
     assert_eq!(
         report["coverage"],
@@ -286,11 +300,11 @@ pub double(x: Int) -> Int
     assert_eq!(stderr(&output), "");
     assert_eq!(
         json(&output)["obligations"],
-        json!({"proven": 0, "refuted": 1, "unknown": 0})
+        json!({"proven": 0, "refuted": 1, "unknown": 0, "cached": 0})
     );
     let output = una(&["report", path]);
     assert_eq!(output.status.code(), Some(1));
-    assert!(stdout(&output).contains("\nobligations: 0 proven, 1 refuted, 0 unknown\n"));
+    assert!(stdout(&output).contains("\nobligations: 0 proven, 1 refuted, 0 unknown; 1 cached\n"));
     assert!(stderr(&output).contains("U5001"), "{}", stderr(&output));
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .args(["--json", "trace", "NUM_1"])
