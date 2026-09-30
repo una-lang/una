@@ -1,0 +1,24 @@
+-- Adversarial: function expecting a pure function parameter passed where the parameter is effectful, so it would receive `note`
+-- Expected: U3003 (S-Fun, contravariant)
+-- Observed: U3003 at 24:7; held
+module a02_contra_param
+
+capability Log
+  op write(line: Text) -> Unit
+
+pure_caller(g: fn(Text) -> Unit) -> Unit = g("x")
+
+run(f: fn(fn(Text) -> Unit uses @log: Log[write]) -> Unit, g: fn(Text) -> Unit uses @log: Log[write]) -> Unit
+  uses @log: Log[write]
+=
+  f(g)
+
+note(line: Text) -> Unit
+  uses @log: Log[write]
+=
+  @log.write(line)
+
+pub go() -> Unit
+  uses @log: Log[write]
+=
+  run(pure_caller, g: note)

@@ -1,0 +1,47 @@
+-- Adversarial: a pure function fixes the type argument first, then an effectful or failing one is unified with it (generic call, `or_else`, `contains`)
+-- Expected: U3016 or U3003/U3009 at each call
+-- Observed: U3016 at 30:18, 35:18, 41:11, 47:3 (reported at the pure argument, Minor), U3007 at 36:3, U2001 at 47:3; held
+module a08_unify_order
+
+kind Boom = | Exploded
+
+capability Log
+  op write(line: Text) -> Unit
+
+note(line: Text) -> Unit
+  uses @log: Log[write]
+=
+  @log.write(line)
+
+silent(line: Text) -> Unit = unit
+
+boom(x: Int) -> Int
+  fails Boom
+=
+  fail Exploded
+
+plain(x: Int) -> Int = x
+
+second[T](a: T, b: T) -> T = b
+
+pub paired() -> Unit
+  uses @log: Log[write]
+=
+  let g = second(silent, b: note)
+  g("x")
+
+pub paired_fails() -> Int
+=
+  let g = second(plain, b: boom)
+  g(1)
+
+pub defaulted() -> Unit
+  uses @log: Log[write]
+=
+  let g = Some(silent).or_else(default: note)
+  g("x")
+
+pub contained() -> Bool
+  uses @log: Log[write]
+=
+  [silent].contains(item: note)

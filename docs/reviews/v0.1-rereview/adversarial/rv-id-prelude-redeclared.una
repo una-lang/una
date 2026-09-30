@@ -1,0 +1,29 @@
+-- Adversarial: the module redeclares `Option` (variants swapped) and `FileError` (four
+-- variants). `first(xs)` returns the prelude `Option` into a `let` annotated with the user one,
+-- and `if error pass` passes the host `FileError` as the user one.
+-- Expected: U2001 and U3008 (distinct declarations; spec/10 §11 rules 5 and 8).
+-- Observed: U2001 "`o` is declared as `Option[Int]`, found `Option[Int]`" and U3008 "`if error
+-- pass` passes a `FileError` failure, and this code fails with `FileError`" (exit 1). Sound,
+-- but the messages print two different types identically (finding RV2-3).
+-- Verdict: Held
+module u
+
+pub kind Option[T] = None | Some(value: T)
+
+pub kind FileError = Io | Denied | NotFound | Gone
+
+annotated(xs: List[Int]) -> Int
+  requires xs.len > 0
+=
+  let o: Option[Int] = first(xs)
+  when o
+    is Some(value) -> 100 / 0
+    is None -> 0
+
+passed() -> Text
+  uses @files: Files[read]
+  fails FileError
+=
+  let t = @files.read("x")
+    if error pass
+  "ok"

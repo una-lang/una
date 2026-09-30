@@ -1,0 +1,8 @@
+module lib.x
+
+pub capability Gauge
+  op read() -> Int
+    ensures result >= 0
+
+pub handler five() for Gauge
+  op read() = 5

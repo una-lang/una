@@ -1,0 +1,53 @@
+-- Adversarial: case differences on a case-insensitive file system (macOS APFS default).
+-- The grant names `./BOX` while the directory is `box`; paths spell links in other cases.
+-- Setup (from this directory): `mkdir -p box/sub outside && echo top > box/a.txt &&
+-- echo inside > box/sub/f.txt && echo secret > outside/secret.txt &&
+-- ln -s ../outside/secret.txt box/evil && ln -s ../outside box/out`
+-- Expected: links are still detected under another case (`EVIL`, `Evil` Denied), an
+-- intermediate link spelled `OUT` still resolves outside and is Denied; plain files are found
+-- (`a.txt`, `SUB/f.txt`).
+-- Observed (`una run`, APFS case-insensitive): a.txt ok, A.TXT ok, SUB/f.txt ok, EVIL denied,
+-- Evil denied, OUT/secret.txt denied, write EVIL denied, write Out/new.txt denied. The `./BOX`
+-- grant resolves to `box`.
+-- Verdict: Held
+module casefold
+
+describe(e: FileError) -> Text
+=
+  when e
+    is NotFound -> "notfound"
+    is Denied -> "denied"
+    is Io -> "io"
+
+show_read(path: Text) -> Unit
+  uses @console: Console[print]
+  uses @files: Files[read]
+=
+  let a = attempt @files.read(path)
+  let status = when a
+    is Ok(t) -> "ok"
+    is Err(e) -> describe(e)
+  @console.print("read [{path}]: {status}")
+
+show_write(path: Text) -> Unit
+  uses @console: Console[print]
+  uses @files: Files[write]
+=
+  let a = attempt @files.write(path, content: "written by probe")
+  let status = when a
+    is Ok(u) -> "ok"
+    is Err(e) -> describe(e)
+  @console.print("write [{path}]: {status}")
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @files: Files[read, write]
+=
+  show_read("a.txt")
+  show_read("A.TXT")
+  show_read("SUB/f.txt")
+  show_read("EVIL")
+  show_read("Evil")
+  show_read("OUT/secret.txt")
+  show_write("EVIL")
+  show_write("Out/new.txt")

@@ -1,0 +1,5 @@
+module lib.a
+
+pub kind Good = Int where valid(it)
+
+pub predicate opaque valid(x: Int) -> Bool = x >= 0
