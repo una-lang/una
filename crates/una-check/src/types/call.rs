@@ -1002,6 +1002,7 @@ impl<'a> Checker<'_, 'a, '_> {
             Some(Entity::Variant(kind, index)) => {
                 let (params, kind_name) = self.kind_params(kind);
                 let targs = self.instantiate(&params, kind_name, ident.span);
+                self.expected_invariant(kind, &targs, expected);
                 self.resolved(
                     span,
                     Res::Ctor {
@@ -1015,6 +1016,7 @@ impl<'a> Checker<'_, 'a, '_> {
             Some(Entity::Kind(id)) if self.env.kinds.get(id).is_some_and(|k| !k.is_sum()) => {
                 let (params, kind_name) = self.kind_params(id);
                 let targs = self.instantiate(&params, kind_name, ident.span);
+                self.expected_invariant(id, &targs, expected);
                 self.resolved(
                     span,
                     Res::Ctor {
@@ -1040,6 +1042,31 @@ impl<'a> Checker<'_, 'a, '_> {
         self.report.error(Code::U2001, ident.span, problem);
         self.unchecked(args);
         Ty::Error
+    }
+
+    /// The type arguments `targs` of a constructor of `kind` take the arguments of the
+    /// expected type at the kind's invariant parameters, labels included, before the fields
+    /// are checked, so that `Feed(get: fn() -> 2)` is a `Feed[secret Int]` where one is
+    /// expected (ADR 0046). An expected argument that still holds a type variable is left to
+    /// the flow that follows the constructor, since the variable may take labels later.
+    /// DECISION D-TBD-l4: ADR 0046 fixes the flow, not how a constructor infers its
+    /// arguments; this uses the expected type only where it is already known.
+    fn expected_invariant(&mut self, kind: KindId, targs: &[Ty], expected: Option<&Ty>) {
+        let Some(expected) = expected else {
+            return;
+        };
+        let Ty::Kind(id, args) = self.labeled(expected).unlabeled().clone() else {
+            return;
+        };
+        if id != kind {
+            return;
+        }
+        let kinds = self.env.kind_labels.clone();
+        for (index, (targ, arg)) in targs.iter().zip(&args).enumerate() {
+            if kinds.is_invariant(kind, index) && !holds_var(arg) {
+                self.vars.unify(targ, arg);
+            }
+        }
     }
 
     /// A constructor application, also after `fail` (`spec/04 §3` rule 4): with two or more
@@ -1290,6 +1317,21 @@ fn generic_result(prelude: usize, def: &FnDef<'_>, subst: &[Ty], result: Ty) -> 
         return result;
     }
     result.raise_deep(&Vars::label_of(subst))
+}
+
+/// Whether `ty` holds a type variable at any position.
+fn holds_var(ty: &Ty) -> bool {
+    match ty {
+        Ty::Var(_) => true,
+        Ty::Labeled(_, inner) | Ty::List(inner) => holds_var(inner),
+        Ty::Kind(_, args) => args.iter().any(holds_var),
+        Ty::Fn(function) => {
+            function.params.iter().any(holds_var)
+                || holds_var(&function.result)
+                || function.fails.as_ref().is_some_and(holds_var)
+        }
+        _ => false,
+    }
 }
 
 /// The declared type of the parameter of each checked argument, with where the argument is
