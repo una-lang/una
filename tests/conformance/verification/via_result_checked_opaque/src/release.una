@@ -13,7 +13,7 @@ pub policy as_slug
   purpose "publish a slug"
   owner web
 
-copy(t: internal Text) -> public Text
+copy(t: internal Text) -> public Slug
   fails SlugError
 =
   checked(t, valid_slug(it)) else fail Invalid

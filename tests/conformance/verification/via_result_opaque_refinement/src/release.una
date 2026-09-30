@@ -11,4 +11,4 @@ pub policy as_slug
   purpose "publish a slug"
   owner web
 
-copy(t: internal Text) -> public Text = t
+copy(t: internal Text) -> public Slug = t
