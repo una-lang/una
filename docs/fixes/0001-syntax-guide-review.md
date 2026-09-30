@@ -344,7 +344,7 @@ Section numbers refer to the owner's guide, `docs/spec/`-relative references to 
 
 | Id | Kind | Title | Status | Commit |
 | --- | --- | --- | --- | --- |
-| F-0001-01 | compiler | Binder suffix in trace argument keys | Open | |
+| F-0001-01 | compiler | Binder suffix in trace argument keys | Done | see `git log --grep F-0001-01` |
 | F-0001-02 | investigate | Obligation for a refined parameter of a function value | Open | |
 | F-0001-03 | investigate | Exit code of U7002 and U7004 | Open | |
 | F-0001-04 | docs | §17 package import order | Open | |
