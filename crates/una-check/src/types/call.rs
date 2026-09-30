@@ -658,11 +658,21 @@ impl<'a> Checker<'_, 'a, '_> {
             span,
             capability.module,
         );
-        // DECISION D-092: an operation's arguments are sinks bounded by `accepts`.
-        let sinks: Vec<(Span, Ty)> = checked
-            .into_iter()
-            .map(|(arg_span, found, _, _)| (arg_span, found))
-            .collect();
+        // DECISION D-092: an operation's arguments are sinks bounded by `accepts`, except
+        // the carried ones, which accept every label and raise the result (ADR 0039).
+        let mut carried = Label::public();
+        let mut sinks: Vec<(Span, Ty)> = Vec::new();
+        for (arg_span, found, _, param) in checked {
+            let is_carried = def
+                .carried
+                .iter()
+                .any(|&i| def.params.get(i).is_some_and(|p| p.name == param));
+            if is_carried {
+                carried = carried.join(&self.labeled(&found).deep_label());
+            } else {
+                sinks.push((arg_span, found));
+            }
+        }
         self.sink(
             span,
             &format!("`@{cap_name}.{op_name}`"),
@@ -684,7 +694,7 @@ impl<'a> Checker<'_, 'a, '_> {
             site.top,
             site.handled,
         );
-        def.result.base
+        def.result.base.with_label(&carried)
     }
 
     /// The capability bound to `@cap` and the position of its operation `op`.

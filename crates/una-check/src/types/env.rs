@@ -193,6 +193,9 @@ pub(crate) struct OpDef<'a> {
     pub(crate) ensures: bool,
     /// The sink label of its arguments (`spec/05 §2`, `spec/07 §4`).
     pub(crate) accepts: Accepts,
+    /// The positions of the parameters that accept every label and whose labels the result
+    /// carries: `data` of `Keys.hmac` (ADR 0039).
+    pub(crate) carried: Vec<usize>,
 }
 
 /// A capability.
@@ -682,16 +685,23 @@ impl<'a> Env<'a> {
                 OpClauseKind::Accepts(label) => Some(label),
                 _ => None,
             });
-            // DECISION D-092: `Keys.hmac` accepts every label (`spec/14 §3`); an operation
-            // without `accepts` accepts `public`.
+            // ADR 0039: `Keys.hmac` accepts `public` for `key_name` and every label for
+            // `data`, whose label its result carries (`spec/14 §3`). DECISION D-092: an
+            // operation without `accepts` accepts `public`.
+            let hmac = module == self.prelude
+                && ast_name(self, module, ast) == "Keys"
+                && op_name == "hmac";
+            let carried: Vec<usize> = if hmac {
+                op.params
+                    .iter()
+                    .position(|p| self.text(module, p.name.name) == "data")
+                    .into_iter()
+                    .collect()
+            } else {
+                Vec::new()
+            };
             let accepts = match written {
                 Some(label) => Some(self.lower_label(module, label, report)),
-                None if module == self.prelude
-                    && ast_name(self, module, ast) == "Keys"
-                    && op_name == "hmac" =>
-                {
-                    None
-                }
                 None => Some(Label::public()),
             };
             ops.push(OpDef {
@@ -703,6 +713,7 @@ impl<'a> Env<'a> {
                 requires: has(|kind| matches!(kind, OpClauseKind::Requires(_))),
                 ensures: has(|kind| matches!(kind, OpClauseKind::Ensures(_))),
                 accepts,
+                carried,
             });
         }
         if let Some(def) = self.capabilities.get_mut(id) {

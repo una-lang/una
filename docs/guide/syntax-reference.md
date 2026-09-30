@@ -785,7 +785,7 @@ The runtime implements these; they are part of the prelude.
 | `Env` | `get(name: Text) -> Option[internal Text]` | | `public` |
 | `Files` | `read(path: Text) -> internal Text` | `FileError` | `public` |
 | `Files` | `write(path: Text, content: Text) -> Unit` | `FileError` | `internal` |
-| `Keys` | `hmac(key_name: Text, data: Text) -> internal Hashed` | `KeyError` | any label |
+| `Keys` | `hmac(key_name: Text, data: Text) -> internal Hashed` | `KeyError` | `public` for `key_name`, any label for `data`; the result carries the label of `data` |
 
 - **Entry.** Host capabilities enter only through `main`'s `uses`, and only if `una run` grants them. An ungranted capability is U3012 before execution starts.
 - **Grant syntax:** `console`, `clock`, `env`, `keys:<keyfile>`, `files:<path>:read`, `files:<path>:write`.
