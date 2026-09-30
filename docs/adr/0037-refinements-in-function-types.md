@@ -1,8 +1,8 @@
 # 0037. Refinements in function types and their obligations
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-09-29
-- Deciders: Leonardo (pending), on a proposal by Claude (fix request F-0001-02)
+- Deciders: Leonardo (accepted on 2026-09-29), on a proposal by Claude (fix request F-0001-02)
 
 ## Context
 
@@ -26,7 +26,7 @@ Fixing the diagnostic of case 1 alone would leave cases 2 to 5, and any fix of t
 
 ## Decision
 
-Option A is proposed: **carry refinements in function types, and give S-Fun's premises named obligations.**
+Option A: **carry refinements in function types, and give S-Fun's premises named obligations.** The owner accepted it with conditions, which are rules 9 to 12.
 
 1. **Types.** A function type keeps the refinements (and labels) of its parameters and result, from its written form, from the header of a named function used as a value, and from a lambda's annotations. Core's `Type::Fn` already has room for them.
 2. **Where.** When a value of type `fn(A1, ..., An) -> R` flows into a position of type `fn(B1, ..., Bn) -> S` (argument, `let` with annotation, constructor field, return), each position whose refinements differ gives one `refinement` obligation at the value's span, under the path context of the flow:
@@ -38,7 +38,13 @@ Option A is proposed: **carry refinements in function types, and give S-Fun's pr
 5. **Counterexample.** The binders are source names in the encoder's name table, so the counterexample binds them (`x = 0`), as `spec/12 §7` requires of parameters and `result`.
 6. **Repairs.** Of `spec/13 §3`, only "strengthen a parameter or field type" applies, and it names the expected function type's position ("strengthen parameter 1 of `fn(Int) -> Int` to a refined kind that implies `x > 0`"). No `requires`, guard or `checked` repair is proposed, since none of them can reach a value that exists only when the function is called.
 7. **Calls through a function value.** Calling a value of type `fn(B1, ..., Bn) -> S` proves the refinements of `Bi` at the arguments, as for any call, and assumes the refinements of `S` of the result (T-App with the refined type).
-8. `spec/12 §3` gets a row "function value flowing into a function type" in the obligation kinds, with rules 2 to 6; `spec/13 §3` gets rule 6; and `spec/10 §2` notes that S-Fun's refined premises are the obligations of `spec/12 §3`. No syntax, keyword or diagnostic code is added: these are U5001 and U5002.
+8. `spec/12 §3` gets a row "function value flowing into a function type" in the obligation kinds, with rules 2 to 6; `spec/13 §3` gets rule 6; and `spec/10 §2` notes that S-Fun's refined premises are the obligations of `spec/12 §3`. Rules 2 to 7 add no syntax, keyword or diagnostic code: their obligations report as U5001 and U5002.
+9. **Quantifier-free.** Every obligation of rules 2 and 7 stays in QF_UFLIA (`spec/12 §4`): the binders of rule 3 are fresh variables of the query, never bound by a quantifier.
+10. **No silent drop.** A refinement in a function type that these rules cannot support, such as a result refinement that depends on a parameter, is rejected with an explicit diagnostic at the type. It is never dropped. Which registered code carries it is settled before the implementation (`docs/fixes/0001-syntax-guide-review.md`, "Needs review").
+11. **Internal check.** The compiler checks, as an internal invariant, that every refinement of a function type written or inferred by the checker is present in Core IR; a discarded refinement is an internal compiler error (U8001), never a silent pass.
+12. **Conformance.** Cases under `tests/conformance/verification/` cover: a correct program passing a named function with refined parameters where the same refined function type is expected, accepted; a lambda whose annotation is stronger than the expected parameter type, rejected; and a function whose result is less refined than the expected result, rejected with a named obligation and a non-empty counterexample.
+
+The implementation is scheduled for the v0.1 closure run, after the review freeze ends, and the spec changes of rule 8 land in the same change (`CLAUDE.md`, "Changing the spec"). Until then the compiler keeps the behavior described in the context.
 
 ## Consequences
 
