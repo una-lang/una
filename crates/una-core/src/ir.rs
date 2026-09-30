@@ -375,6 +375,8 @@ pub enum Rhs {
         cap: Name,
         /// The capability.
         capability: String,
+        /// The capability's declaration, by its qualified identity (`spec/10 §11` rule 8).
+        capability_path: Path,
         /// The operation.
         op: String,
         /// The arguments, in parameter order.
@@ -714,6 +716,9 @@ pub enum Decl {
         params: Vec<(Name, Type)>,
         /// The capability it implements.
         capability: String,
+        /// The declaration of the capability it implements, by its qualified identity
+        /// (`spec/10 §11` rule 8).
+        capability_path: Path,
         /// Its own capability context.
         uses: Vec<Use>,
         /// The operations.
@@ -803,4 +808,9 @@ pub struct Program {
     pub modules: Vec<Module>,
     /// The functions of the prelude and `std.testing`.
     pub library: Vec<Signature>,
+    /// The capability declarations of [`HOST_MODULE`], with their `spec/14 §3` signatures.
+    pub host: Vec<Decl>,
 }
+
+/// The module that declares the host capabilities (`spec/14 §3`, `spec/10 §11` rule 8).
+pub const HOST_MODULE: &str = "std.host";
