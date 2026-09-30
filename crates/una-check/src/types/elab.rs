@@ -1354,10 +1354,14 @@ impl<'e, 'a> Fx<'e, 'a> {
             .arms
             .iter()
             .filter_map(|arm| match &arm.pattern.kind {
-                PatternKind::Literal(_) => Some(format!(
-                    "{scrutinee_text} == {}",
-                    self.text(arm.pattern.span)
-                )),
+                // The pattern's span covers `is`; the goal prints the literal alone (R-032).
+                PatternKind::Literal(_) => {
+                    let text = self.text(arm.pattern.span);
+                    let value = text
+                        .strip_prefix("is")
+                        .map_or(text.as_str(), str::trim_start);
+                    Some(format!("{scrutinee_text} == {value}"))
+                }
                 PatternKind::Range(range) => {
                     Some(format!("{scrutinee_text} in {}", self.text(range.span)))
                 }

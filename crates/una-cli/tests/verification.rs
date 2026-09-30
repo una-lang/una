@@ -821,3 +821,38 @@ pub use_it(c: Bool) -> Int = apply(fn(x) -> if c then 1 else 0)
         ]
     );
 }
+
+/// The goals of the diagnostics of a conformance case, as "code line:col goal".
+fn case_goals(case: &str) -> Vec<String> {
+    let output = una(&["--json", "check", &format!("tests/conformance/{case}")]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let document: Value = serde_json::from_str(stdout(&output)).unwrap();
+    document["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| {
+            format!(
+                "{} {}:{} {}",
+                d["code"].as_str().unwrap(),
+                d["primary"]["start"]["line"],
+                d["primary"]["start"]["col"],
+                d["obligation"]["goal"].as_str().unwrap()
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn goal_texts_name_the_parameters_of_a_function_value_and_print_literals_as_values() {
+    // R-032: the precondition of a function used as a value is instantiated at the
+    // parameters of the lambda that stands for it, and a literal arm prints its value.
+    assert_eq!(
+        case_goals("verification/fn_value_precondition_goal_text.una"),
+        ["U5001 19:17 x == y", "U5001 20:18 needs > 0"]
+    );
+    assert_eq!(
+        case_goals("verification/literal_arms_goal_text.una"),
+        ["U5001 10:3 n == 0 or n == 2"]
+    );
+}
