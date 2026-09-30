@@ -4,6 +4,7 @@
 - Date: 2026-09-29
 - Deciders: Leonardo (accepted on 2026-09-29), on a proposal by Claude (overnight run)
 - Amended by: 0038: out-of-model channels are now six
+- Amended by: 0048: out-of-model channels are now seven
 
 ## Context
 

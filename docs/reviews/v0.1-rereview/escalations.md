@@ -28,3 +28,15 @@ N-001, N-003 and N-005, and the refined-parameter case of N-004, are implementat
 **E5. Accept ADR 0044?** (N-007)
 - A (recommended): accept. `expect fails V` after a `do` that cannot fail becomes U1001. It does not block the tag.
 - B: reject. `una test` alone keeps reporting it.
+
+## Leonardo's answers
+
+Given on 2026-09-30 and relayed to the closure session by the coordinator session, acting on the owner's behalf; recorded here by the closure session.
+
+| Escalation | Answer | Where it is applied |
+| --- | --- | --- |
+| E1 | A: each parameter of a user generic kind has a variance computed from its fields, covariant where it appears only in data positions and invariant where it appears inside a function type. | ADR 0046, `spec/07 §7` rule 2 |
+| E2 | A: a policy's `via` function may require nothing beyond `from`. Its parameter type equals `from` except for labels, and a `via` with `requires` is U4005. | ADR 0047, `spec/07 §5` rule 4 |
+| E3 | A: ADR 0045 is accepted with the three amendments of `decisions.md`, and the Core consistency check runs in every build (D-144 switched to B). ADR 0038 D1's "debug-build" wording is amended by ADR 0045. | ADR 0045 |
+| E4 | A: hard links are out of model in v0.1, and the report lists them with the out-of-model channels. The closure session confirmed first that the `Files` API has no operation that creates links: it has only `read` and `write` (`spec/14 §3`). | ADR 0048 |
+| E5 | A: ADR 0044 is accepted. | ADR 0044 |
