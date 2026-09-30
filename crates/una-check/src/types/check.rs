@@ -185,6 +185,8 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) call_fails: BTreeMap<Span, Ty>,
     /// The function or predicate whose body is checked.
     pub(crate) current: Option<usize>,
+    /// The handler whose operation bodies are checked (ADR 0043).
+    pub(crate) handler: Option<usize>,
     /// Instantiations of generic functions: callee, type arguments and where.
     pub(crate) instances: Vec<(usize, Vec<Ty>, Span)>,
     /// The operand types of `==` and `!=`.
@@ -266,6 +268,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             returning: None,
             call_fails: BTreeMap::new(),
             current: None,
+            handler: None,
             instances: Vec::new(),
             compared: Vec::new(),
             probe_failed: false,
@@ -903,6 +906,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         let Some(def) = self.env.handlers.get(id).cloned() else {
             return;
         };
+        self.handler = Some(id);
         self.base = Base::Declared;
         self.frames = vec![Frame {
             bindings: def
@@ -985,6 +989,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             self.returning = None;
             self.locals.truncate(mark);
         }
+        self.handler = None;
     }
 
     fn example(&mut self, example: &'a ExampleDecl) {

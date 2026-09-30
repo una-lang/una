@@ -181,6 +181,7 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
         }
         findings.records.merge(standard_findings.records);
     }
+    authority::testing_installs(&findings, &mut report);
     facts::predicate_recursion(&env, &findings, &mut report);
     facts::generic_equality(&env, &facts, &findings, &mut report);
     authority::grants(&env, package.settings, package.run, &mut report);
@@ -281,6 +282,10 @@ pub(crate) struct Findings {
     pub(crate) records: records::Records,
     /// The declarations of pass 2 with a diagnostic, by the span of their name.
     pub(crate) failed: std::collections::BTreeSet<Span>,
+    /// For each handler whose operation bodies use `std.testing`, the first use (ADR 0043).
+    pub(crate) testing_handlers: std::collections::BTreeMap<usize, Span>,
+    /// The handlers installed by `with` bindings, and the span of each binding (ADR 0043).
+    pub(crate) with_installs: Vec<(usize, Span)>,
 }
 
 /// The parsed standard modules.

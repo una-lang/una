@@ -72,7 +72,11 @@ kind KeyError = | UnknownKey
 
 ## 4. `std.testing`
 
-Usable only inside handler bodies and example lines: a call of, or reference to, a function of `std.testing` outside a handler operation body or an example is U3015 (ADR 0028).
+Usable only in test code (ADR 0028, ADR 0043):
+
+1. A function of `std.testing` is called only in example lines and in the operation bodies of handlers that are installed only by `given` lines of examples. A call outside a handler operation body or an example is U3015.
+2. A handler whose operation bodies use `std.testing` and that is installed by a `with` binding is U3015 at the `with` binding, with the use of `std.testing` as a related span.
+3. A function of `std.testing` used as a value, not called, is U3015 everywhere, in handler bodies and examples included.
 
 | Signature | Purpose |
 | --- | --- |
