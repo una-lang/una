@@ -1,8 +1,8 @@
 # 0036. Exit code of project-file diagnostics
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-09-29
-- Deciders: Leonardo (pending), on a proposal by Claude (fix request F-0001-03)
+- Deciders: Leonardo (accepted on 2026-09-29), on a proposal by Claude (fix request F-0001-03)
 
 ## Context
 
@@ -17,15 +17,20 @@ The review of the syntax reference guide (`docs/fixes/0001-syntax-guide-review.m
 
 ## Decision
 
-Option A is proposed: **keep exit code `1`**, and make `spec/13 §5` say so.
+Option A: **keep exit code `1`**, and make `spec/13 §5` say so. The owner accepted it with this rule:
 
-1. Every problem reported as a diagnostic with a registered code, U7002 and U7004 included, exits with `1` (or `3` for U8001). This is the rule the compiler follows today.
-2. Exit code `2` is for problems of the invocation that are not diagnostics and are printed to stderr as text: command-line flags and their values, grants given on the command line, a path that is not a package or a file, and the names given to `una contract` and `una trace`.
-3. `spec/13 §5` replaces "`2` usage or configuration error" with "`2` usage error: a problem of the command line, its flags, grants or paths, printed to stderr without a diagnostic code", and adds: "A problem of the project files (`una.toml`, U7002; `verification.lock`, U7004) is a diagnostic, and exits with `1`."
+- exit `1` means the output contains at least one error diagnostic with a code;
+- exit `2` means an invocation problem with no diagnostic document.
+
+1. Every problem reported as a diagnostic with a registered code, U7002 and U7004 included, exits with `1` (or `3` for U8001). U7002 and U7004 appear in human and `--json` output like any other diagnostic. This is the rule the compiler follows today.
+2. Exit code `2` is for problems of the invocation that are not diagnostics and are printed to stderr as text, with no diagnostic document on stdout: command-line flags and their values, grants given on the command line, a path that is not a package or a file, and the names given to `una contract` and `una trace`.
+3. The outcomes that `spec/13 §5`, `spec/08 §1` and ADRs 0033 and 0034 already give exit code `1` without a diagnostic keep it: an obligation that is not proven in `una obligations`, `una trace` and `una report`, and a failed example in `una test`. Whether these should also carry a diagnostic is listed under "Needs review" in `docs/fixes/0001-syntax-guide-review.md`.
+4. `spec/13 §5` states the rule, and says that a problem of the project files (`una.toml`, U7002; `verification.lock`, U7004) is a diagnostic and exits with `1`.
 
 ## Consequences
 
-- No change to the compiler, the ABI or any test. Agents keep one rule: a diagnostic code means exit `1`.
+- No change to the ABI. Agents keep one rule: a diagnostic code means exit `1`.
+- One gap in the compiler, found while confirming rule 1 and listed for the v0.1 closure run in `docs/fixes/0001-syntax-guide-review.md`: `una contract` and `una trace` check the name they are given before the project files, so an unknown name with an invalid `una.toml` or a missing `verification.lock` exits with `2` and hides U7002 or U7004. Every other command reports them, in human and `--json` output, with exit `1`.
 - The word "configuration" leaves the exit code table, so the guide and the spec cannot disagree about it again.
 - A U7004 or U5003 caused by the environment (a missing lock, a solver of another version) still reads as "errors in the program" by exit code alone; the diagnostic's domain (`project`, `verification`) tells them apart.
 

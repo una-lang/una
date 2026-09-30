@@ -340,13 +340,25 @@ Section numbers refer to the owner's guide, `docs/spec/`-relative references to 
 
 ---
 
+## Needs review
+
+Disagreements between the spec, the implementation and the owner's rulings, found while doing this file. They are not resolved here; the answers of the review decide them.
+
+- **R-1. Exit code 1 without a diagnostic (ADR 0036).** The owner's rule says exit `1` means the output contains at least one error diagnostic with a code. But `una obligations`, `una trace` and `una report` exit with `1` for an obligation that is not proven, and `una test` for a failed example, with no diagnostic in their output: their documents carry the status instead. `spec/13 §5`, `spec/08 §1` and ADRs 0033 and 0034 require this, and `spec/13 §5` now states it as part of the rule. Should these outcomes also carry a diagnostic, or does the rule keep them as stated?
+
+## Closure run
+
+Items scheduled for the v0.1 closure run, after the review freeze ends. They change compiler code or tests, which this file's docs work does not touch.
+
+- **C-1. `una contract` and `una trace` hide project-file diagnostics (ADR 0036).** With an invalid `una.toml` or no `verification.lock`, an unknown name exits with `2` ("the package has no function ...", "the package has no requirement ...") and U7002 or U7004 is never reported. Every other command reports them with exit `1`. Load and check the project files before resolving the name, so that the diagnostics come first, and add a CLI test for both commands.
+
 ## Progress
 
 | Id | Kind | Title | Status | Commit |
 | --- | --- | --- | --- | --- |
 | F-0001-01 | compiler | Binder suffix in trace argument keys | Done | see `git log --grep F-0001-01` |
 | F-0001-02 | investigate | Obligation for a refined parameter of a function value | ADR 0037 Proposed, waiting for the owner | see `git log --grep F-0001-02` |
-| F-0001-03 | investigate | Exit code of U7002 and U7004 | ADR 0036 Proposed, waiting for the owner | see `git log --grep F-0001-03` |
+| F-0001-03 | investigate | Exit code of U7002 and U7004 | Done: ADR 0036 Accepted, `spec/13 §5` updated; one code gap in the closure run | see `git log --grep F-0001-03` |
 | F-0001-04 | docs | §17 package import order | Open | |
 | F-0001-05 | docs | §1.2 line breaks inside brackets | Open | |
 | F-0001-06 | docs | §1.1 `\r\n` and U7001 | Open | |
