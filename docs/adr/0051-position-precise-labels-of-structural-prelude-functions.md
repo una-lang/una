@@ -37,7 +37,7 @@ The prelude functions of "Result labels" fall into two groups.
      - `is_some`: the top label of `o`;
      - `is_ok`: the top label of `r`;
      - `map`: the top labels of `xs` and `each`;
-     - `fold`: the top labels of `xs` and `step`;
+     - `fold`: the label of the accumulator type, joined with the top labels of `xs` and `step`;
      - `filter` and `first_where`: the top labels of `xs` and `keep`, and the label of `keep`'s declared result.
    - **Where element values reach the result**, they do so only through a function argument, whose result flows into its declared type (`spec/07 §7` rule 2):
      - for `map` and `fold`, the flow goes into a type variable, which rises;

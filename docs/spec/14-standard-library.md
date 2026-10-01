@@ -41,7 +41,7 @@ Higher-order prelude functions accept only pure, non-failing lambdas in v0.1 (ef
   - `append`, `first` and `is_empty`: the top label of `xs`;
   - `at`: the top label of `xs` and every label of `index`;
   - `is_some`: the top label of `o`; `is_ok`: the top label of `r`;
-  - `map`: the top labels of `xs` and `each`; `fold`: the top labels of `xs` and `step`;
+  - `map`: the top labels of `xs` and `each`; `fold`: the label of the accumulator type, joined with the top labels of `xs` and `step`;
   - `filter` and `first_where`: the top labels of `xs` and `keep`, and the label of `keep`'s declared result. A predicate's result flows into that declared `Bool`, so a predicate over labeled element values is rejected there (U4001).
   `.len` takes the top label of its operand (`spec/07 §7` rule 3).
 - **The other functions** read element or argument values, and their result is labeled with the join of every label of their arguments, element types included: `contains`, `sum`, `or_else`, `min`, `max`, `abs` and the text functions `is_digits`, `starts_with`, `trim` and `to_int`.
