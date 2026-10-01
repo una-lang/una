@@ -1046,6 +1046,15 @@ impl<'p, 'i> Walker<'p, 'i> {
                                 continue;
                             };
                             arm_ctx.types.insert(bind.clone(), field_ty.clone());
+                            // A temporary that unwraps the value of `if none` or `if error`
+                            // shows as the expression it unwraps (final review F-004).
+                            if bind.starts_with('%')
+                                && !self.temps.contains_key(bind.as_str())
+                                && let Atom::Var(scrutinee) = scrutinee
+                            {
+                                let shown = self.show_name(scrutinee);
+                                self.temps.insert(bind.clone(), shown);
+                            }
                             let x = own(&arm_ctx, bind);
                             if let Some(field) = self.field(&value, arm.ctor.index, index) {
                                 arm_ctx.define(F::eq(x.f.clone(), field.f));
