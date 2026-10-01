@@ -720,6 +720,31 @@ fn a_refutation_through_uninterpreted_arithmetic_is_validated_ui004() {
 }
 
 #[test]
+fn a_real_counterexample_through_a_product_is_found_again_v12_001() {
+    // Issue #104 (V12-001), ADR 0054: when the first model disagrees with real arithmetic,
+    // the query is solved once more with the arithmetic interpreted, so a real refutation
+    // keeps its status and its counterexample.
+    let square = only_diagnostic(
+        "real-square",
+        "module app\n\npub kind Pos = Int where it > 0\n\npub sq(a: Int) -> Pos = a * a\n",
+    );
+    assert_eq!(square["code"], "U5001");
+    assert_eq!(
+        square["counterexample"]["bindings"],
+        json!([{"name": "a", "value": 0}, {"name": "result", "value": 0}])
+    );
+    let quotient = only_diagnostic(
+        "real-quotient",
+        "module app\n\npub half(x: Int) -> Int\n  requires x == 7\n  ensures result == 3\n=\n  x / (0 - 2)\n",
+    );
+    assert_eq!(quotient["code"], "U5001");
+    assert_eq!(
+        quotient["counterexample"]["bindings"],
+        json!([{"name": "result", "value": -3}, {"name": "x", "value": 7}])
+    );
+}
+
+#[test]
 fn the_value_that_if_none_use_unwraps_is_named_as_written() {
     // Final review F-004: the ADR 0037 obligation at an annotated `let` names the value that
     // `if none use` unwraps by its expression, not by an internal temporary.
