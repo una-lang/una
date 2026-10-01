@@ -2,10 +2,11 @@
 //! and the lexical errors U0001 to U0007, U0103 and bracket balance (U0101).
 
 use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet};
 
 use una_diag::Code;
 
-use crate::error::SyntaxError;
+use crate::error::{SyntaxError, SyntaxRepair};
 use crate::intern::Interner;
 use crate::keywords::reserved_for_later;
 use crate::source::{FileId, SourceFile, Span};
@@ -34,8 +35,10 @@ pub fn lex(source: &SourceFile, file: FileId, interner: &mut Interner) -> Lexed 
         indents: vec![0],
         brackets: Vec::new(),
         line_has_tokens: false,
+        renames: Vec::new(),
     };
     lexer.run();
+    lexer.name_renames();
     lexer.out
 }
 
@@ -157,6 +160,9 @@ struct Lexer<'a> {
     indents: Vec<usize>,
     brackets: Vec<OpenBracket>,
     line_has_tokens: bool,
+    /// The U0103 errors that get a rename edit once the file is read: the error's index, the
+    /// word, and whether this occurrence names a kind or capability.
+    renames: Vec<(usize, String, bool)>,
 }
 
 impl Lexer<'_> {
@@ -210,20 +216,73 @@ impl Lexer<'_> {
     }
 
     /// U0103 for `word`, reserved with `message`, from `start` to the current position. A word
-    /// reserved for a later version gets a rename repair, the same at every occurrence (issue
-    /// #75), capitalized where a kind or capability name is expected; a word naming a
-    /// construct Una writes differently says what to write instead.
+    /// reserved for a later version gets a rename repair, chosen after the whole file is read
+    /// ([`Lexer::name_renames`], issue #75, #105); a word naming a construct Una writes
+    /// differently says what to write instead. On a `module` or `import` line the repair is
+    /// advice, since the file must move with the module (U1008).
     fn reserved(&mut self, word: &str, message: &str, start: usize) {
         let span = self.span(start, self.pos);
         let mut error = SyntaxError::new(Code::U0103, span, format!("`{word}` is {message}"));
         if message.starts_with("reserved for") {
-            // After `kind` or `capability`, the name must start with an upper-case letter,
-            // which no reserved word does.
-            let upper = matches!(
-                self.out.tokens.last().map(|t| &t.kind),
-                Some(TokenKind::Keyword(Keyword::Kind | Keyword::Capability))
-            );
-            let renamed = if upper {
+            if matches!(
+                self.line_head(),
+                Some(TokenKind::Keyword(Keyword::Module | Keyword::Import))
+            ) {
+                error.repairs.push(SyntaxRepair {
+                    description: format!(
+                        "rename the module so that no part of its path is `{word}`, and move its file to match"
+                    ),
+                    edit: None,
+                });
+            } else {
+                // After `kind` or `capability`, the name must start with an upper-case letter.
+                let upper = matches!(
+                    self.out.tokens.last().map(|t| &t.kind),
+                    Some(TokenKind::Keyword(Keyword::Kind | Keyword::Capability))
+                );
+                self.renames
+                    .push((self.out.errors.len(), word.to_owned(), upper));
+            }
+        }
+        self.out.errors.push(error);
+    }
+
+    /// The first token of the current line, if any.
+    fn line_head(&self) -> Option<&TokenKind> {
+        let mut head = None;
+        for token in self.out.tokens.iter().rev() {
+            match token.kind {
+                TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent => break,
+                ref kind => head = Some(kind),
+            }
+        }
+        head
+    }
+
+    /// The rename edits of the U0103 errors of [`Lexer::reserved`]: one name per word for the
+    /// whole file, so applying every edit keeps the program consistent, and one that no name
+    /// of the file already has (V12-002). It is capitalized when any occurrence is a kind or
+    /// capability name: `Service`, else `the_table`; a clash adds a number, `the_table_2`.
+    fn name_renames(&mut self) {
+        let used: BTreeSet<String> = self
+            .out
+            .tokens
+            .iter()
+            .filter_map(|token| match token.kind {
+                TokenKind::LowerIdent(name)
+                | TokenKind::UpperIdent(name)
+                | TokenKind::Reserved(name)
+                | TokenKind::CapRef(name) => Some(self.interner.resolve(name).to_owned()),
+                _ => None,
+            })
+            .collect();
+        let mut chosen: BTreeMap<String, String> = BTreeMap::new();
+        for (_, word, _) in &self.renames {
+            if chosen.contains_key(word) {
+                continue;
+            }
+            let upper = self.renames.iter().any(|(_, w, upper)| w == word && *upper);
+            let base = if upper {
                 let mut chars = word.chars();
                 chars.next().map_or_else(String::new, |first| {
                     first.to_ascii_uppercase().to_string() + chars.as_str()
@@ -231,9 +290,29 @@ impl Lexer<'_> {
             } else {
                 format!("the_{word}")
             };
-            error = error.with_edit(format!("rename it to `{renamed}`"), span, renamed);
+            let taken = |name: &str| used.contains(name) || chosen.values().any(|v| v == name);
+            let mut name = base.clone();
+            let mut number = 2;
+            while taken(&name) {
+                name = if upper {
+                    format!("{base}{number}")
+                } else {
+                    format!("{base}_{number}")
+                };
+                number += 1;
+            }
+            chosen.insert(word.clone(), name);
         }
-        self.out.errors.push(error);
+        for (index, word, _) in std::mem::take(&mut self.renames) {
+            let (Some(name), Some(error)) = (chosen.get(&word), self.out.errors.get_mut(index))
+            else {
+                continue;
+            };
+            error.repairs.push(SyntaxRepair {
+                description: format!("rename it to `{name}`"),
+                edit: Some((error.span, name.clone())),
+            });
+        }
     }
 
     fn consume_while(&mut self, accept: impl Fn(char) -> bool) {

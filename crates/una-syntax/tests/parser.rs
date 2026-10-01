@@ -936,6 +936,50 @@ fn a_word_reserved_for_a_later_version_gets_a_rename_repair() {
         )]
     );
     tree("pub kind Service = A | B\n");
+    // V12-002: the new name clashes with no name of the file, and is the same for every
+    // occurrence of the word, capitalized when any of them names a kind.
+    let renamed = |body: &str| -> Vec<Option<String>> {
+        repairs(body)
+            .into_iter()
+            .flat_map(|(_, repairs)| repairs.into_iter().map(|(_, edit)| edit))
+            .collect()
+    };
+    assert_eq!(
+        renamed("pub f(table: Int, the_table: Int) -> Int = table + the_table\n"),
+        [
+            Some("the_table_2".to_owned()),
+            Some("the_table_2".to_owned())
+        ]
+    );
+    assert_eq!(
+        renamed("pub kind Service = A | B\n\npub kind service = C | D\n"),
+        [Some("Service2".to_owned())]
+    );
+    assert_eq!(
+        renamed("pub kind service = A | B\n\npub f(x: service) -> service = x\n"),
+        [
+            Some("Service".to_owned()),
+            Some("Service".to_owned()),
+            Some("Service".to_owned())
+        ]
+    );
+    // A module path is not renamed by an edit: its file must move too (U1008).
+    for header in ["module app.table", "module table", "import app.table (f)"] {
+        let text = format!("{header}\n");
+        let mut db = SourceDb::new();
+        let id = db.add("t.una", text.as_bytes());
+        let mut interner = Interner::new();
+        let lexed = lex(db.file(id), id, &mut interner);
+        assert_eq!(lexed.errors.len(), 1, "{header}");
+        let repairs = &lexed.errors[0].repairs;
+        assert_eq!(repairs.len(), 1, "{header}");
+        assert_eq!(repairs[0].edit, None, "{header}");
+        assert_eq!(
+            repairs[0].description,
+            "rename the module so that no part of its path is `table`, and move its file to match",
+            "{header}"
+        );
+    }
     // A word that names a construct Una writes differently says what to write instead.
     assert_eq!(
         repairs("pub f(x: Int) -> Int = return x\n"),
