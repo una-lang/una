@@ -209,6 +209,33 @@ impl Lexer<'_> {
         self.out.errors.push(SyntaxError::new(code, span, message));
     }
 
+    /// U0103 for `word`, reserved with `message`, from `start` to the current position. A word
+    /// reserved for a later version gets a rename repair, the same at every occurrence (issue
+    /// #75), capitalized where a kind or capability name is expected; a word naming a
+    /// construct Una writes differently says what to write instead.
+    fn reserved(&mut self, word: &str, message: &str, start: usize) {
+        let span = self.span(start, self.pos);
+        let mut error = SyntaxError::new(Code::U0103, span, format!("`{word}` is {message}"));
+        if message.starts_with("reserved for") {
+            // After `kind` or `capability`, the name must start with an upper-case letter,
+            // which no reserved word does.
+            let upper = matches!(
+                self.out.tokens.last().map(|t| &t.kind),
+                Some(TokenKind::Keyword(Keyword::Kind | Keyword::Capability))
+            );
+            let renamed = if upper {
+                let mut chars = word.chars();
+                chars.next().map_or_else(String::new, |first| {
+                    first.to_ascii_uppercase().to_string() + chars.as_str()
+                })
+            } else {
+                format!("the_{word}")
+            };
+            error = error.with_edit(format!("rename it to `{renamed}`"), span, renamed);
+        }
+        self.out.errors.push(error);
+    }
+
     fn consume_while(&mut self, accept: impl Fn(char) -> bool) {
         while let Some(c) = self.peek() {
             if !accept(c) {
@@ -585,12 +612,7 @@ impl Lexer<'_> {
         let kind = if let Some(keyword) = Keyword::from_word(&word) {
             TokenKind::Keyword(keyword)
         } else if let Some(message) = reserved_for_later(&word) {
-            self.error(
-                Code::U0103,
-                start,
-                self.pos,
-                format!("`{word}` is {message}"),
-            );
+            self.reserved(&word, message, start);
             TokenKind::Reserved(self.interner.intern(&word))
         } else {
             TokenKind::LowerIdent(self.interner.intern(&word))
@@ -622,12 +644,7 @@ impl Lexer<'_> {
                 format!("keyword `{name}` cannot name a capability"),
             );
         } else if let Some(message) = reserved_for_later(&name) {
-            self.error(
-                Code::U0103,
-                name_start,
-                self.pos,
-                format!("`{name}` is {message}"),
-            );
+            self.reserved(&name, message, name_start);
         }
         let symbol = self.interner.intern(&name);
         self.push(TokenKind::CapRef(symbol), start, self.pos);

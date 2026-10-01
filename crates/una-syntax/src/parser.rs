@@ -328,6 +328,24 @@ impl<'a> Parser<'a> {
         )
     }
 
+    /// [`Parser::unexpected`], with `advice` as a repair without an edit (issue #75).
+    fn unexpected_with(&mut self, expected: &str, advice: impl Into<String>) -> Stop {
+        let found = match self.peek() {
+            TokenKind::Keyword(keyword) => format!("keyword `{}`", keyword.as_str()),
+            kind => kind.describe(self.interner),
+        };
+        let mut error = SyntaxError::new(
+            Code::U0101,
+            self.span(),
+            format!("unexpected {found}, expected {expected}"),
+        );
+        error.repairs.push(SyntaxRepair {
+            description: advice.into(),
+            edit: None,
+        });
+        self.report_error(error)
+    }
+
     fn fail<T>(&mut self, span: Span, message: impl Into<String>) -> Parse<T> {
         Err(self.report(span, message.into()))
     }
@@ -1563,6 +1581,12 @@ impl<'a> Parser<'a> {
 
     fn variant_expr(&mut self) -> Parse<VariantExpr> {
         let start = self.span();
+        if matches!(self.peek(), TokenKind::LowerIdent(_)) {
+            return Err(self.unexpected_with(
+                "a variant",
+                "`fail` takes a variant of the error kind, as in `fail Broke`, not a stored value; fail where the error is found, or pass a call's failure on with `if error pass`",
+            ));
+        }
         let name = self.upper_name("a variant")?;
         let args = if self.at(&TokenKind::LParen) {
             self.call_args()?
@@ -1733,7 +1757,13 @@ impl<'a> Parser<'a> {
     /// `line_expr "else" line_expr`, after `if`, the condition and `then`.
     fn if_line_rest(&mut self, start: Span, condition: Expr) -> Parse<Expr> {
         let then = self.line_expr()?;
-        self.expect_keyword(Keyword::Else)?;
+        if !self.at_keyword(Keyword::Else) {
+            return Err(self.unexpected_with(
+                "`else`",
+                "an `if` with `then` needs `else`; to fail early, make the rest of the body its `else` branch, as in `if x < 0 then fail Broke else x`, or use the block form, whose `else` block holds the rest",
+            ));
+        }
+        self.advance();
         let otherwise = self.line_expr()?;
         Ok(Expr {
             kind: ExprKind::IfLine {
@@ -2153,6 +2183,12 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::Error) => {
                 self.advance();
                 ExprKind::Error
+            }
+            TokenKind::Keyword(Keyword::When) => {
+                return Err(self.unexpected_with(
+                    "an expression",
+                    "`when` must start its own line: write the long form, with `=` on its own line and the `when` indented below it, or bind it with `let`",
+                ));
             }
             _ => return Err(self.unexpected("an expression")),
         };
