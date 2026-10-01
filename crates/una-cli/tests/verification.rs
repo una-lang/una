@@ -720,6 +720,27 @@ fn the_value_that_if_none_use_unwraps_is_named_as_written() {
 }
 
 #[test]
+fn a_function_with_a_precondition_passed_as_a_value_is_named_as_such() {
+    // Issue #76 (UI-007): the precondition is named as written, the message says that the
+    // function type has none, and the only repair is a lambda that establishes it.
+    let value = only_diagnostic(
+        "precondition-function-value",
+        "module app\n\npub same(a: Int, b: Int) -> Int\n  requires a == b\n  ensures result == 0\n=\n  a - b\n\npub apply(f: fn(Int, Int) -> Int) -> Int = f(1, 2)\n\npub use_it() -> Int = apply(same)\n",
+    );
+    assert_eq!(value["code"], "U5001");
+    assert_eq!(
+        value["message"],
+        "precondition `a == b` of `same`, passed as a function value whose type has no precondition, is refuted"
+    );
+    let repairs = value["repairs"].as_array().unwrap();
+    assert_eq!(repairs.len(), 1);
+    assert_eq!(
+        repairs[0]["description"],
+        "pass a lambda that calls `same` only where `a == b` holds, as in `fn(a, b) -> if a == b then same(a, b) else ...`"
+    );
+}
+
+#[test]
 fn a_forged_proof_cache_entry_is_trusted_and_counted_as_cached() {
     // R-018, ADR 0041, adversarial `escape-proof-cache-forgery`: the proof cache is part of
     // the Trusted zone in v0.1. A forged entry turns a refuted query into proven, as the
