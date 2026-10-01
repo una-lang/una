@@ -1,0 +1,87 @@
+-- test: nested kinds and generics holding a secret: a call through a function value, generic or not, keeps the field labels (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 35:3
+-- expect: error U4001 at 40:3
+-- expect: error U4001 at 45:3
+-- expect: error U4001 at 56:3
+-- expect: error U4001 at 61:3
+-- expect: error U4001 at 66:3
+-- expect: error U4001 at 77:3
+-- expect: error U4001 at 82:3
+-- expect: error U4001 at 87:3
+module sweep_label_nested_fnvalue
+
+kind Acct
+  id: Int
+  pin: secret Int
+
+kind Guess = Hit(pin: secret Int) | Miss
+
+kind Box[T]
+  value: T
+
+kind Wallet
+  acct: Acct
+
+grab_boxed_list(x: Box[List[secret Int]]) -> secret Int = x.value.sum()
+
+same_boxed_list[T](a: T, b: T) -> Bool = a == b
+
+equal_boxed_list(a: Box[List[secret Int]], b: Box[List[secret Int]]) -> secret Bool = a == b
+
+pub generic_value_boxed_list(x: Box[List[secret Int]]) -> Bool
+=
+  let f = same_boxed_list
+  f(x, Box(value: [2]))
+
+pub plain_value_boxed_list(x: Box[List[secret Int]]) -> Bool
+=
+  let g = equal_boxed_list
+  g(x, Box(value: [2]))
+
+pub lambda_value_boxed_list(x: Box[List[secret Int]]) -> Bool
+=
+  let h = fn(a: Box[List[secret Int]]) -> a == Box(value: [2])
+  h(x)
+
+grab_option_box(x: Option[Box[secret Int]]) -> secret Int = x.or_else(default: Box(value: 0)).value
+
+same_option_box[T](a: T, b: T) -> Bool = a == b
+
+equal_option_box(a: Option[Box[secret Int]], b: Option[Box[secret Int]]) -> secret Bool = a == b
+
+pub generic_value_option_box(x: Option[Box[secret Int]]) -> Bool
+=
+  let f = same_option_box
+  f(x, Some(Box(value: 2)))
+
+pub plain_value_option_box(x: Option[Box[secret Int]]) -> Bool
+=
+  let g = equal_option_box
+  g(x, Some(Box(value: 2)))
+
+pub lambda_value_option_box(x: Option[Box[secret Int]]) -> Bool
+=
+  let h = fn(a: Option[Box[secret Int]]) -> a == Some(Box(value: 2))
+  h(x)
+
+grab_wallet(x: Wallet) -> secret Int = x.acct.pin
+
+same_wallet[T](a: T, b: T) -> Bool = a == b
+
+equal_wallet(a: Wallet, b: Wallet) -> secret Bool = a == b
+
+pub generic_value_wallet(x: Wallet) -> Bool
+=
+  let f = same_wallet
+  f(x, Wallet(acct: Acct(id: 1, pin: 2)))
+
+pub plain_value_wallet(x: Wallet) -> Bool
+=
+  let g = equal_wallet
+  g(x, Wallet(acct: Acct(id: 1, pin: 2)))
+
+pub lambda_value_wallet(x: Wallet) -> Bool
+=
+  let h = fn(a: Wallet) -> a == Wallet(acct: Acct(id: 1, pin: 2))
+  h(x)

@@ -1,0 +1,41 @@
+-- test: a function type with uses or fails is never a type argument, written or inferred, while pure function types are (R-002)
+-- spec: spec/05 §6, §9
+-- expect: error U3016 at 17:21
+-- expect: error U3016 at 19:23
+-- expect: error U3016 at 24:10
+module second_class_type_argument
+
+kind Boom = | Exploded
+
+capability Log
+  op write(line: Text) -> Unit
+
+id[T](x: T) -> T = x
+
+pub twice(x: Int) -> Int = x * 2
+
+pub stored(fs: List[fn(Text) -> Unit uses @log: Log[write]]) -> Int = fs.len
+
+pub maybe() -> Option[fn(Int) -> Int fails Boom] = None
+
+pub passed() -> Int
+  uses @log: Log[write]
+=
+  run(id(note))
+
+run(write: fn(Text) -> Unit uses @log: Log[write]) -> Int
+  uses @log: Log[write]
+=
+  write("hello")
+  1
+
+note(line: Text) -> Unit
+  uses @log: Log[write]
+=
+  @log.write(line)
+
+pub pure_values() -> Int
+=
+  let f = id(twice)
+  let fs: List[fn(Int) -> Int] = [twice, f]
+  fs.len

@@ -1,0 +1,4 @@
+[package]
+name = "escape_example_host_capability"
+version = "0.1.0"
+edition = "0.1"

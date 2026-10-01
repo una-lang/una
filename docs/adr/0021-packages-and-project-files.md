@@ -8,7 +8,7 @@
 
 ADR 0015 D3 defined interim loading until M3: a file alone, or a directory's `src/**/*.una` with no project checks. M3 replaces it with packages (`plan/milestones-v0.1.md` M3, task 1). `spec/13 §7` gives the layout ("`una.toml` and `verification.lock` at the root, sources under `src/`"), an example `una.toml` and one rule ("Unknown keys are U7002"); `spec/12 §9` gives the six keys of `verification.lock`; `spec/07 §6` requires trusted modules to be declared in both places (U7005); `compiler/testing.md §2` checks single-module cases "with default `una.toml` settings and without the module path check (U1008)". The specification does not say which keys are required, which values are valid, or how a single file is configured.
 
-Decision log entries: D-032 to D-035 (`docs/reviews/open-decisions.md`).
+Decision log entries: D-032 to D-035 (`docs/history/v0.1/open-decisions.md`).
 
 ## Decision
 

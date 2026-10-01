@@ -1,0 +1,56 @@
+-- Adversarial: effects under a symbolic program counter reached through prelude results in a generic body: `contains`, `first() is Some`, a field of `Box[T]`, a `when` on `Option[T]`, a `fold` count, and a function-value call
+-- Expected: U4002 in each body except `d`, whose scrutinee `Option[T]` has a public top label, so which variant it is reveals nothing about T (spec/07 §7 rule 8; ADR 0038 D3.3, D3.4)
+-- Observed: U4002 in a, b, c, e and f; d accepted, as expected (4ea31cf and 85787d7)
+-- Verdict: Held
+module rv_gen_symbolic_pc_prelude
+
+kind Box[T]
+  value: T
+
+a[T](xs: List[T], x: T) -> Unit
+  uses @console: Console[print]
+=
+  if xs.contains(item: x)
+    @console.print("found")
+  else
+    unit
+
+b[T](xs: List[T]) -> Unit
+  uses @console: Console[print]
+=
+  if xs.first() is Some
+    @console.print("some")
+  else
+    unit
+
+c[T](b: Box[T], x: T) -> Unit
+  uses @console: Console[print]
+=
+  if b.value == x
+    @console.print("eq")
+  else
+    unit
+
+d[T](o: Option[T]) -> Unit
+  uses @console: Console[print]
+=
+  when o
+    is Some(v) -> @console.print("some")
+    is None -> unit
+
+e[T](xs: List[T], x: T) -> Unit
+  uses @console: Console[print]
+=
+  let n = xs.fold(initial: 0, step: fn(acc: Int, y: T) -> acc + 1)
+  if n > 3
+    @console.print("big")
+  else
+    unit
+
+f[T](xs: List[T], x: T, g: fn() -> Unit uses @console: Console[print]) -> Unit
+  uses @console: Console[print]
+=
+  if xs.contains(item: x)
+    g()
+  else
+    unit

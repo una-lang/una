@@ -1,0 +1,21 @@
+-- Adversarial: the covariant kind-argument flow used for refinements instead of labels: a `Sink[Positive]` holding a function that divides by its argument, read as `Sink[Int]` and called with 0
+-- Expected: rejected (refinements are never dropped, ADR 0037 and ADR 0038 D1); U2002 forbids a refined type argument in v0.1
+-- Observed: U2002 at `Sink[Positive]` (4ea31cf and 85787d7)
+-- Verdict: Held
+module rv_gen_refined_kind_arg
+
+kind Positive = Int where it > 0
+
+kind Sink[T]
+  eat: fn(T) -> Int
+
+safe(x: Positive) -> Int = 100 / x
+
+feed(s: Sink[Int]) -> Int = s.eat(0)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let s: Sink[Positive] = Sink(eat: safe)
+  let n = feed(s)
+  @console.print("n is {n}")

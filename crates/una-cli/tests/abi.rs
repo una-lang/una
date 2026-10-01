@@ -41,7 +41,9 @@ fn json(output: &Output) -> Value {
 
 #[test]
 fn the_report_of_the_events_example() {
-    // M9 acceptance criterion: a snapshot of `una report --json` for the events example.
+    // M9 acceptance criterion: a snapshot of `una report --json` for the events example, with
+    // a warm cache so that every result comes from it (ADR 0041).
+    let _ = una(&["--json", "report", "examples/events"]);
     let output = una(&["--json", "report", "examples/events"]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert_eq!(stderr(&output), "");
@@ -54,7 +56,7 @@ fn the_report_of_the_events_example() {
     );
     assert_eq!(
         report["obligations"],
-        json!({"proven": 11, "refuted": 0, "unknown": 0})
+        json!({"proven": 11, "refuted": 0, "unknown": 0, "cached": 11})
     );
     assert_eq!(
         report["proven"],
@@ -77,6 +79,8 @@ fn the_report_of_the_events_example() {
         report["tcb"]["trusted_modules"],
         json!([{"module": "events.keys", "lines": 17}])
     );
+    // ADR 0041: the proof cache is part of the Trusted zone.
+    assert_eq!(report["tcb"]["proof_cache"], ".una/cache/");
     assert_eq!(
         report["requirements"],
         json!([{"id": "EVENTS_3", "status": "active", "derived": ["events.seating.availability"]}])
@@ -101,6 +105,65 @@ fn the_report_of_the_events_example() {
         "{}",
         stdout(&output)
     );
+    assert!(
+        stdout(&output).contains("\nobligations: 11 proven, 0 refuted, 0 unknown; 11 cached\n"),
+        "{}",
+        stdout(&output)
+    );
+    assert!(
+        stdout(&output).contains("\n  proof cache: .una/cache/\n"),
+        "{}",
+        stdout(&output)
+    );
+}
+
+#[test]
+fn the_out_of_model_list_is_the_one_of_the_spec() {
+    // R-041: `spec/07 §1`, `spec/13 §6` (the JSON example and the prose) and the report give
+    // one list, in one order; ADR 0038 D9 rule 4 adds path races to it, and ADR 0048 hard
+    // links.
+    let output = una(&["--json", "report", "examples/events"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let channels: Vec<String> = json(&output)["out_of_model"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|channel| channel.as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        channels,
+        [
+            "timing",
+            "termination and divergence",
+            "resource consumption and allocation",
+            "interpreter stack exhaustion",
+            "external systems beyond declared signatures",
+            "races between the check and the use of a file path",
+            "hard links",
+        ]
+    );
+    let (last, first) = channels.split_last().unwrap();
+    let prose = format!("{}, and {last}", first.join(", "));
+    let spec07 =
+        std::fs::read_to_string(repository().join("docs/spec/07-information-flow.md")).unwrap();
+    assert!(spec07.contains(&prose), "spec/07 §1 lacks: {prose}");
+    let spec13 =
+        std::fs::read_to_string(repository().join("docs/spec/13-diagnostics-and-abi.md")).unwrap();
+    assert!(spec13.contains(&prose), "spec/13 §6 lacks: {prose}");
+    let example = format!(
+        "\"out_of_model\": {}",
+        serde_json::to_string(&channels).unwrap()
+    );
+    assert!(
+        spec13.contains(&example.replace("\",\"", "\", \"")),
+        "spec/13 §6 example lacks: {example}"
+    );
+    let output = una(&["report", "examples/events"]);
+    assert!(
+        stdout(&output).contains(&format!("\nout of model: {}\n", channels.join(", "))),
+        "{}",
+        stdout(&output)
+    );
 }
 
 #[test]
@@ -114,7 +177,7 @@ fn the_obligations_of_the_events_example() {
 
 #[test]
 fn trivial_ensures_count_as_missing_contracts() {
-    // `spec/13 §6`, DECISION D-123: an `ensures` clause valid without any hypothesis.
+    // `spec/13 §6`, an `ensures` clause valid without any hypothesis.
     let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("abi-trivial");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("src")).unwrap();
@@ -165,7 +228,7 @@ pub bounded(x: Int) -> Int
 
 #[test]
 fn a_single_file_is_named_after_its_module() {
-    // DECISION D-122: a single file has no `una.toml`; its lock is the default one.
+    // A single file has no `una.toml`; its lock is the default one.
     let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("abi-single");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
@@ -190,7 +253,7 @@ pub next(x: Int) -> Int
     );
     assert_eq!(
         report["obligations"],
-        json!({"proven": 1, "refuted": 0, "unknown": 0})
+        json!({"proven": 1, "refuted": 0, "unknown": 0, "cached": 0})
     );
     assert_eq!(
         report["coverage"],
@@ -201,7 +264,7 @@ pub next(x: Int) -> Int
 
 #[test]
 fn report_and_trace_exit_with_1_on_an_unproven_obligation() {
-    // `spec/13 §5` exit codes, DECISIONS D-122 and D-124: the document still prints.
+    // `spec/13 §5` exit codes, the document still prints.
     let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("abi-refuted");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("src")).unwrap();
@@ -239,11 +302,11 @@ pub double(x: Int) -> Int
     assert_eq!(stderr(&output), "");
     assert_eq!(
         json(&output)["obligations"],
-        json!({"proven": 0, "refuted": 1, "unknown": 0})
+        json!({"proven": 0, "refuted": 1, "unknown": 0, "cached": 0})
     );
     let output = una(&["report", path]);
     assert_eq!(output.status.code(), Some(1));
-    assert!(stdout(&output).contains("\nobligations: 0 proven, 1 refuted, 0 unknown\n"));
+    assert!(stdout(&output).contains("\nobligations: 0 proven, 1 refuted, 0 unknown; 1 cached\n"));
     assert!(stderr(&output).contains("U5001"), "{}", stderr(&output));
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .args(["--json", "trace", "NUM_1"])
@@ -269,7 +332,7 @@ pub double(x: Int) -> Int
 
 #[test]
 fn trace_lists_the_functions_derived_from_a_requirement() {
-    // `spec/08 §1`, DECISION D-124.
+    // `spec/08 §1`,
     let events = Path::new("examples/events");
     let output = una_in(events, &["trace", "EVENTS_3"]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
@@ -302,7 +365,7 @@ fn trace_lists_the_functions_derived_from_a_requirement() {
 
 #[test]
 fn every_command_prints_one_json_document_with_its_schema() {
-    // `spec/13 §5`, DECISION D-125: `--json` for every command, one document on stdout and
+    // `spec/13 §5`, `--json` for every command, one document on stdout and
     // nothing on stderr.
     let events = Path::new("examples/events");
     let cases: Vec<(&Path, Vec<&str>, &str)> = vec![

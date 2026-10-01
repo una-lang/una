@@ -1,0 +1,22 @@
+-- Adversarial: an internal env value written to a file, read back and carried by `main`'s failure.
+-- Run: `UNA_SECRET_TOKEN=hunter2 una --json run` in this directory.
+-- Expected: no `hunter2` in the JSON trace or the failure fields (spec/11 §5, spec/04 §8).
+-- Observed: args and outcomes `<redacted:internal>`, failure fields `{}`. Held.
+module rr
+
+pub kind Oops = Leak(detail: internal Text) | Plain
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+  uses @files: Files[read, write]
+  fails Oops
+=
+  let token = @env.get("UNA_SECRET_TOKEN")
+    if none use "none"
+  @files.write("out.txt", content: token)
+    if error fail Plain
+  let back = @files.read("out.txt")
+    if error fail Plain
+  @console.print("wrote and read a file")
+  fail Leak(detail: back)

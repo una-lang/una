@@ -1,0 +1,29 @@
+-- Adversarial: ADR 0050 with label categories: an operation parameter `fn(internal[Location] Int) -> Int` given a public function, one taking `internal Int`, and one with the exact type
+-- Expected: U4001 for the first two; the exact function accepted
+-- Observed: U4001 for the first two, and U4003 for the exact function and the second: D-164 bounds the labels of function parameters by `accepts`, so with `accepts public` no function can be passed (R3-001)
+-- Verdict: Minor (R3-001)
+module app
+
+capability Probe
+  op apply(f: fn(internal[Location] Int) -> Int) -> Int
+
+ident(x: internal Int) -> Int = 0
+
+plain(x: Int) -> Int = x
+
+pub by_category() -> Int
+  uses @p: Probe[apply]
+=
+  @p.apply(plain)
+
+pub by_level() -> Int
+  uses @p: Probe[apply]
+=
+  @p.apply(ident)
+
+exact(x: internal[Location] Int) -> Int = 0
+
+pub by_exact() -> Int
+  uses @p: Probe[apply]
+=
+  @p.apply(exact)

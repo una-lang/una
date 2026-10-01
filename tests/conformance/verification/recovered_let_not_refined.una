@@ -1,0 +1,19 @@
+-- test: a let bound with if error use is not typed with the callee's refined result (review control)
+-- spec: spec/06 §3
+-- expect: error U5001 at 19:3
+module recovered_let_not_refined
+
+pub kind Pos = Int where it > 0
+
+pub kind Oops = | Bad
+
+g(x: Int) -> Pos
+  fails Oops
+=
+  if x > 0 then x else fail Bad
+
+pub f(x: Int) -> Int
+=
+  let v = g(x)
+    if error use 0
+  100 / v

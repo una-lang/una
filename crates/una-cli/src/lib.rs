@@ -89,7 +89,7 @@ pub fn check(path: &Path, tier: Tier) -> Result<Checked, LoadError> {
 }
 
 /// Loads and checks the file or package at `path`: tier 0, then, at tier 1 and when tier 0
-/// reports nothing, every proof obligation (DECISION D-112).
+/// reports nothing, every proof obligation.
 pub fn check_with(path: &Path, tier: Tier, wallclock: Duration) -> Result<Checked, LoadError> {
     let package = load(path)?;
     let (mut diagnostics, program, pending) = on_large_stack(|| {
@@ -141,7 +141,7 @@ fn analyze(package: &Package, run_grants: Option<&[String]>) -> Analysis {
         }
         trees.push((checked.id, checked.tree, broken));
     }
-    // DECISION D-109: the entry is `[run] entry`, or the module of a single file.
+    // The entry is `[run] entry`, or the module of a single file.
     let entry = if package.single {
         trees.first().and_then(|(_, tree, _)| {
             let header = tree.module.as_ref()?;
@@ -200,8 +200,7 @@ struct FileCheck {
 }
 
 /// Lexes and parses the files `modules` of a package, then prints each one that parsed in its
-/// canonical form, knowing the constructors that every such file declares (ADR 0020 rule 6,
-/// DECISION D-026).
+/// canonical form, knowing the constructors that every such file declares (ADR 0020 rule 6).
 fn check_files(sources: &SourceDb, modules: &[FileId], interner: &mut Interner) -> Vec<FileCheck> {
     let parsed: Vec<(FileId, Lexed, File, Vec<Diagnostic>)> = modules
         .iter()
@@ -226,7 +225,7 @@ fn check_files(sources: &SourceDb, modules: &[FileId], interner: &mut Interner) 
     parsed
         .into_iter()
         .map(|(id, lexed, tree, syntax)| {
-            // DECISION D-027: a file with syntax errors has no canonical form.
+            // A file with syntax errors has no canonical form.
             let canonical = syntax.is_empty().then(|| {
                 una_fmt::format_with(sources.file(id), &lexed, &tree, interner, &constructors)
             });
@@ -242,7 +241,7 @@ fn check_files(sources: &SourceDb, modules: &[FileId], interner: &mut Interner) 
 
 /// The stack of the thread that checks a package. The passes recurse over the syntax tree,
 /// whose depth the parser bounds (`una_syntax::MAX_NESTING`); unoptimized builds use up to
-/// about 40 KiB of stack per level (DECISION D-022).
+/// about 40 KiB of stack per level.
 const CHECK_STACK_BYTES: usize = 64 * 1024 * 1024;
 
 /// Runs `work` on a thread with [`CHECK_STACK_BYTES`] of stack, or on the current thread when
@@ -418,14 +417,14 @@ fn check_command(
 ) -> io::Result<ExitStatus> {
     let checked = match check_with(path, options.tier, options.wallclock) {
         Ok(checked) => checked,
-        // DECISION D-010: a usage error goes to stderr even with --json; it happens before the
+        // A usage error goes to stderr even with --json; it happens before the
         // command runs, like the usage errors clap reports.
         Err(error) => {
             writeln!(stderr, "error: {error}")?;
             return Ok(ExitStatus::Usage);
         }
     };
-    // DECISION D-099: the Core IR of the module's declarations without diagnostics, on stdout.
+    // The Core IR of the module's declarations without diagnostics, on stdout.
     if let Some(module) = dump_core {
         match checked.program.modules.iter().find(|m| m.path == module) {
             Some(core) => write!(stdout, "{}", una_core::print_module(core))?,
@@ -455,7 +454,10 @@ fn report(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
-    let status = if diagnostics.is_empty() {
+    // `spec/13 §5`: an internal compiler error (U8001) exits with 3, whatever else is reported.
+    let status = if diagnostics.iter().any(|d| d.code == Code::U8001) {
+        ExitStatus::Internal
+    } else if diagnostics.is_empty() {
         ExitStatus::Success
     } else {
         ExitStatus::Errors
@@ -493,9 +495,10 @@ struct FmtOptions {
 
 /// `una fmt [path]` and `una fmt --check [path]` (`spec/13 §5`, ADR 0020).
 ///
-/// DECISION D-029: files with syntax errors are reported and left untouched; the others are
+/// Files with syntax errors are reported and left untouched; the others are
 /// rewritten when they differ from their canonical form, each through a temporary file and a
-/// rename, and nothing is printed on success. `--check` reports U7001 instead of writing.
+/// rename onto the file itself or, for a symbolic link, onto its resolved target, and nothing is
+/// printed on success. `--check` reports U7001 instead of writing.
 fn fmt_command(
     path: &Path,
     options: FmtOptions,
@@ -553,7 +556,17 @@ fn fmt_command(
 
 /// Replaces the file `target` with `text`, writing a hidden temporary file next to it first so
 /// that an interrupted write never leaves a truncated source.
+///
+/// A symbolic link is resolved first, so the rename lands on the file the link points to and
+/// the link itself is kept (review finding R-024).
 fn write_through_rename(target: &Path, text: &str) -> io::Result<()> {
+    let resolved;
+    let target = if std::fs::symlink_metadata(target)?.file_type().is_symlink() {
+        resolved = std::fs::canonicalize(target)?;
+        resolved.as_path()
+    } else {
+        target
+    };
     let name = target
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -584,6 +597,18 @@ fn contract_command(
         }
     };
     let analysis = on_large_stack(|| analyze(&package, None));
+    // R-027, ADR 0036: the package's diagnostics, those of its project files included, come
+    // before the name is resolved, so that an unknown name never hides them.
+    if !analysis.diagnostics.is_empty() {
+        return report(
+            &analysis.diagnostics,
+            &package.sources,
+            json,
+            color,
+            stdout,
+            stderr,
+        );
+    }
     let modules = contract::Modules {
         sources: &package.sources,
         interner: &analysis.interner,
@@ -596,16 +621,6 @@ fn contract_command(
         )?;
         return Ok(ExitStatus::Usage);
     };
-    if !analysis.diagnostics.is_empty() {
-        return report(
-            &analysis.diagnostics,
-            &package.sources,
-            json,
-            color,
-            stdout,
-            stderr,
-        );
-    }
     let function_name = analysis.interner.resolve(function.name.name);
     let header = analysis
         .headers
@@ -649,7 +664,7 @@ fn explain_command(
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
     match code.parse::<Code>() {
-        // DECISION D-125: `una.explain/1` with `--json`, as every command has a document.
+        // `una.explain/1` with `--json`, as every command has a document.
         Ok(code) if json => {
             let document = ExplainDocument {
                 schema: "una.explain/1",

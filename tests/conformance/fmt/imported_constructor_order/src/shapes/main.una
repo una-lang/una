@@ -1,4 +1,4 @@
--- test: the arguments of imported constructors follow the declaration of their fields (DECISION D-026)
+-- test: the arguments of imported constructors follow the declaration of their fields
 -- spec: spec/04 §3
 -- expect: error U7001 at src/shapes/main.una:9:1
 -- expect: error U7001 at src/shapes/main.una:11:1

@@ -62,7 +62,6 @@ fn the_specification_example_and_the_examples_are_valid() {
 
 #[test]
 fn manifest_errors_are_located() {
-    // DECISION D-033.
     assert_eq!(
         manifest_errors(&format!("{PACKAGE}license = \"MIT\"\n")),
         ["U7002 5:1 unknown key `license` in [package]"]
@@ -173,7 +172,6 @@ fn the_repository_lock_is_the_default_lock() {
 
 #[test]
 fn lock_errors_are_located() {
-    // DECISION D-034.
     let valid = "encoding_version = \"una-smt-1\"\nsolver = \"z3\"\nsolver_version = \"5.1.0\"\nlogic = \"QF_UFLIA\"\nstep_budget = 5000000\nrandom_seed = 0\n";
     assert_eq!(lock_errors(valid), Vec::<String>::new());
     assert_eq!(
@@ -207,7 +205,6 @@ fn scratch(name: &str) -> PathBuf {
 
 #[test]
 fn a_package_is_a_directory_with_una_toml_and_src() {
-    // DECISION D-032.
     let root = scratch("discover-package");
     std::fs::create_dir_all(root.join("src/a/.cache")).unwrap();
     for (path, text) in [

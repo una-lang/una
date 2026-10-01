@@ -38,6 +38,7 @@ if n < t:             pop while top > n, emitting DEDENT per pop; if top != n: e
 - `---` starts a doc comment. Consecutive doc comment lines attach to the next declaration and appear in `una contract` output.
 - There are no block comments.
 - A doc comment not followed by a declaration is an ordinary comment (ADR 0017).
+- A declaration's doc comments are every doc comment between the end of the preceding token (the previous declaration, import or module header) and the declaration's first token, even when blank lines or ordinary comments separate them from the declaration, so a doc comment below the module header attaches to the file's first declaration.
 
 ## 4. Identifiers and naming conventions
 

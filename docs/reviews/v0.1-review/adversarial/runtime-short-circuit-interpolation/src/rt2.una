@@ -1,0 +1,35 @@
+-- Adversarial: `and`, `or`, `implies` guarding a division by zero; interpolation of negatives,
+-- escaped `}` and quotes; `.len` of a multi-scalar emoji; text ordering.
+-- Expected: no fault; `"👍🏽".len` is 2 (scalar values). Observed: as expected. Held.
+module rt2
+
+pub kind Pair
+  left: Int
+  right: Text
+
+pub kind Shade = Dark | Light(level: Int)
+
+guard_and(x: Int) -> Bool = x != 0 and 100 / x > 1
+
+guard_or(x: Int) -> Bool = x == 0 or 100 / x > 1
+
+guard_implies(x: Int) -> Bool = x != 0 implies 100 / x > 0
+
+guard_if(x: Int) -> Int = if x == 0 then 0 else 100 / x
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let quote = "q\"t"
+  let a = "a"
+  let b = "b"
+  let cap_b = "B"
+  let e_acute = "é"
+  let z = "z"
+  let hello = "héllo"
+  let thumb = "👍🏽"
+  @console.print("and {guard_and(0)} or {guard_or(0)} implies {guard_implies(0)} if {guard_if(0)}")
+  @console.print("neg {-5} none {first([1]) == None} minus {- -5} {0 - -5}")
+  @console.print("bool {not true}")
+  @console.print("brace \} text {quote} len {hello.len} emoji {thumb.len}")
+  @console.print("cmp {b < a} {cap_b < a} {e_acute > z}")

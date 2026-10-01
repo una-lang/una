@@ -1,0 +1,12 @@
+-- test: pattern binding of a secret variant field (review control)
+-- spec: spec/07 §7
+-- expect: error U4001 at 11:24
+module pattern_bind_field
+
+kind Band = Low | High(amount: secret Int)
+
+pub leak(b: Band) -> Int
+=
+  when b
+    is High(amount) -> amount
+    is Low -> 0

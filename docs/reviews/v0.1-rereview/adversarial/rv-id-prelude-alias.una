@@ -1,0 +1,46 @@
+-- Adversarial: prelude kinds under other names (`Maybe[T] = Option[T]`, `Failure = FileError`,
+-- `Outcome = Result[Int, Failure]`), matched through the aliases. If an alias made the verifier
+-- look for a user kind, the tag facts would be missing or wrong.
+-- Expected: accepted; the `100 / zero` branches are dead (spec/12 §4, prelude sorts).
+-- Observed: `una check` exit 0; the queries use `i!Option_Int`, `i!FileError` and
+-- `i!Result_Int_i!FileError` with the prelude's variant counts.
+-- Verdict: control
+module t
+
+pub kind Maybe[T] = Option[T]
+
+pub kind Failure = FileError
+
+pub kind Outcome = Result[Int, Failure]
+
+first_or_zero(xs: List[Int]) -> Int
+  requires xs.len > 0
+=
+  let zero = 0
+  let o: Maybe[Int] = first(xs)
+  when o
+    is Some(value) -> value
+    is None -> 100 / zero
+
+code(f: Failure) -> Int
+=
+  when f
+    is NotFound -> 1
+    is Denied -> 2
+    is Io -> 3
+
+classify(r: Outcome) -> Int
+  requires r is Err
+=
+  let zero = 0
+  when r
+    is Ok(value) -> 100 / zero
+    is Err(failure) -> code(failure)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let xs = [1]
+  let e: Outcome = Err(Denied)
+  let q = first_or_zero(xs) + classify(e)
+  @console.print("q = {q}")

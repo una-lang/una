@@ -1,7 +1,7 @@
 //! `una contract <qualified.name>` (`spec/13 §5`, ADR 0029): the header of a function, declared
 //! or inferred, with its doc comments and requirements.
 //!
-//! DECISION D-081: the package is the one in the current directory; the human output is the
+//! The package is the one in the current directory; the human output is the
 //! header in canonical form, with `-- inferred` after each inferred clause and one comment line
 //! per requirement; `--json` prints the schema `una.contract/1`.
 

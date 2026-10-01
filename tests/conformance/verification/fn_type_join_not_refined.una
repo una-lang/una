@@ -1,0 +1,15 @@
+-- test: a function value joined from branches with different result refinements keeps only the refinements both share (ADR 0037 rule 1)
+-- spec: spec/12 §3
+-- expect: error U5001 at 15:3
+module fn_type_join_not_refined
+
+pub kind Pos = Int where it > 0
+
+gives_pos(x: Int) -> Pos = if x > 0 then x else 1
+
+gives_int(x: Int) -> Int = x
+
+pub pick(c: Bool) -> Int
+=
+  let f = if c then gives_pos else gives_int
+  100 / f(0)

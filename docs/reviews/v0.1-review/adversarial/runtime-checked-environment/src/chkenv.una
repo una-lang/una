@@ -1,0 +1,34 @@
+-- Adversarial: `checked` predicates that mention other locals (`it > y`) and a variant test.
+-- Expected: the runtime evaluates them in the current environment (spec/11 E-CheckOk).
+-- Observed: all four examples pass. Held.
+module chkenv
+
+pub kind Bad = | TooSmall
+
+pub gap(x: Int, y: Int) -> Int
+  fails Bad
+=
+  let v = checked(x, it > y) else fail TooSmall
+  100 / (v - y)
+
+pub field_gap(p: Option[Int], y: Int) -> Int
+  fails Bad
+=
+  let v = checked(y, it != 0 and p is Some) else fail TooSmall
+  100 / v
+
+example "above"
+  do gap(5, y: 3)
+  expect result == 50
+
+example "below"
+  do gap(1, y: 3)
+  expect fails TooSmall
+
+example "equal"
+  do gap(3, y: 3)
+  expect fails TooSmall
+
+example "field"
+  do field_gap(None, y: 4)
+  expect fails TooSmall

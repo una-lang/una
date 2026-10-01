@@ -1,0 +1,5 @@
+module lib.std.host
+
+pub capability Clock
+  op now() -> Int
+    ensures result == 0

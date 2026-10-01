@@ -97,7 +97,7 @@ fn values_flow_into_declared_types_below_their_labels() {
              \n\
              pub kept(pin: secret Int) -> secret Int = pin\n\
              \n\
-             pub argument(pin: secret Int) -> Int\n=\n  abs(pin)\n\
+             pub argument(pin: secret Int) -> Int\n=\n  plain(pin)\n\
              \n\
              pub annotated(pin: secret Int) -> Unit\n=\n  let copy: Int = pin\n  unit\n\
              \n\
@@ -107,16 +107,18 @@ fn values_flow_into_declared_types_below_their_labels() {
              \n\
              pub generic(xs: List[secret Int]) -> Option[Int] = xs.first()\n\
              \n\
-             pub generic_kept(xs: List[secret Int]) -> Option[secret Int] = xs.first()\n\
+             pub generic_kept(xs: List[secret Int]) -> secret Option[secret Int] = xs.first()\n\
              \n\
-             pub raised(pin: Int) -> secret Int = pin\n"
+             pub raised(pin: Int) -> secret Int = pin\n\
+             \n\
+             pub plain(x: Int) -> Int = x\n"
         ),
         [
             "U4001 t.una:6:40 the result of `returned` is `Int`, and this value is `secret Int`: a flow from `secret` to `public`",
-            "U4001 t.una:12:7 parameter `x` of `abs` is `Int`, and this value is `secret Int`: a flow from `secret` to `public`",
+            "U4001 t.una:12:9 parameter `x` of `plain` is `Int`, and this value is `secret Int`: a flow from `secret` to `public`",
             "U4001 t.una:16:19 `copy` is `Int`, and this value is `secret Int`: a flow from `secret` to `public`",
             "U4001 t.una:19:42 the result of `field` is `Box[Int]`, and this value is `Box[secret Int]`: a flow from `secret` to `public`",
-            "U4001 t.una:23:52 the result of `generic` is `Option[Int]`, and this value is `Option[secret Int]`: a flow from `secret` to `public`",
+            "U4001 t.una:23:52 the result of `generic` is `Option[Int]`, and this value is `secret Option[secret Int]`: a flow from `secret` to `public`",
         ]
     );
 }
@@ -219,7 +221,6 @@ fn failures_and_calls_under_a_raised_program_counter_are_implicit_flows() {
             "U4001 t.una:34:19 parameter `x` of `risky` is `Int`, and this value is `secret Int`: a flow from `secret` to `public`",
             "U4002 t.una:35:7 `if error pass` depends on `secret` data, so its failure would reveal it; return a labeled value instead of failing",
             "U4002 t.una:44:5 `if none fail` depends on `secret` data, so its failure would reveal it; return a labeled value instead of failing",
-            "U4001 t.una:46:69 parameter `x` of `abs` is `Int`, and this value is `secret Int`: a flow from `secret` to `public`",
             "U4002 t.una:52:5 `note` has effects that accept at most `public` data, and it is called under a `secret` condition, which would be revealed",
             "U4002 t.una:52:27 handler `forwarding` has effects that accept at most `public` data, and it is installed under a `secret` condition, which would be revealed",
         ]
@@ -266,12 +267,16 @@ fn operation_arguments_are_sinks_bounded_by_accepts() {
              \n\
              pub under(c: secret Bool) -> Unit\n  uses @log: Log[write]\n=\n  if c\n    @log.write(\"yes\")\n  else\n    unit\n\
              \n\
-             pub hashed(name: secret Text) -> internal Hashed\n  uses @keys: Keys[hmac]\n  fails KeyError\n=\n  @keys.hmac(key_name: \"k\", data: name)\n    if error pass\n"
+             pub inner(c: internal Bool) -> Unit\n  uses @log: Log[write]\n=\n  if c\n    @log.write(\"yes\")\n  else\n    unit\n\
+             \n\
+             pub hashed(name: secret Text) -> secret Hashed\n  uses @keys: Keys[hmac]\n  fails KeyError\n=\n  @keys.hmac(key_name: \"k\", data: name)\n    if error pass\n"
         ),
         [
-            "U4003 t.una:12:32 `@log.write` accepts `public` data, and this argument is `secret`; declassify it through a policy first",
+            "U4003 t.una:12:21 `@log.write` accepts `public` data, and it runs in an operation body whose callers may pass `secret` data, which it would reveal",
             "U4003 t.una:17:18 `@console.print` accepts `public` data, and this argument is `secret`; declassify it through a policy first",
             "U4003 t.una:28:5 `@log.write` accepts `public` data, and it runs under a `secret` condition, which it would reveal",
+            // R-034: the article follows the label.
+            "U4003 t.una:36:5 `@log.write` accepts `public` data, and it runs under an `internal` condition, which it would reveal",
         ]
     );
 }
@@ -286,7 +291,7 @@ fn lambdas_and_function_values_carry_labels() {
              \n\
              pub mapped(xs: List[secret Int]) -> List[Int] = xs.map(each: fn(x) -> x + 1)\n\
              \n\
-             pub mapped_kept(xs: List[secret Int]) -> List[secret Int] = xs.map(each: fn(x) -> x + 1)\n\
+             pub mapped_kept(xs: List[secret Int]) -> secret List[secret Int] = xs.map(each: fn(x) -> x + 1)\n\
              \n\
              pub captured(xs: List[Int], s: secret Int) -> List[Int] = xs.map(each: fn(x) -> x + s)\n\
              \n\
@@ -299,7 +304,7 @@ fn lambdas_and_function_values_carry_labels() {
              pub passed() -> Int = accepts_secret(public_only)\n"
         ),
         [
-            "U4001 t.una:5:49 the result of `mapped` is `List[Int]`, and this value is `List[secret Int]`: a flow from `secret` to `public`",
+            "U4001 t.una:5:49 the result of `mapped` is `List[Int]`, and this value is `secret List[secret Int]`: a flow from `secret` to `public`",
             "U4001 t.una:9:59 the result of `captured` is `List[Int]`, and this value is `List[secret Int]`: a flow from `secret` to `public`",
             "U4001 t.una:11:53 the result of this lambda is `Int`, and this value is `secret Int`: a flow from `secret` to `public`",
             "U4001 t.una:17:38 parameter `f` of `accepts_secret` is `fn(secret Int) -> Int`, and this value is `fn(Int) -> Int`: a flow from `secret` to `public`",
@@ -323,7 +328,11 @@ fn policies_live_in_trusted_modules_and_own_their_via_functions() {
                 \n\
                 pub exposed(t: secret Text) -> Text = t\n\
                 \n\
-                direct(t: secret[PII] Text) -> internal Text = masked(t)\n";
+                direct(t: secret[PII] Text) -> internal Text = masked(t)\n\
+                \n\
+                pub policy generic_via\n  from secret Text\n  to internal Text\n  via pass_any\n  purpose \"test\"\n  owner privacy\n\
+                \n\
+                pass_any[T](n: T) -> T = n\n";
     let main = "module app.main\n\
                 \n\
                 import app.keys (mask)\n\
@@ -341,9 +350,10 @@ fn policies_live_in_trusted_modules_and_own_their_via_functions() {
             &[("src/app/keys.una", keys), ("src/app/main.una", main)]
         ),
         [
-            "U4005 src/app/keys.una:13:7 `via` function `masked` must take a `Text` and return a `Int`; it is `fn(Text) -> Text`",
+            "U4005 src/app/keys.una:13:7 `via` function `masked` must have type `fn(Text) -> Int`, except for labels; it is `fn(Text) -> Text`",
             "U4005 src/app/keys.una:20:7 the `via` function of a policy is private to its trusted module, and `exposed` is not; remove its `pub`, or declare it in this module",
             "U4005 src/app/keys.una:28:48 `masked` is the `via` function of policy `mask`, which is its only entry point; call `mask` instead",
+            "U4005 src/app/keys.una:33:7 `via` function `pass_any` must have type `fn(Text) -> Text`, except for labels; it is `fn(T) -> T`",
             "U4004 src/app/main.una:5:12 policy `outside` is declared in module `app.main`, which is not trusted; declare `trusted module app.main` and list it under `[trusted] modules` in `una.toml`",
             "U4002 src/app/main.una:19:5 policy `mask` lowers data to `internal`, and it is called under a `secret` condition, which its result would reveal",
         ]
@@ -393,10 +403,12 @@ fn expect_lines_clauses_and_via_bodies_are_not_checked_for_labels() {
              \n\
              example \"expect lines see labeled values\"\n  do secret_value()\n  expect result == 42\n\
              \n\
-             example \"do lines are checked\"\n  do abs(secret_value())\n  expect true\n"
+             example \"do lines are checked\"\n  do plain(secret_value())\n  expect true\n\
+             \n\
+             pub plain(x: Int) -> Int = x\n"
         ),
         [
-            "U4001 t.una:16:10 parameter `x` of `abs` is `Int`, and this value is `secret Int`: a flow from `secret` to `public`",
+            "U4001 t.una:16:12 parameter `x` of `plain` is `Int`, and this value is `secret Int`: a flow from `secret` to `public`",
         ]
     );
 }
@@ -417,7 +429,7 @@ fn predicate_results_are_checked() {
 
 #[test]
 fn lambda_bodies_keep_the_labels_they_assume_for_their_parameters() {
-    // DECISION D-089: `fold`'s accumulator starts `public` here and becomes `secret`, so the
+    // `fold`'s accumulator starts `public` here and becomes `secret`, so the
     // body, checked with a `public` accumulator, could branch on a secret.
     assert_eq!(
         single(

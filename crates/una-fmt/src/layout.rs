@@ -18,7 +18,7 @@ pub fn format(source: &SourceFile, lexed: &Lexed, file: &File, interner: &Intern
 
 /// The canonical form of a file of a package whose modules declare `constructors`, so that the
 /// arguments of an imported constructor follow the declaration of its fields too (ADR 0020
-/// rule 6, DECISION D-026).
+/// rule 6).
 ///
 /// Formatting the result again, with the same constructors, gives the same text.
 pub fn format_with(
@@ -238,7 +238,7 @@ impl Layout<'_> {
                 let (before, after) = (depth_of(previous), depth_of(next));
                 (before.min(after), before.max(after))
             };
-            // DECISION D-023: the level nearest to the comment's column, ties deeper.
+            // The level nearest to the comment's column, ties deeper.
             let depth = self.source.column(offset).div_ceil(2).clamp(low, high);
             let element = Element {
                 depth,
@@ -271,7 +271,7 @@ impl Layout<'_> {
         for item in &mut items {
             item.elements.sort_by_key(|(key, _)| *key);
         }
-        // DECISION D-025: imports sorted by module path, stably.
+        // Imports sorted by module path, stably.
         let imports: Vec<usize> = items
             .iter()
             .enumerate()

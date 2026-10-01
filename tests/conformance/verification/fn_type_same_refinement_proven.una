@@ -1,0 +1,12 @@
+-- test: a named function with a refined parameter passed where the same refined function type is expected is accepted (ADR 0037 rule 12, case 2)
+-- spec: spec/12 §3
+-- expect: ok
+module fn_type_same_refinement_proven
+
+pub kind Pos = Int where it > 0
+
+pub apply(f: fn(Pos) -> Int, x: Pos) -> Int = f(x)
+
+pub takes_pos(x: Pos) -> Int = x
+
+pub use_it() -> Int = apply(takes_pos, x: 1)

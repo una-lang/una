@@ -33,7 +33,8 @@ pub capability Files
     fails FileError
     accepts internal
 
--- `hmac` accepts any label; host implementations only (spec/14 §3).
+-- `hmac` accepts `public` for `key_name` and any label for `data`, whose label its result
+-- carries (spec/14 §3, ADR 0039).
 pub capability Keys
   op hmac(key_name: Text, data: Text) -> internal Hashed
     fails KeyError

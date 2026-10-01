@@ -1,0 +1,27 @@
+-- Adversarial: a reflect predicate `lib.p.big` (`x > 10`) and a function `lib.f.big`
+-- (`ensures result == (x > 0)`). `app` branches on the function and calls a function that
+-- requires `x > 10`; `other` uses the predicate in a `requires`.
+-- Expected: U5001, precondition `x > 10` refuted (spec/12 §4, ADR 0038 D6, D8).
+-- Observed: exactly that U5001 at src/app.una:13 (exit 1).
+-- Verdict: Held
+module app
+
+import lib.f (big)
+
+need_positive(x: Int) -> Int
+  requires x > 10
+=
+  100 / (x - 5)
+
+try_it(x: Int) -> Int
+=
+  if big(x)
+    need_positive(x)
+  else
+    0
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let q = try_it(5)
+  @console.print("q = {q}")

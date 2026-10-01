@@ -1,6 +1,6 @@
 //! Elaboration to Core IR (`spec/09 §3`): the desugaring of the declarations that checked
-//! without diagnostics, from what pass 2 resolved (DECISION D-098), with the formulas and
-//! spans that verification needs (DECISION D-111).
+//! without diagnostics, from what pass 2 resolved, with the formulas and
+//! spans that verification needs.
 
 use std::collections::BTreeMap;
 
@@ -50,22 +50,67 @@ impl Let {
 
 /// Elaborates the package's modules, in path order, and the contracts of the standard
 /// library; a declaration with a diagnostic, or with a resolution missing, is left out.
+/// Returns the program, and the components of checker types that a Core IR binder type
+/// lost, with the span of their declaration ([`lost`]).
 pub(crate) fn program(
     env: &Env<'_>,
     findings: &Findings,
     sources: &SourceDb,
     standard: &SourceDb,
-) -> Program {
+) -> (Program, Vec<(Span, String)>) {
     let dbs = Dbs { sources, standard };
+    let mut lost = Vec::new();
     let mut modules: Vec<CoreModule> = (0..env.prelude)
         .filter(|module| env.reports(*module))
-        .map(|module| elaborate_module(env, findings, dbs, module))
+        .map(|module| elaborate_module(env, findings, dbs, module, &mut lost))
         .collect();
     modules.sort_by(|a, b| a.path.cmp(&b.path));
     let library = (env.prelude..env.modules.len())
         .flat_map(|module| library(env, findings, dbs, module))
         .collect();
-    Program { modules, library }
+    let host = host(env, findings, dbs);
+    (
+        Program {
+            modules,
+            library,
+            host,
+        },
+        lost,
+    )
+}
+
+/// The host capabilities, which the prelude declares for `std.host` (`spec/14 §3`).
+fn host(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>) -> Vec<Decl> {
+    let Some(m) = env.modules.get(env.prelude) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (decl, entity) in m.tree.decls.iter().zip(m.decls.clone()) {
+        if let (DeclKind::Capability(_), Some(entity @ Entity::Capability(_))) =
+            (&decl.kind, entity)
+        {
+            let mut fx = Fx::new(
+                env,
+                records_of(env, findings, env.prelude),
+                dbs,
+                env.prelude,
+            );
+            if let Some(core) = fx.decl(&decl.kind, entity) {
+                out.push(core);
+            }
+        }
+    }
+    out
+}
+
+/// The records of module `module`: those of the package, or those of the standard modules,
+/// whose spans are those of another source database.
+fn records_of<'f>(env: &Env<'_>, findings: &'f Findings, module: usize) -> &'f Records {
+    if module >= env.prelude {
+        &findings.standard_records
+    } else {
+        &findings.records
+    }
 }
 
 /// The sources of the package, and those of the standard modules, which have a database of
@@ -76,7 +121,13 @@ struct Dbs<'e> {
     standard: &'e SourceDb,
 }
 
-fn elaborate_module(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>, module: usize) -> CoreModule {
+fn elaborate_module(
+    env: &Env<'_>,
+    findings: &Findings,
+    dbs: Dbs<'_>,
+    module: usize,
+    lost: &mut Vec<(Span, String)>,
+) -> CoreModule {
     let mut out = CoreModule {
         path: env
             .modules
@@ -92,7 +143,7 @@ fn elaborate_module(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>, module: us
         if findings.failed.contains(&decl.span) {
             continue;
         }
-        let mut fx = Fx::new(env, &findings.records, dbs, module);
+        let mut fx = Fx::new(env, records_of(env, findings, module), dbs, module);
         match (&decl.kind, entity) {
             (DeclKind::Example(example), _) => {
                 if let Some(example) = fx.example(example) {
@@ -106,11 +157,12 @@ fn elaborate_module(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>, module: us
             }
             _ => {}
         }
+        lost.extend(fx.lost.take().into_iter().map(|what| (decl.span, what)));
     }
     out
 }
 
-/// The signatures of the functions of a standard module (DECISION D-111).
+/// The signatures of the functions of a standard module.
 fn library(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>, module: usize) -> Vec<Signature> {
     let Some(m) = env.modules.get(module) else {
         return Vec::new();
@@ -118,7 +170,7 @@ fn library(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>, module: usize) -> V
     let mut out = Vec::new();
     for (decl, entity) in m.tree.decls.iter().zip(m.decls.clone()) {
         if let (DeclKind::Function(function), Some(Entity::Function(id))) = (&decl.kind, entity) {
-            let mut fx = Fx::new(env, &findings.records, dbs, module);
+            let mut fx = Fx::new(env, records_of(env, findings, module), dbs, module);
             if let Some(signature) = fx.signature(function, id) {
                 out.push(signature);
             }
@@ -145,6 +197,9 @@ struct Fx<'e, 'a> {
     result: Option<Name>,
     /// A resolution was missing: the declaration is not elaborated.
     broken: bool,
+    /// What the Core IR types of this declaration lost of the checker types they come from
+    /// (ADR 0038 D1, the consistency check of `spec/10 §2`).
+    lost: std::cell::RefCell<Vec<String>>,
 }
 
 impl<'e, 'a> Fx<'e, 'a> {
@@ -162,6 +217,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             it: None,
             result: None,
             broken: false,
+            lost: std::cell::RefCell::new(Vec::new()),
         }
     }
 
@@ -201,12 +257,32 @@ impl<'e, 'a> Fx<'e, 'a> {
 
     // ----- types -----
 
+    /// The Core IR type of a checker type. In every build, the result is compared with `ty`,
+    /// and a component that it lost is recorded, for U8001 (ADR 0038 D1, ADR 0045 rule 3).
     fn ty(&self, ty: &Ty) -> Type {
+        let core = self.convert(ty);
+        if let Some(what) = lost(ty, &core) {
+            self.lost.borrow_mut().push(what);
+        }
+        core
+    }
+
+    fn convert(&self, ty: &Ty) -> Type {
         match ty {
-            Ty::Labeled(label, inner) => with_label(self.ty(inner), label),
+            Ty::Labeled(label, inner) => with_label(self.convert(inner), label),
+            // ADR 0037 rule 1: the parameters and the result keep their refinements.
             Ty::Fn(function) => Type::Fn {
-                params: function.params.iter().map(|p| self.ty(p)).collect(),
-                result: Box::new(self.ty(&function.result)),
+                params: function
+                    .params
+                    .iter()
+                    .enumerate()
+                    .map(|(index, p)| {
+                        self.refined(self.convert(p), function.refinements.param(index))
+                    })
+                    .collect(),
+                result: Box::new(
+                    self.refined(self.convert(&function.result), &function.refinements.result),
+                ),
                 uses: self.uses_of(&function.uses),
                 fails: function.fails.as_ref().map(|f| self.kind_name(f)),
                 label: Label::public(),
@@ -229,7 +305,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             Ty::List(element) => Base::Named {
                 module: "prelude".to_owned(),
                 name: "List".to_owned(),
-                args: vec![self.ty(element)],
+                args: vec![self.convert(element)],
             },
             Ty::Kind(id, args) => Base::Named {
                 module: self
@@ -240,7 +316,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     .map(|module| module.path.clone())
                     .unwrap_or_default(),
                 name: self.env.kind_name(*id).to_owned(),
-                args: args.iter().map(|a| self.ty(a)).collect(),
+                args: args.iter().map(|a| self.convert(a)).collect(),
             },
             Ty::Param(index) => Base::Param(
                 self.type_params
@@ -252,21 +328,59 @@ impl<'e, 'a> Fx<'e, 'a> {
         }
     }
 
-    /// A declared type, with the refinements of the kinds and ranges it names.
+    /// A declared type, with the refinements of the kinds and ranges it names. Core IR has no
+    /// room for the refinement of a function-typed value (`spec/09 §2`); such a `where` clause
+    /// is U2002 (ADR 0045), and one that still reaches here is recorded as lost in every
+    /// build, for U8001 (ADR 0037 rule 11), never dropped silently.
     fn declared(&mut self, declared: &Declared) -> Type {
-        let mut ty = self.ty(&declared.base);
-        let refinements: Vec<CoreRefinement> = declared
-            .refinements
+        let ty = self.ty(&declared.base);
+        self.refined_kept(ty, &declared.refinements)
+    }
+
+    /// [`Fx::refined`], recording in every build a refinement that Core IR cannot hold.
+    fn refined_kept(&self, ty: Type, refinements: &[Refinement]) -> Type {
+        let ty = self.refined(ty, refinements);
+        let kept = match &ty {
+            Type::Base { refinements, .. } => refinements.len(),
+            Type::Fn { .. } => 0,
+        };
+        if kept < refinements.len() {
+            self.lost
+                .borrow_mut()
+                .push("the refinement of a declared type".to_owned());
+        }
+        ty
+    }
+
+    /// `ty` with `refinements` elaborated into its refinements; a function type has no room
+    /// for them, and [`lost`] or [`Fx::declared`] report what is left out.
+    fn refined(&self, mut ty: Type, refinements: &[Refinement]) -> Type {
+        if refinements.is_empty() {
+            return ty;
+        }
+        let mut fx = Fx::new(self.env, self.records, self.dbs, self.module);
+        fx.type_params.clone_from(&self.type_params);
+        let core: Vec<CoreRefinement> = refinements
             .iter()
-            .filter_map(|refinement| self.refinement(refinement))
+            .filter_map(|refinement| fx.refinement(refinement))
             .collect();
         if let Type::Base {
             refinements: slot, ..
         } = &mut ty
         {
-            *slot = refinements;
+            *slot = core;
         }
         ty
+    }
+
+    /// The Core IR type of the lambda parameter whose name is at `span`, with the refinements
+    /// the checker recorded for it (ADR 0037 rule 1).
+    fn lambda_param(&self, span: Span) -> Type {
+        let ty = self.type_at(span);
+        match self.records.lambda_params.get(&span) {
+            Some(refinements) => self.refined_kept(ty, refinements),
+            None => ty,
+        }
     }
 
     /// A refinement with its predicate over `it`: a range, or the `where` clause of an alias
@@ -310,6 +424,30 @@ impl<'e, 'a> Fx<'e, 'a> {
             Ty::Kind(id, _) => self.env.kind_name(*id).to_owned(),
             Ty::Labeled(_, inner) => self.kind_name(inner),
             _ => "?".to_owned(),
+        }
+    }
+
+    /// The qualified identity of capability `id` (`spec/10 §11` rule 8): the capabilities of
+    /// the prelude are the host capabilities, declared in `std.host` (`spec/14 §3`).
+    fn capability_path(&self, id: Option<usize>) -> Path {
+        let Some(def) = id.and_then(|id| self.env.capabilities.get(id)) else {
+            return Path {
+                module: String::new(),
+                name: "?".to_owned(),
+            };
+        };
+        let module = if def.module == self.env.prelude {
+            una_core::HOST_MODULE.to_owned()
+        } else {
+            self.env
+                .modules
+                .get(def.module)
+                .map(|m| m.path.clone())
+                .unwrap_or_default()
+        };
+        Path {
+            module,
+            name: def.name.to_owned(),
         }
     }
 
@@ -393,6 +531,39 @@ impl<'e, 'a> Fx<'e, 'a> {
         }
     }
 
+    /// The Core IR type of field `index` of record kind `kind`, a function type, read from the
+    /// record at `record`: the declared type at the record's type arguments, with its label.
+    fn field_fn_type(&mut self, kind: usize, index: usize, record: Span) -> Type {
+        let record = self
+            .records
+            .types
+            .get(&record)
+            .cloned()
+            .unwrap_or(Ty::Error);
+        let args = match record.unlabeled() {
+            Ty::Kind(_, args) => args.clone(),
+            _ => Vec::new(),
+        };
+        let declared = self
+            .env
+            .kinds
+            .get(kind)
+            .and_then(|def| def.record.as_ref())
+            .and_then(|fields| fields.get(index))
+            .map(|field| Declared {
+                base: field
+                    .ty
+                    .base
+                    .substitute(&args)
+                    .with_label(&record.top_label()),
+                refinements: field.ty.refinements.clone(),
+            });
+        match declared {
+            Some(declared) => self.declared(&declared),
+            None => unknown(),
+        }
+    }
+
     fn res(&mut self, span: Span) -> Option<Res> {
         let res = self.records.res.get(&span).cloned();
         if res.is_none() {
@@ -431,7 +602,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         (requires, ensures)
     }
 
-    /// An expression of the refinement language as a term (`spec/03 §3`, DECISION D-111).
+    /// An expression of the refinement language as a term (`spec/03 §3`).
     /// The checker has already rejected every other form (U2014).
     fn term(&mut self, expr: &Expr) -> Term {
         match &expr.kind {
@@ -768,6 +939,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     name: self.name(&handler.name).to_owned(),
                     params,
                     capability: capability.map_or_else(|| "?".to_owned(), |c| c.name.to_owned()),
+                    capability_path: self.capability_path(def.capability),
                     uses: self.needs(&def.uses),
                     ops,
                 }
@@ -1133,7 +1305,7 @@ impl<'e, 'a> Fx<'e, 'a> {
 
     /// `when`: `case` for variant arms, `if` chains for literal and range arms, `else` as the
     /// final branch. Without `else`, the chain ends in `unreachable`, which the `exhaustive`
-    /// obligation proves is never taken (`spec/12 §3`, DECISION D-111).
+    /// obligation proves is never taken (`spec/12 §3`).
     fn when(&mut self, when: &WhenExpr) -> CoreExpr {
         let mut lets = Vec::new();
         let scrutinee = self.atom(&mut lets, &when.scrutinee);
@@ -1195,10 +1367,14 @@ impl<'e, 'a> Fx<'e, 'a> {
             .arms
             .iter()
             .filter_map(|arm| match &arm.pattern.kind {
-                PatternKind::Literal(_) => Some(format!(
-                    "{scrutinee_text} == {}",
-                    self.text(arm.pattern.span)
-                )),
+                // The pattern's span covers `is`; the goal prints the literal alone (R-032).
+                PatternKind::Literal(_) => {
+                    let text = self.text(arm.pattern.span);
+                    let value = text
+                        .strip_prefix("is")
+                        .map_or(text.as_str(), str::trim_start);
+                    Some(format!("{scrutinee_text} == {value}"))
+                }
                 PatternKind::Range(range) => {
                     Some(format!("{scrutinee_text} in {}", self.text(range.span)))
                 }
@@ -1500,7 +1676,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                 let params: Vec<(Name, Type)> = params
                     .iter()
                     .map(|p| {
-                        let ty = self.type_at(p.name.span);
+                        let ty = self.lambda_param(p.name.span);
                         (self.bind(self.name(&p.name)), ty)
                     })
                     .collect();
@@ -1513,6 +1689,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     Rhs::Lambda {
                         params,
                         body: Box::new(body),
+                        function: None,
                     },
                 )
             }
@@ -1588,10 +1765,13 @@ impl<'e, 'a> Fx<'e, 'a> {
                 Some(Res::FieldFn { kind, index }) => {
                     let value = self.atom(lets, target);
                     let (_, field) = self.field(kind, index);
+                    // ADR 0037 rule 7: the field's declared function type, refinements
+                    // included, at the record's type arguments and label.
+                    let field_ty = self.field_fn_type(kind, index, target.span);
                     let f = self.temp();
                     lets.push(Let::inferred(
                         f.clone(),
-                        unknown(),
+                        field_ty,
                         Bound::Rhs(Rhs::Field {
                             value,
                             field,
@@ -1662,9 +1842,10 @@ impl<'e, 'a> Fx<'e, 'a> {
                             self.records
                                 .types
                                 .get(arg)
-                                .map_or_else(Label::public, Ty::deep_label)
+                                .map_or_else(Label::public, Ty::argument_label)
                         })
                         .collect();
+                    let capability_path = self.capability_path(Some(capability));
                     let capability = self
                         .env
                         .capabilities
@@ -1677,6 +1858,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                         Rhs::Op {
                             cap: self.name(cap).to_owned(),
                             capability,
+                            capability_path,
                             op: self.name(op).to_owned(),
                             args: values,
                             arg_spans,
@@ -1726,7 +1908,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                         .records
                         .types
                         .get(&expr.span)
-                        .map_or_else(Label::public, Ty::deep_label);
+                        .map_or_else(Label::public, Ty::argument_label);
                     lets.push(Let::inferred(
                         t.clone(),
                         with_label(text_ty(), &label),
@@ -1914,25 +2096,34 @@ impl<'e, 'a> Fx<'e, 'a> {
         slots.into_iter().flatten().unzip()
     }
 
-    /// A function used as a value at `span`: `λ(x, ...). f[τ*](x, ...)`.
+    /// A function used as a value at `span`: `λ(x, ...). f[τ*](x, ...)`, whose parameters keep
+    /// the declared names and types, refinements included (ADR 0037 rule 1).
     fn function_value(&mut self, id: usize, type_args: &[Ty], span: Span) -> Rhs {
         let Some(def) = self.env.functions.get(id) else {
             self.broken = true;
             return Rhs::Atom(Atom::Unit);
         };
+        let mark = self.scope.len();
         let params: Vec<(Name, Type)> = def
             .params
             .iter()
             .map(|p| {
-                let ty = self.ty(&p.ty.base.substitute(type_args));
-                let t = self.temp();
-                (t, ty)
+                let declared = Declared {
+                    base: p.ty.base.substitute(type_args),
+                    refinements: p.ty.refinements.clone(),
+                };
+                let ty = self.declared(&declared);
+                (self.bind(p.name), ty)
             })
             .collect();
+        self.scope.truncate(mark);
         let args: Vec<Atom> = params.iter().map(|(n, _)| Atom::Var(n.clone())).collect();
         let arg_spans = vec![span; args.len()];
         let t = self.temp();
-        let result = self.ty(&def.result.base.substitute(type_args));
+        let result = self.declared(&Declared {
+            base: def.result.base.substitute(type_args),
+            refinements: def.result.refinements.clone(),
+        });
         let body = CoreExpr::Let {
             name: t.clone(),
             ty: result,
@@ -1953,6 +2144,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         Rhs::Lambda {
             params,
             body: Box::new(body),
+            function: Some(self.function_path(id)),
         }
     }
 }
@@ -1994,10 +2186,16 @@ fn bind_expr(lets: &mut Vec<Let>, name: Name, ty: Type, expr: CoreExpr, span: Sp
                 });
                 current = *body;
             }
+            // ADR 0037 rule 2: an annotated binder whose function type differs from the type
+            // of the value keeps the temporary, so the flow from one to the other is an
+            // `Atom::Var` right side that the verifier checks, whatever the value is (N-005).
             CoreExpr::Atom {
                 atom: Atom::Var(var),
                 ..
-            } if lets.last().is_some_and(|last| last.name == var) => {
+            } if lets.last().is_some_and(|last| {
+                last.name == var && !(written && last.ty != ty && has_fn_type(&ty))
+            }) =>
+            {
                 if let Some(last) = lets.pop() {
                     lets.push(Let {
                         name,
@@ -2030,6 +2228,18 @@ fn bind_expr(lets: &mut Vec<Let>, name: Name, ty: Type, expr: CoreExpr, span: Sp
                 return;
             }
         }
+    }
+}
+
+/// Whether a Core type is or contains a function type, under type arguments.
+fn has_fn_type(ty: &Type) -> bool {
+    match ty {
+        Type::Fn { .. } => true,
+        Type::Base {
+            base: Base::Named { args, .. },
+            ..
+        } => args.iter().any(has_fn_type),
+        Type::Base { .. } => false,
     }
 }
 
@@ -2079,6 +2289,97 @@ fn bin_op(op: BinaryOp) -> BinOp {
         BinaryOp::Mul => BinOp::Mul,
         BinaryOp::Div => BinOp::Div,
         BinaryOp::Mod => BinOp::Mod,
+    }
+}
+
+/// The first component of the checker type `ty` that the Core IR type `core` lost: a label, the
+/// `uses` or `fails` of a function type, or a type argument, at any position (ADR 0038 D1).
+/// Unification variables, `Never` and the error type have no Core IR form and are skipped.
+fn lost(ty: &Ty, core: &Type) -> Option<String> {
+    let label = match core {
+        Type::Base { label, .. } | Type::Fn { label, .. } => label,
+    };
+    if matches!(ty.unlabeled(), Ty::Var(_) | Ty::Never | Ty::Error) {
+        return None;
+    }
+    if *label != ty.top_label() {
+        return Some(format!("the label `{}` became `{label}`", ty.top_label()));
+    }
+    match (ty.unlabeled(), core) {
+        (
+            Ty::Fn(function),
+            Type::Fn {
+                params,
+                result,
+                uses,
+                fails,
+                ..
+            },
+        ) => {
+            let same_uses = function.uses.len() == uses.len()
+                && function
+                    .uses
+                    .iter()
+                    .zip(uses)
+                    .all(|(need, core)| need.name == core.cap && need.ops == core.ops);
+            if !same_uses {
+                return Some("the `uses` of a function type".to_owned());
+            }
+            if function.fails.is_some() != fails.is_some() {
+                return Some("the `fails` of a function type".to_owned());
+            }
+            if params.len() != function.params.len() {
+                return Some("a parameter of a function type".to_owned());
+            }
+            // ADR 0037 rule 11: every refinement of a parameter or the result is in Core IR.
+            let dropped = |refinements: &[Refinement], core: &Type| {
+                let kept = match core {
+                    Type::Base { refinements, .. } => refinements.len(),
+                    Type::Fn { .. } => 0,
+                };
+                kept < refinements.len()
+            };
+            if let Some(index) = (0..params.len()).find(|index| {
+                params
+                    .get(*index)
+                    .is_some_and(|core| dropped(function.refinements.param(*index), core))
+            }) {
+                return Some(format!(
+                    "a refinement of parameter {} of a function type",
+                    index + 1
+                ));
+            }
+            if dropped(&function.refinements.result, result) {
+                return Some("a refinement of the result of a function type".to_owned());
+            }
+            function
+                .params
+                .iter()
+                .zip(params)
+                .find_map(|(ty, core)| lost(ty, core))
+                .or_else(|| lost(&function.result, result))
+        }
+        (Ty::Fn(_), Type::Base { .. }) => Some("a function type".to_owned()),
+        (
+            Ty::List(element),
+            Type::Base {
+                base: Base::Named { args, .. },
+                ..
+            },
+        ) => args.first().and_then(|core| lost(element, core)),
+        (
+            Ty::Kind(_, args),
+            Type::Base {
+                base: Base::Named { args: core, .. },
+                ..
+            },
+        ) => {
+            if args.len() != core.len() {
+                return Some("a type argument".to_owned());
+            }
+            args.iter().zip(core).find_map(|(ty, core)| lost(ty, core))
+        }
+        _ => None,
     }
 }
 
@@ -2138,5 +2439,124 @@ fn signed(value: &SignedInt) -> String {
         format!("-{}", value.digits)
     } else {
         value.digits.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn logging() -> FnUse {
+        FnUse {
+            name: "log".to_owned(),
+            capability: Some(0),
+            ops: vec!["write".to_owned()],
+        }
+    }
+
+    fn core_fn(uses: Vec<Use>, fails: Option<String>, label: Label) -> Type {
+        Type::Fn {
+            params: vec![plain(Base::Text)],
+            result: Box::new(unit()),
+            uses,
+            fails,
+            label,
+        }
+    }
+
+    #[test]
+    fn the_consistency_check_finds_lost_uses_fails_and_labels() {
+        let secret = Label {
+            level: una_core::Level::Secret,
+            categories: std::collections::BTreeSet::new(),
+            symbols: std::collections::BTreeSet::new(),
+        };
+        let function = Ty::Fn(Box::new(super::super::ty::FnTy {
+            params: vec![Ty::Text],
+            result: Ty::Unit,
+            uses: vec![logging()],
+            fails: Some(Ty::Kind(0, Vec::new())),
+            refinements: super::super::ty::FnRefinements::default(),
+        }));
+        let kept = core_fn(
+            vec![Use {
+                cap: "log".to_owned(),
+                capability: "Log".to_owned(),
+                ops: vec!["write".to_owned()],
+            }],
+            Some("Boom".to_owned()),
+            Label::public(),
+        );
+        assert_eq!(lost(&function, &kept), None);
+        let no_uses = core_fn(Vec::new(), Some("Boom".to_owned()), Label::public());
+        assert!(lost(&function, &no_uses).is_some());
+        let no_fails = core_fn(
+            vec![Use {
+                cap: "log".to_owned(),
+                capability: "Log".to_owned(),
+                ops: vec!["write".to_owned()],
+            }],
+            None,
+            Label::public(),
+        );
+        assert!(lost(&function, &no_fails).is_some());
+        let listed = Ty::List(Box::new(function.clone().with_label(&secret)));
+        let dropped = Type::Base {
+            base: Base::Named {
+                module: "prelude".to_owned(),
+                name: "List".to_owned(),
+                args: vec![kept.clone()],
+            },
+            refinements: Vec::new(),
+            label: Label::public(),
+        };
+        assert!(lost(&listed, &dropped).is_some());
+    }
+
+    #[test]
+    fn the_consistency_check_finds_a_lost_refinement_of_a_function_type() {
+        // ADR 0037 rule 11: `fn(Small) -> Pos` keeps both refinements.
+        let alias = |id: usize| super::super::ty::Refinement::Alias(id, Vec::new());
+        let function = Ty::Fn(Box::new(super::super::ty::FnTy {
+            params: vec![Ty::Int],
+            result: Ty::Int,
+            uses: Vec::new(),
+            fails: None,
+            refinements: super::super::ty::FnRefinements {
+                params: vec![vec![alias(0)]],
+                result: vec![alias(1)],
+            },
+        }));
+        let refined = |text: &str| Type::Base {
+            base: Base::Int,
+            refinements: vec![CoreRefinement {
+                name: text.to_owned(),
+                clause: CoreClause {
+                    term: Term::Bool(true),
+                    text: text.to_owned(),
+                    span: None,
+                },
+            }],
+            label: Label::public(),
+        };
+        let core = |param: Type, result: Type| Type::Fn {
+            params: vec![param],
+            result: Box::new(result),
+            uses: Vec::new(),
+            fails: None,
+            label: Label::public(),
+        };
+        let kept = core(refined("Small"), refined("Pos"));
+        assert_eq!(lost(&function, &kept), None);
+        let no_param = core(plain(Base::Int), refined("Pos"));
+        assert_eq!(
+            lost(&function, &no_param).as_deref(),
+            Some("a refinement of parameter 1 of a function type")
+        );
+        let no_result = core(refined("Small"), plain(Base::Int));
+        assert_eq!(
+            lost(&function, &no_result).as_deref(),
+            Some("a refinement of the result of a function type")
+        );
     }
 }

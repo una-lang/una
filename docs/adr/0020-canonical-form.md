@@ -8,7 +8,7 @@
 
 ADR 0011 makes canonical formatting part of the language: `una check` reports U7001 for non-canonical source and `una fmt` fixes it. The specification fixes only part of the canonical form: two spaces per indentation level and no tabs (`spec/01 §2`), no trailing whitespace (`spec/01 §2.6`), the short form of a function without clauses whose body is one line (`spec/04 §1`), the clause order (`spec/02 §3, §4`, enforced by U0102), constructor arguments in declaration order (`spec/04 §3.4`), and no maximum line width. Milestone M2 needs every other rule: comments, blank lines, spacing, continued lines, the other `= body` forms, sums, imports, line endings, and the shape of U7001. Since U7001 rejects every program that is not canonical, these rules are part of the language.
 
-Decision log entries: D-023 to D-031 (`docs/reviews/open-decisions.md`).
+Decision log entries: D-023 to D-031 (`docs/history/v0.1/open-decisions.md`).
 
 ## Decision
 

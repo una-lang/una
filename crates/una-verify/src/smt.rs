@@ -1,5 +1,10 @@
 //! The SMT-LIB encoding of `spec/12 §4`: formulas of QF_UFLIA, the names of sorts and
-//! symbols, and queries emitted as deterministic text (DECISION D-115).
+//! symbols, and queries emitted as deterministic text.
+//!
+//! Namespaces (ADR 0038 D8): every symbol derived from user content starts with `u!` and every
+//! symbol the encoder introduces with `i!`; only `Int`, `Bool` and the operators of SMT-LIB are
+//! unprefixed. User names never contain `!`, and every symbol is built from a prefix and
+//! `!`-separated parts, so the two namespaces cannot collide.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -11,6 +16,18 @@ pub(crate) type Sort = String;
 fn builtin(sort: &str) -> bool {
     matches!(sort, "Int" | "Bool")
 }
+
+/// The sort of `Text`.
+pub(crate) const TEXT: &str = "i!Text";
+
+/// The sort of `Unit`.
+pub(crate) const UNIT: &str = "i!Unit";
+
+/// The sort of `Hashed`.
+pub(crate) const HASHED: &str = "i!Hashed";
+
+/// The prefix of the sorts of `List[T]`.
+pub(crate) const LIST: &str = "i!List_";
 
 /// A term or formula of the solver's logic.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -43,10 +60,34 @@ pub(crate) struct Const {
 /// What a constant stands for.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ConstRole {
-    /// A binder, `result` or a path selector.
+    /// A binder of the program: a parameter, `result`, a `let`, a pattern variable or a
+    /// temporary of Core IR, `u!v!<name>`.
     Plain,
-    /// A text literal: all of them are distinct (`spec/12 §4`).
+    /// A binder the encoder introduces: a path selector or `unit`, `i!v!<name>`.
+    Internal,
+    /// A text literal, `i!lit!<name>` with its bytes in hex as the name: all of them are
+    /// distinct (`spec/12 §4`).
     Text(String),
+}
+
+impl Const {
+    /// The quoted symbol of the constant, in its namespace.
+    pub(crate) fn symbol(&self) -> String {
+        match self.role {
+            ConstRole::Plain => user_binder(&self.name),
+            ConstRole::Internal => format!("|i!v!{}|", self.name),
+            ConstRole::Text(_) => format!("|i!lit!{}|", self.name),
+        }
+    }
+}
+
+/// The path selector `number` of a return obligation.
+pub(crate) fn path_selector(number: usize) -> F {
+    F::Const(Const {
+        name: format!("path!{number}"),
+        sort: "Bool".to_owned(),
+        role: ConstRole::Internal,
+    })
 }
 
 /// An uninterpreted function.
@@ -143,7 +184,7 @@ impl F {
     }
 
     /// Every function application in the term, and every constant, depth first.
-    fn visit<'a>(&'a self, out: &mut Vec<&'a F>) {
+    pub(crate) fn visit<'a>(&'a self, out: &mut Vec<&'a F>) {
         match self {
             F::App { args, .. } | F::Op { args, .. } => {
                 for arg in args {
@@ -166,8 +207,8 @@ impl F {
                 None => out.push_str(digits),
             },
             F::Bool(value) => out.push_str(if *value { "true" } else { "false" }),
-            F::Const(c) => out.push_str(&symbol(&c.name)),
-            F::Local { name, .. } => out.push_str(&symbol(name)),
+            F::Const(c) => out.push_str(&c.symbol()),
+            F::Local { name, .. } => out.push_str(&user_binder(name)),
             F::App { fun, args } => {
                 let _ = write!(out, "({}", fun.name);
                 for arg in args {
@@ -203,11 +244,11 @@ impl F {
     }
 }
 
-/// The name of the sort of a kind declared in `module`: `Kind_<module>_<Name>`, each `_` of a
-/// module segment doubled so that distinct paths give distinct names (`spec/12 §4`).
+/// The name of the sort of a kind declared in `module`: `u!Kind_<module>_<Name>`, each `_` of
+/// a module segment doubled so that distinct paths give distinct names (`spec/12 §4`).
 pub(crate) fn kind_sort(module: &str, name: &str, args: &[Sort]) -> Sort {
     let module: Vec<String> = module.split('.').map(|s| s.replace('_', "__")).collect();
-    let mut sort = format!("Kind_{}_{name}", module.join("_"));
+    let mut sort = format!("u!Kind_{}_{name}", module.join("_"));
     for arg in args {
         sort.push('_');
         sort.push_str(arg);
@@ -245,6 +286,7 @@ impl Query {
             definition.body.visit(&mut terms);
         }
         let mut sorts: BTreeSet<Sort> = BTreeSet::new();
+        // By symbol, which names the namespace too.
         let mut constants: BTreeMap<String, Sort> = BTreeMap::new();
         let mut functions: BTreeMap<String, (Vec<Sort>, Sort)> = BTreeMap::new();
         let mut texts: BTreeSet<String> = BTreeSet::new();
@@ -252,9 +294,9 @@ impl Query {
             match term {
                 F::Const(c) => {
                     sorts.insert(c.sort.clone());
-                    constants.insert(c.name.clone(), c.sort.clone());
+                    constants.insert(c.symbol(), c.sort.clone());
                     if let ConstRole::Text(_) = c.role {
-                        texts.insert(c.name.clone());
+                        texts.insert(c.symbol());
                     }
                 }
                 F::App { fun, .. } => {
@@ -274,8 +316,8 @@ impl Query {
         for sort in sorts.iter().filter(|sort| !builtin(sort)) {
             let _ = writeln!(out, "(declare-sort {sort} 0)");
         }
-        for (name, sort) in &constants {
-            let _ = writeln!(out, "(declare-fun {} () {sort})", symbol(name));
+        for (symbol, sort) in &constants {
+            let _ = writeln!(out, "(declare-fun {symbol} () {sort})");
         }
         for (name, (args, result)) in &functions {
             let _ = writeln!(out, "(declare-fun {name} ({}) {result})", args.join(" "));
@@ -287,7 +329,7 @@ impl Query {
             let params: Vec<String> = definition
                 .params
                 .iter()
-                .map(|(param, sort)| format!("({} {sort})", symbol(param)))
+                .map(|(param, sort)| format!("({} {sort})", user_binder(param)))
                 .collect();
             let _ = writeln!(
                 out,
@@ -297,7 +339,7 @@ impl Query {
             );
         }
         if texts.len() > 1 {
-            let names: Vec<String> = texts.iter().map(|name| symbol(name)).collect();
+            let names: Vec<&str> = texts.iter().map(String::as_str).collect();
             let _ = writeln!(out, "(assert (distinct {}))", names.join(" "));
         }
         for assertion in self.assertions.iter().filter(|a| **a != F::Bool(true)) {
@@ -359,14 +401,11 @@ impl Query {
     }
 }
 
-/// A binder's quoted symbol. Z3 5.1.0 rejects `_` and `as` even quoted, and a constant named
-/// after its variadic `xor` or `distinct`; these names gain a `!` suffix, which ends no other
-/// symbol (ADR 0033 rule 5, DECISION D-115).
-fn symbol(name: &str) -> String {
-    match name {
-        "_" | "as" | "xor" | "distinct" => format!("|{name}!|"),
-        _ => format!("|{name}|"),
-    }
+/// The quoted symbol of a binder of the program, `u!v!<name>`. The prefix also keeps the
+/// names that Z3 5.1.0 rejects even quoted, `_`, `as`, `xor` and `distinct` (ADR 0033 rule 5),
+/// from ever being a whole symbol.
+fn user_binder(name: &str) -> String {
+    format!("|u!v!{name}|")
 }
 
 #[cfg(test)]
@@ -382,28 +421,27 @@ mod tests {
     }
 
     #[test]
-    fn names_the_solver_rejects_gain_a_suffix() {
-        // ADR 0033 rule 5: Z3 5.1.0 rejects these four even as quoted symbols.
-        for name in ["_", "as", "xor", "distinct"] {
-            assert_eq!(symbol(name), format!("|{name}!|"));
+    fn binders_are_in_the_user_namespace() {
+        // ADR 0038 D8; ADR 0033 rule 5: Z3 5.1.0 rejects these four as whole symbols, and the
+        // prefix keeps them from being one.
+        for name in ["_", "as", "xor", "distinct", "e", "%t0", "x%2"] {
+            assert_eq!(user_binder(name), format!("|u!v!{name}|"));
         }
-        assert_eq!(symbol("e"), "|e|");
-        assert_eq!(symbol("%t0"), "|%t0|");
-        assert_eq!(symbol("x%2"), "|x%2|");
+        assert_eq!(path_selector(1).text(), "|i!v!path!1|");
     }
 
     #[test]
     fn queries_declare_sorted_symbols_and_keep_assertions_in_order() {
         let event = kind_sort("events.seating", "Event", &[]);
-        assert_eq!(event, "Kind_events_seating_Event");
-        assert_eq!(kind_sort("a_b.c", "K", &[]), "Kind_a__b_c_K");
+        assert_eq!(event, "u!Kind_events_seating_Event");
+        assert_eq!(kind_sort("a_b.c", "K", &[]), "u!Kind_a__b_c_K");
         assert_eq!(
             kind_sort("a.b_c", "K", &["Int".to_owned()]),
-            "Kind_a_b__c_K_Int"
+            "u!Kind_a_b__c_K_Int"
         );
         let remaining = F::App {
             fun: Fun {
-                name: format!("remaining!{event}"),
+                name: format!("u!f!remaining!{event}"),
                 args: vec![event.clone()],
                 result: "Int".to_owned(),
                 role: FunRole::Other,
@@ -419,11 +457,11 @@ mod tests {
         };
         assert_eq!(
             query.text(),
-            "(declare-sort Kind_events_seating_Event 0)\n\
-             (declare-fun |e| () Kind_events_seating_Event)\n\
-             (declare-fun remaining!Kind_events_seating_Event (Kind_events_seating_Event) Int)\n\
-             (assert (<= 0 (remaining!Kind_events_seating_Event |e|)))\n\
-             (assert (not (< (remaining!Kind_events_seating_Event |e|) (- 1))))\n"
+            "(declare-sort u!Kind_events_seating_Event 0)\n\
+             (declare-fun |u!v!e| () u!Kind_events_seating_Event)\n\
+             (declare-fun u!f!remaining!u!Kind_events_seating_Event (u!Kind_events_seating_Event) Int)\n\
+             (assert (<= 0 (u!f!remaining!u!Kind_events_seating_Event |u!v!e|)))\n\
+             (assert (not (< (u!f!remaining!u!Kind_events_seating_Event |u!v!e|) (- 1))))\n"
         );
     }
 }

@@ -1,0 +1,28 @@
+-- test: function values: a function value passed through a generic function keeps its labels (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 21:36
+-- expect: error U4001 at 23:39
+-- expect: error U4001 at 23:45
+-- expect: error U4001 at 28:3
+module sweep_label_fnvalue_generic
+
+low(x: Int) -> Int = x
+
+high(x: Int) -> Int = x + 1
+
+pick(pin: secret Int) -> secret fn(Int) -> Int = if pin > 0 then low else high
+
+is_pin[T](x: T, y: T) -> Int = if x == y then 1 else 0
+
+id[T](x: T) -> T = x
+
+apply[T](f: fn(T) -> T, x: T) -> T = f(x)
+
+pub ided(pin: secret Int) -> Int = id(pick(pin))(1)
+
+pub applied(pin: secret Int) -> Int = apply(low, x: pin)
+
+pub generic_value(pin: secret Int) -> Int
+=
+  let f = id
+  f(pin)

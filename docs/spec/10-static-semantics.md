@@ -34,6 +34,10 @@ $$
      {\Gamma \vdash (\mathrm{fn}(\bar\tau_1) \to \tau_r \;\mathrm{uses}\; K_1 \;\mathrm{fails}\; F_1)^{\ell} <: (\mathrm{fn}(\bar\tau_2) \to \tau_r' \;\mathrm{uses}\; K_2 \;\mathrm{fails}\; F_2)^{\ell'}}\;(\textsf{S-Fun})
 $$
 
+The refined premises of S-Fun, $\bar\tau_2 <: \bar\tau_1$ and $\tau_r <: \tau_r'$ over refined parameters and results, are the `refinement` obligations of function types of `spec/12 §3` (ADR 0037): the type checker compares bases, and the verifier discharges the refinements.
+
+A function type's `uses`, `fails`, refinements and label are part of the type in every position: parameters and results, record and variant fields, type arguments, pattern bindings and lambda annotations (ADR 0038 D1). Unification, matching, S-Fun and elaboration never drop any of them, and S-Fun applies wherever a value flows into a declared type, recursively under `List`, `Option`, `Result` and kind arguments. As an internal invariant, the compiler compares the types of the checker with the binder types of Core IR; a component that was lost is U8001, never a silent pass.
+
 ## 3. Atoms and primitives
 
 $$
@@ -82,12 +86,29 @@ $$
 $$
 \frac{\begin{array}{c}
 c \mapsto C[O] \in K \qquad o \in O \qquad \mathit{sig}(C.o) = (\bar x{:}\bar\tau) \to \tau_r \;\mathrm{fails}\; F_o \;\mathrm{requires}\; \varphi \;\mathrm{ensures}\; \psi \;\mathrm{accepts}\; \ell_o \\
-\Gamma \vdash \bar a <: \bar\tau \qquad \Gamma \vDash \varphi[\bar a/\bar x] \qquad pc \sqcup \textstyle\bigsqcup_i \ell(a_i) \sqsubseteq \ell_o
+\Gamma \vdash \bar a <: \bar\tau^{\top} \qquad \Gamma \vDash \varphi[\bar a/\bar x] \qquad pc \sqcup \textstyle\bigsqcup_i \ell(a_i) \sqsubseteq \ell_o
 \end{array}}
 {\Gamma;K;pc \vdash c.o(\bar a) : \{\nu{:}b_r \mid \psi[\bar a/\bar x,\, \nu/\mathit{result}]\}^{\ell(\tau_r)} \;!\; \{c.o\};\, F_o}\;(\textsf{T-Op})
 $$
 
-$\mathrm{bound}(f)$ is the meet of the `accepts` labels of every operation in $\mathrm{eff}(K_f)$, met with $\bot$ if $F_f \neq \emptyset$; it is $\top$ for pure, non-failing $f$ (`spec/07 §3`).
+In T-Op, $\tau^{\top}$ is $\tau$ with every covariant position labeled $\top$: the arguments' data is bounded by $\ell_o$, while contravariant positions and the arguments of invariant kind parameters keep their declared labels (`spec/07 §7` rule 4, ADR 0050).
+
+$\mathrm{bound}(f)$ is the meet of the `accepts` labels of every operation in $\mathrm{eff}(K_f)$, met with $\bot$ if $F_f \neq \emptyset$; it is $\top$ for pure, non-failing $f$ (`spec/07 §3`). $\mathrm{bound}(K, F)$ is the same meet for a capability context and an error kind.
+
+A call of a function value, a parameter, local or field of function type, follows T-App (ADR 0038 D1):
+
+$$
+\frac{\Gamma \vdash a_f : (\mathrm{fn}(\bar\tau) \to \tau_r \;\mathrm{uses}\; K_f \;\mathrm{fails}\; F_f)^{\ell_f} \qquad \Gamma \vdash \bar a <: \bar\tau \qquad K_f \le K \qquad pc \sqcup \ell_f \sqsubseteq \mathrm{bound}(K_f, F_f)}
+{\Gamma;K;pc \vdash a_f(\bar a) : \tau_r \sqcup \ell_f \;!\; \mathrm{eff}(K_f);\, F_f}\;(\textsf{T-App})
+$$
+
+A function value's effects and failures count for the caller exactly like those of a named call, so a pure function cannot perform an effect through a function value, and a function without `fails` cannot fail through one. Which function runs depends on the value, so its label $\ell_f$ raises both the result and the program counter of the call.
+
+**Generic instantiation** (ADR 0038 D2, D3). In T-Call, each $\sigma_i$ that instantiates a type parameter $\alpha_i$ is well formed:
+
+1. A function type with non-empty `uses` or `fails` is **second-class**. No $\sigma_i$ is a second-class type or contains one, such as `List[fn() -> Unit uses @log: Log[write]]` (U3016). Together with §9 rule 2, an effectful or failing function value is never stored, returned or carried out of the `with` scope where it was created.
+2. $\sigma_i$ binds the whole labeled type, and unification never drops a label.
+3. In the generic body, a value of type $\alpha$ has the symbolic label $\ell_\alpha$ (`spec/07 §7` rule 8). At the call, every $\ell_{\alpha_i}$ in the result's type is replaced by $\ell^{*}(\sigma_i)$, the join of every label of $\sigma_i$.
 
 $$
 \frac{C \in \mathrm{variants}(F) \qquad pc = \bot \qquad \Gamma \vdash \bar a <: \mathrm{fields}(C)}
@@ -135,12 +156,12 @@ $$
      {\vdash \mathtt{fun}\; f(\bar x{:}\bar\tau) : \tau_r \;\mathrm{uses}\; K_f \;\mathrm{fails}\; F_f \;\mathrm{requires}\; \varphi \;\mathrm{ensures}\; \psi = e \;\; \mathsf{ok}}\;(\textsf{T-Fun})
 $$
 
-Handler operations are checked like functions whose parameters, `requires`, `ensures`, `fails` and result type come from the capability's operation signature and whose capability context is the handler's `uses`. Private functions without declared `uses` or `fails` take the inferred least solution (`spec/04 §5`) before T-Fun is applied.
+Handler operations are checked like functions whose parameters, `requires`, `ensures`, `fails` and result type come from the capability's operation signature and whose capability context is the handler's `uses`. They are checked against the worst caller T-Op allows: every parameter is raised to the operation's `accepts` label $\ell_o$, and every effect in the body satisfies the effect floor $\ell_o$ (`spec/07 §7` rule 4, ADR 0038 D4). Private functions without declared `uses` or `fails` take the inferred least solution (`spec/04 §5`) before T-Fun is applied.
 
 ## 9. Syntactic side conditions
 
 1. Capability names $c$ occur only as the receiver of `c.o(...)` and in `with` (U3005). They are never atoms.
-2. A lambda whose type has non-empty `uses` or `fails` occurs only directly as a call argument (U3006).
+2. A lambda whose type has non-empty `uses` or `fails` occurs only directly as a call argument (U3006), and such a type is never a type argument (U3016, §5).
 3. Inside the `via` function of a policy, label premises ($\ell \sqsubseteq \ell'$, $pc$ conditions) are not checked (`spec/07 §5`).
 
 ## 10. Metatheory targets
@@ -168,13 +189,14 @@ Names resolve before typing, by these rules (ADR 0023).
 5. **Duplicates.** U1002 reports: two declarations of a module with the same name in one namespace, variants included; an explicit import with the name of a declaration of the module or of another explicit import; a local that rebinds a local of an enclosing scope; two parameters, type parameters, fields, variant fields, operations, handler operations, pattern bindings or lambda parameters of one construct with the same name; two requirements of a package or two examples of a module with the same name; two label categories in `una.toml`. A declaration or import MAY reuse a prelude name, and a local MAY reuse any non-local name: the inner one wins.
 6. **Imports.** An imported name MUST be public (U1004, with an edit that adds `pub` to the declaration). An import cycle is U1003, reported once per cycle at the first import of the cycle's first module, in path order.
 7. **Syntax errors.** In a module with syntax errors, the declarations that parsed are registered and checked for U1002, U1005 and U1008, but bodies are not resolved and imports from that module are not checked, so no diagnostic cascades from a declaration that failed to parse.
-8. **Conventions (U1005)**, checked where a name is defined: lower-case names (declarations, parameters, locals, fields, operations, module path segments, owners) contain no `__` and do not end with `_`; kinds, variants, capabilities, type parameters and label categories are UpperCamelCase (`[A-Z][a-zA-Z0-9]*`); requirement identifiers match `[A-Z][A-Z0-9]*(_[A-Z0-9]+)*_[0-9]+` (`spec/01 §4`).
+8. **Identity** (ADR 0038 D6, D7). Kinds, capabilities, operations, handlers, policies and predicates are identified by their fully qualified name, the module path followed by the name. The host capabilities of `spec/14 §3` are declared in the module `std.host`, so a capability `Files` declared by a user module is a different declaration from `std.host.Files`. Contracts, operation signatures and assumptions are looked up by resolved identity, never by bare name. A module path whose first segment is `std` or `prelude` is reserved for the standard library: a user module with such a path is U1009 at its `module` header.
+9. **Conventions (U1005)**, checked where a name is defined: lower-case names (declarations, parameters, locals, fields, operations, module path segments, owners) contain no `__` and do not end with `_`; kinds, variants, capabilities, type parameters and label categories are UpperCamelCase (`[A-Z][a-zA-Z0-9]*`); requirement identifiers match `[A-Z][A-Z0-9]*(_[A-Z0-9]+)*_[0-9]+` (`spec/01 §4`).
 
 ## 12. Surface typing
 
 The rules of §3 to §8 act on Core IR; these rules fix what the surface syntax elaborates to, and what it reports (ADR 0024).
 
-1. **Variants in context.** In a `when` pattern or an `is` test, the variant is looked up in the kind of the tested value: U1001 if the kind has no such variant, U2001 if the value is not of a sum kind. After `fail` (in an expression, a handling clause or `checked`), the variant is looked up in the function's declared error kind, and through the scopes of §11 when the function declares none; a variant outside the declared kind is U3009. After `expect fails`, the variant is looked up in the error kind of the `do` expression.
+1. **Variants in context.** In a `when` pattern or an `is` test, the variant is looked up in the kind of the tested value: U1001 if the kind has no such variant, U2001 if the value is not of a sum kind. After `fail` (in an expression, a handling clause or `checked`), the variant is looked up in the function's declared error kind, and through the scopes of §11 when the function declares none; a variant outside the declared kind is U3009. After `expect fails`, the variant is looked up in the error kind of the `do` expression: a variant outside it is U1001, and when the `do` expression cannot fail, because its error kind is empty, as after `attempt` (D-170), `expect fails V` never holds and is U1001 at `V`, with a help that proposes removing the line (ADR 0044).
 2. **Branches and `fail`.** `fail` has a type below every type, so a branch that fails joins any other. The branches of `if` and `when` otherwise have one base type; a target type, when known, is checked in each branch.
 3. **Unreachable and repeated arms.** U2008 reports an arm after an `else` arm, a variant or literal arm that repeats an earlier one, and an `else` arm that no value reaches because the arms before it cover every variant.
 4. **Field access and method calls.** `e.f` is `.len` on `Text` and `List`, then field `f` of `e`'s record, then a call of a function `f` of one parameter in scope (`spec/04 §3`); if none applies, U1001. `e.f(args)` follows `spec/04 §3`: a field of function type, else a function `f` in scope called with `e` first; if neither exists, U1001.
@@ -185,5 +207,5 @@ The rules of §3 to §8 act on Core IR; these rules fix what the surface syntax 
 9. **Equality on type parameters.** A generic function that compares values of a type parameter, directly or through the generic functions it calls, cannot be instantiated with a type whose values hold functions (U2001 at the instantiation).
 10. **Labels, in detail.** A bare name equal to a parameter's name is labeled with it, even as the first argument. A constructor with several fields reports an unlabeled argument as U2004; extra arguments of a constructor with one field, and parentheses after a variant without fields, are U2009.
 11. **Predicates.** A cycle of calls that contains a predicate, through predicates or functions, reflect or opaque, is U2015 once per cycle; a predicate whose result type is not `Bool` is U2001.
-12. **Policies.** The `via` function takes the base type of `from` and returns the base type of `to` (U4005, `spec/07 §5` rule 4). A policy call takes one argument without a label.
+12. **Policies.** The `via` function takes the type of `from` and returns the type of `to`, except for labels and with the same refinements, and has no `requires` clause (U4005, `spec/07 §5` rule 4, ADR 0047). A policy call takes one argument without a label.
 13. **Argument counts.** Too many arguments, and a parameter that receives none, are U2001.

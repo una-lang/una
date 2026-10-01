@@ -108,6 +108,10 @@ impl<'a> Checker<'_, 'a, '_> {
             self.env
                 .lower_type(self.module, written, &type_params, self.report)
         });
+        let declared = declared.map(|mut declared| {
+            declared.base = self.symbolic(&declared.base);
+            declared
+        });
         let expected = declared.as_ref().map(|declared| declared.base.clone());
         let role = Role::Annotation(name);
         let (ty, value) = match &stmt.value {
@@ -141,11 +145,11 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         if let Some(declared) = &declared {
             self.flow(value, &ty, &declared.base, &format!("`{name}`"));
+            self.fn_flow(value, &declared.base, &ty);
             self.annotated(stmt.name.span, declared);
         }
-        // The local keeps the labels its value has now; later unifications do not change them
-        // (DECISION D-088).
-        let bound = declared.map_or_else(|| self.labeled(&ty), |declared| declared.base);
+        // The local keeps the labels its value has now; later unifications do not change them.
+        let bound = declared.map_or_else(|| self.vars.resolve_bound(&ty), |declared| declared.base);
         self.typed(stmt.name.span, &bound);
         self.bind(name, bound);
     }
@@ -175,12 +179,21 @@ impl<'a> Checker<'_, 'a, '_> {
                         target: self.name(other).to_owned(),
                     }
                 }
-                CapBindingValue::Handler(call) => Bound::Handler {
-                    capability: self.install(call),
-                    span: call.name.span,
-                },
+                CapBindingValue::Handler(call) => {
+                    // ADR 0043: a handler installed by `with` may not use `std.testing`.
+                    if self.pass == super::authority::Pass::Check
+                        && let Some(super::env::Entity::Handler(id)) =
+                            self.env.lower(self.module, self.name(&call.name))
+                    {
+                        self.findings.with_installs.push((id, binding.span));
+                    }
+                    Bound::Handler {
+                        capability: self.install(call),
+                        span: call.name.span,
+                    }
+                }
             };
-            // DECISION D-087: the first binding of a name wins.
+            // The first binding of a name wins.
             let name = self.name(&binding.cap);
             if !frame.bindings.iter().any(|(bound, _)| bound == name) {
                 frame.bindings.push((name.to_owned(), bound));
@@ -214,11 +227,27 @@ impl<'a> Checker<'_, 'a, '_> {
         let value_expected = if unwraps { None } else { expected.cloned() };
         self.ctx.handled = catches;
         self.ctx.top = true;
+        let end = handled
+            .with
+            .last()
+            .map_or(handled.expr.span.end, |binding| binding.span.end);
+        let statement = super::check::Statement {
+            expr: handled.expr.span,
+            insert: Span::at(handled.expr.span.file, end),
+            with: !handled.with.is_empty(),
+            bound: handled
+                .with
+                .iter()
+                .map(|binding| self.name(&binding.cap).to_owned())
+                .collect(),
+        };
+        let saved = self.statement.replace(statement);
         let ty = if tail && handled.handlings.is_empty() {
             self.tail_expr(&handled.expr, value_expected.as_ref(), role)
         } else {
             self.expr_as(&handled.expr, value_expected.as_ref(), role)
         };
+        self.statement = saved;
         self.ctx.handled = false;
         self.ctx.top = false;
         let error = self.fails_of(&handled.expr).unwrap_or(Ty::Error);
@@ -248,7 +277,12 @@ impl<'a> Checker<'_, 'a, '_> {
                     let used = self.within(ctx, |checker| {
                         checker.expr_as(value, Some(&expected), Role::Plain)
                     });
-                    current = self.vars.join(&current, &used);
+                    let before = current;
+                    current = self.vars.join(&before, &used);
+                    self.join_flows(
+                        &current,
+                        vec![(handled.expr.span, before), (value.span, used)],
+                    );
                 }
                 HandlingKind::NoneFail(variant) => {
                     self.impure(handling.span, || "`if none fail`".to_owned());
@@ -271,7 +305,12 @@ impl<'a> Checker<'_, 'a, '_> {
                     let saved = self.raise_pc(&option, handled.expr.span);
                     let used = self.expr_as(value, Some(&expected), Role::Plain);
                     self.restore_pc(saved);
-                    current = self.vars.join(&current, &used).with_label(&option);
+                    let joined = self.vars.join(&current, &used);
+                    self.join_flows(
+                        &joined,
+                        vec![(handled.expr.span, current), (value.span, used)],
+                    );
+                    current = joined.with_label(&option);
                 }
             }
         }
@@ -362,12 +401,26 @@ impl<'a> Checker<'_, 'a, '_> {
             ElseBranch::If(next) => self.if_block(next, joined.as_ref(), role, tail),
         };
         self.restore_pc(saved);
-        // DECISION D-088: the value joins both branches, raised by the condition (T-If).
+        // The value joins both branches, raised by the condition (T-If).
         let value = match (
             self.resolve(&then_ty) == Ty::Never,
             self.resolve(&else_ty) == Ty::Never,
         ) {
-            (false, false) => self.vars.join(&then_ty, &else_ty),
+            (false, false) => {
+                let value = self.vars.join(&then_ty, &else_ty);
+                let else_span = match block.otherwise.as_ref() {
+                    ElseBranch::Block(otherwise) => value_span(otherwise),
+                    ElseBranch::If(next) => next.span,
+                };
+                self.join_flows(
+                    &value,
+                    vec![
+                        (value_span(&block.then_block), then_ty),
+                        (else_span, else_ty),
+                    ],
+                );
+                value
+            }
             (false, true) => then_ty,
             (true, false) => else_ty,
             (true, true) => joined.unwrap_or(Ty::Never),
@@ -386,7 +439,7 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// `when`: variant arms over a sum kind are exhaustive or end with `else` (U2007); arms
-    /// that no value reaches are U2008 (DECISION D-051); range and literal arms without `else`
+    /// that no value reaches are U2008; range and literal arms without `else`
     /// leave an `exhaustive` obligation (`spec/10 §4`, `spec/12 §3`).
     fn when(&mut self, when: &WhenExpr, expected: Option<&Ty>, role: Role<'_>, tail: bool) -> Ty {
         self.outside_rl(when.span, || "`when`".to_owned());
@@ -405,6 +458,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let mut value_arms = false;
         let mut problem = false;
         let mut joined = expected.cloned();
+        let mut arms = Vec::new();
         for arm in &when.arms {
             let pattern = arm.pattern.span;
             if let Some(otherwise) = else_arm {
@@ -462,7 +516,7 @@ impl<'a> Checker<'_, 'a, '_> {
                                     }
                                 }
                             }
-                            // DECISION D-090: the fields take the labels of the scrutinee's
+                            // The fields take the labels of the scrutinee's
                             // arguments, raised by its top label.
                             let targs = match self.labeled(&scrutinee).unlabeled() {
                                 Ty::Kind(id, args) if *id == kind => args.clone(),
@@ -549,6 +603,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 if joined.is_none() {
                     joined = Some(ty.clone());
                 }
+                arms.push((body_span(&arm.body), ty.clone()));
                 value = Some(match value {
                     Some(value) => self.vars.join(&value, &ty),
                     None => ty,
@@ -557,6 +612,9 @@ impl<'a> Checker<'_, 'a, '_> {
             self.locals.truncate(mark);
         }
         self.restore_pc(saved);
+        if let Some(value) = &value {
+            self.join_flows(value, arms);
+        }
         if !problem && else_arm.is_none() {
             if variant_arms && let Some((kind, _)) = self.sum_of(&scrutinee) {
                 self.exhaustive(when, kind, &covered);
@@ -642,6 +700,13 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         let names: Vec<&str> = variant.fields.iter().map(|f| f.name).collect();
         let mut bound: Vec<Option<Span>> = variant.fields.iter().map(|_| None).collect();
+        // R-030: the repair of an unknown field suggests only a field that no other binder
+        // names, so applying it cannot bind a field twice (U2006).
+        let open: Vec<&str> = names
+            .iter()
+            .copied()
+            .filter(|name| binds.iter().all(|bind| self.name(&bind.field) != *name))
+            .collect();
         let mut order: Vec<Option<usize>> = Vec::new();
         for (position, bind) in binds.iter().enumerate() {
             let field = self.name(&bind.field);
@@ -654,7 +719,7 @@ impl<'a> Checker<'_, 'a, '_> {
                         bind.field.span,
                         format!("variant `{}` has no field `{field}`", variant.name),
                     );
-                    if let Some(close) = closest(field, names.iter().copied()) {
+                    if let Some(close) = closest(field, open.iter().copied()) {
                         diagnostic.repairs.push(self.report.edit(
                             format!("write `{close}`"),
                             bind.field.span,
@@ -690,8 +755,25 @@ impl<'a> Checker<'_, 'a, '_> {
             let local = self.name(local_ident);
             self.bind(local, ty);
         }
-        // DECISION D-098: the field of each binding.
+        // The field of each binding.
         self.ordered(pattern, order);
+    }
+}
+
+/// The span of the value of a block: its final statement, or the block.
+fn value_span(block: &Block) -> Span {
+    match block.stmts.last() {
+        Some(Stmt::Handled(handled)) => handled.expr.span,
+        Some(Stmt::BlockExpr(expr)) => block_expr_span(expr),
+        _ => block.span,
+    }
+}
+
+/// The span of the value of a body.
+fn body_span(body: &Body) -> Span {
+    match body {
+        Body::Line(expr) => expr.span,
+        Body::Block(block) => value_span(block),
     }
 }
 

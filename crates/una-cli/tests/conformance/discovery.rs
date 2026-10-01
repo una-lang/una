@@ -258,7 +258,7 @@ mod tests {
     #[test]
     fn hidden_files_of_a_multi_module_case_are_not_read() {
         let root = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("hidden-files-case");
-        // DECISION D-006: temporary files stay under target/, inside the repository.
+        // Temporary files stay under target/, inside the repository.
         let _ = std::fs::remove_dir_all(&root);
         let case = root.join("names/imports");
         std::fs::create_dir_all(case.join("src/.cache")).unwrap();

@@ -220,8 +220,8 @@ impl<'p> Index<'p> {
             .unwrap_or_default()
     }
 
-    /// The Una form of `value` (DECISION D-100). A field whose declared type is labeled above
-    /// `public` is `<redacted:level>` (DECISION D-107).
+    /// The Una form of `value`. A field whose declared type is labeled above
+    /// `public` is `<redacted:level>`.
     pub(crate) fn render(&self, value: &Value<'_>) -> String {
         match value {
             Value::Int(n) => n.to_string(),
@@ -343,6 +343,15 @@ fn none<'p>() -> Value<'p> {
     Value::data(prelude_ctor("Option", "None", 1), Vec::new())
 }
 
+/// A binder's source name: Core renames a binder that shares a name with another, and `k%2`
+/// is keyed as `k` in traces (`spec/11 §5`).
+fn source_name(name: &str) -> String {
+    match name.split_once('%') {
+        Some((source, _)) if !source.is_empty() => source.to_owned(),
+        _ => name.to_owned(),
+    }
+}
+
 /// The parameter names of the operations of host capabilities (`spec/14 §3`).
 fn host_params(capability: &str, op: &str) -> &'static [&'static str] {
     match (capability, op) {
@@ -437,8 +446,7 @@ impl<'p, 'w> Machine<'p, 'w> {
     }
 
     /// Enters a call: past the maximum depth, or when the stack the evaluator was given runs
-    /// short before it, the run aborts with U6003 rather than overflow the stack
-    /// (DECISION D-105).
+    /// short before it, the run aborts with U6003 rather than overflow the stack.
     fn enter(&mut self, span: Span) -> Result<(), Stop<'p>> {
         let used = self.stack_base.abs_diff(stack_position(&span));
         if self.depth >= self.max_depth || used > self.stack_budget {
@@ -462,7 +470,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         loop {
             match expr {
                 Expr::Atom { atom, .. } => return self.atom(env, atom),
-                // DECISION D-111: the `exhaustive` obligation proves this branch is never
+                // The `exhaustive` obligation proves this branch is never
                 // taken; reaching it is a fault.
                 Expr::Unreachable { goal, .. } => {
                     return Err(fault(format!(
@@ -673,7 +681,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                 _ => Err(fault("a field of a value that is not a record")),
             },
             Rhs::List(items) => Ok(Value::List(Rc::new(self.atoms(env, items)?))),
-            Rhs::Lambda { params, body } => Ok(Value::Closure(Rc::new(Closure {
+            Rhs::Lambda { params, body, .. } => Ok(Value::Closure(Rc::new(Closure {
                 params: params.iter().map(|(name, _)| name).collect(),
                 body,
                 env: env.clone(),
@@ -782,7 +790,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             Some(ops) => ops
                 .iter()
                 .find(|o| o.name == op)
-                .map(|o| o.params.iter().map(|(n, _)| n.clone()).collect())
+                .map(|o| o.params.iter().map(|(n, _)| source_name(n)).collect())
                 .unwrap_or_default(),
             None => host_params(capability, op)
                 .iter()
@@ -794,7 +802,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             .enumerate()
             .map(|(i, value)| {
                 let name = names.get(i).cloned().unwrap_or_else(|| format!("arg{i}"));
-                // DECISION D-100: an argument labeled above `public` is redacted.
+                // An argument labeled above `public` is redacted.
                 let label = labels.get(i).cloned().unwrap_or_else(Label::public);
                 (name, self.index.redacted(value, &label))
             })
@@ -848,7 +856,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         result
     }
 
-    /// A host operation, within the grants (`spec/14 §3`, DECISION D-103).
+    /// A host operation, within the grants (`spec/14 §3`).
     fn host(&mut self, capability: &str, op: &str, args: &[Value<'p>]) -> Flow<'p> {
         let text = |i: usize| match args.get(i) {
             Some(Value::Text(t)) => t.to_string(),
@@ -917,7 +925,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         }
     }
 
-    /// The functions of the prelude (`spec/14 §1`, DECISION D-104).
+    /// The functions of the prelude (`spec/14 §1`).
     fn prelude(&mut self, name: &str, args: Vec<Value<'p>>, span: Span) -> Flow<'p> {
         let bad = || fault(format!("`{name}` applied to values of the wrong types"));
         let int = |i: usize| match args.get(i) {
@@ -1114,7 +1122,7 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
         Prim::Div | Prim::Mod => {
             let (a, b) = (int(0)?, int(1)?);
             if b.sign() == Sign::NoSign {
-                // DECISION D-108: tier 1 proves divisors nonzero; until it runs, zero aborts.
+                // Tier 1 proves divisors nonzero; until it runs, zero aborts.
                 return Err(fault(format!(
                     "`{}` by zero, which a proof obligation excludes once tier 1 verifies it",
                     prim.as_str()

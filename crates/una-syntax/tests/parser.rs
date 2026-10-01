@@ -171,7 +171,7 @@ fn types() {
 
 #[test]
 fn a_bracket_after_a_level_starts_label_categories() {
-    // DECISION D-018: `secret [Int]` reads `[Int]` as the label's categories.
+    // `secret [Int]` reads `[Int]` as the label's categories.
     assert_eq!(
         errors("f(xs: secret [Int]) -> Int = 0\n"),
         [
@@ -408,7 +408,7 @@ fn statements_and_handling_clauses() {
 
 #[test]
 fn handling_clauses_follow_the_canonical_order() {
-    // DECISION D-020: `spec/06 §3` orders handling clauses, checked by the parser.
+    // `spec/06 §3` orders handling clauses, checked by the parser.
     assert_eq!(
         errors(
             "f() -> Int\n=\n  let a = g()\n    if none use 0\n    if error pass\n    if none use 1\n  let b = g()\n    if error pass\n    if error use 0\n  a\n"
@@ -691,7 +691,7 @@ fn recovery_resumes_only_at_a_line_that_starts_a_declaration() {
 
 #[test]
 fn a_lexical_error_explains_the_parse_errors_of_its_declaration() {
-    // DECISION D-019: the parser's U0101 after a lexical error in the same declaration is not
+    // The parser's U0101 after a lexical error in the same declaration is not
     // reported; a later declaration still reports its own.
     assert_eq!(
         errors("f(a: Bool, b: Bool) -> Bool = a & b\n\ng() -> Int = 1 1\n"),
@@ -714,7 +714,7 @@ fn a_lexical_error_explains_the_parse_errors_of_its_declaration() {
 
 #[test]
 fn doc_comments_attach_to_the_next_declaration() {
-    // DECISION D-021: every doc comment between the previous token and the declaration
+    // Every doc comment between the previous token and the declaration
     // attaches, even across blank lines and plain comments.
     let parsed = parse_source(
         "--- Orphan: before the module header.\nmodule t\n\n--- One.\n--- Two.\n\n-- plain\n--- Three.\npub f() -> Int\n=\n  --- Orphan: inside a body.\n  1\n\npub g() -> Int = 2\n--- Orphan: at the end of the file.\n",
@@ -799,5 +799,48 @@ fn an_error_at_the_end_of_the_file_points_one_past_the_last_character() {
     assert_eq!(
         errors("pub f() -> Int\n=\n"),
         ["U0101 5:1 unexpected end of file, expected an indented block"]
+    );
+}
+
+#[test]
+fn nested_patterns_are_not_supported() {
+    // Benchmark finding B-001: `spec/02 §6` allows only names in the fields of a variant
+    // pattern, and a nested pattern gets a message that says so.
+    let message = "nested patterns are not supported in v0.1";
+    for (pattern, column) in [
+        ("is Some(Pair(x: a, y: b))", 13),
+        ("is Ok(Some(v))", 11),
+        ("is Ok(value: Some(v))", 18),
+        ("is Some(0)", 13),
+        ("is Some(value: is 0)", 20),
+        ("is Pair(x, y: \"a\")", 19),
+    ] {
+        assert_eq!(
+            errors(&format!(
+                "f(v: T) -> Int\n=\n  when v\n    {pattern} -> 1\n"
+            )),
+            [format!("U0101 6:{column} {message}")],
+            "{pattern}"
+        );
+    }
+    let mut db = SourceDb::new();
+    let id = db.add(
+        "t.una",
+        b"module t\n\nf(v: T) -> Int\n=\n  when v\n    is Ok(Some(v)) -> 1\n",
+    );
+    let mut interner = Interner::new();
+    let lexed = lex(db.file(id), id, &mut interner);
+    let parsed = parse(&lexed, id, &interner);
+    assert_eq!(parsed.errors.len(), 1);
+    assert_eq!(parsed.errors[0].repairs.len(), 1);
+    let repair = &parsed.errors[0].repairs[0];
+    assert_eq!(
+        repair.description,
+        "bind the field to a name, as in `is Ok(inner)`, then match that name in a second `when` inside the arm"
+    );
+    assert_eq!(repair.edit, None);
+    // The two-step shape the repair describes parses.
+    tree(
+        "f(v: T) -> Int\n=\n  when v\n    is Ok(inner) ->\n      when inner\n        is Some(w) -> w\n        else -> 0\n    else -> 0\n",
     );
 }

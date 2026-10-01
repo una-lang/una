@@ -1,0 +1,17 @@
+-- test: effect in `requires` (review control)
+-- spec: spec/03 §3
+-- expect: error U2014 at 14:16
+module effect_in_requires
+
+kind StoreError = | Timeout
+
+capability Store
+  op find(key: Int) -> Option[Int]
+    fails StoreError
+  op count() -> Int
+
+pub run(n: Int) -> Int
+  requires n > @store.count()
+  uses @store: Store[count]
+=
+  n

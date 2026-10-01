@@ -1,0 +1,29 @@
+-- Adversarial: handler for an op that 'accepts secret' performs a public Console effect; the op is called under a secret pc; runtime prints 'ping' only when PIN=1234
+-- Expected: U4002/U4003 (spec/07 §1, §3.4, T6)
+-- Observed: accepted (exit 0)
+-- Verdict: CRITICAL
+module flow_handler_pc
+
+capability Vault
+  op note(line: Text) -> Unit
+    accepts secret
+
+handler to_console() for Vault
+  uses @console: Console[print]
+  op note(line) = @console.print("ping")
+
+branch(flag: secret Bool) -> Unit
+  uses @vault: Vault[note]
+=
+  if flag
+    @vault.note("x")
+  else
+    unit
+
+pub main() -> Unit
+  uses @env: Env[get]
+  uses @console: Console[print]
+=
+  let pin = @env.get("PIN")
+    if none use ""
+  branch(pin == "1234") with @vault = to_console()

@@ -40,7 +40,7 @@ This repository holds the language specification, the design record and **Una Co
 
 ## Project status
 
-**v0.1, Una Core, is complete, reviewed and merged into `main`**: every milestone of `docs/plan/milestones-v0.1.md` is implemented and meets its acceptance criteria, and CI is green on Linux and macOS. The choices the specification left open were reviewed and kept on 2026-09-29: the ADRs that record them in `docs/adr/` are Accepted, the specification states their rules, and `docs/reviews/open-decisions.md` keeps each decision with its answer. The tag `v0.1.0`, which publishes the first release archives, comes next.
+**Version 0.1.0, Una Core.** Every milestone of `docs/plan/milestones-v0.1.md` is implemented and meets its acceptance criteria, and CI is green on Linux and macOS. An independent review of v0.1 (`docs/reviews/v0.1-review/`) found soundness gaps, and the closure run fixed every Critical and Major finding, each with a regression test, and 140 of its 143 adversarial programs are now part of the test suite (the other 3 belong to findings deferred to the backlog). The choices the specification left open are recorded in the ADRs of `docs/adr/` and the decision log in `docs/history/v0.1/open-decisions.md`. Release archives for Linux and macOS come from the tag `v0.1.0`; the changes are listed in [`CHANGELOG.md`](CHANGELOG.md).
 
 Una is a research language built to test a thesis (see [Roadmap](#roadmap)). It is not ready for production use.
 
@@ -60,10 +60,10 @@ Una is a research language built to test a thesis (see [Roadmap](#roadmap)). It 
 
 | At a glance | |
 | --- | --- |
-| Rust crates | 10, about 33,000 lines of Rust |
-| Specification | 15 normative chapters, 35 architecture decision records |
-| Diagnostic codes | 65, each with an explanation, and all but the internal error with a failing and a fixed example |
-| Tests | 320 Rust tests, 194 conformance cases, all passing |
+| Rust crates | 10, about 36,000 lines of Rust |
+| Specification | 15 normative chapters, 45 architecture decision records |
+| Diagnostic codes | 68, each with an explanation, and all but the internal error with a failing and a fixed example |
+| Tests | 348 Rust tests, 374 conformance cases, all passing |
 | Example packages | 7, each verified at tier 1 with every obligation proven |
 | Usage checkpoints | 4 of 4 reached, each with a demo script run in CI |
 
@@ -169,7 +169,7 @@ Every guarantee has the form: *the implementation satisfies its specification, a
 | Zone | Contents in v0.1 | Who is responsible |
 | --- | --- | --- |
 | **Proven** | Type safety, effect and capability confinement, information-flow noninterference (termination-insensitive), refinement and contract obligations | The compiler and the verifier |
-| **Trusted** | The compiler, the reference interpreter, the SMT solver, the standard library, `trusted` modules, host capability implementations | Una maintainers and module owners |
+| **Trusted** | The compiler, the reference interpreter, the SMT solver, the standard library, `trusted` modules, host capability implementations, the proof cache of the package | Una maintainers and module owners |
 | **Assumed** | The behavior of external systems as declared in `capability` signatures | Capability authors |
 | **Human** | That requirements and contracts capture the intent | Requirement owners and reviewers |
 
@@ -205,22 +205,22 @@ With it, `pub average(counts: NonEmpty[Int]) -> Int = counts.sum() / counts.len`
 
 ### Capabilities and effects
 
-There is no ambient authority. A function acts outside the program only through a capability it declares in `uses`; capabilities pass down to callees by name, `with` rebinds them or installs a handler for one statement, and they are never values. From `examples/redacted`:
+There is no ambient authority. A function acts outside the program only through a capability it declares in `uses`; capabilities pass down to callees by name, `with` rebinds them or installs a handler for one statement, and they are never values. From `examples/toolshelf`:
 
 ```una
---- Lends from the main shelf, or from the backup shelf when the main one cannot.
-pub lend_anywhere(member: Member, name: Text, today: Day, days: LoanDays) -> redacted
-  requires can_borrow(member)
+--- Checks out from the main shelf, or from the backup shelf when the main one cannot.
+pub check_out_anywhere(member: Member, name: Text, today: Day, days: KeepDays) -> Checkout
+  requires can_check_out(member)
   ensures result.due == today + days
   uses @main_shelf: Shelf[pick]
   uses @backup_shelf: Shelf[pick]
-  fails LendError
+  fails CheckoutError
 =
-  let first_try = attempt lend(member, name, today, days) with @shelf = @main_shelf
+  let first_try = attempt check_out(member, name, today, days) with @shelf = @main_shelf
   when first_try
-    is Ok(redacted) -> redacted
+    is Ok(checkout) -> checkout
     is Err ->
-      lend(member, name, today, days) with @shelf = @backup_shelf
+      check_out(member, name, today, days) with @shelf = @backup_shelf
         if error pass
 ```
 
@@ -336,7 +336,7 @@ Each diagnostic has a registered code (65 in nine domains: syntax, names, types,
 }
 ```
 
-Exit codes: `0` success; `1` errors in the program, an unproven obligation or a failed example; `2` a usage or configuration error; `3` an internal compiler error (U8001), which is always a bug.
+Exit codes: `0` success; `1` errors in the program, an unproven obligation or a failed example; `2` a usage error, a problem of the invocation reported on stderr without a diagnostic document; `3` an internal compiler error (U8001), which is always a bug. Problems of `una.toml` (U7002) and `verification.lock` (U7004) are diagnostics and exit with `1`.
 
 ### The build report
 
@@ -347,7 +347,7 @@ $ una report examples/events
 package events-example 0.1.0
 lock: z3 5.1.0, sha256 3ae01f54b3b40760c00b7537ac3ba510a2288a5a4dd42a583dab76ea66719c3c
 proven: 11 semantic obligations; security and authority by typing
-obligations: 11 proven, 0 refuted, 0 unknown
+obligations: 11 proven, 0 refuted, 0 unknown; 11 cached
 authority:
   events.checkin.check_in (pub): @registrations: Registrations[find], @audit: Audit[record], @keys: Keys[hmac]
   events.keys.hmac_phone (private): @keys: Keys[hmac]
@@ -363,15 +363,54 @@ tcb:
   trusted modules: events.keys (17 lines)
   host capabilities: Console, Keys
   solver: z3 5.1.0
+  proof cache: .una/cache/
 requirements:
   EVENTS_3 (active): events.seating.availability
 coverage: 5 pub functions, 1 with ensures, 1 with derived from, 0 trivial ensures
-out of model: timing, termination, resource consumption, external systems beyond declared signatures
+out of model: timing, termination and divergence, resource consumption and allocation, interpreter stack exhaustion, external systems beyond declared signatures, races between the check and the use of a file path, hard links
 ```
 
 ## Quick start
 
-### Requirements
+### Install from a release
+
+Each release on the [releases page](https://github.com/una-lang/una/releases) has an archive per platform, with a `.sha256` digest beside it:
+
+| Platform | Archive |
+| --- | --- |
+| Linux, x86_64 | `una-0.1.0-x86_64-unknown-linux-gnu.tar.gz` |
+| macOS, arm64 | `una-0.1.0-aarch64-apple-darwin.tar.gz` |
+
+Each archive holds the `una` binary, this readme and the license. Proofs need Z3 at the version pinned in `verification.lock` (5.1.0) on `PATH`; `scripts/install-z3.sh DIR` installs it. Without it, `una check` fails with U5003, and verification never passes silently.
+
+```bash
+tar -xzf una-0.1.0-aarch64-apple-darwin.tar.gz
+export PATH="$PWD/una-0.1.0-aarch64-apple-darwin:$PATH"
+```
+
+### Hello, world
+
+A single `.una` file is a package with default settings. This is `examples/hello/src/hello.una`:
+
+```una
+module hello
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("Hello, Una")
+```
+
+```text
+$ una run hello.una --grant console
+Hello, Una
+```
+
+`main` declares the one capability it needs, `Console[print]`, and `una run` grants it explicitly; without `--grant console` the program does not start (U3012).
+
+### Build from source
+
+The requirements:
 
 - The Rust toolchain pinned in `rust-toolchain.toml` (1.98.1), installed through [rustup](https://rustup.rs).
 - Z3 at the exact version pinned in `verification.lock` (5.1.0). `scripts/install-z3.sh DIR` downloads that release for Linux (x86_64, aarch64) or macOS (arm64, x86_64), checks its SHA-256 digest and installs it as `DIR/bin/z3`. Without the pinned Z3 on `PATH`, proofs fail with U5003: verification never passes silently.
@@ -387,12 +426,10 @@ cargo build --release -p una-cli && export PATH="$PWD/target/release:$PATH"
 una check examples/events           # tiers 0 and 1: every check and every proof
 una test examples/events            # run the examples, with effect traces
 una run examples/hello              # prints "Hello, Una"
-una obligations examples/redacted    # every proof obligation and its status
+una obligations examples/toolshelf  # every proof obligation and its status
 una report examples/journal         # the build report
 una explain U5001                   # what a code means, with examples
 ```
-
-Once `v0.1.0` is released, the archives `una-0.1.0-x86_64-unknown-linux-gnu.tar.gz` and `una-0.1.0-aarch64-apple-darwin.tar.gz` each hold the `una` binary, this readme and the license, with a `.sha256` digest beside them; Z3 is still installed with `scripts/install-z3.sh`.
 
 ### Your first package
 
@@ -472,7 +509,7 @@ Every package under `examples/` is canonical, checks at tier 1 with every obliga
 | --- | --- | --- |
 | [`hello`](examples/hello) | A greeting | The smallest program: `main` with `Console` |
 | [`events`](examples/events) | Event check-in (the reference example) | Range refinements, a postcondition derived from a requirement, capabilities with handlers, a `secret[PII]` phone number that leaves only as a keyed hash through a policy in a trusted module, an opaque predicate established by `checked` |
-| [`redacted`](examples/redacted) | A community tool-redacted shelf | Records and sums with payloads, reflect predicates in `requires` and `ensures`, `attempt` under a `with` rebinding, a handler instance in `main`, `Clock` |
+| [`toolshelf`](examples/toolshelf) | A shared tool shelf where members check tools out and bring them back | Records and sums with payloads, reflect predicates in `requires` and `ensures`, `attempt` under a `with` rebinding, a handler instance in `main`, `Clock` |
 | [`pantry`](examples/pantry) | The stock of a shared kitchen | Generic kinds and functions, a generic refinement proving a division, lambdas through method calls (`filter`, `map`, `fold`, `first_where`) |
 | [`journal`](examples/journal) | A private journal | A label category, the program counter, a sink label, a declassification policy, `Files` and `Env` under an `internal` program counter |
 | [`greenhouse`](examples/greenhouse) | A roof vent controller | Operation contracts, handlers verified against them, a handler with its own `uses`, `with @x = @y`, an inferred private header, a requirement from a regulation |
@@ -542,7 +579,7 @@ Tests that reach tier 1 need the pinned Z3 on `PATH`; without it they fail with 
 | Properties | `crates/una-fmt/tests/` | Formatting is idempotent and preserves every `.una` file of the repository |
 | End to end | `crates/una-cli/tests/` | The CLI, the ABI documents, the runtime, verification, the examples, the guide and this readme's code, the explain examples, determinism, the checkpoint demos |
 
-CI (`.github/workflows/ci.yml`) runs formatting, clippy and the tests on Linux for every push, and also on macOS for pull requests and pushes to `main`; each push also packs the Linux release archive and runs it on the examples. Pushing a tag `v*` starts `.github/workflows/release.yml`, which builds the Linux and macOS archives with `scripts/release.sh`, checks them with `scripts/check-release.sh`, and attaches them to a draft release.
+CI (`.github/workflows/ci.yml`) runs formatting, clippy and the tests on Linux for every push, and also on macOS for pull requests and pushes to `main`; each run also packs the release archive of its runner's target and runs it on the examples, so the Linux archive is checked on every push and the macOS one on pull requests and pushes to `main`. Pushing a tag `v*` starts `.github/workflows/release.yml`, which builds the Linux and macOS archives with `scripts/release.sh`, checks them with `scripts/check-release.sh`, and attaches them to a draft release.
 
 Each usage checkpoint has a demo script that prints every command with its expected and actual outcome:
 
@@ -560,11 +597,14 @@ scripts/demo/checkpoint-4.sh    # trust: proofs, counterexamples, obligations, t
 | --- | --- |
 | [`docs/00-charter.md`](docs/00-charter.md) | What Una is, what it proves and assumes, the v0.1 scope. Read first |
 | [`docs/spec/`](docs/spec/) | The normative specification, 15 chapters, with RFC 2119 keywords |
+| [`docs/guide/syntax-reference.md`](docs/guide/syntax-reference.md) | The language guide: every construct, with its diagnostics |
 | [`docs/guide/una-for-agents.md`](docs/guide/una-for-agents.md) | A compact, tested reference for agents writing Una |
 | [`docs/adr/`](docs/adr/) | Architecture decision records: why each key decision was made |
 | [`docs/compiler/`](docs/compiler/) | Architecture, conventions and testing of the reference compiler |
 | [`docs/plan/`](docs/plan/) | Roadmap, v0.1 milestones, deferred backlog, milestone plans |
-| [`docs/reviews/`](docs/reviews/) | Design review triage, the decision log, the status report |
+| [`docs/reviews/`](docs/reviews/) | Design review triage, and the independent review of v0.1 |
+| [`docs/history/v0.1/`](docs/history/v0.1/) | How v0.1 was built: the run instructions, the plans, the decision log |
+| [`CHANGELOG.md`](CHANGELOG.md) | The changes of each release |
 | [`docs/README.md`](docs/README.md) | The documentation map and reading order |
 
 | Specification chapter | Defines |

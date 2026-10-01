@@ -1,0 +1,31 @@
+-- test: function values: calls through labeled, captured and generic function values are raised by their labels (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 16:39
+-- expect: error U4001 at 21:3
+-- expect: error U4001 at 26:3
+module sweep_label_fnvalue_fnvalue
+
+low(x: Int) -> Int = x
+
+high(x: Int) -> Int = x + 1
+
+pick(pin: secret Int) -> secret fn(Int) -> Int = if pin > 0 then low else high
+
+is_pin[T](x: T, y: T) -> Int = if x == y then 1 else 0
+
+pub labeled(pin: secret Int) -> Int = pick(pin)(1)
+
+pub captured(pin: secret Int) -> Int
+=
+  let f = fn(x: Int) -> x + pin
+  f(1)
+
+pub generic_value(pin: secret Int) -> Int
+=
+  let f = is_pin
+  f(pin, 1234)
+
+pub generic_twin(pin: secret Int) -> secret Int
+=
+  let f = is_pin
+  f(pin, 1234)

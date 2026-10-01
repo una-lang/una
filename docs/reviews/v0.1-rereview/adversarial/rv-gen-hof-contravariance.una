@@ -1,0 +1,25 @@
+-- Adversarial: pure lambdas and named functions with a public parameter passed where a generic HOF instantiates the parameter with a secret (`apply`, `fold`, `map`), and a `Pair[T, U]` swap
+-- Expected: U4001 at the function value or at the public result (spec/07 §7 rule 2, S-Fun contravariance; ADR 0038 D1, D3)
+-- Observed: U4001 at every function value and every public result (4ea31cf and 85787d7)
+-- Verdict: Held
+module rv_gen_hof_contravariance
+
+apply[T](x: T, f: fn(T) -> Int) -> Int = f(x)
+
+ident(x: Int) -> Int = x
+
+pub a(pin: secret Int) -> Int = apply(pin, f: fn(y: Int) -> y)
+
+pub b(pin: secret Int) -> Int = apply(pin, f: ident)
+
+pub c(pin: secret Int) -> Int = [pin].fold(initial: 0, step: fn(acc: Int, y: Int) -> y)
+
+pub d(pin: secret Int) -> List[Int] = [pin].map(each: ident)
+
+kind Pair[T, U]
+  left: T
+  right: U
+
+swap[T, U](p: Pair[T, U]) -> Pair[U, T] = Pair(left: p.right, right: p.left)
+
+pub e(pin: secret Int) -> Int = swap(Pair(left: pin, right: 0)).right

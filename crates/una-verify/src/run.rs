@@ -10,7 +10,7 @@ use una_diag::{Binding, ObligationStatus};
 
 use crate::cache;
 use crate::generate::{Obligation, Show};
-use crate::smt::{Const, ConstRole, F};
+use crate::smt::{Const, ConstRole, F, path_selector};
 use crate::solver::{self, Answer, Status};
 
 /// The settings of `verification.lock` that the solver runs with (`spec/12 §9`).
@@ -70,7 +70,7 @@ pub enum Problem {
 }
 
 /// The full script of an obligation's query: the preamble of `spec/12 §5`, the query, and the
-/// commands that read the answer (DECISION D-116).
+/// commands that read the answer.
 fn script(obligation: &Obligation, lock: &Lock) -> (String, Vec<F>) {
     let mut out = String::new();
     let _ = writeln!(out, "(set-option :produce-models true)");
@@ -102,11 +102,7 @@ fn requested(obligation: &Obligation) -> Vec<F> {
         })
         .collect();
     for number in 1..=obligation.paths.len() {
-        terms.push(F::Const(Const {
-            name: format!("path!{number}"),
-            sort: "Bool".to_owned(),
-            role: ConstRole::Plain,
-        }));
+        terms.push(path_selector(number));
     }
     for term in obligation.query.applications() {
         if let F::Const(Const {
@@ -245,11 +241,7 @@ fn outcome(obligation: &Obligation, requested: &[F], answer: &Answer, cached: bo
             });
         }
         for number in 1..=obligation.paths.len() {
-            let selector = F::Const(Const {
-                name: format!("path!{number}"),
-                sort: "Bool".to_owned(),
-                role: ConstRole::Plain,
-            });
+            let selector = path_selector(number);
             if value(&selector) == "true" {
                 path = Some(number - 1);
                 break;
@@ -282,7 +274,7 @@ fn number_or_bool(text: &str) -> serde_json::Value {
     }
 }
 
-/// An uninterpreted value as `<Kind>#<n>`: `Kind_events_seating_Event!val!0` is `Event#0`.
+/// An uninterpreted value as `<Kind>#<n>`: `u!Kind_events_seating_Event!val!0` is `Event#0`.
 fn identity(kind: &str, raw: &str) -> String {
     match raw.rsplit_once("!val!") {
         Some((_, n)) => format!("{kind}#{n}"),

@@ -1,0 +1,27 @@
+-- test: a generic kind instantiated with a secret type: ordering and `in` on values read from it are secret, and the kind itself cannot be ordered (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 23:43
+-- expect: error U4001 at 25:42
+-- expect: error U2001 at 27:48
+-- expect: error U4001 at 27:48
+module sweep_label_generic_order
+
+kind Acct
+  id: Int
+  pin: secret Int
+
+kind Guess = Hit(pin: secret Int) | Miss
+
+kind Box[T]
+  value: T
+
+kind Wallet
+  acct: Acct
+
+grab(x: Box[secret Int]) -> secret Int = x.value
+
+pub ordered(x: Box[secret Int]) -> Bool = grab(x) < 5
+
+pub ranged(x: Box[secret Int]) -> Bool = grab(x) in 0..10
+
+pub kind_ordered(x: Box[secret Int]) -> Bool = x < Box(value: 2)

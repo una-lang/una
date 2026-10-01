@@ -8,7 +8,7 @@ use una_diag::{
 };
 use una_syntax::SourceDb;
 
-use crate::generate::Obligation;
+use crate::generate::{Obligation, Within};
 use crate::run::Outcome;
 
 /// The diagnostics of the obligations that are not proven.
@@ -24,7 +24,7 @@ pub fn diagnostics(
             ObligationStatus::Refuted => Code::U5001,
             ObligationStatus::Unknown => Code::U5002,
         };
-        // DECISION D-113: a return obligation points at the returned expression of the path
+        // A return obligation points at the returned expression of the path
         // that the model takes.
         let primary = outcome
             .path
@@ -48,7 +48,12 @@ pub fn diagnostics(
             goal: obligation.goal.clone(),
             status: outcome.status,
         });
-        if outcome.status == ObligationStatus::Refuted {
+        // R-021: a ground goal has no binder to show; N-009: nor has a model without
+        // bindings, as for a closed goal that is not a literal (`zero(1) > 0`).
+        if outcome.status == ObligationStatus::Refuted
+            && !obligation.site.ground
+            && !outcome.bindings.is_empty()
+        {
             diagnostic.counterexample = Some(Counterexample {
                 bindings: outcome.bindings.clone(),
             });
@@ -83,58 +88,95 @@ fn message(obligation: &Obligation, outcome: &Outcome) -> String {
                 .trim_matches(|c| c == '(' || c == ')');
             format!("{subject} could not be proven ({reason})")
         }
+        // Issue #72 (UI-004): a model that treats a product, quotient or remainder of two
+        // values as uninterpreted (`spec/12 §2`) may not be a real execution, so the message
+        // says so; whether such an obligation is refuted or unknown is `spec/12 §6`'s rule.
+        _ if uses_uninterpreted_arithmetic(obligation) => format!(
+            "{subject} is refuted in a model where a product, quotient or remainder of two values is uninterpreted (`spec/12 §2`), so the counterexample may not be a real execution"
+        ),
         _ => format!("{subject} is refuted"),
     }
 }
 
-/// The repair candidates of `spec/13 §3` that apply to the obligation's kind, ranked
-/// (DECISION D-120).
+/// Whether the obligation's query uses the uninterpreted `i!mul!Int`, `i!div!Int` or
+/// `i!mod!Int` of `spec/12 §2`.
+fn uses_uninterpreted_arithmetic(obligation: &Obligation) -> bool {
+    let text = obligation.query.text();
+    ["(i!mul!Int ", "(i!div!Int ", "(i!mod!Int "]
+        .iter()
+        .any(|symbol| text.contains(symbol))
+}
+
+/// The repair candidates of `spec/13 §3` that apply to the obligation's kind and site, ranked
+/// (R-021): a stronger parameter type only when the value is a parameter, a
+/// `requires` clause only in a private function and over its parameters, and no candidate for
+/// a ground goal.
 fn repairs(obligation: &Obligation) -> Vec<Repair> {
     let goal = &obligation.goal;
-    let candidates: Vec<(u32, String)> = match obligation.kind {
-        ObligationKind::Refinement | ObligationKind::Precondition => vec![
-            (
-                0,
-                format!("strengthen the type of the value to a refined kind that implies `{goal}`"),
-            ),
-            (
-                0,
-                format!(
-                    "add `requires {goal}` to the enclosing function, if it is not `pub`; its callers then prove it"
-                ),
-            ),
-            (
+    let site = &obligation.site;
+    if site.ground {
+        return Vec::new();
+    }
+    // ADR 0037 rule 6: a function value flowing into a function type has one repair, a
+    // stronger type at a position of a function type; no `requires`, guard or `checked`
+    // reaches a value that exists only when the function is called.
+    if let Some(flow) = &site.flow {
+        return vec![Repair {
+            rank: 1,
+            escape_cost: 0,
+            description: flow.clone(),
+            edit: None,
+        }];
+    }
+    let requires = site.over_parameters && site.within == Within::Function { public: false };
+    let mut candidates: Vec<(u32, String)> = Vec::new();
+    match obligation.kind {
+        ObligationKind::Refinement | ObligationKind::Precondition => {
+            if let Some(parameter) = &site.parameter {
+                candidates.push((
+                    0,
+                    format!(
+                        "strengthen the type of the parameter `{parameter}` to a refined kind that implies `{goal}`"
+                    ),
+                ));
+            }
+            if requires {
+                candidates.push((
+                    0,
+                    format!(
+                        "add `requires {goal}` to the enclosing function; its callers then prove it"
+                    ),
+                ));
+            }
+            candidates.push((
                 0,
                 format!(
                     "add a guard (`if` or a `when` arm) that handles the values where `{goal}` does not hold"
                 ),
-            ),
-            (
+            ));
+            candidates.push((
                 1,
                 format!("check the value with `checked(value, {goal}) else fail <Variant>`"),
-            ),
-        ],
-        ObligationKind::Postcondition => vec![
-            (
+            ));
+        }
+        ObligationKind::Postcondition => {
+            candidates.push((
                 0,
                 format!(
                     "add a guard or an arm so that the failing path returns a value for which `{goal}` holds"
                 ),
-            ),
-            (0, "adjust the `ensures` clause".to_owned()),
-        ],
-        ObligationKind::Division => vec![
-            (0, format!("guard the division with `if {goal}`")),
-            (
-                0,
-                format!("add `requires {goal}` to the enclosing function, if it is not `pub`"),
-            ),
-        ],
-        ObligationKind::Exhaustive => vec![(
+            ));
+            candidates.push((0, "adjust the `ensures` clause".to_owned()));
+        }
+        // `spec/13 §3`: a `division` proposes a guard.
+        ObligationKind::Division => {
+            candidates.push((0, format!("guard the division with `if {goal}`")));
+        }
+        ObligationKind::Exhaustive => candidates.push((
             0,
             "add an `else` arm, or arms for the values the others miss".to_owned(),
-        )],
-    };
+        )),
+    }
     candidates
         .into_iter()
         .enumerate()

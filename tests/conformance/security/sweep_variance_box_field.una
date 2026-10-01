@@ -1,0 +1,20 @@
+-- test: a kind whose parameter is only in data positions is covariant at a constructor field (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 15:53
+module sweep_variance_box_field
+
+kind Box[T]
+  value: T
+
+kind Sink[T]
+  eat: fn(T) -> Int
+
+kind Hold0
+  w: Box[Int]
+
+pub field_0(v: Box[secret Int]) -> Hold0 = Hold0(w: v)
+
+kind Hold1
+  w: Box[secret Int]
+
+pub field_1(v: Box[Int]) -> Hold1 = Hold1(w: v)

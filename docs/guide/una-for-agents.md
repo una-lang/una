@@ -14,7 +14,7 @@ How to read the blocks: every `una` block is a whole module that `una check` acc
 
 ```sh
 una check examples/events
-una --json check examples/redacted
+una --json check examples/toolshelf
 una fmt --check examples/pantry
 una --json test examples/journal
 una --json obligations examples/greenhouse
@@ -26,7 +26,7 @@ una trace EVENTS_3  # in examples/events
 una contract events.checkin.check_in  # in examples/events
 ```
 
-Exit codes: `0` success; `1` errors in the program, an unproven obligation or a failed example; `2` a usage or configuration error; `3` an internal compiler error (U8001), which is a bug to report. With `--json`, stdout holds exactly one JSON document and stderr stays empty.
+Exit codes: `0` success; `1` errors in the program, an unproven obligation or a failed example; `2` a usage error, a problem of the invocation reported on stderr without a diagnostic document; `3` an internal compiler error (U8001), which is a bug to report. Problems of `una.toml` (U7002) and `verification.lock` (U7004) are diagnostics and exit with `1`. With `--json`, stdout holds exactly one JSON document and stderr stays empty.
 
 ## 2. Files and packages
 
@@ -37,7 +37,7 @@ Exit codes: `0` success; `1` errors in the program, an unproven obligation or a 
 
 ## 3. Syntax in brief
 
-- Indentation is significant: two spaces per level, no tabs. Brackets join lines.
+- Indentation is significant: two spaces per level, no tabs. A line break inside brackets continues the line, but the canonical form joins such lines, so `una check` reports the split as U7001 (and `una fmt` joins it) unless a comment sits inside the brackets. Write each call on one line.
 - `--` starts a comment, `---` a doc comment attached to the next declaration.
 - Names: `lower_snake` for values, functions, fields, modules, handlers and operations; `UpperCamel` for kinds, variants, capabilities and label categories; `@name` for capability references; `UPPER_SNAKE_1` for requirements.
 - Literals: integers without leading zeros (`1_000` is fine), `true`, `false`, `unit`, and single-line text with `{expression}` interpolation; a literal `}` in text is `\}`.
@@ -68,7 +68,7 @@ pub kind Tool
   deposit: Nat
 
 --- Sums, with and without payloads. A sum of one variant starts with `|`.
-pub kind LendError = NotOnShelf(tool: Text) | ShelfDown
+pub kind CheckoutError = NotOnShelf(tool: Text) | ShelfDown
 
 pub kind Oops = | TooLarge
 
@@ -119,7 +119,7 @@ example "restocking adds to the amount"
   expect result.amount == 5
 ```
 
-- Arguments after the first are labeled, `f(a, b: 2)`; a bare name equal to the parameter's name counts as labeled (`f(a, b)` when the parameter is `b`). Constructors with two or more fields label every field.
+- Arguments after the first are labeled, `f(a, b: 2)`; from the second argument on, a bare name equal to the parameter's name counts as labeled (`f(a, b)` when the parameter is `b`). The first argument always binds the first parameter, so `minus(b, a)` with parameters `(a, b)` is U2006, not a swap. Constructors with two or more fields label every field.
 - Blocks bind with `let`; values are immutable. `if c then a else b` fits on a line; `if` and `when` also take indented blocks.
 - `when` branches on variants (`is Some(x)`, `is Err`), literals (`is 0`) and ranges (`in 1..<20`); an `else` arm comes last. Arms over variants must cover every variant (U2007).
 - The prelude has `abs`, `min`, `max`, `is_digits`, `starts_with`, `trim`, `to_int`, `is_empty`, `first`, `at`, `append`, `contains`, `map`, `filter`, `first_where`, `fold`, `sum`, `is_some`, `or_else` and `is_ok`; their contracts are hypotheses for the solver (`spec/14`). There are no loops: use recursion, `map`, `filter` or `fold`.
@@ -148,16 +148,16 @@ pub kind Member
   name: Text
   holding: Int in 0..3
 
-pub predicate reflect can_borrow(m: Member) -> Bool = m.holding < 3
+pub predicate reflect can_check_out(m: Member) -> Bool = m.holding < 3
 
-pub borrow(m: Member) -> Member
-  requires can_borrow(m)
+pub check_out(m: Member) -> Member
+  requires can_check_out(m)
   ensures result.holding == m.holding + 1
 =
   Member(name: m.name, holding: m.holding + 1)
 
 --- A caller proves the precondition: here, from the literal.
-pub first_loan() -> Member = borrow(Member(name: "Ana", holding: 0))
+pub first_checkout() -> Member = check_out(Member(name: "Ana", holding: 0))
 ```
 
 A false contract is refuted, with the path and the values that break it:
@@ -319,7 +319,7 @@ module demo
 
 pub kind StoreError = | Offline
 
-pub kind LendError = NotOnShelf | ShelfDown
+pub kind CheckoutError = NotOnShelf | ShelfDown
 
 pub kind Tool
   name: Text
@@ -328,9 +328,9 @@ pub capability Shelf
   op pick(name: Text) -> Option[Tool]
     fails StoreError
 
-pub lend(name: Text) -> Tool
+pub check_out(name: Text) -> Tool
   uses @shelf: Shelf[pick]
-  fails LendError
+  fails CheckoutError
 =
   let tool = @shelf.pick(name)
     if error fail ShelfDown
@@ -338,25 +338,25 @@ pub lend(name: Text) -> Tool
   tool
 
 --- Tries the main shelf, then the backup one.
-pub lend_anywhere(name: Text) -> Tool
+pub check_out_anywhere(name: Text) -> Tool
   uses @main_shelf: Shelf[pick]
   uses @backup: Shelf[pick]
-  fails LendError
+  fails CheckoutError
 =
-  let outcome = attempt lend(name) with @shelf = @main_shelf
+  let outcome = attempt check_out(name) with @shelf = @main_shelf
   when outcome
     is Ok(tool) -> tool
     is Err ->
-      lend(name) with @shelf = @backup
+      check_out(name) with @shelf = @backup
         if error pass
 
 pub handler shelf_with(tools: List[Tool]) for Shelf
   op pick(name) = tools.first_where(keep: fn(t) -> t.name == name)
 
-example "the backup shelf lends what the main one lacks"
+example "the backup shelf has what the main one lacks"
   given @main_shelf = shelf_with(tools: [])
   given @backup = shelf_with(tools: [Tool(name: "saw")])
-  do lend_anywhere("saw")
+  do check_out_anywhere("saw")
   expect result.name == "saw"
   expect performed @backup.pick
 ```

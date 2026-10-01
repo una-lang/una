@@ -13,6 +13,121 @@ pub(crate) type AliasId = usize;
 /// An index into the capabilities of the environment.
 pub(crate) type CapId = usize;
 
+/// What the label rules need to know of each record and sum kind, from the types of its fields
+/// and variant fields (re-review N-001, ADR 0046).
+/// D-168: the labels a kind's fields declare count at positions that hold data, as
+/// in [`Ty::deep_label`]; the labels inside a field of function type do not, since every use of
+/// the field's function reads them from its declared type. The type arguments of a kind count
+/// whatever positions their parameters occupy, as before.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct KindLabels {
+    /// For each kind, the join of the labels its fields declare at positions that hold data,
+    /// through the kinds they contain: part of the deep label of every value of the kind,
+    /// whatever its type arguments.
+    own: Vec<Label>,
+    /// For each kind, which of its type parameters are invariant for labels: those that occur
+    /// inside a function type, or under an invariant parameter of another kind (ADR 0046
+    /// rule 1). The others are covariant.
+    invariant: Vec<Vec<bool>>,
+}
+
+impl KindLabels {
+    /// The labels of the kinds whose field types are `fields`, by kind: the least solution
+    /// over recursive and mutually recursive kinds (ADR 0046 rule 1).
+    pub(crate) fn new(fields: &[Vec<&Ty>], params: &[usize]) -> KindLabels {
+        let mut labels = KindLabels {
+            own: vec![Label::public(); fields.len()],
+            invariant: params.iter().map(|count| vec![false; *count]).collect(),
+        };
+        loop {
+            let mut changed = false;
+            for (id, types) in fields.iter().enumerate() {
+                let mut own = Label::public();
+                let mut invariant = Vec::new();
+                for ty in types {
+                    own = own.join(&labels.written(ty));
+                    labels.occurrences(ty, false, &mut invariant);
+                }
+                if let Some(slot) = labels.own.get_mut(id)
+                    && *slot != slot.join(&own)
+                {
+                    *slot = slot.join(&own);
+                    changed = true;
+                }
+                if let Some(slots) = labels.invariant.get_mut(id) {
+                    for index in invariant {
+                        if let Some(slot) = slots.get_mut(index)
+                            && !*slot
+                        {
+                            *slot = true;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if !changed {
+                return labels;
+            }
+        }
+    }
+
+    /// The join of the labels written in `ty` at positions that hold data, and of the kinds
+    /// it contains there.
+    fn written(&self, ty: &Ty) -> Label {
+        match ty {
+            Ty::Labeled(label, inner) => label.join(&self.written(inner)),
+            Ty::List(element) => self.written(element),
+            Ty::Kind(id, args) => args
+                .iter()
+                .fold(self.own(*id), |label, arg| label.join(&self.written(arg))),
+            _ => Label::public(),
+        }
+    }
+
+    /// Adds to `out` the type parameters that occur in `ty` in an invariant position:
+    /// inside a function type (`in_fn`), or under an invariant parameter of a kind.
+    fn occurrences(&self, ty: &Ty, in_fn: bool, out: &mut Vec<usize>) {
+        match ty {
+            Ty::Labeled(_, inner) => self.occurrences(inner, in_fn, out),
+            Ty::Param(index) => {
+                if in_fn {
+                    out.push(*index);
+                }
+            }
+            Ty::List(element) => self.occurrences(element, in_fn, out),
+            Ty::Kind(id, args) => {
+                for (index, arg) in args.iter().enumerate() {
+                    self.occurrences(arg, in_fn || self.is_invariant(*id, index), out);
+                }
+            }
+            Ty::Fn(function) => {
+                for param in &function.params {
+                    self.occurrences(param, true, out);
+                }
+                self.occurrences(&function.result, true, out);
+                if let Some(fails) = &function.fails {
+                    self.occurrences(fails, true, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The labels that the fields of kind `id` declare, as in [`KindLabels::new`].
+    pub(crate) fn own(&self, id: KindId) -> Label {
+        self.own.get(id).cloned().unwrap_or_else(Label::public)
+    }
+
+    /// Whether type parameter `index` of kind `id` is invariant for labels (ADR 0046).
+    pub(crate) fn is_invariant(&self, id: KindId, index: usize) -> bool {
+        self.invariant
+            .get(id)
+            .and_then(|params| params.get(index))
+            .copied()
+            .unwrap_or(false)
+    }
+}
+
 /// A base type: what type checking compares (`spec/03 §2`). Refinements and labels are kept
 /// beside it, in [`Declared`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -36,7 +151,7 @@ pub(crate) enum Ty {
     /// yields one diagnostic.
     Error,
     /// A type whose top position carries a label above `public` (`spec/03 §5`, `spec/09 §2`).
-    /// Type equality ignores labels (DECISION D-088).
+    /// Type equality ignores labels.
     Labeled(Label, Box<Ty>),
 }
 
@@ -49,6 +164,63 @@ pub(crate) struct FnTy {
     pub(crate) uses: Vec<FnUse>,
     /// The error kind of `fails`.
     pub(crate) fails: Option<Ty>,
+    /// The refinements of the parameters and the result (ADR 0037 rule 1).
+    pub(crate) refinements: FnRefinements,
+}
+
+/// The refinements of a function type's parameters and result, from its written form, the
+/// header of a named function used as a value, or a lambda's annotations (ADR 0037 rule 1).
+/// They sit beside the base types, as in [`Declared`]: type equality compares bases, so two
+/// function types are equal whatever their refinements, and the verifier proves the flows
+/// between them (`spec/12 §3`).
+#[derive(Clone, Debug, Default, Eq)]
+pub(crate) struct FnRefinements {
+    /// The refinements of each parameter, by position; a missing entry has none.
+    pub(crate) params: Vec<Vec<Refinement>>,
+    /// The refinements of the result.
+    pub(crate) result: Vec<Refinement>,
+}
+
+impl PartialEq for FnRefinements {
+    /// Always equal: refinements are not part of the base that type checking compares.
+    fn eq(&self, _: &FnRefinements) -> bool {
+        true
+    }
+}
+
+impl FnRefinements {
+    /// The refinements of parameter `index`.
+    pub(crate) fn param(&self, index: usize) -> &[Refinement] {
+        self.params.get(index).map_or(&[], Vec::as_slice)
+    }
+
+    /// The refinements of a join (`join`) or a meet (not `join`) of two function types:
+    /// a join accepts what both accept, so its parameters carry the refinements of either and
+    /// its result those both share; a meet the other way round. Every value of either type is
+    /// then of the join, and the flows the verifier checks are trivially implied.
+    /// DECISION D-150: ADR 0037 does not say how branches join; this join never assumes a
+    /// refinement that one branch lacks.
+    pub(crate) fn combine(&self, other: &FnRefinements, join: bool) -> FnRefinements {
+        let count = self.params.len().max(other.params.len());
+        let params = (0..count)
+            .map(|index| mix(self.param(index), other.param(index), !join))
+            .collect();
+        FnRefinements {
+            params,
+            result: mix(&self.result, &other.result, join),
+        }
+    }
+}
+
+/// The refinements that `a` and `b` share (`common`), or those of either, in order.
+fn mix(a: &[Refinement], b: &[Refinement], common: bool) -> Vec<Refinement> {
+    if common {
+        a.iter().filter(|r| b.contains(r)).cloned().collect()
+    } else {
+        let mut out = a.to_vec();
+        out.extend(b.iter().filter(|r| !a.contains(r)).cloned());
+        out
+    }
 }
 
 /// A capability that a function type or a function requires, `uses @name: C[ops]`.
@@ -124,16 +296,93 @@ impl Ty {
         }
     }
 
-    /// The join of the labels of every position that holds data: the top, list elements and
-    /// kind arguments. A function type holds its top label only.
-    pub(crate) fn deep_label(&self) -> Label {
+    /// The join of the labels of every position that holds data: the top, list elements, kind
+    /// arguments and the labels that the fields and variant fields of a kind declare,
+    /// instantiated and through the kinds they contain (`spec/07 §7` rule 3, re-review N-001).
+    /// A function type holds its top label only.
+    pub(crate) fn deep_label(&self, kinds: &KindLabels) -> Label {
         match self {
-            Ty::Labeled(label, inner) => label.join(&inner.deep_label()),
-            Ty::List(element) => element.deep_label(),
-            Ty::Kind(_, args) => args
-                .iter()
-                .fold(Label::public(), |label, arg| label.join(&arg.deep_label())),
+            Ty::Labeled(label, inner) => label.join(&inner.deep_label(kinds)),
+            Ty::List(element) => element.deep_label(kinds),
+            Ty::Kind(id, args) => args.iter().fold(kinds.own(*id), |label, arg| {
+                label.join(&arg.deep_label(kinds))
+            }),
             _ => Label::public(),
+        }
+    }
+
+    /// [`Ty::deep_label`] without the labels that kinds' fields declare: what Core IR records
+    /// for the arguments of an operation and interpolated values, since the runtime redacts
+    /// the fields of a kind value by their own declared labels (`spec/11 §5`).
+    /// D-165: traces keep redacting field by field, as before N-001.
+    pub(crate) fn argument_label(&self) -> Label {
+        self.deep_label(&KindLabels::default())
+    }
+
+    /// The join of every label of the type, at every position: [`Ty::deep_label`] and the
+    /// labels of the parameters, results and failures of its function types. An operation's
+    /// arguments are sinks with every label of their types (`spec/07 §7` rule 4), since the
+    /// declared parameter types do not bound them at covariant positions (ADR 0050): a function
+    /// value whose result carries a label would otherwise reach a handler as a function of the
+    /// declared, lower, type.
+    /// D-164: "every label" includes the labels of function parameters, which is
+    /// conservative, since a value flows into a parameter from the handler, not out of it.
+    pub(crate) fn every_label(&self, kinds: &KindLabels) -> Label {
+        match self {
+            Ty::Labeled(label, inner) => label.join(&inner.every_label(kinds)),
+            Ty::List(element) => element.every_label(kinds),
+            Ty::Kind(id, args) => args.iter().fold(kinds.own(*id), |label, arg| {
+                label.join(&arg.every_label(kinds))
+            }),
+            Ty::Fn(function) => function
+                .params
+                .iter()
+                .chain([&function.result])
+                .chain(function.fails.as_ref())
+                .fold(Label::public(), |label, ty| {
+                    label.join(&ty.every_label(kinds))
+                }),
+            _ => Label::public(),
+        }
+    }
+
+    /// The declared type of an operation parameter as an operation argument flows into it
+    /// (ADR 0050): every covariant position (`positive`) is `top`, since `accepts` bounds the
+    /// data that the caller sends there; contravariant positions, the parameters of its
+    /// function types, and invariant kind arguments keep their declared labels.
+    pub(crate) fn op_parameter(&self, positive: bool, top: &Label, kinds: &KindLabels) -> Ty {
+        let inner = match self.unlabeled() {
+            Ty::List(element) => Ty::List(Box::new(element.op_parameter(positive, top, kinds))),
+            Ty::Kind(id, args) => Ty::Kind(
+                *id,
+                args.iter()
+                    .enumerate()
+                    .map(|(index, arg)| {
+                        if kinds.is_invariant(*id, index) {
+                            arg.clone()
+                        } else {
+                            arg.op_parameter(positive, top, kinds)
+                        }
+                    })
+                    .collect(),
+            ),
+            Ty::Fn(function) => Ty::Fn(Box::new(FnTy {
+                params: function
+                    .params
+                    .iter()
+                    .map(|p| p.op_parameter(!positive, top, kinds))
+                    .collect(),
+                result: function.result.op_parameter(positive, top, kinds),
+                uses: function.uses.clone(),
+                fails: function.fails.clone(),
+                refinements: function.refinements.clone(),
+            })),
+            other => other.clone(),
+        };
+        if positive {
+            inner.with_label(top)
+        } else {
+            inner.with_label(&self.top_label())
         }
     }
 
@@ -158,6 +407,7 @@ impl Ty {
                 result: function.result.erase(),
                 uses: function.uses.clone(),
                 fails: function.fails.as_ref().map(Ty::erase),
+                refinements: function.refinements.clone(),
             })),
             other => other.clone(),
         }
@@ -178,8 +428,68 @@ impl Ty {
                 result: function.result.substitute(args),
                 uses: function.uses.clone(),
                 fails: function.fails.as_ref().map(|f| f.substitute(args)),
+                refinements: function.refinements.clone(),
             })),
             other => other.clone(),
+        }
+    }
+
+    /// `self` with every label, at every position, replaced by `f` of it.
+    pub(crate) fn map_labels(&self, f: &dyn Fn(&Label) -> Label) -> Ty {
+        match self {
+            Ty::Labeled(label, inner) => inner.map_labels(f).with_label(&f(label)),
+            Ty::List(element) => Ty::List(Box::new(element.map_labels(f))),
+            Ty::Kind(id, args) => Ty::Kind(*id, args.iter().map(|a| a.map_labels(f)).collect()),
+            Ty::Fn(function) => Ty::Fn(Box::new(FnTy {
+                params: function.params.iter().map(|p| p.map_labels(f)).collect(),
+                result: function.result.map_labels(f),
+                uses: function.uses.clone(),
+                fails: function.fails.clone(),
+                refinements: function.refinements.clone(),
+            })),
+            other => other.clone(),
+        }
+    }
+
+    /// `self` with the value of each type parameter labeled with its symbolic label `ℓ_T`
+    /// (`spec/07 §7` rule 8, ADR 0038 D3.2): the type of a value in the body of a generic
+    /// function whose type parameters are `names`.
+    pub(crate) fn symbolic(&self, names: &[&str]) -> Ty {
+        match self {
+            Ty::Labeled(label, inner) => inner.symbolic(names).with_label(label),
+            Ty::Param(index) => match names.get(*index) {
+                Some(name) => Ty::Param(*index).with_label(&Label::symbol(*name)),
+                None => Ty::Param(*index),
+            },
+            Ty::List(element) => Ty::List(Box::new(element.symbolic(names))),
+            Ty::Kind(id, args) => Ty::Kind(*id, args.iter().map(|a| a.symbolic(names)).collect()),
+            Ty::Fn(function) => Ty::Fn(Box::new(FnTy {
+                params: function.params.iter().map(|p| p.symbolic(names)).collect(),
+                result: function.result.symbolic(names),
+                uses: function.uses.clone(),
+                fails: function.fails.clone(),
+                refinements: function.refinements.clone(),
+            })),
+            other => other.clone(),
+        }
+    }
+
+    /// Whether the type is second-class or contains a second-class type: a function type with
+    /// `uses` or `fails` at any position (`spec/05 §6`, ADR 0038 D2).
+    /// DECISION D-139: a function type whose parameter or result holds a second-class type
+    /// holds one too, as `fn(fn() -> Unit uses @log: Log[write]) -> Unit` does.
+    pub(crate) fn second_class(&self) -> bool {
+        match self {
+            Ty::Labeled(_, inner) => inner.second_class(),
+            Ty::List(element) => element.second_class(),
+            Ty::Kind(_, args) => args.iter().any(Ty::second_class),
+            Ty::Fn(function) => {
+                !function.uses.is_empty()
+                    || function.fails.is_some()
+                    || function.params.iter().any(Ty::second_class)
+                    || function.result.second_class()
+            }
+            _ => false,
         }
     }
 

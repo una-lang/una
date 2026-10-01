@@ -1,7 +1,7 @@
 //! `una report [path]` (`spec/13 §6`): the build report of a package that checks at tier 1.
 //!
-//! DECISION D-122: what each section lists. DECISION D-123: trivial `ensures` and coverage.
-//! DECISION D-132: the report is assembled here, beside the package and analysis it reads.
+//! What each section lists. trivial `ensures` and coverage.
+//! The report is assembled here, beside the package and analysis it reads.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
@@ -22,12 +22,19 @@ use crate::{Analysis, ExitStatus, Package, analyze, load, on_large_stack, report
 /// The JSON schema of `una report --json` (`spec/13 §6`).
 const REPORT_SCHEMA: &str = "una.report/1";
 
-/// What the verification model does not cover (`spec/13 §6`, `spec/07 §1`).
-const OUT_OF_MODEL: [&str; 4] = [
+/// The proof cache of a package, relative to its root: trusted in v0.1 (ADR 0041).
+const PROOF_CACHE: &str = ".una/cache/";
+
+/// What the verification model does not cover: the one list of `spec/07 §1` and `spec/13 §6`,
+/// in their order (R-041; the last entry is ADR 0038 D9 rule 4).
+const OUT_OF_MODEL: [&str; 7] = [
     "timing",
-    "termination",
-    "resource consumption",
+    "termination and divergence",
+    "resource consumption and allocation",
+    "interpreter stack exhaustion",
     "external systems beyond declared signatures",
+    "races between the check and the use of a file path",
+    "hard links",
 ];
 
 /// The capabilities of the prelude, whose implementations the host provides (`spec/14 §3`).
@@ -48,7 +55,7 @@ struct Report {
     tcb: TcbDoc,
     requirements: Vec<RequirementDoc>,
     coverage: CoverageDoc,
-    out_of_model: [&'static str; 4],
+    out_of_model: [&'static str; 7],
 }
 
 #[derive(Serialize)]
@@ -75,6 +82,8 @@ struct Counts {
     proven: usize,
     refuted: usize,
     unknown: usize,
+    /// How many of these results came from the proof cache (ADR 0041).
+    cached: usize,
 }
 
 #[derive(Serialize)]
@@ -128,6 +137,8 @@ struct TcbDoc {
     trusted_modules: Vec<TrustedDoc>,
     host_capabilities: Vec<String>,
     solver: String,
+    /// The proof cache of the package, part of the Trusted zone (ADR 0041).
+    proof_cache: &'static str,
 }
 
 #[derive(Serialize)]
@@ -196,7 +207,7 @@ pub(crate) fn report_command(
             stderr,
         );
     };
-    // DECISION D-123: a clause the solver proves without any hypothesis is trivial.
+    // A clause the solver proves without any hypothesis is trivial.
     let trivial_queries =
         on_large_stack(|| una_verify::trivial_ensures(&analysis.program, &package.sources));
     let trivial: BTreeSet<(String, Span)> =
@@ -224,6 +235,9 @@ pub(crate) fn report_command(
             ObligationStatus::Proven => counts.proven += 1,
             ObligationStatus::Refuted => counts.refuted += 1,
             ObligationStatus::Unknown => counts.unknown += 1,
+        }
+        if outcome.cached {
+            counts.cached += 1;
         }
     }
     let unproven = counts.refuted + counts.unknown > 0;
@@ -456,6 +470,7 @@ fn build(
             trusted_modules,
             host_capabilities: host.into_iter().collect(),
             solver: format!("z3 {}", lock.solver_version),
+            proof_cache: PROOF_CACHE,
         },
         requirements,
         coverage: CoverageDoc {
@@ -647,8 +662,11 @@ fn human(report: &Report) -> String {
         report.proven.semantic
     ));
     line(format!(
-        "obligations: {} proven, {} refuted, {} unknown",
-        report.obligations.proven, report.obligations.refuted, report.obligations.unknown
+        "obligations: {} proven, {} refuted, {} unknown; {} cached",
+        report.obligations.proven,
+        report.obligations.refuted,
+        report.obligations.unknown,
+        report.obligations.cached
     ));
     line("authority:".to_owned());
     for entry in &report.authority {
@@ -705,6 +723,7 @@ fn human(report: &Report) -> String {
         report.tcb.host_capabilities.join(", ")
     ));
     line(format!("  solver: {}", report.tcb.solver));
+    line(format!("  proof cache: {}", report.tcb.proof_cache));
     line("requirements:".to_owned());
     for requirement in &report.requirements {
         line(format!(

@@ -100,6 +100,8 @@ pub enum Code {
     U1007,
     /// Module path does not match file path.
     U1008,
+    /// Reserved module name.
+    U1009,
     /// Type mismatch.
     U2001,
     /// Unknown or ill-formed type.
@@ -130,6 +132,8 @@ pub enum Code {
     U2014,
     /// Invalid predicate body (impure, failing, recursive or outside RL for `reflect`).
     U2015,
+    /// Opaque predicate called outside `checked`.
+    U2016,
     /// Capability not in scope.
     U3001,
     /// Operation not permitted by capability type.
@@ -160,6 +164,8 @@ pub enum Code {
     U3014,
     /// `std.testing` used outside a handler or example.
     U3015,
+    /// Second-class type used as a type argument.
+    U3016,
     /// Flow to a lower label.
     U4001,
     /// Implicit flow through control, failure or call under raised pc.
@@ -198,7 +204,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 65] = [
+    pub const ALL: [Code; 68] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -217,6 +223,7 @@ impl Code {
         Code::U1006,
         Code::U1007,
         Code::U1008,
+        Code::U1009,
         Code::U2001,
         Code::U2002,
         Code::U2003,
@@ -232,6 +239,7 @@ impl Code {
         Code::U2013,
         Code::U2014,
         Code::U2015,
+        Code::U2016,
         Code::U3001,
         Code::U3002,
         Code::U3003,
@@ -247,6 +255,7 @@ impl Code {
         Code::U3013,
         Code::U3014,
         Code::U3015,
+        Code::U3016,
         Code::U4001,
         Code::U4002,
         Code::U4003,
@@ -396,6 +405,12 @@ impl Code {
                 meaning: "Module path does not match file path",
                 explain: include_str!("../explain/U1008.md"),
             },
+            Code::U1009 => &Entry {
+                code: "U1009",
+                domain: Domain::Names,
+                meaning: "Reserved module name",
+                explain: include_str!("../explain/U1009.md"),
+            },
             Code::U2001 => &Entry {
                 code: "U2001",
                 domain: Domain::Types,
@@ -486,6 +501,12 @@ impl Code {
                 meaning: "Invalid predicate body (impure, failing, recursive or outside RL for `reflect`)",
                 explain: include_str!("../explain/U2015.md"),
             },
+            Code::U2016 => &Entry {
+                code: "U2016",
+                domain: Domain::Types,
+                meaning: "Opaque predicate called outside `checked`",
+                explain: include_str!("../explain/U2016.md"),
+            },
             Code::U3001 => &Entry {
                 code: "U3001",
                 domain: Domain::Authority,
@@ -575,6 +596,12 @@ impl Code {
                 domain: Domain::Authority,
                 meaning: "`std.testing` used outside a handler or example",
                 explain: include_str!("../explain/U3015.md"),
+            },
+            Code::U3016 => &Entry {
+                code: "U3016",
+                domain: Domain::Authority,
+                meaning: "Second-class type used as a type argument",
+                explain: include_str!("../explain/U3016.md"),
             },
             Code::U4001 => &Entry {
                 code: "U4001",

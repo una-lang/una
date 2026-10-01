@@ -1,0 +1,43 @@
+-- Adversarial: UI-008 soundness: a lambda whose parameter is annotated `Pos` flows where `fn(Int) -> Int` is expected, at an argument, annotated `let`, `map`, `fold`, a generic, a function value, a return, a branch join and an `Option` default
+-- Expected: U5001 at every flow
+-- Observed: U5001 at all nine
+-- Verdict: Held
+module fr_lambda_param_refinement
+
+pub kind Pos = Int where it > 0
+
+apply(f: fn(Int) -> Int, x: Int) -> Int = f(x)
+
+twice[T](f: fn(T) -> T, x: T) -> T = f(f(x))
+
+pub to_plain(x: Int) -> Int = apply(fn(n: Pos) -> 100 / n, x: x)
+
+pub by_let() -> Int
+=
+  let g: fn(Int) -> Int = fn(n: Pos) -> 100 / n
+  g(0)
+
+pub by_map(xs: List[Int]) -> List[Int] = xs.map(each: fn(n: Pos) -> 100 / n)
+
+pub by_fold(xs: List[Int]) -> Int = xs.fold(initial: 1, step: fn(acc: Int, n: Pos) -> acc + 100 / n)
+
+pub by_generic(x: Int) -> Int = twice(fn(n: Pos) -> 100 / n, x: x)
+
+pub by_value() -> Int
+=
+  let g = fn(n: Pos) -> 100 / n
+  apply(g, x: 0)
+
+pub by_return() -> fn(Int) -> Int = fn(n: Pos) -> 100 / n
+
+pub by_join(c: Bool) -> Int
+=
+  let g = if c then fn(n: Pos) -> 100 / n else fn(n: Int) -> n
+  g(0)
+
+pub by_option() -> Int
+=
+  let o = Some(fn(n: Pos) -> 100 / n)
+  let g = o
+    if none use fn(n: Int) -> n
+  g(0)

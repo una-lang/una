@@ -29,7 +29,7 @@ pub struct Manifest {
 /// The only edition of v0.1.
 const EDITION: &str = "0.1";
 
-/// Parses `una.toml`. DECISION D-033: the tables and keys of ADR 0021 rule 2 and no others;
+/// Parses `una.toml`. the tables and keys of ADR 0021 rule 2 and no others;
 /// every problem is U7002, except a category's naming convention (U1005) and a repeated
 /// category (U1002).
 pub fn parse_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {

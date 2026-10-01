@@ -1,0 +1,14 @@
+trusted module release
+
+pub kind Pos = Int where it > 0
+
+pub kind Small = Int where it < 10
+
+pub policy lower
+  from internal Small
+  to public Pos
+  via clamp
+  purpose "show a count"
+  owner ops
+
+clamp(n: internal Pos) -> public Pos = n

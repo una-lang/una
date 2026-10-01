@@ -55,7 +55,7 @@ const DECLARATION_KEYWORDS: [&str; 11] = [
 ];
 
 /// Whether a lower-case word at column 1 starts a declaration: a declaration keyword, or a
-/// function name followed by `(`, or by `[` for a generic function (DECISION D-015).
+/// function name followed by `(`, or by `[` for a generic function.
 pub(crate) fn starts_declaration(word: &str, next: Option<char>) -> bool {
     DECLARATION_KEYWORDS.contains(&word) || matches!(next, Some('(' | '['))
 }
@@ -270,7 +270,7 @@ impl Lexer<'_> {
                 ' ' => width += 1,
                 '\t' => {
                     first_tab.get_or_insert(self.pos);
-                    // DECISION D-017: a tab counts two columns when choosing the recovery level.
+                    // A tab counts two columns when choosing the recovery level.
                     width += 2;
                 }
                 _ => break,
@@ -285,7 +285,7 @@ impl Lexer<'_> {
     }
 
     /// U0002 for a tab leading a line that produces no layout: a comment-only line, or a line
-    /// joined inside brackets. Rule 1 of `spec/01 §2` applies to every line (DECISION D-013).
+    /// joined inside brackets. Rule 1 of `spec/01 §2` applies to every line.
     fn tab_outside_layout(&mut self, line_start: usize, indentation: &Indentation) {
         if let Some(tab) = indentation.first_tab {
             let error = SyntaxError::new(
@@ -558,7 +558,7 @@ impl Lexer<'_> {
     }
 
     /// An integer literal, with U0007 and a mechanical edit when malformed (ADR 0017).
-    /// DECISION D-016: a letter right after the digits starts a new token, as in `12abc`.
+    /// A letter right after the digits starts a new token, as in `12abc`.
     fn integer(&mut self) {
         let start = self.pos;
         self.consume_while(|c| c.is_ascii_digit() || c == '_');
@@ -614,7 +614,7 @@ impl Lexer<'_> {
         self.consume_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
         let name = self.slice(name_start, self.pos).to_owned();
         if Keyword::from_word(&name).is_some() {
-            // DECISION D-014: a keyword cannot name a capability.
+            // A keyword cannot name a capability.
             self.error(
                 Code::U0101,
                 name_start,
@@ -640,7 +640,7 @@ impl Lexer<'_> {
 
     /// A text literal; `interpolate` is false for a literal nested in an interpolation, which
     /// is U0006 already and takes `{` and `}` as plain characters. That bounds the recursion
-    /// between literals and interpolations (DECISION D-022).
+    /// between literals and interpolations.
     fn text_literal_with(&mut self, interpolate: bool) {
         let quote = self.pos;
         self.push(TokenKind::TextStart, quote, quote + 1);

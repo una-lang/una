@@ -91,7 +91,7 @@ pub struct Use {
 }
 
 /// A term of the refinement language (`spec/03 §3`): a tree over binders, `it` and
-/// `result`, since formulas are not A-normal (DECISION D-111).
+/// `result`, since formulas are not A-normal.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Term {
     /// A binder: a parameter, a local or a pattern variable.
@@ -375,6 +375,8 @@ pub enum Rhs {
         cap: Name,
         /// The capability.
         capability: String,
+        /// The capability's declaration, by its qualified identity (`spec/10 §11` rule 8).
+        capability_path: Path,
         /// The operation.
         op: String,
         /// The arguments, in parameter order.
@@ -412,6 +414,10 @@ pub enum Rhs {
         params: Vec<(Name, Type)>,
         /// The body.
         body: Box<Expr>,
+        /// The declared function this lambda stands for, when a function is used as a value:
+        /// its parameters keep their declared names and types, and its body calls the
+        /// function (ADR 0037, `spec/12 §3`). `None` for a lambda of the source.
+        function: Option<Path>,
     },
     /// `checked(a, φ, C(a, ...))`, with `φ` as an expression over the binder `it`, which
     /// the interpreter runs, and as a term, which the verifier assumes.
@@ -449,7 +455,7 @@ pub enum Rhs {
 }
 
 /// What a `let` binds: a right-hand side, or an expression, as the value of a handled
-/// statement or a branching construct is (DECISION D-098).
+/// statement or a branching construct is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Bound {
     /// A right-hand side.
@@ -568,7 +574,7 @@ pub enum Expr {
         body: Box<Expr>,
     },
     /// The branch after the last arm of a `when` over literals or ranges without `else`,
-    /// which the `exhaustive` obligation proves is never taken (DECISION D-111).
+    /// which the `exhaustive` obligation proves is never taken.
     Unreachable {
         /// The `when` keyword.
         span: Span,
@@ -714,6 +720,9 @@ pub enum Decl {
         params: Vec<(Name, Type)>,
         /// The capability it implements.
         capability: String,
+        /// The declaration of the capability it implements, by its qualified identity
+        /// (`spec/10 §11` rule 8).
+        capability_path: Path,
         /// Its own capability context.
         uses: Vec<Use>,
         /// The operations.
@@ -803,4 +812,14 @@ pub struct Program {
     pub modules: Vec<Module>,
     /// The functions of the prelude and `std.testing`.
     pub library: Vec<Signature>,
+    /// The capability declarations of [`HOST_MODULE`], with their `spec/14 §3` signatures.
+    pub host: Vec<Decl>,
 }
+
+/// The module that declares the host capabilities (`spec/14 §3`, `spec/10 §11` rule 8).
+pub const HOST_MODULE: &str = "std.host";
+
+/// The module path of the prelude's kinds and functions (`spec/14 §1`). No package module has
+/// it: a module path whose first segment is `prelude` is reserved (U1009, `spec/10 §11`
+/// rule 8), and tier 1 and the interpreter only see packages without diagnostics.
+pub const PRELUDE_MODULE: &str = "prelude";

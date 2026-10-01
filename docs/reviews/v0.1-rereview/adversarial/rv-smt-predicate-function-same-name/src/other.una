@@ -1,0 +1,8 @@
+module other
+
+import lib.p (big)
+
+gate(x: Int) -> Int
+  requires big(x)
+=
+  100 / (x - 5)

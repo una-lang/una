@@ -8,7 +8,7 @@
 
 Every diagnostic has a required `primary` location (`spec/13 §1`, ADR 0012). When M0 was accepted, the owner asked for an ADR on how to locate diagnostics that have no natural position, to be proposed when the first such code is implemented: U7004 for a missing `verification.lock` in M3. U5003 (solver missing or mismatched, M8) and U8001 (internal compiler error) raise the same question later. The conformance runner requires expected positions to lie in files that exist (`compiler/testing.md §2`).
 
-Decision log entry: D-036 (`docs/reviews/open-decisions.md`).
+Decision log entry: D-036 (`docs/history/v0.1/open-decisions.md`).
 
 ## Decision
 

@@ -1,0 +1,41 @@
+-- test: and, or and implies short-circuit a guarded division by zero, and interpolation prints negatives, escapes and scalar lengths (review control)
+-- spec: spec/11 §4
+-- grant: console
+-- expect: run-output "and false or true implies true if 0"
+-- expect: run-output "neg -5 none false minus 5 5"
+-- expect: run-output "bool false"
+-- expect: run-output "brace } text q\"t len 5 emoji 2"
+-- expect: run-output "cmp false true true"
+-- Promoted from the v0.1 review, adversarial `runtime-short-circuit-interpolation`.
+module short_circuit_and_interpolation
+
+pub kind Pair
+  left: Int
+  right: Text
+
+pub kind Shade = Dark | Light(level: Int)
+
+guard_and(x: Int) -> Bool = x != 0 and 100 / x > 1
+
+guard_or(x: Int) -> Bool = x == 0 or 100 / x > 1
+
+guard_implies(x: Int) -> Bool = x != 0 implies 100 / x > 0
+
+guard_if(x: Int) -> Int = if x == 0 then 0 else 100 / x
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let quote = "q\"t"
+  let a = "a"
+  let b = "b"
+  let cap_b = "B"
+  let e_acute = "é"
+  let z = "z"
+  let hello = "héllo"
+  let thumb = "👍🏽"
+  @console.print("and {guard_and(0)} or {guard_or(0)} implies {guard_implies(0)} if {guard_if(0)}")
+  @console.print("neg {-5} none {first([1]) == None} minus {- -5} {0 - -5}")
+  @console.print("bool {not true}")
+  @console.print("brace \} text {quote} len {hello.len} emoji {thumb.len}")
+  @console.print("cmp {b < a} {cap_b < a} {e_acute > z}")

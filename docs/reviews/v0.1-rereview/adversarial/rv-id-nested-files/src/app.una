@@ -1,0 +1,23 @@
+-- Adversarial: a user capability `Files` in a nested module named like the standard library
+-- (`lib.host.std`), with `read` ensuring `result.len == 0` and no `fails`, imported over the
+-- prelude `Files`; `main` uses it with a `files:` grant, hoping `una run` binds the host.
+-- Setup (from this directory, for `una run`): `mkdir -p box && echo hello > box/a.txt`
+-- Expected: U3012, `main` uses a capability that is not a host capability (spec/04 §8,
+-- spec/10 §11 rule 8, ADR 0038 D6).
+-- Observed: `una check` and `una run` both report U3012 (exit 1); nothing runs.
+-- Verdict: Held
+module app
+
+import lib.host.std (Files)
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @files: Files[read]
+=
+  let zero = 0
+  let t = @files.read("a.txt")
+  let q = if t.len > 0
+    100 / zero
+  else
+    1
+  @console.print("q = {q}")
