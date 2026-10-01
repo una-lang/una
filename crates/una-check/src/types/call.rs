@@ -500,7 +500,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let values = declared_args(&def.params, &checked);
         let result = def.result.base.substitute(&subst);
         let result = if prelude_labeled(self.env.prelude, &def) {
-            self.prelude_result(&callee, checked, result)
+            self.prelude_result(&callee, def.name, checked, result)
         } else {
             self.argument_flows(&callee, checked);
             generic_result(self.env.prelude, &def, &subst, result)
@@ -518,15 +518,46 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// The result of a call of a prelude function of `spec/14 §1` "Result labels": its
-    /// parameters that are not functions accept arguments of any label, and its result is
-    /// labeled with the join of every label of every argument, element types included
-    /// (ADR 0038 D3.4). The arguments of function type flow into their parameters as usual,
-    /// so a lambda's result stays below the label its parameter type declares.
-    fn prelude_result(&mut self, callee: &str, checked: Vec<Checked<'a>>, result: Ty) -> Ty {
+    /// parameters that are not functions accept arguments of any label (D-136). The arguments
+    /// of function type flow into their parameters as usual, so a lambda's result stays below
+    /// the label its parameter type declares.
+    /// - The structural functions (ADR 0051) label each position of the result with what it
+    ///   holds: the element and accumulator positions carry the labels of their type
+    ///   variables, which every argument they come from joins (`spec/07 §7` rule 1), and the
+    ///   top label is the label of what decides the shape: [`structural_inputs`].
+    /// - The others label their result with the join of every label of every argument,
+    ///   element types included (ADR 0038 D3.4).
+    fn prelude_result(
+        &mut self,
+        callee: &str,
+        name: &str,
+        checked: Vec<Checked<'a>>,
+        result: Ty,
+    ) -> Ty {
+        let structural = structural_inputs(name);
         let mut label = Label::public();
         let mut functions = Vec::new();
         for (span, found, expected, param) in checked {
-            label = label.join(&self.deep(&found));
+            match structural {
+                Some(inputs) => {
+                    if let Some((_, deep)) = inputs.iter().find(|(input, _)| *input == param) {
+                        let found = self.labeled(&found);
+                        label = label.join(&if *deep {
+                            self.deep(&found)
+                        } else {
+                            found.top_label()
+                        });
+                    }
+                    // A predicate's result decides which elements are kept; its flow into the
+                    // declared `Bool` bounds it, and that bound labels the result.
+                    if let Ty::Fn(function) = self.labeled(&expected).unlabeled()
+                        && param == "keep"
+                    {
+                        label = label.join(&function.result.top_label());
+                    }
+                }
+                None => label = label.join(&self.deep(&found)),
+            }
             if matches!(self.resolve(&expected), Ty::Fn(_)) {
                 functions.push((span, found, expected, param));
             }
@@ -1316,10 +1347,26 @@ const PRELUDE_LABELED: [&str; 20] = [
     "trim",
 ];
 
+/// For a structural prelude function (ADR 0051, `spec/14 §1`), the parameters that decide the
+/// shape of its result, whose labels raise its top label: by their top label, or by every label
+/// (`true`) when their value decides it. `None` for the other functions.
+fn structural_inputs(name: &str) -> Option<&'static [(&'static str, bool)]> {
+    Some(match name {
+        "append" | "first" | "is_empty" => &[("xs", false)],
+        "at" => &[("xs", false), ("index", true)],
+        "is_some" => &[("o", false)],
+        "is_ok" => &[("r", false)],
+        "map" => &[("xs", false), ("each", false)],
+        "fold" => &[("xs", false), ("step", false)],
+        "filter" | "first_where" => &[("xs", false), ("keep", false)],
+        _ => return None,
+    })
+}
+
 /// Whether `def` is a prelude function whose result carries the labels of its arguments.
 /// DECISION D-136: its parameters that are not functions accept arguments of any label,
-/// since the result is raised by all of them; the other prelude functions keep the labels of
-/// their parameter types.
+/// since the result carries all of them, at the positions that hold them for the structural
+/// functions (ADR 0051); the other prelude functions keep the labels of their parameter types.
 fn prelude_labeled(prelude: usize, def: &FnDef<'_>) -> bool {
     def.module == prelude && def.kind == FnKind::Function && PRELUDE_LABELED.contains(&def.name)
 }

@@ -1,0 +1,80 @@
+-- Adversarial: structural results under a raised program counter and at operation arguments (ADR 0050): `is_ok` of a secret choice, a secret-chosen list through `map`, `filter`, `fold`, `append` and `first`; effects under `first() is Some`, `at(index: pin) is Some` and a `first_where`; elements, lengths, records and options sent to operations
+-- Expected: U4001 or U4003 wherever a secret decides the value, the condition or the data; effects under a shape-only condition, a length, and records to an operation that accepts `secret` are accepted
+-- Observed: as expected
+-- Verdict: Held
+module v11_structural_pc_oparg
+
+kind Acct
+  id: Int
+  pin: secret Int
+
+capability Out
+  op send(n: Int) -> Unit
+  op send_list(xs: List[Int]) -> Unit
+  op send_accts(rs: List[Acct]) -> Unit
+    accepts secret
+  op send_option(o: Option[Int]) -> Unit
+
+pub is_ok_choice(pin: secret Int) -> Bool
+=
+  let r = if pin > 3 then Ok(1) else Err(0)
+  is_ok(r)
+
+pub top_through_map(xs: List[Int], pin: secret Int) -> Int
+=
+  let ys = if pin > 3 then xs else []
+  ys.map(each: fn(y) -> y + 1).filter(keep: fn(y) -> true).len
+
+pub top_through_fold(xs: List[Int], pin: secret Int) -> Int
+=
+  let ys = if pin > 3 then xs else []
+  ys.fold(initial: 0, step: fn(n, y) -> n + 1)
+
+pub top_through_append_first(pin: secret Int) -> Bool
+=
+  let ys: secret List[Int] = if pin > 3 then [1] else []
+  ys.append(item: 2).first() is Some
+
+pub under_pc(xs: List[secret Int], pin: secret Int) -> Unit
+  uses @out: Out[send]
+=
+  if xs.first() is Some
+    @out.send(1)
+  else
+    unit
+
+pub under_pc_secret(xs: List[Int], pin: secret Int) -> Unit
+  uses @out: Out[send]
+=
+  if xs.at(index: pin) is Some
+    @out.send(1)
+  else
+    unit
+
+pub under_pc_filter(xs: List[secret Int]) -> Unit
+  uses @out: Out[send]
+=
+  if xs.first_where(keep: fn(x) -> true) is Some
+    @out.send(1)
+  else
+    unit
+
+pub op_elements(xs: List[secret Int]) -> Unit
+  uses @out: Out[send_list]
+=
+  @out.send_list(xs.append(item: 1))
+
+pub op_length(xs: List[secret Int]) -> Unit
+  uses @out: Out[send]
+=
+  @out.send(xs.append(item: 1).len)
+
+pub op_records(rs: List[Acct]) -> Unit
+  uses @out: Out[send_accts]
+=
+  @out.send_accts(rs.filter(keep: fn(r) -> r.id > 3))
+
+pub op_option(xs: List[secret Int]) -> Unit
+  uses @out: Out[send_option]
+=
+  @out.send_option(xs.first())

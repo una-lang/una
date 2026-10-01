@@ -1,8 +1,6 @@
--- test: is_some, is_ok and append accept labeled arguments and join their labels into the result (ADR 0038 D3.4)
+-- test: is_some, is_ok and append accept labeled arguments and join their labels into the result (ADR 0038 D3.4); is_some and is_ok read only the tag, so their result is not raised by the payload (ADR 0051)
 -- spec: spec/14 §1
--- expect: error U4001 at 16:48
--- expect: error U4001 at 18:55
--- expect: error U4001 at 20:62
+-- expect: error U4001 at 18:62
 module prelude_option_result_list_labels
 
 pub kind Missing = | NotThere

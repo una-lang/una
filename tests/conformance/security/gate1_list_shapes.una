@@ -1,0 +1,17 @@
+-- test: the generic list helpers of three Gate 1 scaffolds: concat is accepted (ADR 0051); newest_first and ranked_by, which call a user generic function inside a fold lambda, stay U4001 because D-137 raises the top label of a user generic result (issue #92, v0.2)
+-- spec: spec/14 §1
+-- expect: error U4001 at 9:80
+-- expect: error U4001 at 11:103
+module gate1_list_shapes
+
+pub concat[T](front: List[T], back: List[T]) -> List[T] = back.fold(initial: front, step: fn(acc, x) -> acc.append(item: x))
+
+pub newest_first[T](items: List[T]) -> List[T] = items.fold(initial: [], step: fn(acc, x) -> concat([x], back: acc))
+
+pub ranked_by[T](items: List[T], before: fn(T, T) -> Bool) -> List[T] = items.fold(initial: [], step: fn(sorted, item) -> insert(sorted, item, before))
+
+insert[T](sorted: List[T], item: T, before: fn(T, T) -> Bool) -> List[T]
+=
+  let ahead = sorted.filter(keep: fn(s) -> not before(item, s))
+  let behind = sorted.filter(keep: fn(s) -> before(item, s))
+  behind.fold(initial: ahead.append(item: item), step: fn(acc, s) -> acc.append(item: s))

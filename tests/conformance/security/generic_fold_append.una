@@ -1,0 +1,24 @@
+-- test: unannotated lambdas over generic and labeled elements are accepted with fold, append, map, filter and first_where (issue #89, ADR 0051)
+-- spec: spec/14 §1
+-- expect: ok
+module generic_fold_append
+
+pub concat[T](front: List[T], back: List[T]) -> List[T] = back.fold(initial: front, step: fn(acc, x) -> acc.append(item: x))
+
+pub reversed[T](xs: List[T]) -> List[T] = xs.fold(initial: [], step: fn(acc, x) -> [x].append(item: x))
+
+pub twice[T](xs: List[T]) -> List[T] = concat(xs, back: xs)
+
+pub count[T](xs: List[T]) -> Int = xs.fold(initial: 0, step: fn(acc, x) -> acc + 1)
+
+pub mapped[T](xs: List[T]) -> List[List[T]] = xs.map(each: fn(x) -> [x])
+
+pub kept[T](xs: List[T]) -> List[T] = xs.filter(keep: fn(x) -> true)
+
+pub found[T](xs: List[T]) -> Option[T] = xs.first_where(keep: fn(x) -> true)
+
+pub concat_secret(front: List[secret Int], back: List[secret Int]) -> List[secret Int] = back.fold(initial: front, step: fn(acc, x) -> acc.append(item: x))
+
+pub collected(xs: List[secret Int]) -> List[secret Int] = xs.fold(initial: [], step: fn(acc, x) -> acc.append(item: x))
+
+pub appended(xs: List[secret Int], s: secret Int) -> List[secret Int] = xs.append(item: s)
