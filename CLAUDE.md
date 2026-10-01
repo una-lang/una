@@ -28,6 +28,16 @@ If code and spec disagree, the spec wins. If the spec is wrong, ambiguous or inc
 4. Keep changes scoped to one milestone task. No drive-by refactors across crates.
 5. After each task: `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`.
 
+## Work rules
+
+GitHub issues are the unit of work, tracked on the org project "Una roadmap" (https://github.com/orgs/una-lang/projects/1); `docs/plan/backlog.md` stays the scope guard, and each of its rows links to its issue.
+
+1. Work only on an issue in Ready that the coordinator assigned to you (the board's Agent field). Anything new you find goes to the coordinator first, who creates its issue before work starts. New issues use `.github/ISSUE_TEMPLATE/work-item.md`.
+2. Branch `dev/<issue>-<topic>` from `main`, for example `dev/6-integration-rule`. One issue per branch and per pull request, and one writer per branch.
+3. Every commit references its issue: `Refs #6`.
+4. The pull request into `main` closes its issue. Write the keyword once per issue, `Closes #6` and `Closes #7` on separate lines: a list after one keyword, `Closes #6, #7`, closes only the first.
+5. Status on the board: set In progress when you start, and In review when the pull request is pushed with CI green. Only the coordinator sets Done. An item is Done when it is merged into `main`.
+
 ## Commands
 
 ```bash
