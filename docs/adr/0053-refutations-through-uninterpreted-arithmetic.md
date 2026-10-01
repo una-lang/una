@@ -1,8 +1,8 @@
 # 0053. Refutations through uninterpreted arithmetic
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-01
-- Deciders: Leonardo (pending), on a proposal by Claude (closure)
+- Deciders: Leonardo (accepted on 2026-10-01), on a proposal by Claude (closure)
 - Resolves: issue #72 (UI-004), the open part; final review note F-008
 - Amends: `spec/12 §6` (statuses) and `§7` (counterexamples)
 
@@ -19,11 +19,12 @@ Rejection is right either way: an obligation the verifier cannot prove is an err
 
 ## Decision
 
-Option A is recommended.
-
-1. **Validate the model.** When the query of a satisfiable obligation uses `i!mul!Int`, `i!div!Int` or `i!mod!Int`, the verifier evaluates each application of those symbols in the model with real arithmetic, using Euclidean division and remainder (`spec/11`).
+1. **Validate the model.** When the query of a satisfiable obligation uses `i!mul!Int`, `i!div!Int` or `i!mod!Int`, the verifier evaluates each application of those symbols in the model with real arithmetic, using Euclidean division and remainder (`spec/11`). The evaluation is exact and deterministic. A model that cannot be checked counts as disagreeing:
+   - a value beyond 128 bits, or an overflow;
+   - a zero divisor;
+   - such an application inside a reflect predicate's definition.
 2. **If every application agrees**, the model is an execution of the encoding. The obligation is `refuted` (U5001), with the counterexample and the plain message.
-3. **If any application disagrees**, the obligation is `unknown` (U5002). Its reason is "the refutation depends on a product, quotient or remainder of two values, which the encoding leaves uninterpreted (`spec/12 §2`)". It has no counterexample, and keeps the repairs of its kind. It is still an error in v0.1.
+3. **If any application disagrees**, the obligation is `unknown` (U5002). Its reason is "the refutation depends on a product, quotient or remainder of two values, which the encoding of `spec/12 §2` leaves uninterpreted". It points at the same expression as a refutation would. It has no counterexample, and keeps the repairs of its kind. It is still an error in v0.1.
 4. `spec/12 §6` and `§7` state the rule, and the diagnostics ABI does not change.
 
 ## Consequences
