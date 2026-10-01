@@ -1,0 +1,40 @@
+-- Adversarial: ADR 0053: obligations through `*`, `/` and `mod` with a non-literal operand. Real refutations through a product (`square_pos` at a = 0, `small` at a = b = 2, `product_pos` at a = 0, `fixed`, which is 7 / -2 = -3), true properties (`product_nat`, `guarded`), and linear controls (`quotient`, `remainder`)
+-- Expected: U5001 with a counterexample for every real refutation; U5002 for the true properties
+-- Observed: U5001 for `product_pos` (a = 0, b = 38, result = 0) and the linear controls; U5002 for `square_pos`, `small` and `fixed`, which have real counterexamples (V12-001); U5002 for the true properties. Byte-identical across thread counts and with a warm cache
+-- Verdict: Minor (V12-001)
+module v12_arith_outcomes
+
+pub kind Nat = Int where it >= 0
+
+pub kind Pos = Int where it > 0
+
+pub square_pos(a: Int) -> Pos = a * a
+
+pub product_nat(a: Nat, b: Nat) -> Nat = a * b
+
+pub product_pos(a: Nat, b: Nat) -> Pos = a * b
+
+pub small(a: Int, b: Int) -> Int
+  requires a > 0 and a < 3
+  requires b > 0 and b < 3
+  ensures result < 4
+=
+  a * b
+
+pub quotient(a: Int) -> Int
+  requires a > 10
+  ensures result > 5
+=
+  a / 2
+
+pub remainder(a: Int) -> Int
+  ensures result == 0
+=
+  a mod 2
+
+pub fixed() -> Int
+  ensures result == 3
+=
+  7 / -2
+
+pub guarded(a: Int, b: Int) -> Nat = if a >= 0 and b >= 0 then a * b else 0

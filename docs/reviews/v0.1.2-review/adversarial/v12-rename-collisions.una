@@ -1,0 +1,11 @@
+-- Adversarial: #100 (#75): the rename repair of a reserved word where the new name already exists: a kind `service` next to a kind `Service`, a parameter `table` next to `the_table`. A module `table` in `src/table.una` (in the summary) is the third case
+-- Expected: the rename edits give a program that checks
+-- Observed: applying the edits gives U1002 twice; for the module, U1008 because the file keeps its name (V12-002)
+-- Verdict: Minor (V12-002)
+module v12_rename_collisions
+
+pub kind Service = A | B
+
+pub kind service = C | D
+
+pub f(table: Int, the_table: Int) -> Int = table + the_table
