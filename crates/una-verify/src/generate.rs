@@ -226,6 +226,8 @@ struct Contract<'p> {
     result: &'p Type,
     requires: &'p [Clause],
     ensures: &'p [Clause],
+    /// The error kind of a function that can fail.
+    fails: Option<&'p str>,
 }
 
 /// A predicate: its parameters, and the definition of a reflect one.
@@ -293,6 +295,7 @@ impl<'p> Index<'p> {
                     result: &signature.result,
                     requires: &signature.requires,
                     ensures: &signature.ensures,
+                    fails: None,
                 },
             );
         }
@@ -317,6 +320,7 @@ impl<'p> Index<'p> {
                                 result: &fun.result,
                                 requires: &fun.requires,
                                 ensures: &fun.ensures,
+                                fails: fun.fails.as_deref(),
                             },
                         );
                     }
@@ -1374,6 +1378,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                         result: &signature.result,
                         requires: &signature.requires,
                         ensures: &signature.ensures,
+                        fails: signature.fails.as_deref(),
                     };
                     self.call(&contract, &values, arg_spans, *span, &x, ctx);
                 }
@@ -1573,6 +1578,43 @@ impl<'p, 'i> Walker<'p, 'i> {
             })
             .collect();
         let vars = |name: &str| by_name.get(name).cloned();
+        // Issue #106 (V12-003): the repair of a function value's precondition guards the
+        // conjunction of every `requires`, so applying it settles them all, and uses a named
+        // helper with a handling clause when the function can fail, since a failing call must
+        // be a whole statement (U3013).
+        let shown: Vec<String> = contract
+            .requires
+            .iter()
+            .map(|clause| {
+                print_term_with(&clause.term, &|term| match term {
+                    Term::Var(name) => texts.get(name.as_str()).cloned(),
+                    _ => None,
+                })
+            })
+            .collect();
+        let all = shown.join(" and ");
+        let value_repair = self.eta.as_ref().zip(self.eta_name.clone()).map(|(params, name)| {
+            let args = params.join(", ");
+            let repair = match contract.fails {
+                None => format!(
+                    "pass a lambda that calls `{name}` only where `{all}` holds, as in `fn({args}) -> if {all} then {name}({args}) else ...`"
+                ),
+                Some(kind) => {
+                    let kind = kind.rsplit('.').next().unwrap_or(kind);
+                    let typed: Vec<String> = params
+                        .iter()
+                        .zip(contract.params)
+                        .map(|(param, (_, ty))| format!("{param}: {}", show_type(ty)))
+                        .collect();
+                    format!(
+                        "pass a named function that calls `{name}` only where `{all}` holds: `{name}_where_defined({}) -> {} fails {kind}`, whose body is `if {all}` with `let v = {name}({args})`, `if error pass` and `v` in its block, and a value in its `else` block",
+                        typed.join(", "),
+                        show_type(contract.result)
+                    )
+                }
+            };
+            (name, repair)
+        });
         for clause in contract.requires {
             let env = Env {
                 vars: &vars,
@@ -1587,15 +1629,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             // Issue #76 (UI-007): in the eta-expansion of a named function passed as a value,
             // the precondition cannot follow the value, since a function type has none; its
             // only repair is a lambda that calls the function where the precondition holds.
-            let function_value = self.eta.as_ref().zip(self.eta_name.clone()).map(
-                |(params, name)| {
-                    let repair = format!(
-                        "pass a lambda that calls `{name}` only where `{text}` holds, as in `fn({params}) -> if {text} then {name}({params}) else ...`",
-                        params = params.join(", ")
-                    );
-                    (name, repair)
-                },
-            );
+            let function_value = value_repair.clone();
             let related = clause.span.map(|span| (span, "requires clause"));
             match function_value {
                 Some((name, repair)) => {
