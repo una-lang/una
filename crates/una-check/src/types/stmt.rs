@@ -227,11 +227,27 @@ impl<'a> Checker<'_, 'a, '_> {
         let value_expected = if unwraps { None } else { expected.cloned() };
         self.ctx.handled = catches;
         self.ctx.top = true;
+        let end = handled
+            .with
+            .last()
+            .map_or(handled.expr.span.end, |binding| binding.span.end);
+        let statement = super::check::Statement {
+            expr: handled.expr.span,
+            insert: Span::at(handled.expr.span.file, end),
+            with: !handled.with.is_empty(),
+            bound: handled
+                .with
+                .iter()
+                .map(|binding| self.name(&binding.cap).to_owned())
+                .collect(),
+        };
+        let saved = self.statement.replace(statement);
         let ty = if tail && handled.handlings.is_empty() {
             self.tail_expr(&handled.expr, value_expected.as_ref(), role)
         } else {
             self.expr_as(&handled.expr, value_expected.as_ref(), role)
         };
+        self.statement = saved;
         self.ctx.handled = false;
         self.ctx.top = false;
         let error = self.fails_of(&handled.expr).unwrap_or(Ty::Error);

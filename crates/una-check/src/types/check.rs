@@ -197,8 +197,23 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) instantiations: Vec<super::generic::Instantiation>,
     /// Where U3006 reports a function value that escapes; U3016 is not reported there again.
     pub(crate) escaped: Vec<Span>,
+    /// The statement whose expression is checked, for repairs that add a `with` binding.
+    pub(crate) statement: Option<Statement>,
     /// The number of diagnostics when the declaration started.
     started: usize,
+}
+
+/// A statement `line_expr [ with_clause ]` whose expression is checked (`spec/05 §3`).
+#[derive(Clone, Debug)]
+pub(crate) struct Statement {
+    /// The span of its line expression.
+    pub(crate) expr: Span,
+    /// Where a new `with` binding is inserted: after the expression or the last binding.
+    pub(crate) insert: Span,
+    /// Whether it has a `with` clause already.
+    pub(crate) with: bool,
+    /// The references its `with` clause binds.
+    pub(crate) bound: Vec<String>,
 }
 
 impl Names for Checker<'_, '_, '_> {
@@ -275,6 +290,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             probe_failed: false,
             instantiations: Vec::new(),
             escaped: Vec::new(),
+            statement: None,
             started,
         }
     }
