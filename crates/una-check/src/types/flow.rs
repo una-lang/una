@@ -97,6 +97,26 @@ impl Checker<'_, '_, '_> {
     /// U4001: the value at `span`, of type `found`, flows into `expected`, a declared type
     /// described by `into` (`spec/07 §3` rule 5, `spec/10 §2`).
     pub(crate) fn flow(&mut self, span: Span, found: &Ty, expected: &Ty, into: &str) {
+        self.flow_as(span, found, expected, None, into);
+    }
+
+    /// U4001: an argument at `span`, of type `found`, of an operation whose parameter, described
+    /// by `into`, is declared `declared` (ADR 0050, `spec/07 §7` rule 4). It flows into the
+    /// declared type with every covariant position taken as `⊤`, since `accepts` bounds the
+    /// data there ([`Checker::sink`]); contravariant positions and invariant kind arguments are
+    /// compared as at any other call argument.
+    pub(crate) fn op_argument_flow(&mut self, span: Span, found: &Ty, declared: &Ty, into: &str) {
+        if !self.labels() {
+            return;
+        }
+        let view = self
+            .labeled(declared)
+            .op_parameter(true, &self.top(), &self.env.kind_labels);
+        self.flow_as(span, found, &view, Some(declared), into);
+    }
+
+    /// [`Checker::flow`] into `expected`; the message shows `shown` instead when given.
+    fn flow_as(&mut self, span: Span, found: &Ty, expected: &Ty, shown: Option<&Ty>, into: &str) {
         if !self.labels() {
             return;
         }
@@ -107,6 +127,7 @@ impl Checker<'_, '_, '_> {
         else {
             return;
         };
+        let expected_ty = shown.map_or(expected_ty, |shown| self.labeled(shown));
         let (found_shown, expected_shown) = (
             ShowLabeled(&found_ty, self).to_string(),
             ShowLabeled(&expected_ty, self).to_string(),
@@ -123,7 +144,7 @@ impl Checker<'_, '_, '_> {
     /// U4001: each branch of a construct, at its span and of its type, flows into the value
     /// that joins them (ADR 0046 rule 3). The join is above every branch except at an
     /// invariant parameter of a kind, where it keeps the labels of the first branch.
-    /// DECISION D-160: ADR 0046 rule 3 makes a branch join a flow site without saying which
+    /// D-160: ADR 0046 rule 3 makes a branch join a flow site without saying which
     /// type the join has; it is the first branch's at an invariant argument, so a later
     /// branch that differs there is U4001 at that branch.
     pub(crate) fn join_flows(&mut self, joined: &Ty, branches: Vec<(Span, Ty)>) {

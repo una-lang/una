@@ -5,6 +5,7 @@
 - Deciders: Leonardo (answer E1 A to the re-review, 2026-09-30), on the reviewer's recommendation
 - Resolves: re-review finding N-002
 - Amends: `spec/07 §7` rule 2 (ADR 0031 rule 2) and ADR 0038 D3.1
+- Amended by: ADR 0050 (rule 3: operation arguments are flow sites too, with every covariant position of the parameter type taken as `⊤`), on 2026-10-01
 
 ## Context
 

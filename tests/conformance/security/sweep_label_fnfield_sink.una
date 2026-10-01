@@ -1,6 +1,7 @@
--- test: a kind whose field is a function type: a kind argument in a function field exceeds a public sink, and a kind whose function fields declare their labels does not (label sweep)
+-- test: a kind whose field is a function type: a kind argument in a function field exceeds a public sink, and a kind whose function fields declare their labels does not; the invariant argument also differs from the declared one (label sweep, ADR 0050)
 -- spec: spec/07 §7
--- expect: error U4003 at 28:15
+-- expect: error U4003 at 29:15
+-- expect: error U4001 at 29:15
 module sweep_label_fnfield_sink
 
 kind Src

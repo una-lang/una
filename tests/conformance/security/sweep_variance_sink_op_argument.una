@@ -1,0 +1,40 @@
+-- test: a kind whose parameter is inside a function type is invariant at an operation argument (label sweep, ADR 0050)
+-- spec: spec/07 §7
+-- expect: error U4001 at 25:9
+-- expect: error U4001 at 30:9
+module sweep_variance_sink_op_argument
+
+kind Box[T]
+  value: T
+
+kind Sink[T]
+  eat: fn(T) -> Int
+
+capability Probe
+  op o0(w: Sink[secret Int]) -> Int
+    accepts secret
+  op o1(w: Sink[Int]) -> Int
+    accepts secret
+  op o2(w: Sink[secret Int]) -> Int
+    accepts secret
+  op o3(w: Sink[Int]) -> Int
+
+pub arg_0(v: Sink[Int]) -> Int
+  uses @p: Probe[o0]
+=
+  @p.o0(v)
+
+pub arg_1(v: Sink[secret Int]) -> Int
+  uses @p: Probe[o1]
+=
+  @p.o1(v)
+
+pub arg_2(v: Sink[secret Int]) -> Int
+  uses @p: Probe[o2]
+=
+  @p.o2(v)
+
+pub arg_3(v: Sink[Int]) -> Int
+  uses @p: Probe[o3]
+=
+  @p.o3(v)

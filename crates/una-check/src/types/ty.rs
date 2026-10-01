@@ -15,7 +15,7 @@ pub(crate) type CapId = usize;
 
 /// What the label rules need to know of each record and sum kind, from the types of its fields
 /// and variant fields (re-review N-001, ADR 0046).
-/// DECISION D-168: the labels a kind's fields declare count at positions that hold data, as
+/// D-168: the labels a kind's fields declare count at positions that hold data, as
 /// in [`Ty::deep_label`]; the labels inside a field of function type do not, since every use of
 /// the field's function reads them from its declared type. The type arguments of a kind count
 /// whatever positions their parameters occupy, as before.
@@ -314,7 +314,7 @@ impl Ty {
     /// [`Ty::deep_label`] without the labels that kinds' fields declare: what Core IR records
     /// for the arguments of an operation and interpolated values, since the runtime redacts
     /// the fields of a kind value by their own declared labels (`spec/11 §5`).
-    /// DECISION D-165: traces keep redacting field by field, as before N-001.
+    /// D-165: traces keep redacting field by field, as before N-001.
     pub(crate) fn argument_label(&self) -> Label {
         self.deep_label(&KindLabels::default())
     }
@@ -322,9 +322,10 @@ impl Ty {
     /// The join of every label of the type, at every position: [`Ty::deep_label`] and the
     /// labels of the parameters, results and failures of its function types. An operation's
     /// arguments are sinks with every label of their types (`spec/07 §7` rule 4), since the
-    /// declared parameter types do not bound them: a function value whose result carries a
-    /// label would otherwise reach a handler as a function of the declared, lower, type.
-    /// DECISION D-164: "every label" includes the labels of function parameters, which is
+    /// declared parameter types do not bound them at covariant positions (ADR 0050): a function
+    /// value whose result carries a label would otherwise reach a handler as a function of the
+    /// declared, lower, type.
+    /// D-164: "every label" includes the labels of function parameters, which is
     /// conservative, since a value flows into a parameter from the handler, not out of it.
     pub(crate) fn every_label(&self, kinds: &KindLabels) -> Label {
         match self {
@@ -342,6 +343,46 @@ impl Ty {
                     label.join(&ty.every_label(kinds))
                 }),
             _ => Label::public(),
+        }
+    }
+
+    /// The declared type of an operation parameter as an operation argument flows into it
+    /// (ADR 0050): every covariant position (`positive`) is `top`, since `accepts` bounds the
+    /// data that the caller sends there; contravariant positions, the parameters of its
+    /// function types, and invariant kind arguments keep their declared labels.
+    pub(crate) fn op_parameter(&self, positive: bool, top: &Label, kinds: &KindLabels) -> Ty {
+        let inner = match self.unlabeled() {
+            Ty::List(element) => Ty::List(Box::new(element.op_parameter(positive, top, kinds))),
+            Ty::Kind(id, args) => Ty::Kind(
+                *id,
+                args.iter()
+                    .enumerate()
+                    .map(|(index, arg)| {
+                        if kinds.is_invariant(*id, index) {
+                            arg.clone()
+                        } else {
+                            arg.op_parameter(positive, top, kinds)
+                        }
+                    })
+                    .collect(),
+            ),
+            Ty::Fn(function) => Ty::Fn(Box::new(FnTy {
+                params: function
+                    .params
+                    .iter()
+                    .map(|p| p.op_parameter(!positive, top, kinds))
+                    .collect(),
+                result: function.result.op_parameter(positive, top, kinds),
+                uses: function.uses.clone(),
+                fails: function.fails.clone(),
+                refinements: function.refinements.clone(),
+            })),
+            other => other.clone(),
+        };
+        if positive {
+            inner.with_label(top)
+        } else {
+            inner.with_label(&self.top_label())
         }
     }
 

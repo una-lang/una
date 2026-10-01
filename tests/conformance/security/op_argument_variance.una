@@ -1,0 +1,42 @@
+-- test: an operation argument flows into the operation's parameter type: a `Sink[Int]` where `Sink[secret Int]` is declared, and a `fn(Int) -> Int` where `fn(secret Int) -> Int` is declared, would let a handler holding a secret return it as public (final review F-001)
+-- spec: spec/07 §7
+-- expect: error U4001 at 25:16
+-- expect: error U4001 at 30:17
+module op_argument_variance
+
+kind Sink[T]
+  eat: fn(T) -> Int
+
+capability Keeper
+  op open(s: Sink[secret Int]) -> Int
+  op apply(f: fn(secret Int) -> Int) -> Int
+
+made() -> Sink[Int] = Sink(eat: fn(x: Int) -> x)
+
+ident(x: Int) -> Int = x
+
+handler holding(pin: secret Int) for Keeper
+  op open(s) = s.eat(pin)
+  op apply(f) = f(pin)
+
+pub by_kind() -> Int
+  uses @keeper: Keeper[open]
+=
+  @keeper.open(made())
+
+pub by_fn() -> Int
+  uses @keeper: Keeper[apply]
+=
+  @keeper.apply(ident)
+
+pub main() -> Unit
+  uses @env: Env[get]
+  uses @console: Console[print]
+=
+  let raw = @env.get("PIN")
+    if none use ""
+  let pin: secret Int = to_int(raw)
+    if none use 0
+  let a = by_kind() with @keeper = holding(pin)
+  let b = by_fn() with @keeper = holding(pin)
+  @console.print("pin is {a} and {b}")

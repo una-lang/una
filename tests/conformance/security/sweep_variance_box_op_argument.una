@@ -1,0 +1,39 @@
+-- test: `Box[T]` is covariant at an operation argument: its data is bounded by `accepts`, and a function inside it is compared as at a call argument (label sweep, ADR 0050)
+-- spec: spec/07 §7
+-- expect: error U4001 at 24:9
+-- expect: error U4003 at 34:9
+module sweep_variance_box_op_argument
+
+kind Box[T]
+  value: T
+
+kind Sink[T]
+  eat: fn(T) -> Int
+
+capability Probe
+  op o0(w: Box[fn(secret Int) -> Int]) -> Int
+    accepts secret
+  op o1(w: Box[fn(Int) -> Int]) -> Int
+    accepts secret
+  op o2(w: Box[Int]) -> Int
+  op o3(w: Box[secret Int]) -> Int
+
+pub arg_0(v: Box[fn(Int) -> Int]) -> Int
+  uses @p: Probe[o0]
+=
+  @p.o0(v)
+
+pub arg_1(v: Box[fn(secret Int) -> Int]) -> Int
+  uses @p: Probe[o1]
+=
+  @p.o1(v)
+
+pub arg_2(v: Box[secret Int]) -> Int
+  uses @p: Probe[o2]
+=
+  @p.o2(v)
+
+pub arg_3(v: Box[Int]) -> Int
+  uses @p: Probe[o3]
+=
+  @p.o3(v)

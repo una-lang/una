@@ -699,7 +699,16 @@ impl<'a> Checker<'_, 'a, '_> {
         // the carried ones, which accept every label and raise the result (ADR 0039).
         let mut carried = Label::public();
         let mut sinks: Vec<(Span, Ty)> = Vec::new();
-        for (arg_span, found, _, param) in checked {
+        for (arg_span, found, expected, param) in checked {
+            // ADR 0050: the argument flows into the declared parameter type at its
+            // contravariant positions and invariant kind arguments, which a handler body
+            // assumes; `accepts` bounds its data.
+            self.op_argument_flow(
+                arg_span,
+                &found,
+                &expected,
+                &format!("parameter `{param}` of {callee}"),
+            );
             let is_carried = def
                 .carried
                 .iter()
@@ -1052,7 +1061,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// are checked, so that `Feed(get: fn() -> 2)` is a `Feed[secret Int]` where one is
     /// expected (ADR 0046). An expected argument that still holds a type variable is left to
     /// the flow that follows the constructor, since the variable may take labels later.
-    /// DECISION D-163: ADR 0046 fixes the flow, not how a constructor infers its
+    /// D-163: ADR 0046 fixes the flow, not how a constructor infers its
     /// arguments; this uses the expected type only where it is already known.
     fn expected_invariant(&mut self, kind: KindId, targs: &[Ty], expected: Option<&Ty>) {
         let Some(expected) = expected else {
