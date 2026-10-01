@@ -1,0 +1,39 @@
+-- test: `Result[T, Int]` is covariant at an operation argument: its data is bounded by `accepts`, and a function inside it is compared as at a call argument (label sweep, ADR 0050)
+-- spec: spec/07 §7
+-- expect: error U4001 at 24:9
+-- expect: error U4003 at 34:9
+module sweep_variance_result_op_argument
+
+kind Box[T]
+  value: T
+
+kind Sink[T]
+  eat: fn(T) -> Int
+
+capability Probe
+  op o0(w: Result[fn(secret Int) -> Int, Int]) -> Int
+    accepts secret
+  op o1(w: Result[fn(Int) -> Int, Int]) -> Int
+    accepts secret
+  op o2(w: Result[Int, Int]) -> Int
+  op o3(w: Result[secret Int, Int]) -> Int
+
+pub arg_0(v: Result[fn(Int) -> Int, Int]) -> Int
+  uses @p: Probe[o0]
+=
+  @p.o0(v)
+
+pub arg_1(v: Result[fn(secret Int) -> Int, Int]) -> Int
+  uses @p: Probe[o1]
+=
+  @p.o1(v)
+
+pub arg_2(v: Result[secret Int, Int]) -> Int
+  uses @p: Probe[o2]
+=
+  @p.o2(v)
+
+pub arg_3(v: Result[Int, Int]) -> Int
+  uses @p: Probe[o3]
+=
+  @p.o3(v)

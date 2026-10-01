@@ -1,0 +1,34 @@
+-- test: a function value returned by a handler operation flows into the operation's refined function type, in both directions (flow sweep)
+-- spec: spec/12 §3
+-- expect: error U5001 at 28:14
+-- expect: error U5001 at 31:14
+-- expect: error U5001 at 34:14
+module handler_result_fn_refinement
+
+pub kind Pos = Int where it > 0
+
+pub capability Maker
+  op get() -> fn(Int) -> Pos
+
+pub capability Taker
+  op get() -> fn(Int) -> Int
+
+pub zero(x: Int) -> Int = 0
+
+pub one(x: Int) -> Pos = 1
+
+pub by_pos(p: Pos) -> Int = p
+
+pub make() -> fn(Int) -> Int = zero
+
+pub handler good() for Maker
+  op get() = one
+
+pub handler by_call() for Maker
+  op get() = make()
+
+pub handler by_param(g: fn(Int) -> Int) for Maker
+  op get() = g
+
+pub handler by_contravariance() for Taker
+  op get() = by_pos

@@ -1,0 +1,38 @@
+-- Adversarial: ADR 0044 and D-170: `expect fails` after a `do` that cannot fail, one whose callee absorbs the failure, and one wrapped in `attempt`; ADR 0045 rule 2 for an alias
+-- Expected: U1001 at each `expect fails`; U2002 once at the clause of `Fn`
+-- Observed: U1001 for the first two and U2002 once; `do attempt risky(0)` then `expect fails Broke` passes `una check` and fails `una test`
+-- Verdict: Minor (F-003)
+module fr_expect_fails_do
+
+pub kind Bad = Broke | Other
+
+pub safe(n: Int) -> Int = n
+
+pub risky(n: Int) -> Int
+  fails Bad
+=
+  if n > 0 then n else fail Broke
+
+pub absorbed(n: Int) -> Int
+=
+  let v = risky(n)
+    if error use 0
+  v
+
+predicate reflect good(f: fn(Int) -> Int) -> Bool = true
+
+pub kind Fn = fn(Int) -> Int where good(it)
+
+pub kind G = Fn
+
+example "a do that cannot fail"
+  do safe(1)
+  expect fails Broke
+
+example "a do whose failure is absorbed"
+  do absorbed(0)
+  expect fails Broke
+
+example "attempt makes the do line unable to fail"
+  do attempt risky(0)
+  expect fails Broke

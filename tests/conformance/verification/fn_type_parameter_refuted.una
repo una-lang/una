@@ -1,0 +1,12 @@
+-- test: a named function whose parameter is more refined than the expected parameter is refuted at the function (ADR 0037 case 1)
+-- spec: spec/12 §3
+-- expect: error U5001 at 12:29
+module fn_type_parameter_refuted
+
+pub kind Pos = Int where it > 0
+
+pub apply(f: fn(Int) -> Int, x: Int) -> Int = f(x)
+
+pub takes_pos(x: Pos) -> Int = x
+
+pub use_it() -> Int = apply(takes_pos, x: 0)

@@ -1,11 +1,10 @@
-//! What pass 2 of the checker resolves, recorded for elaboration to Core IR (`spec/09`,
-//! DECISION D-098).
+//! What pass 2 of the checker resolves, recorded for elaboration to Core IR (`spec/09`).
 
 use std::collections::BTreeMap;
 
 use una_syntax::Span;
 
-use super::ty::{CapId, Declared, KindId, Ty};
+use super::ty::{CapId, Declared, KindId, Refinement, Ty};
 
 /// What an expression or pattern resolves to.
 #[derive(Clone, Debug)]
@@ -43,8 +42,11 @@ pub(crate) struct Records {
     /// binding, in written order; a method call's receiver comes first.
     pub(crate) args: BTreeMap<Span, Vec<Option<usize>>>,
     /// The written type of each annotated `let`, by the span of its name, with its
-    /// refinements (DECISION D-111).
+    /// refinements.
     pub(crate) annotations: BTreeMap<Span, Declared>,
+    /// The refinements of each lambda parameter, by the span of its name: its annotation's,
+    /// or the expected parameter type's (ADR 0037 rule 1).
+    pub(crate) lambda_params: BTreeMap<Span, Vec<Refinement>>,
 }
 
 impl Records {
@@ -65,13 +67,6 @@ impl Records {
         }
         self.args.extend(other.args);
         self.annotations.extend(other.annotations);
-    }
-
-    /// Adds records whose types are already resolved.
-    pub(crate) fn merge(&mut self, other: Records) {
-        self.types.extend(other.types);
-        self.res.extend(other.res);
-        self.args.extend(other.args);
-        self.annotations.extend(other.annotations);
+        self.lambda_params.extend(other.lambda_params);
     }
 }

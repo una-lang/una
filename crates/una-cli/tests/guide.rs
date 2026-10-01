@@ -1,5 +1,4 @@
-//! The guide for agents (`plan/milestones-v0.1.md` M10: "Every snippet is tested", DECISION
-//! D-128): each `una` block of `docs/guide/una-for-agents.md` is a whole module that checks clean
+//! The guide for agents (`plan/milestones-v0.1.md` M10: "Every snippet is tested"): each `una` block of `docs/guide/una-for-agents.md` is a whole module that checks clean
 //! at tier 1, or yields only the code its first line names; blocks introduced by file paths form
 //! a package; each `json` block parses and names a schema the CLI prints; each `una` line of a
 //! `sh` block exits with 0, or with the code of its `# exit N`, from the repository root or the

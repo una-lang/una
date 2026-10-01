@@ -1,0 +1,18 @@
+-- test: private helper with inferred effects called inside a pure `map` lambda (review control)
+-- spec: spec/05 §9
+-- expect: error U3001 at 12:3
+module inferred_into_map
+
+capability Log
+  op write(line: Text) -> Unit
+  op flush() -> Unit
+
+helper(x: Int) -> Int
+=
+  @log.write("x")
+  x
+
+pub run(xs: List[Int]) -> List[Int]
+  uses @log: Log[write]
+=
+  xs.map(each: fn(x) -> helper(x))

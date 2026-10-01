@@ -20,6 +20,7 @@ mod env;
 mod expr;
 mod facts;
 mod flow;
+mod generic;
 mod label;
 mod records;
 mod stmt;
@@ -33,10 +34,10 @@ use una_syntax::{FileId, Interner, SourceDb, Span, lex, parse};
 use crate::names::PackageInput;
 use env::{Env, Source};
 
-/// The prelude (`spec/14 §1, §3`) as Una source (DECISION D-055).
+/// The prelude (`spec/14 §1, §3`) as Una source.
 const PRELUDE: &str = include_str!("../std/prelude.una");
 
-/// `std.testing` (`spec/14 §4`) as Una source (DECISION D-055).
+/// `std.testing` (`spec/14 §4`) as Una source.
 const TESTING: &str = include_str!("../std/testing.una");
 
 /// A proof obligation that the type checker found (`spec/12 §3`). It stays pending until the
@@ -126,7 +127,7 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
     let facts = facts::KindFacts::new(&env);
     facts::kind_recursion(&env, &mut report);
     authority::stored_effects(&env, &mut report);
-    // DECISION D-082: pass 1 collects what inference needs, and its diagnostics are dropped;
+    // Pass 1 collects what inference needs, and its diagnostics are dropped;
     // pass 2 checks with the inferred headers.
     let mut collected = authority::Collected::default();
     {
@@ -162,7 +163,7 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
             );
         }
     }
-    // DECISION D-111: the standard modules are checked silently, for the records that their
+    // The standard modules are checked silently, for the records that their
     // contracts are elaborated from.
     {
         let mut scratch = Report::new(&standard.sources);
@@ -178,18 +179,31 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
                 module,
             );
         }
-        findings.records.merge(standard_findings.records);
+        findings.standard_records = standard_findings.records;
     }
+    authority::testing_installs(&findings, &mut report);
     facts::predicate_recursion(&env, &findings, &mut report);
     facts::generic_equality(&env, &facts, &findings, &mut report);
     authority::grants(&env, package.settings, package.run, &mut report);
     authority::budget(&env, &findings, package.settings, &mut report);
-    // DECISION D-070: pending obligations by position, then kind.
+    // Pending obligations by position, then kind.
     findings
         .obligations
         .sort_by_key(|(kind, span, _)| (span.file, span.start, span.end, *kind));
     let headers = headers(&env);
-    let program = elab::program(&env, &findings, package.sources, &standard.sources);
+    let (program, lost) = elab::program(&env, &findings, package.sources, &standard.sources);
+    // ADR 0038 D1: a component of a checker type that Core IR lost is an internal error, never
+    // a silent pass (`spec/10 §2`). DECISION D-144: switched to B by the owner, ADR 0045: the
+    // check runs in every build, not only in debug builds, and reports at the declaration.
+    for (span, what) in lost {
+        report.error(
+            Code::U8001,
+            span,
+            format!(
+                "internal error: the Core IR of this declaration lost {what} of its checked types"
+            ),
+        );
+    }
     TypeCheck {
         headers,
         program,
@@ -264,10 +278,18 @@ pub(crate) struct Findings {
     pub(crate) compared: std::collections::BTreeMap<usize, std::collections::BTreeSet<usize>>,
     /// The uses of `checked`, by module, in order (`spec/06 §6`).
     pub(crate) checked: Vec<(usize, Span)>,
-    /// What pass 2 resolves, for elaboration (DECISION D-098).
+    /// What pass 2 resolves in the package's modules, for elaboration.
     pub(crate) records: records::Records,
+    /// What the silent check of the standard modules resolves, for the elaboration of their
+    /// contracts. The standard modules have a source database of their own, whose file ids
+    /// coincide with the package's, so their records by span are kept apart (flow sweep).
+    pub(crate) standard_records: records::Records,
     /// The declarations of pass 2 with a diagnostic, by the span of their name.
     pub(crate) failed: std::collections::BTreeSet<Span>,
+    /// For each handler whose operation bodies use `std.testing`, the first use (ADR 0043).
+    pub(crate) testing_handlers: std::collections::BTreeMap<usize, Span>,
+    /// The handlers installed by `with` bindings, and the span of each binding (ADR 0043).
+    pub(crate) with_installs: Vec<(usize, Span)>,
 }
 
 /// The parsed standard modules.

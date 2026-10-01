@@ -1,0 +1,33 @@
+-- test: a sum kind with a secret variant field: a generic function result is raised by the field labels of its type argument (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 29:33
+-- expect: error U4001 at 31:33
+module sweep_label_sum_generic
+
+kind Acct
+  id: Int
+  pin: secret Int
+
+kind Guess = Hit(pin: secret Int) | Miss
+
+kind Box[T]
+  value: T
+
+kind Wallet
+  acct: Acct
+
+grab(x: Guess) -> secret Int
+=
+  when x
+    is Hit(pin) -> pin
+    is Miss -> 0
+
+same[T](a: T, b: T) -> Bool = a == b
+
+keep[T](a: T) -> Int = 1
+
+pub generic(x: Guess) -> Bool = same(x, b: Hit(pin: 2))
+
+pub constant(x: Guess) -> Int = keep(x)
+
+pub generic_twin(x: Guess) -> secret Bool = same(x, b: Hit(pin: 2))

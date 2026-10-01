@@ -11,11 +11,11 @@ use una_syntax::ast::{
 };
 
 use super::authority::{Base, Bound, Collected, Frame, Pass};
-use super::env::{Entity, Env, FnDef, FnKind, HandlerDef};
+use super::env::{Entity, Env, FnAst, FnDef, FnKind, HandlerDef};
 use super::facts::KindFacts;
 use super::label::Label;
 use super::records::{Records, Res};
-use super::ty::{CapId, Declared, KindId, Names, Show, Ty};
+use super::ty::{CapId, Declared, KindId, Names, Refinement, Show, Ty};
 use super::unify::{Origin, Vars};
 use super::{Findings, Report};
 
@@ -42,11 +42,15 @@ pub(crate) struct Ctx {
     pub(crate) it: Option<Ty>,
     /// The type of `error`, where `error` is allowed (U2013).
     pub(crate) error: Option<Ty>,
-    /// The error kind in which `fail` finds its variant (DECISION D-048).
+    /// The error kind in which `fail` finds its variant.
     pub(crate) fails: Option<Ty>,
     pub(crate) rl: Rl,
     /// Inside the body of an opaque predicate, which is pure and cannot fail (U2015).
     pub(crate) opaque: bool,
+    /// Opaque predicates may be called here besides opaque bodies: the predicate of `checked`,
+    /// the `where` clause of a kind and the clauses of a capability operation (ADR 0042,
+    /// U2016).
+    pub(crate) opaque_calls: bool,
     /// The failure of the call about to be checked is handled, by `attempt` or `if error`.
     pub(crate) handled: bool,
     /// The expression about to be checked is the whole expression of a statement, `let` or
@@ -63,8 +67,12 @@ pub(crate) struct Ctx {
     /// The program counter label (`spec/07 §3`), and the condition that raised it last.
     pub(crate) pc: Label,
     pub(crate) pc_from: Option<Span>,
-    /// Whether labels are checked: not in `via` bodies or `expect` lines (DECISION D-095).
+    /// Whether labels are checked: not in `via` bodies or `expect` lines.
     pub(crate) labels: bool,
+    /// In a handler operation body, the operation's `accepts` label: the effect floor that
+    /// raises the program counter of every effect in the body (ADR 0038 D4, `spec/07 §7`
+    /// rule 4).
+    pub(crate) floor: Option<Label>,
 }
 
 impl Ctx {
@@ -76,6 +84,7 @@ impl Ctx {
             fails: None,
             rl: Rl::Off,
             opaque: false,
+            opaque_calls: false,
             handled: false,
             top: false,
             argument: false,
@@ -84,6 +93,7 @@ impl Ctx {
             pc: Label::public(),
             pc_from: None,
             labels: true,
+            floor: None,
         }
     }
 }
@@ -133,6 +143,9 @@ pub(crate) struct Returning {
     /// The written result type, when it is in the package.
     pub(crate) origin: Option<Span>,
     pub(crate) ensures: bool,
+    /// For a policy's `via` function, whether the policy's `to` type is refined: its result is
+    /// a `refinement` obligation too (ADR 0038 D5, `spec/12 §3`).
+    pub(crate) via_refined: bool,
 }
 
 pub(crate) struct Checker<'c, 'a, 's> {
@@ -145,11 +158,11 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) type_params: Vec<&'a str>,
     pub(crate) locals: Vec<Local<'a>>,
     /// Capability frames: the body's own context first, then the `with` bindings of the
-    /// statements around the expression checked (DECISION D-047).
+    /// statements around the expression checked.
     pub(crate) frames: Vec<Frame>,
     /// What the body's own context is.
     pub(crate) base: Base,
-    /// Which pass runs (DECISION D-082).
+    /// Which pass runs.
     pub(crate) pass: Pass,
     /// The facts that pass 1 collects for inference.
     pub(crate) collected: &'c mut Collected,
@@ -157,12 +170,12 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) lambda_depth: usize,
     /// The functions that calls resolve to, by the span of the call.
     pub(crate) call_targets: BTreeMap<Span, usize>,
-    /// The types of the operands of the binary operations being checked (DECISION D-090).
+    /// The types of the operands of the binary operations being checked.
     pub(crate) operands: Vec<Ty>,
     /// In pass 1, the operations on references whose capability inference decides, by the
-    /// span of the operation: the reference and the operation (DECISION D-072).
+    /// span of the operation: the reference and the operation.
     pub(crate) pending_ops: BTreeMap<Span, (String, String)>,
-    /// In pass 2, what this declaration resolves (DECISION D-098).
+    /// In pass 2, what this declaration resolves.
     pub(crate) records: Records,
     /// The span of the declaration's name, where its failure is recorded.
     pub(crate) decl_span: Option<Span>,
@@ -172,14 +185,38 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) call_fails: BTreeMap<Span, Ty>,
     /// The function or predicate whose body is checked.
     pub(crate) current: Option<usize>,
+    /// The handler whose operation bodies are checked (ADR 0043).
+    pub(crate) handler: Option<usize>,
     /// Instantiations of generic functions: callee, type arguments and where.
     pub(crate) instances: Vec<(usize, Vec<Ty>, Span)>,
     /// The operand types of `==` and `!=`.
     pub(crate) compared: Vec<Ty>,
     /// Set when an expression checked under [`Rl::Probe`] is outside the refinement language.
     pub(crate) probe_failed: bool,
+    /// The instantiations of type parameters, judged when the declaration ends (U3016).
+    pub(crate) instantiations: Vec<super::generic::Instantiation>,
+    /// Where U3006 reports a function value that escapes; U3016 is not reported there again.
+    pub(crate) escaped: Vec<Span>,
+    /// The statement whose expression is checked, for repairs that add a `with` binding.
+    pub(crate) statement: Option<Statement>,
+    /// In a `do` line, the operands of `attempt` and the lambdas, whose failures do not reach
+    /// the `do` expression's error kind (D-170).
+    pub(crate) absorbed: Vec<Span>,
     /// The number of diagnostics when the declaration started.
     started: usize,
+}
+
+/// A statement `line_expr [ with_clause ]` whose expression is checked (`spec/05 §3`).
+#[derive(Clone, Debug)]
+pub(crate) struct Statement {
+    /// The span of its line expression.
+    pub(crate) expr: Span,
+    /// Where a new `with` binding is inserted: after the expression or the last binding.
+    pub(crate) insert: Span,
+    /// Whether it has a `with` clause already.
+    pub(crate) with: bool,
+    /// The references its `with` clause binds.
+    pub(crate) bound: Vec<String>,
 }
 
 impl Names for Checker<'_, '_, '_> {
@@ -226,13 +263,14 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         module: usize,
     ) -> Checker<'c, 'a, 's> {
         let started = report.count();
+        let kinds = env.kind_labels.clone();
         Checker {
             env,
             facts,
             report,
             findings,
             module,
-            vars: Vars::default(),
+            vars: Vars::new(kinds),
             type_params: Vec::new(),
             locals: Vec::new(),
             frames: Vec::new(),
@@ -249,9 +287,14 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             returning: None,
             call_fails: BTreeMap::new(),
             current: None,
+            handler: None,
             instances: Vec::new(),
             compared: Vec::new(),
             probe_failed: false,
+            instantiations: Vec::new(),
+            escaped: Vec::new(),
+            statement: None,
+            absorbed: Vec::new(),
             started,
         }
     }
@@ -267,6 +310,20 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     pub(crate) fn show(&self, ty: &Ty) -> String {
         let resolved = self.vars.resolve(ty);
         Show(&resolved, self).to_string()
+    }
+
+    /// A written type as Una names it: a refined type by its refined kind or range, without
+    /// its label.
+    pub(crate) fn show_declared(&self, declared: &Declared) -> String {
+        match declared.refinements.last() {
+            Some(Refinement::Alias(id, _)) => self
+                .env
+                .aliases
+                .get(*id)
+                .map_or_else(|| self.show(&declared.base), |alias| alias.name.to_owned()),
+            Some(Refinement::Range(range, _)) => format!("{} {range}", self.show(&declared.base)),
+            None => self.show(&declared.base),
+        }
     }
 
     /// `ty` with its solved variables replaced.
@@ -398,7 +455,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     }
 
     /// Something impure or failing at `span`, which the body of an opaque predicate cannot
-    /// contain (U2015, DECISION D-056).
+    /// contain (U2015).
     pub(crate) fn impure(&mut self, span: Span, what: impl FnOnce() -> String) {
         if self.ctx.opaque {
             let message = format!(
@@ -410,7 +467,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     }
 
     /// U2001 for a value whose type inference has not determined where its type is needed,
-    /// for a field, a method or a call (DECISION D-069).
+    /// for a field, a method or a call.
     pub(crate) fn unknown_type(&mut self, span: Span) {
         self.report.error(
             Code::U2001,
@@ -452,16 +509,15 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 let checked =
                     self.arguments(&callee, &params, &[], None, &call.args, call.span, module);
                 self.argument_flows(&callee, checked);
-                // DECISION D-074: the handler's own `uses` are held where it is installed.
+                // The handler's own `uses` are held where it is installed.
                 let level = self.frames.len();
                 self.needs_site(&callee, &uses, call.span, level);
-                // DECISION D-093: its effects run under the program counter of the statement.
-                let bound = self.bound(&uses, false);
-                self.call_under_pc(call.span, &callee, bound, false, true);
+                // Its effects run under the program counter of the statement.
+                self.call_under_pc(call.span, &callee, &uses, false, true, &Label::public());
                 capability
             }
             other => {
-                // An unknown name is U1001 (M3); another name is U3010 (DECISION D-074).
+                // An unknown name is U1001 (M3); another name is U3010.
                 if other.is_some() && self.pass == Pass::Check {
                     self.report.error(
                         Code::U3010,
@@ -477,8 +533,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         }
     }
 
-    /// Records, in pass 2, what the expression or pattern at `span` resolves to
-    /// (DECISION D-098).
+    /// Records, in pass 2, what the expression or pattern at `span` resolves to.
     pub(crate) fn resolved(&mut self, span: Span, res: Res) {
         if self.pass == Pass::Check {
             self.records.res.insert(span, res);
@@ -499,6 +554,14 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         }
     }
 
+    /// Records, in pass 2, the refinements of the lambda parameter whose name is at `span`
+    /// (ADR 0037 rule 1).
+    pub(crate) fn lambda_refinements(&mut self, span: Span, refinements: Vec<Refinement>) {
+        if self.pass == Pass::Check && !refinements.is_empty() {
+            self.records.lambda_params.insert(span, refinements);
+        }
+    }
+
     /// Records, in pass 2, the type of the expression or binder at `span`.
     pub(crate) fn typed(&mut self, span: Span, ty: &Ty) {
         if self.pass == Pass::Check {
@@ -512,7 +575,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             return;
         };
         let (refined, origin, ensures) = (
-            returning.result.is_refined(),
+            returning.result.is_refined() || returning.via_refined,
             returning.origin,
             returning.ensures,
         );
@@ -525,7 +588,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     }
 
     /// Ends the declaration: records generic instantiations and comparisons, and reports
-    /// types that inference left unknown when nothing else was reported (DECISION D-054).
+    /// types that inference left unknown when nothing else was reported.
     fn finish(self) {
         let Checker {
             report,
@@ -538,9 +601,12 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             records,
             decl_span,
             pass,
+            instantiations,
+            mut escaped,
             ..
         } = self;
         if pass == Pass::Check {
+            super::generic::second_class(report, &vars, &instantiations, &mut escaped);
             findings
                 .records
                 .absorb(records, |ty| vars.resolve_labeled(ty));
@@ -620,6 +686,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             it: Some(alias.base.base.clone()),
             rl: Rl::Clause,
             labels: false,
+            opaque_calls: true,
             ..Ctx::plain()
         };
         self.within(ctx, |checker| {
@@ -634,7 +701,8 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         self.current = Some(id);
         self.type_params = def.type_params.clone();
         for param in &def.params {
-            self.bind(param.name, param.ty.base.clone());
+            let ty = self.symbolic(&param.ty.base);
+            self.bind(param.name, ty);
         }
         self.enter_function(&def);
         if self.pass == Pass::Check {
@@ -677,18 +745,25 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             }
         }
         self.base = base;
+        let via_refined = self
+            .env
+            .vias
+            .get(&id)
+            .and_then(|policy| self.env.functions.get(*policy))
+            .is_some_and(|policy| policy.result.is_refined());
         self.returning = Some(Returning {
             result: def.result.clone(),
             origin: self.origin(def.module, def.result_span),
             ensures: def.ensures,
+            via_refined,
         });
-        // DECISION D-095: the body of a `via` function is not checked for labels.
+        // The body of a `via` function is not checked for labels.
         let ctx = Ctx {
             fails: def.fails.clone(),
             labels: !self.env.vias.contains_key(&id),
             ..Ctx::plain()
         };
-        let expected = def.result.base.clone();
+        let expected = self.symbolic(&def.result.base);
         self.within(ctx, |checker| {
             checker.body(
                 &function.body,
@@ -708,7 +783,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             self.bind(param.name, param.ty.base.clone());
         }
         if !matches!(def.result.base.unlabeled(), Ty::Bool | Ty::Error) {
-            // DECISION D-065: a predicate returns `Bool`.
+            // A predicate returns `Bool`.
             let found = self.show(&def.result.base);
             self.report.error(
                 Code::U2001,
@@ -745,12 +820,12 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     }
 
     /// The `via` function of a policy takes its `from` type and returns its `to` type
-    /// (`spec/10 §7`, DECISION D-066); labels are M6.
+    /// (`spec/10 §7`); labels are M6.
     fn policy(&mut self, policy: &'a PolicyDecl, id: usize) {
         let Some(def) = self.env.functions.get(id).cloned() else {
             return;
         };
-        // DECISION D-094: a policy lives in a module whose header says `trusted`; a header
+        // A policy lives in a module whose header says `trusted`; a header
         // without the listing in `una.toml` is U7005.
         let trusted = self
             .env
@@ -797,32 +872,68 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 ),
             );
         }
-        let from = def.params.first().map_or(Ty::Error, |p| p.ty.base.clone());
-        let to = def.result.base.clone();
+        let from = def
+            .params
+            .first()
+            .map_or_else(|| Declared::plain(Ty::Error), |p| p.ty.clone());
+        let to = def.result.clone();
         let fits = target.kind == FnKind::Function
             && target.type_params.is_empty()
             && target.params.len() == 1
             && target
                 .params
                 .iter()
-                .all(|p| self.vars.unify(&p.ty.base, &from))
-            && self.vars.unify(&target.result.base, &to);
-        if !fits {
+                .all(|p| self.vars.unify(&p.ty.base, &from.base))
+            && self.vars.unify(&target.result.base, &to.base);
+        // ADR 0047 rule 1: the types match except for labels, refinements included, so the
+        // argument of a policy call, checked against `from`, meets every assumption of the
+        // `via` body, and its result is the `to` type.
+        let refined = fits
+            && target.params.iter().all(|p| same_refinements(&p.ty, &from))
+            && same_refinements(&target.result, &to);
+        if !fits || !refined {
+            let expected = format!(
+                "fn({}) -> {}",
+                self.show_declared(&from),
+                self.show_declared(&to)
+            );
+            // The `via` function's type parameters show by their names (final review F-004).
+            let saved = std::mem::replace(&mut self.type_params, target.type_params.clone());
             let params: Vec<String> = target
                 .params
                 .iter()
-                .map(|p| self.show(&p.ty.base))
+                .map(|p| self.show_declared(&p.ty))
                 .collect();
-            let message = format!(
-                "`via` function `{via}` must take a `{}` and return a `{}`; it is `fn({}) -> {}`",
-                self.show(&from),
-                self.show(&to),
+            let found = format!(
+                "fn({}) -> {}",
                 params.join(", "),
-                self.show(&target.result.base)
+                self.show_declared(&target.result)
             );
-            // DECISION D-094: types other than labels match between a policy and its `via`
+            self.type_params = saved;
+            let message = format!(
+                "`via` function `{via}` must have type `{expected}`, except for labels; it is `{found}`"
+            );
+            // Types other than labels match between a policy and its `via`
             // function (`spec/07 §5` rule 4).
             self.report.error(Code::U4005, policy.via.span, message);
+        }
+        // ADR 0047 rule 2: a policy call checks its argument against `from` only, so a `via`
+        // function has no precondition.
+        if let FnAst::Function(decl) = target.ast
+            && self.pass == Pass::Check
+        {
+            for clause in &decl.clauses {
+                if matches!(clause.kind, ClauseKind::Requires(_)) {
+                    self.report.error(
+                        Code::U4005,
+                        clause.span,
+                        format!(
+                            "`via` function `{via}` of policy `{}` has a `requires` clause, which a policy call never checks; remove it and handle every value of the `from` type",
+                            def.name
+                        ),
+                    );
+                }
+            }
         }
     }
 
@@ -841,6 +952,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                         let ctx = Ctx {
                             rl: Rl::Clause,
                             labels: false,
+                            opaque_calls: true,
                             ..Ctx::plain()
                         };
                         self.within(ctx, |checker| {
@@ -851,6 +963,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                         let ctx = Ctx {
                             rl: Rl::Clause,
                             labels: false,
+                            opaque_calls: true,
                             result: Some(op_def.result.base.clone()),
                             ..Ctx::plain()
                         };
@@ -871,6 +984,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         let Some(def) = self.env.handlers.get(id).cloned() else {
             return;
         };
+        self.handler = Some(id);
         self.base = Base::Declared;
         self.frames = vec![Frame {
             bindings: def
@@ -910,14 +1024,21 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             let op_def = capability
                 .as_ref()
                 .and_then(|capability| capability.ops.iter().find(|o| o.name == name));
-            // DECISION D-092: callers may pass anything up to `accepts`.
+            // Callers may pass anything up to `accepts`.
+            // DECISION D-141: an operation that accepts every label has the effect floor `⊤`
+            // (ADR 0038 D4). `Keys.hmac` accepts `public`; its `data` is carried (ADR 0039).
             let accepts = op_def
                 .and_then(|o| o.accepts.clone())
                 .unwrap_or_else(|| self.top());
+            // ADR 0039: a carried parameter (`data` of `Keys.hmac`) may be of every label,
+            // and the result may carry it.
+            let top = self.top();
+            let carried = |index: usize| op_def.is_some_and(|o| o.carried.contains(&index));
             for (index, param) in op.params.iter().enumerate() {
+                let raise = if carried(index) { &top } else { &accepts };
                 let ty = op_def
                     .and_then(|o| o.params.get(index))
-                    .map_or(Ty::Error, |p| p.ty.base.raise_deep(&accepts));
+                    .map_or(Ty::Error, |p| p.ty.base.raise_deep(raise));
                 self.bind(self.name(param), ty);
             }
             let module = capability.as_ref().map_or(0, |c| c.module);
@@ -925,19 +1046,28 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 result: o.result.clone(),
                 origin: self.origin(module, o.result_span),
                 ensures: o.ensures,
+                via_refined: false,
             });
             let ctx = Ctx {
                 fails: op_def.and_then(|o| o.fails.clone()),
                 testing: true,
+                floor: Some(accepts.clone()),
                 ..Ctx::plain()
             };
-            let expected = op_def.map(|o| o.result.base.clone());
+            let expected = op_def.map(|o| {
+                if o.carried.is_empty() {
+                    o.result.base.clone()
+                } else {
+                    o.result.base.clone().with_label(&top)
+                }
+            });
             self.within(ctx, |checker| {
                 checker.body(&op.body, expected.as_ref(), Role::Return(name), true);
             });
             self.returning = None;
             self.locals.truncate(mark);
         }
+        self.handler = None;
     }
 
     fn example(&mut self, example: &'a ExampleDecl) {
@@ -955,7 +1085,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         for given in &example.givens {
             let capability = self.install(&given.handler);
             let name = self.name(&given.cap);
-            // DECISION D-087: the first `given` of a name wins.
+            // The first `given` of a name wins.
             if let Some(frame) = self.frames.first_mut()
                 && !frame.bindings.iter().any(|(bound, _)| bound == name)
             {
@@ -969,21 +1099,27 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             }
         }
         self.ctx.in_do = true;
+        self.absorbed.clear();
         let ty = self.expr(&example.action, None);
         self.ctx.in_do = false;
+        // The error kind of the `do` expression: the failures of its calls, except those that
+        // `attempt` absorbs or that belong to a lambda (D-170).
         let action = example.action.span;
+        let within = |span: &Span, outer: &Span| {
+            span.file == outer.file && span.start >= outer.start && span.end <= outer.end
+        };
         let fails: Vec<Ty> = self
             .call_fails
             .iter()
             .filter(|(span, _)| {
-                span.file == action.file && span.start >= action.start && span.end <= action.end
+                within(span, &action) && !self.absorbed.iter().any(|outer| within(span, outer))
             })
             .map(|(_, kind)| kind.clone())
             .collect();
         for expectation in &example.expectations {
             match &expectation.kind {
                 ExpectationKind::Holds(expr) => {
-                    // DECISION D-095: `expect` lines are not checked for labels.
+                    // `expect` lines are not checked for labels.
                     let ctx = Ctx {
                         result: Some(ty.clone()),
                         testing: true,
@@ -992,13 +1128,15 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                     };
                     self.within(ctx, |checker| checker.condition(expr, "an `expect` line"));
                 }
-                ExpectationKind::Fails(variant) => self.expected_failure(variant, &fails),
+                ExpectationKind::Fails(variant) => {
+                    self.expected_failure(variant, &fails, &ty);
+                }
                 ExpectationKind::Performed { cap, op, .. } => self.performed(cap, op),
             }
         }
     }
 
-    /// The own context of a function's body (DECISION D-071, D-072): its `uses`, declared, or
+    /// The own context of a function's body (D-072): its `uses`, declared, or
     /// inferred in pass 2; being inferred in pass 1; or empty for a public function without
     /// `uses`, which is pure.
     fn enter_function(&mut self, def: &FnDef<'a>) {
@@ -1031,7 +1169,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         }];
     }
 
-    /// U3010 and U3011 for a handler declaration (`spec/05 §5`, DECISION D-073).
+    /// U3010 and U3011 for a handler declaration (`spec/05 §5`).
     fn handler_rules(&mut self, handler: &'a HandlerDecl, def: &HandlerDef<'a>) {
         if self.pass != Pass::Check {
             return;
@@ -1113,7 +1251,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     }
 
     /// `expect performed @x.op`: `@x` is bound by a `given` line, and `op` is an operation of
-    /// its capability (DECISION D-075).
+    /// its capability.
     fn performed(&mut self, cap: &Ident, op: &Ident) {
         if self.pass != Pass::Check {
             return;
@@ -1143,31 +1281,42 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         }
     }
 
-    /// `expect fails V`: `V` is a variant of an error kind of the `do` expression, or of a
-    /// kind in scope when none has it (DECISION D-048).
-    fn expected_failure(&mut self, variant: &Ident, fails: &[Ty]) {
+    /// `expect fails V`: `V` is a variant of an error kind of the `do` expression, and U1001
+    /// otherwise (`spec/10 §12` rule 1, R-020). When the `do` expression cannot fail,
+    /// `expect fails V` never holds, and it is U1001 too (ADR 0044). `action` is the type of
+    /// the `do` expression: one that failed to type reports nothing more.
+    /// D-170 (option B, the owner's answer of 2026-10-01): `fails` is the error kind of the
+    /// `do` expression itself, so a call whose failure `attempt` absorbs, or a call inside a
+    /// lambda, does not count.
+    fn expected_failure(&mut self, variant: &Ident, fails: &[Ty], action: &Ty) {
         let name = self.name(variant);
+        if fails.is_empty() {
+            if self.resolve(action) == Ty::Error {
+                return;
+            }
+            let mut diagnostic = self.report.make(
+                Code::U1001,
+                variant.span,
+                format!("the `do` expression cannot fail, so `expect fails {name}` never holds"),
+            );
+            diagnostic.repairs.push(Report::advice(format!(
+                "remove the line `expect fails {name}`, or make the `do` line call what fails with `{name}`"
+            )));
+            self.report.push(diagnostic);
+            return;
+        }
         let in_kind = fails.iter().any(|kind| match self.resolve(kind) {
             Ty::Kind(id, _) => self.variant_index(id, name).is_some(),
             _ => false,
         });
-        let in_scope = self
-            .env
-            .upper(self.module, name)
-            .iter()
-            .any(|entity| matches!(entity, Entity::Variant(..)));
-        if in_kind || in_scope || fails.iter().any(|kind| self.resolve(kind) == Ty::Error) {
+        if in_kind || fails.iter().any(|kind| self.resolve(kind) == Ty::Error) {
             return;
         }
         let kinds: Vec<String> = fails
             .iter()
             .map(|kind| format!("`{}`", self.show(kind)))
             .collect();
-        let message = if kinds.is_empty() {
-            format!("cannot find variant `{name}` in this module, its imports or the prelude")
-        } else {
-            format!("cannot find variant `{name}` in {}", kinds.join(" or "))
-        };
+        let message = format!("cannot find variant `{name}` in {}", kinds.join(" or "));
         self.report.error(Code::U1001, variant.span, message);
     }
 
@@ -1177,6 +1326,30 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             .kinds
             .get(id)
             .and_then(|kind| kind.variants.iter().position(|v| v.name == name))
+    }
+
+    /// `ty`, a type written in the declaration being checked, with the values of its type
+    /// parameters labeled with their symbolic labels (ADR 0038 D3.2).
+    pub(crate) fn symbolic(&self, ty: &Ty) -> Ty {
+        if self.type_params.is_empty() {
+            return ty.clone();
+        }
+        ty.symbolic(&self.type_params)
+    }
+
+    /// `ty` without the symbolic labels of the type parameters of the declaration being
+    /// checked: the declared result of a generic function may carry them, since each call
+    /// replaces them by the labels of its type arguments (`spec/07 §7` rule 8).
+    pub(crate) fn without_own_symbols(&self, ty: &Ty) -> Ty {
+        if self.type_params.is_empty() {
+            return ty.clone();
+        }
+        let names = self.type_params.clone();
+        ty.map_labels(&|label| {
+            let mut kept = label.clone();
+            kept.symbols.retain(|s| !names.iter().any(|n| n == s));
+            kept
+        })
     }
 
     /// Fresh variables for the type parameters of a generic kind or function.
@@ -1211,4 +1384,25 @@ fn predicate_body_span(body: &una_syntax::ast::Body) -> Span {
         una_syntax::ast::Body::Line(expr) => expr.span,
         una_syntax::ast::Body::Block(block) => block.span,
     }
+}
+
+/// Whether two written types carry the same refinements (ADR 0047 rule 1): the same refined
+/// kinds and ranges, in order, and the same refinements of the function types they contain.
+/// A range compares by its text, wherever it is written.
+/// D-169: ADR 0047 does not say whether an alias without a `where` clause of
+/// its own, `kind P2 = Pos`, is another refined kind than `Pos`; it carries exactly the
+/// refinements of `Pos`, so the policy call's check against `from` still meets every
+/// assumption of the `via` body, and it matches.
+fn same_refinements(a: &Declared, b: &Declared) -> bool {
+    let same = |x: &Refinement, y: &Refinement| match (x, y) {
+        (Refinement::Range(x, _), Refinement::Range(y, _)) => x == y,
+        (x, y) => x == y,
+    };
+    a.refinements.len() == b.refinements.len()
+        && a.refinements
+            .iter()
+            .zip(&b.refinements)
+            .all(|(x, y)| same(x, y))
+        && !super::call::refinement_flow(&a.base, &b.base)
+        && !super::call::refinement_flow(&b.base, &a.base)
 }

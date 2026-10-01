@@ -8,7 +8,7 @@
 
 `spec/02 §2` defines `type = [ label ] type_core [ "in" range ]` and `label = level [ "[" upper_ident { "," upper_ident } "]" ]`, and `type_core` may itself start with `[` (`"[" type "]"`, a list type). After a level such as `secret`, a `[` followed by an upper-case name can start either the label's categories (`secret[PII] Phone`) or a list type (`secret [Int]`). The introduction of `spec/02` says the grammar is LL(2) except for kind bodies; telling the two readings apart here needs unbounded lookahead or backtracking, because the category list can be long. Labels and categories are defined in `spec/07 §2`; `List[T]` is the named form of a list type (`spec/03 §1`, `spec/14`).
 
-Decision log entry: D-018 (`docs/reviews/open-decisions.md`).
+Decision log entry: D-018 (`docs/history/v0.1/open-decisions.md`).
 
 ## Decision
 

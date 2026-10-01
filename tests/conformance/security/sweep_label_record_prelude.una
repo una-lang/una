@@ -1,0 +1,64 @@
+-- test: a record kind with a secret field: prelude results carry the field labels of their element and argument types (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 34:42
+-- expect: error U4001 at 36:39
+-- expect: error U4001 at 38:36
+-- expect: error U4001 at 40:45
+-- expect: error U4001 at 42:39
+-- expect: error U4001 at 44:42
+-- expect: error U4001 at 46:37
+-- expect: error U4001 at 48:42
+-- expect: error U4001 at 50:45
+-- expect: error U4001 at 52:39
+-- expect: error U4001 at 54:42
+-- expect: error U4001 at 56:42
+-- expect: error U4001 at 58:29
+-- expect: error U4001 at 60:29
+-- expect: error U4001 at 62:29
+module sweep_label_record_prelude
+
+kind Acct
+  id: Int
+  pin: secret Int
+
+kind Guess = Hit(pin: secret Int) | Miss
+
+kind Box[T]
+  value: T
+
+kind Wallet
+  acct: Acct
+
+grab(x: Acct) -> secret Int = x.pin
+
+pub p_contains(xs: List[Acct]) -> Bool = xs.contains(item: Acct(id: 1, pin: 2))
+
+pub p_first(xs: List[Acct]) -> Bool = xs.first() is Some
+
+pub p_at(xs: List[Acct]) -> Bool = xs.at(index: 0) is Some
+
+pub p_first_where(xs: List[Acct]) -> Bool = xs.first_where(keep: fn(y) -> true) is Some
+
+pub p_filter(xs: List[Acct]) -> Int = xs.filter(keep: fn(y) -> true).len
+
+pub p_map(xs: List[Acct]) -> List[Int] = xs.map(each: fn(y) -> 1)
+
+pub p_fold(xs: List[Acct]) -> Int = xs.fold(initial: 0, step: fn(n, y) -> n + 1)
+
+pub p_is_some(o: Option[Acct]) -> Bool = o.is_some()
+
+pub p_is_ok(r: Result[Acct, Int]) -> Bool = r.is_ok()
+
+pub p_append(xs: List[Acct]) -> Int = xs.append(item: Acct(id: 1, pin: 2)).len
+
+pub p_or_else(o: Option[Acct]) -> Acct = o.or_else(default: Acct(id: 1, pin: 2))
+
+pub p_is_empty(xs: List[Acct]) -> Bool = xs.is_empty()
+
+pub p_sum(x: Acct) -> Int = [grab(x)].sum()
+
+pub p_min(x: Acct) -> Int = min(grab(x), b: 0)
+
+pub p_max(x: Acct) -> Int = max(grab(x), b: 0)
+
+pub p_len_twin(xs: List[Acct]) -> Int = xs.len

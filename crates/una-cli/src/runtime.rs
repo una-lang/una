@@ -1,7 +1,7 @@
 //! `una run` and `una test` (`spec/13 §5`, `spec/11`): they check the package at tier 1
 //! (`spec/12 §1`), then evaluate it on the Una Abstract Machine.
 //!
-//! DECISION D-101 and DECISION D-102: the human output of both commands, and their JSON
+//! The human output of both commands, and their JSON
 //! documents `una.run/1` and `una.test/1`.
 
 use std::collections::BTreeMap;
@@ -92,11 +92,26 @@ impl World for HostWorld<'_> {
     }
 
     fn write_file(&mut self, path: &Path, content: &str) -> Result<(), FileFault> {
-        std::fs::write(path, content).map_err(file_fault)
+        // `spec/14 §3`, ADR 0038 D9 rule 3: a file that does not exist is created with
+        // `create_new` (`O_CREAT | O_EXCL`), which fails on a symbolic link, dangling or not,
+        // so a write never creates a file through a link. An existing file is truncated and
+        // never created.
+        let exists = std::fs::symlink_metadata(path).is_ok();
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(exists)
+            .create_new(!exists)
+            .open(path)
+            .map_err(file_fault)?;
+        file.write_all(content.as_bytes()).map_err(file_fault)
     }
 
     fn canonical(&mut self, path: &Path) -> Option<PathBuf> {
         std::fs::canonicalize(path).ok()
+    }
+
+    fn is_link(&mut self, path: &Path) -> bool {
+        std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink())
     }
 }
 
@@ -123,7 +138,7 @@ pub(crate) fn run_command(
             return Ok(ExitStatus::Usage);
         }
     };
-    // DECISION D-103: `[run] grants` resolve against the package root, `--grant` flags against
+    // `[run] grants` resolve against the package root, `--grant` flags against
     // the current directory, and they add up.
     let (manifest, _) = crate::package::project(&package);
     let root = package
@@ -168,7 +183,7 @@ pub(crate) fn run_command(
             status,
         );
     }
-    // DECISION D-109: the entry is `[run] entry`, or the module of a single file.
+    // The entry is `[run] entry`, or the module of a single file.
     let Some(entry) = analysis.entry.clone() else {
         writeln!(
             stderr,
@@ -354,8 +369,7 @@ fn main_of<'a>(program: &'a Program, entry: &str) -> Option<&'a Fun> {
     })
 }
 
-/// The keys of the key files of `keys:` grants; the first grant of a name wins
-/// (DECISION D-103).
+/// The keys of the key files of `keys:` grants; the first grant of a name wins.
 fn load_keys(grants: &[Grant]) -> Result<BTreeMap<String, Vec<u8>>, String> {
     let mut keys = BTreeMap::new();
     for grant in grants {

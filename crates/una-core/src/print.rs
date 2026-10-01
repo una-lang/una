@@ -1,6 +1,6 @@
 //! The text of Core IR (`spec/09 §2, §4`): what `una check --dump-core` prints.
 //!
-//! DECISION D-099: declarations in source order, one block each; every binder with its type,
+//! Declarations in source order, one block each; every binder with its type,
 //! label and refinements; primitives in prefix form; qualified callees.
 
 use std::fmt::Write as _;
@@ -411,6 +411,7 @@ impl Printer {
                 capability,
                 uses,
                 ops,
+                ..
             } => {
                 let uses = if uses.is_empty() {
                     String::new()
@@ -605,7 +606,7 @@ impl Printer {
     /// A right-hand side that takes more than a line: a lambda or `checked`.
     fn rhs_block(&mut self, indent: usize, rhs: &Rhs) {
         match rhs {
-            Rhs::Lambda { params, body } => {
+            Rhs::Lambda { params, body, .. } => {
                 self.line(indent, &format!("λ({}).", Printer::params(params)));
                 self.expr(indent + 1, body);
             }

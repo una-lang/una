@@ -1,0 +1,47 @@
+-- test: an annotated let fed by a generic call checks every flow (uses, label, fails); each _bad probe is rejected and each _ok twin accepted (flow sweep)
+-- spec: spec/10 §2
+-- expect: error U4001 at 26:16
+-- expect: error U3003 at 36:27
+-- expect: error U3016 at 36:30
+-- expect: error U3009 at 46:27
+-- expect: error U3016 at 46:30
+module sweep_flow_let_generic
+
+pub kind Pos = Int where it > 0
+
+pub kind Holder
+  n: Int
+  p: Pos
+  s: secret Int
+  run: fn(Int) -> Int
+  pos: fn(Int) -> Pos
+  pinv: fn(Pos) -> Int
+
+pub kind Boom = | Bang
+
+pub id[T](x: T) -> T = x
+
+pub l_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int
+=
+  let y: Int = id(s)
+  0
+
+pub l_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int
+=
+  let y: Int = id(0)
+  0
+
+pub e_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int
+=
+  let y: fn(Int) -> Int = id(q)
+  0
+
+pub e_ok(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int
+=
+  let y: fn(Int) -> Int = id(g)
+  0
+
+pub x_bad(h: Holder, s: secret Int, g: fn(Int) -> Int, k: fn(Int) -> Pos, t: fn(Int) -> secret Int, w: fn(Pos) -> Int, z: fn(Int) -> Int fails Boom, q: fn(Int) -> Int uses @c: Console[print]) -> Int
+=
+  let y: fn(Int) -> Int = id(z)
+  0

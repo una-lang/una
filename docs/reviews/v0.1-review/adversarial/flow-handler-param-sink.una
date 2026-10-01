@@ -1,0 +1,13 @@
+-- Adversarial: handler prints its op parameter raised to 'accepts secret'
+-- Expected: U4003 (spec/07 §7.4)
+-- Observed: U4003 at 13:34
+-- Verdict: Pass
+module flow_handler_param_sink
+
+capability Vault
+  op note(line: Text) -> Unit
+    accepts secret
+
+handler to_console() for Vault
+  uses @console: Console[print]
+  op note(line) = @console.print(line)

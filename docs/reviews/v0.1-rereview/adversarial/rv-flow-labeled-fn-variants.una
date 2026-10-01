@@ -1,0 +1,65 @@
+-- Adversarial: calls of labeled function values: failing, chosen by a secret branch, record field call, field value, curried lambda, captured secret, list index
+-- Expected: U4001/U4002 at each (T-App)
+-- Observed: U4002 at 28:11, 36:3; U4001 at 30:3, 41:3, 43:42, 48:3, 54:3, 59:3, 65:3; U3006 at 35:31, 35:44; held
+module f01_labeled_fn
+
+kind Boom = | Exploded
+
+kind Ops
+  run: fn(Int) -> Int
+
+say_yes(line: Text) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("yes")
+
+say_no(line: Text) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("no")
+
+inc(x: Int) -> Int = x + 1
+
+dec(x: Int) -> Int = x - 1
+
+pub failing(f: secret fn(Int) -> Int fails Boom) -> Int
+  fails Boom
+=
+  let n = f(1)
+    if error pass
+  n
+
+pub chosen(pin: secret Int) -> Unit
+  uses @console: Console[print]
+=
+  let f = if pin == 1234 then say_yes else say_no
+  f("x")
+
+pub chosen_pure(pin: secret Int) -> Int
+=
+  let f = if pin == 1234 then inc else dec
+  f(0)
+
+pub field_call(ops: secret Ops) -> Int = ops.run(1)
+
+pub field_value(ops: secret Ops) -> Int
+=
+  let f = ops.run
+  f(1)
+
+pub curried(pin: secret Int) -> Int
+=
+  let g = fn(x: Int) -> fn(y: Int) -> y + pin
+  let h = g(1)
+  h(2)
+
+pub captured(pin: secret Int) -> Int
+=
+  let f = fn(x: Int) -> x + pin
+  f(1)
+
+pub listed(pin: secret Int) -> Int
+=
+  let fs = [inc, dec]
+  let f = fs.at(index: pin).or_else(default: inc)
+  f(0)

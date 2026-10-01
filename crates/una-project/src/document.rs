@@ -67,7 +67,7 @@ fn type_name(value: &DeValue<'_>) -> &'static str {
 impl<'t, 'i> Table<'t, 'i> {
     /// The value `key` of this table as a table, or an error with `code`.
     pub(crate) fn of(
-        key: &Spanned<std::borrow::Cow<'i, str>>,
+        key: &Spanned<toml::de::DeString<'i>>,
         value: &'t Spanned<DeValue<'i>>,
         code: Code,
         errors: &mut Vec<ProjectError>,
@@ -96,7 +96,7 @@ impl<'t, 'i> Table<'t, 'i> {
     /// An unknown key of this table.
     pub(crate) fn unknown(
         &self,
-        key: &Spanned<std::borrow::Cow<'i, str>>,
+        key: &Spanned<toml::de::DeString<'i>>,
         code: Code,
     ) -> ProjectError {
         ProjectError::new(

@@ -1,0 +1,17 @@
+-- Adversarial: overlapping range arms; the verifier and the interpreter must agree that the
+-- first arm wins (4 is `Low`). The twin with `ensures n == 4 implies result is High` is refuted.
+-- Expected: exit 0 for check and test. Observed: exit 0; the example passes. Held.
+module overlap_ok
+
+pub kind Level = Low | High
+
+pub classify(n: Int in 0..10) -> Level
+  ensures n == 4 implies result is Low
+=
+  when n
+    in 0..5 -> Low
+    in 3..10 -> High
+
+example "first arm wins"
+  do classify(4)
+  expect result is Low

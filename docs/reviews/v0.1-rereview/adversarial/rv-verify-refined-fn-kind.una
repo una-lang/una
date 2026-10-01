@@ -1,0 +1,15 @@
+-- Adversarial: a refined kind whose base is a function type. ADR 0037 rule 10 says such a
+-- refinement is never dropped; ADR 0045 (Proposed) would make the form U2002.
+-- Expected: an ordinary diagnostic (U2002 per ADR 0045), the same in debug and release builds.
+-- Observed at 85787d7: debug build U8001 internal error at 13:1, exit 3; release build exit 0
+-- with no obligation, so `h` passes an unchecked function as `F`.
+-- Verdict: Major
+module rv_verify_refined_fn_kind
+
+pub predicate opaque good(f: fn(Int) -> Int) -> Bool = true
+
+pub kind F = fn(Int) -> Int where good(it)
+
+pub g(f: F) -> Int = f(1)
+
+pub h(x: fn(Int) -> Int) -> Int = g(x)

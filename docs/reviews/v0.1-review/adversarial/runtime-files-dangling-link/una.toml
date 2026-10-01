@@ -1,0 +1,8 @@
+[package]
+name = "runtime_files_dangling_link"
+version = "0.1.0"
+edition = "0.1"
+
+[run]
+entry = "esc"
+grants = ["console", "files:./box:write"]

@@ -44,7 +44,7 @@ pub struct PackageInput<'a> {
 }
 
 /// What `una run` adds to a check: the module whose `main` runs, and the grants of
-/// `[run] grants` and `--grant` together, which are final (`spec/04 §8`, DECISION D-109).
+/// `[run] grants` and `--grant` together, which are final (`spec/04 §8`).
 #[derive(Clone, Copy, Debug)]
 pub struct RunInput<'a> {
     /// The path of the entry module.
@@ -258,6 +258,7 @@ impl<'p, 'a> Checker<'p, 'a> {
                 self.lower_convention(segment, "module path segment");
             }
             self.module_path(module, header.path.span);
+            self.reserved_module(header);
         }
         let mut examples: BTreeMap<String, Span> = BTreeMap::new();
         for decl in &tree.decls {
@@ -388,11 +389,20 @@ impl<'p, 'a> Checker<'p, 'a> {
             self.duplicate(
                 ident.span,
                 first_span,
-                format!(
-                    "`{name}` is defined twice in this module: as a {} and as a {}",
-                    first_what.word(),
-                    what.word()
-                ),
+                // R-034: the construct is named once when both definitions are of one kind
+                // (DECISION D-158).
+                if first_what == what {
+                    format!(
+                        "`{name}` is defined twice in this module, both times as a {}",
+                        what.word()
+                    )
+                } else {
+                    format!(
+                        "`{name}` is defined twice in this module: as a {} and as a {}",
+                        first_what.word(),
+                        what.word()
+                    )
+                },
             );
             return;
         }
@@ -405,6 +415,32 @@ impl<'p, 'a> Checker<'p, 'a> {
                 start,
                 variants,
             },
+        );
+    }
+
+    /// U1009: a module path whose first segment is `std` or `prelude` is reserved for the
+    /// standard library, in a package and in a single file (ADR 0038 D7, `spec/10 §11` rule 8).
+    fn reserved_module(&mut self, header: &una_syntax::ast::ModuleHeader) {
+        let Some(first) = header.path.segments.first() else {
+            return;
+        };
+        let segment = self.name(first);
+        if !prelude::RESERVED_SEGMENTS.contains(&segment) {
+            return;
+        }
+        let names: Vec<&str> = header
+            .path
+            .segments
+            .iter()
+            .map(|segment| self.name(segment))
+            .collect();
+        let path = names.join(".");
+        self.error(
+            Code::U1009,
+            header.span,
+            format!(
+                "module `{path}` starts with `{segment}`, a segment that only the standard library may use"
+            ),
         );
     }
 
@@ -573,7 +609,7 @@ impl<'p, 'a> Checker<'p, 'a> {
             for ident in &import.names {
                 let name = self.name(ident);
                 let found = match target.and_then(|target| tables.get(target)) {
-                    // DECISION D-041: a module with syntax errors may lack the name.
+                    // A module with syntax errors may lack the name.
                     Some(module) if module.module.broken => Found::Unknown,
                     Some(module) => match module.upper.get(name).or_else(|| module.lower.get(name))
                     {
@@ -610,7 +646,7 @@ impl<'p, 'a> Checker<'p, 'a> {
         }
     }
 
-    /// U1004 with an edit that makes the declaration public (DECISION D-040).
+    /// U1004 with an edit that makes the declaration public.
     fn private(
         &mut self,
         span: Span,
@@ -668,7 +704,7 @@ impl<'p, 'a> Checker<'p, 'a> {
     }
 
     /// U1003, once per import cycle, at the first import of the cycle's first module in path
-    /// order (DECISION D-040).
+    /// order.
     fn cycles(&mut self, tables: &[Table<'a>]) {
         let components = strongly_connected(tables);
         for component in components {
@@ -725,7 +761,7 @@ impl<'p, 'a> Checker<'p, 'a> {
                     header.span.start,
                     header.span.start + "trusted".len(),
                 );
-                // DECISION D-045: a single file has no una.toml to list the module in.
+                // A single file has no una.toml to list the module in.
                 let message = if self.package.single {
                     format!(
                         "module `{path}` is `trusted`, but a file checked on its own has no una.toml to list it in [trusted] modules"

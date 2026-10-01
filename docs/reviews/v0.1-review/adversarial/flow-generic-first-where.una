@@ -1,0 +1,9 @@
+-- Adversarial: generic 'first_where(x == y).is_some()' instantiated with secret data
+-- Expected: U4001 (spec/07 §7.1, T6)
+-- Observed: accepted (exit 0)
+-- Verdict: CRITICAL
+module flow_generic_first_where
+
+find[T](xs: List[T], y: T) -> Bool = xs.first_where(keep: fn(x) -> x == y).is_some()
+
+pub leak(pin: secret Int) -> Bool = find([pin], y: 1234)

@@ -8,7 +8,7 @@ const DIFF_CELLS: usize = 4_000_000;
 
 /// The U7001 diagnostics of the file `id`, whose canonical form is `canonical`: one at the
 /// first `\r\n`, if any, and one per changed region of the line diff, each with a mechanical
-/// edit (DECISION D-028).
+/// edit.
 pub fn differences(db: &SourceDb, id: FileId, canonical: &str) -> Vec<Diagnostic> {
     let source = db.file(id);
     let text = source.text();

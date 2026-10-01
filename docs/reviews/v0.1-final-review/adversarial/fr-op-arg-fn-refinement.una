@@ -1,0 +1,26 @@
+-- Adversarial: control for F-001: a function whose result is 0 passed where an operation declares `fn(Int) -> Pos`
+-- Expected: U5001 at the argument
+-- Observed: U5001
+-- Verdict: Held
+module fr_op_arg_fn_refinement
+
+pub kind Pos = Int where it > 0
+
+capability Runner
+  op run(f: fn(Int) -> Pos) -> Int
+
+handler dividing() for Runner
+  op run(f) = 100 / f(1)
+
+zero(x: Int) -> Int = 0
+
+pub go() -> Int
+  uses @run: Runner[run]
+=
+  @run.run(zero)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let n = go() with @run = dividing()
+  @console.print("n = {n}")

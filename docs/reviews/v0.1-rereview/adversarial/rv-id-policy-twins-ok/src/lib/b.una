@@ -1,0 +1,10 @@
+trusted module lib.b
+
+pub policy release
+  from internal Int
+  to public Int in 0..10
+  via squeeze
+  purpose "show a band"
+  owner ops
+
+squeeze(n: internal Int) -> public Int in 0..10 = max(0, b: min(n, b: 10))

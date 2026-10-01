@@ -1,0 +1,9 @@
+-- test: generic `first_where(x == y).is_some()` instantiated with secret data (R-004)
+-- spec: spec/07 §7
+-- expect: error U4001 at 7:68
+-- expect: error U4001 at 9:37
+module generic_first_where
+
+find[T](xs: List[T], y: T) -> Bool = xs.first_where(keep: fn(x) -> x == y).is_some()
+
+pub leak(pin: secret Int) -> Bool = find([pin], y: 1234)

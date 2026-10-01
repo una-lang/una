@@ -1,0 +1,90 @@
+-- test: nested kinds and generics holding a secret: a handler operation result keeps the field labels of the declared result (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 32:3
+-- expect: error U4001 at 56:3
+-- expect: error U4001 at 80:3
+module sweep_label_nested_handler
+
+kind Acct
+  id: Int
+  pin: secret Int
+
+kind Guess = Hit(pin: secret Int) | Miss
+
+kind Box[T]
+  value: T
+
+kind Wallet
+  acct: Acct
+
+grab_boxed_list(x: Box[List[secret Int]]) -> secret Int = x.value.sum()
+
+capability StoreBoxedList
+  op fetch() -> Box[List[secret Int]]
+
+handler fixed_boxed_list() for StoreBoxedList
+  op fetch() = Box(value: [2])
+
+pub fetched_boxed_list() -> Bool
+  uses @store: StoreBoxedList[fetch]
+=
+  let x = @store.fetch()
+  x == Box(value: [2])
+
+pub installed_boxed_list() -> secret Bool
+=
+  fetched_twin_boxed_list() with @store = fixed_boxed_list()
+
+fetched_twin_boxed_list() -> secret Bool
+  uses @store: StoreBoxedList[fetch]
+=
+  let x = @store.fetch()
+  x == Box(value: [2])
+
+grab_option_box(x: Option[Box[secret Int]]) -> secret Int = x.or_else(default: Box(value: 0)).value
+
+capability StoreOptionBox
+  op fetch() -> Option[Box[secret Int]]
+
+handler fixed_option_box() for StoreOptionBox
+  op fetch() = Some(Box(value: 2))
+
+pub fetched_option_box() -> Bool
+  uses @store: StoreOptionBox[fetch]
+=
+  let x = @store.fetch()
+  x == Some(Box(value: 2))
+
+pub installed_option_box() -> secret Bool
+=
+  fetched_twin_option_box() with @store = fixed_option_box()
+
+fetched_twin_option_box() -> secret Bool
+  uses @store: StoreOptionBox[fetch]
+=
+  let x = @store.fetch()
+  x == Some(Box(value: 2))
+
+grab_wallet(x: Wallet) -> secret Int = x.acct.pin
+
+capability StoreWallet
+  op fetch() -> Wallet
+
+handler fixed_wallet() for StoreWallet
+  op fetch() = Wallet(acct: Acct(id: 1, pin: 2))
+
+pub fetched_wallet() -> Bool
+  uses @store: StoreWallet[fetch]
+=
+  let x = @store.fetch()
+  x == Wallet(acct: Acct(id: 1, pin: 2))
+
+pub installed_wallet() -> secret Bool
+=
+  fetched_twin_wallet() with @store = fixed_wallet()
+
+fetched_twin_wallet() -> secret Bool
+  uses @store: StoreWallet[fetch]
+=
+  let x = @store.fetch()
+  x == Wallet(acct: Acct(id: 1, pin: 2))

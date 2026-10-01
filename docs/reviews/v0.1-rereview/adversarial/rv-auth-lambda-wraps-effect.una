@@ -1,0 +1,19 @@
+-- Adversarial: pure-typed lambda that calls an effectful function or parameter, returned as a pure function
+-- Expected: U3003
+-- Observed: U3003 at 17:15 and 19:93; held
+module a03_lambda_wraps
+
+capability Log
+  op write(line: Text) -> Unit
+
+note(line: Text) -> Unit
+  uses @log: Log[write]
+=
+  @log.write(line)
+
+pub wrapped() -> fn(Text) -> Unit
+  uses @log: Log[write]
+=
+  fn(line) -> note(line)
+
+pub wrap_param(f: fn(Text) -> Unit uses @log: Log[write]) -> fn(Text) -> Unit = fn(line) -> f(line)

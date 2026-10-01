@@ -15,7 +15,7 @@ use super::closest;
 use super::env::{Entity, FnKind, KindDef};
 use super::label::Label;
 use super::records::Res;
-use super::ty::{FnTy, FnUse, KindId, Ty};
+use super::ty::{FnRefinements, FnTy, FnUse, KindId, Refinement, Ty};
 use super::unify::Origin;
 
 impl<'a> Checker<'_, 'a, '_> {
@@ -75,8 +75,8 @@ impl<'a> Checker<'_, 'a, '_> {
                 };
                 let what = format!("the operand of `{symbol}`");
                 let found = self.expr_as(operand, Some(&ty), Role::Condition(&what));
-                // DECISION D-090: an operator's result joins every label of its operands.
-                let label = self.labeled(&found).deep_label();
+                // An operator's result joins every label of its operands.
+                let label = self.deep(&found);
                 ty.with_label(&label)
             }
             ExprKind::Is { value, target } => self.is(value, target, span),
@@ -190,8 +190,7 @@ impl<'a> Checker<'_, 'a, '_> {
 
     /// A text literal, and its label: the join of every label of its interpolated values
     /// (`spec/07 §4`). Interpolation converts `Int`, `Bool` and `Text` only (`spec/09 §3`,
-    /// `spec/14 §2`); a literal without interpolation is in the refinement language
-    /// (DECISION D-050).
+    /// `spec/14 §2`); a literal without interpolation is in the refinement language.
     pub(crate) fn text(&mut self, text: &TextLit) -> Label {
         let interpolated = text
             .parts
@@ -206,7 +205,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 continue;
             };
             let ty = self.expr(expr, None);
-            label = label.join(&self.labeled(&ty).deep_label());
+            label = label.join(&self.deep(&ty));
             match self.resolve(&ty) {
                 Ty::Int | Ty::Bool | Ty::Text | Ty::Error | Ty::Never | Ty::Var(_) => {}
                 other => {
@@ -228,12 +227,13 @@ impl<'a> Checker<'_, 'a, '_> {
     fn name_value(&mut self, ident: &Ident, site: Site) -> Ty {
         let name = self.name(ident);
         if let Some(ty) = self.local(name) {
-            // DECISION D-079: so is a parameter or local of such a function type.
+            // So is a parameter or local of such a function type.
             let effects = match self.resolve(&ty) {
                 Ty::Fn(function) => !function.uses.is_empty() || function.fails.is_some(),
                 _ => false,
             };
             if effects && !site.argument && self.pass == Pass::Check && self.base != Base::Quiet {
+                self.escaped.push(ident.span);
                 self.report.error(
                     Code::U3006,
                     ident.span,
@@ -250,12 +250,13 @@ impl<'a> Checker<'_, 'a, '_> {
                 let (module, effects) = self.env.functions.get(id).map_or((0, false), |f| {
                     (f.module, !f.uses.is_empty() || f.fails.is_some())
                 });
-                self.testing_site(module, name, ident.span);
+                self.testing_value_site(module, name, ident.span);
                 self.via_site(id, ident.span);
-                // DECISION D-079: a function with effects or failures is a value only as an
+                // A function with effects or failures is a value only as an
                 // argument.
                 if effects && !site.argument && self.pass == Pass::Check && self.base != Base::Quiet
                 {
+                    self.escaped.push(ident.span);
                     self.report.error(
                         Code::U3006,
                         ident.span,
@@ -295,9 +296,31 @@ impl<'a> Checker<'_, 'a, '_> {
             );
             return Ty::Error;
         }
+        // ADR 0042 rule 2: an opaque predicate used as a value would be called outside
+        // `checked` (re-review N-008).
+        if def.kind == (FnKind::Predicate { reflect: false })
+            && !self.ctx.opaque
+            && !self.ctx.opaque_calls
+            && self.pass == super::authority::Pass::Check
+        {
+            let mut diagnostic = self.report.make(
+                Code::U2016,
+                span,
+                format!(
+                    "opaque predicate `{}` is used as a value, so it would be called outside `checked`",
+                    def.name
+                ),
+            );
+            diagnostic.repairs.push(super::Report::advice(format!(
+                "call it inside `checked(value, {}(it)) else fail <Variant>` instead",
+                def.name
+            )));
+            self.report.push(diagnostic);
+        }
         let args = self.instantiate(&def.type_params, def.name, span);
         if !args.is_empty() {
             self.instances.push((id, args.clone(), span));
+            self.instantiation(def.name, &def.type_params, args.clone(), Vec::new(), span);
         }
         self.edge(id, span);
         self.resolved(
@@ -307,15 +330,39 @@ impl<'a> Checker<'_, 'a, '_> {
                 type_args: args.clone(),
             },
         );
+        // The lambda that stands for the value calls the function, so its `requires` is a
+        // precondition at the value (`spec/10 §2`, S-Fun; R-032).
+        if def.requires {
+            self.obligation(ObligationKind::Precondition, span, None);
+        }
         Ty::Fn(Box::new(FnTy {
             params: def
                 .params
                 .iter()
                 .map(|p| p.ty.base.substitute(&args))
                 .collect(),
-            result: def.result.base.substitute(&args),
+            // The result of a generic function carries the labels of its type arguments, which
+            // the value's type records lazily, since they are known only once the value flows
+            // somewhere (`spec/10 §5`, generic instantiation; DECISION D-137).
+            result: if args.is_empty() {
+                def.result.base.substitute(&args)
+            } else {
+                def.result
+                    .base
+                    .substitute(&args)
+                    .raise_deep(&super::unify::Vars::label_of(&args))
+            },
             uses: def.uses.iter().map(|need| need.usage.clone()).collect(),
             fails: def.fails.clone(),
+            // ADR 0037 rule 1: the refinements of the function's header.
+            refinements: FnRefinements {
+                params: def
+                    .params
+                    .iter()
+                    .map(|p| p.ty.refinements.clone())
+                    .collect(),
+                result: def.result.refinements.clone(),
+            },
         }))
     }
 
@@ -326,7 +373,7 @@ impl<'a> Checker<'_, 'a, '_> {
         }
     }
 
-    /// An upper-case name used as a value: a variant without fields (DECISION D-053).
+    /// An upper-case name used as a value: a variant without fields.
     fn upper_value(&mut self, ident: &Ident, expected: Option<&Ty>) -> Ty {
         let name = self.name(ident);
         let span = ident.span;
@@ -439,19 +486,43 @@ impl<'a> Checker<'_, 'a, '_> {
 
     fn list(&mut self, items: &[Expr], span: Span, expected: Option<&Ty>) -> Ty {
         self.outside_rl(span, || "a list literal".to_owned());
-        // The element variable takes the expected element type, and the labels of every item
-        // (DECISION D-088).
+        // The element variable takes the expected element type, and the labels of every item.
         let element = self.vars.fresh(Origin::Element, span);
         if let Some(Ty::List(expected)) = expected.map(|ty| self.resolve(ty)) {
             self.vars.unify(&element, &expected);
         }
+        let mut found = Vec::new();
         for item in items {
-            self.expr(item, Some(&element));
+            found.push(self.expr(item, Some(&element)));
         }
+        // ADR 0046 rule 3: each item flows into the element type, which keeps the labels of
+        // the first item at an invariant parameter of a kind.
+        for (item, ty) in items.iter().zip(&found) {
+            self.flow(item.span, ty, &element, "the element type of this list");
+        }
+        // ADR 0037 rule 2: each function value of the list flows into the element type.
+        if self.pass == Pass::Check {
+            let resolved = self.resolve(&element);
+            if found
+                .iter()
+                .any(|item| super::call::refinement_flow(&resolved, &self.resolve(item)))
+            {
+                self.obligation(ObligationKind::Refinement, span, None);
+            }
+        }
+        // ADR 0038 D2: the element type instantiates the type parameter of `List`.
+        // DECISION D-140: so a list literal of second-class values is U3016 at its first
+        // such element.
+        let values = items
+            .iter()
+            .zip(found)
+            .map(|(item, found)| (item.span, Ty::Param(0), found))
+            .collect();
+        self.instantiation("List", &["T"], vec![element.clone()], values, span);
         Ty::List(Box::new(element))
     }
 
-    /// A binary operation; its result joins every label of its operands (DECISION D-090).
+    /// A binary operation; its result joins every label of its operands.
     fn binary(&mut self, op: BinaryOp, left: &Expr, right: &Expr, span: Span) -> Ty {
         let mark = self.operands.len();
         let ty = self.binary_type(op, left, right, span);
@@ -460,7 +531,7 @@ impl<'a> Checker<'_, 'a, '_> {
             .split_off(mark)
             .iter()
             .fold(Label::public(), |label, operand| {
-                label.join(&self.labeled(operand).deep_label())
+                label.join(&self.deep(operand))
             });
         ty.with_label(&label)
     }
@@ -504,7 +575,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 if self.same(span, &left_ty, &right_ty, symbol) {
                     match self.resolve(&left_ty) {
                         Ty::Int | Ty::Error | Ty::Never | Ty::Var(_) => {}
-                        // DECISION D-061: ordering of text has no encoding in `spec/12 §4`.
+                        // Ordering of text has no encoding in `spec/12 §4`.
                         Ty::Text => self.outside_rl(span, || "ordering of `Text`".to_owned()),
                         Ty::Kind(id, _) if self.fieldless_sum(id) => {}
                         other => {
@@ -573,7 +644,7 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// In the refinement language a variant is tested with `is`, not compared: `x == V` is
-    /// outside it, with an edit to `x is V` (DECISION D-061).
+    /// outside it, with an edit to `x is V`.
     fn variant_equality(&mut self, op: BinaryOp, left: &Expr, right: &Expr, span: Span) {
         if !matches!(self.ctx.rl, Rl::Clause | Rl::Reflect) {
             return;
@@ -597,7 +668,7 @@ impl<'a> Checker<'_, 'a, '_> {
         );
     }
 
-    /// `v is V` and `v is literal`; the result takes `v`'s top label (DECISION D-090).
+    /// `v is V` and `v is literal`; the result takes `v`'s top label.
     fn is(&mut self, value: &Expr, target: &IsTarget, span: Span) -> Ty {
         let tested = match target {
             IsTarget::Variant(ident) => {
@@ -615,7 +686,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
                 ty
             }
-            // DECISION D-061: `is` with a literal is outside the refinement language.
+            // `is` with a literal is outside the refinement language.
             IsTarget::Literal(literal) => {
                 let full = self.report.text(span);
                 let value_text = self.report.text(value.span);
@@ -645,7 +716,7 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// The variant `ident` of the sum kind of a value of type `ty`: U1001 when the kind has no
-    /// such variant, U2001 when `ty` is not a sum kind (ADR 0024 rule 1, DECISION D-048).
+    /// such variant, U2001 when `ty` is not a sum kind (ADR 0024 rule 1).
     pub(crate) fn variant_of(
         &mut self,
         ty: &Ty,
@@ -704,10 +775,9 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// The branches of `if` or `when`: one type, or that of the expected type; a branch that
-    /// fails joins any other (DECISION D-049).
+    /// fails joins any other.
     /// The branches of `if` or `when`: one type, or that of the expected type; a branch that
-    /// fails joins any other (DECISION D-049). The value joins the labels of every branch
-    /// (DECISION D-088).
+    /// fails joins any other. The value joins the labels of every branch.
     pub(crate) fn branches(
         &mut self,
         branches: &[&Expr],
@@ -717,6 +787,7 @@ impl<'a> Checker<'_, 'a, '_> {
     ) -> Ty {
         let mut joined = expected.cloned();
         let mut value: Option<Ty> = None;
+        let mut found = Vec::new();
         for branch in branches {
             let ty = if tail {
                 self.tail_expr(branch, joined.as_ref(), role)
@@ -727,11 +798,15 @@ impl<'a> Checker<'_, 'a, '_> {
                 if joined.is_none() {
                     joined = Some(ty.clone());
                 }
+                found.push((branch.span, ty.clone()));
                 value = Some(match value {
                     Some(value) => self.vars.join(&value, &ty),
                     None => ty,
                 });
             }
+        }
+        if let Some(value) = &value {
+            self.join_flows(value, found);
         }
         value.or(joined).unwrap_or(Ty::Never)
     }
@@ -781,12 +856,22 @@ impl<'a> Checker<'_, 'a, '_> {
     ) {
         self.returned(span);
         if let (Some(expected), Role::Return(name)) = (expected, role) {
-            self.flow(span, ty, expected, &format!("the result of `{name}`"));
+            // The declared result of a generic function may carry the symbolic labels of its
+            // type parameters (`spec/07 §7` rule 8). They are removed from both sides, so that
+            // a position where the declared result has them and the value must match it, a
+            // function parameter or an invariant kind argument (ADR 0046), still compares
+            // (D-166).
+            let found = self.labeled(ty);
+            let found = self.without_own_symbols(&found);
+            let declared = self.labeled(expected);
+            let declared = self.without_own_symbols(&declared);
+            self.flow(span, &found, &declared, &format!("the result of `{name}`"));
+            self.fn_flow(span, expected, ty);
         }
     }
 
     /// U4001 for a branching construct in a return position whose condition, labeled
-    /// `label`, decides the value returned (DECISION D-089).
+    /// `label`, decides the value returned.
     pub(crate) fn implicit_return(
         &mut self,
         condition: Span,
@@ -795,9 +880,13 @@ impl<'a> Checker<'_, 'a, '_> {
         role: Role<'_>,
     ) {
         if let (Some(expected), Role::Return(name)) = (expected, role) {
+            let mut label = label.clone();
+            label
+                .symbols
+                .retain(|s| !self.type_params.iter().any(|p| p == s));
             self.implicit_result(
                 condition,
-                label,
+                &label,
                 expected,
                 &format!("the result of `{name}`"),
             );
@@ -815,8 +904,11 @@ impl<'a> Checker<'_, 'a, '_> {
         site: Site,
     ) -> Ty {
         self.outside_rl(span, || "a lambda".to_owned());
+        if self.ctx.in_do {
+            self.absorbed.push(span);
+        }
         // The expected function type, whose result may still be a variable that the body's
-        // labels join (DECISION D-088).
+        // labels join.
         let mut shape = match expected.map(|ty| self.vars.head(ty)) {
             Some(Ty::Fn(function)) => Some(*function),
             Some(Ty::Labeled(_, inner)) => match *inner {
@@ -843,18 +935,34 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         let mark = self.locals.len();
         let mut types = Vec::new();
+        // The parameter types the body assumes, and their refinements.
+        let mut own_types = Vec::new();
+        let mut own_refinements: Vec<Vec<Refinement>> = Vec::new();
+        // ADR 0037 rule 1: the lambda's type keeps the refinements of the expected function
+        // type, or without one those of its annotations.
+        let mut refinements = FnRefinements {
+            params: Vec::new(),
+            result: shape
+                .as_ref()
+                .map(|f| f.refinements.result.clone())
+                .unwrap_or_default(),
+        };
         for (index, param) in params.iter().enumerate() {
             let from_shape = shape.as_ref().and_then(|f| f.params.get(index).cloned());
+            let shape_refinements: Option<Vec<Refinement>> =
+                shape.as_ref().map(|f| f.refinements.param(index).to_vec());
+            let mut written_refinements: Option<Vec<Refinement>> = None;
             let name = self.name(&param.name);
             // A parameter's own annotation types the body; the lambda keeps the expected
             // parameter type, so a contradicting annotation is reported once.
             let (ty, param_ty) = match (&param.ty, from_shape) {
                 (Some(written), from_shape) => {
                     let type_params = self.type_params.clone();
-                    let lowered = self
-                        .env
-                        .lower_type(self.module, written, &type_params, self.report)
-                        .base;
+                    let lowered =
+                        self.env
+                            .lower_type(self.module, written, &type_params, self.report);
+                    written_refinements = Some(lowered.refinements);
+                    let lowered = self.symbolic(&lowered.base);
                     match from_shape {
                         Some(from_shape) if !self.vars.unify(&from_shape, &lowered) => {
                             let (declared, given) = (self.show(&lowered), self.show(&from_shape));
@@ -867,12 +975,26 @@ impl<'a> Checker<'_, 'a, '_> {
                             );
                             (lowered, from_shape)
                         }
-                        _ => (lowered.clone(), lowered),
+                        Some(from_shape) => {
+                            // ADR 0038 D1: the values the lambda receives flow into the type
+                            // its body assumes for the parameter. DECISION D-145: a label
+                            // or function type the written type drops is U4001 or U3003 at it.
+                            self.fn_flow_param(written.span, &lowered, &from_shape);
+                            let given = self.labeled(&from_shape);
+                            self.flow(
+                                written.span,
+                                &given,
+                                &lowered,
+                                &format!("lambda parameter `{name}`"),
+                            );
+                            (lowered, from_shape)
+                        }
+                        None => (lowered.clone(), lowered),
                     }
                 }
                 // The body assumes the labels the parameter has now; the lambda's type records
                 // them, so a parameter whose label rises later fails the flow of the lambda
-                // into its parameter, contravariantly (DECISION D-089).
+                // into its parameter, contravariantly.
                 (None, Some(from_shape)) => {
                     let assumed = self.labeled(&from_shape);
                     (assumed.clone(), assumed)
@@ -891,6 +1013,20 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
             };
             types.push(param_ty);
+            own_types.push(ty.clone());
+            // The body assumes the refinements of the annotation, or of the expected
+            // parameter type when there is none; the lambda's type records the expected ones.
+            let own = written_refinements
+                .clone()
+                .or_else(|| shape_refinements.clone())
+                .unwrap_or_default();
+            refinements.params.push(
+                shape_refinements
+                    .or(written_refinements)
+                    .unwrap_or_default(),
+            );
+            own_refinements.push(own.clone());
+            self.lambda_refinements(param.name.span, own);
             self.typed(param.name.span, &ty);
             self.bind(name, ty);
         }
@@ -898,7 +1034,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let fails = shape.as_ref().and_then(|f| f.fails.clone());
         let uses: Vec<FnUse> = shape.as_ref().map(|f| f.uses.clone()).unwrap_or_default();
         // The capabilities a lambda uses are captured where it is written (`spec/04 §6` rule 3);
-        // with effects or failures it may only be an argument (DECISION D-079).
+        // with effects or failures it may only be an argument.
         let level = self.frames.len();
         self.needs_site("this lambda", &uses, span, level);
         if (!uses.is_empty() || fails.is_some())
@@ -906,6 +1042,7 @@ impl<'a> Checker<'_, 'a, '_> {
             && self.pass == Pass::Check
             && self.base != Base::Quiet
         {
+            self.escaped.push(span);
             self.report.error(
                 Code::U3006,
                 span,
@@ -951,6 +1088,7 @@ impl<'a> Checker<'_, 'a, '_> {
             let found = checker.expr(body, result.as_ref());
             if let Some(result) = &result {
                 checker.flow(body.span, &found, result, "the result of this lambda");
+                checker.fn_flow(body.span, result, &found);
             }
             found
         });
@@ -961,12 +1099,53 @@ impl<'a> Checker<'_, 'a, '_> {
         if mismatch {
             return Ty::Error;
         }
-        Ty::Fn(Box::new(FnTy {
+        let result = result.unwrap_or(body_ty);
+        let lambda = Ty::Fn(Box::new(FnTy {
             params: types,
-            result: result.unwrap_or(body_ty),
-            uses,
-            fails,
-        }))
+            result: result.clone(),
+            uses: uses.clone(),
+            fails: fails.clone(),
+            refinements,
+        }));
+        if self.pass == Pass::Check && shape.is_some() {
+            // ADR 0037 rule 2: the lambda's own type, with the parameter types its body
+            // assumes, flows into the type it is given.
+            let own = Ty::Fn(Box::new(FnTy {
+                params: own_types,
+                result,
+                uses,
+                fails,
+                refinements: FnRefinements {
+                    params: own_refinements,
+                    result: Vec::new(),
+                },
+            }));
+            let (expected, own) = (self.resolve(&lambda), self.resolve(&own));
+            let own = match own {
+                Ty::Fn(mut function) => {
+                    if let Ty::Fn(expected) = &expected {
+                        function
+                            .refinements
+                            .result
+                            .clone_from(&expected.refinements.result);
+                    }
+                    Ty::Fn(function)
+                }
+                other => other,
+            };
+            if super::call::refinement_flow(&expected, &own) {
+                self.obligation(ObligationKind::Refinement, span, None);
+            }
+            // The result the lambda is given is a return of its body (`spec/12 §3`).
+            if let Ty::Fn(expected) = &expected
+                && !expected.refinements.result.is_empty()
+            {
+                for path in return_paths(body) {
+                    self.obligation(ObligationKind::Refinement, path, None);
+                }
+            }
+        }
+        lambda
     }
 
     /// `checked(v, p) else fail V` (`spec/06 §6`): `p` is in the refinement language, over `it`.
@@ -977,13 +1156,14 @@ impl<'a> Checker<'_, 'a, '_> {
             self.findings.checked.push((self.module, span));
         }
         let ty = self.expr(value, None);
-        // DECISION D-091: the failure of `checked` reveals whether the predicate holds.
-        let label = self.labeled(&ty).deep_label();
+        // The failure of `checked` reveals whether the predicate holds.
+        let label = self.deep(&ty);
         self.fail_under_pc(span, "`checked`", Some((&label, value.span)));
         let ctx = Ctx {
             it: Some(ty.clone()),
             rl: Rl::Clause,
             labels: false,
+            opaque_calls: true,
             ..self.ctx.clone()
         };
         self.within(ctx, |checker| {
@@ -996,6 +1176,9 @@ impl<'a> Checker<'_, 'a, '_> {
     /// `attempt` applies to one call and gives `Result[T, E]` (`spec/06 §5`).
     fn attempt(&mut self, operand: &Expr, span: Span, site: Site) -> Ty {
         self.outside_rl(span, || "`attempt`".to_owned());
+        if self.ctx.in_do {
+            self.absorbed.push(operand.span);
+        }
         let mut inner = operand;
         while let ExprKind::Paren(next) = &inner.kind {
             inner = next;
@@ -1031,7 +1214,7 @@ impl<'a> Checker<'_, 'a, '_> {
         }
     }
 
-    /// `fail V(args)`, also after `if error`, `if none` and in `checked` (DECISION D-048): `V`
+    /// `fail V(args)`, also after `if error`, `if none` and in `checked`: `V`
     /// is a variant of the error kind in context, or of a kind in scope when the context has
     /// none or lacks `V`. A variant outside the declared kind is U3009 (M5).
     pub(crate) fn raise(&mut self, variant: &VariantExpr) {
@@ -1160,5 +1343,22 @@ pub(crate) fn count(n: usize, thing: &str) -> String {
         format!("1 {thing}")
     } else {
         format!("{n} {thing}s")
+    }
+}
+
+/// The normal return paths of a lambda's body, as [`Checker::tail_expr`] finds them in a
+/// function's: the branches of `if`, through parentheses, except a `fail`.
+fn return_paths(expr: &Expr) -> Vec<Span> {
+    match &expr.kind {
+        ExprKind::IfLine {
+            then, otherwise, ..
+        } => {
+            let mut paths = return_paths(then);
+            paths.extend(return_paths(otherwise));
+            paths
+        }
+        ExprKind::Paren(inner) => return_paths(inner),
+        ExprKind::Fail(_) => Vec::new(),
+        _ => vec![expr.span],
     }
 }

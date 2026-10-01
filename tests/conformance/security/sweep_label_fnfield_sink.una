@@ -1,0 +1,29 @@
+-- test: a kind whose field is a function type: a kind argument in a function field exceeds a public sink, and a kind whose function fields declare their labels does not; the invariant argument also differs from the declared one (label sweep, ADR 0050)
+-- spec: spec/07 §7
+-- expect: error U4003 at 29:15
+-- expect: error U4001 at 29:15
+module sweep_label_fnfield_sink
+
+kind Src
+  get: fn() -> secret Int
+
+kind Feed[T]
+  get: fn() -> T
+
+make(pin: secret Int) -> Src = Src(get: fn() -> pin)
+
+capability Audit
+  op note(s: Src) -> Unit
+    accepts public
+  op feed(f: Feed[Int]) -> Unit
+    accepts public
+
+pub declared(s: Src) -> Unit
+  uses @audit: Audit[note]
+=
+  @audit.note(s)
+
+pub argument(f: Feed[secret Int]) -> Unit
+  uses @audit: Audit[feed]
+=
+  @audit.feed(f)

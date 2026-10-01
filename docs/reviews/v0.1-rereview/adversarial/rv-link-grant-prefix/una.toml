@@ -1,0 +1,8 @@
+[package]
+name = "rv_link_grant_prefix"
+version = "0.1.0"
+edition = "0.1"
+
+[run]
+entry = "prefix"
+grants = ["console", "files:./gl:read", "files:./gd:write", "files:./box:write"]

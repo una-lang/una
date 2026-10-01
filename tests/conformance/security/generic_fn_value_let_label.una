@@ -1,0 +1,14 @@
+-- test: a generic function bound with let and called has its result raised by its type arguments (N-003)
+-- spec: spec/07 §7
+-- expect: error U4003 at 14:18
+module rv_gen_generic_fn_value_label
+
+is_pin[T](x: T, y: T) -> Int = if x == y then 1 else 0
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let pin: secret Int = 1234
+  let f = is_pin
+  let hit = f(pin, 1234)
+  @console.print("pin is 1234: {hit}")

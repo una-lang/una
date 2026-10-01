@@ -1,0 +1,30 @@
+-- Adversarial: `lib.a.valid` is opaque (`x >= 0`), `lib.b.valid` is reflect (`x > 0`); both
+-- modules define `kind Good = Int where valid(it)`. `app` builds an `a.Good` with `checked`
+-- (so only the opaque fact holds) and passes it to `lib.b.inv`, which takes a `b.Good` and
+-- divides by it. Confusing the two predicates would prove `valid(g)` and run `100 / 0`.
+-- Expected: U5001 for the refinement `valid(g)` of `inv` (spec/12 §4, ADR 0038 D6).
+-- Observed: U5001 "refinement `valid(g)` is refuted" at src/app.una:13 (exit 1); the query
+-- declares `u!p!lib.a.valid` and defines `u!p!lib.b.valid` separately.
+-- Verdict: Held
+module app
+
+import lib.a (Good, valid)
+import lib.b (inv)
+
+pub kind Bad = | Negative
+
+make(n: Int) -> Good
+  fails Bad
+=
+  checked(n, valid(it)) else fail Negative
+
+use_good(g: Good) -> Int = inv(g)
+
+pub main() -> Unit
+  uses @console: Console[print]
+  fails Bad
+=
+  let g = make(0)
+    if error pass
+  let q = use_good(g)
+  @console.print("q = {q}")

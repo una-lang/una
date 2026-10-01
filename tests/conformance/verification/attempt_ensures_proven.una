@@ -1,4 +1,4 @@
--- test: the payload of an attempt that succeeded carries the ensures of the attempted call, a normal return (spec/06 §5; DECISION D-131)
+-- test: the payload of an attempt that succeeded carries the ensures of the attempted call, a normal return (spec/06 §5)
 -- spec: spec/12 §3
 -- expect: ok
 module attempt_ensures_proven

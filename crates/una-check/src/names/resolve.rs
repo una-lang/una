@@ -84,7 +84,7 @@ impl<'a> Resolver<'_, '_, 'a> {
         }
     }
 
-    /// U1001 when no scope holds the name of `ident` (DECISION D-038).
+    /// U1001 when no scope holds the name of `ident`.
     fn lookup(&mut self, ident: &Ident, space: Space, what: &str) {
         let name = self.name(ident);
         if !self.visible(name, space) {
@@ -104,7 +104,7 @@ impl<'a> Resolver<'_, '_, 'a> {
         self.locals.pop();
     }
 
-    /// Binds a local; U1002 when it rebinds a local of an enclosing scope (DECISION D-039).
+    /// Binds a local; U1002 when it rebinds a local of an enclosing scope.
     fn bind(&mut self, ident: &Ident, what: &str, check_convention: bool) {
         let name = self.name(ident);
         if check_convention {
@@ -302,7 +302,7 @@ impl<'a> Resolver<'_, '_, 'a> {
                 self.expr(&example.action);
                 for expectation in &example.expectations {
                     match &expectation.kind {
-                        // DECISION D-046: a variant after `expect fails` takes its kind from
+                        // A variant after `expect fails` takes its kind from
                         // the `do` expression (M4).
                         ExpectationKind::Fails(_) | ExpectationKind::Performed { .. } => {}
                         ExpectationKind::Holds(expr) => self.expr(expr),
@@ -329,7 +329,7 @@ impl<'a> Resolver<'_, '_, 'a> {
         self.lookup(&cap_type.name, Space::Upper, "capability");
     }
 
-    /// A type (DECISION D-038: an unknown type name is U1001); label categories wait for M6.
+    /// A type (an unknown type name is U1001); label categories wait for M6.
     fn ty(&mut self, ty: &Type) {
         match &ty.core {
             TypeCore::Named { name, args } => {
@@ -439,7 +439,7 @@ impl<'a> Resolver<'_, '_, 'a> {
     fn arm(&mut self, arm: &Arm) {
         self.enter();
         match &arm.pattern.kind {
-            // DECISION D-046: a pattern's variant takes its kind from the value tested (M4).
+            // A pattern's variant takes its kind from the value tested (M4).
             PatternKind::Variant { binds, .. } => {
                 for bind in binds {
                     match &bind.local {
@@ -456,7 +456,7 @@ impl<'a> Resolver<'_, '_, 'a> {
         self.leave();
     }
 
-    /// A variant after `fail`: DECISION D-046, it takes its kind from the error kind of the
+    /// A variant after `fail` takes its kind from the error kind of the
     /// function (M4); only its arguments are resolved here.
     fn variant(&mut self, variant: &VariantExpr) {
         self.args(&variant.args);
@@ -519,7 +519,7 @@ impl<'a> Resolver<'_, '_, 'a> {
             ExprKind::Is { value, target } => {
                 self.expr(value);
                 match target {
-                    // DECISION D-046: the variant takes its kind from the value tested (M4).
+                    // The variant takes its kind from the value tested (M4).
                     IsTarget::Literal(Literal::Text(text)) => self.text(text),
                     IsTarget::Variant(_) | IsTarget::Literal(_) => {}
                 }

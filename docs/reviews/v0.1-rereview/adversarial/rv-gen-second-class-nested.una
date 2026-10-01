@@ -1,0 +1,46 @@
+-- Adversarial: U3016 and U3006 bypasses: a failing function wrapped in `Some` and in a generic `Box` list, an effectful function in a `Box` inside a list passed to a generic, an alias of a `fails`-only function type as a kind field and as a list element, and an op whose result type holds a failing function type
+-- Expected: U3006 or U3016 at each site (spec/05 §6, §9 rule 6; ADR 0038 D2)
+-- Observed: U3006 at the alias field, `Some(boom)`, `Box(value: boom)` and `Box(value: note)`; U3016 at the op result type and at `List[Risky]` (4ea31cf and 85787d7)
+-- Verdict: Held
+module rv_gen_second_class_nested
+
+kind Boom = | Exploded
+
+kind Risky = fn(Int) -> Int fails Boom
+
+kind Box[T]
+  value: T
+
+kind Holder
+  r: Risky
+
+capability Log
+  op write(line: Text) -> Unit
+
+capability Maker
+  op make() -> Option[fn(Int) -> Int fails Boom]
+
+boom(x: Int) -> Int
+  fails Boom
+=
+  fail Exploded
+
+note(line: Text) -> Unit
+  uses @log: Log[write]
+=
+  @log.write(line)
+
+count[T](xs: List[T]) -> Int = xs.len
+
+pub wrapped() -> Int
+=
+  let o = Some(boom)
+  let bs = [Box(value: boom)]
+  bs.len
+
+pub nested() -> Int
+  uses @log: Log[write]
+=
+  count([Box(value: note)])
+
+pub stored(fs: List[Risky]) -> Int = fs.len

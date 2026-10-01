@@ -1,0 +1,4 @@
+[package]
+name = "verify_if_error_use_ensures"
+version = "0.1.0"
+edition = "0.1"

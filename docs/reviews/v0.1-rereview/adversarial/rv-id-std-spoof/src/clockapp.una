@@ -1,0 +1,22 @@
+-- Adversarial: module paths that contain the reserved segments below the first one:
+-- `lib.std.host` declares `Clock` with `ensures result == 0` (this module's `main` uses it with
+-- a `clock` grant) and `lib.prelude` declares `KeyError` with three variants (the R-010 attack
+-- moved one segment down; `app` divides by zero after building `Expired`).
+-- Expected: U5001 `zero != 0` in `app` (the verifier must not take `lib.prelude.KeyError` for
+-- the prelude's), and U3012 here when `[run] entry = "clockapp"` (a user `Clock` is not the
+-- host one); ADR 0038 D6, D7.
+-- Observed: with `entry = "app"` (as stored): U5001 at src/app.una:9 (exit 1). With
+-- `entry = "clockapp"`: U3012 at this `uses` line, and tier 1 does not run (exit 1); `una run`
+-- also stops at U3012. U1009 applies only to a first segment, as specified.
+-- Verdict: Held
+module clockapp
+
+import lib.std.host (Clock)
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @clock: Clock[now]
+=
+  let t = @clock.now()
+  let q = 100 / (t + 1)
+  @console.print("q = {q}")

@@ -138,13 +138,12 @@ fn a_second_run_reports_every_obligation_as_cached() {
 #[test]
 fn the_queries_of_the_examples_are_byte_identical_across_runs() {
     // M8 acceptance criterion and `spec/12 §4`: declarations sorted by name, assertions in
-    // generation order.
-    let queries = || {
-        let checked = una_cli::check(&repository().join("examples/events"), Tier::One).unwrap();
-        assert_eq!(checked.diagnostics, []);
+    // generation order. Every package under `examples/` has its own snapshot (R-036).
+    let queries = |example: &Path| {
+        let checked = una_cli::check(example, Tier::One).unwrap();
+        assert_eq!(checked.diagnostics, [], "{}", example.display());
         let verification = checked.verification.unwrap();
-        let text = std::fs::read_to_string(repository().join("examples/events/verification.lock"))
-            .unwrap();
+        let text = std::fs::read_to_string(example.join("verification.lock")).unwrap();
         let (lock, _) = una_project::parse_lock(&text);
         let lock = una_verify::Lock {
             text,
@@ -165,9 +164,19 @@ fn the_queries_of_the_examples_are_byte_identical_across_runs() {
         }
         out
     };
-    let first = queries();
-    assert_eq!(first, queries());
-    insta::assert_snapshot!("queries_events", first);
+    let mut examples: Vec<PathBuf> = std::fs::read_dir(repository().join("examples"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.join("una.toml").is_file())
+        .collect();
+    examples.sort();
+    assert!(examples.len() >= 7, "{examples:?}");
+    for example in &examples {
+        let name = example.file_name().unwrap().to_string_lossy().into_owned();
+        let first = queries(example);
+        assert_eq!(first, queries(example), "{name}");
+        insta::assert_snapshot!(format!("queries_{name}"), first);
+    }
 }
 
 #[test]
@@ -294,9 +303,128 @@ pub first() -> Int = book(4321)
 }
 
 #[test]
+fn host_capabilities_are_declared_in_std_host_with_their_signatures() {
+    // ADR 0038 D6, `spec/14 §3`: the verifier sees the host capabilities as declarations of
+    // `std.host`, and operations name their capability by that identity.
+    let checked = una_cli::check(&repository().join("examples/hello"), Tier::Zero).unwrap();
+    let host: Vec<(String, Vec<String>)> = checked
+        .program
+        .host
+        .iter()
+        .filter_map(|decl| match decl {
+            una_core::Decl::Cap { name, ops } => Some((
+                name.clone(),
+                ops.iter()
+                    .map(|op| format!("{}/{}", op.name, op.params.len()))
+                    .collect(),
+            )),
+            _ => None,
+        })
+        .collect();
+    let expected: Vec<(String, Vec<String>)> = [
+        ("Console", vec!["print/1"]),
+        ("Clock", vec!["now/0"]),
+        ("Env", vec!["get/1"]),
+        ("Files", vec!["read/1", "write/2"]),
+        ("Keys", vec!["hmac/2"]),
+    ]
+    .into_iter()
+    .map(|(name, ops)| {
+        (
+            name.to_owned(),
+            ops.into_iter().map(str::to_owned).collect(),
+        )
+    })
+    .collect();
+    assert_eq!(host, expected);
+    let mut paths = Vec::new();
+    for module in &checked.program.modules {
+        for decl in &module.decls {
+            if let una_core::Decl::Fun(fun) = decl {
+                collect_op_paths(&fun.body, &mut paths);
+            }
+        }
+    }
+    assert!(!paths.is_empty());
+    assert!(paths.iter().all(|p| p == "std.host.Console"), "{paths:?}");
+}
+
+/// The qualified capability of every operation in `expr`.
+fn collect_op_paths(expr: &una_core::Expr, out: &mut Vec<String>) {
+    use una_core::{Bound, Expr, Rhs};
+    match expr {
+        Expr::Let { value, body, .. } => {
+            match value.as_ref() {
+                Bound::Rhs(Rhs::Op {
+                    capability_path, ..
+                }) => out.push(capability_path.qualified()),
+                Bound::Expr(inner) => collect_op_paths(inner, out),
+                Bound::Rhs(_) => {}
+            }
+            collect_op_paths(body, out);
+        }
+        Expr::If {
+            then, otherwise, ..
+        } => {
+            collect_op_paths(then, out);
+            collect_op_paths(otherwise, out);
+        }
+        Expr::Case {
+            arms, otherwise, ..
+        } => {
+            for arm in arms {
+                collect_op_paths(&arm.body, out);
+            }
+            if let Some(otherwise) = otherwise {
+                collect_op_paths(otherwise, out);
+            }
+        }
+        Expr::Handle { body, handler, .. } => {
+            collect_op_paths(body, out);
+            collect_op_paths(handler, out);
+        }
+        Expr::Attempt { body, .. } | Expr::With { body, .. } => collect_op_paths(body, out),
+        Expr::Atom { .. } | Expr::Fail { .. } | Expr::Unreachable { .. } => {}
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_query_the_solver_rejects_is_u8001_and_exits_with_3() {
+    // `spec/13 §5`: an internal compiler error exits with 3 (R-019). A stand-in solver of the
+    // pinned version rejects every query, as Z3 does for a query that is not valid SMT-LIB.
+    use std::os::unix::fs::PermissionsExt;
+    let root = package(
+        "rejected-query",
+        &[(
+            "src/app.una",
+            "module app\n\npub half(x: Int, y: Int) -> Int = x / y\n",
+        )],
+    );
+    let bin = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("rejecting-solver");
+    std::fs::create_dir_all(&bin).unwrap();
+    let solver = bin.join("z3");
+    std::fs::write(
+        &solver,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'Z3 version 5.1.0 - 64 bit'; exit 0; fi\ncat > /dev/null\necho '(error \"line 1 column 1: rejected\")'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&solver, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _ = std::fs::remove_dir_all(root.join(".una"));
+    let output = Command::new(env!("CARGO_BIN_EXE_una"))
+        .args(["--json", "check", root.to_str().unwrap()])
+        .env("PATH", &bin)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3), "{}", stdout(&output));
+    let document: Value = serde_json::from_str(stdout(&output)).unwrap();
+    assert_eq!(document["diagnostics"][0]["code"], "U8001");
+}
+
+#[test]
 fn the_verifier_generates_every_obligation_the_checker_found() {
     // `spec/12 §3` over Core IR agrees with the sites the type checker records since M4: the
-    // site of each obligation, or each return path of a return obligation (DECISION D-113).
+    // site of each obligation, or each return path of a return obligation.
     let root = repository().join("tests/conformance");
     let mut targets: Vec<PathBuf> = vec![
         repository().join("examples/events"),
@@ -357,4 +485,567 @@ fn the_verifier_generates_every_obligation_the_checker_found() {
         compared += 1;
     }
     assert!(compared > 30, "{compared}");
+}
+
+/// The single diagnostic of `una --json check` on a package of one module, which must fail.
+fn only_diagnostic(name: &str, source: &str) -> Value {
+    let root = package(name, &[("src/app.una", source)]);
+    let output = una(&["--json", "check", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let document: Value = serde_json::from_str(stdout(&output)).unwrap();
+    let diagnostics = document["diagnostics"].as_array().unwrap();
+    assert_eq!(diagnostics.len(), 1, "{}", stdout(&output));
+    diagnostics[0].clone()
+}
+
+/// The descriptions of a diagnostic's repairs, in order.
+fn repair_descriptions(diagnostic: &Value) -> Vec<String> {
+    diagnostic["repairs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|repair| repair["description"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn repairs_of_a_precondition_at_a_parameter_of_a_private_function() {
+    // R-021, `spec/13 §3`: a stronger parameter type when the value is a parameter, a
+    // `requires` clause for a private function, a guard, and `checked`.
+    let diagnostic = only_diagnostic(
+        "repairs-private-parameter",
+        "module app
+
+pub half(n: Int) -> Int
+  requires n >= 0
+=
+  n / 2
+
+halve(n: Int) -> Int = half(n)
+
+pub run() -> Int = halve(4)
+",
+    );
+    assert_eq!(diagnostic["code"], "U5001");
+    assert_eq!(
+        repair_descriptions(&diagnostic),
+        [
+            "strengthen the type of the parameter `n` to a refined kind that implies `n >= 0`",
+            "add `requires n >= 0` to the enclosing function; its callers then prove it",
+            "add a guard (`if` or a `when` arm) that handles the values where `n >= 0` does not hold",
+            "check the value with `checked(value, n >= 0) else fail <Variant>`",
+        ]
+    );
+    let costs: Vec<&Value> = diagnostic["repairs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|repair| &repair["escape_cost"])
+        .collect();
+    assert_eq!(costs, [&json!(0), &json!(0), &json!(0), &json!(1)]);
+}
+
+#[test]
+fn a_refuted_refinement_at_a_value_that_is_not_a_parameter_has_no_parameter_repair() {
+    // R-021, `spec/13 §3`: the stronger parameter type applies only when the value is a
+    // parameter; `raw - 1` is not one, and a private function may still require it.
+    let diagnostic = only_diagnostic(
+        "repairs-not-a-parameter",
+        "module app
+
+pub kind Seats = Int in 0..5000
+
+pub book(seats: Seats) -> Int = seats
+
+unguarded(raw: Int) -> Int = book(raw - 1)
+
+pub run() -> Int = unguarded(4)
+",
+    );
+    assert_eq!(diagnostic["code"], "U5001");
+    let repairs = repair_descriptions(&diagnostic);
+    assert_eq!(repairs.len(), 3, "{repairs:?}");
+    assert!(repairs[0].starts_with("add `requires "), "{repairs:?}");
+    assert!(repairs[1].starts_with("add a guard"), "{repairs:?}");
+    assert!(
+        repairs[2].starts_with("check the value with"),
+        "{repairs:?}"
+    );
+}
+
+#[test]
+fn a_refuted_precondition_inside_a_pub_function_has_no_requires_repair() {
+    // R-021, `spec/13 §3`: a `requires` clause is proposed for a private function only.
+    let diagnostic = only_diagnostic(
+        "repairs-pub-function",
+        "module app
+
+pub half(n: Int) -> Int
+  requires n >= 0
+=
+  n / 2
+
+pub halve(n: Int) -> Int = half(n)
+",
+    );
+    assert_eq!(diagnostic["code"], "U5001");
+    assert_eq!(
+        repair_descriptions(&diagnostic),
+        [
+            "strengthen the type of the parameter `n` to a refined kind that implies `n >= 0`",
+            "add a guard (`if` or a `when` arm) that handles the values where `n >= 0` does not hold",
+            "check the value with `checked(value, n >= 0) else fail <Variant>`",
+        ]
+    );
+}
+
+#[test]
+fn a_refuted_precondition_on_an_example_do_line_has_no_requires_repair() {
+    // R-021, `spec/13 §3`: an example has no `requires` clause, and no parameters.
+    let diagnostic = only_diagnostic(
+        "repairs-example",
+        "module app
+
+pub half(n: Int) -> Int
+  requires n >= 0
+=
+  n / 2
+
+pub minus(n: Int) -> Int = n - 10
+
+example \"half of a smaller number\"
+  do half(minus(3))
+  expect result == 0
+",
+    );
+    assert_eq!(diagnostic["code"], "U5001");
+    let repairs = repair_descriptions(&diagnostic);
+    assert_eq!(repairs.len(), 2, "{repairs:?}");
+    assert!(repairs[0].starts_with("add a guard"), "{repairs:?}");
+    assert!(
+        repairs[1].starts_with("check the value with"),
+        "{repairs:?}"
+    );
+}
+
+#[test]
+fn a_ground_goal_has_no_repair_and_no_counterexample() {
+    // R-021, `spec/13 §3` ("when applicable"): `0 != 0` has no free binder, so no guard,
+    // `requires` or type can make it hold, and a counterexample would bind nothing.
+    let source = "module app
+
+pub f(x: Int) -> Int = x / 0
+";
+    let diagnostic = only_diagnostic("repairs-ground", source);
+    assert_eq!(diagnostic["code"], "U5001");
+    assert_eq!(diagnostic["obligation"]["goal"], "0 != 0");
+    assert_eq!(diagnostic["repairs"], json!([]));
+    assert_eq!(diagnostic.get("counterexample"), None, "{diagnostic}");
+    let root = package("repairs-ground-human", &[("src/app.una", source)]);
+    let output = una(&["check", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("U5001"), "{}", stderr(&output));
+    assert!(
+        !stderr(&output).contains("counterexample:"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn a_closed_goal_without_bindings_has_no_counterexample_n009() {
+    // N-009, `spec/13 §3` ("when applicable"): `zero(1) > 0` has no free binder but is not a
+    // literal, so the model binds nothing, and no empty counterexample is shown.
+    let source = "module app
+
+pub kind Pos = Int where it > 0
+
+pub inv(p: Pos) -> Int = 100 / p
+
+pub zero(x: Int) -> Int = 0
+
+pub closed_call() -> Int = inv(zero(1))
+";
+    let diagnostic = only_diagnostic("counterexample-closed-goal", source);
+    assert_eq!(diagnostic["code"], "U5001");
+    assert_eq!(diagnostic.get("counterexample"), None, "{diagnostic}");
+    let root = package(
+        "counterexample-closed-goal-human",
+        &[("src/app.una", source)],
+    );
+    let output = una(&["check", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("U5001"), "{}", stderr(&output));
+    assert!(
+        !stderr(&output).contains("counterexample:"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn a_refutation_through_uninterpreted_arithmetic_says_so_ui004() {
+    // Issue #72 (UI-004): `a * b` of two values is the uninterpreted `i!mul!Int`
+    // (`spec/12 §2`), so the model may not be a real execution, and the message says so. A
+    // refutation over linear arithmetic keeps the plain message.
+    let product = only_diagnostic(
+        "uninterpreted-product",
+        "module app\n\npub product(a: Nat, b: Nat) -> Nat = a * b\n",
+    );
+    assert_eq!(product["code"], "U5001");
+    let message = product["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("is uninterpreted") && message.contains("may not be a real execution"),
+        "{message}"
+    );
+    let linear = only_diagnostic(
+        "linear-refutation",
+        "module app\n\npub less(a: Nat) -> Nat = a - 1\n",
+    );
+    assert_eq!(linear["message"], "refinement `result >= 0` is refuted");
+}
+
+#[test]
+fn the_value_that_if_none_use_unwraps_is_named_as_written() {
+    // Final review F-004: the ADR 0037 obligation at an annotated `let` names the value that
+    // `if none use` unwraps by its expression, not by an internal temporary.
+    let unwrapped = only_diagnostic(
+        "if-none-unwrapped",
+        "module app\n\npub kind Pos = Int where it > 0\n\none(x: Int) -> Pos = 1\n\npub first_fn(fs: List[fn(Int) -> Int]) -> Int\n=\n  let f: fn(Int) -> Pos = fs.first()\n    if none use one\n  f(1)\n",
+    );
+    assert_eq!(
+        unwrapped["message"],
+        "refinement `result of fs.first(): result > 0` is refuted"
+    );
+}
+
+#[test]
+fn a_forged_proof_cache_entry_is_trusted_and_counted_as_cached() {
+    // R-018, ADR 0041, adversarial `escape-proof-cache-forgery`: the proof cache is part of
+    // the Trusted zone in v0.1. A forged entry turns a refuted query into proven, as the
+    // boundary states, and the report counts that result as one from the cache.
+    let root = package(
+        "escape-proof-cache-forgery",
+        &[(
+            "src/div0.una",
+            "module div0\n\npub f(x: Int) -> Int = x / 0\n",
+        )],
+    );
+    let path = root.to_str().unwrap();
+    let output = una(&["--json", "report", path]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let report: Value = serde_json::from_str(stdout(&output)).unwrap();
+    assert_eq!(
+        report["obligations"],
+        json!({"proven": 0, "refuted": 1, "unknown": 0, "cached": 0})
+    );
+    assert_eq!(report["tcb"]["proof_cache"], ".una/cache/");
+    let output = una(&["check", path]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("U5001"), "{}", stderr(&output));
+    let entries: Vec<PathBuf> = std::fs::read_dir(root.join(".una/cache/proofs"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    std::fs::write(
+        &entries[0],
+        r#"{"status":"proven","reason":null,"values":[]}"#,
+    )
+    .unwrap();
+    let output = una(&["check", path]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let output = una(&["--json", "report", path]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let report: Value = serde_json::from_str(stdout(&output)).unwrap();
+    assert_eq!(
+        report["obligations"],
+        json!({"proven": 1, "refuted": 0, "unknown": 0, "cached": 1})
+    );
+    let output = una(&["obligations", path]);
+    assert!(
+        stdout(&output).trim_end().ends_with(" (cached)"),
+        "{}",
+        stdout(&output)
+    );
+    // A clean cache verifies everything again.
+    std::fs::remove_dir_all(root.join(".una")).unwrap();
+    let output = una(&["check", path]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+}
+
+#[test]
+fn a_function_value_flowing_into_a_function_type_names_its_obligation() {
+    // ADR 0037 rules 2 to 6 (F-0001-02, R-013): the goal names the position and the binder,
+    // the counterexample binds the binder by its source name, and the only repair is a
+    // stronger type at a position of a function type.
+    let parameter = only_diagnostic(
+        "fn-type-parameter",
+        "module app
+
+pub kind Pos = Int where it > 0
+
+pub apply(f: fn(Int) -> Int, x: Int) -> Int = f(x)
+
+pub takes_pos(x: Pos) -> Int = x
+
+pub use_it() -> Int = apply(takes_pos, x: 0)
+",
+    );
+    assert_eq!(parameter["code"], "U5001");
+    assert_eq!(
+        parameter["message"],
+        "refinement `parameter x of takes_pos: x > 0` is refuted"
+    );
+    assert_eq!(
+        parameter["counterexample"],
+        json!({"bindings": [{"name": "x", "value": 0}]})
+    );
+    assert_eq!(
+        repair_descriptions(&parameter),
+        ["strengthen parameter 1 of `fn(Int) -> Int` to a refined kind that implies `x > 0`"]
+    );
+    // Rule 12: a lambda whose annotation is stronger than the expected parameter type.
+    let lambda = only_diagnostic(
+        "fn-type-lambda",
+        "module app
+
+pub kind Pos = Int where it > 0
+
+pub apply(f: fn(Int) -> Int, x: Int) -> Int = f(x)
+
+pub use_it() -> Int = apply(fn(y: Pos) -> y, x: 0)
+",
+    );
+    assert_eq!(
+        lambda["message"],
+        "refinement `parameter y of the lambda: y > 0` is refuted"
+    );
+    assert_eq!(
+        lambda["primary"],
+        json!({"file": "src/app.una", "start": {"line": 7, "col": 29}, "end": {"line": 7, "col": 44}})
+    );
+    assert_eq!(
+        lambda["counterexample"],
+        json!({"bindings": [{"name": "y", "value": 0}]})
+    );
+    // Rule 12: a function whose result is less refined than the expected result, with a
+    // named obligation and a non-empty counterexample; the call through the value assumes
+    // the expected result, so `apply_pos` itself is proven (rule 7).
+    let result = only_diagnostic(
+        "fn-type-result",
+        "module app
+
+pub kind Pos = Int where it > 0
+
+pub apply_pos(f: fn(Int) -> Pos, x: Int) -> Pos = f(x)
+
+pub gives_int(x: Int) -> Int = x
+
+pub use_it() -> Int = apply_pos(gives_int, x: 0)
+",
+    );
+    assert_eq!(
+        result["message"],
+        "refinement `result of gives_int: result > 0` is refuted"
+    );
+    assert_eq!(result["obligation"]["kind"], "refinement");
+    assert_eq!(
+        result["obligation"]["goal"],
+        "result of gives_int: result > 0"
+    );
+    assert_eq!(result["related"][0]["message"], "where clause");
+    let bindings = result["counterexample"]["bindings"].as_array().unwrap();
+    assert!(
+        bindings
+            .iter()
+            .any(|b| b["name"] == "result" && b["value"].as_i64().is_some_and(|v| v <= 0)),
+        "{bindings:?}"
+    );
+    assert_eq!(
+        repair_descriptions(&result),
+        ["strengthen the result of `fn(Int) -> Int` to a refined kind that implies `result > 0`"]
+    );
+}
+
+#[test]
+fn a_lambda_given_a_refined_result_proves_it_on_its_paths() {
+    // `spec/12 §3`, returns: a lambda's body flows into the result its expected type gives it.
+    let diagnostic = only_diagnostic(
+        "fn-type-lambda-result",
+        "module app
+
+pub kind Pos = Int where it > 0
+
+pub apply(g: fn(Int) -> Pos) -> Int = 100 / g(0)
+
+pub use_it(c: Bool) -> Int = apply(fn(x) -> if c then 1 else 0)
+",
+    );
+    assert_eq!(
+        diagnostic["message"],
+        "refinement `result of the lambda: result > 0` is refuted"
+    );
+    assert_eq!(
+        diagnostic["primary"]["start"],
+        json!({"line": 7, "col": 62})
+    );
+    assert_eq!(
+        repair_descriptions(&diagnostic),
+        [
+            "add a guard or an arm so that the failing path of the lambda returns a value for which `result > 0` holds"
+        ]
+    );
+}
+
+/// The goals of the diagnostics of a conformance case, as "code line:col goal".
+fn case_goals(case: &str) -> Vec<String> {
+    let output = una(&["--json", "check", &format!("tests/conformance/{case}")]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let document: Value = serde_json::from_str(stdout(&output)).unwrap();
+    document["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| {
+            format!(
+                "{} {}:{} {}",
+                d["code"].as_str().unwrap(),
+                d["primary"]["start"]["line"],
+                d["primary"]["start"]["col"],
+                d["obligation"]["goal"].as_str().unwrap()
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn goal_texts_name_the_parameters_of_a_function_value_and_print_literals_as_values() {
+    // R-032: the precondition of a function used as a value is instantiated at the
+    // parameters of the lambda that stands for it, and a literal arm prints its value.
+    assert_eq!(
+        case_goals("verification/fn_value_precondition_goal_text.una"),
+        ["U5001 19:17 x == y", "U5001 20:18 needs > 0"]
+    );
+    assert_eq!(
+        case_goals("verification/literal_arms_goal_text.una"),
+        ["U5001 10:3 n == 0 or n == 2"]
+    );
+}
+
+/// The program of the review's `verify-unknown-is-error-cached`: three obligations, which a
+/// step budget of 1 leaves unknown.
+const UNKNOWN: &str = "module unk
+
+recip(x: Int) -> Int
+  requires x > 0
+=
+  100 / x
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let q = recip(0 - 0)
+  @console.print(\"q = {q}\")
+
+example \"zero\"
+  do recip(0)
+  expect result == 1
+";
+
+/// The codes of a JSON document's diagnostics, and whether each obligation came from the
+/// cache.
+fn codes_and_cached(output: &Output) -> (Vec<String>, Vec<bool>) {
+    let document: Value = serde_json::from_str(stdout(output)).unwrap();
+    let codes = document["diagnostics"]
+        .as_array()
+        .map(|d| {
+            d.iter()
+                .map(|d| d["code"].as_str().unwrap().to_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    let cached = document["obligations"]
+        .as_array()
+        .map(|o| o.iter().map(|o| o["cached"] == true).collect())
+        .unwrap_or_default();
+    (codes, cached)
+}
+
+#[test]
+fn an_unknown_obligation_is_an_error_every_run_and_only_a_wallclock_unknown_is_not_cached() {
+    // Review control `verify-unknown-is-error-cached` (ADR 0008, ADR 0033, `spec/12 §6`):
+    // with `step_budget = 1` every obligation is unknown, U5002 on the first run and again on
+    // the second, answered by the cache; `una run` and `una test` refuse to run (exit 1).
+    let root = package("unknown-cached", &[("src/unk.una", UNKNOWN)]);
+    std::fs::write(
+        root.join("una.toml"),
+        "[package]\nname = \"unknown_cached\"\nversion = \"0.1.0\"\nedition = \"0.1\"\n\n[run]\nentry = \"unk\"\n",
+    )
+    .unwrap();
+    let lock = std::fs::read_to_string(root.join("verification.lock")).unwrap();
+    let lock = lock.replace("step_budget      = 5000000", "step_budget      = 1");
+    assert!(lock.contains("step_budget      = 1\n"), "{lock}");
+    std::fs::write(root.join("verification.lock"), lock).unwrap();
+    let path = root.to_str().unwrap();
+    for (run, cached) in [(1, false), (2, true)] {
+        let obligations = una(&["--json", "obligations", path]);
+        assert_eq!(obligations.status.code(), Some(1), "run {run}");
+        let document: Value = serde_json::from_str(stdout(&obligations)).unwrap();
+        let listed = document["obligations"].as_array().unwrap();
+        assert_eq!(listed.len(), 3, "run {run}");
+        assert!(
+            listed
+                .iter()
+                .all(|o| o["status"] == "unknown" && o["cached"] == cached),
+            "run {run}: {}",
+            stdout(&obligations)
+        );
+        let check = una(&["--json", "check", path]);
+        assert_eq!(check.status.code(), Some(1), "run {run}");
+        assert_eq!(
+            codes_and_cached(&check).0,
+            ["U5002", "U5002", "U5002"],
+            "run {run}"
+        );
+    }
+    for args in [
+        ["--json", "run", "--grant", "console", path].as_slice(),
+        ["--json", "test", path].as_slice(),
+    ] {
+        let output = una(args);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{args:?}: {}",
+            stdout(&output)
+        );
+        assert!(stdout(&output).contains("U5002"), "{args:?}");
+        assert!(!stdout(&output).contains("q = "), "{args:?}");
+    }
+    // `--solver-wallclock 0` stops every query: unknown with reason `wallclock`, which the
+    // cache never keeps, so the second run asks the solver again.
+    let root = package("unknown-wallclock", &[("src/unk.una", UNKNOWN)]);
+    let path = root.to_str().unwrap();
+    for run in 1..=2 {
+        let output = una(&["--json", "obligations", "--solver-wallclock", "0", path]);
+        assert_eq!(output.status.code(), Some(1), "run {run}");
+        let (_, cached) = codes_and_cached(&output);
+        assert_eq!(cached, [false, false, false], "run {run}");
+        let check = una(&["--json", "check", "--solver-wallclock", "0", path]);
+        let document: Value = serde_json::from_str(stdout(&check)).unwrap();
+        let messages: Vec<&str> = document["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["message"].as_str().unwrap())
+            .collect();
+        assert_eq!(messages.len(), 3, "run {run}");
+        assert!(
+            messages
+                .iter()
+                .all(|m| m.ends_with("could not be proven (wallclock)")),
+            "run {run}: {messages:?}"
+        );
+    }
 }

@@ -1,0 +1,4 @@
+[package]
+name = "escape_opaque_predicate_in_if"
+version = "0.1.0"
+edition = "0.1"

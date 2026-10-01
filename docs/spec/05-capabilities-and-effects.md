@@ -76,10 +76,13 @@ handler in_memory(rows: [Registration]) for Registrations
 2. Operation bodies are ordinary Una code: fully type-checked, information-flow checked and verified. They MUST satisfy the operation's `ensures` (proof obligation) and MAY fail only with the operation's error kind.
 3. Handler parameters are captured values. Handlers MAY declare `uses` for capabilities they need themselves.
 4. Handlers are installed only with `with` or `given` (`spec/08 §3`). They are not values.
+5. **Worst caller** (ADR 0038 D4). An operation body is checked for the worst caller that T-Op allows (`spec/10 §5`): every parameter's type is raised to the operation's `accepts` label, and every capability operation and call with effects in the body stays within that label (the effect floor, `spec/07 §7` rule 4). Failures and the result follow ordinary data flow. A handler for an operation that accepts `internal` therefore cannot print that data or signal it to a public sink, while a fake store that fails or returns fixed values stays valid.
 
 ## 6. Second-class rule
 
 Capability references are not values. A capability reference MUST NOT be bound with `let`, passed as an ordinary argument, returned, stored in a kind, compared, or interpolated (U3005). A lambda that uses capabilities or can fail follows the same restrictions except that it may be passed as an argument (U3006).
+
+A function type with non-empty `uses` or `fails` is **second-class** (ADR 0038 D2). A type parameter is never instantiated, explicitly or by inference, with a second-class type or with a type that contains one, such as `List[fn() -> Unit uses @log: Log[write]]` (U3016). Together with the rule above, an effectful or failing function value can never be stored, returned or carried out of its `with` scope: it always runs on the handler that was in scope where it was created.
 
 Consequence: authority moves only downward along calls, through `uses` and `with`, and every function's reachable authority is visible in its header. This is what makes capability confinement (`spec/10 §6`, theorem T4) hold without an escape analysis.
 
@@ -89,7 +92,8 @@ Host capabilities are implemented by the runtime and belong to the Trusted zone.
 
 1. Host capabilities enter a program only through `main`'s `uses` clauses, from the runtime. Other functions receive them from their callers by name, like any capability.
 2. `una run` grants host capabilities explicitly (`--grant console`, `--grant files:./data:read`). Ungranted capabilities in `main`'s header are U3012.
-3. `Files` grants carry a path prefix and mode fixed at grant time; operations outside the prefix fail with `FileError.Denied` rather than escaping it.
+3. `Files` grants carry a path prefix and mode fixed at grant time; operations outside the prefix fail with `FileError.Denied` rather than escaping it. Paths resolve by the rules of `spec/14 §3`, which never follow a symbolic link in the final component (ADR 0038 D9).
+4. Host capabilities are declared in the module `std.host`. A user capability with the same name is a different declaration (`spec/10 §11` rule 8).
 
 ## 8. Not in v0.1
 
@@ -104,6 +108,6 @@ These rules fix which code reports a violation of this chapter, and where (ADR 0
 3. **Handlers.** `for` names a capability (U3010 otherwise). A handler implements every operation of its capability (U3011 at the handler's name, listing the missing ones); an operation that the capability lacks, or one with another parameter count, is U3010. An operation body fails only with the operation's error kind (U3009) and passes only an equal kind (U3008).
 4. **Installing handlers.** In `with @x = h(args)` and `given @x = h(args)`, `h` names a handler (U3010) for the capability that the statement's expression, or the `do` line, needs at `@x` (U3010). The handler's own `uses` are held by the context where it is installed (rule 1): for a `with` binding, the context outside the statement; for a `given` line, the `given` lines before it.
 5. **Examples.** A requirement of the `do` line that no `given` provides is U3014 for a host capability (`spec/14 §3`) and U3001 otherwise. `expect performed @x.op` and `expect not performed @x.op` name a `given` binding (U3001) and an operation of its capability (U3002).
-6. **Escaping lambdas.** A lambda whose expected type has `uses` or `fails`, a function value of a function with `uses` or `fails`, and a parameter or local whose type is such a function type, appear only directly as call arguments, or as the callee (U3006 at the lambda or the name). A field of a kind whose type is such a function type is U3006 at the type.
-7. **Function arguments.** A function value passed where a function type is expected (`spec/10 §2`, S-Fun) has no `uses` that the expected type lacks (U3003) and fails only with the expected type's error kind (U3009).
+6. **Escaping lambdas.** A lambda whose expected type has `uses` or `fails`, a function value of a function with `uses` or `fails`, and a parameter or local whose type is such a function type, appear only directly as call arguments, or as the callee (U3006 at the lambda or the name). A field of a kind whose type is such a function type is U3006 at the type. A type argument, written or inferred, that is or contains such a function type is U3016: at the written type argument, or at the value whose type instantiates the type parameter.
+7. **Function values.** A function value that flows where a function type is expected (`spec/10 §2`, S-Fun), at a call argument, an annotated `let`, a constructor field, a return, or nested under `List`, `Option`, `Result` or kind arguments of such a position, has no `uses` that the expected type lacks (U3003) and fails only with the expected type's error kind (U3009). A call of a function value performs the value's effects and failures (T-App): they count for the caller like those of a named call (rules 1 and 2).
 8. **References bound twice.** A capability reference bound twice in one construct, the `uses` of a header, a handler or a function type, the `given` lines of an example or one `with` clause, is U1002 at the second binding, as `spec/10 §11` rule 5 reports other names defined twice in one construct; the first binding wins.

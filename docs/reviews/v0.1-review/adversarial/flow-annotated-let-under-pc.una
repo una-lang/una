@@ -1,0 +1,10 @@
+-- Adversarial: annotated public 'let' from a secret 'if' line
+-- Expected: U4001
+-- Observed: U4001 at 9:16
+-- Verdict: Pass
+module flow_annotated_let_under_pc
+
+pub leak(flag: secret Bool) -> Int
+=
+  let x: Int = if flag then 1 else 0
+  x

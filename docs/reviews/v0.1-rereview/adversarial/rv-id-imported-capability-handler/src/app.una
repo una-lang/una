@@ -1,0 +1,19 @@
+-- Adversarial: a handler in `app` `for Gauge`, where `Gauge` is imported from `lib.y`
+-- (`ensures result >= 10`) and a same-named `lib.x.Gauge` (`>= 0`) exists. The operation
+-- returns 3, so it must be checked against the imported declaration.
+-- Expected: U5001, postcondition of `read` (spec/05 §6, ADR 0038 D6).
+-- Observed: U5001 "postcondition of `read` is refuted" with a related span at
+-- src/lib/y.una:5 (exit 1).
+-- Verdict: Held
+module app
+
+import lib.y (Gauge, measure)
+
+handler three() for Gauge
+  op read() = 3
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let q = measure() with @g = three()
+  @console.print("q = {q}")

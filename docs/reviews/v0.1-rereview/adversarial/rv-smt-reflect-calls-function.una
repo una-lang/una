@@ -1,0 +1,28 @@
+-- Adversarial: reflect predicates whose bodies call a function (`double`) and the prelude `abs`.
+-- A `define-fun` body cannot carry the callee's contract per argument, so an encoding with one
+-- global result constant would make `ten(a) and ten(b)` imply `a == b`.
+-- Expected: U2015 (reflect bodies are limited to the refinement language, spec/04, spec/10 §12
+-- rule 11).
+-- Observed: U2015 for `double` and for `abs` (exit 1).
+-- Verdict: Held
+module t
+
+double(x: Int) -> Int
+  ensures result == x + x
+=
+  x + x
+
+predicate reflect ten(x: Int) -> Bool = double(x) == 10
+
+predicate reflect pos(x: Int) -> Bool = abs(x) > 0
+
+pub f(a: Int, b: Int) -> Int
+  requires ten(a)
+  requires ten(b)
+=
+  100 / (a - b + 1)
+
+pub g(a: Int) -> Int
+  requires pos(a)
+=
+  100 / a

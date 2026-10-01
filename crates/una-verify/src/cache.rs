@@ -1,5 +1,5 @@
 //! The proof cache of `spec/12 §9`: one JSON file per query in `.una/cache/proofs/`, named by
-//! the SHA-256 of the lock's contents and the query (DECISION D-117).
+//! the SHA-256 of the lock's contents and the query.
 
 use std::path::{Path, PathBuf};
 

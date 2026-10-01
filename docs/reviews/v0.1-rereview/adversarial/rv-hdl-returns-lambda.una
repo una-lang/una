@@ -1,0 +1,21 @@
+-- Adversarial: handler operation results that are lambdas: one closes over the `secret`-raised parameter, one is chosen by it, one is stored in a list and taken back
+-- Expected: U4001 at each operation body (spec/07 §7 rule 4 "the result flows into the operation's declared return type"; ADR 0038 D1, D4)
+-- Observed: U4001 in each of the three handlers (4ea31cf and 85787d7)
+-- Verdict: Held
+module rv_hdl_returns_lambda
+
+capability Maker
+  op make(seed: Int) -> fn(Int) -> Int
+    accepts secret
+
+handler closer() for Maker
+  op make(seed) = fn(x: Int) -> x + seed
+
+handler chooser() for Maker
+  op make(seed) = if seed == 1 then fn(x: Int) -> 1 else fn(x: Int) -> 0
+
+handler boxer() for Maker
+  op make(seed) =
+    let fs = [fn(x: Int) -> seed]
+    fs.first()
+      if none use fn(x: Int) -> 0

@@ -1,0 +1,20 @@
+-- test: `List` is covariant at a lambda result (label sweep)
+-- spec: spec/07 §7
+-- expect: error U4001 at 14:38
+module sweep_variance_list_lambda
+
+kind Box[T]
+  value: T
+
+kind Sink[T]
+  eat: fn(T) -> Int
+
+pub lam_0(v: List[secret Int]) -> Int
+=
+  let f: fn() -> List[Int] = fn() -> v
+  0
+
+pub lam_1(v: List[Int]) -> Int
+=
+  let f: fn() -> List[secret Int] = fn() -> v
+  0

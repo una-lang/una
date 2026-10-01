@@ -1,0 +1,13 @@
+-- test: `trusted module` header without the una.toml listing (review control)
+-- spec: spec/07 §7
+-- expect: error U7005 at src/app/keys.una:4:1
+trusted module app.keys
+
+pub policy mask
+  from secret[PII] Text
+  to internal Text
+  via masked
+  purpose "show the last digits"
+  owner privacy
+
+masked(t: secret[PII] Text) -> internal Text = t

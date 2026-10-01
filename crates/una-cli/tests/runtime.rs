@@ -402,8 +402,10 @@ pub main() -> Unit
 
 #[test]
 fn files_grants_confine_paths_to_their_prefix() {
-    // `spec/14 §3`, DECISION D-103: relative to the prefix; `..`, absolute paths and links
-    // that lead outside are `Denied`.
+    // `spec/14 §3`, relative to the prefix; `..`, absolute paths and links
+    // that lead outside are `Denied`. Hard links are outside the v0.1 model
+    // (ADR 0048, `spec/14 §3` rule 5): a hard link is an ordinary entry, so no
+    // case here expects it to be denied.
     let root = package(
         "files",
         "\n[run]\nentry = \"files\"\ngrants = [\"console\", \"files:data:read\", \"files:out:write\"]\n",
@@ -433,6 +435,136 @@ fn files_grants_confine_paths_to_their_prefix() {
     assert!(!root.join("escape.txt").exists());
 }
 
+/// The program of the link cases: `main` performs each `(operation, path)` of `cases` in order
+/// and prints `<operation> <path>: <outcome>` for each, with the helpers of [`FILES`].
+#[cfg(unix)]
+fn files_program(cases: &[(&str, &str)]) -> String {
+    let helpers = FILES.split("pub main()").next().unwrap();
+    let mut program = format!(
+        "{helpers}pub main() -> Unit\n  uses @console: Console[print]\n  uses @files: Files[read, write]\n=\n"
+    );
+    for (index, (operation, path)) in cases.iter().enumerate() {
+        let call = if *operation == "read" { "show" } else { "save" };
+        program.push_str(&format!(
+            "  let r{index} = {call}(\"{path}\")\n  @console.print(\"{operation} {path}: {{r{index}}}\")\n"
+        ));
+    }
+    program
+}
+
+#[cfg(unix)]
+#[test]
+fn files_grants_never_follow_a_final_link_and_keep_directories_inside_r011() {
+    // R-011, ADR 0038 D9, `spec/14 §3`: (1) paths normalize without following links, and an
+    // absolute path or a `..` that leaves the prefix is `Denied`; (2) every intermediate
+    // directory resolves, links followed, inside the canonical prefix; (3) the final component
+    // is never followed: a link there, dangling or not, inside or outside, is `Denied`, and a
+    // write never creates a file through a link. DECISION D-133: a path naming the prefix
+    // itself (`.`, `sub/..`) has no final component and is `Denied`.
+    use std::os::unix::fs::symlink;
+    let absolute = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("runtime")
+        .join("files-links")
+        .join("box/note.txt");
+    let absolute = absolute.to_str().unwrap();
+    let cases = [
+        ("write", "dangling"),
+        ("read", "dangling"),
+        ("read", "out_link"),
+        ("write", "out_link"),
+        ("read", "in_link"),
+        ("write", "in_link"),
+        ("read", "out_dir/secret.txt"),
+        ("write", "out_dir/new.txt"),
+        ("write", "dangling_dir/new.txt"),
+        ("read", "in_dir/inner.txt"),
+        ("write", "in_dir/new.txt"),
+        ("read", "in_dir/../note.txt"),
+        ("read", "sub/../note.txt"),
+        ("read", "../outside/secret.txt"),
+        ("write", "../outside/new.txt"),
+        ("read", absolute),
+        ("read", "."),
+        ("write", "sub/.."),
+        ("write", "missing/new.txt"),
+        ("write", "note.txt"),
+        ("write", "fresh.txt"),
+    ];
+    let program = files_program(&cases);
+    let root = package(
+        "files-links",
+        "\n[run]\nentry = \"files\"\ngrants = [\"console\", \"files:box:read,write\"]\n",
+        &[
+            ("src/files.una", &program),
+            ("box/note.txt", "inside\n"),
+            ("box/sub/inner.txt", "inner\n"),
+            ("outside/secret.txt", "secret\n"),
+        ],
+    );
+    let outside = root.join("outside");
+    symlink(outside.join("escaped.txt"), root.join("box/dangling")).unwrap();
+    symlink(outside.join("secret.txt"), root.join("box/out_link")).unwrap();
+    symlink("note.txt", root.join("box/in_link")).unwrap();
+    symlink(&outside, root.join("box/out_dir")).unwrap();
+    symlink(outside.join("newdir"), root.join("box/dangling_dir")).unwrap();
+    symlink("sub", root.join("box/in_dir")).unwrap();
+    let output = una_in(&root, &["run"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        format!(
+            "write dangling: denied\n\
+             read dangling: denied\n\
+             read out_link: denied\n\
+             write out_link: denied\n\
+             read in_link: denied\n\
+             write in_link: denied\n\
+             read out_dir/secret.txt: denied\n\
+             write out_dir/new.txt: denied\n\
+             write dangling_dir/new.txt: denied\n\
+             read in_dir/inner.txt: read\n\
+             write in_dir/new.txt: written\n\
+             read in_dir/../note.txt: read\n\
+             read sub/../note.txt: read\n\
+             read ../outside/secret.txt: denied\n\
+             write ../outside/new.txt: denied\n\
+             read {absolute}: denied\n\
+             read .: denied\n\
+             write sub/..: denied\n\
+             write missing/new.txt: not found\n\
+             write note.txt: written\n\
+             write fresh.txt: written\n"
+        )
+    );
+    // Nothing outside the grant was created or changed.
+    assert!(!outside.join("escaped.txt").exists());
+    assert!(!outside.join("new.txt").exists());
+    assert!(!outside.join("newdir").exists());
+    assert_eq!(
+        std::fs::read_to_string(outside.join("secret.txt")).unwrap(),
+        "secret\n"
+    );
+    // Writes inside the grant land where the path says; a link is never written through.
+    assert_eq!(
+        std::fs::read_to_string(root.join("box/sub/new.txt")).unwrap(),
+        "entry"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("box/note.txt")).unwrap(),
+        "entry"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("box/fresh.txt")).unwrap(),
+        "entry"
+    );
+    assert!(
+        std::fs::symlink_metadata(root.join("box/in_link"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
 const KEYS: &str = "module keys
 
 pub known(name: Text) -> Text
@@ -455,7 +587,7 @@ pub main() -> Unit
 
 #[test]
 fn keys_grants_load_their_key_file() {
-    // `spec/14 §3`, DECISION D-103: a TOML table of names to base64 keys; key material never
+    // `spec/14 §3`, a TOML table of names to base64 keys; key material never
     // enters Una values or traces.
     let root = package(
         "keys",
@@ -498,7 +630,7 @@ fn keys_grants_load_their_key_file() {
 #[test]
 fn grants_are_checked_before_running() {
     // `spec/04 §8`: U3012 before execution starts, against `[run] grants` and `--grant`
-    // together (DECISION D-109).
+    // together.
     let root = package(
         "clock",
         "\n[run]\nentry = \"clock\"\ngrants = [\"console\"]\n",
@@ -596,7 +728,7 @@ example \"an unexpected failure\"
 
 #[test]
 fn test_reports_the_expectations_that_do_not_hold() {
-    // `spec/08 §2`; DECISION D-102 and DECISION D-106.
+    // `spec/08 §2`.
     let root = package("doubling", "", &[("src/doubling.una", DOUBLING)]);
     let output = una_in(&root, &["test"]);
     assert_eq!(output.status.code(), Some(1));
@@ -708,5 +840,230 @@ fn handler_instances_keep_their_ids_and_come_before_their_bodies() {
     assert_eq!(
         document["trace"][0]["outcome"],
         json!({"kind": "ok", "value": "42"})
+    );
+}
+
+/// The keys of every trace event's `args` in a `una.run/1` or `una.test/1` document.
+fn trace_keys(document: &Value) -> Vec<String> {
+    let mut traces = vec![&document["trace"]];
+    if let Some(examples) = document["examples"].as_array() {
+        traces.extend(examples.iter().map(|example| &example["trace"]));
+    }
+    traces
+        .into_iter()
+        .filter_map(Value::as_array)
+        .flatten()
+        .filter_map(|event| event["args"].as_object())
+        .flat_map(|args| args.keys().cloned())
+        .collect()
+}
+
+#[test]
+fn trace_arguments_are_keyed_by_source_names() {
+    // `spec/11 §5`: each entry of `args` is keyed by the operation parameter's source name,
+    // even when Core renamed the binder because two operations share a parameter name.
+    let case = "tests/conformance/runtime/op_arg_names";
+    let run = una_in(Path::new(case), &["--json", "run", "--grant", "console"]);
+    let test = una_in(Path::new(case), &["--json", "test"]);
+    for (output, trace) in [
+        (&run, json(&run)["trace"].clone()),
+        (&test, json(&test)["examples"][0]["trace"].clone()),
+    ] {
+        assert_eq!(output.status.code(), Some(0), "{}", stdout(output));
+        let args: Vec<(Value, Value)> = trace
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["capability"] == "Store")
+            .map(|event| (event["op"].clone(), event["args"].clone()))
+            .collect();
+        assert_eq!(
+            args,
+            vec![
+                (json!("put"), json!({"k": "<redacted:secret>", "v": "3"})),
+                (json!("get"), json!({"k": "3"})),
+            ]
+        );
+    }
+}
+
+#[test]
+fn no_trace_key_carries_a_binder_suffix() {
+    // `spec/11 §5`: trace keys are source names, so none contains Core's `%` suffix.
+    let mut targets: Vec<PathBuf> = std::fs::read_dir(repository().join("examples"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    targets.extend(
+        std::fs::read_dir(repository().join("tests/conformance/runtime"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path()),
+    );
+    // Entries starting with `.` are not cases (`compiler/testing.md` §2).
+    targets.retain(|path| !path.file_name().unwrap().to_string_lossy().starts_with('.'));
+    targets.sort();
+    for target in targets {
+        let (dir, args): (PathBuf, Vec<String>) = if target.is_dir() {
+            (target.clone(), vec!["--json".into(), "test".into()])
+        } else {
+            let file = target.to_string_lossy().into_owned();
+            (repository(), vec!["--json".into(), "test".into(), file])
+        };
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let output = una_in(&dir, &args);
+        let document: Value = serde_json::from_str(stdout(&output))
+            .unwrap_or_else(|_| panic!("{}: {}", target.display(), stderr(&output)));
+        let keys = trace_keys(&document);
+        assert!(
+            keys.iter().all(|key| !key.contains('%')),
+            "{}: {keys:?}",
+            target.display()
+        );
+    }
+}
+
+/// The trace of each example of a conformance case under `una --json test`, as the `args` of
+/// its events.
+fn case_traces(case: &str) -> Vec<Value> {
+    let output = una(&["--json", "test", &format!("tests/conformance/{case}")]);
+    assert_eq!(output.status.code(), Some(0), "{}", stdout(&output));
+    json(&output)["examples"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|example| {
+            Value::Array(
+                example["trace"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|event| event["args"].clone())
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn the_review_traces_run_left_to_right_and_redact_every_labeled_position() {
+    // Review controls `runtime-evaluation-order` and `runtime-trace-redaction`: nested effects
+    // on a `do` line run left to right and a short-circuited `and` or `or` skips its right
+    // operand (`spec/08 §2`); a secret argument is redacted directly and inside a record, a
+    // list and an option (`spec/11 §5`).
+    assert_eq!(
+        case_traces("runtime/evaluation_order_do_lines.una"),
+        [
+            json!([{"n": "1"}, {"n": "2"}]),
+            json!([{"n": "0"}]),
+            json!([{"n": "1"}]),
+        ]
+    );
+    let traces = case_traces("runtime/trace_redaction.una");
+    assert_eq!(
+        traces,
+        [json!([{
+            "tag": "\"t\"",
+            "card": "Card(owner: \"Ana\", number: <redacted:secret>)",
+            "extra": "<redacted:secret>",
+            "maybe": "<redacted:secret>",
+            "raw": "<redacted:secret>"
+        }])]
+    );
+    assert!(!traces[0].to_string().contains("4111-SECRET"));
+}
+
+/// The program of the review's `runtime-host-trace-redaction`: an `internal` value from `Env`
+/// written to a file, read back and carried by the failure of `main`.
+const HOST_REDACTION: &str = "module rr
+
+pub kind Oops = Leak(detail: internal Text) | Plain
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+  uses @files: Files[read, write]
+  fails Oops
+=
+  let token = @env.get(\"UNA_SECRET_TOKEN\")
+    if none use \"none\"
+  @files.write(\"out.txt\", content: token)
+    if error fail Plain
+  let back = @files.read(\"out.txt\")
+    if error fail Plain
+  @console.print(\"wrote and read a file\")
+  fail Leak(detail: back)
+";
+
+#[test]
+fn host_values_stay_redacted_through_files_and_the_failure_of_main() {
+    // Review control `runtime-host-trace-redaction` (`spec/11 §5`, `spec/04 §8`): the value
+    // of an environment variable is `internal`, so neither the trace of `Env.get`,
+    // `Files.write` and `Files.read` nor the fields of `main`'s failure show it.
+    let root = package(
+        "host-redaction",
+        "\n[run]\nentry = \"rr\"\ngrants = [\"console\", \"env\", \"files:./data:read,write\"]\n",
+        &[("src/rr.una", HOST_REDACTION), ("data/.keep", "")],
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_una"))
+        .args(["--json", "run"])
+        .env("UNA_SECRET_TOKEN", "hunter2")
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{}", stdout(&output));
+    assert!(!stdout(&output).contains("hunter2"), "{}", stdout(&output));
+    assert!(!stderr(&output).contains("hunter2"), "{}", stderr(&output));
+    assert_eq!(
+        std::fs::read_to_string(root.join("data/out.txt")).unwrap(),
+        "hunter2"
+    );
+    let document = json(&output);
+    assert_eq!(document["output"], json!(["wrote and read a file"]));
+    assert_eq!(
+        document["failure"],
+        json!({"variant": "Leak", "fields": {}})
+    );
+    let events: Vec<(String, Value, Value)> = document["trace"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| {
+            (
+                format!(
+                    "{}.{}",
+                    event["capability"].as_str().unwrap(),
+                    event["op"].as_str().unwrap()
+                ),
+                event["args"].clone(),
+                event["outcome"].clone(),
+            )
+        })
+        .collect();
+    let redacted = json!({"kind": "ok", "value": "<redacted:internal>"});
+    let unit = json!({"kind": "ok", "value": "unit"});
+    assert_eq!(
+        events,
+        [
+            (
+                "Env.get".to_owned(),
+                json!({"name": "\"UNA_SECRET_TOKEN\""}),
+                redacted.clone()
+            ),
+            (
+                "Files.write".to_owned(),
+                json!({"path": "\"out.txt\"", "content": "<redacted:internal>"}),
+                unit.clone()
+            ),
+            (
+                "Files.read".to_owned(),
+                json!({"path": "\"out.txt\""}),
+                redacted
+            ),
+            (
+                "Console.print".to_owned(),
+                json!({"line": "\"wrote and read a file\""}),
+                unit
+            ),
+        ]
     );
 }

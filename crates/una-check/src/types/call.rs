@@ -1,6 +1,6 @@
 //! Calls (`spec/04 §3`): labeled arguments and punning (U2004 to U2006), calls of functions,
 //! function values, policies and capability operations, field access and method-call syntax
-//! (DECISION D-052), and constructors (U2009).
+//!, and constructors (U2009).
 
 use una_diag::{Code, ObligationKind};
 use una_syntax::Span;
@@ -11,21 +11,23 @@ use super::check::{Checker, Role, Site};
 use super::closest;
 use super::env::{Entity, FieldDef, FnDef, FnKind, ParamDef};
 use super::expr::count;
+use super::label::Label;
 use super::records::Res;
-use super::ty::{FnUse, KindId, Ty};
+use super::ty::{FnUse, KindId, Refinement, Ty};
+use super::unify::Vars;
 
 /// A checked argument: where it is, its type, the type of its parameter, and the parameter.
 pub(crate) type Checked<'a> = (Span, Ty, Ty, &'a str);
 
 impl<'a> Checker<'_, 'a, '_> {
     /// `e.f`: `.len` of `Text` and `List`, a field of `e`'s record, or a call `f(e)` of a
-    /// function of one parameter declared in scope (`spec/04 §3`, DECISION D-052); U1001 when
+    /// function of one parameter declared in scope (`spec/04 §3`); U1001 when
     /// none applies.
     pub(crate) fn field(&mut self, target: &Expr, name: &Ident, span: Span, site: Site) -> Ty {
         let target_ty = self.expr(target, None);
         let field = self.name(name);
         let resolved = self.resolve(&target_ty);
-        // DECISION D-090: `.len` and fields take the target's top label.
+        // `.len` and fields take the target's top label.
         let labeled = self.labeled(&target_ty);
         let top = labeled.top_label();
         if field == "len" && matches!(resolved, Ty::Text | Ty::List(_)) {
@@ -121,7 +123,7 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// `e.f(args)`: a call of field `f` when it has a function type, otherwise `f(e, args)` with
-    /// `f` declared in scope (`spec/04 §3`, DECISION D-052).
+    /// `f` declared in scope (`spec/04 §3`).
     pub(crate) fn method(
         &mut self,
         target: &Expr,
@@ -214,11 +216,14 @@ impl<'a> Checker<'_, 'a, '_> {
         }
     }
 
-    /// A call of a function value: positional arguments only (DECISION D-053).
+    /// A call of a function value: positional arguments only.
     fn call_value(&mut self, ty: &Ty, args: &[Arg], span: Span, what: &str, site: Site) -> Ty {
-        let labeled = self.labeled(ty);
-        let value_label = labeled.top_label();
-        let function = match labeled.unlabeled().clone() {
+        let value_label = self.labeled(ty).top_label();
+        // The function type is taken before its labels are settled: the result of a generic
+        // function value carries the labels of type arguments that the arguments of this call
+        // may still solve (ADR 0038 D3.2, DECISION D-137, re-review N-003).
+        let head = self.vars.head(ty);
+        let function = match head.unlabeled().clone() {
             Ty::Fn(function) => *function,
             Ty::Labeled(..) => {
                 self.unchecked(args);
@@ -283,17 +288,31 @@ impl<'a> Checker<'_, 'a, '_> {
                     callee: what,
                 },
             );
-            self.function_argument(arg.value.span, param, &found);
+            self.fn_flow(arg.value.span, param, &found);
+            // ADR 0037 rule 7: the refinements of the value's parameter are proven at the
+            // argument.
+            if !function.refinements.param(flows.len()).is_empty() {
+                self.obligation(ObligationKind::Refinement, arg.value.span, None);
+            }
             flows.push((arg.value.span, found, param.clone()));
         }
         for (arg_span, found, param) in flows {
+            self.instantiated_by(arg_span, &param, &found);
             self.flow(arg_span, &found, &param, &format!("the argument of {what}"));
         }
         // Calling a function value needs the capabilities of its type (`spec/10 §2`, S-Fun).
         let level = self.frames.len();
         self.needs_site(what, &function.uses, span, level);
-        let bound = self.bound(&function.uses, function.fails.is_some());
-        self.call_under_pc(span, what, bound, function.fails.is_some(), false);
+        // T-App (ADR 0038 D1): which function runs depends on the value, so its label raises
+        // the program counter of the call and its result.
+        self.call_under_pc(
+            span,
+            what,
+            &function.uses,
+            function.fails.is_some(),
+            false,
+            &value_label,
+        );
         self.position_site(
             what,
             span,
@@ -305,56 +324,61 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(fails) = &function.fails {
             self.call_fails.insert(span, fails.clone());
         }
-        // DECISION D-093: the result of a function value carries the value's label.
+        // The result of a function value carries the value's label.
         function.result.with_label(&value_label)
     }
 
-    /// A function passed where a function type is expected has no more effects or failures than
-    /// that type allows (`spec/10 §2`, S-Fun): U3003 for effects, U3009 for failures.
-    /// DECISION D-085.
-    fn function_argument(&mut self, span: Span, expected: &Ty, found: &Ty) {
+    /// S-Fun at a flow of a value of type `found` into the declared type `expected`
+    /// (`spec/10 §2`, `spec/05 §9` rule 7, ADR 0038 D1): every function type in
+    /// the value's type, directly or under `List`, `Option`, `Result` and kind arguments, has no
+    /// `uses` that the expected function type at its position lacks (U3003) and fails only with
+    /// its error kind (U3009); function parameters are compared the other way round. One flow
+    /// has at most one such diagnostic.
+    pub(crate) fn fn_flow(&mut self, span: Span, expected: &Ty, found: &Ty) {
+        self.fn_flow_as(span, expected, found, false);
+    }
+
+    /// [`Checker::fn_flow`] for the written type of a lambda parameter, `expected`, which the
+    /// values of `found`, from the expected function type, flow into.
+    pub(crate) fn fn_flow_param(&mut self, span: Span, expected: &Ty, found: &Ty) {
+        self.fn_flow_as(span, expected, found, true);
+    }
+
+    fn fn_flow_as(&mut self, span: Span, expected: &Ty, found: &Ty, param: bool) {
         if self.pass != super::authority::Pass::Check {
             return;
         }
-        let (Ty::Fn(expected), Ty::Fn(found)) = (self.resolve(expected), self.resolve(found))
-        else {
+        let (expected, found) = (self.resolve(expected), self.resolve(found));
+        // ADR 0037 rule 2: a refinement of a function type that the flow does not carry over
+        // is a pending `refinement` obligation at the value. A lambda's written parameter types
+        // are the lambda's own flow, recorded by [`Checker::lambda`].
+        if !param && refinement_flow(&expected, &found) {
+            self.obligation(ObligationKind::Refinement, span, None);
+        }
+        let direct = matches!(expected, Ty::Fn(_));
+        let Some((problem, given)) = fn_problem(&expected, &found, false) else {
             return;
         };
-        let extra: Vec<&FnUse> = found
-            .uses
-            .iter()
-            .filter(|need| {
-                !expected.uses.iter().any(|allowed| {
-                    allowed.name == need.name
-                        && allowed.capability == need.capability
-                        && need.ops.iter().all(|op| allowed.ops.contains(op))
-                })
-            })
-            .collect();
-        if let Some(need) = extra.first() {
-            self.report.error(
-                Code::U3003,
-                span,
-                format!(
-                    "this function uses `{}`, which the expected function type does not allow",
-                    self.show_need(need)
-                ),
-            );
-        }
-        if let Some(kind) = &found.fails
-            && expected
-                .fails
-                .as_ref()
-                .is_none_or(|allowed| allowed != kind)
-            && *kind != Ty::Error
-        {
-            let kind = self.show(kind);
-            self.report.error(
-                Code::U3009,
-                span,
-                format!("this function can fail with `{kind}`, which the expected function type does not allow"),
-            );
-        }
+        let (code, what) = match &problem {
+            FnProblem::Uses(need) => (Code::U3003, format!("uses `{}`", self.show_need(need))),
+            FnProblem::Fails(kind) => (Code::U3009, format!("can fail with `{}`", self.show(kind))),
+        };
+        let message = if param {
+            format!(
+                "the expected function type gives this lambda parameter a function that {what}, which its written type does not allow"
+            )
+        } else if given {
+            format!(
+                "the expected type gives this function a function that {what}, which its own type does not allow"
+            )
+        } else if direct {
+            format!("this function {what}, which the expected function type does not allow")
+        } else {
+            format!(
+                "this value holds a function that {what}, which the expected type does not allow"
+            )
+        };
+        self.report.error(code, span, message);
     }
 
     /// A call of a declared function, predicate or policy, with `receiver` as its first
@@ -388,7 +412,29 @@ impl<'a> Checker<'_, 'a, '_> {
                 "; the refinement language calls only predicates",
             );
         }
-        // DECISION D-056: declared effects and failures in an opaque predicate.
+        // ADR 0042: an opaque predicate is called only as the predicate of `checked` and in
+        // opaque bodies. DECISION D-149: also in the `where` clause of a kind and in the
+        // clauses of a capability operation, which name the fact without establishing it.
+        if def.kind == (FnKind::Predicate { reflect: false })
+            && !self.ctx.opaque
+            && !self.ctx.opaque_calls
+            && self.pass == super::authority::Pass::Check
+        {
+            let mut diagnostic = self.report.make(
+                Code::U2016,
+                span,
+                format!(
+                    "opaque predicate `{}` is called outside `checked`, so its fact would bypass the escape budget",
+                    def.name
+                ),
+            );
+            diagnostic.repairs.push(super::Report::advice(format!(
+                "check the value with `checked(value, {}(it)) else fail <Variant>`",
+                def.name
+            )));
+            self.report.push(diagnostic);
+        }
+        // Declared effects and failures in an opaque predicate.
         if !def.uses.is_empty() {
             self.impure(span, || {
                 format!("call of {callee}, which uses capabilities,")
@@ -405,8 +451,14 @@ impl<'a> Checker<'_, 'a, '_> {
         self.needs_site(&callee, &needs, span, level);
         self.call_fact(id, span);
         self.via_site(id, span);
-        let bound = self.bound(&needs, def.fails.is_some());
-        self.call_under_pc(span, &callee, bound, def.fails.is_some(), false);
+        self.call_under_pc(
+            span,
+            &callee,
+            &needs,
+            def.fails.is_some(),
+            false,
+            &Label::public(),
+        );
         self.position_site(
             &callee,
             span,
@@ -445,18 +497,46 @@ impl<'a> Checker<'_, 'a, '_> {
             span,
             def.module,
         );
-        self.argument_flows(&callee, checked);
+        let values = declared_args(&def.params, &checked);
+        let result = def.result.base.substitute(&subst);
+        let result = if prelude_labeled(self.env.prelude, &def) {
+            self.prelude_result(&callee, checked, result)
+        } else {
+            self.argument_flows(&callee, checked);
+            generic_result(self.env.prelude, &def, &subst, result)
+        };
+        if !subst.is_empty() {
+            self.instantiation(def.name, &def.type_params, subst, values, span);
+        }
         if def.requires {
             self.obligation(ObligationKind::Precondition, span, None);
         }
         if let Some(fails) = &def.fails {
             self.call_fails.insert(span, fails.clone());
         }
-        def.result.base.substitute(&subst)
+        result
+    }
+
+    /// The result of a call of a prelude function of `spec/14 §1` "Result labels": its
+    /// parameters that are not functions accept arguments of any label, and its result is
+    /// labeled with the join of every label of every argument, element types included
+    /// (ADR 0038 D3.4). The arguments of function type flow into their parameters as usual,
+    /// so a lambda's result stays below the label its parameter type declares.
+    fn prelude_result(&mut self, callee: &str, checked: Vec<Checked<'a>>, result: Ty) -> Ty {
+        let mut label = Label::public();
+        let mut functions = Vec::new();
+        for (span, found, expected, param) in checked {
+            label = label.join(&self.deep(&found));
+            if matches!(self.resolve(&expected), Ty::Fn(_)) {
+                functions.push((span, found, expected, param));
+            }
+        }
+        self.argument_flows(callee, functions);
+        result.with_label(&label)
     }
 
     /// U4001 for the arguments of a call, once the whole call is typed so that type variables
-    /// have their final labels (DECISION D-089).
+    /// have their final labels.
     pub(crate) fn argument_flows(&mut self, callee: &str, checked: Vec<Checked<'a>>) {
         for (span, found, expected, param) in checked {
             self.flow(
@@ -469,7 +549,7 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// `p(v)`, a declassification (`spec/10 §7`): one argument, without a label, that flows
-    /// into the policy's `from` type (DECISION D-053, DECISION D-066).
+    /// into the policy's `from` type.
     fn call_policy(
         &mut self,
         def: &FnDef<'a>,
@@ -480,7 +560,7 @@ impl<'a> Checker<'_, 'a, '_> {
     ) -> Ty {
         let from = def.params.first().map(|p| p.ty.clone());
         let expected = from.as_ref().map_or(Ty::Error, |from| from.base.clone());
-        // DECISION D-098: the one argument, or the receiver, is the `from` value.
+        // The one argument, or the receiver, is the `from` value.
         self.ordered(span, vec![Some(0)]);
         let origin = def
             .params
@@ -548,7 +628,7 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// `@c.op(args)`, typed with the operation of the capability bound to `@c`; an unbound
-    /// `@c` is U3001 (M5) (DECISION D-047).
+    /// `@c` is U3001 (M5).
     pub(crate) fn cap_op(
         &mut self,
         cap: &Ident,
@@ -567,7 +647,7 @@ impl<'a> Checker<'_, 'a, '_> {
             .cloned();
         let Some(capability) = capability else {
             // In pass 1, inference decides the capability of an inferred reference; its
-            // failure is resolved then (DECISION D-072).
+            // failure is resolved then.
             if self.base == super::authority::Base::Inferring
                 && let super::authority::Resolved::Missing { name, .. } = self.resolve_cap(cap_name)
             {
@@ -615,11 +695,30 @@ impl<'a> Checker<'_, 'a, '_> {
             span,
             capability.module,
         );
-        // DECISION D-092: an operation's arguments are sinks bounded by `accepts`.
-        let sinks: Vec<(Span, Ty)> = checked
-            .into_iter()
-            .map(|(arg_span, found, _, _)| (arg_span, found))
-            .collect();
+        // An operation's arguments are sinks bounded by `accepts`, except
+        // the carried ones, which accept every label and raise the result (ADR 0039).
+        let mut carried = Label::public();
+        let mut sinks: Vec<(Span, Ty)> = Vec::new();
+        for (arg_span, found, expected, param) in checked {
+            // ADR 0050: the argument flows into the declared parameter type at its
+            // contravariant positions and invariant kind arguments, which a handler body
+            // assumes; `accepts` bounds its data.
+            self.op_argument_flow(
+                arg_span,
+                &found,
+                &expected,
+                &format!("parameter `{param}` of {callee}"),
+            );
+            let is_carried = def
+                .carried
+                .iter()
+                .any(|&i| def.params.get(i).is_some_and(|p| p.name == param));
+            if is_carried {
+                carried = carried.join(&self.deep(&found));
+            } else {
+                sinks.push((arg_span, found));
+            }
+        }
         self.sink(
             span,
             &format!("`@{cap_name}.{op_name}`"),
@@ -641,7 +740,7 @@ impl<'a> Checker<'_, 'a, '_> {
             site.top,
             site.handled,
         );
-        def.result.base
+        def.result.base.with_label(&carried)
     }
 
     /// The capability bound to `@cap` and the position of its operation `op`.
@@ -662,7 +761,8 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// The parameter an unlabeled argument names by punning (`spec/04 §3` rule 3): a bare name
-    /// equal to a parameter's name counts as labeled with it (DECISION D-064).
+    /// equal to a parameter's name counts as labeled with it. In a call, it applies from the
+    /// second argument on (ADR 0049).
     fn punned(&self, arg: &Arg, names: &[&str]) -> Option<usize> {
         if arg.label.is_some() {
             return None;
@@ -676,7 +776,7 @@ impl<'a> Checker<'_, 'a, '_> {
 
     /// The arguments of a call of a function, operation or handler (`spec/04 §3`): the first
     /// may go unlabeled, the others are labeled or punned (U2004); an unknown label is U2005,
-    /// a repeated parameter U2006, and a wrong number of arguments U2001 (DECISION D-067).
+    /// a repeated parameter U2006, and a wrong number of arguments U2001.
     /// Each argument is checked against its parameter; a refined parameter records a pending
     /// obligation.
     #[allow(clippy::too_many_arguments)]
@@ -714,6 +814,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 callee,
             };
             self.unify_at(*receiver_span, &expected, receiver_ty, role);
+            self.fn_flow(*receiver_span, &expected, receiver_ty);
             checked.push((*receiver_span, receiver_ty.clone(), expected, first.name));
             if first.ty.is_refined() {
                 let origin = self.origin(module, first.span);
@@ -724,6 +825,27 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(first) = taken.first_mut() {
             *first = receiver.is_some();
         }
+        // R-030: a repair of an unknown label suggests only a parameter that no other
+        // argument gives, so applying it cannot make the argument a duplicate (U2006).
+        let mut given_params = taken.clone();
+        for (index, arg) in args.iter().enumerate() {
+            let target = match &arg.label {
+                Some(label) => names.iter().position(|name| *name == self.name(label)),
+                // ADR 0049: an unlabeled first argument binds the first parameter, and
+                // punning applies only from the second argument on.
+                None if index + offset == 0 => Some(0),
+                None => self.punned(arg, &names),
+            };
+            if let Some(slot) = target.and_then(|target| given_params.get_mut(target)) {
+                *slot = true;
+            }
+        }
+        let open: Vec<&str> = names
+            .iter()
+            .zip(&given_params)
+            .filter(|(_, given)| !**given)
+            .map(|(name, _)| *name)
+            .collect();
         let mut targets: Vec<Option<usize>> = Vec::new();
         let mut problem = false;
         for (index, arg) in args.iter().enumerate() {
@@ -733,14 +855,15 @@ impl<'a> Checker<'_, 'a, '_> {
                 match names.iter().position(|name| *name == label_name) {
                     Some(target) => Some(target),
                     None => {
-                        self.unknown_label(callee, &names, label);
+                        self.unknown_label(callee, &open, label);
                         None
                     }
                 }
+            } else if position == 0 {
+                // ADR 0049 (`spec/04 §3` rule 2): the first argument is positional.
+                Some(0)
             } else if let Some(target) = self.punned(arg, &names) {
                 Some(target)
-            } else if position == 0 {
-                Some(0)
             } else {
                 self.missing_label(callee, &names, arg, position);
                 None
@@ -765,7 +888,7 @@ impl<'a> Checker<'_, 'a, '_> {
             problem |= target.is_none();
             targets.push(target);
         }
-        // DECISION D-098: the parameter of each argument, the receiver first.
+        // The parameter of each argument, the receiver first.
         let order: Vec<Option<usize>> = receiver
             .as_ref()
             .map(|_| Some(0))
@@ -787,7 +910,7 @@ impl<'a> Checker<'_, 'a, '_> {
             };
             self.ctx.argument = true;
             let found = self.expr_as(&arg.value, Some(&expected), role);
-            self.function_argument(arg.value.span, &expected, &found);
+            self.fn_flow(arg.value.span, &expected, &found);
             if param.ty.is_refined() {
                 let origin = self.origin(module, param.span);
                 self.obligation(ObligationKind::Refinement, arg.value.span, origin);
@@ -817,7 +940,8 @@ impl<'a> Checker<'_, 'a, '_> {
         checked
     }
 
-    /// U2005: a label that names no parameter.
+    /// U2005: a label that names no parameter; `names` are the parameters that no other
+    /// argument gives, which the repair may suggest.
     fn unknown_label(&mut self, callee: &str, names: &[&str], label: &Ident) {
         let label_name = self.name(label);
         let mut diagnostic = self.report.make(
@@ -831,10 +955,13 @@ impl<'a> Checker<'_, 'a, '_> {
                 label.span,
                 close,
             )),
+            None if names.is_empty() => diagnostic.repairs.push(Report::advice(
+                "every parameter is given by another argument; remove this one",
+            )),
             None => {
                 let listed: Vec<String> = names.iter().map(|n| format!("`{n}`")).collect();
                 diagnostic.repairs.push(Report::advice(format!(
-                    "the parameters are {}",
+                    "the parameters that no other argument gives are {}",
                     listed.join(", ")
                 )));
             }
@@ -887,6 +1014,7 @@ impl<'a> Checker<'_, 'a, '_> {
             Some(Entity::Variant(kind, index)) => {
                 let (params, kind_name) = self.kind_params(kind);
                 let targs = self.instantiate(&params, kind_name, ident.span);
+                self.expected_invariant(kind, &targs, expected);
                 self.resolved(
                     span,
                     Res::Ctor {
@@ -900,6 +1028,7 @@ impl<'a> Checker<'_, 'a, '_> {
             Some(Entity::Kind(id)) if self.env.kinds.get(id).is_some_and(|k| !k.is_sum()) => {
                 let (params, kind_name) = self.kind_params(id);
                 let targs = self.instantiate(&params, kind_name, ident.span);
+                self.expected_invariant(id, &targs, expected);
                 self.resolved(
                     span,
                     Res::Ctor {
@@ -927,10 +1056,35 @@ impl<'a> Checker<'_, 'a, '_> {
         Ty::Error
     }
 
+    /// The type arguments `targs` of a constructor of `kind` take the arguments of the
+    /// expected type at the kind's invariant parameters, labels included, before the fields
+    /// are checked, so that `Feed(get: fn() -> 2)` is a `Feed[secret Int]` where one is
+    /// expected (ADR 0046). An expected argument that still holds a type variable is left to
+    /// the flow that follows the constructor, since the variable may take labels later.
+    /// D-163: ADR 0046 fixes the flow, not how a constructor infers its
+    /// arguments; this uses the expected type only where it is already known.
+    fn expected_invariant(&mut self, kind: KindId, targs: &[Ty], expected: Option<&Ty>) {
+        let Some(expected) = expected else {
+            return;
+        };
+        let Ty::Kind(id, args) = self.labeled(expected).unlabeled().clone() else {
+            return;
+        };
+        if id != kind {
+            return;
+        }
+        let kinds = self.env.kind_labels.clone();
+        for (index, (targ, arg)) in targs.iter().zip(&args).enumerate() {
+            if kinds.is_invariant(kind, index) && !holds_var(arg) {
+                self.vars.unify(targ, arg);
+            }
+        }
+    }
+
     /// A constructor application, also after `fail` (`spec/04 §3` rule 4): with two or more
     /// fields every argument is labeled or punned, in any order, and one field may go without
     /// a label. Missing and unknown fields are U2009, a repeated field U2006, and an unlabeled
-    /// argument where labels are required U2004 (DECISION D-064). `span` covers the name and
+    /// argument where labels are required U2004. `span` covers the name and
     /// the arguments, `name` only the name.
     pub(crate) fn construct(
         &mut self,
@@ -971,6 +1125,26 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         let names: Vec<&str> = fields.iter().map(|f| f.name).collect();
         let mut taken: Vec<bool> = fields.iter().map(|_| false).collect();
+        // R-030: the repair of an unknown field suggests only a field that no other argument
+        // gives, so applying it cannot make the argument a duplicate (U2006; DECISION D-157).
+        let mut given_fields = taken.clone();
+        for (position, arg) in args.iter().enumerate() {
+            let target = match &arg.label {
+                Some(label) => names.iter().position(|n| *n == self.name(label)),
+                None => self
+                    .punned(arg, &names)
+                    .or((fields.len() == 1 && position == 0).then_some(0)),
+            };
+            if let Some(slot) = target.and_then(|target| given_fields.get_mut(target)) {
+                *slot = true;
+            }
+        }
+        let open: Vec<&str> = names
+            .iter()
+            .zip(&given_fields)
+            .filter(|(_, given)| !**given)
+            .map(|(name, _)| *name)
+            .collect();
         let mut targets: Vec<Option<usize>> = Vec::new();
         let mut problem = false;
         for (position, arg) in args.iter().enumerate() {
@@ -983,12 +1157,23 @@ impl<'a> Checker<'_, 'a, '_> {
                         label.span,
                         format!("`{constructor}` has no field `{label_name}`"),
                     );
-                    if let Some(close) = closest(label_name, names.iter().copied()) {
+                    if let Some(close) = closest(label_name, open.iter().copied()) {
                         diagnostic.repairs.push(self.report.edit(
                             format!("write `{close}`"),
                             label.span,
                             close,
                         ));
+                    } else if open.is_empty() {
+                        diagnostic.repairs.push(Report::advice(
+                            "every field is given by another argument; remove this one",
+                        ));
+                    } else {
+                        // DECISION D-157, as for U2005 (re-review N-016).
+                        let listed: Vec<String> = open.iter().map(|n| format!("`{n}`")).collect();
+                        diagnostic.repairs.push(Report::advice(format!(
+                            "the fields that no other argument gives are {}",
+                            listed.join(", ")
+                        )));
                     }
                     self.report.push(diagnostic);
                 }
@@ -1049,6 +1234,7 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         self.ordered(span, targets.clone());
         let mut flows = Vec::new();
+        let mut values = Vec::new();
         for (arg, target) in lambdas_last(args, &targets) {
             let Some(field) = target.and_then(|target| fields.get(target)) else {
                 self.expr(&arg.value, None);
@@ -1060,13 +1246,19 @@ impl<'a> Checker<'_, 'a, '_> {
                 kind: constructor,
             };
             let found = self.expr_as(&arg.value, Some(&expected), role);
+            self.fn_flow(arg.value.span, &expected, &found);
             if field.ty.is_refined() {
                 let origin = self.origin(module, field.span);
                 self.obligation(ObligationKind::Refinement, arg.value.span, origin);
             }
+            values.push((arg.value.span, field.ty.base.clone(), found.clone()));
             flows.push((arg.value.span, found, expected, field.name));
         }
-        // DECISION D-089: fields flow once the whole constructor is typed.
+        if !targs.is_empty() {
+            let (params, kind_name) = self.kind_params(kind);
+            self.instantiation(kind_name, &params, targs.to_vec(), values, span);
+        }
+        // Fields flow once the whole constructor is typed.
         for (arg_span, found, expected, field) in flows {
             self.flow(
                 arg_span,
@@ -1098,8 +1290,162 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 }
 
+/// The prelude functions whose results carry the labels of their arguments, as `spec/14 §1`
+/// "Result labels" lists them (ADR 0038 D3.4): their native implementations declare these
+/// labels, which the prelude's Una signatures cannot write.
+const PRELUDE_LABELED: [&str; 20] = [
+    "abs",
+    "append",
+    "at",
+    "contains",
+    "filter",
+    "first",
+    "first_where",
+    "fold",
+    "is_digits",
+    "is_empty",
+    "is_ok",
+    "is_some",
+    "map",
+    "max",
+    "min",
+    "or_else",
+    "starts_with",
+    "sum",
+    "to_int",
+    "trim",
+];
+
+/// Whether `def` is a prelude function whose result carries the labels of its arguments.
+/// DECISION D-136: its parameters that are not functions accept arguments of any label,
+/// since the result is raised by all of them; the other prelude functions keep the labels of
+/// their parameter types.
+fn prelude_labeled(prelude: usize, def: &FnDef<'_>) -> bool {
+    def.module == prelude && def.kind == FnKind::Function && PRELUDE_LABELED.contains(&def.name)
+}
+
+/// The result of a call of a generic function declared outside the prelude: the value its
+/// body returns may carry the symbolic labels of its type parameters, which the call replaces
+/// by `ℓ*(σ)`, the join of every label of each type argument (`spec/10 §5`, generic
+/// instantiation, rule 3).
+/// DECISION D-137: every position of the result that holds data is raised by the join of
+/// `ℓ*(σ)` over all the type arguments, since the checker does not record which symbolic
+/// labels, at which positions, the body's result carries.
+fn generic_result(prelude: usize, def: &FnDef<'_>, subst: &[Ty], result: Ty) -> Ty {
+    if subst.is_empty() || def.module == prelude {
+        return result;
+    }
+    result.raise_deep(&Vars::label_of(subst))
+}
+
+/// Whether `ty` holds a type variable at any position.
+fn holds_var(ty: &Ty) -> bool {
+    match ty {
+        Ty::Var(_) => true,
+        Ty::Labeled(_, inner) | Ty::List(inner) => holds_var(inner),
+        Ty::Kind(_, args) => args.iter().any(holds_var),
+        Ty::Fn(function) => {
+            function.params.iter().any(holds_var)
+                || holds_var(&function.result)
+                || function.fails.as_ref().is_some_and(holds_var)
+        }
+        _ => false,
+    }
+}
+
+/// The declared type of the parameter of each checked argument, with where the argument is
+/// and its own type.
+fn declared_args(params: &[ParamDef<'_>], checked: &[Checked<'_>]) -> Vec<(Span, Ty, Ty)> {
+    checked
+        .iter()
+        .filter_map(|(span, found, _, name)| {
+            params
+                .iter()
+                .find(|p| p.name == *name)
+                .map(|p| (*span, p.ty.base.clone(), found.clone()))
+        })
+        .collect()
+}
+
+/// What a function type in a value's type has beyond the expected function type at its
+/// position.
+enum FnProblem {
+    Uses(FnUse),
+    Fails(Ty),
+}
+
+/// The first function type in `found` that exceeds the one at its position in `expected`,
+/// both resolved (S-Fun, ADR 0038 D1), and whether that position is a function parameter's,
+/// where the expected type gives the value its functions (`flipped` says whether the current
+/// position is one).
+fn fn_problem(expected: &Ty, found: &Ty, flipped: bool) -> Option<(FnProblem, bool)> {
+    match (expected, found) {
+        (Ty::Fn(e), Ty::Fn(f)) => {
+            let extra = f.uses.iter().find(|need| {
+                !e.uses.iter().any(|allowed| {
+                    allowed.name == need.name
+                        && allowed.capability == need.capability
+                        && need.ops.iter().all(|op| allowed.ops.contains(op))
+                })
+            });
+            if let Some(need) = extra {
+                return Some((FnProblem::Uses(need.clone()), flipped));
+            }
+            if let Some(kind) = &f.fails
+                && *kind != Ty::Error
+                && e.fails
+                    .as_ref()
+                    .is_none_or(|allowed| allowed != kind && *allowed != Ty::Error)
+            {
+                return Some((FnProblem::Fails(kind.clone()), flipped));
+            }
+            // Parameters are contravariant: the expected type's arguments flow into the value.
+            e.params
+                .iter()
+                .zip(&f.params)
+                .find_map(|(e, f)| fn_problem(f, e, !flipped))
+                .or_else(|| fn_problem(&e.result, &f.result, flipped))
+        }
+        (Ty::List(e), Ty::List(f)) => fn_problem(e, f, flipped),
+        (Ty::Kind(i, es), Ty::Kind(j, fs)) if i == j => es
+            .iter()
+            .zip(fs)
+            .find_map(|(e, f)| fn_problem(e, f, flipped)),
+        _ => None,
+    }
+}
+
+/// Whether a value of type `found` flowing into `expected` is a `refinement` obligation of
+/// ADR 0037 rule 2: a function type at the same position, directly or under type arguments,
+/// whose parameter carries a refinement that the expected parameter does not (contravariant),
+/// or whose result lacks a refinement of the expected result (covariant). Both are resolved.
+pub(crate) fn refinement_flow(expected: &Ty, found: &Ty) -> bool {
+    match (expected.unlabeled(), found.unlabeled()) {
+        (Ty::Fn(e), Ty::Fn(f)) if e.params.len() == f.params.len() => {
+            let lacks = |target: &[Refinement], source: &[Refinement]| {
+                source.iter().any(|refinement| !target.contains(refinement))
+            };
+            let params = (0..e.params.len()).any(|index| {
+                lacks(e.refinements.param(index), f.refinements.param(index))
+                    || matches!(
+                        (f.params.get(index), e.params.get(index)),
+                        (Some(target), Some(source)) if refinement_flow(target, source)
+                    )
+            });
+            params
+                || lacks(&f.refinements.result, &e.refinements.result)
+                || refinement_flow(&e.result, &f.result)
+        }
+        (Ty::List(e), Ty::List(f)) => refinement_flow(e, f),
+        (Ty::Kind(i, es), Ty::Kind(j, fs)) if i == j && es.len() == fs.len() => {
+            es.iter().zip(fs).any(|(e, f)| refinement_flow(e, f))
+        }
+        _ => false,
+    }
+}
+
 /// The arguments with their targets, lambdas after the other arguments, each group in source
-/// order (DECISION D-069).
+/// order.
 fn lambdas_last<'x>(
     args: &'x [Arg],
     targets: &'x [Option<usize>],

@@ -3,6 +3,7 @@
 //! lowering of written types (U2002, U2003).
 
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use una_diag::Code;
 use una_syntax::ast::{
@@ -15,7 +16,10 @@ use una_syntax::{Interner, Span, Symbol};
 use super::Report;
 use super::closest;
 use super::label::{Accepts, Label};
-use super::ty::{AliasId, CapId, Declared, FnTy, FnUse, KindId, Refinement, Ty};
+use super::ty::{
+    AliasId, CapId, Declared, FnRefinements, FnTy, FnUse, KindId, KindLabels, Names, Refinement,
+    Show, Ty,
+};
 
 /// A module the checker knows: a package module, the prelude or `std.testing`.
 pub(crate) struct Module<'a> {
@@ -193,6 +197,9 @@ pub(crate) struct OpDef<'a> {
     pub(crate) ensures: bool,
     /// The sink label of its arguments (`spec/05 §2`, `spec/07 §4`).
     pub(crate) accepts: Accepts,
+    /// The positions of the parameters that accept every label and whose labels the result
+    /// carries: `data` of `Keys.hmac` (ADR 0039).
+    pub(crate) carried: Vec<usize>,
 }
 
 /// A capability.
@@ -245,6 +252,9 @@ pub(crate) struct Env<'a> {
     pub(crate) categories: Vec<String>,
     /// The `via` function of each policy, and the policy (`spec/07 §5`).
     pub(crate) vias: BTreeMap<usize, usize>,
+    /// The labels that each kind's fields declare and the variance of its type parameters
+    /// (re-review N-001, ADR 0046), computed once the signatures are lowered.
+    pub(crate) kind_labels: Rc<KindLabels>,
     alias_state: Vec<AliasState>,
 }
 
@@ -269,6 +279,7 @@ impl<'a> Env<'a> {
             prelude: count,
             categories,
             vias: BTreeMap::new(),
+            kind_labels: Rc::new(KindLabels::default()),
             alias_state: Vec::new(),
         };
         for source in package.into_iter().chain([prelude, testing]) {
@@ -293,6 +304,20 @@ impl<'a> Env<'a> {
                 env.vias.entry(target).or_insert(id);
             }
         }
+        let fields: Vec<Vec<&Ty>> = env
+            .kinds
+            .iter()
+            .map(|kind| {
+                kind.record
+                    .iter()
+                    .flatten()
+                    .chain(kind.variants.iter().flat_map(|v| v.fields.iter()))
+                    .map(|field| &field.ty.base)
+                    .collect()
+            })
+            .collect();
+        let params: Vec<usize> = env.kinds.iter().map(|kind| kind.params.len()).collect();
+        env.kind_labels = Rc::new(KindLabels::new(&fields, &params));
         env
     }
 
@@ -682,16 +707,23 @@ impl<'a> Env<'a> {
                 OpClauseKind::Accepts(label) => Some(label),
                 _ => None,
             });
-            // DECISION D-092: `Keys.hmac` accepts every label (`spec/14 §3`); an operation
-            // without `accepts` accepts `public`.
+            // ADR 0039: `Keys.hmac` accepts `public` for `key_name` and every label for
+            // `data`, whose label its result carries (`spec/14 §3`). an
+            // operation without `accepts` accepts `public`.
+            let hmac = module == self.prelude
+                && ast_name(self, module, ast) == "Keys"
+                && op_name == "hmac";
+            let carried: Vec<usize> = if hmac {
+                op.params
+                    .iter()
+                    .position(|p| self.text(module, p.name.name) == "data")
+                    .into_iter()
+                    .collect()
+            } else {
+                Vec::new()
+            };
             let accepts = match written {
                 Some(label) => Some(self.lower_label(module, label, report)),
-                None if module == self.prelude
-                    && ast_name(self, module, ast) == "Keys"
-                    && op_name == "hmac" =>
-                {
-                    None
-                }
                 None => Some(Label::public()),
             };
             ops.push(OpDef {
@@ -703,6 +735,7 @@ impl<'a> Env<'a> {
                 requires: has(|kind| matches!(kind, OpClauseKind::Requires(_))),
                 ensures: has(|kind| matches!(kind, OpClauseKind::Ensures(_))),
                 accepts,
+                carried,
             });
         }
         if let Some(def) = self.capabilities.get_mut(id) {
@@ -755,7 +788,7 @@ impl<'a> Env<'a> {
                     def.fails = fails;
                     def.requires = requires;
                     def.ensures = ensures;
-                    // DECISION D-072: a private function without `uses` or `fails` infers them.
+                    // A private function without `uses` or `fails` infers them.
                     def.infer_uses = !function.public && !declares_uses;
                     def.infer_fails = !function.public && !declares_fails;
                     def.uses = uses;
@@ -821,7 +854,7 @@ impl<'a> Env<'a> {
 
     /// `uses @name: C[ops]`: the capability, and the operations it permits, all of them when
     /// none is listed, in the capability's declaration order. A name that is not a capability
-    /// is U3001, and an operation that the capability lacks U1001 (DECISION D-071).
+    /// is U3001, and an operation that the capability lacks U1001.
     pub(crate) fn lower_uses(
         &mut self,
         module: usize,
@@ -939,6 +972,29 @@ impl<'a> Env<'a> {
             return;
         };
         let base = self.lower_type(module, ty, &params, report);
+        // ADR 0045 rules 1 and 2: Core IR has no refinement over a function base, so a `where`
+        // clause on a kind whose base is a function type is ill-formed, at the clause. The
+        // clause is dropped after the report, so an alias of the kind is not reported again
+        // and no refinement is lost later.
+        let fn_base = matches!(base.base.unlabeled(), Ty::Fn(_));
+        let where_clause = self
+            .aliases
+            .get(id)
+            .and_then(|alias| alias.refinement.map(|expr| (alias.name, expr.span)));
+        if fn_base && let Some((name, span)) = where_clause {
+            if self.reports(module) {
+                report.error(
+                    Code::U2002,
+                    span,
+                    format!(
+                        "kind `{name}` refines a function type, which cannot be refined; remove the `where` clause, or refine the parameters or the result of the function type"
+                    ),
+                );
+            }
+            if let Some(alias) = self.aliases.get_mut(id) {
+                alias.refinement = None;
+            }
+        }
         if let Some(alias) = self.aliases.get_mut(id) {
             alias.base = base;
         }
@@ -948,7 +1004,7 @@ impl<'a> Env<'a> {
     }
 
     /// Lowers a written type of module `module`, with `type_params` in scope. Labels wait for
-    /// M6 (DECISION D-057).
+    /// M6.
     pub(crate) fn lower_type(
         &mut self,
         module: usize,
@@ -962,22 +1018,38 @@ impl<'a> Env<'a> {
                     .iter()
                     .map(|arg| self.lower_type(module, arg, type_params, report))
                     .collect();
+                for (arg, lowered) in args.iter().zip(&lowered) {
+                    self.type_argument(module, arg.span, &lowered.base, report);
+                    self.refined_argument(module, arg, lowered, type_params, report);
+                }
                 self.named(module, name, lowered, ty.span, type_params, report)
             }
             TypeCore::List(element) => {
-                let element = self.lower_type(module, element, type_params, report);
-                Declared::plain(Ty::List(Box::new(element.base)))
+                let lowered = self.lower_type(module, element, type_params, report);
+                self.type_argument(module, element.span, &lowered.base, report);
+                self.refined_argument(module, element, &lowered, type_params, report);
+                Declared::plain(Ty::List(Box::new(lowered.base)))
             }
             TypeCore::Function {
                 params,
                 result,
                 clauses,
             } => {
-                let params: Vec<Ty> = params
+                // ADR 0037 rule 1: the refinements of the parameters and the result are part
+                // of the function type.
+                let (params, param_refinements): (Vec<Ty>, Vec<Vec<Refinement>>) = params
                     .iter()
-                    .map(|param| self.lower_type(module, param, type_params, report).base)
-                    .collect();
-                let result = self.lower_type(module, result, type_params, report).base;
+                    .map(|param| {
+                        let lowered = self.lower_type(module, param, type_params, report);
+                        (lowered.base, lowered.refinements)
+                    })
+                    .unzip();
+                let result = self.lower_type(module, result, type_params, report);
+                let refinements = FnRefinements {
+                    params: param_refinements,
+                    result: result.refinements,
+                };
+                let result = result.base;
                 let fails = clauses.iter().find_map(|clause| match clause {
                     FnTypeClause::Fails(kind) => Some(kind),
                     FnTypeClause::Uses(_) => None,
@@ -1011,6 +1083,7 @@ impl<'a> Env<'a> {
                     result,
                     uses,
                     fails,
+                    refinements,
                 })))
             }
         };
@@ -1035,8 +1108,78 @@ impl<'a> Env<'a> {
         declared
     }
 
+    /// U3016: a written type argument that is, or contains, a second-class type, a function
+    /// type with `uses` or `fails` (`spec/05 §6`, ADR 0038 D2). DECISION D-142: it is
+    /// reported at the innermost
+    /// type argument that is a function type, once.
+    fn type_argument(&self, module: usize, span: Span, ty: &Ty, report: &mut Report<'_>) {
+        if self.reports(module) && matches!(ty.unlabeled(), Ty::Fn(_)) && ty.second_class() {
+            report.error(
+                Code::U3016,
+                span,
+                "this type argument is, or holds, a function type with `uses` or `fails`, which is second-class, so it cannot instantiate a type parameter; take the function as a parameter of function type instead",
+            );
+        }
+    }
+
+    /// U2002: a written type argument of a refined kind, or with range sugar (ADR 0040). A type
+    /// that contains one is reported at the innermost refined type argument, once, since the
+    /// lowered argument keeps only its base.
+    fn refined_argument(
+        &self,
+        module: usize,
+        arg: &Type,
+        lowered: &Declared,
+        type_params: &[&'a str],
+        report: &mut Report<'_>,
+    ) {
+        if !self.reports(module) || !lowered.is_refined() {
+            return;
+        }
+        let base = Show(
+            &lowered.base,
+            &LowerNames {
+                env: self,
+                type_params,
+            },
+        )
+        .to_string();
+        // N-010: a refined kind is named as written, not by the kind or range its alias goes
+        // through.
+        let written = match (&arg.core, &arg.range) {
+            (TypeCore::Named { name, .. }, None) => Some(self.text(module, name.name)),
+            _ => None,
+        };
+        let what = match (lowered.refinements.last(), written) {
+            (None, _) => return,
+            (Some(_), Some(name)) => format!("the refined kind `{name}`"),
+            (Some(Refinement::Alias(id, _)), None) => {
+                let name = self.aliases.get(*id).map_or("?", |a| a.name);
+                format!("the refined kind `{name}`")
+            }
+            (Some(Refinement::Range(range, _)), None) => {
+                format!("the refined type `{base} {range}`")
+            }
+        };
+        let mut diagnostic = report.make(
+            Code::U2002,
+            arg.span,
+            format!(
+                "this type argument is {what}, and a refined type cannot instantiate a type parameter in v0.1; write its base type `{base}` and check the refinement where the value is used"
+            ),
+        );
+        if arg.label.is_none() {
+            diagnostic.repairs.push(report.edit(
+                format!("write the base type `{base}`"),
+                arg.span,
+                base.clone(),
+            ));
+        }
+        report.push(diagnostic);
+    }
+
     /// A written label: its level and categories; a category that `una.toml` does not
-    /// declare is U4007 and left out (`spec/07 §2`, DECISION D-096).
+    /// declare is U4007 and left out (`spec/07 §2`).
     pub(crate) fn lower_label(
         &self,
         module: usize,
@@ -1046,6 +1189,7 @@ impl<'a> Env<'a> {
         let mut lowered = Label {
             level: label.level,
             categories: std::collections::BTreeSet::new(),
+            symbols: std::collections::BTreeSet::new(),
         };
         for category in &label.categories {
             let name = self.text(module, category.name);
@@ -1152,7 +1296,7 @@ impl<'a> Env<'a> {
             Some(Entity::Capability(_)) => {
                 format!("`{name}` is a capability, not a type; capabilities are not values")
             }
-            // Unknown names are U1001, reported by M3 (DECISION D-038).
+            // Unknown names are U1001, reported by M3.
             Some(Entity::Function(_) | Entity::Handler(_)) | None => return Declared::error(),
         };
         if reports {
@@ -1211,8 +1355,26 @@ impl<'a> Env<'a> {
     }
 }
 
+/// Names for printing lowered types in messages of the environment.
+struct LowerNames<'e, 'a> {
+    env: &'e Env<'a>,
+    type_params: &'e [&'a str],
+}
+
+impl Names for LowerNames<'_, '_> {
+    fn kind_name(&self, id: KindId) -> String {
+        self.env.kind_name(id).to_owned()
+    }
+
+    fn param_name(&self, index: usize) -> String {
+        self.type_params
+            .get(index)
+            .map_or_else(|| "?".to_owned(), |name| (*name).to_owned())
+    }
+}
+
 /// The first requirement of each name: a reference bound twice is U1002, and the first binding
-/// wins, as the first of two declarations does (DECISION D-087).
+/// wins, as the first of two declarations does.
 fn first_of_each(needs: Vec<Need>) -> Vec<Need> {
     let mut kept: Vec<Need> = Vec::new();
     for need in needs {

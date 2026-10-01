@@ -1,0 +1,10 @@
+-- test: a via function whose types equal the policy's from and to types except for labels, refinements included, verifies (N-004)
+-- spec: spec/07 §5, §7
+-- expect: ok
+module app
+
+import release (Pos, lower)
+
+recip(p: Pos) -> Int = 100 / p
+
+pub shown(n: internal Pos) -> Int = recip(lower(n))

@@ -1,0 +1,7 @@
+-- Adversarial: secret value as a list element returned as List[Int]
+-- Expected: U4001 (spec/07 §7.2)
+-- Observed: U4001 at 7:42
+-- Verdict: Pass
+module flow_list_element
+
+pub wrap(pin: secret Int) -> List[Int] = [pin]

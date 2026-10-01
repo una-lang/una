@@ -1,4 +1,4 @@
-//! Naming conventions (`spec/01 §4`, U1005). DECISION D-042: type parameters follow the
+//! Naming conventions (`spec/01 §4`, U1005). type parameters follow the
 //! upper-case convention, and owners and module path segments the lower-case one; each name is
 //! checked where it is defined.
 

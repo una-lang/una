@@ -60,7 +60,7 @@ fn run(files: &[(&str, &str)], single: bool) -> (Vec<Diagnostic>, TypeCheck) {
 
 /// Whether `code` belongs to a later milestone than M4: the authority codes and the escape
 /// budget of M5, which `authority.rs` tests, and the security codes of M6, which `flow.rs`
-/// tests (DECISION D-084).
+/// tests.
 fn later(code: Code) -> bool {
     matches!(code.domain(), Domain::Authority | Domain::Security) || code == Code::U7003
 }
@@ -155,16 +155,18 @@ fn std_source(name: &str) -> String {
     std::fs::read_to_string(path).unwrap()
 }
 
-// ----- the prelude and std.testing (spec/14, DECISION D-055) -----
+// ----- the prelude and std.testing (spec/14) -----
 
 #[test]
 fn the_standard_modules_type_check_as_ordinary_modules() {
     for name in ["prelude.una", "testing.una"] {
         let text = std_source(name);
-        assert_eq!(
-            check(&[(name, &text)], true),
-            Vec::<String>::new(),
-            "{name}"
+        // ADR 0038 D7: checked as a user module, a standard module's path is reserved
+        // (U1009), and nothing else is reported.
+        let found = check(&[(name, &text)], true);
+        assert!(
+            found.len() == 1 && found[0].starts_with("U1009 "),
+            "{name}: {found:?}"
         );
     }
 }
@@ -232,7 +234,59 @@ fn the_prelude_declares_exactly_the_names_of_spec_14() {
     assert_eq!(functions.len(), 20);
 }
 
+#[test]
+fn package_records_never_take_those_of_the_standard_library() {
+    // Flow sweep: the standard library has a source database of its own, whose file ids
+    // coincide with the package's. Its records (types and resolutions by span) must not
+    // replace those of a package expression at the same position, or a Core binder gets a
+    // type from the prelude, and a flow into a refined function type loses its obligation.
+    // Every padding moves `make()` to another position.
+    for pad in 0..2700 {
+        let source = format!(
+            "module t\n\n-- {}\n\npub kind Pos = Int where it > 0\n\npub kind BoxF\n  v: fn(Int) -> Pos\n\npub zero(x: Int) -> Int = 0\n\npub make() -> fn(Int) -> Int = zero\n\npub f() -> BoxF = BoxF(v: make())\n",
+            "x".repeat(pad)
+        );
+        let (_, types) = run(&[("t.una", &source)], true);
+        let module = types
+            .program
+            .modules
+            .iter()
+            .find(|m| m.path == "t")
+            .expect("module t");
+        let printed = una_core::print_module(module);
+        assert!(
+            printed.contains(": fn(Int) -> Int = t.make()"),
+            "padding {pad}:\n{printed}"
+        );
+    }
+}
+
 // ----- kinds and written types (U2002, U2003) -----
+
+#[test]
+fn a_refined_type_argument_is_named_as_written_n010() {
+    // N-010: a type argument names the refined kind written, not the kind or range its alias
+    // goes through; range sugar on the argument itself names the refined type.
+    assert_eq!(
+        types(
+            "kind Small = Int in 0..5\n\
+             \n\
+             kind S2 = Small\n\
+             \n\
+             kind Pos = Int where it > 0\n\
+             \n\
+             kind P2 = Pos\n\
+             \n\
+             f(a: List[S2], b: List[P2], c: List[Int in 0..5], d: List[Small]) -> Int = 0\n"
+        ),
+        [
+            "U2002 t.una:11:11 this type argument is the refined kind `S2`, and a refined type cannot instantiate a type parameter in v0.1; write its base type `Int` and check the refinement where the value is used",
+            "U2002 t.una:11:24 this type argument is the refined kind `P2`, and a refined type cannot instantiate a type parameter in v0.1; write its base type `Int` and check the refinement where the value is used",
+            "U2002 t.una:11:37 this type argument is the refined type `Int in 0..5`, and a refined type cannot instantiate a type parameter in v0.1; write its base type `Int` and check the refinement where the value is used",
+            "U2002 t.una:11:59 this type argument is the refined kind `Small`, and a refined type cannot instantiate a type parameter in v0.1; write its base type `Int` and check the refinement where the value is used",
+        ]
+    );
+}
 
 #[test]
 fn written_types_name_types_with_their_arguments() {
@@ -272,7 +326,7 @@ fn written_types_name_types_with_their_arguments() {
 
 #[test]
 fn a_kind_contains_itself_only_through_list_or_option() {
-    // DECISION D-062: through any other kind, a type argument or a function type, it is U2002.
+    // Through any other kind, a type argument or a function type, it is U2002.
     assert_eq!(
         types(
             "kind Node\n  next: Node\n\
@@ -377,7 +431,6 @@ fn equality_ordering_and_interpolation_follow_spec_03() {
 
 #[test]
 fn a_type_that_inference_leaves_unknown_is_reported() {
-    // DECISION D-054.
     assert_eq!(
         types(
             "a() -> Int\n=\n  let xs = []\n  0\n\
@@ -424,6 +477,8 @@ fn calls_label_every_argument_after_the_first() {
             "U2006 t.una:7:30 parameter `a` of `max` is given twice",
             "U2001 t.una:9:20 `max` is missing argument `b`",
             "U2001 t.una:11:20 `max` takes 2 arguments, but 3 are given",
+            // ADR 0049: `b` binds `a`, and the punned `a` gives it again.
+            "U2006 t.una:13:35 parameter `a` of `max` is given twice",
         ]
     );
     assert_eq!(
@@ -437,7 +492,6 @@ fn calls_label_every_argument_after_the_first() {
 
 #[test]
 fn function_values_take_positional_arguments() {
-    // DECISION D-053.
     assert_eq!(
         types(
             "a(f: fn(Int, Int) -> Int) -> Int = f(1, 2)\n\
@@ -461,7 +515,6 @@ fn function_values_take_positional_arguments() {
 
 #[test]
 fn fields_and_methods_resolve_by_type() {
-    // DECISION D-052.
     assert_eq!(
         types(
             "kind Point\n  x: Int\n  y: Int\n\
@@ -525,7 +578,7 @@ fn policies_take_one_argument_and_check_their_via_function() {
 
 #[test]
 fn constructors_label_their_fields() {
-    // DECISION D-064 for the unlabeled argument of a constructor with several fields.
+    // The unlabeled argument of a constructor with several fields.
     assert_eq!(
         types(
             "kind Point\n  x: Int\n  y: Int\n\
@@ -568,11 +621,53 @@ fn constructors_label_their_fields() {
     );
 }
 
+#[test]
+fn unknown_label_repairs_suggest_only_what_is_not_given() {
+    // R-030: an unknown label close to a parameter or field that another argument already
+    // gives suggests one that is still missing, so applying the repair cannot give it twice
+    // (U2006); when nothing is missing, the advice says so.
+    assert_eq!(
+        repairs(
+            "kind Point\n  value: Int\n  values: Int\n\
+             \n\
+             kind Shape = Rect(width: Int, widths: Int) | Dot\n\
+             \n\
+             pick(value: Int, values: Int) -> Int = value\n\
+             \n\
+             a(x: Int) -> Int = pick(value: x, valuex: 1)\n\
+             \n\
+             b(x: Int) -> Point = Point(value: 1, valuex: 2)\n\
+             \n\
+             c(s: Shape) -> Int\n=\n  when s\n    is Rect(width, widthx: h) -> h\n    else -> 0\n\
+             \n\
+             d() -> Point = Point(value: 1, values: 2, valuex: 3)\n"
+        ),
+        [
+            "U2005: write `values` [11:35 -> \"values\"]",
+            "U2009: write `values` [13:38 -> \"values\"]",
+            "U2009: write `widths` [18:20 -> \"widths\"]",
+            "U2009: every field is given by another argument; remove this one",
+        ]
+    );
+}
+
+#[test]
+fn an_unknown_field_far_from_every_open_one_lists_them() {
+    // Re-review N-016: U2009 gives the help D-157 describes for U2005.
+    assert_eq!(
+        repairs(
+            "kind P\n  x: Int\n  y: Int\n\
+             \n\
+             f() -> P = P(x: 1, zzzzz: 3)\n"
+        ),
+        ["U2009: the fields that no other argument gives are `y`"]
+    );
+}
+
 // ----- when and patterns (U2007, U2008, `spec/10 §4`) -----
 
 #[test]
 fn when_over_a_sum_is_exhaustive_and_every_arm_is_reachable() {
-    // DECISION D-051.
     assert_eq!(
         types(
             "kind Level = Low | Mid | High\n\
@@ -749,7 +844,7 @@ fn clauses_are_in_the_refinement_language() {
 
 #[test]
 fn predicates_are_pure_total_and_not_recursive() {
-    // DECISION D-056 and D-065.
+    // `helper` calls an opaque predicate outside `checked` (ADR 0042).
     assert_eq!(
         types(
             "kind Failure = | Oops\n\
@@ -785,6 +880,7 @@ fn predicates_are_pure_total_and_not_recursive() {
             "U2015 t.una:10:19 reflect predicate `again` calls itself; predicates are not recursive",
             "U2015 t.una:12:19 reflect predicate `ping` calls itself through `pong`; predicates are not recursive",
             "U2015 t.una:16:18 opaque predicate `via_function` calls itself through `helper`; predicates are not recursive",
+            "U2016 t.una:18:26 opaque predicate `via_function` is called outside `checked`, so its fact would bypass the escape budget",
             "U2015 t.una:20:44 `fail` in the body of a predicate, which must be pure and cannot fail",
             "U2015 t.una:23:11 `checked`, which can fail, in the body of a predicate, which must be pure and cannot fail",
             "U2015 t.una:26:50 call of `risky`, which can fail, in the body of a predicate, which must be pure and cannot fail",
@@ -822,7 +918,7 @@ fn lambda_parameters_take_their_types_from_the_expected_function_type() {
     );
 }
 
-// ----- generics (`spec/03 §2` rule 4, DECISION D-063) -----
+// ----- generics (`spec/03 §2` rule 4) -----
 
 #[test]
 fn type_parameters_are_rigid_and_compared_values_hold_no_functions() {
@@ -853,7 +949,7 @@ fn type_parameters_are_rigid_and_compared_values_hold_no_functions() {
     );
 }
 
-// ----- variants in context (ADR 0024 rule 1, DECISION D-048) -----
+// ----- variants in context (ADR 0024 rule 1) -----
 
 #[test]
 fn variants_take_their_kind_from_the_context() {
@@ -919,7 +1015,7 @@ fn a_variant_that_two_imported_kinds_share_is_chosen_by_type() {
     );
 }
 
-// ----- capability operations (DECISION D-047) -----
+// ----- capability operations -----
 
 #[test]
 fn capability_operations_take_their_types_from_the_bound_capability() {

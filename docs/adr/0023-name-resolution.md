@@ -8,7 +8,7 @@
 
 M3 implements "imports, visibility, cycles, duplicates, unresolved names (U1001 to U1004)" and naming conventions (U1005). The specification gives pieces of the rules: all top-level names of a module are visible throughout it (`spec/02 §1`); declarations are private unless `pub` (`spec/04 §5`); the prelude is imported into every module (`spec/14 §1`); requirement identifiers are unique per package and example names per module (`spec/08`); the conventions of `spec/01 §4`. It says nothing about namespaces, shadowing, what an import of a kind brings, or where U1001 ends and U2002 ("Unknown or ill-formed type") begins. The reference example `events` fixes one constraint: `main.una` matches `SoldOut`, `Few` and `Open`, the variants of `Availability`, without importing `Availability` or its variants. Programs also declare names that the prelude declares too, such as a variant `NotFound`, which the prelude kind `FileError` (`spec/14 §3`) has, and later editions of the prelude may add names that programs already use.
 
-Decision log entries: D-037 to D-042 and D-046 (`docs/reviews/open-decisions.md`).
+Decision log entries: D-037 to D-042 and D-046 (`docs/history/v0.1/open-decisions.md`).
 
 ## Decision
 

@@ -1,0 +1,34 @@
+-- Adversarial: user handlers of the host `Keys` that print or fail depending on `data` (every label), and a control that prints only the public `key_name`
+-- Expected: U4003 in `spy` and U4002 in `picky`; `honest` accepted (ADR 0039 rule 3; spec/14 §3; ADR 0038 D4)
+-- Observed: U4003 in spy and U4002 in picky; honest accepted (4ea31cf and 85787d7)
+-- Verdict: Held
+module rv_hdl_keys_data
+
+handler spy() for Keys
+  uses @real: Keys[hmac]
+  uses @console: Console[print]
+  op hmac(key_name, data) =
+    let u = if data == "1234"
+      @console.print("hit")
+    else
+      unit
+    let h = @real.hmac(key_name: key_name, data: data)
+      if error pass
+    h
+
+handler picky() for Keys
+  uses @real: Keys[hmac]
+  op hmac(key_name, data) =
+    let u = if data == "1234" then fail UnknownKey else unit
+    let h = @real.hmac(key_name: key_name, data: data)
+      if error pass
+    h
+
+handler honest() for Keys
+  uses @real: Keys[hmac]
+  uses @console: Console[print]
+  op hmac(key_name, data) =
+    @console.print(key_name)
+    let h = @real.hmac(key_name: key_name, data: data)
+      if error pass
+    h
