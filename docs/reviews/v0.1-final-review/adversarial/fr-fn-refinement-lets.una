@@ -1,0 +1,52 @@
+-- Adversarial: N-005 class: annotated `let` of `fn(Int) -> Pos` from a `when`, an `if none use` default, an operation result and a field; a range-sugar function kind (ADR 0045 rule 1) at a parameter and a `let`
+-- Expected: U5001 at each
+-- Observed: U5001 at each; one message names an internal temporary (`result of %t3`)
+-- Verdict: Held
+module fr_fn_refinement_lets
+
+pub kind Pos = Int where it > 0
+
+pub kind Ranged = fn(Int) -> Int in 1..5
+
+kind Holder
+  f: fn(Int) -> Int
+
+capability Maker
+  op make() -> fn(Int) -> Int
+
+inv(n: Pos) -> Int = 100 / n
+
+plain() -> fn(Int) -> Int = fn(x: Int) -> x - x
+
+pub by_when(c: Bool) -> Int
+=
+  let f: fn(Int) -> Pos = when c
+    is true -> plain()
+    is false -> plain()
+  inv(f(1))
+
+pub by_or_else(fs: List[fn(Int) -> Int]) -> Int
+=
+  let f: fn(Int) -> Pos = fs.first()
+    if none use plain()
+  inv(f(1))
+
+pub by_op() -> Int
+  uses @maker: Maker[make]
+=
+  let f: fn(Int) -> Pos = @maker.make()
+  inv(f(1))
+
+pub by_nested_field(h: Holder) -> Int
+=
+  let f: fn(Int) -> Pos = h.f
+  inv(f(1))
+
+pub ranged_param(g: Ranged) -> Int = 100 / g(1)
+
+pub ranged_call() -> Int = ranged_param(plain())
+
+pub ranged_let() -> Int
+=
+  let g: Ranged = plain()
+  100 / g(1)

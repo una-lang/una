@@ -1,0 +1,11 @@
+[package]
+name = "fr_via_shapes"
+version = "0.1.0"
+edition = "0.1"
+
+[trusted]
+modules = ["release"]
+
+[run]
+entry = "app"
+grants = ["console"]

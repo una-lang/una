@@ -1,0 +1,39 @@
+-- Adversarial: ADR 0049 across call forms: method call `b.minus(a)`, a generic `pair(b, a)`, an operation `@calc.sub(b, a)`, a `let`-bound function value `f(b, a)`, a lambda whose parameters shadow, and a labeled argument to a function value
+-- Expected: U2006 at the method call, the generic call and the operation; function values take positional arguments, so `f(b, a)` is positional and a label on it is U2005; the shadowing lambda is U1002
+-- Observed: as expected
+-- Verdict: Held
+module fr_arg_binding_forms
+
+capability Calc
+  op sub(a: Int, b: Int) -> Int
+
+handler plain() for Calc
+  op sub(a, b) = a - b
+
+minus(a: Int, b: Int) -> Int = a - b
+
+pair[T](a: T, b: T) -> List[T] = [a, b]
+
+pub by_method(a: Int, b: Int) -> Int = b.minus(a)
+
+pub by_generic(a: Int, b: Int) -> List[Int] = pair(b, a)
+
+pub by_op(a: Int, b: Int) -> Int
+  uses @calc: Calc[sub]
+=
+  @calc.sub(b, a)
+
+pub by_value(a: Int, b: Int) -> Int
+=
+  let f = minus
+  f(b, a)
+
+pub by_lambda(a: Int, b: Int) -> Int
+=
+  let m = fn(a: Int, b: Int) -> a - b
+  m(b, a)
+
+pub by_value_labeled(a: Int, b: Int) -> Int
+=
+  let f = minus
+  f(b, b: a)
