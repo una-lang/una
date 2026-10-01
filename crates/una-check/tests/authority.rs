@@ -768,3 +768,39 @@ fn authority_diagnostics_carry_mechanical_edits_to_the_header() {
         ]
     );
 }
+
+#[test]
+fn an_operation_another_binding_permits_ranks_that_binding_first() {
+    // Issue #69 (UI-005): widening the attenuated binding would undo what the header states,
+    // so using the binding that already permits the operation ranks first.
+    let (_, types) = run(
+        &[(
+            "t.una",
+            concat!(
+                "module t\n\n",
+                "pub capability Payments\n",
+                "  op charged(amount: Int) -> Unit\n",
+                "  op refund(amount: Int) -> Unit\n",
+                "\n",
+                "pub settle(amount: Int) -> Unit\n",
+                "  uses @shop: Payments[charged]\n",
+                "  uses @agent: Payments[refund]\n",
+                "=\n",
+                "  @shop.refund(amount)\n",
+            ),
+        )],
+        true,
+    );
+    let ranked: Vec<(u32, String)> = types
+        .diagnostics
+        .iter()
+        .flat_map(|d| d.repairs.iter().map(|r| (r.rank, r.description.clone())))
+        .collect();
+    assert_eq!(
+        ranked,
+        [
+            (1, "use `@agent`, which permits `refund`".to_owned()),
+            (2, "add `refund` to the `uses` clause of `@shop`".to_owned()),
+        ]
+    );
+}

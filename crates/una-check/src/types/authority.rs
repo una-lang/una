@@ -228,6 +228,38 @@ impl<'a> Checker<'_, 'a, '_> {
         resolve_in(&self.frames, self.frames.len(), name)
     }
 
+    /// Another capability binding in scope, of the same capability as `@declared`, that
+    /// permits `op`: the first in name order, so the repair is deterministic.
+    fn binding_permitting(
+        &self,
+        declared: &str,
+        capability: Option<CapId>,
+        op: &str,
+    ) -> Option<String> {
+        let capability = capability?;
+        let mut names: Vec<&str> = self
+            .frames
+            .iter()
+            .flat_map(|frame| frame.bindings.iter().map(|(name, _)| name.as_str()))
+            .filter(|name| *name != declared)
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        names
+            .into_iter()
+            .find_map(|name| match self.resolve_cap(name) {
+                Resolved::Cap {
+                    name: resolved,
+                    capability: Some(other),
+                    ops: Some(ops),
+                    ..
+                } if other == capability && resolved != declared && ops.iter().any(|o| o == op) => {
+                    Some(name.to_owned())
+                }
+                _ => None,
+            })
+    }
+
     /// Whether diagnostics of this milestone are reported here.
     fn authority(&self) -> bool {
         self.pass == Pass::Check && self.base != Base::Quiet
@@ -274,17 +306,45 @@ impl<'a> Checker<'_, 'a, '_> {
                     } else {
                         permitted.join(", ")
                     };
+                    // Issue #69 (UI-005): when another binding in scope already permits the
+                    // operation, using it ranks before widening this one, which would undo the
+                    // attenuation the header states.
+                    let other = self.binding_permitting(&declared, capability, op_name);
+                    let advice = match &other {
+                        Some(other) => format!(
+                            "use `@{other}`, which permits it, or add `{op_name}` to its `uses` clause"
+                        ),
+                        None => format!("add `{op_name}` to its `uses` clause"),
+                    };
                     let mut diagnostic = self.report.make(
                         Code::U3002,
                         op.span,
-                        format!(
-                            "`@{name}` permits {permitted}, not `{op_name}`; add `{op_name}` to its `uses` clause"
+                        format!("`@{name}` permits {permitted}, not `{op_name}`; {advice}"),
+                    );
+                    let ranked = other.is_some();
+                    if let Some(other) = other {
+                        let text = if cap.span.end - cap.span.start == name.len() {
+                            other.clone()
+                        } else {
+                            format!("@{other}")
+                        };
+                        diagnostic.repairs.push(self.report.edit(
+                            format!("use `@{other}`, which permits `{op_name}`"),
+                            cap.span,
+                            text,
+                        ));
+                    }
+                    let extra = [op_name.to_owned()];
+                    diagnostic.repairs.extend(
+                        self.widen(clause, &declared, capability, &ops, &extra).map(
+                            |mut repair| {
+                                if ranked {
+                                    repair.rank = 2;
+                                }
+                                repair
+                            },
                         ),
                     );
-                    let extra = [op_name.to_owned()];
-                    diagnostic
-                        .repairs
-                        .extend(self.widen(clause, &declared, capability, &ops, &extra));
                     self.report.push(diagnostic);
                 }
                 capability
