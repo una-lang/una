@@ -1,0 +1,42 @@
+-- Adversarial: an operation argument is not a label flow into the operation's parameter type: a `Sink[Int]` built from an identity passes where `op open(s: Sink[secret Int])` is declared, and a named `fn(Int) -> Int` where `fn(secret Int) -> Int` is declared; the handler, holding a secret, feeds it to the argument and returns the result as a public `Int`
+-- Expected: U4001 at each argument (spec/07 §7 rule 2, ADR 0046 rule 3, S-Fun)
+-- Observed: accepted (exit 0) at 879c26a and 85787d7, and the two attack functions at c2f3386; `PIN=4321 una run --grant env --grant console` prints `pin is 4321 and 4321`
+-- Verdict: Critical (F-001)
+module fr_op_arg_variance
+
+kind Sink[T]
+  eat: fn(T) -> Int
+
+capability Keeper
+  op open(s: Sink[secret Int]) -> Int
+  op apply(f: fn(secret Int) -> Int) -> Int
+
+made() -> Sink[Int] = Sink(eat: fn(x: Int) -> x)
+
+ident(x: Int) -> Int = x
+
+handler holding(pin: secret Int) for Keeper
+  op open(s) = s.eat(pin)
+  op apply(f) = f(pin)
+
+pub by_kind() -> Int
+  uses @keeper: Keeper[open]
+=
+  @keeper.open(made())
+
+pub by_fn() -> Int
+  uses @keeper: Keeper[apply]
+=
+  @keeper.apply(ident)
+
+pub main() -> Unit
+  uses @env: Env[get]
+  uses @console: Console[print]
+=
+  let raw = @env.get("PIN")
+    if none use ""
+  let pin: secret Int = to_int(raw)
+    if none use 0
+  let a = by_kind() with @keeper = holding(pin)
+  let b = by_fn() with @keeper = holding(pin)
+  @console.print("pin is {a} and {b}")
