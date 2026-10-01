@@ -1354,7 +1354,7 @@ fn predicate_body_span(body: &una_syntax::ast::Body) -> Span {
 /// Whether two written types carry the same refinements (ADR 0047 rule 1): the same refined
 /// kinds and ranges, in order, and the same refinements of the function types they contain.
 /// A range compares by its text, wherever it is written.
-/// DECISION D-169: ADR 0047 does not say whether an alias without a `where` clause of
+/// D-169: ADR 0047 does not say whether an alias without a `where` clause of
 /// its own, `kind P2 = Pos`, is another refined kind than `Pos`; it carries exactly the
 /// refinements of `Pos`, so the policy call's check against `from` still meets every
 /// assumption of the `via` body, and it matches.

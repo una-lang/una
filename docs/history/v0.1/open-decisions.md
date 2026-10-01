@@ -4,6 +4,8 @@ Decision log of the autonomous run (`OVERNIGHT.md`, C.4). Every choice not liter
 
 **Reviewed on 2026-09-30.** The independent review of v0.1 (`docs/reviews/v0.1-review/decisions.md`) recommended keeping 131 decisions and escalated D-093; the owner kept all 131 and resolved D-093 through ADR 0038 D4. Each entry records it on a `- Review` line. D-001 to D-132 are final, so their `DECISION D-NNN` tags were removed from the code and tests: the entries and their ADRs are the record. Decisions from D-133 on belong to the v0.1 closure run, await the owner's answer, and keep their tags until then.
 
+**Answered on 2026-10-01.** After the limited re-review (`docs/reviews/v0.1-final-review/decisions.md`), the owner kept D-160 to D-169 and switched D-170 to B. Their entries record it, and their `DECISION` tags were removed from the code and tests.
+
 **Answered on 2026-09-29.** The owner reviewed the log and kept every chosen option, so each entry below records its answer, and the Provisional ADRs became Accepted, with their rules stated in the specification (`OVERNIGHT.md` C.9).
 
 ## Blockers
@@ -2042,6 +2044,8 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `d16e779` (merge of track L), tag `DECISION D-160`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-01)
+- Review (2026-10-01, final review): Keep
 
 ### D-161: Unification under an invariant argument (re-review, N-002)
 - Question: A type variable solved under an invariant kind argument could be raised by a later unification.
@@ -2053,6 +2057,8 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `d16e779` (merge of track L), tag `DECISION D-161`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-01)
+- Review (2026-10-01, final review): Keep
 
 ### D-162: A `let`-bound generic function value (re-review, N-003)
 - Question: `let f = is_pin` binds a generic function whose type variables are unsolved.
@@ -2064,6 +2070,8 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `d16e779` (merge of track L), tag `DECISION D-162`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-01)
+- Review (2026-10-01, final review): Keep
 
 ### D-163: Constructors at invariant kind parameters (re-review, ADR 0046)
 - Question: `Feed(get: fn() -> 2)` built without an expected type gets public labels, which an invariant parameter then refuses.
@@ -2075,6 +2083,8 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `d16e779` (merge of track L), tag `DECISION D-163`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-01)
+- Review (2026-10-01, final review): Keep
 
 ### D-164: Sink labels of function-typed arguments (re-review, label sweep)
 - Question: `spec/07 §7` rule 4 bounds an operation argument by "every label of the argument's type".
@@ -2086,6 +2096,8 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `d16e779` (merge of track L), tag `DECISION D-164`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-01)
+- Review (2026-10-01, final review): Keep
 
 ### D-165: Labels in Core IR and traces (re-review, N-001)
 - Question: Deep labels now include kind-field labels; Core IR and the trace redaction use labels too.
@@ -2097,6 +2109,8 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `d16e779` (merge of track L), tag `DECISION D-165`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-01)
+- Review (2026-10-01, final review): Keep
 
 ### D-166: The return flow of a generic function (re-review, label sweep)
 - Question: A generic function's value and its declared result may both carry its own symbolic labels (`spec/07 §7` rule 8).
@@ -2108,6 +2122,8 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `d16e779` (merge of track L), tag `DECISION D-166`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-01)
+- Review (2026-10-01, final review): Keep
 
 ### D-167: Where U3016 is reported (re-review, N-011)
 - Question: The re-review found U3016 at a pure value and at the generic function itself.
@@ -2119,6 +2135,8 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `d16e779` (merge of track L), tag `DECISION D-167`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-01)
+- Review (2026-10-01, final review): Keep
 
 ### D-168: Labels inside a function-typed field and the deep label (re-review, N-001)
 - Question: The deep label of a kind now joins its fields' labels.
@@ -2130,6 +2148,8 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `d16e779` (merge of track L), tag `DECISION D-168`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-01)
+- Review (2026-10-01, final review): Keep
 
 ### D-169: A `via` type written as an alias of the `to` kind (re-review, N-004)
 - Question: ADR 0047 makes a `via` function's types equal `from` and `to` except for labels, refinements included.
@@ -2141,6 +2161,8 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `de9530a` (merge of track F), tag `DECISION D-169`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-01)
+- Review (2026-10-01, final review): Keep
 
 ### D-170: When a `do` expression cannot fail (re-review, N-007)
 - Question: ADR 0044 makes `expect fails V` after a `do` that cannot fail U1001.
@@ -2152,3 +2174,5 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `de9530a` (merge of track F), tag `DECISION D-170`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: switched to B (Leonardo, 2026-10-01): the error kind after `attempt` and handling clauses decides whether a `do` can fail (final review F-003, issue #78)
+- Review (2026-10-01, final review): Switch to B

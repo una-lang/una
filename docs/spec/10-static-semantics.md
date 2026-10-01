@@ -86,10 +86,12 @@ $$
 $$
 \frac{\begin{array}{c}
 c \mapsto C[O] \in K \qquad o \in O \qquad \mathit{sig}(C.o) = (\bar x{:}\bar\tau) \to \tau_r \;\mathrm{fails}\; F_o \;\mathrm{requires}\; \varphi \;\mathrm{ensures}\; \psi \;\mathrm{accepts}\; \ell_o \\
-\Gamma \vdash \bar a <: \bar\tau \qquad \Gamma \vDash \varphi[\bar a/\bar x] \qquad pc \sqcup \textstyle\bigsqcup_i \ell(a_i) \sqsubseteq \ell_o
+\Gamma \vdash \bar a <: \bar\tau^{\top} \qquad \Gamma \vDash \varphi[\bar a/\bar x] \qquad pc \sqcup \textstyle\bigsqcup_i \ell(a_i) \sqsubseteq \ell_o
 \end{array}}
 {\Gamma;K;pc \vdash c.o(\bar a) : \{\nu{:}b_r \mid \psi[\bar a/\bar x,\, \nu/\mathit{result}]\}^{\ell(\tau_r)} \;!\; \{c.o\};\, F_o}\;(\textsf{T-Op})
 $$
+
+In T-Op, $\tau^{\top}$ is $\tau$ with every covariant position labeled $\top$: the arguments' data is bounded by $\ell_o$, while contravariant positions and the arguments of invariant kind parameters keep their declared labels (`spec/07 §7` rule 4, ADR 0050).
 
 $\mathrm{bound}(f)$ is the meet of the `accepts` labels of every operation in $\mathrm{eff}(K_f)$, met with $\bot$ if $F_f \neq \emptyset$; it is $\top$ for pure, non-failing $f$ (`spec/07 §3`). $\mathrm{bound}(K, F)$ is the same meet for a capability context and an error kind.
 
