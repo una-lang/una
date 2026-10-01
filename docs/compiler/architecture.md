@@ -80,6 +80,8 @@ A declaration with tier 0 errors is not elaborated and produces no obligations. 
 
 Allowed without an ADR: `clap`, `serde`, `serde_json`, `toml`, `ariadne` (human diagnostics rendering), `indexmap`, `sha2`, `rayon`, `num-bigint` (for `Int`), `insta` and `pretty_assertions` (dev only). Anything else needs an ADR stating why the standard library or an allowed crate is insufficient.
 
+Allowed by ADR 0055, for the native backend crates `una-codegen` and `una-rt` only (v0.2): `cranelift-codegen`, `cranelift-frontend`, `cranelift-module`, `cranelift-object` and `target-lexicon`.
+
 ## 8. Targets
 
 - Tier 0 on a 5,000-line package: under one second on a laptop (goal, not gate).
