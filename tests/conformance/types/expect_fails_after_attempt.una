@@ -1,0 +1,26 @@
+-- test: the error kind of a do expression is its own: after `attempt`, or for a call inside a lambda, the do line cannot fail, and expect fails is U1001 (final review F-003, D-170 B)
+-- spec: spec/10 §12
+-- expect: error U1001 at 18:16
+-- expect: error U1001 at 22:16
+module expect_fails_after_attempt
+
+kind E = | Boom
+
+pub risky(x: Int) -> Int
+  fails E
+=
+  if x > 0 then x else fail Boom
+
+pub safe_through(f: fn(Int) -> Int fails E) -> Int = 1
+
+example "attempt absorbs the failure"
+  do attempt risky(0)
+  expect fails Boom
+
+example "a call inside a lambda does not make the do line fail"
+  do safe_through(fn(x: Int) -> risky(x))
+  expect fails Boom
+
+example "a do line that can fail"
+  do risky(0)
+  expect fails Boom

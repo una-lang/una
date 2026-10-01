@@ -904,6 +904,9 @@ impl<'a> Checker<'_, 'a, '_> {
         site: Site,
     ) -> Ty {
         self.outside_rl(span, || "a lambda".to_owned());
+        if self.ctx.in_do {
+            self.absorbed.push(span);
+        }
         // The expected function type, whose result may still be a variable that the body's
         // labels join.
         let mut shape = match expected.map(|ty| self.vars.head(ty)) {
@@ -1173,6 +1176,9 @@ impl<'a> Checker<'_, 'a, '_> {
     /// `attempt` applies to one call and gives `Result[T, E]` (`spec/06 §5`).
     fn attempt(&mut self, operand: &Expr, span: Span, site: Site) -> Ty {
         self.outside_rl(span, || "`attempt`".to_owned());
+        if self.ctx.in_do {
+            self.absorbed.push(operand.span);
+        }
         let mut inner = operand;
         while let ExprKind::Paren(next) = &inner.kind {
             inner = next;
