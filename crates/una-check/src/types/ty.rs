@@ -320,13 +320,9 @@ impl Ty {
     }
 
     /// The join of every label of the type, at every position: [`Ty::deep_label`] and the
-    /// labels of the parameters, results and failures of its function types. An operation's
-    /// arguments are sinks with every label of their types (`spec/07 §7` rule 4), since the
-    /// declared parameter types do not bound them at covariant positions (ADR 0050): a function
-    /// value whose result carries a label would otherwise reach a handler as a function of the
-    /// declared, lower, type.
-    /// D-164: "every label" includes the labels of function parameters, which is
-    /// conservative, since a value flows into a parameter from the handler, not out of it.
+    /// labels of the parameters, results and failures of its function types. An argument of an
+    /// invariant kind parameter counts every label in an operation's sink, since data may flow
+    /// both ways there ([`Ty::sent_label`], ADR 0052, which supersedes D-164).
     pub(crate) fn every_label(&self, kinds: &KindLabels) -> Label {
         match self {
             Ty::Labeled(label, inner) => label.join(&inner.every_label(kinds)),
@@ -384,6 +380,44 @@ impl Ty {
         } else {
             inner.with_label(&self.top_label())
         }
+    }
+
+    /// `ℓ⁺`: the join of the labels at the covariant positions of the type (`positive`), which
+    /// an operation argument sends to the handler and its sink bounds (ADR 0052,
+    /// `spec/07 §7` rule 4): the top, list elements, covariant kind
+    /// arguments and the labels their kinds' fields declare, function results, and the
+    /// parameters of function parameters. An argument of an invariant kind parameter counts
+    /// every label, since data flows both ways there. The contravariant positions, which carry
+    /// the handler's data to the caller's function, are compared by the flow of ADR 0050.
+    pub(crate) fn sent_label(&self, positive: bool, kinds: &KindLabels) -> Label {
+        let own = if positive {
+            self.top_label()
+        } else {
+            Label::public()
+        };
+        let inner = match self.unlabeled() {
+            Ty::List(element) => element.sent_label(positive, kinds),
+            Ty::Kind(id, args) => args.iter().enumerate().fold(
+                if positive {
+                    kinds.own(*id)
+                } else {
+                    Label::public()
+                },
+                |label, (index, arg)| {
+                    label.join(&if kinds.is_invariant(*id, index) {
+                        arg.every_label(kinds)
+                    } else {
+                        arg.sent_label(positive, kinds)
+                    })
+                },
+            ),
+            Ty::Fn(function) => function.params.iter().fold(
+                function.result.sent_label(positive, kinds),
+                |label, param| label.join(&param.sent_label(!positive, kinds)),
+            ),
+            _ => Label::public(),
+        };
+        own.join(&inner)
     }
 
     /// `self` with every position that holds data raised by `label`.
