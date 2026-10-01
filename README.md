@@ -40,7 +40,7 @@ This repository holds the language specification, the design record and **Una Co
 
 ## Project status
 
-**Version 0.1.1, Una Core.** Every milestone of `docs/plan/milestones-v0.1.md` is implemented and meets its acceptance criteria, and CI is green on Linux and macOS. An independent review of v0.1 (`docs/reviews/v0.1-review/`) found soundness gaps, and the closure run fixed every Critical and Major finding, each with a regression test, and 140 of its 143 adversarial programs are now part of the test suite (the other 3 belong to findings deferred to the backlog). The choices the specification left open are recorded in the ADRs of `docs/adr/` and the decision log in `docs/history/v0.1/open-decisions.md`. Release archives for Linux and macOS come from the tags `v0.1.0` and `v0.1.1`, a patch release with position-precise result labels for the structural prelude functions (ADR 0051); the changes are listed in [`CHANGELOG.md`](CHANGELOG.md).
+**Version 0.1.2, Una Core.** Every milestone of `docs/plan/milestones-v0.1.md` is implemented and meets its acceptance criteria, and CI is green on Linux and macOS. An independent review of v0.1 (`docs/reviews/v0.1-review/`) found soundness gaps, and the closure run fixed every Critical and Major finding, each with a regression test, and 140 of its 143 adversarial programs are now part of the test suite (the other 3 belong to findings deferred to the backlog). The choices the specification left open are recorded in the ADRs of `docs/adr/` and the decision log in `docs/history/v0.1/open-decisions.md`. Release archives for Linux and macOS come from the tags `v0.1.0`, `v0.1.1` and `v0.1.2`; the patch releases fix result labels of the prelude (ADR 0051), operation sinks (ADR 0052), refutations through nonlinear arithmetic (ADRs 0053 and 0054) and diagnostics that agents meet; the changes are listed in [`CHANGELOG.md`](CHANGELOG.md).
 
 Una is a research language built to test a thesis (see [Roadmap](#roadmap)). It is not ready for production use.
 
@@ -378,14 +378,14 @@ Each release on the [releases page](https://github.com/una-lang/una/releases) ha
 
 | Platform | Archive |
 | --- | --- |
-| Linux, x86_64 | `una-0.1.1-x86_64-unknown-linux-gnu.tar.gz` |
-| macOS, arm64 | `una-0.1.1-aarch64-apple-darwin.tar.gz` |
+| Linux, x86_64 | `una-0.1.2-x86_64-unknown-linux-gnu.tar.gz` |
+| macOS, arm64 | `una-0.1.2-aarch64-apple-darwin.tar.gz` |
 
 Each archive holds the `una` binary, this readme and the license. Proofs need Z3 at the version pinned in `verification.lock` (5.1.0) on `PATH`; `scripts/install-z3.sh DIR` installs it. Without it, `una check` fails with U5003, and verification never passes silently.
 
 ```bash
-tar -xzf una-0.1.1-aarch64-apple-darwin.tar.gz
-export PATH="$PWD/una-0.1.1-aarch64-apple-darwin:$PATH"
+tar -xzf una-0.1.2-aarch64-apple-darwin.tar.gz
+export PATH="$PWD/una-0.1.2-aarch64-apple-darwin:$PATH"
 ```
 
 ### Hello, world
