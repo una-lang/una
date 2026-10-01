@@ -1,0 +1,60 @@
+-- Adversarial: leaks through the ten structural functions alone and composed: predicates and mappings that read secret elements or a secret record field, `at` with a secret index, `first` and `at` payloads, `append` then `at`, a secret-top list, a secret-chosen predicate, a counting fold by a secret test, `contains` on records with a secret field
+-- Expected: U4001 at each leak; `nested_option` (an inner `Option` whose shape is public) accepted
+-- Observed: as expected; 18 diagnostics
+-- Verdict: Held
+module v11_structural_leaks
+
+kind Acct
+  id: Int
+  pin: secret Int
+
+pub filter_reads(xs: List[secret Int]) -> Int = xs.filter(keep: fn(x) -> x > 3).len
+
+pub first_where_reads(xs: List[secret Int]) -> Bool = xs.first_where(keep: fn(x) -> x == 1234) is Some
+
+pub at_secret_index(xs: List[Int], i: secret Int) -> Bool = xs.at(index: i) is Some
+
+pub map_reads(xs: List[secret Int]) -> List[Int] = xs.map(each: fn(x) -> if x > 3 then 1 else 0)
+
+pub map_then_filter(xs: List[secret Int]) -> Int = xs.map(each: fn(x) -> x > 3).filter(keep: fn(b) -> b).len
+
+pub record_pred(rs: List[Acct]) -> Bool = rs.first_where(keep: fn(r) -> r.pin == 1234) is Some
+
+pub record_map(rs: List[Acct]) -> List[Int] = rs.map(each: fn(r) -> r.pin)
+
+pub record_fold(rs: List[Acct]) -> Int = rs.fold(initial: 0, step: fn(n, r) -> n + r.pin)
+
+pub record_equal(rs: List[Acct], a: Acct) -> Bool = rs.contains(item: a)
+
+pub first_payload(xs: List[secret Int]) -> Int
+=
+  when xs.first()
+    is Some(x) -> x
+    is None -> 0
+
+pub append_then_at(xs: List[Int], pin: secret Int) -> Bool
+=
+  let ys = xs.append(item: pin)
+  when ys.at(index: 0)
+    is Some(y) -> y > 3
+    is None -> false
+
+pub is_ok_of_choice(pin: secret Int) -> Bool
+=
+  let r: Result[Int, Int] = if pin > 3 then Ok(1) else Err(0)
+  r.is_ok()
+
+pub is_some_of_first_where_secret_list(xs: secret List[Int]) -> Bool = xs.first_where(keep: fn(x) -> x > 3) is Some
+
+pub empty_of_filter_secret_fn(xs: List[Int], pin: secret Int) -> Bool
+=
+  let keep = if pin > 3 then fn(x: Int) -> true else fn(x: Int) -> false
+  xs.filter(keep: keep).is_empty()
+
+pub fold_count_branch(xs: List[secret Int]) -> Int = xs.fold(initial: 0, step: fn(n, x) -> if x > 3 then n + 1 else n)
+
+pub nested_option(o: Option[Option[secret Int]]) -> Bool
+=
+  when o
+    is Some(inner) -> inner.is_some()
+    is None -> false
