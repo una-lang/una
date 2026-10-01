@@ -119,7 +119,7 @@ example "restocking adds to the amount"
   expect result.amount == 5
 ```
 
-- Arguments after the first are labeled, `f(a, b: 2)`; a bare name equal to the parameter's name counts as labeled (`f(a, b)` when the parameter is `b`). Constructors with two or more fields label every field.
+- Arguments after the first are labeled, `f(a, b: 2)`; from the second argument on, a bare name equal to the parameter's name counts as labeled (`f(a, b)` when the parameter is `b`). The first argument always binds the first parameter, so `minus(b, a)` with parameters `(a, b)` is U2006, not a swap. Constructors with two or more fields label every field.
 - Blocks bind with `let`; values are immutable. `if c then a else b` fits on a line; `if` and `when` also take indented blocks.
 - `when` branches on variants (`is Some(x)`, `is Err`), literals (`is 0`) and ranges (`in 1..<20`); an `else` arm comes last. Arms over variants must cover every variant (U2007).
 - The prelude has `abs`, `min`, `max`, `is_digits`, `starts_with`, `trim`, `to_int`, `is_empty`, `first`, `at`, `append`, `contains`, `map`, `filter`, `first_where`, `fold`, `sum`, `is_some`, `or_else` and `is_ok`; their contracts are hypotheses for the solver (`spec/14`). There are no loops: use recursion, `map`, `filter` or `fold`.

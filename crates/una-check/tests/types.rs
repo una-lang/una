@@ -477,6 +477,8 @@ fn calls_label_every_argument_after_the_first() {
             "U2006 t.una:7:30 parameter `a` of `max` is given twice",
             "U2001 t.una:9:20 `max` is missing argument `b`",
             "U2001 t.una:11:20 `max` takes 2 arguments, but 3 are given",
+            // ADR 0049: `b` binds `a`, and the punned `a` gives it again.
+            "U2006 t.una:13:35 parameter `a` of `max` is given twice",
         ]
     );
     assert_eq!(

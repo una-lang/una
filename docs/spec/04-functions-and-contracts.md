@@ -41,8 +41,8 @@ Rules:
 ## 3. Calls and labeled arguments
 
 1. A call with one argument MAY omit the label.
-2. A call with two or more arguments MAY omit the label of the first argument and MUST label all others (U2004). Unknown labels are U2005; duplicates U2006.
-3. **Punning:** an argument that is a bare identifier equal to the parameter name counts as labeled: `record(key, decision)` is `record(key: key, decision: decision)` when those are the parameter names.
+2. A call with two or more arguments MAY omit the label of the first argument and MUST label all others (U2004). An unlabeled first argument always binds the first parameter, whatever its name (ADR 0049). Unknown labels are U2005; duplicates U2006.
+3. **Punning:** from the second argument on, an argument that is a bare identifier equal to the parameter name counts as labeled: `record(key, decision)` is `record(key: key, decision: decision)` when those are the parameter names. With parameters `(a, b)`, `minus(b, a)` binds `b` to `a` and gives `a` twice (U2006).
 4. Record and variant constructors with two or more fields require every field labeled (punning allowed), in any order; missing or unknown fields are U2009. The formatter orders them by declaration. A constructor with exactly one field MAY omit the label (`Some(a)`), and a pattern on a single-field variant MAY bind the field under any name (`is Some(a)`).
 5. Arguments are evaluated left to right in source order.
 

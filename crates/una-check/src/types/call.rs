@@ -752,7 +752,8 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// The parameter an unlabeled argument names by punning (`spec/04 §3` rule 3): a bare name
-    /// equal to a parameter's name counts as labeled with it.
+    /// equal to a parameter's name counts as labeled with it. In a call, it applies from the
+    /// second argument on (ADR 0049).
     fn punned(&self, arg: &Arg, names: &[&str]) -> Option<usize> {
         if arg.label.is_some() {
             return None;
@@ -821,9 +822,10 @@ impl<'a> Checker<'_, 'a, '_> {
         for (index, arg) in args.iter().enumerate() {
             let target = match &arg.label {
                 Some(label) => names.iter().position(|name| *name == self.name(label)),
-                None => self
-                    .punned(arg, &names)
-                    .or((index + offset == 0).then_some(0)),
+                // ADR 0049: an unlabeled first argument binds the first parameter, and
+                // punning applies only from the second argument on.
+                None if index + offset == 0 => Some(0),
+                None => self.punned(arg, &names),
             };
             if let Some(slot) = target.and_then(|target| given_params.get_mut(target)) {
                 *slot = true;
@@ -848,10 +850,11 @@ impl<'a> Checker<'_, 'a, '_> {
                         None
                     }
                 }
+            } else if position == 0 {
+                // ADR 0049 (`spec/04 §3` rule 2): the first argument is positional.
+                Some(0)
             } else if let Some(target) = self.punned(arg, &names) {
                 Some(target)
-            } else if position == 0 {
-                Some(0)
             } else {
                 self.missing_label(callee, &names, arg, position);
                 None
