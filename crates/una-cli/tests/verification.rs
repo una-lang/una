@@ -780,6 +780,39 @@ fn a_function_with_a_precondition_passed_as_a_value_is_named_as_such() {
 }
 
 #[test]
+fn a_function_value_repair_guards_every_precondition_v12_003() {
+    // Issue #106 (V12-003): with two `requires`, each diagnostic's repair guards both, so
+    // applying it settles them all; a function that can fail gets a named helper with a
+    // handling clause, since a failing call must be a whole statement (U3013).
+    let diagnostics = |name: &str, source: &str| -> Vec<Value> {
+        let root = package(name, &[("src/app.una", source)]);
+        let output = una(&["--json", "check", root.to_str().unwrap()]);
+        let json: Value = serde_json::from_str(stdout(&output)).unwrap();
+        json["diagnostics"].as_array().unwrap().clone()
+    };
+    let pure = diagnostics(
+        "two-requires",
+        "module app\n\npub same(a: Int, b: Int) -> Int\n  requires a == b\n  requires a > 0\n=\n  a - b\n\npub apply(f: fn(Int, Int) -> Int) -> Int = f(1, 2)\n\npub use_it() -> Int = apply(same)\n",
+    );
+    assert_eq!(pure.len(), 2);
+    for diagnostic in &pure {
+        assert_eq!(
+            diagnostic["repairs"][0]["description"],
+            "pass a lambda that calls `same` only where `a == b and a > 0` holds, as in `fn(a, b) -> if a == b and a > 0 then same(a, b) else ...`"
+        );
+    }
+    let failing = diagnostics(
+        "failing-callee",
+        "module app\n\npub kind Bad = | Broke\n\npub same(a: Int, b: Int) -> Int\n  requires a == b\n  fails Bad\n=\n  if a > 5 then fail Broke else a - b\n\npub apply(f: fn(Int, Int) -> Int fails Bad) -> Int\n  fails Bad\n=\n  let v = f(1, 2)\n    if error pass\n  v\n\npub use_it() -> Int\n  fails Bad\n=\n  let v = apply(same)\n    if error pass\n  v\n",
+    );
+    assert_eq!(failing.len(), 1);
+    assert_eq!(
+        failing[0]["repairs"][0]["description"],
+        "pass a named function that calls `same` only where `a == b` holds: `same_where_defined(a: Int, b: Int) -> Int fails Bad`, whose body is `if a == b` with `let v = same(a, b)`, `if error pass` and `v` in its block, and a value in its `else` block"
+    );
+}
+
+#[test]
 fn a_forged_proof_cache_entry_is_trusted_and_counted_as_cached() {
     // R-018, ADR 0041, adversarial `escape-proof-cache-forgery`: the proof cache is part of
     // the Trusted zone in v0.1. A forged entry turns a refuted query into proven, as the
