@@ -578,7 +578,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "una-check"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pretty_assertions",
  "una-core",
@@ -589,7 +589,7 @@ dependencies = [
 
 [[package]]
 name = "una-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "insta",
@@ -610,7 +610,7 @@ dependencies = [
 
 [[package]]
 name = "una-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "una-diag",
  "una-syntax",
@@ -618,7 +618,7 @@ dependencies = [
 
 [[package]]
 name = "una-diag"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ariadne",
  "insta",
@@ -629,7 +629,7 @@ dependencies = [
 
 [[package]]
 name = "una-fmt"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pretty_assertions",
  "una-diag",
@@ -638,7 +638,7 @@ dependencies = [
 
 [[package]]
 name = "una-interp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "num-bigint",
  "sha2",
@@ -650,7 +650,7 @@ dependencies = [
 
 [[package]]
 name = "una-project"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pretty_assertions",
  "toml",
@@ -659,14 +659,14 @@ dependencies = [
 
 [[package]]
 name = "una-report"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "una-diag",
 ]
 
 [[package]]
 name = "una-syntax"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "indexmap",
  "insta",
@@ -676,7 +676,7 @@ dependencies = [
 
 [[package]]
 name = "una-verify"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "insta",
  "pretty_assertions",
