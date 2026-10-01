@@ -1,7 +1,6 @@
 -- test: policy passed as a function value (unaudited) (review control)
 -- spec: spec/07 §5
--- expect: error U4001 at src/app/caller.una:9:55
--- expect: error U2001 at src/app/caller.una:9:68
+-- expect: error U2001 at src/app/caller.una:8:68
 module app.caller
 
 import app.keys (mask)

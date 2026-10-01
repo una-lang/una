@@ -1,6 +1,6 @@
--- test: the listed prelude functions accept labeled arguments and label their results with the labels of their arguments and element types (R-005)
+-- test: the listed prelude functions accept labeled arguments and label their results with the labels of their arguments and element types (R-005); first is structural, so its Option carries the element label at the element position (ADR 0051)
 -- spec: spec/14 §1
--- expect: error U4001 at 20:60
+-- expect: ok
 module prelude_result_labels
 
 pub magnitude(pin: secret Int) -> secret Int = abs(pin)
@@ -17,6 +17,6 @@ pub digits(name: secret Text) -> secret Bool = is_digits(name)
 
 pub none_yet(pins: secret List[Int]) -> secret Bool = pins.is_empty()
 
-pub leaked(pins: List[secret Int]) -> Option[secret Int] = pins.first()
+pub first_labeled(pins: List[secret Int]) -> Option[secret Int] = pins.first()
 
 pub public_data(xs: List[Int]) -> Option[Int] = xs.first()

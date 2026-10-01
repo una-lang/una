@@ -1,8 +1,7 @@
--- test: a kind whose field is a function type: prelude results over kinds with function fields carry the fields' labels when called (label sweep)
+-- test: a kind whose field is a function type: prelude results over kinds with function fields carry the fields' labels when called (label sweep); is_empty reads no element and is accepted (ADR 0051)
 -- spec: spec/07 §7
--- expect: error U4001 at 20:3
--- expect: error U4001 at 22:42
--- expect: error U4001 at 24:47
+-- expect: error U4001 at 19:3
+-- expect: error U4001 at 21:42
 module sweep_label_fnfield_prelude
 
 kind Src
