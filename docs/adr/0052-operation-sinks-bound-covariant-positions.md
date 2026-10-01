@@ -1,8 +1,8 @@
 # 0052. An operation argument's sink bounds only its covariant positions
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-01
-- Deciders: Leonardo (pending), on a proposal by Claude (closure)
+- Deciders: Leonardo (accepted on 2026-10-01), on a proposal by Claude (closure)
 - Resolves: issue #84 (round-3 review finding R3-001)
 - Amends: ADR 0050 rule 2 and `spec/07 §7` rule 4; supersedes D-164
 
@@ -19,8 +19,6 @@ Together, the two rules leave no type to pass when an operation's parameter is a
 The parameter of a function argument carries data the other way: from the handler, which calls the function, to the caller's function. That function is pure (`spec/05 §6`), and its result returns to the handler. So the handler reveals nothing to the caller through it, and ADR 0050's flow already keeps its parameter label from being lowered. The rejection is sound, but no program can use such an operation.
 
 ## Decision
-
-Option A is recommended.
 
 1. **The sink of an operation argument bounds the labels at its covariant positions**, the data the caller sends to the handler: `pc ⊔ ℓ⁺(arg) ⊑ accepts` (U4003). `ℓ⁺` joins these labels:
    - the top label;

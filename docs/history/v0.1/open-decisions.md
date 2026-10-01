@@ -2098,6 +2098,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-10-01)
 - Review (2026-10-01, final review): Keep
+- Superseded (2026-10-01) by ADR 0052, accepted by Leonardo (issue #84, R3-001): the sink bounds only the labels at the argument's covariant positions; ADR 0050's flow compares the contravariant ones.
 
 ### D-165: Labels in Core IR and traces (re-review, N-001)
 - Question: Deep labels now include kind-field labels; Core IR and the trace redaction use labels too.
