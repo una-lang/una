@@ -844,3 +844,105 @@ fn nested_patterns_are_not_supported() {
         "f(v: T) -> Int\n=\n  when v\n    is Ok(inner) ->\n      when inner\n        is Some(w) -> w\n        else -> 0\n    else -> 0\n",
     );
 }
+
+/// A repair: its description and the replacement of its edit, if any.
+type Shown = (String, Option<String>);
+
+/// The code, message and repairs of every lexical and syntax error of `body`, after `module t`.
+fn repairs(body: &str) -> Vec<(String, Vec<Shown>)> {
+    let text = format!("module t\n\n{body}");
+    let mut db = SourceDb::new();
+    let id = db.add("t.una", text.as_bytes());
+    let mut interner = Interner::new();
+    let lexed = lex(db.file(id), id, &mut interner);
+    let parsed = parse(&lexed, id, &interner);
+    lexed
+        .errors
+        .iter()
+        .chain(&parsed.errors)
+        .map(|error| {
+            (
+                format!("{} {}", error.code, error.message),
+                error
+                    .repairs
+                    .iter()
+                    .map(|r| (r.description.clone(), r.edit.as_ref().map(|e| e.1.clone())))
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn builder_mistakes_get_a_hint() {
+    // Issue #75 (UI-006): parse errors that the Gate 1 task builders met with no guidance.
+    let advice = |body: &str| {
+        let found = repairs(body);
+        assert_eq!(found.len(), 1, "{found:?}");
+        let (_, repairs) = &found[0];
+        assert_eq!(repairs.len(), 1, "{repairs:?}");
+        assert_eq!(repairs[0].1, None, "advice has no edit");
+        repairs[0].0.clone()
+    };
+    assert_eq!(
+        advice("f(x: Int) -> Int\n  fails Bad\n=\n  let reason = Broke\n  fail reason\n"),
+        "`fail` takes a variant of the error kind, as in `fail Broke`, not a stored value; fail where the error is found, or pass a call's failure on with `if error pass`"
+    );
+    assert_eq!(
+        advice("f(o: Option[Int]) -> Int = when o\n  is Some(x) -> x\n  is None -> 0\n"),
+        "`when` must start its own line: write the long form, with `=` on its own line and the `when` indented below it, or bind it with `let`"
+    );
+    assert_eq!(
+        advice("f(x: Int) -> Int\n  fails Bad\n=\n  if x < 0 then fail Broke\n  x\n"),
+        "an `if` with `then` needs `else`; to fail early, make the rest of the body its `else` branch, as in `if x < 0 then fail Broke else x`, or use an `if` with blocks"
+    );
+    // The shapes the hints describe parse.
+    tree("f(o: Option[Int]) -> Int\n=\n  when o\n    is Some(x) -> x\n    is None -> 0\n");
+    tree("f(x: Int) -> Int\n  fails Bad\n=\n  if x < 0 then fail Broke else x\n");
+}
+
+#[test]
+fn a_word_reserved_for_a_later_version_gets_a_rename_repair() {
+    // Issue #75 (UI-006): `table`, `all` and `service` are natural names; the repair renames
+    // each occurrence the same way, so applying them all keeps the program consistent.
+    assert_eq!(
+        repairs("pub f(table: Int) -> Int = table\n"),
+        [
+            (
+                "U0103 `table` is reserved for v0.4 (platform)".to_owned(),
+                vec![(
+                    "rename it to `the_table`".to_owned(),
+                    Some("the_table".to_owned())
+                )],
+            ),
+            (
+                "U0103 `table` is reserved for v0.4 (platform)".to_owned(),
+                vec![(
+                    "rename it to `the_table`".to_owned(),
+                    Some("the_table".to_owned())
+                )],
+            ),
+        ]
+    );
+    tree("pub f(the_table: Int) -> Int = the_table\n");
+    // Where a kind name is expected, the rename capitalizes the word.
+    assert_eq!(
+        repairs("pub kind service = A | B\n"),
+        [(
+            "U0103 `service` is reserved for v0.4 (platform)".to_owned(),
+            vec![(
+                "rename it to `Service`".to_owned(),
+                Some("Service".to_owned())
+            )],
+        )]
+    );
+    tree("pub kind Service = A | B\n");
+    // A word that names a construct Una writes differently says what to write instead.
+    assert_eq!(
+        repairs("pub f(x: Int) -> Int = return x\n"),
+        [(
+            "U0103 `return` is not a keyword in Una; the last expression is the result".to_owned(),
+            vec![],
+        )]
+    );
+}
