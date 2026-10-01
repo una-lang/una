@@ -171,6 +171,7 @@ Codes are never reused. Retired codes stay in this table marked retired. Gaps in
 | `una check [path]` | Tiers 0 and 1; `--tier 0` skips the solver; `--dump-core <module>` prints Core IR |
 | `una fmt [path]` | Rewrite to canonical form; `--check` reports U7001 without writing |
 | `una run [path]` | Run `main` of `[run] entry`; `--grant <spec>` repeated |
+| `una build [path]` | (v0.2, ADR 0055) Compile `main` of `[run] entry` into a native executable; `--out <file>` (`spec/16 §2`) |
 | `una test [path]` | Run all examples |
 | `una obligations [path]` | List obligations with status |
 | `una contract <qualified.name>` | Print the full header, declared or inferred, with doc comments and requirements |
@@ -252,6 +253,12 @@ Every command prints one JSON document with `--json`, its `schema` key first (AD
 - `out_of_model`: the channels outside the model of `spec/07 §1`, in this order: timing, termination and divergence, resource consumption and allocation, interpreter stack exhaustion, external systems beyond declared signatures, races between the check and the use of a file path, and hard links (`spec/14 §3`).
 
 Without `--json`, the same sections print as labeled lines.
+
+(v0.2, ADR 0055.) The release that ships `una build` (`spec/16`) bumps the report to `una.report/2`, which changes two things:
+- It adds a section `native`, `{"target": ..., "arbitrary_precision": [...]}`: the host target, and the bindings whose `Int` the native backend keeps at arbitrary precision.
+- The `out_of_model` entry "interpreter stack exhaustion" becomes "stack exhaustion".
+
+Until that release, the report is `una.report/1` as above.
 
 ## 7. Project files
 
