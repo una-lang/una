@@ -72,6 +72,16 @@ Relations: requirement → (derives) contract → (constrains) implementation. E
 
 **Excluded** (see `plan/backlog.md` for target versions): memory model features (regions, `shared`, `iso`, `edit`, `take`), concurrency, laws, cost contracts, units of measure, pipelines, native code generation, FFI, profiles, services, data access, infrastructure generation, semantic diff, effect classes and compensation.
 
+## 5b. v0.2 scope (opened 2026-10-01)
+
+Leonardo opened the v0.2 scope on 2026-10-01, in parallel with Gate 1 (`plan/roadmap.md §1`). The Gate 1 benchmark stays pinned to a v0.1.x release. v0.2 adds three areas to §5, each specified by its ADR and spec text before it is implemented:
+
+- **Native backend** (ADR 0055, `spec/16`): ahead-of-time compilation through Cranelift, refining the UAM.
+- **Fixed-width integers** (ADR 0057): `I8` to `I64` and `U8` to `U64`, with overflow obligations. `Int` stays mathematical.
+- **Memory model** (ADR 0056): mutable value semantics, with `edit`, `take`, `let edit` bindings, field edits and `for` loops. There is no mutable aliasing: `shared`, `iso` and `weak` stay reserved for v0.3.
+
+Everything else in §5's exclusions stays excluded, with the target versions of `plan/backlog.md`.
+
 ## 6. Non-goals
 
 Dynamic typing, runtime reflection, implicit conversions, operator overloading, inheritance, exceptions, null, macros, global mutable state, ambient authority.
