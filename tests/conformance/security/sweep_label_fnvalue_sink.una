@@ -1,9 +1,8 @@
--- test: function values: a function value that is labeled, or whose result or parameter carries a label, exceeds a public sink (label sweep)
+-- test: function values: a function value that is labeled, or whose result carries a label, exceeds a public sink; one whose parameter carries a label is not data the caller sends, so it is accepted (label sweep; ADR 0052)
 -- spec: spec/07 §7
--- expect: error U4003 at 26:16
--- expect: error U4003 at 32:16
--- expect: error U4003 at 38:20
--- expect: error U4003 at 44:16
+-- expect: error U4003 at 25:16
+-- expect: error U4003 at 31:16
+-- expect: error U4003 at 37:20
 module sweep_label_fnvalue_sink
 
 low(x: Int) -> Int = x

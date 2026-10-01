@@ -438,7 +438,7 @@ impl Checker<'_, '_, '_> {
             return;
         }
         for (arg_span, ty) in args {
-            let label = self.labeled(ty).every_label(&self.env.kind_labels);
+            let label = self.labeled(ty).sent_label(true, &self.env.kind_labels);
             if !below(&label, accepts, &self.top()) {
                 self.report.error(
                     Code::U4003,
