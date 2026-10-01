@@ -72,7 +72,14 @@ fn message(obligation: &Obligation, outcome: &Outcome) -> String {
         .map_or(obligation.declaration.as_str(), |(_, name)| name);
     let subject = match obligation.kind {
         ObligationKind::Postcondition => format!("postcondition of `{name}`"),
-        ObligationKind::Precondition => format!("precondition `{}` of this call", obligation.goal),
+        ObligationKind::Precondition => match &obligation.site.function_value {
+            // Issue #76 (UI-007): a named function passed as a value.
+            Some(function) => format!(
+                "precondition `{}` of `{function}`, passed as a function value whose type has no precondition,",
+                obligation.goal
+            ),
+            None => format!("precondition `{}` of this call", obligation.goal),
+        },
         ObligationKind::Refinement => format!("refinement `{}`", obligation.goal),
         ObligationKind::Division => format!("division obligation `{}`", obligation.goal),
         ObligationKind::Exhaustive => {
