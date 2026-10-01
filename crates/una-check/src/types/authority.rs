@@ -229,12 +229,13 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// Another capability binding in scope, of the same capability as `@declared`, that
-    /// permits `op`: the first in name order, so the repair is deterministic.
+    /// permits every operation of `ops`: the first in name order, so the repair is
+    /// deterministic.
     fn binding_permitting(
         &self,
         declared: &str,
         capability: Option<CapId>,
-        op: &str,
+        ops: &[String],
     ) -> Option<String> {
         let capability = capability?;
         let mut names: Vec<&str> = self
@@ -251,9 +252,12 @@ impl<'a> Checker<'_, 'a, '_> {
                 Resolved::Cap {
                     name: resolved,
                     capability: Some(other),
-                    ops: Some(ops),
+                    ops: Some(permitted),
                     ..
-                } if other == capability && resolved != declared && ops.iter().any(|o| o == op) => {
+                } if other == capability
+                    && resolved != declared
+                    && ops.iter().all(|op| permitted.contains(op)) =>
+                {
                     Some(name.to_owned())
                 }
                 _ => None,
@@ -309,7 +313,8 @@ impl<'a> Checker<'_, 'a, '_> {
                     // Issue #69 (UI-005): when another binding in scope already permits the
                     // operation, using it ranks before widening this one, which would undo the
                     // attenuation the header states.
-                    let other = self.binding_permitting(&declared, capability, op_name);
+                    let other =
+                        self.binding_permitting(&declared, capability, &[op_name.to_owned()]);
                     let advice = match &other {
                         Some(other) => format!(
                             "use `@{other}`, which permits it, or add `{op_name}` to its `uses` clause"
@@ -457,9 +462,21 @@ impl<'a> Checker<'_, 'a, '_> {
                                     listed.join(", ")
                                 ),
                             );
-                            diagnostic.repairs.extend(self.widen(
-                                clause, &declared, capability, &ops, &missing,
-                            ));
+                            // Issue #69 (UI-005, final review F-002): rebinding the callee's
+                            // reference to a binding that already permits what it needs ranks
+                            // before widening this one, which would undo its attenuation.
+                            let rebind = self.rebinding(span, need, &declared, capability);
+                            let ranked = rebind.is_some();
+                            diagnostic.repairs.extend(rebind);
+                            diagnostic.repairs.extend(
+                                self.widen(clause, &declared, capability, &ops, &missing)
+                                    .map(|mut repair| {
+                                        if ranked {
+                                            repair.rank = 2;
+                                        }
+                                        repair
+                                    }),
+                            );
                             self.report.push(diagnostic);
                         }
                     }
@@ -553,6 +570,40 @@ impl<'a> Checker<'_, 'a, '_> {
                 },
             }
         }
+    }
+
+    /// The repair that rebinds the callee's `@need` with `with @need = @other` at a call at
+    /// `span` that is the whole expression of its statement, where `@other` is another binding
+    /// in scope, of the same capability, that permits every operation the callee needs there.
+    /// The `with` binding scopes over the whole statement (`spec/05 §3` rule 3), so it is
+    /// offered only there, and only when the statement does not bind `@need` already.
+    fn rebinding(
+        &self,
+        span: Span,
+        need: &FnUse,
+        declared: &str,
+        capability: Option<CapId>,
+    ) -> Option<Repair> {
+        let statement = self.statement.as_ref()?;
+        if statement.expr != span || statement.bound.contains(&need.name) {
+            return None;
+        }
+        let other = self.binding_permitting(declared, capability, &need.ops)?;
+        let binding = format!("@{} = @{other}", need.name);
+        let text = if statement.with {
+            format!(", {binding}")
+        } else {
+            format!(" with {binding}")
+        };
+        let listed: Vec<String> = need.ops.iter().map(|op| format!("`{op}`")).collect();
+        Some(self.report.edit(
+            format!(
+                "add `with {binding}` to this statement, since `@{other}` permits {}",
+                listed.join(", ")
+            ),
+            statement.insert,
+            text,
+        ))
     }
 
     /// `uses @name: C[ops]`, with the operations in the capability's declaration order.

@@ -9,7 +9,7 @@
 
 use pretty_assertions::assert_eq;
 use una_check::{ModuleInput, PackageInput, TypeCheck, check_names, check_types};
-use una_diag::Diagnostic;
+use una_diag::{Code, Diagnostic};
 use una_project::{Manifest, parse_manifest};
 use una_syntax::{Interner, SourceDb, lex, parse};
 
@@ -803,4 +803,83 @@ fn an_operation_another_binding_permits_ranks_that_binding_first() {
             (2, "add `refund` to the `uses` clause of `@shop`".to_owned()),
         ]
     );
+}
+
+#[test]
+fn a_call_another_binding_permits_ranks_the_rebinding_first() {
+    // Issue #69 (UI-005, final review F-002): at a call whose callee needs an operation the
+    // attenuated binding lacks, rebinding the callee's reference to a binding that permits
+    // everything it needs ranks first; widening the attenuated binding comes second, and is
+    // the only repair when no binding permits everything the callee needs.
+    let (_, types) = run(
+        &[(
+            "t.una",
+            concat!(
+                "module t\n\n",
+                "pub capability Shelf\n",
+                "  op stock(count: Int) -> Unit\n",
+                "  op unstock(count: Int) -> Unit\n",
+                "\n",
+                "pub put_back(count: Int) -> Unit\n",
+                "  uses @front: Shelf[unstock]\n",
+                "=\n",
+                "  @front.unstock(count)\n",
+                "\n",
+                "pub both(count: Int) -> Unit\n",
+                "  uses @front: Shelf[stock, unstock]\n",
+                "=\n",
+                "  @front.unstock(count)\n",
+                "\n",
+                "pub by_call(count: Int) -> Unit\n",
+                "  uses @front: Shelf[stock]\n",
+                "  uses @back: Shelf[unstock]\n",
+                "=\n",
+                "  put_back(count)\n",
+                "\n",
+                "pub with_clause(count: Int) -> Unit\n",
+                "  uses @front: Shelf[stock]\n",
+                "  uses @back: Shelf[unstock]\n",
+                "  uses @side: Shelf[stock]\n",
+                "=\n",
+                "  put_back(count) with @other = @side\n",
+                "\n",
+                "pub needs_both(count: Int) -> Unit\n",
+                "  uses @front: Shelf[stock]\n",
+                "  uses @back: Shelf[unstock]\n",
+                "=\n",
+                "  both(count)\n",
+            ),
+        )],
+        true,
+    );
+    let ranked: Vec<(u32, String, String)> = types
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Code::U3002)
+        .flat_map(|d| {
+            d.repairs.iter().map(|r| {
+                (
+                    r.rank,
+                    r.description.clone(),
+                    r.edit
+                        .as_ref()
+                        .map_or(String::new(), |e| e.replacement.clone()),
+                )
+            })
+        })
+        .collect();
+    let rebind = "add `with @front = @back` to this statement, since `@back` permits `unstock`";
+    let widen = "add `unstock` to the `uses` clause of `@front`";
+    let widened = "uses @front: Shelf[stock, unstock]";
+    let expected: Vec<(u32, String, String)> = [
+        (1, rebind, " with @front = @back"),
+        (2, widen, widened),
+        (1, rebind, ", @front = @back"),
+        (2, widen, widened),
+        (1, widen, widened),
+    ]
+    .into_iter()
+    .map(|(rank, description, text)| (rank, description.to_owned(), text.to_owned()))
+    .collect();
+    assert_eq!(ranked, expected);
 }
