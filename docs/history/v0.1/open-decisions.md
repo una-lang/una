@@ -388,6 +388,7 @@ None.
 - Answer needed: Keep A? Or switch to B?
 - Answer: kept the chosen option (Leonardo, 2026-09-29)
 - Review (2026-09-30): Keep
+- Answer (Leonardo, 2026-09-30, issue #68): switched to B by ADR 0049: an unlabeled first argument binds the first parameter, so `max(b, a)` reports U2006.
 
 ### D-065: Recursion and results of predicates (M4)
 - Question: `spec/03 §4` forbids a `reflect` predicate from calling itself "directly or indirectly", and the title of U2015 lists "recursive" for every predicate. Does the rule cover opaque predicates and cycles through functions? What reports a predicate whose result is not `Bool`?

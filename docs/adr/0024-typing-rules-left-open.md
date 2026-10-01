@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-09-29
 - Deciders: Leonardo (accepted on 2026-09-29), on a proposal by Claude (overnight run)
+- Amended by: 0049 (rule 12: an unlabeled first argument binds the first parameter; punning applies from the second argument on)
 
 ## Context
 

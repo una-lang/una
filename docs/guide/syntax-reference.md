@@ -445,7 +445,7 @@ The compiler proves that `e.remaining - count` fits `Seats` (between 0 and 5000)
 | --- | --- |
 | One argument: the label is optional | `double(4)` |
 | Two or more: the first may be unlabeled, the rest must be labeled (U2004) | `seats_after(event, count: 2)` |
-| Punning: a bare identifier equal to the parameter name counts as labeled | `record(key, status)` |
+| Punning: from the second argument on, a bare identifier equal to the parameter name counts as labeled; the first argument always binds the first parameter (ADR 0049) | `record(key, status)` |
 | Argument count: too many arguments, or a parameter that receives none, is U2001. The count is checked before the labels. | `f(1, b: 2, b: 3)` for a two-parameter `f`: U2001 "`f` takes 2 arguments, but 3 are given", and no U2006 |
 | Unknown label: U2005 | `f(1, c: 2)` |
 | Duplicate argument, with the right count: U2006 | `f(a: 1, a: 2)` |
