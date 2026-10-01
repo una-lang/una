@@ -1,0 +1,11 @@
+-- test: a literal inside a variant pattern is U0101 that names literal patterns as unsupported in v0.1 (issue #73, UI-001)
+-- spec: spec/02 §6
+-- expect: error U0101 at 9:13
+module literal_pattern
+
+pub size(count: Option[Int]) -> Int
+=
+  when count
+    is Some(0) -> 0
+    is Some(n) -> n
+    is None -> 0
