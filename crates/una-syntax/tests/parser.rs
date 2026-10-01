@@ -811,9 +811,7 @@ fn nested_patterns_are_not_supported() {
         ("is Some(Pair(x: a, y: b))", 13),
         ("is Ok(Some(v))", 11),
         ("is Ok(value: Some(v))", 18),
-        ("is Some(0)", 13),
         ("is Some(value: is 0)", 20),
-        ("is Pair(x, y: \"a\")", 19),
     ] {
         assert_eq!(
             errors(&format!(
@@ -894,11 +892,12 @@ fn builder_mistakes_get_a_hint() {
     );
     assert_eq!(
         advice("f(x: Int) -> Int\n  fails Bad\n=\n  if x < 0 then fail Broke\n  x\n"),
-        "an `if` with `then` needs `else`; to fail early, make the rest of the body its `else` branch, as in `if x < 0 then fail Broke else x`, or use an `if` with blocks"
+        "an `if` with `then` needs `else`; to fail early, make the rest of the body its `else` branch, as in `if x < 0 then fail Broke else x`, or use the block form, whose `else` block holds the rest"
     );
     // The shapes the hints describe parse.
     tree("f(o: Option[Int]) -> Int\n=\n  when o\n    is Some(x) -> x\n    is None -> 0\n");
     tree("f(x: Int) -> Int\n  fails Bad\n=\n  if x < 0 then fail Broke else x\n");
+    tree("f(x: Int) -> Int\n  fails Bad\n=\n  if x < 0\n    fail Broke\n  else\n    x\n");
 }
 
 #[test]
@@ -944,5 +943,65 @@ fn a_word_reserved_for_a_later_version_gets_a_rename_repair() {
             "U0103 `return` is not a keyword in Una; the last expression is the result".to_owned(),
             vec![],
         )]
+    );
+}
+
+#[test]
+fn literal_patterns_are_not_supported() {
+    // Issue #73 (UI-001): a literal in a field of a variant pattern is named as such. A second
+    // `when` matches it with a literal arm and `else`; a negative number, which a pattern
+    // cannot write, gets only the comparison.
+    let message = "literal patterns are not supported in v0.1";
+    for (pattern, column) in [
+        ("is Some(0)", 13),
+        ("is Some(-1)", 13),
+        ("is Some(true)", 13),
+        ("is Pair(x, y: \"a\")", 19),
+    ] {
+        assert_eq!(
+            errors(&format!(
+                "f(v: T) -> Int\n=\n  when v\n    {pattern} -> 1\n"
+            )),
+            [format!("U0101 6:{column} {message}")],
+            "{pattern}"
+        );
+    }
+    let shown = |pattern: &str| -> Vec<String> {
+        let text = format!("module t\n\nf(v: T) -> Int\n=\n  when v\n    {pattern} -> 1\n");
+        let mut db = SourceDb::new();
+        let id = db.add("t.una", text.as_bytes());
+        let mut interner = Interner::new();
+        let lexed = lex(db.file(id), id, &mut interner);
+        let parsed = parse(&lexed, id, &interner);
+        parsed.errors[0]
+            .repairs
+            .iter()
+            .map(|repair| {
+                assert_eq!(repair.edit, None);
+                repair.description.clone()
+            })
+            .collect()
+    };
+    assert_eq!(
+        shown("is Some(0)"),
+        [
+            "bind the field to a name, as in `is Some(inner)`, then match that name in a second `when` inside the arm, with `is 0 -> ...` and `else -> ...`",
+            "bind the field to a name, as in `is Some(inner)`, then compare that name inside the arm, as in `if inner == 0 then ... else ...`",
+        ]
+    );
+    assert_eq!(
+        shown("is Some(-1)"),
+        [
+            "bind the field to a name, as in `is Some(inner)`, then compare that name inside the arm, as in `if inner == -1 then ... else ...`"
+        ]
+    );
+    // The shapes the repairs describe parse, for every literal a pattern can write.
+    for literal in ["0", "true", "\"a\""] {
+        tree(&format!(
+            "f(v: T) -> Int\n=\n  when v\n    is Some(inner) ->\n      when inner\n        is {literal} -> 1\n        else -> 2\n    else -> 0\n"
+        ));
+    }
+    tree(
+        "f(v: T) -> Int\n=\n  when v\n    is Some(inner) -> if inner == -1 then 1 else 2\n    else -> 0\n",
     );
 }
