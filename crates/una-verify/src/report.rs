@@ -95,23 +95,8 @@ fn message(obligation: &Obligation, outcome: &Outcome) -> String {
                 .trim_matches(|c| c == '(' || c == ')');
             format!("{subject} could not be proven ({reason})")
         }
-        // Issue #72 (UI-004): a model that treats a product, quotient or remainder of two
-        // values as uninterpreted (`spec/12 §2`) may not be a real execution, so the message
-        // says so; whether such an obligation is refuted or unknown is `spec/12 §6`'s rule.
-        _ if uses_uninterpreted_arithmetic(obligation) => format!(
-            "{subject} is refuted in a model where a product, quotient or remainder of two values is uninterpreted (`spec/12 §2`), so the counterexample may not be a real execution"
-        ),
         _ => format!("{subject} is refuted"),
     }
-}
-
-/// Whether the obligation's query uses the uninterpreted `i!mul!Int`, `i!div!Int` or
-/// `i!mod!Int` of `spec/12 §2`.
-fn uses_uninterpreted_arithmetic(obligation: &Obligation) -> bool {
-    let text = obligation.query.text();
-    ["(i!mul!Int ", "(i!div!Int ", "(i!mod!Int "]
-        .iter()
-        .any(|symbol| text.contains(symbol))
 }
 
 /// The repair candidates of `spec/13 §3` that apply to the obligation's kind and site, ranked
