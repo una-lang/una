@@ -811,9 +811,7 @@ fn nested_patterns_are_not_supported() {
         ("is Some(Pair(x: a, y: b))", 13),
         ("is Ok(Some(v))", 11),
         ("is Ok(value: Some(v))", 18),
-        ("is Some(0)", 13),
         ("is Some(value: is 0)", 20),
-        ("is Pair(x, y: \"a\")", 19),
     ] {
         assert_eq!(
             errors(&format!(
@@ -842,5 +840,168 @@ fn nested_patterns_are_not_supported() {
     // The two-step shape the repair describes parses.
     tree(
         "f(v: T) -> Int\n=\n  when v\n    is Ok(inner) ->\n      when inner\n        is Some(w) -> w\n        else -> 0\n    else -> 0\n",
+    );
+}
+
+/// A repair: its description and the replacement of its edit, if any.
+type Shown = (String, Option<String>);
+
+/// The code, message and repairs of every lexical and syntax error of `body`, after `module t`.
+fn repairs(body: &str) -> Vec<(String, Vec<Shown>)> {
+    let text = format!("module t\n\n{body}");
+    let mut db = SourceDb::new();
+    let id = db.add("t.una", text.as_bytes());
+    let mut interner = Interner::new();
+    let lexed = lex(db.file(id), id, &mut interner);
+    let parsed = parse(&lexed, id, &interner);
+    lexed
+        .errors
+        .iter()
+        .chain(&parsed.errors)
+        .map(|error| {
+            (
+                format!("{} {}", error.code, error.message),
+                error
+                    .repairs
+                    .iter()
+                    .map(|r| (r.description.clone(), r.edit.as_ref().map(|e| e.1.clone())))
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn builder_mistakes_get_a_hint() {
+    // Issue #75 (UI-006): parse errors that the Gate 1 task builders met with no guidance.
+    let advice = |body: &str| {
+        let found = repairs(body);
+        assert_eq!(found.len(), 1, "{found:?}");
+        let (_, repairs) = &found[0];
+        assert_eq!(repairs.len(), 1, "{repairs:?}");
+        assert_eq!(repairs[0].1, None, "advice has no edit");
+        repairs[0].0.clone()
+    };
+    assert_eq!(
+        advice("f(x: Int) -> Int\n  fails Bad\n=\n  let reason = Broke\n  fail reason\n"),
+        "`fail` takes a variant of the error kind, as in `fail Broke`, not a stored value; fail where the error is found, or pass a call's failure on with `if error pass`"
+    );
+    assert_eq!(
+        advice("f(o: Option[Int]) -> Int = when o\n  is Some(x) -> x\n  is None -> 0\n"),
+        "`when` must start its own line: write the long form, with `=` on its own line and the `when` indented below it, or bind it with `let`"
+    );
+    assert_eq!(
+        advice("f(x: Int) -> Int\n  fails Bad\n=\n  if x < 0 then fail Broke\n  x\n"),
+        "an `if` with `then` needs `else`; to fail early, make the rest of the body its `else` branch, as in `if x < 0 then fail Broke else x`, or use the block form, whose `else` block holds the rest"
+    );
+    // The shapes the hints describe parse.
+    tree("f(o: Option[Int]) -> Int\n=\n  when o\n    is Some(x) -> x\n    is None -> 0\n");
+    tree("f(x: Int) -> Int\n  fails Bad\n=\n  if x < 0 then fail Broke else x\n");
+    tree("f(x: Int) -> Int\n  fails Bad\n=\n  if x < 0\n    fail Broke\n  else\n    x\n");
+}
+
+#[test]
+fn a_word_reserved_for_a_later_version_gets_a_rename_repair() {
+    // Issue #75 (UI-006): `table`, `all` and `service` are natural names; the repair renames
+    // each occurrence the same way, so applying them all keeps the program consistent.
+    assert_eq!(
+        repairs("pub f(table: Int) -> Int = table\n"),
+        [
+            (
+                "U0103 `table` is reserved for v0.4 (platform)".to_owned(),
+                vec![(
+                    "rename it to `the_table`".to_owned(),
+                    Some("the_table".to_owned())
+                )],
+            ),
+            (
+                "U0103 `table` is reserved for v0.4 (platform)".to_owned(),
+                vec![(
+                    "rename it to `the_table`".to_owned(),
+                    Some("the_table".to_owned())
+                )],
+            ),
+        ]
+    );
+    tree("pub f(the_table: Int) -> Int = the_table\n");
+    // Where a kind name is expected, the rename capitalizes the word.
+    assert_eq!(
+        repairs("pub kind service = A | B\n"),
+        [(
+            "U0103 `service` is reserved for v0.4 (platform)".to_owned(),
+            vec![(
+                "rename it to `Service`".to_owned(),
+                Some("Service".to_owned())
+            )],
+        )]
+    );
+    tree("pub kind Service = A | B\n");
+    // A word that names a construct Una writes differently says what to write instead.
+    assert_eq!(
+        repairs("pub f(x: Int) -> Int = return x\n"),
+        [(
+            "U0103 `return` is not a keyword in Una; the last expression is the result".to_owned(),
+            vec![],
+        )]
+    );
+}
+
+#[test]
+fn literal_patterns_are_not_supported() {
+    // Issue #73 (UI-001): a literal in a field of a variant pattern is named as such. A second
+    // `when` matches it with a literal arm and `else`; a negative number, which a pattern
+    // cannot write, gets only the comparison.
+    let message = "literal patterns are not supported in v0.1";
+    for (pattern, column) in [
+        ("is Some(0)", 13),
+        ("is Some(-1)", 13),
+        ("is Some(true)", 13),
+        ("is Pair(x, y: \"a\")", 19),
+    ] {
+        assert_eq!(
+            errors(&format!(
+                "f(v: T) -> Int\n=\n  when v\n    {pattern} -> 1\n"
+            )),
+            [format!("U0101 6:{column} {message}")],
+            "{pattern}"
+        );
+    }
+    let shown = |pattern: &str| -> Vec<String> {
+        let text = format!("module t\n\nf(v: T) -> Int\n=\n  when v\n    {pattern} -> 1\n");
+        let mut db = SourceDb::new();
+        let id = db.add("t.una", text.as_bytes());
+        let mut interner = Interner::new();
+        let lexed = lex(db.file(id), id, &mut interner);
+        let parsed = parse(&lexed, id, &interner);
+        parsed.errors[0]
+            .repairs
+            .iter()
+            .map(|repair| {
+                assert_eq!(repair.edit, None);
+                repair.description.clone()
+            })
+            .collect()
+    };
+    assert_eq!(
+        shown("is Some(0)"),
+        [
+            "bind the field to a name, as in `is Some(inner)`, then match that name in a second `when` inside the arm, with `is 0 -> ...` and `else -> ...`",
+            "bind the field to a name, as in `is Some(inner)`, then compare that name inside the arm, as in `if inner == 0 then ... else ...`",
+        ]
+    );
+    assert_eq!(
+        shown("is Some(-1)"),
+        [
+            "bind the field to a name, as in `is Some(inner)`, then compare that name inside the arm, as in `if inner == -1 then ... else ...`"
+        ]
+    );
+    // The shapes the repairs describe parse, for every literal a pattern can write.
+    for literal in ["0", "true", "\"a\""] {
+        tree(&format!(
+            "f(v: T) -> Int\n=\n  when v\n    is Some(inner) ->\n      when inner\n        is {literal} -> 1\n        else -> 2\n    else -> 0\n"
+        ));
+    }
+    tree(
+        "f(v: T) -> Int\n=\n  when v\n    is Some(inner) -> if inner == -1 then 1 else 2\n    else -> 0\n",
     );
 }
