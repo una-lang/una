@@ -1,0 +1,49 @@
+-- Adversarial: D-166: generic functions returning a function, a kind with a function field, a `Box` and a list derived from `x == y`, then read as public at the call
+-- Expected: U4001 at each use; the lambda in `leak_fn` is N-020's over-rejection
+-- Observed: U4001 at each use and at `leak_fn`'s lambda; `leak_src`'s identical lambda inside a constructor is accepted, and the call site is still caught
+-- Verdict: Held
+module fr_generic_return_strip
+
+kind Sink[T]
+  eat: fn(T) -> Int
+
+kind Src[T]
+  get: fn() -> T
+
+kind Box[T]
+  value: T
+
+leak_fn[T](x: T, y: T) -> fn() -> Bool = fn() -> x == y
+
+leak_src[T](x: T, y: T) -> Src[Bool] = Src(get: fn() -> x == y)
+
+leak_box[T](x: T, y: T) -> Box[Bool] = Box(value: x == y)
+
+leak_list[T](x: T, y: T) -> List[Bool] = [x == y]
+
+leak_sink[T](x: T) -> Sink[Int] = Sink(eat: fn(n: Int) -> n)
+
+pub by_fn(pin: secret Int) -> Bool
+=
+  let f = leak_fn(pin, y: 1234)
+  let b: Bool = f()
+  b
+
+pub by_src(pin: secret Int) -> Bool
+=
+  let s = leak_src(pin, y: 1234)
+  let b: Bool = s.get()
+  b
+
+pub by_box(pin: secret Int) -> Bool
+=
+  let s = leak_box(pin, y: 1234)
+  let b: Bool = s.value
+  b
+
+pub by_list(pin: secret Int) -> Bool
+=
+  let s = leak_list(pin, y: 1234)
+  let b: Option[Bool] = s.first()
+  b
+    if none use false
