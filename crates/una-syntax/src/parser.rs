@@ -328,6 +328,24 @@ impl<'a> Parser<'a> {
         )
     }
 
+    /// [`Parser::unexpected`], with `advice` as a repair without an edit (issue #75).
+    fn unexpected_with(&mut self, expected: &str, advice: impl Into<String>) -> Stop {
+        let found = match self.peek() {
+            TokenKind::Keyword(keyword) => format!("keyword `{}`", keyword.as_str()),
+            kind => kind.describe(self.interner),
+        };
+        let mut error = SyntaxError::new(
+            Code::U0101,
+            self.span(),
+            format!("unexpected {found}, expected {expected}"),
+        );
+        error.repairs.push(SyntaxRepair {
+            description: advice.into(),
+            edit: None,
+        });
+        self.report_error(error)
+    }
+
     fn fail<T>(&mut self, span: Span, message: impl Into<String>) -> Parse<T> {
         Err(self.report(span, message.into()))
     }
@@ -1563,6 +1581,12 @@ impl<'a> Parser<'a> {
 
     fn variant_expr(&mut self) -> Parse<VariantExpr> {
         let start = self.span();
+        if matches!(self.peek(), TokenKind::LowerIdent(_)) {
+            return Err(self.unexpected_with(
+                "a variant",
+                "`fail` takes a variant of the error kind, as in `fail Broke`, not a stored value; fail where the error is found, or pass a call's failure on with `if error pass`",
+            ));
+        }
         let name = self.upper_name("a variant")?;
         let args = if self.at(&TokenKind::LParen) {
             self.call_args()?
@@ -1654,7 +1678,9 @@ impl<'a> Parser<'a> {
     /// pattern, such as `is Some(Circle(radius))` or `is Ok(value: is 0)` (benchmark finding
     /// B-001). DECISION D-155: a variant, `is`, `in` or a literal where a field or local name
     /// is expected starts a nested pattern; the repair has no mechanical edit, because moving the
-    /// arm body under a second `when` also regroups the arms that share the outer variant.
+    /// arm body under a second `when` also regroups the arms that share the outer variant. A
+    /// literal is named as such, with a second `when` or a comparison in the arm as its repair
+    /// (issue #73).
     fn no_nested_pattern(&mut self, variant: Ident) -> Parse<()> {
         let nested = matches!(
             self.peek(),
@@ -1669,17 +1695,50 @@ impl<'a> Parser<'a> {
         }
         let span = self.span();
         let outer = self.interner.resolve(variant.name).to_owned();
-        let mut error = SyntaxError::new(
-            Code::U0101,
-            span,
-            "nested patterns are not supported in v0.1",
-        );
-        error.repairs.push(SyntaxRepair {
-            description: format!(
-                "bind the field to a name, as in `is {outer}(inner)`, then match that name in a second `when` inside the arm"
+        // Issue #73 (UI-001): a literal is named as such. A second `when` matches it with a
+        // literal arm and `else` (`spec/02 §6`), except a negative number, which a pattern
+        // cannot write; a comparison in the arm works for every literal.
+        let literal = match (self.peek(), self.peek_at(1)) {
+            (TokenKind::Int(digits), _) => Some((digits.clone(), true)),
+            (TokenKind::Minus, TokenKind::Int(digits)) => Some((format!("-{digits}"), false)),
+            (TokenKind::Minus, _) => Some(("-...".to_owned(), false)),
+            (TokenKind::Keyword(Keyword::True), _) => Some(("true".to_owned(), true)),
+            (TokenKind::Keyword(Keyword::False), _) => Some(("false".to_owned(), true)),
+            (TokenKind::TextStart, _) => Some(("\"...\"".to_owned(), true)),
+            _ => None,
+        };
+        let bind = format!("bind the field to a name, as in `is {outer}(inner)`");
+        let (message, descriptions) = match literal {
+            Some((value, in_when)) => {
+                let compare = format!(
+                    "{bind}, then compare that name inside the arm, as in `if inner == {value} then ... else ...`"
+                );
+                let descriptions = if in_when {
+                    vec![
+                        format!(
+                            "{bind}, then match that name in a second `when` inside the arm, with `is {value} -> ...` and `else -> ...`"
+                        ),
+                        compare,
+                    ]
+                } else {
+                    vec![compare]
+                };
+                ("literal patterns are not supported in v0.1", descriptions)
+            }
+            None => (
+                "nested patterns are not supported in v0.1",
+                vec![format!(
+                    "{bind}, then match that name in a second `when` inside the arm"
+                )],
             ),
-            edit: None,
-        });
+        };
+        let mut error = SyntaxError::new(Code::U0101, span, message);
+        for description in descriptions {
+            error.repairs.push(SyntaxRepair {
+                description,
+                edit: None,
+            });
+        }
         Err(self.report_error(error))
     }
 
@@ -1698,7 +1757,13 @@ impl<'a> Parser<'a> {
     /// `line_expr "else" line_expr`, after `if`, the condition and `then`.
     fn if_line_rest(&mut self, start: Span, condition: Expr) -> Parse<Expr> {
         let then = self.line_expr()?;
-        self.expect_keyword(Keyword::Else)?;
+        if !self.at_keyword(Keyword::Else) {
+            return Err(self.unexpected_with(
+                "`else`",
+                "an `if` with `then` needs `else`; to fail early, make the rest of the body its `else` branch, as in `if x < 0 then fail Broke else x`, or use the block form, whose `else` block holds the rest",
+            ));
+        }
+        self.advance();
         let otherwise = self.line_expr()?;
         Ok(Expr {
             kind: ExprKind::IfLine {
@@ -2118,6 +2183,12 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::Error) => {
                 self.advance();
                 ExprKind::Error
+            }
+            TokenKind::Keyword(Keyword::When) => {
+                return Err(self.unexpected_with(
+                    "an expression",
+                    "`when` must start its own line: write the long form, with `=` on its own line and the `when` indented below it, or bind it with `let`",
+                ));
             }
             _ => return Err(self.unexpected("an expression")),
         };
