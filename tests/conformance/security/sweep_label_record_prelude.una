@@ -1,20 +1,10 @@
--- test: a record kind with a secret field: prelude results carry the field labels of their element and argument types (label sweep)
+-- test: a record kind with a secret field: prelude results carry the field labels of their element and argument types (label sweep); the structural functions, whose results the field labels no longer reach unless they read them, are accepted (ADR 0051)
 -- spec: spec/07 §7
--- expect: error U4001 at 34:42
--- expect: error U4001 at 36:39
--- expect: error U4001 at 38:36
--- expect: error U4001 at 40:45
--- expect: error U4001 at 42:39
+-- expect: error U4001 at 24:42
 -- expect: error U4001 at 44:42
--- expect: error U4001 at 46:37
--- expect: error U4001 at 48:42
--- expect: error U4001 at 50:45
--- expect: error U4001 at 52:39
--- expect: error U4001 at 54:42
--- expect: error U4001 at 56:42
--- expect: error U4001 at 58:29
--- expect: error U4001 at 60:29
--- expect: error U4001 at 62:29
+-- expect: error U4001 at 48:29
+-- expect: error U4001 at 50:29
+-- expect: error U4001 at 52:29
 module sweep_label_record_prelude
 
 kind Acct

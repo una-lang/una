@@ -1,7 +1,6 @@
 -- test: `via` function passed as a value to `map` (review control)
 -- spec: spec/07 §7
--- expect: error U4001 at src/app/keys.una:16:55
--- expect: error U4005 at src/app/keys.una:16:68
+-- expect: error U4005 at src/app/keys.una:15:68
 trusted module app.keys
 
 pub policy mask
