@@ -892,17 +892,26 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             && target.params.iter().all(|p| same_refinements(&p.ty, &from))
             && same_refinements(&target.result, &to);
         if !fits || !refined {
+            let expected = format!(
+                "fn({}) -> {}",
+                self.show_declared(&from),
+                self.show_declared(&to)
+            );
+            // The `via` function's type parameters show by their names (final review F-004).
+            let saved = std::mem::replace(&mut self.type_params, target.type_params.clone());
             let params: Vec<String> = target
                 .params
                 .iter()
                 .map(|p| self.show_declared(&p.ty))
                 .collect();
-            let message = format!(
-                "`via` function `{via}` must take a `{}` and return a `{}`; it is `fn({}) -> {}`",
-                self.show_declared(&from),
-                self.show_declared(&to),
+            let found = format!(
+                "fn({}) -> {}",
                 params.join(", "),
                 self.show_declared(&target.result)
+            );
+            self.type_params = saved;
+            let message = format!(
+                "`via` function `{via}` must have type `{expected}`, except for labels; it is `{found}`"
             );
             // Types other than labels match between a policy and its `via`
             // function (`spec/07 §5` rule 4).

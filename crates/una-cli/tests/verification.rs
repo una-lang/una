@@ -706,6 +706,20 @@ fn a_refutation_through_uninterpreted_arithmetic_says_so_ui004() {
 }
 
 #[test]
+fn the_value_that_if_none_use_unwraps_is_named_as_written() {
+    // Final review F-004: the ADR 0037 obligation at an annotated `let` names the value that
+    // `if none use` unwraps by its expression, not by an internal temporary.
+    let unwrapped = only_diagnostic(
+        "if-none-unwrapped",
+        "module app\n\npub kind Pos = Int where it > 0\n\none(x: Int) -> Pos = 1\n\npub first_fn(fs: List[fn(Int) -> Int]) -> Int\n=\n  let f: fn(Int) -> Pos = fs.first()\n    if none use one\n  f(1)\n",
+    );
+    assert_eq!(
+        unwrapped["message"],
+        "refinement `result of fs.first(): result > 0` is refuted"
+    );
+}
+
+#[test]
 fn a_forged_proof_cache_entry_is_trusted_and_counted_as_cached() {
     // R-018, ADR 0041, adversarial `escape-proof-cache-forgery`: the proof cache is part of
     // the Trusted zone in v0.1. A forged entry turns a refuted query into proven, as the

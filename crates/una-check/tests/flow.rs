@@ -328,7 +328,11 @@ fn policies_live_in_trusted_modules_and_own_their_via_functions() {
                 \n\
                 pub exposed(t: secret Text) -> Text = t\n\
                 \n\
-                direct(t: secret[PII] Text) -> internal Text = masked(t)\n";
+                direct(t: secret[PII] Text) -> internal Text = masked(t)\n\
+                \n\
+                pub policy generic_via\n  from secret Text\n  to internal Text\n  via pass_any\n  purpose \"test\"\n  owner privacy\n\
+                \n\
+                pass_any[T](n: T) -> T = n\n";
     let main = "module app.main\n\
                 \n\
                 import app.keys (mask)\n\
@@ -346,9 +350,10 @@ fn policies_live_in_trusted_modules_and_own_their_via_functions() {
             &[("src/app/keys.una", keys), ("src/app/main.una", main)]
         ),
         [
-            "U4005 src/app/keys.una:13:7 `via` function `masked` must take a `Text` and return a `Int`; it is `fn(Text) -> Text`",
+            "U4005 src/app/keys.una:13:7 `via` function `masked` must have type `fn(Text) -> Int`, except for labels; it is `fn(Text) -> Text`",
             "U4005 src/app/keys.una:20:7 the `via` function of a policy is private to its trusted module, and `exposed` is not; remove its `pub`, or declare it in this module",
             "U4005 src/app/keys.una:28:48 `masked` is the `via` function of policy `mask`, which is its only entry point; call `mask` instead",
+            "U4005 src/app/keys.una:33:7 `via` function `pass_any` must have type `fn(Text) -> Text`, except for labels; it is `fn(T) -> T`",
             "U4004 src/app/main.una:5:12 policy `outside` is declared in module `app.main`, which is not trusted; declare `trusted module app.main` and list it under `[trusted] modules` in `una.toml`",
             "U4002 src/app/main.una:19:5 policy `mask` lowers data to `internal`, and it is called under a `secret` condition, which its result would reveal",
         ]
