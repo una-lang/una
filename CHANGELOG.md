@@ -84,7 +84,8 @@ These channels are outside the model, and the build report says so:
 - resource consumption and allocation;
 - interpreter stack exhaustion;
 - external systems beyond their declared signatures;
-- races between the check and the use of a file path.
+- races between the check and the use of a file path;
+- hard links: a hard link inside a `Files` grant to a file outside it is reachable through the grant (ADR 0048).
 
 ### Known limitations
 
@@ -103,3 +104,19 @@ The memory model, concurrency, laws, cost contracts, native code generation, FFI
 
 - An independent review of v0.1 (`docs/reviews/v0.1-review/`) found 11 Critical, 11 Major and 17 Minor findings and 6 notes. Every Critical and Major finding is fixed with a regression test, and the rest are fixed or recorded in the backlog.
 - The review's 143 adversarial programs are part of the conformance suite or the CLI tests. The only exceptions are the programs whose findings are deferred.
+- A re-review of the fixes (`docs/reviews/v0.1-rereview/`) found 5 Critical, 2 Major and 11 Minor findings and 6 notes, with 89 new adversarial programs. Every Critical and Major finding is fixed:
+  - labels of kind fields at every consumer;
+  - per-parameter variance of user generic kinds (ADR 0046);
+  - labels of generic function values;
+  - a policy's `via` function requires nothing beyond `from` (ADR 0047);
+  - refinements at every annotated `let`;
+  - refined kinds over function types, rejected in every build (ADR 0045);
+  - `expect fails` after a `do` line that cannot fail (ADR 0044).
+  Hard links are declared out of model (ADR 0048). Class-level sweeps of label computation, variance and flow sites added a conformance case per covered cell.
+- Four issues found by the Gate 1 task builders were handled:
+  - an unlabeled first argument binds the first parameter (ADR 0049);
+  - the U3002 repair no longer widens an attenuated binding at rank 1;
+  - annotated lambda parameters assume their refinement;
+  - a refutation through uninterpreted arithmetic says so.
+- A limited re-review (`docs/reviews/v0.1-final-review/`) found 1 Critical and 3 Minor findings, with 18 new adversarial programs. The Critical is fixed: an operation argument flows into the operation's parameter type at its contravariant positions and invariant kind arguments (ADR 0050). The three Minor findings are fixed too.
+- A last limited review of that round (`docs/reviews/v0.1-final-review/round3/`) gave the verdict Ready for v0.1.0. Its two non-blocking findings are tracked for v0.1.x.
