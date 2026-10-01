@@ -153,8 +153,8 @@ pub(crate) const UNINTERPRETED: &str = "the refutation depends on a product, quo
 /// Whether the model agrees with real arithmetic at every application of uninterpreted
 /// arithmetic in the obligation (ADR 0053): each value equals the product, or the Euclidean
 /// quotient or remainder (`spec/11`), of its operands' values. A definition that uses one, a
-/// value that is not an integer within 128 bits, an overflow or a zero divisor cannot be
-/// checked, so it does not agree.
+/// value that is not an integer within 128 bits or an overflow cannot be checked, so it does
+/// not agree; by a zero divisor, any value agrees (ADR 0054).
 fn agrees(obligation: &Obligation, value: &dyn Fn(&F) -> String) -> bool {
     let in_definitions = obligation.query.definitions.values().any(|definition| {
         let mut terms = Vec::new();
@@ -179,10 +179,13 @@ fn agrees(obligation: &Obligation, value: &dyn Fn(&F) -> String) -> bool {
             ) else {
                 return false;
             };
+            // ADR 0054: by a zero divisor, any value agrees: an execution that reaches the
+            // division fails there, which its own division obligation reports.
             let expected = match fun.name.as_str() {
                 "i!mul!Int" => a.checked_mul(b),
-                "i!div!Int" if b != 0 => euclidean(a, b).map(|(q, _)| q),
-                "i!mod!Int" if b != 0 => euclidean(a, b).map(|(_, r)| r),
+                "i!div!Int" | "i!mod!Int" if b == 0 => return true,
+                "i!div!Int" => euclidean(a, b).map(|(q, _)| q),
+                "i!mod!Int" => euclidean(a, b).map(|(_, r)| r),
                 _ => None,
             };
             expected == Some(found)
@@ -213,6 +216,26 @@ pub fn queries(obligations: &[Obligation], lock: &Lock) -> Vec<String> {
         .collect()
 }
 
+/// U5003 when the solver is missing or reports another version than the lock.
+fn check_version(settings: &Settings) -> Result<(), Problem> {
+    match solver::version(&settings.solver) {
+        Ok(found) if found == settings.lock.solver_version => {}
+        Ok(found) => {
+            return Err(Problem::Solver(format!(
+                "the solver is z3 {found}, and verification.lock pins z3 {}; install the pinned version with scripts/install-z3.sh",
+                settings.lock.solver_version
+            )));
+        }
+        Err(reason) => {
+            return Err(Problem::Solver(format!(
+                "z3 {} is not available ({reason}); install it with scripts/install-z3.sh and put it on the path",
+                settings.lock.solver_version
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Discharges `obligations`: cached answers first, then the solver for the others, in
 /// parallel; outcomes come in the order of the obligations.
 pub fn verify(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Outcome>, Problem> {
@@ -234,21 +257,7 @@ pub fn verify(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Out
         })
         .collect();
     if cached.iter().any(Option::is_none) {
-        match solver::version(&settings.solver) {
-            Ok(found) if found == settings.lock.solver_version => {}
-            Ok(found) => {
-                return Err(Problem::Solver(format!(
-                    "the solver is z3 {found}, and verification.lock pins z3 {}; install the pinned version with scripts/install-z3.sh",
-                    settings.lock.solver_version
-                )));
-            }
-            Err(reason) => {
-                return Err(Problem::Solver(format!(
-                    "z3 {} is not available ({reason}); install it with scripts/install-z3.sh and put it on the path",
-                    settings.lock.solver_version
-                )));
-            }
-        }
+        check_version(settings)?;
     }
     let answers: Vec<Result<(Answer, bool), Problem>> = scripts
         .par_iter()
@@ -269,17 +278,130 @@ pub fn verify(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Out
             Ok((answer, false))
         })
         .collect();
-    let mut outcomes = Vec::new();
-    for ((answer, obligation), (_, requested, _)) in
-        answers.into_iter().zip(obligations).zip(&scripts)
+    let answers: Vec<(Answer, bool)> = answers.into_iter().collect::<Result<_, _>>()?;
+    // ADR 0053, as amended by ADR 0054: a refutation whose model disagrees with real arithmetic
+    // is solved once more with that arithmetic interpreted, so that a real counterexample
+    // through a product, quotient or remainder keeps its status.
+    let again: Vec<Option<(String, String)>> = answers
+        .iter()
+        .zip(obligations)
+        .zip(&scripts)
+        .map(|(((answer, _), obligation), (_, requested, _))| {
+            let value = values(requested, answer);
+            (answer.status == Status::Refuted && !agrees(obligation, &value)).then(|| {
+                let text = interpreted(obligation, &settings.lock);
+                let key = cache::key(&settings.lock.text, &text);
+                (text, key)
+            })
+        })
+        .collect();
+    let cached_again: Vec<Option<Answer>> = again
+        .iter()
+        .map(|query| {
+            query.as_ref().and_then(|(_, key)| {
+                settings
+                    .cache
+                    .as_deref()
+                    .and_then(|dir| cache::get(dir, key))
+            })
+        })
+        .collect();
+    if again
+        .iter()
+        .zip(&cached_again)
+        .any(|(query, cached)| query.is_some() && cached.is_none())
     {
-        let (answer, cached) = answer?;
-        outcomes.push(outcome(obligation, requested, &answer, cached));
+        check_version(settings)?;
+    }
+    let second: Vec<Option<Answer>> = again
+        .par_iter()
+        .zip(cached_again.into_par_iter())
+        .zip(scripts.par_iter())
+        .zip(obligations.par_iter())
+        .map(|(((query, cached), (_, requested, _)), obligation)| {
+            let Some((text, key)) = query else {
+                return Ok(None);
+            };
+            if let Some(answer) = cached {
+                return Ok(Some(answer));
+            }
+            let answer = solver::run(&settings.solver, text, requested.len(), settings.wallclock)
+                .map_err(|failure| Problem::Query {
+                id: obligation.id.clone(),
+                message: failure.0,
+            })?;
+            if let Some(dir) = &settings.cache {
+                cache::put(dir, key, &answer);
+            }
+            Ok(Some(answer))
+        })
+        .collect::<Result<_, Problem>>()?;
+    let mut outcomes = Vec::new();
+    for (((answer, cached), second), (obligation, (_, requested, _))) in answers
+        .into_iter()
+        .zip(second)
+        .zip(obligations.iter().zip(&scripts))
+    {
+        outcomes.push(outcome(
+            obligation,
+            requested,
+            &answer,
+            second.as_ref(),
+            cached,
+        ));
     }
     Ok(outcomes)
 }
 
-fn outcome(obligation: &Obligation, requested: &[F], answer: &Answer, cached: bool) -> Outcome {
+/// The values of the requested terms in a refuted answer, as the solver prints them.
+fn values<'r>(requested: &'r [F], answer: &'r Answer) -> impl Fn(&F) -> String + 'r {
+    move |term: &F| {
+        requested
+            .iter()
+            .position(|r| r == term)
+            .and_then(|i| answer.values.get(i))
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
+/// The script of an obligation's query with the uninterpreted arithmetic of `spec/12 §2`
+/// defined as real arithmetic, in `QF_NIA` (ADR 0054): `*`, and SMT-LIB `div` and `mod`,
+/// which are Euclidean.
+fn interpreted(obligation: &Obligation, lock: &Lock) -> String {
+    let (text, _) = script(obligation, lock);
+    text.replace("(set-logic QF_UFLIA)", "(set-logic QF_UFNIA)")
+        .replace(
+            "(declare-fun i!mul!Int (Int Int) Int)",
+            "(define-fun i!mul!Int ((x Int) (y Int)) Int (* x y))",
+        )
+        .replace(
+            "(declare-fun i!div!Int (Int Int) Int)",
+            "(define-fun i!div!Int ((x Int) (y Int)) Int (div x y))",
+        )
+        .replace(
+            "(declare-fun i!mod!Int (Int Int) Int)",
+            "(define-fun i!mod!Int ((x Int) (y Int)) Int (mod x y))",
+        )
+}
+
+fn outcome(
+    obligation: &Obligation,
+    requested: &[F],
+    answer: &Answer,
+    second: Option<&Answer>,
+    cached: bool,
+) -> Outcome {
+    // ADR 0054: the second query's refutation, when its model agrees, replaces the first.
+    let answer = match second {
+        Some(second)
+            if second.status == Status::Refuted
+                && agrees(obligation, &values(requested, second)) =>
+        {
+            second
+        }
+        _ => answer,
+    };
     let status = match answer.status {
         Status::Proven => ObligationStatus::Proven,
         Status::Refuted => ObligationStatus::Refuted,
