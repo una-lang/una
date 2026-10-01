@@ -1,7 +1,6 @@
--- test: prelude `filter` with a secret predicate, then `.len` (review control)
+-- test: prelude `filter` with a secret predicate, then `.len` (review control); the secret predicate is rejected at the lambda (ADR 0051)
 -- spec: spec/07 §7
--- expect: error U4001 at 7:42
--- expect: error U4001 at 7:67
+-- expect: error U4001 at 6:67
 module filter_len
 
 pub count(xs: List[secret Int]) -> Int = xs.filter(keep: fn(x) -> x > 0).len

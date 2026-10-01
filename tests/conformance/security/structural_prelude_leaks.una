@@ -1,0 +1,19 @@
+-- test: structural prelude functions keep every label of what they read: a predicate or mapping over a secret field, a secret index, and contains stay rejected (issue #89, ADR 0051)
+-- spec: spec/14 §1
+-- expect: error U4001 at 13:73
+-- expect: error U4001 at 15:45
+-- expect: error U4001 at 17:60
+-- expect: error U4001 at 19:48
+module structural_prelude_leaks
+
+pub kind R
+  id: Text
+  code: secret Text
+
+pub leak_code(xs: List[R]) -> Option[R] = xs.first_where(keep: fn(r) -> r.code == "x")
+
+pub leak_codes(xs: List[R]) -> List[Text] = xs.map(each: fn(r) -> r.code)
+
+pub leak_at(xs: List[Int], i: secret Int) -> Option[Int] = xs.at(index: i)
+
+pub leak_contains(xs: List[R], r: R) -> Bool = xs.contains(item: r)

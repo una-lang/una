@@ -35,7 +35,18 @@ The prelude is imported into every module.
 
 Higher-order prelude functions accept only pure, non-failing lambdas in v0.1 (effect polymorphism is deferred).
 
-**Result labels** (ADR 0038 D3). Every function of this table whose result depends on element or argument values returns a result labeled with the join of the labels of those arguments and of their element types: `contains`, `first`, `at`, `first_where`, `filter`, `map`, `fold`, `sum`, `is_empty`, `is_some`, `is_ok`, `append`, `or_else`, `min`, `max`, `abs` and the text functions `is_digits`, `starts_with`, `trim` and `to_int`. The native implementations declare these labels explicitly (`spec/07 §7` rule 8).
+**Result labels** (ADR 0038 D3, ADR 0051). The parameters of these functions that are not functions accept arguments of any label, and their results carry those labels as follows (`spec/07 §7` rule 8):
+
+- **Structural functions** label each position of the result with what it holds. The element and accumulator positions carry the labels of their type variables, which every argument they come from joins (`spec/07 §7` rule 1). The top label is the top label of what decides the result's shape, so the labels of element values the function does not read never reach it:
+  - `append`, `first` and `is_empty`: the top label of `xs`;
+  - `at`: the top label of `xs` and every label of `index`;
+  - `is_some`: the top label of `o`; `is_ok`: the top label of `r`;
+  - `map`: the top labels of `xs` and `each`; `fold`: the top labels of `xs` and `step`;
+  - `filter` and `first_where`: the top labels of `xs` and `keep`, and the label of `keep`'s declared result. A predicate's result flows into that declared `Bool`, so a predicate over labeled element values is rejected there (U4001).
+  `.len` takes the top label of its operand (`spec/07 §7` rule 3).
+- **The other functions** read element or argument values, and their result is labeled with the join of every label of their arguments, element types included: `contains`, `sum`, `or_else`, `min`, `max`, `abs` and the text functions `is_digits`, `starts_with`, `trim` and `to_int`.
+
+The native implementations declare these labels explicitly.
 
 Text works on Unicode scalar values: `.len` counts them; `is_digits` holds when every character is an ASCII digit, so it holds of the empty text; `trim` removes Unicode whitespace at both ends; `to_int` reads an optional `-` followed by ASCII digits; `starts_with` compares scalar values; `contains` and `==` are structural; `Text` orders by scalar values (ADR 0032).
 

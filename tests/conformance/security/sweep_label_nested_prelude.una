@@ -1,50 +1,20 @@
--- test: nested kinds and generics holding a secret: prelude results carry the field labels of their element and argument types (label sweep)
+-- test: nested kinds and generics holding a secret: prelude results carry the field labels of their element and argument types (label sweep); the structural functions, whose results the field labels no longer reach unless they read them, are accepted (ADR 0051)
 -- spec: spec/07 §7
--- expect: error U4001 at 64:70
--- expect: error U4001 at 66:67
--- expect: error U4001 at 68:64
--- expect: error U4001 at 70:73
--- expect: error U4001 at 72:67
--- expect: error U4001 at 74:70
--- expect: error U4001 at 76:65
--- expect: error U4001 at 78:70
--- expect: error U4001 at 80:73
--- expect: error U4001 at 82:67
--- expect: error U4001 at 84:87
--- expect: error U4001 at 86:70
--- expect: error U4001 at 88:57
--- expect: error U4001 at 90:57
--- expect: error U4001 at 92:57
--- expect: error U4001 at 98:72
--- expect: error U4001 at 100:69
--- expect: error U4001 at 102:66
--- expect: error U4001 at 104:75
--- expect: error U4001 at 106:69
--- expect: error U4001 at 108:72
--- expect: error U4001 at 110:67
--- expect: error U4001 at 112:72
--- expect: error U4001 at 114:75
--- expect: error U4001 at 116:69
--- expect: error U4001 at 118:91
--- expect: error U4001 at 120:72
--- expect: error U4001 at 122:59
--- expect: error U4001 at 124:59
--- expect: error U4001 at 126:59
--- expect: error U4001 at 132:51
--- expect: error U4001 at 134:48
--- expect: error U4001 at 136:45
--- expect: error U4001 at 138:54
--- expect: error U4001 at 140:48
--- expect: error U4001 at 142:51
--- expect: error U4001 at 144:46
--- expect: error U4001 at 146:51
--- expect: error U4001 at 148:54
--- expect: error U4001 at 150:48
--- expect: error U4001 at 152:53
--- expect: error U4001 at 154:51
--- expect: error U4001 at 156:38
--- expect: error U4001 at 158:38
--- expect: error U4001 at 160:38
+-- expect: error U4001 at 34:70
+-- expect: error U4001 at 54:87
+-- expect: error U4001 at 58:57
+-- expect: error U4001 at 60:57
+-- expect: error U4001 at 62:57
+-- expect: error U4001 at 68:72
+-- expect: error U4001 at 88:91
+-- expect: error U4001 at 92:59
+-- expect: error U4001 at 94:59
+-- expect: error U4001 at 96:59
+-- expect: error U4001 at 102:51
+-- expect: error U4001 at 122:53
+-- expect: error U4001 at 126:38
+-- expect: error U4001 at 128:38
+-- expect: error U4001 at 130:38
 module sweep_label_nested_prelude
 
 kind Acct

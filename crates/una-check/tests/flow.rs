@@ -118,7 +118,7 @@ fn values_flow_into_declared_types_below_their_labels() {
             "U4001 t.una:12:9 parameter `x` of `plain` is `Int`, and this value is `secret Int`: a flow from `secret` to `public`",
             "U4001 t.una:16:19 `copy` is `Int`, and this value is `secret Int`: a flow from `secret` to `public`",
             "U4001 t.una:19:42 the result of `field` is `Box[Int]`, and this value is `Box[secret Int]`: a flow from `secret` to `public`",
-            "U4001 t.una:23:52 the result of `generic` is `Option[Int]`, and this value is `secret Option[secret Int]`: a flow from `secret` to `public`",
+            "U4001 t.una:23:52 the result of `generic` is `Option[Int]`, and this value is `Option[secret Int]`: a flow from `secret` to `public`",
         ]
     );
 }
@@ -304,7 +304,7 @@ fn lambdas_and_function_values_carry_labels() {
              pub passed() -> Int = accepts_secret(public_only)\n"
         ),
         [
-            "U4001 t.una:5:49 the result of `mapped` is `List[Int]`, and this value is `secret List[secret Int]`: a flow from `secret` to `public`",
+            "U4001 t.una:5:49 the result of `mapped` is `List[Int]`, and this value is `List[secret Int]`: a flow from `secret` to `public`",
             "U4001 t.una:9:59 the result of `captured` is `List[Int]`, and this value is `List[secret Int]`: a flow from `secret` to `public`",
             "U4001 t.una:11:53 the result of this lambda is `Int`, and this value is `secret Int`: a flow from `secret` to `public`",
             "U4001 t.una:17:38 parameter `f` of `accepts_secret` is `fn(secret Int) -> Int`, and this value is `fn(Int) -> Int`: a flow from `secret` to `public`",
