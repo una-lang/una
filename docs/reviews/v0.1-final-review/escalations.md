@@ -19,3 +19,14 @@
 **Recommendation:** A, with an ADR that amends `spec/07 §7` rule 4 and ADR 0046 rule 3, and an `op argument` row in the flow and variance matrices of the closure plan (§3).
 
 **Blocks the tag:** yes. F-001 is Critical under the owner's rule.
+
+## Leonardo's answers
+
+Given on 2026-10-01 and relayed to the closure session by the coordinator session, acting on the owner's behalf; recorded here by the closure session.
+
+| Item | Answer | Where it is applied |
+| --- | --- | --- |
+| E1 | A: an operation argument flows (`spec/07 §7` rule 2) into the declared parameter type, with every covariant data position taken as `⊤` for the comparison, so `accepts` alone keeps bounding data; contravariant positions and invariant kind arguments are compared as at any other call argument. An `op argument` row joins the flow and variance matrices. | ADR 0050 (Accepted), `spec/07 §7` rules 2 and 4, `spec/10 §5` T-Op; ADR 0046 gets an "Amended by" note. Issue #77 |
+| D-160 to D-169 | Keep A. | `docs/history/v0.1/open-decisions.md` |
+| D-170 | Switch to B (F-003). | `docs/history/v0.1/open-decisions.md`. Issue #78 |
+| Scope | F-001, F-002, F-003 and F-004, all in closure round 3. | Issues #77, #69, #78, #79 |
