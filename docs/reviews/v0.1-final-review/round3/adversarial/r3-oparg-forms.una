@@ -1,0 +1,89 @@
+-- Adversarial: ADR 0050 class sweep: function types at depth 2 and 3 (a function returning a function, a third-order parameter), `Option`, `Result` and nested `List[Option[...]]` of `fn(secret Int) -> Int`, invariant `Sink[secret Int]` under `Box`, `Option` and `List`, a generic alias `Eat[secret Int]` of a function type and a closed alias `Feed`; each passed a public identity
+-- Expected: U4001 at each of the 10 arguments
+-- Observed: U4001 at all 10
+-- Verdict: Held
+module r3_oparg_forms
+
+pub kind Bad = Broke | Other
+
+kind Box[T]
+  value: T
+
+kind Sink[T]
+  eat: fn(T) -> Int
+
+kind Eat[T] = fn(T) -> Int
+
+kind Feed = fn(secret Int) -> Int
+
+capability Probe
+  op returned(f: fn() -> fn(secret Int) -> Int) -> Int
+  op third(f: fn(fn(fn(secret Int) -> Int) -> Int) -> Int) -> Int
+  op optional(f: Option[fn(secret Int) -> Int]) -> Int
+  op resulted(f: Result[fn(secret Int) -> Int, Bad]) -> Int
+  op nested(f: List[Option[fn(secret Int) -> Int]]) -> Int
+  op boxed_sink(b: Box[Sink[secret Int]]) -> Int
+  op option_sink(o: Option[Sink[secret Int]]) -> Int
+  op list_sink(l: List[Sink[secret Int]]) -> Int
+  op aliased(f: Eat[secret Int]) -> Int
+  op closed_alias(f: Feed) -> Int
+
+ident(x: Int) -> Int = x
+
+mk() -> fn(Int) -> Int = ident
+
+made() -> Sink[Int] = Sink(eat: ident)
+
+outer(k: fn(fn(Int) -> Int) -> Int) -> Int = k(ident)
+
+pub by_returned() -> Int
+  uses @p: Probe[returned]
+=
+  @p.returned(mk)
+
+pub by_third() -> Int
+  uses @p: Probe[third]
+=
+  @p.third(outer)
+
+pub by_optional() -> Int
+  uses @p: Probe[optional]
+=
+  @p.optional(Some(ident))
+
+pub by_result() -> Int
+  uses @p: Probe[resulted]
+=
+  let r: Result[fn(Int) -> Int, Bad] = Ok(ident)
+  @p.resulted(r)
+
+pub by_nested() -> Int
+  uses @p: Probe[nested]
+=
+  let l: List[Option[fn(Int) -> Int]] = [Some(ident)]
+  @p.nested(l)
+
+pub by_boxed_sink() -> Int
+  uses @p: Probe[boxed_sink]
+=
+  @p.boxed_sink(Box(value: made()))
+
+pub by_option_sink() -> Int
+  uses @p: Probe[option_sink]
+=
+  @p.option_sink(Some(made()))
+
+pub by_list_sink() -> Int
+  uses @p: Probe[list_sink]
+=
+  @p.list_sink([made()])
+
+pub by_aliased() -> Int
+  uses @p: Probe[aliased]
+=
+  @p.aliased(ident)
+
+pub by_closed_alias() -> Int
+  uses @p: Probe[closed_alias]
+=
+  @p.closed_alias(ident)
