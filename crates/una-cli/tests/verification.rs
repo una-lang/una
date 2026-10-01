@@ -684,19 +684,33 @@ pub closed_call() -> Int = inv(zero(1))
 }
 
 #[test]
-fn a_refutation_through_uninterpreted_arithmetic_says_so_ui004() {
-    // Issue #72 (UI-004): `a * b` of two values is the uninterpreted `i!mul!Int`
-    // (`spec/12 §2`), so the model may not be a real execution, and the message says so. A
-    // refutation over linear arithmetic keeps the plain message.
+fn a_refutation_through_uninterpreted_arithmetic_is_validated_ui004() {
+    // Issue #72 (UI-004), ADR 0053: `a * b` of two values is the uninterpreted `i!mul!Int`
+    // (`spec/12 §2`). A model whose products disagree with real arithmetic is no execution,
+    // so the obligation is unknown (U5002), with no counterexample and the same repairs.
     let product = only_diagnostic(
         "uninterpreted-product",
         "module app\n\npub product(a: Nat, b: Nat) -> Nat = a * b\n",
     );
-    assert_eq!(product["code"], "U5001");
-    let message = product["message"].as_str().unwrap_or_default();
-    assert!(
-        message.contains("is uninterpreted") && message.contains("may not be a real execution"),
-        "{message}"
+    assert_eq!(product["code"], "U5002");
+    assert_eq!(
+        product["message"],
+        "refinement `result >= 0` could not be proven (the refutation depends on a product, quotient or remainder of two values, which the encoding of `spec/12 §2` leaves uninterpreted)"
+    );
+    assert_eq!(product["obligation"]["status"], "unknown");
+    assert!(product.get("counterexample").is_none(), "{product}");
+    assert!(!product["repairs"].as_array().unwrap().is_empty());
+    // A model whose products agree with real arithmetic is an execution: refuted, with the
+    // counterexample and the plain message.
+    let real = only_diagnostic(
+        "real-product",
+        "module app\n\npub six(a: Int, b: Int) -> Int\n  requires a == 2 and b == 3\n  ensures result != 6\n=\n  a * b\n",
+    );
+    assert_eq!(real["code"], "U5001");
+    assert_eq!(real["message"], "postcondition of `six` is refuted");
+    assert_eq!(
+        real["counterexample"]["bindings"],
+        json!([{"name": "a", "value": 2}, {"name": "b", "value": 3}, {"name": "result", "value": 6}])
     );
     let linear = only_diagnostic(
         "linear-refutation",

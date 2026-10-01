@@ -113,7 +113,96 @@ fn requested(obligation: &Obligation) -> Vec<F> {
             terms.push(term);
         }
     }
+    // ADR 0053: every application of uninterpreted arithmetic and its operands, so that the
+    // model can be checked against real arithmetic.
+    for (application, left, right) in uninterpreted(obligation) {
+        for term in [application, left, right] {
+            if !terms.contains(&term) {
+                terms.push(term);
+            }
+        }
+    }
     terms
+}
+
+/// The applications of `i!mul!Int`, `i!div!Int` and `i!mod!Int` in the assertions of the
+/// obligation's query, with their operands (`spec/12 §2`).
+fn uninterpreted(obligation: &Obligation) -> Vec<(F, F, F)> {
+    obligation
+        .query
+        .applications()
+        .into_iter()
+        .filter_map(|term| match &term {
+            F::App { fun, args } if ARITHMETIC.contains(&fun.name.as_str()) => {
+                match args.as_slice() {
+                    [left, right] => Some((term.clone(), left.clone(), right.clone())),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The uninterpreted arithmetic of `spec/12 §2`.
+const ARITHMETIC: [&str; 3] = ["i!mul!Int", "i!div!Int", "i!mod!Int"];
+
+/// The reason of an obligation whose model disagrees with real arithmetic (ADR 0053).
+pub(crate) const UNINTERPRETED: &str = "the refutation depends on a product, quotient or remainder of two values, which the encoding of `spec/12 §2` leaves uninterpreted";
+
+/// Whether the model agrees with real arithmetic at every application of uninterpreted
+/// arithmetic in the obligation (ADR 0053): each value equals the product, or the Euclidean
+/// quotient or remainder (`spec/11`), of its operands' values. A definition that uses one, a
+/// value that is not an integer within 128 bits, an overflow or a zero divisor cannot be
+/// checked, so it does not agree.
+fn agrees(obligation: &Obligation, value: &dyn Fn(&F) -> String) -> bool {
+    let in_definitions = obligation.query.definitions.values().any(|definition| {
+        let mut terms = Vec::new();
+        definition.body.visit(&mut terms);
+        terms.iter().any(
+            |term| matches!(term, F::App { fun, .. } if ARITHMETIC.contains(&fun.name.as_str())),
+        )
+    });
+    if in_definitions {
+        return false;
+    }
+    uninterpreted(obligation)
+        .into_iter()
+        .all(|(application, left, right)| {
+            let F::App { fun, .. } = &application else {
+                return false;
+            };
+            let (Some(found), Some(a), Some(b)) = (
+                integer(&value(&application)),
+                integer(&value(&left)),
+                integer(&value(&right)),
+            ) else {
+                return false;
+            };
+            let expected = match fun.name.as_str() {
+                "i!mul!Int" => a.checked_mul(b),
+                "i!div!Int" if b != 0 => euclidean(a, b).map(|(q, _)| q),
+                "i!mod!Int" if b != 0 => euclidean(a, b).map(|(_, r)| r),
+                _ => None,
+            };
+            expected == Some(found)
+        })
+}
+
+/// The Euclidean quotient and remainder of `a` by a nonzero `b`: `a = b * q + r` with
+/// `0 <= r < |b|`, as SMT-LIB `div` and `mod` define them.
+fn euclidean(a: i128, b: i128) -> Option<(i128, i128)> {
+    let r = a.checked_rem_euclid(b)?;
+    let q = a.checked_sub(r)?.checked_div(b)?;
+    Some((q, r))
+}
+
+/// A solver's integer value, `5` or `(- 5)`, within 128 bits.
+fn integer(text: &str) -> Option<i128> {
+    match text.strip_prefix("(- ").and_then(|t| t.strip_suffix(')')) {
+        Some(positive) => positive.trim().parse::<i128>().ok()?.checked_neg(),
+        None => text.trim().parse::<i128>().ok(),
+    }
 }
 
 /// The SMT-LIB text of every query, for the determinism snapshots of `spec/12 §4`.
@@ -196,6 +285,32 @@ fn outcome(obligation: &Obligation, requested: &[F], answer: &Answer, cached: bo
         Status::Refuted => ObligationStatus::Refuted,
         Status::Unknown => ObligationStatus::Unknown,
     };
+    // ADR 0053: a refutation whose model disagrees with real arithmetic at an application of
+    // uninterpreted arithmetic is no execution, so the obligation is unknown, with no
+    // counterexample.
+    if answer.status == Status::Refuted {
+        let value = |term: &F| {
+            requested
+                .iter()
+                .position(|r| r == term)
+                .and_then(|i| answer.values.get(i))
+                .cloned()
+                .unwrap_or_default()
+        };
+        if !agrees(obligation, &value) {
+            // The diagnostic still points at the returned expression of the model's path.
+            let path = (1..=obligation.paths.len())
+                .find(|number| value(&path_selector(*number)) == "true")
+                .map(|number| number - 1);
+            return Outcome {
+                status: ObligationStatus::Unknown,
+                reason: Some(UNINTERPRETED.to_owned()),
+                cached,
+                path,
+                bindings: Vec::new(),
+            };
+        }
+    }
     let mut bindings = Vec::new();
     let mut path = None;
     if answer.status == Status::Refuted {
@@ -279,5 +394,28 @@ fn identity(kind: &str, raw: &str) -> String {
     match raw.rsplit_once("!val!") {
         Some((_, n)) => format!("{kind}#{n}"),
         None => format!("{kind}#{raw}"),
+    }
+}
+
+#[cfg(test)]
+mod arithmetic_tests {
+    use super::{euclidean, integer};
+
+    #[test]
+    fn euclidean_division_keeps_the_remainder_non_negative() {
+        // `spec/11`: `div` and `mod` are Euclidean, as in SMT-LIB.
+        assert_eq!(euclidean(7, 2), Some((3, 1)));
+        assert_eq!(euclidean(-7, 2), Some((-4, 1)));
+        assert_eq!(euclidean(7, -2), Some((-3, 1)));
+        assert_eq!(euclidean(-7, -2), Some((4, 1)));
+        assert_eq!(euclidean(i128::MIN, -1), None);
+    }
+
+    #[test]
+    fn solver_integers_parse_within_128_bits() {
+        assert_eq!(integer("38"), Some(38));
+        assert_eq!(integer("(- 5)"), Some(-5));
+        assert_eq!(integer("true"), None);
+        assert_eq!(integer("1000000000000000000000000000000000000000000"), None);
     }
 }
