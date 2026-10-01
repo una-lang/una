@@ -63,6 +63,9 @@ pub struct Site {
     /// For an obligation of a function value flowing into a function type, or of a lambda's
     /// result, its only repair (ADR 0037 rule 6).
     pub flow: Option<String>,
+    /// For a precondition of a named function passed as a function value, the function's
+    /// name: the function type it flows into has no precondition (issue #76).
+    pub function_value: Option<String>,
 }
 
 /// The kind of declaration that encloses an obligation.
@@ -648,6 +651,8 @@ struct Walker<'p, 'i> {
     /// hold by the parameters' own, and give no obligation. It holds the source names of
     /// the lambda's parameters, which the goal text of the call's `requires` prints (R-032).
     eta: Option<Vec<String>>,
+    /// The name of the named function whose eta-expansion is walked (issue #76).
+    eta_name: Option<String>,
 }
 
 /// How the obligations of a function value flowing into a function type name the value and
@@ -677,6 +682,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             lambdas: BTreeMap::new(),
             fresh: 0,
             eta: None,
+            eta_name: None,
         }
     }
 
@@ -1435,8 +1441,13 @@ impl<'p, 'i> Walker<'p, 'i> {
                     .as_ref()
                     .map(|_| params.iter().map(|(p, _)| source_name(p)).collect());
                 let eta = std::mem::replace(&mut self.eta, names);
+                let eta_name = std::mem::replace(
+                    &mut self.eta_name,
+                    function.as_ref().map(|f| f.name.clone()),
+                );
                 self.walk(body, &inner, &mut leaves);
                 self.eta = eta;
+                self.eta_name = eta_name;
                 let who = Who {
                     name: function
                         .as_ref()
@@ -1573,14 +1584,40 @@ impl<'p, 'i> Walker<'p, 'i> {
                 Term::Var(name) => texts.get(name.as_str()).cloned(),
                 _ => None,
             });
-            self.site(
-                ObligationKind::Precondition,
-                ctx,
-                goal.map(|g| g.f),
-                text,
-                span,
-                clause.span.map(|span| (span, "requires clause")),
+            // Issue #76 (UI-007): in the eta-expansion of a named function passed as a value,
+            // the precondition cannot follow the value, since a function type has none; its
+            // only repair is a lambda that calls the function where the precondition holds.
+            let function_value = self.eta.as_ref().zip(self.eta_name.clone()).map(
+                |(params, name)| {
+                    let repair = format!(
+                        "pass a lambda that calls `{name}` only where `{text}` holds, as in `fn({params}) -> if {text} then {name}({params}) else ...`",
+                        params = params.join(", ")
+                    );
+                    (name, repair)
+                },
             );
+            let related = clause.span.map(|span| (span, "requires clause"));
+            match function_value {
+                Some((name, repair)) => {
+                    self.function_value_site(
+                        ctx,
+                        goal.map(|g| g.f),
+                        text,
+                        span,
+                        related,
+                        name,
+                        repair,
+                    );
+                }
+                None => self.site(
+                    ObligationKind::Precondition,
+                    ctx,
+                    goal.map(|g| g.f),
+                    text,
+                    span,
+                    related,
+                ),
+            }
         }
         let result = Tv {
             f: x.f.clone(),
@@ -2398,6 +2435,40 @@ impl<'p, 'i> Walker<'p, 'i> {
         );
     }
 
+    /// [`Walker::site`] for the precondition of the named function `name` passed as a function
+    /// value, whose only repair is `repair` (issue #76).
+    #[allow(clippy::too_many_arguments)]
+    fn function_value_site(
+        &mut self,
+        ctx: &Ctx,
+        goal: Option<F>,
+        text: String,
+        span: Span,
+        related: Option<(Span, &'static str)>,
+        name: String,
+        repair: String,
+    ) {
+        let mut assertions: Vec<F> = ctx.hyps.iter().map(|h| h.f.clone()).collect();
+        let mut place = self.place(ObligationKind::Precondition, goal.as_ref());
+        place.parameter = None;
+        place.over_parameters = false;
+        place.flow = Some(repair);
+        place.function_value = Some(name);
+        assertions.push(F::not(goal.unwrap_or(F::Bool(false))));
+        let hypotheses = self.shown_hypotheses(&ctx.hyps);
+        self.push(
+            ObligationKind::Precondition,
+            text,
+            span,
+            related,
+            Vec::new(),
+            hypotheses,
+            assertions,
+            ctx,
+            place,
+        );
+    }
+
     /// An obligation over every normal return path: `Π ∧ (path₁ ∨ … ∨ pathₙ) ⊢ goal`, where
     /// each path fixes `result`.
     #[allow(clippy::too_many_arguments)]
@@ -2512,6 +2583,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 over_parameters: false,
                 ground: false,
                 flow: None,
+                function_value: None,
             };
         };
         let direct = binders(goal);
@@ -2542,6 +2614,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 && free.iter().all(|name| self.parameters.contains(name)),
             ground: free.is_empty(),
             flow: None,
+            function_value: None,
         }
     }
 
