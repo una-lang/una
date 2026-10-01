@@ -1,0 +1,43 @@
+-- Adversarial: label flow sites outside the closure matrix: handler instance argument, failure payload field, `if error use` default
+-- Expected: U4001 at each
+-- Observed: U4001 at each
+-- Verdict: Held
+module fr_flow_extra_sites_label
+
+pub kind Bad = Broke(n: Int) | Other
+
+capability Shout
+  op say(n: Int) -> Int
+
+handler loud(seed: Int) for Shout
+  op say(n) = seed
+
+pub handler_arg(pin: secret Int) -> Int
+  uses @shout: Shout[say]
+=
+  @shout.say(1)
+
+pub install(pin: secret Int) -> Int
+=
+  handler_arg(pin) with @shout = loud(pin)
+
+pub fails_secret(pin: secret Int) -> Int
+  fails Bad
+=
+  fail Broke(n: pin)
+
+pub caught(pin: secret Int) -> Int
+=
+  let r = attempt fails_secret(pin)
+  when r
+    is Ok(v) -> 0
+    is Err(e) ->
+      when e
+        is Broke(n) -> n
+        is Other -> 0
+
+pub defaulted(pin: secret Int) -> Int
+=
+  let v: Int = fails_secret(1)
+    if error use pin
+  v
