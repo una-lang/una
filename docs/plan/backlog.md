@@ -2,6 +2,10 @@
 
 Status: Informative. Nothing in this file may be implemented before its target version (see `CLAUDE.md`, scope guard). Sources: R1, R2, R3 are the three external design reviews (`reviews/triage.md`); D is the original design. The owner's design decisions of 2026-10-01 are cited by their ids (V2-n for the memory model, FW-n for fixed-width integers) and recorded in full in the linked issues. Each row links to its GitHub issue, the unit of work (`CLAUDE.md`, "Work rules").
 
+## Opened for v0.2
+
+These rows are in scope since Leonardo opened the v0.2 scope on 2026-10-01 (charter §5b). Each is implemented only after its ADR and spec text are merged: ADR 0055 for the native backend, ADR 0056 for the memory model and ADR 0057 for fixed-width integers.
+
 | Item | Target | Why deferred | Source | Issue |
 | --- | --- | --- | --- | --- |
 | Native backend (Cranelift), then LLVM for release builds | v0.2 | Thesis first; UAM is the oracle (ADR 0002) | D | [#26](https://github.com/una-lang/una/issues/26) |
@@ -10,6 +14,11 @@ Status: Informative. Nothing in this file may be implemented before its target v
 | `for` loops with full bodies over collections and ranges (no `while`, no `invariant` clause) | v0.2 | Decided (V2-12): desugars to a generated recursive function over the `let edit` bindings the body updates, whose refinements are the loop invariant; a failing body fails the loop and the bindings keep their values; a loop over labeled structure runs its body under that pc | Owner 2026-10-01 | [#81](https://github.com/una-lang/una/issues/81) |
 | Arenas and index-based graph structures in the standard library | v0.2 | Decided (V2-3): with no mutable aliasing in v0.2, graphs and cyclic structures live in arenas addressed by indices | R3, owner 2026-10-01 | [#82](https://github.com/una-lang/una/issues/82) |
 | In-place mutation of unique values, a backend optimization with no syntax | v0.2 | Semantics stay purely functional. Decided (V2-15): the surface method `m.with(k, v)` is dropped, since `with` rebinds capabilities and `let edit` with field edits covers functional update | R3, owner 2026-10-01 | [#30](https://github.com/una-lang/una/issues/30) |
+
+## Deferred
+
+| Item | Target | Why deferred | Source | Issue |
+| --- | --- | --- | --- | --- |
 | Profiles `app` and `systems` | v0.2 | Nothing in v0.1 needs `systems` | D, R3 | [#31](https://github.com/una-lang/una/issues/31) |
 | Structured concurrency (`together`, tasks, cancellation) | v0.2 | Needs disjointness proofs and runtime model | D, R3 | [#32](https://github.com/una-lang/una/issues/32) |
 | SIMD requirements, target-aware (`simd required target avx2`) | v0.2 | Backend dependent | R3 | [#27](https://github.com/una-lang/una/issues/27) |
