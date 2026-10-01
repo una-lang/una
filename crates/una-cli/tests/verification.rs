@@ -684,6 +684,28 @@ pub closed_call() -> Int = inv(zero(1))
 }
 
 #[test]
+fn a_refutation_through_uninterpreted_arithmetic_says_so_ui004() {
+    // Issue #72 (UI-004): `a * b` of two values is the uninterpreted `i!mul!Int`
+    // (`spec/12 §2`), so the model may not be a real execution, and the message says so. A
+    // refutation over linear arithmetic keeps the plain message.
+    let product = only_diagnostic(
+        "uninterpreted-product",
+        "module app\n\npub product(a: Nat, b: Nat) -> Nat = a * b\n",
+    );
+    assert_eq!(product["code"], "U5001");
+    let message = product["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("is uninterpreted") && message.contains("may not be a real execution"),
+        "{message}"
+    );
+    let linear = only_diagnostic(
+        "linear-refutation",
+        "module app\n\npub less(a: Nat) -> Nat = a - 1\n",
+    );
+    assert_eq!(linear["message"], "refinement `result >= 0` is refuted");
+}
+
+#[test]
 fn a_forged_proof_cache_entry_is_trusted_and_counted_as_cached() {
     // R-018, ADR 0041, adversarial `escape-proof-cache-forgery`: the proof cache is part of
     // the Trusted zone in v0.1. A forged entry turns a refuted query into proven, as the
