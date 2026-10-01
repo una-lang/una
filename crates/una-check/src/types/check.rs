@@ -199,6 +199,9 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) escaped: Vec<Span>,
     /// The statement whose expression is checked, for repairs that add a `with` binding.
     pub(crate) statement: Option<Statement>,
+    /// In a `do` line, the operands of `attempt` and the lambdas, whose failures do not reach
+    /// the `do` expression's error kind (D-170).
+    pub(crate) absorbed: Vec<Span>,
     /// The number of diagnostics when the declaration started.
     started: usize,
 }
@@ -291,6 +294,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             instantiations: Vec::new(),
             escaped: Vec::new(),
             statement: None,
+            absorbed: Vec::new(),
             started,
         }
     }
@@ -1086,14 +1090,20 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             }
         }
         self.ctx.in_do = true;
+        self.absorbed.clear();
         let ty = self.expr(&example.action, None);
         self.ctx.in_do = false;
+        // The error kind of the `do` expression: the failures of its calls, except those that
+        // `attempt` absorbs or that belong to a lambda (D-170).
         let action = example.action.span;
+        let within = |span: &Span, outer: &Span| {
+            span.file == outer.file && span.start >= outer.start && span.end <= outer.end
+        };
         let fails: Vec<Ty> = self
             .call_fails
             .iter()
             .filter(|(span, _)| {
-                span.file == action.file && span.start >= action.start && span.end <= action.end
+                within(span, &action) && !self.absorbed.iter().any(|outer| within(span, outer))
             })
             .map(|(_, kind)| kind.clone())
             .collect();
@@ -1266,9 +1276,9 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     /// otherwise (`spec/10 §12` rule 1, R-020). When the `do` expression cannot fail,
     /// `expect fails V` never holds, and it is U1001 too (ADR 0044). `action` is the type of
     /// the `do` expression: one that failed to type reports nothing more.
-    /// DECISION D-170: "cannot fail" means that the `do` expression calls nothing that
-    /// can fail; a failing call whose failure a handling clause absorbs still counts as able
-    /// to fail, so no example is rejected for a failure it might observe.
+    /// D-170 (option B, the owner's answer of 2026-10-01): `fails` is the error kind of the
+    /// `do` expression itself, so a call whose failure `attempt` absorbs, or a call inside a
+    /// lambda, does not count.
     fn expected_failure(&mut self, variant: &Ident, fails: &[Ty], action: &Ty) {
         let name = self.name(variant);
         if fails.is_empty() {
