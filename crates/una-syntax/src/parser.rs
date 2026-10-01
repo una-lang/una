@@ -1655,7 +1655,8 @@ impl<'a> Parser<'a> {
     /// B-001). DECISION D-155: a variant, `is`, `in` or a literal where a field or local name
     /// is expected starts a nested pattern; the repair has no mechanical edit, because moving the
     /// arm body under a second `when` also regroups the arms that share the outer variant. A
-    /// literal is named as such, with a comparison in the arm as its repair (issue #73).
+    /// literal is named as such, with a second `when` or a comparison in the arm as its repair
+    /// (issue #73).
     fn no_nested_pattern(&mut self, variant: Ident) -> Parse<()> {
         let nested = matches!(
             self.peek(),
@@ -1670,36 +1671,50 @@ impl<'a> Parser<'a> {
         }
         let span = self.span();
         let outer = self.interner.resolve(variant.name).to_owned();
-        // Issue #73 (UI-001): a literal cannot move to a second `when`, whose patterns cannot
-        // be literals either, so its repair compares the bound name instead.
+        // Issue #73 (UI-001): a literal is named as such. A second `when` matches it with a
+        // literal arm and `else` (`spec/02 §6`), except a negative number, which a pattern
+        // cannot write; a comparison in the arm works for every literal.
         let literal = match (self.peek(), self.peek_at(1)) {
-            (TokenKind::Int(digits), _) => Some(digits.clone()),
-            (TokenKind::Minus, TokenKind::Int(digits)) => Some(format!("-{digits}")),
-            (TokenKind::Minus, _) => Some("-...".to_owned()),
-            (TokenKind::Keyword(Keyword::True), _) => Some("true".to_owned()),
-            (TokenKind::Keyword(Keyword::False), _) => Some("false".to_owned()),
-            (TokenKind::TextStart, _) => Some("\"...\"".to_owned()),
+            (TokenKind::Int(digits), _) => Some((digits.clone(), true)),
+            (TokenKind::Minus, TokenKind::Int(digits)) => Some((format!("-{digits}"), false)),
+            (TokenKind::Minus, _) => Some(("-...".to_owned(), false)),
+            (TokenKind::Keyword(Keyword::True), _) => Some(("true".to_owned(), true)),
+            (TokenKind::Keyword(Keyword::False), _) => Some(("false".to_owned(), true)),
+            (TokenKind::TextStart, _) => Some(("\"...\"".to_owned(), true)),
             _ => None,
         };
-        let (message, description) = match literal {
-            Some(value) => (
-                "literal patterns are not supported in v0.1",
-                format!(
-                    "bind the field to a name, as in `is {outer}(inner)`, then compare that name inside the arm, as in `if inner == {value} then ... else ...`"
-                ),
-            ),
+        let bind = format!("bind the field to a name, as in `is {outer}(inner)`");
+        let (message, descriptions) = match literal {
+            Some((value, in_when)) => {
+                let compare = format!(
+                    "{bind}, then compare that name inside the arm, as in `if inner == {value} then ... else ...`"
+                );
+                let descriptions = if in_when {
+                    vec![
+                        format!(
+                            "{bind}, then match that name in a second `when` inside the arm, with `is {value} -> ...` and `else -> ...`"
+                        ),
+                        compare,
+                    ]
+                } else {
+                    vec![compare]
+                };
+                ("literal patterns are not supported in v0.1", descriptions)
+            }
             None => (
                 "nested patterns are not supported in v0.1",
-                format!(
-                    "bind the field to a name, as in `is {outer}(inner)`, then match that name in a second `when` inside the arm"
-                ),
+                vec![format!(
+                    "{bind}, then match that name in a second `when` inside the arm"
+                )],
             ),
         };
         let mut error = SyntaxError::new(Code::U0101, span, message);
-        error.repairs.push(SyntaxRepair {
-            description,
-            edit: None,
-        });
+        for description in descriptions {
+            error.repairs.push(SyntaxRepair {
+                description,
+                edit: None,
+            });
+        }
         Err(self.report_error(error))
     }
 
