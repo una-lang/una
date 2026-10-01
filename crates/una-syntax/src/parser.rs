@@ -1654,7 +1654,8 @@ impl<'a> Parser<'a> {
     /// pattern, such as `is Some(Circle(radius))` or `is Ok(value: is 0)` (benchmark finding
     /// B-001). DECISION D-155: a variant, `is`, `in` or a literal where a field or local name
     /// is expected starts a nested pattern; the repair has no mechanical edit, because moving the
-    /// arm body under a second `when` also regroups the arms that share the outer variant.
+    /// arm body under a second `when` also regroups the arms that share the outer variant. A
+    /// literal is named as such, with a comparison in the arm as its repair (issue #73).
     fn no_nested_pattern(&mut self, variant: Ident) -> Parse<()> {
         let nested = matches!(
             self.peek(),
@@ -1669,15 +1670,34 @@ impl<'a> Parser<'a> {
         }
         let span = self.span();
         let outer = self.interner.resolve(variant.name).to_owned();
-        let mut error = SyntaxError::new(
-            Code::U0101,
-            span,
-            "nested patterns are not supported in v0.1",
-        );
-        error.repairs.push(SyntaxRepair {
-            description: format!(
-                "bind the field to a name, as in `is {outer}(inner)`, then match that name in a second `when` inside the arm"
+        // Issue #73 (UI-001): a literal cannot move to a second `when`, whose patterns cannot
+        // be literals either, so its repair compares the bound name instead.
+        let literal = match (self.peek(), self.peek_at(1)) {
+            (TokenKind::Int(digits), _) => Some(digits.clone()),
+            (TokenKind::Minus, TokenKind::Int(digits)) => Some(format!("-{digits}")),
+            (TokenKind::Minus, _) => Some("-...".to_owned()),
+            (TokenKind::Keyword(Keyword::True), _) => Some("true".to_owned()),
+            (TokenKind::Keyword(Keyword::False), _) => Some("false".to_owned()),
+            (TokenKind::TextStart, _) => Some("\"...\"".to_owned()),
+            _ => None,
+        };
+        let (message, description) = match literal {
+            Some(value) => (
+                "literal patterns are not supported in v0.1",
+                format!(
+                    "bind the field to a name, as in `is {outer}(inner)`, then compare that name inside the arm, as in `if inner == {value} then ... else ...`"
+                ),
             ),
+            None => (
+                "nested patterns are not supported in v0.1",
+                format!(
+                    "bind the field to a name, as in `is {outer}(inner)`, then match that name in a second `when` inside the arm"
+                ),
+            ),
+        };
+        let mut error = SyntaxError::new(Code::U0101, span, message);
+        error.repairs.push(SyntaxRepair {
+            description,
             edit: None,
         });
         Err(self.report_error(error))
