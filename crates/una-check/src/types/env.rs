@@ -185,6 +185,11 @@ pub(crate) struct FnDef<'a> {
     pub(crate) infer_uses: bool,
     /// Whether its `fails` is inferred: a private function without `fails` (ADR 0007).
     pub(crate) infer_fails: bool,
+    /// The parameters of function type whose effects it performs, by `uses of p`, written or
+    /// inferred (ADR 0062).
+    pub(crate) uses_of: Vec<usize>,
+    /// The parameter of function type whose failures it passes, by `fails of p`.
+    pub(crate) fails_of: Option<usize>,
     pub(crate) requires: bool,
     pub(crate) ensures: bool,
     pub(crate) ast: FnAst<'a>,
@@ -511,6 +516,8 @@ impl<'a> Env<'a> {
             uses: Vec::new(),
             infer_uses: false,
             infer_fails: false,
+            uses_of: Vec::new(),
+            fails_of: None,
             requires: false,
             ensures: false,
             ast,
@@ -786,8 +793,18 @@ impl<'a> Env<'a> {
                     |pick: fn(&ClauseKind) -> bool| function.clauses.iter().any(|c| pick(&c.kind));
                 let requires = has(|kind| matches!(kind, ClauseKind::Requires(_)));
                 let ensures = has(|kind| matches!(kind, ClauseKind::Ensures(_)));
-                let declares_uses = has(|kind| matches!(kind, ClauseKind::Uses(_)));
-                let declares_fails = has(|kind| matches!(kind, ClauseKind::Fails(_)));
+                let declares_uses =
+                    has(|kind| matches!(kind, ClauseKind::Uses(_) | ClauseKind::UsesOf(_)));
+                let declares_fails =
+                    has(|kind| matches!(kind, ClauseKind::Fails(_) | ClauseKind::FailsOf(_)));
+                let (uses_of, fails_of) = self.of_clauses(
+                    module,
+                    function,
+                    &params,
+                    declares_uses,
+                    declares_fails,
+                    report,
+                );
                 let uses: Vec<Need> = first_of_each(
                     function
                         .clauses
@@ -808,8 +825,12 @@ impl<'a> Env<'a> {
                     def.ensures = ensures;
                     // A private function without `uses` or `fails` infers them.
                     def.infer_uses = !function.public && !declares_uses;
-                    def.infer_fails = !function.public && !declares_fails;
+                    // A function that passes the failures of a parameter, by `fails of p` written
+                    // or inferred, fails with the kind of its argument only (ADR 0062).
+                    def.infer_fails = !function.public && !declares_fails && fails_of.is_none();
                     def.uses = uses;
+                    def.uses_of = uses_of;
+                    def.fails_of = fails_of;
                 }
             }
             FnAst::Predicate(predicate) => {
@@ -835,6 +856,99 @@ impl<'a> Env<'a> {
                 }
             }
         }
+    }
+
+    /// The parameters that the `uses of p` and `fails of p` clauses of `function` name, with
+    /// U3017 to U3019 for malformed ones (`spec/05 §9` rule 9); for a private function
+    /// without such clauses, those inferred from its body (`spec/04 §5`, ADR 0062).
+    fn of_clauses(
+        &self,
+        module: usize,
+        function: &'a FunctionDecl,
+        params: &[ParamDef<'a>],
+        declares_uses: bool,
+        declares_fails: bool,
+        report: &mut Report<'_>,
+    ) -> (Vec<usize>, Option<usize>) {
+        // A parameter whose type is a function type without `uses` and `fails`.
+        let open = |index: usize| {
+            params.get(index).is_some_and(|param| {
+                matches!(param.ty.base.unlabeled(), Ty::Fn(f) if f.uses.is_empty() && f.fails.is_none())
+            })
+        };
+        let mut uses_of = Vec::new();
+        let mut fails_of = None;
+        for clause in &function.clauses {
+            let (ident, uses) = match &clause.kind {
+                ClauseKind::UsesOf(ident) => (ident, true),
+                ClauseKind::FailsOf(ident) => (ident, false),
+                _ => continue,
+            };
+            let name = self.text(module, ident.name);
+            let Some(index) = params.iter().position(|param| param.name == name) else {
+                report.error(
+                    Code::U3017,
+                    ident.span,
+                    format!("`{name}` is not a parameter of this function; an `of` clause names a parameter of function type"),
+                );
+                continue;
+            };
+            let Some(Ty::Fn(f)) = params.get(index).map(|param| param.ty.base.unlabeled()) else {
+                report.error(
+                    Code::U3018,
+                    ident.span,
+                    format!("parameter `{name}` is not of function type, so it has no effects for an `of` clause"),
+                );
+                continue;
+            };
+            if !f.uses.is_empty() || f.fails.is_some() {
+                report.error(
+                    Code::U3019,
+                    ident.span,
+                    format!("the type of parameter `{name}` writes its own `uses` or `fails`, which fix its effects; remove them for an `of` clause"),
+                );
+                continue;
+            }
+            if uses {
+                if !uses_of.contains(&index) {
+                    uses_of.push(index);
+                }
+            } else {
+                fails_of = Some(index);
+            }
+        }
+        // ADR 0062 E3: a private function infers them from a body that only calls the
+        // parameter or passes it on.
+        if !function.public && self.edition >= Edition::V0_2 && (!declares_uses || !declares_fails)
+        {
+            let text = |ident: &Ident| self.text(module, ident.name).to_owned();
+            let mut run: Vec<usize> = Vec::new();
+            let mut passed: Vec<usize> = Vec::new();
+            for index in 0..params.len() {
+                let Some(param) = params.get(index) else {
+                    continue;
+                };
+                if !open(index) {
+                    continue;
+                }
+                let found = super::effects::mentions(&function.body, param.name, &text);
+                if found.run && !found.other {
+                    run.push(index);
+                    // `fails of p` when the body passes the failure of `p` and fails in no
+                    // other way, so its error kind is that of its argument.
+                    if found.passed && !found.own_failures {
+                        passed.push(index);
+                    }
+                }
+            }
+            if !declares_uses {
+                uses_of = run;
+            }
+            if !declares_fails && let [only] = passed.as_slice() {
+                fails_of = Some(*only);
+            }
+        }
+        (uses_of, fails_of)
     }
 
     fn fields(
