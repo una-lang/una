@@ -86,8 +86,15 @@ struct Order {
 
 /// `spec/02 §3`.
 const FUNCTION_CLAUSES: Order = Order {
-    names: &["requires", "ensures", "uses", "fails", "derived from"],
-    unique: &[3, 4],
+    names: &[
+        "requires",
+        "ensures",
+        "uses",
+        "fails",
+        "fails of",
+        "derived from",
+    ],
+    unique: &[3, 4, 5],
     description: "clauses go in the order requires, ensures, uses, fails, derived from",
 };
 
@@ -279,6 +286,11 @@ impl<'a> Parser<'a> {
 
     /// Whether the current token is the lower-case word `word`: a contextual keyword
     /// (`spec/01 §5`).
+    /// Whether the token after the current one is the lower-case word `word`.
+    fn next_is_word(&self, word: &str) -> bool {
+        matches!(self.peek_at(1), TokenKind::LowerIdent(name) if self.interner.resolve(*name) == word)
+    }
+
     fn at_word(&self, word: &str) -> bool {
         matches!(self.peek(), TokenKind::LowerIdent(name) if self.interner.resolve(*name) == word)
     }
@@ -1043,9 +1055,11 @@ impl<'a> Parser<'a> {
                     let rank = match clause.kind {
                         ClauseKind::Requires(_) => 0,
                         ClauseKind::Ensures(_) => 1,
-                        ClauseKind::Uses(_) => 2,
+                        ClauseKind::Uses(_) | ClauseKind::UsesOf(_) => 2,
                         ClauseKind::Fails(_) => 3,
-                        ClauseKind::DerivedFrom(_) => 4,
+                        // A header has at most one `fails` clause of each form (ADR 0062).
+                        ClauseKind::FailsOf(_) => 4,
+                        ClauseKind::DerivedFrom(_) => 5,
                     };
                     (rank, clause.keyword)
                 })
@@ -1077,7 +1091,19 @@ impl<'a> Parser<'a> {
                 self.advance();
                 ClauseKind::Ensures(self.line_expr()?)
             }
+            // Edition 0.2: `uses of p` and `fails of p` (ADR 0062). `of` is no keyword; it is
+            // a word right after `uses` or `fails`.
+            TokenKind::Keyword(Keyword::Uses) if self.v0_2 && self.next_is_word("of") => {
+                self.advance();
+                self.advance();
+                ClauseKind::UsesOf(self.lower_name("a parameter of function type")?)
+            }
             TokenKind::Keyword(Keyword::Uses) => ClauseKind::Uses(self.uses_clause()?),
+            TokenKind::Keyword(Keyword::Fails) if self.v0_2 && self.next_is_word("of") => {
+                self.advance();
+                self.advance();
+                ClauseKind::FailsOf(self.lower_name("a parameter of function type")?)
+            }
             TokenKind::Keyword(Keyword::Fails) => {
                 self.advance();
                 ClauseKind::Fails(self.upper_name("an error kind")?)

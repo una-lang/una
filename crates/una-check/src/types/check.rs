@@ -187,6 +187,18 @@ pub(crate) struct Checker<'c, 'a, 's> {
     /// assignment: the only places for a call with `edit` or `take`, U3013 elsewhere
     /// (`spec/17 §3` rule 5), and where the desugar binds its tuple (`spec/17 §4`).
     pub(crate) statement_calls: Vec<Span>,
+    /// How many of the enclosing lambdas are checked in their caller's context, as the
+    /// arguments of `of` parameters (ADR 0062).
+    pub(crate) inherited: usize,
+    /// The callee whose arguments are being checked, when it has `of` clauses.
+    pub(crate) of_callee: Option<super::effects::OfCallee>,
+    /// The argument being checked for an `of` parameter, for the lambda or the name it is.
+    pub(crate) of_argument: Option<super::effects::OfArgument>,
+    /// The lambdas being checked in their caller's context, innermost last.
+    pub(crate) of_lambdas: Vec<super::effects::OfLambda>,
+    /// What the arguments of the calls with `of` clauses being checked contribute, innermost
+    /// last.
+    pub(crate) of_found: Vec<super::effects::OfFound>,
     /// The functions that calls resolve to, by the span of the call.
     pub(crate) call_targets: BTreeMap<Span, usize>,
     /// The types of the operands of the binary operations being checked.
@@ -298,6 +310,11 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             collected,
             receiver_marker: None,
             statement_calls: Vec::new(),
+            inherited: 0,
+            of_callee: None,
+            of_argument: None,
+            of_lambdas: Vec::new(),
+            of_found: Vec::new(),
             lambda_depth: 0,
             call_targets: BTreeMap::new(),
             operands: Vec::new(),
@@ -779,7 +796,11 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                         checker.condition(expr, "an `ensures` clause")
                     });
                 }
-                ClauseKind::Uses(_) | ClauseKind::Fails(_) | ClauseKind::DerivedFrom(_) => {}
+                ClauseKind::Uses(_)
+                | ClauseKind::Fails(_)
+                | ClauseKind::UsesOf(_)
+                | ClauseKind::FailsOf(_)
+                | ClauseKind::DerivedFrom(_) => {}
             }
         }
         self.base = base;
@@ -797,7 +818,11 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         });
         // The body of a `via` function is not checked for labels.
         let ctx = Ctx {
-            fails: def.fails.clone(),
+            fails: def.fails.clone().or_else(|| {
+                // `fails of p`: the body fails with the kind of the argument, a hidden
+                // parameter here (ADR 0062).
+                def.fails_of.map(|_| Ty::Param(def.type_params.len()))
+            }),
             labels: !self.env.vias.contains_key(&id),
             ..Ctx::plain()
         };

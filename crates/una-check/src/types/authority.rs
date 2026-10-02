@@ -290,6 +290,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// binding holds `@c`, U3002 when its capability type does not permit `op`. Returns the
     /// capability, for typing.
     pub(crate) fn op_site(&mut self, cap: &Ident, op: &Ident) -> Option<CapId> {
+        self.note_effect();
         let name = self.name(cap);
         let op_name = self.name(op);
         match self.resolve_cap(name) {
@@ -361,7 +362,7 @@ impl<'a> Checker<'_, 'a, '_> {
             } => {
                 match self.base {
                     Base::Inferring => {
-                        if let (Some(function), 0) = (self.current, self.lambda_depth) {
+                        if let (Some(function), 0) = (self.current, self.own_depth()) {
                             self.collected.own.push(Own {
                                 function,
                                 name: target,
@@ -415,6 +416,9 @@ impl<'a> Checker<'_, 'a, '_> {
     /// (sufficiency, `spec/05 §4`, `spec/10 §2`). In pass 1, requirements that
     /// an inferring body cannot resolve become its own.
     pub(crate) fn needs_site(&mut self, callee: &str, needs: &[FnUse], span: Span, level: usize) {
+        if !needs.is_empty() {
+            self.note_effect();
+        }
         let mut pure_reported = false;
         // A requirement whose capability is unknown was reported where it is declared or
         // inferred (U1001, U3001).
@@ -507,7 +511,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     rebound,
                 } => match self.base {
                     Base::Inferring => {
-                        if let (Some(function), 0) = (self.current, self.lambda_depth) {
+                        if let (Some(function), 0) = (self.current, self.own_depth()) {
                             self.collected.own.push(Own {
                                 function,
                                 name: target,
@@ -652,7 +656,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// (`spec/02 §3`). A short-form function becomes long-form. Lambdas and other declarations
     /// get no edit.
     fn add_clause(&self, clauses: &[String], before: fn(&ClauseKind) -> bool) -> Option<Repair> {
-        if clauses.is_empty() || self.lambda_depth != 0 {
+        if clauses.is_empty() || self.own_depth() != 0 {
             return None;
         }
         let def = self.env.functions.get(self.current?)?;
@@ -869,7 +873,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     .collect()
             })
             .unwrap_or_default();
-        let caller = if self.lambda_depth == 0 && self.base == Base::Inferring {
+        let caller = if self.own_depth() == 0 && self.base == Base::Inferring {
             self.current
         } else {
             None
@@ -905,11 +909,30 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(kind) = kind {
             self.raised_fact(Raised::Kind(Ty::Kind(kind, Vec::new())), variant.span);
         }
+        // The lambda of a `fails of` parameter fails with the kind it raises (ADR 0062).
+        if self.of_lambda_fails(kind, variant.span) {
+            return;
+        }
         if !self.authority() {
             return;
         }
         let name = self.name(variant);
+        let hidden = self
+            .current
+            .and_then(|id| self.env.functions.get(id))
+            .filter(|def| def.fails.is_none() && def.fails_of.is_some())
+            .map(|def| def.type_params.len());
         match self.ctx.fails.clone().map(|f| self.resolve(&f)) {
+            // The kind of the argument of `fails of p`: the function fails only that way.
+            Some(Ty::Param(index)) if Some(index) == hidden && self.own_depth() == 0 => {
+                self.report.error(
+                    Code::U3009,
+                    variant.span,
+                    format!(
+                        "this function fails with the kind of its parameter's failures (`fails of`), so it cannot fail with `{name}`; declare `fails` with that kind and remove `fails of`"
+                    ),
+                );
+            }
             Some(Ty::Kind(declared, _)) => {
                 if let Some(kind) = kind
                     && kind != declared

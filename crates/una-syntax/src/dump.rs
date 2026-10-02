@@ -178,6 +178,8 @@ impl Dumper<'_> {
                         ClauseKind::Ensures(expr) => list("ensures", [self.expr(expr)]),
                         ClauseKind::Uses(uses) => self.uses(uses),
                         ClauseKind::Fails(kind) => list("fails", [atom(self.name(kind))]),
+                        ClauseKind::UsesOf(param) => list("uses-of", [atom(self.name(param))]),
+                        ClauseKind::FailsOf(param) => list("fails-of", [atom(self.name(param))]),
                         ClauseKind::DerivedFrom(requirements) => list(
                             "derived-from",
                             requirements.iter().map(|id| atom(self.name(id))),

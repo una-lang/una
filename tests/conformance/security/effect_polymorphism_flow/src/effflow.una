@@ -1,0 +1,68 @@
+-- test: a function runs its `uses of` parameter only under a public condition (U4002); a lambda given for it runs under the caller`s program counter, raised for the prelude by the top label of the list, by its elements for `first_where` and by that lambda`s result: the length, a secret element or a secret result never reaches a public sink (spec/07 §7 rule 9, ADR 0062 E4)
+-- spec: spec/07 §7
+-- expect: error U4002 at src/effflow.una:24:5
+-- expect: error U4003 at src/effflow.una:29:38
+-- expect: error U4003 at src/effflow.una:35:53
+-- expect: error U4003 at src/effflow.una:53:47
+-- expect: error U4002 at src/effflow.una:61:36
+-- expect: error U4001 at src/effflow.una:61:45
+-- expect: error U4003 at src/effflow.una:68:29
+module effflow
+
+--- Runs `f` on each element.
+pub each_of(xs: List[Int], f: fn(Int) -> Unit) -> Unit
+  uses of f
+=
+  for x in xs
+    f(x)
+
+--- Runs `f` only when `flag` holds, which this function cannot know is safe.
+pub when_secret(flag: secret Bool, f: fn(Int) -> Unit) -> Unit
+  uses of f
+=
+  if flag
+    f(1)
+
+pub length_leak(pins: secret List[Int]) -> Unit
+  uses @console: Console[print]
+=
+  let done = pins.map(each: fn(x) -> @console.print("item"))
+  unit
+
+pub element_leak(pins: List[secret Int]) -> Unit
+  uses @console: Console[print]
+=
+  let done = pins.map(each: fn(x) -> @console.print("{x}"))
+  unit
+
+pub elements_kept(pins: List[secret Int]) -> Unit
+  uses @console: Console[print]
+=
+  let done = pins.map(each: fn(x) -> @console.print("item"))
+  unit
+
+pub capability Probe
+  op check(n: Int) -> Bool
+  op seen(flag: secret Bool) -> secret Bool
+    accepts secret
+
+--- `first_where` runs `keep` under the labels of the elements, so a public sink is U4003.
+pub first_by_elements(pins: List[secret Int]) -> Unit
+  uses @probe: Probe[check]
+=
+  let found = pins.first_where(keep: fn(x) -> @probe.check(1))
+  unit
+
+--- And it stops at the first accepted element, so a secret result reveals itself through
+--- the effects of the calls that follow.
+pub first_by_result(ns: List[Int], flag: secret Bool) -> Unit
+  uses @probe: Probe[seen]
+=
+  let found = ns.first_where(keep: fn(x) -> @probe.seen(flag))
+  unit
+
+pub caller_pc(flag: secret Bool, xs: List[Int]) -> Unit
+  uses @console: Console[print]
+=
+  if flag
+    each_of(xs, f: fn(x) -> @console.print("x"))
