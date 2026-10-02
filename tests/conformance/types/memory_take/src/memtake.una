@@ -1,8 +1,11 @@
--- test: a binding passed by `take` cannot be used again, also after a branch that takes it, until an assignment gives it a new value (spec/17 §3 rule 3)
+-- test: a binding passed by `take` cannot be used again, also after a branch that takes it, through a field assignment or an `edit` argument, or as the final value of an `edit` parameter, until an assignment of the whole binding gives it a new value (spec/17 §3 rules 1 and 3)
 -- spec: spec/17 §3
--- expect: error U2017 at src/memtake.una:14:7
--- expect: error U2017 at src/memtake.una:22:3
--- expect: error U2017 at src/memtake.una:28:20
+-- expect: error U2017 at src/memtake.una:17:7
+-- expect: error U2017 at src/memtake.una:25:3
+-- expect: error U2017 at src/memtake.una:31:20
+-- expect: error U2017 at src/memtake.una:67:3
+-- expect: error U2017 at src/memtake.una:74:14
+-- expect: error U2017 at src/memtake.una:79:20
 module memtake
 
 eat(take xs: List[Int]) -> Int = xs.len
@@ -46,3 +49,38 @@ pub revived_in_both(flag: Bool) -> Int
     xs = [2]
     2
   xs.len + n + m
+
+pub kind Rec
+  x: Int
+  y: Int
+
+eat_rec(take r: Rec) -> Int = r.x
+
+touch(edit r: Rec) -> Unit
+=
+  r.y = 0
+
+pub field_after_take() -> Int
+=
+  let edit r = Rec(x: 1, y: 2)
+  let n = eat_rec(take r)
+  r.x = 5
+  n
+
+pub edit_after_take() -> Int
+=
+  let edit r = Rec(x: 1, y: 2)
+  let n = eat_rec(take r)
+  touch(edit r)
+  n
+
+pub take_edit_param(edit xs: List[Int]) -> Int
+=
+  let n = eat(take xs)
+  n
+
+pub retake_edit_param(edit xs: List[Int]) -> Int
+=
+  let n = eat(take xs)
+  xs = [n]
+  n

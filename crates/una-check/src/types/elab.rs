@@ -2920,7 +2920,14 @@ impl<'e, 'a> Fx<'e, 'a> {
             arg_spans,
             span,
         };
-        // A call with `edit` arguments returns a tuple (`spec/17 §4`).
+        // A call with `edit` arguments returns a tuple (`spec/17 §4`), which only the desugar
+        // of a statement or `let` binds. Anywhere else, its tuple would pass as the declared
+        // result and its places would keep their values: an internal error (U8001), never a
+        // silent pass.
+        let edits = def
+            .params
+            .iter()
+            .any(|p| p.convention == Some(Convention::Edit));
         match self.call_tuple.take() {
             Some((at, ty)) if at == span => {
                 let t = self.temp();
@@ -2929,6 +2936,13 @@ impl<'e, 'a> Fx<'e, 'a> {
             }
             other => {
                 self.call_tuple = other;
+                if edits {
+                    self.lost.borrow_mut().push(
+                        "the tuple of a call with `edit` arguments outside a statement or `let`"
+                            .to_owned(),
+                    );
+                    self.broken = true;
+                }
                 self.push(lets, span, call)
             }
         }

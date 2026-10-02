@@ -5,7 +5,7 @@
 use una_diag::{Code, ObligationKind};
 use una_syntax::Span;
 use una_syntax::ast::{
-    AssignStmt, Bind, Block, BlockExpr, Body, CapBindingValue, ElseBranch, Expr, Handled,
+    AssignStmt, Bind, Block, BlockExpr, Body, CapBindingValue, ElseBranch, Expr, ExprKind, Handled,
     HandlingKind, IfBlock, IfThenStmt, LetStmt, LetValue, Literal, PatternKind, Stmt, TextPart,
     WhenExpr,
 };
@@ -59,6 +59,26 @@ impl<'a> Checker<'_, 'a, '_> {
         for (index, stmt) in block.stmts.iter().enumerate() {
             self.ctx.rl = rl;
             let is_last = index == last;
+            let handled = match stmt {
+                Stmt::Handled(handled) => Some(handled),
+                Stmt::Let(stmt) => match &stmt.value {
+                    LetValue::Handled(handled) => Some(handled),
+                    LetValue::BlockExpr(_) => None,
+                },
+                Stmt::Assign(stmt) => match &stmt.value {
+                    LetValue::Handled(handled) => Some(handled),
+                    LetValue::BlockExpr(_) => None,
+                },
+                _ => None,
+            };
+            if let Some(handled) = handled
+                && matches!(
+                    handled.expr.kind,
+                    ExprKind::Call { .. } | ExprKind::MethodCall { .. }
+                )
+            {
+                self.statement_calls.push(handled.expr.span);
+            }
             match stmt {
                 Stmt::Let(stmt) => {
                     self.outside_rl(stmt.span, || "`let`".to_owned());
@@ -180,7 +200,8 @@ impl<'a> Checker<'_, 'a, '_> {
 
     /// `place = value` (`spec/17 §2` rule 3).
     fn assign(&mut self, stmt: &AssignStmt) {
-        let Some(place_ty) = self.editable_place(&stmt.place, "the left side of `=`") else {
+        let Some(place_ty) = self.editable_place(&stmt.place, "the left side of `=`", true, None)
+        else {
             match &stmt.value {
                 LetValue::Handled(handled) => {
                     self.handled(handled, None, Role::Plain, false);

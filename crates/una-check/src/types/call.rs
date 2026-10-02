@@ -136,7 +136,9 @@ impl<'a> Checker<'_, 'a, '_> {
         // `edit total.record(e)`: the receiver is a place rooted at an editable binding
         // (`spec/17 §3` rule 2).
         let place = match marker {
-            Some(Convention::Edit) => self.editable_place(target, "the receiver of `edit`"),
+            Some(Convention::Edit) => {
+                self.editable_place(target, "the receiver of `edit`", false, None)
+            }
             _ => None,
         };
         let target_ty = match &place {
@@ -457,7 +459,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 .receiver_marker
                 .as_ref()
                 .is_some_and(|(marker, _)| marker.is_some());
-        let statement = site.top && !self.lambda_bodies.contains(&span);
+        let statement = self.statement_calls.contains(&span);
         if marked && !statement && self.pass == super::authority::Pass::Check {
             self.report.error(
                 Code::U3013,

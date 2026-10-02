@@ -42,7 +42,7 @@ postfix         = [ "edit" ] primary { "." lower_ident [ call_args ] | call_args
 3. **Assignment.** `p = e` rebinds the place `p` to the value of `e`.
    - `p` MUST be rooted at an editable binding (U2019). A plain `let`, a parameter without `edit`, and a binding captured by a lambda are not editable.
    - There are no compound assignment operators and no assignment to list elements: elements change through `set` (§7).
-4. **Fixed type.** An editable binding keeps its declared type at every rebind, refinement and label included (§5, §6). Without an annotation, its type is the type of its initial value.
+4. **Fixed type.** An editable binding keeps its declared type at every rebind, refinement and label included (§5, §6). Without an annotation, its type is the type of its initial value without its refinement: `let edit n = p` with `p: Pos` gives `n` the type `Int`. An annotation, as in `let edit n: Pos = p`, makes the refinement an invariant.
 
 ## 3. Parameter conventions
 
