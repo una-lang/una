@@ -84,3 +84,7 @@ Rules that follow:
 - **Edition `0.2` only** (L6 B). Not chosen: it leaves the stable edition, and the benchmark's packages, without the server.
 - **An editor-specific extension without LSP.** Not chosen: LSP serves every editor with one server.
 - **A daemon shared by the CLI and the editor.** Not chosen for v0.2: the shared proof cache already reuses work, and a daemon adds lifetime and locking problems.
+
+## Amendment (2026-10-02)
+
+`una-lsp` depends only on `una-diag` (and `serde_json`). The CLI's `Workspace` does the checking and formatting and passes the server the function that checks a package, so the server needs no other compiler crate. Rule 1's list of dependencies is superseded by `compiler/architecture.md §2`, which states them as the crates' `Cargo.toml` files declare them. Approved by the coordinator under the owner's decisions L1 to L6.

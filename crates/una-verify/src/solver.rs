@@ -4,6 +4,7 @@
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -56,6 +57,7 @@ pub(crate) fn run(
     script: &str,
     values: usize,
     wallclock: Duration,
+    cancel: Option<&AtomicBool>,
 ) -> Result<Answer, Failure> {
     let mut child = Command::new(solver)
         .args(["-in", "-smt2"])
@@ -77,6 +79,7 @@ pub(crate) fn run(
     }
     let deadline = Instant::now() + wallclock;
     let mut timed_out = false;
+    let mut cancelled = false;
     loop {
         match child.try_wait() {
             Ok(Some(_)) | Err(_) => break,
@@ -86,12 +89,25 @@ pub(crate) fn run(
                 timed_out = true;
                 break;
             }
+            Ok(None) if cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                cancelled = true;
+                break;
+            }
             Ok(None) => std::thread::sleep(Duration::from_millis(2)),
         }
     }
     let output = reader
         .and_then(|reader| reader.join().ok())
         .unwrap_or_default();
+    if cancelled {
+        return Ok(Answer {
+            status: Status::Unknown,
+            reason: Some("cancelled".to_owned()),
+            values: Vec::new(),
+        });
+    }
     if timed_out {
         return Ok(Answer {
             status: Status::Unknown,

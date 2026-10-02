@@ -40,6 +40,17 @@ pub(crate) fn tier_one(
     program: &una_core::Program,
     wallclock: Duration,
 ) -> TierOne {
+    tier_one_cancellable(package, program, wallclock, None)
+}
+
+/// [`tier_one`], whose solvers stop when `cancel` is set: the editor's newer change makes the
+/// run useless (ADR 0063 rule 4).
+pub(crate) fn tier_one_cancellable(
+    package: &Package,
+    program: &una_core::Program,
+    wallclock: Duration,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> TierOne {
     let obligations = on_large_stack(|| una_verify::obligations(program, &package.sources));
     if obligations.is_empty() {
         return TierOne {
@@ -47,7 +58,8 @@ pub(crate) fn tier_one(
             verification: Some(Verification::default()),
         };
     }
-    let settings = settings(package, wallclock);
+    let mut settings = settings(package, wallclock);
+    settings.cancel = cancel;
     match una_verify::verify(&obligations, &settings) {
         Ok(outcomes) => TierOne {
             diagnostics: una_verify::diagnostics(&obligations, &outcomes, &package.sources),
@@ -109,6 +121,7 @@ pub(crate) fn settings(package: &Package, wallclock: Duration) -> Settings {
         },
         wallclock,
         cache: package_root(package).map(|root| root.join(".una").join("cache").join("proofs")),
+        cancel: None,
     }
 }
 

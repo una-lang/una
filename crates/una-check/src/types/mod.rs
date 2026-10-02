@@ -23,6 +23,7 @@ mod facts;
 mod fixed;
 mod flow;
 mod generic;
+mod index;
 mod label;
 mod memory;
 mod records;
@@ -30,6 +31,7 @@ mod stmt;
 mod ty;
 mod unify;
 
+pub use index::Index;
 use una_diag::{Code, Diagnostic, Edit, Location, ObligationKind, Related, Repair};
 use una_project::Edition;
 use una_syntax::ast::File;
@@ -132,6 +134,8 @@ pub struct TypeCheck {
     pub headers: Vec<Header>,
     /// The Core IR of the declarations without diagnostics (`spec/09`).
     pub program: una_core::Program,
+    /// What the checker resolved, by span, for the language server (ADR 0063).
+    pub index: Index,
 }
 
 /// Type-checks the modules of `package` that have no syntax errors.
@@ -241,7 +245,9 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
             ),
         );
     }
+    let index = index::build(&env, &findings);
     TypeCheck {
+        index,
         headers,
         program,
         obligations: findings

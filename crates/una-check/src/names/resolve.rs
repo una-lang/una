@@ -91,9 +91,30 @@ impl<'a> Resolver<'_, '_, 'a> {
         }
     }
 
-    /// U1001 when no scope holds the name of `ident`.
+    /// U1001 when no scope holds the name of `ident`; otherwise, where the name is declared,
+    /// for the language server (ADR 0063).
     fn lookup(&mut self, ident: &Ident, space: Space, what: &str) {
         let name = self.name(ident);
+        let frames = match space {
+            Space::Lower => &self.locals,
+            Space::Upper => &self.types,
+        };
+        let declared = frames
+            .iter()
+            .rev()
+            .flat_map(|frame| frame.iter().rev())
+            .find(|local| local.name == name)
+            .map(|local| local.span)
+            .or_else(|| {
+                let table = match space {
+                    Space::Lower => &self.table.lower,
+                    Space::Upper => &self.table.upper,
+                };
+                table.get(name).map(|declared| declared.span)
+            });
+        if let Some(declared) = declared {
+            self.checker.references.push((ident.span, declared));
+        }
         if !self.visible(name, space) {
             self.checker.error(
                 Code::U1001,

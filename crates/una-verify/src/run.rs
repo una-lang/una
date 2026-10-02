@@ -38,6 +38,10 @@ pub struct Settings {
     pub wallclock: Duration,
     /// The proof cache, `.una/cache/proofs` of the package, when there is one.
     pub cache: Option<PathBuf>,
+    /// Set by an editor whose newer change makes the run useless: each running solver is
+    /// killed, and its answer is `unknown` with reason `cancelled`, never cached (ADR 0063
+    /// rule 4).
+    pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// How an obligation ended.
@@ -268,8 +272,14 @@ pub fn verify(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Out
             if let Some(answer) = cached {
                 return Ok((answer, true));
             }
-            let answer = solver::run(&settings.solver, text, requested.len(), settings.wallclock)
-                .map_err(|failure| Problem::Query {
+            let answer = solver::run(
+                &settings.solver,
+                text,
+                requested.len(),
+                settings.wallclock,
+                settings.cancel.as_deref(),
+            )
+            .map_err(|failure| Problem::Query {
                 id: obligation.id.clone(),
                 message: failure.0,
             })?;
@@ -326,8 +336,14 @@ pub fn verify(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Out
             if let Some(answer) = cached {
                 return Ok(Some(answer));
             }
-            let answer = solver::run(&settings.solver, text, requested.len(), settings.wallclock)
-                .map_err(|failure| Problem::Query {
+            let answer = solver::run(
+                &settings.solver,
+                text,
+                requested.len(),
+                settings.wallclock,
+                settings.cancel.as_deref(),
+            )
+            .map_err(|failure| Problem::Query {
                 id: obligation.id.clone(),
                 message: failure.0,
             })?;
