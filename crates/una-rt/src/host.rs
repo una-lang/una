@@ -276,6 +276,7 @@ pub fn event(site: i64, instance: i64) -> i64 {
         let slot = trace.len();
         trace.push(Event {
             seq: slot + 1,
+            task: String::new(),
             instance: id,
             capability,
             op: name,

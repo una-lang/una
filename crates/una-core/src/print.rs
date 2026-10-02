@@ -184,6 +184,23 @@ fn write_term(
     }
 }
 
+/// What a loop or a `together_for` visits.
+fn print_source(source: &LoopSource) -> String {
+    match source {
+        LoopSource::List(list) => print_atom(list),
+        LoopSource::Range {
+            low,
+            high,
+            inclusive,
+        } => format!(
+            "{}{}{}",
+            print_atom(low),
+            if *inclusive { ".." } else { "..<" },
+            print_atom(high)
+        ),
+    }
+}
+
 /// An atom as written in Core IR.
 pub fn print_atom(atom: &Atom) -> String {
     match atom {
@@ -526,19 +543,7 @@ impl Printer {
                 body,
                 ..
             } => {
-                let source = match source.as_ref() {
-                    LoopSource::List(list) => print_atom(list),
-                    LoopSource::Range {
-                        low,
-                        high,
-                        inclusive,
-                    } => format!(
-                        "{}{}{}",
-                        print_atom(low),
-                        if *inclusive { ".." } else { "..<" },
-                        print_atom(high)
-                    ),
-                };
+                let source = print_source(source);
                 let state: Vec<String> = state
                     .iter()
                     .zip(init)
@@ -556,6 +561,27 @@ impl Printer {
                     ),
                 );
                 self.expr(indent + 1, body);
+            }
+            Expr::Together { tasks, .. } => {
+                self.line(indent, "together");
+                for task in tasks {
+                    self.line(indent + 1, "task");
+                    self.expr(indent + 2, task);
+                }
+            }
+            Expr::TogetherFor {
+                source, var, task, ..
+            } => {
+                self.line(
+                    indent,
+                    &format!(
+                        "together_for {}: {} in {} do",
+                        var.0,
+                        print_type(&var.1),
+                        print_source(source)
+                    ),
+                );
+                self.expr(indent + 1, task);
             }
             Expr::LetTuple {
                 names, value, body, ..

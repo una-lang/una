@@ -153,6 +153,18 @@ impl<'a> Checker<'_, 'a, '_> {
         };
         let name = self.name(root);
         let index = self.local_index(name)?;
+        if self.captured_by_task(
+            index,
+            name,
+            root.span,
+            if assigned {
+                "assigned"
+            } else {
+                "passed as `edit`"
+            },
+        ) {
+            return None;
+        }
         let local = self.locals.get(index)?.clone();
         if !local.editable || local.lambda_depth < self.lambda_depth {
             let reason = if !local.editable {
@@ -317,10 +329,31 @@ impl<'a> Checker<'_, 'a, '_> {
         };
         let name = self.name(ident);
         if let Some(index) = self.local_index(name)
+            && !self.captured_by_task(index, name, value.span, "passed as `take`")
             && let Some(local) = self.locals.get_mut(index)
         {
             local.taken = Some(value.span);
         }
+    }
+
+    /// U2023 when the local at `index`, named `name` at `span`, is declared outside the
+    /// innermost `together` task being checked, which `what` would change (`spec/19 §2` rule
+    /// 3).
+    fn captured_by_task(&mut self, index: usize, name: &str, span: Span, what: &str) -> bool {
+        let Some(mark) = self.task_mark else {
+            return false;
+        };
+        if index >= mark {
+            return false;
+        }
+        self.report.error(
+            Code::U2023,
+            span,
+            format!(
+                "`{name}` is declared outside this `together` task, which captures its value and cannot change it, so it cannot be {what} here; return the new value from the task instead"
+            ),
+        );
+        true
     }
 
     /// U2018: an `edit` argument together with another use of its root binding in the same

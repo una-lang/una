@@ -12,8 +12,8 @@ use crate::ast::{
     Handling, HandlingKind, Ident, IfBlock, IfThenStmt, Import, IsTarget, KindBody, KindDecl,
     Label, LambdaParam, LetStmt, LetValue, Level, Literal, ModuleHeader, ModulePath, OpClause,
     OpClauseKind, OpDecl, Param, Pattern, PatternKind, PolicyDecl, PredicateDecl, Range,
-    RequirementDecl, RequirementSource, SignedInt, Stmt, TextLit, TextPart, Type, TypeCore,
-    UnaryOp, UsesClause, Variant, VariantExpr, WhenExpr,
+    RequirementDecl, RequirementSource, SignedInt, Stmt, TextLit, TextPart, TogetherFor,
+    TogetherStmt, Type, TypeCore, UnaryOp, UsesClause, Variant, VariantExpr, WhenExpr,
 };
 use crate::error::{SyntaxError, SyntaxRepair};
 use crate::intern::Interner;
@@ -1451,10 +1451,17 @@ impl<'a> Parser<'a> {
                         "a block cannot end with `let`; its last line is its value",
                     );
                 }
+                Stmt::Together(_) if last => {
+                    return self.fail(
+                        first,
+                        "a block cannot end with `together`; its last line is its value",
+                    );
+                }
                 Stmt::BlockExpr(expr) if !last => {
                     let construct = match expr {
                         BlockExpr::When(_) => "a `when`",
                         BlockExpr::If(_) => "an `if` with blocks",
+                        BlockExpr::TogetherFor(_) => "a `together for`",
                     };
                     return self.fail(
                         first,
@@ -1486,6 +1493,16 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::For) if self.v0_2 => {
                 Ok(Stmt::For(Box::new(self.for_stmt()?)))
             }
+            // Edition 0.2: `together` with branches, or `together for` (`spec/19 §1`).
+            TokenKind::Keyword(Keyword::Together) => {
+                if matches!(self.peek_at(1), TokenKind::Keyword(Keyword::For)) {
+                    Ok(Stmt::BlockExpr(BlockExpr::TogetherFor(Box::new(
+                        self.together_for()?,
+                    ))))
+                } else {
+                    Ok(Stmt::Together(Box::new(self.together_stmt()?)))
+                }
+            }
             TokenKind::Keyword(Keyword::If) => match self.if_statement()? {
                 IfForm::Line(expr) => Ok(Stmt::Handled(self.handled_rest(expr)?)),
                 IfForm::Block(block) => Ok(Stmt::BlockExpr(BlockExpr::If(block))),
@@ -1509,9 +1526,23 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// The value of a `let` or an assignment: a `when`, an `if`, or a handled line.
+    /// The value of a `let` or an assignment: a `when`, an `if`, a `together for`, or a
+    /// handled line.
     fn let_value(&mut self) -> Parse<LetValue> {
         Ok(match self.peek() {
+            TokenKind::Keyword(Keyword::Together) => {
+                if matches!(self.peek_at(1), TokenKind::Keyword(Keyword::For)) {
+                    LetValue::BlockExpr(BlockExpr::TogetherFor(Box::new(self.together_for()?)))
+                } else {
+                    // `spec/19 §1` rule 4: branches make a statement, not a value.
+                    let span = self.span();
+                    return Err(self.report(
+                        span,
+                        "`together` with branches is a statement; write `together for` to build a list"
+                            .to_owned(),
+                    ));
+                }
+            }
             TokenKind::Keyword(Keyword::When) => {
                 LetValue::BlockExpr(BlockExpr::When(self.when_expr()?))
             }
@@ -1814,6 +1845,34 @@ impl<'a> Parser<'a> {
             });
         }
         Err(self.report_error(error))
+    }
+
+    /// `together` and its indented body, whose statements the checker examines (`spec/19 §1`).
+    fn together_stmt(&mut self) -> Parse<TogetherStmt> {
+        let keyword = self.advance();
+        self.expect(&TokenKind::Newline, "end of line after `together`")?;
+        let outer = self.nesting;
+        self.deeper()?;
+        let body = self.indented("the indented branches", Self::statement);
+        self.nesting = outer;
+        Ok(TogetherStmt {
+            body: body?,
+            keyword,
+            span: self.since(keyword),
+        })
+    }
+
+    /// `together for x in xs` or `together for i in a..<b` with its block (`spec/19 §1`).
+    fn together_for(&mut self) -> Parse<TogetherFor> {
+        let keyword = self.advance();
+        let for_stmt = self.for_stmt()?;
+        Ok(TogetherFor {
+            var: for_stmt.var,
+            source: for_stmt.source,
+            block: for_stmt.block,
+            keyword,
+            span: self.since(keyword),
+        })
     }
 
     /// `for x in xs` or `for i in a..<b` with its block (`spec/17 §1`).
