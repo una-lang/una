@@ -1,4 +1,4 @@
--- test: the edition of v0.1 is 0.1
+-- test: the editions are 0.1 and 0.2, and any other is U7002 (ADR 0056)
 -- spec: spec/13 §7
 -- expect: error U7002 at una.toml:4:11
 module main

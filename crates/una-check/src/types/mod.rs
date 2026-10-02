@@ -19,6 +19,7 @@ mod elab;
 mod env;
 mod expr;
 mod facts;
+mod fixed;
 mod flow;
 mod generic;
 mod label;
@@ -122,6 +123,7 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
         standard.source(&standard.prelude),
         standard.source(&standard.testing),
         categories,
+        package.settings.edition,
         &mut report,
     );
     let facts = facts::KindFacts::new(&env);

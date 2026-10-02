@@ -51,3 +51,7 @@ The goal of v0.2 is native performance (ADR 0055), and some programs need an exa
 - **Make `Int` 64 bits.** Not chosen: it changes the meaning of every v0.1 program and adds an overflow obligation to all arithmetic.
 - **Wrap on overflow by default.** Not chosen: silent wrapping is a classic source of defects, and FW-2 makes it visible.
 - **Bitvectors in the SMT encoding.** Deferred: it leaves QF_UFLIA, and mixing bitvectors with integers makes queries much harder.
+
+## Amendment (2026-10-02)
+
+Binary built-in methods label their argument, as every call does (charter P5): `by` for arithmetic and shifts, `mask` for bit operations. The coordinator corrected the F5 answer under FW-1 to FW-4, and `spec/18 §5` states the rule. Examples above written as `bit_and(a, b)` read as `a.bit_and(mask: b)`.

@@ -1,0 +1,11 @@
+-- test: in edition 0.2 the fixed-width integer types are built in, and a declaration cannot take their names (ADR 0057, spec/18 §1)
+-- spec: spec/18 §1
+-- expect: error U1002 at src/fixednames.una:9:10
+-- expect: error U1002 at src/fixednames.una:11:25
+module fixednames
+
+pub byte(b: U8, w: I64) -> I64 = w
+
+pub kind U8 = A | B
+
+pub kind Mode = Plain | I16

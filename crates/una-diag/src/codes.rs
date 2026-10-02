@@ -134,6 +134,8 @@ pub enum Code {
     U2015,
     /// Opaque predicate called outside `checked`.
     U2016,
+    /// Integer literal does not fit its type.
+    U2022,
     /// Capability not in scope.
     U3001,
     /// Operation not permitted by capability type.
@@ -204,7 +206,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 68] = [
+    pub const ALL: [Code; 69] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -240,6 +242,7 @@ impl Code {
         Code::U2014,
         Code::U2015,
         Code::U2016,
+        Code::U2022,
         Code::U3001,
         Code::U3002,
         Code::U3003,
@@ -506,6 +509,12 @@ impl Code {
                 domain: Domain::Types,
                 meaning: "Opaque predicate called outside `checked`",
                 explain: include_str!("../explain/U2016.md"),
+            },
+            Code::U2022 => &Entry {
+                code: "U2022",
+                domain: Domain::Types,
+                meaning: "Integer literal does not fit its type",
+                explain: include_str!("../explain/U2022.md"),
             },
             Code::U3001 => &Entry {
                 code: "U3001",
