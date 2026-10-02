@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Una is a verification-first programming language for machine-generated software. This repository contains the v0.1 reference compiler ("Una Core"), written in Rust. Read `docs/00-charter.md` before any task.
+Una is a verification-first programming language for machine-generated software. This repository contains the reference compiler, written in Rust: v0.1 ("Una Core") is released, and v0.2 is in development in parallel with Gate 1 (charter §5b). Read `docs/00-charter.md` before any task.
 
 ## Source of truth
 
@@ -15,10 +15,10 @@ If code and spec disagree, the spec wins. If the spec is wrong, ambiguous or inc
 
 ## Scope guard
 
-- Only the v0.1 scope in `docs/00-charter.md` section 5 is in scope.
-- Everything in `docs/plan/backlog.md` is out of scope, even when it looks easy.
+- In scope: the v0.1 scope of `docs/00-charter.md` §5 and, for v0.2 work, §5b (native backend, fixed-width integers, memory model; ADRs 0055 to 0057). Work only on the version and issue you are assigned.
+- Everything else in `docs/plan/backlog.md` is out of scope, even when it looks easy.
 - Do not add syntax, keywords, diagnostics codes, CLI commands or standard library items that the spec does not define.
-- Keywords reserved for future versions (`docs/spec/01-lexical-structure.md`) must be rejected by the parser with U0103, not half-implemented.
+- Keywords reserved for future versions (`docs/spec/01-lexical-structure.md`) must be rejected by the parser with U0103, not half-implemented. v0.2 syntax exists only under `edition = "0.2"` in `una.toml` (ADR 0056); edition 0.1 keeps the v0.1 keyword tables.
 
 ## How to work
 
@@ -53,7 +53,7 @@ Tests that need the SMT solver require Z3 at the exact version in `verification.
 
 ## Rust rules (full list in `docs/compiler/conventions.md`)
 
-- No `unsafe`.
+- No `unsafe`, with one exception: the FFI module of `una-rt` (`ffi.rs`), at the boundary with generated native code, where every unsafe block carries a `// SAFETY:` comment (ADR 0058).
 - No `unwrap`, `expect` or `panic!` in library crates, except for internal invariants marked `// INVARIANT: <reason>`. User-facing problems are `Diagnostic` values with a registered code.
 - Library crates never print. Only `una-cli` writes to stdout or stderr.
 - Deterministic output: no `HashMap` iteration in anything user-visible (use `BTreeMap` or `IndexMap`), no timestamps, no randomness, stable sort orders.
