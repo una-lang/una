@@ -27,12 +27,13 @@ crates/
   una-report/             reserved for build report assembly; v0.1 assembles the report in una-cli (D-132)
   una-codegen/            native code generation: Core IR to an object file through Cranelift (v0.2, ADR 0055)
   una-rt/                 the runtime library of native executables; its ffi.rs is the only unsafe code (ADR 0058)
+  una-lsp/                the language server of `una lsp`: LSP over stdio, the server's state (v0.2, ADR 0063)
   una-cli/                the `una` binary (the only compiler crate that does I/O to the terminal; una-rt is the I/O of native executables)
 tests/conformance/         language conformance suite (`testing.md`)
 examples/                  reference programs
 ```
 
-Dependency direction, as the crates' `Cargo.toml` files declare it, where `a` ← `b` means that `b` depends on `a` (no cycles): `diag` ← every other crate; `syntax` ← `fmt`, `core`, `check`, `verify`, `interp`, `cli`; `project` ← `check`, `cli`; `core` ← `check`, `verify`, `interp`, `cli`; `fmt`, `check`, `verify`, `interp`, `report`, `codegen` ← `cli`; `core` ← `codegen`; `diag`, `core`, `interp` ← `rt`. `una-rt` is a static library that `una build` links into executables, not a dependency of `cli`; it shares the interpreter's grants and trace form. `check`, `verify` and `interp` do not depend on one another: `cli` runs them in turn and passes each one the Core IR that `check` elaborates. `report` is a stub that depends only on `diag` (D-132).
+Dependency direction, as the crates' `Cargo.toml` files declare it, where `a` ← `b` means that `b` depends on `a` (no cycles): `diag` ← every other crate; `syntax` ← `fmt`, `core`, `check`, `verify`, `interp`, `cli`; `project` ← `check`, `cli`; `core` ← `check`, `verify`, `interp`, `cli`; `fmt`, `check`, `verify`, `interp`, `report`, `codegen` ← `cli`; `core` ← `codegen`; `diag`, `core`, `interp` ← `rt`. `una-rt` is a static library that `una build` links into executables, not a dependency of `cli`; it shares the interpreter's grants and trace form. `check`, `verify` and `interp` do not depend on one another: `cli` runs them in turn and passes each one the Core IR that `check` elaborates. `report` is a stub that depends only on `diag` (D-132). (v0.2, ADR 0063.) `diag`, `syntax`, `fmt`, `project`, `check` ← `lsp` ← `cli`: `cli` passes the server the function that checks a package, so no crate depends on `cli`.
 
 ## 3. Pipeline
 
@@ -84,6 +85,8 @@ A declaration with tier 0 errors is not elaborated and produces no obligations. 
 Allowed without an ADR: `clap`, `serde`, `serde_json`, `toml`, `ariadne` (human diagnostics rendering), `indexmap`, `sha2`, `rayon`, `num-bigint` (for `Int`), `insta` and `pretty_assertions` (dev only). Anything else needs an ADR stating why the standard library or an allowed crate is insufficient.
 
 Allowed by ADR 0055, for the native backend crates `una-codegen` and `una-rt` only (v0.2): `cranelift-codegen`, `cranelift-frontend`, `cranelift-module`, `cranelift-object` and `target-lexicon`.
+
+`una-lsp` (ADR 0063) adds no dependency: its JSON-RPC transport and its LSP types are written on `serde_json`.
 
 ## 8. Targets
 
