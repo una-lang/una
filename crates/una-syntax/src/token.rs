@@ -122,6 +122,12 @@ pub enum Keyword {
     Where,
     /// `with`
     With,
+    /// `edit`, from edition 0.2 (`spec/17`).
+    Edit,
+    /// `take`, from edition 0.2 (`spec/17`).
+    Take,
+    /// `old`, from edition 0.2 (`spec/17`).
+    Old,
 }
 
 impl Keyword {
@@ -248,6 +254,9 @@ impl Keyword {
             Keyword::When => "when",
             Keyword::Where => "where",
             Keyword::With => "with",
+            Keyword::Edit => "edit",
+            Keyword::Take => "take",
+            Keyword::Old => "old",
         }
     }
 
@@ -257,6 +266,32 @@ impl Keyword {
             .into_iter()
             .find(|keyword| keyword.as_str() == word)
     }
+
+    /// The keywords that edition 0.2 adds to [`Keyword::ALL`] (`spec/17 §9`, ADR 0056).
+    pub const EDITION_0_2: [Keyword; 3] = [Keyword::Edit, Keyword::Take, Keyword::Old];
+
+    /// The keyword `word` is under the keyword set `set`.
+    pub fn from_word_in(word: &str, set: KeywordSet) -> Option<Keyword> {
+        Keyword::from_word(word).or_else(|| {
+            (set == KeywordSet::V0_2)
+                .then(|| {
+                    Keyword::EDITION_0_2
+                        .into_iter()
+                        .find(|keyword| keyword.as_str() == word)
+                })
+                .flatten()
+        })
+    }
+}
+
+/// The keywords and reserved words of a package's edition (`spec/01 §5`, `spec/17 §9`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum KeywordSet {
+    /// Edition 0.1: the tables of `spec/01 §5`.
+    #[default]
+    V0_1,
+    /// Edition 0.2: `edit`, `take` and `old` are keywords, and the rows of `spec/17 §9` apply.
+    V0_2,
 }
 
 /// The kind of a token.

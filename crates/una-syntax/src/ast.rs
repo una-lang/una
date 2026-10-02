@@ -300,12 +300,33 @@ pub struct FunctionDecl {
 /// `lower_ident ":" type`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Param {
+    /// Its convention, `edit` or `take`, from edition 0.2 (`spec/17 §3`).
+    pub convention: Option<Convention>,
     /// The parameter's name.
     pub name: Ident,
     /// The parameter's type.
     pub ty: Type,
     /// The whole parameter.
     pub span: Span,
+}
+
+/// A parameter convention, and its call-site marker (`spec/17 §3`, ADR 0056).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Convention {
+    /// `edit`: passed in and out.
+    Edit,
+    /// `take`: consumed.
+    Take,
+}
+
+impl Convention {
+    /// The convention as written.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Convention::Edit => "edit",
+            Convention::Take => "take",
+        }
+    }
 }
 
 /// A header clause of a function (`spec/02 §3`).
@@ -549,15 +570,43 @@ pub struct Block {
 pub enum Stmt {
     /// `let_stmt`.
     Let(Box<LetStmt>),
+    /// `place = value`, from edition 0.2 (`spec/17 §2`).
+    Assign(Box<AssignStmt>),
+    /// `if` with a block and no `else`, a `Unit` statement, from edition 0.2 (`spec/17 §1`).
+    IfThen(Box<IfThenStmt>),
     /// `handled`.
     Handled(Handled),
     /// `block_expr`, only as the final statement.
     BlockExpr(BlockExpr),
 }
 
-/// `"let" lower_ident [ ":" type ] "=" ( handled | block_expr )`.
+/// `place "=" ( handled | block_expr )` (`spec/17 §1`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssignStmt {
+    /// The place: a name, or a field path of one.
+    pub place: Expr,
+    /// The value.
+    pub value: LetValue,
+    /// The whole statement.
+    pub span: Span,
+}
+
+/// `"if" line_expr NEWLINE INDENT block DEDENT`, with no `else` (`spec/17 §1`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IfThenStmt {
+    /// The condition.
+    pub condition: Expr,
+    /// The block run when it holds.
+    pub block: Block,
+    /// The whole statement.
+    pub span: Span,
+}
+
+/// `"let" [ "edit" ] lower_ident [ ":" type ] "=" ( handled | block_expr )`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LetStmt {
+    /// Whether the binding is declared `let edit`, from edition 0.2 (`spec/17 §2`).
+    pub editable: bool,
     /// The bound name.
     pub name: Ident,
     /// The annotated type.
@@ -816,8 +865,12 @@ pub enum ExprKind {
         /// The name after the dot.
         name: Ident,
     },
+    /// `old(e)` in an `ensures` clause, from edition 0.2 (`spec/17 §3`).
+    Old(Box<Expr>),
     /// `e.name(args)`: a method call (`spec/04 §3`).
     MethodCall {
+        /// The receiver's call-site marker, as in `edit total.record(e)` (`spec/17 §3`).
+        receiver: Option<Convention>,
         /// The receiver.
         target: Box<Expr>,
         /// The method's name.
@@ -884,6 +937,8 @@ pub struct LambdaParam {
 pub struct Arg {
     /// The label.
     pub label: Option<Ident>,
+    /// The call-site marker, `edit` or `take`, from edition 0.2 (`spec/17 §3`).
+    pub marker: Option<Convention>,
     /// The value.
     pub value: Expr,
     /// The whole argument.

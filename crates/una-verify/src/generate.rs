@@ -562,6 +562,16 @@ pub(crate) fn sort(ty: &Type) -> Sort {
                 }
             }
             Base::Param(name) => format!("u!Param_{name}"),
+            // A tuple of the memory model's desugaring (`spec/17 §4`): an uninterpreted sort
+            // with a projection per component.
+            Base::Tuple(types) => {
+                let mut sort = format!("i!Tuple{}", types.len());
+                for ty in types {
+                    sort.push('_');
+                    sort.push_str(&self::sort(ty));
+                }
+                sort
+            }
             Base::Unknown => "i!Unknown".to_owned(),
         },
     }
@@ -580,6 +590,7 @@ fn type_name(ty: &Type) -> String {
             Base::Unit => "Unit".to_owned(),
             Base::Hashed => "Hashed".to_owned(),
             Base::Named { name, .. } | Base::Param(name) => name.clone(),
+            Base::Tuple(_) => "Tuple".to_owned(),
             Base::Unknown => "Unknown".to_owned(),
         },
     }
@@ -735,8 +746,19 @@ impl<'p, 'i> Walker<'p, 'i> {
             f: constant("result", &fun.result),
             ty: fun.result.clone(),
         };
-        for refinement in refinements(&fun.result) {
-            self.result_refinement(&ctx, &leaves, &result, refinement, fun.span);
+        // With `edit` parameters, the result is the last component of the tuple (`spec/17
+        // §4`); the components of the parameters hold by their rebinds.
+        let subject = match &fun.result {
+            Type::Base {
+                base: Base::Tuple(types),
+                ..
+            } => projection(&result, types.len().saturating_sub(1)),
+            _ => Some(result.clone()),
+        };
+        if let Some(subject) = &subject {
+            for refinement in refinements(&subject.ty) {
+                self.result_refinement(&ctx, &leaves, &result, subject, refinement, fun.span);
+            }
         }
         // ADR 0038 D5: the result of a policy's `via` function satisfies the refinement of the
         // policy's `to` type, which T-Declassify assumes (`spec/12 §3`, `spec/07 §5` rule 3).
@@ -744,7 +766,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             .index
             .via_refinements(self.module, &fun.name, &fun.result)
         {
-            self.result_refinement(&ctx, &leaves, &result, refinement, fun.span);
+            self.result_refinement(&ctx, &leaves, &result, &result, refinement, fun.span);
         }
         for clause in &fun.ensures {
             let goal = {
@@ -770,12 +792,14 @@ impl<'p, 'i> Walker<'p, 'i> {
         }
     }
 
-    /// A `refinement` obligation over every return path: `result` satisfies `refinement`.
+    /// A `refinement` obligation over every return path: `subject`, `result` or a component
+    /// of it, satisfies `refinement`.
     fn result_refinement(
         &mut self,
         ctx: &Ctx,
         leaves: &[Leaf],
         result: &Tv,
+        subject: &Tv,
         refinement: &Refinement,
         source: Span,
     ) {
@@ -783,8 +807,8 @@ impl<'p, 'i> Walker<'p, 'i> {
             let vars = |name: &str| Some(own(ctx, name));
             let env = Env {
                 vars: &vars,
-                it: Some(result.clone()),
-                result: Some(result.clone()),
+                it: Some(subject.clone()),
+                result: Some(subject.clone()),
             };
             self.term(&refinement.clause.term, &env)
         };
@@ -955,6 +979,27 @@ impl<'p, 'i> Walker<'p, 'i> {
                         returns: Vec::new(),
                     });
                     return;
+                }
+                // `let (x, ...) = a in e`: each binder is a projection of the tuple
+                // (`spec/17 §4`), with the refinements of its type.
+                Expr::LetTuple {
+                    names, value, body, ..
+                } => {
+                    let tuple = self.atom(value, &ctx);
+                    for (index, (name, ty)) in names.iter().enumerate() {
+                        ctx.types.insert(name.clone(), ty.clone());
+                        let x = own(&ctx, name);
+                        if let Some(component) = projection(&tuple, index)
+                            && component.f.sort() == x.f.sort()
+                        {
+                            ctx.define(F::eq(x.f.clone(), component.f.clone()));
+                            if name.starts_with('%') {
+                                self.defs.insert(name.clone(), component.f);
+                            }
+                        }
+                        self.assume_refinements(&mut ctx, &x);
+                    }
+                    expr = body;
                 }
                 Expr::Unreachable { span, goal } => {
                     // The path after the last arm is infeasible.
@@ -1433,6 +1478,17 @@ impl<'p, 'i> Walker<'p, 'i> {
                     ctx.define(F::eq(x.f.clone(), projection.f.clone()));
                     if name.starts_with('%') {
                         self.defs.insert(name.to_owned(), projection.f);
+                    }
+                }
+            }
+            // `(a, ...)`: each projection of the binder is a component (`spec/17 §4`).
+            Rhs::Tuple(items) => {
+                for (index, atom) in items.iter().enumerate() {
+                    let value = self.atom(atom, ctx);
+                    if let Some(component) = projection(&x, index)
+                        && component.f.sort() == value.f.sort()
+                    {
+                        ctx.define(F::eq(component.f, value.f));
                     }
                 }
             }
@@ -2517,6 +2573,10 @@ impl<'p, 'i> Walker<'p, 'i> {
             Term::Var(name) => (env.vars)(name)?,
             Term::It => env.it.clone()?,
             Term::Result => env.result.clone()?,
+            Term::Proj { value, index } => {
+                let tuple = self.term(value, env)?;
+                projection(&tuple, *index)?
+            }
             Term::Int(digits) => Tv {
                 f: F::Int(digits.clone()),
                 ty: int(),
@@ -3012,6 +3072,17 @@ impl<'p, 'i> Walker<'p, 'i> {
                     let Some(ty) = ctx.types.get(name) else {
                         continue;
                     };
+                    // A tuple is internal to the desugar of the memory model and has no
+                    // source form (`spec/17 §4`).
+                    if matches!(
+                        ty,
+                        Type::Base {
+                            base: Base::Tuple(_),
+                            ..
+                        }
+                    ) {
+                        continue;
+                    }
                     let source = source_name(name);
                     let value = Tv {
                         f: term.clone(),
@@ -3485,6 +3556,31 @@ fn nonzero_literal(f: &F) -> bool {
         F::Op { op: "-", args } => matches!(args.as_slice(), [inner] if nonzero_literal(inner)),
         _ => false,
     }
+}
+
+/// Component `index` of a tuple value, `i!t!<index>!<Sort>` (`spec/17 §4`).
+fn projection(tuple: &Tv, index: usize) -> Option<Tv> {
+    let Type::Base {
+        base: Base::Tuple(types),
+        ..
+    } = &tuple.ty
+    else {
+        return None;
+    };
+    let ty = types.get(index)?.clone();
+    let sort = tuple.f.sort();
+    Some(Tv {
+        f: F::App {
+            fun: SmtFun {
+                name: format!("i!t!{index}!{sort}"),
+                args: vec![sort],
+                result: self::sort(&ty),
+                role: FunRole::Other,
+            },
+            args: vec![tuple.f.clone()],
+        },
+        ty,
+    })
 }
 
 /// `least <= value <= greatest` of a fixed-width type (`spec/18 §6`).

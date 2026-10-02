@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use una_diag::{Code, ObligationKind, Repair};
 use una_syntax::Span;
 use una_syntax::ast::{
-    CapabilityDecl, ClauseKind, DeclKind, ExampleDecl, ExpectationKind, Expr, FunctionDecl,
-    HandlerCall, HandlerDecl, Ident, OpClauseKind, PolicyDecl, PredicateDecl,
+    CapabilityDecl, ClauseKind, Convention, DeclKind, ExampleDecl, ExpectationKind, Expr,
+    FunctionDecl, HandlerCall, HandlerDecl, Ident, OpClauseKind, PolicyDecl, PredicateDecl,
 };
 
 use super::authority::{Base, Bound, Collected, Frame, Pass};
@@ -38,6 +38,8 @@ pub(crate) enum Rl {
 pub(crate) struct Ctx {
     /// The type of `result`, where `result` is allowed (U2012).
     pub(crate) result: Option<Ty>,
+    /// In an `ensures` clause of a function, where `old` is allowed (`spec/17 §3`).
+    pub(crate) ensures: bool,
     /// The type of `it`, where `it` is allowed (U2013).
     pub(crate) it: Option<Ty>,
     /// The type of `error`, where `error` is allowed (U2013).
@@ -79,6 +81,7 @@ impl Ctx {
     pub(crate) fn plain() -> Ctx {
         Ctx {
             result: None,
+            ensures: false,
             it: None,
             error: None,
             fails: None,
@@ -134,6 +137,15 @@ pub(crate) enum Role<'r> {
 pub(crate) struct Local<'a> {
     pub(crate) name: &'a str,
     pub(crate) ty: Ty,
+    /// Declared `let edit`, or an `edit` parameter (`spec/17 §2`).
+    pub(crate) editable: bool,
+    /// Where it was passed by `take`, until an assignment gives it a new value (`spec/17 §3`).
+    pub(crate) taken: Option<Span>,
+    /// How many lambdas enclosed its binding: inside a deeper lambda it is captured by value
+    /// and not editable (`spec/17 §5`).
+    pub(crate) lambda_depth: usize,
+    /// Its declared type is refined, so each rebind carries an obligation (`spec/17 §5`).
+    pub(crate) refined: bool,
 }
 
 /// What a normal return path must satisfy, for pending obligations.
@@ -168,6 +180,13 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) collected: &'c mut Collected,
     /// How many lambdas enclose the expression checked.
     pub(crate) lambda_depth: usize,
+    /// The receiver of the method call being checked, with its call-site marker, for its
+    /// parameter's convention and exclusivity (`spec/17 §3`).
+    pub(crate) receiver_marker: Option<(Option<Convention>, Expr)>,
+    /// The spans of the calls that are the whole expression of a statement, a `let` or an
+    /// assignment: the only places for a call with `edit` or `take`, U3013 elsewhere
+    /// (`spec/17 §3` rule 5), and where the desugar binds its tuple (`spec/17 §4`).
+    pub(crate) statement_calls: Vec<Span>,
     /// The functions that calls resolve to, by the span of the call.
     pub(crate) call_targets: BTreeMap<Span, usize>,
     /// The types of the operands of the binary operations being checked.
@@ -277,6 +296,8 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             base: Base::Quiet,
             pass,
             collected,
+            receiver_marker: None,
+            statement_calls: Vec::new(),
             lambda_depth: 0,
             call_targets: BTreeMap::new(),
             operands: Vec::new(),
@@ -366,7 +387,19 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
 
     /// Binds a local name.
     pub(crate) fn bind(&mut self, name: &'a str, ty: Ty) {
-        self.locals.push(Local { name, ty });
+        self.bind_as(name, ty, false);
+    }
+
+    /// Binds a local name, editable when `editable` (`spec/17 §2`).
+    pub(crate) fn bind_as(&mut self, name: &'a str, ty: Ty, editable: bool) {
+        self.locals.push(Local {
+            name,
+            ty,
+            editable,
+            taken: None,
+            lambda_depth: self.lambda_depth,
+            refined: false,
+        });
     }
 
     /// The type of the innermost local named `name`.
@@ -702,7 +735,11 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         self.type_params = def.type_params.clone();
         for param in &def.params {
             let ty = self.symbolic(&param.ty.base);
-            self.bind(param.name, ty);
+            let editable = param.convention == Some(una_syntax::ast::Convention::Edit);
+            self.bind_as(param.name, ty, editable);
+            if let Some(local) = self.locals.last_mut() {
+                local.refined = editable && param.ty.is_refined();
+            }
         }
         self.enter_function(&def);
         if self.pass == Pass::Check {
@@ -735,6 +772,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                         rl: Rl::Clause,
                         labels: false,
                         result: Some(def.result.base.clone()),
+                        ensures: true,
                         ..Ctx::plain()
                     };
                     self.within(ctx, |checker| {
@@ -772,6 +810,25 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 true,
             );
         });
+        // The final value of an `edit` parameter returns to the caller, a use of it after the
+        // body: one still taken there is U2017 (`spec/17 §3` rules 1 and 3).
+        if self.pass == Pass::Check {
+            for (param, local) in def.params.iter().zip(self.locals.clone()) {
+                if param.convention != Some(una_syntax::ast::Convention::Edit) {
+                    continue;
+                }
+                if let Some(taken) = local.taken {
+                    self.report.error(
+                        Code::U2017,
+                        taken,
+                        format!(
+                            "`{}` is an `edit` parameter, whose final value returns to the caller, so it cannot stay taken; give it a new value before the end of the body",
+                            param.name
+                        ),
+                    );
+                }
+            }
+        }
     }
 
     fn predicate(&mut self, predicate: &'a PredicateDecl, id: usize) {

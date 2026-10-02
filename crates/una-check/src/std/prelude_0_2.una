@@ -1,0 +1,6 @@
+--- Replaces the element at `index` of `xs` with `item` (`spec/17 §8`).
+pub set[T](edit xs: List[T], index: Int, item: T) -> Unit
+  requires 0 <= index and index < xs.len
+  ensures xs.len == old(xs).len
+=
+  unit

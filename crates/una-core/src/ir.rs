@@ -173,6 +173,9 @@ pub enum Base {
     },
     /// A type parameter.
     Param(String),
+    /// A tuple, internal to the desugaring of the memory model: never surface syntax
+    /// (`spec/17 §4`, `spec/09 §2`).
+    Tuple(Vec<Type>),
     /// A type that inference left open; it only occurs where no value is ever built.
     Unknown,
 }
@@ -221,6 +224,14 @@ pub enum Term {
     },
     /// `a.len`.
     Len(Box<Term>),
+    /// The component `index` of a tuple, as `result` of a function with `edit` parameters
+    /// (`spec/17 §4`).
+    Proj {
+        /// The tuple.
+        value: Box<Term>,
+        /// The component's position.
+        index: usize,
+    },
     /// `-a`.
     Neg(Box<Term>),
     /// `not a`.
@@ -536,6 +547,8 @@ pub struct Ctor {
 pub enum Rhs {
     /// An atom.
     Atom(Atom),
+    /// `(a, ...)`: a tuple (`spec/17 §4`).
+    Tuple(Vec<Atom>),
     /// A primitive applied to atoms.
     Prim {
         /// The primitive.
@@ -721,6 +734,17 @@ pub enum Expr {
         /// Whether the source writes the binder's type, whose refinements are then an
         /// obligation (`spec/12 §3`).
         written: bool,
+    },
+    /// `let (x: τ, ...) = a in e`: the components of a tuple (`spec/17 §4`).
+    LetTuple {
+        /// The binders, one per component.
+        names: Vec<(Name, Type)>,
+        /// The tuple.
+        value: Atom,
+        /// The rest.
+        body: Box<Expr>,
+        /// The source of the tuple.
+        span: Span,
     },
     /// `if a then e else e`.
     If {

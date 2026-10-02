@@ -331,7 +331,15 @@ impl Dumper<'_> {
         Node::List(
             params
                 .iter()
-                .map(|param| Node::List(vec![atom(self.name(&param.name)), self.ty(&param.ty)]))
+                .map(|param| {
+                    let mut items = Vec::new();
+                    if let Some(convention) = param.convention {
+                        items.push(atom(convention.as_str()));
+                    }
+                    items.push(atom(self.name(&param.name)));
+                    items.push(self.ty(&param.ty));
+                    Node::List(items)
+                })
                 .collect(),
         )
     }
@@ -446,7 +454,8 @@ impl Dumper<'_> {
     fn stmt(&self, stmt: &Stmt) -> Node {
         match stmt {
             Stmt::Let(stmt) => {
-                let mut items = vec![atom("let"), atom(self.name(&stmt.name))];
+                let mut items = vec![atom(if stmt.editable { "let-edit" } else { "let" })];
+                items.push(atom(self.name(&stmt.name)));
                 if let Some(ty) = &stmt.ty {
                     items.push(self.ty(ty));
                 }
@@ -456,6 +465,20 @@ impl Dumper<'_> {
                 });
                 Node::List(items)
             }
+            Stmt::Assign(stmt) => list(
+                "assign",
+                [
+                    self.expr(&stmt.place),
+                    match &stmt.value {
+                        LetValue::Handled(handled) => self.handled(handled),
+                        LetValue::BlockExpr(expr) => self.block_expr(expr),
+                    },
+                ],
+            ),
+            Stmt::IfThen(stmt) => list(
+                "if-then",
+                [self.expr(&stmt.condition), self.block(&stmt.block)],
+            ),
             Stmt::Handled(handled) => self.handled(handled),
             Stmt::BlockExpr(expr) => self.block_expr(expr),
         }
@@ -551,12 +574,13 @@ impl Dumper<'_> {
     }
 
     fn arg(&self, arg: &Arg) -> Node {
-        match &arg.label {
-            Some(label) => Node::List(vec![
-                atom(format!("{}:", self.name(label))),
-                self.expr(&arg.value),
-            ]),
+        let value = match arg.marker {
+            Some(marker) => list(marker.as_str(), [self.expr(&arg.value)]),
             None => self.expr(&arg.value),
+        };
+        match &arg.label {
+            Some(label) => Node::List(vec![atom(format!("{}:", self.name(label))), value]),
+            None => value,
         }
     }
 
@@ -637,8 +661,17 @@ impl Dumper<'_> {
             ExprKind::Field { target, name } => {
                 list(".", [self.expr(target), atom(self.name(name))])
             }
-            ExprKind::MethodCall { target, name, args } => {
-                let mut items = vec![atom("method"), self.expr(target), atom(self.name(name))];
+            ExprKind::MethodCall {
+                receiver,
+                target,
+                name,
+                args,
+            } => {
+                let target = match receiver {
+                    Some(marker) => list(marker.as_str(), [self.expr(target)]),
+                    None => self.expr(target),
+                };
+                let mut items = vec![atom("method"), target, atom(self.name(name))];
                 items.extend(args.iter().map(|arg| self.arg(arg)));
                 Node::List(items)
             }
@@ -656,6 +689,7 @@ impl Dumper<'_> {
             ExprKind::CapRef(cap) => atom(format!("@{}", self.name(cap))),
             ExprKind::Paren(inner) => list("paren", [self.expr(inner)]),
             ExprKind::List(items) => list("list", items.iter().map(|item| self.expr(item))),
+            ExprKind::Old(inner) => list("old", [self.expr(inner)]),
             ExprKind::Result => atom("result"),
             ExprKind::It => atom("it"),
             ExprKind::Error => atom("error"),

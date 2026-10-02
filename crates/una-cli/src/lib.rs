@@ -26,7 +26,7 @@ use una_check::{
 };
 use una_diag::{Code, Diagnostic, render_human, render_json};
 use una_syntax::ast::File;
-use una_syntax::{FileId, Interner, Lexed, SourceDb, lex, parse};
+use una_syntax::{FileId, Interner, KeywordSet, Lexed, SourceDb, lex_in, parse};
 
 use crate::args::{Cli, ColorChoice, Command, TierArg};
 pub use crate::package::{LoadError, Package, load};
@@ -130,7 +130,8 @@ fn analyze(package: &Package, run_grants: Option<&[String]>) -> Analysis {
     let (manifest, mut diagnostics) = package::project(package);
     let mut interner = Interner::new();
     let mut trees = Vec::new();
-    for checked in check_files(&package.sources, &package.modules, &mut interner) {
+    let keywords = keyword_set(manifest.edition);
+    for checked in check_files(&package.sources, &package.modules, &mut interner, keywords) {
         let broken = !checked.syntax.is_empty();
         diagnostics.extend(checked.syntax);
         if let Some(canonical) = checked.canonical {
@@ -202,11 +203,16 @@ struct FileCheck {
 
 /// Lexes and parses the files `modules` of a package, then prints each one that parsed in its
 /// canonical form, knowing the constructors that every such file declares (ADR 0020 rule 6).
-fn check_files(sources: &SourceDb, modules: &[FileId], interner: &mut Interner) -> Vec<FileCheck> {
+fn check_files(
+    sources: &SourceDb,
+    modules: &[FileId],
+    interner: &mut Interner,
+    keywords: KeywordSet,
+) -> Vec<FileCheck> {
     let parsed: Vec<(FileId, Lexed, File, Vec<Diagnostic>)> = modules
         .iter()
         .map(|&id| {
-            let lexed = lex(sources.file(id), id, interner);
+            let lexed = lex_in(sources.file(id), id, interner, keywords);
             let parsed = parse(&lexed, id, interner);
             let syntax: Vec<Diagnostic> = lexed
                 .errors
@@ -528,9 +534,11 @@ fn fmt_command(
         }
     };
     let sources = &package.sources;
+    let (manifest, _) = package::project(&package);
+    let keywords = keyword_set(manifest.edition);
     let checks = on_large_stack(|| {
         let mut interner = Interner::new();
-        check_files(sources, &package.modules, &mut interner)
+        check_files(sources, &package.modules, &mut interner, keywords)
     });
     let mut diagnostics = Vec::new();
     for checked in checks {
@@ -719,5 +727,13 @@ fn use_color(choice: ColorChoice, is_terminal: bool) -> bool {
         ColorChoice::Never => false,
         ColorChoice::Auto => is_terminal,
         ColorChoice::Always => true,
+    }
+}
+
+/// The keywords of a package's edition (`spec/01 §5`, `spec/17 §9`).
+fn keyword_set(edition: una_project::Edition) -> KeywordSet {
+    match edition {
+        una_project::Edition::V0_1 => KeywordSet::V0_1,
+        una_project::Edition::V0_2 => KeywordSet::V0_2,
     }
 }

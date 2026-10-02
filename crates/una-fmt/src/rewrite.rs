@@ -252,10 +252,26 @@ struct Collector<'a> {
 /// expression is a line expression (ADR 0020 rule 4).
 fn plain_line(block: &Block) -> Option<&Expr> {
     match block.stmts.as_slice() {
-        [Stmt::Handled(handled)] if handled.with.is_empty() && handled.handlings.is_empty() => {
+        [Stmt::Handled(handled)]
+            if handled.with.is_empty()
+                && handled.handlings.is_empty()
+                && !marked(&handled.expr) =>
+        {
             Some(&handled.expr)
         }
         _ => None,
+    }
+}
+
+/// Whether `expr` is a call with an `edit` or `take` marker, which is legal only as a
+/// statement, so its block form stays (`spec/15`, `spec/17 §3` rule 5).
+fn marked(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Call { args, .. } => args.iter().any(|arg| arg.marker.is_some()),
+        ExprKind::MethodCall { receiver, args, .. } => {
+            receiver.is_some() || args.iter().any(|arg| arg.marker.is_some())
+        }
+        _ => false,
     }
 }
 
@@ -512,6 +528,17 @@ impl Collector<'_> {
                     LetValue::Handled(handled) => self.handled(handled),
                     LetValue::BlockExpr(expr) => self.block_expr(expr),
                 },
+                Stmt::Assign(stmt) => {
+                    self.expr(&stmt.place);
+                    match &stmt.value {
+                        LetValue::Handled(handled) => self.handled(handled),
+                        LetValue::BlockExpr(expr) => self.block_expr(expr),
+                    }
+                }
+                Stmt::IfThen(stmt) => {
+                    self.expr(&stmt.condition);
+                    self.block(&stmt.block);
+                }
                 Stmt::Handled(handled) => self.handled(handled),
                 Stmt::BlockExpr(expr) => self.block_expr(expr),
             }
@@ -614,6 +641,7 @@ impl Collector<'_> {
             }
             ExprKind::Attempt(operand)
             | ExprKind::Unary { operand, .. }
+            | ExprKind::Old(operand)
             | ExprKind::Paren(operand) => self.expr(operand),
             ExprKind::Fail(variant) => self.variant(variant),
             ExprKind::Binary { left, right, .. } => {

@@ -271,6 +271,7 @@ fn mentions(expr: &Expr, name: &str) -> bool {
     match expr {
         Expr::Atom { atom: a, .. } => atom(a),
         Expr::Unreachable { .. } => false,
+        Expr::LetTuple { value, body, .. } => atom(value) || mentions(body, name),
         Expr::Let { value, body, .. } => {
             (match value.as_ref() {
                 Bound::Rhs(rhs) => rhs_mentions(rhs, name),
@@ -311,6 +312,7 @@ fn rhs_mentions(rhs: &Rhs, name: &str) -> bool {
         | Rhs::Call { args, .. }
         | Rhs::Op { args, .. }
         | Rhs::Construct { args, .. }
+        | Rhs::Tuple(args)
         | Rhs::List(args) => args.iter().any(atom),
         Rhs::Apply { callee, args, .. } => atom(callee) || args.iter().any(atom),
         Rhs::Field { value, .. } => atom(value),
