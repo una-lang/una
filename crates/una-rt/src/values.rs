@@ -112,7 +112,8 @@ fn alloc(object: Object) -> i64 {
     HEAP.with(|heap| {
         let mut heap = heap.borrow_mut();
         // A debug build never reuses a slot, so that a use of a freed object is a fault rather
-        // than a read of another object.
+        // than a read of another object. This changes where objects live, never what a program
+        // computes (see `runtime::start`).
         let reused = if cfg!(debug_assertions) {
             None
         } else {
