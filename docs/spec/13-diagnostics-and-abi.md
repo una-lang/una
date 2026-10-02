@@ -222,7 +222,7 @@ Every command prints one JSON document with `--json`, its `schema` key first (AD
 
 ```json
 {
-  "schema": "una.report/1",
+  "schema": "una.report/2",
   "package": { "name": "events-example", "version": "0.1.0" },
   "lock": { "solver_version": "...", "hash": "..." },
   "proven": { "semantic": 14, "security": "by typing", "authority": "by typing" },
@@ -234,7 +234,8 @@ Every command prints one JSON document with `--json`, its `schema` key first (AD
   "tcb": { "trusted_modules": [ { "module": "events.keys", "lines": 17 } ], "host_capabilities": ["Keys"], "solver": "z3 <version>", "proof_cache": ".una/cache/" },
   "requirements": [ { "id": "EVENTS_3", "status": "active", "derived": ["events.seating.availability"] } ],
   "coverage": { "pub_functions": 3, "with_ensures": 1, "with_derived_from": 1, "trivial_ensures": 0 },
-  "out_of_model": ["timing", "termination and divergence", "resource consumption and allocation", "interpreter stack exhaustion", "external systems beyond declared signatures", "races between the check and the use of a file path", "hard links"]
+  "native": { "target": "aarch64-apple-darwin", "arbitrary_precision": ["events.seating.clamp_seats.raw", "events.seating.clamp_seats.result"] },
+  "out_of_model": ["timing", "termination and divergence", "resource consumption and allocation", "stack exhaustion", "external systems beyond declared signatures", "races between the check and the use of a file path", "hard links"]
 }
 ```
 
@@ -252,15 +253,12 @@ Every command prints one JSON document with `--json`, its `schema` key first (AD
 - `tcb`: the trusted modules with their line counts, the host capabilities the package's functions use, the solver as `z3 <version>`, and `proof_cache`, the proof cache of the package, `.una/cache/`: in v0.1 its entries are trusted, not authenticated (ADR 0041).
 - `requirements`: every requirement, by identifier, with its status and the functions derived from it.
 - `coverage`: `pub_functions` counts the public functions, `with_ensures` those with at least one `ensures` clause that is not trivial, `with_derived_from` those with a `derived from` clause, and `trivial_ensures` the trivial clauses of public functions. An `ensures` clause is trivial when the solver proves it with no hypothesis, its parameters and `result` unconstrained: one more query per clause of a public function, cached like the others; a solver that cannot answer these queries gives U5003 or U8001 instead of the report.
-- `out_of_model`: the channels outside the model of `spec/07 §1`, in this order: timing, termination and divergence, resource consumption and allocation, interpreter stack exhaustion, external systems beyond declared signatures, races between the check and the use of a file path, and hard links (`spec/14 §3`).
+- `native` (v0.2, ADR 0055): `target`, the host target of `una build` (`spec/16 §1`), and `arbitrary_precision`, the bindings whose `Int` the native backend keeps at arbitrary precision: every parameter and result of type `Int` of the package's functions, as `module.function.parameter` and `module.function.result`, until machine widths come from proven ranges.
+- `out_of_model`: the channels outside the model of `spec/07 §1`, in this order: timing, termination and divergence, resource consumption and allocation, stack exhaustion, external systems beyond declared signatures, races between the check and the use of a file path, and hard links (`spec/14 §3`).
 
 Without `--json`, the same sections print as labeled lines.
 
-(v0.2, ADR 0055.) The release that ships `una build` (`spec/16`) bumps the report to `una.report/2`, which changes two things:
-- It adds a section `native`, `{"target": ..., "arbitrary_precision": [...]}`: the host target, and the bindings whose `Int` the native backend keeps at arbitrary precision.
-- The `out_of_model` entry "interpreter stack exhaustion" becomes "stack exhaustion".
-
-Until that release, the report is `una.report/1` as above.
+(v0.2, ADR 0055.) The report is `una.report/2` from the first release that ships `una build` (`spec/16`), `v0.2.0-alpha.1`: it added the section `native`, and the `out_of_model` entry "interpreter stack exhaustion" became "stack exhaustion". Releases up to `v0.1.2` write `una.report/1`.
 
 ## 7. Project files
 

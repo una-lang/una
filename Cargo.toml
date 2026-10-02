@@ -12,17 +12,24 @@ publish = false
 [workspace.dependencies]
 # Workspace crates, in the dependency direction of compiler/architecture.md §2.
 una-check = { path = "crates/una-check" }
+una-codegen = { path = "crates/una-codegen" }
 una-core = { path = "crates/una-core" }
 una-diag = { path = "crates/una-diag" }
 una-fmt = { path = "crates/una-fmt" }
 una-interp = { path = "crates/una-interp" }
 una-project = { path = "crates/una-project" }
 una-report = { path = "crates/una-report" }
+una-rt = { path = "crates/una-rt" }
 una-syntax = { path = "crates/una-syntax" }
 una-verify = { path = "crates/una-verify" }
 # External crates, only from the allowlist of compiler/architecture.md §7.
 ariadne = "0.6.0"
 clap = { version = "4.6.7", features = ["derive"] }
+# Allowed by ADR 0055 for una-codegen and una-rt only.
+cranelift-codegen = "0.136.1"
+cranelift-frontend = "0.136.1"
+cranelift-module = "0.136.1"
+cranelift-object = "0.136.1"
 indexmap = "2.14.2"
 insta = "1.48.0"
 num-bigint = "0.4.6"
@@ -31,6 +38,8 @@ rayon = "1.12.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.10.8"
+# Allowed by ADR 0055 for una-codegen and una-rt only.
+target-lexicon = "0.13.5"
 toml = "1.1.6"
 
 # The Rust rules of compiler/conventions.md §1, enforced for every target of

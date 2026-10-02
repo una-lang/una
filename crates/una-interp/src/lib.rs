@@ -9,11 +9,13 @@
 mod harness;
 mod host;
 mod machine;
+mod trace;
 mod value;
 
 pub use harness::{Completion, ExampleFailure, ExampleRun, Host, Run, run_examples, run_main};
 pub use host::{FileFault, Grant, World, parse_keys};
 pub use machine::{Abort, Event, EventOutcome};
+pub use trace::{EventDoc, OutcomeDoc, Pairs, trace_json};
 
 /// The default maximum call depth (`spec/11 §7`).
 pub const DEFAULT_MAX_DEPTH: usize = 10_000;

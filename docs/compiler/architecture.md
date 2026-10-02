@@ -25,12 +25,14 @@ crates/
   una-verify/             obligation generation, SMT-LIB encoding, solver driver, cache, counterexamples
   una-interp/             Una Abstract Machine, host capabilities, traces, example harness
   una-report/             reserved for build report assembly; v0.1 assembles the report in una-cli (D-132)
-  una-cli/                the `una` binary (only crate that does I/O to the terminal)
+  una-codegen/            native code generation: Core IR to an object file through Cranelift (v0.2, ADR 0055)
+  una-rt/                 the runtime library of native executables; its ffi.rs is the only unsafe code (ADR 0058)
+  una-cli/                the `una` binary (the only compiler crate that does I/O to the terminal; una-rt is the I/O of native executables)
 tests/conformance/         language conformance suite (`testing.md`)
 examples/                  reference programs
 ```
 
-Dependency direction, as the crates' `Cargo.toml` files declare it, where `a` ← `b` means that `b` depends on `a` (no cycles): `diag` ← every other crate; `syntax` ← `fmt`, `core`, `check`, `verify`, `interp`, `cli`; `project` ← `check`, `cli`; `core` ← `check`, `verify`, `interp`, `cli`; `fmt`, `check`, `verify`, `interp`, `report` ← `cli`. `check`, `verify` and `interp` do not depend on one another: `cli` runs them in turn and passes each one the Core IR that `check` elaborates. `report` is a stub that depends only on `diag` (D-132).
+Dependency direction, as the crates' `Cargo.toml` files declare it, where `a` ← `b` means that `b` depends on `a` (no cycles): `diag` ← every other crate; `syntax` ← `fmt`, `core`, `check`, `verify`, `interp`, `cli`; `project` ← `check`, `cli`; `core` ← `check`, `verify`, `interp`, `cli`; `fmt`, `check`, `verify`, `interp`, `report`, `codegen` ← `cli`; `core` ← `codegen`; `diag`, `core`, `interp` ← `rt`. `una-rt` is a static library that `una build` links into executables, not a dependency of `cli`; it shares the interpreter's grants and trace form. `check`, `verify` and `interp` do not depend on one another: `cli` runs them in turn and passes each one the Core IR that `check` elaborates. `report` is a stub that depends only on `diag` (D-132).
 
 ## 3. Pipeline
 
@@ -45,6 +47,7 @@ source files
                   elaborate to Core IR (spans preserved)             ─── tier 0
   → una-verify   generate obligations over Core → encode → Z3 → statuses ─ tier 1
   → una-interp   run main or examples over Core IR
+  → una-codegen  compile main to an object (una build, v0.2) → cc links it with una-rt
   → una-cli      assemble the report from check, verify and interp results (una-report is reserved for it)
 ```
 

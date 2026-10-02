@@ -24,6 +24,8 @@ Status: Normative, v0.2 (ADR 0055).
 
    - `status` is `built`, or `rejected` when the checks reported errors, which `diagnostics` holds; then `output` is `null`.
    - `target` is the host target.
+6. Without `--json`, `una build` prints `built <output>` on stdout.
+7. **Slices.** Until the backend compiles the whole language (#26), a construct it does not compile yet is a usage error, exit code 2. `una build` names the construct on stderr, as in "the native backend does not compile calls of functions yet", and writes no executable.
 
 ## 3. The executable
 

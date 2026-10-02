@@ -11,11 +11,10 @@ use std::sync::mpsc::{Sender, channel};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
-use serde::ser::{SerializeMap, Serializer};
 use una_core::{Base, Decl, Fun, Program, Type};
 use una_diag::{Code, Diagnostic, Location, in_output_order, render_human};
 use una_interp::{
-    Abort, Completion, Event, EventOutcome, ExampleRun, FileFault, Grant, Host, World,
+    Abort, Completion, EventDoc, ExampleRun, FileFault, Grant, Host, OutcomeDoc, Pairs, World,
 };
 use una_syntax::{SourceDb, Span};
 
@@ -24,7 +23,7 @@ use crate::verification::tier_one;
 use crate::{Analysis, Environment, ExitStatus, Package, analyze, load, on_large_stack};
 
 /// The exit status of a package that the checks reject: 3 for an internal error, 1 otherwise.
-fn rejected_status(diagnostics: &[Diagnostic]) -> ExitStatus {
+pub(crate) fn rejected_status(diagnostics: &[Diagnostic]) -> ExitStatus {
     if diagnostics.iter().any(|d| d.code == Code::U8001) {
         ExitStatus::Internal
     } else {
@@ -340,7 +339,11 @@ fn finish(
 }
 
 /// `main` of `entry` when it is `pub main() -> Unit` (`spec/04 §8`).
-fn entry_main<'a>(analysis: &'a Analysis, sources: &SourceDb, entry: &str) -> Option<&'a Fun> {
+pub(crate) fn entry_main<'a>(
+    analysis: &'a Analysis,
+    sources: &SourceDb,
+    entry: &str,
+) -> Option<&'a Fun> {
     let modules = Modules {
         sources,
         interner: &analysis.interner,
@@ -650,56 +653,6 @@ impl<'a> RunDocument<'a> {
 struct FailureDoc<'a> {
     variant: &'a str,
     fields: Pairs<'a>,
-}
-
-/// Name and value pairs as a JSON object, in their order.
-struct Pairs<'a>(&'a [(String, String)]);
-
-impl Serialize for Pairs<'_> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut map = serializer.serialize_map(Some(self.0.len()))?;
-        for (name, value) in self.0 {
-            map.serialize_entry(name, value)?;
-        }
-        map.end()
-    }
-}
-
-/// An event of a trace, as `spec/11 §5` shows it.
-#[derive(Serialize)]
-struct EventDoc<'a> {
-    seq: usize,
-    instance: &'a str,
-    capability: &'a str,
-    op: &'a str,
-    args: Pairs<'a>,
-    outcome: OutcomeDoc<'a>,
-}
-
-impl<'a> From<&'a Event> for EventDoc<'a> {
-    fn from(event: &'a Event) -> Self {
-        EventDoc {
-            seq: event.seq,
-            instance: &event.instance,
-            capability: &event.capability,
-            op: &event.op,
-            args: Pairs(&event.args),
-            outcome: match &event.outcome {
-                EventOutcome::Ok(value) => OutcomeDoc::Ok { value },
-                EventOutcome::Fail { variant, value } => OutcomeDoc::Fail { variant, value },
-                EventOutcome::Aborted => OutcomeDoc::Aborted,
-            },
-        }
-    }
-}
-
-/// How an operation, or the `do` line of an example, ended.
-#[derive(Serialize)]
-#[serde(tag = "kind", rename_all = "lowercase")]
-enum OutcomeDoc<'a> {
-    Ok { value: &'a str },
-    Fail { variant: &'a str, value: &'a str },
-    Aborted,
 }
 
 /// `una.test/1`, with keys in the order of ADR 0032 rule 5.
