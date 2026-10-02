@@ -3898,6 +3898,7 @@ mod tests {
             result: int(),
             uses: Vec::new(),
             fails: None,
+            error: None,
             requires: requires.into_iter().map(clause).collect(),
             ensures: vec![clause(positive)],
             body,

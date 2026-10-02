@@ -420,6 +420,18 @@ impl<'e, 'a> Fx<'e, 'a> {
         }
     }
 
+    /// The qualified identity of the kind `ty`, when it is one.
+    fn kind_path(&self, ty: &Ty) -> Option<Box<Path>> {
+        match ty {
+            Ty::Kind(id, _) => {
+                let def = self.env.kinds.get(*id)?;
+                Some(Box::new(self.path(def.module, def.name)))
+            }
+            Ty::Labeled(_, inner) => self.kind_path(inner),
+            _ => None,
+        }
+    }
+
     fn kind_name(&self, ty: &Ty) -> String {
         match ty {
             Ty::Kind(id, _) => self.env.kind_name(*id).to_owned(),
@@ -848,6 +860,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     result,
                     uses: self.needs(&def.uses),
                     fails: def.fails.as_ref().map(|f| self.kind_name(f)),
+                    error: def.fails.as_ref().and_then(|f| self.kind_path(f)),
                     requires,
                     ensures,
                     body,

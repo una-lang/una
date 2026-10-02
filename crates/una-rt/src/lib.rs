@@ -15,5 +15,6 @@
 
 #[allow(unsafe_code)]
 pub mod ffi;
+pub mod render;
 pub mod runtime;
 pub mod values;
