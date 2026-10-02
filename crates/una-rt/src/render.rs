@@ -112,54 +112,83 @@ impl Failure {
 
     /// The Una form of `word`, a value of the type at `ty`.
     fn render(&self, ty: usize, word: i64) -> String {
-        match self.types.get(ty) {
-            Some(Shape::Int) => values::int_value(word).to_string(),
-            Some(Shape::Bool) => (word != 0).to_string(),
-            Some(Shape::Text) => una_core::quote(&values::text_value(word)),
-            Some(Shape::Unit) => "unit".to_owned(),
-            Some(Shape::Fn) => "<function>".to_owned(),
+        render(&self.types, ty, word)
+    }
+}
+
+/// What remains to render: a value of a type, or text as it is.
+enum Task {
+    Value(usize, i64),
+    Text(String),
+}
+
+/// The Una form of `word`, a value of the type at `ty` in `types`, from a stack of tasks rather
+/// than the native stack: a value can nest deeper than any call (ADR 0060, draft). A field of a
+/// kind whose declared type is labeled above `public` is `<redacted:level>`.
+fn render(types: &[Shape], ty: usize, word: i64) -> String {
+    let mut out = String::new();
+    let mut tasks = vec![Task::Value(ty, word)];
+    while let Some(task) = tasks.pop() {
+        let (ty, word) = match task {
+            Task::Text(text) => {
+                out.push_str(&text);
+                continue;
+            }
+            Task::Value(ty, word) => (ty, word),
+        };
+        // The parts of a list or a variant, in order; pushed in reverse onto the stack.
+        let mut parts = Vec::new();
+        match types.get(ty) {
+            Some(Shape::Int) => out.push_str(&values::int_value(word).to_string()),
+            Some(Shape::Bool) => out.push_str(if word != 0 { "true" } else { "false" }),
+            Some(Shape::Text) => out.push_str(&una_core::quote(&values::text_value(word))),
+            Some(Shape::Unit) => out.push_str("unit"),
+            Some(Shape::Fn) => out.push_str("<function>"),
             Some(Shape::List(item)) => {
-                let items: Vec<String> = (0..values::count(word))
-                    .map(|index| self.render(*item, values::field(word, index)))
-                    .collect();
-                format!("[{}]", items.join(", "))
+                out.push('[');
+                for index in 0..values::count(word) {
+                    if index > 0 {
+                        parts.push(Task::Text(", ".to_owned()));
+                    }
+                    parts.push(Task::Value(*item, values::field(word, index)));
+                }
+                parts.push(Task::Text("]".to_owned()));
             }
             Some(Shape::Data(variants)) => {
-                let Some(variant) = usize::try_from(values::tag(word))
+                let variant = usize::try_from(values::tag(word))
                     .ok()
-                    .and_then(|tag| variants.get(tag))
-                else {
-                    return "?".to_owned();
+                    .and_then(|tag| variants.get(tag));
+                let Some(variant) = variant else {
+                    out.push('?');
+                    continue;
                 };
-                let fields: Vec<(&str, String)> = variant
-                    .fields
-                    .iter()
-                    .enumerate()
-                    .map(|(index, field)| {
-                        let unit = matches!(self.types.get(field.ty), Some(Shape::Unit));
-                        let value = match &field.redacted {
+                out.push_str(&variant.name);
+                if !variant.fields.is_empty() {
+                    out.push('(');
+                    // One field is shown bare, several with their names.
+                    let named = variant.fields.len() > 1;
+                    for (index, field) in variant.fields.iter().enumerate() {
+                        if index > 0 {
+                            parts.push(Task::Text(", ".to_owned()));
+                        }
+                        if named {
+                            parts.push(Task::Text(format!("{}: ", field.name)));
+                        }
+                        let unit = matches!(types.get(field.ty), Some(Shape::Unit));
+                        parts.push(match &field.redacted {
                             // `unit` carries no information and is never redacted.
-                            Some(level) if !unit => format!("<redacted:{level}>"),
-                            _ => self.render(field.ty, field_word(word, index)),
-                        };
-                        (field.name.as_str(), value)
-                    })
-                    .collect();
-                match fields.as_slice() {
-                    [] => variant.name.clone(),
-                    [(_, only)] => format!("{}({only})", variant.name),
-                    _ => {
-                        let fields: Vec<String> = fields
-                            .iter()
-                            .map(|(name, value)| format!("{name}: {value}"))
-                            .collect();
-                        format!("{}({})", variant.name, fields.join(", "))
+                            Some(level) if !unit => Task::Text(format!("<redacted:{level}>")),
+                            _ => Task::Value(field.ty, field_word(word, index)),
+                        });
                     }
+                    parts.push(Task::Text(")".to_owned()));
                 }
             }
-            Some(Shape::Other) | None => "?".to_owned(),
+            Some(Shape::Other) | None => out.push('?'),
         }
+        tasks.extend(parts.into_iter().rev());
     }
+    out
 }
 
 fn field_word(word: i64, index: usize) -> i64 {
@@ -268,5 +297,52 @@ mod tests {
         values::push(none, 1);
         values::push(none, 3);
         assert_eq!(failure.shown(none), r#"Halt(reason: "x", inner: None)"#);
+    }
+
+    #[test]
+    fn a_value_deeper_than_any_call_renders_without_recursion() {
+        // `Some(Some(... None))`, a million deep (ADR 0060, draft).
+        let types = [
+            Shape::Data(vec![
+                Variant {
+                    name: "Some".to_owned(),
+                    fields: vec![Field {
+                        name: "value".to_owned(),
+                        ty: 0,
+                        redacted: None,
+                        shown: false,
+                    }],
+                },
+                Variant {
+                    name: "None".to_owned(),
+                    fields: Vec::new(),
+                },
+            ]),
+            Shape::List(0),
+        ];
+        let depth = 1_000_000;
+        let mut value = (1 << 1) | 1;
+        for _ in 0..depth {
+            let cell = values::data(0);
+            values::push(cell, value);
+            values::release(value);
+            value = cell;
+        }
+        let list = values::list();
+        values::push(list, value);
+        let rendered = render(&types, 1, list);
+        assert_eq!(
+            rendered.len(),
+            "[]".len() + depth * "Some()".len() + "None".len()
+        );
+        assert!(rendered.starts_with("[Some(Some("));
+        let innermost = "[".len() + depth * "Some(".len();
+        assert_eq!(
+            rendered.get(innermost - 5..innermost + 5),
+            Some("Some(None)")
+        );
+        assert!(rendered.ends_with(")))]"));
+        values::release(value);
+        values::release(list);
     }
 }
