@@ -535,6 +535,14 @@ impl<'p, 'w> Machine<'p, 'w> {
                 limit: self.max_depth,
             }));
         }
+        self.within_budget(span)?;
+        self.depth += 1;
+        Ok(())
+    }
+
+    /// Whether the heap the run holds is within its budget (ADR 0061): checked at each call
+    /// and at each iteration of a `for` loop, at `span`, else the run aborts with U6003.
+    fn within_budget(&self, span: Span) -> Result<(), Stop<'p>> {
         let budget = self.max_memory.saturating_mul(1024 * 1024);
         if (self.held)().saturating_sub(self.baseline) > budget {
             return Err(Stop::Abort(Abort::Memory {
@@ -542,7 +550,6 @@ impl<'p, 'w> Machine<'p, 'w> {
                 limit: self.max_memory,
             }));
         }
-        self.depth += 1;
         Ok(())
     }
 
@@ -586,7 +593,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                     state,
                     init,
                     body,
-                    ..
+                    span,
                 } => {
                     let mut current = self.atoms(env, init)?;
                     match source.as_ref() {
@@ -595,6 +602,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                                 return Err(fault("a loop over a value that is not a list"));
                             };
                             for item in items.iter() {
+                                self.within_budget(*span)?;
                                 current =
                                     self.iteration(env, &caps, var, state, current, item, body)?;
                             }
@@ -620,6 +628,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                                     break;
                                 }
                                 let item = Value::Int(index.clone());
+                                self.within_budget(*span)?;
                                 current =
                                     self.iteration(env, &caps, var, state, current, &item, body)?;
                                 // The successor of the upper bound is never computed, so a
