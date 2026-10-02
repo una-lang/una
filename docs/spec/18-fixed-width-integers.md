@@ -49,7 +49,7 @@ Status: Normative, v0.2 (ADR 0057).
    - The divisor-nonzero `division` obligation applies unchanged.
 3. **Wrapping and saturating arithmetic** exist only through methods named for them, never by default (§5).
 4. **Repairs** (`spec/13 §3`). An `overflow` diagnostic proposes, in order:
-   - guarding the operation with its goal;
+   - guarding the operation with a test that cannot overflow itself: the operation on `Int`, as in `if a.to_int() + b.to_int() in 0..255`, or the operand's range for a conversion, as in `if a in 0..255`;
    - giving the values a wider type through explicit conversions;
    - using a wrapping or saturating method, when that is the arithmetic meant.
 

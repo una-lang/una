@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use sha2::{Digest, Sha256};
 use una_core::{
-    Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, DataVariant, Decl, Expr, Fun, Name, Prim,
-    Program, Refinement, Rhs, Source, Term, Type, print_term_with,
+    Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, DataVariant, Decl, Expr, FixedOp, Fun, IntType,
+    Name, Prim, Program, Refinement, Rhs, Source, Term, Type, print_term_with,
 };
 use una_diag::ObligationKind;
 use una_syntax::{SourceDb, Span};
@@ -66,6 +66,10 @@ pub struct Site {
     /// For a precondition of a named function passed as a function value, the function's
     /// name: the function type it flows into has no precondition (issue #76).
     pub function_value: Option<String>,
+    /// For an `overflow` obligation, a guard that is valid code and states its goal without
+    /// overflowing itself: the operand's range for a conversion, or the operation on `Int`
+    /// (`spec/18 §3`).
+    pub guard: Option<String>,
 }
 
 /// The kind of declaration that encloses an obligation.
@@ -915,6 +919,15 @@ impl<'p, 'i> Walker<'p, 'i> {
     }
 
     fn assume_refinements(&mut self, ctx: &mut Ctx, value: &Tv) {
+        // A value of a fixed-width type lies in its range (`spec/18 §6`).
+        if let Type::Base {
+            base: Base::Fixed(int),
+            ..
+        } = &value.ty
+            && value.f.sort() == "Int"
+        {
+            ctx.define(in_range(value.f.clone(), *int));
+        }
         for refinement in refinements(&value.ty) {
             let env = Env {
                 vars: &|_| None,
@@ -1279,6 +1292,10 @@ impl<'p, 'i> Walker<'p, 'i> {
                 if matches!(prim, Prim::Div | Prim::Mod)
                     && let (Some(divisor), Some(divisor_atom)) = (values.get(1), args.get(1))
                     && !matches!(divisor_atom, Atom::Int(digits) if digits.trim_start_matches('-') != "0")
+                    // A negated literal, as in `a / -1`, is a nonzero literal divisor, as the
+                    // checker reads it (`spec/12 §3`).
+                    && !nonzero_literal(&divisor.f)
+                    && !matches!(divisor_atom, Atom::Var(name) if self.defs.get(name).is_some_and(nonzero_literal))
                 {
                     let text = format!(
                         "{} != 0",
@@ -1294,6 +1311,9 @@ impl<'p, 'i> Walker<'p, 'i> {
                     );
                 }
                 self.fixed_sites(ty, *prim, args, &values, arg_spans, *span, ctx);
+                if let Prim::Fixed(op, int) = prim {
+                    self.fixed_facts(*op, *int, args, &values, &x.f, ctx);
+                }
                 if let Some(value) = self.prim(*prim, &values)
                     && value.sort() == x.f.sort()
                 {
@@ -2216,12 +2236,129 @@ impl<'p, 'i> Walker<'p, 'i> {
         let Some(exact) = exact else {
             return;
         };
-        let goal = F::and(vec![
-            F::op("<=", vec![F::Int(int.least().to_string()), exact.clone()]),
-            F::op("<=", vec![exact, F::Int(int.greatest().to_string())]),
-        ]);
-        let text = format!("{} in {}..{}", self.text(span), int.least(), int.greatest());
-        self.site(ObligationKind::Overflow, ctx, Some(goal), text, span, None);
+        let goal = in_range(exact, *int);
+        let range = format!("{}..{}", int.least(), int.greatest());
+        let text = format!("{} in {range}", self.text(span));
+        // The operands as `Int`: a literal as written, any other value converted.
+        let operand = |i: usize| -> String {
+            let written = arg_spans.get(i).map_or_else(String::new, |s| self.text(*s));
+            let literal = written
+                .strip_prefix('-')
+                .unwrap_or(&written)
+                .chars()
+                .all(|c| c.is_ascii_digit());
+            if matches!(args.get(i), Some(Atom::Int(_))) || (literal && !written.is_empty()) {
+                written
+            } else {
+                format!("{written}.to_int()")
+            }
+        };
+        let guard = match prim {
+            Prim::Convert(_) => {
+                let written = arg_spans
+                    .first()
+                    .map_or_else(String::new, |s| self.text(*s));
+                Some(format!("{written} in {range}"))
+            }
+            Prim::Neg => Some(format!("-{} in {range}", operand(0))),
+            Prim::Add | Prim::Sub | Prim::Mul | Prim::Div | Prim::Mod => {
+                let symbol = match prim {
+                    Prim::Add => "+",
+                    Prim::Sub => "-",
+                    Prim::Mul => "*",
+                    Prim::Div => "/",
+                    _ => "mod",
+                };
+                Some(format!("{} {symbol} {} in {range}", operand(0), operand(1)))
+            }
+            _ => None,
+        };
+        let mut assertions: Vec<F> = ctx.hyps.iter().map(|h| h.f.clone()).collect();
+        let mut place = self.place(ObligationKind::Overflow, Some(&goal));
+        place.guard = guard;
+        assertions.push(F::not(goal));
+        let hypotheses = self.shown_hypotheses(&ctx.hyps);
+        self.push(
+            ObligationKind::Overflow,
+            text,
+            span,
+            None,
+            Vec::new(),
+            hypotheses,
+            assertions,
+            ctx,
+            place,
+        );
+    }
+
+    /// The contract of a method of a fixed-width type over its result `r` (`spec/18 §5`): the
+    /// exact result of the wrapping and saturating methods, and of `wrapping_shift_left` by a
+    /// literal; the partial contracts of the bit methods and `shift_right`; and, for every
+    /// one, the type's range.
+    fn fixed_facts(
+        &mut self,
+        op: FixedOp,
+        int: IntType,
+        args: &[Atom],
+        values: &[Tv],
+        r: &F,
+        ctx: &mut Ctx,
+    ) {
+        let (Some(a), b) = (
+            values.first().map(|v| v.f.clone()),
+            values.get(1).map(|v| v.f.clone()),
+        ) else {
+            return;
+        };
+        ctx.define(in_range(r.clone(), int));
+        let unsigned = !int.signed();
+        let mut facts = Vec::new();
+        match (op, b) {
+            (FixedOp::WrappingAdd, Some(b)) => {
+                facts.push(F::eq(r.clone(), wrapped(F::op("+", vec![a, b]), int)));
+            }
+            (FixedOp::WrappingSub, Some(b)) => {
+                facts.push(F::eq(r.clone(), wrapped(F::op("-", vec![a, b]), int)));
+            }
+            (FixedOp::WrappingMul, Some(b)) => {
+                facts.push(F::eq(r.clone(), wrapped(arithmetic(BinOp::Mul, a, b), int)));
+            }
+            (FixedOp::SaturatingAdd, Some(b)) => {
+                facts.push(F::eq(r.clone(), clamped(F::op("+", vec![a, b]), int)));
+            }
+            (FixedOp::SaturatingSub, Some(b)) => {
+                facts.push(F::eq(r.clone(), clamped(F::op("-", vec![a, b]), int)));
+            }
+            (FixedOp::SaturatingMul, Some(b)) => {
+                facts.push(F::eq(r.clone(), clamped(arithmetic(BinOp::Mul, a, b), int)));
+            }
+            (FixedOp::BitAnd, Some(b)) if unsigned => {
+                facts.push(F::op("<=", vec![r.clone(), a]));
+                facts.push(F::op("<=", vec![r.clone(), b]));
+            }
+            (FixedOp::BitOr, Some(b)) if unsigned => {
+                facts.push(F::op(">=", vec![r.clone(), a]));
+                facts.push(F::op(">=", vec![r.clone(), b]));
+            }
+            (FixedOp::ShiftRight, Some(_)) if unsigned => {
+                facts.push(F::op("<=", vec![r.clone(), a]));
+            }
+            (FixedOp::WrappingShiftLeft, Some(_)) => {
+                // Exact only by a literal amount, where `2^n` is a numeral and the product
+                // is linear.
+                if let Some(Atom::Int(digits)) = args.get(1)
+                    && let Ok(n) = digits.parse::<u32>()
+                    && n < int.bits()
+                {
+                    let factor = F::Int((1u128 << n).to_string());
+                    facts.push(F::eq(r.clone(), wrapped(F::op("*", vec![a, factor]), int)));
+                }
+            }
+            _ => {}
+        }
+        for fact in facts {
+            ctx.define(fact);
+        }
     }
 
     /// A primitive of code as a term, when it is one of the refinement language (`spec/10 §3`:
@@ -2693,6 +2830,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 ground: false,
                 flow: None,
                 function_value: None,
+                guard: None,
             };
         };
         let direct = binders(goal);
@@ -2724,6 +2862,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             ground: free.is_empty(),
             flow: None,
             function_value: None,
+            guard: None,
         }
     }
 
@@ -3339,6 +3478,60 @@ fn source_symbol(fun: &SmtFun) -> &str {
 /// Arithmetic in QF_UFLIA: multiplication, division and remainder stay linear only with a
 /// literal operand (a nonzero divisor); otherwise they are uninterpreted functions, since the
 /// logic has no nonlinear terms (`spec/12 §2`).
+/// Whether `f` is a nonzero integer literal, or the negation of one.
+fn nonzero_literal(f: &F) -> bool {
+    match f {
+        F::Int(digits) => digits.trim_start_matches('-') != "0",
+        F::Op { op: "-", args } => matches!(args.as_slice(), [inner] if nonzero_literal(inner)),
+        _ => false,
+    }
+}
+
+/// `least <= value <= greatest` of a fixed-width type (`spec/18 §6`).
+fn in_range(value: F, int: IntType) -> F {
+    F::and(vec![
+        F::op("<=", vec![F::Int(int.least().to_string()), value.clone()]),
+        F::op("<=", vec![value, F::Int(int.greatest().to_string())]),
+    ])
+}
+
+/// `value` reduced into the range of `int` modulo `2^width`: `((value - least) mod 2^w) +
+/// least`, linear since `2^w` is a numeral (`spec/18 §5`, `§6`).
+fn wrapped(value: F, int: IntType) -> F {
+    let least = F::Int(int.least().to_string());
+    let modulus = F::Int((1u128 << int.bits()).to_string());
+    F::op(
+        "+",
+        vec![
+            F::op("mod", vec![F::op("-", vec![value, least.clone()]), modulus]),
+            least,
+        ],
+    )
+}
+
+/// `value` clamped to the range of `int` (`spec/18 §5`).
+fn clamped(value: F, int: IntType) -> F {
+    let (least, greatest) = (
+        F::Int(int.least().to_string()),
+        F::Int(int.greatest().to_string()),
+    );
+    F::op(
+        "ite",
+        vec![
+            F::op("<", vec![value.clone(), least.clone()]),
+            least,
+            F::op(
+                "ite",
+                vec![
+                    F::op(">", vec![value.clone(), greatest.clone()]),
+                    greatest,
+                    value,
+                ],
+            ),
+        ],
+    )
+}
+
 fn arithmetic(op: BinOp, left: F, right: F) -> F {
     let literal = |f: &F| matches!(f, F::Int(_));
     let nonzero = |f: &F| matches!(f, F::Int(d) if d.trim_start_matches('-') != "0");

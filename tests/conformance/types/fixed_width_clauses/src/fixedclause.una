@@ -1,6 +1,6 @@
--- test: in clauses every integer type reads as its mathematical Int: types mix, and literals are Int, so no U2022 (spec/18 §2)
+-- test: in clauses every integer type reads as its mathematical Int: types mix, literals are Int, so no U2022, and `ensures result <= 300` on a U8 result is proven (spec/18 §2)
 -- spec: spec/18 §2
--- expect: tier0-ok
+-- expect: ok
 module fixedclause
 
 pub kind Small = U8 where it < 300 and it + 1 > 0
