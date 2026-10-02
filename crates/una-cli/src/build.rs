@@ -151,7 +151,14 @@ pub(crate) fn build_command(
         })
         .collect();
     let grants: Vec<&str> = manifest.grants.iter().map(|g| g.value.as_str()).collect();
-    let meta = json!({ "grants": grants, "uses": uses }).to_string();
+    // The calls' locations, for U6003 at the call that exceeds the maximum depth.
+    let meta = |sites: &[una_syntax::Span]| {
+        let sites: Vec<una_diag::Location> = sites
+            .iter()
+            .map(|span| package.sources.location(*span))
+            .collect();
+        json!({ "grants": grants, "uses": uses, "sites": sites }).to_string()
+    };
     let object = match una_codegen::compile(&analysis.program, &entry, &meta) {
         Ok(object) => object,
         Err(CodegenError::NoMain) => {
