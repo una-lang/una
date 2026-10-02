@@ -1,0 +1,8 @@
+[package]
+name = "memory_runs"
+version = "0.1.0"
+edition = "0.2"
+
+[run]
+entry = "memrun"
+grants = ["console"]

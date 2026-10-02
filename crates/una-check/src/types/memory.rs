@@ -8,6 +8,7 @@ use una_syntax::ast::{Arg, Convention, Expr, ExprKind, Ident};
 
 use super::check::Checker;
 use super::env::ParamDef;
+use super::records::Res;
 use super::ty::Ty;
 
 /// The root binding of a place `r`, `r.f`, `r.f.g` (`spec/17 §2` rule 2), with the field
@@ -188,8 +189,30 @@ impl<'a> Checker<'_, 'a, '_> {
             .and_then(|(root, _)| self.local_index(self.name(root)))
             .and_then(|index| self.locals.get(index))
             .is_some_and(|local| local.refined);
-        if refined {
+        if refined || self.refined_field(place) {
             self.obligation(ObligationKind::Refinement, span, None);
+        }
+    }
+
+    /// Whether a field along the path of `place` has a refined type: the rebuilt record
+    /// proves it, as a constructor argument does (`spec/17 §4`).
+    fn refined_field(&self, place: &Expr) -> bool {
+        match &place.kind {
+            ExprKind::Paren(inner) => self.refined_field(inner),
+            ExprKind::Field { target, .. } => {
+                let own = match self.records.res.get(&place.span) {
+                    Some(Res::Field { kind, index }) => self
+                        .env
+                        .kinds
+                        .get(*kind)
+                        .and_then(|def| def.record.as_ref())
+                        .and_then(|fields| fields.get(*index))
+                        .is_some_and(|field| field.ty.is_refined()),
+                    _ => false,
+                };
+                own || self.refined_field(target)
+            }
+            _ => false,
         }
     }
 
@@ -274,18 +297,22 @@ impl<'a> Checker<'_, 'a, '_> {
 
     /// U2018: an `edit` argument together with another use of its root binding in the same
     /// call (`spec/17 §3` rule 4). `uses` are the other arguments of the call, the receiver
-    /// included, by index.
+    /// included, by index. Two `edit` arguments of one binding are one conflict, reported once.
     pub(crate) fn exclusive(&mut self, edits: &[(usize, &Expr)], uses: &[(usize, &Expr)]) {
+        let mut reported: Vec<(usize, usize)> = Vec::new();
         for (index, place) in edits {
             let Some((root, _)) = place_root(place) else {
                 continue;
             };
             let name = self.name(root).to_owned();
             let resolve = |ident: &Ident| self.name(ident).to_owned();
-            if let Some((_, other)) = uses
-                .iter()
-                .find(|(other, expr)| other != index && mentions(expr, &name, &resolve))
-            {
+            let pair = |other: usize| ((*index).min(other), (*index).max(other));
+            if let Some((other_index, other)) = uses.iter().find(|(other, expr)| {
+                other != index
+                    && !reported.contains(&pair(*other))
+                    && mentions(expr, &name, &resolve)
+            }) {
+                reported.push(pair(*other_index));
                 let other_span = other.span;
                 let mut diagnostic = self.report.make(
                     Code::U2018,

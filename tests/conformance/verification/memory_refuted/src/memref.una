@@ -1,0 +1,64 @@
+-- test: each assignment, `edit` call and join carries the refinement obligation of an annotated `let`, `set` keeps its precondition, and an `ensures` over `old` and the result of a function with `edit` parameters are proven (spec/17 §5 rule 2)
+-- spec: spec/17 §5
+-- expect: error U5001 at src/memref.una:26:15
+-- expect: error U5001 at src/memref.una:32:12
+-- expect: error U5001 at src/memref.una:39:9
+-- expect: error U5001 at src/memref.una:44:7
+-- expect: error U5001 at src/memref.una:49:3
+-- expect: error U5001 at src/memref.una:54:3
+-- expect: error U5001 at src/memref.una:59:3
+-- expect: error U5001 at src/memref.una:64:23
+module memref
+
+pub kind Pos = Int where it > 0
+
+pub kind Crate
+  size: Pos
+  tag: Text
+
+loosen(edit n: Int) -> Unit
+=
+  n = 0 - 5
+
+pub back_through_call() -> Pos
+=
+  let edit p: Pos = 1
+  loosen(edit p)
+  p
+
+pub field_assigned() -> Crate
+=
+  let edit c = Crate(size: 1, tag: "t")
+  c.size = 0
+  c
+
+pub assigned_in_branch(flag: Bool) -> Pos
+=
+  let edit p: Pos = 1
+  if flag
+    p = 0
+  p
+
+pub shrink(edit n: Pos) -> Unit
+=
+  n = n - 1
+
+pub set_outside() -> Unit
+=
+  let edit xs = [1, 2]
+  set(edit xs, index: 2, item: 5)
+
+pub grown(edit xs: List[Int]) -> Unit
+  ensures xs.len == old(xs).len + 1
+=
+  unit
+
+pub result_refined(edit n: Int) -> Pos
+=
+  n = 1
+  n - 1
+
+pub one_branch(edit n: Int, flag: Bool) -> Pos
+=
+  n = n + 1
+  if flag then 1 else 0

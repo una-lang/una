@@ -1172,6 +1172,12 @@ impl<'e, 'a> Fx<'e, 'a> {
     fn body(&mut self, body: &Body) -> CoreExpr {
         match body {
             Body::Line(expr) => match self.tail_wrap.take() {
+                Some(Wrap::Return) => {
+                    let saved = self.current_join.take();
+                    let value = self.return_line(expr);
+                    self.current_join = saved;
+                    value
+                }
                 Some(wrap) => {
                     let saved = self.current_join.take();
                     let value = self.expr(expr);
@@ -1198,13 +1204,51 @@ impl<'e, 'a> Fx<'e, 'a> {
             atom: Atom::Unit,
             span: block.span,
         };
+        let mut tail_span = block.span;
+        // A function's result returned by a branching last line is wrapped in each branch,
+        // at the value each one returns (`spec/12 §3`).
+        let returning = matches!(wrap, Some(Wrap::Return));
+        let mut wrapped = false;
         for (index, stmt) in block.stmts.iter().enumerate() {
             match stmt {
+                Stmt::BlockExpr(expr) if index == last && returning => {
+                    let saved = self.current_join.replace(Wrap::Return);
+                    tail = self.block_expr(expr);
+                    self.current_join = saved;
+                    wrapped = true;
+                }
+                Stmt::Handled(handled)
+                    if index == last
+                        && returning
+                        && handled.with.is_empty()
+                        && handled.handlings.is_empty()
+                        && !self.marked(&handled.expr) =>
+                {
+                    tail = self.return_line(&handled.expr);
+                    wrapped = true;
+                }
+                // As the last line, the value is `unit`, returned at the statement.
                 Stmt::Assign(stmt) => {
                     let (value, span) = self.value(&mut lets, &stmt.value);
                     self.assign(&mut lets, &stmt.place, value, span);
+                    if index == last {
+                        tail = CoreExpr::Atom {
+                            atom: Atom::Unit,
+                            span: stmt.span,
+                        };
+                        tail_span = stmt.span;
+                    }
                 }
-                Stmt::IfThen(stmt) => self.if_then(&mut lets, stmt),
+                Stmt::IfThen(stmt) => {
+                    self.if_then(&mut lets, stmt);
+                    if index == last {
+                        tail = CoreExpr::Atom {
+                            atom: Atom::Unit,
+                            span: stmt.span,
+                        };
+                        tail_span = stmt.span;
+                    }
+                }
                 Stmt::Let(stmt) => {
                     let (value, span) = self.value(&mut lets, &stmt.value);
                     let written = self.records.annotations.get(&stmt.name.span).cloned();
@@ -1224,6 +1268,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                             atom,
                             span: handled.expr.span,
                         };
+                        tail_span = handled.expr.span;
                     }
                 }
                 Stmt::BlockExpr(expr) if !self.updates(expr).is_empty() => {
@@ -1231,10 +1276,17 @@ impl<'e, 'a> Fx<'e, 'a> {
                     let atom = self.joined(&mut lets, expr, span);
                     if index == last {
                         tail = CoreExpr::Atom { atom, span };
+                        tail_span = span;
                     }
                 }
-                Stmt::Handled(handled) if index == last => tail = self.handled(handled),
-                Stmt::BlockExpr(expr) if index == last => tail = self.block_expr(expr),
+                Stmt::Handled(handled) if index == last => {
+                    tail = self.handled(handled);
+                    tail_span = handled.expr.span;
+                }
+                Stmt::BlockExpr(expr) if index == last => {
+                    tail = self.block_expr(expr);
+                    tail_span = block_expr_span(expr);
+                }
                 Stmt::Handled(handled) => {
                     let value = self.handled(handled);
                     bind_expr(
@@ -1259,8 +1311,10 @@ impl<'e, 'a> Fx<'e, 'a> {
                 }
             }
         }
-        if let Some(wrap) = wrap {
-            tail = self.wrap_tail(&mut lets, tail, wrap, block.span);
+        if let Some(wrap) = wrap
+            && !wrapped
+        {
+            tail = self.wrap_tail(&mut lets, tail, wrap, tail_span);
         }
         self.scope.truncate(mark);
         self.current_join = join;
@@ -1715,12 +1769,13 @@ impl<'e, 'a> Fx<'e, 'a> {
                 }
             },
         };
-        let (value, value_span) = match tail {
-            CoreExpr::Atom { atom, span } => (atom, span),
+        let value_span = span;
+        let value = match tail {
+            CoreExpr::Atom { atom, .. } => atom,
             other => {
                 let v = self.temp();
                 bind_expr(lets, v.clone(), strip(ty.clone()), other, span, false);
-                (Atom::Var(v), span)
+                Atom::Var(v)
             }
         };
         let mut atoms = Vec::new();
@@ -1756,6 +1811,39 @@ impl<'e, 'a> Fx<'e, 'a> {
         CoreExpr::Atom {
             atom: Atom::Var(t),
             span: value_span,
+        }
+    }
+
+    /// A function's result written as a line: each branch of an `if` line returns
+    /// `(params..., value)` at its own value, the return paths of `spec/12 §3`.
+    fn return_line(&mut self, expr: &Expr) -> CoreExpr {
+        match &expr.kind {
+            ExprKind::Paren(inner) => self.return_line(inner),
+            ExprKind::IfLine {
+                condition,
+                then,
+                otherwise,
+            } => {
+                let mut lets = Vec::new();
+                let cond = self.atom(&mut lets, condition);
+                let then = self.return_line(then);
+                let otherwise = self.return_line(otherwise);
+                close(
+                    lets,
+                    CoreExpr::If {
+                        cond,
+                        then: Box::new(then),
+                        otherwise: Box::new(otherwise),
+                    },
+                )
+            }
+            ExprKind::Fail(_) => self.expr(expr),
+            _ => {
+                let value = self.expr(expr);
+                let mut lets = Vec::new();
+                let tail = self.wrap_tail(&mut lets, value, Wrap::Return, expr.span);
+                close(lets, tail)
+            }
         }
     }
 

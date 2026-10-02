@@ -91,7 +91,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 
 ## 4. Code registry
 
-(v0.2, ADR 0056.) The codes U2017 to U2021 of the memory model are listed in `spec/17 §10`. They join this table with their implementation. (v0.2, ADR 0057.) U2022, of fixed-width integers (`spec/18 §8`), is in the table.
+(v0.2, ADR 0056.) The codes U2017 to U2021, of the memory model (`spec/17 §10`), are in the table. (v0.2, ADR 0057.) U2022, of fixed-width integers (`spec/18 §8`), is in the table.
 
 | Code | Domain | Meaning |
 | --- | --- | --- |

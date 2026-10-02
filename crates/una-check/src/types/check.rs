@@ -183,6 +183,9 @@ pub(crate) struct Checker<'c, 'a, 's> {
     /// The receiver of the method call being checked, with its call-site marker, for its
     /// parameter's convention and exclusivity (`spec/17 §3`).
     pub(crate) receiver_marker: Option<(Option<Convention>, Expr)>,
+    /// The spans of the lambda bodies being checked: whole expressions for effects, but not
+    /// statements, so a call with `edit` or `take` there is U3013 (`spec/17 §3` rule 5).
+    pub(crate) lambda_bodies: Vec<Span>,
     /// The functions that calls resolve to, by the span of the call.
     pub(crate) call_targets: BTreeMap<Span, usize>,
     /// The types of the operands of the binary operations being checked.
@@ -293,6 +296,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             pass,
             collected,
             receiver_marker: None,
+            lambda_bodies: Vec::new(),
             lambda_depth: 0,
             call_targets: BTreeMap::new(),
             operands: Vec::new(),

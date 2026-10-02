@@ -1,0 +1,4 @@
+[package]
+name = "memory_words_in_0_1"
+version = "0.1.0"
+edition = "0.1"
