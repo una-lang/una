@@ -19,7 +19,7 @@ No query ever contains a quantifier. Axioms that would need quantifiers are inst
 
 ## 3. Obligation generation
 
-Obligations are generated from Core IR by a traversal that maintains a **path context** Π: a list of hypotheses. They are generated for functions, handler operations (against the contract of their operation), opaque predicate bodies, and the `do` and `expect` lines of examples, an `expect` line with `result` the value of one of the `do` line's paths. Tier 1 runs once tier 0 reports nothing. The standard library is trusted: its contracts are hypotheses, and its bodies are not verified (ADR 0033).
+Obligations are generated from Core IR by a traversal that maintains a **path context** Π: a list of hypotheses. They are generated for functions, handler operations (against the contract of their operation), opaque predicate bodies, and the `do` and `expect` lines of examples, an `expect` line with `result` the value of one of the `do` line's paths. Tier 1 runs once tier 0 reports nothing. The standard library is trusted: its contracts are hypotheses, and its bodies are not verified (ADR 0033). (v0.2, ADR 0065.) Each branch of a `together` block is verified with the facts known before the block and none of its siblings', and the facts join after it (`spec/19 §4`).
 
 **Hypotheses added to Π**
 

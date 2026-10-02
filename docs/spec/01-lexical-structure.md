@@ -100,7 +100,7 @@ traced trait type unsafe var while
 - `shared` and `iso` move to v0.3, and `weak` joins them;
 - the messages of `region`, `var`, `while` and `loop` change.
 
-The new rows are in `spec/17 §9`. The Gate 1 benchmark stays on edition `0.1`.
+The new rows are in `spec/17 §9`. (v0.2, ADR 0065.) In edition `0.2`, `together` also becomes a keyword (`spec/19`), and the messages of `parallel`, `actor`, `async` and `await` change (`spec/19 §9`). The Gate 1 benchmark stays on edition `0.1`.
 
 ## 6. Literals
 

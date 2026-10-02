@@ -57,9 +57,10 @@ The representation is not observable; these rules fix what the runtime library `
 3. **Failures** are returned values, a tag and a payload. Nothing unwinds.
 4. **Capabilities** are passed explicitly, as Core IR passes them (`spec/09`). Handlers and `with` compile to environment passing, and a capability is never a runtime value a program can store.
 5. **Host capabilities** (`spec/14 §3`) have the interpreter's semantics, grants, path rules and failures.
+6. (v0.2, ADR 0065.) **Tasks.** Each task of a `together` block runs on its own thread with its own heap; values are copied at the fork and the join, so reference counts stay non-atomic (`spec/19 §8`).
 
 ## 5. Equivalence testing
 
 The repository's CI runs every runnable program of its suites twice: in the interpreter, and as a native executable built on the CI host. This covers the examples, the conformance cases that run, and the adversarial programs of the reviews.
 
-The output, the exit status, the failure and the trace (`--trace`) MUST be identical. A divergence fails CI.
+The output, the exit status, the failure and the trace (`--trace`) MUST be identical. A divergence fails CI. (v0.2, ADR 0065.) A run that starts concurrent tasks is compared as `spec/19 §8` rule 4 says: the lines that tasks print may interleave in any order, and the trace is identical unless a task after a failed one had started.
