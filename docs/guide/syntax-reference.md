@@ -324,7 +324,7 @@ Rules:
 - **Records and sums are nominal.** Two declarations with the same shape are different types.
 - **Aliases and refinements are structural over their base.** A `Seats` value can be used wherever an `Int` is expected. Using an `Int` where `Seats` is expected creates a proof obligation: the compiler must prove the value lies in `0..5000`.
 - **Refinements stack.** Refining a refined kind combines both predicates.
-- **Recursion** is allowed only through `List` or `Option` fields (U2002), so every value is finite.
+- **Recursion** is allowed only through `List` or `Option` fields (U2002), so every value is finite. In edition `0.2`, a kind may contain itself through any field when it has a finite value: a variant without it, as `Lit` in `kind Expr = Lit(value: Int) | Add(left: Expr, right: Expr)`. Its recursion takes only type parameters as arguments (ADR 0060).
 - **Range sugar:** `T in a..b` means `T where a <= it and it <= b`; `T in a..<b` excludes `b`.
 
 ### 3.3 Generics

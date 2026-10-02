@@ -43,6 +43,7 @@ Rules:
 3. A refinement of a refined kind conjoins both predicates.
 4. Generic parameters are unconstrained in v0.1 (no traits). Operations on a type parameter are limited to equality and those provided by function parameters.
 5. Recursive kinds are allowed only through `List` or `Option` fields (U2002 otherwise), so every value is finite.
+   - (v0.2, ADR 0060.) In edition `0.2`, a kind may contain itself through any field when it has a finite value, as `kind Expr = Lit(value: Int) | Add(left: Expr, right: Expr)`. A kind without one, whose every variant (or, for a record, some field) needs a value of a kind without one, is U2002. In a recursion, the kinds of the recursion take only type parameters as arguments (U2002 otherwise). `spec/10 §12` rule 8 states both rules. Edition `0.1` keeps the rule above.
 
 ## 3. Refinements
 
