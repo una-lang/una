@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use sha2::{Digest, Sha256};
 use una_core::{
     Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, DataVariant, Decl, Expr, FixedOp, Fun, IntType,
-    Name, Prim, Program, Refinement, Rhs, Source, Term, Type, print_term_with,
+    LoopSource, Name, Prim, Program, Refinement, Rhs, Source, Term, Type, print_term_with,
 };
 use una_diag::ObligationKind;
 use una_syntax::{SourceDb, Span};
@@ -975,6 +975,50 @@ impl<'p, 'i> Walker<'p, 'i> {
                     leaves.push(Leaf {
                         hyps: ctx.hyps.clone(),
                         value: Some(self.atom(atom, &ctx)),
+                        span: *span,
+                        returns: Vec::new(),
+                    });
+                    return;
+                }
+                // A `for` loop (`spec/17 §4`, `§5` rule 3; ADR 0056, amendment of
+                // 2026-10-02). The body is checked once, for any iteration: the state is fresh
+                // at its declared types, whose refinements are the invariant, and the context
+                // of the loop is kept, since the bindings it does not update keep their values.
+                // The loop's value says nothing but the types of its components, so no fact
+                // about the state survives it.
+                Expr::Loop {
+                    source,
+                    var,
+                    state,
+                    body,
+                    span,
+                    ..
+                } => {
+                    let mut body_ctx = ctx.clone();
+                    self.bind(&mut body_ctx, &var.0, &var.1);
+                    if let LoopSource::Range {
+                        low,
+                        high,
+                        inclusive,
+                    } = source.as_ref()
+                    {
+                        let x = own(&body_ctx, &var.0);
+                        let low = self.atom(low, &ctx);
+                        let high = self.atom(high, &ctx);
+                        if x.f.sort() == low.f.sort() && x.f.sort() == high.f.sort() {
+                            body_ctx.assume(F::op("<=", vec![low.f, x.f.clone()]));
+                            let op = if *inclusive { "<=" } else { "<" };
+                            body_ctx.assume(F::op(op, vec![x.f, high.f]));
+                        }
+                    }
+                    for (name, ty) in state {
+                        self.bind(&mut body_ctx, name, ty);
+                    }
+                    let mut body_leaves = Vec::new();
+                    self.walk(body, &body_ctx, &mut body_leaves);
+                    leaves.push(Leaf {
+                        hyps: ctx.hyps.clone(),
+                        value: None,
                         span: *span,
                         returns: Vec::new(),
                     });

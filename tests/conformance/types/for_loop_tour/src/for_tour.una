@@ -1,0 +1,56 @@
+-- test: loops update fields of an `edit` parameter, visit fixed-width ranges up to the greatest value, join their updates inside a branch, end an `edit` function, and nest with `when` in the body; all of it checks and verifies (spec/17 §1, §4, §5)
+-- spec: spec/17 §1, §4, §5
+-- expect: ok
+module for_tour
+
+pub kind Pos = Int where it > 0
+
+pub kind Tally
+  count: Int
+  seen: Int
+
+--- Counts the elements of `xs` above `floor` into `t`.
+pub tally(edit t: Tally, xs: List[Int], floor: Int) -> Unit
+=
+  for x in xs
+    t.seen = t.seen + 1
+    if x > floor
+      t.count = t.count + 1
+
+--- Every byte from `low` to the greatest, without computing a successor of 255.
+pub bytes(low: U8) -> Int
+=
+  let edit count = 0
+  let top: U8 = 255
+  for b in low..top
+    let copy: U8 = b
+    count = count + 1
+  count
+
+--- A loop inside a branch joins its updates.
+pub maybe_sum(xs: List[Int], flag: Bool) -> Int
+=
+  let edit total = 0
+  if flag
+    for x in xs
+      total = total + x
+  total
+
+--- A loop as the last line of an `edit` function returns `unit`.
+pub fill(edit out: List[Int], n: Int) -> Unit
+=
+  for i in 0..<n
+    out = out.append(item: i)
+
+--- Nested loops, and a `when` in the body.
+pub grid(n: Int) -> Pos
+=
+  let edit cells: Pos = 1
+  for i in 0..<n
+    for j in 0..<n
+      when i
+        is 0 ->
+          cells = cells + 1
+        else ->
+          cells = cells + 2
+  cells

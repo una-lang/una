@@ -6,8 +6,8 @@
 use std::fmt::Write as _;
 
 use crate::ir::{
-    Arm, Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, Decl, Expr, Fun, HandlerOp, Module, Rhs,
-    Source, Term, Type, Use,
+    Arm, Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, Decl, Expr, Fun, HandlerOp, LoopSource,
+    Module, Rhs, Source, Term, Type, Use,
 };
 
 /// The text of a module's Core IR, newline-terminated.
@@ -518,6 +518,45 @@ impl Printer {
         match expr {
             Expr::Atom { atom, .. } => self.line(indent, &print_atom(atom)),
             Expr::Unreachable { .. } => self.line(indent, "unreachable"),
+            Expr::Loop {
+                source,
+                var,
+                state,
+                init,
+                body,
+                ..
+            } => {
+                let source = match source.as_ref() {
+                    LoopSource::List(list) => print_atom(list),
+                    LoopSource::Range {
+                        low,
+                        high,
+                        inclusive,
+                    } => format!(
+                        "{}{}{}",
+                        print_atom(low),
+                        if *inclusive { ".." } else { "..<" },
+                        print_atom(high)
+                    ),
+                };
+                let state: Vec<String> = state
+                    .iter()
+                    .zip(init)
+                    .map(|((name, ty), init)| {
+                        format!("{name}: {} = {}", print_type(ty), print_atom(init))
+                    })
+                    .collect();
+                self.line(
+                    indent,
+                    &format!(
+                        "loop {}: {} in {source} with ({}) do",
+                        var.0,
+                        print_type(&var.1),
+                        state.join(", ")
+                    ),
+                );
+                self.expr(indent + 1, body);
+            }
             Expr::LetTuple {
                 names, value, body, ..
             } => {

@@ -574,6 +574,8 @@ pub enum Stmt {
     Assign(Box<AssignStmt>),
     /// `if` with a block and no `else`, a `Unit` statement, from edition 0.2 (`spec/17 §1`).
     IfThen(Box<IfThenStmt>),
+    /// `for x in source` with a block, a `Unit` statement, from edition 0.2 (`spec/17 §1`).
+    For(Box<ForStmt>),
     /// `handled`.
     Handled(Handled),
     /// `block_expr`, only as the final statement.
@@ -600,6 +602,36 @@ pub struct IfThenStmt {
     pub block: Block,
     /// The whole statement.
     pub span: Span,
+}
+
+/// `"for" lower_ident "in" ( line_expr | range_expr ) NEWLINE INDENT block DEDENT`
+/// (`spec/17 §1`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ForStmt {
+    /// The loop variable.
+    pub var: Ident,
+    /// What the loop visits.
+    pub source: ForSource,
+    /// The body.
+    pub block: Block,
+    /// The whole statement.
+    pub span: Span,
+}
+
+/// What a `for` loop visits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ForSource {
+    /// The elements of a list, in order.
+    List(Expr),
+    /// The integers of `low..high` or `low..<high`, in increasing order.
+    Range {
+        /// The lower bound.
+        low: Expr,
+        /// The upper bound.
+        high: Expr,
+        /// Whether the upper bound is excluded (`..<`).
+        exclusive: bool,
+    },
 }
 
 /// `"let" [ "edit" ] lower_ident [ ":" type ] "=" ( handled | block_expr )`.

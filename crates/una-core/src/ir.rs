@@ -709,6 +709,22 @@ pub enum Source {
     },
 }
 
+/// What a loop visits (`spec/17 §4`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LoopSource {
+    /// The elements of a list, in order.
+    List(Atom),
+    /// The integers from `low` to `high`, in increasing order.
+    Range {
+        /// The lower bound.
+        low: Atom,
+        /// The upper bound.
+        high: Atom,
+        /// Whether `high` is visited (`..`), or excluded (`..<`).
+        inclusive: bool,
+    },
+}
+
 /// An expression (`spec/09 §2`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Expr {
@@ -744,6 +760,24 @@ pub enum Expr {
         /// The rest.
         body: Box<Expr>,
         /// The source of the tuple.
+        span: Span,
+    },
+    /// `loop x in s with (b: τ, ...) = (a, ...) do e`: the `for` loop of `spec/17 §4`
+    /// (ADR 0056, amendment of 2026-10-02). Each iteration binds `x` and the current values of
+    /// the state `b, ...`, and the body returns their new values as a tuple; the loop's value
+    /// is the tuple of their final values. Iterations are not calls.
+    Loop {
+        /// What the loop visits, evaluated once.
+        source: Box<LoopSource>,
+        /// The loop variable.
+        var: Box<(Name, Type)>,
+        /// The binders of the state in the body.
+        state: Vec<(Name, Type)>,
+        /// The values of the state before the loop.
+        init: Vec<Atom>,
+        /// The body, whose value is the tuple of the new state.
+        body: Box<Expr>,
+        /// The loop in the source.
         span: Span,
     },
     /// `if a then e else e`.

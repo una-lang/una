@@ -388,9 +388,10 @@ fn collect_op_paths(expr: &una_core::Expr, out: &mut Vec<String>) {
             collect_op_paths(body, out);
             collect_op_paths(handler, out);
         }
-        Expr::Attempt { body, .. } | Expr::With { body, .. } | Expr::LetTuple { body, .. } => {
-            collect_op_paths(body, out)
-        }
+        Expr::Attempt { body, .. }
+        | Expr::With { body, .. }
+        | Expr::LetTuple { body, .. }
+        | Expr::Loop { body, .. } => collect_op_paths(body, out),
         Expr::Atom { .. } | Expr::Fail { .. } | Expr::Unreachable { .. } => {}
     }
 }

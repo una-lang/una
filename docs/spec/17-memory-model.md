@@ -90,6 +90,9 @@ Core IR gains tuple types `(τ, ...)`, tuple construction `(a, ...)`, and the bi
 - Its capability context and its error kind are those of the enclosing function, restricted to what the body uses.
 - A loop over a list visits the elements in order, and a loop over `a..<b` or `a..b` visits the integers in increasing order. The bounds are evaluated once, before the first iteration.
 - There is no `break` and no `continue`.
+- (ADR 0056, amendment of 2026-10-02.) Core IR represents the generated function as a `Loop` node with the same meaning, whose iterations are not calls: they do not count toward the call depth of `spec/11` (U6003). An inclusive range ends at its upper bound without computing its successor, so `a..b` up to the greatest value of a fixed-width type does not overflow.
+- **The loop variable** is a plain binding (U2019 on assignment). It carries the labels of the elements and the top label of the list, or the labels of the bounds. A range's bounds are integers of one type, `Int` or a fixed-width type, and a literal bound takes the type of the other.
+- **As a statement**, a loop has the value `unit`, also as the last line of a block.
 
 ## 5. Static semantics
 
@@ -97,6 +100,7 @@ Core IR gains tuple types `(τ, ...)`, tuple construction `(a, ...)`, and the bi
 2. **Refinements at every rebind (V2-11).** Each assignment, each `edit` call and each join carries the refinement obligation of an annotated `let` (ADR 0037). So an editable binding never holds a value outside its refinement.
 3. **Loop invariant.**
    - The generated function of a loop has, as `requires` and `ensures`, the refinements of the bindings it updates. These are the loop invariant.
+   - The verifier checks the body once, for any iteration, with the updated bindings fresh at their declared types, and keeps the facts of the enclosing context, since the bindings the loop does not update keep their values. After the loop, the updated bindings are fresh again at their declared types: no fact about their values survives it (ADR 0056, amendment of 2026-10-02).
    - Inside the body, the loop variable of a range loop carries the fact `a <= i < b`, or `a <= i <= b` for an inclusive range, as a hypothesis, not as its type.
    - There is no `invariant` clause in v0.2.
 4. **Lambdas.** A lambda captures the value an editable binding has when the lambda is created (V2-10). Inside the lambda the binding is not editable (U2019), and later updates outside are not seen.
