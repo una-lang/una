@@ -6,6 +6,12 @@ Notation: EBNF. `{ x }` is zero or more, `[ x ]` is optional, `|` separates alte
 
 The grammar is LL(2) with one exception: a `kind` body is a sum if its right-hand side contains `|` at bracket depth zero (§2), which the parser decides by scanning to the end of the logical line.
 
+(v0.2, ADR 0056.) `spec/17 §1` extends this grammar with:
+- parameter conventions and call-site markers (`edit`, `take`);
+- `let edit` bindings, assignments to places and `for` loops;
+- `if` without `else` as a statement;
+- `old` in `ensures`.
+
 ## 1. Files and modules
 
 ```ebnf

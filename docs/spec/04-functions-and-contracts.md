@@ -38,6 +38,8 @@ Rules:
 3. Contracts express **partial correctness**: `ensures` holds if the function returns. Termination is not checked in v0.1.
 4. A function without `fails` cannot fail. A function without `uses` is pure: it cannot contain any `@` (U3004).
 
+(v0.2, ADR 0056.) A parameter MAY be declared `edit` or `take` (`spec/17 §3`). In `ensures`, an `edit` parameter denotes its final value, and `old(x)` its value on entry.
+
 ## 3. Calls and labeled arguments
 
 1. A call with one argument MAY omit the label.
