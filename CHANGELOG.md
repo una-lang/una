@@ -2,6 +2,61 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
+## v0.2.0-alpha.3
+
+The third pre-release of v0.2. The native backend now compiles every runnable program of the suite. Edition 0.2 gains the memory model, `for` loops, recursive kinds and effect polymorphism, and the release also brings a language server, a memory limit and an authenticated proof cache. Gate 1's benchmark stays pinned to v0.1.x (v0.1.3).
+
+### Native backend (slices 3 to 6, #113 to #116)
+
+- **Kinds, lists, `Option` and `Result`, the prelude, lambdas and closures** compile natively. Generic functions compile once.
+- **Reference counting.** Heap values are reference counted (NB-2), in a heap that `una-rt` keeps in safe Rust. Equality, release and rendering never recurse on the native stack, so a value can nest deeper than any call (ADR 0060).
+  - A debug build of the runtime reports, as an internal error, a value left referenced after `main` and any use of a released value. The tests link that build.
+- **Failures** are returned values, and nothing unwinds (`spec/16 §4` rule 3). Handling clauses, `attempt`, `checked` and policies compile natively.
+- **U6001 natively.** A failure of `main` shows the message of `una run`, with the redaction of labeled fields. The build describes the failure from the error kind that the checker resolved, and Core now carries that resolved kind for functions and capability operations.
+- **Capabilities.** Host capabilities, with the interpreter's grants and path rules, handlers and `with` compile as environment passing.
+- **Traces.** Native traces equal the interpreter's, with redaction and outcomes.
+- **Fixed-width integers** compile natively.
+- **Machine widths.** Arithmetic and comparisons whose operands and result are proven to fit a machine word compile to one instruction with no check (NB-3, FW-1).
+  - The build report's `native.arbitrary_precision` lists only the `Int` parameters and results with no proven range.
+- **The whole suite.** Every runnable program of the examples, the conformance suite and the reviews runs natively with the interpreter's output, exit status and trace, and `tests/native/unsupported.txt` is empty. The release check builds every example natively.
+- **Fix: empty text literals.** On x86_64 Linux, an executable could print an empty literal in place of the next literal of the program, because the runtime cached literals by address. Literals are now cached by contents. v0.2.0-alpha.2's Linux archive has this bug.
+
+### Edition 0.2
+
+- **The memory model** (ADR 0056, `spec/17`, #29):
+  - `edit` and `take` parameters;
+  - `let edit` bindings and assignment;
+  - `old(...)` in `ensures`;
+  - the codes U2017 to U2021.
+- **`for` loops** over lists and ranges (#81). The Core form is `Loop`, and the refinements of the bindings a loop updates are its invariant.
+- **Recursive kinds** (ADR 0060, #38): a kind may hold itself through any field, as long as it is grounded (U2002).
+- **Effect polymorphism** (ADR 0062, #36): `uses of p` and `fails of p` let a function have the effects and the failures of a function parameter, with the codes U3017 to U3019.
+
+### Specified, not yet implemented
+
+- **Structured concurrency** (ADR 0065, `spec/19`): `together` blocks and `together for`, in edition 0.2.
+
+### Tools
+
+- **`una lsp`** (ADR 0063, #43), a language server over stdio. It offers:
+  - diagnostics, and quick fixes ordered by escape cost;
+  - formatting;
+  - hover, go-to-definition and document symbols;
+  - proof counts.
+
+  Tier 1 runs on save and is cancelled by a newer change.
+- **A memory limit** (ADR 0061, #45): `--max-memory <MiB>`, 4096 by default, on `una run`, `una test` and native executables.
+  - Over the budget, a run aborts with U6003, "this call exceeds the memory limit of N MiB", instead of being killed by the OS.
+  - The stack is capped at 1 GiB, whatever `--max-depth` says.
+- **An authenticated proof cache** (ADR 0064, #44). Cache entries carry an HMAC tag under a per-user key, `~/.una/proof-cache.key` or the file `UNA_PROOF_KEY` names. A forged entry is solved again.
+  - The key, not the cache, is in the Trusted zone.
+  - The build report adds `tcb.proof_cache_key`.
+- **Local CI and releases** (#156). While GitHub Actions is unavailable, `scripts/local-ci.sh`, with `--linux` for a `linux/amd64` container, runs CI's steps, and `scripts/local-release.sh` builds both release archives.
+
+### Fixes from v0.1.3
+
+- `let b = a` keeps `a` in scope (#139).
+
 ## v0.1.3
 
 A patch release of Una Core for the Gate 1 pin, cut from v0.1.2 with one fix. Edition 0.1 only; report schema versions are unchanged.
