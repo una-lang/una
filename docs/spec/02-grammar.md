@@ -79,6 +79,8 @@ inline_or_block = line_expr NEWLINE | NEWLINE INDENT block DEDENT ;
 
 Clause order is canonical: all `requires`, then all `ensures`, then all `uses`, then `fails`, then `derived from`. At most one `fails` and one `derived from` clause (U0102).
 
+(v0.2, ADR 0062.) In edition `0.2`, a function header also takes `"uses" "of" lower_ident NEWLINE` and `"fails" "of" lower_ident NEWLINE`. `of` is not a keyword: it is recognized only right after `uses` or `fails` in a clause. A `uses of` clause is ordered with the other `uses` clauses. A header has at most one `fails` clause of each form.
+
 ## 4. Capabilities, handlers, policies
 
 ```ebnf

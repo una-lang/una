@@ -255,7 +255,7 @@ Every command prints one JSON document with `--json`, its `schema` key first (AD
 - `package`: the name and version of `una.toml`; a single file is named after its module, with version `0.0.0`.
 - `lock`: the solver version, and the hex SHA-256 of the lock's contents (for a single file, of the default lock's text).
 - `proven`: the number of proven obligations as `semantic`; `security` and `authority` are `"by typing"`. `obligations`: the counts by status, then `cached`, how many of these results came from the proof cache of `spec/12 §9` rather than from the solver (ADR 0041).
-- `authority`: every function of the package with `uses`, by qualified name, with `public`, its `uses` as written in a header, and whether they are inferred.
+- `authority`: every function of the package with `uses`, by qualified name, with `public`, its `uses` as written in a header, and whether they are inferred. (v0.2, ADR 0062.) A `uses of p` clause is listed as written, as `"of each"`. The effects of a lambda count for the function that writes it, within its `uses`.
 - `information.policy_calls`: every call of a policy, in source order, with the policy, its purpose and owner, and the site.
 - `escapes.checked`: every module that uses `checked`, with the count and the budget of `una.toml`.
 - `assumptions`: every capability the package declares, with its operations and their `ensures` clauses as `op: clause`.

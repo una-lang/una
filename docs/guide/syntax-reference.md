@@ -497,6 +497,10 @@ fn(x: Int) -> x + 1               -- explicit annotation (required without an ex
 - Put fallible work in a named function with handling clauses, and pass the function by name: `run_it(1, act: parse)`.
 - Lambdas capture variables by value.
 - The prelude's higher-order functions (`map`, `filter`, `fold`, `first_where`) accept only pure, non-failing lambdas in v0.1: a lambda that uses a capability, passed to `map`, is U3004, since the lambda's expected type has no `uses`.
+- In edition `0.2` (ADR 0062), they declare `uses of each` and `fails of each`, so `let shown = names.map(each: fn(n) -> @console.print(n))` works. Your own higher-order functions can do the same: write `uses of f` and `fails of f` in the header for a parameter `f: fn(A) -> B`.
+  - A failing lambda fails directly. Pass fallible work by name (`xs.map(each: parse)`), and handle the call where it stands.
+  - Inside the function, call `f` only where no secret condition decides the call (U4002).
+  - Prefer a `for` loop for anything that handles failures, updates bindings or takes several steps.
 
 ### 4.7 Recursion and the entry point
 
