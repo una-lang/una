@@ -6,6 +6,11 @@
 //! function it reaches, when they use what the backend compiles so far:
 //! - integers (tagged words, promoted to arbitrary precision by the runtime, NB-3), `Bool`,
 //!   `Unit`, and `Text` literals, interpolation and comparison;
+//! - fixed-width integers of edition 0.2, as integer words whose overflow is proven absent, and
+//!   their wrapping, saturating and bit methods (`spec/18`);
+//! - machine widths (NB-3, FW-1): where the operands and the result of `+`, `-`, `*` or a
+//!   comparison are proven to fit a tagged word, the code is a plain machine instruction with no
+//!   check (`range`);
 //! - arithmetic with Euclidean division, comparisons, `not`, `if`, and the `when` over
 //!   literals and ranges that Core writes as `if`;
 //! - calls of the package's functions and predicates, recursion included, with the call depth
@@ -40,6 +45,9 @@
 
 mod describe;
 mod lower;
+mod range;
+
+pub use range::{machine_width, proven_range};
 
 use lower::Body;
 
@@ -201,7 +209,10 @@ fn callee<'p>(
                 ..
             } if pred == name => Some(Ok(Body {
                 this: None,
-                params: params.clone(),
+                params: params
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), range::unrefined(ty)))
+                    .collect(),
                 uses: Vec::new(),
                 result: None,
                 fails: false,
@@ -275,6 +286,7 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_or_else", 2, true),
     ("una_rt_main_failed", 1, false),
     ("una_rt_op_code", 2, true),
+    ("una_rt_fixed", 4, true),
     ("una_rt_clock_now", 0, true),
     ("una_rt_env_get", 1, true),
     ("una_rt_files_read", 1, true),
@@ -403,7 +415,11 @@ impl<'p> Emitter<'p> {
             id,
             Body {
                 this: Some((captures, caps)),
-                params: params.to_vec(),
+                // A lambda's refinements are not proven of its arguments (`range`).
+                params: params
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), range::unrefined(ty)))
+                    .collect(),
                 uses: Vec::new(),
                 result: None,
                 fails: false,
@@ -477,7 +493,7 @@ impl<'p> Emitter<'p> {
             .params
             .iter()
             .zip(&op.params)
-            .map(|(name, (_, ty))| (name.clone(), ty.clone()))
+            .map(|(name, (_, ty))| (name.clone(), range::unrefined(ty)))
             .collect();
         let name = format!("una_op_{}", self.functions.len());
         let id = self.declare(&name, params.len() + 1)?;
@@ -493,7 +509,11 @@ impl<'p> Emitter<'p> {
             id,
             Body {
                 this: Some((
-                    handler.params.to_vec(),
+                    handler
+                        .params
+                        .iter()
+                        .map(|(name, ty)| (name.clone(), range::unrefined(ty)))
+                        .collect(),
                     handler.uses.iter().map(|u| u.cap.clone()).collect(),
                 )),
                 params,

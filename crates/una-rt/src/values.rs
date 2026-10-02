@@ -703,6 +703,23 @@ pub fn or_else(o: i64, default: i64) -> i64 {
     value
 }
 
+/// Method `op` of the fixed-width type `int`, both by their positions in `FixedOp::ALL` and
+/// `IntType::ALL`, on `a` with the argument `b` (`spec/18 §5`), as the interpreter computes it.
+/// A shift outside the width, which a precondition excludes, gives 0.
+pub fn fixed(op: i64, int: i64, a: i64, b: i64) -> i64 {
+    let op = usize::try_from(op)
+        .ok()
+        .and_then(|i| una_core::FixedOp::ALL.get(i).copied());
+    let int = usize::try_from(int)
+        .ok()
+        .and_then(|i| una_core::IntType::ALL.get(i).copied());
+    let (Some(op), Some(int)) = (op, int) else {
+        return int_word(&BigInt::default());
+    };
+    let result = una_interp::fixed_method(op, int, &int_value(a), &int_value(b));
+    int_word(&result.unwrap_or_default())
+}
+
 /// The length of a list, as an `Int` word.
 pub fn list_len(xs: i64) -> i64 {
     int_word(&BigInt::from(count(xs)))

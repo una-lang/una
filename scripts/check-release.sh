@@ -1,6 +1,6 @@
 #!/bin/sh
 # Checks the archive that scripts/release.sh packed for TARGET: its SHA-256 digest, its contents,
-# the packed binary on the examples, and a native build of examples/hello with the packed runtime;
+# the packed binary on the examples, and a native build of every example with the packed runtime;
 # it needs the pinned Z3 on PATH and the system `cc` (ADR 0035 rule 3, ADR 0059).
 #
 # Usage: scripts/check-release.sh TARGET
@@ -45,11 +45,18 @@ if [ "$greeting" != "Hello, Una" ]; then
     echo "error: the packed una printed \"$greeting\" for examples/hello" >&2
     exit 1
 fi
-cp -R examples/hello "$tmp/hello"
-"$una" build "$tmp/hello" > /dev/null
-native=$("$tmp/hello/target/una/hello")
-if [ "$native" != "Hello, Una" ]; then
-    echo "error: the natively built examples/hello printed \"$native\"" >&2
-    exit 1
-fi
-echo "ok: $name.tar.gz checks and runs the examples, and builds examples/hello natively"
+# Every example, built natively with the packed runtime, prints what `una run` prints and exits
+# with its status (spec/16 §5); each runs in its own directory, where its grants resolve.
+for example in examples/*/; do
+    example=${example%/}
+    dir="$tmp/native-$(basename "$example")"
+    cp -R "$example" "$dir"
+    expected=$(cd "$dir" && "$una" run . 2>/dev/null || echo "exit $?")
+    "$una" build "$dir" --out "$dir/native-exe" > /dev/null
+    native=$(cd "$dir" && ./native-exe 2>/dev/null || echo "exit $?")
+    if [ "$native" != "$expected" ]; then
+        echo "error: the natively built $example printed \"$native\"; una run printed \"$expected\"" >&2
+        exit 1
+    fi
+done
+echo "ok: $name.tar.gz checks and runs the examples, and builds each of them natively"
