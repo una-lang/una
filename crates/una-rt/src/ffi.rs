@@ -44,7 +44,8 @@ pub unsafe extern "C" fn una_rt_start(
     runtime::start(&args, &meta, move || entry())
 }
 
-/// The word of the integer literal of `len` decimal digits at `digits`, with an optional `-`.
+/// The word of the integer literal of `len` decimal digits at `digits`, with an optional `-`,
+/// borrowed: the runtime keeps it for the whole run.
 ///
 /// # Safety
 ///
@@ -57,7 +58,8 @@ pub unsafe extern "C" fn una_rt_int_literal(digits: *const u8, len: usize) -> i6
     values::int_literal(digits as usize, &text)
 }
 
-/// The handle of the text literal of `len` UTF-8 bytes at `bytes`.
+/// The handle of the text literal of `len` UTF-8 bytes at `bytes`, borrowed: the runtime keeps
+/// it for the whole run.
 ///
 /// # Safety
 ///
@@ -70,7 +72,7 @@ pub unsafe extern "C" fn una_rt_text_literal(bytes: *const u8, len: usize) -> i6
     values::text_literal(bytes as usize, &text)
 }
 
-/// The integer and text operations of [`crate::values`], by word.
+/// The operations of [`crate::values`] that return a word, by word.
 macro_rules! exported {
     ($($name:ident => $function:path, ($($arg:ident),*);)*) => {$(
         #[doc = concat!("[`", stringify!($function), "`], for the generated code.")]
@@ -95,6 +97,47 @@ exported! {
     una_rt_text_equal => values::text_equal, (a, b);
     una_rt_text_compare => values::text_compare, (a, b);
     una_rt_text_len => values::text_len, (a);
+    una_rt_data => values::data, (tag);
+    una_rt_list => values::list, ();
+    una_rt_closure => values::closure, (code);
+    una_rt_field => values::field, (object, index);
+    una_rt_tag => values::tag, (value);
+    una_rt_closure_code => values::closure_code, (value);
+    una_rt_count => values::count, (list);
+    una_rt_list_len => values::list_len, (list);
+    una_rt_equal => values::equal, (a, b);
+    una_rt_abs => values::abs, (x);
+    una_rt_min => values::min, (a, b);
+    una_rt_max => values::max, (a, b);
+    una_rt_is_digits => values::is_digits, (t);
+    una_rt_starts_with => values::starts_with, (t, prefix);
+    una_rt_trim => values::trim, (t);
+    una_rt_to_int => values::to_int, (t);
+    una_rt_is_empty => values::is_empty, (xs);
+    una_rt_first => values::first, (xs);
+    una_rt_at => values::at, (xs, index);
+    una_rt_append => values::append, (xs, item);
+    una_rt_contains => values::contains, (xs, item);
+    una_rt_sum => values::sum, (xs);
+    una_rt_or_else => values::or_else, (o, default);
+}
+
+/// Adds a reference to a value ([`values::retain`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_retain(value: i64) {
+    values::retain(value);
+}
+
+/// Releases a reference to a value ([`values::release`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_release(value: i64) {
+    values::release(value);
+}
+
+/// Adds a field, item or captured value to an object being built ([`values::push`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_push(object: i64, value: i64) {
+    values::push(object, value);
 }
 
 /// Enters the call at `site` (U6003 past the maximum depth).

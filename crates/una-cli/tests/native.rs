@@ -380,18 +380,18 @@ fn una_build_rejects_a_package_that_does_not_check() {
 #[test]
 fn a_construct_the_backend_does_not_compile_yet_is_named() {
     let dir = package(
-        "sum",
-        "\n[run]\nentry = \"sum\"\ngrants = [\"console\"]\n",
+        "clock",
+        "\n[run]\nentry = \"clock\"\ngrants = [\"clock\"]\n",
         &[(
-            "src/sum.una",
-            "module sum\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let n = [1, 2].len\n  @console.print(\"{n}\")\n",
+            "src/clock.una",
+            "module clock\n\npub main() -> Unit\n  uses @clock: Clock[now]\n=\n  let t = @clock.now()\n  unit\n",
         )],
     );
     let output = una(&dir, &["build"]);
     assert_eq!(output.status.code(), Some(2));
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
-        "error: the native backend does not compile lists yet (#26)\n"
+        "error: the native backend does not compile `Clock.now` yet (#26)\n"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
