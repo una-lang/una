@@ -13,6 +13,7 @@ use super::authority::{Base, Bound, Frame, Pass};
 use super::check::{Checker, Ctx, Rl, Role, Site};
 use super::closest;
 use super::env::{Entity, FnKind, KindDef};
+use super::fixed;
 use super::label::Label;
 use super::records::Res;
 use super::ty::{FnRefinements, FnTy, FnUse, KindId, Refinement, Ty};
@@ -59,7 +60,7 @@ impl<'a> Checker<'_, 'a, '_> {
     fn infer_kind(&mut self, expr: &Expr, expected: Option<&Ty>, site: Site) -> Ty {
         let span = expr.span;
         match &expr.kind {
-            ExprKind::Literal(literal) => self.literal(literal, span),
+            ExprKind::Literal(literal) => self.literal(literal, span, expected),
             ExprKind::Paren(inner) => {
                 self.pass_site(site);
                 self.infer(inner, expected)
@@ -67,10 +68,42 @@ impl<'a> Checker<'_, 'a, '_> {
             ExprKind::Name(ident) => self.name_value(ident, site),
             ExprKind::UpperName(ident) => self.upper_value(ident, expected),
             ExprKind::List(items) => self.list(items, span, expected),
-            ExprKind::Binary { op, left, right } => self.binary(*op, left, right, span),
+            ExprKind::Binary { op, left, right } => self.binary(*op, left, right, span, expected),
             ExprKind::Unary { op, operand } => {
+                // A negated literal of a fixed-width type is one literal (`spec/18 §2`):
+                // `-128` fits `I8` although `128` does not.
+                if *op == UnaryOp::Neg
+                    && let ExprKind::Literal(Literal::Int(digits)) = &operand.kind
+                    && self.expected_fixed(expected).is_some()
+                {
+                    let ty = self.int_literal_type(true, digits, span, expected);
+                    self.typed(operand.span, &ty);
+                    return ty;
+                }
                 let (ty, symbol) = match op {
-                    UnaryOp::Neg => (Ty::Int, "-"),
+                    UnaryOp::Neg => {
+                        // `-e` has the integer type of `e` (`spec/18 §2`).
+                        let hint = self.expected_fixed(expected).map(Ty::Fixed);
+                        let found = self.infer(operand, hint.as_ref());
+                        let resolved = self.resolve(&found);
+                        let ty = match resolved {
+                            // In a clause, every integer type reads as `Int` (`spec/18 §2`).
+                            Ty::Fixed(_) if self.in_clause() => Ty::Int,
+                            Ty::Fixed(int) => Ty::Fixed(int),
+                            _ => {
+                                self.unify_at(
+                                    operand.span,
+                                    &Ty::Int,
+                                    &found,
+                                    Role::Condition("the operand of `-`"),
+                                );
+                                Ty::Int
+                            }
+                        };
+                        self.overflow_site(&ty, span);
+                        let label = self.deep(&found);
+                        return ty.with_label(&label);
+                    }
                     UnaryOp::Not => (Ty::Bool, "not"),
                 };
                 let what = format!("the operand of `{symbol}`");
@@ -80,12 +113,22 @@ impl<'a> Checker<'_, 'a, '_> {
                 ty.with_label(&label)
             }
             ExprKind::Is { value, target } => self.is(value, target, span),
-            ExprKind::In { value, .. } => {
-                let found = self.expr_as(
-                    value,
-                    Some(&Ty::Int),
-                    Role::Condition("the value tested by `in`"),
-                );
+            ExprKind::In { value, range } => {
+                let found = self.infer(value, None);
+                match self.resolve(&found) {
+                    // A range over a fixed-width value takes its type, and over any integer
+                    // type in a clause (`spec/18 §2`).
+                    Ty::Fixed(int) if !self.in_clause() => self.range_bounds(range, int),
+                    Ty::Fixed(_) => {}
+                    _ => {
+                        self.unify_at(
+                            value.span,
+                            &Ty::Int,
+                            &found,
+                            Role::Condition("the value tested by `in`"),
+                        );
+                    }
+                }
                 Ty::Bool.with_label(&self.labeled(&found).top_label())
             }
             ExprKind::IfLine {
@@ -173,9 +216,9 @@ impl<'a> Checker<'_, 'a, '_> {
         }
     }
 
-    fn literal(&mut self, literal: &Literal, span: Span) -> Ty {
+    fn literal(&mut self, literal: &Literal, span: Span, expected: Option<&Ty>) -> Ty {
         match literal {
-            Literal::Int(_) => Ty::Int,
+            Literal::Int(digits) => self.int_literal_type(false, digits, span, expected),
             Literal::Bool(_) => Ty::Bool,
             Literal::Unit => {
                 self.outside_rl(span, || "`unit`".to_owned());
@@ -207,7 +250,13 @@ impl<'a> Checker<'_, 'a, '_> {
             let ty = self.expr(expr, None);
             label = label.join(&self.deep(&ty));
             match self.resolve(&ty) {
-                Ty::Int | Ty::Bool | Ty::Text | Ty::Error | Ty::Never | Ty::Var(_) => {}
+                Ty::Int
+                | Ty::Fixed(_)
+                | Ty::Bool
+                | Ty::Text
+                | Ty::Error
+                | Ty::Never
+                | Ty::Var(_) => {}
                 other => {
                     let shown = self.show(&other);
                     self.report.error(
@@ -523,9 +572,16 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// A binary operation; its result joins every label of its operands.
-    fn binary(&mut self, op: BinaryOp, left: &Expr, right: &Expr, span: Span) -> Ty {
+    fn binary(
+        &mut self,
+        op: BinaryOp,
+        left: &Expr,
+        right: &Expr,
+        span: Span,
+        expected: Option<&Ty>,
+    ) -> Ty {
         let mark = self.operands.len();
-        let ty = self.binary_type(op, left, right, span);
+        let ty = self.binary_type(op, left, right, span, expected);
         let label = self
             .operands
             .split_off(mark)
@@ -536,7 +592,14 @@ impl<'a> Checker<'_, 'a, '_> {
         ty.with_label(&label)
     }
 
-    fn binary_type(&mut self, op: BinaryOp, left: &Expr, right: &Expr, span: Span) -> Ty {
+    fn binary_type(
+        &mut self,
+        op: BinaryOp,
+        left: &Expr,
+        right: &Expr,
+        span: Span,
+        expected: Option<&Ty>,
+    ) -> Ty {
         let symbol = op_symbol(op);
         let operand = format!("an operand of `{symbol}`");
         match op {
@@ -549,10 +612,12 @@ impl<'a> Checker<'_, 'a, '_> {
             }
             BinaryOp::Eq | BinaryOp::NotEq => {
                 self.variant_equality(op, left, right, span);
-                let left_ty = self.expr(left, None);
-                let right_ty = self.infer(right, Some(&left_ty));
+                let (left_ty, right_ty) = self.operand_pair(left, right);
                 self.operands.push(left_ty.clone());
                 self.operands.push(right_ty.clone());
+                if self.integers_in_clause(&left_ty, &right_ty) {
+                    return Ty::Bool;
+                }
                 if self.same(span, &left_ty, &right_ty, symbol) {
                     let resolved = self.resolve(&left_ty);
                     if self.facts.has_function(&resolved) {
@@ -568,13 +633,15 @@ impl<'a> Checker<'_, 'a, '_> {
                 Ty::Bool
             }
             BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
-                let left_ty = self.expr(left, None);
-                let right_ty = self.infer(right, Some(&left_ty));
+                let (left_ty, right_ty) = self.operand_pair(left, right);
                 self.operands.push(left_ty.clone());
                 self.operands.push(right_ty.clone());
+                if self.integers_in_clause(&left_ty, &right_ty) {
+                    return Ty::Bool;
+                }
                 if self.same(span, &left_ty, &right_ty, symbol) {
                     match self.resolve(&left_ty) {
-                        Ty::Int | Ty::Error | Ty::Never | Ty::Var(_) => {}
+                        Ty::Int | Ty::Fixed(_) | Ty::Error | Ty::Never | Ty::Var(_) => {}
                         // Ordering of text has no encoding in `spec/12 §4`.
                         Ty::Text => self.outside_rl(span, || "ordering of `Text`".to_owned()),
                         Ty::Kind(id, _) if self.fieldless_sum(id) => {}
@@ -592,14 +659,14 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
                 Ty::Bool
             }
-            BinaryOp::Add | BinaryOp::Sub => self.ints(left, right, &operand),
+            BinaryOp::Add | BinaryOp::Sub => self.ints(left, right, &operand, span, expected),
             BinaryOp::Mul => {
                 if int_literal(left).is_none() && int_literal(right).is_none() {
                     self.outside_rl(span, || {
                         "`*` of two operands that are not literals".to_owned()
                     });
                 }
-                self.ints(left, right, &operand)
+                self.ints(left, right, &operand, span, expected)
             }
             BinaryOp::Div | BinaryOp::Mod => {
                 if int_literal(right) != Some(true) {
@@ -608,17 +675,76 @@ impl<'a> Checker<'_, 'a, '_> {
                     });
                     self.obligation(ObligationKind::Division, span, None);
                 }
-                self.ints(left, right, &operand)
+                self.ints(left, right, &operand, span, expected)
             }
         }
     }
 
-    fn ints(&mut self, left: &Expr, right: &Expr, operand: &str) -> Ty {
-        for side in [left, right] {
-            let found = self.expr_as(side, Some(&Ty::Int), Role::Condition(operand));
-            self.operands.push(found);
+    /// The operands of an arithmetic operator, and its type: `Int`, or the fixed-width type of
+    /// its operands, with an `overflow` obligation (`spec/18 §2`, `§3`). The side that is not
+    /// a literal is typed first, so that a literal takes its type from the other operand. In a
+    /// clause, operands of any integer types mix, and the result is `Int`.
+    fn ints(
+        &mut self,
+        left: &Expr,
+        right: &Expr,
+        operand: &str,
+        span: Span,
+        expected: Option<&Ty>,
+    ) -> Ty {
+        if self.in_clause() {
+            for side in [left, right] {
+                let found = self.infer(side, None);
+                if !fixed::is_integer(&self.resolve(&found)) {
+                    self.unify_at(side.span, &Ty::Int, &found, Role::Condition(operand));
+                }
+                self.operands.push(found);
+            }
+            return Ty::Int;
         }
-        Ty::Int
+        let (first, second) =
+            if fixed::literal_value(left).is_some() && fixed::literal_value(right).is_none() {
+                (right, left)
+            } else {
+                (left, right)
+            };
+        let hint = self.expected_fixed(expected).map(Ty::Fixed);
+        let first_ty = self.infer(first, hint.as_ref());
+        let ty = match self.resolve(&first_ty) {
+            Ty::Fixed(int) => Ty::Fixed(int),
+            _ => {
+                self.unify_at(first.span, &Ty::Int, &first_ty, Role::Condition(operand));
+                Ty::Int
+            }
+        };
+        let second_ty = self.expr_as(second, Some(&ty), Role::Condition(operand));
+        self.operands.push(first_ty);
+        self.operands.push(second_ty);
+        self.overflow_site(&ty, span);
+        ty
+    }
+
+    /// The types of the operands of a comparison: the side that is not a literal first, so a
+    /// literal takes the other side's type.
+    fn operand_pair(&mut self, left: &Expr, right: &Expr) -> (Ty, Ty) {
+        if fixed::literal_value(left).is_some() && fixed::literal_value(right).is_none() {
+            let right_ty = self.expr(right, None);
+            let left_ty = self.infer(left, Some(&right_ty));
+            (left_ty, right_ty)
+        } else {
+            let left_ty = self.expr(left, None);
+            let right_ty = self.infer(right, Some(&left_ty));
+            (left_ty, right_ty)
+        }
+    }
+
+    /// Whether both operands are of integer types in a clause, where they compare as
+    /// mathematical integers whatever their types (`spec/18 §2`).
+    fn integers_in_clause(&self, left: &Ty, right: &Ty) -> bool {
+        self.in_clause()
+            && fixed::is_integer(&self.resolve(left))
+            && fixed::is_integer(&self.resolve(right))
+            && self.resolve(left) != self.resolve(right)
     }
 
     /// Whether two operands have one type; U2001 at the operation otherwise.
@@ -700,7 +826,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     });
                 self.outside_rl_with(span, || "`is` with a literal".to_owned(), repair);
                 let ty = self.expr(value, None);
-                let literal_ty = self.literal(literal, span);
+                let literal_ty = self.literal(literal, span, Some(&ty));
                 if !self.vars.unify(&ty, &literal_ty) {
                     let (ty, literal_ty) = (self.show(&ty), self.show(&literal_ty));
                     self.report.error(

@@ -24,10 +24,31 @@ pub struct Manifest {
     pub entry: Option<Located>,
     /// `[run] grants`: the capabilities `una run` grants (`spec/13 §5`).
     pub grants: Vec<Located>,
+    /// `[package] edition`: `0.1`, the default, or `0.2` (`spec/13 §7`, ADR 0056).
+    pub edition: Edition,
 }
 
-/// The only edition of v0.1.
-const EDITION: &str = "0.1";
+/// The language edition of a package (`spec/13 §7`, ADR 0056). A single file, and a package
+/// whose `una.toml` is invalid, has the default, edition `0.1`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Edition {
+    /// Edition `0.1`: the language of v0.1.
+    #[default]
+    V0_1,
+    /// Edition `0.2`: adds the constructs of `spec/17` and `spec/18`.
+    V0_2,
+}
+
+impl Edition {
+    /// The edition named `text` in `una.toml`, if it is one.
+    fn parse(text: &str) -> Option<Edition> {
+        match text {
+            "0.1" => Some(Edition::V0_1),
+            "0.2" => Some(Edition::V0_2),
+            _ => None,
+        }
+    }
+}
 
 /// Parses `una.toml`. the tables and keys of ADR 0021 rule 2 and no others;
 /// every problem is U7002, except a category's naming convention (U1005) and a repeated
@@ -85,15 +106,18 @@ fn package_table(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Ve
                         located.range,
                         format!("`{name}` must not be empty"),
                     ));
-                } else if name == "edition" && located.value != EDITION {
-                    errors.push(ProjectError::new(
-                        Code::U7002,
-                        located.range,
-                        format!(
-                            "edition `{}` is not supported; v0.1 is edition \"{EDITION}\"",
-                            located.value
-                        ),
-                    ));
+                } else if name == "edition" {
+                    match Edition::parse(&located.value) {
+                        Some(edition) => manifest.edition = edition,
+                        None => errors.push(ProjectError::new(
+                            Code::U7002,
+                            located.range,
+                            format!(
+                                "edition `{}` is not supported; the editions are \"0.1\" and \"0.2\"",
+                                located.value
+                            ),
+                        )),
+                    }
                 } else if name == "name" {
                     manifest.name = Some(located);
                 } else if name == "version" {

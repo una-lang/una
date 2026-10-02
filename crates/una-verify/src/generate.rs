@@ -538,7 +538,8 @@ pub(crate) fn sort(ty: &Type) -> Sort {
     match ty {
         Type::Fn { .. } => "i!Fn".to_owned(),
         Type::Base { base, .. } => match base {
-            Base::Int => "Int".to_owned(),
+            // A fixed-width integer is an `Int` with its range bounds (`spec/18 §6`).
+            Base::Int | Base::Fixed(_) => "Int".to_owned(),
             Base::Bool => "Bool".to_owned(),
             Base::Text => TEXT.to_owned(),
             Base::Unit => UNIT.to_owned(),
@@ -569,6 +570,7 @@ fn type_name(ty: &Type) -> String {
         Type::Fn { .. } => "Fn".to_owned(),
         Type::Base { base, .. } => match base {
             Base::Int => "Int".to_owned(),
+            Base::Fixed(int) => int.as_str().to_owned(),
             Base::Bool => "Bool".to_owned(),
             Base::Text => "Text".to_owned(),
             Base::Unit => "Unit".to_owned(),
@@ -1291,6 +1293,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                         None,
                     );
                 }
+                self.fixed_sites(ty, *prim, args, &values, arg_spans, *span, ctx);
                 if let Some(value) = self.prim(*prim, &values)
                     && value.sort() == x.f.sort()
                 {
@@ -2153,6 +2156,74 @@ impl<'p, 'i> Walker<'p, 'i> {
         is_text_or_list.then(|| len_of(&value.f))
     }
 
+    /// The obligations of a primitive of fixed-width integers (`spec/18 §3`, `§5`): an
+    /// `overflow` obligation for arithmetic whose result has a fixed-width type and for a
+    /// narrowing conversion, and the precondition `0 <= n and n < width` of a shift. A negated
+    /// literal is a literal, which the checker bounds (U2022).
+    #[allow(clippy::too_many_arguments)]
+    fn fixed_sites(
+        &mut self,
+        ty: &Type,
+        prim: Prim,
+        args: &[Atom],
+        values: &[Tv],
+        arg_spans: &[Span],
+        span: Span,
+        ctx: &Ctx,
+    ) {
+        let arg = |i: usize| values.get(i).map(|v| v.f.clone());
+        if let Prim::Fixed(op, int) = prim {
+            if op.shift()
+                && let Some(n) = arg(1)
+            {
+                let amount = arg_spans.get(1).map_or_else(String::new, |s| self.text(*s));
+                let goal = F::and(vec![
+                    F::op("<=", vec![F::Int("0".to_owned()), n.clone()]),
+                    F::op("<", vec![n, F::Int(int.bits().to_string())]),
+                ]);
+                let text = format!("0 <= {amount} and {amount} < {}", int.bits());
+                self.site(
+                    ObligationKind::Precondition,
+                    ctx,
+                    Some(goal),
+                    text,
+                    span,
+                    None,
+                );
+            }
+            return;
+        }
+        let Type::Base {
+            base: Base::Fixed(int),
+            ..
+        } = ty
+        else {
+            return;
+        };
+        let exact = match prim {
+            Prim::Add | Prim::Sub | Prim::Mul | Prim::Div | Prim::Mod => self.prim(prim, values),
+            Prim::Neg if !matches!(args.first(), Some(Atom::Int(_))) => self.prim(prim, values),
+            Prim::Convert(Some(_)) => {
+                let source = values.first().map(|v| &v.ty);
+                let widening = matches!(
+                    source,
+                    Some(Type::Base { base: Base::Fixed(from), .. }) if from.widens_to(*int)
+                );
+                if widening { None } else { arg(0) }
+            }
+            _ => None,
+        };
+        let Some(exact) = exact else {
+            return;
+        };
+        let goal = F::and(vec![
+            F::op("<=", vec![F::Int(int.least().to_string()), exact.clone()]),
+            F::op("<=", vec![exact, F::Int(int.greatest().to_string())]),
+        ]);
+        let text = format!("{} in {}..{}", self.text(span), int.least(), int.greatest());
+        self.site(ObligationKind::Overflow, ctx, Some(goal), text, span, None);
+    }
+
     /// A primitive of code as a term, when it is one of the refinement language (`spec/10 §3`:
     /// "RL-expressible results are selfified").
     fn prim(&self, prim: Prim, values: &[Tv]) -> Option<F> {
@@ -2183,7 +2254,11 @@ impl<'p, 'i> Walker<'p, 'i> {
                 self.order(op, &a, &b)?
             }
             Prim::Len => self.len(&arg(0)?)?,
-            Prim::Concat | Prim::ToText => return None,
+            // A conversion keeps the value; a narrowing one has an `overflow` obligation
+            // (`spec/18 §4`).
+            Prim::Convert(_) => arg(0)?.f,
+            // The methods of `spec/18 §5` are known by their contracts, not as terms.
+            Prim::Concat | Prim::ToText | Prim::Fixed(..) => return None,
         })
     }
 

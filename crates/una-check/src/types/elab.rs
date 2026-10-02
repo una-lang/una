@@ -298,6 +298,7 @@ impl<'e, 'a> Fx<'e, 'a> {
     fn base(&self, ty: &Ty) -> Base {
         match ty {
             Ty::Int => Base::Int,
+            Ty::Fixed(int) => Base::Fixed(*int),
             Ty::Bool => Base::Bool,
             Ty::Text => Base::Text,
             Ty::Unit => Base::Unit,
@@ -1762,6 +1763,25 @@ impl<'e, 'a> Fx<'e, 'a> {
                 _ => Atom::Unit,
             },
             ExprKind::MethodCall { target, args, .. } => match self.res(span) {
+                // A built-in method of an integer type (`spec/18 §4`, `§5`).
+                Some(Res::IntMethod(prim)) => {
+                    let mut arg_spans = vec![target.span];
+                    let mut values = vec![self.atom(lets, target)];
+                    for arg in args {
+                        arg_spans.push(arg.value.span);
+                        values.push(self.atom(lets, &arg.value));
+                    }
+                    self.push(
+                        lets,
+                        span,
+                        Rhs::Prim {
+                            prim,
+                            args: values,
+                            arg_spans,
+                            span,
+                        },
+                    )
+                }
                 Some(Res::FieldFn { kind, index }) => {
                     let value = self.atom(lets, target);
                     let (_, field) = self.field(kind, index);

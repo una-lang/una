@@ -82,6 +82,7 @@ fn message(obligation: &Obligation, outcome: &Outcome) -> String {
         },
         ObligationKind::Refinement => format!("refinement `{}`", obligation.goal),
         ObligationKind::Division => format!("division obligation `{}`", obligation.goal),
+        ObligationKind::Overflow => format!("overflow obligation `{}`", obligation.goal),
         ObligationKind::Exhaustive => {
             format!("exhaustiveness of this `when`, `{}`,", obligation.goal)
         }
@@ -168,6 +169,19 @@ fn repairs(obligation: &Obligation) -> Vec<Repair> {
             0,
             "add an `else` arm, or arms for the values the others miss".to_owned(),
         )),
+        // `spec/18 §3`: guard the operation, give the value a wider type, or name the
+        // wrapping or saturating arithmetic that is meant.
+        ObligationKind::Overflow => {
+            candidates.push((0, format!("guard the operation with `if {goal}`")));
+            candidates.push((
+                0,
+                "give the values a wider type, converting them explicitly".to_owned(),
+            ));
+            candidates.push((
+                0,
+                "if wrapping or saturating is meant, use `wrapping_add`, `saturating_add` or their siblings".to_owned(),
+            ));
+        }
     }
     candidates
         .into_iter()

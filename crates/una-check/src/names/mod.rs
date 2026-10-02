@@ -8,8 +8,9 @@ mod resolve;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use una_core::IntType;
 use una_diag::{Code, Diagnostic, Edit, Related, Repair};
-use una_project::{Manifest, is_module_path};
+use una_project::{Edition, Manifest, is_module_path};
 use una_syntax::ast::{DeclKind, File, Ident, KindBody, RequirementSource};
 use una_syntax::{FileId, Interner, SourceDb, Span};
 
@@ -378,6 +379,21 @@ impl<'p, 'a> Checker<'p, 'a> {
             self.upper_convention(ident, what.word());
         } else {
             self.lower_convention(ident, what.word());
+        }
+        // Edition 0.2: the fixed-width integer types are built in (`spec/18 §1` rule 1).
+        if upper
+            && self.package.settings.edition >= Edition::V0_2
+            && IntType::from_name(name).is_some()
+        {
+            let diagnostic = self.make(
+                Code::U1002,
+                ident.span,
+                format!(
+                    "`{name}` is a built-in fixed-width integer type in edition 0.2, so a {} cannot take its name",
+                    what.word()
+                ),
+            );
+            self.diagnostics.push(diagnostic);
         }
         let names = if upper {
             &mut table.upper

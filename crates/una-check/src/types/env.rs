@@ -5,7 +5,9 @@
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+use una_core::IntType;
 use una_diag::Code;
+use una_project::Edition;
 use una_syntax::ast::{
     CapabilityDecl, ClauseKind, DeclKind, Expr, Field, File, FnTypeClause, FunctionDecl,
     HandlerDecl, Ident, KindBody, KindDecl, Label as LabelAst, OpClauseKind, Param, PolicyDecl,
@@ -57,6 +59,8 @@ pub(crate) enum Entity {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Builtin {
     Int,
+    /// A fixed-width integer type, built in from edition 0.2 (`spec/18 §1`).
+    Fixed(IntType),
     Bool,
     Text,
     Unit,
@@ -256,6 +260,8 @@ pub(crate) struct Env<'a> {
     /// (re-review N-001, ADR 0046), computed once the signatures are lowered.
     pub(crate) kind_labels: Rc<KindLabels>,
     alias_state: Vec<AliasState>,
+    /// The package's edition (`spec/13 §7`).
+    pub(crate) edition: Edition,
 }
 
 impl<'a> Env<'a> {
@@ -266,6 +272,7 @@ impl<'a> Env<'a> {
         prelude: Source<'a>,
         testing: Source<'a>,
         categories: Vec<String>,
+        edition: Edition,
         report: &mut Report<'_>,
     ) -> Env<'a> {
         let count = package.len();
@@ -281,6 +288,7 @@ impl<'a> Env<'a> {
             vias: BTreeMap::new(),
             kind_labels: Rc::new(KindLabels::default()),
             alias_state: Vec::new(),
+            edition,
         };
         for source in package.into_iter().chain([prelude, testing]) {
             env.register(source);
@@ -288,6 +296,14 @@ impl<'a> Env<'a> {
         if let Some(module) = env.modules.get_mut(count) {
             for (name, builtin) in BUILTINS {
                 module.upper.entry(name).or_insert(Entity::Builtin(builtin));
+            }
+            if edition >= Edition::V0_2 {
+                for int in IntType::ALL {
+                    module
+                        .upper
+                        .entry(int.as_str())
+                        .or_insert(Entity::Builtin(Builtin::Fixed(int)));
+                }
             }
         }
         env.imports(count);
@@ -1088,7 +1104,31 @@ impl<'a> Env<'a> {
             }
         };
         if let Some(range) = &ty.range {
-            if matches!(declared.base.unlabeled(), Ty::Int | Ty::Error) {
+            // Range sugar on a fixed-width type: its bounds fit the type (`spec/18 §1`).
+            if let Ty::Fixed(int) = declared.base.unlabeled()
+                && self.reports(module)
+            {
+                for bound in [&range.low, &range.high] {
+                    if !super::fixed::fits(*int, bound.negative, &bound.digits) {
+                        let sign = if bound.negative { "-" } else { "" };
+                        report.error(
+                            Code::U2022,
+                            bound.span,
+                            format!(
+                                "the bound `{sign}{}` does not fit `{}`, which holds `{}` to `{}`",
+                                bound.digits,
+                                int.as_str(),
+                                int.least(),
+                                int.greatest()
+                            ),
+                        );
+                    }
+                }
+            }
+            if matches!(
+                declared.base.unlabeled(),
+                Ty::Int | Ty::Fixed(_) | Ty::Error
+            ) {
                 let bound = |i: &una_syntax::ast::SignedInt| {
                     format!("{}{}", if i.negative { "-" } else { "" }, i.digits)
                 };
@@ -1098,7 +1138,12 @@ impl<'a> Env<'a> {
                     range.span,
                 ));
             } else if self.reports(module) {
-                report.error(Code::U2002, range.span, "range sugar applies only to `Int`");
+                let message = if self.edition >= Edition::V0_2 {
+                    "range sugar applies only to integer types"
+                } else {
+                    "range sugar applies only to `Int`"
+                };
+                report.error(Code::U2002, range.span, message);
             }
         }
         if let Some(label) = &ty.label {
@@ -1263,6 +1308,7 @@ impl<'a> Env<'a> {
                 }
                 let base = match builtin {
                     Builtin::Int => Ty::Int,
+                    Builtin::Fixed(int) => Ty::Fixed(int),
                     Builtin::Bool => Ty::Bool,
                     Builtin::Text => Ty::Text,
                     Builtin::Unit => Ty::Unit,
