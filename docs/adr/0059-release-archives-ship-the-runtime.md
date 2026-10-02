@@ -26,3 +26,7 @@ ADR 0035 rule 3 makes a release archive hold `una`, `LICENSE` and `README.md`. A
 
 - **Put `libuna_rt.a` next to `una`.** Not chosen: a `lib/` directory keeps the archive's top level to the binary and its documents, and leaves room for more libraries.
 - **Embed the library in the `una` binary, and write it out at build time.** Not chosen: it doubles the binary's size for every command, and it needs the library to exist before `una` builds, which Cargo cannot order without a build script.
+
+## Amendment (2026-10-02)
+
+While GitHub Actions is unavailable, `scripts/local-release.sh` builds the archives instead of the release workflow, with the same contents, `lib/libuna_rt.a` included. ADR 0035's amendment of the same date describes it (#156).
