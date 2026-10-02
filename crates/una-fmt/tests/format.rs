@@ -4,7 +4,7 @@
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
 use pretty_assertions::assert_eq;
-use una_syntax::{Interner, SourceDb, lex, parse};
+use una_syntax::{Interner, KeywordSet, SourceDb, lex, lex_in, parse};
 
 /// The canonical form of `text`, which must lex and parse without errors; also checks that
 /// formatting the result again changes nothing.
@@ -324,4 +324,34 @@ fn line_breaks_are_line_feeds_and_the_file_ends_with_one() {
         fmt("module t\n\nf() -> Int = 1"),
         "module t\n\nf() -> Int = 1\n"
     );
+}
+
+/// The canonical form of `text` in edition 0.2, formatted once.
+fn format_0_2(text: &str) -> String {
+    let mut db = SourceDb::new();
+    let id = db.add("t.una", text.as_bytes());
+    let mut interner = Interner::new();
+    let lexed = lex_in(db.file(id), id, &mut interner, KeywordSet::V0_2);
+    let parsed = parse(&lexed, id, &interner);
+    assert!(
+        lexed.errors.is_empty() && parsed.errors.is_empty(),
+        "{:?} {:?}\n{text}",
+        lexed.errors,
+        parsed.errors
+    );
+    una_fmt::format(db.file(id), &lexed, &parsed.file, &interner)
+}
+
+#[test]
+fn a_single_call_with_edit_or_take_keeps_its_block_form() {
+    // `spec/15 §4`, `spec/17 §3` rule 5: the call is legal only as a statement.
+    let kept = [
+        "module t\n\nf(xs: List[Int]) -> Int\n=\n  eat(take xs)\n",
+        "module t\n\nf(edit n: Int) -> Unit\n=\n  inc(edit n)\n",
+        "module t\n\nf(edit t: Tally) -> Unit\n=\n  edit t.add(by: 1)\n",
+        "module t\n\nf(k: Int, edit n: Int) -> Unit\n=\n  when k\n    is 1 ->\n      inc(edit n)\n    else -> unit\n",
+    ];
+    for text in kept {
+        assert_eq!(format_0_2(text), text);
+    }
 }

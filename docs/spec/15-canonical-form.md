@@ -24,7 +24,7 @@ Tokens are separated by one space, except:
 
 ## 4. One-line bodies
 
-A function without clauses whose body is a block of one plain line is written in the short form (`spec/04 §1`). The same holds for the body of a predicate or handler operation after its `=`, and of a `when` arm after its `->`. A plain line is a statement with no `with` clause and no handling clause, whose expression is not a `when` or an `if` with blocks. The long form stays when a comment sits between the head and the end of the body, since the formatter never moves a comment.
+A function without clauses whose body is a block of one plain line is written in the short form (`spec/04 §1`). The same holds for the body of a predicate or handler operation after its `=`, and of a `when` arm after its `->`. A plain line is a statement with no `with` clause and no handling clause, whose expression is not a `when` or an `if` with blocks. (v0.2, `spec/17 §3` rule 5.) Nor is it a call with an `edit` or `take` marker, which is legal only as a statement, so its block form stays. The long form stays when a comment sits between the head and the end of the body, since the formatter never moves a comment.
 
 ## 5. Sums
 
