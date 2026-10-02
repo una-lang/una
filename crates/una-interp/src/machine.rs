@@ -1238,8 +1238,30 @@ impl<'p, 'w> Machine<'p, 'w> {
                 Sign::Plus,
                 int(0)?.magnitude().clone(),
             )),
-            "min" => Value::Int(int(0)?.min(int(1)?)),
-            "max" => Value::Int(int(0)?.max(int(1)?)),
+            // Generic over `Ord` in edition 0.2 (`spec/20 §6`): the built-in order of the
+            // values, the first argument when they are equal.
+            "min" => {
+                let (a, b) = (arg(0)?, arg(1)?);
+                if compare(&b, &a) == std::cmp::Ordering::Less {
+                    b
+                } else {
+                    a
+                }
+            }
+            "max" => {
+                let (a, b) = (arg(0)?, arg(1)?);
+                if compare(&b, &a) == std::cmp::Ordering::Greater {
+                    b
+                } else {
+                    a
+                }
+            }
+            // Ascending and stable (`spec/20 §6` rule 2).
+            "sort" => {
+                let mut items = list(0)?.as_ref().clone();
+                items.sort_by(compare);
+                Value::List(Rc::new(items))
+            }
             "is_digits" => Value::Bool(text(0)?.chars().all(|c| c.is_ascii_digit())),
             "starts_with" => Value::Bool(text(0)?.starts_with(text(1)?.as_ref())),
             "trim" => Value::text(text(0)?.trim()),

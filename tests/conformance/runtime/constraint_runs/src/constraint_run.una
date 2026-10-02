@@ -1,0 +1,46 @@
+-- test: `sort` orders integers, text and variants ascending and keeps equal elements in order, `sum` adds fixed-width values as `Int`, `min` and `max` take the built-in order of their type, and `contains` compares structurally (spec/20 §6, §7)
+-- spec: spec/20 §6, §7
+-- grant: console
+-- expect: run-output "ints: -1 -1 2 3"
+-- expect: run-output "levels: Low Low Mid High"
+-- expect: run-output "first apple, sum 350, min a, max High"
+-- expect: run-output "box true"
+module constraint_run
+
+pub kind Level = Low | Mid | High
+
+pub kind Box
+  size: Int
+
+--- The integers of `xs`, separated by spaces.
+show(xs: List[Int]) -> Text = xs.fold(initial: "", step: fn(acc, x) -> "{acc} {x}")
+
+--- The names of `levels`, separated by spaces.
+names(levels: List[Level]) -> Text = levels.fold(initial: "", step: fn(acc, l) -> "{acc} {name(l)}")
+
+--- The name of a level.
+name(level: Level) -> Text
+=
+  when level
+    is Low -> "Low"
+    is Mid -> "Mid"
+    is High -> "High"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let bytes: List[U8] = [200, 100, 50]
+  let words = sort(["pear", "apple", "fig"])
+  let first_word = when words.first()
+    is Some(w) -> w
+    is None -> "-"
+  @console.print("ints:{show(sort([3, -1, 2, -1]))}")
+  @console.print("levels:{names(sort([High, Low, Mid, Low]))}")
+  let b = "b"
+  let a = "a"
+  let smallest = min(b, b: a)
+  let total = sum(bytes)
+  let top = name(max(Low, b: High))
+  @console.print("first {first_word}, sum {total}, min {smallest}, max {top}")
+  let found = [Box(size: 1)].contains(item: Box(size: 1))
+  @console.print("box {found}")

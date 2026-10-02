@@ -91,7 +91,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 
 ## 4. Code registry
 
-(v0.2, ADR 0056.) The codes U2017 to U2021, of the memory model (`spec/17 §10`), are in the table. (v0.2, ADR 0057.) U2022, of fixed-width integers (`spec/18 §8`), is in the table. (v0.2, ADR 0065.) U2023 and U2024, of structured concurrency (`spec/19 §10`), are in the table. (v0.2, ADR 0066.) U2025 to U2027, of constraints on generics (`spec/20 §10`), join it with their implementation.
+(v0.2, ADR 0056.) The codes U2017 to U2021, of the memory model (`spec/17 §10`), are in the table. (v0.2, ADR 0057.) U2022, of fixed-width integers (`spec/18 §8`), is in the table. (v0.2, ADR 0065.) U2023 and U2024, of structured concurrency (`spec/19 §10`), are in the table. (v0.2, ADR 0066.) U2025 to U2027, of constraints on generics (`spec/20 §10`), are in the table.
 
 | Code | Domain | Meaning |
 | --- | --- | --- |
@@ -138,6 +138,9 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U2022 | types | Integer literal does not fit its type |
 | U2023 | types | A binding declared outside a `together` branch assigned, or passed as `edit` or `take`, inside it |
 | U2024 | types | A `together` body with a statement other than `let`, or fewer than two branches |
+| U2025 | types | A type argument does not satisfy the constraint of its parameter |
+| U2026 | types | An operation on a type parameter that its constraint does not allow |
+| U2027 | types | An unknown constraint name |
 | U3001 | authority | Capability not in scope |
 | U3002 | authority | Operation not permitted by capability type |
 | U3003 | authority | Effects exceed declared `uses` |
@@ -218,6 +221,7 @@ Every command prints one JSON document with `--json`, its `schema` key first (AD
   "public": true,
   "docs": ["Looks up a registration by phone, shows its availability, and records it."],
   "header": "pub check_in(phone: secret[PII] Phone) -> Availability",
+  "constraints": [],
   "requires": [],
   "ensures": [],
   "uses": [ { "cap": "registrations", "capability": "Registrations", "ops": ["find"], "inferred": false } ],

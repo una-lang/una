@@ -688,11 +688,15 @@ fn keyword_tables_match_spec_01_section_5() {
 }
 
 #[test]
-fn the_edition_0_2_table_matches_spec_17_and_19_section_9() {
-    // The rows of edition 0.2: those of the memory model (`spec/17 §9`), then those of
-    // structured concurrency (`spec/19 §9`).
+fn the_edition_0_2_table_matches_spec_17_19_and_20_section_9() {
+    // The rows of edition 0.2: those of the memory model (`spec/17 §9`), of structured
+    // concurrency (`spec/19 §9`) and of constraints on generics (`spec/20 §9`).
     let mut from_spec = BTreeMap::new();
-    for chapter in ["17-memory-model.md", "19-structured-concurrency.md"] {
+    for chapter in [
+        "17-memory-model.md",
+        "19-structured-concurrency.md",
+        "20-constraints-on-generics.md",
+    ] {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../docs/spec")
             .join(chapter);

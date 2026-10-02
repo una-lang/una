@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 
 use una_diag::{Code, ObligationKind, Repair};
+use una_project::Edition;
 use una_syntax::Span;
 use una_syntax::ast::{
     CapabilityDecl, ClauseKind, Convention, DeclKind, ExampleDecl, ExpectationKind, Expr,
@@ -11,7 +12,7 @@ use una_syntax::ast::{
 };
 
 use super::authority::{Base, Bound, Collected, Frame, Pass};
-use super::env::{Entity, Env, FnAst, FnDef, FnKind, HandlerDef};
+use super::env::{Constraint, Entity, Env, FnAst, FnDef, FnKind, HandlerDef};
 use super::facts::KindFacts;
 use super::label::Label;
 use super::records::{Records, Res};
@@ -223,8 +224,9 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) handler: Option<usize>,
     /// Instantiations of generic functions: callee, type arguments and where.
     pub(crate) instances: Vec<(usize, Vec<Ty>, Span)>,
-    /// The operand types of `==` and `!=`.
-    pub(crate) compared: Vec<Ty>,
+    /// What the operators on values of type parameters need: the operand type, the
+    /// constraint that allows the operator, and where (`spec/20 §3` rule 1).
+    pub(crate) needs: Vec<(Ty, Constraint, Span)>,
     /// Set when an expression checked under [`Rl::Probe`] is outside the refinement language.
     pub(crate) probe_failed: bool,
     /// The instantiations of type parameters, judged when the declaration ends (U3016).
@@ -331,7 +333,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             current: None,
             handler: None,
             instances: Vec::new(),
-            compared: Vec::new(),
+            needs: Vec::new(),
             probe_failed: false,
             instantiations: Vec::new(),
             escaped: Vec::new(),
@@ -641,7 +643,8 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         }
     }
 
-    /// Ends the declaration: records generic instantiations and comparisons, and reports
+    /// Ends the declaration: records generic instantiations and what operators on type
+    /// parameters need, and reports
     /// types that inference left unknown when nothing else was reported.
     fn finish(self) {
         let Checker {
@@ -649,8 +652,9 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             findings,
             vars,
             instances,
-            compared,
+            needs,
             current,
+            env,
             started,
             records,
             decl_span,
@@ -675,11 +679,45 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             findings.instances.push((current, callee, args, span));
         }
         if let Some(current) = current {
-            for ty in compared {
+            let v0_2 = env.edition >= Edition::V0_2;
+            let mut reported: Vec<Span> = Vec::new();
+            for (ty, need, span) in needs {
+                let resolved = vars.resolve(&ty);
                 let mut params = Vec::new();
-                vars.resolve(&ty).params(&mut params);
-                if !params.is_empty() {
-                    findings.compared.entry(current).or_default().extend(params);
+                match need {
+                    // Equality is structural: it compares every value of a type parameter
+                    // that the operands hold.
+                    Constraint::Eq | Constraint::None => resolved.params(&mut params),
+                    Constraint::Ord | Constraint::Integer => {
+                        if let Ty::Param(index) = resolved.unlabeled() {
+                            params.push(*index);
+                        }
+                    }
+                }
+                for index in params {
+                    if !v0_2 {
+                        // Edition 0.1: the inferred bound of `spec/10 §12` rule 9.
+                        findings.compared.entry(current).or_default().insert(index);
+                        continue;
+                    }
+                    let Some(def) = env.functions.get(current) else {
+                        continue;
+                    };
+                    let written = def.constraints_written.get(index).copied().unwrap_or(false);
+                    let have = def.constraints.get(index).copied().unwrap_or_default();
+                    if !def.public && !written {
+                        // Inferred for a private function (`spec/20 §3` rule 4).
+                        let entry = findings
+                            .needs
+                            .entry(current)
+                            .or_default()
+                            .entry(index)
+                            .or_default();
+                        *entry = (*entry).max(need);
+                    } else if have < need && pass == Pass::Check && !reported.contains(&span) {
+                        reported.push(span);
+                        report.push(unconstrained(report, def, index, need, span));
+                    }
                 }
             }
         }
@@ -1491,4 +1529,44 @@ fn same_refinements(a: &Declared, b: &Declared) -> bool {
             .all(|(x, y)| same(x, y))
         && !super::call::refinement_flow(&a.base, &b.base)
         && !super::call::refinement_flow(&b.base, &a.base)
+}
+
+/// U2026: an operator on values of type parameter `index` of `def` needs the constraint
+/// `need`, which its written constraint does not include (`spec/20 §3` rule 1). The repair
+/// writes `need` on the parameter.
+fn unconstrained(
+    report: &Report<'_>,
+    def: &FnDef<'_>,
+    index: usize,
+    need: Constraint,
+    span: Span,
+) -> una_diag::Diagnostic {
+    let param = def.type_params.get(index).copied().unwrap_or("T");
+    let what = match need {
+        Constraint::Integer => "`to_int()`",
+        Constraint::Ord => "ordering",
+        Constraint::Eq | Constraint::None => "equality",
+    };
+    let need_name = need.name();
+    let mut diagnostic = report.make(
+        Code::U2026,
+        span,
+        format!(
+            "{what} on values of the type parameter `{param}` needs the constraint `{need_name}`; write `[{param}: {need_name}]`"
+        ),
+    );
+    if let FnAst::Function(function) = def.ast
+        && let Some(ident) = function.type_params.get(index)
+    {
+        let (at, replacement) = match function.constraints.get(index).and_then(Option::as_ref) {
+            Some(written) => (written.span, need_name.to_owned()),
+            None => (ident.span, format!("{param}: {need_name}")),
+        };
+        diagnostic.repairs.push(report.edit(
+            format!("constrain `{param}` by `{need_name}`"),
+            at,
+            replacement,
+        ));
+    }
+    diagnostic
 }

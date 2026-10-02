@@ -131,6 +131,15 @@ impl Checker<'_, '_, '_> {
         let receiver = self.resolve(target);
         let convert = convert_target(method);
         let op = FixedOp::from_name(method);
+        // `x.to_int()` on a type parameter needs `Integer` (`spec/20 §1`, `§3` rule 2).
+        if let (Ty::Param(_), Some(None)) = (receiver.unlabeled(), convert) {
+            self.outside_rl(span, || format!("the method `{method}`"));
+            self.no_args(method, args, span);
+            self.needs
+                .push((target.clone(), super::env::Constraint::Integer, span));
+            self.resolved(span, Res::IntMethod(Prim::Convert(None)));
+            return Some(Ty::Int.with_label(&self.deep(target)));
+        }
         let int = match (&receiver, convert, op) {
             (Ty::Int | Ty::Fixed(_), Some(_), _) | (Ty::Fixed(_), _, Some(_)) => receiver.clone(),
             (Ty::Int, None, Some(_)) => {

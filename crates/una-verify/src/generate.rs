@@ -2620,6 +2620,20 @@ impl<'p, 'i> Walker<'p, 'i> {
                 self.order(op, &a, &b)?
             }
             Prim::Len => self.len(&arg(0)?)?,
+            // `to_int()` on a type parameter under `Integer` is uninterpreted (`spec/20 §5`).
+            Prim::Convert(None) if is_param_sort(&arg(0)?.f.sort()) => {
+                let value = arg(0)?.f;
+                let sort = value.sort();
+                F::App {
+                    fun: SmtFun {
+                        name: format!("i!to_int!{sort}"),
+                        args: vec![sort],
+                        result: "Int".to_owned(),
+                        role: FunRole::Other,
+                    },
+                    args: vec![value],
+                }
+            }
             // A conversion keeps the value; a narrowing one has an `overflow` obligation
             // (`spec/18 §4`).
             Prim::Convert(_) => arg(0)?.f,
@@ -2644,8 +2658,8 @@ impl<'p, 'i> Walker<'p, 'i> {
         Some(F::eq(a.f.clone(), b.f.clone()))
     }
 
-    /// Order of two values: `Int` natively, a sum without payloads by its tags, `Text` by an
-    /// uninterpreted relation.
+    /// Order of two values: `Int` natively, a sum without payloads by its tags, `Text` and a
+    /// type parameter under `Ord` by uninterpreted relations, with no axioms (`spec/20 §5`).
     fn order(&self, op: BinOp, a: &Tv, b: &Tv) -> Option<F> {
         let symbol = match op {
             BinOp::Lt => "<",
@@ -2657,17 +2671,23 @@ impl<'p, 'i> Walker<'p, 'i> {
         if sort == "Int" {
             return Some(F::op(symbol, vec![a.f.clone(), b.f.clone()]));
         }
-        if sort == TEXT {
-            let name = match op {
-                BinOp::Lt => "i!lt!Text",
-                BinOp::Le => "i!le!Text",
-                BinOp::Gt => "i!gt!Text",
-                _ => "i!ge!Text",
+        if sort == TEXT || is_param_sort(&sort) {
+            let relation = match op {
+                BinOp::Lt => "lt",
+                BinOp::Le => "le",
+                BinOp::Gt => "gt",
+                _ => "ge",
+            };
+            // `Text` keeps its symbols of `spec/12 §4`, `i!lt!Text` and the others.
+            let name = if sort == TEXT {
+                format!("i!{relation}!Text")
+            } else {
+                format!("i!{relation}!{sort}")
             };
             return Some(F::App {
                 fun: SmtFun {
-                    name: name.to_owned(),
-                    args: vec![TEXT.to_owned(), TEXT.to_owned()],
+                    name,
+                    args: vec![sort.clone(), sort.clone()],
                     result: "Bool".to_owned(),
                     role: FunRole::Other,
                 },
@@ -3691,6 +3711,11 @@ fn tag_of(value: &F, module: &str, kind: &str, variants: usize) -> F {
         },
         args: vec![value.clone()],
     }
+}
+
+/// Whether `sort` is the sort of a type parameter, `u!Param_<name>` (`spec/12 §4`).
+fn is_param_sort(sort: &str) -> bool {
+    sort.starts_with("u!Param_")
 }
 
 /// The length of a text or a list, `i!len!<Sort>`.
