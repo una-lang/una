@@ -1067,3 +1067,50 @@ fn host_values_stay_redacted_through_files_and_the_failure_of_main() {
         ]
     );
 }
+
+#[test]
+fn a_million_deep_value_is_released_compared_and_rendered_within_the_call_depth() {
+    // ADR 0060 R5, `spec/11 §7`: a value has no depth limit, and only calls count toward the
+    // call depth. Two nested folds build a chain of a million links with a few calls in
+    // progress, under `--max-depth 100`. Releasing, comparing and rendering it never recurse
+    // on the native stack, and rendering is linear: the failure message of the example holds
+    // the whole chain.
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("runtime")
+        .join("million");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        "[package]\nname = \"million\"\nversion = \"0.1.0\"\nedition = \"0.2\"\n\n[run]\nentry = \"deep\"\ngrants = [\"console\"]\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        repository().join("verification.lock"),
+        root.join("verification.lock"),
+    )
+    .unwrap();
+    let numbers: Vec<String> = (0..1000).map(|n| n.to_string()).collect();
+    let source = format!(
+        "module deep\n\npub kind Chain = End | Link(value: Int, rest: Chain)\n\n\
+         --- A chain of a million links, built by two nested folds over a thousand numbers.\n\
+         pub build() -> Chain\n=\n  let xs = [{}]\n  xs.fold(initial: End, step: fn(outer: Chain, x: Int) -> xs.fold(initial: outer, step: fn(inner: Chain, y: Int) -> Link(value: y, rest: inner)))\n\n\
+         pub main() -> Unit\n  uses @console: Console[print]\n=\n  let a = build()\n  let b = build()\n  let same = a == b\n  @console.print(\"same: {{same}}\")\n\n\
+         example \"a million links render in the failure message\"\n  do build()\n  expect result == End\n",
+        numbers.join(", ")
+    );
+    std::fs::write(root.join("src/deep.una"), source).unwrap();
+    let started = std::time::Instant::now();
+    let output = una_in(&root, &["run", "--max-depth", "100", "."]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "same: true\n");
+    let output = una_in(&root, &["test", "--max-depth", "100", "."]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(text.contains("FAILED"), "{}", &text[..text.len().min(500)]);
+    // Every link is rendered: about 24 bytes each.
+    assert!(text.len() > 20_000_000, "{}", text.len());
+    assert!(text.contains("Link(value: 0, rest: End)"));
+    // Linear, not quadratic: a quadratic render of a million levels takes most of an hour.
+    assert!(started.elapsed().as_secs() < 120, "{:?}", started.elapsed());
+}
