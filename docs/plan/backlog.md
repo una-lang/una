@@ -30,7 +30,7 @@ These rows are in scope since Leonardo opened the v0.2 scope on 2026-10-01 (char
 | Pipelines `\|>` and `it` shorthand lambdas | v0.2 | Sugar; interacts with labeled-argument rules | D | [#35](https://github.com/una-lang/una/issues/35) |
 | Traits or constraints on generics | v0.2 | Unconstrained generics suffice for v0.1 | D | [#37](https://github.com/una-lang/una/issues/37) |
 | Authenticate or re-validate proof cache entries | v0.2 | ADR 0041: the proof cache is part of the Trusted zone in v0.1, and the report counts cached results | v0.1 review R-018 | [#44](https://github.com/una-lang/una/issues/44) |
-| Bound the interpreter heap and report exhaustion as U6003 | v0.2 | Not a small change; `--max-depth` scales memory until then (`spec/13 §5`) | v0.1 review R-033 | [#45](https://github.com/una-lang/una/issues/45) |
+| Bound the interpreter heap and report exhaustion as U6003 | v0.2 | Done in v0.2: ADR 0061, `--max-memory` and a stack capped at 1 GiB (`spec/11 §7`) | v0.1 review R-033 | [#45](https://github.com/una-lang/una/issues/45) |
 | `shared`, `iso` and `weak`: mutable aliasing, transferable unique values and cycles | v0.3 | Decided (V2-3): v0.2 has mutable value semantics with no references; `iso` may return with structured concurrency; the words stay reserved, and `weak` joins the reserved words with the v0.2 compiler | D, R3, owner 2026-10-01 | [#83](https://github.com/una-lang/una/issues/83) |
 | Laws with quantifiers (tier 2), triggers, proof hints | v0.3 | Undecidable fragment; needs budgets and caching experience | D, R1 | [#50](https://github.com/una-lang/una/issues/50) |
 | Property-based tests and benchmarks (tier 3) | v0.3 | Empirical evidence layer | D | [#51](https://github.com/una-lang/una/issues/51) |
