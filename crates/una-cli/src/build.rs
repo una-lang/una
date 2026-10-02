@@ -268,8 +268,9 @@ fn link(object: &Path, output: &Path, environment: crate::Environment<'_>) -> Re
     }
 }
 
-/// The runtime library: `UNA_RT_LIB` when set, else `libuna_rt.a` next to the `una` binary,
-/// or in the `lib` directory beside it.
+/// The runtime library: `UNA_RT_LIB` when set, else `libuna_rt.a` in the `lib` directory
+/// beside the `una` binary, as a release archive ships it (ADR 0059), next to the binary, as a
+/// Cargo build leaves it, or in `../lib`.
 fn runtime_library(environment: crate::Environment<'_>) -> Result<PathBuf, String> {
     if let Some(path) = environment("UNA_RT_LIB") {
         return Ok(PathBuf::from(path));
@@ -277,7 +278,13 @@ fn runtime_library(environment: crate::Environment<'_>) -> Result<PathBuf, Strin
     let exe = std::env::current_exe()
         .map_err(|error| format!("cannot locate the `una` binary: {error}"))?;
     let dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
-    let candidates = [dir.join(RUNTIME), dir.join("..").join("lib").join(RUNTIME)];
+    // A release archive ships it in `lib/` beside `una` (ADR 0059); a Cargo build leaves it
+    // next to `una`.
+    let candidates = [
+        dir.join("lib").join(RUNTIME),
+        dir.join(RUNTIME),
+        dir.join("..").join("lib").join(RUNTIME),
+    ];
     candidates
         .iter()
         .find(|path| path.is_file())
