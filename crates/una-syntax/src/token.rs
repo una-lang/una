@@ -128,6 +128,8 @@ pub enum Keyword {
     Take,
     /// `old`, from edition 0.2 (`spec/17`).
     Old,
+    /// `together`, from edition 0.2 (`spec/19`).
+    Together,
 }
 
 impl Keyword {
@@ -257,6 +259,7 @@ impl Keyword {
             Keyword::Edit => "edit",
             Keyword::Take => "take",
             Keyword::Old => "old",
+            Keyword::Together => "together",
         }
     }
 
@@ -267,8 +270,14 @@ impl Keyword {
             .find(|keyword| keyword.as_str() == word)
     }
 
-    /// The keywords that edition 0.2 adds to [`Keyword::ALL`] (`spec/17 §9`, ADR 0056).
-    pub const EDITION_0_2: [Keyword; 3] = [Keyword::Edit, Keyword::Take, Keyword::Old];
+    /// The keywords that edition 0.2 adds to [`Keyword::ALL`] (`spec/17 §9`, ADR 0056;
+    /// `spec/19 §9`, ADR 0065).
+    pub const EDITION_0_2: [Keyword; 4] = [
+        Keyword::Edit,
+        Keyword::Take,
+        Keyword::Old,
+        Keyword::Together,
+    ];
 
     /// The keyword `word` is under the keyword set `set`.
     pub fn from_word_in(word: &str, set: KeywordSet) -> Option<Keyword> {
@@ -290,7 +299,8 @@ pub enum KeywordSet {
     /// Edition 0.1: the tables of `spec/01 §5`.
     #[default]
     V0_1,
-    /// Edition 0.2: `edit`, `take` and `old` are keywords, and the rows of `spec/17 §9` apply.
+    /// Edition 0.2: `edit`, `take`, `old` and `together` are keywords, and the rows of
+    /// `spec/17 §9` and `spec/19 §9` apply.
     V0_2,
 }
 

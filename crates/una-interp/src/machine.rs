@@ -57,6 +57,9 @@ pub(crate) struct HandlerInfo<'p> {
 pub struct Event {
     /// Its position in the trace, from 1.
     pub seq: usize,
+    /// The path of the `together` task that performed it, as `2.1`, or empty outside any
+    /// task (`spec/19 §7`).
+    pub task: String,
     /// The instance: `given:<name>`, `host:<Capability>` or `with:<handler>#<n>`.
     pub instance: String,
     /// The capability.
@@ -455,6 +458,9 @@ pub(crate) struct Machine<'p, 'w> {
     installs: BTreeMap<String, usize>,
     /// The name spans of the functions in progress, innermost last, to locate faults.
     frames: Vec<Span>,
+    /// The path of the `together` task in progress, one 1-based index per enclosing block
+    /// (`spec/19 §6`).
+    task: Vec<usize>,
 }
 
 impl<'p, 'w> Machine<'p, 'w> {
@@ -484,6 +490,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                 .map_or(usize::MAX, |bytes| bytes.saturating_sub(STACK_RESERVE)),
             installs: BTreeMap::new(),
             frames: Vec::new(),
+            task: Vec::new(),
         }
     }
 
@@ -641,6 +648,34 @@ impl<'p, 'w> Machine<'p, 'w> {
                         }
                     }
                     return Ok(Value::Tuple(Rc::new(current)));
+                }
+                // The tasks of a `together` block (`spec/19 §6`), run one after another in
+                // branch order, the sequential schedule: a failure stops the block before
+                // the tasks after it start, and none is cancelled after starting.
+                Expr::Together { tasks, .. } => {
+                    let mut results = Vec::with_capacity(tasks.len());
+                    for (index, task) in tasks.iter().enumerate() {
+                        results.push(self.task(env, &caps, index, task)?);
+                    }
+                    return Ok(Value::Tuple(Rc::new(results)));
+                }
+                // `together for` (`spec/19 §6`): one task per element, in element order.
+                Expr::TogetherFor {
+                    source,
+                    var,
+                    task,
+                    span,
+                } => {
+                    let items = self.elements(env, source, *span)?;
+                    let mut results = Vec::with_capacity(items.len());
+                    for (index, item) in items.into_iter().enumerate() {
+                        let mark = env.len();
+                        env.push((var.0.as_str(), item));
+                        let result = self.task(env, &caps, index, task);
+                        env.truncate(mark);
+                        results.push(result?);
+                    }
+                    return Ok(Value::List(Rc::new(results)));
                 }
                 // `let (x, ...) = a in e` (`spec/17 §4`).
                 Expr::LetTuple {
@@ -813,6 +848,68 @@ impl<'p, 'w> Machine<'p, 'w> {
         match result? {
             Value::Tuple(items) if items.len() == state.len() => Ok(items.as_ref().clone()),
             _ => Err(fault("a loop body whose value is not its state")),
+        }
+    }
+
+    /// Task `index` of a `together` block, `task`, with its path (`spec/19 §6` rule 1).
+    fn task(
+        &mut self,
+        env: &mut Env<'p>,
+        caps: &Caps<'p>,
+        index: usize,
+        task: &'p Expr,
+    ) -> Flow<'p> {
+        self.task.push(index + 1);
+        let mark = env.len();
+        let result = self.eval(env, caps, task);
+        env.truncate(mark);
+        self.task.pop();
+        result
+    }
+
+    /// The elements a `together for` visits, in order.
+    fn elements(
+        &mut self,
+        env: &Env<'p>,
+        source: &'p LoopSource,
+        span: Span,
+    ) -> Result<Vec<Value<'p>>, Stop<'p>> {
+        match source {
+            LoopSource::List(list) => match self.atom(env, list)? {
+                Value::List(items) => Ok(items.as_ref().clone()),
+                _ => Err(fault("a `together for` over a value that is not a list")),
+            },
+            LoopSource::Range {
+                low,
+                high,
+                inclusive,
+            } => {
+                let (Value::Int(low), Value::Int(high)) =
+                    (self.atom(env, low)?, self.atom(env, high)?)
+                else {
+                    return Err(fault("a `together for` over a range of non-integers"));
+                };
+                let mut items = Vec::new();
+                let mut index = low;
+                loop {
+                    let visit = if *inclusive {
+                        index <= high
+                    } else {
+                        index < high
+                    };
+                    if !visit {
+                        break;
+                    }
+                    self.within_budget(span)?;
+                    items.push(Value::Int(index.clone()));
+                    // The successor of the upper bound is never computed (`spec/17 §7`).
+                    if index == high {
+                        break;
+                    }
+                    index += 1;
+                }
+                Ok(items)
+            }
         }
     }
 
@@ -1001,8 +1098,10 @@ impl<'p, 'w> Machine<'p, 'w> {
             })
             .collect();
         let slot = self.trace.len();
+        let task: Vec<String> = self.task.iter().map(ToString::to_string).collect();
         self.trace.push(Event {
             seq: slot + 1,
+            task: task.join("."),
             instance: instance.id().to_owned(),
             capability: capability.to_owned(),
             op: op.to_owned(),

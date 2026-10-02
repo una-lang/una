@@ -481,21 +481,15 @@ impl Dumper<'_> {
                 "if-then",
                 [self.expr(&stmt.condition), self.block(&stmt.block)],
             ),
-            Stmt::For(stmt) => {
-                let var = atom(self.name(&stmt.var));
-                let source = match &stmt.source {
-                    ForSource::List(list) => self.expr(list),
-                    ForSource::Range {
-                        low,
-                        high,
-                        exclusive,
-                    } => list(
-                        if *exclusive { "range..<" } else { "range.." },
-                        [self.expr(low), self.expr(high)],
-                    ),
-                };
-                list("for", [var, source, self.block(&stmt.block)])
-            }
+            Stmt::For(stmt) => list(
+                "for",
+                [
+                    atom(self.name(&stmt.var)),
+                    self.for_source(&stmt.source),
+                    self.block(&stmt.block),
+                ],
+            ),
+            Stmt::Together(stmt) => list("together", stmt.body.iter().map(|s| self.stmt(s))),
             Stmt::Handled(handled) => self.handled(handled),
             Stmt::BlockExpr(expr) => self.block_expr(expr),
         }
@@ -546,6 +540,28 @@ impl Dumper<'_> {
                 Node::List(items)
             }
             BlockExpr::If(block) => self.if_block(block),
+            BlockExpr::TogetherFor(together) => list(
+                "together-for",
+                [
+                    atom(self.name(&together.var)),
+                    self.for_source(&together.source),
+                    self.block(&together.block),
+                ],
+            ),
+        }
+    }
+
+    fn for_source(&self, source: &ForSource) -> Node {
+        match source {
+            ForSource::List(list) => self.expr(list),
+            ForSource::Range {
+                low,
+                high,
+                exclusive,
+            } => list(
+                if *exclusive { "range..<" } else { "range.." },
+                [self.expr(low), self.expr(high)],
+            ),
         }
     }
 

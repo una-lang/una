@@ -582,6 +582,8 @@ pub enum Stmt {
     IfThen(Box<IfThenStmt>),
     /// `for x in source` with a block, a `Unit` statement, from edition 0.2 (`spec/17 §1`).
     For(Box<ForStmt>),
+    /// `together` with its branches, from edition 0.2 (`spec/19 §1`).
+    Together(Box<TogetherStmt>),
     /// `handled`.
     Handled(Handled),
     /// `block_expr`, only as the final statement.
@@ -621,6 +623,35 @@ pub struct ForStmt {
     /// The body.
     pub block: Block,
     /// The whole statement.
+    pub span: Span,
+}
+
+/// `"together" NEWLINE INDENT let_stmt let_stmt { let_stmt } DEDENT` (`spec/19 §1`). The
+/// body is kept as parsed; the checker reports a statement other than `let`, or fewer than
+/// two branches (U2024).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TogetherStmt {
+    /// The statements of the body, each `let` a branch.
+    pub body: Vec<Stmt>,
+    /// The `together` keyword, where U2024 points.
+    pub keyword: Span,
+    /// The whole statement.
+    pub span: Span,
+}
+
+/// `"together" "for" lower_ident "in" ( line_expr | range_expr ) NEWLINE INDENT block DEDENT`
+/// (`spec/19 §1`): one task per element, whose results make a list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TogetherFor {
+    /// The variable of each task.
+    pub var: Ident,
+    /// The elements.
+    pub source: ForSource,
+    /// The body, whose final expression is the value of an element's task.
+    pub block: Block,
+    /// The `together` keyword.
+    pub keyword: Span,
+    /// The whole expression.
     pub span: Span,
 }
 
@@ -741,6 +772,8 @@ pub enum BlockExpr {
     When(WhenExpr),
     /// A block `if`.
     If(IfBlock),
+    /// `together for`, from edition 0.2 (`spec/19 §1`).
+    TogetherFor(Box<TogetherFor>),
 }
 
 /// `"when" line_expr` and its arms.

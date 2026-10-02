@@ -780,6 +780,28 @@ pub enum Expr {
         /// The loop in the source.
         span: Span,
     },
+    /// `together(e₁ ∥ ... ∥ eₙ)`: the tasks of a `together` block (`spec/19 §5`). Its value
+    /// is the tuple of the tasks' results; a failure of task `i` cancels the tasks after it,
+    /// and the block fails with the failure of the lowest-indexed task that failed (`spec/19
+    /// §6`).
+    Together {
+        /// The tasks, in branch order, each closed over the bindings before the block.
+        tasks: Vec<Expr>,
+        /// The block in the source.
+        span: Span,
+    },
+    /// `together_for x in s. e`: one task per element of `s` (`spec/19 §5`), whose value is
+    /// the list of the tasks' results, in element order.
+    TogetherFor {
+        /// The elements, evaluated once.
+        source: Box<LoopSource>,
+        /// The variable of each task.
+        var: Box<(Name, Type)>,
+        /// The task of one element.
+        task: Box<Expr>,
+        /// The expression in the source.
+        span: Span,
+    },
     /// `if a then e else e`.
     If {
         /// The condition.

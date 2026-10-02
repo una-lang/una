@@ -14,8 +14,8 @@ use una_syntax::ast::{
     Arg, BinaryOp, Block, BlockExpr, Body, CapBindingValue, Clause, ClauseKind, Convention,
     DeclKind, ElseBranch, ExampleDecl, ExpectationKind, Expr, ExprKind, ForSource, ForStmt,
     FunctionDecl, Handled, HandlingKind, IfBlock, IfThenStmt, IsTarget, LetValue, Literal,
-    OpClauseKind, PatternKind, Range, SignedInt, Stmt, TextLit, TextPart, UnaryOp, VariantExpr,
-    WhenExpr,
+    OpClauseKind, PatternKind, Range, SignedInt, Stmt, TextLit, TextPart, TogetherFor,
+    TogetherStmt, UnaryOp, VariantExpr, WhenExpr,
 };
 use una_syntax::{SourceDb, Span};
 
@@ -1218,7 +1218,10 @@ impl<'e, 'a> Fx<'e, 'a> {
         let mut wrapped = false;
         for (index, stmt) in block.stmts.iter().enumerate() {
             match stmt {
-                Stmt::BlockExpr(expr) if index == last && returning => {
+                // A `together for` is wrapped as a whole, after its tasks (`spec/19 §5`).
+                Stmt::BlockExpr(expr)
+                    if index == last && returning && !matches!(expr, BlockExpr::TogetherFor(_)) =>
+                {
                     let saved = self.current_join.replace(Wrap::Return);
                     tail = self.block_expr(expr);
                     self.current_join = saved;
@@ -1246,6 +1249,8 @@ impl<'e, 'a> Fx<'e, 'a> {
                         tail_span = stmt.span;
                     }
                 }
+                // Never the last line of a block, which the parser reports.
+                Stmt::Together(stmt) => self.together(&mut lets, stmt),
                 Stmt::For(stmt) => {
                     self.for_loop(&mut lets, stmt);
                     if index == last {
@@ -1969,6 +1974,107 @@ impl<'e, 'a> Fx<'e, 'a> {
         lets.push(Let::destructure(after, Atom::Var(t), stmt.span));
     }
 
+    /// `together` with branches: `let (x₁, ..., xₙ) = together(e₁ ∥ ... ∥ eₙ)`, where each task
+    /// `eᵢ` binds its branch's value as its `let` would, the refinement of a written type an
+    /// obligation there, and returns it (`spec/19 §5`).
+    fn together(&mut self, lets: &mut Vec<Let>, stmt: &TogetherStmt) {
+        let mut tasks = Vec::new();
+        let mut types = Vec::new();
+        let mut names = Vec::new();
+        for branch in &stmt.body {
+            let Stmt::Let(branch) = branch else {
+                self.broken = true;
+                return;
+            };
+            let mark = self.scope.len();
+            let mut inner = Vec::new();
+            let (value, span) = self.value(&mut inner, &branch.value);
+            let written = self.records.annotations.get(&branch.name.span).cloned();
+            let ty = match &written {
+                Some(declared) => self.declared(declared),
+                None => self.type_at(branch.name.span),
+            };
+            let name = self.name(&branch.name);
+            let binder = self.bind(name);
+            self.types.insert(binder.clone(), ty.clone());
+            bind_expr(
+                &mut inner,
+                binder.clone(),
+                ty.clone(),
+                value,
+                span,
+                written.is_some(),
+            );
+            // The task's own names end with it: its siblings and the code after the block
+            // see only its result.
+            self.scope.truncate(mark);
+            tasks.push(close(
+                inner,
+                CoreExpr::Atom {
+                    atom: Atom::Var(binder),
+                    span,
+                },
+            ));
+            types.push(ty);
+            names.push(name);
+        }
+        let t = self.temp();
+        bind_expr(
+            lets,
+            t.clone(),
+            tuple_type(types.clone()),
+            CoreExpr::Together {
+                tasks,
+                span: stmt.span,
+            },
+            stmt.span,
+            false,
+        );
+        let mut after = Vec::new();
+        for (name, ty) in names.into_iter().zip(types) {
+            let binder = self.bind(name);
+            self.types.insert(binder.clone(), ty.clone());
+            after.push((binder, ty));
+        }
+        lets.push(Let::destructure(after, Atom::Var(t), stmt.span));
+    }
+
+    /// `together for x in s` with its block: `together_for x in s. e`, whose task is the
+    /// block, with no wrapping of its tail (`spec/19 §5`).
+    fn together_for(&mut self, together: &TogetherFor) -> CoreExpr {
+        let mut lets = Vec::new();
+        let source = match &together.source {
+            ForSource::List(list) => LoopSource::List(self.atom(&mut lets, list)),
+            ForSource::Range {
+                low,
+                high,
+                exclusive,
+            } => LoopSource::Range {
+                low: self.atom(&mut lets, low),
+                high: self.atom(&mut lets, high),
+                inclusive: !exclusive,
+            },
+        };
+        let wrap = self.tail_wrap.take();
+        let join = self.current_join.take();
+        let mark = self.scope.len();
+        let var_ty = self.type_at(together.var.span);
+        let var = (self.bind(self.name(&together.var)), var_ty);
+        let task = self.block(&together.block);
+        self.scope.truncate(mark);
+        self.tail_wrap = wrap;
+        self.current_join = join;
+        close(
+            lets,
+            CoreExpr::TogetherFor {
+                source: Box::new(source),
+                var: Box::new(var),
+                task: Box::new(task),
+                span: together.span,
+            },
+        )
+    }
+
     /// Whether `expr` is a call with an `edit` argument or receiver.
     fn marked(&self, expr: &Expr) -> bool {
         match &expr.kind {
@@ -2093,6 +2199,11 @@ impl<'e, 'a> Fx<'e, 'a> {
     fn scan_block_expr(&self, expr: &BlockExpr, declared: &[String], found: &mut Vec<String>) {
         match expr {
             BlockExpr::If(block) => self.scan_if(block, declared, found),
+            BlockExpr::TogetherFor(together) => {
+                let mut inner = declared.to_vec();
+                inner.push(self.name(&together.var).to_owned());
+                self.scan_block(&together.block, &inner, found);
+            }
             BlockExpr::When(when) => {
                 for arm in &when.arms {
                     if let Body::Block(block) = &arm.body {
@@ -2130,6 +2241,15 @@ impl<'e, 'a> Fx<'e, 'a> {
                     let mut inner = local.clone();
                     inner.push(self.name(&stmt.var).to_owned());
                     self.scan_block(&stmt.block, &inner, found);
+                }
+                Stmt::Together(stmt) => {
+                    let before = local.clone();
+                    for branch in &stmt.body {
+                        if let Stmt::Let(branch) = branch {
+                            self.scan_value(&branch.value, &before, found);
+                            local.push(self.name(&branch.name).to_owned());
+                        }
+                    }
                 }
                 Stmt::Handled(handled) => {
                     for place in self.edit_places_written(&handled.expr) {
@@ -2244,6 +2364,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         match expr {
             BlockExpr::If(block) => self.if_block(block),
             BlockExpr::When(when) => self.when(when),
+            BlockExpr::TogetherFor(together) => self.together_for(together),
         }
     }
 
@@ -3294,6 +3415,7 @@ fn block_expr_span(expr: &BlockExpr) -> Span {
     match expr {
         BlockExpr::When(when) => when.span,
         BlockExpr::If(block) => block.span,
+        BlockExpr::TogetherFor(together) => together.span,
     }
 }
 

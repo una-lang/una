@@ -1,0 +1,10 @@
+-- test: a `together` block is a statement, so it cannot be the last line of a block, whose last line is its value (spec/19 §1)
+-- spec: spec/19 §1
+-- expect: error U0101 at src/together_last.una:8:3
+module together_last
+
+pub both(a: Int, b: Int) -> Unit
+=
+  together
+    let x = a
+    let y = b
