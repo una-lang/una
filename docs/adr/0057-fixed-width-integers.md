@@ -27,7 +27,7 @@ The goal of v0.2 is native performance (ADR 0055), and some programs need an exa
    - A narrowing conversion, such as `x.to_u8()` on an `I32`, carries an obligation that the value fits, or goes through `checked`, which counts against the escape budget.
 5. **Encoding and bit operations (FW-4).**
    - Fixed-width values are encoded as `Int` with their range bounds, and QF_UFLIA stays the only fragment.
-   - Bit operations are library functions with partial range contracts, such as `bit_and(a, b) <= a` on unsigned types, and have no bit-precise proof. Bitvectors are deferred.
+   - Bit operations are library functions with partial range contracts, such as `a.bit_and(mask: b) <= a` on unsigned types, and have no bit-precise proof. Bitvectors are deferred.
 6. **Literals and indices.** A literal takes its type from its context, and `let b: U8 = 300` is rejected because the literal does not fit. List lengths and indices stay `Int`.
 7. **Rules that follow** (`spec/18`, with the coordinator's answers of 2026-10-01 to F1 to F8):
    - **Edition.** The types exist only in edition `0.2` (ADR 0056). There, a user kind named like one is U1002.
@@ -36,6 +36,7 @@ The goal of v0.2 is native performance (ADR 0055), and some programs need an exa
    - **Literals.** A literal that does not fit its type is U2022, a static check with a direct message.
    - **Mixed types.** Operands of different integer types are U2001.
    - **Wrapping and saturating.** `wrapping_add`, `wrapping_sub`, `wrapping_mul` and the `saturating_` versions are built-in methods with exact `ensures`. They are total, and not escapes.
+   - **Labels.** A binary method labels its argument, as every call does (charter P5): `by` for arithmetic and shifts, `mask` for bit operations (the coordinator's correction of F5, 2026-10-01).
    - **Bit operations.** `bit_and`, `bit_or`, `bit_xor`, `bit_not` and `shift_right` have partial range contracts. A left shift is only `wrapping_shift_left`, with exact `ensures`, since a silent wrap would contradict FW-2. There is no checked left shift in v0.2, a known limit.
    - **Kinds.** Refinements, range sugar, labels and type arguments work as on `Int`.
 

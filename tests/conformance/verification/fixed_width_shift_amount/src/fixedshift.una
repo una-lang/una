@@ -3,8 +3,8 @@
 -- expect: error U5001 at src/fixedshift.una:10:32
 module fixedshift
 
-pub fixed(a: U32) -> U32 = a.shift_right(3).wrapping_shift_left(31)
+pub fixed(a: U32) -> U32 = a.shift_right(by: 3).wrapping_shift_left(by: 31)
 
-pub widen(a: U8) -> U16 = a.to_u16().wrapping_mul(a.to_u16())
+pub widen(a: U8) -> U16 = a.to_u16().wrapping_mul(by: a.to_u16())
 
-pub any(a: U8, n: Int) -> U8 = a.shift_right(n)
+pub any(a: U8, n: Int) -> U8 = a.shift_right(by: n)

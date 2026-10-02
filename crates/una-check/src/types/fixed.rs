@@ -168,9 +168,13 @@ impl Checker<'_, '_, '_> {
         };
         if op.binary() {
             let operand = if op.shift() { Ty::Int } else { Ty::Fixed(int) };
+            let param = op.label();
             match args {
-                [arg] if arg.label.is_none() => {
-                    let what = format!("the argument of `{method}`");
+                [arg] => {
+                    // The argument is labeled, as every argument after the first (charter P5),
+                    // or punned.
+                    self.method_label(method, param, arg);
+                    let what = format!("argument `{param}` of `{method}`");
                     let found = self.expr_as(&arg.value, Some(&operand), Role::Condition(&what));
                     label = label.join(&self.deep(&found));
                 }
@@ -178,9 +182,7 @@ impl Checker<'_, '_, '_> {
                     self.report.error(
                         Code::U2001,
                         span,
-                        format!(
-                            "`{method}` takes one argument, without a label, as in `a.{method}(b)`"
-                        ),
+                        format!("`{method}` takes one argument, as in `a.{method}({param}: b)`"),
                     );
                     self.unchecked_args(args);
                 }
@@ -194,6 +196,50 @@ impl Checker<'_, '_, '_> {
         }
         self.resolved(span, Res::IntMethod(Prim::Fixed(op, int)));
         Some(Ty::Fixed(int).with_label(&label))
+    }
+
+    /// U2004 when the argument of a binary method has no label and is not the punned name
+    /// `param`, U2005 when its label is another (`spec/04 §3`).
+    fn method_label(&mut self, method: &str, param: &str, arg: &Arg) {
+        let callee = format!("`{method}`");
+        match &arg.label {
+            Some(label) => {
+                let written = self.name(label);
+                if written != param {
+                    let mut diagnostic = self.report.make(
+                        Code::U2005,
+                        label.span,
+                        format!("{callee} has no parameter `{written}`; its argument is `{param}`"),
+                    );
+                    diagnostic.repairs.push(self.report.edit(
+                        format!("write `{param}`"),
+                        label.span,
+                        param,
+                    ));
+                    self.report.push(diagnostic);
+                }
+            }
+            None => {
+                let punned =
+                    matches!(&arg.value.kind, ExprKind::Name(ident) if self.name(ident) == param);
+                if !punned {
+                    let mut diagnostic = self.report.make(
+                        Code::U2004,
+                        arg.span,
+                        format!(
+                            "argument 2 of {callee} needs a label; only the first argument may go without one"
+                        ),
+                    );
+                    let text = self.report.text(arg.span);
+                    diagnostic.repairs.push(self.report.edit(
+                        format!("label it `{param}`"),
+                        arg.span,
+                        format!("{param}: {text}"),
+                    ));
+                    self.report.push(diagnostic);
+                }
+            }
+        }
     }
 
     /// U2001 when a method that takes no argument has some.
