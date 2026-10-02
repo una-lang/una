@@ -189,6 +189,7 @@ Codes are never reused. Retired codes stay in this table marked retired. Gaps in
 | `una trace <REQUIREMENT_ID>` | Requirement to contract to obligation chain |
 | `una report [path]` | Build report (§6) |
 | `una explain <code>` | Explanation of a diagnostic code |
+| `una lsp` | (v0.2, ADR 0063) The language server: LSP 3.17 over stdin and stdout, for editors. It checks, formats and solves; it never runs programs |
 
 Global flags: `--json` (machine output on stdout, nothing else on stdout), `--color never|auto|always`. Exit codes (ADR 0036): `0` success; `1` the output holds at least one error diagnostic with a registered code, or reports an obligation that is not proven (`una obligations`, `una trace`, `una report`) or a failed example (`una test`); `2` a usage error, a problem of the invocation (its flags, grants, paths or names) printed to stderr without a code, with no diagnostic document on stdout; `3` internal compiler error (U8001). A problem of the project files is a diagnostic like any other, in human and `--json` output: an invalid `una.toml` (U7002) and a missing or invalid `verification.lock` (U7004) exit with `1`.
 
