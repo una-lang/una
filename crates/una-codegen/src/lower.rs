@@ -24,8 +24,8 @@ use cranelift_codegen::isa::TargetFrontendConfig;
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::Module;
 use una_core::{
-    Atom, Base, Bound, Ctor, Decl, Expr, HOST_MODULE, Label, Name, PRELUDE_MODULE, Path, Prim, Rhs,
-    Source, Type,
+    Atom, Base, Bound, Ctor, Decl, Expr, HOST_MODULE, Label, LoopSource, Name, PRELUDE_MODULE,
+    Path, Prim, Rhs, Source, Type,
 };
 use una_syntax::Span;
 
@@ -53,6 +53,9 @@ enum Kind {
     Fn,
     /// A handle to a keyed hash.
     Hashed,
+    /// A handle to a tuple: the state of a loop, or the results of a call with `edit`
+    /// parameters (`spec/17 §4`).
+    Tuple,
     /// A value of a type parameter: any of the above.
     Any,
 }
@@ -65,7 +68,10 @@ impl Kind {
 
     /// Whether the word is always a handle.
     fn handle(self) -> bool {
-        matches!(self, Kind::Text | Kind::List | Kind::Fn | Kind::Hashed)
+        matches!(
+            self,
+            Kind::Text | Kind::List | Kind::Fn | Kind::Hashed | Kind::Tuple
+        )
     }
 }
 
@@ -92,7 +98,7 @@ fn kind(ty: &Type) -> Result<Kind, CodegenError> {
             Base::Named { module, name, .. } if module == PRELUDE_MODULE && name == "List" => {
                 Ok(Kind::List)
             }
-            Base::Tuple(_) => Err(unsupported("the memory model (#29)")),
+            Base::Tuple(_) => Ok(Kind::Tuple),
             Base::Named { .. } => Ok(Kind::Data),
             Base::Param(_) | Base::Unknown => Ok(Kind::Any),
         },
@@ -304,8 +310,21 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let mut expr = expr;
         loop {
             match expr {
-                Expr::LetTuple { .. } => return Err(unsupported("the memory model (#29)")),
-                Expr::Loop { .. } => return Err(unsupported("`for` loops (#81)")),
+                // `let (x, ...) = t in e` (`spec/17 §4`): the components are borrowed from the
+                // tuple, which its own binding keeps alive until the end of the scope.
+                Expr::LetTuple {
+                    names, value, body, ..
+                } => {
+                    let (tuple, _) = self.atom(value, env)?;
+                    for (index, (name, ty)) in names.iter().enumerate() {
+                        let ty = range::unrefined(ty);
+                        kind(&ty)?;
+                        let component = self.field(tuple, index)?;
+                        env.insert(name.clone(), (component, ty));
+                    }
+                    expr = body;
+                }
+                Expr::Loop { .. } => return self.lower_loop(expr, env, scope, catch),
                 Expr::Together { .. } | Expr::TogetherFor { .. } => {
                     return Err(unsupported("`together` (spec/19)"));
                 }
@@ -518,6 +537,187 @@ impl<'p> Lowerer<'_, 'p, '_> {
             return Ok(None);
         }
         self.param(join).map(Some)
+    }
+
+    /// A `for` loop (`spec/17 §4`): the loop owns the current values of its state, passes them
+    /// to each iteration with the item, and takes the new values from the tuple the body
+    /// returns. Iterations are not calls, so each checks the memory budget at the loop instead
+    /// (ADR 0061 rule 2). The loop's value, the tuple of the final state, is the value of the
+    /// expression whose scope is `scope`, which the loop releases at its end.
+    fn lower_loop(
+        &mut self,
+        expr: &'p Expr,
+        env: &Env,
+        scope: &Scope,
+        catch: &Catch,
+    ) -> Result<Option<Value>, CodegenError> {
+        let Expr::Loop {
+            source,
+            var,
+            state,
+            init,
+            body,
+            span,
+        } = expr
+        else {
+            return Err(internal("a loop that is not one"));
+        };
+        let types: Vec<Type> = state.iter().map(|(_, ty)| range::unrefined(ty)).collect();
+        let kinds: Vec<Kind> = types.iter().map(kind).collect::<Result<_, _>>()?;
+        let mut initial = Vec::new();
+        for (atom, &kind) in init.iter().zip(&kinds) {
+            let (value, _) = self.atom(atom, env)?;
+            self.retain(value, kind);
+            initial.push(value);
+        }
+        let site = self.site(*span);
+        // What the loop visits: the items of a list, by index, or the integers of a range, by
+        // an owned cursor from the low bound.
+        let (list, bound, start) = match source.as_ref() {
+            LoopSource::List(list) => {
+                let (list, _) = self.atom(list, env)?;
+                let count = self.call("una_rt_count", &[list])?;
+                let zero = self.builder.ins().iconst(types::I64, 0);
+                (Some(list), count, zero)
+            }
+            LoopSource::Range { low, high, .. } => {
+                let (low, _) = self.atom(low, env)?;
+                let (high, _) = self.atom(high, env)?;
+                self.retain(low, Kind::Int);
+                (None, high, low)
+            }
+        };
+        let inclusive = matches!(
+            source.as_ref(),
+            LoopSource::Range {
+                inclusive: true,
+                ..
+            }
+        );
+        let head = self.builder.create_block();
+        let iteration = self.builder.create_block();
+        let leave = self.builder.create_block();
+        let exit = self.builder.create_block();
+        self.builder.append_block_param(head, types::I64);
+        for _ in &kinds {
+            self.builder.append_block_param(head, types::I64);
+            self.builder.append_block_param(exit, types::I64);
+        }
+        let mut arguments: Vec<cranelift_codegen::ir::BlockArg> = vec![start.into()];
+        arguments.extend(
+            initial
+                .iter()
+                .map(|&v| cranelift_codegen::ir::BlockArg::from(v)),
+        );
+        self.builder.ins().jump(head, &arguments);
+
+        self.builder.switch_to_block(head);
+        let params = self.builder.block_params(head).to_vec();
+        let (Some(&cursor), current) = (params.first(), params.get(1..).unwrap_or(&[])) else {
+            return Err(internal("a loop lost its cursor"));
+        };
+        let current = current.to_vec();
+        let more = match list {
+            Some(_) => {
+                let flag = self
+                    .builder
+                    .ins()
+                    .icmp(IntCC::SignedLessThan, cursor, bound);
+                self.flag(flag)
+            }
+            None => {
+                let cc = if inclusive {
+                    IntCC::SignedLessThanOrEqual
+                } else {
+                    IntCC::SignedLessThan
+                };
+                self.compare_ints(cc, cursor, bound)?
+            }
+        };
+        self.builder.ins().brif(more, iteration, &[], leave, &[]);
+
+        // The loop ends: a range's cursor is released, and the state goes to the exit.
+        self.builder.switch_to_block(leave);
+        if list.is_none() {
+            self.release(cursor, Kind::Int);
+        }
+        let state_arguments: Vec<cranelift_codegen::ir::BlockArg> =
+            current.iter().map(|&v| v.into()).collect();
+        self.builder.ins().jump(exit, &state_arguments);
+
+        self.builder.switch_to_block(iteration);
+        self.runtime("una_rt_budget", &[site]);
+        let item = match list {
+            Some(list) => self.call("una_rt_field", &[list, cursor])?,
+            None => cursor,
+        };
+        let mut inner = env.clone();
+        inner.insert(var.0.clone(), (item, range::unrefined(&var.1)));
+        for ((name, _), (&value, ty)) in state.iter().zip(current.iter().zip(&types)) {
+            inner.insert(name.clone(), (value, ty.clone()));
+        }
+        // A failure in the body releases what the loop owns too: the state and the cursor.
+        let mut nested = catch.nested(scope);
+        nested
+            .outer
+            .extend(current.iter().copied().zip(kinds.iter().copied()));
+        if list.is_none() {
+            nested.outer.push((cursor, Kind::Int));
+        }
+        if let Some(tuple) = self.expr(body, &mut inner, &mut Scope::new(), &nested)? {
+            let mut next = Vec::new();
+            for (index, &kind) in kinds.iter().enumerate() {
+                let value = self.field(tuple, index)?;
+                self.retain(value, kind);
+                next.push(value);
+            }
+            self.release(tuple, Kind::Tuple);
+            for (&old, &kind) in current.iter().zip(&kinds) {
+                self.release(old, kind);
+            }
+            let mut next_arguments: Vec<cranelift_codegen::ir::BlockArg> =
+                next.iter().map(|&v| v.into()).collect();
+            match list {
+                Some(_) => {
+                    let step = self.builder.ins().iadd_imm_s(cursor, 1);
+                    next_arguments.insert(0, step.into());
+                    self.builder.ins().jump(head, &next_arguments);
+                }
+                None => {
+                    // The successor of the upper bound is never computed, so a range up to the
+                    // greatest value of a type stops there, as the interpreter does.
+                    let last = self.compare_ints(IntCC::Equal, cursor, bound)?;
+                    let stop = self.builder.create_block();
+                    let step = self.builder.create_block();
+                    self.builder.ins().brif(last, stop, &[], step, &[]);
+                    self.builder.switch_to_block(stop);
+                    self.release(cursor, Kind::Int);
+                    let final_arguments: Vec<cranelift_codegen::ir::BlockArg> =
+                        next.iter().map(|&v| v.into()).collect();
+                    self.builder.ins().jump(exit, &final_arguments);
+                    self.builder.switch_to_block(step);
+                    let one = self.builder.ins().iconst(types::I64, (1 << 1) | 1);
+                    let successor = self.arithmetic(Prim::Add, cursor, one)?;
+                    self.release(cursor, Kind::Int);
+                    next_arguments.insert(0, successor.into());
+                    self.builder.ins().jump(head, &next_arguments);
+                }
+            }
+        }
+
+        // The loop's value, which owns the final state, and the end of the scope.
+        self.builder.switch_to_block(exit);
+        let finals = self.builder.block_params(exit).to_vec();
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        let tuple = self.call("una_rt_data", &[zero])?;
+        for (&value, &kind) in finals.iter().zip(&kinds) {
+            self.runtime("una_rt_push", &[tuple, value]);
+            self.release(value, kind);
+        }
+        for &(owned, kind) in scope.iter().rev() {
+            self.release(owned, kind);
+        }
+        Ok(Some(tuple))
     }
 
     /// `attempt body`: `Ok` of the body's value, or `Err` of its failure (`spec/11 §4`), as the
@@ -846,7 +1046,15 @@ impl<'p> Lowerer<'_, 'p, '_> {
         catch: &Catch,
     ) -> Result<Value, CodegenError> {
         match rhs {
-            Rhs::Tuple(_) => Err(unsupported("the memory model (#29)")),
+            Rhs::Tuple(items) => {
+                let zero = self.builder.ins().iconst(types::I64, 0);
+                let tuple = self.call("una_rt_data", &[zero])?;
+                for item in items {
+                    let (value, _) = self.atom(item, env)?;
+                    self.runtime("una_rt_push", &[tuple, value]);
+                }
+                Ok(tuple)
+            }
             Rhs::Atom(atom) => {
                 let (value, kind) = self.atom(atom, env)?;
                 self.retain(value, kind);
@@ -884,7 +1092,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     values.push(self.atom(arg, env)?.0);
                 }
                 if function.module == PRELUDE_MODULE {
-                    return self.prelude(&function.name, &values, *span);
+                    return self.prelude(&function.name, &values, *span, scope, catch);
                 }
                 self.call_function(function, &values, *span, env, scope, catch)
             }
@@ -1206,7 +1414,14 @@ impl<'p> Lowerer<'_, 'p, '_> {
     }
 
     /// A call of the prelude (`spec/14 §1`), on borrowed arguments.
-    fn prelude(&mut self, name: &str, args: &[Value], span: Span) -> Result<Value, CodegenError> {
+    fn prelude(
+        &mut self,
+        name: &str,
+        args: &[Value],
+        span: Span,
+        scope: &Scope,
+        catch: &Catch,
+    ) -> Result<Value, CodegenError> {
         let arg = |i: usize| {
             args.get(i)
                 .copied()
@@ -1221,7 +1436,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
             "map" | "filter" | "first_where" | "fold" => {
                 // The interpreter applies the function at the prelude call's site.
                 let site = self.site(span);
-                return self.higher_order(name, args, site);
+                return self.higher_order(name, args, site, scope, catch);
             }
             "abs" => "una_rt_abs",
             "min" => "una_rt_min",
@@ -1235,6 +1450,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
             "at" => "una_rt_at",
             "append" => "una_rt_append",
             "contains" => "una_rt_contains",
+            "set" => "una_rt_set",
             "sum" => "una_rt_sum",
             "or_else" => "una_rt_or_else",
             other => return Err(unsupported(format!("`{other}` of the prelude"))),
@@ -1244,11 +1460,15 @@ impl<'p> Lowerer<'_, 'p, '_> {
 
     /// `map`, `filter`, `first_where` and `fold`: a loop over the list's items that applies the
     /// function to each, in order.
+    /// In edition 0.2 the function may fail (ADR 0062): its failure stops the loop, releases what
+    /// the loop made, and goes to `catch`, after the effects already performed.
     fn higher_order(
         &mut self,
         name: &str,
         args: &[Value],
         site: Value,
+        scope: &Scope,
+        catch: &Catch,
     ) -> Result<Value, CodegenError> {
         let (Some(&list), Some(&function)) = (args.first(), args.last()) else {
             return Err(internal(format!("`{name}` lacks an argument")));
@@ -1296,7 +1516,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let next_index = self.builder.ins().iadd_imm_s(index, 1);
         match name {
             "map" => {
-                let (mapped, _) = self.apply(function, &[item], site)?;
+                let (mapped, failed) = self.apply(function, &[item], site)?;
+                self.stop_on_failure(mapped, failed, &[(carried, Kind::List)], scope, catch);
                 self.runtime("una_rt_push", &[carried, mapped]);
                 self.release(mapped, Kind::Any);
                 self.builder
@@ -1304,7 +1525,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     .jump(head, &[next_index.into(), carried.into()]);
             }
             "filter" | "first_where" => {
-                let (keep, _) = self.apply(function, &[item], site)?;
+                let (keep, failed) = self.apply(function, &[item], site)?;
+                // `filter` owns the list it builds; `first_where` carries `None`, an immediate.
+                self.stop_on_failure(keep, failed, &[(carried, Kind::Any)], scope, catch);
                 let kept = self.builder.create_block();
                 let next = self.builder.create_block();
                 self.builder.ins().brif(keep, kept, &[], next, &[]);
@@ -1324,7 +1547,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     .jump(head, &[next_index.into(), carried.into()]);
             }
             _ => {
-                let (step, _) = self.apply(function, &[carried, item], site)?;
+                let (step, failed) = self.apply(function, &[carried, item], site)?;
+                self.stop_on_failure(step, failed, &[(carried, Kind::Any)], scope, catch);
                 self.release(carried, Kind::Any);
                 self.builder
                     .ins()
@@ -1341,6 +1565,27 @@ impl<'p> Lowerer<'_, 'p, '_> {
 
     /// The owned result of `prim` on `args`, whose operands and result `width` says are proven
     /// to fit a tagged word (`range`).
+    /// Continues when `failed` is 0; otherwise releases `owned`, what a loop of the prelude
+    /// made, and fails with `value`.
+    fn stop_on_failure(
+        &mut self,
+        value: Value,
+        failed: Value,
+        owned: &[(Value, Kind)],
+        scope: &Scope,
+        catch: &Catch,
+    ) {
+        let failing = self.builder.create_block();
+        let next = self.builder.create_block();
+        self.builder.ins().brif(failed, failing, &[], next, &[]);
+        self.builder.switch_to_block(failing);
+        for &(word, kind) in owned {
+            self.release(word, kind);
+        }
+        self.fail(value, scope, catch);
+        self.builder.switch_to_block(next);
+    }
+
     fn prim(
         &mut self,
         prim: Prim,
