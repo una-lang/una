@@ -351,6 +351,12 @@ pub enum ClauseKind {
     Uses(UsesClause),
     /// `fails upper_ident`.
     Fails(Ident),
+    /// `uses of lower_ident`: the effects of a parameter of function type, from edition 0.2
+    /// (ADR 0062).
+    UsesOf(Ident),
+    /// `fails of lower_ident`: the failures of a parameter of function type, from edition 0.2
+    /// (ADR 0062).
+    FailsOf(Ident),
     /// `derived from upper_ident { "," upper_ident }`.
     DerivedFrom(Vec<Ident>),
 }

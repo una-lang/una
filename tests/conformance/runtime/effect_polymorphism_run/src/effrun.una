@@ -1,0 +1,54 @@
+-- test: in edition 0.2, `map`, `filter`, `fold`, `first_where` and a user function with `uses of` run effectful and failing functions left to right, once per element; a failure stops them, and effects already performed stay performed (spec/14 §1, ADR 0062)
+-- spec: spec/14 §1
+-- grant: console
+-- expect: run-output "map ann"
+-- expect: run-output "map bo"
+-- expect: run-output "map "
+-- expect: run-output "map cy"
+-- expect: run-output "each ann"
+-- expect: run-output "each bo"
+-- expect: run-output "each "
+-- expect: run-output "each cy"
+-- expect: run-output "shout ann"
+-- expect: run-output "shout bo"
+-- expect: run-output "7 0 0 true 0"
+module effrun
+
+pub kind Oops = Bad | Worse
+
+parse(t: Text) -> Int
+  fails Oops
+=
+  if t.len > 0 then t.len else fail Bad
+
+--- Prints `t`, and fails on an empty text.
+shout(t: Text) -> Unit
+  uses @console: Console[print]
+  fails Oops
+=
+  if t.len == 0
+    fail Bad
+  @console.print("shout {t}")
+
+--- Runs `f` on each element.
+pub each_of(xs: List[Text], f: fn(Text) -> Unit) -> Unit
+  uses of f
+=
+  for x in xs
+    f(x)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let names = ["ann", "bo", "", "cy"]
+  let shown = names.map(each: fn(n) -> @console.print("map {n}"))
+  each_of(names, f: fn(n) -> @console.print("each {n}"))
+  let total = names.fold(initial: 0, step: fn(sum, n) -> sum + n.len)
+  let lengths = names.map(each: parse)
+    if error use [0]
+  let kept = names.filter(keep: fn(n) -> if n.len > 2 then true else fail Worse)
+    if error use []
+  let first = names.first_where(keep: fn(n) -> n.len == 2)
+  let shouted = names.map(each: shout)
+    if error use []
+  @console.print("{total} {lengths.sum} {kept.len} {first is Some} {shouted.len}")

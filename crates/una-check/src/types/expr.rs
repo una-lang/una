@@ -280,6 +280,28 @@ impl<'a> Checker<'_, 'a, '_> {
     fn name_value(&mut self, ident: &Ident, site: Site) -> Ty {
         let name = self.name(ident);
         self.use_after_take(name, ident.span);
+        // A parameter that an `of` clause names is only called or passed on for another `of`
+        // parameter (ADR 0062, `spec/05 §9` rule 9).
+        if let (Some(index), Some(ty)) = (self.of_param(name), self.local(name)) {
+            match self.of_argument.take() {
+                Some(slot) => {
+                    let found = self.run_of_param(name, index, ident.span, &slot.raise);
+                    self.record_of(&slot, found, ident.span, &format!("`{name}`"));
+                }
+                None if self.pass == Pass::Check && self.base != Base::Quiet => {
+                    self.escaped.push(ident.span);
+                    self.report.error(
+                        Code::U3006,
+                        ident.span,
+                        format!(
+                            "`{name}` runs the effects its caller chose, so it may only be called, or passed on for a parameter that an `of` clause names"
+                        ),
+                    );
+                }
+                None => {}
+            }
+            return ty;
+        }
         if let Some(ty) = self.local(name) {
             // So is a parameter or local of such a function type.
             let effects = match self.resolve(&ty) {
@@ -1053,6 +1075,8 @@ impl<'a> Checker<'_, 'a, '_> {
         if self.ctx.in_do {
             self.absorbed.push(span);
         }
+        // The argument of an `of` parameter is checked in its caller's context (ADR 0062).
+        let inherit = self.of_argument.take();
         // The expected function type, whose result may still be a variable that the body's
         // labels join.
         let mut shape = match expected.map(|ty| self.vars.head(ty)) {
@@ -1183,6 +1207,9 @@ impl<'a> Checker<'_, 'a, '_> {
         // with effects or failures it may only be an argument.
         let level = self.frames.len();
         self.needs_site("this lambda", &uses, span, level);
+        if let Some(argument) = inherit {
+            return self.inherited_lambda(argument, params, body, span, types, result, mark);
+        }
         if (!uses.is_empty() || fails.is_some())
             && !site.argument
             && self.pass == Pass::Check

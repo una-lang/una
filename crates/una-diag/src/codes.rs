@@ -178,6 +178,12 @@ pub enum Code {
     U3015,
     /// Second-class type used as a type argument.
     U3016,
+    /// An `of` clause that names no parameter.
+    U3017,
+    /// An `of` clause that names a parameter not of function type.
+    U3018,
+    /// An `of` clause that names a function type with its own `uses` or `fails`.
+    U3019,
     /// Flow to a lower label.
     U4001,
     /// Implicit flow through control, failure or call under raised pc.
@@ -216,7 +222,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 74] = [
+    pub const ALL: [Code; 77] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -274,6 +280,9 @@ impl Code {
         Code::U3014,
         Code::U3015,
         Code::U3016,
+        Code::U3017,
+        Code::U3018,
+        Code::U3019,
         Code::U4001,
         Code::U4002,
         Code::U4003,
@@ -656,6 +665,24 @@ impl Code {
                 domain: Domain::Authority,
                 meaning: "Second-class type used as a type argument",
                 explain: include_str!("../explain/U3016.md"),
+            },
+            Code::U3017 => &Entry {
+                code: "U3017",
+                domain: Domain::Authority,
+                meaning: "`of` clause that names no parameter",
+                explain: include_str!("../explain/U3017.md"),
+            },
+            Code::U3018 => &Entry {
+                code: "U3018",
+                domain: Domain::Authority,
+                meaning: "`of` clause that names a parameter not of function type",
+                explain: include_str!("../explain/U3018.md"),
+            },
+            Code::U3019 => &Entry {
+                code: "U3019",
+                domain: Domain::Authority,
+                meaning: "`of` clause that names a function type with its own `uses` or `fails`",
+                explain: include_str!("../explain/U3019.md"),
             },
             Code::U4001 => &Entry {
                 code: "U4001",

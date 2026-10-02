@@ -154,7 +154,14 @@ impl<'a> Checker<'_, 'a, '_> {
             && matches!(self.resolve(&field_ty), Ty::Fn(_))
         {
             self.outside_rl(span, || format!("call of field `{method}`"));
-            let ty = self.call_value(&field_ty, args, span, &format!("field `{method}`"), site);
+            let ty = self.call_value(
+                &field_ty,
+                args,
+                span,
+                &format!("field `{method}`"),
+                site,
+                None,
+            );
             if let Some((kind, index)) = self.field_index(&resolved, method) {
                 self.resolved(span, Res::FieldFn { kind, index });
             }
@@ -203,7 +210,12 @@ impl<'a> Checker<'_, 'a, '_> {
                 let name = self.name(ident);
                 if let Some(ty) = self.local(name) {
                     self.outside_rl(span, || format!("call of local function `{name}`"));
-                    return self.call_value(&ty, args, span, &format!("`{name}`"), site);
+                    // A parameter that an `of` clause names runs the effects of its argument
+                    // (ADR 0062).
+                    let of = self
+                        .of_param(name)
+                        .map(|index| self.run_of_param(name, index, ident.span, &Label::public()));
+                    return self.call_value(&ty, args, span, &format!("`{name}`"), site, of);
                 }
                 match self.env.lower(self.module, name) {
                     Some(Entity::Function(id)) => self.call_function(id, None, args, span, site),
@@ -229,13 +241,23 @@ impl<'a> Checker<'_, 'a, '_> {
             _ => {
                 self.outside_rl(span, || "call of a function value".to_owned());
                 let ty = self.expr(callee, None);
-                self.call_value(&ty, args, span, "this function", site)
+                self.call_value(&ty, args, span, "this function", site, None)
             }
         }
     }
 
     /// A call of a function value: positional arguments only.
-    fn call_value(&mut self, ty: &Ty, args: &[Arg], span: Span, what: &str, site: Site) -> Ty {
+    /// `of`: for a parameter that an `of` clause names, the effects and failure of its
+    /// argument, which the call performs (ADR 0062).
+    fn call_value(
+        &mut self,
+        ty: &Ty,
+        args: &[Arg],
+        span: Span,
+        what: &str,
+        site: Site,
+        of: Option<super::effects::OfFound>,
+    ) -> Ty {
         let value_label = self.labeled(ty).top_label();
         // The function type is taken before its labels are settled: the result of a generic
         // function value carries the labels of type arguments that the arguments of this call
@@ -331,15 +353,17 @@ impl<'a> Checker<'_, 'a, '_> {
             false,
             &value_label,
         );
+        let of = of.unwrap_or_default();
+        let fails = function.fails.clone().or(of.fails);
         self.position_site(
             what,
             span,
-            !function.uses.is_empty(),
-            function.fails.as_ref(),
+            !function.uses.is_empty() || of.effects,
+            fails.as_ref(),
             site.top,
             site.handled,
         );
-        if let Some(fails) = &function.fails {
+        if let Some(fails) = &fails {
             self.call_fails.insert(span, fails.clone());
         }
         // The result of a function value carries the value's label.
@@ -494,14 +518,19 @@ impl<'a> Checker<'_, 'a, '_> {
             false,
             &Label::public(),
         );
-        self.position_site(
-            &callee,
-            span,
-            !needs.is_empty(),
-            def.fails.as_ref(),
-            site.top,
-            site.handled,
-        );
+        // A callee with `of` clauses performs the effects of its arguments too, so its
+        // position is checked once they are known (ADR 0062).
+        let of_clauses = !def.uses_of.is_empty() || def.fails_of.is_some();
+        if !of_clauses {
+            self.position_site(
+                &callee,
+                span,
+                !needs.is_empty(),
+                def.fails.as_ref(),
+                site.top,
+                site.handled,
+            );
+        }
         if def.kind == FnKind::Policy {
             self.resolved(
                 span,
@@ -523,6 +552,15 @@ impl<'a> Checker<'_, 'a, '_> {
                 type_args: subst.clone(),
             },
         );
+        if of_clauses {
+            self.of_callee = Some(super::effects::OfCallee {
+                uses_of: def.uses_of.clone(),
+                fails_of: def.fails_of,
+                own_fails: def.fails.clone(),
+                prelude: (def.module == self.env.prelude).then(|| def.name.to_owned()),
+            });
+            self.of_found.push(super::effects::OfFound::default());
+        }
         let checked = self.arguments(
             &callee,
             &def.params,
@@ -532,6 +570,23 @@ impl<'a> Checker<'_, 'a, '_> {
             span,
             def.module,
         );
+        let mut call_fails = def.fails.clone();
+        if of_clauses {
+            let found = self.of_found.pop().unwrap_or_default();
+            // The effects of its arguments are the call's, and so of the lambda around it.
+            if found.effects {
+                self.note_effect();
+            }
+            call_fails = call_fails.or(found.fails);
+            self.position_site(
+                &callee,
+                span,
+                !needs.is_empty() || found.effects,
+                call_fails.as_ref(),
+                site.top,
+                site.handled,
+            );
+        }
         let values = declared_args(&def.params, &checked);
         let result = def.result.base.substitute(&subst);
         let result = if prelude_labeled(self.env.prelude, &def) {
@@ -546,7 +601,7 @@ impl<'a> Checker<'_, 'a, '_> {
         if def.requires {
             self.obligation(ObligationKind::Precondition, span, None);
         }
-        if let Some(fails) = &def.fails {
+        if let Some(fails) = &call_fails {
             self.call_fails.insert(span, fails.clone());
         }
         result
@@ -857,6 +912,7 @@ impl<'a> Checker<'_, 'a, '_> {
         module: usize,
     ) -> Vec<Checked<'a>> {
         let mut checked: Vec<Checked<'a>> = Vec::new();
+        let of_callee = self.of_callee.take();
         let names: Vec<&str> = params.iter().map(|p| p.name).collect();
         let offset = usize::from(receiver.is_some());
         let given_count = args.len() + offset;
@@ -1006,7 +1062,32 @@ impl<'a> Checker<'_, 'a, '_> {
                 callee,
             };
             self.ctx.argument = true;
-            let found = self.expr_as(&arg.value, Some(&expected), role);
+            let slot = target.and_then(|target| {
+                of_callee
+                    .as_ref()
+                    .and_then(|of| self.of_slot(of, target, &checked, params))
+            });
+            let of_kind = slot.as_ref().and_then(|slot| slot.kind.clone());
+            let of_uses = slot.as_ref().is_some_and(|slot| slot.uses);
+            let of_fails = slot.as_ref().is_some_and(|slot| slot.fails);
+            let raise = slot.as_ref().map(|slot| slot.raise.clone());
+            let is_slot = slot.is_some();
+            self.of_argument = slot;
+            let mut found = self.expr_as(&arg.value, Some(&expected), role);
+            if is_slot {
+                // Not consumed by a lambda or a parameter passed on: a function value, whose
+                // effects and failures the callee performs at this argument.
+                if self.of_argument.take().is_some() {
+                    found = self.of_function_value(
+                        arg.value.span,
+                        &found,
+                        of_uses,
+                        of_fails,
+                        of_kind.as_ref(),
+                        &raise.unwrap_or_else(Label::public),
+                    );
+                }
+            }
             self.convention_arg(callee, param, arg, &found, &expected);
             self.fn_flow(arg.value.span, &expected, &found);
             if param.ty.is_refined() {

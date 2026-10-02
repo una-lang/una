@@ -15,6 +15,7 @@
 mod authority;
 mod call;
 mod check;
+mod effects;
 mod elab;
 mod env;
 mod expr;
@@ -41,6 +42,32 @@ use env::{Env, Source};
 const PRELUDE: &str = include_str!("../std/prelude.una");
 /// The declarations that edition 0.2 adds to the prelude (`spec/17 §8`), appended to it.
 const PRELUDE_0_2: &str = include_str!("../std/prelude_0_2.una");
+
+/// The prelude of edition 0.2: `map`, `filter`, `first_where` and `fold` take effectful and
+/// failing functions (ADR 0062, `spec/14 §1`).
+fn of_prelude() -> String {
+    const OF: [(&str, &str); 4] = [
+        (
+            "  ensures result.len == xs.len\n=\n  []",
+            "  ensures result.len == xs.len\n  uses of each\n  fails of each\n=\n  []",
+        ),
+        (
+            "  ensures result.len <= xs.len\n=\n  xs",
+            "  ensures result.len <= xs.len\n  uses of keep\n  fails of keep\n=\n  xs",
+        ),
+        (
+            "keep: fn(T) -> Bool) -> Option[T] = None",
+            "keep: fn(T) -> Bool) -> Option[T]\n  uses of keep\n  fails of keep\n=\n  None",
+        ),
+        (
+            "step: fn(U, T) -> U) -> U = initial",
+            "step: fn(U, T) -> U) -> U\n  uses of step\n  fails of step\n=\n  initial",
+        ),
+    ];
+    OF.iter().fold(PRELUDE.to_owned(), |text, (from, to)| {
+        text.replace(from, to)
+    })
+}
 
 /// `std.testing` (`spec/14 §4`) as Una source.
 const TESTING: &str = include_str!("../std/testing.una");
@@ -85,6 +112,10 @@ pub struct Header {
     pub fails: Option<String>,
     /// Whether its `fails` is inferred: a private function without a `fails` clause.
     pub fails_inferred: bool,
+    /// The parameters of its `uses of` clauses, written or inferred (ADR 0062).
+    pub uses_of: Vec<String>,
+    /// The parameter of its `fails of` clause, written or inferred.
+    pub fails_of: Option<String>,
 }
 
 /// The outcome of [`check_types`].
@@ -262,6 +293,16 @@ fn headers(env: &Env<'_>) -> Vec<Header> {
                 _ => None,
             },
             fails_inferred: f.infer_fails,
+            uses_of: f
+                .uses_of
+                .iter()
+                .filter_map(|index| f.params.get(*index))
+                .map(|param| param.name.to_owned())
+                .collect(),
+            fails_of: f
+                .fails_of
+                .and_then(|index| f.params.get(index))
+                .map(|param| param.name.to_owned()),
         })
         .collect()
 }
@@ -314,7 +355,7 @@ impl Standard {
         let mut sources = SourceDb::new();
         let mut interner = Interner::new();
         let (text, keywords) = if edition >= Edition::V0_2 {
-            (format!("{PRELUDE}\n{PRELUDE_0_2}"), KeywordSet::V0_2)
+            (format!("{}\n{PRELUDE_0_2}", of_prelude()), KeywordSet::V0_2)
         } else {
             (PRELUDE.to_owned(), KeywordSet::V0_1)
         };

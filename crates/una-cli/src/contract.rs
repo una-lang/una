@@ -190,7 +190,10 @@ pub(crate) fn contract(
             ClauseKind::DerivedFrom(ids) => {
                 derived.extend(ids.iter().map(|id| modules.name(id.name).to_owned()));
             }
-            ClauseKind::Uses(_) | ClauseKind::Fails(_) => {}
+            ClauseKind::Uses(_)
+            | ClauseKind::Fails(_)
+            | ClauseKind::UsesOf(_)
+            | ClauseKind::FailsOf(_) => {}
         }
     }
     let uses_inferred = header.is_some_and(|h| h.uses_inferred);
@@ -219,6 +222,18 @@ pub(crate) fn contract(
     } else {
         clause_lines(&|k| matches!(k, ClauseKind::Uses(_)), &mut lines);
     }
+    // ADR 0062: `uses of p`, as written, or inferred for a private function.
+    let written_of = function
+        .clauses
+        .iter()
+        .any(|c| matches!(c.kind, ClauseKind::UsesOf(_)));
+    if written_of {
+        clause_lines(&|k| matches!(k, ClauseKind::UsesOf(_)), &mut lines);
+    } else if let Some(header) = header {
+        for param in &header.uses_of {
+            lines.push(format!("  uses of {param} -- inferred"));
+        }
+    }
     let fails_inferred = header.is_some_and(|h| h.fails_inferred);
     let fails = header.and_then(|h| h.fails.clone()).map(|kind| Fails {
         kind,
@@ -227,6 +242,15 @@ pub(crate) fn contract(
     match (&fails, fails_inferred) {
         (Some(fails), true) => lines.push(format!("  fails {} -- inferred", fails.kind)),
         _ => clause_lines(&|k| matches!(k, ClauseKind::Fails(_)), &mut lines),
+    }
+    let written_fails_of = function
+        .clauses
+        .iter()
+        .any(|c| matches!(c.kind, ClauseKind::FailsOf(_)));
+    if written_fails_of {
+        clause_lines(&|k| matches!(k, ClauseKind::FailsOf(_)), &mut lines);
+    } else if let Some(param) = header.and_then(|h| h.fails_of.clone()) {
+        lines.push(format!("  fails of {param} -- inferred"));
     }
     clause_lines(&|k| matches!(k, ClauseKind::DerivedFrom(_)), &mut lines);
     let derived_from: Vec<Requirement> = derived

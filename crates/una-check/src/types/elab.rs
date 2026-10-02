@@ -660,7 +660,11 @@ impl<'e, 'a> Fx<'e, 'a> {
                     ensures.push(self.clause(expr));
                     self.in_ensures = false;
                 }
-                ClauseKind::Uses(_) | ClauseKind::Fails(_) | ClauseKind::DerivedFrom(_) => {}
+                ClauseKind::Uses(_)
+                | ClauseKind::Fails(_)
+                | ClauseKind::UsesOf(_)
+                | ClauseKind::FailsOf(_)
+                | ClauseKind::DerivedFrom(_) => {}
             }
         }
         (requires, ensures)
