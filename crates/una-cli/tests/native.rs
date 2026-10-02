@@ -43,6 +43,7 @@ fn runtime() {
 fn una(dir: &Path, args: &[&str]) -> Output {
     runtime();
     Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .args(args)
         .current_dir(dir)
         .env("NO_COLOR", "1")

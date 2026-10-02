@@ -5,7 +5,6 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::json;
@@ -33,8 +32,8 @@ pub(crate) struct BuildOptions<'a> {
     pub(crate) json: bool,
     /// Whether human diagnostics use color.
     pub(crate) color: bool,
-    /// The wall-clock guard of the solver.
-    pub(crate) wallclock: Duration,
+    /// How tier 1 runs the solver (ADR 0064).
+    pub(crate) solving: crate::verification::Solving,
     /// The environment variables, for `UNA_RT_LIB`.
     pub(crate) environment: crate::Environment<'a>,
 }
@@ -67,7 +66,7 @@ pub(crate) fn build_command(
     // As `una check` does: U3012 against `[run] grants` when they are listed (`spec/16 §2`).
     let mut analysis = on_large_stack(|| analyze(&package, None));
     if analysis.diagnostics.is_empty() {
-        let found = tier_one(&package, &analysis.program, options.wallclock);
+        let found = tier_one(&package, &analysis.program, &options.solving);
         analysis.diagnostics = found.diagnostics;
     }
     let target = una_codegen::host_target();

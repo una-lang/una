@@ -10,12 +10,13 @@ use std::sync::atomic::AtomicBool;
 use una_lsp::{Checked, Workspace};
 
 use crate::package::load_with;
-use crate::{
-    DEFAULT_WALLCLOCK, ExitStatus, analyze, check_files, keyword_set, on_large_stack, verification,
-};
+use crate::{ExitStatus, analyze, check_files, keyword_set, on_large_stack, verification};
 
 /// The CLI's checks and formatter, as the server needs them.
-pub(crate) struct CliWorkspace;
+pub(crate) struct CliWorkspace {
+    /// How tier 1 runs the solver, with the user's key of the proof cache (ADR 0064).
+    pub(crate) solving: verification::Solving,
+}
 
 impl Workspace for CliWorkspace {
     fn root(&self, file: &Path) -> PathBuf {
@@ -43,7 +44,7 @@ impl Workspace for CliWorkspace {
             let found = verification::tier_one_cancellable(
                 &package,
                 &analysis.program,
-                DEFAULT_WALLCLOCK,
+                &self.solving,
                 Some(Arc::clone(cancel)),
             );
             diagnostics.extend(found.diagnostics);
@@ -87,9 +88,12 @@ impl Workspace for CliWorkspace {
 
 /// Serves the language server on the process's stdin and on `stdout`, until the client
 /// sends `exit` or closes the input.
-pub(crate) fn serve(stdout: &mut dyn Write) -> std::io::Result<ExitStatus> {
+pub(crate) fn serve(
+    stdout: &mut dyn Write,
+    solving: verification::Solving,
+) -> std::io::Result<ExitStatus> {
     let input = Box::new(BufReader::new(std::io::stdin()));
-    una_lsp::serve(input, stdout, CliWorkspace).map(|()| ExitStatus::Success)
+    una_lsp::serve(input, stdout, CliWorkspace { solving }).map(|()| ExitStatus::Success)
 }
 
 /// What the editor asks about, from a check: definitions, hovers, the outline and the proof

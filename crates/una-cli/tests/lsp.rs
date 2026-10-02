@@ -50,6 +50,7 @@ fn uri(path: &Path) -> String {
 /// `una --json check` on the package at `dir`.
 fn cli_check(dir: &Path) -> Value {
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .args(["--json", "check"])
         .arg(dir)
         .output()
@@ -139,6 +140,7 @@ impl Session {
     /// UTF-32 positions.
     fn start(path: Option<&Path>) -> Session {
         let mut command = Command::new(env!("CARGO_BIN_EXE_una"));
+        command.env("HOME", env!("CARGO_TARGET_TMPDIR"));
         if let Some(path) = path {
             command.env("PATH", path);
         }
