@@ -5,6 +5,7 @@
 use una_diag::{Code, ObligationKind};
 use una_syntax::Span;
 use una_syntax::ast::{
+    AssignStmt, IfThenStmt,
     Bind, Block, BlockExpr, Body, CapBindingValue, ElseBranch, Expr, Handled, HandlingKind,
     IfBlock, LetStmt, LetValue, Literal, PatternKind, Stmt, TextPart, WhenExpr,
 };
@@ -62,6 +63,16 @@ impl<'a> Checker<'_, 'a, '_> {
                 Stmt::Let(stmt) => {
                     self.outside_rl(stmt.span, || "`let`".to_owned());
                     self.let_stmt(stmt);
+                }
+                // `place = value`; as a block's last line, the block's value is `unit`
+                // (`spec/17 §1`).
+                Stmt::Assign(stmt) => {
+                    self.outside_rl(stmt.span, || "an assignment".to_owned());
+                    self.assign(stmt);
+                }
+                Stmt::IfThen(stmt) => {
+                    self.outside_rl(stmt.span, || "`if` without `else`".to_owned());
+                    self.if_then(stmt);
                 }
                 Stmt::Handled(handled) if is_last => {
                     ty = self.handled(handled, expected, role, tail);
@@ -149,9 +160,50 @@ impl<'a> Checker<'_, 'a, '_> {
             self.annotated(stmt.name.span, declared);
         }
         // The local keeps the labels its value has now; later unifications do not change them.
+        let refined = declared.as_ref().is_some_and(super::ty::Declared::is_refined);
         let bound = declared.map_or_else(|| self.vars.resolve_bound(&ty), |declared| declared.base);
         self.typed(stmt.name.span, &bound);
-        self.bind(name, bound);
+        // `let edit` keeps this type, label included, at every rebind (`spec/17 §2` rule 4).
+        self.bind_as(name, bound, stmt.editable);
+        if let Some(local) = self.locals.last_mut() {
+            local.refined = stmt.editable && refined;
+        }
+    }
+
+    /// `place = value` (`spec/17 §2` rule 3).
+    fn assign(&mut self, stmt: &AssignStmt) {
+        let Some(place_ty) = self.editable_place(&stmt.place, "the left side of `=`") else {
+            match &stmt.value {
+                LetValue::Handled(handled) => {
+                    self.handled(handled, None, Role::Plain, false);
+                }
+                LetValue::BlockExpr(expr) => {
+                    self.block_expr(expr, None, Role::Plain, false);
+                }
+            }
+            return;
+        };
+        let (value, span) = match &stmt.value {
+            LetValue::Handled(handled) => (
+                self.handled(handled, Some(&place_ty), Role::Plain, false),
+                handled.expr.span,
+            ),
+            LetValue::BlockExpr(expr) => (
+                self.block_expr(expr, Some(&place_ty), Role::Plain, false),
+                block_expr_span(expr),
+            ),
+        };
+        self.rebind(&stmt.place, &place_ty, &value, span);
+    }
+
+    /// `if` with a block and no `else`: a `Unit` statement run under the condition's label
+    /// (`spec/17 §1`, `§6`).
+    fn if_then(&mut self, stmt: &IfThenStmt) {
+        let label = self.condition_label(&stmt.condition, "the condition of `if`");
+        let saved = self.raise_pc(&label, stmt.condition.span);
+        let ty = self.block(&stmt.block, None, Role::Plain, false);
+        self.restore_pc(saved);
+        self.discarded(value_span(&stmt.block), &ty);
     }
 
     /// A line expression with its `with` bindings and handling clauses (`spec/06 §3`).
@@ -392,7 +444,11 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         let saved = self.raise_pc(&label, block.condition.span);
         let mut joined = expected.cloned();
+        // A binding taken in either branch is taken after the `if` (`spec/17 §3` rule 3).
+        let before = self.taken_state();
         let then_ty = self.block(&block.then_block, joined.as_ref(), role, tail);
+        let mut merged = self.taken_state();
+        self.restore_taken(&before);
         if joined.is_none() && self.resolve(&then_ty) != Ty::Never {
             joined = Some(then_ty.clone());
         }
@@ -400,6 +456,8 @@ impl<'a> Checker<'_, 'a, '_> {
             ElseBranch::Block(otherwise) => self.block(otherwise, joined.as_ref(), role, tail),
             ElseBranch::If(next) => self.if_block(next, joined.as_ref(), role, tail),
         };
+        self.merge_taken(&mut merged);
+        self.restore_taken(&merged);
         self.restore_pc(saved);
         // The value joins both branches, raised by the condition (T-If).
         let value = match (
@@ -459,7 +517,11 @@ impl<'a> Checker<'_, 'a, '_> {
         let mut problem = false;
         let mut joined = expected.cloned();
         let mut arms = Vec::new();
+        // A binding taken in any arm is taken after the `when` (`spec/17 §3` rule 3).
+        let before = self.taken_state();
+        let mut merged = before.clone();
         for arm in &when.arms {
+            self.restore_taken(&before);
             let pattern = arm.pattern.span;
             if let Some(otherwise) = else_arm {
                 let mut diagnostic = self.report.make(
@@ -620,7 +682,9 @@ impl<'a> Checker<'_, 'a, '_> {
                 });
             }
             self.locals.truncate(mark);
+            self.merge_taken(&mut merged);
         }
+        self.restore_taken(&merged);
         self.restore_pc(saved);
         if let Some(value) = &value {
             self.join_flows(value, arms);

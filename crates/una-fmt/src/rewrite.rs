@@ -512,6 +512,17 @@ impl Collector<'_> {
                     LetValue::Handled(handled) => self.handled(handled),
                     LetValue::BlockExpr(expr) => self.block_expr(expr),
                 },
+                Stmt::Assign(stmt) => {
+                    self.expr(&stmt.place);
+                    match &stmt.value {
+                        LetValue::Handled(handled) => self.handled(handled),
+                        LetValue::BlockExpr(expr) => self.block_expr(expr),
+                    }
+                }
+                Stmt::IfThen(stmt) => {
+                    self.expr(&stmt.condition);
+                    self.block(&stmt.block);
+                }
                 Stmt::Handled(handled) => self.handled(handled),
                 Stmt::BlockExpr(expr) => self.block_expr(expr),
             }
@@ -614,6 +625,7 @@ impl Collector<'_> {
             }
             ExprKind::Attempt(operand)
             | ExprKind::Unary { operand, .. }
+            | ExprKind::Old(operand)
             | ExprKind::Paren(operand) => self.expr(operand),
             ExprKind::Fail(variant) => self.variant(variant),
             ExprKind::Binary { left, right, .. } => {

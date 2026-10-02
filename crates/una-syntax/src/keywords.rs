@@ -1,5 +1,7 @@
 //! The contextual keywords and the words reserved for later versions (`spec/01 §5`, ADR 0014).
 
+use crate::token::KeywordSet;
+
 /// Keywords only inside `requirement` and `policy` blocks, and identifiers elsewhere.
 pub const CONTEXTUAL: [&str; 12] = [
     "active",
@@ -57,6 +59,34 @@ pub const RESERVED_FOR_LATER: [(&str, &str); 31] = [
     ("async", "not supported; see structured concurrency in v0.2"),
     ("await", "not supported; see structured concurrency in v0.2"),
 ];
+
+/// The rows of the reserved-word table that edition 0.2 changes or adds (`spec/17 §9`, ADR
+/// 0056); `edit` and `take` are keywords there.
+pub const RESERVED_IN_0_2: [(&str, &str); 7] = [
+    ("shared", "reserved for v0.3 (aliasing)"),
+    ("iso", "reserved for v0.3 (aliasing)"),
+    ("weak", "reserved for v0.3 (aliasing)"),
+    (
+        "region",
+        "not a keyword in Una; the backend chooses where values live",
+    ),
+    ("var", "not a keyword in Una; use `let edit`"),
+    ("while", "not a keyword in Una; use `for` or recursion"),
+    ("loop", "not a keyword in Una; use `for` or recursion"),
+];
+
+/// The U0103 message text of `word` under the keyword set `set`, if it is reserved.
+pub fn reserved_in(word: &str, set: KeywordSet) -> Option<&'static str> {
+    if set == KeywordSet::V0_2 {
+        if matches!(word, "edit" | "take") {
+            return None;
+        }
+        if let Some((_, message)) = RESERVED_IN_0_2.iter().find(|(reserved, _)| *reserved == word) {
+            return Some(message);
+        }
+    }
+    reserved_for_later(word)
+}
 
 /// The U0103 message text of `word`, if it is reserved for a later version.
 pub fn reserved_for_later(word: &str) -> Option<&'static str> {

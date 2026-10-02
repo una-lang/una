@@ -20,6 +20,7 @@ mod env;
 mod expr;
 mod facts;
 mod fixed;
+mod memory;
 mod flow;
 mod generic;
 mod label;
@@ -30,13 +31,16 @@ mod unify;
 
 use una_diag::{Code, Diagnostic, Edit, Location, ObligationKind, Related, Repair};
 use una_syntax::ast::File;
-use una_syntax::{FileId, Interner, SourceDb, Span, lex, parse};
+use una_project::Edition;
+use una_syntax::{FileId, Interner, KeywordSet, SourceDb, Span, lex_in, parse};
 
 use crate::names::PackageInput;
 use env::{Env, Source};
 
 /// The prelude (`spec/14 §1, §3`) as Una source.
 const PRELUDE: &str = include_str!("../std/prelude.una");
+/// The declarations that edition 0.2 adds to the prelude (`spec/17 §8`), appended to it.
+const PRELUDE_0_2: &str = include_str!("../std/prelude_0_2.una");
 
 /// `std.testing` (`spec/14 §4`) as Una source.
 const TESTING: &str = include_str!("../std/testing.una");
@@ -101,7 +105,7 @@ pub struct TypeCheck {
 
 /// Type-checks the modules of `package` that have no syntax errors.
 pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
-    let standard = Standard::load();
+    let standard = Standard::load(package.settings.edition);
     let mut report = Report::new(package.sources);
     let sources = package
         .modules
@@ -306,13 +310,18 @@ impl Standard {
     /// Parses the prelude and `std.testing`. They are part of the compiler and parse without
     /// errors (a test checks it); their spans belong to a database of their own and are never
     /// reported.
-    fn load() -> Standard {
+    fn load(edition: Edition) -> Standard {
         let mut sources = SourceDb::new();
         let mut interner = Interner::new();
-        let prelude = sources.add("std/prelude.una", PRELUDE.as_bytes());
+        let (text, keywords) = if edition >= Edition::V0_2 {
+            (format!("{PRELUDE}\n{PRELUDE_0_2}"), KeywordSet::V0_2)
+        } else {
+            (PRELUDE.to_owned(), KeywordSet::V0_1)
+        };
+        let prelude = sources.add("std/prelude.una", text.as_bytes());
         let testing = sources.add("std/testing.una", TESTING.as_bytes());
-        let prelude = parse_standard(&sources, prelude, &mut interner);
-        let testing = parse_standard(&sources, testing, &mut interner);
+        let prelude = parse_standard(&sources, prelude, &mut interner, keywords);
+        let testing = parse_standard(&sources, testing, &mut interner, KeywordSet::V0_1);
         Standard {
             sources,
             interner,
@@ -330,8 +339,13 @@ impl Standard {
     }
 }
 
-fn parse_standard(sources: &SourceDb, id: FileId, interner: &mut Interner) -> File {
-    let lexed = lex(sources.file(id), id, interner);
+fn parse_standard(
+    sources: &SourceDb,
+    id: FileId,
+    interner: &mut Interner,
+    keywords: KeywordSet,
+) -> File {
+    let lexed = lex_in(sources.file(id), id, interner, keywords);
     parse(&lexed, id, interner).file
 }
 

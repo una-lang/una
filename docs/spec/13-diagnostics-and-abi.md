@@ -130,6 +130,11 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U2014 | types | Expression outside the refinement language |
 | U2015 | types | Invalid predicate body (impure, failing, recursive or outside RL for `reflect`) |
 | U2016 | types | Opaque predicate called outside `checked` |
+| U2017 | types | Use of a binding after it was passed by `take` |
+| U2018 | types | An `edit` argument together with another use of its binding in the same call |
+| U2019 | types | Assignment to a binding that is not editable |
+| U2020 | types | A parameter convention (`edit`, `take`) not matched at the call site, or declared where none is allowed |
+| U2021 | types | A function with `edit` or `take` parameters used as a value |
 | U2022 | types | Integer literal does not fit its type |
 | U3001 | authority | Capability not in scope |
 | U3002 | authority | Operation not permitted by capability type |
