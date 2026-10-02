@@ -3,8 +3,8 @@
 # fmt, clippy with warnings denied, the tests, then packing and checking the release archive of
 # the host's target. With --linux, it runs the same inside a linux/amd64 container of CI's
 # Ubuntu image (scripts/local-ci/Dockerfile), emulated on an arm64 Mac, so it is slow; the
-# target directory, the cargo registry and Z3 live in named volumes, so later runs are
-# incremental. It ends with PASS, or FAIL and the step that failed, and a non-zero exit on any
+# target directory (one volume per checkout), the cargo registry and Z3 live in named volumes,
+# so later runs are incremental. It ends with PASS, or FAIL and the step that failed, and a non-zero exit on any
 # failure. While GitHub Actions is unavailable, this is the check before a merge (#156).
 #
 # Usage: scripts/local-ci.sh [--linux]
@@ -25,12 +25,16 @@ if [ "${1:-}" = --linux ]; then
     echo "== building the image $image (linux/amd64)"
     docker build --platform linux/amd64 --build-arg "TOOLCHAIN=$toolchain" \
         --tag "$image" scripts/local-ci || fail "the container image did not build"
-    echo "== running scripts/local-ci.sh in $image"
+    # The target directory is a volume of this checkout, named from its path, so runs from two
+    # checkouts at once never share a build; the cargo registry and Z3 are shared.
+    checkout=$(printf '%s' "$root" | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-12)
+    volume="una-local-ci-target-$checkout"
+    echo "== running scripts/local-ci.sh in $image, with the target directory in $volume"
     # The checkout is mounted read-write, as CI checks it out; the target directory, the cargo
     # registry and Z3 are volumes, which keep the container's builds apart from the host's.
     docker run --rm --platform linux/amd64 \
         --volume "$root:/work" \
-        --volume una-local-ci-target:/work/target \
+        --volume "$volume:/work/target" \
         --volume una-local-ci-registry:/opt/cargo/registry \
         --volume una-local-ci-z3:/opt/z3 \
         --env UNA_LOCAL_CI_Z3=/opt/z3 \
