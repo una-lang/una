@@ -83,7 +83,7 @@ fn precedence(term: &Term) -> u8 {
         Term::Is { .. } | Term::In { .. } => 5,
         Term::Neg(_) => 8,
         Term::Int(digits) if digits.starts_with('-') => 8,
-        Term::Field { .. } | Term::Len(_) | Term::Call { .. } => 9,
+        Term::Field { .. } | Term::Len(_) | Term::Proj { .. } | Term::Call { .. } => 9,
         _ => 10,
     }
 }
@@ -127,6 +127,10 @@ fn write_term(
         Term::Len(value) => {
             write_term(out, value, 9, replace);
             out.push_str(".len");
+        }
+        Term::Proj { value, index } => {
+            write_term(out, value, 9, replace);
+            let _ = write!(out, ".{index}");
         }
         Term::Neg(value) => {
             out.push('-');
@@ -286,6 +290,16 @@ fn write_base(out: &mut String, base: &Base) {
             }
         }
         Base::Param(name) => out.push_str(name),
+        Base::Tuple(types) => {
+            out.push('(');
+            for (index, ty) in types.iter().enumerate() {
+                if index > 0 {
+                    out.push_str(", ");
+                }
+                write_type(out, ty);
+            }
+            out.push(')');
+        }
         Base::Unknown => out.push('_'),
     }
 }
@@ -504,6 +518,19 @@ impl Printer {
         match expr {
             Expr::Atom { atom, .. } => self.line(indent, &print_atom(atom)),
             Expr::Unreachable { .. } => self.line(indent, "unreachable"),
+            Expr::LetTuple {
+                names, value, body, ..
+            } => {
+                let binders: Vec<String> = names
+                    .iter()
+                    .map(|(name, ty)| format!("{name}: {}", print_type(ty)))
+                    .collect();
+                self.line(
+                    indent,
+                    &format!("let ({}) = {} in", binders.join(", "), print_atom(value)),
+                );
+                self.expr(indent, body);
+            }
             Expr::Let {
                 name,
                 ty,
@@ -632,6 +659,7 @@ impl Printer {
 fn rhs_line(rhs: &Rhs) -> String {
     match rhs {
         Rhs::Atom(atom) => print_atom(atom),
+        Rhs::Tuple(items) => format!("({})", atoms(items)),
         Rhs::Prim { prim, args, .. } => format!("{}({})", prim.as_str(), atoms(args)),
         Rhs::Call {
             function,
