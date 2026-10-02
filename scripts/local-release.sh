@@ -104,7 +104,7 @@ awk -v heading="## v$version" '
     $0 == heading { inside = 1; next }
     inside && /^## / { exit }
     inside { print }
-' "$checkout/CHANGELOG.md" | sed '1{/^$/d;}' > "$notes"
+' "$checkout/CHANGELOG.md" | sed '1{/^$/d;}' | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' > "$notes"
 [ -s "$notes" ] || fail "CHANGELOG.md of $commit has no section ## v$version"
 printf '\nThe archives were built locally from commit %s with `scripts/local-release.sh`, while GitHub Actions is unavailable.\n' "$commit" >> "$notes"
 
