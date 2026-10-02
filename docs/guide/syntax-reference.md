@@ -175,6 +175,14 @@ active generated human owner proposed purpose regulation source status text to v
 | `macro` | not supported (charter §6) |
 | `async`, `await` | not supported; see structured concurrency in v0.2 |
 
+In v0.2 (ADR 0056, `spec/17`):
+- `edit`, `take` and `old` become keywords of the memory model;
+- `shared`, `iso` and the new `weak` are reserved for v0.3 (aliasing);
+- `region` is no keyword, since the backend chooses where values live;
+- `var` suggests `let edit`, and `while` and `loop` suggest `for` or recursion.
+
+The v0.1 compiler still gives the messages of the table above.
+
 ### 1.6 Literals
 
 **Integers**

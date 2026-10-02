@@ -1,0 +1,163 @@
+# 17. Memory model
+
+Status: Normative, v0.2 (ADR 0056).
+
+Una has mutable value semantics. Values are immutable, and there are no references and no lifetimes. A binding declared editable can be rebound, and a parameter can be passed in and out (`edit`) or consumed (`take`). Every construct of this chapter desugars into Core IR (§4). The UAM, the verifier and the information-flow rules then apply to the desugared program unchanged.
+
+**Editions.** The constructs of this chapter exist only in packages of edition `0.2` (`edition = "0.2"` in `una.toml`, `spec/13 §7`).
+- In edition `0.1`, the parser keeps the keyword tables of v0.1 (`spec/01 §5`): `old` is an ordinary name, `weak` is not reserved, and `edit`, `take`, `region`, `shared` and `iso` give the U0103 messages of v0.1.
+- `for` stays limited to `handler h for K`, so a `for` loop is a syntax error (U0101).
+- A single file has the default settings, and so edition `0.1`.
+- The Gate 1 benchmark stays on edition `0.1`.
+
+## 1. Syntax
+
+These productions extend `spec/02`.
+
+```ebnf
+param           = [ "edit" | "take" ] lower_ident ":" type ;
+arg             = [ lower_ident ":" ] ( "edit" place | "take" lower_ident | line_expr ) ;
+place           = lower_ident { "." lower_ident } ;
+
+statement       = let_stmt | assign_stmt | for_stmt | if_stmt | handled ;
+let_stmt        = "let" [ "edit" ] lower_ident [ ":" type ] "=" ( handled | block_expr ) ;
+assign_stmt     = place "=" ( handled | block_expr ) ;
+for_stmt        = "for" lower_ident "in" ( line_expr | range_expr ) NEWLINE INDENT block DEDENT ;
+range_expr      = add_expr ( ".." | "..<" ) add_expr ;
+if_stmt         = "if" line_expr NEWLINE INDENT block DEDENT ;      (* no else: a Unit statement *)
+
+postfix         = [ "edit" ] primary { "." lower_ident [ call_args ] | call_args } ;
+```
+
+- A method receiver marked `edit` is written before the receiver: `edit total.record(e)`.
+- `old` is a keyword. `old(x)` appears only in `ensures` clauses (§3.6).
+- An `if_stmt` is a block-form `if` without `else`, and it appears only where a statement can appear. A block whose last element would be an `if_stmt` gets `unit` as its final expression.
+- `for` is already a keyword (`handler h for K`).
+
+## 2. Places and editable bindings
+
+1. An **editable binding** is a binding introduced by `let edit`, or a parameter declared `edit`.
+2. A **place** is an editable binding, or a field path of one: `r`, `r.f`, `r.f.g`. Each field in a path MUST be a field of a record kind. A field of a variant payload is not a place.
+3. **Assignment.** `p = e` rebinds the place `p` to the value of `e`.
+   - `p` MUST be rooted at an editable binding (U2019). A plain `let`, a parameter without `edit`, and a binding captured by a lambda are not editable.
+   - There are no compound assignment operators and no assignment to list elements: elements change through `set` (§7).
+4. **Fixed type.** An editable binding keeps its declared type at every rebind, refinement and label included (§5, §6). Without an annotation, its type is the type of its initial value.
+
+## 3. Parameter conventions
+
+1. **Declaration.** A parameter declared `edit x: T` is passed in and out: the function receives the caller's value and returns its final value with its result. A parameter declared `take x: T` consumes its argument.
+2. **Call-site markers.** A caller writes `edit p` exactly where the parameter is declared `edit`, and `take a` exactly where it is declared `take`. A marker on a plain parameter, or a missing marker, is U2020.
+   - **Method receivers** follow the same rule: `edit total.record(e)` passes `total` to a first parameter declared `edit`.
+   - **The argument of `edit`** is a place (§2).
+   - **The argument of `take`** is a binding, not a field.
+3. **Affine `take`.**
+   - After `take a`, every use of `a` is U2017, until an assignment to `a` gives it a new value. Only a `let edit` binding can be reassigned.
+   - A binding taken in one branch of an `if` or a `when` counts as taken after the construct.
+   - A binding taken in a loop body is taken in every iteration after the first, which is U2017. A binding taken in a loop body is therefore assigned before the end of the body, or is declared inside it.
+4. **Exclusivity.** In one call, an `edit p` argument together with any other use of the root binding of `p`, in the same call or as another `edit` or `take` argument, is U2018. This holds even for disjoint fields: `f(edit r.x, y: r.y)` is U2018.
+5. **One effect per line.** A call with an `edit` or `take` argument is the whole `line_expr` of a statement or a `let` (U3013, `spec/02 §8`). As for any call, a statement call of a non-`Unit` type is U2011, so its result is bound with `let`.
+6. **`old`.**
+   - In an `ensures` clause, an `edit` parameter `x` denotes its final value, and `old(x)` its value on entry.
+   - `old(x)` is legal only in `ensures`, and only on an `edit` parameter: U2012 elsewhere, as for `result`.
+   - `requires` clauses read entry values, and `old` is not legal there.
+7. **Function values.** A function with an `edit` or `take` parameter cannot be used as a value: naming it anywhere but in the callee position of a call is U2021. Function types are unchanged, and have no conventions.
+8. **Capabilities.** Operations and handlers cannot declare `edit` or `take` parameters (U2020). Capabilities are second-class and not values, so `edit` and `take` never apply to them.
+
+## 4. Desugaring to Core IR
+
+Core IR gains tuple types `(τ, ...)`, tuple construction `(a, ...)`, and the binder `let (x, ...) = r in e`. Neither is legal surface syntax.
+
+| Surface | Core IR |
+| --- | --- |
+| `fun f(edit x: T, y: U) -> R` | `fun f(x: T, y: U) : (T, R)`, where each normal return `e` becomes `(x', e)` with `x'` the final value of `x` |
+| `let r = f(edit a, y: b)` | `let (%a1, r) = f(a, b) in ...`, with `a` renamed to `%a1` afterwards |
+| `f(edit r.g, y: b)` | `let %t = r.g in let (%t1, %v) = f(%t, b) in let %r1 = C(r.f1, ..., %t1, ...) in ...`, rebuilding the record of `r` with `g` changed |
+| `let edit x = e` | `let x: T = e in ...` |
+| `x = e` | `let %x1: T = e in ...`, with `x` renamed to `%x1` afterwards (SSA) |
+| `r.g = e` | `let %v = e in let %r1: T = C(r.f1, ..., %v, ...) in ...` |
+| `f(take a)` | `f(a)`; `take` is checked statically and leaves no trace |
+| `if c` block without `else` | `if c then block else unit`, with the updates of the block joined at the end of each branch |
+| `for x in xs` body | a call of a generated recursive function `%loop(xs, b1, ..., bn) : (T1, ..., Tn)`, over the bindings `b1` to `bn` that the body updates (§5) |
+
+**Joins.** At the end of an `if`, a `when` or a loop, an editable binding updated in some branch is the value the branch that ran left it. In Core IR, each branch returns the updated bindings, and the construct binds them afresh.
+
+**Loops.**
+- The generated function takes the list, or the range bounds and the current index, and the current values of the updated bindings.
+- It returns their final values.
+- Its capability context and its error kind are those of the enclosing function, restricted to what the body uses.
+- A loop over a list visits the elements in order, and a loop over `a..<b` or `a..b` visits the integers in increasing order. The bounds are evaluated once, before the first iteration.
+- There is no `break` and no `continue`.
+
+## 5. Static semantics
+
+1. **Types.** The checker checks the desugared program by the rules of `spec/10`. An assignment `p = e` checks `e` against the fixed type of `p` (§2.4), as an annotated `let` does (`spec/10 §5`).
+2. **Refinements at every rebind (V2-11).** Each assignment, each `edit` call and each join carries the refinement obligation of an annotated `let` (ADR 0037). So an editable binding never holds a value outside its refinement.
+3. **Loop invariant.**
+   - The generated function of a loop has, as `requires` and `ensures`, the refinements of the bindings it updates. These are the loop invariant.
+   - Inside the body, the loop variable of a range loop carries the fact `a <= i < b`, or `a <= i <= b` for an inclusive range, as a hypothesis, not as its type.
+   - There is no `invariant` clause in v0.2.
+4. **Lambdas.** A lambda captures the value an editable binding has when the lambda is created (V2-10). Inside the lambda the binding is not editable (U2019), and later updates outside are not seen.
+5. **Termination** is not checked, as for recursion (`spec/04 §2` rule 3).
+
+## 6. Information flow
+
+1. **Fixed labels (V2-16).** An editable binding's declared label is fixed.
+   - An assignment, an `edit` call or a join flows the new value into the declared type (`spec/07 §7` rule 2).
+   - A rebind under a program counter above the binding's label is U4001 at the value, never a silent raise.
+2. **`edit` parameters.** The desugar returns the parameter's final value at its declared type, which flows back into the caller's place. In effect, an `edit` argument and its parameter carry the same labels.
+3. **Loops.**
+   - A `for` over a list runs its body under the top label of the list, and a range loop under the labels of its bounds.
+   - In that body, `fail` and calls that can fail are U4002, and every sink must accept the program counter (`spec/07 §7` rule 4).
+
+## 7. Dynamic semantics
+
+1. **Transactional values (V2-5).** A call that fails leaves every `edit` argument unchanged for the caller, since the desugared call returns the new values only on success. A loop whose body fails leaves the bindings it updates at their values from before the loop.
+2. **Effects are not rolled back.** Operations performed before the failure stay performed, and the trace records them (`spec/11 §5`), as in v0.1 when a function fails after an operation:
+
+   ```una
+   notify(edit sent: Int, to: Text) -> Unit
+     uses @mail: Mail[send]
+     fails MailError
+   =
+     @mail.send(to)
+       if error pass
+     sent = sent + 1
+     check_quota(sent)
+       if error pass
+   ```
+
+   If `check_quota` fails, the caller's `sent` keeps its old value, but the mail was sent and the trace shows it.
+3. **Backend freedom.** The meaning of every construct is that of its desugared form in the UAM (`spec/11 §1`). A backend MAY update a uniquely held value in place, reuse the memory of a value passed by `take`, and choose where values live. None of these is observable.
+
+## 8. Standard library
+
+The prelude (`spec/14 §1`) gains one function:
+
+| Function | Contract |
+| --- | --- |
+| `set[T](edit xs: List[T], index: Int, item: T) -> Unit` | `requires 0 <= index and index < xs.len`; `ensures xs.len == old(xs).len` |
+
+It is written `edit xs.set(index: i, item: v)`. Graphs and cyclic structures use arenas and indices (V2-3, issue #82).
+
+## 9. Reserved words
+
+`edit`, `take` and `old` become keywords. The table of `spec/01 §5` changes as follows:
+
+| Keywords | Message |
+| --- | --- |
+| `shared`, `iso`, `weak` | reserved for v0.3 (aliasing) |
+| `region` | not a keyword in Una; the backend chooses where values live |
+| `var` | not a keyword in Una; use `let edit` |
+| `while`, `loop` | not a keyword in Una; use `for` or recursion |
+
+## 10. Diagnostic codes
+
+These codes join the registry of `spec/13 §4` with their implementation:
+
+| Code | Domain | Meaning |
+| --- | --- | --- |
+| U2017 | types | Use of a binding after it was passed by `take` |
+| U2018 | types | An `edit` argument together with another use of its binding in the same call |
+| U2019 | types | Assignment to a binding that is not editable |
+| U2020 | types | A parameter convention (`edit`, `take`) not matched at the call site, or declared where none is allowed |
+| U2021 | types | A function with `edit` or `take` parameters used as a value |
