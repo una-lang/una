@@ -217,10 +217,23 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         .spawn(move || {
             STATE.with(|cell| *cell.borrow_mut() = Some(state));
             let status = entry();
+            // A debug build of the runtime checks the compiled code's reference counting: it
+            // never used a value it had released, and released every value it made, which is
+            // unreferenced once `main` returns (`spec/16 §4`).
+            //
+            // Only the detection of an internal error depends on the build (unlike N-006, where a
+            // check of the program did): for a program whose counting is right, the output, exit
+            // status and trace are the same in both builds, and a release executable never runs
+            // the check. The tests link the debug build, so a counting bug fails them.
+            let faults = if cfg!(debug_assertions) {
+                (values::faults(), values::live())
+            } else {
+                (0, 0)
+            };
             let state = STATE.with(|cell| cell.borrow_mut().take());
-            (status, state)
+            (status, state, faults)
         });
-    let (status, state) = match worker.map(std::thread::JoinHandle::join) {
+    let (status, state, (faults, leaked)) = match worker.map(std::thread::JoinHandle::join) {
         Ok(Ok(result)) => result,
         _ => {
             let _ = writeln!(
@@ -234,6 +247,20 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     let mut code = if status == 0 { 0 } else { 1 };
     if let Some(state) = state {
         code = code.max(finish(state));
+    }
+    if faults > 0 {
+        let _ = writeln!(
+            stderr,
+            "error: internal error: uses of released values: {faults}"
+        );
+        code = 3;
+    }
+    if leaked > 0 {
+        let _ = writeln!(
+            stderr,
+            "error: internal error: values still referenced after `main` returned: {leaked}"
+        );
+        code = 3;
     }
     code
 }
@@ -408,6 +435,28 @@ mod tests {
         assert!(parse_args(&strings(&["--json"])).is_err());
         assert!(parse_args(&strings(&["--grant"])).is_err());
         assert!(parse_args(&strings(&["--max-depth", "many"])).is_err());
+    }
+
+    #[test]
+    fn a_debug_runtime_reports_values_left_referenced_or_used_after_release() {
+        let meta = r#"{"grants":[],"uses":[]}"#;
+        let freed = start(&[], meta, || {
+            values::release(values::text_word("freed".to_owned()));
+            0
+        });
+        assert_eq!(freed, 0);
+        let leaked = start(&[], meta, || {
+            values::text_word("kept".to_owned());
+            0
+        });
+        assert_eq!(leaked, 3);
+        let reused = start(&[], meta, || {
+            let text = values::text_word("twice".to_owned());
+            values::release(text);
+            values::release(text);
+            0
+        });
+        assert_eq!(reused, 3);
     }
 
     #[test]
