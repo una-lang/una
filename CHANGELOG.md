@@ -2,6 +2,28 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
+## v0.2.0-alpha.1
+
+The first pre-release of v0.2, with the first slice of the native backend (ADR 0055, `spec/16`, #26). It runs in parallel with Gate 1, whose benchmark stays pinned to v0.1.x.
+
+### Native backend (slice 1)
+
+- **`una build [path]`** checks a package at tier 1, compiles `main` of the `[run] entry` module through Cranelift, and links it with the runtime library through the system `cc`. It writes `target/una/<name>`, or the file that `--out` names, and with `--json` it prints `una.build/1`.
+- **The executables** follow the contract of `una run`. They take `--grant`, `--trace <file>` and `--max-depth`, check `main`'s capabilities against their grants (U3012) before running, and write the trace in the interpreter's JSON form.
+- **What compiles in this slice:** `main` printing text through `Console`, as `examples/hello` does. A construct the backend does not compile yet is a usage error (exit 2) that names it. The next slices add integers and control flow, kinds, failures and capabilities.
+- **The differential test** runs every runnable program of the examples, the conformance suite and the reviews in the interpreter and natively, and compares their output, exit status and trace. The programs not compiled yet are listed explicitly (`tests/native/unsupported.txt`).
+- **The runtime library** `una-rt` is written in Rust. Its C ABI boundary, `ffi.rs`, is the only code of the repository that uses `unsafe` (ADR 0058).
+
+### Build report
+
+- The report is `una.report/2` (ADR 0055):
+  - a section `native` gives the host target, and the `Int` parameters and results that stay at arbitrary precision;
+  - the `out_of_model` entry "interpreter stack exhaustion" is now "stack exhaustion".
+
+### Release archives
+
+- Each archive also ships the runtime library, as `lib/libuna_rt.a` beside `una` (ADR 0059). Building natively needs the system `cc`.
+
 ## v0.1.2
 
 A patch release of Una Core with agent-facing fixes, shipped before the Gate 1 full run. Report schema versions are unchanged (D-148).

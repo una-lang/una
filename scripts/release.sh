@@ -1,7 +1,8 @@
 #!/bin/sh
-# Builds `una` in release mode and packs it with the license and the readme into
-# target/release-archives/una-<version>-<target>.tar.gz, with its SHA-256 digest beside it in
-# a .sha256 file (ADR 0035 rule 3). Each target builds natively on its own
+# Builds `una` and the native runtime library in release mode and packs them with the license
+# and the readme into target/release-archives/una-<version>-<target>.tar.gz, with `una`,
+# `lib/libuna_rt.a`, `LICENSE` and `README.md`, and its SHA-256 digest beside it in a .sha256
+# file (ADR 0035 rule 3, ADR 0059). Each target builds natively on its own
 # runner, so TARGET must be the host's.
 #
 # Usage: scripts/release.sh TARGET
@@ -25,12 +26,13 @@ if [ "$target" != "$host" ]; then
     exit 2
 fi
 
-cargo build --release --locked --package una-cli
+cargo build --release --locked --package una-cli --package una-rt
 name="una-$version-$target"
 out="$root/target/release-archives"
 rm -rf "${out:?}/$name" "$out/$name.tar.gz" "$out/$name.tar.gz.sha256"
-mkdir -p "$out/$name"
+mkdir -p "$out/$name/lib"
 cp target/release/una LICENSE README.md "$out/$name/"
+cp target/release/libuna_rt.a "$out/$name/lib/"
 tar -C "$out" -czf "$out/$name.tar.gz" "$name"
 rm -rf "${out:?}/$name"
 cd "$out"
