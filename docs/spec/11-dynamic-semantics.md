@@ -122,3 +122,5 @@ For each example, the harness builds `H0` from its `given` lines (one fresh inst
 ## 7. Limits
 
 The interpreter enforces a maximum call depth (default 10,000 frames, `--max-depth`). Exceeding it aborts with runtime diagnostic U6003. This is outside the noninterference model (`spec/07 §1`). The depth counts the calls of functions, predicates, lambdas, policies and handler operations in progress. The evaluator runs with a stack sized from the maximum depth, and aborts with U6003 when that stack runs short before the depth does, so it never overflows (ADR 0032).
+
+(v0.2, ADR 0060.) A value has no depth limit, and only calls count toward the call depth. A value can be deeper than the call depth, since a `for` loop builds it without calls (`spec/17 §4`). Releasing, comparing, rendering and tracing a value MUST NOT recurse on the native stack over its structure, in the interpreter and in a native backend's runtime (`spec/16`).
