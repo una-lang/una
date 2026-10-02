@@ -32,6 +32,7 @@ postfix         = [ "edit" ] primary { "." lower_ident [ call_args ] | call_args
 - A method receiver marked `edit` is written before the receiver: `edit total.record(e)`.
 - `old` is a keyword. `old(x)` appears only in `ensures` clauses (§3.6).
 - An `if_stmt` is a block-form `if` without `else`, and it appears only where a statement can appear. A block whose last element would be an `if_stmt` gets `unit` as its final expression.
+- A block whose last element is an `assign_stmt` also gets `unit` as its final expression, as in a `Unit` function that ends by updating an `edit` parameter.
 - `for` is already a keyword (`handler h for K`).
 
 ## 2. Places and editable bindings
@@ -48,14 +49,16 @@ postfix         = [ "edit" ] primary { "." lower_ident [ call_args ] | call_args
 1. **Declaration.** A parameter declared `edit x: T` is passed in and out: the function receives the caller's value and returns its final value with its result. A parameter declared `take x: T` consumes its argument.
 2. **Call-site markers.** A caller writes `edit p` exactly where the parameter is declared `edit`, and `take a` exactly where it is declared `take`. A marker on a plain parameter, or a missing marker, is U2020.
    - **Method receivers** follow the same rule: `edit total.record(e)` passes `total` to a first parameter declared `edit`.
-   - **The argument of `edit`** is a place (§2).
-   - **The argument of `take`** is a binding, not a field.
+   - **The argument of `edit`** is a place (§2). An argument that is not a place, as in `f(edit g(x))`, is U2020. A place rooted at a binding that is not editable is U2019 (§2.3).
+   - **The argument of `take`** is a binding, not a field: `f(take r.f)` is U2020. Any local binding can be taken: a plain `let`, a `let edit` or a parameter. Only an assignment revives it (rule 3), so a plain binding stays taken.
 3. **Affine `take`.**
    - After `take a`, every use of `a` is U2017, until an assignment to `a` gives it a new value. Only a `let edit` binding can be reassigned.
    - A binding taken in one branch of an `if` or a `when` counts as taken after the construct.
    - A binding taken in a loop body is taken in every iteration after the first, which is U2017. A binding taken in a loop body is therefore assigned before the end of the body, or is declared inside it.
 4. **Exclusivity.** In one call, an `edit p` argument together with any other use of the root binding of `p`, in the same call or as another `edit` or `take` argument, is U2018. This holds even for disjoint fields: `f(edit r.x, y: r.y)` is U2018.
 5. **One effect per line.** A call with an `edit` or `take` argument is the whole `line_expr` of a statement or a `let` (U3013, `spec/02 §8`). As for any call, a statement call of a non-`Unit` type is U2011, so its result is bound with `let`.
+   - A lambda body is not a statement, so a call with a marker there is U3013.
+   - **Known limit of v0.2.** A `do` line of an example is not a statement either, and it has no editable binding, so a call with a marker there is U3013. An example exercises a convention through a function that takes a plain argument and edits a local copy, as in `let edit copy = n`, `bump(edit copy)`, `copy`.
 6. **`old`.**
    - In an `ensures` clause, an `edit` parameter `x` denotes its final value, and `old(x)` its value on entry.
    - `old(x)` is legal only in `ensures`, and only on an `edit` parameter: U2012 elsewhere, as for `result`.

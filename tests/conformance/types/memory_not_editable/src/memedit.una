@@ -1,0 +1,59 @@
+-- test: only a `let edit` binding or an `edit` parameter is assigned or passed as `edit`, and a lambda cannot update a binding it captures (spec/17 §2, §5 rule 4)
+-- spec: spec/17 §2, §5
+-- expect: error U2019 at src/memedit.una:22:3
+-- expect: error U2019 at src/memedit.una:27:3
+-- expect: error U2019 at src/memedit.una:33:3
+-- expect: error U2019 at src/memedit.una:39:12
+-- expect: error U3013 at src/memedit.una:45:25
+-- expect: error U2019 at src/memedit.una:45:34
+-- expect: error U2019 at src/memedit.una:50:3
+module memedit
+
+pub kind Tally
+  count: Int
+
+add(edit t: Tally) -> Unit
+=
+  t.count = t.count + 1
+
+pub plain_let() -> Int
+=
+  let n = 1
+  n = 2
+  n
+
+pub plain_param(n: Int) -> Int
+=
+  n = n + 1
+  n
+
+pub plain_field() -> Int
+=
+  let t = Tally(count: 0)
+  t.count = 1
+  t.count
+
+pub plain_argument() -> Int
+=
+  let t = Tally(count: 0)
+  add(edit t)
+  t.count
+
+pub captured() -> Int
+=
+  let edit t = Tally(count: 0)
+  let f = fn(x: Int) -> add(edit t)
+  t.count
+
+pub take_param(take xs: List[Int]) -> Int
+=
+  xs = [1]
+  xs.len
+
+pub revived() -> Int
+=
+  let edit n = 1
+  n = 2
+  let edit t = Tally(count: n)
+  add(edit t)
+  t.count

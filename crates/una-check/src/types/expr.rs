@@ -1230,6 +1230,7 @@ impl<'a> Checker<'_, 'a, '_> {
             pc_from: None,
             ..self.ctx.clone()
         };
+        self.lambda_bodies.push(unparenthesized(body).span);
         let body_ty = self.within(ctx, |checker| {
             let found = checker.expr(body, result.as_ref());
             if let Some(result) = &result {
@@ -1238,6 +1239,7 @@ impl<'a> Checker<'_, 'a, '_> {
             }
             found
         });
+        self.lambda_bodies.pop();
         self.lambda_depth -= 1;
         self.base = base;
         self.frames = frames;
@@ -1506,5 +1508,13 @@ fn return_paths(expr: &Expr) -> Vec<Span> {
         ExprKind::Paren(inner) => return_paths(inner),
         ExprKind::Fail(_) => Vec::new(),
         _ => vec![expr.span],
+    }
+}
+
+/// `expr` without its enclosing parentheses.
+fn unparenthesized(expr: &Expr) -> &Expr {
+    match &expr.kind {
+        ExprKind::Paren(inner) => unparenthesized(inner),
+        _ => expr,
     }
 }

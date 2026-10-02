@@ -1,0 +1,44 @@
+-- test: a call with an `edit` or `take` argument is the whole expression of a statement or `let`, not an operand, an argument, a condition or a lambda body (spec/17 §3 rule 5)
+-- spec: spec/17 §3
+-- expect: error U3013 at src/memeffect.una:19:11
+-- expect: error U3013 at src/memeffect.una:25:12
+-- expect: error U3013 at src/memeffect.una:31:25
+-- expect: error U3013 at src/memeffect.una:37:6
+module memeffect
+
+next(edit n: Int) -> Int
+=
+  n = n + 1
+  n
+
+eat(take xs: List[Int]) -> Int = xs.len
+
+pub in_operand() -> Int
+=
+  let edit n = 1
+  let m = next(edit n) + 1
+  m
+
+pub in_argument() -> Int
+=
+  let xs = [1]
+  let m = [eat(take xs)].len
+  m
+
+pub in_lambda() -> Int
+=
+  let xs = [1]
+  let f = fn(x: Int) -> eat(take xs)
+  0
+
+pub in_condition() -> Int
+=
+  let edit n = 1
+  if next(edit n) > 1 then 1 else 0
+
+pub whole_line() -> Int
+=
+  let edit n = 1
+  let m = next(edit n)
+  n = next(edit n)
+  m + n

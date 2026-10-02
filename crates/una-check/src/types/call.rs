@@ -457,7 +457,8 @@ impl<'a> Checker<'_, 'a, '_> {
                 .receiver_marker
                 .as_ref()
                 .is_some_and(|(marker, _)| marker.is_some());
-        if marked && !site.top && self.pass == super::authority::Pass::Check {
+        let statement = site.top && !self.lambda_bodies.contains(&span);
+        if marked && !statement && self.pass == super::authority::Pass::Check {
             self.report.error(
                 Code::U3013,
                 span,

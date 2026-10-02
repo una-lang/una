@@ -69,10 +69,16 @@ impl<'a> Checker<'_, 'a, '_> {
                 Stmt::Assign(stmt) => {
                     self.outside_rl(stmt.span, || "an assignment".to_owned());
                     self.assign(stmt);
+                    if is_last && tail {
+                        self.returned_value(stmt.span, &Ty::Unit, expected, role);
+                    }
                 }
                 Stmt::IfThen(stmt) => {
                     self.outside_rl(stmt.span, || "`if` without `else`".to_owned());
                     self.if_then(stmt);
+                    if is_last && tail {
+                        self.returned_value(stmt.span, &Ty::Unit, expected, role);
+                    }
                 }
                 Stmt::Handled(handled) if is_last => {
                     ty = self.handled(handled, expected, role, tail);
@@ -426,10 +432,13 @@ impl<'a> Checker<'_, 'a, '_> {
         role: Role<'_>,
         tail: bool,
     ) -> Ty {
-        match expr {
+        let ty = match expr {
             BlockExpr::When(when) => self.when(when, expected, role, tail),
             BlockExpr::If(block) => self.if_block(block, expected, role, tail),
-        }
+        };
+        // The value of a join, in the desugar of the memory model (`spec/17 §4`).
+        self.typed(block_expr_span(expr), &ty);
+        ty
     }
 
     fn if_block(
