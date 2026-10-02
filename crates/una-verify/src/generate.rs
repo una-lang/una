@@ -1178,6 +1178,14 @@ impl<'p, 'i> Walker<'p, 'i> {
                                     .collect();
                                 ctx.define(F::or(paths));
                             }
+                            // The list of a `together for` has one element per task (`spec/19
+                            // §4` rule 2).
+                            if let Expr::TogetherFor { source, .. } = inner
+                                && let Some(length) = self.len(&x)
+                                && let Some(count) = self.task_count(source, &ctx)
+                            {
+                                ctx.define(F::eq(length, count));
+                            }
                         }
                     }
                     if name.starts_with('%') && !self.temps.contains_key(name.as_str()) {
@@ -2358,6 +2366,43 @@ impl<'p, 'i> Walker<'p, 'i> {
         let sort = value.f.sort();
         let is_text_or_list = sort == TEXT || sort.starts_with(LIST);
         is_text_or_list.then(|| len_of(&value.f))
+    }
+
+    /// How many tasks a `together for` over `source` runs: the length of its list, or the
+    /// number of integers of its range, zero when it is empty.
+    fn task_count(&mut self, source: &LoopSource, ctx: &Ctx) -> Option<F> {
+        match source {
+            LoopSource::List(list) => {
+                let list = self.atom(list, ctx);
+                self.len(&list)
+            }
+            LoopSource::Range {
+                low,
+                high,
+                inclusive,
+            } => {
+                let low = self.atom(low, ctx).f;
+                let high = self.atom(high, ctx).f;
+                if low.sort() != "Int" || high.sort() != "Int" {
+                    return None;
+                }
+                let (nonempty, count) = if *inclusive {
+                    (
+                        F::op("<=", vec![low.clone(), high.clone()]),
+                        F::op(
+                            "+",
+                            vec![F::op("-", vec![high, low]), F::Int("1".to_owned())],
+                        ),
+                    )
+                } else {
+                    (
+                        F::op("<", vec![low.clone(), high.clone()]),
+                        F::op("-", vec![high, low]),
+                    )
+                };
+                Some(F::op("ite", vec![nonempty, count, F::Int("0".to_owned())]))
+            }
+        }
     }
 
     /// The obligations of a primitive of fixed-width integers (`spec/18 §3`, `§5`): an
