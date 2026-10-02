@@ -80,7 +80,7 @@ pub kind Bin[T]
 pub kind NonEmpty[T] = List[T] where it.len > 0
 ```
 
-Built-in types: `Int` (unbounded), `Nat` (`Int` at least 0), `Bool`, `Text`, `Unit`, `List[T]` (`[a, b]`, `xs.len`), `Option[T]` (`Some(value)`, `None`), `Result[T, E]` (`Ok(value)`, `Err(failure)`), `Hashed` (from `Keys` only) and function types `fn(A) -> B`. Records and sums are nominal; aliases and refinements are their base type. Recursive kinds go only through `List` or `Option`.
+Built-in types: `Int` (unbounded), `Nat` (`Int` at least 0), `Bool`, `Text`, `Unit`, `List[T]` (`[a, b]`, `xs.len`), `Option[T]` (`Some(value)`, `None`), `Result[T, E]` (`Ok(value)`, `Err(failure)`), `Hashed` (from `Keys` only) and function types `fn(A) -> B`. Records and sums are nominal; aliases and refinements are their base type. Recursive kinds go only through `List` or `Option` in edition `0.1`; edition `0.2` allows any recursion with a base variant, as `kind Expr = Lit(value: Int) | Add(left: Expr, right: Expr)` (ADR 0060).
 
 ## 5. Functions
 
