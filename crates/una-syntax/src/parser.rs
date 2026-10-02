@@ -13,12 +13,13 @@ use crate::ast::{
     ModulePath, OpClause, OpClauseKind, OpDecl, Param, Pattern, PatternKind, PolicyDecl,
     PredicateDecl, Range, RequirementDecl, RequirementSource, SignedInt, Stmt, TextLit, TextPart,
     Type, TypeCore, UnaryOp, UsesClause, Variant, VariantExpr, WhenExpr,
+    AssignStmt, Convention, IfThenStmt,
 };
 use crate::error::{SyntaxError, SyntaxRepair};
 use crate::intern::Interner;
 use crate::lexer::{Lexed, starts_declaration};
 use crate::source::{FileId, Span};
-use crate::token::{Comment, Keyword, Token, TokenKind};
+use crate::token::{Comment, Keyword, KeywordSet, Token, TokenKind};
 
 /// The result of parsing one file.
 #[derive(Clone, Debug)]
@@ -49,6 +50,7 @@ pub fn parse(lexed: &Lexed, file: FileId, interner: &Interner) -> Parsed {
         unit_start: 0,
         nesting: 0,
         errors: Vec::new(),
+        v0_2: lexed.keywords == KeywordSet::V0_2,
     };
     let tree = parser.file();
     Parsed {
@@ -68,6 +70,8 @@ enum IfForm {
     Line(Expr),
     /// An `if` with indented blocks.
     Block(IfBlock),
+    /// An `if` with a block and no `else`, in edition 0.2.
+    Then(IfThenStmt),
 }
 
 /// The canonical order of a group of clauses, for U0102.
@@ -126,6 +130,8 @@ struct Parser<'a> {
     /// The nesting depth of the construct being parsed.
     nesting: usize,
     errors: Vec<SyntaxError>,
+    /// Whether the constructs of edition 0.2 parse (`spec/17 §1`).
+    v0_2: bool,
 }
 
 fn is_layout(kind: &TokenKind) -> bool {
@@ -973,10 +979,12 @@ impl<'a> Parser<'a> {
 
     fn param(&mut self) -> Parse<Param> {
         let start = self.span();
+        let convention = self.convention();
         let name = self.lower_name("a parameter name")?;
         self.expect(&TokenKind::Colon, "`:` and the parameter's type")?;
         let ty = self.ty()?;
         Ok(Param {
+            convention,
             name,
             ty,
             span: self.since(start),
@@ -1451,16 +1459,63 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::If) => match self.if_statement()? {
                 IfForm::Line(expr) => Ok(Stmt::Handled(self.handled_rest(expr)?)),
                 IfForm::Block(block) => Ok(Stmt::BlockExpr(BlockExpr::If(block))),
+                IfForm::Then(stmt) => Ok(Stmt::IfThen(Box::new(stmt))),
             },
             _ => {
                 let expr = self.line_expr()?;
+                // Edition 0.2: `place = value` (`spec/17 §1`).
+                if self.v0_2 && self.at(&TokenKind::Eq) {
+                    self.advance();
+                    let value = self.let_value()?;
+                    let span = expr.span.to(self.last_end.unwrap_or(expr.span));
+                    return Ok(Stmt::Assign(Box::new(AssignStmt {
+                        place: expr,
+                        value,
+                        span,
+                    })));
+                }
                 Ok(Stmt::Handled(self.handled_rest(expr)?))
             }
         }
     }
 
+    /// The value of a `let` or an assignment: a `when`, an `if`, or a handled line.
+    fn let_value(&mut self) -> Parse<LetValue> {
+        Ok(match self.peek() {
+            TokenKind::Keyword(Keyword::When) => {
+                LetValue::BlockExpr(BlockExpr::When(self.when_expr()?))
+            }
+            TokenKind::Keyword(Keyword::If) => match self.if_statement()? {
+                IfForm::Line(expr) => LetValue::Handled(self.handled_rest(expr)?),
+                IfForm::Block(block) => LetValue::BlockExpr(BlockExpr::If(block)),
+                IfForm::Then(stmt) => {
+                    return Err(self.report(
+                        stmt.span,
+                        "an `if` that gives a value needs `else`".to_owned(),
+                    ));
+                }
+            },
+            _ => {
+                let expr = self.line_expr()?;
+                LetValue::Handled(self.handled_rest(expr)?)
+            }
+        })
+    }
+
+    /// A parameter convention or call-site marker, `edit` or `take`, in edition 0.2.
+    fn convention(&mut self) -> Option<Convention> {
+        if self.eat_keyword(Keyword::Edit) {
+            Some(Convention::Edit)
+        } else if self.eat_keyword(Keyword::Take) {
+            Some(Convention::Take)
+        } else {
+            None
+        }
+    }
+
     fn let_stmt(&mut self) -> Parse<LetStmt> {
         let start = self.advance();
+        let editable = self.eat_keyword(Keyword::Edit);
         let name = self.lower_name("a name")?;
         let ty = if self.eat(&TokenKind::Colon) {
             Some(self.ty()?)
@@ -1468,20 +1523,9 @@ impl<'a> Parser<'a> {
             None
         };
         self.expect(&TokenKind::Eq, "`=` and the value")?;
-        let value = match self.peek() {
-            TokenKind::Keyword(Keyword::When) => {
-                LetValue::BlockExpr(BlockExpr::When(self.when_expr()?))
-            }
-            TokenKind::Keyword(Keyword::If) => match self.if_statement()? {
-                IfForm::Line(expr) => LetValue::Handled(self.handled_rest(expr)?),
-                IfForm::Block(block) => LetValue::BlockExpr(BlockExpr::If(block)),
-            },
-            _ => {
-                let expr = self.line_expr()?;
-                LetValue::Handled(self.handled_rest(expr)?)
-            }
-        };
+        let value = self.let_value()?;
         Ok(LetStmt {
+            editable,
             name,
             ty,
             value,
@@ -1751,6 +1795,18 @@ impl<'a> Parser<'a> {
             return Ok(IfForm::Line(self.if_line_rest(start, condition)?));
         }
         self.expect(&TokenKind::Newline, "`then` or end of line")?;
+        // Edition 0.2: an `if` with a block and no `else` is a `Unit` statement.
+        if self.v0_2 {
+            let then_block = self.indented_block()?;
+            if !self.at_keyword(Keyword::Else) {
+                return Ok(IfForm::Then(IfThenStmt {
+                    condition,
+                    block: then_block,
+                    span: self.since(start),
+                }));
+            }
+            return Ok(IfForm::Block(self.if_block_else(start, condition, then_block)?));
+        }
         Ok(IfForm::Block(self.if_block(start, condition)?))
     }
 
@@ -1778,6 +1834,11 @@ impl<'a> Parser<'a> {
     /// The blocks of an `if` whose condition line has ended.
     fn if_block(&mut self, start: Span, condition: Expr) -> Parse<IfBlock> {
         let then_block = self.indented_block()?;
+        self.if_block_else(start, condition, then_block)
+    }
+
+    /// The `else` part of an `if` with blocks, after its then-block.
+    fn if_block_else(&mut self, start: Span, condition: Expr, then_block: Block) -> Parse<IfBlock> {
         self.expect_keyword(Keyword::Else)?;
         let otherwise = if self.at_keyword(Keyword::If) {
             let else_if = self.advance();
@@ -2043,6 +2104,22 @@ impl<'a> Parser<'a> {
     }
 
     fn postfix(&mut self) -> Parse<Expr> {
+        // Edition 0.2: `edit` before a method call marks its receiver (`spec/17 §1`).
+        if self.at_keyword(Keyword::Edit) {
+            let start = self.advance();
+            let mut expr = self.postfix()?;
+            return match &mut expr.kind {
+                ExprKind::MethodCall { receiver, .. } if receiver.is_none() => {
+                    *receiver = Some(Convention::Edit);
+                    expr.span = start.to(expr.span);
+                    Ok(expr)
+                }
+                _ => Err(self.report(
+                    start,
+                    "`edit` marks an argument, as in `f(edit x)`, or the receiver of a method call, as in `edit total.record(e)`".to_owned(),
+                )),
+            };
+        }
         let outer = self.nesting;
         let mut expr = self.primary()?;
         loop {
@@ -2054,6 +2131,7 @@ impl<'a> Parser<'a> {
                     let span = self.since(expr.span);
                     Expr {
                         kind: ExprKind::MethodCall {
+                            receiver: None,
                             target: Box::new(expr),
                             name,
                             args,
@@ -2114,9 +2192,16 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        let value = self.line_expr()?;
+        // Edition 0.2: `edit place` or `take name` (`spec/17 §3`).
+        let marker = self.convention();
+        let value = if marker.is_some() {
+            self.postfix()?
+        } else {
+            self.line_expr()?
+        };
         Ok(Arg {
             label,
+            marker,
             value,
             span: self.since(start),
         })
@@ -2131,6 +2216,14 @@ impl<'a> Parser<'a> {
                 ExprKind::Literal(self.literal()?)
             }
             TokenKind::LowerIdent(_) => ExprKind::Name(self.lower_name("a name")?),
+            // Edition 0.2: `old(e)` (`spec/17 §3`).
+            TokenKind::Keyword(Keyword::Old) => {
+                self.advance();
+                self.expect(&TokenKind::LParen, "`(` after `old`")?;
+                let inner = self.line_expr()?;
+                self.expect(&TokenKind::RParen, "`)`")?;
+                ExprKind::Old(Box::new(inner))
+            }
             TokenKind::Reserved(name) => {
                 // A word reserved for a later version, whose U0103 the lexer reported, is
                 // skipped when an expression follows it (`return x * 2`) and read as a name

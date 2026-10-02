@@ -82,7 +82,7 @@ impl Spacer {
                 | T::Reserved(_)
                 | T::RParen
                 | T::RBracket
-                | T::Keyword(Keyword::Fn | Keyword::Checked),
+                | T::Keyword(Keyword::Fn | Keyword::Checked | Keyword::Old),
                 T::LParen,
             ) => false,
             (T::LowerIdent(_) | T::UpperIdent(_) | T::Reserved(_), T::LBracket) => false,

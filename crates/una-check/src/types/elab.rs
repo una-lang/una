@@ -1107,6 +1107,8 @@ impl<'e, 'a> Fx<'e, 'a> {
         };
         for (index, stmt) in block.stmts.iter().enumerate() {
             match stmt {
+                // Stage 1 of #29: the memory model is not desugared yet.
+                Stmt::Assign(_) | Stmt::IfThen(_) => self.broken = true,
                 Stmt::Let(stmt) => {
                     let (value, span) = match &stmt.value {
                         LetValue::Handled(handled) => (self.handled(handled), handled.expr.span),
@@ -1576,6 +1578,10 @@ impl<'e, 'a> Fx<'e, 'a> {
     fn atom(&mut self, lets: &mut Vec<Let>, expr: &Expr) -> Atom {
         let span = expr.span;
         match &expr.kind {
+            ExprKind::Old(_) => {
+                self.broken = true;
+                Atom::Unit
+            }
             ExprKind::Literal(literal) => self.literal_atom(lets, literal, span),
             ExprKind::Paren(inner) => self.atom(lets, inner),
             ExprKind::Name(ident) => {
