@@ -888,6 +888,7 @@ dependencies = [
  "una-diag",
  "una-fmt",
  "una-interp",
+ "una-lsp",
  "una-project",
  "una-report",
  "una-syntax",
@@ -948,6 +949,15 @@ dependencies = [
  "una-core",
  "una-diag",
  "una-syntax",
+]
+
+[[package]]
+name = "una-lsp"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "pretty_assertions",
+ "serde_json",
+ "una-diag",
 ]
 
 [[package]]

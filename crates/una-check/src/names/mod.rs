@@ -56,9 +56,16 @@ pub struct RunInput<'a> {
 
 /// The name diagnostics of `package`.
 pub fn check_names(package: &PackageInput<'_>) -> Vec<Diagnostic> {
+    check_names_indexed(package).0
+}
+
+/// [`check_names`], with each name that resolves to a declaration or a local of the package
+/// and the span of its declaration, for the language server (ADR 0063).
+pub fn check_names_indexed(package: &PackageInput<'_>) -> (Vec<Diagnostic>, Vec<(Span, Span)>) {
     let mut checker = Checker {
         package,
         diagnostics: Vec::new(),
+        references: Vec::new(),
     };
     let mut tables: Vec<Table<'_>> = package
         .modules
@@ -78,7 +85,7 @@ pub fn check_names(package: &PackageInput<'_>) -> Vec<Diagnostic> {
             resolve::module(&mut checker, table, &requirements);
         }
     }
-    checker.diagnostics
+    (checker.diagnostics, checker.references)
 }
 
 /// What an imported name refers to.
@@ -151,6 +158,9 @@ struct Table<'a> {
 struct Checker<'p, 'a> {
     package: &'p PackageInput<'a>,
     diagnostics: Vec<Diagnostic>,
+    /// Each name that resolves to a declaration or a local of the package, and where that is
+    /// declared (ADR 0063).
+    references: Vec<(Span, Span)>,
 }
 
 impl<'p, 'a> Checker<'p, 'a> {

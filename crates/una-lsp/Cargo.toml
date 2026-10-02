@@ -1,0 +1,18 @@
+[package]
+name = "una-lsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "The language server of `una lsp` (ADR 0063)"
+
+[dependencies]
+una-diag.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+
+[lints]
+workspace = true

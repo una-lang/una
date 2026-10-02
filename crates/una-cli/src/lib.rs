@@ -9,6 +9,7 @@
 mod args;
 mod build;
 mod contract;
+mod lsp;
 mod package;
 mod report;
 mod runtime;
@@ -21,9 +22,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use clap::Parser;
-use una_check::{
-    Header, ModuleInput, PackageInput, PendingObligation, RunInput, check_names, check_types,
-};
+use una_check::{Header, ModuleInput, PackageInput, PendingObligation, RunInput, check_types};
 use una_diag::{Code, Diagnostic, render_human, render_json};
 use una_syntax::ast::File;
 use una_syntax::{FileId, Interner, KeywordSet, Lexed, SourceDb, lex_in, parse};
@@ -123,6 +122,10 @@ struct Analysis {
     program: una_core::Program,
     entry: Option<String>,
     pending: Vec<PendingObligation>,
+    /// Each name that resolves to a declaration or a local, and its declaration (ADR 0063).
+    references: Vec<(una_syntax::Span, una_syntax::Span)>,
+    /// What the type checker resolved, by span (ADR 0063).
+    index: una_check::Index,
 }
 
 /// Checks `package`; with `run_grants`, for `una run`, whose grants are final (U3012).
@@ -178,7 +181,8 @@ fn analyze(package: &Package, run_grants: Option<&[String]>) -> Analysis {
         settings: &manifest,
         run,
     };
-    diagnostics.extend(check_names(&input));
+    let (names, references) = una_check::check_names_indexed(&input);
+    diagnostics.extend(names);
     let types = check_types(&input);
     diagnostics.extend(types.diagnostics);
     Analysis {
@@ -189,6 +193,8 @@ fn analyze(package: &Package, run_grants: Option<&[String]>) -> Analysis {
         program: types.program,
         entry,
         pending: types.obligations,
+        references,
+        index: types.index,
     }
 }
 
@@ -398,6 +404,7 @@ where
                 runtime::test_command(&path, options, stdout, stderr)
             }
             Command::Explain { code } => explain_command(&code, cli.json, stdout, stderr),
+            Command::Lsp => lsp::serve(stdout),
         },
         // clap reports `--help` as an error that belongs on stdout with exit code 0.
         Err(error) => {

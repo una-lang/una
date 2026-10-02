@@ -18,6 +18,7 @@ una-core.workspace = true
 una-diag.workspace = true
 una-fmt.workspace = true
 una-interp.workspace = true
+una-lsp.workspace = true
 una-project.workspace = true
 una-report.workspace = true
 una-syntax.workspace = true

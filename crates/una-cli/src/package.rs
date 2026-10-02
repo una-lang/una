@@ -29,7 +29,18 @@ pub struct Package {
 
 /// Loads the package at `path` (ADR 0021 rule 1).
 pub fn load(path: &Path) -> Result<Package, LoadError> {
-    let loaded = discover(path)?;
+    load_with(path, &BTreeMap::new())
+}
+
+/// Loads the package at `path`, with the text of `overlay` in place of the files it names:
+/// the unsaved buffers of an editor (ADR 0063 rule 4).
+pub fn load_with(path: &Path, overlay: &BTreeMap<PathBuf, String>) -> Result<Package, LoadError> {
+    let mut loaded = discover(path)?;
+    for file in &mut loaded.files {
+        if let Some(text) = overlay.get(&file.path) {
+            file.bytes = text.as_bytes().to_vec();
+        }
+    }
     let mut package = Package {
         sources: SourceDb::new(),
         single: loaded.single,
