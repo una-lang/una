@@ -1,20 +1,3 @@
 # Runnable programs that the native backend does not compile yet (#26), by repository path.
 # The differential test (crates/una-cli/tests/native.rs) requires this list to be exact.
-docs/reviews/v0.1-rereview/adversarial/rv-link-case                       `Files.write`
-docs/reviews/v0.1-rereview/adversarial/rv-link-chain                      `Files.write`
-docs/reviews/v0.1-rereview/adversarial/rv-link-dangling                   `Files.read`
-docs/reviews/v0.1-rereview/adversarial/rv-link-grant-prefix               `Files.write`
-docs/reviews/v0.1-rereview/adversarial/rv-link-hardlink                   `Files.write`
-docs/reviews/v0.1-rereview/adversarial/rv-link-intermediate               `Files.write`
-docs/reviews/v0.1-rereview/adversarial/rv-link-lexical                    `Files.write`
-docs/reviews/v0.1-review/adversarial/flow-main-failure-payload.una        `Env.get`
-docs/reviews/v0.1-review/adversarial/runtime-files-dangling-link          `Files.write`
-docs/reviews/v0.1-review/adversarial/runtime-host-trace-redaction         `Env.get`
-examples/greenhouse                                                       `with`
-examples/journal                                                          `Files.read`
-examples/shortlinks                                                       `with`
-examples/toolshelf                                                        `Clock.now`
 tests/conformance/runtime/fixed_width_methods                             fixed-width integers (#28)
-tests/conformance/runtime/handlers.una                                    `with`
-tests/conformance/runtime/op_arg_names                                    `with`
-tests/conformance/security/main_failure_payload.una                       `Env.get`

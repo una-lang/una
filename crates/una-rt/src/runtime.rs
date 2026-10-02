@@ -2,22 +2,24 @@
 //! trace of a native executable (`spec/16 §3`). [`crate::ffi`] calls it from the C ABI.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use una_diag::{Code, Diagnostic, Location, Position, render_human};
-use una_interp::{Event, EventOutcome, Grant};
+use una_interp::{Event, Grant};
 
-use crate::render::Failure;
+use crate::host::OpSite;
+use crate::render::{Failure, Types};
 use crate::values;
 
 /// The exit code of a usage error (`spec/13 §5`, ADR 0036).
 const USAGE: i32 = 2;
 
 /// What `una build` embeds in the executable (`spec/16 §2`), as JSON: the `[run] grants`, every
-/// `uses` of `main` with its operations and where it is written, and where each call of the
-/// program is written, for U6003.
+/// `uses` of `main` with its operations and where it is written, where each call of the
+/// program is written, for U6003, and the types and operations that traces and U6001 render.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Meta {
     /// The grant specs of `[run] grants`.
@@ -26,6 +28,10 @@ pub struct Meta {
     pub uses: Vec<Need>,
     /// The calls of the program, by the index that the generated code passes on each call.
     pub sites: Vec<Location>,
+    /// The types the program renders.
+    pub types: Types,
+    /// The operations of the program, by the index the generated code passes on each one.
+    pub ops: Vec<OpSite>,
     /// What U6001 needs when `main` can fail.
     pub failure: Option<Failure>,
 }
@@ -79,17 +85,31 @@ impl Meta {
                 .collect::<Option<Vec<_>>>()?,
             None => Vec::new(),
         };
+        let types = match value.get("types") {
+            Some(types) => Types::parse(types)?,
+            None => Types::default(),
+        };
+        let ops = match value.get("ops") {
+            Some(ops) => ops
+                .as_array()?
+                .iter()
+                .map(OpSite::parse)
+                .collect::<Option<Vec<_>>>()?,
+            None => Vec::new(),
+        };
         let failure = match value.get("failure") {
-            Some(failure) => Some(Failure::parse(
-                failure,
-                location(failure.get("location")?)?,
-            )?),
+            Some(failure) => Some(Failure {
+                location: location(failure.get("location")?)?,
+                root: crate::render::index(failure, "root")?,
+            }),
             None => None,
         };
         Some(Meta {
             grants,
             uses,
             sites,
+            types,
+            ops,
             failure,
         })
     }
@@ -158,18 +178,32 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
 }
 
 /// The state of a run, on the thread that runs `main`.
-struct State {
-    trace: Option<Vec<Event>>,
+pub(crate) struct State {
+    pub(crate) trace: Option<Vec<Event>>,
     trace_path: Option<PathBuf>,
-    failed_write: Option<io::Error>,
+    pub(crate) failed_write: Option<io::Error>,
     depth: usize,
     max_depth: usize,
     sites: Vec<Location>,
     failure: Option<Failure>,
+    /// The grants of the run, and the keys of its `keys:` grants.
+    pub(crate) grants: Vec<Grant>,
+    pub(crate) keys: BTreeMap<String, Vec<u8>>,
+    pub(crate) types: Types,
+    pub(crate) ops: Vec<OpSite>,
+    /// Whether the last host operation failed.
+    pub(crate) host_failed: bool,
+    /// The number of instances of each handler that `with` installed so far.
+    pub(crate) installs: BTreeMap<String, usize>,
 }
 
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
+}
+
+/// `f` of the state of the run, when the thread runs `main`.
+pub(crate) fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> {
+    STATE.with(|cell| cell.borrow_mut().as_mut().map(f))
 }
 
 /// Runs the executable: parses the command line, checks `main`'s capabilities against the
@@ -191,7 +225,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
             return USAGE;
         }
     };
-    let grants = match grants(&meta, &options) {
+    let (grants, keys) = match grants(&meta, &options) {
         Ok(grants) => grants,
         Err(message) => {
             let _ = writeln!(stderr, "error: {message}");
@@ -223,6 +257,12 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         max_depth: options.max_depth,
         sites: meta.sites,
         failure: meta.failure,
+        grants,
+        keys,
+        types: meta.types,
+        ops: meta.ops,
+        host_failed: false,
+        installs: BTreeMap::new(),
     };
     let worker = std::thread::Builder::new()
         .name("una-main".to_owned())
@@ -300,11 +340,17 @@ fn finish(state: State) -> i32 {
     code
 }
 
+/// The keys of a run's `keys:` grants, by name; the first grant with a name wins, as in
+/// `una run`.
+type Keys = BTreeMap<String, Vec<u8>>;
+
 /// The grants of the run: the embedded `[run] grants`, then the `--grant` flags, every
-/// relative path resolved against the current directory (`spec/16 §3`). Key files are read
-/// and parsed here, so that an unreadable or invalid one is a usage error before `main`.
-fn grants(meta: &Meta, options: &Options) -> Result<Vec<Grant>, String> {
+/// relative path resolved against the current directory (`spec/16 §3`), and their keys. Key
+/// files are read and parsed here, so that an unreadable or invalid one is a usage error
+/// before `main`.
+fn grants(meta: &Meta, options: &Options) -> Result<(Vec<Grant>, Keys), String> {
     let mut grants = Vec::new();
+    let mut keys = Keys::new();
     for spec in meta.grants.iter().chain(&options.grants) {
         let Some(grant) = Grant::parse(spec, Path::new("")) else {
             return Err(format!(
@@ -315,13 +361,16 @@ fn grants(meta: &Meta, options: &Options) -> Result<Vec<Grant>, String> {
             let text = std::fs::read_to_string(file).map_err(|error| {
                 format!("cannot read the key file `{}`: {error}", file.display())
             })?;
-            una_interp::parse_keys(&text).map_err(|reason| {
+            let loaded = una_interp::parse_keys(&text).map_err(|reason| {
                 format!("the key file `{}` is invalid: {reason}", file.display())
             })?;
+            for (name, key) in loaded {
+                keys.entry(name).or_insert(key);
+            }
         }
         grants.push(grant);
     }
-    Ok(grants)
+    Ok((grants, keys))
 }
 
 /// U3012 for each `uses` of `main` whose capability no grant provides, as `una run` reports
@@ -390,10 +439,14 @@ pub fn main_failed(failure: i64) {
     let _ = io::stdout().flush();
     let diagnostic = STATE.with(|cell| {
         let cell = cell.borrow();
-        let described = cell.as_ref()?.failure.as_ref()?;
+        let state = cell.as_ref()?;
+        let described = state.failure.as_ref()?;
         Some(Diagnostic::error(
             Code::U6001,
-            format!("`main` failed with `{}`", described.shown(failure)),
+            format!(
+                "`main` failed with `{}`",
+                state.types.shown(described.root, failure)
+            ),
             described.location.clone(),
         ))
     });
@@ -412,35 +465,6 @@ pub fn leave() {
     STATE.with(|cell| {
         if let Some(state) = cell.borrow_mut().as_mut() {
             state.depth = state.depth.saturating_sub(1);
-        }
-    });
-}
-
-/// `Console.print` of the text `line`: writes it and a newline to stdout, and records the event
-/// (`spec/14 §3`, `spec/11 §5`).
-pub fn console_print(line: i64) {
-    let line = values::text_value(line);
-    let mut stdout = io::stdout().lock();
-    let written = writeln!(stdout, "{line}").and_then(|()| stdout.flush());
-    STATE.with(|state| {
-        let mut state = state.borrow_mut();
-        let Some(state) = state.as_mut() else {
-            return;
-        };
-        if let Err(error) = written
-            && state.failed_write.is_none()
-        {
-            state.failed_write = Some(error);
-        }
-        if let Some(trace) = state.trace.as_mut() {
-            trace.push(Event {
-                seq: trace.len() + 1,
-                instance: "host:Console".to_owned(),
-                capability: "Console".to_owned(),
-                op: "print".to_owned(),
-                args: vec![("line".to_owned(), una_core::quote(&line))],
-                outcome: EventOutcome::Ok("unit".to_owned()),
-            });
         }
     });
 }

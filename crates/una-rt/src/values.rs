@@ -45,25 +45,37 @@ enum Object {
     List(Vec<i64>),
     /// A closure: the address of its code, and the values it captures.
     Closure { code: i64, env: Vec<i64> },
+    /// A keyed hash.
+    Hashed(Vec<u8>),
+    /// An instance of a capability (`spec/11 §2`): its id in traces, the code of each of its
+    /// operations in the capability's order (none for a host instance), and the values and
+    /// instances its handler holds.
+    Instance {
+        id: String,
+        code: Vec<i64>,
+        cells: Vec<i64>,
+    },
 }
 
 impl Object {
     /// The words the object references.
     fn cells(&self) -> &[i64] {
         match self {
-            Object::Int(_) | Object::Text(_) => &[],
+            Object::Int(_) | Object::Text(_) | Object::Hashed(_) => &[],
             Object::Data { fields, .. } => fields,
             Object::List(items) => items,
             Object::Closure { env, .. } => env,
+            Object::Instance { cells, .. } => cells,
         }
     }
 
     fn cells_mut(&mut self) -> Option<&mut Vec<i64>> {
         match self {
-            Object::Int(_) | Object::Text(_) => None,
+            Object::Int(_) | Object::Text(_) | Object::Hashed(_) => None,
             Object::Data { fields, .. } => Some(fields),
             Object::List(items) => Some(items),
             Object::Closure { env, .. } => Some(env),
+            Object::Instance { cells, .. } => Some(cells),
         }
     }
 }
@@ -466,16 +478,18 @@ fn equal_words(a: i64, b: i64) -> bool {
     enum Shape {
         Int(BigInt),
         Text(String),
+        Bytes(Vec<u8>),
         Cells(Option<i64>, Vec<i64>),
-        Closure,
+        Opaque,
     }
     let shape = |word: i64| {
         with(word, |object| match object {
             Object::Int(value) => Shape::Int(value.clone()),
             Object::Text(text) => Shape::Text(text.clone()),
+            Object::Hashed(bytes) => Shape::Bytes(bytes.clone()),
             Object::Data { tag, fields } => Shape::Cells(Some(*tag), fields.clone()),
             Object::List(items) => Shape::Cells(None, items.clone()),
-            Object::Closure { .. } => Shape::Closure,
+            Object::Closure { .. } | Object::Instance { .. } => Shape::Opaque,
         })
     };
     let mut pending = vec![(a, b)];
@@ -489,6 +503,7 @@ fn equal_words(a: i64, b: i64) -> bool {
         match (shape(a), shape(b)) {
             (Some(Shape::Int(x)), Some(Shape::Int(y))) if x == y => {}
             (Some(Shape::Text(x)), Some(Shape::Text(y))) if x == y => {}
+            (Some(Shape::Bytes(x)), Some(Shape::Bytes(y))) if x == y => {}
             (Some(Shape::Cells(tx, x)), Some(Shape::Cells(ty, y)))
                 if tx == ty && x.len() == y.len() =>
             {
@@ -500,6 +515,69 @@ fn equal_words(a: i64, b: i64) -> bool {
     true
 }
 
+/// A new keyed hash.
+pub fn hashed_word(bytes: Vec<u8>) -> i64 {
+    alloc(Object::Hashed(bytes))
+}
+
+/// The bytes of a keyed hash.
+pub fn bytes(word: i64) -> Vec<u8> {
+    with(word, |object| match object {
+        Object::Hashed(bytes) => bytes.clone(),
+        _ => Vec::new(),
+    })
+    .unwrap_or_default()
+}
+
+/// A new instance of a capability with the id `id`, whose operations' code [`push_op`] adds
+/// in the capability's order, and whose handler's values and instances [`push`] adds.
+pub fn instance(id: String) -> i64 {
+    alloc(Object::Instance {
+        id,
+        code: Vec::new(),
+        cells: Vec::new(),
+    })
+}
+
+/// Adds the code of the next operation to `instance`, which the caller has just made.
+pub fn push_op(instance: i64, code: i64) {
+    let Some(index) = slot(instance) else {
+        return;
+    };
+    HEAP.with(|heap| {
+        if let Some(Object::Instance { code: ops, .. }) = heap
+            .borrow_mut()
+            .slots
+            .get_mut(index)
+            .and_then(|slot| slot.object.as_mut())
+        {
+            ops.push(code);
+        }
+    });
+}
+
+/// The code of operation `index` of `instance`: 0 for a host instance, whose operations the
+/// runtime performs.
+pub fn op_code(instance: i64, index: i64) -> i64 {
+    with(instance, |object| match object {
+        Object::Instance { code, .. } => usize::try_from(index)
+            .ok()
+            .and_then(|i| code.get(i).copied())
+            .unwrap_or(0),
+        _ => 0,
+    })
+    .unwrap_or(0)
+}
+
+/// The id of an instance in traces.
+pub fn instance_id(instance: i64) -> String {
+    with(instance, |object| match object {
+        Object::Instance { id, .. } => id.clone(),
+        _ => String::new(),
+    })
+    .unwrap_or_default()
+}
+
 /// The variant `Some(value)` of `Option`, with `value` retained.
 fn some(value: i64) -> i64 {
     let word = data(0);
@@ -508,7 +586,14 @@ fn some(value: i64) -> i64 {
 }
 
 /// The variant `None` of `Option`.
-const NONE: i64 = (1 << 1) | 1;
+pub const NONE: i64 = (1 << 1) | 1;
+
+/// `Some(value)`, owning a reference to `value`, which the caller passes on.
+pub fn some_owned(value: i64) -> i64 {
+    let option = some(value);
+    release(value);
+    option
+}
 
 fn items(list: i64) -> Vec<i64> {
     with(list, |object| object.cells().to_vec()).unwrap_or_default()

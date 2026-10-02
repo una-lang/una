@@ -806,6 +806,10 @@ pub struct CapOp {
     pub result: Type,
     /// The error kind.
     pub fails: Option<String>,
+    /// The error kind's declaration, by its qualified identity (`spec/09 §3`), when it is
+    /// resolved: what a failure of the operation holds, which a native trace renders
+    /// (`spec/16 §3`).
+    pub error: Option<Box<Path>>,
     /// The `requires` clauses, over the parameters.
     pub requires: Vec<Clause>,
     /// The `ensures` clauses, over the parameters and `result`.

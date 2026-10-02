@@ -916,6 +916,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                         params,
                         result,
                         fails: op.fails.as_ref().map(|f| self.kind_name(f)),
+                        error: op.fails.as_ref().and_then(|f| self.kind_path(f)),
                         requires,
                         ensures,
                         accepts: op.accepts.clone(),
