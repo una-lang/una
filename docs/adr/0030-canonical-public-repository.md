@@ -26,3 +26,13 @@ Una was developed in a private repository whose history carries names and materi
 
 - **Rewriting the legacy history:** forbidden by the run's rules, and it would still carry the earlier names in other places.
 - **Publishing the legacy repository:** exposes the earlier names and material.
+
+## Amendment (2026-10-02)
+
+The runner rule changes to spare the Actions minutes of the private repository (#151, Leonardo, 2026-10-02):
+- `push` triggers CI only on `main` and on release tags, and a branch is tested by the run of its pull request, so no change runs twice.
+- Linux runs every time.
+- macOS runs on pushes to `main`, on release tags and on manual runs. On a pull request, it runs only when the pull request touches what differs between the targets: the native backend (`crates/una-codegen`, `crates/una-rt`, `una build`), the release scripts, the workflows or `Cargo.lock`.
+- Compiled dependencies and the Z3 install are cached.
+
+`.github/workflows/ci.yml` states the rule. D-083, in `docs/history/v0.1/`, keeps the rule of v0.1.
