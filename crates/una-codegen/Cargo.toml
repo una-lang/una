@@ -14,6 +14,7 @@ cranelift-module.workspace = true
 cranelift-object.workspace = true
 target-lexicon.workspace = true
 una-core.workspace = true
+una-syntax.workspace = true
 
 [lints]
 workspace = true

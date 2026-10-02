@@ -384,14 +384,14 @@ fn a_construct_the_backend_does_not_compile_yet_is_named() {
         "\n[run]\nentry = \"sum\"\ngrants = [\"console\"]\n",
         &[(
             "src/sum.una",
-            "module sum\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let n = 1 + 2\n  @console.print(\"{n}\")\n",
+            "module sum\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let n = [1, 2].len\n  @console.print(\"{n}\")\n",
         )],
     );
     let output = una(&dir, &["build"]);
     assert_eq!(output.status.code(), Some(2));
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
-        "error: the native backend does not compile arithmetic, comparisons and other primitive operations yet (#26)\n"
+        "error: the native backend does not compile lists yet (#26)\n"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
