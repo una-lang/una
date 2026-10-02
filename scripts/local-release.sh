@@ -77,8 +77,10 @@ cp "$checkout/target/release-archives/una-$version-aarch64-apple-darwin.tar.gz" 
 echo "== x86_64-unknown-linux-gnu, in the linux/amd64 container, from $commit"
 toolchain=$(sed -n 's/^channel *= *"\([^"]*\)"$/\1/p' "$checkout/rust-toolchain.toml")
 image="una-local-ci:$toolchain"
+# The image comes from this checkout's scripts/local-ci, which a tag made before it lacks; the
+# toolchain is the one the tag's commit pins.
 docker build --platform linux/amd64 --build-arg "TOOLCHAIN=$toolchain" --tag "$image" \
-    "$checkout/scripts/local-ci" || fail "the container image did not build"
+    "$root/scripts/local-ci" || fail "the container image did not build"
 name="una-$version-x86_64-unknown-linux-gnu.tar.gz"
 docker run --rm --platform linux/amd64 \
     --volume "$checkout:/work" \
