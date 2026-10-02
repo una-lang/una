@@ -23,3 +23,7 @@
 ## Alternatives considered
 
 - **Authenticate or re-validate entries now (E6 B).** Not chosen: a new mechanism before v0.1 closes.
+
+## Amendment (2026-10-02)
+
+Rule 1 is superseded by ADR 0064: cache entries carry a tag under the user's key, and the key, not the cache, is in the Trusted zone. Rules 2 and 3 stand, and rule 3's deferred item is done.

@@ -19,6 +19,7 @@ fn repository() -> PathBuf {
 /// Runs `una --json <args>` in `dir`: the exit code and the one document on stdout.
 fn una(dir: &Path, args: &[&str]) -> (i32, Value) {
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .arg("--json")
         .args(args)
         .current_dir(dir)
@@ -164,6 +165,7 @@ example \"a second after midnight\"
 
     // 5. A usage error is the only output outside a document: exit code 2 and stderr.
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .args(["--json", "check", "no-such-package"])
         .current_dir(&root)
         .output()

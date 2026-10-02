@@ -18,6 +18,7 @@ fn repository() -> PathBuf {
 
 fn una(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .args(args)
         .current_dir(repository())
         .output()
@@ -276,6 +277,7 @@ pub first() -> Int = book(4321)
     let empty = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("no-solver-path");
     std::fs::create_dir_all(&empty).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .args(["--json", "check", root.to_str().unwrap()])
         .env("PATH", &empty)
         .output()
@@ -299,6 +301,7 @@ pub first() -> Int = book(4321)
     );
     // Tier 0 needs no solver.
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .args(["check", "--tier", "0", root.to_str().unwrap()])
         .env("PATH", &empty)
         .output()
@@ -420,6 +423,7 @@ fn a_query_the_solver_rejects_is_u8001_and_exits_with_3() {
     std::fs::set_permissions(&solver, std::fs::Permissions::from_mode(0o755)).unwrap();
     let _ = std::fs::remove_dir_all(root.join(".una"));
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .args(["--json", "check", root.to_str().unwrap()])
         .env("PATH", &bin)
         .output()
@@ -821,61 +825,6 @@ fn a_function_value_repair_guards_every_precondition_v12_003() {
 }
 
 #[test]
-fn a_forged_proof_cache_entry_is_trusted_and_counted_as_cached() {
-    // R-018, ADR 0041, adversarial `escape-proof-cache-forgery`: the proof cache is part of
-    // the Trusted zone in v0.1. A forged entry turns a refuted query into proven, as the
-    // boundary states, and the report counts that result as one from the cache.
-    let root = package(
-        "escape-proof-cache-forgery",
-        &[(
-            "src/div0.una",
-            "module div0\n\npub f(x: Int) -> Int = x / 0\n",
-        )],
-    );
-    let path = root.to_str().unwrap();
-    let output = una(&["--json", "report", path]);
-    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
-    let report: Value = serde_json::from_str(stdout(&output)).unwrap();
-    assert_eq!(
-        report["obligations"],
-        json!({"proven": 0, "refuted": 1, "unknown": 0, "cached": 0})
-    );
-    assert_eq!(report["tcb"]["proof_cache"], ".una/cache/");
-    let output = una(&["check", path]);
-    assert_eq!(output.status.code(), Some(1));
-    assert!(stderr(&output).contains("U5001"), "{}", stderr(&output));
-    let entries: Vec<PathBuf> = std::fs::read_dir(root.join(".una/cache/proofs"))
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .collect();
-    assert_eq!(entries.len(), 1, "{entries:?}");
-    std::fs::write(
-        &entries[0],
-        r#"{"status":"proven","reason":null,"values":[]}"#,
-    )
-    .unwrap();
-    let output = una(&["check", path]);
-    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    let output = una(&["--json", "report", path]);
-    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    let report: Value = serde_json::from_str(stdout(&output)).unwrap();
-    assert_eq!(
-        report["obligations"],
-        json!({"proven": 1, "refuted": 0, "unknown": 0, "cached": 1})
-    );
-    let output = una(&["obligations", path]);
-    assert!(
-        stdout(&output).trim_end().ends_with(" (cached)"),
-        "{}",
-        stdout(&output)
-    );
-    // A clean cache verifies everything again.
-    std::fs::remove_dir_all(root.join(".una")).unwrap();
-    let output = una(&["check", path]);
-    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
-}
-
-#[test]
 fn a_function_value_flowing_into_a_function_type_names_its_obligation() {
     // ADR 0037 rules 2 to 6 (F-0001-02, R-013): the goal names the position and the binder,
     // the counterexample binds the binder by its source name, and the only repair is a
@@ -1199,4 +1148,69 @@ fn an_overflow_repair_guards_with_code_that_verifies_issue_28() {
         let output = una(&["check", root.to_str().unwrap()]);
         assert_eq!(output.status.code(), Some(0), "{name}: {}", stderr(&output));
     }
+}
+
+#[test]
+fn a_forged_or_foreign_cache_entry_is_solved_again() {
+    // ADR 0064 (v0.1 review R-018): an entry is an answer only under the user's key, so an edit
+    // of `.una/cache/proofs/` cannot turn a refutation into a proof.
+    let scratch = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("forgery");
+    let _ = std::fs::remove_dir_all(&scratch);
+    let package = scratch.join("div0");
+    std::fs::create_dir_all(package.join("src")).unwrap();
+    let source =
+        repository().join("docs/reviews/v0.1-review/adversarial/escape-proof-cache-forgery");
+    for file in ["una.toml", "verification.lock", "src/div0.una"] {
+        std::fs::copy(source.join(file), package.join(file)).unwrap();
+    }
+    let run = |home: &str, key: Option<&Path>, args: &[&str]| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_una"));
+        command
+            .env("HOME", scratch.join(home))
+            .env_remove("UNA_PROOF_KEY")
+            .args(args)
+            .arg(&package);
+        if let Some(key) = key {
+            command.env("UNA_PROOF_KEY", key);
+        }
+        command.output().unwrap()
+    };
+    let report = |home: &str, key: Option<&Path>| {
+        let output = run(home, key, &["--json", "report"]);
+        let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        (
+            document["obligations"]["cached"].clone(),
+            document["tcb"]["proof_cache_key"].clone(),
+        )
+    };
+    let refuted =
+        |output: &Output| output.status.code() == Some(1) && stderr(output).contains("U5001");
+    // The first run solves and caches the refutation under the key it makes.
+    assert!(refuted(&run("alice", None, &["check"])));
+    assert_eq!(
+        report("alice", None),
+        (json!(1), json!("~/.una/proof-cache.key"))
+    );
+    // R-018's forgery: every entry overwritten with a bare `proven`.
+    let proofs = package.join(".una/cache/proofs");
+    for entry in std::fs::read_dir(&proofs).unwrap() {
+        let path = entry.unwrap().path();
+        std::fs::write(&path, r#"{"status":"proven","reason":null,"values":[]}"#).unwrap();
+    }
+    assert!(refuted(&run("alice", None, &["check"])));
+    // Another user's key does not authenticate alice's entries; the query is solved again.
+    assert_eq!(
+        report("bob", None),
+        (json!(0), json!("~/.una/proof-cache.key"))
+    );
+    // With no key to read, the cache is off.
+    let unreadable = scratch.join("a-directory");
+    std::fs::create_dir_all(&unreadable).unwrap();
+    assert_eq!(report("alice", Some(&unreadable)), (json!(0), json!(null)));
+    // The override names the key file, as the report shows it.
+    let named = scratch.join("team.key");
+    std::fs::write(&named, [7u8; 32]).unwrap();
+    let shown = json!(named.to_str().unwrap());
+    assert_eq!(report("carol", Some(&named)).1, shown);
+    let _ = std::fs::remove_dir_all(&scratch);
 }

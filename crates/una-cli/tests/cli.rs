@@ -15,6 +15,7 @@ const EMPTY_LIST: &str = "{\"schema\":\"una.diagnostics/1\",\"diagnostics\":[]}\
 /// Runs the `una` binary from the repository root.
 fn una(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .args(args)
         .current_dir(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .output()
@@ -141,6 +142,7 @@ fn check_json_is_byte_identical_across_runs() {
         let first = una(&["check", "--json", target]);
         let second = una(&["check", "--json", target]);
         let single = Command::new(env!("CARGO_BIN_EXE_una"))
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
             .args(["check", "--json", target])
             .env("RAYON_NUM_THREADS", "1")
             .current_dir(&repository)
@@ -569,6 +571,7 @@ fn check_reports_project_file_errors_and_still_checks_the_modules() {
 fn una_in(dir: &std::path::Path, args: &[&str]) -> Output {
     let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .args(args)
         .current_dir(repository.join(dir))
         .output()

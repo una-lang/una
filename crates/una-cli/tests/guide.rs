@@ -106,6 +106,7 @@ fn scratch(line: usize) -> PathBuf {
 
 fn check(target: &Path) -> (Output, Vec<String>) {
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .args(["--json", "check", target.to_str().unwrap()])
         .output()
         .unwrap();
@@ -197,6 +198,7 @@ fn every_block_of_the_guide_is_checked() {
                     }
                     let args: Vec<&str> = words.split_whitespace().skip(1).collect();
                     let output = Command::new(env!("CARGO_BIN_EXE_una"))
+                        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
                         .args(&args)
                         .current_dir(&dir)
                         .output()

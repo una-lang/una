@@ -19,6 +19,7 @@ fn every_demo_script_finds_its_expected_outcomes() {
     assert!(!scripts.is_empty(), "scripts/demo holds no demo script");
     for script in scripts {
         let output = Command::new("sh")
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
             .arg(&script)
             .arg(env!("CARGO_BIN_EXE_una"))
             .current_dir(&root)
