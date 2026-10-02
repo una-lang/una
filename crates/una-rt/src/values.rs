@@ -690,6 +690,24 @@ pub fn append(xs: i64, item: i64) -> i64 {
     list
 }
 
+/// `set(edit xs, index, item)` of the prelude (`spec/14 §1`, v0.2): a call with an `edit`
+/// parameter returns the parameter's new value with the result, so this is the tuple of the
+/// list with `item` at `index`, and `unit`. The list is copied: updating a list that nothing
+/// else holds in place is #30. Its `requires` keeps `index` in range; outside it, the list is
+/// unchanged.
+pub fn set(xs: i64, index: i64, item: i64) -> i64 {
+    let position = usize::try_from(&int_value(index)).ok();
+    let updated = list();
+    for (at, existing) in items(xs).into_iter().enumerate() {
+        push(updated, if Some(at) == position { item } else { existing });
+    }
+    let tuple = data(0);
+    push(tuple, updated);
+    release(updated);
+    push(tuple, 0);
+    tuple
+}
+
 /// `contains(xs, item)` of the prelude.
 pub fn contains(xs: i64, item: i64) -> i64 {
     bool_word(items(xs).into_iter().any(|x| equal_words(x, item)))

@@ -118,6 +118,7 @@ exported! {
     una_rt_at => values::at, (xs, index);
     una_rt_append => values::append, (xs, item);
     una_rt_contains => values::contains, (xs, item);
+    una_rt_set => values::set, (xs, index, item);
     una_rt_sum => values::sum, (xs);
     una_rt_or_else => values::or_else, (o, default);
     una_rt_op_code => values::op_code, (instance, index);
@@ -180,6 +181,12 @@ pub extern "C" fn una_rt_enter(site: i64) {
 #[unsafe(no_mangle)]
 pub extern "C" fn una_rt_main_failed(failure: i64) {
     runtime::main_failed(failure);
+}
+
+/// Checks the memory budget at an iteration of the loop at `site` (U6003 over it).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_budget(site: i64) {
+    runtime::budget(usize::try_from(site).unwrap_or(usize::MAX));
 }
 
 /// Leaves a call.
