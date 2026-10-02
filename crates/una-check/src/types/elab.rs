@@ -2064,12 +2064,27 @@ impl<'e, 'a> Fx<'e, 'a> {
         self.scope.truncate(mark);
         self.tail_wrap = wrap;
         self.current_join = join;
-        close(
-            lets,
+        // Bound to a temporary, so that the verifier gives the list its length wherever it
+        // stands (`spec/19 §4` rule 2).
+        let t = self.temp();
+        let ty = self.type_at(together.span);
+        bind_expr(
+            &mut lets,
+            t.clone(),
+            ty,
             CoreExpr::TogetherFor {
                 source: Box::new(source),
                 var: Box::new(var),
                 task: Box::new(task),
+                span: together.span,
+            },
+            together.span,
+            false,
+        );
+        close(
+            lets,
+            CoreExpr::Atom {
+                atom: Atom::Var(t),
                 span: together.span,
             },
         )
