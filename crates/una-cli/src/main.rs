@@ -2,8 +2,16 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+use std::alloc::System;
 use std::io::IsTerminal;
 use std::process::ExitCode;
+
+use cap::Cap;
+
+/// The allocator of the process, which counts the bytes it holds and fails past a ceiling, for
+/// the memory limit of runs (ADR 0061).
+#[global_allocator]
+static ALLOCATOR: Cap<System> = Cap::new(System, usize::MAX);
 
 fn main() -> ExitCode {
     let stdout = std::io::stdout();
@@ -16,6 +24,13 @@ fn main() -> ExitCode {
         &mut stderr.lock(),
         stderr_is_terminal,
         &environment,
+        una_cli::Heap {
+            held: &|| ALLOCATOR.allocated(),
+            ceiling: &|bytes| {
+                // A ceiling below what is held fails; the next check reports the run then.
+                let _ = ALLOCATOR.set_limit(bytes);
+            },
+        },
     );
     ExitCode::from(status.code())
 }

@@ -465,6 +465,67 @@ fn a_failure_of_main_is_described_by_the_kind_the_checker_resolved() {
 }
 
 #[test]
+fn an_executable_over_its_memory_budget_is_u6003() {
+    // ADR 0061 rule 2: the executable takes `--max-memory` as `una run` does, and the call that
+    // finds the run over its budget is U6003.
+    let program = "module hog\n\ngrow(t: Text, n: Int) -> Int = if n <= 0 then t.len else grow(\"{t}0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\", n: n - 1)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let size = grow(\"\", n: 9000)\n  @console.print(\"held {size}\")\n";
+    let dir = package(
+        "hog",
+        "\n[run]\nentry = \"hog\"\ngrants = [\"console\"]\n",
+        &[("src/hog.una", program)],
+    );
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let exe = dir.join("target/una/hog");
+    let output = Command::new(&exe)
+        .args(["--max-memory", "64"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.starts_with("[U6003] Error: this call exceeds the memory limit of 64 MiB\n"),
+        "{stderr}"
+    );
+    let output = Command::new(&exe)
+        .args(["--max-memory", "many"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_executable_stops_at_its_stack_whatever_its_max_depth() {
+    // ADR 0061 rule 1, ADR 0032: the stack is capped at 1 GiB, and a recursion that runs short
+    // of it before its depth limit is U6003, never a stack overflow.
+    let program = "module never\n\ncountdown(n: Int) -> Int = if n == 0 then 0 else countdown(n - 1)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let steps = countdown(-1)\n  @console.print(\"done {steps}\")\n";
+    let dir = package(
+        "never",
+        "\n[run]\nentry = \"never\"\ngrants = [\"console\"]\n",
+        &[("src/never.una", program)],
+    );
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let output = Command::new(dir.join("target/una/never"))
+        .args(["--max-depth", "100000000000"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.starts_with(
+            "[U6003] Error: this call exceeds the maximum call depth of 100000000000\n"
+        ),
+        "{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn the_executable_checks_main_against_its_grants() {
     runtime();
     // No `[run] grants`: `una build` accepts it, and the executable needs `--grant console`.

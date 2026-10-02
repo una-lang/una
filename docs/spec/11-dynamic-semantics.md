@@ -121,6 +121,12 @@ For each example, the harness builds `H0` from its `given` lines (one fresh inst
 
 ## 7. Limits
 
-The interpreter enforces a maximum call depth (default 10,000 frames, `--max-depth`). Exceeding it aborts with runtime diagnostic U6003. This is outside the noninterference model (`spec/07 §1`). The depth counts the calls of functions, predicates, lambdas, policies and handler operations in progress. The evaluator runs with a stack sized from the maximum depth, and aborts with U6003 when that stack runs short before the depth does, so it never overflows (ADR 0032).
+The interpreter enforces a maximum call depth (default 10,000 frames, `--max-depth`). Exceeding it aborts with runtime diagnostic U6003. This is outside the noninterference model (`spec/07 §1`). The depth counts the calls of functions, predicates, lambdas, policies and handler operations in progress. The evaluator runs with a stack sized from the maximum depth, capped at 1 GiB, and aborts with U6003 when that stack runs short before the depth does, so it never overflows (ADR 0032, ADR 0061).
 
 (v0.2, ADR 0060.) A value has no depth limit, and only calls count toward the call depth. A value can be deeper than the call depth, since a `for` loop builds it without calls (`spec/17 §4`). Releasing, comparing, rendering and tracing a value MUST NOT recurse on the native stack over its structure, in the interpreter and in a native backend's runtime (`spec/16`).
+
+(v0.2, ADR 0061.) A run also has a memory budget (default 4096 MiB, `--max-memory <MiB>`): the heap it holds beyond what the process held when it started.
+- **Checks.** The budget is checked at each call that the depth counts, so at each application in the prelude's higher-order functions, and at each iteration of a `for` loop.
+- **Over the budget.** A call or an iteration that finds the run over its budget aborts with U6003, `this call exceeds the memory limit of N MiB`, with the trace and status of a depth abort.
+- **Hard ceiling.** An allocation beyond twice the budget between two checks aborts the process.
+- **Determinism.** The depth limit is exact. The point where memory runs out is not, and it is outside the model. The guarantee is that a run over its budget ends with U6003, provided the machine can supply the budget.

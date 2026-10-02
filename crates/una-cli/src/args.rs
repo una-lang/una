@@ -111,6 +111,10 @@ pub(crate) enum Command {
         #[arg(long, value_name = "N", default_value_t = una_interp::DEFAULT_MAX_DEPTH)]
         max_depth: usize,
 
+        /// The memory a run may hold, in MiB
+        #[arg(long, value_name = "MIB", default_value_t = una_interp::DEFAULT_MAX_MEMORY)]
+        max_memory: usize,
+
         /// Stop a solver query after this many seconds; the obligation is then unknown
         #[arg(long, value_name = "SECONDS", default_value_t = 60)]
         solver_wallclock: u64,
@@ -138,6 +142,10 @@ pub(crate) enum Command {
         /// The maximum call depth
         #[arg(long, value_name = "N", default_value_t = una_interp::DEFAULT_MAX_DEPTH)]
         max_depth: usize,
+
+        /// The memory a run may hold, in MiB
+        #[arg(long, value_name = "MIB", default_value_t = una_interp::DEFAULT_MAX_MEMORY)]
+        max_memory: usize,
 
         /// Stop a solver query after this many seconds; the obligation is then unknown
         #[arg(long, value_name = "SECONDS", default_value_t = 60)]

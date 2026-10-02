@@ -96,6 +96,14 @@ pub enum Abort {
         /// The maximum depth.
         limit: usize,
     },
+    /// The call at this span finds the run over its memory budget (U6003, `spec/11 §7`,
+    /// ADR 0061).
+    Memory {
+        /// The call.
+        span: Span,
+        /// The budget, in MiB.
+        limit: usize,
+    },
     /// A fault that a checked and verified program cannot reach, such as a division by zero
     /// while proof obligations are not verified yet (ADR 0027).
     Fault {
@@ -397,6 +405,35 @@ fn host_params(capability: &str, op: &str) -> &'static [&'static str] {
     }
 }
 
+/// The limits of a run (`spec/11 §7`): its maximum call depth, and its memory budget, in MiB,
+/// with a probe of the bytes the process holds on the heap (ADR 0061). The machine never
+/// touches the allocator: the binary that counts allocations passes the probe.
+#[derive(Clone, Copy)]
+pub struct Limits<'a> {
+    /// The maximum call depth.
+    pub max_depth: usize,
+    /// The memory budget, in MiB.
+    pub max_memory: usize,
+    /// The bytes the process holds on the heap now.
+    pub held: &'a (dyn Fn() -> usize + Sync),
+}
+
+impl Limits<'_> {
+    /// The depth `max_depth`, with a memory budget nothing measures: for a caller that does not
+    /// count allocations.
+    pub fn depth(max_depth: usize) -> Limits<'static> {
+        Limits {
+            max_depth,
+            max_memory: usize::MAX,
+            held: &unmeasured,
+        }
+    }
+}
+
+fn unmeasured() -> usize {
+    0
+}
+
 /// The Una Abstract Machine: one run of `main` or of one example.
 pub(crate) struct Machine<'p, 'w> {
     index: &'w Index<'p>,
@@ -407,6 +444,11 @@ pub(crate) struct Machine<'p, 'w> {
     pub(crate) trace: Vec<Event>,
     depth: usize,
     max_depth: usize,
+    /// The memory budget in MiB, the probe of the heap, and what the heap held when the run
+    /// started, which does not count.
+    max_memory: usize,
+    held: &'w dyn Fn() -> usize,
+    baseline: usize,
     /// Where the evaluator's stack starts, and how much of it evaluation may use.
     stack_base: usize,
     stack_budget: usize,
@@ -417,14 +459,15 @@ pub(crate) struct Machine<'p, 'w> {
 
 impl<'p, 'w> Machine<'p, 'w> {
     /// A machine over `index`, with `world`, `grants` and the keys of `keys:` grants for host
-    /// capabilities, and a maximum call depth.
+    /// capabilities, and the limits of the run.
     pub(crate) fn new(
         index: &'w Index<'p>,
         world: &'w mut dyn World,
         grants: &'w [Grant],
         keys: &'w BTreeMap<String, Vec<u8>>,
-        max_depth: usize,
+        limits: Limits<'w>,
     ) -> Machine<'p, 'w> {
+        let max_depth = limits.max_depth;
         Machine {
             index,
             world,
@@ -433,6 +476,9 @@ impl<'p, 'w> Machine<'p, 'w> {
             trace: Vec::new(),
             depth: 0,
             max_depth,
+            max_memory: limits.max_memory,
+            held: limits.held,
+            baseline: (limits.held)(),
             stack_base: stack_position(&max_depth),
             stack_budget: crate::stack_bytes(max_depth)
                 .map_or(usize::MAX, |bytes| bytes.saturating_sub(STACK_RESERVE)),
@@ -479,13 +525,21 @@ impl<'p, 'w> Machine<'p, 'w> {
     }
 
     /// Enters a call: past the maximum depth, or when the stack the evaluator was given runs
-    /// short before it, the run aborts with U6003 rather than overflow the stack.
+    /// short before it, the run aborts with U6003 rather than overflow the stack, and so it
+    /// does when the heap the run holds is over its budget (ADR 0061).
     fn enter(&mut self, span: Span) -> Result<(), Stop<'p>> {
         let used = self.stack_base.abs_diff(stack_position(&span));
         if self.depth >= self.max_depth || used > self.stack_budget {
             return Err(Stop::Abort(Abort::Depth {
                 span,
                 limit: self.max_depth,
+            }));
+        }
+        let budget = self.max_memory.saturating_mul(1024 * 1024);
+        if (self.held)().saturating_sub(self.baseline) > budget {
+            return Err(Stop::Abort(Abort::Memory {
+                span,
+                limit: self.max_memory,
             }));
         }
         self.depth += 1;
@@ -1427,7 +1481,7 @@ mod tests {
         let keys = BTreeMap::new();
         let mut sources = una_syntax::SourceDb::new();
         let span = Span::at(sources.add("a.una", b"module a\n"), 0);
-        let mut machine = Machine::new(&index, &mut world, &[], &keys, 3);
+        let mut machine = Machine::new(&index, &mut world, &[], &keys, Limits::depth(3));
         for _ in 0..3 {
             assert!(machine.enter(span).is_ok());
         }
@@ -1437,7 +1491,7 @@ mod tests {
         ));
         // A stack used beyond the budget aborts in the same way, below the maximum depth.
         let mut world = crate::host::NoWorld;
-        let mut machine = Machine::new(&index, &mut world, &[], &keys, 3);
+        let mut machine = Machine::new(&index, &mut world, &[], &keys, Limits::depth(3));
         machine.stack_base = stack_position(&span).wrapping_add(4096);
         machine.stack_budget = 1024;
         assert!(matches!(
@@ -1446,6 +1500,38 @@ mod tests {
         ));
         machine.stack_budget = 1024 * 1024;
         assert!(machine.enter(span).is_ok());
+    }
+
+    #[test]
+    fn calls_stop_when_the_run_holds_more_than_its_memory_budget() {
+        let program = Program::default();
+        let index = Index::new(&program);
+        let mut world = crate::host::NoWorld;
+        let keys = BTreeMap::new();
+        let mut sources = una_syntax::SourceDb::new();
+        let span = Span::at(sources.add("a.una", b"module a\n"), 0);
+        // The heap held 100 MiB when the run started, which does not count.
+        let held = std::sync::atomic::AtomicUsize::new(100 << 20);
+        let probe = || held.load(std::sync::atomic::Ordering::Relaxed);
+        let limits = Limits {
+            max_depth: 10,
+            max_memory: 2,
+            held: &probe,
+        };
+        let mut machine = Machine::new(&index, &mut world, &[], &keys, limits);
+        held.store(
+            (100 << 20) + (2 << 20),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        assert!(machine.enter(span).is_ok());
+        held.store(
+            (100 << 20) + (2 << 20) + 1,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        assert!(matches!(
+            machine.enter(span),
+            Err(Stop::Abort(Abort::Memory { limit: 2, .. }))
+        ));
     }
 
     #[test]
