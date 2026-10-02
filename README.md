@@ -581,6 +581,10 @@ Tests that reach tier 1 need the pinned Z3 on `PATH`; without it they fail with 
 
 CI (`.github/workflows/ci.yml`) runs formatting, clippy and the tests on Linux for every pull request, push to `main` and release tag, and also on macOS for pushes to `main`, release tags, manual runs and the pull requests that touch the native backend, the release scripts, the workflows or `Cargo.lock`; a branch is tested by its pull request's run. Each run also packs the release archive of its runner's target and runs it on the examples. Compiled dependencies and the pinned Z3 are cached. Pushing a tag `v*` starts `.github/workflows/release.yml`, which builds the Linux and macOS archives with `scripts/release.sh`, checks them with `scripts/check-release.sh`, and attaches them to a draft release.
 
+While GitHub Actions is unavailable, both run on a Mac instead (ADR 0035, amendment on local CI):
+- **Checks.** `scripts/local-ci.sh` runs the CI steps in order: the solver check, formatting, clippy, the tests, and the release archive of the host's target. `scripts/local-ci.sh --linux` runs the same steps inside a `linux/amd64` container of CI's Ubuntu image (`scripts/local-ci/Dockerfile`, pinned by digest), which Docker emulates on an arm64 Mac. Each run ends with `PASS`, or with `FAIL` and the failed step, and a failure exits non-zero.
+- **Releases.** `scripts/local-release.sh <tag>` builds both archives from a clean checkout of the tag's commit, the macOS one natively and the Linux one in that container, and checks each with `scripts/check-release.sh`. It writes them with their digests and release notes to `target/local-release/<tag>/`, and prints the `gh release create` command that publishes them. It publishes nothing.
+
 Each usage checkpoint has a demo script that prints every command with its expected and actual outcome:
 
 ```bash

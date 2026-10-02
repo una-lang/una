@@ -45,3 +45,11 @@ Rule 3's note on CI follows the runner rule of ADR 0030, which changes to spare 
 - Compiled dependencies and the Z3 install are cached.
 
 `.github/workflows/ci.yml` states the rule. D-083, in `docs/history/v0.1/`, keeps the rule of v0.1.
+
+## Amendment (2026-10-02): local CI and releases
+
+While GitHub Actions is unavailable (Leonardo, 2026-10-02, #156), a Mac runs the checks and builds the releases:
+- **Checks.** `scripts/local-ci.sh` runs `ci.yml`'s steps on the host, and with `--linux` in a `linux/amd64` container of CI's Ubuntu image. A full local run on the merged tree, with fmt, clippy with warnings denied and `cargo test --workspace --locked`, is the check before a merge.
+- **Releases.** `scripts/local-release.sh <tag>` builds rule 3's two archives from a clean checkout of the tag's commit: `aarch64-apple-darwin` natively, and `x86_64-unknown-linux-gnu` in that container. Each is built with `scripts/release.sh` and checked with `scripts/check-release.sh`. The script prints the `gh release create` command, and the release notes say that the archives were built locally and from which commit.
+
+The release workflow stays, for when Actions returns.

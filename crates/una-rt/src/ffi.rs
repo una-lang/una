@@ -55,7 +55,7 @@ pub unsafe extern "C" fn una_rt_start(
 pub unsafe extern "C" fn una_rt_int_literal(digits: *const u8, len: usize) -> i64 {
     // SAFETY: the caller passes `len` bytes at `digits` (this function's contract).
     let text = unsafe { text(digits, len) }.unwrap_or_default();
-    values::int_literal(digits as usize, &text)
+    values::int_literal(&text)
 }
 
 /// The handle of the text literal of `len` UTF-8 bytes at `bytes`, borrowed: the runtime keeps
@@ -69,7 +69,7 @@ pub unsafe extern "C" fn una_rt_int_literal(digits: *const u8, len: usize) -> i6
 pub unsafe extern "C" fn una_rt_text_literal(bytes: *const u8, len: usize) -> i64 {
     // SAFETY: the caller passes `len` bytes at `bytes` (this function's contract).
     let text = unsafe { text(bytes, len) }.unwrap_or_default();
-    values::text_literal(bytes as usize, &text)
+    values::text_literal(&text)
 }
 
 /// The operations of [`crate::values`] that return a word, by word.
