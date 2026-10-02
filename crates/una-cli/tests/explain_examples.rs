@@ -104,7 +104,14 @@ fn codes(code: Code, name: &str, example: &Example, fixed: bool) -> Vec<Code> {
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
         let args = ["una", "--json", "run", target.to_str().unwrap()];
-        una_cli::run(args, &mut stdout, &mut stderr, false, &|_| None);
+        una_cli::run(
+            args,
+            &mut stdout,
+            &mut stderr,
+            false,
+            &|_| None,
+            una_cli::Heap::unmeasured(),
+        );
         let document: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
         return document["diagnostics"]
             .as_array()

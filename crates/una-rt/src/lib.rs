@@ -14,9 +14,30 @@
 //! process, so unlike the library crates it writes to stdout and stderr.
 #![deny(missing_docs)]
 
+use std::alloc::System;
+
+use cap::Cap;
+
 #[allow(unsafe_code)]
 pub mod ffi;
 pub mod host;
 pub mod render;
 pub mod runtime;
 pub mod values;
+
+/// The allocator of the executable, which counts the bytes it holds and fails past a ceiling,
+/// for the memory limit of runs (ADR 0061). The `cap` crate wraps the system allocator, so the
+/// runtime writes no `unsafe` for it.
+#[global_allocator]
+static ALLOCATOR: Cap<System> = Cap::new(System, usize::MAX);
+
+/// The bytes the process holds on the heap.
+pub(crate) fn held() -> usize {
+    ALLOCATOR.allocated()
+}
+
+/// Sets the ceiling past which an allocation fails; `usize::MAX` lifts it. A ceiling below what
+/// is held already is refused, and the next check reports the run.
+pub(crate) fn ceiling(bytes: usize) {
+    let _ = ALLOCATOR.set_limit(bytes);
+}

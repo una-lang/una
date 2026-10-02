@@ -273,6 +273,26 @@ fn on_large_stack<T: Send>(work: impl Fn() -> T + Sync) -> T {
 /// (`compiler/conventions.md §1`).
 pub type Environment<'a> = &'a (dyn Fn(&str) -> Option<String> + Sync);
 
+/// The heap of the process, as the binary counts it (ADR 0061): the bytes it holds, and how to
+/// set the ceiling past which an allocation fails. The library never touches the allocator.
+#[derive(Clone, Copy)]
+pub struct Heap<'a> {
+    /// The bytes the process holds on the heap now.
+    pub held: &'a (dyn Fn() -> usize + Sync),
+    /// Sets the ceiling, in bytes; `usize::MAX` lifts it.
+    pub ceiling: &'a (dyn Fn(usize) + Sync),
+}
+
+impl Heap<'static> {
+    /// A heap that nothing counts: every run is within its memory budget.
+    pub fn unmeasured() -> Heap<'static> {
+        Heap {
+            held: &|| 0,
+            ceiling: &|_| {},
+        }
+    }
+}
+
 /// Runs the `una` command line. `args` starts with the program name; `stderr_is_terminal`
 /// decides `--color auto`, since human diagnostics go to stderr (ADR 0015 D1).
 ///
@@ -283,6 +303,7 @@ pub fn run<I, T>(
     stderr: &mut dyn Write,
     stderr_is_terminal: bool,
     environment: Environment<'_>,
+    heap: Heap<'_>,
 ) -> ExitStatus
 where
     I: IntoIterator<Item = T>,
@@ -356,11 +377,14 @@ where
                 path,
                 grants,
                 max_depth,
+                max_memory,
                 solver_wallclock,
             } => {
                 let options = runtime::RunOptions {
                     grants: &grants,
                     max_depth,
+                    max_memory,
+                    heap,
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
                     environment,
@@ -385,11 +409,14 @@ where
             Command::Test {
                 path,
                 max_depth,
+                max_memory,
                 solver_wallclock,
             } => {
                 let options = runtime::RunOptions {
                     grants: &[],
                     max_depth,
+                    max_memory,
+                    heap,
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
                     environment,

@@ -31,7 +31,7 @@ Status: Normative, v0.2 (ADR 0055).
 
 1. **Output contract.** The executable follows the human contract of `una run` (`spec/13 §5`):
    - the lines the program prints go to stdout as it prints them;
-   - U6001 (a failure of `main`) and U6003 (stack exhaustion) go to stderr, with exit code 1;
+   - U6001 (a failure of `main`) and U6003 (call depth, stack or memory exhausted) go to stderr, with exit code 1;
    - exit code 0 when `main` returns.
 
    It has no `--json` output in v0.2.
@@ -39,8 +39,8 @@ Status: Normative, v0.2 (ADR 0055).
    - Its grants are the `[run] grants` embedded at build time, together with its own `--grant <spec>` flags, which take the grant specs of `spec/13 §5`.
    - Before `main` starts, it checks every `uses` of `main` against those grants. A `uses` they do not grant is U3012 on stderr, with exit code 1, and nothing runs.
    - Relative paths, those of embedded grants included, resolve against the executable's current directory, with the path rules of `una run`.
-   - A `--grant` value that is not a grant spec, an unreadable or invalid key file, and a `--max-depth` whose stack cannot be allocated are usage errors, exit code 2, as for `una run`.
-3. **Depth.** `--max-depth <n>` bounds the call depth as in `spec/11 §7`, with the same default. Exceeding it, or running short of stack before it, aborts with U6003; the executable never overflows its stack.
+   - A `--grant` value that is not a grant spec, an unreadable or invalid key file, a `--max-depth` or `--max-memory` that is not a number, and a `--max-depth` whose stack cannot be allocated are usage errors, exit code 2, as for `una run`.
+3. **Depth and memory.** `--max-depth <n>` bounds the call depth as in `spec/11 §7`, with the same default, on a stack capped at 1 GiB. Exceeding it, or running short of stack before it, aborts with U6003; the executable never overflows its stack. (v0.2, ADR 0061.) `--max-memory <MiB>` bounds the heap of the run as in `spec/11 §7`, with the same default, and exceeding it aborts with U6003, `this call exceeds the memory limit of N MiB`.
 4. **Traces.** `--trace <file>` writes the trace of `spec/11 §5` to `<file>` as a JSON array of events. Without the flag the executable records no trace.
 
 ## 4. Runtime representation
