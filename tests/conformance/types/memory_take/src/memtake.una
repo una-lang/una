@@ -1,11 +1,12 @@
--- test: a binding passed by `take` cannot be used again, also after a branch that takes it, through a field assignment or an `edit` argument, or as the final value of an `edit` parameter, until an assignment of the whole binding gives it a new value (spec/17 §3 rules 1 and 3)
+-- test: a binding passed by `take` cannot be used again, also after a branch that takes it, through a field assignment or an `edit` argument, as the final value of an `edit` parameter, or after an `if` without `else` that revives it on one path only, until an assignment of the whole binding gives it a new value on every path (spec/17 §3 rules 1 and 3)
 -- spec: spec/17 §3
--- expect: error U2017 at src/memtake.una:17:7
--- expect: error U2017 at src/memtake.una:25:3
--- expect: error U2017 at src/memtake.una:31:20
--- expect: error U2017 at src/memtake.una:67:3
--- expect: error U2017 at src/memtake.una:74:14
--- expect: error U2017 at src/memtake.una:79:20
+-- expect: error U2017 at src/memtake.una:18:7
+-- expect: error U2017 at src/memtake.una:26:3
+-- expect: error U2017 at src/memtake.una:32:20
+-- expect: error U2017 at src/memtake.una:68:3
+-- expect: error U2017 at src/memtake.una:75:14
+-- expect: error U2017 at src/memtake.una:80:20
+-- expect: error U2017 at src/memtake.una:95:3
 module memtake
 
 eat(take xs: List[Int]) -> Int = xs.len
@@ -84,3 +85,23 @@ pub retake_edit_param(edit xs: List[Int]) -> Int
   let n = eat(take xs)
   xs = [n]
   n
+
+pub revived_in_one_branch(c: Bool) -> Int
+=
+  let edit xs = [1]
+  let n = eat(take xs)
+  if c
+    xs = [2]
+  xs.len + n
+
+pub revived_on_every_path(c: Bool) -> Int
+=
+  let edit xs = [1]
+  let n = eat(take xs)
+  let u = if c
+    xs = [2]
+    unit
+  else
+    xs = [3]
+    unit
+  xs.len + n

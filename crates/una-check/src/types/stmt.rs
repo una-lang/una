@@ -229,10 +229,24 @@ impl<'a> Checker<'_, 'a, '_> {
     /// (`spec/17 §1`, `§6`).
     fn if_then(&mut self, stmt: &IfThenStmt) {
         let label = self.condition_label(&stmt.condition, "the condition of `if`");
+        let before: Vec<Option<Span>> = self.locals.iter().map(|local| local.taken).collect();
         let saved = self.raise_pc(&label, stmt.condition.span);
         let ty = self.block(&stmt.block, None, Role::Plain, false);
         self.restore_pc(saved);
         self.discarded(value_span(&stmt.block), &ty);
+        // The path that skips the block keeps the state from before it: a binding taken
+        // there and revived only in the block stays taken (`spec/17 §3` rule 3).
+        self.join_skipped(&before);
+    }
+
+    /// Joins the taken state with `before`, the state of a path that skipped a block: a
+    /// binding taken on either path stays taken (`spec/17 §3` rule 3).
+    pub(crate) fn join_skipped(&mut self, before: &[Option<Span>]) {
+        for (local, was) in self.locals.iter_mut().zip(before) {
+            if local.taken.is_none() {
+                local.taken = *was;
+            }
+        }
     }
 
     /// A line expression with its `with` bindings and handling clauses (`spec/06 §3`).
