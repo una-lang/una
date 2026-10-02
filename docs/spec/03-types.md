@@ -17,6 +17,8 @@ Status: Normative, v0.1.
 | `Hashed` | Opaque digests | Only produced by host capabilities (`spec/14`) |
 | `fn(A, B) -> C` | Lambdas and named functions | Not comparable, not storable in kinds if effectful (`spec/05 §6`) |
 
+(v0.2, ADR 0057.) Edition `0.2` adds the fixed-width integer types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`, with overflow obligations (`spec/18`). `Int` stays unbounded.
+
 Equality `==` and `!=` are structural and defined for every type except function types (U2001). Ordering `<`, `<=`, `>`, `>=` is defined for `Int`, `Text` (lexicographic by scalar value) and sum kinds whose variants have no payload (declaration order).
 
 ## 2. Kinds
