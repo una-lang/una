@@ -2,6 +2,32 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
+## v0.2.0-alpha.2
+
+The second pre-release of v0.2. It adds the second slice of the native backend and fixed-width integers in edition 0.2. Gate 1's benchmark stays pinned to v0.1.x.
+
+### Native backend (slice 2)
+
+- **What compiles now** (#112): `Int`, `Bool`, `Text` and `Unit` values, arithmetic, comparisons, `if`, `let`, text concatenation and interpolation, and calls between functions that do not fail.
+- **`Int` stays mathematical.** A small integer is one machine word, with inline fast paths for `+`, `-` and `*` that fall back to arbitrary precision on overflow. Division and remainder stay Euclidean.
+- **Call depth.** Native calls count toward `--max-depth`, as in the interpreter, and exceeding it is U6003 at the call site.
+- **The differential test** covers more of the suite. The programs not compiled yet, such as those with records and variants, lists, failures, `with` or fixed-width integers, stay listed in `tests/native/unsupported.txt` with the construct that is missing.
+
+### Fixed-width integers (edition 0.2)
+
+- **Edition 0.2** (ADR 0056): `edition = "0.2"` in `una.toml` enables the constructs of v0.2. Edition 0.1 packages are unchanged.
+- **`I8` to `I64` and `U8` to `U64`** (ADR 0057, `spec/18`, #28) are built-in kinds, distinct from `Int`, with explicit conversions (`x.to_u8()`, `x.to_int()`).
+  - A literal takes its type from its context. One that does not fit is U2022, a new code.
+  - Operands of different integer types are U2001.
+  - In clauses, every integer type reads as its mathematical `Int`.
+- **Overflow is a proof obligation.** Arithmetic on a fixed-width type and every narrowing conversion must be proven to fit, or the program is rejected with a counterexample. The first repair proposed is a guard.
+- **Wrapping, saturating and bit operations** are built-in methods with their argument labeled: `by` for arithmetic and shifts, `mask` for bit operations (ADR 0057, amendment of 2026-10-02). Wrapping and saturating methods have exact contracts; bit operations have partial range contracts.
+- The native backend does not compile fixed-width integers yet.
+
+### Specification
+
+- **The memory model** (ADR 0056, `spec/17`), mutable value semantics with `edit` and `take` parameters, is specified but not implemented yet.
+
 ## v0.2.0-alpha.1
 
 The first pre-release of v0.2, with the first slice of the native backend (ADR 0055, `spec/16`, #26). It runs in parallel with Gate 1, whose benchmark stays pinned to v0.1.x.
