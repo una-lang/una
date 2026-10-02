@@ -1,0 +1,24 @@
+-- test: a `let` whose value is another binding keeps that binding in scope, so both names stay usable (spec/09 §3)
+-- spec: spec/09 §3
+-- grant: console
+-- expect: run-output "1 1 2"
+-- expect: test-pass
+module conformance.runtime.let_of_a_binding
+
+pub both() -> Int
+=
+  let a = 1
+  let b = a
+  a + b
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let a = 1
+  let b = a
+  let c = both()
+  @console.print("{a} {b} {c}")
+
+example "the first binding stays in scope"
+  do both()
+  expect result == 2
