@@ -2,6 +2,14 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
+## v0.1.3
+
+A patch release of Una Core for the Gate 1 pin, cut from v0.1.2 with one fix. Edition 0.1 only; report schema versions are unchanged.
+
+### Fixes
+
+- **`let b = a` keeps `a` in scope** (issue #139). A `let` whose value is another binding no longer merges into that binding's `let`. Before, `una check` passed such a program, but `una run` and `una test` stopped with U8001 ("`a` is not bound") when both names were used, as in `let b = a` followed by `a + b`. The merge is meant only for the compiler's temporaries. The conformance case `runtime/let_of_a_binding` covers it.
+
 ## v0.2.0-alpha.2
 
 The second pre-release of v0.2. It adds the second slice of the native backend and fixed-width integers in edition 0.2. Gate 1's benchmark stays pinned to v0.1.x.
