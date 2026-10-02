@@ -1,0 +1,76 @@
+-- test: in edition 0.2, kinds contain themselves directly, mutually, generically and through a record, with exhaustive `when`, `is`, and contracts of recursive functions proven by induction on their own contracts (spec/03 §2 rule 5, spec/10 §12 rule 8, ADR 0060)
+-- spec: spec/03 §2
+-- expect: ok
+module rectour
+
+pub kind Nat = Int where it >= 0
+
+pub kind Expr = Lit(value: Int) | Add(left: Expr, right: Expr) | Neg(operand: Expr)
+
+--- Evaluates an expression.
+pub eval(e: Expr) -> Int
+=
+  when e
+    is Lit(value) -> value
+    is Add(left, right) -> eval(left) + eval(right)
+    is Neg(operand) -> 0 - eval(operand)
+
+--- The number of nodes of `e`, at least one.
+pub size(e: Expr) -> Int
+  ensures result >= 1
+=
+  when e
+    is Lit(value) -> 1
+    is Add(left, right) -> 1 + size(left) + size(right)
+    is Neg(operand) -> 1 + size(operand)
+
+pub kind Tree[T] = Leaf | Node(left: Tree[T], item: T, right: Tree[T])
+
+--- The number of items of a tree.
+pub count[T](t: Tree[T]) -> Nat
+=
+  when t
+    is Leaf -> 0
+    is Node(left, item, right) -> count(left) + 1 + count(right)
+
+pub kind Forest = Grove(first: Wood, rest: Forest) | Empty
+
+pub kind Wood = | Trunk(tall: Nat, branches: Forest)
+
+--- The total height of a forest.
+pub height(f: Forest) -> Nat
+=
+  when f
+    is Empty -> 0
+    is Grove(first, rest) -> wood(first) + height(rest)
+
+--- The height of a wood and its branches.
+pub wood(w: Wood) -> Nat
+=
+  when w
+    is Trunk(tall, branches) -> tall + height(branches)
+
+pub kind Chain
+  value: Int
+  next: Link
+
+pub kind Link = End | More(chain: Chain)
+
+--- The values of a chain.
+pub total(c: Chain) -> Int
+=
+  when c.next
+    is End -> c.value
+    is More(chain) -> c.value + total(chain)
+
+pub kind Doc = Piece(text: secret Text) | Join(left: Doc, right: Doc)
+
+--- The number of leaves of a document; its texts stay secret.
+pub leaves(d: Doc) -> Int
+=
+  when d
+    is Piece(text) -> 1
+    is Join(left, right) -> leaves(left) + leaves(right)
+
+--- An expression is a literal or not.
+pub literal(e: Expr) -> Bool = e is Lit

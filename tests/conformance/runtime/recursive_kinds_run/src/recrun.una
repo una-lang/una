@@ -1,0 +1,26 @@
+-- test: values of a recursive kind are built, evaluated by recursion, compared and tested with `is`, also 5000 levels deep (ADR 0060, spec/11 §7)
+-- spec: spec/11 §7
+-- grant: console
+-- expect: run-output "-5 5000 true true"
+module recrun
+
+pub kind Expr = Lit(value: Int) | Add(left: Expr, right: Expr) | Neg(operand: Expr)
+
+eval(e: Expr) -> Int
+=
+  when e
+    is Lit(value) -> value
+    is Add(left, right) -> eval(left) + eval(right)
+    is Neg(operand) -> 0 - eval(operand)
+
+--- A sum of `n` ones, nested to the right.
+ones(n: Int) -> Expr = if n <= 1 then Lit(value: 1) else Add(left: Lit(value: 1), right: ones(n - 1))
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let e = Add(left: Lit(value: 2), right: Neg(operand: Add(left: Lit(value: 3), right: Lit(value: 4))))
+  let deep = ones(5000)
+  let same = deep == ones(5000)
+  let total = eval(deep)
+  @console.print("{eval(e)} {total} {same} {e is Add}")
