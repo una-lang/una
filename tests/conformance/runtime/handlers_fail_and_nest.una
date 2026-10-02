@@ -1,0 +1,75 @@
+-- test: a handler's operation can fail, use its own capabilities and values, and run inside another handler's, and each instance keeps its id (native slice 5 control)
+-- spec: spec/16 §4
+-- grant: console
+-- expect: run-output "audit: took 2 of 5"
+-- expect: run-output "audit: took 9 of 5"
+-- expect: run-output "stock: 3, then empty"
+-- expect: run-output "refused: 9"
+-- expect: run-output "secret noted"
+module conformance.runtime.handlers_fail_and_nest
+
+pub kind StockError = | Short(wanted: Int)
+
+pub capability Stock
+  op pull(count: Int) -> Int
+    fails StockError
+
+pub capability Audit
+  op note(line: Text) -> Unit
+
+pub capability Vault
+  op keep(code: internal Text) -> Unit
+    accepts internal
+
+pub handler console_audit(prefix: Text) for Audit
+  uses @console: Console[print]
+  op note(line) = @console.print("{prefix}{line}")
+
+pub handler shelf(held: Int) for Stock
+  uses @audit: Audit[note]
+  op pull(count) =
+    @audit.note("took {count} of {held}")
+    if count > held then fail Short(wanted: count) else held - count
+
+pub handler quiet_vault() for Vault
+  op keep(code) = unit
+
+pub draw(count: Int) -> Int
+  uses @stock: Stock[pull]
+  fails StockError
+=
+  let left = @stock.pull(count)
+    if error pass
+  left
+
+pub stocked(count: Int) -> Int
+  uses @audit: Audit[note]
+  fails StockError
+=
+  let left = draw(count) with @stock = shelf(5)
+    if error pass
+  left
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let first = attempt stocked(2) with @audit = console_audit("audit: ")
+  let second = attempt stocked(9) with @audit = console_audit("audit: ")
+  let left = when first
+    is Ok(value) -> value
+    is Err(failure) -> -1
+  let shown = when second
+    is Ok(value) -> "ok"
+    is Err(failure) ->
+      when failure
+        is Short(wanted) -> "empty"
+  @console.print("stock: {left}, then {shown}")
+  let refused = when second
+    is Ok(value) -> 0
+    is Err(failure) ->
+      when failure
+        is Short(wanted) -> wanted
+  @console.print("refused: {refused}")
+  let pin: internal Text = "4321"
+  @vault.keep(pin) with @vault = quiet_vault()
+  @console.print("secret noted")

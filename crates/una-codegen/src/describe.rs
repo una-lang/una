@@ -1,51 +1,16 @@
-//! What a native executable needs to report a failure of `main` as `una run` does (U6001,
-//! `spec/04 §8`): the types the failure can hold, as `una-rt`'s `render` reads them.
+//! The types that a native executable renders, as `una-rt`'s `render` reads them: the failure
+//! of `main` (U6001, `spec/04 §8`), and the arguments, results and failures of the operations
+//! a trace records (`spec/11 §5`). A word does not say its type, so each one is described: its
+//! shape, with the variants of a kind, the names and types of their fields, and the label of
+//! each field's declared type, which redacts it as the interpreter does.
 
 use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
-use una_core::{Base, Decl, Fun, Label, Level, PRELUDE_MODULE, Program, Type};
-
-/// The description of `main`'s error kind and the types it holds, with `location`, where `main`
-/// is named: `None` when `main` cannot fail. The kind is the one the checker resolved: when
-/// Core lacks it, the description would be a guess that could show a labeled field, so it is an
-/// internal error instead.
-pub(super) fn describe(
-    program: &Program,
-    main: &Fun,
-    location: Value,
-) -> Result<Option<Value>, String> {
-    if main.fails.is_none() {
-        return Ok(None);
-    }
-    let Some(kind) = main.error.as_deref().cloned() else {
-        return Err("the error kind of `main` is not resolved".to_owned());
-    };
-    let mut types = Types {
-        program,
-        index: BTreeMap::new(),
-        shapes: Vec::new(),
-        unknown: false,
-    };
-    let root = types.of(&Type::Base {
-        base: Base::Named {
-            module: kind.module,
-            name: kind.name,
-            args: Vec::new(),
-        },
-        refinements: Vec::new(),
-        label: Label::public(),
-    });
-    if types.unknown {
-        return Err("the error kind of `main` holds a kind that has no declaration".to_owned());
-    }
-    Ok(Some(
-        json!({ "location": location, "root": root, "types": types.shapes }),
-    ))
-}
+use una_core::{Base, Decl, Label, Level, PRELUDE_MODULE, Program, Type};
 
 /// The types described so far, by index, and the index of each by its name.
-struct Types<'p> {
+pub(crate) struct Types<'p> {
     program: &'p Program,
     index: BTreeMap<String, usize>,
     shapes: Vec<Value>,
@@ -53,9 +18,29 @@ struct Types<'p> {
     unknown: bool,
 }
 
-impl Types<'_> {
+impl<'p> Types<'p> {
+    /// No type described yet.
+    pub(crate) fn new(program: &'p Program) -> Types<'p> {
+        Types {
+            program,
+            index: BTreeMap::new(),
+            shapes: Vec::new(),
+            unknown: false,
+        }
+    }
+
+    /// The descriptions, by index.
+    pub(crate) fn shapes(&self) -> &[Value] {
+        &self.shapes
+    }
+
+    /// Whether a kind had no declaration to describe: its values render as `?`.
+    pub(crate) fn unknown(&self) -> bool {
+        self.unknown
+    }
+
     /// The index of `ty`, described once; a kind that holds itself refers to its own index.
-    fn of(&mut self, ty: &Type) -> usize {
+    pub(crate) fn of(&mut self, ty: &Type) -> usize {
         let key = key(ty);
         if let Some(index) = self.index.get(&key) {
             return *index;
@@ -79,6 +64,7 @@ impl Types<'_> {
             Base::Bool => json!({ "shape": "bool" }),
             Base::Text => json!({ "shape": "text" }),
             Base::Unit => json!({ "shape": "unit" }),
+            Base::Hashed => json!({ "shape": "hashed" }),
             Base::Named { module, name, args } if module == PRELUDE_MODULE => {
                 let arg = |i: usize| args.get(i).cloned().unwrap_or_else(unknown);
                 match name.as_str() {
@@ -154,7 +140,7 @@ impl Types<'_> {
                     .collect();
                 data(variants)
             }
-            Base::Hashed | Base::Param(_) | Base::Unknown => json!({ "shape": "other" }),
+            Base::Param(_) | Base::Unknown => json!({ "shape": "other" }),
         }
     }
 }
@@ -231,7 +217,7 @@ fn substitute(ty: &Type, params: &[String], args: &[Type]) -> Type {
 
 /// The join of the labels at every position of `ty` that holds data, as the interpreter reads a
 /// field's declared type.
-fn deep_label(ty: &Type) -> Label {
+pub(crate) fn deep_label(ty: &Type) -> Label {
     match ty {
         Type::Base { base, label, .. } => match base {
             Base::Named { args, .. } => args
@@ -254,7 +240,8 @@ fn has_param(ty: &Type) -> bool {
     }
 }
 
-fn level(level: Level) -> &'static str {
+/// The name of a level, as `<redacted:level>` shows it.
+pub(crate) fn level(level: Level) -> &'static str {
     match level {
         Level::Public => "public",
         Level::Internal => "internal",

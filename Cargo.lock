@@ -902,6 +902,7 @@ dependencies = [
  "cranelift-frontend",
  "cranelift-module",
  "cranelift-object",
+ "serde_json",
  "target-lexicon",
  "una-core",
  "una-syntax",

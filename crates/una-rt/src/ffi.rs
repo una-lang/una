@@ -8,7 +8,7 @@
 
 use std::ffi::{CStr, c_char, c_int};
 
-use crate::{runtime, values};
+use crate::{host, runtime, values};
 
 /// Starts the executable: the generated `main` calls it with the process arguments, the
 /// embedded description of the program (`meta`, `meta_len` bytes of UTF-8 JSON) and the
@@ -120,6 +120,35 @@ exported! {
     una_rt_contains => values::contains, (xs, item);
     una_rt_sum => values::sum, (xs);
     una_rt_or_else => values::or_else, (o, default);
+    una_rt_op_code => values::op_code, (instance, index);
+    una_rt_console_print => host::console_print, (line);
+    una_rt_clock_now => host::clock_now, ();
+    una_rt_env_get => host::env_get, (name);
+    una_rt_files_read => host::files_read, (path);
+    una_rt_files_write => host::files_write, (path, content);
+    una_rt_keys_hmac => host::keys_hmac, (key_name, data);
+    una_rt_host_failed => host::host_failed, ();
+    una_rt_host_instance => host::host_instance, (capability);
+    una_rt_handler_instance => host::handler_instance, (name);
+    una_rt_event => host::event, (site, instance);
+}
+
+/// Adds the code of an operation to an instance being built ([`values::push_op`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_push_op(instance: i64, code: i64) {
+    values::push_op(instance, code);
+}
+
+/// Records an argument of an operation's event ([`host::event_arg`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_event_arg(site: i64, slot: i64, index: i64, value: i64) {
+    host::event_arg(site, slot, index, value);
+}
+
+/// Ends an operation's event ([`host::event_end`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_event_end(site: i64, slot: i64, value: i64, failed: i64) {
+    host::event_end(site, slot, value, failed);
 }
 
 /// Adds a reference to a value ([`values::retain`]).
@@ -156,12 +185,6 @@ pub extern "C" fn una_rt_main_failed(failure: i64) {
 #[unsafe(no_mangle)]
 pub extern "C" fn una_rt_leave() {
     runtime::leave();
-}
-
-/// `Console.print(line)`, with the line as a text handle.
-#[unsafe(no_mangle)]
-pub extern "C" fn una_rt_console_print(line: i64) {
-    runtime::console_print(line);
 }
 
 /// The text of `len` bytes at `pointer`; `None` for a null pointer or bytes that are not
