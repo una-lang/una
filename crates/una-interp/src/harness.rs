@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use una_core::{Atom, Bound, Example, Expectation, Expr, Program, Rhs, Source};
+use una_core::{Atom, Bound, Example, Expectation, Expr, LoopSource, Program, Rhs, Source};
 
 use crate::host::{Grant, NoWorld, World};
 use crate::machine::{Abort, Env, Event, EventOutcome, Flow, Index, Machine, Stop, variant};
@@ -272,6 +272,15 @@ fn mentions(expr: &Expr, name: &str) -> bool {
         Expr::Atom { atom: a, .. } => atom(a),
         Expr::Unreachable { .. } => false,
         Expr::LetTuple { value, body, .. } => atom(value) || mentions(body, name),
+        Expr::Loop {
+            source, init, body, ..
+        } => {
+            (match source.as_ref() {
+                LoopSource::List(list) => atom(list),
+                LoopSource::Range { low, high, .. } => atom(low) || atom(high),
+            }) || init.iter().any(atom)
+                || mentions(body, name)
+        }
         Expr::Let { value, body, .. } => {
             (match value.as_ref() {
                 Bound::Rhs(rhs) => rhs_mentions(rhs, name),

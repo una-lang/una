@@ -7,7 +7,7 @@ use std::rc::Rc;
 use num_bigint::{BigInt, Sign};
 use una_core::{
     Atom, Base, Bound, CapOp, Ctor, Decl, Expr, FixedOp, Fun, HandlerOp, IntType, Label, Level,
-    Path, Prim, Program, Rhs, Source, Type, Use,
+    LoopSource, Name, Path, Prim, Program, Rhs, Source, Type, Use,
 };
 use una_syntax::Span;
 
@@ -223,50 +223,79 @@ impl<'p> Index<'p> {
     /// The Una form of `value`. A field whose declared type is labeled above
     /// `public` is `<redacted:level>`.
     pub(crate) fn render(&self, value: &Value<'_>) -> String {
-        match value {
-            Value::Int(n) => n.to_string(),
-            Value::Bool(b) => b.to_string(),
-            Value::Text(t) => una_core::quote(t),
-            Value::Unit => "unit".to_owned(),
-            Value::Hashed(bytes) => format!("hashed:{}", host::hex(bytes)),
-            Value::Closure(_) => "<function>".to_owned(),
-            Value::List(items) => {
-                let items: Vec<String> = items.iter().map(|v| self.render(v)).collect();
-                format!("[{}]", items.join(", "))
-            }
-            Value::Tuple(items) => {
-                let items: Vec<String> = items.iter().map(|v| self.render(v)).collect();
-                format!("({})", items.join(", "))
-            }
-            Value::Data(data) => {
-                let names = self.fields(&data.ctor);
-                let shown: Vec<(&str, String)> = data
-                    .fields
-                    .iter()
-                    .enumerate()
-                    .map(|(i, v)| {
-                        let (name, ty) = names.get(i).copied().unwrap_or(("?", None));
-                        let label = ty.map_or_else(Label::public, deep_label);
-                        (name, self.redacted(v, &label))
-                    })
-                    .collect();
-                match shown.as_slice() {
-                    [] => data.ctor.name.clone(),
-                    [(_, only)] => format!("{}({only})", data.ctor.name),
-                    _ => {
-                        let fields: Vec<String> = shown
-                            .iter()
-                            .map(|(name, value)| format!("{name}: {value}"))
-                            .collect();
-                        format!("{}({})", data.ctor.name, fields.join(", "))
+        // A worklist instead of recursion: a value built by a loop can be deeper than the
+        // native stack allows (`spec/17 §4`, ADR 0032).
+        enum Task<'v, 'p> {
+            Value(&'v Value<'p>),
+            Text(String),
+        }
+        let mut out = String::new();
+        let mut pending = vec![Task::Value(value)];
+        while let Some(task) = pending.pop() {
+            let value = match task {
+                Task::Text(text) => {
+                    out.push_str(&text);
+                    continue;
+                }
+                Task::Value(value) => value,
+            };
+            let mut parts: Vec<Task<'_, '_>> = Vec::new();
+            match value {
+                Value::Int(n) => out.push_str(&n.to_string()),
+                Value::Bool(b) => out.push_str(&b.to_string()),
+                Value::Text(t) => out.push_str(&una_core::quote(t)),
+                Value::Unit => out.push_str("unit"),
+                Value::Hashed(bytes) => out.push_str(&format!("hashed:{}", host::hex(bytes))),
+                Value::Closure(_) => out.push_str("<function>"),
+                Value::List(items) | Value::Tuple(items) => {
+                    let (open, close) = if matches!(value, Value::List(_)) {
+                        ("[", "]")
+                    } else {
+                        ("(", ")")
+                    };
+                    parts.push(Task::Text(open.to_owned()));
+                    for (i, item) in items.iter().enumerate() {
+                        if i > 0 {
+                            parts.push(Task::Text(", ".to_owned()));
+                        }
+                        parts.push(Task::Value(item));
                     }
+                    parts.push(Task::Text(close.to_owned()));
+                }
+                Value::Data(data) => {
+                    let names = self.fields(&data.ctor);
+                    if data.fields.is_empty() {
+                        out.push_str(&data.ctor.name);
+                        continue;
+                    }
+                    parts.push(Task::Text(format!("{}(", data.ctor.name)));
+                    let named = data.fields.len() > 1;
+                    for (i, field) in data.fields.iter().enumerate() {
+                        let (name, ty) = names.get(i).copied().unwrap_or(("?", None));
+                        if i > 0 {
+                            parts.push(Task::Text(", ".to_owned()));
+                        }
+                        if named {
+                            parts.push(Task::Text(format!("{name}: ")));
+                        }
+                        let label = ty.map_or_else(Label::public, deep_label);
+                        if label.is_public() || matches!(field, Value::Unit) {
+                            parts.push(Task::Value(field));
+                        } else {
+                            parts.push(Task::Text(format!(
+                                "<redacted:{}>",
+                                level_name(label.level)
+                            )));
+                        }
+                    }
+                    parts.push(Task::Text(")".to_owned()));
                 }
             }
+            pending.extend(parts.into_iter().rev());
         }
+        out
     }
 
-    /// `value` in its Una form, or `<redacted:level>` when `label` is above `public`. `unit`
-    /// carries no information and is never redacted.
     pub(crate) fn redacted(&self, value: &Value<'_>, label: &Label) -> String {
         if label.is_public() || matches!(value, Value::Unit) {
             self.render(value)
@@ -495,6 +524,61 @@ impl<'p, 'w> Machine<'p, 'w> {
                     env.push((name.as_str(), value));
                     expr = body;
                 }
+                // A `for` loop (`spec/17 §4`): iterations are not calls, so they do not count
+                // toward the call depth (ADR 0056, amendment of 2026-10-02).
+                Expr::Loop {
+                    source,
+                    var,
+                    state,
+                    init,
+                    body,
+                    ..
+                } => {
+                    let mut current = self.atoms(env, init)?;
+                    match source.as_ref() {
+                        LoopSource::List(list) => {
+                            let Value::List(items) = self.atom(env, list)? else {
+                                return Err(fault("a loop over a value that is not a list"));
+                            };
+                            for item in items.iter() {
+                                current =
+                                    self.iteration(env, &caps, var, state, current, item, body)?;
+                            }
+                        }
+                        LoopSource::Range {
+                            low,
+                            high,
+                            inclusive,
+                        } => {
+                            let (Value::Int(low), Value::Int(high)) =
+                                (self.atom(env, low)?, self.atom(env, high)?)
+                            else {
+                                return Err(fault("a loop over a range of non-integers"));
+                            };
+                            let mut index = low;
+                            loop {
+                                let visit = if *inclusive {
+                                    index <= high
+                                } else {
+                                    index < high
+                                };
+                                if !visit {
+                                    break;
+                                }
+                                let item = Value::Int(index.clone());
+                                current =
+                                    self.iteration(env, &caps, var, state, current, &item, body)?;
+                                // The successor of the upper bound is never computed, so a
+                                // range up to the greatest value of a type stops there.
+                                if index == high {
+                                    break;
+                                }
+                                index += 1;
+                            }
+                        }
+                    }
+                    return Ok(Value::Tuple(Rc::new(current)));
+                }
                 // `let (x, ...) = a in e` (`spec/17 §4`).
                 Expr::LetTuple {
                     names, value, body, ..
@@ -641,6 +725,32 @@ impl<'p, 'w> Machine<'p, 'w> {
             Atom::Text(text) => Value::text(text),
             Atom::Unit => Value::Unit,
         })
+    }
+
+    /// One iteration of a loop: the body with the loop variable and the current state bound;
+    /// returns the new state.
+    #[allow(clippy::too_many_arguments)]
+    fn iteration(
+        &mut self,
+        env: &mut Env<'p>,
+        caps: &Caps<'p>,
+        var: &'p (Name, Type),
+        state: &'p [(Name, Type)],
+        current: Vec<Value<'p>>,
+        item: &Value<'p>,
+        body: &'p Expr,
+    ) -> Result<Vec<Value<'p>>, Stop<'p>> {
+        let mark = env.len();
+        env.push((var.0.as_str(), item.clone()));
+        for ((name, _), value) in state.iter().zip(current) {
+            env.push((name.as_str(), value));
+        }
+        let result = self.eval(env, caps, body);
+        env.truncate(mark);
+        match result? {
+            Value::Tuple(items) if items.len() == state.len() => Ok(items.as_ref().clone()),
+            _ => Err(fault("a loop body whose value is not its state")),
+        }
     }
 
     fn atoms(&self, env: &Env<'p>, atoms: &'p [Atom]) -> Result<Vec<Value<'p>>, Stop<'p>> {

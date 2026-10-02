@@ -10,8 +10,9 @@ use std::path::{Path, PathBuf};
 use pretty_assertions::assert_eq;
 use una_syntax::ast::{
     Arg, Block, BlockExpr, Body, CapBindingValue, ClauseKind, DeclKind, ElseBranch,
-    ExpectationKind, Expr, ExprKind, File, HandlingKind, IfBlock, IsTarget, KindBody, LetValue,
-    Literal, OpClauseKind, PatternKind, RequirementSource, Stmt, TextLit, TextPart, VariantExpr,
+    ExpectationKind, Expr, ExprKind, File, ForSource, HandlingKind, IfBlock, IsTarget, KindBody,
+    LetValue, Literal, OpClauseKind, PatternKind, RequirementSource, Stmt, TextLit, TextPart,
+    VariantExpr,
 };
 use una_syntax::{Interner, KeywordSet, SourceDb, dump, lex_in, parse};
 
@@ -260,6 +261,16 @@ impl Normalizer<'_> {
                 }
                 Stmt::IfThen(stmt) => {
                     self.expr(&mut stmt.condition);
+                    self.block(&mut stmt.block);
+                }
+                Stmt::For(stmt) => {
+                    match &mut stmt.source {
+                        ForSource::List(list) => self.expr(list),
+                        ForSource::Range { low, high, .. } => {
+                            self.expr(low);
+                            self.expr(high);
+                        }
+                    }
                     self.block(&mut stmt.block);
                 }
                 Stmt::Handled(handled) => {

@@ -8,12 +8,12 @@ use crate::ast::{
     Arg, Arm, AssignStmt, BinaryOp, Bind, Block, BlockExpr, Body, CapBinding, CapBindingValue,
     CapType, CapabilityDecl, Clause, ClauseKind, Convention, Decl, DeclKind, ElseBranch,
     ExampleDecl, Expectation, ExpectationKind, Expr, ExprKind, Field, File, FnTypeClause,
-    FunctionDecl, Given, Handled, HandlerCall, HandlerDecl, HandlerOp, Handling, HandlingKind,
-    Ident, IfBlock, IfThenStmt, Import, IsTarget, KindBody, KindDecl, Label, LambdaParam, LetStmt,
-    LetValue, Level, Literal, ModuleHeader, ModulePath, OpClause, OpClauseKind, OpDecl, Param,
-    Pattern, PatternKind, PolicyDecl, PredicateDecl, Range, RequirementDecl, RequirementSource,
-    SignedInt, Stmt, TextLit, TextPart, Type, TypeCore, UnaryOp, UsesClause, Variant, VariantExpr,
-    WhenExpr,
+    ForSource, ForStmt, FunctionDecl, Given, Handled, HandlerCall, HandlerDecl, HandlerOp,
+    Handling, HandlingKind, Ident, IfBlock, IfThenStmt, Import, IsTarget, KindBody, KindDecl,
+    Label, LambdaParam, LetStmt, LetValue, Level, Literal, ModuleHeader, ModulePath, OpClause,
+    OpClauseKind, OpDecl, Param, Pattern, PatternKind, PolicyDecl, PredicateDecl, Range,
+    RequirementDecl, RequirementSource, SignedInt, Stmt, TextLit, TextPart, Type, TypeCore,
+    UnaryOp, UsesClause, Variant, VariantExpr, WhenExpr,
 };
 use crate::error::{SyntaxError, SyntaxRepair};
 use crate::intern::Interner;
@@ -1456,6 +1456,10 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::When) => {
                 Ok(Stmt::BlockExpr(BlockExpr::When(self.when_expr()?)))
             }
+            // Edition 0.2: `for x in source` (`spec/17 §1`).
+            TokenKind::Keyword(Keyword::For) if self.v0_2 => {
+                Ok(Stmt::For(Box::new(self.for_stmt()?)))
+            }
             TokenKind::Keyword(Keyword::If) => match self.if_statement()? {
                 IfForm::Line(expr) => Ok(Stmt::Handled(self.handled_rest(expr)?)),
                 IfForm::Block(block) => Ok(Stmt::BlockExpr(BlockExpr::If(block))),
@@ -1784,6 +1788,40 @@ impl<'a> Parser<'a> {
             });
         }
         Err(self.report_error(error))
+    }
+
+    /// `for x in xs` or `for i in a..<b` with its block (`spec/17 §1`).
+    fn for_stmt(&mut self) -> Parse<ForStmt> {
+        let start = self.advance();
+        let var = self.lower_name("the loop variable")?;
+        self.expect_keyword(Keyword::In)?;
+        let low = self.line_expr()?;
+        let exclusive = if self.eat(&TokenKind::DotDotLt) {
+            Some(true)
+        } else if self.eat(&TokenKind::DotDot) {
+            Some(false)
+        } else {
+            None
+        };
+        let source = match exclusive {
+            Some(exclusive) => {
+                let high = self.add_expr()?;
+                ForSource::Range {
+                    low,
+                    high,
+                    exclusive,
+                }
+            }
+            None => ForSource::List(low),
+        };
+        self.expect(&TokenKind::Newline, "end of line")?;
+        let block = self.indented_block()?;
+        Ok(ForStmt {
+            var,
+            source,
+            block,
+            span: self.since(start),
+        })
     }
 
     /// An `if` in a statement or `let`, whose form is decided after its condition: `then` makes
