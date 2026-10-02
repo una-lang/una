@@ -38,7 +38,10 @@ fn runtime() {
     });
 }
 
+/// Runs `una` in `dir`, once the runtime library is built: `una build` links it, and cargo
+/// builds the test binaries before the staticlib on a cold target directory.
 fn una(dir: &Path, args: &[&str]) -> Output {
+    runtime();
     Command::new(env!("CARGO_BIN_EXE_una"))
         .args(args)
         .current_dir(dir)
