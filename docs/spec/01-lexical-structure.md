@@ -95,6 +95,13 @@ traced trait type unsafe var while
 | `macro` | not supported (charter §6) |
 | `async`, `await` | not supported; see structured concurrency in v0.2 |
 
+(v0.2, ADR 0056.) **Editions.** The keyword tables of this section are those of edition `0.1`, and a package of edition `0.1` keeps them in every version of the compiler. Only a package of edition `0.2` (`spec/13 §7`) gets the memory model's keywords (`spec/17`). There:
+- `edit`, `take` and `old` become keywords;
+- `shared` and `iso` move to v0.3, and `weak` joins them;
+- the messages of `region`, `var`, `while` and `loop` change.
+
+The new rows are in `spec/17 §9`. The Gate 1 benchmark stays on edition `0.1`.
+
 ## 6. Literals
 
 | Literal | Syntax | Notes |
