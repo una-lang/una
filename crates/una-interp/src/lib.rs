@@ -14,7 +14,7 @@ mod value;
 
 pub use harness::{Completion, ExampleFailure, ExampleRun, Host, Run, run_examples, run_main};
 pub use host::{FileFault, Grant, World, confine, hex, hmac_sha256, parse_keys};
-pub use machine::{Abort, Event, EventOutcome};
+pub use machine::{Abort, Event, EventOutcome, fixed_method};
 pub use trace::{EventDoc, OutcomeDoc, Pairs, trace_json};
 
 /// The default maximum call depth (`spec/11 §7`).

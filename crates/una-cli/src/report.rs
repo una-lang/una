@@ -497,9 +497,10 @@ fn build(
     }
 }
 
-/// The parameters and results of the package's functions whose type is `Int`, as
-/// `module.function.parameter` and `module.function.result`: the native backend keeps every
-/// `Int` at arbitrary precision until machine widths come from proven ranges (ADR 0055 NB-3).
+/// The parameters and results of the package's functions whose type is `Int` with no proven
+/// range that fits a machine word, as `module.function.parameter` and `module.function.result`:
+/// the native backend keeps them at arbitrary precision (ADR 0055 NB-3, ADR 0057 FW-1). A
+/// parameter's refinements are proven by each call, and a result's by the function.
 fn arbitrary_precision(program: &una_core::Program) -> Vec<String> {
     let int = |ty: &una_core::Type| {
         matches!(
@@ -508,7 +509,7 @@ fn arbitrary_precision(program: &una_core::Program) -> Vec<String> {
                 base: una_core::Base::Int,
                 ..
             }
-        )
+        ) && !una_codegen::machine_width(ty)
     };
     let mut bindings = Vec::new();
     for module in &program.modules {

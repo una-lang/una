@@ -235,7 +235,7 @@ Every command prints one JSON document with `--json`, its `schema` key first (AD
   "tcb": { "trusted_modules": [ { "module": "events.keys", "lines": 17 } ], "host_capabilities": ["Keys"], "solver": "z3 <version>", "proof_cache": ".una/cache/" },
   "requirements": [ { "id": "EVENTS_3", "status": "active", "derived": ["events.seating.availability"] } ],
   "coverage": { "pub_functions": 3, "with_ensures": 1, "with_derived_from": 1, "trivial_ensures": 0 },
-  "native": { "target": "aarch64-apple-darwin", "arbitrary_precision": ["events.seating.clamp_seats.raw", "events.seating.clamp_seats.result"] },
+  "native": { "target": "aarch64-apple-darwin", "arbitrary_precision": ["events.seating.clamp_seats.raw"] },
   "out_of_model": ["timing", "termination and divergence", "resource consumption and allocation", "stack exhaustion", "external systems beyond declared signatures", "races between the check and the use of a file path", "hard links"]
 }
 ```
@@ -254,7 +254,7 @@ Every command prints one JSON document with `--json`, its `schema` key first (AD
 - `tcb`: the trusted modules with their line counts, the host capabilities the package's functions use, the solver as `z3 <version>`, and `proof_cache`, the proof cache of the package, `.una/cache/`: in v0.1 its entries are trusted, not authenticated (ADR 0041).
 - `requirements`: every requirement, by identifier, with its status and the functions derived from it.
 - `coverage`: `pub_functions` counts the public functions, `with_ensures` those with at least one `ensures` clause that is not trivial, `with_derived_from` those with a `derived from` clause, and `trivial_ensures` the trivial clauses of public functions. An `ensures` clause is trivial when the solver proves it with no hypothesis, its parameters and `result` unconstrained: one more query per clause of a public function, cached like the others; a solver that cannot answer these queries gives U5003 or U8001 instead of the report.
-- `native` (v0.2, ADR 0055): `target`, the host target of `una build` (`spec/16 §1`), and `arbitrary_precision`, the bindings whose `Int` the native backend keeps at arbitrary precision: every parameter and result of type `Int` of the package's functions, as `module.function.parameter` and `module.function.result`, until machine widths come from proven ranges.
+- `native` (v0.2, ADR 0055): `target`, the host target of `una build` (`spec/16 §1`), and `arbitrary_precision`, the bindings whose `Int` the native backend keeps at arbitrary precision: every parameter and result of type `Int` of the package's functions whose refinements do not prove a range within a machine word, as `module.function.parameter` and `module.function.result` (NB-3, FW-1). A parameter's refinements are proven by each call and a result's by the function, so `clamp_seats`, whose result is `Seats = Int in 0..5000`, lists only its parameter.
 - `out_of_model`: the channels outside the model of `spec/07 §1`, in this order: timing, termination and divergence, resource consumption and allocation, stack exhaustion, external systems beyond declared signatures, races between the check and the use of a file path, and hard links (`spec/14 §3`).
 
 Without `--json`, the same sections print as labeled lines.

@@ -29,7 +29,7 @@ use una_core::{
 };
 use una_syntax::Span;
 
-use crate::{CodegenError, Emitter, describe};
+use crate::{CodegenError, Emitter, describe, range};
 
 /// The integers a tagged word holds: `[-2^62, 2^62)`.
 const SMALL: std::ops::RangeInclusive<i64> = -(1 << 62)..=(1 << 62) - 1;
@@ -86,7 +86,9 @@ fn kind(ty: &Type) -> Result<Kind, CodegenError> {
             Base::Text => Ok(Kind::Text),
             Base::Unit => Ok(Kind::Unit),
             Base::Hashed => Ok(Kind::Hashed),
-            Base::Fixed(_) => Err(unsupported("fixed-width integers")),
+            // A fixed-width integer is an integer word: its range is proven, so arithmetic on
+            // it never leaves the type (`spec/18 §3`).
+            Base::Fixed(_) => Ok(Kind::Int),
             Base::Named { module, name, .. } if module == PRELUDE_MODULE && name == "List" => {
                 Ok(Kind::List)
             }
@@ -314,8 +316,16 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     ty,
                     value,
                     body,
+                    written,
                     ..
                 } => {
+                    // A written type is an obligation; another binding's refinements are not
+                    // proven of every value (`range`).
+                    let ty = &if *written {
+                        ty.clone()
+                    } else {
+                        range::unrefined(ty)
+                    };
                     let kind = kind(ty)?;
                     let bound = match value.as_ref() {
                         Bound::Rhs(rhs) => self.rhs(rhs, ty, env, scope, catch)?,
@@ -370,7 +380,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
                         let mut inner = env.clone();
                         for (position, bind) in arm.binds.iter().enumerate() {
                             if let Some(name) = bind {
-                                let field_ty = self.field_type(&ty, &arm.ctor, position);
+                                let field_ty =
+                                    range::unrefined(&self.field_type(&ty, &arm.ctor, position));
                                 kind(&field_ty)?;
                                 let field = self.field(value, position)?;
                                 inner.insert(name.clone(), (field, field_ty));
@@ -836,10 +847,24 @@ impl<'p> Lowerer<'_, 'p, '_> {
             }
             Rhs::Prim { prim, args, .. } => {
                 let mut operands = Vec::new();
+                let mut machine = true;
                 for arg in args {
                     operands.push(self.atom(arg, env)?);
+                    machine &= match arg {
+                        Atom::Int(digits) => {
+                            digits.parse::<i64>().is_ok_and(|n| SMALL.contains(&n))
+                        }
+                        Atom::Var(name) => env
+                            .get(name.as_str())
+                            .is_some_and(|(_, ty)| range::machine_width(ty)),
+                        _ => false,
+                    };
                 }
-                self.prim(*prim, &operands)
+                let width = Width {
+                    operands: machine,
+                    result: range::machine_width(ty),
+                };
+                self.prim(*prim, &operands, width)
             }
             Rhs::Call {
                 function,
@@ -1307,16 +1332,52 @@ impl<'p> Lowerer<'_, 'p, '_> {
         }
     }
 
-    fn prim(&mut self, prim: Prim, args: &[(Value, Kind)]) -> Result<Value, CodegenError> {
+    /// The owned result of `prim` on `args`, whose operands and result `width` says are proven
+    /// to fit a tagged word (`range`).
+    fn prim(
+        &mut self,
+        prim: Prim,
+        args: &[(Value, Kind)],
+        width: Width,
+    ) -> Result<Value, CodegenError> {
         let first = args.first().copied();
         let second = args.get(1).copied();
         let operand = |i: Option<(Value, Kind)>| {
             i.ok_or_else(|| internal(format!("`{}` lacks an operand", prim.as_str())))
         };
         match prim {
-            Prim::Convert(_) | Prim::Fixed(..) => Err(unsupported("fixed-width integers")),
+            // A conversion keeps the value: a narrowing one carries an `overflow` obligation that
+            // proves it fits (`spec/18 §4`).
+            Prim::Convert(_) => {
+                let (a, kind) = operand(first)?;
+                self.retain(a, kind);
+                Ok(a)
+            }
+            Prim::Fixed(op, int) => {
+                let a = operand(first)?.0;
+                let b = match second {
+                    Some((b, _)) => b,
+                    None => self.builder.ins().iconst(types::I64, 1),
+                };
+                let op = una_core::FixedOp::ALL
+                    .iter()
+                    .position(|x| *x == op)
+                    .and_then(|i| i64::try_from(i).ok())
+                    .ok_or_else(|| internal("an unknown fixed-width method"))?;
+                let int = una_core::IntType::ALL
+                    .iter()
+                    .position(|x| *x == int)
+                    .and_then(|i| i64::try_from(i).ok())
+                    .ok_or_else(|| internal("an unknown fixed-width type"))?;
+                let op = self.builder.ins().iconst(types::I64, op);
+                let int = self.builder.ins().iconst(types::I64, int);
+                self.call("una_rt_fixed", &[op, int, a, b])
+            }
             Prim::Add | Prim::Sub | Prim::Mul => {
                 let (a, b) = (operand(first)?.0, operand(second)?.0);
+                if width.operands && width.result {
+                    return Ok(self.unchecked(prim, a, b));
+                }
                 self.arithmetic(prim, a, b)
             }
             Prim::Div => {
@@ -1348,6 +1409,11 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 };
                 let equality = matches!(prim, Prim::Eq | Prim::Ne);
                 match kind {
+                    Kind::Int if width.operands => {
+                        // Both are tagged words, which order as their integers.
+                        let flag = self.builder.ins().icmp(cc, a, b);
+                        Ok(self.flag(flag))
+                    }
                     Kind::Int => self.compare_ints(cc, a, b),
                     Kind::Bool | Kind::Unit => {
                         let flag = self.builder.ins().icmp(cc, a, b);
@@ -1414,6 +1480,27 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     }
                     _ => Err(unsupported("this value as text")),
                 }
+            }
+        }
+    }
+
+    /// `a op b` over tagged words whose result is proven to fit one: plain machine arithmetic.
+    fn unchecked(&mut self, prim: Prim, a: Value, b: Value) -> Value {
+        // With `a = 2x + 1` and `b = 2y + 1`, as in `arithmetic`.
+        match prim {
+            Prim::Add => {
+                let untagged = self.builder.ins().iadd_imm_s(a, -1);
+                self.builder.ins().iadd(untagged, b)
+            }
+            Prim::Sub => {
+                let difference = self.builder.ins().isub(a, b);
+                self.builder.ins().iadd_imm_s(difference, 1)
+            }
+            _ => {
+                let x = self.builder.ins().sshr_imm_s(a, 1);
+                let twice_y = self.builder.ins().iadd_imm_s(b, -1);
+                let product = self.builder.ins().imul(x, twice_y);
+                self.builder.ins().iadd_imm_s(product, 1)
             }
         }
     }
@@ -1487,6 +1574,13 @@ impl<'p> Lowerer<'_, 'p, '_> {
         self.builder.switch_to_block(done);
         self.param(done)
     }
+}
+
+/// Whether a primitive's operands, and its result, are proven to fit a tagged word.
+#[derive(Clone, Copy, Debug)]
+struct Width {
+    operands: bool,
+    result: bool,
 }
 
 /// The level that redacts a value labeled `label` in a trace, when it is above `public`.

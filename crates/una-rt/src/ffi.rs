@@ -121,6 +121,7 @@ exported! {
     una_rt_sum => values::sum, (xs);
     una_rt_or_else => values::or_else, (o, default);
     una_rt_op_code => values::op_code, (instance, index);
+    una_rt_fixed => values::fixed, (op, int, a, b);
     una_rt_console_print => host::console_print, (line);
     una_rt_clock_now => host::clock_now, ();
     una_rt_env_get => host::env_get, (name);
