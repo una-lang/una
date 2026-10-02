@@ -36,6 +36,7 @@ fn kind(ty: &Type) -> Result<Kind, CodegenError> {
             Base::Text => Ok(Kind::Text),
             Base::Unit => Ok(Kind::Unit),
             Base::Hashed => Err(unsupported("`Hashed` values")),
+            Base::Fixed(_) => Err(unsupported("fixed-width integers")),
             Base::Named { module, name, .. } if module == "prelude" && name == "List" => {
                 Err(unsupported("lists"))
             }
@@ -297,6 +298,7 @@ impl Lowerer<'_, '_, '_> {
             i.ok_or_else(|| CodegenError::Internal(format!("`{}` lacks an operand", prim.as_str())))
         };
         match prim {
+            Prim::Convert(_) | Prim::Fixed(..) => Err(unsupported("fixed-width integers")),
             Prim::Add | Prim::Sub | Prim::Mul => {
                 let (a, b) = (operand(first)?.0, operand(second)?.0);
                 Ok((self.arithmetic(prim, a, b)?, Kind::Int))
