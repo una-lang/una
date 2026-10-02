@@ -99,6 +99,8 @@ Host capabilities are implemented by the runtime and belong to the Trusted zone.
 
 Revocation, attenuation by parameters other than operation sets (for example host or rate limits on user-declared capabilities), effect polymorphism, effect classes, idempotency and delivery semantics. See `plan/backlog.md`.
 
+(v0.2, ADR 0062.) Effect polymorphism for function parameters arrives in edition `0.2`, with the clauses `uses of p` and `fails of p` (§9 rule 9).
+
 ## 9. Reporting
 
 These rules fix which code reports a violation of this chapter, and where (ADR 0028).
@@ -111,3 +113,12 @@ These rules fix which code reports a violation of this chapter, and where (ADR 0
 6. **Escaping lambdas.** A lambda whose expected type has `uses` or `fails`, a function value of a function with `uses` or `fails`, and a parameter or local whose type is such a function type, appear only directly as call arguments, or as the callee (U3006 at the lambda or the name). A field of a kind whose type is such a function type is U3006 at the type. A type argument, written or inferred, that is or contains such a function type is U3016: at the written type argument, or at the value whose type instantiates the type parameter.
 7. **Function values.** A function value that flows where a function type is expected (`spec/10 §2`, S-Fun), at a call argument, an annotated `let`, a constructor field, a return, or nested under `List`, `Option`, `Result` or kind arguments of such a position, has no `uses` that the expected type lacks (U3003) and fails only with the expected type's error kind (U3009). A call of a function value performs the value's effects and failures (T-App): they count for the caller like those of a named call (rules 1 and 2).
 8. **References bound twice.** A capability reference bound twice in one construct, the `uses` of a header, a handler or a function type, the `given` lines of an example or one `with` clause, is U1002 at the second binding, as `spec/10 §11` rule 5 reports other names defined twice in one construct; the first binding wins.
+9. **"Of the parameter" clauses** (v0.2, ADR 0062). A header's `uses of p` and `fails of p` name a parameter `p` of function type, written without `uses` and `fails`.
+   - **Malformed clauses.** Each is reported at `p` in the clause:
+     - U3017 when `p` names no parameter;
+     - U3018 when its type is not a function type;
+     - U3019 when its type writes its own `uses` or `fails`.
+   - **Calls.** At a call, the callee's effects are its declared `uses` plus the `uses` of the argument for each parameter that a `uses of` clause names, and the same for `fails`. They count for the caller like any callee's (rules 1 and 2).
+   - **One error kind.** A callee with its own `fails E` and `fails of p` accepts for `p` only an argument that fails with `E` (U3009 at the argument), so each function keeps one error kind.
+   - **The body.** Inside it, `p` is only called, or passed on as the argument of a parameter that the callee's `of` clause names. Rules 6 and 7 still apply to it, so it never escapes.
+   - **The codes U3017 to U3019** are in the registry of `spec/13 §4`.

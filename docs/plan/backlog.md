@@ -4,7 +4,7 @@ Status: Informative. Nothing in this file may be implemented before its target v
 
 ## Opened for v0.2
 
-These rows are in scope since Leonardo opened the v0.2 scope on 2026-10-01 (charter §5b). Each is implemented only after its ADR and spec text are merged: ADR 0055 for the native backend, ADR 0056 for the memory model, ADR 0057 for fixed-width integers and ADR 0060 for recursive kinds.
+These rows are in scope since Leonardo opened the v0.2 scope on 2026-10-01 (charter §5b). Each is implemented only after its ADR and spec text are merged: ADR 0055 for the native backend, ADR 0056 for the memory model, ADR 0057 for fixed-width integers, ADR 0060 for recursive kinds and ADR 0062 for effect polymorphism.
 
 | Item | Target | Why deferred | Source | Issue |
 | --- | --- | --- | --- | --- |
@@ -15,6 +15,7 @@ These rows are in scope since Leonardo opened the v0.2 scope on 2026-10-01 (char
 | Arenas and index-based graph structures in the standard library | v0.2 | Decided (V2-3): with no mutable aliasing in v0.2, graphs and cyclic structures live in arenas addressed by indices | R3, owner 2026-10-01 | [#82](https://github.com/una-lang/una/issues/82) |
 | In-place mutation of unique values, a backend optimization with no syntax | v0.2 | Semantics stay purely functional. Decided (V2-15): the surface method `m.with(k, v)` is dropped, since `with` rebinds capabilities and `let edit` with field edits covers functional update | R3, owner 2026-10-01 | [#30](https://github.com/una-lang/una/issues/30) |
 | Recursive kinds with a base variant | v0.2 | `spec/03 §2` rule 5 rejects them in v0.1. Decided (ADR 0060, R1 to R5): inhabited kinds by a least fixpoint, regular recursion only, verification by contracts, termination unchecked, unbounded depth of values | v0.1 review R-045, Leonardo 2026-10-02 | [#38](https://github.com/una-lang/una/issues/38) |
+| Effect polymorphism (effectful lambdas in prelude higher-order functions) | v0.2 | Typing complexity; v0.1 prelude takes pure lambdas. Decided (ADR 0062, E1 to E5): `uses of p` and `fails of p` clauses, no effect variables; handling unchanged; inferred for private functions; the program counter of a lambda raised by what decides its calls | D, Leonardo 2026-10-02 | [#36](https://github.com/una-lang/una/issues/36) |
 
 ## Deferred
 
@@ -26,7 +27,6 @@ These rows are in scope since Leonardo opened the v0.2 scope on 2026-10-01 (char
 | FFI and `trusted` foreign code | v0.2 | Largest TCB risk; needs TCB risk profile first | D, R3 | [#33](https://github.com/una-lang/una/issues/33) |
 | Units of measure | v0.2 | Useful, not needed for the thesis | D | [#34](https://github.com/una-lang/una/issues/34) |
 | Pipelines `\|>` and `it` shorthand lambdas | v0.2 | Sugar; interacts with labeled-argument rules | D | [#35](https://github.com/una-lang/una/issues/35) |
-| Effect polymorphism (effectful lambdas in prelude higher-order functions) | v0.2 | Typing complexity; v0.1 prelude takes pure lambdas | D | [#36](https://github.com/una-lang/una/issues/36) |
 | Traits or constraints on generics | v0.2 | Unconstrained generics suffice for v0.1 | D | [#37](https://github.com/una-lang/una/issues/37) |
 | Language server (LSP) | v0.2 | Tooling after semantics stabilize | D | [#43](https://github.com/una-lang/una/issues/43) |
 | Authenticate or re-validate proof cache entries | v0.2 | ADR 0041: the proof cache is part of the Trusted zone in v0.1, and the report counts cached results | v0.1 review R-018 | [#44](https://github.com/una-lang/una/issues/44) |

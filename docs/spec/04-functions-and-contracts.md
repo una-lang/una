@@ -66,6 +66,9 @@ show(@registrations.find(key))                  -- U3013
 1. Declarations are private to their module unless marked `pub`.
 2. A `pub` function MUST declare every `uses` and its `fails` explicitly (U3003, U3009).
 3. A private function MAY omit `uses` and `fails`. The compiler infers them as the least fixed point over the module's call graph. `una contract` prints the inferred header, and the build report marks it as inferred.
+   - (v0.2, ADR 0062.) A private function without `uses` clauses gets `uses of p` inferred for each parameter `p` of function type, without its own `uses` or `fails`, that its body calls or passes on only where a call with effects may stand: as the whole expression of a statement, a `let` or a one-line body. The body mentions `p` in no other way, and not inside a lambda. A parameter used otherwise stays pure.
+   - Without a `fails` clause, the function also gets `fails of p` inferred when the body passes the failure of such a call of `p` with `if error pass` and fails in no other way. That is, it raises no variant and passes or maps no other failure.
+   - A `pub` function writes these clauses (`spec/05 §9` rule 9).
 4. Types of parameters and results are never inferred.
 
 ## 6. Lambdas
@@ -75,6 +78,7 @@ let adults = people.filter(keep: fn(p) -> adult(p.age))
 ```
 
 1. A lambda is pure unless its expected type declares `uses` or `fails` (`spec/02 §2`, `fn_type_clause`).
+   - (v0.2, ADR 0062.) A lambda given for a parameter that the callee's `uses of` or `fails of` clause names may also use capabilities and fail, as its body requires. A pure lambda stays valid there.
 2. A lambda that uses capabilities or can fail is **second-class** (`spec/05 §6`): it can be passed as an argument but not returned, stored in a kind or bound with `let` to escape its scope.
 3. Lambdas capture variables by value. They cannot capture capability references unless their type declares the corresponding `uses`.
 
