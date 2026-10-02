@@ -12,6 +12,13 @@
 //! Each path through an expression ends with its result: it retains the result, then releases
 //! every word its scope owns.
 //!
+//! **Moves** (#30, `spec/16 §4` rule 7). At its last use in a path, a word the scope owns moves
+//! instead of being borrowed: to `let b = a`, out as the result, into `append` and `set`, which
+//! update a list in place when nothing else holds it, into a record of its kind rebuilt there,
+//! into a loop as its initial state, or into a nested expression that uses it last. A loop's
+//! iteration owns its state. A binding something borrows from (a `when` scrutinee, a `let (...)`
+//! tuple, a list a loop visits) never moves, nor does anything passed to a function.
+//!
 //! **Failures** are returned values (`spec/16 §4` rule 3). A body returns its value and a flag,
 //! 1 when the value is a failure. A failure releases what the code owns since the innermost
 //! [`Catch`] was installed, and goes to it: a handling clause, `attempt`, or the body's return.
@@ -230,6 +237,9 @@ pub(crate) struct Body<'p> {
 struct Lowerer<'e, 'p, 'b> {
     emitter: &'e mut Emitter<'p>,
     builder: FunctionBuilder<'b>,
+    /// The bindings that other words borrow from: the scrutinees of `case`, the tuples of
+    /// `let (...)` and the lists that loops visit. Their values are never moved (#30).
+    pinned: BTreeSet<String>,
 }
 
 /// Compiles `body` into `builder`'s function.
@@ -244,7 +254,13 @@ pub(crate) fn function<'p>(
     builder.switch_to_block(block);
     builder.seal_block(block);
     let mut params = builder.block_params(block).to_vec().into_iter();
-    let mut lowerer = Lowerer { emitter, builder };
+    let mut pinned = BTreeSet::new();
+    borrowed_from(body.body, &mut pinned);
+    let mut lowerer = Lowerer {
+        emitter,
+        builder,
+        pinned,
+    };
     let mut env = Env::new();
     if let Some((values, caps)) = &body.this {
         let this = params
@@ -330,8 +346,21 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 }
                 Expr::Atom { atom, .. } => {
                     let (value, kind) = self.atom(atom, env)?;
-                    self.retain(value, kind);
-                    for &(owned, kind) in scope.iter().rev() {
+                    // A binding the scope owns moves out as the result; another word is
+                    // retained, and the scope released (#30).
+                    // An alias `let b = a` that does not move shares `a`'s word, with its own
+                    // reference: one entry moves out, and any other is released.
+                    let mut moved = matches!(atom, Atom::Var(_))
+                        .then(|| scope.iter().rposition(|&(owned, _)| owned == value))
+                        .flatten();
+                    if moved.is_none() {
+                        self.retain(value, kind);
+                    }
+                    for (position, &(owned, kind)) in scope.iter().enumerate().rev() {
+                        if moved == Some(position) {
+                            moved = None;
+                            continue;
+                        }
                         self.release(owned, kind);
                     }
                     return Ok(Some(value));
@@ -353,10 +382,13 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     };
                     let kind = kind(ty)?;
                     let bound = match value.as_ref() {
-                        Bound::Rhs(rhs) => self.rhs(rhs, ty, env, scope, catch)?,
+                        Bound::Rhs(rhs) => self.rhs(rhs, ty, env, scope, catch, body)?,
                         Bound::Expr(inner) => {
+                            // A binding the nested expression uses for the last time moves into
+                            // its scope, so a branch can update it in place (#30).
+                            let mut owned = self.handed_down(inner, body, env, scope, catch);
                             let nested = catch.nested(scope);
-                            match self.expr(inner, &mut env.clone(), &mut Scope::new(), &nested)? {
+                            match self.expr(inner, &mut env.clone(), &mut owned, &nested)? {
                                 Some(value) => value,
                                 None => return Ok(None),
                             }
@@ -548,7 +580,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
         &mut self,
         expr: &'p Expr,
         env: &Env,
-        scope: &Scope,
+        scope: &mut Scope,
         catch: &Catch,
     ) -> Result<Option<Value>, CodegenError> {
         let Expr::Loop {
@@ -564,10 +596,17 @@ impl<'p> Lowerer<'_, 'p, '_> {
         };
         let types: Vec<Type> = state.iter().map(|(_, ty)| range::unrefined(ty)).collect();
         let kinds: Vec<Kind> = types.iter().map(kind).collect::<Result<_, _>>()?;
+        // The loop owns its initial state: a binding at its last use moves in, any other word
+        // is retained (#30).
         let mut initial = Vec::new();
         for (atom, &kind) in init.iter().zip(&kinds) {
             let (value, _) = self.atom(atom, env)?;
-            self.retain(value, kind);
+            match self.moving(atom, env, scope, catch, body) {
+                Some(position) => {
+                    scope.remove(position);
+                }
+                None => self.retain(value, kind),
+            }
             initial.push(value);
         }
         let site = self.site(*span);
@@ -656,15 +695,15 @@ impl<'p> Lowerer<'_, 'p, '_> {
         for ((name, _), (&value, ty)) in state.iter().zip(current.iter().zip(&types)) {
             inner.insert(name.clone(), (value, ty.clone()));
         }
-        // A failure in the body releases what the loop owns too: the state and the cursor.
+        // The iteration owns the current state, which its body releases at its end or moves to
+        // its last use, so `acc = acc.append(item: x)` updates the list in place (#30). A
+        // failure in the body releases the state with the body's scope, and the cursor.
         let mut nested = catch.nested(scope);
-        nested
-            .outer
-            .extend(current.iter().copied().zip(kinds.iter().copied()));
         if list.is_none() {
             nested.outer.push((cursor, Kind::Int));
         }
-        if let Some(tuple) = self.expr(body, &mut inner, &mut Scope::new(), &nested)? {
+        let mut owned: Scope = current.iter().copied().zip(kinds.iter().copied()).collect();
+        if let Some(tuple) = self.expr(body, &mut inner, &mut owned, &nested)? {
             let mut next = Vec::new();
             for (index, &kind) in kinds.iter().enumerate() {
                 let value = self.field(tuple, index)?;
@@ -672,9 +711,6 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 next.push(value);
             }
             self.release(tuple, Kind::Tuple);
-            for (&old, &kind) in current.iter().zip(&kinds) {
-                self.release(old, kind);
-            }
             let mut next_arguments: Vec<cranelift_codegen::ir::BlockArg> =
                 next.iter().map(|&v| v.into()).collect();
             match list {
@@ -718,6 +754,116 @@ impl<'p> Lowerer<'_, 'p, '_> {
             self.release(owned, kind);
         }
         Ok(Some(tuple))
+    }
+
+    /// The position in `scope` of the binding `atom` names, when this is its last use, before
+    /// `rest`, and its value can move: the scope owns it since `catch` was installed, and no
+    /// other word borrows from it (#30).
+    fn moving(
+        &self,
+        atom: &Atom,
+        env: &Env,
+        scope: &Scope,
+        catch: &Catch,
+        rest: &Expr,
+    ) -> Option<usize> {
+        let Atom::Var(name) = atom else {
+            return None;
+        };
+        if self.pinned.contains(name) {
+            return None;
+        }
+        let (value, _) = env.get(name.as_str())?;
+        let position = scope
+            .iter()
+            .enumerate()
+            .skip(catch.base)
+            .find(|(_, (owned, _))| owned == value)
+            .map(|(position, _)| position)?;
+        let mut later = BTreeSet::new();
+        vars(rest, &mut later);
+        (!later.contains(name)).then_some(position)
+    }
+
+    /// The entries of `scope` that `inner`, a nested expression, uses for the last time before
+    /// `rest`, removed from `scope`: the nested expression's scope starts with them (#30).
+    fn handed_down(
+        &self,
+        inner: &Expr,
+        rest: &Expr,
+        env: &Env,
+        scope: &mut Scope,
+        catch: &Catch,
+    ) -> Scope {
+        let mut used = BTreeSet::new();
+        vars(inner, &mut used);
+        let mut later = BTreeSet::new();
+        vars(rest, &mut later);
+        let mut handed = Scope::new();
+        let mut position = scope.len();
+        while position > catch.base {
+            position -= 1;
+            let Some(&(owned, kind)) = scope.get(position) else {
+                break;
+            };
+            // Every binding of the word: an alias that did not move shares it.
+            let names: Vec<&String> = env
+                .iter()
+                .filter(|(_, (value, _))| *value == owned)
+                .map(|(name, _)| name)
+                .collect();
+            let moves = names.iter().any(|name| used.contains(*name))
+                && names
+                    .iter()
+                    .all(|name| !later.contains(*name) && !self.pinned.contains(*name));
+            if moves {
+                scope.remove(position);
+                handed.push((owned, kind));
+            }
+        }
+        handed
+    }
+
+    /// A binding of type `ty` that dies before `rest`, which `args` does not name, and whose
+    /// value can move: its object and its position in `scope`.
+    fn reusable(
+        &self,
+        ty: &Type,
+        args: &[Atom],
+        env: &Env,
+        scope: &Scope,
+        catch: &Catch,
+        rest: &Expr,
+    ) -> Option<(Value, usize)> {
+        let Type::Base {
+            base: Base::Named { module, name, .. },
+            ..
+        } = ty
+        else {
+            return None;
+        };
+        let mut later = BTreeSet::new();
+        vars(rest, &mut later);
+        let named = |atom: &Atom, binding: &str| matches!(atom, Atom::Var(n) if n == binding);
+        scope
+            .iter()
+            .enumerate()
+            .skip(catch.base)
+            .rev()
+            .find_map(|(position, &(owned, _))| {
+                let (binding, (_, binding_ty)) =
+                    env.iter().find(|(_, (value, _))| *value == owned)?;
+                let same_kind = matches!(
+                    binding_ty,
+                    Type::Base { base: Base::Named { module: m, name: n, .. }, .. }
+                        if m == module && n == name
+                );
+                (same_kind
+                    && !self.pinned.contains(binding)
+                    && !later.contains(binding)
+                    && !args.iter().any(|arg| named(arg, binding)))
+                .then_some((owned, position))
+            })
     }
 
     /// `attempt body`: `Ok` of the body's value, or `Err` of its failure (`spec/11 §4`), as the
@@ -1042,8 +1188,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
         rhs: &'p Rhs,
         ty: &Type,
         env: &Env,
-        scope: &Scope,
+        scope: &mut Scope,
         catch: &Catch,
+        rest: &'p Expr,
     ) -> Result<Value, CodegenError> {
         match rhs {
             Rhs::Tuple(items) => {
@@ -1057,6 +1204,11 @@ impl<'p> Lowerer<'_, 'p, '_> {
             }
             Rhs::Atom(atom) => {
                 let (value, kind) = self.atom(atom, env)?;
+                // `let b = a` at the last use of `a` moves it to `b` (#30).
+                if let Some(position) = self.moving(atom, env, scope, catch, rest) {
+                    scope.remove(position);
+                    return Ok(value);
+                }
                 self.retain(value, kind);
                 Ok(value)
             }
@@ -1092,6 +1244,19 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     values.push(self.atom(arg, env)?.0);
                 }
                 if function.module == PRELUDE_MODULE {
+                    // `append` and `set` at the last use of their list take it over, and update
+                    // it in place when nothing else holds it (#30).
+                    let owned = match function.name.as_str() {
+                        "append" => Some("una_rt_append_owned"),
+                        "set" => Some("una_rt_set_owned"),
+                        _ => None,
+                    };
+                    if let (Some(owned), Some(list)) = (owned, args.first())
+                        && let Some(position) = self.moving(list, env, scope, catch, rest)
+                    {
+                        scope.remove(position);
+                        return self.call(owned, &values);
+                    }
                     return self.prelude(&function.name, &values, *span, scope, catch);
                 }
                 self.call_function(function, &values, *span, env, scope, catch)
@@ -1113,6 +1278,22 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 Ok(value)
             }
             Rhs::Op { .. } => self.op(rhs, ty, env, scope, catch),
+            Rhs::Construct { ctor, args, .. } if !args.is_empty() => {
+                // A value of the same kind that dies here lends its object, when nothing else
+                // holds it: a field edit `r.f = v` rebuilds `r` (#30).
+                if let Some((old, position)) = self.reusable(ty, args, env, scope, catch, rest) {
+                    scope.remove(position);
+                    let index = i64::try_from(ctor.index).map_err(crate::internal)?;
+                    let tag = self.builder.ins().iconst(types::I64, index);
+                    let object = self.call("una_rt_reuse", &[old, tag])?;
+                    for arg in args {
+                        let (value, _) = self.atom(arg, env)?;
+                        self.runtime("una_rt_push", &[object, value]);
+                    }
+                    return Ok(object);
+                }
+                self.construct(ctor, args, env)
+            }
             Rhs::Construct { ctor, args, .. } => self.construct(ctor, args, env),
             Rhs::Field { value, index, .. } => {
                 let (record, _) = self.atom(value, env)?;
@@ -1851,6 +2032,64 @@ fn source_name(name: &str) -> String {
 
 /// The word of `None`, the variant of `Option` at position 1, without fields.
 const NONE: i64 = (1 << 1) | 1;
+
+/// The bindings other words borrow from in `expr`: the scrutinees of `case`, the tuples of
+/// `let (...)`, and the lists and states that loops visit, in it and in the lambdas it makes.
+fn borrowed_from(expr: &Expr, out: &mut BTreeSet<String>) {
+    let add = |atom: &Atom, out: &mut BTreeSet<String>| {
+        if let Atom::Var(name) = atom {
+            out.insert(name.clone());
+        }
+    };
+    match expr {
+        Expr::Case {
+            scrutinee,
+            arms,
+            otherwise,
+        } => {
+            add(scrutinee, out);
+            for arm in arms {
+                borrowed_from(&arm.body, out);
+            }
+            if let Some(otherwise) = otherwise {
+                borrowed_from(otherwise, out);
+            }
+        }
+        Expr::LetTuple { value, body, .. } => {
+            add(value, out);
+            borrowed_from(body, out);
+        }
+        Expr::Loop { source, body, .. } => {
+            if let LoopSource::List(list) = source.as_ref() {
+                add(list, out);
+            }
+            borrowed_from(body, out);
+        }
+        Expr::Let { value, body, .. } => {
+            if let Bound::Expr(inner) = value.as_ref() {
+                borrowed_from(inner, out);
+            }
+            borrowed_from(body, out);
+        }
+        Expr::If {
+            then, otherwise, ..
+        } => {
+            borrowed_from(then, out);
+            borrowed_from(otherwise, out);
+        }
+        Expr::Handle { body, handler, .. } => {
+            borrowed_from(body, out);
+            borrowed_from(handler, out);
+        }
+        Expr::Attempt { body, .. } | Expr::With { body, .. } => borrowed_from(body, out),
+        Expr::Together { .. } | Expr::TogetherFor { .. } => {
+            // A task's captures are never moved: every name the block reads stays pinned
+            // (#162).
+            vars(expr, out);
+        }
+        Expr::Atom { .. } | Expr::Fail { .. } | Expr::Unreachable { .. } => {}
+    }
+}
 
 /// Every binder that `expr` reads, in it and in the lambdas it makes.
 fn vars(expr: &Expr, out: &mut BTreeSet<String>) {

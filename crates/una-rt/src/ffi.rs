@@ -119,6 +119,9 @@ exported! {
     una_rt_append => values::append, (xs, item);
     una_rt_contains => values::contains, (xs, item);
     una_rt_set => values::set, (xs, index, item);
+    una_rt_append_owned => values::append_owned, (xs, item);
+    una_rt_set_owned => values::set_owned, (xs, index, item);
+    una_rt_reuse => values::reuse, (old, tag);
     una_rt_sum => values::sum, (xs);
     una_rt_or_else => values::or_else, (o, default);
     una_rt_op_code => values::op_code, (instance, index);
