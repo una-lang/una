@@ -285,7 +285,7 @@ impl<'a> Checker<'_, 'a, '_> {
         if let (Some(index), Some(ty)) = (self.of_param(name), self.local(name)) {
             match self.of_argument.take() {
                 Some(slot) => {
-                    let found = self.run_of_param(name, index, ident.span);
+                    let found = self.run_of_param(name, index, ident.span, &slot.raise);
                     self.record_of(&slot, found, ident.span, &format!("`{name}`"));
                 }
                 None if self.pass == Pass::Check && self.base != Base::Quiet => {

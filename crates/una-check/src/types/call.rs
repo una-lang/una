@@ -214,7 +214,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     // (ADR 0062).
                     let of = self
                         .of_param(name)
-                        .map(|index| self.run_of_param(name, index, ident.span));
+                        .map(|index| self.run_of_param(name, index, ident.span, &Label::public()));
                     return self.call_value(&ty, args, span, &format!("`{name}`"), site, of);
                 }
                 match self.env.lower(self.module, name) {

@@ -397,9 +397,16 @@ impl Checker<'_, '_, '_> {
     }
 
     /// The effects and failure of the parameter `index` of the function being checked, run
-    /// or passed on at `span`: allowed only under a public program counter (ADR 0062 E4)
-    /// and in the function's own context.
-    pub(crate) fn run_of_param(&mut self, name: &str, index: usize, span: Span) -> OfFound {
+    /// or passed on at `span`: allowed only under a public program counter (ADR 0062 E4),
+    /// with the label `raise` of the callee that it is passed on to, and in the function's
+    /// own context.
+    pub(crate) fn run_of_param(
+        &mut self,
+        name: &str,
+        index: usize,
+        span: Span,
+        raise: &Label,
+    ) -> OfFound {
         let Some(def) = self
             .current
             .and_then(|id| self.env.functions.get(id))
@@ -431,6 +438,14 @@ impl Checker<'_, '_, '_> {
                         .push(self.report.related(from, "the condition that raises it"));
                 }
                 self.report.push(diagnostic);
+            } else if !raise.is_public() {
+                // Passed on to a function that runs it under its own raised program counter,
+                // as the prelude does over a labeled list (`spec/07 §7` rule 9).
+                self.report.error(
+                    Code::U4002,
+                    span,
+                    format!("`{name}` runs effects and failures that this function cannot see, and the callee runs it under a `{raise}` condition, such as the length of a `{raise}` list, which they would reveal"),
+                );
             }
         }
         if effects {
@@ -543,14 +558,13 @@ impl<'a> Checker<'_, 'a, '_> {
         if uses && !function.uses.is_empty() {
             let level = self.frames.len();
             self.needs_site("this function", &function.uses, span, level);
-            self.call_under_pc(
-                span,
-                "this function",
-                &function.uses,
-                function.fails.is_some(),
-                false,
-                raise,
-            );
+        }
+        // The callee runs it under the program counter raised by `raise`: its effects and its
+        // failure are checked there, as for a call (`spec/07 §7` rule 9).
+        let effects: &[super::ty::FnUse] = if uses { &function.uses } else { &[] };
+        let fallible = fails && function.fails.is_some();
+        if !effects.is_empty() || fallible {
+            self.call_under_pc(span, "this function", effects, fallible, false, raise);
         }
         self.record_of(&slot, value, span, "this function");
         if uses {

@@ -374,6 +374,22 @@ impl<'a> Checker<'_, 'a, '_> {
                     }
                     // The rebinding that leads nowhere is reported where it is written.
                     _ if !self.authority() || rebound => {}
+                    // In a lambda, the pure code is the lambda, whose expected type has no
+                    // `uses`, not the function around it.
+                    Base::Pure if self.own_depth() > 0 => {
+                        let allows = if self.env.edition >= una_project::Edition::V0_2 {
+                            "whose type or `uses of` clause allows the effect"
+                        } else {
+                            "whose type allows the effect"
+                        };
+                        self.report.error(
+                            Code::U3004,
+                            cap.span,
+                            format!(
+                                "`@{name}` is used in a lambda whose type declares no `uses`, so the lambda is pure; pass it directly as an argument for a parameter {allows}"
+                            ),
+                        );
+                    }
                     Base::Pure => self.report.error(
                         Code::U3004,
                         cap.span,
