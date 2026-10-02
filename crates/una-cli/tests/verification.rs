@@ -395,6 +395,12 @@ fn collect_op_paths(expr: &una_core::Expr, out: &mut Vec<String>) {
         | Expr::With { body, .. }
         | Expr::LetTuple { body, .. }
         | Expr::Loop { body, .. } => collect_op_paths(body, out),
+        Expr::Together { tasks, .. } => {
+            for task in tasks {
+                collect_op_paths(task, out);
+            }
+        }
+        Expr::TogetherFor { task, .. } => collect_op_paths(task, out),
         Expr::Atom { .. } | Expr::Fail { .. } | Expr::Unreachable { .. } => {}
     }
 }

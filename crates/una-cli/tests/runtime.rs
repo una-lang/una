@@ -1227,3 +1227,88 @@ fn a_million_deep_value_is_released_compared_and_rendered_within_the_call_depth(
     // Linear, not quadratic: a quadratic render of a million levels takes most of an hour.
     assert!(started.elapsed().as_secs() < 120, "{:?}", started.elapsed());
 }
+
+#[test]
+fn together_traces_list_tasks_in_branch_order_with_their_paths() {
+    // spec/19 §7: an event inside a task carries the task's path, nested ones joined by `.`;
+    // events outside any task carry none; `seq` and installation ids follow branch order.
+    let root = package(
+        "tasks",
+        "\n[run]\nentry = \"tasks\"\ngrants = [\"console\"]\n",
+        &[],
+    );
+    let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("src/tasks.una"),
+        "module tasks
+
+pub capability Log
+  op write(line: Text) -> Unit
+
+handler quiet() for Log
+  op write(line) = unit
+
+shout(line: Text) -> Int
+  uses @console: Console[print]
+=
+  @console.print(line)
+  1
+
+note(line: Text) -> Int
+  uses @log: Log[write]
+=
+  @log.write(line)
+  1
+
+inner() -> Int
+  uses @console: Console[print]
+=
+  together
+    let p = shout(\"b1\")
+    let q = note(\"b2\") with @log = quiet()
+  p + q
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(\"before\")
+  together
+    let a = shout(\"a\")
+    let b = inner()
+  @console.print(\"after {a + b}\")
+",
+    )
+    .unwrap();
+    let output = una(&["--json", "run", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(0), "{}", stdout(&output));
+    let document = json(&output);
+    let events: Vec<Value> = document["trace"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| {
+            json!({
+                "seq": event["seq"],
+                "task": event.get("task").cloned().unwrap_or(Value::Null),
+                "instance": event["instance"],
+                "args": event["args"],
+            })
+        })
+        .collect();
+    assert_eq!(
+        events,
+        vec![
+            json!({"seq": 1, "task": null, "instance": "host:Console", "args": {"line": "\"before\""}}),
+            json!({"seq": 2, "task": "1", "instance": "host:Console", "args": {"line": "\"a\""}}),
+            json!({"seq": 3, "task": "2.1", "instance": "host:Console", "args": {"line": "\"b1\""}}),
+            json!({"seq": 4, "task": "2.2", "instance": "with:quiet#1", "args": {"line": "\"b2\""}}),
+            json!({"seq": 5, "task": null, "instance": "host:Console", "args": {"line": "\"after 3\""}}),
+        ]
+    );
+}

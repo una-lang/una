@@ -24,6 +24,9 @@ impl Serialize for Pairs<'_> {
 #[derive(Serialize)]
 pub struct EventDoc<'a> {
     seq: usize,
+    /// The task's path, only inside a `together` task (`spec/19 §7` rule 1).
+    #[serde(skip_serializing_if = "str::is_empty")]
+    task: &'a str,
     instance: &'a str,
     capability: &'a str,
     op: &'a str,
@@ -35,6 +38,7 @@ impl<'a> From<&'a Event> for EventDoc<'a> {
     fn from(event: &'a Event) -> Self {
         EventDoc {
             seq: event.seq,
+            task: &event.task,
             instance: &event.instance,
             capability: &event.capability,
             op: &event.op,

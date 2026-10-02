@@ -8,7 +8,7 @@ Una enforces **termination-insensitive noninterference up to declassification** 
 
 Observable channels in the model: return values, failure variants and payloads, capability operation arguments, the occurrence of effects.
 
-Outside the model in v0.1, and reported as such in the build report (`spec/13 §6`, `out_of_model`): timing, termination and divergence, resource consumption and allocation, stack exhaustion, external systems beyond declared signatures, races between the check and the use of a file path, and hard links (`spec/14 §3`, ADR 0048). (v0.2, ADR 0065.) Also outside: the order of the effects of concurrent tasks, and how far a cancelled task got (`spec/19 §3`). T6 holds for the result of a `together` block and for each task's own events.
+Outside the model in v0.1, and reported as such in the build report (`spec/13 §6`, `out_of_model`): timing, termination and divergence, resource consumption and allocation, stack exhaustion, external systems beyond declared signatures, races between the check and the use of a file path, hard links, and order of effects across concurrent tasks (`spec/14 §3` and ADR 0048 for hard links; v0.2, ADR 0065 and `spec/19 §3` for the order of effects, which includes how far a cancelled task got). T6 holds for the result of a `together` block and for each task's own events.
 
 ## 2. Labels
 

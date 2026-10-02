@@ -4,3 +4,4 @@ tests/conformance/runtime/effect_polymorphism_run                         effect
 tests/conformance/runtime/for_loop_deep_values                            `for` loops (#81)
 tests/conformance/runtime/for_loop_runs                                   `for` loops (#81)
 tests/conformance/runtime/memory_runs                                     memory model (#29)
+tests/conformance/runtime/together_runs                                   `together` (spec/19)

@@ -11,8 +11,8 @@ use una_syntax::Span;
 use una_syntax::ast::{
     Arg, Arm, Block, BlockExpr, Body, CapBindingValue, CapType, ClauseKind, DeclKind, ElseBranch,
     ExpectationKind, Expr, ExprKind, Field, FnTypeClause, ForSource, Handled, HandlerCall,
-    HandlingKind, Ident, IfBlock, IsTarget, KindBody, LetValue, Literal, OpClauseKind, Param,
-    PatternKind, Stmt, TextLit, TextPart, Type, TypeCore, VariantExpr,
+    HandlingKind, Ident, IfBlock, IsTarget, KindBody, LetStmt, LetValue, Literal, OpClauseKind,
+    Param, PatternKind, Stmt, TextLit, TextPart, Type, TypeCore, VariantExpr,
 };
 
 use super::{Checker, Table, prelude};
@@ -398,47 +398,80 @@ impl<'a> Resolver<'_, '_, 'a> {
     fn block(&mut self, block: &Block) {
         self.enter();
         for stmt in &block.stmts {
-            match stmt {
-                Stmt::Let(stmt) => {
-                    if let Some(ty) = &stmt.ty {
-                        self.ty(ty);
-                    }
-                    match &stmt.value {
-                        LetValue::Handled(handled) => self.handled(handled),
-                        LetValue::BlockExpr(expr) => self.block_expr(expr),
-                    }
-                    self.bind(&stmt.name, "local", true);
-                }
-                Stmt::Assign(stmt) => {
-                    self.expr(&stmt.place);
-                    match &stmt.value {
-                        LetValue::Handled(handled) => self.handled(handled),
-                        LetValue::BlockExpr(expr) => self.block_expr(expr),
-                    }
-                }
-                Stmt::IfThen(stmt) => {
-                    self.expr(&stmt.condition);
-                    self.block(&stmt.block);
-                }
-                Stmt::For(stmt) => {
-                    match &stmt.source {
-                        ForSource::List(list) => self.expr(list),
-                        ForSource::Range { low, high, .. } => {
-                            self.expr(low);
-                            self.expr(high);
-                        }
-                    }
-                    // The loop variable is in scope in the body only.
-                    self.enter();
-                    self.bind(&stmt.var, "local", true);
-                    self.block(&stmt.block);
-                    self.leave();
-                }
-                Stmt::Handled(handled) => self.handled(handled),
-                Stmt::BlockExpr(expr) => self.block_expr(expr),
-            }
+            self.stmt(stmt);
         }
         self.leave();
+    }
+
+    fn stmt(&mut self, stmt: &Stmt) {
+        match stmt {
+            Stmt::Let(stmt) => {
+                self.let_value(stmt);
+                self.bind(&stmt.name, "local", true);
+            }
+            Stmt::Assign(stmt) => {
+                self.expr(&stmt.place);
+                match &stmt.value {
+                    LetValue::Handled(handled) => self.handled(handled),
+                    LetValue::BlockExpr(expr) => self.block_expr(expr),
+                }
+            }
+            Stmt::IfThen(stmt) => {
+                self.expr(&stmt.condition);
+                self.block(&stmt.block);
+            }
+            Stmt::For(stmt) => {
+                self.for_source(&stmt.source);
+                // The loop variable is in scope in the body only.
+                self.enter();
+                self.bind(&stmt.var, "local", true);
+                self.block(&stmt.block);
+                self.leave();
+            }
+            Stmt::Together(stmt) => {
+                // A branch sees the names before the block and none of its siblings'; the
+                // branches' names are in scope after it (`spec/19 §2` rule 1).
+                for branch in &stmt.body {
+                    match branch {
+                        Stmt::Let(branch) => self.let_value(branch),
+                        // Not a branch (U2024), resolved in a scope of its own.
+                        other => {
+                            self.enter();
+                            self.stmt(other);
+                            self.leave();
+                        }
+                    }
+                }
+                for branch in &stmt.body {
+                    if let Stmt::Let(branch) = branch {
+                        self.bind(&branch.name, "local", true);
+                    }
+                }
+            }
+            Stmt::Handled(handled) => self.handled(handled),
+            Stmt::BlockExpr(expr) => self.block_expr(expr),
+        }
+    }
+
+    /// The type and value of a `let`, before its name is bound.
+    fn let_value(&mut self, stmt: &LetStmt) {
+        if let Some(ty) = &stmt.ty {
+            self.ty(ty);
+        }
+        match &stmt.value {
+            LetValue::Handled(handled) => self.handled(handled),
+            LetValue::BlockExpr(expr) => self.block_expr(expr),
+        }
+    }
+
+    fn for_source(&mut self, source: &ForSource) {
+        match source {
+            ForSource::List(list) => self.expr(list),
+            ForSource::Range { low, high, .. } => {
+                self.expr(low);
+                self.expr(high);
+            }
+        }
     }
 
     fn handled(&mut self, handled: &Handled) {
@@ -473,6 +506,13 @@ impl<'a> Resolver<'_, '_, 'a> {
                 }
             }
             BlockExpr::If(block) => self.if_block(block),
+            BlockExpr::TogetherFor(together) => {
+                self.for_source(&together.source);
+                self.enter();
+                self.bind(&together.var, "local", true);
+                self.block(&together.block);
+                self.leave();
+            }
         }
     }
 

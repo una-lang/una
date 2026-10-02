@@ -61,8 +61,8 @@ pub const RESERVED_FOR_LATER: [(&str, &str); 31] = [
 ];
 
 /// The rows of the reserved-word table that edition 0.2 changes or adds (`spec/17 §9`, ADR
-/// 0056); `edit` and `take` are keywords there.
-pub const RESERVED_IN_0_2: [(&str, &str); 7] = [
+/// 0056; `spec/19 §9`, ADR 0065); `edit`, `take` and `together` are keywords there.
+pub const RESERVED_IN_0_2: [(&str, &str); 11] = [
     ("shared", "reserved for v0.3 (aliasing)"),
     ("iso", "reserved for v0.3 (aliasing)"),
     ("weak", "reserved for v0.3 (aliasing)"),
@@ -73,12 +73,22 @@ pub const RESERVED_IN_0_2: [(&str, &str); 7] = [
     ("var", "not a keyword in Una; use `let edit`"),
     ("while", "not a keyword in Una; use `for` or recursion"),
     ("loop", "not a keyword in Una; use `for` or recursion"),
+    (
+        "parallel",
+        "reserved for a later version (concurrency beyond `together`)",
+    ),
+    (
+        "actor",
+        "reserved for a later version (concurrency beyond `together`)",
+    ),
+    ("async", "not supported; use `together`"),
+    ("await", "not supported; use `together`"),
 ];
 
 /// The U0103 message text of `word` under the keyword set `set`, if it is reserved.
 pub fn reserved_in(word: &str, set: KeywordSet) -> Option<&'static str> {
     if set == KeywordSet::V0_2 {
-        if matches!(word, "edit" | "take") {
+        if matches!(word, "edit" | "take" | "together") {
             return None;
         }
         if let Some((_, message)) = RESERVED_IN_0_2

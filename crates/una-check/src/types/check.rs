@@ -180,6 +180,9 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) collected: &'c mut Collected,
     /// How many lambdas enclose the expression checked.
     pub(crate) lambda_depth: usize,
+    /// Where the locals of the innermost enclosing `together` task start: a local before it
+    /// is captured by the task, which cannot change it (U2023, `spec/19 §2` rule 3).
+    pub(crate) task_mark: Option<usize>,
     /// The receiver of the method call being checked, with its call-site marker, for its
     /// parameter's convention and exclusivity (`spec/17 §3`).
     pub(crate) receiver_marker: Option<(Option<Convention>, Expr)>,
@@ -316,6 +319,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             of_lambdas: Vec::new(),
             of_found: Vec::new(),
             lambda_depth: 0,
+            task_mark: None,
             call_targets: BTreeMap::new(),
             operands: Vec::new(),
             pending_ops: BTreeMap::new(),
