@@ -7,5 +7,5 @@
 pub mod names;
 pub mod types;
 
-pub use names::{ModuleInput, PackageInput, RunInput, check_names};
-pub use types::{Header, HeaderUse, PendingObligation, TypeCheck, check_types};
+pub use names::{ModuleInput, PackageInput, RunInput, check_names, check_names_indexed};
+pub use types::{Header, HeaderUse, Index, PendingObligation, TypeCheck, check_types};

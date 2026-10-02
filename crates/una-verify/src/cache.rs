@@ -27,9 +27,12 @@ pub(crate) fn get(dir: &Path, key: &str) -> Option<Answer> {
 }
 
 /// Stores an answer, through a temporary file and a rename so that parallel runs never read a
-/// partial entry. An `unknown` from the wall-clock guard depends on time and is not stored.
+/// partial entry. An `unknown` from the wall-clock guard depends on time, and one of a
+/// cancelled run on an editor (ADR 0063): neither is stored.
 pub(crate) fn put(dir: &Path, key: &str, answer: &Answer) {
-    if answer.status == Status::Unknown && answer.reason.as_deref() == Some("wallclock") {
+    if answer.status == Status::Unknown
+        && matches!(answer.reason.as_deref(), Some("wallclock" | "cancelled"))
+    {
         return;
     }
     let Ok(text) = serde_json::to_string(answer) else {
