@@ -530,6 +530,40 @@ fn an_executable_stops_at_its_stack_whatever_its_max_depth() {
 }
 
 #[test]
+fn an_executable_loop_over_its_memory_budget_is_u6003() {
+    // ADR 0061 rule 2: a `for` iteration is not a call, and the executable checks the budget
+    // at each one too, at the loop.
+    let program = "module hog\n\npub kind Node\n  value: Int\n  next: Option[Node]\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit chain: Option[Node] = None\n  for i in 0..<100000000\n    chain = Some(Node(value: i, next: chain))\n  let built = chain.is_some()\n  @console.print(\"built {built}\")\n";
+    let dir = package(
+        "loop-hog",
+        "\n[run]\nentry = \"hog\"\ngrants = [\"console\"]\n",
+        &[("src/hog.una", program)],
+    );
+    let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+    std::fs::write(
+        dir.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let output = Command::new(dir.join("target/una/loop-hog"))
+        .args(["--max-memory", "16"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.starts_with(
+            "[U6003] Error: this call exceeds the memory limit of 16 MiB\n  at src/hog.una:11:3"
+        ),
+        "{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn the_executable_checks_main_against_its_grants() {
     runtime();
     // No `[run] grants`: `una build` accepts it, and the executable needs `--grant console`.

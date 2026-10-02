@@ -26,7 +26,10 @@
 //!   instances, which the runtime serves with the interpreter's grants and path rules, and
 //!   handler instances, which `with` installs and whose operations are compiled code;
 //! - traces: every operation records its event through the runtime, with its arguments, result
-//!   and failure rendered and redacted as the interpreter does.
+//!   and failure rendered and redacted as the interpreter does;
+//! - edition 0.2's memory model: tuples, `let (x, ...)`, and `for` loops, whose iterations
+//!   check the memory budget (ADR 0061); and effectful and failing functions in the prelude's
+//!   higher-order functions, whose failure stops the loop (ADR 0062).
 //!
 //! Examples run in the interpreter only, as `una test` does (#115).
 //!
@@ -282,11 +285,13 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_at", 2, true),
     ("una_rt_append", 2, true),
     ("una_rt_contains", 2, true),
+    ("una_rt_set", 3, true),
     ("una_rt_sum", 1, true),
     ("una_rt_or_else", 2, true),
     ("una_rt_main_failed", 1, false),
     ("una_rt_op_code", 2, true),
     ("una_rt_fixed", 4, true),
+    ("una_rt_budget", 1, false),
     ("una_rt_clock_now", 0, true),
     ("una_rt_env_get", 1, true),
     ("una_rt_files_read", 1, true),
