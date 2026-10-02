@@ -91,7 +91,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 
 ## 4. Code registry
 
-(v0.2, ADR 0056.) The codes U2017 to U2021 of the memory model are listed in `spec/17 §10`. They join this table with their implementation.
+(v0.2, ADR 0056.) The codes U2017 to U2021 of the memory model are listed in `spec/17 §10`. They join this table with their implementation. (v0.2, ADR 0057.) So does U2022, of fixed-width integers (`spec/18 §8`).
 
 | Code | Domain | Meaning |
 | --- | --- | --- |
@@ -293,7 +293,7 @@ Commands take a file or a directory, `.` by default (ADR 0021):
 
 `una.toml` is a TOML document with these tables and keys, and no others (U7002):
 
-- `[package]`, required: `name`, `version` and `edition`, non-empty strings; `edition` is `"0.1"`. (v0.2, ADR 0056.) `edition` is `"0.1"` or `"0.2"`. The constructs of `spec/17` and the keywords of edition `0.2` exist only in packages of edition `"0.2"`, and a single file has edition `"0.1"`.
+- `[package]`, required: `name`, `version` and `edition`, non-empty strings; `edition` is `"0.1"`. (v0.2, ADR 0056.) `edition` is `"0.1"` or `"0.2"`. The constructs of `spec/17` and `spec/18` and the keywords of edition `0.2` exist only in packages of edition `"0.2"`, and a single file has edition `"0.1"`.
 - `[labels]`: `categories`, an array of category names (UpperCamelCase, U1005; unique, U1002).
 - `[trusted]`: `modules`, an array of module paths, each a module of the package whose header says `trusted module` (U7005).
 - `[escape_budget]`: `checked_per_module`, an integer of at least 0 (default 0).

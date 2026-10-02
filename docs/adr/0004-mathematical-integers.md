@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-09-28
+- Amended by: 0057 (v0.2: fixed-width integer types with overflow obligations; `Int` stays mathematical)
 
 ## Context
 
