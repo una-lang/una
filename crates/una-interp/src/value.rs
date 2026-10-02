@@ -40,6 +40,30 @@ pub(crate) struct Data<'p> {
     pub(crate) fields: Vec<Value<'p>>,
 }
 
+// A value can be deeper than the call depth bounds, since a loop builds it without calls
+// (`spec/17 §4`), so dropping and comparing values never recurse on the native stack, which
+// would overflow (ADR 0032).
+impl Drop for Data<'_> {
+    fn drop(&mut self) {
+        let mut pending = std::mem::take(&mut self.fields);
+        while let Some(value) = pending.pop() {
+            match value {
+                Value::Data(data) => {
+                    if let Ok(mut data) = Rc::try_unwrap(data) {
+                        pending.append(&mut data.fields);
+                    }
+                }
+                Value::List(items) | Value::Tuple(items) => {
+                    if let Ok(items) = Rc::try_unwrap(items) {
+                        pending.extend(items);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 /// A lambda with the environment it closes over.
 #[derive(Clone, Debug)]
 pub(crate) struct Closure<'p> {
@@ -72,24 +96,34 @@ impl<'p> Value<'p> {
 
 /// Structural equality: `==` of `spec/03 §1`. Functions are never compared (the checker
 /// rejects it), and compare unequal.
+/// It compares with a worklist, so a deep value does not recurse on the native stack.
 pub(crate) fn equal(a: &Value<'_>, b: &Value<'_>) -> bool {
-    match (a, b) {
-        (Value::Int(x), Value::Int(y)) => x == y,
-        (Value::Bool(x), Value::Bool(y)) => x == y,
-        (Value::Text(x), Value::Text(y)) => x == y,
-        (Value::Unit, Value::Unit) => true,
-        (Value::Hashed(x), Value::Hashed(y)) => x == y,
-        (Value::Data(x), Value::Data(y)) => {
-            x.ctor.kind == y.ctor.kind
-                && x.ctor.index == y.ctor.index
-                && x.fields.len() == y.fields.len()
-                && x.fields.iter().zip(&y.fields).all(|(a, b)| equal(a, b))
+    let mut pending = vec![(a, b)];
+    while let Some(pair) = pending.pop() {
+        let same = match pair {
+            (Value::Int(x), Value::Int(y)) => x == y,
+            (Value::Bool(x), Value::Bool(y)) => x == y,
+            (Value::Text(x), Value::Text(y)) => x == y,
+            (Value::Unit, Value::Unit) => true,
+            (Value::Hashed(x), Value::Hashed(y)) => x == y,
+            (Value::Data(x), Value::Data(y)) => {
+                let same = x.ctor.kind == y.ctor.kind
+                    && x.ctor.index == y.ctor.index
+                    && x.fields.len() == y.fields.len();
+                pending.extend(x.fields.iter().zip(&y.fields));
+                same
+            }
+            (Value::List(x), Value::List(y)) | (Value::Tuple(x), Value::Tuple(y)) => {
+                pending.extend(x.iter().zip(y.iter()));
+                x.len() == y.len()
+            }
+            _ => false,
+        };
+        if !same {
+            return false;
         }
-        (Value::List(x), Value::List(y)) | (Value::Tuple(x), Value::Tuple(y)) => {
-            x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| equal(a, b))
-        }
-        _ => false,
     }
+    true
 }
 
 /// The order of `<`: integers, texts by scalar values, and variants without fields by

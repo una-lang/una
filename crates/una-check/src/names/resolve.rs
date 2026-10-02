@@ -10,9 +10,9 @@ use una_project::Edition;
 use una_syntax::Span;
 use una_syntax::ast::{
     Arg, Arm, Block, BlockExpr, Body, CapBindingValue, CapType, ClauseKind, DeclKind, ElseBranch,
-    ExpectationKind, Expr, ExprKind, Field, FnTypeClause, Handled, HandlerCall, HandlingKind,
-    Ident, IfBlock, IsTarget, KindBody, LetValue, Literal, OpClauseKind, Param, PatternKind, Stmt,
-    TextLit, TextPart, Type, TypeCore, VariantExpr,
+    ExpectationKind, Expr, ExprKind, Field, FnTypeClause, ForSource, Handled, HandlerCall,
+    HandlingKind, Ident, IfBlock, IsTarget, KindBody, LetValue, Literal, OpClauseKind, Param,
+    PatternKind, Stmt, TextLit, TextPart, Type, TypeCore, VariantExpr,
 };
 
 use super::{Checker, Table, prelude};
@@ -396,6 +396,20 @@ impl<'a> Resolver<'_, '_, 'a> {
                 Stmt::IfThen(stmt) => {
                     self.expr(&stmt.condition);
                     self.block(&stmt.block);
+                }
+                Stmt::For(stmt) => {
+                    match &stmt.source {
+                        ForSource::List(list) => self.expr(list),
+                        ForSource::Range { low, high, .. } => {
+                            self.expr(low);
+                            self.expr(high);
+                        }
+                    }
+                    // The loop variable is in scope in the body only.
+                    self.enter();
+                    self.bind(&stmt.var, "local", true);
+                    self.block(&stmt.block);
+                    self.leave();
                 }
                 Stmt::Handled(handled) => self.handled(handled),
                 Stmt::BlockExpr(expr) => self.block_expr(expr),

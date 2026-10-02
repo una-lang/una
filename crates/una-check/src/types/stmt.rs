@@ -5,9 +5,9 @@
 use una_diag::{Code, ObligationKind};
 use una_syntax::Span;
 use una_syntax::ast::{
-    AssignStmt, Bind, Block, BlockExpr, Body, CapBindingValue, ElseBranch, Expr, ExprKind, Handled,
-    HandlingKind, IfBlock, IfThenStmt, LetStmt, LetValue, Literal, PatternKind, Stmt, TextPart,
-    WhenExpr,
+    AssignStmt, Bind, Block, BlockExpr, Body, CapBindingValue, ElseBranch, Expr, ExprKind,
+    ForSource, ForStmt, Handled, HandlingKind, IfBlock, IfThenStmt, LetStmt, LetValue, Literal,
+    PatternKind, Stmt, TextPart, WhenExpr,
 };
 
 use super::Report;
@@ -96,6 +96,13 @@ impl<'a> Checker<'_, 'a, '_> {
                 Stmt::IfThen(stmt) => {
                     self.outside_rl(stmt.span, || "`if` without `else`".to_owned());
                     self.if_then(stmt);
+                    if is_last && tail {
+                        self.returned_value(stmt.span, &Ty::Unit, expected, role);
+                    }
+                }
+                Stmt::For(stmt) => {
+                    self.outside_rl(stmt.span, || "`for`".to_owned());
+                    self.for_stmt(stmt);
                     if is_last && tail {
                         self.returned_value(stmt.span, &Ty::Unit, expected, role);
                     }
@@ -247,6 +254,97 @@ impl<'a> Checker<'_, 'a, '_> {
                 local.taken = *was;
             }
         }
+    }
+
+    /// `for x in source` with its block: a `Unit` statement whose body runs under the label
+    /// of what it visits, the top label of a list or the labels of a range's bounds
+    /// (`spec/17 §1`, `§3` rule 3, `§6` rule 3).
+    fn for_stmt(&mut self, stmt: &ForStmt) {
+        let (var_ty, label, from) = match &stmt.source {
+            ForSource::List(list) => {
+                let found = self.expr(list, None);
+                let element = self.vars.fresh(Origin::Element, list.span);
+                self.unify_at(
+                    list.span,
+                    &Ty::List(Box::new(element.clone())),
+                    &found,
+                    Role::Plain,
+                );
+                // The element type with its labels: unification ignores them.
+                let labeled = self.labeled(&found);
+                let label = labeled.top_label();
+                let element = match labeled.unlabeled() {
+                    Ty::List(element) => element.as_ref().clone(),
+                    _ => self.resolve(&element),
+                };
+                (element, label, list.span)
+            }
+            ForSource::Range { low, high, .. } => {
+                // A literal bound takes the type of the other (`spec/18 §2`), and both are
+                // integers of one type.
+                let literal = |e: &Expr| match &e.kind {
+                    ExprKind::Literal(_) => true,
+                    ExprKind::Unary { operand, .. } => {
+                        matches!(operand.kind, ExprKind::Literal(_))
+                    }
+                    _ => false,
+                };
+                let (first, second) = if literal(low) {
+                    (high, low)
+                } else {
+                    (low, high)
+                };
+                let first_ty = self.expr(first, None);
+                let base = match self.resolve(&first_ty).unlabeled() {
+                    fixed @ Ty::Fixed(_) => fixed.clone(),
+                    _ => Ty::Int,
+                };
+                let second_ty = self.expr(second, Some(&base));
+                self.unify_at(first.span, &base, &first_ty, Role::Plain);
+                self.unify_at(second.span, &base, &second_ty, Role::Plain);
+                let (low_ty, high_ty) = if literal(low) {
+                    (second_ty, first_ty)
+                } else {
+                    (first_ty, second_ty)
+                };
+                let label = self
+                    .labeled(&low_ty)
+                    .top_label()
+                    .join(&self.labeled(&high_ty).top_label());
+                (base, label, low.span.to(high.span))
+            }
+        };
+        // The loop variable is derived from what the loop visits, so it carries its label.
+        let var_ty = var_ty.with_label(&label);
+        self.typed(stmt.var.span, &var_ty);
+        // An outer binding taken in the body is taken again in the next iteration (`spec/17
+        // §3` rule 3).
+        let before: Vec<Option<Span>> = self.locals.iter().map(|local| local.taken).collect();
+        let saved = self.raise_pc(&label, from);
+        let mark = self.locals.len();
+        self.bind(self.name(&stmt.var), var_ty);
+        let ty = self.block(&stmt.block, None, Role::Plain, false);
+        self.locals.truncate(mark);
+        self.restore_pc(saved);
+        self.discarded(value_span(&stmt.block), &ty);
+        for (index, was) in before.iter().enumerate() {
+            let Some(local) = self.locals.get(index) else {
+                continue;
+            };
+            if let (None, Some(at)) = (was, local.taken) {
+                let name = local.name;
+                self.report.error(
+                    Code::U2017,
+                    at,
+                    format!(
+                        "`{name}` is taken in every iteration of this loop; give it a new value before the end of the body, or declare it inside the loop"
+                    ),
+                );
+            }
+        }
+        // A loop may run zero times, so the state after it joins the state before it: a
+        // binding taken before and revived only in the body stays taken (`spec/17 §3` rule 3).
+        self.join_skipped(&before);
     }
 
     /// A line expression with its `with` bindings and handling clauses (`spec/06 §3`).

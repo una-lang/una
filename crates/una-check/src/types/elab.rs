@@ -7,14 +7,15 @@ use std::collections::BTreeMap;
 use una_core::{
     Arm as CoreArm, Atom, Base, BinOp, Bound, CapOp as CoreCapOp, Clause as CoreClause, Ctor,
     DataVariant, Decl, Example, Expectation, Expr as CoreExpr, Fun, HandlerOp as CoreHandlerOp,
-    Label, Module as CoreModule, Name, Path, Prim, Program, Refinement as CoreRefinement, Rhs,
-    Signature, Source, Term, Type, Use,
+    Label, LoopSource, Module as CoreModule, Name, Path, Prim, Program,
+    Refinement as CoreRefinement, Rhs, Signature, Source, Term, Type, Use,
 };
 use una_syntax::ast::{
     Arg, BinaryOp, Block, BlockExpr, Body, CapBindingValue, Clause, ClauseKind, Convention,
-    DeclKind, ElseBranch, ExampleDecl, ExpectationKind, Expr, ExprKind, FunctionDecl, Handled,
-    HandlingKind, IfBlock, IfThenStmt, IsTarget, LetValue, Literal, OpClauseKind, PatternKind,
-    Range, SignedInt, Stmt, TextLit, TextPart, UnaryOp, VariantExpr, WhenExpr,
+    DeclKind, ElseBranch, ExampleDecl, ExpectationKind, Expr, ExprKind, ForSource, ForStmt,
+    FunctionDecl, Handled, HandlingKind, IfBlock, IfThenStmt, IsTarget, LetValue, Literal,
+    OpClauseKind, PatternKind, Range, SignedInt, Stmt, TextLit, TextPart, UnaryOp, VariantExpr,
+    WhenExpr,
 };
 use una_syntax::{SourceDb, Span};
 
@@ -238,6 +239,8 @@ enum Wrap {
     Join { names: Vec<String>, ty: Type },
     /// The body of a function with `edit` parameters: `(params..., result)`.
     Return,
+    /// The body of a loop that updates `names`: `(names...)`, its value discarded.
+    State { names: Vec<String> },
 }
 
 impl<'e, 'a> Fx<'e, 'a> {
@@ -1239,6 +1242,16 @@ impl<'e, 'a> Fx<'e, 'a> {
                         tail_span = stmt.span;
                     }
                 }
+                Stmt::For(stmt) => {
+                    self.for_loop(&mut lets, stmt);
+                    if index == last {
+                        tail = CoreExpr::Atom {
+                            atom: Atom::Unit,
+                            span: stmt.span,
+                        };
+                        tail_span = stmt.span;
+                    }
+                }
                 Stmt::IfThen(stmt) => {
                     self.if_then(&mut lets, stmt);
                     if index == last {
@@ -1760,6 +1773,7 @@ impl<'e, 'a> Fx<'e, 'a> {
     ) -> CoreExpr {
         let join = matches!(wrap, Wrap::Join { .. });
         let (names, ty) = match wrap {
+            Wrap::State { names } => return self.wrap_state(lets, tail, &names, span),
             Wrap::Join { names, ty } => (names, ty),
             Wrap::Return => match self.returning.clone() {
                 Some((names, ty)) => (names, ty),
@@ -1845,6 +1859,110 @@ impl<'e, 'a> Fx<'e, 'a> {
                 close(lets, tail)
             }
         }
+    }
+
+    /// The tail of a loop body: its value is discarded, and the body returns the current values
+    /// of the bindings the loop updates.
+    fn wrap_state(
+        &mut self,
+        lets: &mut Vec<Let>,
+        tail: CoreExpr,
+        names: &[String],
+        span: Span,
+    ) -> CoreExpr {
+        if !matches!(tail, CoreExpr::Atom { .. }) {
+            bind_expr(lets, "_".to_owned(), unit(), tail, span, false);
+        }
+        let mut atoms = Vec::new();
+        let mut types = Vec::new();
+        for name in names {
+            let Some(binder) = self.local(name) else {
+                self.broken = true;
+                continue;
+            };
+            types.push(self.binding_type(&binder, span));
+            atoms.push(Atom::Var(binder));
+        }
+        let t = self.temp();
+        lets.push(Let::inferred(
+            t.clone(),
+            tuple_type(types),
+            Bound::Rhs(Rhs::Tuple(atoms)),
+            span,
+        ));
+        CoreExpr::Atom {
+            atom: Atom::Var(t),
+            span,
+        }
+    }
+
+    /// `for x in source` (`spec/17 §4`): a Core loop over the bindings its body updates, whose
+    /// final values are bound afresh after it (ADR 0056, amendment of 2026-10-02).
+    fn for_loop(&mut self, lets: &mut Vec<Let>, stmt: &ForStmt) {
+        let var_name = self.name(&stmt.var);
+        let mut names = Vec::new();
+        self.scan_block(&stmt.block, &[var_name.to_owned()], &mut names);
+        names.retain(|name| self.local(name).is_some());
+        let source = match &stmt.source {
+            ForSource::List(list) => LoopSource::List(self.atom(lets, list)),
+            ForSource::Range {
+                low,
+                high,
+                exclusive,
+            } => LoopSource::Range {
+                low: self.atom(lets, low),
+                high: self.atom(lets, high),
+                inclusive: !exclusive,
+            },
+        };
+        let mut init = Vec::new();
+        let mut types = Vec::new();
+        for name in &names {
+            let binder = self.local(name).unwrap_or_default();
+            types.push(self.binding_type(&binder, stmt.span));
+            init.push(Atom::Var(binder));
+        }
+        let mark = self.scope.len();
+        let var_ty = self.type_at(stmt.var.span);
+        let var = (self.bind(var_name), var_ty);
+        let mut state = Vec::new();
+        for (name, ty) in names.iter().zip(&types) {
+            let binder = self.bind(name);
+            self.types.insert(binder.clone(), ty.clone());
+            state.push((binder, ty.clone()));
+        }
+        self.tail_wrap = Some(Wrap::State {
+            names: names.clone(),
+        });
+        let body = self.block(&stmt.block);
+        self.scope.truncate(mark);
+        let looped = CoreExpr::Loop {
+            source: Box::new(source),
+            var: Box::new(var),
+            state,
+            init,
+            body: Box::new(body),
+            span: stmt.span,
+        };
+        let t = self.temp();
+        bind_expr(
+            lets,
+            t.clone(),
+            tuple_type(types.clone()),
+            looped,
+            stmt.span,
+            false,
+        );
+        if names.is_empty() {
+            return;
+        }
+        let mut after = Vec::new();
+        for (name, ty) in names.iter().zip(types) {
+            let binder = self.bind(name);
+            self.types.insert(binder.clone(), ty.clone());
+            after.push((binder, ty));
+        }
+        lets.push(Let::destructure(after, Atom::Var(t), stmt.span));
     }
 
     /// Whether `expr` is a call with an `edit` argument or receiver.
@@ -2004,6 +2122,11 @@ impl<'e, 'a> Fx<'e, 'a> {
                     }
                 }
                 Stmt::IfThen(stmt) => self.scan_block(&stmt.block, &local, found),
+                Stmt::For(stmt) => {
+                    let mut inner = local.clone();
+                    inner.push(self.name(&stmt.var).to_owned());
+                    self.scan_block(&stmt.block, &inner, found);
+                }
                 Stmt::Handled(handled) => {
                     for place in self.edit_places_written(&handled.expr) {
                         if let Some((root, _)) = super::memory::place_root(place) {

@@ -561,7 +561,7 @@ impl Sites {
                 }
                 self.expr(body);
             }
-            Expr::LetTuple { body, .. } => self.expr(body),
+            Expr::LetTuple { body, .. } | Expr::Loop { body, .. } => self.expr(body),
             Expr::If {
                 then, otherwise, ..
             } => {
