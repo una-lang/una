@@ -115,6 +115,20 @@ pub(crate) enum Command {
         #[arg(long, value_name = "SECONDS", default_value_t = 60)]
         solver_wallclock: u64,
     },
+    /// Compile `main` of the `[run] entry` module into a native executable
+    Build {
+        /// The package directory, or a single file
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Write the executable to this file instead of `target/una/<name>`
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+
+        /// Stop a solver query after this many seconds; the obligation is then unknown
+        #[arg(long, value_name = "SECONDS", default_value_t = 60)]
+        solver_wallclock: u64,
+    },
     /// Run every example
     Test {
         /// The package directory, or a single file

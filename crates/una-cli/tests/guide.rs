@@ -17,7 +17,7 @@ use serde_json::Value;
 const MANIFEST: &str = "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"0.1\"\n";
 
 /// The schemas the CLI prints (`spec/13 §1, §2, §6`, ADRs 0029, 0032 and 0034).
-const SCHEMAS: [&str; 9] = [
+const SCHEMAS: [&str; 10] = [
     "una.diagnostics/1",
     "una.diagnostic/1",
     "una.obligations/1",
@@ -25,7 +25,8 @@ const SCHEMAS: [&str; 9] = [
     "una.run/1",
     "una.contract/1",
     "una.trace/1",
-    "una.report/1",
+    "una.report/2",
+    "una.build/1",
     "una.explain/1",
 ];
 

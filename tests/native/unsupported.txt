@@ -1,0 +1,39 @@
+# Runnable programs that the native backend does not compile yet (#26), by repository path.
+# The differential test (crates/una-cli/tests/native.rs) requires this list to be exact.
+docs/reviews/v0.1-rereview/adversarial/rv-id-policy-twins-ok              calls of functions
+docs/reviews/v0.1-rereview/adversarial/rv-id-prelude-alias.una            lists
+docs/reviews/v0.1-rereview/adversarial/rv-link-case                       calls of functions
+docs/reviews/v0.1-rereview/adversarial/rv-link-chain                      calls of functions
+docs/reviews/v0.1-rereview/adversarial/rv-link-dangling                   calls of functions
+docs/reviews/v0.1-rereview/adversarial/rv-link-grant-prefix               calls of functions
+docs/reviews/v0.1-rereview/adversarial/rv-link-hardlink                   calls of functions
+docs/reviews/v0.1-rereview/adversarial/rv-link-intermediate               calls of functions
+docs/reviews/v0.1-rereview/adversarial/rv-link-lexical                    calls of functions
+docs/reviews/v0.1-review/adversarial/flow-main-failure-payload.una        `Env.get`
+docs/reviews/v0.1-review/adversarial/runtime-deep-recursion-memory        calls of functions
+docs/reviews/v0.1-review/adversarial/runtime-euclidean-division           calls of functions
+docs/reviews/v0.1-review/adversarial/runtime-files-dangling-link          `attempt`
+docs/reviews/v0.1-review/adversarial/runtime-host-trace-redaction         `Env.get`
+docs/reviews/v0.1-review/adversarial/runtime-prelude-contracts            lists
+docs/reviews/v0.1-review/adversarial/runtime-short-circuit-interpolation  calls of functions
+examples/events                                                           calls of functions
+examples/greenhouse                                                       `with`
+examples/journal                                                          `Files.read`
+examples/pantry                                                           calls of functions
+examples/shortlinks                                                       `with`
+examples/toolshelf                                                        `Clock.now`
+tests/conformance/runtime/big_integers.una                                calls of functions
+tests/conformance/runtime/call_depth.una                                  arithmetic, comparisons and other primitive operations
+tests/conformance/runtime/checked                                         `attempt`
+tests/conformance/runtime/euclidean_division.una                          calls of functions
+tests/conformance/runtime/euclidean_division_signs.una                    calls of functions
+tests/conformance/runtime/failures_and_handling.una                       handling clauses
+tests/conformance/runtime/handlers.una                                    `with`
+tests/conformance/runtime/main_fails.una                                  `fail`
+tests/conformance/runtime/op_arg_names                                    `with`
+tests/conformance/runtime/prelude_edge_cases.una                          lists
+tests/conformance/runtime/prelude_functions.una                           lists
+tests/conformance/runtime/short_circuit_and_interpolation.una             calls of functions
+tests/conformance/runtime/text_interpolation.una                          `Int` values
+tests/conformance/runtime/when_arms.una                                   records and variants
+tests/conformance/security/main_failure_payload.una                       `Env.get`
