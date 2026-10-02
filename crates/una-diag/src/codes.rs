@@ -204,7 +204,7 @@ pub enum Code {
     U5003,
     /// `main` failed.
     U6001,
-    /// Call depth exceeded.
+    /// Call depth or memory limit exceeded.
     U6003,
     /// Non-canonical formatting.
     U7001,
@@ -747,7 +747,7 @@ impl Code {
             Code::U6003 => &Entry {
                 code: "U6003",
                 domain: Domain::Runtime,
-                meaning: "Call depth exceeded",
+                meaning: "Call depth or memory limit exceeded",
                 explain: include_str!("../explain/U6003.md"),
             },
             Code::U7001 => &Entry {

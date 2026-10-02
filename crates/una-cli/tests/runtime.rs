@@ -333,11 +333,15 @@ fn a_call_deeper_than_the_limit_is_u6003() {
 }
 
 #[test]
-fn a_depth_beyond_the_address_space_is_a_usage_error() {
+fn a_huge_max_depth_reserves_a_bounded_stack_and_ends_with_u6003() {
+    // ADR 0061 rule 1 (v0.1 review R-033): the stack reservation is capped at 1 GiB, so a depth
+    // the address space could not hold runs, and a recursion that outgrows the capped stack is
+    // U6003, never an OS kill.
     let root = package("too-deep", "", &[]);
     let file = root.join("countdown.una");
-    std::fs::write(&file, COUNTDOWN.replace("DEPTH", "3")).unwrap();
+    std::fs::write(&file, COUNTDOWN.replace("DEPTH", "-1")).unwrap();
     let output = una(&[
+        "--json",
         "run",
         file.to_str().unwrap(),
         "--grant",
@@ -345,12 +349,119 @@ fn a_depth_beyond_the_address_space_is_a_usage_error() {
         "--max-depth",
         "100000000000",
     ]);
-    assert_eq!(output.status.code(), Some(2));
-    assert!(
-        stderr(&output).contains("--max-depth 100000000000"),
-        "{}",
-        stderr(&output)
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let document = json(&output);
+    assert_eq!(document["status"], "aborted");
+    assert_eq!(document["diagnostics"][0]["code"], "U6003");
+    assert_eq!(
+        document["diagnostics"][0]["message"],
+        "this call exceeds the maximum call depth of 100000000000"
     );
+}
+
+/// A program that holds more text at each call: about 64 bytes times the square of its depth
+/// over two, so 64 MiB by about 1,450 calls.
+const HOG: &str = "module hog
+
+grow(t: Text, n: Int) -> Int = if n <= 0 then t.len else grow(\"{t}0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\", n: n - 1)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let size = grow(\"\", n: STEPS)
+  @console.print(\"held {size}\")
+";
+
+#[test]
+fn a_run_over_its_memory_budget_is_u6003() {
+    // ADR 0061 rule 2: `--max-memory <MiB>` bounds the heap a run holds; past it, the call that
+    // finds it over is U6003, with the status and trace of a depth abort.
+    let root = package("hog", "", &[]);
+    let file = root.join("hog.una");
+    let program = |steps: &str| {
+        std::fs::write(&file, HOG.replace("STEPS", steps)).unwrap();
+        file.to_str().unwrap().to_owned()
+    };
+    let small = program("100");
+    let output = una(&["run", &small, "--grant", "console", "--max-memory", "64"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "held 6400\n");
+    let large = program("9000");
+    let output = una(&[
+        "--json",
+        "run",
+        &large,
+        "--grant",
+        "console",
+        "--max-memory",
+        "64",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let document = json(&output);
+    assert_eq!(document["status"], "aborted");
+    assert_eq!(document["output"], json!([]));
+    assert_eq!(document["diagnostics"][0]["code"], "U6003");
+    assert_eq!(
+        document["diagnostics"][0]["message"],
+        "this call exceeds the memory limit of 64 MiB"
+    );
+    // The call that found the run over its budget.
+    assert_eq!(document["diagnostics"][0]["primary"]["start"]["line"], 3);
+    let output = una(&["run", &large, "--grant", "console", "--max-memory", "many"]);
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn a_loop_over_its_memory_budget_is_u6003() {
+    // ADR 0061 rule 2: a `for` iteration is not a call, and the budget is checked at each one
+    // too; the abort points at the loop.
+    let root = package("loop-hog", "\n[run]\nentry = \"hog\"\n", &[]);
+    let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("src/hog.una"),
+        "module hog
+
+pub kind Node
+  value: Int
+  next: Option[Node]
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit chain: Option[Node] = None
+  for i in 0..<100000000
+    chain = Some(Node(value: i, next: chain))
+  let built = chain.is_some()
+  @console.print(\"built {built}\")
+",
+    )
+    .unwrap();
+    let dir = root.to_str().unwrap();
+    let output = una(&[
+        "--json",
+        "run",
+        dir,
+        "--grant",
+        "console",
+        "--max-memory",
+        "16",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let document = json(&output);
+    assert_eq!(document["status"], "aborted");
+    assert_eq!(document["diagnostics"][0]["code"], "U6003");
+    assert_eq!(
+        document["diagnostics"][0]["message"],
+        "this call exceeds the memory limit of 16 MiB"
+    );
+    // The loop, where the iteration found the run over its budget.
+    assert_eq!(document["diagnostics"][0]["primary"]["start"]["line"], 11);
 }
 
 const FILES: &str = "module files

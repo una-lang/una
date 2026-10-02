@@ -12,6 +12,7 @@ description = "The runtime library that every native Una executable links (spec/
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
+cap.workspace = true
 num-bigint.workspace = true
 serde_json.workspace = true
 una-core.workspace = true

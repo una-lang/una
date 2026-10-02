@@ -25,6 +25,7 @@ una-syntax = { path = "crates/una-syntax" }
 una-verify = { path = "crates/una-verify" }
 # External crates, only from the allowlist of compiler/architecture.md §7.
 ariadne = "0.6.0"
+cap = "0.1.2"
 clap = { version = "4.6.7", features = ["derive"] }
 # Allowed by ADR 0055 for una-codegen and una-rt only.
 cranelift-codegen = "0.136.1"

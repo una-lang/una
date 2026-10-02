@@ -11,6 +11,7 @@ name = "una"
 path = "src/main.rs"
 
 [dependencies]
+cap.workspace = true
 clap.workspace = true
 una-check.workspace = true
 una-codegen.workspace = true
