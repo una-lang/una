@@ -1,0 +1,10 @@
+-- test: in edition 0.1 the fixed-width type names are ordinary names, and `to_u8` resolves as a function (ADR 0056, ADR 0057)
+-- spec: spec/18 §1
+-- expect: tier0-ok
+module fixed_width_edition_01
+
+pub kind U8 = Low | High
+
+pub to_u8(n: Int) -> U8 = if n > 0 then High else Low
+
+pub level(n: Int) -> U8 = n.to_u8()

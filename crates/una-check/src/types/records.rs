@@ -23,6 +23,9 @@ pub(crate) enum Res {
     },
     /// `.len`.
     Len,
+    /// A built-in method of an integer type, as the primitive it elaborates to (`spec/18 §4`,
+    /// `§5`).
+    IntMethod(una_core::Prim),
     /// A record field.
     Field { kind: KindId, index: usize },
     /// An operation of a capability.

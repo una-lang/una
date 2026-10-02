@@ -91,7 +91,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 
 ## 4. Code registry
 
-(v0.2, ADR 0056.) The codes U2017 to U2021 of the memory model are listed in `spec/17 §10`. They join this table with their implementation. (v0.2, ADR 0057.) So does U2022, of fixed-width integers (`spec/18 §8`).
+(v0.2, ADR 0056.) The codes U2017 to U2021 of the memory model are listed in `spec/17 §10`. They join this table with their implementation. (v0.2, ADR 0057.) U2022, of fixed-width integers (`spec/18 §8`), is in the table.
 
 | Code | Domain | Meaning |
 | --- | --- | --- |
@@ -130,6 +130,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U2014 | types | Expression outside the refinement language |
 | U2015 | types | Invalid predicate body (impure, failing, recursive or outside RL for `reflect`) |
 | U2016 | types | Opaque predicate called outside `checked` |
+| U2022 | types | Integer literal does not fit its type |
 | U3001 | authority | Capability not in scope |
 | U3002 | authority | Operation not permitted by capability type |
 | U3003 | authority | Effects exceed declared `uses` |

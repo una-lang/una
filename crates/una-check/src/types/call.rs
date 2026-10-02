@@ -148,6 +148,9 @@ impl<'a> Checker<'_, 'a, '_> {
             }
             return ty;
         }
+        if let Some(ty) = self.int_method(&target_ty, method, args, span) {
+            return ty;
+        }
         match self.env.lower(self.module, method) {
             Some(Entity::Function(id)) => {
                 self.call_function(id, Some((target.span, target_ty)), args, span, site)

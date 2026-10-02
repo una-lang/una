@@ -1,0 +1,4 @@
+[package]
+name = "fixed_width_names"
+version = "0.1.0"
+edition = "0.2"

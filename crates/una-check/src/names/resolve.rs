@@ -4,7 +4,9 @@
 
 use std::collections::BTreeSet;
 
+use una_core::IntType;
 use una_diag::Code;
+use una_project::Edition;
 use una_syntax::Span;
 use una_syntax::ast::{
     Arg, Arm, Block, BlockExpr, Body, CapBindingValue, CapType, ClauseKind, DeclKind, ElseBranch,
@@ -80,6 +82,9 @@ impl<'a> Resolver<'_, '_, 'a> {
                     || table.imported.contains_key(name)
                     || table.imported_variants.contains(name)
                     || prelude::UPPER.contains(&name)
+                    // Edition 0.2: the fixed-width integer types (`spec/18 §1`).
+                    || (self.checker.package.settings.edition >= Edition::V0_2
+                        && IntType::from_name(name).is_some())
             }
         }
     }

@@ -80,6 +80,9 @@ pub enum ObligationKind {
     Division,
     /// The arms of a `when` cover every value.
     Exhaustive,
+    /// The exact result of an operation on a fixed-width integer type, or of a narrowing
+    /// conversion, lies in the type's range (`spec/18 §3`).
+    Overflow,
 }
 
 impl ObligationKind {
@@ -91,6 +94,7 @@ impl ObligationKind {
             ObligationKind::Postcondition => "postcondition",
             ObligationKind::Division => "division",
             ObligationKind::Exhaustive => "exhaustive",
+            ObligationKind::Overflow => "overflow",
         }
     }
 }

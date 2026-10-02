@@ -1,0 +1,20 @@
+-- test: literal and range arms over a fixed-width value take its type, as do `in` tests and range sugar; a bound that does not fit is U2022 (spec/18 §1, §2)
+-- spec: spec/18 §2
+-- expect: error U2022 at src/fixedrange.una:8:25
+-- expect: error U2022 at src/fixedrange.una:16:12
+-- expect: error U2022 at src/fixedrange.una:20:35
+module fixedrange
+
+pub kind Bad = U8 in 1..300
+
+pub kind Good = I8 in -10..10
+
+pub band(a: U8) -> Int
+=
+  when a
+    in 0..9 -> 1
+    in 10..300 -> 2
+    is 255 -> 3
+    else -> 4
+
+pub inside(a: I16) -> Bool = a in -40000..10

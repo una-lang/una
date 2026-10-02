@@ -294,6 +294,7 @@ impl Vars {
         match (&a, &b) {
             (Ty::Never, _) | (_, Ty::Never) => true,
             (Ty::Error, _) | (_, Ty::Error) => true,
+            (Ty::Fixed(x), Ty::Fixed(y)) => x == y,
             (Ty::Int, Ty::Int)
             | (Ty::Bool, Ty::Bool)
             | (Ty::Text, Ty::Text)
