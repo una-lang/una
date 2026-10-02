@@ -35,3 +35,13 @@ Decision log entries: D-127 to D-130 (`docs/history/v0.1/open-decisions.md`).
 - **Guide fragments completed by a template:** shorter, but an agent that copies a fragment gets code that does not check on its own.
 - **Both archives on every push:** the macOS runner quota of D-083.
 - **Tagging `dev/v0.1` during the run:** a release would name history the owner has not reviewed or merged.
+
+## Amendment (2026-10-02)
+
+Rule 3's note on CI follows the runner rule of ADR 0030, which changes to spare the Actions minutes of the private repository (#151, Leonardo, 2026-10-02):
+- `push` triggers CI only on `main` and on release tags, and a branch is tested by the run of its pull request, so no change runs twice.
+- Linux runs every time.
+- macOS runs on pushes to `main`, on release tags and on manual runs. On a pull request, it runs only when the pull request touches what differs between the targets: the native backend (`crates/una-codegen`, `crates/una-rt`, `una build`), the release scripts, the workflows or `Cargo.lock`.
+- Compiled dependencies and the Z3 install are cached.
+
+`.github/workflows/ci.yml` states the rule. D-083, in `docs/history/v0.1/`, keeps the rule of v0.1.
