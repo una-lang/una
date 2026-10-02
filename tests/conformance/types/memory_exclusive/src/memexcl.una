@@ -1,9 +1,10 @@
--- test: an `edit` argument excludes any other use of its root binding in the same call, even of a disjoint field (spec/17 §3 rule 4)
+-- test: an `edit` argument excludes any other use of its root binding in the same call, even of a disjoint field or inside interpolated text (spec/17 §3 rule 4)
 -- spec: spec/17 §3
--- expect: error U2018 at src/memexcl.una:34:20
--- expect: error U2018 at src/memexcl.una:39:23
--- expect: error U2018 at src/memexcl.una:44:24
--- expect: error U2018 at src/memexcl.una:49:24
+-- expect: error U2018 at src/memexcl.una:35:20
+-- expect: error U2018 at src/memexcl.una:40:23
+-- expect: error U2018 at src/memexcl.una:45:24
+-- expect: error U2018 at src/memexcl.una:50:24
+-- expect: error U2018 at src/memexcl.una:67:19
 module memexcl
 
 pub kind Point
@@ -55,3 +56,12 @@ pub distinct() -> Unit
   let d = 3
   swap(edit n, b: edit m)
   shift(edit n, by: d)
+
+note(edit a: Int, s: Text) -> Unit
+=
+  a = a + s.len
+
+pub in_text() -> Unit
+=
+  let edit n = 1
+  note(edit n, s: "{n}")

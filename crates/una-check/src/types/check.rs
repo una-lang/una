@@ -183,9 +183,10 @@ pub(crate) struct Checker<'c, 'a, 's> {
     /// The receiver of the method call being checked, with its call-site marker, for its
     /// parameter's convention and exclusivity (`spec/17 §3`).
     pub(crate) receiver_marker: Option<(Option<Convention>, Expr)>,
-    /// The spans of the lambda bodies being checked: whole expressions for effects, but not
-    /// statements, so a call with `edit` or `take` there is U3013 (`spec/17 §3` rule 5).
-    pub(crate) lambda_bodies: Vec<Span>,
+    /// The spans of the calls that are the whole expression of a statement, a `let` or an
+    /// assignment: the only places for a call with `edit` or `take`, U3013 elsewhere
+    /// (`spec/17 §3` rule 5), and where the desugar binds its tuple (`spec/17 §4`).
+    pub(crate) statement_calls: Vec<Span>,
     /// The functions that calls resolve to, by the span of the call.
     pub(crate) call_targets: BTreeMap<Span, usize>,
     /// The types of the operands of the binary operations being checked.
@@ -296,7 +297,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             pass,
             collected,
             receiver_marker: None,
-            lambda_bodies: Vec::new(),
+            statement_calls: Vec::new(),
             lambda_depth: 0,
             call_targets: BTreeMap::new(),
             operands: Vec::new(),
@@ -809,6 +810,25 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 true,
             );
         });
+        // The final value of an `edit` parameter returns to the caller, a use of it after the
+        // body: one still taken there is U2017 (`spec/17 §3` rules 1 and 3).
+        if self.pass == Pass::Check {
+            for (param, local) in def.params.iter().zip(self.locals.clone()) {
+                if param.convention != Some(una_syntax::ast::Convention::Edit) {
+                    continue;
+                }
+                if let Some(taken) = local.taken {
+                    self.report.error(
+                        Code::U2017,
+                        taken,
+                        format!(
+                            "`{}` is an `edit` parameter, whose final value returns to the caller, so it cannot stay taken; give it a new value before the end of the body",
+                            param.name
+                        ),
+                    );
+                }
+            }
+        }
     }
 
     fn predicate(&mut self, predicate: &'a PredicateDecl, id: usize) {

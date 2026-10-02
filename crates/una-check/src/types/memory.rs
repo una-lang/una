@@ -4,7 +4,7 @@
 
 use una_diag::{Code, ObligationKind};
 use una_syntax::Span;
-use una_syntax::ast::{Arg, Convention, Expr, ExprKind, Ident};
+use una_syntax::ast::{Arg, Convention, Expr, ExprKind, Ident, Literal, TextPart};
 
 use super::check::Checker;
 use super::env::ParamDef;
@@ -69,7 +69,18 @@ pub(crate) fn mentions(expr: &Expr, name: &str, resolve: &dyn Fn(&Ident) -> Stri
             value, predicate, ..
         } => mentions(value, name, resolve) || mentions(predicate, name, resolve),
         ExprKind::Fail(variant) => any(&mut variant.args.iter().map(|a| &a.value)),
-        _ => false,
+        ExprKind::Literal(Literal::Text(text)) => {
+            any(&mut text.parts.iter().filter_map(|part| match part {
+                TextPart::Interpolation(expr) => Some(expr),
+                TextPart::Text(_) => None,
+            }))
+        }
+        ExprKind::Literal(_)
+        | ExprKind::UpperName(_)
+        | ExprKind::CapRef(_)
+        | ExprKind::Result
+        | ExprKind::It
+        | ExprKind::Error => false,
     }
 }
 
@@ -123,7 +134,15 @@ impl<'a> Checker<'_, 'a, '_> {
 
     /// The place `place` of an assignment or an `edit` argument, rooted at an editable binding
     /// (`spec/17 §2`): its type, or `None` after U2019, or U2020 when `place` is no place.
-    pub(crate) fn editable_place(&mut self, place: &Expr, what: &str) -> Option<Ty> {
+    /// `assigned` tells whether `place` is the left side of `=`, and `checked` is its type when
+    /// the caller has already checked it as an expression, which reported its uses.
+    pub(crate) fn editable_place(
+        &mut self,
+        place: &Expr,
+        what: &str,
+        assigned: bool,
+        checked: Option<&Ty>,
+    ) -> Option<Ty> {
         let Some((root, _)) = place_root(place) else {
             self.report.error(
                 Code::U2020,
@@ -148,8 +167,17 @@ impl<'a> Checker<'_, 'a, '_> {
             self.report.error(Code::U2019, root.span, reason);
             return None;
         }
-        // The place is read for its type; a binding taken earlier is revived by an assignment,
-        // so its taken state does not count here.
+        if let Some(checked) = checked {
+            return Some(checked.clone());
+        }
+        // Only an assignment of the whole binding revives one taken earlier: a field path or
+        // an `edit` argument reads the rest of its value (`spec/17 §3` rule 3).
+        let (_, fields) = place_root(place)?;
+        let revives = assigned && fields.is_empty();
+        if !revives {
+            self.use_after_take(name, root.span);
+        }
+        // The place is read for its type, its taken state reported above.
         let saved = self.locals.get(index).and_then(|local| local.taken);
         if let Some(local) = self.locals.get_mut(index) {
             local.taken = None;
@@ -267,7 +295,7 @@ impl<'a> Checker<'_, 'a, '_> {
             }
             (_, Some(Convention::Edit)) => {
                 if self
-                    .editable_place(&arg.value, "the argument of `edit`")
+                    .editable_place(&arg.value, "the argument of `edit`", false, Some(found))
                     .is_some()
                 {
                     self.rebind(&arg.value, found, expected, arg.value.span);

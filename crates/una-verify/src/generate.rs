@@ -3072,6 +3072,17 @@ impl<'p, 'i> Walker<'p, 'i> {
                     let Some(ty) = ctx.types.get(name) else {
                         continue;
                     };
+                    // A tuple is internal to the desugar of the memory model and has no
+                    // source form (`spec/17 §4`).
+                    if matches!(
+                        ty,
+                        Type::Base {
+                            base: Base::Tuple(_),
+                            ..
+                        }
+                    ) {
+                        continue;
+                    }
                     let source = source_name(name);
                     let value = Tv {
                         f: term.clone(),

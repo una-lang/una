@@ -6,9 +6,9 @@
 -- expect: error U2020 at src/memconv.una:39:9
 -- expect: error U2020 at src/memconv.una:44:7
 -- expect: error U2020 at src/memconv.una:49:7
--- expect: error U2020 at src/memconv.una:51:38
--- expect: error U2020 at src/memconv.una:56:12
--- expect: error U2020 at src/memconv.una:61:3
+-- expect: error U2020 at src/memconv.una:53:12
+-- expect: error U2020 at src/memconv.una:59:12
+-- expect: error U2020 at src/memconv.una:64:3
 module memconv
 
 pub kind Tally
@@ -48,7 +48,10 @@ pub wrong_marker() -> Int
   let edit xs = [1]
   eat(edit xs)
 
-pub not_a_place() -> Unit = add(edit Tally(count: 0), by: 1)
+pub not_a_place() -> Unit
+=
+  add(edit Tally(count: 0), by: 1)
+  unit
 
 pub take_a_field() -> Int
 =
