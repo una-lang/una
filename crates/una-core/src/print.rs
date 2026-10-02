@@ -267,6 +267,7 @@ fn write_type(out: &mut String, ty: &Type) {
 fn write_base(out: &mut String, base: &Base) {
     match base {
         Base::Int => out.push_str("Int"),
+        Base::Fixed(int) => out.push_str(int.as_str()),
         Base::Bool => out.push_str("Bool"),
         Base::Text => out.push_str("Text"),
         Base::Unit => out.push_str("Unit"),

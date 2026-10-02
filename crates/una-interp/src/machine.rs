@@ -6,8 +6,8 @@ use std::rc::Rc;
 
 use num_bigint::{BigInt, Sign};
 use una_core::{
-    Atom, Base, Bound, CapOp, Ctor, Decl, Expr, Fun, HandlerOp, Label, Level, Path, Prim, Program,
-    Rhs, Source, Type, Use,
+    Atom, Base, Bound, CapOp, Ctor, Decl, Expr, FixedOp, Fun, HandlerOp, IntType, Label, Level,
+    Path, Prim, Program, Rhs, Source, Type, Use,
 };
 use una_syntax::Span;
 
@@ -1103,6 +1103,83 @@ fn div_euclid(a: &BigInt, b: &BigInt) -> (BigInt, BigInt) {
     }
 }
 
+/// Whether `value` lies in the range of `int`.
+fn in_range(value: &BigInt, int: IntType) -> bool {
+    BigInt::from(int.least()) <= *value && *value <= BigInt::from(int.greatest())
+}
+
+/// `value` reduced into the range of `int` modulo `2^width` (`spec/18 §5`).
+fn wrap(value: &BigInt, int: IntType) -> BigInt {
+    let modulus = BigInt::from(1) << int.bits();
+    let (_, mut r) = div_euclid(value, &modulus);
+    if r > BigInt::from(int.greatest()) {
+        r -= modulus;
+    }
+    r
+}
+
+/// `value` clamped to the range of `int` (`spec/18 §5`).
+fn saturate(value: BigInt, int: IntType) -> BigInt {
+    let (least, greatest) = (BigInt::from(int.least()), BigInt::from(int.greatest()));
+    if value < least {
+        least
+    } else if value > greatest {
+        greatest
+    } else {
+        value
+    }
+}
+
+/// A method of a fixed-width type over its operands' values (`spec/18 §5`). Bit operations act
+/// on the two's-complement bits of the width; `shift_right` divides by `2^n` rounding toward
+/// negative infinity, so it is arithmetic on signed types.
+fn fixed_apply<'p>(op: FixedOp, int: IntType, args: &[Value<'p>]) -> Result<BigInt, Stop<'p>> {
+    let int_at = |i: usize| match args.get(i) {
+        Some(Value::Int(n)) => Ok(n.clone()),
+        _ => Err(fault(format!(
+            "`{}` applied to a value that is not an integer",
+            op.as_str()
+        ))),
+    };
+    let a = int_at(0)?;
+    let b = if op.binary() {
+        int_at(1)?
+    } else {
+        BigInt::from(0)
+    };
+    if op.shift() && (b.sign() == Sign::Minus || b >= BigInt::from(int.bits())) {
+        return Err(fault(format!(
+            "`{}` by {b}, outside `0` to `{}`, which a precondition excludes",
+            op.as_str(),
+            int.bits() - 1
+        )));
+    }
+    Ok(match op {
+        FixedOp::WrappingAdd => wrap(&(a + b), int),
+        FixedOp::WrappingSub => wrap(&(a - b), int),
+        FixedOp::WrappingMul => wrap(&(a * b), int),
+        FixedOp::SaturatingAdd => saturate(a + b, int),
+        FixedOp::SaturatingSub => saturate(a - b, int),
+        FixedOp::SaturatingMul => saturate(a * b, int),
+        FixedOp::BitAnd => wrap(&(wrap_bits(&a, int) & wrap_bits(&b, int)), int),
+        FixedOp::BitOr => wrap(&(wrap_bits(&a, int) | wrap_bits(&b, int)), int),
+        FixedOp::BitXor => wrap(&(wrap_bits(&a, int) ^ wrap_bits(&b, int)), int),
+        FixedOp::ShiftRight => {
+            let divisor = BigInt::from(1) << usize::try_from(b).unwrap_or(0);
+            let (q, _) = div_euclid(&a, &divisor);
+            q
+        }
+        FixedOp::WrappingShiftLeft => wrap(&(a << usize::try_from(b).unwrap_or(0)), int),
+        FixedOp::BitNot => wrap(&!wrap_bits(&a, int), int),
+    })
+}
+
+/// The bits of `value` in the width of `int`, as a non-negative integer below `2^width`.
+fn wrap_bits(value: &BigInt, int: IntType) -> BigInt {
+    let modulus = BigInt::from(1) << int.bits();
+    div_euclid(value, &modulus).1
+}
+
 fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
     let int = |i: usize| match args.get(i) {
         Some(Value::Int(n)) => Ok(n),
@@ -1157,6 +1234,20 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
             }
             Value::text(&out)
         }
+        Prim::Convert(target) => {
+            let value = int(0)?;
+            if let Some(int) = target
+                && !in_range(value, int)
+            {
+                return Err(fault(format!(
+                    "`{}` of a value outside `{}`, which an `overflow` obligation excludes",
+                    prim.as_str(),
+                    int.as_str()
+                )));
+            }
+            Value::Int(value.clone())
+        }
+        Prim::Fixed(op, int) => Value::Int(fixed_apply(op, int, args)?),
         Prim::ToText => match arg(0)? {
             Value::Int(n) => Value::text(&n.to_string()),
             Value::Bool(b) => Value::text(&b.to_string()),

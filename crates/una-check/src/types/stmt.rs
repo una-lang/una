@@ -539,7 +539,13 @@ impl<'a> Checker<'_, 'a, '_> {
                     if let Literal::Text(text) = literal {
                         self.text(text);
                     }
-                    let literal_ty = literal_type(literal);
+                    // A literal arm over a fixed-width value takes its type (`spec/18 §2`).
+                    let literal_ty = match (literal, self.resolve(&scrutinee)) {
+                        (Literal::Int(digits), Ty::Fixed(int)) => {
+                            self.int_literal_type(false, digits, pattern, Some(&Ty::Fixed(int)))
+                        }
+                        _ => literal_type(literal),
+                    };
                     if !self.vars.unify(&scrutinee, &literal_ty) {
                         let (value, literal_ty) = (self.show(&scrutinee), self.show(&literal_ty));
                         self.report.error(
@@ -565,9 +571,13 @@ impl<'a> Checker<'_, 'a, '_> {
                         }
                     }
                 }
-                PatternKind::Range(_) => {
+                PatternKind::Range(range) => {
                     value_arms = true;
-                    if !self.vars.unify(&scrutinee, &Ty::Int) {
+                    // A range arm over a fixed-width value: its bounds take its type
+                    // (`spec/18 §2`).
+                    if let Ty::Fixed(int) = self.resolve(&scrutinee) {
+                        self.range_bounds(range, int);
+                    } else if !self.vars.unify(&scrutinee, &Ty::Int) {
                         let value = self.show(&scrutinee);
                         self.report.error(
                             Code::U2001,

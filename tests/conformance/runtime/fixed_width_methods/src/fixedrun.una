@@ -1,0 +1,23 @@
+-- test: wrapping, saturating and bit methods compute on the two's-complement bits of the width, and `shift_right` rounds toward negative infinity (spec/18 §5)
+-- spec: spec/18 §5
+-- grant: console
+-- expect: run-output "4 255 10 127 -64 0 127 244 -128 5 250"
+module fixedrun
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let x: U8 = 250
+  let y = x.wrapping_add(by: 10)
+  let z = x.saturating_add(by: 10)
+  let w = x.bit_and(mask: 15)
+  let n: I8 = -128
+  let m = n.wrapping_sub(by: 1)
+  let s = n.shift_right(by: 1)
+  let l = n.wrapping_shift_left(by: 1)
+  let b = n.bit_not()
+  let q = x.wrapping_mul(by: 2)
+  let p = n.saturating_mul(by: 2)
+  let o = x.bit_xor(mask: 255)
+  let wide = x.to_i64()
+  @console.print("{y} {z} {w} {m} {s} {l} {b} {q} {p} {o} {wide}")

@@ -1,0 +1,11 @@
+-- test: operands of different integer types are U2001 in executed code, and a literal takes the type of the other operand on either side (spec/18 §2)
+-- spec: spec/18 §2
+-- expect: error U2001 at src/fixedmix.una:9:48
+-- expect: error U2001 at src/fixedmix.una:11:34
+module fixedmix
+
+pub left(a: U8) -> U8 = 1 + a
+
+pub add(a: U8, b: U16) -> U8 = a + b.to_u8() + b
+
+pub int(a: U8, n: Int) -> Bool = a < n

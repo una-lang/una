@@ -22,11 +22,21 @@ Status: Normative, v0.2 (ADR 0057).
 ## 2. Literals and operators
 
 1. **Literals.** An integer literal takes the fixed-width type its context expects: an annotated `let`, a parameter, a field, a return, or the other operand of an operator. Without such a context it is an `Int`.
-   - A literal that does not fit its type is U2022, a static check of the checker. `let b: U8 = 300` and `let c: U8 = -1` are U2022.
+   - The expected type counts only as it is known when the literal is checked: `[1, 2]` against `List[U8]` and `Some(1)` against `Option[U8]` are `U8`.
+   - An operator types the operand that is not a literal first, so `1 + a` with `a: U8` is `U8`.
+   - A literal that does not fit its type is U2022, a static check of the checker. `let b: U8 = 300` and `let c: U8 = -1` are U2022. A negated literal is one literal, so `-128` fits `I8`.
+   - U2022 applies to a single literal only. A constant expression that leaves the range, such as `200 + 100` where `U8` is expected, gets an `overflow` obligation (§3), which is refuted.
+   - **Arms and ranges.** A literal or range arm of a `when` over a fixed-width value, a range of an `in` test, and range sugar on a fixed-width type take that type, and a bound that does not fit is U2022.
 2. **Operators.**
    - `+`, `-`, `*`, `/`, `mod` and unary `-` are defined on operands of the same integer type, and their result has that type. Operands of different integer types are U2001, since there is no implicit conversion.
    - Division and remainder are Euclidean on every type, as on `Int` (`spec/11`).
 3. **Comparisons, equality and interpolation** are defined on every integer type. `to_text` renders the decimal value.
+4. **Clauses** (`where`, `requires`, `ensures`, and the predicate of `checked`) are logic and never run. There, every integer type reads as its mathematical `Int`:
+   - operators and comparisons accept any mix of integer types and compute exactly;
+   - literals are `Int`;
+   - there is no `overflow` obligation and no U2022.
+
+   So `ensures result <= 300` on a `U8` result is valid and proven. The rule against mixed integer types (U2001) applies to code that runs, including the body of a `reflect` predicate. This follows from the encoding of FW-4, which is `Int` with range bounds (ADR 0057).
 
 ## 3. Overflow (FW-2)
 
@@ -38,6 +48,10 @@ Status: Normative, v0.2 (ADR 0057).
    - `I64` minimum divided by `-1` is refuted.
    - The divisor-nonzero `division` obligation applies unchanged.
 3. **Wrapping and saturating arithmetic** exist only through methods named for them, never by default (§5).
+4. **Repairs** (`spec/13 §3`). An `overflow` diagnostic proposes, in order:
+   - guarding the operation with its goal;
+   - giving the values a wider type through explicit conversions;
+   - using a wrapping or saturating method, when that is the arithmetic meant.
 
 ## 4. Conversions (FW-3)
 
@@ -54,15 +68,23 @@ These are built-in methods on the eight types, resolved by the receiver as in §
 
 | Method | Contract |
 | --- | --- |
-| `a.wrapping_add(b)`, `a.wrapping_sub(b)`, `a.wrapping_mul(b)` | total; `ensures` the exact result reduced into the range modulo `2^w` |
-| `a.saturating_add(b)`, `a.saturating_sub(b)`, `a.saturating_mul(b)` | total; `ensures` the exact result clamped to `lo..hi` |
-| `a.bit_and(b)`, `a.bit_or(b)`, `a.bit_xor(b)`, `a.bit_not()` | total; on unsigned types, `bit_and` `ensures result <= a and result <= b`, and `bit_or` `ensures result >= a and result >= b`; otherwise only the type's range |
-| `a.shift_right(n)` | `requires 0 <= n and n < w`; on unsigned types `ensures result <= a` |
-| `a.wrapping_shift_left(n)` | `requires 0 <= n and n < w`; `ensures` `a * 2^n` reduced into the range modulo `2^w` |
+| `a.wrapping_add(by: b)`, `a.wrapping_sub(by: b)`, `a.wrapping_mul(by: b)` | total; `ensures` the exact result reduced into the range modulo `2^w` |
+| `a.saturating_add(by: b)`, `a.saturating_sub(by: b)`, `a.saturating_mul(by: b)` | total; `ensures` the exact result clamped to `lo..hi` |
+| `a.bit_and(mask: b)`, `a.bit_or(mask: b)`, `a.bit_xor(mask: b)`, `a.bit_not()` | total; on unsigned types, `bit_and` `ensures result <= a and result <= b`, and `bit_or` `ensures result >= a and result >= b`; otherwise only the type's range |
+| `a.shift_right(by: n)` | `requires 0 <= n and n < w`; on unsigned types `ensures result <= a` |
+| `a.wrapping_shift_left(by: n)` | `requires 0 <= n and n < w`; `ensures` `a * 2^n` reduced into the range modulo `2^w` |
 
 1. **Not escapes.** These methods are total and specified, so they are not escapes and do not count against any budget.
 2. **The encoding** stays QF_UFLIA (§6). The bit operations have no bit-precise proof, so a property that needs bit-level facts beyond these contracts is `unknown`.
 3. **No checked left shift.** There is no checked `shift_left` in v0.2. A left shift is either `wrapping_shift_left`, or a multiplication by a power of two, with its `overflow` obligation. This is a known limit of v0.2.
+
+**Arguments and shifts.** Like every call (charter P5, `spec/04 §3`), a binary method labels its argument:
+- `by` for the wrapping and saturating methods and the shifts, as in `a.wrapping_add(by: b)`, `h.wrapping_mul(by: 31)` and `a.shift_right(by: n)`;
+- `mask` for `bit_and`, `bit_or` and `bit_xor`, as in `a.bit_and(mask: m)`.
+
+A bare `by` or `mask` is punned. A missing label is U2004, and another label is U2005. `bit_not` and the conversions take no argument.
+
+`shift_right` on a signed type is arithmetic: it divides by `2^n`, rounding toward negative infinity, as Euclidean division by a positive divisor does.
 
 ## 6. Encoding
 
@@ -70,13 +92,18 @@ These are built-in methods on the eight types, resolved by the receiver as in §
 2. **Products of two non-literal values** use the uninterpreted encoding of `spec/12 §2`, and ADR 0053 and ADR 0054 apply to their refutations.
 3. **Wrapping methods** are encoded by their `ensures`, through `mod` by the literal `2^w`, which is linear.
 
+## 6b. Known limits of v0.2
+
+- **The `Int` functions of the prelude stay `Int`-only.** `sum`, `min`, `max`, `abs` and `to_int` on `Text` take and return `Int`, so a `List[U8]` is converted first, as in `xs.map(each: fn(x) -> x.to_int()).sum()`. Numeric generic functions wait for constraints on generics (traits).
+- **There is no checked left shift** (§5).
+
 ## 7. Native representation
 
 The native backend (ADR 0055) represents each fixed-width type in its machine width, with no tag and no check: the `overflow` obligations prove that no result leaves the range.
 
 ## 8. Diagnostic codes
 
-This code joins the registry of `spec/13 §4` with its implementation:
+This code is in the registry of `spec/13 §4`:
 
 | Code | Domain | Meaning |
 | --- | --- | --- |

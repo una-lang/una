@@ -4,6 +4,8 @@ use std::fmt;
 
 use una_syntax::Span;
 
+use una_core::IntType;
+
 use super::label::Label;
 
 /// An index into the kinds (records and sums) of the environment.
@@ -133,6 +135,8 @@ impl KindLabels {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Ty {
     Int,
+    /// A fixed-width integer type of edition 0.2 (`spec/18`).
+    Fixed(IntType),
     Bool,
     Text,
     Unit,
@@ -562,6 +566,7 @@ impl<N: Names> fmt::Display for Show<'_, '_, N> {
             // Messages about types name their bases; labels have messages of their own.
             Ty::Labeled(_, inner) => write!(f, "{}", Show(inner, names)),
             Ty::Int => write!(f, "Int"),
+            Ty::Fixed(int) => write!(f, "{}", int.as_str()),
             Ty::Bool => write!(f, "Bool"),
             Ty::Text => write!(f, "Text"),
             Ty::Unit => write!(f, "Unit"),

@@ -51,11 +51,109 @@ pub enum Type {
     },
 }
 
+/// A fixed-width integer type of edition `0.2` (`spec/18 §1`, ADR 0057).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum IntType {
+    /// `I8`.
+    I8,
+    /// `I16`.
+    I16,
+    /// `I32`.
+    I32,
+    /// `I64`.
+    I64,
+    /// `U8`.
+    U8,
+    /// `U16`.
+    U16,
+    /// `U32`.
+    U32,
+    /// `U64`.
+    U64,
+}
+
+impl IntType {
+    /// Every fixed-width type, in the order of `spec/18 §1`.
+    pub const ALL: [IntType; 8] = [
+        IntType::I8,
+        IntType::I16,
+        IntType::I32,
+        IntType::I64,
+        IntType::U8,
+        IntType::U16,
+        IntType::U32,
+        IntType::U64,
+    ];
+
+    /// The type's name, as written.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IntType::I8 => "I8",
+            IntType::I16 => "I16",
+            IntType::I32 => "I32",
+            IntType::I64 => "I64",
+            IntType::U8 => "U8",
+            IntType::U16 => "U16",
+            IntType::U32 => "U32",
+            IntType::U64 => "U64",
+        }
+    }
+
+    /// The type named `name`, if it is one.
+    pub fn from_name(name: &str) -> Option<IntType> {
+        IntType::ALL.into_iter().find(|t| t.as_str() == name)
+    }
+
+    /// The width in bits.
+    pub fn bits(self) -> u32 {
+        match self {
+            IntType::I8 | IntType::U8 => 8,
+            IntType::I16 | IntType::U16 => 16,
+            IntType::I32 | IntType::U32 => 32,
+            IntType::I64 | IntType::U64 => 64,
+        }
+    }
+
+    /// Whether the type is signed.
+    pub fn signed(self) -> bool {
+        matches!(
+            self,
+            IntType::I8 | IntType::I16 | IntType::I32 | IntType::I64
+        )
+    }
+
+    /// The least value: `-2^(n-1)` signed, `0` unsigned.
+    pub fn least(self) -> i128 {
+        if self.signed() {
+            -(1i128 << (self.bits() - 1))
+        } else {
+            0
+        }
+    }
+
+    /// The greatest value: `2^(n-1) - 1` signed, `2^n - 1` unsigned.
+    pub fn greatest(self) -> i128 {
+        if self.signed() {
+            (1i128 << (self.bits() - 1)) - 1
+        } else {
+            (1i128 << self.bits()) - 1
+        }
+    }
+
+    /// Whether every value of `self` is a value of `target`: a widening conversion
+    /// (`spec/18 §4` rule 3).
+    pub fn widens_to(self, target: IntType) -> bool {
+        target.least() <= self.least() && self.greatest() <= target.greatest()
+    }
+}
+
 /// A base type.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Base {
     /// `Int`.
     Int,
+    /// A fixed-width integer type (`spec/18`).
+    Fixed(IntType),
     /// `Bool`.
     Bool,
     /// `Text`.
@@ -290,6 +388,99 @@ pub enum Prim {
     Concat,
     /// `Int`, `Bool` or `Text` as text.
     ToText,
+    /// A conversion to the fixed-width type, or to `Int` when `None` (`spec/18 §4`).
+    Convert(Option<IntType>),
+    /// A built-in method of a fixed-width type (`spec/18 §5`).
+    Fixed(FixedOp, IntType),
+}
+
+/// The wrapping, saturating and bit methods of the fixed-width types (`spec/18 §5`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FixedOp {
+    /// `wrapping_add`.
+    WrappingAdd,
+    /// `wrapping_sub`.
+    WrappingSub,
+    /// `wrapping_mul`.
+    WrappingMul,
+    /// `saturating_add`.
+    SaturatingAdd,
+    /// `saturating_sub`.
+    SaturatingSub,
+    /// `saturating_mul`.
+    SaturatingMul,
+    /// `bit_and`.
+    BitAnd,
+    /// `bit_or`.
+    BitOr,
+    /// `bit_xor`.
+    BitXor,
+    /// `bit_not`.
+    BitNot,
+    /// `shift_right`.
+    ShiftRight,
+    /// `wrapping_shift_left`.
+    WrappingShiftLeft,
+}
+
+impl FixedOp {
+    /// Every method, in the order of `spec/18 §5`.
+    pub const ALL: [FixedOp; 12] = [
+        FixedOp::WrappingAdd,
+        FixedOp::WrappingSub,
+        FixedOp::WrappingMul,
+        FixedOp::SaturatingAdd,
+        FixedOp::SaturatingSub,
+        FixedOp::SaturatingMul,
+        FixedOp::BitAnd,
+        FixedOp::BitOr,
+        FixedOp::BitXor,
+        FixedOp::BitNot,
+        FixedOp::ShiftRight,
+        FixedOp::WrappingShiftLeft,
+    ];
+
+    /// The method's name, as written.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FixedOp::WrappingAdd => "wrapping_add",
+            FixedOp::WrappingSub => "wrapping_sub",
+            FixedOp::WrappingMul => "wrapping_mul",
+            FixedOp::SaturatingAdd => "saturating_add",
+            FixedOp::SaturatingSub => "saturating_sub",
+            FixedOp::SaturatingMul => "saturating_mul",
+            FixedOp::BitAnd => "bit_and",
+            FixedOp::BitOr => "bit_or",
+            FixedOp::BitXor => "bit_xor",
+            FixedOp::BitNot => "bit_not",
+            FixedOp::ShiftRight => "shift_right",
+            FixedOp::WrappingShiftLeft => "wrapping_shift_left",
+        }
+    }
+
+    /// The method named `name`, if it is one.
+    pub fn from_name(name: &str) -> Option<FixedOp> {
+        FixedOp::ALL.into_iter().find(|op| op.as_str() == name)
+    }
+
+    /// Whether the method takes an argument besides its receiver: every one but `bit_not`.
+    pub fn binary(self) -> bool {
+        self != FixedOp::BitNot
+    }
+
+    /// The label of the argument (`spec/18 §5`, charter P5): `mask` for the bit operations,
+    /// `by` for the others.
+    pub fn label(self) -> &'static str {
+        match self {
+            FixedOp::BitAnd | FixedOp::BitOr | FixedOp::BitXor => "mask",
+            _ => "by",
+        }
+    }
+
+    /// Whether the argument is a shift amount, an `Int` with `0 <= n < width`.
+    pub fn shift(self) -> bool {
+        matches!(self, FixedOp::ShiftRight | FixedOp::WrappingShiftLeft)
+    }
 }
 
 impl Prim {
@@ -312,6 +503,18 @@ impl Prim {
             Prim::Len => "len",
             Prim::Concat => "concat",
             Prim::ToText => "to_text",
+            Prim::Convert(None) => "to_int",
+            Prim::Convert(Some(int)) => match int {
+                IntType::I8 => "to_i8",
+                IntType::I16 => "to_i16",
+                IntType::I32 => "to_i32",
+                IntType::I64 => "to_i64",
+                IntType::U8 => "to_u8",
+                IntType::U16 => "to_u16",
+                IntType::U32 => "to_u32",
+                IntType::U64 => "to_u64",
+            },
+            Prim::Fixed(op, _) => op.as_str(),
         }
     }
 }

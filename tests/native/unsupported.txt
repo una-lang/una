@@ -28,6 +28,7 @@ tests/conformance/runtime/checked                                         `attem
 tests/conformance/runtime/euclidean_division.una                          calls of functions
 tests/conformance/runtime/euclidean_division_signs.una                    calls of functions
 tests/conformance/runtime/failures_and_handling.una                       handling clauses
+tests/conformance/runtime/fixed_width_methods                             fixed-width integers (#28)
 tests/conformance/runtime/handlers.una                                    `with`
 tests/conformance/runtime/main_fails.una                                  `fail`
 tests/conformance/runtime/op_arg_names                                    `with`
