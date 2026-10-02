@@ -4,7 +4,8 @@
 //! The executable's `main` calls [`ffi`]'s `una_rt_start`, which reads the program's embedded
 //! description and the command line, checks `main`'s capabilities against the grants
 //! (U3012), runs the compiled `main`, and writes the trace when `--trace` asks for it. The
-//! compiled code performs host operations through the other functions of [`ffi`].
+//! compiled code keeps its values in [`values`], performs host operations and records events
+//! through [`host`], and reports a failure of `main` (U6001) with [`render`].
 //!
 //! Host capabilities have the interpreter's semantics and grants, and traces use its JSON
 //! form ([`una_interp::trace_json`]), so a native run and `una run` agree (`spec/16 §5`).
@@ -15,6 +16,7 @@
 
 #[allow(unsafe_code)]
 pub mod ffi;
+pub mod host;
 pub mod render;
 pub mod runtime;
 pub mod values;

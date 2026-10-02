@@ -13,8 +13,6 @@ use una_codegen::CodegenError;
 use una_diag::{Diagnostic, render_human};
 use una_syntax::ast::ClauseKind;
 
-mod failure;
-
 use crate::contract::Modules;
 use crate::runtime::{entry_main, rejected_status};
 use crate::verification::tier_one;
@@ -153,27 +151,28 @@ pub(crate) fn build_command(
         })
         .collect();
     let grants: Vec<&str> = manifest.grants.iter().map(|g| g.value.as_str()).collect();
-    // What U6001 shows when `main` fails: the types its failure can hold.
-    let failure = match failure::describe(
-        &analysis.program,
-        main,
-        json!(package.sources.location(main.span)),
-    ) {
-        Ok(failure) => failure,
-        Err(message) => {
-            writeln!(stderr, "internal compiler error (U8001): {message}")?;
-            return Ok(ExitStatus::Internal);
-        }
-    };
-    // The calls' locations, for U6003 at the call that exceeds the maximum depth.
-    let meta = |sites: &[una_syntax::Span]| {
-        let sites: Vec<una_diag::Location> = sites
+    // What the generated code refers to by index: the calls' locations, for U6003 at the call
+    // that exceeds the maximum depth, the types the runtime renders, the operations a trace
+    // records, and where `main` is named, for U6001.
+    let main_location = package.sources.location(main.span);
+    let meta = |described: &una_codegen::Described<'_>| {
+        let sites: Vec<una_diag::Location> = described
+            .sites
             .iter()
             .map(|span| package.sources.location(*span))
             .collect();
-        let mut meta = json!({ "grants": grants, "uses": uses, "sites": sites });
-        if let (Some(failure), Some(object)) = (&failure, meta.as_object_mut()) {
-            object.insert("failure".to_owned(), failure.clone());
+        let mut meta = json!({
+            "grants": grants,
+            "uses": uses,
+            "sites": sites,
+            "types": described.types,
+            "ops": described.ops,
+        });
+        if let (Some(root), Some(object)) = (described.failure, meta.as_object_mut()) {
+            object.insert(
+                "failure".to_owned(),
+                json!({ "location": main_location, "root": root }),
+            );
         }
         meta.to_string()
     };

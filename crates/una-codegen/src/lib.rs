@@ -17,7 +17,13 @@
 //! - failures, handling clauses, `attempt`, `checked` and policies: every compiled body returns
 //!   its value and whether it failed, and nothing unwinds (`spec/16 §4` rule 3); a failure of
 //!   `main` is U6001, which the runtime shows from the types `una build` describes;
-//! - `Console.print`.
+//! - capabilities, passed to each function after its parameters (`spec/16 §4` rule 4): host
+//!   instances, which the runtime serves with the interpreter's grants and path rules, and
+//!   handler instances, which `with` installs and whose operations are compiled code;
+//! - traces: every operation records its event through the runtime, with its arguments, result
+//!   and failure rendered and redacted as the interpreter does.
+//!
+//! Examples run in the interpreter only, as `una test` does (#115).
 //!
 //! Heap values are reference counted (NB-2): `lower` describes which words the code owns and
 //! when it releases them. A debug build of the runtime reports a value the code leaks or uses
@@ -32,6 +38,7 @@
 //! machine code but never runs it: there is no JIT, and no `unsafe`.
 #![deny(missing_docs)]
 
+mod describe;
 mod lower;
 
 use lower::Body;
@@ -47,7 +54,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module, default_libcall_names};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use target_lexicon::Triple;
-use una_core::{Decl, Expr, Fun, Name, Path, Program, Type};
+use una_core::{CapOp, Decl, Expr, Fun, Name, Path, Program, Type};
 use una_syntax::Span;
 
 /// Why the backend cannot compile a program.
@@ -81,24 +88,71 @@ pub fn host_target() -> String {
     Triple::host().to_string()
 }
 
+/// What the generated code refers to by index, which the runtime reads at start: `una build`
+/// embeds it in the program's description (`spec/16 §2`).
+#[derive(Clone, Copy, Debug)]
+pub struct Described<'a> {
+    /// The spans of the program's calls, by the index passed to `una_rt_enter`.
+    pub sites: &'a [Span],
+    /// The types that the runtime renders, by index, as `una-rt`'s `render` reads them.
+    pub types: &'a [serde_json::Value],
+    /// The operations of the program, by the index passed to `una_rt_event`: the capability,
+    /// the operation, its parameters' names, and the type and redaction of its arguments,
+    /// result and failure.
+    pub ops: &'a [serde_json::Value],
+    /// The type of `main`'s failures, when it can fail.
+    pub failure: Option<usize>,
+}
+
 /// The object file of the program: `main` of module `entry` and the functions it reaches,
 /// compiled for the host target. `meta` gives the description of the program that the runtime
-/// reads at start (`spec/16 §2`), from the spans of the program's calls, in the order of the
-/// indices the generated code passes to the runtime on each call.
+/// reads at start (`spec/16 §2`), from what the generated code refers to by index.
 pub fn compile(
     program: &Program,
     entry: &str,
-    meta: &dyn Fn(&[Span]) -> String,
+    meta: &dyn Fn(&Described<'_>) -> String,
 ) -> Result<Vec<u8>, CodegenError> {
     let main = function(program, entry, "main").ok_or(CodegenError::NoMain)?;
     let mut emitter = Emitter::new(program, isa()?)?;
-    let (main_id, _) = emitter.function(&Path {
+    // U6001 shows `main`'s failure by the kind the checker resolved: without it, or with a kind
+    // it cannot describe, a guess could show a labeled field.
+    let failure = match (&main.fails, &main.error) {
+        (None, _) => None,
+        (Some(_), Some(kind)) => {
+            let root = emitter.types.of(&una_core::Type::Base {
+                base: una_core::Base::Named {
+                    module: kind.module.clone(),
+                    name: kind.name.clone(),
+                    args: Vec::new(),
+                },
+                refinements: Vec::new(),
+                label: una_core::Label::public(),
+            });
+            if emitter.types.unknown() {
+                return Err(CodegenError::Internal(
+                    "the error kind of `main` holds a kind that has no declaration".to_owned(),
+                ));
+            }
+            Some(root)
+        }
+        (Some(_), None) => {
+            return Err(CodegenError::Internal(
+                "the error kind of `main` is not resolved".to_owned(),
+            ));
+        }
+    };
+    let main_id = emitter.function(&Path {
         module: entry.to_owned(),
         name: "main".to_owned(),
     })?;
     emitter.drain()?;
-    let meta = meta(&emitter.sites);
-    emitter.entry(main_id, main, &meta)?;
+    let meta = meta(&Described {
+        sites: &emitter.sites,
+        types: emitter.types.shapes(),
+        ops: &emitter.ops,
+        failure,
+    });
+    emitter.entry(main_id.id, main, &meta)?;
     emitter
         .module
         .finish()
@@ -133,10 +187,10 @@ fn callee<'p>(
         .flat_map(|m| &m.decls)
         .find_map(|decl| match decl {
             Decl::Fun(fun) if fun.name == name => Some(Ok(Body {
-                closure: false,
-                captures: Vec::new(),
-                params: &fun.params,
-                result: Some(&fun.result),
+                this: None,
+                params: fun.params.clone(),
+                uses: fun.uses.iter().map(|u| u.cap.clone()).collect(),
+                result: Some(fun.result.clone()),
                 fails: fun.fails.is_some(),
                 body: &fun.body,
             })),
@@ -146,9 +200,9 @@ fn callee<'p>(
                 body,
                 ..
             } if pred == name => Some(Ok(Body {
-                closure: false,
-                captures: Vec::new(),
-                params,
+                this: None,
+                params: params.clone(),
+                uses: Vec::new(),
                 result: None,
                 fails: false,
                 body,
@@ -192,7 +246,7 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_text_len", 1, true),
     ("una_rt_enter", 1, false),
     ("una_rt_leave", 0, false),
-    ("una_rt_console_print", 1, false),
+    ("una_rt_console_print", 1, true),
     ("una_rt_retain", 1, false),
     ("una_rt_release", 1, false),
     ("una_rt_push", 2, false),
@@ -220,7 +274,38 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_sum", 1, true),
     ("una_rt_or_else", 2, true),
     ("una_rt_main_failed", 1, false),
+    ("una_rt_op_code", 2, true),
+    ("una_rt_clock_now", 0, true),
+    ("una_rt_env_get", 1, true),
+    ("una_rt_files_read", 1, true),
+    ("una_rt_files_write", 2, true),
+    ("una_rt_keys_hmac", 2, true),
+    ("una_rt_host_failed", 0, true),
+    ("una_rt_host_instance", 1, true),
+    ("una_rt_handler_instance", 1, true),
+    ("una_rt_event", 2, true),
+    ("una_rt_push_op", 2, false),
+    ("una_rt_event_arg", 4, false),
+    ("una_rt_event_end", 4, false),
 ];
+
+/// A compiled function: its code, whether it can fail, and the capabilities it takes after its
+/// parameters, by name.
+#[derive(Clone, Debug)]
+struct Callee {
+    id: FuncId,
+    fails: bool,
+    uses: Vec<Name>,
+}
+
+/// A handler of the package.
+#[derive(Clone, Copy)]
+struct Handler<'p> {
+    params: &'p [(Name, Type)],
+    capability: &'p Path,
+    uses: &'p [una_core::Use],
+    ops: &'p [una_core::HandlerOp],
+}
 
 /// The object being built.
 struct Emitter<'p> {
@@ -228,9 +313,9 @@ struct Emitter<'p> {
     module: ObjectModule,
     /// The runtime functions, by name.
     runtime: BTreeMap<&'static str, FuncId>,
-    /// The compiled functions, by qualified name, with whether they can fail, and the bodies
-    /// still to compile.
-    functions: BTreeMap<String, (FuncId, bool)>,
+    /// The compiled functions, by qualified name, with whether they can fail and the
+    /// capabilities they take, and the bodies still to compile.
+    functions: BTreeMap<String, Callee>,
     pending: Vec<(FuncId, Body<'p>)>,
     /// The number of lambdas declared so far.
     lambdas: usize,
@@ -238,6 +323,10 @@ struct Emitter<'p> {
     data: BTreeMap<String, DataId>,
     /// The spans of the calls, by the index passed to `una_rt_enter`.
     sites: Vec<Span>,
+    /// The types the runtime renders.
+    types: describe::Types<'p>,
+    /// The operations, by the index passed to `una_rt_event`.
+    ops: Vec<serde_json::Value>,
 }
 
 impl<'p> Emitter<'p> {
@@ -267,15 +356,17 @@ impl<'p> Emitter<'p> {
             lambdas: 0,
             data: BTreeMap::new(),
             sites: Vec::new(),
+            types: describe::Types::new(program),
+            ops: Vec::new(),
         })
     }
 
     /// The function or predicate `path` of the package, declared now and compiled by
     /// [`Emitter::drain`].
-    fn function(&mut self, path: &Path) -> Result<(FuncId, bool), CodegenError> {
+    fn function(&mut self, path: &Path) -> Result<Callee, CodegenError> {
         let qualified = format!("{}.{}", path.module, path.name);
         if let Some(found) = self.functions.get(&qualified) {
-            return Ok(*found);
+            return Ok(found.clone());
         }
         let body = callee(self.program, &path.module, &path.name).ok_or_else(|| {
             CodegenError::Unsupported(format!(
@@ -283,20 +374,26 @@ impl<'p> Emitter<'p> {
             ))
         })??;
         let name = format!("una_fn_{}", self.functions.len());
-        let id = self.declare(&name, body.params.len())?;
-        let fails = body.fails;
-        self.functions.insert(qualified, (id, fails));
+        let id = self.declare(&name, body.params.len() + body.uses.len())?;
+        let callee = Callee {
+            id,
+            fails: body.fails,
+            uses: body.uses.clone(),
+        };
+        self.functions.insert(qualified, callee.clone());
         self.pending.push((id, body));
-        Ok((id, fails))
+        Ok(callee)
     }
 
-    /// The code of a closure of the lambda `params` to `body`, which captures `captures`:
-    /// declared now, and compiled by [`Emitter::drain`].
+    /// The code of a closure of the lambda `params` to `body`, which captures the values
+    /// `captures` and the capabilities `caps`: declared now, and compiled by
+    /// [`Emitter::drain`].
     fn lambda(
         &mut self,
         params: &'p [(Name, Type)],
         body: &'p Expr,
         captures: Vec<(Name, Type)>,
+        caps: Vec<Name>,
     ) -> Result<FuncId, CodegenError> {
         let name = format!("una_lambda_{}", self.lambdas);
         self.lambdas += 1;
@@ -305,12 +402,105 @@ impl<'p> Emitter<'p> {
         self.pending.push((
             id,
             Body {
-                closure: true,
-                captures,
-                params,
+                this: Some((captures, caps)),
+                params: params.to_vec(),
+                uses: Vec::new(),
                 result: None,
                 fails: false,
                 body,
+            },
+        ));
+        Ok(id)
+    }
+
+    /// The capability declared at `path`, by its operations: a host capability of
+    /// [`una_core::HOST_MODULE`], or one of the package.
+    fn capability(&self, path: &Path) -> Option<&'p [CapOp]> {
+        let program = self.program;
+        let decls: Vec<&'p Decl> = if path.module == una_core::HOST_MODULE {
+            program.host.iter().collect()
+        } else {
+            program
+                .modules
+                .iter()
+                .filter(|m| m.path == path.module)
+                .flat_map(|m| &m.decls)
+                .collect()
+        };
+        decls.into_iter().find_map(|decl| match decl {
+            Decl::Cap { name, ops } if *name == path.name => Some(ops.as_slice()),
+            _ => None,
+        })
+    }
+
+    /// The handler declared at `path`.
+    fn handler(&self, path: &Path) -> Option<Handler<'p>> {
+        self.program
+            .modules
+            .iter()
+            .filter(|m| m.path == path.module)
+            .flat_map(|m| &m.decls)
+            .find_map(|decl| match decl {
+                Decl::Handler {
+                    name,
+                    params,
+                    capability_path,
+                    uses,
+                    ops,
+                    ..
+                } if *name == path.name => Some(Handler {
+                    params,
+                    capability: capability_path,
+                    uses,
+                    ops,
+                }),
+                _ => None,
+            })
+    }
+
+    /// The code of operation `op` of the handler at `path`, whose first parameter is the
+    /// instance: declared now, and compiled by [`Emitter::drain`].
+    fn handler_op(&mut self, path: &Path, op: &CapOp) -> Result<FuncId, CodegenError> {
+        let qualified = format!("{}.{}.{}", path.module, path.name, op.name);
+        if let Some(found) = self.functions.get(&qualified) {
+            return Ok(found.id);
+        }
+        let handler = self
+            .handler(path)
+            .ok_or_else(|| internal(format!("no handler `{}`", path.qualified())))?;
+        let implementation = handler
+            .ops
+            .iter()
+            .find(|o| o.name == op.name)
+            .ok_or_else(|| internal(format!("`{}` lacks `{}`", path.qualified(), op.name)))?;
+        let params: Vec<(Name, Type)> = implementation
+            .params
+            .iter()
+            .zip(&op.params)
+            .map(|(name, (_, ty))| (name.clone(), ty.clone()))
+            .collect();
+        let name = format!("una_op_{}", self.functions.len());
+        let id = self.declare(&name, params.len() + 1)?;
+        self.functions.insert(
+            qualified,
+            Callee {
+                id,
+                fails: op.fails.is_some(),
+                uses: Vec::new(),
+            },
+        );
+        self.pending.push((
+            id,
+            Body {
+                this: Some((
+                    handler.params.to_vec(),
+                    handler.uses.iter().map(|u| u.cap.clone()).collect(),
+                )),
+                params,
+                uses: Vec::new(),
+                result: Some(op.result.clone()),
+                fails: op.fails.is_some(),
+                body: &implementation.body,
             },
         ));
         Ok(id)
@@ -393,9 +583,26 @@ impl<'p> Emitter<'p> {
             builder.switch_to_block(block);
             builder.seal_block(block);
             debug_assert!(main.params.is_empty());
+            // A host instance for each capability `main` uses (`spec/11 §2`), which `main` takes
+            // after its parameters.
+            let mut instances = Vec::new();
+            for need in &main.uses {
+                let name = self.bytes(&need.capability)?;
+                let name = self.module.declare_data_in_func(name, builder.func);
+                let address = builder.ins().symbol_value(types::I64, name);
+                let len = i64::try_from(need.capability.len()).map_err(internal)?;
+                let len = builder.ins().iconst(types::I64, len);
+                let text =
+                    self.runtime_call(&mut builder, "una_rt_text_literal", &[address, len])?;
+                let instance = self.runtime_call(&mut builder, "una_rt_host_instance", &[text])?;
+                instances.push(instance);
+            }
             let main_ref = self.module.declare_func_in_func(main_id, builder.func);
-            let call = builder.ins().call(main_ref, &[]);
+            let call = builder.ins().call(main_ref, &instances);
             let results = builder.inst_results(call).to_vec();
+            for &instance in &instances {
+                self.runtime_call(&mut builder, "una_rt_release", &[instance])?;
+            }
             let (Some(&value), Some(&failed)) = (results.first(), results.get(1)) else {
                 return Err(internal("`main` lost its result"));
             };
@@ -470,6 +677,26 @@ impl<'p> Emitter<'p> {
             builder.finalize(config);
         }
         self.define(c_main_id, &mut context)
+    }
+
+    /// Calls the runtime function `name` in `builder`'s function; its result, or 0 when it has
+    /// none.
+    fn runtime_call(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        name: &str,
+        args: &[ir::Value],
+    ) -> Result<ir::Value, CodegenError> {
+        let id = *self
+            .runtime
+            .get(name)
+            .ok_or_else(|| internal(format!("the runtime lacks `{name}`")))?;
+        let callee = self.module.declare_func_in_func(id, builder.func);
+        let call = builder.ins().call(callee, args);
+        Ok(match builder.inst_results(call).first() {
+            Some(&value) => value,
+            None => builder.ins().iconst(types::I64, 0),
+        })
     }
 
     fn define(&mut self, id: FuncId, context: &mut Context) -> Result<(), CodegenError> {
