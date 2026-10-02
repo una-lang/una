@@ -154,12 +154,17 @@ pub(crate) fn build_command(
         .collect();
     let grants: Vec<&str> = manifest.grants.iter().map(|g| g.value.as_str()).collect();
     // What U6001 shows when `main` fails: the types its failure can hold.
-    let failure = failure::describe(
+    let failure = match failure::describe(
         &analysis.program,
-        &entry,
         main,
         json!(package.sources.location(main.span)),
-    );
+    ) {
+        Ok(failure) => failure,
+        Err(message) => {
+            writeln!(stderr, "internal compiler error (U8001): {message}")?;
+            return Ok(ExitStatus::Internal);
+        }
+    };
     // The calls' locations, for U6003 at the call that exceeds the maximum depth.
     let meta = |sites: &[una_syntax::Span]| {
         let sites: Vec<una_diag::Location> = sites
