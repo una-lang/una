@@ -94,7 +94,7 @@ A bare `by` or `mask` is punned. A missing label is U2004, and another label is 
 
 ## 6b. Known limits of v0.2
 
-- **The `Int` functions of the prelude stay `Int`-only.** `sum`, `min`, `max`, `abs` and `to_int` on `Text` take and return `Int`, so a `List[U8]` is converted first, as in `xs.map(each: fn(x) -> x.to_int()).sum()`. Numeric generic functions wait for constraints on generics (traits).
+- **The `Int` functions of the prelude stay `Int`-only.** `sum`, `min`, `max`, `abs` and `to_int` on `Text` take and return `Int`, so a `List[U8]` is converted first, as in `xs.map(each: fn(x) -> x.to_int()).sum()`. Numeric generic functions wait for constraints on generics (traits). (v0.2, ADR 0066.) With constraints, `sum`, `min` and `max` take the fixed-width types too, `sum` returning an `Int` (`spec/20 §6`); `abs` stays `Int`-only.
 - **There is no checked left shift** (§5).
 
 ## 7. Native representation

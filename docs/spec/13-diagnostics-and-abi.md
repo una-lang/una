@@ -91,7 +91,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 
 ## 4. Code registry
 
-(v0.2, ADR 0056.) The codes U2017 to U2021, of the memory model (`spec/17 §10`), are in the table. (v0.2, ADR 0057.) U2022, of fixed-width integers (`spec/18 §8`), is in the table. (v0.2, ADR 0065.) U2023 and U2024, of structured concurrency (`spec/19 §10`), are in the table.
+(v0.2, ADR 0056.) The codes U2017 to U2021, of the memory model (`spec/17 §10`), are in the table. (v0.2, ADR 0057.) U2022, of fixed-width integers (`spec/18 §8`), is in the table. (v0.2, ADR 0065.) U2023 and U2024, of structured concurrency (`spec/19 §10`), are in the table. (v0.2, ADR 0066.) U2025 to U2027, of constraints on generics (`spec/20 §10`), join it with their implementation.
 
 | Code | Domain | Meaning |
 | --- | --- | --- |
@@ -226,7 +226,7 @@ Every command prints one JSON document with `--json`, its `schema` key first (AD
 }
 ```
 
-`fails` is `null` for a function that cannot fail, `ops` lists the operations in the declaration order of the capability, and `docs` holds the doc comments without their `---` marker.
+`fails` is `null` for a function that cannot fail, `ops` lists the operations in the declaration order of the capability, and `docs` holds the doc comments without their `---` marker. (v0.2, ADR 0066.) The document also holds `constraints`, after `header`: the constrained type parameters, as `{"param": "T", "constraint": "Ord", "inferred": false}`, or `[]` (`spec/20 §8`). The key is additive, and the schema stays `una.contract/1`.
 
 ## 6. Build report
 
@@ -303,7 +303,7 @@ Commands take a file or a directory, `.` by default (ADR 0021):
 
 `una.toml` is a TOML document with these tables and keys, and no others (U7002):
 
-- `[package]`, required: `name`, `version` and `edition`, non-empty strings; `edition` is `"0.1"`. (v0.2, ADR 0056.) `edition` is `"0.1"` or `"0.2"`. The constructs of `spec/17`, `spec/18` and `spec/19` and the keywords of edition `0.2` exist only in packages of edition `"0.2"`, and a single file has edition `"0.1"`.
+- `[package]`, required: `name`, `version` and `edition`, non-empty strings; `edition` is `"0.1"`. (v0.2, ADR 0056.) `edition` is `"0.1"` or `"0.2"`. The constructs of `spec/17`, `spec/18`, `spec/19` and `spec/20` and the keywords of edition `0.2` exist only in packages of edition `"0.2"`, and a single file has edition `"0.1"`.
 - `[labels]`: `categories`, an array of category names (UpperCamelCase, U1005; unique, U1002).
 - `[trusted]`: `modules`, an array of module paths, each a module of the package whose header says `trusted module` (U7005).
 - `[escape_budget]`: `checked_per_module`, an integer of at least 0 (default 0).
