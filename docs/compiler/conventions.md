@@ -5,7 +5,7 @@ Status: Normative for the reference implementation.
 ## 1. Rust
 
 - Edition 2024, toolchain pinned in `rust-toolchain.toml`.
-- Every crate starts with `#![forbid(unsafe_code)]` and `#![deny(missing_docs)]` for public items.
+- Every crate starts with `#![forbid(unsafe_code)]` and `#![deny(missing_docs)]` for public items. The one exception is `una-rt` (ADR 0058). It sets `unsafe_code = "deny"` and allows `unsafe` only in its module `ffi.rs`, the C ABI boundary with generated code, where every `unsafe` block has a `// SAFETY:` comment and every exported `unsafe extern "C"` function a `# Safety` section.
 - `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all --check` pass on every commit.
 - No `unwrap`, `expect`, `panic!`, `unreachable!` or indexing that can panic in library crates, except for internal invariants written as `// INVARIANT: <why this cannot fail>` next to the call. Tests may unwrap freely.
 - Library crates return `Result<T, Vec<Diagnostic>>` or accumulate into a `Diagnostics` sink; they never print, exit or read environment variables.

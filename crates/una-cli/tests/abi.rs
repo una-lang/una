@@ -47,9 +47,13 @@ fn the_report_of_the_events_example() {
     let output = una(&["--json", "report", "examples/events"]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert_eq!(stderr(&output), "");
-    insta::assert_snapshot!("report_events_json", stdout(&output));
+    // The `native` section names the host target (ADR 0055), which differs between runners.
+    let target = una_codegen::host_target();
+    let text =
+        stdout(&output).replace(&format!("\"target\":\"{target}\""), "\"target\":\"<host>\"");
+    insta::assert_snapshot!("report_events_json", text);
     let report = json(&output);
-    assert_eq!(report["schema"], "una.report/1");
+    assert_eq!(report["schema"], "una.report/2");
     assert_eq!(
         report["package"],
         json!({"name": "events-example", "version": "0.1.0"})
@@ -95,7 +99,15 @@ fn the_report_of_the_events_example() {
         .keys()
         .map(String::as_str)
         .collect();
-    assert_eq!(keys.len(), 13);
+    assert_eq!(keys.len(), 14);
+    assert_eq!(report["native"]["target"], target.as_str());
+    assert_eq!(
+        report["native"]["arbitrary_precision"],
+        json!([
+            "events.seating.clamp_seats.raw",
+            "events.seating.clamp_seats.result"
+        ])
+    );
     let output = una(&["report", "examples/events"]);
     assert_eq!(output.status.code(), Some(0));
     assert!(
@@ -136,7 +148,7 @@ fn the_out_of_model_list_is_the_one_of_the_spec() {
             "timing",
             "termination and divergence",
             "resource consumption and allocation",
-            "interpreter stack exhaustion",
+            "stack exhaustion",
             "external systems beyond declared signatures",
             "races between the check and the use of a file path",
             "hard links",
@@ -403,7 +415,7 @@ fn every_command_prints_one_json_document_with_its_schema() {
         (
             Path::new("."),
             vec!["--json", "report", "examples/events"],
-            "una.report/1",
+            "una.report/2",
         ),
         (
             Path::new("."),
