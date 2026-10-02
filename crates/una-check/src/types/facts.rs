@@ -5,6 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use una_diag::Code;
+use una_project::Edition;
 
 use super::env::{Entity, Env, FnAst, FnKind};
 use super::ty::{KindId, Ty};
@@ -112,6 +113,12 @@ fn contained(ty: &Ty, option: Option<KindId>, out: &mut Vec<KindId>) {
 /// (`spec/03 §2` rule 5), so every value is finite. One diagnostic per cycle, at the first
 /// field of the cycle's first kind that leads back into it.
 pub(crate) fn kind_recursion(env: &Env<'_>, report: &mut Report<'_>) {
+    // Edition 0.2 replaces the rule with two (ADR 0060, `spec/10 §12` rule 8).
+    if env.edition >= Edition::V0_2 {
+        inhabited_kinds(env, report);
+        regular_recursion(env, report);
+        return;
+    }
     let option = env.prelude_kind("Option");
     let edges: Vec<Vec<(KindId, usize, usize)>> = env
         .kinds
@@ -204,6 +211,245 @@ pub(crate) fn kind_recursion(env: &Env<'_>, report: &mut Report<'_>) {
             format!("Option[{written}]"),
         ));
         report.push(diagnostic);
+    }
+}
+
+/// The fields of `kind`, each with its variant (`None` for a record).
+fn fields_of<'k, 'a>(
+    kind: &'k super::env::KindDef<'a>,
+) -> Vec<(Option<usize>, &'k super::env::FieldDef<'a>)> {
+    match &kind.record {
+        Some(fields) => fields.iter().map(|field| (None, field)).collect(),
+        None => kind
+            .variants
+            .iter()
+            .enumerate()
+            .flat_map(|(v, variant)| variant.fields.iter().map(move |field| (Some(v), field)))
+            .collect(),
+    }
+}
+
+/// The grounded instances of record and sum kinds (ADR 0060 R1): the least fixpoint of
+/// `spec/10 §12` rule 8, by kind and by which of its type arguments are grounded.
+struct Grounded<'e, 'a> {
+    env: &'e Env<'a>,
+    known: BTreeMap<(KindId, Vec<bool>), bool>,
+}
+
+impl Grounded<'_, '_> {
+    /// Whether values of `ty` can be finite, with the type parameters in `params` grounded or
+    /// not. An instance not yet known is assumed not grounded, and joins the fixpoint.
+    fn ty(&mut self, ty: &Ty, params: &[bool]) -> bool {
+        match ty {
+            Ty::Labeled(_, inner) => self.ty(inner, params),
+            Ty::Param(index) => params.get(*index).copied().unwrap_or(true),
+            Ty::Kind(kind, args) => {
+                let args: Vec<bool> = args.iter().map(|arg| self.ty(arg, params)).collect();
+                *self.known.entry((*kind, args)).or_insert(false)
+            }
+            // `[]` exists, and the other built-in types have values.
+            _ => true,
+        }
+    }
+
+    /// Whether the instance `(kind, args)` has a finite value, by its fields.
+    fn kind(&mut self, kind: KindId, args: &[bool]) -> bool {
+        let Some(def) = self.env.kinds.get(kind) else {
+            return true;
+        };
+        match &def.record {
+            Some(fields) => fields.iter().all(|field| self.ty(&field.ty.base, args)),
+            None => def.variants.iter().any(|variant| {
+                variant
+                    .fields
+                    .iter()
+                    .all(|field| self.ty(&field.ty.base, args))
+            }),
+        }
+    }
+
+    fn solve(&mut self) {
+        loop {
+            let pending: Vec<(KindId, Vec<bool>)> = self
+                .known
+                .iter()
+                .filter(|(_, grounded)| !**grounded)
+                .map(|(key, _)| key.clone())
+                .collect();
+            let before = self.known.len();
+            let mut changed = false;
+            for (kind, args) in pending {
+                if self.kind(kind, &args) {
+                    self.known.insert((kind, args), true);
+                    changed = true;
+                }
+            }
+            if !changed && self.known.len() == before {
+                return;
+            }
+        }
+    }
+}
+
+/// U2002 for a record or sum kind without a finite value (ADR 0060 R1, `spec/10 §12` rule 8):
+/// once per kind, at its name.
+fn inhabited_kinds(env: &Env<'_>, report: &mut Report<'_>) {
+    let mut grounded = Grounded {
+        env,
+        known: BTreeMap::new(),
+    };
+    for (id, kind) in env.kinds.iter().enumerate() {
+        grounded
+            .known
+            .insert((id, vec![true; kind.params.len()]), false);
+    }
+    grounded.solve();
+    for (id, kind) in env.kinds.iter().enumerate() {
+        let all = vec![true; kind.params.len()];
+        if !env.reports(kind.module) || grounded.known.get(&(id, all.clone())) != Some(&false) {
+            continue;
+        }
+        let name_span = kind.ast.name.span;
+        let diagnostic = match &kind.record {
+            Some(fields) => {
+                let Some(field) = fields
+                    .iter()
+                    .find(|field| !grounded.ty(&field.ty.base, &all))
+                else {
+                    continue;
+                };
+                let mut diagnostic = report.make(
+                    Code::U2002,
+                    name_span,
+                    format!(
+                        "kind `{}` has no finite value: its field `{}` needs a kind without one; make it an `Option` or a `List`",
+                        kind.name, field.name
+                    ),
+                );
+                let written = report.text(field.span);
+                diagnostic.repairs.push(report.edit(
+                    format!("make the field optional: `Option[{written}]`"),
+                    field.span,
+                    format!("Option[{written}]"),
+                ));
+                diagnostic
+            }
+            None => report.make(
+                Code::U2002,
+                name_span,
+                format!(
+                    "kind `{}` has no finite value: every variant contains a kind without one; add a variant without it, as `End`",
+                    kind.name
+                ),
+            ),
+        };
+        report.push(diagnostic);
+    }
+}
+
+/// U2002 for a recursion whose kinds take arguments other than type parameters (ADR 0060
+/// R2, `spec/10 §12` rule 8): once per field, at its type.
+fn regular_recursion(env: &Env<'_>, report: &mut Report<'_>) {
+    // Every kind that a field type mentions, at any depth.
+    fn mentioned(ty: &Ty, out: &mut Vec<(KindId, Vec<Ty>)>) {
+        match ty {
+            Ty::Labeled(_, inner) | Ty::List(inner) => mentioned(inner, out),
+            Ty::Kind(kind, args) => {
+                out.push((*kind, args.clone()));
+                for arg in args {
+                    mentioned(arg, out);
+                }
+            }
+            Ty::Fn(function) => {
+                for param in &function.params {
+                    mentioned(param, out);
+                }
+                mentioned(&function.result, out);
+                if let Some(fails) = &function.fails {
+                    mentioned(fails, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let edges: Vec<BTreeSet<KindId>> = env
+        .kinds
+        .iter()
+        .map(|kind| {
+            let mut out = Vec::new();
+            for (_, field) in fields_of(kind) {
+                mentioned(&field.ty.base, &mut out);
+            }
+            out.into_iter().map(|(kind, _)| kind).collect()
+        })
+        .collect();
+    let reach = |from: KindId| -> BTreeSet<KindId> {
+        let mut seen = BTreeSet::new();
+        let mut stack = vec![from];
+        while let Some(kind) = stack.pop() {
+            for target in edges.get(kind).into_iter().flatten() {
+                if seen.insert(*target) {
+                    stack.push(*target);
+                }
+            }
+        }
+        seen
+    };
+    let reaches: Vec<BTreeSet<KindId>> = (0..env.kinds.len()).map(reach).collect();
+    for (id, kind) in env.kinds.iter().enumerate() {
+        let Some(own) = reaches.get(id) else {
+            continue;
+        };
+        if !env.reports(kind.module) || !own.contains(&id) {
+            continue;
+        }
+        for (_, field) in fields_of(kind) {
+            let mut out = Vec::new();
+            mentioned(&field.ty.base, &mut out);
+            let irregular = out.into_iter().find_map(|(other, args)| {
+                let recursive = own.contains(&other)
+                    && reaches.get(other).is_some_and(|back| back.contains(&id));
+                let arg = args
+                    .into_iter()
+                    .find(|arg| !matches!(arg.unlabeled(), Ty::Param(_)));
+                recursive.then_some(arg).flatten().map(|arg| (other, arg))
+            });
+            if let Some((other, arg)) = irregular {
+                report.error(
+                    Code::U2002,
+                    field.span,
+                    format!(
+                        "`{}` occurs in its own recursion with the argument `{}`; inside a recursive kind, the kinds of its recursion take only type parameters",
+                        env.kind_name(other),
+                        written(env, kind, &arg)
+                    ),
+                );
+            }
+        }
+    }
+}
+
+/// `ty` as written, with the type parameters of `kind`.
+fn written(env: &Env<'_>, kind: &super::env::KindDef<'_>, ty: &Ty) -> String {
+    let list = |args: &[Ty]| -> String {
+        args.iter()
+            .map(|arg| written(env, kind, arg))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    match ty {
+        Ty::Labeled(_, inner) => written(env, kind, inner),
+        Ty::Param(index) => kind.params.get(*index).copied().unwrap_or("?").to_owned(),
+        Ty::List(element) => format!("List[{}]", written(env, kind, element)),
+        Ty::Kind(other, args) if args.is_empty() => env.kind_name(*other).to_owned(),
+        Ty::Kind(other, args) => format!("{}[{}]", env.kind_name(*other), list(args)),
+        Ty::Int => "Int".to_owned(),
+        Ty::Bool => "Bool".to_owned(),
+        Ty::Text => "Text".to_owned(),
+        Ty::Unit => "Unit".to_owned(),
+        Ty::Hashed => "Hashed".to_owned(),
+        Ty::Fixed(int) => format!("{int:?}"),
+        _ => "_".to_owned(),
     }
 }
 

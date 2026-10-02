@@ -1,0 +1,29 @@
+-- test: a labeled field of a recursive kind keeps its label at every depth, and a recursive generic kind is covariant in its parameter (ADR 0060, ADR 0046)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/reclabels.una:13:23
+-- expect: error U4001 at src/reclabels.una:26:47
+module reclabels
+
+pub kind Doc = Piece(text: secret Text) | Join(left: Doc, right: Doc)
+
+--- The first text of a document, which is secret.
+pub first(d: Doc) -> Text
+=
+  when d
+    is Piece(text) -> text
+    is Join(left, right) -> first(left)
+
+--- The same, kept secret.
+pub first_kept(d: Doc) -> secret Text
+=
+  when d
+    is Piece(text) -> text
+    is Join(left, right) -> first_kept(left)
+
+pub kind Tree[T] = Leaf | Node(left: Tree[T], item: T, right: Tree[T])
+
+--- A tree of secret values into a tree of public ones.
+pub lower(t: Tree[secret Int]) -> Tree[Int] = t
+
+--- And of public values into secret ones.
+pub raise(t: Tree[Int]) -> Tree[secret Int] = t

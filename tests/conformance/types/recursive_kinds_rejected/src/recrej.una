@@ -1,0 +1,30 @@
+-- test: in edition 0.2, a recursive kind needs a finite value, also through mutual recursion and a generic kind, and its recursion takes only type parameters as arguments; a base variant and swapped parameters are fine (spec/10 §12 rule 8, ADR 0060)
+-- spec: spec/10 §12
+-- expect: error U2002 at src/recrej.una:11:10
+-- expect: error U2002 at src/recrej.una:13:10
+-- expect: error U2002 at src/recrej.una:17:10
+-- expect: error U2002 at src/recrej.una:19:10
+-- expect: error U2002 at src/recrej.una:24:10
+-- expect: error U2002 at src/recrej.una:26:39
+module recrej
+
+pub kind Stream = | More(head: Int, tail: Stream)
+
+pub kind Ring
+  value: Int
+  next: Ring
+
+pub kind Ping = | Hit(back: Pong)
+
+pub kind Pong = | Return(back: Ping)
+
+pub kind Box[T]
+  value: T
+
+pub kind Wrapped = | Wrap(inner: Box[Wrapped])
+
+pub kind Nest[T] = Flat | Deep(inner: Nest[List[T]])
+
+pub kind Swap[A, B] = Stop | Turn(first: A, rest: Swap[B, A])
+
+pub kind Fine = Leaf | Node(left: Fine, right: Fine)
