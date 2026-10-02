@@ -4062,6 +4062,7 @@ mod tests {
             params: vec![("path".to_owned(), base_type(Base::Text))],
             result: base_type(Base::Text),
             fails: None,
+            error: None,
             requires: Vec::new(),
             ensures,
             accepts: None,

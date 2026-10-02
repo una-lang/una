@@ -273,7 +273,7 @@ fn every_runnable_program_runs_natively_as_in_the_interpreter() {
             .ok()
             .and_then(|t| serde_json::from_slice(&t).ok())
             .unwrap_or(Value::Null);
-        if native_trace != document["trace"] {
+        if timeless(native_trace.clone()) != timeless(document["trace"].clone()) {
             failures.push(format!(
                 "{name}: trace differs: interpreter {}, native {native_trace}",
                 document["trace"]
@@ -293,6 +293,19 @@ fn every_runnable_program_runs_natively_as_in_the_interpreter() {
         "examples/hello must compile: {failures:#?}"
     );
     assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// `trace` with the result of each `Clock.now` replaced: two runs read the clock at different
+/// times, and everything else must agree.
+fn timeless(mut trace: Value) -> Value {
+    if let Some(events) = trace.as_array_mut() {
+        for event in events {
+            if event["capability"] == "Clock" && event["op"] == "now" {
+                event["outcome"]["value"] = Value::from("<now>");
+            }
+        }
+    }
+    trace
 }
 
 /// A package in a fresh temporary directory, with `una.toml` and the files `(path, text)`.
@@ -380,18 +393,25 @@ fn una_build_rejects_a_package_that_does_not_check() {
 #[test]
 fn a_construct_the_backend_does_not_compile_yet_is_named() {
     let dir = package(
-        "clock",
-        "\n[run]\nentry = \"clock\"\ngrants = [\"clock\"]\n",
+        "wide",
+        "\n[run]\nentry = \"wide\"\n",
         &[(
-            "src/clock.una",
-            "module clock\n\npub main() -> Unit\n  uses @clock: Clock[now]\n=\n  let t = @clock.now()\n  unit\n",
+            "src/wide.una",
+            "module wide\n\npub main() -> Unit\n=\n  let x: U8 = 250\n  unit\n",
         )],
     );
+    // Fixed-width integers exist only in edition 0.2 (`spec/18`).
+    let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+    std::fs::write(
+        dir.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
     let output = una(&dir, &["build"]);
     assert_eq!(output.status.code(), Some(2));
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
-        "error: the native backend does not compile `Clock.now` yet (#26)\n"
+        "error: the native backend does not compile fixed-width integers yet (#26)\n"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

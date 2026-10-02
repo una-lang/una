@@ -29,7 +29,7 @@ use una_core::{
 };
 use una_syntax::Span;
 
-use crate::{CodegenError, Emitter};
+use crate::{CodegenError, Emitter, describe};
 
 /// The integers a tagged word holds: `[-2^62, 2^62)`.
 const SMALL: std::ops::RangeInclusive<i64> = -(1 << 62)..=(1 << 62) - 1;
@@ -49,8 +49,10 @@ enum Kind {
     Data,
     /// A handle to a list.
     List,
-    /// A handle to a closure.
+    /// A handle to a closure, or to an instance of a capability.
     Fn,
+    /// A handle to a keyed hash.
+    Hashed,
     /// A value of a type parameter: any of the above.
     Any,
 }
@@ -63,7 +65,7 @@ impl Kind {
 
     /// Whether the word is always a handle.
     fn handle(self) -> bool {
-        matches!(self, Kind::Text | Kind::List | Kind::Fn)
+        matches!(self, Kind::Text | Kind::List | Kind::Fn | Kind::Hashed)
     }
 }
 
@@ -83,7 +85,7 @@ fn kind(ty: &Type) -> Result<Kind, CodegenError> {
             Base::Bool => Ok(Kind::Bool),
             Base::Text => Ok(Kind::Text),
             Base::Unit => Ok(Kind::Unit),
-            Base::Hashed => Err(unsupported("`Hashed` values")),
+            Base::Hashed => Ok(Kind::Hashed),
             Base::Fixed(_) => Err(unsupported("fixed-width integers")),
             Base::Named { module, name, .. } if module == PRELUDE_MODULE && name == "List" => {
                 Ok(Kind::List)
@@ -155,8 +157,14 @@ fn substitute(ty: &Type, params: &[String], args: &[Type]) -> Type {
     }
 }
 
-/// The binders in scope, with their words and types.
+/// The binders in scope, with their words and types, and the capabilities in scope, keyed
+/// `@name`, with their instances.
 type Env = BTreeMap<String, (Value, Type)>;
+
+/// The key of the capability `name` in an [`Env`].
+fn cap_key(name: &str) -> String {
+    format!("@{name}")
+}
 
 /// The words a scope owns, released at the end of each of its paths.
 type Scope = Vec<(Value, Kind)>;
@@ -188,16 +196,22 @@ impl Catch {
     }
 }
 
-/// A body to compile: a function or predicate of the package, or a lambda.
+/// What a closure or a handler instance holds, in its cells' order: values with their types,
+/// then capabilities, by name.
+pub(crate) type Cells = (Vec<(Name, Type)>, Vec<Name>);
+
+/// A body to compile: a function or predicate of the package, a lambda, or an operation of a
+/// handler.
 pub(crate) struct Body<'p> {
-    /// Whether it is the code of a closure, whose first parameter is the closure itself.
-    pub(crate) closure: bool,
-    /// The values a closure captures, in the order of its environment.
-    pub(crate) captures: Vec<(Name, Type)>,
+    /// For a closure or a handler's operation, whose first parameter is the closure or the
+    /// instance: the values it holds, then the capabilities, by name, in its cells' order.
+    pub(crate) this: Option<Cells>,
     /// The parameters.
-    pub(crate) params: &'p [(Name, Type)],
+    pub(crate) params: Vec<(Name, Type)>,
+    /// The capabilities a function takes after its parameters, by name (`spec/16 §4` rule 4).
+    pub(crate) uses: Vec<Name>,
     /// The result type, when it is declared.
-    pub(crate) result: Option<&'p Type>,
+    pub(crate) result: Option<Type>,
     /// Whether it can fail.
     pub(crate) fails: bool,
     /// The body.
@@ -223,21 +237,34 @@ pub(crate) fn function<'p>(
     let mut params = builder.block_params(block).to_vec().into_iter();
     let mut lowerer = Lowerer { emitter, builder };
     let mut env = Env::new();
-    if body.closure {
+    if let Some((values, caps)) = &body.this {
         let this = params
             .next()
             .ok_or_else(|| internal("a closure lost its parameter"))?;
-        for (index, (name, ty)) in body.captures.iter().enumerate() {
+        for (index, (name, ty)) in values.iter().enumerate() {
             kind(ty)?;
             let value = lowerer.field(this, index)?;
             env.insert(name.clone(), (value, ty.clone()));
         }
+        for (index, name) in caps.iter().enumerate() {
+            let value = lowerer.field(this, values.len() + index)?;
+            env.insert(cap_key(name), (value, unknown()));
+        }
     }
-    for ((name, ty), value) in body.params.iter().zip(params) {
+    for (name, ty) in &body.params {
         kind(ty)?;
+        let value = params
+            .next()
+            .ok_or_else(|| internal("a body lost a parameter"))?;
         env.insert(name.clone(), (value, ty.clone()));
     }
-    if let Some(result) = body.result {
+    for name in &body.uses {
+        let value = params
+            .next()
+            .ok_or_else(|| internal("a body lost a capability"))?;
+        env.insert(cap_key(name), (value, unknown()));
+    }
+    if let Some(result) = &body.result {
         kind(result)?;
     }
     // Every body returns its value and whether it failed, the value being then the failure.
@@ -399,7 +426,31 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     return self.joined(join, reached);
                 }
                 Expr::Attempt { body, .. } => return self.attempt(body, env, scope).map(Some),
-                Expr::With { .. } => return Err(unsupported("`with`")),
+                Expr::With { cap, source, body } => {
+                    let instance = match source {
+                        // E-Rebind shares the instance.
+                        Source::Rebind(other) => {
+                            env.get(&cap_key(other))
+                                .ok_or_else(|| internal(format!("no capability `@{other}`")))?
+                                .0
+                        }
+                        Source::Handler {
+                            handler,
+                            args,
+                            given,
+                            ..
+                        } => {
+                            if *given {
+                                return Err(unsupported("examples"));
+                            }
+                            let instance = self.install(handler, args, env)?;
+                            scope.push((instance, Kind::Fn));
+                            instance
+                        }
+                    };
+                    env.insert(cap_key(cap), (instance, unknown()));
+                    expr = body;
+                }
             }
         }
     }
@@ -539,10 +590,19 @@ impl<'p> Lowerer<'_, 'p, '_> {
         function: &Path,
         args: &[Value],
         span: Span,
+        env: &Env,
         scope: &Scope,
         catch: &Catch,
     ) -> Result<Value, CodegenError> {
-        let (id, fails) = self.emitter.function(function)?;
+        let callee = self.emitter.function(function)?;
+        let mut args = args.to_vec();
+        for name in &callee.uses {
+            let (instance, _) = env
+                .get(&cap_key(name))
+                .ok_or_else(|| internal(format!("no capability `@{name}` to pass")))?;
+            args.push(*instance);
+        }
+        let (id, fails) = (callee.id, callee.fails);
         // `spec/11 §7`: each call counts toward the maximum depth, which the runtime checks
         // against the call's site.
         let site = self.site(span);
@@ -551,7 +611,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
             .emitter
             .module
             .declare_func_in_func(id, self.builder.func);
-        let call = self.builder.ins().call(callee, args);
+        let call = self.builder.ins().call(callee, &args);
         let results = self.builder.inst_results(call).to_vec();
         self.runtime("una_rt_leave", &[]);
         let (Some(&value), Some(&failed)) = (results.first(), results.get(1)) else {
@@ -561,6 +621,201 @@ impl<'p> Lowerer<'_, 'p, '_> {
             self.check(value, failed, scope, catch);
         }
         Ok(value)
+    }
+
+    /// `c.o(a, ...)` (E-OpHost, E-OpHandler, `spec/11 §4`), whose result has type `ty`: records
+    /// the operation's event, performs it on the instance bound to `c`, a host instance through
+    /// the runtime or a handler's through its code, and ends the event with its outcome; a
+    /// failure then goes to `catch`.
+    fn op(
+        &mut self,
+        rhs: &'p Rhs,
+        ty: &Type,
+        env: &Env,
+        scope: &Scope,
+        catch: &Catch,
+    ) -> Result<Value, CodegenError> {
+        let Rhs::Op {
+            cap,
+            capability,
+            capability_path,
+            op,
+            args,
+            labels,
+            span,
+            ..
+        } = rhs
+        else {
+            return Err(internal("an operation that is not one"));
+        };
+        let ops = self
+            .emitter
+            .capability(capability_path)
+            .ok_or_else(|| internal(format!("no capability `{}`", capability_path.qualified())))?;
+        let (index, declared) = ops
+            .iter()
+            .enumerate()
+            .find(|(_, o)| o.name == *op)
+            .ok_or_else(|| internal(format!("`{capability}` has no operation `{op}`")))?;
+        let (instance, _) = *env
+            .get(&cap_key(cap))
+            .ok_or_else(|| internal(format!("no capability `@{cap}`")))?;
+        // What the event records: the arguments, redacted by their static labels, the result,
+        // redacted by its type's label, and the failure (`spec/11 §5`).
+        let mut values = Vec::new();
+        let mut shown = Vec::new();
+        for (position, arg) in args.iter().enumerate() {
+            values.push(self.atom(arg, env)?.0);
+            let arg_type = self.atom_type(arg, env);
+            let label = labels.get(position).cloned().unwrap_or_else(Label::public);
+            shown.push(serde_json::json!({
+                "type": self.emitter.types.of(&arg_type),
+                "redacted": redaction(&label),
+            }));
+        }
+        let result = serde_json::json!({
+            "type": self.emitter.types.of(ty),
+            "redacted": redaction(&describe::deep_label(ty)),
+        });
+        let error = match (&declared.fails, &declared.error) {
+            (None, _) => None,
+            (Some(_), Some(kind)) => Some(self.emitter.types.of(&base(Base::Named {
+                module: kind.module.clone(),
+                name: kind.name.clone(),
+                args: Vec::new(),
+            }))),
+            (Some(_), None) => {
+                return Err(internal(format!(
+                    "the error kind of `{capability}.{op}` is not resolved"
+                )));
+            }
+        };
+        let params: Vec<String> = declared
+            .params
+            .iter()
+            .map(|(name, _)| source_name(name))
+            .collect();
+        let site = i64::try_from(self.emitter.ops.len()).map_err(crate::internal)?;
+        self.emitter.ops.push(serde_json::json!({
+            "capability": capability,
+            "op": op,
+            "params": params,
+            "args": shown,
+            "result": result,
+            "error": error,
+        }));
+        let site = self.builder.ins().iconst(types::I64, site);
+        let slot = self.call("una_rt_event", &[site, instance])?;
+        for (position, &value) in values.iter().enumerate() {
+            let position = i64::try_from(position).map_err(crate::internal)?;
+            let position = self.builder.ins().iconst(types::I64, position);
+            self.runtime("una_rt_event_arg", &[site, slot, position, value]);
+        }
+        let index = i64::try_from(index).map_err(crate::internal)?;
+        let index = self.builder.ins().iconst(types::I64, index);
+        let code = self.call("una_rt_op_code", &[instance, index])?;
+        let host = self.builder.create_block();
+        let handled = self.builder.create_block();
+        let done = self.builder.create_block();
+        self.builder.append_block_param(done, types::I64);
+        self.builder.append_block_param(done, types::I64);
+        self.builder.ins().brif(code, handled, &[], host, &[]);
+
+        // A host instance has no code: the runtime performs the operation (`spec/14 §3`).
+        self.builder.switch_to_block(host);
+        if capability_path.module == HOST_MODULE {
+            let (function, fails) = match (capability_path.name.as_str(), op.as_str()) {
+                ("Console", "print") => ("una_rt_console_print", false),
+                ("Clock", "now") => ("una_rt_clock_now", false),
+                ("Env", "get") => ("una_rt_env_get", false),
+                ("Files", "read") => ("una_rt_files_read", true),
+                ("Files", "write") => ("una_rt_files_write", true),
+                ("Keys", "hmac") => ("una_rt_keys_hmac", true),
+                _ => return Err(unsupported(format!("`{capability}.{op}`"))),
+            };
+            let value = self.call(function, &values)?;
+            let failed = if fails {
+                self.call("una_rt_host_failed", &[])?
+            } else {
+                self.builder.ins().iconst(types::I64, 0)
+            };
+            self.builder
+                .ins()
+                .jump(done, &[value.into(), failed.into()]);
+        } else {
+            // Only `una run` makes host instances, of host capabilities.
+            self.builder.ins().trap(TRAP);
+        }
+
+        // A handler's operation counts toward the maximum depth, as a call does.
+        self.builder.switch_to_block(handled);
+        let call_site = self.site(*span);
+        let mut signature = self.emitter.module.make_signature();
+        for _ in 0..=values.len() {
+            signature.params.push(AbiParam::new(types::I64));
+        }
+        signature.returns.push(AbiParam::new(types::I64));
+        signature.returns.push(AbiParam::new(types::I64));
+        let signature = self.builder.import_signature(signature);
+        let mut operands = vec![instance];
+        operands.extend_from_slice(&values);
+        self.runtime("una_rt_enter", &[call_site]);
+        let call = self.builder.ins().call_indirect(signature, code, &operands);
+        let results = self.builder.inst_results(call).to_vec();
+        self.runtime("una_rt_leave", &[]);
+        let (Some(&value), Some(&failed)) = (results.first(), results.get(1)) else {
+            return Err(internal("an operation lost its result"));
+        };
+        self.builder
+            .ins()
+            .jump(done, &[value.into(), failed.into()]);
+
+        self.builder.switch_to_block(done);
+        let results = self.builder.block_params(done).to_vec();
+        let (Some(&value), Some(&failed)) = (results.first(), results.get(1)) else {
+            return Err(internal("an operation lost its result"));
+        };
+        self.runtime("una_rt_event_end", &[site, slot, value, failed]);
+        if declared.fails.is_some() {
+            self.check(value, failed, scope, catch);
+        }
+        Ok(value)
+    }
+
+    /// A new instance of `handler` (E-Handler, `spec/11 §4`): the code of each operation of its
+    /// capability, in the capability's order, then the values `args` and the instances of its
+    /// own capabilities, from those in scope.
+    fn install(&mut self, handler: &Path, args: &[Atom], env: &Env) -> Result<Value, CodegenError> {
+        let info = self
+            .emitter
+            .handler(handler)
+            .ok_or_else(|| internal(format!("no handler `{}`", handler.qualified())))?;
+        let ops = self
+            .emitter
+            .capability(info.capability)
+            .ok_or_else(|| internal(format!("no capability `{}`", info.capability.qualified())))?;
+        let name = self.literal("una_rt_text_literal", &handler.name)?;
+        let instance = self.call("una_rt_handler_instance", &[name])?;
+        for op in ops {
+            let id = self.emitter.handler_op(handler, op)?;
+            let code = self
+                .emitter
+                .module
+                .declare_func_in_func(id, self.builder.func);
+            let address = self.builder.ins().func_addr(types::I64, code);
+            self.runtime("una_rt_push_op", &[instance, address]);
+        }
+        for arg in args {
+            let (value, _) = self.atom(arg, env)?;
+            self.runtime("una_rt_push", &[instance, value]);
+        }
+        for need in info.uses {
+            let (value, _) = *env
+                .get(&cap_key(&need.cap))
+                .ok_or_else(|| internal(format!("no capability `@{}`", need.cap)))?;
+            self.runtime("una_rt_push", &[instance, value]);
+        }
+        Ok(instance)
     }
 
     /// The owned word of a right-hand side bound to a binder of type `ty`; a failure goes to
@@ -599,7 +854,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 if function.module == PRELUDE_MODULE {
                     return self.prelude(&function.name, &values, *span);
                 }
-                self.call_function(function, &values, *span, scope, catch)
+                self.call_function(function, &values, *span, env, scope, catch)
             }
             Rhs::Apply {
                 callee, args, span, ..
@@ -617,30 +872,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 }
                 Ok(value)
             }
-            Rhs::Op {
-                capability_path,
-                op,
-                args,
-                labels,
-                capability,
-                ..
-            } => {
-                if capability_path.module != HOST_MODULE
-                    || capability_path.name != "Console"
-                    || op != "print"
-                {
-                    return Err(unsupported(format!("`{capability}.{op}`")));
-                }
-                if labels.iter().any(|label| !label.is_public()) {
-                    return Err(unsupported("labeled arguments of host operations"));
-                }
-                let [line] = args.as_slice() else {
-                    return Err(unsupported("this call of `Console.print`"));
-                };
-                let (line, _) = self.atom(line, env)?;
-                self.runtime("una_rt_console_print", &[line]);
-                Ok(self.builder.ins().iconst(types::I64, 0))
-            }
+            Rhs::Op { .. } => self.op(rhs, ty, env, scope, catch),
             Rhs::Construct { ctor, args, .. } => self.construct(ctor, args, env),
             Rhs::Field { value, index, .. } => {
                 let (record, _) = self.atom(value, env)?;
@@ -661,17 +893,26 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 vars(body, &mut names);
                 let captures: Vec<(Name, Type)> = names
                     .into_iter()
+                    .filter(|name| !name.starts_with('@'))
                     .filter(|name| !params.iter().any(|(p, _)| p == name))
                     .filter_map(|name| {
                         let ty = env.get(&name)?.1.clone();
                         Some((name, ty))
                     })
                     .collect();
+                // A lambda keeps the capabilities in scope where it is made (`spec/11 §4`).
+                let caps: Vec<Name> = env
+                    .keys()
+                    .filter_map(|key| key.strip_prefix('@'))
+                    .map(str::to_owned)
+                    .collect();
                 let values: Vec<Value> = captures
                     .iter()
-                    .filter_map(|(name, _)| env.get(name).map(|(value, _)| *value))
+                    .map(|(name, _)| name.clone())
+                    .chain(caps.iter().map(|name| cap_key(name)))
+                    .filter_map(|name| env.get(&name).map(|(value, _)| *value))
                     .collect();
-                let id = self.emitter.lambda(params, body, captures)?;
+                let id = self.emitter.lambda(params, body, captures, caps)?;
                 let code = self
                     .emitter
                     .module
@@ -715,7 +956,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
             }
             Rhs::Declassify { via, arg, span, .. } => {
                 let (value, _) = self.atom(arg, env)?;
-                self.call_function(via, &[value], *span, scope, catch)
+                self.call_function(via, &[value], *span, env, scope, catch)
             }
         }
     }
@@ -1245,6 +1486,20 @@ impl<'p> Lowerer<'_, 'p, '_> {
 
         self.builder.switch_to_block(done);
         self.param(done)
+    }
+}
+
+/// The level that redacts a value labeled `label` in a trace, when it is above `public`.
+fn redaction(label: &Label) -> Option<&'static str> {
+    (!label.is_public()).then(|| describe::level(label.level))
+}
+
+/// A binder's source name: Core renames a binder that shares a name with another, and `k%2` is
+/// keyed as `k` in traces (`spec/11 §5`).
+fn source_name(name: &str) -> String {
+    match name.split_once('%') {
+        Some((source, _)) if !source.is_empty() => source.to_owned(),
+        _ => name.to_owned(),
     }
 }
 
