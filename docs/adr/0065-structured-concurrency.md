@@ -167,3 +167,7 @@ Besides the B and C options under each decision:
 - **Actors and channels.** Not chosen: they need message types, mailboxes and unbounded lifetimes, and channel order is a new observable channel. The `actor` word stays reserved.
 - **Implicit parallelism** of independent `let` statements. Not chosen: it is invisible in the source, and the order of effects would change without a written construct.
 - **Algebraic effects with resumable handlers,** to build schedulers in the language. Not chosen: Una's handlers are call-like by design, and resumption would change what handlers are.
+
+## Amendment (2026-10-02)
+
+The result of a `together for` also carries its length, the number of its tasks: the length of its list, or the number of integers of its range (`spec/19 §4` rule 2). C8 A gave only the facts of each element, so an `ensures` such as `result.len == xs.len` was refuted though it holds. The fact follows from the semantics of `together_for` (`spec/19 §6`) and adds no assumption. Issue #167, assigned by the coordinator.
