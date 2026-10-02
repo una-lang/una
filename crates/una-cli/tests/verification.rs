@@ -34,6 +34,11 @@ fn stderr(output: &Output) -> &str {
 
 /// A package under the test's temporary directory with the repository's lock.
 fn package(name: &str, files: &[(&str, &str)]) -> PathBuf {
+    package_of_edition(name, "0.1", files)
+}
+
+/// [`package`] of the given edition (`spec/13 §7`).
+fn package_of_edition(name: &str, edition: &str, files: &[(&str, &str)]) -> PathBuf {
     let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
         .join("verification")
         .join(name);
@@ -41,7 +46,7 @@ fn package(name: &str, files: &[(&str, &str)]) -> PathBuf {
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(
         root.join("una.toml"),
-        format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"0.1\"\n"),
+        format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"{edition}\"\n"),
     )
     .unwrap();
     std::fs::copy(
@@ -1140,5 +1145,55 @@ fn an_unknown_obligation_is_an_error_every_run_and_only_a_wallclock_unknown_is_n
                 .all(|m| m.ends_with("could not be proven (wallclock)")),
             "run {run}: {messages:?}"
         );
+    }
+}
+
+#[test]
+fn an_overflow_repair_guards_with_code_that_verifies_issue_28() {
+    // `spec/18 §3`: the first repair of an `overflow` obligation is a guard that is valid
+    // code and cannot overflow itself: the operation on `Int`, or the operand's range for a
+    // conversion. Applying it verifies.
+    for (name, header, operation, guard) in [
+        (
+            "overflow-add",
+            "pub add(a: U8, b: U8) -> U8",
+            "a + b",
+            "a.to_int() + b.to_int() in 0..255",
+        ),
+        (
+            "overflow-narrow",
+            "pub narrow(a: I32) -> U8",
+            "a.to_u8()",
+            "a in 0..255",
+        ),
+        (
+            "overflow-negate",
+            "pub negate(a: I8) -> I8",
+            "-a",
+            "-a.to_int() in -128..127",
+        ),
+    ] {
+        let failing = format!("module app\n\n{header} = {operation}\n");
+        let root = package_of_edition(name, "0.2", &[("src/app.una", &failing)]);
+        let output = una(&["--json", "check", root.to_str().unwrap()]);
+        assert_eq!(output.status.code(), Some(1), "{name}: {}", stderr(&output));
+        let document: Value = serde_json::from_str(stdout(&output)).unwrap();
+        let diagnostics = document["diagnostics"].as_array().unwrap();
+        assert_eq!(diagnostics.len(), 1, "{name}: {}", stdout(&output));
+        assert_eq!(diagnostics[0]["code"], "U5001", "{name}");
+        let repairs = repair_descriptions(&diagnostics[0]);
+        assert_eq!(
+            repairs.first().map(String::as_str),
+            Some(format!("guard the operation with `if {guard}`").as_str()),
+            "{name}"
+        );
+        let guarded = format!("module app\n\n{header} = if {guard} then {operation} else 0\n");
+        let root = package_of_edition(
+            &format!("{name}-guarded"),
+            "0.2",
+            &[("src/app.una", &guarded)],
+        );
+        let output = una(&["check", root.to_str().unwrap()]);
+        assert_eq!(output.status.code(), Some(0), "{name}: {}", stderr(&output));
     }
 }

@@ -172,7 +172,8 @@ fn repairs(obligation: &Obligation) -> Vec<Repair> {
         // `spec/18 §3`: guard the operation, give the value a wider type, or name the
         // wrapping or saturating arithmetic that is meant.
         ObligationKind::Overflow => {
-            candidates.push((0, format!("guard the operation with `if {goal}`")));
+            let guard = site.guard.as_deref().unwrap_or(goal);
+            candidates.push((0, format!("guard the operation with `if {guard}`")));
             candidates.push((
                 0,
                 "give the values a wider type, converting them explicitly".to_owned(),

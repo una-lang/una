@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use rayon::prelude::*;
 
-use una_diag::{Binding, ObligationKind, ObligationStatus};
+use una_diag::{Binding, ObligationStatus};
 
 use crate::cache;
 use crate::generate::{Obligation, Show};
@@ -343,23 +343,16 @@ pub fn verify(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Out
         .zip(second)
         .zip(obligations.iter().zip(&scripts))
     {
-        let mut found = outcome(obligation, requested, &answer, second.as_ref(), cached);
-        // Issue #28, stage 1: until the encoding of `spec/18 §6` is in place, every `overflow`
-        // obligation is unknown, so no fixed-width arithmetic passes tier 1 unverified.
-        if obligation.kind == ObligationKind::Overflow {
-            found.status = ObligationStatus::Unknown;
-            found.reason = Some(OVERFLOW_PENDING.to_owned());
-            found.path = None;
-            found.bindings = Vec::new();
-        }
-        outcomes.push(found);
+        outcomes.push(outcome(
+            obligation,
+            requested,
+            &answer,
+            second.as_ref(),
+            cached,
+        ));
     }
     Ok(outcomes)
 }
-
-/// The reason of every `overflow` obligation until their encoding is implemented (issue #28,
-/// stage 1).
-pub(crate) const OVERFLOW_PENDING: &str = "overflow obligations are not implemented yet";
 
 /// The values of the requested terms in a refuted answer, as the solver prints them.
 fn values<'r>(requested: &'r [F], answer: &'r Answer) -> impl Fn(&F) -> String + 'r {
