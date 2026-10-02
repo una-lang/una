@@ -19,7 +19,7 @@ Status: Normative, v0.1.
 
 (v0.2, ADR 0057.) Edition `0.2` adds the fixed-width integer types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`, with overflow obligations (`spec/18`). `Int` stays unbounded.
 
-Equality `==` and `!=` are structural and defined for every type except function types (U2001). Ordering `<`, `<=`, `>`, `>=` is defined for `Int`, `Text` (lexicographic by scalar value) and sum kinds whose variants have no payload (declaration order).
+Equality `==` and `!=` are structural and defined for every type except function types (U2001). Ordering `<`, `<=`, `>`, `>=` is defined for `Int`, `Text` (lexicographic by scalar value) and sum kinds whose variants have no payload (declaration order). (v0.2, ADR 0066.) In edition `0.2`, the fixed-width types are ordered too (`spec/18 §2`), and on a type parameter equality and ordering need a constraint (`spec/20`).
 
 ## 2. Kinds
 
@@ -41,7 +41,7 @@ Rules:
 1. Records and sums are **nominal**: two declarations with the same shape are different types.
 2. Aliases and refinements are **structural over their base**: `Seats` is `Int` refined by `0 <= it and it <= 5000`. A `Seats` value may be used where `Int` is expected; an `Int` used where `Seats` is expected produces a proof obligation (`spec/12`).
 3. A refinement of a refined kind conjoins both predicates.
-4. Generic parameters are unconstrained in v0.1 (no traits). Operations on a type parameter are limited to equality and those provided by function parameters.
+4. Generic parameters are unconstrained in v0.1 (no traits). Operations on a type parameter are limited to equality and those provided by function parameters. (v0.2, ADR 0066.) In edition `0.2`, a function's type parameter may carry the constraint `Eq`, `Ord` or `Integer`, which allows equality, ordering and `to_int()`, and equality needs `Eq` (`spec/20`).
 5. Recursive kinds are allowed only through `List` or `Option` fields (U2002 otherwise), so every value is finite.
    - (v0.2, ADR 0060.) In edition `0.2`, a kind may contain itself through any field when it has a finite value, as `kind Expr = Lit(value: Int) | Add(left: Expr, right: Expr)`. A kind without one, whose every variant (or, for a record, some field) needs a value of a kind without one, is U2002. In a recursion, the kinds of the recursion take only type parameters as arguments (U2002 otherwise). `spec/10 §12` rule 8 states both rules. Edition `0.1` keeps the rule above.
 

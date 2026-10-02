@@ -87,7 +87,7 @@ Besides the hypotheses above, a query holds ground facts for every term in it: `
 | Symbol | Name |
 | --- | --- |
 | Sort of a user kind | `u!Kind_<module>_<Name>[_<args>]`, with each `_` of a module segment doubled |
-| Sort of a type parameter | `u!Param_<name>` |
+| Sort of a type parameter | `u!Param_<name>`. (v0.2, ADR 0066.) Its order under `Ord` and its `to_int()` under `Integer` are uninterpreted, with no axioms (`spec/20 §5`) |
 | Built-in sorts and the prelude's kinds | `i!Text`, `i!Hashed`, `i!Unit`, `i!Fn` (function values), `i!List_<T>`, `i!Option_<T>`, `i!Result_<T>_<E>`, `i!FileError`, `i!KeyError` |
 | Field of a record kind | `u!f!<field>!<Sort>` |
 | Field of a variant of a sum kind | `u!f!<field>!<Variant>!<Sort>`, so variants that share a field name with different types have distinct functions |

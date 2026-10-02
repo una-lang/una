@@ -4,7 +4,7 @@ Status: Informative. Nothing in this file may be implemented before its target v
 
 ## Opened for v0.2
 
-These rows are in scope since Leonardo opened the v0.2 scope on 2026-10-01 (charter §5b). Each is implemented only after its ADR and spec text are merged: ADR 0055 for the native backend, ADR 0056 for the memory model, ADR 0057 for fixed-width integers, ADR 0060 for recursive kinds, ADR 0062 for effect polymorphism, ADR 0063 for the language server and ADR 0065 for structured concurrency.
+These rows are in scope since Leonardo opened the v0.2 scope on 2026-10-01 (charter §5b). Each is implemented only after its ADR and spec text are merged: ADR 0055 for the native backend, ADR 0056 for the memory model, ADR 0057 for fixed-width integers, ADR 0060 for recursive kinds, ADR 0062 for effect polymorphism, ADR 0063 for the language server, ADR 0065 for structured concurrency and ADR 0066 for constraints on generics.
 
 | Item | Target | Why deferred | Source | Issue |
 | --- | --- | --- | --- | --- |
@@ -17,6 +17,7 @@ These rows are in scope since Leonardo opened the v0.2 scope on 2026-10-01 (char
 | Recursive kinds with a base variant | v0.2 | `spec/03 §2` rule 5 rejects them in v0.1. Decided (ADR 0060, R1 to R5): inhabited kinds by a least fixpoint, regular recursion only, verification by contracts, termination unchecked, unbounded depth of values | v0.1 review R-045, Leonardo 2026-10-02 | [#38](https://github.com/una-lang/una/issues/38) |
 | Effect polymorphism (effectful lambdas in prelude higher-order functions) | v0.2 | Typing complexity; v0.1 prelude takes pure lambdas. Decided (ADR 0062, E1 to E5): `uses of p` and `fails of p` clauses, no effect variables; handling unchanged; inferred for private functions; the program counter of a lambda raised by what decides its calls | D, Leonardo 2026-10-02 | [#36](https://github.com/una-lang/una/issues/36) |
 | Structured concurrency (`together`, tasks, cancellation) | v0.2 | Needs disjointness proofs and runtime model. Decided (ADR 0065, C1 to C8): `together` blocks of `let` branches and `together for`, with no task values; a failure cancels the later tasks, so the result is the sequential one; branches capture by value and never edit outer bindings, with no `iso`; capabilities shared; the order of effects across tasks out of model; a trace in branch order; the interpreter sequential, the native backend one thread and heap per task | D, R3, Leonardo 2026-10-02 | [#32](https://github.com/una-lang/una/issues/32) |
+| Traits or constraints on generics | v0.2 | Unconstrained generics suffice for v0.1. Decided (ADR 0066, G1 to G8): a closed set of built-in constraints `Eq`, `Ord` and `Integer`, written `[T: C]` on function type parameters; no user traits or `impl`; `==` on a type parameter needs `Eq` in edition 0.2; no arithmetic on `T`; a hidden type descriptor in native code; no laws; a generic `min`, `max`, `contains`, `sum` and `sort` | D, Leonardo 2026-10-02 | [#37](https://github.com/una-lang/una/issues/37) |
 | Language server (LSP) | v0.2 | Tooling after semantics stabilize. Decided (ADR 0063, L1 to L6): `una lsp` over stdio, hand-written on `serde_json`; diagnostics, repairs as quick fixes, formatting, hover, definitions, symbols and proof counts; tier 0 on change and tier 1 on save, with the CLI's lock and cache; both editions | D, Leonardo 2026-10-02 | [#43](https://github.com/una-lang/una/issues/43) |
 
 ## Deferred
@@ -28,7 +29,6 @@ These rows are in scope since Leonardo opened the v0.2 scope on 2026-10-01 (char
 | FFI and `trusted` foreign code | v0.2 | Largest TCB risk; needs TCB risk profile first | D, R3 | [#33](https://github.com/una-lang/una/issues/33) |
 | Units of measure | v0.2 | Useful, not needed for the thesis | D | [#34](https://github.com/una-lang/una/issues/34) |
 | Pipelines `\|>` and `it` shorthand lambdas | v0.2 | Sugar; interacts with labeled-argument rules | D | [#35](https://github.com/una-lang/una/issues/35) |
-| Traits or constraints on generics | v0.2 | Unconstrained generics suffice for v0.1 | D | [#37](https://github.com/una-lang/una/issues/37) |
 | Authenticate or re-validate proof cache entries | v0.2 | Done in v0.2: ADR 0064, entries tagged under a per-user key, which replaces the cache in the Trusted zone (`spec/12 §9`) | v0.1 review R-018 | [#44](https://github.com/una-lang/una/issues/44) |
 | Bound the interpreter heap and report exhaustion as U6003 | v0.2 | Done in v0.2: ADR 0061, `--max-memory` and a stack capped at 1 GiB (`spec/11 §7`) | v0.1 review R-033 | [#45](https://github.com/una-lang/una/issues/45) |
 | `shared`, `iso` and `weak`: mutable aliasing, transferable unique values and cycles | v0.3 | Decided (V2-3): v0.2 has mutable value semantics with no references; `iso` may return with structured concurrency; the words stay reserved, and `weak` joins the reserved words with the v0.2 compiler | D, R3, owner 2026-10-01 | [#83](https://github.com/una-lang/una/issues/83) |
