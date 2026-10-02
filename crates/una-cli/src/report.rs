@@ -332,7 +332,7 @@ fn build(
     let mut authority = Vec::new();
     let mut host = BTreeSet::new();
     for header in &analysis.headers {
-        if header.uses.is_empty() {
+        if header.uses.is_empty() && header.uses_of.is_empty() {
             continue;
         }
         let function = format!("{}.{}", header.module, header.name);
@@ -346,10 +346,12 @@ fn build(
         authority.push(AuthorityDoc {
             public: public.get(&function).copied().unwrap_or(false),
             function,
+            // ADR 0062: `uses of p` is listed as written, `of p`.
             uses: header
                 .uses
                 .iter()
                 .map(|u| format!("@{}: {}[{}]", u.cap, u.capability, u.ops.join(", ")))
+                .chain(header.uses_of.iter().map(|param| format!("of {param}")))
                 .collect(),
             inferred: header.uses_inferred,
         });

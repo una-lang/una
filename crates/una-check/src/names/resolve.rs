@@ -245,6 +245,8 @@ impl<'a> Resolver<'_, '_, 'a> {
                         ClauseKind::Requires(expr) | ClauseKind::Ensures(expr) => self.expr(expr),
                         ClauseKind::Uses(uses) => self.cap_type(&uses.cap_type),
                         ClauseKind::Fails(kind) => self.lookup(kind, Space::Upper, "error kind"),
+                        // A parameter, which the type checker resolves (ADR 0062).
+                        ClauseKind::UsesOf(_) | ClauseKind::FailsOf(_) => {}
                         ClauseKind::DerivedFrom(requirements) => {
                             for requirement in requirements {
                                 self.requirement(requirement);

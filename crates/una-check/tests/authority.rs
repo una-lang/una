@@ -498,7 +498,7 @@ fn effectful_functions_are_values_only_as_arguments() {
             "U3006 t.una:41:3 `write` uses capabilities or can fail, so as a value it may only be passed directly as an argument",
             "U3006 t.una:44:8 field `run` of `Holder` has a function type with `uses` or `fails`, which a kind cannot store",
             "U3003 t.una:49:16 this function uses `@log: Log[write]`, which the expected function type does not allow",
-            "U3004 t.una:54:25 `@log` is used here, but this code declares no `uses`, so it is pure; declare `uses @log: ...` in its header",
+            "U3004 t.una:54:25 `@log` is used in a lambda whose type declares no `uses`, so the lambda is pure; pass it directly as an argument for a parameter whose type allows the effect",
             "U3009 t.una:58:51 this code declares no error kind, so it cannot fail with `Missing`; declare `fails` in its header",
         ]
     );
