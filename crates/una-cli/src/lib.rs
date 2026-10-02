@@ -11,6 +11,7 @@ mod build;
 mod contract;
 mod lsp;
 mod package;
+mod proof_key;
 mod report;
 mod runtime;
 mod trace;
@@ -29,7 +30,7 @@ use una_syntax::{FileId, Interner, KeywordSet, Lexed, SourceDb, lex_in, parse};
 
 use crate::args::{Cli, ColorChoice, Command, TierArg};
 pub use crate::package::{LoadError, Package, load};
-pub use crate::verification::{DEFAULT_WALLCLOCK, Verification};
+pub use crate::verification::{DEFAULT_WALLCLOCK, Solving, Verification};
 
 /// The exit status of a `una` command (`spec/13 §5`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,14 +84,14 @@ pub struct Checked {
 }
 
 /// Loads and checks the file or package at `path` (`spec/13 §5`, `spec/12 §1`), with the
-/// default wall-clock guard of the solver.
+/// default wall-clock guard of the solver and no proof cache.
 pub fn check(path: &Path, tier: Tier) -> Result<Checked, LoadError> {
-    check_with(path, tier, DEFAULT_WALLCLOCK)
+    check_with(path, tier, &Solving::new(DEFAULT_WALLCLOCK))
 }
 
 /// Loads and checks the file or package at `path`: tier 0, then, at tier 1 and when tier 0
 /// reports nothing, every proof obligation.
-pub fn check_with(path: &Path, tier: Tier, wallclock: Duration) -> Result<Checked, LoadError> {
+pub fn check_with(path: &Path, tier: Tier, solving: &Solving) -> Result<Checked, LoadError> {
     let package = load(path)?;
     let (mut diagnostics, program, pending) = on_large_stack(|| {
         let analysis = analyze(&package, None);
@@ -98,7 +99,7 @@ pub fn check_with(path: &Path, tier: Tier, wallclock: Duration) -> Result<Checke
     });
     let mut verification = None;
     if tier == Tier::One && diagnostics.is_empty() {
-        let found = verification::tier_one(&package, &program, wallclock);
+        let found = verification::tier_one(&package, &program, solving);
         diagnostics.extend(found.diagnostics);
         verification = found.verification;
     }
@@ -315,6 +316,12 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
+    // The key of the proof cache is resolved when a command verifies, and not before: `una fmt`
+    // never makes one (ADR 0064).
+    let solving = |seconds: u64| Solving {
+        wallclock: Duration::from_secs(seconds),
+        proof_key: proof_key::resolve(environment),
+    };
     let status = match Cli::try_parse_from(args) {
         Ok(cli) => match cli.command {
             Command::Check {
@@ -330,7 +337,7 @@ where
                     },
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
-                    wallclock: Duration::from_secs(solver_wallclock),
+                    solving: solving(solver_wallclock),
                 };
                 check_command(&path, options, dump_core.as_deref(), stdout, stderr)
             }
@@ -341,7 +348,7 @@ where
                 let options = trace::TraceOptions {
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
-                    wallclock: Duration::from_secs(solver_wallclock),
+                    solving: solving(solver_wallclock),
                 };
                 trace::trace_command(&requirement, options, stdout, stderr)
             }
@@ -352,7 +359,7 @@ where
                 let options = report::ReportOptions {
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
-                    wallclock: Duration::from_secs(solver_wallclock),
+                    solving: solving(solver_wallclock),
                 };
                 report::report_command(&path, options, stdout, stderr)
             }
@@ -363,7 +370,7 @@ where
                 let options = verification::ObligationsOptions {
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
-                    wallclock: Duration::from_secs(solver_wallclock),
+                    solving: solving(solver_wallclock),
                 };
                 verification::obligations_command(&path, options, stdout, stderr)
             }
@@ -394,7 +401,7 @@ where
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
                     environment,
-                    wallclock: Duration::from_secs(solver_wallclock),
+                    solving: solving(solver_wallclock),
                 };
                 runtime::run_command(&path, options, stdout, stderr)
             }
@@ -407,7 +414,7 @@ where
                     out,
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
-                    wallclock: Duration::from_secs(solver_wallclock),
+                    solving: solving(solver_wallclock),
                     environment,
                 };
                 build::build_command(&path, &options, stdout, stderr)
@@ -426,12 +433,12 @@ where
                     json: cli.json,
                     color: use_color(cli.color, stderr_is_terminal),
                     environment,
-                    wallclock: Duration::from_secs(solver_wallclock),
+                    solving: solving(solver_wallclock),
                 };
                 runtime::test_command(&path, options, stdout, stderr)
             }
             Command::Explain { code } => explain_command(&code, cli.json, stdout, stderr),
-            Command::Lsp => lsp::serve(stdout),
+            Command::Lsp => lsp::serve(stdout, solving(DEFAULT_WALLCLOCK.as_secs())),
         },
         // clap reports `--help` as an error that belongs on stdout with exit code 0.
         Err(error) => {
@@ -453,12 +460,12 @@ where
 }
 
 /// The options of `una check`.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct CheckOptions {
     tier: Tier,
     json: bool,
     color: bool,
-    wallclock: Duration,
+    solving: Solving,
 }
 
 /// `una check [path]`: prints the diagnostics of [`check`], as JSON on stdout (ADR 0012) or
@@ -470,7 +477,7 @@ fn check_command(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
-    let checked = match check_with(path, options.tier, options.wallclock) {
+    let checked = match check_with(path, options.tier, &options.solving) {
         Ok(checked) => checked,
         // A usage error goes to stderr even with --json; it happens before the
         // command runs, like the usage errors clap reports.

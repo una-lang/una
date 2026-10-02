@@ -166,7 +166,13 @@ step_budget      = 5000000
 random_seed      = 0
 ```
 
-The proof cache lives in `.una/cache/proofs/` (not committed). The key is SHA-256 over the lock file contents and the exact query text; the value is the status, reason and model. Changing the lock invalidates the cache. Each entry is one JSON file named by the key in hex, written through a temporary file and a rename; an unreadable entry is solved again, and `unknown` with reason `wallclock` is never cached (ADR 0033). In v0.1 the proof cache is part of the Trusted zone (`00-charter.md §3`): an entry is not authenticated, a readable one is the answer without asking the solver, and the build report counts the results that came from it (ADR 0041). Removing `.una/` verifies every obligation again.
+The proof cache lives in `.una/cache/proofs/` (not committed). The key is SHA-256 over the lock file contents and the exact query text; the value is the status, reason and model. Changing the lock invalidates the cache. Each entry is one JSON file named by the key in hex, written through a temporary file and a rename; an unreadable entry is solved again, and `unknown` with reason `wallclock` is never cached (ADR 0033). (v0.2, ADR 0064.) Each entry carries an HMAC-SHA-256 tag, under the user's secret key, over its key and its answer:
+- An entry whose tag is missing or does not match is not an answer. The query is solved again, and the entry is rewritten.
+- The key lives outside the package, in the file `UNA_PROOF_KEY` names, else `$HOME/.una/proof-cache.key`. `una` makes it on first use with 32 random bytes, readable by the user only.
+- With no key to read or make, a run uses no cache.
+- The key file, not the cache, is part of the Trusted zone (`00-charter.md §3`).
+
+The build report counts the results that came from the cache (ADR 0041). Removing `.una/` verifies every obligation again. (In v0.1, entries were not authenticated, and the cache itself was in the Trusted zone.)
 
 ## 10. Determinism guarantee
 

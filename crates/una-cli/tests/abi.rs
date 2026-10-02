@@ -17,6 +17,7 @@ fn repository() -> PathBuf {
 
 fn una_in(dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .args(args)
         .current_dir(repository().join(dir))
         .output()
@@ -320,6 +321,7 @@ pub double(x: Int) -> Int
     assert!(stdout(&output).contains("\nobligations: 0 proven, 1 refuted, 0 unknown; 1 cached\n"));
     assert!(stderr(&output).contains("U5001"), "{}", stderr(&output));
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .args(["--json", "trace", "NUM_1"])
         .current_dir(&root)
         .output()
@@ -466,6 +468,7 @@ fn json_outputs_are_byte_identical_across_runs_and_thread_counts() {
         let first = una_in(dir, &args);
         let second = una_in(dir, &args);
         let single = Command::new(env!("CARGO_BIN_EXE_una"))
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
             .args(&args)
             .env("RAYON_NUM_THREADS", "1")
             .current_dir(repository().join(dir))
