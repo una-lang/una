@@ -57,7 +57,7 @@ let pages = together for id in ids
 ## 4. Verification (C8)
 
 1. Each branch is verified as its `let` would be, in the context of the block: with the facts known before the block, and no facts of its sibling branches.
-2. After the join, each branch's binding carries its facts. The result of a `together for` carries, for each element, the facts of the element type `T`, as a list does.
+2. After the join, each branch's binding carries its facts. The result of a `together for` carries, for each element, the facts of the element type `T`, as a list does, and its length is the number of tasks: the length of its list, or for a range `a..b` the value `b - a + 1` when `a <= b`, and for `a..<b` the value `b - a` when `a < b`, else `0`.
 3. No fact about an outer binding changes across the block, since no task can assign it (§2 rule 3).
 4. No new kind of obligation exists, and no contract mentions tasks. This is sound because tasks share no mutable state, and the verifier encodes no world and no order of effects (`spec/12 §3`).
 5. Termination is not checked (`spec/04 §2` rule 3). A task that does not terminate keeps its block from ending.
