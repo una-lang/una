@@ -48,6 +48,10 @@ pub(crate) struct RunOptions<'a> {
     pub(crate) grants: &'a [String],
     /// `--max-depth`.
     pub(crate) max_depth: usize,
+    /// `--max-memory`, in MiB.
+    pub(crate) max_memory: usize,
+    /// The heap of the process, as the binary counts it.
+    pub(crate) heap: crate::Heap<'a>,
     /// `--json`.
     pub(crate) json: bool,
     /// Whether human diagnostics use color.
@@ -119,6 +123,38 @@ fn file_fault(error: io::Error) -> FileFault {
         FileFault::NotFound
     } else {
         FileFault::Io
+    }
+}
+
+/// The limits of a run (`spec/11 §7`, ADR 0061).
+fn limits<'a>(options: &RunOptions<'a>) -> una_interp::Limits<'a> {
+    una_interp::Limits {
+        max_depth: options.max_depth,
+        max_memory: options.max_memory,
+        held: options.heap.held,
+    }
+}
+
+/// The hard ceiling of the heap while a run evaluates (ADR 0061 rule 3): twice the budget past
+/// what the process holds when the run starts. One step between two checks can allocate beyond
+/// the budget; past the ceiling, allocation fails and the process aborts. Dropping it lifts the
+/// ceiling again.
+struct Ceiling<'a> {
+    heap: crate::Heap<'a>,
+}
+
+impl<'a> Ceiling<'a> {
+    fn raise(options: &RunOptions<'a>) -> Ceiling<'a> {
+        let budget = options.max_memory.saturating_mul(1024 * 1024);
+        let held = (options.heap.held)();
+        (options.heap.ceiling)(held.saturating_add(budget.saturating_mul(2)));
+        Ceiling { heap: options.heap }
+    }
+}
+
+impl Drop for Ceiling<'_> {
+    fn drop(&mut self) {
+        (self.heap.ceiling)(usize::MAX);
     }
 }
 
@@ -218,9 +254,11 @@ pub(crate) fn run_command(
     let entry_path = entry.as_str();
     let host = &host;
     let max_depth = options.max_depth;
+    let limits = limits(&options);
     let environment = options.environment;
     let mut output = Vec::new();
     let mut write_error = None;
+    let ceiling = Ceiling::raise(&options);
     let evaluated = std::thread::scope(|scope| {
         let worker = std::thread::Builder::new()
             .name("una-run".to_owned())
@@ -230,7 +268,7 @@ pub(crate) fn run_command(
                     lines: sender,
                     environment,
                 };
-                una_interp::run_main(program, entry_path, &mut world, host, max_depth)
+                una_interp::run_main(program, entry_path, &mut world, host, limits)
             })?;
         for line in receiver {
             if options.json {
@@ -247,6 +285,7 @@ pub(crate) fn run_command(
                 .unwrap_or_else(|payload| std::panic::resume_unwind(payload)),
         )
     });
+    drop(ceiling);
     let run = match evaluated {
         Ok(Some(run)) => run,
         Ok(None) => {
@@ -271,7 +310,8 @@ pub(crate) fn run_command(
             .collect();
     let status = match &run.completion {
         Completion::Ok(_) => ExitStatus::Success,
-        Completion::Failed { .. } | Completion::Aborted(Abort::Depth { .. }) => ExitStatus::Errors,
+        Completion::Failed { .. }
+        | Completion::Aborted(Abort::Depth { .. } | Abort::Memory { .. }) => ExitStatus::Errors,
         Completion::Aborted(Abort::Fault { .. }) => ExitStatus::Internal,
     };
     let document = RunDocument {
@@ -445,6 +485,11 @@ fn abort_diagnostic(abort: &Abort, sources: &SourceDb, root: &Location) -> Diagn
             format!("this call exceeds the maximum call depth of {limit}"),
             sources.location(*span),
         ),
+        Abort::Memory { span, limit } => Diagnostic::error(
+            Code::U6003,
+            format!("this call exceeds the memory limit of {limit} MiB"),
+            sources.location(*span),
+        ),
         Abort::Fault { message, span } => Diagnostic::error(
             Code::U8001,
             format!("evaluation stopped: {message}"),
@@ -502,17 +547,20 @@ pub(crate) fn test_command(
     };
     let program = &analysis.program;
     let max_depth = options.max_depth;
+    let limits = limits(&options);
+    let ceiling = Ceiling::raise(&options);
     let evaluated = std::thread::scope(|scope| {
         let worker = std::thread::Builder::new()
             .name("una-test".to_owned())
             .stack_size(stack)
-            .spawn_scoped(scope, move || una_interp::run_examples(program, max_depth))?;
+            .spawn_scoped(scope, move || una_interp::run_examples(program, limits))?;
         Ok::<_, io::Error>(
             worker
                 .join()
                 .unwrap_or_else(|payload| std::panic::resume_unwind(payload)),
         )
     });
+    drop(ceiling);
     let runs = match evaluated {
         Ok(runs) => runs,
         Err(error) => {

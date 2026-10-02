@@ -5,7 +5,9 @@ use std::collections::BTreeMap;
 use una_core::{Atom, Bound, Example, Expectation, Expr, LoopSource, Program, Rhs, Source};
 
 use crate::host::{Grant, NoWorld, World};
-use crate::machine::{Abort, Env, Event, EventOutcome, Flow, Index, Machine, Stop, variant};
+use crate::machine::{
+    Abort, Env, Event, EventOutcome, Flow, Index, Limits, Machine, Stop, variant,
+};
 use crate::value::Value;
 
 /// What `una run` grants: the grants, with the keys of the key files of `keys:` grants loaded
@@ -52,11 +54,11 @@ pub fn run_main(
     module: &str,
     world: &mut dyn World,
     host: &Host,
-    max_depth: usize,
+    limits: Limits<'_>,
 ) -> Option<Run> {
     let index = Index::new(program);
     let main = index.function(module, "main")?;
-    let mut machine = Machine::new(&index, world, &host.grants, &host.keys, max_depth);
+    let mut machine = Machine::new(&index, world, &host.grants, &host.keys, limits);
     let result = machine.run_main(main);
     let completion = completion(&index, result);
     Some(Run {
@@ -104,7 +106,7 @@ pub struct ExampleFailure {
 
 /// Runs every example of `program`, by module in path order, then in source order, each in a
 /// fresh machine with an empty environment and an empty world (`spec/11 §6`).
-pub fn run_examples(program: &Program, max_depth: usize) -> Vec<ExampleRun> {
+pub fn run_examples(program: &Program, limits: Limits<'_>) -> Vec<ExampleRun> {
     let index = Index::new(program);
     program
         .modules
@@ -115,7 +117,7 @@ pub fn run_examples(program: &Program, max_depth: usize) -> Vec<ExampleRun> {
                 .iter()
                 .map(|example| (module.path.as_str(), example))
         })
-        .map(|(module, example)| run_example(&index, module, example, max_depth))
+        .map(|(module, example)| run_example(&index, module, example, limits))
         .collect()
 }
 
@@ -123,12 +125,12 @@ fn run_example<'p>(
     index: &Index<'p>,
     module: &str,
     example: &'p Example,
-    max_depth: usize,
+    limits: Limits<'_>,
 ) -> ExampleRun {
     let mut world = NoWorld;
     let grants: Vec<Grant> = Vec::new();
     let keys = BTreeMap::new();
-    let mut machine = Machine::new(index, &mut world, &grants, &keys, max_depth);
+    let mut machine = Machine::new(index, &mut world, &grants, &keys, limits);
     let result = machine.eval_closed(&mut Env::new(), &example.body);
     let failure = match &result {
         Err(Stop::Abort(_)) => Some(ExampleFailure {

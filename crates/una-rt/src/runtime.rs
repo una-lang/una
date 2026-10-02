@@ -138,12 +138,15 @@ pub struct Options {
     pub trace: Option<PathBuf>,
     /// `--max-depth <n>`.
     pub max_depth: usize,
+    /// `--max-memory <MiB>` (ADR 0061).
+    pub max_memory: usize,
 }
 
 /// The command line, without the program name, or the message of a usage error.
 pub fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut options = Options {
         max_depth: una_interp::DEFAULT_MAX_DEPTH,
+        max_memory: una_interp::DEFAULT_MAX_MEMORY,
         ..Options::default()
     };
     let mut rest = args.iter();
@@ -167,9 +170,15 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
                     .parse()
                     .map_err(|_| format!("`--max-depth {text}` is not a number"))?;
             }
+            "--max-memory" => {
+                let text = value()?;
+                options.max_memory = text
+                    .parse()
+                    .map_err(|_| format!("`--max-memory {text}` is not a number"))?;
+            }
             other => {
                 return Err(format!(
-                    "unexpected argument `{other}`; the options are --grant <spec>, --trace <file> and --max-depth <n>"
+                    "unexpected argument `{other}`; the options are --grant <spec>, --trace <file>, --max-depth <n> and --max-memory <MiB>"
                 ));
             }
         }
@@ -195,6 +204,13 @@ pub(crate) struct State {
     pub(crate) host_failed: bool,
     /// The number of instances of each handler that `with` installed so far.
     pub(crate) installs: BTreeMap<String, usize>,
+    /// Where the stack of `main`'s thread starts, and how much of it the code may use: past
+    /// it, a call aborts with U6003 before the stack overflows (ADR 0032, ADR 0061 rule 1).
+    stack_base: usize,
+    stack_budget: usize,
+    /// The memory budget in MiB, and what the heap held when `main` started (ADR 0061).
+    max_memory: usize,
+    baseline: usize,
 }
 
 thread_local! {
@@ -263,13 +279,24 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         ops: meta.ops,
         host_failed: false,
         installs: BTreeMap::new(),
+        stack_base: 0,
+        stack_budget: stack.saturating_sub(STACK_RESERVE),
+        max_memory: options.max_memory,
+        baseline: 0,
     };
+    let budget = options.max_memory.saturating_mul(1024 * 1024);
     let worker = std::thread::Builder::new()
         .name("una-main".to_owned())
         .stack_size(stack)
         .spawn(move || {
+            let mut state = state;
+            state.stack_base = stack_position(&state);
+            state.baseline = crate::held();
+            // ADR 0061 rule 3: past twice the budget, allocation fails and the process aborts.
+            crate::ceiling(state.baseline.saturating_add(budget.saturating_mul(2)));
             STATE.with(|cell| *cell.borrow_mut() = Some(state));
             let status = entry();
+            crate::ceiling(usize::MAX);
             // A debug build of the runtime checks the compiled code's reference counting: it
             // never used a value it had released, and released every value it made, which is
             // unreferenced once `main` returns (`spec/16 §4`).
@@ -394,32 +421,54 @@ pub fn check_grants(meta: &Meta, grants: &[Grant]) -> Vec<Diagnostic> {
         .collect()
 }
 
-/// Enters the call at `site`: past the maximum depth, the run aborts with U6003 at the call,
-/// as in the interpreter (`spec/11 §7`): the output so far stays printed, the trace is written,
-/// and the executable exits with code 1.
+/// The stack kept free below the budget of `main`'s thread, for the runtime's own work after the
+/// last check: performing a host operation, rendering a value, writing the trace.
+const STACK_RESERVE: usize = 8 * 1024 * 1024;
+
+/// The address of `local`, a variable of the caller's frame: a measure of the stack in use.
+fn stack_position<T>(local: &T) -> usize {
+    std::ptr::from_ref(local).addr()
+}
+
+/// Enters the call at `site`: past the maximum depth, or when the stack of `main`'s thread runs
+/// short before it, the run aborts with U6003 at the call, as in the interpreter
+/// (`spec/11 §7`, ADR 0032), and so it does when the heap the run holds is over its budget
+/// (ADR 0061). The output so far stays printed, the trace is written, and the executable exits
+/// with code 1.
 pub fn enter(site: usize) {
+    let marker = site;
+    let position = stack_position(&marker);
+    let held = crate::held();
     let abort = STATE.with(|cell| {
         let mut cell = cell.borrow_mut();
         let state = cell.as_mut()?;
-        if state.depth >= state.max_depth {
-            let location = state.sites.get(site).cloned().unwrap_or(Location {
-                file: String::new(),
-                start: Position { line: 1, col: 1 },
-                end: Position { line: 1, col: 1 },
-            });
-            let limit = state.max_depth;
-            return cell.take().map(|state| (state, location, limit));
-        }
-        state.depth += 1;
-        None
+        let used = state.stack_base.abs_diff(position);
+        let budget = state.max_memory.saturating_mul(1024 * 1024);
+        let message = if state.depth >= state.max_depth || used > state.stack_budget {
+            format!(
+                "this call exceeds the maximum call depth of {}",
+                state.max_depth
+            )
+        } else if held.saturating_sub(state.baseline) > budget {
+            format!(
+                "this call exceeds the memory limit of {} MiB",
+                state.max_memory
+            )
+        } else {
+            state.depth += 1;
+            return None;
+        };
+        let location = state.sites.get(site).cloned().unwrap_or(Location {
+            file: String::new(),
+            start: Position { line: 1, col: 1 },
+            end: Position { line: 1, col: 1 },
+        });
+        cell.take().map(|state| (state, location, message))
     });
-    if let Some((state, location, limit)) = abort {
+    if let Some((state, location, message)) = abort {
+        crate::ceiling(usize::MAX);
         let _ = io::stdout().flush();
-        let diagnostic = Diagnostic::error(
-            Code::U6003,
-            format!("this call exceeds the maximum call depth of {limit}"),
-            location,
-        );
+        let diagnostic = Diagnostic::error(Code::U6003, message, location);
         let _ = write!(
             io::stderr(),
             "{}",
@@ -492,6 +541,10 @@ mod tests {
         assert_eq!(options.grants, ["console", "env"]);
         assert_eq!(options.trace, Some(PathBuf::from("t.json")));
         assert_eq!(options.max_depth, 50);
+        assert_eq!(options.max_memory, una_interp::DEFAULT_MAX_MEMORY);
+        let options = parse_args(&strings(&["--max-memory", "64"])).unwrap();
+        assert_eq!(options.max_memory, 64);
+        assert!(parse_args(&strings(&["--max-memory", "many"])).is_err());
         assert!(parse_args(&strings(&["--json"])).is_err());
         assert!(parse_args(&strings(&["--grant"])).is_err());
         assert!(parse_args(&strings(&["--max-depth", "many"])).is_err());
