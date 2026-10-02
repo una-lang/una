@@ -31,6 +31,13 @@ pub(crate) struct Contract {
     lines: Vec<String>,
 }
 
+impl Contract {
+    /// The lines of its human output, as `una contract` prints them.
+    pub(crate) fn lines(&self) -> &[String] {
+        &self.lines
+    }
+}
+
 /// `uses @cap: Capability[ops]`.
 #[derive(Debug, Serialize)]
 struct Uses {

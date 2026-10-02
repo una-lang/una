@@ -17,6 +17,7 @@ una-core = { path = "crates/una-core" }
 una-diag = { path = "crates/una-diag" }
 una-fmt = { path = "crates/una-fmt" }
 una-interp = { path = "crates/una-interp" }
+una-lsp = { path = "crates/una-lsp" }
 una-project = { path = "crates/una-project" }
 una-report = { path = "crates/una-report" }
 una-rt = { path = "crates/una-rt" }

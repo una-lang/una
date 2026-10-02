@@ -154,6 +154,8 @@ pub(crate) enum Command {
         /// A diagnostic code, for example U0001
         code: String,
     },
+    /// Serve the language server on stdin and stdout, for editors (ADR 0063)
+    Lsp,
 }
 
 /// The values of `--tier` (`spec/12 §1`).
