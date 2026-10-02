@@ -91,11 +91,12 @@ struct Slot {
 struct Heap {
     slots: Vec<Slot>,
     free: Vec<usize>,
-    /// Text literals by the address of their bytes, so that each literal is one text, which the
-    /// heap keeps for the whole run.
-    literals: BTreeMap<usize, i64>,
-    /// Integer literals beyond the tagged range, by the address of their digits.
-    int_literals: BTreeMap<usize, i64>,
+    /// Text literals by their contents, so that each literal is one text, which the heap keeps
+    /// for the whole run. Not by the address of their bytes: an empty literal has no bytes, and
+    /// can share its address with the next literal of the object file.
+    literals: BTreeMap<String, i64>,
+    /// Integer literals beyond the tagged range, by their digits.
+    int_literals: BTreeMap<String, i64>,
     /// The uses of a freed object: retaining, releasing or reading it, which the generated code
     /// never does.
     faults: usize,
@@ -248,16 +249,20 @@ pub fn int_value(word: i64) -> BigInt {
     }
 }
 
-/// The word of an integer literal of decimal `digits`, with an optional `-`, made once for
-/// each `site`, the address of the literal's bytes. The word is borrowed.
-pub fn int_literal(site: usize, digits: &str) -> i64 {
-    if let Some(word) = HEAP.with(|heap| heap.borrow().int_literals.get(&site).copied()) {
+/// The word of the integer literal of decimal `digits`, with an optional `-`, made once for
+/// each literal. The word is borrowed.
+pub fn int_literal(digits: &str) -> i64 {
+    if let Some(word) = HEAP.with(|heap| heap.borrow().int_literals.get(digits).copied()) {
         return word;
     }
     let value: BigInt = digits.parse().unwrap_or_default();
     let word = int_word(&value);
     if is_handle(word) {
-        HEAP.with(|heap| heap.borrow_mut().int_literals.insert(site, word));
+        HEAP.with(|heap| {
+            heap.borrow_mut()
+                .int_literals
+                .insert(digits.to_owned(), word)
+        });
     }
     word
 }
@@ -343,13 +348,13 @@ pub fn text_value(word: i64) -> String {
     .unwrap_or_default()
 }
 
-/// The text literal of `site`, the address of its bytes, made once. The word is borrowed.
-pub fn text_literal(site: usize, text: &str) -> i64 {
-    if let Some(word) = HEAP.with(|heap| heap.borrow().literals.get(&site).copied()) {
+/// The text literal `text`, made once for each literal. The word is borrowed.
+pub fn text_literal(text: &str) -> i64 {
+    if let Some(word) = HEAP.with(|heap| heap.borrow().literals.get(text).copied()) {
         return word;
     }
     let word = text_word(text.to_owned());
-    HEAP.with(|heap| heap.borrow_mut().literals.insert(site, word));
+    HEAP.with(|heap| heap.borrow_mut().literals.insert(text.to_owned(), word));
     word
 }
 
@@ -833,11 +838,17 @@ mod tests {
     #[test]
     fn literals_live_for_the_whole_run_and_are_not_leaks() {
         let before = live();
-        let text = text_literal(0x1000, "hello");
-        assert_eq!(text_literal(0x1000, "hello"), text);
-        let big = int_literal(0x2000, "99999999999999999999999");
+        let text = text_literal("hello");
+        assert_eq!(text_literal("hello"), text);
+        // An empty literal is its own text, whatever address its (no) bytes share: an x86_64
+        // object file can place it at the address of the next literal.
+        let empty = text_literal("");
+        assert_ne!(empty, text);
+        assert_eq!(text_value(empty), "");
+        assert_eq!(text_value(text_literal("hello")), "hello");
+        let big = int_literal("99999999999999999999999");
         assert_eq!(int(big), "99999999999999999999999");
-        assert_eq!(int_literal(0x3000, "7"), n(7));
+        assert_eq!(int_literal("7"), n(7));
         assert_eq!(live(), before);
     }
 
