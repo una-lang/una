@@ -65,7 +65,7 @@ impl<'p> Types<'p> {
             Base::Text => json!({ "shape": "text" }),
             Base::Unit => json!({ "shape": "unit" }),
             Base::Hashed => json!({ "shape": "hashed" }),
-            // Internal to the memory model, which the backend does not compile yet (#29).
+            // Internal to the memory model: a tuple is never a value a trace or U6001 shows.
             Base::Tuple(_) => json!({ "shape": "other" }),
             Base::Named { module, name, args } if module == PRELUDE_MODULE => {
                 let arg = |i: usize| args.get(i).cloned().unwrap_or_else(unknown);

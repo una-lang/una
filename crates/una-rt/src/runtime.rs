@@ -443,43 +443,76 @@ pub fn enter(site: usize) {
         let mut cell = cell.borrow_mut();
         let state = cell.as_mut()?;
         let used = state.stack_base.abs_diff(position);
-        let budget = state.max_memory.saturating_mul(1024 * 1024);
         let message = if state.depth >= state.max_depth || used > state.stack_budget {
             format!(
                 "this call exceeds the maximum call depth of {}",
                 state.max_depth
             )
-        } else if held.saturating_sub(state.baseline) > budget {
-            format!(
-                "this call exceeds the memory limit of {} MiB",
-                state.max_memory
-            )
+        } else if let Some(message) = over_budget(state, held) {
+            message
         } else {
             state.depth += 1;
             return None;
         };
-        let location = state.sites.get(site).cloned().unwrap_or(Location {
-            file: String::new(),
-            start: Position { line: 1, col: 1 },
-            end: Position { line: 1, col: 1 },
-        });
+        let location = site_location(state, site);
         cell.take().map(|state| (state, location, message))
     });
     if let Some((state, location, message)) = abort {
-        crate::ceiling(usize::MAX);
-        let _ = io::stdout().flush();
-        let diagnostic = Diagnostic::error(Code::U6003, message, location);
-        let _ = write!(
-            io::stderr(),
-            "{}",
-            render_human(&[diagnostic], &Default::default(), false)
-        );
-        let code = finish(state).max(1);
-        // The run ends here, as the interpreter's abort does: nothing unwinds through the
-        // compiled frames (spec/16 §4 rule 3).
-        #[allow(clippy::exit)]
-        std::process::exit(code);
+        abort_run(state, location, message);
     }
+}
+
+/// Checks the memory budget at an iteration of the `for` loop at `site`: iterations are not
+/// calls, so this is the only check inside a loop that builds a value (ADR 0061 rule 2). Over
+/// the budget, the run aborts with U6003 at the loop, as at a call.
+pub fn budget(site: usize) {
+    let held = crate::held();
+    let abort = STATE.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        let state = cell.as_mut()?;
+        let message = over_budget(state, held)?;
+        let location = site_location(state, site);
+        cell.take().map(|state| (state, location, message))
+    });
+    if let Some((state, location, message)) = abort {
+        abort_run(state, location, message);
+    }
+}
+
+/// The U6003 message when the heap the run holds, `held` bytes, is over its budget.
+fn over_budget(state: &State, held: usize) -> Option<String> {
+    let budget = state.max_memory.saturating_mul(1024 * 1024);
+    (held.saturating_sub(state.baseline) > budget).then(|| {
+        format!(
+            "this call exceeds the memory limit of {} MiB",
+            state.max_memory
+        )
+    })
+}
+
+fn site_location(state: &State, site: usize) -> Location {
+    state.sites.get(site).cloned().unwrap_or(Location {
+        file: String::new(),
+        start: Position { line: 1, col: 1 },
+        end: Position { line: 1, col: 1 },
+    })
+}
+
+/// Ends the run with U6003 at `location`, as the interpreter's abort does: the output so far
+/// stays printed, the trace is written, and the executable exits with code 1.
+fn abort_run(state: State, location: Location, message: String) {
+    crate::ceiling(usize::MAX);
+    let _ = io::stdout().flush();
+    let diagnostic = Diagnostic::error(Code::U6003, message, location);
+    let _ = write!(
+        io::stderr(),
+        "{}",
+        render_human(&[diagnostic], &Default::default(), false)
+    );
+    let code = finish(state).max(1);
+    // Nothing unwinds through the compiled frames (spec/16 §4 rule 3).
+    #[allow(clippy::exit)]
+    std::process::exit(code);
 }
 
 /// Reports that `main` failed with `failure`, which the caller owns and the report releases:
