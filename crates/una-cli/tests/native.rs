@@ -391,32 +391,6 @@ fn una_build_rejects_a_package_that_does_not_check() {
 }
 
 #[test]
-fn a_construct_the_backend_does_not_compile_yet_is_named() {
-    let dir = package(
-        "wide",
-        "\n[run]\nentry = \"wide\"\n",
-        &[(
-            "src/wide.una",
-            "module wide\n\npub main() -> Unit\n=\n  let x: U8 = 250\n  unit\n",
-        )],
-    );
-    // Fixed-width integers exist only in edition 0.2 (`spec/18`).
-    let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
-    std::fs::write(
-        dir.join("una.toml"),
-        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
-    )
-    .unwrap();
-    let output = una(&dir, &["build"]);
-    assert_eq!(output.status.code(), Some(2));
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "error: the native backend does not compile fixed-width integers yet (#26)\n"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
 fn a_failure_of_main_shows_what_una_run_shows() {
     let dir = package(
         "stop",

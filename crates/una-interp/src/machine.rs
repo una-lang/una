@@ -1130,9 +1130,7 @@ fn saturate(value: BigInt, int: IntType) -> BigInt {
     }
 }
 
-/// A method of a fixed-width type over its operands' values (`spec/18 §5`). Bit operations act
-/// on the two's-complement bits of the width; `shift_right` divides by `2^n` rounding toward
-/// negative infinity, so it is arithmetic on signed types.
+/// A method of a fixed-width type over its operands' values (`spec/18 §5`).
 fn fixed_apply<'p>(op: FixedOp, int: IntType, args: &[Value<'p>]) -> Result<BigInt, Stop<'p>> {
     let int_at = |i: usize| match args.get(i) {
         Some(Value::Int(n)) => Ok(n.clone()),
@@ -1147,14 +1145,26 @@ fn fixed_apply<'p>(op: FixedOp, int: IntType, args: &[Value<'p>]) -> Result<BigI
     } else {
         BigInt::from(0)
     };
-    if op.shift() && (b.sign() == Sign::Minus || b >= BigInt::from(int.bits())) {
-        return Err(fault(format!(
+    fixed_method(op, int, &a, &b).ok_or_else(|| {
+        fault(format!(
             "`{}` by {b}, outside `0` to `{}`, which a precondition excludes",
             op.as_str(),
             int.bits() - 1
-        )));
+        ))
+    })
+}
+
+/// Method `op` of the fixed-width type `int` on `a`, with the argument `b` (`spec/18 §5`), or
+/// `None` for a shift by an amount outside the width, which a precondition excludes. Bit
+/// operations act on the two's-complement bits of the width; `shift_right` divides by `2^n`
+/// rounding toward negative infinity, so it is arithmetic on signed types. The native runtime
+/// computes the methods with this function too.
+pub fn fixed_method(op: FixedOp, int: IntType, a: &BigInt, b: &BigInt) -> Option<BigInt> {
+    if op.shift() && (b.sign() == Sign::Minus || *b >= BigInt::from(int.bits())) {
+        return None;
     }
-    Ok(match op {
+    let (a, b) = (a.clone(), b.clone());
+    Some(match op {
         FixedOp::WrappingAdd => wrap(&(a + b), int),
         FixedOp::WrappingSub => wrap(&(a - b), int),
         FixedOp::WrappingMul => wrap(&(a * b), int),

@@ -101,12 +101,11 @@ fn the_report_of_the_events_example() {
         .collect();
     assert_eq!(keys.len(), 14);
     assert_eq!(report["native"]["target"], target.as_str());
+    // `clamp_seats` returns `Seats`, `Int in 0..5000`, a machine width (FW-1); its parameter
+    // `raw` is an unbounded `Int`.
     assert_eq!(
         report["native"]["arbitrary_precision"],
-        json!([
-            "events.seating.clamp_seats.raw",
-            "events.seating.clamp_seats.result"
-        ])
+        json!(["events.seating.clamp_seats.raw"])
     );
     let output = una(&["report", "examples/events"]);
     assert_eq!(output.status.code(), Some(0));
