@@ -179,7 +179,8 @@ In a package of edition `0.2` (ADR 0056, `spec/17`):
 - `edit`, `take` and `old` become keywords of the memory model;
 - `shared`, `iso` and the new `weak` are reserved for v0.3 (aliasing);
 - `region` is no keyword, since the backend chooses where values live;
-- `var` suggests `let edit`, and `while` and `loop` suggest `for` or recursion.
+- `var` suggests `let edit`, and `while` and `loop` suggest `for` or recursion;
+- `together` becomes the keyword of structured concurrency (ADR 0065, `spec/19`), `parallel` and `actor` are reserved for a later version, and `async` and `await` suggest `together`.
 
 A package of edition `0.1` keeps the table above in every version of the compiler.
 

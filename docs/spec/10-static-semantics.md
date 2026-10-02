@@ -175,7 +175,7 @@ These theorems define what `proven` means. They are stated here and mechanized i
 | T3 | Failure soundness | If $e$ fails with $C$, then $C \in \mathrm{variants}(F)$ |
 | T4 | Capability confinement | Every event acts on a binding reachable from $K$ through `with` bindings in scope; no expression creates authority |
 | T5 | Refinement soundness | If $\vdash v : \{\nu{:}b \mid \varphi\}$ and all obligations are proven, then $\varphi[v/\nu]$ holds (opaque facts: established by `checked` or an operation `ensures`, an assumption) |
-| T6 | Noninterference | Termination-insensitive noninterference up to declassification, for the channels in `spec/07 §1` |
+| T6 | Noninterference | Termination-insensitive noninterference up to declassification, for the channels in `spec/07 §1`. (v0.2, ADR 0065.) With `together`, for the result of each block and for each task's own events (`spec/19 §3`) |
 | T7 | Decidability | Type checking is decidable; obligation checking is decidable for RL (`spec/12 §2`) |
 
 ## 11. Names

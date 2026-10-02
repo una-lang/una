@@ -91,7 +91,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 
 ## 4. Code registry
 
-(v0.2, ADR 0056.) The codes U2017 to U2021, of the memory model (`spec/17 §10`), are in the table. (v0.2, ADR 0057.) U2022, of fixed-width integers (`spec/18 §8`), is in the table.
+(v0.2, ADR 0056.) The codes U2017 to U2021, of the memory model (`spec/17 §10`), are in the table. (v0.2, ADR 0057.) U2022, of fixed-width integers (`spec/18 §8`), is in the table. (v0.2, ADR 0065.) U2023 and U2024, of structured concurrency (`spec/19 §10`), join it with their implementation.
 
 | Code | Domain | Meaning |
 | --- | --- | --- |
@@ -264,7 +264,7 @@ Every command prints one JSON document with `--json`, its `schema` key first (AD
 - `requirements`: every requirement, by identifier, with its status and the functions derived from it.
 - `coverage`: `pub_functions` counts the public functions, `with_ensures` those with at least one `ensures` clause that is not trivial, `with_derived_from` those with a `derived from` clause, and `trivial_ensures` the trivial clauses of public functions. An `ensures` clause is trivial when the solver proves it with no hypothesis, its parameters and `result` unconstrained: one more query per clause of a public function, cached like the others; a solver that cannot answer these queries gives U5003 or U8001 instead of the report.
 - `native` (v0.2, ADR 0055): `target`, the host target of `una build` (`spec/16 §1`), and `arbitrary_precision`, the bindings whose `Int` the native backend keeps at arbitrary precision: every parameter and result of type `Int` of the package's functions whose refinements do not prove a range within a machine word, as `module.function.parameter` and `module.function.result` (NB-3, FW-1). A parameter's refinements are proven by each call and a result's by the function, so `clamp_seats`, whose result is `Seats = Int in 0..5000`, lists only its parameter.
-- `out_of_model`: the channels outside the model of `spec/07 §1`, in this order: timing, termination and divergence, resource consumption and allocation, stack exhaustion, external systems beyond declared signatures, races between the check and the use of a file path, and hard links (`spec/14 §3`).
+- `out_of_model`: the channels outside the model of `spec/07 §1`, in this order: timing, termination and divergence, resource consumption and allocation, stack exhaustion, external systems beyond declared signatures, races between the check and the use of a file path, and hard links (`spec/14 §3`). (v0.2, ADR 0065.) From the release that implements `spec/19`, the list ends with "order of effects across concurrent tasks".
 
 Without `--json`, the same sections print as labeled lines.
 
@@ -301,7 +301,7 @@ Commands take a file or a directory, `.` by default (ADR 0021):
 
 `una.toml` is a TOML document with these tables and keys, and no others (U7002):
 
-- `[package]`, required: `name`, `version` and `edition`, non-empty strings; `edition` is `"0.1"`. (v0.2, ADR 0056.) `edition` is `"0.1"` or `"0.2"`. The constructs of `spec/17` and `spec/18` and the keywords of edition `0.2` exist only in packages of edition `"0.2"`, and a single file has edition `"0.1"`.
+- `[package]`, required: `name`, `version` and `edition`, non-empty strings; `edition` is `"0.1"`. (v0.2, ADR 0056.) `edition` is `"0.1"` or `"0.2"`. The constructs of `spec/17`, `spec/18` and `spec/19` and the keywords of edition `0.2` exist only in packages of edition `"0.2"`, and a single file has edition `"0.1"`.
 - `[labels]`: `categories`, an array of category names (UpperCamelCase, U1005; unique, U1002).
 - `[trusted]`: `modules`, an array of module paths, each a module of the package whose header says `trusted module` (U7005).
 - `[escape_budget]`: `checked_per_module`, an integer of at least 0 (default 0).

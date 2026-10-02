@@ -4,7 +4,7 @@ Status: Normative, v0.1.
 
 ## 1. The Una Abstract Machine
 
-The Una Abstract Machine (UAM) is the reference meaning of Una programs. The v0.1 interpreter implements it directly over Core IR. Any future backend MUST refine it: for every program and host behavior, the backend's results and traces MUST be ones the UAM can produce. (v0.2, ADR 0055.) The native backend is such a refinement, and CI tests it against the interpreter on every runnable program of the repository's suites (`spec/16`).
+The Una Abstract Machine (UAM) is the reference meaning of Una programs. The v0.1 interpreter implements it directly over Core IR. Any future backend MUST refine it: for every program and host behavior, the backend's results and traces MUST be ones the UAM can produce. (v0.2, ADR 0055.) The native backend is such a refinement, and CI tests it against the interpreter on every runnable program of the repository's suites (`spec/16`). (v0.2, ADR 0065.) The tasks of a `together` block run concurrently, in any interleaving (E-Together, `spec/19 §6`); the interpreter runs them sequentially, in branch order, which is one of them.
 
 Labels, refinements and contracts are static. The UAM carries no labels at runtime, except for the static argument labels that Core IR attaches to each operation call for trace redaction (§5).
 
@@ -112,6 +112,7 @@ Each operation invocation appends one event:
 - Arguments whose static label is above `public` are printed as `<redacted:level>`.
 - Handler events appear before the events produced inside the handler body (E-OpHandler).
 - Host operation results are recorded in full (subject to redaction), so a future `una replay` can substitute them (`plan/backlog.md`).
+- (v0.2, ADR 0065.) An event inside a task of a `together` block carries the task's path, `task`, and the events are listed in branch order; a cancelled task ends with an event of outcome `cancelled` (`spec/19 §7`).
 
 Values in traces and outputs are JSON strings holding their Una form: `"42"`, `"\"Ana\""`, `"true"`, `"unit"`, `"Open"`, `"Some(3)"`, `"Registration(name: \"Ana\", event: ...)"`, `"[1, 2]"`; a `Hashed` value is `"hashed:<hex>"`, and a function `"<function>"`. Inside any rendered value, a field whose declared type is labeled above `public` is `<redacted:level>`, with the label's level only; an operation's outcome is redacted by the label of the binder of its result; `unit` carries no information and is never redacted. An event's outcome is `{"kind":"ok","value":...}`, `{"kind":"fail","variant":...,"value":...}` or `{"kind":"aborted"}` (ADR 0032).
 
