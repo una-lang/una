@@ -1,0 +1,125 @@
+-- test: records, variants, lists, Option and Result, generic functions, lambdas and closures compute as the interpreter does, with integers and texts kept alive by the values that hold them (native slice 3 control)
+-- spec: spec/16 §4
+-- grant: console
+-- expect: run-output "pair: b 1, swapped back: true"
+-- expect: run-output "tree: 1 3 4 5 8 9, size 6"
+-- expect: run-output "closures: 8 11 13, mapped: 2 4 6"
+-- expect: run-output "options: 7 0 true false, results: ok 3 err no"
+-- expect: run-output "equal: true true false true, ordered: true false"
+-- expect: run-output "big: 4611686018427387904 9223372036854775808 4611686018427387904"
+-- expect: run-output "texts: a-b-c, una una, 3"
+-- expect: run-output "reflect: true false"
+-- expect: run-output "held: 11 ten true ten"
+module conformance.runtime.kinds_lists_and_closures
+
+pub kind Pair[A, B]
+  first: A
+  second: B
+
+pub kind Tree
+  left: Option[Tree]
+  value: Int
+  right: Option[Tree]
+
+pub kind Size = Small | Medium | Large
+
+pub kind Boxed
+  amount: Int
+  note: Text
+
+pub kind Holder
+  apply: fn(Int) -> Int
+  name: Text
+
+pub predicate reflect positive(n: Int) -> Bool = n > 0
+
+pub swap[A, B](p: Pair[A, B]) -> Pair[B, A] = Pair(first: p.second, second: p.first)
+
+pub insert(tree: Option[Tree], n: Int) -> Tree
+=
+  when tree
+    is None -> Tree(left: None, value: n, right: None)
+    is Some(node) -> if n < node.value then Tree(left: Some(insert(node.left, n)), value: node.value, right: node.right) else Tree(left: node.left, value: node.value, right: Some(insert(node.right, n)))
+
+pub walk(tree: Option[Tree]) -> List[Int]
+=
+  when tree
+    is None -> []
+    is Some(node) -> walk(node.right).fold(initial: walk(node.left).append(item: node.value), step: fn(acc, x) -> acc.append(item: x))
+
+pub adder(k: Int) -> fn(Int) -> Int = fn(x) -> x + k
+
+pub double(n: Int) -> Int = n * 2
+
+pub describe(r: Result[Int, Text]) -> Text
+=
+  when r
+    is Ok(value) -> "ok {value}"
+    is Err(failure) -> "err {failure}"
+
+pub unwrap_text(o: Option[Text]) -> Text
+=
+  when o
+    is Some(t) -> t
+    is None -> "none"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let p = Pair(first: 1, second: "b")
+  let q = swap(p)
+  let back = swap(q) == p
+  @console.print("pair: {q.first} {q.second}, swapped back: {back}")
+  let tree = [5, 3, 8, 1, 4, 9].fold(initial: None, step: fn(t: Option[Tree], n: Int) -> Some(insert(t, n)))
+  let walked = walk(tree)
+  let line = walked.fold(initial: "", step: fn(acc, n) -> if acc == "" then "{n}" else "{acc} {n}")
+  let size = walked.len
+  @console.print("tree: {line}, size {size}")
+  let add5 = adder(5)
+  let twice = fn(x: Int) -> add5(add5(x))
+  let a = add5(3)
+  let b = add5(6)
+  let c = twice(3)
+  let mapped = [1, 2, 3].map(each: double)
+  let m0 = mapped.at(index: 0).or_else(default: 0)
+  let m1 = mapped.at(index: 1).or_else(default: 0)
+  let m2 = mapped.at(index: 2).or_else(default: 0)
+  @console.print("closures: {a} {b} {c}, mapped: {m0} {m1} {m2}")
+  let some = Some(7)
+  let empty: Option[Int] = None
+  let s = some.or_else(default: 0)
+  let n = empty.or_else(default: 0)
+  let has = some.is_some()
+  let lacks = empty.is_some()
+  let ok: Result[Int, Text] = Ok(3)
+  let err: Result[Int, Text] = Err("no")
+  let shown_ok = describe(ok)
+  let shown_err = describe(err)
+  @console.print("options: {s} {n} {has} {lacks}, results: {shown_ok} {shown_err}")
+  let lists_equal = [1, 2] == [1, 2]
+  let pairs_equal = Pair(first: 1, second: "a") == Pair(first: 1, second: "a")
+  let options_equal = some == empty
+  let nested_equal = [Some(1), None] == [Some(1), None]
+  let ordered = Small < Large
+  let reversed = Large < Medium
+  @console.print("equal: {lists_equal} {pairs_equal} {options_equal} {nested_equal}, ordered: {ordered} {reversed}")
+  let boxed = Boxed(amount: 4611686018427387904, note: "big")
+  let total = [boxed.amount, 4611686018427387904].sum()
+  let held = Some(boxed).or_else(default: Boxed(amount: 0, note: "none"))
+  @console.print("big: {boxed.amount} {total} {held.amount}")
+  let joined = ["a", "b", "c"].fold(initial: "", step: fn(acc, t) -> if acc == "" then t else "{acc}-{t}")
+  let word = trim("  una ")
+  let words = [word, word].fold(initial: "", step: fn(acc, t) -> if acc == "" then t else "{acc} {t}")
+  let kept = ["x", "yy", "zzz", ""].filter(keep: fn(t) -> t.len > 0).len
+  @console.print("texts: {joined}, {words}, {kept}")
+  let yes = positive(3)
+  let no = positive(-3)
+  @console.print("reflect: {yes} {no}")
+  let holder = Holder(apply: adder(10), name: "ten")
+  let f = holder.apply
+  let applied = f(1)
+  let alias = holder.name
+  let unwrapped = unwrap_text(Some(alias))
+  let flags = [true, false].contains(item: true)
+  let chosen = if applied > 5 then alias else unwrapped
+  @console.print("held: {applied} {unwrapped} {flags} {chosen}")
