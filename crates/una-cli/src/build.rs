@@ -13,6 +13,8 @@ use una_codegen::CodegenError;
 use una_diag::{Diagnostic, render_human};
 use una_syntax::ast::ClauseKind;
 
+mod failure;
+
 use crate::contract::Modules;
 use crate::runtime::{entry_main, rejected_status};
 use crate::verification::tier_one;
@@ -151,13 +153,24 @@ pub(crate) fn build_command(
         })
         .collect();
     let grants: Vec<&str> = manifest.grants.iter().map(|g| g.value.as_str()).collect();
+    // What U6001 shows when `main` fails: the types its failure can hold.
+    let failure = failure::describe(
+        &analysis.program,
+        &entry,
+        main,
+        json!(package.sources.location(main.span)),
+    );
     // The calls' locations, for U6003 at the call that exceeds the maximum depth.
     let meta = |sites: &[una_syntax::Span]| {
         let sites: Vec<una_diag::Location> = sites
             .iter()
             .map(|span| package.sources.location(*span))
             .collect();
-        json!({ "grants": grants, "uses": uses, "sites": sites }).to_string()
+        let mut meta = json!({ "grants": grants, "uses": uses, "sites": sites });
+        if let (Some(failure), Some(object)) = (&failure, meta.as_object_mut()) {
+            object.insert("failure".to_owned(), failure.clone());
+        }
+        meta.to_string()
     };
     let object = match una_codegen::compile(&analysis.program, &entry, &meta) {
         Ok(object) => object,

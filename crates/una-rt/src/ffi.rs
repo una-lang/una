@@ -146,6 +146,12 @@ pub extern "C" fn una_rt_enter(site: i64) {
     runtime::enter(usize::try_from(site).unwrap_or(usize::MAX));
 }
 
+/// Reports that `main` failed with `failure` (U6001), and releases it.
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_main_failed(failure: i64) {
+    runtime::main_failed(failure);
+}
+
 /// Leaves a call.
 #[unsafe(no_mangle)]
 pub extern "C" fn una_rt_leave() {

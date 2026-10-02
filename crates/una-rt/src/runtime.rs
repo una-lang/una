@@ -9,6 +9,7 @@ use serde_json::Value;
 use una_diag::{Code, Diagnostic, Location, Position, render_human};
 use una_interp::{Event, EventOutcome, Grant};
 
+use crate::render::Failure;
 use crate::values;
 
 /// The exit code of a usage error (`spec/13 §5`, ADR 0036).
@@ -25,6 +26,8 @@ pub struct Meta {
     pub uses: Vec<Need>,
     /// The calls of the program, by the index that the generated code passes on each call.
     pub sites: Vec<Location>,
+    /// What U6001 needs when `main` can fail.
+    pub failure: Option<Failure>,
 }
 
 /// One `uses` clause of `main`.
@@ -76,10 +79,18 @@ impl Meta {
                 .collect::<Option<Vec<_>>>()?,
             None => Vec::new(),
         };
+        let failure = match value.get("failure") {
+            Some(failure) => Some(Failure::parse(
+                failure,
+                location(failure.get("location")?)?,
+            )?),
+            None => None,
+        };
         Some(Meta {
             grants,
             uses,
             sites,
+            failure,
         })
     }
 }
@@ -154,6 +165,7 @@ struct State {
     depth: usize,
     max_depth: usize,
     sites: Vec<Location>,
+    failure: Option<Failure>,
 }
 
 thread_local! {
@@ -210,6 +222,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         depth: 0,
         max_depth: options.max_depth,
         sites: meta.sites,
+        failure: meta.failure,
     };
     let worker = std::thread::Builder::new()
         .name("una-main".to_owned())
@@ -368,6 +381,29 @@ pub fn enter(site: usize) {
         // compiled frames (spec/16 §4 rule 3).
         #[allow(clippy::exit)]
         std::process::exit(code);
+    }
+}
+
+/// Reports that `main` failed with `failure`, which the caller owns and the report releases:
+/// U6001 with the failure's `public` fields (`spec/04 §8`), after the output so far.
+pub fn main_failed(failure: i64) {
+    let _ = io::stdout().flush();
+    let diagnostic = STATE.with(|cell| {
+        let cell = cell.borrow();
+        let described = cell.as_ref()?.failure.as_ref()?;
+        Some(Diagnostic::error(
+            Code::U6001,
+            format!("`main` failed with `{}`", described.shown(failure)),
+            described.location.clone(),
+        ))
+    });
+    values::release(failure);
+    if let Some(diagnostic) = diagnostic {
+        let _ = write!(
+            io::stderr(),
+            "{}",
+            render_human(&[diagnostic], &Default::default(), false)
+        );
     }
 }
 

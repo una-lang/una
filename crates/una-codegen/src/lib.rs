@@ -14,6 +14,9 @@
 //!   the prelude;
 //! - generic functions, compiled once, since every value is a word;
 //! - lambdas and closures, and declared functions used as values;
+//! - failures, handling clauses, `attempt`, `checked` and policies: every compiled body returns
+//!   its value and whether it failed, and nothing unwinds (`spec/16 §4` rule 3); a failure of
+//!   `main` is U6001, which the runtime shows from the types `una build` describes;
 //! - `Console.print`.
 //!
 //! Heap values are reference counted (NB-2): `lower` describes which words the code owns and
@@ -89,7 +92,7 @@ pub fn compile(
 ) -> Result<Vec<u8>, CodegenError> {
     let main = function(program, entry, "main").ok_or(CodegenError::NoMain)?;
     let mut emitter = Emitter::new(program, isa()?)?;
-    let main_id = emitter.function(&Path {
+    let (main_id, _) = emitter.function(&Path {
         module: entry.to_owned(),
         name: "main".to_owned(),
     })?;
@@ -129,19 +132,14 @@ fn callee<'p>(
         .filter(|m| m.path == module)
         .flat_map(|m| &m.decls)
         .find_map(|decl| match decl {
-            Decl::Fun(fun) if fun.name == name => Some(if fun.fails.is_some() {
-                Err(CodegenError::Unsupported(
-                    "functions that can fail".to_owned(),
-                ))
-            } else {
-                Ok(Body {
-                    closure: false,
-                    captures: Vec::new(),
-                    params: &fun.params,
-                    result: Some(&fun.result),
-                    body: &fun.body,
-                })
-            }),
+            Decl::Fun(fun) if fun.name == name => Some(Ok(Body {
+                closure: false,
+                captures: Vec::new(),
+                params: &fun.params,
+                result: Some(&fun.result),
+                fails: fun.fails.is_some(),
+                body: &fun.body,
+            })),
             Decl::Pred {
                 name: pred,
                 params,
@@ -152,6 +150,7 @@ fn callee<'p>(
                 captures: Vec::new(),
                 params,
                 result: None,
+                fails: false,
                 body,
             })),
             _ => None,
@@ -220,6 +219,7 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_contains", 2, true),
     ("una_rt_sum", 1, true),
     ("una_rt_or_else", 2, true),
+    ("una_rt_main_failed", 1, false),
 ];
 
 /// The object being built.
@@ -228,8 +228,9 @@ struct Emitter<'p> {
     module: ObjectModule,
     /// The runtime functions, by name.
     runtime: BTreeMap<&'static str, FuncId>,
-    /// The compiled functions, by qualified name, and the bodies still to compile.
-    functions: BTreeMap<String, FuncId>,
+    /// The compiled functions, by qualified name, with whether they can fail, and the bodies
+    /// still to compile.
+    functions: BTreeMap<String, (FuncId, bool)>,
     pending: Vec<(FuncId, Body<'p>)>,
     /// The number of lambdas declared so far.
     lambdas: usize,
@@ -271,10 +272,10 @@ impl<'p> Emitter<'p> {
 
     /// The function or predicate `path` of the package, declared now and compiled by
     /// [`Emitter::drain`].
-    fn function(&mut self, path: &Path) -> Result<FuncId, CodegenError> {
+    fn function(&mut self, path: &Path) -> Result<(FuncId, bool), CodegenError> {
         let qualified = format!("{}.{}", path.module, path.name);
-        if let Some(id) = self.functions.get(&qualified) {
-            return Ok(*id);
+        if let Some(found) = self.functions.get(&qualified) {
+            return Ok(*found);
         }
         let body = callee(self.program, &path.module, &path.name).ok_or_else(|| {
             CodegenError::Unsupported(format!(
@@ -283,9 +284,10 @@ impl<'p> Emitter<'p> {
         })??;
         let name = format!("una_fn_{}", self.functions.len());
         let id = self.declare(&name, body.params.len())?;
-        self.functions.insert(qualified, id);
+        let fails = body.fails;
+        self.functions.insert(qualified, (id, fails));
         self.pending.push((id, body));
-        Ok(id)
+        Ok((id, fails))
     }
 
     /// The code of a closure of the lambda `params` to `body`, which captures `captures`:
@@ -307,18 +309,20 @@ impl<'p> Emitter<'p> {
                 captures,
                 params,
                 result: None,
+                fails: false,
                 body,
             },
         ));
         Ok(id)
     }
 
-    /// A local function of `params` words that returns a word.
+    /// A local function of `params` words that returns a word and whether it failed.
     fn declare(&mut self, name: &str, params: usize) -> Result<FuncId, CodegenError> {
         let mut signature = self.module.make_signature();
         for _ in 0..params {
             signature.params.push(AbiParam::new(types::I64));
         }
+        signature.returns.push(AbiParam::new(types::I64));
         signature.returns.push(AbiParam::new(types::I64));
         self.module
             .declare_function(name, Linkage::Local, &signature)
@@ -371,7 +375,8 @@ impl<'p> Emitter<'p> {
         let call_conv = self.module.target_config().default_call_conv;
         let config = self.module.target_config();
 
-        // `una_main`: calls `main` of Una, whose result is `unit`, and returns 0.
+        // `una_main`: calls `main` of Una, whose result is `unit`, and returns 0, or reports its
+        // failure (U6001) and returns 1.
         let mut una_main = self.module.make_signature();
         una_main.returns.push(AbiParam::new(types::I64));
         let una_main_id = self
@@ -389,9 +394,28 @@ impl<'p> Emitter<'p> {
             builder.seal_block(block);
             debug_assert!(main.params.is_empty());
             let main_ref = self.module.declare_func_in_func(main_id, builder.func);
-            builder.ins().call(main_ref, &[]);
+            let call = builder.ins().call(main_ref, &[]);
+            let results = builder.inst_results(call).to_vec();
+            let (Some(&value), Some(&failed)) = (results.first(), results.get(1)) else {
+                return Err(internal("`main` lost its result"));
+            };
+            let returned = builder.create_block();
+            let failing = builder.create_block();
+            builder.ins().brif(failed, failing, &[], returned, &[]);
+            builder.switch_to_block(returned);
+            builder.seal_block(returned);
             let zero = builder.ins().iconst(types::I64, 0);
             builder.ins().return_(&[zero]);
+            builder.switch_to_block(failing);
+            builder.seal_block(failing);
+            let report = *self
+                .runtime
+                .get("una_rt_main_failed")
+                .ok_or_else(|| internal("the runtime lacks `una_rt_main_failed`"))?;
+            let report = self.module.declare_func_in_func(report, builder.func);
+            builder.ins().call(report, &[value]);
+            let one = builder.ins().iconst(types::I64, 1);
+            builder.ins().return_(&[one]);
             builder.finalize(config);
         }
         self.define(una_main_id, &mut context)?;
