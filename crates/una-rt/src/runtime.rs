@@ -220,6 +220,11 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
             // A debug build of the runtime checks the compiled code's reference counting: it
             // never used a value it had released, and released every value it made, which is
             // unreferenced once `main` returns (`spec/16 §4`).
+            //
+            // Only the detection of an internal error depends on the build (unlike N-006, where a
+            // check of the program did): for a program whose counting is right, the output, exit
+            // status and trace are the same in both builds, and a release executable never runs
+            // the check. The tests link the debug build, so a counting bug fails them.
             let faults = if cfg!(debug_assertions) {
                 (values::faults(), values::live())
             } else {
