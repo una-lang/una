@@ -468,6 +468,15 @@ impl FixedOp {
         self != FixedOp::BitNot
     }
 
+    /// The label of the argument (`spec/18 §5`, charter P5): `mask` for the bit operations,
+    /// `by` for the others.
+    pub fn label(self) -> &'static str {
+        match self {
+            FixedOp::BitAnd | FixedOp::BitOr | FixedOp::BitXor => "mask",
+            _ => "by",
+        }
+    }
+
     /// Whether the argument is a shift amount, an `Int` with `0 <= n < width`.
     pub fn shift(self) -> bool {
         matches!(self, FixedOp::ShiftRight | FixedOp::WrappingShiftLeft)

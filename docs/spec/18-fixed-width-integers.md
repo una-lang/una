@@ -68,17 +68,23 @@ These are built-in methods on the eight types, resolved by the receiver as in §
 
 | Method | Contract |
 | --- | --- |
-| `a.wrapping_add(b)`, `a.wrapping_sub(b)`, `a.wrapping_mul(b)` | total; `ensures` the exact result reduced into the range modulo `2^w` |
-| `a.saturating_add(b)`, `a.saturating_sub(b)`, `a.saturating_mul(b)` | total; `ensures` the exact result clamped to `lo..hi` |
-| `a.bit_and(b)`, `a.bit_or(b)`, `a.bit_xor(b)`, `a.bit_not()` | total; on unsigned types, `bit_and` `ensures result <= a and result <= b`, and `bit_or` `ensures result >= a and result >= b`; otherwise only the type's range |
-| `a.shift_right(n)` | `requires 0 <= n and n < w`; on unsigned types `ensures result <= a` |
-| `a.wrapping_shift_left(n)` | `requires 0 <= n and n < w`; `ensures` `a * 2^n` reduced into the range modulo `2^w` |
+| `a.wrapping_add(by: b)`, `a.wrapping_sub(by: b)`, `a.wrapping_mul(by: b)` | total; `ensures` the exact result reduced into the range modulo `2^w` |
+| `a.saturating_add(by: b)`, `a.saturating_sub(by: b)`, `a.saturating_mul(by: b)` | total; `ensures` the exact result clamped to `lo..hi` |
+| `a.bit_and(mask: b)`, `a.bit_or(mask: b)`, `a.bit_xor(mask: b)`, `a.bit_not()` | total; on unsigned types, `bit_and` `ensures result <= a and result <= b`, and `bit_or` `ensures result >= a and result >= b`; otherwise only the type's range |
+| `a.shift_right(by: n)` | `requires 0 <= n and n < w`; on unsigned types `ensures result <= a` |
+| `a.wrapping_shift_left(by: n)` | `requires 0 <= n and n < w`; `ensures` `a * 2^n` reduced into the range modulo `2^w` |
 
 1. **Not escapes.** These methods are total and specified, so they are not escapes and do not count against any budget.
 2. **The encoding** stays QF_UFLIA (§6). The bit operations have no bit-precise proof, so a property that needs bit-level facts beyond these contracts is `unknown`.
 3. **No checked left shift.** There is no checked `shift_left` in v0.2. A left shift is either `wrapping_shift_left`, or a multiplication by a power of two, with its `overflow` obligation. This is a known limit of v0.2.
 
-**Arguments and shifts.** The binary methods take one argument without a label, as in `a.wrapping_add(b)`. `shift_right` on a signed type is arithmetic: it divides by `2^n`, rounding toward negative infinity, as Euclidean division by a positive divisor does.
+**Arguments and shifts.** Like every call (charter P5, `spec/04 §3`), a binary method labels its argument:
+- `by` for the wrapping and saturating methods and the shifts, as in `a.wrapping_add(by: b)`, `h.wrapping_mul(by: 31)` and `a.shift_right(by: n)`;
+- `mask` for `bit_and`, `bit_or` and `bit_xor`, as in `a.bit_and(mask: m)`.
+
+A bare `by` or `mask` is punned. A missing label is U2004, and another label is U2005. `bit_not` and the conversions take no argument.
+
+`shift_right` on a signed type is arithmetic: it divides by `2^n`, rounding toward negative infinity, as Euclidean division by a positive divisor does.
 
 ## 6. Encoding
 
