@@ -42,7 +42,7 @@ const TEST_SCHEMA: &str = "una.test/1";
 const TIER: u8 = 1;
 
 /// What `una run` needs besides the package.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct RunOptions<'a> {
     /// The specs of `--grant` flags, in order.
     pub(crate) grants: &'a [String],
@@ -58,8 +58,8 @@ pub(crate) struct RunOptions<'a> {
     pub(crate) color: bool,
     /// The environment variables for `Env.get`.
     pub(crate) environment: Environment<'a>,
-    /// The wall-clock guard of the solver.
-    pub(crate) wallclock: std::time::Duration,
+    /// How tier 1 runs the solver (ADR 0064).
+    pub(crate) solving: crate::verification::Solving,
 }
 
 /// The world of `una run`: printed lines go to the thread that writes stdout, environment
@@ -203,7 +203,7 @@ pub(crate) fn run_command(
     }
     let mut analysis = on_large_stack(|| analyze(&package, Some(&specs)));
     if analysis.diagnostics.is_empty() {
-        let found = tier_one(&package, &analysis.program, options.wallclock);
+        let found = tier_one(&package, &analysis.program, &options.solving);
         analysis.diagnostics = found.diagnostics;
     }
     if !analysis.diagnostics.is_empty() {
@@ -515,7 +515,7 @@ pub(crate) fn test_command(
     };
     let mut analysis = on_large_stack(|| analyze(&package, None));
     if analysis.diagnostics.is_empty() {
-        let found = tier_one(&package, &analysis.program, options.wallclock);
+        let found = tier_one(&package, &analysis.program, &options.solving);
         analysis.diagnostics = found.diagnostics;
     }
     if !analysis.diagnostics.is_empty() {

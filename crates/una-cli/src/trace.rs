@@ -6,7 +6,6 @@
 
 use std::io::{self, Write};
 use std::path::Path;
-use std::time::Duration;
 
 use serde::Serialize;
 use una_core::Decl;
@@ -55,11 +54,12 @@ struct ObligationDoc<'a> {
 }
 
 /// The options of `una trace`.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct TraceOptions {
     pub(crate) json: bool,
     pub(crate) color: bool,
-    pub(crate) wallclock: Duration,
+    /// How tier 1 runs the solver (ADR 0064).
+    pub(crate) solving: crate::verification::Solving,
 }
 
 /// `una trace <REQUIREMENT_ID>`.
@@ -98,7 +98,7 @@ pub(crate) fn trace_command(
         writeln!(stderr, "error: the package has no requirement `{id}`")?;
         return Ok(ExitStatus::Usage);
     };
-    let found = tier_one(&package, &analysis.program, options.wallclock);
+    let found = tier_one(&package, &analysis.program, &options.solving);
     let Some(verification) = found.verification else {
         return report_unverified(
             &found.diagnostics,

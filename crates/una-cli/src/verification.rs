@@ -19,6 +19,24 @@ use crate::{ExitStatus, Package, analyze, load, on_large_stack, report};
 /// The wall-clock guard of the solver, `--solver-wallclock` (`spec/12 §5`).
 pub const DEFAULT_WALLCLOCK: Duration = Duration::from_secs(60);
 
+/// How tier 1 runs the solver: its wall-clock guard, and the user's key of the proof cache,
+/// without which the cache is off (ADR 0064).
+#[derive(Clone, Debug)]
+pub struct Solving {
+    pub(crate) wallclock: Duration,
+    pub(crate) proof_key: Option<crate::proof_key::ProofKey>,
+}
+
+impl Solving {
+    /// The guard `wallclock`, with no proof cache.
+    pub fn new(wallclock: Duration) -> Solving {
+        Solving {
+            wallclock,
+            proof_key: None,
+        }
+    }
+}
+
 /// What tier 1 found: every obligation and how it ended, in the order of `spec/12 §5`.
 #[derive(Debug, Default)]
 pub struct Verification {
@@ -38,9 +56,9 @@ pub(crate) struct TierOne {
 pub(crate) fn tier_one(
     package: &Package,
     program: &una_core::Program,
-    wallclock: Duration,
+    solving: &Solving,
 ) -> TierOne {
-    tier_one_cancellable(package, program, wallclock, None)
+    tier_one_cancellable(package, program, solving, None)
 }
 
 /// [`tier_one`], whose solvers stop when `cancel` is set: the editor's newer change makes the
@@ -48,7 +66,7 @@ pub(crate) fn tier_one(
 pub(crate) fn tier_one_cancellable(
     package: &Package,
     program: &una_core::Program,
-    wallclock: Duration,
+    solving: &Solving,
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> TierOne {
     let obligations = on_large_stack(|| una_verify::obligations(program, &package.sources));
@@ -58,7 +76,7 @@ pub(crate) fn tier_one_cancellable(
             verification: Some(Verification::default()),
         };
     }
-    let mut settings = settings(package, wallclock);
+    let mut settings = settings(package, solving);
     settings.cancel = cancel;
     match una_verify::verify(&obligations, &settings) {
         Ok(outcomes) => TierOne {
@@ -108,8 +126,8 @@ pub(crate) fn report_unverified(
 }
 
 /// The solver settings of a package: its lock, or the default lock of a single file, and its
-/// proof cache.
-pub(crate) fn settings(package: &Package, wallclock: Duration) -> Settings {
+/// proof cache under the user's key, when there is one (ADR 0064).
+pub(crate) fn settings(package: &Package, solving: &Solving) -> Settings {
     let (text, lock) = lock_of(package);
     Settings {
         solver: PathBuf::from("z3"),
@@ -119,8 +137,13 @@ pub(crate) fn settings(package: &Package, wallclock: Duration) -> Settings {
             step_budget: lock.step_budget,
             random_seed: lock.random_seed,
         },
-        wallclock,
-        cache: package_root(package).map(|root| root.join(".una").join("cache").join("proofs")),
+        wallclock: solving.wallclock,
+        cache: package_root(package)
+            .zip(solving.proof_key.as_ref())
+            .map(|(root, key)| una_verify::ProofCache {
+                dir: root.join(".una").join("cache").join("proofs"),
+                key: key.secret.clone(),
+            }),
         cancel: None,
     }
 }
@@ -219,11 +242,12 @@ struct ObligationDoc<'a> {
 }
 
 /// The options of `una obligations`.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct ObligationsOptions {
     pub(crate) json: bool,
     pub(crate) color: bool,
-    pub(crate) wallclock: Duration,
+    /// How tier 1 runs the solver (ADR 0064).
+    pub(crate) solving: crate::verification::Solving,
 }
 
 /// `una obligations [path]`: every obligation with its status (`spec/13 §2, §5`).
@@ -251,7 +275,7 @@ pub(crate) fn obligations_command(
             stderr,
         );
     }
-    let found = tier_one(&package, &analysis.program, options.wallclock);
+    let found = tier_one(&package, &analysis.program, &options.solving);
     let Some(verification) = found.verification else {
         return report_unverified(
             &found.diagnostics,
