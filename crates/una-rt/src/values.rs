@@ -100,6 +100,10 @@ struct Heap {
     /// The uses of a freed object: retaining, releasing or reading it, which the generated code
     /// never does.
     faults: usize,
+    /// The lists that `append` and `set` copied so far, and the records rebuilt into a new object
+    /// rather than reused: a copy happens when the value is borrowed or something else holds it
+    /// (#30).
+    copies: usize,
 }
 
 thread_local! {
@@ -219,6 +223,42 @@ pub fn live() -> usize {
         let heap = heap.borrow();
         let objects = heap.slots.len() - heap.free.len();
         objects.saturating_sub(heap.literals.len() + heap.int_literals.len())
+    })
+}
+
+/// The number of lists and records copied so far, rather than updated in place (#30).
+pub fn copies() -> usize {
+    HEAP.with(|heap| heap.borrow().copies)
+}
+
+fn copied() {
+    HEAP.with(|heap| heap.borrow_mut().copies += 1);
+}
+
+/// Whether `word` is a handle that nothing but the caller references: an object the caller
+/// may update in place, since no one else can see it (`spec/17 §7`).
+fn unique(word: i64) -> bool {
+    let Some(index) = slot(word) else {
+        return false;
+    };
+    HEAP.with(|heap| {
+        heap.borrow()
+            .slots
+            .get(index)
+            .is_some_and(|slot| slot.count == 1 && slot.object.is_some())
+    })
+}
+
+/// The cells of the object of `word`, for an update in place by its only holder.
+fn with_cells<R>(word: i64, f: impl FnOnce(&mut Vec<i64>) -> R) -> Option<R> {
+    let index = slot(word)?;
+    HEAP.with(|heap| {
+        heap.borrow_mut()
+            .slots
+            .get_mut(index)
+            .and_then(|slot| slot.object.as_mut())
+            .and_then(Object::cells_mut)
+            .map(f)
     })
 }
 
@@ -682,11 +722,24 @@ pub fn at(xs: i64, index: i64) -> i64 {
 
 /// `append(xs, item)` of the prelude.
 pub fn append(xs: i64, item: i64) -> i64 {
+    copied();
     let list = list();
     for existing in items(xs) {
         push(list, existing);
     }
     push(list, item);
+    list
+}
+
+/// `append(xs, item)` when the caller gives up its reference to `xs`, at the list's last use
+/// (#30): the list is updated in place when nothing else holds it, and copied otherwise.
+pub fn append_owned(xs: i64, item: i64) -> i64 {
+    if unique(xs) {
+        push(xs, item);
+        return xs;
+    }
+    let list = append(xs, item);
+    release(xs);
     list
 }
 
@@ -696,6 +749,7 @@ pub fn append(xs: i64, item: i64) -> i64 {
 /// else holds in place is #30. Its `requires` keeps `index` in range; outside it, the list is
 /// unchanged.
 pub fn set(xs: i64, index: i64, item: i64) -> i64 {
+    copied();
     let position = usize::try_from(&int_value(index)).ok();
     let updated = list();
     for (at, existing) in items(xs).into_iter().enumerate() {
@@ -706,6 +760,68 @@ pub fn set(xs: i64, index: i64, item: i64) -> i64 {
     release(updated);
     push(tuple, 0);
     tuple
+}
+
+/// `set(edit xs, index, item)` when the caller gives up its reference to `xs`, at the list's
+/// last use (#30): the item is replaced in place when nothing else holds the list, and the list
+/// is copied otherwise.
+pub fn set_owned(xs: i64, index: i64, item: i64) -> i64 {
+    if !unique(xs) {
+        let tuple = set(xs, index, item);
+        release(xs);
+        return tuple;
+    }
+    retain(item);
+    let position = usize::try_from(&int_value(index)).ok();
+    let old = with_cells(xs, |cells| {
+        position
+            .and_then(|at| cells.get_mut(at))
+            .map(|cell| std::mem::replace(cell, item))
+    })
+    .flatten();
+    // Outside the range, which the `requires` excludes, the list is unchanged.
+    release(old.unwrap_or(item));
+    let tuple = data(0);
+    push(tuple, xs);
+    release(xs);
+    push(tuple, 0);
+    tuple
+}
+
+/// A variant or record at position `tag`, made from `old`, a value of the same kind that the
+/// caller gives up at its last use (#30): when nothing else holds `old`, its object is reused,
+/// with its fields released, for the fields the caller then pushes; otherwise a new one.
+pub fn reuse(old: i64, tag: i64) -> i64 {
+    if unique(old) {
+        let index = slot(old);
+        let fields = HEAP.with(|heap| {
+            let mut heap = heap.borrow_mut();
+            match index
+                .and_then(|i| heap.slots.get_mut(i))
+                .and_then(|slot| slot.object.as_mut())
+            {
+                Some(Object::Data {
+                    tag: old_tag,
+                    fields,
+                }) => {
+                    *old_tag = tag;
+                    Some(std::mem::take(fields))
+                }
+                _ => None,
+            }
+        });
+        if let Some(fields) = fields {
+            for field in fields {
+                release(field);
+            }
+            return old;
+        }
+    }
+    if is_handle(old) {
+        copied();
+    }
+    release(old);
+    data(tag)
 }
 
 /// `contains(xs, item)` of the prelude.
@@ -850,6 +966,44 @@ mod tests {
             release(value);
         }
         assert_eq!(live(), before);
+        assert_eq!(faults(), 0);
+    }
+
+    #[test]
+    fn a_list_nothing_else_holds_is_updated_in_place() {
+        let before = (live(), copies());
+        // 1,000 appends to a list that only the caller holds copy nothing.
+        let mut xs = list();
+        for i in 0..1000 {
+            xs = append_owned(xs, n(i));
+        }
+        assert_eq!(count(xs), 1000);
+        assert_eq!(copies(), before.1);
+        // A second holder makes the next update copy, and keeps its own list.
+        retain(xs);
+        let other = xs;
+        let tuple = set_owned(xs, n(0), n(-1));
+        assert_eq!(copies(), before.1 + 1);
+        assert_eq!(int_value(field(other, 0)).to_string(), "0");
+        let updated = field(tuple, 0);
+        assert_eq!(int_value(field(updated, 0)).to_string(), "-1");
+        // The only holder sets in place.
+        retain(updated);
+        release(tuple);
+        let tuple = set_owned(updated, n(1), n(-2));
+        assert_eq!(copies(), before.1 + 1);
+        assert_eq!(field(tuple, 0), updated);
+        release(tuple);
+        release(other);
+        // A record nothing else holds is reused for the new fields.
+        let record = data(0);
+        push(record, n(1));
+        let reused = reuse(record, 0);
+        assert_eq!(reused, record);
+        assert_eq!(count(reused), 0);
+        push(reused, n(2));
+        release(reused);
+        assert_eq!(live(), before.0);
         assert_eq!(faults(), 0);
     }
 
