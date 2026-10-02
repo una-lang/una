@@ -81,7 +81,10 @@ pub fn reserved_in(word: &str, set: KeywordSet) -> Option<&'static str> {
         if matches!(word, "edit" | "take") {
             return None;
         }
-        if let Some((_, message)) = RESERVED_IN_0_2.iter().find(|(reserved, _)| *reserved == word) {
+        if let Some((_, message)) = RESERVED_IN_0_2
+            .iter()
+            .find(|(reserved, _)| *reserved == word)
+        {
             return Some(message);
         }
     }

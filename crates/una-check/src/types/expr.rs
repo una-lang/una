@@ -163,9 +163,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 target,
                 name,
                 args,
-            } => {
-                self.method(target, name, args, span, site, *receiver)
-            }
+            } => self.method(target, name, args, span, site, *receiver),
             ExprKind::Call { callee, args } => self.call(callee, args, span, site, expected),
             ExprKind::CapOp { cap, op, args } => self.cap_op(cap, op, args, span, site),
             ExprKind::CapRef(cap) => {
