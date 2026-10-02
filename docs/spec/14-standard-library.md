@@ -35,6 +35,11 @@ The prelude is imported into every module.
 
 Higher-order prelude functions accept only pure, non-failing lambdas in v0.1 (effect polymorphism is deferred).
 
+(v0.2, ADR 0062.) In edition `0.2`, `map`, `filter`, `fold` and `first_where` declare `uses of` and `fails of` their function parameter (`each`, `keep`, `step`), so they take effectful and failing functions.
+- They call it left to right, once per element, except that `first_where` stops at the first accepted element.
+- They stop at the first failure. Effects already performed stay performed (`spec/11 §5`).
+- Their `ensures` hold on success. The program counter of the function's body is that of `spec/07 §7` rule 9.
+
 (v0.2, ADR 0056.) The prelude gains `set[T](edit xs: List[T], index: Int, item: T) -> Unit`, with `requires 0 <= index and index < xs.len` and `ensures xs.len == old(xs).len` (`spec/17 §8`).
 
 (v0.2, ADR 0057.) The conversions, wrapping, saturating and bit operations of fixed-width integers are built-in methods resolved by the receiver, not prelude functions (`spec/18 §4`, `§5`). `to_int` on `Text` keeps the meaning above.
