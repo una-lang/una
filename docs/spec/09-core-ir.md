@@ -46,6 +46,8 @@ prim            ::= + | - | * | div | mod | neg | == | != | < | <= | > | >= | no
 
 `and`, `or` and `implies` are not primitives: they desugar to `if` so that short-circuit evaluation and path conditions coincide.
 
+(v0.2, ADR 0056.) Core IR gains tuple types `(τ, ...)`, tuple construction and the binder `let (x, ...) = r in e`. Only the desugaring of the memory model uses them, and they are not surface syntax (`spec/17 §4`).
+
 Refinements, `requires` and `ensures` clauses, the bodies of reflect predicates and the predicates of `checked` are terms of the refinement language (`spec/03 §3`): trees over binders, `it` and `result`, not A-normal expressions. A clause keeps its source text and span, and the contracts of the standard library are signatures in the program. Returned atoms, the value of each `let` (with whether its type is written), each argument, each division and each exhaustiveness check carry their source spans. A `when` over literals or ranges without `else` ends in an `unreachable` branch, whose `exhaustive` obligation proves it cannot be taken; reaching it at run time is a fault (ADR 0033).
 
 ## 3. Desugaring
