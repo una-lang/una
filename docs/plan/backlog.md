@@ -4,7 +4,7 @@ Status: Informative. Nothing in this file may be implemented before its target v
 
 ## Opened for v0.2
 
-These rows are in scope since Leonardo opened the v0.2 scope on 2026-10-01 (charter §5b). Each is implemented only after its ADR and spec text are merged: ADR 0055 for the native backend, ADR 0056 for the memory model and ADR 0057 for fixed-width integers.
+These rows are in scope since Leonardo opened the v0.2 scope on 2026-10-01 (charter §5b). Each is implemented only after its ADR and spec text are merged: ADR 0055 for the native backend, ADR 0056 for the memory model, ADR 0057 for fixed-width integers and ADR 0060 for recursive kinds.
 
 | Item | Target | Why deferred | Source | Issue |
 | --- | --- | --- | --- | --- |
@@ -14,6 +14,7 @@ These rows are in scope since Leonardo opened the v0.2 scope on 2026-10-01 (char
 | `for` loops with full bodies over collections and ranges (no `while`, no `invariant` clause) | v0.2 | Decided (V2-12): desugars to a generated recursive function over the `let edit` bindings the body updates, whose refinements are the loop invariant; a failing body fails the loop and the bindings keep their values; a loop over labeled structure runs its body under that pc | Owner 2026-10-01 | [#81](https://github.com/una-lang/una/issues/81) |
 | Arenas and index-based graph structures in the standard library | v0.2 | Decided (V2-3): with no mutable aliasing in v0.2, graphs and cyclic structures live in arenas addressed by indices | R3, owner 2026-10-01 | [#82](https://github.com/una-lang/una/issues/82) |
 | In-place mutation of unique values, a backend optimization with no syntax | v0.2 | Semantics stay purely functional. Decided (V2-15): the surface method `m.with(k, v)` is dropped, since `with` rebinds capabilities and `let edit` with field edits covers functional update | R3, owner 2026-10-01 | [#30](https://github.com/una-lang/una/issues/30) |
+| Recursive kinds with a base variant | v0.2 | `spec/03 §2` rule 5 rejects them in v0.1. Decided (ADR 0060, R1 to R5): inhabited kinds by a least fixpoint, regular recursion only, verification by contracts, termination unchecked, unbounded depth of values | v0.1 review R-045, Leonardo 2026-10-02 | [#38](https://github.com/una-lang/una/issues/38) |
 
 ## Deferred
 
@@ -57,7 +58,7 @@ These rows are in scope since Leonardo opened the v0.2 scope on 2026-10-01 (char
 | Precise messages for `0x1F`, `1e5` and `3.14` | v0.1.x | Generic "unexpected" messages today; ergonomics | v0.1 review R-045 | [#12](https://github.com/una-lang/una/issues/12) |
 | Distinguish a module capability that shadows a prelude name, such as `Console`, in diagnostics | v0.1.x | Ergonomics | v0.1 review R-045 | [#13](https://github.com/una-lang/una/issues/13) |
 | Handlers with `uses` in the report's authority section | v0.1.x | `spec/13 §6` lists "every function"; extending it changes the report | v0.1 review R-045 | [#14](https://github.com/una-lang/una/issues/14) |
-| Recursive kinds with a base variant | v0.2 | `spec/03 §2` rule 5 rejects them in v0.1 | v0.1 review R-045 | [#38](https://github.com/una-lang/una/issues/38) |
+| Structurally recursive reflect predicates over recursive kinds, with a termination check | v0.3 | ADR 0060 R3: v0.2 verifies recursive values by contracts only; recursive predicates need a structural termination check to stay sound | ADR 0060, Leonardo 2026-10-02 | [#146](https://github.com/una-lang/una/issues/146) |
 | Refined elements of collections (`List[Pos]`, `Option[Pos]`) with obligations at construction and facts on access | v0.2 | Needs quantifiers or per-term facts; ADR 0040 rejects them in v0.1 | v0.1 review R-012 | [#39](https://github.com/una-lang/una/issues/39) |
 | Label polymorphism beyond symbolic labels on type parameters, with inferred label constraints in signatures | v0.2 | ADR 0038 D3; only if Gate 1 shows agents need it | ADR 0038 | [#40](https://github.com/una-lang/una/issues/40) |
 | Resolve capability operations in the clauses of a kind alias of an effectful function type | v0.1.x | Gives a false U1001 today; U3016 still rejects every use, so nothing unsound passes | v0.1 re-review N-012 | [#15](https://github.com/una-lang/una/issues/15) |
