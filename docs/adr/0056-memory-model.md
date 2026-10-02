@@ -78,3 +78,13 @@ Leonardo decided the memory model in four rounds on 2026-10-01 (V2-1 to V2-16). 
 - **References with borrowing (Rust style).** Not chosen: lifetimes in the surface conflict with machine-generated code and with the verifier's fragment.
 - **Mutable aliasing (`shared`).** Deferred to v0.3: it needs ownership or alias analysis that v0.2 does not have.
 - **Loops as `fold`.** Not chosen: `fold` takes a pure, non-failing, one-expression lambda, so its body could not perform operations, fail or hold statements.
+
+## Amendment (2026-10-02)
+
+A `for` loop lowers to a Core `Loop` node, equivalent to the generated recursive function of `spec/17 §4`: the source is evaluated once, each iteration binds the loop variable and the current values of the bindings the body updates, the body returns their new values, and a failure in the body fails the whole loop. The coordinator approved this form for issue #81 (L-Q1).
+
+- **Call depth.** The iterations of a loop are not calls, so they do not count toward the call depth of `spec/11` (U6003). A loop over more elements than the maximum depth runs to its end.
+- **Verification.** The body is checked once, for any iteration. The bindings the loop updates are fresh there, at their declared types, whose refinements are the invariant. Every other fact of the enclosing context is kept, since the loop does not change the bindings it does not update. After the loop, the updated bindings are fresh again at their declared types, so no fact about their values survives it.
+- **Ranges.** An inclusive range ends at its upper bound without computing its successor, so a range up to the greatest value of a fixed-width type does not overflow.
+
+The consequence above, "a loop is a recursive function", holds of the meaning: the node is that function, with iterations that are not calls.

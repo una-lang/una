@@ -4,9 +4,9 @@
 use crate::ast::{
     Arg, Arm, BinaryOp, Block, BlockExpr, Body, CapBinding, CapBindingValue, CapType, ClauseKind,
     Decl, DeclKind, ElseBranch, ExpectationKind, Expr, ExprKind, Field, File, FnTypeClause,
-    Handled, HandlerCall, HandlingKind, Ident, IfBlock, IsTarget, KindBody, Label, LetValue, Level,
-    Literal, OpClauseKind, Param, PatternKind, Range, RequirementSource, SignedInt, Stmt, TextLit,
-    TextPart, Type, TypeCore, UnaryOp, UsesClause, VariantExpr,
+    ForSource, Handled, HandlerCall, HandlingKind, Ident, IfBlock, IsTarget, KindBody, Label,
+    LetValue, Level, Literal, OpClauseKind, Param, PatternKind, Range, RequirementSource,
+    SignedInt, Stmt, TextLit, TextPart, Type, TypeCore, UnaryOp, UsesClause, VariantExpr,
 };
 use crate::intern::Interner;
 
@@ -479,6 +479,21 @@ impl Dumper<'_> {
                 "if-then",
                 [self.expr(&stmt.condition), self.block(&stmt.block)],
             ),
+            Stmt::For(stmt) => {
+                let var = atom(self.name(&stmt.var));
+                let source = match &stmt.source {
+                    ForSource::List(list) => self.expr(list),
+                    ForSource::Range {
+                        low,
+                        high,
+                        exclusive,
+                    } => list(
+                        if *exclusive { "range..<" } else { "range.." },
+                        [self.expr(low), self.expr(high)],
+                    ),
+                };
+                list("for", [var, source, self.block(&stmt.block)])
+            }
             Stmt::Handled(handled) => self.handled(handled),
             Stmt::BlockExpr(expr) => self.block_expr(expr),
         }

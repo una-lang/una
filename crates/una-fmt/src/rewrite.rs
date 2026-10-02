@@ -5,8 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use una_syntax::ast::{
     Arg, Arm, Block, BlockExpr, Body, CapBindingValue, ClauseKind, DeclKind, ElseBranch,
-    ExpectationKind, Expr, ExprKind, File, Handled, HandlingKind, IsTarget, KindBody, LetValue,
-    Literal, OpClauseKind, PatternKind, RequirementSource, Stmt, TextLit, TextPart, VariantExpr,
+    ExpectationKind, Expr, ExprKind, File, ForSource, Handled, HandlingKind, IsTarget, KindBody,
+    LetValue, Literal, OpClauseKind, PatternKind, RequirementSource, Stmt, TextLit, TextPart,
+    VariantExpr,
 };
 use una_syntax::{Comment, Interner, Span, Symbol, Token, TokenKind};
 
@@ -537,6 +538,16 @@ impl Collector<'_> {
                 }
                 Stmt::IfThen(stmt) => {
                     self.expr(&stmt.condition);
+                    self.block(&stmt.block);
+                }
+                Stmt::For(stmt) => {
+                    match &stmt.source {
+                        ForSource::List(list) => self.expr(list),
+                        ForSource::Range { low, high, .. } => {
+                            self.expr(low);
+                            self.expr(high);
+                        }
+                    }
                     self.block(&stmt.block);
                 }
                 Stmt::Handled(handled) => self.handled(handled),
