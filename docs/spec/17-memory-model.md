@@ -157,6 +157,8 @@ It is written `edit xs.set(index: i, item: v)`. Graphs and cyclic structures use
 | `var` | not a keyword in Una; use `let edit` |
 | `while`, `loop` | not a keyword in Una; use `for` or recursion |
 
+(v0.2, ADR 0065.) `together` also becomes a keyword, with the rows of `spec/19 §9`.
+
 ## 10. Diagnostic codes
 
 These codes join the registry of `spec/13 §4` with their implementation:

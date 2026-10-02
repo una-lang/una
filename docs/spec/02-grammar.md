@@ -160,6 +160,8 @@ if_block        = "if" line_expr NEWLINE INDENT block DEDENT
                   "else" ( NEWLINE INDENT block DEDENT | if_block ) ;
 ```
 
+(v0.2, ADR 0065.) In edition `0.2`, a block also takes `together` statements, and a `let` the `together for` form (`spec/19 §1`).
+
 ## 7. Expressions
 
 ```ebnf
