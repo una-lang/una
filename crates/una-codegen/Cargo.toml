@@ -1,0 +1,19 @@
+[package]
+name = "una-codegen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Native code generation from Core IR through Cranelift (spec/16, ADR 0055)"
+
+[dependencies]
+cranelift-codegen.workspace = true
+cranelift-frontend.workspace = true
+cranelift-module.workspace = true
+cranelift-object.workspace = true
+target-lexicon.workspace = true
+una-core.workspace = true
+
+[lints]
+workspace = true

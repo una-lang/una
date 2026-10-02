@@ -20,18 +20,19 @@ use crate::verification::{lock_of, problem_diagnostic, report_unverified, settin
 use crate::{Analysis, ExitStatus, Package, analyze, load, on_large_stack, report};
 
 /// The JSON schema of `una report --json` (`spec/13 §6`).
-const REPORT_SCHEMA: &str = "una.report/1";
+const REPORT_SCHEMA: &str = "una.report/2";
 
 /// The proof cache of a package, relative to its root: trusted in v0.1 (ADR 0041).
 const PROOF_CACHE: &str = ".una/cache/";
 
 /// What the verification model does not cover: the one list of `spec/07 §1` and `spec/13 §6`,
-/// in their order (R-041; the last entry is ADR 0038 D9 rule 4).
+/// in their order (R-041; the last entry is ADR 0038 D9 rule 4). `una.report/2` says "stack
+/// exhaustion", since native executables exhaust their stack too (ADR 0055).
 const OUT_OF_MODEL: [&str; 7] = [
     "timing",
     "termination and divergence",
     "resource consumption and allocation",
-    "interpreter stack exhaustion",
+    "stack exhaustion",
     "external systems beyond declared signatures",
     "races between the check and the use of a file path",
     "hard links",
@@ -40,7 +41,7 @@ const OUT_OF_MODEL: [&str; 7] = [
 /// The capabilities of the prelude, whose implementations the host provides (`spec/14 §3`).
 const HOST_CAPABILITIES: [&str; 5] = ["Console", "Clock", "Env", "Files", "Keys"];
 
-/// `una.report/1`, with keys in the order of `spec/13 §6`.
+/// `una.report/2`, with keys in the order of `spec/13 §6`.
 #[derive(Serialize)]
 struct Report {
     schema: &'static str,
@@ -55,7 +56,16 @@ struct Report {
     tcb: TcbDoc,
     requirements: Vec<RequirementDoc>,
     coverage: CoverageDoc,
+    native: NativeDoc,
     out_of_model: [&'static str; 7],
+}
+
+/// The native backend (ADR 0055): the host target, and the bindings whose `Int` stays
+/// arbitrary precision in native code.
+#[derive(Serialize)]
+struct NativeDoc {
+    target: String,
+    arbitrary_precision: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -479,8 +489,45 @@ fn build(
             with_derived_from,
             trivial_ensures,
         },
+        native: NativeDoc {
+            target: una_codegen::host_target(),
+            arbitrary_precision: arbitrary_precision(program),
+        },
         out_of_model: OUT_OF_MODEL,
     }
+}
+
+/// The parameters and results of the package's functions whose type is `Int`, as
+/// `module.function.parameter` and `module.function.result`: the native backend keeps every
+/// `Int` at arbitrary precision until machine widths come from proven ranges (ADR 0055 NB-3).
+fn arbitrary_precision(program: &una_core::Program) -> Vec<String> {
+    let int = |ty: &una_core::Type| {
+        matches!(
+            ty,
+            una_core::Type::Base {
+                base: una_core::Base::Int,
+                ..
+            }
+        )
+    };
+    let mut bindings = Vec::new();
+    for module in &program.modules {
+        for decl in &module.decls {
+            let una_core::Decl::Fun(fun) = decl else {
+                continue;
+            };
+            let qualified = format!("{}.{}", module.path, fun.name);
+            for (name, ty) in &fun.params {
+                if int(ty) {
+                    bindings.push(format!("{qualified}.{name}"));
+                }
+            }
+            if int(&fun.result) {
+                bindings.push(format!("{qualified}.result"));
+            }
+        }
+    }
+    bindings
 }
 
 /// The policy call sites and `checked` escapes of Core IR.
@@ -740,6 +787,11 @@ fn human(report: &Report) -> String {
         coverage.with_ensures,
         coverage.with_derived_from,
         coverage.trivial_ensures
+    ));
+    line(format!("native: {}", report.native.target));
+    line(format!(
+        "  arbitrary precision: {}",
+        report.native.arbitrary_precision.join(", ")
     ));
     line(format!("out of model: {}", report.out_of_model.join(", ")));
     out

@@ -7,6 +7,7 @@
 #![deny(missing_docs)]
 
 mod args;
+mod build;
 mod contract;
 mod package;
 mod report;
@@ -360,6 +361,20 @@ where
                     wallclock: Duration::from_secs(solver_wallclock),
                 };
                 runtime::run_command(&path, options, stdout, stderr)
+            }
+            Command::Build {
+                path,
+                out,
+                solver_wallclock,
+            } => {
+                let options = build::BuildOptions {
+                    out,
+                    json: cli.json,
+                    color: use_color(cli.color, stderr_is_terminal),
+                    wallclock: Duration::from_secs(solver_wallclock),
+                    environment,
+                };
+                build::build_command(&path, &options, stdout, stderr)
             }
             Command::Test {
                 path,
