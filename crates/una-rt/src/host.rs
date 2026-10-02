@@ -253,16 +253,17 @@ pub fn host_instance(capability: i64) -> i64 {
 }
 
 /// A new instance of the handler named `name`, installed by `with`: its id is
-/// `with:<name>#<n>`, the `n`th such instance of the run.
+/// `with:<name>#<n>`, the `n`th such instance of the run (`runtime::State::install_id`).
 pub fn handler_instance(name: i64) -> i64 {
     let name = values::text_value(name);
-    let count = with_state(|state| {
+    let id = with_state(|state| {
         let count = state.installs.entry(name.clone()).or_insert(0);
         *count += 1;
-        *count
+        let count = *count;
+        state.install_id(&name, count)
     })
-    .unwrap_or(1);
-    values::instance(format!("with:{name}#{count}"))
+    .unwrap_or_else(|| format!("with:{name}#1"));
+    values::instance(id)
 }
 
 /// Starts the event of operation `site` on `instance`, when the run records a trace: its
@@ -276,7 +277,7 @@ pub fn event(site: i64, instance: i64) -> i64 {
         let slot = trace.len();
         trace.push(Event {
             seq: slot + 1,
-            task: String::new(),
+            task: state.path.clone(),
             instance: id,
             capability,
             op: name,

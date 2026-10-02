@@ -240,6 +240,10 @@ struct Lowerer<'e, 'p, 'b> {
     /// The bindings that other words borrow from: the scrutinees of `case`, the tuples of
     /// `let (...)` and the lists that loops visit. Their values are never moved (#30).
     pinned: BTreeSet<String>,
+    /// The block that returns the status 2 of a stopped task (`spec/19 §6` rule 4): a task
+    /// that is cancelled, or that aborts, stops where it is. Nothing is released, since the
+    /// task's heap ends with its thread.
+    stop: Block,
 }
 
 /// Compiles `body` into `builder`'s function.
@@ -254,12 +258,14 @@ pub(crate) fn function<'p>(
     builder.switch_to_block(block);
     builder.seal_block(block);
     let mut params = builder.block_params(block).to_vec().into_iter();
+    let stop = builder.create_block();
     let mut pinned = BTreeSet::new();
     borrowed_from(body.body, &mut pinned);
     let mut lowerer = Lowerer {
         emitter,
         builder,
         pinned,
+        stop,
     };
     let mut env = Env::new();
     if let Some((values, caps)) = &body.this {
@@ -307,6 +313,10 @@ pub(crate) fn function<'p>(
     let failure = lowerer.param(failed)?;
     let one = lowerer.builder.ins().iconst(types::I64, 1);
     lowerer.builder.ins().return_(&[failure, one]);
+    lowerer.builder.switch_to_block(stop);
+    let zero = lowerer.builder.ins().iconst(types::I64, 0);
+    let two = lowerer.builder.ins().iconst(types::I64, 2);
+    lowerer.builder.ins().return_(&[zero, two]);
     lowerer.builder.seal_all_blocks();
     lowerer.builder.finalize(config);
     Ok(())
@@ -342,7 +352,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 }
                 Expr::Loop { .. } => return self.lower_loop(expr, env, scope, catch),
                 Expr::Together { .. } | Expr::TogetherFor { .. } => {
-                    return Err(unsupported("`together` (spec/19)"));
+                    return self.together(expr, env, scope, catch);
                 }
                 Expr::Atom { atom, .. } => {
                     let (value, kind) = self.atom(atom, env)?;
@@ -685,7 +695,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
         self.builder.ins().jump(exit, &state_arguments);
 
         self.builder.switch_to_block(iteration);
-        self.runtime("una_rt_budget", &[site]);
+        let stopping = self.call("una_rt_budget", &[site])?;
+        self.stop_if(stopping);
         let item = match list {
             Some(list) => self.call("una_rt_field", &[list, cursor])?,
             None => cursor,
@@ -866,6 +877,115 @@ impl<'p> Lowerer<'_, 'p, '_> {
             })
     }
 
+    /// A new closure of the lambda `params` to `body`, which captures the values of `env` that
+    /// `body` uses and every capability in scope (`spec/11 §4`).
+    fn closure(
+        &mut self,
+        params: &'p [(Name, Type)],
+        body: &'p Expr,
+        env: &Env,
+    ) -> Result<Value, CodegenError> {
+        let mut names = BTreeSet::new();
+        vars(body, &mut names);
+        let captures: Vec<(Name, Type)> = names
+            .into_iter()
+            .filter(|name| !name.starts_with('@'))
+            .filter(|name| !params.iter().any(|(p, _)| p == name))
+            .filter_map(|name| {
+                let ty = env.get(&name)?.1.clone();
+                Some((name, ty))
+            })
+            .collect();
+        // A lambda keeps the capabilities in scope where it is made (`spec/11 §4`).
+        let caps: Vec<Name> = env
+            .keys()
+            .filter_map(|key| key.strip_prefix('@'))
+            .map(str::to_owned)
+            .collect();
+        let values: Vec<Value> = captures
+            .iter()
+            .map(|(name, _)| name.clone())
+            .chain(caps.iter().map(|name| cap_key(name)))
+            .filter_map(|name| env.get(&name).map(|(value, _)| *value))
+            .collect();
+        let id = self.emitter.lambda(params, body, captures, caps)?;
+        let code = self
+            .emitter
+            .module
+            .declare_func_in_func(id, self.builder.func);
+        let address = self.builder.ins().func_addr(types::I64, code);
+        let closure = self.call("una_rt_closure", &[address])?;
+        for value in values {
+            self.runtime("una_rt_push", &[closure, value]);
+        }
+        Ok(closure)
+    }
+
+    /// `together` and `together for` (`spec/19`), as the value of the expression whose scope is
+    /// `scope`: each task is a closure of the bindings before the block, which the runtime runs
+    /// on its own thread (`tasks`). The block fails with the failure of the lowest-indexed task
+    /// that failed, and stops when its task must.
+    fn together(
+        &mut self,
+        expr: &'p Expr,
+        env: &Env,
+        scope: &Scope,
+        catch: &Catch,
+    ) -> Result<Option<Value>, CodegenError> {
+        let value = match expr {
+            Expr::Together { tasks, span } => {
+                let site = self.site(*span);
+                let closures = self.call("una_rt_list", &[])?;
+                for task in tasks {
+                    let closure = self.closure(&[], task, env)?;
+                    self.runtime("una_rt_push", &[closures, closure]);
+                    self.release(closure, Kind::Fn);
+                }
+                let value = self.call("una_rt_together", &[closures, site])?;
+                self.release(closures, Kind::List);
+                value
+            }
+            Expr::TogetherFor {
+                source,
+                var,
+                task,
+                span,
+            } => {
+                let site = self.site(*span);
+                let (items, owned) = match source.as_ref() {
+                    LoopSource::List(list) => (self.atom(list, env)?.0, false),
+                    LoopSource::Range {
+                        low,
+                        high,
+                        inclusive,
+                        ..
+                    } => {
+                        let (low, _) = self.atom(low, env)?;
+                        let (high, _) = self.atom(high, env)?;
+                        let inclusive =
+                            self.builder.ins().iconst(types::I64, i64::from(*inclusive));
+                        (self.call("una_rt_range", &[low, high, inclusive])?, true)
+                    }
+                };
+                let closure = self.closure(std::slice::from_ref(var.as_ref()), task, env)?;
+                let value = self.call("una_rt_together_for", &[closure, items, site])?;
+                self.release(closure, Kind::Fn);
+                if owned {
+                    self.release(items, Kind::List);
+                }
+                value
+            }
+            _ => return Err(internal("a `together` that is not one")),
+        };
+        let status = self.call("una_rt_together_status", &[])?;
+        self.stop_if_stopped(status);
+        self.check(value, status, scope, catch);
+        for &(owned, kind) in scope.iter().rev() {
+            self.release(owned, kind);
+        }
+        Ok(Some(value))
+    }
+
     /// `attempt body`: `Ok` of the body's value, or `Err` of its failure (`spec/11 §4`), as the
     /// value of the expression whose scope is `scope`.
     fn attempt(&mut self, body: &'p Expr, env: &Env, scope: &Scope) -> Result<Value, CodegenError> {
@@ -969,7 +1089,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
         // `spec/11 §7`: each call counts toward the maximum depth, which the runtime checks
         // against the call's site.
         let site = self.site(span);
-        self.runtime("una_rt_enter", &[site]);
+        self.enter(site)?;
         let callee = self
             .emitter
             .module
@@ -980,6 +1100,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let (Some(&value), Some(&failed)) = (results.first(), results.get(1)) else {
             return Err(internal("a call lost its result"));
         };
+        self.stop_if_stopped(failed);
         if fails {
             self.check(value, failed, scope, catch);
         }
@@ -1068,6 +1189,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
             "error": error,
         }));
         let site = self.builder.ins().iconst(types::I64, site);
+        // A cancelled task stops before its next operation (`spec/19 §6` rule 4).
+        let stopping = self.call("una_rt_poll", &[])?;
+        self.stop_if(stopping);
         let slot = self.call("una_rt_event", &[site, instance])?;
         for (position, &value) in values.iter().enumerate() {
             let position = i64::try_from(position).map_err(crate::internal)?;
@@ -1122,13 +1246,15 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let signature = self.builder.import_signature(signature);
         let mut operands = vec![instance];
         operands.extend_from_slice(&values);
-        self.runtime("una_rt_enter", &[call_site]);
+        self.enter(call_site)?;
         let call = self.builder.ins().call_indirect(signature, code, &operands);
         let results = self.builder.inst_results(call).to_vec();
         self.runtime("una_rt_leave", &[]);
         let (Some(&value), Some(&failed)) = (results.first(), results.get(1)) else {
             return Err(internal("an operation lost its result"));
         };
+        // A task that stops inside the operation leaves its event as it was, `aborted`.
+        self.stop_if_stopped(failed);
         self.builder
             .ins()
             .jump(done, &[value.into(), failed.into()]);
@@ -1329,42 +1455,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 }
                 Ok(list)
             }
-            Rhs::Lambda { params, body, .. } => {
-                let mut names = BTreeSet::new();
-                vars(body, &mut names);
-                let captures: Vec<(Name, Type)> = names
-                    .into_iter()
-                    .filter(|name| !name.starts_with('@'))
-                    .filter(|name| !params.iter().any(|(p, _)| p == name))
-                    .filter_map(|name| {
-                        let ty = env.get(&name)?.1.clone();
-                        Some((name, ty))
-                    })
-                    .collect();
-                // A lambda keeps the capabilities in scope where it is made (`spec/11 §4`).
-                let caps: Vec<Name> = env
-                    .keys()
-                    .filter_map(|key| key.strip_prefix('@'))
-                    .map(str::to_owned)
-                    .collect();
-                let values: Vec<Value> = captures
-                    .iter()
-                    .map(|(name, _)| name.clone())
-                    .chain(caps.iter().map(|name| cap_key(name)))
-                    .filter_map(|name| env.get(&name).map(|(value, _)| *value))
-                    .collect();
-                let id = self.emitter.lambda(params, body, captures, caps)?;
-                let code = self
-                    .emitter
-                    .module
-                    .declare_func_in_func(id, self.builder.func);
-                let address = self.builder.ins().func_addr(types::I64, code);
-                let closure = self.call("una_rt_closure", &[address])?;
-                for value in values {
-                    self.runtime("una_rt_push", &[closure, value]);
-                }
-                Ok(closure)
-            }
+            Rhs::Lambda { params, body, .. } => self.closure(params, body, env),
             Rhs::Checked {
                 value,
                 it,
@@ -1540,14 +1631,38 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let signature = self.builder.import_signature(signature);
         let mut values = vec![callee];
         values.extend_from_slice(args);
-        self.runtime("una_rt_enter", &[site]);
+        self.enter(site)?;
         let call = self.builder.ins().call_indirect(signature, code, &values);
         let results = self.builder.inst_results(call).to_vec();
         self.runtime("una_rt_leave", &[]);
         match (results.first(), results.get(1)) {
-            (Some(&value), Some(&failed)) => Ok((value, failed)),
+            (Some(&value), Some(&failed)) => {
+                self.stop_if_stopped(failed);
+                Ok((value, failed))
+            }
             _ => Err(internal("a closure lost its result")),
         }
+    }
+
+    /// Enters the call at `site` (`spec/11 §7`), or stops the task when the runtime says so.
+    fn enter(&mut self, site: Value) -> Result<(), CodegenError> {
+        let stopping = self.call("una_rt_enter", &[site])?;
+        self.stop_if(stopping);
+        Ok(())
+    }
+
+    /// Stops the task when `stopping` is not 0.
+    fn stop_if(&mut self, stopping: Value) {
+        let next = self.builder.create_block();
+        self.builder.ins().brif(stopping, self.stop, &[], next, &[]);
+        self.builder.switch_to_block(next);
+    }
+
+    /// Stops the task when the code it called returned the status 2 of a stopped task.
+    fn stop_if_stopped(&mut self, status: Value) {
+        let stopped = self.builder.ins().icmp_imm_s(IntCC::Equal, status, 2);
+        let stopped = self.flag(stopped);
+        self.stop_if(stopped);
     }
 
     /// The one parameter of a join block.

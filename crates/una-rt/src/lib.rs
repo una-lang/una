@@ -23,6 +23,7 @@ pub mod ffi;
 pub mod host;
 pub mod render;
 pub mod runtime;
+pub mod tasks;
 pub mod values;
 
 /// The allocator of the executable, which counts the bytes it holds and fails past a ceiling,

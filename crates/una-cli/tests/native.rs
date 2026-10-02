@@ -1,6 +1,8 @@
 //! The differential test of the native backend (`spec/16 §5`, ADR 0055 NB-4): every runnable
 //! program of the repository's suites runs in the interpreter (`una run --json`) and as a
 //! native executable (`una build`), and their output, exit status and trace must be identical.
+//! A program that starts tasks is compared under the equivalence of `spec/19 §8` rule 4 instead
+//! ([`task_differences`]).
 //!
 //! The suites are the examples, the conformance cases that run, and the adversarial programs of
 //! the reviews that have `pub main`. A program is runnable when the interpreter runs it.
@@ -260,12 +262,6 @@ fn every_runnable_program_runs_natively_as_in_the_interpreter() {
             .iter()
             .map(|line| format!("{}\n", line.as_str().unwrap()))
             .collect();
-        if String::from_utf8_lossy(&native.stdout) != expected_stdout {
-            failures.push(format!(
-                "{name}: stdout differs: interpreter {expected_stdout:?}, native {:?}",
-                String::from_utf8_lossy(&native.stdout)
-            ));
-        }
         if native.status.code() != run.status.code() {
             failures.push(format!(
                 "{name}: exit status differs: interpreter {:?}, native {:?}",
@@ -277,6 +273,21 @@ fn every_runnable_program_runs_natively_as_in_the_interpreter() {
             .ok()
             .and_then(|t| serde_json::from_slice(&t).ok())
             .unwrap_or(Value::Null);
+        if starts_tasks(&document["trace"]) || starts_tasks(&native_trace) {
+            let stdout = String::from_utf8_lossy(&native.stdout);
+            failures.extend(
+                task_differences(&stdout, &document["trace"], &native_trace)
+                    .into_iter()
+                    .map(|difference| format!("{name}: {difference}")),
+            );
+            continue;
+        }
+        if String::from_utf8_lossy(&native.stdout) != expected_stdout {
+            failures.push(format!(
+                "{name}: stdout differs: interpreter {expected_stdout:?}, native {:?}",
+                String::from_utf8_lossy(&native.stdout)
+            ));
+        }
         if timeless(native_trace.clone()) != timeless(document["trace"].clone()) {
             failures.push(format!(
                 "{name}: trace differs: interpreter {}, native {native_trace}",
@@ -297,6 +308,93 @@ fn every_runnable_program_runs_natively_as_in_the_interpreter() {
         "examples/hello must compile: {failures:#?}"
     );
     assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Whether a trace has events of tasks (`spec/19 §7` rule 1).
+fn starts_tasks(trace: &Value) -> bool {
+    trace
+        .as_array()
+        .is_some_and(|events| events.iter().any(|event| event.get("task").is_some()))
+}
+
+/// How a native run that starts tasks departs from the equivalence of `spec/19 §8` rule 4,
+/// the exit status being compared already:
+/// - the output is what the native trace says each task printed, each task's lines in its own
+///   order, those of different tasks interleaved in any order;
+/// - the trace equals the interpreter's on an ordered run (`spec/19 §6` rule 7). A run that is
+///   not ordered also holds events of tasks that started after a failed one, so its trace holds
+///   the interpreter's, in order, and the extra events are those of tasks.
+fn task_differences(stdout: &str, interpreted: &Value, native: &Value) -> Vec<String> {
+    let mut differences = Vec::new();
+    let empty = Vec::new();
+    let events = native.as_array().unwrap_or(&empty);
+    let printed: Vec<(&str, &str)> = events
+        .iter()
+        .filter(|event| event["capability"] == "Console" && event["op"] == "print")
+        .filter_map(|event| {
+            let task = event.get("task").and_then(Value::as_str).unwrap_or("");
+            Some((task, event["args"]["line"].as_str()?))
+        })
+        .collect();
+    let lines: Vec<String> = stdout.lines().map(una_core::quote).collect();
+    let mut sorted_lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+    let mut sorted_printed: Vec<&str> = printed.iter().map(|(_, line)| *line).collect();
+    sorted_lines.sort_unstable();
+    sorted_printed.sort_unstable();
+    // A redacted line is not in the trace: only the order of the others is checked then.
+    let redacted = sorted_printed
+        .iter()
+        .any(|line| line.starts_with("<redacted"));
+    if !redacted && sorted_lines != sorted_printed {
+        differences.push(format!(
+            "the output is not what the native trace printed: output {lines:?}, trace {printed:?}"
+        ));
+    }
+    let tasks: BTreeSet<&str> = printed.iter().map(|(task, _)| *task).collect();
+    for task in tasks {
+        let own: Vec<&str> = printed
+            .iter()
+            .filter(|(t, _)| *t == task)
+            .map(|(_, line)| *line)
+            .collect();
+        if !subsequence(&own, &lines.iter().map(String::as_str).collect::<Vec<_>>()) {
+            differences.push(format!(
+                "the output {lines:?} does not keep the order of the lines of task {task:?}: {own:?}"
+            ));
+        }
+    }
+    let unnumbered = |trace: &Value| -> Vec<Value> {
+        let mut trace = timeless(trace.clone());
+        let mut events = trace.as_array_mut().map(std::mem::take).unwrap_or_default();
+        for event in &mut events {
+            if let Some(event) = event.as_object_mut() {
+                event.remove("seq");
+            }
+        }
+        events
+    };
+    if timeless(native.clone()) != timeless(interpreted.clone()) {
+        let (interpreted, native) = (unnumbered(interpreted), unnumbered(native));
+        let extra_of_root = native.len()
+            - native.iter().filter(|e| e.get("task").is_some()).count()
+            != interpreted.len()
+                - interpreted
+                    .iter()
+                    .filter(|e| e.get("task").is_some())
+                    .count();
+        if !subsequence(&interpreted, &native) || extra_of_root {
+            differences.push(format!(
+                "the trace is neither the interpreter's nor one of a run that is not ordered: interpreter {interpreted:?}, native {native:?}"
+            ));
+        }
+    }
+    differences
+}
+
+/// Whether `part` is a subsequence of `whole`.
+fn subsequence<T: PartialEq>(part: &[T], whole: &[T]) -> bool {
+    let mut rest = whole.iter();
+    part.iter().all(|item| rest.any(|other| other == item))
 }
 
 /// `trace` with the result of each `Clock.now` replaced: two runs read the clock at different
@@ -643,5 +741,111 @@ fn the_executable_checks_main_against_its_grants() {
     );
     assert_eq!(usage(&["--json"]).status.code(), Some(2));
     assert_eq!(usage(&["--max-depth", "many"]).status.code(), Some(2));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A package of edition 0.2, which has `together` (ADR 0056), whose entry is `module`.
+fn tasks_package(name: &str, module: &str, program: &str) -> PathBuf {
+    let dir = package(
+        name,
+        &format!("\n[run]\nentry = \"{module}\"\ngrants = [\"console\"]\n"),
+        &[(&format!("src/{module}.una"), program)],
+    );
+    let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+    std::fs::write(
+        dir.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    dir
+}
+
+#[test]
+fn a_task_counts_its_depth_from_its_block() {
+    // `spec/19 §8` rule 3: `--max-depth` bounds each task's depth, counted from the depth of the
+    // block that started it, as the interpreter counts it; past it, the run is U6003.
+    let program = "module deep\n\ncountdown(n: Int) -> Int = if n == 0 then 0 else countdown(n - 1)\n\nnested(n: Int) -> Int\n=\n  together\n    let a = countdown(n)\n    let b = countdown(1)\n  a + b\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  together\n    let a = countdown(10)\n    let b = nested(85)\n  @console.print(\"done {a} {b}\")\n";
+    let dir = tasks_package("deep", "deep", program);
+    let exe = dir.join("target/una/deep");
+    for (depth, code) in [("100", 0), ("80", 1)] {
+        let native = Command::new(&exe)
+            .args(["--max-depth", depth])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        let interpreted = una(&dir, &["run", ".", "--max-depth", depth]);
+        assert_eq!(native.status.code(), Some(code), "{native:?}");
+        assert_eq!(interpreted.status.code(), Some(code), "{interpreted:?}");
+        assert_eq!(native.stdout, interpreted.stdout);
+        if code == 1 {
+            let stderr = String::from_utf8_lossy(&native.stderr);
+            assert!(
+                stderr.starts_with(&format!(
+                    "[U6003] Error: this call exceeds the maximum call depth of {depth}\n"
+                )),
+                "{stderr}"
+            );
+            // The same diagnostic; `una run` also shows the source around it.
+            let interpreted = String::from_utf8_lossy(&interpreted.stderr);
+            assert_eq!(stderr.lines().next(), interpreted.lines().next());
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_tasks_of_a_run_share_its_memory_budget() {
+    // `spec/19 §8` rule 3: `--max-memory` bounds the heaps of all tasks together, and the call
+    // of a task that finds the run over its budget is U6003.
+    let program = "module hogs\n\ngrow(t: Text, n: Int) -> Int = if n <= 0 then t.len else grow(\"{t}0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\", n: n - 1)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  together\n    let a = grow(\"\", n: 10)\n    let b = grow(\"\", n: 9000)\n  @console.print(\"held {a} {b}\")\n";
+    let dir = tasks_package("hogs", "hogs", program);
+    let output = Command::new(dir.join("target/una/hogs"))
+        .args(["--max-memory", "64"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.starts_with("[U6003] Error: this call exceeds the memory limit of 64 MiB\n"),
+        "{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_failed_task_cancels_the_tasks_after_it() {
+    // `spec/19 §6` rules 3 and 4: when a task fails, a task after it stops at its next loop
+    // iteration, call or operation, or never starts; the block fails with the failure.
+    let program = "module cancel\n\npub kind Oops = Bad | Worse\n\nboom() -> Int\n  fails Oops\n=\n  let edit total = 0\n  for i in 0..<3000000\n    total = total + 1\n  if total > 0\n    fail Bad\n  total\n\nspin(n: Int) -> Int\n  uses @console: Console[print]\n=\n  let edit total = 0\n  for i in 0..<n\n    total = total + 1\n  @console.print(\"spun {total}\")\n  total\n\nspins() -> Int\n  uses @console: Console[print]\n=\n  together\n    let a = spin(10000000000)\n    let b = spin(10000000000)\n  a + b\n\npick() -> Int\n  uses @console: Console[print]\n  fails Oops\n=\n  together\n    let a = boom()\n      if error pass\n    let b = spin(10000000000)\n    let c = spins()\n  a + b + c\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let tried = attempt pick()\n  let outcome = when tried\n    is Ok(n) -> \"ok {n}\"\n    is Err(e) -> \"failed\"\n  @console.print(outcome)\n";
+    let dir = tasks_package("cancel", "cancel", program);
+    let trace = dir.join("trace.json");
+    let native = Command::new(dir.join("target/una/cancel"))
+        .arg("--trace")
+        .arg(&trace)
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "failed\n");
+    // The failing task works first, so the tasks after it have usually started. They, and the
+    // tasks of the block that the third one runs, stopped before their prints, each with a `cancelled` event if it had started, in task
+    // order.
+    let events: Value = serde_json::from_slice(&std::fs::read(&trace).unwrap()).unwrap();
+    let events = events.as_array().unwrap();
+    let (last, stopped) = events.split_last().unwrap();
+    assert_eq!(last["op"], "print");
+    let order = ["2", "3.1", "3.2", "3"];
+    let mut paths = order.iter();
+    for (index, event) in stopped.iter().enumerate() {
+        let task = event["task"].as_str().unwrap();
+        assert!(paths.any(|path| *path == task), "{events:?}");
+        assert_eq!(
+            *event,
+            serde_json::json!({"seq": index + 1, "task": task, "outcome": {"kind": "cancelled"}})
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
