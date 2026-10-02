@@ -411,6 +411,59 @@ fn a_run_over_its_memory_budget_is_u6003() {
     assert_eq!(output.status.code(), Some(2));
 }
 
+#[test]
+fn a_loop_over_its_memory_budget_is_u6003() {
+    // ADR 0061 rule 2: a `for` iteration is not a call, and the budget is checked at each one
+    // too; the abort points at the loop.
+    let root = package("loop-hog", "\n[run]\nentry = \"hog\"\n", &[]);
+    let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("src/hog.una"),
+        "module hog
+
+pub kind Node
+  value: Int
+  next: Option[Node]
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit chain: Option[Node] = None
+  for i in 0..<100000000
+    chain = Some(Node(value: i, next: chain))
+  let built = chain.is_some()
+  @console.print(\"built {built}\")
+",
+    )
+    .unwrap();
+    let dir = root.to_str().unwrap();
+    let output = una(&[
+        "--json",
+        "run",
+        dir,
+        "--grant",
+        "console",
+        "--max-memory",
+        "16",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let document = json(&output);
+    assert_eq!(document["status"], "aborted");
+    assert_eq!(document["diagnostics"][0]["code"], "U6003");
+    assert_eq!(
+        document["diagnostics"][0]["message"],
+        "this call exceeds the memory limit of 16 MiB"
+    );
+    // The loop, where the iteration found the run over its budget.
+    assert_eq!(document["diagnostics"][0]["primary"]["start"]["line"], 11);
+}
+
 const FILES: &str = "module files
 
 pub describe(failure: FileError) -> Text
