@@ -8,9 +8,17 @@
 //!   `Unit`, and `Text` literals, interpolation and comparison;
 //! - arithmetic with Euclidean division, comparisons, `not`, `if`, and the `when` over
 //!   literals and ranges that Core writes as `if`;
-//! - calls of the package's functions, recursion included, with the call depth of
-//!   `spec/11 §7`;
+//! - calls of the package's functions and predicates, recursion included, with the call depth
+//!   of `spec/11 §7`;
+//! - records and variants, `when` over them, `List`, `Option` and `Result`, and the functions of
+//!   the prelude;
+//! - generic functions, compiled once, since every value is a word;
+//! - lambdas and closures, and declared functions used as values;
 //! - `Console.print`.
+//!
+//! Heap values are reference counted (NB-2): `lower` describes which words the code owns and
+//! when it releases them. A debug build of the runtime reports a value the code leaks or uses
+//! after releasing it, which the differential test turns into a failure.
 //!
 //! Anything else is [`CodegenError::Unsupported`], with the construct named, so that `una build`
 //! reports what the native backend cannot compile yet instead of building something else.
@@ -23,6 +31,8 @@
 
 mod lower;
 
+use lower::Body;
+
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -34,7 +44,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module, default_libcall_names};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use target_lexicon::Triple;
-use una_core::{Decl, Fun, Path, Program};
+use una_core::{Decl, Expr, Fun, Name, Path, Program, Type};
 use una_syntax::Span;
 
 /// Why the backend cannot compile a program.
@@ -106,6 +116,48 @@ fn function<'p>(program: &'p Program, module: &str, name: &str) -> Option<&'p Fu
         })
 }
 
+/// The body of the function or predicate `name` of module `module`: `None` when there is none,
+/// and an error when the backend does not compile it yet.
+fn callee<'p>(
+    program: &'p Program,
+    module: &str,
+    name: &str,
+) -> Option<Result<Body<'p>, CodegenError>> {
+    program
+        .modules
+        .iter()
+        .filter(|m| m.path == module)
+        .flat_map(|m| &m.decls)
+        .find_map(|decl| match decl {
+            Decl::Fun(fun) if fun.name == name => Some(if fun.fails.is_some() {
+                Err(CodegenError::Unsupported(
+                    "functions that can fail".to_owned(),
+                ))
+            } else {
+                Ok(Body {
+                    closure: false,
+                    captures: Vec::new(),
+                    params: &fun.params,
+                    result: Some(&fun.result),
+                    body: &fun.body,
+                })
+            }),
+            Decl::Pred {
+                name: pred,
+                params,
+                body,
+                ..
+            } if pred == name => Some(Ok(Body {
+                closure: false,
+                captures: Vec::new(),
+                params,
+                result: None,
+                body,
+            })),
+            _ => None,
+        })
+}
+
 fn internal(error: impl fmt::Display) -> CodegenError {
     CodegenError::Internal(error.to_string())
 }
@@ -122,8 +174,8 @@ fn isa() -> Result<OwnedTargetIsa, CodegenError> {
 }
 
 /// The runtime functions the generated code calls, with their arities: every parameter and
-/// result is a word (`i64`), and `None` is no result.
-const RUNTIME: [(&str, usize, bool); 18] = [
+/// result is a word (`i64`), and `false` is no result.
+const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_int_literal", 2, true),
     ("una_rt_text_literal", 2, true),
     ("una_rt_int_add", 2, true),
@@ -142,6 +194,32 @@ const RUNTIME: [(&str, usize, bool); 18] = [
     ("una_rt_enter", 1, false),
     ("una_rt_leave", 0, false),
     ("una_rt_console_print", 1, false),
+    ("una_rt_retain", 1, false),
+    ("una_rt_release", 1, false),
+    ("una_rt_push", 2, false),
+    ("una_rt_data", 1, true),
+    ("una_rt_list", 0, true),
+    ("una_rt_closure", 1, true),
+    ("una_rt_field", 2, true),
+    ("una_rt_tag", 1, true),
+    ("una_rt_closure_code", 1, true),
+    ("una_rt_count", 1, true),
+    ("una_rt_list_len", 1, true),
+    ("una_rt_equal", 2, true),
+    ("una_rt_abs", 1, true),
+    ("una_rt_min", 2, true),
+    ("una_rt_max", 2, true),
+    ("una_rt_is_digits", 1, true),
+    ("una_rt_starts_with", 2, true),
+    ("una_rt_trim", 1, true),
+    ("una_rt_to_int", 1, true),
+    ("una_rt_is_empty", 1, true),
+    ("una_rt_first", 1, true),
+    ("una_rt_at", 2, true),
+    ("una_rt_append", 2, true),
+    ("una_rt_contains", 2, true),
+    ("una_rt_sum", 1, true),
+    ("una_rt_or_else", 2, true),
 ];
 
 /// The object being built.
@@ -150,9 +228,11 @@ struct Emitter<'p> {
     module: ObjectModule,
     /// The runtime functions, by name.
     runtime: BTreeMap<&'static str, FuncId>,
-    /// The compiled functions, by qualified name, and those still to compile.
+    /// The compiled functions, by qualified name, and the bodies still to compile.
     functions: BTreeMap<String, FuncId>,
-    pending: Vec<(FuncId, &'p Fun)>,
+    pending: Vec<(FuncId, Body<'p>)>,
+    /// The number of lambdas declared so far.
+    lambdas: usize,
     /// Read-only data: text literals and integer literals beyond the tagged range.
     data: BTreeMap<String, DataId>,
     /// The spans of the calls, by the index passed to `una_rt_enter`.
@@ -164,7 +244,7 @@ impl<'p> Emitter<'p> {
         let builder = ObjectBuilder::new(isa, "una", default_libcall_names()).map_err(internal)?;
         let mut module = ObjectModule::new(builder);
         let mut runtime = BTreeMap::new();
-        for (name, params, returns) in RUNTIME {
+        for &(name, params, returns) in RUNTIME {
             let mut signature = module.make_signature();
             for _ in 0..params {
                 signature.params.push(AbiParam::new(types::I64));
@@ -183,45 +263,71 @@ impl<'p> Emitter<'p> {
             runtime,
             functions: BTreeMap::new(),
             pending: Vec::new(),
+            lambdas: 0,
             data: BTreeMap::new(),
             sites: Vec::new(),
         })
     }
 
-    /// The function `path` of the package, declared now and compiled by [`Emitter::drain`].
+    /// The function or predicate `path` of the package, declared now and compiled by
+    /// [`Emitter::drain`].
     fn function(&mut self, path: &Path) -> Result<FuncId, CodegenError> {
         let qualified = format!("{}.{}", path.module, path.name);
         if let Some(id) = self.functions.get(&qualified) {
             return Ok(*id);
         }
-        let fun = function(self.program, &path.module, &path.name).ok_or_else(|| {
+        let body = callee(self.program, &path.module, &path.name).ok_or_else(|| {
             CodegenError::Unsupported(format!(
                 "calls of `{qualified}`, which is not a function of the package"
             ))
-        })?;
-        if fun.fails.is_some() {
-            return Err(CodegenError::Unsupported(
-                "functions that can fail".to_owned(),
-            ));
-        }
+        })??;
+        let name = format!("una_fn_{}", self.functions.len());
+        let id = self.declare(&name, body.params.len())?;
+        self.functions.insert(qualified, id);
+        self.pending.push((id, body));
+        Ok(id)
+    }
+
+    /// The code of a closure of the lambda `params` to `body`, which captures `captures`:
+    /// declared now, and compiled by [`Emitter::drain`].
+    fn lambda(
+        &mut self,
+        params: &'p [(Name, Type)],
+        body: &'p Expr,
+        captures: Vec<(Name, Type)>,
+    ) -> Result<FuncId, CodegenError> {
+        let name = format!("una_lambda_{}", self.lambdas);
+        self.lambdas += 1;
+        // The closure itself comes first.
+        let id = self.declare(&name, params.len() + 1)?;
+        self.pending.push((
+            id,
+            Body {
+                closure: true,
+                captures,
+                params,
+                result: None,
+                body,
+            },
+        ));
+        Ok(id)
+    }
+
+    /// A local function of `params` words that returns a word.
+    fn declare(&mut self, name: &str, params: usize) -> Result<FuncId, CodegenError> {
         let mut signature = self.module.make_signature();
-        for _ in &fun.params {
+        for _ in 0..params {
             signature.params.push(AbiParam::new(types::I64));
         }
         signature.returns.push(AbiParam::new(types::I64));
-        let name = format!("una_fn_{}", self.functions.len());
-        let id = self
-            .module
-            .declare_function(&name, Linkage::Local, &signature)
-            .map_err(internal)?;
-        self.functions.insert(qualified, id);
-        self.pending.push((id, fun));
-        Ok(id)
+        self.module
+            .declare_function(name, Linkage::Local, &signature)
+            .map_err(internal)
     }
 
     /// Compiles every declared function, and those they call in turn.
     fn drain(&mut self) -> Result<(), CodegenError> {
-        while let Some((id, fun)) = self.pending.pop() {
+        while let Some((id, body)) = self.pending.pop() {
             let mut context = self.module.make_context();
             context.func.signature = self
                 .module
@@ -234,7 +340,7 @@ impl<'p> Emitter<'p> {
             let config = self.module.target_config();
             {
                 let builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
-                lower::function(self, builder, fun, config)?;
+                lower::function(self, builder, &body, config)?;
             }
             self.define(id, &mut context)?;
         }
