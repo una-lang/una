@@ -56,6 +56,7 @@ The representation is not observable; these rules fix what the runtime library `
    - Arithmetic is mathematical, with Euclidean division and remainder, as in `spec/11`.
 3. **Failures** are returned values, a tag and a payload. Nothing unwinds.
 4. **Capabilities** are passed explicitly, as Core IR passes them (`spec/09`). Handlers and `with` compile to environment passing, and a capability is never a runtime value a program can store.
+   - (v0.2, ADR 0066.) A function with constrained type parameters also takes a hidden type descriptor for each of them, and is still compiled once (`spec/20 §7`).
 5. **Host capabilities** (`spec/14 §3`) have the interpreter's semantics, grants, path rules and failures.
 6. (v0.2, ADR 0065.) **Tasks.** Each task of a `together` block runs on its own thread with its own heap; values are copied at the fork and the join, so reference counts stay non-atomic (`spec/19 §8`).
 

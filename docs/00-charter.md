@@ -83,6 +83,7 @@ Leonardo opened the v0.2 scope on 2026-10-01, in parallel with Gate 1 (`plan/roa
 - **Effect polymorphism** (ADR 0062): `uses of p` and `fails of p` let higher-order functions, the prelude's among them, take effectful and failing functions. Leonardo added it on 2026-10-02.
 - **Language server** (ADR 0063): `una lsp`, which shows diagnostics, proofs, contracts and labels in an editor and offers repairs as quick fixes. Leonardo added it on 2026-10-02.
 - **Structured concurrency** (ADR 0065, `spec/19`): `together` blocks and `together for`, whose tasks end before their block, with failures that cancel the later tasks and a trace in branch order. Leonardo added it on 2026-10-02.
+- **Constraints on generics** (ADR 0066, `spec/20`): the built-in constraints `Eq`, `Ord` and `Integer` on type parameters, written `[T: Ord]`, with a generic `min`, `max`, `sum` and `sort` in the prelude. There are no user traits. Leonardo added them on 2026-10-02.
 
 Everything else in §5's exclusions stays excluded, with the target versions of `plan/backlog.md`.
 
