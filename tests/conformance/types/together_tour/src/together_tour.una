@@ -1,0 +1,87 @@
+-- test: `together` binds its branches after the block, branches call functions with `with` bindings, handling clauses and `uses of` parameters, use the capabilities in scope, nest, and keep their own `let edit` bindings; `together for` makes a list over a list or a range, and can be a function's last line (spec/19 §1, §2)
+-- spec: spec/19 §1, §2
+-- expect: ok
+module together_tour
+
+pub kind Oops = Bad | Worse
+
+pub capability Log
+  op write(line: Text) -> Unit
+
+handler quiet() for Log
+  op write(line) = unit
+
+--- Logs `line` and returns its length.
+logged(line: Text) -> Int
+  uses @log: Log[write]
+=
+  @log.write(line)
+  line.len
+
+--- Fails on a negative number.
+checked_half(n: Int) -> Int
+  fails Oops
+=
+  if n < 0
+    fail Bad
+  n / 2
+
+--- Counts up to `n` with a local editable binding.
+count_to(n: Int) -> Int
+=
+  let edit total = 0
+  for i in 1..n
+    total = total + i
+  total
+
+pub branches(a: Int, b: Int) -> Int
+  uses @log: Log[write]
+  fails Oops
+=
+  together
+    let x = logged("a")
+    let y = checked_half(b)
+      if error pass
+    let z = logged("z") with @log = quiet()
+    let w: Int = count_to(a)
+  x + y + z + w
+
+pub nested(a: Int) -> Int
+=
+  together
+    let left = count_to(a)
+    let right = if a > 0
+      together
+        let p = count_to(1)
+        let q = count_to(2)
+      p + q
+    else
+      0
+  left + right
+
+pub each(xs: List[Int], act: fn(Int) -> Int) -> Int
+  uses of act
+=
+  together
+    let first = act(1)
+    let second = act(2)
+  first + second
+
+pub doubled(xs: List[Int]) -> List[Int]
+=
+  together for x in xs
+    let edit y = x
+    y = y * 2
+    y
+
+pub squares(n: Int) -> List[Int]
+=
+  let squared = together for i in 1..n
+    i * i
+  squared
+
+pub lengths(lines: List[Text]) -> List[Int]
+  uses @log: Log[write]
+=
+  together for line in lines
+    logged(line)

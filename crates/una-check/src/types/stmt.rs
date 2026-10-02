@@ -7,7 +7,7 @@ use una_syntax::Span;
 use una_syntax::ast::{
     AssignStmt, Bind, Block, BlockExpr, Body, CapBindingValue, ElseBranch, Expr, ExprKind,
     ForSource, ForStmt, Handled, HandlingKind, IfBlock, IfThenStmt, LetStmt, LetValue, Literal,
-    PatternKind, Stmt, TextPart, WhenExpr,
+    PatternKind, Stmt, TextPart, TogetherFor, TogetherStmt, WhenExpr,
 };
 
 use super::Report;
@@ -106,6 +106,11 @@ impl<'a> Checker<'_, 'a, '_> {
                     if is_last && tail {
                         self.returned_value(stmt.span, &Ty::Unit, expected, role);
                     }
+                }
+                // Never the last line of a block, which the parser reports.
+                Stmt::Together(stmt) => {
+                    self.outside_rl(stmt.span, || "`together`".to_owned());
+                    self.together(stmt);
                 }
                 Stmt::Handled(handled) if is_last => {
                     ty = self.handled(handled, expected, role, tail);
@@ -260,7 +265,135 @@ impl<'a> Checker<'_, 'a, '_> {
     /// of what it visits, the top label of a list or the labels of a range's bounds
     /// (`spec/17 §1`, `§3` rule 3, `§6` rule 3).
     fn for_stmt(&mut self, stmt: &ForStmt) {
-        let (var_ty, label, from) = match &stmt.source {
+        let (var_ty, label, from) = self.loop_source(&stmt.source);
+        // The loop variable is derived from what the loop visits, so it carries its label.
+        let var_ty = var_ty.with_label(&label);
+        self.typed(stmt.var.span, &var_ty);
+        // An outer binding taken in the body is taken again in the next iteration (`spec/17
+        // §3` rule 3).
+        let before: Vec<Option<Span>> = self.locals.iter().map(|local| local.taken).collect();
+        let saved = self.raise_pc(&label, from);
+        let mark = self.locals.len();
+        self.bind(self.name(&stmt.var), var_ty);
+        let ty = self.block(&stmt.block, None, Role::Plain, false);
+        self.locals.truncate(mark);
+        self.restore_pc(saved);
+        self.discarded(value_span(&stmt.block), &ty);
+        for (index, was) in before.iter().enumerate() {
+            let Some(local) = self.locals.get(index) else {
+                continue;
+            };
+            if let (None, Some(at)) = (was, local.taken) {
+                let name = local.name;
+                self.report.error(
+                    Code::U2017,
+                    at,
+                    format!(
+                        "`{name}` is taken in every iteration of this loop; give it a new value before the end of the body, or declare it inside the loop"
+                    ),
+                );
+            }
+        }
+        // A loop may run zero times, so the state after it joins the state before it: a
+        // binding taken before and revived only in the body stays taken (`spec/17 §3` rule 3).
+        self.join_skipped(&before);
+    }
+
+    /// `together` with its branches (`spec/19 §1`, `§2`): each branch is checked as its `let`,
+    /// under the program counter of the block, without the bindings of its siblings, and
+    /// cannot change a binding declared before it (U2023). The branches' bindings are in scope
+    /// after the block, in branch order.
+    fn together(&mut self, stmt: &TogetherStmt) {
+        let branches = stmt
+            .body
+            .iter()
+            .filter(|s| matches!(s, Stmt::Let(_)))
+            .count();
+        if let Some(other) = stmt.body.iter().find(|s| !matches!(s, Stmt::Let(_))) {
+            let mut diagnostic = self.report.make(
+                Code::U2024,
+                stmt.keyword,
+                "the body of `together` holds only `let` statements, one per branch; call a function from a branch's `let` for more steps".to_owned(),
+            );
+            diagnostic
+                .related
+                .push(self.report.related(stmt_span(other), "not a `let`"));
+            self.report.push(diagnostic);
+        } else if branches < 2 {
+            self.report.error(
+                Code::U2024,
+                stmt.keyword,
+                "`together` needs at least two `let` branches; with one, write a plain `let`"
+                    .to_owned(),
+            );
+        }
+        let mark = self.locals.len();
+        let saved = self.task_mark.replace(mark);
+        let mut bound = Vec::new();
+        for branch in &stmt.body {
+            let Stmt::Let(branch) = branch else {
+                continue;
+            };
+            if let LetValue::Handled(handled) = &branch.value
+                && matches!(
+                    handled.expr.kind,
+                    ExprKind::Call { .. } | ExprKind::MethodCall { .. }
+                )
+            {
+                self.statement_calls.push(handled.expr.span);
+            }
+            self.let_stmt(branch);
+            // The branch's binding waits for the join, so its siblings do not see it.
+            bound.extend(self.locals.drain(mark..));
+        }
+        self.task_mark = saved;
+        self.locals.extend(bound);
+    }
+
+    /// `together for x in source` with its block (`spec/19 §1`, `§2`, `§3`): one task per
+    /// element, run under the label that decides how many tasks there are, whose results make
+    /// a list carrying that label.
+    fn together_for(
+        &mut self,
+        together: &TogetherFor,
+        expected: Option<&Ty>,
+        role: Role<'_>,
+        tail: bool,
+    ) -> Ty {
+        self.outside_rl(together.span, || "`together for`".to_owned());
+        let (var_ty, label, from) = self.loop_source(&together.source);
+        let var_ty = var_ty.with_label(&label);
+        self.typed(together.var.span, &var_ty);
+        let element_expected = expected.and_then(|ty| match self.resolve(ty).unlabeled() {
+            Ty::List(element) => Some(element.as_ref().clone()),
+            _ => None,
+        });
+        let saved_pc = self.raise_pc(&label, from);
+        let mark = self.locals.len();
+        let saved_mark = self.task_mark.replace(mark);
+        self.bind(self.name(&together.var), var_ty);
+        let element = self.block(
+            &together.block,
+            element_expected.as_ref(),
+            Role::Plain,
+            false,
+        );
+        self.locals.truncate(mark);
+        self.task_mark = saved_mark;
+        self.restore_pc(saved_pc);
+        // How many elements there are depends on the label of what the tasks visit.
+        let ty = Ty::List(Box::new(element)).with_label(&label);
+        if tail {
+            self.returned_value(together.span, &ty, expected, role);
+        }
+        ty
+    }
+
+    /// What a `for` loop or a `together for` visits: the type of its variable, the label that
+    /// decides how many times its body runs, the top label of a list or the labels of a
+    /// range's bounds, and where that label comes from (`spec/17 §6` rule 3).
+    fn loop_source(&mut self, source: &ForSource) -> (Ty, Label, Span) {
+        match source {
             ForSource::List(list) => {
                 let found = self.expr(list, None);
                 let element = self.vars.fresh(Origin::Element, list.span);
@@ -313,38 +446,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     .join(&self.labeled(&high_ty).top_label());
                 (base, label, low.span.to(high.span))
             }
-        };
-        // The loop variable is derived from what the loop visits, so it carries its label.
-        let var_ty = var_ty.with_label(&label);
-        self.typed(stmt.var.span, &var_ty);
-        // An outer binding taken in the body is taken again in the next iteration (`spec/17
-        // §3` rule 3).
-        let before: Vec<Option<Span>> = self.locals.iter().map(|local| local.taken).collect();
-        let saved = self.raise_pc(&label, from);
-        let mark = self.locals.len();
-        self.bind(self.name(&stmt.var), var_ty);
-        let ty = self.block(&stmt.block, None, Role::Plain, false);
-        self.locals.truncate(mark);
-        self.restore_pc(saved);
-        self.discarded(value_span(&stmt.block), &ty);
-        for (index, was) in before.iter().enumerate() {
-            let Some(local) = self.locals.get(index) else {
-                continue;
-            };
-            if let (None, Some(at)) = (was, local.taken) {
-                let name = local.name;
-                self.report.error(
-                    Code::U2017,
-                    at,
-                    format!(
-                        "`{name}` is taken in every iteration of this loop; give it a new value before the end of the body, or declare it inside the loop"
-                    ),
-                );
-            }
         }
-        // A loop may run zero times, so the state after it joins the state before it: a
-        // binding taken before and revived only in the body stays taken (`spec/17 §3` rule 3).
-        self.join_skipped(&before);
     }
 
     /// A line expression with its `with` bindings and handling clauses (`spec/06 §3`).
@@ -568,6 +670,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let ty = match expr {
             BlockExpr::When(when) => self.when(when, expected, role, tail),
             BlockExpr::If(block) => self.if_block(block, expected, role, tail),
+            BlockExpr::TogetherFor(together) => self.together_for(together, expected, role, tail),
         };
         // The value of a join, in the desugar of the memory model (`spec/17 §4`).
         self.typed(block_expr_span(expr), &ty);
@@ -1000,6 +1103,20 @@ fn block_expr_span(expr: &BlockExpr) -> Span {
     match expr {
         BlockExpr::When(when) => when.span,
         BlockExpr::If(block) => block.span,
+        BlockExpr::TogetherFor(together) => together.span,
+    }
+}
+
+/// The span of a statement.
+fn stmt_span(stmt: &Stmt) -> Span {
+    match stmt {
+        Stmt::Let(stmt) => stmt.span,
+        Stmt::Assign(stmt) => stmt.span,
+        Stmt::IfThen(stmt) => stmt.span,
+        Stmt::For(stmt) => stmt.span,
+        Stmt::Together(stmt) => stmt.span,
+        Stmt::Handled(handled) => handled.span,
+        Stmt::BlockExpr(expr) => block_expr_span(expr),
     }
 }
 

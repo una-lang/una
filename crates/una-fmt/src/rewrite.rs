@@ -524,34 +524,47 @@ impl Collector<'_> {
 
     fn block(&mut self, block: &Block) {
         for stmt in &block.stmts {
-            match stmt {
-                Stmt::Let(stmt) => match &stmt.value {
+            self.stmt(stmt);
+        }
+    }
+
+    fn stmt(&mut self, stmt: &Stmt) {
+        match stmt {
+            Stmt::Let(stmt) => match &stmt.value {
+                LetValue::Handled(handled) => self.handled(handled),
+                LetValue::BlockExpr(expr) => self.block_expr(expr),
+            },
+            Stmt::Assign(stmt) => {
+                self.expr(&stmt.place);
+                match &stmt.value {
                     LetValue::Handled(handled) => self.handled(handled),
                     LetValue::BlockExpr(expr) => self.block_expr(expr),
-                },
-                Stmt::Assign(stmt) => {
-                    self.expr(&stmt.place);
-                    match &stmt.value {
-                        LetValue::Handled(handled) => self.handled(handled),
-                        LetValue::BlockExpr(expr) => self.block_expr(expr),
-                    }
                 }
-                Stmt::IfThen(stmt) => {
-                    self.expr(&stmt.condition);
-                    self.block(&stmt.block);
+            }
+            Stmt::IfThen(stmt) => {
+                self.expr(&stmt.condition);
+                self.block(&stmt.block);
+            }
+            Stmt::For(stmt) => {
+                self.for_source(&stmt.source);
+                self.block(&stmt.block);
+            }
+            Stmt::Together(stmt) => {
+                for branch in &stmt.body {
+                    self.stmt(branch);
                 }
-                Stmt::For(stmt) => {
-                    match &stmt.source {
-                        ForSource::List(list) => self.expr(list),
-                        ForSource::Range { low, high, .. } => {
-                            self.expr(low);
-                            self.expr(high);
-                        }
-                    }
-                    self.block(&stmt.block);
-                }
-                Stmt::Handled(handled) => self.handled(handled),
-                Stmt::BlockExpr(expr) => self.block_expr(expr),
+            }
+            Stmt::Handled(handled) => self.handled(handled),
+            Stmt::BlockExpr(expr) => self.block_expr(expr),
+        }
+    }
+
+    fn for_source(&mut self, source: &ForSource) {
+        match source {
+            ForSource::List(list) => self.expr(list),
+            ForSource::Range { low, high, .. } => {
+                self.expr(low);
+                self.expr(high);
             }
         }
     }
@@ -595,6 +608,10 @@ impl Collector<'_> {
                         ElseBranch::If(next) => current = next,
                     }
                 }
+            }
+            BlockExpr::TogetherFor(together) => {
+                self.for_source(&together.source);
+                self.block(&together.block);
             }
         }
     }

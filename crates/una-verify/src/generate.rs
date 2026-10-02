@@ -1024,6 +1024,57 @@ impl<'p, 'i> Walker<'p, 'i> {
                     });
                     return;
                 }
+                // `together_for x in s. e` (`spec/19 §4`): the task is checked once, for any
+                // element, in the context before it, with the facts of a range on its variable
+                // as in a loop. The list it makes says nothing but its type.
+                Expr::TogetherFor {
+                    source,
+                    var,
+                    task,
+                    span,
+                } => {
+                    let mut task_ctx = ctx.clone();
+                    self.bind(&mut task_ctx, &var.0, &var.1);
+                    if let LoopSource::Range {
+                        low,
+                        high,
+                        inclusive,
+                    } = source.as_ref()
+                    {
+                        let x = own(&task_ctx, &var.0);
+                        let low = self.atom(low, &ctx);
+                        let high = self.atom(high, &ctx);
+                        if x.f.sort() == low.f.sort() && x.f.sort() == high.f.sort() {
+                            task_ctx.assume(F::op("<=", vec![low.f, x.f.clone()]));
+                            let op = if *inclusive { "<=" } else { "<" };
+                            task_ctx.assume(F::op(op, vec![x.f, high.f]));
+                        }
+                    }
+                    let mut task_leaves = Vec::new();
+                    self.walk(task, &task_ctx, &mut task_leaves);
+                    leaves.push(Leaf {
+                        hyps: ctx.hyps.clone(),
+                        value: None,
+                        span: *span,
+                        returns: Vec::new(),
+                    });
+                    return;
+                }
+                // The tasks of a `together` block outside the `let` that binds their tuple,
+                // which the desugar never makes: each is checked in the context before it.
+                Expr::Together { tasks, span } => {
+                    for task in tasks {
+                        let mut task_leaves = Vec::new();
+                        self.walk(task, &ctx, &mut task_leaves);
+                    }
+                    leaves.push(Leaf {
+                        hyps: ctx.hyps.clone(),
+                        value: None,
+                        span: *span,
+                        returns: Vec::new(),
+                    });
+                    return;
+                }
                 // `let (x, ...) = a in e`: each binder is a projection of the tuple
                 // (`spec/17 §4`), with the refinements of its type.
                 Expr::LetTuple {
@@ -1067,6 +1118,39 @@ impl<'p, 'i> Walker<'p, 'i> {
                 } => {
                     match value.as_ref() {
                         Bound::Rhs(rhs) => self.rhs(name, ty, rhs, *span, &mut ctx),
+                        // The tuple of a `together` block (`spec/19 §4`): each task is checked
+                        // in the context before the block, with none of its siblings' facts,
+                        // and each component of the tuple is the value of one of its task's
+                        // paths, so each branch's binding carries its facts after the join.
+                        Bound::Expr(Expr::Together { tasks, .. }) => {
+                            ctx.types.insert(name.clone(), ty.clone());
+                            let x = own(&ctx, name);
+                            let base = ctx.hyps.len();
+                            let mut paths = Vec::new();
+                            for (index, task) in tasks.iter().enumerate() {
+                                let mut task_leaves = Vec::new();
+                                self.walk(task, &ctx, &mut task_leaves);
+                                let Some(component) = projection(&x, index) else {
+                                    continue;
+                                };
+                                self.returned_functions(
+                                    &ctx,
+                                    &task_leaves,
+                                    &component.ty,
+                                    Some(*span),
+                                );
+                                if !task_leaves.is_empty() {
+                                    let options: Vec<F> = task_leaves
+                                        .iter()
+                                        .map(|leaf| self.path(leaf, base, &component))
+                                        .collect();
+                                    paths.push(F::or(options));
+                                }
+                            }
+                            for path in paths {
+                                ctx.define(path);
+                            }
+                        }
                         Bound::Expr(inner) => {
                             let mut inner_leaves = Vec::new();
                             self.walk(inner, &ctx, &mut inner_leaves);

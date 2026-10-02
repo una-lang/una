@@ -241,43 +241,56 @@ impl Normalizer<'_> {
 
     fn block(&mut self, block: &mut Block) {
         for stmt in &mut block.stmts {
-            match stmt {
-                Stmt::Let(stmt) => match &mut stmt.value {
+            self.stmt(stmt);
+        }
+    }
+
+    fn stmt(&mut self, stmt: &mut Stmt) {
+        match stmt {
+            Stmt::Let(stmt) => match &mut stmt.value {
+                LetValue::Handled(handled) => {
+                    self.expr(&mut handled.expr);
+                    self.handlings(handled);
+                }
+                LetValue::BlockExpr(expr) => self.block_expr(expr),
+            },
+            Stmt::Assign(stmt) => {
+                self.expr(&mut stmt.place);
+                match &mut stmt.value {
                     LetValue::Handled(handled) => {
                         self.expr(&mut handled.expr);
                         self.handlings(handled);
                     }
                     LetValue::BlockExpr(expr) => self.block_expr(expr),
-                },
-                Stmt::Assign(stmt) => {
-                    self.expr(&mut stmt.place);
-                    match &mut stmt.value {
-                        LetValue::Handled(handled) => {
-                            self.expr(&mut handled.expr);
-                            self.handlings(handled);
-                        }
-                        LetValue::BlockExpr(expr) => self.block_expr(expr),
-                    }
                 }
-                Stmt::IfThen(stmt) => {
-                    self.expr(&mut stmt.condition);
-                    self.block(&mut stmt.block);
+            }
+            Stmt::IfThen(stmt) => {
+                self.expr(&mut stmt.condition);
+                self.block(&mut stmt.block);
+            }
+            Stmt::For(stmt) => {
+                self.source(&mut stmt.source);
+                self.block(&mut stmt.block);
+            }
+            Stmt::Together(stmt) => {
+                for branch in &mut stmt.body {
+                    self.stmt(branch);
                 }
-                Stmt::For(stmt) => {
-                    match &mut stmt.source {
-                        ForSource::List(list) => self.expr(list),
-                        ForSource::Range { low, high, .. } => {
-                            self.expr(low);
-                            self.expr(high);
-                        }
-                    }
-                    self.block(&mut stmt.block);
-                }
-                Stmt::Handled(handled) => {
-                    self.expr(&mut handled.expr);
-                    self.handlings(handled);
-                }
-                Stmt::BlockExpr(expr) => self.block_expr(expr),
+            }
+            Stmt::Handled(handled) => {
+                self.expr(&mut handled.expr);
+                self.handlings(handled);
+            }
+            Stmt::BlockExpr(expr) => self.block_expr(expr),
+        }
+    }
+
+    fn source(&mut self, source: &mut ForSource) {
+        match source {
+            ForSource::List(list) => self.expr(list),
+            ForSource::Range { low, high, .. } => {
+                self.expr(low);
+                self.expr(high);
             }
         }
     }
@@ -311,6 +324,10 @@ impl Normalizer<'_> {
                 }
             }
             BlockExpr::If(block) => self.if_block(block),
+            BlockExpr::TogetherFor(together) => {
+                self.source(&mut together.source);
+                self.block(&mut together.block);
+            }
         }
     }
 

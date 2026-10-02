@@ -598,6 +598,27 @@ availability(@registrations.find(key))         -- U3013
 
 This fixes evaluation order, gives every failure a handling site and makes every effect visible on its own line. Pure calls nest freely. Example `do` lines are exempt (§10).
 
+### 5.5 Concurrent tasks with `together` (edition `0.2`)
+
+In a package of edition `0.2`, `together` runs independent work as concurrent tasks (ADR 0065, `spec/19`):
+
+```una
+together                                        -- two or more `let` branches (U2024)
+  let north = reading() with @sensor = @north
+  let south = reading() with @sensor = @south
+let warmest = max(north, b: south)              -- the branches' names are bound after the block
+
+let pages = together for id in ids              -- one task per element, a list of results
+  fetch(id) if error pass
+```
+
+- **A branch** sees the bindings before the block, never its siblings', and cannot assign, `edit` or `take` a binding declared outside it (U2023). Return new values from the branch instead.
+- **Capabilities** in scope can be used by every branch, and so can `uses of` parameters.
+- **Failures.** When a task fails, the tasks after it are cancelled, and the block fails with the failure of the lowest-indexed failing task, as running the branches one after another would.
+- **Labels.** `together for` runs its tasks under the top label of its list, as a `for` loop does, and its result carries that label.
+- **Traces** list the events of the tasks in branch order, each with its task's path, as `"task": "2.1"`.
+- The interpreter runs the tasks one after another. The native backend does not compile `together` yet.
+
 ---
 
 ## 6. Errors

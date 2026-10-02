@@ -61,28 +61,42 @@ impl Scan<'_, '_> {
 
     fn block(&mut self, block: &Block) {
         for stmt in &block.stmts {
-            match stmt {
-                Stmt::Let(stmt) => self.value(&stmt.value),
-                Stmt::Assign(stmt) => {
-                    self.expr(&stmt.place);
-                    self.value(&stmt.value);
+            self.stmt(stmt);
+        }
+    }
+
+    fn stmt(&mut self, stmt: &Stmt) {
+        match stmt {
+            Stmt::Let(stmt) => self.value(&stmt.value),
+            Stmt::Assign(stmt) => {
+                self.expr(&stmt.place);
+                self.value(&stmt.value);
+            }
+            Stmt::IfThen(stmt) => {
+                self.expr(&stmt.condition);
+                self.block(&stmt.block);
+            }
+            Stmt::For(stmt) => {
+                self.source(&stmt.source);
+                self.block(&stmt.block);
+            }
+            // Each branch is a statement of its own (`spec/19 §2` rule 4).
+            Stmt::Together(stmt) => {
+                for branch in &stmt.body {
+                    self.stmt(branch);
                 }
-                Stmt::IfThen(stmt) => {
-                    self.expr(&stmt.condition);
-                    self.block(&stmt.block);
-                }
-                Stmt::For(stmt) => {
-                    match &stmt.source {
-                        ForSource::List(list) => self.expr(list),
-                        ForSource::Range { low, high, .. } => {
-                            self.expr(low);
-                            self.expr(high);
-                        }
-                    }
-                    self.block(&stmt.block);
-                }
-                Stmt::Handled(handled) => self.handled(handled),
-                Stmt::BlockExpr(expr) => self.block_expr(expr),
+            }
+            Stmt::Handled(handled) => self.handled(handled),
+            Stmt::BlockExpr(expr) => self.block_expr(expr),
+        }
+    }
+
+    fn source(&mut self, source: &ForSource) {
+        match source {
+            ForSource::List(list) => self.expr(list),
+            ForSource::Range { low, high, .. } => {
+                self.expr(low);
+                self.expr(high);
             }
         }
     }
@@ -148,6 +162,10 @@ impl Scan<'_, '_> {
                         Body::Block(block) => self.block(block),
                     }
                 }
+            }
+            BlockExpr::TogetherFor(together) => {
+                self.source(&together.source);
+                self.block(&together.block);
             }
         }
     }

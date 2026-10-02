@@ -274,6 +274,13 @@ fn mentions(expr: &Expr, name: &str) -> bool {
         Expr::Atom { atom: a, .. } => atom(a),
         Expr::Unreachable { .. } => false,
         Expr::LetTuple { value, body, .. } => atom(value) || mentions(body, name),
+        Expr::Together { tasks, .. } => tasks.iter().any(|task| mentions(task, name)),
+        Expr::TogetherFor { source, task, .. } => {
+            (match source.as_ref() {
+                LoopSource::List(list) => atom(list),
+                LoopSource::Range { low, high, .. } => atom(low) || atom(high),
+            }) || mentions(task, name)
+        }
         Expr::Loop {
             source, init, body, ..
         } => {

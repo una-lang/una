@@ -306,6 +306,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
             match expr {
                 Expr::LetTuple { .. } => return Err(unsupported("the memory model (#29)")),
                 Expr::Loop { .. } => return Err(unsupported("`for` loops (#81)")),
+                Expr::Together { .. } | Expr::TogetherFor { .. } => {
+                    return Err(unsupported("`together` (spec/19)"));
+                }
                 Expr::Atom { atom, .. } => {
                     let (value, kind) = self.atom(atom, env)?;
                     self.retain(value, kind);
@@ -1666,6 +1669,21 @@ fn vars(expr: &Expr, out: &mut BTreeSet<String>) {
             }
             atoms(init, out);
             vars(body, out);
+        }
+        Expr::Together { tasks, .. } => {
+            for task in tasks {
+                vars(task, out);
+            }
+        }
+        Expr::TogetherFor { source, task, .. } => {
+            match source.as_ref() {
+                una_core::LoopSource::List(list) => atoms(std::slice::from_ref(list), out),
+                una_core::LoopSource::Range { low, high, .. } => {
+                    atoms(std::slice::from_ref(low), out);
+                    atoms(std::slice::from_ref(high), out);
+                }
+            }
+            vars(task, out);
         }
         Expr::With { source, body, .. } => {
             if let Source::Handler { args, .. } = source {

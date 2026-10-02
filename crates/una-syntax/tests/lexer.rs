@@ -688,20 +688,26 @@ fn keyword_tables_match_spec_01_section_5() {
 }
 
 #[test]
-fn the_edition_0_2_table_matches_spec_17_section_9() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/spec/17-memory-model.md");
-    let spec = std::fs::read_to_string(path).unwrap();
-    let section = spec.split("## 9. Reserved words").nth(1).unwrap();
-    let table = section.split("| Keywords | Message |").nth(1).unwrap();
+fn the_edition_0_2_table_matches_spec_17_and_19_section_9() {
+    // The rows of edition 0.2: those of the memory model (`spec/17 §9`), then those of
+    // structured concurrency (`spec/19 §9`).
     let mut from_spec = BTreeMap::new();
-    for row in table
-        .lines()
-        .skip(2)
-        .take_while(|line| line.starts_with('|'))
-    {
-        let cells: Vec<&str> = row.trim_matches('|').split('|').map(str::trim).collect();
-        for word in cells[0].split(", ") {
-            from_spec.insert(word.trim_matches('`').to_owned(), cells[1].to_owned());
+    for chapter in ["17-memory-model.md", "19-structured-concurrency.md"] {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/spec")
+            .join(chapter);
+        let spec = std::fs::read_to_string(path).unwrap();
+        let section = spec.split("## 9. Reserved words").nth(1).unwrap();
+        let table = section.split("| Keywords | Message |").nth(1).unwrap();
+        for row in table
+            .lines()
+            .skip(2)
+            .take_while(|line| line.starts_with('|'))
+        {
+            let cells: Vec<&str> = row.trim_matches('|').split('|').map(str::trim).collect();
+            for word in cells[0].split(", ") {
+                from_spec.insert(word.trim_matches('`').to_owned(), cells[1].to_owned());
+            }
         }
     }
     let from_code: BTreeMap<String, String> = keywords::RESERVED_IN_0_2

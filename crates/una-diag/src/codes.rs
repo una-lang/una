@@ -146,6 +146,10 @@ pub enum Code {
     U2021,
     /// Integer literal does not fit its type.
     U2022,
+    /// A binding declared outside a `together` branch assigned, or passed as `edit` or `take`, inside it.
+    U2023,
+    /// A `together` body with a statement other than `let`, or fewer than two branches.
+    U2024,
     /// Capability not in scope.
     U3001,
     /// Operation not permitted by capability type.
@@ -222,7 +226,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 77] = [
+    pub const ALL: [Code; 79] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -264,6 +268,8 @@ impl Code {
         Code::U2020,
         Code::U2021,
         Code::U2022,
+        Code::U2023,
+        Code::U2024,
         Code::U3001,
         Code::U3002,
         Code::U3003,
@@ -569,6 +575,18 @@ impl Code {
                 domain: Domain::Types,
                 meaning: "Integer literal does not fit its type",
                 explain: include_str!("../explain/U2022.md"),
+            },
+            Code::U2023 => &Entry {
+                code: "U2023",
+                domain: Domain::Types,
+                meaning: "A binding declared outside a `together` branch assigned, or passed as `edit` or `take`, inside it",
+                explain: include_str!("../explain/U2023.md"),
+            },
+            Code::U2024 => &Entry {
+                code: "U2024",
+                domain: Domain::Types,
+                meaning: "A `together` body with a statement other than `let`, or fewer than two branches",
+                explain: include_str!("../explain/U2024.md"),
             },
             Code::U3001 => &Entry {
                 code: "U3001",
