@@ -4,22 +4,28 @@
 use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
-use una_core::{Base, Decl, Expr, Fun, Label, Level, PRELUDE_MODULE, Path, Program, Type};
+use una_core::{Base, Decl, Fun, Label, Level, PRELUDE_MODULE, Program, Type};
 
 /// The description of `main`'s error kind and the types it holds, with `location`, where `main`
-/// is named: `None` when `main` cannot fail.
+/// is named: `None` when `main` cannot fail. The kind is the one the checker resolved: when
+/// Core lacks it, the description would be a guess that could show a labeled field, so it is an
+/// internal error instead.
 pub(super) fn describe(
     program: &Program,
-    entry: &str,
     main: &Fun,
     location: Value,
-) -> Option<Value> {
-    let name = main.fails.as_ref()?;
-    let kind = error_kind(program, entry, main, name);
+) -> Result<Option<Value>, String> {
+    if main.fails.is_none() {
+        return Ok(None);
+    }
+    let Some(kind) = main.error.as_deref().cloned() else {
+        return Err("the error kind of `main` is not resolved".to_owned());
+    };
     let mut types = Types {
         program,
         index: BTreeMap::new(),
         shapes: Vec::new(),
+        unknown: false,
     };
     let root = types.of(&Type::Base {
         base: Base::Named {
@@ -30,59 +36,12 @@ pub(super) fn describe(
         refinements: Vec::new(),
         label: Label::public(),
     });
-    Some(json!({ "location": location, "root": root, "types": types.shapes }))
-}
-
-/// The declaration of `main`'s error kind, which Core names without its module: the kind of a
-/// `fail` in `main`, else the kind of that name in the entry module, in another module, or in the
-/// prelude.
-fn error_kind(program: &Program, entry: &str, main: &Fun, name: &str) -> Path {
-    if let Some(kind) = failed_kind(&main.body) {
-        return kind;
+    if types.unknown {
+        return Err("the error kind of `main` holds a kind that has no declaration".to_owned());
     }
-    let declares = |module: &&una_core::Module| {
-        module
-            .decls
-            .iter()
-            .any(|decl| matches!(decl, Decl::Data { name: declared, .. } if declared == name))
-    };
-    let module = program
-        .modules
-        .iter()
-        .filter(|module| module.path == entry)
-        .find(declares)
-        .or_else(|| program.modules.iter().find(declares))
-        .map_or_else(|| PRELUDE_MODULE.to_owned(), |module| module.path.clone());
-    Path {
-        module,
-        name: name.to_owned(),
-    }
-}
-
-/// The kind of the first `fail` of `expr`, outside handling clauses.
-fn failed_kind(expr: &Expr) -> Option<Path> {
-    match expr {
-        Expr::Fail { ctor, .. } => Some(ctor.kind.clone()),
-        Expr::Let { value, body, .. } => {
-            let inner = match value.as_ref() {
-                una_core::Bound::Expr(inner) => failed_kind(inner),
-                una_core::Bound::Rhs(_) => None,
-            };
-            inner.or_else(|| failed_kind(body))
-        }
-        Expr::If {
-            then, otherwise, ..
-        } => failed_kind(then).or_else(|| failed_kind(otherwise)),
-        Expr::Case {
-            arms, otherwise, ..
-        } => arms
-            .iter()
-            .find_map(|arm| failed_kind(&arm.body))
-            .or_else(|| otherwise.as_deref().and_then(failed_kind)),
-        Expr::Handle { handler, .. } => failed_kind(handler),
-        Expr::With { body, .. } => failed_kind(body),
-        Expr::Atom { .. } | Expr::Attempt { .. } | Expr::Unreachable { .. } => None,
-    }
+    Ok(Some(
+        json!({ "location": location, "root": root, "types": types.shapes }),
+    ))
 }
 
 /// The types described so far, by index, and the index of each by its name.
@@ -90,6 +49,8 @@ struct Types<'p> {
     program: &'p Program,
     index: BTreeMap<String, usize>,
     shapes: Vec<Value>,
+    /// Whether a kind had no declaration to describe.
+    unknown: bool,
 }
 
 impl Types<'_> {
@@ -148,7 +109,10 @@ impl Types<'_> {
                             .collect(),
                     ),
                     "KeyError" => data(vec![variant("UnknownKey", Vec::new())]),
-                    _ => json!({ "shape": "other" }),
+                    _ => {
+                        self.unknown = true;
+                        json!({ "shape": "other" })
+                    }
                 }
             }
             Base::Named { module, name, args } => {
@@ -168,6 +132,7 @@ impl Types<'_> {
                         _ => None,
                     });
                 let Some((params, variants)) = declared else {
+                    self.unknown = true;
                     return json!({ "shape": "other" });
                 };
                 let variants = variants

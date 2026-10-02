@@ -840,6 +840,10 @@ pub struct Fun {
     pub uses: Vec<Use>,
     /// The error kind.
     pub fails: Option<String>,
+    /// The error kind's declaration, by its qualified identity (`spec/09 §3`), when it is
+    /// resolved: what a failure of the function holds, which the native backend describes for
+    /// U6001 (`spec/16 §3`).
+    pub error: Option<Box<Path>>,
     /// The `requires` clauses, over the parameters.
     pub requires: Vec<Clause>,
     /// The `ensures` clauses, over the parameters and `result`.
