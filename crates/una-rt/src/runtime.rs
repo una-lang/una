@@ -1,5 +1,5 @@
-//! The runtime in safe Rust: the command line, grants, host operations and the trace of a
-//! native executable (`spec/16 §3`). [`crate::ffi`] calls it from the C ABI.
+//! The runtime in safe Rust: the command line, grants, the call depth, host operations and the
+//! trace of a native executable (`spec/16 §3`). [`crate::ffi`] calls it from the C ABI.
 
 use std::cell::RefCell;
 use std::io::{self, Write};
@@ -9,17 +9,22 @@ use serde_json::Value;
 use una_diag::{Code, Diagnostic, Location, Position, render_human};
 use una_interp::{Event, EventOutcome, Grant};
 
+use crate::values;
+
 /// The exit code of a usage error (`spec/13 §5`, ADR 0036).
 const USAGE: i32 = 2;
 
-/// What `una build` embeds in the executable (`spec/16 §2`), as JSON: the `[run] grants`, and
-/// every `uses` of `main` with its operations and where it is written.
+/// What `una build` embeds in the executable (`spec/16 §2`), as JSON: the `[run] grants`, every
+/// `uses` of `main` with its operations and where it is written, and where each call of the
+/// program is written, for U6003.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Meta {
     /// The grant specs of `[run] grants`.
     pub grants: Vec<String>,
     /// The `uses` clauses of `main`.
     pub uses: Vec<Need>,
+    /// The calls of the program, by the index that the generated code passes on each call.
+    pub sites: Vec<Location>,
 }
 
 /// One `uses` clause of `main`.
@@ -63,7 +68,19 @@ impl Meta {
                 })
             })
             .collect::<Option<Vec<_>>>()?;
-        Some(Meta { grants, uses })
+        let sites = match value.get("sites") {
+            Some(sites) => sites
+                .as_array()?
+                .iter()
+                .map(location)
+                .collect::<Option<Vec<_>>>()?,
+            None => Vec::new(),
+        };
+        Some(Meta {
+            grants,
+            uses,
+            sites,
+        })
     }
 }
 
@@ -129,10 +146,14 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
     Ok(options)
 }
 
-/// The state of a run: the grants, and the trace when `--trace` asks for one.
+/// The state of a run, on the thread that runs `main`.
 struct State {
     trace: Option<Vec<Event>>,
+    trace_path: Option<PathBuf>,
     failed_write: Option<io::Error>,
+    depth: usize,
+    max_depth: usize,
+    sites: Vec<Location>,
 }
 
 thread_local! {
@@ -140,8 +161,9 @@ thread_local! {
 }
 
 /// Runs the executable: parses the command line, checks `main`'s capabilities against the
-/// grants, calls `entry`, the compiled `main`, and writes the trace. Returns the exit code.
-pub fn start(args: &[String], meta: &str, entry: &dyn Fn() -> i64) -> i32 {
+/// grants, calls `entry`, the compiled `main`, on a thread with the stack that `--max-depth`
+/// needs, and writes the trace. Returns the exit code.
+pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + 'static) -> i32 {
     let mut stderr = io::stderr();
     let Some(meta) = Meta::parse(meta) else {
         let _ = writeln!(
@@ -164,14 +186,14 @@ pub fn start(args: &[String], meta: &str, entry: &dyn Fn() -> i64) -> i32 {
             return USAGE;
         }
     };
-    if una_interp::stack_bytes(options.max_depth).is_none() {
+    let Some(stack) = una_interp::stack_bytes(options.max_depth) else {
         let _ = writeln!(
             stderr,
             "error: `--max-depth {}` needs more stack than the system can address",
             options.max_depth
         );
         return USAGE;
-    }
+    };
     let ungranted = check_grants(&meta, &grants);
     if !ungranted.is_empty() {
         let _ = write!(
@@ -181,33 +203,59 @@ pub fn start(args: &[String], meta: &str, entry: &dyn Fn() -> i64) -> i32 {
         );
         return 1;
     }
-    STATE.with(|state| {
-        *state.borrow_mut() = Some(State {
-            trace: options.trace.as_ref().map(|_| Vec::new()),
-            failed_write: None,
-        });
-    });
-    let status = entry();
-    let state = STATE.with(|state| state.borrow_mut().take());
-    let mut code = match status {
-        0 => 0,
-        _ => 1,
+    let state = State {
+        trace: options.trace.as_ref().map(|_| Vec::new()),
+        trace_path: options.trace.clone(),
+        failed_write: None,
+        depth: 0,
+        max_depth: options.max_depth,
+        sites: meta.sites,
     };
-    if let Some(state) = state {
-        if let Some(error) = state.failed_write {
-            let _ = writeln!(stderr, "error: cannot write the output: {error}");
-            code = USAGE;
-        }
-        if let (Some(path), Some(events)) = (&options.trace, state.trace)
-            && let Err(error) = std::fs::write(path, una_interp::trace_json(&events))
-        {
+    let worker = std::thread::Builder::new()
+        .name("una-main".to_owned())
+        .stack_size(stack)
+        .spawn(move || {
+            STATE.with(|cell| *cell.borrow_mut() = Some(state));
+            let status = entry();
+            let state = STATE.with(|cell| cell.borrow_mut().take());
+            (status, state)
+        });
+    let (status, state) = match worker.map(std::thread::JoinHandle::join) {
+        Ok(Ok(result)) => result,
+        _ => {
             let _ = writeln!(
                 stderr,
-                "error: cannot write the trace to `{}`: {error}",
-                path.display()
+                "error: cannot start `main` with the stack that `--max-depth {}` needs",
+                options.max_depth
             );
-            code = USAGE;
+            return USAGE;
         }
+    };
+    let mut code = if status == 0 { 0 } else { 1 };
+    if let Some(state) = state {
+        code = code.max(finish(state));
+    }
+    code
+}
+
+/// Reports a failed write of the output and writes the trace; returns the exit code they
+/// need, 0 when both went well.
+fn finish(state: State) -> i32 {
+    let mut stderr = io::stderr();
+    let mut code = 0;
+    if let Some(error) = state.failed_write {
+        let _ = writeln!(stderr, "error: cannot write the output: {error}");
+        code = USAGE;
+    }
+    if let (Some(path), Some(events)) = (&state.trace_path, state.trace)
+        && let Err(error) = std::fs::write(path, una_interp::trace_json(&events))
+    {
+        let _ = writeln!(
+            stderr,
+            "error: cannot write the trace to `{}`: {error}",
+            path.display()
+        );
+        code = USAGE;
     }
     code
 }
@@ -257,9 +305,58 @@ pub fn check_grants(meta: &Meta, grants: &[Grant]) -> Vec<Diagnostic> {
         .collect()
 }
 
-/// `Console.print`: writes the line and a newline to stdout, and records the event
+/// Enters the call at `site`: past the maximum depth, the run aborts with U6003 at the call,
+/// as in the interpreter (`spec/11 §7`): the output so far stays printed, the trace is written,
+/// and the executable exits with code 1.
+pub fn enter(site: usize) {
+    let abort = STATE.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        let state = cell.as_mut()?;
+        if state.depth >= state.max_depth {
+            let location = state.sites.get(site).cloned().unwrap_or(Location {
+                file: String::new(),
+                start: Position { line: 1, col: 1 },
+                end: Position { line: 1, col: 1 },
+            });
+            let limit = state.max_depth;
+            return cell.take().map(|state| (state, location, limit));
+        }
+        state.depth += 1;
+        None
+    });
+    if let Some((state, location, limit)) = abort {
+        let _ = io::stdout().flush();
+        let diagnostic = Diagnostic::error(
+            Code::U6003,
+            format!("this call exceeds the maximum call depth of {limit}"),
+            location,
+        );
+        let _ = write!(
+            io::stderr(),
+            "{}",
+            render_human(&[diagnostic], &Default::default(), false)
+        );
+        let code = finish(state).max(1);
+        // The run ends here, as the interpreter's abort does: nothing unwinds through the
+        // compiled frames (spec/16 §4 rule 3).
+        #[allow(clippy::exit)]
+        std::process::exit(code);
+    }
+}
+
+/// Leaves a call.
+pub fn leave() {
+    STATE.with(|cell| {
+        if let Some(state) = cell.borrow_mut().as_mut() {
+            state.depth = state.depth.saturating_sub(1);
+        }
+    });
+}
+
+/// `Console.print` of the text `line`: writes it and a newline to stdout, and records the event
 /// (`spec/14 §3`, `spec/11 §5`).
-pub fn console_print(line: &str) {
+pub fn console_print(line: i64) {
+    let line = values::text_value(line);
     let mut stdout = io::stdout().lock();
     let written = writeln!(stdout, "{line}").and_then(|()| stdout.flush());
     STATE.with(|state| {
@@ -278,7 +375,7 @@ pub fn console_print(line: &str) {
                 instance: "host:Console".to_owned(),
                 capability: "Console".to_owned(),
                 op: "print".to_owned(),
-                args: vec![("line".to_owned(), una_core::quote(line))],
+                args: vec![("line".to_owned(), una_core::quote(&line))],
                 outcome: EventOutcome::Ok("unit".to_owned()),
             });
         }
@@ -319,6 +416,7 @@ mod tests {
             r#"{"grants":[],"uses":[{"name":"console","capability":"Console","ops":["print"],"location":{"file":"src/hello.una","start":{"line":4,"col":3},"end":{"line":4,"col":33}}}]}"#,
         )
         .unwrap();
+        assert!(meta.sites.is_empty());
         let missing = check_grants(&meta, &[]);
         assert_eq!(missing.len(), 1);
         assert_eq!(missing[0].code, Code::U3012);

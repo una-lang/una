@@ -904,6 +904,7 @@ dependencies = [
  "cranelift-object",
  "target-lexicon",
  "una-core",
+ "una-syntax",
 ]
 
 [[package]]
@@ -968,6 +969,7 @@ dependencies = [
 name = "una-rt"
 version = "0.2.0-alpha.1"
 dependencies = [
+ "num-bigint",
  "serde_json",
  "una-core",
  "una-diag",

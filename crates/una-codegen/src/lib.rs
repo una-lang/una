@@ -2,22 +2,31 @@
 //! object file for the host target, through Cranelift. `una build` links the object with the
 //! runtime library `una-rt` through the system `cc`.
 //!
-//! The backend is delivered in slices (#26). This slice compiles `main` of the entry module when
-//! its body prints text through the host `Console`: enough for `examples/hello`. Any other
-//! construct is [`CodegenError::Unsupported`], with the construct named, so that `una build`
+//! The backend is delivered in slices (#26). It compiles `main` of the entry module and every
+//! function it reaches, when they use what the backend compiles so far:
+//! - integers (tagged words, promoted to arbitrary precision by the runtime, NB-3), `Bool`,
+//!   `Unit`, and `Text` literals, interpolation and comparison;
+//! - arithmetic with Euclidean division, comparisons, `not`, `if`, and the `when` over
+//!   literals and ranges that Core writes as `if`;
+//! - calls of the package's functions, recursion included, with the call depth of
+//!   `spec/11 §7`;
+//! - `Console.print`.
+//!
+//! Anything else is [`CodegenError::Unsupported`], with the construct named, so that `una build`
 //! reports what the native backend cannot compile yet instead of building something else.
 //!
-//! The object has two functions. `una_main` is `main` of Una; it returns 0 when `main`
-//! returns. `main`, the C entry point, calls `una_rt_start` of the runtime with the process
-//! arguments, the program's description that `una build` embeds (`spec/16 §2`) and
-//! `una_main`. This crate emits machine code but never runs it: there is no JIT, and no
-//! `unsafe`.
+//! Values are machine words, as the runtime describes them (`una-rt`, `values`). The object's
+//! C `main` calls `una_rt_start` of the runtime with the process arguments, the program's
+//! description (`spec/16 §2`) and `una_main`, which runs `main` of Una. This crate emits
+//! machine code but never runs it: there is no JIT, and no `unsafe`.
 #![deny(missing_docs)]
+
+mod lower;
 
 use std::collections::BTreeMap;
 use std::fmt;
 
-use cranelift_codegen::ir::{AbiParam, InstBuilder, UserFuncName, Value, types};
+use cranelift_codegen::ir::{AbiParam, InstBuilder, UserFuncName, types};
 use cranelift_codegen::isa::{self, OwnedTargetIsa};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::{Context, ir};
@@ -25,7 +34,8 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module, default_libcall_names};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use target_lexicon::Triple;
-use una_core::{Atom, Bound, Decl, Expr, Fun, HOST_MODULE, Program, Rhs};
+use una_core::{Decl, Fun, Path, Program};
+use una_syntax::Span;
 
 /// Why the backend cannot compile a program.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,27 +68,42 @@ pub fn host_target() -> String {
     Triple::host().to_string()
 }
 
-/// The object file of the program: `main` of module `entry` compiled for the host target, and
-/// `meta`, the description of the program that the runtime reads at start (`spec/16 §2`).
-pub fn compile(program: &Program, entry: &str, meta: &str) -> Result<Vec<u8>, CodegenError> {
-    let main = program
-        .modules
-        .iter()
-        .filter(|module| module.path == entry)
-        .flat_map(|module| &module.decls)
-        .find_map(|decl| match decl {
-            Decl::Fun(fun) if fun.name == "main" => Some(fun),
-            _ => None,
-        })
-        .ok_or(CodegenError::NoMain)?;
-    let mut emitter = Emitter::new(isa()?)?;
-    let body = emitter.lower_main(main)?;
-    emitter.entry(body, meta)?;
+/// The object file of the program: `main` of module `entry` and the functions it reaches,
+/// compiled for the host target. `meta` gives the description of the program that the runtime
+/// reads at start (`spec/16 §2`), from the spans of the program's calls, in the order of the
+/// indices the generated code passes to the runtime on each call.
+pub fn compile(
+    program: &Program,
+    entry: &str,
+    meta: &dyn Fn(&[Span]) -> String,
+) -> Result<Vec<u8>, CodegenError> {
+    let main = function(program, entry, "main").ok_or(CodegenError::NoMain)?;
+    let mut emitter = Emitter::new(program, isa()?)?;
+    let main_id = emitter.function(&Path {
+        module: entry.to_owned(),
+        name: "main".to_owned(),
+    })?;
+    emitter.drain()?;
+    let meta = meta(&emitter.sites);
+    emitter.entry(main_id, main, &meta)?;
     emitter
         .module
         .finish()
         .emit()
         .map_err(|error| CodegenError::Internal(error.to_string()))
+}
+
+/// The function `name` of module `module`.
+fn function<'p>(program: &'p Program, module: &str, name: &str) -> Option<&'p Fun> {
+    program
+        .modules
+        .iter()
+        .filter(|m| m.path == module)
+        .flat_map(|m| &m.decls)
+        .find_map(|decl| match decl {
+            Decl::Fun(fun) if fun.name == name => Some(fun),
+            _ => None,
+        })
 }
 
 fn internal(error: impl fmt::Display) -> CodegenError {
@@ -96,120 +121,151 @@ fn isa() -> Result<OwnedTargetIsa, CodegenError> {
         .map_err(internal)
 }
 
-/// What `main` does, in order: the host operations it performs.
-enum Step {
-    /// `Console.print` of a text known at compile time.
-    Print(String),
-}
+/// The runtime functions the generated code calls, with their arities: every parameter and
+/// result is a word (`i64`), and `None` is no result.
+const RUNTIME: [(&str, usize, bool); 18] = [
+    ("una_rt_int_literal", 2, true),
+    ("una_rt_text_literal", 2, true),
+    ("una_rt_int_add", 2, true),
+    ("una_rt_int_sub", 2, true),
+    ("una_rt_int_mul", 2, true),
+    ("una_rt_int_div", 2, true),
+    ("una_rt_int_mod", 2, true),
+    ("una_rt_int_neg", 1, true),
+    ("una_rt_int_compare", 2, true),
+    ("una_rt_int_text", 1, true),
+    ("una_rt_bool_text", 1, true),
+    ("una_rt_text_concat", 2, true),
+    ("una_rt_text_equal", 2, true),
+    ("una_rt_text_compare", 2, true),
+    ("una_rt_text_len", 1, true),
+    ("una_rt_enter", 1, false),
+    ("una_rt_leave", 0, false),
+    ("una_rt_console_print", 1, false),
+];
 
-struct Emitter {
+/// The object being built.
+struct Emitter<'p> {
+    program: &'p Program,
     module: ObjectModule,
-    texts: BTreeMap<String, DataId>,
+    /// The runtime functions, by name.
+    runtime: BTreeMap<&'static str, FuncId>,
+    /// The compiled functions, by qualified name, and those still to compile.
+    functions: BTreeMap<String, FuncId>,
+    pending: Vec<(FuncId, &'p Fun)>,
+    /// Read-only data: text literals and integer literals beyond the tagged range.
+    data: BTreeMap<String, DataId>,
+    /// The spans of the calls, by the index passed to `una_rt_enter`.
+    sites: Vec<Span>,
 }
 
-impl Emitter {
-    fn new(isa: OwnedTargetIsa) -> Result<Emitter, CodegenError> {
+impl<'p> Emitter<'p> {
+    fn new(program: &'p Program, isa: OwnedTargetIsa) -> Result<Emitter<'p>, CodegenError> {
         let builder = ObjectBuilder::new(isa, "una", default_libcall_names()).map_err(internal)?;
+        let mut module = ObjectModule::new(builder);
+        let mut runtime = BTreeMap::new();
+        for (name, params, returns) in RUNTIME {
+            let mut signature = module.make_signature();
+            for _ in 0..params {
+                signature.params.push(AbiParam::new(types::I64));
+            }
+            if returns {
+                signature.returns.push(AbiParam::new(types::I64));
+            }
+            let id = module
+                .declare_function(name, Linkage::Import, &signature)
+                .map_err(internal)?;
+            runtime.insert(name, id);
+        }
         Ok(Emitter {
-            module: ObjectModule::new(builder),
-            texts: BTreeMap::new(),
+            program,
+            module,
+            runtime,
+            functions: BTreeMap::new(),
+            pending: Vec::new(),
+            data: BTreeMap::new(),
+            sites: Vec::new(),
         })
     }
 
-    /// The steps of `main`'s body. This slice compiles a sequence of `let`s whose values are
-    /// text literals or `Console.print` of a text, ending in `unit`.
-    fn lower_main(&mut self, main: &Fun) -> Result<Vec<Step>, CodegenError> {
-        let mut texts: BTreeMap<&str, &str> = BTreeMap::new();
-        let mut steps = Vec::new();
-        let mut expr = &main.body;
-        loop {
-            match expr {
-                Expr::Atom {
-                    atom: Atom::Unit, ..
-                } => return Ok(steps),
-                Expr::Atom {
-                    atom: Atom::Var(name),
-                    ..
-                } if !texts.contains_key(name.as_str()) => {
-                    return Ok(steps);
-                }
-                Expr::Let {
-                    name, value, body, ..
-                } => {
-                    match value.as_ref() {
-                        Bound::Rhs(Rhs::Atom(Atom::Text(text))) => {
-                            texts.insert(name, text);
-                        }
-                        Bound::Rhs(Rhs::Op {
-                            capability_path,
-                            op,
-                            args,
-                            ..
-                        }) if capability_path.module == HOST_MODULE
-                            && capability_path.name == "Console"
-                            && op == "print" =>
-                        {
-                            let text = match args.as_slice() {
-                                [Atom::Text(text)] => text.as_str(),
-                                [Atom::Var(var)] => {
-                                    texts.get(var.as_str()).copied().ok_or_else(|| {
-                                        CodegenError::Unsupported("a computed `Text`".to_owned())
-                                    })?
-                                }
-                                _ => {
-                                    return Err(CodegenError::Unsupported(
-                                        "this argument of `Console.print`".to_owned(),
-                                    ));
-                                }
-                            };
-                            self.text(text)?;
-                            steps.push(Step::Print(text.to_owned()));
-                        }
-                        Bound::Rhs(rhs) => {
-                            return Err(CodegenError::Unsupported(describe_rhs(rhs)));
-                        }
-                        Bound::Expr(inner) => {
-                            return Err(CodegenError::Unsupported(describe_expr(inner)));
-                        }
-                    }
-                    expr = body;
-                }
-                other => return Err(CodegenError::Unsupported(describe_expr(other))),
-            }
-        }
-    }
-
-    /// The read-only data of a text literal, emitted once per text.
-    fn text(&mut self, text: &str) -> Result<DataId, CodegenError> {
-        if let Some(id) = self.texts.get(text) {
+    /// The function `path` of the package, declared now and compiled by [`Emitter::drain`].
+    fn function(&mut self, path: &Path) -> Result<FuncId, CodegenError> {
+        let qualified = format!("{}.{}", path.module, path.name);
+        if let Some(id) = self.functions.get(&qualified) {
             return Ok(*id);
         }
-        let name = format!("una_text_{}", self.texts.len());
+        let fun = function(self.program, &path.module, &path.name).ok_or_else(|| {
+            CodegenError::Unsupported(format!(
+                "calls of `{qualified}`, which is not a function of the package"
+            ))
+        })?;
+        if fun.fails.is_some() {
+            return Err(CodegenError::Unsupported(
+                "functions that can fail".to_owned(),
+            ));
+        }
+        let mut signature = self.module.make_signature();
+        for _ in &fun.params {
+            signature.params.push(AbiParam::new(types::I64));
+        }
+        signature.returns.push(AbiParam::new(types::I64));
+        let name = format!("una_fn_{}", self.functions.len());
+        let id = self
+            .module
+            .declare_function(&name, Linkage::Local, &signature)
+            .map_err(internal)?;
+        self.functions.insert(qualified, id);
+        self.pending.push((id, fun));
+        Ok(id)
+    }
+
+    /// Compiles every declared function, and those they call in turn.
+    fn drain(&mut self) -> Result<(), CodegenError> {
+        while let Some((id, fun)) = self.pending.pop() {
+            let mut context = self.module.make_context();
+            context.func.signature = self
+                .module
+                .declarations()
+                .get_function_decl(id)
+                .signature
+                .clone();
+            context.func.name = UserFuncName::user(0, id.as_u32());
+            let mut builder_context = FunctionBuilderContext::new();
+            let config = self.module.target_config();
+            {
+                let builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
+                lower::function(self, builder, fun, config)?;
+            }
+            self.define(id, &mut context)?;
+        }
+        Ok(())
+    }
+
+    /// The read-only data of `bytes`, emitted once per distinct content.
+    fn bytes(&mut self, bytes: &str) -> Result<DataId, CodegenError> {
+        if let Some(id) = self.data.get(bytes) {
+            return Ok(*id);
+        }
+        let name = format!("una_data_{}", self.data.len());
         let id = self
             .module
             .declare_data(&name, Linkage::Local, false, false)
             .map_err(internal)?;
         let mut data = DataDescription::new();
-        data.define(text.as_bytes().to_vec().into_boxed_slice());
+        data.define(bytes.as_bytes().to_vec().into_boxed_slice());
         self.module.define_data(id, &data).map_err(internal)?;
-        self.texts.insert(text.to_owned(), id);
+        self.data.insert(bytes.to_owned(), id);
         Ok(id)
     }
 
-    /// `una_main`, which performs the steps and returns 0, and the C `main`, which hands the
-    /// process to the runtime.
-    fn entry(&mut self, steps: Vec<Step>, meta: &str) -> Result<(), CodegenError> {
+    /// The C `main`, which hands the process to the runtime with `una_main`, the compiled `main`
+    /// of Una wrapped to return 0.
+    fn entry(&mut self, main_id: FuncId, main: &Fun, meta: &str) -> Result<(), CodegenError> {
         let pointer = self.module.target_config().pointer_type();
         let call_conv = self.module.target_config().default_call_conv;
+        let config = self.module.target_config();
 
-        let mut print = self.module.make_signature();
-        print.params.push(AbiParam::new(pointer));
-        print.params.push(AbiParam::new(pointer));
-        let print = self
-            .module
-            .declare_function("una_rt_console_print", Linkage::Import, &print)
-            .map_err(internal)?;
-
+        // `una_main`: calls `main` of Una, whose result is `unit`, and returns 0.
         let mut una_main = self.module.make_signature();
         una_main.returns.push(AbiParam::new(types::I64));
         let una_main_id = self
@@ -225,41 +281,26 @@ impl Emitter {
             let block = builder.create_block();
             builder.switch_to_block(block);
             builder.seal_block(block);
-            let print_ref = self.module.declare_func_in_func(print, builder.func);
-            for step in &steps {
-                match step {
-                    Step::Print(text) => {
-                        let (address, len) = self.text_value(&mut builder, text, pointer)?;
-                        builder.ins().call(print_ref, &[address, len]);
-                    }
-                }
-            }
+            debug_assert!(main.params.is_empty());
+            let main_ref = self.module.declare_func_in_func(main_id, builder.func);
+            builder.ins().call(main_ref, &[]);
             let zero = builder.ins().iconst(types::I64, 0);
             builder.ins().return_(&[zero]);
-            builder.finalize(self.module.target_config());
+            builder.finalize(config);
         }
         self.define(una_main_id, &mut context)?;
 
-        let meta_id = self
-            .module
-            .declare_data("una_meta", Linkage::Local, false, false)
-            .map_err(internal)?;
-        let mut data = DataDescription::new();
-        data.define(meta.as_bytes().to_vec().into_boxed_slice());
-        self.module.define_data(meta_id, &data).map_err(internal)?;
-
+        let meta_id = self.bytes(meta)?;
         let mut start = self.module.make_signature();
         start.params.push(AbiParam::new(types::I32));
-        start.params.push(AbiParam::new(pointer));
-        start.params.push(AbiParam::new(pointer));
-        start.params.push(AbiParam::new(pointer));
-        start.params.push(AbiParam::new(pointer));
+        for _ in 0..4 {
+            start.params.push(AbiParam::new(pointer));
+        }
         start.returns.push(AbiParam::new(types::I32));
         let start = self
             .module
             .declare_function("una_rt_start", Linkage::Import, &start)
             .map_err(internal)?;
-
         let mut c_main = ir::Signature::new(call_conv);
         c_main.params.push(AbiParam::new(types::I32));
         c_main.params.push(AbiParam::new(pointer));
@@ -296,25 +337,9 @@ impl Emitter {
             );
             let status = builder.inst_results(call).to_vec();
             builder.ins().return_(&status);
-            builder.finalize(self.module.target_config());
+            builder.finalize(config);
         }
         self.define(c_main_id, &mut context)
-    }
-
-    /// The address and length of a text's data, inside `builder`'s function.
-    fn text_value(
-        &mut self,
-        builder: &mut FunctionBuilder<'_>,
-        text: &str,
-        pointer: ir::Type,
-    ) -> Result<(Value, Value), CodegenError> {
-        let id = self.text(text)?;
-        let global = self.module.declare_data_in_func(id, builder.func);
-        let address = builder.ins().symbol_value(pointer, global);
-        let len = builder
-            .ins()
-            .iconst(pointer, i64::try_from(text.len()).map_err(internal)?);
-        Ok((address, len))
     }
 
     fn define(&mut self, id: FuncId, context: &mut Context) -> Result<(), CodegenError> {
@@ -323,39 +348,5 @@ impl Emitter {
             .map_err(|error| internal(format!("{error:?}")))?;
         self.module.clear_context(context);
         Ok(())
-    }
-}
-
-/// How an unsupported right-hand side reads in the message.
-fn describe_rhs(rhs: &Rhs) -> String {
-    match rhs {
-        Rhs::Atom(Atom::Int(_)) => "`Int` values".to_owned(),
-        Rhs::Atom(Atom::Bool(_)) => "`Bool` values".to_owned(),
-        Rhs::Atom(_) => "this value".to_owned(),
-        Rhs::Prim { .. } => "arithmetic, comparisons and other primitive operations".to_owned(),
-        Rhs::Call { .. } => "calls of functions".to_owned(),
-        Rhs::Apply { .. } => "calls of function values".to_owned(),
-        Rhs::Op { capability, op, .. } => format!("`{capability}.{op}`"),
-        Rhs::Construct { .. } => "records and variants".to_owned(),
-        Rhs::Field { .. } => "field access".to_owned(),
-        Rhs::List(_) => "lists".to_owned(),
-        Rhs::Lambda { .. } => "lambdas".to_owned(),
-        Rhs::Checked { .. } => "`checked`".to_owned(),
-        Rhs::Declassify { .. } => "policies".to_owned(),
-    }
-}
-
-/// How an unsupported expression reads in the message.
-fn describe_expr(expr: &Expr) -> String {
-    match expr {
-        Expr::Atom { .. } => "this result of `main`".to_owned(),
-        Expr::Let { .. } => "this `let`".to_owned(),
-        Expr::If { .. } => "`if`".to_owned(),
-        Expr::Case { .. } => "`when`".to_owned(),
-        Expr::Fail { .. } => "`fail`".to_owned(),
-        Expr::Handle { .. } => "handling clauses".to_owned(),
-        Expr::Attempt { .. } => "`attempt`".to_owned(),
-        Expr::With { .. } => "`with`".to_owned(),
-        Expr::Unreachable { .. } => "a `when` without `else`".to_owned(),
     }
 }
