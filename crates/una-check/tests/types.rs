@@ -11,9 +11,9 @@ use std::path::PathBuf;
 use pretty_assertions::assert_eq;
 use una_check::{ModuleInput, PackageInput, TypeCheck, check_names, check_types};
 use una_diag::{Code, Diagnostic, Domain};
-use una_project::{Manifest, parse_manifest};
+use una_project::{Edition, Manifest, parse_manifest};
 use una_syntax::ast::DeclKind;
-use una_syntax::{Interner, SourceDb, lex, parse};
+use una_syntax::{Interner, KeywordSet, SourceDb, lex, lex_in, parse};
 
 const MANIFEST: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"0.1\"\n";
 
@@ -31,7 +31,12 @@ fn run(files: &[(&str, &str)], single: bool) -> (Vec<Diagnostic>, TypeCheck) {
             settings = parse_manifest(text).0;
             continue;
         }
-        let lexed = lex(db.file(id), id, &mut interner);
+        // The keywords of the manifest's edition, which comes first in `files`.
+        let keywords = match settings.edition {
+            Edition::V0_1 => KeywordSet::V0_1,
+            Edition::V0_2 => KeywordSet::V0_2,
+        };
+        let lexed = lex_in(db.file(id), id, &mut interner, keywords);
         let parsed = parse(&lexed, id, &interner);
         let broken = !lexed.errors.is_empty() || !parsed.errors.is_empty();
         assert!(!broken, "{name} has syntax errors: {:?}", parsed.errors);
@@ -1085,4 +1090,19 @@ fn lets_whose_value_is_in_the_refinement_language_are_selfified() {
          f(p: Point, n: Int) -> Int\n=\n  let a = p.x + 1\n  let b = positive(a) and n > 2\n  let c = abs(n)\n  let d = [n]\n  let e = \"x\"\n  let g = a\n  a\n",
     );
     assert_eq!(selfified, ["11:7", "12:7", "15:7", "16:7"]);
+}
+
+// ----- the memory model (spec/17) -----
+
+#[test]
+fn an_edit_argument_is_checked_once() {
+    let manifest = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"0.2\"\n";
+    let module = "module t\n\npub kind Rec\n  x: Int\n\nzero(edit n: Int) -> Unit\n=\n  n = 0\n\neat(take xs: List[Int]) -> Int = xs.len\n\nreset(edit xs: List[Int]) -> Unit\n=\n  xs = []\n\npub wrong_field() -> Int\n=\n  let edit r = Rec(x: 1)\n  zero(edit r.nope)\n  r.x\n\npub after_take() -> Int\n=\n  let edit xs = [1]\n  let n = eat(take xs)\n  reset(edit xs)\n  n\n";
+    assert_eq!(
+        check(&[("una.toml", manifest), ("src/t.una", module)], false),
+        [
+            "U1001 src/t.una:19:15 `Rec` has no field `nope`, and no function `nope` in scope applies",
+            "U2017 src/t.una:26:14 `xs` was passed by `take`, so it cannot be used afterwards",
+        ]
+    );
 }

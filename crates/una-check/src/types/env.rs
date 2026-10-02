@@ -9,9 +9,9 @@ use una_core::IntType;
 use una_diag::Code;
 use una_project::Edition;
 use una_syntax::ast::{
-    CapabilityDecl, ClauseKind, DeclKind, Expr, Field, File, FnTypeClause, FunctionDecl,
-    HandlerDecl, Ident, KindBody, KindDecl, Label as LabelAst, OpClauseKind, Param, PolicyDecl,
-    PredicateDecl, Type, TypeCore, UsesClause,
+    CapabilityDecl, ClauseKind, Convention, DeclKind, Expr, Field, File, FnTypeClause,
+    FunctionDecl, HandlerDecl, Ident, KindBody, KindDecl, Label as LabelAst, OpClauseKind, Param,
+    PolicyDecl, PredicateDecl, Type, TypeCore, UsesClause,
 };
 use una_syntax::{Interner, Span, Symbol};
 
@@ -149,6 +149,8 @@ pub(crate) enum FnAst<'a> {
 pub(crate) struct ParamDef<'a> {
     pub(crate) name: &'a str,
     pub(crate) ty: Declared,
+    /// `edit` or `take`, from edition 0.2 (`spec/17 §3`).
+    pub(crate) convention: Option<Convention>,
     /// Where its type is written.
     pub(crate) span: Span,
 }
@@ -687,7 +689,7 @@ impl<'a> Env<'a> {
             let Some((module, ast)) = self.handlers.get(id).map(|h| (h.module, h.ast)) else {
                 continue;
             };
-            let params = self.params(module, &ast.params, &[], report);
+            let params = self.params_of(module, &ast.params, &[], Some("a handler"), report);
             let uses: Vec<Need> = first_of_each(
                 ast.uses
                     .iter()
@@ -744,7 +746,7 @@ impl<'a> Env<'a> {
             };
             ops.push(OpDef {
                 name: self.text(module, op.name.name),
-                params: self.params(module, &op.params, &[], report),
+                params: self.params_of(module, &op.params, &[], Some("an operation"), report),
                 result: self.lower_type(module, &op.result, &[], report),
                 result_span: op.result.span,
                 fails: fails.map(|kind| self.error_kind(module, kind, report)),
@@ -811,7 +813,8 @@ impl<'a> Env<'a> {
                 }
             }
             FnAst::Predicate(predicate) => {
-                let params = self.params(module, &predicate.params, &[], report);
+                let params =
+                    self.params_of(module, &predicate.params, &[], Some("a predicate"), report);
                 let result = self.lower_type(module, &predicate.result, &[], report);
                 if let Some(def) = self.functions.get_mut(id) {
                     def.params = params;
@@ -825,6 +828,7 @@ impl<'a> Env<'a> {
                     def.params = vec![ParamDef {
                         name: "",
                         ty: from,
+                        convention: None,
                         span: policy.from.span,
                     }];
                     def.result = to;
@@ -850,7 +854,8 @@ impl<'a> Env<'a> {
             .collect()
     }
 
-    /// Lowers parameters with `type_params` in scope.
+    /// Lowers parameters with `type_params` in scope. Only functions declare conventions:
+    /// one on a parameter of a handler, an operation or a predicate is U2020 (`spec/17 §3`).
     pub(crate) fn params(
         &mut self,
         module: usize,
@@ -858,12 +863,40 @@ impl<'a> Env<'a> {
         type_params: &[&'a str],
         report: &mut Report<'_>,
     ) -> Vec<ParamDef<'a>> {
+        self.params_of(module, params, type_params, None, report)
+    }
+
+    /// [`Env::params`] for `owner`, which names the construct that cannot declare conventions,
+    /// or `None` for a function, which can.
+    pub(crate) fn params_of(
+        &mut self,
+        module: usize,
+        params: &[Param],
+        type_params: &[&'a str],
+        owner: Option<&str>,
+        report: &mut Report<'_>,
+    ) -> Vec<ParamDef<'a>> {
         params
             .iter()
-            .map(|param| ParamDef {
-                name: self.text(module, param.name.name),
-                ty: self.lower_type(module, &param.ty, type_params, report),
-                span: param.ty.span,
+            .map(|param| {
+                if let (Some(convention), Some(owner)) = (param.convention, owner)
+                    && self.reports(module)
+                {
+                    report.error(
+                        Code::U2020,
+                        param.span,
+                        format!(
+                            "a parameter of {owner} cannot be declared `{}`; only functions declare conventions",
+                            convention.as_str()
+                        ),
+                    );
+                }
+                ParamDef {
+                    name: self.text(module, param.name.name),
+                    ty: self.lower_type(module, &param.ty, type_params, report),
+                    convention: if owner.is_none() { param.convention } else { None },
+                    span: param.ty.span,
+                }
             })
             .collect()
     }

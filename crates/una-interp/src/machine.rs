@@ -234,6 +234,10 @@ impl<'p> Index<'p> {
                 let items: Vec<String> = items.iter().map(|v| self.render(v)).collect();
                 format!("[{}]", items.join(", "))
             }
+            Value::Tuple(items) => {
+                let items: Vec<String> = items.iter().map(|v| self.render(v)).collect();
+                format!("({})", items.join(", "))
+            }
             Value::Data(data) => {
                 let names = self.fields(&data.ctor);
                 let shown: Vec<(&str, String)> = data
@@ -491,6 +495,21 @@ impl<'p, 'w> Machine<'p, 'w> {
                     env.push((name.as_str(), value));
                     expr = body;
                 }
+                // `let (x, ...) = a in e` (`spec/17 §4`).
+                Expr::LetTuple {
+                    names, value, body, ..
+                } => {
+                    let Value::Tuple(items) = self.atom(env, value)? else {
+                        return Err(fault("`let (...)` of a value that is not a tuple"));
+                    };
+                    if items.len() != names.len() {
+                        return Err(fault("`let (...)` of a tuple of another length"));
+                    }
+                    for ((name, _), item) in names.iter().zip(items.iter()) {
+                        env.push((name.as_str(), item.clone()));
+                    }
+                    expr = body;
+                }
                 Expr::If {
                     cond,
                     then,
@@ -681,6 +700,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                 _ => Err(fault("a field of a value that is not a record")),
             },
             Rhs::List(items) => Ok(Value::List(Rc::new(self.atoms(env, items)?))),
+            Rhs::Tuple(items) => Ok(Value::Tuple(Rc::new(self.atoms(env, items)?))),
             Rhs::Lambda { params, body, .. } => Ok(Value::Closure(Rc::new(Closure {
                 params: params.iter().map(|(name, _)| name).collect(),
                 body,
@@ -975,6 +995,20 @@ impl<'p, 'w> Machine<'p, 'w> {
                 let mut items = list(0)?.as_ref().clone();
                 items.push(arg(1)?);
                 Value::List(Rc::new(items))
+            }
+            // `set` has an `edit` parameter: it returns the new list and its result, `unit`
+            // (`spec/17 §4`, `§8`). Its `requires` keeps the index in range.
+            "set" => {
+                let mut items = list(0)?.as_ref().clone();
+                let index = int(1)?;
+                let slot = usize::try_from(&index)
+                    .ok()
+                    .and_then(|i| items.get_mut(i))
+                    .ok_or_else(|| {
+                        fault("`set` at an index outside the list, which its precondition excludes")
+                    })?;
+                *slot = arg(2)?;
+                Value::Tuple(Rc::new(vec![Value::List(Rc::new(items)), Value::Unit]))
             }
             "contains" => {
                 let item = arg(1)?;

@@ -134,6 +134,16 @@ pub enum Code {
     U2015,
     /// Opaque predicate called outside `checked`.
     U2016,
+    /// Use of a binding after it was passed by `take`.
+    U2017,
+    /// An `edit` argument together with another use of its binding in the same call.
+    U2018,
+    /// Assignment to a binding that is not editable.
+    U2019,
+    /// A parameter convention (`edit`, `take`) not matched at the call site, or declared where none is allowed.
+    U2020,
+    /// A function with `edit` or `take` parameters used as a value.
+    U2021,
     /// Integer literal does not fit its type.
     U2022,
     /// Capability not in scope.
@@ -206,7 +216,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 69] = [
+    pub const ALL: [Code; 74] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -242,6 +252,11 @@ impl Code {
         Code::U2014,
         Code::U2015,
         Code::U2016,
+        Code::U2017,
+        Code::U2018,
+        Code::U2019,
+        Code::U2020,
+        Code::U2021,
         Code::U2022,
         Code::U3001,
         Code::U3002,
@@ -509,6 +524,36 @@ impl Code {
                 domain: Domain::Types,
                 meaning: "Opaque predicate called outside `checked`",
                 explain: include_str!("../explain/U2016.md"),
+            },
+            Code::U2017 => &Entry {
+                code: "U2017",
+                domain: Domain::Types,
+                meaning: "Use of a binding after it was passed by `take`",
+                explain: include_str!("../explain/U2017.md"),
+            },
+            Code::U2018 => &Entry {
+                code: "U2018",
+                domain: Domain::Types,
+                meaning: "An `edit` argument together with another use of its binding in the same call",
+                explain: include_str!("../explain/U2018.md"),
+            },
+            Code::U2019 => &Entry {
+                code: "U2019",
+                domain: Domain::Types,
+                meaning: "Assignment to a binding that is not editable",
+                explain: include_str!("../explain/U2019.md"),
+            },
+            Code::U2020 => &Entry {
+                code: "U2020",
+                domain: Domain::Types,
+                meaning: "A parameter convention (`edit`, `take`) not matched at the call site, or declared where none is allowed",
+                explain: include_str!("../explain/U2020.md"),
+            },
+            Code::U2021 => &Entry {
+                code: "U2021",
+                domain: Domain::Types,
+                meaning: "A function with `edit` or `take` parameters used as a value",
+                explain: include_str!("../explain/U2021.md"),
             },
             Code::U2022 => &Entry {
                 code: "U2022",

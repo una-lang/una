@@ -11,10 +11,10 @@ use una_core::{
     Signature, Source, Term, Type, Use,
 };
 use una_syntax::ast::{
-    Arg, BinaryOp, Block, BlockExpr, Body, CapBindingValue, Clause, ClauseKind, DeclKind,
-    ElseBranch, ExampleDecl, ExpectationKind, Expr, ExprKind, FunctionDecl, Handled, HandlingKind,
-    IfBlock, IsTarget, LetValue, Literal, OpClauseKind, PatternKind, Range, SignedInt, Stmt,
-    TextLit, TextPart, UnaryOp, VariantExpr, WhenExpr,
+    Arg, BinaryOp, Block, BlockExpr, Body, CapBindingValue, Clause, ClauseKind, Convention,
+    DeclKind, ElseBranch, ExampleDecl, ExpectationKind, Expr, ExprKind, FunctionDecl, Handled,
+    HandlingKind, IfBlock, IfThenStmt, IsTarget, LetValue, Literal, OpClauseKind, PatternKind,
+    Range, SignedInt, Stmt, TextLit, TextPart, UnaryOp, VariantExpr, WhenExpr,
 };
 use una_syntax::{SourceDb, Span};
 
@@ -32,6 +32,9 @@ struct Let {
     span: Span,
     /// Whether the source writes the binder's type.
     written: bool,
+    /// For `let (x, ...) = a`, the binders of the components; `value` is the atom `a`
+    /// (`spec/17 §4`).
+    destructure: Option<Vec<(Name, Type)>>,
 }
 
 impl Let {
@@ -44,6 +47,19 @@ impl Let {
             value,
             span,
             written: false,
+            destructure: None,
+        }
+    }
+
+    /// `let (x, ...) = tuple` (`spec/17 §4`).
+    fn destructure(names: Vec<(Name, Type)>, tuple: Atom, span: Span) -> Let {
+        Let {
+            name: String::new(),
+            ty: unit(),
+            value: Bound::Rhs(Rhs::Atom(tuple)),
+            span,
+            written: false,
+            destructure: Some(names),
         }
     }
 }
@@ -200,6 +216,28 @@ struct Fx<'e, 'a> {
     /// What the Core IR types of this declaration lost of the checker types they come from
     /// (ADR 0038 D1, the consistency check of `spec/10 §2`).
     lost: std::cell::RefCell<Vec<String>>,
+    /// The Core type of each binder of an editable binding, for the tuples of the memory
+    /// model (`spec/17 §4`).
+    types: BTreeMap<Name, Type>,
+    /// The `edit` parameters of the function elaborated, in order, and its declared result.
+    returning: Option<(Vec<String>, Type)>,
+    /// In an `ensures` clause.
+    in_ensures: bool,
+    /// The wrapping the next block's or line body's tail takes (`spec/17 §4`).
+    tail_wrap: Option<Wrap>,
+    /// The join of the `if` or `when` being elaborated, which each of its branches takes.
+    current_join: Option<Wrap>,
+    /// The tuple type of the call at a span, for a call with `edit` arguments.
+    call_tuple: Option<(Span, Type)>,
+}
+
+/// How a tail value is wrapped into a tuple (`spec/17 §4`).
+#[derive(Clone, Debug)]
+enum Wrap {
+    /// A branch of a construct that updates `names`: `(value, names...)`, the value of `ty`.
+    Join { names: Vec<String>, ty: Type },
+    /// The body of a function with `edit` parameters: `(params..., result)`.
+    Return,
 }
 
 impl<'e, 'a> Fx<'e, 'a> {
@@ -218,6 +256,12 @@ impl<'e, 'a> Fx<'e, 'a> {
             result: None,
             broken: false,
             lost: std::cell::RefCell::new(Vec::new()),
+            types: BTreeMap::new(),
+            returning: None,
+            in_ensures: false,
+            tail_wrap: None,
+            current_join: None,
+            call_tuple: None,
         }
     }
 
@@ -608,7 +652,11 @@ impl<'e, 'a> Fx<'e, 'a> {
         for clause in clauses {
             match &clause.kind {
                 ClauseKind::Requires(expr) => requires.push(self.clause(expr)),
-                ClauseKind::Ensures(expr) => ensures.push(self.clause(expr)),
+                ClauseKind::Ensures(expr) => {
+                    self.in_ensures = true;
+                    ensures.push(self.clause(expr));
+                    self.in_ensures = false;
+                }
                 ClauseKind::Uses(_) | ClauseKind::Fails(_) | ClauseKind::DerivedFrom(_) => {}
             }
         }
@@ -623,16 +671,37 @@ impl<'e, 'a> Fx<'e, 'a> {
             ExprKind::Literal(literal) => self.literal_term(literal),
             ExprKind::Name(ident) => {
                 let name = self.name(ident);
+                // In `ensures`, an `edit` parameter is its final value, a component of the
+                // result (`spec/17 §3` rule 6, `§4`).
+                if let Some(index) = self.ensures_edit(name) {
+                    return Term::Proj {
+                        value: Box::new(Term::Result),
+                        index,
+                    };
+                }
                 match self.local(name) {
                     Some(binder) => Term::Var(binder),
                     None => self.outside(),
                 }
             }
+            ExprKind::Old(inner) => match &inner.kind {
+                ExprKind::Name(ident) => match self.local(self.name(ident)) {
+                    Some(binder) => Term::Var(binder),
+                    None => self.outside(),
+                },
+                _ => self.outside(),
+            },
             ExprKind::UpperName(ident) => match self.res(ident.span) {
                 Some(Res::Ctor { kind, variant }) => Term::Ctor(self.ctor(kind, variant)),
                 _ => self.outside(),
             },
-            ExprKind::Result => Term::Result,
+            ExprKind::Result => match &self.returning {
+                Some((edits, _)) if self.in_ensures => Term::Proj {
+                    value: Box::new(Term::Result),
+                    index: edits.len(),
+                },
+                _ => Term::Result,
+            },
             ExprKind::It => Term::It,
             ExprKind::Binary { op, left, right } => Term::Binary {
                 op: bin_op(*op),
@@ -761,8 +830,10 @@ impl<'e, 'a> Fx<'e, 'a> {
         let def = self.env.functions.get(id)?;
         self.type_params = def.type_params.clone();
         let params = self.params(&def.params);
-        let result = self.declared(&def.result);
+        let declared_result = self.declared(&def.result);
+        let result = self.returning(&def.params, &params, declared_result);
         let (requires, ensures) = self.contracts(&function.clauses);
+        self.returning = None;
         (!self.broken).then(|| Signature {
             path: self.path(def.module, def.name),
             type_params: def.type_params.iter().map(|p| (*p).to_owned()).collect(),
@@ -850,9 +921,15 @@ impl<'e, 'a> Fx<'e, 'a> {
                 let def = self.env.functions.get(id)?;
                 self.type_params = def.type_params.clone();
                 let params = self.params(&def.params);
-                let result = self.declared(&def.result);
+                let declared_result = self.declared(&def.result);
+                let result = self.returning(&def.params, &params, declared_result);
                 let (requires, ensures) = self.contracts(&function.clauses);
+                if self.returning.is_some() {
+                    self.tail_wrap = Some(Wrap::Return);
+                }
                 let body = self.body(&function.body);
+                self.returning = None;
+                self.tail_wrap = None;
                 Decl::Fun(Fun {
                     name: def.name.to_owned(),
                     type_params: def.type_params.iter().map(|p| (*p).to_owned()).collect(),
@@ -987,7 +1064,9 @@ impl<'e, 'a> Fx<'e, 'a> {
             .iter()
             .map(|p| {
                 let ty = self.declared(&p.ty);
-                (self.bind(p.name), ty)
+                let binder = self.bind(p.name);
+                self.types.insert(binder.clone(), ty.clone());
+                (binder, ty)
             })
             .collect()
     }
@@ -1092,12 +1171,32 @@ impl<'e, 'a> Fx<'e, 'a> {
 
     fn body(&mut self, body: &Body) -> CoreExpr {
         match body {
-            Body::Line(expr) => self.expr(expr),
+            Body::Line(expr) => match self.tail_wrap.take() {
+                Some(Wrap::Return) => {
+                    let saved = self.current_join.take();
+                    let value = self.return_line(expr);
+                    self.current_join = saved;
+                    value
+                }
+                Some(wrap) => {
+                    let saved = self.current_join.take();
+                    let value = self.expr(expr);
+                    self.current_join = saved;
+                    let mut lets = Vec::new();
+                    let tail = self.wrap_tail(&mut lets, value, wrap, expr.span);
+                    close(lets, tail)
+                }
+                None => self.expr(expr),
+            },
             Body::Block(block) => self.block(block),
         }
     }
 
     fn block(&mut self, block: &Block) -> CoreExpr {
+        // The wrapping of this block's tail, and no join for its own statements (`spec/17
+        // §4`).
+        let wrap = self.tail_wrap.take();
+        let join = self.current_join.take();
         let mark = self.scope.len();
         let mut lets: Vec<Let> = Vec::new();
         let last = block.stmts.len().saturating_sub(1);
@@ -1105,13 +1204,53 @@ impl<'e, 'a> Fx<'e, 'a> {
             atom: Atom::Unit,
             span: block.span,
         };
+        let mut tail_span = block.span;
+        // A function's result returned by a branching last line is wrapped in each branch,
+        // at the value each one returns (`spec/12 §3`).
+        let returning = matches!(wrap, Some(Wrap::Return));
+        let mut wrapped = false;
         for (index, stmt) in block.stmts.iter().enumerate() {
             match stmt {
+                Stmt::BlockExpr(expr) if index == last && returning => {
+                    let saved = self.current_join.replace(Wrap::Return);
+                    tail = self.block_expr(expr);
+                    self.current_join = saved;
+                    wrapped = true;
+                }
+                Stmt::Handled(handled)
+                    if index == last
+                        && returning
+                        && handled.with.is_empty()
+                        && handled.handlings.is_empty()
+                        && !self.marked(&handled.expr) =>
+                {
+                    tail = self.return_line(&handled.expr);
+                    wrapped = true;
+                }
+                // As the last line, the value is `unit`, returned at the statement.
+                Stmt::Assign(stmt) => {
+                    let (value, span) = self.value(&mut lets, &stmt.value);
+                    self.assign(&mut lets, &stmt.place, value, span);
+                    if index == last {
+                        tail = CoreExpr::Atom {
+                            atom: Atom::Unit,
+                            span: stmt.span,
+                        };
+                        tail_span = stmt.span;
+                    }
+                }
+                Stmt::IfThen(stmt) => {
+                    self.if_then(&mut lets, stmt);
+                    if index == last {
+                        tail = CoreExpr::Atom {
+                            atom: Atom::Unit,
+                            span: stmt.span,
+                        };
+                        tail_span = stmt.span;
+                    }
+                }
                 Stmt::Let(stmt) => {
-                    let (value, span) = match &stmt.value {
-                        LetValue::Handled(handled) => (self.handled(handled), handled.expr.span),
-                        LetValue::BlockExpr(expr) => (self.block_expr(expr), block_expr_span(expr)),
-                    };
+                    let (value, span) = self.value(&mut lets, &stmt.value);
                     let written = self.records.annotations.get(&stmt.name.span).cloned();
                     let ty = match &written {
                         Some(declared) => self.declared(declared),
@@ -1119,10 +1258,35 @@ impl<'e, 'a> Fx<'e, 'a> {
                     };
                     let name = self.name(&stmt.name);
                     let binder = self.bind(name);
+                    self.types.insert(binder.clone(), ty.clone());
                     bind_expr(&mut lets, binder, ty, value, span, written.is_some());
                 }
-                Stmt::Handled(handled) if index == last => tail = self.handled(handled),
-                Stmt::BlockExpr(expr) if index == last => tail = self.block_expr(expr),
+                Stmt::Handled(handled) if self.marked(&handled.expr) => {
+                    let atom = self.marked_call(&mut lets, handled);
+                    if index == last {
+                        tail = CoreExpr::Atom {
+                            atom,
+                            span: handled.expr.span,
+                        };
+                        tail_span = handled.expr.span;
+                    }
+                }
+                Stmt::BlockExpr(expr) if !self.updates(expr).is_empty() => {
+                    let span = block_expr_span(expr);
+                    let atom = self.joined(&mut lets, expr, span);
+                    if index == last {
+                        tail = CoreExpr::Atom { atom, span };
+                        tail_span = span;
+                    }
+                }
+                Stmt::Handled(handled) if index == last => {
+                    tail = self.handled(handled);
+                    tail_span = handled.expr.span;
+                }
+                Stmt::BlockExpr(expr) if index == last => {
+                    tail = self.block_expr(expr);
+                    tail_span = block_expr_span(expr);
+                }
                 Stmt::Handled(handled) => {
                     let value = self.handled(handled);
                     bind_expr(
@@ -1147,12 +1311,31 @@ impl<'e, 'a> Fx<'e, 'a> {
                 }
             }
         }
+        if let Some(wrap) = wrap
+            && !wrapped
+        {
+            tail = self.wrap_tail(&mut lets, tail, wrap, tail_span);
+        }
         self.scope.truncate(mark);
+        self.current_join = join;
         close(lets, tail)
     }
 
     /// A statement's expression with its `with` bindings and handling clauses (`spec/09 §3`).
     fn handled(&mut self, handled: &Handled) -> CoreExpr {
+        self.handled_in(handled, None).0
+    }
+
+    /// [`Self::handled`], and for a call with `edit` arguments, `tuple` holds the current
+    /// values of its places and the types of its tuple: an `if error use` default keeps the
+    /// places, and `if none` unwraps the last component (`spec/17 §4`, `§7` rule 1). Returns
+    /// the expression and the types of its tuple.
+    fn handled_in(
+        &mut self,
+        handled: &Handled,
+        tuple: Option<(Vec<Atom>, Vec<Type>)>,
+    ) -> (CoreExpr, Vec<Type>) {
+        let (places, mut components) = tuple.unwrap_or_default();
         let mut lets: Vec<Let> = Vec::new();
         let mut bindings = Vec::new();
         let span = handled.expr.span;
@@ -1164,10 +1347,13 @@ impl<'e, 'a> Fx<'e, 'a> {
                     let handler = match self.res(call.span) {
                         Some(Res::Handler { id }) => id,
                         _ => {
-                            return CoreExpr::Atom {
-                                atom: Atom::Unit,
-                                span,
-                            };
+                            return (
+                                CoreExpr::Atom {
+                                    atom: Atom::Unit,
+                                    span,
+                                },
+                                components,
+                            );
                         }
                     };
                     let (args, arg_spans) = self.call_args(&mut lets, call.span, &call.args);
@@ -1203,6 +1389,43 @@ impl<'e, 'a> Fx<'e, 'a> {
                         handler: Box::new(handler),
                     }
                 }
+                HandlingKind::ErrorUse(value) if !components.is_empty() => {
+                    let error = self.bind("error");
+                    self.error = Some(error.clone());
+                    let mut inner = Vec::new();
+                    let default = self.atom(&mut inner, value);
+                    let mut atoms = places.clone();
+                    atoms.push(default);
+                    let t = self.temp();
+                    inner.push(Let::inferred(
+                        t.clone(),
+                        tuple_type(components.clone()),
+                        Bound::Rhs(Rhs::Tuple(atoms)),
+                        value.span,
+                    ));
+                    let handler = close(
+                        inner,
+                        CoreExpr::Atom {
+                            atom: Atom::Var(t),
+                            span: value.span,
+                        },
+                    );
+                    self.error = None;
+                    self.scope.pop();
+                    CoreExpr::Handle {
+                        body: Box::new(current),
+                        error,
+                        handler: Box::new(handler),
+                    }
+                }
+                HandlingKind::NoneFail(variant) if !components.is_empty() => {
+                    let otherwise = self.fail(variant);
+                    self.unwrap_last(current, &mut components, otherwise, span)
+                }
+                HandlingKind::NoneUse(value) if !components.is_empty() => {
+                    let otherwise = self.expr(value);
+                    self.unwrap_last(current, &mut components, otherwise, span)
+                }
                 HandlingKind::ErrorUse(value) => {
                     let error = self.bind("error");
                     self.error = Some(error.clone());
@@ -1232,7 +1455,604 @@ impl<'e, 'a> Fx<'e, 'a> {
                 body: Box::new(current),
             };
         }
-        close(lets, current)
+        (close(lets, current), components)
+    }
+
+    /// `if none` on the last component of a call's tuple: the places keep their new values,
+    /// and the option is unwrapped.
+    fn unwrap_last(
+        &mut self,
+        tuple: CoreExpr,
+        components: &mut [Type],
+        otherwise: CoreExpr,
+        span: Span,
+    ) -> CoreExpr {
+        let mut lets = Vec::new();
+        let t = self.temp();
+        bind_expr(
+            &mut lets,
+            t.clone(),
+            tuple_type(components.to_vec()),
+            tuple,
+            span,
+            false,
+        );
+        let names: Vec<(Name, Type)> = components
+            .iter()
+            .map(|ty| (self.temp(), ty.clone()))
+            .collect();
+        lets.push(Let::destructure(names.clone(), Atom::Var(t), span));
+        let Some(((option, option_ty), kept)) = names.split_last() else {
+            self.broken = true;
+            return close(lets, otherwise);
+        };
+        let inner = match option_ty {
+            Type::Base {
+                base: Base::Named { args, .. },
+                ..
+            } => args.first().cloned().unwrap_or_else(unknown),
+            _ => unknown(),
+        };
+        let unwrapped = self.unwrap_option(
+            CoreExpr::Atom {
+                atom: Atom::Var(option.clone()),
+                span,
+            },
+            option_ty.clone(),
+            otherwise,
+            span,
+        );
+        let v = self.temp();
+        bind_expr(&mut lets, v.clone(), inner.clone(), unwrapped, span, false);
+        if let Some(last) = components.last_mut() {
+            *last = inner;
+        }
+        let mut atoms: Vec<Atom> = kept.iter().map(|(n, _)| Atom::Var(n.clone())).collect();
+        atoms.push(Atom::Var(v));
+        let r = self.temp();
+        lets.push(Let::inferred(
+            r.clone(),
+            tuple_type(components.to_vec()),
+            Bound::Rhs(Rhs::Tuple(atoms)),
+            span,
+        ));
+        close(
+            lets,
+            CoreExpr::Atom {
+                atom: Atom::Var(r),
+                span,
+            },
+        )
+    }
+
+    // ----- the memory model (`spec/17 §4`) -----
+
+    /// The Core result of a function: `(params..., result)` with its `edit` parameters, whose
+    /// names are then kept for the body and the `ensures` clauses.
+    fn returning(
+        &mut self,
+        defs: &[super::env::ParamDef<'a>],
+        params: &[(Name, Type)],
+        result: Type,
+    ) -> Type {
+        let edits: Vec<(String, Type)> = defs
+            .iter()
+            .zip(params)
+            .filter(|(def, _)| def.convention == Some(Convention::Edit))
+            .map(|(def, (_, ty))| (def.name.to_owned(), ty.clone()))
+            .collect();
+        if edits.is_empty() {
+            self.returning = None;
+            return result;
+        }
+        let mut components: Vec<Type> = edits.iter().map(|(_, ty)| ty.clone()).collect();
+        components.push(result.clone());
+        self.returning = Some((edits.into_iter().map(|(name, _)| name).collect(), result));
+        tuple_type(components)
+    }
+
+    /// In an `ensures` clause, the component of the result that is the final value of the
+    /// `edit` parameter `name`.
+    fn ensures_edit(&self, name: &str) -> Option<usize> {
+        if !self.in_ensures {
+            return None;
+        }
+        let (edits, _) = self.returning.as_ref()?;
+        edits.iter().position(|edit| edit == name)
+    }
+
+    /// The type of the current binder of the editable binding `name`.
+    fn binding_type(&self, binder: &str, at: Span) -> Type {
+        self.types
+            .get(binder)
+            .cloned()
+            .unwrap_or_else(|| self.type_at(at))
+    }
+
+    /// The value of a `let` or of an assignment.
+    fn value(&mut self, lets: &mut Vec<Let>, value: &LetValue) -> (CoreExpr, Span) {
+        match value {
+            LetValue::Handled(handled) if self.marked(&handled.expr) => {
+                let span = handled.expr.span;
+                let atom = self.marked_call(lets, handled);
+                (CoreExpr::Atom { atom, span }, span)
+            }
+            LetValue::Handled(handled) => (self.handled(handled), handled.expr.span),
+            LetValue::BlockExpr(expr) if !self.updates(expr).is_empty() => {
+                let span = block_expr_span(expr);
+                let atom = self.joined(lets, expr, span);
+                (CoreExpr::Atom { atom, span }, span)
+            }
+            LetValue::BlockExpr(expr) => (self.block_expr(expr), block_expr_span(expr)),
+        }
+    }
+
+    /// `p = value`: a new binder for the root of `p`, with the record rebuilt along a field
+    /// path. A refined binding carries the obligation of an annotated `let` (`spec/17 §5`
+    /// rule 2).
+    fn assign(&mut self, lets: &mut Vec<Let>, place: &Expr, value: CoreExpr, span: Span) {
+        match &place.kind {
+            ExprKind::Paren(inner) => self.assign(lets, inner, value, span),
+            ExprKind::Name(ident) => {
+                let name = self.name(ident);
+                let Some(old) = self.local(name) else {
+                    self.broken = true;
+                    return;
+                };
+                let ty = self.binding_type(&old, ident.span);
+                let binder = self.bind(name);
+                self.types.insert(binder.clone(), ty.clone());
+                let written = has_refinements(&ty) || has_fn_type(&ty);
+                bind_expr(lets, binder, ty, value, span, written);
+            }
+            ExprKind::Field { target, .. } => {
+                let Some(Res::Field { kind, index }) = self.res(place.span) else {
+                    self.broken = true;
+                    return;
+                };
+                let v = self.temp();
+                let field_ty = strip(self.field_fn_type(kind, index, target.span));
+                bind_expr(lets, v.clone(), field_ty, value, span, false);
+                let record = self.atom(lets, target);
+                let count = self
+                    .env
+                    .kinds
+                    .get(kind)
+                    .and_then(|def| def.record.as_ref())
+                    .map_or(0, Vec::len);
+                let mut args = Vec::new();
+                for i in 0..count {
+                    if i == index {
+                        args.push(Atom::Var(v.clone()));
+                        continue;
+                    }
+                    let (_, field) = self.field(kind, i);
+                    let ty = self.field_fn_type(kind, i, target.span);
+                    let t = self.temp();
+                    lets.push(Let::inferred(
+                        t.clone(),
+                        ty,
+                        Bound::Rhs(Rhs::Field {
+                            value: record.clone(),
+                            field,
+                            index: i,
+                        }),
+                        place.span,
+                    ));
+                    args.push(Atom::Var(t));
+                }
+                let ctor = self.ctor(kind, None);
+                let rebuilt = Rhs::Construct {
+                    ctor,
+                    arg_spans: vec![span; args.len()],
+                    args,
+                };
+                let r = self.temp();
+                lets.push(Let::inferred(
+                    r.clone(),
+                    strip(self.type_at(target.span)),
+                    Bound::Rhs(rebuilt),
+                    span,
+                ));
+                self.assign(
+                    lets,
+                    target,
+                    CoreExpr::Atom {
+                        atom: Atom::Var(r),
+                        span,
+                    },
+                    span,
+                );
+            }
+            _ => self.broken = true,
+        }
+    }
+
+    /// `if c` with a block and no `else`: `if c then block else unit`, with a join when the
+    /// block updates bindings of the enclosing scope.
+    fn if_then(&mut self, lets: &mut Vec<Let>, stmt: &IfThenStmt) {
+        let names = self.block_updates(&stmt.block);
+        let cond = self.atom(lets, &stmt.condition);
+        if names.is_empty() {
+            let then = self.block(&stmt.block);
+            let expr = CoreExpr::If {
+                cond,
+                then: Box::new(then),
+                otherwise: Box::new(CoreExpr::Atom {
+                    atom: Atom::Unit,
+                    span: stmt.span,
+                }),
+            };
+            bind_expr(lets, "_".to_owned(), unit(), expr, stmt.span, false);
+            return;
+        }
+        let join = Wrap::Join {
+            names: names.clone(),
+            ty: unit(),
+        };
+        self.tail_wrap = Some(join.clone());
+        let then = self.block(&stmt.block);
+        let mut inner = Vec::new();
+        let unchanged = CoreExpr::Atom {
+            atom: Atom::Unit,
+            span: stmt.span,
+        };
+        let otherwise = self.wrap_tail(&mut inner, unchanged, join, stmt.span);
+        let expr = CoreExpr::If {
+            cond,
+            then: Box::new(then),
+            otherwise: Box::new(close(inner, otherwise)),
+        };
+        self.bind_join(lets, &names, unit(), expr, stmt.span);
+    }
+
+    /// An `if` or a `when` that updates bindings of the enclosing scope: each branch returns
+    /// `(value, names...)`, and the construct binds them afresh (`spec/17 §4`, joins).
+    fn joined(&mut self, lets: &mut Vec<Let>, expr: &BlockExpr, span: Span) -> Atom {
+        let names = self.updates(expr);
+        let ty = strip(self.type_at(span));
+        let saved = self.current_join.replace(Wrap::Join {
+            names: names.clone(),
+            ty: ty.clone(),
+        });
+        let value = self.block_expr(expr);
+        self.current_join = saved;
+        self.bind_join(lets, &names, ty, value, span)
+    }
+
+    /// Binds the tuple of a join and destructures it, rebinding `names`; returns the value.
+    fn bind_join(
+        &mut self,
+        lets: &mut Vec<Let>,
+        names: &[String],
+        ty: Type,
+        value: CoreExpr,
+        span: Span,
+    ) -> Atom {
+        let mut binders = Vec::new();
+        let mut types = vec![ty.clone()];
+        for name in names {
+            let old = self.local(name).unwrap_or_default();
+            let ty = self.binding_type(&old, span);
+            types.push(ty.clone());
+            binders.push((name.clone(), ty));
+        }
+        let t = self.temp();
+        bind_expr(lets, t.clone(), tuple_type(types), value, span, false);
+        let v = self.temp();
+        let mut destructured = vec![(v.clone(), ty)];
+        for (name, ty) in binders {
+            let binder = self.bind(&name);
+            self.types.insert(binder.clone(), ty.clone());
+            destructured.push((binder, ty));
+        }
+        lets.push(Let::destructure(destructured, Atom::Var(t), span));
+        Atom::Var(v)
+    }
+
+    /// The tail of a branch or of a function body, wrapped as `wrap` says.
+    fn wrap_tail(
+        &mut self,
+        lets: &mut Vec<Let>,
+        tail: CoreExpr,
+        wrap: Wrap,
+        span: Span,
+    ) -> CoreExpr {
+        let join = matches!(wrap, Wrap::Join { .. });
+        let (names, ty) = match wrap {
+            Wrap::Join { names, ty } => (names, ty),
+            Wrap::Return => match self.returning.clone() {
+                Some((names, ty)) => (names, ty),
+                None => {
+                    self.broken = true;
+                    return tail;
+                }
+            },
+        };
+        let value_span = span;
+        let value = match tail {
+            CoreExpr::Atom { atom, .. } => atom,
+            other => {
+                let v = self.temp();
+                bind_expr(lets, v.clone(), strip(ty.clone()), other, span, false);
+                Atom::Var(v)
+            }
+        };
+        let mut atoms = Vec::new();
+        let mut types = Vec::new();
+        for name in &names {
+            let Some(binder) = self.local(name) else {
+                self.broken = true;
+                continue;
+            };
+            types.push(self.binding_type(&binder, span));
+            atoms.push(Atom::Var(binder));
+        }
+        let (atoms, types) = if join {
+            // `(value, names...)`
+            let mut a = vec![value];
+            a.extend(atoms);
+            let mut t = vec![strip(ty)];
+            t.extend(types);
+            (a, t)
+        } else {
+            // `(params..., result)`
+            atoms.push(value);
+            types.push(ty);
+            (atoms, types)
+        };
+        let t = self.temp();
+        lets.push(Let::inferred(
+            t.clone(),
+            tuple_type(types),
+            Bound::Rhs(Rhs::Tuple(atoms)),
+            value_span,
+        ));
+        CoreExpr::Atom {
+            atom: Atom::Var(t),
+            span: value_span,
+        }
+    }
+
+    /// A function's result written as a line: each branch of an `if` line returns
+    /// `(params..., value)` at its own value, the return paths of `spec/12 §3`.
+    fn return_line(&mut self, expr: &Expr) -> CoreExpr {
+        match &expr.kind {
+            ExprKind::Paren(inner) => self.return_line(inner),
+            ExprKind::IfLine {
+                condition,
+                then,
+                otherwise,
+            } => {
+                let mut lets = Vec::new();
+                let cond = self.atom(&mut lets, condition);
+                let then = self.return_line(then);
+                let otherwise = self.return_line(otherwise);
+                close(
+                    lets,
+                    CoreExpr::If {
+                        cond,
+                        then: Box::new(then),
+                        otherwise: Box::new(otherwise),
+                    },
+                )
+            }
+            ExprKind::Fail(_) => self.expr(expr),
+            _ => {
+                let value = self.expr(expr);
+                let mut lets = Vec::new();
+                let tail = self.wrap_tail(&mut lets, value, Wrap::Return, expr.span);
+                close(lets, tail)
+            }
+        }
+    }
+
+    /// Whether `expr` is a call with an `edit` argument or receiver.
+    fn marked(&self, expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Call { args, .. } => args.iter().any(|a| a.marker == Some(Convention::Edit)),
+            ExprKind::MethodCall { receiver, args, .. } => {
+                *receiver == Some(Convention::Edit)
+                    || args.iter().any(|a| a.marker == Some(Convention::Edit))
+            }
+            _ => false,
+        }
+    }
+
+    /// The `edit` places of the call `expr`, in parameter order.
+    fn edit_places<'x>(&self, expr: &'x Expr) -> Vec<&'x Expr> {
+        let mut written: Vec<(Option<Convention>, &Expr)> = Vec::new();
+        let args = match &expr.kind {
+            ExprKind::Call { args, .. } => args,
+            ExprKind::MethodCall {
+                receiver,
+                target,
+                args,
+                ..
+            } => {
+                written.push((*receiver, target));
+                args
+            }
+            _ => return Vec::new(),
+        };
+        written.extend(args.iter().map(|a| (a.marker, &a.value)));
+        let order = self.order(expr.span);
+        let mut places: Vec<(usize, &Expr)> = written
+            .into_iter()
+            .zip(order)
+            .filter_map(|((marker, value), slot)| {
+                (marker == Some(Convention::Edit)).then_some((slot?, value))
+            })
+            .collect();
+        places.sort_by_key(|(slot, _)| *slot);
+        places.into_iter().map(|(_, value)| value).collect()
+    }
+
+    /// A statement or `let` whose expression is a call with `edit` arguments: the call
+    /// returns `(places..., result)`, each place takes its new value, and the result is
+    /// returned (`spec/17 §4`). The places change only when the call returns (`§7` rule 1).
+    fn marked_call(&mut self, lets: &mut Vec<Let>, handled: &Handled) -> Atom {
+        let expr = &handled.expr;
+        let span = expr.span;
+        let Some(Res::Function { id, type_args }) = self.res(span) else {
+            self.broken = true;
+            return Atom::Unit;
+        };
+        let Some(def) = self.env.functions.get(id) else {
+            self.broken = true;
+            return Atom::Unit;
+        };
+        let mut components: Vec<Type> = Vec::new();
+        for param in &def.params {
+            if param.convention == Some(Convention::Edit) {
+                let declared = Declared {
+                    base: param.ty.base.substitute(&type_args),
+                    refinements: param.ty.refinements.clone(),
+                };
+                components.push(self.declared(&declared));
+            }
+        }
+        components.push(self.declared(&Declared {
+            base: def.result.base.substitute(&type_args),
+            refinements: def.result.refinements.clone(),
+        }));
+        let places = self.edit_places(expr);
+        if places.len() + 1 != components.len() {
+            self.broken = true;
+            return Atom::Unit;
+        }
+        let current: Vec<Atom> = places.iter().map(|place| self.atom(lets, place)).collect();
+        self.call_tuple = Some((span, tuple_type(components.clone())));
+        let (value, components) = self.handled_in(handled, Some((current, components)));
+        self.call_tuple = None;
+        let t = self.temp();
+        bind_expr(
+            lets,
+            t.clone(),
+            tuple_type(components.clone()),
+            value,
+            span,
+            false,
+        );
+        let binders: Vec<(Name, Type)> = components
+            .iter()
+            .map(|ty| (self.temp(), ty.clone()))
+            .collect();
+        lets.push(Let::destructure(binders.clone(), Atom::Var(t), span));
+        for (place, (binder, _)) in places.iter().zip(&binders) {
+            let value = CoreExpr::Atom {
+                atom: Atom::Var(binder.clone()),
+                span: place.span,
+            };
+            self.assign(lets, place, value, place.span);
+        }
+        binders
+            .last()
+            .map_or(Atom::Unit, |(name, _)| Atom::Var(name.clone()))
+    }
+
+    /// The bindings of the enclosing scope that an `if` or a `when` updates, in order of
+    /// first update.
+    fn updates(&self, expr: &BlockExpr) -> Vec<String> {
+        let mut found = Vec::new();
+        self.scan_block_expr(expr, &[], &mut found);
+        found.retain(|name| self.local(name).is_some());
+        found
+    }
+
+    /// [`Self::updates`] of a block.
+    fn block_updates(&self, block: &Block) -> Vec<String> {
+        let mut found = Vec::new();
+        self.scan_block(block, &[], &mut found);
+        found.retain(|name| self.local(name).is_some());
+        found
+    }
+
+    fn scan_block_expr(&self, expr: &BlockExpr, declared: &[String], found: &mut Vec<String>) {
+        match expr {
+            BlockExpr::If(block) => self.scan_if(block, declared, found),
+            BlockExpr::When(when) => {
+                for arm in &when.arms {
+                    if let Body::Block(block) = &arm.body {
+                        self.scan_block(block, declared, found);
+                    }
+                }
+            }
+        }
+    }
+
+    fn scan_if(&self, block: &IfBlock, declared: &[String], found: &mut Vec<String>) {
+        self.scan_block(&block.then_block, declared, found);
+        match block.otherwise.as_ref() {
+            ElseBranch::Block(otherwise) => self.scan_block(otherwise, declared, found),
+            ElseBranch::If(next) => self.scan_if(next, declared, found),
+        }
+    }
+
+    fn scan_block(&self, block: &Block, declared: &[String], found: &mut Vec<String>) {
+        let mut local = declared.to_vec();
+        for stmt in &block.stmts {
+            match stmt {
+                Stmt::Let(stmt) => {
+                    self.scan_value(&stmt.value, &local, found);
+                    local.push(self.name(&stmt.name).to_owned());
+                }
+                Stmt::Assign(stmt) => {
+                    self.scan_value(&stmt.value, &local, found);
+                    if let Some((root, _)) = super::memory::place_root(&stmt.place) {
+                        note_update(self.name(root), &local, found);
+                    }
+                }
+                Stmt::IfThen(stmt) => self.scan_block(&stmt.block, &local, found),
+                Stmt::Handled(handled) => {
+                    for place in self.edit_places_written(&handled.expr) {
+                        if let Some((root, _)) = super::memory::place_root(place) {
+                            note_update(self.name(root), &local, found);
+                        }
+                    }
+                }
+                Stmt::BlockExpr(expr) => self.scan_block_expr(expr, &local, found),
+            }
+        }
+    }
+
+    fn scan_value(&self, value: &LetValue, declared: &[String], found: &mut Vec<String>) {
+        match value {
+            LetValue::Handled(handled) => {
+                for place in self.edit_places_written(&handled.expr) {
+                    if let Some((root, _)) = super::memory::place_root(place) {
+                        note_update(self.name(root), declared, found);
+                    }
+                }
+            }
+            LetValue::BlockExpr(expr) => self.scan_block_expr(expr, declared, found),
+        }
+    }
+
+    /// The `edit` places of a call as written, without its resolution.
+    fn edit_places_written<'x>(&self, expr: &'x Expr) -> Vec<&'x Expr> {
+        let mut places = Vec::new();
+        let args = match &expr.kind {
+            ExprKind::Call { args, .. } => args,
+            ExprKind::MethodCall {
+                receiver,
+                target,
+                args,
+                ..
+            } => {
+                if *receiver == Some(Convention::Edit) {
+                    places.push(target.as_ref());
+                }
+                args
+            }
+            _ => return places,
+        };
+        places.extend(
+            args.iter()
+                .filter(|a| a.marker == Some(Convention::Edit))
+                .map(|a| &a.value),
+        );
+        places
     }
 
     /// `let %t = option in case %t of { Some(v) ⇒ v } else ⇒ otherwise`.
@@ -1303,9 +2123,13 @@ impl<'e, 'a> Fx<'e, 'a> {
     fn if_block(&mut self, block: &IfBlock) -> CoreExpr {
         let mut lets = Vec::new();
         let cond = self.atom(&mut lets, &block.condition);
+        self.tail_wrap = self.current_join.clone();
         let then = self.block(&block.then_block);
         let otherwise = match block.otherwise.as_ref() {
-            ElseBranch::Block(otherwise) => self.block(otherwise),
+            ElseBranch::Block(otherwise) => {
+                self.tail_wrap = self.current_join.clone();
+                self.block(otherwise)
+            }
             ElseBranch::If(next) => self.if_block(next),
         };
         close(
@@ -1355,6 +2179,8 @@ impl<'e, 'a> Fx<'e, 'a> {
                                 *slot = Some(binder);
                             }
                         }
+                        self.tail_wrap = self.current_join.clone();
+                        self.tail_wrap = self.current_join.clone();
                         let body = self.body(&arm.body);
                         self.scope.truncate(mark);
                         arms.push(CoreArm {
@@ -1363,7 +2189,10 @@ impl<'e, 'a> Fx<'e, 'a> {
                             body,
                         });
                     }
-                    PatternKind::Else => otherwise = Some(Box::new(self.body(&arm.body))),
+                    PatternKind::Else => {
+                        self.tail_wrap = self.current_join.clone();
+                        otherwise = Some(Box::new(self.body(&arm.body)));
+                    }
                     PatternKind::Literal(_) | PatternKind::Range(_) => {}
                 }
             }
@@ -1408,6 +2237,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             });
         }
         for arm in when.arms.iter().rev() {
+            self.tail_wrap = self.current_join.clone();
             let body = self.body(&arm.body);
             let test = match &arm.pattern.kind {
                 PatternKind::Literal(literal) => {
@@ -1576,6 +2406,10 @@ impl<'e, 'a> Fx<'e, 'a> {
     fn atom(&mut self, lets: &mut Vec<Let>, expr: &Expr) -> Atom {
         let span = expr.span;
         match &expr.kind {
+            ExprKind::Old(_) => {
+                self.broken = true;
+                Atom::Unit
+            }
             ExprKind::Literal(literal) => self.literal_atom(lets, literal, span),
             ExprKind::Paren(inner) => self.atom(lets, inner),
             ExprKind::Name(ident) => {
@@ -2079,17 +2913,39 @@ impl<'e, 'a> Fx<'e, 'a> {
         }
         let type_args: Vec<Type> = type_args.iter().map(|t| self.ty(t)).collect();
         let function = self.function_path(id);
-        self.push(
-            lets,
+        let call = Rhs::Call {
+            function,
+            type_args,
+            args: values,
+            arg_spans,
             span,
-            Rhs::Call {
-                function,
-                type_args,
-                args: values,
-                arg_spans,
-                span,
-            },
-        )
+        };
+        // A call with `edit` arguments returns a tuple (`spec/17 §4`), which only the desugar
+        // of a statement or `let` binds. Anywhere else, its tuple would pass as the declared
+        // result and its places would keep their values: an internal error (U8001), never a
+        // silent pass.
+        let edits = def
+            .params
+            .iter()
+            .any(|p| p.convention == Some(Convention::Edit));
+        match self.call_tuple.take() {
+            Some((at, ty)) if at == span => {
+                let t = self.temp();
+                lets.push(Let::inferred(t.clone(), ty, Bound::Rhs(call), span));
+                Atom::Var(t)
+            }
+            other => {
+                self.call_tuple = other;
+                if edits {
+                    self.lost.borrow_mut().push(
+                        "the tuple of a call with `edit` arguments outside a statement or `let`"
+                            .to_owned(),
+                    );
+                    self.broken = true;
+                }
+                self.push(lets, span, call)
+            }
+        }
     }
 
     /// The arguments of the call at `span`, evaluated in written order and placed in
@@ -2188,13 +3044,24 @@ impl<'e, 'a> Fx<'e, 'a> {
 fn close(lets: Vec<Let>, tail: CoreExpr) -> CoreExpr {
     lets.into_iter()
         .rev()
-        .fold(tail, |body, binding| CoreExpr::Let {
-            name: binding.name,
-            ty: binding.ty,
-            value: Box::new(binding.value),
-            body: Box::new(body),
-            span: binding.span,
-            written: binding.written,
+        .fold(tail, |body, binding| match binding.destructure {
+            Some(names) => CoreExpr::LetTuple {
+                names,
+                value: match binding.value {
+                    Bound::Rhs(Rhs::Atom(atom)) => atom,
+                    _ => Atom::Unit,
+                },
+                body: Box::new(body),
+                span: binding.span,
+            },
+            None => CoreExpr::Let {
+                name: binding.name,
+                ty: binding.ty,
+                value: Box::new(binding.value),
+                body: Box::new(body),
+                span: binding.span,
+                written: binding.written,
+            },
         })
 }
 
@@ -2217,7 +3084,17 @@ fn bind_expr(lets: &mut Vec<Let>, name: Name, ty: Type, expr: CoreExpr, span: Sp
                     value: *value,
                     span: inner_span,
                     written: inner_written,
+                    destructure: None,
                 });
+                current = *body;
+            }
+            CoreExpr::LetTuple {
+                names,
+                value,
+                body,
+                span: inner_span,
+            } => {
+                lets.push(Let::destructure(names, value, inner_span));
                 current = *body;
             }
             // ADR 0037 rule 2: an annotated binder whose function type differs from the type
@@ -2230,7 +3107,9 @@ fn bind_expr(lets: &mut Vec<Let>, name: Name, ty: Type, expr: CoreExpr, span: Sp
                 ..
             } if var.starts_with('%')
                 && lets.last().is_some_and(|last| {
-                    last.name == var && !(written && last.ty != ty && has_fn_type(&ty))
+                    last.destructure.is_none()
+                        && last.name == var
+                        && !(written && last.ty != ty && has_fn_type(&ty))
                 }) =>
             {
                 if let Some(last) = lets.pop() {
@@ -2240,6 +3119,7 @@ fn bind_expr(lets: &mut Vec<Let>, name: Name, ty: Type, expr: CoreExpr, span: Sp
                         value: last.value,
                         span,
                         written,
+                        destructure: None,
                     });
                 }
                 return;
@@ -2251,6 +3131,7 @@ fn bind_expr(lets: &mut Vec<Let>, name: Name, ty: Type, expr: CoreExpr, span: Sp
                     value: Bound::Rhs(Rhs::Atom(atom)),
                     span,
                     written,
+                    destructure: None,
                 });
                 return;
             }
@@ -2261,6 +3142,7 @@ fn bind_expr(lets: &mut Vec<Let>, name: Name, ty: Type, expr: CoreExpr, span: Sp
                     value: Bound::Expr(other),
                     span,
                     written,
+                    destructure: None,
                 });
                 return;
             }
@@ -2445,6 +3327,34 @@ fn with_label(ty: Type, label: &Label) -> Type {
             label: own.join(label),
         },
     }
+}
+
+/// Records an update of `name`, unless it is declared in the construct.
+fn note_update(name: &str, declared: &[String], found: &mut Vec<String>) {
+    if !declared.iter().any(|d| d == name) && !found.iter().any(|f| f == name) {
+        found.push(name.to_owned());
+    }
+}
+
+/// The Core tuple type of `components` (`spec/17 §4`).
+fn tuple_type(components: Vec<Type>) -> Type {
+    plain(Base::Tuple(components))
+}
+
+/// `ty` without its refinements: a value whose refinement is still to be proven.
+fn strip(ty: Type) -> Type {
+    match ty {
+        Type::Base { base, label, .. } => Type::Base {
+            base,
+            refinements: Vec::new(),
+            label,
+        },
+        other => other,
+    }
+}
+
+fn has_refinements(ty: &Type) -> bool {
+    matches!(ty, Type::Base { refinements, .. } if !refinements.is_empty())
 }
 
 fn plain(base: Base) -> Type {

@@ -1,0 +1,28 @@
+-- test: a function with an `edit` or `take` parameter is only called, never used as a value (spec/17 §3 rule 7)
+-- spec: spec/17 §3
+-- expect: error U2021 at src/memfnval.una:17:11
+-- expect: error U2021 at src/memfnval.una:20:39
+module memfnval
+
+bump(edit n: Int) -> Unit
+=
+  n = n + 1
+
+eat(take xs: List[Int]) -> Int = xs.len
+
+twice(f: fn(Int) -> Int, x: Int) -> Int = f(f(x))
+
+pub named() -> Int
+=
+  let f = bump
+  0
+
+pub passed() -> Int = [[1]].map(each: eat).len
+
+pub plain_value() -> Int = twice(fn(x: Int) -> x + 1, x: 1)
+
+pub called() -> Int
+=
+  let edit n = 1
+  bump(edit n)
+  n

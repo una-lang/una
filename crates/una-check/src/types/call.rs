@@ -4,7 +4,7 @@
 
 use una_diag::{Code, ObligationKind};
 use una_syntax::Span;
-use una_syntax::ast::{Arg, Expr, ExprKind, Ident};
+use una_syntax::ast::{Arg, Convention, Expr, ExprKind, Ident};
 
 use super::Report;
 use super::check::{Checker, Role, Site};
@@ -131,8 +131,20 @@ impl<'a> Checker<'_, 'a, '_> {
         args: &[Arg],
         span: Span,
         site: Site,
+        marker: Option<Convention>,
     ) -> Ty {
-        let target_ty = self.expr(target, None);
+        // `edit total.record(e)`: the receiver is a place rooted at an editable binding
+        // (`spec/17 §3` rule 2).
+        let place = match marker {
+            Some(Convention::Edit) => {
+                self.editable_place(target, "the receiver of `edit`", false, None)
+            }
+            _ => None,
+        };
+        let target_ty = match &place {
+            Some(ty) => ty.clone(),
+            None => self.expr(target, None),
+        };
         let method = self.name(name);
         let resolved = self.resolve(&target_ty);
         let labeled = self.labeled(&target_ty);
@@ -153,7 +165,10 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         match self.env.lower(self.module, method) {
             Some(Entity::Function(id)) => {
-                self.call_function(id, Some((target.span, target_ty)), args, span, site)
+                self.receiver_marker = Some((marker, target.clone()));
+                let ty = self.call_function(id, Some((target.span, target_ty)), args, span, site);
+                self.receiver_marker = None;
+                ty
             }
             _ => {
                 match resolved {
@@ -436,6 +451,23 @@ impl<'a> Checker<'_, 'a, '_> {
                 def.name
             )));
             self.report.push(diagnostic);
+        }
+        // A call with an `edit` or `take` argument changes a binding, so it is the whole
+        // expression of a statement or `let` (`spec/17 §3` rule 5).
+        let marked = args.iter().any(|arg| arg.marker.is_some())
+            || self
+                .receiver_marker
+                .as_ref()
+                .is_some_and(|(marker, _)| marker.is_some());
+        let statement = self.statement_calls.contains(&span);
+        if marked && !statement && self.pass == super::authority::Pass::Check {
+            self.report.error(
+                Code::U3013,
+                span,
+                format!(
+                    "{callee} is called with `edit` or `take`, so the call must be the whole expression of a statement or `let`; bind its result with `let` first"
+                ),
+            );
         }
         // Declared effects and failures in an opaque predicate.
         if !def.uses.is_empty() {
@@ -841,6 +873,7 @@ impl<'a> Checker<'_, 'a, '_> {
             self.unchecked(args);
             return checked;
         }
+        let receiver_info = self.receiver_marker.take().filter(|_| receiver.is_some());
         if let (Some((receiver_span, receiver_ty)), Some(first)) = (&receiver, params.first()) {
             let expected = first.ty.base.substitute(subst);
             let role = Role::Argument {
@@ -848,6 +881,36 @@ impl<'a> Checker<'_, 'a, '_> {
                 callee,
             };
             self.unify_at(*receiver_span, &expected, receiver_ty, role);
+            // The receiver's marker against the first parameter's convention (`spec/17 §3`).
+            if let Some((marker, place)) = &receiver_info {
+                match (first.convention, *marker) {
+                    (None, None) => {}
+                    (Some(Convention::Edit), Some(Convention::Edit)) => {
+                        self.rebind(place, receiver_ty, &expected, *receiver_span);
+                    }
+                    (Some(convention), None) => self.report.error(
+                        Code::U2020,
+                        *receiver_span,
+                        format!(
+                            "parameter `{}` of {callee} is declared `{}`, so the call is written `{} {}.{}`",
+                            first.name,
+                            convention.as_str(),
+                            convention.as_str(),
+                            self.report.text(*receiver_span),
+                            callee.trim_matches('`')
+                        ),
+                    ),
+                    (_, Some(marker)) => self.report.error(
+                        Code::U2020,
+                        *receiver_span,
+                        format!(
+                            "parameter `{}` of {callee} does not take its argument by `{}`",
+                            first.name,
+                            marker.as_str()
+                        ),
+                    ),
+                }
+            }
             self.fn_flow(*receiver_span, &expected, receiver_ty);
             checked.push((*receiver_span, receiver_ty.clone(), expected, first.name));
             if first.ty.is_refined() {
@@ -944,12 +1007,35 @@ impl<'a> Checker<'_, 'a, '_> {
             };
             self.ctx.argument = true;
             let found = self.expr_as(&arg.value, Some(&expected), role);
+            self.convention_arg(callee, param, arg, &found, &expected);
             self.fn_flow(arg.value.span, &expected, &found);
             if param.ty.is_refined() {
                 let origin = self.origin(module, param.span);
                 self.obligation(ObligationKind::Refinement, arg.value.span, origin);
             }
             checked.push((arg.value.span, found, expected, param.name));
+        }
+        // Exclusivity (`spec/17 §3` rule 4): an `edit` argument and any other use of its
+        // binding in the same call, the receiver included.
+        let mut edits: Vec<(usize, &Expr)> = args
+            .iter()
+            .enumerate()
+            .filter(|(_, arg)| arg.marker == Some(Convention::Edit))
+            .map(|(index, arg)| (index + 1, &arg.value))
+            .collect();
+        let mut uses: Vec<(usize, &Expr)> = args
+            .iter()
+            .enumerate()
+            .map(|(index, arg)| (index + 1, &arg.value))
+            .collect();
+        if let Some((marker, place)) = &receiver_info {
+            if *marker == Some(Convention::Edit) {
+                edits.push((0, place));
+            }
+            uses.push((0, place));
+        }
+        if !edits.is_empty() {
+            self.exclusive(&edits, &uses);
         }
         if !problem {
             let missing: Vec<String> = params

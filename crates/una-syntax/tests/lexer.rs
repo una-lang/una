@@ -686,3 +686,27 @@ fn keyword_tables_match_spec_01_section_5() {
         .collect();
     assert_eq!(from_code, from_spec);
 }
+
+#[test]
+fn the_edition_0_2_table_matches_spec_17_section_9() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/spec/17-memory-model.md");
+    let spec = std::fs::read_to_string(path).unwrap();
+    let section = spec.split("## 9. Reserved words").nth(1).unwrap();
+    let table = section.split("| Keywords | Message |").nth(1).unwrap();
+    let mut from_spec = BTreeMap::new();
+    for row in table
+        .lines()
+        .skip(2)
+        .take_while(|line| line.starts_with('|'))
+    {
+        let cells: Vec<&str> = row.trim_matches('|').split('|').map(str::trim).collect();
+        for word in cells[0].split(", ") {
+            from_spec.insert(word.trim_matches('`').to_owned(), cells[1].to_owned());
+        }
+    }
+    let from_code: BTreeMap<String, String> = keywords::RESERVED_IN_0_2
+        .iter()
+        .map(|(word, message)| ((*word).to_owned(), (*message).to_owned()))
+        .collect();
+    assert_eq!(from_code, from_spec);
+}

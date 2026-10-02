@@ -27,6 +27,8 @@ pub(crate) enum Value<'p> {
     Closure(Rc<Closure<'p>>),
     /// A keyed hash.
     Hashed(Rc<[u8]>),
+    /// A tuple, internal to the desugaring of the memory model (`spec/17 §4`).
+    Tuple(Rc<Vec<Value<'p>>>),
 }
 
 /// A constructor and its fields.
@@ -83,7 +85,7 @@ pub(crate) fn equal(a: &Value<'_>, b: &Value<'_>) -> bool {
                 && x.fields.len() == y.fields.len()
                 && x.fields.iter().zip(&y.fields).all(|(a, b)| equal(a, b))
         }
-        (Value::List(x), Value::List(y)) => {
+        (Value::List(x), Value::List(y)) | (Value::Tuple(x), Value::Tuple(y)) => {
             x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| equal(a, b))
         }
         _ => false,

@@ -8,9 +8,9 @@ use una_diag::Code;
 
 use crate::error::{SyntaxError, SyntaxRepair};
 use crate::intern::Interner;
-use crate::keywords::reserved_for_later;
+use crate::keywords::reserved_in;
 use crate::source::{FileId, SourceFile, Span};
-use crate::token::{Comment, Keyword, Token, TokenKind};
+use crate::token::{Comment, Keyword, KeywordSet, Token, TokenKind};
 
 /// The result of lexing one file.
 #[derive(Clone, Debug, Default)]
@@ -21,17 +21,32 @@ pub struct Lexed {
     pub comments: Vec<Comment>,
     /// The lexical errors, in the order they were found.
     pub errors: Vec<SyntaxError>,
+    /// The keyword set the file was lexed with, which the parser follows.
+    pub keywords: KeywordSet,
 }
 
-/// Lexes `source`, which is the file `file` of its database.
+/// Lexes `source`, which is the file `file` of its database, with the keywords of edition 0.1.
 pub fn lex(source: &SourceFile, file: FileId, interner: &mut Interner) -> Lexed {
+    lex_in(source, file, interner, KeywordSet::V0_1)
+}
+
+/// Lexes `source` with the keywords and reserved words of `keywords` (`spec/17 §9`).
+pub fn lex_in(
+    source: &SourceFile,
+    file: FileId,
+    interner: &mut Interner,
+    keywords: KeywordSet,
+) -> Lexed {
     let mut lexer = Lexer {
         source,
         text: source.text(),
         file,
         interner,
         pos: 0,
-        out: Lexed::default(),
+        out: Lexed {
+            keywords,
+            ..Lexed::default()
+        },
         indents: vec![0],
         brackets: Vec::new(),
         line_has_tokens: false,
@@ -688,9 +703,9 @@ impl Lexer<'_> {
         let start = self.pos;
         self.consume_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
         let word = self.slice(start, self.pos).to_owned();
-        let kind = if let Some(keyword) = Keyword::from_word(&word) {
+        let kind = if let Some(keyword) = Keyword::from_word_in(&word, self.out.keywords) {
             TokenKind::Keyword(keyword)
-        } else if let Some(message) = reserved_for_later(&word) {
+        } else if let Some(message) = reserved_in(&word, self.out.keywords) {
             self.reserved(&word, message, start);
             TokenKind::Reserved(self.interner.intern(&word))
         } else {
@@ -714,7 +729,7 @@ impl Lexer<'_> {
         let name_start = self.pos;
         self.consume_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
         let name = self.slice(name_start, self.pos).to_owned();
-        if Keyword::from_word(&name).is_some() {
+        if Keyword::from_word_in(&name, self.out.keywords).is_some() {
             // A keyword cannot name a capability.
             self.error(
                 Code::U0101,
@@ -722,7 +737,7 @@ impl Lexer<'_> {
                 self.pos,
                 format!("keyword `{name}` cannot name a capability"),
             );
-        } else if let Some(message) = reserved_for_later(&name) {
+        } else if let Some(message) = reserved_in(&name, self.out.keywords) {
             self.reserved(&name, message, name_start);
         }
         let symbol = self.interner.intern(&name);

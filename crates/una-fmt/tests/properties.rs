@@ -13,7 +13,7 @@ use una_syntax::ast::{
     ExpectationKind, Expr, ExprKind, File, HandlingKind, IfBlock, IsTarget, KindBody, LetValue,
     Literal, OpClauseKind, PatternKind, RequirementSource, Stmt, TextLit, TextPart, VariantExpr,
 };
-use una_syntax::{Interner, SourceDb, dump, lex, parse};
+use una_syntax::{Interner, KeywordSet, SourceDb, dump, lex_in, parse};
 
 fn repository() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -49,11 +49,28 @@ struct Parsed {
     canonical: String,
 }
 
-fn parse_text(bytes: &[u8]) -> Option<Parsed> {
+/// The keywords of the edition of the package that holds `path`, by its nearest `una.toml`
+/// (`spec/13 §7`); a single file is edition 0.1.
+fn keywords_for(path: &Path) -> KeywordSet {
+    for dir in path.ancestors().skip(1) {
+        let manifest = dir.join("una.toml");
+        if manifest.is_file() {
+            let text = std::fs::read_to_string(manifest).unwrap_or_default();
+            return if text.contains("edition = \"0.2\"") {
+                KeywordSet::V0_2
+            } else {
+                KeywordSet::V0_1
+            };
+        }
+    }
+    KeywordSet::V0_1
+}
+
+fn parse_text(bytes: &[u8], keywords: KeywordSet) -> Option<Parsed> {
     let mut db = SourceDb::new();
     let id = db.add("t.una", bytes);
     let mut interner = Interner::new();
-    let lexed = lex(db.file(id), id, &mut interner);
+    let lexed = lex_in(db.file(id), id, &mut interner, keywords);
     let parsed = parse(&lexed, id, &interner);
     if !lexed.errors.is_empty() || !parsed.errors.is_empty() {
         return None;
@@ -89,11 +106,12 @@ fn every_file_is_formatted_idempotently_and_keeps_its_tree_and_comments() {
             .unwrap()
             .display()
             .to_string();
-        let Some(original) = parse_text(&std::fs::read(&path).unwrap()) else {
+        let keywords = keywords_for(&path);
+        let Some(original) = parse_text(&std::fs::read(&path).unwrap(), keywords) else {
             skipped += 1;
             continue;
         };
-        let again = parse_text(original.canonical.as_bytes())
+        let again = parse_text(original.canonical.as_bytes(), keywords)
             .unwrap_or_else(|| panic!("{name}: the canonical form does not parse"));
         assert_eq!(
             again.canonical, original.canonical,
@@ -230,6 +248,20 @@ impl Normalizer<'_> {
                     }
                     LetValue::BlockExpr(expr) => self.block_expr(expr),
                 },
+                Stmt::Assign(stmt) => {
+                    self.expr(&mut stmt.place);
+                    match &mut stmt.value {
+                        LetValue::Handled(handled) => {
+                            self.expr(&mut handled.expr);
+                            self.handlings(handled);
+                        }
+                        LetValue::BlockExpr(expr) => self.block_expr(expr),
+                    }
+                }
+                Stmt::IfThen(stmt) => {
+                    self.expr(&mut stmt.condition);
+                    self.block(&mut stmt.block);
+                }
                 Stmt::Handled(handled) => {
                     self.expr(&mut handled.expr);
                     self.handlings(handled);
@@ -332,6 +364,7 @@ impl Normalizer<'_> {
                 self.expr(predicate);
                 self.variant(failure);
             }
+            ExprKind::Old(operand) => self.expr(operand),
             ExprKind::Attempt(operand)
             | ExprKind::Unary { operand, .. }
             | ExprKind::Paren(operand) => self.expr(operand),

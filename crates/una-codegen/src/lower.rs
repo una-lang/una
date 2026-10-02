@@ -92,6 +92,7 @@ fn kind(ty: &Type) -> Result<Kind, CodegenError> {
             Base::Named { module, name, .. } if module == PRELUDE_MODULE && name == "List" => {
                 Ok(Kind::List)
             }
+            Base::Tuple(_) => Err(unsupported("the memory model (#29)")),
             Base::Named { .. } => Ok(Kind::Data),
             Base::Param(_) | Base::Unknown => Ok(Kind::Any),
         },
@@ -303,6 +304,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let mut expr = expr;
         loop {
             match expr {
+                Expr::LetTuple { .. } => return Err(unsupported("the memory model (#29)")),
                 Expr::Atom { atom, .. } => {
                     let (value, kind) = self.atom(atom, env)?;
                     self.retain(value, kind);
@@ -840,6 +842,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
         catch: &Catch,
     ) -> Result<Value, CodegenError> {
         match rhs {
+            Rhs::Tuple(_) => Err(unsupported("the memory model (#29)")),
             Rhs::Atom(atom) => {
                 let (value, kind) = self.atom(atom, env)?;
                 self.retain(value, kind);
@@ -1646,6 +1649,10 @@ fn vars(expr: &Expr, out: &mut BTreeSet<String>) {
             vars(handler, out);
         }
         Expr::Attempt { body, .. } => vars(body, out),
+        Expr::LetTuple { value, body, .. } => {
+            atoms(std::slice::from_ref(value), out);
+            vars(body, out);
+        }
         Expr::With { source, body, .. } => {
             if let Source::Handler { args, .. } = source {
                 atoms(args, out);
@@ -1668,7 +1675,8 @@ fn rhs_vars(rhs: &Rhs, out: &mut BTreeSet<String>) {
         | Rhs::Call { args, .. }
         | Rhs::Op { args, .. }
         | Rhs::Construct { args, .. }
-        | Rhs::List(args) => args.iter().for_each(add),
+        | Rhs::List(args)
+        | Rhs::Tuple(args) => args.iter().for_each(add),
         Rhs::Apply { callee, args, .. } => {
             add(callee);
             args.iter().for_each(add);

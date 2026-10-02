@@ -1,0 +1,79 @@
+-- test: editable bindings, assignment to names and field paths, edit and take parameters, method receivers, joins, `set` and `old` check and verify (spec/17 §1 to §5)
+-- spec: spec/17 §2, §3, §4, §5
+-- expect: ok
+module memtour
+
+pub kind Pos = Int where it > 0
+
+pub kind Tally
+  count: Int
+  label: Text
+
+pub kind Pair
+  left: Tally
+  right: Tally
+
+--- Adds `by` to the count of `t`.
+pub add(edit t: Tally, by: Int) -> Unit
+  ensures t.count == old(t).count + by
+  ensures t.label == old(t).label
+=
+  t.count = t.count + by
+
+--- Increments `n` and returns its value on entry.
+pub next(edit n: Int) -> Int
+  ensures n == old(n) + 1
+  ensures result == old(n)
+=
+  let before = n
+  n = n + 1
+  before
+
+--- Consumes the list.
+pub total(take xs: List[Int]) -> Int = xs.len
+
+pub tour(flag: Bool) -> Pos
+=
+  let edit t = Tally(count: 0, label: "a")
+  add(edit t, by: 2)
+  edit t.add(by: 3)
+  let edit p = Pair(left: t, right: t)
+  p.left.count = 10
+  add(edit p.right, by: 1)
+  let edit k: Pos = 1
+  let was = next(edit k)
+  if flag
+    k = k + was
+  let edit xs = [1, 2, 3]
+  set(edit xs, index: 0, item: 5)
+  let n = total(take xs)
+  xs = [n]
+  let size = if flag
+    k = k + 1
+    xs.len
+  else
+    0
+  k + size + p.left.count - 10 + p.right.count - 6
+
+--- Returns the larger of `n` and `floor`, after counting one step in `steps`.
+pub clamp(edit steps: Int, n: Int, floor: Int) -> Pos
+  requires floor > 0
+  ensures steps == old(steps) + 1
+  ensures result >= floor
+=
+  steps = steps + 1
+  if n > floor then n else floor
+
+--- Moves `n` toward zero by one.
+pub toward_zero(edit n: Int) -> Bool
+  ensures old(n) > 0 implies n == old(n) - 1
+  ensures result == (old(n) != 0)
+=
+  if n > 0
+    n = n - 1
+    true
+  else if n < 0
+    n = n + 1
+    true
+  else
+    false

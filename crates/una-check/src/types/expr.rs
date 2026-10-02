@@ -158,9 +158,12 @@ impl<'a> Checker<'_, 'a, '_> {
                 Ty::Never
             }
             ExprKind::Field { target, name } => self.field(target, name, span, site),
-            ExprKind::MethodCall { target, name, args } => {
-                self.method(target, name, args, span, site)
-            }
+            ExprKind::MethodCall {
+                receiver,
+                target,
+                name,
+                args,
+            } => self.method(target, name, args, span, site, *receiver),
             ExprKind::Call { callee, args } => self.call(callee, args, span, site, expected),
             ExprKind::CapOp { cap, op, args } => self.cap_op(cap, op, args, span, site),
             ExprKind::CapRef(cap) => {
@@ -177,6 +180,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
                 Ty::Error
             }
+            ExprKind::Old(inner) => self.old(inner, span),
             ExprKind::Result => match self.ctx.result.clone() {
                 Some(ty) => ty,
                 None => {
@@ -275,6 +279,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// A lower-case name: a local, or a function used as a value.
     fn name_value(&mut self, ident: &Ident, site: Site) -> Ty {
         let name = self.name(ident);
+        self.use_after_take(name, ident.span);
         if let Some(ty) = self.local(name) {
             // So is a parameter or local of such a function type.
             let effects = match self.resolve(&ty) {
@@ -301,6 +306,21 @@ impl<'a> Checker<'_, 'a, '_> {
                 });
                 self.testing_value_site(module, name, ident.span);
                 self.via_site(id, ident.span);
+                // A function with conventions is not a value (`spec/17 §3` rule 7).
+                let conventions = self
+                    .env
+                    .functions
+                    .get(id)
+                    .is_some_and(|f| f.params.iter().any(|p| p.convention.is_some()));
+                if conventions {
+                    self.report.error(
+                        Code::U2021,
+                        ident.span,
+                        format!(
+                            "`{name}` has `edit` or `take` parameters, so it is not a value; call it, or wrap the call in a function without conventions"
+                        ),
+                    );
+                }
                 // A function with effects or failures is a value only as an
                 // argument.
                 if effects && !site.argument && self.pass == Pass::Check && self.base != Base::Quiet

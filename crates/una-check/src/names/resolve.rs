@@ -75,6 +75,8 @@ impl<'a> Resolver<'_, '_, 'a> {
                     || table.lower.contains_key(name)
                     || table.imported.contains_key(name)
                     || prelude::LOWER.contains(&name)
+                    // Edition 0.2: `set` (`spec/17 §8`).
+                    || (name == "set" && self.checker.package.settings.edition >= Edition::V0_2)
             }
             Space::Upper => {
                 self.types.iter().flatten().any(|local| local.name == name)
@@ -384,6 +386,17 @@ impl<'a> Resolver<'_, '_, 'a> {
                     }
                     self.bind(&stmt.name, "local", true);
                 }
+                Stmt::Assign(stmt) => {
+                    self.expr(&stmt.place);
+                    match &stmt.value {
+                        LetValue::Handled(handled) => self.handled(handled),
+                        LetValue::BlockExpr(expr) => self.block_expr(expr),
+                    }
+                }
+                Stmt::IfThen(stmt) => {
+                    self.expr(&stmt.condition);
+                    self.block(&stmt.block);
+                }
                 Stmt::Handled(handled) => self.handled(handled),
                 Stmt::BlockExpr(expr) => self.block_expr(expr),
             }
@@ -515,6 +528,7 @@ impl<'a> Resolver<'_, '_, 'a> {
             }
             ExprKind::Attempt(operand)
             | ExprKind::Unary { operand, .. }
+            | ExprKind::Old(operand)
             | ExprKind::Paren(operand) => self.expr(operand),
             ExprKind::Fail(variant) => self.variant(variant),
             ExprKind::Binary { left, right, .. } => {
