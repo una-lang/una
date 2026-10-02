@@ -61,8 +61,9 @@ pub const RESERVED_FOR_LATER: [(&str, &str); 31] = [
 ];
 
 /// The rows of the reserved-word table that edition 0.2 changes or adds (`spec/17 §9`, ADR
-/// 0056; `spec/19 §9`, ADR 0065); `edit`, `take` and `together` are keywords there.
-pub const RESERVED_IN_0_2: [(&str, &str); 11] = [
+/// 0056; `spec/19 §9`, ADR 0065; `spec/20 §9`, ADR 0066); `edit`, `take` and `together` are
+/// keywords there.
+pub const RESERVED_IN_0_2: [(&str, &str); 13] = [
     ("shared", "reserved for v0.3 (aliasing)"),
     ("iso", "reserved for v0.3 (aliasing)"),
     ("weak", "reserved for v0.3 (aliasing)"),
@@ -83,6 +84,8 @@ pub const RESERVED_IN_0_2: [(&str, &str); 11] = [
     ),
     ("async", "not supported; use `together`"),
     ("await", "not supported; use `together`"),
+    ("trait", "reserved for a later version (user traits)"),
+    ("impl", "reserved for a later version (user traits)"),
 ];
 
 /// The U0103 message text of `word` under the keyword set `set`, if it is reserved.

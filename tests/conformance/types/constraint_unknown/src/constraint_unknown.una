@@ -1,0 +1,6 @@
+-- test: a constraint is `Eq`, `Ord` or `Integer`, and any other name after `:` is U2027 (spec/20 §2 rule 3)
+-- spec: spec/20 §2
+-- expect: error U2027 at src/constraint_unknown.una:6:13
+module constraint_unknown
+
+pub same[T: Equal](a: T, b: T) -> Bool = a == b

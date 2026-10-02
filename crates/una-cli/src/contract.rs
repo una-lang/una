@@ -21,6 +21,7 @@ pub(crate) struct Contract {
     public: bool,
     docs: Vec<String>,
     header: String,
+    constraints: Vec<Constraint>,
     requires: Vec<String>,
     ensures: Vec<String>,
     uses: Vec<Uses>,
@@ -44,6 +45,14 @@ struct Uses {
     cap: String,
     capability: String,
     ops: Vec<String>,
+    inferred: bool,
+}
+
+/// A constrained type parameter (`spec/20 §8`).
+#[derive(Debug, Serialize)]
+struct Constraint {
+    param: String,
+    constraint: String,
     inferred: bool,
 }
 
@@ -179,7 +188,25 @@ pub(crate) fn contract(
         .iter()
         .map(|doc| modules.text(doc.span).to_owned())
         .collect();
-    lines.push(signature.clone());
+    let constraints: Vec<Constraint> = header
+        .map(|h| {
+            h.constraints
+                .iter()
+                .map(|(param, constraint, inferred)| Constraint {
+                    param: param.clone(),
+                    constraint: constraint.clone(),
+                    inferred: *inferred,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    lines.push(with_inferred(
+        modules,
+        decl,
+        function,
+        &signature,
+        &constraints,
+    ));
     let mut requires = Vec::new();
     let mut ensures = Vec::new();
     let mut derived = Vec::new();
@@ -276,6 +303,7 @@ pub(crate) fn contract(
         public: function.public,
         docs,
         header: signature,
+        constraints,
         requires,
         ensures,
         uses,
@@ -283,6 +311,35 @@ pub(crate) fn contract(
         derived_from,
         lines,
     }
+}
+
+/// The signature `signature` with its inferred constraints written in canonical form, as
+/// `[T: Ord]`, and the comment `-- inferred` when there is one (`spec/20 §8`).
+fn with_inferred(
+    modules: &Modules<'_>,
+    decl: &Decl,
+    function: &FunctionDecl,
+    signature: &str,
+    constraints: &[Constraint],
+) -> String {
+    let mut text = signature.to_owned();
+    let mut inferred = false;
+    // From the last parameter to the first, so that earlier offsets stay valid.
+    for param in function.type_params.iter().rev() {
+        let name = modules.name(param.name);
+        let Some(constraint) = constraints.iter().find(|c| c.inferred && c.param == name) else {
+            continue;
+        };
+        let at = param.span.end.saturating_sub(decl.span.start);
+        if text.is_char_boundary(at) {
+            text.insert_str(at, &format!(": {}", constraint.constraint));
+            inferred = true;
+        }
+    }
+    if inferred {
+        text.push_str(" -- inferred");
+    }
+    text
 }
 
 impl Contract {

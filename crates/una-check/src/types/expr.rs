@@ -3,6 +3,7 @@
 //! language (U2014) and the positions of `result`, `it` and `error` (U2012, U2013).
 
 use una_diag::{Code, ObligationKind};
+use una_project::Edition;
 use una_syntax::Span;
 use una_syntax::ast::{
     BinaryOp, Expr, ExprKind, Ident, IsTarget, LambdaParam, Literal, TextLit, TextPart, UnaryOp,
@@ -12,7 +13,7 @@ use una_syntax::ast::{
 use super::authority::{Base, Bound, Frame, Pass};
 use super::check::{Checker, Ctx, Rl, Role, Site};
 use super::closest;
-use super::env::{Entity, FnKind, KindDef};
+use super::env::{Constraint, Entity, FnKind, KindDef};
 use super::fixed;
 use super::label::Label;
 use super::records::Res;
@@ -671,7 +672,7 @@ impl<'a> Checker<'_, 'a, '_> {
                         );
                     }
                 }
-                self.compared.push(left_ty);
+                self.needs.push((left_ty, Constraint::Eq, span));
                 Ty::Bool
             }
             BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
@@ -687,6 +688,10 @@ impl<'a> Checker<'_, 'a, '_> {
                         // Ordering of text has no encoding in `spec/12 §4`.
                         Ty::Text => self.outside_rl(span, || "ordering of `Text`".to_owned()),
                         Ty::Kind(id, _) if self.fieldless_sum(id) => {}
+                        // Edition 0.2: ordering on a type parameter needs `Ord` (`spec/20 §3`).
+                        Ty::Param(_) if self.env.edition >= Edition::V0_2 => {
+                            self.needs.push((left_ty, Constraint::Ord, span));
+                        }
                         other => {
                             let shown = self.show(&other);
                             self.report.error(

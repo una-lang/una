@@ -168,7 +168,18 @@ impl Dumper<'_> {
                 }
                 items.push(atom(self.name(&function.name)));
                 if !function.type_params.is_empty() {
-                    items.push(self.type_params(&function.type_params));
+                    let names: Vec<String> = function
+                        .type_params
+                        .iter()
+                        .zip(&function.constraints)
+                        .map(|(param, constraint)| match constraint {
+                            Some(constraint) => {
+                                format!("{}: {}", self.name(param), self.name(constraint))
+                            }
+                            None => self.name(param),
+                        })
+                        .collect();
+                    items.push(atom(format!("[{}]", names.join(", "))));
                 }
                 items.push(self.params(&function.params));
                 items.push(self.ty(&function.result));

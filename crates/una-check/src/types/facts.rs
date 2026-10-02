@@ -7,8 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use una_diag::Code;
 use una_project::Edition;
 
-use super::env::{Entity, Env, FnAst, FnKind};
-use super::ty::{KindId, Ty};
+use super::env::{Constraint, Entity, Env, FnAst, FnKind};
+use super::ty::{KindId, Names, Show, Ty};
 use super::{Findings, Report};
 
 /// For each kind, whether its values can hold a function whatever its type arguments are, and
@@ -582,5 +582,168 @@ pub(crate) fn generic_equality(
                 break;
             }
         }
+    }
+}
+
+/// Edition 0.2: the constraints of type parameters (`spec/20 §3`). A private function gets,
+/// on each type parameter without a written constraint, the least constraint that its body
+/// and the generic functions it instantiates need (rule 4); then every instantiation of a
+/// constrained parameter must satisfy its constraint (U2025, rule 3).
+pub(crate) fn generic_constraints(
+    env: &mut Env<'_>,
+    facts: &KindFacts,
+    findings: &Findings,
+    report: &mut Report<'_>,
+) {
+    // Inference, to a fixpoint: an instantiation passes the callee's needs on to the type
+    // parameters of the caller that its type arguments hold.
+    for (function, needs) in &findings.needs {
+        for (index, need) in needs {
+            raise(env, *function, *index, *need);
+        }
+    }
+    loop {
+        let mut changed = false;
+        for (caller, callee, args, _) in &findings.instances {
+            let Some(caller) = caller else {
+                continue;
+            };
+            let constraints = env
+                .functions
+                .get(*callee)
+                .map(|def| def.constraints.clone())
+                .unwrap_or_default();
+            for (need, arg) in constraints.iter().zip(args) {
+                for index in passed_on(arg, *need) {
+                    changed |= raise(env, *caller, index, *need);
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    for (caller, callee, args, span) in &findings.instances {
+        let Some(def) = env.functions.get(*callee) else {
+            continue;
+        };
+        let caller_constraints = caller
+            .and_then(|caller| env.functions.get(caller))
+            .map(|def| def.constraints.clone())
+            .unwrap_or_default();
+        for ((need, arg), param) in def.constraints.iter().zip(args).zip(&def.type_params) {
+            if satisfies(env, facts, arg, *need, &caller_constraints) {
+                continue;
+            }
+            let caller_params = caller
+                .and_then(|caller| env.functions.get(caller))
+                .map(|def| def.type_params.clone())
+                .unwrap_or_default();
+            let shown = Show(
+                arg,
+                &CallerNames {
+                    env,
+                    params: &caller_params,
+                },
+            )
+            .to_string();
+            let need_name = need.name();
+            report.error(
+                Code::U2025,
+                *span,
+                format!(
+                    "`{}` needs its type parameter `{param}` to satisfy `{need_name}`, and `{shown}` does not",
+                    def.name
+                ),
+            );
+            break;
+        }
+    }
+}
+
+/// Raises the inferred constraint of type parameter `index` of the private function
+/// `function` to `need`, when none is written; whether it changed.
+fn raise(env: &mut Env<'_>, function: usize, index: usize, need: Constraint) -> bool {
+    let Some(def) = env.functions.get_mut(function) else {
+        return false;
+    };
+    if def.public || def.constraints_written.get(index).copied().unwrap_or(true) {
+        return false;
+    }
+    match def.constraints.get_mut(index) {
+        Some(have) if *have < need => {
+            *have = need;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// The type parameters of the caller that a type argument `arg` holds, which a callee's
+/// `need` requires of them: every one under `Eq`, since equality is structural, and the
+/// argument itself under `Ord` and `Integer`.
+fn passed_on(arg: &Ty, need: Constraint) -> Vec<usize> {
+    let mut params = Vec::new();
+    match need {
+        Constraint::None => {}
+        Constraint::Eq => arg.params(&mut params),
+        Constraint::Ord | Constraint::Integer => {
+            if let Ty::Param(index) = arg.unlabeled() {
+                params.push(*index);
+            }
+        }
+    }
+    params
+}
+
+/// Whether `ty` satisfies `need` (`spec/20 §1`), its type parameters by `constraints`, the
+/// constraints of the function whose parameters they are.
+fn satisfies(
+    env: &Env<'_>,
+    facts: &KindFacts,
+    ty: &Ty,
+    need: Constraint,
+    constraints: &[Constraint],
+) -> bool {
+    let param_has = |index: usize, need: Constraint| {
+        constraints.get(index).copied().unwrap_or_default() >= need
+    };
+    match need {
+        Constraint::None => true,
+        Constraint::Eq => {
+            let mut params = Vec::new();
+            ty.params(&mut params);
+            !facts.has_function(ty) && params.into_iter().all(|index| param_has(index, need))
+        }
+        Constraint::Ord | Constraint::Integer => match ty.unlabeled() {
+            Ty::Int | Ty::Fixed(_) | Ty::Error | Ty::Never | Ty::Var(_) => true,
+            Ty::Param(index) => param_has(*index, need),
+            Ty::Text => need == Constraint::Ord,
+            Ty::Kind(id, _) => {
+                need == Constraint::Ord
+                    && env.kinds.get(*id).is_some_and(|kind| {
+                        kind.is_sum() && kind.variants.iter().all(|v| v.fields.is_empty())
+                    })
+            }
+            _ => false,
+        },
+    }
+}
+
+/// Names for showing a type argument in the caller's terms.
+struct CallerNames<'e, 'a> {
+    env: &'e Env<'a>,
+    params: &'e [&'a str],
+}
+
+impl Names for CallerNames<'_, '_> {
+    fn kind_name(&self, id: KindId) -> String {
+        self.env.kind_name(id).to_owned()
+    }
+
+    fn param_name(&self, index: usize) -> String {
+        self.params
+            .get(index)
+            .map_or_else(|| "?".to_owned(), |name| (*name).to_owned())
     }
 }

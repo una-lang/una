@@ -616,7 +616,7 @@ impl<'a> Checker<'_, 'a, '_> {
     ///   variables, which every argument they come from joins (`spec/07 §7` rule 1), and the
     ///   top label is the label of what decides the shape: [`structural_inputs`].
     /// - The others label their result with the join of every label of every argument,
-    ///   element types included (ADR 0038 D3.4).
+    ///   element types included (ADR 0038 D3.4); `sort` raises every position by it.
     fn prelude_result(
         &mut self,
         callee: &str,
@@ -653,6 +653,12 @@ impl<'a> Checker<'_, 'a, '_> {
             }
         }
         self.argument_flows(callee, functions);
+        // Where an element of `sort` ends up depends on every element, so every position of
+        // its result carries the labels of the list and of all its elements (`spec/20 §4`
+        // rule 2).
+        if name == "sort" {
+            return result.raise_deep(&label);
+        }
         result.with_label(&label)
     }
 
@@ -1494,7 +1500,7 @@ impl<'a> Checker<'_, 'a, '_> {
 /// The prelude functions whose results carry the labels of their arguments, as `spec/14 §1`
 /// "Result labels" lists them (ADR 0038 D3.4): their native implementations declare these
 /// labels, which the prelude's Una signatures cannot write.
-const PRELUDE_LABELED: [&str; 20] = [
+const PRELUDE_LABELED: [&str; 21] = [
     "abs",
     "append",
     "at",
@@ -1511,6 +1517,7 @@ const PRELUDE_LABELED: [&str; 20] = [
     "max",
     "min",
     "or_else",
+    "sort",
     "starts_with",
     "sum",
     "to_int",

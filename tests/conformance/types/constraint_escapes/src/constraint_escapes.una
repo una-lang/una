@@ -1,0 +1,35 @@
+-- test: equality on a type parameter needs `Eq` wherever it hides: in a lambda, through a kind's field, through `contains`, through a recursive private helper whose constraint is inferred, and in a constrained function used as a value (spec/20 §3)
+-- spec: spec/20 §3
+-- expect: error U2026 at src/constraint_escapes.una:14:75
+-- expect: error U2026 at src/constraint_escapes.una:16:60
+-- expect: error U2025 at src/constraint_escapes.una:18:54
+-- expect: error U2025 at src/constraint_escapes.una:24:15
+-- expect: error U2025 at src/constraint_escapes.una:27:64
+-- expect: error U2025 at src/constraint_escapes.una:29:55
+module constraint_escapes
+
+pub kind Holder[T]
+  value: T
+
+pub in_lambda[T](xs: List[T], y: T) -> List[Bool] = xs.map(each: fn(x) -> x == y)
+
+pub through_field[T](a: Holder[T], b: Holder[T]) -> Bool = a == b
+
+pub through_contains[T](xs: List[T], y: T) -> Bool = xs.contains(item: y)
+
+same[T: Eq](a: T, b: T) -> Bool = a == b
+
+pub as_value(f: fn(Int) -> Int) -> Bool
+=
+  let check = same
+  check(f, f)
+
+pub sort_records(xs: List[Holder[Int]]) -> List[Holder[Int]] = sort(xs)
+
+pub recursive_private[T](xs: List[T], y: T) -> Bool = find(xs, y: y, at: 0)
+
+find[T](xs: List[T], y: T, at: Int) -> Bool
+=
+  when xs.at(index: at)
+    is Some(x) -> if x == y then true else find(xs, y: y, at: at + 1)
+    is None -> false

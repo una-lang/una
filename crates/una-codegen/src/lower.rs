@@ -1083,10 +1083,30 @@ impl<'p> Lowerer<'_, 'p, '_> {
             }
             Rhs::Call {
                 function,
+                type_args,
                 args,
                 span,
                 ..
             } => {
+                // The generic `min`, `max` and `sum` of edition 0.2 need the type descriptors
+                // of `spec/20 §7` for any type but `Int`.
+                if function.module == PRELUDE_MODULE
+                    && matches!(function.name.as_str(), "min" | "max" | "sum")
+                    && type_args.first().is_some_and(|ty| {
+                        !matches!(
+                            ty,
+                            Type::Base {
+                                base: Base::Int,
+                                ..
+                            }
+                        )
+                    })
+                {
+                    return Err(unsupported(format!(
+                        "`{}` over a type other than `Int` (spec/20 §7)",
+                        function.name
+                    )));
+                }
                 let mut values = Vec::new();
                 for arg in args {
                     values.push(self.atom(arg, env)?.0);
@@ -1602,6 +1622,10 @@ impl<'p> Lowerer<'_, 'p, '_> {
             // proves it fits (`spec/18 §4`).
             Prim::Convert(_) => {
                 let (a, kind) = operand(first)?;
+                // `to_int()` on a type parameter needs its type descriptor (`spec/20 §7`).
+                if kind == Kind::Any {
+                    return Err(unsupported("`to_int()` on a type parameter (spec/20 §7)"));
+                }
                 self.retain(a, kind);
                 Ok(a)
             }

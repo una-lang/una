@@ -1,0 +1,8 @@
+-- test: constraints are written on the type parameters of functions only, not of kinds (spec/20 §2 rule 1)
+-- spec: spec/20 §2
+-- expect: error U0101 at src/constraint_kind.una:6:16
+module constraint_kind
+
+pub kind Pair[T: Eq]
+  left: T
+  right: T
