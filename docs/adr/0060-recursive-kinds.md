@@ -69,3 +69,7 @@ Rules that follow, unchanged in substance:
 - **A depth limit on values** (R5 B), with an abort like U6003. Not chosen: it rejects ordinary programs, such as a long list built in a loop.
 - **SMT datatypes** (`declare-datatypes`), which bring acyclicity and structural induction facts. Not chosen: they leave QF_UFLIA (`spec/12 §2`), and Z3's datatype reasoning brings performance and `unknown` behaviour that the rest of the encoding avoids.
 - **Box-like indirection in the syntax** (`left: Box[Expr]`). Not chosen: with immutable reference-counted values, indirection is the backend's choice, and the source should not spell it.
+
+## Amendment (2026-10-02)
+
+R2 stands. Its justification is the finiteness of the SMT sorts and of the checker's traversals of types. The native backend is uniform and compiles each function once, every value a word (ADR 0055, ADR 0062 rule 11), so "the monomorphization of the native backend" in R2 is not a reason: there is none. Found while drafting ADR 0066, whose type descriptors keep that representation; the coordinator asked for this amendment.

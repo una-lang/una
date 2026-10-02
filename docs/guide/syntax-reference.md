@@ -180,7 +180,8 @@ In a package of edition `0.2` (ADR 0056, `spec/17`):
 - `shared`, `iso` and the new `weak` are reserved for v0.3 (aliasing);
 - `region` is no keyword, since the backend chooses where values live;
 - `var` suggests `let edit`, and `while` and `loop` suggest `for` or recursion;
-- `together` becomes the keyword of structured concurrency (ADR 0065, `spec/19`), `parallel` and `actor` are reserved for a later version, and `async` and `await` suggest `together`.
+- `together` becomes the keyword of structured concurrency (ADR 0065, `spec/19`), `parallel` and `actor` are reserved for a later version, and `async` and `await` suggest `together`;
+- `trait` and `impl` are reserved for a later version (user traits), since edition `0.2` has only the built-in constraints of ADR 0066.
 
 A package of edition `0.1` keeps the table above in every version of the compiler.
 
@@ -331,6 +332,14 @@ Rules:
 ### 3.3 Generics
 
 Kinds and functions can take type parameters. They are unconstrained in v0.1 (no traits), so the only operations on a type parameter are equality and whatever function parameters provide.
+
+In edition `0.2` (ADR 0066, `spec/20`), a function's type parameter can carry one built-in constraint: `Eq` allows `==` and `!=`, `Ord` adds `<`, `<=`, `>` and `>=` (for integers, `Text` and sums without payloads), and `Integer` adds `x.to_int()` (for `Int` and the fixed-width types). Equality on a type parameter needs `Eq` (U2026), written in public headers and inferred in private ones. There is no arithmetic on a type parameter: convert with `to_int()`. The prelude's `min`, `max`, `contains` and `sum` are generic there, and `sort[T: Ord]` sorts a list.
+
+```una
+pub largest[T: Ord](xs: List[T], floor: T) -> T
+=
+  xs.fold(initial: floor, step: fn(best, x) -> max(best, b: x))
+```
 
 ```una
 pub first_or[T](xs: List[T], default: T) -> T = xs.first().or_else(default)
