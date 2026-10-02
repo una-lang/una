@@ -20,18 +20,18 @@ mod env;
 mod expr;
 mod facts;
 mod fixed;
-mod memory;
 mod flow;
 mod generic;
 mod label;
+mod memory;
 mod records;
 mod stmt;
 mod ty;
 mod unify;
 
 use una_diag::{Code, Diagnostic, Edit, Location, ObligationKind, Related, Repair};
-use una_syntax::ast::File;
 use una_project::Edition;
+use una_syntax::ast::File;
 use una_syntax::{FileId, Interner, KeywordSet, SourceDb, Span, lex_in, parse};
 
 use crate::names::PackageInput;

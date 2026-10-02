@@ -136,9 +136,13 @@ impl<'a> Checker<'_, 'a, '_> {
         let local = self.locals.get(index)?.clone();
         if !local.editable || local.lambda_depth < self.lambda_depth {
             let reason = if !local.editable {
-                format!("`{name}` is not editable; declare it `let edit {name}`, or the parameter `edit {name}`")
+                format!(
+                    "`{name}` is not editable; declare it `let edit {name}`, or the parameter `edit {name}`"
+                )
             } else {
-                format!("`{name}` is captured by this lambda, which sees its value when it was created and cannot change it")
+                format!(
+                    "`{name}` is captured by this lambda, which sees its value when it was created and cannot change it"
+                )
             };
             self.report.error(Code::U2019, root.span, reason);
             return None;
@@ -239,7 +243,10 @@ impl<'a> Checker<'_, 'a, '_> {
                 self.report.error(Code::U2020, arg.span, message);
             }
             (_, Some(Convention::Edit)) => {
-                if self.editable_place(&arg.value, "the argument of `edit`").is_some() {
+                if self
+                    .editable_place(&arg.value, "the argument of `edit`")
+                    .is_some()
+                {
                     self.rebind(&arg.value, found, expected, arg.value.span);
                 }
             }
@@ -283,7 +290,9 @@ impl<'a> Checker<'_, 'a, '_> {
                 let mut diagnostic = self.report.make(
                     Code::U2018,
                     other_span,
-                    format!("`{name}` is passed as `edit` in this call, so the call cannot use it again"),
+                    format!(
+                        "`{name}` is passed as `edit` in this call, so the call cannot use it again"
+                    ),
                 );
                 diagnostic
                     .related

@@ -6,9 +6,8 @@ use std::collections::BTreeMap;
 use una_diag::{Code, ObligationKind, Repair};
 use una_syntax::Span;
 use una_syntax::ast::{
-    Convention,
-    CapabilityDecl, ClauseKind, DeclKind, ExampleDecl, ExpectationKind, Expr, FunctionDecl,
-    HandlerCall, HandlerDecl, Ident, OpClauseKind, PolicyDecl, PredicateDecl,
+    CapabilityDecl, ClauseKind, Convention, DeclKind, ExampleDecl, ExpectationKind, Expr,
+    FunctionDecl, HandlerCall, HandlerDecl, Ident, OpClauseKind, PolicyDecl, PredicateDecl,
 };
 
 use super::authority::{Base, Bound, Collected, Frame, Pass};

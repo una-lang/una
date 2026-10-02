@@ -1004,7 +1004,9 @@ impl<'p, 'w> Machine<'p, 'w> {
                 let slot = usize::try_from(&index)
                     .ok()
                     .and_then(|i| items.get_mut(i))
-                    .ok_or_else(|| fault("`set` at an index outside the list, which its precondition excludes"))?;
+                    .ok_or_else(|| {
+                        fault("`set` at an index outside the list, which its precondition excludes")
+                    })?;
                 *slot = arg(2)?;
                 Value::Tuple(Rc::new(vec![Value::List(Rc::new(items)), Value::Unit]))
             }

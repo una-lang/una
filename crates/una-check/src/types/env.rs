@@ -9,10 +9,9 @@ use una_core::IntType;
 use una_diag::Code;
 use una_project::Edition;
 use una_syntax::ast::{
-    Convention,
-    CapabilityDecl, ClauseKind, DeclKind, Expr, Field, File, FnTypeClause, FunctionDecl,
-    HandlerDecl, Ident, KindBody, KindDecl, Label as LabelAst, OpClauseKind, Param, PolicyDecl,
-    PredicateDecl, Type, TypeCore, UsesClause,
+    CapabilityDecl, ClauseKind, Convention, DeclKind, Expr, Field, File, FnTypeClause,
+    FunctionDecl, HandlerDecl, Ident, KindBody, KindDecl, Label as LabelAst, OpClauseKind, Param,
+    PolicyDecl, PredicateDecl, Type, TypeCore, UsesClause,
 };
 use una_syntax::{Interner, Span, Symbol};
 
@@ -814,7 +813,8 @@ impl<'a> Env<'a> {
                 }
             }
             FnAst::Predicate(predicate) => {
-                let params = self.params_of(module, &predicate.params, &[], Some("a predicate"), report);
+                let params =
+                    self.params_of(module, &predicate.params, &[], Some("a predicate"), report);
                 let result = self.lower_type(module, &predicate.result, &[], report);
                 if let Some(def) = self.functions.get_mut(id) {
                     def.params = params;

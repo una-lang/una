@@ -5,9 +5,9 @@
 use una_diag::{Code, ObligationKind};
 use una_syntax::Span;
 use una_syntax::ast::{
-    AssignStmt, IfThenStmt,
-    Bind, Block, BlockExpr, Body, CapBindingValue, ElseBranch, Expr, Handled, HandlingKind,
-    IfBlock, LetStmt, LetValue, Literal, PatternKind, Stmt, TextPart, WhenExpr,
+    AssignStmt, Bind, Block, BlockExpr, Body, CapBindingValue, ElseBranch, Expr, Handled,
+    HandlingKind, IfBlock, IfThenStmt, LetStmt, LetValue, Literal, PatternKind, Stmt, TextPart,
+    WhenExpr,
 };
 
 use super::Report;
@@ -160,7 +160,9 @@ impl<'a> Checker<'_, 'a, '_> {
             self.annotated(stmt.name.span, declared);
         }
         // The local keeps the labels its value has now; later unifications do not change them.
-        let refined = declared.as_ref().is_some_and(super::ty::Declared::is_refined);
+        let refined = declared
+            .as_ref()
+            .is_some_and(super::ty::Declared::is_refined);
         let bound = declared.map_or_else(|| self.vars.resolve_bound(&ty), |declared| declared.base);
         self.typed(stmt.name.span, &bound);
         // `let edit` keeps this type, label included, at every rebind (`spec/17 §2` rule 4).

@@ -5,15 +5,15 @@
 use una_diag::Code;
 
 use crate::ast::{
-    Arg, Arm, BinaryOp, Bind, Block, BlockExpr, Body, CapBinding, CapBindingValue, CapType,
-    CapabilityDecl, Clause, ClauseKind, Decl, DeclKind, ElseBranch, ExampleDecl, Expectation,
-    ExpectationKind, Expr, ExprKind, Field, File, FnTypeClause, FunctionDecl, Given, Handled,
-    HandlerCall, HandlerDecl, HandlerOp, Handling, HandlingKind, Ident, IfBlock, Import, IsTarget,
-    KindBody, KindDecl, Label, LambdaParam, LetStmt, LetValue, Level, Literal, ModuleHeader,
-    ModulePath, OpClause, OpClauseKind, OpDecl, Param, Pattern, PatternKind, PolicyDecl,
-    PredicateDecl, Range, RequirementDecl, RequirementSource, SignedInt, Stmt, TextLit, TextPart,
-    Type, TypeCore, UnaryOp, UsesClause, Variant, VariantExpr, WhenExpr,
-    AssignStmt, Convention, IfThenStmt,
+    Arg, Arm, AssignStmt, BinaryOp, Bind, Block, BlockExpr, Body, CapBinding, CapBindingValue,
+    CapType, CapabilityDecl, Clause, ClauseKind, Convention, Decl, DeclKind, ElseBranch,
+    ExampleDecl, Expectation, ExpectationKind, Expr, ExprKind, Field, File, FnTypeClause,
+    FunctionDecl, Given, Handled, HandlerCall, HandlerDecl, HandlerOp, Handling, HandlingKind,
+    Ident, IfBlock, IfThenStmt, Import, IsTarget, KindBody, KindDecl, Label, LambdaParam, LetStmt,
+    LetValue, Level, Literal, ModuleHeader, ModulePath, OpClause, OpClauseKind, OpDecl, Param,
+    Pattern, PatternKind, PolicyDecl, PredicateDecl, Range, RequirementDecl, RequirementSource,
+    SignedInt, Stmt, TextLit, TextPart, Type, TypeCore, UnaryOp, UsesClause, Variant, VariantExpr,
+    WhenExpr,
 };
 use crate::error::{SyntaxError, SyntaxRepair};
 use crate::intern::Interner;
@@ -1805,7 +1805,9 @@ impl<'a> Parser<'a> {
                     span: self.since(start),
                 }));
             }
-            return Ok(IfForm::Block(self.if_block_else(start, condition, then_block)?));
+            return Ok(IfForm::Block(
+                self.if_block_else(start, condition, then_block)?,
+            ));
         }
         Ok(IfForm::Block(self.if_block(start, condition)?))
     }
