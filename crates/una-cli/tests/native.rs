@@ -397,6 +397,37 @@ fn a_construct_the_backend_does_not_compile_yet_is_named() {
 }
 
 #[test]
+fn a_failure_of_main_shows_what_una_run_shows() {
+    let dir = package(
+        "stop",
+        "\n[run]\nentry = \"stop\"\n",
+        &[(
+            "src/stop.una",
+            "module stop\n\npub kind Pair\n  name: Text\n  pin: secret Int\n\npub kind Stop = | Halt(reason: Text, inner: Option[Pair], code: secret Int, size: Int)\n\npub main() -> Unit\n  fails Stop\n=\n  let pairs = [Pair(name: \"ana\", pin: 7)]\n  fail Halt(reason: \"x\", inner: pairs.first(), code: 1, size: pairs.len)\n",
+        )],
+    );
+    let message = "`main` failed with `Halt(reason: \"x\", inner: Some(Pair(name: \"ana\", pin: <redacted:secret>)), size: 1)`";
+    let run = una(&dir, &["run"]);
+    assert_eq!(run.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&run.stderr).contains(message));
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let native = Command::new(dir.join("target/una/stop"))
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&native.stderr);
+    assert!(
+        stderr.starts_with(&format!(
+            "[U6001] Error: {message}\n  at src/stop.una:9:5\n"
+        )),
+        "{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn the_executable_checks_main_against_its_grants() {
     runtime();
     // No `[run] grants`: `una build` accepts it, and the executable needs `--grant console`.

@@ -11,6 +11,10 @@
 //!
 //! Each path through an expression ends with its result: it retains the result, then releases
 //! every word its scope owns.
+//!
+//! **Failures** are returned values (`spec/16 §4` rule 3). A body returns its value and a flag,
+//! 1 when the value is a failure. A failure releases what the code owns since the innermost
+//! [`Catch`] was installed, and goes to it: a handling clause, `attempt`, or the body's return.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -20,7 +24,7 @@ use cranelift_codegen::isa::TargetFrontendConfig;
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::Module;
 use una_core::{
-    Atom, Base, Bound, Ctor, Decl, Expr, HOST_MODULE, Label, Name, PRELUDE_MODULE, Prim, Rhs,
+    Atom, Base, Bound, Ctor, Decl, Expr, HOST_MODULE, Label, Name, PRELUDE_MODULE, Path, Prim, Rhs,
     Source, Type,
 };
 use una_syntax::Span;
@@ -157,6 +161,33 @@ type Env = BTreeMap<String, (Value, Type)>;
 /// The words a scope owns, released at the end of each of its paths.
 type Scope = Vec<(Value, Kind)>;
 
+/// Where a failure goes, as a returned value that nothing unwinds (`spec/16 §4` rule 3): the
+/// block of the innermost handling clause, `attempt` or function return, whose parameter is the
+/// failure, with the words to release on the way.
+#[derive(Clone)]
+struct Catch {
+    /// The block.
+    block: Block,
+    /// The words that enclosing expressions own since the catch was installed.
+    outer: Scope,
+    /// Where the words of the current scope since the catch was installed start.
+    base: usize,
+}
+
+impl Catch {
+    /// The catch of an expression nested in the one whose scope is `scope`: the nested
+    /// expression's scope starts empty.
+    fn nested(&self, scope: &Scope) -> Catch {
+        let mut outer = self.outer.clone();
+        outer.extend(scope.iter().skip(self.base).copied());
+        Catch {
+            block: self.block,
+            outer,
+            base: 0,
+        }
+    }
+}
+
 /// A body to compile: a function or predicate of the package, or a lambda.
 pub(crate) struct Body<'p> {
     /// Whether it is the code of a closure, whose first parameter is the closure itself.
@@ -167,6 +198,8 @@ pub(crate) struct Body<'p> {
     pub(crate) params: &'p [(Name, Type)],
     /// The result type, when it is declared.
     pub(crate) result: Option<&'p Type>,
+    /// Whether it can fail.
+    pub(crate) fails: bool,
     /// The body.
     pub(crate) body: &'p Expr,
 }
@@ -207,9 +240,21 @@ pub(crate) fn function<'p>(
     if let Some(result) = body.result {
         kind(result)?;
     }
-    if let Some(result) = lowerer.expr(body.body, &mut env, &mut Scope::new())? {
-        lowerer.builder.ins().return_(&[result]);
+    // Every body returns its value and whether it failed, the value being then the failure.
+    let failed = lowerer.join();
+    let catch = Catch {
+        block: failed,
+        outer: Scope::new(),
+        base: 0,
+    };
+    if let Some(result) = lowerer.expr(body.body, &mut env, &mut Scope::new(), &catch)? {
+        let ok = lowerer.builder.ins().iconst(types::I64, 0);
+        lowerer.builder.ins().return_(&[result, ok]);
     }
+    lowerer.builder.switch_to_block(failed);
+    let failure = lowerer.param(failed)?;
+    let one = lowerer.builder.ins().iconst(types::I64, 1);
+    lowerer.builder.ins().return_(&[failure, one]);
     lowerer.builder.seal_all_blocks();
     lowerer.builder.finalize(config);
     Ok(())
@@ -217,12 +262,14 @@ pub(crate) fn function<'p>(
 
 impl<'p> Lowerer<'_, 'p, '_> {
     /// The owned word of `expr`, or `None` when its block ends without a value (an unreachable
-    /// branch). `scope` holds the words to release at the end of each path.
+    /// branch). `scope` holds the words to release at the end of each path, and a failure goes
+    /// to `catch`.
     fn expr(
         &mut self,
         expr: &'p Expr,
         env: &mut Env,
         scope: &mut Scope,
+        catch: &Catch,
     ) -> Result<Option<Value>, CodegenError> {
         let mut expr = expr;
         loop {
@@ -244,9 +291,10 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 } => {
                     let kind = kind(ty)?;
                     let bound = match value.as_ref() {
-                        Bound::Rhs(rhs) => self.rhs(rhs, ty, env)?,
+                        Bound::Rhs(rhs) => self.rhs(rhs, ty, env, scope, catch)?,
                         Bound::Expr(inner) => {
-                            match self.expr(inner, &mut env.clone(), &mut Scope::new())? {
+                            let nested = catch.nested(scope);
+                            match self.expr(inner, &mut env.clone(), &mut Scope::new(), &nested)? {
                                 Some(value) => value,
                                 None => return Ok(None),
                             }
@@ -271,7 +319,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     let mut reached = false;
                     for (block, branch) in [(then_block, then), (else_block, otherwise)] {
                         self.builder.switch_to_block(block);
-                        reached |= self.branch(branch, env, scope, join)?;
+                        reached |= self.branch(branch, env, scope, join, catch)?;
                     }
                     return self.joined(join, reached);
                 }
@@ -301,11 +349,13 @@ impl<'p> Lowerer<'_, 'p, '_> {
                                 inner.insert(name.clone(), (field, field_ty));
                             }
                         }
-                        reached |= self.branch_in(&arm.body, &mut inner, scope, join)?;
+                        reached |= self.branch_in(&arm.body, &mut inner, scope, join, catch)?;
                         self.builder.switch_to_block(next);
                     }
                     match otherwise {
-                        Some(otherwise) => reached |= self.branch(otherwise, env, scope, join)?,
+                        Some(otherwise) => {
+                            reached |= self.branch(otherwise, env, scope, join, catch)?;
+                        }
                         // The checker proves the arms exhaustive.
                         None => {
                             self.builder.ins().trap(TRAP);
@@ -318,9 +368,37 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     self.builder.ins().trap(TRAP);
                     return Ok(None);
                 }
-                Expr::Fail { .. } => return Err(unsupported("`fail`")),
-                Expr::Handle { .. } => return Err(unsupported("handling clauses")),
-                Expr::Attempt { .. } => return Err(unsupported("`attempt`")),
+                Expr::Fail { ctor, args, .. } => {
+                    let failure = self.construct(ctor, args, env)?;
+                    self.fail(failure, scope, catch);
+                    return Ok(None);
+                }
+                Expr::Handle {
+                    body,
+                    error,
+                    handler,
+                } => {
+                    // The body's value is the clause's; its failure goes to the handler, which
+                    // owns it.
+                    let join = self.join();
+                    let handling = self.join();
+                    let inner = Catch {
+                        block: handling,
+                        outer: Scope::new(),
+                        base: scope.len(),
+                    };
+                    let mut reached = self.branch(body, env, scope, join, &inner)?;
+                    self.builder.switch_to_block(handling);
+                    let failure = self.param(handling)?;
+                    let mut handler_env = env.clone();
+                    handler_env.insert(error.clone(), (failure, unknown()));
+                    let mut handler_scope = scope.clone();
+                    handler_scope.push((failure, Kind::Any));
+                    reached |=
+                        self.branch_in(handler, &mut handler_env, &handler_scope, join, catch)?;
+                    return self.joined(join, reached);
+                }
+                Expr::Attempt { body, .. } => return self.attempt(body, env, scope).map(Some),
                 Expr::With { .. } => return Err(unsupported("`with`")),
             }
         }
@@ -341,8 +419,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
         env: &Env,
         scope: &Scope,
         join: Block,
+        catch: &Catch,
     ) -> Result<bool, CodegenError> {
-        self.branch_in(branch, &mut env.clone(), scope, join)
+        self.branch_in(branch, &mut env.clone(), scope, join, catch)
     }
 
     fn branch_in(
@@ -351,8 +430,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
         env: &mut Env,
         scope: &Scope,
         join: Block,
+        catch: &Catch,
     ) -> Result<bool, CodegenError> {
-        match self.expr(branch, env, &mut scope.clone())? {
+        match self.expr(branch, env, &mut scope.clone(), catch)? {
             Some(value) => {
                 self.builder.ins().jump(join, &[value.into()]);
                 Ok(true)
@@ -372,8 +452,127 @@ impl<'p> Lowerer<'_, 'p, '_> {
         self.param(join).map(Some)
     }
 
-    /// The owned word of a right-hand side bound to a binder of type `ty`.
-    fn rhs(&mut self, rhs: &'p Rhs, ty: &Type, env: &Env) -> Result<Value, CodegenError> {
+    /// `attempt body`: `Ok` of the body's value, or `Err` of its failure (`spec/11 §4`), as the
+    /// value of the expression whose scope is `scope`.
+    fn attempt(&mut self, body: &'p Expr, env: &Env, scope: &Scope) -> Result<Value, CodegenError> {
+        let succeeded = self.join();
+        let failed = self.join();
+        let done = self.join();
+        let inner = Catch {
+            block: failed,
+            outer: Scope::new(),
+            base: scope.len(),
+        };
+        // The body's path releases the whole scope when it ends; a failure releases what the
+        // body made, and the scope is released here.
+        let reached = self.branch(body, env, scope, succeeded, &inner)?;
+        self.builder.switch_to_block(succeeded);
+        if reached {
+            let value = self.param(succeeded)?;
+            let ok = self.wrap(0, value)?;
+            self.builder.ins().jump(done, &[ok.into()]);
+        } else {
+            self.builder.ins().trap(TRAP);
+        }
+        self.builder.switch_to_block(failed);
+        let failure = self.param(failed)?;
+        let err = self.wrap(1, failure)?;
+        for &(owned, kind) in scope.iter().rev() {
+            self.release(owned, kind);
+        }
+        self.builder.ins().jump(done, &[err.into()]);
+        self.builder.switch_to_block(done);
+        self.param(done)
+    }
+
+    /// The variant at position `tag` of `Result` or `Option` holding `value`, which it takes
+    /// from the caller.
+    fn wrap(&mut self, tag: i64, value: Value) -> Result<Value, CodegenError> {
+        let tag = self.builder.ins().iconst(types::I64, tag);
+        let wrapped = self.call("una_rt_data", &[tag])?;
+        self.runtime("una_rt_push", &[wrapped, value]);
+        self.release(value, Kind::Any);
+        Ok(wrapped)
+    }
+
+    /// Fails with `failure`, which the code owns: releases what the code owns since `catch` was
+    /// installed, and goes to it.
+    fn fail(&mut self, failure: Value, scope: &Scope, catch: &Catch) {
+        for &(owned, kind) in scope.iter().skip(catch.base).rev() {
+            self.release(owned, kind);
+        }
+        for &(owned, kind) in catch.outer.iter().rev() {
+            self.release(owned, kind);
+        }
+        self.builder.ins().jump(catch.block, &[failure.into()]);
+    }
+
+    /// Continues when `failed` is 0, and fails with `value` otherwise.
+    fn check(&mut self, value: Value, failed: Value, scope: &Scope, catch: &Catch) {
+        let failing = self.builder.create_block();
+        let next = self.builder.create_block();
+        self.builder.ins().brif(failed, failing, &[], next, &[]);
+        self.builder.switch_to_block(failing);
+        self.fail(value, scope, catch);
+        self.builder.switch_to_block(next);
+    }
+
+    /// The owned value `ctor(args)`.
+    fn construct(&mut self, ctor: &Ctor, args: &[Atom], env: &Env) -> Result<Value, CodegenError> {
+        let index = i64::try_from(ctor.index).map_err(crate::internal)?;
+        if args.is_empty() {
+            return Ok(self.builder.ins().iconst(types::I64, (index << 1) | 1));
+        }
+        let tag = self.builder.ins().iconst(types::I64, index);
+        let object = self.call("una_rt_data", &[tag])?;
+        for arg in args {
+            let (value, _) = self.atom(arg, env)?;
+            self.runtime("una_rt_push", &[object, value]);
+        }
+        Ok(object)
+    }
+
+    /// The owned result of a call of the function or predicate `function` with `args` at
+    /// `span`; its failure goes to `catch`.
+    fn call_function(
+        &mut self,
+        function: &Path,
+        args: &[Value],
+        span: Span,
+        scope: &Scope,
+        catch: &Catch,
+    ) -> Result<Value, CodegenError> {
+        let (id, fails) = self.emitter.function(function)?;
+        // `spec/11 §7`: each call counts toward the maximum depth, which the runtime checks
+        // against the call's site.
+        let site = self.site(span);
+        self.runtime("una_rt_enter", &[site]);
+        let callee = self
+            .emitter
+            .module
+            .declare_func_in_func(id, self.builder.func);
+        let call = self.builder.ins().call(callee, args);
+        let results = self.builder.inst_results(call).to_vec();
+        self.runtime("una_rt_leave", &[]);
+        let (Some(&value), Some(&failed)) = (results.first(), results.get(1)) else {
+            return Err(internal("a call lost its result"));
+        };
+        if fails {
+            self.check(value, failed, scope, catch);
+        }
+        Ok(value)
+    }
+
+    /// The owned word of a right-hand side bound to a binder of type `ty`; a failure goes to
+    /// `catch`.
+    fn rhs(
+        &mut self,
+        rhs: &'p Rhs,
+        ty: &Type,
+        env: &Env,
+        scope: &Scope,
+        catch: &Catch,
+    ) -> Result<Value, CodegenError> {
         match rhs {
             Rhs::Atom(atom) => {
                 let (value, kind) = self.atom(atom, env)?;
@@ -400,30 +599,23 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 if function.module == PRELUDE_MODULE {
                     return self.prelude(&function.name, &values, *span);
                 }
-                let id = self.emitter.function(function)?;
-                // `spec/11 §7`: each call counts toward the maximum depth, which the runtime
-                // checks against the call's site.
-                let site = self.site(*span);
-                self.runtime("una_rt_enter", &[site]);
-                let callee = self
-                    .emitter
-                    .module
-                    .declare_func_in_func(id, self.builder.func);
-                let call = self.builder.ins().call(callee, &values);
-                let result = self.builder.inst_results(call).first().copied();
-                self.runtime("una_rt_leave", &[]);
-                result.ok_or_else(|| internal("a call lost its result"))
+                self.call_function(function, &values, *span, scope, catch)
             }
             Rhs::Apply {
                 callee, args, span, ..
             } => {
+                let fails = matches!(self.atom_type(callee, env), Type::Fn { fails: Some(_), .. });
                 let (callee, _) = self.atom(callee, env)?;
                 let mut values = Vec::new();
                 for arg in args {
                     values.push(self.atom(arg, env)?.0);
                 }
                 let site = self.site(*span);
-                self.apply(callee, &values, site)
+                let (value, failed) = self.apply(callee, &values, site)?;
+                if fails {
+                    self.check(value, failed, scope, catch);
+                }
+                Ok(value)
             }
             Rhs::Op {
                 capability_path,
@@ -449,19 +641,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 self.runtime("una_rt_console_print", &[line]);
                 Ok(self.builder.ins().iconst(types::I64, 0))
             }
-            Rhs::Construct { ctor, args, .. } => {
-                let index = i64::try_from(ctor.index).map_err(crate::internal)?;
-                if args.is_empty() {
-                    return Ok(self.builder.ins().iconst(types::I64, (index << 1) | 1));
-                }
-                let tag = self.builder.ins().iconst(types::I64, index);
-                let object = self.call("una_rt_data", &[tag])?;
-                for arg in args {
-                    let (value, _) = self.atom(arg, env)?;
-                    self.runtime("una_rt_push", &[object, value]);
-                }
-                Ok(object)
-            }
+            Rhs::Construct { ctor, args, .. } => self.construct(ctor, args, env),
             Rhs::Field { value, index, .. } => {
                 let (record, _) = self.atom(value, env)?;
                 let field = self.field(record, *index)?;
@@ -503,8 +683,40 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 }
                 Ok(closure)
             }
-            Rhs::Checked { .. } => Err(unsupported("`checked`")),
-            Rhs::Declassify { .. } => Err(unsupported("policies")),
+            Rhs::Checked {
+                value,
+                it,
+                predicate,
+                ctor,
+                args,
+                ..
+            } => {
+                // The value when the predicate holds of it, else the failure `ctor(args)`.
+                let (checked, kind) = self.atom(value, env)?;
+                let mut inner = env.clone();
+                inner.insert(it.clone(), (checked, self.atom_type(value, env)));
+                let nested = catch.nested(scope);
+                let Some(holds) = self.expr(predicate, &mut inner, &mut Scope::new(), &nested)?
+                else {
+                    // The predicate never returns, and nothing after it runs.
+                    let unreachable = self.builder.create_block();
+                    self.builder.switch_to_block(unreachable);
+                    return Ok(self.builder.ins().iconst(types::I64, 0));
+                };
+                let passed = self.builder.create_block();
+                let failing = self.builder.create_block();
+                self.builder.ins().brif(holds, passed, &[], failing, &[]);
+                self.builder.switch_to_block(failing);
+                let failure = self.construct(ctor, args, env)?;
+                self.fail(failure, scope, catch);
+                self.builder.switch_to_block(passed);
+                self.retain(checked, kind);
+                Ok(checked)
+            }
+            Rhs::Declassify { via, arg, span, .. } => {
+                let (value, _) = self.atom(arg, env)?;
+                self.call_function(via, &[value], *span, scope, catch)
+            }
         }
     }
 
@@ -629,22 +841,31 @@ impl<'p> Lowerer<'_, 'p, '_> {
     }
 
     /// The owned result of the closure `callee` applied to `args`, a call that counts toward the
-    /// maximum depth at `site`.
-    fn apply(&mut self, callee: Value, args: &[Value], site: Value) -> Result<Value, CodegenError> {
+    /// maximum depth at `site`, and whether it failed.
+    fn apply(
+        &mut self,
+        callee: Value,
+        args: &[Value],
+        site: Value,
+    ) -> Result<(Value, Value), CodegenError> {
         let code = self.call("una_rt_closure_code", &[callee])?;
         let mut signature = self.emitter.module.make_signature();
         for _ in 0..=args.len() {
             signature.params.push(AbiParam::new(types::I64));
         }
         signature.returns.push(AbiParam::new(types::I64));
+        signature.returns.push(AbiParam::new(types::I64));
         let signature = self.builder.import_signature(signature);
         let mut values = vec![callee];
         values.extend_from_slice(args);
         self.runtime("una_rt_enter", &[site]);
         let call = self.builder.ins().call_indirect(signature, code, &values);
-        let result = self.builder.inst_results(call).first().copied();
+        let results = self.builder.inst_results(call).to_vec();
         self.runtime("una_rt_leave", &[]);
-        result.ok_or_else(|| internal("a closure lost its result"))
+        match (results.first(), results.get(1)) {
+            (Some(&value), Some(&failed)) => Ok((value, failed)),
+            _ => Err(internal("a closure lost its result")),
+        }
     }
 
     /// The one parameter of a join block.
@@ -802,7 +1023,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let next_index = self.builder.ins().iadd_imm_s(index, 1);
         match name {
             "map" => {
-                let mapped = self.apply(function, &[item], site)?;
+                let (mapped, _) = self.apply(function, &[item], site)?;
                 self.runtime("una_rt_push", &[carried, mapped]);
                 self.release(mapped, Kind::Any);
                 self.builder
@@ -810,7 +1031,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     .jump(head, &[next_index.into(), carried.into()]);
             }
             "filter" | "first_where" => {
-                let keep = self.apply(function, &[item], site)?;
+                let (keep, _) = self.apply(function, &[item], site)?;
                 let kept = self.builder.create_block();
                 let next = self.builder.create_block();
                 self.builder.ins().brif(keep, kept, &[], next, &[]);
@@ -830,7 +1051,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     .jump(head, &[next_index.into(), carried.into()]);
             }
             _ => {
-                let step = self.apply(function, &[carried, item], site)?;
+                let (step, _) = self.apply(function, &[carried, item], site)?;
                 self.release(carried, Kind::Any);
                 self.builder
                     .ins()
