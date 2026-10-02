@@ -460,13 +460,9 @@ pub fn equal(a: i64, b: i64) -> i64 {
     i64::from(equal_words(a, b))
 }
 
+/// Structural equality over a worklist of pairs, never the native stack: a value can nest
+/// deeper than any call (ADR 0060, draft).
 fn equal_words(a: i64, b: i64) -> bool {
-    if a == b {
-        return true;
-    }
-    if !is_handle(a) || !is_handle(b) {
-        return false;
-    }
     enum Shape {
         Int(BigInt),
         Text(String),
@@ -482,14 +478,26 @@ fn equal_words(a: i64, b: i64) -> bool {
             Object::Closure { .. } => Shape::Closure,
         })
     };
-    match (shape(a), shape(b)) {
-        (Some(Shape::Int(x)), Some(Shape::Int(y))) => x == y,
-        (Some(Shape::Text(x)), Some(Shape::Text(y))) => x == y,
-        (Some(Shape::Cells(tx, x)), Some(Shape::Cells(ty, y))) => {
-            tx == ty && x.len() == y.len() && x.iter().zip(&y).all(|(a, b)| equal_words(*a, *b))
+    let mut pending = vec![(a, b)];
+    while let Some((a, b)) = pending.pop() {
+        if a == b {
+            continue;
         }
-        _ => false,
+        if !is_handle(a) || !is_handle(b) {
+            return false;
+        }
+        match (shape(a), shape(b)) {
+            (Some(Shape::Int(x)), Some(Shape::Int(y))) if x == y => {}
+            (Some(Shape::Text(x)), Some(Shape::Text(y))) if x == y => {}
+            (Some(Shape::Cells(tx, x)), Some(Shape::Cells(ty, y)))
+                if tx == ty && x.len() == y.len() =>
+            {
+                pending.extend(x.into_iter().zip(y));
+            }
+            _ => return false,
+        }
     }
+    true
 }
 
 /// The variant `Some(value)` of `Option`, with `value` retained.
@@ -693,6 +701,31 @@ mod tests {
         release(again);
         assert_eq!(text_value(again), "");
         assert_eq!(faults(), 2);
+    }
+
+    #[test]
+    fn a_chain_deeper_than_any_call_compares_and_is_freed_without_recursion() {
+        // `Some(Some(... None))`, a million deep, twice: equality and release use worklists,
+        // never the native stack (ADR 0060, draft).
+        let before = live();
+        let chain = |depth: usize| {
+            let mut value = NONE;
+            for _ in 0..depth {
+                let cell = some(value);
+                release(value);
+                value = cell;
+            }
+            value
+        };
+        let (a, b) = (chain(1_000_000), chain(1_000_000));
+        assert_eq!(equal(a, b), 1);
+        let shorter = chain(999_999);
+        assert_eq!(equal(a, shorter), 0);
+        for value in [a, b, shorter] {
+            release(value);
+        }
+        assert_eq!(live(), before);
+        assert_eq!(faults(), 0);
     }
 
     #[test]
