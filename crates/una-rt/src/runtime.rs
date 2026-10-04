@@ -5,10 +5,12 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::Value;
 use una_diag::{Code, Diagnostic, Location, Position, render_human};
-use una_interp::{Event, Grant};
+use una_interp::{Event, EventOutcome, Grant};
 
 use crate::host::OpSite;
 use crate::render::{Failure, Types};
@@ -186,31 +188,157 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
     Ok(options)
 }
 
-/// The state of a run, on the thread that runs `main`.
+/// The state of a run, on the thread that runs `main` and on each thread that runs a task
+/// (`spec/19 §8`).
 pub(crate) struct State {
     pub(crate) trace: Option<Vec<Event>>,
     trace_path: Option<PathBuf>,
     pub(crate) failed_write: Option<io::Error>,
     depth: usize,
     max_depth: usize,
-    sites: Vec<Location>,
-    failure: Option<Failure>,
-    /// The grants of the run, and the keys of its `keys:` grants.
-    pub(crate) grants: Vec<Grant>,
-    pub(crate) keys: BTreeMap<String, Vec<u8>>,
-    pub(crate) types: Types,
-    pub(crate) ops: Vec<OpSite>,
+    sites: Arc<Vec<Location>>,
+    failure: Option<Arc<Failure>>,
+    /// The grants of the run, and the keys of its `keys:` grants, which every task reads.
+    pub(crate) grants: Arc<Vec<Grant>>,
+    pub(crate) keys: Arc<BTreeMap<String, Vec<u8>>>,
+    pub(crate) types: Arc<Types>,
+    pub(crate) ops: Arc<Vec<OpSite>>,
     /// Whether the last host operation failed.
     pub(crate) host_failed: bool,
-    /// The number of instances of each handler that `with` installed so far.
+    /// The number of instances of each handler that `with` installed so far: in the run, or
+    /// in a task, since it started (`tasks`).
     pub(crate) installs: BTreeMap<String, usize>,
-    /// Where the stack of `main`'s thread starts, and how much of it the code may use: past
-    /// it, a call aborts with U6003 before the stack overflows (ADR 0032, ADR 0061 rule 1).
+    /// Where the stack of the thread starts, and how much of it the code may use: past it, a
+    /// call aborts with U6003 before the stack overflows (ADR 0032, ADR 0061 rule 1).
     stack_base: usize,
     stack_budget: usize,
     /// The memory budget in MiB, and what the heap held when `main` started (ADR 0061).
     max_memory: usize,
     baseline: usize,
+    /// The path of the task the thread runs, empty for `main`'s (`spec/19 §6` rule 1).
+    pub(crate) path: String,
+    /// The cancellation flags of the task and of the tasks that run it.
+    cancel: Vec<Arc<AtomicBool>>,
+    /// In a task, the U6003 that stopped it, which its block reports.
+    pub(crate) stopped: Option<(Location, String)>,
+}
+
+/// What a task's state starts from: the run's settings, and the block's depth, path and
+/// cancellation flags.
+#[derive(Clone)]
+pub(crate) struct TaskTemplate {
+    tracing: bool,
+    depth: usize,
+    max_depth: usize,
+    sites: Arc<Vec<Location>>,
+    failure: Option<Arc<Failure>>,
+    grants: Arc<Vec<Grant>>,
+    keys: Arc<BTreeMap<String, Vec<u8>>>,
+    types: Arc<Types>,
+    ops: Arc<Vec<OpSite>>,
+    max_memory: usize,
+    baseline: usize,
+    /// The path of the task that runs the block.
+    pub(crate) path: String,
+    cancel: Vec<Arc<AtomicBool>>,
+    /// The stack of a task's thread.
+    pub(crate) stack: usize,
+    /// Where the block is written.
+    pub(crate) location: Location,
+}
+
+impl TaskTemplate {
+    /// Whether the task that runs the block, or one that runs it, was cancelled.
+    pub(crate) fn cancelled(&self) -> bool {
+        self.cancel.iter().any(|flag| flag.load(Ordering::SeqCst))
+    }
+}
+
+impl State {
+    /// What the tasks of a block at `site` start from.
+    pub(crate) fn for_tasks(&self, site: usize) -> TaskTemplate {
+        let left = self.max_depth.saturating_sub(self.depth);
+        TaskTemplate {
+            tracing: self.trace.is_some(),
+            depth: self.depth,
+            max_depth: self.max_depth,
+            sites: Arc::clone(&self.sites),
+            failure: self.failure.clone(),
+            grants: Arc::clone(&self.grants),
+            keys: Arc::clone(&self.keys),
+            types: Arc::clone(&self.types),
+            ops: Arc::clone(&self.ops),
+            max_memory: self.max_memory,
+            baseline: self.baseline,
+            path: self.path.clone(),
+            cancel: self.cancel.clone(),
+            stack: una_interp::stack_bytes(left).unwrap_or(STACK_RESERVE * 2),
+            location: site_location(self, site),
+        }
+    }
+
+    /// Whether the task the thread runs was cancelled.
+    fn cancelled(&self) -> bool {
+        self.cancel.iter().any(|flag| flag.load(Ordering::SeqCst))
+    }
+
+    /// The id of the `count`th instance of the handler `name` that the thread's task installed
+    /// (`spec/19 §7` rule 2): `with:<name>#<count>` in `main`'s; in a task, an id with the
+    /// task's path that its block renumbers when it adopts the task's events.
+    pub(crate) fn install_id(&self, name: &str, count: usize) -> String {
+        if self.path.is_empty() {
+            format!("with:{name}#{count}")
+        } else {
+            format!("with:{name}#@{}#{count}", self.path)
+        }
+    }
+
+    /// Appends the events of the task `task` of a block, in task order (`spec/19 §7` rule 2):
+    /// numbers their `seq` after the events so far, and the handlers the task installed after
+    /// those installed so far, `installs` being how many of each it installed.
+    pub(crate) fn adopt(
+        &mut self,
+        task: &str,
+        events: Vec<Event>,
+        installs: &BTreeMap<String, usize>,
+    ) {
+        let local = format!("#@{task}#");
+        let bases = self.installs.clone();
+        if self.trace.is_some() {
+            for mut event in events {
+                if let Some(rest) = event.instance.strip_prefix("with:")
+                    && let Some((name, count)) = rest.split_once(&local)
+                    && let Ok(count) = count.parse::<usize>()
+                {
+                    let base = bases.get(name).copied().unwrap_or(0);
+                    event.instance = self.install_id(name, base + count);
+                }
+                if let Some(trace) = self.trace.as_mut() {
+                    event.seq = trace.len() + 1;
+                    trace.push(event);
+                }
+            }
+        }
+        for (name, &count) in installs {
+            *self.installs.entry(name.clone()).or_insert(0) += count;
+        }
+    }
+
+    /// Appends the event that ends the task `task`, started and then cancelled
+    /// (`spec/19 §7` rule 3).
+    pub(crate) fn cancelled_event(&mut self, task: String) {
+        if let Some(trace) = self.trace.as_mut() {
+            trace.push(Event {
+                seq: trace.len() + 1,
+                task,
+                instance: String::new(),
+                capability: String::new(),
+                op: String::new(),
+                args: Vec::new(),
+                outcome: EventOutcome::Cancelled,
+            });
+        }
+    }
 }
 
 thread_local! {
@@ -271,18 +399,21 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         failed_write: None,
         depth: 0,
         max_depth: options.max_depth,
-        sites: meta.sites,
-        failure: meta.failure,
-        grants,
-        keys,
-        types: meta.types,
-        ops: meta.ops,
+        sites: Arc::new(meta.sites),
+        failure: meta.failure.map(Arc::new),
+        grants: Arc::new(grants),
+        keys: Arc::new(keys),
+        types: Arc::new(meta.types),
+        ops: Arc::new(meta.ops),
         host_failed: false,
         installs: BTreeMap::new(),
         stack_base: 0,
         stack_budget: stack.saturating_sub(STACK_RESERVE),
         max_memory: options.max_memory,
         baseline: 0,
+        path: String::new(),
+        cancel: Vec::new(),
+        stopped: None,
     };
     let budget = options.max_memory.saturating_mul(1024 * 1024);
     let worker = std::thread::Builder::new()
@@ -305,8 +436,14 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
             // check of the program did): for a program whose counting is right, the output, exit
             // status and trace are the same in both builds, and a release executable never runs
             // the check. The tests link the debug build, so a counting bug fails them.
+            //
+            // The tasks of `together` blocks check their own heaps when they end (`tasks`).
             let faults = if cfg!(debug_assertions) {
-                (values::faults(), values::live(), values::copies())
+                (
+                    values::faults() + crate::tasks::TASK_FAULTS.load(Ordering::SeqCst),
+                    values::live() + crate::tasks::TASK_LEAKS.load(Ordering::SeqCst),
+                    values::copies() + crate::tasks::TASK_COPIES.load(Ordering::SeqCst),
+                )
             } else {
                 (0, 0, 0)
             };
@@ -440,18 +577,24 @@ fn stack_position<T>(local: &T) -> usize {
     std::ptr::from_ref(local).addr()
 }
 
-/// Enters the call at `site`: past the maximum depth, or when the stack of `main`'s thread runs
+/// Enters the call at `site`: past the maximum depth, or when the stack of the thread runs
 /// short before it, the run aborts with U6003 at the call, as in the interpreter
 /// (`spec/11 §7`, ADR 0032), and so it does when the heap the run holds is over its budget
 /// (ADR 0061). The output so far stays printed, the trace is written, and the executable exits
 /// with code 1.
-pub fn enter(site: usize) {
+///
+/// Returns 1 when the task must stop instead of making the call: it was cancelled, or, in a
+/// task, the abort stops it and goes to its block (`tasks`). Returns 0 otherwise.
+pub fn enter(site: usize) -> i64 {
     let marker = site;
     let position = stack_position(&marker);
     let held = crate::held();
     let abort = STATE.with(|cell| {
         let mut cell = cell.borrow_mut();
         let state = cell.as_mut()?;
+        if state.cancelled() {
+            return Some(None);
+        }
         let used = state.stack_base.abs_diff(position);
         let message = if state.depth >= state.max_depth || used > state.stack_budget {
             format!(
@@ -465,28 +608,111 @@ pub fn enter(site: usize) {
             return None;
         };
         let location = site_location(state, site);
-        cell.take().map(|state| (state, location, message))
+        Some(stop_or_abort(&mut cell, location, message))
     });
-    if let Some((state, location, message)) = abort {
-        abort_run(state, location, message);
+    match abort {
+        None => 0,
+        Some(None) => 1,
+        Some(Some((state, location, message))) => {
+            abort_run(state, location, message);
+            1
+        }
     }
 }
 
 /// Checks the memory budget at an iteration of the `for` loop at `site`: iterations are not
 /// calls, so this is the only check inside a loop that builds a value (ADR 0061 rule 2). Over
-/// the budget, the run aborts with U6003 at the loop, as at a call.
-pub fn budget(site: usize) {
+/// the budget, the run aborts with U6003 at the loop, as at a call. Returns 1 when the task
+/// must stop, as [`enter`] does, and 0 otherwise.
+pub fn budget(site: usize) -> i64 {
     let held = crate::held();
     let abort = STATE.with(|cell| {
         let mut cell = cell.borrow_mut();
         let state = cell.as_mut()?;
+        if state.cancelled() {
+            return Some(None);
+        }
         let message = over_budget(state, held)?;
         let location = site_location(state, site);
-        cell.take().map(|state| (state, location, message))
+        Some(stop_or_abort(&mut cell, location, message))
     });
+    match abort {
+        None => 0,
+        Some(None) => 1,
+        Some(Some((state, location, message))) => {
+            abort_run(state, location, message);
+            1
+        }
+    }
+}
+
+/// Returns 1 when the task must stop before an operation, having been cancelled, and 0
+/// otherwise (`spec/19 §6` rule 4).
+pub fn poll() -> i64 {
+    with_state(|state| i64::from(state.cancelled())).unwrap_or(0)
+}
+
+/// An abort with `message` at `location`: in a task, recorded for its block, which the task
+/// stops to reach; in `main`'s thread, the state to end the run with.
+fn stop_or_abort(
+    cell: &mut Option<State>,
+    location: Location,
+    message: String,
+) -> Option<(State, Location, String)> {
+    match cell {
+        Some(state) if !state.path.is_empty() => {
+            state.stopped = Some((location, message));
+            None
+        }
+        _ => cell.take().map(|state| (state, location, message)),
+    }
+}
+
+/// The abort of a task of a block that the thread runs, at `location` with `message`: in a
+/// task, it stops it in turn; in `main`'s thread, it ends the run. Returns 0, the value of a
+/// stopped block.
+pub(crate) fn abort_from_task(location: Location, message: String) -> i64 {
+    let abort = STATE.with(|cell| stop_or_abort(&mut cell.borrow_mut(), location, message));
     if let Some((state, location, message)) = abort {
         abort_run(state, location, message);
     }
+    0
+}
+
+/// Starts the state of a task, on its thread, from `template`, with its path and its own
+/// cancellation flag.
+pub(crate) fn enter_task(template: &TaskTemplate, path: String, flag: Arc<AtomicBool>) {
+    let mut cancel = template.cancel.clone();
+    cancel.push(flag);
+    let mut state = State {
+        trace: template.tracing.then(Vec::new),
+        trace_path: None,
+        failed_write: None,
+        depth: template.depth,
+        max_depth: template.max_depth,
+        sites: Arc::clone(&template.sites),
+        failure: template.failure.clone(),
+        grants: Arc::clone(&template.grants),
+        keys: Arc::clone(&template.keys),
+        types: Arc::clone(&template.types),
+        ops: Arc::clone(&template.ops),
+        host_failed: false,
+        installs: BTreeMap::new(),
+        stack_base: 0,
+        stack_budget: template.stack.saturating_sub(STACK_RESERVE),
+        max_memory: template.max_memory,
+        baseline: template.baseline,
+        path,
+        cancel,
+        stopped: None,
+    };
+    state.stack_base = stack_position(&state);
+    STATE.with(|cell| *cell.borrow_mut() = Some(state));
+}
+
+/// Ends the state of the task the thread runs, and returns it.
+pub(crate) fn leave_task() -> Option<State> {
+    STATE.with(|cell| cell.borrow_mut().take())
 }
 
 /// The U6003 message when the heap the run holds, `held` bytes, is over its budget.

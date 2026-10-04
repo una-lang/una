@@ -623,7 +623,177 @@ pub fn instance_id(instance: i64) -> String {
     .unwrap_or_default()
 }
 
-/// The variant `Some(value)` of `Option`, with `value` retained.
+/// A value outside any heap, to carry from one task's heap to another's (`spec/19 §8`): each
+/// task has its own heap and non-atomic reference counts, so values are copied at the fork and
+/// the join. The objects are listed children first, and an object several others hold is
+/// listed once, so sharing survives the copy.
+#[derive(Debug, Default)]
+pub struct Portable {
+    nodes: Vec<Node>,
+    root: Cell,
+}
+
+/// A word of a portable value: an immediate, or an object of its list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Cell {
+    Word(i64),
+    Node(usize),
+}
+
+impl Default for Cell {
+    fn default() -> Cell {
+        Cell::Word(0)
+    }
+}
+
+#[derive(Debug)]
+enum Node {
+    Int(BigInt),
+    Text(String),
+    Hashed(Vec<u8>),
+    Data {
+        tag: i64,
+        fields: Vec<Cell>,
+    },
+    List(Vec<Cell>),
+    Closure {
+        code: i64,
+        env: Vec<Cell>,
+    },
+    Instance {
+        id: String,
+        code: Vec<i64>,
+        cells: Vec<Cell>,
+    },
+}
+
+/// The value of `word` and everything it holds, copied out of this heap. The walk uses a stack
+/// of its own, never the native stack, since a value can nest deeper than any call (ADR 0060).
+pub fn export(word: i64) -> Portable {
+    let mut nodes = Vec::new();
+    let mut index: BTreeMap<i64, usize> = BTreeMap::new();
+    let mut pending = vec![(word, false)];
+    while let Some((word, children_done)) = pending.pop() {
+        if !is_handle(word) || index.contains_key(&word) {
+            continue;
+        }
+        if !children_done {
+            pending.push((word, true));
+            let children = with(word, |object| object.cells().to_vec()).unwrap_or_default();
+            pending.extend(children.into_iter().map(|child| (child, false)));
+            continue;
+        }
+        let cell = |child: &i64| match index.get(child) {
+            Some(&node) => Cell::Node(node),
+            None => Cell::Word(*child),
+        };
+        let cells = |words: &[i64]| words.iter().map(cell).collect::<Vec<_>>();
+        let Some(node) = with(word, |object| match object {
+            Object::Int(value) => Node::Int(value.clone()),
+            Object::Text(text) => Node::Text(text.clone()),
+            Object::Hashed(bytes) => Node::Hashed(bytes.clone()),
+            Object::Data { tag, fields } => Node::Data {
+                tag: *tag,
+                fields: cells(fields),
+            },
+            Object::List(items) => Node::List(cells(items)),
+            Object::Closure { code, env } => Node::Closure {
+                code: *code,
+                env: cells(env),
+            },
+            Object::Instance {
+                id,
+                code,
+                cells: held,
+            } => Node::Instance {
+                id: id.clone(),
+                code: code.clone(),
+                cells: cells(held),
+            },
+        }) else {
+            continue;
+        };
+        index.insert(word, nodes.len());
+        nodes.push(node);
+    }
+    let root = match index.get(&word) {
+        Some(&node) => Cell::Node(node),
+        None => Cell::Word(word),
+    };
+    Portable { nodes, root }
+}
+
+/// A portable value made into this heap: a word the caller owns.
+pub fn import(portable: &Portable) -> i64 {
+    let mut words: Vec<i64> = Vec::with_capacity(portable.nodes.len());
+    let word_of = |cell: &Cell, words: &[i64]| match *cell {
+        Cell::Word(word) => word,
+        Cell::Node(node) => words.get(node).copied().unwrap_or(0),
+    };
+    for node in &portable.nodes {
+        let made = match node {
+            Node::Int(value) => alloc(Object::Int(value.clone())),
+            Node::Text(text) => alloc(Object::Text(text.clone())),
+            Node::Hashed(bytes) => alloc(Object::Hashed(bytes.clone())),
+            Node::Data { tag, fields } => {
+                let object = data(*tag);
+                for field in fields {
+                    push(object, word_of(field, &words));
+                }
+                object
+            }
+            Node::List(items) => {
+                let object = list();
+                for item in items {
+                    push(object, word_of(item, &words));
+                }
+                object
+            }
+            Node::Closure { code, env } => {
+                let object = closure(*code);
+                for cell in env {
+                    push(object, word_of(cell, &words));
+                }
+                object
+            }
+            Node::Instance { id, code, cells } => {
+                let object = instance(id.clone());
+                for &op in code {
+                    push_op(object, op);
+                }
+                for cell in cells {
+                    push(object, word_of(cell, &words));
+                }
+                object
+            }
+        };
+        words.push(made);
+    }
+    let root = word_of(&portable.root, &words);
+    // Each object was made with the reference its builder held, and is held by its parents
+    // now: the builder's references go, but the root's, which the caller owns.
+    retain(root);
+    for &word in &words {
+        release(word);
+    }
+    root
+}
+
+/// The list of the integers from `low` to `high`, with `high` when `inclusive` is 1: the
+/// elements of a `together for` over a range.
+pub fn range(low: i64, high: i64, inclusive: i64) -> i64 {
+    let (mut current, high) = (int_value(low), int_value(high));
+    let out = list();
+    while current < high || (inclusive == 1 && current == high) {
+        let word = int_word(&current);
+        push(out, word);
+        release(word);
+        current += 1;
+    }
+    out
+}
+
+/// The variant `Some(value)` of `Option`, with `value` retained./// The variant `Some(value)` of `Option`, with `value` retained.
 fn some(value: i64) -> i64 {
     let word = data(0);
     push(word, value);
@@ -1005,6 +1175,69 @@ mod tests {
         release(reused);
         assert_eq!(live(), before.0);
         assert_eq!(faults(), 0);
+    }
+
+    #[test]
+    fn a_value_copied_between_heaps_keeps_its_contents_and_sharing() {
+        let before = live();
+        let shared = text_word("shared".to_owned());
+        let record = data(1);
+        push(record, shared);
+        push(record, shared);
+        let big = add(n(SMALL_MAX), n(1));
+        push(record, big);
+        release(big);
+        let items = list();
+        push(items, record);
+        push(items, NONE);
+        release(record);
+        release(shared);
+        let portable = export(items);
+        // Across threads, as a task's heap is (`spec/19 §8`).
+        let copied = std::thread::spawn(move || {
+            let word = import(&portable);
+            let shown = (
+                count(word),
+                tag(field(word, 0)),
+                text_value(field(field(word, 0), 0)),
+                field(field(word, 0), 0) == field(field(word, 0), 1),
+                int_value(field(field(word, 0), 2)).to_string(),
+                field(word, 1),
+            );
+            release(word);
+            (shown, live())
+        })
+        .join()
+        .unwrap();
+        assert_eq!(
+            copied,
+            (
+                (
+                    2,
+                    1,
+                    "shared".to_owned(),
+                    true,
+                    "4611686018427387904".to_owned(),
+                    NONE
+                ),
+                0
+            )
+        );
+        release(items);
+        assert_eq!(live(), before);
+        // A chain deeper than any call copies without recursion.
+        let mut chain = NONE;
+        for _ in 0..200_000 {
+            let cell = some(chain);
+            release(chain);
+            chain = cell;
+        }
+        let portable = export(chain);
+        let back = import(&portable);
+        assert_eq!(equal(back, chain), 1);
+        release(back);
+        release(chain);
+        assert_eq!(live(), before);
     }
 
     #[test]
