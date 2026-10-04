@@ -547,25 +547,42 @@ fn grants(meta: &Meta, options: &Options) -> Result<(Vec<Grant>, Keys), String> 
     Ok((grants, keys))
 }
 
-/// U3012 for each `uses` of `main` whose capability no grant provides, as `una run` reports
-/// it (`spec/13 §5`): host grants cover every operation of their capability.
+/// U3012 for each `uses` of `main` with an operation that no grant provides, as `una run`
+/// reports it (`spec/13 §5`): a `files` grant provides the operations of its modes, and every
+/// other grant every operation of its capability (#183).
 pub fn check_grants(meta: &Meta, grants: &[Grant]) -> Vec<Diagnostic> {
     meta.uses
         .iter()
-        .filter(|need| !grants.iter().any(|g| g.capability() == need.capability))
-        .map(|need| {
-            let ops: Vec<String> = need.ops.iter().map(|op| format!("`{op}`")).collect();
-            Diagnostic::error(
-                Code::U3012,
-                format!(
-                    "`main` uses {} of `{}`, which neither `[run] grants` nor a `--grant` flag grants",
-                    ops.join(", "),
-                    need.capability
-                ),
-                need.location.clone(),
-            )
+        .filter_map(|need| {
+            let missing: Vec<String> = need
+                .ops
+                .iter()
+                .filter(|op| !grants.iter().any(|g| provides(g, &need.capability, op)))
+                .map(|op| format!("`{op}`"))
+                .collect();
+            (!missing.is_empty()).then(|| {
+                Diagnostic::error(
+                    Code::U3012,
+                    format!(
+                        "`main` uses {} of `{}`, which neither `[run] grants` nor a `--grant` flag grants",
+                        missing.join(", "),
+                        need.capability
+                    ),
+                    need.location.clone(),
+                )
+            })
         })
         .collect()
+}
+
+/// Whether `grant` provides the operation `op` of `capability`.
+fn provides(grant: &Grant, capability: &str, op: &str) -> bool {
+    match grant {
+        Grant::Files { read, write, .. } => {
+            capability == "Files" && ((op == "read" && *read) || (op == "write" && *write))
+        }
+        other => other.capability() == capability,
+    }
 }
 
 /// The stack kept free below the budget of `main`'s thread, for the runtime's own work after the
@@ -856,5 +873,27 @@ mod tests {
             "`main` uses `print` of `Console`, which neither `[run] grants` nor a `--grant` flag grants"
         );
         assert!(check_grants(&meta, &[Grant::Console]).is_empty());
+    }
+
+    #[test]
+    fn a_files_grant_provides_only_the_operations_of_its_modes() {
+        let meta = Meta::parse(
+            r#"{"grants":[],"uses":[{"name":"files","capability":"Files","ops":["read","write"],"location":{"file":"src/copy.una","start":{"line":4,"col":3},"end":{"line":4,"col":36}}}]}"#,
+        )
+        .unwrap();
+        let files = |read, write| Grant::Files {
+            prefix: PathBuf::from("data"),
+            read,
+            write,
+        };
+        let missing = check_grants(&meta, &[Grant::Console, files(true, false)]);
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].code, Code::U3012);
+        assert_eq!(
+            missing[0].message,
+            "`main` uses `write` of `Files`, which neither `[run] grants` nor a `--grant` flag grants"
+        );
+        assert!(check_grants(&meta, &[files(true, true)]).is_empty());
+        assert!(check_grants(&meta, &[files(true, false), files(false, true)]).is_empty());
     }
 }
