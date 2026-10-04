@@ -1,0 +1,48 @@
+module edges
+
+kind Top = Int in 0..4611686018427387903
+
+kind Bottom = Int in -4611686018427387904..0
+
+kind Wide = Int in -4611686018427387904..4611686018427387903
+
+kind Over = Int in 0..4611686018427387904
+
+kind Half = Int in -2147483648..2147483647
+
+add_edges(a: Top, b: Bottom) -> Int
+=
+  let c: Wide = a + b
+  let d: Wide = b + a
+  let e: Wide = a - 4611686018427387903
+  let f: Wide = b + 4611686018427387903
+  let g: Wide = 0 - a
+  let h: Bottom = b - 0
+  let lt = a < b
+  let eq = c == d
+  let ge = e >= f
+  if lt or not eq or ge then 1 else c + d + e + f + g + h
+
+mul_edges(x: Half) -> Int
+=
+  let y: Wide = x * 2147483647
+  let z: Wide = 3 * x
+  let w: Wide = x * x * 0
+  y + z + w
+
+over(o: Over, t: Top) -> Int
+=
+  let s: Over = o - 0
+  let u: Int in 0..9223372036854775806 = t + t
+  s + u
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let r1 = add_edges(4611686018427387903, b: -4611686018427387904)
+  let r2 = add_edges(0, b: 0)
+  let r3 = add_edges(4611686018427387903, b: 0)
+  let r4 = mul_edges(-2147483648)
+  let r5 = mul_edges(2147483647)
+  let r6 = over(4611686018427387904, t: 4611686018427387903)
+  @console.print("{r1} {r2} {r3} {r4} {r5} {r6}")

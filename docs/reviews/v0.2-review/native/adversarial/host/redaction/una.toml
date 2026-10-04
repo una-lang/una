@@ -1,0 +1,11 @@
+[package]
+name = "redaction"
+version = "0.1.0"
+edition = "0.2"
+
+[labels]
+categories = ["PII"]
+
+[run]
+entry = "red"
+grants = ["console"]

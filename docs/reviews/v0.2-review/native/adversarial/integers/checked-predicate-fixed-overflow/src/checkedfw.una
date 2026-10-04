@@ -1,0 +1,26 @@
+module checkedfw
+
+kind GateError = | Rejected
+
+gate(a: U32) -> Bool
+  fails GateError
+=
+  let v = checked(a, it * 4294967295 > 4294967295) else fail Rejected
+  true
+
+gate_signed(b: I32) -> Bool
+  fails GateError
+=
+  let v = checked(b, it * -2147483648 > 0) else fail Rejected
+  true
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let a: U32 = 4294967295
+  let b: I32 = -2147483648
+  let r = attempt gate(a)
+  let s = attempt gate_signed(b)
+  let t1 = if r is Ok then "passed" else "rejected"
+  let t2 = if s is Ok then "passed" else "rejected"
+  @console.print("{t1} {t2}")

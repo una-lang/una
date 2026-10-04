@@ -1,0 +1,79 @@
+module generic01
+
+pub kind Pair[A, B]
+  left: A
+  right: B
+
+pub kind Color = Red | Green | Blue
+
+pub kind Tree[T] = Leaf | Node(value: T, kids: List[Tree[T]])
+
+same[T](a: T, b: T) -> Bool = a == b
+
+differ[T](a: T, b: T) -> Bool = a != b
+
+count_eq[T](xs: List[T], x: T) -> Bool = contains(xs, item: x)
+
+swap[A, B](p: Pair[A, B]) -> Pair[B, A] = Pair(left: p.right, right: p.left)
+
+wrap[T](x: T) -> Option[Option[T]] = Some(Some(x))
+
+classify(n: Int) -> Text
+=
+  when n
+    is 0 -> "zero"
+    in -1..-1 -> "minus one"
+    is 99999999999999999999 -> "huge"
+    in -99999999999999999999..-99999999999999999999 -> "neg huge"
+    in -100000000000000000001..-99999999999999999999 -> "neg range"
+    is 4611686018427387904 -> "edge"
+    else -> "other"
+
+word(t: Text) -> Text
+=
+  when t
+    is "" -> "empty"
+    is "é" -> "e-acute"
+    is "a\"b" -> "quote"
+    else -> "other"
+
+b(x: Bool) -> Text = if x then "T" else "F"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let big1 = 99999999999999999999
+  let big2 = 99999999999999999998 + 1
+  let e1 = same(big1, b: big2)
+  let e2 = same(4611686018427387904, b: 4611686018427387903 + 1)
+  let e3 = same("é", b: "e\u{301}")
+  let e4 = same(Pair(left: big1, right: "x"), b: Pair(left: big2, right: "x"))
+  let e5 = same([Some(big1), None], b: [Some(big2), None])
+  let e6 = same(Red, b: Red)
+  let e7 = same(true, b: false)
+  let e8 = same(unit, b: unit)
+  let e9 = differ(Some(Green), b: Some(Blue))
+  let e10 = same(wrap(big1), b: wrap(big2))
+  let t1 = Node(value: 1, kids: [Leaf, Node(value: big1, kids: [])])
+  let t2 = Node(value: 1, kids: [Leaf, Node(value: big2, kids: [])])
+  let t3 = Node(value: 1, kids: [Leaf, Node(value: big2, kids: [Leaf])])
+  let e11 = same(t1, b: t2)
+  let e12 = same(t1, b: t3)
+  let e13 = same(swap(Pair(left: 1, right: "a")), b: Pair(left: "a", right: 1))
+  let e14 = same(0, b: 0 - 0)
+  let e15 = same(false, b: 0 == 1)
+  let e16 = same([[1], []], b: [[1], [0]])
+  @console.print("{b(e1)}{b(e2)}{b(e3)}{b(e4)}{b(e5)}{b(e6)}{b(e7)}{b(e8)}{b(e9)}{b(e10)}{b(e11)}{b(e12)}{b(e13)}{b(e14)}{b(e15)}{b(e16)}")
+  let c1 = count_eq([big1, 1, big2, -1], x: big2)
+  let c2 = count_eq(["a", "b", "a"], x: "a")
+  let c3 = count_eq([Red, Green, Red], x: Red)
+  let c4 = contains([Pair(left: 1, right: Red)], item: Pair(left: 1, right: Red))
+  @console.print("{b(c1)} {b(c2)} {b(c3)} {b(c4)}")
+  let n1 = big1 - big2 + 0
+  let n2 = 0 - big1
+  let n3 = n2 - 1
+  let m1 = 4611686018427387903 + 1
+  @console.print("{classify(0)} {classify(n1)} {classify(-1)} {classify(big1)} {classify(n2)} {classify(m1)} {classify(n3)}")
+  let ws = "a\"b"
+  let em = ""
+  @console.print("{word(em)} {word(ws)}")
