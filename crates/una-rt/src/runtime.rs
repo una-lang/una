@@ -306,14 +306,15 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
             // status and trace are the same in both builds, and a release executable never runs
             // the check. The tests link the debug build, so a counting bug fails them.
             let faults = if cfg!(debug_assertions) {
-                (values::faults(), values::live())
+                (values::faults(), values::live(), values::copies())
             } else {
-                (0, 0)
+                (0, 0, 0)
             };
             let state = STATE.with(|cell| cell.borrow_mut().take());
             (status, state, faults)
         });
-    let (status, state, (faults, leaked)) = match worker.map(std::thread::JoinHandle::join) {
+    let (status, state, (faults, leaked, copies)) = match worker.map(std::thread::JoinHandle::join)
+    {
         Ok(Ok(result)) => result,
         _ => {
             let _ = writeln!(
@@ -327,6 +328,15 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     let mut code = if status == 0 { 0 } else { 1 };
     if let Some(state) = state {
         code = code.max(finish(state));
+    }
+    // A debug build also says how many lists and records were copied rather than updated in
+    // place (#30), so tests can check that an update the code owns is in place. As with the
+    // checks above, only a debug build says it, and it changes neither output nor exit status.
+    if copies > 0 {
+        let _ = writeln!(
+            stderr,
+            "note: una-rt (debug build): lists and records copied: {copies}"
+        );
     }
     if faults > 0 {
         let _ = writeln!(

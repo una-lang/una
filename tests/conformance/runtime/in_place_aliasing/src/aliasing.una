@@ -1,0 +1,55 @@
+-- test: an update of a value that something else still holds never changes what the other holder sees, whether the value is kept in another binding, captured by a closure, stored in a record or passed to a function with `uses of` (#30, spec/17 §7)
+-- spec: spec/17 §7
+-- grant: console
+-- expect: run-output "kept: 1 2 3 / 9 2 3 4"
+-- expect: run-output "captured: 1 2 3 / 9 2 3"
+-- expect: run-output "stored: 1 2 / 9 2"
+-- expect: run-output "passed: 3 / 7"
+-- expect: run-output "point: 1 2 / 5 2"
+module aliasing
+
+pub kind Box
+  items: List[Int]
+
+pub kind Point
+  x: Int
+  y: Int
+
+pub show(xs: List[Int]) -> Text = xs.fold(initial: "", step: fn(line, x) -> if line == "" then "{x}" else "{line} {x}")
+
+pub apply_each(xs: List[Int], f: fn(Int) -> Int) -> Int
+  uses of f
+=
+  let edit total = 0
+  for x in xs
+    let y = f(x)
+    total = total + y
+  total
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let original = [1, 2, 3]
+  let edit changed = original
+  edit changed.set(index: 0, item: 9)
+  changed = changed.append(item: 4)
+  @console.print("kept: {show(original)} / {show(changed)}")
+  let held = [1, 2, 3]
+  let reader = fn(i: Int) -> held.at(index: i).or_else(default: 0)
+  let edit later = held
+  edit later.set(index: 0, item: 9)
+  @console.print("captured: {reader(0)} {reader(1)} {reader(2)} / {show(later)}")
+  let boxed = Box(items: [1, 2])
+  let edit inner = boxed.items
+  edit inner.set(index: 0, item: 9)
+  @console.print("stored: {show(boxed.items)} / {show(inner)}")
+  let counted = [1, 1, 1]
+  let total = apply_each(counted, f: fn(x: Int) -> x)
+  let edit grown = counted
+  grown = grown.append(item: 4)
+  edit grown.set(index: 0, item: 1)
+  @console.print("passed: {total} / {apply_each(grown, f: fn(x: Int) -> x)}")
+  let p = Point(x: 1, y: 2)
+  let edit q = p
+  q.x = 5
+  @console.print("point: {p.x} {p.y} / {q.x} {q.y}")
