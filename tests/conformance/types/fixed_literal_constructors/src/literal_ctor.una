@@ -1,0 +1,31 @@
+-- test: an integer literal given for a constructor's field of a type parameter takes the fixed-width type that the expected type gives that parameter: `Some(3)` where an `Option[U8]` is expected, `Ok`, `Err`, a generic record, nested constructors and negative literals, as in `let`, a field and an argument (spec/18 §2.1, #187)
+-- spec: spec/18 §2
+-- expect: ok
+module literal_ctor
+
+pub kind Box[T]
+  value: T
+
+pub kind Pair
+  a: Option[I64]
+  b: Option[U8]
+
+pub kind Oops = Bad | Worse
+
+take_option(o: Option[I8]) -> Int
+=
+  when o
+    is Some(v) -> v.to_int()
+    is None -> 0
+
+pub literals() -> Int
+=
+  let o: Option[U8] = Some(3)
+  let low: Option[I8] = Some(-128)
+  let big: Option[I64] = Some(-5)
+  let ok: Result[U16, Oops] = Ok(65535)
+  let boxed: Box[U32] = Box(value: 3)
+  let nested: Option[Option[U8]] = Some(Some(255))
+  let pair = Pair(a: Some(5), b: Some(1))
+  let passed = take_option(Some(-1))
+  passed

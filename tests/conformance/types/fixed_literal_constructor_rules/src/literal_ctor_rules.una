@@ -1,0 +1,14 @@
+-- test: a literal that takes a fixed-width type from a constructor's expected type must fit it (U2022), and a value that is not a literal keeps its own type and labels, so a secret given to `Some` where a public `Option[U8]` is expected still flows (U4001) (spec/18 §2.1, #187)
+-- spec: spec/18 §2
+-- expect: error U2022 at src/literal_ctor_rules.una:8:36
+-- expect: error U2022 at src/literal_ctor_rules.una:10:38
+-- expect: error U4001 at src/literal_ctor_rules.una:12:49
+module literal_ctor_rules
+
+pub too_big() -> Option[U8] = Some(256)
+
+pub too_small() -> Option[I8] = Some(-129)
+
+pub secret_inside(v: secret U8) -> Option[U8] = Some(v)
+
+pub labeled_ok() -> Option[secret U8] = Some(3)
