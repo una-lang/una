@@ -793,7 +793,23 @@ impl<'p> Lowerer<'_, 'p, '_> {
             .map(|(position, _)| position)?;
         let mut later = BTreeSet::new();
         vars(rest, &mut later);
-        (!later.contains(name)).then_some(position)
+        self.unheld(*value, env, &later, &[]).then_some(position)
+    }
+
+    /// Whether no binding holds `word` after this point: every name bound to it, the one in
+    /// use and its aliases, is dead in `later`, not pinned, and not named by `args` (#181). A
+    /// `let` of another binding at its last use shares the word, so a dead name and a live
+    /// alias can hold the same word.
+    fn unheld(&self, word: Value, env: &Env, later: &BTreeSet<String>, args: &[Atom]) -> bool {
+        env.iter()
+            .filter(|(_, (value, _))| *value == word)
+            .all(|(name, _)| {
+                !later.contains(name)
+                    && !self.pinned.contains(name)
+                    && !args
+                        .iter()
+                        .any(|arg| matches!(arg, Atom::Var(n) if n == name))
+            })
     }
 
     /// The entries of `scope` that `inner`, a nested expression, uses for the last time before
@@ -818,15 +834,10 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 break;
             };
             // Every binding of the word: an alias that did not move shares it.
-            let names: Vec<&String> = env
+            let moves = env
                 .iter()
-                .filter(|(_, (value, _))| *value == owned)
-                .map(|(name, _)| name)
-                .collect();
-            let moves = names.iter().any(|name| used.contains(*name))
-                && names
-                    .iter()
-                    .all(|name| !later.contains(*name) && !self.pinned.contains(*name));
+                .any(|(name, (value, _))| *value == owned && used.contains(name))
+                && self.unheld(owned, env, &later, &[]);
             if moves {
                 scope.remove(position);
                 handed.push((owned, kind));
@@ -855,25 +866,19 @@ impl<'p> Lowerer<'_, 'p, '_> {
         };
         let mut later = BTreeSet::new();
         vars(rest, &mut later);
-        let named = |atom: &Atom, binding: &str| matches!(atom, Atom::Var(n) if n == binding);
         scope
             .iter()
             .enumerate()
             .skip(catch.base)
             .rev()
             .find_map(|(position, &(owned, _))| {
-                let (binding, (_, binding_ty)) =
-                    env.iter().find(|(_, (value, _))| *value == owned)?;
+                let (_, (_, binding_ty)) = env.iter().find(|(_, (value, _))| *value == owned)?;
                 let same_kind = matches!(
                     binding_ty,
                     Type::Base { base: Base::Named { module: m, name: n, .. }, .. }
                         if m == module && n == name
                 );
-                (same_kind
-                    && !self.pinned.contains(binding)
-                    && !later.contains(binding)
-                    && !args.iter().any(|arg| named(arg, binding)))
-                .then_some((owned, position))
+                (same_kind && self.unheld(owned, env, &later, args)).then_some((owned, position))
             })
     }
 
