@@ -41,7 +41,30 @@ pub unsafe extern "C" fn una_rt_start(
     }
     // SAFETY: the caller passes `meta_len` bytes at `meta` (this function's contract).
     let meta = unsafe { text(meta, meta_len) }.unwrap_or_default();
+    ignore_sigpipe();
     runtime::start(&args, &meta, move || entry())
+}
+
+/// `SIGPIPE` and `SIG_IGN`, which are 13 and 1 on both targets (`aarch64-apple-darwin`,
+/// `x86_64-unknown-linux-gnu`).
+const SIGPIPE: c_int = 13;
+const SIG_IGN: usize = 1;
+
+unsafe extern "C" {
+    /// `signal(2)` of the C library, which every executable links.
+    fn signal(signum: c_int, handler: usize) -> usize;
+}
+
+/// Ignores `SIGPIPE`, as a Rust program's start does and as `una` does for `una run`: a write
+/// to a closed pipe then fails with `EPIPE`, which the runtime reports at the end (exit code 2),
+/// after writing the trace, instead of the signal ending the process (#184). The executable's
+/// `main` is the generated C `main`, so Rust's start never runs.
+fn ignore_sigpipe() {
+    // SAFETY: `signal` with a valid signal number and `SIG_IGN` only changes the disposition
+    // of `SIGPIPE` for the process; it runs before any thread of the runtime starts.
+    unsafe {
+        signal(SIGPIPE, SIG_IGN);
+    }
 }
 
 /// The word of the integer literal of `len` decimal digits at `digits`, with an optional `-`,
