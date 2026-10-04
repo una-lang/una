@@ -624,7 +624,7 @@ fn contract_marks_inferred_clauses() {
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(
         stdout(&output),
-        "{\"schema\":\"una.contract/1\",\"function\":\"app.log.helper\",\"public\":false,\"docs\":[\"Writes a line and flushes.\"],\"header\":\"helper(line: Text) -> Int\",\"requires\":[],\"ensures\":[],\"uses\":[{\"cap\":\"log\",\"capability\":\"Log\",\"ops\":[\"write\",\"flush\"],\"inferred\":true}],\"fails\":{\"kind\":\"LookupError\",\"inferred\":true},\"derived_from\":[]}\n"
+        "{\"schema\":\"una.contract/1\",\"function\":\"app.log.helper\",\"public\":false,\"docs\":[\"Writes a line and flushes.\"],\"header\":\"helper(line: Text) -> Int\",\"constraints\":[],\"requires\":[],\"ensures\":[],\"uses\":[{\"cap\":\"log\",\"capability\":\"Log\",\"ops\":[\"write\",\"flush\"],\"inferred\":true}],\"fails\":{\"kind\":\"LookupError\",\"inferred\":true},\"derived_from\":[]}\n"
     );
     std::fs::remove_dir_all(&root).unwrap();
 }
@@ -770,4 +770,40 @@ fn dump_core_prints_the_core_ir_of_the_reference_example() {
     }
     let output = una(&["check", "--dump-core", "events.nothing", "examples/events"]);
     assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn contract_shows_written_and_inferred_constraints() {
+    // spec/20 §8: the header writes an inferred constraint, with `-- inferred`, and the JSON
+    // lists each constrained type parameter.
+    let root = scratch("contract-constraints");
+    std::fs::create_dir_all(root.join("src/app")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        "[package]\nname = \"k\"\nversion = \"0.1.0\"\nedition = \"0.2\"\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../verification.lock"),
+        root.join("verification.lock"),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/app/k.una"),
+        "module app.k\n\nlowest[T, U](a: T, b: T, tag: U) -> T = if a < b then a else b\n\npub same[T: Eq](a: T, b: T) -> Bool = a == b\n\npub use_it() -> Int = lowest(1, b: 2, tag: \"x\")\n",
+    )
+    .unwrap();
+    let output = una_in(&root, &["contract", "app.k.lowest"]);
+    assert_eq!(stderr(&output), "");
+    assert_eq!(
+        stdout(&output),
+        "lowest[T: Ord, U](a: T, b: T, tag: U) -> T -- inferred\n"
+    );
+    let output = una_in(&root, &["contract", "--json", "app.k.same"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        stdout(&output),
+        "{\"schema\":\"una.contract/1\",\"function\":\"app.k.same\",\"public\":true,\"docs\":[],\"header\":\"pub same[T: Eq](a: T, b: T) -> Bool\",\"constraints\":[{\"param\":\"T\",\"constraint\":\"Eq\",\"inferred\":false}],\"requires\":[],\"ensures\":[],\"uses\":[],\"fails\":null,\"derived_from\":[]}\n"
+    );
+    std::fs::remove_dir_all(&root).unwrap();
 }

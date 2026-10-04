@@ -46,9 +46,26 @@ const PRELUDE: &str = include_str!("../std/prelude.una");
 const PRELUDE_0_2: &str = include_str!("../std/prelude_0_2.una");
 
 /// The prelude of edition 0.2: `map`, `filter`, `first_where` and `fold` take effectful and
-/// failing functions (ADR 0062, `spec/14 §1`).
+/// failing functions (ADR 0062, `spec/14 §1`), and `min`, `max`, `contains` and `sum` are
+/// generic over constrained types (ADR 0066, `spec/20 §6`).
 fn of_prelude() -> String {
-    const OF: [(&str, &str); 4] = [
+    const OF: [(&str, &str); 8] = [
+        (
+            "pub min(a: Int, b: Int) -> Int",
+            "pub min[T: Ord](a: T, b: T) -> T",
+        ),
+        (
+            "pub max(a: Int, b: Int) -> Int",
+            "pub max[T: Ord](a: T, b: T) -> T",
+        ),
+        (
+            "pub contains[T](xs: List[T], item: T) -> Bool",
+            "pub contains[T: Eq](xs: List[T], item: T) -> Bool",
+        ),
+        (
+            "pub sum(xs: List[Int]) -> Int = 0",
+            "pub sum[T: Integer](xs: List[T]) -> Int = 0",
+        ),
         (
             "  ensures result.len == xs.len\n=\n  []",
             "  ensures result.len == xs.len\n  uses of each\n  fails of each\n=\n  []",
@@ -118,6 +135,9 @@ pub struct Header {
     pub uses_of: Vec<String>,
     /// The parameter of its `fails of` clause, written or inferred.
     pub fails_of: Option<String>,
+    /// Its constrained type parameters, in order: the parameter, the constraint, and whether
+    /// it is inferred (`spec/20 §8`).
+    pub constraints: Vec<(String, String, bool)>,
 }
 
 /// The outcome of [`check_types`].
@@ -224,7 +244,11 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
     }
     authority::testing_installs(&findings, &mut report);
     facts::predicate_recursion(&env, &findings, &mut report);
-    facts::generic_equality(&env, &facts, &findings, &mut report);
+    if package.settings.edition >= Edition::V0_2 {
+        facts::generic_constraints(&mut env, &facts, &findings, &mut report);
+    } else {
+        facts::generic_equality(&env, &facts, &findings, &mut report);
+    }
     authority::grants(&env, package.settings, package.run, &mut report);
     authority::budget(&env, &findings, package.settings, &mut report);
     // Pending obligations by position, then kind.
@@ -280,6 +304,16 @@ fn headers(env: &Env<'_>) -> Vec<Header> {
                 .map(|m| m.path.clone())
                 .unwrap_or_default(),
             name: f.name.to_owned(),
+            constraints: f
+                .type_params
+                .iter()
+                .zip(&f.constraints)
+                .zip(&f.constraints_written)
+                .filter(|((_, constraint), _)| **constraint != env::Constraint::None)
+                .map(|((param, constraint), written)| {
+                    ((*param).to_owned(), constraint.name().to_owned(), !written)
+                })
+                .collect(),
             uses: f
                 .uses
                 .iter()
@@ -329,6 +363,10 @@ pub(crate) struct Findings {
     /// For each generic function, the type parameters whose values its body compares with
     /// `==` or `!=`.
     pub(crate) compared: std::collections::BTreeMap<usize, std::collections::BTreeSet<usize>>,
+    /// Edition 0.2: for each private function, the constraint its body needs on each type
+    /// parameter without a written one (`spec/20 §3` rule 4).
+    pub(crate) needs:
+        std::collections::BTreeMap<usize, std::collections::BTreeMap<usize, env::Constraint>>,
     /// The uses of `checked`, by module, in order (`spec/06 §6`).
     pub(crate) checked: Vec<(usize, Span)>,
     /// What pass 2 resolves in the package's modules, for elaboration.

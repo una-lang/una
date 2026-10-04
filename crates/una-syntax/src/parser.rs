@@ -805,6 +805,28 @@ impl<'a> Parser<'a> {
         Ok(params)
     }
 
+    /// The type parameters of a function, each with its constraint, as `[T: Ord]`; a
+    /// constraint only in edition 0.2 (`spec/20 §2`).
+    fn constrained_params(&mut self) -> Parse<(Vec<Ident>, Vec<Option<Ident>>)> {
+        self.advance();
+        let mut params = Vec::new();
+        let mut constraints = Vec::new();
+        loop {
+            params.push(self.upper_name("a type parameter")?);
+            let constraint = if self.v0_2 && self.eat(&TokenKind::Colon) {
+                Some(self.upper_name("a constraint: `Eq`, `Ord` or `Integer`")?)
+            } else {
+                None
+            };
+            constraints.push(constraint);
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(&TokenKind::RBracket, "`,` or `]`")?;
+        Ok((params, constraints))
+    }
+
     fn ty(&mut self) -> Parse<Type> {
         let outer = self.nesting;
         self.deeper()?;
@@ -1030,10 +1052,10 @@ impl<'a> Parser<'a> {
 
     fn function_decl(&mut self, public: bool) -> Parse<DeclKind> {
         let name = self.lower_name("a function name")?;
-        let type_params = if self.at(&TokenKind::LBracket) {
-            self.type_params()?
+        let (type_params, constraints) = if self.at(&TokenKind::LBracket) {
+            self.constrained_params()?
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
         let params = self.params()?;
         self.expect(&TokenKind::Arrow, "`->` and the result type")?;
@@ -1073,6 +1095,7 @@ impl<'a> Parser<'a> {
             public,
             name,
             type_params,
+            constraints,
             params,
             result,
             clauses,
