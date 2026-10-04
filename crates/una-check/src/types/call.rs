@@ -936,6 +936,8 @@ impl<'a> Checker<'_, 'a, '_> {
             return checked;
         }
         let receiver_info = self.receiver_marker.take().filter(|_| receiver.is_some());
+        // The `edit` places get their new values once every argument is typed (#186).
+        let mut flow_backs = Vec::new();
         if let (Some((receiver_span, receiver_ty)), Some(first)) = (&receiver, params.first()) {
             let expected = first.ty.base.substitute(subst);
             let role = Role::Argument {
@@ -948,7 +950,12 @@ impl<'a> Checker<'_, 'a, '_> {
                 match (first.convention, *marker) {
                     (None, None) => {}
                     (Some(Convention::Edit), Some(Convention::Edit)) => {
-                        self.rebind(place, receiver_ty, &expected, *receiver_span);
+                        flow_backs.push(super::memory::FlowBack {
+                            place: place.clone(),
+                            place_ty: receiver_ty.clone(),
+                            value: expected.clone(),
+                            span: *receiver_span,
+                        });
                     }
                     (Some(convention), None) => self.report.error(
                         Code::U2020,
@@ -1094,7 +1101,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     );
                 }
             }
-            self.convention_arg(callee, param, arg, &found, &expected);
+            flow_backs.extend(self.convention_arg(callee, param, arg, &found, &expected));
             self.fn_flow(arg.value.span, &expected, &found);
             if param.ty.is_refined() {
                 let origin = self.origin(module, param.span);
@@ -1102,6 +1109,9 @@ impl<'a> Checker<'_, 'a, '_> {
             }
             checked.push((arg.value.span, found, expected, param.name));
         }
+        // Every argument is typed, so the parameters' types have their final labels: a later
+        // argument may raise the label of a type variable that an `edit` place takes back.
+        self.flow_back(flow_backs);
         // Exclusivity (`spec/17 §3` rule 4): an `edit` argument and any other use of its
         // binding in the same call, the receiver included.
         let mut edits: Vec<(usize, &Expr)> = args
