@@ -84,6 +84,16 @@ pub(crate) fn mentions(expr: &Expr, name: &str, resolve: &dyn Fn(&Ident) -> Stri
     }
 }
 
+/// The new value of an `edit` argument or receiver, which flows back into its place when the
+/// call returns (`spec/17 §3`, `§6` rule 2): the place, its type, the parameter's type, and
+/// where.
+pub(crate) struct FlowBack {
+    pub(crate) place: Expr,
+    pub(crate) place_ty: Ty,
+    pub(crate) value: Ty,
+    pub(crate) span: Span,
+}
+
 impl<'a> Checker<'_, 'a, '_> {
     /// The index of the innermost local named `name`.
     pub(crate) fn local_index(&self, name: &str) -> Option<usize> {
@@ -258,7 +268,9 @@ impl<'a> Checker<'_, 'a, '_> {
 
     /// The convention of parameter `param` of `callee` against the marker of `arg`, of type
     /// `found` (`spec/17 §3` rule 2): U2020 when they differ. An `edit` argument is a place
-    /// whose new value flows back; a `take` argument is a binding, taken from here on.
+    /// whose new value flows back: returned, for the caller to check once every argument of
+    /// the call is typed, so that the parameter's type has its final labels (#186). A `take`
+    /// argument is a binding, taken from here on.
     pub(crate) fn convention_arg(
         &mut self,
         callee: &str,
@@ -266,7 +278,7 @@ impl<'a> Checker<'_, 'a, '_> {
         arg: &Arg,
         found: &Ty,
         expected: &Ty,
-    ) {
+    ) -> Option<FlowBack> {
         match (param.convention, arg.marker) {
             (None, None) => {}
             (Some(convention), None) => {
@@ -310,10 +322,23 @@ impl<'a> Checker<'_, 'a, '_> {
                     .editable_place(&arg.value, "the argument of `edit`", false, Some(found))
                     .is_some()
                 {
-                    self.rebind(&arg.value, found, expected, arg.value.span);
+                    return Some(FlowBack {
+                        place: arg.value.clone(),
+                        place_ty: found.clone(),
+                        value: expected.clone(),
+                        span: arg.value.span,
+                    });
                 }
             }
             (_, Some(Convention::Take)) => self.take(&arg.value),
+        }
+        None
+    }
+
+    /// The flows back of the `edit` arguments of a call, once all its arguments are typed.
+    pub(crate) fn flow_back(&mut self, pending: Vec<FlowBack>) {
+        for back in pending {
+            self.rebind(&back.place, &back.place_ty, &back.value, back.span);
         }
     }
 
