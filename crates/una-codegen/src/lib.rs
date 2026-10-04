@@ -203,12 +203,14 @@ fn callee<'p>(
                 uses: fun.uses.iter().map(|u| u.cap.clone()).collect(),
                 result: Some(fun.result.clone()),
                 fails: fun.fails.is_some(),
+                exact: false,
                 body: &fun.body,
             })),
             Decl::Pred {
                 name: pred,
                 params,
                 body,
+                reflect,
                 ..
             } if pred == name => Some(Ok(Body {
                 this: None,
@@ -219,6 +221,9 @@ fn callee<'p>(
                 uses: Vec::new(),
                 result: None,
                 fails: false,
+                // The verifier defines a reflect predicate by its body as a term, exact, and
+                // makes no overflow obligation in it (#180).
+                exact: *reflect,
                 body,
             })),
             _ => None,
@@ -419,6 +424,7 @@ impl<'p> Emitter<'p> {
         body: &'p Expr,
         captures: Vec<(Name, Type)>,
         caps: Vec<Name>,
+        exact: bool,
     ) -> Result<FuncId, CodegenError> {
         let name = format!("una_lambda_{}", self.lambdas);
         self.lambdas += 1;
@@ -436,6 +442,7 @@ impl<'p> Emitter<'p> {
                 uses: Vec::new(),
                 result: None,
                 fails: false,
+                exact,
                 body,
             },
         ));
@@ -533,6 +540,7 @@ impl<'p> Emitter<'p> {
                 uses: Vec::new(),
                 result: Some(op.result.clone()),
                 fails: op.fails.is_some(),
+                exact: false,
                 body: &implementation.body,
             },
         ));
