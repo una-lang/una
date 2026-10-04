@@ -1239,7 +1239,16 @@ impl<'a> Checker<'_, 'a, '_> {
                         variant: Some(index),
                     },
                 );
-                self.construct(kind, Some(index), &targs, args, ident.span, span);
+                let hint = self.expected_args(kind, expected);
+                self.construct(
+                    kind,
+                    Some(index),
+                    &targs,
+                    hint.as_deref(),
+                    args,
+                    ident.span,
+                    span,
+                );
                 return Ty::Kind(kind, targs);
             }
             Some(Entity::Kind(id)) if self.env.kinds.get(id).is_some_and(|k| !k.is_sum()) => {
@@ -1253,7 +1262,8 @@ impl<'a> Checker<'_, 'a, '_> {
                         variant: None,
                     },
                 );
-                self.construct(id, None, &targs, args, ident.span, span);
+                let hint = self.expected_args(id, expected);
+                self.construct(id, None, &targs, hint.as_deref(), args, ident.span, span);
                 return Ty::Kind(id, targs);
             }
             Some(Entity::Kind(_)) => {
@@ -1298,16 +1308,39 @@ impl<'a> Checker<'_, 'a, '_> {
         }
     }
 
+    /// Whether `expr` is an integer literal, possibly negated, or a constructor application,
+    /// whose type an expected type decides.
+    fn literal_or_constructor(expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Paren(inner) => Self::literal_or_constructor(inner),
+            ExprKind::Literal(_) | ExprKind::Unary { .. } => {
+                super::fixed::literal_value(expr).is_some()
+            }
+            ExprKind::Call { callee, .. } => matches!(callee.kind, ExprKind::UpperName(_)),
+            _ => false,
+        }
+    }
+
+    /// The type arguments of `expected` when it is a type of `kind` (#187).
+    fn expected_args(&self, kind: KindId, expected: Option<&Ty>) -> Option<Vec<Ty>> {
+        match self.labeled(expected?).unlabeled() {
+            Ty::Kind(id, args) if *id == kind => Some(args.clone()),
+            _ => None,
+        }
+    }
+
     /// A constructor application, also after `fail` (`spec/04 §3` rule 4): with two or more
     /// fields every argument is labeled or punned, in any order, and one field may go without
     /// a label. Missing and unknown fields are U2009, a repeated field U2006, and an unlabeled
     /// argument where labels are required U2004. `span` covers the name and
     /// the arguments, `name` only the name.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn construct(
         &mut self,
         kind: KindId,
         index: Option<usize>,
         targs: &[Ty],
+        hint: Option<&[Ty]>,
         args: &[Arg],
         name: Span,
         span: Span,
@@ -1462,7 +1495,24 @@ impl<'a> Checker<'_, 'a, '_> {
                 field: field.name,
                 kind: constructor,
             };
-            let found = self.expr_as(&arg.value, Some(&expected), role);
+            // A literal, or a constructor, given for a field of a type parameter that the
+            // expected type fixes takes that type, as `Some(3)` where an `Option[U8]` is
+            // expected (`spec/18 §2.1`, #187). The parameter then takes the value's type.
+            let hinted = match (&field.ty.base, hint) {
+                (Ty::Param(param), Some(hint)) if Self::literal_or_constructor(&arg.value) => hint
+                    .get(*param)
+                    .filter(|ty| !holds_var(ty))
+                    .map(|ty| ty.unlabeled().clone()),
+                _ => None,
+            };
+            let found = match hinted {
+                Some(hinted) => {
+                    let found = self.expr_as(&arg.value, Some(&hinted), role);
+                    self.unify_at(arg.value.span, &expected, &found, role);
+                    found
+                }
+                None => self.expr_as(&arg.value, Some(&expected), role),
+            };
             self.fn_flow(arg.value.span, &expected, &found);
             if field.ty.is_refined() {
                 let origin = self.origin(module, field.span);
