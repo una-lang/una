@@ -87,6 +87,10 @@ pub enum EventOutcome {
     },
     /// The run aborted before it ended.
     Aborted,
+    /// A task was cancelled (`spec/19 §7` rule 3): the event that ends a started task after a
+    /// failed one, which names no operation. The interpreter, which runs tasks one after
+    /// another, never cancels one; a native run can.
+    Cancelled,
 }
 
 /// Why a run stops without a value or a failure.

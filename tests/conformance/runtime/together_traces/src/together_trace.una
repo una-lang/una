@@ -1,0 +1,49 @@
+-- test: tasks install handlers, nest, and run `together for` over a range; the interpreter runs them in task order, so the output and the trace, with each task's path and the handler instances numbered in that order, are those of a sequential run (spec/19 §6, §7)
+-- spec: spec/19 §6, §7
+-- grant: console
+-- expect: run-output "outer"
+-- expect: run-output "a:1"
+-- expect: run-output "b:2.1"
+-- expect: run-output "b:2.2"
+-- expect: run-output "c:3"
+-- expect: run-output "r1"
+-- expect: run-output "r2"
+-- expect: run-output "outer again"
+-- expect: run-output "1 1 1 2 3"
+module together_trace
+
+pub capability Log
+  op write(line: Text) -> Unit
+
+handler echo(prefix: Text) for Log
+  uses @console: Console[print]
+  op write(line) = @console.print("{prefix}{line}")
+
+--- Writes `line` and returns its length.
+logged(line: Text) -> Int
+  uses @log: Log[write]
+=
+  @log.write(line)
+  line.len
+
+--- Two nested tasks, each with its own handler.
+pair() -> Int
+  uses @console: Console[print]
+=
+  together
+    let p = logged("2.1") with @log = echo("b:")
+    let q = logged("2.2") with @log = echo("b:")
+  p - q + 1
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let outer = logged("outer") with @log = echo("")
+  together
+    let a = logged("1") with @log = echo("a:")
+    let b = pair()
+    let c = logged("3") with @log = echo("c:")
+  let rs = together for i in 1..2
+    logged("r{i}") with @log = echo("")
+  let again = logged("outer again") with @log = echo("")
+  @console.print("{a} {b} {c} {rs.len} {again - 8}")

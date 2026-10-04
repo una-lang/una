@@ -8,7 +8,7 @@
 
 use std::ffi::{CStr, c_char, c_int};
 
-use crate::{host, runtime, values};
+use crate::{host, runtime, tasks, values};
 
 /// Starts the executable: the generated `main` calls it with the process arguments, the
 /// embedded description of the program (`meta`, `meta_len` bytes of UTF-8 JSON) and the
@@ -126,6 +126,7 @@ exported! {
     una_rt_or_else => values::or_else, (o, default);
     una_rt_op_code => values::op_code, (instance, index);
     una_rt_fixed => values::fixed, (op, int, a, b);
+    una_rt_range => values::range, (low, high, inclusive);
     una_rt_console_print => host::console_print, (line);
     una_rt_clock_now => host::clock_now, ();
     una_rt_env_get => host::env_get, (name);
@@ -174,10 +175,11 @@ pub extern "C" fn una_rt_push(object: i64, value: i64) {
     values::push(object, value);
 }
 
-/// Enters the call at `site` (U6003 past the maximum depth).
+/// Enters the call at `site` (U6003 past the maximum depth): 1 when the task must stop
+/// instead ([`runtime::enter`]).
 #[unsafe(no_mangle)]
-pub extern "C" fn una_rt_enter(site: i64) {
-    runtime::enter(usize::try_from(site).unwrap_or(usize::MAX));
+pub extern "C" fn una_rt_enter(site: i64) -> i64 {
+    runtime::enter(usize::try_from(site).unwrap_or(usize::MAX))
 }
 
 /// Reports that `main` failed with `failure` (U6001), and releases it.
@@ -186,10 +188,69 @@ pub extern "C" fn una_rt_main_failed(failure: i64) {
     runtime::main_failed(failure);
 }
 
-/// Checks the memory budget at an iteration of the loop at `site` (U6003 over it).
+/// Checks the memory budget at an iteration of the loop at `site` (U6003 over it): 1 when
+/// the task must stop instead ([`runtime::budget`]).
 #[unsafe(no_mangle)]
-pub extern "C" fn una_rt_budget(site: i64) {
-    runtime::budget(usize::try_from(site).unwrap_or(usize::MAX));
+pub extern "C" fn una_rt_budget(site: i64) -> i64 {
+    runtime::budget(usize::try_from(site).unwrap_or(usize::MAX))
+}
+
+/// 1 when the task must stop before an operation ([`runtime::poll`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_poll() -> i64 {
+    runtime::poll()
+}
+
+/// Runs the tasks of `together` at `site` ([`tasks::together`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_together(closures: i64, site: i64) -> i64 {
+    tasks::together(closures, usize::try_from(site).unwrap_or(usize::MAX))
+}
+
+/// Runs the tasks of `together for` at `site` ([`tasks::together_for`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_together_for(closure: i64, items: i64, site: i64) -> i64 {
+    tasks::together_for(closure, items, usize::try_from(site).unwrap_or(usize::MAX))
+}
+
+/// How the last block of tasks ended ([`tasks::status`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_together_status() -> i64 {
+    tasks::status()
+}
+
+/// What compiled code returns: its value, and 0, 1 when the value is a failure, or 2 when the
+/// task stopped (`spec/16 §4` rule 3). Two words, which the C calling conventions of both
+/// targets return in two registers, as Cranelift returns a body's two results.
+#[repr(C)]
+struct Returned {
+    value: i64,
+    status: i64,
+}
+
+/// Calls the closure `closure`, whose code is at `code`, with `arg` when it takes one, on the
+/// thread of a task ([`tasks::Invoke`]).
+pub(crate) fn invoke(code: i64, closure: i64, arg: Option<i64>) -> (i64, i64) {
+    if code == 0 {
+        return (0, 2);
+    }
+    let address = code as usize as *const ();
+    let returned = match arg {
+        None => {
+            // SAFETY: `code` is the address of a compiled lambda that `una_rt_closure` stored
+            // in the closure: generated code with the default calling convention, that takes
+            // the closure and returns two words (`Emitter::lambda`, with no parameter).
+            let function: extern "C" fn(i64) -> Returned = unsafe { std::mem::transmute(address) };
+            function(closure)
+        }
+        Some(arg) => {
+            // SAFETY: as above, for a lambda with one parameter (`together for`).
+            let function: extern "C" fn(i64, i64) -> Returned =
+                unsafe { std::mem::transmute(address) };
+            function(closure, arg)
+        }
+    };
+    (returned.value, returned.status)
 }
 
 /// Leaves a call.
