@@ -1,0 +1,30 @@
+module tracefw
+
+kind Packet
+  id: U64
+  delta: I8
+  bytes: List[U8]
+  extra: Option[I64]
+
+capability Sink
+  op put(p: Packet, n: I32) -> U16
+  op big(x: U64, y: I64) -> I64
+
+handler counting(base: U16) for Sink
+  op put(p, n) = base
+  op big(x, y) = y
+
+send(p: Packet) -> U16
+  uses @sink: Sink[put, big]
+=
+  let r = @sink.put(p, n: -2147483648)
+  let m = @sink.big(18446744073709551615, y: -9223372036854775808)
+  r
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let least: I64 = -9223372036854775808
+  let p = Packet(id: 18446744073709551615, delta: -128, bytes: [0, 255, 128], extra: Some(least))
+  let r = send(p) with @sink = counting(base: 65535)
+  @console.print("{r} {p.id} {p.delta} {p.bytes.len}")

@@ -1,0 +1,49 @@
+module lp
+
+pub kind Chain = Link(next: Chain) | End
+
+pub capability Step
+  op down(n: Int) -> Int
+
+--- Recursion through a closure: each level applies a fresh function.
+via_closure(n: Int) -> Int
+=
+  let f = fn(k: Int) -> if k <= 0 then 0 else 1 + via_closure(k - 1)
+  f(n)
+
+--- Recursion through a fold whose step recurses.
+via_fold(n: Int) -> Int = if n <= 0 then 0 else [n].fold(initial: 0, step: fn(acc, k) -> acc + 1 + via_fold(k - 1))
+
+--- Recursion through a handler operation.
+via_op(n: Int) -> Int
+  uses @step: Step
+=
+  @step.down(n)
+
+handler stepper() for Step
+  op down(n) = if n <= 0 then 0 else 1 + again(n - 1)
+
+--- Runs `via_op` under a fresh handler.
+again(n: Int) -> Int
+=
+  let r = via_op(n) with @step = stepper()
+  r
+
+--- A chain `n` deep, built by a loop, compared and dropped.
+chain(n: Int) -> Bool
+=
+  let edit c = End
+  for i in 0..<n
+    c = Link(next: c)
+  let edit d = End
+  for i in 0..<n
+    d = Link(next: d)
+  c == d
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let deepc = chain(3000000)
+  @console.print("chains equal: {deepc}")
+  let a = via_closure(100000000)
+  @console.print("closure {a}")

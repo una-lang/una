@@ -1,0 +1,126 @@
+module alias2
+
+pub kind Oops = Bad | Worse
+
+pub kind Box
+  items: List[Int]
+  name: Text
+
+pub kind Outer
+  box: Box
+  n: Int
+
+pub kind Holder = Empty | Holds(items: List[Int])
+
+show(xs: List[Int]) -> Text = xs.fold(initial: "", step: fn(line, x) -> if line == "" then "{x}" else "{line} {x}")
+
+risky(edit xs: List[Int], go: Bool) -> Unit
+  fails Oops
+=
+  if 0 >= 0 and 0 < xs.len
+    edit xs.set(index: 0, item: 99)
+  xs = xs.append(item: 100)
+  if go
+    fail Bad
+  if 1 >= 0 and 1 < xs.len
+    edit xs.set(index: 1, item: 77)
+
+risky_box(edit b: Box, go: Bool) -> Unit
+  fails Oops
+=
+  b.name = "changed"
+  if 0 >= 0 and 0 < b.items.len
+    edit b.items.set(index: 0, item: 55)
+  if go
+    fail Worse
+
+taker(take xs: List[Int]) -> List[Int]
+=
+  let edit ys = xs
+  if 0 >= 0 and 0 < ys.len
+    edit ys.set(index: 0, item: -1)
+  ys
+
+loop_fail(edit xs: List[Int]) -> Unit
+  fails Oops
+=
+  for i in 0..<xs.len
+    if i >= 0 and i < xs.len
+      edit xs.set(index: i, item: 0)
+    if i == 1
+      fail Bad
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit a = [1, 2, 3]
+  risky(edit a, go: true)
+    if error use unit
+  @console.print("a after failed risky: {show(a)}")
+  risky(edit a, go: false)
+    if error use unit
+  @console.print("a after ok risky: {show(a)}")
+  let edit b = Box(items: [1, 2], name: "orig")
+  risky_box(edit b, go: true)
+    if error use unit
+  @console.print("b after failed: {show(b.items)} {b.name}")
+  let edit o = Outer(box: Box(items: [4, 5], name: "o"), n: 1)
+  risky_box(edit o.box, go: true)
+    if error use unit
+  @console.print("o after failed: {show(o.box.items)} {o.box.name}")
+  risky_box(edit o.box, go: false)
+    if error use unit
+  @console.print("o after ok: {show(o.box.items)} {o.box.name}")
+  let edit c = [1, 2, 3]
+  loop_fail(edit c)
+    if error use unit
+  @console.print("c after loop_fail: {show(c)}")
+  let edit d = [1, 2, 3]
+  let snapshot = d
+  let t = taker(take d)
+  @console.print("taker: {show(snapshot)} / {show(t)}")
+  let edit e = [1, 2, 3]
+  let wrapped = Some(e)
+  let held = Holds(items: e)
+  let inlist = [e, e]
+  if 0 >= 0 and 0 < e.len
+    edit e.set(index: 0, item: 42)
+  let w = wrapped.or_else(default: [])
+  let h = when held
+    is Holds(items) -> show(items)
+    is Empty -> "empty"
+  let il = inlist.first().or_else(default: [])
+  @console.print("wrapped {show(w)} held {h} inlist {show(il)} e {show(e)}")
+  let edit f = [1, 2, 3]
+  let edit g = [0]
+  for x in f
+    if 0 >= 0 and 0 < f.len
+      edit f.set(index: 0, item: x * 10)
+    g = g.append(item: x)
+  @console.print("loop over self: {show(f)} {show(g)}")
+  let edit m = [1, 2, 3]
+  let res = when m.first()
+    is Some(v) ->
+      if 0 >= 0 and 0 < m.len
+        edit m.set(index: 0, item: v + 1000)
+      v
+    is None -> 0
+  @console.print("when then edit: {res} {show(m)}")
+  let edit n = [1, 2, 3]
+  let clo = fn(i: Int) -> n.at(index: i).or_else(default: -1)
+  if 2 >= 0 and 2 < n.len
+    edit n.set(index: 2, item: 33)
+  n = n.append(item: 4)
+  @console.print("closure: {clo(2)} {clo(3)} {show(n)}")
+  let edit s = "abc"
+  let s0 = s
+  s = "{s}d"
+  @console.print("{s0} {s}")
+  let edit nest = [[1, 2], [3]]
+  let inner0 = nest.at(index: 0).or_else(default: [])
+  let edit inner = inner0
+  if 0 >= 0 and 0 < inner.len
+    edit inner.set(index: 0, item: 9)
+  if 0 >= 0 and 0 < nest.len
+    edit nest.set(index: 0, item: inner)
+  @console.print("nest: {show(inner0)} {show(nest.at(index: 0).or_else(default: []))}")

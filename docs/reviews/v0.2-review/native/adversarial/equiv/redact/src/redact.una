@@ -1,0 +1,63 @@
+module redact
+
+pub kind Oops = | Bad(code: Int)
+
+pub kind Rec
+  open: Int
+  hidden: secret Int
+
+pub capability Src
+  op get(n: Int) -> Int
+    fails Oops
+  op rec(n: Int) -> Rec
+  op lab(n: internal Int) -> internal Int
+    accepts internal
+
+pub handler src() for Src
+  op get(n) = if n > 5 then fail Bad(code: n) else n * 2
+  op rec(n) = Rec(open: n, hidden: n + 1)
+  op lab(n) = n + 1
+
+final_secret(n: Int) -> secret Int
+  uses @src: Src[get]
+  fails Oops
+=
+  @src.get(n)
+    if error pass
+
+final_plain(n: Int) -> Int
+  uses @src: Src[get]
+  fails Oops
+=
+  @src.get(n)
+    if error pass
+
+pub run() -> Unit
+  uses @src: Src[get, rec, lab]
+=
+  let a: secret Int = @src.get(1)
+    if error use 0
+  let b: internal Int = @src.get(9)
+    if error use 0
+  let c = @src.get(2)
+    if error use 0
+  let d = attempt @src.get(3)
+  let e: confidential Result[Int, Oops] = attempt @src.get(8)
+  let f = @src.rec(4)
+  let g: secret Rec = @src.rec(5)
+  let h = final_secret(1)
+    if error use 0
+  let i = final_plain(2)
+    if error use 0
+  let j: secret Int = final_plain(3)
+    if error use 0
+  let k = @src.lab(i)
+  let l: internal Int = 7
+  let m = @src.lab(l)
+  unit
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  run() with @src = src()
+  @console.print("ok")

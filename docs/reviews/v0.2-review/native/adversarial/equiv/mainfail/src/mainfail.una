@@ -1,0 +1,15 @@
+module mainfail
+
+pub kind Inner
+  a: Int
+  b: internal Text
+
+pub kind Refusal = Blocked(reason: Text, code: secret Int, big: Int, inner: Inner, opt: Option[Inner], list: List[Text], neg: Int) | Other
+
+pub main() -> Unit
+  uses @console: Console[print]
+  fails Refusal
+=
+  @console.print("starting")
+  let inner = Inner(a: -3, b: "hid")
+  fail Blocked(reason: "q\"x\n\u{1}é", code: 4242, big: 123456789012345678901234567890, inner: inner, opt: Some(inner), list: ["a", "b\\"], neg: -4611686018427387905)
