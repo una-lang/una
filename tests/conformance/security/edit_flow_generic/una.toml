@@ -1,0 +1,4 @@
+[package]
+name = "edit_flow_generic"
+version = "0.1.0"
+edition = "0.2"
