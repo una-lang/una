@@ -4,3 +4,9 @@ pub set[T](edit xs: List[T], index: Int, item: T) -> Unit
   ensures xs.len == old(xs).len
 =
   unit
+
+--- The elements of `xs` in ascending order, equal ones in their order in `xs` (`spec/20 §6`).
+pub sort[T: Ord](xs: List[T]) -> List[T]
+  ensures result.len == xs.len
+=
+  xs

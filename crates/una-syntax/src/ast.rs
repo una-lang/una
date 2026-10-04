@@ -287,6 +287,9 @@ pub struct FunctionDecl {
     pub name: Ident,
     /// The type parameters.
     pub type_params: Vec<Ident>,
+    /// The constraint written on each type parameter, as `Ord` in `[T: Ord]`, from edition
+    /// 0.2 (`spec/20 §2`); as long as `type_params`.
+    pub constraints: Vec<Option<Ident>>,
     /// The parameters.
     pub params: Vec<Param>,
     /// The result type.

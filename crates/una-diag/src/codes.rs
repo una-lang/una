@@ -150,6 +150,12 @@ pub enum Code {
     U2023,
     /// A `together` body with a statement other than `let`, or fewer than two branches.
     U2024,
+    /// A type argument does not satisfy the constraint of its parameter.
+    U2025,
+    /// An operation on a type parameter that its constraint does not allow.
+    U2026,
+    /// An unknown constraint name.
+    U2027,
     /// Capability not in scope.
     U3001,
     /// Operation not permitted by capability type.
@@ -226,7 +232,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 79] = [
+    pub const ALL: [Code; 82] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -270,6 +276,9 @@ impl Code {
         Code::U2022,
         Code::U2023,
         Code::U2024,
+        Code::U2025,
+        Code::U2026,
+        Code::U2027,
         Code::U3001,
         Code::U3002,
         Code::U3003,
@@ -587,6 +596,24 @@ impl Code {
                 domain: Domain::Types,
                 meaning: "A `together` body with a statement other than `let`, or fewer than two branches",
                 explain: include_str!("../explain/U2024.md"),
+            },
+            Code::U2025 => &Entry {
+                code: "U2025",
+                domain: Domain::Types,
+                meaning: "A type argument does not satisfy the constraint of its parameter",
+                explain: include_str!("../explain/U2025.md"),
+            },
+            Code::U2026 => &Entry {
+                code: "U2026",
+                domain: Domain::Types,
+                meaning: "An operation on a type parameter that its constraint does not allow",
+                explain: include_str!("../explain/U2026.md"),
+            },
+            Code::U2027 => &Entry {
+                code: "U2027",
+                domain: Domain::Types,
+                meaning: "An unknown constraint name",
+                explain: include_str!("../explain/U2027.md"),
             },
             Code::U3001 => &Entry {
                 code: "U3001",

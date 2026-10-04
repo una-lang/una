@@ -171,6 +171,11 @@ pub(crate) struct FnDef<'a> {
     pub(crate) module: usize,
     pub(crate) kind: FnKind,
     pub(crate) type_params: Vec<&'a str>,
+    /// The constraint of each type parameter: written, or inferred for a private function
+    /// whose parameter has none written (`spec/20 §3` rule 4).
+    pub(crate) constraints: Vec<Constraint>,
+    /// Whether the constraint of each type parameter is written.
+    pub(crate) constraints_written: Vec<bool>,
     pub(crate) params: Vec<ParamDef<'a>>,
     pub(crate) result: Declared,
     /// Where the result type is written.
@@ -193,6 +198,43 @@ pub(crate) struct FnDef<'a> {
     pub(crate) requires: bool,
     pub(crate) ensures: bool,
     pub(crate) ast: FnAst<'a>,
+}
+
+/// A built-in constraint on a type parameter (`spec/20 §1`), in order: each includes the
+/// ones before it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Constraint {
+    /// No constraint.
+    #[default]
+    None,
+    /// `==` and `!=`.
+    Eq,
+    /// Also `<`, `<=`, `>` and `>=`.
+    Ord,
+    /// Also `x.to_int()`.
+    Integer,
+}
+
+impl Constraint {
+    /// The constraint named `name`, if any.
+    pub(crate) fn from_name(name: &str) -> Option<Constraint> {
+        match name {
+            "Eq" => Some(Constraint::Eq),
+            "Ord" => Some(Constraint::Ord),
+            "Integer" => Some(Constraint::Integer),
+            _ => None,
+        }
+    }
+
+    /// Its name, as written.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Constraint::None => "none",
+            Constraint::Eq => "Eq",
+            Constraint::Ord => "Ord",
+            Constraint::Integer => "Integer",
+        }
+    }
 }
 
 /// An operation of a capability.
@@ -515,6 +557,8 @@ impl<'a> Env<'a> {
             },
             uses: Vec::new(),
             infer_uses: false,
+            constraints: Vec::new(),
+            constraints_written: Vec::new(),
             infer_fails: false,
             uses_of: Vec::new(),
             fails_of: None,
@@ -779,6 +823,35 @@ impl<'a> Env<'a> {
                     .iter()
                     .map(|p| self.text(module, p.name))
                     .collect();
+                // `spec/20 §2`: a written constraint names `Eq`, `Ord` or `Integer` (U2027).
+                let mut constraints = Vec::new();
+                let mut constraints_written = Vec::new();
+                for written in &function.constraints {
+                    let constraint = written.as_ref().and_then(|ident| {
+                        let name = self.text(module, ident.name);
+                        let found = Constraint::from_name(name);
+                        if found.is_none() && self.reports(module) {
+                            report.error(
+                                Code::U2027,
+                                ident.span,
+                                format!(
+                                    "`{name}` is not a constraint; a type parameter takes `Eq`, `Ord` or `Integer`"
+                                ),
+                            );
+                        }
+                        found
+                    });
+                    constraints_written.push(written.is_some());
+                    // After U2027, the parameter allows every operator, so that it reports
+                    // nothing more.
+                    constraints.push(match (constraint, written) {
+                        (Some(constraint), _) => constraint,
+                        (None, Some(_)) => Constraint::Integer,
+                        (None, None) => Constraint::None,
+                    });
+                }
+                constraints.resize(type_params.len(), Constraint::None);
+                constraints_written.resize(type_params.len(), false);
                 let params = self.params(module, &function.params, &type_params, report);
                 let result = self.lower_type(module, &function.result, &type_params, report);
                 let fails = function
@@ -818,6 +891,8 @@ impl<'a> Env<'a> {
                 );
                 if let Some(def) = self.functions.get_mut(id) {
                     def.type_params = type_params;
+                    def.constraints = constraints;
+                    def.constraints_written = constraints_written;
                     def.params = params;
                     def.result = result;
                     def.fails = fails;

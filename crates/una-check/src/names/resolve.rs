@@ -75,8 +75,9 @@ impl<'a> Resolver<'_, '_, 'a> {
                     || table.lower.contains_key(name)
                     || table.imported.contains_key(name)
                     || prelude::LOWER.contains(&name)
-                    // Edition 0.2: `set` (`spec/17 §8`).
-                    || (name == "set" && self.checker.package.settings.edition >= Edition::V0_2)
+                    // Edition 0.2: `set` (`spec/17 §8`) and `sort` (`spec/20 §6`).
+                    || (matches!(name, "set" | "sort")
+                        && self.checker.package.settings.edition >= Edition::V0_2)
             }
             Space::Upper => {
                 self.types.iter().flatten().any(|local| local.name == name)

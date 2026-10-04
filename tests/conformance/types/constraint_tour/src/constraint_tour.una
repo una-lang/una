@@ -1,0 +1,39 @@
+-- test: constrained type parameters allow their operators, a constraint includes the ones before it, private functions infer theirs, records without functions satisfy `Eq`, and the prelude's `min`, `max`, `contains`, `sum` and `sort` take every type that satisfies their constraint (spec/20 §1 to §3, §6)
+-- spec: spec/20 §1, §3, §6
+-- expect: ok
+module constraint_tour
+
+pub kind Box
+  size: Int
+  label: Text
+
+pub kind Level = Low | Mid | High
+
+pub same[T: Eq](a: T, b: T) -> Bool = a == b
+
+pub different[T: Ord](a: T, b: T) -> Bool = a != b
+
+pub largest[T: Ord](xs: List[T], floor: T) -> T = xs.fold(initial: floor, step: fn(best, x) -> max(best, b: x))
+
+pub total[T: Integer](xs: List[T]) -> Int = xs.map(each: fn(x) -> x.to_int()).sum()
+
+pub doubled_total[T: Integer](xs: List[T]) -> Int = sum(xs) * 2
+
+lowest[T](a: T, b: T) -> T = if a < b then a else b
+
+pub uses_lowest[T: Integer](a: T, b: T) -> T = lowest(a, b: b)
+
+pub everything(bytes: List[U8], names: List[Text], levels: List[Level], boxes: List[Box]) -> Bool
+=
+  let bytes_total = sum(bytes)
+  let longest = largest(names, floor: "")
+  let top = largest(levels, floor: Low)
+  let sorted = sort(names)
+  let small = min(3, b: 4)
+  let a: I32 = 3
+  let b: I32 = -2
+  let small_i32 = min(a, b: b)
+  let found = boxes.contains(item: Box(size: 1, label: "a"))
+  let same_boxes = same(Box(size: 1, label: "a"), b: Box(size: 1, label: "a"))
+  let low = lowest(High, b: Mid)
+  bytes_total >= 0 and longest.len >= 0 and top != Low and sorted.len == names.len and small == 3 and found and same_boxes and low == Mid
