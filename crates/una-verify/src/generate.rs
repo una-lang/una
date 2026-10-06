@@ -2590,6 +2590,18 @@ impl<'p, 'i> Walker<'p, 'i> {
         }
     }
 
+    /// `f`, or the literal that defines it when it is a temporary bound to one, as the Core
+    /// IR binds `-3` before `e mod -3`, so that the operation stays linear (#188).
+    fn literal(&self, f: F) -> F {
+        if let F::Const(constant) = &f
+            && let Some(def) = self.defs.get(&constant.name)
+            && int_literal(def)
+        {
+            return def.clone();
+        }
+        f
+    }
+
     /// A primitive of code as a term, when it is one of the refinement language (`spec/10 §3`:
     /// "RL-expressible results are selfified").
     fn prim(&self, prim: Prim, values: &[Tv]) -> Option<F> {
@@ -2599,9 +2611,9 @@ impl<'p, 'i> Walker<'p, 'i> {
                 let (a, b) = (arg(0)?.f, arg(1)?.f);
                 F::op(if prim == Prim::Add { "+" } else { "-" }, vec![a, b])
             }
-            Prim::Mul => arithmetic(BinOp::Mul, arg(0)?.f, arg(1)?.f),
-            Prim::Div => arithmetic(BinOp::Div, arg(0)?.f, arg(1)?.f),
-            Prim::Mod => arithmetic(BinOp::Mod, arg(0)?.f, arg(1)?.f),
+            Prim::Mul => arithmetic(BinOp::Mul, self.literal(arg(0)?.f), self.literal(arg(1)?.f)),
+            Prim::Div => arithmetic(BinOp::Div, self.literal(arg(0)?.f), self.literal(arg(1)?.f)),
+            Prim::Mod => arithmetic(BinOp::Mod, self.literal(arg(0)?.f), self.literal(arg(1)?.f)),
             Prim::Neg => F::op("-", vec![arg(0)?.f]),
             Prim::Not => F::not(arg(0)?.f),
             Prim::Eq | Prim::Ne => {
@@ -3744,9 +3756,15 @@ fn source_symbol(fun: &SmtFun) -> &str {
     }
 }
 
-/// Arithmetic in QF_UFLIA: multiplication, division and remainder stay linear only with a
-/// literal operand (a nonzero divisor); otherwise they are uninterpreted functions, since the
-/// logic has no nonlinear terms (`spec/12 §2`).
+/// Whether `f` is an integer literal, or the negation of one.
+fn int_literal(f: &F) -> bool {
+    match f {
+        F::Int(_) => true,
+        F::Op { op: "-", args } => matches!(args.as_slice(), [inner] if int_literal(inner)),
+        _ => false,
+    }
+}
+
 /// Whether `f` is a nonzero integer literal, or the negation of one.
 fn nonzero_literal(f: &F) -> bool {
     match f {
@@ -3826,15 +3844,17 @@ fn clamped(value: F, int: IntType) -> F {
     )
 }
 
+/// Arithmetic in QF_UFLIA: multiplication, division and remainder stay linear only with a
+/// literal operand (a nonzero divisor); otherwise they are uninterpreted functions, since the
+/// logic has no nonlinear terms (`spec/12 §2`).
 fn arithmetic(op: BinOp, left: F, right: F) -> F {
-    let literal = |f: &F| matches!(f, F::Int(_));
-    let nonzero = |f: &F| matches!(f, F::Int(d) if d.trim_start_matches('-') != "0");
     let (symbol, name, linear) = match op {
         BinOp::Add => ("+", "add", true),
         BinOp::Sub => ("-", "sub", true),
-        BinOp::Mul => ("*", "mul", literal(&left) || literal(&right)),
-        BinOp::Div => ("div", "div", nonzero(&right)),
-        _ => ("mod", "mod", nonzero(&right)),
+        // A literal, negated or not, keeps a product, a quotient or a remainder linear (#188).
+        BinOp::Mul => ("*", "mul", int_literal(&left) || int_literal(&right)),
+        BinOp::Div => ("div", "div", nonzero_literal(&right)),
+        _ => ("mod", "mod", nonzero_literal(&right)),
     };
     if linear {
         F::op(symbol, vec![left, right])

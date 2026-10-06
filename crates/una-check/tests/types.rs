@@ -1106,3 +1106,16 @@ fn an_edit_argument_is_checked_once() {
         ]
     );
 }
+
+#[test]
+fn a_refined_type_argument_in_edition_0_2_names_no_version() {
+    // #188: the rule holds in every edition, so edition 0.2's message names no version.
+    let manifest = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"0.2\"\n";
+    let module = "module t\n\nkind Small = Int in 0..5\n\nf(a: List[Small]) -> Int = 0\n";
+    assert_eq!(
+        check(&[("una.toml", manifest), ("src/t.una", module)], false),
+        [
+            "U2002 src/t.una:5:11 this type argument is the refined kind `Small`, and a refined type cannot instantiate a type parameter; write its base type `Int` and check the refinement where the value is used",
+        ]
+    );
+}
