@@ -697,6 +697,62 @@ fn updates_of_values_nothing_else_holds_are_in_place() {
 }
 
 #[test]
+fn a_closed_output_pipe_is_a_failed_write_not_a_signal() {
+    // #184: the executable ignores `SIGPIPE`, as `una run` does: when the reader of its output
+    // goes away, the writes fail, the run goes on, the trace is written, and the exit code is 2.
+    runtime();
+    let program = "module chatty\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit n = 0\n  for i in 0..<20000\n    @console.print(\"line {i}\")\n    n = n + 1\n  @console.print(\"done {n}\")\n";
+    let dir = package(
+        "chatty",
+        "\n[run]\nentry = \"chatty\"\ngrants = [\"console\"]\n",
+        &[("src/chatty.una", program)],
+    );
+    let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+    std::fs::write(
+        dir.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let first_line = |command: &mut Command| {
+        let mut child = command
+            .current_dir(&dir)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        let mut reader = std::io::BufReader::new(child.stdout.take().unwrap());
+        std::io::BufRead::read_line(&mut reader, &mut line).unwrap();
+        drop(reader);
+        let output = child.wait_with_output().unwrap();
+        (line, output)
+    };
+    let trace = dir.join("trace.json");
+    let (line, native) = first_line(
+        Command::new(dir.join("target/una/chatty"))
+            .arg("--trace")
+            .arg(&trace),
+    );
+    assert_eq!(line, "line 0\n");
+    assert_eq!(native.status.code(), Some(2), "{native:?}");
+    assert!(
+        String::from_utf8_lossy(&native.stderr).starts_with("error: cannot write the output: "),
+        "{native:?}"
+    );
+    let events: Value = serde_json::from_slice(&std::fs::read(&trace).unwrap()).unwrap();
+    assert_eq!(events.as_array().unwrap().len(), 20001);
+    let (_, interpreted) = first_line(
+        Command::new(env!("CARGO_BIN_EXE_una"))
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .args(["run", "."]),
+    );
+    assert_eq!(interpreted.status.code(), native.status.code());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn the_executable_checks_main_against_its_grants() {
     runtime();
     // No `[run] grants`: `una build` accepts it, and the executable needs `--grant console`.
