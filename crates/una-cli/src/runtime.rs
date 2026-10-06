@@ -300,14 +300,25 @@ pub(crate) fn run_command(
             return Ok(ExitStatus::Usage);
         }
     };
-    if let Some(error) = write_error {
-        return Err(error);
-    }
     let root_location = root_location(&package);
     let diagnostics: Vec<Diagnostic> =
         completion_diagnostic(&run.completion, main.span, &package.sources, &root_location)
             .into_iter()
             .collect();
+    // The program ran to its end after stdout failed. Its failure or abort is still reported,
+    // then the failed write, with exit code 2, as the native executable does (#199).
+    if let Some(error) = write_error {
+        if !diagnostics.is_empty() {
+            write!(
+                stderr,
+                "{}",
+                render_human(&diagnostics, &package.sources.texts(), options.color)
+            )?;
+        }
+        writeln!(stderr, "error: cannot write the output: {error}")?;
+        stderr.flush()?;
+        return Ok(ExitStatus::Usage);
+    }
     let status = match &run.completion {
         Completion::Ok(_) => ExitStatus::Success,
         Completion::Failed { .. }
