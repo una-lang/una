@@ -972,6 +972,202 @@ fn a_failed_task_cancels_the_tasks_after_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A program whose first task fails only once the second has started: the second writes
+/// `box/started` and then performs operations of a Una handler, `step`, whose body runs `BODY`;
+/// the first polls for the file and then fails. The cancellation of the second task so comes
+/// while it performs its operations (#200).
+const IN_OPERATION: &str = "module opcancel
+
+pub kind Oops = | Bad
+
+pub capability Work
+  op step(n: Int) -> Int
+
+pub handler busy() for Work
+  op step(n) = BODY
+
+churn(n: Int) -> Int
+=
+  let edit total = 0
+  for i in 0..<n
+    total = total + 1
+  total
+
+deep(n: Int) -> Int = if n == 0 then 0 else deep(n - 1) + 1
+
+started() -> Bool
+  uses @files: Files[read]
+=
+  let r = attempt @files.read(\"started\")
+  when r
+    is Ok(t) -> true
+    is Err(e) -> false
+
+watcher() -> Int
+  uses @files: Files[read]
+  fails Oops
+=
+  let edit seen = false
+  for i in 0..<20000
+    if not seen
+      seen = started()
+  fail Bad
+
+worker() -> Int
+  uses @files: Files[write]
+=
+  let w = attempt @files.write(\"started\", content: \"yes\")
+  let edit total = 0
+  for i in 0..<STEPS
+    let v = stepped() with @work = busy()
+    total = total + v
+  total
+
+stepped() -> Int
+  uses @work: Work[step]
+=
+  @work.step(20000)
+
+pick() -> Int
+  uses @files: Files[read, write]
+  fails Oops
+=
+  together
+    let a = watcher()
+      if error pass
+    let b = worker()
+  a + b
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @files: Files[read, write]
+=
+  let r = attempt pick()
+  let shown = when r
+    is Ok(v) -> \"ok\"
+    is Err(e) -> \"failed\"
+  @console.print(shown)
+";
+
+/// Builds `IN_OPERATION` with `body` as the handler's operation and `steps` operations, runs
+/// it natively with a trace and `args`, then in the interpreter, and returns the native output,
+/// the native trace, and the interpreter's output.
+fn in_operation(
+    name: &str,
+    body: &str,
+    steps: &str,
+    args: &[&str],
+) -> (Output, Vec<Value>, Output) {
+    let program = IN_OPERATION.replace("BODY", body).replace("STEPS", steps);
+    let dir = package(
+        name,
+        "\n[run]\nentry = \"opcancel\"\ngrants = [\"console\", \"files:box:read,write\"]\n",
+        &[("src/opcancel.una", &program)],
+    );
+    let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+    std::fs::write(
+        dir.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.join("box")).unwrap();
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let trace = dir.join("trace.json");
+    let native = Command::new(dir.join("target/una").join(name))
+        .args(args)
+        .arg("--trace")
+        .arg(&trace)
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    let events: Value = serde_json::from_slice(&std::fs::read(&trace).unwrap()).unwrap();
+    let events = events.as_array().unwrap().clone();
+    let _ = std::fs::remove_file(dir.join("box/started"));
+    let mut run_args = vec!["run", "."];
+    run_args.extend(args);
+    let interpreted = una(&dir, &run_args);
+    let _ = std::fs::remove_dir_all(&dir);
+    (native, events, interpreted)
+}
+
+/// The events of task `task`.
+fn task_events<'a>(events: &'a [Value], task: &str) -> Vec<&'a Value> {
+    events
+        .iter()
+        .filter(|event| event["task"] == task)
+        .collect()
+}
+
+#[test]
+fn an_operation_in_progress_at_cancellation_completes() {
+    // `spec/19 §6` rule 4 and `§7` rule 3 (#200): the second task is cancelled while it performs
+    // an operation of a Una handler, whose body makes calls and loops. The operation completes
+    // with its own outcome; the task performs no operation after it and ends with `cancelled`.
+    // `aborted` belongs to U6003 alone (`§8` rule 4).
+    for _ in 0..3 {
+        let (native, events, interpreted) = in_operation("opcancel", "churn(n)", "1000000", &[]);
+        assert_eq!(native.status.code(), Some(0), "{native:?}");
+        assert_eq!(String::from_utf8_lossy(&native.stdout), "failed\n");
+        // The run is not ordered, so only the status and the output must equal the
+        // interpreter's (`spec/19 §8` rule 4); the interpreter never starts the second task.
+        assert_eq!(native.status.code(), interpreted.status.code());
+        assert_eq!(native.stdout, interpreted.stdout);
+        assert!(
+            events
+                .iter()
+                .all(|event| event["outcome"]["kind"] != "aborted"),
+            "{events:?}"
+        );
+        let worker = task_events(&events, "2");
+        let (last, performed) = worker.split_last().unwrap();
+        assert_eq!(
+            **last,
+            serde_json::json!({"seq": last["seq"], "task": "2", "outcome": {"kind": "cancelled"}})
+        );
+        // The write, then the operations, each complete with its value: the cancellation took
+        // effect at the poll before the next operation.
+        let (write, steps) = performed.split_first().unwrap();
+        assert_eq!(write["op"], "write", "{worker:?}");
+        assert!(!steps.is_empty(), "{worker:?}");
+        for step in steps {
+            assert_eq!(step["op"], "step", "{worker:?}");
+            assert_eq!(
+                step["outcome"],
+                serde_json::json!({"kind": "ok", "value": "20000"}),
+                "{worker:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_limits_hold_inside_an_operation_in_progress() {
+    // #200: while an operation in progress ignores the cancellation, its body still stops at
+    // `--max-depth` (U6003): the operation is `aborted`, by U6003, and the task stops with no
+    // `cancelled` event. The block fails with the first task's failure, as in the interpreter.
+    let (native, events, interpreted) = in_operation(
+        "opdeep",
+        "churn(n) + deep(1000)",
+        "1",
+        &["--max-depth", "200"],
+    );
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "failed\n");
+    assert_eq!(native.status.code(), interpreted.status.code());
+    assert_eq!(native.stdout, interpreted.stdout);
+    let worker = task_events(&events, "2");
+    let (step, performed) = worker.split_last().unwrap();
+    assert_eq!(performed.len(), 1, "{worker:?}");
+    assert_eq!(performed[0]["op"], "write", "{worker:?}");
+    assert_eq!(step["op"], "step", "{worker:?}");
+    assert_eq!(
+        step["outcome"],
+        serde_json::json!({"kind": "aborted"}),
+        "{worker:?}"
+    );
+}
+
 #[test]
 fn the_executable_checks_each_operation_against_the_files_modes() {
     // #183: a `files` grant gives the operations of its modes, so `uses Files[read, write]`
