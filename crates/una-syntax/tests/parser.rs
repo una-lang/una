@@ -1080,7 +1080,10 @@ fn a_handling_clause_on_the_line_of_its_expression_says_where_it_goes() {
     assert_eq!(
         errors("f(x: Int) -> Int\n=\n  let y = g(x) if x > 0\n  y\n"),
         ["U0101 5:16 unexpected keyword `if`, expected end of line"]
+    );
+}
 
+#[test]
 fn a_reserved_keyword_as_a_binding_name_says_so() {
     // #206: `let result = ...` named only the unexpected keyword. The message says what the
     // word is reserved for; a `let` whose uses are all in its block gets one edit that renames
@@ -1112,6 +1115,12 @@ fn a_reserved_keyword_as_a_binding_name_says_so() {
             Some("outcome".to_owned())
         )]
     );
+    // `it` also names the value of a `checked` predicate or a `where` clause in the same
+    // block, so renaming its uses could change their meaning: advice only.
+    assert_eq!(
+        repairs("f(y: Int) -> Int\n  fails Bad\n=\n  let it = 1\n  let z = checked(y, it > 0) else fail Bad\n  z + it\n")[0].1,
+        [("choose another name, such as `item`".to_owned(), None)]
+    );
     // Parameters, loop variables and other keywords get advice.
     assert_eq!(
         repairs("f(result: Int) -> Int = 1\n"),
@@ -1123,7 +1132,7 @@ fn a_reserved_keyword_as_a_binding_name_says_so() {
     assert_eq!(
         repairs("f(xs: List[Int]) -> Int = xs.map(each: fn(it) -> 1).sum\n"),
         [(
-            "U0101 `it` is reserved: it names the value a `where` clause constrains, so it cannot name a binding".to_owned(),
+            "U0101 `it` is reserved: it names the value that a `where` clause or a `checked` predicate constrains, so it cannot name a binding".to_owned(),
             vec![("choose another name, such as `item`".to_owned(), None)]
         )]
     );

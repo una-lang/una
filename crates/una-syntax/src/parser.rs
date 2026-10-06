@@ -467,8 +467,11 @@ impl<'a> Parser<'a> {
 
     /// The name a binding introduces: a `let`, a parameter, a loop variable or a pattern's
     /// local name. A reserved keyword there is U0101 saying what the word is reserved for
-    /// (#206), with a new name: for a `let` of `result` or `it`, one edit that renames the
-    /// binding and its uses in its block, since those words name nothing else in a body.
+    /// (#206), with a new name. For a `let` of `result`, the repair is one edit that renames
+    /// the binding and its uses in its block: in a body, `result` names nothing else, since it
+    /// is legal only in `ensures` (U2012) and neither lambdas nor nested blocks have clauses.
+    /// `it` also names the value of a `checked` predicate or a `where` clause in a body, so
+    /// its repair, like every other, is advice.
     fn binding_name(&mut self, expected: &str, local: bool) -> Parse<Ident> {
         let TokenKind::Keyword(keyword) = *self.peek() else {
             return self.lower_name(expected);
@@ -480,7 +483,7 @@ impl<'a> Parser<'a> {
                 "outcome".to_owned(),
             ),
             Keyword::It => (
-                Some("names the value a `where` clause constrains"),
+                Some("names the value that a `where` clause or a `checked` predicate constrains"),
                 "item".to_owned(),
             ),
             Keyword::Error => (
@@ -498,7 +501,7 @@ impl<'a> Parser<'a> {
         let fresh = self.fresh_name(&base);
         let span = self.span();
         let repair = match self.uses_in_block(keyword) {
-            Some(uses) if local && matches!(keyword, Keyword::Result | Keyword::It) => {
+            Some(uses) if local && keyword == Keyword::Result => {
                 let end = uses.last().map_or(span.end, |last| last.end);
                 let mut replacement = String::new();
                 let mut at = span.start;
