@@ -408,12 +408,14 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     };
     let ungranted = check_grants(&meta, &grants);
     if !ungranted.is_empty() {
-        let _ = write!(
+        // A failed write of the diagnostics is a failed write of the output: exit code 2, as
+        // `una run` has (`spec/13 §5`, #198).
+        let written = write!(
             stderr,
             "{}",
             render_human(&ungranted, &Default::default(), false)
         );
-        return 1;
+        return if written.is_ok() { 1 } else { USAGE };
     }
     // An unreadable or invalid key file is a usage error before `main`.
     let keys = match keys(&grants) {
@@ -820,12 +822,15 @@ fn abort_run(state: State, location: Location, message: String) {
     crate::ceiling(usize::MAX);
     let _ = io::stdout().flush();
     let diagnostic = Diagnostic::error(Code::U6003, message, location);
-    let _ = write!(
+    let written = write!(
         io::stderr(),
         "{}",
         render_human(&[diagnostic], &Default::default(), false)
     );
-    let code = finish(state).max(1);
+    let mut code = finish(state).max(1);
+    if written.is_err() {
+        code = USAGE;
+    }
     // Nothing unwinds through the compiled frames (spec/16 §4 rule 3).
     #[allow(clippy::exit)]
     std::process::exit(code);
@@ -849,12 +854,19 @@ pub fn main_failed(failure: i64) {
         ))
     });
     values::release(failure);
-    if let Some(diagnostic) = diagnostic {
-        let _ = write!(
+    if let Some(diagnostic) = diagnostic
+        && let Err(error) = write!(
             io::stderr(),
             "{}",
             render_human(&[diagnostic], &Default::default(), false)
-        );
+        )
+    {
+        // Reported at the end with exit code 2, as a failed write of the output is (#198).
+        with_state(|state| {
+            if state.failed_write.is_none() {
+                state.failed_write = Some(error);
+            }
+        });
     }
 }
 
