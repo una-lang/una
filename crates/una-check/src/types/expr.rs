@@ -1436,6 +1436,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     id,
                     Some(index),
                     &args,
+                    None,
                     &variant.args,
                     variant.name.span,
                     variant.span,
