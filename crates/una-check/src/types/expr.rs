@@ -2,6 +2,8 @@
 //! operators, `is`, `in`, `if`, lambdas, `checked`, `attempt` and `fail`, with the refinement
 //! language (U2014) and the positions of `result`, `it` and `error` (U2012, U2013).
 
+use std::collections::BTreeSet;
+
 use una_diag::{Code, ObligationKind};
 use una_project::Edition;
 use una_syntax::Span;
@@ -237,8 +239,10 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// A text literal, and its label: the join of every label of its interpolated values
-    /// (`spec/07 §4`). Interpolation converts `Int`, `Bool` and `Text` only (`spec/09 §3`,
-    /// `spec/14 §2`); a literal without interpolation is in the refinement language.
+    /// (`spec/07 §4`). In edition 0.1, interpolation converts integers, `Bool` and `Text` only;
+    /// in edition 0.2, any value whose type holds no function and no `Hashed`, a type
+    /// parameter's under `Eq` (`spec/10 §12` rule 14, ADR 0068). A literal without
+    /// interpolation is in the refinement language.
     pub(crate) fn text(&mut self, text: &TextLit) -> Label {
         let interpolated = text
             .parts
@@ -262,6 +266,25 @@ impl<'a> Checker<'_, 'a, '_> {
                 | Ty::Error
                 | Ty::Never
                 | Ty::Var(_) => {}
+                other if self.env.edition >= Edition::V0_2 => {
+                    if let Some(position) = self.unwritable(&other, &mut BTreeSet::new()) {
+                        self.report.error(
+                            Code::U2001,
+                            expr.span,
+                            format!(
+                                "interpolation writes values that hold no function and no `Hashed`, and {position}"
+                            ),
+                        );
+                    } else {
+                        let mut params = Vec::new();
+                        other.params(&mut params);
+                        if !params.is_empty() {
+                            // A value of a type parameter needs `Eq` (`spec/20 §1`).
+                            self.needs.push((other.clone(), Constraint::Eq, expr.span));
+                            self.interpolations.push(expr.span);
+                        }
+                    }
+                }
                 other => {
                     let shown = self.show(&other);
                     self.report.error(
@@ -275,6 +298,47 @@ impl<'a> Checker<'_, 'a, '_> {
             }
         }
         label
+    }
+
+    /// Where values of `ty` hold a function or a `Hashed`, which interpolation cannot write
+    /// (ADR 0068 D4), as a phrase for the message, or `None`. `seen` stops at kinds already
+    /// visited, so a recursive kind ends.
+    fn unwritable(&self, ty: &Ty, seen: &mut BTreeSet<KindId>) -> Option<String> {
+        match ty.unlabeled() {
+            Ty::Fn(_) => Some("this value is a function".to_owned()),
+            Ty::Hashed => Some("this value is a `Hashed`".to_owned()),
+            Ty::List(element) => self.unwritable(element, seen),
+            Ty::Kind(id, args) => {
+                if !seen.insert(*id) {
+                    return None;
+                }
+                let kind = self.env.kinds.get(*id)?;
+                let fields = kind
+                    .record
+                    .iter()
+                    .flatten()
+                    .chain(kind.variants.iter().flat_map(|v| &v.fields));
+                for field in fields {
+                    let field_ty = field.ty.base.substitute(args);
+                    let what = match field_ty.unlabeled() {
+                        Ty::Fn(_) => "a function",
+                        Ty::Hashed => "a `Hashed`",
+                        _ => {
+                            if let Some(inner) = self.unwritable(&field_ty, seen) {
+                                return Some(inner);
+                            }
+                            continue;
+                        }
+                    };
+                    return Some(format!(
+                        "field `{}` of `{}` holds {what}",
+                        field.name, kind.name
+                    ));
+                }
+                None
+            }
+            _ => None,
+        }
     }
 
     /// A lower-case name: a local, or a function used as a value.

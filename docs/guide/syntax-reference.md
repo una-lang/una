@@ -213,7 +213,7 @@ A package of edition `0.1` keeps the table of v0.1 in every version of the compi
 `"{event.name}: {label}"` embeds an expression between braces.
 
 - The embedded expression cannot contain a text literal (U0006). Bind it with `let` first.
-- Only integers (`Int` and the fixed-width types), `Bool` and `Text` can be interpolated (U2001 otherwise). A record, a variant or a list is not: convert it with `when`, or describe it field by field in a function of your own.
+- Any value that holds no function and no `Hashed` can be interpolated (U2001 otherwise). It is written in its Una form, as `una test` shows it: `Event(name: "Gala", remaining: 3)`, `[1, 2]`, `Some(3)`. A `Text` inside it is quoted. A value of a type parameter `T` needs `[T: Eq]` (U2026). In edition 0.1, only integers, `Bool` and `Text` can be interpolated (ADR 0068).
 - A missing closing `}` is reported as U0004 at the opening quote.
 - Interpolation **propagates labels**: `"id {phone}"` is as secret as `phone` (§8).
 
@@ -226,8 +226,11 @@ pub kind Event
   name: Text
   remaining: Int
 
---- A record is not interpolated: describe it field by field.
+--- A record is interpolated as it is, or field by field for a shorter text.
 pub describe(event: Event) -> Text = "{event.name} ({event.remaining} seats)"
+
+--- The whole record: `Event(name: "Gala", remaining: 3)`.
+pub raw(event: Event) -> Text = "{event}"
 
 pub banner(event: Event, status: Status) -> Text
 =

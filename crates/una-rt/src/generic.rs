@@ -9,6 +9,7 @@ use std::cmp::Ordering;
 use num_bigint::BigInt;
 use una_core::Descriptor;
 
+use crate::runtime;
 use crate::values::{self, fault, int_value, int_word, retain, tag, text_value};
 
 /// The order of `a` and `b` by the descriptor `desc`, or `None` with a fault when `desc` gives
@@ -22,7 +23,7 @@ fn order(desc: i64, a: i64, b: i64) -> Option<Ordering> {
         Some(Descriptor::Text) if values::is_text(a) && values::is_text(b) => {
             Some(text_value(a).cmp(&text_value(b)))
         }
-        Some(Descriptor::Sum) if values::is_data(a) && values::is_data(b) => {
+        Some(Descriptor::Sum(_)) if values::is_data(a) && values::is_data(b) => {
             Some(tag(a).cmp(&tag(b)))
         }
         _ => None,
@@ -63,7 +64,7 @@ pub fn compare(desc: i64, a: i64, b: i64) -> i64 {
 /// (`spec/20 §1` rule 5), checked against the descriptor.
 pub fn equal(desc: i64, a: i64, b: i64) -> i64 {
     match Descriptor::from_word(desc) {
-        Some(Descriptor::Structural) => values::equal(a, b),
+        Some(Descriptor::Structural(_)) => values::equal(a, b),
         _ => i64::from(order(desc, a, b).is_none_or(Ordering::is_eq)),
     }
 }
@@ -80,6 +81,24 @@ pub fn to_int(desc: i64, x: i64) -> i64 {
     }
     retain(x);
     x
+}
+
+/// `x` written as text by interpolation, on a `T: Eq` (`spec/11 §5`, ADR 0068): an integer
+/// in decimal, a `Text` as it is, any other value in its Una form, by the type description that
+/// its descriptor carries. A new reference.
+pub fn write(desc: i64, x: i64) -> i64 {
+    match Descriptor::from_word(desc) {
+        Some(Descriptor::Int | Descriptor::Fixed(_)) => values::int_text(x),
+        Some(Descriptor::Text) => {
+            retain(x);
+            x
+        }
+        Some(Descriptor::Sum(ty) | Descriptor::Structural(ty)) => runtime::written(ty, x),
+        None => {
+            fault();
+            values::text_word(String::new())
+        }
+    }
 }
 
 /// `min(a, b)` of the prelude of edition 0.2 (`spec/20 §6`): `a` when they are equal, retained.
@@ -143,8 +162,8 @@ mod tests {
         let int = Descriptor::Int.word();
         let u8 = Descriptor::Fixed(IntType::U8).word();
         let text = Descriptor::Text.word();
-        let sum = Descriptor::Sum.word();
-        let structural = Descriptor::Structural.word();
+        let sum = Descriptor::Sum(0).word();
+        let structural = Descriptor::Structural(0).word();
         let (small, large) = (int_word(&BigInt::from(3)), int_word(&BigInt::from(300)));
         let (apple, pear) = (values::text_literal("apple"), values::text_literal("pear"));
         let (low, high) = (values::data(0), values::data(2));

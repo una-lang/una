@@ -1220,3 +1220,39 @@ fn a_forged_or_foreign_cache_entry_is_solved_again() {
     assert_eq!(report("carol", Some(&named)).1, shown);
     let _ = std::fs::remove_dir_all(&scratch);
 }
+
+#[test]
+fn an_interpolation_names_what_it_cannot_write_and_the_constraint_it_needs() {
+    // ADR 0068 D4 and D8: U2001 names the position of the function, through a list, and U2026
+    // says that interpolation needs `Eq`, with the repair that writes it.
+    let diagnostic = |name: &str, source: &str| {
+        let root = package_of_edition(name, "0.2", &[("src/app.una", source)]);
+        let output = una(&["--json", "check", root.to_str().unwrap()]);
+        let document: Value = serde_json::from_str(stdout(&output)).unwrap();
+        let diagnostics = document["diagnostics"].as_array().unwrap().clone();
+        assert_eq!(diagnostics.len(), 1, "{}", stdout(&output));
+        diagnostics[0].clone()
+    };
+    let function = diagnostic(
+        "interpolate-function",
+        "module app\n\npub kind Step\n  run: fn(Int) -> Int\n\npub kind Plan\n  steps: List[Step]\n\npub shown(p: Plan) -> Text = \"plan {p}\"\n",
+    );
+    assert_eq!(function["code"], "U2001");
+    assert_eq!(
+        function["message"],
+        "interpolation writes values that hold no function and no `Hashed`, and field `run` of `Step` holds a function"
+    );
+    let unconstrained = diagnostic(
+        "interpolate-param",
+        "module app\n\npub shown[T](x: T) -> Text = \"is {x}\"\n",
+    );
+    assert_eq!(unconstrained["code"], "U2026");
+    assert_eq!(
+        unconstrained["message"],
+        "interpolation on values of the type parameter `T` needs the constraint `Eq`; write `[T: Eq]`"
+    );
+    assert_eq!(
+        repair_descriptions(&unconstrained),
+        ["constrain `T` by `Eq`"]
+    );
+}

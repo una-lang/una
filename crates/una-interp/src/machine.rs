@@ -238,6 +238,18 @@ impl<'p> Index<'p> {
     /// The Una form of `value`. A field whose declared type is labeled above
     /// `public` is `<redacted:level>`.
     pub(crate) fn render(&self, value: &Value<'_>) -> String {
+        self.una_form(value, true)
+    }
+
+    /// The Una form of `value` with every field, which interpolation writes: its text carries
+    /// the value's labels (`spec/11 §5`, ADR 0068).
+    pub(crate) fn written(&self, value: &Value<'_>) -> String {
+        self.una_form(value, false)
+    }
+
+    /// The Una form of `value` (`spec/11 §5`); with `redact`, a field whose declared type is
+    /// labeled above `public` is `<redacted:level>`.
+    fn una_form(&self, value: &Value<'_>, redact: bool) -> String {
         // A worklist instead of recursion: a value built by a loop can be deeper than the
         // native stack allows (`spec/17 §4`, ADR 0032).
         enum Task<'v, 'p> {
@@ -294,7 +306,7 @@ impl<'p> Index<'p> {
                             parts.push(Task::Text(format!("{name}: ")));
                         }
                         let label = ty.map_or_else(Label::public, deep_label);
-                        if label.is_public() || matches!(field, Value::Unit) {
+                        if !redact || label.is_public() || matches!(field, Value::Unit) {
                             parts.push(Task::Value(field));
                         } else {
                             parts.push(Task::Text(format!(
@@ -1076,7 +1088,17 @@ impl<'p, 'w> Machine<'p, 'w> {
     fn rhs(&mut self, env: &Env<'p>, caps: &Caps<'p>, rhs: &'p Rhs, ty: &Type) -> Flow<'p> {
         match rhs {
             Rhs::Atom(atom) => self.atom(env, atom),
-            Rhs::Prim { prim, args, .. } => prim_apply(*prim, &self.atoms(env, args)?),
+            Rhs::Prim { prim, args, .. } => {
+                let args = self.atoms(env, args)?;
+                // Interpolation writes a structured value in its Una form (ADR 0068).
+                if *prim == Prim::ToText
+                    && let Some(value) = args.first()
+                    && !matches!(value, Value::Int(_) | Value::Bool(_) | Value::Text(_))
+                {
+                    return Ok(Value::text(&self.index.written(value)));
+                }
+                prim_apply(*prim, &args)
+            }
             Rhs::Call {
                 function,
                 args,
