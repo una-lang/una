@@ -618,7 +618,8 @@ together                                        -- two or more `let` branches (U
 let warmest = max(north, b: south)              -- the branches' names are bound after the block
 
 let pages = together for id in ids              -- one task per element, a list of results
-  fetch(id) if error pass
+  fetch(id)
+    if error pass
 ```
 
 - **A branch** sees the bindings before the block, never its siblings', and cannot assign, `edit` or `take` a binding declared outside it (U2023). Return new values from the branch instead.
