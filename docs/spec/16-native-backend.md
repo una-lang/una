@@ -59,11 +59,11 @@ The representation is not observable; these rules fix what the runtime library `
    - (v0.2, ADR 0066.) A function with constrained type parameters also takes a hidden type descriptor for each of them, and is still compiled once (`spec/20 §7`).
 5. **Host capabilities** (`spec/14 §3`) have the interpreter's semantics, grants, path rules and failures.
 6. (v0.2, ADR 0065.) **Tasks.** Each task of a `together` block runs on its own thread with its own heap; values are copied at the fork and the join, so reference counts stay non-atomic (`spec/19 §8`).
-7. **Trusted base.** `una-rt` is in the Trusted zone (charter §3). Its only `unsafe` code of the repository is `ffi.rs` (ADR 0058), and its heap budget (§3, ADR 0061) depends on the `cap` allocator crate, whose `unsafe` code is outside that boundary and is trusted with it (ADR 0061 amendment of 2026-10-06; Leonardo, 2026-10-06).
 7. (v0.2, #30.) **Updates in place.** Within the freedom of `spec/17 §7` rule 3, an update MAY happen in place when the code gives up the value at its last use and its reference count shows nothing else holds it. Otherwise the value is copied.
    - **Which updates:** `append` and `set` on a list, and a record or variant rebuilt from one of its kind that dies there, as a field edit is.
    - **Never moved:** a value something borrows from, which is a `when` scrutinee, a `let (...)` tuple or a list a loop visits. Nor a value a `together` task captures, or one passed to a function, including a `uses of` parameter's argument.
    - **Not observable:** in-place updates change no output, failure, abort or trace.
+8. **Trusted base.** `una-rt` is in the Trusted zone (charter §3). Its only `unsafe` code of the repository is `ffi.rs` (ADR 0058), and its heap budget (§3, ADR 0061) depends on the `cap` allocator crate, whose `unsafe` code is outside that boundary and is trusted with it (ADR 0061 amendment of 2026-10-06; Leonardo, 2026-10-06).
 
 ## 5. Equivalence testing
 
