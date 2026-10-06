@@ -126,7 +126,7 @@ The interpreter enforces a maximum call depth (default 10,000 frames, `--max-dep
 
 (v0.2, ADR 0060.) A value has no depth limit, and only calls count toward the call depth. A value can be deeper than the call depth, since a `for` loop builds it without calls (`spec/17 §4`). Releasing, comparing, rendering and tracing a value MUST NOT recurse on the native stack over its structure, in the interpreter and in a native backend's runtime (`spec/16`).
 
-(v0.2, ADR 0061.) A run also has a memory budget (default 4096 MiB, `--max-memory <MiB>`): the heap it holds beyond what the process held when it started.
+(v0.2, ADR 0061.) A run also has a memory budget (default 4096 MiB, `--max-memory <MiB>`, at least 1): the heap it holds beyond what the process held when it started.
 - **Checks.** The budget is checked at each call that the depth counts, so at each application in the prelude's higher-order functions, and at each iteration of a `for` loop.
 - **Over the budget.** A call or an iteration that finds the run over its budget aborts with U6003, `this call exceeds the memory limit of N MiB`, with the trace and status of a depth abort.
 - **Hard ceiling.** An allocation beyond twice the budget between two checks aborts the process.
