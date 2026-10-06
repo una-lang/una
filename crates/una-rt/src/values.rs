@@ -271,8 +271,9 @@ fn with_cells<R>(word: i64, f: impl FnOnce(&mut Vec<i64>) -> R) -> Option<R> {
     })
 }
 
-/// The number of uses of freed objects so far: 0 unless the generated code releases a value it
-/// still uses.
+/// The number of faults so far: uses of freed objects, and operations on a constrained type
+/// parameter whose descriptor does not fit the values (`generic`). 0 unless the generated code
+/// releases a value it still uses or passes a wrong descriptor.
 pub fn faults() -> usize {
     HEAP.with(|heap| heap.borrow().faults)
 }
@@ -821,6 +822,34 @@ pub fn some_owned(value: i64) -> i64 {
 
 fn items(list: i64) -> Vec<i64> {
     with(list, |object| object.cells().to_vec()).unwrap_or_default()
+}
+
+/// The items of a list, borrowed.
+pub(crate) fn list_items(list: i64) -> Vec<i64> {
+    items(list)
+}
+
+/// Whether `word` is a handle to a big integer.
+pub(crate) fn is_big_int(word: i64) -> bool {
+    is_handle(word) && with(word, |object| matches!(object, Object::Int(_))).unwrap_or(false)
+}
+
+/// Whether `word` is a handle to a text.
+pub(crate) fn is_text(word: i64) -> bool {
+    is_handle(word) && with(word, |object| matches!(object, Object::Text(_))).unwrap_or(false)
+}
+
+/// Whether `word` is a variant: an immediate without fields, or a handle to one with them.
+pub(crate) fn is_data(word: i64) -> bool {
+    word & 1 == 1
+        || (is_handle(word)
+            && with(word, |object| matches!(object, Object::Data { .. })).unwrap_or(false))
+}
+
+/// Counts a fault: an operation the generated code never asks for, which the debug runtime's
+/// check reports (see `runtime::start`).
+pub(crate) fn fault() {
+    HEAP.with(|heap| heap.borrow_mut().faults += 1);
 }
 
 fn bool_word(value: bool) -> i64 {

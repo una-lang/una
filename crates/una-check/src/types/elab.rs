@@ -20,7 +20,7 @@ use una_syntax::ast::{
 use una_syntax::{SourceDb, Span};
 
 use super::Findings;
-use super::env::{Entity, Env, FnAst, FnKind, Need};
+use super::env::{Constraint, Entity, Env, FnAst, FnKind, Need};
 use super::records::{Records, Res};
 use super::ty::{Declared, FnUse, Refinement, Ty};
 
@@ -844,6 +844,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         (!self.broken).then(|| Signature {
             path: self.path(def.module, def.name),
             type_params: def.type_params.iter().map(|p| (*p).to_owned()).collect(),
+            constraints: core_constraints(&def.constraints, def.type_params.len()),
             params,
             result,
             requires,
@@ -937,9 +938,10 @@ impl<'e, 'a> Fx<'e, 'a> {
                 let body = self.body(&function.body);
                 self.returning = None;
                 self.tail_wrap = None;
-                Decl::Fun(Fun {
+                Decl::Fun(Box::new(Fun {
                     name: def.name.to_owned(),
                     type_params: def.type_params.iter().map(|p| (*p).to_owned()).collect(),
+                    constraints: core_constraints(&def.constraints, def.type_params.len()),
                     params,
                     result,
                     uses: self.needs(&def.uses),
@@ -950,7 +952,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     body,
                     span: function.name.span,
                     public: function.public,
-                })
+                }))
             }
             (DeclKind::Predicate(predicate), Entity::Function(id)) => {
                 let def = self.env.functions.get(id)?;
@@ -3651,6 +3653,21 @@ fn signed(value: &SignedInt) -> String {
     } else {
         value.digits.clone()
     }
+}
+
+/// The constraints of a function's `count` type parameters, as Core IR states them, for the
+/// type descriptors of the native backend (`spec/20 §7`).
+fn core_constraints(constraints: &[Constraint], count: usize) -> Vec<una_core::Constraint> {
+    (0..count)
+        .map(
+            |index| match constraints.get(index).copied().unwrap_or_default() {
+                Constraint::None => una_core::Constraint::None,
+                Constraint::Eq => una_core::Constraint::Eq,
+                Constraint::Ord => una_core::Constraint::Ord,
+                Constraint::Integer => una_core::Constraint::Integer,
+            },
+        )
+        .collect()
 }
 
 #[cfg(test)]

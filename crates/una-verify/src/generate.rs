@@ -4205,9 +4205,10 @@ mod tests {
             left: Box::new(Term::Result),
             right: Box::new(Term::Int("0".to_owned())),
         };
-        decls.push(Decl::Fun(Fun {
+        decls.push(Decl::Fun(Box::new(Fun {
             name: "f".to_owned(),
             type_params: Vec::new(),
+            constraints: Vec::new(),
             params,
             result: int(),
             uses: Vec::new(),
@@ -4218,7 +4219,7 @@ mod tests {
             body,
             span,
             public: true,
-        }));
+        })));
         Program {
             modules: vec![una_core::Module {
                 path: "m".to_owned(),
