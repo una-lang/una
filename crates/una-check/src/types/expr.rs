@@ -496,6 +496,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     );
                     return Ty::Kind(kind, args);
                 }
+                self.needs_fields.push(span);
                 (
                     Code::U2009,
                     format!("variant `{name}` needs its fields: {}", fields.join(", ")),
@@ -655,7 +656,9 @@ impl<'a> Checker<'_, 'a, '_> {
             }
             BinaryOp::Eq | BinaryOp::NotEq => {
                 self.variant_equality(op, left, right, span);
+                let (mark, needs) = (self.report.count(), self.needs_fields.len());
                 let (left_ty, right_ty) = self.operand_pair(left, right);
+                self.compare_with_is(op, left, right, span, mark, needs);
                 self.operands.push(left_ty.clone());
                 self.operands.push(right_ty.clone());
                 if self.integers_in_clause(&left_ty, &right_ty) {
@@ -839,6 +842,44 @@ impl<'a> Checker<'_, 'a, '_> {
             || format!("comparing with variant `{name}`"),
             Some(repair),
         );
+    }
+
+    /// The `is` repair of U2009 at a variant compared with `==` or `!=`, as `e == Overdrawn`
+    /// where `Overdrawn` has fields: `e is Overdrawn`, or `not (e is Overdrawn)` (#205).
+    fn compare_with_is(
+        &mut self,
+        op: BinaryOp,
+        left: &Expr,
+        right: &Expr,
+        span: Span,
+        mark: usize,
+        needs: usize,
+    ) {
+        let written = self.needs_fields.split_off(needs);
+        let sides = [(right, left), (left, right)];
+        let Some((ident, value)) =
+            sides
+                .into_iter()
+                .find_map(|(variant, value)| match &variant.kind {
+                    ExprKind::UpperName(ident) if written.contains(&ident.span) => {
+                        Some((ident, value))
+                    }
+                    _ => None,
+                })
+        else {
+            return;
+        };
+        let name = self.name(ident);
+        let value_text = self.report.text(value.span);
+        let replacement = match op {
+            BinaryOp::Eq => format!("{value_text} is {name}"),
+            _ => format!("not ({value_text} is {name})"),
+        };
+        let repair = self
+            .report
+            .edit(format!("write `{replacement}`"), span, replacement);
+        self.report
+            .repair_since(mark, Code::U2009, ident.span, repair);
     }
 
     /// `v is V` and `v is literal`; the result takes `v`'s top label.

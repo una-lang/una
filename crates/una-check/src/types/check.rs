@@ -207,6 +207,9 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) call_targets: BTreeMap<Span, usize>,
     /// The types of the operands of the binary operations being checked.
     pub(crate) operands: Vec<Ty>,
+    /// The spans of the variants written without their fields (U2009), for the `is` repair of
+    /// a comparison (#205).
+    pub(crate) needs_fields: Vec<Span>,
     /// In pass 1, the operations on references whose capability inference decides, by the
     /// span of the operation: the reference and the operation.
     pub(crate) pending_ops: BTreeMap<Span, (String, String)>,
@@ -324,6 +327,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             task_mark: None,
             call_targets: BTreeMap::new(),
             operands: Vec::new(),
+            needs_fields: Vec::new(),
             pending_ops: BTreeMap::new(),
             records: Records::default(),
             decl_span: None,
