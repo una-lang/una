@@ -1,0 +1,22 @@
+-- test: the body of a `together for` ends with a handled expression whose handling clause stands on its own indented line, as in any block (spec/02 §6, spec/19 §1, #202)
+-- spec: spec/19 §1
+-- expect: ok
+module handled
+
+pub kind FetchError = Missing | Gone
+
+fetch(id: Int) -> Int
+  fails FetchError
+=
+  if id < 0
+    fail Missing
+  else
+    id
+
+pub pages(ids: List[Int]) -> List[Int]
+  fails FetchError
+=
+  let pages = together for id in ids
+    fetch(id)
+      if error pass
+  pages
