@@ -1428,11 +1428,17 @@ impl<'a> Env<'a> {
                 format!("the refined type `{base} {range}`")
             }
         };
+        // The rule holds in every edition; edition 0.1 keeps its message (#188).
+        let version = if self.edition >= Edition::V0_2 {
+            ""
+        } else {
+            " in v0.1"
+        };
         let mut diagnostic = report.make(
             Code::U2002,
             arg.span,
             format!(
-                "this type argument is {what}, and a refined type cannot instantiate a type parameter in v0.1; write its base type `{base}` and check the refinement where the value is used"
+                "this type argument is {what}, and a refined type cannot instantiate a type parameter{version}; write its base type `{base}` and check the refinement where the value is used"
             ),
         );
         if arg.label.is_none() {

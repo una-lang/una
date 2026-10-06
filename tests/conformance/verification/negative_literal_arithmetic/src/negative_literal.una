@@ -1,0 +1,24 @@
+-- test: a negated literal operand keeps `*`, `/` and `mod` linear, as a literal does, so their facts are proven (spec/12 §2, #188)
+-- spec: spec/12 §2
+-- expect: ok
+module negative_literal
+
+pub remainder(e: Int) -> Int
+  ensures result >= 0 and result < 3
+=
+  e mod -3
+
+pub scaled(x: Int) -> Int
+  ensures result == -2 * x
+=
+  -2 * x
+
+pub halved(x: Int) -> Int
+  ensures result == x / -2
+=
+  x / -2
+
+pub fixed_remainder(e: I64) -> I64
+  ensures result >= 0
+=
+  e mod -3
