@@ -112,7 +112,7 @@ pub(crate) enum Command {
         max_depth: usize,
 
         /// The memory a run may hold, in MiB
-        #[arg(long, value_name = "MIB", default_value_t = una_interp::DEFAULT_MAX_MEMORY)]
+        #[arg(long, value_name = "MIB", default_value_t = una_interp::DEFAULT_MAX_MEMORY, value_parser = memory_budget)]
         max_memory: usize,
 
         /// Stop a solver query after this many seconds; the obligation is then unknown
@@ -144,7 +144,7 @@ pub(crate) enum Command {
         max_depth: usize,
 
         /// The memory a run may hold, in MiB
-        #[arg(long, value_name = "MIB", default_value_t = una_interp::DEFAULT_MAX_MEMORY)]
+        #[arg(long, value_name = "MIB", default_value_t = una_interp::DEFAULT_MAX_MEMORY, value_parser = memory_budget)]
         max_memory: usize,
 
         /// Stop a solver query after this many seconds; the obligation is then unknown
@@ -175,4 +175,14 @@ pub(crate) enum TierArg {
     /// Tier 1: tier 0 and every proof obligation.
     #[value(name = "1")]
     One,
+}
+
+/// A value of `--max-memory`: a whole number of MiB, at least 1, since no run fits in 0 MiB
+/// (#185, ADR 0061).
+fn memory_budget(text: &str) -> Result<usize, String> {
+    match text.parse::<usize>() {
+        Ok(0) => Err("0 MiB holds nothing; give at least 1 MiB".to_owned()),
+        Ok(mib) => Ok(mib),
+        Err(error) => Err(error.to_string()),
+    }
 }

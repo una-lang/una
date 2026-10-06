@@ -17,7 +17,11 @@ use crate::{host, runtime, tasks, values};
 /// # Safety
 ///
 /// `argv` holds `argc` pointers to NUL-terminated strings, as the C runtime passes them to
-/// `main`, and `meta` points to `meta_len` bytes that live for the whole process.
+/// `main`, and `meta` points to `meta_len` bytes that live for the whole process. `entry` is
+/// the compiled `main` that `una build` generated with `meta` (#185): the runtime calls it once,
+/// on a thread of its own with the stack `--max-depth` needs, after the grants are checked, and
+/// it may call every exported function of this module with the words they expect, which is
+/// the contract of the generated code (ADR 0058).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn una_rt_start(
     argc: c_int,

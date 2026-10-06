@@ -413,6 +413,34 @@ fn a_run_over_its_memory_budget_is_u6003() {
 }
 
 #[test]
+fn a_memory_budget_of_zero_is_a_usage_error() {
+    // HOST-4 (#185): no run fits in 0 MiB, so `--max-memory 0` is a usage error, exit code 2,
+    // on `una run` and `una test`, before anything runs.
+    let root = package("hog-zero", "", &[]);
+    let file = root.join("hog.una");
+    std::fs::write(&file, HOG.replace("STEPS", "1")).unwrap();
+    let file = file.to_str().unwrap();
+    for args in [
+        ["run", file, "--grant", "console", "--max-memory", "0"].as_slice(),
+        ["test", file, "--max-memory", "0"].as_slice(),
+    ] {
+        let output = una(args);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+        assert_eq!(stdout(&output), "", "{args:?}");
+        assert!(
+            stderr(&output).contains("--max-memory"),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+    }
+}
+
+#[test]
 fn a_loop_over_its_memory_budget_is_u6003() {
     // ADR 0061 rule 2: a `for` iteration is not a call, and the budget is checked at each one
     // too; the abort points at the loop.

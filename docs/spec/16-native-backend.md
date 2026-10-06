@@ -39,7 +39,7 @@ Status: Normative, v0.2 (ADR 0055).
    - Its grants are the `[run] grants` embedded at build time, together with its own `--grant <spec>` flags, which take the grant specs of `spec/13 §5`.
    - Before `main` starts, it checks every `uses` of `main` against those grants. A `uses` they do not grant is U3012 on stderr, with exit code 1, and nothing runs.
    - Relative paths, those of embedded grants included, resolve against the executable's current directory, with the path rules of `una run`.
-   - A `--grant` value that is not a grant spec, an unreadable or invalid key file, a `--max-depth` or `--max-memory` that is not a number, and a `--max-depth` whose stack cannot be allocated are usage errors, exit code 2, as for `una run`.
+   - A `--grant` value that is not a grant spec, a `--max-depth` or `--max-memory` that is not a number, a `--max-memory` of `0`, and a `--max-depth` whose stack cannot be allocated are usage errors, exit code 2, as for `una run`. Key files are read after the check of `uses`, as `una run` reads them, and an unreadable or invalid one is then a usage error too.
 3. **Depth and memory.** `--max-depth <n>` bounds the call depth as in `spec/11 §7`, with the same default, on a stack capped at 1 GiB. Exceeding it, or running short of stack before it, aborts with U6003; the executable never overflows its stack. (v0.2, ADR 0061.) `--max-memory <MiB>` bounds the heap of the run as in `spec/11 §7`, with the same default, and exceeding it aborts with U6003, `this call exceeds the memory limit of N MiB`.
 4. **Traces.** `--trace <file>` writes the trace of `spec/11 §5` to `<file>` as a JSON array of events. Without the flag the executable records no trace.
 
@@ -59,6 +59,7 @@ The representation is not observable; these rules fix what the runtime library `
    - (v0.2, ADR 0066.) A function with constrained type parameters also takes a hidden type descriptor for each of them, and is still compiled once (`spec/20 §7`).
 5. **Host capabilities** (`spec/14 §3`) have the interpreter's semantics, grants, path rules and failures.
 6. (v0.2, ADR 0065.) **Tasks.** Each task of a `together` block runs on its own thread with its own heap; values are copied at the fork and the join, so reference counts stay non-atomic (`spec/19 §8`).
+7. **Trusted base.** `una-rt` is in the Trusted zone (charter §3). Its only `unsafe` code of the repository is `ffi.rs` (ADR 0058), and its heap budget (§3, ADR 0061) depends on the `cap` allocator crate, whose `unsafe` code is outside that boundary and is trusted with it (ADR 0061 amendment of 2026-10-06; Leonardo, 2026-10-06).
 7. (v0.2, #30.) **Updates in place.** Within the freedom of `spec/17 §7` rule 3, an update MAY happen in place when the code gives up the value at its last use and its reference count shows nothing else holds it. Otherwise the value is copied.
    - **Which updates:** `append` and `set` on a list, and a record or variant rebuilt from one of its kind that dies there, as a field edit is.
    - **Never moved:** a value something borrows from, which is a `when` scrutinee, a `let (...)` tuple or a list a loop visits. Nor a value a `together` task captures, or one passed to a function, including a `uses of` parameter's argument.

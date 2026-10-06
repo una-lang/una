@@ -50,3 +50,7 @@ The native backend (ADR 0055) sizes the stack of its `main` the same way, and it
 - **A budget in abstract cells**, counted by the interpreter for each value. It would be deterministic, but each engine would have to count the same cells at the same points, and native reference counting frees values at other times than the interpreter's environments do. Rejected: it gives determinism the model does not need.
 - **Only the stack cap.** It fixes R-033's deep recursion, but a program that builds a huge value is still killed by the OS. Rejected for leaving half of `spec/06 §7` unenforced.
 - **A share of physical memory as the default.** It would differ from machine to machine. Rejected for a fixed default.
+
+## Amendment (2026-10-06)
+
+The native runtime's heap budget depends on the `cap` allocator crate (rule 4), which is `unsafe` code outside ADR 0058's single `unsafe` module, `crates/una-rt/src/ffi.rs`. The repository still writes no `unsafe` for it, but the crate's allocator wraps every allocation of `una` and of every native executable, so `cap` is part of the trusted base, with the runtime (Leonardo, 2026-10-06, on MEM-4 of the independent v0.2 native review #176, issue #185). `spec/16 §4` and the Trusted row of charter §3 name it.
