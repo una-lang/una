@@ -230,6 +230,8 @@ pub(crate) struct Checker<'c, 'a, 's> {
     /// What the operators on values of type parameters need: the operand type, the
     /// constraint that allows the operator, and where (`spec/20 §3` rule 1).
     pub(crate) needs: Vec<(Ty, Constraint, Span)>,
+    /// The interpolations among `needs`, whose U2026 names interpolation (ADR 0068).
+    pub(crate) interpolations: Vec<Span>,
     /// Set when an expression checked under [`Rl::Probe`] is outside the refinement language.
     pub(crate) probe_failed: bool,
     /// The instantiations of type parameters, judged when the declaration ends (U3016).
@@ -338,6 +340,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             handler: None,
             instances: Vec::new(),
             needs: Vec::new(),
+            interpolations: Vec::new(),
             probe_failed: false,
             instantiations: Vec::new(),
             escaped: Vec::new(),
@@ -657,6 +660,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             vars,
             instances,
             needs,
+            interpolations,
             current,
             env,
             started,
@@ -720,7 +724,8 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                         *entry = (*entry).max(need);
                     } else if have < need && pass == Pass::Check && !reported.contains(&span) {
                         reported.push(span);
-                        report.push(unconstrained(report, def, index, need, span));
+                        let interpolated = interpolations.contains(&span);
+                        report.push(unconstrained(report, def, index, need, span, interpolated));
                     }
                 }
             }
@@ -1544,11 +1549,13 @@ fn unconstrained(
     index: usize,
     need: Constraint,
     span: Span,
+    interpolated: bool,
 ) -> una_diag::Diagnostic {
     let param = def.type_params.get(index).copied().unwrap_or("T");
     let what = match need {
         Constraint::Integer => "`to_int()`",
         Constraint::Ord => "ordering",
+        Constraint::Eq | Constraint::None if interpolated => "interpolation",
         Constraint::Eq | Constraint::None => "equality",
     };
     let need_name = need.name();

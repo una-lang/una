@@ -130,9 +130,16 @@ impl Types {
         }
     }
 
-    /// The Una form of `word`, a value of the type at `ty`.
+    /// The Una form of `word`, a value of the type at `ty`, with the fields labeled above
+    /// `public` redacted, as traces and diagnostics show it.
     pub fn render(&self, ty: usize, word: i64) -> String {
-        render(&self.0, ty, word)
+        render(&self.0, ty, word, true)
+    }
+
+    /// The Una form of `word` with every field, as interpolation writes it: the text carries
+    /// the value's labels (`spec/11 §5`, ADR 0068).
+    pub fn written(&self, ty: usize, word: i64) -> String {
+        render(&self.0, ty, word, false)
     }
 }
 
@@ -143,9 +150,10 @@ enum Task {
 }
 
 /// The Una form of `word`, a value of the type at `ty` in `types`, from a stack of tasks rather
-/// than the native stack: a value can nest deeper than any call (ADR 0060, draft). A field of a
-/// kind whose declared type is labeled above `public` is `<redacted:level>`.
-fn render(types: &[Shape], ty: usize, word: i64) -> String {
+/// than the native stack: a value can nest deeper than any call (ADR 0060, draft). With
+/// `redact`, a field of a kind whose declared type is labeled above `public` is
+/// `<redacted:level>`.
+fn render(types: &[Shape], ty: usize, word: i64, redact: bool) -> String {
     let mut out = String::new();
     let mut tasks = vec![Task::Value(ty, word)];
     while let Some(task) = tasks.pop() {
@@ -201,7 +209,9 @@ fn render(types: &[Shape], ty: usize, word: i64) -> String {
                         let unit = matches!(types.get(field.ty), Some(Shape::Unit));
                         parts.push(match &field.redacted {
                             // `unit` carries no information and is never redacted.
-                            Some(level) if !unit => Task::Text(format!("<redacted:{level}>")),
+                            Some(level) if redact && !unit => {
+                                Task::Text(format!("<redacted:{level}>"))
+                            }
                             _ => Task::Value(field.ty, field_word(word, index)),
                         });
                     }

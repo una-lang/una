@@ -125,10 +125,16 @@ pub(crate) fn descriptor_type() -> Type {
 }
 
 /// The descriptor that a type parameter under `constraint` takes when `ty` instantiates it, or
-/// `None` when `ty` is a type parameter, whose own descriptor is passed on (`spec/20 §7`).
-pub(crate) fn constant_descriptor(ty: &Type, constraint: Constraint) -> Option<Descriptor> {
+/// `None` when `ty` is a type parameter, whose own descriptor is passed on (`spec/20 §7`). A
+/// sum's and a structural descriptor carry the index of the type's description, by `index`,
+/// which interpolation writes the value by (ADR 0068).
+pub(crate) fn constant_descriptor(
+    ty: &Type,
+    constraint: Constraint,
+    index: &mut dyn FnMut(&Type) -> usize,
+) -> Option<Descriptor> {
     let Type::Base { base, .. } = ty else {
-        return Some(Descriptor::Structural);
+        return Some(Descriptor::Structural(index(ty)));
     };
     Some(match base {
         Base::Param(_) => return None,
@@ -137,9 +143,9 @@ pub(crate) fn constant_descriptor(ty: &Type, constraint: Constraint) -> Option<D
         Base::Text => Descriptor::Text,
         // A kind satisfies `Ord` only as a sum whose variants have no payload (`spec/20 §1`).
         Base::Named { module, .. } if module != PRELUDE_MODULE && constraint >= Constraint::Ord => {
-            Descriptor::Sum
+            Descriptor::Sum(index(ty))
         }
-        _ => Descriptor::Structural,
+        _ => Descriptor::Structural(index(ty)),
     })
 }
 
@@ -1430,6 +1436,26 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     }
                     return self.generic_prim(*prim, &operands);
                 }
+                // Interpolation of a value other than an integer, a `Bool` or a `Text` writes
+                // it by its type's description (`spec/11 §5`, ADR 0068).
+                if *prim == Prim::ToText
+                    && let Some(first) = args.first()
+                {
+                    let ty = self.atom_type(first, env);
+                    if !matches!(
+                        &ty,
+                        Type::Base {
+                            base: Base::Int | Base::Fixed(_) | Base::Bool | Base::Text,
+                            ..
+                        }
+                    ) {
+                        let (value, _) = self.atom(first, env)?;
+                        let index =
+                            i64::try_from(self.emitter.types.of(&ty)).map_err(crate::internal)?;
+                        let index = self.builder.ins().iconst(types::I64, index);
+                        return self.call("una_rt_write", &[index, value]);
+                    }
+                }
                 let mut operands = Vec::new();
                 let mut machine = true;
                 for arg in args {
@@ -1473,7 +1499,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                         "contains" => Some((
                             "una_rt_generic_contains",
                             Constraint::Eq,
-                            Descriptor::Structural,
+                            Descriptor::Structural(0),
                         )),
                         _ => None,
                     };
@@ -1628,7 +1654,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
         constraint: Constraint,
         env: &Env,
     ) -> Result<Value, CodegenError> {
-        match constant_descriptor(ty, constraint) {
+        let types = &mut self.emitter.types;
+        match constant_descriptor(ty, constraint, &mut |ty| types.of(ty)) {
             Some(descriptor) => Ok(self.builder.ins().iconst(types::I64, descriptor.word())),
             None => {
                 let Type::Base {
@@ -2044,6 +2071,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
     fn generic_prim(&mut self, prim: Prim, operands: &[Value]) -> Result<Value, CodegenError> {
         let cc = match prim {
             Prim::Convert(_) => return self.call("una_rt_generic_to_int", operands),
+            // Interpolation, by the type that instantiates the parameter (ADR 0068).
+            Prim::ToText => return self.call("una_rt_generic_write", operands),
             Prim::Eq | Prim::Ne => {
                 let equal = self.call("una_rt_generic_equal", operands)?;
                 return Ok(if prim == Prim::Eq {
@@ -2435,27 +2464,31 @@ mod tests {
             (
                 named("app", "Level"),
                 Constraint::Ord,
-                Some(Descriptor::Sum),
+                Some(Descriptor::Sum(5)),
             ),
             (
                 named("app", "Box"),
                 Constraint::Eq,
-                Some(Descriptor::Structural),
+                Some(Descriptor::Structural(5)),
             ),
             (
                 named(PRELUDE_MODULE, "List"),
                 Constraint::Eq,
-                Some(Descriptor::Structural),
+                Some(Descriptor::Structural(5)),
             ),
             (
                 base(Base::Bool),
                 Constraint::Eq,
-                Some(Descriptor::Structural),
+                Some(Descriptor::Structural(5)),
             ),
             (base(Base::Param("T".to_owned())), Constraint::Ord, None),
         ];
         for (ty, constraint, expected) in cases {
-            assert_eq!(constant_descriptor(&ty, constraint), expected, "{ty:?}");
+            assert_eq!(
+                constant_descriptor(&ty, constraint, &mut |_| 5),
+                expected,
+                "{ty:?}"
+            );
         }
         assert_eq!(descriptor_name("T"), "$T");
         assert_eq!(kind(&descriptor_type()), Ok(Kind::Bool));

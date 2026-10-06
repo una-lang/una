@@ -1,0 +1,52 @@
+-- test: interpolation writes any value without functions in its Una form: records and variants with their fields in declaration order, nested lists, `Option` and `Result`, fixed-width and big integers, and a `Text` inside a structure quoted with its escapes; a value of `T: Eq` is written by the type that instantiates it (spec/10 §12 rule 14, spec/11 §5, ADR 0068)
+-- spec: spec/11 §5
+-- grant: console
+-- expect: run-output "point: Point(x: 1, y: -2), level: Mid, tag: Tag(\"say \\\"hi\\\"\")"
+-- expect: run-output "lists: [[1, 2], [], [3]] [\"a, b\"] [\"a\", \"b\"]"
+-- expect: run-output "options: Some(3) None Ok(\"x\") Err(High)"
+-- expect: run-output "ints: 255 -9223372036854775808 1000000000000000000000000000000"
+-- expect: run-output "generic: <t> <Point(x: 1, y: -2)> <Some(Low)> <Box(7)> <[1, 2]>"
+module print_values
+
+pub kind Level = Low | Mid | High
+
+pub kind Point
+  x: Int
+  y: Int
+
+pub kind Tag
+  name: Text
+
+pub kind Box[T]
+  inner: T
+
+--- `x` between angle brackets.
+bracketed[T: Eq](x: T) -> Text = "<{x}>"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let p = Point(x: 1, y: -2)
+  let level = Mid
+  let tag = Tag(name: "say \"hi\"")
+  @console.print("point: {p}, level: {level}, tag: {tag}")
+  let nested = [[1, 2], [], [3]]
+  let one = ["a, b"]
+  let two = ["a", "b"]
+  @console.print("lists: {nested} {one} {two}")
+  let some: Option[Int] = Some(3)
+  let nothing: Option[Int] = None
+  let ok: Result[Text, Level] = Ok("x")
+  let err: Result[Text, Level] = Err(High)
+  @console.print("options: {some} {nothing} {ok} {err}")
+  let byte: U8 = 255
+  let least: I64 = -9223372036854775808
+  let huge = 1000000000000000000000000000000
+  @console.print("ints: {byte} {least} {huge}")
+  let t = "t"
+  let a = bracketed(t)
+  let b = bracketed(p)
+  let c = bracketed(Some(Low))
+  let d = bracketed(Box(inner: 7))
+  let e = bracketed([1, 2])
+  @console.print("generic: {a} {b} {c} {d} {e}")
