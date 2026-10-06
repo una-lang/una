@@ -1,9 +1,12 @@
-//! The guide for agents (`plan/milestones-v0.1.md` M10: "Every snippet is tested"): each `una` block of `docs/guide/una-for-agents.md` is a whole module that checks clean
-//! at tier 1, or yields only the code its first line names; blocks introduced by file paths form
-//! a package; each `json` block parses and names a schema the CLI prints; each `una` line of a
-//! `sh` block exits with 0, or with the code of its `# exit N`, from the repository root or the
-//! directory of its `# in <dir>`. Tier 1 needs Z3 at the version of `verification.lock` on the
-//! path.
+//! The guides (`docs/guide/`, #178): every `una` block of `una-for-agents.md` and of
+//! `syntax-reference.md` is a whole module, checked as the only module of a package of edition
+//! `0.2`, or of `0.1` when a leading `-- edition 0.1` line says so. It checks clean at tier 1 in
+//! canonical form (`una fmt --check`), or yields only the code of its leading
+//! `-- fails with U####` line. Blocks introduced by file paths form a package. Each `json` block
+//! parses and names a schema the CLI prints. Each `una` or `./` line of a `sh` block exits with
+//! 0, or with the code of its `# exit N`, from the repository root, the directory of its
+//! `# in <dir>`, or a fresh copy of the directory of a `# copy <dir>` earlier in the block.
+//! Tier 1 needs Z3 at the version of `verification.lock` on the path.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
@@ -14,7 +17,16 @@ use std::process::{Command, Output};
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 
-const MANIFEST: &str = "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"0.1\"\n";
+/// The manifest of a package of `edition`.
+fn manifest(edition: &str) -> String {
+    format!("[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"{edition}\"\n")
+}
+
+/// The guides whose blocks are checked.
+const GUIDES: [&str; 2] = [
+    "docs/guide/una-for-agents.md",
+    "docs/guide/syntax-reference.md",
+];
 
 /// The schemas the CLI prints (`spec/13 §1, §2, §6`, ADRs 0029, 0032 and 0034).
 const SCHEMAS: [&str; 10] = [
@@ -136,9 +148,118 @@ fn check(target: &Path) -> (Output, Vec<String>) {
     (output, codes)
 }
 
-#[test]
-fn every_block_of_the_guide_is_checked() {
-    let text = std::fs::read_to_string(repository().join("docs/guide/una-for-agents.md")).unwrap();
+/// The leading `--` lines of a `una` block: the code it fails with, and its edition.
+fn directives(body: &str) -> (Option<&str>, &str) {
+    let mut fails = None;
+    let mut edition = "0.2";
+    for line in body.lines().take_while(|line| line.starts_with("--")) {
+        if let Some(code) = line.strip_prefix("-- fails with ") {
+            fails = Some(code.trim());
+        } else if let Some(found) = line.strip_prefix("-- edition ") {
+            edition = found.trim();
+        }
+    }
+    (fails, edition)
+}
+
+/// The path under `src/` of the module that `body` declares.
+fn module_file(body: &str) -> PathBuf {
+    let header = body
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("module ")
+                .or_else(|| line.strip_prefix("trusted module "))
+        })
+        .expect("a `una` block declares its module");
+    let mut path: PathBuf = header.trim().split('.').collect();
+    path.set_extension("una");
+    Path::new("src").join(path)
+}
+
+/// Writes the lock of the repository into `dir`, and `una.toml` of `edition` unless the
+/// package has its own.
+fn complete(dir: &Path, edition: &str) {
+    if !dir.join("una.toml").exists() {
+        std::fs::write(dir.join("una.toml"), manifest(edition)).unwrap();
+    }
+    std::fs::copy(
+        repository().join("verification.lock"),
+        dir.join("verification.lock"),
+    )
+    .unwrap();
+}
+
+/// Whether `una fmt --check` accepts the package at `dir`.
+fn canonical(dir: &Path) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .args(["fmt", "--check", dir.to_str().unwrap()])
+        .output()
+        .unwrap()
+}
+
+/// Copies the directory `from` into `to`.
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.path().is_dir() {
+            if entry.file_name() != "target" && entry.file_name() != ".una" {
+                copy_dir(&entry.path(), &target);
+            }
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+/// Runs each command line of a `sh` block, as the module documentation says.
+fn run_commands(block: &Block, scratch_base: usize) {
+    let mut copy: Option<PathBuf> = None;
+    for line in block.body.lines() {
+        let (words, comment) = line.split_once('#').unwrap_or((line, ""));
+        let words = words.trim();
+        let mut code = 0;
+        let mut dir = copy.clone().unwrap_or_else(repository);
+        for part in comment.split(';').map(str::trim) {
+            if let Some(n) = part.strip_prefix("exit ") {
+                code = n.parse().unwrap();
+            } else if let Some(d) = part.strip_prefix("in ") {
+                dir = repository().join(d);
+            } else if let Some(d) = part.strip_prefix("copy ") {
+                let fresh = scratch(scratch_base + block.line).join("copy");
+                copy_dir(&repository().join(d), &fresh);
+                copy = Some(fresh.clone());
+                dir = fresh;
+            }
+        }
+        let mut parts = words.split_whitespace();
+        let program = match parts.next() {
+            Some("una") => PathBuf::from(env!("CARGO_BIN_EXE_una")),
+            Some(local) if local.starts_with("./") => dir.join(local),
+            _ => continue,
+        };
+        let output = Command::new(&program)
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .args(parts)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(code),
+            "`{line}` (block at line {}): {}",
+            block.line,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+/// Checks every block of the guide at `path`, and returns how many modules, documents,
+/// commands and packages it holds.
+fn check_guide(path: &str, scratch_base: usize) -> [usize; 4] {
+    let text = std::fs::read_to_string(repository().join(path)).unwrap();
     let blocks = blocks(&text);
     let mut checked = [0; 4];
     let mut packages: Vec<Vec<&Block>> = Vec::new();
@@ -152,64 +273,49 @@ fn every_block_of_the_guide_is_checked() {
         }
         let at = block.line;
         assert!(
-            ["una", "json", "sh"].contains(&block.lang.as_str()),
-            "block at line {at}: a `{}` block outside a package is not checked",
+            ["una", "json", "sh", "text", "ebnf"].contains(&block.lang.as_str()),
+            "{path}, block at line {at}: a `{}` block outside a package is not checked",
             block.lang
         );
         match block.lang.as_str() {
             "una" => {
-                let dir = scratch(at);
-                let file = dir.join("snippet.una");
+                let (fails, edition) = directives(&block.body);
+                let dir = scratch(scratch_base + at);
+                let file = dir.join(module_file(&block.body));
+                std::fs::create_dir_all(file.parent().unwrap()).unwrap();
                 std::fs::write(&file, &block.body).unwrap();
-                let (_, found) = check(&file);
-                let expected = block
-                    .body
-                    .lines()
-                    .next()
-                    .and_then(|first| first.strip_prefix("-- fails with "));
-                match expected {
+                complete(&dir, edition);
+                let (_, found) = check(&dir);
+                match fails {
                     Some(code) => assert!(
                         !found.is_empty() && found.iter().all(|f| f.starts_with(code)),
-                        "block at line {at}: expected only {code}, found {found:?}"
+                        "{path}, block at line {at}: expected only {code}, found {found:?}"
                     ),
-                    None => assert_eq!(found, Vec::<String>::new(), "block at line {at}"),
+                    None => {
+                        assert_eq!(found, Vec::<String>::new(), "{path}, block at line {at}");
+                        let output = canonical(&dir);
+                        assert!(
+                            output.status.success(),
+                            "{path}, block at line {at} is not canonical: {}",
+                            String::from_utf8_lossy(&output.stdout)
+                        );
+                    }
                 }
                 checked[0] += 1;
             }
             "json" => {
                 let document: Value = serde_json::from_str(&block.body)
-                    .map_err(|e| format!("block at line {at}: {e}"))
+                    .map_err(|e| format!("{path}, block at line {at}: {e}"))
                     .unwrap();
                 let schema = document["schema"].as_str().unwrap_or("");
-                assert!(SCHEMAS.contains(&schema), "block at line {at}: {schema}");
+                assert!(
+                    SCHEMAS.contains(&schema),
+                    "{path}, block at line {at}: {schema}"
+                );
                 checked[1] += 1;
             }
             "sh" => {
-                for command in block.body.lines().filter(|l| l.starts_with("una ")) {
-                    let (words, comment) = command.split_once('#').unwrap_or((command, ""));
-                    let mut code = 0;
-                    let mut dir = repository();
-                    for part in comment.split(';').map(str::trim) {
-                        if let Some(n) = part.strip_prefix("exit ") {
-                            code = n.parse().unwrap();
-                        } else if let Some(d) = part.strip_prefix("in ") {
-                            dir = repository().join(d);
-                        }
-                    }
-                    let args: Vec<&str> = words.split_whitespace().skip(1).collect();
-                    let output = Command::new(env!("CARGO_BIN_EXE_una"))
-                        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
-                        .args(&args)
-                        .current_dir(&dir)
-                        .output()
-                        .unwrap();
-                    assert_eq!(
-                        output.status.code(),
-                        Some(code),
-                        "`{command}`: {}",
-                        String::from_utf8_lossy(&output.stderr)
-                    );
-                }
+                run_commands(block, scratch_base);
                 checked[2] += 1;
             }
             _ => {}
@@ -217,27 +323,42 @@ fn every_block_of_the_guide_is_checked() {
     }
     for files in &packages {
         let at = files[0].line;
-        let dir = scratch(at);
+        let dir = scratch(scratch_base + at);
         for file in files {
             let path = dir.join(file.path.as_deref().unwrap());
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, &file.body).unwrap();
         }
-        if !dir.join("una.toml").exists() {
-            std::fs::write(dir.join("una.toml"), MANIFEST).unwrap();
-        }
-        std::fs::copy(
-            repository().join("verification.lock"),
-            dir.join("verification.lock"),
-        )
-        .unwrap();
+        complete(&dir, "0.2");
         let (output, found) = check(&dir);
-        assert_eq!(found, Vec::<String>::new(), "package at line {at}");
-        assert_eq!(output.status.code(), Some(0), "package at line {at}");
+        assert_eq!(found, Vec::<String>::new(), "{path}, package at line {at}");
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{path}, package at line {at}"
+        );
+        let output = canonical(&dir);
+        assert!(
+            output.status.success(),
+            "{path}, package at line {at} is not canonical: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
         checked[3] += 1;
     }
+    checked
+}
+
+#[test]
+fn every_block_of_the_agent_guide_is_checked() {
+    let checked = check_guide(GUIDES[0], 0);
     // Every kind of block is present: modules, documents, commands and packages.
     assert!(checked.iter().all(|n| *n > 0), "{checked:?}");
+}
+
+#[test]
+fn every_block_of_the_syntax_reference_is_checked() {
+    let checked = check_guide(GUIDES[1], 200_000);
+    assert!(checked[0] > 0, "{checked:?}");
 }
 
 /// Every `.una` file under `dir`, read.
