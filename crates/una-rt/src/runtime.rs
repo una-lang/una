@@ -512,7 +512,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     if faults > 0 {
         let _ = writeln!(
             stderr,
-            "error: internal error: uses of released values: {faults}"
+            "error: internal error: uses of released values or misread type descriptors: {faults}"
         );
         code = 3;
     }

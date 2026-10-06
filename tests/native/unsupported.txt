@@ -1,3 +1,2 @@
 # Runnable programs that the native backend does not compile yet (#26), by repository path.
 # The differential test (crates/una-cli/tests/native.rs) requires this list to be exact.
-tests/conformance/runtime/constraint_runs                                 constraints on generics (spec/20 §7)

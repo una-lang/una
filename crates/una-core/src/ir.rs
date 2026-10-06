@@ -909,6 +909,21 @@ pub struct HandlerOp {
     pub body: Expr,
 }
 
+/// The built-in constraint of a type parameter (`spec/20 §1`), written or inferred, in order:
+/// each includes the ones before it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Constraint {
+    /// No constraint: the parameter takes no type descriptor (`spec/20 §7`).
+    #[default]
+    None,
+    /// `==` and `!=`.
+    Eq,
+    /// Also `<`, `<=`, `>` and `>=`.
+    Ord,
+    /// Also `x.to_int()`.
+    Integer,
+}
+
 /// A function declaration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Fun {
@@ -916,6 +931,8 @@ pub struct Fun {
     pub name: String,
     /// The type parameters.
     pub type_params: Vec<String>,
+    /// The constraint of each type parameter, in their order (`spec/20 §1`).
+    pub constraints: Vec<Constraint>,
     /// The parameters.
     pub params: Vec<(Name, Type)>,
     /// The result type.
@@ -948,6 +965,8 @@ pub struct Signature {
     pub path: Path,
     /// The type parameters.
     pub type_params: Vec<String>,
+    /// The constraint of each type parameter, in their order (`spec/20 §1`).
+    pub constraints: Vec<Constraint>,
     /// The parameters.
     pub params: Vec<(Name, Type)>,
     /// The result type.
@@ -1020,7 +1039,7 @@ pub enum Decl {
         ops: Vec<HandlerOp>,
     },
     /// `fun f[α*](x: τ, ...) : τ uses Κ fails E = e`.
-    Fun(Fun),
+    Fun(Box<Fun>),
     /// `policy p : τ ⇝ τ via f`.
     Policy {
         /// The name.

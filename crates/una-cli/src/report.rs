@@ -448,7 +448,7 @@ fn build(
         .iter()
         .flat_map(|module| {
             module.decls.iter().filter_map(move |decl| match decl {
-                Decl::Fun(fun) if fun.public => Some((&module.path, fun)),
+                Decl::Fun(fun) if fun.public => Some((&module.path, fun.as_ref())),
                 _ => None,
             })
         })
