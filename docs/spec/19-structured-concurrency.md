@@ -40,7 +40,7 @@ let pages = together for id in ids
 ## 2. Static semantics
 
 1. **Scope.** A branch's expression sees the bindings in scope before the block, and none of its sibling branches. The bindings of the branches are in scope after the block, in branch order, as consecutive `let` statements would bind them.
-2. **Types.** A branch is typed as its `let` would be outside a `together` (`spec/10`). A `together for x in xs` has type `List[T]` when `xs` is a `List[S]`, or a range, and its body has type `T` with `x : S` (or `x : Int` for a range).
+2. **Types.** A branch is typed as its `let` would be outside a `together` (`spec/10`). A `together for x in xs` has type `List[T]` when `xs` is a `List[S]`, or a range, and its body has type `T` with `x : S`, or, for a range, `x` of the integer type of its bounds, as in a `for` loop (`spec/17 §4`).
 3. **Captures (C3).** A task captures the values of the outer bindings it reads, as a lambda does (`spec/17 §5` rule 4). Inside a branch, or the body of a `together for`:
    - assigning a binding declared outside the branch, passing it as `edit`, or passing it as `take`, is U2023 at the binding;
    - the branch's own bindings, `let edit` ones included, follow `spec/17` unchanged.
