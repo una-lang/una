@@ -422,7 +422,7 @@ The requirements:
 git clone https://github.com/una-lang/una.git && cd una
 scripts/install-z3.sh "$HOME/.local/z3" && export PATH="$HOME/.local/z3/bin:$PATH"
 scripts/check-solver.sh
-cargo build --release -p una-cli && export PATH="$PWD/target/release:$PATH"
+cargo build --release -p una-cli -p una-rt && export PATH="$PWD/target/release:$PATH"   # una-rt: the runtime `una build` links
 
 una check examples/events           # tiers 0 and 1: every check and every proof
 una test examples/events            # run the examples, with effect traces
