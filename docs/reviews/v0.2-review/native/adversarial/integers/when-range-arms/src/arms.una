@@ -1,0 +1,52 @@
+module arms
+
+kind Top = Int in -4611686018427387904..4611686018427387903
+
+band_u64(x: U64) -> Text
+=
+  when x
+    in 0..9223372036854775807 -> "low"
+    in 9223372036854775808..18446744073709551614 -> "high"
+    in 18446744073709551615..18446744073709551615 -> "max"
+
+band_i64(x: I64) -> Text
+=
+  when x
+    in -9223372036854775808..-4611686018427387905 -> "very negative"
+    in -4611686018427387904..-1 -> "negative"
+    in 0..4611686018427387903 -> "small"
+    in 4611686018427387904..9223372036854775807 -> "big"
+
+band_top(x: Top) -> Text
+=
+  when x
+    in -4611686018427387904..-4611686018427387904 -> "least"
+    in -4611686018427387903..4611686018427387902 -> "middle"
+    in 4611686018427387903..4611686018427387903 -> "greatest"
+
+band_i8(x: I8) -> Text
+=
+  when x
+    in -128..-1 -> "neg"
+    in 0..<127 -> "nonneg"
+    else -> "max"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let u0: U64 = 0
+  let u1: U64 = 9223372036854775807
+  let u2: U64 = 9223372036854775808
+  let u3: U64 = 18446744073709551615
+  @console.print("{band_u64(u0)} {band_u64(u1)} {band_u64(u2)} {band_u64(u3)}")
+  let i0: I64 = -9223372036854775808
+  let i1: I64 = -4611686018427387905
+  let i2: I64 = -4611686018427387904
+  let i3: I64 = 4611686018427387903
+  let i4: I64 = 4611686018427387904
+  @console.print("{band_i64(i0)} {band_i64(i1)} {band_i64(i2)} {band_i64(i3)} {band_i64(i4)}")
+  @console.print("{band_top(-4611686018427387904)} {band_top(0)} {band_top(4611686018427387903)}")
+  let e0: I8 = -128
+  let e1: I8 = 126
+  let e2: I8 = 127
+  @console.print("{band_i8(e0)} {band_i8(e1)} {band_i8(e2)}")

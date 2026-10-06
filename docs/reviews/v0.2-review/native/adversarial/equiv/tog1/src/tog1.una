@@ -1,0 +1,74 @@
+module tog1
+
+pub kind Oops = Bad(n: Int) | Worse
+
+pub kind Rec
+  name: Text
+  items: List[Int]
+  big: Int
+
+pub capability Store
+  op get(i: Int) -> Rec
+    fails Oops
+
+pub handler store(rows: List[Rec], prefix: Text) for Store
+  uses @console: Console[print]
+  op get(i) =
+    @console.print("{prefix} get {i}")
+    let r = rows.at(index: i)
+      if none fail Bad(n: i)
+    r
+
+pub handler inner_store(base: Rec) for Store
+  op get(i) = Rec(name: "{base.name}{i}", items: base.items.append(item: i), big: base.big * i)
+
+fetch(i: Int) -> Rec
+  uses @store: Store[get]
+  fails Oops
+=
+  let r = @store.get(i)
+    if error pass
+  r
+
+total(r: Rec) -> Int = r.items.sum + r.big
+
+both(base: Rec) -> Int
+  uses @store: Store[get]
+  fails Oops
+=
+  together
+    let a = fetch(0)
+      if error pass
+    let b = fetch(1) with @store = inner_store(base)
+      if error pass
+    let c = fetch(1)
+      if error pass
+  total(a) + total(b) + total(c)
+
+pub run() -> Unit
+  uses @console: Console[print]
+  uses @store: Store[get]
+=
+  let base = Rec(name: "base\u{e9}", items: [1, 2, 3], big: 99999999999999999999)
+  let f = fn(k: Int) -> k + base.big
+  let r = both(base)
+    if error use -1
+  @console.print("both {r}")
+  let lists = together for i in 0..<4
+    let x = fetch(i) with @store = inner_store(base)
+      if error use base
+    let y = f(i)
+    Rec(name: x.name, items: x.items, big: y)
+  let shown = lists.map(each: fn(rr) -> total(rr))
+  @console.print("lists {shown.sum} {lists.len}")
+  let outer = together for i in [0, 1]
+    let inner = together for j in [i, i + 1]
+      j * 10 + i
+    inner.sum
+  @console.print("nested {outer.sum}")
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let rows = [Rec(name: "r0", items: [7], big: 4611686018427387904), Rec(name: "r1", items: [], big: -1)]
+  run() with @store = store(rows, prefix: "s")

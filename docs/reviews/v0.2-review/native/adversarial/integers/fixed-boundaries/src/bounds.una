@@ -1,0 +1,98 @@
+module bounds
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let a: I8 = -128
+  let b: I8 = 127
+  let c: U8 = 255
+  let d: U8 = 0
+  let e: I64 = -9223372036854775808
+  let f: I64 = 9223372036854775807
+  let g: U64 = 18446744073709551615
+  let h: I32 = -2147483648
+  let i: U32 = 4294967295
+  let j: I16 = -32768
+  let k: U16 = 65535
+  @console.print("{a} {b} {c} {d} {e} {f} {g} {h} {i} {j} {k}")
+  let w1 = a.wrapping_sub(by: 1)
+  let w2 = b.wrapping_add(by: 1)
+  let w3 = d.wrapping_sub(by: 1)
+  let w4 = e.wrapping_sub(by: 1)
+  let w5 = f.wrapping_add(by: 1)
+  let w6 = g.wrapping_add(by: 1)
+  let w7 = a.wrapping_mul(by: -1)
+  let w8 = e.wrapping_mul(by: -1)
+  let w9 = g.wrapping_mul(by: g)
+  let w10 = f.wrapping_mul(by: f)
+  @console.print("{w1} {w2} {w3} {w4} {w5} {w6} {w7} {w8} {w9} {w10}")
+  let s1 = a.saturating_sub(by: 1)
+  let s2 = b.saturating_add(by: 1)
+  let s3 = d.saturating_sub(by: 1)
+  let s4 = e.saturating_mul(by: -1)
+  let s5 = g.saturating_add(by: 1)
+  let s6 = h.saturating_mul(by: h)
+  @console.print("{s1} {s2} {s3} {s4} {s5} {s6}")
+  let b1 = a.bit_not()
+  let b2 = c.bit_not()
+  let b3 = e.bit_not()
+  let b4 = g.bit_not()
+  let b5 = a.bit_and(mask: -1)
+  let b6 = a.bit_or(mask: 1)
+  let b7 = e.bit_xor(mask: f)
+  let b8 = g.bit_xor(mask: 1)
+  let b9 = i.bit_and(mask: 65535)
+  @console.print("{b1} {b2} {b3} {b4} {b5} {b6} {b7} {b8} {b9}")
+  let r1 = a.shift_right(by: 0)
+  let r2 = a.shift_right(by: 7)
+  let r3 = e.shift_right(by: 63)
+  let r4 = g.shift_right(by: 63)
+  let r5 = j.shift_right(by: 1)
+  let m7: I8 = -7
+  let r6 = m7.shift_right(by: 1)
+  let l1 = b.wrapping_shift_left(by: 7)
+  let l2 = c.wrapping_shift_left(by: 7)
+  let l3 = f.wrapping_shift_left(by: 63)
+  let l4 = g.wrapping_shift_left(by: 63)
+  let one: I64 = 1
+  let l5 = one.wrapping_shift_left(by: 63)
+  let l6 = a.wrapping_shift_left(by: 0)
+  @console.print("{r1} {r2} {r3} {r4} {r5} {r6} {l1} {l2} {l3} {l4} {l5} {l6}")
+  let n7: I8 = -7
+  let q1 = n7 / 2
+  let q2 = n7 mod 2
+  let q3 = n7.to_int() / -2
+  let q4 = n7.to_int() mod -2
+  let q5 = a / 2
+  let q6 = a.to_int() mod -2
+  let q7 = e / 2
+  let q8 = e.to_int() mod -3
+  let q9 = g / 3
+  let q10 = g mod 7
+  @console.print("{q1} {q2} {q3} {q4} {q5} {q6} {q7} {q8} {q9} {q10}")
+  let x1 = e.to_int() - 1
+  let x2 = g.to_int() + 1
+  let x3 = a.to_i64()
+  let x4 = c.to_u64()
+  let x5 = i.to_i64()
+  let x6 = c.to_i16()
+  let x7 = h.to_int() * h.to_int()
+  @console.print("{x1} {x2} {x3} {x4} {x5} {x6} {x7}")
+  let c1 = e < f
+  let c2 = g > f.to_u64()
+  let c3 = a == a
+  let c4 = g == g
+  let c5 = e != e
+  let c6 = h <= h
+  let c7 = i >= i
+  let c8 = g >= 9223372036854775808
+  @console.print("{c1} {c2} {c3} {c4} {c5} {c6} {c7} {c8}")
+  let ng = -b
+  let nf = -f
+  let p1 = b - 1
+  let p2 = f - 1
+  let p3 = g - 1
+  let p4 = e + 1
+  let p5 = h + 1
+  let p6 = i - 1
+  @console.print("{ng} {nf} {p1} {p2} {p3} {p4} {p5} {p6}")

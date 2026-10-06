@@ -1,0 +1,40 @@
+module toginstall
+
+pub kind Oops = | Bad(n: Int)
+
+pub capability Log
+  op note(n: Int) -> Int
+
+pub handler log_h(k: Int) for Log
+  op note(n) = n + k
+
+pub handler quiet() for Log
+  op note(n) = 0
+
+use_log(n: Int) -> Int
+  uses @log: Log[note]
+=
+  let v = @log.note(n)
+  v
+
+twice(n: Int) -> Int
+=
+  let a = use_log(n) with @log = log_h(1)
+  let q = use_log(n) with @log = quiet()
+  let b = use_log(n) with @log = log_h(2)
+  a + b + q
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let pre = use_log(0) with @log = log_h(0)
+  together
+    let a = twice(1)
+    let b = twice(2)
+    let c = use_log(3) with @log = log_h(3)
+  let xs = together for i in 0..<3
+    let inner = together for j in 0..<2
+      twice(i + j)
+    inner.sum
+  let post = use_log(9) with @log = log_h(9)
+  @console.print("{pre} {a} {b} {c} {xs.sum} {post}")

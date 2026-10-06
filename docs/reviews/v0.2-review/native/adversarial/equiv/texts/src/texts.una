@@ -1,0 +1,71 @@
+module texts
+
+show(o: Option[Int]) -> Text
+=
+  when o
+    is Some(v) -> "Some({v})"
+    is None -> "None"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let s = "héllo wörld 🎉 日本"
+  let n = s.len
+  @console.print("{s} {n}")
+  let e = ""
+  let el = e.len
+  let combining = "e\u{301}"
+  let cl = combining.len
+  @console.print("[{e}] {el} {combining} {cl}")
+  let t1 = trim("  \t a b \n ")
+  let t2 = trim("\u{3000}\u{a0}x\u{2003}\u{85}")
+  let t3 = trim("\u{200b}y\u{200b}")
+  let t4 = trim("\u{feff}z")
+  let l2 = t2.len
+  let l3 = t3.len
+  let l4 = t4.len
+  @console.print("[{t1}] [{t2}] {l2} {l3} {l4}")
+  @console.print(show(to_int("-0")))
+  @console.print(show(to_int("-")))
+  @console.print(show(to_int("")))
+  @console.print(show(to_int("+1")))
+  @console.print(show(to_int("0042")))
+  @console.print(show(to_int("-0042")))
+  @console.print(show(to_int("123456789012345678901234567890")))
+  @console.print(show(to_int("-9223372036854775808")))
+  @console.print(show(to_int("4611686018427387904")))
+  @console.print(show(to_int("-4611686018427387905")))
+  @console.print(show(to_int("4611686018427387903")))
+  @console.print(show(to_int(" 1")))
+  @console.print(show(to_int("1 ")))
+  @console.print(show(to_int("1_000")))
+  @console.print(show(to_int("\u{661}")))
+  @console.print(show(to_int("--1")))
+  @console.print(show(to_int("1-")))
+  @console.print(show(to_int("\u{ff11}")))
+  let d1 = is_digits("")
+  let d2 = is_digits("0123")
+  let d3 = is_digits("\u{661}")
+  let d4 = is_digits("-1")
+  @console.print("{d1} {d2} {d3} {d4}")
+  let w1 = starts_with("héllo", prefix: "hé")
+  let w2 = starts_with("héllo", prefix: "h\u{e9}l")
+  let w3 = starts_with("héllo", prefix: "he\u{301}")
+  let w4 = starts_with("a", prefix: "")
+  let w5 = starts_with("", prefix: "a")
+  let w6 = starts_with("ab", prefix: "abc")
+  @console.print("{w1} {w2} {w3} {w4} {w5} {w6}")
+  let o1 = "a" < "b"
+  let o2 = "a" < "ab"
+  let o3 = "\u{ffff}" < "\u{10000}"
+  let o4 = "Z" < "a"
+  let o5 = "é" > "z"
+  let o6 = "" < "a"
+  let o7 = "abc" <= "abc"
+  let o8 = "\u{e9}" == "e\u{301}"
+  @console.print("{o1} {o2} {o3} {o4} {o5} {o6} {o7} {o8}")
+  let neg = -5
+  let b = true
+  let esc = "q\"uote\\ \{brace\} tab\tend"
+  @console.print("{neg}{b}{esc}{s}")
+  @console.print("{neg}")

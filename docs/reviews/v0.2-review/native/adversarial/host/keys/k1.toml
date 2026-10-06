@@ -1,0 +1,4 @@
+dup = "AAEC"
+same = "AAEC"
+padded = "AAEC=="
+trailing = "AAEC=!!junk"

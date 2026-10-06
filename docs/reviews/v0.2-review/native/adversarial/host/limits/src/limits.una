@@ -1,0 +1,27 @@
+module limits
+
+--- Not a tail call: each frame keeps `n` for the addition after the call.
+deep(n: Int) -> Int = if n <= 0 then 0 else 1 + deep(n - 1)
+
+--- Builds a list of `count` texts of growing length.
+grow(count: Int) -> Int
+=
+  let edit items: List[Text] = []
+  let edit text = "x"
+  for i in 0..<count
+    text = "{text}{text}"
+    if text.len > 1000000
+      text = "x"
+    items = append(items, item: text)
+  items.len
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("starting")
+  let a = deep(5000)
+  @console.print("5000 deep: {a}")
+  let b = deep(5000000)
+  @console.print("5000000 deep: {b}")
+  let c = grow(100000)
+  @console.print("grew {c}")

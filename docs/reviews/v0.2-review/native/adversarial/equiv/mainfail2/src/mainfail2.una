@@ -1,0 +1,20 @@
+module mainfail2
+
+pub kind Expr = Lit(value: Int) | Neg(operand: Expr)
+
+pub kind Deep = | Down(e: Expr)
+
+build(n: Int) -> Expr
+=
+  let edit e = Lit(value: 7)
+  for i in 0..<n
+    e = Neg(operand: e)
+  e
+
+pub main() -> Unit
+  uses @console: Console[print]
+  fails Deep
+=
+  @console.print("before")
+  let e = build(100000)
+  fail Down(e: e)

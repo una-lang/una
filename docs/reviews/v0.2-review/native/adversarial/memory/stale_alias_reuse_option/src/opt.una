@@ -1,0 +1,14 @@
+-- The same as `stale_alias_reuse` with the prelude's `Option`: `Some(0)` must not reuse the
+-- object that `pick` took over from `candidate`.
+module opt
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let xs = [5, 6]
+  let candidate = xs.first()
+  let edit pick = candidate
+  let fallback = Some(0)
+  let p = pick.or_else(default: -1)
+  let f = fallback.or_else(default: -1)
+  @console.print("pick {p}, fallback {f}")
