@@ -1,0 +1,21 @@
+-- test: a handling clause on the line of its expression is U0101 naming the rule, with a repair that moves it to its own indented line (spec/02 §6, #211)
+-- spec: spec/02 §6
+-- expect: error U0101 at src/onsame.una:20:15
+module onsame
+
+pub kind FetchError = Missing | Gone
+
+fetch(id: Int) -> Int
+  fails FetchError
+=
+  if id < 0
+    fail Missing
+  else
+    id
+
+pub pages(ids: List[Int]) -> List[Int]
+  fails FetchError
+=
+  let pages = together for id in ids
+    fetch(id) if error pass
+  pages
