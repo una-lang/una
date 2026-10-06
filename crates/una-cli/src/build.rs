@@ -298,7 +298,10 @@ fn runtime_library(environment: crate::Environment<'_>) -> Result<PathBuf, Strin
     if let Some(path) = environment("UNA_RT_LIB") {
         return Ok(PathBuf::from(path));
     }
+    // Through a symlink, macOS reports the link's path: the runtime is beside the binary the
+    // link resolves to (#185).
     let exe = std::env::current_exe()
+        .and_then(std::fs::canonicalize)
         .map_err(|error| format!("cannot locate the `una` binary: {error}"))?;
     let dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
     // A release archive ships it in `lib/` beside `una` (ADR 0059); a Cargo build leaves it

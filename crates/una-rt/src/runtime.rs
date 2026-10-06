@@ -177,6 +177,10 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
                 options.max_memory = text
                     .parse()
                     .map_err(|_| format!("`--max-memory {text}` is not a number"))?;
+                // No run fits in 0 MiB (#185).
+                if options.max_memory == 0 {
+                    return Err("`--max-memory 0` holds nothing; give at least 1 MiB".to_owned());
+                }
             }
             other => {
                 return Err(format!(
@@ -369,7 +373,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
             return USAGE;
         }
     };
-    let (grants, keys) = match grants(&meta, &options) {
+    let grants = match grants(&meta, &options) {
         Ok(grants) => grants,
         Err(message) => {
             let _ = writeln!(stderr, "error: {message}");
@@ -393,6 +397,14 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         );
         return 1;
     }
+    // An unreadable or invalid key file is a usage error before `main`.
+    let keys = match keys(&grants) {
+        Ok(keys) => keys,
+        Err(message) => {
+            let _ = writeln!(stderr, "error: {message}");
+            return USAGE;
+        }
+    };
     let state = State {
         trace: options.trace.as_ref().map(|_| Vec::new()),
         trace_path: options.trace.clone(),
@@ -519,19 +531,28 @@ fn finish(state: State) -> i32 {
 type Keys = BTreeMap<String, Vec<u8>>;
 
 /// The grants of the run: the embedded `[run] grants`, then the `--grant` flags, every
-/// relative path resolved against the current directory (`spec/16 §3`), and their keys. Key
-/// files are read and parsed here, so that an unreadable or invalid one is a usage error
-/// before `main`.
-fn grants(meta: &Meta, options: &Options) -> Result<(Vec<Grant>, Keys), String> {
-    let mut grants = Vec::new();
+/// relative path resolved against the current directory (`spec/16 §3`). A spec that is not a
+/// grant is a usage error.
+fn grants(meta: &Meta, options: &Options) -> Result<Vec<Grant>, String> {
+    meta.grants
+        .iter()
+        .chain(&options.grants)
+        .map(|spec| {
+            Grant::parse(spec, Path::new("")).ok_or_else(|| {
+                format!(
+                    "`{spec}` is not a grant; grants are console, clock, env, keys:<file> and files:<path>:<access>"
+                )
+            })
+        })
+        .collect()
+}
+
+/// The keys of the `keys:` grants, read once `main`'s capabilities are known to be granted, as
+/// `una run` reads them after U3012 (#185). A key named in two files keeps the first.
+fn keys(grants: &[Grant]) -> Result<Keys, String> {
     let mut keys = Keys::new();
-    for spec in meta.grants.iter().chain(&options.grants) {
-        let Some(grant) = Grant::parse(spec, Path::new("")) else {
-            return Err(format!(
-                "`{spec}` is not a grant; grants are console, clock, env, keys:<file> and files:<path>:<access>"
-            ));
-        };
-        if let Grant::Keys { file } = &grant {
+    for grant in grants {
+        if let Grant::Keys { file } = grant {
             let text = std::fs::read_to_string(file).map_err(|error| {
                 format!("cannot read the key file `{}`: {error}", file.display())
             })?;
@@ -542,9 +563,8 @@ fn grants(meta: &Meta, options: &Options) -> Result<(Vec<Grant>, Keys), String> 
                 keys.entry(name).or_insert(key);
             }
         }
-        grants.push(grant);
     }
-    Ok((grants, keys))
+    Ok(keys)
 }
 
 /// U3012 for each `uses` of `main` with an operation that no grant provides, as `una run`

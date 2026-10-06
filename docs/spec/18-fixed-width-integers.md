@@ -101,7 +101,7 @@ A bare `by` or `mask` is punned. A missing label is U2004, and another label is 
 
 ## 7. Native representation
 
-The native backend (ADR 0055) represents each fixed-width type in its machine width, with no tag and no check: the `overflow` obligations prove that no result leaves the range.
+The native backend (ADR 0055) holds a fixed-width value as it holds an `Int` (`spec/16 §4`): a tagged 63-bit integer in a machine word, not an untagged machine integer of the type's width. Where a type's range fits a tagged word (`I8` to `I32`, `U8` to `U32`, and a refinement of `I64` or `U64` that bounds it inside), arithmetic among its values is a plain machine instruction with no check, since the `overflow` obligations prove that no result leaves the range. A value of `I64` or `U64` outside a tagged word's range is an arbitrary-precision integer, and its arithmetic takes the checked path of `Int`. The representation is not observable. (Clarified on 2026-10-06, #185.)
 
 ## 8. Diagnostic codes
 
