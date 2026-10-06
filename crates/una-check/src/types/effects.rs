@@ -558,7 +558,9 @@ impl<'a> Checker<'_, 'a, '_> {
         kind: Option<&Ty>,
         raise: &Label,
     ) -> Ty {
-        let Ty::Fn(function) = self.resolve(found) else {
+        // The labels stay: those of the value's parameter and result types, symbolic ones of
+        // type parameters included, flow into the parameter's type as for any argument (#210).
+        let (label, Ty::Fn(function)) = self.vars.resolve_labels(found) else {
             return found.clone();
         };
         let mut function = *function;
@@ -591,7 +593,7 @@ impl<'a> Checker<'_, 'a, '_> {
         if fails {
             function.fails = None;
         }
-        Ty::Fn(Box::new(function))
+        Ty::Fn(Box::new(function)).with_label(&label)
     }
 }
 
