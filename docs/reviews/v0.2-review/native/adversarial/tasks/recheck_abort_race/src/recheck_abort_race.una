@@ -1,0 +1,38 @@
+module recheck_abort_race
+
+pub kind Oops = | Slow
+
+spin(n: Int) -> Int
+=
+  let edit acc = 0
+  for i in 1..n
+    acc = acc + 1
+  acc
+
+deep(n: Int) -> Int = if n <= 0 then 0 else 1 + deep(n - 1)
+
+slow_fail(n: Int) -> Int
+  fails Oops
+=
+  let s = spin(n)
+  if s > 0
+    fail Slow
+  s
+
+race() -> Int
+  fails Oops
+=
+  together
+    let a = slow_fail(3000000)
+      if error pass
+    let b = deep(1000000)
+  a + b
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let r = attempt race()
+  let t = when r
+    is Ok(v) -> "ok {v}"
+    is Err(e) -> "failed"
+  @console.print(t)

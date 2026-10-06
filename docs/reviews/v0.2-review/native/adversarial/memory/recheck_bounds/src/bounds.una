@@ -1,0 +1,73 @@
+-- A range loop evaluates its bounds once: bounds from a field, a call or a nested loop that the
+-- body updates, empty ranges, failures out of a nested loop, `together for` over big bounds and
+-- fixed-width bounds at their limits (spec/17 §4).
+module bounds
+
+pub kind Box
+  n: Int
+
+pub kind Stop = Early | Late
+
+--- A big integer `k` past 2^62.
+pub big(k: Int) -> Int = 4611686018427387900 + k
+
+--- Fails from the inner loop once `count` steps ran.
+pub nested(count: Int) -> Int
+  fails Stop
+=
+  let edit outer = big(3)
+  let edit steps = 0
+  for i in big(0)..<outer
+    let edit inner = big(2)
+    for j in big(0)..inner
+      if steps == count
+        fail Early
+      inner = j + 5
+      outer = i + 7
+      steps = steps + 1
+  steps
+
+--- The count, or `early`.
+pub shown(r: Result[Int, Stop]) -> Text
+=
+  when r
+    is Ok(k) -> "{k}"
+    is Err(e) -> "early"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit b = Box(n: big(4))
+  let edit c = 0
+  for i in big(0)..<b.n
+    b.n = i + 100
+    c = c + 1
+  @console.print("field: {c} {b.n}")
+  let edit d = 0
+  for i in big(5)..<big(2)
+    d = d + 1
+  for i in big(5)..big(5)
+    d = d + 10
+  @console.print("empty: {d}")
+  let stopped = attempt nested(5)
+  let finished = attempt nested(100)
+  @console.print("nested: {shown(stopped)} {shown(finished)}")
+  let low = big(0)
+  let high = big(3)
+  let vs = together for i in low..high
+    i - low
+  @console.print("together: {vs.fold(initial: 0, step: fn(t, v) -> t + v)} {high - low}")
+  let edit u: U8 = 250
+  let edit n8 = 0
+  for i in u..255
+    u = 0
+    n8 = n8 + 1
+  @console.print("u8: {n8} {u}")
+  let top: I64 = 9223372036854775805
+  let edit n64 = 0
+  for i in top..9223372036854775807
+    n64 = n64 + 1
+  let bottom: I64 = -9223372036854775808
+  for i in bottom..<-9223372036854775806
+    n64 = n64 + 10
+  @console.print("i64: {n64}")

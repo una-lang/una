@@ -1,0 +1,46 @@
+module captures
+
+pub kind Box
+  name: Text
+  items: List[Int]
+  big: Int
+  run: fn(Int) -> Int
+
+pub capability Log
+  op write(line: Text) -> Unit
+
+handler echo(prefix: Text, extra: List[Text]) for Log
+  uses @console: Console[print]
+  op write(line) = @console.print("{prefix}{line} {extra.len}")
+
+adder(n: Int) -> fn(Int) -> Int = fn(x: Int) -> x + n
+
+shown(xs: List[Int]) -> Text = xs.fold(initial: "", step: fn(acc, x) -> if acc == "" then "{x}" else "{acc} {x}")
+
+work(b: Box, k: Int) -> Box
+  uses @log: Log[write]
+=
+  @log.write("{b.name} {k}")
+  let edit ys = b.items
+  ys = ys.append(item: b.run(k))
+  Box(name: "{b.name}/{k}", items: ys, big: b.big * b.big, run: adder(b.big + k))
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let big = 99999999999999999999
+  let f = adder(big)
+  let common = [big, big + 1, 3]
+  let b = Box(name: "box", items: common, big: big, run: f)
+  let pair = [b, b]
+  together
+    let x = work(b, k: 1) with @log = echo("x:", extra: ["a", "b"])
+    let y = work(pair.at(index: 1).or_else(default: b), k: 2) with @log = echo("y:", extra: ["c"])
+    let z = common.map(each: fn(v) -> f(v) + big)
+  let rs = together for i in pair
+    work(i, k: i.items.len) with @log = echo("r:", extra: [])
+  @console.print("{x.name} {shown(x.items)} {x.big} {x.run(1)}")
+  @console.print("{y.name} {shown(y.items)} {y.big} {y.run(1)}")
+  @console.print("{shown(z)}")
+  @console.print("{rs.len} {shown(rs.map(each: fn(r) -> r.run(0)))}")
+  @console.print("{b.name} {shown(b.items)} {shown(common)}")

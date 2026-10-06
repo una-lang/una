@@ -1,0 +1,36 @@
+module redactgen
+
+pub kind Pair[A, B]
+  left: A
+  right: B
+
+pub kind Tree[T] = Leaf | Node(value: T, kids: List[Tree[T]])
+
+pub kind Stop = | Halt(p: Pair[secret Int, Text], t: Tree[internal Int], q: Option[Pair[Int, confidential Text]], plain: Int)
+
+pub capability Vault
+  op keep(p: Pair[secret Int, Text], t: Tree[internal Int], l: List[Pair[Int, secret Text]], r: Result[secret Int, Int]) -> Pair[Int, internal Int]
+    accepts secret
+
+pub handler vault() for Vault
+  op keep(p, t, l, r) = Pair(left: 1, right: 2)
+
+pub run() -> Unit
+  uses @vault: Vault[keep]
+=
+  let s: secret Int = 42
+  let i: internal Int = 7
+  let c: secret Text = "pw"
+  let x = @vault.keep(Pair(left: s, right: "pub"), t: Node(value: i, kids: [Leaf]), l: [Pair(left: 1, right: c)], r: Ok(s))
+  unit
+
+pub main() -> Unit
+  uses @console: Console[print]
+  fails Stop
+=
+  run() with @vault = vault()
+  @console.print("ok")
+  let s: secret Int = 42
+  let i: internal Int = 7
+  let ct: confidential Text = "conf"
+  fail Halt(p: Pair(left: s, right: "pub"), t: Node(value: i, kids: []), q: Some(Pair(left: 3, right: ct)), plain: 5)

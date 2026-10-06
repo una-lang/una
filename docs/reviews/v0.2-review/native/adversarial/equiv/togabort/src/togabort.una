@@ -1,0 +1,19 @@
+module togabort
+
+spin(n: Int) -> Int = if n <= 0 then 0 else 1 + spin(n - 1)
+
+busy(n: Int) -> Int
+=
+  let edit acc = 0
+  for i in 0..<n
+    acc = acc + 1
+  acc
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("before")
+  together
+    let a = spin(100000)
+    let b = busy(30000000)
+  @console.print("after {a} {b}")
