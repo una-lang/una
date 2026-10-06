@@ -37,6 +37,7 @@ pub struct Parsed {
 pub fn parse(lexed: &Lexed, file: FileId, interner: &Interner) -> Parsed {
     let mut parser = Parser {
         tokens: &lexed.tokens,
+        text: &lexed.text,
         comments: &lexed.comments,
         interner,
         eof: lexed
@@ -121,6 +122,8 @@ pub const MAX_NESTING: usize = 256;
 
 struct Parser<'a> {
     tokens: &'a [Token],
+    /// The text of the file.
+    text: &'a str,
     comments: &'a [Comment],
     interner: &'a Interner,
     /// Where the token stream ends.
@@ -460,6 +463,107 @@ impl<'a> Parser<'a> {
             }
             _ => Err(self.unexpected(expected)),
         }
+    }
+
+    /// The name a binding introduces: a `let`, a parameter, a loop variable or a pattern's
+    /// local name. A reserved keyword there is U0101 saying what the word is reserved for
+    /// (#206), with a new name. For a `let` of `result`, the repair is one edit that renames
+    /// the binding and its uses in its block: in a body, `result` names nothing else, since it
+    /// is legal only in `ensures` (U2012) and neither lambdas nor nested blocks have clauses.
+    /// `it` also names the value of a `checked` predicate or a `where` clause in a body, so
+    /// its repair, like every other, is advice.
+    fn binding_name(&mut self, expected: &str, local: bool) -> Parse<Ident> {
+        let TokenKind::Keyword(keyword) = *self.peek() else {
+            return self.lower_name(expected);
+        };
+        let word = keyword.as_str();
+        let (meaning, base) = match keyword {
+            Keyword::Result => (
+                Some("names a function's result in `ensures`"),
+                "outcome".to_owned(),
+            ),
+            Keyword::It => (
+                Some("names the value that a `where` clause or a `checked` predicate constrains"),
+                "item".to_owned(),
+            ),
+            Keyword::Error => (
+                Some("names the failure in an `if error` handling clause"),
+                "problem".to_owned(),
+            ),
+            _ => (None, format!("{word}_value")),
+        };
+        let message = match meaning {
+            Some(meaning) => {
+                format!("`{word}` is reserved: it {meaning}, so it cannot name a binding")
+            }
+            None => format!("`{word}` is a reserved keyword, so it cannot name a binding"),
+        };
+        let fresh = self.fresh_name(&base);
+        let span = self.span();
+        let repair = match self.uses_in_block(keyword) {
+            Some(uses) if local && keyword == Keyword::Result => {
+                let end = uses.last().map_or(span.end, |last| last.end);
+                let mut replacement = String::new();
+                let mut at = span.start;
+                for range in std::iter::once(span).chain(uses) {
+                    replacement.push_str(self.text.get(at..range.start).unwrap_or(""));
+                    replacement.push_str(&fresh);
+                    at = range.end;
+                }
+                SyntaxRepair {
+                    description: format!("rename the binding and its uses to `{fresh}`"),
+                    edit: Some((
+                        Span {
+                            file: span.file,
+                            start: span.start,
+                            end,
+                        },
+                        replacement,
+                    )),
+                }
+            }
+            _ => SyntaxRepair {
+                description: format!("choose another name, such as `{fresh}`"),
+                edit: None,
+            },
+        };
+        let mut error = SyntaxError::new(Code::U0101, span, message);
+        error.repairs.push(repair);
+        Err(self.report_error(error))
+    }
+
+    /// The spans of `keyword` after the current token, up to the end of the block it is in.
+    fn uses_in_block(&self, keyword: Keyword) -> Option<Vec<Span>> {
+        let mut depth = 0usize;
+        let mut uses = Vec::new();
+        for token in self.tokens.get(self.pos + 1..)? {
+            match token.kind {
+                TokenKind::Indent => depth += 1,
+                TokenKind::Dedent if depth == 0 => break,
+                TokenKind::Dedent => depth -= 1,
+                TokenKind::Eof => break,
+                TokenKind::Keyword(found) if found == keyword => uses.push(token.span),
+                _ => {}
+            }
+        }
+        Some(uses)
+    }
+
+    /// `base`, or `base` followed by the first number from 2 that makes it a name the file
+    /// does not use.
+    fn fresh_name(&self, base: &str) -> String {
+        let used = |name: &str| {
+            self.tokens.iter().any(|token| {
+                matches!(token.kind, TokenKind::LowerIdent(symbol) if self.interner.resolve(symbol) == name)
+            })
+        };
+        if !used(base) {
+            return base.to_owned();
+        }
+        (2..)
+            .map(|n| format!("{base}{n}"))
+            .find(|name| !used(name))
+            .unwrap_or_else(|| base.to_owned())
     }
 
     fn upper_name(&mut self, expected: &str) -> Parse<Ident> {
@@ -1014,7 +1118,7 @@ impl<'a> Parser<'a> {
     fn param(&mut self) -> Parse<Param> {
         let start = self.span();
         let convention = self.convention();
-        let name = self.lower_name("a parameter name")?;
+        let name = self.binding_name("a parameter name", false)?;
         self.expect(&TokenKind::Colon, "`:` and the parameter's type")?;
         let ty = self.ty()?;
         Ok(Param {
@@ -1282,9 +1386,9 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::LParen, "`(` and the parameter names")?;
         let mut params = Vec::new();
         if !self.at(&TokenKind::RParen) {
-            params.push(self.lower_name("a parameter name")?);
+            params.push(self.binding_name("a parameter name", false)?);
             while self.eat(&TokenKind::Comma) {
-                params.push(self.lower_name("a parameter name")?);
+                params.push(self.binding_name("a parameter name", false)?);
             }
         }
         self.expect(&TokenKind::RParen, "`,` or `)`")?;
@@ -1600,7 +1704,7 @@ impl<'a> Parser<'a> {
     fn let_stmt(&mut self) -> Parse<LetStmt> {
         let start = self.advance();
         let editable = self.eat_keyword(Keyword::Edit);
-        let name = self.lower_name("a name")?;
+        let name = self.binding_name("a name", true)?;
         let ty = if self.eat(&TokenKind::Colon) {
             Some(self.ty()?)
         } else {
@@ -1825,7 +1929,7 @@ impl<'a> Parser<'a> {
         let field = self.lower_name("a field name")?;
         let local = if self.eat(&TokenKind::Colon) {
             self.no_nested_pattern(variant)?;
-            Some(self.lower_name("a local name")?)
+            Some(self.binding_name("a local name", false)?)
         } else {
             None
         };
@@ -1931,7 +2035,7 @@ impl<'a> Parser<'a> {
     /// `for x in xs` or `for i in a..<b` with its block (`spec/17 §1`).
     fn for_stmt(&mut self) -> Parse<ForStmt> {
         let start = self.advance();
-        let var = self.lower_name("the loop variable")?;
+        let var = self.binding_name("the loop variable", false)?;
         self.expect_keyword(Keyword::In)?;
         let low = self.line_expr()?;
         let exclusive = if self.eat(&TokenKind::DotDotLt) {
@@ -2105,7 +2209,7 @@ impl<'a> Parser<'a> {
     }
 
     fn lambda_param(&mut self) -> Parse<LambdaParam> {
-        let name = self.lower_name("a parameter name")?;
+        let name = self.binding_name("a parameter name", false)?;
         let ty = if self.eat(&TokenKind::Colon) {
             Some(self.ty()?)
         } else {

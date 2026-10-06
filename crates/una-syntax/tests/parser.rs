@@ -236,7 +236,7 @@ fn function_header_errors() {
     );
     assert_eq!(
         errors("pub total(if: Int) -> Int = 1\n"),
-        ["U0101 3:11 unexpected keyword `if`, expected a parameter name"]
+        ["U0101 3:11 `if` is a reserved keyword, so it cannot name a binding"]
     );
     assert_eq!(
         errors("pub one() -> Int\n  requires true\n  returns 1\n=\n  1\n"),
@@ -1080,5 +1080,67 @@ fn a_handling_clause_on_the_line_of_its_expression_says_where_it_goes() {
     assert_eq!(
         errors("f(x: Int) -> Int\n=\n  let y = g(x) if x > 0\n  y\n"),
         ["U0101 5:16 unexpected keyword `if`, expected end of line"]
+    );
+}
+
+#[test]
+fn a_reserved_keyword_as_a_binding_name_says_so() {
+    // #206: `let result = ...` named only the unexpected keyword. The message says what the
+    // word is reserved for; a `let` whose uses are all in its block gets one edit that renames
+    // the binding and its uses, and the other binding positions get the name as advice.
+    let message = "U0101 `result` is reserved: it names a function's result in `ensures`, so it cannot name a binding";
+    assert_eq!(
+        repairs("f() -> Int\n=\n  let result = 1\n  result + 1\n"),
+        [(
+            message.to_owned(),
+            vec![(
+                "rename the binding and its uses to `outcome`".to_owned(),
+                Some("outcome = 1\n  outcome".to_owned())
+            )]
+        )]
+    );
+    // A name the file already uses is not proposed.
+    assert_eq!(
+        repairs("f(outcome: Int) -> Int\n=\n  let result = outcome\n  result\n")[0].1,
+        [(
+            "rename the binding and its uses to `outcome2`".to_owned(),
+            Some("outcome2 = outcome\n  outcome2".to_owned())
+        )]
+    );
+    // Without a later use, the edit renames the binding alone.
+    assert_eq!(
+        repairs("f() -> Int\n=\n  let result = 1\n  2\n")[0].1,
+        [(
+            "rename the binding and its uses to `outcome`".to_owned(),
+            Some("outcome".to_owned())
+        )]
+    );
+    // `it` also names the value of a `checked` predicate or a `where` clause in the same
+    // block, so renaming its uses could change their meaning: advice only.
+    assert_eq!(
+        repairs("f(y: Int) -> Int\n  fails Bad\n=\n  let it = 1\n  let z = checked(y, it > 0) else fail Bad\n  z + it\n")[0].1,
+        [("choose another name, such as `item`".to_owned(), None)]
+    );
+    // Parameters, loop variables and other keywords get advice.
+    assert_eq!(
+        repairs("f(result: Int) -> Int = 1\n"),
+        [(
+            message.to_owned(),
+            vec![("choose another name, such as `outcome`".to_owned(), None)]
+        )]
+    );
+    assert_eq!(
+        repairs("f(xs: List[Int]) -> Int = xs.map(each: fn(it) -> 1).sum\n"),
+        [(
+            "U0101 `it` is reserved: it names the value that a `where` clause or a `checked` predicate constrains, so it cannot name a binding".to_owned(),
+            vec![("choose another name, such as `item`".to_owned(), None)]
+        )]
+    );
+    assert_eq!(
+        repairs("f() -> Int\n=\n  let when = 1\n  when\n"),
+        [(
+            "U0101 `when` is a reserved keyword, so it cannot name a binding".to_owned(),
+            vec![("choose another name, such as `when_value`".to_owned(), None)]
+        )]
     );
 }

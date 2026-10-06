@@ -23,6 +23,8 @@ pub struct Lexed {
     pub errors: Vec<SyntaxError>,
     /// The keyword set the file was lexed with, which the parser follows.
     pub keywords: KeywordSet,
+    /// The text of the file, for repairs that rewrite a range of it.
+    pub text: String,
 }
 
 /// Lexes `source`, which is the file `file` of its database, with the keywords of edition 0.1.
@@ -45,6 +47,7 @@ pub fn lex_in(
         pos: 0,
         out: Lexed {
             keywords,
+            text: source.text().to_owned(),
             ..Lexed::default()
         },
         indents: vec![0],
