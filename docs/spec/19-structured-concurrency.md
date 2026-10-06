@@ -27,7 +27,8 @@ together
 let warmest = max(north, b: south)
 
 let pages = together for id in ids
-  fetch(id) if error pass
+  fetch(id)
+    if error pass
 ```
 
 1. **Branches.** Each `let` statement of a `together_stmt` is a **branch**. Its expression, with its `with` bindings and its handling clauses, is the branch's task.
