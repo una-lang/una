@@ -65,7 +65,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module, default_libcall_names};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use target_lexicon::Triple;
-use una_core::{CapOp, Decl, Expr, Fun, Name, Path, Program, Type};
+use una_core::{CapOp, Constraint, Decl, Expr, Fun, Name, Path, Program, Type};
 use una_syntax::Span;
 
 /// Why the backend cannot compile a program.
@@ -179,7 +179,7 @@ fn function<'p>(program: &'p Program, module: &str, name: &str) -> Option<&'p Fu
         .filter(|m| m.path == module)
         .flat_map(|m| &m.decls)
         .find_map(|decl| match decl {
-            Decl::Fun(fun) if fun.name == name => Some(fun),
+            Decl::Fun(fun) if fun.name == name => Some(fun.as_ref()),
             _ => None,
         })
 }
@@ -199,7 +199,23 @@ fn callee<'p>(
         .find_map(|decl| match decl {
             Decl::Fun(fun) if fun.name == name => Some(Ok(Body {
                 this: None,
-                params: fun.params.clone(),
+                // After the parameters, the type descriptor of each constrained type parameter
+                // (`spec/20 §7`), bound to `$T` for the parameter `T`.
+                params: fun
+                    .params
+                    .iter()
+                    .cloned()
+                    .chain(
+                        fun.type_params
+                            .iter()
+                            .zip(&fun.constraints)
+                            .filter(|(_, constraint)| **constraint != Constraint::None)
+                            .map(|(param, _)| {
+                                (lower::descriptor_name(param), lower::descriptor_type())
+                            }),
+                    )
+                    .collect(),
+                constraints: fun.constraints.clone(),
                 uses: fun.uses.iter().map(|u| u.cap.clone()).collect(),
                 result: Some(fun.result.clone()),
                 fails: fun.fails.is_some(),
@@ -214,6 +230,7 @@ fn callee<'p>(
                 ..
             } if pred == name => Some(Ok(Body {
                 this: None,
+                constraints: Vec::new(),
                 params: params
                     .iter()
                     .map(|(name, ty)| (name.clone(), range::unrefined(ty)))
@@ -301,6 +318,14 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_fixed", 4, true),
     ("una_rt_budget", 1, true),
     ("una_rt_poll", 0, true),
+    ("una_rt_generic_compare", 3, true),
+    ("una_rt_generic_equal", 3, true),
+    ("una_rt_generic_to_int", 2, true),
+    ("una_rt_generic_min", 3, true),
+    ("una_rt_generic_max", 3, true),
+    ("una_rt_generic_contains", 3, true),
+    ("una_rt_generic_sum", 2, true),
+    ("una_rt_generic_sort", 2, true),
     ("una_rt_operation_begin", 0, false),
     ("una_rt_operation_end", 0, false),
     ("una_rt_together", 2, true),
@@ -328,6 +353,9 @@ struct Callee {
     id: FuncId,
     fails: bool,
     uses: Vec<Name>,
+    /// The constraint of each type parameter: each one but `None` takes a type descriptor
+    /// after the parameters (`spec/20 §7`).
+    constraints: Vec<Constraint>,
 }
 
 /// A handler of the package.
@@ -411,6 +439,7 @@ impl<'p> Emitter<'p> {
             id,
             fails: body.fails,
             uses: body.uses.clone(),
+            constraints: body.constraints.clone(),
         };
         self.functions.insert(qualified, callee.clone());
         self.pending.push((id, body));
@@ -436,6 +465,7 @@ impl<'p> Emitter<'p> {
             id,
             Body {
                 this: Some((captures, caps)),
+                constraints: Vec::new(),
                 // A lambda's refinements are not proven of its arguments (`range`).
                 params: params
                     .iter()
@@ -525,11 +555,13 @@ impl<'p> Emitter<'p> {
                 id,
                 fails: op.fails.is_some(),
                 uses: Vec::new(),
+                constraints: Vec::new(),
             },
         );
         self.pending.push((
             id,
             Body {
+                constraints: Vec::new(),
                 this: Some((
                     handler
                         .params

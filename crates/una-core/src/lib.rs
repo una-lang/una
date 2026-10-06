@@ -4,15 +4,17 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+mod descriptor;
 mod ir;
 mod label;
 mod names;
 mod print;
 
+pub use descriptor::Descriptor;
 pub use ir::{
-    Arm, Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, DataVariant, Decl, Example, Expectation,
-    Expr, FixedOp, Fun, HOST_MODULE, HandlerOp, IntType, LoopSource, Module, Name, PRELUDE_MODULE,
-    Path, Prim, Program, Refinement, Rhs, Signature, Source, Term, Type, Use,
+    Arm, Atom, Base, BinOp, Bound, CapOp, Clause, Constraint, Ctor, DataVariant, Decl, Example,
+    Expectation, Expr, FixedOp, Fun, HOST_MODULE, HandlerOp, IntType, LoopSource, Module, Name,
+    PRELUDE_MODULE, Path, Prim, Program, Refinement, Rhs, Signature, Source, Term, Type, Use,
 };
 pub use label::{Accepts, Label, Level};
 pub use names::{rhs_vars, vars};

@@ -8,7 +8,7 @@
 
 use std::ffi::{CStr, c_char, c_int};
 
-use crate::{host, runtime, tasks, values};
+use crate::{generic, host, runtime, tasks, values};
 
 /// Starts the executable: the generated `main` calls it with the process arguments, the
 /// embedded description of the program (`meta`, `meta_len` bytes of UTF-8 JSON) and the
@@ -150,6 +150,14 @@ exported! {
     una_rt_set_owned => values::set_owned, (xs, index, item);
     una_rt_reuse => values::reuse, (old, tag);
     una_rt_sum => values::sum, (xs);
+    una_rt_generic_compare => generic::compare, (desc, a, b);
+    una_rt_generic_equal => generic::equal, (desc, a, b);
+    una_rt_generic_to_int => generic::to_int, (desc, x);
+    una_rt_generic_min => generic::min, (desc, a, b);
+    una_rt_generic_max => generic::max, (desc, a, b);
+    una_rt_generic_contains => generic::contains, (desc, xs, item);
+    una_rt_generic_sum => generic::sum, (desc, xs);
+    una_rt_generic_sort => generic::sort, (desc, xs);
     una_rt_or_else => values::or_else, (o, default);
     una_rt_op_code => values::op_code, (instance, index);
     una_rt_fixed => values::fixed, (op, int, a, b);
