@@ -1,0 +1,15 @@
+-- test: a `secret fn` parameter passed on to `filter` or `map`, generic or not, keeps its label: U4001 at the argument and the result, as in edition 0.1 (spec/07 §7, ADR 0062, #210)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/params.una:11:65
+-- expect: error U4001 at src/params.una:11:75
+-- expect: error U4001 at src/params.una:13:66
+-- expect: error U4001 at src/params.una:13:76
+-- expect: error U4001 at src/params.una:15:69
+-- expect: error U4001 at src/params.una:15:76
+module params
+
+pub plain(keep: secret fn(Int) -> Bool, xs: List[Int]) -> Int = xs.filter(keep).len
+
+pub generic[T](keep: secret fn(T) -> Bool, xs: List[T]) -> Int = xs.filter(keep).len
+
+pub mapped[T, U](each: secret fn(T) -> U, xs: List[T]) -> List[U] = xs.map(each)

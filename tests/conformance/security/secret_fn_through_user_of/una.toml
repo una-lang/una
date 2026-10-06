@@ -1,0 +1,4 @@
+[package]
+name = "secret_fn_through_user_of"
+version = "0.1.0"
+edition = "0.2"
