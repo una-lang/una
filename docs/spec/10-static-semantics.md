@@ -109,6 +109,7 @@ A function value's effects and failures count for the caller exactly like those 
 1. A function type with non-empty `uses` or `fails` is **second-class**. No $\sigma_i$ is a second-class type or contains one, such as `List[fn() -> Unit uses @log: Log[write]]` (U3016). Together with §9 rule 2, an effectful or failing function value is never stored, returned or carried out of the `with` scope where it was created.
 2. $\sigma_i$ binds the whole labeled type, and unification never drops a label.
 3. In the generic body, a value of type $\alpha$ has the symbolic label $\ell_\alpha$ (`spec/07 §7` rule 8). At the call, every $\ell_{\alpha_i}$ in the result's type is replaced by $\ell^{*}(\sigma_i)$, the join of every label of $\sigma_i$.
+   - (v0.2, ADR 0067.) In edition `0.2`, for a function declared outside the prelude, the replacement is per position: each position $p$ of the declared result type is raised by $\ell^{*}(\sigma_i)$ for each $\alpha_i$ in the function's result summary $S_f(p)$ (`spec/07 §7` rule 8), and by no other. Edition `0.1` raises every position that holds data by the join of $\ell^{*}(\sigma_i)$ over all the type arguments (D-137).
 
 $$
 \frac{C \in \mathrm{variants}(F) \qquad pc = \bot \qquad \Gamma \vdash \bar a <: \mathrm{fields}(C)}

@@ -70,3 +70,7 @@ The prelude functions of "Result labels" fall into two groups.
 - **A. Only `append` and `fold`.** Not chosen: it leaves the second form (`is_some`, `at`, `first_where` on records with labeled fields) blocking B03, B14 and B16.
 - **C. Also per-position result labels of user generic functions, replacing D-137.** Deferred to issue #92: it changes generic instantiation (`spec/10 §5`) and needs a fixpoint over recursive generic functions.
 - **D. Re-check a lambda when its expected parameter types rise.** Not chosen: it contradicts `spec/07 §7` rule 2 as written, and the structural labels make it unnecessary for the reported shapes.
+
+## Amendment (2026-10-06)
+
+ADR 0067, accepted by Leonardo on 2026-10-06, takes alternative C for edition `0.2`. A call of a user generic function raises each position of its result only by the type arguments whose symbolic labels its body can put there, which replaces D-137. The predicate of `filter` and `first_where` raises the result's top label instead of being rejected (#41). Edition `0.1` keeps this ADR's rules unchanged.
