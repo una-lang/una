@@ -621,7 +621,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
         }
         let site = self.site(*span);
         // What the loop visits: the items of a list, by index, or the integers of a range, by
-        // an owned cursor from the low bound.
+        // an owned cursor from the low bound up to the high bound, which the loop also owns:
+        // the source is evaluated once, and the body may update the binding that names it
+        // (`spec/17 §4`, #182).
         let (list, bound, start) = match source.as_ref() {
             LoopSource::List(list) => {
                 let (list, _) = self.atom(list, env)?;
@@ -633,6 +635,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 let (low, _) = self.atom(low, env)?;
                 let (high, _) = self.atom(high, env)?;
                 self.retain(low, Kind::Int);
+                self.retain(high, Kind::Int);
                 (None, high, low)
             }
         };
@@ -711,6 +714,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
         // failure in the body releases the state with the body's scope, and the cursor.
         let mut nested = catch.nested(scope);
         if list.is_none() {
+            nested.outer.push((bound, Kind::Int));
             nested.outer.push((cursor, Kind::Int));
         }
         let mut owned: Scope = current.iter().copied().zip(kinds.iter().copied()).collect();
@@ -754,6 +758,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
 
         // The loop's value, which owns the final state, and the end of the scope.
         self.builder.switch_to_block(exit);
+        if list.is_none() {
+            self.release(bound, Kind::Int);
+        }
         let finals = self.builder.block_params(exit).to_vec();
         let zero = self.builder.ins().iconst(types::I64, 0);
         let tuple = self.call("una_rt_data", &[zero])?;
