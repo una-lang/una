@@ -1629,6 +1629,14 @@ impl<'a> Parser<'a> {
             }
         }
         let span = self.since(start);
+        if self.at_keyword(Keyword::If)
+            && matches!(
+                self.peek_at(1),
+                TokenKind::Keyword(Keyword::Error | Keyword::None)
+            )
+        {
+            return Err(self.same_line_handling(span));
+        }
         self.expect_line_end()?;
         let handlings = if self.at(&TokenKind::Indent) {
             self.indented("handling clauses", Self::handling)?
@@ -1654,6 +1662,28 @@ impl<'a> Parser<'a> {
             handlings,
             span,
         })
+    }
+
+    /// U0101 at a handling clause written on the line of its expression, which ends at
+    /// `expr` (#211). The repair moves the clause to its own line, one level deeper than the
+    /// line of the expression: each open block is two spaces in canonical form.
+    fn same_line_handling(&mut self, expr: Span) -> Stop {
+        let clause = self.span();
+        let mut error = SyntaxError::new(
+            Code::U0101,
+            clause,
+            "a handling clause goes on its own line, indented under the expression it handles",
+        );
+        let gap = Span {
+            file: clause.file,
+            start: expr.end,
+            end: clause.start,
+        };
+        error.repairs.push(SyntaxRepair {
+            description: "move the clause to its own line".to_owned(),
+            edit: Some((gap, format!("\n{}", "  ".repeat(self.depth + 1)))),
+        });
+        self.report_error(error)
     }
 
     fn cap_binding(&mut self) -> Parse<CapBinding> {
