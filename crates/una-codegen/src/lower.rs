@@ -32,7 +32,7 @@ use cranelift_frontend::FunctionBuilder;
 use cranelift_module::Module;
 use una_core::{
     Atom, Base, Bound, Ctor, Decl, Expr, HOST_MODULE, Label, LoopSource, Name, PRELUDE_MODULE,
-    Path, Prim, Rhs, Source, Type,
+    Path, Prim, Rhs, Source, Type, vars,
 };
 use una_syntax::Span;
 
@@ -2258,128 +2258,6 @@ fn borrowed_from(expr: &Expr, out: &mut BTreeSet<String>) {
             vars(expr, out);
         }
         Expr::Atom { .. } | Expr::Fail { .. } | Expr::Unreachable { .. } => {}
-    }
-}
-
-/// Every binder that `expr` reads, in it and in the lambdas it makes.
-fn vars(expr: &Expr, out: &mut BTreeSet<String>) {
-    let atoms = |list: &[Atom], out: &mut BTreeSet<String>| {
-        for atom in list {
-            if let Atom::Var(name) = atom {
-                out.insert(name.clone());
-            }
-        }
-    };
-    match expr {
-        Expr::Atom { atom, .. } => atoms(std::slice::from_ref(atom), out),
-        Expr::Let { value, body, .. } => {
-            match value.as_ref() {
-                Bound::Rhs(rhs) => rhs_vars(rhs, out),
-                Bound::Expr(inner) => vars(inner, out),
-            }
-            vars(body, out);
-        }
-        Expr::If {
-            cond,
-            then,
-            otherwise,
-        } => {
-            atoms(std::slice::from_ref(cond), out);
-            vars(then, out);
-            vars(otherwise, out);
-        }
-        Expr::Case {
-            scrutinee,
-            arms,
-            otherwise,
-        } => {
-            atoms(std::slice::from_ref(scrutinee), out);
-            for arm in arms {
-                vars(&arm.body, out);
-            }
-            if let Some(otherwise) = otherwise {
-                vars(otherwise, out);
-            }
-        }
-        Expr::Fail { args, .. } => atoms(args, out),
-        Expr::Handle { body, handler, .. } => {
-            vars(body, out);
-            vars(handler, out);
-        }
-        Expr::Attempt { body, .. } => vars(body, out),
-        Expr::LetTuple { value, body, .. } => {
-            atoms(std::slice::from_ref(value), out);
-            vars(body, out);
-        }
-        Expr::Loop {
-            source, init, body, ..
-        } => {
-            match source.as_ref() {
-                una_core::LoopSource::List(list) => atoms(std::slice::from_ref(list), out),
-                una_core::LoopSource::Range { low, high, .. } => {
-                    atoms(std::slice::from_ref(low), out);
-                    atoms(std::slice::from_ref(high), out);
-                }
-            }
-            atoms(init, out);
-            vars(body, out);
-        }
-        Expr::Together { tasks, .. } => {
-            for task in tasks {
-                vars(task, out);
-            }
-        }
-        Expr::TogetherFor { source, task, .. } => {
-            match source.as_ref() {
-                una_core::LoopSource::List(list) => atoms(std::slice::from_ref(list), out),
-                una_core::LoopSource::Range { low, high, .. } => {
-                    atoms(std::slice::from_ref(low), out);
-                    atoms(std::slice::from_ref(high), out);
-                }
-            }
-            vars(task, out);
-        }
-        Expr::With { source, body, .. } => {
-            if let Source::Handler { args, .. } = source {
-                atoms(args, out);
-            }
-            vars(body, out);
-        }
-        Expr::Unreachable { .. } => {}
-    }
-}
-
-fn rhs_vars(rhs: &Rhs, out: &mut BTreeSet<String>) {
-    let mut add = |atom: &Atom| {
-        if let Atom::Var(name) = atom {
-            out.insert(name.clone());
-        }
-    };
-    match rhs {
-        Rhs::Atom(atom) => add(atom),
-        Rhs::Prim { args, .. }
-        | Rhs::Call { args, .. }
-        | Rhs::Op { args, .. }
-        | Rhs::Construct { args, .. }
-        | Rhs::List(args)
-        | Rhs::Tuple(args) => args.iter().for_each(add),
-        Rhs::Apply { callee, args, .. } => {
-            add(callee);
-            args.iter().for_each(add);
-        }
-        Rhs::Field { value, .. } => add(value),
-        Rhs::Declassify { arg, .. } => add(arg),
-        Rhs::Checked {
-            value,
-            args,
-            predicate,
-            ..
-        } => {
-            add(value);
-            args.iter().for_each(add);
-            vars(predicate, out);
-        }
-        Rhs::Lambda { body, .. } => vars(body, out),
     }
 }
 
