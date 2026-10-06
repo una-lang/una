@@ -214,6 +214,20 @@ fn copy_dir(from: &Path, to: &Path) {
     }
 }
 
+/// Builds the runtime library next to the `una` binary, once, for the `una build` lines:
+/// `cargo test` builds `una-rt`'s static library only when asked (#203).
+fn runtime() {
+    static BUILT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    BUILT.get_or_init(|| {
+        let status = Command::new(env!("CARGO"))
+            .args(["build", "--quiet", "-p", "una-rt"])
+            .current_dir(repository())
+            .status()
+            .unwrap();
+        assert!(status.success(), "cargo build -p una-rt failed");
+    });
+}
+
 /// Runs each command line of a `sh` block, as the module documentation says.
 fn run_commands(block: &Block, scratch_base: usize) {
     let mut copy: Option<PathBuf> = None;
@@ -233,6 +247,9 @@ fn run_commands(block: &Block, scratch_base: usize) {
                 copy = Some(fresh.clone());
                 dir = fresh;
             }
+        }
+        if words.starts_with("una build") {
+            runtime();
         }
         let mut parts = words.split_whitespace();
         let program = match parts.next() {
