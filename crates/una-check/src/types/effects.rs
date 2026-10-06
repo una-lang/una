@@ -424,6 +424,7 @@ impl Checker<'_, '_, '_> {
         index: usize,
         span: Span,
         raise: &Label,
+        own: &Label,
     ) -> OfFound {
         let Some(def) = self
             .current
@@ -456,6 +457,14 @@ impl Checker<'_, '_, '_> {
                         .push(self.report.related(from, "the condition that raises it"));
                 }
                 self.report.push(diagnostic);
+            } else if !own.is_public() {
+                // A call of a function value labeled `own` is a call under `pc ⊔ own`
+                // (`spec/07 §3` rule 4, #216), and passing it on runs it there too.
+                self.report.error(
+                    Code::U4002,
+                    span,
+                    format!("`{name}` is a `{own}` function that runs effects this function cannot see, so running it is running them under a `{own}` condition, which they would reveal"),
+                );
             } else if !raise.is_public() {
                 // Passed on to a function that runs it under its own raised program counter,
                 // as the prelude does over a labeled list (`spec/07 §7` rule 9).
@@ -563,6 +572,8 @@ impl<'a> Checker<'_, 'a, '_> {
         let (label, Ty::Fn(function)) = self.vars.resolve_labels(found) else {
             return found.clone();
         };
+        // Running a labeled function value is running it under its label (`spec/07 §3` rule 4).
+        let raise = &value_raise(raise, &label);
         let mut function = *function;
         let slot = OfArgument {
             uses,
@@ -666,5 +677,40 @@ impl<'a> Checker<'_, 'a, '_> {
             fails: None,
             refinements: super::ty::FnRefinements::default(),
         }))
+    }
+}
+
+/// The program counter under which a callee runs a function value given for an `of`
+/// parameter: the callee's `raise`, joined with the value's own top label, since a call of a
+/// value labeled `l` is a call under `pc ⊔ l` (`spec/07 §3` rule 4, #216).
+fn value_raise(raise: &Label, value: &Label) -> Label {
+    raise.join(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use una_core::Level;
+
+    use super::*;
+
+    fn at(level: Level) -> Label {
+        Label {
+            level,
+            categories: std::collections::BTreeSet::new(),
+            symbols: std::collections::BTreeSet::new(),
+        }
+    }
+
+    #[test]
+    fn a_function_value_runs_under_its_own_label() {
+        // #216: no source form reaches `of_function_value` with a labeled function that has
+        // effects (U3006 stops it first), so the join is checked here.
+        let secret = at(Level::Secret);
+        assert_eq!(value_raise(&Label::public(), &secret), secret);
+        assert_eq!(value_raise(&secret, &Label::public()), secret);
+        assert_eq!(
+            value_raise(&at(Level::Internal), &at(Level::Confidential)),
+            at(Level::Confidential)
+        );
     }
 }
