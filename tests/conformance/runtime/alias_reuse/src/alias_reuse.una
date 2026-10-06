@@ -1,0 +1,88 @@
+-- test: a value that a new value of its kind could reuse is reused only when no binding holds it any more: a dead name that a live alias shares, a tuple, a loop state, a closure or a record holding it keeps its object (#30, #181, spec/17 §7)
+-- spec: spec/17 §7
+-- grant: console
+-- expect: run-output "alias: 1 2 / 7 8"
+-- expect: run-output "fields: a b / c d"
+-- expect: run-output "chain: 7 2"
+-- expect: run-output "cycle: 4 2"
+-- expect: run-output "tuple: 2 2 / 7 8 1"
+-- expect: run-output "state: 3 4 / 7 8"
+-- expect: run-output "captured: 1 2 / 7 8"
+-- expect: run-output "held: 1 2 / 7 8"
+-- expect: run-output "moved: 5 2 / 7 8"
+module alias_reuse
+
+pub kind Point
+  x: Int
+  y: Int
+
+pub kind Pair
+  left: Text
+  right: Text
+
+pub kind Tree = Leaf(value: Int) | Branch(left: Tree, right: Tree)
+
+pub kind Holder
+  point: Point
+
+--- The sum of the leaves of `tree`.
+pub total(tree: Tree) -> Int
+=
+  when tree
+    is Leaf(value) -> value
+    is Branch(left, right) -> total(left) + total(right)
+
+--- Moves `p` right and counts the move: a call with two `edit` parameters returns a tuple.
+pub shift(edit p: Point, edit count: Int) -> Unit
+=
+  p.x = p.x + 1
+  count = count + 1
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let a = Point(x: 1, y: 2)
+  let z = a
+  let r = Point(x: 7, y: 8)
+  @console.print("alias: {z.x} {z.y} / {r.x} {r.y}")
+  let p = Pair(left: "a", right: "b")
+  let q = p
+  let s = Pair(left: "c", right: "d")
+  @console.print("fields: {q.left} {q.right} / {s.left} {s.right}")
+  let leaf = Leaf(value: 1)
+  let branch = Branch(left: leaf, right: leaf)
+  let tree = branch
+  let grown = Branch(left: tree, right: Leaf(value: 5))
+  @console.print("chain: {total(grown)} {total(tree)}")
+  let b0 = Branch(left: leaf, right: leaf)
+  let b1 = b0
+  let looped = Branch(left: b1, right: b1)
+  @console.print("cycle: {total(looped)} {total(b1)}")
+  let t0 = Point(x: 1, y: 2)
+  let edit t1 = t0
+  let edit count = 0
+  shift(edit t1, edit count)
+  let t2 = Point(x: 7, y: 8)
+  @console.print("tuple: {t1.x} {t1.y} / {t2.x} {t2.y} {count}")
+  let l0 = Point(x: 1, y: 2)
+  let l1 = l0
+  let edit acc = l1
+  for i in 1..2
+    acc = Point(x: acc.x + 1, y: acc.y + 1)
+  let l2 = Point(x: 7, y: 8)
+  @console.print("state: {acc.x} {acc.y} / {l2.x} {l2.y}")
+  let c0 = Point(x: 1, y: 2)
+  let c1 = c0
+  let reader = fn(k: Int) -> if k == 0 then c1.x else c1.y
+  let c2 = Point(x: 7, y: 8)
+  @console.print("captured: {reader(0)} {reader(1)} / {c2.x} {c2.y}")
+  let h0 = Point(x: 1, y: 2)
+  let h1 = h0
+  let holder = Holder(point: h1)
+  let h2 = Point(x: 7, y: 8)
+  @console.print("held: {holder.point.x} {holder.point.y} / {h2.x} {h2.y}")
+  let m0 = Point(x: 1, y: 2)
+  let edit m1 = m0
+  m1.x = 5
+  let m2 = Point(x: 7, y: 8)
+  @console.print("moved: {m1.x} {m1.y} / {m2.x} {m2.y}")
