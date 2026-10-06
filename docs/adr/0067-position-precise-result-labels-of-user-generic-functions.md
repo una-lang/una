@@ -1,10 +1,10 @@
 # 0067. Position-precise result labels of user generic functions
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-06
-- Deciders: Leonardo, on a proposal by Claude (Una-1)
-- Resolves: issue #92 (D-137); proposes part of #41
-- Amends, if accepted: `spec/07 §7` rule 8, `spec/10 §5` (generic instantiation), `spec/14 §1` "Result labels", ADR 0051 (alternative C, deferred there)
+- Deciders: Leonardo (accepted on 2026-10-06), on a proposal by Claude (Una-1)
+- Resolves: issue #92 (D-137) and issue #41
+- Amends: `spec/07 §7` rule 8, `spec/10 §5` (generic instantiation), `spec/13 §5` and `§6`, `spec/14 §1` "Result labels", `plan/backlog.md`; ADR 0051 gains an amendment (its alternative C, deferred there)
 
 ## Context
 
@@ -41,13 +41,13 @@ What the design must respect:
 - **Edition `0.1` keeps its rules**, as for every v0.2 change.
 - **No runtime change.** Labels are static; the interpreter, native code and the verifier are untouched.
 
-The questions below are L1 to L4, each with options and a recommendation **A**.
+The proposal asked four questions, L1 to L4, each with options and a recommendation A. Leonardo answered them on 2026-10-06, each with option A. The other options stay below, marked as not chosen. Everything applies in edition `0.2` only; edition `0.1` keeps D-137 and the rule of ADR 0051 for predicates.
 
 ## Decision
 
 ### L1. What the call of a user generic function raises
 
-**A (recommended): a per-position summary of the symbolic labels its result carries.**
+**A (chosen): a per-position summary of the symbolic labels its result carries.**
 
 1. **Positions.** The positions of a declared result type `R` are:
    - its top;
@@ -63,50 +63,51 @@ The questions below are L1 to L4, each with options and a recommendation **A**.
 
 For shape (1): `concat`'s result carries `ℓ_T` only at its elements, so `S(top) = ∅`. The call `concat([x], back: acc)` raises nothing at the top, and the accumulator keeps its type. `newest_first` and `ranked_by` are accepted.
 
-**B:** keep D-137. No change; shapes (1) stay U4001.
+**B (not chosen):** keep D-137. No change; shapes (1) stay U4001.
 
-**C:** read the summary off the declared type instead of the body. `S_f(p)` is `{T}` where `T` occurs at `p`, and `∅` elsewhere. Then the body's result must flow into that, so a body whose top label is `ℓ_T` is U4001. Not recommended: it rejects programs accepted today, such as the `if a < b then [a] else [b, a]` above. That breaks the rule that B and A never reject more than D-137.
+**C (not chosen):** read the summary off the declared type instead of the body. `S_f(p)` is `{T}` where `T` occurs at `p`, and `∅` elsewhere. Then the body's result must flow into that, so a body whose top label is `ℓ_T` is U4001. Not recommended: it rejects programs accepted today, such as the `if a < b then [a] else [b, a]` above. That breaks the rule that B and A never reject more than D-137.
 
 ### L2. Recursion
 
 The summary of a recursive function depends on itself, as does that of mutually recursive generic functions.
 
-**A (recommended): the least fixpoint over each strongly connected component of the call graph.**
+**A (chosen): the least fixpoint over each strongly connected component of the call graph.**
 - Start from `S = ∅` at every position.
 - Check the component's bodies, recompute the summaries, and repeat until none changes.
 - Summaries only grow, and there are at most (positions × type parameters) of them, so this ends. In practice it takes one or two rounds.
 - Pass 1 of the checker already iterates components for inferred `uses`, `fails` and constraints (ADR 0007, ADR 0062, ADR 0066). This adds a label round to it.
 
-**B:** inside a component, calls use D-137; calls from outside it use the summary. Simpler, but a recursive generic helper stays coarse to itself. A recursive `insert` would still raise its own accumulator.
+**B (not chosen):** inside a component, calls use D-137; calls from outside it use the summary. Simpler, but a recursive generic helper stays coarse to itself. A recursive `insert` would still raise its own accumulator.
 
 ### L3. Public functions: inferred or written
 
 The summary depends on the body, as an inferred `uses` would. ADR 0007 and ADR 0066 make public functions write `uses` and constraints, so that changing a body cannot change a caller silently.
 
-**A (recommended for v0.2): inferred for every function, and shown.**
-- `una contract` prints the summary with the header, for example `result: List[T] (top: public)`.
-- `una report` lists the summaries of public generic functions.
+**A (chosen): inferred for every function, and shown.**
+- `una contract` prints the summary after the header, as the comment `-- result labels: top from T; element.arg 1 from T, U` (positions with an empty summary are left out), and its JSON gains the additive key `result_labels` (`spec/13 §5`).
+- `una report` lists the summaries of public generic functions in the additive key `generic_results` (`spec/13 §6`).
+- A position is written as its path in the declared result type: `top`, `element` for a list's element, `arg N` for the `N`th type argument of `Option`, `Result` or a kind, `param N` and `result` inside a function type, joined by `.`, as `element.arg 1`.
 - A change that raises a public function's summary can only make callers' results more labeled. That surfaces at the callers as U4001, never as a leak.
 
-**B:** public functions write it. This needs label syntax in signatures, such as `-> label(T) List[T]`. That is label polymorphism (#40), not in v0.2. Private functions would infer it.
+**B (not chosen):** public functions write it. This needs label syntax in signatures, such as `-> label(T) List[T]`. That is label polymorphism (#40), not in v0.2. Private functions would infer it.
 
-**C:** public functions use D-137, and private ones get the summary. This keeps the public contract unchanged, but leaves shape (1) rejected whenever the helper is `pub`, as `concat` is in the Gate 1 scaffolds.
+**C (not chosen):** public functions use D-137, and private ones get the summary. This keeps the public contract unchanged, but leaves shape (1) rejected whenever the helper is `pub`, as `concat` is in the Gate 1 scaffolds.
 
 ### L4. Predicates over labeled elements (`filter`, `first_where`; #41)
 
-**A (recommended): the predicate's result label raises the call's result instead of being rejected.**
+**A (chosen): the predicate's result label raises the call's result instead of being rejected.**
 - `keep`'s declared result `Bool` takes the label of the predicate's result, symbolic labels included.
 - That label joins the top label of `filter`'s and `first_where`'s result: which elements remain, or which one is found, depends on it.
 - **Effects:** `first_where` stops at the first accepted element, so which calls of `keep` happen depends on the predicate's results. A predicate with effects or failures and a labeled result is therefore U4002 there, as for any effect under a raised program counter (`spec/07 §3` rule 4). `filter` calls `keep` on every element, so its effects do not depend on the results.
 - For shape (2), the two `filter` calls are `label(T) List[T]`, which the result of `insert` may carry by rule 8. With L1 A, `S_insert(top) = {T}`, so a caller that instantiates `T` with `secret Int` gets a `secret` list, and one with `Int` gets a public one.
 
-**B:** keep ADR 0051's rule. The predicate is U4001; agents write the comparison with `fold` and an `if` instead, which is accepted today but harder to write.
+**B (not chosen):** keep ADR 0051's rule. The predicate is U4001; agents write the comparison with `fold` and an `if` instead, which is accepted today but harder to write.
 
-**C:** like A, and also for user higher-order functions that take a predicate. This needs a label variable on a function parameter's result, which is label polymorphism (#40). Not in v0.2.
+**C (not chosen):** like A, and also for user higher-order functions that take a predicate. This needs a label variable on a function parameter's result, which is label polymorphism (#40). Not in v0.2.
 
 ## Consequences
 
-If L1 to L4 are A:
+With L1 to L4 all A, in edition `0.2`:
 - **Accepted:** shapes (1) and (2), the Gate 1 helpers `newest_first` and `ranked_by`, and generic insertion, partition and grouping by comparisons.
   - `gate1_list_shapes` becomes an `ok` case.
   - The guide drops its workaround notes.

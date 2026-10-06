@@ -1790,6 +1790,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `c4aea7c` (track a), tag `DECISION D-137`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: switch to B in edition `0.2`, as ADR 0067 L1 to L4 (Leonardo, 2026-10-06): a per-position summary of each user generic function's result, the least fixpoint over recursion, inferred and shown; edition `0.1` keeps A
 
 ### D-138: Where an inferred U3016 is reported (closure, R-002)
 - Question: `spec/05 §9` rule 6: at the value whose type instantiates the type parameter.
