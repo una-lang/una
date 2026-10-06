@@ -217,3 +217,8 @@ The rules of §3 to §8 act on Core IR; these rules fix what the surface syntax 
 11. **Predicates.** A cycle of calls that contains a predicate, through predicates or functions, reflect or opaque, is U2015 once per cycle; a predicate whose result type is not `Bool` is U2001.
 12. **Policies.** The `via` function takes the type of `from` and returns the type of `to`, except for labels and with the same refinements, and has no `requires` clause (U4005, `spec/07 §5` rule 4, ADR 0047). A policy call takes one argument without a label.
 13. **Argument counts.** Too many arguments, and a parameter that receives none, are U2001.
+14. **Interpolation.** In edition `0.1`, an interpolated expression is an `Int`, a fixed-width integer, a `Bool` or a `Text`; any other type is U2001. (v0.2, ADR 0068.) In edition `0.2`, an interpolated expression MAY have any type that satisfies `Eq` (`spec/20 §1`), except `Hashed`:
+    - A type that holds a function, at any position, is U2001 at the interpolation, and the message names the position. `Hashed`, at any position, is U2001 too (`spec/14 §1`).
+    - A value of a type parameter `T` needs `T: Eq`, written or inferred for a private function (`spec/20 §3` rule 4); otherwise it is U2026, with the repair that writes `[T: Eq]`.
+    - The text is the value's Una form of `spec/11 §5`, without redaction.
+    - Its label is the join of every label of the value's type, deep (`spec/07 §7` rule 3), so a `secret` field makes the whole text `secret`.

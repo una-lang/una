@@ -116,6 +116,13 @@ Each operation invocation appends one event:
 
 Values in traces and outputs are JSON strings holding their Una form: `"42"`, `"\"Ana\""`, `"true"`, `"unit"`, `"Open"`, `"Some(3)"`, `"Registration(name: \"Ana\", event: ...)"`, `"[1, 2]"`; a `Hashed` value is `"hashed:<hex>"`, and a function `"<function>"`. Inside any rendered value, a field whose declared type is labeled above `public` is `<redacted:level>`, with the label's level only; an operation's outcome is redacted by the label of the binder of its result; `unit` carries no information and is never redacted. An event's outcome is `{"kind":"ok","value":...}`, `{"kind":"fail","variant":...,"value":...}` or `{"kind":"aborted"}` (ADR 0032).
 
+(v0.2, ADR 0068.) Interpolation (`spec/10 §12` rule 14) writes a value in this Una form, without redaction, since its text carries the value's labels:
+- Integers are written in decimal, `Bool` as `true` or `false`, and `Unit` as `unit`.
+- A variant without fields is written as its name. A variant or record with one field is `Name(value)`, and one with several fields is `Name(f: value, g: value)`, in declaration order.
+- A list is `[a, b]`, and an empty one is `[]`. `Option` and `Result` are written as variants: `Some(3)`, `None`, `Ok("x")`, `Err(NotFound)`.
+- A `Text` inside a structure is quoted with the escapes of `spec/01 §6`. A `Text` interpolated directly is not quoted.
+- The text depends on the value alone. The interpreter and a native backend MUST write the same text (`spec/16 §5`).
+
 ## 6. Example harness
 
 For each example, the harness builds `H0` from its `given` lines (one fresh instance per line), evaluates the desugared `do` expression with an empty environment and an empty world, then evaluates the expectations against the result and trace (`spec/08 §2`). Examples cannot reach host capabilities, so they are deterministic.

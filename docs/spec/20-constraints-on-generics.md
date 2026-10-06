@@ -13,7 +13,7 @@ A type parameter of a function may carry one of three built-in **constraints**: 
 
 | Constraint | Allows on values of `T` | Satisfied by |
 | --- | --- | --- |
-| `Eq` | `==`, `!=` | every type whose values hold no functions |
+| `Eq` | `==`, `!=`, and interpolation (ADR 0068) | every type whose values hold no functions |
 | `Ord` | what `Eq` allows, and `<`, `<=`, `>`, `>=` | `Int`, `I8` to `U64`, `Text`, and sum kinds whose variants have no payload |
 | `Integer` | what `Ord` allows, and `x.to_int()` | `Int`, `I8` to `U64` |
 
