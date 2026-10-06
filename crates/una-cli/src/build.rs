@@ -284,11 +284,38 @@ fn link(object: &Path, output: &Path, environment: crate::Environment<'_>) -> Re
     if result.status.success() {
         Ok(())
     } else {
-        Err(format!(
-            "the system linker `cc` failed:\n{}",
-            String::from_utf8_lossy(&result.stderr).trim_end()
-        ))
+        let output = String::from_utf8_lossy(&result.stderr);
+        let mut message = format!("the system linker `cc` failed:\n{}", output.trim_end());
+        if let Some(hint) = stale_runtime_hint(&output, &runtime) {
+            message.push('\n');
+            message.push_str(&hint);
+        }
+        Err(message)
     }
+}
+
+/// The command that builds `una` with its runtime, for a source build (#203).
+const SOURCE_BUILD: &str = "cargo build --release -p una-cli -p una-rt";
+
+/// A hint for a link that fails on a runtime symbol: the runtime library is older than this
+/// `una`, as when `cargo build -p una-cli` rebuilt only the compiler (#203).
+fn stale_runtime_hint(linker_output: &str, runtime: &Path) -> Option<String> {
+    let undefined = linker_output.contains("Undefined symbols")
+        || linker_output.contains("undefined reference");
+    (undefined && linker_output.contains("una_rt_")).then(|| {
+        format!(
+            "the runtime `{}` lacks functions this `una` calls, so it is older than `una`: rebuild both with `{SOURCE_BUILD}` (without `--release` for target/debug)",
+            runtime.display()
+        )
+    })
+}
+
+/// The message when no runtime library is found beside `una` in `dir` (#203).
+fn missing_runtime(dir: &Path) -> String {
+    format!(
+        "the native runtime `{RUNTIME}` is not next to `una` ({}); a source build makes it with `{SOURCE_BUILD}` (without `--release` for target/debug), or set UNA_RT_LIB to its path",
+        dir.display()
+    )
 }
 
 /// The runtime library: `UNA_RT_LIB` when set, else `libuna_rt.a` in the `lib` directory
@@ -315,10 +342,39 @@ fn runtime_library(environment: crate::Environment<'_>) -> Result<PathBuf, Strin
         .iter()
         .find(|path| path.is_file())
         .cloned()
-        .ok_or_else(|| {
-            format!(
-                "the native runtime `{RUNTIME}` is not next to `una` ({}); set UNA_RT_LIB to its path",
-                dir.display()
-            )
-        })
+        .ok_or_else(|| missing_runtime(&dir))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_runtime_names_the_command_that_builds_it() {
+        let message = missing_runtime(Path::new("/src/una/target/release"));
+        assert!(
+            message.contains("`cargo build --release -p una-cli -p una-rt`"),
+            "{message}"
+        );
+        assert!(message.contains("UNA_RT_LIB"), "{message}");
+    }
+
+    #[test]
+    fn a_link_that_misses_a_runtime_function_says_the_runtime_is_stale() {
+        let runtime = Path::new("target/debug/libuna_rt.a");
+        let macos = "Undefined symbols for architecture arm64:\n  \"_una_rt_operation_begin\", referenced from:";
+        let linux =
+            "hello.o: in function `una_fn_0': undefined reference to `una_rt_operation_begin'";
+        for output in [macos, linux] {
+            let hint = stale_runtime_hint(output, runtime).unwrap_or_default();
+            assert!(hint.contains("older than `una`"), "{hint}");
+            assert!(hint.contains("-p una-cli -p una-rt"), "{hint}");
+        }
+        // Another link failure gets no hint.
+        assert_eq!(
+            stale_runtime_hint("Undefined symbols: \"_sqrt\"", runtime),
+            None
+        );
+        assert_eq!(stale_runtime_hint("ld: library not found", runtime), None);
+    }
 }
