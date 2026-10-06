@@ -128,7 +128,8 @@ impl Vars {
                     .collect(),
                 result: self.resolve_shape(&function.result),
                 uses: function.uses.clone(),
-                fails: function.fails.as_ref().map(|f| self.resolve(f)),
+                // The failure kind keeps its labels too, as every part of the type does (#216).
+                fails: function.fails.as_ref().map(|f| self.resolve_shape(f)),
                 refinements: function.refinements.clone(),
             })),
             other => other,
@@ -447,6 +448,31 @@ mod tests {
         assert!(vars.unify(&Ty::Error, &Ty::Text));
         assert!(vars.unify(&a, &Ty::Error));
         assert!(vars.unsolved().is_empty());
+    }
+
+    #[test]
+    fn resolving_with_labels_keeps_those_of_a_failure_kind() {
+        // #216: `resolve_shape` keeps the labels inside a function type, its failure kind's
+        // included, so `resolve_labels` hands them to the flow checks.
+        use una_core::{Label, Level};
+        let secret = Label {
+            level: Level::Secret,
+            categories: std::collections::BTreeSet::new(),
+            symbols: std::collections::BTreeSet::new(),
+        };
+        let vars = Vars::default();
+        let function = Ty::Fn(Box::new(FnTy {
+            params: vec![Ty::Int],
+            result: Ty::Bool,
+            uses: Vec::new(),
+            fails: Some(Ty::Text.with_label(&secret)),
+            refinements: super::super::ty::FnRefinements::default(),
+        }));
+        let (_, resolved) = vars.resolve_labels(&function);
+        let Ty::Fn(resolved) = resolved else {
+            panic!("a function type resolves to a function type");
+        };
+        assert_eq!(resolved.fails, Some(Ty::Text.with_label(&secret)));
     }
 
     #[test]
