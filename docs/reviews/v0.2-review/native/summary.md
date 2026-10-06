@@ -15,11 +15,11 @@
 | --- | --- | --- |
 | PR #191, MEM-1 (#181) | **Clean** | none |
 | PR #192, MEM-2 (#182) | **Clean** | none |
-| PR #194, INT-1 (#180) | **Clean** at `6593ff8` | none; the owner's rule A' (below) changes the PR, so its new head needs a recheck |
+| PR #194, INT-1 (#180) | **Clean** at `6593ff8`, and under rule A' at `aa9b9b4` (merged as `ef69aad`) | none |
 | PR #195, HOST-1 (#183) | **Clean** | none |
 | PR #196, HOST-2 (#184) | **Not clean (minor)** | #198: a failed write to stderr |
 | PR #175, native `together` (#162) | **Not clean (minor)** | #200: a cancelled handler operation traced as `aborted` |
-| **Native backend for v0.2.0** | **Not ready** until #200, #198 and #194 land | 0 Critical, 0 Major open; #200 (P1), #198 |
+| **Native backend for v0.2.0** | **Not ready** until #200 and #198 land | 0 Critical, 0 Major open; #200 (P1), #198 |
 
 The first round found three Criticals (INT-1, MEM-1, MEM-2) and two Majors (HOST-1, HOST-2), filed as #180 to #184, with the minors in #185. All five have fixes, and no fix let a new variant of its class through, except the stderr half of HOST-2.
 
@@ -58,6 +58,14 @@ The owner decided the rule as A': a reflect body makes no overflow obligation an
   - A reflect predicate calls only reflect predicates (an opaque one is U2016). In `checked`, arithmetic is `Int`, so an out-of-range value cannot reach a fixed-width parameter (U2001).
   - Lambdas, `if` and generics are outside the refinement language (U2014, U2015), so a lambda inheriting exactness is not reachable from source.
 - **New variants, all matching:** `integers/recheck_exact_widths` (U64, `I64` minimum through negation and `/ -1`, U8, I8 `mod`, I16, nested reflect calls), `recheck_predicate_values` (predicates as function values, in `together` branches and `together for`), `recheck_refined_params` (out-of-range `Int` values from `checked` into refined parameters, at 1e20 and at the 2^62 tagged-word boundary) and `recheck_checked_in_tasks`.
+
+**Recheck under rule A' (2026-10-06).** PR #194's new head `aa9b9b4`, merged as `ef69aad`, implements A'. On `main` at `7de962e`, every case of `integers/` matches between the interpreter and the native executable, the two INT-1 originals included. The new case `integers/recheck_a_prime` runs reflect bodies through `checked`:
+
+- `x + 300 > 500` on a `U8`: the literal `300` does not fit `U8`, which is no U2022 in a reflect body, and `255 + 300` is computed as `555`.
+- `x - 1 < 0` on a `U8` holds at `0`: the difference is `-1`, not `255`.
+- `x * 2 > 9223372036854775807` on an `I64`, through a nested reflect call, holds at the `I64` maximum.
+
+Both sides print `passed rejected` three times. U2001 still applies in a reflect body (`a + b` with `a: U8` and `b: I64`), and U2022 still applies in code that is not a reflect body.
 
 ### HOST-1 (#183, Major): the native grant check ignored operations
 

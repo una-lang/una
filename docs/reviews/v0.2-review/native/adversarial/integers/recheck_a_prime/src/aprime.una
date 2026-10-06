@@ -1,0 +1,53 @@
+module aprime
+
+pub kind Refusal = | Rejected
+
+--- A literal that does not fit `U8` is no U2022 in a `reflect` body, and the sum is exact.
+pub predicate reflect beyond(x: U8) -> Bool = x + 300 > 500
+
+--- Exact below zero: `x - 1` of a `U8` is `-1` at `0`, not 255.
+pub predicate reflect below(x: U8) -> Bool = x - 1 < 0
+
+--- Exact past the `I64` range, through a nested reflect call.
+pub predicate reflect huge(x: I64) -> Bool = x * 2 > 9223372036854775807
+
+pub predicate reflect both(x: I64) -> Bool = huge(x) and x > 0
+
+pub kind Big = I64 where both(it)
+
+pub kind Low = U8 where below(it)
+
+pub kind Far = U8 where beyond(it)
+
+pub as_big(x: I64) -> Big
+  fails Refusal
+=
+  checked(x, both(it)) else fail Rejected
+
+pub as_low(x: U8) -> Low
+  fails Refusal
+=
+  checked(x, below(it)) else fail Rejected
+
+pub as_far(x: U8) -> Far
+  fails Refusal
+=
+  checked(x, beyond(it)) else fail Rejected
+
+show(ok: Bool) -> Text = if ok then "passed" else "rejected"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let big = attempt as_big(9223372036854775807)
+  @console.print(show(big.is_ok()))
+  let small = attempt as_big(1)
+  @console.print(show(small.is_ok()))
+  let low = attempt as_low(0)
+  @console.print(show(low.is_ok()))
+  let high = attempt as_low(255)
+  @console.print(show(high.is_ok()))
+  let far = attempt as_far(255)
+  @console.print(show(far.is_ok()))
+  let near = attempt as_far(100)
+  @console.print(show(near.is_ok()))
