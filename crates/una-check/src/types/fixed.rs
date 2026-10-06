@@ -44,10 +44,19 @@ impl Checker<'_, '_, '_> {
     /// Whether the expression being checked is in a clause (`where`, `requires`, `ensures`, or
     /// the predicate of `checked`), where every integer type reads as its mathematical `Int`:
     /// mixed types are allowed, literals are `Int`, and there is no `overflow` obligation and
-    /// no U2022 (`spec/18 §2`, ADR 0057). The body of a `reflect` predicate runs, so it follows
-    /// the rules of executed code.
+    /// no U2022 (`spec/18 §2`, ADR 0057). The body of a `reflect` predicate is typed as
+    /// executed code, mixed types included, but its arithmetic is exact
+    /// ([`Self::exact_integers`]).
     pub(crate) fn in_clause(&self) -> bool {
         matches!(self.ctx.rl, Rl::Clause)
+    }
+
+    /// Whether integer arithmetic is exact where the expression being checked is: in a clause,
+    /// and in the body of a `reflect` predicate, which is typed as code but computes exactly,
+    /// as the verifier reads it, so it has no `overflow` obligation and no U2022 (Leonardo,
+    /// 2026-10-06; `spec/18 §2`, `§3`, ADR 0057 amendment).
+    pub(crate) fn exact_integers(&self) -> bool {
+        matches!(self.ctx.rl, Rl::Clause | Rl::Reflect)
     }
 
     /// The fixed-width type that `expected` resolves to now, outside clauses.
@@ -63,7 +72,7 @@ impl Checker<'_, '_, '_> {
 
     /// The type of the integer literal `-digits` or `digits` at `span` where `expected` is
     /// expected: the fixed-width type it resolves to, after U2022 when the literal does not
-    /// fit, or `Int`.
+    /// fit where arithmetic is not exact, or `Int`.
     pub(crate) fn int_literal_type(
         &mut self,
         negative: bool,
@@ -74,7 +83,7 @@ impl Checker<'_, '_, '_> {
         let Some(int) = self.expected_fixed(expected) else {
             return Ty::Int;
         };
-        if !fits(int, negative, digits) {
+        if !fits(int, negative, digits) && !self.exact_integers() {
             let sign = if negative { "-" } else { "" };
             self.report.error(
                 Code::U2022,
@@ -102,10 +111,10 @@ impl Checker<'_, '_, '_> {
         }
     }
 
-    /// Records the `overflow` obligation of an operation of type `ty` at `span`, outside
-    /// clauses (`spec/18 §3`).
+    /// Records the `overflow` obligation of an operation of type `ty` at `span`, where integer
+    /// arithmetic is not exact (`spec/18 §3`).
     pub(crate) fn overflow_site(&mut self, ty: &Ty, span: Span) {
-        if self.in_clause() {
+        if self.exact_integers() {
             return;
         }
         if matches!(self.resolve(ty), Ty::Fixed(_)) {

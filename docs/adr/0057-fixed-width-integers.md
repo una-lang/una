@@ -55,3 +55,13 @@ The goal of v0.2 is native performance (ADR 0055), and some programs need an exa
 ## Amendment (2026-10-02)
 
 Binary built-in methods label their argument, as every call does (charter P5): `by` for arithmetic and shifts, `mask` for bit operations. The coordinator corrected the F5 answer under FW-1 to FW-4, and `spec/18 §5` states the rule. Examples above written as `bit_and(a, b)` read as `a.bit_and(mask: b)`.
+
+## Amendment (2026-10-06)
+
+The body of a `reflect` predicate computes integers exactly, as clauses do, and keeps the typing of code that runs (Leonardo, 2026-10-06, on issue #180, from the independent v0.2 native review #176, INT-1):
+
+- no `overflow` obligation and no U2022 in the body;
+- U2001 still applies, since operands of different integer types do not mix in code;
+- the verifier, which unfolds the body as `Int` logic, the interpreter and the native backend agree on its value, also where a fixed-width result would leave its type.
+
+The decision keeps a proven `ensures` or `checked` gate that calls the predicate true at run time. `spec/18 §2.4` and `§3.1` state the rule.
