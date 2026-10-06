@@ -1,0 +1,27 @@
+module thread_limit
+
+spin(n: Int) -> Int
+=
+  let edit acc = 0
+  for i in 1..n
+    acc = acc + 1
+  acc
+
+cell(i: Int, j: Int) -> Int
+=
+  let zs = together for k in 1..4
+    spin(3000000) + i + j + k
+  zs.len
+
+row(i: Int) -> Int
+=
+  let xs = together for j in 1..64
+    cell(i, j: j)
+  xs.len
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let rows = together for i in 1..64
+    row(i)
+  @console.print("rows = {rows.len}")

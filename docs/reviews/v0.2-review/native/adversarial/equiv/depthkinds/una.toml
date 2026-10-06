@@ -1,0 +1,14 @@
+[package]
+name = "depthkinds"
+version = "0.1.0"
+edition = "0.2"
+
+[run]
+entry = "depthkinds"
+grants = ["console"]
+
+[trusted]
+modules = ["depthkinds.pol"]
+
+[escape_budget]
+checked_per_module = 1

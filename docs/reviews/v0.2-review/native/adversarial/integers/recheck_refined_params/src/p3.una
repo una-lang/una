@@ -1,0 +1,29 @@
+module p3
+
+kind GateError = | Rejected
+
+predicate opaque quad(x: Int in 0..10) -> Bool = x * 4 == 0
+
+predicate reflect rquad(x: Int in 0..10) -> Bool = x * 4 == 0
+
+gate(a: Int) -> Bool
+  fails GateError
+=
+  let v = checked(a, quad(it * 4611686018427387904)) else fail Rejected
+  true
+
+gate_r(a: Int) -> Bool
+  fails GateError
+=
+  let v = checked(a, rquad(it * 4611686018427387904)) else fail Rejected
+  true
+
+shown(ok: Bool) -> Text = if ok then "passed" else "rejected"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let r1 = attempt gate(1)
+  let r2 = attempt gate(2)
+  let r3 = attempt gate_r(1)
+  @console.print("{shown(r1 is Ok)} {shown(r2 is Ok)} {shown(r3 is Ok)}")

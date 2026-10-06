@@ -1,0 +1,20 @@
+module pipe
+
+chatter(tag: Text, n: Int) -> Int
+  uses @console: Console[print]
+=
+  for i in 0..<n
+    @console.print("{tag} {i}")
+  n
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @files: Files[write]
+=
+  together
+    let a = chatter("a", n: 3000)
+    let b = chatter("b", n: 3000)
+  let counts = together for t in ["c", "d", "e"]
+    chatter(t, n: 2000)
+  @files.write("done.txt", content: "main finished {a} {b} {counts.len}")
+    if error use unit

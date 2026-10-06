@@ -1,0 +1,22 @@
+module togdeep
+
+pub kind Expr = Lit(value: Int) | Neg(operand: Expr)
+
+build(n: Int) -> Expr
+=
+  let edit e = Lit(value: 0)
+  for i in 0..<n
+    e = Neg(operand: e)
+  e
+
+same_as(e: Expr, n: Int) -> Bool = e == build(n)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let held = build(300000)
+  together
+    let a = same_as(held, n: 300000)
+    let b = build(300000)
+  let same = b == held
+  @console.print("{a} {same}")

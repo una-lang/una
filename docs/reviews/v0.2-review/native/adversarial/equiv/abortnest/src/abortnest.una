@@ -1,0 +1,41 @@
+module abortnest
+
+pub capability Outer
+  op go(n: Int) -> Int
+
+pub capability Inner
+  op deep(n: Int) -> Int
+
+pub handler inner_h() for Inner
+  uses @console: Console[print]
+  op deep(n) =
+    @console.print("deep {n}")
+    spin(n)
+
+pub handler outer_h(k: Int) for Outer
+  uses @inner: Inner[deep]
+  uses @console: Console[print]
+  op go(n) =
+    @console.print("go {n}")
+    @inner.deep(n + k)
+
+spin(n: Int) -> Int = if n <= 0 then 0 else 1 + spin(n - 1)
+
+pub use_outer(n: Int) -> Int
+  uses @outer: Outer[go]
+=
+  let xs = [1, n].map(each: fn(v) -> @outer.go(v))
+  xs.sum
+
+pub with_inner(n: Int) -> Int
+  uses @inner: Inner[deep]
+  uses @console: Console[print]
+=
+  let r = use_outer(n) with @outer = outer_h(1)
+  r
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let r = with_inner(50) with @inner = inner_h()
+  @console.print("{r}")
