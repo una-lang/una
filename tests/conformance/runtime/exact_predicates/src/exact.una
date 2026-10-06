@@ -4,11 +4,15 @@
 -- expect: run-output "top: true, one: false, two: true"
 -- expect: run-output "admitted: 1, rejected: 1"
 -- expect: run-output "inline: 1, rejected: 1"
+-- expect: run-output "past: true, zero: false"
 module exact
 
 pub kind Rejected = Small | Odd
 
 pub predicate reflect scaled_large(x: U32) -> Bool = x * 4294967295 > 4294967295
+
+--- A literal past `U32` is exact in a reflect body too: no U2022 (Leonardo, 2026-10-06).
+pub predicate reflect past_top(x: U32) -> Bool = x + 4294967296 > 8589934590
 
 pub kind Big = U32 where scaled_large(it)
 
@@ -42,3 +46,5 @@ pub main() -> Unit
   let c = attempt admit_inline(top)
   let d = attempt admit_inline(one)
   @console.print("inline: {counted(c)}, rejected: {1 - counted(d)}")
+  let zero: U32 = 0
+  @console.print("past: {past_top(top)}, zero: {past_top(zero)}")
