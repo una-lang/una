@@ -3,6 +3,7 @@
 //!, and constructors (U2009).
 
 use una_diag::{Code, ObligationKind};
+use una_project::Edition;
 use una_syntax::Span;
 use una_syntax::ast::{Arg, Convention, Expr, ExprKind, Ident};
 
@@ -14,7 +15,7 @@ use super::expr::count;
 use super::label::Label;
 use super::records::Res;
 use super::ty::{FnUse, KindId, Refinement, Ty};
-use super::unify::Vars;
+use super::unify::{Origin, Vars};
 
 /// A checked argument: where it is, its type, the type of its parameter, and the parameter.
 pub(crate) type Checked<'a> = (Span, Ty, Ty, &'a str);
@@ -594,7 +595,7 @@ impl<'a> Checker<'_, 'a, '_> {
             self.prelude_result(&callee, def.name, checked, result)
         } else {
             self.argument_flows(&callee, checked);
-            generic_result(self.env.prelude, &def, &subst, result)
+            self.generic_result(id, &def, &subst, result)
         };
         if !subst.is_empty() {
             self.instantiation(def.name, &def.type_params, subst, values, span);
@@ -606,6 +607,41 @@ impl<'a> Checker<'_, 'a, '_> {
             self.call_fails.insert(span, fails.clone());
         }
         result
+    }
+
+    /// The result of a call of a generic function declared outside the prelude: the value its
+    /// body returns may carry the symbolic labels of its type parameters, which the call
+    /// replaces by `ℓ*(σ)`, the join of every label of each type argument (`spec/10 §5`,
+    /// generic instantiation, rule 3).
+    /// - Edition 0.2 (ADR 0067): each position is raised by the type arguments of its summary.
+    /// - Edition 0.1, DECISION D-137: every position that holds data is raised by the join of
+    ///   `ℓ*(σ)` over all the type arguments.
+    pub(crate) fn generic_result(
+        &self,
+        id: usize,
+        def: &FnDef<'_>,
+        subst: &[Ty],
+        result: Ty,
+    ) -> Ty {
+        if subst.is_empty() || def.module == self.env.prelude {
+            return result;
+        }
+        if self.env.edition >= Edition::V0_2 {
+            let summary = self.env.summaries.get(&id).cloned().unwrap_or_default();
+            return super::summary::raise(&def.result.base, result, &summary, subst);
+        }
+        result.raise_deep(&Vars::label_of(subst))
+    }
+
+    /// The result type of a generic function used as a value with type arguments `args`, which
+    /// the value's type records lazily, since they are known only once the value flows
+    /// somewhere (`spec/10 §5`, generic instantiation): raised as a call raises it.
+    pub(crate) fn generic_value_result(&self, id: usize, args: &[Ty]) -> Ty {
+        let Some(def) = self.env.functions.get(id) else {
+            return Ty::Error;
+        };
+        let result = def.result.base.substitute(args);
+        self.generic_result(id, def, args, result)
     }
 
     /// The result of a call of a prelude function of `spec/14 §1` "Result labels": its
@@ -902,6 +938,24 @@ impl<'a> Checker<'_, 'a, '_> {
         names.iter().position(|candidate| *candidate == name)
     }
 
+    /// `keep`'s expected type `fn(T) -> Bool` with the result a fresh variable bound to
+    /// `Bool`, whose label rises with the predicate's result (ADR 0067 L4).
+    fn labeled_predicate(&mut self, expected: Ty, span: Span) -> Ty {
+        let Ty::Fn(mut function) = expected else {
+            return expected;
+        };
+        let result = self.vars.fresh(
+            Origin::Instance {
+                param: "Bool".to_owned(),
+                of: "keep".to_owned(),
+            },
+            span,
+        );
+        self.vars.unify(&result, &function.result);
+        function.result = result;
+        Ty::Fn(function)
+    }
+
     /// The arguments of a call of a function, operation or handler (`spec/04 §3`): the first
     /// may go unlabeled, the others are labeled or punned (U2004); an unknown label is U2005,
     /// a repeated parameter U2006, and a wrong number of arguments U2001.
@@ -1071,6 +1125,18 @@ impl<'a> Checker<'_, 'a, '_> {
                 continue;
             };
             let expected = param.ty.base.substitute(subst);
+            // ADR 0067 L4: in edition 0.2, whose prelude gives `filter` and `first_where` an
+            // `of` clause, the predicate's result is a variable bound to `Bool` that takes the
+            // predicate's labels, which then raise the result's top label (`spec/14 §1`).
+            let expected = if param.name == "keep"
+                && matches!(
+                    of_callee.as_ref().and_then(|of| of.prelude.as_deref()),
+                    Some("filter" | "first_where")
+                ) {
+                self.labeled_predicate(expected, span)
+            } else {
+                expected
+            };
             let role = Role::Argument {
                 param: param.name,
                 callee,
@@ -1607,20 +1673,6 @@ fn structural_inputs(name: &str) -> Option<&'static [(&'static str, bool)]> {
 /// functions (ADR 0051); the other prelude functions keep the labels of their parameter types.
 fn prelude_labeled(prelude: usize, def: &FnDef<'_>) -> bool {
     def.module == prelude && def.kind == FnKind::Function && PRELUDE_LABELED.contains(&def.name)
-}
-
-/// The result of a call of a generic function declared outside the prelude: the value its
-/// body returns may carry the symbolic labels of its type parameters, which the call replaces
-/// by `ℓ*(σ)`, the join of every label of each type argument (`spec/10 §5`, generic
-/// instantiation, rule 3).
-/// DECISION D-137: every position of the result that holds data is raised by the join of
-/// `ℓ*(σ)` over all the type arguments, since the checker does not record which symbolic
-/// labels, at which positions, the body's result carries.
-fn generic_result(prelude: usize, def: &FnDef<'_>, subst: &[Ty], result: Ty) -> Ty {
-    if subst.is_empty() || def.module == prelude {
-        return result;
-    }
-    result.raise_deep(&Vars::label_of(subst))
 }
 
 /// Whether `ty` holds a type variable at any position.

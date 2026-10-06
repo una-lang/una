@@ -1,0 +1,7 @@
+---
+source: crates/una-cli/tests/cli.rs
+expression: human
+---
+--- Which elements stay depends on comparisons of `T` values.
+pub below[T: Ord](xs: List[T], pivot: T) -> List[T]
+-- result labels: top from T

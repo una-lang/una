@@ -1,0 +1,64 @@
+-- test: a call of a user generic function raises each position of its result only by the type arguments whose symbolic labels its body can put there, so the Gate 1 helpers, a generic insertion by comparison, recursive and mutually recursive helpers, and the positions of options, results, kinds, nested lists and function results are accepted (ADR 0067, spec/07 §7 rule 8, #92)
+-- spec: spec/07 §7
+-- expect: ok
+module summaries
+
+pub kind Box[T]
+  item: T
+  count: Int
+
+pub concat[T](front: List[T], back: List[T]) -> List[T] = back.fold(initial: front, step: fn(acc, x) -> acc.append(item: x))
+
+--- Gate 1 (A09): a user generic call inside a fold lambda.
+pub newest_first[T](items: List[T]) -> List[T] = items.fold(initial: [], step: fn(acc, x) -> concat([x], back: acc))
+
+--- Gate 1 (C04, C12).
+pub ranked_by[T](items: List[T], before: fn(T, T) -> Bool) -> List[T] = items.fold(initial: [], step: fn(sorted, item) -> place(sorted, item, before))
+
+place[T](sorted: List[T], item: T, before: fn(T, T) -> Bool) -> List[T]
+=
+  let ahead = sorted.filter(keep: fn(s) -> not before(item, s))
+  let behind = sorted.filter(keep: fn(s) -> before(item, s))
+  behind.fold(initial: ahead.append(item: item), step: fn(acc, s) -> acc.append(item: s))
+
+--- A generic insertion by comparison (ADR 0067 L4).
+pub insert[T: Ord](sorted: List[T], item: T) -> List[T]
+=
+  let ahead = sorted.filter(keep: fn(s) -> s < item)
+  let behind = sorted.filter(keep: fn(s) -> not (s < item))
+  behind.fold(initial: ahead.append(item: item), step: fn(acc, s) -> acc.append(item: s))
+
+--- Recursion: the summary is a least fixpoint, so the top stays public.
+pub repeat[T](x: T, n: Int) -> List[T] = if n <= 0 then [] else concat([x], back: repeat(x, n: n - 1))
+
+pub alternate[T](x: T, y: T, n: Int) -> List[T] = if n <= 0 then [] else concat([x], back: other(x, y, n: n - 1))
+
+other[T](x: T, y: T, n: Int) -> List[T] = if n <= 0 then [] else concat([y], back: alternate(x, y, n: n - 1))
+
+pub doubled[T](items: List[T]) -> List[T] = items.fold(initial: [], step: fn(acc, x) -> concat(repeat(x, n: 2), back: acc))
+
+pub interleaved[T](items: List[T], y: T) -> List[T] = items.fold(initial: [], step: fn(acc, x) -> concat(alternate(x, y, n: 2), back: acc))
+
+--- Other positions: an option payload, a kind argument and a nested list.
+pub wrap[T](x: T) -> Option[T] = Some(x)
+
+pub boxed[T](x: T) -> Box[T] = Box(item: x, count: 1)
+
+pub groups[T](items: List[T]) -> List[List[T]] = items.map(each: fn(x) -> [x])
+
+pub counts[T](items: List[T]) -> List[Int] = items.fold(initial: [], step: fn(acc, x) -> acc.append(item: boxed(x).count))
+
+pub nested[T](items: List[T]) -> List[List[T]] = items.fold(initial: [], step: fn(acc, x) -> acc.append(item: concat([x], back: [])))
+
+--- Over secret elements, the results are public lists of secret elements.
+pub newest(xs: List[secret Int]) -> List[secret Int] = newest_first(xs)
+
+--- Where the shape depends on comparisons of secret values, the top is secret; over public
+--- values it stays public.
+pub placed(xs: List[secret Int], x: secret Int) -> secret List[secret Int] = insert(xs, item: x)
+
+pub placed_public(xs: List[Int]) -> List[Int] = insert(xs, item: 3)
+
+pub sizes(xs: List[secret Int]) -> Int = doubled(xs).len
+
+pub box_count(x: secret Int) -> Int = boxed(x).count

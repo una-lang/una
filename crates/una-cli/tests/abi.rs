@@ -100,7 +100,9 @@ fn the_report_of_the_events_example() {
         .keys()
         .map(String::as_str)
         .collect();
-    assert_eq!(keys.len(), 14);
+    // ADR 0067 added `generic_results`, after `native`.
+    assert_eq!(keys.len(), 15);
+    assert_eq!(report["generic_results"], json!([]));
     assert_eq!(report["native"]["target"], target.as_str());
     // `clamp_seats` returns `Seats`, `Int in 0..5000`, a machine width (FW-1); its parameter
     // `raw` is an unbounded `Int`.

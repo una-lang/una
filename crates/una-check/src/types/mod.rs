@@ -28,6 +28,7 @@ mod label;
 mod memory;
 mod records;
 mod stmt;
+mod summary;
 mod ty;
 mod unify;
 
@@ -138,6 +139,11 @@ pub struct Header {
     /// Its constrained type parameters, in order: the parameter, the constraint, and whether
     /// it is inferred (`spec/20 §8`).
     pub constraints: Vec<(String, String, bool)>,
+    /// Its result summary: each position of its declared result whose summary is not empty,
+    /// written as `spec/13 §5` writes it, with the type parameters there (ADR 0067).
+    pub result_labels: Vec<(String, Vec<String>)>,
+    /// Whether it has type parameters.
+    pub generic: bool,
 }
 
 /// The outcome of [`check_types`].
@@ -190,8 +196,14 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
     authority::stored_effects(&env, &mut report);
     // Pass 1 collects what inference needs, and its diagnostics are dropped;
     // pass 2 checks with the inferred headers.
-    let mut collected = authority::Collected::default();
-    {
+    // In edition 0.2, pass 1 also computes the result summaries of generic functions
+    // (ADR 0067 L2): it runs again while one grows, so they reach their least fixpoint. They
+    // only grow, over finitely many positions and type parameters, so this ends.
+    let mut collected;
+    let mut rounds = 0;
+    loop {
+        collected = authority::Collected::default();
+        env.summaries_grew = false;
         let mut scratch = Report::new(package.sources);
         let mut findings = Findings::default();
         for module in 0..package.modules.len() {
@@ -206,6 +218,10 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
                     module,
                 );
             }
+        }
+        rounds += 1;
+        if !env.summaries_grew || rounds >= MAX_SUMMARY_ROUNDS {
+            break;
         }
     }
     authority::infer(&mut env, &collected, &mut report);
@@ -296,8 +312,30 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
 fn headers(env: &Env<'_>) -> Vec<Header> {
     env.functions
         .iter()
-        .filter(|f| f.kind == env::FnKind::Function && env.reports(f.module))
-        .map(|f| Header {
+        .enumerate()
+        .filter(|(_, f)| f.kind == env::FnKind::Function && env.reports(f.module))
+        .map(|(id, f)| Header {
+            generic: !f.type_params.is_empty(),
+            result_labels: env
+                .summaries
+                .get(&id)
+                .map(|summary| {
+                    summary
+                        .iter()
+                        .filter(|(_, params)| !params.is_empty())
+                        .map(|(path, params)| {
+                            (
+                                env::position_text(path),
+                                params
+                                    .iter()
+                                    .filter_map(|index| f.type_params.get(*index))
+                                    .map(|param| (*param).to_owned())
+                                    .collect(),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             module: env
                 .modules
                 .get(f.module)
@@ -433,6 +471,11 @@ fn parse_standard(
     let lexed = lex_in(sources.file(id), id, interner, keywords);
     parse(&lexed, id, interner).file
 }
+
+/// A bound on the rounds of pass 1 for the least fixpoint of result summaries (ADR 0067):
+/// each round that does not end adds a type parameter at a position, and a package reaching
+/// it would need that many in one chain of calls.
+const MAX_SUMMARY_ROUNDS: usize = 64;
 
 /// Collects diagnostics, with the sources their spans point into.
 pub(crate) struct Report<'s> {

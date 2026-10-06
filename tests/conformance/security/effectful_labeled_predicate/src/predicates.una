@@ -1,0 +1,30 @@
+-- test: `first_where` calls its predicate only up to the first accepted element, so a predicate with effects whose result is labeled is U4002; `filter` calls it on every element, and a pure labeled predicate raises the result (ADR 0067 L4, spec/14 §1, #92)
+-- spec: spec/14 §1
+-- expect: error U4002 at src/predicates.una:19:36
+module predicates
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+noisy(x: secret Int) -> secret Bool
+  uses @log: Log[write]
+=
+  @log.write(0)
+  x > 0
+
+--- Which elements get logged depends on the secret results.
+pub first_logged(xs: List[secret Int]) -> secret Bool
+  uses @log: Log[write]
+=
+  let found = xs.first_where(keep: noisy)
+  found.is_some()
+
+--- `filter` logs once per element, whatever the results; the count is secret.
+pub filter_logged(xs: List[secret Int]) -> secret Int
+  uses @log: Log[write]
+=
+  let kept = xs.filter(keep: noisy)
+  kept.len
+
+--- A pure labeled predicate: the result's top label is secret.
+pub positives(xs: List[secret Int]) -> secret Int = xs.filter(keep: fn(x) -> x > 0).len

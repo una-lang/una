@@ -311,6 +311,42 @@ pub(crate) struct Env<'a> {
     alias_state: Vec<AliasState>,
     /// The package's edition (`spec/13 §7`).
     pub(crate) edition: Edition,
+    /// The result summary of each generic function declared outside the prelude, by function
+    /// (ADR 0067, `spec/07 §7` rule 8); edition 0.2 only.
+    pub(crate) summaries: BTreeMap<usize, Summary>,
+    /// Whether a summary grew in the current round of their least fixpoint.
+    pub(crate) summaries_grew: bool,
+}
+
+/// A step from a position of a type to a position inside it (ADR 0067).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Step {
+    /// The element of a `List`.
+    Element,
+    /// The type argument of `Option`, `Result` or a kind, by index.
+    Arg(usize),
+    /// The result of a function type.
+    Result,
+}
+
+/// The positions of a declared result type, as paths of steps from its top, and the type
+/// parameters, by index, whose symbolic labels the function's body can put at each one
+/// (ADR 0067 L1). A position missing from the map has an empty summary.
+pub(crate) type Summary = BTreeMap<Vec<Step>, std::collections::BTreeSet<usize>>;
+
+/// A position written as `spec/13 §5` writes it: `top`, or its steps joined by `.`.
+pub(crate) fn position_text(path: &[Step]) -> String {
+    if path.is_empty() {
+        return "top".to_owned();
+    }
+    path.iter()
+        .map(|step| match step {
+            Step::Element => "element".to_owned(),
+            Step::Arg(index) => format!("arg {}", index + 1),
+            Step::Result => "result".to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 impl<'a> Env<'a> {
@@ -338,6 +374,8 @@ impl<'a> Env<'a> {
             kind_labels: Rc::new(KindLabels::default()),
             alias_state: Vec::new(),
             edition,
+            summaries: BTreeMap::new(),
+            summaries_grew: false,
         };
         for source in package.into_iter().chain([prelude, testing]) {
             env.register(source);
