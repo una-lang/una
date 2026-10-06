@@ -23,7 +23,7 @@
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use num_bigint::{BigInt, Sign};
 
@@ -87,10 +87,16 @@ struct Slot {
     object: Option<Object>,
 }
 
+/// How many freed slots a debug build keeps unused before it reuses the oldest: a use of an
+/// object freed since is a fault rather than a read of another object, and a long run still
+/// holds a bounded heap (#201).
+const QUARANTINE: usize = 1 << 16;
+
 #[derive(Default)]
 struct Heap {
     slots: Vec<Slot>,
-    free: Vec<usize>,
+    /// The free slots, oldest first: a release build reuses the newest.
+    free: VecDeque<usize>,
     /// Text literals by their contents, so that each literal is one text, which the heap keeps
     /// for the whole run. Not by the address of their bytes: an empty literal has no bytes, and
     /// can share its address with the next literal of the object file.
@@ -128,13 +134,16 @@ fn slot(word: i64) -> Option<usize> {
 fn alloc(object: Object) -> i64 {
     HEAP.with(|heap| {
         let mut heap = heap.borrow_mut();
-        // A debug build never reuses a slot, so that a use of a freed object is a fault rather
-        // than a read of another object. This changes where objects live, never what a program
-        // computes (see `runtime::start`).
-        let reused = if cfg!(debug_assertions) {
-            None
+        // A debug build reuses a slot only once `QUARANTINE` slots were freed after it, so
+        // that a use of a recently freed object is a fault rather than a read of another
+        // object. This changes where objects live, never what a program computes (see
+        // `runtime::start`), and the heap it holds stays that of the program (#201).
+        let reused = if !cfg!(debug_assertions) {
+            heap.free.pop_back()
+        } else if heap.free.len() > QUARANTINE {
+            heap.free.pop_front()
         } else {
-            heap.free.pop()
+            None
         };
         let index = match reused {
             Some(index) => index,
@@ -206,7 +215,7 @@ pub fn release(word: i64) {
                 return None;
             }
             let object = slot.object.take();
-            heap.free.push(index);
+            heap.free.push_back(index);
             object
         });
         if let Some(object) = freed {

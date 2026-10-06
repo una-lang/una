@@ -373,6 +373,71 @@ pub main() -> Unit
   @console.print(\"held {size}\")
 ";
 
+/// A loop of `STEPS` iterations whose state is a counter and a list that `append` or `set`
+/// updates (#201).
+const UPDATES: &str = "module updates
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit n = 0
+  let edit xs: List[Int] = []
+  for i in 0..<STEPS
+    n = n + 1
+    xs = xs.append(item: i)
+  let kept = xs
+  let edit ys = xs
+  for i in 0..<STEPS
+    if i < ys.len
+      edit ys.set(index: i, item: 7)
+  let first = when kept.first()
+    is Some(v) -> v
+    is None -> -1
+  let changed = when ys.first()
+    is Some(v) -> v
+    is None -> -1
+  @console.print(\"{n} {xs.len} {first} {changed}\")
+";
+
+#[test]
+fn a_loop_runs_in_constant_memory_and_updates_a_list_in_place() {
+    // #201: a loop whose state takes constant space runs in constant space, and `append` and
+    // `set` on a list nothing else holds update it in place, in linear time, as the native code
+    // does (#30). A list that another binding holds is copied: `kept` keeps its values while
+    // `ys` changes. 1,000,000 iterations fit in 64 MiB; with a copy at each update, 100,000
+    // appends took about two minutes in a debug build, and now take well under a second.
+    let root = package("updates", "\n[run]\nentry = \"updates\"\n", &[]);
+    let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let file = root.join("src/updates.una");
+    let dir = root.to_str().unwrap();
+    for (steps, expected) in [("3", "3 3 0 7"), ("100000", "100000 100000 0 7")] {
+        std::fs::write(&file, UPDATES.replace("STEPS", steps)).unwrap();
+        let started = std::time::Instant::now();
+        let output = una(&["run", dir, "--grant", "console", "--max-memory", "64"]);
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        assert_eq!(stdout(&output), format!("{expected}\n"));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "{steps} updates took {:?}",
+            started.elapsed()
+        );
+    }
+    std::fs::write(
+        &file,
+        "module updates\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit n = 0\n  for i in 0..<1000000\n    n = n + 1\n  @console.print(\"{n}\")\n",
+    )
+    .unwrap();
+    let output = una(&["run", dir, "--grant", "console", "--max-memory", "64"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "1000000\n");
+}
+
 #[test]
 fn a_run_over_its_memory_budget_is_u6003() {
     // ADR 0061 rule 2: `--max-memory <MiB>` bounds the heap a run holds; past it, the call that
