@@ -37,9 +37,7 @@ constrained_param  = upper_ident [ ":" upper_ident ] ;
 ```una
 pub sort[T: Ord](xs: List[T]) -> List[T]
 
-pub largest[T: Ord](xs: List[T], floor: T) -> T
-=
-  xs.fold(initial: floor, step: fn(best, x) -> max(best, b: x))
+pub largest[T: Ord](xs: List[T], floor: T) -> T = xs.fold(initial: floor, step: fn(best, x) -> max(best, b: x))
 
 pub total[T: Integer](xs: List[T]) -> Int = xs.map(each: fn(x) -> x.to_int()).sum()
 ```
