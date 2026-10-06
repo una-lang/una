@@ -1049,3 +1049,36 @@ fn literal_patterns_are_not_supported() {
         "f(v: T) -> Int\n=\n  when v\n    is Some(inner) -> if inner == -1 then 1 else 2\n    else -> 0\n",
     );
 }
+
+#[test]
+fn a_handling_clause_on_the_line_of_its_expression_says_where_it_goes() {
+    // #211: `spec/02 §6` puts each handling clause on its own line, indented under the
+    // expression it handles. The same-line form gets a message naming the rule and an edit
+    // that moves the clause down.
+    let message =
+        "U0101 a handling clause goes on its own line, indented under the expression it handles";
+    assert_eq!(
+        repairs("f(x: Int) -> Int\n  fails Bad\n=\n  let y = g(x) if error pass\n  y\n"),
+        [(
+            message.to_owned(),
+            vec![(
+                "move the clause to its own line".to_owned(),
+                Some("\n    ".to_owned())
+            )]
+        )]
+    );
+    assert_eq!(
+        repairs("f(o: Option[Int]) -> Int\n=\n  when o\n    is Some(v) ->\n      g(v) if none use 0\n    else -> 0\n")[0].1,
+        [(
+            "move the clause to its own line".to_owned(),
+            Some("\n        ".to_owned())
+        )]
+    );
+    // The repaired forms parse.
+    tree("f(x: Int) -> Int\n  fails Bad\n=\n  let y = g(x)\n    if error pass\n  y\n");
+    // `if` after an expression that is not a handling clause keeps the general message.
+    assert_eq!(
+        errors("f(x: Int) -> Int\n=\n  let y = g(x) if x > 0\n  y\n"),
+        ["U0101 5:16 unexpected keyword `if`, expected end of line"]
+    );
+}

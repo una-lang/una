@@ -1,0 +1,4 @@
+[package]
+name = "handling_clause_moved"
+version = "0.1.0"
+edition = "0.2"
