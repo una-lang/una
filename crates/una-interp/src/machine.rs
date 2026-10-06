@@ -1,13 +1,13 @@
 //! The evaluation of Core IR: the rules of `spec/11 §4`, big-step, call-by-value, left to
 //! right, with the capability environment, the world and the trace.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
 use num_bigint::{BigInt, Sign};
 use una_core::{
     Atom, Base, Bound, CapOp, Ctor, Decl, Expr, FixedOp, Fun, HandlerOp, IntType, Label, Level,
-    LoopSource, Name, Path, Prim, Program, Rhs, Source, Type, Use,
+    LoopSource, Name, PRELUDE_MODULE, Path, Prim, Program, Rhs, Source, Type, Use,
 };
 use una_syntax::Span;
 
@@ -441,6 +441,15 @@ fn unmeasured() -> usize {
     0
 }
 
+/// What a loop visits, its variable, its state, its body and where it is written.
+type LoopParts<'p> = (
+    &'p LoopSource,
+    &'p (Name, Type),
+    &'p [(Name, Type)],
+    &'p Expr,
+    Span,
+);
+
 /// The Una Abstract Machine: one run of `main` or of one example.
 pub(crate) struct Machine<'p, 'w> {
     index: &'w Index<'p>,
@@ -465,6 +474,14 @@ pub(crate) struct Machine<'p, 'w> {
     /// The path of the `together` task in progress, one 1-based index per enclosing block
     /// (`spec/19 §6`).
     task: Vec<usize>,
+    /// What the function in progress evaluates after the expression in progress, innermost
+    /// last, with the names that each rebinds before reading them: a binding none of them
+    /// reads is dead once the expression no longer reads it (#201).
+    later: Vec<(&'p Expr, Vec<&'p str>)>,
+    /// `later` of the functions that called the one in progress.
+    callers: Vec<Vec<(&'p Expr, Vec<&'p str>)>>,
+    /// The names each expression reads, computed once (`una_core::vars`).
+    reads: HashMap<*const Expr, Rc<BTreeSet<String>>>,
 }
 
 impl<'p, 'w> Machine<'p, 'w> {
@@ -495,6 +512,9 @@ impl<'p, 'w> Machine<'p, 'w> {
             installs: BTreeMap::new(),
             frames: Vec::new(),
             task: Vec::new(),
+            later: Vec::new(),
+            callers: Vec::new(),
+            reads: HashMap::new(),
         }
     }
 
@@ -548,6 +568,9 @@ impl<'p, 'w> Machine<'p, 'w> {
         }
         self.within_budget(span)?;
         self.depth += 1;
+        // A function starts with an environment of its own: what its caller evaluates later
+        // reads none of its bindings.
+        self.callers.push(std::mem::take(&mut self.later));
         Ok(())
     }
 
@@ -566,7 +589,56 @@ impl<'p, 'w> Machine<'p, 'w> {
 
     fn leave(&mut self, result: Flow<'p>) -> Flow<'p> {
         self.depth = self.depth.saturating_sub(1);
+        self.later = self.callers.pop().unwrap_or_default();
         result
+    }
+
+    /// The names `expr` reads.
+    fn reads(&mut self, expr: &'p Expr) -> Rc<BTreeSet<String>> {
+        Rc::clone(
+            self.reads
+                .entry(std::ptr::from_ref(expr))
+                .or_insert_with(|| {
+                    let mut names = BTreeSet::new();
+                    una_core::vars(expr, &mut names);
+                    Rc::new(names)
+                }),
+        )
+    }
+
+    /// Whether the binding `name` is dead once `rest` has started: neither `rest` nor what the
+    /// function evaluates after it reads it (#201).
+    fn dead_after(&mut self, name: &str, rest: &'p Expr) -> bool {
+        if self.reads(rest).contains(name) {
+            return false;
+        }
+        let later = self.later.clone();
+        later
+            .into_iter()
+            .all(|(expr, rebound)| rebound.contains(&name) || !self.reads(expr).contains(name))
+    }
+
+    /// `let name = f(xs, ...) in rest` where `f` is `append` or `set` of the prelude and `xs`
+    /// is a binding at its last use: the binding gives up its list, so that the call, holding
+    /// the only reference, updates it in place, as the native code does (#30, #201). A list
+    /// something else holds is still copied, so no value ever changes under another name.
+    fn updates_in_place(&mut self, rhs: &'p Rhs, rest: &'p Expr) -> Option<&'p str> {
+        let Rhs::Call { function, args, .. } = rhs else {
+            return None;
+        };
+        if function.module != PRELUDE_MODULE || !matches!(function.name.as_str(), "append" | "set")
+        {
+            return None;
+        }
+        let Some(Atom::Var(name)) = args.first() else {
+            return None;
+        };
+        let twice = args
+            .iter()
+            .filter(|arg| matches!(arg, Atom::Var(other) if other == name))
+            .count()
+            > 1;
+        (!twice && self.dead_after(name, rest)).then_some(name.as_str())
     }
 
     fn eval(&mut self, env: &mut Env<'p>, caps: &Caps<'p>, expr: &'p Expr) -> Flow<'p> {
@@ -590,8 +662,33 @@ impl<'p, 'w> Machine<'p, 'w> {
                     ..
                 } => {
                     let value = match value.as_ref() {
-                        Bound::Rhs(rhs) => self.rhs(env, &caps, rhs, ty)?,
-                        Bound::Expr(inner) => self.eval(env, &caps, inner)?,
+                        Bound::Rhs(rhs) => match self.updates_in_place(rhs, body) {
+                            Some(moved) => {
+                                let Rhs::Call {
+                                    function,
+                                    args,
+                                    span,
+                                    ..
+                                } = rhs
+                                else {
+                                    return Err(fault("an update that is not a call"));
+                                };
+                                let args = self.atoms(env, args)?;
+                                if let Some((_, value)) =
+                                    env.iter_mut().rev().find(|(n, _)| *n == moved)
+                                {
+                                    *value = Value::Unit;
+                                }
+                                self.call(function, args, &caps, *span)?
+                            }
+                            None => self.rhs(env, &caps, rhs, ty)?,
+                        },
+                        Bound::Expr(inner) => {
+                            self.later.push((body, Vec::new()));
+                            let value = self.eval(env, &caps, inner);
+                            self.later.pop();
+                            value?
+                        }
                     };
                     env.push((name.as_str(), value));
                     expr = body;
@@ -607,60 +704,46 @@ impl<'p, 'w> Machine<'p, 'w> {
                     span,
                 } => {
                     let mut current = self.atoms(env, init)?;
-                    match source.as_ref() {
-                        LoopSource::List(list) => {
-                            let Value::List(items) = self.atom(env, list)? else {
-                                return Err(fault("a loop over a value that is not a list"));
-                            };
-                            for item in items.iter() {
-                                self.within_budget(*span)?;
-                                current =
-                                    self.iteration(env, &caps, var, state, current, item, body)?;
-                            }
-                        }
-                        LoopSource::Range {
-                            low,
-                            high,
-                            inclusive,
-                        } => {
-                            let (Value::Int(low), Value::Int(high)) =
-                                (self.atom(env, low)?, self.atom(env, high)?)
-                            else {
-                                return Err(fault("a loop over a range of non-integers"));
-                            };
-                            let mut index = low;
-                            loop {
-                                let visit = if *inclusive {
-                                    index <= high
-                                } else {
-                                    index < high
-                                };
-                                if !visit {
-                                    break;
-                                }
-                                let item = Value::Int(index.clone());
-                                self.within_budget(*span)?;
-                                current =
-                                    self.iteration(env, &caps, var, state, current, &item, body)?;
-                                // The successor of the upper bound is never computed, so a
-                                // range up to the greatest value of a type stops there.
-                                if index == high {
-                                    break;
-                                }
-                                index += 1;
-                            }
-                        }
-                    }
+                    // The next iterations read the bindings the body reads, but for the item
+                    // and the state, which each iteration binds anew.
+                    let rebound = std::iter::once(var.as_ref())
+                        .chain(state.iter())
+                        .map(|(name, _)| name.as_str())
+                        .collect();
+                    self.later.push((body, rebound));
+                    let result = self.iterations(
+                        env,
+                        &caps,
+                        (
+                            source.as_ref(),
+                            var.as_ref(),
+                            state.as_slice(),
+                            body.as_ref(),
+                            *span,
+                        ),
+                        current,
+                    );
+                    self.later.pop();
+                    current = result?;
                     return Ok(Value::Tuple(Rc::new(current)));
                 }
                 // The tasks of a `together` block (`spec/19 §6`), run one after another in
                 // branch order, the sequential schedule: a failure stops the block before
                 // the tasks after it start, and none is cancelled after starting.
                 Expr::Together { tasks, .. } => {
+                    // A task's captures are never given up: the tasks after it read them.
+                    self.later.push((expr, Vec::new()));
                     let mut results = Vec::with_capacity(tasks.len());
                     for (index, task) in tasks.iter().enumerate() {
-                        results.push(self.task(env, &caps, index, task)?);
+                        match self.task(env, &caps, index, task) {
+                            Ok(result) => results.push(result),
+                            Err(stop) => {
+                                self.later.pop();
+                                return Err(stop);
+                            }
+                        }
                     }
+                    self.later.pop();
                     return Ok(Value::Tuple(Rc::new(results)));
                 }
                 // `together for` (`spec/19 §6`): one task per element, in element order.
@@ -672,13 +755,21 @@ impl<'p, 'w> Machine<'p, 'w> {
                 } => {
                     let items = self.elements(env, source, *span)?;
                     let mut results = Vec::with_capacity(items.len());
+                    self.later.push((expr, Vec::new()));
                     for (index, item) in items.into_iter().enumerate() {
                         let mark = env.len();
                         env.push((var.0.as_str(), item));
                         let result = self.task(env, &caps, index, task);
                         env.truncate(mark);
-                        results.push(result?);
+                        match result {
+                            Ok(result) => results.push(result),
+                            Err(stop) => {
+                                self.later.pop();
+                                return Err(stop);
+                            }
+                        }
                     }
+                    self.later.pop();
                     return Ok(Value::List(Rc::new(results)));
                 }
                 // `let (x, ...) = a in e` (`spec/17 §4`).
@@ -739,13 +830,19 @@ impl<'p, 'w> Machine<'p, 'w> {
                     body,
                     error,
                     handler,
-                } => match self.eval(env, &caps, body) {
-                    Err(Stop::Fail(failure)) => {
-                        env.push((error.as_str(), failure));
-                        expr = handler;
+                } => {
+                    // After a failure of the body, the handler runs.
+                    self.later.push((handler, Vec::new()));
+                    let result = self.eval(env, &caps, body);
+                    self.later.pop();
+                    match result {
+                        Err(Stop::Fail(failure)) => {
+                            env.push((error.as_str(), failure));
+                            expr = handler;
+                        }
+                        other => return other,
                     }
-                    other => return other,
-                },
+                }
                 Expr::Attempt { body, .. } => {
                     return match self.eval(env, &caps, body) {
                         Ok(value) => Ok(Value::data(prelude_ctor("Result", "Ok", 0), vec![value])),
@@ -827,6 +924,60 @@ impl<'p, 'w> Machine<'p, 'w> {
             Atom::Text(text) => Value::text(text),
             Atom::Unit => Value::Unit,
         })
+    }
+
+    /// The iterations of a loop from the state `current` (`spec/17 §4`): iterations are not
+    /// calls, so they do not count toward the call depth (ADR 0056, amendment of 2026-10-02).
+    fn iterations(
+        &mut self,
+        env: &mut Env<'p>,
+        caps: &Caps<'p>,
+        (source, var, state, body, span): LoopParts<'p>,
+        mut current: Vec<Value<'p>>,
+    ) -> Result<Vec<Value<'p>>, Stop<'p>> {
+        match source {
+            LoopSource::List(list) => {
+                let Value::List(items) = self.atom(env, list)? else {
+                    return Err(fault("a loop over a value that is not a list"));
+                };
+                for item in items.iter() {
+                    self.within_budget(span)?;
+                    current = self.iteration(env, caps, var, state, current, item, body)?;
+                }
+            }
+            LoopSource::Range {
+                low,
+                high,
+                inclusive,
+            } => {
+                let (Value::Int(low), Value::Int(high)) =
+                    (self.atom(env, low)?, self.atom(env, high)?)
+                else {
+                    return Err(fault("a loop over a range of non-integers"));
+                };
+                let mut index = low;
+                loop {
+                    let visit = if *inclusive {
+                        index <= high
+                    } else {
+                        index < high
+                    };
+                    if !visit {
+                        break;
+                    }
+                    let item = Value::Int(index.clone());
+                    self.within_budget(span)?;
+                    current = self.iteration(env, caps, var, state, current, &item, body)?;
+                    // The successor of the upper bound is never computed, so a
+                    // range up to the greatest value of a type stops there.
+                    if index == high {
+                        break;
+                    }
+                    index += 1;
+                }
+            }
+        }
+        Ok(current)
     }
 
     /// One iteration of a loop: the body with the loop variable and the current state bound;
@@ -1223,6 +1374,9 @@ impl<'p, 'w> Machine<'p, 'w> {
 
     /// The functions of the prelude (`spec/14 §1`).
     fn prelude(&mut self, name: &str, args: Vec<Value<'p>>, span: Span) -> Flow<'p> {
+        if matches!(name, "append" | "set") {
+            return update(name, args);
+        }
         let bad = || fault(format!("`{name}` applied to values of the wrong types"));
         let int = |i: usize| match args.get(i) {
             Some(Value::Int(n)) => Ok(n.clone()),
@@ -1288,25 +1442,6 @@ impl<'p, 'w> Machine<'p, 'w> {
                     .ok()
                     .and_then(|i| items.get(i).cloned())
                     .map_or_else(none, some)
-            }
-            "append" => {
-                let mut items = list(0)?.as_ref().clone();
-                items.push(arg(1)?);
-                Value::List(Rc::new(items))
-            }
-            // `set` has an `edit` parameter: it returns the new list and its result, `unit`
-            // (`spec/17 §4`, `§8`). Its `requires` keeps the index in range.
-            "set" => {
-                let mut items = list(0)?.as_ref().clone();
-                let index = int(1)?;
-                let slot = usize::try_from(&index)
-                    .ok()
-                    .and_then(|i| items.get_mut(i))
-                    .ok_or_else(|| {
-                        fault("`set` at an index outside the list, which its precondition excludes")
-                    })?;
-                *slot = arg(2)?;
-                Value::Tuple(Rc::new(vec![Value::List(Rc::new(items)), Value::Unit]))
             }
             "contains" => {
                 let item = arg(1)?;
@@ -1601,6 +1736,37 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
             }
         },
     })
+}
+
+/// `append` and `set` of the prelude (`spec/14 §1`, `spec/17 §4`). They update the list in
+/// place when they hold its only reference, which a binding at its last use gives up (#201),
+/// and copy it otherwise: no other name ever sees the change.
+fn update<'p>(name: &str, args: Vec<Value<'p>>) -> Flow<'p> {
+    let bad = || fault(format!("`{name}` applied to values of the wrong types"));
+    let mut args = args.into_iter();
+    let Some(Value::List(mut items)) = args.next() else {
+        return Err(bad());
+    };
+    if name == "append" {
+        let item = args.next().ok_or_else(bad)?;
+        Rc::make_mut(&mut items).push(item);
+        return Ok(Value::List(items));
+    }
+    // `set` has an `edit` parameter: it returns the new list and its result, `unit`
+    // (`spec/17 §4`, `§8`). Its `requires` keeps the index in range.
+    let (Some(Value::Int(index)), Some(item)) = (args.next(), args.next()) else {
+        return Err(bad());
+    };
+    let slot = usize::try_from(&index)
+        .ok()
+        .filter(|&i| i < items.len())
+        .ok_or_else(|| {
+            fault("`set` at an index outside the list, which its precondition excludes")
+        })?;
+    if let Some(cell) = Rc::make_mut(&mut items).get_mut(slot) {
+        *cell = item;
+    }
+    Ok(Value::Tuple(Rc::new(vec![Value::List(items), Value::Unit])))
 }
 
 #[cfg(test)]
