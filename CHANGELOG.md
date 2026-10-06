@@ -2,6 +2,85 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
+## v0.2.0
+
+The first stable release of v0.2. The native backend compiles the whole language of edition 0.2 into executables that match the interpreter. Edition 0.2 completes its scope with structured concurrency, constraints on generics and printing of structured values, and every Critical and Major finding of the two independent reviews of v0.2 (#176, #177) is fixed. Gate 1's benchmark stays pinned to v0.1.x.
+
+### Security
+
+- **Labels of function values passed for `of` parameters** (#210, P0, Critical). In edition 0.2, a function value given for a `uses of` or `fails of` parameter, as `map`, `filter`, `first_where` and `fold` take, lost its labels. That was both a false rejection and an information-flow leak, present since v0.2.0-alpha.3. v0.1.x is not affected.
+- **Defense in depth near `of` parameters** (#216). Three sites keep or join the labels the rules require, although none leaked: the effects of a function value given for an `of` parameter run under its own label too.
+- **Edit arguments flow back with their final labels** (#186). An `edit` argument's new value is checked after every argument is typed. Before, a `secret` could reach a public place through a generic callee.
+
+### Edition 0.2
+
+- **Structured concurrency** (ADR 0065, `spec/19`, #32, #167): `together` blocks and `together for`, with cancellation of the tasks after a failed one and a deterministic trace. `together for` proves the length of its list.
+- **Constraints on generics** (ADR 0066, `spec/20`, #37): `Eq`, `Ord` and `Integer` on function type parameters, written or inferred for private functions, with the codes U2025 to U2027. The prelude gains a generic `min`, `max`, `contains`, `sum` and a stable `sort`.
+- **Printing structured values** (ADR 0068, #204): interpolation writes any value that holds no function in its Una form, as `una test` shows it, keeping its labels.
+- **Exact integers in `reflect` bodies** (ADR 0057 amendment, #180): the body of a `reflect` predicate makes no `overflow` obligation and no U2022, and every engine computes its integers exactly, as the verifier reads it.
+- **Literals in constructors** (#187): `Some(3)`, `Ok(3)` and `Box(value: 3)` take the fixed-width type they are checked against.
+- **Negative literals** in `*`, `/` and `mod` stay linear for the verifier (#188).
+
+### Native backend
+
+- **`together` and `together for`** (#162): a thread per task with its own heap, values copied at the fork and the join, non-atomic reference counts.
+  - An operation in progress at cancellation completes (#200).
+- **Constrained generics** (#171): one hidden type descriptor per constrained type parameter (ADR 0066 G4, `spec/20 §7`), also captured by closures.
+- **Tuples, `let (...)`, `for` loops and `set`**, and effectful and failing functions in the prelude's higher-order functions (#116).
+- **In-place updates** (#30): a uniquely held list or record is updated in place at its last use.
+  - #181 limits this to words with no live alias.
+  - #182 keeps a range loop's high bound for the whole loop.
+- **Grants per operation** (#183): `main` is checked against the modes of each `files` grant, as `una run` checks it.
+- **Pipes and writes**:
+  - executables ignore `SIGPIPE`, and report a closed output with exit code 2 (#184);
+  - a failed write to stderr exits 2 (#198).
+- **Native review minors** (#185):
+  - key files load after U3012;
+  - `--max-memory 0` is a usage error in `una run`, `una test` and executables;
+  - `una build` works through a symlinked `una`;
+  - the trusted base names `una-rt` and its allocator `cap` (ADR 0061 amendment, charter §3).
+- **The runtime build** (#203): the README builds `una-rt` with `una-cli`, and a missing or stale `libuna_rt.a` names the command that builds it.
+
+### Interpreter and tools
+
+- **Lists are updated in place** at their last use in the interpreter too (#201). A loop of 100,000 appends takes a fraction of a second instead of about two minutes.
+  - Loops run in constant memory in both engines.
+  - The debug runtime's quarantine of freed slots is bounded.
+- **`una run` with a closed stdout** reports its diagnostics on stderr, as the executable does (#199).
+- **The solver's wallclock** is checked before its answer, so `--solver-wallclock 0` makes every query unknown (#189).
+- **Diagnostics agents meet:**
+  - U2009 at a compared variant offers `e is V` (#205);
+  - a reserved word used as a binding name says what it is reserved for (#206);
+  - a handling clause on its expression's line says where it goes (#211).
+- **The agent guide and the syntax reference** cover edition 0.2, and every example is checked (#178).
+
+### Architecture decisions
+
+The decisions of v0.2, all accepted:
+- ADR 0055, native backend;
+- ADR 0056, memory model;
+- ADR 0057, fixed-width integers;
+- ADR 0058, `unsafe` at the runtime's C ABI boundary;
+- ADR 0059, release archives ship the native runtime;
+- ADR 0060, recursive kinds;
+- ADR 0061, a memory limit;
+- ADR 0062, effect polymorphism;
+- ADR 0063, the language server;
+- ADR 0064, the authenticated proof cache;
+- ADR 0065, structured concurrency;
+- ADR 0066, constraints on generics;
+- ADR 0067, position-precise result labels of user generic functions;
+- ADR 0068, printing structured values.
+
+### Known limits
+
+- Native code is generated with Cranelift, and each target is built on its own platform. LLVM release builds are later (`plan/backlog.md`).
+- Constraints have no laws: no axiom states that an order is total or transitive (`spec/20 §5`).
+- There are no user traits or implementations, and no map type.
+- The point where a run exhausts its memory differs between engines and builds (ADR 0061 rule 5).
+- A redacting view of a value, `redact(x)`, is deferred (ADR 0068).
+- This release was built and checked locally (`scripts/local-release.sh`), on macOS natively and Linux in a container, while GitHub Actions was unavailable.
+
 ## v0.2.0-alpha.3
 
 The third pre-release of v0.2. The native backend now compiles every runnable program of the suite. Edition 0.2 gains the memory model, `for` loops, recursive kinds and effect polymorphism, and the release also brings a language server, a memory limit and an authenticated proof cache. Gate 1's benchmark stays pinned to v0.1.x (v0.1.3).
