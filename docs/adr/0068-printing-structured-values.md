@@ -1,10 +1,10 @@
 # 0068. Printing structured values
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-06
-- Deciders: Leonardo (pending), on a proposal by Claude (Una-2)
+- Deciders: Leonardo (accepted on 2026-10-06, D1 to D8 as recommended), on a proposal by Claude (Una-2)
 - Resolves: issue #204 (F2 of the native dogfood, una-bench#17)
-- Amends, when accepted: `spec/07 §7` rule 3 (no change of rule; an example), `spec/11 §5` (the Una form becomes the text of interpolation), `spec/14 §1`, `spec/16 §4`, `spec/20 §1` and `§3`, the guide (`una-for-agents.md`, `syntax-reference.md`)
+- Amends: `spec/07 §7` rule 3 (no change of rule; its consequence for structured values), `spec/10 §12` (rule 14), `spec/11 §5` (the Una form is the text of interpolation), `spec/20 §1`, `plan/backlog.md`; the guide (`una-for-agents.md`, `syntax-reference.md`) with the implementation
 
 ## Context
 
@@ -88,7 +88,7 @@ The text an interpolation produces must carry an exact label. Two rules are soun
 
 ### D8. Diagnostic codes
 
-- Interpolation of a type that holds a function: U2001, with a message that names the function position. **To assign** if the coordinator prefers a distinct code.
+- Interpolation of a type that holds a function: U2001, with a message that names the function position. No new code (decided).
 - Interpolation of a `T` without `Eq` in a public generic function: U2026, with the repair `[T: Eq]` (`spec/20 §3` rule 1).
 - Printing a record with a secret field: U4003, unchanged, with a repair that names the field above `public`.
 

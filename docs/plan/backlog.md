@@ -28,6 +28,7 @@ These rows are in scope since Leonardo opened the v0.2 scope on 2026-10-01 (char
 | SIMD requirements, target-aware (`simd required target avx2`) | v0.2 | Backend dependent | R3 | [#27](https://github.com/una-lang/una/issues/27) |
 | FFI and `trusted` foreign code | v0.2 | Largest TCB risk; needs TCB risk profile first | D, R3 | [#33](https://github.com/una-lang/una/issues/33) |
 | Units of measure | v0.2 | Useful, not needed for the thesis | D | [#34](https://github.com/una-lang/una/issues/34) |
+| `redact(x) -> Text`: a public view of a value, with every position above `public` written as `<redacted:level>` | later | Decided (ADR 0068, D3): interpolation keeps the value's labels and redacts nothing; a redacting view is a separate, rarer need, to revisit if agents ask | ADR 0068 | [#204](https://github.com/una-lang/una/issues/204) |
 | Pipelines `\|>` and `it` shorthand lambdas | v0.2 | Sugar; interacts with labeled-argument rules | D | [#35](https://github.com/una-lang/una/issues/35) |
 | Authenticate or re-validate proof cache entries | v0.2 | Done in v0.2: ADR 0064, entries tagged under a per-user key, which replaces the cache in the Trusted zone (`spec/12 §9`) | v0.1 review R-018 | [#44](https://github.com/una-lang/una/issues/44) |
 | Bound the interpreter heap and report exhaustion as U6003 | v0.2 | Done in v0.2: ADR 0061, `--max-memory` and a stack capped at 1 GiB (`spec/11 §7`) | v0.1 review R-033 | [#45](https://github.com/una-lang/una/issues/45) |
