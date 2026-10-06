@@ -877,6 +877,49 @@ fn a_failed_write_to_stderr_exits_as_una_run_does() {
 }
 
 #[test]
+fn a_closed_stdout_is_reported_on_stderr_by_both_engines() {
+    // #199: with stdout on a pipe whose reader is gone, `una run` exited 2 and said nothing.
+    // Like the executable, it now reports the U6001 of a failing `main` and the failed write
+    // on stderr, and exits 2.
+    runtime();
+    let program = "module closed\n\npub kind Oops = | Bad\n\npub main() -> Unit\n  uses @console: Console[print]\n  fails Oops\n=\n  @console.print(\"start\")\n  fail Bad\n";
+    let dir = package(
+        "closed",
+        "\n[run]\nentry = \"closed\"\ngrants = [\"console\"]\n",
+        &[("src/closed.una", program)],
+    );
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let closed = |command: &mut Command| {
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        command
+            .current_dir(&dir)
+            .env("NO_COLOR", "1")
+            .stdout(writer)
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .unwrap()
+    };
+    let interpreted = closed(
+        Command::new(env!("CARGO_BIN_EXE_una"))
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .args(["run", "."]),
+    );
+    let native = closed(&mut Command::new(dir.join("target/una/closed")));
+    for (engine, output) in [("una run", &interpreted), ("the executable", &native)] {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{engine}: {stderr}");
+        assert!(stderr.contains("U6001"), "{engine}: {stderr}");
+        assert!(
+            stderr.contains("error: cannot write the output: "),
+            "{engine}: {stderr}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn the_executable_checks_main_against_its_grants() {
     runtime();
     // No `[run] grants`: `una build` accepts it, and the executable needs `--grant console`.
