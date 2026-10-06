@@ -1,0 +1,14 @@
+-- test: the variable of a `together for` over a range has the integer type of the range's bounds, as in a `for` loop, so tasks over a `U8` range make a `List[U8]` (spec/19 §2 rule 2, #188)
+-- spec: spec/19 §2
+-- expect: ok
+module range_type
+
+pub bytes(low: U8, high: U8) -> List[U8]
+=
+  together for i in low..high
+    i
+
+pub wide(n: I64) -> List[I64]
+=
+  together for i in 0..<n
+    i
