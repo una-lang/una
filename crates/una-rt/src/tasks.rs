@@ -8,7 +8,7 @@
 //!   its cancellation flags, its own and its ancestors'.
 //! - **Failure and cancellation.** When a task fails, every task after it is cancelled. A task
 //!   cancelled before it starts never starts; a started one stops at its next call, operation
-//!   or loop iteration. Nothing unwinds: the compiled code returns a stop, and the task's heap
+//!   or loop iteration outside an operation in progress, which completes (#200). Nothing unwinds: the compiled code returns a stop, and the task's heap
 //!   goes with its thread.
 //! - **The join** appends the tasks' events in task order, with a `cancelled` event after a
 //!   cancelled task that had started, then numbers `seq` and the installations of handlers. The
