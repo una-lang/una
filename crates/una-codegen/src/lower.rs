@@ -31,8 +31,8 @@ use cranelift_codegen::isa::TargetFrontendConfig;
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::Module;
 use una_core::{
-    Atom, Base, Bound, Ctor, Decl, Expr, HOST_MODULE, Label, LoopSource, Name, PRELUDE_MODULE,
-    Path, Prim, Rhs, Source, Type, vars,
+    Atom, Base, Bound, Constraint, Ctor, Decl, Descriptor, Expr, HOST_MODULE, Label, LoopSource,
+    Name, PRELUDE_MODULE, Path, Prim, Rhs, Source, Type, vars,
 };
 use una_syntax::Span;
 
@@ -111,6 +111,36 @@ fn kind(ty: &Type) -> Result<Kind, CodegenError> {
         },
         Type::Fn { .. } => Ok(Kind::Fn),
     }
+}
+
+/// The binding of the type descriptor of the type parameter `param` (`spec/20 §7`): `$T`, which
+/// no source name can be.
+pub(crate) fn descriptor_name(param: &str) -> String {
+    format!("${param}")
+}
+
+/// The type of a type descriptor's binding: an immediate, which reference counting skips.
+pub(crate) fn descriptor_type() -> Type {
+    base(Base::Bool)
+}
+
+/// The descriptor that a type parameter under `constraint` takes when `ty` instantiates it, or
+/// `None` when `ty` is a type parameter, whose own descriptor is passed on (`spec/20 §7`).
+pub(crate) fn constant_descriptor(ty: &Type, constraint: Constraint) -> Option<Descriptor> {
+    let Type::Base { base, .. } = ty else {
+        return Some(Descriptor::Structural);
+    };
+    Some(match base {
+        Base::Param(_) => return None,
+        Base::Int => Descriptor::Int,
+        Base::Fixed(int) => Descriptor::Fixed(*int),
+        Base::Text => Descriptor::Text,
+        // A kind satisfies `Ord` only as a sum whose variants have no payload (`spec/20 §1`).
+        Base::Named { module, .. } if module != PRELUDE_MODULE && constraint >= Constraint::Ord => {
+            Descriptor::Sum
+        }
+        _ => Descriptor::Structural,
+    })
 }
 
 /// A type of no known base: a value the code only passes on.
@@ -222,6 +252,9 @@ pub(crate) struct Body<'p> {
     /// For a closure or a handler's operation, whose first parameter is the closure or the
     /// instance: the values it holds, then the capabilities, by name, in its cells' order.
     pub(crate) this: Option<Cells>,
+    /// The constraint of each type parameter of a function; its `params` end with the type
+    /// descriptors of the constrained ones (`spec/20 §7`).
+    pub(crate) constraints: Vec<Constraint>,
     /// The parameters.
     pub(crate) params: Vec<(Name, Type)>,
     /// The capabilities a function takes after its parameters, by name (`spec/16 §4` rule 4).
@@ -906,6 +939,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
     ) -> Result<Value, CodegenError> {
         let mut names = BTreeSet::new();
         vars(body, &mut names);
+        // The type descriptors in scope too: the lambda's body may compare values of a type
+        // parameter, or call a constrained function with one (`spec/20 §7`).
+        names.extend(env.keys().filter(|key| key.starts_with('$')).cloned());
         let captures: Vec<(Name, Type)> = names
             .into_iter()
             .filter(|name| !name.starts_with('@'))
@@ -1089,9 +1125,11 @@ impl<'p> Lowerer<'_, 'p, '_> {
 
     /// The owned result of a call of the function or predicate `function` with `args` at
     /// `span`; its failure goes to `catch`.
+    #[allow(clippy::too_many_arguments)]
     fn call_function(
         &mut self,
         function: &Path,
+        type_args: &[Type],
         args: &[Value],
         span: Span,
         env: &Env,
@@ -1100,6 +1138,20 @@ impl<'p> Lowerer<'_, 'p, '_> {
     ) -> Result<Value, CodegenError> {
         let callee = self.emitter.function(function)?;
         let mut args = args.to_vec();
+        // After the arguments, the type descriptor of each constrained type parameter: a
+        // constant for a known type, the caller's own for its type parameter (`spec/20 §7`).
+        for (index, &constraint) in callee.constraints.iter().enumerate() {
+            if constraint == Constraint::None {
+                continue;
+            }
+            let ty = type_args.get(index).ok_or_else(|| {
+                internal(format!(
+                    "a call of `{}` lacks a type argument",
+                    function.qualified()
+                ))
+            })?;
+            args.push(self.descriptor(ty, constraint, env)?);
+        }
         for name in &callee.uses {
             let (instance, _) = env
                 .get(&cap_key(name))
@@ -1366,6 +1418,18 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 Ok(value)
             }
             Rhs::Prim { prim, args, .. } => {
+                // On values of a constrained type parameter, comparisons and `to_int()` read the
+                // parameter's type descriptor (`spec/20 §7`).
+                if let Some(desc) = args
+                    .first()
+                    .and_then(|first| self.descriptor_of(first, env))
+                {
+                    let mut operands = vec![desc];
+                    for arg in args {
+                        operands.push(self.atom(arg, env)?.0);
+                    }
+                    return self.generic_prim(*prim, &operands);
+                }
                 let mut operands = Vec::new();
                 let mut machine = true;
                 for arg in args {
@@ -1393,28 +1457,35 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 span,
                 ..
             } => {
-                // The generic `min`, `max` and `sum` of edition 0.2 need the type descriptors
-                // of `spec/20 §7` for any type but `Int`.
-                if function.module == PRELUDE_MODULE
-                    && matches!(function.name.as_str(), "min" | "max" | "sum")
-                    && type_args.first().is_some_and(|ty| {
-                        !matches!(
-                            ty,
-                            Type::Base {
-                                base: Base::Int,
-                                ..
-                            }
-                        )
-                    })
-                {
-                    return Err(unsupported(format!(
-                        "`{}` over a type other than `Int` (spec/20 §7)",
-                        function.name
-                    )));
-                }
                 let mut values = Vec::new();
                 for arg in args {
                     values.push(self.atom(arg, env)?.0);
+                }
+                // The generic functions of the prelude take the descriptor of their type
+                // argument first (`spec/20 §6`, `§7`). In edition 0.1, `min`, `max` and `sum`
+                // are on `Int` and `contains` compares structurally, with no type argument.
+                if function.module == PRELUDE_MODULE {
+                    let generic = match function.name.as_str() {
+                        "min" => Some(("una_rt_generic_min", Constraint::Ord, Descriptor::Int)),
+                        "max" => Some(("una_rt_generic_max", Constraint::Ord, Descriptor::Int)),
+                        "sort" => Some(("una_rt_generic_sort", Constraint::Ord, Descriptor::Int)),
+                        "sum" => Some(("una_rt_generic_sum", Constraint::Integer, Descriptor::Int)),
+                        "contains" => Some((
+                            "una_rt_generic_contains",
+                            Constraint::Eq,
+                            Descriptor::Structural,
+                        )),
+                        _ => None,
+                    };
+                    if let Some((runtime, constraint, default)) = generic {
+                        let desc = match type_args.first() {
+                            Some(ty) => self.descriptor(ty, constraint, env)?,
+                            None => self.builder.ins().iconst(types::I64, default.word()),
+                        };
+                        let mut operands = vec![desc];
+                        operands.extend(values);
+                        return self.call(runtime, &operands);
+                    }
                 }
                 if function.module == PRELUDE_MODULE {
                     // `append` and `set` at the last use of their list take it over, and update
@@ -1432,7 +1503,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     }
                     return self.prelude(&function.name, &values, *span, scope, catch);
                 }
-                self.call_function(function, &values, *span, env, scope, catch)
+                self.call_function(function, type_args, &values, *span, env, scope, catch)
             }
             Rhs::Apply {
                 callee, args, span, ..
@@ -1519,7 +1590,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
             }
             Rhs::Declassify { via, arg, span, .. } => {
                 let (value, _) = self.atom(arg, env)?;
-                self.call_function(via, &[value], *span, env, scope, catch)
+                self.call_function(via, &[], &[value], *span, env, scope, catch)
             }
         }
     }
@@ -1550,6 +1621,41 @@ impl<'p> Lowerer<'_, 'p, '_> {
     }
 
     /// The type of an atom.
+    /// The word of the type descriptor for `ty` under `constraint` (`spec/20 §7`).
+    fn descriptor(
+        &mut self,
+        ty: &Type,
+        constraint: Constraint,
+        env: &Env,
+    ) -> Result<Value, CodegenError> {
+        match constant_descriptor(ty, constraint) {
+            Some(descriptor) => Ok(self.builder.ins().iconst(types::I64, descriptor.word())),
+            None => {
+                let Type::Base {
+                    base: Base::Param(param),
+                    ..
+                } = ty
+                else {
+                    return Err(internal("a descriptor of no type"));
+                };
+                env.get(&descriptor_name(param))
+                    .map(|(value, _)| *value)
+                    .ok_or_else(|| internal(format!("no type descriptor for `{param}`")))
+            }
+        }
+    }
+
+    /// The type descriptor of the type parameter that `atom` has as its type, when it has one.
+    fn descriptor_of(&self, atom: &Atom, env: &Env) -> Option<Value> {
+        match self.atom_type(atom, env) {
+            Type::Base {
+                base: Base::Param(param),
+                ..
+            } => env.get(&descriptor_name(&param)).map(|(value, _)| *value),
+            _ => None,
+        }
+    }
+
     fn atom_type(&self, atom: &Atom, env: &Env) -> Type {
         match atom {
             Atom::Var(name) => env
@@ -1933,6 +2039,35 @@ impl<'p> Lowerer<'_, 'p, '_> {
         self.builder.switch_to_block(next);
     }
 
+    /// `prim` on values of a constrained type parameter, whose descriptor comes first in
+    /// `operands` (`spec/20 §7`).
+    fn generic_prim(&mut self, prim: Prim, operands: &[Value]) -> Result<Value, CodegenError> {
+        let cc = match prim {
+            Prim::Convert(_) => return self.call("una_rt_generic_to_int", operands),
+            Prim::Eq | Prim::Ne => {
+                let equal = self.call("una_rt_generic_equal", operands)?;
+                return Ok(if prim == Prim::Eq {
+                    equal
+                } else {
+                    self.builder.ins().bxor_imm_s(equal, 1)
+                });
+            }
+            Prim::Lt => IntCC::SignedLessThan,
+            Prim::Le => IntCC::SignedLessThanOrEqual,
+            Prim::Gt => IntCC::SignedGreaterThan,
+            Prim::Ge => IntCC::SignedGreaterThanOrEqual,
+            _ => {
+                return Err(internal(format!(
+                    "`{}` on a type parameter, which its constraint never allows",
+                    prim.as_str()
+                )));
+            }
+        };
+        let order = self.call("una_rt_generic_compare", operands)?;
+        let flag = self.builder.ins().icmp_imm_s(cc, order, 0);
+        Ok(self.flag(flag))
+    }
+
     fn prim(
         &mut self,
         prim: Prim,
@@ -2263,3 +2398,66 @@ fn borrowed_from(expr: &Expr, out: &mut BTreeSet<String>) {
 
 /// The trap of a branch that verification proves unreachable.
 const TRAP: cranelift_codegen::ir::TrapCode = cranelift_codegen::ir::TrapCode::unwrap_user(1);
+
+#[cfg(test)]
+mod tests {
+    use una_core::IntType;
+
+    use super::*;
+
+    fn named(module: &str, name: &str) -> Type {
+        base(Base::Named {
+            module: module.to_owned(),
+            name: name.to_owned(),
+            args: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn each_type_argument_takes_the_descriptor_of_its_form() {
+        // `spec/20 §7`: the descriptor a call passes for each type argument under the
+        // constraint of its parameter. A wrong one makes the runtime count a fault (`generic`),
+        // which the debug runtime's check reports, so every runnable program of the
+        // differential test checks the descriptors its calls pass.
+        let cases = [
+            (base(Base::Int), Constraint::Integer, Some(Descriptor::Int)),
+            (
+                base(Base::Fixed(IntType::U64)),
+                Constraint::Ord,
+                Some(Descriptor::Fixed(IntType::U64)),
+            ),
+            (
+                base(Base::Fixed(IntType::I8)),
+                Constraint::Eq,
+                Some(Descriptor::Fixed(IntType::I8)),
+            ),
+            (base(Base::Text), Constraint::Ord, Some(Descriptor::Text)),
+            (
+                named("app", "Level"),
+                Constraint::Ord,
+                Some(Descriptor::Sum),
+            ),
+            (
+                named("app", "Box"),
+                Constraint::Eq,
+                Some(Descriptor::Structural),
+            ),
+            (
+                named(PRELUDE_MODULE, "List"),
+                Constraint::Eq,
+                Some(Descriptor::Structural),
+            ),
+            (
+                base(Base::Bool),
+                Constraint::Eq,
+                Some(Descriptor::Structural),
+            ),
+            (base(Base::Param("T".to_owned())), Constraint::Ord, None),
+        ];
+        for (ty, constraint, expected) in cases {
+            assert_eq!(constant_descriptor(&ty, constraint), expected, "{ty:?}");
+        }
+        assert_eq!(descriptor_name("T"), "$T");
+        assert_eq!(kind(&descriptor_type()), Ok(Kind::Bool));
+    }
+}

@@ -418,7 +418,7 @@ pub(crate) fn entry_main<'a>(
 fn main_of<'a>(program: &'a Program, entry: &str) -> Option<&'a Fun> {
     let module = program.modules.iter().find(|m| m.path == entry)?;
     module.decls.iter().find_map(|decl| match decl {
-        Decl::Fun(fun) if fun.name == "main" => Some(fun),
+        Decl::Fun(fun) if fun.name == "main" => Some(fun.as_ref()),
         _ => None,
     })
 }

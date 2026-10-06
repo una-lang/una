@@ -20,6 +20,7 @@ use cap::Cap;
 
 #[allow(unsafe_code)]
 pub mod ffi;
+pub mod generic;
 pub mod host;
 pub mod render;
 pub mod runtime;
