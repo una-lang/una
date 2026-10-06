@@ -228,6 +228,19 @@ pub extern "C" fn una_rt_poll() -> i64 {
     runtime::poll()
 }
 
+/// Begins an operation in progress, which a cancellation does not stop
+/// ([`runtime::operation_begin`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_operation_begin() {
+    runtime::operation_begin();
+}
+
+/// Ends the operation in progress ([`runtime::operation_end`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_operation_end() {
+    runtime::operation_end();
+}
+
 /// Runs the tasks of `together` at `site` ([`tasks::together`]).
 #[unsafe(no_mangle)]
 pub extern "C" fn una_rt_together(closures: i64, site: i64) -> i64 {
