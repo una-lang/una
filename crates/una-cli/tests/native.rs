@@ -709,6 +709,38 @@ fn an_executable_loop_over_its_memory_budget_is_u6003() {
 }
 
 #[test]
+fn a_loop_runs_in_constant_memory() {
+    // #201: a loop whose state takes constant space runs in constant space, also in the debug
+    // runtime the tests link, whose quarantine of freed slots is bounded: 10,000,000 iterations
+    // and 1,000,000 appends fit in 64 MiB, and their output is the interpreter's.
+    let program = "module steady\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit n = 0\n  for i in 0..<10000000\n    n = n + 1\n  let edit xs: List[Int] = []\n  for i in 0..<1000000\n    xs = xs.append(item: i)\n  @console.print(\"{n} {xs.len}\")\n";
+    let dir = package(
+        "steady",
+        "\n[run]\nentry = \"steady\"\ngrants = [\"console\"]\n",
+        &[("src/steady.una", program)],
+    );
+    let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+    std::fs::write(
+        dir.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let output = Command::new(dir.join("target/una/steady"))
+        .args(["--max-memory", "64"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "10000000 1000000\n"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn updates_of_values_nothing_else_holds_are_in_place() {
     // #30: 200,000 appends in a loop, 200,000 `set`s and 200,000 field edits copy only what
     // another holder still sees: the caller's list, once, and the caller's point, once. The
