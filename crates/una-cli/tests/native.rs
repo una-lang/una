@@ -800,6 +800,51 @@ fn a_closed_output_pipe_is_a_failed_write_not_a_signal() {
 }
 
 #[test]
+fn a_failed_write_to_stderr_exits_as_una_run_does() {
+    // #198: with stderr on a pipe whose reader is gone, writing a diagnostic fails, and
+    // `una run` exits 2 as for any failed write of its output (`spec/13 §5`). The executable
+    // exits 2 too, on U3012 before `main`, on U6001 after `main` fails, and on U6003.
+    runtime();
+    let program = "module oops\n\npub kind Oops = | Bad\n\ndeep(n: Int) -> Int = if n == 0 then 0 else 1 + deep(n - 1)\n\npub main() -> Unit\n  uses @console: Console[print]\n  fails Oops\n=\n  @console.print(\"start\")\n  let d = deep(100)\n  @console.print(\"{d}\")\n  fail Bad\n";
+    let dir = package(
+        "oops",
+        "\n[run]\nentry = \"oops\"\n",
+        &[("src/oops.una", program)],
+    );
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let closed = |command: &mut Command| {
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        command
+            .current_dir(&dir)
+            .stdout(std::process::Stdio::null())
+            .stderr(writer)
+            .status()
+            .unwrap()
+            .code()
+    };
+    let exe = dir.join("target/una/oops");
+    for args in [
+        &[][..],
+        &["--grant", "console"][..],
+        &["--grant", "console", "--max-depth", "20"][..],
+    ] {
+        let interpreted = closed(
+            Command::new(env!("CARGO_BIN_EXE_una"))
+                .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+                .arg("run")
+                .arg(".")
+                .args(args),
+        );
+        let native = closed(Command::new(&exe).args(args));
+        assert_eq!(interpreted, Some(2), "una run {args:?}");
+        assert_eq!(native, interpreted, "the executable with {args:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn the_executable_checks_main_against_its_grants() {
     runtime();
     // No `[run] grants`: `una build` accepts it, and the executable needs `--grant console`.
