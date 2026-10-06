@@ -99,6 +99,18 @@ impl Vars {
         label
     }
 
+    /// `ty` with every solved variable replaced by its value, its own labels apart from those
+    /// inside it: the top label, and the type under it with its inner labels kept.
+    pub(crate) fn resolve_labels(&self, ty: &Ty) -> (Label, Ty) {
+        let mut label = Label::public();
+        let mut ty = self.resolve_shape(ty);
+        while let Ty::Labeled(top, inner) = ty {
+            label = label.join(&top);
+            ty = *inner;
+        }
+        (label, ty)
+    }
+
     /// `ty` with every solved variable replaced by its value, labels included, and the labels
     /// of variables left symbolic.
     fn resolve_shape(&self, ty: &Ty) -> Ty {
