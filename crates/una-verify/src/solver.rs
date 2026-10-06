@@ -78,26 +78,12 @@ pub(crate) fn run(
         let _ = stdin.write_all(script.as_bytes());
     }
     let deadline = Instant::now() + wallclock;
-    let mut timed_out = false;
-    let mut cancelled = false;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) | Err(_) => break,
-            Ok(None) if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                timed_out = true;
-                break;
-            }
-            Ok(None) if cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                cancelled = true;
-                break;
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(2)),
-        }
+    let waited = wait(|| !matches!(child.try_wait(), Ok(None)), deadline, cancel);
+    if waited != Waited::Exited {
+        let _ = child.kill();
+        let _ = child.wait();
     }
+    let (timed_out, cancelled) = (waited == Waited::Wallclock, waited == Waited::Cancelled);
     let output = reader
         .and_then(|reader| reader.join().ok())
         .unwrap_or_default();
@@ -116,6 +102,40 @@ pub(crate) fn run(
         });
     }
     parse(&output, values)
+}
+
+/// How waiting for the solver ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Waited {
+    /// It exited, with its answer, within its time.
+    Exited,
+    /// Its time ran out (`--solver-wallclock`).
+    Wallclock,
+    /// The run no longer needs its answer.
+    Cancelled,
+}
+
+/// Waits for the solver, `exited` telling whether it has exited, until `deadline` or until
+/// `cancel` is set. The deadline comes first: a solver's answer counts only when it came within
+/// its time, so `--solver-wallclock 0` makes every query unknown, however fast the solver is
+/// (`spec/12 §5`, #189).
+fn wait(
+    mut exited: impl FnMut() -> bool,
+    deadline: Instant,
+    cancel: Option<&AtomicBool>,
+) -> Waited {
+    loop {
+        if Instant::now() >= deadline {
+            return Waited::Wallclock;
+        }
+        if exited() {
+            return Waited::Exited;
+        }
+        if cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)) {
+            return Waited::Cancelled;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
 }
 
 /// A solver's output as s-expressions.
@@ -300,6 +320,27 @@ fn parse(output: &str, values: usize) -> Result<Answer, Failure> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_solver_past_its_wallclock_is_unknown_even_if_it_has_answered() {
+        // #189: with `--solver-wallclock 0` every query is unknown with reason `wallclock`,
+        // however fast the solver is: the deadline is checked before the solver's exit, so a
+        // solver that has already answered when the first check comes is still past its time.
+        let past = Instant::now();
+        assert_eq!(wait(|| true, past, None), Waited::Wallclock);
+        let cancel = AtomicBool::new(true);
+        assert_eq!(wait(|| true, past, Some(&cancel)), Waited::Wallclock);
+        // Within the deadline, an exit is the answer, and a cancellation stops the solver.
+        let later = Instant::now() + Duration::from_secs(60);
+        assert_eq!(wait(|| true, later, None), Waited::Exited);
+        assert_eq!(wait(|| false, later, Some(&cancel)), Waited::Cancelled);
+        let mut polls = 0;
+        let exits_third = || {
+            polls += 1;
+            polls == 3
+        };
+        assert_eq!(wait(exits_third, later, None), Waited::Exited);
+    }
 
     #[test]
     fn answers_are_read_from_the_solver_output() {
