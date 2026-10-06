@@ -230,6 +230,9 @@ pub(crate) struct Body<'p> {
     pub(crate) result: Option<Type>,
     /// Whether it can fail.
     pub(crate) fails: bool,
+    /// Whether its integer arithmetic is exact, with no machine-width shortcut: where the
+    /// verifier makes no `overflow` obligation (#180).
+    pub(crate) exact: bool,
     /// The body.
     pub(crate) body: &'p Expr,
 }
@@ -244,6 +247,9 @@ struct Lowerer<'e, 'p, 'b> {
     /// that is cancelled, or that aborts, stops where it is. Nothing is released, since the
     /// task's heap ends with its thread.
     stop: Block,
+    /// Whether the code being lowered computes integers exactly (`Body::exact`): a fixed-width
+    /// type there is not a proof that a value fits it.
+    exact: bool,
 }
 
 /// Compiles `body` into `builder`'s function.
@@ -266,6 +272,7 @@ pub(crate) fn function<'p>(
         builder,
         pinned,
         stop,
+        exact: body.exact,
     };
     let mut env = Env::new();
     if let Some((values, caps)) = &body.this {
@@ -920,7 +927,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
             .chain(caps.iter().map(|name| cap_key(name)))
             .filter_map(|name| env.get(&name).map(|(value, _)| *value))
             .collect();
-        let id = self.emitter.lambda(params, body, captures, caps)?;
+        let id = self
+            .emitter
+            .lambda(params, body, captures, caps, self.exact)?;
         let code = self
             .emitter
             .module
@@ -1366,8 +1375,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     };
                 }
                 let width = Width {
-                    operands: machine,
-                    result: range::machine_width(ty),
+                    operands: machine && !self.exact,
+                    result: range::machine_width(ty) && !self.exact,
                 };
                 self.prim(*prim, &operands, width)
             }
@@ -1481,8 +1490,12 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 let mut inner = env.clone();
                 inner.insert(it.clone(), (checked, self.atom_type(value, env)));
                 let nested = catch.nested(scope);
-                let Some(holds) = self.expr(predicate, &mut inner, &mut Scope::new(), &nested)?
-                else {
+                // The verifier reads the predicate as its formula, exact, with no `overflow`
+                // obligation, so it is computed exactly (#180).
+                let outer = std::mem::replace(&mut self.exact, true);
+                let holds = self.expr(predicate, &mut inner, &mut Scope::new(), &nested);
+                self.exact = outer;
+                let Some(holds) = holds? else {
                     // The predicate never returns, and nothing after it runs.
                     let unreachable = self.builder.create_block();
                     self.builder.switch_to_block(unreachable);
