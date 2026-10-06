@@ -212,9 +212,10 @@ impl<'a> Checker<'_, 'a, '_> {
                     self.outside_rl(span, || format!("call of local function `{name}`"));
                     // A parameter that an `of` clause names runs the effects of its argument
                     // (ADR 0062).
-                    let of = self
-                        .of_param(name)
-                        .map(|index| self.run_of_param(name, index, ident.span, &Label::public()));
+                    let own = self.labeled(&ty).top_label();
+                    let of = self.of_param(name).map(|index| {
+                        self.run_of_param(name, index, ident.span, &Label::public(), &own)
+                    });
                     return self.call_value(&ty, args, span, &format!("`{name}`"), site, of);
                 }
                 match self.env.lower(self.module, name) {
