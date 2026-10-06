@@ -1,0 +1,8 @@
+[package]
+name = "generic01"
+version = "0.1.0"
+edition = "0.1"
+
+[run]
+entry = "generic01"
+grants = ["console"]

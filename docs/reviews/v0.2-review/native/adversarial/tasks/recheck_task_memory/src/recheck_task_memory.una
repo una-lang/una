@@ -1,0 +1,15 @@
+module recheck_task_memory
+
+grow(n: Int, tag: Int) -> Int
+=
+  let edit xs = []
+  for i in 0..<n
+    xs = xs.append(item: "item {tag} {i}")
+  xs.len
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let sizes = together for t in 1..16
+    grow(400000, tag: t)
+  @console.print("{sizes.len}")

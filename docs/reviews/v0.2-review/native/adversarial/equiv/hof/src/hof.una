@@ -1,0 +1,133 @@
+module hof
+
+pub kind Oops = Bad(at: Int) | Worse(text: Text)
+
+pub capability Log
+  op note(line: Text) -> Int
+    fails Oops
+
+pub handler counting(limit: Int) for Log
+  uses @console: Console[print]
+  op note(line) =
+    @console.print("note {line}")
+    if line.len > limit then fail Worse(text: line) else line.len
+
+check(x: Int) -> Int
+  fails Oops
+=
+  if x == 3 then fail Bad(at: x) else x * 2
+
+noted(x: Int) -> Int
+  uses @log: Log[note]
+  fails Oops
+=
+  let n = @log.note("x{x}")
+    if error pass
+  n + x
+
+apply_all(xs: List[Int], f: fn(Int) -> Int) -> List[Int]
+  uses of f
+  fails of f
+=
+  let edit out = []
+  for x in xs
+    let y = f(x)
+      if error pass
+    out = out.append(item: y)
+  out
+
+show(xs: List[Int]) -> Text = xs.fold(initial: "", step: fn(line, x) -> if line == "" then "{x}" else "{line} {x}")
+
+describe(e: Oops) -> Text
+=
+  when e
+    is Bad(at) -> "Bad {at}"
+    is Worse(text) -> "Worse {text}"
+
+fstep(acc: Int, x: Int) -> Int
+  uses @log: Log[note]
+  fails Oops
+=
+  let n = @log.note("f{x}")
+    if error pass
+  acc + x + n
+
+wkeep(x: Int) -> Bool
+  uses @log: Log[note]
+  fails Oops
+=
+  let n = @log.note("w{x}")
+    if error pass
+  n > 2
+
+kkeep(x: Int) -> Bool
+  uses @log: Log[note]
+  fails Oops
+=
+  if x == 4
+    fail Bad(at: 4)
+  let n = @log.note("k{x}")
+    if error pass
+  n > 1
+
+ynote(y: Int) -> Int
+  uses @log: Log[note]
+  fails Oops
+=
+  let n = @log.note("y{y}")
+    if error pass
+  n
+
+ymap(inner: List[Int]) -> List[Int]
+  uses @log: Log[note]
+  fails Oops
+=
+  let r = inner.map(each: ynote)
+    if error pass
+  r
+
+pub run() -> Unit
+  uses @console: Console[print]
+  uses @log: Log[note]
+=
+  let xs = [1, 2, 3, 4]
+  let a = attempt xs.map(each: check)
+  let a1 = when a
+    is Ok(v) -> show(v)
+    is Err(e) -> describe(e)
+  @console.print("map check: {a1}")
+  let b = attempt xs.map(each: noted)
+  let b1 = when b
+    is Ok(v) -> show(v)
+    is Err(e) -> describe(e)
+  @console.print("map noted: {b1}")
+  let c = attempt [9, 99, 999, 1].fold(initial: 0, step: fstep)
+  let c1 = when c
+    is Ok(v) -> "{v}"
+    is Err(e) -> describe(e)
+  @console.print("fold: {c1}")
+  let d = attempt xs.first_where(keep: wkeep)
+  let d1 = when d
+    is Ok(v) -> v.or_else(default: -1)
+    is Err(e) -> -2
+  @console.print("first_where: {d1}")
+  let ee = attempt xs.filter(keep: kkeep)
+  let e1 = when ee
+    is Ok(v) -> show(v)
+    is Err(e) -> describe(e)
+  @console.print("filter: {e1}")
+  let f = attempt apply_all(xs, f: noted)
+  let f1 = when f
+    is Ok(v) -> show(v)
+    is Err(e) -> describe(e)
+  @console.print("apply_all: {f1}")
+  let g = attempt [[1, 2], [3333, 4]].map(each: ymap)
+  let g1 = when g
+    is Ok(v) -> "{v.len}"
+    is Err(e) -> describe(e)
+  @console.print("nested: {g1}")
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  run() with @log = counting(3)

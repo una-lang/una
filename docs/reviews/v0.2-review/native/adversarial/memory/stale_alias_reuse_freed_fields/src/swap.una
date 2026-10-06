@@ -1,0 +1,21 @@
+-- The scrutinee `z` is an alias that took over `a`'s value; rebuilding a value of the same kind
+-- from the fields `z` lends must not reuse (and free the fields of) `z`'s object.
+module swap
+
+pub kind Pair = | Both(left: Text, right: Text)
+
+pub make(n: Int) -> Pair = Both(left: "l{n}", right: "r{n}")
+
+pub swapped(n: Int) -> Pair
+=
+  let a = make(n)
+  let z = a
+  when z
+    is Both(left, right) -> Both(left: right, right: left)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let p = swapped(1)
+  when p
+    is Both(left, right) -> @console.print("{left} {right}")

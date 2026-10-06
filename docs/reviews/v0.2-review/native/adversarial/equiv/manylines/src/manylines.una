@@ -1,0 +1,7 @@
+module manylines
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  for i in 0..<200000
+    @console.print("line {i} xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")

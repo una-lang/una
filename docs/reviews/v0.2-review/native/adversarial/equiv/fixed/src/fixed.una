@@ -1,0 +1,72 @@
+module fixed
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit line = ""
+  for i in 4611686018427387901..4611686018427387905
+    line = "{line} {i}"
+  @console.print(line)
+  let edit back = ""
+  for i in -4611686018427387906..<-4611686018427387902
+    back = "{back} {i}"
+  @console.print(back)
+  let top: U64 = 18446744073709551615
+  let low: U64 = 18446744073709551612
+  let edit u = ""
+  for x in low..top
+    u = "{u} {x}"
+  @console.print(u)
+  let imax: I64 = 9223372036854775807
+  let imin: I64 = -9223372036854775808
+  let edit s = ""
+  for x in 9223372036854775805..imax
+    s = "{s} {x}"
+  @console.print(s)
+  let a = top.wrapping_add(by: 2)
+  let b = imax.wrapping_add(by: 1)
+  let c = imin.wrapping_sub(by: 1)
+  let d = imin.wrapping_mul(by: -1)
+  let e = top.saturating_add(by: 5)
+  let f = imin.saturating_sub(by: 5)
+  let g = imin.saturating_mul(by: -1)
+  let h = imin.bit_not()
+  let k = top.bit_xor(mask: 1)
+  let l = imin.shift_right(by: 63)
+  let m = imax.wrapping_shift_left(by: 1)
+  let n = top.wrapping_shift_left(by: 63)
+  let o = imin.shift_right(by: 1)
+  @console.print("{a} {b} {c} {d} {e} {f} {g} {h} {k} {l} {m} {n} {o}")
+  let p = top.to_int()
+  let q = p + 1
+  let r = imin.to_int() - 1
+  let half: U64 = 9223372036854775808
+  let t = half / 3
+  let v = half mod 7
+  let w = top - half
+  let neg: I64 = -7
+  let x = neg / 2
+  let y = neg mod 2
+  let z = imin / 2
+  let zz = imin mod 3
+  @console.print("{p} {q} {r} {t} {v} {w} {x} {y} {z} {zz}")
+  let bytes: List[U8] = [255, 0, 128]
+  let wb = bytes.map(each: fn(bb) -> bb.wrapping_add(by: 1))
+  let total = wb.map(each: fn(bb) -> bb.to_int()).sum
+  let i8: I8 = -128
+  let i8n = i8.wrapping_mul(by: -1)
+  let i8s = i8.saturating_sub(by: 1)
+  let i8b = i8.bit_and(mask: 127)
+  let u32: U32 = 4294967295
+  let u32w = u32.wrapping_mul(by: u32)
+  let i32: I32 = -2147483648
+  let i32w = i32.wrapping_sub(by: 1)
+  @console.print("{total} {i8n} {i8s} {i8b} {u32w} {i32w}")
+  let cmp1 = top > half
+  let cmp2 = imin < neg
+  let eq1 = top == 18446744073709551615
+  let tw = when top
+    in 0..9223372036854775807 -> "low"
+    in 9223372036854775808..18446744073709551614 -> "mid"
+    in 18446744073709551615..18446744073709551615 -> "max"
+  @console.print("{cmp1} {cmp2} {eq1} {tw}")

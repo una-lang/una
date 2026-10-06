@@ -1,0 +1,8 @@
+[package]
+name = "rendergen"
+version = "0.1.0"
+edition = "0.2"
+
+[run]
+entry = "rendergen"
+grants = ["console"]
