@@ -849,3 +849,49 @@ fn a_failed_task_cancels_the_tasks_after_it() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn the_executable_checks_each_operation_against_the_files_modes() {
+    // #183: a `files` grant gives the operations of its modes, so `uses Files[read, write]`
+    // with only a read grant is U3012 before `main` runs, as `una run` reports it.
+    runtime();
+    let program = "module copy\n\npub main() -> Unit\n  uses @console: Console[print]\n  uses @files: Files[read, write]\n  fails FileError\n=\n  let text = @files.read(\"in.txt\")\n    if error pass\n  @files.write(\"out.txt\", content: text)\n    if error pass\n  @console.print(\"copied\")\n";
+    let dir = package(
+        "copy",
+        "\n[run]\nentry = \"copy\"\n",
+        &[("src/copy.una", program)],
+    );
+    std::fs::create_dir_all(dir.join("data")).unwrap();
+    std::fs::write(dir.join("data/in.txt"), "text").unwrap();
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let exe = dir.join("target/una/copy");
+    let grants = ["--grant", "console", "--grant", "files:data:read"];
+    let native = Command::new(&exe)
+        .args(grants)
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    let mut run_args = vec!["run", "."];
+    run_args.extend(grants);
+    let interpreted = una(&dir, &run_args);
+    assert_eq!(interpreted.status.code(), Some(1), "{interpreted:?}");
+    assert_eq!(native.status.code(), Some(1), "{native:?}");
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "");
+    assert!(!dir.join("data/out.txt").exists());
+    let stderr = String::from_utf8_lossy(&native.stderr);
+    let message = "[U3012] Error: `main` uses `write` of `Files`, which neither `[run] grants` nor a `--grant` flag grants";
+    assert!(stderr.starts_with(message), "{stderr}");
+    assert!(
+        String::from_utf8_lossy(&interpreted.stderr).starts_with(message),
+        "{interpreted:?}"
+    );
+    let both = Command::new(&exe)
+        .args(["--grant", "console", "--grant", "files:data:read,write"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(both.status.code(), Some(0), "{both:?}");
+    assert_eq!(String::from_utf8_lossy(&both.stdout), "copied\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}
