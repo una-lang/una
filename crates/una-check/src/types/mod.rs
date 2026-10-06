@@ -476,6 +476,20 @@ impl<'s> Report<'s> {
         self.push(diagnostic);
     }
 
+    /// Adds `repair` to the diagnostic with `code` at `span` among those reported since the
+    /// first `mark` ones.
+    pub(crate) fn repair_since(&mut self, mark: usize, code: Code, span: Span, repair: Repair) {
+        let location = self.location(span);
+        if let Some(diagnostic) = self
+            .diagnostics
+            .iter_mut()
+            .skip(mark)
+            .find(|d| d.code == code && d.primary == location)
+        {
+            diagnostic.repairs.push(repair);
+        }
+    }
+
     /// How many diagnostics have been reported so far.
     pub(crate) fn count(&self) -> usize {
         self.diagnostics.len()

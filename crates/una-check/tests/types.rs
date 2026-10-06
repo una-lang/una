@@ -1119,3 +1119,18 @@ fn a_refined_type_argument_in_edition_0_2_names_no_version() {
         ]
     );
 }
+
+#[test]
+fn comparing_with_a_variant_that_needs_fields_offers_is() {
+    // #205: `e == V` where `V` has fields is U2009; outside the refinement language, too, the
+    // repair is `e is V`, and `not (e is V)` for `!=`.
+    let body = "kind Problem = Overdrawn(index: Int) | Closed\n\nf(e: Problem) -> Bool = e == Overdrawn\n\ng(e: Problem) -> Bool = e != Overdrawn\n\nh(p: Problem) -> Bool = Overdrawn == p\n";
+    assert_eq!(
+        repairs(body),
+        [
+            "U2009: write `e is Overdrawn` [5:25 -> \"e is Overdrawn\"]",
+            "U2009: write `not (e is Overdrawn)` [7:25 -> \"not (e is Overdrawn)\"]",
+            "U2009: write `p is Overdrawn` [9:25 -> \"p is Overdrawn\"]",
+        ]
+    );
+}
