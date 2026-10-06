@@ -1,0 +1,32 @@
+---
+source: crates/una-cli/tests/cli.rs
+expression: "serde_json::to_string_pretty(&document[\"generic_results\"]).unwrap()"
+---
+[
+  {
+    "function": "s.below",
+    "result_labels": [
+      {
+        "from": [
+          "T"
+        ],
+        "position": "top"
+      }
+    ]
+  },
+  {
+    "function": "s.concat",
+    "result_labels": []
+  },
+  {
+    "function": "s.tagged",
+    "result_labels": [
+      {
+        "from": [
+          "T"
+        ],
+        "position": "arg 1"
+      }
+    ]
+  }
+]

@@ -170,7 +170,8 @@ example "restocking adds to the amount"
 - Blocks bind with `let`; values are immutable, and a `let edit` binding can be rebound (§11). `if c then a else b` fits on a line; `if` and `when` also take indented blocks.
 - `when` branches on variants (`is Some(x)`, `is Err`), literals (`is 0`) and ranges (`in 1..<20`); an `else` arm comes last. Arms over variants must cover every variant (U2007).
 - The prelude has `abs`, `min`, `max`, `is_digits`, `starts_with`, `trim`, `to_int`, `is_empty`, `first`, `at`, `append`, `contains`, `map`, `filter`, `first_where`, `fold`, `sum`, `is_some`, `or_else` and `is_ok`, and in edition `0.2` also `sort` and `set`; their contracts are hypotheses for the solver (`spec/14`, `spec/20 §6`). Loop with `for` (§11), recursion, `map`, `filter` or `fold`.
-- A predicate passed to `filter`, `first_where` or `fold` returns a public `Bool` unless its type says otherwise, so a lambda that reads labeled element values, such as the elements of a `List[T]` in a generic function, is U4001 there (`spec/14`, result labels).
+- The result of `filter` and `first_where` carries the labels of the predicate's result at its top, since which elements remain depends on it: over `secret` elements, a predicate that reads them gives a list whose top is `secret` (`spec/14`, result labels, ADR 0067). A predicate with effects whose result is labeled is U4002 in `first_where`.
+- A call of a generic function raises each position of its result only by the type arguments that position depends on; `una contract` shows them as `-- result labels: ...`. A list whose top depends on comparisons of `T` values carries `T`'s labels, and a parameter of a user function still takes only what its type allows, so build such lists with the prelude (`fold`, `append`), not by passing them to your own generic functions.
 
 ```una
 -- fails with U2004

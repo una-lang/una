@@ -22,6 +22,7 @@ pub(crate) struct Contract {
     docs: Vec<String>,
     header: String,
     constraints: Vec<Constraint>,
+    result_labels: Vec<ResultLabel>,
     requires: Vec<String>,
     ensures: Vec<String>,
     uses: Vec<Uses>,
@@ -30,6 +31,14 @@ pub(crate) struct Contract {
     /// The lines of the human output.
     #[serde(skip)]
     lines: Vec<String>,
+}
+
+/// A position of a generic function's result whose summary is not empty, and the type
+/// parameters whose labels a call puts there (ADR 0067, `spec/13 §5`).
+#[derive(Debug, Serialize)]
+struct ResultLabel {
+    position: String,
+    from: Vec<String>,
 }
 
 impl Contract {
@@ -287,6 +296,25 @@ pub(crate) fn contract(
         lines.push(format!("  fails of {param} -- inferred"));
     }
     clause_lines(&|k| matches!(k, ClauseKind::DerivedFrom(_)), &mut lines);
+    // ADR 0067: the result summary, after the header.
+    let result_labels: Vec<ResultLabel> = header
+        .map(|h| {
+            h.result_labels
+                .iter()
+                .map(|(position, from)| ResultLabel {
+                    position: position.clone(),
+                    from: from.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if !result_labels.is_empty() {
+        let parts: Vec<String> = result_labels
+            .iter()
+            .map(|label| format!("{} from {}", label.position, label.from.join(", ")))
+            .collect();
+        lines.push(format!("-- result labels: {}", parts.join("; ")));
+    }
     let derived_from: Vec<Requirement> = derived
         .iter()
         .filter_map(|id| modules.requirement(id))
@@ -304,6 +332,7 @@ pub(crate) fn contract(
         docs,
         header: signature,
         constraints,
+        result_labels,
         requires,
         ensures,
         uses,
