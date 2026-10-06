@@ -382,7 +382,7 @@ Each release on the [releases page](https://github.com/una-lang/una/releases) ha
 | Linux, x86_64 | `una-0.1.2-x86_64-unknown-linux-gnu.tar.gz` |
 | macOS, arm64 | `una-0.1.2-aarch64-apple-darwin.tar.gz` |
 
-Each archive holds the `una` binary, this readme and the license. Proofs need Z3 at the version pinned in `verification.lock` (5.1.0) on `PATH`; `scripts/install-z3.sh DIR` installs it. Without it, `una check` fails with U5003, and verification never passes silently.
+Each archive holds the `una` binary, the native runtime `lib/libuna_rt.a` that `una build` links (ADR 0059), this readme and the license. Keep `lib/` beside `una`: a symlink to `una`, such as one in `~/.local/bin`, works, since `una build` looks beside the binary the link resolves to; elsewhere, set `UNA_RT_LIB` to the library's path. Proofs need Z3 at the version pinned in `verification.lock` (5.1.0) on `PATH`; `scripts/install-z3.sh DIR` installs it. Without it, `una check` fails with U5003, and verification never passes silently.
 
 ```bash
 tar -xzf una-0.1.2-aarch64-apple-darwin.tar.gz

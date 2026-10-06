@@ -473,6 +473,41 @@ fn una_build_writes_the_executable_and_prints_una_build_1() {
 }
 
 #[test]
+fn una_build_finds_the_runtime_through_a_symlinked_una() {
+    // HOST-5 (#185): `una` installed as a symlink, as a package manager links it into `bin/`,
+    // finds `libuna_rt.a` beside the binary the link resolves to, not beside the link. macOS
+    // reports the path of the link as the executable's path.
+    runtime();
+    let dir = package(
+        "linked",
+        "\n[run]\nentry = \"hello\"\ngrants = [\"console\"]\n",
+        &[("src/hello.una", HELLO)],
+    );
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let link = bin.join("una");
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_una"), &link).unwrap();
+    let output = Command::new(&link)
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env_remove("UNA_RT_LIB")
+        .args(["build"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let run = Command::new(dir.join("target/una/linked"))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "Hello, Una\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn una_build_rejects_a_package_that_does_not_check() {
     let dir = package(
         "broken",
@@ -596,6 +631,18 @@ fn an_executable_over_its_memory_budget_is_u6003() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(2));
+    // HOST-4 (#185): a budget of 0 MiB is a usage error too, as for `una run`.
+    let output = Command::new(&exe)
+        .args(["--max-memory", "0"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "error: `--max-memory 0` holds nothing; give at least 1 MiB\n"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -797,6 +844,25 @@ fn the_executable_checks_main_against_its_grants() {
     );
     assert_eq!(usage(&["--json"]).status.code(), Some(2));
     assert_eq!(usage(&["--max-depth", "many"]).status.code(), Some(2));
+    // HOST-3 (#185): U3012 comes before the key files are read, as in `una run`: an ungranted
+    // `uses` is U3012 even when a `keys:` grant names a file that does not exist, and the
+    // missing file is a usage error only once every `uses` is granted.
+    let ungranted = usage(&["--grant", "keys:missing.toml"]);
+    assert_eq!(ungranted.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&ungranted.stderr);
+    assert!(
+        stderr.contains("U3012") && !stderr.contains("missing.toml"),
+        "{stderr}"
+    );
+    let missing = usage(&["--grant", "console", "--grant", "keys:missing.toml"]);
+    assert_eq!(missing.status.code(), Some(2));
+    assert_eq!(String::from_utf8_lossy(&missing.stdout), "");
+    assert!(
+        String::from_utf8_lossy(&missing.stderr)
+            .starts_with("error: cannot read the key file `missing.toml`"),
+        "{}",
+        String::from_utf8_lossy(&missing.stderr)
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
