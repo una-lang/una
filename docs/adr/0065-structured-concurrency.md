@@ -171,3 +171,15 @@ Besides the B and C options under each decision:
 ## Amendment (2026-10-02)
 
 The result of a `together for` also carries its length, the number of its tasks: the length of its list, or the number of integers of its range (`spec/19 §4` rule 2). C8 A gave only the facts of each element, so an `ensures` such as `result.len == xs.len` was refuted though it holds. The fact follows from the semantics of `together_for` (`spec/19 §6`) and adds no assumption. Issue #167, assigned by the coordinator.
+
+## Amendment (2026-10-06)
+
+The `together for` example above writes its handling clause on the line of the call, as `fetch(id) if error pass`. That is not a handled expression: `spec/02 §6` puts each handling clause on its own indented line, so the example is U0101. The rule does not change; the example in `spec/19 §1` now reads:
+
+```una
+let pages = together for id in ids
+  fetch(id)
+    if error pass
+```
+
+(#202.)
