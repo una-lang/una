@@ -223,6 +223,12 @@ pub(crate) struct State {
     pub(crate) path: String,
     /// The cancellation flags of the task and of the tasks that run it.
     cancel: Vec<Arc<AtomicBool>>,
+    /// How many of `cancel`'s flags an operation in progress shields: those set before it
+    /// began, which it completes despite (`spec/19 §6` rule 4). Flags of tasks the operation
+    /// starts come after them and still count.
+    shielded: usize,
+    /// The shields of the operations in progress, outermost first, to restore as each ends.
+    operations: Vec<usize>,
     /// In a task, the U6003 that stopped it, which its block reports.
     pub(crate) stopped: Option<(Location, String)>,
 }
@@ -245,6 +251,8 @@ pub(crate) struct TaskTemplate {
     /// The path of the task that runs the block.
     pub(crate) path: String,
     cancel: Vec<Arc<AtomicBool>>,
+    /// The flags of `cancel` that an operation in progress shields (`State::shielded`).
+    shielded: usize,
     /// The stack of a task's thread.
     pub(crate) stack: usize,
     /// Where the block is written.
@@ -254,8 +262,16 @@ pub(crate) struct TaskTemplate {
 impl TaskTemplate {
     /// Whether the task that runs the block, or one that runs it, was cancelled.
     pub(crate) fn cancelled(&self) -> bool {
-        self.cancel.iter().any(|flag| flag.load(Ordering::SeqCst))
+        unshielded(&self.cancel, self.shielded)
     }
+}
+
+/// Whether one of `cancel`'s flags past the first `shielded` is set.
+fn unshielded(cancel: &[Arc<AtomicBool>], shielded: usize) -> bool {
+    cancel
+        .iter()
+        .skip(shielded)
+        .any(|flag| flag.load(Ordering::SeqCst))
 }
 
 impl State {
@@ -276,14 +292,16 @@ impl State {
             baseline: self.baseline,
             path: self.path.clone(),
             cancel: self.cancel.clone(),
+            shielded: self.shielded,
             stack: una_interp::stack_bytes(left).unwrap_or(STACK_RESERVE * 2),
             location: site_location(self, site),
         }
     }
 
-    /// Whether the task the thread runs was cancelled.
+    /// Whether the task the thread runs was cancelled, past what an operation in progress
+    /// shields.
     fn cancelled(&self) -> bool {
-        self.cancel.iter().any(|flag| flag.load(Ordering::SeqCst))
+        unshielded(&self.cancel, self.shielded)
     }
 
     /// The id of the `count`th instance of the handler `name` that the thread's task installed
@@ -425,6 +443,8 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         baseline: 0,
         path: String::new(),
         cancel: Vec::new(),
+        shielded: 0,
+        operations: Vec::new(),
         stopped: None,
     };
     let budget = options.max_memory.saturating_mul(1024 * 1024);
@@ -689,6 +709,27 @@ pub fn poll() -> i64 {
     with_state(|state| i64::from(state.cancelled())).unwrap_or(0)
 }
 
+/// Begins an operation, past its [`poll`]: an operation in progress completes, so until
+/// [`operation_end`] the cancellations already possible, of the task and of the tasks that run
+/// it, are not seen; the limits of depth and memory still are (`spec/19 §6` rule 4, `§7`
+/// rule 3, #200).
+pub fn operation_begin() {
+    with_state(|state| {
+        state.operations.push(state.shielded);
+        state.shielded = state.cancel.len();
+    });
+}
+
+/// Ends the operation [`operation_begin`] began: a cancellation that came meanwhile takes
+/// effect at the task's next call, operation or loop iteration.
+pub fn operation_end() {
+    with_state(|state| {
+        if let Some(shielded) = state.operations.pop() {
+            state.shielded = shielded;
+        }
+    });
+}
+
 /// An abort with `message` at `location`: in a task, recorded for its block, which the task
 /// stops to reach; in `main`'s thread, the state to end the run with.
 fn stop_or_abort(
@@ -741,6 +782,8 @@ pub(crate) fn enter_task(template: &TaskTemplate, path: String, flag: Arc<Atomic
         baseline: template.baseline,
         path,
         cancel,
+        shielded: template.shielded,
+        operations: Vec::new(),
         stopped: None,
     };
     state.stack_base = stack_position(&state);

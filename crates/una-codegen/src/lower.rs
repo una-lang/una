@@ -1213,6 +1213,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
         // A cancelled task stops before its next operation (`spec/19 §6` rule 4).
         let stopping = self.call("una_rt_poll", &[])?;
         self.stop_if(stopping);
+        // From here the operation is in progress: it completes, and keeps its own outcome,
+        // whatever cancellation comes meanwhile (`spec/19 §6` rule 4, `§7` rule 3).
+        self.runtime("una_rt_operation_begin", &[]);
         let slot = self.call("una_rt_event", &[site, instance])?;
         for (position, &value) in values.iter().enumerate() {
             let position = i64::try_from(position).map_err(crate::internal)?;
@@ -1247,6 +1250,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
             } else {
                 self.builder.ins().iconst(types::I64, 0)
             };
+            self.runtime("una_rt_operation_end", &[]);
             self.builder
                 .ins()
                 .jump(done, &[value.into(), failed.into()]);
@@ -1271,10 +1275,12 @@ impl<'p> Lowerer<'_, 'p, '_> {
         let call = self.builder.ins().call_indirect(signature, code, &operands);
         let results = self.builder.inst_results(call).to_vec();
         self.runtime("una_rt_leave", &[]);
+        self.runtime("una_rt_operation_end", &[]);
         let (Some(&value), Some(&failed)) = (results.first(), results.get(1)) else {
             return Err(internal("an operation lost its result"));
         };
-        // A task that stops inside the operation leaves its event as it was, `aborted`.
+        // A task that stops inside the operation, by U6003 alone, leaves its event as it was,
+        // `aborted`.
         self.stop_if_stopped(failed);
         self.builder
             .ins()
