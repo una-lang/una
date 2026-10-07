@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use una_core::{
     Arm as CoreArm, Atom, Base, BinOp, Bound, CapOp as CoreCapOp, Clause as CoreClause, Ctor,
     DataVariant, Decl, Example, Expectation, Expr as CoreExpr, Fun, HandlerOp as CoreHandlerOp,
-    Label, LoopSource, Module as CoreModule, Name, Path, Prim, Program,
+    Label, LoopSource, MapOp, Module as CoreModule, Name, Path, Prim, Program,
     Refinement as CoreRefinement, Rhs, Signature, Source, Term, Type, Use,
 };
 use una_syntax::ast::{
@@ -771,6 +771,14 @@ impl<'e, 'a> Fx<'e, 'a> {
                 _ => self.outside(),
             },
             ExprKind::MethodCall { target, args, .. } => match self.res(expr.span) {
+                // `m.has(key: k)` of a map (`spec/21 §4` rule 4).
+                Some(Res::MapMethod(MapOp::Has)) => match args.first() {
+                    Some(key) => Term::Has {
+                        map: Box::new(self.term(target)),
+                        key: Box::new(self.term(&key.value)),
+                    },
+                    None => self.outside(),
+                },
                 Some(Res::Function { id, .. }) => {
                     let receiver = self.term(target);
                     let args = self.ordered_terms(expr.span, Some(receiver), args);

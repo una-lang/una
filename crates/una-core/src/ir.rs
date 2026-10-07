@@ -224,6 +224,13 @@ pub enum Term {
     },
     /// `a.len`.
     Len(Box<Term>),
+    /// `m.has(key: k)` of a map (`spec/21 §4` rule 4).
+    Has {
+        /// The map.
+        map: Box<Term>,
+        /// The key.
+        key: Box<Term>,
+    },
     /// The component `index` of a tuple, as `result` of a function with `edit` parameters
     /// (`spec/17 §4`).
     Proj {
