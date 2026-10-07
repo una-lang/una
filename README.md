@@ -402,14 +402,14 @@ Each release on the [releases page](https://github.com/una-lang/una/releases) ha
 
 | Platform | Archive |
 | --- | --- |
-| Linux, x86_64 | `una-0.1.2-x86_64-unknown-linux-gnu.tar.gz` |
-| macOS, arm64 | `una-0.1.2-aarch64-apple-darwin.tar.gz` |
+| Linux, x86_64 | `una-0.2.0-x86_64-unknown-linux-gnu.tar.gz` |
+| macOS, arm64 | `una-0.2.0-aarch64-apple-darwin.tar.gz` |
 
 Each archive holds the `una` binary, the native runtime `lib/libuna_rt.a` that `una build` links (ADR 0059), this readme and the license. Keep `lib/` beside `una`: a symlink to `una`, such as one in `~/.local/bin`, works, since `una build` looks beside the binary the link resolves to; elsewhere, set `UNA_RT_LIB` to the library's path. Proofs need Z3 at the version pinned in `verification.lock` (5.1.0) on `PATH`; `scripts/install-z3.sh DIR` installs it. Without it, `una check` fails with U5003, and verification never passes silently.
 
 ```bash
-tar -xzf una-0.1.2-aarch64-apple-darwin.tar.gz
-export PATH="$PWD/una-0.1.2-aarch64-apple-darwin:$PATH"
+tar -xzf una-0.2.0-aarch64-apple-darwin.tar.gz
+export PATH="$PWD/una-0.2.0-aarch64-apple-darwin:$PATH"
 ```
 
 ### Hello, world
@@ -603,11 +603,9 @@ Tests that reach tier 1 need the pinned Z3 on `PATH`; without it they fail with 
 | Properties | `crates/una-fmt/tests/` | Formatting is idempotent and preserves every `.una` file of the repository |
 | End to end | `crates/una-cli/tests/` | The CLI, the ABI documents, the runtime, verification, the examples, the guide and this readme's code, the explain examples, determinism, the checkpoint demos |
 
-CI (`.github/workflows/ci.yml`) runs formatting, clippy and the tests on Linux for every pull request, push to `main` and release tag, and also on macOS for pushes to `main`, release tags, manual runs and the pull requests that touch the native backend, the release scripts, the workflows or `Cargo.lock`; a branch is tested by its pull request's run. Each run also packs the release archive of its runner's target and runs it on the examples. Compiled dependencies and the pinned Z3 are cached. Pushing a tag `v*` starts `.github/workflows/release.yml`, which builds the Linux and macOS archives with `scripts/release.sh`, checks them with `scripts/check-release.sh`, and attaches them to a draft release.
-
-While GitHub Actions is unavailable, both run on a Mac instead (ADR 0035, amendment on local CI):
-- **Checks.** `scripts/local-ci.sh` runs the CI steps in order: the solver check, formatting, clippy, the tests, and the release archive of the host's target. `scripts/local-ci.sh --linux` runs the same steps inside a `linux/amd64` container of CI's Ubuntu image (`scripts/local-ci/Dockerfile`, pinned by digest), which Docker emulates on an arm64 Mac. Each run ends with `PASS`, or with `FAIL` and the failed step, and a failure exits non-zero.
-- **Releases.** `scripts/local-release.sh <tag>` builds both archives from a clean checkout of the tag's commit, the macOS one natively and the Linux one in that container, and checks each with `scripts/check-release.sh`. It writes them with their digests and release notes to `target/local-release/<tag>/`, and prints the `gh release create` command that publishes them. It publishes nothing.
+Validation is local, and GitHub Actions is not used (`docs/releases/validation.md`; the workflow files stay in the repository, but nothing waits for them):
+- **Checks.** `scripts/local-ci.sh` runs the solver check, formatting, clippy, the tests, and the release archive of the host's target, packed and checked. A merge into `main` needs its PASS on macOS on the pull request's tip. `scripts/local-ci.sh --linux` runs the same steps inside a `linux/amd64` container of CI's Ubuntu image (`scripts/local-ci/Dockerfile`, pinned by digest). Each run ends with `PASS`, or with `FAIL` and the failed step, and a failure exits non-zero.
+- **Releases.** `scripts/release-gates.sh <sha> <out>` runs every gate on one commit, from a fresh clone: the build and tests, macOS, Linux, both release archives (`scripts/local-release.sh`), determinism, and the native equivalence test. A tag needs a run with every gate PASS on its SHA, recorded as `docs/releases/<version>-validation.md`, and the published archives are the ones that run built, with the digests the record lists.
 
 Each usage checkpoint has a demo script that prints every command with its expected and actual outcome:
 

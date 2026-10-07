@@ -35,6 +35,8 @@ Status: Normative, v0.2 (ADR 0055).
    - exit code 0 when `main` returns.
 
    It has no `--json` output in v0.2.
+
+   Its rendering of U6001 and U6003 on stderr is compact: the first line, the code, the position and the failure are those of `una run`, followed by `  at <file>:<line>:<column>` and a `  note:` line instead of a source frame. The comparison of §5 covers stdout, the exit status, the failure and the trace, not that rendering.
 2. **Grants.** The executable has the grants model of `una run` (`spec/13 §5`):
    - Its grants are the `[run] grants` embedded at build time, together with its own `--grant <spec>` flags, which take the grant specs of `spec/13 §5`.
    - Before `main` starts, it checks every `uses` of `main` against those grants. A `uses` they do not grant is U3012 on stderr, with exit code 1, and nothing runs.
@@ -60,7 +62,7 @@ The representation is not observable; these rules fix what the runtime library `
 5. **Host capabilities** (`spec/14 §3`) have the interpreter's semantics, grants, path rules and failures.
 6. (v0.2, ADR 0065.) **Tasks.** Each task of a `together` block runs on its own thread with its own heap; values are copied at the fork and the join, so reference counts stay non-atomic (`spec/19 §8`).
 7. (v0.2, #30.) **Updates in place.** Within the freedom of `spec/17 §7` rule 3, an update MAY happen in place when the code gives up the value at its last use and its reference count shows nothing else holds it. Otherwise the value is copied.
-   - **Which updates:** `append` and `set` on a list, and a record or variant rebuilt from one of its kind that dies there, as a field edit is. (v0.2, ADR 0069.) Also `set` and `remove` on a map, kept in Rust's standard `BTreeMap` (`spec/21 §5`). (v0.2, ADR 0070.) Also a text rebound to an interpolation that begins with it, which appends in place (`spec/22 §6`).
+   - **Which updates:** `append` and `set` on a list, and a record or variant rebuilt from one of its kind that dies there, as a field edit is. (v0.2, ADR 0069; not implemented in v0.2.0; planned (#236).) Also `set` and `remove` on a map, kept in Rust's standard `BTreeMap` (`spec/21 §5`). (v0.2, ADR 0070; not implemented in v0.2.0; planned (#237).) Also a text rebound to an interpolation that begins with it, which appends in place (`spec/22 §6`).
    - **Never moved:** a value something borrows from, which is a `when` scrutinee, a `let (...)` tuple or a list a loop visits. Nor a value a `together` task captures, or one passed to a function, including a `uses of` parameter's argument.
    - **Not observable:** in-place updates change no output, failure, abort or trace.
 8. **Trusted base.** `una-rt` is in the Trusted zone (charter §3). Its only `unsafe` code of the repository is `ffi.rs` (ADR 0058), and its heap budget (§3, ADR 0061) depends on the `cap` allocator crate, whose `unsafe` code is outside that boundary and is trusted with it (ADR 0061 amendment of 2026-10-06; Leonardo, 2026-10-06).

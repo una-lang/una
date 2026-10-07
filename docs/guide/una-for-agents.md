@@ -603,6 +603,7 @@ Values stay immutable and there are no references; what changes is which value a
 - Markers match declarations exactly (U2020); an `edit` argument and another use of the same binding in one call is U2018; a function with `edit` or `take` parameters cannot be used as a value (U2021). A call with a marker is the whole expression of its statement.
 - `for x in xs` visits a list in order, and `for i in a..b` or `a..<b` the integers of a range; the bounds are evaluated once, before the first iteration. The loop variable has the element type, or the integer type of the bounds. There is no `break` or `continue`. The refinements of the bindings a loop updates are its invariant; no other fact about them survives the loop.
 - `if c` with an indented block and no `else` is a statement. `edit xs.set(index: i, item: v)` replaces a list element.
+- Known limit of v0.2.0 (#260): a loop forgets the length of a list it updates, so `for i in 0..<xs.len` with `edit xs.set(index: i, item: v)` in its body is U5001, refuted with a counterexample where `xs.len` is 0. Guard the update with a statement `if i < xs.len` around it.
 - A call that fails leaves its `edit` arguments unchanged for the caller; operations it performed stay performed.
 
 ```una
@@ -632,6 +633,15 @@ pub sum_to(n: Nat) -> Int
   for i in 1..n
     total = total + i
   total
+
+--- The guard keeps the precondition of `set` provable inside the loop (#260).
+pub zeroed(xs: List[Int]) -> List[Int]
+=
+  let edit ys = xs
+  for i in 0..<ys.len
+    if i < ys.len
+      edit ys.set(index: i, item: 0)
+  ys
 
 pub cleared(xs: List[Int], index: Int) -> List[Int]
   requires 0 <= index and index < xs.len
@@ -777,7 +787,7 @@ pub count(xs: List[Int]) -> Int
 ## 15. Native executables and the language server
 
 - `una build [path]` checks the package at tier 1, then writes a native executable to `target/una/<name>` (`spec/16`), or to `--out <file>`. It refuses a package with errors, as `una run` does; `--json` prints `una.build/1`.
-- The executable runs `main` of the entry module with the output, failures, exit codes and grants of `una run`: the `[run] grants` of `una.toml` are built in, and `--grant`, `--max-depth`, `--max-memory` and `--trace <file>` work as for `una run`. Its output and trace match the interpreter's.
+- The executable runs `main` of the entry module with the output, failures, exit codes and grants of `una run`: the `[run] grants` of `una.toml` are built in, and `--grant`, `--max-depth` and `--max-memory` work as for `una run`. Its `--trace <file>` writes the trace as a JSON array, the trace that `una --json run` reports in `una.run/1`. Its output and trace match the interpreter's.
 - Tasks of `together` run on their own threads in a native executable, and one at a time in `una run`.
 - `una lsp` is a language server (LSP 3.17 over stdin and stdout) for editors: it checks, formats and solves, and never runs programs.
 
