@@ -22,7 +22,7 @@ use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use una_diag::Location;
+use una_diag::{Code, Location};
 use una_interp::Event;
 
 use crate::runtime::{self, TaskTemplate, with_state};
@@ -96,7 +96,7 @@ struct Outcome {
     events: Vec<Event>,
     installs: BTreeMap<String, usize>,
     failed_write: Option<io::Error>,
-    abort: Option<(Location, String)>,
+    abort: Option<(Code, Location, String)>,
 }
 
 /// Runs a block's tasks: closures and their arguments, words of the calling task's heap
@@ -146,7 +146,7 @@ fn run(tasks: &[(i64, Option<i64>)], tuple: bool, site: usize, invoke: Invoke) -
                         events: Vec::new(),
                         installs: BTreeMap::new(),
                         failed_write: None,
-                        abort: Some((template.location.clone(), stopped_message())),
+                        abort: Some((Code::U6003, template.location.clone(), stopped_message())),
                     },
                 })
                 .collect::<Vec<_>>()
@@ -288,8 +288,8 @@ fn join(outcomes: Vec<Outcome>, tuple: bool, template: &TaskTemplate) -> (i64, i
             }
         }
     });
-    if let Some((location, message)) = abort {
-        return (runtime::abort_from_task(location, message), 2);
+    if let Some((code, location, message)) = abort {
+        return (runtime::abort_from_task(code, location, message), 2);
     }
     if let Some(failure) = failure {
         return (values::import(&failure), 1);

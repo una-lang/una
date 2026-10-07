@@ -111,6 +111,12 @@ pub enum Abort {
         /// The budget, in MiB.
         limit: usize,
     },
+    /// The operation of `Http` at this span is given a header value with a control character
+    /// (U6004, `spec/24 §1`, N-40).
+    HeaderValue {
+        /// The operation.
+        span: Span,
+    },
     /// A fault that a checked and verified program cannot reach, such as a division by zero
     /// while proof obligations are not verified yet (ADR 0027).
     Fault {
@@ -1435,7 +1441,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             outcome: EventOutcome::Aborted,
         });
         let result = match instance.as_ref() {
-            Instance::Host { .. } => self.host(capability, op, &args),
+            Instance::Host { .. } => self.host(capability, op, &args, span),
             Instance::Handled {
                 handler,
                 values,
@@ -1475,7 +1481,7 @@ impl<'p, 'w> Machine<'p, 'w> {
     }
 
     /// An operation of `Http` (`spec/24`), by the client that native code shares.
-    fn http(&mut self, op: &str, args: &[Value<'p>]) -> Flow<'p> {
+    fn http(&mut self, op: &str, args: &[Value<'p>], span: Span) -> Flow<'p> {
         use una_http::client::{Error, Request, send};
         use una_http::grant::Method;
         let fail = |error: Error| {
@@ -1488,6 +1494,8 @@ impl<'p, 'w> Machine<'p, 'w> {
                 Error::TooLarge => ("TooLarge", 5),
                 Error::Tls => ("Tls", 6),
                 Error::Protocol => ("Protocol", 7),
+                // Not a failure: the run aborts (N-40).
+                Error::HeaderValue => return Stop::Abort(Abort::HeaderValue { span }),
             };
             Stop::Fail(Value::data(
                 prelude_ctor("HttpError", name, index),
@@ -1572,7 +1580,7 @@ impl<'p, 'w> Machine<'p, 'w> {
     }
 
     /// A host operation, within the grants (`spec/14 §3`).
-    fn host(&mut self, capability: &str, op: &str, args: &[Value<'p>]) -> Flow<'p> {
+    fn host(&mut self, capability: &str, op: &str, args: &[Value<'p>], span: Span) -> Flow<'p> {
         let text = |i: usize| match args.get(i) {
             Some(Value::Text(t)) => t.to_string(),
             _ => String::new(),
@@ -1626,7 +1634,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                     FileFault::Io => file_error("Io", 2),
                 })
             }
-            ("Http", "get" | "post" | "put" | "delete") => self.http(op, args),
+            ("Http", "get" | "post" | "put" | "delete") => self.http(op, args, span),
             ("Keys", "hmac") => match self.keys.get(&text(0)) {
                 Some(key) => Ok(Value::Hashed(Rc::from(host::hmac_sha256(
                     key,

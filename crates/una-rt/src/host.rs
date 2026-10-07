@@ -350,6 +350,7 @@ pub fn event_end(site: i64, slot: i64, value: i64, failed: i64) {
 /// An operation of `Http` (`spec/24`), by the client that the interpreter shares: the response
 /// as a `Response` record, or an `HttpError`, which `una_rt_host_failed` then reports.
 fn http(
+    site: i64,
     method: una_http::grant::Method,
     url: i64,
     headers: i64,
@@ -368,6 +369,8 @@ fn http(
             Error::TooLarge => 5,
             Error::Tls => 6,
             Error::Protocol => 7,
+            // Not a failure: `http` aborts before (N-40).
+            Error::HeaderValue => 2,
         };
         (index << 1) | 1
     };
@@ -433,18 +436,33 @@ fn http(
             }
             record
         }
+        // The run, or the task, aborts with U6004 at the operation (N-40); a task's caller
+        // stops it ([`crate::runtime::stopped`]).
+        Err(Error::HeaderValue) => crate::runtime::abort_at(
+            usize::try_from(site).unwrap_or(usize::MAX),
+            una_diag::Code::U6004,
+            "a header value contains a control character".to_owned(),
+        ),
         Err(error) => failed(variant(error)),
     }
 }
 
-/// `Http.get(url, headers, key_name)`.
-pub fn http_get(url: i64, headers: i64, key_name: i64) -> i64 {
-    http(una_http::grant::Method::Get, url, headers, None, key_name)
+/// `Http.get(url, headers, key_name)`, at the call `site`.
+pub fn http_get(site: i64, url: i64, headers: i64, key_name: i64) -> i64 {
+    http(
+        site,
+        una_http::grant::Method::Get,
+        url,
+        headers,
+        None,
+        key_name,
+    )
 }
 
-/// `Http.post(url, headers, body, key_name)`.
-pub fn http_post(url: i64, headers: i64, body: i64, key_name: i64) -> i64 {
+/// `Http.post(url, headers, body, key_name)`, at the call `site`.
+pub fn http_post(site: i64, url: i64, headers: i64, body: i64, key_name: i64) -> i64 {
     http(
+        site,
         una_http::grant::Method::Post,
         url,
         headers,
@@ -453,9 +471,10 @@ pub fn http_post(url: i64, headers: i64, body: i64, key_name: i64) -> i64 {
     )
 }
 
-/// `Http.put(url, headers, body, key_name)`.
-pub fn http_put(url: i64, headers: i64, body: i64, key_name: i64) -> i64 {
+/// `Http.put(url, headers, body, key_name)`, at the call `site`.
+pub fn http_put(site: i64, url: i64, headers: i64, body: i64, key_name: i64) -> i64 {
     http(
+        site,
         una_http::grant::Method::Put,
         url,
         headers,
@@ -464,9 +483,10 @@ pub fn http_put(url: i64, headers: i64, body: i64, key_name: i64) -> i64 {
     )
 }
 
-/// `Http.delete(url, headers, key_name)`.
-pub fn http_delete(url: i64, headers: i64, key_name: i64) -> i64 {
+/// `Http.delete(url, headers, key_name)`, at the call `site`.
+pub fn http_delete(site: i64, url: i64, headers: i64, key_name: i64) -> i64 {
     http(
+        site,
         una_http::grant::Method::Delete,
         url,
         headers,

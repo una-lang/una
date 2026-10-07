@@ -856,6 +856,8 @@ The host capability `Http` sends HTTP/1.1 requests (`spec/24`, edition 0.2).
 - **Grants.** `http:<origin>` or `http:<origin>:<methods>`, by default `get`: `http:https://api.example.com:get,post`. A request outside them fails with `Denied`, before any connection. Plain `http` only where a grant says so.
 - **Credentials.** `key_name: Some("name")` sends the key `name` of the run's `keys:` grant as a bearer token, to that origin only. The program never sees it, and no trace shows it.
 - **Labels.** Arguments accept `internal` data: a `secret` URL, body or header value needs a policy first. Responses are `internal`, so a function that returns what it read declares an `internal` result, and its `Option` or `Result` too, since which one it returns depends on the response.
+- **Failures of `internal` requests.** Whether a request fails depends on its URL, headers and key name, so with an `internal` URL or key name its failure is `internal`: `attempt` gives an `internal` `Result`, and `if error pass` or `if error fail` is U4002. Handle it with `attempt` and return a labeled value. The body does not count.
+- **Header values.** A header value with a control character other than a tab, such as a newline, aborts the run with U6004, since the value is `internal`. Remove them from values built from data first: `value.replace(pattern: "\n", by: "")`.
 - **Limits.** `--max-response <MiB>` (default 16) and `--http-timeout <seconds>` (default 30, the total time of a request). Tests give `Http` a handler, since examples cannot use it.
 
 ```una

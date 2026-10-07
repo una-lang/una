@@ -254,8 +254,8 @@ pub(crate) struct State {
     shielded: usize,
     /// The shields of the operations in progress, outermost first, to restore as each ends.
     operations: Vec<usize>,
-    /// In a task, the U6003 that stopped it, which its block reports.
-    pub(crate) stopped: Option<(Location, String)>,
+    /// In a task, the abort that stopped it, U6003 or U6004, which its block reports.
+    pub(crate) stopped: Option<(Code, Location, String)>,
 }
 
 /// What a task's state starts from: the run's settings, and the block's depth, path and
@@ -700,13 +700,13 @@ pub fn enter(site: usize) -> i64 {
             return None;
         };
         let location = site_location(state, site);
-        Some(stop_or_abort(&mut cell, location, message))
+        Some(stop_or_abort(&mut cell, Code::U6003, location, message))
     });
     match abort {
         None => 0,
         Some(None) => 1,
-        Some(Some((state, location, message))) => {
-            abort_run(state, location, message);
+        Some(Some((state, code, location, message))) => {
+            abort_run(state, code, location, message);
             1
         }
     }
@@ -726,13 +726,13 @@ pub fn budget(site: usize) -> i64 {
         }
         let message = over_budget(state, held)?;
         let location = site_location(state, site);
-        Some(stop_or_abort(&mut cell, location, message))
+        Some(stop_or_abort(&mut cell, Code::U6003, location, message))
     });
     match abort {
         None => 0,
         Some(None) => 1,
-        Some(Some((state, location, message))) => {
-            abort_run(state, location, message);
+        Some(Some((state, code, location, message))) => {
+            abort_run(state, code, location, message);
             1
         }
     }
@@ -755,6 +755,12 @@ pub fn write(ty: i64, word: i64) -> i64 {
 /// otherwise (`spec/19 §6` rule 4).
 pub fn poll() -> i64 {
     with_state(|state| i64::from(state.cancelled())).unwrap_or(0)
+}
+
+/// 1 when an operation stopped the task the thread runs, as U6004 does in a task: its caller
+/// stops it before using the operation's value (N-40).
+pub fn stopped() -> i64 {
+    with_state(|state| i64::from(state.stopped.is_some())).unwrap_or(0)
 }
 
 /// Begins an operation, past its [`poll`]: an operation in progress completes, so until
@@ -782,25 +788,41 @@ pub fn operation_end() {
 /// stops to reach; in `main`'s thread, the state to end the run with.
 fn stop_or_abort(
     cell: &mut Option<State>,
+    code: Code,
     location: Location,
     message: String,
-) -> Option<(State, Location, String)> {
+) -> Option<(State, Code, Location, String)> {
     match cell {
         Some(state) if !state.path.is_empty() => {
-            state.stopped = Some((location, message));
+            state.stopped = Some((code, location, message));
             None
         }
-        _ => cell.take().map(|state| (state, location, message)),
+        _ => cell.take().map(|state| (state, code, location, message)),
     }
 }
 
 /// The abort of a task of a block that the thread runs, at `location` with `message`: in a
 /// task, it stops it in turn; in `main`'s thread, it ends the run. Returns 0, the value of a
 /// stopped block.
-pub(crate) fn abort_from_task(location: Location, message: String) -> i64 {
-    let abort = STATE.with(|cell| stop_or_abort(&mut cell.borrow_mut(), location, message));
-    if let Some((state, location, message)) = abort {
-        abort_run(state, location, message);
+pub(crate) fn abort_from_task(code: Code, location: Location, message: String) -> i64 {
+    let abort = STATE.with(|cell| stop_or_abort(&mut cell.borrow_mut(), code, location, message));
+    if let Some((state, code, location, message)) = abort {
+        abort_run(state, code, location, message);
+    }
+    0
+}
+
+/// Aborts the run, or the task the thread runs, with `code` at the call `site`, as a call
+/// over the depth does: U6004 for a header value with a control character (N-40). Returns 0,
+/// the value the caller drops: a task stops, and its block reports the abort.
+pub(crate) fn abort_at(site: usize, code: Code, message: String) -> i64 {
+    let abort = STATE.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        let location = cell.as_ref().map(|state| site_location(state, site))?;
+        stop_or_abort(&mut cell, code, location, message)
+    });
+    if let Some((state, code, location, message)) = abort {
+        abort_run(state, code, location, message);
     }
     0
 }
@@ -863,12 +885,12 @@ fn site_location(state: &State, site: usize) -> Location {
     })
 }
 
-/// Ends the run with U6003 at `location`, as the interpreter's abort does: the output so far
+/// Ends the run with `code`, U6003 or U6004, at `location`, as the interpreter's abort does: the output so far
 /// stays printed, the trace is written, and the executable exits with code 1.
-fn abort_run(state: State, location: Location, message: String) {
+fn abort_run(state: State, code: Code, location: Location, message: String) {
     crate::ceiling(usize::MAX);
     let _ = io::stdout().flush();
-    let diagnostic = Diagnostic::error(Code::U6003, message, location);
+    let diagnostic = Diagnostic::error(code, message, location);
     let written = write!(
         io::stderr(),
         "{}",
