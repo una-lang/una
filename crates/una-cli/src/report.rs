@@ -68,6 +68,15 @@ struct Report {
 struct GenericResultDoc {
     function: String,
     result_labels: Vec<ResultLabelDoc>,
+    of_raises: Vec<OfRaiseDoc>,
+}
+
+/// An `of` parameter of a generic function whose calls depend on decisions on type
+/// parameters (ADR 0067 amendment).
+#[derive(Serialize)]
+struct OfRaiseDoc {
+    param: String,
+    from: Vec<String>,
 }
 
 /// A position of a generic function's result and the type parameters whose labels reach it.
@@ -370,6 +379,14 @@ fn build(
                 .iter()
                 .map(|(position, from)| ResultLabelDoc {
                     position: position.clone(),
+                    from: from.clone(),
+                })
+                .collect(),
+            of_raises: header
+                .of_raises
+                .iter()
+                .map(|(param, from)| OfRaiseDoc {
+                    param: param.clone(),
                     from: from.clone(),
                 })
                 .collect(),
@@ -865,6 +882,13 @@ fn human(report: &Report) -> String {
             .iter()
             .map(|label| format!("{} from {}", label.position, label.from.join(", ")))
             .collect();
+        let mut parts = parts;
+        parts.extend(
+            generic
+                .of_raises
+                .iter()
+                .map(|raise| format!("{} runs under {}", raise.param, raise.from.join(", "))),
+        );
         let summary = if parts.is_empty() {
             "none".to_owned()
         } else {

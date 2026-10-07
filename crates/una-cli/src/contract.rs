@@ -23,6 +23,7 @@ pub(crate) struct Contract {
     header: String,
     constraints: Vec<Constraint>,
     result_labels: Vec<ResultLabel>,
+    of_raises: Vec<OfRaise>,
     requires: Vec<String>,
     ensures: Vec<String>,
     uses: Vec<Uses>,
@@ -31,6 +32,14 @@ pub(crate) struct Contract {
     /// The lines of the human output.
     #[serde(skip)]
     lines: Vec<String>,
+}
+
+/// A parameter that an `of` clause names whose calls depend on decisions on the type
+/// parameters `from`: callers run their argument under their labels (ADR 0067 amendment).
+#[derive(Debug, Serialize)]
+struct OfRaise {
+    param: String,
+    from: Vec<String>,
 }
 
 /// A position of a generic function's result whose summary is not empty, and the type
@@ -315,6 +324,26 @@ pub(crate) fn contract(
             .collect();
         lines.push(format!("-- result labels: {}", parts.join("; ")));
     }
+    // ADR 0067 amendment: the `of` parameters whose calls depend on decisions on type
+    // parameters, after the result summary.
+    let of_raises: Vec<OfRaise> = header
+        .map(|h| {
+            h.of_raises
+                .iter()
+                .map(|(param, from)| OfRaise {
+                    param: param.clone(),
+                    from: from.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if !of_raises.is_empty() {
+        let parts: Vec<String> = of_raises
+            .iter()
+            .map(|raise| format!("{} from {}", raise.param, raise.from.join(", ")))
+            .collect();
+        lines.push(format!("-- of raises: {}", parts.join("; ")));
+    }
     let derived_from: Vec<Requirement> = derived
         .iter()
         .filter_map(|id| modules.requirement(id))
@@ -333,6 +362,7 @@ pub(crate) fn contract(
         header: signature,
         constraints,
         result_labels,
+        of_raises,
         requires,
         ensures,
         uses,

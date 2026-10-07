@@ -1,11 +1,12 @@
 ---
 source: crates/una-cli/tests/cli.rs
-assertion_line: 845
+assertion_line: 851
 expression: "serde_json::to_string_pretty(&document[\"generic_results\"]).unwrap()"
 ---
 [
   {
     "function": "s.below",
+    "of_raises": [],
     "result_labels": [
       {
         "from": [
@@ -23,10 +24,12 @@ expression: "serde_json::to_string_pretty(&document[\"generic_results\"]).unwrap
   },
   {
     "function": "s.concat",
+    "of_raises": [],
     "result_labels": []
   },
   {
     "function": "s.tagged",
+    "of_raises": [],
     "result_labels": [
       {
         "from": [
@@ -38,6 +41,26 @@ expression: "serde_json::to_string_pretty(&document[\"generic_results\"]).unwrap
   },
   {
     "function": "s.size",
+    "of_raises": [],
     "result_labels": []
+  },
+  {
+    "function": "s.apply",
+    "of_raises": [
+      {
+        "from": [
+          "T"
+        ],
+        "param": "k"
+      }
+    ],
+    "result_labels": [
+      {
+        "from": [
+          "T"
+        ],
+        "position": "top"
+      }
+    ]
   }
 ]

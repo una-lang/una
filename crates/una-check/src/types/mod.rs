@@ -144,6 +144,10 @@ pub struct Header {
     pub result_labels: Vec<(String, Vec<String>)>,
     /// Whether it has type parameters.
     pub generic: bool,
+    /// Each parameter that an `of` clause names whose calls depend on decisions on type
+    /// parameters, with those type parameters: callers run their argument under them
+    /// (ADR 0067 amendment).
+    pub of_raises: Vec<(String, Vec<String>)>,
 }
 
 /// The outcome of [`check_types`].
@@ -318,6 +322,22 @@ fn headers(env: &Env<'_>) -> Vec<Header> {
         .filter(|(_, f)| f.kind == env::FnKind::Function && env.reports(f.module))
         .map(|(id, f)| Header {
             generic: !f.type_params.is_empty(),
+            of_raises: env
+                .of_raises
+                .range((id, 0)..=(id, usize::MAX))
+                .filter(|(_, params)| !params.is_empty())
+                .filter_map(|((_, index), params)| {
+                    let param = f.params.get(*index)?;
+                    Some((
+                        param.name.to_owned(),
+                        params
+                            .iter()
+                            .filter_map(|p| f.type_params.get(*p))
+                            .map(|p| (*p).to_owned())
+                            .collect(),
+                    ))
+                })
+                .collect(),
             result_labels: env
                 .summaries
                 .get(&id)
