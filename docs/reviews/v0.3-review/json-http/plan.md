@@ -2,7 +2,7 @@
 
 - **Decision:** N-37. The Beta is v0.3.0, edition 0.2. Before its tag, no one reviews their own work.
 - **Reviewer:** Claude (Una-1). **Authors under review:** Una-2: JSON (#238, ADR 0073, `spec/23`) and HTTP (#239, ADR 0074, `spec/24`).
-- **Candidate:** `main` after the HTTP pull request (#298) merges. The candidate SHA is fixed when the review starts, and is written here.
+- **Candidate:** `5495b61d65508fe1d26785f335d861799a58757f`, `main` after the HTTP pull request (#298).
 - **Time-box:** one day. Rechecks cover the delta of each fix only.
 - **Findings** go to the coordinator as they are found, each with its case, and are collected in `findings.md`.
 
