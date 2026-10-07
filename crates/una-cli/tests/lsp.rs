@@ -361,15 +361,19 @@ fn a_newer_change_cancels_tier_1_and_leaves_no_solver_behind() {
     std::fs::create_dir_all(&bin).unwrap();
     let pids = dir.join("pids");
     let solver = bin.join("z3");
+    // Written under another name and renamed into place, so that no process can execute the
+    // file while it is still open for writing ("text file busy", #286).
+    let staged = bin.join("z3.staged");
     std::fs::write(
-        &solver,
+        &staged,
         format!(
             "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"Z3 version 5.1.0 - 64 bit\"; exit 0; fi\necho $$ >> '{}'\nexec /bin/sleep 600\n",
             pids.display()
         ),
     )
     .unwrap();
-    std::fs::set_permissions(&solver, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::rename(&staged, &solver).unwrap();
 
     let mut session = Session::start(Some(&bin));
     session.open(&file, text);
