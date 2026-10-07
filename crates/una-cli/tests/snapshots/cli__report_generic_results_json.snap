@@ -1,5 +1,6 @@
 ---
 source: crates/una-cli/tests/cli.rs
+assertion_line: 845
 expression: "serde_json::to_string_pretty(&document[\"generic_results\"]).unwrap()"
 ---
 [
@@ -11,12 +12,25 @@ expression: "serde_json::to_string_pretty(&document[\"generic_results\"]).unwrap
           "T"
         ],
         "position": "top"
+      },
+      {
+        "from": [
+          "T"
+        ],
+        "position": "element"
       }
     ]
   },
   {
     "function": "s.concat",
-    "result_labels": []
+    "result_labels": [
+      {
+        "from": [
+          "T"
+        ],
+        "position": "element"
+      }
+    ]
   },
   {
     "function": "s.tagged",
@@ -26,7 +40,17 @@ expression: "serde_json::to_string_pretty(&document[\"generic_results\"]).unwrap
           "T"
         ],
         "position": "arg 1"
+      },
+      {
+        "from": [
+          "U"
+        ],
+        "position": "arg 1.element"
       }
     ]
+  },
+  {
+    "function": "s.size",
+    "result_labels": []
   }
 ]

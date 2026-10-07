@@ -1,0 +1,408 @@
+-- test: ADR 0067 adversarial check of #231, L_chain200: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/chain200.una:408:34
+module chain200
+
+f0[T](a: T, b: T) -> Int = f1(a, b: b)
+
+f1[T](a: T, b: T) -> Int = f2(a, b: b)
+
+f2[T](a: T, b: T) -> Int = f3(a, b: b)
+
+f3[T](a: T, b: T) -> Int = f4(a, b: b)
+
+f4[T](a: T, b: T) -> Int = f5(a, b: b)
+
+f5[T](a: T, b: T) -> Int = f6(a, b: b)
+
+f6[T](a: T, b: T) -> Int = f7(a, b: b)
+
+f7[T](a: T, b: T) -> Int = f8(a, b: b)
+
+f8[T](a: T, b: T) -> Int = f9(a, b: b)
+
+f9[T](a: T, b: T) -> Int = f10(a, b: b)
+
+f10[T](a: T, b: T) -> Int = f11(a, b: b)
+
+f11[T](a: T, b: T) -> Int = f12(a, b: b)
+
+f12[T](a: T, b: T) -> Int = f13(a, b: b)
+
+f13[T](a: T, b: T) -> Int = f14(a, b: b)
+
+f14[T](a: T, b: T) -> Int = f15(a, b: b)
+
+f15[T](a: T, b: T) -> Int = f16(a, b: b)
+
+f16[T](a: T, b: T) -> Int = f17(a, b: b)
+
+f17[T](a: T, b: T) -> Int = f18(a, b: b)
+
+f18[T](a: T, b: T) -> Int = f19(a, b: b)
+
+f19[T](a: T, b: T) -> Int = f20(a, b: b)
+
+f20[T](a: T, b: T) -> Int = f21(a, b: b)
+
+f21[T](a: T, b: T) -> Int = f22(a, b: b)
+
+f22[T](a: T, b: T) -> Int = f23(a, b: b)
+
+f23[T](a: T, b: T) -> Int = f24(a, b: b)
+
+f24[T](a: T, b: T) -> Int = f25(a, b: b)
+
+f25[T](a: T, b: T) -> Int = f26(a, b: b)
+
+f26[T](a: T, b: T) -> Int = f27(a, b: b)
+
+f27[T](a: T, b: T) -> Int = f28(a, b: b)
+
+f28[T](a: T, b: T) -> Int = f29(a, b: b)
+
+f29[T](a: T, b: T) -> Int = f30(a, b: b)
+
+f30[T](a: T, b: T) -> Int = f31(a, b: b)
+
+f31[T](a: T, b: T) -> Int = f32(a, b: b)
+
+f32[T](a: T, b: T) -> Int = f33(a, b: b)
+
+f33[T](a: T, b: T) -> Int = f34(a, b: b)
+
+f34[T](a: T, b: T) -> Int = f35(a, b: b)
+
+f35[T](a: T, b: T) -> Int = f36(a, b: b)
+
+f36[T](a: T, b: T) -> Int = f37(a, b: b)
+
+f37[T](a: T, b: T) -> Int = f38(a, b: b)
+
+f38[T](a: T, b: T) -> Int = f39(a, b: b)
+
+f39[T](a: T, b: T) -> Int = f40(a, b: b)
+
+f40[T](a: T, b: T) -> Int = f41(a, b: b)
+
+f41[T](a: T, b: T) -> Int = f42(a, b: b)
+
+f42[T](a: T, b: T) -> Int = f43(a, b: b)
+
+f43[T](a: T, b: T) -> Int = f44(a, b: b)
+
+f44[T](a: T, b: T) -> Int = f45(a, b: b)
+
+f45[T](a: T, b: T) -> Int = f46(a, b: b)
+
+f46[T](a: T, b: T) -> Int = f47(a, b: b)
+
+f47[T](a: T, b: T) -> Int = f48(a, b: b)
+
+f48[T](a: T, b: T) -> Int = f49(a, b: b)
+
+f49[T](a: T, b: T) -> Int = f50(a, b: b)
+
+f50[T](a: T, b: T) -> Int = f51(a, b: b)
+
+f51[T](a: T, b: T) -> Int = f52(a, b: b)
+
+f52[T](a: T, b: T) -> Int = f53(a, b: b)
+
+f53[T](a: T, b: T) -> Int = f54(a, b: b)
+
+f54[T](a: T, b: T) -> Int = f55(a, b: b)
+
+f55[T](a: T, b: T) -> Int = f56(a, b: b)
+
+f56[T](a: T, b: T) -> Int = f57(a, b: b)
+
+f57[T](a: T, b: T) -> Int = f58(a, b: b)
+
+f58[T](a: T, b: T) -> Int = f59(a, b: b)
+
+f59[T](a: T, b: T) -> Int = f60(a, b: b)
+
+f60[T](a: T, b: T) -> Int = f61(a, b: b)
+
+f61[T](a: T, b: T) -> Int = f62(a, b: b)
+
+f62[T](a: T, b: T) -> Int = f63(a, b: b)
+
+f63[T](a: T, b: T) -> Int = f64(a, b: b)
+
+f64[T](a: T, b: T) -> Int = f65(a, b: b)
+
+f65[T](a: T, b: T) -> Int = f66(a, b: b)
+
+f66[T](a: T, b: T) -> Int = f67(a, b: b)
+
+f67[T](a: T, b: T) -> Int = f68(a, b: b)
+
+f68[T](a: T, b: T) -> Int = f69(a, b: b)
+
+f69[T](a: T, b: T) -> Int = f70(a, b: b)
+
+f70[T](a: T, b: T) -> Int = f71(a, b: b)
+
+f71[T](a: T, b: T) -> Int = f72(a, b: b)
+
+f72[T](a: T, b: T) -> Int = f73(a, b: b)
+
+f73[T](a: T, b: T) -> Int = f74(a, b: b)
+
+f74[T](a: T, b: T) -> Int = f75(a, b: b)
+
+f75[T](a: T, b: T) -> Int = f76(a, b: b)
+
+f76[T](a: T, b: T) -> Int = f77(a, b: b)
+
+f77[T](a: T, b: T) -> Int = f78(a, b: b)
+
+f78[T](a: T, b: T) -> Int = f79(a, b: b)
+
+f79[T](a: T, b: T) -> Int = f80(a, b: b)
+
+f80[T](a: T, b: T) -> Int = f81(a, b: b)
+
+f81[T](a: T, b: T) -> Int = f82(a, b: b)
+
+f82[T](a: T, b: T) -> Int = f83(a, b: b)
+
+f83[T](a: T, b: T) -> Int = f84(a, b: b)
+
+f84[T](a: T, b: T) -> Int = f85(a, b: b)
+
+f85[T](a: T, b: T) -> Int = f86(a, b: b)
+
+f86[T](a: T, b: T) -> Int = f87(a, b: b)
+
+f87[T](a: T, b: T) -> Int = f88(a, b: b)
+
+f88[T](a: T, b: T) -> Int = f89(a, b: b)
+
+f89[T](a: T, b: T) -> Int = f90(a, b: b)
+
+f90[T](a: T, b: T) -> Int = f91(a, b: b)
+
+f91[T](a: T, b: T) -> Int = f92(a, b: b)
+
+f92[T](a: T, b: T) -> Int = f93(a, b: b)
+
+f93[T](a: T, b: T) -> Int = f94(a, b: b)
+
+f94[T](a: T, b: T) -> Int = f95(a, b: b)
+
+f95[T](a: T, b: T) -> Int = f96(a, b: b)
+
+f96[T](a: T, b: T) -> Int = f97(a, b: b)
+
+f97[T](a: T, b: T) -> Int = f98(a, b: b)
+
+f98[T](a: T, b: T) -> Int = f99(a, b: b)
+
+f99[T](a: T, b: T) -> Int = f100(a, b: b)
+
+f100[T](a: T, b: T) -> Int = f101(a, b: b)
+
+f101[T](a: T, b: T) -> Int = f102(a, b: b)
+
+f102[T](a: T, b: T) -> Int = f103(a, b: b)
+
+f103[T](a: T, b: T) -> Int = f104(a, b: b)
+
+f104[T](a: T, b: T) -> Int = f105(a, b: b)
+
+f105[T](a: T, b: T) -> Int = f106(a, b: b)
+
+f106[T](a: T, b: T) -> Int = f107(a, b: b)
+
+f107[T](a: T, b: T) -> Int = f108(a, b: b)
+
+f108[T](a: T, b: T) -> Int = f109(a, b: b)
+
+f109[T](a: T, b: T) -> Int = f110(a, b: b)
+
+f110[T](a: T, b: T) -> Int = f111(a, b: b)
+
+f111[T](a: T, b: T) -> Int = f112(a, b: b)
+
+f112[T](a: T, b: T) -> Int = f113(a, b: b)
+
+f113[T](a: T, b: T) -> Int = f114(a, b: b)
+
+f114[T](a: T, b: T) -> Int = f115(a, b: b)
+
+f115[T](a: T, b: T) -> Int = f116(a, b: b)
+
+f116[T](a: T, b: T) -> Int = f117(a, b: b)
+
+f117[T](a: T, b: T) -> Int = f118(a, b: b)
+
+f118[T](a: T, b: T) -> Int = f119(a, b: b)
+
+f119[T](a: T, b: T) -> Int = f120(a, b: b)
+
+f120[T](a: T, b: T) -> Int = f121(a, b: b)
+
+f121[T](a: T, b: T) -> Int = f122(a, b: b)
+
+f122[T](a: T, b: T) -> Int = f123(a, b: b)
+
+f123[T](a: T, b: T) -> Int = f124(a, b: b)
+
+f124[T](a: T, b: T) -> Int = f125(a, b: b)
+
+f125[T](a: T, b: T) -> Int = f126(a, b: b)
+
+f126[T](a: T, b: T) -> Int = f127(a, b: b)
+
+f127[T](a: T, b: T) -> Int = f128(a, b: b)
+
+f128[T](a: T, b: T) -> Int = f129(a, b: b)
+
+f129[T](a: T, b: T) -> Int = f130(a, b: b)
+
+f130[T](a: T, b: T) -> Int = f131(a, b: b)
+
+f131[T](a: T, b: T) -> Int = f132(a, b: b)
+
+f132[T](a: T, b: T) -> Int = f133(a, b: b)
+
+f133[T](a: T, b: T) -> Int = f134(a, b: b)
+
+f134[T](a: T, b: T) -> Int = f135(a, b: b)
+
+f135[T](a: T, b: T) -> Int = f136(a, b: b)
+
+f136[T](a: T, b: T) -> Int = f137(a, b: b)
+
+f137[T](a: T, b: T) -> Int = f138(a, b: b)
+
+f138[T](a: T, b: T) -> Int = f139(a, b: b)
+
+f139[T](a: T, b: T) -> Int = f140(a, b: b)
+
+f140[T](a: T, b: T) -> Int = f141(a, b: b)
+
+f141[T](a: T, b: T) -> Int = f142(a, b: b)
+
+f142[T](a: T, b: T) -> Int = f143(a, b: b)
+
+f143[T](a: T, b: T) -> Int = f144(a, b: b)
+
+f144[T](a: T, b: T) -> Int = f145(a, b: b)
+
+f145[T](a: T, b: T) -> Int = f146(a, b: b)
+
+f146[T](a: T, b: T) -> Int = f147(a, b: b)
+
+f147[T](a: T, b: T) -> Int = f148(a, b: b)
+
+f148[T](a: T, b: T) -> Int = f149(a, b: b)
+
+f149[T](a: T, b: T) -> Int = f150(a, b: b)
+
+f150[T](a: T, b: T) -> Int = f151(a, b: b)
+
+f151[T](a: T, b: T) -> Int = f152(a, b: b)
+
+f152[T](a: T, b: T) -> Int = f153(a, b: b)
+
+f153[T](a: T, b: T) -> Int = f154(a, b: b)
+
+f154[T](a: T, b: T) -> Int = f155(a, b: b)
+
+f155[T](a: T, b: T) -> Int = f156(a, b: b)
+
+f156[T](a: T, b: T) -> Int = f157(a, b: b)
+
+f157[T](a: T, b: T) -> Int = f158(a, b: b)
+
+f158[T](a: T, b: T) -> Int = f159(a, b: b)
+
+f159[T](a: T, b: T) -> Int = f160(a, b: b)
+
+f160[T](a: T, b: T) -> Int = f161(a, b: b)
+
+f161[T](a: T, b: T) -> Int = f162(a, b: b)
+
+f162[T](a: T, b: T) -> Int = f163(a, b: b)
+
+f163[T](a: T, b: T) -> Int = f164(a, b: b)
+
+f164[T](a: T, b: T) -> Int = f165(a, b: b)
+
+f165[T](a: T, b: T) -> Int = f166(a, b: b)
+
+f166[T](a: T, b: T) -> Int = f167(a, b: b)
+
+f167[T](a: T, b: T) -> Int = f168(a, b: b)
+
+f168[T](a: T, b: T) -> Int = f169(a, b: b)
+
+f169[T](a: T, b: T) -> Int = f170(a, b: b)
+
+f170[T](a: T, b: T) -> Int = f171(a, b: b)
+
+f171[T](a: T, b: T) -> Int = f172(a, b: b)
+
+f172[T](a: T, b: T) -> Int = f173(a, b: b)
+
+f173[T](a: T, b: T) -> Int = f174(a, b: b)
+
+f174[T](a: T, b: T) -> Int = f175(a, b: b)
+
+f175[T](a: T, b: T) -> Int = f176(a, b: b)
+
+f176[T](a: T, b: T) -> Int = f177(a, b: b)
+
+f177[T](a: T, b: T) -> Int = f178(a, b: b)
+
+f178[T](a: T, b: T) -> Int = f179(a, b: b)
+
+f179[T](a: T, b: T) -> Int = f180(a, b: b)
+
+f180[T](a: T, b: T) -> Int = f181(a, b: b)
+
+f181[T](a: T, b: T) -> Int = f182(a, b: b)
+
+f182[T](a: T, b: T) -> Int = f183(a, b: b)
+
+f183[T](a: T, b: T) -> Int = f184(a, b: b)
+
+f184[T](a: T, b: T) -> Int = f185(a, b: b)
+
+f185[T](a: T, b: T) -> Int = f186(a, b: b)
+
+f186[T](a: T, b: T) -> Int = f187(a, b: b)
+
+f187[T](a: T, b: T) -> Int = f188(a, b: b)
+
+f188[T](a: T, b: T) -> Int = f189(a, b: b)
+
+f189[T](a: T, b: T) -> Int = f190(a, b: b)
+
+f190[T](a: T, b: T) -> Int = f191(a, b: b)
+
+f191[T](a: T, b: T) -> Int = f192(a, b: b)
+
+f192[T](a: T, b: T) -> Int = f193(a, b: b)
+
+f193[T](a: T, b: T) -> Int = f194(a, b: b)
+
+f194[T](a: T, b: T) -> Int = f195(a, b: b)
+
+f195[T](a: T, b: T) -> Int = f196(a, b: b)
+
+f196[T](a: T, b: T) -> Int = f197(a, b: b)
+
+f197[T](a: T, b: T) -> Int = f198(a, b: b)
+
+f198[T](a: T, b: T) -> Int = f199(a, b: b)
+
+f199[T](a: T, b: T) -> Int = f200(a, b: b)
+
+f200[T](a: T, b: T) -> Int = if a == b then 1 else 0
+
+pub leak(s: secret Int) -> Int = f0(s, b: 0)

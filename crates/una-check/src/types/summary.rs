@@ -54,10 +54,7 @@ impl Checker<'_, '_, '_> {
         let Some(def) = self.env.functions.get(id) else {
             return;
         };
-        let mut found = own(label, &def.type_params);
-        if let Ty::Param(index) = def.result.base.unlabeled() {
-            found.remove(index);
-        }
+        let found = own(label, &def.type_params);
         if found.is_empty() {
             return;
         }
@@ -90,19 +87,14 @@ fn own(label: &Label, params: &[&str]) -> BTreeSet<usize> {
 }
 
 /// Walks the value's type `found` and the declared result type together, recording at each
-/// position the type parameters among `params` whose symbolic labels `found` has there. At
-/// a position that is a type parameter, the value is a value of that parameter, whose labels
-/// its type argument gives by substitution, so only the other parameters count there, and
-/// the walk stops.
+/// position the type parameters among `params` whose symbolic labels `found` has there.
+/// A position that is a type parameter `T` records `T` too: `ℓ_T` there stands for every
+/// label of `T`'s type argument, while substitution puts only its top label there, so a
+/// value of `T` chosen by a comparison of `T` values must be raised by all of them. The walk
+/// stops there, since the type argument's inner positions come from substitution.
 fn collect(found: &Ty, declared: &Ty, params: &[&str], path: &mut Vec<Step>, out: &mut Summary) {
-    let mut at = own(&found.top_label(), params);
-    let param = match declared.unlabeled() {
-        Ty::Param(index) => {
-            at.remove(index);
-            true
-        }
-        _ => false,
-    };
+    let at = own(&found.top_label(), params);
+    let param = matches!(declared.unlabeled(), Ty::Param(_));
     if !at.is_empty() {
         out.entry(path.clone()).or_default().extend(at);
     }
@@ -185,4 +177,87 @@ fn raise_at(
         (_, other) => other,
     };
     raised.with_label(&top)
+}
+
+/// The strongly connected components of the call graph among the functions of `nodes`, from
+/// `edges` (caller, callee), callees first: a component comes after every component it calls
+/// (Kosaraju, with explicit stacks, so long chains do not recurse).
+pub(crate) fn components(
+    nodes: &BTreeSet<usize>,
+    edges: &[(usize, usize)],
+) -> Vec<BTreeSet<usize>> {
+    use std::collections::BTreeMap;
+    let mut forward: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    let mut backward: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for &(caller, callee) in edges {
+        if nodes.contains(&caller) && nodes.contains(&callee) {
+            forward.entry(caller).or_default().push(callee);
+            backward.entry(callee).or_default().push(caller);
+        }
+    }
+    // First pass: the order in which a depth-first search over calls finishes each function.
+    let mut finished = Vec::new();
+    let mut seen = BTreeSet::new();
+    for &start in nodes {
+        if !seen.insert(start) {
+            continue;
+        }
+        let mut stack = vec![(start, 0usize)];
+        while let Some((node, next)) = stack.pop() {
+            let callees = forward.get(&node).map_or(&[][..], Vec::as_slice);
+            if let Some(&callee) = callees.get(next) {
+                stack.push((node, next + 1));
+                if seen.insert(callee) {
+                    stack.push((callee, 0));
+                }
+            } else {
+                finished.push(node);
+            }
+        }
+    }
+    // Second pass, over callers, in reverse finishing order: each search finds a component,
+    // and the components come out callers first, so they are reversed at the end.
+    let mut assigned = BTreeSet::new();
+    let mut out = Vec::new();
+    for &start in finished.iter().rev() {
+        if !assigned.insert(start) {
+            continue;
+        }
+        let mut component = BTreeSet::from([start]);
+        let mut stack = vec![start];
+        while let Some(node) = stack.pop() {
+            for &caller in backward.get(&node).map_or(&[][..], Vec::as_slice) {
+                if assigned.insert(caller) {
+                    component.insert(caller);
+                    stack.push(caller);
+                }
+            }
+        }
+        out.push(component);
+    }
+    out.reverse();
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn components_come_callees_first() {
+        // 0 -> 1 -> 2 <-> 3, and 4 alone.
+        let nodes: BTreeSet<usize> = (0..5).collect();
+        let edges = [(0, 1), (1, 2), (2, 3), (3, 2)];
+        let found = components(&nodes, &edges);
+        let position = |n: usize| found.iter().position(|c| c.contains(&n)).unwrap_or(99);
+        assert!(found.contains(&BTreeSet::from([2, 3])));
+        assert!(position(2) < position(1) && position(1) < position(0));
+        assert_eq!(found.iter().map(BTreeSet::len).sum::<usize>(), 5);
+        // A chain of 10,000 functions does not overflow the stack.
+        let nodes: BTreeSet<usize> = (0..10_000).collect();
+        let edges: Vec<(usize, usize)> = (0..9_999).map(|n| (n, n + 1)).collect();
+        let found = components(&nodes, &edges);
+        assert_eq!(found.len(), 10_000);
+        assert_eq!(found.first(), Some(&BTreeSet::from([9_999])));
+    }
 }

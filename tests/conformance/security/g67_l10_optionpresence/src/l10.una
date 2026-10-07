@@ -1,0 +1,13 @@
+-- test: ADR 0067 adversarial check of #231, L10_optionpresence: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/l10.una:11:8
+-- expect: error U4001 at src/l10.una:12:19
+module l10
+
+found[T](a: T, b: T) -> Option[Int] = if a == b then Some(1) else None
+
+pub leak(s: secret Int) -> Int
+=
+  when found(s, b: 0)
+    is Some(v) -> v
+    is None -> 0

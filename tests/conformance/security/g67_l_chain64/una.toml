@@ -1,0 +1,4 @@
+[package]
+name = "g67_l_chain64"
+version = "0.1.0"
+edition = "0.2"

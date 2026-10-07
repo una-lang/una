@@ -1,0 +1,9 @@
+-- test: ADR 0067 adversarial check of #231, L23_fnvalue_map: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/l23.una:9:41
+-- expect: error U4001 at src/l23.una:9:83
+module l23
+
+flag[T](a: T) -> Int = if a == a then 1 else 0
+
+pub leak(xs: List[secret Int]) -> Int = xs.map(each: flag).fold(initial: 0, step: fn(acc, v) -> acc + v)

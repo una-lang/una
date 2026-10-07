@@ -1,0 +1,18 @@
+-- test: ADR 0067 adversarial check of #231, L33d_fw_effect_tail: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
+-- spec: spec/07 §7
+-- expect: error U4002 at src/l33d.una:18:24
+module l33d
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+noisy(x: secret Int) -> secret Bool
+  uses @log: Log[write]
+=
+  @log.write(0)
+  x > 0
+
+pub leak(xs: List[secret Int]) -> secret Option[secret Int]
+  uses @log: Log[write]
+=
+  xs.first_where(keep: noisy)
