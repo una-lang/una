@@ -1044,10 +1044,25 @@ impl<'p, 'i> Walker<'p, 'i> {
                             body_ctx.assume(F::op(op, vec![x.f, high.f]));
                         }
                     }
-                    for (name, ty) in state {
+                    // The body of a loop over a list runs only when the list has an element
+                    // (#278).
+                    if let LoopSource::List(list) = source.as_ref() {
+                        let list = self.atom(list, &ctx);
+                        if let Some(length) = self.len(&list) {
+                            body_ctx.assume(F::op(">=", vec![length, F::Int("1".to_owned())]));
+                        }
+                    }
+                    for ((name, ty), atom) in state.iter().zip(init) {
                         self.bind(&mut body_ctx, name, ty);
                         self.loop_fresh
                             .insert(name.clone(), BTreeSet::from([source_name(name)]));
+                        // A state that starts from an earlier loop's final value is fixed by
+                        // no first iteration (ADR 0071 D3, #278).
+                        if let Atom::Var(start) = atom
+                            && self.unpinned.contains(start)
+                        {
+                            self.unpinned.insert(name.clone());
+                        }
                     }
                     for ((name, _), atom) in state.iter().zip(init) {
                         let x = own(&body_ctx, name);
