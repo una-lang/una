@@ -59,6 +59,9 @@ pub(crate) fn run(
     wallclock: Duration,
     cancel: Option<&AtomicBool>,
 ) -> Result<Answer, Failure> {
+    // The deadline runs from before the solver starts, and holds while the query is written:
+    // a solver that does not read its input must not keep the run past its time (#286).
+    let deadline = Instant::now() + wallclock;
     let mut child = Command::new(solver)
         .args(["-in", "-smt2"])
         .stdin(Stdio::piped())
@@ -66,27 +69,35 @@ pub(crate) fn run(
         .stderr(Stdio::null())
         .spawn()
         .map_err(|error| Failure(format!("cannot start the solver: {error}")))?;
-    // Read before writing, so that a full pipe cannot block the solver.
-    let reader = child.stdout.take().map(|mut stdout| {
-        std::thread::spawn(move || {
-            let mut text = String::new();
-            let _ = stdout.read_to_string(&mut text);
-            text
-        })
+    let stdin = child.stdin.take();
+    let stdout = child.stdout.take();
+    let (waited, output) = std::thread::scope(|scope| {
+        // Read and write on threads of their own, so that a full pipe in either direction
+        // blocks neither the solver nor the wait. The writer drops the solver's input when it
+        // is done; killing the solver ends a write it does not read with a broken pipe.
+        let reader = stdout.map(|mut stdout| {
+            scope.spawn(move || {
+                let mut text = String::new();
+                let _ = stdout.read_to_string(&mut text);
+                text
+            })
+        });
+        if let Some(mut stdin) = stdin {
+            scope.spawn(move || {
+                let _ = stdin.write_all(script.as_bytes());
+            });
+        }
+        let waited = wait(|| !matches!(child.try_wait(), Ok(None)), deadline, cancel);
+        if waited != Waited::Exited {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let output = reader
+            .and_then(|reader| reader.join().ok())
+            .unwrap_or_default();
+        (waited, output)
     });
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(script.as_bytes());
-    }
-    let deadline = Instant::now() + wallclock;
-    let waited = wait(|| !matches!(child.try_wait(), Ok(None)), deadline, cancel);
-    if waited != Waited::Exited {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
     let (timed_out, cancelled) = (waited == Waited::Wallclock, waited == Waited::Cancelled);
-    let output = reader
-        .and_then(|reader| reader.join().ok())
-        .unwrap_or_default();
     if cancelled {
         return Ok(Answer {
             status: Status::Unknown,
@@ -375,5 +386,30 @@ mod tests {
         let broken =
             "(error \"line 4 column 21: logic does not support nonlinear arithmetic\")\nsat\n";
         assert!(parse(broken, 0).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_solver_that_reads_no_query_is_stopped_at_its_wallclock() {
+        // #286: the deadline holds while the query is being written. A solver that never reads
+        // its input leaves a query larger than a pipe unwritten; the write must not keep the
+        // run past the wallclock.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("una-solver-mute-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let solver = dir.join("mute");
+        let staged = dir.join("mute.tmp");
+        std::fs::write(&staged, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::rename(&staged, &solver).unwrap();
+        let script = ";".repeat(4 * 1024 * 1024);
+        let started = Instant::now();
+        let answer = run(&solver, &script, 0, Duration::from_millis(300), None).unwrap();
+        let took = started.elapsed();
+        assert_eq!(answer.status, Status::Unknown);
+        assert_eq!(answer.reason.as_deref(), Some("wallclock"));
+        assert!(took < Duration::from_secs(5), "took {took:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
