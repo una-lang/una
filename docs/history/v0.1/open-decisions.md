@@ -1931,7 +1931,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Options: A) a joined function type keeps, for each parameter, the refinements of either branch, and for the result only those both branches share; B) drop every refinement of a join.
 - Chosen: A, because it is the strongest type that both branches satisfy (contravariant parameters, covariant result).
 - Confidence: medium
-- Reversal cost: low, the join in `crates/una-check/src/types/unify.rs`
+- Reversal cost: low, the join `FnRefinements::combine` in `crates/una-check/src/types/ty.rs` (in `unify.rs` when decided)
 - Implemented in: `9cf2b99`, tag `DECISION D-150`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
@@ -1942,7 +1942,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Options: A) the repair names the value's function type ("strengthen the result of `fn(...)`..."); B) no repair.
 - Chosen: A, because the result is the value's own declaration, which the agent edits.
 - Confidence: medium
-- Reversal cost: low, `crates/una-verify/src/report.rs`
+- Reversal cost: low, `crates/una-verify/src/generate.rs` (in `report.rs` when decided)
 - Implemented in: `9cf2b99`, tag `DECISION D-151`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
