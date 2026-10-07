@@ -26,25 +26,26 @@ fn gates(sha: &str, out: &Path, gates: &[&str]) -> Output {
         .unwrap()
 }
 
-/// Whether `git` runs here; without it, the tests say so and check nothing, since the script
-/// needs it (scripts/local-ci/Dockerfile installs it for the Linux runs). The skip is printed,
-/// so that a run without git is never mistaken for a pass.
+/// The commit this checkout is at, when `git` runs here and reaches its metadata; otherwise the
+/// tests say they are skipped and check nothing, since the script needs both. The skip is
+/// printed, so that it is never mistaken for a pass: `scripts/local-ci/Dockerfile` installs git,
+/// but a worktree mounted alone into the container has its metadata outside the mount.
 #[allow(clippy::print_stderr)]
-fn git_available() -> bool {
-    let found = Command::new("git").arg("--version").output().is_ok();
-    if !found {
-        eprintln!("skipped: git is not installed, and scripts/release-gates.sh needs it");
-    }
-    found
-}
-
-fn head() -> String {
+fn head() -> Option<String> {
     let output = Command::new("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(root())
-        .output()
-        .unwrap();
-    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        .output();
+    let sha = output
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned());
+    if sha.is_none() {
+        eprintln!(
+            "skipped: git does not run here or cannot read this checkout, and scripts/release-gates.sh needs it"
+        );
+    }
+    sha
 }
 
 /// The rows of `results.tsv`, without its header, which the first assertion checks.
@@ -59,10 +60,9 @@ fn rows(out: &Path) -> Vec<Vec<String>> {
 
 #[test]
 fn the_clone_gate_checks_out_exactly_the_commit_and_records_it() {
-    if !git_available() {
+    let Some(sha) = head() else {
         return;
-    }
-    let sha = head();
+    };
     let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-head");
     let output = gates(&sha, &out, &["clone"]);
     assert!(
@@ -115,7 +115,7 @@ fn the_clone_gate_checks_out_exactly_the_commit_and_records_it() {
 
 #[test]
 fn a_failing_gate_does_not_stop_the_next_one() {
-    if !git_available() {
+    if head().is_none() {
         return;
     }
     // No commit has this name, so each clone gate fails, and both run.
@@ -132,14 +132,14 @@ fn a_failing_gate_does_not_stop_the_next_one() {
 
 #[test]
 fn usage_errors_exit_with_2() {
-    if !git_available() {
+    let Some(sha) = head() else {
         return;
-    }
+    };
     let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-usage");
     // An abbreviated commit is not a validation target: the record names the full one.
     assert_eq!(gates("abc1234", &out, &["clone"]).status.code(), Some(2));
     assert_eq!(
-        gates(&head(), &out, &["lint"]).status.code(),
+        gates(&sha, &out, &["lint"]).status.code(),
         Some(2),
         "an unknown gate"
     );
