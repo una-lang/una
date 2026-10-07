@@ -157,9 +157,12 @@ const ARITHMETIC: [&str; 3] = ["i!mul!Int", "i!div!Int", "i!mod!Int"];
 /// The reason of an obligation whose refutation sets values a loop made fresh (ADR 0071 D3).
 fn forgotten(names: &[String]) -> String {
     let names: Vec<String> = names.iter().map(|name| format!("`{name}`")).collect();
-    let names = names.join(" and ");
+    let (its, names) = match names.as_slice() {
+        [one] => ("its type, and its length", one.clone()),
+        _ => ("their types, and their lengths", names.join(" and ")),
+    };
     format!(
-        "the loop forgets every fact about {names} but the refinements of its type, and its length when the loop only `set`s a list, as `spec/17 §5` rule 3 says, so the counterexample sets {names} freely; guard the use with an `if`, or check the value with `checked`"
+        "the loop forgets every fact about {names} but the refinements of {its} when the loop only `set`s a list, as `spec/17 §5` rule 3 says, so the counterexample sets {names} freely; guard the use with an `if`, or check the value with `checked`"
     )
 }
 
@@ -577,5 +580,21 @@ mod arithmetic_tests {
         assert_eq!(integer("(- 5)"), Some(-5));
         assert_eq!(integer("true"), None);
         assert_eq!(integer("1000000000000000000000000000000000000000000"), None);
+    }
+}
+
+#[cfg(test)]
+mod forgotten_tests {
+    use super::forgotten;
+
+    #[test]
+    fn the_reason_names_each_forgotten_binding() {
+        let one = forgotten(&["xs".to_owned()]);
+        assert!(one.starts_with(
+            "the loop forgets every fact about `xs` but the refinements of its type, and its length"
+        ));
+        let two = forgotten(&["xs".to_owned(), "ys".to_owned()]);
+        assert!(two.starts_with("the loop forgets every fact about `xs` and `ys` but the refinements of their types, and their lengths"));
+        assert!(two.contains("sets `xs` and `ys` freely"));
     }
 }
