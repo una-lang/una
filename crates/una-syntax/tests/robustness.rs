@@ -6,7 +6,7 @@
 
 use pretty_assertions::assert_eq;
 use una_syntax::ast::{Body, DeclKind};
-use una_syntax::{Interner, MAX_NESTING, SourceDb, lex, parse};
+use una_syntax::{Interner, KeywordSet, MAX_NESTING, SourceDb, lex, lex_in, parse};
 
 /// The diagnostics of `text` as "code line:col message", and the number of declarations.
 ///
@@ -188,14 +188,30 @@ fn examples() -> Vec<(String, String)> {
         .collect()
 }
 
+/// The keywords of the edition of the example file at `path`, which its package's `una.toml`
+/// names (`spec/13 §7`).
+fn edition_of(path: &str) -> KeywordSet {
+    let mut dir = std::path::Path::new(path).parent();
+    while let Some(here) = dir {
+        if let Ok(manifest) = std::fs::read_to_string(here.join("una.toml")) {
+            if manifest.contains("edition = \"0.2\"") {
+                return KeywordSet::V0_2;
+            }
+            return KeywordSet::V0_1;
+        }
+        dir = here.parent();
+    }
+    KeywordSet::V0_1
+}
+
 /// The line boundaries of `text` where a prefix must yield a diagnostic: right after the first
 /// line of each multi-line declaration, and right after the `=` line of each long-form
 /// function (ADR 0017 decision 7).
-fn boundaries_that_must_fail(text: &str) -> Vec<usize> {
+fn boundaries_that_must_fail(text: &str, keywords: KeywordSet) -> Vec<usize> {
     let mut db = SourceDb::new();
     let id = db.add("t.una", text.as_bytes());
     let mut interner = Interner::new();
-    let lexed = lex(db.file(id), id, &mut interner);
+    let lexed = lex_in(db.file(id), id, &mut interner, keywords);
     let parsed = parse(&lexed, id, &interner);
     assert!(parsed.errors.is_empty() && lexed.errors.is_empty());
     let mut boundaries = Vec::new();
@@ -222,7 +238,8 @@ fn every_prefix_of_every_example_is_parsed_safely() {
     let mut prefixes = 0;
     let mut required = 0;
     for (name, text) in examples() {
-        let must_fail = boundaries_that_must_fail(&text);
+        let keywords = edition_of(&name);
+        let must_fail = boundaries_that_must_fail(&text, keywords);
         assert!(!must_fail.is_empty(), "{name}");
         let mut boundaries: Vec<usize> = std::iter::once(0)
             .chain(text.match_indices('\n').map(|(index, _)| index + 1))
@@ -235,7 +252,7 @@ fn every_prefix_of_every_example_is_parsed_safely() {
             let mut db = SourceDb::new();
             let id = db.add("t.una", prefix.as_bytes());
             let mut interner = Interner::new();
-            let lexed = lex(db.file(id), id, &mut interner);
+            let lexed = lex_in(db.file(id), id, &mut interner, keywords);
             let parsed = parse(&lexed, id, &interner);
             let errors: Vec<_> = lexed.errors.iter().chain(&parsed.errors).collect();
             for error in &errors {
