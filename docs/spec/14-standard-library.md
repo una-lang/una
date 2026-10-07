@@ -42,6 +42,8 @@ Higher-order prelude functions accept only pure, non-failing lambdas in v0.1 (ef
 
 (v0.2, ADR 0066.) In edition `0.2`, `min`, `max`, `contains` and `sum` are generic over constrained types, and the prelude gains `sort` (`spec/20 §6`). `abs` stays `Int`-only.
 
+(v0.2, ADR 0069.) In edition `0.2`, the prelude gains `empty_map()` and the kind `Entry[K, V]`; the operations of a map are built-in methods of the receiver (`spec/21 §2`).
+
 (v0.2, ADR 0056.) The prelude gains `set[T](edit xs: List[T], index: Int, item: T) -> Unit`, with `requires 0 <= index and index < xs.len` and `ensures xs.len == old(xs).len` (`spec/17 §8`).
 
 (v0.2, ADR 0057.) The conversions, wrapping, saturating and bit operations of fixed-width integers are built-in methods resolved by the receiver, not prelude functions (`spec/18 §4`, `§5`). `to_int` on `Text` keeps the meaning above.
