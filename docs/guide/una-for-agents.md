@@ -565,6 +565,24 @@ import release (length_band)
 pub size(text: confidential[Private] Text) -> Nat = length_band(text)
 ```
 
+A generic function may decide something by comparing values of a type parameter. It must not hand the decided value to a function value it was given, because that function value was checked only against values of `T` passed through, and its result, effects or failures would reveal the comparison. The checker rejects the call where the decided value meets the function value, here at `each: k`, whether a prelude function such as `map`, `filter`, `first_where` or `fold` calls it or a generic function of the program does (U4001):
+
+```una
+-- fails with U4001
+module demo
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+count_chosen[T: Eq](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  let ns = [if a == b then p else q].map(each: k)
+  @log.write(ns.sum())
+```
+
+Pass the values of `T` through unchanged (`[p, q].map(each: k)` is accepted), or give the decision to the caller as a `Bool` result. Edition `0.1` reports the same U4001 at `each: k`, and also the code where the decision would come out, U4003 at the sink or U4002 at a call with effects (#346, #350, #354). A written annotation that mentions `T` cannot hold such a value either; see section 13.
+
 ## 10. Requirements and examples
 
 A requirement records a statement with its source and owner; `derived from` traces functions to it, and `una trace <ID>` lists them with their obligations. A `generated` requirement stays `proposed` until a person changes its source.
