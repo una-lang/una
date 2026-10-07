@@ -1405,3 +1405,88 @@ pub main() -> Unit
         ]
     );
 }
+
+/// Runs the `una` binary in the repository root with the descriptor `fd` closed, as
+/// `una ... 1>&-` does in a shell.
+fn una_closed(fd: u8, args: &[&str]) -> Output {
+    Command::new("sh")
+        .arg("-c")
+        .arg(format!("exec \"$0\" \"$@\" {fd}>&-"))
+        .arg(env!("CARGO_BIN_EXE_una"))
+        .args(args)
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .current_dir(repository())
+        .output()
+        .unwrap()
+}
+
+const PRINTS: &str = "module closed\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  @console.print(\"hello\")\n";
+
+const FAILS: &str = "module closed\n\npub kind Stop = | Stopped\n\npub main() -> Unit\n  fails Stop\n=\n  fail Stopped\n";
+
+#[test]
+fn a_closed_stdout_discards_the_output() {
+    // `spec/13 §5` (#259, N-17): writing to a closed stdout counts as discarded output, as
+    // `/dev/null` does, so the run, its `--json` document and `una test` exit as they would
+    // with stdout open.
+    let prints = package(
+        "closed-stdout",
+        "\n[run]\nentry = \"closed\"\n",
+        &[("src/closed.una", PRINTS)],
+    );
+    let dir = prints.to_str().unwrap();
+    let run = una_closed(1, &["run", dir, "--grant", "console"]);
+    assert_eq!(run.status.code(), Some(0), "{}", stderr(&run));
+    assert_eq!(stderr(&run), "");
+    let json = una_closed(1, &["--json", "run", dir, "--grant", "console"]);
+    assert_eq!(json.status.code(), Some(0), "{}", stderr(&json));
+    let test = una_closed(1, &["test", "examples/events"]);
+    assert_eq!(test.status.code(), Some(0), "{}", stderr(&test));
+}
+
+#[test]
+fn a_closed_stderr_discards_the_diagnostics() {
+    // #259, N-17: with stderr closed, the U6001 of a failing `main` is discarded, and the run
+    // still exits with 1, as it does with stderr open.
+    let fails = package(
+        "closed-stderr",
+        "\n[run]\nentry = \"closed\"\n",
+        &[("src/closed.una", FAILS)],
+    );
+    let run = una_closed(2, &["run", fails.to_str().unwrap()]);
+    assert_eq!(run.status.code(), Some(1), "{run:?}");
+    let open = una(&["run", fails.to_str().unwrap()]);
+    assert_eq!(open.status.code(), Some(1), "{}", stderr(&open));
+    assert!(stderr(&open).contains("U6001"), "{}", stderr(&open));
+}
+
+/// A program that prints more than a pipe holds, so that a write meets a reader that went
+/// away.
+const FLOODS: &str = "module closed\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  for i in 0..<20000\n    @console.print(\"a line of output that fills the pipe\")\n";
+
+#[test]
+fn a_reader_that_went_away_is_a_failed_write() {
+    // `spec/13 §5`: unlike a closed stdout, a broken pipe (EPIPE) is a failure to write
+    // output, which exits with code 2 (#259, N-17).
+    let floods = package(
+        "broken-pipe",
+        "\n[run]\nentry = \"closed\"\n",
+        &[("src/closed.una", FLOODS)],
+    );
+    let manifest = std::fs::read_to_string(floods.join("una.toml")).unwrap();
+    std::fs::write(
+        floods.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .args(["run", floods.to_str().unwrap(), "--grant", "console"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+}
