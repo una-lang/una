@@ -362,9 +362,12 @@ fn a_huge_max_depth_reserves_a_bounded_stack_and_ends_with_u6003() {
 
 /// A program that holds more text at each call: about 64 bytes times the square of its depth
 /// over two, so 64 MiB by about 1,450 calls.
+// Each level reads its `t` after the call, so it keeps its own copy of the text: the program
+// holds O(n^2) bytes. A level that gave `t` up would let the callee append in place (#261,
+// ADR 0072), and the program would hold only O(n).
 const HOG: &str = "module hog
 
-grow(t: Text, n: Int) -> Int = if n <= 0 then t.len else grow(\"{t}0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\", n: n - 1)
+grow(t: Text, n: Int) -> Int = if n <= 0 then t.len else max(grow(\"{t}0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\", n: n - 1), b: t.len)
 
 pub main() -> Unit
   uses @console: Console[print]
@@ -398,6 +401,43 @@ pub main() -> Unit
     is None -> -1
   @console.print(\"{n} {xs.len} {first} {changed}\")
 ";
+
+#[test]
+fn a_text_appended_in_a_loop_grows_in_linear_time() {
+    // ADR 0070 X10, `spec/22 §6` rule 2 (#261): `t = "{t}x"` appends in place when nothing
+    // else holds `t`, so ten times the appends take about ten times as long, not a hundred. The
+    // interpreter counts no copies, so the check is timing, at sizes where a copy per append
+    // dominates the run: the bound sits well below the growth of the copy.
+    let root = package("text-append", "\n[run]\nentry = \"grow\"\n", &[]);
+    let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let dir = root.to_str().unwrap();
+    let mut times = Vec::new();
+    for steps in [200_000, 2_000_000] {
+        std::fs::write(
+            root.join("src/grow.una"),
+            format!(
+                "module grow\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit t = \"\"\n  for i in 0..<{steps}\n    t = \"{{t}}x\"\n  @console.print(\"{{t.len}}\")\n"
+            ),
+        )
+        .unwrap();
+        let started = std::time::Instant::now();
+        let output = una(&["run", dir, "--grant", "console"]);
+        times.push(started.elapsed().as_secs_f64().max(0.05));
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        assert_eq!(stdout(&output), format!("{steps}\n"));
+    }
+    assert!(
+        times[1] < 10.0 * times[0],
+        "10x the appends took {:.1}x as long: {times:?}",
+        times[1] / times[0]
+    );
+}
 
 #[test]
 fn a_loop_runs_in_constant_memory_and_updates_a_list_in_place() {

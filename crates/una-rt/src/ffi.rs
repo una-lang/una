@@ -121,6 +121,7 @@ exported! {
     una_rt_int_text => values::int_text, (a);
     una_rt_bool_text => values::bool_text, (a);
     una_rt_text_concat => values::concat, (a, b);
+    una_rt_text_append_owned => values::text_append_owned, (t, part);
     una_rt_text_equal => values::text_equal, (a, b);
     una_rt_text_compare => values::text_compare, (a, b);
     una_rt_text_len => values::text_len, (a);

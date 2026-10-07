@@ -1,0 +1,51 @@
+-- test: `t = "{t}..."` appends to `t`: in place when nothing else holds the text, and on a copy when something does, so a text taken before or inside the loop keeps its value, in both engines (ADR 0070 X10, spec/22 §6, #261)
+-- spec: spec/22 §6
+-- grant: console
+-- expect: run-output "built ababcabcabcab, kept ab, first a, len 11"
+-- expect: run-output "lines 1, 2, 3"
+-- expect: run-output "unicode é→é→é→"
+-- expect: run-output "doubled x-x-x-x, seen [x][x-x]"
+-- expect: run-output "through calls abbb, before a"
+module append
+
+--- Appends `part` to `out`, which moves into the call when the caller no longer needs it (ADR 0072).
+grown(edit out: Text, part: Text) -> Unit
+=
+  out = "{out}{part}"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit t = "ab"
+  let kept = t
+  let edit first = ""
+  for i in 0..<3
+    if i == 1
+      first = "a"
+    t = "{t}c"
+    t = "{t}ab"
+  let trimmed = t.len
+  @console.print("built {kept}{t}, kept {kept}, first {first}, len {trimmed}")
+  let edit lines = ""
+  for n in 1..3
+    if n == 1
+      lines = "{n}"
+    else
+      lines = "{lines}, {n}"
+  @console.print("lines {lines}")
+  let edit u = ""
+  for k in 0..<3
+    u = "{u}é→"
+  @console.print("unicode {u}")
+  let edit d = "x"
+  let edit seen = ""
+  for j in 0..<2
+    let before = d
+    d = "{d}-{d}"
+    seen = "{seen}[{before}]"
+  @console.print("doubled {d}, seen {seen}")
+  let edit w = "a"
+  let before = w
+  for k in 0..<3
+    grown(edit w, part: "b")
+  @console.print("through calls {w}, before {before}")
