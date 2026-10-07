@@ -6,7 +6,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ## v0.3.0
 
-The Beta of Una, on edition 0.2. Edition 0.2 gains a standard library for real programs: maps, text operations, JSON and an HTTP client, with labels on every value they produce. Lists and texts built in loops and through calls are updated in place. The release was cross-reviewed before its tag, each area by someone other than its author (N-37): JSON and HTTP (#308), maps and text (#309), and the in-place work (#311). Upgrading from v0.1.x: read v0.2.0 below as well, including its Critical fix #253, which makes edition 0.1 reject a shape that v0.1.0 to v0.1.3 accept. Edition 0.2 of v0.2.0 had an information-flow leak: an un-annotated `let edit` whose initial value left a label open, as `[]`, `None` or `empty_map()`, could print an `internal` value read in a loop before its assignment (#323, see Security). It is fixed in this release. [PLACEHOLDER, Leonardo's choice A or B: v0.2.0 was not published / v0.2.1 carries a stopgap.]
+The Beta of Una, on edition 0.2. Edition 0.2 gains a standard library for real programs: maps, text operations, JSON and an HTTP client, with labels on every value they produce. Lists and texts built in loops and through calls are updated in place. The release was cross-reviewed before its tag, each area by someone other than its author (N-37): JSON and HTTP (#308), maps and text (#309), and the in-place work (#311). Upgrading from v0.1.x: read v0.2.0 below as well, including its Critical fix #253, which makes edition 0.1 reject a shape that v0.1.0 to v0.1.3 accept. Edition 0.2 of v0.2.0 had an information-flow leak: an un-annotated `let edit` whose initial value left a label open, as `[]`, `None` or `empty_map()`, could print an `internal` value read in a loop before its assignment (#323, see Security). It is fixed in this release. v0.2.0 was validated but not published because of this leak, so v0.3.0 is the first published release of edition 0.2, and v0.1.x users go from v0.1.3 to v0.3.0.
 
 ### Security
 
@@ -89,7 +89,9 @@ The Beta of Una, on edition 0.2. Edition 0.2 gains a standard library for real p
 - A redacting view of a value, `redact(x)`, is deferred (ADR 0068).
 - This release was built and checked locally (`scripts/release-gates.sh`), on macOS natively and Linux in containers.
 
-## v0.2.0
+## v0.2.0 (validated, not published; see v0.3.0)
+
+This version passed its release gates (docs/releases/0.2.0-validation.md) but was not published, because edition 0.2 had the information-flow leak that v0.3.0 fixes (#323). Every change below ships in v0.3.0.
 
 The first stable release of v0.2. The native backend compiles the whole language of edition 0.2 into executables that match the interpreter. Edition 0.2 completes its scope with structured concurrency, constraints on generics and printing of structured values, and every Critical and Major finding of the two independent reviews of v0.2 (#176, #177) is fixed. Gate 1's benchmark stays pinned to v0.1.x.
 
