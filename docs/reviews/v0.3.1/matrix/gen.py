@@ -331,6 +331,47 @@ cell("rule_350", "effect", "reject", program("effect", APPLY_E, f"apply_eff(x: {
      "control shape: an inferred lambda after the decided argument", variant="lambda_after")
 
 
+# --- 13. An annotated lambda that is not itself the argument (the coordinator's probe of
+# `annotated_lambdas`, keyed by the lambda's span): inside a list, an Option, a record, an `if`,
+# and parentheses.
+LAM = "fn(x: T) -> k(x)"
+cell("annotated_nested", "effect", "reject", program("effect", LOGGER_LIST, f"logger_list({D}, fs: [{LAM}])", cb="pure"),
+     "the callee calls an annotated lambda from a list argument and writes it", variant="list", control_expect="rule")
+cell("annotated_nested", "effect", "reject", program("effect", LOGGER_OPT, f"logger_opt({D}, f: Some({LAM}))", cb="pure"),
+     "the callee calls an annotated lambda from an Option argument and writes it", variant="option")
+cell("annotated_nested", "effect", "reject", program("effect", LOGGER_BOX, f"logger_box({D}, box: Box(run: {LAM}))", cb="pure"),
+     "the callee calls an annotated lambda from a record argument and writes it", variant="record")
+cell("annotated_nested", "effect", "reject", program("effect", LOGGER, f"logger({D}, f: ({LAM}))", cb="pure"),
+     "the callee calls a parenthesized annotated lambda and writes it", variant="parens")
+cell("annotated_nested", "effect", "reject",
+     program("effect", LOGGER, f"logger({D}, f: if c then {LAM} else fn(x: T) -> 0)", cb="pure", extra_params=", c: Bool", extra_args=", c: true"),
+     "the callee calls one of two annotated lambdas chosen by a public condition", variant="if")
+cell("annotated_nested", "effect", "reject", program("effect", APPLY_E, f"apply_eff({D}, f: (fn(x: T) -> k(x)))"),
+     "an effectful parenthesized annotated lambda", variant="parens_effect")
+cell("annotated_nested", "result", "reject", program("result", "", f"[{D}].map(each: ({LAM})).sum()"),
+     "map with a parenthesized annotated lambda", variant="prelude_parens")
+cell("annotated_nested", "result", "reject",
+     program("result", "", f"[{D}].map(each: if c then {LAM} else fn(x: T) -> 0).sum()", extra_params=", c: Bool", extra_args=", c: true"),
+     "map with one of two annotated lambdas chosen by a public condition", variant="prelude_if")
+cell("annotated_nested", "result", "reject",
+     program("result", "", f"[{D}].fold(initial: 0, step: fn(acc, x: T) -> acc + k(x))"),
+     "fold with a lambda whose second parameter alone is annotated", variant="prelude_partial_annotation")
+cell("annotated_nested", "result", "reject",
+     program("result", "", f"[{D}].map(each: fn(x: T) -> [x].map(each: fn(y) -> k(y)).sum()).sum()"),
+     "an annotated lambda whose body maps an inferred lambda over its parameter", variant="prelude_inner_inferred")
+
+
+cell("annotated_nested", "result", "reject",
+     program("result", "", f"[{D}].map(each: w).sum()").replace("  let n = [", f"  let w = {LAM}\n  let n = ["),
+     "map with an annotated lambda bound by let", variant="prelude_let")
+cell("annotated_nested", "effect", "reject",
+     program("effect", LOGGER, f"logger({D}, f: w)", cb="pure").replace("  logger(", f"  let w = {LAM}\n  logger("),
+     "the callee calls an annotated lambda bound by let and writes it", variant="let")
+cell("annotated_nested", "result", "reject",
+     program("result", "pass_on[V](f: fn(V) -> Int) -> fn(V) -> Int = f\n", f"[{D}].map(each: pass_on({LAM})).sum()"),
+     "map with an annotated lambda returned by a generic function", variant="prelude_returned", control_expect="rule")
+
+
 def write():
     if os.path.isdir(ROOT):
         shutil.rmtree(ROOT)

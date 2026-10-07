@@ -1,3 +1,29 @@
+annotated_nested__effect__if                               reject  FAIL clean
+annotated_nested__effect__if__control                      accept  ok   clean
+annotated_nested__effect__let                              reject  ok   U4002 
+annotated_nested__effect__let__control                     accept  ok   clean
+annotated_nested__effect__list                             reject  ok   U4001 U4002 
+annotated_nested__effect__list__control                    rule    ok   U4001 
+annotated_nested__effect__option                           reject  ok   U4002 
+annotated_nested__effect__option__control                  accept  ok   clean
+annotated_nested__effect__parens                           reject  FAIL clean
+annotated_nested__effect__parens__control                  accept  ok   clean
+annotated_nested__effect__parens_effect                    reject  FAIL clean
+annotated_nested__effect__parens_effect__control           accept  ok   clean
+annotated_nested__effect__record                           reject  ok   U4002 
+annotated_nested__effect__record__control                  accept  ok   clean
+annotated_nested__result__prelude_if                       reject  FAIL clean
+annotated_nested__result__prelude_if__control              accept  ok   clean
+annotated_nested__result__prelude_inner_inferred           reject  ok   U4003 
+annotated_nested__result__prelude_inner_inferred__control  accept  ok   clean
+annotated_nested__result__prelude_let                      reject  ok   U4003 
+annotated_nested__result__prelude_let__control             accept  ok   clean
+annotated_nested__result__prelude_parens                   reject  FAIL clean
+annotated_nested__result__prelude_parens__control          accept  ok   clean
+annotated_nested__result__prelude_partial_annotation       reject  ok   U4003 
+annotated_nested__result__prelude_partial_annotation__control accept  ok   clean
+annotated_nested__result__prelude_returned                 reject  ok   U4001 U4003 
+annotated_nested__result__prelude_returned__control        rule    ok   U4001 U4003 
 attempt__failure                                           reject  ok   U4002 U4003 
 attempt__failure__callee                                   reject  ok   U4002 U4003 
 attempt__failure__callee__control                          accept  ok   clean
@@ -115,4 +141,4 @@ user_nested__effect__callee__control                       accept  ok   clean
 user_non_generic__effect                                   reject  ok   U4001 U4002 
 user_recursive__effect                                     reject  ok   U4002 
 user_recursive__effect__control                            accept  ok   clean
-FAIL: 0
+FAIL: 5
