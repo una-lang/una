@@ -197,11 +197,47 @@ fn the_installer_installs_nothing_that_the_validation_record_does_not_vouch_for(
         stderr(&output)
     );
     assert!(!home.exists());
-    // Uninstall removes UNA_HOME, and nothing else.
+    // Without the record of an installation, uninstall refuses and removes nothing, whatever
+    // UNA_HOME holds.
     std::fs::create_dir_all(home.join("bin")).unwrap();
+    std::fs::write(home.join("bin/tool"), "mine").unwrap();
     let output = install(&dir, version, &["--uninstall"]);
-    assert_eq!(output.status.code(), Some(0));
-    assert!(!home.exists() && dir.join("home").exists());
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("no record of an installation"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(home.join("bin/tool").exists());
+    // With the record, it removes the files listed there, and the directories the
+    // installation created when they are empty: `lib` and `z3`, not `bin`, which holds a file
+    // of the user's, and not UNA_HOME, which existed before.
+    for file in ["bin/una", "lib/libuna_rt.a", "z3/bin/z3", "README.md"] {
+        std::fs::create_dir_all(home.join(file).parent().unwrap()).unwrap();
+        std::fs::write(home.join(file), "una").unwrap();
+    }
+    std::fs::write(
+        home.join(".una-install"),
+        "# Una 9.9.9, installed by install.sh\nversion 9.9.9\ndir lib\ndir z3\ndir z3/bin\nfile bin/una\nfile bin/z3\nfile lib/libuna_rt.a\nfile z3/bin/z3\nfile README.md\n",
+    )
+    .unwrap();
+    let output = install(&dir, version, &["--uninstall"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(home.join("bin/tool").exists());
+    for gone in ["bin/una", "lib", "z3", "README.md", ".una-install"] {
+        assert!(!home.join(gone).exists(), "{gone}");
+    }
+    // A record that names a path outside UNA_HOME is refused before anything is removed.
+    std::fs::write(home.join("README.md"), "una").unwrap();
+    std::fs::write(
+        home.join(".una-install"),
+        "version 9.9.9\nfile README.md\nfile ../escape\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("home/escape"), "kept").unwrap();
+    let output = install(&dir, version, &["--uninstall"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(dir.join("home/escape").exists() && home.join("README.md").exists());
     assert_eq!(install(&dir, version, &["--bogus"]).status.code(), Some(2));
     let _ = std::fs::remove_dir_all(&dir);
 }

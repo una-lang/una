@@ -394,7 +394,7 @@ Settings:
 - `UNA_VERSION` picks another release.
 - `UNA_HOME` picks another directory.
 
-It needs `curl` or `wget`, `tar`, `unzip`, and `shasum` or `sha256sum`. `una build` also needs a C compiler as `cc`, to link. Uninstall with `sh install.sh --uninstall`, which removes `~/.una`, then remove the `PATH` line.
+It needs `curl` or `wget`, `tar`, `unzip`, and `shasum` or `sha256sum`. `una build` also needs a C compiler as `cc`, to link. Uninstall with `sh install.sh --uninstall`. It removes exactly what the installer recorded in `~/.una/.una-install`, and the directories it created once they are empty. It refuses a directory without that record. Then remove the `PATH` line.
 
 ### Install from a release
 

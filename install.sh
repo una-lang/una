@@ -15,6 +15,11 @@
 # A mismatch stops the installation with exit code 1, and nothing is installed. Nothing outside
 # UNA_HOME is changed: the script prints the line to add to your shell's profile.
 #
+# The installation is recorded in UNA_HOME/.una-install: the version, each file it installed and
+# each directory it created. `--uninstall` removes exactly those files, then those directories
+# when they are empty, and refuses a UNA_HOME without that record, so it never removes what
+# Una did not install.
+#
 # Usage:
 #   curl -fsSL <site>/install.sh | sh
 #   sh install.sh [--uninstall]
@@ -45,16 +50,38 @@ fail() {
 
 home=${UNA_HOME:-$HOME/.una}
 
+marker=$home/.una-install
+
 if [ "${1:-}" = --uninstall ]; then
-    case $home in
-        "" | / | "$HOME" | "$HOME/") fail "UNA_HOME is $home, which uninstall will not remove" ;;
-    esac
+    [ -f "$marker" ] \
+        || fail "$home has no record of an installation by this script ($marker), so nothing is removed"
+    # The files first, then the directories that the installation created, deepest first, when
+    # they are empty. A path that leaves UNA_HOME is never followed.
+    # Every path is checked before anything is removed.
+    while read -r kind path; do
+        case $kind in
+            file | dir)
+                case $path in /* | *..* | "") fail "the record $marker names '$path', which is not inside $home" ;; esac ;;
+        esac
+    done < "$marker"
+    while read -r kind path; do
+        [ "$kind" = file ] && rm -f "${home:?}/$path"
+    done < "$marker"
+    dirs=$(sed -n 's/^dir //p' "$marker" | awk '{ print length($0) "\t" $0 }' | sort -rn | cut -f2-)
+    rm -f "$marker"
+    printf '%s\n' "$dirs" | while read -r path; do
+        case $path in
+            "") ;;
+            .) rmdir "$home" 2> /dev/null || true ;;
+            *) rmdir "$home/$path" 2> /dev/null || true ;;
+        esac
+    done
     if [ -d "$home" ]; then
-        rm -rf "${home:?}"
-        say "removed $home; remove the PATH line for $home/bin from your shell's profile too"
+        say "removed Una from $home; the other files there are kept"
     else
-        say "nothing to remove at $home"
+        say "removed $home"
     fi
+    say "remove the PATH line for $home/bin from your shell's profile too"
     exit 0
 fi
 [ "$#" -eq 0 ] || {
@@ -137,15 +164,33 @@ unpacked=$work/una-$version-$target
     || fail "$archive does not hold una and lib/libuna_rt.a"
 unzip -q "$work/$z3_asset.zip" "$z3_asset/bin/z3" -d "$work"
 
+# The directories this installation creates, kept from an earlier record when there is one, so
+# that uninstall removes them and no other.
+created=$work/created
+: > "$created"
+[ -f "$marker" ] && sed -n 's/^dir //p' "$marker" > "$created"
+for dir in . bin lib z3 z3/bin; do
+    [ -d "$home/$dir" ] || echo "$dir" >> "$created"
+done
 mkdir -p "$home/bin" "$home/lib" "$home/z3/bin"
 cp "$unpacked/una" "$home/bin/una.new" && mv "$home/bin/una.new" "$home/bin/una"
 cp "$unpacked/lib/libuna_rt.a" "$home/lib/libuna_rt.a"
 cp "$work/$z3_asset/bin/z3" "$home/z3/bin/z3"
 chmod +x "$home/bin/una" "$home/z3/bin/z3"
 ln -sf ../z3/bin/z3 "$home/bin/z3"
+files="bin/una bin/z3 lib/libuna_rt.a z3/bin/z3"
 for doc in README.md LICENSE; do
-    [ -f "$unpacked/$doc" ] && cp "$unpacked/$doc" "$home/$doc"
+    if [ -f "$unpacked/$doc" ]; then
+        cp "$unpacked/$doc" "$home/$doc"
+        files="$files $doc"
+    fi
 done
+{
+    echo "# Una $version, installed by install.sh; \`sh install.sh --uninstall\` removes what follows."
+    echo "version $version"
+    sort -u "$created" | sed 's/^/dir /'
+    for file in $files; do echo "file $file"; done
+} > "$marker"
 
 installed=$("$home/bin/una" --version 2>/dev/null || echo "una $version")
 say "installed $installed and Z3 $Z3_VERSION in $home"
@@ -154,4 +199,4 @@ case ":$PATH:" in
     *) say "add $home/bin to PATH, for example with this line in your shell's profile:"
        printf '\n    export PATH="%s/bin:$PATH"\n\n' "$home" ;;
 esac
-say "uninstall with: sh install.sh --uninstall (or remove $home)"
+say "uninstall with: sh install.sh --uninstall"
