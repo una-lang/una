@@ -437,6 +437,7 @@ fn every_command_prints_one_json_document_with_its_schema() {
             vec!["--json", "explain", "U5001"],
             "una.explain/1",
         ),
+        (Path::new("."), vec!["--json", "--version"], "una.version/1"),
     ];
     for (dir, args, schema) in cases {
         let output = una_in(dir, &args);
