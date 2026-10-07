@@ -1,7 +1,8 @@
 -- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, Una-2's matrix): U3006, U4001: an effectful callback re-wrapped by a generic function value
 -- spec: spec/07 §7
--- expect: error U3006 at src/sw.una:19:91
--- expect: error U4001 at src/sw.una:24:41
+-- expect: error U3006 at src/sw.una:20:91
+-- expect: error U4002 at src/sw.una:25:3
+-- expect: error U4001 at src/sw.una:25:41
 module sw
 
 pub capability Log
