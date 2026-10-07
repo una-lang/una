@@ -1,0 +1,10 @@
+module sw
+
+pub kind Hold[T]
+  value: T
+
+add[T](a: T, b: T, p: T, xs: List[T]) -> List[T] = xs.append(item: if a == b then p else a)
+
+pub use_it(s: secret Int) -> secret Int = add(s, b: 0, p: 1, xs: [s]).len
+
+pub use_public(n: Int) -> Int = add(n, b: 0, p: 1, xs: [n]).len
