@@ -17,7 +17,7 @@ pub(crate) enum Value<'p> {
     /// A boolean.
     Bool(bool),
     /// A text.
-    Text(Rc<str>),
+    Text(Rc<String>),
     /// `unit`.
     Unit,
     /// A constructor applied to its fields.
@@ -44,7 +44,7 @@ pub(crate) type Entries<'p> = BTreeMap<Key, (Value<'p>, Value<'p>)>;
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Key {
     Int(BigInt),
-    Text(Rc<str>),
+    Text(Rc<String>),
     Variant(usize),
 }
 
@@ -122,7 +122,7 @@ impl<'p> Value<'p> {
 
     /// A text value.
     pub(crate) fn text(text: &str) -> Value<'p> {
-        Value::Text(Rc::from(text))
+        Value::Text(Rc::new(text.to_owned()))
     }
 
     /// An integer value.

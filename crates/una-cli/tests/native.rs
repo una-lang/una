@@ -605,7 +605,7 @@ fn a_failure_of_main_is_described_by_the_kind_the_checker_resolved() {
 fn an_executable_over_its_memory_budget_is_u6003() {
     // ADR 0061 rule 2: the executable takes `--max-memory` as `una run` does, and the call that
     // finds the run over its budget is U6003.
-    let program = "module hog\n\ngrow(t: Text, n: Int) -> Int = if n <= 0 then t.len else grow(\"{t}0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\", n: n - 1)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let size = grow(\"\", n: 9000)\n  @console.print(\"held {size}\")\n";
+    let program = "module hog\n\ngrow(t: Text, n: Int) -> Int = if n <= 0 then t.len else max(grow(\"{t}0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\", n: n - 1), b: t.len)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let size = grow(\"\", n: 9000)\n  @console.print(\"held {size}\")\n";
     let dir = package(
         "hog",
         "\n[run]\nentry = \"hog\"\ngrants = [\"console\"]\n",
@@ -709,6 +709,55 @@ fn an_executable_loop_over_its_memory_budget_is_u6003() {
 }
 
 #[test]
+fn a_text_appended_in_a_loop_grows_in_linear_time() {
+    // ADR 0070 X10, `spec/22 §6` rule 2 (#261): natively too, `t = "{t}x"` appends in place
+    // when nothing else holds `t`.
+    let mut times = Vec::new();
+    for steps in [100_000, 1_000_000] {
+        let program = format!(
+            "module grow\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit t = \"\"\n  for i in 0..<{steps}\n    t = \"{{t}}x\"\n  @console.print(\"{{t.len}}\")\n"
+        );
+        let dir = package(
+            &format!("grow{steps}"),
+            "\n[run]\nentry = \"grow\"\ngrants = [\"console\"]\n",
+            &[("src/grow.una", &program)],
+        );
+        let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+        std::fs::write(
+            dir.join("una.toml"),
+            manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+        )
+        .unwrap();
+        let built = una(&dir, &["build"]);
+        assert_eq!(built.status.code(), Some(0), "{built:?}");
+        let started = std::time::Instant::now();
+        let output = Command::new(dir.join("target/una").join(format!("grow{steps}")))
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        times.push(started.elapsed().as_secs_f64().max(0.05));
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("{steps}\n")
+        );
+        // The deterministic check: the debug runtime counts every copy, and there is one at any
+        // size, of the literal `""` that the loop starts from, which is never updated in place.
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "note: una-rt (debug build): lists, maps, records and texts copied: 1\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    // The timing is a second check, with a wide margin (3.5x measured, 17x when copying).
+    assert!(
+        times[1] < 12.0 * times[0],
+        "10x the appends took {:.1}x as long: {times:?}",
+        times[1] / times[0]
+    );
+}
+
+#[test]
 fn a_loop_runs_in_constant_memory() {
     // #201: a loop whose state takes constant space runs in constant space, also in the debug
     // runtime the tests link, whose quarantine of freed slots is bounded: 10,000,000 iterations
@@ -770,7 +819,7 @@ fn updates_of_values_nothing_else_holds_are_in_place() {
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
-        "note: una-rt (debug build): lists, maps and records copied: 2\n"
+        "note: una-rt (debug build): lists, maps, records and texts copied: 2\n"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -839,7 +888,7 @@ fn map_updates_are_in_place_and_scale_as_n_log_n() {
         );
         assert_eq!(
             String::from_utf8_lossy(&output.stderr),
-            "note: una-rt (debug build): lists, maps and records copied: 1\n"
+            "note: una-rt (debug build): lists, maps, records and texts copied: 1\n"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1117,7 +1166,7 @@ fn a_task_counts_its_depth_from_its_block() {
 fn the_tasks_of_a_run_share_its_memory_budget() {
     // `spec/19 §8` rule 3: `--max-memory` bounds the heaps of all tasks together, and the call
     // of a task that finds the run over its budget is U6003.
-    let program = "module hogs\n\ngrow(t: Text, n: Int) -> Int = if n <= 0 then t.len else grow(\"{t}0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\", n: n - 1)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  together\n    let a = grow(\"\", n: 10)\n    let b = grow(\"\", n: 9000)\n  @console.print(\"held {a} {b}\")\n";
+    let program = "module hogs\n\ngrow(t: Text, n: Int) -> Int = if n <= 0 then t.len else max(grow(\"{t}0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\", n: n - 1), b: t.len)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  together\n    let a = grow(\"\", n: 10)\n    let b = grow(\"\", n: 9000)\n  @console.print(\"held {a} {b}\")\n";
     let dir = tasks_package("hogs", "hogs", program);
     let output = Command::new(dir.join("target/una/hogs"))
         .args(["--max-memory", "64"])

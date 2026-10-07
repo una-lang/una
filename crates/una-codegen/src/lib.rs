@@ -279,6 +279,7 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_int_text", 1, true),
     ("una_rt_bool_text", 1, true),
     ("una_rt_text_concat", 2, true),
+    ("una_rt_text_append_owned", 2, true),
     ("una_rt_text_equal", 2, true),
     ("una_rt_text_compare", 2, true),
     ("una_rt_text_len", 1, true),
