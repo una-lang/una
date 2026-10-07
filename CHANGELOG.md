@@ -2,6 +2,15 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
+## v0.1.4
+
+A security patch release of Una Core, cut from v0.1.3 with two information-flow fixes backported from v0.3.0 (A′). Edition 0.1 only; report schema versions are unchanged. Each fix makes edition 0.1 reject programs that v0.1.0 to v0.1.3 accept.
+
+### Security
+
+- **A decision on `T` values no longer leaks through a call of a function value** (Critical, #253). In a generic body, `let n = k(if a == b then p else q)` with `k: fn(T) -> Int`, then `@log.write(n)`, wrote a `public` number that depends on comparing values of `T`, which may be `secret` at the call. An argument decided by values of `T` now raises the result and program counter of the call of a function value, as the value's own label does (T-App), so the write is U4003. So does a prelude function that calls a function value with such an argument, as `map`, `filter`, `first_where` and `fold` do: `[if a == b then p else q].map(each: k)` is raised the same way (found by the review of #343). A value of `T` passed through, `k(p)` or `[p, q].map(each: k)`, is still accepted, since `k` is checked against the type argument at each call. Diagnostics still show `label(T)`. The conformance cases `security/decided_argument_to_function_0_1`, `security/decided_argument_to_prelude_callback_0_1` and the `security/tapp_*_0_1` matrix cover it.
+- **Whether `Files.write` fails is labeled by its path** (N-39). `Files.write` accepts an `internal` path, and its failure revealed it. A host operation's failure is now labeled by the arguments that decide it, capped at what the operation accepts: the path of `Files`, the key name of `Keys.hmac`. With an `internal` path, `attempt` gives an `internal` `Result`, `if error use` runs under it, and `if error pass` and `if error fail` are U4002. `Files.read` and `Keys.hmac` accept only `public` there, so they are unchanged. The conformance case `security/files_path_failure_0_1` covers it.
+
 ## v0.1.3
 
 A patch release of Una Core for the Gate 1 pin, cut from v0.1.2 with one fix. Edition 0.1 only; report schema versions are unchanged.

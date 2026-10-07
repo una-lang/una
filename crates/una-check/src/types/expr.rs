@@ -881,9 +881,12 @@ impl<'a> Checker<'_, 'a, '_> {
     ) {
         if let (Some(expected), Role::Return(name)) = (expected, role) {
             let mut label = label.clone();
-            label
-                .symbols
-                .retain(|s| !self.type_params.iter().any(|p| p == s));
+            label.symbols.retain(|s| {
+                !self
+                    .type_params
+                    .iter()
+                    .any(|p| *p == s.trim_end_matches('*'))
+            });
             self.implicit_result(
                 condition,
                 &label,
@@ -1208,8 +1211,15 @@ impl<'a> Checker<'_, 'a, '_> {
             .get(&inner.span)
             .cloned()
             .unwrap_or(Ty::Error);
+        let decided = self.decided_failures.get(&inner.span).cloned();
         match self.env.prelude_kind("Result") {
-            Some(result) => Ty::Kind(result, vec![ty, error]),
+            // Whether the call failed, and how, is labeled like what decided it (N-39).
+            Some(result) => match decided {
+                Some(label) if !label.is_public() => {
+                    Ty::Kind(result, vec![ty, error]).with_label(&label)
+                }
+                _ => Ty::Kind(result, vec![ty, error]),
+            },
             None => Ty::Error,
         }
     }

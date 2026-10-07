@@ -317,7 +317,11 @@ impl<'a> Env<'a> {
             })
             .collect();
         let params: Vec<usize> = env.kinds.iter().map(|kind| kind.params.len()).collect();
-        env.kind_labels = Rc::new(KindLabels::new(&fields, &params));
+        let mut kind_labels = KindLabels::new(&fields, &params);
+        // Deep labels mark `T*` for the raise of a call of a function value with a decided
+        // argument (#253).
+        kind_labels.deep_symbols = true;
+        env.kind_labels = Rc::new(kind_labels);
         env
     }
 

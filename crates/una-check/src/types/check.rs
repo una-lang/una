@@ -183,6 +183,9 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) returning: Option<Returning>,
     /// The error kinds of the calls checked so far, by the span of the call.
     pub(crate) call_fails: BTreeMap<Span, Ty>,
+    /// The label that decides whether a host operation's call fails, and how, when its
+    /// arguments' values do, by the span of the call (N-39).
+    pub(crate) decided_failures: BTreeMap<Span, Label>,
     /// The function or predicate whose body is checked.
     pub(crate) current: Option<usize>,
     /// The handler whose operation bodies are checked (ADR 0043).
@@ -286,6 +289,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             ctx: Ctx::plain(),
             returning: None,
             call_fails: BTreeMap::new(),
+            decided_failures: BTreeMap::new(),
             current: None,
             handler: None,
             instances: Vec::new(),
@@ -1347,7 +1351,8 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         let names = self.type_params.clone();
         ty.map_labels(&|label| {
             let mut kept = label.clone();
-            kept.symbols.retain(|s| !names.iter().any(|n| n == s));
+            kept.symbols
+                .retain(|s| !names.iter().any(|n| *n == s.trim_end_matches('*')));
             kept
         })
     }

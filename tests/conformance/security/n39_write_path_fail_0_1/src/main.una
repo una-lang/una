@@ -1,0 +1,13 @@
+-- test: in edition 0.1, a host operation's failure is labeled by the arguments that decide it, capped at what it accepts (N-39, review of #343): U4002 at `if error fail`
+-- spec: spec/07 §7
+-- expect: error U4002 at src/main.una:13:5
+module main
+
+pub kind Bad = Broken | Other
+
+pub probe(path: internal Text) -> Unit
+  uses @files: Files[write]
+  fails Bad
+=
+  @files.write(path, content: "x")
+    if error fail Broken

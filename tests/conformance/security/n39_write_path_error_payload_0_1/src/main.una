@@ -1,0 +1,19 @@
+-- test: in edition 0.1, a host operation's failure is labeled by the arguments that decide it, capped at what it accepts (N-39, review of #343): U4003: the variant of the failure, printed
+-- spec: spec/07 §7
+-- expect: error U4003 at src/main.una:17:24
+-- expect: error U4003 at src/main.una:18:22
+-- expect: error U4003 at src/main.una:19:18
+module main
+
+pub probe(path: internal Text) -> Unit
+  uses @files: Files[write]
+  uses @console: Console[print]
+=
+  let r = attempt @files.write(path, content: "x")
+  when r
+    is Ok(v) -> unit
+    is Err(e) ->
+      when e
+        is NotFound -> @console.print("not found")
+        is Denied -> @console.print("denied")
+        is Io -> @console.print("io")

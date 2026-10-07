@@ -251,12 +251,18 @@ impl<'a> Checker<'_, 'a, '_> {
         self.ctx.handled = false;
         self.ctx.top = false;
         let error = self.fails_of(&handled.expr).unwrap_or(Ty::Error);
+        // The label that decides whether the call fails, when its arguments' values do
+        // (N-39): a handling clause branches on it.
+        let decided = self
+            .decided_of(&handled.expr)
+            .filter(|label| !label.is_public());
+        let decided_by = decided.as_ref().map(|label| (label, handled.expr.span));
         let mut current = ty;
         for handling in &handled.handlings {
             match &handling.kind {
                 HandlingKind::ErrorFail(variant) => {
                     self.impure(handling.span, || "`if error fail`".to_owned());
-                    self.fail_under_pc(handling.span, "`if error fail`", None);
+                    self.fail_under_pc(handling.span, "`if error fail`", decided_by);
                     let ctx = Ctx {
                         error: Some(error.clone()),
                         ..self.ctx.clone()
@@ -265,7 +271,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
                 HandlingKind::ErrorPass => {
                     self.impure(handling.span, || "`if error pass`".to_owned());
-                    self.fail_under_pc(handling.span, "`if error pass`", None);
+                    self.fail_under_pc(handling.span, "`if error pass`", decided_by);
                     self.pass_clause(handling.span, &handled.expr);
                 }
                 HandlingKind::ErrorUse(value) => {
@@ -274,15 +280,24 @@ impl<'a> Checker<'_, 'a, '_> {
                         ..self.ctx.clone()
                     };
                     let expected = current.clone();
+                    let saved = decided
+                        .as_ref()
+                        .map(|label| self.raise_pc(label, handled.expr.span));
                     let used = self.within(ctx, |checker| {
                         checker.expr_as(value, Some(&expected), Role::Plain)
                     });
+                    if let Some(saved) = saved {
+                        self.restore_pc(saved);
+                    }
                     let before = current;
                     current = self.vars.join(&before, &used);
                     self.join_flows(
                         &current,
                         vec![(handled.expr.span, before), (value.span, used)],
                     );
+                    if let Some(label) = &decided {
+                        current = current.with_label(label);
+                    }
                 }
                 HandlingKind::NoneFail(variant) => {
                     self.impure(handling.span, || "`if none fail`".to_owned());
@@ -324,6 +339,16 @@ impl<'a> Checker<'_, 'a, '_> {
             self.returned_value(handled.expr.span, &current, expected, role);
         }
         current
+    }
+
+    /// The label that decides the failure of the call that `expr` is, when its arguments'
+    /// values decide it (N-39).
+    fn decided_of(&self, expr: &Expr) -> Option<Label> {
+        let mut inner = expr;
+        while let una_syntax::ast::ExprKind::Paren(next) = &inner.kind {
+            inner = next;
+        }
+        self.decided_failures.get(&inner.span).cloned()
     }
 
     /// The error kind of the call that `expr` is, when it declares one.

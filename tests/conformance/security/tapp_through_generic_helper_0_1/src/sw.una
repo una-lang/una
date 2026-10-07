@@ -1,0 +1,20 @@
+-- test: in edition 0.1, a function value given a value of a type parameter, or a decision on such values (#253, review of #343): leak (U4003): the decided value goes into another generic function, which calls k
+-- spec: spec/07 §7
+-- expect: error U4003 at src/sw.una:15:14
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+apply[U](x: U, k: fn(U) -> Int) -> Int = k(x)
+
+g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  let n = apply(if a == b then p else q, k: k)
+  @log.write(n)
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g([s], b: [0], p: [], q: [1], k: fn(xs) -> xs.len)
