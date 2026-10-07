@@ -793,6 +793,28 @@ Known limits of edition `0.2`, which need label polymorphism (#40):
 - Passing such a list to a parameter of your own generic function, as `concat(ahead.append(item: item), back: behind)`, is U4001: the parameter's top label is public.
 - A `fold` whose step returns such a list, as an insertion sort built from `insert`, is U4001: the accumulator's label rises after the step was checked. Use `sort`.
 
+A value chosen by comparing values of `T` carries that decision in its label, and a written annotation that mentions `T` cannot hold it: `let picked: T = if a == b then p else q` is U4001, and so are `List[T]` and a kind applied to `T`. Leave the annotation out. Inference keeps the decision, and each call raises its result by the type argument's label. The return type `-> T` is fine, and both editions apply the same rule (#354):
+
+```una
+module demo
+
+pub choose[T: Eq](a: T, b: T, p: T, q: T) -> T
+=
+  let picked = if a == b then p else q
+  picked
+```
+
+```una
+-- edition 0.1
+-- fails with U4001
+module demo
+
+pub choose[T](a: T, b: T, p: T, q: T) -> T
+=
+  let picked: T = if a == b then p else q
+  picked
+```
+
 ## 14. Maps
 
 `Map[K, V]` maps keys to values, in ascending key order (`spec/21`). It is a value, as a list is.
