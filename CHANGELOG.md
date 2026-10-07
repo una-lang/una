@@ -4,6 +4,15 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ## Unreleased
 
+### Language
+
+- **Maps** (#236, ADR 0069, `spec/21`). Edition 0.2 gains `Map[K, V]`, keyed by an `Ord` type, in ascending key order, with `empty_map()`, `m.len`, `has`, `get`, `keys`, `values`, `entries`, `with`, `without`, and `edit m.set` and `edit m.remove`.
+  - `len` is O(1); `get`, `has`, `set` and `remove` are O(log n), in place when nothing else holds the map; `with` and `without` on a map another binding holds copy it, O(n). A text key is copied into the map at insert, O(key length).
+  - Which keys a map holds is part of its shape: reads carry the key position's labels with the top label, and a key above an editable map's top label is U4001 at the key.
+  - `m.len` and `m.has(key: k)` are in the refinement language, and each operation's contract is a hypothesis after it.
+  - In edition 0.2, a user kind named `Map` or `Entry` is U1002, and `with` after `.` is a method name.
+  - The native debug runtime's note now reads "lists, maps and records copied".
+
 ### Verification
 
 - **Loops keep the length of a list they update with `set`** (#260, ADR 0071). In edition 0.2, a loop whose every change to a list is `set`, or an `edit` call whose callee ensures `xs.len == old(xs).len`, keeps the list's length in its body and after it. So `for i in 0..<xs.len` with `set(edit xs, index: i, …)` verifies with no guard, which fixes the v0.2.0 known limit S-1.
