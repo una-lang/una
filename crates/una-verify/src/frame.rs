@@ -175,7 +175,9 @@ impl<'p, 'l> Frames<'p, 'l> {
                     if shape.len() <= component {
                         shape.resize(component + 1, BTreeSet::new());
                     }
-                    shape[component].extend(single(arg, env));
+                    if let Some(set) = shape.get_mut(component) {
+                        set.extend(single(arg, env));
+                    }
                 }
                 shape
             }
@@ -238,7 +240,6 @@ fn keeps_length(term: &Term) -> Option<(usize, &Name)> {
     }
 }
 
-
 /// `p.len`: the parameter whose length a term is.
 fn param(term: &Term) -> Option<&Name> {
     match term {
@@ -247,5 +248,167 @@ fn param(term: &Term) -> Option<&Name> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use una_core::{Base, Label};
+    use una_syntax::SourceDb;
+
+    fn span() -> Span {
+        let mut db = SourceDb::new();
+        Span::at(db.add("t.una", b""), 0)
+    }
+
+    fn ty() -> Type {
+        Type::Base {
+            base: Base::Unknown,
+            refinements: Vec::new(),
+            label: Label::public(),
+        }
+    }
+
+    fn var(name: &str) -> Atom {
+        Atom::Var(name.to_owned())
+    }
+
+    fn let_rhs(name: &str, rhs: Rhs, body: Expr) -> Expr {
+        Expr::Let {
+            name: name.to_owned(),
+            ty: ty(),
+            value: Box::new(Bound::Rhs(rhs)),
+            body: Box::new(body),
+            span: span(),
+            written: false,
+        }
+    }
+
+    fn call(module: &str, name: &str, args: Vec<Atom>) -> Rhs {
+        Rhs::Call {
+            function: Path {
+                module: module.to_owned(),
+                name: name.to_owned(),
+            },
+            type_args: Vec::new(),
+            arg_spans: args.iter().map(|_| span()).collect(),
+            args,
+            span: span(),
+        }
+    }
+
+    /// `let t = callee(xs, i) in let (a, u) = t in (a)`: the iteration's new state.
+    fn through(callee: &str, list: &str) -> Expr {
+        let_rhs(
+            "t",
+            call("m", callee, vec![var(list), var("i")]),
+            Expr::LetTuple {
+                names: vec![("a".to_owned(), ty()), ("u".to_owned(), ty())],
+                value: var("t"),
+                body: Box::new(let_rhs(
+                    "r",
+                    Rhs::Tuple(vec![var("a")]),
+                    Expr::Atom {
+                        atom: var("r"),
+                        span: span(),
+                    },
+                )),
+                span: span(),
+            },
+        )
+    }
+
+    fn len(term: Term) -> Term {
+        Term::Len(Box::new(term))
+    }
+
+    fn eq(left: Term, right: Term) -> Clause {
+        Clause {
+            term: Term::Binary {
+                op: BinOp::Eq,
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            text: String::new(),
+            span: None,
+        }
+    }
+
+    fn post() -> Term {
+        Term::Proj {
+            value: Box::new(Term::Result),
+            index: 0,
+        }
+    }
+
+    /// The frame of a loop with one state binding `xs` and body `body`, where `keeps` has the
+    /// exact clause, `flipped` has it the other way round, `grows` a weaker one, and any other
+    /// callee no contract.
+    fn preserved(body: &Expr) -> bool {
+        let params = vec![("p".to_owned(), ty()), ("i".to_owned(), ty())];
+        let keeps = vec![eq(len(post()), len(Term::Var("p".to_owned())))];
+        let flipped = vec![eq(len(Term::Var("p".to_owned())), len(post()))];
+        let grows = vec![Clause {
+            term: Term::Binary {
+                op: BinOp::Ge,
+                left: Box::new(len(post())),
+                right: Box::new(len(Term::Var("p".to_owned()))),
+            },
+            text: String::new(),
+            span: None,
+        }];
+        let contract = |path: &Path| match path.name.as_str() {
+            "keeps" => Some((params.as_slice(), keeps.as_slice())),
+            "flipped" => Some((params.as_slice(), flipped.as_slice())),
+            "grows" => Some((params.as_slice(), grows.as_slice())),
+            _ => None,
+        };
+        let mut done = BTreeMap::new();
+        Frames::new(&contract, &mut done).preserved(span(), &[("xs".to_owned(), ty())], body)
+            == [true]
+    }
+
+    #[test]
+    fn a_callee_that_ensures_the_length_keeps_it_either_way_round() {
+        assert!(preserved(&through("keeps", "xs")));
+        assert!(preserved(&through("flipped", "xs")));
+    }
+
+    #[test]
+    fn a_weaker_contract_or_none_breaks_it() {
+        assert!(!preserved(&through("grows", "xs")));
+        assert!(!preserved(&through("append", "xs")));
+    }
+
+    #[test]
+    fn the_argument_must_be_the_state() {
+        assert!(!preserved(&through("keeps", "other")));
+    }
+
+    #[test]
+    fn a_join_keeps_it_only_when_every_completing_branch_does() {
+        let fresh = let_rhs(
+            "r",
+            Rhs::Tuple(vec![var("n")]),
+            Expr::Atom {
+                atom: var("r"),
+                span: span(),
+            },
+        );
+        let fresh = let_rhs("n", Rhs::List(Vec::new()), fresh);
+        let branch = |otherwise: Expr| Expr::If {
+            cond: Atom::Bool(true),
+            then: Box::new(through("keeps", "xs")),
+            otherwise: Box::new(otherwise),
+        };
+        assert!(!preserved(&branch(fresh)));
+        assert!(preserved(&branch(through("flipped", "xs"))));
+        // A branch that never completes an iteration does not count.
+        let stops = Expr::Unreachable {
+            span: span(),
+            goal: String::new(),
+        };
+        assert!(preserved(&branch(stops)));
     }
 }

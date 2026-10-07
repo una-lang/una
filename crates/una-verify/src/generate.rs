@@ -1115,7 +1115,8 @@ impl<'p, 'i> Walker<'p, 'i> {
                         && let Some(sources) = self.loop_results.get(tuple_name).cloned()
                     {
                         for ((name, _), source) in names.iter().zip(sources) {
-                            self.loop_fresh.insert(name.clone(), BTreeSet::from([source]));
+                            self.loop_fresh
+                                .insert(name.clone(), BTreeSet::from([source]));
                         }
                     } else if let Atom::Var(tuple_name) = value
                         && let Some(sources) = self.loop_fresh.get(tuple_name).cloned()
@@ -3090,8 +3091,11 @@ impl<'p, 'i> Walker<'p, 'i> {
         }
         ctx.types.insert("result".to_owned(), result.ty.clone());
         // ADR 0071 D3: a returned value that a loop made fresh, which fixes `result`.
-        self.returned_forgotten =
-            self.forgotten(leaves.iter().filter_map(|leaf| leaf.value.as_ref().map(|v| &v.f)));
+        self.returned_forgotten = self.forgotten(
+            leaves
+                .iter()
+                .filter_map(|leaf| leaf.value.as_ref().map(|v| &v.f)),
+        );
         self.push(
             kind, text, source, related, paths, hypotheses, assertions, &ctx, place,
         );
