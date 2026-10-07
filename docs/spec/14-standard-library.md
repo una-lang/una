@@ -46,6 +46,8 @@ Higher-order prelude functions accept only pure, non-failing lambdas in v0.1 (ef
 
 (v0.2, ADR 0070; not implemented in v0.2.0; planned (#237).) In edition `0.2`, the prelude gains the text functions of `spec/22 §2` and the kind `ParseError` (`spec/22 §4`).
 
+(v0.2, ADR 0073; not implemented yet; planned (#238).) In edition `0.2`, the prelude gains the kinds `Json`, `JsonNumber` and `JsonError`, the predicate `is_json_number`, and the functions `parse_json`, `to_json` and `quote_json` (`spec/23`).
+
 (v0.2, ADR 0056.) The prelude gains `set[T](edit xs: List[T], index: Int, item: T) -> Unit`, with `requires 0 <= index and index < xs.len` and `ensures xs.len == old(xs).len` (`spec/17 §8`).
 
 (v0.2, ADR 0057.) The conversions, wrapping, saturating and bit operations of fixed-width integers are built-in methods resolved by the receiver, not prelude functions (`spec/18 §4`, `§5`). `to_int` on `Text` keeps the meaning above.
