@@ -74,6 +74,20 @@ impl<'p> Types<'p> {
                         let item = self.of(&arg(0));
                         json!({ "shape": "list", "item": item })
                     }
+                    "Map" => {
+                        let (key, value) = (self.of(&arg(0)), self.of(&arg(1)));
+                        json!({ "shape": "map", "key": key, "value": value })
+                    }
+                    "Entry" => {
+                        let (key, value) = (self.of(&arg(0)), self.of(&arg(1)));
+                        data(vec![variant(
+                            "Entry",
+                            vec![
+                                field("key", key, None, false),
+                                field("value", value, None, false),
+                            ],
+                        )])
+                    }
                     // The fields of the prelude's variants have no declared type that the
                     // interpreter reads: they are never redacted, and U6001 never shows them.
                     "Option" => {

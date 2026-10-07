@@ -55,13 +55,50 @@ enum Object {
         code: Vec<i64>,
         cells: Vec<i64>,
     },
+    /// A map, by the order of its keys (`spec/21 §5`): the word of each key, and of its value.
+    Map(BTreeMap<MapKey, (i64, i64)>),
+}
+
+/// A map's key, copied out of the heap at insert (N-15): an integer, or a text. A variant
+/// without fields is an immediate `index << 1 | 1`, which reads as the integer `index`, in the
+/// order of its declaration. A map holds keys of one type, so no other order applies.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum MapKey {
+    Int(BigInt),
+    Text(String),
+}
+
+impl MapKey {
+    /// The key of `word`, a value of an `Ord` type.
+    fn of(word: i64) -> MapKey {
+        if !is_handle(word) {
+            return MapKey::Int(BigInt::from(word >> 1));
+        }
+        with(word, |object| match object {
+            Object::Text(text) => MapKey::Text(text.clone()),
+            Object::Int(value) => MapKey::Int(value.clone()),
+            _ => MapKey::Int(BigInt::default()),
+        })
+        .unwrap_or(MapKey::Int(BigInt::default()))
+    }
 }
 
 impl Object {
+    /// The words the object references, a map's keys and values included.
+    fn children(&self) -> Vec<i64> {
+        match self {
+            Object::Map(entries) => entries
+                .values()
+                .flat_map(|(key, value)| [*key, *value])
+                .collect(),
+            other => other.cells().to_vec(),
+        }
+    }
+
     /// The words the object references.
     fn cells(&self) -> &[i64] {
         match self {
-            Object::Int(_) | Object::Text(_) | Object::Hashed(_) => &[],
+            Object::Int(_) | Object::Text(_) | Object::Hashed(_) | Object::Map(_) => &[],
             Object::Data { fields, .. } => fields,
             Object::List(items) => items,
             Object::Closure { env, .. } => env,
@@ -71,7 +108,7 @@ impl Object {
 
     fn cells_mut(&mut self) -> Option<&mut Vec<i64>> {
         match self {
-            Object::Int(_) | Object::Text(_) | Object::Hashed(_) => None,
+            Object::Int(_) | Object::Text(_) | Object::Hashed(_) | Object::Map(_) => None,
             Object::Data { fields, .. } => Some(fields),
             Object::List(items) => Some(items),
             Object::Closure { env, .. } => Some(env),
@@ -106,9 +143,9 @@ struct Heap {
     /// The uses of a freed object: retaining, releasing or reading it, which the generated code
     /// never does.
     faults: usize,
-    /// The lists that `append` and `set` copied so far, and the records rebuilt into a new object
-    /// rather than reused: a copy happens when the value is borrowed or something else holds it
-    /// (#30).
+    /// The lists that `append` and `set` copied so far, the maps that `with` and `without`
+    /// copied, and the records rebuilt into a new object rather than reused: a copy happens
+    /// when the value is borrowed or something else holds it (#30).
     copies: usize,
 }
 
@@ -219,7 +256,10 @@ pub fn release(word: i64) {
             object
         });
         if let Some(object) = freed {
-            pending.extend_from_slice(object.cells());
+            match &object {
+                Object::Map(_) => pending.extend(object.children()),
+                _ => pending.extend_from_slice(object.cells()),
+            }
         }
     }
 }
@@ -235,7 +275,7 @@ pub fn live() -> usize {
     })
 }
 
-/// The number of lists and records copied so far, rather than updated in place (#30).
+/// The number of lists, maps and records copied so far, rather than updated in place (#30).
 pub fn copies() -> usize {
     HEAP.with(|heap| heap.borrow().copies)
 }
@@ -535,6 +575,7 @@ fn equal_words(a: i64, b: i64) -> bool {
         Text(String),
         Bytes(Vec<u8>),
         Cells(Option<i64>, Vec<i64>),
+        Map(Vec<MapKey>, Vec<i64>),
         Opaque,
     }
     let shape = |word: i64| {
@@ -544,6 +585,10 @@ fn equal_words(a: i64, b: i64) -> bool {
             Object::Hashed(bytes) => Shape::Bytes(bytes.clone()),
             Object::Data { tag, fields } => Shape::Cells(Some(*tag), fields.clone()),
             Object::List(items) => Shape::Cells(None, items.clone()),
+            Object::Map(entries) => Shape::Map(
+                entries.keys().cloned().collect(),
+                entries.values().map(|(_, value)| *value).collect(),
+            ),
             Object::Closure { .. } | Object::Instance { .. } => Shape::Opaque,
         })
     };
@@ -562,6 +607,10 @@ fn equal_words(a: i64, b: i64) -> bool {
             (Some(Shape::Cells(tx, x)), Some(Shape::Cells(ty, y)))
                 if tx == ty && x.len() == y.len() =>
             {
+                pending.extend(x.into_iter().zip(y));
+            }
+            // The same keys, each with an equal value (`spec/21 §1` rule 5).
+            (Some(Shape::Map(kx, x)), Some(Shape::Map(ky, y))) if kx == ky => {
                 pending.extend(x.into_iter().zip(y));
             }
             _ => return false,
@@ -675,6 +724,7 @@ enum Node {
         code: Vec<i64>,
         cells: Vec<Cell>,
     },
+    Map(Vec<(Cell, Cell)>),
 }
 
 /// The value of `word` and everything it holds, copied out of this heap. The walk uses a stack
@@ -689,7 +739,7 @@ pub fn export(word: i64) -> Portable {
         }
         if !children_done {
             pending.push((word, true));
-            let children = with(word, |object| object.cells().to_vec()).unwrap_or_default();
+            let children = with(word, Object::children).unwrap_or_default();
             pending.extend(children.into_iter().map(|child| (child, false)));
             continue;
         }
@@ -720,6 +770,12 @@ pub fn export(word: i64) -> Portable {
                 code: code.clone(),
                 cells: cells(held),
             },
+            Object::Map(entries) => Node::Map(
+                entries
+                    .values()
+                    .map(|(key, value)| (cell(key), cell(value)))
+                    .collect(),
+            ),
         }) else {
             continue;
         };
@@ -773,6 +829,13 @@ pub fn import(portable: &Portable) -> i64 {
                 }
                 for cell in cells {
                     push(object, word_of(cell, &words));
+                }
+                object
+            }
+            Node::Map(entries) => {
+                let object = map_empty();
+                for (key, value) in entries {
+                    map_insert(object, word_of(key, &words), word_of(value, &words));
                 }
                 object
             }
@@ -1070,6 +1133,158 @@ pub fn fixed(op: i64, int: i64, a: i64, b: i64) -> i64 {
 /// The length of a list, as an `Int` word.
 pub fn list_len(xs: i64) -> i64 {
     int_word(&BigInt::from(count(xs)))
+}
+
+// ----- maps (`spec/21`) -----
+
+/// The entries of the map `map`, by `f`.
+fn with_map<R>(map: i64, f: impl FnOnce(&BTreeMap<MapKey, (i64, i64)>) -> R) -> Option<R> {
+    with(map, |object| match object {
+        Object::Map(entries) => Some(f(entries)),
+        _ => None,
+    })
+    .flatten()
+}
+
+/// The entries of the map `map`, for an update in place by its only holder.
+fn with_map_mut<R>(map: i64, f: impl FnOnce(&mut BTreeMap<MapKey, (i64, i64)>) -> R) -> Option<R> {
+    let index = slot(map)?;
+    HEAP.with(|heap| {
+        match heap
+            .borrow_mut()
+            .slots
+            .get_mut(index)
+            .and_then(|slot| slot.object.as_mut())
+        {
+            Some(Object::Map(entries)) => Some(f(entries)),
+            _ => None,
+        }
+    })
+}
+
+/// `empty_map()` of the prelude: a new map with no entries.
+pub fn map_empty() -> i64 {
+    alloc(Object::Map(BTreeMap::new()))
+}
+
+/// Puts `key` with `value` into `map`, which the caller holds alone, retaining both and
+/// releasing the entry it replaces. O(log n), plus O(key length) to copy a text key.
+fn map_insert(map: i64, key: i64, value: i64) {
+    let mapped = MapKey::of(key);
+    retain(key);
+    retain(value);
+    let old = with_map_mut(map, |entries| entries.insert(mapped, (key, value))).flatten();
+    if let Some((old_key, old_value)) = old {
+        release(old_key);
+        release(old_value);
+    }
+}
+
+/// Takes `key` out of `map`, which the caller holds alone, releasing its entry. O(log n).
+fn map_take(map: i64, key: i64) {
+    let mapped = MapKey::of(key);
+    let old = with_map_mut(map, |entries| entries.remove(&mapped)).flatten();
+    if let Some((old_key, old_value)) = old {
+        release(old_key);
+        release(old_value);
+    }
+}
+
+/// A copy of `map`, with its words retained: O(n).
+fn map_copy(map: i64) -> i64 {
+    copied();
+    let entries = with_map(map, BTreeMap::clone).unwrap_or_default();
+    for (key, value) in entries.values() {
+        retain(*key);
+        retain(*value);
+    }
+    alloc(Object::Map(entries))
+}
+
+/// `m.len`: O(1).
+pub fn map_len(map: i64) -> i64 {
+    let len = with_map(map, BTreeMap::len).unwrap_or(0);
+    int_word(&BigInt::from(len))
+}
+
+/// `m.has(key: k)`: 1 or 0, O(log n).
+pub fn map_has(map: i64, key: i64) -> i64 {
+    let mapped = MapKey::of(key);
+    bool_word(with_map(map, |entries| entries.contains_key(&mapped)).unwrap_or(false))
+}
+
+/// `m.get(key: k)`: `Some` of the value, retained, or `None`. O(log n).
+pub fn map_get(map: i64, key: i64) -> i64 {
+    let mapped = MapKey::of(key);
+    match with_map(map, |entries| entries.get(&mapped).map(|(_, value)| *value)).flatten() {
+        Some(value) => some(value),
+        None => NONE,
+    }
+}
+
+/// `m.with(key: k, value: v)`: a new map, copied. O(n).
+pub fn map_with(map: i64, key: i64, value: i64) -> i64 {
+    let copy = map_copy(map);
+    map_insert(copy, key, value);
+    copy
+}
+
+/// `m.with(key: k, value: v)` when the caller gives up its reference to `map`, at its last use
+/// (`edit m.set`): in place when nothing else holds it, O(log n), and copied otherwise.
+pub fn map_with_owned(map: i64, key: i64, value: i64) -> i64 {
+    if unique(map) {
+        map_insert(map, key, value);
+        return map;
+    }
+    let updated = map_with(map, key, value);
+    release(map);
+    updated
+}
+
+/// `m.without(key: k)`: a new map, copied. O(n).
+pub fn map_without(map: i64, key: i64) -> i64 {
+    let copy = map_copy(map);
+    map_take(copy, key);
+    copy
+}
+
+/// `m.without(key: k)` when the caller gives up its reference to `map` (`edit m.remove`): in
+/// place when nothing else holds it, O(log n), and copied otherwise.
+pub fn map_without_owned(map: i64, key: i64) -> i64 {
+    if unique(map) {
+        map_take(map, key);
+        return map;
+    }
+    let updated = map_without(map, key);
+    release(map);
+    updated
+}
+
+/// `m.keys()`, `m.values()` or `m.entries()`, by `part`: 0, 1 or 2, a new list in key order.
+/// O(n).
+pub fn map_list(map: i64, part: i64) -> i64 {
+    let entries: Vec<(i64, i64)> =
+        with_map(map, |entries| entries.values().copied().collect()).unwrap_or_default();
+    let out = list();
+    for (key, value) in entries {
+        match part {
+            0 => push(out, key),
+            1 => push(out, value),
+            _ => {
+                let entry = data(0);
+                push(entry, key);
+                push(entry, value);
+                push(out, entry);
+                release(entry);
+            }
+        }
+    }
+    out
+}
+
+/// The words of the entries of `map`, borrowed, in key order: for rendering.
+pub(crate) fn map_words(map: i64) -> Vec<(i64, i64)> {
+    with_map(map, |entries| entries.values().copied().collect()).unwrap_or_default()
 }
 
 #[cfg(test)]
