@@ -5,8 +5,18 @@
 //! stack of its own, writing walks the tree with an explicit stack, and dropping a tree drains
 //! it iteratively (ADR 0060). Parsing is O(n + Σ k log k) for an input of n scalar values,
 //! with k keys per object; writing is O(n) for an output of n scalar values.
+//!
+//! Both read the text in place and check the run's memory budget as they go, every
+//! [`CHECK_EVERY`] values and every [`CHECK_EVERY`] scalar values of a string, through a hook
+//! each engine supplies (`spec/11 §7`, N-41), so a large input ends with U6003 at the call
+//! rather than with an allocation the process cannot make.
 
 use std::collections::HashSet;
+use std::convert::Infallible;
+
+/// How often [`parse_within`] and [`write_within`] call their budget hook: every this many
+/// values, and every this many scalar values inside one string (N-41).
+pub const CHECK_EVERY: usize = 4096;
 
 /// The deepest nesting of arrays and objects that [`parse`] accepts (`spec/23 §3` rule 4).
 pub const MAX_DEPTH: usize = 512;
@@ -70,6 +80,21 @@ pub enum Error {
     NumberTooLong(usize),
 }
 
+/// Why [`parse_within`] stopped without a value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Halt {
+    /// The text is not one JSON value.
+    Invalid(Error),
+    /// The budget hook said the run is over its memory budget (`spec/11 §7`).
+    OverBudget,
+}
+
+impl From<Error> for Halt {
+    fn from(error: Error) -> Halt {
+        Halt::Invalid(error)
+    }
+}
+
 /// An array or an object being read.
 enum Frame {
     Array(Vec<Tree>),
@@ -81,25 +106,62 @@ enum Frame {
     },
 }
 
-struct Parser {
-    chars: Vec<char>,
+/// The text being read, in place: `byte` is the offset of the next character, and `at` its
+/// position in scalar values, which errors report (`spec/23 §3` rule 5).
+struct Parser<'t, 'w, E> {
+    text: &'t str,
+    byte: usize,
     at: usize,
+    ticks: usize,
+    within: &'w mut dyn FnMut() -> Result<(), E>,
 }
 
-impl Parser {
+/// Why the parser stopped: the text is invalid, or the hook stopped it with its `E`.
+enum Stop<E> {
+    Invalid(Error),
+    Hook(E),
+}
+
+impl<E> From<Error> for Stop<E> {
+    fn from(error: Error) -> Stop<E> {
+        Stop::Invalid(error)
+    }
+}
+
+impl<E> Parser<'_, '_, E> {
     fn peek(&self) -> Option<char> {
-        self.chars.get(self.at).copied()
+        self.text
+            .get(self.byte..)
+            .and_then(|rest| rest.chars().next())
+    }
+
+    /// Moves past the next character, which the caller has seen.
+    fn bump(&mut self) {
+        if let Some(c) = self.peek() {
+            self.byte += c.len_utf8();
+            self.at += 1;
+        }
+    }
+
+    /// Counts one unit of work, and every [`CHECK_EVERY`] asks the budget hook.
+    fn tick(&mut self) -> Result<(), Stop<E>> {
+        self.ticks += 1;
+        if self.ticks >= CHECK_EVERY {
+            self.ticks = 0;
+            (self.within)().map_err(Stop::Hook)?;
+        }
+        Ok(())
     }
 
     fn skip_whitespace(&mut self) {
         while matches!(self.peek(), Some(' ' | '\t' | '\n' | '\r')) {
-            self.at += 1;
+            self.bump();
         }
     }
 
     fn expect(&mut self, c: char) -> Result<(), Error> {
         if self.peek() == Some(c) {
-            self.at += 1;
+            self.bump();
             Ok(())
         } else {
             Err(Error::Syntax(self.at))
@@ -113,18 +175,19 @@ impl Parser {
         Ok(value)
     }
 
-    /// A number, at its first character.
+    /// A number, at its first character. A number is ASCII, so its offsets in bytes and in
+    /// scalar values advance together.
     fn number(&mut self) -> Result<Tree, Error> {
         let start = self.at;
-        let end =
-            number_end(&self.chars, start).ok_or(Error::Syntax(self.at_number_error(start)))?;
-        let text: String = self
-            .chars
-            .get(start..end)
-            .ok_or(Error::Syntax(start))?
-            .iter()
-            .collect();
-        self.at = end;
+        let bytes = self.text.as_bytes();
+        let Some(end) = number_end(bytes, self.byte) else {
+            let stop = number_error(bytes, self.byte);
+            return Err(Error::Syntax(start + (stop - self.byte)));
+        };
+        let text = self.text.get(self.byte..end).ok_or(Error::Syntax(start))?;
+        let text = text.to_owned();
+        self.at += end - self.byte;
+        self.byte = end;
         let integer = !text.contains(['.', 'e', 'E']);
         if integer && text.trim_start_matches('-').len() > MAX_INT_DIGITS {
             return Err(Error::NumberTooLong(start));
@@ -136,26 +199,22 @@ impl Parser {
         })
     }
 
-    /// The position where the number at `start` stops being valid.
-    fn at_number_error(&self, start: usize) -> usize {
-        number_error(&self.chars, start)
-    }
-
     /// A string, at its opening quote.
-    fn string(&mut self) -> Result<String, Error> {
+    fn string(&mut self) -> Result<String, Stop<E>> {
         self.expect('"')?;
         let mut out = String::new();
         loop {
+            self.tick()?;
             let Some(c) = self.peek() else {
-                return Err(Error::Syntax(self.at));
+                return Err(Error::Syntax(self.at).into());
             };
             match c {
                 '"' => {
-                    self.at += 1;
+                    self.bump();
                     return Ok(out);
                 }
                 '\\' => {
-                    self.at += 1;
+                    self.bump();
                     let escape = self.peek().ok_or(Error::Syntax(self.at))?;
                     match escape {
                         '"' => out.push('"'),
@@ -167,7 +226,7 @@ impl Parser {
                         'r' => out.push('\r'),
                         't' => out.push('\t'),
                         'u' => {
-                            self.at += 1;
+                            self.bump();
                             let unit = self.unit_escape(false)?;
                             let scalar = if (0xD800..=0xDBFF).contains(&unit) {
                                 // A high surrogate needs a low one right after it: the error is
@@ -182,14 +241,14 @@ impl Parser {
                             out.push(char::from_u32(scalar).ok_or(Error::Syntax(self.at))?);
                             continue;
                         }
-                        _ => return Err(Error::Syntax(self.at)),
+                        _ => return Err(Error::Syntax(self.at).into()),
                     }
-                    self.at += 1;
+                    self.bump();
                 }
-                c if (c as u32) < 0x20 => return Err(Error::Syntax(self.at)),
+                c if (c as u32) < 0x20 => return Err(Error::Syntax(self.at).into()),
                 c => {
                     out.push(c);
-                    self.at += 1;
+                    self.bump();
                 }
             }
         }
@@ -214,29 +273,29 @@ impl Parser {
                 return Err(Error::Syntax(at));
             }
             value = value * 16 + digit;
-            self.at += 1;
+            self.bump();
         }
         Ok(value)
     }
 }
 
 /// The end of the JSON number that starts at `start`, or `None` when none does.
-fn number_end(chars: &[char], start: usize) -> Option<usize> {
-    let digit = |i: usize| chars.get(i).is_some_and(char::is_ascii_digit);
+fn number_end(chars: &[u8], start: usize) -> Option<usize> {
+    let digit = |i: usize| chars.get(i).is_some_and(u8::is_ascii_digit);
     let mut i = start;
-    if chars.get(i) == Some(&'-') {
+    if chars.get(i) == Some(&b'-') {
         i += 1;
     }
     match chars.get(i) {
-        Some('0') => i += 1,
-        Some('1'..='9') => {
+        Some(b'0') => i += 1,
+        Some(b'1'..=b'9') => {
             while digit(i) {
                 i += 1;
             }
         }
         _ => return None,
     }
-    if chars.get(i) == Some(&'.') {
+    if chars.get(i) == Some(&b'.') {
         i += 1;
         if !digit(i) {
             return None;
@@ -245,9 +304,9 @@ fn number_end(chars: &[char], start: usize) -> Option<usize> {
             i += 1;
         }
     }
-    if matches!(chars.get(i), Some('e' | 'E')) {
+    if matches!(chars.get(i), Some(b'e' | b'E')) {
         i += 1;
-        if matches!(chars.get(i), Some('+' | '-')) {
+        if matches!(chars.get(i), Some(b'+' | b'-')) {
             i += 1;
         }
         if !digit(i) {
@@ -262,22 +321,22 @@ fn number_end(chars: &[char], start: usize) -> Option<usize> {
 
 /// The position where the number that starts at `start` stops being valid: the first character
 /// that no number can continue with.
-fn number_error(chars: &[char], start: usize) -> usize {
-    let digit = |i: usize| chars.get(i).is_some_and(char::is_ascii_digit);
+fn number_error(chars: &[u8], start: usize) -> usize {
+    let digit = |i: usize| chars.get(i).is_some_and(u8::is_ascii_digit);
     let mut i = start;
-    if chars.get(i) == Some(&'-') {
+    if chars.get(i) == Some(&b'-') {
         i += 1;
     }
     match chars.get(i) {
-        Some('0') => i += 1,
-        Some('1'..='9') => {
+        Some(b'0') => i += 1,
+        Some(b'1'..=b'9') => {
             while digit(i) {
                 i += 1;
             }
         }
         _ => return i,
     }
-    if chars.get(i) == Some(&'.') {
+    if chars.get(i) == Some(&b'.') {
         i += 1;
         if !digit(i) {
             return i;
@@ -286,9 +345,9 @@ fn number_error(chars: &[char], start: usize) -> usize {
             i += 1;
         }
     }
-    if matches!(chars.get(i), Some('e' | 'E')) {
+    if matches!(chars.get(i), Some(b'e' | b'E')) {
         i += 1;
-        if matches!(chars.get(i), Some('+' | '-')) {
+        if matches!(chars.get(i), Some(b'+' | b'-')) {
             i += 1;
         }
         return i;
@@ -299,32 +358,58 @@ fn number_error(chars: &[char], start: usize) -> usize {
 /// Whether `text` is exactly one JSON number (RFC 8259 §6) with a fraction or an exponent, as
 /// `is_json_number` says: the numbers that `Decimal` holds, never those of `Number` (N-27).
 pub fn is_json_number(text: &str) -> bool {
-    let chars: Vec<char> = text.chars().collect();
-    number_end(&chars, 0) == Some(chars.len()) && text.contains(['.', 'e', 'E'])
+    number_end(text.as_bytes(), 0) == Some(text.len()) && text.contains(['.', 'e', 'E'])
 }
 
 /// The one JSON value of `text` (`spec/23 §3`), or the first error in reading order.
 pub fn parse(text: &str) -> Result<Tree, Error> {
+    // A hook that cannot stop: `Infallible` proves the parser ends with a value or an error.
+    match parse_hooked(text, &mut || Ok::<(), Infallible>(())) {
+        Ok(tree) => Ok(tree),
+        Err(Stop::Invalid(error)) => Err(error),
+        Err(Stop::Hook(never)) => match never {},
+    }
+}
+
+/// [`parse`], asking `within` every [`CHECK_EVERY`] values and string characters whether the
+/// run is still within its memory budget, and stopping with [`Halt::OverBudget`] when it is
+/// not (`spec/11 §7`, N-41).
+pub fn parse_within(text: &str, within: &mut dyn FnMut() -> bool) -> Result<Tree, Halt> {
+    let mut hook = || if within() { Ok(()) } else { Err(()) };
+    match parse_hooked(text, &mut hook) {
+        Ok(tree) => Ok(tree),
+        Err(Stop::Invalid(error)) => Err(Halt::Invalid(error)),
+        Err(Stop::Hook(())) => Err(Halt::OverBudget),
+    }
+}
+
+/// The parser, with a hook that may stop it with its own `E`.
+fn parse_hooked<E>(text: &str, within: &mut dyn FnMut() -> Result<(), E>) -> Result<Tree, Stop<E>> {
+    within().map_err(Stop::Hook)?;
     let mut parser = Parser {
-        chars: text.chars().collect(),
+        text,
+        byte: 0,
         at: 0,
+        ticks: 0,
+        within,
     };
     let mut frames: Vec<Frame> = Vec::new();
     parser.skip_whitespace();
     let value = loop {
+        parser.tick()?;
         // A value starts here: a scalar, or an array or object that opens a frame.
         let start = parser.at;
         let mut value = match parser.peek() {
             Some('{' | '[') => {
                 if frames.len() == MAX_DEPTH {
-                    return Err(Error::TooDeep(start));
+                    return Err(Error::TooDeep(start).into());
                 }
                 let object = parser.peek() == Some('{');
-                parser.at += 1;
+                parser.bump();
                 parser.skip_whitespace();
                 let closer = if object { '}' } else { ']' };
                 if parser.peek() == Some(closer) {
-                    parser.at += 1;
+                    parser.bump();
                     Some(if object {
                         Tree::Object(Vec::new())
                     } else {
@@ -333,7 +418,7 @@ pub fn parse(text: &str) -> Result<Tree, Error> {
                 } else if object {
                     let key_at = parser.at;
                     if parser.peek() != Some('"') {
-                        return Err(Error::Syntax(key_at));
+                        return Err(Error::Syntax(key_at).into());
                     }
                     let key = parser.string()?;
                     parser.skip_whitespace();
@@ -357,7 +442,7 @@ pub fn parse(text: &str) -> Result<Tree, Error> {
             Some('f') => Some(parser.literal("false", Tree::Bool(false))?),
             Some('n') => Some(parser.literal("null", Tree::Null)?),
             Some('-' | '0'..='9') => Some(parser.number()?),
-            _ => return Err(Error::Syntax(start)),
+            _ => return Err(Error::Syntax(start).into()),
         };
         // A complete value goes into its frame; closing brackets complete the frames.
         while let Some(done) = value.take() {
@@ -371,16 +456,16 @@ pub fn parse(text: &str) -> Result<Tree, Error> {
                     items.push(done);
                     match parser.peek() {
                         Some(',') => {
-                            parser.at += 1;
+                            parser.bump();
                             parser.skip_whitespace();
                         }
                         Some(']') => {
-                            parser.at += 1;
+                            parser.bump();
                             if let Some(Frame::Array(items)) = frames.pop() {
                                 value = Some(Tree::Array(items));
                             }
                         }
-                        _ => return Err(Error::Syntax(parser.at)),
+                        _ => return Err(Error::Syntax(parser.at).into()),
                     }
                 }
                 Frame::Object { entries, keys, key } => {
@@ -389,15 +474,15 @@ pub fn parse(text: &str) -> Result<Tree, Error> {
                     }
                     match parser.peek() {
                         Some(',') => {
-                            parser.at += 1;
+                            parser.bump();
                             parser.skip_whitespace();
                             let key_at = parser.at;
                             if parser.peek() != Some('"') {
-                                return Err(Error::Syntax(key_at));
+                                return Err(Error::Syntax(key_at).into());
                             }
                             let next = parser.string()?;
                             if !keys.insert(next.clone()) {
-                                return Err(Error::DuplicateKey(key_at));
+                                return Err(Error::DuplicateKey(key_at).into());
                             }
                             *key = Some(next);
                             parser.skip_whitespace();
@@ -405,7 +490,7 @@ pub fn parse(text: &str) -> Result<Tree, Error> {
                             parser.skip_whitespace();
                         }
                         Some('}') => {
-                            parser.at += 1;
+                            parser.bump();
                             if let Some(Frame::Object { mut entries, .. }) = frames.pop() {
                                 // Keys are unique, so an unstable sort orders them fully; a
                                 // run of keys already in order sorts in one pass.
@@ -413,7 +498,7 @@ pub fn parse(text: &str) -> Result<Tree, Error> {
                                 value = Some(Tree::Object(entries));
                             }
                         }
-                        _ => return Err(Error::Syntax(parser.at)),
+                        _ => return Err(Error::Syntax(parser.at).into()),
                     }
                 }
             }
@@ -423,8 +508,8 @@ pub fn parse(text: &str) -> Result<Tree, Error> {
         }
     };
     parser.skip_whitespace();
-    if parser.at != parser.chars.len() {
-        return Err(Error::Syntax(parser.at));
+    if parser.byte != text.len() {
+        return Err(Error::Syntax(parser.at).into());
     }
     Ok(value)
 }
@@ -464,14 +549,36 @@ fn push_quoted(out: &mut String, text: &str) {
 
 /// The canonical JSON text of `tree` (`spec/23 §4` rule 1).
 pub fn write(tree: &Tree) -> String {
+    match write_hooked(tree, &mut || Ok::<(), Infallible>(())) {
+        Ok(text) => text,
+        Err(never) => match never {},
+    }
+}
+
+/// [`write`], asking `within` every [`CHECK_EVERY`] values whether the run is still within its
+/// memory budget, and stopping with `None` when it is not (`spec/11 §7`, N-41).
+pub fn write_within(tree: &Tree, within: &mut dyn FnMut() -> bool) -> Option<String> {
+    let mut hook = || if within() { Ok(()) } else { Err(()) };
+    write_hooked(tree, &mut hook).ok()
+}
+
+/// The writer, with a hook that may stop it with its own `E`.
+fn write_hooked<E>(tree: &Tree, within: &mut dyn FnMut() -> Result<(), E>) -> Result<String, E> {
     enum Step<'t> {
         Value(&'t Tree),
         Text(&'static str),
         Key(&'t str),
     }
+    within()?;
     let mut out = String::new();
     let mut steps = vec![Step::Value(tree)];
+    let mut ticks = 0;
     while let Some(step) = steps.pop() {
+        ticks += 1;
+        if ticks >= CHECK_EVERY {
+            ticks = 0;
+            within()?;
+        }
         match step {
             Step::Text(text) => out.push_str(text),
             Step::Key(key) => {
@@ -508,7 +615,7 @@ pub fn write(tree: &Tree) -> String {
             },
         }
     }
-    out
+    Ok(out)
 }
 
 #[cfg(test)]

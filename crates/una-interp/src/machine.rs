@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
 use num_bigint::{BigInt, Sign};
+use una_core::json::Halt;
 use una_core::{
     Atom, Base, Bound, CapOp, Ctor, Decl, Expr, FixedOp, Fun, HandlerOp, IntType, Label, Level,
     LoopSource, MapOp, Name, Path, Prim, Program, Rhs, Source, Type, Use,
@@ -1693,13 +1694,44 @@ impl<'p, 'w> Machine<'p, 'w> {
             }
             "empty_map" => Value::Map(Rc::default()),
             // JSON (`spec/23`), by the parser and writer that the native runtime shares.
-            "parse_json" => match una_core::json::parse(&text(0)?) {
-                Ok(tree) => crate::json::value(tree),
-                Err(error) => return Err(Stop::Fail(crate::json::error(error))),
-            },
+            // Both check the memory budget as they go, and stop at this call over it (N-41).
+            "parse_json" => {
+                let source = text(0)?;
+                let (held, baseline) = (self.held, self.baseline);
+                let budget = self.max_memory.saturating_mul(1024 * 1024);
+                let mut within = || held().saturating_sub(baseline) <= budget;
+                let over = Stop::Abort(Abort::Memory {
+                    span,
+                    limit: self.max_memory,
+                });
+                match una_core::json::parse_within(&source, &mut within) {
+                    Ok(tree) => match crate::json::value(tree, &mut within) {
+                        Some(value) => value,
+                        None => return Err(over),
+                    },
+                    Err(Halt::Invalid(error)) => {
+                        return Err(Stop::Fail(crate::json::error(error)));
+                    }
+                    Err(Halt::OverBudget) => return Err(over),
+                }
+            }
             "to_json" => {
-                let tree = crate::json::tree(&arg(0)?).ok_or_else(bad)?;
-                Value::text(&una_core::json::write(&tree))
+                let (held, baseline) = (self.held, self.baseline);
+                let budget = self.max_memory.saturating_mul(1024 * 1024);
+                let mut within = || held().saturating_sub(baseline) <= budget;
+                let over = Stop::Abort(Abort::Memory {
+                    span,
+                    limit: self.max_memory,
+                });
+                let tree = match crate::json::tree(&arg(0)?, &mut within) {
+                    Ok(tree) => tree,
+                    Err(crate::json::NoTree::NotJson) => return Err(bad()),
+                    Err(crate::json::NoTree::OverBudget) => return Err(over),
+                };
+                match una_core::json::write_within(&tree, &mut within) {
+                    Some(text) => Value::text(&text),
+                    None => return Err(over),
+                }
             }
             "quote_json" => Value::text(&una_core::json::quote(&text(0)?)),
             "is_json_number" => Value::Bool(una_core::json::is_json_number(&text(0)?)),
