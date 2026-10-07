@@ -603,7 +603,7 @@ Values stay immutable and there are no references; what changes is which value a
 - Markers match declarations exactly (U2020); an `edit` argument and another use of the same binding in one call is U2018; a function with `edit` or `take` parameters cannot be used as a value (U2021). A call with a marker is the whole expression of its statement.
 - `for x in xs` visits a list in order, and `for i in a..b` or `a..<b` the integers of a range; the bounds are evaluated once, before the first iteration. The loop variable has the element type, or the integer type of the bounds. There is no `break` or `continue`. The refinements of the bindings a loop updates are its invariant; no other fact about them survives the loop.
 - `if c` with an indented block and no `else` is a statement. `edit xs.set(index: i, item: v)` replaces a list element.
-- Known limit of v0.2.0 (#260): a loop forgets the length of a list it updates, so `for i in 0..<xs.len` with `edit xs.set(index: i, item: v)` in its body is U5001, refuted with a counterexample where `xs.len` is 0. Guard the update with a statement `if i < xs.len` around it.
+- A loop keeps the length of a list it changes only with `set`, or with a helper whose `ensures` is exactly `xs.len == old(xs).len`, so `for i in 0..<xs.len` with `edit xs.set(index: i, item: v)` verifies. After an `append` or any other change, the loop forgets the length, and a check that needs it is U5002, "the loop forgets every fact about `xs` ...": guard it with `if i < xs.len`.
 - A call that fails leaves its `edit` arguments unchanged for the caller; operations it performed stay performed.
 
 ```una
@@ -634,13 +634,13 @@ pub sum_to(n: Nat) -> Int
     total = total + i
   total
 
---- The guard keeps the precondition of `set` provable inside the loop (#260).
+--- `set` keeps the length, so every index of the range stays valid (ADR 0071).
 pub zeroed(xs: List[Int]) -> List[Int]
+  ensures result.len == xs.len
 =
   let edit ys = xs
   for i in 0..<ys.len
-    if i < ys.len
-      edit ys.set(index: i, item: 0)
+    edit ys.set(index: i, item: 0)
   ys
 
 pub cleared(xs: List[Int], index: Int) -> List[Int]
