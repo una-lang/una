@@ -233,8 +233,11 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
         summary_fixpoint(&mut env, &facts, package.sources, &edges);
         // ADR 0075 rule 5: once the summaries are final, pass 1 runs once more over the
         // declarations, so the label variables of editable bindings count every callee's final
-        // summary. Its diagnostics and what it collects are dropped.
-        if env.edit_labels_seen {
+        // summary. Its diagnostics and what it collects are dropped. Should that change a
+        // solution, the summaries that read it are brought to their fixpoint again, so none
+        // keeps a stale label; solutions only grow, so this ends.
+        while env.edit_labels_seen {
+            env.edit_labels_changed = false;
             let mut scratch = Report::new(package.sources);
             let mut findings = Findings::default();
             let mut collected = authority::Collected::default();
@@ -251,6 +254,10 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
                     );
                 }
             }
+            if !env.edit_labels_changed {
+                break;
+            }
+            summary_fixpoint(&mut env, &facts, package.sources, &edges);
         }
     }
     authority::infer(&mut env, &collected, &mut report);

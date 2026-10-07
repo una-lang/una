@@ -1,0 +1,46 @@
+-- test: label variables cross calls: a generic builder's summary feeds another binding's variable
+-- spec: spec/17 §6
+-- expect: error U4003 at src/main.una:43:18
+module main
+
+--- How often each item occurs.
+pub tally[T: Ord](xs: List[T]) -> Map[T, Int]
+=
+  let edit m = empty_map()
+  for x in xs
+    let n = m.get(key: x)
+      if none use 0
+    edit m.set(key: x, value: n + 1)
+  m
+
+--- The count of `item` in `xs`, through `tally`.
+pub count_of[T: Ord](xs: List[T], item: T) -> Int = tally(xs).get(key: item).or_else(default: 0)
+
+--- The counts of two lists, side by side, in a binding whose values are open.
+summed(a: List[Text], b: List[internal Text]) -> Map[Text, internal Int]
+=
+  let edit both = empty_map()
+  edit both.set(key: "a", value: count_of(a, item: "x"))
+  edit both.set(key: "b", value: count_of(b, item: "x"))
+  both
+
+--- The same over public lists: its values stay `public`.
+plain(a: List[Text], b: List[Text]) -> Map[Text, Int]
+=
+  let edit both = empty_map()
+  edit both.set(key: "a", value: count_of(a, item: "x"))
+  edit both.set(key: "b", value: count_of(b, item: "x"))
+  both
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let s = @env.get("S")
+    if none use "x"
+  let loud = summed(["x"], b: [s])
+  let l = loud.get(key: "a").or_else(default: 0)
+  @console.print("{l}")
+  let quiet = plain(["x", "y"], b: ["x"])
+  let q = quiet.get(key: "a").or_else(default: 0)
+  @console.print("{q}")
