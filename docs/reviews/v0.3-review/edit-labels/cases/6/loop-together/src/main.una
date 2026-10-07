@@ -1,0 +1,16 @@
+module main
+
+-- expect: rejected (U4003): the same loop in a task of together
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let s = @env.get("S")
+    if none use "x"
+  let sizes = together for t in [0, 1]
+    let edit xs = []
+    for i in 0..<2
+      @console.print("{xs}")
+      xs = xs.append(item: s.len)
+    xs.len
+  @console.print("done")

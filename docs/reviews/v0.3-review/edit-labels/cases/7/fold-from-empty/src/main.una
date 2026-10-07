@@ -1,0 +1,11 @@
+-- expect: U4003: an accumulator in edition 0.1 is a fold, whose state from [] carries the labels of its steps
+module main
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let s = @env.get("S")
+    if none use "x"
+  let xs = [1, 2].fold(initial: [], step: fn(acc, x) -> acc.append(item: s.len))
+  @console.print("{xs}")

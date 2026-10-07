@@ -1,0 +1,16 @@
+-- expect: U4003: an accumulator through recursion from [] carries the labels it is given
+module main
+
+grow(acc: List[Int], n: Int, v: Int) -> List[Int]
+  requires n >= 0
+=
+  if n == 0 then acc else grow(acc.append(item: v), n: n - 1, v: v)
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let s = @env.get("S")
+    if none use "x"
+  let xs = grow([], n: 2, v: s.len)
+  @console.print("{xs}")

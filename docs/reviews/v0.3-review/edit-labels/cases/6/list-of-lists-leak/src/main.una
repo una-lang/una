@@ -1,0 +1,14 @@
+-- expect: rejected (U4003)
+module main
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let s = @env.get("S")
+    if none use "x"
+  let edit xss = []
+  xss = xss.append(item: [1])
+  let first = xss.first().or_else(default: [])
+  xss = xss.append(item: [s.len])
+  @console.print("{first}")
