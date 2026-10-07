@@ -12,27 +12,33 @@
 
 ## Verdict
 
-**Not ready on the candidate.** One Critical is open: 3a-1, #267. Una-2 is fixing it, and its delta check is pending.
+**Ready.** Every Critical and Major finding is fixed on `main`, and every gate passes on the gated SHA `5361a0e364a4116cafb65a7cebe92c3733525eea` (`main` after #230). The tag waits for Leonardo's word (`docs/releases/validation.md` §1 rule 2).
 
-The tag needs all of these, in order:
-1. #267 merged, with a Clean delta check from the 3a reviewer.
-2. #257 (3b Majors) and #266 (#258, docs) merged.
-3. #230 merged, with the CHANGELOG items listed below.
-4. Every gate PASS on the tag SHA, recorded as `docs/releases/0.2.0-validation.md`.
+On the candidate `ef34f2f`, the verdict was Not ready. One Critical (3a-1) and five Majors (F3, F5, S4-01, S4-02, S4-03) were open. Their fixes:
+
+| Finding | Fix | Delta check |
+| --- | --- | --- |
+| 3a-1 (Critical) | #267, PR #269 | 3a reviewer (Coordenador), before the final gates |
+| F3, F5 (Major), F1, F2, F4 (Minor) | #257, PR #265 | Una-2's 3b corpus |
+| S4-01 (Major), S4-07, S4-09, 3c-2, S-1 | #258, PR #266 | docs only |
+| S4-02, S4-03 (Major), S4-04 to S4-06, S4-08 | #230 | the final `build` gate (`tests/install.rs`) |
+| 3e-1 (Minor) | #256, PR #264 | Una-3: 960 of 964 targets identical; the 4 others are the expected U3004 cases |
 
 No information-flow leak was found. Edition 0.1 isolation holds.
 
 | Area | Owner | Result | Open Critical/Major |
 | --- | --- | --- | --- |
-| 1. Release gates | Una-1 | **PASS**, every gate, Linux included | none |
-| 3a. Labels and information flow | Coordenador's reviewer | **Not clean**: no leak; 1 Critical in native failure handling | 3a-1 (#267) |
-| 3b. Diagnostics and repairs | Una-2 | No meaning change; 2 Major in batch application | F3, F5 (#257) |
+| 1. Release gates | Una-1 | **PASS**, every gate, Linux included, on the candidate and on the gated SHA | none |
+| 3a. Labels and information flow | Coordenador's reviewer | No leak; 1 Critical in native failure handling, fixed | none (3a-1 fixed, #269) |
+| 3b. Diagnostics and repairs | Una-2 | No meaning change; 2 Major in batch application, fixed | none (F3, F5 fixed, #265) |
 | 3c. Runtime and CLI streams | Una-3 | Engines agree; EBADF treated as success | none (3c-1 Minor, after the tag) |
 | 3d. #200 and #201 fixes | Una-1 | **Clean** for soundness and parity; 2 Minor performance findings | none |
 | 3e. Edition 0.1 isolation | Una-3 | Gate 1 references identical to v0.1.3; one message regression | none (3e-1 fixed, #264) |
-| 4. Docs and release consistency | Una-1 | 3 Major, 8 Minor | S4-01 (#266); S4-02 and S4-03 (#230) |
+| 4. Docs and release consistency | Una-1 | 3 Major, 8 Minor, fixed except S4-10 and S4-11 (Leonardo) | none |
 
 ## 1. Release gates
+
+### The candidate
 
 `scripts/release-gates.sh ef34f2f604657572da0c8ec97612f2e923549ef8 OUT`, with the pinned Z3.
 
@@ -48,7 +54,25 @@ No information-flow leak was found. Edition 0.1 isolation holds.
 
 Verdict of the run: **PASS (every gate)**. The record, with log digests and archive digests, is `gates-ef34f2f.md`.
 
-The candidate is superseded by the review fixes, so this run is a baseline. The run that counts is the final one on the tag SHA, committed as `docs/releases/0.2.0-validation.md`.
+### The gated SHA
+
+`scripts/release-gates.sh 5361a0e364a4116cafb65a7cebe92c3733525eea OUT`, the run that counts, recorded unchanged as `docs/releases/0.2.0-validation.md` (PR #272):
+
+| Gate | Result | Seconds |
+| --- | --- | --- |
+| clone | PASS | 1 |
+| build | PASS | 248 |
+| mac | PASS | 131 |
+| linux | PASS | 870 |
+| release | PASS | 87 |
+| determinism | PASS | 50 |
+| native | PASS | 42 |
+
+The archives:
+- `una-0.2.0-aarch64-apple-darwin.tar.gz`: SHA-256 `ffb299c770a9d6239ce0fc79620dceb35839277337f6603cb4715a2943895e7c`;
+- `una-0.2.0-x86_64-unknown-linux-gnu.tar.gz`: SHA-256 `8721f6be3670d31f26a0e8e6ab1d5c8db5e8f8be6df0a803698f56eb4c24829a`.
+
+The tag goes on the merge commit of #272, whose own change is the record. Its diff from 5361a0e is that record plus the rule of #271, all under `docs/` (N-11).
 
 The `native` gate's equivalence test did not catch 3a-1, because no program in the repository calls a `fails of` parameter under `if error pass`. #267 should add the repro to a corpus that the test runs.
 
@@ -188,11 +212,12 @@ Sent to Una-2:
 - **ADRs 0069 and 0070:** accepted, not implemented.
 - **Also:** the installer and release gates PRs, the version in `install.sh`, and #253 marked fixed.
 
-## Remaining before the tag
+## Before the tag
 
-- [ ] #267 merged, with the 3a delta check Clean.
-- [ ] #257 merged, with the 3b delta check.
-- [ ] #266 merged.
-- [ ] #230 rebased onto the final `main`, with the items above, and merged.
-- [ ] `scripts/release-gates.sh <tag SHA>` all PASS, and the record committed as `docs/releases/0.2.0-validation.md`.
+- [x] #267 merged (PR #269), with the 3a delta check.
+- [x] #257 merged (PR #265).
+- [x] #258 merged (PR #266), and #256 (PR #264).
+- [x] #230 merged, at the gated SHA 5361a0e.
+- [x] `scripts/release-gates.sh 5361a0e` all PASS. The record is PR #272, and the tag rule is PR #271.
+- [ ] #272 merged with a merge commit, the commit to tag.
 - [ ] Leonardo's word for the tag.
