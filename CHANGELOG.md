@@ -4,7 +4,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ## v0.1.4
 
-A security patch release of Una Core, cut from v0.1.3 with two information-flow fixes backported from v0.3.0 (A′). Edition 0.1 only; report schema versions are unchanged. Each fix makes edition 0.1 reject programs that v0.1.0 to v0.1.3 accept.
+A security patch release of Una Core, cut from v0.1.3 with two information-flow fixes (A′). Both were backported from v0.3.0, except one part of the first: v0.3.0 does not cover prelude functions that call a function value (`map`, `filter`, `first_where`, `fold`), and v0.3.1 brings that part to edition 0.1 packages. Edition 0.1 only; report schema versions are unchanged. Each fix makes edition 0.1 reject programs that v0.1.0 to v0.1.3 accept.
 
 ### Security
 
