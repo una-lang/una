@@ -189,7 +189,6 @@ fn requests_outside_the_grants_or_malformed_never_connect() {
         Err(Error::BadUrl)
     );
     for header in [
-        ("X-A", "a\r\nInjected: 1"),
         ("Bad Name", "v"),
         ("Host", "evil"),
         ("Content-Length", "0"),
@@ -203,6 +202,28 @@ fn requests_outside_the_grants_or_malformed_never_connect() {
             "{header:?}"
         );
     }
+    // A control character in a header value, but a tab, is `HeaderValue`, which the engines
+    // turn into the abort U6004 (N-40). It is checked first, so it does not depend on the URL,
+    // the grants or the other headers.
+    for value in ["a\r\nInjected: 1", "a\n", "a\0", "a\x7f", "a\x01"] {
+        let headers = vec![
+            ("Bad Name".to_owned(), "v".to_owned()),
+            ("X-A".to_owned(), value.to_owned()),
+        ];
+        for target in [url.as_str(), "not a url", "http://example.com/"] {
+            assert_eq!(
+                send(&get(target, &headers), &[server.grant("get")], &fine),
+                Err(Error::HeaderValue),
+                "{value:?} {target}"
+            );
+        }
+    }
+    let tab = vec![("X-A".to_owned(), "a\tb".to_owned())];
+    assert_eq!(
+        send(&get(&url, &tab), &[], &fine),
+        Err(Error::Denied),
+        "a tab is allowed"
+    );
     assert!(server.requests().is_empty());
 }
 

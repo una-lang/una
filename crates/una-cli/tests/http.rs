@@ -293,6 +293,129 @@ pub main() -> Unit
 }
 
 #[test]
+fn a_control_character_in_a_header_value_aborts_in_both_engines() {
+    // N-40: whether a header value has a control character is not a failure the program can
+    // branch on, since the value may be `internal`: the run aborts with U6004 at the operation,
+    // as for U6003, in both engines, after the output so far, with the same trace.
+    let server = Server::start();
+    let port = server.port;
+    let program = format!(
+        r#"module web
+
+pub main() -> Unit
+  uses @http: Http[get]
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  @console.print("before")
+  let value = @env.get("UNA_TEST_HEADER")
+    if none use "fine"
+  let r = attempt @http.get("http://127.0.0.1:{port}/ok", headers: [Header(name: "X-A", value: value)], key_name: None)
+  @console.print("after")
+"#
+    );
+    let dir = package(
+        "aborting",
+        &format!(
+            "\n[run]\nentry = \"web\"\ngrants = [\"console\", \"env\", \"http:http://127.0.0.1:{port}\"]\n"
+        ),
+        &[("src/web.una", &program)],
+    );
+    let interpreted = Command::new(env!("CARGO_BIN_EXE_una"))
+        .args(["--json", "run", "."])
+        .env("UNA_TEST_HEADER", "a\r\nInjected: 1")
+        .env("NO_COLOR", "1")
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(interpreted.status.code(), Some(1), "{interpreted:?}");
+    let document: serde_json::Value = serde_json::from_slice(&interpreted.stdout).unwrap();
+    assert_eq!(document["status"], "aborted", "{document}");
+    assert_eq!(
+        document["output"],
+        serde_json::json!(["before"]),
+        "{document}"
+    );
+    assert!(document.to_string().contains("U6004"), "{document}");
+    let human = Command::new(env!("CARGO_BIN_EXE_una"))
+        .args(["run", "."])
+        .env("UNA_TEST_HEADER", "a\r\nInjected: 1")
+        .env("NO_COLOR", "1")
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(human.status.code(), Some(1), "{human:?}");
+    let stderr = String::from_utf8_lossy(&human.stderr);
+    assert!(stderr.contains("[U6004]"), "{stderr}");
+    assert!(
+        stderr.contains("a header value contains a control character"),
+        "{stderr}"
+    );
+
+    let built = una(&dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let trace = dir.join("trace.json");
+    let native = Command::new(dir.join("target/una/aborting"))
+        .arg("--trace")
+        .arg(&trace)
+        .env("UNA_TEST_HEADER", "a\r\nInjected: 1")
+        .env("NO_COLOR", "1")
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(1), "{native:?}");
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "before\n");
+    let stderr = String::from_utf8_lossy(&native.stderr);
+    assert!(stderr.contains("[U6004]"), "{stderr}");
+    assert!(
+        stderr.contains("a header value contains a control character"),
+        "{stderr}"
+    );
+    let native: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(trace).unwrap()).unwrap();
+    assert_eq!(document["trace"], native);
+    // No request left: the abort comes before any connection.
+    assert!(server.requests.lock().unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_header_value_abort_in_a_task_ends_the_run_in_both_engines() {
+    // N-40 under `together` (`spec/19`): the task's abort ends the run with U6004, as U6003 in a
+    // task does, in both engines.
+    let program = "module web\n\npub main() -> Unit\n  uses @http: Http[get]\n  uses @console: Console[print]\n=\n  @console.print(\"before\")\n  together\n    let a = attempt @http.get(\"http://127.0.0.1:9/\", headers: [Header(name: \"X-A\", value: \"a\\nb\")], key_name: None)\n    let b = attempt @http.get(\"http://127.0.0.1:9/\", headers: [], key_name: None)\n  @console.print(\"after\")\n";
+    let dir = package(
+        "tasked",
+        "\n[run]\nentry = \"web\"\ngrants = [\"console\", \"http:http://127.0.0.1:9\"]\n",
+        &[("src/web.una", program)],
+    );
+    let interpreted = una(&dir, &["run", "."]);
+    assert_eq!(interpreted.status.code(), Some(1), "{interpreted:?}");
+    assert_eq!(String::from_utf8_lossy(&interpreted.stdout), "before\n");
+    assert!(
+        String::from_utf8_lossy(&interpreted.stderr).contains("[U6004]"),
+        "{interpreted:?}"
+    );
+    let built = una(&dir, &["build", "."]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let native = Command::new(dir.join("target/una/tasked"))
+        .env("NO_COLOR", "1")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(1), "{native:?}");
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "before\n");
+    assert!(
+        String::from_utf8_lossy(&native.stderr).contains("[U6004]"),
+        "{native:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn http_grants_are_checked_before_main_in_both_engines() {
     // U3012 for an operation that no grant allows: `post` under a `get` grant.
     let program = "module needs\n\npub main() -> Unit\n  uses @http: Http[post]\n=\n  let r = attempt @http.post(\"http://127.0.0.1:1/\", headers: [], body: \"\", key_name: None)\n  unit\n";

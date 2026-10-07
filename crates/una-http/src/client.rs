@@ -28,6 +28,9 @@ pub enum Error {
     Tls,
     /// The response is not valid HTTP/1.1, or its body is not UTF-8.
     Protocol,
+    /// A header value has a control character other than a tab. It is not an `HttpError`: the
+    /// value may be `internal`, so the engines abort the run with U6004 instead (N-40).
+    HeaderValue,
 }
 
 /// A request, as an operation of `Http` makes it.
@@ -89,6 +92,14 @@ pub fn send(
     // Capped at a day, as the flags are, so the deadline never overflows the clock.
     let timeout = settings.timeout.min(Duration::from_secs(MAX_TIMEOUT_SECS));
     let deadline = Instant::now().checked_add(timeout).ok_or(Error::TimedOut)?;
+    // First, so that the abort it leads to depends on the header values alone (N-40).
+    if request
+        .headers
+        .iter()
+        .any(|(_, value)| value.as_bytes().iter().any(control))
+    {
+        return Err(Error::HeaderValue);
+    }
     let mut url = Url::parse(request.url).ok_or(Error::BadUrl)?;
     check_headers(request.headers, request.bearer)?;
     if !allowed(grants, &url, request.method) {
@@ -156,23 +167,24 @@ fn location(response: &Response, base: &Url) -> Option<Url> {
     Url::parse(value)
 }
 
+/// A control character other than a tab, which no header value or key may hold.
+fn control(b: &u8) -> bool {
+    *b < 0x20 && *b != b'\t' || *b == 0x7f
+}
+
 /// The headers that carry a credential, which a redirect to another origin drops (N-30).
 const CREDENTIALS: [&str; 3] = ["authorization", "cookie", "proxy-authorization"];
 
-/// The headers the program may send: tokens with values free of control characters, none that
-/// the client sets itself, and no `Authorization` beside a key; the key, free of control
-/// characters too (`BadRequest`, N-28, N-30).
+/// The headers the program may send: tokens, none that the client sets itself, and no
+/// `Authorization` beside a key; the key, free of control characters (`BadRequest`, N-28,
+/// N-30). [`send`] checks the values first ([`Error::HeaderValue`], N-40).
 fn check_headers(headers: &[(String, String)], bearer: Option<&[u8]>) -> Result<(), Error> {
     let token = |b: u8| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b);
-    let control = |b: &u8| *b < 0x20 && *b != b'\t' || *b == 0x7f;
     if bearer.is_some_and(|key| key.iter().any(control)) {
         return Err(Error::BadRequest);
     }
-    for (name, value) in headers {
+    for (name, _) in headers {
         if name.is_empty() || !name.bytes().all(token) {
-            return Err(Error::BadRequest);
-        }
-        if value.as_bytes().iter().any(control) {
             return Err(Error::BadRequest);
         }
         if bearer.is_some() && name.eq_ignore_ascii_case("authorization") {
