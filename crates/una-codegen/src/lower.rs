@@ -295,8 +295,6 @@ pub(crate) struct Body<'p> {
     pub(crate) uses: Vec<Name>,
     /// The result type, when it is declared.
     pub(crate) result: Option<Type>,
-    /// Whether it can fail.
-    pub(crate) fails: bool,
     /// Whether its integer arithmetic is exact, with no machine-width shortcut: where the
     /// verifier makes no `overflow` obligation (#180).
     pub(crate) exact: bool,
@@ -1192,7 +1190,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 .ok_or_else(|| internal(format!("no capability `@{name}` to pass")))?;
             args.push(*instance);
         }
-        let (id, fails) = (callee.id, callee.fails);
+        let id = callee.id;
         // `spec/11 §7`: each call counts toward the maximum depth, which the runtime checks
         // against the call's site.
         let site = self.site(span);
@@ -1208,9 +1206,10 @@ impl<'p> Lowerer<'_, 'p, '_> {
             return Err(internal("a call lost its result"));
         };
         self.stop_if_stopped(failed);
-        if fails {
-            self.check(value, failed, scope, catch);
-        }
+        // Every callee returns whether it failed, 0 when it cannot: a function with `fails of
+        // p` fails when the function value given for `p` does, which its declaration does not
+        // say, so every call checks (#267).
+        self.check(value, failed, scope, catch);
         Ok(value)
     }
 
@@ -1378,9 +1377,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
             return Err(internal("an operation lost its result"));
         };
         self.runtime("una_rt_event_end", &[site, slot, value, failed]);
-        if declared.fails.is_some() {
-            self.check(value, failed, scope, catch);
-        }
+        // An operation that cannot fail returns 0 as its failure flag, so every operation
+        // checks it, as every call does (#267).
+        self.check(value, failed, scope, catch);
         Ok(value)
     }
 
@@ -1568,7 +1567,6 @@ impl<'p> Lowerer<'_, 'p, '_> {
             Rhs::Apply {
                 callee, args, span, ..
             } => {
-                let fails = matches!(self.atom_type(callee, env), Type::Fn { fails: Some(_), .. });
                 let (callee, _) = self.atom(callee, env)?;
                 let mut values = Vec::new();
                 for arg in args {
@@ -1576,9 +1574,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 }
                 let site = self.site(*span);
                 let (value, failed) = self.apply(callee, &values, site)?;
-                if fails {
-                    self.check(value, failed, scope, catch);
-                }
+                // A function value's type does not say whether it fails when it is the parameter
+                // of a `fails of` clause, so every call of one checks (#267).
+                self.check(value, failed, scope, catch);
                 Ok(value)
             }
             Rhs::Op { .. } => self.op(rhs, ty, env, scope, catch),
