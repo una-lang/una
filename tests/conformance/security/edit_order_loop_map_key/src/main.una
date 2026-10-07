@@ -1,0 +1,16 @@
+-- test: label order shape `loop-map-key` (#323, N-45, review #330): the read sees the solved label, whatever the order
+-- spec: spec/17 §6
+-- expect: error U4003 at src/main.una:15:20
+module main
+
+-- review: rejected (U4001 or U4003): a map key raised in a loop
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let s = @env.get("S")
+    if none use "x"
+  let edit m = empty_map()
+  for i in 0..<2
+    @console.print("{m.len}")
+    edit m.set(key: s, value: i)

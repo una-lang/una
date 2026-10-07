@@ -47,22 +47,38 @@ impl Checker<'_, '_, '_> {
                 let name = symbol(span, *index);
                 *index += 1;
                 self.env.edit_label_spans.insert(name.clone(), span);
-                let solved = self
-                    .env
-                    .edit_labels
-                    .get(&name)
-                    .cloned()
-                    .unwrap_or_else(Label::public);
                 self.env.edit_labels_seen = true;
-                let label = if self.pass == Pass::Collect {
-                    self.edit_bounds
-                        .entry(name.clone())
-                        .or_insert_with(Label::public);
-                    Label::symbol(name).join(&solved)
-                } else {
-                    solved
-                };
-                Ty::Var(var).with_label(&label)
+                if self.pass == Pass::Collect {
+                    self.edit_open.push((name.clone(), var));
+                }
+                // Once an earlier check learned what the variable resolves to, every label
+                // position of that type has a variable of its own (ADR 0075 rule 1).
+                match self.env.edit_shapes.get(&name).cloned() {
+                    // ADR 0075 rule 1: a position whose labels cannot all be variables is
+                    // rejected, never decided by the order unification sees its uses in (N-45).
+                    Some(Ty::Error) => {
+                        if self.pass == Pass::Check {
+                            let shown = self.report.text(span).to_owned();
+                            self.report.error(
+                                una_diag::Code::U4001,
+                                span,
+                                format!(
+                                    "the labels of `{shown}` cannot be inferred, since part of its type holds a function; annotate its type, as in `let edit {shown}: List[...] = ...`"
+                                ),
+                            );
+                        }
+                        Ty::Var(var).with_label(&self.variable_label(&name))
+                    }
+                    Some(shape) => {
+                        let labeled = self.shaped(&shape, &name);
+                        // The variable is still solved by unification, now with this type.
+                        if !self.vars.unify(&Ty::Var(var), &labeled) {
+                            return Ty::Var(var).with_label(&self.variable_label(&name));
+                        }
+                        labeled
+                    }
+                    None => Ty::Var(var).with_label(&self.variable_label(&name)),
+                }
             }
             Ty::Labeled(label, inner) => {
                 // An unsolved variable under a label keeps that label too.
@@ -85,6 +101,78 @@ impl Checker<'_, '_, '_> {
         }
     }
 
+    /// The label of the variable `name`: in pass 1 its symbol joined with the solution of
+    /// earlier checks, in pass 2 the solution alone.
+    fn variable_label(&mut self, name: &str) -> Label {
+        let solved = self
+            .env
+            .edit_labels
+            .get(name)
+            .cloned()
+            .unwrap_or_else(Label::public);
+        if self.pass == Pass::Collect {
+            self.edit_bounds
+                .entry(name.to_owned())
+                .or_insert_with(Label::public);
+            Label::symbol(name).join(&solved)
+        } else {
+            solved
+        }
+    }
+
+    /// `shape` with the variable `name` as its top label and a variable derived from `name` at
+    /// each label position inside it: linear in the size of the shape.
+    fn shaped(&mut self, shape: &Ty, name: &str) -> Ty {
+        let label = self.variable_label(name);
+        let inner = match shape {
+            Ty::List(element) => Ty::List(Box::new(self.shaped(element, &derived(name, "e")))),
+            Ty::Map(key, value) => Ty::Map(
+                Box::new(self.shaped(key, &derived(name, "k"))),
+                Box::new(self.shaped(value, &derived(name, "v"))),
+            ),
+            Ty::Kind(kind, args) => Ty::Kind(
+                *kind,
+                args.iter()
+                    .enumerate()
+                    .map(|(i, arg)| self.shaped(arg, &derived(name, &i.to_string())))
+                    .collect(),
+            ),
+            other => other.clone(),
+        };
+        inner.with_label(&label)
+    }
+
+    /// At the end of a pass 1 check, the type each open variable resolved to, without labels,
+    /// when it holds no unification variable and no function type: the shape that later checks
+    /// give label variables at every position. Returns whether a shape is new.
+    pub(crate) fn record_edit_shapes(
+        open: &[(String, usize)],
+        vars: &super::unify::Vars,
+        shapes: &mut BTreeMap<String, Ty>,
+    ) -> bool {
+        let mut changed = false;
+        for (name, var) in open {
+            let resolved = vars.resolve(&Ty::Var(*var));
+            if shapes.contains_key(name) {
+                continue;
+            }
+            // A variable nothing solved holds no value with labels, as the elements of a list
+            // that stays empty. A type with a function or a variable inside has label positions
+            // a shape cannot name: it is recorded as such, and pass 2 rejects it (N-45).
+            if matches!(resolved, Ty::Var(_)) {
+                continue;
+            }
+            let shape = if closed(&resolved) {
+                resolved
+            } else {
+                Ty::Error
+            };
+            shapes.insert(name.clone(), shape);
+            changed = true;
+        }
+        changed
+    }
+
     /// In pass 1, records the labels that `found` brings to the label variables of `expected`,
     /// the type of an editable place it flows into (ADR 0075 rule 2).
     pub(crate) fn record_edit_bounds(&mut self, found: &Ty, expected: &Ty) {
@@ -93,11 +181,16 @@ impl Checker<'_, '_, '_> {
         }
         let (found, expected) = (self.labeled(found), self.labeled(expected));
         let mut flows = Vec::new();
-        pair_labels(&found, &expected, &mut flows);
+        pair_labels(&found, &expected, None, &mut flows);
         for (name, label) in flows {
-            if let Some(bound) = self.edit_bounds.get_mut(&name) {
-                *bound = bound.join(&label);
+            // A variable derived from one of this declaration's, for a position inside a type
+            // an earlier check has not yet seen, is recorded too.
+            let base = name.split('/').next().unwrap_or(&name);
+            if !self.edit_bounds.contains_key(base) {
+                continue;
             }
+            let bound = self.edit_bounds.entry(name).or_insert_with(Label::public);
+            *bound = bound.join(&label);
         }
     }
 }
@@ -125,25 +218,54 @@ pub(crate) fn solve_into(
 }
 
 /// The labels at the positions of `found` and `expected` that correspond, for each label
-/// variable in `expected`: `(variable, label of found there)`.
-fn pair_labels(found: &Ty, expected: &Ty, out: &mut Vec<(String, Label)>) {
+/// variable in `expected`: `(variable, label of found there)`. Under a position with a variable,
+/// a position without one has the variable derived from it (`outer`), as later checks name it.
+fn pair_labels(found: &Ty, expected: &Ty, outer: Option<&str>, out: &mut Vec<(String, Label)>) {
     let (found_label, found) = strip(found);
     let (expected_label, expected) = strip(expected);
-    for name in expected_label.symbols.iter().filter(|s| is_variable(s)) {
-        out.push((name.clone(), found_label.clone()));
+    let own: Vec<&String> = expected_label
+        .symbols
+        .iter()
+        .filter(|s| is_variable(s))
+        .collect();
+    for name in &own {
+        out.push(((*name).clone(), found_label.clone()));
     }
+    let here = own.first().map(|name| name.as_str()).or(outer);
+    if own.is_empty()
+        && let Some(name) = outer
+    {
+        out.push((name.to_owned(), found_label.clone()));
+    }
+    let child = |slot: &str| here.map(|name| derived(name, slot));
     match (found, expected) {
-        (Ty::List(a), Ty::List(b)) => pair_labels(a, b, out),
+        (Ty::List(a), Ty::List(b)) => pair_labels(a, b, child("e").as_deref(), out),
         (Ty::Map(ka, va), Ty::Map(kb, vb)) => {
-            pair_labels(ka, kb, out);
-            pair_labels(va, vb, out);
+            pair_labels(ka, kb, child("k").as_deref(), out);
+            pair_labels(va, vb, child("v").as_deref(), out);
         }
         (Ty::Kind(k1, a1), Ty::Kind(k2, a2)) if k1 == k2 => {
-            for (a, b) in a1.iter().zip(a2) {
-                pair_labels(a, b, out);
+            for (i, (a, b)) in a1.iter().zip(a2).enumerate() {
+                pair_labels(a, b, child(&i.to_string()).as_deref(), out);
             }
         }
         _ => {}
+    }
+}
+
+/// The variable at the position `slot` inside the position of the variable `name`.
+fn derived(name: &str, slot: &str) -> String {
+    format!("{name}/{slot}")
+}
+
+/// Whether `ty` holds no unification variable and no function type, so it can be a shape.
+fn closed(ty: &Ty) -> bool {
+    match ty {
+        Ty::Var(_) | Ty::Fn(_) | Ty::Error | Ty::Never => false,
+        Ty::Labeled(_, inner) | Ty::List(inner) => closed(inner),
+        Ty::Map(key, value) => closed(key) && closed(value),
+        Ty::Kind(_, args) => args.iter().all(closed),
+        _ => true,
     }
 }
 
