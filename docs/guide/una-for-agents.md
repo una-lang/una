@@ -26,7 +26,7 @@ una trace EVENTS_3  # in examples/events
 una contract events.checkin.check_in  # in examples/events
 ```
 
-`una build` compiles a package into a native executable that behaves as `una run` (§16):
+`una build` compiles a package into a native executable that behaves as `una run` (§17):
 
 ```sh
 una build .  # copy examples/hello
@@ -40,7 +40,7 @@ Exit codes: `0` success; `1` errors in the program, an unproven obligation or a 
 - A package is a directory with `una.toml`, `verification.lock` and sources under `src/`. Module `shop.cart` lives in `src/shop/cart.una`, and a file holds exactly one module.
 - A single `.una` file is also a package, with default settings and the default lock.
 - `una.toml` has `[package]` (`name`, `version`, `edition = "0.2"`), and optionally `[labels] categories`, `[trusted] modules`, `[escape_budget] checked_per_module` (default 0) and `[run]` (`entry` module, `grants`). Unknown keys are U7002.
-- **Editions.** `edition = "0.2"` enables the constructs of v0.2: editable values and `for` loops (§11), fixed-width integers (§12), recursive kinds (§4), `uses of` and `fails of` (§8), constraints on generics (§13), maps (§14) and `together` (§15). A package of edition `0.1` keeps the language of v0.1 in every later compiler, and a single `.una` file outside a package is edition `0.1`. §18 lists what changes between them.
+- **Editions.** `edition = "0.2"` enables the constructs of v0.2: editable values and `for` loops (§11), fixed-width integers (§12), recursive kinds (§4), `uses of` and `fails of` (§8), constraints on generics (§13), maps (§14), JSON (§15) and `together` (§16). A package of edition `0.1` keeps the language of v0.1 in every later compiler, and a single `.una` file outside a package is edition `0.1`. §19 lists what changes between them.
 - `verification.lock` pins the solver: Z3 at the exact version it names must be on the path, or tier 1 reports U5003. `scripts/install-z3.sh` installs it.
 
 ## 3. Syntax in brief
@@ -774,7 +774,40 @@ pub count_of(counts: Map[Text, Int], word: Text) -> Int
   n
 ```
 
-## 15. Concurrent tasks: `together`
+## 15. JSON
+
+`parse_json`, `to_json` and `quote_json` read and write JSON (`spec/23`, edition 0.2).
+
+- **The value** is the prelude kind `Json`: `Null`, `Boolean(value)`, `Number(value: Int)` for an exact integer, `Decimal(text)` for any other number as written, `Str(value)`, `Array(items: List[Json])` and `Object(fields: Map[Text, Json])`, whose keys are in ascending order.
+- **Parsing.** `t.parse_json()` fails with `JsonError`: `Syntax(at)`, `TooDeep(at)` past 512 levels, `DuplicateKey(at)`, or `NumberTooLong(at)` for an integer over 4300 digits. `at` counts scalar values. Handle it with `if error`, or `attempt` for the `Result`.
+- **Writing.** `j.to_json()` writes the canonical compact form, keys in order. `t.quote_json()` writes one JSON string, for building JSON text by interpolation.
+- **Decimals.** A `Decimal` holds a `JsonNumber`, a number with a fraction or an exponent, which parsing makes, or `checked(t, is_json_number(it))`.
+- **Labels.** A value parsed from a labeled text, its fields, and whether and where the parse failed, all carry the text's labels. A `secret` cannot enter a `Json` constructor (U4001): build the text with `quote_json` and interpolation instead, and its result is `secret`.
+- **Cost.** Parsing is O(n + Σ k log k), and O(n) when keys arrive in order. Writing is O(n). Neither recurses on depth.
+- **Parse, then branch.** After `attempt` on a labeled text, the branches of `when r` run under the text's label, so a call that can fail inside them is U4002. Give the parse a default with `if error use`, then branch on the value, and make fallible calls outside the branches:
+
+```una
+module config
+
+--- The port of a configuration, or 8080 when it is missing or not a number.
+pub port(text: internal Text) -> internal Int
+=
+  let doc = text.parse_json()
+    if error use Null
+  when doc
+    is Object(fields) ->
+      let value = fields.get(key: "port")
+        if none use Null
+      when value
+        is Number(n) -> n
+        else -> 8080
+    else -> 8080
+
+--- The configuration written back, with the port replaced.
+pub with_port(fields: Map[Text, Json], port: Int) -> Text = Object(fields.with(key: "port", value: Number(port))).to_json()
+```
+
+## 16. Concurrent tasks: `together`
 
 `together` runs independent work at once with the result and trace of a sequential run (`spec/19`).
 
@@ -825,14 +858,14 @@ pub count(xs: List[Int]) -> Int
   seen
 ```
 
-## 16. Native executables and the language server
+## 17. Native executables and the language server
 
 - `una build [path]` checks the package at tier 1, then writes a native executable to `target/una/<name>` (`spec/16`), or to `--out <file>`. It refuses a package with errors, as `una run` does; `--json` prints `una.build/1`.
 - The executable runs `main` of the entry module with the output, failures, exit codes and grants of `una run`: the `[run] grants` of `una.toml` are built in, and `--grant`, `--max-depth` and `--max-memory` work as for `una run`. Its `--trace <file>` writes the trace as a JSON array, the trace that `una --json run` reports in `una.run/1`. Its output and trace match the interpreter's.
 - Tasks of `together` run on their own threads in a native executable, and one at a time in `una run`.
 - `una lsp` is a language server (LSP 3.17 over stdin and stdout) for editors: it checks, formats and solves, and never runs programs.
 
-## 17. The Agent ABI
+## 18. The Agent ABI
 
 Every command takes `--json` and prints one document whose `schema` names its shape:
 
@@ -871,7 +904,7 @@ When the checks reject a package, `contract`, `trace`, `obligations` and `report
 
 The build report counts trivial `ensures`, clauses the solver proves with no hypothesis at all such as `ensures result == result`, as missing contracts: write contracts that say something about the result.
 
-## 18. Migrating from edition 0.1
+## 19. Migrating from edition 0.1
 
 Change `edition = "0.1"` to `"0.2"` in `una.toml`, then check. What can change:
 

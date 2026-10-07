@@ -153,7 +153,7 @@ fn print(line: &str) {
 
 /// Records that the host operation in progress failed, with a failure the caller then reads
 /// as its value.
-fn failed(word: i64) -> i64 {
+pub(crate) fn failed(word: i64) -> i64 {
     with_state(|state| state.host_failed = true);
     word
 }

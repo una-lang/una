@@ -8,7 +8,7 @@
 
 use std::ffi::{CStr, c_char, c_int};
 
-use crate::{generic, host, runtime, tasks, values};
+use crate::{generic, host, json, runtime, tasks, values};
 
 /// Starts the executable: the generated `main` calls it with the process arguments, the
 /// embedded description of the program (`meta`, `meta_len` bytes of UTF-8 JSON) and the
@@ -182,6 +182,10 @@ exported! {
     una_rt_files_write => host::files_write, (path, content);
     una_rt_keys_hmac => host::keys_hmac, (key_name, data);
     una_rt_host_failed => host::host_failed, ();
+    una_rt_parse_json => json::parse_json, (t);
+    una_rt_to_json => json::to_json, (j);
+    una_rt_quote_json => json::quote_json, (t);
+    una_rt_is_json_number => json::is_json_number, (t);
     una_rt_host_instance => host::host_instance, (capability);
     una_rt_handler_instance => host::handler_instance, (name);
     una_rt_event => host::event, (site, instance);

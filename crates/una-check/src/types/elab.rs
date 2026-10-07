@@ -81,6 +81,9 @@ pub(crate) fn program(
         .filter(|module| env.reports(*module))
         .map(|module| elaborate_module(env, findings, dbs, module, &mut lost))
         .collect();
+    if let Some(kinds) = prelude_kinds(env, findings, dbs) {
+        modules.push(kinds);
+    }
     modules.sort_by(|a, b| a.path.cmp(&b.path));
     let library = (env.prelude..env.modules.len())
         .flat_map(|module| library(env, findings, dbs, module))
@@ -96,6 +99,39 @@ pub(crate) fn program(
     )
 }
 
+/// The kinds of JSON and their opaque predicate `is_json_number`, which the prelude declares in
+/// edition 0.2 (`spec/23 §1`), in a module of the prelude's path: so the verifier generates the
+/// obligations of the refinements of their fields, as `Decimal`'s `JsonNumber`, proves them
+/// from the facts of `checked`, and both engines read their fields, as for a kind of the
+/// package. Both engines call the predicate by name, never its placeholder body. `None` in
+/// edition 0.1, where the prelude does not declare them.
+fn prelude_kinds(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>) -> Option<CoreModule> {
+    let m = env.modules.get(env.prelude)?;
+    let mut decls = Vec::new();
+    for (decl, entity) in m.tree.decls.iter().zip(m.decls.clone()) {
+        let Some(entity) = entity else {
+            continue;
+        };
+        let mut fx = Fx::new(env, findings, dbs, env.prelude);
+        let Some(core) = fx.decl(&decl.kind, entity) else {
+            continue;
+        };
+        let json = match &core {
+            Decl::Data { name, .. } => matches!(name.as_str(), "Json" | "JsonError"),
+            Decl::Pred { name, .. } => name == "is_json_number",
+            _ => false,
+        };
+        if json {
+            decls.push(core);
+        }
+    }
+    (!decls.is_empty()).then(|| CoreModule {
+        path: una_core::PRELUDE_MODULE.to_owned(),
+        decls,
+        ..CoreModule::default()
+    })
+}
+
 /// The host capabilities, which the prelude declares for `std.host` (`spec/14 §3`).
 fn host(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>) -> Vec<Decl> {
     let Some(m) = env.modules.get(env.prelude) else {
@@ -106,12 +142,7 @@ fn host(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>) -> Vec<Decl> {
         if let (DeclKind::Capability(_), Some(entity @ Entity::Capability(_))) =
             (&decl.kind, entity)
         {
-            let mut fx = Fx::new(
-                env,
-                records_of(env, findings, env.prelude),
-                dbs,
-                env.prelude,
-            );
+            let mut fx = Fx::new(env, findings, dbs, env.prelude);
             if let Some(core) = fx.decl(&decl.kind, entity) {
                 out.push(core);
             }
@@ -160,7 +191,7 @@ fn elaborate_module(
         if findings.failed.contains(&decl.span) {
             continue;
         }
-        let mut fx = Fx::new(env, records_of(env, findings, module), dbs, module);
+        let mut fx = Fx::new(env, findings, dbs, module);
         match (&decl.kind, entity) {
             (DeclKind::Example(example), _) => {
                 if let Some(example) = fx.example(example) {
@@ -187,7 +218,7 @@ fn library(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>, module: usize) -> V
     let mut out = Vec::new();
     for (decl, entity) in m.tree.decls.iter().zip(m.decls.clone()) {
         if let (DeclKind::Function(function), Some(Entity::Function(id))) = (&decl.kind, entity) {
-            let mut fx = Fx::new(env, records_of(env, findings, module), dbs, module);
+            let mut fx = Fx::new(env, findings, dbs, module);
             if let Some(signature) = fx.signature(function, id) {
                 out.push(signature);
             }
@@ -200,6 +231,8 @@ fn library(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>, module: usize) -> V
 struct Fx<'e, 'a> {
     env: &'e Env<'a>,
     records: &'e Records,
+    /// The findings of every module, for a clause elaborated in another module's records.
+    findings: &'e Findings,
     dbs: Dbs<'e>,
     module: usize,
     type_params: Vec<&'a str>,
@@ -244,10 +277,11 @@ enum Wrap {
 }
 
 impl<'e, 'a> Fx<'e, 'a> {
-    fn new(env: &'e Env<'a>, records: &'e Records, dbs: Dbs<'e>, module: usize) -> Self {
+    fn new(env: &'e Env<'a>, findings: &'e Findings, dbs: Dbs<'e>, module: usize) -> Self {
         Fx {
             env,
-            records,
+            records: records_of(env, findings, module),
+            findings,
             dbs,
             module,
             type_params: Vec::new(),
@@ -411,7 +445,7 @@ impl<'e, 'a> Fx<'e, 'a> {
         if refinements.is_empty() {
             return ty;
         }
-        let mut fx = Fx::new(self.env, self.records, self.dbs, self.module);
+        let mut fx = Fx::new(self.env, self.findings, self.dbs, self.module);
         fx.type_params.clone_from(&self.type_params);
         let core: Vec<CoreRefinement> = refinements
             .iter()
@@ -461,7 +495,14 @@ impl<'e, 'a> Fx<'e, 'a> {
                 let expr = alias.refinement?;
                 let scope = std::mem::take(&mut self.scope);
                 let module = std::mem::replace(&mut self.module, alias.module);
+                // The clause is resolved in the alias's module, whose records are those of the
+                // standard modules for a kind of the prelude, as `JsonNumber` (N-27 F4).
+                let records = std::mem::replace(
+                    &mut self.records,
+                    records_of(self.env, self.findings, alias.module),
+                );
                 let clause = self.clause(expr);
+                self.records = records;
                 self.module = module;
                 self.scope = scope;
                 Some(CoreRefinement {

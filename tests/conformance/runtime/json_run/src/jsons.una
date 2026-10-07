@@ -1,0 +1,94 @@
+-- test: parse_json reads strict RFC 8259 JSON into Json, with exact integers, decimals kept as written and objects in key order; to_json writes the canonical form; failures name the first error in reading order, in scalar values, including a duplicate key and nesting past 512; quote_json escapes for JSON; both engines agree (spec/23, ADR 0073)
+-- spec: spec/23 §3
+-- grant: console
+-- expect: run-output "canonical: {\"a\":[1,2.50,-1E+3,true,null],\"b\":{},\"name\":\"Ana \\\"A\\\" \\u2028\"}"
+-- expect: run-output "big: 123456789012345678901234567891 Decimal(\"0.1\")"
+-- expect: run-output "name: \"Ana \\\"A\\\" \\u2028\", missing: ?"
+-- expect: run-output "errors: syntax at 0 / syntax at 3 / syntax at 1 / duplicate key at 7 / syntax at 2 / syntax at 6 / too deep at 512 / ok"
+-- expect: run-output "built: [\"x\",{\"k\":-0.5}] quoted: \"tab\\tq\\\"\""
+-- expect: run-output "long: number too long at 1 / ok, integers: null"
+module jsons
+
+shown(e: JsonError) -> Text
+=
+  when e
+    is Syntax(at) -> "syntax at {at}"
+    is TooDeep(at) -> "too deep at {at}"
+    is DuplicateKey(at) -> "duplicate key at {at}"
+    is NumberTooLong(at) -> "number too long at {at}"
+
+outcome(t: Text) -> Text
+=
+  let parsed = attempt t.parse_json()
+  when parsed
+    is Ok(j) -> "ok"
+    is Err(e) -> shown(e)
+
+name_of(j: Json) -> Text
+=
+  when j
+    is Object(fields) ->
+      let name = fields.get(key: "name")
+        if none use Null
+      when name
+        is Str(value) -> value
+        else -> "?"
+    else -> "?"
+
+plus_one(j: Json) -> Json
+=
+  when j
+    is Number(value) -> Number(value + 1)
+    else -> j
+
+--- A decimal of `t`, which must be a JSON number.
+decimal(t: Text) -> Json
+  fails JsonError
+=
+  let n = checked(t, is_json_number(it)) else fail Syntax(0)
+  Decimal(n)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let text = " \{ \"name\": \"Ana \\\"A\\\" \\u2028\", \"b\": \{\}, \"a\": [1, 2.50, -1E+3, true, null] \} "
+  let doc = text.parse_json()
+    if error use Null
+  @console.print("canonical: {doc.to_json()}")
+  let big = "123456789012345678901234567890".parse_json()
+    if error use Null
+  let tenth = "0.1".parse_json()
+    if error use Null
+  @console.print("big: {plus_one(big).to_json()} {tenth}")
+  let empty_array = "[]".parse_json()
+    if error use Null
+  @console.print("name: {name_of(doc).quote_json()}, missing: {name_of(empty_array)}")
+  let edit deep = ""
+  for i in 0..<513
+    deep = "{deep}["
+  let e1 = outcome("")
+  let e2 = outcome("[1,]")
+  let e3 = outcome("01")
+  let e4 = outcome("\{\"a\":1,\"a\":2,?\}")
+  let e5 = outcome("\"\\x\"")
+  let e6 = outcome("\"ab\\udc00\"")
+  let e7 = outcome(deep)
+  let e8 = outcome("[[[]]]")
+  @console.print("errors: {e1} / {e2} / {e3} / {e4} / {e5} / {e6} / {e7} / {e8}")
+  let half = decimal("-0.5")
+    if error use Null
+  let empty: Map[Text, Json] = empty_map()
+  let built = Array([Str("x"), Object(empty.with(key: "k", value: half))])
+  let raw = "tab\tq\""
+  @console.print("built: {built.to_json()} quoted: {raw.quote_json()}")
+  let edit digits = "["
+  for i in 0..<4301
+    digits = "{digits}9"
+  let too_long = outcome("{digits}]")
+  let edit fits = ""
+  for i in 0..<4300
+    fits = "{fits}9"
+  let at_limit = outcome(fits)
+  let integer = decimal("5")
+    if error use Null
+  @console.print("long: {too_long} / {at_limit}, integers: {integer.to_json()}")

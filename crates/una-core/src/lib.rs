@@ -6,6 +6,7 @@
 
 mod descriptor;
 mod ir;
+pub mod json;
 mod label;
 mod names;
 mod print;
