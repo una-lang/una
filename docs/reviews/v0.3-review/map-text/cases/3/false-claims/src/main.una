@@ -1,0 +1,35 @@
+-- expect: each ensures refuted (U5001) or unknown (U5002); a proof is unsound (spec/21 §4)
+module main
+
+pub kind Counts = Map[Text, Int] where it.len > 0
+
+pub removed_still_nonempty(c: Counts) -> Map[Text, Int]
+  ensures result.len > 0
+=
+  let edit m: Map[Text, Int] = c
+  edit m.remove(key: "a")
+  m
+
+pub get_after_remove(m: Map[Text, Int]) -> Bool
+  ensures result
+=
+  let n = m.without(key: "a")
+  let v = n.get(key: "a")
+  v is Some
+
+pub has_after_set_other(m: Map[Text, Int]) -> Bool
+  ensures result
+=
+  let n = m.with(key: "b", value: 1)
+  n.has(key: "a")
+
+pub empty_has_something() -> Bool
+  ensures result
+=
+  let m: Map[Int, Int] = empty_map()
+  m.has(key: 3)
+
+pub keys_len_mismatch(m: Map[Int, Int]) -> Int
+  ensures result == m.len + 1
+=
+  m.keys().len

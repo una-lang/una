@@ -1,0 +1,106 @@
+[U5001] Error: postcondition of `removed_still_nonempty` is refuted
+    ╭─[ src/main.una:11:3 ]
+    │
+  7 │   ensures result.len > 0
+    │           ───────┬──────  
+    │                  ╰──────── ensures clause
+    │ 
+ 11 │   m
+    │   ┬  
+    │   ╰── postcondition of `removed_still_nonempty` is refuted
+    │ 
+    │ Help 1: repair 1 (escape cost 0): add a guard or an arm so that the failing path returns a value for which `result.len > 0` holds
+    │ 
+    │ Help 2: repair 2 (escape cost 0): adjust the `ensures` clause
+    │ 
+    │ Note 1: obligation ob-e478b532f606 (postcondition) is refuted: result.len > 0
+    │ 
+    │ Note 2: counterexample: c = Map#0, c.len = 1, m.len = 0, result = Map#1, result.len = 0
+    │ 
+    │ Note 3: run `una explain U5001` for an explanation
+────╯
+[U5001] Error: postcondition of `get_after_remove` is refuted
+    ╭─[ src/main.una:18:3 ]
+    │
+ 14 │   ensures result
+    │           ───┬──  
+    │              ╰──── ensures clause
+    │ 
+ 18 │   v is Some
+    │   ────┬────  
+    │       ╰────── postcondition of `get_after_remove` is refuted
+    │ 
+    │ Help 1: repair 1 (escape cost 0): add a guard or an arm so that the failing path returns a value for which `result` holds
+    │ 
+    │ Help 2: repair 2 (escape cost 0): adjust the `ensures` clause
+    │ 
+    │ Note 1: obligation ob-e0892a6091ba (postcondition) is refuted: result
+    │ 
+    │ Note 2: counterexample: m = Map#0, m.len = 1, n.len = 0, result = false
+    │ 
+    │ Note 3: run `una explain U5001` for an explanation
+────╯
+[U5001] Error: postcondition of `has_after_set_other` is refuted
+    ╭─[ src/main.una:24:3 ]
+    │
+ 21 │   ensures result
+    │           ───┬──  
+    │              ╰──── ensures clause
+    │ 
+ 24 │   n.has(key: "a")
+    │   ───────┬───────  
+    │          ╰───────── postcondition of `has_after_set_other` is refuted
+    │ 
+    │ Help 1: repair 1 (escape cost 0): add a guard or an arm so that the failing path returns a value for which `result` holds
+    │ 
+    │ Help 2: repair 2 (escape cost 0): adjust the `ensures` clause
+    │ 
+    │ Note 1: obligation ob-2383662f0d48 (postcondition) is refuted: result
+    │ 
+    │ Note 2: counterexample: m = Map#0, m.len = 1, n.len = 1, result = false
+    │ 
+    │ Note 3: run `una explain U5001` for an explanation
+────╯
+[U5001] Error: postcondition of `empty_has_something` is refuted
+    ╭─[ src/main.una:30:3 ]
+    │
+ 27 │   ensures result
+    │           ───┬──  
+    │              ╰──── ensures clause
+    │ 
+ 30 │   m.has(key: 3)
+    │   ──────┬──────  
+    │         ╰──────── postcondition of `empty_has_something` is refuted
+    │ 
+    │ Help 1: repair 1 (escape cost 0): add a guard or an arm so that the failing path returns a value for which `result` holds
+    │ 
+    │ Help 2: repair 2 (escape cost 0): adjust the `ensures` clause
+    │ 
+    │ Note 1: obligation ob-5a13ada5ce92 (postcondition) is refuted: result
+    │ 
+    │ Note 2: counterexample: m.len = 0, result = false
+    │ 
+    │ Note 3: run `una explain U5001` for an explanation
+────╯
+[U5001] Error: postcondition of `keys_len_mismatch` is refuted
+    ╭─[ src/main.una:35:3 ]
+    │
+ 33 │   ensures result == m.len + 1
+    │           ─────────┬─────────  
+    │                    ╰─────────── ensures clause
+    │ 
+ 35 │   m.keys().len
+    │   ──────┬─────  
+    │         ╰─────── postcondition of `keys_len_mismatch` is refuted
+    │ 
+    │ Help 1: repair 1 (escape cost 0): add a guard or an arm so that the failing path returns a value for which `result == m.len + 1` holds
+    │ 
+    │ Help 2: repair 2 (escape cost 0): adjust the `ensures` clause
+    │ 
+    │ Note 1: obligation ob-da6cadfbb642 (postcondition) is refuted: result == m.len + 1
+    │ 
+    │ Note 2: counterexample: m = Map#0, m.len = 0, result = 0
+    │ 
+    │ Note 3: run `una explain U5001` for an explanation
+────╯
+exit 1
