@@ -741,10 +741,17 @@ fn a_text_appended_in_a_loop_grows_in_linear_time() {
             String::from_utf8_lossy(&output.stdout),
             format!("{steps}\n")
         );
+        // The deterministic check: the debug runtime counts every copy, and there is one at any
+        // size, of the literal `""` that the loop starts from, which is never updated in place.
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "note: una-rt (debug build): lists, records and texts copied: 1\n"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
+    // The timing is a second check, with a wide margin (3.5x measured, 17x when copying).
     assert!(
-        times[1] < 8.0 * times[0],
+        times[1] < 12.0 * times[0],
         "10x the appends took {:.1}x as long: {times:?}",
         times[1] / times[0]
     );
@@ -812,7 +819,7 @@ fn updates_of_values_nothing_else_holds_are_in_place() {
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
-        "note: una-rt (debug build): lists, maps and records copied: 2\n"
+        "note: una-rt (debug build): lists, maps, records and texts copied: 2\n"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
