@@ -37,7 +37,7 @@ use cranelift_frontend::FunctionBuilder;
 use cranelift_module::Module;
 use una_core::{
     Atom, Base, Bound, Constraint, Ctor, Decl, Descriptor, Expr, HOST_MODULE, Label, LoopSource,
-    Name, PRELUDE_MODULE, Path, Prim, Rhs, Source, Type, vars,
+    MapOp, Name, PRELUDE_MODULE, Path, Prim, Rhs, Source, Type, vars,
 };
 use una_syntax::Span;
 
@@ -61,6 +61,8 @@ enum Kind {
     Data,
     /// A handle to a list.
     List,
+    /// A handle to a map (`spec/21`).
+    Map,
     /// A handle to a closure, or to an instance of a capability.
     Fn,
     /// A handle to a keyed hash.
@@ -82,7 +84,7 @@ impl Kind {
     fn handle(self) -> bool {
         matches!(
             self,
-            Kind::Text | Kind::List | Kind::Fn | Kind::Hashed | Kind::Tuple
+            Kind::Text | Kind::List | Kind::Map | Kind::Fn | Kind::Hashed | Kind::Tuple
         )
     }
 }
@@ -109,6 +111,9 @@ fn kind(ty: &Type) -> Result<Kind, CodegenError> {
             Base::Fixed(_) => Ok(Kind::Int),
             Base::Named { module, name, .. } if module == PRELUDE_MODULE && name == "List" => {
                 Ok(Kind::List)
+            }
+            Base::Named { module, name, .. } if module == PRELUDE_MODULE && name == "Map" => {
+                Ok(Kind::Map)
             }
             Base::Tuple(_) => Ok(Kind::Tuple),
             Base::Named { .. } => Ok(Kind::Data),
@@ -1496,6 +1501,46 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 self.retain(value, kind);
                 Ok(value)
             }
+            // A map's methods (`spec/21 §2`): `with` and `without` at the map's last use take it
+            // over, and update it in place when nothing else holds it (`§5` rule 2).
+            Rhs::Prim {
+                prim: Prim::Map(op),
+                args,
+                ..
+            } => {
+                let mut values = Vec::new();
+                for arg in args {
+                    values.push(self.atom(arg, env)?.0);
+                }
+                let moved = match (op, args.first()) {
+                    (MapOp::With | MapOp::Without, Some(map)) => {
+                        self.moving(map, env, scope, catch, rest)
+                    }
+                    _ => None,
+                };
+                if let Some(position) = moved {
+                    scope.remove(position);
+                }
+                let runtime = match (op, moved.is_some()) {
+                    (MapOp::Has, _) => "una_rt_map_has",
+                    (MapOp::Get, _) => "una_rt_map_get",
+                    (MapOp::With, false) => "una_rt_map_with",
+                    (MapOp::With, true) => "una_rt_map_with_owned",
+                    (MapOp::Without, false) => "una_rt_map_without",
+                    (MapOp::Without, true) => "una_rt_map_without_owned",
+                    (MapOp::Keys | MapOp::Values | MapOp::Entries, _) => {
+                        let part = match op {
+                            MapOp::Keys => 0,
+                            MapOp::Values => 1,
+                            _ => 2,
+                        };
+                        let part = self.builder.ins().iconst(types::I64, part);
+                        values.push(part);
+                        "una_rt_map_list"
+                    }
+                };
+                self.call(runtime, &values)
+            }
             Rhs::Prim { prim, args, .. } => {
                 // On values of a constrained type parameter, comparisons and `to_int()` read the
                 // parameter's type descriptor (`spec/20 §7`).
@@ -2042,6 +2087,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
             "set" => "una_rt_set",
             "sum" => "una_rt_sum",
             "or_else" => "una_rt_or_else",
+            "empty_map" => "una_rt_map_empty",
             other => return Err(unsupported(format!("`{other}` of the prelude"))),
         };
         self.call(function, args)
@@ -2229,11 +2275,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 self.retain(a, kind);
                 Ok(a)
             }
-            // Maps compile from #236's native step on.
-            Prim::Map(op) => Err(internal(format!(
-                "map `{}` is not compiled yet",
-                op.as_str()
-            ))),
+            // Lowered with their arguments' ownership, in `rhs`.
+            Prim::Map(op) => Err(internal(format!("map `{}` out of place", op.as_str()))),
             Prim::Fixed(op, int) => {
                 let a = operand(first)?.0;
                 let b = match second {
@@ -2326,6 +2369,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 match kind {
                     Kind::Text => self.call("una_rt_text_len", &[a]),
                     Kind::List => self.call("una_rt_list_len", &[a]),
+                    Kind::Map => self.call("una_rt_map_len", &[a]),
                     _ => Err(unsupported("this length")),
                 }
             }
