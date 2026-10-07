@@ -5,7 +5,13 @@
 -- expect: run-output "lines 1, 2, 3"
 -- expect: run-output "unicode é→é→é→"
 -- expect: run-output "doubled x-x-x-x, seen [x][x-x]"
+-- expect: run-output "through calls abbb, before a"
 module append
+
+--- Appends `part` to `out`, which moves into the call when the caller no longer needs it (ADR 0072).
+grown(edit out: Text, part: Text) -> Unit
+=
+  out = "{out}{part}"
 
 pub main() -> Unit
   uses @console: Console[print]
@@ -38,3 +44,8 @@ pub main() -> Unit
     d = "{d}-{d}"
     seen = "{seen}[{before}]"
   @console.print("doubled {d}, seen {seen}")
+  let edit w = "a"
+  let before = w
+  for k in 0..<3
+    grown(edit w, part: "b")
+  @console.print("through calls {w}, before {before}")
