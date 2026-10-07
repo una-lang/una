@@ -453,6 +453,53 @@ fn checking_a_body_takes_linear_time_in_its_locals() {
 }
 
 #[test]
+fn checking_deeply_nested_types_is_not_cubic_in_their_depth() {
+    // #331 (N-47): unification and resolution follow solved variables by reference instead of
+    // copying their whole value at each node, so a type nested d deep costs O(d) to walk. A
+    // check is then quadratic in d, since each expression node keeps its own type (#335),
+    // where it was cubic. The fixed cost is measured at depth 10 and taken out of both sizes
+    // (N-29): 4x the depth took about 20x as long measured, 16x for quadratic, and about 64x
+    // when it was cubic; the bound of 40x is between them.
+    let root = package("deep-nesting", "", &[]);
+    let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let dir = root.to_str().unwrap();
+    let mut times = Vec::new();
+    for depth in [10, 10, 40, 160] {
+        let mut value = String::from("1");
+        for level in 0..depth {
+            value = if level % 2 == 0 {
+                format!("[{value}]")
+            } else {
+                format!("Some({value})")
+            };
+        }
+        let mut source = String::from("module deep\n\npub f() -> Int\n=\n");
+        for k in 0..10 {
+            source.push_str(&format!("  let edit x{k} = {value}\n  x{k} = {value}\n"));
+        }
+        source.push_str("  1\n");
+        std::fs::write(root.join("src/deep.una"), source).unwrap();
+        let started = std::time::Instant::now();
+        let output = una(&["check", "--tier", "0", dir]);
+        times.push(started.elapsed().as_secs_f64().max(0.02));
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    }
+    let fixed = times[1];
+    let (small, large) = ((times[2] - fixed).max(0.02), (times[3] - fixed).max(0.02));
+    assert!(
+        large < 40.0 * small,
+        "4x the depth took {:.1}x as long, past the fixed cost: {times:?}",
+        large / small
+    );
+}
+
+#[test]
 fn a_text_appended_in_a_loop_grows_in_linear_time() {
     // ADR 0070 X10, `spec/22 §6` rule 2 (#261): `t = "{t}x"` appends in place when nothing
     // else holds `t`, so ten times the appends take about ten times as long, not a hundred. The

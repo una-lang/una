@@ -4,6 +4,10 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ## Unreleased
 
+### Performance
+
+- **Checking a deeply nested type is no longer cubic in its depth** (#331, N-47). Resolving a type, the occurs check and taking a type's shape copied the whole value of each solved variable they met, at every node, so a value nested d deep checked in O(d³). They now follow variables by reference: a check is quadratic in the depth, since each expression keeps its own type (#335), and about 18 times faster at depth 160. Diagnostics and the queries sent to the solver are byte-identical on every conformance case and example.
+
 ## v0.3.0
 
 The Beta of Una, on edition 0.2. Edition 0.2 gains a standard library for real programs: maps, text operations, JSON and an HTTP client, with labels on every value they produce. Lists and texts built in loops and through calls are updated in place. The release was cross-reviewed before its tag, each area by someone other than its author (N-37): JSON and HTTP (#308), maps and text (#309), and the in-place work (#311). Upgrading from v0.1.x: read v0.2.0 below as well, including its Critical fix #253, which makes edition 0.1 reject a shape that v0.1.0 to v0.1.3 accept. Edition 0.2 of v0.2.0 had an information-flow leak: an un-annotated `let edit` whose initial value left a label open, as `[]`, `None` or `empty_map()`, could print an `internal` value read in a loop before its assignment (#323, see Security). It is fixed in this release. v0.2.0 was validated but not published because of this leak, so v0.3.0 is the first published release of edition 0.2, and v0.1.x users go from v0.1.3 to v0.3.0.
