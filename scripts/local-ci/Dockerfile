@@ -4,8 +4,11 @@
 FROM ubuntu:24.04@sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b
 
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates curl gcc libc6-dev unzip \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get install --yes --no-install-recommends ca-certificates curl gcc git libc6-dev unzip \
+    && rm -rf /var/lib/apt/lists/* \
+    && git config --system --add safe.directory '*'
+# git: the tests of scripts/release-gates.sh clone the checkout (#232), which the container
+# mounts with another owner than its user, hence the safe directory.
 
 # rustup-init, checked against the digest that static.rust-lang.org publishes with it.
 ARG RUSTUP_VERSION=1.29.1
