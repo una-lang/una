@@ -1333,3 +1333,67 @@ fn the_executable_checks_each_operation_against_the_files_modes() {
     assert_eq!(String::from_utf8_lossy(&both.stdout), "copied\n");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Builds the package `name` of edition 0.2 whose entry module `closed` is `source`, and
+/// returns its directory and executable.
+fn closed_package(name: &str, source: &str) -> (PathBuf, PathBuf) {
+    let dir = package(
+        name,
+        "\n[run]\nentry = \"closed\"\ngrants = [\"console\"]\n",
+        &[("src/closed.una", source)],
+    );
+    let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+    std::fs::write(
+        dir.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let executable = dir.join("target/una").join(name);
+    (dir, executable)
+}
+
+/// Runs `executable` with the descriptor `fd` closed, as `... 1>&-` does in a shell.
+fn run_closed(executable: &Path, fd: u8) -> Output {
+    Command::new("sh")
+        .arg("-c")
+        .arg(format!("exec \"$0\" {fd}>&-"))
+        .arg(executable)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn a_closed_stream_discards_the_output_and_a_broken_pipe_fails_natively() {
+    // `spec/13 §5`, `spec/16 §3` (#259, N-17): natively as in the interpreter, a closed stdout
+    // or stderr discards what is written to it, while a reader that went away (EPIPE) is a
+    // failure to write output, exit code 2.
+    let (prints_dir, prints) = closed_package(
+        "closed-prints",
+        "module closed\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  @console.print(\"hello\")\n",
+    );
+    let run = run_closed(&prints, 1);
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    let (fails_dir, fails) = closed_package(
+        "closed-fails",
+        "module closed\n\npub kind Stop = | Stopped\n\npub main() -> Unit\n  fails Stop\n=\n  fail Stopped\n",
+    );
+    let run = run_closed(&fails, 2);
+    assert_eq!(run.status.code(), Some(1), "{run:?}");
+    let (floods_dir, floods) = closed_package(
+        "closed-floods",
+        "module closed\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  for i in 0..<20000\n    @console.print(\"a line of output that fills the pipe\")\n",
+    );
+    let mut child = Command::new(&floods)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    for dir in [prints_dir, fails_dir, floods_dir] {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
