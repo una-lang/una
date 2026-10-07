@@ -316,6 +316,10 @@ pub(crate) struct Env<'a> {
     pub(crate) summaries: BTreeMap<usize, Summary>,
     /// Whether a summary grew in the current round of their least fixpoint.
     pub(crate) summaries_grew: bool,
+    /// For a parameter that an `of` clause names, by function and parameter index: the type
+    /// parameters whose decisions reach a call of it in the body, which its callers' arguments
+    /// run under (ADR 0067 amendment, #234). Grown with the summaries.
+    pub(crate) of_raises: BTreeMap<(usize, usize), std::collections::BTreeSet<usize>>,
 }
 
 /// A step from a position of a type to a position inside it (ADR 0067).
@@ -376,6 +380,7 @@ impl<'a> Env<'a> {
             edition,
             summaries: BTreeMap::new(),
             summaries_grew: false,
+            of_raises: BTreeMap::new(),
         };
         for source in package.into_iter().chain([prelude, testing]) {
             env.register(source);
@@ -420,7 +425,9 @@ impl<'a> Env<'a> {
             })
             .collect();
         let params: Vec<usize> = env.kinds.iter().map(|kind| kind.params.len()).collect();
-        env.kind_labels = Rc::new(KindLabels::new(&fields, &params));
+        let mut kind_labels = KindLabels::new(&fields, &params);
+        kind_labels.deep_symbols = env.edition >= Edition::V0_2;
+        env.kind_labels = Rc::new(kind_labels);
         env
     }
 

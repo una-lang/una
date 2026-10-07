@@ -23,14 +23,7 @@ expression: "serde_json::to_string_pretty(&document[\"generic_results\"]).unwrap
   },
   {
     "function": "s.concat",
-    "result_labels": [
-      {
-        "from": [
-          "T"
-        ],
-        "position": "element"
-      }
-    ]
+    "result_labels": []
   },
   {
     "function": "s.tagged",
@@ -40,12 +33,6 @@ expression: "serde_json::to_string_pretty(&document[\"generic_results\"]).unwrap
           "T"
         ],
         "position": "arg 1"
-      },
-      {
-        "from": [
-          "U"
-        ],
-        "position": "arg 1.element"
       }
     ]
   },

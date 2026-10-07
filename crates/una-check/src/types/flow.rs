@@ -13,6 +13,11 @@ use super::ty::{FnUse, KindLabels, ShowLabeled, Ty};
 /// `from ⊑ to`, where a symbolic label is below `to` only if `to` contains it or is `⊤`
 /// (`spec/07 §7` rule 8, ADR 0038 D3.2).
 pub(crate) fn below(from: &Label, to: &Label, top: &Label) -> bool {
+    // `ℓ_T`, the label of a value of `T`, is below `ℓ*_T`, every label of its type argument.
+    let mut from = from.clone();
+    from.symbols
+        .retain(|s| s.ends_with('*') || !to.symbols.contains(&format!("{s}*")));
+    let from = &from;
     if from.flows_to(to) {
         return true;
     }

@@ -301,6 +301,9 @@ pub(crate) struct OfCallee {
     pub(crate) own_fails: Option<Ty>,
     /// For a prelude function, its name, whose calls `spec/07 §7` rule 9 describes.
     pub(crate) prelude: Option<String>,
+    /// For a function of the package, the label each `of` parameter's argument runs under, by
+    /// parameter: its decisions on type parameters, instantiated (ADR 0067 amendment).
+    pub(crate) raises: std::collections::BTreeMap<usize, Label>,
 }
 
 /// The argument being checked, given for a parameter that an `of` clause names.
@@ -437,6 +440,13 @@ impl Checker<'_, '_, '_> {
         let fails = (def.fails_of == Some(index))
             .then(|| self.of_kind())
             .flatten();
+        // The callee runs the parameter under `raise`. Its part that is a decision on this
+        // function's own type parameters is this function's callers' to check, as for a call
+        // of the parameter here (ADR 0067 amendment); the rest is checked now.
+        let raise = &self.labeled(&Ty::Bool.with_label(raise)).top_label();
+        let (decided, rest) = self.split_decisions(raise);
+        self.raise_of(index, &decided);
+        let raise = &rest;
         if self.pass == super::authority::Pass::Check {
             if self.own_depth() > 0 {
                 self.report.error(
@@ -508,6 +518,13 @@ impl<'a> Checker<'_, 'a, '_> {
                 (self.labeled(&list).top_label(), false)
             }
             (Some("first_where"), Some(list)) => (self.deep(&list), true),
+            (None, _) => (
+                of.raises
+                    .get(&target)
+                    .map(|raise| self.labeled(&Ty::Bool.with_label(raise)).top_label())
+                    .unwrap_or_else(Label::public),
+                false,
+            ),
             _ => (Label::public(), false),
         };
         Some(OfArgument {
@@ -684,6 +701,23 @@ impl<'a> Checker<'_, 'a, '_> {
 }
 
 impl Checker<'_, '_, '_> {
+    /// `label` split into the deep symbolic labels `ℓ*_T` of the enclosing function's own type
+    /// parameters, and the rest (ADR 0067 amendment).
+    pub(crate) fn split_decisions(&self, label: &Label) -> (Label, Label) {
+        let names = &self.type_params;
+        let own = |s: &String| {
+            s.strip_suffix('*')
+                .is_some_and(|name| names.contains(&name))
+        };
+        let mut decided = label.clone();
+        decided.symbols.retain(own);
+        decided.level = una_core::Level::Public;
+        decided.categories.clear();
+        let mut rest = label.clone();
+        rest.symbols.retain(|s| !own(s));
+        (decided, rest)
+    }
+
     /// U4002 for a predicate of `first_where`, `what`, whose effects or failures run only up
     /// to the first element it accepts, when its result is labeled `label`.
     fn stops_by_result(&mut self, span: Span, label: &Label, what: &str) {

@@ -162,6 +162,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 &format!("field `{method}`"),
                 site,
                 None,
+                None,
             );
             if let Some((kind, index)) = self.field_index(&resolved, method) {
                 self.resolved(span, Res::FieldFn { kind, index });
@@ -217,7 +218,8 @@ impl<'a> Checker<'_, 'a, '_> {
                     let of = self.of_param(name).map(|index| {
                         self.run_of_param(name, index, ident.span, &Label::public(), &own)
                     });
-                    return self.call_value(&ty, args, span, &format!("`{name}`"), site, of);
+                    let index = self.of_param(name);
+                    return self.call_value(&ty, args, span, &format!("`{name}`"), site, of, index);
                 }
                 match self.env.lower(self.module, name) {
                     Some(Entity::Function(id)) => self.call_function(id, None, args, span, site),
@@ -243,7 +245,7 @@ impl<'a> Checker<'_, 'a, '_> {
             _ => {
                 self.outside_rl(span, || "call of a function value".to_owned());
                 let ty = self.expr(callee, None);
-                self.call_value(&ty, args, span, "this function", site, None)
+                self.call_value(&ty, args, span, "this function", site, None, None)
             }
         }
     }
@@ -251,6 +253,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// A call of a function value: positional arguments only.
     /// `of`: for a parameter that an `of` clause names, the effects and failure of its
     /// argument, which the call performs (ADR 0062).
+    #[allow(clippy::too_many_arguments)]
     fn call_value(
         &mut self,
         ty: &Ty,
@@ -259,6 +262,7 @@ impl<'a> Checker<'_, 'a, '_> {
         what: &str,
         site: Site,
         of: Option<super::effects::OfFound>,
+        of_index: Option<usize>,
     ) -> Ty {
         let value_label = self.labeled(ty).top_label();
         // The function type is taken before its labels are settled: the result of a generic
@@ -320,6 +324,7 @@ impl<'a> Checker<'_, 'a, '_> {
         self.resolved(span, Res::Value);
         self.ordered(span, (0..args.len()).map(Some).collect());
         let mut flows = Vec::new();
+        let mut decided = Label::public();
         for (arg, param) in args.iter().zip(&function.params) {
             self.ctx.argument = true;
             let found = self.expr_as(
@@ -336,12 +341,24 @@ impl<'a> Checker<'_, 'a, '_> {
             if !function.refinements.param(flows.len()).is_empty() {
                 self.obligation(ObligationKind::Refinement, arg.value.span, None);
             }
+            // ADR 0067 amendment: an argument decided by comparing values of the enclosing
+            // function's type parameters carries `ℓ*_T`. A function value cannot be checked
+            // against that, so the decision raises the call's result and program counter
+            // instead, as the value's own label does, and the argument flows without it.
+            let found = self.without_decisions(&found, &mut decided);
             flows.push((arg.value.span, found, param.clone()));
         }
         for (arg_span, found, param) in flows {
             self.instantiated_by(arg_span, &param, &found);
             self.flow(arg_span, &found, &param, &format!("the argument of {what}"));
         }
+        // A parameter that an `of` clause names runs the effects its caller chose, so a
+        // decision on its argument would reveal itself through them (#234): its callers run
+        // their argument under the decision, as the prelude's `first_where` does.
+        if let Some(index) = of_index {
+            self.raise_of(index, &decided);
+        }
+        let value_label = value_label.join(&decided);
         // Calling a function value needs the capabilities of its type (`spec/10 §2`, S-Fun).
         let level = self.frames.len();
         self.needs_site(what, &function.uses, span, level);
@@ -370,6 +387,33 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         // The result of a function value carries the value's label.
         function.result.with_label(&value_label)
+    }
+
+    /// `found` without the deep symbolic labels `ℓ*_T` of the enclosing function's type
+    /// parameters, which are joined into `decided` (ADR 0067 amendment): edition 0.2 only.
+    fn without_decisions(&self, found: &Ty, decided: &mut Label) -> Ty {
+        if self.env.edition < Edition::V0_2 || self.type_params.is_empty() {
+            return found.clone();
+        }
+        let names = self.type_params.clone();
+        let deep = |symbol: &str| {
+            symbol
+                .strip_suffix('*')
+                .is_some_and(|name| names.contains(&name))
+        };
+        let labeled = self.labeled(found);
+        let seen = std::cell::RefCell::new(Label::public());
+        let stripped = labeled.map_labels(&|label| {
+            let mut kept = label.clone();
+            kept.symbols.retain(|s| !deep(s));
+            let mut gathered = Label::public();
+            gathered.symbols = label.symbols.iter().filter(|s| deep(s)).cloned().collect();
+            let joined = seen.borrow().join(&gathered);
+            *seen.borrow_mut() = joined;
+            kept
+        });
+        *decided = decided.join(&seen.into_inner());
+        stripped
     }
 
     /// S-Fun at a flow of a value of type `found` into the declared type `expected`
@@ -560,6 +604,18 @@ impl<'a> Checker<'_, 'a, '_> {
                 fails_of: def.fails_of,
                 own_fails: def.fails.clone(),
                 prelude: (def.module == self.env.prelude).then(|| def.name.to_owned()),
+                raises: self
+                    .env
+                    .of_raises
+                    .range((id, 0)..=(id, usize::MAX))
+                    .map(|((_, param), indices)| {
+                        let args: Vec<Ty> = indices
+                            .iter()
+                            .filter_map(|i| subst.get(*i).cloned())
+                            .collect();
+                        (*param, Vars::label_of(&args))
+                    })
+                    .collect(),
             });
             self.of_found.push(super::effects::OfFound::default());
         }

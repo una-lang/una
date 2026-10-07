@@ -1,0 +1,4 @@
+[package]
+name = "g67b_p05d_generic_named_fails"
+version = "0.1.0"
+edition = "0.2"

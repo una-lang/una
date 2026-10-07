@@ -1,0 +1,11 @@
+-- test: ADR 0067 recheck of #231, F02_fn_param_T: a decision on values of a type parameter reaches a public result or an effect, through a returned value, a function value or an `of` parameter, and is rejected (spec/07 §7 rule 8, #92, #234)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/f02.una:6:49
+module f02
+
+mk[T](a: T, b: T) -> fn(T) -> Int = fn(x: T) -> if x == a then 1 else 0
+
+pub leak(s: secret Int) -> Int
+=
+  let g = mk([s], b: [0])
+  g([0])
