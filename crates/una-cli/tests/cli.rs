@@ -624,7 +624,7 @@ fn contract_marks_inferred_clauses() {
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(
         stdout(&output),
-        "{\"schema\":\"una.contract/1\",\"function\":\"app.log.helper\",\"public\":false,\"docs\":[\"Writes a line and flushes.\"],\"header\":\"helper(line: Text) -> Int\",\"constraints\":[],\"requires\":[],\"ensures\":[],\"uses\":[{\"cap\":\"log\",\"capability\":\"Log\",\"ops\":[\"write\",\"flush\"],\"inferred\":true}],\"fails\":{\"kind\":\"LookupError\",\"inferred\":true},\"derived_from\":[]}\n"
+        "{\"schema\":\"una.contract/1\",\"function\":\"app.log.helper\",\"public\":false,\"docs\":[\"Writes a line and flushes.\"],\"header\":\"helper(line: Text) -> Int\",\"constraints\":[],\"result_labels\":[],\"of_raises\":[],\"requires\":[],\"ensures\":[],\"uses\":[{\"cap\":\"log\",\"capability\":\"Log\",\"ops\":[\"write\",\"flush\"],\"inferred\":true}],\"fails\":{\"kind\":\"LookupError\",\"inferred\":true},\"derived_from\":[]}\n"
     );
     std::fs::remove_dir_all(&root).unwrap();
 }
@@ -797,13 +797,60 @@ fn contract_shows_written_and_inferred_constraints() {
     assert_eq!(stderr(&output), "");
     assert_eq!(
         stdout(&output),
-        "lowest[T: Ord, U](a: T, b: T, tag: U) -> T -- inferred\n"
+        "lowest[T: Ord, U](a: T, b: T, tag: U) -> T -- inferred\n-- result labels: top from T\n"
     );
     let output = una_in(&root, &["contract", "--json", "app.k.same"]);
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(
         stdout(&output),
-        "{\"schema\":\"una.contract/1\",\"function\":\"app.k.same\",\"public\":true,\"docs\":[],\"header\":\"pub same[T: Eq](a: T, b: T) -> Bool\",\"constraints\":[{\"param\":\"T\",\"constraint\":\"Eq\",\"inferred\":false}],\"requires\":[],\"ensures\":[],\"uses\":[],\"fails\":null,\"derived_from\":[]}\n"
+        "{\"schema\":\"una.contract/1\",\"function\":\"app.k.same\",\"public\":true,\"docs\":[],\"header\":\"pub same[T: Eq](a: T, b: T) -> Bool\",\"constraints\":[{\"param\":\"T\",\"constraint\":\"Eq\",\"inferred\":false}],\"result_labels\":[{\"position\":\"top\",\"from\":[\"T\"]}],\"of_raises\":[],\"requires\":[],\"ensures\":[],\"uses\":[],\"fails\":null,\"derived_from\":[]}\n"
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn contract_and_report_show_result_summaries() {
+    // ADR 0067, spec/13 §5 and §6: the summary of a generic function's result, as a line after
+    // the header and the JSON key `result_labels`; the report lists the public generic
+    // functions under `generic_results`.
+    let root = scratch("result-summaries");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        "[package]\nname = \"s\"\nversion = \"0.1.0\"\nedition = \"0.2\"\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../verification.lock"),
+        root.join("verification.lock"),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/s.una"),
+        "module s\n\npub kind Pair[A, B]\n  left: A\n  right: B\n\n--- Which elements stay depends on comparisons of `T` values.\npub below[T: Ord](xs: List[T], pivot: T) -> List[T] = xs.filter(keep: fn(x) -> x < pivot)\n\npub concat[T](front: List[T], back: List[T]) -> List[T] = back.fold(initial: front, step: fn(acc, x) -> acc.append(item: x))\n\npub tagged[T: Eq, U](x: T, y: T, tag: U) -> Pair[List[U], Int] = Pair(left: if x == y then [tag] else [], right: 1)\n\nhelper[T](x: T) -> List[T] = [x]\n\npub size[T](xs: List[T]) -> Int = xs.len\n\npub apply[T: Eq](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Int\n  uses of k\n=\n  k(if a == b then p else q)\n",
+    )
+    .unwrap();
+    let human = una_in(&root, &["contract", "s.below"]);
+    let human = stdout(&human).to_owned();
+    insta::assert_snapshot!("contract_result_summary_human", human);
+    let json = una_in(&root, &["contract", "--json", "s.tagged"]);
+    let json = stdout(&json).to_owned();
+    insta::assert_snapshot!("contract_result_summary_json", json);
+    let raises = una_in(&root, &["contract", "s.apply"]);
+    let raises = stdout(&raises).to_owned();
+    insta::assert_snapshot!("contract_of_raises_human", raises);
+    let raises = una_in(&root, &["contract", "--json", "s.apply"]);
+    let raises = stdout(&raises).to_owned();
+    insta::assert_snapshot!("contract_of_raises_json", raises);
+    let none = una_in(&root, &["contract", "s.size"]);
+    let none = stdout(&none).to_owned();
+    assert!(!none.contains("result labels"), "{none}");
+    let report = una_in(&root, &["report", "--json", "."]);
+    let report = stdout(&report).to_owned();
+    let document: serde_json::Value = serde_json::from_str(&report).unwrap();
+    insta::assert_snapshot!(
+        "report_generic_results_json",
+        serde_json::to_string_pretty(&document["generic_results"]).unwrap()
     );
     std::fs::remove_dir_all(&root).unwrap();
 }

@@ -296,6 +296,38 @@ pub(crate) fn module<'a>(
     }
 }
 
+/// Checks, in `pass`, only the declarations of the functions in `ids`, in every module that
+/// reports: a round of the least fixpoint of result summaries over one strongly connected
+/// component (ADR 0067 L2).
+pub(crate) fn functions<'a>(
+    env: &mut Env<'a>,
+    facts: &KindFacts,
+    report: &mut Report<'_>,
+    findings: &mut Findings,
+    collected: &mut Collected,
+    pass: Pass,
+    ids: &std::collections::BTreeSet<usize>,
+) {
+    for module in 0..env.prelude {
+        if !env.reports(module) {
+            continue;
+        }
+        let Some((tree, entities)) = env.modules.get(module).map(|m| (m.tree, m.decls.clone()))
+        else {
+            continue;
+        };
+        for (decl, entity) in tree.decls.iter().zip(entities) {
+            if !matches!(entity, Some(Entity::Function(id)) if ids.contains(&id)) {
+                continue;
+            }
+            let mut checker = Checker::new(env, facts, report, findings, collected, pass, module);
+            checker.decl_span = Some(decl.span);
+            checker.decl(&decl.kind, entity);
+            checker.finish();
+        }
+    }
+}
+
 impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     fn new(
         env: &'c mut Env<'a>,
@@ -1471,7 +1503,33 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         if self.type_params.is_empty() {
             return ty.clone();
         }
-        ty.symbolic(&self.type_params)
+        ty.symbolic(&self.param_symbols())
+    }
+
+    /// The symbolic label of each type parameter of the declaration being checked: `T`, or
+    /// `T*` in edition 0.2 for a parameter constrained by `Ord` or `Integer`, whose type
+    /// arguments are scalars, so that every label of one is its top label (ADR 0067 amendment).
+    fn param_symbols(&self) -> Vec<String> {
+        let def = self.current.and_then(|id| self.env.functions.get(id));
+        self.type_params
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                let scalar = self.env.edition >= una_project::Edition::V0_2
+                    && def.is_some_and(|def| {
+                        def.type_params.get(index) == Some(name)
+                            && matches!(
+                                def.constraints.get(index),
+                                Some(Constraint::Ord | Constraint::Integer)
+                            )
+                    });
+                if scalar {
+                    format!("{name}*")
+                } else {
+                    (*name).to_owned()
+                }
+            })
+            .collect()
     }
 
     /// `ty` without the symbolic labels of the type parameters of the declaration being
@@ -1484,7 +1542,8 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         let names = self.type_params.clone();
         ty.map_labels(&|label| {
             let mut kept = label.clone();
-            kept.symbols.retain(|s| !names.iter().any(|n| n == s));
+            kept.symbols
+                .retain(|s| !names.iter().any(|n| *n == s.trim_end_matches('*')));
             kept
         })
     }

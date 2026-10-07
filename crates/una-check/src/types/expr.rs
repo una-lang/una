@@ -544,10 +544,7 @@ impl<'a> Checker<'_, 'a, '_> {
             result: if args.is_empty() {
                 def.result.base.substitute(&args)
             } else {
-                def.result
-                    .base
-                    .substitute(&args)
-                    .raise_deep(&super::unify::Vars::label_of(&args))
+                self.generic_value_result(id, &args)
             },
             uses: def.uses.iter().map(|need| need.usage.clone()).collect(),
             fails: def.fails.clone(),
@@ -1180,6 +1177,7 @@ impl<'a> Checker<'_, 'a, '_> {
             // a position where the declared result has them and the value must match it, a
             // function parameter or an invariant kind argument (ADR 0046), still compares
             // (D-166).
+            self.summarize_return(name, ty);
             let found = self.labeled(ty);
             let found = self.without_own_symbols(&found);
             let declared = self.labeled(expected);
@@ -1199,10 +1197,14 @@ impl<'a> Checker<'_, 'a, '_> {
         role: Role<'_>,
     ) {
         if let (Some(expected), Role::Return(name)) = (expected, role) {
+            self.summarize_condition(name, label);
             let mut label = label.clone();
-            label
-                .symbols
-                .retain(|s| !self.type_params.iter().any(|p| p == s));
+            label.symbols.retain(|s| {
+                !self
+                    .type_params
+                    .iter()
+                    .any(|p| *p == s.trim_end_matches('*'))
+            });
             self.implicit_result(
                 condition,
                 &label,

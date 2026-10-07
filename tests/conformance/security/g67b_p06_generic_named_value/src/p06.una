@@ -1,0 +1,19 @@
+-- test: ADR 0067 recheck of #231, P06_generic_named_value: a decision on values of a type parameter reaches a public result or an effect, through a returned value, a function value or an `of` parameter, and is rejected (spec/07 §7 rule 8, #92, #234)
+-- spec: spec/07 §7
+-- expect: error U4002 at src/p06.una:18:36
+module p06
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+hit[T](x: T) -> Bool
+  uses @log: Log[write]
+=
+  @log.write(0)
+  x == x
+
+pub leak(xs: List[secret Int]) -> Unit
+  uses @log: Log[write]
+=
+  let found = xs.first_where(keep: hit)
+  unit

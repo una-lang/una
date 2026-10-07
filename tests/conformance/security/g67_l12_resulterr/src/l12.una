@@ -1,0 +1,12 @@
+-- test: ADR 0067 adversarial check of #231, L12_resulterr: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/l12.una:12:18
+module l12
+
+chk[T](a: T, b: T) -> Result[Int, Int] = Err(if a == b then 1 else 0)
+
+pub leak(s: secret Int) -> Int
+=
+  when chk(s, b: 0)
+    is Ok(v) -> 0
+    is Err(e) -> e
