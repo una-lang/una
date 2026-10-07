@@ -1,12 +1,15 @@
--- test: whether parse_int fails on a secret, and where, is secret: attempt's Ok or Err, the payload of Err, a failure in its place and the value that replaces it all carry the argument's labels, each with a control, and a public text's failure stays public; a failure relayed through fails of keeps the rules of ADR 0062 and 0067, which reject a callback failing on secret elements or over a secret length (spec/22 §5 rule 2, N-27)
+-- test: whether parse_int fails on a secret, and where, is secret: attempt's Ok or Err, the payload of Err itself, read through when, a failure in its place and the value that replaces it all carry the argument's labels, each with a control, and a public text's failure stays public; a failure relayed through fails of keeps the rules of ADR 0062 and 0067, which reject a callback failing on secret elements or over a secret length (spec/22 §5 rule 2, N-27)
 -- spec: spec/22 §5
--- expect: error U4001 at src/failures.una:18:3
--- expect: error U4001 at src/failures.una:36:8
--- expect: error U4001 at src/failures.una:38:18
--- expect: error U4002 at src/failures.una:52:5
--- expect: error U4001 at src/failures.una:60:3
--- expect: error U4001 at src/failures.una:91:31
--- expect: error U4002 at src/failures.una:99:31
+-- expect: error U4001 at src/failures.una:21:3
+-- expect: error U4001 at src/failures.una:39:8
+-- expect: error U4001 at src/failures.una:41:18
+-- expect: error U4002 at src/failures.una:55:5
+-- expect: error U4001 at src/failures.una:63:3
+-- expect: error U4001 at src/failures.una:94:31
+-- expect: error U4002 at src/failures.una:102:31
+-- expect: error U4001 at src/failures.una:111:8
+-- expect: error U4001 at src/failures.una:114:12
+-- expect: error U4001 at src/failures.una:115:29
 module failures
 
 pub kind Bad = Other | Worse
@@ -99,3 +102,25 @@ pub on_length(pins: secret List[Int]) -> Int
   let mapped = pins.map(each: always)
     if error pass
   0
+
+--- The position in a failure's payload is labeled itself (N-27): read through `when` and
+--- returned, it is as secret as the text.
+pub where_failed(s: secret Text) -> Int
+=
+  let r = attempt s.parse_int()
+  when r
+    is Ok(n) -> 0
+    is Err(e) ->
+      when e
+        is NotADigit(at) -> at
+        else -> -1
+
+pub where_failed_control(s: secret Text) -> secret Int
+=
+  let r = attempt s.parse_int()
+  when r
+    is Ok(n) -> 0
+    is Err(e) ->
+      when e
+        is NotADigit(at) -> at
+        else -> -1
