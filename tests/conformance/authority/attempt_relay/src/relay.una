@@ -1,0 +1,42 @@
+-- test: attempt over a call of a fails-of parameter runs it where the statement stands, so a private relay infers uses of it and another relay may pass its parameter on, while effects still need the caller's uses (ADR 0062 E3, #270)
+-- spec: spec/05 §9
+-- expect: error U3003 at src/relay.una:34:29
+module relay
+
+pub kind Bad = Wrong | Worse
+
+--- `attempt f(2)` runs `f` where the statement stands, as a call does, so `inner` infers
+--- `uses of f` and a relay may pass its own parameter on.
+inner(f: fn(Int) -> Int) -> Int
+  fails of f
+=
+  let r = attempt f(2)
+  when r
+    is Ok(n) -> n
+    is Err(e) -> 0
+
+outer(g: fn(Int) -> Int) -> Int
+  fails of g
+=
+  let v = inner(f: g)
+    if error pass
+  v
+
+pub pure_use() -> Int
+=
+  let v = outer(g: fn(x) -> x)
+    if error use 0
+  v
+
+--- Effects still need the caller's `uses`.
+pub printing() -> Int
+=
+  let v = outer(g: fn(x) -> print_one(x))
+    if error use 0
+  v
+
+print_one(x: Int) -> Int
+  uses @console: Console[print]
+=
+  @console.print("{x}")
+  x
