@@ -1658,6 +1658,9 @@ impl<'p, 'i> Walker<'p, 'i> {
                         ..*contract
                     };
                     self.call(&contract, &values, arg_spans, *span, &x, ctx);
+                    if is_prelude(&function.module) {
+                        self.text_facts(&function.name, &values, &x, ctx);
+                    }
                 } else if let Some((params, formula)) = self.index.predicates.get(&key) {
                     self.arguments(params, args, arg_spans, ctx);
                     let predicate = self.predicate(function, params, *formula, &values);
@@ -2481,6 +2484,55 @@ impl<'p, 'i> Walker<'p, 'i> {
             },
             ty: field_ty,
         })
+    }
+
+    /// `find` and `contains_text` share an uninterpreted `i!contains!Text` (N-19): one is `Some`
+    /// exactly when the other holds (`spec/22 §2` rule 2). Both engines run them over one
+    /// search, so the symbol stands for the same relation. A position `find` returns lies in
+    /// the text with its match after it (N-21).
+    fn text_facts(&mut self, name: &str, values: &[Tv], x: &Tv, ctx: &mut Ctx) {
+        let (Some(t), Some(part)) = (values.first(), values.get(1)) else {
+            return;
+        };
+        if t.f.sort() != TEXT || part.f.sort() != TEXT {
+            return;
+        }
+        let contains = F::App {
+            fun: SmtFun {
+                name: "i!contains!i!Text".to_owned(),
+                args: vec![TEXT.to_owned(), TEXT.to_owned()],
+                result: "Bool".to_owned(),
+                role: FunRole::Other,
+            },
+            args: vec![t.f.clone(), part.f.clone()],
+        };
+        match name {
+            "contains_text" if x.f.sort() == "Bool" => ctx.define(F::eq(x.f.clone(), contains)),
+            "find" => {
+                let Some(tag) = self.tag(x) else {
+                    return;
+                };
+                let some = F::eq(tag, F::Int("0".to_owned()));
+                ctx.assume(F::eq(some.clone(), contains));
+                // N-21: the position of a match lies in the text, with the match after it.
+                if let (Some(at), Some(t_len), Some(part_len)) =
+                    (self.field(x, 0, 0), self.len(t), self.len(part))
+                    && at.f.sort() == "Int"
+                {
+                    ctx.assume(F::op(
+                        "=>",
+                        vec![
+                            some,
+                            F::and(vec![
+                                F::op("<=", vec![F::Int("0".to_owned()), at.f.clone()]),
+                                F::op("<=", vec![F::op("+", vec![at.f, part_len]), t_len]),
+                            ]),
+                        ],
+                    ));
+                }
+            }
+            _ => {}
+        }
     }
 
     /// `.len` of a text, list or map, `i!len!<Sort>`.
@@ -3768,6 +3820,10 @@ impl<'p, 'i> Walker<'p, 'i> {
                         let shown: Vec<String> = args.iter().map(|a| operand(a, 10)).collect();
                         let short = base.rsplit('.').next().unwrap_or(base);
                         (format!("{short}({})", shown.join(", ")), 1)
+                    }
+                    FunRole::Other if base == "contains" => {
+                        let shown: Vec<String> = args.iter().map(|a| operand(a, 10)).collect();
+                        (format!("contains_text({})", shown.join(", ")), 1)
                     }
                     FunRole::Other => {
                         let (op, level) = match base {

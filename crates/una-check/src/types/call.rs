@@ -697,6 +697,9 @@ impl<'a> Checker<'_, 'a, '_> {
             // failure of a function value given for `fails of` follows ADR 0067 instead.
             if def.fails.is_some() && prelude_labeled(self.env.prelude, &def) {
                 let label = self.labeled(&result).top_label();
+                // The payload too, as `ParseError`'s position: it is labeled itself, not only
+                // read under the raised program counter.
+                self.call_fails.insert(span, fails.raise_deep(&label));
                 self.decided_failures.insert(span, label);
             }
         }
@@ -1725,12 +1728,17 @@ impl<'a> Checker<'_, 'a, '_> {
 /// The prelude functions whose results carry the labels of their arguments, as `spec/14 §1`
 /// "Result labels" lists them (ADR 0038 D3.4): their native implementations declare these
 /// labels, which the prelude's Una signatures cannot write.
-const PRELUDE_LABELED: [&str; 24] = [
+const PRELUDE_LABELED: [&str; 38] = [
     "abs",
     "append",
     "at",
+    "bytes",
+    "chars",
     "contains",
+    "contains_text",
+    "ends_with",
     "filter",
+    "find",
     "first",
     "first_where",
     "fold",
@@ -1738,20 +1746,29 @@ const PRELUDE_LABELED: [&str; 24] = [
     "is_empty",
     "is_ok",
     "is_some",
+    "join",
     "map",
     "max",
     "min",
     "or_else",
+    "parse_int",
     // JSON (`spec/23 §5`): a parsed value and its failure, and a written or quoted text,
     // carry the labels of their argument.
     "parse_json",
     "quote_json",
+    "replace",
+    "slice",
     "sort",
+    "split",
     "starts_with",
     "sum",
     "to_int",
     "to_json",
+    "to_lower",
+    "to_upper",
     "trim",
+    "trim_end",
+    "trim_start",
 ];
 
 /// For a structural prelude function (ADR 0051, `spec/14 §1`), the parameters that decide the
