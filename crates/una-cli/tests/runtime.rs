@@ -1489,6 +1489,7 @@ fn a_reader_that_went_away_is_a_failed_write() {
     drop(child.stdout.take());
     let output = child.wait_with_output().unwrap();
     assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+}
 
 const MAPS: &str = "module maps
 
