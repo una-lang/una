@@ -1,0 +1,32 @@
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub handler to_console() for Log
+  uses @console: Console[print]
+  op write(n) = @console.print("{n}")
+
+g[T](p: T, q: T, k: fn(T) -> Int, keep: fn(T) -> Bool, step: fn(Int, T) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  let a = [p, q].map(each: k).sum()
+  let b = [p, q].filter(keep: keep).len
+  let c = [p, q].fold(initial: 0, step: step)
+  let d = when [p, q].first_where(keep: keep)
+    is Some(x) -> 1
+    is None -> 0
+  @log.write(a + b + c + d)
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let s = @env.get("S")
+    if none use ""
+  run(s.len) with @log = to_console()
+
+run(v: internal Int) -> Unit
+  uses @log: Log[write]
+=
+  g([v], q: [1], k: fn(ys) -> ys.len, keep: fn(ys) -> ys.len > 0, step: fn(acc, ys) -> acc + ys.len)
