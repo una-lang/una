@@ -32,6 +32,20 @@ pub main() -> Unit
 - **Suggested fix.** Label the failure of an `Http` operation with the join of the labels of its arguments, as N-27 does for prelude functions: `attempt` gives a `Result` labeled that way, `if error use` runs under the raised program counter, and `if error pass` and `if error fail` are U4002 when the join is above `public`. A program whose URL, headers and key name are `public`, the common case, keeps `if error pass`. The alternative, making URL, headers and key name accept only `public` as `Keys` does, is simpler, but it forbids `internal` header values, which `Header.value` exists to carry.
 - **Scope.** The same holds for `post`, `put` and `delete`, whose `body` does not affect the failure but whose URL, headers and key name do. It is a question for the spec owner whether the rule belongs in `spec/07 §7` for every operation that accepts more than `public`, since today only `Http` does.
 
+**Fixed: #310, PR #317 (decisions N-39 and N-40), rechecked at `651062b` independently: Clean.**
+- `cases/6/http-failure-of-internal-url` is now U4003 at both prints; the `if error pass` variants of area 3 are U4002 for an `internal` URL, and accepted for an `internal` header value, which N-40 takes out of the decision.
+- `cases/recheck-h1/matrix.py`, 48 cases, 0 unexpected:
+  - the URL decides, in `get`, `post`, `put` and `delete`, under `if error pass` and `if error fail` (U4002), with `if error use` accepted and a `public` URL as control;
+  - the key name, and the header list's top label, decide; a header value and a body do not;
+  - `attempt` on an `internal` URL makes the branch and the error payload U4003 at a `public` sink, while a `public` URL, an `internal` header value or an `internal` body keep it `public`;
+  - the same in a loop over `internal` URLs, in a task of `together`, through a generic helper, and through a relay with `uses of` and `fails of`, each with a `public` control;
+  - `Files.write` with an `internal` path is U4002 in editions 0.1 and 0.2, with `internal` content accepted; `Files.read` with an `internal` path and `Keys.hmac` with an `internal` key name stay U4003, and `Keys.hmac` with `secret` data stays accepted.
+- `cases/recheck-h1/u6004`: a header value with U+0001, from the environment, in a task of `together`, aborts with U6004 at the operation, exit 1, in both engines, with identical traces (the task's `get` is `aborted`), and the server receives no request. With a tab instead, both engines send the requests and finish, with identical traces.
+- Notes, not findings:
+  - A `secret` URL or key name now gives U4002 next to its U4003, since the failure takes the argument's label. Both are true; the second is redundant.
+  - The body stays out of the decision by design (N-39), but a server that receives an `internal` body can still choose whether the request fails. That is the behavior of an external system, which `spec/07 §1` leaves outside the model, as it does the response's content.
+  - `Files.write` with an `internal` path changes in edition 0.1 too. Gate 1 pins v0.1.3, so its references are not affected.
+
 ## H-2, Minor: one large `parse_json` aborts the process instead of ending with U6003
 
 **Area 5.** Case: `cases/5/scale` with a 26 MB array of short strings and `--max-memory 64`.
@@ -41,7 +55,9 @@ pub main() -> Unit
 - It matters because JSON is where untrusted size arrives: a response body of up to `--max-response` (16 MiB by default) expands several times when parsed. With the default budget of 4096 MiB that cannot reach the ceiling, but with a smaller `--max-memory` an input of a few MiB can.
 - **Suggested fix.** Check the budget inside the parser and the writer, every so many values (say every 4096 nodes), as `for` loops do per iteration, and end with U6003 there. `spec/23 §3` rule 6 ("no limit beyond the memory budget") then holds in the sense rule 141 promises.
 
-## Clean so far
+**Fixed: #314, PR #318 (decision N-41).** Una-1 wrote the fix, so Una-2, the author of JSON, reviewed it: approved at `1f461b5`. The case now ends with U6003 at the `parse_json` call in both engines; area 2's 10,119 inputs give 0 differences and area 5's doubling is unchanged.
+
+## Clean
 
 - **Area 2.** `parse_json` and `to_json` against an independent reference of `spec/23 §3` and `§4` (`cases/2/reference.py`), on 10,119 inputs (113 handcrafted, the rest generated and mutated): 0 differences in value, failure kind or position, every round trip a fixed point, and both engines identical (`cases/2/compare.py`). JSON built from `Map` and `Text` over 66 texts with every escape class: 0 differences, and `quote_json(t) == to_json(Str(value: t))` on all of them (`cases/2/gen_build.py`).
 - **Area 3.** 23 label cases (`cases/3/matrix.py`): constructors (U4001 for a labeled `Str`, key or map), a parsed response body, a parse failure and its position, `quote_json`, interpolation, `m.has`, `find`, a status, and a `secret` URL, body or key name, all as specified. The two exceptions are H-1.

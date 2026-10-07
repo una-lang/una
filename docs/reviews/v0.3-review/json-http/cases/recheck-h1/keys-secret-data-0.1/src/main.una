@@ -1,0 +1,8 @@
+module main
+
+g(d: secret Text) -> secret Hashed
+  uses @keys: Keys[hmac]
+  fails KeyError
+=
+  @keys.hmac("k", data: d)
+    if error pass

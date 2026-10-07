@@ -76,12 +76,12 @@ CASES = {
   else
     @console.print("not ok")
 """),
-    "secret-url": ("U4003", "h(u: secret Text) -> internal Response\n  uses @http: Http[get]\n  fails HttpError\n=\n  @http.get(u, headers: [], key_name: None)\n    if error pass\n", None),
+    "secret-url": ("U4002,U4003", "h(u: secret Text) -> internal Response\n  uses @http: Http[get]\n  fails HttpError\n=\n  @http.get(u, headers: [], key_name: None)\n    if error pass\n", None),
     "secret-body": ("U4003", "h(b: secret Text) -> internal Response\n  uses @http: Http[post]\n  fails HttpError\n=\n  @http.post(\"http://127.0.0.1:8765/\", headers: [], body: b, key_name: None)\n    if error pass\n", None),
-    "secret-key-name": ("U4003", "h(k: secret Text) -> internal Response\n  uses @http: Http[get]\n  fails HttpError\n=\n  @http.get(\"http://127.0.0.1:8765/\", headers: [], key_name: Some(k))\n    if error pass\n", None),
+    "secret-key-name": ("U4002,U4003", "h(k: secret Text) -> internal Response\n  uses @http: Http[get]\n  fails HttpError\n=\n  @http.get(\"http://127.0.0.1:8765/\", headers: [], key_name: Some(k))\n    if error pass\n", None),
     "internal-body-allowed": ("ok", "h(b: internal Text) -> internal Response\n  uses @http: Http[post]\n  fails HttpError\n=\n  @http.post(\"http://127.0.0.1:8765/\", headers: [], body: b, key_name: None)\n    if error use Response(status: 0, headers: [], body: \"\")\n", None),
     "http-fails-of-internal-url-pass": ("U4002", "h(u: internal Text) -> internal Response\n  uses @http: Http[get]\n  fails HttpError\n=\n  @http.get(u, headers: [], key_name: None)\n    if error pass\n", None),
-    "http-fails-of-internal-header-pass": ("U4002", "h(v: internal Text) -> internal Response\n  uses @http: Http[get]\n  fails HttpError\n=\n  @http.get(\"http://127.0.0.1:8765/\", headers: [Header(name: \"x\", value: v)], key_name: None)\n    if error pass\n", None),
+    "http-fails-of-internal-header-pass": ("ok", "h(v: internal Text) -> internal Response\n  uses @http: Http[get]\n  fails HttpError\n=\n  @http.get(\"http://127.0.0.1:8765/\", headers: [Header(name: \"x\", value: v)], key_name: None)\n    if error pass\n", None),
     "http-under-internal-pc": ("U4003", None, """  let t = @env.get("T")
     if none use ""
   if t == "go"
