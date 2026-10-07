@@ -28,6 +28,8 @@ pub(crate) const HASHED: &str = "i!Hashed";
 
 /// The prefix of the sorts of `List[T]`.
 pub(crate) const LIST: &str = "i!List_";
+/// The prefix of the sorts of maps, `i!Map_<K>_<V>` (`spec/21 §4`).
+pub(crate) const MAP: &str = "i!Map_";
 
 /// A term or formula of the solver's logic.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -123,6 +125,10 @@ pub(crate) enum FunRole {
         kind: String,
         variants: usize,
     },
+    /// `m.has(key: k)` of a map: a map that has a key is not empty (`spec/21 §4`).
+    Has,
+    /// `m.get(key: k)` of a map, uninterpreted.
+    Get,
     /// A predicate; a reflect one has a definition.
     Predicate,
     /// Any other function, without facts: nonlinear arithmetic, text ordering.

@@ -128,6 +128,12 @@ fn write_term(
             write_term(out, value, 9, replace);
             out.push_str(".len");
         }
+        Term::Has { map, key } => {
+            write_term(out, map, 9, replace);
+            out.push_str(".has(key: ");
+            write_term(out, key, 0, replace);
+            out.push(')');
+        }
         Term::Proj { value, index } => {
             write_term(out, value, 9, replace);
             let _ = write!(out, ".{index}");

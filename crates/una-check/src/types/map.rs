@@ -44,7 +44,10 @@ impl Checker<'_, '_, '_> {
             "entries" => (MapOp::Entries, false, &[]),
             _ => return None,
         };
-        self.outside_rl(span, || format!("the method `{method}`"));
+        // `m.has(key: k)` is in the refinement language, as `m.len` is (`spec/21 §4` rule 4).
+        if op != MapOp::Has {
+            self.outside_rl(span, || format!("the method `{method}`"));
+        }
         let receiver = self.report.text(target.span).to_owned();
         // `set` and `remove` update the map in place, as an `edit` receiver (`spec/21 §2`
         // rule 1, `spec/17 §3`); the other methods read it.
