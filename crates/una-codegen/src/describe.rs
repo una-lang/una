@@ -142,6 +142,10 @@ impl<'p> Types<'p> {
                     .collect();
                 data(variants)
             }
+            // A slot of a composite descriptor, `#<position>` (ADR 0068 D6).
+            Base::Param(name) if let Some(position) = slot(name) => {
+                json!({ "shape": "param", "index": position })
+            }
             Base::Param(_) | Base::Unknown => json!({ "shape": "other" }),
         }
     }
@@ -251,4 +255,15 @@ pub(crate) fn level(level: Level) -> &'static str {
         Level::Secret => "secret",
         Level::Restricted => "restricted",
     }
+}
+
+/// The name of the type parameter at `position` of a composite descriptor: `#<position>`, which
+/// no source name can be.
+pub(crate) fn slot_name(position: usize) -> String {
+    format!("#{position}")
+}
+
+/// The position of a composite descriptor's type parameter named by [`slot_name`].
+fn slot(name: &str) -> Option<usize> {
+    name.strip_prefix('#')?.parse().ok()
 }

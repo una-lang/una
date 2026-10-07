@@ -1,0 +1,9 @@
+-- test: a value whose type holds a function is not interpolated, and the message names the position of the function (spec/10 §12 rule 14, ADR 0068 D4)
+-- spec: spec/10 §12
+-- expect: error U2001 at src/interp_fn.una:9:37
+module interp_fn
+
+pub kind Step
+  run: fn(Int) -> Int
+
+pub shown(s: Step) -> Text = "step {s}"

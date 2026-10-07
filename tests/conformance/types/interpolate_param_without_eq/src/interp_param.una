@@ -1,0 +1,10 @@
+-- test: a public generic function interpolates a value of its type parameter only under `Eq`, with the repair that writes it; a private one infers it (spec/10 §12 rule 14, spec/20 §3, ADR 0068 D4)
+-- spec: spec/20 §3
+-- expect: error U2026 at src/interp_param.una:6:35
+module interp_param
+
+pub shown[T](x: T) -> Text = "is {x}"
+
+inferred[T](x: T) -> Text = "is {x}"
+
+pub used() -> Text = inferred(3)

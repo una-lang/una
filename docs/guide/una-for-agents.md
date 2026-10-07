@@ -116,7 +116,7 @@ module demo
 pub kind Stream = | Next(head: Int, tail: Stream)
 ```
 
-Interpolation renders integers, `Bool` and `Text`, but not records or lists: describe them by hand.
+Interpolation writes any value that holds no function in its Una form, the one `una test` shows: `Point(x: 1, y: -2)`, `[1, 2]`, `Some(3)`, `Err(NotFound)`. Text inside a structure is quoted. A field that holds a function is U2001. A value of a type parameter `T` needs `[T: Eq]`. The text keeps the labels of every field, so a record with a `secret` field cannot be printed (U4003) (ADR 0068).
 
 ```una
 module demo
@@ -125,8 +125,8 @@ pub kind Point
   x: Int
   y: Int
 
---- Interpolation takes integers, text and other scalars; a record is described by hand.
-pub describe(p: Point) -> Text = "({p.x}, {p.y})"
+--- Interpolation writes the record itself: `at Point(x: 1, y: -2)`.
+pub describe(p: Point) -> Text = "at {p}"
 ```
 
 ## 5. Functions
