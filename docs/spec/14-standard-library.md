@@ -74,7 +74,7 @@ Text works on Unicode scalar values: `.len` counts them; `is_digits` holds when 
 
 ## 3. Host capabilities (part of the prelude)
 
-The host capabilities are declared in the module `std.host` and are in scope in every module through the prelude (`spec/10 §11` rule 8).
+The host capabilities are declared in the module `std.host` and are in scope in every module through the prelude (`spec/10 §11` rule 8). A module MAY also import them, with their failure kinds, from `std.host` (`spec/10 §11` rule 10).
 
 | Capability | Operation | Fails | Accepts | Notes |
 | --- | --- | --- | --- | --- |
