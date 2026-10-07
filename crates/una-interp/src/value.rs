@@ -1,6 +1,7 @@
 //! Runtime values (`spec/11 §2`).
 
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use num_bigint::BigInt;
@@ -29,6 +30,34 @@ pub(crate) enum Value<'p> {
     Hashed(Rc<[u8]>),
     /// A tuple, internal to the desugaring of the memory model (`spec/17 §4`).
     Tuple(Rc<Vec<Value<'p>>>),
+    /// A map, in the order of its keys (`spec/21 §5`): each entry keeps its key as a value,
+    /// for listing and rendering.
+    Map(Rc<Entries<'p>>),
+}
+
+/// The entries of a map, by the order of their keys.
+pub(crate) type Entries<'p> = BTreeMap<Key, (Value<'p>, Value<'p>)>;
+
+/// A map's key, in the order of `spec/03 §1` and `spec/20 §5`: an integer, a text by its
+/// scalar values, or a variant without fields by its declaration. A map holds keys of one
+/// type, so the order across these never applies.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Key {
+    Int(BigInt),
+    Text(Rc<str>),
+    Variant(usize),
+}
+
+impl Key {
+    /// The key of a value of an `Ord` type, `None` for any other value.
+    pub(crate) fn of(value: &Value<'_>) -> Option<Key> {
+        match value {
+            Value::Int(n) => Some(Key::Int(n.clone())),
+            Value::Text(t) => Some(Key::Text(t.clone())),
+            Value::Data(data) if data.fields.is_empty() => Some(Key::Variant(data.ctor.index)),
+            _ => None,
+        }
+    }
 }
 
 /// A constructor and its fields.
@@ -56,6 +85,14 @@ impl Drop for Data<'_> {
                 Value::List(items) | Value::Tuple(items) => {
                     if let Ok(items) = Rc::try_unwrap(items) {
                         pending.extend(items);
+                    }
+                }
+                Value::Map(entries) => {
+                    if let Ok(entries) = Rc::try_unwrap(entries) {
+                        for (_, (key, value)) in entries {
+                            pending.push(key);
+                            pending.push(value);
+                        }
                     }
                 }
                 _ => {}
@@ -116,6 +153,12 @@ pub(crate) fn equal(a: &Value<'_>, b: &Value<'_>) -> bool {
             (Value::List(x), Value::List(y)) | (Value::Tuple(x), Value::Tuple(y)) => {
                 pending.extend(x.iter().zip(y.iter()));
                 x.len() == y.len()
+            }
+            // The same keys, each with an equal value (`spec/21 §1` rule 5).
+            (Value::Map(x), Value::Map(y)) => {
+                let same = x.len() == y.len() && x.keys().eq(y.keys());
+                pending.extend(x.values().zip(y.values()).map(|((_, a), (_, b))| (a, b)));
+                same
             }
             _ => false,
         };
