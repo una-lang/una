@@ -51,3 +51,82 @@ pub to_json(j: Json) -> Text
 pub quote_json(t: Text) -> Text
 =
   t
+
+--- Why `parse_int` fails (`spec/22 §4`).
+pub kind ParseError = Empty | NotADigit(at: Int) | NoDigits
+
+--- The parts of `t` between the non-overlapping occurrences of `on`, left to right
+--- (`spec/22 §2`).
+pub split(t: Text, on: Text) -> List[Text]
+  requires on.len > 0
+  ensures result.len >= 1
+=
+  [t]
+
+--- The parts joined, with `separator` between each two (`spec/22 §2`).
+pub join(parts: List[Text], separator: Text) -> Text = separator
+
+--- Whether `t` ends with `suffix`.
+pub ends_with(t: Text, suffix: Text) -> Bool = true
+
+--- Whether `part` occurs in `t`.
+pub contains_text(t: Text, part: Text) -> Bool = true
+
+--- The position of the first occurrence of `text` in `t`, `Some(0)` for an empty `text`; it
+--- is `Some` exactly when `contains_text(t, part: text)` (`spec/22 §2` rule 2).
+pub find(t: Text, text: Text) -> Option[Int] = None
+
+--- `t` with every non-overlapping occurrence of `pattern` replaced by `by`, left to right.
+pub replace(t: Text, pattern: Text, by: Text) -> Text
+  requires pattern.len > 0
+=
+  t
+
+--- The scalar values of `t` from position `start` up to, not including, `end`.
+pub slice(t: Text, start: Int, end: Int) -> Text
+  requires 0 <= start and start <= end and end <= t.len
+  ensures result.len == end - start
+=
+  t
+
+--- `t` with the ASCII letters `a` to `z` in upper case (`spec/22 §3`).
+pub to_upper(t: Text) -> Text
+  ensures result.len == t.len
+=
+  t
+
+--- `t` with the ASCII letters `A` to `Z` in lower case.
+pub to_lower(t: Text) -> Text
+  ensures result.len == t.len
+=
+  t
+
+--- One text of length 1 per scalar value of `t`, in order.
+pub chars(t: Text) -> List[Text]
+  ensures result.len == t.len
+=
+  [t]
+
+--- The integer that `t` writes, an optional `-` and one or more ASCII digits (`spec/22 §4`).
+pub parse_int(t: Text) -> Int
+  fails ParseError
+=
+  fail Empty
+
+--- `t` without Unicode white space at its start.
+pub trim_start(t: Text) -> Text
+  ensures result.len <= t.len
+=
+  t
+
+--- `t` without Unicode white space at its end.
+pub trim_end(t: Text) -> Text
+  ensures result.len <= t.len
+=
+  t
+
+--- The UTF-8 encoding of `t`.
+pub bytes(t: Text) -> List[U8]
+  ensures result.len >= t.len
+=
+  []

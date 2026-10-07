@@ -336,7 +336,7 @@ pub cart_total(cart: Cart) -> Int = total(cart.items)
 | `U8`, `U16`, `U32`, `U64` | `0` to `2^n - 1` | edition `0.2`; overflow is a proof obligation |
 | `Nat` | `Int where it >= 0` | prelude alias |
 | `Bool` | `true`, `false` | |
-| `Text` | Unicode strings | `t.len` counts Unicode scalar values |
+| `Text` | Unicode strings | `t.len` counts Unicode scalar values; in edition `0.2`, `split`, `join`, `find`, `contains_text`, `ends_with`, `replace`, `slice`, `chars`, `bytes`, `to_upper`, `to_lower`, `trim_start`, `trim_end` and `parse_int` (`spec/22`) |
 | `Unit` | `unit` | |
 | `List[T]` or `[T]` | `[1, 2, 3]` | values; `xs.len`; changed through `set` and `append` (§5.6) |
 | `Map[K, V]` | `empty_map().with(key: "a", value: 1)` | edition `0.2`; keys satisfy `Ord`, in ascending order; `m.len`, `has`, `get`, `keys`, `values`, `entries`, `with`, `without`, and `edit m.set` and `edit m.remove` (`spec/21`) |

@@ -8,7 +8,7 @@ use num_bigint::BigInt;
 use una_core::json::{self, Tree};
 
 use crate::machine::prelude_ctor;
-use crate::value::{Entries, Key, Value};
+use crate::value::{Entries, Key, Text, Value};
 
 /// The variants of `Json`, in declaration order (`spec/23 §1`).
 const NULL: usize = 0;
@@ -47,7 +47,7 @@ enum Building<'p> {
     Object(
         std::vec::IntoIter<(String, Tree)>,
         Entries<'p>,
-        Option<Rc<String>>,
+        Option<Rc<Text>>,
     ),
 }
 
@@ -108,7 +108,7 @@ pub(crate) fn value<'p>(tree: Tree) -> Value<'p> {
                 Some((key, tree)) => {
                     if let (Some(key), Some(Building::Object(_, _, slot))) = (key, stack.last_mut())
                     {
-                        *slot = Some(Rc::new(key));
+                        *slot = Some(Rc::new(Text::new(key)));
                     }
                     pending = Some(tree);
                     break;

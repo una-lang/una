@@ -161,3 +161,19 @@ With X1 to X9 as A, and X10:
 
 The B and C options under each question. Also:
 - **A `Char` type for scalar values.** `chars()` returns one-scalar texts instead. A `Char` would need its own literals, ordering and conversions, for a gain that `Text` of length 1 mostly gives.
+
+## Amendment (2026-10-07)
+
+Three parameters of X3 are renamed (the coordinator under the owner's delegation, N-20):
+- `join(parts, separator: Text)`;
+- `slice(t, start: Int, end: Int)`, with `requires 0 <= start and start <= end and end <= t.len` and `ensures result.len == end - start`;
+- `replace(t, pattern: Text, by: Text)`, with `requires pattern.len > 0`.
+
+**Why.** `with`, `from` and `old` are keywords of edition 0.2. A parameter with one of those names could not be named in its function's contracts or body: `requires old.len > 0` reads as `old(...)`. Reading a keyword as a label before `:` would allow the label, but not those uses, and would make the keyword depend on context for every tool. None of the new names is a keyword in any edition. The functions were not implemented when this was decided, so no program changes.
+
+## Amendment (2026-10-07, second)
+
+`find`'s contract also bounds its position (the coordinator under the owner's delegation, N-21): when `find(t, text)` is `Some(p)`, `0 <= p` and `p + text.len <= t.len`.
+
+**Why.** Without it, `t.slice(start: 0, end: p)` after a `find` is U5001, the most common use of the two. The refinement language cannot name the payload of `Some`, so the verifier states it as a fact after each call, as it does for `find` and `contains_text` (N-19). It is an implication over the option's tag and value, in QF_UFLIA. Both engines return the first match's position, so it holds by construction, and a property test checks it.
+

@@ -2124,6 +2124,27 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 let site = self.site(span);
                 return self.higher_order(name, args, site, scope, catch);
             }
+            // A failure of `parse_int` goes to `catch` (`spec/22 §4`).
+            "parse_int" => {
+                let t = arg(0)?;
+                let failure = self.call("una_rt_parse_failure", &[t])?;
+                let failed = self.builder.ins().icmp_imm_s(IntCC::NotEqual, failure, 0);
+                self.check(failure, failed, scope, catch);
+                return self.call("una_rt_parse_int", &[t]);
+            }
+            "split" => "una_rt_split",
+            "join" => "una_rt_join",
+            "ends_with" => "una_rt_ends_with",
+            "contains_text" => "una_rt_contains_text",
+            "find" => "una_rt_find",
+            "replace" => "una_rt_replace",
+            "slice" => "una_rt_slice",
+            "to_upper" => "una_rt_to_upper",
+            "to_lower" => "una_rt_to_lower",
+            "chars" => "una_rt_chars",
+            "trim_start" => "una_rt_trim_start",
+            "trim_end" => "una_rt_trim_end",
+            "bytes" => "una_rt_bytes",
             "abs" => "una_rt_abs",
             "min" => "una_rt_min",
             "max" => "una_rt_max",

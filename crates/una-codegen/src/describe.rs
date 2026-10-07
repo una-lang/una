@@ -159,6 +159,19 @@ impl<'p> Types<'p> {
                                 .collect(),
                         )
                     }
+                    // `spec/22 §4`.
+                    "ParseError" => {
+                        let int = self.of(&Type::Base {
+                            base: Base::Int,
+                            refinements: Vec::new(),
+                            label: Label::public(),
+                        });
+                        data(vec![
+                            variant("Empty", Vec::new()),
+                            variant("NotADigit", vec![field("at", int, None, false)]),
+                            variant("NoDigits", Vec::new()),
+                        ])
+                    }
                     _ => {
                         self.unknown = true;
                         json!({ "shape": "other" })
