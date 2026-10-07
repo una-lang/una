@@ -11,6 +11,9 @@ The first stable release of v0.2. The native backend compiles the whole language
 - **Labels of function values passed for `of` parameters** (#210, P0, Critical). In edition 0.2, a function value given for a `uses of` or `fails of` parameter, as `map`, `filter`, `first_where` and `fold` take, lost its labels. That was both a false rejection and an information-flow leak, present since v0.2.0-alpha.3. v0.1.x is not affected.
 - **Defense in depth near `of` parameters** (#216). Three sites keep or join the labels the rules require, although none leaked: the effects of a function value given for an `of` parameter run under its own label too.
 - **Edit arguments flow back with their final labels** (#186). An `edit` argument's new value is checked after every argument is typed. Before, a `secret` could reach a public place through a generic callee.
+- **A decision on `T` values given to an effectful `uses of` parameter** (#234, Critical). In edition 0.2, a value chosen by comparing values of `T` inside a generic function, then passed to a `uses of` parameter whose effect reveals it, was accepted. Fixed with ADR 0067: a decision that reaches a call of an `of` parameter is recorded, and each caller runs its argument under the labels of the type argument. A pure callback stays accepted, while an effectful one over secrets is U4002.
+- **Pending: a decision on `T` values through a call of a function-typed parameter in edition 0.1** (#253, Critical). The same shape through a function value's result, in edition 0.1, is accepted on v0.1.0 to v0.1.3 and on this release's edition 0.1. Edition 0.2 rejects it (U4003). The fix, and whether a v0.1.4 patch follows, are tracked in #253.
+- **v0.2.0-alpha.3 is superseded.** Its security note named #210. alpha.3 is also affected by #234, so use v0.2.0.
 
 ### Edition 0.2
 
@@ -22,6 +25,13 @@ The first stable release of v0.2. The native backend compiles the whole language
   - A record with a `secret` field cannot reach `Console` (U4003), and the diagnostic names the field.
   - Every `Hashed` is written `<hashed>`, also through a type parameter, while traces keep `hashed:<hex>` (ADR 0068 amendment).
   - Native code writes values of a type parameter inside a structure through composite type descriptors, byte-identical to the interpreter.
+- **Position-precise result labels of user generic functions** (ADR 0067, #92):
+  - A call of a generic function raises each position of its result only by the labels of the type arguments that reach it (a summary per function, computed to a least fixpoint over recursion), not by every type argument (D-137).
+  - Two symbolic labels: `ℓ_T` for a value of `T` as passed in, and `ℓ*_T` for every label of the type argument, which comparisons and conditions on `T` values carry.
+  - `filter` and `first_where` take predicates over labeled elements, raising the result.
+  - `una contract` shows `-- result labels: …` and `una report` lists `generic_results`.
+  - Newly rejected, by the ratified rules: a decision on `T` values that reaches an effectful `of` parameter (U4002 at the caller, #234), and a function value called with an argument that carries such a decision.
+  - Edition 0.1 keeps D-137.
 - **Exact integers in `reflect` bodies** (ADR 0057 amendment, #180): the body of a `reflect` predicate makes no `overflow` obligation and no U2022, and every engine computes its integers exactly, as the verifier reads it.
 - **Literals in constructors** (#187): `Some(3)`, `Ok(3)` and `Box(value: 3)` take the fixed-width type they are checked against.
 - **Negative literals** in `*`, `/` and `mod` stay linear for the verifier (#188).
@@ -74,7 +84,7 @@ The decisions of v0.2, all accepted:
 - ADR 0064, the authenticated proof cache;
 - ADR 0065, structured concurrency;
 - ADR 0066, constraints on generics;
-- ADR 0067, position-precise result labels of user generic functions;
+- ADR 0067, position-precise result labels of user generic functions, with its amendment of 2026-10-06;
 - ADR 0068, printing structured values.
 
 ### Known limits
