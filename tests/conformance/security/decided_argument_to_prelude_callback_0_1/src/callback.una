@@ -1,0 +1,52 @@
+-- test: in edition 0.1, a function value that a prelude function calls with elements chosen by comparing values of a type parameter raises the prelude call's result by them, as a call written in the body does, so writing that result to a public sink is U4003; values of the type parameter passed through, and a lambda of the body, stay accepted (spec/07 §7 rule 8, #253)
+-- spec: spec/07 §7
+-- expect: error U4003 at src/callback.una:16:14
+-- expect: error U4003 at src/callback.una:22:14
+-- expect: error U4003 at src/callback.una:28:14
+module callback
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+--- `map` calls `k` with an element chosen by comparing `T` values.
+mapped[T](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  let ns = [if a == b then p else q].map(each: k)
+  @log.write(ns.sum())
+
+kept[T](a: T, b: T, p: T, q: T, keep: fn(T) -> Bool) -> Unit
+  uses @log: Log[write]
+=
+  let xs = [if a == b then p else q].filter(keep: keep)
+  @log.write(xs.len)
+
+folded[T](a: T, b: T, p: T, q: T, step: fn(Int, T) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  let n = [if a == b then p else q].fold(initial: 0, step: step)
+  @log.write(n)
+
+--- Values of `T` passed through: `k` is checked against the caller's type argument.
+passed[T](p: T, q: T, k: fn(T) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  let ns = [p, q].map(each: k)
+  @log.write(ns.sum())
+
+--- A lambda of the body takes the decision in its parameter's type, and its result does not depend on it.
+counted[T](a: T, b: T, p: T, q: T) -> Unit
+  uses @log: Log[write]
+=
+  let ns = [if a == b then p else q].map(each: fn(x) -> 1)
+  @log.write(ns.sum())
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  mapped([s], b: [0], p: [], q: [1, 2], k: fn(xs) -> xs.len)
+
+pub fine(xs: List[Int]) -> Unit
+  uses @log: Log[write]
+=
+  passed(xs, q: [], k: fn(ys) -> ys.len)

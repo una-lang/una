@@ -1,0 +1,13 @@
+-- test: in edition 0.1, a host operation's failure is labeled by the arguments that decide it, capped at what it accepts (N-39, review of #343): U4001: `if error use` runs under the internal decision, so the result is internal
+-- spec: spec/07 §7
+-- expect: error U4001 at src/main.una:13:3
+module main
+
+pub probe(path: internal Text) -> Int
+  uses @files: Files[write]
+=
+  let done = attempt @files.write(path, content: "x")
+  let n = when done
+    is Ok(v) -> 1
+    is Err(e) -> 0
+  n

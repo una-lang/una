@@ -4,6 +4,10 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ## Unreleased
 
+### Security
+
+- **A decision on `T` values through a prelude function's callback, in edition 0.1** (#346, Critical). In a generic body, `[if a == b then p else q].map(each: k)` with `k: fn(T) -> Int`, then writing the result to a `public` sink, was accepted in edition 0.1, and so were `filter`, `first_where` and `fold` with a named step: the prelude called `k` with a value chosen by comparing values of `T`, out of #253's reach. Such a prelude call now raises its result at every position, and runs the function value under the raised program counter, when the function value's parameters lack the decision (T-App, as #253 does for a call written in the body), so the write is U4003. A lambda of the body, and values of `T` passed through, are unchanged. Edition 0.2 already rejected these programs (U4001 at the callback). Found by Una-2's review of the v0.1.4 backport (#343); the conformance cases `security/tapp_*_0_1`, `security/decided_argument_to_prelude_callback_0_1` and `security/n39_*_0_1` come from it.
+
 ### Performance
 
 - **Checking a deeply nested type is no longer cubic in its depth** (#331, N-47). Resolving a type, the occurs check and taking a type's shape copied the whole value of each solved variable they met, at every node, so a value nested d deep checked in O(d³). They now follow variables by reference: a check is quadratic in the depth, since each expression keeps its own type (#335), and about 18 times faster at depth 160. Diagnostics and the queries sent to the solver are byte-identical on every conformance case and example.
