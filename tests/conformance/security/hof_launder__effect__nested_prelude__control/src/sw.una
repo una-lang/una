@@ -1,0 +1,35 @@
+-- test: a decision on values of a type parameter given to function values or to annotations (#346, #350, #354, Una-2's matrix): accept: control: an inferred lambda whose body maps an annotated lambda over its parameter
+-- spec: spec/07 §7
+-- expect: ok
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub kind Bad = | Oops
+
+pub kind Box[T]
+  run: fn(T) -> Int
+
+pub kind Hold[T]
+  value: T
+
+check_len(xs: List[secret Int]) -> Int
+  fails Bad
+=
+  if xs.len > 0 then fail Oops else 0
+
+logger[U](x: U, f: fn(U) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  @log.write(f(x))
+
+g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  logger(p, f: fn(x) -> [x].map(each: fn(y: T) -> k(y)).sum())
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g([s], b: [0], p: [], q: [1], k: fn(xs) -> xs.len)

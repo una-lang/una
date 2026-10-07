@@ -374,20 +374,29 @@ impl<'a> Checker<'_, 'a, '_> {
             let mut declared = Vec::new();
             self.function_types(&self.labeled(expected), &mut declared, &mut Vec::new());
             let (annotated, opaque) = self.annotated_in(*arg_span);
+            // Only an inline lambda written as the argument, none of whose parameters is
+            // annotated, takes its parameter types from the data, as its body assumes them
+            // (#350, H-3, H-4, H-5): it accepts the decisions that every parameter's type
+            // carries. A named function value was checked against `ℓ_T`, an annotated
+            // parameter's body assumes `ℓ_T`, and a wrapped, let-bound or field function value's
+            // type does not show what its body assumed: they accept nothing.
+            let inline = annotated
+                .as_ref()
+                .filter(|flags| !opaque && !flags.contains(&true));
             for (index, (function, field)) in inner.into_iter().enumerate() {
                 let mut accepted = Label::public();
-                for (position, input) in function.params.iter().enumerate() {
-                    // A lambda argument's annotated parameter types its body: it accepts what
-                    // the annotation says, `ℓ_T`, whatever its type unified with. A kind's
-                    // field does not show the type of the function value it holds, so it
-                    // accepts nothing either.
-                    let written = index == 0
-                        && annotated
-                            .as_ref()
-                            .is_some_and(|flags| flags.get(position) == Some(&true));
-                    if !written && !field && !opaque {
-                        accepted = accepted.join(&self.decisions(input));
+                if index == 0 && !field && inline.is_some() && !function.params.is_empty() {
+                    let mut every: Option<std::collections::BTreeSet<String>> = None;
+                    for input in &function.params {
+                        let carried = self.decisions(input);
+                        every = Some(match every {
+                            None => carried.symbols,
+                            Some(so_far) => {
+                                so_far.intersection(&carried.symbols).cloned().collect()
+                            }
+                        });
                     }
+                    accepted.symbols = every.unwrap_or_default();
                 }
                 let mut missing = decided.clone();
                 missing.symbols.retain(|s| !accepted.symbols.contains(s));

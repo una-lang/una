@@ -30,9 +30,8 @@ pub(crate) struct KindLabels {
     /// rule 1). The others are covariant.
     invariant: Vec<Vec<bool>>,
     /// Whether a deep label marks the symbolic labels it joins as deep, `ℓ*_T` (written `T*`),
-    /// apart from the label of a value of `T` itself, `ℓ_T`: only so that a call of a function
-    /// value raises its result by a decision on `T` values (#253). Flows read `T*` as `T`
-    /// ([`super::flow::plain`]), and diagnostics show `label(T)` as before.
+    /// apart from the label of a value of `T` itself, `ℓ_T` (#253, #354): flows tell them apart,
+    /// so a decision on `T` values is not dropped, and diagnostics show `label(T)` as before.
     pub(crate) deep_symbols: bool,
 }
 

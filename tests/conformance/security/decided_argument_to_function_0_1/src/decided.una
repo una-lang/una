@@ -1,6 +1,7 @@
 -- test: in edition 0.1, under D-137, a function value called with an argument chosen by comparing values of a type parameter raises the call's result by them, so writing that result to a public sink is U4003; a value of the type parameter passed through stays accepted (spec/07 §7 rule 8, #253)
 -- spec: spec/07 §7
--- expect: error U4003 at src/decided.una:14:14
+-- expect: error U4001 at src/decided.una:14:13
+-- expect: error U4003 at src/decided.una:15:14
 module decided
 
 pub capability Log

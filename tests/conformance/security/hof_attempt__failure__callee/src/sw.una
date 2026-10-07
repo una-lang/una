@@ -1,7 +1,8 @@
 -- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, Una-2's matrix): reject: attempt failer(decided, f: pure k), then its tag
 -- spec: spec/07 §7
--- expect: error U4002 at src/sw.una:31:19
--- expect: error U4003 at src/sw.una:33:14
+-- expect: error U4002 at src/sw.una:32:19
+-- expect: error U4001 at src/sw.una:32:54
+-- expect: error U4003 at src/sw.una:34:14
 module sw
 
 pub capability Log

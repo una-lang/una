@@ -1,6 +1,9 @@
 -- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, Una-2's matrix): reject: the callee calls an annotated lambda through if_in_if and writes it
 -- spec: spec/07 §7
--- expect: error U4002 at src/sw.una:30:3
+-- expect: error U4002 at src/sw.una:33:3
+-- expect: error U4001 at src/sw.una:33:65
+-- expect: error U4001 at src/sw.una:33:87
+-- expect: error U4001 at src/sw.una:33:107
 module sw
 
 pub capability Log

@@ -1,6 +1,7 @@
 -- test: in edition 0.1, a function value given a value of a type parameter, or a decision on such values (#253, review of #343): leak (U4003): first_where applies a public predicate to the decided element
 -- spec: spec/07 §7
--- expect: error U4003 at src/sw.una:14:14
+-- expect: error U4001 at src/sw.una:13:59
+-- expect: error U4003 at src/sw.una:15:14
 module sw
 
 pub capability Log
