@@ -7,6 +7,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 ### Performance
 
 - **Checking a deeply nested type is no longer cubic in its depth** (#331, N-47). Resolving a type, the occurs check and taking a type's shape copied the whole value of each solved variable they met, at every node, so a value nested d deep checked in O(d³). They now follow variables by reference: a check is quadratic in the depth, since each expression keeps its own type (#335), and about 18 times faster at depth 160. Diagnostics and the queries sent to the solver are byte-identical on every conformance case and example.
+- **The interpreter reads a binding in constant time** (#329). Its run-time environment indexes each name's bindings, so reading one no longer scans every binding in scope: a body of n bindings that each read an early one runs in O(n), not O(n²) (16,000 bindings: 2.6 s to 0.03 s). A closure keeps the bindings its body reads rather than a copy of the whole environment, so making and calling one costs what it reads, not what is in scope. Outputs and traces are unchanged.
 
 ## v0.3.0
 

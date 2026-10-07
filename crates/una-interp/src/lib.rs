@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+mod env;
 mod harness;
 mod host;
 mod json;
