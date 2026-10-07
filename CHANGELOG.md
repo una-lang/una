@@ -14,6 +14,10 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 - **A closed stdout or stderr discards the output** (#259). `spec/13 §5` and `spec/16 §3` now say what both engines already did: writing to a closed stream is not a failure to write, as for `/dev/null`, so `una run`, `una test` and native executables exit as they would with the stream open. A broken pipe (EPIPE), a reader that went away, still exits with code 2. Tests now pin both cases in the interpreter and in native code.
 
+### Performance
+
+- **Building a list through calls takes linear time** (ADR 0072, #262). An `edit` argument, or a binding at its last use rebound from a call's result (`acc = push(acc, x)`), now moves into the callee, which appends in place through any number of call levels, in the interpreter and in native code: amortized O(1) per append instead of a copy of the whole list at each call. A binding that the code after a failure reads keeps its value, as before. Native functions own the parameters they consume, found by borrow inference. A read-only parameter is still borrowed at no cost.
+
 ## v0.2.0
 
 The first stable release of v0.2. The native backend compiles the whole language of edition 0.2 into executables that match the interpreter. Edition 0.2 completes its scope with structured concurrency, constraints on generics and printing of structured values, and every Critical and Major finding of the two independent reviews of v0.2 (#176, #177) is fixed. Gate 1's benchmark stays pinned to v0.1.x.
