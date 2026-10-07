@@ -128,3 +128,23 @@ With L1 to L4 all A, in edition `0.2`:
 The B and C options under each question. Also:
 - **Re-check a lambda when its expected parameter types rise.** This is ADR 0051 D. Not chosen there and not here: it contradicts `spec/07 §7` rule 2.
 - **Monomorphize the label check:** check each generic function again for every instantiation. Not chosen: it is precise, but the work grows with the number of call sites, and a diagnostic would point into the generic body for a caller's type.
+
+## Amendment (2026-10-06)
+
+The independent check of the implementation (#231) found that L1 rule 1 as written is unsound, and two rounds of rechecks shaped the rule the implementation follows.
+
+Leonardo ratified the four rules below that go beyond L1 to L4 on 2026-10-06: the two symbolic labels with `Ord` and `Integer` parameters starting deep, the raise at calls of function values (T-App), the decisions recorded for `of` parameters, and function-type parameters left out of the summary positions.
+
+- **Two symbolic labels.** L1 rule 1 says a position that is a type parameter `T` "gets its labels from `σ(T)` by substitution". Substitution puts only `σ(T)`'s own labels there, while a `T` value chosen by comparing `T` values depends on every label of `σ(T)`: with `T = List[secret Int]`, it would come out with a public top. Edition `0.2` therefore tells two symbolic labels apart in a generic body: `ℓ_T`, the label of a value of `T` as it was passed in, and `ℓ*_T`, every label of `σ(T)`, which comparisons, conditions and every deep join of `T` values give, with `ℓ_T ⊑ ℓ*_T`. At a position that is a type parameter `T`, the summary leaves `ℓ_T` out, as rule 1 says, and counts `ℓ*_T`, so `id(xs).len` stays public and a chosen value is raised by `ℓ*(σ(T))`. For a parameter constrained by `Ord` or `Integer`, whose type arguments are scalars, the two labels are the same.
+- **Decisions given to functions.** A function value called with an argument that carries `ℓ*_T` raises the call's result and program counter by it, as the label of the value itself does (T-App), since the function's parameter type says `ℓ_T`. When the function is a parameter that an `of` clause names, the decision is recorded for the parameter, and each caller runs its argument under `ℓ*(σ(T))`, as the prelude's `first_where` runs its predicate (#234). This replaces an earlier reading of this amendment, that the parameters of a function type in the result are not raised: a decision reaches a function's parameter through such calls, which this rule covers.
+- **No bound on the rounds of L2.** The least fixpoint is computed per strongly connected component, callees first, with a worklist that checks a function again only when a function it calls grew: summaries only grow over finitely many positions and parameters.
+- **L4 covers every predicate value.** The U4002 of an effectful `first_where` predicate with a labeled result applies to a named function given as the predicate, as to a lambda, and to failures as to effects.
+- **Some sound programs are rejected** (Leonardo, 2026-10-06). The consequence "Never more rejections" above no longer holds. A generic body that sends a `T` value decided by comparing `T` values, which carries `ℓ*_T`, to a place labeled `ℓ_T` is now U4001 in the body, where main accepted it soundly. The places are:
+  - a lambda's parameter or result;
+  - an argument of a higher-order function;
+  - a function value returned as the result;
+  - an `edit` binding of type `T`;
+  - a field of a non-generic kind of the body.
+
+  For example, `pick` with an `edit` binding assigned under `if a == b`, and `best` folded with a comparison inside the step lambda. There is no sound way to accept these without checking a lambda again when its expected labels rise, which this ADR rules out (alternative D of ADR 0051). The conformance cases `security/g67c_*` record the shapes the check found: A19, A20, B04, B04c, B05b, B06 to B09, G01, G02, G15 and G18, each with its control.
+- **The example of shape (2)** (Leonardo, 2026-10-06). The `insert` of the Context ends with a call of the user function `concat`, whose parameter `front` has a public top. A list built by comparisons of `T` values has the top label `ℓ_T`, and passing it there would let `concat`'s public result length depend on the comparison, so that call stays U4001. Accepting it soundly needs a summary from parameter labels to result positions, which is label polymorphism (#40). The example's form that this ADR accepts ends with the prelude instead: `behind.fold(initial: ahead.append(item: item), step: fn(acc, s) -> acc.append(item: s))`.

@@ -301,6 +301,9 @@ pub(crate) struct OfCallee {
     pub(crate) own_fails: Option<Ty>,
     /// For a prelude function, its name, whose calls `spec/07 §7` rule 9 describes.
     pub(crate) prelude: Option<String>,
+    /// For a function of the package, the label each `of` parameter's argument runs under, by
+    /// parameter: its decisions on type parameters, instantiated (ADR 0067 amendment).
+    pub(crate) raises: std::collections::BTreeMap<usize, Label>,
 }
 
 /// The argument being checked, given for a parameter that an `of` clause names.
@@ -437,6 +440,13 @@ impl Checker<'_, '_, '_> {
         let fails = (def.fails_of == Some(index))
             .then(|| self.of_kind())
             .flatten();
+        // The callee runs the parameter under `raise`. Its part that is a decision on this
+        // function's own type parameters is this function's callers' to check, as for a call
+        // of the parameter here (ADR 0067 amendment); the rest is checked now.
+        let raise = &self.labeled(&Ty::Bool.with_label(raise)).top_label();
+        let (decided, rest) = self.split_decisions(raise);
+        self.raise_of(index, &decided);
+        let raise = &rest;
         if self.pass == super::authority::Pass::Check {
             if self.own_depth() > 0 {
                 self.report.error(
@@ -508,6 +518,13 @@ impl<'a> Checker<'_, 'a, '_> {
                 (self.labeled(&list).top_label(), false)
             }
             (Some("first_where"), Some(list)) => (self.deep(&list), true),
+            (None, _) => (
+                of.raises
+                    .get(&target)
+                    .map(|raise| self.labeled(&Ty::Bool.with_label(raise)).top_label())
+                    .unwrap_or_else(Label::public),
+                false,
+            ),
             _ => (Label::public(), false),
         };
         Some(OfArgument {
@@ -558,6 +575,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// A function value given for an `of` parameter at `span`: the callee performs its
     /// effects and failures, so its `uses` are needed here, under the program counter
     /// raised by `raise`, and are taken out of the type that flows into the parameter.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn of_function_value(
         &mut self,
         span: Span,
@@ -566,6 +584,7 @@ impl<'a> Checker<'_, 'a, '_> {
         fails: bool,
         kind: Option<&Ty>,
         raise: &Label,
+        by_result: bool,
     ) -> Ty {
         // The labels stay: those of the value's parameter and result types, symbolic ones of
         // type parameters included, flow into the parameter's type as for any argument (#210).
@@ -596,6 +615,12 @@ impl<'a> Checker<'_, 'a, '_> {
         let fallible = fails && function.fails.is_some();
         if !effects.is_empty() || fallible {
             self.call_under_pc(span, "this function", effects, fallible, false, raise);
+        }
+        // As for a lambda: `first_where` stops at the first element the function accepts, so
+        // its effects and failures reveal its labeled result (ADR 0067 L4).
+        if by_result && (!function.uses.is_empty() || function.fails.is_some()) {
+            let result = self.labeled(&function.result).top_label();
+            self.stops_by_result(span, &result.join(&label), "this function");
         }
         self.record_of(&slot, value, span, "this function");
         if uses {
@@ -658,16 +683,11 @@ impl<'a> Checker<'_, 'a, '_> {
         self.locals.truncate(mark);
         let (effects, fails) = lambda.map_or((false, None), |l| (l.effects, l.fails));
         // `first_where` stops at the first element its lambda accepts, so the lambda's
-        // effects run under the label of its result too (`spec/07 §7` rule 9).
-        if argument.by_result && effects && self.pass == super::authority::Pass::Check {
+        // effects and failures run under the label of its result too (`spec/07 §7` rule 9,
+        // ADR 0067 L4).
+        if argument.by_result && (effects || fails.is_some()) {
             let label = self.labeled(&body_ty).top_label();
-            if !label.is_public() {
-                self.report.error(
-                    Code::U4002,
-                    span,
-                    format!("`first_where` stops at the first element this lambda accepts, so its effects reveal its `{label}` result; perform them in a `for` loop over the elements instead"),
-                );
-            }
+            self.stops_by_result(span, &label, "this lambda");
         }
         self.record_of(&argument, OfFound { effects, fails }, span, "this lambda");
         Ty::Fn(Box::new(super::ty::FnTy {
@@ -677,6 +697,42 @@ impl<'a> Checker<'_, 'a, '_> {
             fails: None,
             refinements: super::ty::FnRefinements::default(),
         }))
+    }
+}
+
+impl Checker<'_, '_, '_> {
+    /// `label` split into the deep symbolic labels `ℓ*_T` of the enclosing function's own type
+    /// parameters, and the rest (ADR 0067 amendment).
+    pub(crate) fn split_decisions(&self, label: &Label) -> (Label, Label) {
+        let names = &self.type_params;
+        let own = |s: &String| {
+            s.strip_suffix('*')
+                .is_some_and(|name| names.contains(&name))
+        };
+        let mut decided = label.clone();
+        decided.symbols.retain(own);
+        decided.level = una_core::Level::Public;
+        decided.categories.clear();
+        let mut rest = label.clone();
+        rest.symbols.retain(|s| !own(s));
+        (decided, rest)
+    }
+
+    /// U4002 for a predicate of `first_where`, `what`, whose effects or failures run only up
+    /// to the first element it accepts, when its result is labeled `label`.
+    fn stops_by_result(&mut self, span: Span, label: &Label, what: &str) {
+        // One U4002 at the predicate is enough, when the program counter already raised one.
+        if self.pass != super::authority::Pass::Check
+            || label.is_public()
+            || self.report.has(Code::U4002, span)
+        {
+            return;
+        }
+        self.report.error(
+            Code::U4002,
+            span,
+            format!("`first_where` stops at the first element {what} accepts, so its effects reveal its `{label}` result; perform them in a `for` loop over the elements instead"),
+        );
     }
 }
 

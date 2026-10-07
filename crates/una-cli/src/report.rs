@@ -59,7 +59,31 @@ struct Report {
     requirements: Vec<RequirementDoc>,
     coverage: CoverageDoc,
     native: NativeDoc,
+    generic_results: Vec<GenericResultDoc>,
     out_of_model: [&'static str; 8],
+}
+
+/// A public generic function and its result summary (ADR 0067, `spec/13 §6`).
+#[derive(Serialize)]
+struct GenericResultDoc {
+    function: String,
+    result_labels: Vec<ResultLabelDoc>,
+    of_raises: Vec<OfRaiseDoc>,
+}
+
+/// An `of` parameter of a generic function whose calls depend on decisions on type
+/// parameters (ADR 0067 amendment).
+#[derive(Serialize)]
+struct OfRaiseDoc {
+    param: String,
+    from: Vec<String>,
+}
+
+/// A position of a generic function's result and the type parameters whose labels reach it.
+#[derive(Serialize)]
+struct ResultLabelDoc {
+    position: String,
+    from: Vec<String>,
 }
 
 /// The native backend (ADR 0055): the host target, and the bindings whose `Int` stays
@@ -341,6 +365,33 @@ fn build(
             })
         })
         .collect();
+    // ADR 0067: the result summaries of the public generic functions.
+    let generic_results: Vec<GenericResultDoc> = analysis
+        .headers
+        .iter()
+        .filter(|header| header.generic)
+        .map(|header| (format!("{}.{}", header.module, header.name), header))
+        .filter(|(function, _)| public.get(function).copied().unwrap_or(false))
+        .map(|(function, header)| GenericResultDoc {
+            function,
+            result_labels: header
+                .result_labels
+                .iter()
+                .map(|(position, from)| ResultLabelDoc {
+                    position: position.clone(),
+                    from: from.clone(),
+                })
+                .collect(),
+            of_raises: header
+                .of_raises
+                .iter()
+                .map(|(param, from)| OfRaiseDoc {
+                    param: param.clone(),
+                    from: from.clone(),
+                })
+                .collect(),
+        })
+        .collect();
     let mut authority = Vec::new();
     let mut host = BTreeSet::new();
     for header in &analysis.headers {
@@ -508,6 +559,7 @@ fn build(
             target: una_codegen::host_target(),
             arbitrary_precision: arbitrary_precision(program),
         },
+        generic_results,
         out_of_model: OUT_OF_MODEL,
     }
 }
@@ -824,6 +876,26 @@ fn human(report: &Report) -> String {
         "  arbitrary precision: {}",
         report.native.arbitrary_precision.join(", ")
     ));
+    for generic in &report.generic_results {
+        let parts: Vec<String> = generic
+            .result_labels
+            .iter()
+            .map(|label| format!("{} from {}", label.position, label.from.join(", ")))
+            .collect();
+        let mut parts = parts;
+        parts.extend(
+            generic
+                .of_raises
+                .iter()
+                .map(|raise| format!("{} runs under {}", raise.param, raise.from.join(", "))),
+        );
+        let summary = if parts.is_empty() {
+            "none".to_owned()
+        } else {
+            parts.join("; ")
+        };
+        line(format!("generic result {}: {summary}", generic.function));
+    }
     line(format!("out of model: {}", report.out_of_model.join(", ")));
     out
 }

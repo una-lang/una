@@ -1,0 +1,8 @@
+-- test: ADR 0067 recheck of #231, F11_list_T_callback: a decision on values of a type parameter reaches a public result or an effect, through a returned value, a function value or an `of` parameter, and is rejected (spec/07 §7 rule 8, #92, #234)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/f11.una:8:34
+module f11
+
+apply[T](xs: List[T], y: T, k: fn(List[T]) -> Int) -> Int = k(xs.filter(keep: fn(x) -> x == y))
+
+pub leak(s: secret Int) -> Int = apply([s, 1], y: 0, k: fn(l: List[secret Int]) -> l.len)

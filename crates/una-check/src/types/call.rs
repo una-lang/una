@@ -3,6 +3,7 @@
 //!, and constructors (U2009).
 
 use una_diag::{Code, ObligationKind};
+use una_project::Edition;
 use una_syntax::Span;
 use una_syntax::ast::{Arg, Convention, Expr, ExprKind, Ident};
 
@@ -14,7 +15,7 @@ use super::expr::count;
 use super::label::Label;
 use super::records::Res;
 use super::ty::{FnUse, KindId, Refinement, Ty};
-use super::unify::Vars;
+use super::unify::{Origin, Vars};
 
 /// A checked argument: where it is, its type, the type of its parameter, and the parameter.
 pub(crate) type Checked<'a> = (Span, Ty, Ty, &'a str);
@@ -161,6 +162,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 &format!("field `{method}`"),
                 site,
                 None,
+                None,
             );
             if let Some((kind, index)) = self.field_index(&resolved, method) {
                 self.resolved(span, Res::FieldFn { kind, index });
@@ -216,7 +218,8 @@ impl<'a> Checker<'_, 'a, '_> {
                     let of = self.of_param(name).map(|index| {
                         self.run_of_param(name, index, ident.span, &Label::public(), &own)
                     });
-                    return self.call_value(&ty, args, span, &format!("`{name}`"), site, of);
+                    let index = self.of_param(name);
+                    return self.call_value(&ty, args, span, &format!("`{name}`"), site, of, index);
                 }
                 match self.env.lower(self.module, name) {
                     Some(Entity::Function(id)) => self.call_function(id, None, args, span, site),
@@ -242,7 +245,7 @@ impl<'a> Checker<'_, 'a, '_> {
             _ => {
                 self.outside_rl(span, || "call of a function value".to_owned());
                 let ty = self.expr(callee, None);
-                self.call_value(&ty, args, span, "this function", site, None)
+                self.call_value(&ty, args, span, "this function", site, None, None)
             }
         }
     }
@@ -250,6 +253,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// A call of a function value: positional arguments only.
     /// `of`: for a parameter that an `of` clause names, the effects and failure of its
     /// argument, which the call performs (ADR 0062).
+    #[allow(clippy::too_many_arguments)]
     fn call_value(
         &mut self,
         ty: &Ty,
@@ -258,6 +262,7 @@ impl<'a> Checker<'_, 'a, '_> {
         what: &str,
         site: Site,
         of: Option<super::effects::OfFound>,
+        of_index: Option<usize>,
     ) -> Ty {
         let value_label = self.labeled(ty).top_label();
         // The function type is taken before its labels are settled: the result of a generic
@@ -319,6 +324,7 @@ impl<'a> Checker<'_, 'a, '_> {
         self.resolved(span, Res::Value);
         self.ordered(span, (0..args.len()).map(Some).collect());
         let mut flows = Vec::new();
+        let mut decided = Label::public();
         for (arg, param) in args.iter().zip(&function.params) {
             self.ctx.argument = true;
             let found = self.expr_as(
@@ -335,12 +341,24 @@ impl<'a> Checker<'_, 'a, '_> {
             if !function.refinements.param(flows.len()).is_empty() {
                 self.obligation(ObligationKind::Refinement, arg.value.span, None);
             }
+            // ADR 0067 amendment: an argument decided by comparing values of the enclosing
+            // function's type parameters carries `ℓ*_T`. A function value cannot be checked
+            // against that, so the decision raises the call's result and program counter
+            // instead, as the value's own label does, and the argument flows without it.
+            let found = self.without_decisions(&found, &mut decided);
             flows.push((arg.value.span, found, param.clone()));
         }
         for (arg_span, found, param) in flows {
             self.instantiated_by(arg_span, &param, &found);
             self.flow(arg_span, &found, &param, &format!("the argument of {what}"));
         }
+        // A parameter that an `of` clause names runs the effects its caller chose, so a
+        // decision on its argument would reveal itself through them (#234): its callers run
+        // their argument under the decision, as the prelude's `first_where` does.
+        if let Some(index) = of_index {
+            self.raise_of(index, &decided);
+        }
+        let value_label = value_label.join(&decided);
         // Calling a function value needs the capabilities of its type (`spec/10 §2`, S-Fun).
         let level = self.frames.len();
         self.needs_site(what, &function.uses, span, level);
@@ -369,6 +387,33 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         // The result of a function value carries the value's label.
         function.result.with_label(&value_label)
+    }
+
+    /// `found` without the deep symbolic labels `ℓ*_T` of the enclosing function's type
+    /// parameters, which are joined into `decided` (ADR 0067 amendment): edition 0.2 only.
+    fn without_decisions(&self, found: &Ty, decided: &mut Label) -> Ty {
+        if self.env.edition < Edition::V0_2 || self.type_params.is_empty() {
+            return found.clone();
+        }
+        let names = self.type_params.clone();
+        let deep = |symbol: &str| {
+            symbol
+                .strip_suffix('*')
+                .is_some_and(|name| names.contains(&name))
+        };
+        let labeled = self.labeled(found);
+        let seen = std::cell::RefCell::new(Label::public());
+        let stripped = labeled.map_labels(&|label| {
+            let mut kept = label.clone();
+            kept.symbols.retain(|s| !deep(s));
+            let mut gathered = Label::public();
+            gathered.symbols = label.symbols.iter().filter(|s| deep(s)).cloned().collect();
+            let joined = seen.borrow().join(&gathered);
+            *seen.borrow_mut() = joined;
+            kept
+        });
+        *decided = decided.join(&seen.into_inner());
+        stripped
     }
 
     /// S-Fun at a flow of a value of type `found` into the declared type `expected`
@@ -559,6 +604,18 @@ impl<'a> Checker<'_, 'a, '_> {
                 fails_of: def.fails_of,
                 own_fails: def.fails.clone(),
                 prelude: (def.module == self.env.prelude).then(|| def.name.to_owned()),
+                raises: self
+                    .env
+                    .of_raises
+                    .range((id, 0)..=(id, usize::MAX))
+                    .map(|((_, param), indices)| {
+                        let args: Vec<Ty> = indices
+                            .iter()
+                            .filter_map(|i| subst.get(*i).cloned())
+                            .collect();
+                        (*param, Vars::label_of(&args))
+                    })
+                    .collect(),
             });
             self.of_found.push(super::effects::OfFound::default());
         }
@@ -594,7 +651,7 @@ impl<'a> Checker<'_, 'a, '_> {
             self.prelude_result(&callee, def.name, checked, result)
         } else {
             self.argument_flows(&callee, checked);
-            generic_result(self.env.prelude, &def, &subst, result)
+            self.generic_result(id, &def, &subst, result)
         };
         if !subst.is_empty() {
             self.instantiation(def.name, &def.type_params, subst, values, span);
@@ -606,6 +663,41 @@ impl<'a> Checker<'_, 'a, '_> {
             self.call_fails.insert(span, fails.clone());
         }
         result
+    }
+
+    /// The result of a call of a generic function declared outside the prelude: the value its
+    /// body returns may carry the symbolic labels of its type parameters, which the call
+    /// replaces by `ℓ*(σ)`, the join of every label of each type argument (`spec/10 §5`,
+    /// generic instantiation, rule 3).
+    /// - Edition 0.2 (ADR 0067): each position is raised by the type arguments of its summary.
+    /// - Edition 0.1, DECISION D-137: every position that holds data is raised by the join of
+    ///   `ℓ*(σ)` over all the type arguments.
+    pub(crate) fn generic_result(
+        &self,
+        id: usize,
+        def: &FnDef<'_>,
+        subst: &[Ty],
+        result: Ty,
+    ) -> Ty {
+        if subst.is_empty() || def.module == self.env.prelude {
+            return result;
+        }
+        if self.env.edition >= Edition::V0_2 {
+            let summary = self.env.summaries.get(&id).cloned().unwrap_or_default();
+            return super::summary::raise(&def.result.base, result, &summary, subst);
+        }
+        result.raise_deep(&Vars::label_of(subst))
+    }
+
+    /// The result type of a generic function used as a value with type arguments `args`, which
+    /// the value's type records lazily, since they are known only once the value flows
+    /// somewhere (`spec/10 §5`, generic instantiation): raised as a call raises it.
+    pub(crate) fn generic_value_result(&self, id: usize, args: &[Ty]) -> Ty {
+        let Some(def) = self.env.functions.get(id) else {
+            return Ty::Error;
+        };
+        let result = def.result.base.substitute(args);
+        self.generic_result(id, def, args, result)
     }
 
     /// The result of a call of a prelude function of `spec/14 §1` "Result labels": its
@@ -902,6 +994,24 @@ impl<'a> Checker<'_, 'a, '_> {
         names.iter().position(|candidate| *candidate == name)
     }
 
+    /// `keep`'s expected type `fn(T) -> Bool` with the result a fresh variable bound to
+    /// `Bool`, whose label rises with the predicate's result (ADR 0067 L4).
+    fn labeled_predicate(&mut self, expected: Ty, span: Span) -> Ty {
+        let Ty::Fn(mut function) = expected else {
+            return expected;
+        };
+        let result = self.vars.fresh(
+            Origin::Instance {
+                param: "Bool".to_owned(),
+                of: "keep".to_owned(),
+            },
+            span,
+        );
+        self.vars.unify(&result, &function.result);
+        function.result = result;
+        Ty::Fn(function)
+    }
+
     /// The arguments of a call of a function, operation or handler (`spec/04 §3`): the first
     /// may go unlabeled, the others are labeled or punned (U2004); an unknown label is U2005,
     /// a repeated parameter U2006, and a wrong number of arguments U2001.
@@ -1071,6 +1181,18 @@ impl<'a> Checker<'_, 'a, '_> {
                 continue;
             };
             let expected = param.ty.base.substitute(subst);
+            // ADR 0067 L4: in edition 0.2, whose prelude gives `filter` and `first_where` an
+            // `of` clause, the predicate's result is a variable bound to `Bool` that takes the
+            // predicate's labels, which then raise the result's top label (`spec/14 §1`).
+            let expected = if param.name == "keep"
+                && matches!(
+                    of_callee.as_ref().and_then(|of| of.prelude.as_deref()),
+                    Some("filter" | "first_where")
+                ) {
+                self.labeled_predicate(expected, span)
+            } else {
+                expected
+            };
             let role = Role::Argument {
                 param: param.name,
                 callee,
@@ -1085,6 +1207,7 @@ impl<'a> Checker<'_, 'a, '_> {
             let of_uses = slot.as_ref().is_some_and(|slot| slot.uses);
             let of_fails = slot.as_ref().is_some_and(|slot| slot.fails);
             let raise = slot.as_ref().map(|slot| slot.raise.clone());
+            let by_result = slot.as_ref().is_some_and(|slot| slot.by_result);
             let is_slot = slot.is_some();
             self.of_argument = slot;
             let mut found = self.expr_as(&arg.value, Some(&expected), role);
@@ -1099,6 +1222,7 @@ impl<'a> Checker<'_, 'a, '_> {
                         of_fails,
                         of_kind.as_ref(),
                         &raise.unwrap_or_else(Label::public),
+                        by_result,
                     );
                 }
             }
@@ -1607,20 +1731,6 @@ fn structural_inputs(name: &str) -> Option<&'static [(&'static str, bool)]> {
 /// functions (ADR 0051); the other prelude functions keep the labels of their parameter types.
 fn prelude_labeled(prelude: usize, def: &FnDef<'_>) -> bool {
     def.module == prelude && def.kind == FnKind::Function && PRELUDE_LABELED.contains(&def.name)
-}
-
-/// The result of a call of a generic function declared outside the prelude: the value its
-/// body returns may carry the symbolic labels of its type parameters, which the call replaces
-/// by `ℓ*(σ)`, the join of every label of each type argument (`spec/10 §5`, generic
-/// instantiation, rule 3).
-/// DECISION D-137: every position of the result that holds data is raised by the join of
-/// `ℓ*(σ)` over all the type arguments, since the checker does not record which symbolic
-/// labels, at which positions, the body's result carries.
-fn generic_result(prelude: usize, def: &FnDef<'_>, subst: &[Ty], result: Ty) -> Ty {
-    if subst.is_empty() || def.module == prelude {
-        return result;
-    }
-    result.raise_deep(&Vars::label_of(subst))
 }
 
 /// Whether `ty` holds a type variable at any position.

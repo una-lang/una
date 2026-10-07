@@ -1,0 +1,4 @@
+[package]
+name = "g67b_p06b_generic_named_value_cmp"
+version = "0.1.0"
+edition = "0.2"

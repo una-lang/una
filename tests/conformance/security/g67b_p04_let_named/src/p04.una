@@ -1,0 +1,23 @@
+-- test: ADR 0067 recheck of #231, P04_let_named: a decision on values of a type parameter reaches a public result or an effect, through a returned value, a function value or an `of` parameter, and is rejected (spec/07 §7 rule 8, #92, #234)
+-- spec: spec/07 §7
+-- expect: error U3006 at src/p04.una:21:11
+-- expect: error U4002 at src/p04.una:22:36
+module p04
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+noisy(x: Int) -> secret Bool
+  uses @log: Log[write]
+=
+  @log.write(x)
+  x < secret_threshold()
+
+secret_threshold() -> secret Int = 3
+
+pub leak(xs: List[Int]) -> Unit
+  uses @log: Log[write]
+=
+  let p = noisy
+  let found = xs.first_where(keep: p)
+  unit

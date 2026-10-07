@@ -1,0 +1,21 @@
+-- test: ADR 0067 recheck of #231, P01_lambda_wraps_named: a decision on values of a type parameter reaches a public result or an effect, through a returned value, a function value or an `of` parameter, and is rejected (spec/07 §7 rule 8, #92, #234)
+-- spec: spec/07 §7
+-- expect: error U4002 at src/p01.una:20:36
+module p01
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+noisy(x: Int) -> secret Bool
+  uses @log: Log[write]
+=
+  @log.write(x)
+  x < secret_threshold()
+
+secret_threshold() -> secret Int = 3
+
+pub leak(xs: List[Int]) -> Unit
+  uses @log: Log[write]
+=
+  let found = xs.first_where(keep: fn(x) -> noisy(x))
+  unit

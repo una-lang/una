@@ -1,0 +1,11 @@
+-- test: ADR 0067 adversarial check of #231, L30_callerpc: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/l30.una:11:3
+module l30
+
+id_list[T](x: T) -> List[T] = [x]
+
+pub leak(c: secret Bool) -> Int
+=
+  let xs = if c then id_list(1) else id_list(2)
+  xs.fold(initial: 0, step: fn(acc, v) -> acc + v)

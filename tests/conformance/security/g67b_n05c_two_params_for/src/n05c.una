@@ -1,0 +1,13 @@
+-- test: ADR 0067 recheck of #231, N05c_two_params_for: a decision on values of a type parameter reaches a public result or an effect, through a returned value, a function value or an `of` parameter, and is rejected (spec/07 §7 rule 8, #92, #234)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/n05c.una:12:9
+module n05c
+
+pick[T, U](a: T, b: T, p: U, q: U) -> U = if a == b then p else q
+
+pub leak(s: secret Int) -> Int
+=
+  let edit n = 0
+  for x in pick(s, b: 0, p: [1], q: [2])
+    n = n + 1
+  n

@@ -1,0 +1,8 @@
+-- test: ADR 0067 adversarial check of #231, L00_t00: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/t00.una:8:34
+module t00
+
+smaller[T: Ord](a: T, b: T) -> List[T] = if a < b then [a] else [b, a]
+
+pub leak(s: secret Int) -> Int = smaller(s, b: 0).len

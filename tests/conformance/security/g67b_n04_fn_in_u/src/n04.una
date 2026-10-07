@@ -1,0 +1,11 @@
+-- test: ADR 0067 recheck of #231, N04_fn_in_U: a decision on values of a type parameter reaches a public result or an effect, through a returned value, a function value or an `of` parameter, and is rejected (spec/07 §7 rule 8, #92, #234)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/n04.una:11:3
+module n04
+
+pick[U](x: U, y: U, p: fn(Int) -> U, q: fn(Int) -> U) -> fn(Int) -> U = if x == y then p else q
+
+pub leak(s: secret Int) -> Int
+=
+  let g = pick([s], y: [0], p: fn(n: Int) -> [n], q: fn(n: Int) -> [n, n])
+  g(0).len

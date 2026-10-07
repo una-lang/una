@@ -1,0 +1,4 @@
+[package]
+name = "g67c_a20_fold_max_like"
+version = "0.1.0"
+edition = "0.2"

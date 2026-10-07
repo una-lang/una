@@ -1,0 +1,24 @@
+-- test: ADR 0067 adversarial check of #231, L33g_fw_generic_pivot: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
+-- spec: spec/07 §7
+-- expect: error U4002 at src/l33g.una:18:36
+module l33g
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+hit[T](x: Int, p: T, q: T) -> Bool
+  uses @log: Log[write]
+=
+  @log.write(x)
+  p == q
+
+scan[T](xs: List[Int], p: T, q: T) -> Unit
+  uses @log: Log[write]
+=
+  let found = xs.first_where(keep: fn(x) -> hit(x, p, q))
+  unit
+
+pub leak(xs: List[Int], s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  scan(xs, p: s, q: 0)

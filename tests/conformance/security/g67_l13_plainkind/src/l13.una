@@ -1,0 +1,12 @@
+-- test: ADR 0067 adversarial check of #231, L13_plainkind: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/l13.una:10:41
+module l13
+
+kind Pair
+  x: Int
+  y: Int
+
+paired[T](a: T, b: T) -> Pair = Pair(x: if a == b then 1 else 0, y: 0)
+
+pub leak(s: secret Int) -> Int = paired(s, b: 0).x

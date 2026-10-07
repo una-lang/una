@@ -1,0 +1,16 @@
+-- test: ADR 0067 adversarial check of #231, L08_effect: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
+-- spec: spec/07 §7
+-- expect: error U4002 at src/l08.una:10:5
+module l08
+
+announce[T](a: T, b: T) -> Int
+  uses @console: Console[print]
+=
+  if a == b
+    @console.print("same")
+  0
+
+pub leak(s: secret Int) -> Int
+  uses @console: Console[print]
+=
+  announce(s, b: 0)

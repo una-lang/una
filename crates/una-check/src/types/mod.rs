@@ -28,6 +28,7 @@ mod label;
 mod memory;
 mod records;
 mod stmt;
+mod summary;
 mod ty;
 mod unify;
 
@@ -138,6 +139,15 @@ pub struct Header {
     /// Its constrained type parameters, in order: the parameter, the constraint, and whether
     /// it is inferred (`spec/20 §8`).
     pub constraints: Vec<(String, String, bool)>,
+    /// Its result summary: each position of its declared result whose summary is not empty,
+    /// written as `spec/13 §5` writes it, with the type parameters there (ADR 0067).
+    pub result_labels: Vec<(String, Vec<String>)>,
+    /// Whether it has type parameters.
+    pub generic: bool,
+    /// Each parameter that an `of` clause names whose calls depend on decisions on type
+    /// parameters, with those type parameters: callers run their argument under them
+    /// (ADR 0067 amendment).
+    pub of_raises: Vec<(String, Vec<String>)>,
 }
 
 /// The outcome of [`check_types`].
@@ -190,7 +200,10 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
     authority::stored_effects(&env, &mut report);
     // Pass 1 collects what inference needs, and its diagnostics are dropped;
     // pass 2 checks with the inferred headers.
+    // Pass 1 also records the result summaries of generic functions (ADR 0067); in edition
+    // 0.2 they then reach their least fixpoint, below.
     let mut collected = authority::Collected::default();
+    let mut edges = Vec::new();
     {
         let mut scratch = Report::new(package.sources);
         let mut findings = Findings::default();
@@ -207,6 +220,15 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
                 );
             }
         }
+        edges.extend(
+            findings
+                .edges
+                .iter()
+                .map(|(caller, callee, _)| (*caller, *callee)),
+        );
+    }
+    if package.settings.edition >= Edition::V0_2 {
+        summary_fixpoint(&mut env, &facts, package.sources, &edges);
     }
     authority::infer(&mut env, &collected, &mut report);
     let mut findings = Findings::default();
@@ -296,8 +318,46 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
 fn headers(env: &Env<'_>) -> Vec<Header> {
     env.functions
         .iter()
-        .filter(|f| f.kind == env::FnKind::Function && env.reports(f.module))
-        .map(|f| Header {
+        .enumerate()
+        .filter(|(_, f)| f.kind == env::FnKind::Function && env.reports(f.module))
+        .map(|(id, f)| Header {
+            generic: !f.type_params.is_empty(),
+            of_raises: env
+                .of_raises
+                .range((id, 0)..=(id, usize::MAX))
+                .filter(|(_, params)| !params.is_empty())
+                .filter_map(|((_, index), params)| {
+                    let param = f.params.get(*index)?;
+                    Some((
+                        param.name.to_owned(),
+                        params
+                            .iter()
+                            .filter_map(|p| f.type_params.get(*p))
+                            .map(|p| (*p).to_owned())
+                            .collect(),
+                    ))
+                })
+                .collect(),
+            result_labels: env
+                .summaries
+                .get(&id)
+                .map(|summary| {
+                    summary
+                        .iter()
+                        .filter(|(_, params)| !params.is_empty())
+                        .map(|(path, params)| {
+                            (
+                                env::position_text(path),
+                                params
+                                    .iter()
+                                    .filter_map(|index| f.type_params.get(*index))
+                                    .map(|param| (*param).to_owned())
+                                    .collect(),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             module: env
                 .modules
                 .get(f.module)
@@ -434,6 +494,66 @@ fn parse_standard(
     parse(&lexed, id, interner).file
 }
 
+/// The least fixpoint of the result summaries of the generic functions (ADR 0067 L2): over
+/// the strongly connected components of their calls, callees first, each component's bodies
+/// are checked again until none of their summaries grows. Summaries only grow, over finitely
+/// many positions and type parameters, so each loop ends, and a function is checked again
+/// only with its own component.
+fn summary_fixpoint(
+    env: &mut Env<'_>,
+    facts: &facts::KindFacts,
+    sources: &SourceDb,
+    edges: &[(usize, usize)],
+) {
+    let generic: std::collections::BTreeSet<usize> = env
+        .functions
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| {
+            f.module < env.prelude && f.kind == env::FnKind::Function && !f.type_params.is_empty()
+        })
+        .map(|(id, _)| id)
+        .collect();
+    for component in summary::components(&generic, edges) {
+        // A worklist: a function is checked again only when the summary of a function it
+        // calls has grown, so a cycle of n functions takes about n checks, not n rounds of n.
+        let members: std::collections::BTreeSet<usize> = component.iter().copied().collect();
+        let mut callers: std::collections::BTreeMap<usize, Vec<usize>> =
+            std::collections::BTreeMap::new();
+        for &(caller, callee) in edges {
+            if members.contains(&caller) && members.contains(&callee) {
+                callers.entry(callee).or_default().push(caller);
+            }
+        }
+        let mut queue: std::collections::VecDeque<usize> = component.iter().copied().collect();
+        let mut queued = members.clone();
+        while let Some(function) = queue.pop_front() {
+            queued.remove(&function);
+            let before = summary::size(env, function);
+            let mut scratch = Report::new(sources);
+            let mut findings = Findings::default();
+            let mut collected = authority::Collected::default();
+            check::functions(
+                env,
+                facts,
+                &mut scratch,
+                &mut findings,
+                &mut collected,
+                authority::Pass::Collect,
+                &std::collections::BTreeSet::from([function]),
+            );
+            if summary::size(env, function) == before {
+                continue;
+            }
+            for &caller in callers.get(&function).map_or(&[][..], Vec::as_slice) {
+                if queued.insert(caller) {
+                    queue.push_back(caller);
+                }
+            }
+        }
+    }
+}
+
 /// Collects diagnostics, with the sources their spans point into.
 pub(crate) struct Report<'s> {
     sources: &'s SourceDb,
@@ -488,6 +608,14 @@ impl<'s> Report<'s> {
         {
             diagnostic.repairs.push(repair);
         }
+    }
+
+    /// Whether a diagnostic with `code` is already reported at `span`.
+    pub(crate) fn has(&self, code: Code, span: Span) -> bool {
+        let location = self.location(span);
+        self.diagnostics
+            .iter()
+            .any(|d| d.code == code && d.primary == location)
     }
 
     /// How many diagnostics have been reported so far.

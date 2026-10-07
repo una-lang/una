@@ -1,12 +1,11 @@
 -- test: a function runs its `uses of` parameter only under a public condition (U4002); a lambda given for it runs under the caller`s program counter, raised for the prelude by the top label of the list, by its elements for `first_where` and by that lambda`s result: the length, a secret element or a secret result never reaches a public sink (spec/07 §7 rule 9, ADR 0062 E4)
 -- spec: spec/07 §7
--- expect: error U4002 at src/effflow.una:24:5
--- expect: error U4003 at src/effflow.una:29:38
--- expect: error U4003 at src/effflow.una:35:53
--- expect: error U4003 at src/effflow.una:53:47
--- expect: error U4002 at src/effflow.una:61:36
--- expect: error U4001 at src/effflow.una:61:45
--- expect: error U4003 at src/effflow.una:68:29
+-- expect: error U4002 at src/effflow.una:23:5
+-- expect: error U4003 at src/effflow.una:28:38
+-- expect: error U4003 at src/effflow.una:34:53
+-- expect: error U4003 at src/effflow.una:52:47
+-- expect: error U4002 at src/effflow.una:60:36
+-- expect: error U4003 at src/effflow.una:67:29
 module effflow
 
 --- Runs `f` on each element.
