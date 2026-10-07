@@ -1469,7 +1469,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn find_is_some_exactly_when_contains_text_holds() {
+    fn find_is_some_exactly_when_contains_text_holds_at_a_match() {
         // N-19: the verifier gives both one uninterpreted symbol, which holds because both
         // run over one search. Texts and parts over a small alphabet, with a non-ASCII
         // scalar, so that occurrences are frequent; a fixed seed keeps the run reproducible.
@@ -1491,6 +1491,16 @@ mod tests {
                 contains_text(t_word, part_word) == 1,
                 "{t:?} {part:?}"
             );
+            // N-21: the position starts a match that lies in the text.
+            if found != NONE {
+                let at = usize::try_from(&int_value(field(found, 0))).unwrap_or(usize::MAX);
+                let rest: String = t.chars().skip(at).collect();
+                assert!(
+                    at + part.chars().count() <= t.chars().count(),
+                    "{t:?} {part:?}"
+                );
+                assert!(rest.starts_with(&part), "{t:?} {part:?} at {at}");
+            }
             for word in [found, t_word, part_word] {
                 release(word);
             }

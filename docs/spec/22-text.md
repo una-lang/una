@@ -33,7 +33,7 @@ They are prelude functions, called with method syntax, as `line.split(on: ",")` 
 | `bytes(t: Text) -> List[U8]` | `ensures result.len >= t.len` | O(b) |
 
 1. **`split`** returns the parts between non-overlapping occurrences of `on`, left to right, including empty parts: `"a,,b".split(on: ",")` is `["a", "", "b"]`, and a text without `on` is a list of itself. `join` is its inverse: `t.split(on: s).join(separator: s) == t`.
-2. **`find`** returns the position of the first occurrence of `text`, and `Some(0)` for an empty `text`.
+2. **`find`** returns the position of the first occurrence of `text`, and `Some(0)` for an empty `text`. When it is `Some(p)`, `0 <= p` and `p + text.len <= t.len`, which the verifier assumes after each call (N-21).
 3. **`replace`** replaces every non-overlapping occurrence of `pattern` by `by`, left to right.
 4. **`slice`** returns the scalar values at positions `start` up to, not including, `end`. Its precondition is an obligation at each call (`spec/12 §3`).
 5. **`chars`** returns one text of length 1 per scalar value, in order.

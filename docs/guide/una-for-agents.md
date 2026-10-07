@@ -814,7 +814,7 @@ Edition `0.2` adds functions that take a text apart, search it, change it and pa
 - **Positions** count Unicode scalar values from 0, as `.len` does; there are no byte offsets or graphemes.
 - **The functions:**
   - `split(on:)`, which keeps empty parts, and `join(separator:)`, its inverse.
-  - `find(text:)`, `Some` of the first position or `None`, which is `Some` exactly when `contains_text(part:)` holds; `ends_with(suffix:)`.
+  - `find(text:)`, `Some` of the first position or `None`, which is `Some` exactly when `contains_text(part:)` holds; the position and the match lie in the text, so it bounds a `slice`. `ends_with(suffix:)`.
   - `replace(pattern:, by:)`, every non-overlapping occurrence, left to right.
   - `slice(start:, end:)`, whose precondition `0 <= start and start <= end and end <= t.len` you prove at each call.
   - `chars()`, one text per scalar value; `bytes()`, the UTF-8 encoding as `List[U8]`.
@@ -841,7 +841,7 @@ pub leading_number(field: Text) -> Int
   let space = " "
   let end = field.find(text: space)
     if none use field.len
-  let digits = if 0 <= end and end <= field.len then field.slice(start: 0, end: end) else field
+  let digits = field.slice(start: 0, end: end)
   let n = digits.parse_int()
     if error use 0
   n

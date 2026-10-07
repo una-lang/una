@@ -2488,7 +2488,8 @@ impl<'p, 'i> Walker<'p, 'i> {
 
     /// `find` and `contains_text` share an uninterpreted `i!contains!Text` (N-19): one is `Some`
     /// exactly when the other holds (`spec/22 §2` rule 2). Both engines run them over one
-    /// search, so the symbol stands for the same relation.
+    /// search, so the symbol stands for the same relation. A position `find` returns lies in
+    /// the text with its match after it (N-21).
     fn text_facts(&mut self, name: &str, values: &[Tv], x: &Tv, ctx: &mut Ctx) {
         let (Some(t), Some(part)) = (values.first(), values.get(1)) else {
             return;
@@ -2508,8 +2509,26 @@ impl<'p, 'i> Walker<'p, 'i> {
         match name {
             "contains_text" if x.f.sort() == "Bool" => ctx.define(F::eq(x.f.clone(), contains)),
             "find" => {
-                if let Some(tag) = self.tag(x) {
-                    ctx.assume(F::eq(F::eq(tag, F::Int("0".to_owned())), contains));
+                let Some(tag) = self.tag(x) else {
+                    return;
+                };
+                let some = F::eq(tag, F::Int("0".to_owned()));
+                ctx.assume(F::eq(some.clone(), contains));
+                // N-21: the position of a match lies in the text, with the match after it.
+                if let (Some(at), Some(t_len), Some(part_len)) =
+                    (self.field(x, 0, 0), self.len(t), self.len(part))
+                    && at.f.sort() == "Int"
+                {
+                    ctx.assume(F::op(
+                        "=>",
+                        vec![
+                            some,
+                            F::and(vec![
+                                F::op("<=", vec![F::Int("0".to_owned()), at.f.clone()]),
+                                F::op("<=", vec![F::op("+", vec![at.f, part_len]), t_len]),
+                            ]),
+                        ],
+                    ));
                 }
             }
             _ => {}

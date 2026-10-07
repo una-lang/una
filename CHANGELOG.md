@@ -15,7 +15,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
   - The native debug runtime's note now reads "lists, maps and records copied".
 - **Text functions** (#237, ADR 0070, `spec/22`). Edition 0.2 gains `split(on:)`, `join(separator:)`, `ends_with(suffix:)`, `contains_text(part:)`, `find(text:)`, `replace(pattern:, by:)`, `slice(start:, end:)`, `to_upper`, `to_lower`, `chars`, `parse_int` with the kind `ParseError`, `trim_start`, `trim_end` and `bytes`.
   - Positions count scalar values. `find`, `split` and `replace` are linear, over Rust's Two-Way search, which `find` and `contains_text` share.
-  - Every result carries every label of every argument. The contracts are hypotheses, `slice`'s precondition is an obligation, and `find` is `Some` exactly when `contains_text` holds.
+  - Every result carries every label of every argument. The contracts are hypotheses, `slice`'s precondition is an obligation, `find` is `Some` exactly when `contains_text` holds (N-19), and its position bounds the match within the text (N-21).
   - The parameters `separator`, `start` and `end`, and `pattern` and `by` replace the ADR's `with`, `from` and `to`, and `old` and `new`, since `with`, `from` and `old` are keywords (N-20).
 
 ### Verification
