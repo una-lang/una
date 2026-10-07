@@ -1,5 +1,7 @@
 //! The names of the prelude and of `std.testing` (`spec/14`), for name resolution.
 
+use una_project::Edition;
+
 /// Upper-case names of the prelude: types, variants, host capabilities and their error kinds
 /// (`spec/14 §1, §3`).
 pub(crate) const UPPER: [&str; 24] = [
@@ -63,9 +65,9 @@ pub(crate) const STD_TESTING: &str = "std.testing";
 /// The path of the standard module that declares the host capabilities (`spec/14 §3`).
 pub(crate) const STD_HOST: &str = "std.host";
 
-/// What `std.host` exports to an import: the host capabilities and their failure kinds
-/// (`spec/10 §11` rule 10, N-33). The prelude puts the same declarations in scope.
-pub(crate) const STD_HOST_NAMES: [&str; 7] = [
+/// What `std.host` exports to an import in edition 0.1: the host capabilities and their
+/// failure kinds (`spec/10 §11` rule 10, N-33). The prelude puts the same declarations in scope.
+const STD_HOST_NAMES: [&str; 7] = [
     "Console",
     "Clock",
     "Env",
@@ -74,6 +76,30 @@ pub(crate) const STD_HOST_NAMES: [&str; 7] = [
     "FileError",
     "KeyError",
 ];
+
+/// What `std.host` exports in edition 0.2: also `Http` and its kinds (`spec/24 §1`, #307).
+const STD_HOST_NAMES_0_2: [&str; 11] = [
+    "Console",
+    "Clock",
+    "Env",
+    "Files",
+    "Keys",
+    "FileError",
+    "KeyError",
+    "Http",
+    "Header",
+    "Response",
+    "HttpError",
+];
+
+/// What `std.host` exports to an import in `edition`.
+pub(crate) fn std_host_names(edition: Edition) -> &'static [&'static str] {
+    if edition >= Edition::V0_2 {
+        &STD_HOST_NAMES_0_2
+    } else {
+        &STD_HOST_NAMES
+    }
+}
 
 /// The public functions of `std.testing`.
 pub(crate) const STD_TESTING_NAMES: [&str; 1] = ["fake_hash"];

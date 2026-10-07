@@ -37,7 +37,7 @@ The host capability `Http` sends HTTP/1.1 requests to the origins that grants al
        accepts internal
    ```
 
-2. **Names.** A user kind or capability named `Http`, `Header`, `Response` or `HttpError` is U1002 in edition 0.2.
+2. **Names.** A user kind or capability named `Http`, `Header`, `Response` or `HttpError` is U1002 in edition 0.2. A module MAY import the four names from `std.host`, as `import std.host (Http, Response)` (`spec/10 §11` rule 10, #307).
 3. **Statuses.** Every HTTP response is a `Response`, whatever its status. A request fails only when it gets no response it may return:
    - `Denied`: no grant allows the URL's origin with the method, or `key_name` names no key of the grants;
    - `BadUrl`: the URL is not an absolute `http` or `https` URL, or it has user info;
