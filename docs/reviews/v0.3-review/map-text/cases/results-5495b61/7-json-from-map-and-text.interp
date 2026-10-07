@@ -1,0 +1,6 @@
+{"":6,"\"q\"":4,"alpha":2,"back\\slash":5,"zeta":1,"é":3,"😀":7}
+true
+true
+{'':6,'\'q\'':4,'alpha':2,'back\\slash':5,'zeta':1,'é':3,'😀':7}
+["", "\"q\"", "alpha", "back\\slash", "zeta", "é", "😀"] 7
+exit 0
