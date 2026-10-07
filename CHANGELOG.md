@@ -19,6 +19,8 @@ All notable changes to Una are recorded here. Versions follow the milestones and
   - Every result carries every label of every argument, and so does a failure of a prelude function that declares one, as `parse_int` does: `attempt`'s `Ok` or `Err`, the payload, and the code that handles it run under those labels (N-27). The contracts are hypotheses, `slice`'s precondition is an obligation, `find` is `Some` exactly when `contains_text` holds (N-19), and its position bounds the match within the text (N-21).
   - The parameters `separator`, `start` and `end`, and `pattern` and `by` replace the ADR's `with`, `from` and `to`, and `old` and `new`, since `with`, `from` and `old` are keywords (N-20).
 
+- **`attempt` over a `fails of` parameter no longer implies effects** (#270). A private relay whose body is `let r = attempt f(x)` infers `uses of f`, as with a plain call, so another relay can pass its own parameter to it without a false U3003.
+
 ### Verification
 
 - **The counterexample of an assignment shows the value before it** (#277). For `n = n - 1` on `n: Pos`, it shows `n = 1, n (assigned) = 0`, where it showed `n = 0`.

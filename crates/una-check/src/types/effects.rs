@@ -226,9 +226,12 @@ impl Scan<'_, '_> {
                 self.expr(body);
                 self.lambda -= 1;
             }
-            ExprKind::Paren(inner)
-            | ExprKind::Attempt(inner)
-            | ExprKind::Old(inner)
+            // `attempt f(x)` and `(f(x))` stand where the call does (#270).
+            ExprKind::Paren(inner) | ExprKind::Attempt(inner) => {
+                self.top = top;
+                self.expr(inner);
+            }
+            ExprKind::Old(inner)
             | ExprKind::Unary { operand: inner, .. }
             | ExprKind::Field { target: inner, .. }
             | ExprKind::Is { value: inner, .. }
