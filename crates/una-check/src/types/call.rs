@@ -570,7 +570,13 @@ impl<'a> Checker<'_, 'a, '_> {
         let structural = structural_inputs(name);
         let mut label = Label::public();
         let mut functions = Vec::new();
+        // The decisions on values of the enclosing function's type parameters that the
+        // arguments holding data carry, which the prelude gives to its function arguments (#253).
+        let mut decided = Label::public();
         for (span, found, expected, param) in checked {
+            if !matches!(self.resolve(&expected), Ty::Fn(_)) {
+                decided = decided.join(&self.decisions(&found));
+            }
             match structural {
                 Some(inputs) => {
                     if let Some((_, deep)) = inputs.iter().find(|(input, _)| *input == param) {
@@ -595,8 +601,44 @@ impl<'a> Checker<'_, 'a, '_> {
                 functions.push((span, found, expected, param));
             }
         }
+        // A function value whose parameters lack those decisions was checked against `ℓ_T` at
+        // each call, so the prelude's calls of it raise the result and program counter, as a
+        // call written in the body does (T-App, #253). A lambda of the body takes them in its
+        // parameters' types, and its own flows carry them.
+        let mut raised = Label::public();
+        for (span, found, _, param) in &functions {
+            if decided.is_public() {
+                break;
+            }
+            let Ty::Fn(function) = self.labeled(found).unlabeled().clone() else {
+                continue;
+            };
+            let mut accepted = Label::public();
+            for input in &function.params {
+                accepted = accepted.join(&self.decisions(input));
+            }
+            let mut missing = decided.clone();
+            missing.symbols.retain(|s| !accepted.symbols.contains(s));
+            if missing.is_public() {
+                continue;
+            }
+            self.call_under_pc(
+                *span,
+                &format!("the argument `{param}` of {callee}"),
+                &function.uses,
+                function.fails.is_some(),
+                false,
+                &missing,
+            );
+            raised = raised.join(&missing);
+        }
         self.argument_flows(callee, functions);
-        result.with_label(&label)
+        let result = result.with_label(&label);
+        if raised.is_public() {
+            result
+        } else {
+            result.raise_deep(&raised)
+        }
     }
 
     /// U4001 for the arguments of a call, once the whole call is typed so that type variables
