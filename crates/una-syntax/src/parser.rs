@@ -1839,7 +1839,22 @@ impl<'a> Parser<'a> {
                 TokenKind::Keyword(Keyword::Error | Keyword::None)
             )
         {
-            return Err(self.same_line_handling(span));
+            // The clauses are reported with their repair, and the body goes on after the line,
+            // so that every such line of a body is reported in one check (#268).
+            let _ = self.same_line_handling(span);
+            let mut nesting = 0usize;
+            loop {
+                match self.peek() {
+                    TokenKind::Newline | TokenKind::Eof if nesting == 0 => break,
+                    TokenKind::Eof => break,
+                    TokenKind::LParen | TokenKind::LBracket => nesting += 1,
+                    TokenKind::RParen | TokenKind::RBracket => {
+                        nesting = nesting.saturating_sub(1);
+                    }
+                    _ => {}
+                }
+                self.advance();
+            }
         }
         self.expect_line_end()?;
         let handlings = if self.at(&TokenKind::Indent) {
