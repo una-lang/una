@@ -1,0 +1,27 @@
+-- test: a loop over a list has an element in its body, and a loop whose state starts from an earlier loop's final value is unknown rather than refuted at its first iteration (ADR 0071 D3, #278)
+-- spec: spec/17 §5
+-- expect: error U5002 at src/first.una:26:5
+module first
+
+--- The body of a loop over a list runs only when the list has an element.
+pub other_source(edit xs: List[Int], ys: List[Int]) -> Unit
+  requires xs.len == ys.len
+=
+  for y in ys
+    set(edit xs, index: 0, item: y)
+
+pub over_itself(edit xs: List[Int]) -> Unit
+=
+  for x in xs
+    set(edit xs, index: 0, item: x)
+
+--- A loop whose state starts from an earlier loop's final value has no first iteration to
+--- check against: the failure hinges on the forgotten state, so it is unknown.
+pub after_another() -> List[Int]
+=
+  let edit xs: List[Int] = []
+  for i in 0..<1
+    xs = xs.append(item: i)
+  for j in 0..<1
+    set(edit xs, index: 0, item: 5)
+  xs
