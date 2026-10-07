@@ -1,0 +1,8 @@
+-- expect: rule: an effectful function in a record field (U3006/U3016)
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub kind EffBox[T]
+  run: fn(T) -> Unit uses @log: Log[write]

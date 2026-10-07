@@ -1,0 +1,33 @@
+-- expect: accept: control: apply_eff(p, f: fn(x) -> k(decided))
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub kind Bad = | Oops
+
+pub kind Box[T]
+  run: fn(T) -> Int
+
+pub kind Hold[T]
+  value: T
+
+check_len(xs: List[secret Int]) -> Int
+  fails Bad
+=
+  if xs.len > 0 then fail Oops else 0
+
+apply_eff[U](x: U, f: fn(U) -> Unit uses @log: Log[write]) -> Unit
+  uses @log: Log[write]
+=
+  f(x)
+
+g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Unit uses @log: Log[write]) -> Unit
+  uses @log: Log[write]
+=
+  apply_eff(p, f: fn(x) -> k(p))
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g([s], b: [0], p: [], q: [1], k: fn(xs) -> @log.write(xs.len))

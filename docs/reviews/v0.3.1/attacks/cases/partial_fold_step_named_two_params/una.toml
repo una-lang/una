@@ -1,0 +1,4 @@
+[package]
+name = "partial_fold_step_named_two_params"
+version = "0.1.0"
+edition = "0.1"

@@ -1,0 +1,8 @@
+[package]
+name = "effect_user_hof_run"
+version = "0.1.0"
+edition = "0.1"
+
+[run]
+entry = "sw"
+grants = ["console", "env"]
