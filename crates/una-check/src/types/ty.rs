@@ -35,8 +35,8 @@ pub(crate) struct KindLabels {
     /// apart from the label of a value of `T` itself, `ℓ_T` (ADR 0067 amendment): in edition
     /// 0.2, where result summaries tell them apart.
     pub(crate) deep_symbols: bool,
-    /// Whether flows tell `ℓ*_T` from `ℓ_T`: edition 0.2. Edition 0.1 marks deep labels only
-    /// for the raise of a call of a function value (#253), and its flows read `T*` as `T`.
+    /// Whether flows tell `ℓ*_T` from `ℓ_T`: in both editions since #354 (edition 0.1 read
+    /// `T*` as `T` before, which let annotations drop a decision).
     pub(crate) deep_distinct: bool,
 }
 

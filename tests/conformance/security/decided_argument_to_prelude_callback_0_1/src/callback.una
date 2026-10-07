@@ -1,8 +1,11 @@
 -- test: in edition 0.1, a function value that a prelude function calls with elements chosen by comparing values of a type parameter raises the prelude call's result by them, as a call written in the body does, so writing that result to a public sink is U4003; values of the type parameter passed through, and a lambda of the body, stay accepted (spec/07 §7 rule 8, #253)
 -- spec: spec/07 §7
--- expect: error U4003 at src/callback.una:16:14
--- expect: error U4003 at src/callback.una:22:14
--- expect: error U4003 at src/callback.una:28:14
+-- expect: error U4001 at src/callback.una:18:48
+-- expect: error U4003 at src/callback.una:19:14
+-- expect: error U4001 at src/callback.una:24:51
+-- expect: error U4003 at src/callback.una:25:14
+-- expect: error U4001 at src/callback.una:30:60
+-- expect: error U4003 at src/callback.una:31:14
 module callback
 
 pub capability Log

@@ -1,7 +1,8 @@
 -- test: in edition 0.1, a function value given a value of a type parameter, or a decision on such values (#253, review of #343): leak (U4003): the function value comes out of a list
 -- spec: spec/07 §7
--- expect: error U4003 at src/sw.una:16:14
--- expect: error U4001 at src/sw.una:21:37
+-- expect: error U4001 at src/sw.una:15:21
+-- expect: error U4003 at src/sw.una:17:14
+-- expect: error U4001 at src/sw.una:22:37
 module sw
 
 pub capability Log
