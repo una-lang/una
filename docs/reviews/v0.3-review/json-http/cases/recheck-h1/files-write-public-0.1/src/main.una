@@ -1,0 +1,8 @@
+module main
+
+g() -> Unit
+  uses @files: Files[read, write]
+  fails FileError
+=
+  @files.write("out.txt", content: "x")
+    if error pass
