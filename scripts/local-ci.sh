@@ -2,8 +2,9 @@
 # Runs what .github/workflows/ci.yml runs, in the same order, on this machine: the solver check,
 # fmt, clippy with warnings denied, the tests, then packing and checking the release archive of
 # the host's target. With --linux, it runs the same inside a linux/amd64 container of CI's
-# Ubuntu image (scripts/local-ci/Dockerfile), emulated on an arm64 Mac, so it is slow; with
-# --linux-arm64, inside a linux/arm64 one, native on such a Mac (#241). The
+# Ubuntu image (scripts/local-ci/Dockerfile), emulated on an arm64 Mac, so it is slow and runs
+# the tests one at a time (#286); with --linux-arm64, inside a linux/arm64 one, native on such a
+# Mac (#241), with the tests in parallel. The
 # target directory (one volume per checkout), the cargo registry and Z3 live in named volumes,
 # so later runs are incremental. It ends with PASS, or FAIL and the step that failed, and a non-zero exit on any
 # failure. While GitHub Actions is unavailable, this is the check before a merge (#156).
@@ -22,8 +23,8 @@ fail() {
 if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
     # --linux: x86_64, emulated on an arm64 Mac; --linux-arm64: aarch64, native on one (#241).
     case $1 in
-        --linux) arch=amd64 target=x86_64-unknown-linux-gnu suffix="" ;;
-        *) arch=arm64 target=aarch64-unknown-linux-gnu suffix=-arm64 ;;
+        --linux) arch=amd64 target=x86_64-unknown-linux-gnu suffix="" serial=1 ;;
+        *) arch=arm64 target=aarch64-unknown-linux-gnu suffix=-arm64 serial="" ;;
     esac
     command -v docker >/dev/null 2>&1 || fail "docker not found; $1 needs Docker"
     toolchain=$(sed -n 's/^channel *= *"\([^"]*\)"$/\1/p' rust-toolchain.toml)
@@ -45,6 +46,7 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
         --volume una-local-ci-registry:/opt/cargo/registry \
         --volume "una-local-ci-z3$suffix:/opt/z3" \
         --env UNA_LOCAL_CI_Z3=/opt/z3 \
+        --env "UNA_LOCAL_CI_SERIAL=$serial" \
         "$image" scripts/local-ci.sh || fail "the Linux run failed; its output is above"
     echo "local CI: PASS ($target, in the container)"
     exit 0
@@ -74,7 +76,14 @@ step() {
 step "Check the solver version" scripts/check-solver.sh
 step "Format" cargo fmt --all --check
 step "Clippy" cargo clippy --workspace --all-targets --locked -- -D warnings
-step "Test" cargo test --workspace --locked
+# Under emulation (--linux on an arm64 Mac, through Rosetta), the tests run one at a time, on
+# one thread each: processes spawned from many threads at once can hang there (#286). The
+# native runs, --linux-arm64 among them, keep full parallelism.
+if [ -n "${UNA_LOCAL_CI_SERIAL:-}" ]; then
+    step "Test (serial)" env RAYON_NUM_THREADS=1 cargo test --workspace --locked -- --test-threads=1
+else
+    step "Test" cargo test --workspace --locked
+fi
 step "Pack the release archive of $target" scripts/release.sh "$target"
 step "Check the release archive of $target" scripts/check-release.sh "$target"
 echo "local CI: PASS ($target)"
