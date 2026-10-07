@@ -5,6 +5,7 @@
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -1324,5 +1325,141 @@ pub step(start: Pos) -> Pos
             {"name": "n (assigned)", "value": 0},
             {"name": "start", "value": 1}
         ]})
+    );
+}
+
+/// A function with `n` editable bindings, all updated in one loop, whose postcondition reads
+/// the loop's final state: the loop state is a tuple of `n` components (`spec/17 §4`).
+fn loop_state_source(n: usize) -> String {
+    let mut out = String::from(
+        "module wide\n\npub f(x: Int) -> Int\n  requires x >= 0\n  ensures result >= 0\n=\n",
+    );
+    for i in 0..n {
+        out.push_str(&format!("  let edit e{i} = x\n"));
+    }
+    out.push_str("  for k in 0..<2\n");
+    for i in 0..n {
+        out.push_str(&format!("    e{i} = e{i} + 1\n"));
+    }
+    out.push_str("  e0\n");
+    out
+}
+
+/// The bytes of every query of the package `wide` with a loop state of `n` components.
+fn loop_state_query_bytes(n: usize) -> usize {
+    let root = package_of_edition(
+        &format!("wide-{n}"),
+        "0.2",
+        &[("src/wide.una", &loop_state_source(n))],
+    );
+    let (checked, obligations) = generated(&root);
+    assert_eq!(checked.diagnostics, [], "{n}");
+    let text = std::fs::read_to_string(root.join("verification.lock")).unwrap();
+    let (lock, _) = una_project::parse_lock(&text);
+    let lock = una_verify::Lock {
+        text,
+        solver_version: lock.solver_version,
+        step_budget: lock.step_budget,
+        random_seed: lock.random_seed,
+    };
+    let bytes = una_verify::queries(&obligations, &lock)
+        .iter()
+        .map(String::len)
+        .sum();
+    let _ = std::fs::remove_dir_all(&root);
+    bytes
+}
+
+#[test]
+fn a_loop_state_of_n_components_gives_queries_linear_in_n() {
+    // #333: each projection of a loop-state tuple was named after the whole tuple sort, so the
+    // query text grew as n². With a short id per tuple sort it grows linearly: 8x the
+    // components give about 8x the bytes, against about 50x before. The count is exact, so
+    // the bound needs no timing margin.
+    let small = loop_state_query_bytes(50);
+    let large = loop_state_query_bytes(400);
+    let growth = large as f64 / small as f64;
+    eprintln!("8x the loop state: {growth:.1}x the query bytes ({small}, {large})");
+    assert!(
+        growth < 12.0,
+        "8x the loop state gave {growth:.1}x the query bytes"
+    );
+}
+
+/// Every conformance case and example of the repository: package directories and single files.
+fn every_program() -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut pending = vec![
+        repository().join("tests/conformance"),
+        repository().join("examples"),
+    ];
+    while let Some(dir) = pending.pop() {
+        if dir.join("una.toml").is_file() {
+            found.push(dir);
+            continue;
+        }
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() && !path.ends_with("target") {
+                pending.push(path);
+            } else if path.extension().is_some_and(|e| e == "una") {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+#[test]
+fn no_two_tuple_sorts_share_a_name() {
+    // #333: a tuple sort is named by a 128-bit digest of its components. Across every query of
+    // every program of the repository that checks, no query declares a symbol twice, and every
+    // projection of a tuple sort has the same component sort in every query, which two
+    // distinct tuple sorts sharing a name would break.
+    let mut projections: BTreeMap<String, String> = BTreeMap::new();
+    let mut tuple_sorts = 0;
+    for program in every_program() {
+        let (checked, obligations) = generated(&program);
+        if !checked.diagnostics.is_empty() || obligations.is_empty() {
+            continue;
+        }
+        let text = std::fs::read_to_string(repository().join("verification.lock")).unwrap();
+        let (lock, _) = una_project::parse_lock(&text);
+        let lock = una_verify::Lock {
+            text,
+            solver_version: lock.solver_version,
+            step_budget: lock.step_budget,
+            random_seed: lock.random_seed,
+        };
+        for query in una_verify::queries(&obligations, &lock) {
+            let mut declared = BTreeSet::new();
+            for line in query.lines() {
+                let Some(rest) = line
+                    .strip_prefix("(declare-sort ")
+                    .or_else(|| line.strip_prefix("(declare-fun "))
+                else {
+                    continue;
+                };
+                let name = rest.split(' ').next().unwrap().to_owned();
+                assert!(
+                    declared.insert(name.clone()),
+                    "{}: {name} twice",
+                    program.display()
+                );
+                if name.starts_with("i!t!") {
+                    let result = rest.rsplit(' ').next().unwrap().trim_end_matches(')');
+                    let known = projections.entry(name.clone()).or_insert_with(|| {
+                        tuple_sorts += 1;
+                        result.to_owned()
+                    });
+                    assert_eq!(known, result, "{}: {name}", program.display());
+                }
+            }
+        }
+    }
+    assert!(
+        tuple_sorts > 0,
+        "no query of the repository projects a tuple"
     );
 }
