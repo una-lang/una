@@ -571,17 +571,27 @@ pub(crate) fn sort(ty: &Type) -> Sort {
             Base::Param(name) => format!("u!Param_{name}"),
             // A tuple of the memory model's desugaring (`spec/17 §4`): an uninterpreted sort
             // with a projection per component.
-            Base::Tuple(types) => {
-                let mut sort = format!("i!Tuple{}", types.len());
-                for ty in types {
-                    sort.push('_');
-                    sort.push_str(&self::sort(ty));
-                }
-                sort
-            }
+            Base::Tuple(types) => tuple_sort(types),
             Base::Unknown => "i!Unknown".to_owned(),
         },
     }
+}
+
+/// The sort of a tuple of `types`, `i!Tuple<n>!<id>`: `<id>` is the first 32 hex digits of
+/// SHA-256 over the components' sorts, so the name has the same length whatever `n` is (#333).
+/// Each projection names the sort, so spelling every component in it made a query of n
+/// components O(n²) long; now it is O(n). Two distinct tuple sorts share a name only if their
+/// spellings collide in 128 bits of SHA-256, and a test checks the names of every query of the
+/// repository's programs.
+fn tuple_sort(types: &[Type]) -> Sort {
+    let mut spelling = String::new();
+    for ty in types {
+        spelling.push_str(&self::sort(ty));
+        spelling.push('\n');
+    }
+    let digest = Sha256::digest(spelling.as_bytes());
+    let hex: String = digest.iter().take(16).map(|b| format!("{b:02x}")).collect();
+    format!("i!Tuple{}!{hex}", types.len())
 }
 
 /// How the values of a type show in a counterexample that cannot print them, `<name>#<n>`
@@ -4275,7 +4285,8 @@ fn nonzero_literal(f: &F) -> bool {
     }
 }
 
-/// Component `index` of a tuple value, `i!t!<index>!<Sort>` (`spec/17 §4`).
+/// Component `index` of a tuple value, `i!t!<index>!<Sort>` (`spec/17 §4`), whose tuple sort
+/// has a short name (#333).
 fn projection(tuple: &Tv, index: usize) -> Option<Tv> {
     let Type::Base {
         base: Base::Tuple(types),
@@ -4473,6 +4484,36 @@ fn obligation_id(module: &str, declaration: &str, kind: ObligationKind, goal: &s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn base(base: Base) -> Type {
+        Type::Base {
+            base,
+            refinements: Vec::new(),
+            label: una_core::Label::public(),
+        }
+    }
+
+    #[test]
+    fn a_tuple_sort_has_a_short_name_that_tells_its_components_apart() {
+        // #333: the same components give the same name, any difference gives another, and the
+        // length does not grow with the number of components.
+        let ints = |n: usize| base(Base::Tuple(vec![base(Base::Int); n]));
+        let mixed = base(Base::Tuple(vec![base(Base::Int), base(Base::Bool)]));
+        let swapped = base(Base::Tuple(vec![base(Base::Bool), base(Base::Int)]));
+        assert_eq!(sort(&ints(2)), sort(&ints(2)));
+        assert_ne!(sort(&ints(2)), sort(&mixed));
+        assert_ne!(sort(&mixed), sort(&swapped));
+        assert_ne!(sort(&ints(2)), sort(&ints(3)));
+        assert!(sort(&ints(2)).starts_with("i!Tuple2!"));
+        assert_eq!(sort(&ints(1000)).len(), "i!Tuple1000!".len() + 32);
+        let nested = base(Base::Tuple(vec![ints(2), base(Base::Int)]));
+        let flat = base(Base::Tuple(vec![
+            base(Base::Int),
+            base(Base::Int),
+            base(Base::Int),
+        ]));
+        assert_ne!(sort(&nested), sort(&flat));
+    }
 
     fn int(digits: &str) -> F {
         F::Int(digits.to_owned())
