@@ -47,7 +47,7 @@ enum Building<'p> {
     Object(
         std::vec::IntoIter<(String, Tree)>,
         Entries<'p>,
-        Option<Rc<str>>,
+        Option<Rc<String>>,
     ),
 }
 
@@ -108,7 +108,7 @@ pub(crate) fn value<'p>(tree: Tree) -> Value<'p> {
                 Some((key, tree)) => {
                     if let (Some(key), Some(Building::Object(_, _, slot))) = (key, stack.last_mut())
                     {
-                        *slot = Some(Rc::from(key));
+                        *slot = Some(Rc::new(key));
                     }
                     pending = Some(tree);
                     break;
