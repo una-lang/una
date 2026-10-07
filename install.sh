@@ -39,7 +39,7 @@ set -eu
 
 # The release this script installs by default, and the Z3 it pins; a test keeps them equal to
 # the workspace version and to verification.lock and scripts/install-z3.sh.
-DEFAULT_VERSION=0.2.0-alpha.3
+DEFAULT_VERSION=0.2.0
 Z3_VERSION=5.1.0
 
 say() { printf '%s\n' "una install: $*"; }
@@ -192,8 +192,8 @@ done
     for file in $files; do echo "file $file"; done
 } > "$marker"
 
-installed=$("$home/bin/una" --version 2>/dev/null || echo "una $version")
-say "installed $installed and Z3 $Z3_VERSION in $home"
+# The version is the one the validation record vouched for: `una` has no --version flag.
+say "installed una $version and Z3 $Z3_VERSION in $home"
 case ":$PATH:" in
     *":$home/bin:"*) ;;
     *) say "add $home/bin to PATH, for example with this line in your shell's profile:"
