@@ -6,6 +6,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ### Language
 
+- **JSON** (ADR 0073, `spec/23`, #238). In edition 0.2 the prelude reads and writes JSON: the kind `Json` (`Null`, `Boolean`, `Number` for exact integers, `Decimal` for other numbers as written, `Str`, `Array`, `Object` as a map in key order), `parse_json` failing with `JsonError` (`Syntax`, `TooDeep` past 512 levels, `DuplicateKey`, at a position in scalar values), a canonical `to_json`, and `quote_json`. Parsing is O(n + Σ k log k), writing O(n), with no recursion on the native stack; one implementation serves both engines. Parsed values keep the label of their text, and a secret cannot enter a `Json` constructor.
 - **Maps** (#236, ADR 0069, `spec/21`). Edition 0.2 gains `Map[K, V]`, keyed by an `Ord` type, in ascending key order, with `empty_map()`, `m.len`, `has`, `get`, `keys`, `values`, `entries`, `with`, `without`, and `edit m.set` and `edit m.remove`.
   - `len` is O(1); `get`, `has`, `set` and `remove` are O(log n), in place when nothing else holds the map; `with` and `without` on a map another binding holds copy it, O(n). A text key is copied into the map at insert, O(key length).
   - Which keys a map holds is part of its shape: reads carry the key position's labels with the top label, and a key above an editable map's top label is U4001 at the key.

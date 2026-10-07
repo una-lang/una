@@ -1593,3 +1593,51 @@ fn a_list_appended_through_calls_grows_in_linear_time() {
         }
     }
 }
+
+#[test]
+fn json_parses_and_writes_in_linear_time_natively() {
+    // ADR 0073 J6 (#238): natively, the debug runtime's count of copies is the same at every
+    // size, so nothing is copied per item; the timing is a second check, wide in margin.
+    let mut times = Vec::new();
+    let mut notes = Vec::new();
+    for steps in [10_000, 100_000, 1_000_000] {
+        let program = format!(
+            "module grow\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit items: List[Json] = []\n  for i in 0..<{steps}\n    items = items.append(item: Number(i))\n  for i in 0..<{steps}\n    items = items.append(item: Str(\"item {{i}}\"))\n  let text = Array(items).to_json()\n  let back = text.parse_json()\n    if error use Null\n  let again = back.to_json()\n  @console.print(\"{{text.len}} {{again == text}}\")\n"
+        );
+        let name = format!("json-scaling-{steps}");
+        let dir = package(
+            &name,
+            "\n[run]\nentry = \"grow\"\ngrants = [\"console\"]\n",
+            &[("src/grow.una", &program)],
+        );
+        let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+        std::fs::write(
+            dir.join("una.toml"),
+            manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+        )
+        .unwrap();
+        let built = una(&dir, &["build"]);
+        assert_eq!(built.status.code(), Some(0), "{built:?}");
+        let started = std::time::Instant::now();
+        let output = Command::new(dir.join("target/una").join(&name))
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        times.push(started.elapsed().as_secs_f64().max(0.05));
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).ends_with(" true\n"),
+            "{output:?}"
+        );
+        notes.push(String::from_utf8_lossy(&output.stderr).into_owned());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    assert!(notes.windows(2).all(|pair| pair[0] == pair[1]), "{notes:?}");
+    for pair in times.windows(2) {
+        assert!(
+            pair[1] < 30.0 * pair[0],
+            "10x the items took {:.1}x as long: {times:?}",
+            pair[1] / pair[0]
+        );
+    }
+}

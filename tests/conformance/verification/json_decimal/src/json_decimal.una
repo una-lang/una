@@ -1,0 +1,12 @@
+-- test: a Decimal holds a JsonNumber, whose refinement is an obligation at the constructor: a text that checked has tested proves it, any other text is refuted (spec/23 §1, §7)
+-- spec: spec/23 §7
+-- expect: error U5001 at src/json_decimal.una:6:42
+module json_decimal
+
+pub unchecked(t: Text) -> Json = Decimal(t)
+
+pub tested(t: Text) -> Json
+  fails JsonError
+=
+  let n = checked(t, is_json_number(it)) else fail Syntax(0)
+  Decimal(n)

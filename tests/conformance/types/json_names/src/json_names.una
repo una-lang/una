@@ -1,0 +1,14 @@
+-- test: in edition 0.2 the kinds of JSON are prelude names that a user kind cannot take, while a user variant named like a variant of Json shadows it in its module, as a user Some shadows Option's (spec/23 §1 rule 2, ADR 0073 amendment of 2026-10-07)
+-- spec: spec/23 §1
+-- expect: error U1002 at src/json_names.una:6:10
+module json_names
+
+pub kind Json = A | B
+
+pub kind Token = Number(n: Int) | Null
+
+pub count(t: Token) -> Int
+=
+  when t
+    is Number(n) -> n
+    is Null -> 0

@@ -1,6 +1,6 @@
 # 23. JSON
 
-Status: Normative, v0.2 (ADR 0073). Not implemented yet; planned (#238).
+Status: Normative, v0.2 (ADR 0073 and its amendment of 2026-10-07).
 
 The prelude reads and writes JSON (RFC 8259): a kind for JSON values, a parser that fails with a declared kind, and one canonical way of writing.
 
@@ -13,8 +13,9 @@ The prelude reads and writes JSON (RFC 8259): a kind for JSON values, a parser t
    ```una
    pub kind Json =
      | Null
-     | Bool(value: Bool)
-     | Int(value: Int)
+     | Boolean(value: Bool)
+     --- An exact integer: a JSON number with neither a fraction nor an exponent. Other numbers are `Decimal`.
+     | Number(value: Int)
      | Decimal(text: JsonNumber)
      | Str(value: Text)
      | Array(items: List[Json])
@@ -24,8 +25,8 @@ The prelude reads and writes JSON (RFC 8259): a kind for JSON values, a parser t
    ```
 
    `is_json_number(t: Text) -> Bool` is an opaque prelude predicate. It is true exactly when `t` matches the `number` production of RFC 8259 §6.
-2. **Names.** A user kind named `Json`, `JsonNumber` or `JsonError` is U1002, as for `Map` (`spec/21 §1`).
-3. **Numbers.** A JSON number with neither a fraction nor an exponent is `Int`, exact at any size. Every other number is `Decimal`, whose `text` is the number as written in the input.
+2. **Names.** A user kind named `Json`, `JsonNumber` or `JsonError` is U1002, as for `Map` (`spec/21 §1`). A user variant named like a variant of `Json` or `JsonError` shadows it in its module, as a user `Some` shadows `Option`'s (ADR 0073, amendment of 2026-10-07).
+3. **Numbers.** A JSON number with neither a fraction nor an exponent is `Number`, exact at any size. Every other number is `Decimal`, whose `text` is the number as written in the input.
 4. **Objects** are maps ordered by their keys (`spec/21 §1` rule 3), so the order of the input is not kept.
 5. **Equality** is structural, as for any kind. Two `Decimal`s are equal when their texts are: `1.0` and `1.00` differ.
 
@@ -60,8 +61,8 @@ They are prelude functions, called with method syntax as those of `spec/22 §2` 
 ## 4. Writing
 
 1. **Canonical form.** `to_json(j)` writes `j` with no whitespace:
-   - `Null` as `null`, and `Bool` as `true` or `false`;
-   - `Int` in decimal, with a leading `-` when negative;
+   - `Null` as `null`, and `Boolean` as `true` or `false`;
+   - `Number` in decimal, with a leading `-` when negative;
    - `Decimal` as its `text`;
    - `Str` as the string literal of rule 2;
    - `Array` as `[`, its items separated by `,`, then `]`;

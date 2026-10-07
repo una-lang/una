@@ -81,6 +81,9 @@ pub(crate) fn program(
         .filter(|module| env.reports(*module))
         .map(|module| elaborate_module(env, findings, dbs, module, &mut lost))
         .collect();
+    if let Some(kinds) = prelude_kinds(env, findings, dbs) {
+        modules.push(kinds);
+    }
     modules.sort_by(|a, b| a.path.cmp(&b.path));
     let library = (env.prelude..env.modules.len())
         .flat_map(|module| library(env, findings, dbs, module))
@@ -94,6 +97,44 @@ pub(crate) fn program(
         },
         lost,
     )
+}
+
+/// The kinds of JSON and their opaque predicate `is_json_number`, which the prelude declares in
+/// edition 0.2 (`spec/23 §1`), in a module of the prelude's path: so the verifier generates the
+/// obligations of the refinements of their fields, as `Decimal`'s `JsonNumber`, proves them
+/// from the facts of `checked`, and both engines read their fields, as for a kind of the
+/// package. Both engines call the predicate by name, never its placeholder body. `None` in
+/// edition 0.1, where the prelude does not declare them.
+fn prelude_kinds(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>) -> Option<CoreModule> {
+    let m = env.modules.get(env.prelude)?;
+    let mut decls = Vec::new();
+    for (decl, entity) in m.tree.decls.iter().zip(m.decls.clone()) {
+        let Some(entity) = entity else {
+            continue;
+        };
+        let mut fx = Fx::new(
+            env,
+            records_of(env, findings, env.prelude),
+            dbs,
+            env.prelude,
+        );
+        let Some(core) = fx.decl(&decl.kind, entity) else {
+            continue;
+        };
+        let json = match &core {
+            Decl::Data { name, .. } => matches!(name.as_str(), "Json" | "JsonError"),
+            Decl::Pred { name, .. } => name == "is_json_number",
+            _ => false,
+        };
+        if json {
+            decls.push(core);
+        }
+    }
+    (!decls.is_empty()).then(|| CoreModule {
+        path: una_core::PRELUDE_MODULE.to_owned(),
+        decls,
+        ..CoreModule::default()
+    })
 }
 
 /// The host capabilities, which the prelude declares for `std.host` (`spec/14 §3`).

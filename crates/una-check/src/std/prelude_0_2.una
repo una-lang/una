@@ -21,3 +21,33 @@ pub empty_map[K: Ord, V]() -> Map[K, V]
   ensures result.len == 0
 =
   empty_map()
+
+--- Whether `t` is one JSON number of RFC 8259 §6 (`spec/23 §1`). Opaque: both engines
+--- evaluate it.
+pub predicate opaque is_json_number(t: Text) -> Bool = t.len > 0
+
+--- The text of a JSON number that is not an exact integer (`spec/23 §1`).
+pub kind JsonNumber = Text where is_json_number(it)
+
+--- A JSON value (`spec/23 §1`). `Number` is an exact integer, a JSON number with neither a
+--- fraction nor an exponent; other numbers are `Decimal`, as written.
+pub kind Json = Null | Boolean(value: Bool) | Number(value: Int) | Decimal(text: JsonNumber) | Str(value: Text) | Array(items: List[Json]) | Object(fields: Map[Text, Json])
+
+--- Why a text is not one JSON value, at the first error in reading order (`spec/23 §3`).
+pub kind JsonError = Syntax(at: Int) | TooDeep(at: Int) | DuplicateKey(at: Int)
+
+--- The one JSON value of `t` (`spec/23 §3`).
+pub parse_json(t: Text) -> Json
+  fails JsonError
+=
+  Null
+
+--- The canonical JSON text of `j` (`spec/23 §4`).
+pub to_json(j: Json) -> Text
+=
+  ""
+
+--- `t` as a JSON string literal (`spec/23 §4` rule 2).
+pub quote_json(t: Text) -> Text
+=
+  t
