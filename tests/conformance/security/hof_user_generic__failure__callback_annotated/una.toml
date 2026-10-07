@@ -1,0 +1,4 @@
+[package]
+name = "hof_user_generic__failure__callback_annotated"
+version = "0.1.0"
+edition = "0.1"

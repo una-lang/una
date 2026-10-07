@@ -1,0 +1,4 @@
+[package]
+name = "hof_captured_decision__effect__callee"
+version = "0.1.0"
+edition = "0.1"

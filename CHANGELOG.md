@@ -2,6 +2,21 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
+## v0.1.5
+
+A security patch release of Una Core, cut from v0.1.4. Edition 0.1 only; report schema versions are unchanged. It closes the class of leaks that v0.1.4 began to close: a decision on values of a type parameter given to function values. The fix rejects programs that v0.1.0 to v0.1.4 accept.
+
+### Security
+
+- **A decision on `T` values given to function values** (Critical, #346, #350, #354). In a generic body, a call that passed function values data chosen by comparing values of `T` could reveal the comparison, whose operands may be `secret` at the caller. v0.1.4 closed it for a call written in the body, `k(if a == b then p else q)`, and for the prelude's `map`, `filter`, `first_where` and `fold` given a named function value. It stayed open:
+  - through a generic function of the program that calls a function value: by its result, by its own effects and failures, and by the function value's, so `logger(if a == b then p else q, f: k)` with `logger` writing `f(x)` printed a number that depends on the secret;
+  - with a lambda whose parameter is annotated `T`, as in `map(each: fn(x: T) -> k(x))`, whose body assumes the annotation;
+  - with a function held in a kind's field;
+  - with an annotated lambda inside parentheses or a branch of `if`;
+  - with an annotation: `let y: T = if a == b then p else q`, or a record field `Hold[T]`, dropped the decision label (#354), since edition 0.1 read it as the label of a value of `T` in every flow.
+
+  Edition 0.1 now tells the decision label from a value's own label in its flows, as edition 0.2 does, and as edition 0.1 does from v0.3.2: a decided value flowing into an annotation, a field or a function value's parameter of type `T` is U4001. Besides, a call that gives function values a decision now raises its result at every position, runs under the decision so that its effects, and the function values', are bounded by it and it may not fail (U4002), and labels its failure, as an operation's failure is labeled (v0.1.4). A lambda whose parameter types are inferred, and values of `T` passed through, are unchanged. Only a lambda written as the argument, with no annotated parameter, accepts a decision; every other function value accepts none, which may reject a sound program, such as a lambda whose annotated parameter receives no decision; write the lambda without annotations, or pass the function directly. Found by Una-2's reviews; her 194-case matrix and 11 runnable cases are the conformance cases `security/hof_*`. The same rule ships for edition 0.1 in v0.3.1.
+
 ## v0.1.4
 
 A security patch release of Una Core, cut from v0.1.3 with two information-flow fixes (A′). Both were backported from v0.3.0, except one part of the first: v0.3.0 does not cover prelude functions that call a function value (`map`, `filter`, `first_where`, `fold`), and v0.3.1 brings that part to edition 0.1 packages. Edition 0.1 only; report schema versions are unchanged. Each fix makes edition 0.1 reject programs that v0.1.0 to v0.1.3 accept.

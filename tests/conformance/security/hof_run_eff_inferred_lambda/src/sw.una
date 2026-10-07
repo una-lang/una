@@ -1,0 +1,35 @@
+-- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, Una-2's matrix): U4002 (control): an inferred lambda takes `T*`, and its call of k is raised
+-- spec: spec/07 §7
+-- expect: error U4002 at src/sw.una:22:50
+-- expect: error U4001 at src/sw.una:22:52
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub handler to_console() for Log
+  uses @console: Console[print]
+  op write(n) = @console.print("{n}")
+
+apply_eff[U](x: U, f: fn(U) -> Unit uses @log: Log[write]) -> Unit
+  uses @log: Log[write]
+=
+  f(x)
+
+g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Unit uses @log: Log[write]) -> Unit
+  uses @log: Log[write]
+=
+  apply_eff(if a == b then p else q, f: fn(x) -> k(x))
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let s = @env.get("S")
+    if none use ""
+  run(s.len) with @log = to_console()
+
+run(v: internal Int) -> Unit
+  uses @log: Log[write]
+=
+  g([v], b: [0], p: [], q: [1], k: fn(xs) -> @log.write(xs.len))
