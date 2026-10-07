@@ -1,0 +1,9 @@
+---
+source: crates/una-cli/tests/cli.rs
+assertion_line: 841
+expression: raises
+---
+pub apply[T: Eq](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Int
+  uses of k
+-- result labels: top from T
+-- of raises: k from T
