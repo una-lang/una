@@ -3,7 +3,7 @@
 //! requirements (U1002, U1006, U1007) and trusted modules (U7005).
 
 mod conventions;
-mod prelude;
+pub(crate) mod prelude;
 mod resolve;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -667,13 +667,21 @@ impl<'p, 'a> Checker<'p, 'a> {
             {
                 table.edges.push((target, import.module.span));
             }
-            let is_std = path == prelude::STD_TESTING;
+            // The importable standard modules (`spec/10 §11` rule 10, N-33).
+            let standard: &[&str] = match path.as_str() {
+                prelude::STD_TESTING => &prelude::STD_TESTING_NAMES,
+                prelude::STD_HOST => &prelude::STD_HOST_NAMES,
+                _ => &[],
+            };
+            let is_std = path == prelude::STD_TESTING || path == prelude::STD_HOST;
             if target.is_none() && !is_std {
                 self.error(
                     Code::U1001,
                     import.module.span,
                     format!(
-                        "module `{path}` is not a module of this package or of the standard library"
+                        "module `{path}` is not a module of this package; the standard modules that can be imported are `{}` and `{}`",
+                        prelude::STD_HOST,
+                        prelude::STD_TESTING
                     ),
                 );
                 continue;
@@ -688,7 +696,7 @@ impl<'p, 'a> Checker<'p, 'a> {
                         Some(declared) => Found::Declared(declared.clone(), module.module.id),
                         None => Found::Missing,
                     },
-                    None if prelude::STD_TESTING_NAMES.contains(&name) => Found::Standard,
+                    None if standard.contains(&name) => Found::Standard,
                     None => Found::Missing,
                 };
                 match found {

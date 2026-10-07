@@ -22,6 +22,7 @@ use super::ty::{
     AliasId, CapId, Declared, FnRefinements, FnTy, FnUse, KindId, KindLabels, Names, Refinement,
     Show, Ty,
 };
+use crate::names::prelude;
 
 /// A module the checker knows: a package module, the prelude or `std.testing`.
 pub(crate) struct Module<'a> {
@@ -647,6 +648,8 @@ impl<'a> Env<'a> {
             paths.entry(module.path.clone()).or_insert(index);
         }
         paths.insert("std.testing".to_owned(), count + 1);
+        // `std.host` is the prelude's host declarations (`spec/10 §11` rule 10, N-33).
+        paths.insert(prelude::STD_HOST.to_owned(), count);
         for index in 0..count {
             let Some(module) = self.modules.get(index) else {
                 continue;
@@ -666,8 +669,12 @@ impl<'a> Env<'a> {
                 else {
                     continue;
                 };
+                let host = path.join(".") == prelude::STD_HOST;
                 for ident in &import.names {
                     let name = module.interner.resolve(ident.name);
+                    if host && !prelude::STD_HOST_NAMES.contains(&name) {
+                        continue;
+                    }
                     let Some(&entity) = target.upper.get(name).or_else(|| target.lower.get(name))
                     else {
                         continue;
