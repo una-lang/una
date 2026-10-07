@@ -1,0 +1,16 @@
+== 1c58f7d
+single-flow-closed: [U2001] Error: type parameter `E` of `Result` cannot be inferred here; give the value a type, for example with an annotated `let` 
+deep-nested: [U2001] Error: type parameter `E` of `Result` cannot be inferred here; give the value a type, for example with an annotated `let` 
+list-of-none: [U2001] Error: type parameter `T` of `Option` cannot be inferred here; give the value a type, for example with an annotated `let` 
+map-of-empty-lists: [U2001] Error: the element type of this empty list cannot be inferred; give it a type, as in `let xs: List[Int] = []` 
+functions-unannotated: [U4001] Error: the labels of `fs` cannot all be inferred, since part of its type is a function type, whose labels cannot be variables; annotate its type, as in `let edit fs: List[...] = ...` 
+functions-annotated: accepted
+map-of-functions: [U4001] Error: the labels of `ops` cannot all be inferred, since part of its type is a function type, whose labels cannot be variables; annotate its type, as in `let edit ops: Map[...] = ...` 
+== main 3aed995
+single-flow-closed: [U2001] Error: type parameter `E` of `Result` cannot be inferred here; give the value a type, for example with an annotated `let` 
+deep-nested: [U2001] Error: type parameter `E` of `Result` cannot be inferred here; give the value a type, for example with an annotated `let` 
+list-of-none: [U2001] Error: type parameter `T` of `Option` cannot be inferred here; give the value a type, for example with an annotated `let` 
+map-of-empty-lists: [U2001] Error: the element type of this empty list cannot be inferred; give it a type, as in `let xs: List[Int] = []` 
+functions-unannotated: accepted
+functions-annotated: accepted
+map-of-functions: accepted

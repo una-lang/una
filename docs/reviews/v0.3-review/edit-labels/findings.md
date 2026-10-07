@@ -58,6 +58,10 @@ edit m.set(key: "b", value: [s.len])   -- s is internal
   - When the cause is an unsolved variable, leave the program to U2001.
   - Keep the annotate U4001 for function types.
   - Show the binding's own outer type in the example.
+- **Fixed at `1c58f7d`** (`cases/8/recheck-e2-results.txt`):
+  - The four unsolved shapes give U2001 with exactly main's messages.
+  - A list or a map of functions gives a neutral U4001 ("part of its type is a function type, whose labels cannot be variables"), with a `List[...]` or `Map[...]` example to match.
+  - The annotated control checks.
 
 ## Notes (not findings)
 
