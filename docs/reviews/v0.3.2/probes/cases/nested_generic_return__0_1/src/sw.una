@@ -1,0 +1,12 @@
+module sw
+
+pub kind Hold[T]
+  value: T
+
+choose[T](a: T, b: T, p: T, q: T) -> T = if a == b then p else q
+
+twice[V](a: V, b: V, p: V, q: V) -> V = choose(a, b: b, p: choose(a, b: b, p: p, q: q), q: q)
+
+pub use_it(s: secret Int) -> secret Int = twice(s, b: 0, p: 1, q: 2)
+
+pub use_public(n: Int) -> Int = twice(n, b: 0, p: 1, q: 2)
