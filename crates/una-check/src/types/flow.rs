@@ -440,13 +440,27 @@ impl Checker<'_, '_, '_> {
         for (arg_span, ty) in args {
             let label = self.labeled(ty).sent_label(true, &self.env.kind_labels);
             if !below(&label, accepts, &self.top()) {
-                self.report.error(
+                let mut diagnostic = self.report.make(
                     Code::U4003,
                     *arg_span,
                     format!(
                         "{what} accepts `{accepts}` data, and this argument is `{label}`; declassify it through a policy first"
                     ),
                 );
+                // An interpolated value with a labeled field: name the field (ADR 0068 D8).
+                let top = self.top();
+                if let Some((_, field, kind, field_label)) =
+                    self.written_fields
+                        .iter()
+                        .find(|(span, _, _, field_label)| {
+                            span == arg_span && !below(field_label, accepts, &top)
+                        })
+                {
+                    diagnostic.repairs.push(super::Report::advice(format!(
+                        "field `{field}` of `{kind}` is `{field_label}`: interpolate the fields that {what} accepts instead, or declassify `{field}` through a policy"
+                    )));
+                }
+                self.report.push(diagnostic);
             }
         }
     }

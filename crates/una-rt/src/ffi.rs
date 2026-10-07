@@ -158,6 +158,9 @@ exported! {
     una_rt_generic_contains => generic::contains, (desc, xs, item);
     una_rt_generic_sum => generic::sum, (desc, xs);
     una_rt_generic_sort => generic::sort, (desc, xs);
+    una_rt_generic_write => generic::write, (desc, x);
+    una_rt_write => runtime::write, (ty, word);
+    una_rt_descriptor_composite => generic::composite, (ty, params);
     una_rt_or_else => values::or_else, (o, default);
     una_rt_op_code => values::op_code, (instance, index);
     una_rt_fixed => values::fixed, (op, int, a, b);

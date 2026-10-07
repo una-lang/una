@@ -1,0 +1,101 @@
+-- test: interpolation writes any value without functions in its Una form: records and variants with their fields in declaration order, nested lists, `Option` and `Result`, fixed-width and big integers, and a `Text` inside a structure quoted with its escapes; a value of `T: Eq` is written by the type that instantiates it (spec/10 §12 rule 14, spec/11 §5, ADR 0068)
+-- spec: spec/11 §5
+-- grant: console
+-- expect: run-output "point: Point(x: 1, y: -2), level: Mid, tag: Tag(\"say \\\"hi\\\"\")"
+-- expect: run-output "lists: [[1, 2], [], [3]] [\"a, b\"] [\"a\", \"b\"]"
+-- expect: run-output "options: Some(3) None Ok(\"x\") Err(High)"
+-- expect: run-output "ints: 255 -9223372036854775808 1000000000000000000000000000000"
+-- expect: run-output "generic: <t> <Point(x: 1, y: -2)> <Some(Low)> <Box(7)> <[1, 2]>"
+-- expect: run-output "nested: Box(Box(1)) [[\"s\"]] Some(\"s\")"
+-- expect: run-output "wrapped: Some(1) [\"s\", \"s\"] Box(true)"
+-- expect: run-output "params: Box(3) [Some(1)] Some(2) Box(Box(Pair(a: \"s\", b: [1])))"
+-- expect: run-output "tasks: [\"Box(Box(1))\", \"Box(Box(2))\", \"Box(Box(3))\"] [\"Box([\\\"s\\\"])\", \"Box([\\\"s\\\"])\"]"
+module print_values
+
+pub kind Level = Low | Mid | High
+
+pub kind Point
+  x: Int
+  y: Int
+
+pub kind Tag
+  name: Text
+
+pub kind Box[T]
+  inner: T
+
+pub kind Pair[A, B]
+  a: A
+  b: B
+
+--- `x` inside `n` boxes, written at the innermost call.
+deep[T: Eq](x: T, n: Int) -> Text = if n == 0 then "{x}" else deep(Box(inner: x), n: n - 1)
+
+--- `x` inside `n` lists, written at the innermost call.
+wrap[T: Eq](x: T, n: Int) -> Text = if n == 0 then "{x}" else wrap([x], n: n - 1)
+
+--- `x` written by a generic callee.
+show[T: Eq](x: T) -> Text = "{x}"
+
+--- `Some(x)`, written by `show`.
+outer[T: Eq](x: T) -> Text = show(Some(x))
+
+--- `Some(x)`, written here.
+direct[T: Eq](x: T) -> Text = "{Some(x)}"
+
+--- `[x, x]`, written here.
+listed[T: Eq](x: T) -> Text = "{[x, x]}"
+
+--- `Box(inner: x)`, written here.
+boxed[T: Eq](x: T) -> Text = "{Box(inner: x)}"
+
+--- A box of `T`, written.
+inner_text[T: Eq](b: Box[T]) -> Text = "{b}"
+
+--- A list of `T`, written.
+items[T: Eq](xs: List[T]) -> Text = "{xs}"
+
+--- The first of a list of `T`, written.
+firsts[T: Eq](xs: List[T]) -> Text = "{xs.first()}"
+
+--- `x` between angle brackets.
+bracketed[T: Eq](x: T) -> Text = "<{x}>"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let p = Point(x: 1, y: -2)
+  let level = Mid
+  let tag = Tag(name: "say \"hi\"")
+  @console.print("point: {p}, level: {level}, tag: {tag}")
+  let nested = [[1, 2], [], [3]]
+  let one = ["a, b"]
+  let two = ["a", "b"]
+  @console.print("lists: {nested} {one} {two}")
+  let some: Option[Int] = Some(3)
+  let nothing: Option[Int] = None
+  let ok: Result[Text, Level] = Ok("x")
+  let err: Result[Text, Level] = Err(High)
+  @console.print("options: {some} {nothing} {ok} {err}")
+  let byte: U8 = 255
+  let least: I64 = -9223372036854775808
+  let huge = 1000000000000000000000000000000
+  @console.print("ints: {byte} {least} {huge}")
+  let t = "t"
+  let a = bracketed(t)
+  let b = bracketed(p)
+  let c = bracketed(Some(Low))
+  let d = bracketed(Box(inner: 7))
+  let e = bracketed([1, 2])
+  @console.print("generic: {a} {b} {c} {d} {e}")
+  let s = "s"
+  @console.print("nested: {deep(1, n: 2)} {wrap(s, n: 2)} {outer(s)}")
+  @console.print("wrapped: {direct(1)} {listed(s)} {boxed(true)}")
+  let pair = Pair(a: s, b: [1])
+  @console.print("params: {inner_text(Box(inner: 3))} {items([Some(1)])} {firsts([2])} {deep(pair, n: 2)}")
+  let ks = [1, 2, 3]
+  let boxed_ints = together for k in ks
+    deep(k, n: 2)
+  let words = together for k in [1, 2]
+    deep([s], n: 1)
+  @console.print("tasks: {boxed_ints} {words}")

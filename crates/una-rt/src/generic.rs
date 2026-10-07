@@ -5,11 +5,81 @@
 //! ([`values::faults`]), and the operation answers as if the values were equal.
 
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
+use std::sync::Mutex;
 
 use num_bigint::BigInt;
 use una_core::Descriptor;
 
+use crate::runtime;
 use crate::values::{self, fault, int_value, int_word, retain, tag, text_value};
+
+/// The composite descriptors of the run (ADR 0068 D6): each entry is a type description that
+/// holds type parameters, with the descriptor of each, by position. One table for the process,
+/// so a type gets the same descriptor in every task's thread. An entry's key is a few words,
+/// so interning costs the same at every depth of a polymorphic recursion; its memory is the
+/// process's, which `--max-memory` counts (ADR 0061).
+struct Composites {
+    entries: Vec<(usize, Vec<i64>)>,
+    index: BTreeMap<(usize, Vec<i64>), usize>,
+}
+
+static COMPOSITES: Mutex<Composites> = Mutex::new(Composites {
+    entries: Vec::new(),
+    index: BTreeMap::new(),
+});
+
+/// The descriptor of the type described at `ty`, whose type parameters have the descriptors
+/// that the list `params` holds, by position: interned, so an immediate word.
+pub fn composite(ty: i64, params: i64) -> i64 {
+    let key = (
+        usize::try_from(ty).unwrap_or(usize::MAX),
+        values::list_items(params),
+    );
+    let Ok(mut table) = COMPOSITES.lock() else {
+        fault();
+        return Descriptor::Structural(0).word();
+    };
+    let entry = match table.index.get(&key) {
+        Some(entry) => *entry,
+        None => {
+            let entry = table.entries.len();
+            table.entries.push(key.clone());
+            table.index.insert(key, entry);
+            entry
+        }
+    };
+    Descriptor::Composite(entry).word()
+}
+
+/// The type description and parameter descriptors of a composite entry.
+fn entry(entry: usize) -> Option<(usize, Vec<i64>)> {
+    COMPOSITES.lock().ok()?.entries.get(entry).cloned()
+}
+
+/// How a value of a type parameter is written inside a structure, by its descriptor.
+pub(crate) enum Written {
+    /// An integer, in decimal.
+    Int,
+    /// A text, quoted.
+    Text,
+    /// By the type description at this index, with these parameter descriptors.
+    Typed(usize, Vec<i64>),
+}
+
+/// How the descriptor `desc` says to write its values, or `None` for a word that is no
+/// descriptor.
+pub(crate) fn shape_of(desc: i64) -> Option<Written> {
+    Some(match Descriptor::from_word(desc)? {
+        Descriptor::Int | Descriptor::Fixed(_) => Written::Int,
+        Descriptor::Text => Written::Text,
+        Descriptor::Sum(ty) | Descriptor::Structural(ty) => Written::Typed(ty, Vec::new()),
+        Descriptor::Composite(index) => {
+            let (ty, params) = entry(index)?;
+            Written::Typed(ty, params)
+        }
+    })
+}
 
 /// The order of `a` and `b` by the descriptor `desc`, or `None` with a fault when `desc` gives
 /// no order or does not fit them.
@@ -22,7 +92,7 @@ fn order(desc: i64, a: i64, b: i64) -> Option<Ordering> {
         Some(Descriptor::Text) if values::is_text(a) && values::is_text(b) => {
             Some(text_value(a).cmp(&text_value(b)))
         }
-        Some(Descriptor::Sum) if values::is_data(a) && values::is_data(b) => {
+        Some(Descriptor::Sum(_)) if values::is_data(a) && values::is_data(b) => {
             Some(tag(a).cmp(&tag(b)))
         }
         _ => None,
@@ -63,7 +133,7 @@ pub fn compare(desc: i64, a: i64, b: i64) -> i64 {
 /// (`spec/20 §1` rule 5), checked against the descriptor.
 pub fn equal(desc: i64, a: i64, b: i64) -> i64 {
     match Descriptor::from_word(desc) {
-        Some(Descriptor::Structural) => values::equal(a, b),
+        Some(Descriptor::Structural(_) | Descriptor::Composite(_)) => values::equal(a, b),
         _ => i64::from(order(desc, a, b).is_none_or(Ordering::is_eq)),
     }
 }
@@ -80,6 +150,31 @@ pub fn to_int(desc: i64, x: i64) -> i64 {
     }
     retain(x);
     x
+}
+
+/// `x` written as text by interpolation, on a `T: Eq` (`spec/11 §5`, ADR 0068): an integer
+/// in decimal, a `Text` as it is, any other value in its Una form, by the type description that
+/// its descriptor carries. A new reference.
+pub fn write(desc: i64, x: i64) -> i64 {
+    match Descriptor::from_word(desc) {
+        Some(Descriptor::Int | Descriptor::Fixed(_)) => values::int_text(x),
+        Some(Descriptor::Text) => {
+            retain(x);
+            x
+        }
+        Some(Descriptor::Sum(ty) | Descriptor::Structural(ty)) => runtime::written(ty, x, &[]),
+        Some(Descriptor::Composite(index)) => match entry(index) {
+            Some((ty, params)) => runtime::written(ty, x, &params),
+            None => {
+                fault();
+                values::text_word(String::new())
+            }
+        },
+        None => {
+            fault();
+            values::text_word(String::new())
+        }
+    }
 }
 
 /// `min(a, b)` of the prelude of edition 0.2 (`spec/20 §6`): `a` when they are equal, retained.
@@ -143,8 +238,8 @@ mod tests {
         let int = Descriptor::Int.word();
         let u8 = Descriptor::Fixed(IntType::U8).word();
         let text = Descriptor::Text.word();
-        let sum = Descriptor::Sum.word();
-        let structural = Descriptor::Structural.word();
+        let sum = Descriptor::Sum(0).word();
+        let structural = Descriptor::Structural(0).word();
         let (small, large) = (int_word(&BigInt::from(3)), int_word(&BigInt::from(300)));
         let (apple, pear) = (values::text_literal("apple"), values::text_literal("pear"));
         let (low, high) = (values::data(0), values::data(2));
@@ -164,6 +259,34 @@ mod tests {
         let converted = to_int(u8, large);
         values::release(converted);
         assert_eq!(values::faults(), before + 5);
+    }
+
+    #[test]
+    fn a_composite_is_the_same_word_in_every_thread() {
+        // ADR 0068 D6: the table is the process's, so tasks agree on a type's descriptor, and
+        // a deeper composite costs one entry more.
+        let build = || {
+            let params = values::list();
+            values::push(params, Descriptor::Int.word());
+            let word = composite(7, params);
+            values::release(params);
+            let deeper = values::list();
+            values::push(deeper, word);
+            let nested = composite(7, deeper);
+            values::release(deeper);
+            (word, nested)
+        };
+        let here = build();
+        let there: Vec<(i64, i64)> = (0..4)
+            .map(|_| std::thread::spawn(build))
+            .map(|handle| handle.join().unwrap_or_default())
+            .collect();
+        assert!(there.iter().all(|pair| *pair == here), "{here:?} {there:?}");
+        assert_ne!(here.0, here.1);
+        assert!(matches!(
+            Descriptor::from_word(here.1),
+            Some(Descriptor::Composite(_))
+        ));
     }
 
     #[test]
