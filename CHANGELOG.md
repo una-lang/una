@@ -27,6 +27,10 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 - **Building a list through calls takes linear time** (ADR 0072, #262). An `edit` argument, or a binding at its last use rebound from a call's result (`acc = push(acc, x)`), now moves into the callee, which appends in place through any number of call levels, in the interpreter and in native code: amortized O(1) per append instead of a copy of the whole list at each call. A binding that the code after a failure reads keeps its value, as before. Native functions own the parameters they consume, found by borrow inference. A read-only parameter is still borrowed at no cost.
 
+### Proof cache
+
+- **Runs that start together on a new home share one proof-cache key** (#282). The key file `~/.una/proof-cache.key` is now written to a file of its own and linked into place. Before, a run that lost the race to make it could read it half written, and ran with the cache off.
+
 ## v0.2.0
 
 The first stable release of v0.2. The native backend compiles the whole language of edition 0.2 into executables that match the interpreter. Edition 0.2 completes its scope with structured concurrency, constraints on generics and printing of structured values, and every Critical and Major finding of the two independent reviews of v0.2 (#176, #177) is fixed. Gate 1's benchmark stays pinned to v0.1.x.
