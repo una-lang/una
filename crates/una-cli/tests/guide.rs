@@ -30,7 +30,7 @@ const GUIDES: [&str; 3] = [
 ];
 
 /// The schemas the CLI prints (`spec/13 §1, §2, §6`, ADRs 0029, 0032 and 0034).
-const SCHEMAS: [&str; 10] = [
+const SCHEMAS: [&str; 11] = [
     "una.diagnostics/1",
     "una.diagnostic/1",
     "una.obligations/1",
@@ -41,6 +41,7 @@ const SCHEMAS: [&str; 10] = [
     "una.report/2",
     "una.build/1",
     "una.explain/1",
+    "una.version/1",
 ];
 
 fn repository() -> PathBuf {

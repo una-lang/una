@@ -24,8 +24,13 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 - **Every handling clause written on its expression's line is reported in one check** (#268). The parser goes on past the first such line of a body, so each one gets its U0101 and its edit, and applying them all converges in one round.
 
 
+### Command line
+
+- **`una --version`** (#305, N-38, `spec/13 §5`). It prints the version, the editions it serves and the pinned Z3 (`una 0.2.0`, `editions: 0.1, 0.2`, `z3: 5.1.0`), and `una.version/1` with `--json`, with no commit hash. `install.sh` prints it after installing, and the bug and soundness templates, `CONTRIBUTING.md` and `SECURITY.md`, which ask for it, are now right.
+
 ### Documentation
 
+- **The downloads page links no vsix** (#305, N-38). Its editor section says the VS Code extension ships on the Marketplace and Open VSX with the Beta, and links #243, where it linked `images/*.vsix`, which the repository does not hold. `scripts/site.sh` now fails on a link into the repository that names no tracked file, and leaves inline code alone, where it rewrote `sum[T: Integer](xs)` as a link.
 - **The website** (#244, N-34). `scripts/site.sh` builds it with mdBook 0.5.4 into `target/site`, from the repository's own documents: a landing page from the README, the tutorial and the guides, the specification, the ADRs with their status, the validation records, the changelog, and a downloads page whose archive digests come from the validation records that `install.sh` trusts. The theme uses the Graúna palette in a light and a dark variant, with Una highlighting. Every page must build and every link between pages must resolve. `scripts/local-ci.sh` runs it when mdBook 0.5.4 is installed and prints that it skipped it otherwise, and the new `site` gate of `scripts/release-gates.sh` requires it (N-36). Hosting and the domain are not decided yet.
 - `docs/guide/syntax-reference.md`: the U0103 message format no longer shows as an HTML tag.
 - **A getting-started tutorial** (#245, `docs/guide/getting-started.md`): from install to a verified, natively built program, `examples/wordfreq`, through a contract, a refuted proof and its counterexample, examples, grants, `una run`, `una build` and the editor. The guide test checks every block, and the tutorial's last package is the example.

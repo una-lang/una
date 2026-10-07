@@ -207,6 +207,7 @@ Every command takes `--json` and prints exactly one JSON document, with a `schem
 | `una trace <REQUIREMENT_ID>` | Follows a requirement to its functions and proofs |
 | `una report` | The build report: what is proven, trusted, assumed and declassified |
 | `una explain <code>` | Explains a diagnostic code, with examples |
+| `una --version` | The version, the editions it serves and the pinned Z3 |
 
 ## Learn more
 

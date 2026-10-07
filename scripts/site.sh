@@ -5,10 +5,12 @@
 # - the tutorial, the guides, the specification, the charter, the ADRs, the validation records
 #   and the changelog are the files under docs/ and CHANGELOG.md, as they are;
 # - the downloads page takes the archives and their digests from docs/releases/*-validation.md,
-#   the records install.sh trusts, and the install steps from README.md;
+#   the records install.sh trusts, and the install steps from README.md; it links no binary
+#   that the repository does not hold;
 # - the indexes of the specification and of the ADRs, and the table of contents, are generated.
 # A link to a page of the site stays a link to that page; any other link into the repository,
-# such as an example package or a script, points to the file on GitHub. After the build, every
+# such as an example package or a script, points to the file on GitHub, and must name a file
+# or directory that git tracks. After the build, every
 # page must exist and every link between pages, or to an image, must resolve, or the script
 # fails. Hosting and the domain are the owner's decision: this script only builds.
 #
@@ -121,10 +123,7 @@ awk '
     echo
     echo "## Editor support"
     echo
-    for vsix in images/*.vsix; do
-        [ -e "$vsix" ] || continue
-        echo "The VS Code extension, with Una's grammar, the Graúna theme and file icons: [\`$(basename "$vsix")\`]($vsix). Install it with **Extensions: Install from VSIX...** in VS Code."
-    done
+    echo "The VS Code extension, with Una's grammar, the Graúna theme, file icons and the language server \`una lsp\`, ships on the Visual Studio Marketplace and Open VSX with the Beta ([#243]($REPOSITORY/issues/243))."
 } >"$src/downloads.md.in"
 
 # --- The table of contents.
@@ -177,7 +176,7 @@ done
 # stays as written, except that a link to a README.md goes to the index.html that mdBook builds
 # from it. A link to a directory with a generated index goes to that index; a link to
 # any other file or directory of the repository goes to it on GitHub. Links inside code blocks
-# are left alone.
+# and inline code are left alone.
 staged=$(cd "$src" && find . -name '*.md.in' | sed -e 's|^\./||' -e 's|\.in$||' | sort)
 images=$(sed -n 's/.*src="\(images\/[^"]*\)".*/\1/p' README.md | sort -u)
 for image in $images; do
@@ -191,7 +190,7 @@ done
 } >"$src/.paths"
 
 for page in $staged; do
-    awk -v page="$page" -v repository="$REPOSITORY" -v paths="$src/.paths" '
+    awk -v page="$page" -v repository="$REPOSITORY" -v paths="$src/.paths" -v missing="$src/.missing" '
         BEGIN {
             while ((getline line < paths) > 0) {
                 split(line, f, " ")
@@ -230,13 +229,14 @@ for page in $staged; do
                 sub(/\/$/, "", path)
                 return path "/index.md" frag
             }
-            if (kind[resolved] == "dir" || path ~ /\/$/) return repository "/tree/main/" resolved frag
+            if (kind[resolved] == "dir") return repository "/tree/main/" resolved frag
+            if (kind[resolved] != "file") print page ": " target >> missing
             return repository "/blob/main/" resolved frag
         }
         /^[[:space:]]*```/ { fence = !fence; print; next }
         fence { print; next }
-        {
-            line = $0
+        # Rewrites the links of a stretch of text outside inline code.
+        function links(line,    result, token, target, at) {
             result = ""
             while (match(line, /\]\([^)[:space:]]+\)|(src|href)="[^"]+"/)) {
                 token = substr(line, RSTART, RLENGTH)
@@ -251,12 +251,27 @@ for page in $staged; do
                 result = result substr(line, 1, RSTART - 1) token
                 line = substr(line, RSTART + RLENGTH)
             }
-            print result line
+            return result line
+        }
+        # Inline code spans, between backticks, are left alone.
+        {
+            count = split($0, spans, "`")
+            out = ""
+            for (i = 1; i <= count; i++) {
+                out = out (i > 1 ? "`" : "") (i % 2 == 1 ? links(spans[i]) : spans[i])
+            }
+            print out
         }
     ' "$src/$page.in" >"$src/$page"
     rm "$src/$page.in"
 done
 rm "$src/.paths"
+# A link into the repository must name a file or directory that git tracks (#305): an untracked
+# file, such as a local build, does not exist on GitHub.
+if [ -s "$src/.missing" ]; then
+    cat "$src/.missing" >&2
+    fail "$(wc -l <"$src/.missing" | tr -d ' ') links name no tracked file"
+fi
 
 # --- The build.
 mdbook build site >"$src/.build.log" 2>&1 || {

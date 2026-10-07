@@ -6,7 +6,12 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 /// Una, a verification-first programming language for machine-generated software.
 #[derive(Debug, Parser)]
-#[command(name = "una", disable_help_subcommand = true)]
+#[command(
+    name = "una",
+    disable_help_subcommand = true,
+    disable_version_flag = true,
+    override_usage = "una [OPTIONS] <COMMAND>\n       una --version [--json]"
+)]
 pub(crate) struct Cli {
     /// Print machine output as JSON on stdout, and nothing else on stdout
     #[arg(long, global = true)]
@@ -22,8 +27,12 @@ pub(crate) struct Cli {
     )]
     pub(crate) color: ColorChoice,
 
+    /// Print the version, the editions and the pinned Z3 version, and exit
+    #[arg(long)]
+    pub(crate) version: bool,
+
     #[command(subcommand)]
-    pub(crate) command: Command,
+    pub(crate) command: Option<Command>,
 }
 
 /// The values of `--color`.

@@ -40,6 +40,17 @@ pub enum Edition {
 }
 
 impl Edition {
+    /// Every edition, oldest first.
+    pub const ALL: [Edition; 2] = [Edition::V0_1, Edition::V0_2];
+
+    /// The edition's name, as `una.toml` writes it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Edition::V0_1 => "0.1",
+            Edition::V0_2 => "0.2",
+        }
+    }
+
     /// The edition named `text` in `una.toml`, if it is one.
     fn parse(text: &str) -> Option<Edition> {
         match text {
