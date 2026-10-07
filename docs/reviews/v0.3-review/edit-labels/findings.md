@@ -1,6 +1,29 @@
 # Adversarial check of label variables for editable bindings (ADR 0075): findings
 
-Candidate `2e0ff81` (PR #327), cases written against `bbb935d`, with the same verdicts on both. There is no leak.
+Candidate `2e0ff81` (PR #327), cases written against `bbb935d`, with the same verdicts on both. The first check found no leak in the shapes it tried. The delta preparation then found one, which predates ADR 0075: L-1.
+
+## L-1, Critical: an editable binding's label is fixed by the order of unification (N-45)
+
+**Area 6.** Cases: `cases/6/loop-*`, scoped by `cases/6/scope.sh`, with results in `cases/6/scope-results.txt`.
+
+```una
+let s = @env.get("S")
+  if none use "x"
+let edit xs = []
+for i in 0..<2
+  @console.print("{xs}")
+  xs = xs.append(item: s.len)
+```
+
+- **What happens.** `una check` accepts it, and with `S=secretvalue` the run prints `[]` then `[11]`. The length of an `internal` value reaches `Console`.
+- **Why.** The open label positions of an empty initializer (`[]`, `None`, `Ok(0)`'s `Err` side, `empty_map()`) are fixed by unification as the checker goes. A read checked before the later flow keeps `public`, and in a loop that read sees the earlier iteration's value.
+- **Scope.**
+  - v0.2.0 (`2a69456`): 11 shapes leak.
+  - main (`3aed995`): the same 11, plus the map value and a map key whose size reveals equality with a known key.
+  - #327 at `2e0ff81`: fixes every top-level shape, and four nested ones still leak: a list of lists, an `Option` of a list, an `Option` in a list, and a `Result` in a list.
+  - The coordinator withdrew v0.2.0's ready status (N-45).
+- **Edition 0.1 is unaffected** (`cases/7/`): `edit` is reserved (U0103), a plain `let` cannot be assigned (U0101), and the accumulator forms, `fold` from `[]` and recursion, carry the label (U4003, U4001). This was confirmed on the v0.2.0 and main checkers, and by Una-3 on the pinned v0.1.3 binary (`df2c495`).
+- **Fix:** #327 with N-44's nested label variables; the delta pass checks it.
 
 ## E-1, Minor: a nested position inside an open position is fixed by the first assignment
 
@@ -14,7 +37,7 @@ edit m.set(key: "b", value: [s.len])   -- s is internal
 
 - **What happens.** U4001 at the second `set`: "`m` is `Map[Text, List[Int]]`, and this value is `Map[Text, List[internal Int]]`".
 - **Why.** The value position of `empty_map()` is a type variable, so its top label is a label variable. The first `set` resolves that variable to `List[Int]`, and the list's element label is then fixed `public`. Only the top of the open position is a variable, so the later, higher flow is rejected.
-- **It is sound:** the program is rejected, not accepted with a wrong label. It does contradict the ADR's consequence that "labels only rise to what actually flows in". The ADR's own `group_by` example works only because its elements carry `T` from the start.
+- **At a map value it is a false rejection.** The program is rejected, not accepted with a wrong label. At a list or option element in a loop, the same rule leaks (L-1). It does contradict the ADR's consequence that "labels only rise to what actually flows in". The ADR's own `group_by` example works only because its elements carry `T` from the start.
 - **Suggested fix.** Open a label variable at every label position of the type that an open position's variable resolves to, collected when pass 1 resolves it. Otherwise, state in ADR 0075 rule 1 that only the top of each open position is a variable, and give the workaround (annotate the binding).
 
 ## Notes (not findings)
