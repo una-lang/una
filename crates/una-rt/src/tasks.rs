@@ -205,9 +205,7 @@ fn task(
     if status != 2 {
         values::release(value);
         values::release(closure);
-        if let Some(arg) = arg {
-            values::release(arg);
-        }
+        // The task's argument went to the lambda, which owns its parameters (N-42).
         // A debug build checks the task's reference counting as `main`'s (`runtime::start`).
         if cfg!(debug_assertions) {
             TASK_FAULTS.fetch_add(values::faults(), Ordering::SeqCst);

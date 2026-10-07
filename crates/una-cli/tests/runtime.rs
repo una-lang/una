@@ -1875,3 +1875,90 @@ fn text_len_and_slice_take_constant_time_on_any_text() {
         times[1]
     );
 }
+
+/// A program that appends `steps` items to a list through a function value, by `shape`: a
+/// named function passed as a value (`named`), a lambda (`lambda`), two layers of lambdas over
+/// a function value (`layers`), or `fold` over a list (`fold`) or into a text (`text`) (N-42).
+fn appends_through_function_values(shape: &str, steps: usize) -> String {
+    let body = match shape {
+        "named" => format!("  let a = run_with(r1, n: {steps})\n  @console.print(\"{{a.len}}\")\n"),
+        "lambda" => format!(
+            "  let a = run_with(fn(acc, i) -> acc.append(item: i), n: {steps})\n  @console.print(\"{{a.len}}\")\n"
+        ),
+        "layers" => {
+            format!("  let a = twice_layered(r1, n: {steps})\n  @console.print(\"{{a.len}}\")\n")
+        }
+        "fold" => format!(
+            "  let a = numbers({steps}).fold(initial: [], step: fn(acc, x) -> acc.append(item: x))\n  @console.print(\"{{a.len}}\")\n"
+        ),
+        _ => format!(
+            "  let t = numbers({steps}).fold(initial: \"\", step: fn(line, x) -> \"{{line}}x\")\n  @console.print(\"{{t.len}}\")\n"
+        ),
+    };
+    format!(
+        "module grow\n\nr1(acc: List[Int], i: Int) -> List[Int] = acc.append(item: i)\n\nrun_with(f: fn(List[Int], Int) -> List[Int], n: Int) -> List[Int]\n=\n  let edit acc: List[Int] = []\n  for i in 0..<n\n    acc = f(acc, i)\n  acc\n\nlayered(f: fn(List[Int], Int) -> List[Int], n: Int) -> List[Int] = run_with(fn(acc, i) -> f(acc, i), n: n)\n\ntwice_layered(f: fn(List[Int], Int) -> List[Int], n: Int) -> List[Int] = layered(fn(acc, i) -> f(acc, i), n: n)\n\nnumbers(n: Int) -> List[Int]\n=\n  let edit xs: List[Int] = []\n  for i in 0..<n\n    xs = xs.append(item: i)\n  xs\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n{body}"
+    )
+}
+
+/// Function values that a list goes through twice, or that capture it, never change it (N-42).
+const ALIASED: &str = "module aliased\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let base = [1, 2]\n  let f = fn(acc: List[Int], i: Int) -> acc.append(item: i)\n  let a = f(base, 3)\n  let b = f(base, 4)\n  let g = fn(i: Int) -> base.append(item: i)\n  let c = g(5)\n  let d = g(6)\n  let folded = [7, 8].fold(initial: base, step: fn(acc, x) -> acc.append(item: x))\n  @console.print(\"{base} {a} {b} {c} {d} {folded} {base}\")\n";
+
+/// What [`ALIASED`] prints.
+const ALIASED_OUTPUT: &str = "[1, 2] [1, 2, 3] [1, 2, 4] [1, 2, 5] [1, 2, 6] [1, 2, 7, 8] [1, 2]\n";
+
+#[test]
+fn a_list_built_through_function_values_grows_in_linear_time() {
+    // N-42 (#312): in the interpreter too, a binding at its last use moves into a call through
+    // a function value, so appends through function values and `fold` stay in place. Each
+    // tenfold step stays under 30x, against about 100x when every call copies.
+    let root = package("value-append", "\n[run]\nentry = \"grow\"\n", &[]);
+    let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let dir = root.to_str().unwrap();
+    for shape in ["named", "lambda", "layers", "fold", "text"] {
+        let mut times = Vec::new();
+        for steps in [10_000, 100_000] {
+            std::fs::write(
+                root.join("src/grow.una"),
+                appends_through_function_values(shape, steps),
+            )
+            .unwrap();
+            let started = std::time::Instant::now();
+            let output = una(&["run", dir, "--grant", "console"]);
+            times.push(started.elapsed().as_secs_f64().max(0.05));
+            assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+            assert_eq!(stdout(&output), format!("{steps}\n"));
+        }
+        for pair in times.windows(2) {
+            assert!(
+                pair[1] < 30.0 * pair[0],
+                "{shape}: 10x the appends took {:.1}x as long: {times:?}",
+                pair[1] / pair[0]
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn function_values_never_change_a_list_another_name_holds() {
+    // N-42: as natively.
+    let root = package("value-aliased", "\n[run]\nentry = \"aliased\"\n", &[]);
+    let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/aliased.una"), ALIASED).unwrap();
+    let output = una(&["run", root.to_str().unwrap(), "--grant", "console"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), ALIASED_OUTPUT);
+    let _ = std::fs::remove_dir_all(&root);
+}
