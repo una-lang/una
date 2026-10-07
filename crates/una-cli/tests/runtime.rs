@@ -1691,3 +1691,56 @@ fn a_list_appended_through_calls_grows_in_linear_time() {
         }
     }
 }
+
+#[test]
+fn appends_in_nested_loops_and_tasks_grow_in_linear_time() {
+    // #263: the `later` entry of an enclosing loop or `together` block counts the bindings of
+    // its own body as rebound, so a list appended in an inner loop, or in a loop inside a task
+    // of `together for`, is updated in place. Each tenfold step stays under 30x, against about
+    // 100x when every append copies.
+    let root = package("nested-append", "\n[run]\nentry = \"grow\"\n", &[]);
+    let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let dir = root.to_str().unwrap();
+    for shape in ["nested", "task"] {
+        let mut times = Vec::new();
+        for steps in [10_000, 100_000] {
+            let body = if shape == "nested" {
+                format!(
+                    "  let edit acc: List[Int] = []\n  for i in 0..<2\n    for j in 0..<{steps}\n      acc = acc.append(item: j)\n  @console.print(\"{{acc.len}}\")\n"
+                )
+            } else {
+                format!(
+                    "  let sizes = together for r in [0, 1]\n    let edit acc: List[Int] = []\n    for j in 0..<{steps}\n      acc = acc.append(item: j)\n    acc.len\n  @console.print(\"{{sizes}}\")\n"
+                )
+            };
+            std::fs::write(
+                root.join("src/grow.una"),
+                format!(
+                    "module grow\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n{body}"
+                ),
+            )
+            .unwrap();
+            let started = std::time::Instant::now();
+            let output = una(&["run", dir, "--grant", "console"]);
+            times.push(started.elapsed().as_secs_f64().max(0.05));
+            assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+            let expected = if shape == "nested" {
+                format!("{}\n", 2 * steps)
+            } else {
+                format!("[{steps}, {steps}]\n")
+            };
+            assert_eq!(stdout(&output), expected);
+        }
+        assert!(
+            times[1] < 30.0 * times[0],
+            "{shape}: 10x the appends took {:.1}x as long: {times:?}",
+            times[1] / times[0]
+        );
+    }
+}
