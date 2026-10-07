@@ -402,8 +402,9 @@ pub main() -> Unit
 #[test]
 fn a_text_appended_in_a_loop_grows_in_linear_time() {
     // ADR 0070 X10, `spec/22 §6` rule 2 (#261): `t = "{t}x"` appends in place when nothing
-    // else holds `t`, so ten times the appends take about ten times as long, not a hundred: the
-    // bound sits between the measured 3.5x and the 17x to 19x of the copy.
+    // else holds `t`, so ten times the appends take about ten times as long, not a hundred. The
+    // interpreter counts no copies, so the check is timing, at sizes where a copy per append
+    // dominates the run: the bound sits well below the growth of the copy.
     let root = package("text-append", "\n[run]\nentry = \"grow\"\n", &[]);
     let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
     std::fs::write(
@@ -414,7 +415,7 @@ fn a_text_appended_in_a_loop_grows_in_linear_time() {
     std::fs::create_dir_all(root.join("src")).unwrap();
     let dir = root.to_str().unwrap();
     let mut times = Vec::new();
-    for steps in [100_000, 1_000_000] {
+    for steps in [200_000, 2_000_000] {
         std::fs::write(
             root.join("src/grow.una"),
             format!(
@@ -429,7 +430,7 @@ fn a_text_appended_in_a_loop_grows_in_linear_time() {
         assert_eq!(stdout(&output), format!("{steps}\n"));
     }
     assert!(
-        times[1] < 8.0 * times[0],
+        times[1] < 10.0 * times[0],
         "10x the appends took {:.1}x as long: {times:?}",
         times[1] / times[0]
     );

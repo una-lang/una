@@ -278,7 +278,8 @@ pub fn live() -> usize {
     })
 }
 
-/// The number of lists, maps and records copied so far, rather than updated in place (#30).
+/// The number of lists, maps, records and texts copied so far, rather than updated in place
+/// (#30, #261).
 pub fn copies() -> usize {
     HEAP.with(|heap| heap.borrow().copies)
 }
@@ -485,6 +486,7 @@ pub fn text_append_owned(t: i64, part: i64) -> i64 {
             return t;
         }
     }
+    copied();
     let text = concat(t, part);
     release(t);
     text
