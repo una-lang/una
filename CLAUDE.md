@@ -58,6 +58,14 @@ GitHub Actions is not used: never wait for it. Validation is local and recorded 
 
 Tests that need the SMT solver require Z3 at the exact version in `verification.lock`. If it is missing or mismatched, those tests must fail with diagnostic U5003, never skip silently.
 
+## Performance
+
+Every design choice favors the best average-case algorithmic complexity (owner's rule, 2026-10-06):
+
+- An ADR states the time and space complexity of each option. Prefer O(1) or O(log n) operations and O(n) or O(n log n) passes. A quadratic choice needs a written reason and the owner's acceptance.
+- A pull request that touches a hot path (the runtime, the interpreter, codegen, the checker's fixpoints, the verifier's encoding) states the complexity it achieves. It includes a scaling test at growing sizes that would fail on quadratic behavior.
+- Value semantics stay cheap: updates of uniquely held values happen in place (#30, #201), and shared values are copied only when written.
+
 ## Rust rules (full list in `docs/compiler/conventions.md`)
 
 - No `unsafe`, with one exception: the FFI module of `una-rt` (`ffi.rs`), at the boundary with generated native code, where every unsafe block carries a `// SAFETY:` comment (ADR 0058).
