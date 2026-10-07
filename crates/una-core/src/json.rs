@@ -12,6 +12,7 @@
 //! rather than with an allocation the process cannot make.
 
 use std::collections::HashSet;
+use std::convert::Infallible;
 
 /// How often [`parse_within`] and [`write_within`] call their budget hook: every this many
 /// values, and every this many scalar values inside one string (N-41).
@@ -107,15 +108,27 @@ enum Frame {
 
 /// The text being read, in place: `byte` is the offset of the next character, and `at` its
 /// position in scalar values, which errors report (`spec/23 §3` rule 5).
-struct Parser<'t, 'w> {
+struct Parser<'t, 'w, E> {
     text: &'t str,
     byte: usize,
     at: usize,
     ticks: usize,
-    within: &'w mut dyn FnMut() -> bool,
+    within: &'w mut dyn FnMut() -> Result<(), E>,
 }
 
-impl Parser<'_, '_> {
+/// Why the parser stopped: the text is invalid, or the hook stopped it with its `E`.
+enum Stop<E> {
+    Invalid(Error),
+    Hook(E),
+}
+
+impl<E> From<Error> for Stop<E> {
+    fn from(error: Error) -> Stop<E> {
+        Stop::Invalid(error)
+    }
+}
+
+impl<E> Parser<'_, '_, E> {
     fn peek(&self) -> Option<char> {
         self.text
             .get(self.byte..)
@@ -131,13 +144,11 @@ impl Parser<'_, '_> {
     }
 
     /// Counts one unit of work, and every [`CHECK_EVERY`] asks the budget hook.
-    fn tick(&mut self) -> Result<(), Halt> {
+    fn tick(&mut self) -> Result<(), Stop<E>> {
         self.ticks += 1;
         if self.ticks >= CHECK_EVERY {
             self.ticks = 0;
-            if !(self.within)() {
-                return Err(Halt::OverBudget);
-            }
+            (self.within)().map_err(Stop::Hook)?;
         }
         Ok(())
     }
@@ -189,7 +200,7 @@ impl Parser<'_, '_> {
     }
 
     /// A string, at its opening quote.
-    fn string(&mut self) -> Result<String, Halt> {
+    fn string(&mut self) -> Result<String, Stop<E>> {
         self.expect('"')?;
         let mut out = String::new();
         loop {
@@ -352,12 +363,11 @@ pub fn is_json_number(text: &str) -> bool {
 
 /// The one JSON value of `text` (`spec/23 §3`), or the first error in reading order.
 pub fn parse(text: &str) -> Result<Tree, Error> {
-    match parse_within(text, &mut || true) {
+    // A hook that cannot stop: `Infallible` proves the parser ends with a value or an error.
+    match parse_hooked(text, &mut || Ok::<(), Infallible>(())) {
         Ok(tree) => Ok(tree),
-        Err(Halt::Invalid(error)) => Err(error),
-        // INVARIANT: a hook that always answers `true` never stops the parser; position 0 is a
-        // placeholder that cannot be reached.
-        Err(Halt::OverBudget) => Err(Error::Syntax(0)),
+        Err(Stop::Invalid(error)) => Err(error),
+        Err(Stop::Hook(never)) => match never {},
     }
 }
 
@@ -365,9 +375,17 @@ pub fn parse(text: &str) -> Result<Tree, Error> {
 /// run is still within its memory budget, and stopping with [`Halt::OverBudget`] when it is
 /// not (`spec/11 §7`, N-41).
 pub fn parse_within(text: &str, within: &mut dyn FnMut() -> bool) -> Result<Tree, Halt> {
-    if !within() {
-        return Err(Halt::OverBudget);
+    let mut hook = || if within() { Ok(()) } else { Err(()) };
+    match parse_hooked(text, &mut hook) {
+        Ok(tree) => Ok(tree),
+        Err(Stop::Invalid(error)) => Err(Halt::Invalid(error)),
+        Err(Stop::Hook(())) => Err(Halt::OverBudget),
     }
+}
+
+/// The parser, with a hook that may stop it with its own `E`.
+fn parse_hooked<E>(text: &str, within: &mut dyn FnMut() -> Result<(), E>) -> Result<Tree, Stop<E>> {
+    within().map_err(Stop::Hook)?;
     let mut parser = Parser {
         text,
         byte: 0,
@@ -531,20 +549,27 @@ fn push_quoted(out: &mut String, text: &str) {
 
 /// The canonical JSON text of `tree` (`spec/23 §4` rule 1).
 pub fn write(tree: &Tree) -> String {
-    write_within(tree, &mut || true).unwrap_or_default()
+    match write_hooked(tree, &mut || Ok::<(), Infallible>(())) {
+        Ok(text) => text,
+        Err(never) => match never {},
+    }
 }
 
 /// [`write`], asking `within` every [`CHECK_EVERY`] values whether the run is still within its
 /// memory budget, and stopping with `None` when it is not (`spec/11 §7`, N-41).
 pub fn write_within(tree: &Tree, within: &mut dyn FnMut() -> bool) -> Option<String> {
+    let mut hook = || if within() { Ok(()) } else { Err(()) };
+    write_hooked(tree, &mut hook).ok()
+}
+
+/// The writer, with a hook that may stop it with its own `E`.
+fn write_hooked<E>(tree: &Tree, within: &mut dyn FnMut() -> Result<(), E>) -> Result<String, E> {
     enum Step<'t> {
         Value(&'t Tree),
         Text(&'static str),
         Key(&'t str),
     }
-    if !within() {
-        return None;
-    }
+    within()?;
     let mut out = String::new();
     let mut steps = vec![Step::Value(tree)];
     let mut ticks = 0;
@@ -552,9 +577,7 @@ pub fn write_within(tree: &Tree, within: &mut dyn FnMut() -> bool) -> Option<Str
         ticks += 1;
         if ticks >= CHECK_EVERY {
             ticks = 0;
-            if !within() {
-                return None;
-            }
+            within()?;
         }
         match step {
             Step::Text(text) => out.push_str(text),
@@ -592,7 +615,7 @@ pub fn write_within(tree: &Tree, within: &mut dyn FnMut() -> bool) -> Option<Str
             },
         }
     }
-    Some(out)
+    Ok(out)
 }
 
 #[cfg(test)]
