@@ -37,7 +37,7 @@ pub tally[T: Ord](xs: List[T]) -> Map[T, Int]
 
 - `tally`, `group_by` and similar generic map and list builders check without annotations, and their results carry the labels their inputs give them: a `tally` over `secret` keys is a map whose counts are `secret`.
 - A binding's labels now depend on its later assignments. A diagnostic about a read of the binding names the solved label, which may come from an assignment after the read; the message of U4001 and U4003 shows the label, and the related span points at the binding.
-- Labels only rise to what actually flows in, so no program that checked before is rejected now, and a program accepted now has every sink checked against the labels its values really have.
+- Labels only rise to what actually flows in, and every program they accept has every sink checked against the labels its values really have. Two kinds of program that v0.2.0 accepted are rejected now, by design (N-45, N-4): a read printed before the only `internal` assignment of a binding, with no loop, which is U4003 at the print, since v0.2.0 decided that label by the order of the checks; and an un-annotated binding whose open position holds a function type, as a list of functions, which is U4001 asking for an annotation, since a function type's labels cannot be variables. Where inference leaves a position unsolved, as in `[None]`, the existing U2001 names it, as before.
 - Each function with such a binding is checked twice. The other functions are checked once, as before.
 
 ## Alternatives considered
