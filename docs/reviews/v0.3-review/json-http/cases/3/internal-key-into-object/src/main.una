@@ -1,0 +1,3 @@
+module main
+
+f(k: internal Text) -> Json = Object(fields: empty_map().with(key: k, value: Null))
