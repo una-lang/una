@@ -2,6 +2,136 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
+## v0.2.0
+
+The first stable release of v0.2. The native backend compiles the whole language of edition 0.2 into executables that match the interpreter. Edition 0.2 completes its scope with structured concurrency, constraints on generics and printing of structured values, and every Critical and Major finding of the two independent reviews of v0.2 (#176, #177) is fixed. Gate 1's benchmark stays pinned to v0.1.x.
+
+### Security
+
+- **Labels of function values passed for `of` parameters** (#210, P0, Critical). In edition 0.2, a function value given for a `uses of` or `fails of` parameter, as `map`, `filter`, `first_where` and `fold` take, lost its labels. That was both a false rejection and an information-flow leak, present since v0.2.0-alpha.3. v0.1.x is not affected.
+- **Defense in depth near `of` parameters** (#216). Three sites keep or join the labels the rules require, although none leaked: the effects of a function value given for an `of` parameter run under its own label too.
+- **Edit arguments flow back with their final labels** (#186). An `edit` argument's new value is checked after every argument is typed. Before, a `secret` could reach a public place through a generic callee.
+- **A decision on `T` values given to an effectful `uses of` parameter** (#234, Critical). In edition 0.2, a value chosen by comparing values of `T` inside a generic function, then passed to a `uses of` parameter whose effect reveals it, was accepted. Fixed with ADR 0067: a decision that reaches a call of an `of` parameter is recorded, and each caller runs its argument under the labels of the type argument. A pure callback stays accepted, while an effectful one over secrets is U4002.
+- **A decision on `T` values through a call of a function-typed parameter, in edition 0.1** (#253, Critical, fixed by #255). A value chosen by comparing values of `T`, passed to a function value whose result reaches a sink, was accepted in edition 0.1. It now raises the call's result, as edition 0.2 already did. Edition 0.1 now rejects that shape, which v0.1.0 to v0.1.3 accept.
+- **v0.2.0-alpha.3 is superseded.** Its security note named #210. alpha.3 is also affected by #234, so use v0.2.0.
+
+### Edition 0.2
+
+- **Structured concurrency** (ADR 0065, `spec/19`, #32, #167): `together` blocks and `together for`, with cancellation of the tasks after a failed one and a deterministic trace. `together for` proves the length of its list.
+- **Constraints on generics** (ADR 0066, `spec/20`, #37): `Eq`, `Ord` and `Integer` on function type parameters, written or inferred for private functions, with the codes U2025 to U2027. The prelude gains a generic `min`, `max`, `contains`, `sum` and a stable `sort`.
+- **Printing structured values** (ADR 0068, #204): interpolation writes any value that holds no function in its Una form, as `una test` shows it, keeping its labels.
+  - Records, variants, lists, `Option` and `Result` are written in full, and `Text` inside them is quoted.
+  - A value of a type parameter needs `T: Eq`, else U2026 with a repair. A function position is U2001.
+  - A record with a `secret` field cannot reach `Console` (U4003), and the diagnostic names the field.
+  - Every `Hashed` is written `<hashed>`, also through a type parameter, while traces keep `hashed:<hex>` (ADR 0068 amendment).
+  - Native code writes values of a type parameter inside a structure through composite type descriptors, byte-identical to the interpreter.
+- **Position-precise result labels of user generic functions** (ADR 0067, #92):
+  - A call of a generic function raises each position of its result only by the labels of the type arguments that reach it (a summary per function, computed to a least fixpoint over recursion), not by every type argument (D-137).
+  - Two symbolic labels: `ℓ_T` for a value of `T` as passed in, and `ℓ*_T` for every label of the type argument, which comparisons and conditions on `T` values carry.
+  - `filter` and `first_where` take predicates over labeled elements, raising the result.
+  - `una contract` shows `-- result labels: …` and `una report` lists `generic_results`.
+  - Newly rejected, by the ratified rules: a decision on `T` values that reaches an effectful `of` parameter (U4002 at the caller, #234), and a function value called with an argument that carries such a decision.
+  - Edition 0.1 keeps D-137.
+- **Exact integers in `reflect` bodies** (ADR 0057 amendment, #180): the body of a `reflect` predicate makes no `overflow` obligation and no U2022, and every engine computes its integers exactly, as the verifier reads it.
+- **Literals in constructors** (#187): `Some(3)`, `Ok(3)` and `Box(value: 3)` take the fixed-width type they are checked against.
+- **Negative literals** in `*`, `/` and `mod` stay linear for the verifier (#188).
+
+### Edition 0.1
+
+Edition 0.1 keeps its rules, apart from the security fix #253 above. Some of its messages and repairs change:
+- U2009 at a variant compared with `==` or `!=` offers `e is V` (#205).
+- A reserved word used as a binding name says what it is reserved for. `let result` gets a rename of the binding and its uses (#206).
+- A handling clause on its expression's line says where it goes, with an edit that moves it (#211).
+- The U3004 message no longer gives advice that misleads in edition 0.1 (#256).
+- The repairs of one check apply together without editing the same text (#257).
+
+### Native backend
+
+- **Fix: a failure through a `fails of` parameter was swallowed** (#267, Critical, found by the pre-tag review). In native code, a failure of a function value given for a `fails of` parameter was dropped. `if error pass` passed nothing on, `if error use` used a wrong value, and `attempt` gave `Ok`, where `una run` failed. Every native call now checks its callee's failure flag. A conformance case of relays through `if error pass`, `if error use`, `attempt`, two levels and `together` tasks is part of the native equivalence test.
+- **`together` and `together for`** (#162): a thread per task with its own heap, values copied at the fork and the join, non-atomic reference counts.
+  - An operation in progress at cancellation completes (#200).
+- **Constrained generics** (#171): one hidden type descriptor per constrained type parameter (ADR 0066 G4, `spec/20 §7`), also captured by closures.
+- **Tuples, `let (...)`, `for` loops and `set`**, and effectful and failing functions in the prelude's higher-order functions (#116).
+- **In-place updates** (#30): a uniquely held list or record is updated in place at its last use.
+  - #181 limits this to words with no live alias.
+  - #182 keeps a range loop's high bound for the whole loop.
+- **Grants per operation** (#183): `main` is checked against the modes of each `files` grant, as `una run` checks it.
+- **Pipes and writes**:
+  - executables ignore `SIGPIPE`, and report a closed output with exit code 2 (#184);
+  - a failed write to stderr exits 2 (#198).
+- **Native review minors** (#185):
+  - key files load after U3012;
+  - `--max-memory 0` is a usage error in `una run`, `una test` and executables;
+  - `una build` works through a symlinked `una`;
+  - the trusted base names `una-rt` and its allocator `cap` (ADR 0061 amendment, charter §3).
+- **The runtime build** (#203): the README builds `una-rt` with `una-cli`, and a missing or stale `libuna_rt.a` names the command that builds it.
+
+### Interpreter and tools
+
+- **Lists are updated in place** at their last use in the interpreter too (#201). A loop of 100,000 appends takes a fraction of a second instead of about two minutes.
+  - Loops run in constant memory in both engines.
+  - The debug runtime's quarantine of freed slots is bounded.
+- **`una run` with a closed stdout** reports its diagnostics on stderr, as the executable does (#199).
+- **The solver's wallclock** is checked before its answer, so `--solver-wallclock 0` makes every query unknown (#189).
+- **Diagnostics agents meet:**
+  - U2009 at a compared variant offers `e is V` (#205);
+  - a reserved word used as a binding name says what it is reserved for (#206);
+  - a handling clause on its expression's line says where it goes (#211).
+- **The agent guide and the syntax reference** cover edition 0.2, and every example is checked (#178).
+- **The repairs of one check apply together** (#257, PR #265, from the pre-tag review). No two repairs edit the same text, applying them all converges, and none changes a program's meaning:
+  - one `[T: C]` edit per type parameter, with the strongest constraint;
+  - distinct names for each renamed `let result`, also past a `together` block;
+  - each handling clause on a line of its own.
+- **An installer** (#240): `install.sh` installs `una`, its runtime and the pinned Z3 into `~/.una`. It does so only when the release's validation record is a PASS, and only with the archive digest the record lists. `--uninstall` removes exactly what it installed.
+- **Release gates** (#232): GitHub Actions is not used. `scripts/release-gates.sh SHA OUT` runs seven gates on a fresh clone of one commit:
+  - the cold build and tests;
+  - local CI on macOS and in a Linux container;
+  - both release archives;
+  - determinism;
+  - the interpreter against native code.
+
+  It records the results as `docs/releases/<version>-validation.md`, which a tag needs (`docs/releases/validation.md`).
+
+### Architecture decisions
+
+The decisions of v0.2, all accepted:
+- ADR 0055, native backend;
+- ADR 0056, memory model;
+- ADR 0057, fixed-width integers;
+- ADR 0058, `unsafe` at the runtime's C ABI boundary;
+- ADR 0059, release archives ship the native runtime;
+- ADR 0060, recursive kinds;
+- ADR 0061, a memory limit;
+- ADR 0062, effect polymorphism;
+- ADR 0063, the language server;
+- ADR 0064, the authenticated proof cache;
+- ADR 0065, structured concurrency;
+- ADR 0066, constraints on generics;
+- ADR 0067, position-precise result labels of user generic functions, with its amendment of 2026-10-06;
+- ADR 0068, printing structured values;
+- ADR 0069, a map type, accepted and not yet implemented;
+- ADR 0070, text operations, accepted and not yet implemented.
+
+### Known issues
+
+- **A closed stdout or stderr counts as success** (3c-1, #259). When a write fails with `EBADF` because the stream is closed rather than a broken pipe, both engines exit 0. It is fixed after this release.
+- **One same-line handling clause reported per body** (#268). When a function body has several lines with a handling clause on its expression's line, only the first is reported, so applying the repairs takes a check per line. Separate functions each report theirs.
+- **A false U3003 for `attempt` over a `fails of` parameter in a relay** (#270). A relay whose only clause is `fails of f` and whose body is `let r = attempt f(2)` is rejected with U3003 when another relay calls it, although no effect is performed. `if error use` instead of `attempt`, or adding `uses of`, avoids it. It is not a soundness issue.
+
+### Known limits
+
+- Native code is generated with Cranelift, and each target is built on its own platform. LLVM release builds are later (`plan/backlog.md`).
+- The archives are for macOS on arm64 and Linux on x86_64. Linux on arm64 follows right after this release (#241).
+- Constraints have no laws: no axiom states that an order is total or transitive (`spec/20 §5`).
+- There are no user traits or implementations, and no map type.
+- The point where a run exhausts its memory differs between engines and builds (ADR 0061 rule 5).
+- A redacting view of a value, `redact(x)`, is deferred (ADR 0068).
+- **Loops that update a list with `set` lose its length** (S-1, #260, ADR 0071). In edition 0.2, `for i in 0..<xs.len` with `set(edit xs, index: i, …)` is U5001, with a counterexample where `xs.len` is 0. Workaround: guard the update with `if i < xs.len`. The fix follows this release.
+- **Appending to text in a loop is quadratic** (S-2, #261). `t = "{t}x"` copies the text each time, about n^1.7 in both engines (320,000 appends: 4.4 s interpreted, 2.3 s native). Appending to a list stays linear. The in-place update (ADR 0070 X10) follows this release.
+- **A list passed by `edit`, or rebound from a call, in a loop is quadratic** (#262). In `grow(edit acc)` or `acc = push(acc, …)`, the caller still holds the list during the call, so each append copies it, in both engines.
+- **Nested loops that append, in the interpreter** (#263). A loop that appends to a list it binds is quadratic in the interpreter when it is inside another loop or a `together` task. Native code stays linear, and the output is the same.
+- This release was built and checked locally (`scripts/local-release.sh`), on macOS natively and Linux in a container, while GitHub Actions was unavailable.
+
 ## v0.2.0-alpha.3
 
 The third pre-release of v0.2. The native backend now compiles every runnable program of the suite. Edition 0.2 gains the memory model, `for` loops, recursive kinds and effect polymorphism, and the release also brings a language server, a memory limit and an authenticated proof cache. Gate 1's benchmark stays pinned to v0.1.x (v0.1.3).
