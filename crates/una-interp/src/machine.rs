@@ -2026,6 +2026,7 @@ fn map_apply<'p>(op: MapOp, args: Vec<Value<'p>>) -> Flow<'p> {
         )),
         _ => return Err(bad()),
     })
+}
 
 /// The first occurrence of `part` in `t`, as a byte offset: the one search that `find` and
 /// `contains_text` share, so that one is `Some` exactly when the other holds (N-19). Rust's

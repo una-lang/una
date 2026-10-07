@@ -989,6 +989,146 @@ pub fn trim(t: i64) -> i64 {
     text_word(text_value(t).trim().to_owned())
 }
 
+/// A new list of the texts of `parts`.
+fn text_list(parts: impl IntoIterator<Item = String>) -> i64 {
+    let out = list();
+    for part in parts {
+        let word = text_word(part);
+        push(out, word);
+        release(word);
+    }
+    out
+}
+
+/// The first occurrence of `part` in `t`, as a byte offset: the one search that `find` and
+/// `contains_text` share (N-19), Rust's linear Two-Way search (`spec/22 §2` rule 8).
+fn search(t: &str, part: &str) -> Option<usize> {
+    t.find(part)
+}
+
+/// `split(t, on)` of the prelude (`spec/22 §2` rule 1).
+pub fn split(t: i64, on: i64) -> i64 {
+    let (t, on) = (text_value(t), text_value(on));
+    text_list(t.split(on.as_str()).map(str::to_owned))
+}
+
+/// `join(parts, separator)` of the prelude.
+pub fn join(parts: i64, separator: i64) -> i64 {
+    let texts: Vec<String> = items(parts).into_iter().map(text_value).collect();
+    text_word(texts.join(&text_value(separator)))
+}
+
+/// `ends_with(t, suffix)` of the prelude.
+pub fn ends_with(t: i64, suffix: i64) -> i64 {
+    bool_word(text_value(t).ends_with(text_value(suffix).as_str()))
+}
+
+/// `contains_text(t, part)` of the prelude.
+pub fn contains_text(t: i64, part: i64) -> i64 {
+    bool_word(search(&text_value(t), &text_value(part)).is_some())
+}
+
+/// `find(t, text)` of the prelude: `Some` of the scalar position of the first occurrence.
+pub fn find(t: i64, text: i64) -> i64 {
+    let t = text_value(t);
+    match search(&t, &text_value(text)) {
+        Some(byte) => {
+            let position = t.get(..byte).map_or(0, |before| before.chars().count());
+            let word = int_word(&BigInt::from(position));
+            let option = some(word);
+            release(word);
+            option
+        }
+        None => NONE,
+    }
+}
+
+/// `replace(t, pattern, by)` of the prelude (`spec/22 §2` rule 3).
+pub fn replace(t: i64, pattern: i64, by: i64) -> i64 {
+    let (pattern, by) = (text_value(pattern), text_value(by));
+    text_word(text_value(t).replace(pattern.as_str(), &by))
+}
+
+/// `slice(t, start, end)` of the prelude: the scalar values from `start` up to `end`, which its
+/// precondition keeps in range.
+pub fn slice(t: i64, start: i64, end: i64) -> i64 {
+    let position = |word: i64| usize::try_from(&int_value(word)).unwrap_or(0);
+    let (start, end) = (position(start), position(end));
+    let t = text_value(t);
+    text_word(
+        t.chars()
+            .skip(start)
+            .take(end.saturating_sub(start))
+            .collect(),
+    )
+}
+
+/// `to_upper(t)` of the prelude: ASCII letters only (`spec/22 §3`).
+pub fn to_upper(t: i64) -> i64 {
+    text_word(text_value(t).to_ascii_uppercase())
+}
+
+/// `to_lower(t)` of the prelude: ASCII letters only (`spec/22 §3`).
+pub fn to_lower(t: i64) -> i64 {
+    text_word(text_value(t).to_ascii_lowercase())
+}
+
+/// `chars(t)` of the prelude: one text per scalar value.
+pub fn chars(t: i64) -> i64 {
+    text_list(text_value(t).chars().map(String::from))
+}
+
+/// `trim_start(t)` of the prelude: without Unicode `White_Space` at its start.
+pub fn trim_start(t: i64) -> i64 {
+    text_word(text_value(t).trim_start().to_owned())
+}
+
+/// `trim_end(t)` of the prelude: without Unicode `White_Space` at its end.
+pub fn trim_end(t: i64) -> i64 {
+    text_word(text_value(t).trim_end().to_owned())
+}
+
+/// `bytes(t)` of the prelude: the UTF-8 encoding, as `U8` integers.
+pub fn bytes_of(t: i64) -> i64 {
+    let out = list();
+    for byte in text_value(t).bytes() {
+        push(out, (i64::from(byte) << 1) | 1);
+    }
+    out
+}
+
+/// Why `parse_int(t)` fails, as the `ParseError` it fails with, or 0 when it does not
+/// (`spec/22 §4`): `Empty`, `NotADigit(at: i)` at the first position that is neither the
+/// leading `-` nor a digit, or `NoDigits` for `-` alone.
+pub fn parse_failure(t: i64) -> i64 {
+    let t = text_value(t);
+    if t.is_empty() {
+        return 1;
+    }
+    let digits = t.strip_prefix('-').unwrap_or(&t);
+    let signed = usize::from(digits.len() < t.len());
+    if let Some((at, _)) = digits
+        .chars()
+        .enumerate()
+        .find(|(_, c)| !c.is_ascii_digit())
+    {
+        let failure = data(1);
+        let at = int_word(&BigInt::from(at + signed));
+        push(failure, at);
+        release(at);
+        return failure;
+    }
+    if digits.is_empty() {
+        return (2 << 1) | 1;
+    }
+    0
+}
+
+/// `parse_int(t)` of a text that `parse_failure` accepts.
+pub fn parse_int(t: i64) -> i64 {
+    int_word(&text_value(t).parse::<BigInt>().unwrap_or_default())
+}
+
 /// `to_int(t)` of the prelude: `Some` of an optional `-` followed by ASCII digits.
 pub fn to_int(t: i64) -> i64 {
     let text = text_value(t);
@@ -1327,6 +1467,35 @@ pub(crate) fn map_words(map: i64) -> Vec<(i64, i64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn find_is_some_exactly_when_contains_text_holds() {
+        // N-19: the verifier gives both one uninterpreted symbol, which holds because both
+        // run over one search. Texts and parts over a small alphabet, with a non-ASCII
+        // scalar, so that occurrences are frequent; a fixed seed keeps the run reproducible.
+        let alphabet = ['a', 'b', ' ', 'é'];
+        let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            usize::try_from(seed % bound as u64).unwrap_or(0)
+        };
+        for _ in 0..10_000 {
+            let t: String = (0..next(9)).map(|_| alphabet[next(4)]).collect();
+            let part: String = (0..next(4)).map(|_| alphabet[next(4)]).collect();
+            let (t_word, part_word) = (text_word(t.clone()), text_word(part.clone()));
+            let found = find(t_word, part_word);
+            assert_eq!(
+                found != NONE,
+                contains_text(t_word, part_word) == 1,
+                "{t:?} {part:?}"
+            );
+            for word in [found, t_word, part_word] {
+                release(word);
+            }
+        }
+    }
 
     fn int(word: i64) -> String {
         int_value(word).to_string()
