@@ -1,0 +1,14 @@
+-- expect: rejected (U4003): a fold into an editable binding's map, from internal items
+module main
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let s = @env.get("S")
+    if none use "x"
+  let edit m = empty_map()
+  m = [s, "b"].fold(initial: m, step: fn(acc, w) -> acc.with(key: w.len, value: w))
+  let v = m.get(key: 1)
+    if none use ""
+  @console.print(v)

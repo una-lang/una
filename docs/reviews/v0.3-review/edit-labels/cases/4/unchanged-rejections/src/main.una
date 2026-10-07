@@ -1,0 +1,33 @@
+-- expect: U4001 at each of the five functions, as before ADR 0075 (annotations, determined positions and the top label are fixed)
+module main
+
+pub annotated(v: internal Int) -> Int
+=
+  let edit m: Map[Text, Int] = empty_map()
+  edit m.set(key: "a", value: v)
+  m.len
+
+pub determined_list(v: internal Int) -> Int
+=
+  let edit xs = [1]
+  xs = xs.append(item: v)
+  xs.len
+
+pub determined_option(v: internal Int) -> Bool
+=
+  let edit o = Some(0)
+  o = Some(v)
+  o is Some
+
+pub top_under_pc(flag: internal Bool) -> Int
+=
+  let edit xs = []
+  if flag
+    xs = xs.append(item: 1)
+  xs.len
+
+pub top_of_value(v: internal List[Int]) -> Int
+=
+  let edit xs = []
+  xs = v
+  0
