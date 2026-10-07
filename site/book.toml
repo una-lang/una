@@ -1,0 +1,23 @@
+# The Una website (#244, N-34). `scripts/site.sh` stages the pages from the repository's own
+# documents into target/site-src and builds them into target/site; nothing here is edited by
+# hand but this file and the theme.
+[book]
+title = "Una"
+description = "Una, the verification-first programming language for software that AI agents write"
+language = "en"
+src = "../target/site-src"
+
+[build]
+build-dir = "../target/site"
+create-missing = false
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+additional-css = ["theme/una.css"]
+additional-js = ["theme/una.js"]
+git-repository-url = "https://github.com/una-lang/una"
+no-section-label = true
+
+[output.html.search]
+enable = true

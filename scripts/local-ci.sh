@@ -84,6 +84,12 @@ if [ -n "${UNA_LOCAL_CI_SERIAL:-}" ]; then
 else
     step "Test" cargo test --workspace --locked
 fi
+# The website (#244): every page builds and every link between pages resolves. It needs mdBook
+# at the version scripts/site.sh pins, on the host; the container runs skip it, since the site
+# is the same on every platform.
+if [ -z "${UNA_LOCAL_CI_Z3:-}" ]; then
+    step "Website" scripts/site.sh
+fi
 step "Pack the release archive of $target" scripts/release.sh "$target"
 step "Check the release archive of $target" scripts/check-release.sh "$target"
 echo "local CI: PASS ($target)"
