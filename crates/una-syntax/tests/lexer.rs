@@ -720,3 +720,28 @@ fn the_edition_0_2_table_matches_spec_17_19_and_20_section_9() {
         .collect();
     assert_eq!(from_code, from_spec);
 }
+
+#[test]
+fn with_after_a_dot_names_the_map_method_in_edition_0_2() {
+    // `spec/21 §2`, ADR 0069 M2: `m.with(key: k, value: v)`; elsewhere `with` stays a keyword.
+    let kinds = |keywords: una_syntax::KeywordSet| {
+        let mut db = SourceDb::new();
+        let mut interner = Interner::new();
+        let id = db.add("t.una", b"m.with with");
+        let lexed = una_syntax::lex_in(db.file(id), id, &mut interner, keywords);
+        lexed
+            .tokens
+            .iter()
+            .map(|token| render(&token.kind, &interner))
+            .filter(|token| token != "eof")
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        kinds(una_syntax::KeywordSet::V0_2)[..4],
+        ["id:m", ".", "id:with", "with"]
+    );
+    assert_eq!(
+        kinds(una_syntax::KeywordSet::V0_1)[..4],
+        ["id:m", ".", "with", "with"]
+    );
+}

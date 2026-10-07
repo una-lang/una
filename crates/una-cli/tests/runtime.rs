@@ -1491,6 +1491,108 @@ fn a_reader_that_went_away_is_a_failed_write() {
     assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
 }
 
+const MAPS: &str = "module maps
+
+pub kind Color = Red | Green | Blue
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit counts: Map[Text, Int] = empty_map()
+  for word in [\"b\", \"a\", \"b\", \"c\", \"b\"]
+    let n = counts.get(key: word)
+      if none use 0
+    edit counts.set(key: word, value: n + 1)
+  @console.print(\"{counts}\")
+  let before = counts
+  edit counts.remove(key: \"b\")
+  @console.print(\"{counts} {before} {counts.len} {before.len}\")
+  @console.print(\"{counts.keys()} {counts.values()} {counts.entries()}\")
+  let none_yet: Map[Int, Bool] = empty_map()
+  @console.print(\"{none_yet} {none_yet.has(key: 1)} {none_yet.get(key: 1)}\")
+  let by_int = none_yet.with(key: -3, value: true).with(key: 10, value: false).with(key: 2, value: true)
+  @console.print(\"{by_int}\")
+  let by_color: Map[Color, Text] = empty_map().with(key: Blue, value: \"b\").with(key: Red, value: \"r\")
+  @console.print(\"{by_color} {by_color == by_color} {by_color == by_color.without(key: Red)}\")
+";
+
+#[test]
+fn maps_list_their_entries_in_key_order_and_keep_value_semantics() {
+    // `spec/21 §2` rules 3 and 4, `§5`: entries in ascending key order, for integers, texts
+    // and variants; `{k: v}` rendering; a `remove` leaves another binding's map as it was;
+    // `==` is structural.
+    let root = package(
+        "maps",
+        "\n[run]\nentry = \"maps\"\n",
+        &[("src/maps.una", MAPS)],
+    );
+    let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    let output = una(&["run", root.to_str().unwrap(), "--grant", "console"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        "{\"a\": 1, \"b\": 3, \"c\": 1}\n\
+         {\"a\": 1, \"c\": 1} {\"a\": 1, \"b\": 3, \"c\": 1} 2 3\n\
+         [\"a\", \"c\"] [1, 1] [Entry(key: \"a\", value: 1), Entry(key: \"c\", value: 1)]\n\
+         {} false None\n\
+         {-3: true, 2: true, 10: false}\n\
+         {Red: \"r\", Blue: \"b\"} true false\n"
+    );
+}
+
+const MAP_SCALE: &str = "module scale
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit m: Map[Int, Int] = empty_map()
+  for i in 0..<N
+    edit m.set(key: (i * 7919) mod N, value: i)
+  let edit found = 0
+  for i in 0..<N
+    if m.has(key: i)
+      found = found + 1
+  for i in 0..<N
+    edit m.remove(key: i)
+  @console.print(\"{found} {m.len}\")
+";
+
+#[test]
+fn map_updates_and_lookups_scale_as_n_log_n() {
+    // The performance rule, `spec/21 §5` rule 2: `set`, `has` and `remove` are O(log n), and an
+    // update of a map nothing else holds is in place. Ten times the keys take well under 25
+    // times as long (n log n gives about 12, a copy per update about 100).
+    let root = package("map_scale", "\n[run]\nentry = \"scale\"\n", &[]);
+    let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let dir = root.to_str().unwrap();
+    let mut times = Vec::new();
+    for n in ["100000", "1000000"] {
+        std::fs::write(root.join("src/scale.una"), MAP_SCALE.replace('N', n)).unwrap();
+        let started = std::time::Instant::now();
+        let output = una(&["run", dir, "--grant", "console", "--max-memory", "1024"]);
+        times.push(started.elapsed());
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        assert_eq!(stdout(&output), format!("{n} 0\n"));
+    }
+    assert!(
+        times[1] < times[0] * 25,
+        "10^5 keys took {:?}, 10^6 took {:?}",
+        times[0],
+        times[1]
+    );
+}
+
 /// A program that appends `steps` items to a list in a loop, through `shape`: an `edit`
 /// argument one, two or three calls deep, or a binding rebound from a call's result (#262).
 fn appends_through_calls(shape: &str, steps: usize) -> String {

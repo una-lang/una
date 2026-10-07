@@ -28,6 +28,8 @@ pub enum Shape {
     Fn,
     /// `List` of the type at this index.
     List(usize),
+    /// `Map` of the key and value types at these indices (`spec/21 §2` rule 4).
+    Map(usize, usize),
     /// A kind, by its variants in declaration order.
     Data(Vec<Variant>),
     /// The type parameter at this position of a composite descriptor, which says how to write
@@ -197,6 +199,19 @@ fn render(types: &[Shape], ty: usize, word: i64, redact: bool, params: &[i64]) -
                 }
                 parts.push(Task::Text("]".to_owned()));
             }
+            // `{k: v, ...}` in key order, `{}` when empty.
+            Some(Shape::Map(key, value)) => {
+                out.push('{');
+                for (index, (k, v)) in values::map_words(word).into_iter().enumerate() {
+                    if index > 0 {
+                        parts.push(Task::Text(", ".to_owned()));
+                    }
+                    parts.push(Task::Value(*key, k, std::rc::Rc::clone(&params)));
+                    parts.push(Task::Text(": ".to_owned()));
+                    parts.push(Task::Value(*value, v, std::rc::Rc::clone(&params)));
+                }
+                parts.push(Task::Text("}".to_owned()));
+            }
             Some(Shape::Data(variants)) => {
                 let variant = usize::try_from(values::tag(word))
                     .ok()
@@ -277,6 +292,7 @@ fn shape(value: &Value) -> Option<Shape> {
         "hashed" => Shape::Hashed,
         "fn" => Shape::Fn,
         "list" => Shape::List(index(value, "item")?),
+        "map" => Shape::Map(index(value, "key")?, index(value, "value")?),
         "param" => Shape::Param(index(value, "index")?),
         "data" => Shape::Data(
             value

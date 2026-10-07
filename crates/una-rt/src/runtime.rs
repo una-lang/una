@@ -506,7 +506,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     if copies > 0 {
         let _ = writeln!(
             stderr,
-            "note: una-rt (debug build): lists and records copied: {copies}"
+            "note: una-rt (debug build): lists, maps and records copied: {copies}"
         );
     }
     if faults > 0 {

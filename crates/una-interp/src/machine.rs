@@ -7,12 +7,12 @@ use std::rc::Rc;
 use num_bigint::{BigInt, Sign};
 use una_core::{
     Atom, Base, Bound, CapOp, Ctor, Decl, Expr, FixedOp, Fun, HandlerOp, IntType, Label, Level,
-    LoopSource, Name, Path, Prim, Program, Rhs, Source, Type, Use,
+    LoopSource, MapOp, Name, Path, Prim, Program, Rhs, Source, Type, Use,
 };
 use una_syntax::Span;
 
 use crate::host::{self, FileFault, Grant, World};
-use crate::value::{Closure, Value, compare, equal};
+use crate::value::{Closure, Key, Value, compare, equal};
 
 /// The environment `ρ`: binders and their values, innermost last. Core binders are unique
 /// within a function (`spec/09 §1`), so the last binding of a name is the one in scope.
@@ -221,12 +221,13 @@ impl<'p> Index<'p> {
     /// The names of the fields of `ctor`, with their declared types when they are known.
     fn fields(&self, ctor: &Ctor) -> Vec<(&'p str, Option<&'p Type>)> {
         if ctor.kind.module == "prelude" {
-            let name = match (ctor.kind.name.as_str(), ctor.name.as_str()) {
-                ("Option", "Some") | ("Result", "Ok") => "value",
-                ("Result", "Err") => "failure",
+            let names: &[&'static str] = match (ctor.kind.name.as_str(), ctor.name.as_str()) {
+                ("Option", "Some") | ("Result", "Ok") => &["value"],
+                ("Result", "Err") => &["failure"],
+                ("Entry", "Entry") => &["key", "value"],
                 _ => return Vec::new(),
             };
-            return vec![(name, None)];
+            return names.iter().map(|name| (*name, None)).collect();
         }
         self.data
             .get(&(ctor.kind.module.as_str(), ctor.kind.name.as_str()))
@@ -291,6 +292,19 @@ impl<'p> Index<'p> {
                         parts.push(Task::Value(item));
                     }
                     parts.push(Task::Text(close.to_owned()));
+                }
+                // `{k: v, ...}` in key order, `{}` when empty (`spec/21 §2` rule 4).
+                Value::Map(entries) => {
+                    parts.push(Task::Text("{".to_owned()));
+                    for (i, (key, value)) in entries.values().enumerate() {
+                        if i > 0 {
+                            parts.push(Task::Text(", ".to_owned()));
+                        }
+                        parts.push(Task::Value(key));
+                        parts.push(Task::Text(": ".to_owned()));
+                        parts.push(Task::Value(value));
+                    }
+                    parts.push(Task::Text("}".to_owned()));
                 }
                 Value::Data(data) => {
                     let names = self.fields(&data.ctor);
@@ -640,16 +654,28 @@ impl<'p, 'w> Machine<'p, 'w> {
     /// `attempt`, through `later`), so a binding read there keeps its value. A binding passed
     /// twice keeps it too, and a value something else holds is still copied, so no value ever
     /// changes under another name.
+    /// A map's `set` and `remove`, `With` and `Without`, give up the map the same way
+    /// (`spec/21 §5` rule 2).
     fn updates_in_place(&mut self, rhs: &'p Rhs, rest: &'p Expr) -> Option<Vec<&'p str>> {
-        let Rhs::Call { args, .. } = rhs else {
-            return None;
+        let args = match rhs {
+            Rhs::Call { args, .. } => args.as_slice(),
+            Rhs::Prim {
+                prim: Prim::Map(MapOp::With | MapOp::Without),
+                args,
+                ..
+            } => args.get(..1)?,
+            _ => return None,
+        };
+        let all = match rhs {
+            Rhs::Call { args, .. } | Rhs::Prim { args, .. } => args.as_slice(),
+            _ => args,
         };
         let mut moved = Vec::new();
         for arg in args {
             let Atom::Var(name) = arg else {
                 continue;
             };
-            let twice = args
+            let twice = all
                 .iter()
                 .filter(|arg| matches!(arg, Atom::Var(other) if other == name))
                 .count()
@@ -684,14 +710,10 @@ impl<'p, 'w> Machine<'p, 'w> {
                     let value = match value.as_ref() {
                         Bound::Rhs(rhs) => match self.updates_in_place(rhs, body) {
                             Some(moved) => {
-                                let Rhs::Call {
-                                    function,
-                                    args,
-                                    span,
-                                    ..
-                                } = rhs
-                                else {
-                                    return Err(fault("an update that is not a call"));
+                                let (Rhs::Call { args, .. } | Rhs::Prim { args, .. }) = rhs else {
+                                    return Err(fault(
+                                        "an update that is neither a call nor a map's",
+                                    ));
                                 };
                                 let args = self.atoms(env, args)?;
                                 for moved in moved {
@@ -701,7 +723,16 @@ impl<'p, 'w> Machine<'p, 'w> {
                                         *value = Value::Unit;
                                     }
                                 }
-                                self.call(function, args, &caps, *span)?
+                                match rhs {
+                                    Rhs::Call { function, span, .. } => {
+                                        self.call(function, args, &caps, *span)?
+                                    }
+                                    Rhs::Prim {
+                                        prim: Prim::Map(op),
+                                        ..
+                                    } => map_apply(*op, args)?,
+                                    _ => return Err(fault("an update that is not one")),
+                                }
                             }
                             None => self.rhs(env, &caps, rhs, ty)?,
                         },
@@ -1446,6 +1477,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                     a
                 }
             }
+            "empty_map" => Value::Map(Rc::default()),
             // Ascending and stable (`spec/20 §6` rule 2).
             "sort" => {
                 let mut items = list(0)?.as_ref().clone();
@@ -1731,7 +1763,8 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
         Prim::Len => match arg(0)? {
             Value::Text(t) => Value::Int(BigInt::from(t.chars().count())),
             Value::List(items) => Value::Int(BigInt::from(items.len())),
-            _ => return Err(fault("`len` of a value that is neither a text nor a list")),
+            Value::Map(entries) => Value::Int(BigInt::from(entries.len())),
+            _ => return Err(fault("`len` of a value that is not a text, list or map")),
         },
         Prim::Concat => {
             let mut out = String::new();
@@ -1757,6 +1790,9 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
             Value::Int(value.clone())
         }
         Prim::Fixed(op, int) => Value::Int(fixed_apply(op, int, args)?),
+        // A copy of the map when another name holds it; a binding at its last use gives it up
+        // first, in `Machine::eval`.
+        Prim::Map(op) => return map_apply(op, args.to_vec()),
         Prim::ToText => match arg(0)? {
             Value::Int(n) => Value::text(&n.to_string()),
             Value::Bool(b) => Value::text(&b.to_string()),
@@ -1767,6 +1803,64 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
                 ));
             }
         },
+    })
+}
+
+/// A map's built-in method (`spec/21 §2`), in O(log n) for a lookup or an update of a map it
+/// holds the only reference to, and with an O(n) copy first otherwise (`§5` rule 2).
+fn map_apply<'p>(op: MapOp, args: Vec<Value<'p>>) -> Flow<'p> {
+    let bad = || {
+        fault(format!(
+            "map `{}` applied to values of the wrong types",
+            op.as_str()
+        ))
+    };
+    let mut args = args.into_iter();
+    let Some(Value::Map(mut entries)) = args.next() else {
+        return Err(bad());
+    };
+    let key = match op {
+        MapOp::Has | MapOp::Get | MapOp::With | MapOp::Without => {
+            let value = args.next().ok_or_else(bad)?;
+            Some((Key::of(&value).ok_or_else(bad)?, value))
+        }
+        MapOp::Keys | MapOp::Values | MapOp::Entries => None,
+    };
+    Ok(match (op, key) {
+        (MapOp::Has, Some((key, _))) => Value::Bool(entries.contains_key(&key)),
+        (MapOp::Get, Some((key, _))) => match entries.get(&key) {
+            Some((_, value)) => some(value.clone()),
+            None => none(),
+        },
+        (MapOp::With, Some((key, written))) => {
+            let value = args.next().ok_or_else(bad)?;
+            Rc::make_mut(&mut entries).insert(key, (written, value));
+            Value::Map(entries)
+        }
+        (MapOp::Without, Some((key, _))) => {
+            if entries.contains_key(&key) {
+                Rc::make_mut(&mut entries).remove(&key);
+            }
+            Value::Map(entries)
+        }
+        (MapOp::Keys, None) => Value::List(Rc::new(
+            entries.values().map(|(key, _)| key.clone()).collect(),
+        )),
+        (MapOp::Values, None) => Value::List(Rc::new(
+            entries.values().map(|(_, value)| value.clone()).collect(),
+        )),
+        (MapOp::Entries, None) => Value::List(Rc::new(
+            entries
+                .values()
+                .map(|(key, value)| {
+                    Value::data(
+                        prelude_ctor("Entry", "Entry", 0),
+                        vec![key.clone(), value.clone()],
+                    )
+                })
+                .collect(),
+        )),
+        _ => return Err(bad()),
     })
 }
 

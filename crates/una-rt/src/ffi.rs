@@ -126,6 +126,7 @@ exported! {
     una_rt_text_len => values::text_len, (a);
     una_rt_data => values::data, (tag);
     una_rt_list => values::list, ();
+    una_rt_map_empty => values::map_empty, ();
     una_rt_closure => values::closure, (code);
     una_rt_field => values::field, (object, index);
     una_rt_tag => values::tag, (value);
@@ -148,6 +149,14 @@ exported! {
     una_rt_set => values::set, (xs, index, item);
     una_rt_append_owned => values::append_owned, (xs, item);
     una_rt_set_owned => values::set_owned, (xs, index, item);
+    una_rt_map_len => values::map_len, (map);
+    una_rt_map_has => values::map_has, (map, key);
+    una_rt_map_get => values::map_get, (map, key);
+    una_rt_map_with => values::map_with, (map, key, value);
+    una_rt_map_with_owned => values::map_with_owned, (map, key, value);
+    una_rt_map_without => values::map_without, (map, key);
+    una_rt_map_without_owned => values::map_without_owned, (map, key);
+    una_rt_map_list => values::map_list, (map, part);
     una_rt_reuse => values::reuse, (old, tag);
     una_rt_sum => values::sum, (xs);
     una_rt_generic_compare => generic::compare, (desc, a, b);

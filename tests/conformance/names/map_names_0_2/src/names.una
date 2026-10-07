@@ -1,0 +1,12 @@
+-- test: in edition 0.2, Map and Entry are built-in names that a kind cannot take (spec/21 §1 rule 1)
+-- spec: spec/21 §1
+-- expect: error U1002 at src/names.una:7:10
+-- expect: error U1002 at src/names.una:10:10
+module names
+
+pub kind Map
+  size: Int
+
+pub kind Entry = Key | Value
+
+pub empty_map() -> Int = 0

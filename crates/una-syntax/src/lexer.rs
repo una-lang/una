@@ -706,7 +706,15 @@ impl Lexer<'_> {
         let start = self.pos;
         self.consume_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
         let word = self.slice(start, self.pos).to_owned();
-        let kind = if let Some(keyword) = Keyword::from_word_in(&word, self.out.keywords) {
+        // Edition 0.2: after `.`, `with` names the map method (`spec/21 §2`, ADR 0069 M2).
+        let after_dot = self
+            .out
+            .tokens
+            .last()
+            .is_some_and(|token| token.kind == TokenKind::Dot);
+        let kind = if word == "with" && after_dot && self.out.keywords == KeywordSet::V0_2 {
+            TokenKind::LowerIdent(self.interner.intern(&word))
+        } else if let Some(keyword) = Keyword::from_word_in(&word, self.out.keywords) {
             TokenKind::Keyword(keyword)
         } else if let Some(message) = reserved_in(&word, self.out.keywords) {
             self.reserved(&word, message, start);

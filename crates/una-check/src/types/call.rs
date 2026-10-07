@@ -35,6 +35,15 @@ impl<'a> Checker<'_, 'a, '_> {
             self.resolved(span, Res::Len);
             return Ty::Int.with_label(&top);
         }
+        // A map's size depends on which of its keys are equal, so `.len` takes the labels of
+        // its key position too (`spec/21 §3` rule 2).
+        if field == "len"
+            && let Ty::Map(key, _) = labeled.unlabeled()
+        {
+            self.resolved(span, Res::Len);
+            let kinds = self.env.kind_labels.clone();
+            return Ty::Int.with_label(&top.join(&key.every_label(&kinds)));
+        }
         if let Some(ty) = self.record_field(labeled.unlabeled(), field) {
             if let Some((kind, index)) = self.field_index(&resolved, field) {
                 self.resolved(span, Res::Field { kind, index });
@@ -170,6 +179,17 @@ impl<'a> Checker<'_, 'a, '_> {
             return ty;
         }
         if let Some(ty) = self.int_method(&target_ty, method, args, span) {
+            return ty;
+        }
+        if let Some(ty) = self.map_method(
+            target,
+            &target_ty,
+            place.as_ref(),
+            marker,
+            method,
+            args,
+            span,
+        ) {
             return ty;
         }
         match self.env.lower(self.module, method) {
@@ -1750,6 +1770,7 @@ fn holds_var(ty: &Ty) -> bool {
     match ty {
         Ty::Var(_) => true,
         Ty::Labeled(_, inner) | Ty::List(inner) => holds_var(inner),
+        Ty::Map(key, value) => holds_var(key) || holds_var(value),
         Ty::Kind(_, args) => args.iter().any(holds_var),
         Ty::Fn(function) => {
             function.params.iter().any(holds_var)
@@ -1814,6 +1835,9 @@ fn fn_problem(expected: &Ty, found: &Ty, flipped: bool) -> Option<(FnProblem, bo
                 .or_else(|| fn_problem(&e.result, &f.result, flipped))
         }
         (Ty::List(e), Ty::List(f)) => fn_problem(e, f, flipped),
+        (Ty::Map(ek, ev), Ty::Map(fk, fv)) => {
+            fn_problem(ek, fk, flipped).or_else(|| fn_problem(ev, fv, flipped))
+        }
         (Ty::Kind(i, es), Ty::Kind(j, fs)) if i == j => es
             .iter()
             .zip(fs)
@@ -1844,6 +1868,7 @@ pub(crate) fn refinement_flow(expected: &Ty, found: &Ty) -> bool {
                 || refinement_flow(&e.result, &f.result)
         }
         (Ty::List(e), Ty::List(f)) => refinement_flow(e, f),
+        (Ty::Map(ek, ev), Ty::Map(fk, fv)) => refinement_flow(ek, fk) || refinement_flow(ev, fv),
         (Ty::Kind(i, es), Ty::Kind(j, fs)) if i == j && es.len() == fs.len() => {
             es.iter().zip(fs).any(|(e, f)| refinement_flow(e, f))
         }

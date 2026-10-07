@@ -154,8 +154,12 @@ impl<'a> Checker<'_, 'a, '_> {
         let name = self.name(&stmt.name);
         let declared = stmt.ty.as_ref().map(|written| {
             let type_params = self.type_params.clone();
-            self.env
-                .lower_type(self.module, written, &type_params, self.report)
+            self.env.owner = self.current;
+            let lowered = self
+                .env
+                .lower_type(self.module, written, &type_params, self.report);
+            self.env.owner = None;
+            lowered
         });
         let declared = declared.map(|mut declared| {
             declared.base = self.symbolic(&declared.base);

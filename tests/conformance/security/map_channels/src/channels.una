@@ -1,0 +1,73 @@
+-- test: a map's size, presence, iteration order and the value under a key carry its top label joined with the key position's labels and the key's, and a set raises the top by the key and the value position by the value, each with a control (ADR 0069 M6, M7)
+-- spec: spec/21 §3
+-- expect: error U4001 at src/channels.una:19:3
+-- expect: error U4001 at src/channels.una:29:59
+-- expect: error U4001 at src/channels.una:34:53
+-- expect: error U4001 at src/channels.una:39:63
+-- expect: error U4001 at src/channels.una:44:46
+-- expect: error U4001 at src/channels.una:52:19
+-- expect: error U4001 at src/channels.una:59:31
+-- expect: error U4001 at src/channels.una:71:48
+module channels
+
+--- Size: setting a secret key and reading the size reveals whether the key was there.
+pub size(s: secret Text) -> Int
+=
+  let edit m: secret Map[Text, Int] = empty_map()
+  edit m.set(key: "a", value: 1)
+  edit m.set(key: s, value: 1)
+  m.len
+
+pub size_control(s: secret Text) -> secret Int
+=
+  let edit m: secret Map[Text, Int] = empty_map()
+  edit m.set(key: "a", value: 1)
+  edit m.set(key: s, value: 1)
+  m.len
+
+--- Presence: looking a secret key up.
+pub presence(m: Map[Text, Int], s: secret Text) -> Bool = m.has(key: s)
+
+pub presence_control(m: Map[Text, Int], s: secret Text) -> secret Bool = m.has(key: s)
+
+--- Iteration order: the keys of a map with secret keys.
+pub order(m: Map[secret Text, Int]) -> List[Text] = m.keys()
+
+pub order_control(m: Map[secret Text, Int]) -> secret List[secret Text] = m.keys()
+
+--- A value under a secret key.
+pub value(m: Map[Text, Int], s: secret Text) -> Option[Int] = m.get(key: s)
+
+pub value_control(m: Map[Text, Int], s: secret Text) -> secret Option[Int] = m.get(key: s)
+
+--- The size of a map with secret keys is secret, written or not.
+pub keyed(m: Map[secret Text, Int]) -> Int = m.len
+
+pub keyed_control(m: Map[secret Text, Int]) -> secret Int = m.len
+
+--- A secret key into an editable map with a public top label.
+pub into_public(s: secret Text) -> Unit
+=
+  let edit m: Map[Text, Int] = empty_map()
+  edit m.set(key: s, value: 1)
+  unit
+
+--- A secret value into a public value position.
+pub value_into_public(v: secret Int) -> Unit
+=
+  let edit m: Map[Text, Int] = empty_map()
+  edit m.set(key: "a", value: v)
+  unit
+
+pub value_control_into(v: secret Int) -> Unit
+=
+  let edit m: Map[Text, secret Int] = empty_map()
+  edit m.set(key: "a", value: v)
+  unit
+
+--- A generic key carries every label of its type argument.
+size_of[T: Ord](m: Map[T, Int]) -> Int = m.len
+
+pub generic(m: Map[secret Text, Int]) -> Int = size_of(m)
+
+pub generic_control(m: Map[Text, Int]) -> Int = size_of(m)
