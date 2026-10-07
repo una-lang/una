@@ -1208,6 +1208,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 callee,
             };
             self.ctx.argument = true;
+            self.prelude_argument = module == self.env.prelude;
             let slot = target.and_then(|target| {
                 of_callee
                     .as_ref()
@@ -1221,6 +1222,7 @@ impl<'a> Checker<'_, 'a, '_> {
             let is_slot = slot.is_some();
             self.of_argument = slot;
             let mut found = self.expr_as(&arg.value, Some(&expected), role);
+            self.prelude_argument = false;
             if is_slot {
                 // Not consumed by a lambda or a parameter passed on: a function value, whose
                 // effects and failures the callee performs at this argument.

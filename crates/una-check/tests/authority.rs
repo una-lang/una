@@ -498,8 +498,38 @@ fn effectful_functions_are_values_only_as_arguments() {
             "U3006 t.una:41:3 `write` uses capabilities or can fail, so as a value it may only be passed directly as an argument",
             "U3006 t.una:44:8 field `run` of `Holder` has a function type with `uses` or `fails`, which a kind cannot store",
             "U3003 t.una:49:16 this function uses `@log: Log[write]`, which the expected function type does not allow",
-            "U3004 t.una:54:25 `@log` is used in a lambda whose type declares no `uses`, so the lambda is pure; pass it directly as an argument for a parameter whose type allows the effect",
+            "U3004 t.una:54:25 `@log` is used here, but this code declares no `uses`, so it is pure; declare `uses @log: ...` in its header; a function passed to a prelude function such as `map`, `filter` or `fold` may use capabilities only in edition 0.2",
             "U3009 t.una:58:51 this code declares no error kind, so it cannot fail with `Missing`; declare `fails` in its header",
+        ]
+    );
+}
+
+/// The program of [`u3004_in_a_pure_lambda_keeps_the_message_of_its_edition`]: a pure
+/// lambda passed to the prelude's `map`, line 11, and to a public function, line 16.
+const PURE_LAMBDAS: &str = "module t\n\n\
+                            capability Log\n  op write(line: Text) -> Unit\n\n\
+                            pub apply(x: Text, f: fn(Text) -> Unit) -> Unit = f(x)\n\n\
+                            pub mapped(xs: List[Text]) -> List[Unit]\n  uses @log: Log[write]\n=\n  xs.map(each: fn(t) -> @log.write(t))\n\n\
+                            pub applied(x: Text) -> Unit\n  uses @log: Log[write]\n=\n  apply(x, f: fn(t) -> @log.write(t))\n";
+
+#[test]
+fn u3004_in_a_pure_lambda_keeps_the_message_of_its_edition() {
+    // Edition 0.1 keeps the v0.1.3 message, and names the edition when the lambda is an
+    // argument of a prelude function, whose functions are pure there (#256).
+    assert_eq!(
+        single(PURE_LAMBDAS.trim_start_matches("module t\n\n")),
+        [
+            "U3004 t.una:11:25 `@log` is used here, but this code declares no `uses`, so it is pure; declare `uses @log: ...` in its header; a function passed to a prelude function such as `map`, `filter` or `fold` may use capabilities only in edition 0.2",
+            "U3004 t.una:16:24 `@log` is used here, but this code declares no `uses`, so it is pure; declare `uses @log: ...` in its header",
+        ]
+    );
+    // Edition 0.2: `map` takes the effect through its `uses of` clause.
+    let manifest = MANIFEST.replace("edition = \"0.1\"", "edition = \"0.2\"");
+    let files = [("una.toml", manifest.as_str()), ("src/t.una", PURE_LAMBDAS)];
+    assert_eq!(
+        check(&files, false),
+        [
+            "U3004 src/t.una:16:24 `@log` is used in a lambda whose type declares no `uses`, so the lambda is pure; pass it directly as an argument for a parameter whose type or `uses of` clause allows the effect",
         ]
     );
 }
