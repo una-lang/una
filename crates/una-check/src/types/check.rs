@@ -236,6 +236,8 @@ pub(crate) struct Checker<'c, 'a, 's> {
     /// In pass 1, the open positions of this declaration's editable bindings: each variable's
     /// name and the unification variable whose type will be its shape (ADR 0075).
     pub(crate) edit_open: Vec<(String, usize)>,
+    /// The outer form of the editable binding being opened, for the example of an annotation.
+    pub(crate) edit_outer: String,
     /// The function or predicate whose body is checked.
     pub(crate) current: Option<usize>,
     /// The handler whose operation bodies are checked (ADR 0043).
@@ -391,6 +393,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             decided_failures: BTreeMap::new(),
             edit_bounds: BTreeMap::new(),
             edit_open: Vec::new(),
+            edit_outer: String::new(),
             current: None,
             handler: None,
             instances: Vec::new(),

@@ -38,7 +38,26 @@ impl Checker<'_, '_, '_> {
     /// the solution of earlier checks, in pass 2 the solution alone (ADR 0075 rule 1).
     pub(crate) fn open_label_positions(&mut self, bound: Ty, span: Span) -> Ty {
         let mut index = 0;
+        self.edit_outer = self.outer_example(&bound);
         self.open(bound, span, &mut index)
+    }
+
+    /// The outer form of `ty` for the example of an annotation, as `Map[...]`.
+    fn outer_example(&self, ty: &Ty) -> String {
+        match ty {
+            Ty::Labeled(_, inner) => self.outer_example(inner),
+            Ty::List(_) => "List[...]".to_owned(),
+            Ty::Map(..) => "Map[...]".to_owned(),
+            Ty::Kind(kind, args) => {
+                let name = self.env.kinds.get(*kind).map_or("...", |def| def.name);
+                if args.is_empty() {
+                    name.to_owned()
+                } else {
+                    format!("{name}[...]")
+                }
+            }
+            _ => "...".to_owned(),
+        }
     }
 
     fn open(&mut self, ty: Ty, span: Span, index: &mut usize) -> Ty {
@@ -63,7 +82,8 @@ impl Checker<'_, '_, '_> {
                                 una_diag::Code::U4001,
                                 span,
                                 format!(
-                                    "the labels of `{shown}` cannot be inferred, since part of its type holds a function; annotate its type, as in `let edit {shown}: List[...] = ...`"
+                                    "the labels of `{shown}` cannot all be inferred, since part of its type is a function type, whose labels cannot be variables; annotate its type, as in `let edit {shown}: {} = ...`",
+                                    self.edit_outer
                                 ),
                             );
                         }
@@ -157,9 +177,11 @@ impl Checker<'_, '_, '_> {
                 continue;
             }
             // A variable nothing solved holds no value with labels, as the elements of a list
-            // that stays empty. A type with a function or a variable inside has label positions
-            // a shape cannot name: it is recorded as such, and pass 2 rejects it (N-45).
-            if matches!(resolved, Ty::Var(_)) {
+            // that stays empty, and a type with an unsolved variable inside is already U2001,
+            // which names the type parameter that cannot be inferred: neither has a shape. A
+            // type with a function inside has label positions a shape cannot name: it is
+            // recorded as such, and pass 2 rejects it (N-45, E-2).
+            if !closed(&resolved) && !holds_function(&resolved) {
                 continue;
             }
             let shape = if closed(&resolved) {
@@ -256,6 +278,17 @@ fn pair_labels(found: &Ty, expected: &Ty, outer: Option<&str>, out: &mut Vec<(St
 /// The variable at the position `slot` inside the position of the variable `name`.
 fn derived(name: &str, slot: &str) -> String {
     format!("{name}/{slot}")
+}
+
+/// Whether `ty` holds a function type, at any depth.
+fn holds_function(ty: &Ty) -> bool {
+    match ty {
+        Ty::Fn(_) => true,
+        Ty::Labeled(_, inner) | Ty::List(inner) => holds_function(inner),
+        Ty::Map(key, value) => holds_function(key) || holds_function(value),
+        Ty::Kind(_, args) => args.iter().any(holds_function),
+        _ => false,
+    }
 }
 
 /// Whether `ty` holds no unification variable and no function type, so it can be a shape.
