@@ -1,0 +1,16 @@
+-- test: in edition 0.2, std.host also exports Http and its kinds
+-- spec: spec/24 §1
+-- expect: ok
+module main
+
+import std.host (Header, Http, HttpError, Response)
+
+--- The status of a page, or its failure passed on.
+pub status(url: Text) -> internal Int
+  uses @http: Http[get]
+  fails HttpError
+=
+  let headers: List[Header] = []
+  let response: internal Response = @http.get(url, headers: headers, key_name: None)
+    if error pass
+  response.status
