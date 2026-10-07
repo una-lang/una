@@ -1228,6 +1228,7 @@ impl<'a> Checker<'_, 'a, '_> {
         if self.ctx.in_do {
             self.absorbed.push(span);
         }
+        let prelude = std::mem::take(&mut self.prelude_argument) && site.argument;
         // The argument of an `of` parameter is checked in its caller's context (ADR 0062).
         let inherit = self.of_argument.take();
         // The expected function type, whose result may still be a variable that the body's
@@ -1401,6 +1402,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 Base::Declared
             };
         }
+        let prelude_lambda = std::mem::replace(&mut self.prelude_lambda, prelude);
         self.lambda_depth += 1;
         // A lambda's body starts at a `public` program counter (ADR 0031 rule 4).
         let ctx = Ctx {
@@ -1419,6 +1421,7 @@ impl<'a> Checker<'_, 'a, '_> {
             found
         });
         self.lambda_depth -= 1;
+        self.prelude_lambda = prelude_lambda;
         self.base = base;
         self.frames = frames;
         self.locals.truncate(mark);
