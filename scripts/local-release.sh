@@ -1,9 +1,9 @@
 #!/bin/sh
 # Builds the release archives of TAG on this machine while GitHub Actions is unavailable (#156,
 # ADR 0035 amendment of 2026-10-02): on a clean checkout of the tag's commit, the
-# aarch64-apple-darwin archive natively and the x86_64-unknown-linux-gnu archive in the
-# linux/amd64 container of scripts/local-ci/Dockerfile, each with scripts/release.sh and checked
-# with scripts/check-release.sh. It writes the archives, their .sha256 files and the release
+# aarch64-apple-darwin archive natively, the x86_64-unknown-linux-gnu archive in the linux/amd64
+# container of scripts/local-ci/Dockerfile and the aarch64-unknown-linux-gnu archive in its
+# linux/arm64 one (#241), each with scripts/release.sh and checked with scripts/check-release.sh. It writes the archives, their .sha256 files and the release
 # notes to target/local-release/TAG/, and prints the `gh release create` command that publishes
 # them. It publishes nothing.
 #
@@ -74,26 +74,34 @@ cp "$checkout/target/release-archives/una-$version-aarch64-apple-darwin.tar.gz" 
     "$checkout/target/release-archives/una-$version-aarch64-apple-darwin.tar.gz.sha256" "$out/" \
     || fail "copying the macOS archive"
 
-echo "== x86_64-unknown-linux-gnu, in the linux/amd64 container, from $commit"
 toolchain=$(sed -n 's/^channel *= *"\([^"]*\)"$/\1/p' "$checkout/rust-toolchain.toml")
-image="una-local-ci:$toolchain"
-# The image comes from this checkout's scripts/local-ci, which a tag made before it lacks; the
-# toolchain is the one the tag's commit pins.
-docker build --platform linux/amd64 --build-arg "TOOLCHAIN=$toolchain" --tag "$image" \
-    "$root/scripts/local-ci" || fail "the container image did not build"
-name="una-$version-x86_64-unknown-linux-gnu.tar.gz"
-docker run --rm --platform linux/amd64 \
-    --volume "$checkout:/work" \
-    --volume una-local-release-target:/work/target \
-    --volume una-local-ci-registry:/opt/cargo/registry \
-    --volume una-local-ci-z3:/opt/z3 \
-    --volume "$out:/out" \
-    "$image" sh -c "set -e
-        [ -x /opt/z3/bin/z3 ] || scripts/install-z3.sh /opt/z3
-        scripts/release.sh x86_64-unknown-linux-gnu
-        scripts/check-release.sh x86_64-unknown-linux-gnu
-        cp target/release-archives/$name target/release-archives/$name.sha256 /out/" \
-    || fail "the Linux archive"
+
+# The Linux archive of `target`, in a container of `arch` (amd64, emulated on an arm64 Mac, or
+# arm64, native on one, #241), with the image, the target directory and Z3 of that
+# architecture. The image comes from this checkout's scripts/local-ci, which a tag made before
+# it lacks; the toolchain is the one the tag's commit pins.
+linux_archive() {
+    arch=$1 target=$2 suffix=$3
+    echo "== $target, in the linux/$arch container, from $commit"
+    image="una-local-ci:$toolchain$suffix"
+    docker build --platform "linux/$arch" --build-arg "TOOLCHAIN=$toolchain" --tag "$image" \
+        "$root/scripts/local-ci" || fail "the container image for linux/$arch did not build"
+    name="una-$version-$target.tar.gz"
+    docker run --rm --platform "linux/$arch" \
+        --volume "$checkout:/work" \
+        --volume "una-local-release-target$suffix:/work/target" \
+        --volume una-local-ci-registry:/opt/cargo/registry \
+        --volume "una-local-ci-z3$suffix:/opt/z3" \
+        --volume "$out:/out" \
+        "$image" sh -c "set -e
+            [ -x /opt/z3/bin/z3 ] || scripts/install-z3.sh /opt/z3
+            scripts/release.sh $target
+            scripts/check-release.sh $target
+            cp target/release-archives/$name target/release-archives/$name.sha256 /out/" \
+        || fail "the Linux archive of $target"
+}
+linux_archive amd64 x86_64-unknown-linux-gnu ""
+linux_archive arm64 aarch64-unknown-linux-gnu -arm64
 
 echo "== digests"
 (cd "$out" && shasum -a 256 -c ./*.sha256) || fail "a digest does not match its archive"
@@ -116,5 +124,7 @@ echo "local release: PASS ($tag, commit $commit)"
 echo "archives, digests and notes: $out"
 echo "publish with:"
 echo "  gh release create $tag --verify-tag --title \"Una $tag\" --notes-file $notes$prerelease \\"
-echo "    $out/una-$version-aarch64-apple-darwin.tar.gz $out/una-$version-aarch64-apple-darwin.tar.gz.sha256 \\"
-echo "    $out/$name $out/$name.sha256"
+for target in aarch64-apple-darwin x86_64-unknown-linux-gnu; do
+    echo "    $out/una-$version-$target.tar.gz $out/una-$version-$target.tar.gz.sha256 \\"
+done
+echo "    $out/una-$version-aarch64-unknown-linux-gnu.tar.gz $out/una-$version-aarch64-unknown-linux-gnu.tar.gz.sha256"
