@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-07
-- Deciders: the coordinator, under Leonardo's delegation (decision N-07, 2026-10-06), on a proposal by Claude (Una-1)
+- Deciders: the coordinator, under Leonardo's delegation (decisions N-07, 2026-10-06, and N-13, 2026-10-07, which narrowed D3), on a proposal by Claude (Una-1)
 - Resolves: issue #260 (Beta), pre-tag finding S-1
 - Amends: `spec/17 §5` rule 3; `spec/12 §6`; the guide §11 with the implementation
 
@@ -71,7 +71,11 @@ The frame is only about the length. No fact about the elements survives, as befo
 
 The verifier names each value that a loop makes fresh: the state binders in its body, and the components of its final value. Take an obligation that the solver refutes, and whose counterexample gives a value to a term over one of those fresh values. That counterexample may be no run at all: the loop forgot the fact that excludes it.
 
-So such an obligation is reported as **unknown** (U5002), not refuted (U5001), with no counterexample. Its reason names the binding: "the loop forgets every fact about `xs` but its type, and its length when the loop only `set`s it (`spec/17 §5` rule 3); guard the use with an `if`, or check the value with `checked`".
+Such an obligation is checked once more (decision N-13, 2026-10-07), when the values it depends on are state binders of the loops around it, or are computed from them:
+- **The second query** is the first, with every enclosing loop put at its first iteration: each state binder equal to its value on entry, and the variable of a range equal to the lower bound. The frame of D2 and the refinements of the state's types stay.
+- **Still refuted:** the obligation is **refuted** (U5001) with the second query's counterexample. That counterexample is a run, the first iteration's. So a loop that breaks a refinement invariant on its first iteration, as `n = n - 1` on `n: Pos` from `n = 1`, keeps its counterexample.
+- **Not refuted:** the obligation is **unknown** (U5002), with no counterexample. Its reason names the bindings: "the loop forgets every fact about `xs` but the refinements of its type, and its length when the loop only `set`s a list, as `spec/17 §5` rule 3 says, so the counterexample sets `xs` freely; guard the use with an `if`, or check the value with `checked`".
+- **A value from a loop's final value,** after the loop or after a nested loop, is not fixed by any first iteration. So no second query is made, and the obligation is unknown with that reason.
 
 ADR 0053 already turns a refutation that is no execution into unknown in the same way. The program is still rejected, so this changes only the report.
 
@@ -82,13 +86,16 @@ ADR 0053 already turns a refutation that is no execution into unknown in the sam
 - **D3:**
   - Each binder computed from a loop-fresh value is marked when it is bound. A `let` of an `if` or `case` reads the variables of its branches, so marking is linear in the body times the nesting depth of its expressions, and it only runs after a loop.
   - A refuted answer then needs a check of the terms its counterexample shows.
+  - One more query, in QF_UFLIA, for each refuted obligation in a loop body whose counterexample sets loop-fresh values, and none for any other obligation.
 
-No query is added.
+No query is added for an obligation that is proven, or refuted outside a loop.
 
 ## Consequences
 
 - The repro, and its `let edit` and `let n = xs.len` forms, verify without a guard. So do loops that call an `edit` helper whose contract keeps the length.
-- A loop that appends, takes, or calls a helper without the clause is checked as before. A failure there that hinges on the forgotten state is reported unknown, with a reason that says why, rather than refuted with an impossible counterexample.
+- A loop that appends, takes, or calls a helper without the clause is checked as before.
+  - A failure there that hinges on the forgotten state is reported unknown, with a reason that says why, rather than refuted with an impossible counterexample.
+  - A failure that the first iteration reaches stays refuted, with that iteration as its counterexample.
 - **Engines:** the interpreter and the native backend are unchanged.
 - **Spec:** `spec/17 §5` rule 3 gains the frame, and `spec/12 §6` gains the unknown reason.
 - **The guide:** §11 drops the workaround and states the rule.

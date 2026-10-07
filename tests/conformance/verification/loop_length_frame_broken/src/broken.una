@@ -1,10 +1,10 @@
 -- test: the length frame of a loop holds only for updates that keep the length by contract: an append, a helper without the exact clause or with a weaker one, a rebind to a literal, a taken list, another list and a nested loop that appends break it, and a failure that hinges on the forgotten state is unknown (ADR 0071 D1, D3)
 -- spec: spec/17 §5
 -- expect: error U5002 at src/broken.una:18:5
--- expect: error U5002 at src/broken.una:27:5
+-- expect: error U5001 at src/broken.una:27:5
 -- expect: error U5002 at src/broken.una:39:5
--- expect: error U5002 at src/broken.una:47:5
--- expect: error U5002 at src/broken.una:56:5
+-- expect: error U5001 at src/broken.una:47:5
+-- expect: error U5001 at src/broken.una:56:5
 -- expect: error U5001 at src/broken.una:63:5
 -- expect: error U5002 at src/broken.una:71:5
 -- expect: error U5002 at src/broken.una:75:11

@@ -2,9 +2,9 @@
 -- spec: spec/17 §4, §5
 -- expect: error U5002 at src/for_state.una:14:11
 -- expect: error U5002 at src/for_state.una:26:18
--- expect: error U5002 at src/for_state.una:43:9
+-- expect: error U5001 at src/for_state.una:43:9
 -- expect: error U5001 at src/for_state.una:72:18
--- expect: error U5002 at src/for_state.una:85:17
+-- expect: error U5001 at src/for_state.una:85:17
 module for_state
 
 pub kind Pos = Int where it > 0
