@@ -707,6 +707,22 @@ module demo
 pub same[T](a: T, b: T) -> Bool = a == b
 ```
 
+A generic function can build a structure by comparing values. Lists built by comparisons carry `T`'s labels at their top, so combine them with the prelude (`append`, `fold`), whose parameters take labels of any kind (ADR 0067):
+
+```una
+module demo
+
+pub insert[T: Ord](sorted: List[T], item: T) -> List[T]
+=
+  let ahead = sorted.filter(keep: fn(s) -> s < item)
+  let behind = sorted.filter(keep: fn(s) -> not (s < item))
+  behind.fold(initial: ahead.append(item: item), step: fn(acc, s) -> acc.append(item: s))
+```
+
+Known limits of edition `0.2`, which need label polymorphism (#40):
+- Passing such a list to a parameter of your own generic function, as `concat(ahead.append(item: item), back: behind)`, is U4001: the parameter's top label is public.
+- A `fold` whose step returns such a list, as an insertion sort built from `insert`, is U4001: the accumulator's label rises after the step was checked. Use `sort`.
+
 ## 14. Concurrent tasks: `together`
 
 `together` runs independent work at once with the result and trace of a sequential run (`spec/19`).
