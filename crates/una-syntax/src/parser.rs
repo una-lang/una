@@ -498,20 +498,23 @@ impl<'a> Parser<'a> {
             }
             None => format!("`{word}` is a reserved keyword, so it cannot name a binding"),
         };
-        let fresh = self.fresh_name(&base);
+        let fresh = self.fresh_name(&base, &[]);
         let span = self.span();
-        let repair = match self.uses_in_block(keyword) {
-            Some(uses) if local && keyword == Keyword::Result => {
-                let end = uses.last().map_or(span.end, |last| last.end);
+        let repair = match self.result_renames(&base) {
+            Some(renames) if local && keyword == Keyword::Result => {
+                let end = renames.last().map_or(span.end, |(last, _)| last.end);
                 let mut replacement = String::new();
                 let mut at = span.start;
-                for range in std::iter::once(span).chain(uses) {
+                for (range, name) in &renames {
                     replacement.push_str(self.text.get(at..range.start).unwrap_or(""));
-                    replacement.push_str(&fresh);
+                    replacement.push_str(name);
                     at = range.end;
                 }
+                let first = renames
+                    .first()
+                    .map_or(fresh.as_str(), |(_, name)| name.as_str());
                 SyntaxRepair {
-                    description: format!("rename the binding and its uses to `{fresh}`"),
+                    description: format!("rename the binding and its uses to `{first}`"),
                     edit: Some((
                         Span {
                             file: span.file,
@@ -532,30 +535,127 @@ impl<'a> Parser<'a> {
         Err(self.report_error(error))
     }
 
-    /// The spans of `keyword` after the current token, up to the end of the block it is in.
-    fn uses_in_block(&self, keyword: Keyword) -> Option<Vec<Span>> {
+    /// The renames of `result` from the current token, a `let` binding of it, to the end of its
+    /// scope (#206, #257): each `let result` gets a name of its own, from `base`, and each use
+    /// the name of the binding it reads. A binding's own value reads the binding before it, so
+    /// a new name takes effect at the end of its line, and a nested block's names end with the
+    /// block. The scope is the block of the `let`, extended past a `together` block, whose
+    /// tasks' bindings are in scope after it (`spec/19`).
+    fn result_renames(&self, base: &str) -> Option<Vec<(Span, String)>> {
+        let tokens = self.tokens.get(self.pos..)?;
+        let mut chosen: Vec<String> = Vec::new();
+        let mut renames = Vec::new();
+        // The name in effect at each open block, innermost last; the pending switch to a new
+        // binding's name, with the depth whose end of line makes it effective.
+        let mut names: Vec<Option<String>> = vec![None];
+        let mut pending: Option<(usize, String)> = None;
         let mut depth = 0usize;
-        let mut uses = Vec::new();
-        for token in self.tokens.get(self.pos + 1..)? {
+        // The blocks closed past so far, when the scope extends past `together` blocks.
+        let mut level = self.pos;
+        for (offset, token) in tokens.iter().enumerate() {
+            let at = self.pos + offset;
             match token.kind {
-                TokenKind::Indent => depth += 1,
-                TokenKind::Dedent if depth == 0 => break,
-                TokenKind::Dedent => depth -= 1,
+                TokenKind::Indent => {
+                    depth += 1;
+                    let current = names.last().cloned().flatten();
+                    names.push(current);
+                }
+                TokenKind::Dedent if depth == 0 => {
+                    // The end of the scope, unless the block was a `together` block.
+                    if !self.opens_together(level, at) {
+                        break;
+                    }
+                    level = at;
+                }
+                TokenKind::Dedent => {
+                    depth -= 1;
+                    names.pop();
+                }
+                TokenKind::Newline => {
+                    if let Some((line_depth, name)) = pending.take_if(|(d, _)| *d == depth) {
+                        let _ = line_depth;
+                        if let Some(slot) = names.last_mut() {
+                            *slot = Some(name);
+                        }
+                    }
+                }
                 TokenKind::Eof => break,
-                TokenKind::Keyword(found) if found == keyword => uses.push(token.span),
+                TokenKind::Keyword(Keyword::Result) => {
+                    let binds = offset == 0 || self.binds_at(at);
+                    if binds {
+                        let name = self.fresh_name(base, &chosen);
+                        chosen.push(name.clone());
+                        renames.push((token.span, name.clone()));
+                        pending = Some((depth, name));
+                    } else if let Some(Some(name)) = names.last() {
+                        renames.push((token.span, name.clone()));
+                    } else if let Some((_, name)) = &pending {
+                        // A use on the line of the first binding, after it.
+                        renames.push((token.span, name.clone()));
+                    }
+                }
                 _ => {}
             }
         }
-        Some(uses)
+        Some(renames)
+    }
+
+    /// Whether the token at `at` is the name of a `let` (or `let edit`) binding.
+    fn binds_at(&self, at: usize) -> bool {
+        let before = |back: usize| at.checked_sub(back).and_then(|i| self.tokens.get(i));
+        match before(1).map(|t| &t.kind) {
+            Some(TokenKind::Keyword(Keyword::Let)) => true,
+            Some(TokenKind::Keyword(Keyword::Edit)) => {
+                matches!(
+                    before(2).map(|t| &t.kind),
+                    Some(TokenKind::Keyword(Keyword::Let))
+                )
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether the block that the `Dedent` at `close` ends, and that holds the token at `from`,
+    /// was opened by `together`: its `Indent` follows the keyword and the end of its line.
+    fn opens_together(&self, from: usize, close: usize) -> bool {
+        let _ = close;
+        // From a `Dedent`, the block it closes is passed over first.
+        let mut depth = usize::from(matches!(
+            self.tokens.get(from).map(|t| &t.kind),
+            Some(TokenKind::Dedent)
+        ));
+        let mut index = from;
+        while index > 0 {
+            index -= 1;
+            match self.tokens.get(index).map(|t| &t.kind) {
+                Some(TokenKind::Dedent) => depth += 1,
+                Some(TokenKind::Indent) if depth == 0 => {
+                    let mut before = index;
+                    while before > 0 {
+                        before -= 1;
+                        match self.tokens.get(before).map(|t| &t.kind) {
+                            Some(TokenKind::Newline) => continue,
+                            Some(TokenKind::Keyword(Keyword::Together)) => return true,
+                            _ => return false,
+                        }
+                    }
+                    return false;
+                }
+                Some(TokenKind::Indent) => depth -= 1,
+                _ => {}
+            }
+        }
+        false
     }
 
     /// `base`, or `base` followed by the first number from 2 that makes it a name the file
-    /// does not use.
-    fn fresh_name(&self, base: &str) -> String {
+    /// does not use and that is not in `taken`.
+    fn fresh_name(&self, base: &str, taken: &[String]) -> String {
         let used = |name: &str| {
-            self.tokens.iter().any(|token| {
-                matches!(token.kind, TokenKind::LowerIdent(symbol) if self.interner.resolve(symbol) == name)
-            })
+            taken.iter().any(|t| t == name)
+                || self.tokens.iter().any(|token| {
+                    matches!(token.kind, TokenKind::LowerIdent(symbol) if self.interner.resolve(symbol) == name)
+                })
         };
         if !used(base) {
             return base.to_owned();
@@ -1778,14 +1878,58 @@ impl<'a> Parser<'a> {
             clause,
             "a handling clause goes on its own line, indented under the expression it handles",
         );
+        // Every clause on the rest of the line goes to a line of its own, each one level deeper
+        // than the expression's line, so that the edit leaves no clause on another's line
+        // (#257).
+        let indent = format!("\n{}", "  ".repeat(self.depth + 1));
+        let mut starts = Vec::new();
+        let mut end = clause.end;
+        let mut nesting = 0usize;
+        for (offset, token) in self
+            .tokens
+            .get(self.pos..)
+            .unwrap_or(&[])
+            .iter()
+            .enumerate()
+        {
+            match token.kind {
+                TokenKind::Newline | TokenKind::Eof if nesting == 0 => break,
+                TokenKind::LParen | TokenKind::LBracket => nesting += 1,
+                TokenKind::RParen | TokenKind::RBracket => nesting = nesting.saturating_sub(1),
+                TokenKind::Keyword(Keyword::If) if nesting == 0 => {
+                    let next = self.tokens.get(self.pos + offset + 1).map(|t| &t.kind);
+                    if matches!(
+                        next,
+                        Some(TokenKind::Keyword(Keyword::Error | Keyword::None))
+                    ) {
+                        starts.push(token.span.start);
+                    }
+                }
+                _ => {}
+            }
+            if token.span.end > token.span.start {
+                end = end.max(token.span.end);
+            }
+        }
+        let mut replacement = String::new();
+        for (i, start) in starts.iter().enumerate() {
+            let stop = starts.get(i + 1).copied().unwrap_or(end);
+            let text = self.text.get(*start..stop).unwrap_or("").trim_end();
+            replacement.push_str(&indent);
+            replacement.push_str(text);
+        }
         let gap = Span {
             file: clause.file,
             start: expr.end,
-            end: clause.start,
+            end,
         };
         error.repairs.push(SyntaxRepair {
-            description: "move the clause to its own line".to_owned(),
-            edit: Some((gap, format!("\n{}", "  ".repeat(self.depth + 1)))),
+            description: if starts.len() > 1 {
+                "move each handling clause to its own line".to_owned()
+            } else {
+                "move the clause to its own line".to_owned()
+            },
+            edit: Some((gap, replacement)),
         });
         self.report_error(error)
     }

@@ -977,9 +977,14 @@ impl<'a> Checker<'_, 'a, '_> {
             BinaryOp::Eq => format!("{value_text} is {name}"),
             _ => format!("not ({value_text} is {name})"),
         };
-        let repair = self
-            .report
-            .edit(format!("write `{replacement}`"), span, replacement);
+        // In a clause, U2014 at the comparison already carries this edit; one repair of a check
+        // never edits text another one edits (#257).
+        let repair = if self.report.has(Code::U2014, span) {
+            super::Report::advice(format!("write `{replacement}`, as the U2014 here does"))
+        } else {
+            self.report
+                .edit(format!("write `{replacement}`"), span, replacement)
+        };
         self.report
             .repair_since(mark, Code::U2009, ident.span, repair);
     }
