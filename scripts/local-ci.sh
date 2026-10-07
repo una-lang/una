@@ -97,6 +97,9 @@ if [ -z "${UNA_LOCAL_CI_Z3:-}" ]; then
         echo "skipped: mdbook $mdbook_version not installed (cargo install mdbook --version $mdbook_version --locked)"
     fi
 fi
+
+# A release build never trusts the test certificate authority of una-http (ADR 0074, N-28).
+step "Test (release, TLS trust)" cargo test --release --locked -p una-http --test tls
 step "Pack the release archive of $target" scripts/release.sh "$target"
 step "Check the release archive of $target" scripts/check-release.sh "$target"
 echo "local CI: PASS ($target)"

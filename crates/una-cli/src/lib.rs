@@ -406,12 +406,15 @@ where
                 grants,
                 max_depth,
                 max_memory,
+                max_response,
+                http_timeout,
                 solver_wallclock,
             } => {
                 let options = runtime::RunOptions {
                     grants: &grants,
                     max_depth,
                     max_memory,
+                    http: runtime::http_settings(max_response, http_timeout),
                     heap,
                     json,
                     color: use_color(color, stderr_is_terminal),
@@ -444,6 +447,7 @@ where
                     grants: &[],
                     max_depth,
                     max_memory,
+                    http: una_http::client::Settings::default(),
                     heap,
                     json,
                     color: use_color(color, stderr_is_terminal),

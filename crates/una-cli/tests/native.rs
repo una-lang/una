@@ -1085,7 +1085,7 @@ fn the_executable_checks_main_against_its_grants() {
     assert_eq!(bad.status.code(), Some(2));
     assert_eq!(
         String::from_utf8_lossy(&bad.stderr),
-        "error: `network` is not a grant; grants are console, clock, env, keys:<file> and files:<path>:<access>\n"
+        "error: `network` is not a grant; grants are console, clock, env, keys:<file>, files:<path>:<access> and http:<origin>[:<methods>]\n"
     );
     assert_eq!(usage(&["--json"]).status.code(), Some(2));
     assert_eq!(usage(&["--max-depth", "many"]).status.code(), Some(2));

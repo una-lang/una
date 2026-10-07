@@ -130,3 +130,34 @@ pub bytes(t: Text) -> List[U8]
   ensures result.len >= t.len
 =
   []
+
+--- A header of an HTTP request or response (`spec/24 §1`). Its value may hold `internal` data,
+--- which a request accepts; a `secret` needs a policy first.
+pub kind Header
+  name: Text
+  value: internal Text
+
+--- An HTTP response, whatever its status (`spec/24 §1` rule 3).
+pub kind Response
+  status: Int
+  headers: List[Header]
+  body: Text
+
+--- Why an HTTP request got no response it may return (`spec/24 §1` rule 3).
+pub kind HttpError = Denied | BadUrl | BadRequest | Unreachable | TimedOut | TooLarge | Tls | Protocol
+
+--- HTTP/1.1 to the origins that `http:` grants allow (`spec/24`). `key_name` sends the key of
+--- that name from the `keys:` grants as a bearer token, which the program never sees.
+pub capability Http
+  op get(url: Text, headers: List[Header], key_name: Option[Text]) -> internal Response
+    fails HttpError
+    accepts internal
+  op post(url: Text, headers: List[Header], body: Text, key_name: Option[Text]) -> internal Response
+    fails HttpError
+    accepts internal
+  op put(url: Text, headers: List[Header], body: Text, key_name: Option[Text]) -> internal Response
+    fails HttpError
+    accepts internal
+  op delete(url: Text, headers: List[Header], key_name: Option[Text]) -> internal Response
+    fails HttpError
+    accepts internal

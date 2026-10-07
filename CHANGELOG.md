@@ -7,6 +7,12 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 ### Language
 
 - **`std.host` can be imported** (#16, N-33, `spec/10 §11` rule 10). `import std.host (Files)` names the host capabilities and their failure kinds (`Console`, `Clock`, `Env`, `Files`, `Keys`, `FileError`, `KeyError`), the same declarations the prelude puts in scope, in both editions. Any other `std` path is U1001 with a message that names the two standard modules that can be imported, `std.host` and `std.testing`, where it said `std.host` was not a module.
+- **HTTP** (ADR 0074, `spec/24`, #239). In edition 0.2 the host capability `Http` sends HTTP/1.1 requests:
+  - `get`, `post`, `put` and `delete`, one operation per method, return an `internal Response` or fail with `HttpError`;
+  - origins and methods are granted with `http:<origin>[:<methods>]`, deny by default, https unless a grant says http, and redirects stay within the grants;
+  - `key_name` sends a key of the `keys:` grant as a bearer token, to that origin only, never seen by the program or shown in a trace; a redirect to another origin also drops the program's `Authorization`, `Cookie` and `Proxy-Authorization` headers for the rest of the chain, and traces redact `Header.value` in both engines;
+  - each request has one total deadline (`--http-timeout`, default 30 s, at most a day) and a body limit (`--max-response`, default 16 MiB), in `una run` and in executables;
+  - one client serves both engines, over rustls with ring and the Mozilla roots compiled in, the new trusted dependencies of ADR 0074.
 - **JSON** (ADR 0073, `spec/23`, #238). In edition 0.2 the prelude reads and writes JSON: the kind `Json` (`Null`, `Boolean`, `Number` for exact integers, `Decimal` for other numbers as written, `Str`, `Array`, `Object` as a map in key order), `parse_json` failing with `JsonError` (`Syntax`, `TooDeep` past 512 levels, `DuplicateKey`, at a position in scalar values), a canonical `to_json`, and `quote_json`. Parsing is O(n + Σ k log k), writing O(n), with no recursion on the native stack; one implementation serves both engines. Parsed values keep the label of their text, and a secret cannot enter a `Json` constructor.
 - **Maps** (#236, ADR 0069, `spec/21`). Edition 0.2 gains `Map[K, V]`, keyed by an `Ord` type, in ascending key order, with `empty_map()`, `m.len`, `has`, `get`, `keys`, `values`, `entries`, `with`, `without`, and `edit m.set` and `edit m.remove`.
   - `len` is O(1); `get`, `has`, `set` and `remove` are O(log n), in place when nothing else holds the map; `with` and `without` on a map another binding holds copy it, O(n). A text key is copied into the map at insert, O(key length).
@@ -63,6 +69,10 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 - **A solver that does not read its query is stopped at its wallclock** (#286). The deadline now runs from before the solver starts, and the query is written on a thread of its own: a solver that left the query unread used to keep the run waiting until it exited, past `--solver-wallclock`.
 - **The amd64 `linux` gate runs its tests one at a time** (#286). Under emulation on an arm64 Mac, processes spawned from many threads at once could hang the test run. The native `linux-arm64` gate keeps full parallelism and is the primary evidence of the tests on Linux.
 
+
+### Native executables
+
+- **Executables keep only the runtime they call** (#239). `una build` links with dead-stripping, so an executable carries none of the runtime it never calls, the TLS stack of `Http` included: `examples/hello` built natively shrinks to about 40% of its size (debug build, macOS).
 ## v0.2.0
 
 The first stable release of v0.2. The native backend compiles the whole language of edition 0.2 into executables that match the interpreter. Edition 0.2 completes its scope with structured concurrency, constraints on generics and printing of structured values, and every Critical and Major finding of the two independent reviews of v0.2 (#176, #177) is fixed. Gate 1's benchmark stays pinned to v0.1.x.

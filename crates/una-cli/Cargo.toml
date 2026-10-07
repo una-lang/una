@@ -18,6 +18,7 @@ una-codegen.workspace = true
 una-core.workspace = true
 una-diag.workspace = true
 una-fmt.workspace = true
+una-http.workspace = true
 una-interp.workspace = true
 una-lsp.workspace = true
 una-project.workspace = true

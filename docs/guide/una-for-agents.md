@@ -26,7 +26,7 @@ una trace EVENTS_3  # in examples/events
 una contract events.checkin.check_in  # in examples/events
 ```
 
-`una build` compiles a package into a native executable that behaves as `una run` (§18):
+`una build` compiles a package into a native executable that behaves as `una run` (§19):
 
 ```sh
 una build .  # copy examples/hello
@@ -40,7 +40,7 @@ Exit codes: `0` success; `1` errors in the program, an unproven obligation or a 
 - A package is a directory with `una.toml`, `verification.lock` and sources under `src/`. Module `shop.cart` lives in `src/shop/cart.una`, and a file holds exactly one module.
 - A single `.una` file is also a package, with default settings and the default lock.
 - `una.toml` has `[package]` (`name`, `version`, `edition = "0.2"`), and optionally `[labels] categories`, `[trusted] modules`, `[escape_budget] checked_per_module` (default 0) and `[run]` (`entry` module, `grants`). Unknown keys are U7002.
-- **Editions.** `edition = "0.2"` enables the constructs of v0.2: editable values and `for` loops (§11), fixed-width integers (§12), recursive kinds (§4), `uses of` and `fails of` (§8), constraints on generics (§13), maps (§14), JSON (§15), text functions (§16) and `together` (§17). A package of edition `0.1` keeps the language of v0.1 in every later compiler, and a single `.una` file outside a package is edition `0.1`. §20 lists what changes between them.
+- **Editions.** `edition = "0.2"` enables the constructs of v0.2: editable values and `for` loops (§11), fixed-width integers (§12), recursive kinds (§4), `uses of` and `fails of` (§8), constraints on generics (§13), maps (§14), JSON (§15), text functions (§16), HTTP (§17) and `together` (§18). A package of edition `0.1` keeps the language of v0.1 in every later compiler, and a single `.una` file outside a package is edition `0.1`. §21 lists what changes between them.
 - `verification.lock` pins the solver: Z3 at the exact version it names must be on the path, or tier 1 reports U5003. `scripts/install-z3.sh` installs it.
 
 ## 3. Syntax in brief
@@ -847,7 +847,47 @@ pub leading_number(field: Text) -> Int
   n
 ```
 
-## 17. Concurrent tasks: `together`
+## 17. HTTP
+
+The host capability `Http` sends HTTP/1.1 requests (`spec/24`, edition 0.2).
+
+- **Operations.** `get(url, headers, key_name)`, `post(url, headers, body, key_name)`, `put` and `delete`, one per method, so `uses @http: Http[get]` can never post. Each returns an `internal Response` (`status`, `headers`, `body`) or fails with `HttpError`.
+- **Statuses are not failures.** A 404 is a `Response`. `HttpError` is for requests that got no response: `Denied`, `BadUrl`, `BadRequest`, `Unreachable`, `TimedOut`, `TooLarge`, `Tls` or `Protocol`.
+- **Grants.** `http:<origin>` or `http:<origin>:<methods>`, by default `get`: `http:https://api.example.com:get,post`. A request outside them fails with `Denied`, before any connection. Plain `http` only where a grant says so.
+- **Credentials.** `key_name: Some("name")` sends the key `name` of the run's `keys:` grant as a bearer token, to that origin only. The program never sees it, and no trace shows it.
+- **Labels.** Arguments accept `internal` data: a `secret` URL, body or header value needs a policy first. Responses are `internal`, so a function that returns what it read declares an `internal` result, and its `Option` or `Result` too, since which one it returns depends on the response.
+- **Limits.** `--max-response <MiB>` (default 16) and `--http-timeout <seconds>` (default 30, the total time of a request). Tests give `Http` a handler, since examples cannot use it.
+
+```una
+module weather
+
+--- The temperature of a city, from a JSON API, or `None` when the request or its answer fails.
+--- The token is the key `weather` of the run's `keys:` grant; the program never sees it.
+pub temperature(city: Text) -> internal Option[internal Int]
+  uses @http: Http[get]
+=
+  let accept = Header(name: "Accept", value: "application/json")
+  let r = attempt @http.get("https://api.example.com/v1/now?city={city}", headers: [accept], key_name: Some("weather"))
+  when r
+    is Ok(response) -> if response.status == 200 then degrees(response.body) else None
+    is Err(e) -> None
+
+--- The `degrees` field of a JSON object, when it is an integer.
+degrees(body: internal Text) -> internal Option[internal Int]
+=
+  let doc = body.parse_json()
+    if error use Null
+  when doc
+    is Object(fields) ->
+      let value = fields.get(key: "degrees")
+        if none use Null
+      when value
+        is Number(n) -> Some(n)
+        else -> None
+    else -> None
+```
+
+## 18. Concurrent tasks: `together`
 
 `together` runs independent work at once with the result and trace of a sequential run (`spec/19`).
 
@@ -898,14 +938,14 @@ pub count(xs: List[Int]) -> Int
   seen
 ```
 
-## 18. Native executables and the language server
+## 19. Native executables and the language server
 
 - `una build [path]` checks the package at tier 1, then writes a native executable to `target/una/<name>` (`spec/16`), or to `--out <file>`. It refuses a package with errors, as `una run` does; `--json` prints `una.build/1`.
 - The executable runs `main` of the entry module with the output, failures, exit codes and grants of `una run`: the `[run] grants` of `una.toml` are built in, and `--grant`, `--max-depth` and `--max-memory` work as for `una run`. Its `--trace <file>` writes the trace as a JSON array, the trace that `una --json run` reports in `una.run/1`. Its output and trace match the interpreter's.
 - Tasks of `together` run on their own threads in a native executable, and one at a time in `una run`.
 - `una lsp` is a language server (LSP 3.17 over stdin and stdout) for editors: it checks, formats and solves, and never runs programs.
 
-## 19. The Agent ABI
+## 20. The Agent ABI
 
 Every command takes `--json` and prints one document whose `schema` names its shape:
 
@@ -944,7 +984,7 @@ When the checks reject a package, `contract`, `trace`, `obligations` and `report
 
 The build report counts trivial `ensures`, clauses the solver proves with no hypothesis at all such as `ensures result == result`, as missing contracts: write contracts that say something about the result.
 
-## 20. Migrating from edition 0.1
+## 21. Migrating from edition 0.1
 
 Change `edition = "0.1"` to `"0.2"` in `una.toml`, then check. What can change:
 

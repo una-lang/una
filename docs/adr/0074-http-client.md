@@ -164,3 +164,48 @@ One client serves both engines: a new crate `una-http`, called by the interprete
 - **G. OpenSSL, `native-tls` or the platform's TLS.** These are system libraries, which vary across machines and are harder to pin, and Linux would need `libssl` at run time. They are rejected for reproducibility.
 - **H. `rustls` with `aws-lc-rs`.** It is FIPS-oriented, but a larger C code base with a CMake build. `ring` is smaller. This can be revisited if FIPS matters.
 - **I. Running the system's `curl`.** No crate, but behavior and version vary by machine, it needs an external program at run time, and argument handling becomes a new attack surface. Rejected.
+
+## Amendment of 2026-10-07: implementation decisions (N-28)
+
+Decided by the coordinator under the owner's delegation (N-28), pending Leonardo's review; raised by Claude (Una-2) while implementing.
+
+1. **The credential stays with its origin.** `key_name` sends its key only to the origin of the request the program made. A redirect to another origin, granted or not, carries no `Authorization`.
+2. **`HttpError` gains `BadRequest`**, for a request header the client must refuse:
+   - a name that is not a token;
+   - a value with a control character, which would allow header injection;
+   - a header the client sets itself (`Host`, `Content-Length`, `Transfer-Encoding`, `Connection`).
+
+   `BadUrl` stays for URLs. The kind is now `Denied | BadUrl | BadRequest | Unreachable | TimedOut | TooLarge | Tls | Protocol`.
+3. **The test certificate authority is a debug-build hook.** It is gated by `debug_assertions` inside `una-http`, never by a cargo feature, so no release build can trust it. A release-build test, which `scripts/local-ci.sh` runs, shows the test authority rejected.
+4. **Grants are read by one parser.** `una_core::http` holds URLs and `http:` grants, so the checker, the manifest and both engines read them alike. `una-http` holds the client, and is the only crate that links the TLS stack.
+5. **Executables keep only the runtime they call.** `una build` links with `-dead_strip` (macOS) or `--gc-sections` (Linux), so an executable that never uses `Http` carries no TLS code (H7). A test checks it.
+
+## Amendment of 2026-10-07: independent check (N-30)
+
+Decided by the coordinator under the owner's delegation (N-30), pending Leonardo's review; found by the coordinator's independent check of the implementation.
+
+1. **Traces redact the prelude's labeled fields in both engines.** The interpreter reads the field types of the prelude's kinds from their declarations, as the executable does, so `Header.value` is `<redacted:internal>` in every trace.
+2. **The program's credentials stay with their origin too.** A redirect to another origin drops `Authorization`, `Cookie` and `Proxy-Authorization`, in any letter case, besides the key of `key_name` (amendment N-28, item 1). A request with both `key_name` and an `Authorization` header is `BadRequest`.
+3. **A key with a control character is `BadRequest`**, as a header value is, since it is written into a header.
+4. **`--http-timeout` is at most a day** (86400 seconds); more is a usage error, and the client computes its deadline without overflow.
+5. **An IPv6 grant names its host in brackets**, `http:http://[::1]:8080`; the colons inside the brackets are the host's.
+6. **RFC 9112 details.** A `204` or `304` has no body, whatever its headers say. At most 10 `1xx` responses precede the final one. A chunk size has no whitespace around its digits.
+7. **The residual of H7 on macOS.** An executable that never uses `Http` carries no `rustls` or `webpki` code. On Linux it carries no `ring` code either. On macOS it keeps about 39 KB of `ring`'s assembly kernels (SHA-2, AES, ChaCha20, P-256), which no call reaches. `ld64` cannot dead-strip an object assembled without `.subsections_via_symbols`, and the loading of the runtime archive, transitive by object file, pulls those objects in. The size test bounds this residual at 64 KiB on macOS and at zero on Linux.
+
+## Amendment of 2026-10-07: no private keys in the repository (N-31)
+
+Decided by the coordinator under the owner's delegation (N-31), pending Leonardo's review.
+
+The test certificate authority of H8 is not kept in the repository's test fixtures. The TLS tests make it, and the server certificates it signs, once per test process with `rcgen`, a dev-dependency of `una-http` outside the trusted base. They write only the authority's certificate to a temporary file for the debug-only hook. The repository and its history hold no private key, which a secret scanner would flag.
+
+## Amendment of 2026-10-07: the residual of H7 (N-32)
+
+Decided by the coordinator under the owner's delegation (N-32), pending Leonardo's review.
+
+H7 reads: an executable that never uses `Http` carries no TLS logic. On macOS up to 64 KiB of the TLS library's assembly primitives may remain, unreachable (amendment N-30, item 7). The size test enforces at most 64 KiB on macOS and none on Linux.
+
+## Amendment of 2026-10-07: credentials across a chain (N-35)
+
+Decided by the coordinator under the owner's delegation (N-35), pending Leonardo's review; found by the coordinator's recheck.
+
+Once a redirect leaves the request's origin, the key of `key_name` and the program's `Authorization`, `Cookie` and `Proxy-Authorization` stay dropped for the rest of the chain, as browser `fetch` does. A chain A → B → A does not send them to A at its last hop, whose path B chose.
