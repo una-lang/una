@@ -243,7 +243,18 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
         let mut rounds = 0;
         while env.edit_labels_seen {
             rounds += 1;
-            if rounds > env.edit_labels.len() + 2 {
+            // Each round that goes on raises some variable by at least one atom, or records a
+            // variable's shape once; atoms: the four levels above `public`, the categories, and
+            // the symbolic labels the solutions name (ADR 0075 rule 5).
+            let atoms = 4
+                + env.categories.len()
+                + env
+                    .edit_labels
+                    .values()
+                    .flat_map(|label| label.symbols.iter())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len();
+            if rounds > env.edit_labels.len() * (atoms + 1) + 2 {
                 let span = env
                     .edit_labels_changed_name
                     .as_ref()

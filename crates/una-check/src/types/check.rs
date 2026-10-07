@@ -233,6 +233,9 @@ pub(crate) struct Checker<'c, 'a, 's> {
     /// In pass 1, the labels that flow into the label variables of this declaration's editable
     /// bindings, by symbol (ADR 0075).
     pub(crate) edit_bounds: BTreeMap<String, Label>,
+    /// In pass 1, the open positions of this declaration's editable bindings: each variable's
+    /// name and the unification variable whose type will be its shape (ADR 0075).
+    pub(crate) edit_open: Vec<(String, usize)>,
     /// The function or predicate whose body is checked.
     pub(crate) current: Option<usize>,
     /// The handler whose operation bodies are checked (ADR 0043).
@@ -387,6 +390,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             call_fails: BTreeMap::new(),
             decided_failures: BTreeMap::new(),
             edit_bounds: BTreeMap::new(),
+            edit_open: Vec::new(),
             current: None,
             handler: None,
             instances: Vec::new(),
@@ -722,6 +726,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             instantiations,
             mut escaped,
             edit_bounds,
+            edit_open,
             ..
         } = self;
         // ADR 0075 rule 2: pass 1 solves the label variables of the editable bindings.
@@ -731,6 +736,11 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         {
             env.edit_labels_changed = true;
             env.edit_labels_changed_name = Some(name);
+        }
+        if pass == Pass::Collect
+            && Checker::record_edit_shapes(&edit_open, &vars, &mut env.edit_shapes)
+        {
+            env.edit_labels_changed = true;
         }
         if pass == Pass::Check {
             super::generic::second_class(report, &vars, &instantiations, &mut escaped);

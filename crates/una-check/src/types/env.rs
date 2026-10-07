@@ -321,6 +321,9 @@ pub(crate) struct Env<'a> {
     pub(crate) edit_labels_changed_name: Option<String>,
     /// The binding of each label variable, for a diagnostic that names it.
     pub(crate) edit_label_spans: BTreeMap<String, Span>,
+    /// The type an open position of an editable binding resolved to, without labels, by the
+    /// name of its variable: later checks give each label position inside it a variable.
+    pub(crate) edit_shapes: BTreeMap<String, super::ty::Ty>,
     alias_state: Vec<AliasState>,
     /// The package's edition (`spec/13 §7`).
     pub(crate) edition: Edition,
@@ -408,6 +411,7 @@ impl<'a> Env<'a> {
             edit_labels_changed: false,
             edit_labels_changed_name: None,
             edit_label_spans: BTreeMap::new(),
+            edit_shapes: BTreeMap::new(),
             alias_state: Vec::new(),
             edition,
             summaries: BTreeMap::new(),
