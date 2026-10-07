@@ -1,0 +1,8 @@
+-- test: ADR 0067 adversarial check of #231, L18b_mixedlist: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/l18b.una:8:34
+module l18b
+
+pick[T, U](a: T, b: T, x: U, y: U) -> U = if a == b then x else y
+
+pub leak(s: secret Int) -> Int = pick(s, b: 0, x: [1], y: [2]).fold(initial: 0, step: fn(acc, v) -> acc + v)

@@ -128,3 +128,12 @@ With L1 to L4 all A, in edition `0.2`:
 The B and C options under each question. Also:
 - **Re-check a lambda when its expected parameter types rise.** This is ADR 0051 D. Not chosen there and not here: it contradicts `spec/07 §7` rule 2.
 - **Monomorphize the label check:** check each generic function again for every instantiation. Not chosen: it is precise, but the work grows with the number of call sites, and a diagnostic would point into the generic body for a caller's type.
+
+## Amendment (2026-10-07)
+
+The independent check of the implementation (#231) found that L1 rule 1 as written is unsound, and the implementation follows this amendment instead.
+
+- **A type-parameter position counts its own parameter.** L1 rule 1 says a position that is a type parameter `T` "gets its labels from `σ(T)` by substitution". Substitution puts only `σ(T)`'s own labels there, while `ℓ_T` at that position stands for every label of `σ(T)` (`spec/10 §5`). So with `T = List[secret Int]`, a `T` value chosen by comparing `T` values would come out with a public top. The summary at a type-parameter position therefore counts `T` itself, as it counts every other parameter, and a call raises that position by `ℓ*(σ(T))`. At the positions that are not type parameters, the summary is as precise as before.
+- **No bound on the rounds of L2.** The least fixpoint is computed per strongly connected component, callees first, with no cap: summaries only grow over finitely many positions and parameters.
+- **L4 covers every predicate value.** The U4002 of an effectful `first_where` predicate with a labeled result applies to a named function given as the predicate, as to a lambda, and to failures as to effects.
+- **The parameters of a function type in the result are not raised.** They are contravariant: raising them would let a caller pass labeled data into the returned function.

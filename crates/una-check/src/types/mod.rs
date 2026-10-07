@@ -196,14 +196,11 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
     authority::stored_effects(&env, &mut report);
     // Pass 1 collects what inference needs, and its diagnostics are dropped;
     // pass 2 checks with the inferred headers.
-    // In edition 0.2, pass 1 also computes the result summaries of generic functions
-    // (ADR 0067 L2): it runs again while one grows, so they reach their least fixpoint. They
-    // only grow, over finitely many positions and type parameters, so this ends.
-    let mut collected;
-    let mut rounds = 0;
-    loop {
-        collected = authority::Collected::default();
-        env.summaries_grew = false;
+    // Pass 1 also records the result summaries of generic functions (ADR 0067); in edition
+    // 0.2 they then reach their least fixpoint, below.
+    let mut collected = authority::Collected::default();
+    let mut edges = Vec::new();
+    {
         let mut scratch = Report::new(package.sources);
         let mut findings = Findings::default();
         for module in 0..package.modules.len() {
@@ -219,10 +216,15 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
                 );
             }
         }
-        rounds += 1;
-        if !env.summaries_grew || rounds >= MAX_SUMMARY_ROUNDS {
-            break;
-        }
+        edges.extend(
+            findings
+                .edges
+                .iter()
+                .map(|(caller, callee, _)| (*caller, *callee)),
+        );
+    }
+    if package.settings.edition >= Edition::V0_2 {
+        summary_fixpoint(&mut env, &facts, package.sources, &edges);
     }
     authority::infer(&mut env, &collected, &mut report);
     let mut findings = Findings::default();
@@ -472,10 +474,47 @@ fn parse_standard(
     parse(&lexed, id, interner).file
 }
 
-/// A bound on the rounds of pass 1 for the least fixpoint of result summaries (ADR 0067):
-/// each round that does not end adds a type parameter at a position, and a package reaching
-/// it would need that many in one chain of calls.
-const MAX_SUMMARY_ROUNDS: usize = 64;
+/// The least fixpoint of the result summaries of the generic functions (ADR 0067 L2): over
+/// the strongly connected components of their calls, callees first, each component's bodies
+/// are checked again until none of their summaries grows. Summaries only grow, over finitely
+/// many positions and type parameters, so each loop ends, and a function is checked again
+/// only with its own component.
+fn summary_fixpoint(
+    env: &mut Env<'_>,
+    facts: &facts::KindFacts,
+    sources: &SourceDb,
+    edges: &[(usize, usize)],
+) {
+    let generic: std::collections::BTreeSet<usize> = env
+        .functions
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| {
+            f.module < env.prelude && f.kind == env::FnKind::Function && !f.type_params.is_empty()
+        })
+        .map(|(id, _)| id)
+        .collect();
+    for component in summary::components(&generic, edges) {
+        loop {
+            env.summaries_grew = false;
+            let mut scratch = Report::new(sources);
+            let mut findings = Findings::default();
+            let mut collected = authority::Collected::default();
+            check::functions(
+                env,
+                facts,
+                &mut scratch,
+                &mut findings,
+                &mut collected,
+                authority::Pass::Collect,
+                &component,
+            );
+            if !env.summaries_grew {
+                break;
+            }
+        }
+    }
+}
 
 /// Collects diagnostics, with the sources their spans point into.
 pub(crate) struct Report<'s> {
@@ -531,6 +570,14 @@ impl<'s> Report<'s> {
         {
             diagnostic.repairs.push(repair);
         }
+    }
+
+    /// Whether a diagnostic with `code` is already reported at `span`.
+    pub(crate) fn has(&self, code: Code, span: Span) -> bool {
+        let location = self.location(span);
+        self.diagnostics
+            .iter()
+            .any(|d| d.code == code && d.primary == location)
     }
 
     /// How many diagnostics have been reported so far.

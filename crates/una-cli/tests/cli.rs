@@ -797,7 +797,7 @@ fn contract_shows_written_and_inferred_constraints() {
     assert_eq!(stderr(&output), "");
     assert_eq!(
         stdout(&output),
-        "lowest[T: Ord, U](a: T, b: T, tag: U) -> T -- inferred\n"
+        "lowest[T: Ord, U](a: T, b: T, tag: U) -> T -- inferred\n-- result labels: top from T\n"
     );
     let output = una_in(&root, &["contract", "--json", "app.k.same"]);
     assert_eq!(output.status.code(), Some(0));
@@ -827,7 +827,7 @@ fn contract_and_report_show_result_summaries() {
     .unwrap();
     std::fs::write(
         root.join("src/s.una"),
-        "module s\n\npub kind Pair[A, B]\n  left: A\n  right: B\n\n--- Which elements stay depends on comparisons of `T` values.\npub below[T: Ord](xs: List[T], pivot: T) -> List[T] = xs.filter(keep: fn(x) -> x < pivot)\n\npub concat[T](front: List[T], back: List[T]) -> List[T] = back.fold(initial: front, step: fn(acc, x) -> acc.append(item: x))\n\npub tagged[T: Eq, U](x: T, y: T, tag: U) -> Pair[List[U], Int] = Pair(left: if x == y then [tag] else [], right: 1)\n\nhelper[T](x: T) -> List[T] = [x]\n",
+        "module s\n\npub kind Pair[A, B]\n  left: A\n  right: B\n\n--- Which elements stay depends on comparisons of `T` values.\npub below[T: Ord](xs: List[T], pivot: T) -> List[T] = xs.filter(keep: fn(x) -> x < pivot)\n\npub concat[T](front: List[T], back: List[T]) -> List[T] = back.fold(initial: front, step: fn(acc, x) -> acc.append(item: x))\n\npub tagged[T: Eq, U](x: T, y: T, tag: U) -> Pair[List[U], Int] = Pair(left: if x == y then [tag] else [], right: 1)\n\nhelper[T](x: T) -> List[T] = [x]\n\npub size[T](xs: List[T]) -> Int = xs.len\n",
     )
     .unwrap();
     let human = una_in(&root, &["contract", "s.below"]);
@@ -836,7 +836,7 @@ fn contract_and_report_show_result_summaries() {
     let json = una_in(&root, &["contract", "--json", "s.tagged"]);
     let json = stdout(&json).to_owned();
     insta::assert_snapshot!("contract_result_summary_json", json);
-    let none = una_in(&root, &["contract", "s.concat"]);
+    let none = una_in(&root, &["contract", "s.size"]);
     let none = stdout(&none).to_owned();
     assert!(!none.contains("result labels"), "{none}");
     let report = una_in(&root, &["report", "--json", "."]);

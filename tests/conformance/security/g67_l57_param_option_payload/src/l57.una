@@ -1,0 +1,12 @@
+-- test: ADR 0067 adversarial check of #231, L57_param_option_payload: a secret reaches a public result only through the labels of a generic call's result, and is rejected in edition 0.2 as main rejects it (spec/07 §7 rule 8, #92)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/l57.una:11:19
+module l57
+
+pick[U](x: U, y: U, p: U, q: U) -> Option[U] = Some(if x == y then p else q)
+
+pub leak(s: secret Int) -> Int
+=
+  when pick([s], y: [0], p: [], q: [s, s])
+    is Some(v) -> v.len
+    is None -> 0

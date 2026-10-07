@@ -1151,6 +1151,7 @@ impl<'a> Checker<'_, 'a, '_> {
             let of_uses = slot.as_ref().is_some_and(|slot| slot.uses);
             let of_fails = slot.as_ref().is_some_and(|slot| slot.fails);
             let raise = slot.as_ref().map(|slot| slot.raise.clone());
+            let by_result = slot.as_ref().is_some_and(|slot| slot.by_result);
             let is_slot = slot.is_some();
             self.of_argument = slot;
             let mut found = self.expr_as(&arg.value, Some(&expected), role);
@@ -1165,6 +1166,7 @@ impl<'a> Checker<'_, 'a, '_> {
                         of_fails,
                         of_kind.as_ref(),
                         &raise.unwrap_or_else(Label::public),
+                        by_result,
                     );
                 }
             }

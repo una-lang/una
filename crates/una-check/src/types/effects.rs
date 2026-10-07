@@ -558,6 +558,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// A function value given for an `of` parameter at `span`: the callee performs its
     /// effects and failures, so its `uses` are needed here, under the program counter
     /// raised by `raise`, and are taken out of the type that flows into the parameter.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn of_function_value(
         &mut self,
         span: Span,
@@ -566,6 +567,7 @@ impl<'a> Checker<'_, 'a, '_> {
         fails: bool,
         kind: Option<&Ty>,
         raise: &Label,
+        by_result: bool,
     ) -> Ty {
         // The labels stay: those of the value's parameter and result types, symbolic ones of
         // type parameters included, flow into the parameter's type as for any argument (#210).
@@ -596,6 +598,12 @@ impl<'a> Checker<'_, 'a, '_> {
         let fallible = fails && function.fails.is_some();
         if !effects.is_empty() || fallible {
             self.call_under_pc(span, "this function", effects, fallible, false, raise);
+        }
+        // As for a lambda: `first_where` stops at the first element the function accepts, so
+        // its effects and failures reveal its labeled result (ADR 0067 L4).
+        if by_result && (!function.uses.is_empty() || function.fails.is_some()) {
+            let result = self.labeled(&function.result).top_label();
+            self.stops_by_result(span, &result.join(&label), "this function");
         }
         self.record_of(&slot, value, span, "this function");
         if uses {
@@ -658,16 +666,11 @@ impl<'a> Checker<'_, 'a, '_> {
         self.locals.truncate(mark);
         let (effects, fails) = lambda.map_or((false, None), |l| (l.effects, l.fails));
         // `first_where` stops at the first element its lambda accepts, so the lambda's
-        // effects run under the label of its result too (`spec/07 §7` rule 9).
-        if argument.by_result && effects && self.pass == super::authority::Pass::Check {
+        // effects and failures run under the label of its result too (`spec/07 §7` rule 9,
+        // ADR 0067 L4).
+        if argument.by_result && (effects || fails.is_some()) {
             let label = self.labeled(&body_ty).top_label();
-            if !label.is_public() {
-                self.report.error(
-                    Code::U4002,
-                    span,
-                    format!("`first_where` stops at the first element this lambda accepts, so its effects reveal its `{label}` result; perform them in a `for` loop over the elements instead"),
-                );
-            }
+            self.stops_by_result(span, &label, "this lambda");
         }
         self.record_of(&argument, OfFound { effects, fails }, span, "this lambda");
         Ty::Fn(Box::new(super::ty::FnTy {
@@ -677,6 +680,25 @@ impl<'a> Checker<'_, 'a, '_> {
             fails: None,
             refinements: super::ty::FnRefinements::default(),
         }))
+    }
+}
+
+impl Checker<'_, '_, '_> {
+    /// U4002 for a predicate of `first_where`, `what`, whose effects or failures run only up
+    /// to the first element it accepts, when its result is labeled `label`.
+    fn stops_by_result(&mut self, span: Span, label: &Label, what: &str) {
+        // One U4002 at the predicate is enough, when the program counter already raised one.
+        if self.pass != super::authority::Pass::Check
+            || label.is_public()
+            || self.report.has(Code::U4002, span)
+        {
+            return;
+        }
+        self.report.error(
+            Code::U4002,
+            span,
+            format!("`first_where` stops at the first element {what} accepts, so its effects reveal its `{label}` result; perform them in a `for` loop over the elements instead"),
+        );
     }
 }
 

@@ -291,6 +291,38 @@ pub(crate) fn module<'a>(
     }
 }
 
+/// Checks, in `pass`, only the declarations of the functions in `ids`, in every module that
+/// reports: a round of the least fixpoint of result summaries over one strongly connected
+/// component (ADR 0067 L2).
+pub(crate) fn functions<'a>(
+    env: &mut Env<'a>,
+    facts: &KindFacts,
+    report: &mut Report<'_>,
+    findings: &mut Findings,
+    collected: &mut Collected,
+    pass: Pass,
+    ids: &std::collections::BTreeSet<usize>,
+) {
+    for module in 0..env.prelude {
+        if !env.reports(module) {
+            continue;
+        }
+        let Some((tree, entities)) = env.modules.get(module).map(|m| (m.tree, m.decls.clone()))
+        else {
+            continue;
+        };
+        for (decl, entity) in tree.decls.iter().zip(entities) {
+            if !matches!(entity, Some(Entity::Function(id)) if ids.contains(&id)) {
+                continue;
+            }
+            let mut checker = Checker::new(env, facts, report, findings, collected, pass, module);
+            checker.decl_span = Some(decl.span);
+            checker.decl(&decl.kind, entity);
+            checker.finish();
+        }
+    }
+}
+
 impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     fn new(
         env: &'c mut Env<'a>,

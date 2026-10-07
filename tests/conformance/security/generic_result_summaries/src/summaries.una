@@ -62,3 +62,8 @@ pub placed_public(xs: List[Int]) -> List[Int] = insert(xs, item: 3)
 pub sizes(xs: List[secret Int]) -> Int = doubled(xs).len
 
 pub box_count(x: secret Int) -> Int = boxed(x).count
+
+--- `.len` takes only the list's top label, so the size of a list of secret elements is public.
+size[T](xs: List[T]) -> Int = xs.len
+
+pub count(xs: List[secret Int]) -> Int = size(xs)
