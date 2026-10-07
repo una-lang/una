@@ -192,8 +192,10 @@ done
     for file in $files; do echo "file $file"; done
 } > "$marker"
 
-# The version is the one the validation record vouched for: `una` has no --version flag.
+# The version is the one the validation record vouched for. From 0.3.0 `una --version` also
+# names the editions it serves (#305); an older `una` has no such flag, and prints nothing here.
 say "installed una $version and Z3 $Z3_VERSION in $home"
+"$home/bin/una" --version 2>/dev/null | sed 's/^/    /' || true
 case ":$PATH:" in
     *":$home/bin:"*) ;;
     *) say "add $home/bin to PATH, for example with this line in your shell's profile:"
