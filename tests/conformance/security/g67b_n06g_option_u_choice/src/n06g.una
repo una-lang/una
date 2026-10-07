@@ -1,0 +1,8 @@
+-- test: ADR 0067 recheck of #231, N06g_option_U_choice: a decision on values of a type parameter reaches a public result or an effect, through a returned value, a function value or an `of` parameter, and is rejected (spec/07 §7 rule 8, #92, #234)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/n06g.una:8:35
+module n06g
+
+pick[U](x: U, y: U, p: U) -> Option[U] = if x == y then Some(p) else None
+
+pub leak(s: secret Int) -> Bool = pick([s], y: [0], p: []) is Some

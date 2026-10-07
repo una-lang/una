@@ -1,0 +1,9 @@
+-- test: ADR 0067 recheck of #231, F08_secret_scalar_still_caught: a decision on values of a type parameter reaches a public result or an effect, through a returned value, a function value or an `of` parameter, and is rejected (spec/07 §7 rule 8, #92, #234)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/f08.una:9:34
+-- expect: error U4001 at src/f08.una:9:70
+module f08
+
+apply[T](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Int = k(if a == b then p else q)
+
+pub leak(s: secret Int) -> Int = apply(s, b: 0, p: 1, q: 2, k: fn(x: Int) -> 1)

@@ -1,0 +1,21 @@
+-- test: ADR 0067 recheck of #231, control P09_filter_named_effect: the same shapes with nothing secret decided, which edition 0.2 accepts (spec/07 §7 rule 8, #92)
+-- spec: spec/07 §7
+-- expect: ok
+module p09
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+noisy(x: Int) -> secret Bool
+  uses @log: Log[write]
+=
+  @log.write(x)
+  x < secret_threshold()
+
+secret_threshold() -> secret Int = 3
+
+pub fine(xs: List[Int]) -> secret Int
+  uses @log: Log[write]
+=
+  let kept = xs.filter(keep: noisy)
+  kept.len

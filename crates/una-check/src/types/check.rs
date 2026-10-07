@@ -1494,7 +1494,33 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         if self.type_params.is_empty() {
             return ty.clone();
         }
-        ty.symbolic(&self.type_params)
+        ty.symbolic(&self.param_symbols())
+    }
+
+    /// The symbolic label of each type parameter of the declaration being checked: `T`, or
+    /// `T*` in edition 0.2 for a parameter constrained by `Ord` or `Integer`, whose type
+    /// arguments are scalars, so that every label of one is its top label (ADR 0067 amendment).
+    fn param_symbols(&self) -> Vec<String> {
+        let def = self.current.and_then(|id| self.env.functions.get(id));
+        self.type_params
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                let scalar = self.env.edition >= una_project::Edition::V0_2
+                    && def.is_some_and(|def| {
+                        def.type_params.get(index) == Some(name)
+                            && matches!(
+                                def.constraints.get(index),
+                                Some(Constraint::Ord | Constraint::Integer)
+                            )
+                    });
+                if scalar {
+                    format!("{name}*")
+                } else {
+                    (*name).to_owned()
+                }
+            })
+            .collect()
     }
 
     /// `ty` without the symbolic labels of the type parameters of the declaration being
@@ -1507,7 +1533,8 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         let names = self.type_params.clone();
         ty.map_labels(&|label| {
             let mut kept = label.clone();
-            kept.symbols.retain(|s| !names.iter().any(|n| n == s));
+            kept.symbols
+                .retain(|s| !names.iter().any(|n| *n == s.trim_end_matches('*')));
             kept
         })
     }

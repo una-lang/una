@@ -495,8 +495,21 @@ fn summary_fixpoint(
         .map(|(id, _)| id)
         .collect();
     for component in summary::components(&generic, edges) {
-        loop {
-            env.summaries_grew = false;
+        // A worklist: a function is checked again only when the summary of a function it
+        // calls has grown, so a cycle of n functions takes about n checks, not n rounds of n.
+        let members: std::collections::BTreeSet<usize> = component.iter().copied().collect();
+        let mut callers: std::collections::BTreeMap<usize, Vec<usize>> =
+            std::collections::BTreeMap::new();
+        for &(caller, callee) in edges {
+            if members.contains(&caller) && members.contains(&callee) {
+                callers.entry(callee).or_default().push(caller);
+            }
+        }
+        let mut queue: std::collections::VecDeque<usize> = component.iter().copied().collect();
+        let mut queued = members.clone();
+        while let Some(function) = queue.pop_front() {
+            queued.remove(&function);
+            let before = summary::size(env, function);
             let mut scratch = Report::new(sources);
             let mut findings = Findings::default();
             let mut collected = authority::Collected::default();
@@ -507,10 +520,15 @@ fn summary_fixpoint(
                 &mut findings,
                 &mut collected,
                 authority::Pass::Collect,
-                &component,
+                &std::collections::BTreeSet::from([function]),
             );
-            if !env.summaries_grew {
-                break;
+            if summary::size(env, function) == before {
+                continue;
+            }
+            for &caller in callers.get(&function).map_or(&[][..], Vec::as_slice) {
+                if queued.insert(caller) {
+                    queue.push_back(caller);
+                }
             }
         }
     }

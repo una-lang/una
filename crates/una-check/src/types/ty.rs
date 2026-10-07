@@ -31,6 +31,35 @@ pub(crate) struct KindLabels {
     /// inside a function type, or under an invariant parameter of another kind (ADR 0046
     /// rule 1). The others are covariant.
     invariant: Vec<Vec<bool>>,
+    /// Whether a deep label marks the symbolic labels it joins as deep, `ℓ*_T` (written `T*`),
+    /// apart from the label of a value of `T` itself, `ℓ_T` (ADR 0067 amendment): in edition
+    /// 0.2, where result summaries tell them apart.
+    pub(crate) deep_symbols: bool,
+}
+
+/// `label` with each symbolic label of a type parameter `T` written as `T*`: the join of every
+/// label of `T`'s type argument, as a deep label takes it (ADR 0067 amendment).
+pub(crate) fn starred(label: &Label) -> Label {
+    if !label
+        .symbols
+        .iter()
+        .any(|s| !s.starts_with('?') && !s.ends_with('*'))
+    {
+        return label.clone();
+    }
+    let mut out = label.clone();
+    out.symbols = label
+        .symbols
+        .iter()
+        .map(|s| {
+            if s.starts_with('?') || s.ends_with('*') {
+                s.clone()
+            } else {
+                format!("{s}*")
+            }
+        })
+        .collect();
+    out
 }
 
 impl KindLabels {
@@ -40,6 +69,7 @@ impl KindLabels {
         let mut labels = KindLabels {
             own: vec![Label::public(); fields.len()],
             invariant: params.iter().map(|count| vec![false; *count]).collect(),
+            deep_symbols: false,
         };
         loop {
             let mut changed = false;
@@ -306,6 +336,9 @@ impl Ty {
     /// A function type holds its top label only.
     pub(crate) fn deep_label(&self, kinds: &KindLabels) -> Label {
         match self {
+            Ty::Labeled(label, inner) if kinds.deep_symbols => {
+                starred(label).join(&inner.deep_label(kinds))
+            }
             Ty::Labeled(label, inner) => label.join(&inner.deep_label(kinds)),
             Ty::List(element) => element.deep_label(kinds),
             Ty::Kind(id, args) => args.iter().fold(kinds.own(*id), |label, arg| {
@@ -492,11 +525,11 @@ impl Ty {
     /// `self` with the value of each type parameter labeled with its symbolic label `ℓ_T`
     /// (`spec/07 §7` rule 8, ADR 0038 D3.2): the type of a value in the body of a generic
     /// function whose type parameters are `names`.
-    pub(crate) fn symbolic(&self, names: &[&str]) -> Ty {
+    pub(crate) fn symbolic(&self, names: &[String]) -> Ty {
         match self {
             Ty::Labeled(label, inner) => inner.symbolic(names).with_label(label),
             Ty::Param(index) => match names.get(*index) {
-                Some(name) => Ty::Param(*index).with_label(&Label::symbol(*name)),
+                Some(name) => Ty::Param(*index).with_label(&Label::symbol(name.clone())),
                 None => Ty::Param(*index),
             },
             Ty::List(element) => Ty::List(Box::new(element.symbolic(names))),

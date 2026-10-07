@@ -1,0 +1,8 @@
+-- test: ADR 0067 recheck of #231, control C82_pick_public_cond_composite: the same shapes with nothing secret decided, which edition 0.2 accepts (spec/07 §7 rule 8, #92)
+-- spec: spec/07 §7
+-- expect: ok
+module c82
+
+pick[T, U](a: T, b: T, p: U, q: U) -> U = if a == b then p else q
+
+pub fine(xs: List[secret Int]) -> Int = pick(1, b: 0, p: xs, q: xs).len

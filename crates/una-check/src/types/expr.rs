@@ -1095,9 +1095,12 @@ impl<'a> Checker<'_, 'a, '_> {
         if let (Some(expected), Role::Return(name)) = (expected, role) {
             self.summarize_condition(name, label);
             let mut label = label.clone();
-            label
-                .symbols
-                .retain(|s| !self.type_params.iter().any(|p| p == s));
+            label.symbols.retain(|s| {
+                !self
+                    .type_params
+                    .iter()
+                    .any(|p| *p == s.trim_end_matches('*'))
+            });
             self.implicit_result(
                 condition,
                 &label,

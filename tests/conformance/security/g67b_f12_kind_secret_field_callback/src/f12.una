@@ -1,0 +1,12 @@
+-- test: ADR 0067 recheck of #231, F12_kind_secret_field_callback: a decision on values of a type parameter reaches a public result or an effect, through a returned value, a function value or an `of` parameter, and is rejected (spec/07 §7 rule 8, #92, #234)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/f12.una:12:34
+module f12
+
+kind Card
+  pin: secret Int
+  tag: Int
+
+apply[T](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Int = k(if a == b then p else q)
+
+pub leak(s: secret Int) -> Int = apply(Card(pin: s, tag: 0), b: Card(pin: 1234, tag: 0), p: Card(pin: 0, tag: 1), q: Card(pin: 0, tag: 2), k: fn(c: Card) -> c.tag)
