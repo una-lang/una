@@ -1378,6 +1378,10 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 ("Files", "read") => ("una_rt_files_read", true),
                 ("Files", "write") => ("una_rt_files_write", true),
                 ("Keys", "hmac") => ("una_rt_keys_hmac", true),
+                ("Http", "get") => ("una_rt_http_get", true),
+                ("Http", "post") => ("una_rt_http_post", true),
+                ("Http", "put") => ("una_rt_http_put", true),
+                ("Http", "delete") => ("una_rt_http_delete", true),
                 _ => return Err(unsupported(format!("`{capability}.{op}`"))),
             };
             let value = self.call(function, &values)?;
@@ -1914,9 +1918,13 @@ impl<'p> Lowerer<'_, 'p, '_> {
             let arg = match (ctor.kind.name.as_str(), ctor.name.as_str()) {
                 ("Option", "Some") | ("Result", "Ok") => args.first(),
                 ("Result", "Err") => args.get(1),
+                // The other kinds of the prelude that Core holds, as `Response` (`spec/24 §1`),
+                // are read from their declarations below.
                 _ => None,
             };
-            return arg.cloned().unwrap_or_else(unknown);
+            if let Some(arg) = arg {
+                return arg.clone();
+            }
         }
         self.emitter
             .program

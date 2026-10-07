@@ -218,13 +218,24 @@ impl<'p> Index<'p> {
         self.functions.get(&(module, name)).copied()
     }
 
-    /// The names of the fields of `ctor`, with their declared types when they are known.
+    /// The names of the fields of `ctor`, with their declared types when they are known: a
+    /// kind that Core declares, the program's or the prelude's as `Header` (`spec/24 §1`), by
+    /// its declaration, so that its labeled fields are redacted as the executable redacts them.
     fn fields(&self, ctor: &Ctor) -> Vec<(&'p str, Option<&'p Type>)> {
+        let declared = self
+            .data
+            .get(&(ctor.kind.module.as_str(), ctor.kind.name.as_str()))
+            .and_then(|variants| variants.get(ctor.index));
+        if let Some(fields) = declared {
+            return fields.iter().map(|(f, t)| (*f, Some(*t))).collect();
+        }
         if ctor.kind.module == "prelude" {
             let names: &[&'static str] = match (ctor.kind.name.as_str(), ctor.name.as_str()) {
                 ("Option", "Some") | ("Result", "Ok") => &["value"],
                 ("Result", "Err") => &["failure"],
                 ("Entry", "Entry") => &["key", "value"],
+                ("Header", "Header") => &["name", "value"],
+                ("Response", "Response") => &["status", "headers", "body"],
                 ("Json", "Boolean" | "Number" | "Str") => &["value"],
                 ("Json", "Decimal") => &["text"],
                 ("Json", "Array") => &["items"],
@@ -235,11 +246,7 @@ impl<'p> Index<'p> {
             };
             return names.iter().map(|name| (*name, None)).collect();
         }
-        self.data
-            .get(&(ctor.kind.module.as_str(), ctor.kind.name.as_str()))
-            .and_then(|variants| variants.get(ctor.index))
-            .map(|fields| fields.iter().map(|(f, t)| (*f, Some(*t))).collect())
-            .unwrap_or_default()
+        Vec::new()
     }
 
     /// The Una form of `value`. A field whose declared type is labeled above
@@ -443,6 +450,8 @@ fn host_params(capability: &str, op: &str) -> &'static [&'static str] {
         ("Files", "read") => &["path"],
         ("Files", "write") => &["path", "content"],
         ("Keys", "hmac") => &["key_name", "data"],
+        ("Http", "get" | "delete") => &["url", "headers", "key_name"],
+        ("Http", "post" | "put") => &["url", "headers", "body", "key_name"],
         _ => &[],
     }
 }
@@ -458,6 +467,8 @@ pub struct Limits<'a> {
     pub max_memory: usize,
     /// The bytes the process holds on the heap now.
     pub held: &'a (dyn Fn() -> usize + Sync),
+    /// The limits and deadline of each HTTP request (`spec/24 §4`).
+    pub http: una_http::client::Settings,
 }
 
 impl Limits<'_> {
@@ -468,6 +479,7 @@ impl Limits<'_> {
             max_depth,
             max_memory: usize::MAX,
             held: &unmeasured,
+            http: una_http::client::Settings::default(),
         }
     }
 }
@@ -491,6 +503,8 @@ pub(crate) struct Machine<'p, 'w> {
     world: &'w mut dyn World,
     grants: &'w [Grant],
     keys: &'w BTreeMap<String, Vec<u8>>,
+    /// The limits and deadline of each HTTP request.
+    http: una_http::client::Settings,
     /// The trace so far.
     pub(crate) trace: Vec<Event>,
     depth: usize,
@@ -541,6 +555,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             depth: 0,
             max_depth,
             max_memory: limits.max_memory,
+            http: limits.http,
             held: limits.held,
             baseline: (limits.held)(),
             stack_base: stack_position(&max_depth),
@@ -1459,6 +1474,103 @@ impl<'p, 'w> Machine<'p, 'w> {
         result
     }
 
+    /// An operation of `Http` (`spec/24`), by the client that native code shares.
+    fn http(&mut self, op: &str, args: &[Value<'p>]) -> Flow<'p> {
+        use una_http::client::{Error, Request, send};
+        use una_http::grant::Method;
+        let fail = |error: Error| {
+            let (name, index) = match error {
+                Error::Denied => ("Denied", 0),
+                Error::BadUrl => ("BadUrl", 1),
+                Error::BadRequest => ("BadRequest", 2),
+                Error::Unreachable => ("Unreachable", 3),
+                Error::TimedOut => ("TimedOut", 4),
+                Error::TooLarge => ("TooLarge", 5),
+                Error::Tls => ("Tls", 6),
+                Error::Protocol => ("Protocol", 7),
+            };
+            Stop::Fail(Value::data(
+                prelude_ctor("HttpError", name, index),
+                Vec::new(),
+            ))
+        };
+        let text = |value: Option<&Value<'p>>| match value {
+            Some(Value::Text(t)) => t.to_string(),
+            _ => String::new(),
+        };
+        let method =
+            Method::of(op).ok_or_else(|| fault("an operation of `Http` with no method"))?;
+        let with_body = matches!(method, Method::Post | Method::Put);
+        let url = text(args.first());
+        let headers: Vec<(String, String)> = match args.get(1) {
+            Some(Value::List(items)) => items
+                .iter()
+                .map(|item| match item {
+                    Value::Data(header) => {
+                        (text(header.fields.first()), text(header.fields.get(1)))
+                    }
+                    _ => (String::new(), String::new()),
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        let body = if with_body {
+            text(args.get(2))
+        } else {
+            String::new()
+        };
+        let key_name = match args.get(if with_body { 3 } else { 2 }) {
+            Some(Value::Data(option)) if option.ctor.name == "Some" => {
+                Some(text(option.fields.first()))
+            }
+            _ => None,
+        };
+        // The key a name stands for; an unknown name is `Denied` (`spec/24 §1` rule 3).
+        let bearer = match key_name {
+            Some(name) => Some(
+                self.keys
+                    .get(&name)
+                    .ok_or_else(|| fail(Error::Denied))?
+                    .clone(),
+            ),
+            None => None,
+        };
+        let grants: Vec<una_core::http::Grant> = self
+            .grants
+            .iter()
+            .filter_map(|grant| match grant {
+                Grant::Http(http) => Some(http.clone()),
+                _ => None,
+            })
+            .collect();
+        let request = Request {
+            method,
+            url: &url,
+            headers: &headers,
+            body: body.as_bytes(),
+            bearer: bearer.as_deref(),
+        };
+        let response = send(&request, &grants, &self.http).map_err(fail)?;
+        let headers: Vec<Value<'p>> = response
+            .headers
+            .iter()
+            .map(|(name, value)| {
+                Value::data(
+                    prelude_ctor("Header", "Header", 0),
+                    vec![Value::text(name), Value::text(value)],
+                )
+            })
+            .collect();
+        Ok(Value::data(
+            prelude_ctor("Response", "Response", 0),
+            vec![
+                Value::int(i64::from(response.status)),
+                Value::List(Rc::new(headers)),
+                Value::text(&response.body),
+            ],
+        ))
+    }
+
     /// A host operation, within the grants (`spec/14 §3`).
     fn host(&mut self, capability: &str, op: &str, args: &[Value<'p>]) -> Flow<'p> {
         let text = |i: usize| match args.get(i) {
@@ -1514,6 +1626,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                     FileFault::Io => file_error("Io", 2),
                 })
             }
+            ("Http", "get" | "post" | "put" | "delete") => self.http(op, args),
             ("Keys", "hmac") => match self.keys.get(&text(0)) {
                 Some(key) => Ok(Value::Hashed(Rc::from(host::hmac_sha256(
                     key,
@@ -2145,6 +2258,7 @@ mod tests {
         let held = std::sync::atomic::AtomicUsize::new(100 << 20);
         let probe = || held.load(std::sync::atomic::Ordering::Relaxed);
         let limits = Limits {
+            http: una_http::client::Settings::default(),
             max_depth: 10,
             max_memory: 2,
             held: &probe,

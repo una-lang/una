@@ -41,7 +41,7 @@ const OUT_OF_MODEL: [&str; 8] = [
 ];
 
 /// The capabilities of the prelude, whose implementations the host provides (`spec/14 §3`).
-const HOST_CAPABILITIES: [&str; 5] = ["Console", "Clock", "Env", "Files", "Keys"];
+const HOST_CAPABILITIES: [&str; 6] = ["Console", "Clock", "Env", "Files", "Keys", "Http"];
 
 /// `una.report/2`, with keys in the order of `spec/13 §6`.
 #[derive(Serialize)]

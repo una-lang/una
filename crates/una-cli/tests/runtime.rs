@@ -918,7 +918,7 @@ fn run_reports_bad_grants_entries_and_mains_as_usage_errors() {
     assert_eq!(output.status.code(), Some(2));
     assert_eq!(
         stderr(&output),
-        "error: `network` is not a grant; grants are console, clock, env, keys:<file> and files:<path>:<access>\n"
+        "error: `network` is not a grant; grants are console, clock, env, keys:<file>, files:<path>:<access> and http:<origin>[:<methods>]\n"
     );
     assert_eq!(stdout(&output), "");
     let root = package(

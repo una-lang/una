@@ -50,6 +50,8 @@ pub(crate) struct RunOptions<'a> {
     pub(crate) max_depth: usize,
     /// `--max-memory`, in MiB.
     pub(crate) max_memory: usize,
+    /// `--max-response` and `--http-timeout` (`spec/24 §4`).
+    pub(crate) http: una_http::client::Settings,
     /// The heap of the process, as the binary counts it.
     pub(crate) heap: crate::Heap<'a>,
     /// `--json`.
@@ -132,6 +134,20 @@ fn limits<'a>(options: &RunOptions<'a>) -> una_interp::Limits<'a> {
         max_depth: options.max_depth,
         max_memory: options.max_memory,
         held: options.heap.held,
+        http: options.http,
+    }
+}
+
+/// The HTTP settings of `--max-response <MiB>` and `--http-timeout <seconds>` (`spec/24 §4`).
+pub(crate) fn http_settings(max_response: u64, http_timeout: u64) -> una_http::client::Settings {
+    let defaults = una_http::client::Settings::default();
+    una_http::client::Settings {
+        limits: una_http::parse::Limits {
+            max_body: usize::try_from(max_response.saturating_mul(1024 * 1024))
+                .unwrap_or(usize::MAX),
+            ..defaults.limits
+        },
+        timeout: std::time::Duration::from_secs(http_timeout),
     }
 }
 
@@ -194,7 +210,7 @@ pub(crate) fn run_command(
         let Some(grant) = Grant::parse(spec, Path::new("")) else {
             writeln!(
                 stderr,
-                "error: `{spec}` is not a grant; grants are console, clock, env, keys:<file> and files:<path>:<access>"
+                "error: `{spec}` is not a grant; grants are console, clock, env, keys:<file>, files:<path>:<access> and http:<origin>[:<methods>]"
             )?;
             return Ok(ExitStatus::Usage);
         };

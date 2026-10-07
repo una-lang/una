@@ -26,6 +26,7 @@ crates/
   una-interp/             Una Abstract Machine, host capabilities, traces, example harness
   una-report/             reserved for build report assembly; v0.1 assembles the report in una-cli (D-132)
   una-codegen/            native code generation: Core IR to an object file through Cranelift (v0.2, ADR 0055)
+  una-http/               the HTTP/1.1 client of `Http`, over TCP or rustls, shared by both engines (v0.2, ADR 0074)
   una-rt/                 the runtime library of native executables; its ffi.rs is the only unsafe code (ADR 0058)
   una-lsp/                the language server of `una lsp`: LSP over stdio, the server's state (v0.2, ADR 0063)
   una-cli/                the `una` binary (the only compiler crate that does I/O to the terminal; una-rt is the I/O of native executables)
@@ -85,6 +86,8 @@ A declaration with tier 0 errors is not elaborated and produces no obligations. 
 Allowed without an ADR: `clap`, `serde`, `serde_json`, `toml`, `ariadne` (human diagnostics rendering), `indexmap`, `sha2`, `rayon`, `num-bigint` (for `Int`), `insta` and `pretty_assertions` (dev only). Anything else needs an ADR stating why the standard library or an allowed crate is insufficient.
 
 Allowed by ADR 0055, for the native backend crates `una-codegen` and `una-rt` only (v0.2): `cranelift-codegen`, `cranelift-frontend`, `cranelift-module`, `cranelift-object` and `target-lexicon`.
+
+Allowed by ADR 0074, for `una-http` only (v0.2): `rustls` with its `ring` provider, and `webpki-roots`, the TLS stack of the `Http` capability, with their dependencies (`rustls-webpki`, `rustls-pki-types`, `untrusted`, `subtle`, `zeroize`, `once_cell`, `getrandom`). They are in the trusted base. Executables that never use `Http` do not link them.
 
 `una-lsp` (ADR 0063) adds no dependency: its JSON-RPC transport and its LSP types are written on `serde_json`.
 

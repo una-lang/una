@@ -120,7 +120,7 @@ fn manifest_errors_are_located() {
         )),
         [
             "U7002 6:9 `Main` is not a module path",
-            "U7002 7:11 `network` is not a grant; grants are console, clock, env, keys:<file> and files:<path>:<access>",
+            "U7002 7:11 `network` is not a grant; grants are console, clock, env, keys:<file>, files:<path>:<access> and http:<origin>[:<methods>]",
         ]
     );
     assert_eq!(
