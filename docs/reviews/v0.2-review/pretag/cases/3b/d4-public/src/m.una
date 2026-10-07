@@ -1,0 +1,9 @@
+module m
+
+pub kind Point
+  x: Int
+
+pub show(p: Point, s: secret Int) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("{p} {s}")

@@ -1,0 +1,13 @@
+module m
+
+three() -> Int = 3
+
+four() -> Int = 4
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  together
+    let result = three()
+    let b = four()
+  @console.print("{result} {b}")

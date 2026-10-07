@@ -1,0 +1,17 @@
+module m
+
+pub double(x: Int) -> Int
+  ensures result == x * 2
+=
+  let result = x + x
+  result
+
+pub other(y: Int) -> Int
+  ensures result == y
+=
+  y
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("{double(1)}")
