@@ -1,0 +1,13 @@
+-- test: label order shape `map-of-lists-accepted` (#323, N-45, review #330): public flows into open positions check
+-- spec: spec/17 §6
+-- expect: ok
+module main
+
+pub f(v: internal Int) -> internal Int
+=
+  let edit m = empty_map()
+  edit m.set(key: "a", value: [1])
+  edit m.set(key: "b", value: [v])
+  let xs = m.get(key: "a")
+    if none use []
+  xs.first().or_else(default: 0)

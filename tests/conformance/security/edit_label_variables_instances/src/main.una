@@ -1,0 +1,46 @@
+-- test: generic builders with label variables give their instances the labels of their arguments
+-- spec: spec/17 §6
+-- expect: error U4003 at src/main.una:38:18
+-- expect: error U4003 at src/main.una:39:18
+-- expect: error U4003 at src/main.una:41:18
+module main
+
+--- How often each item occurs.
+pub tally[T: Ord](xs: List[T]) -> Map[T, Int]
+=
+  let edit m = empty_map()
+  for x in xs
+    let n = m.get(key: x)
+      if none use 0
+    edit m.set(key: x, value: n + 1)
+  m
+
+--- The items of each key, in order.
+pub group_by[K: Ord, T](xs: List[T], key: fn(T) -> K) -> Map[K, List[T]]
+=
+  let edit m = empty_map()
+  for x in xs
+    let k = key(x)
+    let seen = m.get(key: k)
+      if none use []
+    edit m.set(key: k, value: seen.append(item: x))
+  m
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let s = @env.get("WORDS")
+    if none use "a b a"
+  let words = [s, s, "a"]
+  let counts = tally(words)
+  let a = counts.get(key: "a").or_else(default: 0)
+  @console.print("{a}")
+  @console.print("{counts.len}")
+  let groups = group_by(words, key: fn(w) -> w.len)
+  @console.print("{groups.len}")
+  let known = tally(["x", "y", "x"])
+  let x = known.get(key: "x").or_else(default: 0)
+  @console.print("{x} {known.len}")
+  let lengths = group_by([1, 22, 3], key: fn(n) -> n / 10)
+  @console.print("{lengths.len}")

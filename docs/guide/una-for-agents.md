@@ -598,6 +598,7 @@ example "no seats left is sold out"
 Values stay immutable and there are no references; what changes is which value a binding holds (`spec/17`).
 
 - `let edit x = e` declares an editable binding, and `x = e` or `x.field = e` rebinds it. Assigning anything else is U2019. An editable binding keeps its declared type, refinement and label at every rebind.
+- Without an annotation, the positions that its initial value leaves open, as the key and value of `empty_map()` or the element of `[]`, take the labels of everything assigned there, so a generic `tally[T: Ord](xs: List[T]) -> Map[T, Int]` built with `let edit m = empty_map()` checks, and its counts carry the labels of `T` (ADR 0075). The binding's own top label stays the one its initial value gives it.
 - A parameter declared `edit p: T` is passed in and out: the caller writes `edit place` and gets the final value back; `old(p)` in `ensures` is its value on entry. A method receiver is marked before it: `edit tally.record(amount)`.
 - A parameter declared `take p: T` consumes its argument: the caller writes `take x`, and `x` cannot be used afterwards (U2017) until it is assigned again.
 - Markers match declarations exactly (U2020); an `edit` argument and another use of the same binding in one call is U2018; a function with `edit` or `take` parameters cannot be used as a value (U2021). A call with a marker is the whole expression of its statement.
