@@ -186,6 +186,9 @@ pub(crate) struct Checker<'c, 'a, 's> {
     /// The label that decides whether a host operation's call fails, and how, when its
     /// arguments' values do, by the span of the call (N-39).
     pub(crate) decided_failures: BTreeMap<Span, Label>,
+    /// For each lambda, by its span, which of its parameters are annotated: the body assumes
+    /// the annotation, whatever the lambda's type unifies with (#350).
+    pub(crate) annotated_lambdas: BTreeMap<Span, Vec<bool>>,
     /// The function or predicate whose body is checked.
     pub(crate) current: Option<usize>,
     /// The handler whose operation bodies are checked (ADR 0043).
@@ -290,6 +293,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             returning: None,
             call_fails: BTreeMap::new(),
             decided_failures: BTreeMap::new(),
+            annotated_lambdas: BTreeMap::new(),
             current: None,
             handler: None,
             instances: Vec::new(),

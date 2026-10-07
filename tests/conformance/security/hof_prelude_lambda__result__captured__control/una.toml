@@ -1,0 +1,4 @@
+[package]
+name = "hof_prelude_lambda__result__captured__control"
+version = "0.1.0"
+edition = "0.1"

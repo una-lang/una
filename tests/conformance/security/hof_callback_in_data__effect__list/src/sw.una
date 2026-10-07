@@ -1,0 +1,39 @@
+-- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, Una-2's matrix): rule: the callee calls a pure callback from a list argument and writes it; `[k]` does not flow into `List[fn(U) -> Int]` (U4001, also without the decision)
+-- spec: spec/07 §7
+-- expect: error U4002 at src/sw.una:34:3
+-- expect: error U4001 at src/sw.una:34:44
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub kind Bad = | Oops
+
+pub kind Box[T]
+  run: fn(T) -> Int
+
+pub kind Hold[T]
+  value: T
+
+check_len(xs: List[secret Int]) -> Int
+  fails Bad
+=
+  if xs.len > 0 then fail Oops else 0
+
+logger_list[U](x: U, fs: List[fn(U) -> Int]) -> Unit
+  uses @log: Log[write]
+=
+  let n = when fs.first()
+    is Some(f) -> f(x)
+    is None -> 0
+  @log.write(n)
+
+g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  logger_list(if a == b then p else q, fs: [k])
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g([s], b: [0], p: [], q: [1], k: fn(xs) -> xs.len)

@@ -13,7 +13,7 @@ use super::env::{Entity, FieldDef, FnDef, FnKind, ParamDef};
 use super::expr::count;
 use super::label::Label;
 use super::records::Res;
-use super::ty::{FnUse, KindId, Refinement, Ty};
+use super::ty::{FnTy, FnUse, KindId, Refinement, Ty};
 use super::unify::Vars;
 
 /// A checked argument: where it is, its type, the type of its parameter, and the parameter.
@@ -335,6 +335,124 @@ impl<'a> Checker<'_, 'a, '_> {
         function.result.with_label(&value_label)
     }
 
+    /// #253, #350: a call that gives function values data decided by values of
+    /// the enclosing function's type parameters. The arguments carry `ℓ*_T`; a function value
+    /// whose parameters lack it was checked against `ℓ_T` at each call, as a named function
+    /// value or a lambda whose parameter is annotated (the body assumes the annotation) is.
+    /// Whoever calls it with that data, the prelude or a generic function, may reveal the
+    /// decision through what it returns, through its effects and through its failures, its
+    /// own or the function value's. So the result is raised at every position, the callee's
+    /// effects and the function values' run under the raised program counter (T-Call, T-App,
+    /// as #253 does for a call written in the body), and its failure is labeled by it, as
+    /// N-39 labels a host operation's. A lambda whose parameter types are inferred takes
+    /// `ℓ*_T` in them, and its own flows carry it. Returns the label of the decision.
+    fn decided_callbacks(
+        &mut self,
+        callee: &str,
+        span: Span,
+        needs: &[FnUse],
+        fails: bool,
+        checked: &[Checked<'a>],
+    ) -> Label {
+        let mut raised = Label::public();
+        if self.type_params.is_empty() {
+            return raised;
+        }
+        // Every decision the arguments carry, at any position, beside callbacks too.
+        let mut decided = Label::public();
+        for (_, found, _, _) in checked {
+            decided = decided.join(&self.decisions(found));
+        }
+        if decided.is_public() {
+            return raised;
+        }
+        let mut uses: Vec<FnUse> = needs.to_vec();
+        let mut fails = fails;
+        for (arg_span, found, expected, _) in checked {
+            let mut inner = Vec::new();
+            self.function_types(&self.labeled(found), &mut inner, &mut Vec::new());
+            let mut declared = Vec::new();
+            self.function_types(&self.labeled(expected), &mut declared, &mut Vec::new());
+            let annotated = self.annotated_lambdas.get(arg_span).cloned();
+            for (index, (function, field)) in inner.into_iter().enumerate() {
+                let mut accepted = Label::public();
+                for (position, input) in function.params.iter().enumerate() {
+                    // A lambda argument's annotated parameter types its body: it accepts what
+                    // the annotation says, `ℓ_T`, whatever its type unified with. A kind's
+                    // field does not show the type of the function value it holds, so it
+                    // accepts nothing either.
+                    let written = index == 0
+                        && annotated
+                            .as_ref()
+                            .is_some_and(|flags| flags.get(position) == Some(&true));
+                    if !written && !field {
+                        accepted = accepted.join(&self.decisions(input));
+                    }
+                }
+                let mut missing = decided.clone();
+                missing.symbols.retain(|s| !accepted.symbols.contains(s));
+                if missing.is_public() {
+                    continue;
+                }
+                raised = raised.join(&missing);
+                fails = fails || function.fails.is_some();
+                uses.extend(function.uses.iter().cloned());
+                if let Some((declared, _)) = declared.get(index) {
+                    uses.extend(declared.uses.iter().cloned());
+                }
+            }
+        }
+        if !raised.is_public() {
+            // T-Call: the callee runs under the decision, so its effects are bounded by it and
+            // it may not fail (`spec/07 §7` rule 4).
+            self.call_under_pc(span, callee, &uses, fails, false, &raised);
+        }
+        raised
+    }
+
+    /// The function types at the positions of `ty` that hold values: its top, list elements,
+    /// the arguments of `Option`, `Result` and kinds, and the fields of kinds, instantiated,
+    /// recursively (#350). `seen` stops at a kind already walked.
+    /// Each comes with whether it is a kind's field: its type is the field's, instantiated with
+    /// the kind's arguments as they unified, not the type of the function value it holds.
+    fn function_types(&self, ty: &Ty, out: &mut Vec<(FnTy, bool)>, seen: &mut Vec<KindId>) {
+        self.function_types_in(ty, false, out, seen);
+    }
+
+    fn function_types_in(
+        &self,
+        ty: &Ty,
+        field: bool,
+        out: &mut Vec<(FnTy, bool)>,
+        seen: &mut Vec<KindId>,
+    ) {
+        match ty.unlabeled() {
+            Ty::Fn(function) => out.push(((**function).clone(), field)),
+            Ty::List(element) => self.function_types_in(element, field, out, seen),
+            Ty::Kind(id, args) => {
+                for arg in args {
+                    self.function_types_in(&self.labeled(arg), field, out, seen);
+                }
+                if seen.contains(id) {
+                    return;
+                }
+                seen.push(*id);
+                if let Some(kind) = self.env.kinds.get(*id) {
+                    let fields = kind
+                        .record
+                        .iter()
+                        .flatten()
+                        .chain(kind.variants.iter().flat_map(|v| v.fields.iter()));
+                    for field in fields {
+                        let field = field.ty.base.substitute(args);
+                        self.function_types_in(&self.labeled(&field), true, out, seen);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// The deep symbolic labels `ℓ*_T` of the enclosing function's type parameters at any
     /// position of `found` (#253).
     fn decisions(&self, found: &Ty) -> Label {
@@ -532,6 +650,7 @@ impl<'a> Checker<'_, 'a, '_> {
         );
         let values = declared_args(&def.params, &checked);
         let result = def.result.base.substitute(&subst);
+        let decided = self.decided_callbacks(&callee, span, &needs, def.fails.is_some(), &checked);
         let result = if prelude_labeled(self.env.prelude, &def) {
             self.prelude_result(&callee, def.name, checked, result)
         } else {
@@ -544,8 +663,20 @@ impl<'a> Checker<'_, 'a, '_> {
         if def.requires {
             self.obligation(ObligationKind::Precondition, span, None);
         }
+        let result = if decided.is_public() {
+            result
+        } else {
+            result.raise_deep(&decided)
+        };
         if let Some(fails) = &def.fails {
-            self.call_fails.insert(span, fails.clone());
+            // Whether the call fails, and how, may reveal a decision given to its function
+            // values, as an operation's failure reveals its arguments (N-39, #350).
+            if decided.is_public() {
+                self.call_fails.insert(span, fails.clone());
+            } else {
+                self.call_fails.insert(span, fails.raise_deep(&decided));
+                self.decided_failures.insert(span, decided);
+            }
         }
         result
     }
@@ -570,13 +701,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let structural = structural_inputs(name);
         let mut label = Label::public();
         let mut functions = Vec::new();
-        // The decisions on values of the enclosing function's type parameters that the
-        // arguments holding data carry, which the prelude gives to its function arguments (#253).
-        let mut decided = Label::public();
         for (span, found, expected, param) in checked {
-            if !matches!(self.resolve(&expected), Ty::Fn(_)) {
-                decided = decided.join(&self.decisions(&found));
-            }
             match structural {
                 Some(inputs) => {
                     if let Some((_, deep)) = inputs.iter().find(|(input, _)| *input == param) {
@@ -601,44 +726,8 @@ impl<'a> Checker<'_, 'a, '_> {
                 functions.push((span, found, expected, param));
             }
         }
-        // A function value whose parameters lack those decisions was checked against `ℓ_T` at
-        // each call, so the prelude's calls of it raise the result and program counter, as a
-        // call written in the body does (T-App, #253). A lambda of the body takes them in its
-        // parameters' types, and its own flows carry them.
-        let mut raised = Label::public();
-        for (span, found, _, param) in &functions {
-            if decided.is_public() {
-                break;
-            }
-            let Ty::Fn(function) = self.labeled(found).unlabeled().clone() else {
-                continue;
-            };
-            let mut accepted = Label::public();
-            for input in &function.params {
-                accepted = accepted.join(&self.decisions(input));
-            }
-            let mut missing = decided.clone();
-            missing.symbols.retain(|s| !accepted.symbols.contains(s));
-            if missing.is_public() {
-                continue;
-            }
-            self.call_under_pc(
-                *span,
-                &format!("the argument `{param}` of {callee}"),
-                &function.uses,
-                function.fails.is_some(),
-                false,
-                &missing,
-            );
-            raised = raised.join(&missing);
-        }
         self.argument_flows(callee, functions);
-        let result = result.with_label(&label);
-        if raised.is_public() {
-            result
-        } else {
-            result.raise_deep(&raised)
-        }
+        result.with_label(&label)
     }
 
     /// U4001 for the arguments of a call, once the whole call is typed so that type variables

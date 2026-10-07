@@ -1,0 +1,8 @@
+[package]
+name = "hof_run_eff_generic_callback_value"
+version = "0.1.0"
+edition = "0.1"
+
+[run]
+entry = "sw"
+grants = ["console", "env"]
