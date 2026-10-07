@@ -15,6 +15,7 @@
 mod authority;
 mod call;
 mod check;
+mod edit_labels;
 mod effects;
 mod elab;
 mod env;
@@ -230,6 +231,27 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
     }
     if package.settings.edition >= Edition::V0_2 {
         summary_fixpoint(&mut env, &facts, package.sources, &edges);
+        // ADR 0075 rule 5: once the summaries are final, pass 1 runs once more over the
+        // declarations, so the label variables of editable bindings count every callee's final
+        // summary. Its diagnostics and what it collects are dropped.
+        if env.edit_labels_seen {
+            let mut scratch = Report::new(package.sources);
+            let mut findings = Findings::default();
+            let mut collected = authority::Collected::default();
+            for module in 0..package.modules.len() {
+                if env.reports(module) {
+                    check::module(
+                        &mut env,
+                        &facts,
+                        &mut scratch,
+                        &mut findings,
+                        &mut collected,
+                        authority::Pass::Collect,
+                        module,
+                    );
+                }
+            }
+        }
     }
     authority::infer(&mut env, &collected, &mut report);
     let mut findings = Findings::default();
@@ -589,18 +611,26 @@ fn summary_fixpoint(
         while let Some(function) = queue.pop_front() {
             queued.remove(&function);
             let before = summary::size(env, function);
-            let mut scratch = Report::new(sources);
-            let mut findings = Findings::default();
-            let mut collected = authority::Collected::default();
-            check::functions(
-                env,
-                facts,
-                &mut scratch,
-                &mut findings,
-                &mut collected,
-                authority::Pass::Collect,
-                &std::collections::BTreeSet::from([function]),
-            );
+            // A check that changes the solution of a label variable is followed by one more,
+            // which reads the solution, so the summary counts the labels it gives (ADR 0075).
+            for _ in 0..2 {
+                env.edit_labels_changed = false;
+                let mut scratch = Report::new(sources);
+                let mut findings = Findings::default();
+                let mut collected = authority::Collected::default();
+                check::functions(
+                    env,
+                    facts,
+                    &mut scratch,
+                    &mut findings,
+                    &mut collected,
+                    authority::Pass::Collect,
+                    &std::collections::BTreeSet::from([function]),
+                );
+                if !env.edit_labels_changed {
+                    break;
+                }
+            }
             if summary::size(env, function) == before {
                 continue;
             }
