@@ -697,6 +697,9 @@ impl<'a> Checker<'_, 'a, '_> {
             // failure of a function value given for `fails of` follows ADR 0067 instead.
             if def.fails.is_some() && prelude_labeled(self.env.prelude, &def) {
                 let label = self.labeled(&result).top_label();
+                // The payload too, as `ParseError`'s position: it is labeled itself, not only
+                // read under the raised program counter.
+                self.call_fails.insert(span, fails.raise_deep(&label));
                 self.decided_failures.insert(span, label);
             }
         }
