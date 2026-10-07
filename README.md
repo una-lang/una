@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/next-v0.2.0-7c5cff" alt="Next release: v0.2.0">
+  <img src="https://img.shields.io/badge/version-v0.3.0%20Beta-7c5cff" alt="Version v0.3.0, Beta">
   <img src="https://img.shields.io/badge/solver-Z3%205.1.0-4f46e5" alt="Solver: Z3 5.1.0">
   <img src="https://img.shields.io/badge/rust-1.98.1-3b3b58" alt="Rust 1.98.1">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-2e2e48" alt="License: Apache-2.0"></a>
@@ -32,23 +32,20 @@ Una is a verification-first programming language for software that AI agents wri
 
 ## Status
 
-- **v0.2.0**, validated and awaiting publication:
-  - the verifier and the reference interpreter;
-  - the native backend: `una build` compiles a program into an executable that behaves exactly like the interpreter;
-  - fixed-width integers;
-  - the memory model, with `edit`, `take` and `for` loops;
-  - structured concurrency;
-  - constraints on generics;
-  - printing of structured values;
-  - editions 0.1 and 0.2.
-- **On `main` for the next release, the Beta:**
-  - maps, text operations and JSON;
-  - the HTTP client, once it merges;
-  - Linux arm64;
-  - in-place updates for performance;
-  - importable standard modules.
+**v0.3.0 is the Beta**, and the current release. It has:
+- the verifier and the reference interpreter;
+- the native backend: `una build` compiles a program into an executable that behaves exactly like the interpreter;
+- in edition 0.2, a standard library for real programs: maps, text operations, JSON and an HTTP client, every result labeled;
+- fixed-width integers;
+- the memory model, with `edit`, `take` and `for` loops, and lists and texts updated in place;
+- structured concurrency;
+- constraints on generics;
+- printing of structured values;
+- importable standard modules;
+- editions 0.1 and 0.2;
+- archives for macOS on arm64 and Linux on x86_64 and arm64.
 
-The latest published release is v0.1.3, on the [releases page](https://github.com/una-lang/una/releases). Feedback on the Beta will shape the language. Una is a research language: it is not ready for production use. The changes in each release are in [`CHANGELOG.md`](CHANGELOG.md).
+Before its tag, every area of v0.3.0 was reviewed by someone other than its author. Feedback on the Beta will shape the language: open an [issue](https://github.com/una-lang/una/issues/new/choose). Una is a research language: it is not ready for production use. The changes in each release, and the known limits, are in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Install
 
@@ -70,11 +67,11 @@ What the installer checks:
 
 `UNA_VERSION` picks another release, and `UNA_HOME` picks another directory. The installer needs `curl` or `wget`, `tar`, `unzip`, and `shasum` or `sha256sum`. `una build` also needs a C compiler available as `cc`. To uninstall, run `sh install.sh --uninstall`, which removes exactly what the installer recorded.
 
-The [releases page](https://github.com/una-lang/una/releases) also has an archive per platform with its digest beside it: Linux x86_64 and macOS arm64. Keep `lib/` beside `una`, and put Z3 5.1.0 on `PATH` (`scripts/install-z3.sh DIR` installs it). Without the pinned Z3, `una check` fails with U5003: verification never passes silently.
+The [releases page](https://github.com/una-lang/una/releases) also has an archive per platform with its digest beside it: macOS arm64, Linux x86_64 and Linux arm64. Keep `lib/` beside `una`, and put Z3 5.1.0 on `PATH` (`scripts/install-z3.sh DIR` installs it). Without the pinned Z3, `una check` fails with U5003: verification never passes silently.
 
 ## A taste
 
-From [`examples/wordfreq`](examples/wordfreq), the program of the [getting-started tutorial](docs/guide/getting-started.md). It uses maps and text operations, which are on `main` for the Beta, so until then [build from source](#build-from-source) to run it:
+From [`examples/wordfreq`](examples/wordfreq), the program of the [getting-started tutorial](docs/guide/getting-started.md). It uses maps and text operations, from v0.3.0:
 
 ```una
 --- The first letter of a word.
