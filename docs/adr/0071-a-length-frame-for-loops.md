@@ -113,3 +113,10 @@ No query is added for an obligation that is proven, or refuted outside a loop.
 - **An `invariant` clause.** It is general, but it is new syntax that agents must write, and v0.2 has none. That is for a later edition.
 - **Keeping every fact about the elements, as a frame for unchanged indices.** It needs quantifiers or SMT arrays, which `spec/12` and ADR 0069 M8 B rule out.
 - **Only the D3 reason, with no frame.** It is honest, but it still forces a guard on the most common loop.
+
+## Amendment (2026-10-07)
+
+Two gaps of D3, from the soundness check of #276, filed as #278 and decided by the coordinator. Both were refutations with a counterexample that is no run:
+- **A state that starts from an earlier loop's final value** is fixed by no first iteration. So, like the final value itself, it gets no second query, and a refutation that sets it is unknown.
+- **The body of a loop over a list runs only when the list has an element.** So the body assumes `xs.len >= 1` of the visited list, in every query, not only the second. This is sound for every iteration.
+

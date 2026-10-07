@@ -8,6 +8,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 - **Loops keep the length of a list they update with `set`** (#260, ADR 0071). In edition 0.2, a loop whose every change to a list is `set`, or an `edit` call whose callee ensures `xs.len == old(xs).len`, keeps the list's length in its body and after it. So `for i in 0..<xs.len` with `set(edit xs, index: i, …)` verifies with no guard, which fixes the v0.2.0 known limit S-1.
 - **Refutations that only a loop's abstraction allows are unknown** (#260, ADR 0071 D3). A refutation inside a loop body that sets values the loop forgot is checked once more at the loop's first iteration. It stays U5001 with that iteration's counterexample when the first iteration fails, and is U5002 with the reason "the loop forgets every fact about `x` ..." otherwise. After a loop, such a refutation is U5002. Both are errors, as before.
+- **Two more counterexamples that were no run** (#278). The body of a loop over a list now assumes the list has an element, so `for y in ys` with `set(edit xs, index: 0, …)` and `xs.len == ys.len` verifies. A loop whose state starts from an earlier loop's final value is U5002, not refuted at a first iteration it cannot pin.
 
 ## v0.2.0
 
