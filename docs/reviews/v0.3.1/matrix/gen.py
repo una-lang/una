@@ -372,6 +372,36 @@ cell("annotated_nested", "result", "reject",
      "map with an annotated lambda returned by a generic function", variant="prelude_returned", control_expect="rule")
 
 
+# Other value forms of edition 0.1 that hold a lambda: a `when` and an `if` block as a let's
+# value, `attempt` of a lambda, a field of a record literal, nested wrappers, and an `if` whose
+# other branch fails.
+WHEN_LET = f"  let w = when Some(p)\n    is Some(z) -> {LAM}\n    is None -> fn(x: T) -> 0\n"
+IF_BLOCK_LET = f"  let w = if c\n    {LAM}\n  else\n    fn(x: T) -> 0\n"
+for form, pre, arg, extra in [
+    ("let_when", WHEN_LET, "w", ("", "")),
+    ("let_if_block", IF_BLOCK_LET, "w", (", c: Bool", ", c: true")),
+    ("record_literal_field", "", f"Box(run: {LAM}).run", ("", "")),
+    ("nested_wrappers", "", f"((if c then ({LAM}) else (fn(x: T) -> 0)))", (", c: Bool", ", c: true")),
+    ("if_in_if", "", f"if c then (if c then {LAM} else fn(x: T) -> 1) else fn(x: T) -> 0", (", c: Bool", ", c: true")),
+]:
+    cell("annotated_nested", "result", "reject",
+         program("result", "", f"[{D}].map(each: {arg}).sum()", extra_params=extra[0], extra_args=extra[1])
+         .replace("  let n = [", pre + "  let n = ["),
+         f"map with an annotated lambda through {form}", variant=f"prelude_{form}")
+    cell("annotated_nested", "effect", "reject",
+         program("effect", LOGGER, f"logger({D}, f: {arg})", cb="pure", extra_params=extra[0], extra_args=extra[1])
+         .replace("  logger(", pre + "  logger("),
+         f"the callee calls an annotated lambda through {form} and writes it", variant=form)
+cell("annotated_nested", "result", "rule",
+     program("result", "", f"when attempt_lambda\n    is Ok(f) -> [{D}].map(each: f).sum()\n    is Err(e) -> 0")
+     .replace("  let n = when attempt_lambda", f"  let attempt_lambda = attempt ({LAM})\n  let n = when attempt_lambda"),
+     "`attempt` of a lambda: attempt applies to one call only (U2001)", variant="prelude_attempt", control=False)
+cell("annotated_nested", "failure", "reject",
+     program("failure", LOGGER.replace("logger", "logger_f").replace("-> Unit\n  uses", "-> Int\n  uses").replace("  @log.write(f(x))\n", "  @log.write(f(x))\n  0\n"),
+             f"logger_f({D}, f: if c then {LAM} else fail Oops)", cb="pure", extra_params=", c: Bool", extra_args=", c: true"),
+     "an annotated lambda in an if whose other branch fails", variant="if_fail")
+
+
 def write():
     if os.path.isdir(ROOT):
         shutil.rmtree(ROOT)
