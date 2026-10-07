@@ -1,0 +1,3 @@
+module m
+
+pub same[T: Eq](a: T, b: T) -> Bool = a == b

@@ -1,0 +1,67 @@
+module ophost
+
+pub kind Oops = | Bad
+
+pub capability Work
+  op step(n: Int) -> Int
+
+pub capability Inner
+  op deep(n: Int) -> Int
+
+pub capability Log
+  op note(n: Int) -> Int
+
+handler quiet() for Log
+  op note(n) = n
+
+spin(n: Int) -> Int
+=
+  let edit t = 0
+  for i in 0..<n
+    t = t + 1
+  t
+
+rec(n: Int) -> Int = if n <= 0 then 0 else 1 + rec(n - 1)
+
+--- Fails after some work, while the second task is inside its operations.
+early() -> Int
+  fails Oops
+=
+  let w = spin(30000)
+  if w > 0
+    fail Bad
+  w
+
+steps(k: Int) -> Int
+  uses @work: Work[step]
+=
+  let edit total = 0
+  for i in 0..<k
+    let s = @work.step(20000)
+    total = total + s
+  total
+
+handler loud() for Work
+  uses @console: Console[print]
+  op step(n) =
+    let v = spin(n)
+    @console.print("step {v}")
+    v
+
+pick() -> Int
+  fails Oops
+=
+  together
+    let a = early()
+      if error pass
+    let b = steps(50) with @work = loud()
+  a + b
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let r = attempt pick()
+  let shown = when r
+    is Ok(v) -> "ok {v}"
+    is Err(e) -> "failed"
+  @console.print(shown)

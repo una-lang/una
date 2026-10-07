@@ -1,0 +1,30 @@
+-- #201 recheck: tasks of `together` and `together for` that update a list they capture, and
+-- a task that builds its own list in a loop. The captured list keeps its value in every task.
+module tasks
+
+--- The sum of the elements.
+pub sum(xs: List[Int]) -> Int = xs.fold(initial: 0, step: fn(acc, x) -> acc + x)
+
+--- A list of `n` elements built by a loop.
+pub build(n: Int) -> List[Int]
+=
+  let edit acc: List[Int] = []
+  for i in 0..<n
+    acc = acc.append(item: i)
+  acc
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let base = [1, 2, 3]
+  together
+    let a = base.append(item: 10)
+    let b = base.append(item: 20)
+    let c = build(5)
+  @console.print("together: {sum(a)} {sum(b)} {sum(c)} {sum(base)}")
+  let lists = together for i in 0..<4
+    let edit own = base
+    own = own.append(item: i)
+    edit own.set(index: 0, item: i)
+    own
+  @console.print("together for: {lists.fold(initial: 0, step: fn(n, l) -> n * 100 + sum(l))} {sum(base)}")
