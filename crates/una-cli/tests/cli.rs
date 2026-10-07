@@ -178,7 +178,6 @@ fn usage_errors_exit_with_2_and_leave_stdout_empty() {
     for args in [
         &["frobnicate"][..],
         &["help"],
-        &["--version"],
         &["explain"],
         &["check", "--color", "sometimes"],
         &["check", "--tier", "2", "examples/hello"],
@@ -853,4 +852,39 @@ fn contract_and_report_show_result_summaries() {
         serde_json::to_string_pretty(&document["generic_results"]).unwrap()
     );
     std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn version_names_the_editions_and_the_pinned_z3() {
+    // #305: `una --version`, with no commit hash, and its `una.version/1` document.
+    let version = env!("CARGO_PKG_VERSION");
+    let output = una(&["--version"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        format!("una {version}\neditions: 0.1, 0.2\nz3: 5.1.0\n")
+    );
+    assert_eq!(stderr(&output), "");
+    let output = una(&["--json", "--version"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        format!(
+            "{{\"schema\":\"una.version/1\",\"version\":\"{version}\",\"editions\":[\"0.1\",\"0.2\"],\"z3\":\"5.1.0\"}}\n"
+        )
+    );
+    // The pinned Z3 is the one of the repository's lock.
+    let lock = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../verification.lock"),
+    )
+    .unwrap();
+    assert!(lock.contains("solver_version   = \"5.1.0\""), "{lock}");
+    // Without a command or --version, `una` is a usage error.
+    let output = una(&[]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        stderr(&output).contains("a command is required"),
+        "{}",
+        stderr(&output)
+    );
 }

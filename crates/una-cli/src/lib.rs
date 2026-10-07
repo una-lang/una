@@ -323,7 +323,22 @@ where
         proof_key: proof_key::resolve(environment),
     };
     let status = match Cli::try_parse_from(args) {
-        Ok(cli) => match cli.command {
+        Ok(cli) if cli.version => version_command(cli.json, stdout),
+        // Neither a command nor `--version`: the usage, as clap prints it for a missing command.
+        Ok(Cli { command: None, .. }) => {
+            let usage = <Cli as clap::CommandFactory>::command().render_usage();
+            write!(
+                stderr,
+                "error: a command is required\n\n{usage}\n\nFor more information, try '--help'.\n"
+            )
+            .map(|()| ExitStatus::Usage)
+        }
+        Ok(Cli {
+            json,
+            color,
+            command: Some(command),
+            ..
+        }) => match command {
             Command::Check {
                 path,
                 tier,
@@ -335,8 +350,8 @@ where
                         TierArg::Zero => Tier::Zero,
                         TierArg::One => Tier::One,
                     },
-                    json: cli.json,
-                    color: use_color(cli.color, stderr_is_terminal),
+                    json,
+                    color: use_color(color, stderr_is_terminal),
                     solving: solving(solver_wallclock),
                 };
                 check_command(&path, options, dump_core.as_deref(), stdout, stderr)
@@ -346,8 +361,8 @@ where
                 solver_wallclock,
             } => {
                 let options = trace::TraceOptions {
-                    json: cli.json,
-                    color: use_color(cli.color, stderr_is_terminal),
+                    json,
+                    color: use_color(color, stderr_is_terminal),
                     solving: solving(solver_wallclock),
                 };
                 trace::trace_command(&requirement, options, stdout, stderr)
@@ -357,8 +372,8 @@ where
                 solver_wallclock,
             } => {
                 let options = report::ReportOptions {
-                    json: cli.json,
-                    color: use_color(cli.color, stderr_is_terminal),
+                    json,
+                    color: use_color(color, stderr_is_terminal),
                     solving: solving(solver_wallclock),
                 };
                 report::report_command(&path, options, stdout, stderr)
@@ -368,8 +383,8 @@ where
                 solver_wallclock,
             } => {
                 let options = verification::ObligationsOptions {
-                    json: cli.json,
-                    color: use_color(cli.color, stderr_is_terminal),
+                    json,
+                    color: use_color(color, stderr_is_terminal),
                     solving: solving(solver_wallclock),
                 };
                 verification::obligations_command(&path, options, stdout, stderr)
@@ -377,14 +392,14 @@ where
             Command::Fmt { path, check } => {
                 let options = FmtOptions {
                     check,
-                    json: cli.json,
-                    color: use_color(cli.color, stderr_is_terminal),
+                    json,
+                    color: use_color(color, stderr_is_terminal),
                 };
                 fmt_command(&path, options, stdout, stderr)
             }
             Command::Contract { name } => {
-                let color = use_color(cli.color, stderr_is_terminal);
-                contract_command(&name, cli.json, color, stdout, stderr)
+                let color = use_color(color, stderr_is_terminal);
+                contract_command(&name, json, color, stdout, stderr)
             }
             Command::Run {
                 path,
@@ -398,8 +413,8 @@ where
                     max_depth,
                     max_memory,
                     heap,
-                    json: cli.json,
-                    color: use_color(cli.color, stderr_is_terminal),
+                    json,
+                    color: use_color(color, stderr_is_terminal),
                     environment,
                     solving: solving(solver_wallclock),
                 };
@@ -412,8 +427,8 @@ where
             } => {
                 let options = build::BuildOptions {
                     out,
-                    json: cli.json,
-                    color: use_color(cli.color, stderr_is_terminal),
+                    json,
+                    color: use_color(color, stderr_is_terminal),
                     solving: solving(solver_wallclock),
                     environment,
                 };
@@ -430,14 +445,14 @@ where
                     max_depth,
                     max_memory,
                     heap,
-                    json: cli.json,
-                    color: use_color(cli.color, stderr_is_terminal),
+                    json,
+                    color: use_color(color, stderr_is_terminal),
                     environment,
                     solving: solving(solver_wallclock),
                 };
                 runtime::test_command(&path, options, stdout, stderr)
             }
-            Command::Explain { code } => explain_command(&code, cli.json, stdout, stderr),
+            Command::Explain { code } => explain_command(&code, json, stdout, stderr),
             Command::Lsp => lsp::serve(stdout, solving(DEFAULT_WALLCLOCK.as_secs())),
         },
         // clap reports `--help` as an error that belongs on stdout with exit code 0.
@@ -457,6 +472,42 @@ where
         }
     };
     status.unwrap_or(ExitStatus::Usage)
+}
+
+/// `una.version/1`, with keys in this order (ADR 0034 rule 4).
+#[derive(serde::Serialize)]
+struct VersionDocument {
+    schema: &'static str,
+    version: &'static str,
+    editions: Vec<&'static str>,
+    z3: &'static str,
+}
+
+/// `una --version` (`spec/13 §5`, #305): the version of `una`, the editions it serves and the
+/// Z3 version its default lock pins, with no commit hash, so builds stay reproducible.
+fn version_command(json: bool, stdout: &mut dyn Write) -> io::Result<ExitStatus> {
+    let version = env!("CARGO_PKG_VERSION");
+    let editions: Vec<&'static str> = una_project::Edition::ALL
+        .iter()
+        .map(|edition| edition.name())
+        .collect();
+    let z3 = una_project::DEFAULT_SOLVER_VERSION;
+    if json {
+        let document = VersionDocument {
+            schema: "una.version/1",
+            version,
+            editions,
+            z3,
+        };
+        // INVARIANT: a struct of strings always serializes.
+        let text = serde_json::to_string(&document).unwrap_or_default();
+        writeln!(stdout, "{text}")?;
+    } else {
+        writeln!(stdout, "una {version}")?;
+        writeln!(stdout, "editions: {}", editions.join(", "))?;
+        writeln!(stdout, "z3: {z3}")?;
+    }
+    Ok(ExitStatus::Success)
 }
 
 /// The options of `una check`.
