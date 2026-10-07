@@ -605,6 +605,8 @@ Values stay immutable and there are no references; what changes is which value a
 - `if c` with an indented block and no `else` is a statement. `edit xs.set(index: i, item: v)` replaces a list element.
 - A loop keeps the length of a list it changes only with `set`, or with a helper whose `ensures` is exactly `xs.len == old(xs).len`, so `for i in 0..<xs.len` with `edit xs.set(index: i, item: v)` verifies. After an `append` or any other change, the loop forgets the length, and a check that needs it is U5002, "the loop forgets every fact about `xs` ...": guard it with `if i < xs.len`.
 - A call that fails leaves its `edit` arguments unchanged for the caller; operations it performed stay performed.
+- **Cost.** A list, map or text that nothing else holds is updated in place, so `acc = acc.append(item: x)` in a loop, or through helpers that take `acc` and return it, is linear (ADR 0072).
+- **Known limit: keeping the old value on failure.** `acc = step(acc, item: x)` followed by `if error use acc` reads `acc` after the call, so the call cannot take it over and copies it: every iteration copies the whole list, and the loop is quadratic. The old value is kept because a failed call changes nothing for its caller (`spec/17`). For a linear loop, check first and then update, or make the update unable to fail and return a status with the new value (N-42).
 
 ```una
 module demo
@@ -650,6 +652,63 @@ pub cleared(xs: List[Int], index: Int) -> List[Int]
   let edit copy = xs
   edit copy.set(index: index, item: 0)
   copy
+```
+
+```una
+module demo
+
+pub kind Limit = | Full
+
+pub kind Added
+  items: List[Int]
+  full: Bool
+
+--- Fails when the list is full.
+pub bounded(acc: List[Int], item: Int) -> List[Int]
+  fails Limit
+=
+  if acc.len >= 100
+    fail Full
+  acc.append(item: item)
+
+--- Quadratic: `if error use acc` reads `acc` after the call, so each call copies it.
+pub kept(items: List[Int]) -> List[Int]
+=
+  let edit acc: List[Int] = []
+  for item in items
+    acc = bounded(acc, item: item)
+      if error use acc
+  acc
+
+--- Linear: check first, then update.
+pub checked_first(items: List[Int]) -> List[Int]
+=
+  let edit acc: List[Int] = []
+  for item in items
+    if acc.len < 100
+      acc = acc.append(item: item)
+  acc
+
+--- Never fails: the new list, and whether it was full.
+pub add(acc: List[Int], item: Int) -> Added
+=
+  if acc.len >= 100
+    Added(items: acc, full: true)
+  else
+    Added(items: acc.append(item: item), full: false)
+
+--- Linear: the update cannot fail, and returns its status with the new value.
+pub with_status(items: List[Int]) -> List[Int]
+=
+  let edit acc: List[Int] = []
+  for item in items
+    let added = add(acc, item: item)
+    acc = added.items
+  acc
+
+example "the three keep the first 100 items"
+  do kept([1, 2, 3]) == checked_first([1, 2, 3]) and checked_first([1, 2, 3]) == with_status([1, 2, 3])
+  expect result == true
 ```
 
 ```una
