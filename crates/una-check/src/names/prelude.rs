@@ -57,8 +57,23 @@ pub(crate) const LOWER: [&str; 20] = [
 /// `spec/10 §11` rule 8).
 pub(crate) const RESERVED_SEGMENTS: [&str; 2] = ["std", "prelude"];
 
-/// The path of the only standard module outside the prelude (`spec/14 §4`).
+/// The path of the standard module of test helpers, outside the prelude (`spec/14 §4`).
 pub(crate) const STD_TESTING: &str = "std.testing";
+
+/// The path of the standard module that declares the host capabilities (`spec/14 §3`).
+pub(crate) const STD_HOST: &str = "std.host";
+
+/// What `std.host` exports to an import: the host capabilities and their failure kinds
+/// (`spec/10 §11` rule 10, N-33). The prelude puts the same declarations in scope.
+pub(crate) const STD_HOST_NAMES: [&str; 7] = [
+    "Console",
+    "Clock",
+    "Env",
+    "Files",
+    "Keys",
+    "FileError",
+    "KeyError",
+];
 
 /// The public functions of `std.testing`.
 pub(crate) const STD_TESTING_NAMES: [&str; 1] = ["fake_hash"];

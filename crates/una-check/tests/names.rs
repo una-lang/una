@@ -263,7 +263,7 @@ fn imports_bring_public_names_and_the_variants_of_kinds() {
         [
             "U1004 src/c.una:3:11 function `helper` is private to module `a`",
             "U1001 src/c.una:3:19 module `a` declares no `missing`",
-            "U1001 src/c.una:4:8 module `nowhere` is not a module of this package or of the standard library",
+            "U1001 src/c.una:4:8 module `nowhere` is not a module of this package; the standard modules that can be imported are `std.host` and `std.testing`",
             "U1001 src/c.una:5:21 module `std.testing` declares no `fake_key`",
         ]
     );
