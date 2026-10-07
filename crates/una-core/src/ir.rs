@@ -403,6 +403,43 @@ pub enum Prim {
     Convert(Option<IntType>),
     /// A built-in method of a fixed-width type (`spec/18 §5`).
     Fixed(FixedOp, IntType),
+    /// A built-in method of a map (`spec/21 §2`); `set` and `remove` are rebinds to `With`
+    /// and `Without`.
+    Map(MapOp),
+}
+
+/// The built-in methods of a map, in their order of arguments after the map (`spec/21 §2`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MapOp {
+    /// `has(key:)`.
+    Has,
+    /// `get(key:)`.
+    Get,
+    /// `with(key:, value:)`, and `edit set`.
+    With,
+    /// `without(key:)`, and `edit remove`.
+    Without,
+    /// `keys()`.
+    Keys,
+    /// `values()`.
+    Values,
+    /// `entries()`.
+    Entries,
+}
+
+impl MapOp {
+    /// The method's name in the source.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MapOp::Has => "has",
+            MapOp::Get => "get",
+            MapOp::With => "with",
+            MapOp::Without => "without",
+            MapOp::Keys => "keys",
+            MapOp::Values => "values",
+            MapOp::Entries => "entries",
+        }
+    }
 }
 
 /// The wrapping, saturating and bit methods of the fixed-width types (`spec/18 §5`).
@@ -526,6 +563,7 @@ impl Prim {
                 IntType::U64 => "to_u64",
             },
             Prim::Fixed(op, _) => op.as_str(),
+            Prim::Map(op) => op.as_str(),
         }
     }
 }

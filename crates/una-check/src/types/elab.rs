@@ -2144,6 +2144,39 @@ impl<'e, 'a> Fx<'e, 'a> {
     fn marked_call(&mut self, lets: &mut Vec<Let>, handled: &Handled) -> Atom {
         let expr = &handled.expr;
         let span = expr.span;
+        // `edit m.set(key: k, value: v)` is `m = with(m, k, v)`, and `edit m.remove(key: k)`
+        // is `m = without(m, k)` (`spec/21 §2` rule 1).
+        if let Some(Res::MapUpdate(op)) = self.res(span) {
+            let ExprKind::MethodCall { target, args, .. } = &expr.kind else {
+                self.broken = true;
+                return Atom::Unit;
+            };
+            let mut arg_spans = vec![target.span];
+            let mut values = vec![self.atom(lets, target)];
+            for arg in args {
+                arg_spans.push(arg.value.span);
+                values.push(self.atom(lets, &arg.value));
+            }
+            let t = self.temp();
+            let ty = self.type_at(target.span);
+            lets.push(Let::inferred(
+                t.clone(),
+                ty,
+                Bound::Rhs(Rhs::Prim {
+                    prim: Prim::Map(op),
+                    args: values,
+                    arg_spans,
+                    span,
+                }),
+                span,
+            ));
+            let value = CoreExpr::Atom {
+                atom: Atom::Var(t),
+                span: target.span,
+            };
+            self.assign(lets, target, value, span);
+            return Atom::Unit;
+        }
         let Some(Res::Function { id, type_args }) = self.res(span) else {
             self.broken = true;
             return Atom::Unit;
@@ -2881,8 +2914,14 @@ impl<'e, 'a> Fx<'e, 'a> {
                 _ => Atom::Unit,
             },
             ExprKind::MethodCall { target, args, .. } => match self.res(span) {
-                // A built-in method of an integer type (`spec/18 §4`, `§5`).
-                Some(Res::IntMethod(prim)) => {
+                // A built-in method of an integer type (`spec/18 §4`, `§5`), or one of a map
+                // that reads it (`spec/21 §2`).
+                Some(res @ (Res::IntMethod(_) | Res::MapMethod(_))) => {
+                    let prim = match res {
+                        Res::MapMethod(op) => Prim::Map(op),
+                        Res::IntMethod(prim) => prim,
+                        _ => Prim::Len,
+                    };
                     let mut arg_spans = vec![target.span];
                     let mut values = vec![self.atom(lets, target)];
                     for arg in args {
