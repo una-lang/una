@@ -1,0 +1,12 @@
+-- test: in edition 0.1, a host operation's failure is labeled by the arguments that decide it, capped at what it accepts (N-39, review of #343): U4003 only, at the path (Files.read accepts public): no extra U4002 at the pass
+-- spec: spec/07 §7
+-- expect: error U4003 at src/main.una:10:23
+module main
+
+pub probe(path: internal Text) -> internal Text
+  uses @files: Files[read]
+  fails FileError
+=
+  let t = @files.read(path)
+    if error pass
+  t

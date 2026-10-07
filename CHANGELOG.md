@@ -4,6 +4,10 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ## Unreleased
 
+### Security
+
+- **A decision on `T` values given to function values, in edition 0.1** (#346, #350, Critical). In a generic body, a call that gave function values data decided by comparing values of `T` was accepted in edition 0.1, and could reveal the decision: through the prelude, `[if a == b then p else q].map(each: k)` written to a `public` sink, and so `filter`, `first_where` and `fold`; through a generic function of the program, its result, its own effects and failures, and the function values' (`logger(decided, f: k)` writing `f(x)`, or failing on it), with named function values, lambdas whose parameter is annotated `T`, and functions in a record field. Such a call now raises its result at every position, runs under the decision so that its effects are bounded by it and it may not fail (U4002), and labels its failure, as #253 does for a call written in the body. Lambdas whose parameter types are inferred, and values of `T` passed through, are unchanged. Edition 0.2 already rejected these programs (U4001 at the function argument). Found by Una-2's reviews of the v0.1.4 backport (#343) and of #349; her matrix and cases are the conformance cases `security/hof_*`, `security/tapp_*_0_1`, `security/decided_argument_to_prelude_callback_0_1` and `security/n39_*_0_1`.
+
 ### Performance
 
 - **Checking a deeply nested type is no longer cubic in its depth** (#331, N-47). Resolving a type, the occurs check and taking a type's shape copied the whole value of each solved variable they met, at every node, so a value nested d deep checked in O(d³). They now follow variables by reference: a check is quadratic in the depth, since each expression keeps its own type (#335), and about 18 times faster at depth 160. Diagnostics and the queries sent to the solver are byte-identical on every conformance case and example.

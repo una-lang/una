@@ -1236,6 +1236,8 @@ impl<'a> Checker<'_, 'a, '_> {
         site: Site,
     ) -> Ty {
         self.outside_rl(span, || "a lambda".to_owned());
+        self.annotated_lambdas
+            .insert(span, params.iter().map(|p| p.ty.is_some()).collect());
         if self.ctx.in_do {
             self.absorbed.push(span);
         }
