@@ -745,7 +745,7 @@ fn a_text_appended_in_a_loop_grows_in_linear_time() {
         // size, of the literal `""` that the loop starts from, which is never updated in place.
         assert_eq!(
             String::from_utf8_lossy(&output.stderr),
-            "note: una-rt (debug build): lists, records and texts copied: 1\n"
+            "note: una-rt (debug build): lists, maps, records and texts copied: 1\n"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -888,7 +888,7 @@ fn map_updates_are_in_place_and_scale_as_n_log_n() {
         );
         assert_eq!(
             String::from_utf8_lossy(&output.stderr),
-            "note: una-rt (debug build): lists, maps and records copied: 1\n"
+            "note: una-rt (debug build): lists, maps, records and texts copied: 1\n"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
