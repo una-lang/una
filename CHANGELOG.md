@@ -4,7 +4,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ## Unreleased
 
-## v0.3.0 (Beta)
+## v0.3.0
 
 The Beta of Una, on edition 0.2. Edition 0.2 gains a standard library for real programs: maps, text operations, JSON and an HTTP client, with labels on every value they produce. Lists and texts built in loops and through calls are updated in place. The release was cross-reviewed before its tag, each area by someone other than its author (N-37): JSON and HTTP (#308), maps and text (#309), and the in-place work (#311). Upgrading from v0.1.x: read v0.2.0 below as well, including its Critical fix #253, which makes edition 0.1 reject a shape that v0.1.0 to v0.1.3 accept. Edition 0.2 of v0.2.0 had an information-flow leak: an un-annotated `let edit` whose initial value left a label open, as `[]`, `None` or `empty_map()`, could print an `internal` value read in a loop before its assignment (#323, see Security). It is fixed in this release. [PLACEHOLDER, Leonardo's choice A or B: v0.2.0 was not published / v0.2.1 carries a stopgap.]
 
