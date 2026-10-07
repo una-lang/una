@@ -1,0 +1,15 @@
+-- expect: rejected (U4003): the raised element label reaches every read
+module main
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let s = @env.get("S")
+    if none use "x"
+  let edit m = empty_map()
+  edit m.set(key: "a", value: [1])
+  let early = m.get(key: "a")
+    if none use []
+  edit m.set(key: "b", value: [s.len])
+  @console.print("{early}")

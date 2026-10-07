@@ -1,0 +1,13 @@
+module main
+
+-- expect: rejected (U4003): a fold that appends internal items into the binding
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let s = @env.get("S")
+    if none use "x"
+  let edit acc = []
+  for i in 0..<2
+    @console.print("{acc}")
+    acc = [1].fold(initial: acc, step: fn(a, x) -> a.append(item: s.len))

@@ -1,0 +1,10 @@
+-- expect: accepted (N-44): the inner element label rises to what flows in
+module main
+
+pub f(v: internal Int) -> internal Int
+=
+  let edit xss = []
+  xss = xss.append(item: [1])
+  xss = xss.append(item: [v])
+  let first = xss.first().or_else(default: [])
+  first.first().or_else(default: 0)

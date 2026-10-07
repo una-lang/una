@@ -1,0 +1,15 @@
+-- expect: rejected (U4003): an inner map's key position, raised late, reaches the read of its size
+module main
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let s = @env.get("S")
+    if none use "x"
+  let edit m = empty_map()
+  edit m.set(key: 0, value: empty_map().with(key: "a", value: 1))
+  edit m.set(key: 1, value: empty_map().with(key: s, value: 2))
+  let inner = m.get(key: 1)
+    if none use empty_map()
+  @console.print("{inner.len}")

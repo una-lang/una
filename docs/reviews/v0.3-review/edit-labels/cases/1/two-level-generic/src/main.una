@@ -1,0 +1,28 @@
+-- expect: rejected (U4003): a generic builder's solution reaches a caller through another generic builder
+module main
+
+tally[T: Ord](xs: List[T]) -> Map[T, Int]
+=
+  let edit m = empty_map()
+  for x in xs
+    let n = m.get(key: x)
+      if none use 0
+    edit m.set(key: x, value: n + 1)
+  m
+
+totals[T: Ord](xss: List[List[T]]) -> List[Int]
+=
+  let edit out = []
+  for xs in xss
+    let counts = tally(xs)
+    out = out.append(item: counts.len)
+  out
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let s = @env.get("S")
+    if none use "x"
+  let t = totals([[s, "a"], ["b"]])
+  @console.print("{t}")

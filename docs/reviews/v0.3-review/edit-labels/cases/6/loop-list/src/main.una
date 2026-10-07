@@ -1,0 +1,13 @@
+module main
+
+-- expect: rejected (U4003). Leaks on main 3aed995 (prints [] then the length of S); fixed at 2e0ff81
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let s = @env.get("S")
+    if none use "x"
+  let edit xs = []
+  for i in 0..<2
+    @console.print("{xs}")
+    xs = xs.append(item: s.len)

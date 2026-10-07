@@ -1,0 +1,4 @@
+[package]
+name = "map_of_functions"
+version = "0.1.0"
+edition = "0.2"

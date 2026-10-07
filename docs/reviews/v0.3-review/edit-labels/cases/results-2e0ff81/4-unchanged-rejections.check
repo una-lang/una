@@ -1,0 +1,46 @@
+[U4001] Error: `m` is `Map[Text, Int]`, and this value is `Map[Text, internal Int]`: a flow from `internal` to `public`
+   ╭─[ src/main.una:7:31 ]
+   │
+ 7 │   edit m.set(key: "a", value: v)
+   │                               ┬  
+   │                               ╰── `m` is `Map[Text, Int]`, and this value is `Map[Text, internal Int]`: a flow from `internal` to `public`
+   │ 
+   │ Note: run `una explain U4001` for an explanation
+───╯
+[U4001] Error: `xs` is `List[Int]`, and this value is `List[internal Int]`: a flow from `internal` to `public`
+    ╭─[ src/main.una:13:8 ]
+    │
+ 13 │   xs = xs.append(item: v)
+    │        ─────────┬────────  
+    │                 ╰────────── `xs` is `List[Int]`, and this value is `List[internal Int]`: a flow from `internal` to `public`
+    │ 
+    │ Note: run `una explain U4001` for an explanation
+────╯
+[U4001] Error: `o` is `Option[Int]`, and this value is `Option[internal Int]`: a flow from `internal` to `public`
+    ╭─[ src/main.una:19:7 ]
+    │
+ 19 │   o = Some(v)
+    │       ───┬───  
+    │          ╰───── `o` is `Option[Int]`, and this value is `Option[internal Int]`: a flow from `internal` to `public`
+    │ 
+    │ Note: run `una explain U4001` for an explanation
+────╯
+[U4001] Error: `xs` is labeled `public`, and this update runs under a `internal` condition, which it would reveal
+    ╭─[ src/main.una:26:10 ]
+    │
+ 26 │     xs = xs.append(item: 1)
+    │          ─────────┬────────  
+    │                   ╰────────── `xs` is labeled `public`, and this update runs under a `internal` condition, which it would reveal
+    │ 
+    │ Note: run `una explain U4001` for an explanation
+────╯
+[U4001] Error: `xs` is `List[Int]`, and this value is `internal List[Int]`: a flow from `internal` to `public`
+    ╭─[ src/main.una:32:8 ]
+    │
+ 32 │   xs = v
+    │        ┬  
+    │        ╰── `xs` is `List[Int]`, and this value is `internal List[Int]`: a flow from `internal` to `public`
+    │ 
+    │ Note: run `una explain U4001` for an explanation
+────╯
+exit 1
