@@ -46,10 +46,40 @@ fn program(n: usize) -> String {
     out
 }
 
+/// `main` with `n` bindings in scope and a loop that makes a closure reading the last one and
+/// calls it, 50,000 times.
+fn closures(n: usize) -> String {
+    let mut out = String::from("module main\n\npub main() -> Unit\n=\n");
+    for i in 0..n {
+        out.push_str(&format!("  let a{i} = {i}\n"));
+    }
+    let last = n - 1;
+    out.push_str(&format!(
+        "  let edit total = 0\n  for i in 0..<50000\n    let add = fn(m: Int) -> m + a{last}\n    total = total + add(i)\n  unit\n"
+    ));
+    out
+}
+
 /// The seconds `run_main` takes on the program of `n` bindings, its best of three.
 fn run_seconds(dir: &Path, n: usize) -> f64 {
-    std::fs::write(dir.join("main.una"), program(n)).unwrap();
-    let checked = una_cli::check(&dir.join("main.una"), una_cli::Tier::Zero).unwrap();
+    run_source_seconds(dir, &program(n))
+}
+
+/// The seconds `run_main` takes on `source`, a package of edition 0.2, its best of three.
+fn run_source_seconds(dir: &Path, source: &str) -> f64 {
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("una.toml"),
+        "[package]\nname = \"scaling\"\nversion = \"0.1.0\"\nedition = \"0.2\"\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../verification.lock"),
+        dir.join("verification.lock"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("src/main.una"), source).unwrap();
+    let checked = una_cli::check(dir, una_cli::Tier::Zero).unwrap();
     assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
     let program = checked.program;
     let host = Host {
@@ -98,6 +128,24 @@ fn reading_a_binding_does_not_scan_the_others() {
     assert!(
         growth < 24.0,
         "8x the bindings took {growth:.1}x as long (fixed {fixed:.4}s, {small:.4}s, {large:.4}s)"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_closure_costs_what_it_reads_not_what_is_in_scope() {
+    // #329: a closure keeps the bindings its body reads, not a copy of every binding in scope,
+    // so making one and calling it in a loop costs the same with 16 or 1,024 bindings in scope:
+    // within 3x, against about 30x when each closure copied the whole environment.
+    let dir = std::env::temp_dir().join(format!("una-interp-closures-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let few = run_source_seconds(&dir, &closures(16));
+    let many = run_source_seconds(&dir, &closures(1_024));
+    let growth = many / few.max(1e-6);
+    eprintln!("64x the bindings in scope: {growth:.1}x the closure loop ({few:.4}s, {many:.4}s)");
+    assert!(
+        growth < 3.0,
+        "64x the bindings in scope took {growth:.1}x as long ({few:.4}s, {many:.4}s)"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

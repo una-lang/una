@@ -1314,12 +1314,19 @@ impl<'p, 'w> Machine<'p, 'w> {
             },
             Rhs::List(items) => Ok(Value::List(Rc::new(self.atoms(env, items)?))),
             Rhs::Tuple(items) => Ok(Value::Tuple(Rc::new(self.atoms(env, items)?))),
-            Rhs::Lambda { params, body, .. } => Ok(Value::Closure(Rc::new(Closure {
-                params: params.iter().map(|(name, _)| name).collect(),
-                body,
-                env: env.clone(),
-                caps: caps.clone(),
-            }))),
+            // A closure keeps, by value, the bindings its body reads: what a copy of the whole
+            // environment would give it, at the cost of what it reads rather than of what is in
+            // scope, at its making and at each call (#329).
+            Rhs::Lambda { params, body, .. } => {
+                let reads = self.reads(body);
+                let captured: Env<'p> = reads.iter().filter_map(|name| env.binding(name)).collect();
+                Ok(Value::Closure(Rc::new(Closure {
+                    params: params.iter().map(|(name, _)| name).collect(),
+                    body,
+                    env: captured,
+                    caps: caps.clone(),
+                })))
+            }
             Rhs::Checked {
                 value,
                 it,

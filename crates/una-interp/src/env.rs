@@ -4,17 +4,49 @@
 //!
 //! Shadowing pushes a position onto the name's stack and leaving a scope pops it, so the index
 //! always names the binding a scan from the end would find. The index is never iterated, so its
-//! order is never observable.
+//! order is never observable. A small environment, as a closure's, has no index: a scan of up
+//! to [`INDEXED`] bindings costs less than hashing, and copying it costs only its bindings.
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 
 use crate::value::Value;
 
-/// The bindings in scope, in order, and the positions of each name.
+/// How many bindings an environment holds before it indexes them by name.
+const INDEXED: usize = 64;
+
+/// FNV-1a over a name's bytes: names are short, and the index is never iterated, so a fast
+/// hash with no protection against chosen collisions is enough (a program's own names).
+#[derive(Default)]
+struct Fnv(u64);
+
+impl Hasher for Fnv {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut hash = if self.0 == 0 {
+            0xcbf2_9ce4_8422_2325
+        } else {
+            self.0
+        };
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+        self.0 = hash;
+    }
+}
+
+/// The index of an environment: each name's positions.
+type Positions<'p> = HashMap<&'p str, Vec<usize>, BuildHasherDefault<Fnv>>;
+
+/// The bindings in scope, in order, and, past [`INDEXED`] bindings, the positions of each name.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Env<'p> {
     bindings: Vec<(&'p str, Value<'p>)>,
-    positions: HashMap<&'p str, Vec<usize>>,
+    positions: Option<Positions<'p>>,
 }
 
 impl<'p> Env<'p> {
@@ -30,11 +62,25 @@ impl<'p> Env<'p> {
 
     /// Binds `name` to `value`, shadowing an earlier binding of `name`.
     pub(crate) fn push(&mut self, (name, value): (&'p str, Value<'p>)) {
-        self.positions
-            .entry(name)
-            .or_default()
-            .push(self.bindings.len());
+        if let Some(positions) = &mut self.positions {
+            positions.entry(name).or_default().push(self.bindings.len());
+        } else if self.bindings.len() >= INDEXED {
+            let mut positions = Positions::default();
+            for (at, (bound, _)) in self.bindings.iter().enumerate() {
+                positions.entry(*bound).or_default().push(at);
+            }
+            positions.entry(name).or_default().push(self.bindings.len());
+            self.positions = Some(positions);
+        }
         self.bindings.push((name, value));
+    }
+
+    /// The position of the latest binding of `name`.
+    fn position(&self, name: &str) -> Option<usize> {
+        match &self.positions {
+            Some(positions) => positions.get(name)?.last().copied(),
+            None => self.bindings.iter().rposition(|(bound, _)| *bound == name),
+        }
     }
 
     /// Leaves the bindings made after the mark `len`: each removal is O(1), so a scope's exit
@@ -44,10 +90,12 @@ impl<'p> Env<'p> {
             let Some((name, _)) = self.bindings.pop() else {
                 break;
             };
-            if let Some(stack) = self.positions.get_mut(name) {
+            if let Some(positions) = &mut self.positions
+                && let Some(stack) = positions.get_mut(name)
+            {
                 stack.pop();
                 if stack.is_empty() {
-                    self.positions.remove(name);
+                    positions.remove(name);
                 }
             }
         }
@@ -55,13 +103,21 @@ impl<'p> Env<'p> {
 
     /// The latest binding of `name`.
     pub(crate) fn lookup(&self, name: &str) -> Option<&Value<'p>> {
-        let at = *self.positions.get(name)?.last()?;
+        let at = self.position(name)?;
         self.bindings.get(at).map(|(_, value)| value)
+    }
+
+    /// The latest binding of `name`, with its name as the environment holds it.
+    pub(crate) fn binding(&self, name: &str) -> Option<(&'p str, Value<'p>)> {
+        let at = self.position(name)?;
+        self.bindings
+            .get(at)
+            .map(|(name, value)| (*name, value.clone()))
     }
 
     /// The latest binding of `name`, to change in place.
     pub(crate) fn lookup_mut(&mut self, name: &str) -> Option<&mut Value<'p>> {
-        let at = *self.positions.get(name)?.last()?;
+        let at = self.position(name)?;
         self.bindings.get_mut(at).map(|(_, value)| value)
     }
 
@@ -115,6 +171,32 @@ mod tests {
         env.truncate(0);
         assert!(env.lookup("x").is_none());
         assert_eq!(env.len(), 0);
+    }
+
+    #[test]
+    fn an_environment_past_the_threshold_finds_the_same_bindings() {
+        // The index is built at INDEXED bindings: reads, shadowing and scope exit agree with
+        // the scan on either side of it.
+        let names: Vec<String> = (0..3 * INDEXED).map(|i| format!("v{}", i % 7)).collect();
+        let mut env = Env::new();
+        for (i, name) in names.iter().enumerate() {
+            env.push((name.as_str(), Value::Int(i.into())));
+            for probe in 0..7 {
+                let probe = format!("v{probe}");
+                let scanned = names[..=i].iter().rposition(|n| *n == probe);
+                let found = env.lookup(&probe).map(|v| match v {
+                    Value::Int(n) => usize::try_from(n.clone()).unwrap(),
+                    _ => usize::MAX,
+                });
+                assert_eq!(found, scanned, "{i} {probe}");
+            }
+        }
+        env.truncate(INDEXED / 2);
+        let latest = (0..INDEXED / 2).rev().find(|i| i % 7 == 0).unwrap_or(0);
+        assert!(matches!(env.lookup("v0"), Some(Value::Int(n)) if *n == latest.into()));
+        assert!(env.lookup("v6").is_some());
+        env.truncate(0);
+        assert!(env.lookup("v0").is_none());
     }
 
     #[test]
