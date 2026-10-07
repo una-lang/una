@@ -16,7 +16,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use una_core::{Atom, Bound, Decl, Expr, PRELUDE_MODULE, Prim, Program, Rhs};
+use una_core::{Atom, Bound, Decl, Expr, MapOp, PRELUDE_MODULE, Prim, Program, Rhs};
 
 /// The owned parameters of each function of the package, by qualified name, in parameter
 /// order (the type descriptors that follow them are borrowed).
@@ -103,6 +103,12 @@ impl<'e> Facts<'e> {
             } => self.alias(name, args.first()),
             Rhs::Prim {
                 prim: Prim::Concat,
+                args,
+                ..
+            } => self.consume(args.first()),
+            // A map's `set` and `remove` update it in place (`spec/21 §5` rule 2).
+            Rhs::Prim {
+                prim: Prim::Map(MapOp::With | MapOp::Without),
                 args,
                 ..
             } => self.consume(args.first()),

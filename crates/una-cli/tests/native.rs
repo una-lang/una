@@ -779,6 +779,34 @@ fn updates_of_values_nothing_else_holds_are_in_place() {
 const MAP_UPDATES: &str = "module maps\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit m: Map[Int, Int] = empty_map()\n  for i in 0..<N\n    edit m.set(key: (i * 7919) mod N, value: i)\n  let edit found = 0\n  for i in 0..<N\n    if m.has(key: i)\n      found = found + 1\n  let kept = m\n  edit m.remove(key: 0)\n  for i in 1..<N\n    edit m.remove(key: i)\n  @console.print(\"{found} {m.len} {kept.len}\")\n";
 
 #[test]
+fn a_map_passed_by_edit_moves_into_the_callee() {
+    // ADR 0072 with `spec/21 §5` rule 2: a helper that sets a key of its `edit` map owns it,
+    // so a loop of 200,000 calls updates one map in place, with no copy.
+    let program = "module helper\n\nput(edit m: Map[Int, Int], k: Int) -> Unit\n=\n  edit m.set(key: k, value: k)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit m: Map[Int, Int] = empty_map()\n  for i in 0..<200000\n    put(edit m, k: i)\n  @console.print(\"{m.len}\")\n";
+    let dir = package(
+        "helper",
+        "\n[run]\nentry = \"helper\"\ngrants = [\"console\"]\n",
+        &[("src/helper.una", program)],
+    );
+    let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+    std::fs::write(
+        dir.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let output = Command::new(dir.join("target/una/helper"))
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "200000\n");
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn map_updates_are_in_place_and_scale_as_n_log_n() {
     // `spec/21 §5` rule 2 and the performance rule: `set`, `has` and `remove` on a map nothing
     // else holds are O(log n) and in place; the one copy is the map that `kept` still sees.
