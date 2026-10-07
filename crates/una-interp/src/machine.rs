@@ -230,6 +230,7 @@ impl<'p> Index<'p> {
                 ("Json", "Array") => &["items"],
                 ("Json", "Object") => &["fields"],
                 ("JsonError", _) => &["at"],
+                ("ParseError", "NotADigit") => &["at"],
                 _ => return Vec::new(),
             };
             return names.iter().map(|name| (*name, None)).collect();
@@ -1590,6 +1591,66 @@ impl<'p, 'w> Machine<'p, 'w> {
             "is_digits" => Value::Bool(text(0)?.chars().all(|c| c.is_ascii_digit())),
             "starts_with" => Value::Bool(text(0)?.starts_with(text(1)?.as_ref())),
             "trim" => Value::text(text(0)?.trim()),
+            // The text functions of edition 0.2 (`spec/22 §2`).
+            "split" => {
+                let (t, on) = (text(0)?, text(1)?);
+                Value::List(Rc::new(t.split(on.as_ref()).map(Value::text).collect()))
+            }
+            "join" => {
+                let parts = list(0)?;
+                let separator = text(1)?;
+                let mut out = String::new();
+                for (i, part) in parts.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(&separator);
+                    }
+                    match part {
+                        Value::Text(t) => out.push_str(t),
+                        _ => return Err(bad()),
+                    }
+                }
+                Value::text(&out)
+            }
+            "ends_with" => Value::Bool(text(0)?.ends_with(text(1)?.as_ref())),
+            "contains_text" => Value::Bool(search(&text(0)?, &text(1)?).is_some()),
+            "find" => {
+                let t = text(0)?;
+                match search(&t, &text(1)?) {
+                    Some(byte) => some(Value::int(scalars_before(&t, byte))),
+                    None => none(),
+                }
+            }
+            "replace" => Value::text(&text(0)?.replace(text(1)?.as_ref(), &text(2)?)),
+            "slice" => {
+                let t = text(0)?;
+                let (start, end) = (int(1)?, int(2)?);
+                let position = |n: &BigInt| usize::try_from(n).ok();
+                let (Some(start), Some(end)) = (position(&start), position(&end)) else {
+                    return Err(fault(
+                        "`slice` outside the text, which its precondition excludes",
+                    ));
+                };
+                let taken: String = t
+                    .chars()
+                    .skip(start)
+                    .take(end.saturating_sub(start))
+                    .collect();
+                Value::text(&taken)
+            }
+            "to_upper" => Value::text(&text(0)?.to_ascii_uppercase()),
+            "to_lower" => Value::text(&text(0)?.to_ascii_lowercase()),
+            "chars" => Value::List(Rc::new(
+                text(0)?
+                    .chars()
+                    .map(|c| Value::text(c.encode_utf8(&mut [0; 4])))
+                    .collect(),
+            )),
+            "parse_int" => return parse_int(&text(0)?),
+            "trim_start" => Value::text(text(0)?.trim_start()),
+            "trim_end" => Value::text(text(0)?.trim_end()),
+            "bytes" => Value::List(Rc::new(
+                text(0)?.bytes().map(|b| Value::int(i64::from(b))).collect(),
+            )),
             "to_int" => {
                 let t = text(0)?;
                 let digits = t.strip_prefix('-').unwrap_or(&t);
@@ -1965,6 +2026,54 @@ fn map_apply<'p>(op: MapOp, args: Vec<Value<'p>>) -> Flow<'p> {
         )),
         _ => return Err(bad()),
     })
+
+/// The first occurrence of `part` in `t`, as a byte offset: the one search that `find` and
+/// `contains_text` share, so that one is `Some` exactly when the other holds (N-19). Rust's
+/// search is linear in the worst case (`spec/22 §2` rule 8).
+fn search(t: &str, part: &str) -> Option<usize> {
+    t.find(part)
+}
+
+/// The number of scalar values before the byte offset `byte` of `t`.
+fn scalars_before(t: &str, byte: usize) -> i64 {
+    let count = t.get(..byte).map_or(0, |before| before.chars().count());
+    i64::try_from(count).unwrap_or(i64::MAX)
+}
+
+/// `parse_int(t)` (`spec/22 §4`): an optional `-` and one or more ASCII digits, or a failure
+/// that says why: `Empty`, `NoDigits` for `-` alone, or `NotADigit(at: i)` at the first
+/// position that is neither.
+fn parse_int<'p>(t: &str) -> Flow<'p> {
+    let failure = |name: &str, index: usize, fields: Vec<Value<'p>>| {
+        Err(Stop::Fail(Value::data(
+            prelude_ctor("ParseError", name, index),
+            fields,
+        )))
+    };
+    if t.is_empty() {
+        return failure("Empty", 0, Vec::new());
+    }
+    let digits = t.strip_prefix('-').unwrap_or(t);
+    let signed = digits.len() < t.len();
+    if let Some((at, _)) = digits
+        .chars()
+        .enumerate()
+        .find(|(_, c)| !c.is_ascii_digit())
+    {
+        let at = at + usize::from(signed);
+        return failure(
+            "NotADigit",
+            1,
+            vec![Value::int(i64::try_from(at).unwrap_or(i64::MAX))],
+        );
+    }
+    if digits.is_empty() {
+        return failure("NoDigits", 2, Vec::new());
+    }
+    match t.parse::<BigInt>() {
+        Ok(n) => Ok(Value::Int(n)),
+        Err(_) => failure("NoDigits", 2, Vec::new()),
+    }
 }
 
 /// `append` and `set` of the prelude (`spec/14 §1`, `spec/17 §4`). They update the list in
