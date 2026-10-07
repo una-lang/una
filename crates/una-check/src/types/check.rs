@@ -732,6 +732,10 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         if let Some(current) = current {
             let v0_2 = env.edition >= Edition::V0_2;
             let mut reported: Vec<Span> = Vec::new();
+            // The U2026 of each type parameter, in order: one edit per parameter, writing the
+            // strongest constraint its body needs, so that the repairs of one check never edit
+            // the same text (#257).
+            let mut unmet: Vec<(usize, Constraint, Span)> = Vec::new();
             for (ty, need, span) in needs {
                 let resolved = vars.resolve(&ty);
                 let mut params = Vec::new();
@@ -767,9 +771,31 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                         *entry = (*entry).max(need);
                     } else if have < need && pass == Pass::Check && !reported.contains(&span) {
                         reported.push(span);
-                        let interpolated = interpolations.contains(&span);
-                        report.push(unconstrained(report, def, index, need, span, interpolated));
+                        unmet.push((index, need, span));
                     }
+                }
+            }
+            if let Some(def) = env.functions.get(current) {
+                let mut edited: Vec<usize> = Vec::new();
+                for &(index, need, span) in &unmet {
+                    let strongest = unmet
+                        .iter()
+                        .filter(|(other, _, _)| *other == index)
+                        .map(|(_, need, _)| *need)
+                        .max()
+                        .unwrap_or(need);
+                    let edit = !edited.contains(&index);
+                    edited.push(index);
+                    let interpolated = interpolations.contains(&span);
+                    report.push(unconstrained(
+                        report,
+                        def,
+                        index,
+                        need,
+                        span,
+                        interpolated,
+                        (strongest, edit),
+                    ));
                 }
             }
         }
@@ -1612,7 +1638,9 @@ fn same_refinements(a: &Declared, b: &Declared) -> bool {
 
 /// U2026: an operator on values of type parameter `index` of `def` needs the constraint
 /// `need`, which its written constraint does not include (`spec/20 §3` rule 1). The repair
-/// writes `need` on the parameter.
+/// writes `strongest`, the strongest constraint the body needs of the parameter, as an edit
+/// when `edit` (the parameter's first U2026), else as advice: one repair per parameter edits its
+/// text (#257).
 fn unconstrained(
     report: &Report<'_>,
     def: &FnDef<'_>,
@@ -1620,6 +1648,7 @@ fn unconstrained(
     need: Constraint,
     span: Span,
     interpolated: bool,
+    (strongest, edit): (Constraint, bool),
 ) -> una_diag::Diagnostic {
     let param = def.type_params.get(index).copied().unwrap_or("T");
     let what = match need {
@@ -1636,15 +1665,20 @@ fn unconstrained(
             "{what} on values of the type parameter `{param}` needs the constraint `{need_name}`; write `[{param}: {need_name}]`"
         ),
     );
-    if let FnAst::Function(function) = def.ast
+    let strongest_name = strongest.name();
+    if !edit {
+        diagnostic.repairs.push(Report::advice(format!(
+            "constrain `{param}` by `{strongest_name}`, as the first U2026 of `{param}` does"
+        )));
+    } else if let FnAst::Function(function) = def.ast
         && let Some(ident) = function.type_params.get(index)
     {
         let (at, replacement) = match function.constraints.get(index).and_then(Option::as_ref) {
-            Some(written) => (written.span, need_name.to_owned()),
-            None => (ident.span, format!("{param}: {need_name}")),
+            Some(written) => (written.span, strongest_name.to_owned()),
+            None => (ident.span, format!("{param}: {strongest_name}")),
         };
         diagnostic.repairs.push(report.edit(
-            format!("constrain `{param}` by `{need_name}`"),
+            format!("constrain `{param}` by `{strongest_name}`"),
             at,
             replacement,
         ));
