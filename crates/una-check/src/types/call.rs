@@ -14,7 +14,7 @@ use super::env::{Entity, FieldDef, FnDef, FnKind, ParamDef};
 use super::expr::count;
 use super::label::Label;
 use super::records::Res;
-use super::ty::{FnUse, KindId, Refinement, Ty};
+use super::ty::{FnTy, FnUse, KindId, Refinement, Ty};
 use super::unify::{Origin, Vars};
 
 /// A checked argument: where it is, its type, the type of its parameter, and the parameter.
@@ -677,11 +677,17 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         let values = declared_args(&def.params, &checked);
         let result = def.result.base.substitute(&subst);
+        let decided = self.decided_callbacks(&callee, span, &needs, call_fails.is_some(), &checked);
         let result = if prelude_labeled(self.env.prelude, &def) {
             self.prelude_result(&callee, def.name, checked, result)
         } else {
             self.argument_flows(&callee, checked);
             self.generic_result(id, &def, &subst, result)
+        };
+        let result = if decided.is_public() {
+            result
+        } else {
+            result.raise_deep(&decided)
         };
         if !subst.is_empty() {
             self.instantiation(def.name, &def.type_params, subst, values, span);
@@ -700,6 +706,17 @@ impl<'a> Checker<'_, 'a, '_> {
                 // The payload too, as `ParseError`'s position: it is labeled itself, not only
                 // read under the raised program counter.
                 self.call_fails.insert(span, fails.raise_deep(&label));
+                self.decided_failures.insert(span, label);
+            }
+            // Edition 0.1 (#350): whether the call fails, and how, may reveal a decision given
+            // to its function values, as an operation's failure reveals its arguments (N-39).
+            if !decided.is_public() {
+                let payload = self.call_fails.get(&span).cloned().unwrap_or(fails.clone());
+                self.call_fails.insert(span, payload.raise_deep(&decided));
+                let label = self
+                    .decided_failures
+                    .get(&span)
+                    .map_or_else(|| decided.clone(), |label| label.join(&decided));
                 self.decided_failures.insert(span, label);
             }
         }
@@ -761,14 +778,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let structural = structural_inputs(name);
         let mut label = Label::public();
         let mut functions = Vec::new();
-        // Edition 0.1: the decisions on values of the enclosing function's type parameters
-        // that the arguments holding data carry, which the prelude gives to its function
-        // arguments (#346). Edition 0.2 tells them apart at the function argument's flow.
-        let mut decided = Label::public();
         for (span, found, expected, param) in checked {
-            if self.env.edition < Edition::V0_2 && !matches!(self.resolve(&expected), Ty::Fn(_)) {
-                self.without_decisions(&found, &mut decided);
-            }
             match structural {
                 Some(inputs) => {
                     if let Some((_, deep)) = inputs.iter().find(|(input, _)| *input == param) {
@@ -793,49 +803,132 @@ impl<'a> Checker<'_, 'a, '_> {
                 functions.push((span, found, expected, param));
             }
         }
-        // Edition 0.1 (#346): a function value whose parameters lack those decisions was
-        // checked against `ℓ_T` at each call, so the prelude's calls of it raise the result and
-        // program counter, as a call written in the body does (T-App, #253). A lambda of the
-        // body takes them in its parameters' types, and its own flows carry them.
-        let mut raised = Label::public();
-        for (span, found, _, param) in &functions {
-            if decided.is_public() {
-                break;
-            }
-            let Ty::Fn(function) = self.labeled(found).unlabeled().clone() else {
-                continue;
-            };
-            let mut accepted = Label::public();
-            for input in &function.params {
-                self.without_decisions(input, &mut accepted);
-            }
-            let mut missing = decided.clone();
-            missing.symbols.retain(|s| !accepted.symbols.contains(s));
-            if missing.is_public() {
-                continue;
-            }
-            self.call_under_pc(
-                *span,
-                &format!("the argument `{param}` of {callee}"),
-                &function.uses,
-                function.fails.is_some(),
-                false,
-                &missing,
-            );
-            raised = raised.join(&missing);
-        }
         self.argument_flows(callee, functions);
         // Where an element of `sort` ends up depends on every element, so every position of
         // its result carries the labels of the list and of all its elements (`spec/20 §4`
         // rule 2).
         if name == "sort" {
-            return result.raise_deep(&label.join(&raised));
+            return result.raise_deep(&label);
         }
-        let result = result.with_label(&label);
-        if raised.is_public() {
-            result
-        } else {
-            result.raise_deep(&raised)
+        result.with_label(&label)
+    }
+
+    /// Edition 0.1 (#346, #350): a call that gives function values data decided by values of
+    /// the enclosing function's type parameters. The arguments carry `ℓ*_T`; a function value
+    /// whose parameters lack it was checked against `ℓ_T` at each call, as a named function
+    /// value or a lambda whose parameter is annotated (the body assumes the annotation) is.
+    /// Whoever calls it with that data, the prelude or a generic function, may reveal the
+    /// decision through what it returns, through its effects and through its failures, its
+    /// own or the function value's. So the result is raised at every position, the callee's
+    /// effects and the function values' run under the raised program counter (T-Call, T-App,
+    /// as #253 does for a call written in the body), and its failure is labeled by it, as
+    /// N-39 labels a host operation's. A lambda whose parameter types are inferred takes
+    /// `ℓ*_T` in them, and its own flows carry it. Edition 0.2 tells `ℓ*_T` from `ℓ_T` at
+    /// the function argument's flow (S-Fun) instead. Returns the label of the decision.
+    fn decided_callbacks(
+        &mut self,
+        callee: &str,
+        span: Span,
+        needs: &[FnUse],
+        fails: bool,
+        checked: &[Checked<'a>],
+    ) -> Label {
+        let mut raised = Label::public();
+        if self.env.edition >= Edition::V0_2 || self.type_params.is_empty() {
+            return raised;
+        }
+        // Every decision the arguments carry, at any position, beside callbacks too.
+        let mut decided = Label::public();
+        for (_, found, _, _) in checked {
+            self.without_decisions(found, &mut decided);
+        }
+        if decided.is_public() {
+            return raised;
+        }
+        let mut uses: Vec<FnUse> = needs.to_vec();
+        let mut fails = fails;
+        for (arg_span, found, expected, _) in checked {
+            let mut inner = Vec::new();
+            self.function_types(&self.labeled(found), &mut inner, &mut Vec::new());
+            let mut declared = Vec::new();
+            self.function_types(&self.labeled(expected), &mut declared, &mut Vec::new());
+            let annotated = self.annotated_lambdas.get(arg_span).cloned();
+            for (index, (function, field)) in inner.into_iter().enumerate() {
+                let mut accepted = Label::public();
+                for (position, input) in function.params.iter().enumerate() {
+                    // A lambda argument's annotated parameter types its body: it accepts what
+                    // the annotation says, `ℓ_T`, whatever its type unified with. A kind's
+                    // field does not show the type of the function value it holds, so it
+                    // accepts nothing either.
+                    let written = index == 0
+                        && annotated
+                            .as_ref()
+                            .is_some_and(|flags| flags.get(position) == Some(&true));
+                    if !written && !field {
+                        self.without_decisions(input, &mut accepted);
+                    }
+                }
+                let mut missing = decided.clone();
+                missing.symbols.retain(|s| !accepted.symbols.contains(s));
+                if missing.is_public() {
+                    continue;
+                }
+                raised = raised.join(&missing);
+                fails = fails || function.fails.is_some();
+                uses.extend(function.uses.iter().cloned());
+                if let Some((declared, _)) = declared.get(index) {
+                    uses.extend(declared.uses.iter().cloned());
+                }
+            }
+        }
+        if !raised.is_public() {
+            // T-Call: the callee runs under the decision, so its effects are bounded by it and
+            // it may not fail (`spec/07 §7` rule 4).
+            self.call_under_pc(span, callee, &uses, fails, false, &raised);
+        }
+        raised
+    }
+
+    /// The function types at the positions of `ty` that hold values: its top, list elements,
+    /// the arguments of `Option`, `Result` and kinds, and the fields of kinds, instantiated,
+    /// recursively (#350). `seen` stops at a kind already walked.
+    /// Each comes with whether it is a kind's field: its type is the field's, instantiated with
+    /// the kind's arguments as they unified, not the type of the function value it holds.
+    fn function_types(&self, ty: &Ty, out: &mut Vec<(FnTy, bool)>, seen: &mut Vec<KindId>) {
+        self.function_types_in(ty, false, out, seen);
+    }
+
+    fn function_types_in(
+        &self,
+        ty: &Ty,
+        field: bool,
+        out: &mut Vec<(FnTy, bool)>,
+        seen: &mut Vec<KindId>,
+    ) {
+        match ty.unlabeled() {
+            Ty::Fn(function) => out.push(((**function).clone(), field)),
+            Ty::List(element) => self.function_types_in(element, field, out, seen),
+            Ty::Kind(id, args) => {
+                for arg in args {
+                    self.function_types_in(&self.labeled(arg), field, out, seen);
+                }
+                if seen.contains(id) {
+                    return;
+                }
+                seen.push(*id);
+                if let Some(kind) = self.env.kinds.get(*id) {
+                    let fields = kind
+                        .record
+                        .iter()
+                        .flatten()
+                        .chain(kind.variants.iter().flat_map(|v| v.fields.iter()));
+                    for field in fields {
+                        let field = field.ty.base.substitute(args);
+                        self.function_types_in(&self.labeled(&field), true, out, seen);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
