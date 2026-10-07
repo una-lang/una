@@ -400,6 +400,42 @@ pub main() -> Unit
 ";
 
 #[test]
+fn a_text_appended_in_a_loop_grows_in_linear_time() {
+    // ADR 0070 X10, `spec/22 §6` rule 2 (#261): `t = "{t}x"` appends in place when nothing
+    // else holds `t`, so ten times the appends take about ten times as long, not a hundred: the
+    // bound sits between the measured 3.5x and the 17x to 19x of the copy.
+    let root = package("text-append", "\n[run]\nentry = \"grow\"\n", &[]);
+    let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let dir = root.to_str().unwrap();
+    let mut times = Vec::new();
+    for steps in [100_000, 1_000_000] {
+        std::fs::write(
+            root.join("src/grow.una"),
+            format!(
+                "module grow\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit t = \"\"\n  for i in 0..<{steps}\n    t = \"{{t}}x\"\n  @console.print(\"{{t.len}}\")\n"
+            ),
+        )
+        .unwrap();
+        let started = std::time::Instant::now();
+        let output = una(&["run", dir, "--grant", "console"]);
+        times.push(started.elapsed().as_secs_f64().max(0.05));
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        assert_eq!(stdout(&output), format!("{steps}\n"));
+    }
+    assert!(
+        times[1] < 8.0 * times[0],
+        "10x the appends took {:.1}x as long: {times:?}",
+        times[1] / times[0]
+    );
+}
+
+#[test]
 fn a_loop_runs_in_constant_memory_and_updates_a_list_in_place() {
     // #201: a loop whose state takes constant space runs in constant space, and `append` and
     // `set` on a list nothing else holds update it in place, in linear time, as the native code

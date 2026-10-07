@@ -17,5 +17,5 @@ pub use ir::{
     Name, PRELUDE_MODULE, Path, Prim, Program, Refinement, Rhs, Signature, Source, Term, Type, Use,
 };
 pub use label::{Accepts, Label, Level};
-pub use names::{rhs_vars, vars};
+pub use names::{binders, rhs_vars, vars};
 pub use print::{print_atom, print_module, print_term, print_term_with, print_type, quote};

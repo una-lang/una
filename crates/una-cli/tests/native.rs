@@ -709,6 +709,48 @@ fn an_executable_loop_over_its_memory_budget_is_u6003() {
 }
 
 #[test]
+fn a_text_appended_in_a_loop_grows_in_linear_time() {
+    // ADR 0070 X10, `spec/22 §6` rule 2 (#261): natively too, `t = "{t}x"` appends in place
+    // when nothing else holds `t`.
+    let mut times = Vec::new();
+    for steps in [100_000, 1_000_000] {
+        let program = format!(
+            "module grow\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit t = \"\"\n  for i in 0..<{steps}\n    t = \"{{t}}x\"\n  @console.print(\"{{t.len}}\")\n"
+        );
+        let dir = package(
+            &format!("grow{steps}"),
+            "\n[run]\nentry = \"grow\"\ngrants = [\"console\"]\n",
+            &[("src/grow.una", &program)],
+        );
+        let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+        std::fs::write(
+            dir.join("una.toml"),
+            manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+        )
+        .unwrap();
+        let built = una(&dir, &["build"]);
+        assert_eq!(built.status.code(), Some(0), "{built:?}");
+        let started = std::time::Instant::now();
+        let output = Command::new(dir.join("target/una").join(format!("grow{steps}")))
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        times.push(started.elapsed().as_secs_f64().max(0.05));
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("{steps}\n")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    assert!(
+        times[1] < 8.0 * times[0],
+        "10x the appends took {:.1}x as long: {times:?}",
+        times[1] / times[0]
+    );
+}
+
+#[test]
 fn a_loop_runs_in_constant_memory() {
     // #201: a loop whose state takes constant space runs in constant space, also in the debug
     // runtime the tests link, whose quarantine of freed slots is bounded: 10,000,000 iterations

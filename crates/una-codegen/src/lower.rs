@@ -1580,6 +1580,39 @@ impl<'p> Lowerer<'_, 'p, '_> {
                         return self.call("una_rt_write", &[index, value]);
                     }
                 }
+                // `"{t}..."` at the last use of the text of `t` takes it over, with every owned
+                // reference to it, as `t` beside the temporary of its conversion to text, and
+                // appends to it in place when nothing else holds it (ADR 0070 X10, #261). Not
+                // when a later part is the same text, which the first append would change.
+                if *prim == Prim::Concat
+                    && let Some((first, parts)) = args.split_first()
+                    && !parts.is_empty()
+                    && let Some(position) = self.moving(first, env, scope, catch, rest)
+                {
+                    let (text, _) = self.atom(first, env)?;
+                    let mut values = Vec::new();
+                    for part in parts {
+                        values.push(self.atom(part, env)?.0);
+                    }
+                    if !values.contains(&text) {
+                        scope.remove(position);
+                        while let Some(other) = scope
+                            .iter()
+                            .enumerate()
+                            .skip(catch.base)
+                            .find(|(_, (owned, _))| *owned == text)
+                            .map(|(other, _)| other)
+                        {
+                            scope.remove(other);
+                            self.release(text, Kind::Text);
+                        }
+                        let mut text = text;
+                        for part in values {
+                            text = self.call("una_rt_text_append_owned", &[text, part])?;
+                        }
+                        return Ok(text);
+                    }
+                }
                 let mut operands = Vec::new();
                 let mut machine = true;
                 for arg in args {

@@ -23,7 +23,7 @@
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use num_bigint::{BigInt, Sign};
 
@@ -138,6 +138,9 @@ struct Heap {
     /// for the whole run. Not by the address of their bytes: an empty literal has no bytes, and
     /// can share its address with the next literal of the object file.
     literals: BTreeMap<String, i64>,
+    /// The words of `literals`, which the code borrows: never updated in place, whatever their
+    /// count.
+    literal_words: BTreeSet<i64>,
     /// Integer literals beyond the tagged range, by their digits.
     int_literals: BTreeMap<String, i64>,
     /// The uses of a freed object: retaining, releasing or reading it, which the generated code
@@ -444,7 +447,11 @@ pub fn text_literal(text: &str) -> i64 {
         return word;
     }
     let word = text_word(text.to_owned());
-    HEAP.with(|heap| heap.borrow_mut().literals.insert(text.to_owned(), word));
+    HEAP.with(|heap| {
+        let mut heap = heap.borrow_mut();
+        heap.literals.insert(text.to_owned(), word);
+        heap.literal_words.insert(word);
+    });
     word
 }
 
@@ -453,6 +460,34 @@ pub fn concat(a: i64, b: i64) -> i64 {
     let mut text = text_value(a);
     text.push_str(&text_value(b));
     text_word(text)
+}
+
+/// `concat(t, part)` when the caller gives up its reference to `t`, at the text's last use, as
+/// in `t = "{t}..."` (#261): `part` is appended in place when nothing else holds `t`, in
+/// amortized O(length of `part`), and `t` is copied otherwise, then released.
+pub fn text_append_owned(t: i64, part: i64) -> i64 {
+    let literal = HEAP.with(|heap| heap.borrow().literal_words.contains(&t));
+    if !literal && unique(t) && t != part {
+        let tail = text_value(part);
+        let appended = slot(t).and_then(|index| {
+            HEAP.with(|heap| match heap.borrow_mut().slots.get_mut(index) {
+                Some(Slot {
+                    object: Some(Object::Text(text)),
+                    ..
+                }) => {
+                    text.push_str(&tail);
+                    Some(())
+                }
+                _ => None,
+            })
+        });
+        if appended.is_some() {
+            return t;
+        }
+    }
+    let text = concat(t, part);
+    release(t);
+    text
 }
 
 /// Whether two texts are equal: 1 or 0.

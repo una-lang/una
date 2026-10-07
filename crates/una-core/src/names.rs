@@ -127,3 +127,80 @@ pub fn rhs_vars(rhs: &Rhs, out: &mut BTreeSet<String>) {
         Rhs::Lambda { body, .. } => vars(body, out),
     }
 }
+
+/// Every binder that `expr` introduces, in it and in the lambdas and predicates it makes. Core
+/// binders are unique in a declaration, so a name `expr` binds is bound nowhere else: a read of
+/// it in `expr` reads that binding.
+pub fn binders<'e>(expr: &'e Expr, out: &mut BTreeSet<&'e str>) {
+    let rhs_binders = |rhs: &'e Rhs, out: &mut BTreeSet<&'e str>| match rhs {
+        Rhs::Lambda { params, body, .. } => {
+            out.extend(params.iter().map(|(name, _)| name.as_str()));
+            binders(body, out);
+        }
+        Rhs::Checked { it, predicate, .. } => {
+            out.insert(it.as_str());
+            binders(predicate, out);
+        }
+        _ => {}
+    };
+    match expr {
+        Expr::Atom { .. } | Expr::Fail { .. } | Expr::Unreachable { .. } => {}
+        Expr::Let {
+            name, value, body, ..
+        } => {
+            out.insert(name.as_str());
+            match value.as_ref() {
+                Bound::Rhs(rhs) => rhs_binders(rhs, out),
+                Bound::Expr(inner) => binders(inner, out),
+            }
+            binders(body, out);
+        }
+        Expr::LetTuple { names, body, .. } => {
+            out.extend(names.iter().map(|(name, _)| name.as_str()));
+            binders(body, out);
+        }
+        Expr::Loop {
+            var, state, body, ..
+        } => {
+            out.insert(var.0.as_str());
+            out.extend(state.iter().map(|(name, _)| name.as_str()));
+            binders(body, out);
+        }
+        Expr::Together { tasks, .. } => tasks.iter().for_each(|task| binders(task, out)),
+        Expr::TogetherFor { var, task, .. } => {
+            out.insert(var.0.as_str());
+            binders(task, out);
+        }
+        Expr::If {
+            then, otherwise, ..
+        } => {
+            binders(then, out);
+            binders(otherwise, out);
+        }
+        Expr::Case {
+            arms, otherwise, ..
+        } => {
+            for arm in arms {
+                out.extend(arm.binds.iter().flatten().map(String::as_str));
+                binders(&arm.body, out);
+            }
+            if let Some(otherwise) = otherwise {
+                binders(otherwise, out);
+            }
+        }
+        Expr::Handle {
+            body,
+            error,
+            handler,
+        } => {
+            out.insert(error.as_str());
+            binders(body, out);
+            binders(handler, out);
+        }
+        Expr::Attempt { body, .. } => binders(body, out),
+        Expr::With { cap, body, .. } => {
+            out.insert(cap.as_str());
+            binders(body, out);
+        }
+    }
+}
