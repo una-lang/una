@@ -2,12 +2,13 @@
 # Runs what .github/workflows/ci.yml runs, in the same order, on this machine: the solver check,
 # fmt, clippy with warnings denied, the tests, then packing and checking the release archive of
 # the host's target. With --linux, it runs the same inside a linux/amd64 container of CI's
-# Ubuntu image (scripts/local-ci/Dockerfile), emulated on an arm64 Mac, so it is slow; the
+# Ubuntu image (scripts/local-ci/Dockerfile), emulated on an arm64 Mac, so it is slow; with
+# --linux-arm64, inside a linux/arm64 one, native on such a Mac (#241). The
 # target directory (one volume per checkout), the cargo registry and Z3 live in named volumes,
 # so later runs are incremental. It ends with PASS, or FAIL and the step that failed, and a non-zero exit on any
 # failure. While GitHub Actions is unavailable, this is the check before a merge (#156).
 #
-# Usage: scripts/local-ci.sh [--linux]
+# Usage: scripts/local-ci.sh [--linux | --linux-arm64]
 set -u
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
@@ -18,32 +19,38 @@ fail() {
     exit 1
 }
 
-if [ "${1:-}" = --linux ]; then
-    command -v docker >/dev/null 2>&1 || fail "docker not found; --linux needs Docker"
+if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
+    # --linux: x86_64, emulated on an arm64 Mac; --linux-arm64: aarch64, native on one (#241).
+    case $1 in
+        --linux) arch=amd64 target=x86_64-unknown-linux-gnu suffix="" ;;
+        *) arch=arm64 target=aarch64-unknown-linux-gnu suffix=-arm64 ;;
+    esac
+    command -v docker >/dev/null 2>&1 || fail "docker not found; $1 needs Docker"
     toolchain=$(sed -n 's/^channel *= *"\([^"]*\)"$/\1/p' rust-toolchain.toml)
-    image="una-local-ci:$toolchain"
-    echo "== building the image $image (linux/amd64)"
-    docker build --platform linux/amd64 --build-arg "TOOLCHAIN=$toolchain" \
+    image="una-local-ci:$toolchain$suffix"
+    echo "== building the image $image (linux/$arch)"
+    docker build --platform "linux/$arch" --build-arg "TOOLCHAIN=$toolchain" \
         --tag "$image" scripts/local-ci || fail "the container image did not build"
-    # The target directory is a volume of this checkout, named from its path, so runs from two
-    # checkouts at once never share a build; the cargo registry and Z3 are shared.
+    # The target directory is a volume of this checkout and architecture, named from its path,
+    # so runs from two checkouts never share or overwrite one; Z3 has one volume per
+    # architecture, and the cargo registry, which holds sources, one for both.
     checkout=$(printf '%s' "$root" | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-12)
-    volume="una-local-ci-target-$checkout"
+    volume="una-local-ci-target-$checkout$suffix"
     echo "== running scripts/local-ci.sh in $image, with the target directory in $volume"
     # The checkout is mounted read-write, as CI checks it out; the target directory, the cargo
     # registry and Z3 are volumes, which keep the container's builds apart from the host's.
-    docker run --rm --platform linux/amd64 \
+    docker run --rm --platform "linux/$arch" \
         --volume "$root:/work" \
         --volume "$volume:/work/target" \
         --volume una-local-ci-registry:/opt/cargo/registry \
-        --volume una-local-ci-z3:/opt/z3 \
+        --volume "una-local-ci-z3$suffix:/opt/z3" \
         --env UNA_LOCAL_CI_Z3=/opt/z3 \
         "$image" scripts/local-ci.sh || fail "the Linux run failed; its output is above"
-    echo "local CI: PASS (x86_64-unknown-linux-gnu, in the container)"
+    echo "local CI: PASS ($target, in the container)"
     exit 0
 fi
 if [ "$#" -ne 0 ]; then
-    echo "usage: scripts/local-ci.sh [--linux]" >&2
+    echo "usage: scripts/local-ci.sh [--linux | --linux-arm64]" >&2
     exit 2
 fi
 
