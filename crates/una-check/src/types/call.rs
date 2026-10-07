@@ -373,7 +373,7 @@ impl<'a> Checker<'_, 'a, '_> {
             self.function_types(&self.labeled(found), &mut inner, &mut Vec::new());
             let mut declared = Vec::new();
             self.function_types(&self.labeled(expected), &mut declared, &mut Vec::new());
-            let annotated = self.annotated_lambdas.get(arg_span).cloned();
+            let (annotated, opaque) = self.annotated_in(*arg_span);
             for (index, (function, field)) in inner.into_iter().enumerate() {
                 let mut accepted = Label::public();
                 for (position, input) in function.params.iter().enumerate() {
@@ -385,7 +385,7 @@ impl<'a> Checker<'_, 'a, '_> {
                         && annotated
                             .as_ref()
                             .is_some_and(|flags| flags.get(position) == Some(&true));
-                    if !written && !field {
+                    if !written && !field && !opaque {
                         accepted = accepted.join(&self.decisions(input));
                     }
                 }
@@ -408,6 +408,50 @@ impl<'a> Checker<'_, 'a, '_> {
             self.call_under_pc(span, callee, &uses, fails, false, &raised);
         }
         raised
+    }
+
+    /// The lambdas checked inside the argument at `arg` (#350, H-4): the parameter
+    /// annotations of the lambda that is the argument itself, inside parentheses or not, and
+    /// whether another lambda with an annotated parameter lies anywhere in it. The body of an
+    /// annotated lambda assumes its annotation, whatever its type unifies with, and through a
+    /// join (`if`, `when`), a block or a call the argument's type no longer shows which
+    /// function value assumes what: such an argument's function values accept nothing.
+    fn annotated_in(&self, arg: Span) -> (Option<Vec<bool>>, bool) {
+        let from = Span {
+            file: arg.file,
+            start: arg.start,
+            end: 0,
+        };
+        let to = Span {
+            file: arg.file,
+            start: arg.end,
+            end: usize::MAX,
+        };
+        let mut direct = None;
+        let mut opaque = false;
+        for (span, flags) in self.annotated_lambdas.range(from..=to) {
+            if span.end > arg.end {
+                continue;
+            }
+            let before = self.report.text(Span {
+                file: arg.file,
+                start: arg.start,
+                end: span.start,
+            });
+            let after = self.report.text(Span {
+                file: arg.file,
+                start: span.end,
+                end: arg.end,
+            });
+            let wraps =
+                |text: &str, paren: char| text.chars().all(|c| c == paren || c.is_whitespace());
+            if direct.is_none() && wraps(before, '(') && wraps(after, ')') {
+                direct = Some(flags.clone());
+            } else if flags.contains(&true) {
+                opaque = true;
+            }
+        }
+        (direct, opaque)
     }
 
     /// The function types at the positions of `ty` that hold values: its top, list elements,

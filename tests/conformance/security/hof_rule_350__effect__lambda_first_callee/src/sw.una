@@ -1,0 +1,35 @@
+-- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, Una-2's matrix): reject: an inferred pure lambda checked before the decided argument; the callee writes its result
+-- spec: spec/07 §7
+-- expect: error U4001 at src/sw.una:30:22
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub kind Bad = | Oops
+
+pub kind Box[T]
+  run: fn(T) -> Int
+
+pub kind Hold[T]
+  value: T
+
+check_len(xs: List[secret Int]) -> Int
+  fails Bad
+=
+  if xs.len > 0 then fail Oops else 0
+
+apply_rev[U](f: fn(U) -> Int, x: U) -> Unit
+  uses @log: Log[write]
+=
+  @log.write(f(x))
+
+g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  apply_rev(fn(y) -> k(y), x: if a == b then p else q)
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g([s], b: [0], p: [], q: [1], k: fn(xs) -> xs.len)
