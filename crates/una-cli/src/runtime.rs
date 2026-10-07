@@ -338,7 +338,9 @@ pub(crate) fn run_command(
     let status = match &run.completion {
         Completion::Ok(_) => ExitStatus::Success,
         Completion::Failed { .. }
-        | Completion::Aborted(Abort::Depth { .. } | Abort::Memory { .. }) => ExitStatus::Errors,
+        | Completion::Aborted(
+            Abort::Depth { .. } | Abort::Memory { .. } | Abort::HeaderValue { .. },
+        ) => ExitStatus::Errors,
         Completion::Aborted(Abort::Fault { .. }) => ExitStatus::Internal,
     };
     let document = RunDocument {
@@ -473,7 +475,8 @@ fn root_location(package: &Package) -> Location {
     }
 }
 
-/// U6001 when `main` failed, U6003 when a call went too deep, U8001 on a fault.
+/// U6001 when `main` failed, U6003 when a call went too deep, U6004 for a header value with a
+/// control character, U8001 on a fault.
 fn completion_diagnostic(
     completion: &Completion,
     main: Span,
@@ -515,6 +518,11 @@ fn abort_diagnostic(abort: &Abort, sources: &SourceDb, root: &Location) -> Diagn
         Abort::Memory { span, limit } => Diagnostic::error(
             Code::U6003,
             format!("this call exceeds the memory limit of {limit} MiB"),
+            sources.location(*span),
+        ),
+        Abort::HeaderValue { span } => Diagnostic::error(
+            Code::U6004,
+            "a header value contains a control character",
             sources.location(*span),
         ),
         Abort::Fault { message, span } => Diagnostic::error(

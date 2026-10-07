@@ -196,10 +196,10 @@ exported! {
     una_rt_files_read => host::files_read, (path);
     una_rt_files_write => host::files_write, (path, content);
     una_rt_keys_hmac => host::keys_hmac, (key_name, data);
-    una_rt_http_get => host::http_get, (url, headers, key_name);
-    una_rt_http_post => host::http_post, (url, headers, body, key_name);
-    una_rt_http_put => host::http_put, (url, headers, body, key_name);
-    una_rt_http_delete => host::http_delete, (url, headers, key_name);
+    una_rt_http_get => host::http_get, (site, url, headers, key_name);
+    una_rt_http_post => host::http_post, (site, url, headers, body, key_name);
+    una_rt_http_put => host::http_put, (site, url, headers, body, key_name);
+    una_rt_http_delete => host::http_delete, (site, url, headers, key_name);
     una_rt_host_failed => host::host_failed, ();
     una_rt_parse_json => json::parse_json, (t);
     una_rt_to_json => json::to_json, (j);
@@ -270,6 +270,12 @@ pub extern "C" fn una_rt_budget(site: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn una_rt_poll() -> i64 {
     runtime::poll()
+}
+
+/// 1 when the task the thread runs stopped in an operation ([`runtime::stopped`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn una_rt_stopped() -> i64 {
+    runtime::stopped()
 }
 
 /// Begins an operation in progress, which a cancellation does not stop
