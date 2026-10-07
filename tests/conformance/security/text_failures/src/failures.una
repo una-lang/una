@@ -1,10 +1,12 @@
--- test: whether parse_int fails on a secret, and where, is secret: attempt's Ok or Err, the payload of Err, a failure in its place and the value that replaces it all carry the argument's labels, each with a control, and a public text's failure stays public (spec/22 §5 rule 2, N-27)
+-- test: whether parse_int fails on a secret, and where, is secret: attempt's Ok or Err, the payload of Err, a failure in its place and the value that replaces it all carry the argument's labels, each with a control, and a public text's failure stays public; a failure relayed through fails of keeps the rules of ADR 0062 and 0067, which reject a callback failing on secret elements or over a secret length (spec/22 §5 rule 2, N-27)
 -- spec: spec/22 §5
--- expect: error U4001 at src/failures.una:16:3
--- expect: error U4001 at src/failures.una:34:8
--- expect: error U4001 at src/failures.una:36:18
--- expect: error U4002 at src/failures.una:50:5
--- expect: error U4001 at src/failures.una:58:3
+-- expect: error U4001 at src/failures.una:18:3
+-- expect: error U4001 at src/failures.una:36:8
+-- expect: error U4001 at src/failures.una:38:18
+-- expect: error U4002 at src/failures.una:52:5
+-- expect: error U4001 at src/failures.una:60:3
+-- expect: error U4001 at src/failures.una:91:31
+-- expect: error U4002 at src/failures.una:99:31
 module failures
 
 pub kind Bad = Other | Worse
@@ -68,3 +70,32 @@ pub public_tag(t: Text) -> Bool
 =
   let r = attempt t.parse_int()
   r is Ok
+
+lucky(x: Int) -> Int
+  fails Bad
+=
+  if x == 7
+    fail Other
+  x
+
+always(x: Int) -> Int
+  fails Bad
+=
+  fail Worse
+
+--- A failure relayed through `fails of` keeps the rules of ADR 0062 and 0067: a callback
+--- that fails on a secret element is rejected where it is passed...
+pub on_elements(pins: List[secret Int]) -> Int
+  fails Bad
+=
+  let mapped = pins.map(each: lucky)
+    if error pass
+  0
+
+--- ...and so is one that fails over a list whose length is secret.
+pub on_length(pins: secret List[Int]) -> Int
+  fails Bad
+=
+  let mapped = pins.map(each: always)
+    if error pass
+  0
