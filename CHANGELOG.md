@@ -6,7 +6,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ### Language
 
-- **`std.host` can be imported** (#16, N-33, `spec/10 §11` rule 10). `import std.host (Files)` names the host capabilities and their failure kinds (`Console`, `Clock`, `Env`, `Files`, `Keys`, `FileError`, `KeyError`), the same declarations the prelude puts in scope, in both editions. Any other `std` path is U1001 with a message that names the two standard modules that can be imported, `std.host` and `std.testing`, where it said `std.host` was not a module.
+- **`std.host` can be imported** (#16, N-33, `spec/10 §11` rule 10). `import std.host (Files)` names the host capabilities and their failure kinds (`Console`, `Clock`, `Env`, `Files`, `Keys`, `FileError`, `KeyError`), the same declarations the prelude puts in scope, in both editions. Any other `std` path is U1001 with a message that names the two standard modules that can be imported, `std.host` and `std.testing`, where it said `std.host` was not a module. In edition 0.2 it also exports `Http`, `Header`, `Response` and `HttpError` (#307).
 - **HTTP** (ADR 0074, `spec/24`, #239). In edition 0.2 the host capability `Http` sends HTTP/1.1 requests:
   - `get`, `post`, `put` and `delete`, one operation per method, return an `internal Response` or fail with `HttpError`;
   - origins and methods are granted with `http:<origin>[:<methods>]`, deny by default, https unless a grant says http, and redirects stay within the grants;

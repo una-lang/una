@@ -672,7 +672,7 @@ impl<'a> Env<'a> {
                 let host = path.join(".") == prelude::STD_HOST;
                 for ident in &import.names {
                     let name = module.interner.resolve(ident.name);
-                    if host && !prelude::STD_HOST_NAMES.contains(&name) {
+                    if host && !prelude::std_host_names(self.edition).contains(&name) {
                         continue;
                     }
                     let Some(&entity) = target.upper.get(name).or_else(|| target.lower.get(name))
