@@ -63,8 +63,8 @@ pub(super) fn module<'a>(
         checker,
         table,
         requirements,
-        locals: Vec::new(),
-        types: Vec::new(),
+        locals: Frames::default(),
+        types: Frames::default(),
     };
     for decl in &table.module.tree.decls {
         resolver.decl(&decl.kind);
@@ -83,9 +83,51 @@ struct Resolver<'c, 'p, 'a> {
     table: &'c Table<'a>,
     requirements: &'c BTreeSet<&'a str>,
     /// Frames of local names, innermost last.
-    locals: Vec<Vec<Local<'a>>>,
+    locals: Frames<'a>,
     /// Frames of type parameters, innermost last.
-    types: Vec<Vec<Local<'a>>>,
+    types: Frames<'a>,
+}
+
+/// Frames of local names, innermost last, with an index from each name to where it is bound,
+/// so a name resolves in expected O(1) whatever the number of locals (#326). The index is only
+/// looked up, never iterated.
+#[derive(Default)]
+struct Frames<'a> {
+    frames: Vec<Vec<Local<'a>>>,
+    index: std::collections::HashMap<&'a str, Vec<Span>>,
+}
+
+impl<'a> Frames<'a> {
+    fn push(&mut self, frame: Vec<Local<'a>>) {
+        for local in &frame {
+            self.index.entry(local.name).or_default().push(local.span);
+        }
+        self.frames.push(frame);
+    }
+
+    fn pop(&mut self) {
+        for local in self.frames.pop().unwrap_or_default() {
+            if let Some(spans) = self.index.get_mut(local.name) {
+                spans.pop();
+                if spans.is_empty() {
+                    self.index.remove(local.name);
+                }
+            }
+        }
+    }
+
+    /// Binds `local` in the innermost frame.
+    fn bind(&mut self, local: Local<'a>) {
+        if let Some(frame) = self.frames.last_mut() {
+            self.index.entry(local.name).or_default().push(local.span);
+            frame.push(local);
+        }
+    }
+
+    /// Where the innermost binding of `name` is.
+    fn find(&self, name: &str) -> Option<Span> {
+        self.index.get(name).and_then(|spans| spans.last().copied())
+    }
 }
 
 /// The namespace a name is looked up in.
@@ -107,7 +149,7 @@ impl<'a> Resolver<'_, '_, 'a> {
         let table = self.table;
         match space {
             Space::Lower => {
-                self.locals.iter().flatten().any(|local| local.name == name)
+                self.locals.find(name).is_some()
                     || table.lower.contains_key(name)
                     || table.imported.contains_key(name)
                     || prelude::LOWER.contains(&name)
@@ -127,7 +169,7 @@ impl<'a> Resolver<'_, '_, 'a> {
                         && self.checker.package.settings.edition >= Edition::V0_2)
             }
             Space::Upper => {
-                self.types.iter().flatten().any(|local| local.name == name)
+                self.types.find(name).is_some()
                     || table.upper.contains_key(name)
                     || table.imported.contains_key(name)
                     || table.imported_variants.contains(name)
@@ -155,19 +197,13 @@ impl<'a> Resolver<'_, '_, 'a> {
             Space::Lower => &self.locals,
             Space::Upper => &self.types,
         };
-        let declared = frames
-            .iter()
-            .rev()
-            .flat_map(|frame| frame.iter().rev())
-            .find(|local| local.name == name)
-            .map(|local| local.span)
-            .or_else(|| {
-                let table = match space {
-                    Space::Lower => &self.table.lower,
-                    Space::Upper => &self.table.upper,
-                };
-                table.get(name).map(|declared| declared.span)
-            });
+        let declared = frames.find(name).or_else(|| {
+            let table = match space {
+                Space::Lower => &self.table.lower,
+                Space::Upper => &self.table.upper,
+            };
+            table.get(name).map(|declared| declared.span)
+        });
         if let Some(declared) = declared {
             self.checker.references.push((ident.span, declared));
         }
@@ -194,26 +230,18 @@ impl<'a> Resolver<'_, '_, 'a> {
         if check_convention {
             self.checker.lower_convention(ident, what);
         }
-        if let Some(earlier) = self
-            .locals
-            .iter()
-            .flatten()
-            .find(|local| local.name == name)
-            .copied()
-        {
+        if let Some(earlier) = self.locals.find(name) {
             self.checker.duplicate(
                 ident.span,
-                earlier.span,
+                earlier,
                 format!("`{name}` is already bound in this scope; a local cannot rebind another"),
             );
             return;
         }
-        if let Some(frame) = self.locals.last_mut() {
-            frame.push(Local {
-                name,
-                span: ident.span,
-            });
-        }
+        self.locals.bind(Local {
+            name,
+            span: ident.span,
+        });
     }
 
     /// Binds type parameters in a new frame; U1002 for repeats, U1005 for conventions.

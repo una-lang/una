@@ -8,6 +8,7 @@ use una_syntax::ast::{Arg, Convention, Expr, ExprKind, Ident, Literal, TextPart}
 
 use super::check::Checker;
 use super::env::ParamDef;
+use super::locals::TakenState;
 use super::records::Res;
 use super::ty::Ty;
 
@@ -97,7 +98,7 @@ pub(crate) struct FlowBack {
 impl<'a> Checker<'_, 'a, '_> {
     /// The index of the innermost local named `name`.
     pub(crate) fn local_index(&self, name: &str) -> Option<usize> {
-        self.locals.iter().rposition(|local| local.name == name)
+        self.locals.position(name)
     }
 
     /// U2017 when the local `name`, used at `span`, was passed by `take` (`spec/17 §3` rule 3).
@@ -120,26 +121,20 @@ impl<'a> Checker<'_, 'a, '_> {
         self.report.push(diagnostic);
     }
 
-    /// The taken state of every local, to restore and merge around branches.
-    pub(crate) fn taken_state(&self) -> Vec<Option<Span>> {
-        self.locals.iter().map(|local| local.taken).collect()
+    /// The taken state of the locals, to restore and merge around branches.
+    pub(crate) fn taken_state(&self) -> TakenState {
+        self.locals.taken_state()
     }
 
     /// Restores the taken state `state` of the locals it covers.
-    pub(crate) fn restore_taken(&mut self, state: &[Option<Span>]) {
-        for (local, taken) in self.locals.iter_mut().zip(state) {
-            local.taken = *taken;
-        }
+    pub(crate) fn restore_taken(&mut self, state: &TakenState) {
+        self.locals.restore_taken(state);
     }
 
     /// Adds to `merged` every local the current state takes: a binding taken in one branch
     /// counts as taken after the construct (`spec/17 §3` rule 3).
-    pub(crate) fn merge_taken(&self, merged: &mut [Option<Span>]) {
-        for (slot, local) in merged.iter_mut().zip(&self.locals) {
-            if slot.is_none() {
-                *slot = local.taken;
-            }
-        }
+    pub(crate) fn merge_taken(&self, merged: &mut TakenState) {
+        self.locals.merge_taken(merged);
     }
 
     /// The place `place` of an assignment or an `edit` argument, rooted at an editable binding
@@ -201,13 +196,9 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         // The place is read for its type, its taken state reported above.
         let saved = self.locals.get(index).and_then(|local| local.taken);
-        if let Some(local) = self.locals.get_mut(index) {
-            local.taken = None;
-        }
+        self.locals.set_taken(index, None);
         let ty = self.expr(place, None);
-        if let Some(local) = self.locals.get_mut(index) {
-            local.taken = saved;
-        }
+        self.locals.set_taken(index, saved);
         Some(ty)
     }
 
@@ -232,9 +223,8 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some((root, fields)) = place_root(place)
             && fields.is_empty()
             && let Some(index) = self.local_index(self.name(root))
-            && let Some(local) = self.locals.get_mut(index)
         {
-            local.taken = None;
+            self.locals.set_taken(index, None);
         }
         let refined = place_root(place)
             .and_then(|(root, _)| self.local_index(self.name(root)))
@@ -356,9 +346,8 @@ impl<'a> Checker<'_, 'a, '_> {
         let name = self.name(ident);
         if let Some(index) = self.local_index(name)
             && !self.captured_by_task(index, name, value.span, "passed as `take`")
-            && let Some(local) = self.locals.get_mut(index)
         {
-            local.taken = Some(value.span);
+            self.locals.set_taken(index, Some(value.span));
         }
     }
 
