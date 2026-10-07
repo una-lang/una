@@ -1,4 +1,4 @@
--- expect: accept: control: the same, in parentheses
+-- expect: rule: control: the same, in parentheses
 module sw
 
 pub capability Log

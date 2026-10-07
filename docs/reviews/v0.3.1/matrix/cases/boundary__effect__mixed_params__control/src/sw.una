@@ -1,4 +1,4 @@
--- expect: accept: control: a lambda with an inferred parameter that takes the decision and an annotated one that drops it
+-- expect: rule: control: a lambda with an inferred parameter that takes the decision and an annotated one that drops it
 module sw
 
 pub capability Log

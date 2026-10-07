@@ -1,4 +1,4 @@
--- expect: accept: control: an inferred lambda that passes its parameter through a generic identity
+-- expect: rule: control: an inferred lambda that passes its parameter through a generic identity; D-137 labels `ident(x)` with `T`, so the lambda's public result is U4001 with or without the decision: the identity raises, it does not launder
 module sw
 
 pub capability Log

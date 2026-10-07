@@ -417,10 +417,11 @@ cell("boundary", "effect", "reject", program("effect", SAME_P, f"same_p(p, f: fn
 MIX = ("mix[U, W](w: W, x: U, f: fn(W, U) -> Int) -> Unit\n  uses @log: Log[write]\n=\n  @log.write(f(w, x))\n")
 cell("boundary", "effect", "reject",
      program("effect", MIX, f"mix(if a == b then 1 else 0, x: {D}, f: fn(c, x: T) -> k(x))", cb="pure"),
-     "a lambda with an inferred parameter that takes the decision and an annotated one that drops it", variant="mixed_params")
+     "a lambda with an inferred parameter that takes the decision and an annotated one that drops it", variant="mixed_params",
+     control_expect="rule")  # rule A (#350, H-5): a lambda with an annotated parameter accepts nothing, so the safe control is U4002 too
 cell("boundary", "effect", "reject",
      program("effect", MIX, f"mix(if a == b then 1 else 0, x: {D}, f: (fn(c, x: T) -> k(x)))", cb="pure"),
-     "the same, in parentheses", variant="mixed_params_parens")
+     "the same, in parentheses", variant="mixed_params_parens", control_expect="rule")  # rule A, as above
 cell("boundary", "result", "reject",
      program("result", "", f"[{D}].fold(initial: if a == b then 1 else 0, step: fn(acc, x: T) -> k(x))"),
      "fold: the accumulator takes the decision, the annotated element drops it; its result carries the accumulator's label",
@@ -451,7 +452,8 @@ cell("launder", "effect", "reject",
      "an inferred lambda whose body maps an annotated lambda over its parameter", variant="nested_prelude")
 cell("launder", "effect", "reject",
      program("effect", "ident[V](v: V) -> V = v\n\n" + LOGGER, f"logger({D}, f: fn(x) -> k(ident(x)))", cb="pure"),
-     "an inferred lambda that passes its parameter through a generic identity", variant="generic_identity")
+     "an inferred lambda that passes its parameter through a generic identity; D-137 labels `ident(x)` with `T`, so the lambda's public result is U4001 with or without the decision: the identity raises, it does not launder",
+     variant="generic_identity", control_expect="rule")
 
 
 def write():
