@@ -181,6 +181,11 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) collected: &'c mut Collected,
     /// How many lambdas enclose the expression checked.
     pub(crate) lambda_depth: usize,
+    /// The argument about to be checked is one of a prelude function's.
+    pub(crate) prelude_argument: bool,
+    /// The innermost lambda is directly an argument of a prelude function, for the advice of
+    /// U3004 in edition `0.1`.
+    pub(crate) prelude_lambda: bool,
     /// Where the locals of the innermost enclosing `together` task start: a local before it
     /// is captured by the task, which cannot change it (U2023, `spec/19 §2` rule 3).
     pub(crate) task_mark: Option<usize>,
@@ -361,6 +366,8 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             of_lambdas: Vec::new(),
             of_found: Vec::new(),
             lambda_depth: 0,
+            prelude_argument: false,
+            prelude_lambda: false,
             task_mark: None,
             call_targets: BTreeMap::new(),
             operands: Vec::new(),

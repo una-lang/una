@@ -376,20 +376,27 @@ impl<'a> Checker<'_, 'a, '_> {
                     _ if !self.authority() || rebound => {}
                     // In a lambda, the pure code is the lambda, whose expected type has no
                     // `uses`, not the function around it.
-                    Base::Pure if self.own_depth() > 0 => {
-                        let allows = if self.env.edition >= una_project::Edition::V0_2 {
-                            "whose type or `uses of` clause allows the effect"
-                        } else {
-                            "whose type allows the effect"
-                        };
+                    Base::Pure
+                        if self.own_depth() > 0
+                            && self.env.edition >= una_project::Edition::V0_2 =>
+                    {
                         self.report.error(
                             Code::U3004,
                             cap.span,
                             format!(
-                                "`@{name}` is used in a lambda whose type declares no `uses`, so the lambda is pure; pass it directly as an argument for a parameter {allows}"
+                                "`@{name}` is used in a lambda whose type declares no `uses`, so the lambda is pure; pass it directly as an argument for a parameter whose type or `uses of` clause allows the effect"
                             ),
                         );
                     }
+                    // Edition 0.1 keeps its message; the prelude's higher-order functions take
+                    // only pure functions there (ADR 0062).
+                    Base::Pure if self.prelude_lambda => self.report.error(
+                        Code::U3004,
+                        cap.span,
+                        format!(
+                            "`@{name}` is used here, but this code declares no `uses`, so it is pure; declare `uses @{name}: ...` in its header; a function passed to a prelude function such as `map`, `filter` or `fold` may use capabilities only in edition 0.2"
+                        ),
+                    ),
                     Base::Pure => self.report.error(
                         Code::U3004,
                         cap.span,
