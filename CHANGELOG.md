@@ -2,7 +2,9 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
-## Unreleased
+## v0.3.1
+
+A security patch of the Beta. Edition 0.2, the edition of the Beta, is unchanged in what it accepts. Edition 0.1 packages compiled by v0.3.0 could reveal a decision on `T` values through function values: through the prelude's higher-order functions and through generic functions of the program. That is fixed below, with the same rule as v0.1.4 and v0.1.5. Every finding came from adversarial reviews before any report from outside: a matrix of 194 cells, every path by which a function value can be called in edition 0.1 crossed with the result, effect and failure channels. Further edition 0.1 hardening follows in the next patch (#354). The release also carries three performance fixes.
 
 ### Security
 
