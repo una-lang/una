@@ -10,6 +10,7 @@ pub mod json;
 mod label;
 mod names;
 mod print;
+mod text;
 
 pub use descriptor::Descriptor;
 pub use ir::{
@@ -20,3 +21,4 @@ pub use ir::{
 pub use label::{Accepts, Label, Level};
 pub use names::{binders, rhs_vars, vars};
 pub use print::{print_atom, print_module, print_term, print_term_with, print_type, quote};
+pub use text::Text;

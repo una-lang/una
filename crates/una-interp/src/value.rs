@@ -8,6 +8,7 @@ use num_bigint::BigInt;
 use una_core::{Ctor, Expr, Name};
 
 use crate::machine::{Caps, Env};
+pub(crate) use una_core::Text;
 
 /// A value of the Una Abstract Machine; `'p` is the program's lifetime.
 #[derive(Clone, Debug)]
@@ -17,7 +18,7 @@ pub(crate) enum Value<'p> {
     /// A boolean.
     Bool(bool),
     /// A text.
-    Text(Rc<String>),
+    Text(Rc<Text>),
     /// `unit`.
     Unit,
     /// A constructor applied to its fields.
@@ -44,7 +45,7 @@ pub(crate) type Entries<'p> = BTreeMap<Key, (Value<'p>, Value<'p>)>;
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Key {
     Int(BigInt),
-    Text(Rc<String>),
+    Text(Rc<Text>),
     Variant(usize),
 }
 
@@ -122,7 +123,7 @@ impl<'p> Value<'p> {
 
     /// A text value.
     pub(crate) fn text(text: &str) -> Value<'p> {
-        Value::Text(Rc::new(text.to_owned()))
+        Value::Text(Rc::new(Text::new(text.to_owned())))
     }
 
     /// An integer value.

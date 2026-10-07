@@ -1589,12 +1589,12 @@ impl<'p, 'w> Machine<'p, 'w> {
                 Value::List(Rc::new(items))
             }
             "is_digits" => Value::Bool(text(0)?.chars().all(|c| c.is_ascii_digit())),
-            "starts_with" => Value::Bool(text(0)?.starts_with(text(1)?.as_ref())),
+            "starts_with" => Value::Bool(text(0)?.starts_with(text(1)?.as_str())),
             "trim" => Value::text(text(0)?.trim()),
             // The text functions of edition 0.2 (`spec/22 §2`).
             "split" => {
                 let (t, on) = (text(0)?, text(1)?);
-                Value::List(Rc::new(t.split(on.as_ref()).map(Value::text).collect()))
+                Value::List(Rc::new(t.split(on.as_str()).map(Value::text).collect()))
             }
             "join" => {
                 let parts = list(0)?;
@@ -1611,16 +1611,18 @@ impl<'p, 'w> Machine<'p, 'w> {
                 }
                 Value::text(&out)
             }
-            "ends_with" => Value::Bool(text(0)?.ends_with(text(1)?.as_ref())),
+            "ends_with" => Value::Bool(text(0)?.ends_with(text(1)?.as_str())),
             "contains_text" => Value::Bool(search(&text(0)?, &text(1)?).is_some()),
             "find" => {
                 let t = text(0)?;
                 match search(&t, &text(1)?) {
-                    Some(byte) => some(Value::int(scalars_before(&t, byte))),
+                    Some(byte) => some(Value::int(
+                        i64::try_from(t.scalars_before(byte)).unwrap_or(i64::MAX),
+                    )),
                     None => none(),
                 }
             }
-            "replace" => Value::text(&text(0)?.replace(text(1)?.as_ref(), &text(2)?)),
+            "replace" => Value::text(&text(0)?.replace(text(1)?.as_str(), &text(2)?)),
             "slice" => {
                 let t = text(0)?;
                 let (start, end) = (int(1)?, int(2)?);
@@ -1630,12 +1632,8 @@ impl<'p, 'w> Machine<'p, 'w> {
                         "`slice` outside the text, which its precondition excludes",
                     ));
                 };
-                let taken: String = t
-                    .chars()
-                    .skip(start)
-                    .take(end.saturating_sub(start))
-                    .collect();
-                Value::text(&taken)
+                // O(result) once the text's index is built (`spec/22 §6` rule 1).
+                Value::text(t.slice(start, end))
             }
             "to_upper" => Value::text(&text(0)?.to_ascii_uppercase()),
             "to_lower" => Value::text(&text(0)?.to_ascii_lowercase()),
@@ -1925,7 +1923,7 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
         Prim::Gt => Value::Bool(compare(arg(0)?, arg(1)?).is_gt()),
         Prim::Ge => Value::Bool(compare(arg(0)?, arg(1)?).is_ge()),
         Prim::Len => match arg(0)? {
-            Value::Text(t) => Value::Int(BigInt::from(t.chars().count())),
+            Value::Text(t) => Value::Int(BigInt::from(t.scalars())),
             Value::List(items) => Value::Int(BigInt::from(items.len())),
             Value::Map(entries) => Value::Int(BigInt::from(entries.len())),
             _ => return Err(fault("`len` of a value that is not a text, list or map")),
@@ -2033,12 +2031,6 @@ fn map_apply<'p>(op: MapOp, args: Vec<Value<'p>>) -> Flow<'p> {
 /// search is linear in the worst case (`spec/22 §2` rule 8).
 fn search(t: &str, part: &str) -> Option<usize> {
     t.find(part)
-}
-
-/// The number of scalar values before the byte offset `byte` of `t`.
-fn scalars_before(t: &str, byte: usize) -> i64 {
-    let count = t.get(..byte).map_or(0, |before| before.chars().count());
-    i64::try_from(count).unwrap_or(i64::MAX)
 }
 
 /// `parse_int(t)` (`spec/22 §4`): an optional `-` and one or more ASCII digits, or a failure

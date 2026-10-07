@@ -26,6 +26,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use num_bigint::{BigInt, Sign};
+use una_core::Text;
 
 /// The smallest integer that a tagged word holds.
 const SMALL_MIN: i64 = -(1 << 62);
@@ -37,8 +38,8 @@ const SMALL_MAX: i64 = (1 << 62) - 1;
 enum Object {
     /// An integer outside the tagged range.
     Int(BigInt),
-    /// A text, in UTF-8.
-    Text(String),
+    /// A text, in UTF-8, with its scalar count, ASCII flag and lazy index (`spec/22 §6`).
+    Text(Text),
     /// A variant with fields, or a record: its position in its kind, and its fields.
     Data { tag: i64, fields: Vec<i64> },
     /// A list.
@@ -75,7 +76,7 @@ impl MapKey {
             return MapKey::Int(BigInt::from(word >> 1));
         }
         with(word, |object| match object {
-            Object::Text(text) => MapKey::Text(text.clone()),
+            Object::Text(text) => MapKey::Text(text.as_str().to_owned()),
             Object::Int(value) => MapKey::Int(value.clone()),
             _ => MapKey::Int(BigInt::default()),
         })
@@ -430,13 +431,13 @@ fn ordering(order: Ordering) -> i64 {
 
 /// A new text.
 pub fn text_word(text: String) -> i64 {
-    alloc(Object::Text(text))
+    alloc(Object::Text(Text::new(text)))
 }
 
 /// The text of a word.
 pub fn text_value(word: i64) -> String {
     with(word, |object| match object {
-        Object::Text(text) => text.clone(),
+        Object::Text(text) => text.as_str().to_owned(),
         _ => String::new(),
     })
     .unwrap_or_default()
@@ -505,7 +506,12 @@ pub fn text_compare(a: i64, b: i64) -> i64 {
 
 /// The length of a text in Unicode scalar values, as an `Int` word (`spec/14 §1`).
 pub fn text_len(a: i64) -> i64 {
-    int_word(&BigInt::from(text_value(a).chars().count()))
+    let scalars = with(a, |object| match object {
+        Object::Text(text) => text.scalars(),
+        _ => 0,
+    })
+    .unwrap_or(0);
+    int_word(&BigInt::from(scalars))
 }
 
 /// An `Int` as text, in decimal.
@@ -618,7 +624,7 @@ fn equal_words(a: i64, b: i64) -> bool {
     let shape = |word: i64| {
         with(word, |object| match object {
             Object::Int(value) => Shape::Int(value.clone()),
-            Object::Text(text) => Shape::Text(text.clone()),
+            Object::Text(text) => Shape::Text(text.as_str().to_owned()),
             Object::Hashed(bytes) => Shape::Bytes(bytes.clone()),
             Object::Data { tag, fields } => Shape::Cells(Some(*tag), fields.clone()),
             Object::List(items) => Shape::Cells(None, items.clone()),
@@ -787,7 +793,7 @@ pub fn export(word: i64) -> Portable {
         let cells = |words: &[i64]| words.iter().map(cell).collect::<Vec<_>>();
         let Some(node) = with(word, |object| match object {
             Object::Int(value) => Node::Int(value.clone()),
-            Object::Text(text) => Node::Text(text.clone()),
+            Object::Text(text) => Node::Text(text.as_str().to_owned()),
             Object::Hashed(bytes) => Node::Hashed(bytes.clone()),
             Object::Data { tag, fields } => Node::Data {
                 tag: *tag,
@@ -836,7 +842,7 @@ pub fn import(portable: &Portable) -> i64 {
     for node in &portable.nodes {
         let made = match node {
             Node::Int(value) => alloc(Object::Int(value.clone())),
-            Node::Text(text) => alloc(Object::Text(text.clone())),
+            Node::Text(text) => alloc(Object::Text(Text::new(text.clone()))),
             Node::Hashed(bytes) => alloc(Object::Hashed(bytes.clone())),
             Node::Data { tag, fields } => {
                 let object = data(*tag);
@@ -1030,10 +1036,14 @@ pub fn contains_text(t: i64, part: i64) -> i64 {
 
 /// `find(t, text)` of the prelude: `Some` of the scalar position of the first occurrence.
 pub fn find(t: i64, text: i64) -> i64 {
-    let t = text_value(t);
-    match search(&t, &text_value(text)) {
-        Some(byte) => {
-            let position = t.get(..byte).map_or(0, |before| before.chars().count());
+    let part = text_value(text);
+    let found = with(t, |object| match object {
+        Object::Text(t) => search(t, &part).map(|byte| t.scalars_before(byte)),
+        _ => None,
+    })
+    .flatten();
+    match found {
+        Some(position) => {
             let word = int_word(&BigInt::from(position));
             let option = some(word);
             release(word);
@@ -1054,13 +1064,13 @@ pub fn replace(t: i64, pattern: i64, by: i64) -> i64 {
 pub fn slice(t: i64, start: i64, end: i64) -> i64 {
     let position = |word: i64| usize::try_from(&int_value(word)).unwrap_or(0);
     let (start, end) = (position(start), position(end));
-    let t = text_value(t);
-    text_word(
-        t.chars()
-            .skip(start)
-            .take(end.saturating_sub(start))
-            .collect(),
-    )
+    // O(result) once the text's index is built (`spec/22 §6` rule 1).
+    let taken = with(t, |object| match object {
+        Object::Text(t) => t.slice(start, end).to_owned(),
+        _ => String::new(),
+    })
+    .unwrap_or_default();
+    text_word(taken)
 }
 
 /// `to_upper(t)` of the prelude: ASCII letters only (`spec/22 §3`).

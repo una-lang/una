@@ -1821,3 +1821,57 @@ fn text_search_replace_and_split_take_linear_time() {
         times[1]
     );
 }
+
+/// A non-ASCII text of `COUNT` scalar values, built by appends, then each one sliced.
+const SLICE_SCALE: &str = "module scale
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit t = \"\"
+  for i in 0..<COUNT
+    t = \"{t}é\"
+  let edit total = 0
+  for i in 0..<COUNT
+    if i + 1 <= t.len
+      total = total + t.slice(start: i, end: i + 1).len + t.len
+  @console.print(\"{t.len} {total}\")
+";
+
+#[test]
+fn text_len_and_slice_take_constant_time_on_any_text() {
+    // `spec/22 §6` rule 1 and the performance rule: `.len` is O(1), and a position O(1) once
+    // the text's index is built, which appends extend; so a slice at each of n positions of a
+    // non-ASCII text takes linear time. Ten times the text takes well under 25 times as long.
+    let root = package("slice_scale", "\n[run]\nentry = \"scale\"\n", &[]);
+    let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let dir = root.to_str().unwrap();
+    let mut times = Vec::new();
+    for (count, expected) in [
+        ("100000", "100000 10000100000"),
+        ("1000000", "1000000 1000001000000"),
+    ] {
+        std::fs::write(
+            root.join("src/scale.una"),
+            SLICE_SCALE.replace("COUNT", count),
+        )
+        .unwrap();
+        let started = std::time::Instant::now();
+        let output = una(&["run", dir, "--grant", "console", "--max-memory", "1024"]);
+        times.push(started.elapsed());
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        assert_eq!(stdout(&output), format!("{expected}\n"));
+    }
+    assert!(
+        times[1] < times[0] * 25,
+        "10^5 took {:?}, 10^6 took {:?}",
+        times[0],
+        times[1]
+    );
+}
