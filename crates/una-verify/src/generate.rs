@@ -754,6 +754,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             }
         }
         let mut leaves = Vec::new();
+        self.forget_loops();
         self.walk(&fun.body, &ctx, &mut leaves);
         // ADR 0037 rule 2: a function value returned into a declared function type.
         self.returned_functions(&ctx, &leaves, &fun.result, None);
@@ -877,6 +878,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             }
         }
         let mut leaves = Vec::new();
+        self.forget_loops();
         self.walk(&op.body, &ctx, &mut leaves);
         let Some(signature) = signature else {
             return;
@@ -947,6 +949,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             self.bind(&mut ctx, name, ty);
         }
         let mut leaves = Vec::new();
+        self.forget_loops();
         self.walk(body, &ctx, &mut leaves);
     }
 
@@ -3162,6 +3165,12 @@ impl<'p, 'i> Walker<'p, 'i> {
             site,
             forgotten,
         });
+    }
+
+    /// Starts a body: the loops of another one made nothing fresh here (ADR 0071 D3).
+    fn forget_loops(&mut self) {
+        self.loop_fresh.clear();
+        self.loop_results.clear();
     }
 
     /// A binder computed from values a loop made fresh depends on them too (ADR 0071 D3).
