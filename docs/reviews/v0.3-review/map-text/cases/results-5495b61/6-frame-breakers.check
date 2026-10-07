@@ -1,0 +1,97 @@
+[U5002] Error: precondition `0 <= i and i < xs.len` of this call could not be proven (the loop forgets every fact about `xs` but the refinements of its type, and its length when the loop only `set`s a list, as `spec/17 §5` rule 3 says, so the counterexample sets `xs` freely; guard the use with an `if`, or check the value with `checked`)
+    ╭─[ src/main.una:24:5 ]
+    │
+  5 │   requires 0 <= i and i < p.len
+    │            ──────────┬─────────  
+    │                      ╰─────────── requires clause
+    │ 
+ 24 │     near(edit xs, i: i)
+    │     ─────────┬─────────  
+    │              ╰─────────── precondition `0 <= i and i < xs.len` of this call could not be proven (the loop forgets every fact about `xs` but the refinements of its type, and its length when the loop only `set`s a list, as `spec/17 §5` rule 3 says, so the counterexample sets `xs` freely; guard the use with an `if`, or check the value with `checked`)
+    │ 
+    │ Help 1: repair 1 (escape cost 0): add a guard (`if` or a `when` arm) that handles the values where `0 <= i and i < xs.len` does not hold
+    │ 
+    │ Help 2: repair 2 (escape cost 1): check the value with `checked(value, 0 <= i and i < xs.len) else fail <Variant>`
+    │ 
+    │ Note 1: obligation ob-e510eb1cabd7 (precondition) is unknown: 0 <= i and i < xs.len
+    │ 
+    │ Note 2: run `una explain U5002` for an explanation
+────╯
+[U5002] Error: precondition `0 <= i and i < xs.len` of this call could not be proven (the loop forgets every fact about `xs` but the refinements of its type, and its length when the loop only `set`s a list, as `spec/17 §5` rule 3 says, so the counterexample sets `xs` freely; guard the use with an `if`, or check the value with `checked`)
+    ╭─[ src/main.una:32:7 ]
+    │
+ 32 │       set(edit xs, index: i, item: 0)
+    │       ───────────────┬───────────────  
+    │                      ╰───────────────── precondition `0 <= i and i < xs.len` of this call could not be proven (the loop forgets every fact about `xs` but the refinements of its type, and its length when the loop only `set`s a list, as `spec/17 §5` rule 3 says, so the counterexample sets `xs` freely; guard the use with an `if`, or check the value with `checked`)
+    │ 
+    │ Help 1: repair 1 (escape cost 0): add a guard (`if` or a `when` arm) that handles the values where `0 <= i and i < xs.len` does not hold
+    │ 
+    │ Help 2: repair 2 (escape cost 1): check the value with `checked(value, 0 <= i and i < xs.len) else fail <Variant>`
+    │ 
+    │ Note 1: obligation ob-3c70aa9b8269 (precondition) is unknown: 0 <= i and i < xs.len
+    │ 
+    │ Note 2: run `una explain U5002` for an explanation
+────╯
+[U5002] Error: precondition `0 <= i and i < xs.len` of this call could not be proven (the loop forgets every fact about `xs` but the refinements of its type, and its length when the loop only `set`s a list, as `spec/17 §5` rule 3 says, so the counterexample sets `xs` freely; guard the use with an `if`, or check the value with `checked`)
+    ╭─[ src/main.una:40:7 ]
+    │
+ 40 │       set(edit xs, index: i, item: 0)
+    │       ───────────────┬───────────────  
+    │                      ╰───────────────── precondition `0 <= i and i < xs.len` of this call could not be proven (the loop forgets every fact about `xs` but the refinements of its type, and its length when the loop only `set`s a list, as `spec/17 §5` rule 3 says, so the counterexample sets `xs` freely; guard the use with an `if`, or check the value with `checked`)
+    │ 
+    │ Help 1: repair 1 (escape cost 0): add a guard (`if` or a `when` arm) that handles the values where `0 <= i and i < xs.len` does not hold
+    │ 
+    │ Help 2: repair 2 (escape cost 1): check the value with `checked(value, 0 <= i and i < xs.len) else fail <Variant>`
+    │ 
+    │ Note 1: obligation ob-5666b23be03e (precondition) is unknown: 0 <= i and i < xs.len
+    │ 
+    │ Note 2: run `una explain U5002` for an explanation
+────╯
+[U5001] Error: precondition `0 <= i and i < xs.len` of this call is refuted
+    ╭─[ src/main.una:46:5 ]
+    │
+ 46 │     set(edit xs, index: i, item: 0)
+    │     ───────────────┬───────────────  
+    │                    ╰───────────────── precondition `0 <= i and i < xs.len` of this call is refuted
+    │ 
+    │ Help 1: repair 1 (escape cost 0): add a guard (`if` or a `when` arm) that handles the values where `0 <= i and i < xs.len` does not hold
+    │ 
+    │ Help 2: repair 2 (escape cost 1): check the value with `checked(value, 0 <= i and i < xs.len) else fail <Variant>`
+    │ 
+    │ Note 1: obligation ob-23f1de96d305 (precondition) is refuted: 0 <= i and i < xs.len
+    │ 
+    │ Note 2: counterexample: i = 0, xs = List#1, xs.len = 0, ys = List#1
+    │ 
+    │ Note 3: run `una explain U5001` for an explanation
+────╯
+[U5002] Error: precondition `0 <= i and i < xs.len` of this call could not be proven (the loop forgets every fact about `xs` but the refinements of its type, and its length when the loop only `set`s a list, as `spec/17 §5` rule 3 says, so the counterexample sets `xs` freely; guard the use with an `if`, or check the value with `checked`)
+    ╭─[ src/main.una:53:5 ]
+    │
+ 53 │     set(edit xs, index: i, item: 0)
+    │     ───────────────┬───────────────  
+    │                    ╰───────────────── precondition `0 <= i and i < xs.len` of this call could not be proven (the loop forgets every fact about `xs` but the refinements of its type, and its length when the loop only `set`s a list, as `spec/17 §5` rule 3 says, so the counterexample sets `xs` freely; guard the use with an `if`, or check the value with `checked`)
+    │ 
+    │ Help 1: repair 1 (escape cost 0): add a guard (`if` or a `when` arm) that handles the values where `0 <= i and i < xs.len` does not hold
+    │ 
+    │ Help 2: repair 2 (escape cost 1): check the value with `checked(value, 0 <= i and i < xs.len) else fail <Variant>`
+    │ 
+    │ Note 1: obligation ob-5a093f360d42 (precondition) is unknown: 0 <= i and i < xs.len
+    │ 
+    │ Note 2: run `una explain U5002` for an explanation
+────╯
+[U5002] Error: precondition `0 <= 0 and 0 < ys.len` of this call could not be proven (the loop forgets every fact about `xs` but the refinements of its type, and its length when the loop only `set`s a list, as `spec/17 §5` rule 3 says, so the counterexample sets `xs` freely; guard the use with an `if`, or check the value with `checked`)
+    ╭─[ src/main.una:61:3 ]
+    │
+ 61 │   set(edit ys, index: 0, item: 1)
+    │   ───────────────┬───────────────  
+    │                  ╰───────────────── precondition `0 <= 0 and 0 < ys.len` of this call could not be proven (the loop forgets every fact about `xs` but the refinements of its type, and its length when the loop only `set`s a list, as `spec/17 §5` rule 3 says, so the counterexample sets `xs` freely; guard the use with an `if`, or check the value with `checked`)
+    │ 
+    │ Help 1: repair 1 (escape cost 0): add a guard (`if` or a `when` arm) that handles the values where `0 <= 0 and 0 < ys.len` does not hold
+    │ 
+    │ Help 2: repair 2 (escape cost 1): check the value with `checked(value, 0 <= 0 and 0 < ys.len) else fail <Variant>`
+    │ 
+    │ Note 1: obligation ob-45bd61c7bc95 (precondition) is unknown: 0 <= 0 and 0 < ys.len
+    │ 
+    │ Note 2: run `una explain U5002` for an explanation
+────╯
+exit 1

@@ -1,0 +1,23 @@
+module main
+
+-- N-42 with maps and texts: function values, closures and fold never change a value another
+-- name holds (spec/21 §5 rule 1).
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let base = empty_map().with(key: 1, value: 10)
+  let f = fn(m: Map[Int, Int], k: Int) -> m.with(key: k, value: k)
+  let a = f(base, 2)
+  let b = f(base, 3)
+  let g = fn(k: Int) -> base.without(key: k).with(key: k + 100, value: 0)
+  let c = g(1)
+  let d = g(1)
+  let folded = [5, 6].fold(initial: base, step: fn(acc, x) -> acc.with(key: x, value: x))
+  let words = "x"
+  let grown = ["a", "b"].fold(initial: words, step: fn(t, w) -> "{t}{w}")
+  let twice = fn(t: Text) -> "{t}{t}"
+  let w1 = twice(words)
+  let entries = base.entries().fold(initial: base, step: fn(acc, e) -> acc.with(key: e.key + 1, value: e.value))
+  @console.print("{base} {a} {b} {c} {d}")
+  @console.print("{folded} {entries} {base}")
+  @console.print("{words} {grown} {w1} {words}")
