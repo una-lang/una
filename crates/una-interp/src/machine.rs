@@ -272,6 +272,9 @@ impl<'p> Index<'p> {
                 Value::Bool(b) => out.push_str(&b.to_string()),
                 Value::Text(t) => out.push_str(&una_core::quote(t)),
                 Value::Unit => out.push_str("unit"),
+                // Interpolation writes no bytes of a hash (ADR 0068, amendment of
+                // 2026-10-06); traces and diagnostics show them.
+                Value::Hashed(_) if !redact => out.push_str("<hashed>"),
                 Value::Hashed(bytes) => out.push_str(&format!("hashed:{}", host::hex(bytes))),
                 Value::Closure(_) => out.push_str("<function>"),
                 Value::List(items) | Value::Tuple(items) => {

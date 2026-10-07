@@ -232,6 +232,9 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) needs: Vec<(Ty, Constraint, Span)>,
     /// The interpolations among `needs`, whose U2026 names interpolation (ADR 0068).
     pub(crate) interpolations: Vec<Span>,
+    /// The labeled fields that interpolations wrote, by the text literal's span: the field,
+    /// its kind and its declared label, which U4003 names at a sink (ADR 0068 D8).
+    pub(crate) written_fields: Vec<(Span, String, String, Label)>,
     /// Set when an expression checked under [`Rl::Probe`] is outside the refinement language.
     pub(crate) probe_failed: bool,
     /// The instantiations of type parameters, judged when the declaration ends (U3016).
@@ -341,6 +344,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             instances: Vec::new(),
             needs: Vec::new(),
             interpolations: Vec::new(),
+            written_fields: Vec::new(),
             probe_failed: false,
             instantiations: Vec::new(),
             escaped: Vec::new(),

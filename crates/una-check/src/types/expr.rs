@@ -276,6 +276,11 @@ impl<'a> Checker<'_, 'a, '_> {
                             ),
                         );
                     } else {
+                        if let Some((field, kind, label)) =
+                            self.labeled_field(&other, &mut BTreeSet::new())
+                        {
+                            self.written_fields.push((text.span, field, kind, label));
+                        }
                         let mut params = Vec::new();
                         other.params(&mut params);
                         if !params.is_empty() {
@@ -334,6 +339,41 @@ impl<'a> Checker<'_, 'a, '_> {
                         "field `{}` of `{}` holds {what}",
                         field.name, kind.name
                     ));
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// The first field of values of `ty` whose declared type is labeled above `public`: its
+    /// name, its kind and the label, for U4003 at a sink (ADR 0068 D8).
+    fn labeled_field(
+        &self,
+        ty: &Ty,
+        seen: &mut BTreeSet<KindId>,
+    ) -> Option<(String, String, Label)> {
+        match ty.unlabeled() {
+            Ty::List(element) => self.labeled_field(element, seen),
+            Ty::Kind(id, args) => {
+                if !seen.insert(*id) {
+                    return None;
+                }
+                let kind = self.env.kinds.get(*id)?;
+                let fields = kind
+                    .record
+                    .iter()
+                    .flatten()
+                    .chain(kind.variants.iter().flat_map(|v| &v.fields));
+                for field in fields {
+                    let field_ty = field.ty.base.substitute(args);
+                    let label = self.deep(&field_ty);
+                    if label != Label::public() {
+                        return Some((field.name.to_owned(), kind.name.to_owned(), label));
+                    }
+                    if let Some(found) = self.labeled_field(&field_ty, seen) {
+                        return Some(found);
+                    }
                 }
                 None
             }

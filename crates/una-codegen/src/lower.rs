@@ -138,6 +138,9 @@ pub(crate) fn constant_descriptor(
     };
     Some(match base {
         Base::Param(_) => return None,
+        // A type that holds a type parameter takes a composite descriptor, built at run time
+        // from the caller's descriptors (ADR 0068 D6).
+        _ if constraint < Constraint::Ord && !type_params(ty).is_empty() => return None,
         Base::Int => Descriptor::Int,
         Base::Fixed(int) => Descriptor::Fixed(*int),
         Base::Text => Descriptor::Text,
@@ -147,6 +150,31 @@ pub(crate) fn constant_descriptor(
         }
         _ => Descriptor::Structural(index(ty)),
     })
+}
+
+/// The type parameters that `ty` holds, by first occurrence.
+fn type_params(ty: &Type) -> Vec<String> {
+    fn walk(ty: &Type, out: &mut Vec<String>) {
+        match ty {
+            Type::Base { base, .. } => match base {
+                Base::Param(name) => {
+                    if !out.contains(name) {
+                        out.push(name.clone());
+                    }
+                }
+                Base::Named { args, .. } => args.iter().for_each(|arg| walk(arg, out)),
+                Base::Tuple(items) => items.iter().for_each(|item| walk(item, out)),
+                _ => {}
+            },
+            Type::Fn { params, result, .. } => {
+                params.iter().for_each(|param| walk(param, out));
+                walk(result, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(ty, &mut out);
+    out
 }
 
 /// A type of no known base: a value the code only passes on.
@@ -1450,6 +1478,12 @@ impl<'p> Lowerer<'_, 'p, '_> {
                         }
                     ) {
                         let (value, _) = self.atom(first, env)?;
+                        // A type that holds type parameters is written through its composite
+                        // descriptor (ADR 0068 D6).
+                        if !type_params(&ty).is_empty() {
+                            let desc = self.descriptor(&ty, Constraint::Eq, env)?;
+                            return self.call("una_rt_generic_write", &[desc, value]);
+                        }
                         let index =
                             i64::try_from(self.emitter.types.of(&ty)).map_err(crate::internal)?;
                         let index = self.builder.ins().iconst(types::I64, index);
@@ -1658,16 +1692,37 @@ impl<'p> Lowerer<'_, 'p, '_> {
         match constant_descriptor(ty, constraint, &mut |ty| types.of(ty)) {
             Some(descriptor) => Ok(self.builder.ins().iconst(types::I64, descriptor.word())),
             None => {
-                let Type::Base {
+                if let Type::Base {
                     base: Base::Param(param),
                     ..
                 } = ty
-                else {
-                    return Err(internal("a descriptor of no type"));
-                };
-                env.get(&descriptor_name(param))
-                    .map(|(value, _)| *value)
-                    .ok_or_else(|| internal(format!("no type descriptor for `{param}`")))
+                {
+                    return env
+                        .get(&descriptor_name(param))
+                        .map(|(value, _)| *value)
+                        .ok_or_else(|| internal(format!("no type descriptor for `{param}`")));
+                }
+                // A composite: the description of `ty` with its type parameters as slots, and
+                // the caller's descriptor of each (ADR 0068 D6).
+                let params = type_params(ty);
+                let slots: Vec<Type> = (0..params.len())
+                    .map(|position| base(Base::Param(crate::describe::slot_name(position))))
+                    .collect();
+                let described = substitute(ty, &params, &slots);
+                let index =
+                    i64::try_from(self.emitter.types.of(&described)).map_err(crate::internal)?;
+                let list = self.call("una_rt_list", &[])?;
+                for param in &params {
+                    let desc = env
+                        .get(&descriptor_name(param))
+                        .map(|(value, _)| *value)
+                        .ok_or_else(|| internal(format!("no type descriptor for `{param}`")))?;
+                    self.runtime("una_rt_push", &[list, desc]);
+                }
+                let index = self.builder.ins().iconst(types::I64, index);
+                let desc = self.call("una_rt_descriptor_composite", &[index, list])?;
+                self.release(list, Kind::List);
+                Ok(desc)
             }
         }
     }

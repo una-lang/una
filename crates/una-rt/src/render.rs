@@ -30,6 +30,9 @@ pub enum Shape {
     List(usize),
     /// A kind, by its variants in declaration order.
     Data(Vec<Variant>),
+    /// The type parameter at this position of a composite descriptor, which says how to write
+    /// its values (`spec/20 §7`, ADR 0068 D6).
+    Param(usize),
     /// A type the build cannot describe: its values render as `?`.
     Other,
 }
@@ -133,19 +136,21 @@ impl Types {
     /// The Una form of `word`, a value of the type at `ty`, with the fields labeled above
     /// `public` redacted, as traces and diagnostics show it.
     pub fn render(&self, ty: usize, word: i64) -> String {
-        render(&self.0, ty, word, true)
+        render(&self.0, ty, word, true, &[])
     }
 
     /// The Una form of `word` with every field, as interpolation writes it: the text carries
-    /// the value's labels (`spec/11 §5`, ADR 0068).
-    pub fn written(&self, ty: usize, word: i64) -> String {
-        render(&self.0, ty, word, false)
+    /// the value's labels (`spec/11 §5`, ADR 0068). `params` are the descriptors of the type
+    /// parameters that the type at `ty` holds, by position.
+    pub fn written(&self, ty: usize, word: i64, params: &[i64]) -> String {
+        render(&self.0, ty, word, false, params)
     }
 }
 
-/// What remains to render: a value of a type, or text as it is.
+/// What remains to render: a value of a type, with the descriptors of the type parameters it
+/// holds, or text as it is.
 enum Task {
-    Value(usize, i64),
+    Value(usize, i64, std::rc::Rc<Vec<i64>>),
     Text(String),
 }
 
@@ -153,16 +158,16 @@ enum Task {
 /// than the native stack: a value can nest deeper than any call (ADR 0060, draft). With
 /// `redact`, a field of a kind whose declared type is labeled above `public` is
 /// `<redacted:level>`.
-fn render(types: &[Shape], ty: usize, word: i64, redact: bool) -> String {
+fn render(types: &[Shape], ty: usize, word: i64, redact: bool, params: &[i64]) -> String {
     let mut out = String::new();
-    let mut tasks = vec![Task::Value(ty, word)];
+    let mut tasks = vec![Task::Value(ty, word, std::rc::Rc::new(params.to_vec()))];
     while let Some(task) = tasks.pop() {
-        let (ty, word) = match task {
+        let (ty, word, params) = match task {
             Task::Text(text) => {
                 out.push_str(&text);
                 continue;
             }
-            Task::Value(ty, word) => (ty, word),
+            Task::Value(ty, word, params) => (ty, word, params),
         };
         // The parts of a list or a variant, in order; pushed in reverse onto the stack.
         let mut parts = Vec::new();
@@ -171,6 +176,8 @@ fn render(types: &[Shape], ty: usize, word: i64, redact: bool) -> String {
             Some(Shape::Bool) => out.push_str(if word != 0 { "true" } else { "false" }),
             Some(Shape::Text) => out.push_str(&una_core::quote(&values::text_value(word))),
             Some(Shape::Unit) => out.push_str("unit"),
+            // Interpolation writes no bytes of a hash (ADR 0068, amendment of 2026-10-06).
+            Some(Shape::Hashed) if !redact => out.push_str("<hashed>"),
             Some(Shape::Hashed) => {
                 out.push_str("hashed:");
                 out.push_str(&una_interp::hex(&values::bytes(word)));
@@ -182,7 +189,11 @@ fn render(types: &[Shape], ty: usize, word: i64, redact: bool) -> String {
                     if index > 0 {
                         parts.push(Task::Text(", ".to_owned()));
                     }
-                    parts.push(Task::Value(*item, values::field(word, index)));
+                    parts.push(Task::Value(
+                        *item,
+                        values::field(word, index),
+                        std::rc::Rc::clone(&params),
+                    ));
                 }
                 parts.push(Task::Text("]".to_owned()));
             }
@@ -212,10 +223,33 @@ fn render(types: &[Shape], ty: usize, word: i64, redact: bool) -> String {
                             Some(level) if redact && !unit => {
                                 Task::Text(format!("<redacted:{level}>"))
                             }
-                            _ => Task::Value(field.ty, field_word(word, index)),
+                            _ => Task::Value(
+                                field.ty,
+                                field_word(word, index),
+                                std::rc::Rc::clone(&params),
+                            ),
                         });
                     }
                     parts.push(Task::Text(")".to_owned()));
+                }
+            }
+            // A value of a type parameter, by its descriptor: an integer in decimal, a text
+            // quoted, anything else by the type description the descriptor carries.
+            Some(Shape::Param(position)) => {
+                match params
+                    .get(*position)
+                    .and_then(|desc| crate::generic::shape_of(*desc))
+                {
+                    Some(crate::generic::Written::Int) => {
+                        out.push_str(&values::int_value(word).to_string());
+                    }
+                    Some(crate::generic::Written::Text) => {
+                        out.push_str(&una_core::quote(&values::text_value(word)));
+                    }
+                    Some(crate::generic::Written::Typed(ty, inner)) => {
+                        parts.push(Task::Value(ty, word, std::rc::Rc::new(inner)));
+                    }
+                    None => out.push('?'),
                 }
             }
             Some(Shape::Other) | None => out.push('?'),
@@ -243,6 +277,7 @@ fn shape(value: &Value) -> Option<Shape> {
         "hashed" => Shape::Hashed,
         "fn" => Shape::Fn,
         "list" => Shape::List(index(value, "item")?),
+        "param" => Shape::Param(index(value, "index")?),
         "data" => Shape::Data(
             value
                 .get("variants")?

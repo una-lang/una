@@ -707,14 +707,15 @@ pub fn budget(site: usize) -> i64 {
 
 /// The text of `word`, a value of the type at `ty` in the program's type descriptions, as
 /// interpolation writes it, with every field (`spec/11 §5`, ADR 0068). A new reference.
-pub fn written(ty: usize, word: i64) -> i64 {
-    let text = with_state(|state| state.types.written(ty, word)).unwrap_or_default();
+/// `params` are the descriptors of the type parameters that the type holds, by position.
+pub fn written(ty: usize, word: i64, params: &[i64]) -> i64 {
+    let text = with_state(|state| state.types.written(ty, word, params)).unwrap_or_default();
     values::text_word(text)
 }
 
 /// `written` of the type at `ty`, as the generated code passes it.
 pub fn write(ty: i64, word: i64) -> i64 {
-    written(usize::try_from(ty).unwrap_or(usize::MAX), word)
+    written(usize::try_from(ty).unwrap_or(usize::MAX), word, &[])
 }
 
 /// Returns 1 when the task must stop before an operation, having been cancelled, and 0

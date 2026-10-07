@@ -328,6 +328,7 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_generic_sort", 2, true),
     ("una_rt_generic_write", 2, true),
     ("una_rt_write", 2, true),
+    ("una_rt_descriptor_composite", 2, true),
     ("una_rt_operation_begin", 0, false),
     ("una_rt_operation_end", 0, false),
     ("una_rt_together", 2, true),

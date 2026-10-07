@@ -1255,4 +1255,16 @@ fn an_interpolation_names_what_it_cannot_write_and_the_constraint_it_needs() {
         repair_descriptions(&unconstrained),
         ["constrain `T` by `Eq`"]
     );
+    // D8: U4003 at a sink names the labeled field of the interpolated record.
+    let secret = diagnostic(
+        "interpolate-secret",
+        "module app\n\npub kind Account\n  owner: Text\n  pin: secret Int\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  @console.print(\"account {open()}\")\n\nopen() -> Account = Account(owner: \"Ana\", pin: 1)\n",
+    );
+    assert_eq!(secret["code"], "U4003");
+    assert_eq!(
+        repair_descriptions(&secret),
+        [
+            "field `pin` of `Account` is `secret`: interpolate the fields that `@console.print` accepts instead, or declassify `pin` through a policy"
+        ]
+    );
 }
