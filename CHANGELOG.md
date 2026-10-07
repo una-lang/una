@@ -26,6 +26,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 ### Documentation
 
 - **A getting-started tutorial** (#245, `docs/guide/getting-started.md`): from install to a verified, natively built program, `examples/wordfreq`, through a contract, a refuted proof and its counterexample, examples, grants, `una run`, `una build` and the editor. The guide test checks every block, and the tutorial's last package is the example.
+- **Project files for the public launch** (#246). A README for newcomers, `CONTRIBUTING.md`, `SECURITY.md` with what is in scope (the checker's soundness, the runtime, the trusted base), `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), and issue templates for bug reports, soundness reports and questions.
 
 ### Verification
 
