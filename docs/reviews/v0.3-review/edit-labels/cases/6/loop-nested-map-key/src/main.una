@@ -1,0 +1,17 @@
+module main
+
+-- expect: rejected (U4003) once N-44 opens nested positions: an inner map's key, raised in a later iteration
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let s = @env.get("S")
+    if none use "x"
+  let x = "x"
+  let edit m = empty_map()
+  edit m.set(key: 0, value: empty_map().with(key: x, value: 0))
+  for i in 0..<2
+    let inner = m.get(key: i)
+      if none use empty_map()
+    @console.print("{inner.len}")
+    edit m.set(key: i + 1, value: empty_map().with(key: s, value: 0).with(key: x, value: 1))

@@ -1,0 +1,8 @@
+[package]
+name = "plain_let_not_rebindable"
+version = "0.1.0"
+edition = "0.1"
+
+[run]
+entry = "main"
+grants = ["console", "env"]

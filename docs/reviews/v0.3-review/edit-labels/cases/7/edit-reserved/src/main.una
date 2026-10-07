@@ -1,0 +1,8 @@
+-- expect: U0103: `edit` is reserved in edition 0.1, so no binding is editable
+module main
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit xs = []
+  @console.print("{xs}")
