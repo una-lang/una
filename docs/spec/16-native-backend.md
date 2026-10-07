@@ -33,6 +33,7 @@ Status: Normative, v0.2 (ADR 0055).
    - the lines the program prints go to stdout as it prints them;
    - U6001 (a failure of `main`) and U6003 (call depth, stack or memory exhausted) go to stderr, with exit code 1;
    - exit code 0 when `main` returns.
+   - (v0.2, #259.) A failure to write output exits with code 2, as in `una run`. A closed stdout or stderr is not one: what the executable writes there is discarded, as `/dev/null` discards it, and the exit code is the one an open stream would give. A broken pipe (EPIPE), a reader that went away, is a failure to write.
 
    It has no `--json` output in v0.2.
 
