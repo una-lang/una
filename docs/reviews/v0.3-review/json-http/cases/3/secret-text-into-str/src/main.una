@@ -1,0 +1,3 @@
+module main
+
+f(s: secret Text) -> Json = Str(value: s)

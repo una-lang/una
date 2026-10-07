@@ -1,0 +1,102 @@
+module build
+
+--- How often each character occurs, as a JSON object of counts.
+counts(t: Text) -> Json
+=
+  let edit m: Map[Text, Json] = empty_map()
+  for c in t.chars()
+    let seen = m.get(key: c)
+      if none use Number(value: 0)
+    let n = when seen
+      is Number(value) -> value
+      else -> 0
+    edit m.set(key: c, value: Number(value: n + 1))
+  Object(fields: m)
+
+--- The parts of a text between commas, as an array, and the text as a key of an object.
+shapes(t: Text) -> Json
+=
+  let parts = t.split(on: ",").map(each: fn(p) -> Str(value: p))
+  let m: Map[Text, Json] = empty_map().with(key: t, value: Array(items: parts))
+  Object(fields: m.with(key: t.replace(pattern: ",", by: ";"), value: Str(value: t.quote_json())))
+
+line(t: Text) -> Text
+=
+  let q = if t.quote_json() == Str(value: t).to_json() then "same" else "DIFFERENT"
+  let c = counts(t)
+  let s = shapes(t)
+  let back = attempt parse_json(s.to_json())
+  let trip = when back
+    is Ok(j) -> if j == s then "trip" else "NO TRIP"
+    is Err -> "NO PARSE"
+  "{q} {trip} {c.to_json()} {s.to_json()}"
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print(line(""))
+  @console.print(line("\u{61}"))
+  @console.print(line("\u{61}\u{2c}\u{62}\u{2c}\u{2c}\u{63}"))
+  @console.print(line("\u{e9}\u{1f600}"))
+  @console.print(line("\u{2028}\u{2029}"))
+  @console.print(line("\u{6b}\u{65}\u{79}\u{3a}\u{20}\u{76}\u{61}\u{6c}\u{75}\u{65}\u{2c}\u{20}\u{6f}\u{74}\u{68}\u{65}\u{72}\u{3a}\u{20}\u{74}\u{68}\u{69}\u{6e}\u{67}"))
+  @console.print(line("\u{2028}\u{1f600}\u{20}\u{c}"))
+  @console.print(line("\u{7f}\u{2068}\u{2028}\u{2c}\u{202e}\u{61}\u{7f}\u{a}\u{1f600}\u{2f}"))
+  @console.print(line("\u{feff}\u{7f}\u{1f600}\u{1f600}"))
+  @console.print(line("\u{d}\u{2068}\u{20}\u{2f}\u{2068}\u{20}\u{e9}\u{d}"))
+  @console.print(line("\u{4e2d}"))
+  @console.print(line("\u{22}\u{7d}"))
+  @console.print(line("\u{62}\u{9}\u{7d}\u{61}\u{a}\u{7f}\u{202e}\u{7b}\u{d}\u{feff}"))
+  @console.print(line("\u{d}\u{7b}\u{2028}\u{1f}\u{20}\u{c}\u{3a}"))
+  @console.print(line("\u{20}"))
+  @console.print(line("\u{5c}\u{a}\u{4e2d}\u{0}\u{7d}\u{2068}\u{9}\u{0}"))
+  @console.print(line("\u{d}\u{2028}\u{c}\u{1f600}\u{2028}\u{0}\u{2028}\u{2f}\u{8}"))
+  @console.print(line("\u{61}\u{a}\u{202e}\u{4e2d}\u{feff}\u{22}\u{feff}\u{8}\u{1f600}\u{2028}\u{2028}"))
+  @console.print(line("\u{feff}\u{2068}"))
+  @console.print(line("\u{2068}\u{2028}\u{a}\u{9}"))
+  @console.print(line("\u{2c}\u{7f}"))
+  @console.print(line("\u{7f}\u{2c}\u{c}\u{2c}\u{0}\u{20}\u{61}\u{9}\u{0}\u{7d}\u{0}"))
+  @console.print(line("\u{62}\u{202e}"))
+  @console.print(line("\u{7d}\u{62}\u{d}\u{feff}\u{2028}\u{8}\u{1f600}\u{a}\u{e9}\u{2f}"))
+  @console.print(line("\u{9}"))
+  @console.print(line("\u{2c}"))
+  @console.print(line("\u{202e}\u{1f600}"))
+  @console.print(line("\u{5c}"))
+  @console.print(line("\u{9}\u{202e}\u{a}\u{20}\u{feff}\u{62}\u{8}"))
+  @console.print(line("\u{c}\u{20}\u{d}\u{d}\u{1f}\u{e9}"))
+  @console.print(line("\u{2068}\u{202e}\u{4e2d}\u{1f600}\u{3a}\u{202e}\u{e9}"))
+  @console.print(line("\u{0}\u{2068}\u{7b}\u{feff}\u{2f}"))
+  @console.print(line("\u{0}\u{a}\u{e9}\u{9}\u{1f600}"))
+  @console.print(line("\u{61}\u{0}\u{2028}\u{8}\u{61}\u{d}"))
+  @console.print(line("\u{2028}\u{2068}\u{20}\u{62}\u{2068}\u{2068}\u{8}\u{1f}\u{c}\u{4e2d}"))
+  @console.print(line("\u{202e}\u{feff}\u{a}\u{7b}\u{7f}\u{61}"))
+  @console.print(line("\u{62}\u{4e2d}\u{61}\u{c}\u{a}\u{2068}\u{1f}\u{9}\u{2028}\u{202e}"))
+  @console.print(line("\u{22}\u{c}\u{22}\u{8}\u{7d}\u{c}"))
+  @console.print(line("\u{a}\u{9}\u{d}\u{3a}\u{7d}\u{61}\u{2028}\u{4e2d}\u{7b}\u{20}"))
+  @console.print(line("\u{e9}\u{2f}\u{2068}\u{a}\u{2f}"))
+  @console.print(line("\u{22}\u{4e2d}\u{0}\u{2068}\u{feff}\u{3a}"))
+  @console.print(line("\u{202e}\u{8}"))
+  @console.print(line("\u{4e2d}\u{2f}\u{1f}\u{22}\u{2c}\u{8}"))
+  @console.print(line("\u{5c}\u{2028}\u{1f}\u{a}\u{2f}\u{3a}\u{62}\u{e9}\u{5c}\u{8}\u{2028}"))
+  @console.print(line("\u{a}\u{8}\u{2068}"))
+  @console.print(line("\u{202e}\u{c}"))
+  @console.print(line("\u{20}\u{0}\u{9}\u{e9}\u{a}\u{1f}\u{c}\u{2068}\u{0}\u{9}"))
+  @console.print(line("\u{2028}\u{0}\u{62}\u{0}\u{20}\u{5c}\u{61}"))
+  @console.print(line("\u{202e}\u{e9}\u{0}\u{1f600}\u{feff}\u{2f}\u{62}\u{7b}"))
+  @console.print(line("\u{7d}\u{4e2d}\u{7b}\u{e9}\u{9}\u{1f600}\u{8}\u{2f}"))
+  @console.print(line("\u{2028}\u{9}"))
+  @console.print(line("\u{2f}\u{62}"))
+  @console.print(line("\u{feff}"))
+  @console.print(line("\u{5c}\u{0}\u{2028}\u{62}\u{61}\u{7f}\u{7b}\u{3a}\u{22}"))
+  @console.print(line("\u{9}\u{2f}\u{4e2d}\u{61}\u{e9}\u{1f600}\u{0}\u{62}\u{202e}"))
+  @console.print(line("\u{8}\u{20}"))
+  @console.print(line("\u{1f600}\u{7f}\u{62}\u{c}\u{2f}"))
+  @console.print(line("\u{3a}\u{1f600}\u{3a}\u{22}"))
+  @console.print(line("\u{a}\u{20}\u{61}\u{7f}"))
+  @console.print(line("\u{2028}\u{d}\u{62}\u{7d}\u{a}\u{2f}\u{a}\u{202e}\u{e9}\u{e9}\u{0}"))
+  @console.print(line("\u{7f}"))
+  @console.print(line("\u{7d}\u{61}\u{62}\u{7d}\u{20}\u{62}"))
+  @console.print(line("\u{62}\u{2c}"))
+  @console.print(line("\u{62}\u{feff}\u{2c}\u{e9}\u{e9}\u{7f}\u{8}\u{22}"))
+  @console.print(line("\u{2c}\u{c}\u{d}\u{2068}\u{d}\u{2028}"))
+  @console.print(line("\u{c}\u{a}\u{5c}\u{8}\u{0}"))

@@ -1,0 +1,5 @@
+module main
+
+import std.host (Http, Response)
+
+pub f(r: Response) -> Int = r.status

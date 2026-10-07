@@ -1,0 +1,3 @@
+module main
+
+f(m: Map[Text, internal Json]) -> Json = Object(fields: m)

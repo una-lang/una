@@ -1,0 +1,10 @@
+module main
+
+pub kind Json = Null | Str(value: Text)
+
+pub kind Http = Get | Post
+
+pub kind Response
+  status: Int
+
+pub f() -> Json = Str(value: "a")
