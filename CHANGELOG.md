@@ -10,6 +10,10 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 - **Refutations that only a loop's abstraction allows are unknown** (#260, ADR 0071 D3). A refutation inside a loop body that sets values the loop forgot is checked once more at the loop's first iteration. It stays U5001 with that iteration's counterexample when the first iteration fails, and is U5002 with the reason "the loop forgets every fact about `x` ..." otherwise. After a loop, such a refutation is U5002. Both are errors, as before.
 - **Two more counterexamples that were no run** (#278). The body of a loop over a list now assumes the list has an element, so `for y in ys` with `set(edit xs, index: 0, …)` and `xs.len == ys.len` verifies. A loop whose state starts from an earlier loop's final value is U5002, not refuted at a first iteration it cannot pin.
 
+### Output streams
+
+- **A closed stdout or stderr discards the output** (#259). `spec/13 §5` and `spec/16 §3` now say what both engines already did: writing to a closed stream is not a failure to write, as for `/dev/null`, so `una run`, `una test` and native executables exit as they would with the stream open. A broken pipe (EPIPE), a reader that went away, still exits with code 2. Tests now pin both cases in the interpreter and in native code.
+
 ## v0.2.0
 
 The first stable release of v0.2. The native backend compiles the whole language of edition 0.2 into executables that match the interpreter. Edition 0.2 completes its scope with structured concurrency, constraints on generics and printing of structured values, and every Critical and Major finding of the two independent reviews of v0.2 (#176, #177) is fixed. Gate 1's benchmark stays pinned to v0.1.x.
