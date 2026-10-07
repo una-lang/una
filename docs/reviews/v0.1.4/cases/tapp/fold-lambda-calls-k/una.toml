@@ -1,0 +1,4 @@
+[package]
+name = "fold_lambda_calls_k"
+version = "0.1.0"
+edition = "0.1"

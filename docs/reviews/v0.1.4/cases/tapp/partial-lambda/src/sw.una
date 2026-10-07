@@ -1,0 +1,17 @@
+-- expect: leak (U4003): a lambda bound by let wraps k, and receives the decision
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  let wrapped = fn(x: T) -> k(x) + 1
+  let n = wrapped(if a == b then p else q)
+  @log.write(n)
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g([s], b: [0], p: [], q: [1], k: fn(xs) -> xs.len)

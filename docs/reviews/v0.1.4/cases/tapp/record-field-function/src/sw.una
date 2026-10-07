@@ -1,0 +1,20 @@
+-- expect: leak (U4003): the function value is a field of a generic record
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub kind Box[T]
+  run: fn(T) -> Int
+
+g[T](a: T, b: T, p: T, q: T, box: Box[T]) -> Unit
+  uses @log: Log[write]
+=
+  let f = box.run
+  let n = f(if a == b then p else q)
+  @log.write(n)
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g([s], b: [0], p: [], q: [1], box: Box(run: fn(xs) -> xs.len))

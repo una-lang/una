@@ -1,0 +1,8 @@
+[package]
+name = "filter_then_fold"
+version = "0.1.0"
+edition = "0.1"
+
+[run]
+entry = "sw"
+grants = ["console", "env"]

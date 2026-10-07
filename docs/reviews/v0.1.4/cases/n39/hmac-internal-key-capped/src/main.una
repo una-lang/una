@@ -1,0 +1,9 @@
+-- expect: U4003 only, at key_name (Keys.hmac accepts public for it): no extra U4002
+module main
+
+pub probe(name: internal Text) -> internal Hashed
+  uses @keys: Keys[hmac]
+  fails KeyError
+=
+  @keys.hmac(key_name: name, data: "x")
+    if error pass

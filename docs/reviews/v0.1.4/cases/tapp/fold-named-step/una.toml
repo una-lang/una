@@ -1,0 +1,4 @@
+[package]
+name = "fold_named_step"
+version = "0.1.0"
+edition = "0.1"

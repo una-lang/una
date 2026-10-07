@@ -1,0 +1,16 @@
+-- expect: ok (no U4xxx): map of k over values of T, with no decision
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+g[T](p: T, q: T, k: fn(T) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  let ns = [p, q].map(each: k)
+  @log.write(ns.sum())
+
+pub fine(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g([s], q: [1], k: fn(xs) -> xs.len)

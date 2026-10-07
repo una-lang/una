@@ -1,0 +1,11 @@
+-- expect: U4001: `if error use` runs under the internal decision, so the result is internal
+module main
+
+pub probe(path: internal Text) -> Int
+  uses @files: Files[write]
+=
+  let done = attempt @files.write(path, content: "x")
+  let n = when done
+    is Ok(v) -> 1
+    is Err(e) -> 0
+  n

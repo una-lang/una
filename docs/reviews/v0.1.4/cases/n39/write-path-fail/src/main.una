@@ -1,0 +1,11 @@
+-- expect: U4002 at `if error fail`
+module main
+
+pub kind Bad = Broken | Other
+
+pub probe(path: internal Text) -> Unit
+  uses @files: Files[write]
+  fails Bad
+=
+  @files.write(path, content: "x")
+    if error fail Broken

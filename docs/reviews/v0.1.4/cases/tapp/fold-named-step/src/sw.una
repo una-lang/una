@@ -1,0 +1,16 @@
+-- expect: leak (U4003): fold applies a function value to the decided element
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+g[T](a: T, b: T, p: T, q: T, step: fn(Int, T) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  let n = [if a == b then p else q].fold(initial: 0, step: step)
+  @log.write(n)
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g([s], b: [0], p: [], q: [1], step: fn(acc, xs) -> acc + xs.len)

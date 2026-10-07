@@ -1,0 +1,19 @@
+-- expect: leak (U4003): the function value is the result of a call
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pick[T](k: fn(T) -> Int) -> fn(T) -> Int = k
+
+g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  let f = pick(k)
+  let n = f(if a == b then p else q)
+  @log.write(n)
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g([s], b: [0], p: [], q: [1], k: fn(xs) -> xs.len)
