@@ -605,7 +605,7 @@ fn a_failure_of_main_is_described_by_the_kind_the_checker_resolved() {
 fn an_executable_over_its_memory_budget_is_u6003() {
     // ADR 0061 rule 2: the executable takes `--max-memory` as `una run` does, and the call that
     // finds the run over its budget is U6003.
-    let program = "module hog\n\ngrow(t: Text, n: Int) -> Int = if n <= 0 then t.len else grow(\"{t}0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\", n: n - 1)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let size = grow(\"\", n: 9000)\n  @console.print(\"held {size}\")\n";
+    let program = "module hog\n\ngrow(t: Text, n: Int) -> Int = if n <= 0 then t.len else max(grow(\"{t}0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\", n: n - 1), b: t.len)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let size = grow(\"\", n: 9000)\n  @console.print(\"held {size}\")\n";
     let dir = package(
         "hog",
         "\n[run]\nentry = \"hog\"\ngrants = [\"console\"]\n",
@@ -1166,7 +1166,7 @@ fn a_task_counts_its_depth_from_its_block() {
 fn the_tasks_of_a_run_share_its_memory_budget() {
     // `spec/19 §8` rule 3: `--max-memory` bounds the heaps of all tasks together, and the call
     // of a task that finds the run over its budget is U6003.
-    let program = "module hogs\n\ngrow(t: Text, n: Int) -> Int = if n <= 0 then t.len else grow(\"{t}0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\", n: n - 1)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  together\n    let a = grow(\"\", n: 10)\n    let b = grow(\"\", n: 9000)\n  @console.print(\"held {a} {b}\")\n";
+    let program = "module hogs\n\ngrow(t: Text, n: Int) -> Int = if n <= 0 then t.len else max(grow(\"{t}0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\", n: n - 1), b: t.len)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  together\n    let a = grow(\"\", n: 10)\n    let b = grow(\"\", n: 9000)\n  @console.print(\"held {a} {b}\")\n";
     let dir = tasks_package("hogs", "hogs", program);
     let output = Command::new(dir.join("target/una/hogs"))
         .args(["--max-memory", "64"])
