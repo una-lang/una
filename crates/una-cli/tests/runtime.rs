@@ -362,9 +362,12 @@ fn a_huge_max_depth_reserves_a_bounded_stack_and_ends_with_u6003() {
 
 /// A program that holds more text at each call: about 64 bytes times the square of its depth
 /// over two, so 64 MiB by about 1,450 calls.
+// Each level reads its `t` after the call, so it keeps its own copy of the text: the program
+// holds O(n^2) bytes. A level that gave `t` up would let the callee append in place (#261,
+// ADR 0072), and the program would hold only O(n).
 const HOG: &str = "module hog
 
-grow(t: Text, n: Int) -> Int = if n <= 0 then t.len else grow(\"{t}0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\", n: n - 1)
+grow(t: Text, n: Int) -> Int = if n <= 0 then t.len else max(grow(\"{t}0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\", n: n - 1), b: t.len)
 
 pub main() -> Unit
   uses @console: Console[print]
