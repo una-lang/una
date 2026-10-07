@@ -218,7 +218,7 @@ impl Checker<'_, '_, '_> {
 
     /// U2004 when the argument of a binary method has no label and is not the punned name
     /// `param`, U2005 when its label is another (`spec/04 §3`).
-    fn method_label(&mut self, method: &str, param: &str, arg: &Arg) {
+    pub(crate) fn method_label(&mut self, method: &str, param: &str, arg: &Arg) {
         let callee = format!("`{method}`");
         match &arg.label {
             Some(label) => {
@@ -273,7 +273,7 @@ impl Checker<'_, '_, '_> {
     }
 
     /// Checks arguments that belong to no parameter, for the diagnostics inside them.
-    fn unchecked_args(&mut self, args: &[Arg]) {
+    pub(crate) fn unchecked_args(&mut self, args: &[Arg]) {
         for arg in args {
             self.expr(&arg.value, None);
         }

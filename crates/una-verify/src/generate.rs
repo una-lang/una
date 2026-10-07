@@ -2768,7 +2768,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             // (`spec/18 §4`).
             Prim::Convert(_) => arg(0)?.f,
             // The methods of `spec/18 §5` are known by their contracts, not as terms.
-            Prim::Concat | Prim::ToText | Prim::Fixed(..) => return None,
+            Prim::Concat | Prim::ToText | Prim::Fixed(..) | Prim::Map(_) => return None,
         })
     }
 

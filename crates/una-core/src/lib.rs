@@ -13,8 +13,8 @@ mod print;
 pub use descriptor::Descriptor;
 pub use ir::{
     Arm, Atom, Base, BinOp, Bound, CapOp, Clause, Constraint, Ctor, DataVariant, Decl, Example,
-    Expectation, Expr, FixedOp, Fun, HOST_MODULE, HandlerOp, IntType, LoopSource, Module, Name,
-    PRELUDE_MODULE, Path, Prim, Program, Refinement, Rhs, Signature, Source, Term, Type, Use,
+    Expectation, Expr, FixedOp, Fun, HOST_MODULE, HandlerOp, IntType, LoopSource, MapOp, Module,
+    Name, PRELUDE_MODULE, Path, Prim, Program, Refinement, Rhs, Signature, Source, Term, Type, Use,
 };
 pub use label::{Accepts, Label, Level};
 pub use names::{rhs_vars, vars};

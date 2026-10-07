@@ -1757,6 +1757,8 @@ fn prim_apply<'p>(prim: Prim, args: &[Value<'p>]) -> Flow<'p> {
             Value::Int(value.clone())
         }
         Prim::Fixed(op, int) => Value::Int(fixed_apply(op, int, args)?),
+        // Maps run from #236's interpreter step on.
+        Prim::Map(op) => return Err(fault(format!("map `{}` is not run yet", op.as_str()))),
         Prim::ToText => match arg(0)? {
             Value::Int(n) => Value::text(&n.to_string()),
             Value::Bool(b) => Value::text(&b.to_string()),

@@ -2229,6 +2229,11 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 self.retain(a, kind);
                 Ok(a)
             }
+            // Maps compile from #236's native step on.
+            Prim::Map(op) => Err(internal(format!(
+                "map `{}` is not compiled yet",
+                op.as_str()
+            ))),
             Prim::Fixed(op, int) => {
                 let a = operand(first)?.0;
                 let b = match second {

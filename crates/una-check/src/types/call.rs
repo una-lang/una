@@ -181,6 +181,17 @@ impl<'a> Checker<'_, 'a, '_> {
         if let Some(ty) = self.int_method(&target_ty, method, args, span) {
             return ty;
         }
+        if let Some(ty) = self.map_method(
+            target,
+            &target_ty,
+            place.as_ref(),
+            marker,
+            method,
+            args,
+            span,
+        ) {
+            return ty;
+        }
         match self.env.lower(self.module, method) {
             Some(Entity::Function(id)) => {
                 self.receiver_marker = Some((marker, target.clone()));
