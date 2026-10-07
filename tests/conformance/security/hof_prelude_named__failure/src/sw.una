@@ -1,8 +1,9 @@
 -- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, Una-2's matrix): rule: a failing callback of the prelude is U3009 in edition 0.1
 -- spec: spec/07 §7
--- expect: error U4002 at src/sw.una:27:11
--- expect: error U3009 at src/sw.una:27:47
--- expect: error U4003 at src/sw.una:28:14
+-- expect: error U4002 at src/sw.una:28:11
+-- expect: error U3009 at src/sw.una:28:47
+-- expect: error U4001 at src/sw.una:28:47
+-- expect: error U4003 at src/sw.una:29:14
 module sw
 
 pub capability Log

@@ -468,10 +468,11 @@ impl<'a> Env<'a> {
             .collect();
         let params: Vec<usize> = env.kinds.iter().map(|kind| kind.params.len()).collect();
         let mut kind_labels = KindLabels::new(&fields, &params);
-        // Both editions mark deep labels: edition 0.1 for the raise of a call of a function
-        // value with a decided argument (#253), edition 0.2 for result summaries as well.
+        // Both editions mark deep labels, and both tell `ℓ*_T` from `ℓ_T` in their flows:
+        // edition 0.1 since #354, since reading `T*` as `T` let an annotation, a field or a
+        // callback's parameter drop a decision. Edition 0.2 also has result summaries.
         kind_labels.deep_symbols = true;
-        kind_labels.deep_distinct = env.edition >= Edition::V0_2;
+        kind_labels.deep_distinct = true;
         env.kind_labels = Rc::new(kind_labels);
         env
     }

@@ -1,6 +1,7 @@
 -- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, Una-2's matrix): U4002 (control): the decision is made inside the generic function
 -- spec: spec/07 §7
--- expect: error U4002 at src/sw.una:21:3
+-- expect: error U4002 at src/sw.una:22:3
+-- expect: error U4001 at src/sw.una:22:5
 module sw
 
 pub capability Log

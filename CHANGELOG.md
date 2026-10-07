@@ -2,6 +2,12 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
+## Unreleased
+
+### Security
+
+- **An annotation no longer drops a decision on `T` values, in edition 0.1** (#354, Critical). In a generic body, `let y: T = if a == b then p else q`, or a record field `Hold[T]`, dropped the label of the comparison, since edition 0.1 read the decision label `ℓ*_T` as `ℓ_T` in every flow; a later `k(y)`, a generic callee or `map` then revealed it past every rule of #253, #346 and #350. Edition 0.1 now tells `ℓ*_T` from `ℓ_T` in its flows, as edition 0.2 does: a decided value flowing into an annotation, a field or a function value's parameter of type `T` is U4001 at the flow. No accepted program of the repository changes; already rejected edition 0.1 programs of the security suites gain that U4001 beside their U4002 or U4003. Found by Una-2 (H-6); her matrix's section 15 is the conformance cases `security/hof_launder__*`.
+
 ## v0.3.1
 
 A security patch of the Beta. Edition 0.2, the edition of the Beta, is unchanged in what it accepts. Edition 0.1 packages compiled by v0.3.0 could reveal a decision on `T` values through function values: through the prelude's higher-order functions and through generic functions of the program. That is fixed below, with the same rule as v0.1.4 and v0.1.5. Every finding came from adversarial reviews before any report from outside: a matrix of 194 cells, every path by which a function value can be called in edition 0.1 crossed with the result, effect and failure channels. Further edition 0.1 hardening follows in the next patch (#354). The release also carries three performance fixes.
