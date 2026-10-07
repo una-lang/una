@@ -380,6 +380,70 @@ pub fn verify(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Out
             cached,
         ));
     }
+    // ADR 0071 D3 (decision N-13): a refutation that sets loop-fresh values in a loop body is
+    // solved once more with every enclosing loop at its first iteration. A model there is a
+    // run, so the obligation stays refuted with it; otherwise it is unknown.
+    let retries: Vec<Option<Obligation>> = obligations
+        .iter()
+        .zip(&outcomes)
+        .map(|(obligation, outcome)| {
+            let forgot = outcome.status == ObligationStatus::Unknown
+                && !obligation.forgotten.is_empty()
+                && outcome.reason.as_deref() == Some(forgotten(&obligation.forgotten).as_str());
+            (forgot && !obligation.entry.is_empty()).then(|| {
+                let mut first = obligation.clone();
+                first.query.assertions.append(&mut first.entry);
+                first.forgotten.clear();
+                first
+            })
+        })
+        .collect();
+    if retries.iter().any(Option::is_some) {
+        check_version(settings)?;
+    }
+    let firsts: Vec<Option<Outcome>> = retries
+        .par_iter()
+        .map(|retry| {
+            let Some(first) = retry else {
+                return Ok(None);
+            };
+            let (text, requested) = script(first, &settings.lock);
+            let key = cache::key(&settings.lock.text, &text);
+            let cached = settings
+                .cache
+                .as_ref()
+                .and_then(|cache| cache::get(cache, &key));
+            let was_cached = cached.is_some();
+            let answer = match cached {
+                Some(answer) => answer,
+                None => {
+                    let answer = solver::run(
+                        &settings.solver,
+                        &text,
+                        requested.len(),
+                        settings.wallclock,
+                        settings.cancel.as_deref(),
+                    )
+                    .map_err(|failure| Problem::Query {
+                        id: first.id.clone(),
+                        message: failure.0,
+                    })?;
+                    if let Some(cache) = &settings.cache {
+                        cache::put(cache, &key, &answer);
+                    }
+                    answer
+                }
+            };
+            Ok(Some(outcome(first, &requested, &answer, None, was_cached)))
+        })
+        .collect::<Result<_, Problem>>()?;
+    for (outcome, first) in outcomes.iter_mut().zip(firsts) {
+        if let Some(first) = first
+            && first.status == ObligationStatus::Refuted
+        {
+            *outcome = first;
+        }
+    }
     Ok(outcomes)
 }
 
