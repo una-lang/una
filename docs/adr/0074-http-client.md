@@ -1,10 +1,10 @@
 # 0074. An HTTP client
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-07
-- Deciders: the coordinator under the owner's delegation, pending Leonardo's review; proposal by Claude (Una-2)
-- Resolves, when accepted: issue #239 (Beta)
-- Amends, when accepted: a new chapter `spec/24-http.md`; `spec/14 §3` (host capabilities), `spec/13 §5` (grants and flags), `spec/11 §5` (traces), `spec/16 §3` (executables); `docs/compiler/architecture.md §7` (dependencies)
+- Deciders: the coordinator under the owner's delegation (2026-10-07, N-26), pending Leonardo's review; proposal by Claude (Una-2)
+- Resolves: issue #239 (Beta)
+- Amends: a new chapter `spec/24-http.md`; `spec/14 §3` (host capabilities), `spec/13 §5` (grants and flags), `spec/11 §5` (traces), `spec/16 §3` (executables); `docs/compiler/architecture.md §7` (dependencies)
 
 ## Context
 
@@ -20,7 +20,7 @@ The constraints:
 - **Dependencies.** No network or TLS crate is in Cargo.lock, and every crate outside the allowed list needs an ADR saying why the standard library or an allowed crate is not enough (`architecture.md §7`). The host implementations are in the trusted base (charter §3).
 - **Performance rule.** The ADR states the complexity, and bodies are streamed or bounded (CLAUDE.md, N-22 guidance).
 
-## Decision (proposed)
+## Decision
 
 ### H1. The capability
 
@@ -62,7 +62,8 @@ pub capability Http
   - `Tls`: a handshake or certificate failure;
   - `Protocol`: a malformed response.
 - **The body is `Text`.** A response body that is not valid UTF-8 is `Protocol`: Una has no byte strings in v0.2. A body in another encoding is out of scope.
-- **Not in scope:** cookies, caches, proxies, HTTP/2, compression (requests send `Accept-Encoding: identity`), and redirects that leave the grants (H2).
+- **Not in scope:** cookies, caches, HTTP/2, compression (requests send `Accept-Encoding: identity`), and redirects that leave the grants (H2).
+- **HTTP/1.1 only, and no proxies** (N-26). The client speaks HTTP/1.1, and connects directly to the origin of each request. It ignores the variables `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and `NO_PROXY`, in any case, for determinism and explicit authority: a grant names where requests go, and nothing in the environment changes that.
 - Alternatives: one `send(request)` operation (C), or `get` and `post` only (D).
 
 ### H2. Grants
@@ -92,7 +93,7 @@ pub capability Http
   - A response body over `--max-response <MiB>` (default 16) fails with `TooLarge`, without reading past the limit. The connection is closed.
   - The headers of a response are bounded: at most 100 headers and 64 KiB in all, else `Protocol`.
   - A request body is a `Text` the program already holds, so the memory budget bounds it (`spec/11 §7`).
-- **Time.** Each request has a deadline, `--http-timeout <seconds>` (default 30), for connecting, sending and receiving together. Past it, the request fails with `TimedOut`. Timing is outside the model, so a `TimedOut` is an outcome the program must handle, like any failure of the outside world.
+- **Time.** Each request has one deadline, `--http-timeout <seconds>` (default 30): the total wall-clock time of the request (N-26), covering name resolution, connecting, the TLS handshake, writing the request and reading the response, across redirects. It is not a per-read timeout, so a server that trickles bytes (slowloris) cannot stretch a request past it. Past it, the request fails with `TimedOut`. Timing is outside the model, so a `TimedOut` is an outcome the program must handle, like any failure of the outside world.
 - **Complexity.** A request takes O(u + h + b) time and space for the URL, headers and body it sends. A response takes O(h' + b') for what it receives, with b' ≤ the limit, so it is bounded. Parsing is single-pass and linear: the status line, the headers, then `Content-Length` or chunked framing. No step is superlinear in the bytes received.
 - **Tasks.** A request blocks only its own task's thread (`spec/19 §8`), as the other host operations do.
 
@@ -124,7 +125,14 @@ One client serves both engines: a new crate `una-http`, called by the interprete
 - **TLS: `rustls`**, with the `ring` crypto provider and `webpki-roots`, the Mozilla root store compiled in.
   - **Why a new dependency.** TLS cannot be written safely in-house, and the standard library has none. `rustls` is memory-safe Rust, widely audited, and needs no system library, so both engines and every platform behave the same.
   - **Why compiled-in roots.** They are reproducible and independent of the machine. The root store changes with the crate's version, which `Cargo.lock` pins and the build report lists.
-  - **The cost.** `ring` holds assembly and C for its primitives, so the trusted base grows by `rustls`, `ring`, `webpki-roots`, `rustls-pki-types`, `untrusted` and their small dependencies. `architecture.md §7` gains this ADR as their justification. Native executables that use `Http` link them, and others should not grow, which the implementation verifies.
+  - **The cost.** `ring` holds assembly and C for its primitives, so the trusted base grows by `rustls`, `ring`, `webpki-roots`, `rustls-pki-types`, `untrusted` and their small dependencies. `architecture.md §7` gains this ADR as their justification.
+  - **Binary size** (N-26). A native executable that does not use `Http` MUST NOT grow: the TLS stack is linked only into executables that use it, and the implementation checks that the linker drops it. The pull request reports the size of `examples/hello` built natively before and after, on macOS and on Linux.
+- **Fuzzing the parser** (N-26). The response parser is new trusted code, so property or fuzz tests cover:
+  - the status line and headers;
+  - `Content-Length`;
+  - chunked encoding with trailers, and malformed chunk sizes;
+  - every limit of H4;
+  - every response split at every byte boundary, which must parse the same as in one piece.
   - Alternatives: OpenSSL or the platform's TLS (G), `aws-lc-rs` (H), or the system's `curl` (I).
 - **The build report** lists `Http` among the host capabilities and its dependencies in the trusted base (`spec/12`).
 
