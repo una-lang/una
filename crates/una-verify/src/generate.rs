@@ -162,7 +162,7 @@ pub fn obligations(program: &Program, sources: &SourceDb) -> Vec<Obligation> {
                 if let una_core::Expectation::Holds { result, check, .. } = expectation {
                     let mut ctx = Ctx::default();
                     if let Some(ty) = leaves.iter().find_map(|l| l.value.as_ref().map(|v| &v.ty)) {
-                        ctx.types.insert(result.clone(), ty.clone());
+                        std::rc::Rc::make_mut(&mut ctx.types).insert(result.clone(), ty.clone());
                         let x = own(&ctx, result);
                         let paths: Vec<F> =
                             leaves.iter().map(|leaf| walker.path(leaf, 0, &x)).collect();
@@ -198,9 +198,9 @@ pub fn trivial_ensures(program: &Program, sources: &SourceDb) -> Vec<Obligation>
             walker.lambdas.clear();
             let mut ctx = Ctx::default();
             for (name, ty) in &fun.params {
-                ctx.types.insert(name.clone(), ty.clone());
+                std::rc::Rc::make_mut(&mut ctx.types).insert(name.clone(), ty.clone());
             }
-            ctx.types.insert("result".to_owned(), fun.result.clone());
+            std::rc::Rc::make_mut(&mut ctx.types).insert("result".to_owned(), fun.result.clone());
             let result = own(&ctx, "result");
             for clause in &fun.ensures {
                 let goal = {
@@ -619,15 +619,68 @@ struct Hyp {
     shown: bool,
 }
 
+/// The hypotheses of a path, in order: a persistent list, so a context is copied in O(1)
+/// whatever its length, and a path extends its parent's hypotheses without copying them
+/// (#326). Iteration yields them in the order they were added, as a `Vec` did.
+#[derive(Clone, Debug, Default)]
+struct Hyps {
+    last: Option<std::rc::Rc<HypNode>>,
+    len: usize,
+}
+
+#[derive(Debug)]
+struct HypNode {
+    hyp: Hyp,
+    previous: Option<std::rc::Rc<HypNode>>,
+}
+
+impl Hyps {
+    fn push(&mut self, hyp: Hyp) {
+        let previous = self.last.take();
+        self.last = Some(std::rc::Rc::new(HypNode { hyp, previous }));
+        self.len += 1;
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    /// The hypotheses in the order they were added.
+    fn iter(&self) -> std::vec::IntoIter<&Hyp> {
+        let mut out = Vec::with_capacity(self.len);
+        let mut node = self.last.as_deref();
+        while let Some(current) = node {
+            out.push(&current.hyp);
+            node = current.previous.as_deref();
+        }
+        out.reverse();
+        out.into_iter()
+    }
+}
+
+impl Drop for Hyps {
+    // Dropping a long list node by node would recurse: unlink the nodes nothing else holds.
+    fn drop(&mut self) {
+        let mut node = self.last.take();
+        while let Some(current) = node {
+            match std::rc::Rc::try_unwrap(current) {
+                Ok(mut owned) => node = owned.previous.take(),
+                Err(_) => break,
+            }
+        }
+    }
+}
+
 /// The path context Π and the types of the binders in scope.
 #[derive(Clone, Debug, Default)]
 struct Ctx {
-    hyps: Vec<Hyp>,
-    types: BTreeMap<Name, Type>,
+    hyps: Hyps,
+    /// Shared until changed, so a context is copied in O(1) (#326).
+    types: std::rc::Rc<BTreeMap<Name, Type>>,
     /// In a loop body, the equalities that put every enclosing loop at its first iteration:
     /// each state binding at its value on entry, and a range's variable at its lower bound
-    /// (ADR 0071 D3, decision N-13).
-    entry: Vec<F>,
+    /// (ADR 0071 D3, decision N-13). Shared until changed, as `types`.
+    entry: std::rc::Rc<Vec<F>>,
 }
 
 impl Ctx {
@@ -643,7 +696,7 @@ impl Ctx {
 /// A normal return path: its context, the value it returns and where it is written.
 #[derive(Clone, Debug)]
 struct Leaf {
-    hyps: Vec<Hyp>,
+    hyps: Hyps,
     value: Option<Tv>,
     span: Span,
     /// For the value of an `attempt`, the normal returns of the attempted call.
@@ -974,7 +1027,7 @@ impl<'p, 'i> Walker<'p, 'i> {
 
     /// Brings a binder into scope with the refinements of its type as hypotheses.
     fn bind(&mut self, ctx: &mut Ctx, name: &str, ty: &Type) {
-        ctx.types.insert(name.to_owned(), ty.clone());
+        std::rc::Rc::make_mut(&mut ctx.types).insert(name.to_owned(), ty.clone());
         let value = own(ctx, name);
         self.assume_refinements(ctx, &value);
     }
@@ -1043,7 +1096,8 @@ impl<'p, 'i> Walker<'p, 'i> {
                         let low = self.atom(low, &ctx);
                         let high = self.atom(high, &ctx);
                         if x.f.sort() == low.f.sort() && x.f.sort() == high.f.sort() {
-                            body_ctx.entry.push(F::eq(x.f.clone(), low.f.clone()));
+                            std::rc::Rc::make_mut(&mut body_ctx.entry)
+                                .push(F::eq(x.f.clone(), low.f.clone()));
                             body_ctx.assume(F::op("<=", vec![low.f, x.f.clone()]));
                             let op = if *inclusive { "<=" } else { "<" };
                             body_ctx.assume(F::op(op, vec![x.f, high.f]));
@@ -1073,7 +1127,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                         let x = own(&body_ctx, name);
                         let entry = self.atom(atom, &ctx);
                         if x.f.sort() == entry.f.sort() {
-                            body_ctx.entry.push(F::eq(x.f, entry.f));
+                            std::rc::Rc::make_mut(&mut body_ctx.entry).push(F::eq(x.f, entry.f));
                         }
                     }
                     // ADR 0071 D2: a length-preserving binding keeps its length at entry.
@@ -1176,7 +1230,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                         }
                     }
                     for (index, (name, ty)) in names.iter().enumerate() {
-                        ctx.types.insert(name.clone(), ty.clone());
+                        std::rc::Rc::make_mut(&mut ctx.types).insert(name.clone(), ty.clone());
                         let x = own(&ctx, name);
                         if let Some(component) = projection(&tuple, index)
                             && component.f.sort() == x.f.sort()
@@ -1218,7 +1272,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                         // and each component of the tuple is the value of one of its task's
                         // paths, so each branch's binding carries its facts after the join.
                         Bound::Expr(Expr::Together { tasks, .. }) => {
-                            ctx.types.insert(name.clone(), ty.clone());
+                            std::rc::Rc::make_mut(&mut ctx.types).insert(name.clone(), ty.clone());
                             let x = own(&ctx, name);
                             let base = ctx.hyps.len();
                             let mut paths = Vec::new();
@@ -1257,7 +1311,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                             // ADR 0037 rule 2: the value of each path flows into the binder,
                             // at the bound expression.
                             self.returned_functions(&ctx, &inner_leaves, ty, Some(*span));
-                            ctx.types.insert(name.clone(), ty.clone());
+                            std::rc::Rc::make_mut(&mut ctx.types).insert(name.clone(), ty.clone());
                             let x = own(&ctx, name);
                             // `spec/03 §7`: a value in the refinement language is selfified;
                             // `and`, `or`, `implies`, `in` and `is` are branches in Core.
@@ -1383,7 +1437,8 @@ impl<'p, 'i> Walker<'p, 'i> {
                             else {
                                 continue;
                             };
-                            arm_ctx.types.insert(bind.clone(), field_ty.clone());
+                            std::rc::Rc::make_mut(&mut arm_ctx.types)
+                                .insert(bind.clone(), field_ty.clone());
                             // A temporary that unwraps the value of `if none` or `if error`
                             // shows as the expression it unwraps (final review F-004).
                             if bind.starts_with('%')
@@ -1582,7 +1637,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             let who = self.who(&value);
             self.fn_flow(&value.ty, ty, &who, span, ctx);
         }
-        ctx.types.insert(name.to_owned(), ty.clone());
+        std::rc::Rc::make_mut(&mut ctx.types).insert(name.to_owned(), ty.clone());
         let x = own(ctx, name);
         match rhs {
             Rhs::Atom(atom) => {
@@ -2104,7 +2159,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 continue;
             };
             let mut ctx = entry.clone();
-            ctx.hyps.clone_from(&leaf.hyps);
+            ctx.hyps = leaf.hyps.clone();
             let who = self.who(value);
             self.fn_flow(&value.ty, target, &who, at.unwrap_or(leaf.span), &ctx);
         }
@@ -2305,7 +2360,7 @@ impl<'p, 'i> Walker<'p, 'i> {
     /// Brings the fresh binder `binder` of type `ty` into `ctx`, with its refinements as
     /// hypotheses, and returns its value.
     fn flow_binder(&mut self, ctx: &mut Ctx, binder: &str, ty: &Type) -> Tv {
-        ctx.types.insert(binder.to_owned(), ty.clone());
+        std::rc::Rc::make_mut(&mut ctx.types).insert(binder.to_owned(), ty.clone());
         let value = own(ctx, binder);
         self.assume_refinements(ctx, &value);
         value
@@ -3289,7 +3344,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 ctx.hyps.push(hyp.clone());
             }
         }
-        ctx.types.insert("result".to_owned(), result.ty.clone());
+        std::rc::Rc::make_mut(&mut ctx.types).insert("result".to_owned(), result.ty.clone());
         // ADR 0071 D3: a returned value that a loop made fresh, which fixes `result`.
         (self.returned_forgotten, self.returned_unpinned) = self.forgotten(
             leaves
@@ -3347,7 +3402,7 @@ impl<'p, 'i> Walker<'p, 'i> {
         let entry = if unpinned || returned_unpinned {
             Vec::new()
         } else {
-            ctx.entry.clone()
+            ctx.entry.as_ref().clone()
         };
         for name in shown_forgotten {
             if !forgotten.contains(&name) {
@@ -3799,7 +3854,7 @@ impl<'p, 'i> Walker<'p, 'i> {
     }
 
     /// The listed hypotheses: those that are not definitions of temporaries, as text.
-    fn shown_hypotheses(&self, hyps: &[Hyp]) -> Vec<String> {
+    fn shown_hypotheses(&self, hyps: &Hyps) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for hyp in hyps.iter().filter(|h| h.shown) {
             for part in conjuncts(&hyp.f) {
