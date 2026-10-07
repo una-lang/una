@@ -51,6 +51,18 @@ impl Vars {
         Ty::Var(self.slots.len() - 1)
     }
 
+    /// [`Vars::shallow`] by reference: no part of the type is copied (#331).
+    fn shallow_ref<'s>(&'s self, ty: &'s Ty) -> &'s Ty {
+        let mut current = ty;
+        while let Ty::Var(var) = current {
+            match self.slots.get(*var).and_then(|slot| slot.value.as_ref()) {
+                Some(value) => current = value,
+                None => break,
+            }
+        }
+        current
+    }
+
     /// `ty` with its outermost variables replaced by their values.
     fn shallow(&self, ty: &Ty) -> Ty {
         let mut current = ty.clone();
@@ -114,16 +126,18 @@ impl Vars {
     /// `ty` with every solved variable replaced by its value, labels included, and the labels
     /// of variables left symbolic.
     fn resolve_shape(&self, ty: &Ty) -> Ty {
-        match self.shallow(ty) {
-            Ty::Labeled(label, inner) => self.resolve_shape(&inner).with_label(&label),
-            Ty::List(element) => Ty::List(Box::new(self.resolve_shape(&element))),
+        // Through references, so each node of the type is visited once (#331).
+        match self.shallow_ref(ty) {
+            Ty::Labeled(label, inner) => self.resolve_shape(inner).with_label(label),
+            Ty::List(element) => Ty::List(Box::new(self.resolve_shape(element))),
             Ty::Map(key, value) => Ty::Map(
-                Box::new(self.resolve_shape(&key)),
-                Box::new(self.resolve_shape(&value)),
+                Box::new(self.resolve_shape(key)),
+                Box::new(self.resolve_shape(value)),
             ),
-            Ty::Kind(id, args) => {
-                Ty::Kind(id, args.iter().map(|arg| self.resolve_shape(arg)).collect())
-            }
+            Ty::Kind(id, args) => Ty::Kind(
+                *id,
+                args.iter().map(|arg| self.resolve_shape(arg)).collect(),
+            ),
             Ty::Fn(function) => Ty::Fn(Box::new(FnTy {
                 params: function
                     .params
@@ -136,7 +150,7 @@ impl Vars {
                 fails: function.fails.as_ref().map(|f| self.resolve_shape(f)),
                 refinements: function.refinements.clone(),
             })),
-            other => other,
+            other => other.clone(),
         }
     }
 
@@ -178,11 +192,11 @@ impl Vars {
 
     /// `ty` with the variables and labels at its top removed: its shape at the top.
     fn bare(&self, ty: &Ty) -> Ty {
-        let mut current = self.shallow(ty);
+        let mut current = self.shallow_ref(ty);
         while let Ty::Labeled(_, inner) = current {
-            current = self.shallow(&inner);
+            current = self.shallow_ref(inner);
         }
-        current
+        current.clone()
     }
 
     /// `ty` with the variables at its top replaced by their values, labels kept; its
@@ -206,11 +220,11 @@ impl Vars {
     }
 
     fn occurs(&self, var: usize, ty: &Ty) -> bool {
-        match self.shallow(ty) {
-            Ty::Labeled(_, inner) => self.occurs(var, &inner),
-            Ty::Var(other) => other == var,
-            Ty::List(element) => self.occurs(var, &element),
-            Ty::Map(key, value) => self.occurs(var, &key) || self.occurs(var, &value),
+        match self.shallow_ref(ty) {
+            Ty::Labeled(_, inner) => self.occurs(var, inner),
+            Ty::Var(other) => *other == var,
+            Ty::List(element) => self.occurs(var, element),
+            Ty::Map(key, value) => self.occurs(var, key) || self.occurs(var, value),
             Ty::Kind(_, args) => args.iter().any(|arg| self.occurs(var, arg)),
             Ty::Fn(function) => {
                 function.params.iter().any(|p| self.occurs(var, p))
