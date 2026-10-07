@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v0.2.0-7c5cff" alt="Version v0.2.0">
+  <img src="https://img.shields.io/badge/next-v0.2.0-7c5cff" alt="Next release: v0.2.0">
   <img src="https://img.shields.io/badge/solver-Z3%205.1.0-4f46e5" alt="Solver: Z3 5.1.0">
   <img src="https://img.shields.io/badge/rust-1.98.1-3b3b58" alt="Rust 1.98.1">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-2e2e48" alt="License: Apache-2.0"></a>
@@ -32,16 +32,23 @@ Una is a verification-first programming language for software that AI agents wri
 
 ## Status
 
-**Version 0.2.0** is the current release. It has:
-- the verifier;
-- a reference interpreter;
-- a native backend: `una build` compiles a program into an executable that behaves exactly like the interpreter;
-- fixed-width integers;
-- a memory model with `edit`, `take` and `for` loops;
-- structured concurrency;
-- text, maps and JSON in the standard library.
+- **v0.2.0**, validated and awaiting publication:
+  - the verifier and the reference interpreter;
+  - the native backend: `una build` compiles a program into an executable that behaves exactly like the interpreter;
+  - fixed-width integers;
+  - the memory model, with `edit`, `take` and `for` loops;
+  - structured concurrency;
+  - constraints on generics;
+  - printing of structured values;
+  - editions 0.1 and 0.2.
+- **On `main` for the next release, the Beta:**
+  - maps, text operations and JSON;
+  - the HTTP client, once it merges;
+  - Linux arm64;
+  - in-place updates for performance;
+  - importable standard modules.
 
-A **Beta** built on 0.2 is coming next, and feedback on it shapes the language. Una is a research language: it is not ready for production use. The changes in each release are in [`CHANGELOG.md`](CHANGELOG.md).
+The latest published release is v0.1.3, on the [releases page](https://github.com/una-lang/una/releases). Feedback on the Beta will shape the language. Una is a research language: it is not ready for production use. The changes in each release are in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Install
 
@@ -67,7 +74,7 @@ The [releases page](https://github.com/una-lang/una/releases) also has an archiv
 
 ## A taste
 
-From [`examples/wordfreq`](examples/wordfreq), the program of the [getting-started tutorial](docs/guide/getting-started.md):
+From [`examples/wordfreq`](examples/wordfreq), the program of the [getting-started tutorial](docs/guide/getting-started.md). It uses maps and text operations, which are on `main` for the Beta, so until then [build from source](#build-from-source) to run it:
 
 ```una
 --- The first letter of a word.
