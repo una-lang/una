@@ -201,8 +201,9 @@ exported! {
     una_rt_http_put => host::http_put, (site, url, headers, body, key_name);
     una_rt_http_delete => host::http_delete, (site, url, headers, key_name);
     una_rt_host_failed => host::host_failed, ();
-    una_rt_parse_json => json::parse_json, (t);
-    una_rt_to_json => json::to_json, (j);
+    una_rt_parse_json => json::parse_json, (t, site);
+    una_rt_to_json => json::to_json, (j, site);
+    una_rt_json_stopped => json::json_stopped, ();
     una_rt_quote_json => json::quote_json, (t);
     una_rt_is_json_number => json::is_json_number, (t);
     una_rt_host_instance => host::host_instance, (capability);

@@ -51,13 +51,22 @@ enum Building<'p> {
     ),
 }
 
-/// The `Json` value of `tree`.
-pub(crate) fn value<'p>(tree: Tree) -> Value<'p> {
+/// The `Json` value of `tree`, asking `within` every [`json::CHECK_EVERY`] values whether the
+/// run is within its memory budget: `None` when it is not (N-41).
+pub(crate) fn value<'p>(tree: Tree, within: &mut dyn FnMut() -> bool) -> Option<Value<'p>> {
     let mut stack: Vec<Building<'p>> = Vec::new();
     let mut pending = Some(tree);
+    let mut ticks = 0;
     loop {
         let mut done = None;
         if let Some(mut tree) = pending.take() {
+            ticks += 1;
+            if ticks >= json::CHECK_EVERY {
+                ticks = 0;
+                if !within() {
+                    return None;
+                }
+            }
             done = match &mut tree {
                 Tree::Null => Some(json(NULL, Vec::new())),
                 Tree::Bool(b) => Some(json(BOOLEAN, vec![Value::Bool(*b)])),
@@ -88,7 +97,7 @@ pub(crate) fn value<'p>(tree: Tree) -> Value<'p> {
         loop {
             if let Some(value) = done.take() {
                 match stack.last_mut() {
-                    None => return value,
+                    None => return Some(value),
                     Some(Building::Array(_, out)) => out.push(value),
                     Some(Building::Object(_, out, key)) => {
                         if let Some(key) = key.take() {
@@ -125,7 +134,7 @@ pub(crate) fn value<'p>(tree: Tree) -> Value<'p> {
                     };
                     if done.is_none() {
                         // Unreachable: the root returns above.
-                        return json(NULL, Vec::new());
+                        return Some(json(NULL, Vec::new()));
                     }
                 }
             }
@@ -143,15 +152,32 @@ enum Walking<'v, 'p> {
     ),
 }
 
-/// The tree of a `Json` value, or `None` when `value` is not one.
-pub(crate) fn tree(value: &Value<'_>) -> Option<Tree> {
+/// Why [`tree`] made no tree.
+pub(crate) enum NoTree {
+    /// The value is not a `Json`.
+    NotJson,
+    /// The run is over its memory budget (N-41).
+    OverBudget,
+}
+
+/// The tree of a `Json` value, asking `within` every [`json::CHECK_EVERY`] values whether the
+/// run is within its memory budget.
+pub(crate) fn tree(value: &Value<'_>, within: &mut dyn FnMut() -> bool) -> Result<Tree, NoTree> {
     let mut stack: Vec<Walking<'_, '_>> = Vec::new();
     let mut pending = Some(value);
+    let mut ticks = 0;
     loop {
         let mut done = None;
         if let Some(value) = pending.take() {
+            ticks += 1;
+            if ticks >= json::CHECK_EVERY {
+                ticks = 0;
+                if !within() {
+                    return Err(NoTree::OverBudget);
+                }
+            }
             let Value::Data(data) = value else {
-                return None;
+                return Err(NoTree::NotJson);
             };
             let field = data.fields.first();
             done = match (data.ctor.index, field) {
@@ -175,13 +201,13 @@ pub(crate) fn tree(value: &Value<'_>) -> Option<Tree> {
                     ));
                     None
                 }
-                _ => return None,
+                _ => return Err(NoTree::NotJson),
             };
         }
         loop {
             if let Some(tree) = done.take() {
                 match stack.last_mut() {
-                    None => return Some(tree),
+                    None => return Ok(tree),
                     Some(Walking::Array(_, out)) => out.push(tree),
                     Some(Walking::Object(_, out, key)) => {
                         out.push((key.take().unwrap_or_default(), tree));
@@ -212,7 +238,7 @@ pub(crate) fn tree(value: &Value<'_>) -> Option<Tree> {
                     done = match stack.pop() {
                         Some(Walking::Array(_, out)) => Some(Tree::Array(out)),
                         Some(Walking::Object(_, out, _)) => Some(Tree::Object(out)),
-                        None => return None,
+                        None => return Err(NoTree::NotJson),
                     };
                 }
             }

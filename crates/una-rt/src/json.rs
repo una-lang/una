@@ -3,9 +3,10 @@
 //! no value's depth recurses on the native stack (ADR 0060).
 
 use num_bigint::BigInt;
-use una_core::json::{self, Tree};
+use una_core::json::{self, Halt, Tree};
 
 use crate::host;
+use crate::runtime;
 use crate::values::{
     data, field, int_value, int_word, list, list_items, map_empty, map_with_owned, map_words, push,
     release, tag, text_value, text_word,
@@ -34,13 +35,34 @@ enum Building {
     Object(std::vec::IntoIter<(String, Tree)>, i64, Option<i64>),
 }
 
-/// The `Json` word of `tree`, owned by the caller.
-fn word(tree: Tree) -> i64 {
+/// The `Json` word of `tree`, owned by the caller, asking `within` every
+/// [`json::CHECK_EVERY`] values whether the run is within its memory budget: `None` when it is
+/// not, with what was built so far released (N-41).
+fn word(tree: Tree, within: &mut dyn FnMut() -> bool) -> Option<i64> {
     let mut stack: Vec<Building> = Vec::new();
     let mut pending = Some(tree);
+    let mut ticks = 0;
     loop {
         let mut done = None;
         if let Some(mut tree) = pending.take() {
+            ticks += 1;
+            if ticks >= json::CHECK_EVERY {
+                ticks = 0;
+                if !within() {
+                    for building in stack {
+                        match building {
+                            Building::Array(_, out) | Building::Object(_, out, None) => {
+                                release(out)
+                            }
+                            Building::Object(_, out, Some(key)) => {
+                                release(out);
+                                release(key);
+                            }
+                        }
+                    }
+                    return None;
+                }
+            }
             done = match &mut tree {
                 Tree::Null => Some((NULL << 1) | 1),
                 Tree::Bool(b) => Some(wrap(BOOLEAN, i64::from(*b))),
@@ -65,7 +87,7 @@ fn word(tree: Tree) -> i64 {
         loop {
             if let Some(value) = done.take() {
                 match stack.last_mut() {
-                    None => return value,
+                    None => return Some(value),
                     Some(Building::Array(_, out)) => {
                         push(*out, value);
                         release(value);
@@ -98,7 +120,7 @@ fn word(tree: Tree) -> i64 {
                 None => match stack.pop() {
                     Some(Building::Array(_, out)) => done = Some(wrap(ARRAY, out)),
                     Some(Building::Object(_, out, _)) => done = Some(wrap(OBJECT, out)),
-                    None => return (NULL << 1) | 1,
+                    None => return Some((NULL << 1) | 1),
                 },
             }
         }
@@ -115,13 +137,23 @@ enum Walking {
     ),
 }
 
-/// The tree of a `Json` word, which stays borrowed.
-fn tree(word: i64) -> Tree {
+/// The tree of a `Json` word, which stays borrowed, asking `within` every
+/// [`json::CHECK_EVERY`] values whether the run is within its memory budget: `None` when it is
+/// not (N-41).
+fn tree(word: i64, within: &mut dyn FnMut() -> bool) -> Option<Tree> {
     let mut stack: Vec<Walking> = Vec::new();
     let mut pending = Some(word);
+    let mut ticks = 0;
     loop {
         let mut done = None;
         if let Some(word) = pending.take() {
+            ticks += 1;
+            if ticks >= json::CHECK_EVERY {
+                ticks = 0;
+                if !within() {
+                    return None;
+                }
+            }
             done = match tag(word) {
                 BOOLEAN => Some(Tree::Bool(field(word, 0) != 0)),
                 NUMBER => Some(Tree::Int(int_value(field(word, 0)).to_string())),
@@ -149,7 +181,7 @@ fn tree(word: i64) -> Tree {
         loop {
             if let Some(tree) = done.take() {
                 match stack.last_mut() {
-                    None => return tree,
+                    None => return Some(tree),
                     Some(Walking::Array(_, out)) => out.push(tree),
                     Some(Walking::Object(_, out, key)) => {
                         out.push((key.take().unwrap_or_default(), tree));
@@ -175,7 +207,7 @@ fn tree(word: i64) -> Tree {
                 None => match stack.pop() {
                     Some(Walking::Array(_, out)) => done = Some(Tree::Array(out)),
                     Some(Walking::Object(_, out, _)) => done = Some(Tree::Object(out)),
-                    None => return Tree::Null,
+                    None => return Some(Tree::Null),
                 },
             }
         }
@@ -193,18 +225,44 @@ fn error(error: json::Error) -> i64 {
     wrap(variant, int_word(&BigInt::from(at)))
 }
 
-/// `parse_json(t)`: the `Json` of `t`, or a `JsonError` failure, which `una_rt_host_failed`
-/// then reports (`spec/23 §3`).
-pub fn parse_json(t: i64) -> i64 {
-    match json::parse(&text_value(t)) {
-        Ok(tree) => word(tree),
-        Err(failure) => host::failed(error(failure)),
-    }
+/// `parse_json(t)` at `site`: the `Json` of `t`, or a `JsonError` failure, which
+/// `una_rt_host_failed` then reports (`spec/23 §3`). Over the memory budget it aborts at
+/// `site` with U6003, as a loop iteration does, and [`json_stopped`] says so (N-41).
+pub fn parse_json(t: i64, site: i64) -> i64 {
+    let mut within = || runtime::budget(usize::try_from(site).unwrap_or(usize::MAX)) == 0;
+    let built = match json::parse_within(&text_value(t), &mut within) {
+        Ok(tree) => word(tree, &mut within),
+        Err(Halt::Invalid(failure)) => return host::failed(error(failure)),
+        Err(Halt::OverBudget) => None,
+    };
+    built.unwrap_or_else(stopped)
 }
 
-/// `to_json(j)`: the canonical text of `j` (`spec/23 §4`).
-pub fn to_json(j: i64) -> i64 {
-    text_word(json::write(&tree(j)))
+/// `to_json(j)` at `site`: the canonical text of `j` (`spec/23 §4`), with the memory budget
+/// checked as [`parse_json`] checks it.
+pub fn to_json(j: i64, site: i64) -> i64 {
+    let mut within = || runtime::budget(usize::try_from(site).unwrap_or(usize::MAX)) == 0;
+    tree(j, &mut within)
+        .and_then(|tree| json::write_within(&tree, &mut within))
+        .map_or_else(stopped, text_word)
+}
+
+thread_local! {
+    /// Whether the last `parse_json` or `to_json` of this thread stopped over the budget.
+    static STOPPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The value of a JSON call that stopped over the budget: `Null`, which the task's stop
+/// discards, with [`json_stopped`] set.
+fn stopped() -> i64 {
+    STOPPED.with(|cell| cell.set(true));
+    (NULL << 1) | 1
+}
+
+/// 1 when the last `parse_json` or `to_json` of this thread stopped over the memory budget,
+/// and the task must stop, as after [`runtime::budget`]; the flag is then cleared.
+pub fn json_stopped() -> i64 {
+    i64::from(STOPPED.with(|cell| cell.replace(false)))
 }
 
 /// `quote_json(t)`: `t` as a JSON string literal (`spec/23 §4` rule 2).
