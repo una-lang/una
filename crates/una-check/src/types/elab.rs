@@ -240,7 +240,7 @@ struct Fx<'e, 'a> {
     module: usize,
     type_params: Vec<&'a str>,
     /// Source names in scope and their binders, innermost last.
-    scope: Vec<(String, Name)>,
+    scope: Scope,
     /// How many binders each source name has had, for unique names (`spec/09 §1` rule 3).
     used: BTreeMap<String, usize>,
     temps: usize,
@@ -288,7 +288,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             dbs,
             module,
             type_params: Vec::new(),
-            scope: Vec::new(),
+            scope: Scope::default(),
             used: BTreeMap::new(),
             temps: 0,
             error: None,
@@ -332,11 +332,7 @@ impl<'e, 'a> Fx<'e, 'a> {
     }
 
     fn local(&self, name: &str) -> Option<Name> {
-        self.scope
-            .iter()
-            .rev()
-            .find(|(source, _)| source == name)
-            .map(|(_, binder)| binder.clone())
+        self.scope.find(name)
     }
 
     // ----- types -----
@@ -3892,5 +3888,51 @@ mod tests {
             lost(&function, &no_result).as_deref(),
             Some("a refinement of the result of a function type")
         );
+    }
+}
+
+/// The source names in scope during elaboration and their Core IR binders, innermost last, with
+/// an index from each name to its positions, so a name resolves in expected O(1) whatever the
+/// number of locals (#326). The index is only looked up, never iterated.
+#[derive(Default)]
+struct Scope {
+    items: Vec<(String, Name)>,
+    index: std::collections::HashMap<String, Vec<usize>>,
+}
+
+impl Scope {
+    fn push(&mut self, (source, binder): (String, Name)) {
+        self.index
+            .entry(source.clone())
+            .or_default()
+            .push(self.items.len());
+        self.items.push((source, binder));
+    }
+
+    fn pop(&mut self) {
+        if let Some((source, _)) = self.items.pop()
+            && let Some(positions) = self.index.get_mut(&source)
+        {
+            positions.pop();
+            if positions.is_empty() {
+                self.index.remove(&source);
+            }
+        }
+    }
+
+    fn truncate(&mut self, len: usize) {
+        while self.items.len() > len {
+            self.pop();
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    /// The binder of the innermost source name `name`.
+    fn find(&self, name: &str) -> Option<Name> {
+        let position = self.index.get(name)?.last()?;
+        self.items.get(*position).map(|(_, binder)| binder.clone())
     }
 }

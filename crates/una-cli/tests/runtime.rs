@@ -403,6 +403,56 @@ pub main() -> Unit
 ";
 
 #[test]
+fn checking_a_body_takes_linear_time_in_its_locals() {
+    // #326: the checker resolves a local by an index from its name, and saves the taken state
+    // of the locals around a branch in proportion to the taken ones, so a body of n bindings,
+    // read again under `if`s, and of editable bindings updated in loops, checks in linear
+    // time. The fixed cost of a check is measured on 10 bindings and taken out of both sizes
+    // (N-29): 8x the bindings took about 7x as long measured, and about 60x when each lookup
+    // scanned every local; the bound of 24x is between them.
+    let root = package("many-locals", "", &[]);
+    let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let dir = root.to_str().unwrap();
+    let mut times = Vec::new();
+    for bindings in [10, 10, 2_000, 16_000] {
+        let mut source = String::from(
+            "module many\n\npub build(x: Int) -> Int\n=\n  let first = x\n  let edit acc = 0\n",
+        );
+        // Bindings each read again, some under an `if`, and editable bindings each updated in
+        // a loop: two shapes that were quadratic.
+        for i in 0..bindings / 2 {
+            source.push_str(&format!(
+                "  let v{i} = first + {i}\n  if v{i} > 3\n    acc = acc + 1\n"
+            ));
+        }
+        for i in 0..bindings / 2 {
+            source.push_str(&format!(
+                "  let edit e{i} = first\n  for k in 0..<2\n    e{i} = e{i} + k\n"
+            ));
+        }
+        source.push_str("  acc\n");
+        std::fs::write(root.join("src/many.una"), source).unwrap();
+        let started = std::time::Instant::now();
+        let output = una(&["check", "--tier", "0", dir]);
+        times.push(started.elapsed().as_secs_f64().max(0.02));
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    }
+    let fixed = times[1];
+    let (small, large) = ((times[2] - fixed).max(0.02), (times[3] - fixed).max(0.02));
+    assert!(
+        large < 24.0 * small,
+        "8x the bindings took {:.1}x as long, past the fixed cost: {times:?}",
+        large / small
+    );
+}
+
+#[test]
 fn a_text_appended_in_a_loop_grows_in_linear_time() {
     // ADR 0070 X10, `spec/22 §6` rule 2 (#261): `t = "{t}x"` appends in place when nothing
     // else holds `t`, so ten times the appends take about ten times as long, not a hundred. The

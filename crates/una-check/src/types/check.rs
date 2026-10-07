@@ -169,7 +169,7 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) module: usize,
     pub(crate) vars: Vars,
     pub(crate) type_params: Vec<&'a str>,
-    pub(crate) locals: Vec<Local<'a>>,
+    pub(crate) locals: super::locals::Locals<'a>,
     /// Capability frames: the body's own context first, then the `with` bindings of the
     /// statements around the expression checked.
     pub(crate) frames: Vec<Frame>,
@@ -365,7 +365,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             module,
             vars: Vars::new(kinds),
             type_params: Vec::new(),
-            locals: Vec::new(),
+            locals: super::locals::Locals::default(),
             frames: Vec::new(),
             base: Base::Quiet,
             pass,
@@ -493,11 +493,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
 
     /// The type of the innermost local named `name`.
     pub(crate) fn local(&self, name: &str) -> Option<Ty> {
-        self.locals
-            .iter()
-            .rev()
-            .find(|local| local.name == name)
-            .map(|local| local.ty.clone())
+        self.locals.find(name).map(|local| local.ty.clone())
     }
 
     /// Runs `check` with the position context `ctx`, then restores the current one.
