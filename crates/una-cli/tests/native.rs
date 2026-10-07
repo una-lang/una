@@ -759,6 +759,51 @@ fn a_json_parse_over_its_memory_budget_is_u6003_in_both_engines() {
 }
 
 #[test]
+fn a_json_parse_over_its_memory_budget_in_a_task_is_u6003_in_both_engines() {
+    // N-41 (#314): in a task of `together`, the parse that finds the run over its budget stops
+    // the task, natively through `una_rt_json_stopped`, and the block ends the run with U6003
+    // at that call, as the interpreter does; the line after the block never prints.
+    let program = "module hog\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit t = \"[0\"\n  for i in 0..<1000000\n    t = \"{t},\\\"abcdefghij\\\"\"\n  together\n    let doc = parse_json(\"{t}]\")\n      if error use Null\n    let other = t.len\n  @console.print(\"{doc.to_json().len} {other}\")\n";
+    let dir = package(
+        "json-task-hog",
+        "\n[run]\nentry = \"hog\"\ngrants = [\"console\"]\n",
+        &[("src/hog.una", program)],
+    );
+    let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+    std::fs::write(
+        dir.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let native = Command::new(dir.join("target/una/json-task-hog"))
+        .args(["--max-memory", "64"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(1), "{native:?}");
+    assert_eq!(String::from_utf8_lossy(&native.stdout), "");
+    let stderr = String::from_utf8_lossy(&native.stderr);
+    assert!(
+        stderr.starts_with(
+            "[U6003] Error: this call exceeds the memory limit of 64 MiB\n  at src/hog.una:10:15"
+        ),
+        "{stderr}"
+    );
+    let interpreted = una(&dir, &["run", "--max-memory", "64"]);
+    assert_eq!(interpreted.status.code(), Some(1), "{interpreted:?}");
+    assert_eq!(String::from_utf8_lossy(&interpreted.stdout), "");
+    let stderr = String::from_utf8_lossy(&interpreted.stderr);
+    assert!(
+        stderr.starts_with("[U6003] Error: this call exceeds the memory limit of 64 MiB\n"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("hog.una:10:15"), "{stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_text_appended_in_a_loop_grows_in_linear_time() {
     // ADR 0070 X10, `spec/22 §6` rule 2 (#261): natively too, `t = "{t}x"` appends in place
     // when nothing else holds `t`.
