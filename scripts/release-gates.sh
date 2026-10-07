@@ -20,7 +20,8 @@
 # logs/<gate>.log, and record.md, the validation record that docs/releases/validation.md
 # describes. The clone is OUT/clone.
 #
-# UNA_GATES_SOURCE overrides where the clone comes from (default: the remote `origin`).
+# UNA_GATES_SOURCE overrides where the clone comes from (default: the remote `origin`), and
+# UNA_GATES_Z3 where the pinned solver is (default: target/z3 of this checkout or of the clone).
 # Exit code: 0 when no gate failed, 1 when one did, 2 for a usage error.
 #
 # Usage: scripts/release-gates.sh SHA OUT [GATE...]
@@ -51,8 +52,17 @@ OUT=$(CDPATH='' cd -- "$OUT" && pwd)
 CLONE=$OUT/clone
 RESULTS=$OUT/results.tsv
 printf 'gate\tsha\tresult\tseconds\tlog_sha256\n' > "$RESULTS"
-# The pinned solver, as local-ci installs it, when it is there.
-[ -d "$REPO/target/z3/bin" ] && export PATH="$REPO/target/z3/bin:$PATH"
+# The pinned solver: UNA_GATES_Z3, else this checkout's target/z3 when it is there, else the
+# clone's target/z3, which the build gate installs with scripts/install-z3.sh, as local-ci does
+# (target/ is ignored, so the clone stays exact).
+if [ -n "${UNA_GATES_Z3:-}" ]; then
+    Z3=$UNA_GATES_Z3
+elif [ -x "$REPO/target/z3/bin/z3" ]; then
+    Z3=$REPO/target/z3
+else
+    Z3=$CLONE/target/z3
+fi
+export PATH="$Z3/bin:$PATH"
 
 digest() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
@@ -101,7 +111,11 @@ gate_clone() {
 }
 
 gate_build() {
-    run build sh -c 'cargo build --release -p una-cli -p una-rt && cargo test --workspace'
+    run build sh -c '
+        if [ ! -x "'"$Z3"'/bin/z3" ]; then scripts/install-z3.sh "'"$Z3"'" || exit 1; fi
+        scripts/check-solver.sh \
+            && cargo build --locked --release -p una-cli -p una-rt \
+            && cargo test --workspace --locked'
 }
 
 gate_mac() { run mac scripts/local-ci.sh; }
