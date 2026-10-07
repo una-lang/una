@@ -26,7 +26,7 @@ pub empty_map[K: Ord, V]() -> Map[K, V]
 --- evaluate it.
 pub predicate opaque is_json_number(t: Text) -> Bool = t.len > 0
 
---- The text of a JSON number that is not an exact integer (`spec/23 §1`).
+--- The text of a JSON number with a fraction or an exponent, which `Decimal` holds (`spec/23 §1`).
 pub kind JsonNumber = Text where is_json_number(it)
 
 --- A JSON value (`spec/23 §1`). `Number` is an exact integer, a JSON number with neither a
@@ -34,7 +34,7 @@ pub kind JsonNumber = Text where is_json_number(it)
 pub kind Json = Null | Boolean(value: Bool) | Number(value: Int) | Decimal(text: JsonNumber) | Str(value: Text) | Array(items: List[Json]) | Object(fields: Map[Text, Json])
 
 --- Why a text is not one JSON value, at the first error in reading order (`spec/23 §3`).
-pub kind JsonError = Syntax(at: Int) | TooDeep(at: Int) | DuplicateKey(at: Int)
+pub kind JsonError = Syntax(at: Int) | TooDeep(at: Int) | DuplicateKey(at: Int) | NumberTooLong(at: Int)
 
 --- The one JSON value of `t` (`spec/23 §3`).
 pub parse_json(t: Text) -> Json

@@ -1,6 +1,6 @@
 # 23. JSON
 
-Status: Normative, v0.2 (ADR 0073 and its amendment of 2026-10-07).
+Status: Normative, v0.2 (ADR 0073 and its amendments of 2026-10-07).
 
 The prelude reads and writes JSON (RFC 8259): a kind for JSON values, a parser that fails with a declared kind, and one canonical way of writing.
 
@@ -24,7 +24,7 @@ The prelude reads and writes JSON (RFC 8259): a kind for JSON values, a parser t
    pub kind JsonNumber = Text where is_json_number(it)
    ```
 
-   `is_json_number(t: Text) -> Bool` is an opaque prelude predicate. It is true exactly when `t` matches the `number` production of RFC 8259 §6.
+   `is_json_number(t: Text) -> Bool` is an opaque prelude predicate. It is true exactly when `t` matches the `number` production of RFC 8259 §6 and has a fraction or an exponent, so `Number` and `Decimal` never hold the same number (ADR 0073, amendment N-27).
 2. **Names.** A user kind named `Json`, `JsonNumber` or `JsonError` is U1002, as for `Map` (`spec/21 §1`). A user variant named like a variant of `Json` or `JsonError` shadows it in its module, as a user `Some` shadows `Option`'s (ADR 0073, amendment of 2026-10-07).
 3. **Numbers.** A JSON number with neither a fraction nor an exponent is `Number`, exact at any size. Every other number is `Decimal`, whose `text` is the number as written in the input.
 4. **Objects** are maps ordered by their keys (`spec/21 §1` rule 3), so the order of the input is not kept.
@@ -51,11 +51,12 @@ They are prelude functions, called with method syntax as those of `spec/22 §2` 
 5. **Failures.** The prelude declares:
 
    ```una
-   pub kind JsonError = Syntax(at: Int) | TooDeep(at: Int) | DuplicateKey(at: Int)
+   pub kind JsonError = Syntax(at: Int) | TooDeep(at: Int) | DuplicateKey(at: Int) | NumberTooLong(at: Int)
    ```
 
    - `at` is a position in scalar values, as in `spec/22 §1`.
-   - The failure is the first error in reading order: `Syntax` at the first scalar value where no valid JSON text can continue, or at the end of `t` when it ends early.
+   - The failure is the first error in reading order: `Syntax` at the first scalar value where no valid JSON text can continue, or at the end of `t` when it ends early. In a `\u` escape, that is the first character that cannot continue a valid escape: `"\uD800` fails at 7, `"\uDC00` at 4, the `C` that makes it a lone low surrogate.
+   - `NumberTooLong` at the first character of an integer of more than 4300 digits. A number with a fraction or an exponent has no such limit.
 6. **Size.** There is no limit beyond the memory budget (`spec/11 §7`).
 
 ## 4. Writing
@@ -78,7 +79,10 @@ They are prelude functions, called with method syntax as those of `spec/22 §2` 
 
 ## 5. Information flow
 
-1. **Parsing.** The result of `parse_json(t)` and its failure are labeled with the labels of `t` (`spec/14 §1`). A value bound from the result by `when` takes that label as its top label (`spec/07 §7` rule 3).
+1. **Parsing.** The result of `parse_json(t)` and its failure are labeled with the labels of `t` (`spec/14 §1`). A value bound from the result by `when` takes that label as its top label (`spec/07 §7` rule 3). Whether the call fails, and where, depends on `t`:
+   - `attempt` gives a `Result` labeled like `t`;
+   - `if error use` runs under a program counter raised by those labels, and its value carries them;
+   - `if error pass` and `if error fail` are U4002 when those labels are not `public` (`spec/07 §3` rule 3).
 2. **Constructing.** The positions of `Json` are unlabeled, so `public`. A labeled value given to a `Json` constructor is U4001 (`spec/07 §7` rule 2). A labeled text reaches JSON through a policy (`spec/07 §5`), or through `quote_json` and interpolation.
 3. **Writing.** The result of `to_json(j)` carries the labels of `j`, and the result of `quote_json(t)` those of `t`.
 
@@ -86,7 +90,7 @@ They are prelude functions, called with method syntax as those of `spec/22 §2` 
 
 1. **Complexity.** For an input of n scalar values, with an object of k keys counted once for each object:
    - parsing takes O(n + Σ k log k) time, which is O(n) when every object's keys arrive in order, as `to_json` writes them;
-   - writing takes O(n) time for an output of n scalar values;
+   - writing takes O(n) time for an output of n scalar values, except that writing a `Number` of d digits takes O(d²): parsing bounds d by 4300, but a program may build a longer `Int`;
    - both take O(n) space.
 2. **No native recursion.** Parsing and writing keep their own stack on the heap, and never recurse on the native stack over a value's depth (ADR 0060).
 3. **Equivalence.** Both engines use one implementation, and give the same value, text or failure for every input (`spec/16 §5`).

@@ -153,7 +153,7 @@ impl<'p> Types<'p> {
                             label: Label::public(),
                         });
                         data(
-                            ["Syntax", "TooDeep", "DuplicateKey"]
+                            ["Syntax", "TooDeep", "DuplicateKey", "NumberTooLong"]
                                 .into_iter()
                                 .map(|name| variant(name, vec![field("at", int, None, false)]))
                                 .collect(),
