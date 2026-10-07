@@ -13,6 +13,7 @@ use super::ty::{FnUse, KindLabels, ShowLabeled, Ty};
 /// `from ⊑ to`, where a symbolic label is below `to` only if `to` contains it or is `⊤`
 /// (`spec/07 §7` rule 8, ADR 0038 D3.2).
 pub(crate) fn below(from: &Label, to: &Label, top: &Label) -> bool {
+    let (from, to) = (&plain(from), &plain(to));
     if from.flows_to(to) {
         return true;
     }
@@ -63,6 +64,21 @@ fn violation(
             .or_else(|| violation(&f.result, &g.result, covariant, top, kinds)),
         _ => None,
     }
+}
+
+/// `label` with each deep symbolic label `ℓ*_T` read as `ℓ_T`: flows tell them apart nowhere,
+/// since deep labels mark `T*` only for the raise of a call of a function value (#253).
+pub(crate) fn plain(label: &Label) -> Label {
+    if !label.symbols.iter().any(|s| s.ends_with('*')) {
+        return label.clone();
+    }
+    let mut plain = label.clone();
+    plain.symbols = label
+        .symbols
+        .iter()
+        .map(|s| s.trim_end_matches('*').to_owned())
+        .collect();
+    plain
 }
 
 /// Whether `label` contains the symbolic label of a type parameter.

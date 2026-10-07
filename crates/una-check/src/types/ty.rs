@@ -29,6 +29,36 @@ pub(crate) struct KindLabels {
     /// inside a function type, or under an invariant parameter of another kind (ADR 0046
     /// rule 1). The others are covariant.
     invariant: Vec<Vec<bool>>,
+    /// Whether a deep label marks the symbolic labels it joins as deep, `ℓ*_T` (written `T*`),
+    /// apart from the label of a value of `T` itself, `ℓ_T`: only so that a call of a function
+    /// value raises its result by a decision on `T` values (#253). Flows read `T*` as `T`
+    /// ([`super::flow::plain`]), and diagnostics show `label(T)` as before.
+    pub(crate) deep_symbols: bool,
+}
+
+/// `label` with each symbolic label of a type parameter `T` written as `T*`: the join of every
+/// label of `T`'s type argument, as a deep label takes it (#253).
+pub(crate) fn starred(label: &Label) -> Label {
+    if !label
+        .symbols
+        .iter()
+        .any(|s| !s.starts_with('?') && !s.ends_with('*'))
+    {
+        return label.clone();
+    }
+    let mut out = label.clone();
+    out.symbols = label
+        .symbols
+        .iter()
+        .map(|s| {
+            if s.starts_with('?') || s.ends_with('*') {
+                s.clone()
+            } else {
+                format!("{s}*")
+            }
+        })
+        .collect();
+    out
 }
 
 impl KindLabels {
@@ -38,6 +68,7 @@ impl KindLabels {
         let mut labels = KindLabels {
             own: vec![Label::public(); fields.len()],
             invariant: params.iter().map(|count| vec![false; *count]).collect(),
+            deep_symbols: false,
         };
         loop {
             let mut changed = false;
@@ -302,6 +333,9 @@ impl Ty {
     /// A function type holds its top label only.
     pub(crate) fn deep_label(&self, kinds: &KindLabels) -> Label {
         match self {
+            Ty::Labeled(label, inner) if kinds.deep_symbols => {
+                starred(label).join(&inner.deep_label(kinds))
+            }
             Ty::Labeled(label, inner) => label.join(&inner.deep_label(kinds)),
             Ty::List(element) => element.deep_label(kinds),
             Ty::Kind(id, args) => args.iter().fold(kinds.own(*id), |label, arg| {

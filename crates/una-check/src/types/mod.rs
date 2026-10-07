@@ -204,6 +204,16 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
             ),
         );
     }
+    // Deep labels mark `T*` only for one rule (#253): diagnostics show them as before.
+    for diagnostic in &mut report.diagnostics {
+        plain_deep(&mut diagnostic.message);
+        for related in &mut diagnostic.related {
+            plain_deep(&mut related.message);
+        }
+        for repair in &mut diagnostic.repairs {
+            plain_deep(&mut repair.description);
+        }
+    }
     TypeCheck {
         headers,
         program,
@@ -334,6 +344,52 @@ fn parse_standard(sources: &SourceDb, id: FileId, interner: &mut Interner) -> Fi
 }
 
 /// Collects diagnostics, with the sources their spans point into.
+/// `text` with each deep symbolic label `label(T*)` written `label(T)`, as diagnostics show
+/// it (#253).
+fn plain_deep(text: &mut String) {
+    if !text.contains("*)") {
+        return;
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find("label(") {
+        let (before, after) = rest.split_at(at + "label(".len());
+        out.push_str(before);
+        match after.find(')') {
+            Some(close) => {
+                let inner = after.get(..close).unwrap_or("");
+                out.push_str(inner.strip_suffix('*').unwrap_or(inner));
+                rest = after.get(close..).unwrap_or("");
+            }
+            None => rest = after,
+        }
+    }
+    out.push_str(rest);
+    // A label with both `ℓ_T` and `ℓ*_T` now names `label(T)` twice in a row: once.
+    loop {
+        let mut collapsed = None;
+        let mut from = 0;
+        while let Some(at) = out.get(from..).and_then(|r| r.find("label(")) {
+            let start = from + at;
+            let Some(close) = out.get(start..).and_then(|r| r.find(')')) else {
+                break;
+            };
+            let one = out.get(start..=start + close).unwrap_or("").to_owned();
+            let twice = format!("{one} + {one}");
+            if out.get(start..).is_some_and(|r| r.starts_with(&twice)) {
+                collapsed = Some((start, twice.len(), one));
+                break;
+            }
+            from = start + close + 1;
+        }
+        let Some((start, length, one)) = collapsed else {
+            break;
+        };
+        out.replace_range(start..start + length, &one);
+    }
+    *text = out;
+}
+
 pub(crate) struct Report<'s> {
     sources: &'s SourceDb,
     diagnostics: Vec<Diagnostic>,

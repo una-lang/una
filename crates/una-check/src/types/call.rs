@@ -278,6 +278,7 @@ impl<'a> Checker<'_, 'a, '_> {
         self.resolved(span, Res::Value);
         self.ordered(span, (0..args.len()).map(Some).collect());
         let mut flows = Vec::new();
+        let mut decided = Label::public();
         for (arg, param) in args.iter().zip(&function.params) {
             self.ctx.argument = true;
             let found = self.expr_as(
@@ -294,12 +295,18 @@ impl<'a> Checker<'_, 'a, '_> {
             if !function.refinements.param(flows.len()).is_empty() {
                 self.obligation(ObligationKind::Refinement, arg.value.span, None);
             }
+            // An argument decided by comparing values of the enclosing function's type
+            // parameters carries `ℓ*_T`, which its flow into `T` reads as `ℓ_T`, the label the
+            // function value is checked against at each call. The decision raises the call's
+            // result and program counter instead, as the value's own label does (#253).
+            decided = decided.join(&self.decisions(&found));
             flows.push((arg.value.span, found, param.clone()));
         }
         for (arg_span, found, param) in flows {
             self.instantiated_by(arg_span, &param, &found);
             self.flow(arg_span, &found, &param, &format!("the argument of {what}"));
         }
+        let value_label = value_label.join(&decided);
         // Calling a function value needs the capabilities of its type (`spec/10 §2`, S-Fun).
         let level = self.frames.len();
         self.needs_site(what, &function.uses, span, level);
@@ -326,6 +333,32 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         // The result of a function value carries the value's label.
         function.result.with_label(&value_label)
+    }
+
+    /// The deep symbolic labels `ℓ*_T` of the enclosing function's type parameters at any
+    /// position of `found` (#253).
+    fn decisions(&self, found: &Ty) -> Label {
+        if self.type_params.is_empty() {
+            return Label::public();
+        }
+        let names = self.type_params.clone();
+        let seen = std::cell::RefCell::new(Label::public());
+        self.labeled(found).map_labels(&|label| {
+            let mut gathered = Label::public();
+            gathered.symbols = label
+                .symbols
+                .iter()
+                .filter(|s| {
+                    s.strip_suffix('*')
+                        .is_some_and(|name| names.contains(&name))
+                })
+                .cloned()
+                .collect();
+            let joined = seen.borrow().join(&gathered);
+            *seen.borrow_mut() = joined;
+            label.clone()
+        });
+        seen.into_inner()
     }
 
     /// S-Fun at a flow of a value of type `found` into the declared type `expected`
@@ -729,8 +762,18 @@ impl<'a> Checker<'_, 'a, '_> {
         // An operation's arguments are sinks bounded by `accepts`, except
         // the carried ones, which accept every label and raise the result (ADR 0039).
         let mut carried = Label::public();
+        // The join of the labels of the arguments that decide whether a host operation fails,
+        // and how (N-39).
+        let mut decided = Label::public();
+        let host = capability.module == self.env.prelude;
         let mut sinks: Vec<(Span, Ty)> = Vec::new();
         for (arg_span, found, expected, param) in checked {
+            if host && decides_failure(capability.name, op_name, param) {
+                // Capped at what the operation accepts: an argument above it is U4003 already,
+                // so `Keys.hmac` and `Files.read`, which accept only `public`, are unchanged.
+                let accepted = def.accepts.clone().unwrap_or_else(Label::public);
+                decided = decided.join(&self.deep(&found).meet(&accepted));
+            }
             // ADR 0050: the argument flows into the declared parameter type at its
             // contravariant positions and invariant kind arguments, which a handler body
             // assumes; `accepts` bounds its data.
@@ -760,7 +803,15 @@ impl<'a> Checker<'_, 'a, '_> {
             self.obligation(ObligationKind::Precondition, span, None);
         }
         if let Some(fails) = &def.fails {
-            self.call_fails.insert(span, fails.clone());
+            // Whether a host operation fails, and how, is labeled like the arguments that
+            // decide it (`spec/07 §7` rule 4, N-39): its payload too, and a handling clause
+            // branches on that label.
+            if decided.is_public() {
+                self.call_fails.insert(span, fails.clone());
+            } else {
+                self.call_fails.insert(span, fails.raise_deep(&decided));
+                self.decided_failures.insert(span, decided);
+            }
         }
         let what = format!("`@{cap_name}.{op_name}`");
         self.position_site(
@@ -1361,6 +1412,17 @@ fn structural_inputs(name: &str) -> Option<&'static [(&'static str, bool)]> {
         "filter" | "first_where" => &[("xs", false), ("keep", false)],
         _ => return None,
     })
+}
+
+/// Whether the parameter `param` of the host operation `capability.op` decides whether it
+/// fails, and how (`spec/07 §7` rule 4, N-39): the path of `Files`, not the content; the key
+/// name of `Keys`, not the data.
+fn decides_failure(capability: &str, op: &str, param: &str) -> bool {
+    match (capability, op) {
+        ("Files", _) => param == "path",
+        ("Keys", "hmac") => param == "key_name",
+        _ => false,
+    }
 }
 
 /// Whether `def` is a prelude function whose result carries the labels of its arguments.
