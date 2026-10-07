@@ -66,3 +66,19 @@ The language already allows the update in place. `spec/17 §7` rule 3 lets a bac
 - **A flag per call telling the callee whether it owns each argument.** That costs a branch per parameter in every callee, and the callee would need both code paths. Rejected.
 - **Only `take` and `edit` parameters owned.** The convention is then visible in the signature, but `acc = pushed(acc, i)` stays quadratic unless the author writes `take`. The language should not make a performance trap the default.
 - **Copy-on-write in the callee, with no move.** The caller's reference is what forces the copy, so this changes nothing.
+
+## Amendment of 2026-10-07: function values (N-42)
+
+Decided by the coordinator under the owner's delegation (N-42), pending Leonardo's review; found by the in-place review of v0.3.0 (#311, IP-1 and IP-2), fixed by #312.
+
+"Not affected: closures" (D2) left a call through a function value copying a list or a text at every call, in both engines: `acc = f(acc, i)` with `f` a named function passed as a value, or a lambda, and `fold` with a list or text state natively. It is replaced by:
+
+1. **A lambda owns every parameter.** Its body moves each one at its last use or releases it at its end, as a function's body does with its owned parameters.
+2. **A function used as a value is the lambda that calls it** (ADR 0037 rule 1). That lambda is the wrapper the convention needs: its call moves the arguments into the function's owned parameters, and releases those the function borrows. So every function value has the same convention, whatever its target.
+3. **A call through a function value** moves each argument at its last use, by D1, and retains it otherwise, as a call of a function does with an owned parameter. Borrow inference (D2) counts it as consuming every argument.
+4. **The prelude.** `fold` moves its state into the step, its initial state included when it is at its last use and is not the list folded over; `map`, `filter`, `first_where` and `fold` retain each item they give the function.
+5. **The interpreter** moves a binding at its last use into a call through a function value, as into a call of a function (D3).
+
+**Complexity.** Appending through any number of function values and higher-order layers is amortized O(1) per append, in both engines: O(n) for n appends, in O(n) space, copying nothing that no other name holds. A call through a function value whose target only borrows costs at most one retain at the caller and one release in the lambda, a constant per call; a call whose argument moves costs nothing more. A `fold` into a text that starts from a literal copies that literal once.
+
+IP-3, `acc = f(acc) if error use acc`, still copies at each call: the failure path reads `acc`, so it never moves (D1). The guide gives its linear form.

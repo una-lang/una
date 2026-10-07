@@ -760,10 +760,11 @@ impl<'p, 'w> Machine<'p, 'w> {
     /// twice keeps it too, and a value something else holds is still copied, so no value ever
     /// changes under another name.
     /// A map's `set` and `remove`, `With` and `Without`, give up the map the same way
-    /// (`spec/21 §5` rule 2).
+    /// (`spec/21 §5` rule 2), and so does a call through a function value (N-42).
     fn updates_in_place(&mut self, rhs: &'p Rhs, rest: &'p Expr) -> Option<Vec<&'p str>> {
         let args = match rhs {
-            Rhs::Call { args, .. } => args.as_slice(),
+            // A call through a function value too, whose lambda owns its arguments (N-42).
+            Rhs::Call { args, .. } | Rhs::Apply { args, .. } => args.as_slice(),
             Rhs::Prim {
                 prim: Prim::Map(MapOp::With | MapOp::Without),
                 args,
@@ -772,7 +773,9 @@ impl<'p, 'w> Machine<'p, 'w> {
             _ => return None,
         };
         let all = match rhs {
-            Rhs::Call { args, .. } | Rhs::Prim { args, .. } => args.as_slice(),
+            Rhs::Call { args, .. } | Rhs::Apply { args, .. } | Rhs::Prim { args, .. } => {
+                args.as_slice()
+            }
             _ => args,
         };
         let mut moved = Vec::new();
@@ -815,10 +818,17 @@ impl<'p, 'w> Machine<'p, 'w> {
                     let value = match value.as_ref() {
                         Bound::Rhs(rhs) => match self.updates_in_place(rhs, body) {
                             Some(moved) => {
-                                let (Rhs::Call { args, .. } | Rhs::Prim { args, .. }) = rhs else {
+                                let (Rhs::Call { args, .. }
+                                | Rhs::Apply { args, .. }
+                                | Rhs::Prim { args, .. }) = rhs
+                                else {
                                     return Err(fault(
                                         "an update that is neither a call nor a map's",
                                     ));
+                                };
+                                let callee = match rhs {
+                                    Rhs::Apply { callee, .. } => Some(self.atom(env, callee)?),
+                                    _ => None,
                                 };
                                 let args = self.atoms(env, args)?;
                                 for moved in moved {
@@ -832,6 +842,10 @@ impl<'p, 'w> Machine<'p, 'w> {
                                     Rhs::Call { function, span, .. } => {
                                         self.call(function, args, &caps, *span)?
                                     }
+                                    Rhs::Apply { span, .. } => match &callee {
+                                        Some(callee) => self.apply(callee, args, *span)?,
+                                        None => return Err(fault("a call of no function value")),
+                                    },
                                     Rhs::Prim {
                                         prim: Prim::Map(op),
                                         ..
