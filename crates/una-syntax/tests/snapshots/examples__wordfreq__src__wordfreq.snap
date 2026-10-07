@@ -1,0 +1,54 @@
+---
+source: crates/una-syntax/tests/examples.rs
+assertion_line: 81
+expression: "dump(&parsed.file, &interner, db.file(id).text())"
+---
+(module wordfreq)
+(fn pub words
+  (doc "--- The words of a line: the parts between spaces, without the empty ones.")
+  ((line {Text}))
+  {List[Text]}
+  (block
+    (let space " ")
+    (method (method line split (on: space)) filter (keep: (fn (part) (> (. part len) 0))))))
+(fn pub initial
+  (doc "--- The first letter of a word.")
+  ((word {Text}))
+  {Text}
+  (requires (>= (. word len) 1))
+  (ensures (== (. result len) 1))
+  (block (method word slice (start: 0) (end: 1))))
+(fn pub counts
+  (doc "--- How often each word occurs, in ascending order of the words.")
+  ((words {List[Text]}))
+  {Map[Text, Int]}
+  (block
+    (let-edit counts {Map[Text, Int]} (call empty_map))
+    (for word words
+      (block
+        (let seen (handled (method counts get (key: word)) (if-none-use 0)))
+        (method (edit counts) set (key: word) (value: (+ seen 1)))))
+    counts))
+(fn pub report
+  (doc "--- The counts as one JSON object.")
+  ((counts {Map[Text, Int]}))
+  {Text}
+  (block
+    (let-edit fields {Map[Text, Json]} (call empty_map))
+    (for entry
+      (method counts entries)
+      (block (method (edit fields) set (key: (. entry key)) (value: (call Number (. entry value))))))
+    (method (call Object fields) to_json)))
+(fn pub main
+  ()
+  {Unit}
+  (uses @console {Console[print]})
+  (block
+    (let text "the cat and the hat and the bat")
+    (@console.print (call report (call counts (call words text))))))
+(example "a word's first letter" (do (call initial "una")) (expect (== result "u")))
+(example "each word is counted"
+  (do (call counts (call words "a b a")))
+  (expect
+    (== result
+      (method (method (call empty_map) with (key: "a") (value: 2)) with (key: "b") (value: 1)))))

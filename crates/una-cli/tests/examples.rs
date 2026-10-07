@@ -81,6 +81,10 @@ const RUNS: &[(&str, &str)] = &[
         "toolshelf",
         "Ana took the ladder for 14 days\nreturned 20 days later, it is 6 days late\n",
     ),
+    (
+        "wordfreq",
+        "{\"and\":2,\"bat\":1,\"cat\":1,\"hat\":1,\"the\":3}\n",
+    ),
 ];
 
 /// A `kind` declaration line: its name and what follows it.
