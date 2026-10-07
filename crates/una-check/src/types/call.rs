@@ -1717,7 +1717,7 @@ impl<'a> Checker<'_, 'a, '_> {
 /// The prelude functions whose results carry the labels of their arguments, as `spec/14 §1`
 /// "Result labels" lists them (ADR 0038 D3.4): their native implementations declare these
 /// labels, which the prelude's Una signatures cannot write.
-const PRELUDE_LABELED: [&str; 21] = [
+const PRELUDE_LABELED: [&str; 24] = [
     "abs",
     "append",
     "at",
@@ -1734,10 +1734,15 @@ const PRELUDE_LABELED: [&str; 21] = [
     "max",
     "min",
     "or_else",
+    // JSON (`spec/23 §5`): a parsed value and its failure, and a written or quoted text,
+    // carry the labels of their argument.
+    "parse_json",
+    "quote_json",
     "sort",
     "starts_with",
     "sum",
     "to_int",
+    "to_json",
     "trim",
 ];
 

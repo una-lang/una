@@ -1892,6 +1892,25 @@ impl<'p> Lowerer<'_, 'p, '_> {
             _ => &[],
         };
         if ctor.kind.module == PRELUDE_MODULE {
+            // JSON (`spec/23 §1`): `Json` holds itself through its arrays and objects.
+            let named = |name: &str, args: Vec<Type>| Type::Base {
+                base: Base::Named {
+                    module: PRELUDE_MODULE.to_owned(),
+                    name: name.to_owned(),
+                    args,
+                },
+                refinements: Vec::new(),
+                label: Label::public(),
+            };
+            let json = || named("Json", Vec::new());
+            match (ctor.kind.name.as_str(), ctor.name.as_str()) {
+                ("Json", "Boolean") => return base(Base::Bool),
+                ("Json", "Number") | ("JsonError", _) => return base(Base::Int),
+                ("Json", "Decimal" | "Str") => return base(Base::Text),
+                ("Json", "Array") => return named("List", vec![json()]),
+                ("Json", "Object") => return named("Map", vec![base(Base::Text), json()]),
+                _ => {}
+            }
             let arg = match (ctor.kind.name.as_str(), ctor.name.as_str()) {
                 ("Option", "Some") | ("Result", "Ok") => args.first(),
                 ("Result", "Err") => args.get(1),
@@ -2121,6 +2140,16 @@ impl<'p> Lowerer<'_, 'p, '_> {
             "sum" => "una_rt_sum",
             "or_else" => "una_rt_or_else",
             "empty_map" => "una_rt_map_empty",
+            // JSON (`spec/23`): `parse_json` reports its failure as a host operation does.
+            "parse_json" => {
+                let value = self.call("una_rt_parse_json", args)?;
+                let failed = self.call("una_rt_host_failed", &[])?;
+                self.check(value, failed, scope, catch);
+                return Ok(value);
+            }
+            "to_json" => "una_rt_to_json",
+            "quote_json" => "una_rt_quote_json",
+            "is_json_number" => "una_rt_is_json_number",
             other => return Err(unsupported(format!("`{other}` of the prelude"))),
         };
         self.call(function, args)

@@ -1,0 +1,32 @@
+-- test: JSON keeps labels: a value parsed from a secret text, a text quoted or written from a secret, and a value bound from a secret Json are secret, and a secret cannot enter a Json constructor, whose positions are public (spec/23 §5, ADR 0073 J5)
+-- spec: spec/23 §5
+-- expect: error U4001 at src/json_labels.una:14:3
+-- expect: error U4001 at src/json_labels.una:17:47
+-- expect: error U4001 at src/json_labels.una:19:42
+-- expect: error U4001 at src/json_labels.una:21:39
+-- expect: error U4001 at src/json_labels.una:30:8
+-- expect: error U4001 at src/json_labels.una:31:22
+module json_labels
+
+pub parsed(t: secret Text) -> Json
+  fails JsonError
+=
+  t.parse_json()
+    if error pass
+
+pub wrapped(token: secret Text) -> Json = Str(token)
+
+pub quoted(token: secret Text) -> Text = token.quote_json()
+
+pub written(j: secret Json) -> Text = j.to_json()
+
+pub kept(token: secret Text) -> secret Text = token.quote_json()
+
+pub bound(t: secret Text) -> Text
+  fails JsonError
+=
+  let j = t.parse_json()
+    if error pass
+  when j
+    is Str(value) -> value
+    else -> ""

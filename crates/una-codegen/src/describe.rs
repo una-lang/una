@@ -111,6 +111,54 @@ impl<'p> Types<'p> {
                             .collect(),
                     ),
                     "KeyError" => data(vec![variant("UnknownKey", Vec::new())]),
+                    // JSON (`spec/23 §1`): `Json` holds itself through its arrays and objects,
+                    // which refer to its own index.
+                    "Json" => {
+                        let named = |name: &str, args: Vec<Type>| Type::Base {
+                            base: Base::Named {
+                                module: PRELUDE_MODULE.to_owned(),
+                                name: name.to_owned(),
+                                args,
+                            },
+                            refinements: Vec::new(),
+                            label: Label::public(),
+                        };
+                        let base = |base: Base| Type::Base {
+                            base,
+                            refinements: Vec::new(),
+                            label: Label::public(),
+                        };
+                        let json = named("Json", Vec::new());
+                        let (boolean, int, text) = (
+                            self.of(&base(Base::Bool)),
+                            self.of(&base(Base::Int)),
+                            self.of(&base(Base::Text)),
+                        );
+                        let items = self.of(&named("List", vec![json.clone()]));
+                        let fields = self.of(&named("Map", vec![base(Base::Text), json]));
+                        data(vec![
+                            variant("Null", Vec::new()),
+                            variant("Boolean", vec![field("value", boolean, None, false)]),
+                            variant("Number", vec![field("value", int, None, false)]),
+                            variant("Decimal", vec![field("text", text, None, false)]),
+                            variant("Str", vec![field("value", text, None, false)]),
+                            variant("Array", vec![field("items", items, None, false)]),
+                            variant("Object", vec![field("fields", fields, None, false)]),
+                        ])
+                    }
+                    "JsonError" => {
+                        let int = self.of(&Type::Base {
+                            base: Base::Int,
+                            refinements: Vec::new(),
+                            label: Label::public(),
+                        });
+                        data(
+                            ["Syntax", "TooDeep", "DuplicateKey"]
+                                .into_iter()
+                                .map(|name| variant(name, vec![field("at", int, None, false)]))
+                                .collect(),
+                        )
+                    }
                     _ => {
                         self.unknown = true;
                         json!({ "shape": "other" })

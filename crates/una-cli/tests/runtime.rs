@@ -1744,3 +1744,40 @@ fn appends_in_nested_loops_and_tasks_grow_in_linear_time() {
         );
     }
 }
+
+/// A program that builds a JSON array of `steps` items, writes it with `to_json`, parses the
+/// text back and checks the round trip (#238).
+fn json_round_trip(steps: usize) -> String {
+    format!(
+        "module grow\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit items: List[Json] = []\n  for i in 0..<{steps}\n    items = items.append(item: Number(i))\n  for i in 0..<{steps}\n    items = items.append(item: Str(\"item {{i}}\"))\n  let text = Array(items).to_json()\n  let back = text.parse_json()\n    if error use Null\n  let again = back.to_json()\n  @console.print(\"{{text.len}} {{again == text}}\")\n"
+    )
+}
+
+#[test]
+fn json_parses_and_writes_in_linear_time() {
+    // ADR 0073 J6 (#238): writing is O(n) and parsing O(n) for canonical input. Each tenfold
+    // step stays under 30x, against about 100x for quadratic work.
+    let root = package("json-scaling", "\n[run]\nentry = \"grow\"\n", &[]);
+    let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let dir = root.to_str().unwrap();
+    let mut times = Vec::new();
+    for steps in [10_000, 100_000] {
+        std::fs::write(root.join("src/grow.una"), json_round_trip(steps)).unwrap();
+        let started = std::time::Instant::now();
+        let output = una(&["run", dir, "--grant", "console"]);
+        times.push(started.elapsed().as_secs_f64().max(0.05));
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        assert!(stdout(&output).ends_with(" true\n"), "{}", stdout(&output));
+    }
+    assert!(
+        times[1] < 30.0 * times[0],
+        "10x the items took {:.1}x as long: {times:?}",
+        times[1] / times[0]
+    );
+}
