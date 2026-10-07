@@ -42,7 +42,7 @@ postfix         = [ "edit" ] primary { "." lower_ident [ call_args ] | call_args
 3. **Assignment.** `p = e` rebinds the place `p` to the value of `e`.
    - `p` MUST be rooted at an editable binding (U2019). A plain `let`, a parameter without `edit`, and a binding captured by a lambda are not editable.
    - There are no compound assignment operators and no assignment to list elements: elements change through `set` (§7).
-4. **Fixed type.** An editable binding keeps its declared type at every rebind, refinement and label included (§5, §6). Without an annotation, its type is the type of its initial value without its refinement: `let edit n = p` with `p: Pos` gives `n` the type `Int`. An annotation, as in `let edit n: Pos = p`, makes the refinement an invariant.
+4. **Fixed type.** An editable binding keeps its declared type at every rebind, refinement and label included (§5, §6). Without an annotation, its type is the type of its initial value without its refinement: `let edit n = p` with `p: Pos` gives `n` the type `Int`. An annotation, as in `let edit n: Pos = p`, makes the refinement an invariant. (v0.3, ADR 0075.) Without an annotation, a position of the initial value's type that is still an unsolved type variable when the binding is made, such as the key and value of `empty_map()` or the element of `[]`, has a label variable as its top label: the least label above every label that flows into that position (§6 rule 1). The other positions keep the labels the initial value gives them, the binding's top label included.
 
 ## 3. Parameter conventions
 
@@ -109,7 +109,7 @@ Core IR gains tuple types `(τ, ...)`, tuple construction `(a, ...)`, and the bi
 
 ## 6. Information flow
 
-1. **Fixed labels (V2-16).** An editable binding's declared label is fixed.
+1. **Fixed labels (V2-16).** An editable binding's declared label is fixed. (v0.3, ADR 0075.) The label variables of an un-annotated binding (§2 rule 4) are solved first, over every assignment, `edit` argument and join of the binding, and then fixed: every read sees the solution, and every flow is checked against it.
    - An assignment, an `edit` call or a join flows the new value into the declared type (`spec/07 §7` rule 2).
    - A rebind under a program counter above the binding's label is U4001 at the value, never a silent raise.
 2. **`edit` parameters.** The desugar returns the parameter's final value at its declared type, which flows back into the caller's place. In effect, an `edit` argument and its parameter carry the same labels.

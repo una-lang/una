@@ -216,6 +216,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// program counter stays below the place's label (`spec/17 §5` rule 2, `§6` rule 1).
     pub(crate) fn rebind(&mut self, place: &Expr, place_ty: &Ty, value: &Ty, span: Span) {
         let shown = self.report.text(place.span).to_owned();
+        self.record_edit_bounds(value, place_ty);
         self.flow(span, value, place_ty, &format!("`{shown}`"));
         let top = self.labeled(place_ty).top_label();
         if !self.ctx.pc.flows_to(&top) {

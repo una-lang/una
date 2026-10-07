@@ -205,7 +205,14 @@ impl<'a> Checker<'_, 'a, '_> {
         let refined = declared
             .as_ref()
             .is_some_and(super::ty::Declared::is_refined);
+        let annotated = declared.is_some();
         let bound = declared.map_or_else(|| self.vars.resolve_bound(&ty), |declared| declared.base);
+        // ADR 0075: an un-annotated `let edit` has label variables at its open positions.
+        let bound = if stmt.editable && !annotated {
+            self.open_label_positions(bound, stmt.name.span)
+        } else {
+            bound
+        };
         self.typed(stmt.name.span, &bound);
         // `let edit` keeps this type, label included, at every rebind (`spec/17 §2` rule 4).
         self.bind_as(name, bound, stmt.editable);

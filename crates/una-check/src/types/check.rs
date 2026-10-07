@@ -230,6 +230,9 @@ pub(crate) struct Checker<'c, 'a, 's> {
     /// on their arguments' values, as `parse_json` (`spec/23 §5`, `spec/07 §3`), by the span of
     /// the call: handling such a failure branches on them (N-27).
     pub(crate) decided_failures: BTreeMap<Span, Label>,
+    /// In pass 1, the labels that flow into the label variables of this declaration's editable
+    /// bindings, by symbol (ADR 0075).
+    pub(crate) edit_bounds: BTreeMap<String, Label>,
     /// The function or predicate whose body is checked.
     pub(crate) current: Option<usize>,
     /// The handler whose operation bodies are checked (ADR 0043).
@@ -383,6 +386,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             returning: None,
             call_fails: BTreeMap::new(),
             decided_failures: BTreeMap::new(),
+            edit_bounds: BTreeMap::new(),
             current: None,
             handler: None,
             instances: Vec::new(),
@@ -717,8 +721,16 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             pass,
             instantiations,
             mut escaped,
+            edit_bounds,
             ..
         } = self;
+        // ADR 0075 rule 2: pass 1 solves the label variables of the editable bindings.
+        if pass == Pass::Collect
+            && !edit_bounds.is_empty()
+            && super::edit_labels::solve_into(&edit_bounds, &mut env.edit_labels)
+        {
+            env.edit_labels_changed = true;
+        }
         if pass == Pass::Check {
             super::generic::second_class(report, &vars, &instantiations, &mut escaped);
             findings
