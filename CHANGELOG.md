@@ -47,6 +47,7 @@ Edition 0.1 keeps its rules, apart from the security fix #253 above. Some of its
 
 ### Native backend
 
+- **Fix: a failure through a `fails of` parameter was swallowed** (#267, Critical, found by the pre-tag review). In native code, a failure of a function value given for a `fails of` parameter was dropped. `if error pass` passed nothing on, `if error use` used a wrong value, and `attempt` gave `Ok`, where `una run` failed. Every native call now checks its callee's failure flag. A conformance case of relays through `if error pass`, `if error use`, `attempt`, two levels and `together` tasks is part of the native equivalence test.
 - **`together` and `together for`** (#162): a thread per task with its own heap, values copied at the fork and the join, non-atomic reference counts.
   - An operation in progress at cancellation completes (#200).
 - **Constrained generics** (#171): one hidden type descriptor per constrained type parameter (ADR 0066 G4, `spec/20 §7`), also captured by closures.
@@ -77,7 +78,7 @@ Edition 0.1 keeps its rules, apart from the security fix #253 above. Some of its
   - a reserved word used as a binding name says what it is reserved for (#206);
   - a handling clause on its expression's line says where it goes (#211).
 - **The agent guide and the syntax reference** cover edition 0.2, and every example is checked (#178).
-- **The repairs of one check apply together** (#257, from the pre-tag review). No two repairs edit the same text, applying them all converges, and none changes a program's meaning:
+- **The repairs of one check apply together** (#257, PR #265, from the pre-tag review). No two repairs edit the same text, applying them all converges, and none changes a program's meaning:
   - one `[T: C]` edit per type parameter, with the strongest constraint;
   - distinct names for each renamed `let result`, also past a `together` block;
   - each handling clause on a line of its own.
@@ -114,6 +115,8 @@ The decisions of v0.2, all accepted:
 ### Known issues
 
 - **A closed stdout or stderr counts as success** (3c-1, #259). When a write fails with `EBADF` because the stream is closed rather than a broken pipe, both engines exit 0. It is fixed after this release.
+- **One same-line handling clause reported per body** (#268). When a function body has several lines with a handling clause on its expression's line, only the first is reported, so applying the repairs takes a check per line. Separate functions each report theirs.
+- **A false U3003 for `attempt` over a `fails of` parameter in a relay** (#270). A relay whose only clause is `fails of f` and whose body is `let r = attempt f(2)` is rejected with U3003 when another relay calls it, although no effect is performed. `if error use` instead of `attempt`, or adding `uses of`, avoids it. It is not a soundness issue.
 
 ### Known limits
 
