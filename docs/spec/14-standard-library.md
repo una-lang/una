@@ -100,6 +100,8 @@ kind KeyError = | UnknownKey
 - **Labels of `Keys.hmac`** (ADR 0039). The result of `@k.hmac(key_name: n, data: d)` is labeled `internal ⊔ ℓ*(d)`, where `ℓ*(d)` joins every label of the type of `d`; lowering it below that label needs a policy (`spec/07 §5`). `key_name` accepts only `public`, so a labeled key name, or a call under a raised program counter, is U4003, and a failure of `hmac` depends only on public data. `data` accepts every label. A user handler of `Keys` is checked against the worst caller (`spec/07 §7` rule 4): its `key_name` parameter is `public`, its `data` parameter carries every label, and its result may carry the label of `data`.
 - User code MAY write handlers for host capabilities (for example, a fake `Keys` in examples). Host implementations are used only by `una run`.
 
+(v0.2, ADR 0074; not implemented yet; planned (#239).) In edition `0.2`, `std.host` also declares the capability `Http` and the kinds `Header`, `Response` and `HttpError` (`spec/24`).
+
 ## 4. `std.testing`
 
 Usable only in test code (ADR 0028, ADR 0043):
