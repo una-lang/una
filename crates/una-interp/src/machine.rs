@@ -511,6 +511,8 @@ pub(crate) struct Machine<'p, 'w> {
     callers: Vec<Vec<(&'p Expr, Vec<&'p str>)>>,
     /// The names each expression reads, computed once (`una_core::vars`).
     reads: HashMap<*const Expr, Rc<BTreeSet<String>>>,
+    /// The names each loop body binds, computed once (`una_core::binders`).
+    binders: HashMap<*const Expr, Rc<BTreeSet<&'p str>>>,
 }
 
 impl<'p, 'w> Machine<'p, 'w> {
@@ -544,6 +546,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             later: Vec::new(),
             callers: Vec::new(),
             reads: HashMap::new(),
+            binders: HashMap::new(),
         }
     }
 
@@ -635,6 +638,19 @@ impl<'p, 'w> Machine<'p, 'w> {
         )
     }
 
+    /// The names `expr` binds.
+    fn binders(&mut self, expr: &'p Expr) -> Rc<BTreeSet<&'p str>> {
+        Rc::clone(
+            self.binders
+                .entry(std::ptr::from_ref(expr))
+                .or_insert_with(|| {
+                    let mut names = BTreeSet::new();
+                    una_core::binders(expr, &mut names);
+                    Rc::new(names)
+                }),
+        )
+    }
+
     /// Whether the binding `name` is dead once `rest` has started: neither `rest` nor what the
     /// function evaluates after it reads it (#201).
     fn dead_after(&mut self, name: &str, rest: &'p Expr) -> bool {
@@ -645,6 +661,67 @@ impl<'p, 'w> Machine<'p, 'w> {
         later
             .into_iter()
             .all(|(expr, rebound)| rebound.contains(&name) || !self.reads(expr).contains(name))
+    }
+
+    /// `let t2 = concat(t1, part, ...) in rest`, the interpolation `"{t}..."`, where the text of
+    /// `t1` is held by no binding that `rest` or what follows reads, as when `t = "{t}x"` in a
+    /// loop: those bindings give the text up, and `Rc::make_mut` appends to it in place when
+    /// that leaves its only reference, or copies it otherwise (ADR 0070 X10, `spec/22 §6` rule
+    /// 2, #261). `None` when the rhs is not such a concatenation.
+    fn appends_in_place(
+        &mut self,
+        env: &mut Env<'p>,
+        rhs: &'p Rhs,
+        rest: &'p Expr,
+    ) -> Option<Flow<'p>> {
+        let Rhs::Prim {
+            prim: Prim::Concat,
+            args,
+            ..
+        } = rhs
+        else {
+            return None;
+        };
+        let Some(Atom::Var(first)) = args.first() else {
+            return None;
+        };
+        let parts = match self.atoms(env, args) {
+            Ok(parts) => parts,
+            Err(stop) => return Some(Err(stop)),
+        };
+        let mut parts = parts.into_iter();
+        let Some(Value::Text(mut text)) = parts.next() else {
+            return None;
+        };
+        if !self.dead_after(first, rest) {
+            return None;
+        }
+        // Every binding of this text that nothing reads later gives it up: in `"{t}x"`, both
+        // `t` and the temporary of its conversion to text.
+        let dead: Vec<usize> = env
+            .iter()
+            .enumerate()
+            .filter(
+                |(_, (_, value))| matches!(value, Value::Text(other) if Rc::ptr_eq(other, &text)),
+            )
+            .map(|(at, _)| at)
+            .collect();
+        for at in dead {
+            let name = env.get(at).map(|(name, _)| *name)?;
+            if self.dead_after(name, rest)
+                && let Some((_, value)) = env.get_mut(at)
+            {
+                *value = Value::Unit;
+            }
+        }
+        let grown = Rc::make_mut(&mut text);
+        for part in parts {
+            match part {
+                Value::Text(part) => grown.push_str(&part),
+                _ => return Some(Err(fault("`concat` of a value that is not a `Text`"))),
+            }
+        }
+        Some(Ok(Value::Text(text)))
     }
 
     /// `let name = f(x, ...) in rest` where arguments of the call are bindings at their last
@@ -734,7 +811,10 @@ impl<'p, 'w> Machine<'p, 'w> {
                                     _ => return Err(fault("an update that is not one")),
                                 }
                             }
-                            None => self.rhs(env, &caps, rhs, ty)?,
+                            None => match self.appends_in_place(env, rhs, body) {
+                                Some(appended) => appended?,
+                                None => self.rhs(env, &caps, rhs, ty)?,
+                            },
                         },
                         Bound::Expr(inner) => {
                             self.later.push((body, Vec::new()));
@@ -757,11 +837,13 @@ impl<'p, 'w> Machine<'p, 'w> {
                     span,
                 } => {
                     let mut current = self.atoms(env, init)?;
-                    // The next iterations read the bindings the body reads, but for the item
-                    // and the state, which each iteration binds anew.
+                    // The next iterations read the bindings the body reads, but for the item,
+                    // the state and the binders of the body, which each iteration binds anew
+                    // before reading them: Core binders are unique (#261).
                     let rebound = std::iter::once(var.as_ref())
                         .chain(state.iter())
                         .map(|(name, _)| name.as_str())
+                        .chain(self.binders(body).iter().copied())
                         .collect();
                     self.later.push((body, rebound));
                     let result = self.iterations(
