@@ -61,6 +61,24 @@ fn package_of_edition(name: &str, edition: &str, files: &[(&str, &str)]) -> Path
     root
 }
 
+/// The package at `path` checked at tier 0, and the obligations that tier 1 would generate for
+/// it, on a stack as large as tier 1 gives them, but not solved: tests that compare obligations
+/// or queries start no solver (#286).
+fn generated(path: &Path) -> (una_cli::Checked, Vec<una_verify::Obligation>) {
+    let checked = una_cli::check(path, Tier::Zero).unwrap();
+    let obligations = std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn_scoped(scope, || {
+                una_verify::obligations(&checked.program, &checked.sources)
+            })
+            .unwrap()
+            .join()
+            .unwrap()
+    });
+    (checked, obligations)
+}
+
 #[test]
 fn the_examples_verify_with_every_obligation_proven() {
     // M8 acceptance criterion: all examples verify, with zero refuted and zero unknown.
@@ -146,9 +164,8 @@ fn the_queries_of_the_examples_are_byte_identical_across_runs() {
     // M8 acceptance criterion and `spec/12 §4`: declarations sorted by name, assertions in
     // generation order. Every package under `examples/` has its own snapshot (R-036).
     let queries = |example: &Path| {
-        let checked = una_cli::check(example, Tier::One).unwrap();
+        let (checked, obligations) = generated(example);
         assert_eq!(checked.diagnostics, [], "{}", example.display());
-        let verification = checked.verification.unwrap();
         let text = std::fs::read_to_string(example.join("verification.lock")).unwrap();
         let (lock, _) = una_project::parse_lock(&text);
         let lock = una_verify::Lock {
@@ -157,9 +174,9 @@ fn the_queries_of_the_examples_are_byte_identical_across_runs() {
             step_budget: lock.step_budget,
             random_seed: lock.random_seed,
         };
-        let queries = una_verify::queries(&verification.obligations, &lock);
+        let queries = una_verify::queries(&obligations, &lock);
         let mut out = String::new();
-        for (obligation, query) in verification.obligations.iter().zip(queries) {
+        for (obligation, query) in obligations.iter().zip(queries) {
             out.push_str(&format!(
                 "; {} {} {} {}\n{query}\n",
                 obligation.id,
@@ -421,12 +438,16 @@ fn a_query_the_solver_rejects_is_u8001_and_exits_with_3() {
     let bin = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("rejecting-solver");
     std::fs::create_dir_all(&bin).unwrap();
     let solver = bin.join("z3");
+    // Written under another name and renamed into place, so that no process can execute the
+    // file while it is still open for writing ("text file busy", #286).
+    let staged = bin.join("z3.staged");
     std::fs::write(
-        &solver,
+        &staged,
         "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'Z3 version 5.1.0 - 64 bit'; exit 0; fi\ncat > /dev/null\necho '(error \"line 1 column 1: rejected\")'\n",
     )
     .unwrap();
-    std::fs::set_permissions(&solver, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::rename(&staged, &solver).unwrap();
     let _ = std::fs::remove_dir_all(root.join(".una"));
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
@@ -459,10 +480,11 @@ fn the_verifier_generates_every_obligation_the_checker_found() {
     }
     let mut compared = 0;
     for target in targets {
-        let checked = una_cli::check(&target, Tier::One).unwrap();
-        let Some(verification) = checked.verification else {
+        // Tier 1 generates obligations only for a package without diagnostics.
+        let (checked, obligations) = generated(&target);
+        if !checked.diagnostics.is_empty() {
             continue;
-        };
+        }
         let key = |kind: una_diag::ObligationKind, file: &str, line: u32, col: u32| {
             format!("{} {file}:{line}:{col}", kind.as_str())
         };
@@ -479,7 +501,7 @@ fn the_verifier_generates_every_obligation_the_checker_found() {
             })
             .collect();
         let mut generated: Vec<String> = Vec::new();
-        for obligation in &verification.obligations {
+        for obligation in &obligations {
             let spans = if obligation.paths.is_empty() {
                 vec![obligation.source]
             } else {
