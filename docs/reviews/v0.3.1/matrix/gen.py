@@ -402,6 +402,34 @@ cell("annotated_nested", "failure", "reject",
      "an annotated lambda in an if whose other branch fails", variant="if_fail")
 
 
+# --- 14. The boundary of f915764's rule (`annotated_in`): an annotated lambda inside an
+# argument that is not called on the decision (precision only), a lambda checked between the
+# arguments that solve its parameter, and a lambda that mixes inferred and annotated parameters.
+cell("boundary", "effect", "rule",
+     program("effect", LOGGER, f"logger({D}, f: fn(x) -> [p].map(each: fn(y: T) -> 0).sum())", cb="pure"),
+     "precision: the argument's lambda ignores the decision, but holds an unrelated annotated lambda", variant="unrelated_annotated")
+SAME = ("same[U](x: U, f: fn(U) -> Unit uses @log: Log[write], y: U) -> Unit\n  uses @log: Log[write]\n=\n  f(y)\n")
+cell("boundary", "effect", "reject", program("effect", SAME, f"same(p, f: fn(z) -> k(z), y: {D})"),
+     "an inferred lambda checked after an undecided argument solved its parameter, before the decided one", variant="lambda_between")
+SAME_P = ("same_p[U](x: U, f: fn(U) -> Int, y: U) -> Unit\n  uses @log: Log[write]\n=\n  @log.write(f(y))\n")
+cell("boundary", "effect", "reject", program("effect", SAME_P, f"same_p(p, f: fn(z) -> k(z), y: {D})", cb="pure"),
+     "the same with a pure lambda, and the callee writes its result", variant="lambda_between_callee")
+MIX = ("mix[U, W](w: W, x: U, f: fn(W, U) -> Int) -> Unit\n  uses @log: Log[write]\n=\n  @log.write(f(w, x))\n")
+cell("boundary", "effect", "reject",
+     program("effect", MIX, f"mix(if a == b then 1 else 0, x: {D}, f: fn(c, x: T) -> k(x))", cb="pure"),
+     "a lambda with an inferred parameter that takes the decision and an annotated one that drops it", variant="mixed_params")
+cell("boundary", "effect", "reject",
+     program("effect", MIX, f"mix(if a == b then 1 else 0, x: {D}, f: (fn(c, x: T) -> k(x)))", cb="pure"),
+     "the same, in parentheses", variant="mixed_params_parens")
+cell("boundary", "result", "reject",
+     program("result", "", f"[{D}].fold(initial: if a == b then 1 else 0, step: fn(acc, x: T) -> k(x))"),
+     "fold: the accumulator takes the decision, the annotated element drops it; its result carries the accumulator's label",
+     variant="prelude_mixed_params", control=False)
+cell("boundary", "effect", "reject",
+     program("effect", LOGGER, f"logger({D}, f: if c then fn(x) -> k(x) else fn(x) -> 0)", cb="pure", extra_params=", c: Bool", extra_args=", c: true"),
+     "inferred lambdas joined by an if", variant="inferred_if")
+
+
 def write():
     if os.path.isdir(ROOT):
         shutil.rmtree(ROOT)
