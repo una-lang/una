@@ -1,6 +1,6 @@
 # Adversarial check of v0.3.1 (PR #349, #346): findings
 
-Candidates `68a0cd1` (`dev/346-hof-callback-0-1`) on main `5e122d2`, then `92d1b6e` on main `3d2b197`, which fixes H-2 and H-3. Reviewer: Claude (Una-2). Author: Una-1. Every finding is in edition `0.1`; edition `0.2` rejects each program at the callback (U4001, S-Fun). The cases are under `cases/run` (runnable), `matrix/` (the systematic matrix) and `attacks/`.
+Candidates `68a0cd1` (`dev/346-hof-callback-0-1`) on main `5e122d2`, then `92d1b6e`, `f915764` and `3dc582b` on main `3d2b197`. `3dc582b` fixes H-2 to H-5; H-6 is open as #354. Reviewer: Claude (Una-2). Author: Una-1. Every finding is in edition `0.1`; edition `0.2` rejects each program at the callback (U4001, S-Fun). The cases are under `cases/run` (runnable), `matrix/` (the systematic matrix) and `attacks/`.
 
 The binaries:
 - **PR:** a debug build of `68a0cd1`.
@@ -73,3 +73,46 @@ run(v: internal Int) -> Unit   -- v is the length of an `Env` value
 - **The 30 attacks** (`attacks/`, `attacks/results-main-vs-68a0cd1.txt`) cover user generic functions that call the prelude, partial decisions, two type parameters, named arguments in another order, a let-bound lambda, a decided function value, `Option` and nested lists, and `sort`.
   - Apart from the H-2 shapes, none is accepted where it should not be.
   - `sort` is edition 0.2 only (U1001 in 0.1) and takes no callback, so its changed line is a no-op.
+
+## H-4, Critical (S-10): an annotated lambda in parentheses or an `if` (at `92d1b6e`)
+
+**Cause.** `annotated_lambdas` was keyed by the lambda's span and read at the argument's. So in these, the annotated lambda was read from its unified type:
+- `map(each: (fn(x: T) -> k(x)))`;
+- `map(each: if c then fn(x: T) -> k(x) else fn(x: T) -> 0)`, with a public `c`;
+- the same given to a user generic callee;
+- an `if` inside an `if`, and an `if` whose other branch fails.
+
+**Evidence.** Both `cases/run/prelude-annotated-lambda-{parens,if}` ran. Matrix section 13 covers them.
+
+**Fixed** at `f915764` and `3dc582b`: a wrapped function value accepts nothing.
+
+## H-5, Critical (S-11): a lambda with an inferred and an annotated parameter (at `f915764`)
+
+**What happened.** `mix(w, x, f: fn(c, x: T) -> k(x))`, with a decided `w` and a decided `x`, checked clean and ran (`cases/run/mixed-params-lambda`). What a lambda accepts was joined over its parameters, so the inferred `c` accepted for the annotated `x`.
+
+**Fixed** at `3dc582b` (rule A): a lambda with an annotated parameter accepts nothing, and an inline one accepts only what every parameter carries.
+
+## H-6, Critical (#354, S-12): an annotated `let` or record drops a decision (open)
+
+```una
+  let y: T = if a == b then p else q
+  @log.write(k(y))
+```
+
+**What happens.** The program checks clean and runs on `3dc582b`, main and v0.1.4 (`cases/run/let-annotation-direct`).
+
+**Why.** Edition 0.1 reads `T*` as `T` in every flow, so a binding with a written type keeps the type it names. The decision is gone before #253, #346 or #350 see it.
+
+**Other shapes that leak the same way:**
+- `let h: Hold[T] = Hold(value: d)`;
+- the same `let` followed by a generic callee;
+- the same `let` followed by `map`.
+
+**Edition 0.2** rejects the flow (U4001).
+
+**Not laundering.**
+- A generic identity: D-137 labels its result with `T`.
+- An annotated lambda applied or mapped inside a lambda's body: rejected.
+- A `let` inside a lambda cannot be written, since a lambda's body is one line expression.
+
+**Status.** Tracked by matrix section 15 (5 cells). Decision N-50: v0.3.2, then v0.1.5.
