@@ -106,4 +106,5 @@ if __name__ == "__main__":
             print(f"{name:34} BUILD FAILED {r.get('N_build') or r.get('D_build')}", flush=True)
         else:
             print(f"{name:34} copies={r['copies']:<4} " + ("OK" if not r["problems"] else "PROBLEMS " + " | ".join(r["problems"])), flush=True)
-    (D / f"results-{Path(sys.argv[1]).stem}.json").write_text(json.dumps(out, indent=1))
+    suffix = "-partial" if only else ""
+    (D / f"results-{Path(sys.argv[1]).stem}{suffix}.json").write_text(json.dumps(out, indent=1))
