@@ -1,0 +1,34 @@
+-- expect: U4001 at each leak (spec/22 §5); controls accepted
+module main
+
+pub split_len(t: secret Text) -> Int = t.split(on: ",").len
+
+pub split_with_secret_separator(sep: secret Text) -> Int = "a,b".split(on: sep).len
+
+pub find_tag(t: Text, part: secret Text) -> Bool
+=
+  let p = t.find(text: part)
+  p is Some
+
+pub replace_by_secret_len(t: Text, by: secret Text) -> Int = t.replace(pattern: "a", by: by).len
+
+pub chars_count(t: secret Text) -> Int = t.chars().len
+
+pub join_secret_part(xs: List[secret Text]) -> Text = xs.join(separator: ",")
+
+pub join_secret_list(xs: secret List[Text]) -> Int = xs.join(separator: ",").len
+
+pub slice_secret_bound(t: Text, n: secret Int) -> Text
+  requires 0 <= n and n <= t.len
+=
+  t.slice(start: 0, end: n)
+
+pub trim_secret(t: secret Text) -> Text = t.trim_end()
+
+pub bytes_len(t: secret Text) -> Int = t.bytes().len
+
+pub upper(t: secret Text) -> Text = t.to_upper()
+
+pub ends(t: secret Text) -> Bool = t.ends_with(suffix: "x")
+
+pub control(t: secret Text) -> secret Int = t.split(on: ",").len

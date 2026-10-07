@@ -1,0 +1,76 @@
+-- expect: each `breaks_*` stays rejected (U5001 or U5002), each `keeps_*` verifies (ADR 0071 D1, D2)
+module main
+
+near(edit p: List[Int], i: Int) -> Unit
+  requires 0 <= i and i < p.len
+  ensures p.len >= old(p).len
+=
+  set(edit p, index: i, item: 0)
+
+exact(edit p: List[Int], i: Int) -> Unit
+  requires 0 <= i and i < p.len
+  ensures p.len == old(p).len
+=
+  set(edit p, index: i, item: 0)
+
+pub keeps_exact(edit xs: List[Int]) -> Unit
+=
+  for i in 0..<xs.len
+    exact(edit xs, i: i)
+
+pub breaks_near(edit xs: List[Int]) -> Unit
+=
+  for i in 0..<xs.len
+    near(edit xs, i: i)
+
+pub breaks_append_in_branch(edit xs: List[Int], flag: Bool) -> Unit
+=
+  for i in 0..<xs.len
+    if flag
+      xs = xs.append(item: 1)
+    else
+      set(edit xs, index: i, item: 0)
+
+pub breaks_rebind_to_literal(edit xs: List[Int], flag: Bool) -> Unit
+=
+  for i in 0..<xs.len
+    if flag
+      xs = []
+    else
+      set(edit xs, index: i, item: 0)
+
+pub breaks_alias_of_other(edit xs: List[Int], ys: List[Int]) -> Unit
+=
+  for i in 0..<xs.len
+    xs = ys
+    set(edit xs, index: i, item: 0)
+
+pub breaks_nested_append(edit xs: List[Int]) -> Unit
+=
+  for i in 0..<xs.len
+    for j in 0..<1
+      xs = xs.append(item: j)
+    set(edit xs, index: i, item: 0)
+
+pub breaks_after_loop(edit xs: List[Int]) -> Int
+  requires xs.len > 0
+=
+  for i in 0..<xs.len
+    xs = xs.append(item: 1)
+  let edit ys = xs
+  set(edit ys, index: 0, item: 1)
+  xs.len
+
+pub keeps_after_loop(edit xs: List[Int]) -> Unit
+  requires xs.len > 0
+=
+  for i in 0..<xs.len
+    set(edit xs, index: i, item: 0)
+  set(edit xs, index: 0, item: 9)
+
+pub keeps_alias(edit xs: List[Int]) -> Unit
+=
+  for i in 0..<xs.len
+    let edit ys = xs
+    set(edit ys, index: i, item: 0)
+    xs = ys
