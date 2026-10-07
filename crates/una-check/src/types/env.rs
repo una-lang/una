@@ -316,8 +316,11 @@ pub(crate) struct Env<'a> {
     /// Whether any editable binding has label variables, so pass 1 runs once more after the
     /// summaries reach their fixpoint (ADR 0075 rule 5).
     pub(crate) edit_labels_seen: bool,
-    /// Whether a check of pass 1 changed a solution of `edit_labels`.
+    /// Whether a check of pass 1 changed a solution of `edit_labels`, and one that changed.
     pub(crate) edit_labels_changed: bool,
+    pub(crate) edit_labels_changed_name: Option<String>,
+    /// The binding of each label variable, for a diagnostic that names it.
+    pub(crate) edit_label_spans: BTreeMap<String, Span>,
     alias_state: Vec<AliasState>,
     /// The package's edition (`spec/13 §7`).
     pub(crate) edition: Edition,
@@ -403,6 +406,8 @@ impl<'a> Env<'a> {
             edit_labels: BTreeMap::new(),
             edit_labels_seen: false,
             edit_labels_changed: false,
+            edit_labels_changed_name: None,
+            edit_label_spans: BTreeMap::new(),
             alias_state: Vec::new(),
             edition,
             summaries: BTreeMap::new(),
