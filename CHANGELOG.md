@@ -2,6 +2,12 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
+## Unreleased
+
+### Diagnostics
+
+- **Edition 0.1 names a decision on `T` values in its messages** (#362). Since #354, edition 0.1 tells `label(T*)` from `label(T)` in its flows, as edition 0.2 does, but its messages still wrote `label(T*)` as `label(T)`, so a rejected flow could read "a flow from `label(T)` to `label(T)`". They now name `label(T*)` as edition 0.2's do. Only the text changes: over 2164 targets (conformance, examples and the review corpora under `docs/`), every exit code and every edition 0.2 message is unchanged, and every edition 0.1 message is unchanged once `label(T*)` is read as `label(T)`.
+
 ## v0.3.2
 
 A security patch of the Beta, completing v0.3.1's edition 0.1 fixes at their root: edition 0.1 now tells a decision on `T` values apart in every flow, as edition 0.2 always has. Edition 0.2 is unchanged. In edition 0.1, binding a value decided by comparing `T` values to a written annotation that mentions `T` (`let y: T = ...`, `List[T]`, a kind of `T`) is now U4001, as in edition 0.2, even where the program would not leak: leave the annotation out, since inference keeps the decision (`docs/guide/una-for-agents.md` §13, #345).
