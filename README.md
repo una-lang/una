@@ -373,6 +373,29 @@ out of model: timing, termination and divergence, resource consumption and alloc
 
 ## Quick start
 
+### Install with the installer
+
+From v0.2.0, `install.sh` installs a release into `~/.una`:
+- `bin/una`;
+- the native runtime `lib/libuna_rt.a`;
+- Z3 at the pinned version, linked as `bin/z3`.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/una-lang/una/main/install.sh | sh
+export PATH="$HOME/.una/bin:$PATH"
+```
+
+How it checks what it installs:
+- It installs only an archive whose SHA-256 the release's validation record lists (`docs/releases/<version>-validation.md`, [`docs/releases/validation.md`](docs/releases/validation.md)), and only when that record's verdict is PASS.
+- Z3 must match the digest its project publishes.
+- A mismatch installs nothing.
+
+Settings:
+- `UNA_VERSION` picks another release.
+- `UNA_HOME` picks another directory.
+
+It needs `curl` or `wget`, `tar`, `unzip`, and `shasum` or `sha256sum`. `una build` also needs a C compiler as `cc`, to link. Uninstall with `sh install.sh --uninstall`. It removes exactly what the installer recorded in `~/.una/.una-install`, and the directories it created once they are empty. It refuses a directory without that record. Then remove the `PATH` line.
+
 ### Install from a release
 
 Each release on the [releases page](https://github.com/una-lang/una/releases) has an archive per platform, with a `.sha256` digest beside it:
