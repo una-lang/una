@@ -16,6 +16,7 @@ use super::check::{Checker, Ctx, Rl, Role};
 use super::closest;
 use super::env::KindDef;
 use super::label::Label;
+use super::locals::TakenState;
 use super::records::Res;
 use super::ty::{KindId, Ty};
 use super::unify::Origin;
@@ -252,7 +253,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// (`spec/17 §1`, `§6`).
     fn if_then(&mut self, stmt: &IfThenStmt) {
         let label = self.condition_label(&stmt.condition, "the condition of `if`");
-        let before: Vec<Option<Span>> = self.locals.iter().map(|local| local.taken).collect();
+        let before = self.taken_state();
         let saved = self.raise_pc(&label, stmt.condition.span);
         let ty = self.block(&stmt.block, None, Role::Plain, false);
         self.restore_pc(saved);
@@ -264,10 +265,14 @@ impl<'a> Checker<'_, 'a, '_> {
 
     /// Joins the taken state with `before`, the state of a path that skipped a block: a
     /// binding taken on either path stays taken (`spec/17 §3` rule 3).
-    pub(crate) fn join_skipped(&mut self, before: &[Option<Span>]) {
-        for (local, was) in self.locals.iter_mut().zip(before) {
-            if local.taken.is_none() {
-                local.taken = *was;
+    pub(crate) fn join_skipped(&mut self, before: &TakenState) {
+        for (index, was) in before.iter() {
+            if self
+                .locals
+                .get(index)
+                .is_some_and(|local| local.taken.is_none())
+            {
+                self.locals.set_taken(index, Some(was));
             }
         }
     }
@@ -282,7 +287,8 @@ impl<'a> Checker<'_, 'a, '_> {
         self.typed(stmt.var.span, &var_ty);
         // An outer binding taken in the body is taken again in the next iteration (`spec/17
         // §3` rule 3).
-        let before: Vec<Option<Span>> = self.locals.iter().map(|local| local.taken).collect();
+        let before = self.taken_state();
+        let before_len = self.locals.len();
         let saved = self.raise_pc(&label, from);
         let mark = self.locals.len();
         self.bind(self.name(&stmt.var), var_ty);
@@ -290,11 +296,14 @@ impl<'a> Checker<'_, 'a, '_> {
         self.locals.truncate(mark);
         self.restore_pc(saved);
         self.discarded(value_span(&stmt.block), &ty);
-        for (index, was) in before.iter().enumerate() {
-            let Some(local) = self.locals.get(index) else {
-                continue;
-            };
-            if let (None, Some(at)) = (was, local.taken) {
+        // The outer bindings taken now and not before the loop, in order.
+        let newly: Vec<(usize, Span)> = self
+            .locals
+            .taken_now()
+            .filter(|&(index, _)| index < before_len && before.get(index).is_none())
+            .collect();
+        for (index, at) in newly {
+            if let Some(local) = self.locals.get(index) {
                 let name = local.name;
                 self.report.error(
                     Code::U2017,
@@ -355,7 +364,7 @@ impl<'a> Checker<'_, 'a, '_> {
             }
             self.let_stmt(branch);
             // The branch's binding waits for the join, so its siblings do not see it.
-            bound.extend(self.locals.drain(mark..));
+            bound.extend(self.locals.drain_from(mark));
         }
         self.task_mark = saved;
         self.locals.extend(bound);
