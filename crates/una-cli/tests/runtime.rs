@@ -4,6 +4,9 @@
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+#[path = "common/timing.rs"]
+mod timing;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -407,9 +410,10 @@ fn checking_a_body_takes_linear_time_in_its_locals() {
     // #326: the checker resolves a local by an index from its name, and saves the taken state
     // of the locals around a branch in proportion to the taken ones, so a body of n bindings,
     // read again under `if`s, and of editable bindings updated in loops, checks in linear
-    // time. The fixed cost of a check is measured on 10 bindings and taken out of both sizes
-    // (N-29): 8x the bindings took about 7x as long measured, and about 60x when each lookup
-    // scanned every local; the bound of 24x is between them.
+    // time. The fixed cost of a check is measured on 10 bindings, the best of three, and taken
+    // out of both sizes (N-29): 8x the bindings took about 7x as long measured, and about 60x
+    // when each lookup scanned every local; the bound of 24x is between them. A miss is
+    // measured twice more before it fails (#341).
     let root = package("many-locals", "", &[]);
     let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
     std::fs::write(
@@ -419,8 +423,8 @@ fn checking_a_body_takes_linear_time_in_its_locals() {
     .unwrap();
     std::fs::create_dir_all(root.join("src")).unwrap();
     let dir = root.to_str().unwrap();
-    let mut times = Vec::new();
-    for bindings in [10, 10, 2_000, 16_000] {
+    // Writes the body of `bindings` bindings (untimed), then times its check.
+    let measure = |bindings: usize| {
         let mut source = String::from(
             "module many\n\npub build(x: Int) -> Int\n=\n  let first = x\n  let edit acc = 0\n",
         );
@@ -438,17 +442,18 @@ fn checking_a_body_takes_linear_time_in_its_locals() {
         }
         source.push_str("  acc\n");
         std::fs::write(root.join("src/many.una"), source).unwrap();
-        let started = std::time::Instant::now();
-        let output = una(&["check", "--tier", "0", dir]);
-        times.push(started.elapsed().as_secs_f64().max(0.02));
+        let (output, seconds) = timing::timed(|| una(&["check", "--tier", "0", dir]));
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    }
-    let fixed = times[1];
-    let (small, large) = ((times[2] - fixed).max(0.02), (times[3] - fixed).max(0.02));
-    assert!(
-        large < 24.0 * small,
-        "8x the bindings took {:.1}x as long, past the fixed cost: {times:?}",
-        large / small
+        seconds
+    };
+    let fixed = timing::best_of_three(|| measure(10));
+    timing::assert_growth(
+        "bindings",
+        &[2_000, 16_000],
+        fixed,
+        timing::FLOOR,
+        24.0,
+        measure,
     );
 }
 
@@ -457,9 +462,10 @@ fn checking_deeply_nested_types_is_not_cubic_in_their_depth() {
     // #331 (N-47): unification and resolution follow solved variables by reference instead of
     // copying their whole value at each node, so a type nested d deep costs O(d) to walk. A
     // check is then quadratic in d, since each expression node keeps its own type (#335),
-    // where it was cubic. The fixed cost is measured at depth 10 and taken out of both sizes
-    // (N-29): 4x the depth took about 20x as long measured, 16x for quadratic, and about 64x
-    // when it was cubic; the bound of 40x is between them.
+    // where it was cubic. The fixed cost is measured at depth 10, the best of three, and taken
+    // out of both sizes (N-29): 4x the depth took about 20x as long measured, 16x for
+    // quadratic, and about 64x when it was cubic; the bound of 40x is between them. A miss is
+    // measured twice more before it fails (#341).
     let root = package("deep-nesting", "", &[]);
     let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
     std::fs::write(
@@ -469,8 +475,8 @@ fn checking_deeply_nested_types_is_not_cubic_in_their_depth() {
     .unwrap();
     std::fs::create_dir_all(root.join("src")).unwrap();
     let dir = root.to_str().unwrap();
-    let mut times = Vec::new();
-    for depth in [10, 10, 40, 160] {
+    // Writes the types `depth` deep (untimed), then times their check.
+    let measure = |depth: usize| {
         let mut value = String::from("1");
         for level in 0..depth {
             value = if level % 2 == 0 {
@@ -485,18 +491,12 @@ fn checking_deeply_nested_types_is_not_cubic_in_their_depth() {
         }
         source.push_str("  1\n");
         std::fs::write(root.join("src/deep.una"), source).unwrap();
-        let started = std::time::Instant::now();
-        let output = una(&["check", "--tier", "0", dir]);
-        times.push(started.elapsed().as_secs_f64().max(0.02));
+        let (output, seconds) = timing::timed(|| una(&["check", "--tier", "0", dir]));
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    }
-    let fixed = times[1];
-    let (small, large) = ((times[2] - fixed).max(0.02), (times[3] - fixed).max(0.02));
-    assert!(
-        large < 40.0 * small,
-        "4x the depth took {:.1}x as long, past the fixed cost: {times:?}",
-        large / small
-    );
+        seconds
+    };
+    let fixed = timing::best_of_three(|| measure(10));
+    timing::assert_growth("depth", &[40, 160], fixed, timing::FLOOR, 40.0, measure);
 }
 
 #[test]
@@ -504,9 +504,10 @@ fn a_text_appended_in_a_loop_grows_in_linear_time() {
     // ADR 0070 X10, `spec/22 §6` rule 2 (#261): `t = "{t}x"` appends in place when nothing
     // else holds `t`, so ten times the appends take about ten times as long, not a hundred. The
     // interpreter counts no copies, so the check is timing. The fixed cost of a run (checking,
-    // starting) is measured on 10 appends, once the proof cache is warm, and taken out of both
-    // sizes, so the ratio is the growth of the appends alone: about 11x measured, about 490x
-    // when every append copies, with a bound of 30x between them (N-29).
+    // starting) is measured on 10 appends, once the proof cache is warm, the best of three, and
+    // taken out of both sizes, so the ratio is the growth of the appends alone: about 11x
+    // measured, about 490x when every append copies, with a bound of 30x between them (N-29).
+    // A miss is measured twice more before it fails (#341).
     let root = package("text-append", "\n[run]\nentry = \"grow\"\n", &[]);
     let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
     std::fs::write(
@@ -516,9 +517,8 @@ fn a_text_appended_in_a_loop_grows_in_linear_time() {
     .unwrap();
     std::fs::create_dir_all(root.join("src")).unwrap();
     let dir = root.to_str().unwrap();
-    let mut times = Vec::new();
-    // The first run of 10 warms the proof cache; the second measures the fixed cost.
-    for steps in [10, 10, 200_000, 2_000_000] {
+    // Writes the program of `steps` appends (untimed), then times its run.
+    let measure = |steps: usize| {
         std::fs::write(
             root.join("src/grow.una"),
             format!(
@@ -526,19 +526,15 @@ fn a_text_appended_in_a_loop_grows_in_linear_time() {
             ),
         )
         .unwrap();
-        let started = std::time::Instant::now();
-        let output = una(&["run", dir, "--grant", "console"]);
-        times.push(started.elapsed().as_secs_f64().max(0.05));
+        let (output, seconds) = timing::timed(|| una(&["run", dir, "--grant", "console"]));
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
         assert_eq!(stdout(&output), format!("{steps}\n"));
-    }
-    let fixed = times[1];
-    let (small, large) = ((times[2] - fixed).max(0.05), (times[3] - fixed).max(0.05));
-    assert!(
-        large < 30.0 * small,
-        "10x the appends took {:.1}x as long, past the fixed cost: {times:?}",
-        large / small
-    );
+        seconds
+    };
+    // The first run of 10 warms the proof cache; the next three measure the fixed cost.
+    measure(10);
+    let fixed = timing::best_of_three(|| measure(10));
+    timing::assert_growth("appends", &[200_000, 2_000_000], fixed, 0.05, 30.0, measure);
 }
 
 #[test]
@@ -1459,8 +1455,10 @@ fn a_million_deep_value_is_released_compared_and_rendered_within_the_call_depth(
     // Every link is rendered: about 24 bytes each.
     assert!(text.len() > 20_000_000, "{}", text.len());
     assert!(text.contains("Link(value: 0, rest: End)"));
-    // Linear, not quadratic: a quadratic render of a million levels takes most of an hour.
-    assert!(started.elapsed().as_secs() < 120, "{:?}", started.elapsed());
+    // Linear, not quadratic: a quadratic render of a million levels takes most of an hour. The
+    // ceiling is a single generous deadline, not a ratio, wide enough for a loaded machine
+    // (#341).
+    assert!(started.elapsed().as_secs() < 300, "{:?}", started.elapsed());
 }
 
 #[test]
@@ -1707,8 +1705,9 @@ pub main() -> Unit
 #[test]
 fn map_updates_and_lookups_scale_as_n_log_n() {
     // The performance rule, `spec/21 §5` rule 2: `set`, `has` and `remove` are O(log n), and an
-    // update of a map nothing else holds is in place. Ten times the keys take well under 25
-    // times as long (n log n gives about 12, a copy per update about 100).
+    // update of a map nothing else holds is in place. Ten times the keys take under 40 times
+    // as long: n log n gives about 12, a copy per update about 100, and the bound of 40x is
+    // between them. A miss is measured twice more before it fails (#341).
     let root = package("map_scale", "\n[run]\nentry = \"scale\"\n", &[]);
     let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
     std::fs::write(
@@ -1718,20 +1717,26 @@ fn map_updates_and_lookups_scale_as_n_log_n() {
     .unwrap();
     std::fs::create_dir_all(root.join("src")).unwrap();
     let dir = root.to_str().unwrap();
-    let mut times = Vec::new();
-    for n in ["100000", "1000000"] {
-        std::fs::write(root.join("src/scale.una"), MAP_SCALE.replace('N', n)).unwrap();
-        let started = std::time::Instant::now();
-        let output = una(&["run", dir, "--grant", "console", "--max-memory", "1024"]);
-        times.push(started.elapsed());
+    // Writes the program of `n` keys (untimed), then times its run.
+    let measure = |n: usize| {
+        std::fs::write(
+            root.join("src/scale.una"),
+            MAP_SCALE.replace('N', &n.to_string()),
+        )
+        .unwrap();
+        let (output, seconds) =
+            timing::timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
         assert_eq!(stdout(&output), format!("{n} 0\n"));
-    }
-    assert!(
-        times[1] < times[0] * 25,
-        "10^5 keys took {:?}, 10^6 took {:?}",
-        times[0],
-        times[1]
+        seconds
+    };
+    timing::assert_growth(
+        "keys",
+        &[100_000, 1_000_000],
+        0.0,
+        timing::FLOOR,
+        40.0,
+        measure,
     );
 }
 
@@ -1754,7 +1759,8 @@ fn a_list_appended_through_calls_grows_in_linear_time() {
     // ADR 0072 D1 and D3 (#262): an `edit` argument, or a binding at its last use rebound from
     // the result, moves into the callee, which appends in place through any number of call
     // levels. Each tenfold step stays under 30x: about 4x to 10x with the run's fixed cost,
-    // against about 100x when every call copies the list.
+    // against about 100x when every call copies the list. A miss is measured twice more before
+    // it fails (#341).
     let root = package("edit-append", "\n[run]\nentry = \"grow\"\n", &[]);
     let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
     std::fs::write(
@@ -1771,26 +1777,19 @@ fn a_list_appended_through_calls_grows_in_linear_time() {
         ("rebound", &[10_000, 100_000]),
     ];
     for &(shape, sizes) in runs {
-        let mut times = Vec::new();
-        for &steps in sizes {
+        // Writes the program of `steps` appends (untimed), then times its run.
+        let measure = |steps: usize| {
             std::fs::write(
                 root.join("src/grow.una"),
                 appends_through_calls(shape, steps),
             )
             .unwrap();
-            let started = std::time::Instant::now();
-            let output = una(&["run", dir, "--grant", "console"]);
-            times.push(started.elapsed().as_secs_f64().max(0.05));
+            let (output, seconds) = timing::timed(|| una(&["run", dir, "--grant", "console"]));
             assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
             assert_eq!(stdout(&output), format!("{steps}\n"));
-        }
-        for pair in times.windows(2) {
-            assert!(
-                pair[1] < 30.0 * pair[0],
-                "{shape}: 10x the appends took {:.1}x as long: {times:?}",
-                pair[1] / pair[0]
-            );
-        }
+            seconds
+        };
+        timing::assert_growth(shape, sizes, 0.0, 0.05, 30.0, measure);
     }
 }
 
@@ -1799,7 +1798,7 @@ fn appends_in_nested_loops_and_tasks_grow_in_linear_time() {
     // #263: the `later` entry of an enclosing loop or `together` block counts the bindings of
     // its own body as rebound, so a list appended in an inner loop, or in a loop inside a task
     // of `together for`, is updated in place. Each tenfold step stays under 30x, against about
-    // 100x when every append copies.
+    // 100x when every append copies. A miss is measured twice more before it fails (#341).
     let root = package("nested-append", "\n[run]\nentry = \"grow\"\n", &[]);
     let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
     std::fs::write(
@@ -1810,8 +1809,8 @@ fn appends_in_nested_loops_and_tasks_grow_in_linear_time() {
     std::fs::create_dir_all(root.join("src")).unwrap();
     let dir = root.to_str().unwrap();
     for shape in ["nested", "task"] {
-        let mut times = Vec::new();
-        for steps in [10_000, 100_000] {
+        // Writes the program of `steps` appends (untimed), then times its run.
+        let measure = |steps: usize| {
             let body = if shape == "nested" {
                 format!(
                     "  let edit acc: List[Int] = []\n  for i in 0..<2\n    for j in 0..<{steps}\n      acc = acc.append(item: j)\n  @console.print(\"{{acc.len}}\")\n"
@@ -1828,9 +1827,7 @@ fn appends_in_nested_loops_and_tasks_grow_in_linear_time() {
                 ),
             )
             .unwrap();
-            let started = std::time::Instant::now();
-            let output = una(&["run", dir, "--grant", "console"]);
-            times.push(started.elapsed().as_secs_f64().max(0.05));
+            let (output, seconds) = timing::timed(|| una(&["run", dir, "--grant", "console"]));
             assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
             let expected = if shape == "nested" {
                 format!("{}\n", 2 * steps)
@@ -1838,12 +1835,9 @@ fn appends_in_nested_loops_and_tasks_grow_in_linear_time() {
                 format!("[{steps}, {steps}]\n")
             };
             assert_eq!(stdout(&output), expected);
-        }
-        assert!(
-            times[1] < 30.0 * times[0],
-            "{shape}: 10x the appends took {:.1}x as long: {times:?}",
-            times[1] / times[0]
-        );
+            seconds
+        };
+        timing::assert_growth(shape, &[10_000, 100_000], 0.0, 0.05, 30.0, measure);
     }
 }
 
@@ -1858,7 +1852,8 @@ fn json_round_trip(steps: usize) -> String {
 #[test]
 fn json_parses_and_writes_in_linear_time() {
     // ADR 0073 J6 (#238): writing is O(n) and parsing O(n) for canonical input. Each tenfold
-    // step stays under 30x, against about 100x for quadratic work.
+    // step stays under 30x, against about 100x for quadratic work. A miss is measured twice
+    // more before it fails (#341).
     let root = package("json-scaling", "\n[run]\nentry = \"grow\"\n", &[]);
     let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
     std::fs::write(
@@ -1868,20 +1863,15 @@ fn json_parses_and_writes_in_linear_time() {
     .unwrap();
     std::fs::create_dir_all(root.join("src")).unwrap();
     let dir = root.to_str().unwrap();
-    let mut times = Vec::new();
-    for steps in [10_000, 100_000] {
+    // Writes the program of `steps` items (untimed), then times its run.
+    let measure = |steps: usize| {
         std::fs::write(root.join("src/grow.una"), json_round_trip(steps)).unwrap();
-        let started = std::time::Instant::now();
-        let output = una(&["run", dir, "--grant", "console"]);
-        times.push(started.elapsed().as_secs_f64().max(0.05));
+        let (output, seconds) = timing::timed(|| una(&["run", dir, "--grant", "console"]));
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
         assert!(stdout(&output).ends_with(" true\n"), "{}", stdout(&output));
-    }
-    assert!(
-        times[1] < 30.0 * times[0],
-        "10x the items took {:.1}x as long: {times:?}",
-        times[1] / times[0]
-    );
+        seconds
+    };
+    timing::assert_growth("items", &[10_000, 100_000], 0.0, 0.05, 30.0, measure);
 }
 
 /// A text of `COUNT` copies of `ab`, searched, replaced and split.
@@ -1890,7 +1880,9 @@ const TEXT_SCALE: &str = "module scale\n\npub main() -> Unit\n  uses @console: C
 #[test]
 fn text_search_replace_and_split_take_linear_time() {
     // `spec/22 §2` rule 8 and the performance rule: `find`, `replace` and `split` are linear
-    // in the text, the search included. Ten times the text takes well under 25 times as long.
+    // in the text, the search included. Ten times the text takes under 30 times as long, about
+    // 10x when linear against about 100x when quadratic. A miss is measured twice more before
+    // it fails (#341).
     let root = package("text_scale", "\n[run]\nentry = \"scale\"\n", &[]);
     let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
     std::fs::write(
@@ -1900,27 +1892,27 @@ fn text_search_replace_and_split_take_linear_time() {
     .unwrap();
     std::fs::create_dir_all(root.join("src")).unwrap();
     let dir = root.to_str().unwrap();
-    let mut times = Vec::new();
-    for (count, expected) in [
-        ("100000", "200000 None 200000 100001"),
-        ("1000000", "2000000 None 2000000 1000001"),
-    ] {
+    // Writes the program of `count` pieces (untimed), then times its run.
+    let measure = |count: usize| {
         std::fs::write(
             root.join("src/scale.una"),
-            TEXT_SCALE.replace("COUNT", count),
+            TEXT_SCALE.replace("COUNT", &count.to_string()),
         )
         .unwrap();
-        let started = std::time::Instant::now();
-        let output = una(&["run", dir, "--grant", "console", "--max-memory", "1024"]);
-        times.push(started.elapsed());
+        let (output, seconds) =
+            timing::timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-        assert_eq!(stdout(&output), format!("{expected}\n"));
-    }
-    assert!(
-        times[1] < times[0] * 25,
-        "10^5 took {:?}, 10^6 took {:?}",
-        times[0],
-        times[1]
+        let (len, pieces) = (2 * count, count + 1);
+        assert_eq!(stdout(&output), format!("{len} None {len} {pieces}\n"));
+        seconds
+    };
+    timing::assert_growth(
+        "text",
+        &[100_000, 1_000_000],
+        0.0,
+        timing::FLOOR,
+        30.0,
+        measure,
     );
 }
 
@@ -1944,7 +1936,9 @@ pub main() -> Unit
 fn text_len_and_slice_take_constant_time_on_any_text() {
     // `spec/22 §6` rule 1 and the performance rule: `.len` is O(1), and a position O(1) once
     // the text's index is built, which appends extend; so a slice at each of n positions of a
-    // non-ASCII text takes linear time. Ten times the text takes well under 25 times as long.
+    // non-ASCII text takes linear time. Ten times the text takes under 30 times as long, about
+    // 10x when linear against about 100x when a position costs O(n). A miss is measured twice
+    // more before it fails (#341).
     let root = package("slice_scale", "\n[run]\nentry = \"scale\"\n", &[]);
     let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
     std::fs::write(
@@ -1954,27 +1948,28 @@ fn text_len_and_slice_take_constant_time_on_any_text() {
     .unwrap();
     std::fs::create_dir_all(root.join("src")).unwrap();
     let dir = root.to_str().unwrap();
-    let mut times = Vec::new();
-    for (count, expected) in [
-        ("100000", "100000 10000100000"),
-        ("1000000", "1000000 1000001000000"),
-    ] {
+    // Writes the program of `count` scalar values (untimed), then times its run.
+    let measure = |count: usize| {
         std::fs::write(
             root.join("src/scale.una"),
-            SLICE_SCALE.replace("COUNT", count),
+            SLICE_SCALE.replace("COUNT", &count.to_string()),
         )
         .unwrap();
-        let started = std::time::Instant::now();
-        let output = una(&["run", dir, "--grant", "console", "--max-memory", "1024"]);
-        times.push(started.elapsed());
+        let (output, seconds) =
+            timing::timed(|| una(&["run", dir, "--grant", "console", "--max-memory", "1024"]));
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-        assert_eq!(stdout(&output), format!("{expected}\n"));
-    }
-    assert!(
-        times[1] < times[0] * 25,
-        "10^5 took {:?}, 10^6 took {:?}",
-        times[0],
-        times[1]
+        // Each of the `count` slices adds 1 and the length `count`.
+        let total = count * (count + 1);
+        assert_eq!(stdout(&output), format!("{count} {total}\n"));
+        seconds
+    };
+    timing::assert_growth(
+        "text",
+        &[100_000, 1_000_000],
+        0.0,
+        timing::FLOOR,
+        30.0,
+        measure,
     );
 }
 
@@ -2012,7 +2007,8 @@ const ALIASED_OUTPUT: &str = "[1, 2] [1, 2, 3] [1, 2, 4] [1, 2, 5] [1, 2, 6] [1,
 fn a_list_built_through_function_values_grows_in_linear_time() {
     // N-42 (#312): in the interpreter too, a binding at its last use moves into a call through
     // a function value, so appends through function values and `fold` stay in place. Each
-    // tenfold step stays under 30x, against about 100x when every call copies.
+    // tenfold step stays under 30x, against about 100x when every call copies. A miss is
+    // measured twice more before it fails (#341).
     let root = package("value-append", "\n[run]\nentry = \"grow\"\n", &[]);
     let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
     std::fs::write(
@@ -2023,26 +2019,19 @@ fn a_list_built_through_function_values_grows_in_linear_time() {
     std::fs::create_dir_all(root.join("src")).unwrap();
     let dir = root.to_str().unwrap();
     for shape in ["named", "lambda", "layers", "fold", "text"] {
-        let mut times = Vec::new();
-        for steps in [10_000, 100_000] {
+        // Writes the program of `steps` appends (untimed), then times its run.
+        let measure = |steps: usize| {
             std::fs::write(
                 root.join("src/grow.una"),
                 appends_through_function_values(shape, steps),
             )
             .unwrap();
-            let started = std::time::Instant::now();
-            let output = una(&["run", dir, "--grant", "console"]);
-            times.push(started.elapsed().as_secs_f64().max(0.05));
+            let (output, seconds) = timing::timed(|| una(&["run", dir, "--grant", "console"]));
             assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
             assert_eq!(stdout(&output), format!("{steps}\n"));
-        }
-        for pair in times.windows(2) {
-            assert!(
-                pair[1] < 30.0 * pair[0],
-                "{shape}: 10x the appends took {:.1}x as long: {times:?}",
-                pair[1] / pair[0]
-            );
-        }
+            seconds
+        };
+        timing::assert_growth(shape, &[10_000, 100_000], 0.0, 0.05, 30.0, measure);
     }
     let _ = std::fs::remove_dir_all(&root);
 }

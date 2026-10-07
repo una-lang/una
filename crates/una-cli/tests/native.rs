@@ -11,6 +11,9 @@
 //! the test until it leaves the list, so the list stays exact.
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+#[path = "common/timing.rs"]
+mod timing;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -807,49 +810,60 @@ fn a_json_parse_over_its_memory_budget_in_a_task_is_u6003_in_both_engines() {
 fn a_text_appended_in_a_loop_grows_in_linear_time() {
     // ADR 0070 X10, `spec/22 §6` rule 2 (#261): natively too, `t = "{t}x"` appends in place
     // when nothing else holds `t`.
-    let mut times = Vec::new();
-    for steps in [100_000, 1_000_000] {
-        let program = format!(
-            "module grow\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit t = \"\"\n  for i in 0..<{steps}\n    t = \"{{t}}x\"\n  @console.print(\"{{t.len}}\")\n"
-        );
-        let dir = package(
-            &format!("grow{steps}"),
-            "\n[run]\nentry = \"grow\"\ngrants = [\"console\"]\n",
-            &[("src/grow.una", &program)],
-        );
-        let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
-        std::fs::write(
-            dir.join("una.toml"),
-            manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
-        )
-        .unwrap();
-        let built = una(&dir, &["build"]);
-        assert_eq!(built.status.code(), Some(0), "{built:?}");
-        let started = std::time::Instant::now();
-        let output = Command::new(dir.join("target/una").join(format!("grow{steps}")))
-            .current_dir(&dir)
-            .output()
+    let sizes = [100_000, 1_000_000];
+    let dirs: Vec<PathBuf> = sizes
+        .iter()
+        .map(|steps| {
+            let program = format!(
+                "module grow\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit t = \"\"\n  for i in 0..<{steps}\n    t = \"{{t}}x\"\n  @console.print(\"{{t.len}}\")\n"
+            );
+            let dir = package(
+                &format!("grow{steps}"),
+                "\n[run]\nentry = \"grow\"\ngrants = [\"console\"]\n",
+                &[("src/grow.una", &program)],
+            );
+            let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+            std::fs::write(
+                dir.join("una.toml"),
+                manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+            )
             .unwrap();
-        times.push(started.elapsed().as_secs_f64().max(0.05));
+            let built = una(&dir, &["build"]);
+            assert_eq!(built.status.code(), Some(0), "{built:?}");
+            dir
+        })
+        .collect();
+    // Times a run of the executable built for `steps` appends.
+    let measure = |steps: usize| {
+        let dir = &dirs[sizes.iter().position(|&s| s == steps).unwrap()];
+        let (output, seconds) = timing::timed(|| {
+            Command::new(dir.join("target/una").join(format!("grow{steps}")))
+                .current_dir(dir)
+                .output()
+                .unwrap()
+        });
         assert_eq!(output.status.code(), Some(0), "{output:?}");
         assert_eq!(
             String::from_utf8_lossy(&output.stdout),
             format!("{steps}\n")
         );
-        // The deterministic check: the debug runtime counts every copy, and there is one at any
-        // size, of the literal `""` that the loop starts from, which is never updated in place.
+        // The deterministic check, the primary one: the debug runtime counts every copy, and
+        // there is one at any size, of the literal `""` that the loop starts from, which is
+        // never updated in place.
         assert_eq!(
             String::from_utf8_lossy(&output.stderr),
             "note: una-rt (debug build): lists, maps, records and texts copied: 1\n"
         );
-        let _ = std::fs::remove_dir_all(&dir);
+        seconds
+    };
+    // The timing is the secondary check, with a wide margin: 3.5x measured; the bound of 30x
+    // is the linear bound of #341, which only quadratic work (about 100x) exceeds. It no longer
+    // separates the 17x measured when copying: the copy count above does. A miss is measured
+    // twice more before it fails.
+    timing::assert_growth("appends", &sizes, 0.0, 0.05, 30.0, measure);
+    for dir in &dirs {
+        let _ = std::fs::remove_dir_all(dir);
     }
-    // The timing is a second check, with a wide margin (3.5x measured, 17x when copying).
-    assert!(
-        times[1] < 12.0 * times[0],
-        "10x the appends took {:.1}x as long: {times:?}",
-        times[1] / times[0]
-    );
 }
 
 #[test]
@@ -954,28 +968,38 @@ fn a_map_passed_by_edit_moves_into_the_callee() {
 fn map_updates_are_in_place_and_scale_as_n_log_n() {
     // `spec/21 §5` rule 2 and the performance rule: `set`, `has` and `remove` on a map nothing
     // else holds are O(log n) and in place; the one copy is the map that `kept` still sees.
-    // Ten times the keys take well under 25 times as long (n log n gives about 12).
-    let mut times = Vec::new();
-    for n in ["100000", "1000000"] {
-        let dir = package(
-            &format!("maps_{n}"),
-            "\n[run]\nentry = \"maps\"\ngrants = [\"console\"]\n",
-            &[("src/maps.una", &MAP_UPDATES.replace('N', n))],
-        );
-        let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
-        std::fs::write(
-            dir.join("una.toml"),
-            manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
-        )
-        .unwrap();
-        let built = una(&dir, &["build"]);
-        assert_eq!(built.status.code(), Some(0), "{built:?}");
-        let started = std::time::Instant::now();
-        let output = Command::new(dir.join(format!("target/una/maps_{n}")))
-            .current_dir(&dir)
-            .output()
+    // The copy count is the primary check; the timing is the secondary one: ten times the keys
+    // take under 40 times as long, n log n giving about 12 and a copy per update about 100. A
+    // miss is measured twice more before it fails (#341).
+    let sizes = [100_000, 1_000_000];
+    let dirs: Vec<PathBuf> = sizes
+        .iter()
+        .map(|n| {
+            let dir = package(
+                &format!("maps_{n}"),
+                "\n[run]\nentry = \"maps\"\ngrants = [\"console\"]\n",
+                &[("src/maps.una", &MAP_UPDATES.replace('N', &n.to_string()))],
+            );
+            let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+            std::fs::write(
+                dir.join("una.toml"),
+                manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+            )
             .unwrap();
-        times.push(started.elapsed());
+            let built = una(&dir, &["build"]);
+            assert_eq!(built.status.code(), Some(0), "{built:?}");
+            dir
+        })
+        .collect();
+    // Times a run of the executable built for `n` keys.
+    let measure = |n: usize| {
+        let dir = &dirs[sizes.iter().position(|&s| s == n).unwrap()];
+        let (output, seconds) = timing::timed(|| {
+            Command::new(dir.join(format!("target/una/maps_{n}")))
+                .current_dir(dir)
+                .output()
+                .unwrap()
+        });
         assert_eq!(output.status.code(), Some(0));
         assert_eq!(
             String::from_utf8_lossy(&output.stdout),
@@ -985,14 +1009,12 @@ fn map_updates_are_in_place_and_scale_as_n_log_n() {
             String::from_utf8_lossy(&output.stderr),
             "note: una-rt (debug build): lists, maps, records and texts copied: 1\n"
         );
-        let _ = std::fs::remove_dir_all(&dir);
+        seconds
+    };
+    timing::assert_growth("keys", &sizes, 0.0, timing::FLOOR, 40.0, measure);
+    for dir in &dirs {
+        let _ = std::fs::remove_dir_all(dir);
     }
-    assert!(
-        times[1] < times[0] * 25,
-        "10^5 keys took {:?}, 10^6 took {:?}",
-        times[0],
-        times[1]
-    );
 }
 
 #[test]
@@ -1636,8 +1658,10 @@ fn appends_through_calls(shape: &str, steps: usize) -> String {
 fn a_list_appended_through_calls_grows_in_linear_time() {
     // ADR 0072 D1 and D2 (#262): natively too, an `edit` argument, or a binding at its last
     // use rebound from the result, moves into the callee's owned parameter, which appends in
-    // place through any number of call levels, copying nothing. Each tenfold step stays under
-    // 30x, against about 100x when every call copies the list.
+    // place through any number of call levels, copying nothing: the copy count is the primary
+    // check. The timing is the secondary one: each tenfold step stays under 30x, against about
+    // 100x when every call copies the list. A miss is measured twice more before it fails
+    // (#341).
     let runs: &[(&str, &[usize])] = &[
         ("edit1", &[10_000, 100_000]),
         ("edit2", &[10_000, 100_000]),
@@ -1645,28 +1669,37 @@ fn a_list_appended_through_calls_grows_in_linear_time() {
         ("rebound", &[10_000, 100_000]),
     ];
     for &(shape, sizes) in runs {
-        let mut times = Vec::new();
-        for &steps in sizes {
-            let name = format!("calls-{shape}-{steps}");
-            let dir = package(
-                &name,
-                "\n[run]\nentry = \"grow\"\ngrants = [\"console\"]\n",
-                &[("src/grow.una", &appends_through_calls(shape, steps))],
-            );
-            let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
-            std::fs::write(
-                dir.join("una.toml"),
-                manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
-            )
-            .unwrap();
-            let built = una(&dir, &["build"]);
-            assert_eq!(built.status.code(), Some(0), "{built:?}");
-            let started = std::time::Instant::now();
-            let output = Command::new(dir.join("target/una").join(&name))
-                .current_dir(&dir)
-                .output()
+        let dirs: Vec<PathBuf> = sizes
+            .iter()
+            .map(|&steps| {
+                let dir = package(
+                    &format!("calls-{shape}-{steps}"),
+                    "\n[run]\nentry = \"grow\"\ngrants = [\"console\"]\n",
+                    &[("src/grow.una", &appends_through_calls(shape, steps))],
+                );
+                let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+                std::fs::write(
+                    dir.join("una.toml"),
+                    manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+                )
                 .unwrap();
-            times.push(started.elapsed().as_secs_f64().max(0.05));
+                let built = una(&dir, &["build"]);
+                assert_eq!(built.status.code(), Some(0), "{built:?}");
+                dir
+            })
+            .collect();
+        // Times a run of the executable built for `steps` appends.
+        let measure = |steps: usize| {
+            let dir = &dirs[sizes.iter().position(|&s| s == steps).unwrap()];
+            let (output, seconds) = timing::timed(|| {
+                Command::new(
+                    dir.join("target/una")
+                        .join(format!("calls-{shape}-{steps}")),
+                )
+                .current_dir(dir)
+                .output()
+                .unwrap()
+            });
             assert_eq!(output.status.code(), Some(0), "{output:?}");
             assert_eq!(
                 String::from_utf8_lossy(&output.stdout),
@@ -1677,14 +1710,11 @@ fn a_list_appended_through_calls_grows_in_linear_time() {
                 !String::from_utf8_lossy(&output.stderr).contains("copied"),
                 "{shape} {steps}: {output:?}"
             );
-            let _ = std::fs::remove_dir_all(&dir);
-        }
-        for pair in times.windows(2) {
-            assert!(
-                pair[1] < 30.0 * pair[0],
-                "{shape}: 10x the appends took {:.1}x as long: {times:?}",
-                pair[1] / pair[0]
-            );
+            seconds
+        };
+        timing::assert_growth(shape, sizes, 0.0, 0.05, 30.0, measure);
+        for dir in &dirs {
+            let _ = std::fs::remove_dir_all(dir);
         }
     }
 }
@@ -1692,48 +1722,58 @@ fn a_list_appended_through_calls_grows_in_linear_time() {
 #[test]
 fn json_parses_and_writes_in_linear_time_natively() {
     // ADR 0073 J6 (#238): natively, the debug runtime's count of copies is the same at every
-    // size, so nothing is copied per item; the timing is a second check, wide in margin.
-    let mut times = Vec::new();
-    let mut notes = Vec::new();
-    for steps in [10_000, 100_000, 1_000_000] {
-        let program = format!(
-            "module grow\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit items: List[Json] = []\n  for i in 0..<{steps}\n    items = items.append(item: Number(i))\n  for i in 0..<{steps}\n    items = items.append(item: Str(\"item {{i}}\"))\n  let text = Array(items).to_json()\n  let back = text.parse_json()\n    if error use Null\n  let again = back.to_json()\n  @console.print(\"{{text.len}} {{again == text}}\")\n"
-        );
-        let name = format!("json-scaling-{steps}");
-        let dir = package(
-            &name,
-            "\n[run]\nentry = \"grow\"\ngrants = [\"console\"]\n",
-            &[("src/grow.una", &program)],
-        );
-        let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
-        std::fs::write(
-            dir.join("una.toml"),
-            manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
-        )
-        .unwrap();
-        let built = una(&dir, &["build"]);
-        assert_eq!(built.status.code(), Some(0), "{built:?}");
-        let started = std::time::Instant::now();
-        let output = Command::new(dir.join("target/una").join(&name))
-            .current_dir(&dir)
-            .output()
+    // size, so nothing is copied per item; the timing is a second check, wide in margin: each
+    // tenfold step stays under 30x, against about 100x for quadratic work. A miss is measured
+    // twice more before it fails (#341).
+    let sizes = [10_000, 100_000, 1_000_000];
+    let dirs: Vec<PathBuf> = sizes
+        .iter()
+        .map(|steps| {
+            let program = format!(
+                "module grow\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit items: List[Json] = []\n  for i in 0..<{steps}\n    items = items.append(item: Number(i))\n  for i in 0..<{steps}\n    items = items.append(item: Str(\"item {{i}}\"))\n  let text = Array(items).to_json()\n  let back = text.parse_json()\n    if error use Null\n  let again = back.to_json()\n  @console.print(\"{{text.len}} {{again == text}}\")\n"
+            );
+            let dir = package(
+                &format!("json-scaling-{steps}"),
+                "\n[run]\nentry = \"grow\"\ngrants = [\"console\"]\n",
+                &[("src/grow.una", &program)],
+            );
+            let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+            std::fs::write(
+                dir.join("una.toml"),
+                manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+            )
             .unwrap();
-        times.push(started.elapsed().as_secs_f64().max(0.05));
+            let built = una(&dir, &["build"]);
+            assert_eq!(built.status.code(), Some(0), "{built:?}");
+            dir
+        })
+        .collect();
+    let mut first_note: Option<String> = None;
+    // Times a run of the executable built for `steps` items, and checks its notes.
+    let measure = |steps: usize| {
+        let dir = &dirs[sizes.iter().position(|&s| s == steps).unwrap()];
+        let (output, seconds) = timing::timed(|| {
+            Command::new(dir.join("target/una").join(format!("json-scaling-{steps}")))
+                .current_dir(dir)
+                .output()
+                .unwrap()
+        });
         assert_eq!(output.status.code(), Some(0), "{output:?}");
         assert!(
             String::from_utf8_lossy(&output.stdout).ends_with(" true\n"),
             "{output:?}"
         );
-        notes.push(String::from_utf8_lossy(&output.stderr).into_owned());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-    assert!(notes.windows(2).all(|pair| pair[0] == pair[1]), "{notes:?}");
-    for pair in times.windows(2) {
-        assert!(
-            pair[1] < 30.0 * pair[0],
-            "10x the items took {:.1}x as long: {times:?}",
-            pair[1] / pair[0]
-        );
+        // The primary check: the same count of copies at every size, on every run.
+        let note = String::from_utf8_lossy(&output.stderr).into_owned();
+        match &first_note {
+            Some(first) => assert_eq!(&note, first, "{steps} items"),
+            None => first_note = Some(note),
+        }
+        seconds
+    };
+    timing::assert_growth("items", &sizes, 0.0, 0.05, 30.0, measure);
+    for dir in &dirs {
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
 
@@ -1742,46 +1782,53 @@ const TEXT_SCALE: &str = "module scale\n\npub main() -> Unit\n  uses @console: C
 
 #[test]
 fn native_text_search_replace_and_split_take_linear_time() {
-    // `spec/22 §2` rule 8 and the performance rule, natively: ten times the text takes well
-    // under 25 times as long.
-    let mut times = Vec::new();
-    for (count, expected) in [
-        ("100000", "200000 None 200000 100001"),
-        ("1000000", "2000000 None 2000000 1000001"),
-    ] {
-        let name = format!("text_{count}");
-        let dir = package(
-            &name,
-            "\n[run]\nentry = \"scale\"\ngrants = [\"console\"]\n",
-            &[("src/scale.una", &TEXT_SCALE.replace("COUNT", count))],
-        );
-        let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
-        std::fs::write(
-            dir.join("una.toml"),
-            manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
-        )
-        .unwrap();
-        let built = una(&dir, &["build"]);
-        assert_eq!(built.status.code(), Some(0), "{built:?}");
-        let started = std::time::Instant::now();
-        let output = Command::new(dir.join(format!("target/una/{name}")))
-            .current_dir(&dir)
-            .output()
+    // `spec/22 §2` rule 8 and the performance rule, natively: ten times the text takes under
+    // 30 times as long, about 10x when linear against about 100x when quadratic. A miss is
+    // measured twice more before it fails (#341).
+    let sizes = [100_000, 1_000_000];
+    let dirs: Vec<PathBuf> = sizes
+        .iter()
+        .map(|count| {
+            let dir = package(
+                &format!("text_{count}"),
+                "\n[run]\nentry = \"scale\"\ngrants = [\"console\"]\n",
+                &[(
+                    "src/scale.una",
+                    &TEXT_SCALE.replace("COUNT", &count.to_string()),
+                )],
+            );
+            let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+            std::fs::write(
+                dir.join("una.toml"),
+                manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+            )
             .unwrap();
-        times.push(started.elapsed());
+            let built = una(&dir, &["build"]);
+            assert_eq!(built.status.code(), Some(0), "{built:?}");
+            dir
+        })
+        .collect();
+    // Times a run of the executable built for `count` pieces.
+    let measure = |count: usize| {
+        let dir = &dirs[sizes.iter().position(|&s| s == count).unwrap()];
+        let (output, seconds) = timing::timed(|| {
+            Command::new(dir.join(format!("target/una/text_{count}")))
+                .current_dir(dir)
+                .output()
+                .unwrap()
+        });
         assert_eq!(output.status.code(), Some(0));
+        let (len, pieces) = (2 * count, count + 1);
         assert_eq!(
             String::from_utf8_lossy(&output.stdout),
-            format!("{expected}\n")
+            format!("{len} None {len} {pieces}\n")
         );
-        let _ = std::fs::remove_dir_all(&dir);
+        seconds
+    };
+    timing::assert_growth("text", &sizes, 0.0, timing::FLOOR, 30.0, measure);
+    for dir in &dirs {
+        let _ = std::fs::remove_dir_all(dir);
     }
-    assert!(
-        times[1] < times[0] * 25,
-        "10^5 took {:?}, 10^6 took {:?}",
-        times[0],
-        times[1]
-    );
 }
 
 /// A non-ASCII text of `COUNT` scalar values, built by appends, then each one sliced.
@@ -1803,45 +1850,54 @@ pub main() -> Unit
 #[test]
 fn native_text_len_and_slice_take_constant_time_on_any_text() {
     // `spec/22 §6` rule 1, natively: a slice at each of n positions of a non-ASCII text takes
-    // linear time. Ten times the text takes well under 25 times as long.
-    let mut times = Vec::new();
-    for (count, expected) in [
-        ("100000", "100000 10000100000"),
-        ("1000000", "1000000 1000001000000"),
-    ] {
-        let name = format!("slice_{count}");
-        let dir = package(
-            &name,
-            "\n[run]\nentry = \"scale\"\ngrants = [\"console\"]\n",
-            &[("src/scale.una", &SLICE_SCALE.replace("COUNT", count))],
-        );
-        let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
-        std::fs::write(
-            dir.join("una.toml"),
-            manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
-        )
-        .unwrap();
-        let built = una(&dir, &["build"]);
-        assert_eq!(built.status.code(), Some(0), "{built:?}");
-        let started = std::time::Instant::now();
-        let output = Command::new(dir.join(format!("target/una/{name}")))
-            .current_dir(&dir)
-            .output()
+    // linear time. Ten times the text takes under 30 times as long, about 10x when linear
+    // against about 100x when a position costs O(n). A miss is measured twice more before it
+    // fails (#341).
+    let sizes = [100_000, 1_000_000];
+    let dirs: Vec<PathBuf> = sizes
+        .iter()
+        .map(|count| {
+            let dir = package(
+                &format!("slice_{count}"),
+                "\n[run]\nentry = \"scale\"\ngrants = [\"console\"]\n",
+                &[(
+                    "src/scale.una",
+                    &SLICE_SCALE.replace("COUNT", &count.to_string()),
+                )],
+            );
+            let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+            std::fs::write(
+                dir.join("una.toml"),
+                manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+            )
             .unwrap();
-        times.push(started.elapsed());
+            let built = una(&dir, &["build"]);
+            assert_eq!(built.status.code(), Some(0), "{built:?}");
+            dir
+        })
+        .collect();
+    // Times a run of the executable built for `count` scalar values.
+    let measure = |count: usize| {
+        let dir = &dirs[sizes.iter().position(|&s| s == count).unwrap()];
+        let (output, seconds) = timing::timed(|| {
+            Command::new(dir.join(format!("target/una/slice_{count}")))
+                .current_dir(dir)
+                .output()
+                .unwrap()
+        });
         assert_eq!(output.status.code(), Some(0));
+        // Each of the `count` slices adds 1 and the length `count`.
+        let total = count * (count + 1);
         assert_eq!(
             String::from_utf8_lossy(&output.stdout),
-            format!("{expected}\n")
+            format!("{count} {total}\n")
         );
-        let _ = std::fs::remove_dir_all(&dir);
+        seconds
+    };
+    timing::assert_growth("text", &sizes, 0.0, timing::FLOOR, 30.0, measure);
+    for dir in &dirs {
+        let _ = std::fs::remove_dir_all(dir);
     }
-    assert!(
-        times[1] < times[0] * 25,
-        "10^5 took {:?}, 10^6 took {:?}",
-        times[0],
-        times[1]
-    );
 }
 
 /// A program that appends `steps` items to a list through a function value, by `shape`: a
@@ -1879,8 +1935,9 @@ fn a_list_built_through_function_values_grows_in_linear_time() {
     // N-42 (#312, IP-1, IP-2): a call through a function value moves its arguments into the
     // lambda, which owns them, so a list or a text appended through function values and `fold`
     // grows in place: the debug runtime's count of copies is the same at every size, 0, or 1
-    // for the literal a text starts from. Each tenfold step stays under 30x, against about
-    // 100x when every call copies.
+    // for the literal a text starts from: the copy count is the primary check. The timing is
+    // the secondary one: each tenfold step stays under 30x, against about 100x when every call
+    // copies. A miss is measured twice more before it fails (#341).
     let runs: &[(&str, &[usize])] = &[
         ("named", &[10_000, 100_000]),
         ("lambda", &[10_000, 100_000]),
@@ -1889,52 +1946,59 @@ fn a_list_built_through_function_values_grows_in_linear_time() {
         ("text", &[10_000, 100_000]),
     ];
     for &(shape, sizes) in runs {
-        let mut times = Vec::new();
-        let mut copies = Vec::new();
-        for &steps in sizes {
-            let name = format!("values-{shape}-{steps}");
-            let dir = package(
-                &name,
-                "\n[run]\nentry = \"grow\"\ngrants = [\"console\"]\n",
-                &[(
-                    "src/grow.una",
-                    &appends_through_function_values(shape, steps),
-                )],
-            );
-            let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
-            std::fs::write(
-                dir.join("una.toml"),
-                manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
-            )
-            .unwrap();
-            let built = una(&dir, &["build"]);
-            assert_eq!(built.status.code(), Some(0), "{built:?}");
-            let started = std::time::Instant::now();
-            let output = Command::new(dir.join("target/una").join(&name))
-                .current_dir(&dir)
-                .output()
+        let dirs: Vec<PathBuf> = sizes
+            .iter()
+            .map(|&steps| {
+                let dir = package(
+                    &format!("values-{shape}-{steps}"),
+                    "\n[run]\nentry = \"grow\"\ngrants = [\"console\"]\n",
+                    &[(
+                        "src/grow.una",
+                        &appends_through_function_values(shape, steps),
+                    )],
+                );
+                let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+                std::fs::write(
+                    dir.join("una.toml"),
+                    manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+                )
                 .unwrap();
-            times.push(started.elapsed().as_secs_f64().max(0.05));
+                let built = una(&dir, &["build"]);
+                assert_eq!(built.status.code(), Some(0), "{built:?}");
+                dir
+            })
+            .collect();
+        let mut first_copies = None;
+        // Times a run of the executable built for `steps` appends, and checks its copies.
+        let measure = |steps: usize| {
+            let dir = &dirs[sizes.iter().position(|&s| s == steps).unwrap()];
+            let (output, seconds) = timing::timed(|| {
+                Command::new(
+                    dir.join("target/una")
+                        .join(format!("values-{shape}-{steps}")),
+                )
+                .current_dir(dir)
+                .output()
+                .unwrap()
+            });
             assert_eq!(output.status.code(), Some(0), "{output:?}");
             assert_eq!(
                 String::from_utf8_lossy(&output.stdout),
                 format!("{steps}\n")
             );
-            copies.push(copied(&output));
-            let _ = std::fs::remove_dir_all(&dir);
-        }
-        // The copies do not grow with the size: none, or the one copy of the literal `""`
-        // that the first append into the text makes.
-        assert!(
-            copies.iter().all(|&c| c == copies[0] && c <= 1),
-            "{shape}: copies {copies:?}"
-        );
-        for pair in times.windows(2) {
+            // The copies do not grow with the size: none, or the one copy of the literal `""`
+            // that the first append into the text makes.
+            let copies = copied(&output);
+            let first = *first_copies.get_or_insert(copies);
             assert!(
-                pair[1] < 30.0 * pair[0],
-                "{shape}: 10x the appends took {:.1}x as long: {times:?}",
-                pair[1] / pair[0]
+                copies == first && copies <= 1,
+                "{shape} {steps}: {copies} copies, {first} at the first size"
             );
+            seconds
+        };
+        timing::assert_growth(shape, sizes, 0.0, 0.05, 30.0, measure);
+        for dir in &dirs {
+            let _ = std::fs::remove_dir_all(dir);
         }
     }
 }

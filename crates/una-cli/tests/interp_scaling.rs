@@ -5,6 +5,9 @@
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
+#[path = "common/timing.rs"]
+mod timing;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -117,18 +120,15 @@ fn run_source_seconds(dir: &Path, source: &str) -> f64 {
 fn reading_a_binding_does_not_scan_the_others() {
     // #329: from 2,000 to 16,000 bindings, eight times as many, the run takes about eight
     // times as long once the fixed cost is taken away (#300's method), against about 64 times
-    // when each read scans every binding by name. The bound, 24, leaves a wide margin.
+    // when each read scans every binding by name. The bound, 24, leaves a wide margin. Each
+    // time is already the best of three runs, and a miss is measured twice more (#341); the
+    // floor stays at a microsecond, as before: these runs are too short for the usual floor.
     let dir = std::env::temp_dir().join(format!("una-interp-scaling-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let fixed = run_seconds(&dir, 10);
-    let small = run_seconds(&dir, 2_000) - fixed;
-    let large = run_seconds(&dir, 16_000) - fixed;
-    let growth = large / small.max(1e-6);
-    eprintln!("8x the bindings: {growth:.1}x the run time ({small:.4}s, {large:.4}s)");
-    assert!(
-        growth < 24.0,
-        "8x the bindings took {growth:.1}x as long (fixed {fixed:.4}s, {small:.4}s, {large:.4}s)"
-    );
+    timing::assert_growth("bindings", &[2_000, 16_000], fixed, 1e-6, 24.0, |n| {
+        run_seconds(&dir, n)
+    });
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -136,16 +136,12 @@ fn reading_a_binding_does_not_scan_the_others() {
 fn a_closure_costs_what_it_reads_not_what_is_in_scope() {
     // #329: a closure keeps the bindings its body reads, not a copy of every binding in scope,
     // so making one and calling it in a loop costs the same with 16 or 1,024 bindings in scope:
-    // within 3x, against about 30x when each closure copied the whole environment.
+    // within 3x, against about 30x when each closure copied the whole environment. Each time is
+    // already the best of three runs, and a miss is measured twice more (#341).
     let dir = std::env::temp_dir().join(format!("una-interp-closures-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let few = run_source_seconds(&dir, &closures(16));
-    let many = run_source_seconds(&dir, &closures(1_024));
-    let growth = many / few.max(1e-6);
-    eprintln!("64x the bindings in scope: {growth:.1}x the closure loop ({few:.4}s, {many:.4}s)");
-    assert!(
-        growth < 3.0,
-        "64x the bindings in scope took {growth:.1}x as long ({few:.4}s, {many:.4}s)"
-    );
+    timing::assert_growth("bindings in scope", &[16, 1_024], 0.0, 1e-6, 3.0, |n| {
+        run_source_seconds(&dir, &closures(n))
+    });
     let _ = std::fs::remove_dir_all(&dir);
 }
