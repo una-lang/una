@@ -1,0 +1,10 @@
+[U4003] Error: `@console.print` accepts `public` data, and this argument is `internal`; declassify it through a policy first
+    ╭─[ src/main.una:28:18 ]
+    │
+ 28 │   @console.print("{r}")
+    │                  ──┬──  
+    │                    ╰──── `@console.print` accepts `public` data, and this argument is `internal`; declassify it through a policy first
+    │ 
+    │ Note: run `una explain U4003` for an explanation
+────╯
+exit 1
