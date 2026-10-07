@@ -424,13 +424,16 @@ impl<'p, 'a> Checker<'p, 'a> {
         // variants may be shadowed, as `Some` may.
         if upper
             && self.package.settings.edition >= Edition::V0_2
-            && matches!(name, "Json" | "JsonNumber" | "JsonError")
+            && matches!(
+                name,
+                "Json" | "JsonNumber" | "JsonError" | "Http" | "Header" | "Response" | "HttpError"
+            )
         {
             let diagnostic = self.make(
                 Code::U1002,
                 ident.span,
                 format!(
-                    "`{name}` is a kind of the prelude in edition 0.2, so a {} cannot take its name",
+                    "`{name}` is a name of the prelude in edition 0.2, so a {} cannot take its name",
                     what.word()
                 ),
             );

@@ -17,6 +17,7 @@ num-bigint.workspace = true
 serde_json.workspace = true
 una-core.workspace = true
 una-diag.workspace = true
+una-http.workspace = true
 una-interp.workspace = true
 
 # The workspace lints, except `unsafe_code`: ADR 0058 allows `unsafe` in one module, the

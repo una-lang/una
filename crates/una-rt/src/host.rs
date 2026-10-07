@@ -346,3 +346,131 @@ pub fn event_end(site: i64, slot: i64, value: i64, failed: i64) {
         }
     });
 }
+
+/// An operation of `Http` (`spec/24`), by the client that the interpreter shares: the response
+/// as a `Response` record, or an `HttpError`, which `una_rt_host_failed` then reports.
+fn http(
+    method: una_http::grant::Method,
+    url: i64,
+    headers: i64,
+    body: Option<i64>,
+    key_name: i64,
+) -> i64 {
+    use una_http::client::{Error, Request, send};
+    // The variants of `HttpError`, in declaration order, as words.
+    let variant = |error: Error| {
+        let index: i64 = match error {
+            Error::Denied => 0,
+            Error::BadUrl => 1,
+            Error::BadRequest => 2,
+            Error::Unreachable => 3,
+            Error::TimedOut => 4,
+            Error::TooLarge => 5,
+            Error::Tls => 6,
+            Error::Protocol => 7,
+        };
+        (index << 1) | 1
+    };
+    let url = values::text_value(url);
+    let headers: Vec<(String, String)> = values::list_items(headers)
+        .into_iter()
+        .map(|header| {
+            (
+                values::text_value(values::field(header, 0)),
+                values::text_value(values::field(header, 1)),
+            )
+        })
+        .collect();
+    let body = body.map(values::text_value).unwrap_or_default();
+    // `Some(name)` is the variant at position 0 of `Option`.
+    let key_name =
+        (values::tag(key_name) == 0).then(|| values::text_value(values::field(key_name, 0)));
+    let bearer = match key_name {
+        Some(name) => match with_state(|state| state.keys.get(&name).cloned()).flatten() {
+            Some(key) => Some(key),
+            None => return failed(variant(Error::Denied)),
+        },
+        None => None,
+    };
+    let (grants, settings) = with_state(|state| {
+        let grants: Vec<una_http::grant::Grant> = state
+            .grants
+            .iter()
+            .filter_map(|grant| match grant {
+                Grant::Http(http) => Some(http.clone()),
+                _ => None,
+            })
+            .collect();
+        (grants, state.http)
+    })
+    .unwrap_or_default();
+    let request = Request {
+        method,
+        url: &url,
+        headers: &headers,
+        body: body.as_bytes(),
+        bearer: bearer.as_deref(),
+    };
+    match send(&request, &grants, &settings) {
+        Ok(response) => {
+            let list = values::list();
+            for (name, value) in response.headers {
+                let header = values::data(0);
+                let (name, value) = (values::text_word(name), values::text_word(value));
+                values::push(header, name);
+                values::push(header, value);
+                values::release(name);
+                values::release(value);
+                values::push(list, header);
+                values::release(header);
+            }
+            let record = values::data(0);
+            let status = values::int_word(&num_bigint::BigInt::from(response.status));
+            let body = values::text_word(response.body);
+            for field in [status, list, body] {
+                values::push(record, field);
+                values::release(field);
+            }
+            record
+        }
+        Err(error) => failed(variant(error)),
+    }
+}
+
+/// `Http.get(url, headers, key_name)`.
+pub fn http_get(url: i64, headers: i64, key_name: i64) -> i64 {
+    http(una_http::grant::Method::Get, url, headers, None, key_name)
+}
+
+/// `Http.post(url, headers, body, key_name)`.
+pub fn http_post(url: i64, headers: i64, body: i64, key_name: i64) -> i64 {
+    http(
+        una_http::grant::Method::Post,
+        url,
+        headers,
+        Some(body),
+        key_name,
+    )
+}
+
+/// `Http.put(url, headers, body, key_name)`.
+pub fn http_put(url: i64, headers: i64, body: i64, key_name: i64) -> i64 {
+    http(
+        una_http::grant::Method::Put,
+        url,
+        headers,
+        Some(body),
+        key_name,
+    )
+}
+
+/// `Http.delete(url, headers, key_name)`.
+pub fn http_delete(url: i64, headers: i64, key_name: i64) -> i64 {
+    http(
+        una_http::grant::Method::Delete,
+        url,
+        headers,
+        None,
+        key_name,
+    )
+}

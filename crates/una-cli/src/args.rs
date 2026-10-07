@@ -112,7 +112,7 @@ pub(crate) enum Command {
         #[arg(default_value = ".")]
         path: PathBuf,
 
-        /// Grant a host capability: `console`, `clock`, `env`, `keys:<file>` or `files:<path>:<access>`
+        /// Grant a host capability: `console`, `clock`, `env`, `keys:<file>`, `files:<path>:<access>` or `http:<origin>[:<methods>]`
         #[arg(long = "grant", value_name = "SPEC")]
         grants: Vec<String>,
 
@@ -123,6 +123,14 @@ pub(crate) enum Command {
         /// The memory a run may hold, in MiB
         #[arg(long, value_name = "MIB", default_value_t = una_interp::DEFAULT_MAX_MEMORY, value_parser = memory_budget)]
         max_memory: usize,
+
+        /// The largest HTTP response body, in MiB (`spec/24 §4`)
+        #[arg(long, value_name = "MIB", default_value_t = 16, value_parser = at_least_one)]
+        max_response: u64,
+
+        /// The total time of each HTTP request, in seconds (`spec/24 §4`)
+        #[arg(long, value_name = "SECONDS", default_value_t = 30, value_parser = http_timeout)]
+        http_timeout: u64,
 
         /// Stop a solver query after this many seconds; the obligation is then unknown
         #[arg(long, value_name = "SECONDS", default_value_t = 60)]
@@ -184,6 +192,27 @@ pub(crate) enum TierArg {
     /// Tier 1: tier 0 and every proof obligation.
     #[value(name = "1")]
     One,
+}
+
+/// A value of `--max-response` or `--http-timeout`: a whole number, at least 1 (`spec/24 §4`).
+fn at_least_one(text: &str) -> Result<u64, String> {
+    match text.parse::<u64>() {
+        Ok(0) => Err("0 allows nothing; give at least 1".to_owned()),
+        Ok(n) => Ok(n),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// A value of `--http-timeout`: a whole number of seconds, from 1 to a day (`spec/24 §4`, N-30).
+fn http_timeout(text: &str) -> Result<u64, String> {
+    let n = at_least_one(text)?;
+    if n > una_http::client::MAX_TIMEOUT_SECS {
+        return Err(format!(
+            "{n} is longer than a day; give at most {}",
+            una_http::client::MAX_TIMEOUT_SECS
+        ));
+    }
+    Ok(n)
 }
 
 /// A value of `--max-memory`: a whole number of MiB, at least 1, since no run fits in 0 MiB

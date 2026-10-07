@@ -196,6 +196,10 @@ exported! {
     una_rt_files_read => host::files_read, (path);
     una_rt_files_write => host::files_write, (path, content);
     una_rt_keys_hmac => host::keys_hmac, (key_name, data);
+    una_rt_http_get => host::http_get, (url, headers, key_name);
+    una_rt_http_post => host::http_post, (url, headers, body, key_name);
+    una_rt_http_put => host::http_put, (url, headers, body, key_name);
+    una_rt_http_delete => host::http_delete, (url, headers, key_name);
     una_rt_host_failed => host::host_failed, ();
     una_rt_parse_json => json::parse_json, (t);
     una_rt_to_json => json::to_json, (j);

@@ -1403,6 +1403,11 @@ fn granted(grants: &[String]) -> BTreeMap<&'static str, BTreeSet<&'static str>> 
             "clock" => ("Clock", vec!["now"]),
             "env" => ("Env", vec!["get"]),
             _ if grant.starts_with("keys:") => ("Keys", vec!["hmac"]),
+            // An `http:` grant gives the operations of its methods (`spec/24 §2`).
+            _ if grant.starts_with("http:") => match una_core::http::Grant::parse(grant) {
+                Some(http) => ("Http", http.methods().iter().map(|m| m.op()).collect()),
+                None => continue,
+            },
             _ => match grant
                 .strip_prefix("files:")
                 .and_then(|rest| rest.rsplit_once(':'))
