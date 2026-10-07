@@ -1,6 +1,6 @@
 # 21. Maps
 
-Status: Normative, v0.2 (ADR 0069).
+Status: Accepted, not implemented in v0.2.0; planned (#236). Normative for edition `0.2` once implemented (ADR 0069).
 
 `Map[K, V]` is a built-in keyed collection: a finite set of keys, each mapped to one value, ordered by its keys. Maps are values, as lists are (`spec/17`).
 

@@ -1,6 +1,6 @@
 # 22. Text operations
 
-Status: Normative, v0.2 (ADR 0070).
+Status: Accepted, not implemented in v0.2.0; planned (#237). Normative for edition `0.2` once implemented (ADR 0070).
 
 These prelude functions take a text apart, search it, change it and parse it. Text stays a value of Unicode scalar values (`spec/03 §1`), and every function here is pure.
 
