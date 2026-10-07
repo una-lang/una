@@ -1,0 +1,10 @@
+module m
+
+pub kind P = Over(index: Int) | Fine
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let a = Over(index: 1)
+  let b = Fine
+  @console.print("{not (a is Over)} {not (b is Over)}")

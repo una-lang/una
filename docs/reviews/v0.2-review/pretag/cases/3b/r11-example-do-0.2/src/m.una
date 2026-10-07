@@ -1,0 +1,9 @@
+module m
+
+pub f(x: Int) -> Int = x + 1
+
+example "a do block"
+  do
+    let result = f(1)
+    result
+  expect result == 2

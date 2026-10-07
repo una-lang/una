@@ -1,0 +1,3 @@
+module m
+
+pub f(error: Int) -> Int = error

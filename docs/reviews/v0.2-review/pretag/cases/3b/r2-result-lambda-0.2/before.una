@@ -1,0 +1,8 @@
+module m
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let result = 10
+  let f = fn(x) -> x + result
+  @console.print("{f(1)}")
