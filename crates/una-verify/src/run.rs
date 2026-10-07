@@ -154,6 +154,18 @@ fn uninterpreted(obligation: &Obligation) -> Vec<(F, F, F)> {
 const ARITHMETIC: [&str; 3] = ["i!mul!Int", "i!div!Int", "i!mod!Int"];
 
 /// The reason of an obligation whose model disagrees with real arithmetic (ADR 0053).
+/// The reason of an obligation whose refutation sets values a loop made fresh (ADR 0071 D3).
+fn forgotten(names: &[String]) -> String {
+    let names: Vec<String> = names.iter().map(|name| format!("`{name}`")).collect();
+    let (its, names) = match names.as_slice() {
+        [one] => ("its type, and its length", one.clone()),
+        _ => ("their types, and their lengths", names.join(" and ")),
+    };
+    format!(
+        "the loop forgets every fact about {names} but the refinements of {its} when the loop only `set`s a list, as `spec/17 §5` rule 3 says, so the counterexample sets {names} freely; guard the use with an `if`, or check the value with `checked`"
+    )
+}
+
 pub(crate) const UNINTERPRETED: &str = "the refutation depends on a product, quotient or remainder of two values, which the encoding of `spec/12 §2` leaves uninterpreted";
 
 /// Whether the model agrees with real arithmetic at every application of uninterpreted
@@ -368,6 +380,70 @@ pub fn verify(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Out
             cached,
         ));
     }
+    // ADR 0071 D3 (decision N-13): a refutation that sets loop-fresh values in a loop body is
+    // solved once more with every enclosing loop at its first iteration. A model there is a
+    // run, so the obligation stays refuted with it; otherwise it is unknown.
+    let retries: Vec<Option<Obligation>> = obligations
+        .iter()
+        .zip(&outcomes)
+        .map(|(obligation, outcome)| {
+            let forgot = outcome.status == ObligationStatus::Unknown
+                && !obligation.forgotten.is_empty()
+                && outcome.reason.as_deref() == Some(forgotten(&obligation.forgotten).as_str());
+            (forgot && !obligation.entry.is_empty()).then(|| {
+                let mut first = obligation.clone();
+                first.query.assertions.append(&mut first.entry);
+                first.forgotten.clear();
+                first
+            })
+        })
+        .collect();
+    if retries.iter().any(Option::is_some) {
+        check_version(settings)?;
+    }
+    let firsts: Vec<Option<Outcome>> = retries
+        .par_iter()
+        .map(|retry| {
+            let Some(first) = retry else {
+                return Ok(None);
+            };
+            let (text, requested) = script(first, &settings.lock);
+            let key = cache::key(&settings.lock.text, &text);
+            let cached = settings
+                .cache
+                .as_ref()
+                .and_then(|cache| cache::get(cache, &key));
+            let was_cached = cached.is_some();
+            let answer = match cached {
+                Some(answer) => answer,
+                None => {
+                    let answer = solver::run(
+                        &settings.solver,
+                        &text,
+                        requested.len(),
+                        settings.wallclock,
+                        settings.cancel.as_deref(),
+                    )
+                    .map_err(|failure| Problem::Query {
+                        id: first.id.clone(),
+                        message: failure.0,
+                    })?;
+                    if let Some(cache) = &settings.cache {
+                        cache::put(cache, &key, &answer);
+                    }
+                    answer
+                }
+            };
+            Ok(Some(outcome(first, &requested, &answer, None, was_cached)))
+        })
+        .collect::<Result<_, Problem>>()?;
+    for (outcome, first) in outcomes.iter_mut().zip(firsts) {
+        if let Some(first) = first
+            && first.status == ObligationStatus::Refuted
+        {
+            *outcome = first;
+        }
+    }
     Ok(outcomes)
 }
 
@@ -450,6 +526,17 @@ fn outcome(
                 bindings: Vec::new(),
             };
         }
+    }
+    // ADR 0071 D3: a counterexample that sets a value a loop made fresh may be no execution,
+    // since the loop forgot the facts that exclude it.
+    if answer.status == Status::Refuted && !obligation.forgotten.is_empty() {
+        return Outcome {
+            status: ObligationStatus::Unknown,
+            reason: Some(forgotten(&obligation.forgotten)),
+            cached,
+            path: None,
+            bindings: Vec::new(),
+        };
     }
     let mut bindings = Vec::new();
     let mut path = None;
@@ -557,5 +644,21 @@ mod arithmetic_tests {
         assert_eq!(integer("(- 5)"), Some(-5));
         assert_eq!(integer("true"), None);
         assert_eq!(integer("1000000000000000000000000000000000000000000"), None);
+    }
+}
+
+#[cfg(test)]
+mod forgotten_tests {
+    use super::forgotten;
+
+    #[test]
+    fn the_reason_names_each_forgotten_binding() {
+        let one = forgotten(&["xs".to_owned()]);
+        assert!(one.starts_with(
+            "the loop forgets every fact about `xs` but the refinements of its type, and its length"
+        ));
+        let two = forgotten(&["xs".to_owned(), "ys".to_owned()]);
+        assert!(two.starts_with("the loop forgets every fact about `xs` and `ys` but the refinements of their types, and their lengths"));
+        assert!(two.contains("sets `xs` and `ys` freely"));
     }
 }

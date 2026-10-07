@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use sha2::{Digest, Sha256};
 use una_core::{
     Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, DataVariant, Decl, Expr, FixedOp, Fun, IntType,
-    LoopSource, Name, Prim, Program, Refinement, Rhs, Source, Term, Type, print_term_with,
+    LoopSource, Name, Path, Prim, Program, Refinement, Rhs, Source, Term, Type, print_term_with,
 };
 use una_diag::ObligationKind;
 use una_syntax::{SourceDb, Span};
@@ -44,6 +44,12 @@ pub struct Obligation {
     pub(crate) shown: Vec<Shown>,
     /// Where the obligation arises, which decides its repairs (`spec/13 §3`).
     pub site: Site,
+    /// The source names of the values that a loop made fresh and that the counterexample
+    /// shows (ADR 0071 D3): a refutation is then unknown.
+    pub(crate) forgotten: Vec<String>,
+    /// The equalities that put the enclosing loops at their first iteration, for the second
+    /// query of a refutation that sets loop-fresh values (ADR 0071 D3).
+    pub(crate) entry: Vec<F>,
 }
 
 /// Where an obligation arises: what decides which repair candidates of `spec/13 §3` apply
@@ -617,6 +623,10 @@ struct Hyp {
 struct Ctx {
     hyps: Vec<Hyp>,
     types: BTreeMap<Name, Type>,
+    /// In a loop body, the equalities that put every enclosing loop at its first iteration:
+    /// each state binding at its value on entry, and a range's variable at its lower bound
+    /// (ADR 0071 D3, decision N-13).
+    entry: Vec<F>,
 }
 
 impl Ctx {
@@ -674,6 +684,19 @@ struct Walker<'p, 'i> {
     eta: Option<Vec<String>>,
     /// The name of the named function whose eta-expansion is walked (issue #76).
     eta_name: Option<String>,
+    /// Whether each state binding of each loop met so far keeps its length (ADR 0071 D1).
+    frames: BTreeMap<Span, Vec<bool>>,
+    /// The values that loops make fresh, by binder, with their source names (ADR 0071 D3).
+    loop_fresh: BTreeMap<String, BTreeSet<String>>,
+    /// The binders of loops' final values, with the source names of their components.
+    loop_results: BTreeMap<Name, Vec<String>>,
+    /// The loop-fresh binders that come from a loop's final value, which no equality of an
+    /// enclosing loop's first iteration fixes (ADR 0071 D3).
+    unpinned: BTreeSet<String>,
+    /// Whether the paths of the return obligation being pushed return such a value.
+    returned_unpinned: bool,
+    /// The loop-fresh values that the paths of the return obligation being pushed return.
+    returned_forgotten: Vec<String>,
 }
 
 /// How the obligations of a function value flowing into a function type name the value and
@@ -704,6 +727,12 @@ impl<'p, 'i> Walker<'p, 'i> {
             fresh: 0,
             eta: None,
             eta_name: None,
+            frames: BTreeMap::new(),
+            loop_fresh: BTreeMap::new(),
+            loop_results: BTreeMap::new(),
+            returned_forgotten: Vec::new(),
+            unpinned: BTreeSet::new(),
+            returned_unpinned: false,
         }
     }
 
@@ -739,6 +768,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             }
         }
         let mut leaves = Vec::new();
+        self.forget_loops();
         self.walk(&fun.body, &ctx, &mut leaves);
         // ADR 0037 rule 2: a function value returned into a declared function type.
         self.returned_functions(&ctx, &leaves, &fun.result, None);
@@ -862,6 +892,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             }
         }
         let mut leaves = Vec::new();
+        self.forget_loops();
         self.walk(&op.body, &ctx, &mut leaves);
         let Some(signature) = signature else {
             return;
@@ -932,6 +963,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             self.bind(&mut ctx, name, ty);
         }
         let mut leaves = Vec::new();
+        self.forget_loops();
         self.walk(body, &ctx, &mut leaves);
     }
 
@@ -990,9 +1022,9 @@ impl<'p, 'i> Walker<'p, 'i> {
                     source,
                     var,
                     state,
+                    init,
                     body,
                     span,
-                    ..
                 } => {
                     let mut body_ctx = ctx.clone();
                     self.bind(&mut body_ctx, &var.0, &var.1);
@@ -1006,6 +1038,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                         let low = self.atom(low, &ctx);
                         let high = self.atom(high, &ctx);
                         if x.f.sort() == low.f.sort() && x.f.sort() == high.f.sort() {
+                            body_ctx.entry.push(F::eq(x.f.clone(), low.f.clone()));
                             body_ctx.assume(F::op("<=", vec![low.f, x.f.clone()]));
                             let op = if *inclusive { "<=" } else { "<" };
                             body_ctx.assume(F::op(op, vec![x.f, high.f]));
@@ -1013,6 +1046,27 @@ impl<'p, 'i> Walker<'p, 'i> {
                     }
                     for (name, ty) in state {
                         self.bind(&mut body_ctx, name, ty);
+                        self.loop_fresh
+                            .insert(name.clone(), BTreeSet::from([source_name(name)]));
+                    }
+                    for ((name, _), atom) in state.iter().zip(init) {
+                        let x = own(&body_ctx, name);
+                        let entry = self.atom(atom, &ctx);
+                        if x.f.sort() == entry.f.sort() {
+                            body_ctx.entry.push(F::eq(x.f, entry.f));
+                        }
+                    }
+                    // ADR 0071 D2: a length-preserving binding keeps its length at entry.
+                    let preserved = self.preserved(*span, state, body);
+                    for (((name, _), atom), kept) in state.iter().zip(init).zip(&preserved) {
+                        if !kept {
+                            continue;
+                        }
+                        let x = own(&body_ctx, name);
+                        let entry = self.atom(atom, &ctx);
+                        if let (Some(now), Some(then)) = (self.len(&x), self.len(&entry)) {
+                            body_ctx.assume(F::eq(now, then));
+                        }
                     }
                     let mut body_leaves = Vec::new();
                     self.walk(body, &body_ctx, &mut body_leaves);
@@ -1081,6 +1135,26 @@ impl<'p, 'i> Walker<'p, 'i> {
                     names, value, body, ..
                 } => {
                     let tuple = self.atom(value, &ctx);
+                    // The components of a loop's final value are fresh (ADR 0071 D3).
+                    if let Atom::Var(tuple_name) = value
+                        && let Some(sources) = self.loop_results.get(tuple_name).cloned()
+                    {
+                        for ((name, _), source) in names.iter().zip(sources) {
+                            self.loop_fresh
+                                .insert(name.clone(), BTreeSet::from([source]));
+                            self.unpinned.insert(name.clone());
+                        }
+                    } else if let Atom::Var(tuple_name) = value
+                        && let Some(sources) = self.loop_fresh.get(tuple_name).cloned()
+                    {
+                        let unpinned = self.unpinned.contains(tuple_name);
+                        for (name, _) in names {
+                            self.loop_fresh.insert(name.clone(), sources.clone());
+                            if unpinned {
+                                self.unpinned.insert(name.clone());
+                            }
+                        }
+                    }
                     for (index, (name, ty)) in names.iter().enumerate() {
                         ctx.types.insert(name.clone(), ty.clone());
                         let x = own(&ctx, name);
@@ -1116,6 +1190,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                     span,
                     written,
                 } => {
+                    self.taint(name, value);
                     match value.as_ref() {
                         Bound::Rhs(rhs) => self.rhs(name, ty, rhs, *span, &mut ctx),
                         // The tuple of a `together` block (`spec/19 §4`): each task is checked
@@ -1177,6 +1252,34 @@ impl<'p, 'i> Walker<'p, 'i> {
                                     .map(|leaf| self.path(leaf, base, &x))
                                     .collect();
                                 ctx.define(F::or(paths));
+                            }
+                            // ADR 0071 D2: after a loop, a length-preserving binding has its
+                            // length at entry; the others are fresh (D3).
+                            if let Expr::Loop {
+                                state,
+                                init,
+                                body,
+                                span: loop_span,
+                                ..
+                            } = inner
+                            {
+                                let preserved = self.preserved(*loop_span, state, body);
+                                let sources = state.iter().map(|(name, _)| source_name(name));
+                                self.loop_results.insert(name.clone(), sources.collect());
+                                for (index, ((_, _), atom)) in state.iter().zip(init).enumerate() {
+                                    let Some(component) = projection(&x, index) else {
+                                        continue;
+                                    };
+                                    if !preserved.get(index).copied().unwrap_or(false) {
+                                        continue;
+                                    }
+                                    let entry = self.atom(atom, &ctx);
+                                    if let (Some(now), Some(then)) =
+                                        (self.len(&component), self.len(&entry))
+                                    {
+                                        ctx.define(F::eq(now, then));
+                                    }
+                                }
                             }
                             // The list of a `together for` has one element per task (`spec/19
                             // §4` rule 2).
@@ -3017,6 +3120,12 @@ impl<'p, 'i> Walker<'p, 'i> {
             }
         }
         ctx.types.insert("result".to_owned(), result.ty.clone());
+        // ADR 0071 D3: a returned value that a loop made fresh, which fixes `result`.
+        (self.returned_forgotten, self.returned_unpinned) = self.forgotten(
+            leaves
+                .iter()
+                .filter_map(|leaf| leaf.value.as_ref().map(|v| &v.f)),
+        );
         self.push(
             kind, text, source, related, paths, hypotheses, assertions, &ctx, place,
         );
@@ -3060,6 +3169,21 @@ impl<'p, 'i> Walker<'p, 'i> {
         let hypotheses = shown_facts;
         self.add_definitions(&mut query);
         let shown = self.shown(&query, ctx);
+        let mut forgotten = std::mem::take(&mut self.returned_forgotten);
+        let returned_unpinned = std::mem::take(&mut self.returned_unpinned);
+        let (shown_forgotten, unpinned) = self.forgotten(shown.iter().map(|item| &item.term));
+        // A value from a loop's final value is not fixed by the first iteration, so a model of
+        // the second query would be no run either: there is none (ADR 0071 D3).
+        let entry = if unpinned || returned_unpinned {
+            Vec::new()
+        } else {
+            ctx.entry.clone()
+        };
+        for name in shown_forgotten {
+            if !forgotten.contains(&name) {
+                forgotten.push(name);
+            }
+        }
         let normalized: String = goal.split_whitespace().collect::<Vec<_>>().join(" ");
         let id = obligation_id(self.module, &self.declaration, kind, &normalized);
         self.obligations.push(Obligation {
@@ -3075,7 +3199,78 @@ impl<'p, 'i> Walker<'p, 'i> {
             query,
             shown,
             site,
+            forgotten,
+            entry,
         });
+    }
+
+    /// Starts a body: the loops of another one made nothing fresh here (ADR 0071 D3).
+    fn forget_loops(&mut self) {
+        self.loop_fresh.clear();
+        self.loop_results.clear();
+        self.unpinned.clear();
+    }
+
+    /// A binder computed from values a loop made fresh depends on them too (ADR 0071 D3).
+    fn taint(&mut self, name: &str, value: &Bound) {
+        if self.loop_fresh.is_empty() {
+            return;
+        }
+        let mut used = BTreeSet::new();
+        match value {
+            Bound::Rhs(rhs) => una_core::rhs_vars(rhs, &mut used),
+            Bound::Expr(expr) => una_core::vars(expr, &mut used),
+        }
+        let sources: BTreeSet<String> = used
+            .iter()
+            .filter_map(|used| self.loop_fresh.get(used))
+            .flatten()
+            .cloned()
+            .collect();
+        if !sources.is_empty() {
+            self.loop_fresh.insert(name.to_owned(), sources);
+            if used.iter().any(|used| self.unpinned.contains(used)) {
+                self.unpinned.insert(name.to_owned());
+            }
+        }
+    }
+
+    /// Whether each state binding of the loop at `span` keeps its length (ADR 0071 D1).
+    fn preserved(&mut self, span: Span, state: &[(Name, Type)], body: &Expr) -> Vec<bool> {
+        let index = self.index;
+        let contract = |path: &Path| {
+            index
+                .contracts
+                .get(&(path.module.as_str(), path.name.as_str()))
+                .map(|c| (c.params, c.ensures))
+        };
+        crate::frame::Frames::new(&contract, &mut self.frames).preserved(span, state, body)
+    }
+
+    /// The source names of the loop-fresh values that the terms a counterexample shows
+    /// depend on, through the definitions of temporaries (ADR 0071 D3).
+    fn forgotten<'t>(&self, terms: impl IntoIterator<Item = &'t F>) -> (Vec<String>, bool) {
+        let mut names = Vec::new();
+        let mut unpinned = false;
+        for term in terms {
+            let mut pending: Vec<String> = binders(term).into_iter().collect();
+            let mut seen = BTreeSet::new();
+            while let Some(name) = pending.pop() {
+                if !seen.insert(name.clone()) {
+                    continue;
+                }
+                unpinned |= self.unpinned.contains(&name);
+                for source in self.loop_fresh.get(&name).into_iter().flatten() {
+                    if !names.contains(source) {
+                        names.push(source.clone());
+                    }
+                }
+                if let Some(term) = self.defs.get(&name) {
+                    pending.extend(binders(term));
+                }
+            }
+        }
+        (names, unpinned)
     }
 
     /// Where an obligation with `goal` arises (R-021). The free binders of the goal are its

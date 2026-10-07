@@ -4,6 +4,7 @@
 #![deny(missing_docs)]
 
 mod cache;
+mod frame;
 mod generate;
 mod report;
 mod run;
