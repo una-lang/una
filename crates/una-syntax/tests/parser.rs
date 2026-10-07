@@ -1063,7 +1063,7 @@ fn a_handling_clause_on_the_line_of_its_expression_says_where_it_goes() {
             message.to_owned(),
             vec![(
                 "move the clause to its own line".to_owned(),
-                Some("\n    ".to_owned())
+                Some("\n    if error pass".to_owned())
             )]
         )]
     );
@@ -1071,7 +1071,15 @@ fn a_handling_clause_on_the_line_of_its_expression_says_where_it_goes() {
         repairs("f(o: Option[Int]) -> Int\n=\n  when o\n    is Some(v) ->\n      g(v) if none use 0\n    else -> 0\n")[0].1,
         [(
             "move the clause to its own line".to_owned(),
-            Some("\n        ".to_owned())
+            Some("\n        if none use 0".to_owned())
+        )]
+    );
+    // Two clauses on the line: each gets its own line (#257).
+    assert_eq!(
+        repairs("f(x: Int) -> Int\n=\n  let y = g(x) if error use None if none use 0\n  y\n")[0].1,
+        [(
+            "move each handling clause to its own line".to_owned(),
+            Some("\n    if error use None\n    if none use 0".to_owned())
         )]
     );
     // The repaired forms parse.
