@@ -41,12 +41,14 @@ The host capability `Http` sends HTTP/1.1 requests to the origins that grants al
 3. **Statuses.** Every HTTP response is a `Response`, whatever its status. A request fails only when it gets no response it may return:
    - `Denied`: no grant allows the URL's origin with the method, or `key_name` names no key of the grants;
    - `BadUrl`: the URL is not an absolute `http` or `https` URL, or it has user info;
-   - `BadRequest`: a header's name is not a token, its value has a control character other than a tab, or it names `Host`, `Content-Length`, `Transfer-Encoding` or `Connection`, which the client sets itself; or the request names a key by `key_name` and also has an `Authorization` header, or the key has a control character other than a tab;
+   - `BadRequest`: a header's name is not a token, or it names `Host`, `Content-Length`, `Transfer-Encoding` or `Connection`, which the client sets itself; or the request names a key by `key_name` and also has an `Authorization` header, or the key has a control character other than a tab;
    - `Unreachable`: name resolution or the connection failed;
    - `TimedOut`: the request passed its deadline (§4 rule 2);
    - `TooLarge`: the response passed a limit of §4 rule 1;
    - `Tls`: the TLS handshake or the certificate failed;
    - `Protocol`: the response is not valid HTTP/1.1 as §3 reads it, or its body is not UTF-8.
+
+   A header value with a control character other than a tab is no failure: the run aborts with U6004 at the operation, before anything is sent (N-40). A header's value is `internal` (§5), so a failure the program could handle would reveal whether it holds one; an abort is outside the noninterference model (`spec/07 §1`).
 
 ## 2. Grants
 
@@ -81,7 +83,8 @@ The host capability `Http` sends HTTP/1.1 requests to the origins that grants al
 
 1. Every argument of every operation is a sink with `accepts internal` (`spec/07 §7` rule 4): a `secret` URL, header, body or key name is U4003.
 2. Every response is `internal`.
-3. A key sent by `key_name` never becomes a value of the program, so it has no label in it. It appears in no trace, outcome or diagnostic.
+3. **Failures** (N-39, N-40). Whether an operation fails, and how, is labeled by its URL, its key name and its headers, through the list's labels and the names but not the values, and not by its body (`spec/07 §7` rule 4). So `attempt` gives a `Result` with that label, and `if error pass` and `if error fail` are U4002 when it is above `public`; with `public` arguments nothing changes.
+4. A key sent by `key_name` never becomes a value of the program, so it has no label in it. It appears in no trace, outcome or diagnostic.
 
 ## 6. Traces
 

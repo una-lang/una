@@ -959,8 +959,26 @@ impl<'a> Checker<'_, 'a, '_> {
         // An operation's arguments are sinks bounded by `accepts`, except
         // the carried ones, which accept every label and raise the result (ADR 0039).
         let mut carried = Label::public();
+        // The join of the labels of the arguments that decide whether a host operation fails,
+        // and how (N-39).
+        let mut decided = Label::public();
+        let host = capability.module == self.env.prelude;
         let mut sinks: Vec<(Span, Ty)> = Vec::new();
         for (arg_span, found, expected, param) in checked {
+            if host && decides_failure(capability.name, op_name, param) {
+                // Headers decide by the list's labels and their names, not by the `value` that
+                // `Header` declares `internal`: a control character there aborts the run with
+                // U6004 rather than failing (N-40).
+                let label = if param == "headers" {
+                    self.labeled(&found).argument_label()
+                } else {
+                    self.deep(&found)
+                };
+                // Capped at what the operation accepts: an argument above it is U4003 already,
+                // so `Keys.hmac` and `Files.read`, which accept only `public`, are unchanged.
+                let accepted = def.accepts.clone().unwrap_or_else(Label::public);
+                decided = decided.join(&label.meet(&accepted));
+            }
             // ADR 0050: the argument flows into the declared parameter type at its
             // contravariant positions and invariant kind arguments, which a handler body
             // assumes; `accepts` bounds its data.
@@ -990,7 +1008,15 @@ impl<'a> Checker<'_, 'a, '_> {
             self.obligation(ObligationKind::Precondition, span, None);
         }
         if let Some(fails) = &def.fails {
-            self.call_fails.insert(span, fails.clone());
+            // Whether a host operation fails, and how, is labeled like the arguments that
+            // decide it, as a prelude function's failure is (`spec/07 §7`, N-27, N-39): its
+            // payload too, and a handling clause branches on that label.
+            if decided.is_public() {
+                self.call_fails.insert(span, fails.clone());
+            } else {
+                self.call_fails.insert(span, fails.raise_deep(&decided));
+                self.decided_failures.insert(span, decided);
+            }
         }
         let what = format!("`@{cap_name}.{op_name}`");
         self.position_site(
@@ -1785,6 +1811,18 @@ fn structural_inputs(name: &str) -> Option<&'static [(&'static str, bool)]> {
         "filter" | "first_where" => &[("xs", false), ("keep", false)],
         _ => return None,
     })
+}
+
+/// Whether the parameter `param` of the host operation `capability.op` decides whether it
+/// fails, and how (`spec/07 §7`, N-39, N-40): the URL, headers and key name of `Http`, not its body;
+/// the path of `Files`, not the content; the key name of `Keys`, not the data.
+fn decides_failure(capability: &str, op: &str, param: &str) -> bool {
+    match (capability, op) {
+        ("Http", _) => matches!(param, "url" | "headers" | "key_name"),
+        ("Files", _) => param == "path",
+        ("Keys", "hmac") => param == "key_name",
+        _ => false,
+    }
 }
 
 /// Whether `def` is a prelude function whose result carries the labels of its arguments.

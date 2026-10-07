@@ -216,6 +216,8 @@ pub enum Code {
     U6001,
     /// Call depth or memory limit exceeded.
     U6003,
+    /// A header value contains a control character.
+    U6004,
     /// Non-canonical formatting.
     U7001,
     /// Invalid `una.toml`.
@@ -232,7 +234,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 82] = [
+    pub const ALL: [Code; 83] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -309,6 +311,7 @@ impl Code {
         Code::U5003,
         Code::U6001,
         Code::U6003,
+        Code::U6004,
         Code::U7001,
         Code::U7002,
         Code::U7003,
@@ -794,6 +797,12 @@ impl Code {
                 domain: Domain::Runtime,
                 meaning: "Call depth or memory limit exceeded",
                 explain: include_str!("../explain/U6003.md"),
+            },
+            Code::U6004 => &Entry {
+                code: "U6004",
+                domain: Domain::Runtime,
+                meaning: "A header value contains a control character",
+                explain: include_str!("../explain/U6004.md"),
             },
             Code::U7001 => &Entry {
                 code: "U7001",
