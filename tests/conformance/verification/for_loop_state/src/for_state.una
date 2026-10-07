@@ -1,10 +1,10 @@
--- test: a loop body is checked once with the updated bindings fresh at their declared types: no fact about them reaches the body or survives the loop, their refinements are the invariant, the context of the loop is kept, and the loop variable of a range lies in it (spec/17 §4, §5 rule 3)
+-- test: a loop body is checked once with the updated bindings fresh at their declared types: no fact about them reaches the body or survives the loop, their refinements are the invariant, the context of the loop is kept, and the loop variable of a range lies in it (spec/17 §4, §5 rule 3); a failure that hinges on the forgotten facts is unknown (ADR 0071 D3)
 -- spec: spec/17 §4, §5
--- expect: error U5001 at src/for_state.una:19:3
--- expect: error U5001 at src/for_state.una:26:18
--- expect: error U5001 at src/for_state.una:43:9
+-- expect: error U5002 at src/for_state.una:14:11
+-- expect: error U5002 at src/for_state.una:26:18
+-- expect: error U5002 at src/for_state.una:43:9
 -- expect: error U5001 at src/for_state.una:72:18
--- expect: error U5001 at src/for_state.una:85:17
+-- expect: error U5002 at src/for_state.una:85:17
 module for_state
 
 pub kind Pos = Int where it > 0
