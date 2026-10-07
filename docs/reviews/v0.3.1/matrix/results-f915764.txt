@@ -84,6 +84,22 @@ handler_op__effect                                         reject  ok   U4003
 handler_op__effect__control                                accept  ok   clean
 if_error_use__failure__callee                              reject  ok   U4002 
 if_error_use__failure__callee__control                     accept  ok   clean
+launder__effect__generic_identity                          reject  ok   U4001 
+launder__effect__generic_identity__control                 accept  FAIL U4001 
+launder__effect__let_annotation_callee                     reject  FAIL clean
+launder__effect__let_annotation_callee__control            accept  ok   clean
+launder__effect__let_annotation_direct                     reject  FAIL clean
+launder__effect__let_annotation_direct__control            accept  ok   clean
+launder__effect__nested_applied                            reject  ok   U4001 U4002 
+launder__effect__nested_applied__control                   accept  ok   clean
+launder__effect__nested_prelude                            reject  ok   U4001 U4002 
+launder__effect__nested_prelude__control                   accept  ok   clean
+launder__result__let_annotation_direct                     reject  FAIL clean
+launder__result__let_annotation_direct__control            accept  ok   clean
+launder__result__let_annotation_prelude                    reject  FAIL clean
+launder__result__let_annotation_prelude__control           accept  ok   clean
+launder__result__record_annotation                         reject  FAIL clean
+launder__result__record_annotation__control                accept  ok   clean
 let_lambda__effect                                         rule    ok   U3003 
 let_lambda__result                                         reject  ok   U4003 
 let_lambda__result__control                                accept  ok   clean
@@ -176,4 +192,4 @@ user_nested__effect__callee__control                       accept  ok   clean
 user_non_generic__effect                                   reject  ok   U4001 U4002 
 user_recursive__effect                                     reject  ok   U4002 
 user_recursive__effect__control                            accept  ok   clean
-FAIL: 2
+FAIL: 8

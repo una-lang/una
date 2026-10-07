@@ -1,0 +1,8 @@
+[package]
+name = "let_annotation_direct_run"
+version = "0.1.0"
+edition = "0.1"
+
+[run]
+entry = "sw"
+grants = ["console", "env"]

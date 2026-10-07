@@ -430,6 +430,30 @@ cell("boundary", "effect", "reject",
      "inferred lambdas joined by an if", variant="inferred_if")
 
 
+# --- 15. Laundering a decision before it reaches a function value: a let with an annotation,
+# a generic identity, a record round trip, and a nested lambda applied in a lambda's body.
+LET_T = f"  let y: T = {D}\n"
+cell("launder", "result", "reject", program("result", "", "k(y)").replace("  let n = k(y)", LET_T + "  let n = k(y)"),
+     "let y: T = decided; k(y)", variant="let_annotation_direct")
+cell("launder", "effect", "reject", program("effect", "", "k(y)").replace("  k(y)", LET_T + "  k(y)"),
+     "let y: T = decided; k(y) with an effectful k", variant="let_annotation_direct")
+cell("launder", "effect", "reject", program("effect", LOGGER, "logger(y, f: k)", cb="pure").replace("  logger(", LET_T + "  logger("),
+     "let y: T = decided; a generic callee writes k(y)", variant="let_annotation_callee")
+cell("launder", "result", "reject", program("result", "", "[y].map(each: k).sum()").replace("  let n = [", LET_T + "  let n = ["),
+     "let y: T = decided; map with k", variant="let_annotation_prelude")
+cell("launder", "result", "reject", program("result", "", "k(y)").replace("  let n = k(y)", f"  let h: Hold[T] = Hold(value: {D})\n  let y = h.value\n  let n = k(y)"),
+     "an annotated record round trip", variant="record_annotation")
+cell("launder", "effect", "reject",
+     program("effect", LOGGER, f"logger({D}, f: fn(x) -> (fn(y: T) -> k(y))(x))", cb="pure"),
+     "an inferred lambda whose body applies an annotated lambda to its parameter", variant="nested_applied")
+cell("launder", "effect", "reject",
+     program("effect", LOGGER, f"logger({D}, f: fn(x) -> [x].map(each: fn(y: T) -> k(y)).sum())", cb="pure"),
+     "an inferred lambda whose body maps an annotated lambda over its parameter", variant="nested_prelude")
+cell("launder", "effect", "reject",
+     program("effect", "ident[V](v: V) -> V = v\n\n" + LOGGER, f"logger({D}, f: fn(x) -> k(ident(x)))", cb="pure"),
+     "an inferred lambda that passes its parameter through a generic identity", variant="generic_identity")
+
+
 def write():
     if os.path.isdir(ROOT):
         shutil.rmtree(ROOT)
