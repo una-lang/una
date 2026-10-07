@@ -1641,3 +1641,50 @@ fn json_parses_and_writes_in_linear_time_natively() {
         );
     }
 }
+
+/// A text of `COUNT` copies of `ab`, searched, replaced and split.
+const TEXT_SCALE: &str = "module scale\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit parts: List[Text] = []\n  for i in 0..<COUNT\n    parts = parts.append(item: \"ab\")\n  let empty = \"\"\n  let t = parts.join(separator: empty)\n  let c = \"c\"\n  let a = \"a\"\n  let b = \"b\"\n  let missing = t.find(text: c)\n  let swapped = t.replace(pattern: a, by: c)\n  let pieces = t.split(on: b)\n  @console.print(\"{t.len} {missing} {swapped.len} {pieces.len}\")\n";
+
+#[test]
+fn native_text_search_replace_and_split_take_linear_time() {
+    // `spec/22 §2` rule 8 and the performance rule, natively: ten times the text takes well
+    // under 25 times as long.
+    let mut times = Vec::new();
+    for (count, expected) in [
+        ("100000", "200000 None 200000 100001"),
+        ("1000000", "2000000 None 2000000 1000001"),
+    ] {
+        let name = format!("text_{count}");
+        let dir = package(
+            &name,
+            "\n[run]\nentry = \"scale\"\ngrants = [\"console\"]\n",
+            &[("src/scale.una", &TEXT_SCALE.replace("COUNT", count))],
+        );
+        let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+        std::fs::write(
+            dir.join("una.toml"),
+            manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+        )
+        .unwrap();
+        let built = una(&dir, &["build"]);
+        assert_eq!(built.status.code(), Some(0), "{built:?}");
+        let started = std::time::Instant::now();
+        let output = Command::new(dir.join(format!("target/una/{name}")))
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        times.push(started.elapsed());
+        assert_eq!(output.status.code(), Some(0));
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("{expected}\n")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    assert!(
+        times[1] < times[0] * 25,
+        "10^5 took {:?}, 10^6 took {:?}",
+        times[0],
+        times[1]
+    );
+}

@@ -1781,3 +1781,43 @@ fn json_parses_and_writes_in_linear_time() {
         times[1] / times[0]
     );
 }
+
+/// A text of `COUNT` copies of `ab`, searched, replaced and split.
+const TEXT_SCALE: &str = "module scale\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit parts: List[Text] = []\n  for i in 0..<COUNT\n    parts = parts.append(item: \"ab\")\n  let empty = \"\"\n  let t = parts.join(separator: empty)\n  let c = \"c\"\n  let a = \"a\"\n  let b = \"b\"\n  let missing = t.find(text: c)\n  let swapped = t.replace(pattern: a, by: c)\n  let pieces = t.split(on: b)\n  @console.print(\"{t.len} {missing} {swapped.len} {pieces.len}\")\n";
+
+#[test]
+fn text_search_replace_and_split_take_linear_time() {
+    // `spec/22 §2` rule 8 and the performance rule: `find`, `replace` and `split` are linear
+    // in the text, the search included. Ten times the text takes well under 25 times as long.
+    let root = package("text_scale", "\n[run]\nentry = \"scale\"\n", &[]);
+    let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let dir = root.to_str().unwrap();
+    let mut times = Vec::new();
+    for (count, expected) in [
+        ("100000", "200000 None 200000 100001"),
+        ("1000000", "2000000 None 2000000 1000001"),
+    ] {
+        std::fs::write(
+            root.join("src/scale.una"),
+            TEXT_SCALE.replace("COUNT", count),
+        )
+        .unwrap();
+        let started = std::time::Instant::now();
+        let output = una(&["run", dir, "--grant", "console", "--max-memory", "1024"]);
+        times.push(started.elapsed());
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        assert_eq!(stdout(&output), format!("{expected}\n"));
+    }
+    assert!(
+        times[1] < times[0] * 25,
+        "10^5 took {:?}, 10^6 took {:?}",
+        times[0],
+        times[1]
+    );
+}
