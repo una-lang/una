@@ -224,3 +224,36 @@ fn one_type_parameter_gets_one_constraint_edit_the_strongest_f5() {
         );
     }
 }
+
+#[test]
+fn every_same_line_clause_of_a_body_is_repaired_in_one_round() {
+    // #268: the parser goes on past a handling clause on its expression's line, so a second
+    // such line in the same body is reported, with its edit, in the same check.
+    for edition in ["0.1", "0.2"] {
+        let root = package(
+            "two_lines",
+            edition,
+            "module m\n\npub total(xs: List[Int]) -> Int\n=\n  let a = xs.first() if none use 0\n  let b = xs.first() if none use 1\n  a + b\n",
+        );
+        assert_eq!(
+            diagnostics(&root)
+                .iter()
+                .map(|d| d["code"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>(),
+            ["U0101", "U0101"]
+        );
+        assert_eq!(
+            apply_all(&root),
+            Vec::<String>::new(),
+            "{}",
+            repaired(&root)
+        );
+        assert!(
+            repaired(&root).contains(
+                "  let a = xs.first()\n    if none use 0\n  let b = xs.first()\n    if none use 1\n"
+            ),
+            "{}",
+            repaired(&root)
+        );
+    }
+}
