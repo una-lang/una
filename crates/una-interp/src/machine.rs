@@ -7,7 +7,7 @@ use std::rc::Rc;
 use num_bigint::{BigInt, Sign};
 use una_core::{
     Atom, Base, Bound, CapOp, Ctor, Decl, Expr, FixedOp, Fun, HandlerOp, IntType, Label, Level,
-    LoopSource, Name, PRELUDE_MODULE, Path, Prim, Program, Rhs, Source, Type, Use,
+    LoopSource, Name, Path, Prim, Program, Rhs, Source, Type, Use,
 };
 use una_syntax::Span;
 
@@ -633,27 +633,32 @@ impl<'p, 'w> Machine<'p, 'w> {
             .all(|(expr, rebound)| rebound.contains(&name) || !self.reads(expr).contains(name))
     }
 
-    /// `let name = f(xs, ...) in rest` where `f` is `append` or `set` of the prelude and `xs`
-    /// is a binding at its last use: the binding gives up its list, so that the call, holding
-    /// the only reference, updates it in place, as the native code does (#30, #201). A list
-    /// something else holds is still copied, so no value ever changes under another name.
-    fn updates_in_place(&mut self, rhs: &'p Rhs, rest: &'p Expr) -> Option<&'p str> {
-        let Rhs::Call { function, args, .. } = rhs else {
+    /// `let name = f(x, ...) in rest` where arguments of the call are bindings at their last
+    /// use: those bindings give up their values to the callee, which, holding the only
+    /// reference, updates them in place, as the native code does (#30, #201; ADR 0072, #262).
+    /// `rest` includes the code after a failure of the call (a handler, or what follows an
+    /// `attempt`, through `later`), so a binding read there keeps its value. A binding passed
+    /// twice keeps it too, and a value something else holds is still copied, so no value ever
+    /// changes under another name.
+    fn updates_in_place(&mut self, rhs: &'p Rhs, rest: &'p Expr) -> Option<Vec<&'p str>> {
+        let Rhs::Call { args, .. } = rhs else {
             return None;
         };
-        if function.module != PRELUDE_MODULE || !matches!(function.name.as_str(), "append" | "set")
-        {
-            return None;
+        let mut moved = Vec::new();
+        for arg in args {
+            let Atom::Var(name) = arg else {
+                continue;
+            };
+            let twice = args
+                .iter()
+                .filter(|arg| matches!(arg, Atom::Var(other) if other == name))
+                .count()
+                > 1;
+            if !twice && self.dead_after(name, rest) {
+                moved.push(name.as_str());
+            }
         }
-        let Some(Atom::Var(name)) = args.first() else {
-            return None;
-        };
-        let twice = args
-            .iter()
-            .filter(|arg| matches!(arg, Atom::Var(other) if other == name))
-            .count()
-            > 1;
-        (!twice && self.dead_after(name, rest)).then_some(name.as_str())
+        (!moved.is_empty()).then_some(moved)
     }
 
     fn eval(&mut self, env: &mut Env<'p>, caps: &Caps<'p>, expr: &'p Expr) -> Flow<'p> {
@@ -689,10 +694,12 @@ impl<'p, 'w> Machine<'p, 'w> {
                                     return Err(fault("an update that is not a call"));
                                 };
                                 let args = self.atoms(env, args)?;
-                                if let Some((_, value)) =
-                                    env.iter_mut().rev().find(|(n, _)| *n == moved)
-                                {
-                                    *value = Value::Unit;
+                                for moved in moved {
+                                    if let Some((_, value)) =
+                                        env.iter_mut().rev().find(|(n, _)| *n == moved)
+                                    {
+                                        *value = Value::Unit;
+                                    }
                                 }
                                 self.call(function, args, &caps, *span)?
                             }
