@@ -117,7 +117,10 @@ fn prelude_kinds(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>) -> Option<Cor
             continue;
         };
         let json = match &core {
-            Decl::Data { name, .. } => matches!(name.as_str(), "Json" | "JsonError"),
+            Decl::Data { name, .. } => matches!(
+                name.as_str(),
+                "Json" | "JsonError" | "Header" | "Response" | "HttpError"
+            ),
             Decl::Pred { name, .. } => name == "is_json_number",
             _ => false,
         };

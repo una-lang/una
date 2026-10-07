@@ -172,57 +172,68 @@ impl<'p> Types<'p> {
                             variant("NoDigits", Vec::new()),
                         ])
                     }
-                    _ => {
-                        self.unknown = true;
-                        json!({ "shape": "other" })
-                    }
+                    // The other kinds of the prelude that Core holds, as `Response`
+                    // (`spec/24 §1`), by their declarations.
+                    _ => match self.declared_shape(module, name, args) {
+                        Some(shape) => shape,
+                        None => {
+                            self.unknown = true;
+                            json!({ "shape": "other" })
+                        }
+                    },
                 }
             }
-            Base::Named { module, name, args } => {
-                let declared = self
-                    .program
-                    .modules
-                    .iter()
-                    .filter(|m| m.path == *module)
-                    .flat_map(|m| &m.decls)
-                    .find_map(|decl| match decl {
-                        Decl::Data {
-                            name: declared,
-                            params,
-                            variants,
-                            ..
-                        } if declared == name => Some((params, variants)),
-                        _ => None,
-                    });
-                let Some((params, variants)) = declared else {
+            Base::Named { module, name, args } => match self.declared_shape(module, name, args) {
+                Some(shape) => shape,
+                None => {
                     self.unknown = true;
-                    return json!({ "shape": "other" });
-                };
-                let variants = variants
-                    .iter()
-                    .map(|v| {
-                        let fields = v
-                            .fields
-                            .iter()
-                            .map(|(name, declared)| {
-                                let label = deep_label(declared);
-                                let ty = self.of(&substitute(declared, params, args));
-                                let redacted = (!label.is_public()).then(|| level(label.level));
-                                let shown = !has_param(declared) && label.is_public();
-                                field(name, ty, redacted, shown)
-                            })
-                            .collect();
-                        variant(&v.name, fields)
-                    })
-                    .collect();
-                data(variants)
-            }
+                    json!({ "shape": "other" })
+                }
+            },
             // A slot of a composite descriptor, `#<position>` (ADR 0068 D6).
             Base::Param(name) if let Some(position) = slot(name) => {
                 json!({ "shape": "param", "index": position })
             }
             Base::Param(_) | Base::Unknown => json!({ "shape": "other" }),
         }
+    }
+    /// The shape of the kind `name` of `module` as the program declares it, with its type
+    /// parameters replaced by `args`; `None` when the program declares no such kind.
+    fn declared_shape(&mut self, module: &str, name: &str, args: &[Type]) -> Option<Value> {
+        let declared = self
+            .program
+            .modules
+            .iter()
+            .filter(|m| m.path == *module)
+            .flat_map(|m| &m.decls)
+            .find_map(|decl| match decl {
+                Decl::Data {
+                    name: declared,
+                    params,
+                    variants,
+                    ..
+                } if declared == name => Some((params, variants)),
+                _ => None,
+            });
+        let (params, variants) = declared?;
+        let variants = variants
+            .iter()
+            .map(|v| {
+                let fields = v
+                    .fields
+                    .iter()
+                    .map(|(name, declared)| {
+                        let label = deep_label(declared);
+                        let ty = self.of(&substitute(declared, params, args));
+                        let redacted = (!label.is_public()).then(|| level(label.level));
+                        let shown = !has_param(declared) && label.is_public();
+                        field(name, ty, redacted, shown)
+                    })
+                    .collect();
+                variant(&v.name, fields)
+            })
+            .collect();
+        Some(data(variants))
     }
 }
 

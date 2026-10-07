@@ -1,6 +1,6 @@
 # 24. HTTP
 
-Status: Normative, v0.2 (ADR 0074). Not implemented yet; planned (#239).
+Status: Normative, v0.2 (ADR 0074 and its amendment of 2026-10-07).
 
 The host capability `Http` sends HTTP/1.1 requests to the origins that grants allow, and returns their responses.
 
@@ -13,14 +13,14 @@ The host capability `Http` sends HTTP/1.1 requests to the origins that grants al
    ```una
    pub kind Header
      name: Text
-     value: Text
+     value: internal Text
 
    pub kind Response
      status: Int
      headers: List[Header]
      body: Text
 
-   pub kind HttpError = Denied | BadUrl | Unreachable | TimedOut | TooLarge | Tls | Protocol
+   pub kind HttpError = Denied | BadUrl | BadRequest | Unreachable | TimedOut | TooLarge | Tls | Protocol
 
    pub capability Http
      op get(url: Text, headers: List[Header], key_name: Option[Text]) -> internal Response
@@ -41,6 +41,7 @@ The host capability `Http` sends HTTP/1.1 requests to the origins that grants al
 3. **Statuses.** Every HTTP response is a `Response`, whatever its status. A request fails only when it gets no response it may return:
    - `Denied`: no grant allows the URL's origin with the method, or `key_name` names no key of the grants;
    - `BadUrl`: the URL is not an absolute `http` or `https` URL, or it has user info;
+   - `BadRequest`: a header's name is not a token, its value has a control character other than a tab, or it names `Host`, `Content-Length`, `Transfer-Encoding` or `Connection`, which the client sets itself; or the request names a key by `key_name` and also has an `Authorization` header, or the key has a control character other than a tab;
    - `Unreachable`: name resolution or the connection failed;
    - `TimedOut`: the request passed its deadline (§4 rule 2);
    - `TooLarge`: the response passed a limit of §4 rule 1;
@@ -50,7 +51,7 @@ The host capability `Http` sends HTTP/1.1 requests to the origins that grants al
 ## 2. Grants
 
 1. **Syntax.** `http:<origin>` or `http:<origin>:<methods>`, in `[run] grants` and in `--grant` (`spec/13 §5`):
-   - `<origin>` is `http://` or `https://`, a host, and an optional `:<port>`;
+   - `<origin>` is `http://` or `https://`, a host, and an optional `:<port>`; an IPv6 host is in brackets, as `http://[::1]:8080`;
    - the host's leftmost label MAY be `*`, which matches exactly one label;
    - `<methods>` is a comma-separated list of `get`, `post`, `put` and `delete`, by default `get`.
 2. **Deny by default.** A request is allowed when a grant matches its scheme, its host and its port (the scheme's default when absent), and allows its method. Otherwise it fails with `Denied`, before any connection.
@@ -60,17 +61,19 @@ The host capability `Http` sends HTTP/1.1 requests to the origins that grants al
 ## 3. Requests and responses
 
 1. **HTTP/1.1, directly.** The client speaks HTTP/1.1 to the origin of each request, with no proxy. It MUST ignore `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and `NO_PROXY`, in any letter case.
-2. **Requests.** A request carries the method, the URL's path and query, `Host`, `Content-Length` for a body, `Accept-Encoding: identity`, `Connection: close`, and the program's headers in order. With `key_name: Some(n)` it also carries `Authorization: Bearer <key>`, with the key named `n` of the `keys:` grants (`spec/13 §5`).
+2. **Requests.** A request carries the method, the URL's path and query, `Host`, `Content-Length` for a body, `Accept-Encoding: identity`, `Connection: close`, and the program's headers in order. With `key_name: Some(n)` it also carries `Authorization: Bearer <key>`, with the key named `n` of the `keys:` grants (`spec/13 §5`), to the origin of the request only. A redirect to another origin carries neither that header nor the program's `Authorization`, `Cookie` and `Proxy-Authorization` headers, in any letter case; its other headers follow.
 3. **Responses.**
    - The client reads the status line and the headers.
-   - It reads the body by `Content-Length`, by `chunked` transfer coding (trailers are read and dropped), or to the end of the connection when neither is present.
+   - It reads the body by `Content-Length`, by `chunked` transfer coding (trailers are read and dropped), or to the end of the connection when neither is present. A chunk size is hex digits alone, with no whitespace around them, else `Protocol`.
+   - A `204` or `304` response has no body, whatever its headers say.
+   - At most 10 `1xx` responses MAY precede the final one; one more, or a `101`, is `Protocol`.
    - Header names are kept as received, in order.
 4. **TLS** verifies the server's certificate chain against the Mozilla root store that the implementation compiles in, and the host name. There is no option to skip verification.
 
 ## 4. Limits and time
 
 1. **Size.** A response's headers are at most 100, and at most 64 KiB together, else `Protocol`. Its body is at most `--max-response <MiB>` (default 16), else `TooLarge`, and the client reads no further.
-2. **Time.** Each request has one deadline, `--http-timeout <seconds>` (default 30): the total wall-clock time of the request, covering name resolution, connecting, the TLS handshake, writing and reading, across its redirects. Past it the request fails with `TimedOut`.
+2. **Time.** Each request has one deadline, `--http-timeout <seconds>` (default 30, at most 86400, a day): the total wall-clock time of the request, covering name resolution, connecting, the TLS handshake, writing and reading, across its redirects. Past it the request fails with `TimedOut`.
 3. **Complexity.** A request takes time and space linear in the URL, headers and body it sends. A response takes time and space linear in what it reads, which rule 1 bounds.
 4. **Tasks.** A request blocks only its task's thread (`spec/19 §8`).
 

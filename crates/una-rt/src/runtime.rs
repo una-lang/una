@@ -142,6 +142,8 @@ pub struct Options {
     pub max_depth: usize,
     /// `--max-memory <MiB>` (ADR 0061).
     pub max_memory: usize,
+    /// `--max-response <MiB>` and `--http-timeout <seconds>` (`spec/24 §4`).
+    pub http: una_http::client::Settings,
 }
 
 /// The command line, without the program name, or the message of a usage error.
@@ -182,9 +184,30 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
                     return Err("`--max-memory 0` holds nothing; give at least 1 MiB".to_owned());
                 }
             }
+            "--max-response" | "--http-timeout" => {
+                let text = value()?;
+                let n: u64 = text
+                    .parse()
+                    .map_err(|_| format!("`{flag} {text}` is not a number"))?;
+                if n == 0 {
+                    return Err(format!("`{flag} 0` allows nothing; give at least 1"));
+                }
+                let day = una_http::client::MAX_TIMEOUT_SECS;
+                if flag == "--http-timeout" && n > day {
+                    return Err(format!(
+                        "`{flag} {n}` is longer than a day; give at most {day}"
+                    ));
+                }
+                if flag == "--max-response" {
+                    options.http.limits.max_body =
+                        usize::try_from(n.saturating_mul(1024 * 1024)).unwrap_or(usize::MAX);
+                } else {
+                    options.http.timeout = std::time::Duration::from_secs(n);
+                }
+            }
             other => {
                 return Err(format!(
-                    "unexpected argument `{other}`; the options are --grant <spec>, --trace <file>, --max-depth <n> and --max-memory <MiB>"
+                    "unexpected argument `{other}`; the options are --grant <spec>, --trace <file>, --max-depth <n>, --max-memory <MiB>, --max-response <MiB> and --http-timeout <seconds>"
                 ));
             }
         }
@@ -205,6 +228,8 @@ pub(crate) struct State {
     /// The grants of the run, and the keys of its `keys:` grants, which every task reads.
     pub(crate) grants: Arc<Vec<Grant>>,
     pub(crate) keys: Arc<BTreeMap<String, Vec<u8>>>,
+    /// The limits and deadline of each HTTP request (`spec/24 §4`).
+    pub(crate) http: una_http::client::Settings,
     pub(crate) types: Arc<Types>,
     pub(crate) ops: Arc<Vec<OpSite>>,
     /// Whether the last host operation failed.
@@ -244,6 +269,7 @@ pub(crate) struct TaskTemplate {
     failure: Option<Arc<Failure>>,
     grants: Arc<Vec<Grant>>,
     keys: Arc<BTreeMap<String, Vec<u8>>>,
+    http: una_http::client::Settings,
     types: Arc<Types>,
     ops: Arc<Vec<OpSite>>,
     max_memory: usize,
@@ -286,6 +312,7 @@ impl State {
             failure: self.failure.clone(),
             grants: Arc::clone(&self.grants),
             keys: Arc::clone(&self.keys),
+            http: self.http,
             types: Arc::clone(&self.types),
             ops: Arc::clone(&self.ops),
             max_memory: self.max_memory,
@@ -435,6 +462,7 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
         failure: meta.failure.map(Arc::new),
         grants: Arc::new(grants),
         keys: Arc::new(keys),
+        http: options.http,
         types: Arc::new(meta.types),
         ops: Arc::new(meta.ops),
         host_failed: false,
@@ -563,7 +591,7 @@ fn grants(meta: &Meta, options: &Options) -> Result<Vec<Grant>, String> {
         .map(|spec| {
             Grant::parse(spec, Path::new("")).ok_or_else(|| {
                 format!(
-                    "`{spec}` is not a grant; grants are console, clock, env, keys:<file> and files:<path>:<access>"
+                    "`{spec}` is not a grant; grants are console, clock, env, keys:<file>, files:<path>:<access> and http:<origin>[:<methods>]"
                 )
             })
         })
@@ -623,6 +651,10 @@ fn provides(grant: &Grant, capability: &str, op: &str) -> bool {
     match grant {
         Grant::Files { read, write, .. } => {
             capability == "Files" && ((op == "read" && *read) || (op == "write" && *write))
+        }
+        // An `http:` grant provides the operations of its methods (`spec/24 §2`).
+        Grant::Http(http) => {
+            capability == "Http" && http.methods().iter().any(|method| method.op() == op)
         }
         other => other.capability() == capability,
     }
@@ -788,6 +820,7 @@ pub(crate) fn enter_task(template: &TaskTemplate, path: String, flag: Arc<Atomic
         failure: template.failure.clone(),
         grants: Arc::clone(&template.grants),
         keys: Arc::clone(&template.keys),
+        http: template.http,
         types: Arc::clone(&template.types),
         ops: Arc::clone(&template.ops),
         host_failed: false,

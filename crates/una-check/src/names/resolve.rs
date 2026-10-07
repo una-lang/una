@@ -23,6 +23,23 @@ pub(crate) const JSON_NAMES: &[&str] = &[
     "NumberTooLong",
 ];
 
+/// The names that HTTP adds to the prelude in edition 0.2 (`spec/24 §1`): its capability, its
+/// kinds and the variants of its failure.
+pub(crate) const HTTP_NAMES: &[&str] = &[
+    "Http",
+    "Header",
+    "Response",
+    "HttpError",
+    "Denied",
+    "BadUrl",
+    "BadRequest",
+    "Unreachable",
+    "TimedOut",
+    "TooLarge",
+    "Tls",
+    "Protocol",
+];
+
 use una_core::IntType;
 use una_diag::Code;
 use una_project::Edition;
@@ -124,7 +141,8 @@ impl<'a> Resolver<'_, '_, 'a> {
                                 name,
                                 "Map" | "Entry" | "ParseError" | "Empty" | "NotADigit" | "NoDigits"
                             )
-                            || JSON_NAMES.contains(&name)))
+                            || JSON_NAMES.contains(&name)
+                            || HTTP_NAMES.contains(&name)))
             }
         }
     }

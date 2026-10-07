@@ -243,7 +243,7 @@ fn run(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Vec<ProjectE
                             Code::U7002,
                             grant.range,
                             format!(
-                                "`{}` is not a grant; grants are console, clock, env, keys:<file> and files:<path>:<access>",
+                                "`{}` is not a grant; grants are console, clock, env, keys:<file>, files:<path>:<access> and http:<origin>[:<methods>]",
                                 grant.value
                             ),
                         ));
@@ -266,11 +266,14 @@ pub fn is_module_path(text: &str) -> bool {
 }
 
 /// Whether `text` is a grant spec of `spec/13 §5`: `console`, `clock`, `env`, `keys:<keyfile>`,
-/// or `files:<path>:read`, `:write` or `:read,write`.
+/// `files:<path>:read`, `:write` or `:read,write`, or `http:<origin>[:<methods>]` (`spec/24 §2`).
 pub fn is_grant(text: &str) -> bool {
     match text {
         "console" | "clock" | "env" => true,
         _ => {
+            if text.starts_with("http:") {
+                return una_core::http::Grant::parse(text).is_some();
+            }
             if let Some(file) = text.strip_prefix("keys:") {
                 return !file.is_empty();
             }

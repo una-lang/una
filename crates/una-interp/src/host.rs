@@ -91,6 +91,8 @@ pub enum Grant {
         /// The key file.
         file: PathBuf,
     },
+    /// `http:<origin>[:<methods>]` (`spec/24 §2`).
+    Http(una_core::http::Grant),
 }
 
 impl Grant {
@@ -102,6 +104,7 @@ impl Grant {
             Grant::Env => "Env",
             Grant::Files { .. } => "Files",
             Grant::Keys { .. } => "Keys",
+            Grant::Http(_) => "Http",
         }
     }
 
@@ -112,6 +115,9 @@ impl Grant {
             "clock" => Some(Grant::Clock),
             "env" => Some(Grant::Env),
             _ => {
+                if spec.starts_with("http:") {
+                    return una_core::http::Grant::parse(spec).map(Grant::Http);
+                }
                 if let Some(file) = spec.strip_prefix("keys:") {
                     return (!file.is_empty()).then(|| Grant::Keys {
                         file: base.join(file),

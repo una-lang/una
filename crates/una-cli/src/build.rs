@@ -265,6 +265,13 @@ fn link(object: &Path, output: &Path, environment: crate::Environment<'_>) -> Re
     let runtime = runtime_library(environment)?;
     let mut command = Command::new("cc");
     command.arg(object).arg(&runtime).arg("-o").arg(output);
+    // Only the runtime functions the program calls are kept: an executable that never uses
+    // `Http` carries no TLS stack (ADR 0074 H7, N-26).
+    if cfg!(target_os = "macos") {
+        command.arg("-Wl,-dead_strip");
+    } else if cfg!(target_os = "linux") {
+        command.arg("-Wl,--gc-sections");
+    }
     // The system libraries that the Rust standard library inside `una-rt` needs, as
     // `rustc --print native-static-libs` lists them for each target.
     if cfg!(target_os = "linux") {
