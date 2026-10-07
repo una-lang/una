@@ -1,0 +1,11 @@
+module main
+
+f(us: List[internal Text]) -> internal Response
+  uses @http: Http[get, post, put, delete]
+  fails HttpError
+=
+  let edit last: internal Response = Response(status: 0, headers: [], body: "")
+  for u in us
+    last = @http.get(u, headers: [], key_name: None)
+      if error pass
+  last

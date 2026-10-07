@@ -1,0 +1,8 @@
+[package]
+name = "redirects"
+version = "0.1.0"
+edition = "0.2"
+
+[run]
+entry = "redirects"
+grants = ["http:http://127.0.0.1:8765:get", "http:http://localhost:8766:get", "keys:keys.toml", "files:out:write"]

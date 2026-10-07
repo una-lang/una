@@ -1,0 +1,10 @@
+module main
+
+pub main() -> Unit
+  uses @http: Http[get, post]
+  uses @env: Env[get]
+  uses @console: Console[print]
+=
+  let t = @env.get("T")
+    if none use ""
+  @console.print(t.quote_json())

@@ -1,0 +1,16 @@
+module main
+
+pub main() -> Unit
+  uses @http: Http[get, post]
+  uses @env: Env[get]
+  uses @console: Console[print]
+=
+  let t = @env.get("T")
+    if none use "null"
+  let j = attempt parse_json(t)
+  when j
+    is Ok -> @console.print("json")
+    is Err(e) ->
+      when e
+        is Syntax(at) -> @console.print("{at}")
+        else -> @console.print("other")

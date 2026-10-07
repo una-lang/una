@@ -1,0 +1,3 @@
+module main
+
+f(s: internal Text) -> Json = Str(value: s)
