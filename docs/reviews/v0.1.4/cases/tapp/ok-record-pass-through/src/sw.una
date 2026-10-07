@@ -1,0 +1,19 @@
+-- expect: ok (no U4xxx): a record's function value applied to a value of T, with no decision
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub kind Box[T]
+  run: fn(T) -> Int
+
+g[T](p: T, box: Box[T]) -> Unit
+  uses @log: Log[write]
+=
+  let f = box.run
+  @log.write(f(p))
+
+pub fine(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g([s], box: Box(run: fn(xs) -> xs.len))

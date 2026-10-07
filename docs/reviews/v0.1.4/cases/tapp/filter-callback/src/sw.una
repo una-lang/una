@@ -1,0 +1,16 @@
+-- expect: leak (U4003): whether the decided element passes a public predicate, through filter
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+g[T](a: T, b: T, p: T, q: T, keep: fn(T) -> Bool) -> Unit
+  uses @log: Log[write]
+=
+  let kept = [if a == b then p else q].filter(keep: keep)
+  @log.write(kept.len)
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g([s], b: [0], p: [], q: [1], keep: fn(xs) -> xs.len > 0)

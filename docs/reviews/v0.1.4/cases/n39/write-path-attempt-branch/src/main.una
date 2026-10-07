@@ -1,0 +1,11 @@
+-- expect: U4003: whether a write to an internal path fails, branched on and printed
+module main
+
+pub probe(path: internal Text) -> Unit
+  uses @files: Files[write]
+  uses @console: Console[print]
+=
+  let r = attempt @files.write(path, content: "x")
+  when r
+    is Ok(v) -> @console.print("written")
+    is Err(e) -> @console.print("failed")

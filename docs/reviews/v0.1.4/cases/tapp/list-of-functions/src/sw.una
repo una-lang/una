@@ -1,0 +1,18 @@
+-- expect: leak (U4003): the function value comes out of a list
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+g[T](a: T, b: T, p: T, q: T, ks: List[fn(T) -> Int]) -> Unit
+  uses @log: Log[write]
+=
+  let n = when ks.first()
+    is Some(f) -> f(if a == b then p else q)
+    is None -> 0
+  @log.write(n)
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g([s], b: [0], p: [], q: [1], ks: [fn(xs) -> xs.len])

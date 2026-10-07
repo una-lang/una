@@ -1,0 +1,15 @@
+-- expect: ok (no U4xxx): a public path and internal content keep `if error pass`, and the branch is public
+module main
+
+pub probe(note: internal Text) -> Unit
+  uses @files: Files[write]
+  uses @console: Console[print]
+  fails FileError
+=
+  let r = attempt @files.write("note.txt", content: note)
+  let shown = when r
+    is Ok(v) -> "written"
+    is Err(e) -> "failed"
+  @console.print(shown)
+  @files.write("other.txt", content: note)
+    if error pass

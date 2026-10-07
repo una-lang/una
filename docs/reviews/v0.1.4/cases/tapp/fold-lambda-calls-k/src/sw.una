@@ -1,0 +1,16 @@
+-- expect: leak (U4003): a lambda step whose parameter receives the decided element calls k with it
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  let n = [if a == b then p else q].fold(initial: 0, step: fn(acc, x) -> acc + k(x))
+  @log.write(n)
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  g([s], b: [0], p: [], q: [1], k: fn(xs) -> xs.len)

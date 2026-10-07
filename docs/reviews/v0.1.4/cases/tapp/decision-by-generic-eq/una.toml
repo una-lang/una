@@ -1,0 +1,4 @@
+[package]
+name = "decision_by_generic_eq"
+version = "0.1.0"
+edition = "0.1"

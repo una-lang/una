@@ -1,0 +1,10 @@
+-- expect: U4003 only, at the path (Files.read accepts public): no extra U4002 at the pass
+module main
+
+pub probe(path: internal Text) -> internal Text
+  uses @files: Files[read]
+  fails FileError
+=
+  let t = @files.read(path)
+    if error pass
+  t

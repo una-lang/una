@@ -1,0 +1,31 @@
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub handler to_console() for Log
+  uses @console: Console[print]
+  op write(n) = @console.print("{n}")
+
+pub kind Box[T]
+  run: fn(T) -> Int
+
+g[T](a: T, b: T, p: T, q: T, step: fn(Int, Entry[Int, T]) -> Int) -> Unit
+  uses @log: Log[write]
+=
+  let m = empty_map().with(key: 0, value: if a == b then p else q)
+  let n = m.entries().fold(initial: 0, step: step)
+  @log.write(n)
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let s = @env.get("S")
+    if none use ""
+  run(s.len) with @log = to_console()
+
+run(v: internal Int) -> Unit
+  uses @log: Log[write]
+=
+  g([v], b: [0], p: [], q: [1], step: fn(acc, e) -> acc + e.value.len)

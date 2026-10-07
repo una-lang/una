@@ -1,0 +1,15 @@
+-- expect: U4003: the variant of the failure, printed
+module main
+
+pub probe(path: internal Text) -> Unit
+  uses @files: Files[write]
+  uses @console: Console[print]
+=
+  let r = attempt @files.write(path, content: "x")
+  when r
+    is Ok(v) -> unit
+    is Err(e) ->
+      when e
+        is NotFound -> @console.print("not found")
+        is Denied -> @console.print("denied")
+        is Io -> @console.print("io")
