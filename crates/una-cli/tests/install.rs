@@ -62,13 +62,13 @@ fn the_installer_pins_follow_the_repository() {
     assert_eq!(seen, 6);
 }
 
-/// The archive's target on this machine, as the installer names it.
-fn target() -> &'static str {
+/// The archive's target on this machine, as the installer names it, when it has releases.
+fn target() -> Option<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("macos", "aarch64") => "aarch64-apple-darwin",
-        ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
-        ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
-        other => panic!("no release for {other:?}"),
+        ("macos", "aarch64") => Some("aarch64-apple-darwin"),
+        ("linux", "x86_64") => Some("x86_64-unknown-linux-gnu"),
+        ("linux", "aarch64") => Some("aarch64-unknown-linux-gnu"),
+        _ => None,
     }
 }
 
@@ -85,9 +85,9 @@ fn sha256(path: &Path) -> String {
 /// A release of `version` under `dir`: an archive holding a stub `una` and runtime, and a
 /// validation record whose verdict is `verdict` and that lists `listed` as the archive's digest
 /// (its own digest when `None`).
-fn release(dir: &Path, version: &str, verdict: &str, listed: Option<&str>) {
+fn release(dir: &Path, target: &str, version: &str, verdict: &str, listed: Option<&str>) {
     let _ = std::fs::remove_dir_all(dir);
-    let name = format!("una-{version}-{}", target());
+    let name = format!("una-{version}-{target}");
     let staging = dir.join("staging").join(&name);
     std::fs::create_dir_all(staging.join("lib")).unwrap();
     std::fs::write(staging.join("una"), "#!/bin/sh\necho una stub\n").unwrap();
@@ -153,11 +153,21 @@ fn stderr(output: &Output) -> String {
 
 #[test]
 fn the_installer_installs_nothing_that_the_validation_record_does_not_vouch_for() {
+    // The installer has no release for another platform.
+    let Some(target) = target() else {
+        return;
+    };
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("install");
     let version = "9.9.9";
     let home = dir.join("home/.una");
     // A digest that is not the archive's: refused, and nothing installed.
-    release(&dir, version, "PASS (every gate)", Some(&"0".repeat(64)));
+    release(
+        &dir,
+        target,
+        version,
+        "PASS (every gate)",
+        Some(&"0".repeat(64)),
+    );
     let output = install(&dir, version, &[]);
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
     assert!(
@@ -167,7 +177,7 @@ fn the_installer_installs_nothing_that_the_validation_record_does_not_vouch_for(
     );
     assert!(!home.exists());
     // A record whose verdict is not PASS: refused.
-    release(&dir, version, "FAIL (linux)", None);
+    release(&dir, target, version, "FAIL (linux)", None);
     let output = install(&dir, version, &[]);
     assert_eq!(output.status.code(), Some(1));
     assert!(
@@ -178,7 +188,7 @@ fn the_installer_installs_nothing_that_the_validation_record_does_not_vouch_for(
     assert!(!home.exists());
     // A record that vouches for the archive: the installer goes on, to Z3, which this test
     // does not serve, and still installs nothing.
-    release(&dir, version, "PASS (every gate)", None);
+    release(&dir, target, version, "PASS (every gate)", None);
     let output = install(&dir, version, &[]);
     assert_eq!(output.status.code(), Some(1));
     assert!(
