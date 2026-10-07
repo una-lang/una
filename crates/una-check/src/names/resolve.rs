@@ -94,9 +94,10 @@ impl<'a> Resolver<'_, '_, 'a> {
                     || table.lower.contains_key(name)
                     || table.imported.contains_key(name)
                     || prelude::LOWER.contains(&name)
-                    // Edition 0.2: `set` (`spec/17 §8`), `sort` (`spec/20 §6`),
-                    // `empty_map` (`spec/21 §2`) and the JSON functions (`spec/23 §2`).
-                    || (matches!(
+                    // Edition 0.2: `set` (`spec/17 §8`), `sort` (`spec/20 §6`), `empty_map`
+                    // (`spec/21 §2`), the text functions (`spec/22 §2`) and the JSON functions
+                    // (`spec/23 §2`).
+                    || ((matches!(
                         name,
                         "set"
                             | "sort"
@@ -105,7 +106,8 @@ impl<'a> Resolver<'_, '_, 'a> {
                             | "to_json"
                             | "quote_json"
                             | "is_json_number"
-                    ) && self.checker.package.settings.edition >= Edition::V0_2)
+                    ) || prelude::TEXT_0_2.contains(&name))
+                        && self.checker.package.settings.edition >= Edition::V0_2)
             }
             Space::Upper => {
                 self.types.iter().flatten().any(|local| local.name == name)
@@ -113,11 +115,15 @@ impl<'a> Resolver<'_, '_, 'a> {
                     || table.imported.contains_key(name)
                     || table.imported_variants.contains(name)
                     || prelude::UPPER.contains(&name)
-                    // Edition 0.2: the fixed-width integer types (`spec/18 §1`), maps
-                    // with their entries (`spec/21 §1`), and JSON (`spec/23 §1`).
+                    // Edition 0.2: the fixed-width integer types (`spec/18 §1`), maps with
+                    // their entries (`spec/21 §1`), the kind of `parse_int`'s failures with its
+                    // variants (`spec/22 §4`), and JSON (`spec/23 §1`).
                     || (self.checker.package.settings.edition >= Edition::V0_2
                         && (IntType::from_name(name).is_some()
-                            || matches!(name, "Map" | "Entry")
+                            || matches!(
+                                name,
+                                "Map" | "Entry" | "ParseError" | "Empty" | "NotADigit" | "NoDigits"
+                            )
                             || JSON_NAMES.contains(&name)))
             }
         }

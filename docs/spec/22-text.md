@@ -18,12 +18,12 @@ They are prelude functions, called with method syntax, as `line.split(on: ",")` 
 | Function | Contract | Time |
 | --- | --- | --- |
 | `split(t: Text, on: Text) -> List[Text]` | `requires on.len > 0`; `ensures result.len >= 1` | O(b + m) |
-| `join(parts: List[Text], with: Text) -> Text` | none | O(total bytes) |
+| `join(parts: List[Text], separator: Text) -> Text` | none | O(total bytes) |
 | `ends_with(t: Text, suffix: Text) -> Bool` | none | O(m) |
 | `contains_text(t: Text, part: Text) -> Bool` | none | O(b + m) |
 | `find(t: Text, text: Text) -> Option[Int]` | `result` is `Some` exactly when `contains_text(t, part: text)` | O(b + m) |
-| `replace(t: Text, old: Text, new: Text) -> Text` | `requires old.len > 0` | O(b + m + result) |
-| `slice(t: Text, from: Int, to: Int) -> Text` | `requires 0 <= from and from <= to and to <= t.len`; `ensures result.len == to - from` | O(result) |
+| `replace(t: Text, pattern: Text, by: Text) -> Text` | `requires pattern.len > 0` | O(b + m + result) |
+| `slice(t: Text, start: Int, end: Int) -> Text` | `requires 0 <= start and start <= end and end <= t.len`; `ensures result.len == end - start` | O(result) |
 | `to_upper(t: Text) -> Text` | `ensures result.len == t.len` | O(b) |
 | `to_lower(t: Text) -> Text` | `ensures result.len == t.len` | O(b) |
 | `chars(t: Text) -> List[Text]` | `ensures result.len == t.len` | O(b) |
@@ -32,10 +32,10 @@ They are prelude functions, called with method syntax, as `line.split(on: ",")` 
 | `trim_end(t: Text) -> Text` | `ensures result.len <= t.len` | O(result + trimmed) |
 | `bytes(t: Text) -> List[U8]` | `ensures result.len >= t.len` | O(b) |
 
-1. **`split`** returns the parts between non-overlapping occurrences of `on`, left to right, including empty parts: `"a,,b".split(on: ",")` is `["a", "", "b"]`, and a text without `on` is a list of itself. `join` is its inverse: `t.split(on: s).join(with: s) == t`.
+1. **`split`** returns the parts between non-overlapping occurrences of `on`, left to right, including empty parts: `"a,,b".split(on: ",")` is `["a", "", "b"]`, and a text without `on` is a list of itself. `join` is its inverse: `t.split(on: s).join(separator: s) == t`.
 2. **`find`** returns the position of the first occurrence of `text`, and `Some(0)` for an empty `text`.
-3. **`replace`** replaces every non-overlapping occurrence of `old`, left to right.
-4. **`slice`** returns the scalar values at positions `from` up to, not including, `to`. Its precondition is an obligation at each call (`spec/12 §3`).
+3. **`replace`** replaces every non-overlapping occurrence of `pattern` by `by`, left to right.
+4. **`slice`** returns the scalar values at positions `start` up to, not including, `end`. Its precondition is an obligation at each call (`spec/12 §3`).
 5. **`chars`** returns one text of length 1 per scalar value, in order.
 6. **`trim_start`** and **`trim_end`** remove Unicode `White_Space` at one end, as `trim` does at both (`spec/14 §1`).
 7. **`bytes`** returns the UTF-8 encoding.

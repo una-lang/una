@@ -785,6 +785,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_standard_modules_parse_in_their_editions() {
+        // A syntax error in a standard module would drop its declarations without a word, as
+        // a keyword used as a name does.
+        let v0_2 = format!("{}\n{PRELUDE_0_2}", of_prelude());
+        for (name, text, keywords) in [
+            ("prelude", PRELUDE, KeywordSet::V0_1),
+            ("prelude 0.2", v0_2.as_str(), KeywordSet::V0_2),
+            ("testing", TESTING, KeywordSet::V0_1),
+        ] {
+            let mut sources = SourceDb::new();
+            let mut interner = Interner::new();
+            let id = sources.add(name, text.as_bytes());
+            let lexed = lex_in(sources.file(id), id, &mut interner, keywords);
+            let parsed = parse(&lexed, id, &interner);
+            assert!(lexed.errors.is_empty(), "{name}: {:?}", lexed.errors);
+            assert!(parsed.errors.is_empty(), "{name}: {:?}", parsed.errors);
+        }
+    }
+
+    #[test]
     fn closest_names_are_within_a_third_of_the_length() {
         assert_eq!(closest("nme", ["name", "seats"]), Some("name"));
         assert_eq!(closest("saets", ["name", "seats"]), Some("seats"));

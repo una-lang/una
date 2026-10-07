@@ -63,6 +63,24 @@ pub(crate) const STD_TESTING: &str = "std.testing";
 /// The public functions of `std.testing`.
 pub(crate) const STD_TESTING_NAMES: [&str; 1] = ["fake_hash"];
 
+/// The text functions of the prelude in edition 0.2 (`spec/22 §2`).
+pub(crate) const TEXT_0_2: [&str; 14] = [
+    "split",
+    "join",
+    "ends_with",
+    "contains_text",
+    "find",
+    "replace",
+    "slice",
+    "to_upper",
+    "to_lower",
+    "chars",
+    "parse_int",
+    "trim_start",
+    "trim_end",
+    "bytes",
+];
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]

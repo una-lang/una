@@ -161,3 +161,12 @@ With X1 to X9 as A, and X10:
 
 The B and C options under each question. Also:
 - **A `Char` type for scalar values.** `chars()` returns one-scalar texts instead. A `Char` would need its own literals, ordering and conversions, for a gain that `Text` of length 1 mostly gives.
+
+## Amendment (2026-10-07)
+
+Three parameters of X3 are renamed (the coordinator under the owner's delegation, N-20):
+- `join(parts, separator: Text)`;
+- `slice(t, start: Int, end: Int)`, with `requires 0 <= start and start <= end and end <= t.len` and `ensures result.len == end - start`;
+- `replace(t, pattern: Text, by: Text)`, with `requires pattern.len > 0`.
+
+**Why.** `with`, `from` and `old` are keywords of edition 0.2. A parameter with one of those names could not be named in its function's contracts or body: `requires old.len > 0` reads as `old(...)`. Reading a keyword as a label before `:` would allow the label, but not those uses, and would make the keyword depend on context for every tool. None of the new names is a keyword in any edition. The functions were not implemented when this was decided, so no program changes.
