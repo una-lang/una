@@ -7,8 +7,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/una-lang/una/actions/workflows/ci.yml"><img src="https://github.com/una-lang/una/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/version-v0.1%20Una%20Core-7c5cff" alt="Version v0.1, Una Core">
+  <img src="https://img.shields.io/badge/version-v0.2.0-7c5cff" alt="Version v0.2.0">
   <img src="https://img.shields.io/badge/solver-Z3%205.1.0-4f46e5" alt="Solver: Z3 5.1.0">
   <img src="https://img.shields.io/badge/rust-1.98.1-3b3b58" alt="Rust 1.98.1">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-2e2e48" alt="License: Apache-2.0"></a>

@@ -12,7 +12,7 @@ The first stable release of v0.2. The native backend compiles the whole language
 - **Defense in depth near `of` parameters** (#216). Three sites keep or join the labels the rules require, although none leaked: the effects of a function value given for an `of` parameter run under its own label too.
 - **Edit arguments flow back with their final labels** (#186). An `edit` argument's new value is checked after every argument is typed. Before, a `secret` could reach a public place through a generic callee.
 - **A decision on `T` values given to an effectful `uses of` parameter** (#234, Critical). In edition 0.2, a value chosen by comparing values of `T` inside a generic function, then passed to a `uses of` parameter whose effect reveals it, was accepted. Fixed with ADR 0067: a decision that reaches a call of an `of` parameter is recorded, and each caller runs its argument under the labels of the type argument. A pure callback stays accepted, while an effectful one over secrets is U4002.
-- **Pending: a decision on `T` values through a call of a function-typed parameter in edition 0.1** (#253, Critical). The same shape through a function value's result, in edition 0.1, is accepted on v0.1.0 to v0.1.3 and on this release's edition 0.1. Edition 0.2 rejects it (U4003). The fix, and whether a v0.1.4 patch follows, are tracked in #253.
+- **A decision on `T` values through a call of a function-typed parameter, in edition 0.1** (#253, Critical, fixed by #255). A value chosen by comparing values of `T`, passed to a function value whose result reaches a sink, was accepted in edition 0.1. It now raises the call's result, as edition 0.2 already did. Edition 0.1 now rejects that shape, which v0.1.0 to v0.1.3 accept.
 - **v0.2.0-alpha.3 is superseded.** Its security note named #210. alpha.3 is also affected by #234, so use v0.2.0.
 
 ### Edition 0.2
@@ -35,6 +35,15 @@ The first stable release of v0.2. The native backend compiles the whole language
 - **Exact integers in `reflect` bodies** (ADR 0057 amendment, #180): the body of a `reflect` predicate makes no `overflow` obligation and no U2022, and every engine computes its integers exactly, as the verifier reads it.
 - **Literals in constructors** (#187): `Some(3)`, `Ok(3)` and `Box(value: 3)` take the fixed-width type they are checked against.
 - **Negative literals** in `*`, `/` and `mod` stay linear for the verifier (#188).
+
+### Edition 0.1
+
+Edition 0.1 keeps its rules, apart from the security fix #253 above. Some of its messages and repairs change:
+- U2009 at a variant compared with `==` or `!=` offers `e is V` (#205).
+- A reserved word used as a binding name says what it is reserved for. `let result` gets a rename of the binding and its uses (#206).
+- A handling clause on its expression's line says where it goes, with an edit that moves it (#211).
+- The U3004 message no longer gives advice that misleads in edition 0.1 (#256).
+- The repairs of one check apply together without editing the same text (#257).
 
 ### Native backend
 
@@ -68,6 +77,19 @@ The first stable release of v0.2. The native backend compiles the whole language
   - a reserved word used as a binding name says what it is reserved for (#206);
   - a handling clause on its expression's line says where it goes (#211).
 - **The agent guide and the syntax reference** cover edition 0.2, and every example is checked (#178).
+- **The repairs of one check apply together** (#257, from the pre-tag review). No two repairs edit the same text, applying them all converges, and none changes a program's meaning:
+  - one `[T: C]` edit per type parameter, with the strongest constraint;
+  - distinct names for each renamed `let result`, also past a `together` block;
+  - each handling clause on a line of its own.
+- **An installer** (#240): `install.sh` installs `una`, its runtime and the pinned Z3 into `~/.una`. It does so only when the release's validation record is a PASS, and only with the archive digest the record lists. `--uninstall` removes exactly what it installed.
+- **Release gates** (#232): GitHub Actions is not used. `scripts/release-gates.sh SHA OUT` runs seven gates on a fresh clone of one commit:
+  - the cold build and tests;
+  - local CI on macOS and in a Linux container;
+  - both release archives;
+  - determinism;
+  - the interpreter against native code.
+
+  It records the results as `docs/releases/<version>-validation.md`, which a tag needs (`docs/releases/validation.md`).
 
 ### Architecture decisions
 
@@ -85,7 +107,13 @@ The decisions of v0.2, all accepted:
 - ADR 0065, structured concurrency;
 - ADR 0066, constraints on generics;
 - ADR 0067, position-precise result labels of user generic functions, with its amendment of 2026-10-06;
-- ADR 0068, printing structured values.
+- ADR 0068, printing structured values;
+- ADR 0069, a map type, accepted and not yet implemented;
+- ADR 0070, text operations, accepted and not yet implemented.
+
+### Known issues
+
+- **A closed stdout or stderr counts as success** (3c-1, #259). When a write fails with `EBADF` because the stream is closed rather than a broken pipe, both engines exit 0. It is fixed after this release.
 
 ### Known limits
 
@@ -95,6 +123,10 @@ The decisions of v0.2, all accepted:
 - There are no user traits or implementations, and no map type.
 - The point where a run exhausts its memory differs between engines and builds (ADR 0061 rule 5).
 - A redacting view of a value, `redact(x)`, is deferred (ADR 0068).
+- **Loops that update a list with `set` lose its length** (S-1, #260, ADR 0071). In edition 0.2, `for i in 0..<xs.len` with `set(edit xs, index: i, …)` is U5001, with a counterexample where `xs.len` is 0. Workaround: guard the update with `if i < xs.len`. The fix follows this release.
+- **Appending to text in a loop is quadratic** (S-2, #261). `t = "{t}x"` copies the text each time, about n^1.7 in both engines (320,000 appends: 4.4 s interpreted, 2.3 s native). Appending to a list stays linear. The in-place update (ADR 0070 X10) follows this release.
+- **A list passed by `edit`, or rebound from a call, in a loop is quadratic** (#262). In `grow(edit acc)` or `acc = push(acc, …)`, the caller still holds the list during the call, so each append copies it, in both engines.
+- **Nested loops that append, in the interpreter** (#263). A loop that appends to a list it binds is quadratic in the interpreter when it is inside another loop or a `together` task. Native code stays linear, and the output is the same.
 - This release was built and checked locally (`scripts/local-release.sh`), on macOS natively and Linux in a container, while GitHub Actions was unavailable.
 
 ## v0.2.0-alpha.3
