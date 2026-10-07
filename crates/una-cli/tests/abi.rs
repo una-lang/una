@@ -312,6 +312,17 @@ pub double(x: Int) -> Int
     )
     .unwrap();
     let path = root.to_str().unwrap();
+    // The cache counts below depend on the proof-cache key, so the test has a home of its own:
+    // no other test makes or reads that key while it runs (#282).
+    let home = root.join("home");
+    let una = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_una"))
+            .env("HOME", &home)
+            .args(args)
+            .current_dir(repository())
+            .output()
+            .unwrap()
+    };
     let output = una(&["--json", "report", path]);
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
     assert_eq!(stderr(&output), "");
@@ -324,7 +335,7 @@ pub double(x: Int) -> Int
     assert!(stdout(&output).contains("\nobligations: 0 proven, 1 refuted, 0 unknown; 1 cached\n"));
     assert!(stderr(&output).contains("U5001"), "{}", stderr(&output));
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
-        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .env("HOME", &home)
         .args(["--json", "trace", "NUM_1"])
         .current_dir(&root)
         .output()
