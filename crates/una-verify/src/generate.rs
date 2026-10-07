@@ -685,6 +685,9 @@ struct Walker<'p, 'i> {
     eta: Option<Vec<String>>,
     /// The name of the named function whose eta-expansion is walked (issue #76).
     eta_name: Option<String>,
+    /// The binder that an assignment's refinement obligation is about, which a counterexample
+    /// shows as `x (assigned)` (#277).
+    assigned: Option<String>,
     /// Whether each state binding of each loop met so far keeps its length (ADR 0071 D1).
     frames: BTreeMap<Span, Vec<bool>>,
     /// The values that loops make fresh, by binder, with their source names (ADR 0071 D3).
@@ -728,6 +731,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             fresh: 0,
             eta: None,
             eta_name: None,
+            assigned: None,
             frames: BTreeMap::new(),
             loop_fresh: BTreeMap::new(),
             loop_results: BTreeMap::new(),
@@ -1314,6 +1318,9 @@ impl<'p, 'i> Walker<'p, 'i> {
                     let x = own(&ctx, name);
                     if *written {
                         let value_text = self.text(*span);
+                        // An assignment's refinement is about the new value; the counterexample
+                        // names it apart from the value before (#277).
+                        self.assigned = name.contains('%').then(|| name.clone());
                         for refinement in refinements(ty) {
                             let env = Env {
                                 vars: &|_| None,
@@ -1334,6 +1341,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                                     .map(|span| (span, clause_role(refinement))),
                             );
                         }
+                        self.assigned = None;
                     }
                     self.assume_refinements(&mut ctx, &x);
                     expr = body;
@@ -3600,7 +3608,20 @@ impl<'p, 'i> Walker<'p, 'i> {
                     ) {
                         continue;
                     }
-                    let source = source_name(name);
+                    let assigned = self.assigned.as_deref() == Some(name.as_str());
+                    let source = if assigned {
+                        format!("{} (assigned)", source_name(name))
+                    } else {
+                        source_name(name)
+                    };
+                    // Of the binders of one name, the latest rebind shows: the value before
+                    // the assignment, when the obligation is about the assigned one.
+                    if out
+                        .get(&source)
+                        .is_some_and(|shown| rebind_number(&shown.term) > rebind_number(&term))
+                    {
+                        continue;
+                    }
                     let value = Tv {
                         f: term.clone(),
                         ty: ty.clone(),
@@ -4280,6 +4301,17 @@ fn show_type(ty: &Type) -> String {
                 None => plain,
             }
         }
+    }
+}
+
+/// The rebind number of a binder's constant: 0 for `x`, 2 for `x%2`.
+fn rebind_number(term: &F) -> usize {
+    match term {
+        F::Const(Const { name, .. }) => name
+            .split_once('%')
+            .and_then(|(_, number)| number.parse().ok())
+            .unwrap_or(0),
+        _ => 0,
     }
 }
 

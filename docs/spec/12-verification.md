@@ -151,7 +151,7 @@ A `sat` model is mapped back to source names through the encoder's name table. V
 }
 ```
 
-The bindings cover the parameters, `result`, named `let`s, pattern variables and the binders of function-type obligations (§3), and the field and `len` terms over them that occur in the query, by name. A value of a sum shows its variant, a text equal to a literal of the query shows as that literal, and another uninterpreted value shows as `<Kind>#<n>` (ADR 0033).
+The bindings cover the parameters, `result`, named `let`s, pattern variables and the binders of function-type obligations (§3), and the field and `len` terms over them that occur in the query, by name. A value of a sum shows its variant, a text equal to a literal of the query shows as that literal, and another uninterpreted value shows as `<Kind>#<n>` (ADR 0033). (v0.2, #277.) A binding rebound in the query shows its latest value before the obligation's site; when the obligation is the refinement of an assignment, the assigned value shows as `x (assigned)`, beside the `x` the assignment reads.
 
 ## 8. Obligation identity
 

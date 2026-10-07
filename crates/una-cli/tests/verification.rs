@@ -1290,3 +1290,39 @@ fn an_interpolation_names_what_it_cannot_write_and_the_constraint_it_needs() {
         ]
     );
 }
+
+#[test]
+fn an_assignment_s_counterexample_shows_the_value_before_it() {
+    // #277: the refinement of `n = n - 1` is about the new value; the counterexample shows the
+    // `n` the right-hand side reads, and the new value as `n (assigned)`.
+    let root = package_of_edition(
+        "assigned",
+        "0.2",
+        &[(
+            "src/app.una",
+            "module app
+
+pub kind Pos = Int where it >= 1
+
+pub step(start: Pos) -> Pos
+=
+  let edit n: Pos = start
+  n = n - 1
+  n
+",
+        )],
+    );
+    let output = una(&["--json", "check", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let document: Value = serde_json::from_str(stdout(&output)).unwrap();
+    let diagnostic = &document["diagnostics"][0];
+    assert_eq!(diagnostic["code"], "U5001");
+    assert_eq!(
+        diagnostic["counterexample"],
+        json!({"bindings": [
+            {"name": "n", "value": 1},
+            {"name": "n (assigned)", "value": 0},
+            {"name": "start", "value": 1}
+        ]})
+    );
+}
