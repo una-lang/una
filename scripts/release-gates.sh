@@ -8,9 +8,10 @@
 #   clone        a fresh clone of the commit, from the repository's remote
 #   build        cargo build --release -p una-cli -p una-rt, then cargo test --workspace, cold
 #   mac          scripts/local-ci.sh
-#   linux        scripts/local-ci.sh --linux (Docker)
-#   release      scripts/local-release.sh for both archives, each checked with
-#                scripts/check-release.sh (Docker for the Linux one)
+#   linux        scripts/local-ci.sh --linux (Docker, linux/amd64)
+#   linux-arm64  scripts/local-ci.sh --linux-arm64 (Docker, linux/arm64, #241)
+#   release      scripts/local-release.sh for the three archives, each checked with
+#                scripts/check-release.sh (Docker for the Linux ones)
 #   determinism  the conformance suite twice, and `una --json check` of every case and example
 #                twice, compared
 #   native       the interpreter against the native executable, on every runnable program of
@@ -27,7 +28,7 @@
 # Usage: scripts/release-gates.sh SHA OUT [GATE...]
 set -u
 
-ALL=(clone build mac linux release determinism native)
+ALL=(clone build mac linux linux-arm64 release determinism native)
 
 usage() {
     echo "usage: scripts/release-gates.sh SHA OUT [GATE...]; SHA is a full 40-digit commit, GATE is one of: ${ALL[*]}" >&2
@@ -122,6 +123,8 @@ gate_mac() { run mac scripts/local-ci.sh; }
 
 gate_linux() { run linux scripts/local-ci.sh --linux; }
 
+gate_linux-arm64() { run linux-arm64 scripts/local-ci.sh --linux-arm64; }
+
 gate_release() {
     # The archives are named after the workspace version, so the run tags it here, in the
     # clone only; the tag is never pushed.
@@ -173,7 +176,8 @@ done
 # path), so that runs do not pile volumes up.
 if command -v docker > /dev/null 2>&1; then
     checkout=$(printf '%s' "$CLONE" | shasum -a 256 | cut -c1-12)
-    docker volume rm "una-local-ci-target-$checkout" > /dev/null 2>&1 || true
+    docker volume rm "una-local-ci-target-$checkout" "una-local-ci-target-$checkout-arm64" \
+        > /dev/null 2>&1 || true
 fi
 
 # The record.
