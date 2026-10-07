@@ -406,8 +406,10 @@ pub main() -> Unit
 fn a_text_appended_in_a_loop_grows_in_linear_time() {
     // ADR 0070 X10, `spec/22 §6` rule 2 (#261): `t = "{t}x"` appends in place when nothing
     // else holds `t`, so ten times the appends take about ten times as long, not a hundred. The
-    // interpreter counts no copies, so the check is timing, at sizes where a copy per append
-    // dominates the run: the bound sits well below the growth of the copy.
+    // interpreter counts no copies, so the check is timing. The fixed cost of a run (checking,
+    // starting) is measured on 10 appends, once the proof cache is warm, and taken out of both
+    // sizes, so the ratio is the growth of the appends alone: about 11x measured, about 490x
+    // when every append copies, with a bound of 30x between them (N-29).
     let root = package("text-append", "\n[run]\nentry = \"grow\"\n", &[]);
     let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
     std::fs::write(
@@ -418,7 +420,8 @@ fn a_text_appended_in_a_loop_grows_in_linear_time() {
     std::fs::create_dir_all(root.join("src")).unwrap();
     let dir = root.to_str().unwrap();
     let mut times = Vec::new();
-    for steps in [200_000, 2_000_000] {
+    // The first run of 10 warms the proof cache; the second measures the fixed cost.
+    for steps in [10, 10, 200_000, 2_000_000] {
         std::fs::write(
             root.join("src/grow.una"),
             format!(
@@ -432,10 +435,12 @@ fn a_text_appended_in_a_loop_grows_in_linear_time() {
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
         assert_eq!(stdout(&output), format!("{steps}\n"));
     }
+    let fixed = times[1];
+    let (small, large) = ((times[2] - fixed).max(0.05), (times[3] - fixed).max(0.05));
     assert!(
-        times[1] < 10.0 * times[0],
-        "10x the appends took {:.1}x as long: {times:?}",
-        times[1] / times[0]
+        large < 30.0 * small,
+        "10x the appends took {:.1}x as long, past the fixed cost: {times:?}",
+        large / small
     );
 }
 
