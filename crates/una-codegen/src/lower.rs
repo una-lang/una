@@ -1187,6 +1187,22 @@ impl<'p> Lowerer<'_, 'p, '_> {
         rest: &Expr,
     ) -> Result<(), CodegenError> {
         let owned = self.emitter.function(function)?.owned;
+        self.hand_over(&owned, args, values, env, scope, catch, rest)
+    }
+
+    /// [`Lowerer::give`] for the parameters `owned` says are owned, of a function or of a
+    /// lambda (N-42).
+    #[allow(clippy::too_many_arguments)]
+    fn hand_over(
+        &mut self,
+        owned: &[bool],
+        args: &[Atom],
+        values: &[Value],
+        env: &Env,
+        scope: &mut Scope,
+        catch: &Catch,
+        rest: &Expr,
+    ) -> Result<(), CodegenError> {
         for (index, arg) in args.iter().enumerate() {
             if !owned.get(index).copied().unwrap_or(false) {
                 continue;
@@ -1700,6 +1716,30 @@ impl<'p> Lowerer<'_, 'p, '_> {
                         scope.remove(position);
                         return self.call(owned, &values);
                     }
+                    // `fold` hands its state to the step as owned (N-42): an initial value at
+                    // its last use moves in, unless it is the list folded over, which the loop
+                    // still reads.
+                    if function.name == "fold" {
+                        let shared = values.get(1).is_some() && values.first() == values.get(1);
+                        let moved = match args.get(1) {
+                            Some(initial) if !shared => {
+                                self.moving(initial, env, scope, catch, rest)
+                            }
+                            _ => None,
+                        };
+                        if let Some(position) = moved {
+                            scope.remove(position);
+                        }
+                        let site = self.site(*span);
+                        return self.higher_order(
+                            "fold",
+                            &values,
+                            site,
+                            moved.is_some(),
+                            scope,
+                            catch,
+                        );
+                    }
                     return self.prelude(&function.name, &values, *span, scope, catch);
                 }
                 self.give(function, args, &values, env, scope, catch, rest)?;
@@ -1713,6 +1753,10 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 for arg in args {
                     values.push(self.atom(arg, env)?.0);
                 }
+                // A lambda owns every parameter (N-42): each argument moves at its last use,
+                // and is retained otherwise.
+                let owned = vec![true; args.len()];
+                self.hand_over(&owned, args, &values, env, scope, catch, rest)?;
                 let site = self.site(*span);
                 let (value, failed) = self.apply(callee, &values, site)?;
                 // A function value's type does not say whether it fails when it is the parameter
@@ -2142,7 +2186,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
             "map" | "filter" | "first_where" | "fold" => {
                 // The interpreter applies the function at the prelude call's site.
                 let site = self.site(span);
-                return self.higher_order(name, args, site, scope, catch);
+                return self.higher_order(name, args, site, false, scope, catch);
             }
             // A failure of `parse_int` goes to `catch` (`spec/22 §4`).
             "parse_int" => {
@@ -2200,11 +2244,15 @@ impl<'p> Lowerer<'_, 'p, '_> {
     /// function to each, in order.
     /// In edition 0.2 the function may fail (ADR 0062): its failure stops the loop, releases what
     /// the loop made, and goes to `catch`, after the effects already performed.
+    /// Every call of the function gives it its arguments as owned (N-42): an item is retained
+    /// for it, and `fold`'s state moves into it, which returns the next state; `initial_owned`
+    /// says that the initial state moved into the loop already.
     fn higher_order(
         &mut self,
         name: &str,
         args: &[Value],
         site: Value,
+        initial_owned: bool,
         scope: &Scope,
         catch: &Catch,
     ) -> Result<Value, CodegenError> {
@@ -2226,7 +2274,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     .get(1)
                     .copied()
                     .ok_or_else(|| internal("`fold` lacks its initial value"))?;
-                self.retain(initial, Kind::Any);
+                if !initial_owned {
+                    self.retain(initial, Kind::Any);
+                }
                 (initial, None)
             }
             "first_where" => (self.builder.ins().iconst(types::I64, NONE), None),
@@ -2251,6 +2301,8 @@ impl<'p> Lowerer<'_, 'p, '_> {
 
         self.builder.switch_to_block(body);
         let item = self.call("una_rt_field", &[list, index])?;
+        // The function owns the item it is given, and the list keeps its own.
+        self.retain(item, Kind::Any);
         let next_index = self.builder.ins().iadd_imm_s(index, 1);
         match name {
             "map" => {
@@ -2285,9 +2337,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     .jump(head, &[next_index.into(), carried.into()]);
             }
             _ => {
+                // The state moves into the step, which releases it on a failure too.
                 let (step, failed) = self.apply(function, &[carried, item], site)?;
-                self.stop_on_failure(step, failed, &[(carried, Kind::Any)], scope, catch);
-                self.release(carried, Kind::Any);
+                self.stop_on_failure(step, failed, &[], scope, catch);
                 self.builder
                     .ins()
                     .jump(head, &[next_index.into(), step.into()]);
