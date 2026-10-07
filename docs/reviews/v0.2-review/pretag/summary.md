@@ -12,7 +12,7 @@
 
 ## Verdict
 
-**Ready.** Every Critical and Major finding is fixed on `main`, and every gate passes on the gated SHA `5361a0e364a4116cafb65a7cebe92c3733525eea` (`main` after #230). The tag waits for Leonardo's word (`docs/releases/validation.md` §1 rule 2).
+**Ready.** Every Critical and Major finding is fixed on `main`, and every gate passes on the gated SHA `5361a0e364a4116cafb65a7cebe92c3733525eea` (`main` after #230). The tag commit is `2a694567d9b760865eee3122b7cbdec173f45e59` (#272, the record). The tag waits for Leonardo's word (`docs/releases/validation.md` §1 rule 2).
 
 On the candidate `ef34f2f`, the verdict was Not ready. One Critical (3a-1) and five Majors (F3, F5, S4-01, S4-02, S4-03) were open. Their fixes:
 
@@ -72,7 +72,7 @@ The archives:
 - `una-0.2.0-aarch64-apple-darwin.tar.gz`: SHA-256 `ffb299c770a9d6239ce0fc79620dceb35839277337f6603cb4715a2943895e7c`;
 - `una-0.2.0-x86_64-unknown-linux-gnu.tar.gz`: SHA-256 `8721f6be3670d31f26a0e8e6ab1d5c8db5e8f8be6df0a803698f56eb4c24829a`.
 
-The tag goes on the merge commit of #272, whose own change is the record. Its diff from 5361a0e is that record plus the rule of #271, all under `docs/` (N-11).
+The tag goes on `2a694567d9b760865eee3122b7cbdec173f45e59`, the merge commit of #272, whose own change is the record. Its diff from 5361a0e is that record plus the rule of #271, all under `docs/` (N-11).
 
 The `native` gate's equivalence test did not catch 3a-1, because no program in the repository calls a `fails of` parameter under `if error pass`. #267 should add the repro to a corpus that the test runs.
 
@@ -219,5 +219,5 @@ Sent to Una-2:
 - [x] #258 merged (PR #266), and #256 (PR #264).
 - [x] #230 merged, at the gated SHA 5361a0e.
 - [x] `scripts/release-gates.sh 5361a0e` all PASS. The record is PR #272, and the tag rule is PR #271.
-- [ ] #272 merged with a merge commit, the commit to tag.
+- [x] #272 merged with a merge commit: `2a694567d9b760865eee3122b7cbdec173f45e59`, the commit to tag. Rule 2 was checked by Coordenador: its own change is the record, and only `docs/` changes from 5361a0e.
 - [ ] Leonardo's word for the tag.
