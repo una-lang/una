@@ -1,6 +1,6 @@
 # Adversarial check of v0.3.1 (PR #349, #346): findings
 
-Candidate `68a0cd1` (`dev/346-hof-callback-0-1`) on main `5e122d2`. Reviewer: Claude (Una-2). Author: Una-1. Every finding is in edition `0.1`; edition `0.2` rejects each program at the callback (U4001, S-Fun). The cases are under `cases/run` (runnable), `matrix/` (the systematic matrix) and `attacks/`.
+Candidates `68a0cd1` (`dev/346-hof-callback-0-1`) on main `5e122d2`, then `92d1b6e` on main `3d2b197`, which fixes H-2 and H-3. Reviewer: Claude (Una-2). Author: Una-1. Every finding is in edition `0.1`; edition `0.2` rejects each program at the callback (U4001, S-Fun). The cases are under `cases/run` (runnable), `matrix/` (the systematic matrix) and `attacks/`.
 
 The binaries:
 - **PR:** a debug build of `68a0cd1`.
@@ -48,6 +48,8 @@ run(v: internal Int) -> Unit   -- v is the length of an `Env` value
   - Raise the program counter by it for the callee's whole `uses` and `fails` and for the callbacks' own, so those are U4002, under `attempt` and `if error` as well.
   - The result stays raised by D-137.
 
+- **Fixed at `92d1b6e`:** all of H-2's cells and runnable shapes are U4002 or U4003. See `summary.md`.
+
 ## H-3, Critical (S-09): a lambda annotated `x: T` given to the prelude drops the decision
 
 ```una
@@ -59,6 +61,8 @@ run(v: internal Int) -> Unit   -- v is the length of an `Env` value
 - **Why.** #349 reads what a function value accepts from its parameter types after unification with the list's `T{T*}` element type. The lambda's body was checked with the annotated `x: T`, though, so `k(x)` inside it was not raised.
 - **The same happens** with `fn(x: T) -> attempt k(x)` and a failing `k` (matrix cell `prelude_lambda__failure__attempt`).
 - **Fix requirement.** What a function value accepts is the type its body was checked with: an annotated parameter without `T*` does not accept it.
+
+- **Fixed at `92d1b6e`:** an annotated lambda parameter accepts what its annotation says (`annotated_lambdas`). Both cells are U4003, and the run form is rejected.
 
 ## What #349 gets right
 

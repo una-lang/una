@@ -1,9 +1,36 @@
 # Adversarial check of v0.3.1 (PR #349, #346): summary
 
-- **Candidate:** `68a0cd1` on main `5e122d2`. **Reviewer:** Claude (Una-2). **Author:** Una-1.
+- **Candidates:** `68a0cd1` on main `5e122d2`, then `92d1b6e` on main `3d2b197`. **Reviewer:** Claude (Una-2). **Author:** Una-1.
 - **Scope:** edition `0.1`'s handling of decisions on values of a type parameter (`T*`) given to function values, after #253 (v0.1.4) and #346 (the prelude).
 
-## Verdict at `68a0cd1`: Not ready
+## Verdict at `92d1b6e`: Ready
+
+**Candidate:** `92d1b6e` on main `3d2b197`, with `Closes #346` and `Closes #350`. It makes one rule for prelude and user calls: a call that gives function values data decided by `T` values raises its result, runs the callee's and the function values' effects and failures under the decision, and labels its failure.
+
+- **The matrix:**
+  - `FAIL: 0` over 117 cells (`matrix/results-92d1b6e.txt`), against 28 leaks on main (`matrix/results-main-3d2b197.txt`).
+  - The 39 controls of the first 96 cells give the same codes as at `68a0cd1`, and the new controls are accepted.
+- **The runnable repros:** the six leaks of `cases/run` are U4002 or U4003. The no-decision control still prints the same for both secrets (`cases/run-results-92d1b6e.txt`).
+- **The 30 attacks:** against `68a0cd1`, only the two H-2 shapes change, from accepted to U4002, and two rejected cases gain a code (`failing_user_hof_callback`: U4002; `user_hof_non_generic_int`: U4003) (`attacks/results-main-vs-92d1b6e.txt`).
+- **The 47 cases of the v0.1.4 review:** the same results as at `68a0cd1`, so only the intended 13 change, and edition 0.2 and N-39 are byte-identical (`v0.1.4-cases-main-vs-92d1b6e.txt`).
+- **Fresh attacks on the new rule** (matrix section 12, `rule_350__*`, 21 cells) are all rejected. Six of them leak on main:
+  - a decision in a list of records of lists;
+  - callbacks inside an `Option` and a `Result` argument;
+  - a decided argument the callback never sees (two type parameters, conservative);
+  - a `with` rebinding around the call;
+  - a handler installed around the call.
+
+  The others are rejected on main too:
+  - a closure over the decided value, returned and called later (D-137 and T-App);
+  - an inferred lambda checked before the decided argument (its own flows);
+  - two type parameters where a decision on `T` selects a `V` value.
+- **The two over-approximations Una-1 lists are sound.** Each rejects more, never less, and their controls without a decision are accepted:
+  - a callback held in a kind's field accepts nothing;
+  - a failing callee under `attempt` is U4002.
+
+  The cost is precision only: a lambda in a record that does take the decision is rejected.
+
+## Verdict at `68a0cd1`: Not ready (superseded)
 
 - **H-2, Critical (#350):** a decision on `T` values reaches a public sink through a user-defined generic function. This happens through the callback's effects or failures, and through the callee's own effects or failures with a pure callback.
   - Five shapes run and print differently for the two secrets.
@@ -22,7 +49,7 @@
 
 ## The matrix (`matrix/`)
 
-- **Size:** 96 cells. Each is one way a function value is called or receives data in edition 0.1, crossed with one channel a decision could leave by: the result, an effect, or a failure.
+- **Size:** 96 cells, plus 21 aimed at #350's rule (section 12), 117 in all. Each is one way a function value is called or receives data in edition 0.1, crossed with one channel a decision could leave by: the result, an effect, or a failure.
 - **Controls:** every cell expected to be rejected has a control without the decision.
 - **The paths:**
   - a call of a parameter, a let-bound lambda, a record field, a list element and a returned function;

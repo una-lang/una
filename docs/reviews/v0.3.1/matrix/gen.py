@@ -272,6 +272,65 @@ cell("example", "result", "accept",
      "an example of a generic higher-order function")
 
 
+# --- 12. Aimed at #350's rule (rerun at 92d1b6e): deeper data, callbacks in Option and
+# Result, two type parameters, a callback stored and called later, a handler around the call,
+# and a lambda checked before the argument that carries the decision.
+LOGGER_OPT = ("logger_opt[U](x: U, f: Option[fn(U) -> Int]) -> Unit\n  uses @log: Log[write]\n=\n"
+              "  let n = when f\n    is Some(h) -> h(x)\n    is None -> 0\n  @log.write(n)\n")
+LOGGER_RES = ("logger_res[U](x: U, f: Result[fn(U) -> Int, Int]) -> Unit\n  uses @log: Log[write]\n=\n"
+              "  let n = when f\n    is Ok(h) -> h(x)\n    is Err(e) -> e\n  @log.write(n)\n")
+cell("rule_350", "effect", "reject", program("effect", LOGGER_OPT, f"logger_opt({D}, f: Some(k))", cb="pure"),
+     "the callee calls a pure callback from an Option argument and writes it", variant="option_callback")
+cell("rule_350", "effect", "reject", program("effect", LOGGER_RES, f"logger_res({D}, f: Ok(k))", cb="pure"),
+     "the callee calls a pure callback from a Result argument and writes it", variant="result_callback")
+DEEP = ("deep[U](xs: List[Hold[List[U]]], f: fn(Hold[List[U]]) -> Int) -> Unit\n  uses @log: Log[write]\n=\n"
+        "  @log.write(xs.map(each: f).sum())\n")
+cell("rule_350", "effect", "reject",
+     program("effect", DEEP, f"deep([Hold(value: [{D}])], f: hk)", extra_params=", hk: fn(Hold[List[T]]) -> Int",
+             extra_args=", hk: fn(h) -> h.value.len"),
+     "the decision in a list of records of lists", variant="deep_data")
+cell("rule_350", "effect", "reject",
+     program("effect", DEEP, f"deep([Hold(value: [p])], f: fn(h) -> if a == b then 1 else 0)", cb="pure"),
+     "a lambda that decides itself, in a list of records of lists", variant="deep_lambda_decides", control=False)
+TWO = ("two[U, W](x: U, y: W, f: fn(U) -> Int) -> Unit\n  uses @log: Log[write]\n=\n  @log.write(f(x))\n")
+cell("rule_350", "effect", "reject",
+     "module sw\n\npub capability Log\n  op write(n: Int) -> Unit\n\n" + TWO
+     + "\ng[T, V](a: T, b: T, c: V, e: V, k: fn(V) -> Int) -> Unit\n  uses @log: Log[write]\n=\n"
+     + "  two(if a == b then c else e, y: a, f: k)\n\npub leak(s: secret Int) -> Unit\n  uses @log: Log[write]\n=\n"
+     + "  g(s, b: 0, c: [], e: [1], k: fn(xs) -> xs.len)\n",
+     "two type parameters: a decision on T selects a V value given to a V callback", variant="two_params", control=False)
+cell("rule_350", "effect", "reject",
+     "module sw\n\npub capability Log\n  op write(n: Int) -> Unit\n\n" + TWO
+     + "\ng[T, V](a: T, b: T, c: V, e: V, k: fn(V) -> Int) -> Unit\n  uses @log: Log[write]\n=\n"
+     + "  two(c, y: if a == b then a else b, f: k)\n\npub leak(s: secret Int) -> Unit\n  uses @log: Log[write]\n=\n"
+     + "  g(s, b: 0, c: [], e: [1], k: fn(xs) -> xs.len)\n",
+     "two type parameters: the decided argument goes to a parameter the callback never sees (conservative)", variant="two_params_unused", control=False)
+CAPTURE = "capture[U](x: U, f: fn(U) -> Int) -> fn(Int) -> Int = fn(n) -> f(x) + n\n"
+cell("rule_350", "result", "reject",
+     program("result", CAPTURE, f"later(0)").replace("  let n = later(0)", f"  let later = capture({D}, f: k)\n  let n = later(0)"),
+     "the callee returns a closure over the decided value and the callback, called later", variant="stored_closure",
+     control_expect="rule")
+cell("rule_350", "effect", "reject",
+     program("effect", APPLY_E, f"apply_eff({D}, f: k) with @log = @log"),
+     "the call under a with clause that rebinds the capability", variant="with_rebind")
+HANDLED = ("handler forward() for Log\n  uses @out: Log[write]\n  op write(n) = @out.write(n)\n")
+cell("rule_350", "effect", "reject",
+     program("effect", APPLY_E + "\n" + HANDLED, f"apply_eff({D}, f: k) with @log = forward()")
+     .replace("  uses @log: Log[write]\n=\n  apply_eff(", "  uses @out: Log[write]\n=\n  apply_eff(")
+     .replace("k: fn(T) -> Unit uses @log: Log[write]) -> Unit\n  uses @out", "k: fn(T) -> Unit uses @log: Log[write]) -> Unit\n  uses @out")
+     .replace("pub leak(s: secret Int) -> Unit\n  uses @log: Log[write]\n=\n  g(", "pub leak(s: secret Int) -> Unit\n  uses @log: Log[write]\n=\n  g(")
+     .replace("  g([s]", "  g([s]").replace("=\n  g([s], b: [0], p: [], q: [1], k: fn(xs) -> @log.write(xs.len))", "=\n  g([s], b: [0], p: [], q: [1], k: fn(xs) -> @log.write(xs.len)) with @out = @log"),
+     "a handler installed around the call", variant="handler_around")
+APPLY_REV = ("apply_rev[U](f: fn(U) -> Unit uses @log: Log[write], x: U) -> Unit\n  uses @log: Log[write]\n=\n  f(x)\n")
+cell("rule_350", "effect", "reject", program("effect", APPLY_REV, f"apply_rev(fn(y) -> k(y), x: {D})"),
+     "an inferred lambda checked before the argument that carries the decision", variant="lambda_first")
+APPLY_REV_P = ("apply_rev[U](f: fn(U) -> Int, x: U) -> Unit\n  uses @log: Log[write]\n=\n  @log.write(f(x))\n")
+cell("rule_350", "effect", "reject", program("effect", APPLY_REV_P, f"apply_rev(fn(y) -> k(y), x: {D})", cb="pure"),
+     "an inferred pure lambda checked before the decided argument; the callee writes its result", variant="lambda_first_callee")
+cell("rule_350", "effect", "reject", program("effect", APPLY_E, f"apply_eff(x: {D}, f: fn(y) -> k(y))").replace("apply_eff(x: ", "apply_eff("),
+     "control shape: an inferred lambda after the decided argument", variant="lambda_after")
+
+
 def write():
     if os.path.isdir(ROOT):
         shutil.rmtree(ROOT)
