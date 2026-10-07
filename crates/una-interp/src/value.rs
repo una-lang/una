@@ -44,7 +44,7 @@ pub(crate) type Entries<'p> = BTreeMap<Key, (Value<'p>, Value<'p>)>;
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Key {
     Int(BigInt),
-    Text(Rc<str>),
+    Text(Rc<String>),
     Variant(usize),
 }
 

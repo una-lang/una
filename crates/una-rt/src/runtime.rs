@@ -500,9 +500,10 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
     if let Some(state) = state {
         code = code.max(finish(state));
     }
-    // A debug build also says how many lists, records and texts were copied rather than updated
-    // in place (#30, #261), so tests can check that an update the code owns is in place. As with the
-    // checks above, only a debug build says it, and it changes neither output nor exit status.
+    // A debug build also says how many lists, maps, records and texts were copied rather than
+    // updated in place (#30, #236, #261), so tests can check that an update the code owns is in
+    // place. As with the checks above, only a debug build says it, and it changes neither output
+    // nor exit status.
     if copies > 0 {
         let _ = writeln!(
             stderr,
