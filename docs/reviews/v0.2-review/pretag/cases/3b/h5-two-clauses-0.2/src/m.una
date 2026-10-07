@@ -1,0 +1,14 @@
+module m
+
+pub kind Oops = | Bad
+
+fetch(x: Int) -> Option[Int]
+  fails Oops
+=
+  if x > 0 then Some(x) else fail Bad
+
+pub use_it(x: Int) -> Int
+=
+  let v = fetch(x)
+    if error use None if none use 0
+  v

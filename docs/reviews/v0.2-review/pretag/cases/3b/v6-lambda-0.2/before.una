@@ -1,0 +1,10 @@
+module m
+
+pub kind P = Over(index: Int) | Fine
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let xs = [Over(index: 1), Fine]
+  let n = xs.filter(keep: fn(p) -> p == Over).len
+  @console.print("{n}")

@@ -1,0 +1,12 @@
+module m
+
+pub kind P = Over(index: Int) | Fine
+
+check(p: P, q: Bool) -> Bool = q and p == Over or not q
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let x = check(Over(index: 1), q: true)
+  let y = check(Fine, q: true)
+  @console.print("{x} {y}")

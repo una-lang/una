@@ -1,0 +1,10 @@
+module m
+
+pub kind Acct
+  owner: Text
+  pin: secret Int
+
+pub show(a: Acct) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("all {[a]}")
