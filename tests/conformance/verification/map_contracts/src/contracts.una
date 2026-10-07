@@ -1,0 +1,71 @@
+-- test: each map operation's contract is a hypothesis after it: set and with make the key present with its value and size one more unless it was there, remove takes it out, listing keeps the size, empty_map is empty, a map with a key is not empty, len and has are in the refinement language, and nothing is known of another key (spec/21 §4)
+-- spec: spec/21 §4
+-- expect: error U5001 at src/contracts.una:46:3
+-- expect: error U5001 at src/contracts.una:71:3
+module contracts
+
+pub kind Seven = Int where it == 7
+
+--- `set` makes the key present, with its value, and grows the size by one at most.
+pub put(m: Map[Text, Int], k: Text) -> Map[Text, Int]
+  ensures result.len >= m.len and result.len <= m.len + 1
+=
+  let edit n = m
+  edit n.set(key: k, value: 7)
+  let got = n.get(key: k)
+    if none use 0
+  let seven: Seven = got
+  n
+
+--- A new map is empty, and `set` on it gives one entry.
+pub one() -> Int
+  ensures result == 1
+=
+  let edit m: Map[Text, Int] = empty_map()
+  edit m.set(key: "a", value: 1)
+  m.len
+
+--- `remove` takes the key out.
+pub gone(m: Map[Text, Int], k: Text) -> Bool
+  ensures result == false
+=
+  m.without(key: k).has(key: k)
+
+--- Listing keeps the size.
+pub listed(m: Map[Text, Int]) -> Int
+  ensures result == m.len
+=
+  m.keys().len
+
+--- Nothing is known of another key after a `set`.
+pub other(m: Map[Text, Int]) -> Bool
+  ensures result
+=
+  let edit n = m
+  edit n.set(key: "a", value: 1)
+  n.has(key: "b")
+
+--- `len` and `has` are in the refinement language.
+pub kind Counts = Map[Text, Int] where it.len > 0
+
+pub size(c: Counts) -> Int
+  ensures result > 0
+=
+  c.len
+
+lookup(m: Map[Text, Int], k: Text) -> Int
+  requires m.has(key: k)
+=
+  let v = m.get(key: k)
+    if none use 0
+  v
+
+pub present() -> Int
+=
+  let m: Map[Text, Int] = empty_map()
+  lookup(m.with(key: "a", value: 1), k: "a")
+
+pub absent() -> Int
+=
+  let m: Map[Text, Int] = empty_map()
+  lookup(m, k: "a")

@@ -117,6 +117,10 @@ impl Vars {
         match self.shallow(ty) {
             Ty::Labeled(label, inner) => self.resolve_shape(&inner).with_label(&label),
             Ty::List(element) => Ty::List(Box::new(self.resolve_shape(&element))),
+            Ty::Map(key, value) => Ty::Map(
+                Box::new(self.resolve_shape(&key)),
+                Box::new(self.resolve_shape(&value)),
+            ),
             Ty::Kind(id, args) => {
                 Ty::Kind(id, args.iter().map(|arg| self.resolve_shape(arg)).collect())
             }
@@ -206,6 +210,7 @@ impl Vars {
             Ty::Labeled(_, inner) => self.occurs(var, &inner),
             Ty::Var(other) => other == var,
             Ty::List(element) => self.occurs(var, &element),
+            Ty::Map(key, value) => self.occurs(var, &key) || self.occurs(var, &value),
             Ty::Kind(_, args) => args.iter().any(|arg| self.occurs(var, arg)),
             Ty::Fn(function) => {
                 function.params.iter().any(|p| self.occurs(var, p))
@@ -314,6 +319,9 @@ impl Vars {
             | (Ty::Unit, Ty::Unit)
             | (Ty::Hashed, Ty::Hashed) => true,
             (Ty::List(x), Ty::List(y)) => self.unify_in(x, y, fixed),
+            (Ty::Map(xk, xv), Ty::Map(yk, yv)) => {
+                self.unify_in(xk, yk, fixed) && self.unify_in(xv, yv, fixed)
+            }
             (Ty::Kind(i, xs), Ty::Kind(j, ys)) => {
                 let kinds = self.kinds.clone();
                 i == j
@@ -361,6 +369,10 @@ fn combine(a: &Ty, b: &Ty, join: bool, kinds: &KindLabels) -> Ty {
         (Ty::Never, other) | (other, Ty::Never) => return other.clone().with_label(&label),
         (Ty::Error, _) | (_, Ty::Error) => return Ty::Error,
         (Ty::List(x), Ty::List(y)) => Ty::List(Box::new(combine(x, y, join, kinds))),
+        (Ty::Map(xk, xv), Ty::Map(yk, yv)) => Ty::Map(
+            Box::new(combine(xk, yk, join, kinds)),
+            Box::new(combine(xv, yv, join, kinds)),
+        ),
         (Ty::Kind(i, xs), Ty::Kind(j, ys)) if i == j && xs.len() == ys.len() => Ty::Kind(
             *i,
             xs.iter()

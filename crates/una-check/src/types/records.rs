@@ -26,6 +26,10 @@ pub(crate) enum Res {
     /// A built-in method of an integer type, as the primitive it elaborates to (`spec/18 §4`,
     /// `§5`).
     IntMethod(una_core::Prim),
+    /// A built-in method of a map that reads it (`spec/21 §2`).
+    MapMethod(una_core::MapOp),
+    /// `edit m.set(...)` or `edit m.remove(...)`: the map rebound to `With` or `Without`.
+    MapUpdate(una_core::MapOp),
     /// A record field.
     Field { kind: KindId, index: usize },
     /// An operation of a capability.

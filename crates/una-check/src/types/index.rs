@@ -111,7 +111,9 @@ pub(crate) fn build(env: &Env<'_>, findings: &Findings) -> Index {
                 .get(*id)
                 .filter(|h| h.module < env.prelude)
                 .map(|h| h.ast.name.span),
-            Res::Value | Res::Len | Res::IntMethod(_) => None,
+            Res::Value | Res::Len | Res::IntMethod(_) | Res::MapMethod(_) | Res::MapUpdate(_) => {
+                None
+            }
         };
         // Only declarations of the package have a place to go to; the standard modules are
         // left out above, since their sources are another database.

@@ -66,6 +66,8 @@ pub(crate) enum Builtin {
     Unit,
     Hashed,
     List,
+    /// `Map[K, V]`, built in from edition 0.2 (`spec/21 §1`).
+    Map,
 }
 
 const BUILTINS: [(&str, Builtin); 6] = [
@@ -320,6 +322,20 @@ pub(crate) struct Env<'a> {
     /// parameters whose decisions reach a call of it in the body, which its callers' arguments
     /// run under (ADR 0067 amendment, #234). Grown with the summaries.
     pub(crate) of_raises: BTreeMap<(usize, usize), std::collections::BTreeSet<usize>>,
+    /// The function whose signature or body is lowering types, for the key types of maps.
+    pub(crate) owner: Option<usize>,
+    /// The key type of each map type written in the package, which must satisfy `Ord`
+    /// (`spec/21 §1` rule 2, U2025).
+    pub(crate) map_keys: Vec<MapKey>,
+}
+
+/// The key type of a written `Map[K, V]`, where it is written, and the function whose type
+/// parameters it may name.
+#[derive(Clone, Debug)]
+pub(crate) struct MapKey {
+    pub(crate) key: Ty,
+    pub(crate) span: Span,
+    pub(crate) owner: Option<usize>,
 }
 
 /// A step from a position of a type to a position inside it (ADR 0067).
@@ -381,6 +397,8 @@ impl<'a> Env<'a> {
             summaries: BTreeMap::new(),
             summaries_grew: false,
             of_raises: BTreeMap::new(),
+            owner: None,
+            map_keys: Vec::new(),
         };
         for source in package.into_iter().chain([prelude, testing]) {
             env.register(source);
@@ -396,6 +414,10 @@ impl<'a> Env<'a> {
                         .entry(int.as_str())
                         .or_insert(Entity::Builtin(Builtin::Fixed(int)));
                 }
+                module
+                    .upper
+                    .entry("Map")
+                    .or_insert(Entity::Builtin(Builtin::Map));
             }
         }
         env.imports(count);
@@ -900,8 +922,10 @@ impl<'a> Env<'a> {
                 }
                 constraints.resize(type_params.len(), Constraint::None);
                 constraints_written.resize(type_params.len(), false);
+                self.owner = Some(id);
                 let params = self.params(module, &function.params, &type_params, report);
                 let result = self.lower_type(module, &function.result, &type_params, report);
+                self.owner = None;
                 let fails = function
                     .clauses
                     .iter()
@@ -1578,7 +1602,11 @@ impl<'a> Env<'a> {
         let bases: Vec<Ty> = args.into_iter().map(|arg| arg.base).collect();
         let problem = match self.upper(module, name).first().copied() {
             Some(Entity::Builtin(builtin)) => {
-                let expected = usize::from(builtin == Builtin::List);
+                let expected = match builtin {
+                    Builtin::List => 1,
+                    Builtin::Map => 2,
+                    _ => 0,
+                };
                 if bases.len() != expected {
                     return arity(expected, bases.len());
                 }
@@ -1591,6 +1619,19 @@ impl<'a> Env<'a> {
                     Builtin::Hashed => Ty::Hashed,
                     Builtin::List => {
                         Ty::List(Box::new(bases.into_iter().next().unwrap_or(Ty::Error)))
+                    }
+                    Builtin::Map => {
+                        let mut bases = bases.into_iter();
+                        let key = bases.next().unwrap_or(Ty::Error);
+                        let value = bases.next().unwrap_or(Ty::Error);
+                        if reports {
+                            self.map_keys.push(MapKey {
+                                key: key.clone(),
+                                span,
+                                owner: self.owner,
+                            });
+                        }
+                        Ty::Map(Box::new(key), Box::new(value))
                     }
                 };
                 return Declared::plain(base);

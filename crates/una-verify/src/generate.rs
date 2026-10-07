@@ -6,14 +6,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use sha2::{Digest, Sha256};
 use una_core::{
     Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, DataVariant, Decl, Expr, FixedOp, Fun, IntType,
-    LoopSource, Name, Path, Prim, Program, Refinement, Rhs, Source, Term, Type, print_term_with,
+    LoopSource, MapOp, Name, Path, Prim, Program, Refinement, Rhs, Source, Term, Type,
+    print_term_with,
 };
 use una_diag::ObligationKind;
 use una_syntax::{SourceDb, Span};
 
 use crate::smt::{
-    Const, ConstRole, Definition, F, Fun as SmtFun, FunRole, HASHED, LIST, Query, Sort, TEXT, UNIT,
-    kind_sort, path_selector,
+    Const, ConstRole, Definition, F, Fun as SmtFun, FunRole, HASHED, LIST, MAP, Query, Sort, TEXT,
+    UNIT, kind_sort, path_selector,
 };
 
 /// A proof obligation of `spec/12 §3`, with its query.
@@ -1613,6 +1614,9 @@ impl<'p, 'i> Walker<'p, 'i> {
                 if let Prim::Fixed(op, int) = prim {
                     self.fixed_facts(*op, *int, args, &values, &x.f, ctx);
                 }
+                if let Prim::Map(op) = prim {
+                    self.map_facts(*op, &values, &x, ctx);
+                }
                 if let Some(value) = self.prim(*prim, &values)
                     && value.sort() == x.f.sort()
                 {
@@ -2479,11 +2483,86 @@ impl<'p, 'i> Walker<'p, 'i> {
         })
     }
 
-    /// `.len` of a text or list, `i!len!<Sort>`.
+    /// `.len` of a text, list or map, `i!len!<Sort>`.
     fn len(&self, value: &Tv) -> Option<F> {
         let sort = value.f.sort();
-        let is_text_or_list = sort == TEXT || sort.starts_with(LIST);
-        is_text_or_list.then(|| len_of(&value.f))
+        let has_len = sort == TEXT || sort.starts_with(LIST) || sort.starts_with(MAP);
+        has_len.then(|| len_of(&value.f))
+    }
+
+    /// The contract of a map's operation as facts of its result `x` (`spec/21 §4`): `has` and
+    /// `get` are uninterpreted, and only the key the operation names is described.
+    fn map_facts(&mut self, op: MapOp, values: &[Tv], x: &Tv, ctx: &mut Ctx) {
+        let Some(map) = values.first() else {
+            return;
+        };
+        let Some(old_len) = self.len(map) else {
+            return;
+        };
+        let key = values.get(1);
+        match op {
+            MapOp::Has => {
+                if let Some(key) = key {
+                    ctx.define(F::eq(x.f.clone(), has_of(&map.f, &key.f)));
+                }
+            }
+            MapOp::Get => {
+                let Some(key) = key else {
+                    return;
+                };
+                ctx.define(F::eq(x.f.clone(), get_of(&map.f, &key.f, &x.f.sort())));
+                // `result` is `Some` exactly when `m.has(key: k)`; `Some` is variant 0.
+                if let Some(tag) = self.tag(x) {
+                    ctx.define(F::eq(
+                        F::eq(tag, F::Int("0".to_owned())),
+                        has_of(&map.f, &key.f),
+                    ));
+                }
+            }
+            MapOp::With | MapOp::Without => {
+                let (Some(key), Some(new_len)) = (key, self.len(x)) else {
+                    return;
+                };
+                let had = has_of(&map.f, &key.f);
+                let one = F::Int("1".to_owned());
+                let (with_key, without_key) = if op == MapOp::With {
+                    (old_len.clone(), F::op("+", vec![old_len.clone(), one]))
+                } else {
+                    (F::op("-", vec![old_len.clone(), one]), old_len.clone())
+                };
+                ctx.assume(F::eq(
+                    new_len,
+                    F::op("ite", vec![had, with_key, without_key]),
+                ));
+                let has_now = has_of(&x.f, &key.f);
+                if op == MapOp::Without {
+                    ctx.assume(F::not(has_now));
+                    return;
+                }
+                ctx.assume(has_now);
+                // `m.get(key: k) == Some(v)` after `set` and `with`.
+                let (Some(value), Some(option)) = (values.get(2), option_of(&x.ty)) else {
+                    return;
+                };
+                let got = Tv {
+                    f: get_of(&x.f, &key.f, &sort(&option)),
+                    ty: option,
+                };
+                if let Some(tag) = self.tag(&got) {
+                    ctx.assume(F::eq(tag, F::Int("0".to_owned())));
+                }
+                if let Some(payload) = self.field(&got, 0, 0)
+                    && payload.f.sort() == value.f.sort()
+                {
+                    ctx.assume(F::eq(payload.f, value.f.clone()));
+                }
+            }
+            MapOp::Keys | MapOp::Values | MapOp::Entries => {
+                if let Some(new_len) = self.len(x) {
+                    ctx.assume(F::eq(new_len, old_len));
+                }
+            }
+        }
     }
 
     /// How many tasks a `together for` over `source` runs: the length of its list, or the
@@ -2768,7 +2847,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             // (`spec/18 §4`).
             Prim::Convert(_) => arg(0)?.f,
             // The methods of `spec/18 §5` are known by their contracts, not as terms.
-            Prim::Concat | Prim::ToText | Prim::Fixed(..) => return None,
+            Prim::Concat | Prim::ToText | Prim::Fixed(..) | Prim::Map(_) => return None,
         })
     }
 
@@ -2920,6 +2999,17 @@ impl<'p, 'i> Walker<'p, 'i> {
                 Tv {
                     f: self.len(&value)?,
                     ty: int(),
+                }
+            }
+            Term::Has { map, key } => {
+                let map = self.term(map, env)?;
+                let key = self.term(key, env)?;
+                if !map.f.sort().starts_with(MAP) {
+                    return None;
+                }
+                Tv {
+                    f: has_of(&map.f, &key.f),
+                    ty: boolean(),
                 }
             }
             Term::Neg(value) => Tv {
@@ -3362,6 +3452,18 @@ impl<'p, 'i> Walker<'p, 'i> {
                         FunRole::Len => {
                             new.push(F::op(">=", vec![term.clone(), F::Int("0".to_owned())]));
                         }
+                        // A map that has a key is not empty, so an empty one has none.
+                        FunRole::Has => {
+                            if let Some(map) = args.first() {
+                                new.push(F::op(
+                                    "=>",
+                                    vec![
+                                        term.clone(),
+                                        F::op(">=", vec![len_of(map), F::Int("1".to_owned())]),
+                                    ],
+                                ));
+                            }
+                        }
                         FunRole::Tag { variants, .. } => new.push(F::and(vec![
                             F::op("<=", vec![F::Int("0".to_owned()), term.clone()]),
                             F::op("<", vec![term.clone(), F::Int(variants.to_string())]),
@@ -3416,7 +3518,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                                 }
                             }
                         }
-                        FunRole::Predicate | FunRole::Other => {}
+                        FunRole::Predicate | FunRole::Get | FunRole::Other => {}
                     },
                     F::Const(Const {
                         role: ConstRole::Text(text),
@@ -3658,6 +3760,10 @@ impl<'p, 'i> Walker<'p, 'i> {
                     FunRole::Field { .. } => (format!("{}.{base}", first()), 1),
                     FunRole::Len => (format!("{}.len", first()), 1),
                     FunRole::Tag { .. } => (format!("tag({})", first()), 1),
+                    FunRole::Has | FunRole::Get => {
+                        let key = args.get(1).map_or_else(String::new, |a| operand(a, 10));
+                        (format!("{}.{base}(key: {key})", first()), 1)
+                    }
                     FunRole::Predicate => {
                         let shown: Vec<String> = args.iter().map(|a| operand(a, 10)).collect();
                         let short = base.rsplit('.').next().unwrap_or(base);
@@ -3940,7 +4046,55 @@ fn is_param_sort(sort: &str) -> bool {
     sort.starts_with("u!Param_")
 }
 
-/// The length of a text or a list, `i!len!<Sort>`.
+/// `Option[V]` of the prelude, for a map type `Map[K, V]`.
+fn option_of(map: &Type) -> Option<Type> {
+    let Type::Base {
+        base: Base::Named { args, .. },
+        ..
+    } = map
+    else {
+        return None;
+    };
+    Some(Type::Base {
+        base: Base::Named {
+            module: una_core::PRELUDE_MODULE.to_owned(),
+            name: "Option".to_owned(),
+            args: vec![args.get(1)?.clone()],
+        },
+        refinements: Vec::new(),
+        label: una_core::Label::public(),
+    })
+}
+
+/// `m.has(key: k)`, `i!has!<Sort>`, uninterpreted (`spec/21 §4`).
+fn has_of(map: &F, key: &F) -> F {
+    let sort = map.sort();
+    F::App {
+        fun: SmtFun {
+            name: format!("i!has!{sort}"),
+            args: vec![sort, key.sort()],
+            result: "Bool".to_owned(),
+            role: FunRole::Has,
+        },
+        args: vec![map.clone(), key.clone()],
+    }
+}
+
+/// `m.get(key: k)`, `i!get!<Sort>`, uninterpreted, of the option sort `option`.
+fn get_of(map: &F, key: &F, option: &Sort) -> F {
+    let sort = map.sort();
+    F::App {
+        fun: SmtFun {
+            name: format!("i!get!{sort}"),
+            args: vec![sort, key.sort()],
+            result: option.clone(),
+            role: FunRole::Get,
+        },
+        args: vec![map.clone(), key.clone()],
+    }
+}
+
+/// The length of a text, a list or a map, `i!len!<Sort>`.
 fn len_of(value: &F) -> F {
     let sort = value.sort();
     F::App {

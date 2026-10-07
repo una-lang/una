@@ -770,9 +770,85 @@ fn updates_of_values_nothing_else_holds_are_in_place() {
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
-        "note: una-rt (debug build): lists and records copied: 2\n"
+        "note: una-rt (debug build): lists, maps and records copied: 2\n"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A program that sets, looks up and removes `N` keys, then copies a map another binding holds.
+const MAP_UPDATES: &str = "module maps\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit m: Map[Int, Int] = empty_map()\n  for i in 0..<N\n    edit m.set(key: (i * 7919) mod N, value: i)\n  let edit found = 0\n  for i in 0..<N\n    if m.has(key: i)\n      found = found + 1\n  let kept = m\n  edit m.remove(key: 0)\n  for i in 1..<N\n    edit m.remove(key: i)\n  @console.print(\"{found} {m.len} {kept.len}\")\n";
+
+#[test]
+fn a_map_passed_by_edit_moves_into_the_callee() {
+    // ADR 0072 with `spec/21 §5` rule 2: a helper that sets a key of its `edit` map owns it,
+    // so a loop of 200,000 calls updates one map in place, with no copy.
+    let program = "module helper\n\nput(edit m: Map[Int, Int], k: Int) -> Unit\n=\n  edit m.set(key: k, value: k)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit m: Map[Int, Int] = empty_map()\n  for i in 0..<200000\n    put(edit m, k: i)\n  @console.print(\"{m.len}\")\n";
+    let dir = package(
+        "helper",
+        "\n[run]\nentry = \"helper\"\ngrants = [\"console\"]\n",
+        &[("src/helper.una", program)],
+    );
+    let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+    std::fs::write(
+        dir.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    let built = una(&dir, &["build"]);
+    assert_eq!(built.status.code(), Some(0), "{built:?}");
+    let output = Command::new(dir.join("target/una/helper"))
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "200000\n");
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn map_updates_are_in_place_and_scale_as_n_log_n() {
+    // `spec/21 §5` rule 2 and the performance rule: `set`, `has` and `remove` on a map nothing
+    // else holds are O(log n) and in place; the one copy is the map that `kept` still sees.
+    // Ten times the keys take well under 25 times as long (n log n gives about 12).
+    let mut times = Vec::new();
+    for n in ["100000", "1000000"] {
+        let dir = package(
+            &format!("maps_{n}"),
+            "\n[run]\nentry = \"maps\"\ngrants = [\"console\"]\n",
+            &[("src/maps.una", &MAP_UPDATES.replace('N', n))],
+        );
+        let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+        std::fs::write(
+            dir.join("una.toml"),
+            manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+        )
+        .unwrap();
+        let built = una(&dir, &["build"]);
+        assert_eq!(built.status.code(), Some(0), "{built:?}");
+        let started = std::time::Instant::now();
+        let output = Command::new(dir.join(format!("target/una/maps_{n}")))
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        times.push(started.elapsed());
+        assert_eq!(output.status.code(), Some(0));
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("{n} 0 {n}\n")
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "note: una-rt (debug build): lists, maps and records copied: 1\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    assert!(
+        times[1] < times[0] * 25,
+        "10^5 keys took {:?}, 10^6 took {:?}",
+        times[0],
+        times[1]
+    );
 }
 
 #[test]

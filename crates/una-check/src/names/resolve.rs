@@ -75,8 +75,9 @@ impl<'a> Resolver<'_, '_, 'a> {
                     || table.lower.contains_key(name)
                     || table.imported.contains_key(name)
                     || prelude::LOWER.contains(&name)
-                    // Edition 0.2: `set` (`spec/17 §8`) and `sort` (`spec/20 §6`).
-                    || (matches!(name, "set" | "sort")
+                    // Edition 0.2: `set` (`spec/17 §8`), `sort` (`spec/20 §6`) and
+                    // `empty_map` (`spec/21 §2`).
+                    || (matches!(name, "set" | "sort" | "empty_map")
                         && self.checker.package.settings.edition >= Edition::V0_2)
             }
             Space::Upper => {
@@ -85,9 +86,11 @@ impl<'a> Resolver<'_, '_, 'a> {
                     || table.imported.contains_key(name)
                     || table.imported_variants.contains(name)
                     || prelude::UPPER.contains(&name)
-                    // Edition 0.2: the fixed-width integer types (`spec/18 §1`).
+                    // Edition 0.2: the fixed-width integer types (`spec/18 §1`), and maps
+                    // with their entries (`spec/21 §1`).
                     || (self.checker.package.settings.edition >= Edition::V0_2
-                        && IntType::from_name(name).is_some())
+                        && (IntType::from_name(name).is_some()
+                            || matches!(name, "Map" | "Entry")))
             }
         }
     }

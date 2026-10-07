@@ -25,6 +25,7 @@ mod flow;
 mod generic;
 mod index;
 mod label;
+mod map;
 mod memory;
 mod records;
 mod stmt;
