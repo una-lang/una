@@ -2182,13 +2182,24 @@ impl<'p> Lowerer<'_, 'p, '_> {
             "or_else" => "una_rt_or_else",
             "empty_map" => "una_rt_map_empty",
             // JSON (`spec/23`): `parse_json` reports its failure as a host operation does.
+            // Both check the memory budget at this call's site as they go: over it, the run
+            // aborts with U6003 there, or the task stops (N-41).
             "parse_json" => {
-                let value = self.call("una_rt_parse_json", args)?;
+                let site = self.site(span);
+                let value = self.call("una_rt_parse_json", &[arg(0)?, site])?;
+                let stopping = self.call("una_rt_json_stopped", &[])?;
+                self.stop_if(stopping);
                 let failed = self.call("una_rt_host_failed", &[])?;
                 self.check(value, failed, scope, catch);
                 return Ok(value);
             }
-            "to_json" => "una_rt_to_json",
+            "to_json" => {
+                let site = self.site(span);
+                let value = self.call("una_rt_to_json", &[arg(0)?, site])?;
+                let stopping = self.call("una_rt_json_stopped", &[])?;
+                self.stop_if(stopping);
+                return Ok(value);
+            }
             "quote_json" => "una_rt_quote_json",
             "is_json_number" => "una_rt_is_json_number",
             other => return Err(unsupported(format!("`{other}` of the prelude"))),
