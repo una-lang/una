@@ -90,7 +90,9 @@ fn the_clone_gate_checks_out_exactly_the_commit_and_records_it() {
     assert!(record.contains(&format!("| clone | PASS | {} | `{}` |", row[3], row[4])));
     // A run of some gates is not a validation of the commit.
     assert!(
-        record.contains("Verdict: INCOMPLETE (not run: build, mac, linux, release, determinism, native)"),
+        record.contains(
+            "Verdict: INCOMPLETE (not run: build, mac, linux, release, determinism, native)"
+        ),
         "{record}"
     );
     let _ = std::fs::remove_dir_all(&out);
