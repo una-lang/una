@@ -1,0 +1,24 @@
+-- test: the text functions' contracts are hypotheses after each call, slice's precondition is an obligation, and find is Some exactly when contains_text holds of the same texts (spec/22 §7, N-19)
+-- spec: spec/22 §7
+-- expect: error U5001 at src/contracts.una:19:32
+module contracts
+
+pub agree(t: Text) -> Bool
+  ensures result
+=
+  let at = t.find(text: "x")
+  let has = t.contains_text(part: "x")
+  (at is Some) == has
+
+pub cut(t: Text) -> Text
+  requires t.len >= 3
+  ensures result.len == 2
+=
+  t.slice(start: 1, end: 3)
+
+pub cut_bad(t: Text) -> Text = t.slice(start: 1, end: 3)
+
+pub words(t: Text) -> Int
+  ensures result >= 1
+=
+  t.split(on: " ").len
