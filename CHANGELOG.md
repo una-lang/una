@@ -17,6 +17,11 @@ The first stable release of v0.2. The native backend compiles the whole language
 - **Structured concurrency** (ADR 0065, `spec/19`, #32, #167): `together` blocks and `together for`, with cancellation of the tasks after a failed one and a deterministic trace. `together for` proves the length of its list.
 - **Constraints on generics** (ADR 0066, `spec/20`, #37): `Eq`, `Ord` and `Integer` on function type parameters, written or inferred for private functions, with the codes U2025 to U2027. The prelude gains a generic `min`, `max`, `contains`, `sum` and a stable `sort`.
 - **Printing structured values** (ADR 0068, #204): interpolation writes any value that holds no function in its Una form, as `una test` shows it, keeping its labels.
+  - Records, variants, lists, `Option` and `Result` are written in full, and `Text` inside them is quoted.
+  - A value of a type parameter needs `T: Eq`, else U2026 with a repair. A function position is U2001.
+  - A record with a `secret` field cannot reach `Console` (U4003), and the diagnostic names the field.
+  - Every `Hashed` is written `<hashed>`, also through a type parameter, while traces keep `hashed:<hex>` (ADR 0068 amendment).
+  - Native code writes values of a type parameter inside a structure through composite type descriptors, byte-identical to the interpreter.
 - **Exact integers in `reflect` bodies** (ADR 0057 amendment, #180): the body of a `reflect` predicate makes no `overflow` obligation and no U2022, and every engine computes its integers exactly, as the verifier reads it.
 - **Literals in constructors** (#187): `Some(3)`, `Ok(3)` and `Box(value: 3)` take the fixed-width type they are checked against.
 - **Negative literals** in `*`, `/` and `mod` stay linear for the verifier (#188).
