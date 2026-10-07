@@ -24,7 +24,7 @@ No information-flow leak was found. Edition 0.1 isolation holds.
 
 | Area | Owner | Result | Open Critical/Major |
 | --- | --- | --- | --- |
-| 1. Release gates | Una-1 | See Section 1 | see Section 1 |
+| 1. Release gates | Una-1 | **PASS**, every gate, Linux included | none |
 | 3a. Labels and information flow | Coordenador's reviewer | **Not clean**: no leak; 1 Critical in native failure handling | 3a-1 (#267) |
 | 3b. Diagnostics and repairs | Una-2 | No meaning change; 2 Major in batch application | F3, F5 (#257) |
 | 3c. Runtime and CLI streams | Una-3 | Engines agree; EBADF treated as success | none (3c-1 Minor, after the tag) |
@@ -41,10 +41,12 @@ No information-flow leak was found. Edition 0.1 isolation holds.
 | clone | PASS | 3 |
 | build | PASS | 301 |
 | mac | PASS | 145 |
-| linux | running | |
-| release | pending | |
-| determinism | pending | |
-| native | pending | |
+| linux | PASS | 1207 |
+| release | PASS | 109 |
+| determinism | PASS | 56 |
+| native | PASS | 52 |
+
+Verdict of the run: **PASS (every gate)**. The record, with log digests and archive digests, is `gates-ef34f2f.md`.
 
 The candidate is superseded by the review fixes, so this run is a baseline. The run that counts is the final one on the tag SHA, committed as `docs/releases/0.2.0-validation.md`.
 
