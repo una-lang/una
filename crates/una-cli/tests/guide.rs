@@ -23,9 +23,10 @@ fn manifest(edition: &str) -> String {
 }
 
 /// The guides whose blocks are checked.
-const GUIDES: [&str; 2] = [
+const GUIDES: [&str; 3] = [
     "docs/guide/una-for-agents.md",
     "docs/guide/syntax-reference.md",
+    "docs/guide/getting-started.md",
 ];
 
 /// The schemas the CLI prints (`spec/13 §1, §2, §6`, ADRs 0029, 0032 and 0034).
@@ -348,6 +349,20 @@ fn check_guide(path: &str, scratch_base: usize) -> [usize; 4] {
         }
         complete(&dir, "0.2");
         let (output, found) = check(&dir);
+        // A package may show a failure, named by a leading `-- fails with` line of one of its
+        // modules.
+        let fails = files
+            .iter()
+            .filter(|file| file.lang == "una")
+            .find_map(|file| directives(&file.body).0);
+        if let Some(code) = fails {
+            assert!(
+                !found.is_empty() && found.iter().all(|f| f.starts_with(code)),
+                "{path}, package at line {at}: expected only {code}, found {found:?}"
+            );
+            checked[3] += 1;
+            continue;
+        }
         assert_eq!(found, Vec::<String>::new(), "{path}, package at line {at}");
         assert_eq!(
             output.status.code(),
@@ -428,4 +443,25 @@ fn the_readme_shows_only_checked_code() {
         blocks_seen += 1;
     }
     assert!(blocks_seen > 0, "the readme shows no code");
+}
+
+#[test]
+fn every_block_of_the_getting_started_tutorial_is_checked() {
+    // #245: the tutorial's packages, from the first to the finished program, and its commands,
+    // which run in fresh copies of `examples/wordfreq`.
+    let checked = check_guide(GUIDES[2], 400_000);
+    assert!(checked[2] > 0 && checked[3] >= 4, "{checked:?}");
+    // The finished program, the tutorial's last package, is `examples/wordfreq`, which the
+    // tests of the examples check and run in both engines.
+    let text = std::fs::read_to_string(repository().join(GUIDES[2])).unwrap();
+    let blocks = blocks(&text);
+    let last = blocks.iter().filter_map(|b| b.package).max().unwrap();
+    for block in blocks.iter().filter(|b| b.package == Some(last)) {
+        let path = block.path.as_deref().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(repository().join("examples/wordfreq").join(path)).unwrap(),
+            block.body,
+            "`{path}` of the tutorial's last package differs from examples/wordfreq"
+        );
+    }
 }

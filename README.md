@@ -385,6 +385,8 @@ out of model: timing, termination and divergence, resource consumption and alloc
 
 ## Quick start
 
+For a guided first program, from install to a native executable, read [`docs/guide/getting-started.md`](docs/guide/getting-started.md).
+
 ### Install with the installer
 
 From v0.2.0, `install.sh` installs a release into `~/.una`:
@@ -546,6 +548,7 @@ Every package under `examples/` is canonical, checks at tier 1 with every obliga
 | [`hello`](examples/hello) | A greeting | The smallest program: `main` with `Console` |
 | [`events`](examples/events) | Event check-in (the reference example) | Range refinements, a postcondition derived from a requirement, capabilities with handlers, a `secret[PII]` phone number that leaves only as a keyed hash through a policy in a trusted module, an opaque predicate established by `checked` |
 | [`toolshelf`](examples/toolshelf) | A shared tool shelf where members check tools out and bring them back | Records and sums with payloads, reflect predicates in `requires` and `ensures`, `attempt` under a `with` rebinding, a handler instance in `main`, `Clock` |
+| [`wordfreq`](examples/wordfreq) | Word counts of a text, as JSON | The program of the getting-started tutorial: `Text` functions, a `Map`, JSON, a `requires` and examples, edition 0.2 |
 | [`pantry`](examples/pantry) | The stock of a shared kitchen | Generic kinds and functions, a generic refinement proving a division, lambdas through method calls (`filter`, `map`, `fold`, `first_where`) |
 | [`journal`](examples/journal) | A private journal | A label category, the program counter, a sink label, a declassification policy, `Files` and `Env` under an `internal` program counter |
 | [`greenhouse`](examples/greenhouse) | A roof vent controller | Operation contracts, handlers verified against them, a handler with its own `uses`, `with @x = @y`, an inferred private header, a requirement from a regulation |
@@ -635,6 +638,7 @@ scripts/demo/checkpoint-4.sh    # trust: proofs, counterexamples, obligations, t
 | --- | --- |
 | [`docs/00-charter.md`](docs/00-charter.md) | What Una is, what it proves and assumes, the v0.1 scope. Read first |
 | [`docs/spec/`](docs/spec/) | The normative specification, 15 chapters, with RFC 2119 keywords |
+| [`docs/guide/getting-started.md`](docs/guide/getting-started.md) | A tutorial, from install to a verified, natively built program |
 | [`docs/guide/syntax-reference.md`](docs/guide/syntax-reference.md) | The language guide: every construct, with its diagnostics |
 | [`docs/guide/una-for-agents.md`](docs/guide/una-for-agents.md) | A compact, tested reference for agents writing Una |
 | [`docs/adr/`](docs/adr/) | Architecture decision records: why each key decision was made |
