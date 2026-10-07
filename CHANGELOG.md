@@ -90,6 +90,7 @@ The decisions of v0.2, all accepted:
 ### Known limits
 
 - Native code is generated with Cranelift, and each target is built on its own platform. LLVM release builds are later (`plan/backlog.md`).
+- The archives are for macOS on arm64 and Linux on x86_64. Linux on arm64 follows right after this release (#241).
 - Constraints have no laws: no axiom states that an order is total or transitive (`spec/20 §5`).
 - There are no user traits or implementations, and no map type.
 - The point where a run exhausts its memory differs between engines and builds (ADR 0061 rule 5).
