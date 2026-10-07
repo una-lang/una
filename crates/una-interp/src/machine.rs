@@ -17,7 +17,7 @@ use crate::value::{Closure, Key, Value, compare, equal};
 
 /// The environment `ρ`: binders and their values, innermost last. Core binders are unique
 /// within a function (`spec/09 §1`), so the last binding of a name is the one in scope.
-pub(crate) type Env<'p> = Vec<(&'p str, Value<'p>)>;
+pub(crate) use crate::env::Env;
 
 /// The capability environment `H`: bindings and their instances.
 pub(crate) type Caps<'p> = Rc<BTreeMap<&'p str, Rc<Instance<'p>>>>;
@@ -737,7 +737,7 @@ impl<'p, 'w> Machine<'p, 'w> {
         for at in dead {
             let name = env.get(at).map(|(name, _)| *name)?;
             if self.dead_after(name, rest)
-                && let Some((_, value)) = env.get_mut(at)
+                && let Some(value) = env.get_mut(at)
             {
                 *value = Value::Unit;
             }
@@ -832,9 +832,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                                 };
                                 let args = self.atoms(env, args)?;
                                 for moved in moved {
-                                    if let Some((_, value)) =
-                                        env.iter_mut().rev().find(|(n, _)| *n == moved)
-                                    {
+                                    if let Some(value) = env.lookup_mut(moved) {
                                         *value = Value::Unit;
                                     }
                                 }
@@ -1092,10 +1090,8 @@ impl<'p, 'w> Machine<'p, 'w> {
     fn atom(&self, env: &Env<'p>, atom: &'p Atom) -> Flow<'p> {
         Ok(match atom {
             Atom::Var(name) => env
-                .iter()
-                .rev()
-                .find(|(n, _)| *n == name)
-                .map(|(_, v)| v.clone())
+                .lookup(name)
+                .cloned()
                 .ok_or_else(|| fault(format!("`{name}` is not bound")))?,
             Atom::Int(digits) => Value::Int(
                 digits
