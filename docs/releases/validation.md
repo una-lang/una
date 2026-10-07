@@ -35,6 +35,7 @@ Status: Normative for the project's workflow (#232). GitHub Actions is not used.
 | `release` | `scripts/local-release.sh v<version>` on a tag made in the clone only (never pushed): the three archives (`aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`), each checked with `scripts/check-release.sh` | macOS, Docker |
 | `determinism` | The conformance suite twice with equal summaries and no failure; `una --json check` of every conformance case and example twice, the outputs hashed and compared; the tracked files unchanged | Rust, Z3 |
 | `native` | The equivalence test of `spec/16 §5`, `every_runnable_program_runs_natively_as_in_the_interpreter`: every runnable program of the repository (the examples, the conformance cases that run, the review corpora), in the interpreter and as a native executable, compared by status, output and trace | Rust, Z3 |
+| `site` | `scripts/site.sh`: the website builds with mdBook from the repository's documents, every page exists and every link between pages, or to an image, resolves (#244, N-36). Unlike `scripts/local-ci.sh`, which skips the site when mdBook is missing, the gate fails when mdBook is missing or at another version than the script pins | mdBook 0.5.4 |
 
 The pinned Z3 comes from `UNA_GATES_Z3`, else this checkout's `target/z3`, else the clone's `target/z3`. If none is there, the `build` gate installs it with `scripts/install-z3.sh`.
 

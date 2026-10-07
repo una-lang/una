@@ -84,11 +84,18 @@ if [ -n "${UNA_LOCAL_CI_SERIAL:-}" ]; then
 else
     step "Test" cargo test --workspace --locked
 fi
-# The website (#244): every page builds and every link between pages resolves. It needs mdBook
-# at the version scripts/site.sh pins, on the host; the container runs skip it, since the site
-# is the same on every platform.
+# The website (#244): every page builds and every link between pages resolves. It runs when
+# mdBook is installed at the version scripts/site.sh pins, and is skipped, visibly, otherwise
+# (N-36); the `site` gate of scripts/release-gates.sh requires it. The container runs skip it,
+# since the site is the same on every platform.
 if [ -z "${UNA_LOCAL_CI_Z3:-}" ]; then
-    step "Website" scripts/site.sh
+    mdbook_version=$(sed -n 's/^MDBOOK_VERSION=//p' scripts/site.sh)
+    if [ "$(mdbook --version 2>/dev/null)" = "mdbook v$mdbook_version" ]; then
+        step "Website" scripts/site.sh
+    else
+        echo "== Website"
+        echo "skipped: mdbook $mdbook_version not installed (cargo install mdbook --version $mdbook_version --locked)"
+    fi
 fi
 step "Pack the release archive of $target" scripts/release.sh "$target"
 step "Check the release archive of $target" scripts/check-release.sh "$target"
