@@ -19,7 +19,7 @@ Status: Normative, v0.1.
 
 (v0.2, ADR 0057.) Edition `0.2` adds the fixed-width integer types `I8`, `I16`, `I32`, `I64`, `U8`, `U16`, `U32` and `U64`, with overflow obligations (`spec/18`). `Int` stays unbounded.
 
-(v0.2, ADR 0069.) Edition `0.2` adds `Map[K, V]`, a keyed collection whose keys satisfy `Ord`, ordered by its keys (`spec/21`).
+(v0.2, ADR 0069; not implemented in v0.2.0; planned (#236).) Edition `0.2` adds `Map[K, V]`, a keyed collection whose keys satisfy `Ord`, ordered by its keys (`spec/21`).
 
 Equality `==` and `!=` are structural and defined for every type except function types (U2001). Ordering `<`, `<=`, `>`, `>=` is defined for `Int`, `Text` (lexicographic by scalar value) and sum kinds whose variants have no payload (declaration order). (v0.2, ADR 0066.) In edition `0.2`, the fixed-width types are ordered too (`spec/18 §2`), and on a type parameter equality and ordering need a constraint (`spec/20`).
 
