@@ -6,9 +6,13 @@ Status: Normative for the project's workflow (#232). GitHub Actions is not used.
 
 1. **A merge into `main`** needs a `scripts/local-ci.sh` PASS on macOS on the pull request's exact tip, written into the pull request body with the SHA.
    - Linux is not checked per pull request. The next gate run confirms it on `main` (`scripts/local-ci.sh --linux`, in Docker), and a Linux FAIL there is reported at once and fixed before anything else merges.
-2. **A tag** `v<version>` needs a run of `scripts/release-gates.sh` on the tagged SHA in which every gate is PASS.
+2. **A tag** `v<version>` needs a run of `scripts/release-gates.sh` in which every gate is PASS, on the gated SHA: the commit of `main` after the release pull request.
    - Its record is committed as `docs/releases/<version>-validation.md` before the tag is made.
-   - A tag on a SHA whose record has a FAIL or is INCOMPLETE is not made.
+   - **The tagged commit is the record commit**, not the gated SHA, since `install.sh` reads the record from the tag's tree, and gating the record commit again would be circular. So:
+     - The tagged commit's own change, against its first parent, is exactly the record file.
+     - Between the gated SHA and the tagged commit, only files under `docs/` change: `git diff --name-only <gated> <tag>` lists nothing else. The code, build files, scripts and `install.sh` of the tag are then those of the gated SHA.
+     - Anything else that merges in between, such as a change of code, needs a new gate run, and the gated SHA becomes that commit.
+   - A tag whose record has a FAIL or is INCOMPLETE is not made.
    - The owner's word is still needed for every tag and release.
 3. **A release** publishes the archives that the `release` gate built (`OUT/clone/target/local-release/v<version>/`), whose digests the record lists. A build is not assumed to be byte-reproducible, so the archives are not rebuilt after the record. The record and the published `.sha256` files MUST agree.
 4. **`.github/workflows` is not a gate.** The files stay in the repository, but no merge, tag or release waits for them or reads their results.
@@ -56,6 +60,6 @@ For a tag, `record.md` is committed as `docs/releases/<version>-validation.md`, 
 
 1. Merge the release pull request (version and `CHANGELOG.md`) under rule 1, and note the SHA of `main`.
 2. Run `scripts/release-gates.sh <sha> <out>` on that SHA, with Docker running and nothing else using it.
-3. If the verdict is PASS, commit `<out>/record.md` as `docs/releases/<version>-validation.md` in a pull request, under rule 1. The tag goes on the SHA the record names, not on this commit.
-4. With the owner's word, tag `v<version>` on the recorded SHA and push the tag.
+3. If the verdict is PASS, commit `<out>/record.md` as `docs/releases/<version>-validation.md` in a pull request that changes nothing else, under rule 1.
+4. Check rule 2 on the merged record commit: its own change is the record, and `git diff --name-only <gated> <record commit>` lists only files under `docs/`. With the owner's word, tag `v<version>` on the record commit and push the tag.
 5. Publish the archives from `<out>/clone/target/local-release/v<version>/`, checking that their digests match the record's, with the `gh release create` command that `logs/release.log` prints.
