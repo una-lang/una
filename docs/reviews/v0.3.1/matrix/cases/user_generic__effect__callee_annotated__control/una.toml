@@ -1,0 +1,4 @@
+[package]
+name = "user_generic__effect__callee_annotated__control"
+version = "0.1.0"
+edition = "0.1"

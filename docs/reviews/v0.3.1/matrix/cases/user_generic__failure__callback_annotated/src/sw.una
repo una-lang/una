@@ -1,0 +1,41 @@
+-- expect: rule: apply_f(decided, f: fn(x: T) -> k(x)), the callback's failure; a lambda cannot handle k's failure (U3007)
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub kind Bad = | Oops
+
+pub kind Box[T]
+  run: fn(T) -> Int
+
+pub kind Hold[T]
+  value: T
+
+check_len(xs: List[secret Int]) -> Int
+  fails Bad
+=
+  if xs.len > 0 then fail Oops else 0
+
+apply_f[U](x: U, f: fn(U) -> Int fails Bad) -> Int
+  fails Bad
+=
+  let r = f(x)
+    if error pass
+  r
+
+g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Int fails Bad) -> Int
+  uses @log: Log[write]
+  fails Bad
+=
+  let n = apply_f(if a == b then p else q, f: fn(x: T) -> k(x))
+    if error pass
+  @log.write(1)
+  2
+
+pub leak(s: secret Int) -> Unit
+  uses @log: Log[write]
+=
+  let r = g([s], b: [0], p: [], q: [1], k: check_len)
+    if error use 3
+  @log.write(5)
