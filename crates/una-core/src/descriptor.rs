@@ -20,6 +20,10 @@ pub enum Descriptor {
     /// Any other type that satisfies `Eq`: structural equality, and no order, with the index of
     /// its type description.
     Structural(usize),
+    /// A type that holds type parameters of the caller, as `Box[T]` or `List[T]`: an entry of
+    /// the runtime's table of composite descriptors, which holds the type's description and
+    /// the descriptor of each of its parameters (ADR 0068 D6).
+    Composite(usize),
 }
 
 /// The code of the first fixed-width type: the next ones follow in `IntType::ALL` order.
@@ -38,6 +42,7 @@ impl Descriptor {
             Descriptor::Text => 1,
             Descriptor::Sum(ty) => 2 | index(ty),
             Descriptor::Structural(ty) => 3 | index(ty),
+            Descriptor::Composite(entry) => 4 | index(entry),
             Descriptor::Fixed(int) => {
                 FIXED
                     + IntType::ALL
@@ -62,6 +67,7 @@ impl Descriptor {
             1 if ty == 0 => Some(Descriptor::Text),
             2 => Some(Descriptor::Sum(ty)),
             3 => Some(Descriptor::Structural(ty)),
+            4 => Some(Descriptor::Composite(ty)),
             code if ty == 0 => usize::try_from(code - FIXED)
                 .ok()
                 .and_then(|i| IntType::ALL.get(i).copied())
@@ -84,6 +90,8 @@ mod tests {
             Descriptor::Sum(41),
             Descriptor::Structural(0),
             Descriptor::Structural(7),
+            Descriptor::Composite(0),
+            Descriptor::Composite(3),
         ];
         all.extend(IntType::ALL.iter().copied().map(Descriptor::Fixed));
         let mut words = std::collections::BTreeSet::new();
@@ -94,6 +102,6 @@ mod tests {
             assert_eq!(Descriptor::from_word(word), Some(descriptor));
         }
         assert_eq!(Descriptor::from_word(2), None);
-        assert_eq!(Descriptor::from_word((4 << 1) | 1), None);
+        assert_eq!(Descriptor::from_word((5 << 1) | 1), None);
     }
 }

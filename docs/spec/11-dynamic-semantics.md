@@ -121,6 +121,7 @@ Values in traces and outputs are JSON strings holding their Una form: `"42"`, `"
 - A variant without fields is written as its name. A variant or record with one field is `Name(value)`, and one with several fields is `Name(f: value, g: value)`, in declaration order.
 - A list is `[a, b]`, and an empty one is `[]`. `Option` and `Result` are written as variants: `Some(3)`, `None`, `Ok("x")`, `Err(NotFound)`.
 - A `Text` inside a structure is quoted with the escapes of `spec/01 §6`. A `Text` interpolated directly is not quoted.
+- (Leonardo, 2026-10-06, ADR 0068 amendment.) A `Hashed`, at any position and through a type parameter, is written `<hashed>`: interpolation writes no bytes of a hash. Traces and diagnostics keep `hashed:<hex>`.
 - The text depends on the value alone. The interpreter and a native backend MUST write the same text (`spec/16 §5`).
 
 ## 6. Example harness
