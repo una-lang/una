@@ -104,9 +104,13 @@ pub fn send(
         .filter(|(name, _)| !CREDENTIALS.iter().any(|c| name.eq_ignore_ascii_case(c)))
         .cloned()
         .collect();
+    // Whether the chain has left the first origin: the credentials then stay dropped to its
+    // end, even back at that origin, whose path the other origin chose (N-35).
+    let mut left_first = false;
     for redirects in 0..=MAX_REDIRECTS {
         // The credentials go only to the origin they were given for.
-        let first = (url.tls, url.host.clone(), url.port) == first_origin;
+        left_first |= (url.tls, url.host.clone(), url.port) != first_origin;
+        let first = !left_first;
         let bearer = request.bearer.filter(|_| first);
         let headers = if first {
             request.headers
