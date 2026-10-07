@@ -26,6 +26,18 @@ fn gates(sha: &str, out: &Path, gates: &[&str]) -> Output {
         .unwrap()
 }
 
+/// Whether `git` runs here; without it, the tests say so and check nothing, since the script
+/// needs it (scripts/local-ci/Dockerfile installs it for the Linux runs). The skip is printed,
+/// so that a run without git is never mistaken for a pass.
+#[allow(clippy::print_stderr)]
+fn git_available() -> bool {
+    let found = Command::new("git").arg("--version").output().is_ok();
+    if !found {
+        eprintln!("skipped: git is not installed, and scripts/release-gates.sh needs it");
+    }
+    found
+}
+
 fn head() -> String {
     let output = Command::new("git")
         .args(["rev-parse", "HEAD"])
@@ -47,6 +59,9 @@ fn rows(out: &Path) -> Vec<Vec<String>> {
 
 #[test]
 fn the_clone_gate_checks_out_exactly_the_commit_and_records_it() {
+    if !git_available() {
+        return;
+    }
     let sha = head();
     let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-head");
     let output = gates(&sha, &out, &["clone"]);
@@ -100,6 +115,9 @@ fn the_clone_gate_checks_out_exactly_the_commit_and_records_it() {
 
 #[test]
 fn a_failing_gate_does_not_stop_the_next_one() {
+    if !git_available() {
+        return;
+    }
     // No commit has this name, so each clone gate fails, and both run.
     let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-missing");
     let output = gates(&"0".repeat(40), &out, &["clone", "clone"]);
@@ -114,6 +132,9 @@ fn a_failing_gate_does_not_stop_the_next_one() {
 
 #[test]
 fn usage_errors_exit_with_2() {
+    if !git_available() {
+        return;
+    }
     let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gates-usage");
     // An abbreviated commit is not a validation target: the record names the full one.
     assert_eq!(gates("abc1234", &out, &["clone"]).status.code(), Some(2));
