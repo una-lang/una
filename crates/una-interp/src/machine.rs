@@ -866,8 +866,11 @@ impl<'p, 'w> Machine<'p, 'w> {
                 // branch order, the sequential schedule: a failure stops the block before
                 // the tasks after it start, and none is cancelled after starting.
                 Expr::Together { tasks, .. } => {
-                    // A task's captures are never given up: the tasks after it read them.
-                    self.later.push((expr, Vec::new()));
+                    // A task's captures are never given up: the tasks after it read them. The
+                    // bindings of the tasks are their own, bound anew in each before it reads
+                    // them: Core binders are unique (#263).
+                    let rebound = self.binders(expr).iter().copied().collect();
+                    self.later.push((expr, rebound));
                     let mut results = Vec::with_capacity(tasks.len());
                     for (index, task) in tasks.iter().enumerate() {
                         match self.task(env, &caps, index, task) {
@@ -890,7 +893,9 @@ impl<'p, 'w> Machine<'p, 'w> {
                 } => {
                     let items = self.elements(env, source, *span)?;
                     let mut results = Vec::with_capacity(items.len());
-                    self.later.push((expr, Vec::new()));
+                    // As for `together`, and the element too, which each task binds anew (#263).
+                    let rebound = self.binders(expr).iter().copied().collect();
+                    self.later.push((expr, rebound));
                     for (index, item) in items.into_iter().enumerate() {
                         let mark = env.len();
                         env.push((var.0.as_str(), item));

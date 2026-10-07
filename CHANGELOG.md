@@ -27,6 +27,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 - **Building a list through calls takes linear time** (ADR 0072, #262). An `edit` argument, or a binding at its last use rebound from a call's result (`acc = push(acc, x)`), now moves into the callee, which appends in place through any number of call levels, in the interpreter and in native code: amortized O(1) per append instead of a copy of the whole list at each call. A binding that the code after a failure reads keeps its value, as before. Native functions own the parameters they consume, found by borrow inference. A read-only parameter is still borrowed at no cost.
 - **Appending to a text in a loop takes linear time** (ADR 0070 X10, #261). `t = "{t}..."` appends in place when nothing else holds the text, in the interpreter and in native code: amortized O(length of the appended part) per append, O(total length) for a loop, instead of a copy of the whole text each time. A text that something else holds is copied as before, so a copy taken earlier keeps its value.
+- **Appending in a task of `together` takes linear time in the interpreter** (#263). A list or text that a task, or a loop inside it, appends to is updated in place, as native code already did: the bindings of the block's own tasks no longer count as read by the tasks after them. A list a task captures keeps its value for the other tasks.
 
 ### Proof cache
 
