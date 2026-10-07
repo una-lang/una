@@ -113,6 +113,7 @@ impl KindLabels {
         match ty {
             Ty::Labeled(label, inner) => label.join(&self.written(inner)),
             Ty::List(element) => self.written(element),
+            Ty::Map(key, value) => self.written(key).join(&self.written(value)),
             Ty::Kind(id, args) => args
                 .iter()
                 .fold(self.own(*id), |label, arg| label.join(&self.written(arg))),
@@ -131,6 +132,10 @@ impl KindLabels {
                 }
             }
             Ty::List(element) => self.occurrences(element, in_fn, out),
+            Ty::Map(key, value) => {
+                self.occurrences(key, in_fn, out);
+                self.occurrences(value, in_fn, out);
+            }
             Ty::Kind(id, args) => {
                 for (index, arg) in args.iter().enumerate() {
                     self.occurrences(arg, in_fn || self.is_invariant(*id, index), out);
@@ -176,6 +181,9 @@ pub(crate) enum Ty {
     Unit,
     Hashed,
     List(Box<Ty>),
+    /// `Map[K, V]`, keyed by an `Ord` type, from edition 0.2 (`spec/21 §1`). Its keys are part
+    /// of its shape, so a read takes the labels of the key position with the top label (§3).
+    Map(Box<Ty>, Box<Ty>),
     /// A record or sum kind and its type arguments; nominal (`spec/03 §2.1`).
     Kind(KindId, Vec<Ty>),
     /// The type parameter with this index in the declaration being checked.
@@ -345,6 +353,7 @@ impl Ty {
             }
             Ty::Labeled(label, inner) => label.join(&inner.deep_label(kinds)),
             Ty::List(element) => element.deep_label(kinds),
+            Ty::Map(key, value) => key.deep_label(kinds).join(&value.deep_label(kinds)),
             Ty::Kind(id, args) => args.iter().fold(kinds.own(*id), |label, arg| {
                 label.join(&arg.deep_label(kinds))
             }),
@@ -368,6 +377,7 @@ impl Ty {
         match self {
             Ty::Labeled(label, inner) => label.join(&inner.every_label(kinds)),
             Ty::List(element) => element.every_label(kinds),
+            Ty::Map(key, value) => key.every_label(kinds).join(&value.every_label(kinds)),
             Ty::Kind(id, args) => args.iter().fold(kinds.own(*id), |label, arg| {
                 label.join(&arg.every_label(kinds))
             }),
@@ -390,6 +400,10 @@ impl Ty {
     pub(crate) fn op_parameter(&self, positive: bool, top: &Label, kinds: &KindLabels) -> Ty {
         let inner = match self.unlabeled() {
             Ty::List(element) => Ty::List(Box::new(element.op_parameter(positive, top, kinds))),
+            Ty::Map(key, value) => Ty::Map(
+                Box::new(key.op_parameter(positive, top, kinds)),
+                Box::new(value.op_parameter(positive, top, kinds)),
+            ),
             Ty::Kind(id, args) => Ty::Kind(
                 *id,
                 args.iter()
@@ -438,6 +452,9 @@ impl Ty {
         };
         let inner = match self.unlabeled() {
             Ty::List(element) => element.sent_label(positive, kinds),
+            Ty::Map(key, value) => key
+                .sent_label(positive, kinds)
+                .join(&value.sent_label(positive, kinds)),
             Ty::Kind(id, args) => args.iter().enumerate().fold(
                 if positive {
                     kinds.own(*id)
@@ -465,6 +482,10 @@ impl Ty {
     pub(crate) fn raise_deep(&self, label: &Label) -> Ty {
         let inner = match self.unlabeled() {
             Ty::List(element) => Ty::List(Box::new(element.raise_deep(label))),
+            Ty::Map(key, value) => Ty::Map(
+                Box::new(key.raise_deep(label)),
+                Box::new(value.raise_deep(label)),
+            ),
             Ty::Kind(id, args) => Ty::Kind(*id, args.iter().map(|a| a.raise_deep(label)).collect()),
             other => other.clone(),
         };
@@ -476,6 +497,7 @@ impl Ty {
         match self {
             Ty::Labeled(_, inner) => inner.erase(),
             Ty::List(element) => Ty::List(Box::new(element.erase())),
+            Ty::Map(key, value) => Ty::Map(Box::new(key.erase()), Box::new(value.erase())),
             Ty::Kind(id, args) => Ty::Kind(*id, args.iter().map(Ty::erase).collect()),
             Ty::Fn(function) => Ty::Fn(Box::new(FnTy {
                 params: function.params.iter().map(Ty::erase).collect(),
@@ -494,6 +516,10 @@ impl Ty {
             Ty::Labeled(label, inner) => inner.substitute(args).with_label(label),
             Ty::Param(index) => args.get(*index).cloned().unwrap_or(Ty::Error),
             Ty::List(element) => Ty::List(Box::new(element.substitute(args))),
+            Ty::Map(key, value) => Ty::Map(
+                Box::new(key.substitute(args)),
+                Box::new(value.substitute(args)),
+            ),
             Ty::Kind(id, kind_args) => Ty::Kind(
                 *id,
                 kind_args.iter().map(|arg| arg.substitute(args)).collect(),
@@ -514,6 +540,9 @@ impl Ty {
         match self {
             Ty::Labeled(label, inner) => inner.map_labels(f).with_label(&f(label)),
             Ty::List(element) => Ty::List(Box::new(element.map_labels(f))),
+            Ty::Map(key, value) => {
+                Ty::Map(Box::new(key.map_labels(f)), Box::new(value.map_labels(f)))
+            }
             Ty::Kind(id, args) => Ty::Kind(*id, args.iter().map(|a| a.map_labels(f)).collect()),
             Ty::Fn(function) => Ty::Fn(Box::new(FnTy {
                 params: function.params.iter().map(|p| p.map_labels(f)).collect(),
@@ -537,6 +566,12 @@ impl Ty {
                 None => Ty::Param(*index),
             },
             Ty::List(element) => Ty::List(Box::new(element.symbolic(names))),
+            // A key of type `T` carries `ℓ*_T` (`spec/21 §3` rule 5): it is a scalar of `T`'s
+            // argument, whose every label is its top.
+            Ty::Map(key, value) => Ty::Map(
+                Box::new(key.symbolic(names).map_labels(&starred)),
+                Box::new(value.symbolic(names)),
+            ),
             Ty::Kind(id, args) => Ty::Kind(*id, args.iter().map(|a| a.symbolic(names)).collect()),
             Ty::Fn(function) => Ty::Fn(Box::new(FnTy {
                 params: function.params.iter().map(|p| p.symbolic(names)).collect(),
@@ -557,6 +592,7 @@ impl Ty {
         match self {
             Ty::Labeled(_, inner) => inner.second_class(),
             Ty::List(element) => element.second_class(),
+            Ty::Map(key, value) => key.second_class() || value.second_class(),
             Ty::Kind(_, args) => args.iter().any(Ty::second_class),
             Ty::Fn(function) => {
                 !function.uses.is_empty()
@@ -574,6 +610,10 @@ impl Ty {
             Ty::Labeled(_, inner) => inner.params(params),
             Ty::Param(index) => params.push(*index),
             Ty::List(element) => element.params(params),
+            Ty::Map(key, value) => {
+                key.params(params);
+                value.params(params);
+            }
             Ty::Kind(_, args) => args.iter().for_each(|arg| arg.params(params)),
             Ty::Fn(function) => {
                 function
@@ -609,6 +649,9 @@ impl<N: Names> fmt::Display for Show<'_, '_, N> {
             Ty::Unit => write!(f, "Unit"),
             Ty::Hashed => write!(f, "Hashed"),
             Ty::List(element) => write!(f, "List[{}]", Show(element, names)),
+            Ty::Map(key, value) => {
+                write!(f, "Map[{}, {}]", Show(key, names), Show(value, names))
+            }
             Ty::Kind(id, args) => {
                 write!(f, "{}", names.kind_name(*id))?;
                 if !args.is_empty() {
@@ -651,6 +694,12 @@ impl<N: Names> fmt::Display for ShowLabeled<'_, '_, N> {
         match self.0 {
             Ty::Labeled(label, inner) => write!(f, "{label} {}", ShowLabeled(inner, names)),
             Ty::List(element) => write!(f, "List[{}]", ShowLabeled(element, names)),
+            Ty::Map(key, value) => write!(
+                f,
+                "Map[{}, {}]",
+                ShowLabeled(key, names),
+                ShowLabeled(value, names)
+            ),
             Ty::Kind(id, args) if !args.is_empty() => {
                 let args: Vec<String> = args
                     .iter()

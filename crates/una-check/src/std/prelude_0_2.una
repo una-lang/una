@@ -10,3 +10,14 @@ pub sort[T: Ord](xs: List[T]) -> List[T]
   ensures result.len == xs.len
 =
   xs
+
+--- An entry of a map, as `entries()` lists them (`spec/21 §1` rule 4).
+pub kind Entry[K, V]
+  key: K
+  value: V
+
+--- The map with no entries, of the type its context expects (`spec/21 §2`).
+pub empty_map[K: Ord, V]() -> Map[K, V]
+  ensures result.len == 0
+=
+  empty_map()

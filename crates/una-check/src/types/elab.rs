@@ -355,6 +355,11 @@ impl<'e, 'a> Fx<'e, 'a> {
                 name: "List".to_owned(),
                 args: vec![self.convert(element)],
             },
+            Ty::Map(key, value) => Base::Named {
+                module: "prelude".to_owned(),
+                name: "Map".to_owned(),
+                args: vec![self.convert(key), self.convert(value)],
+            },
             Ty::Kind(id, args) => Base::Named {
                 module: self
                     .env
@@ -3552,6 +3557,16 @@ fn lost(ty: &Ty, core: &Type) -> Option<String> {
                 ..
             },
         ) => args.first().and_then(|core| lost(element, core)),
+        (
+            Ty::Map(key, value),
+            Type::Base {
+                base: Base::Named { args, .. },
+                ..
+            },
+        ) => [key.as_ref(), value.as_ref()]
+            .into_iter()
+            .zip(args)
+            .find_map(|(ty, core)| lost(ty, core)),
         (
             Ty::Kind(_, args),
             Type::Base {

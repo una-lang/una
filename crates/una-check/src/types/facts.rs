@@ -64,6 +64,7 @@ impl KindFacts {
                 false
             }
             Ty::List(element) => self.walk(element, params),
+            Ty::Map(key, value) => self.walk(key, params) | self.walk(value, params),
             Ty::Kind(kind, args) => {
                 let mut holds = self.direct.get(*kind).copied().unwrap_or(false);
                 if let Some(via) = self.via.get(*kind) {
@@ -354,6 +355,10 @@ fn regular_recursion(env: &Env<'_>, report: &mut Report<'_>) {
     fn mentioned(ty: &Ty, out: &mut Vec<(KindId, Vec<Ty>)>) {
         match ty {
             Ty::Labeled(_, inner) | Ty::List(inner) => mentioned(inner, out),
+            Ty::Map(key, value) => {
+                mentioned(key, out);
+                mentioned(value, out);
+            }
             Ty::Kind(kind, args) => {
                 out.push((*kind, args.clone()));
                 for arg in args {
@@ -441,6 +446,11 @@ fn written(env: &Env<'_>, kind: &super::env::KindDef<'_>, ty: &Ty) -> String {
         Ty::Labeled(_, inner) => written(env, kind, inner),
         Ty::Param(index) => kind.params.get(*index).copied().unwrap_or("?").to_owned(),
         Ty::List(element) => format!("List[{}]", written(env, kind, element)),
+        Ty::Map(key, value) => format!(
+            "Map[{}, {}]",
+            written(env, kind, key),
+            written(env, kind, value)
+        ),
         Ty::Kind(other, args) if args.is_empty() => env.kind_name(*other).to_owned(),
         Ty::Kind(other, args) => format!("{}[{}]", env.kind_name(*other), list(args)),
         Ty::Int => "Int".to_owned(),
@@ -602,6 +612,13 @@ pub(crate) fn generic_constraints(
             raise(env, *function, *index, *need);
         }
     }
+    // A map's key type must satisfy `Ord` (`spec/21 §1` rule 2): a private function infers it.
+    let map_keys = std::mem::take(&mut env.map_keys);
+    for key in &map_keys {
+        if let (Ty::Param(index), Some(owner)) = (key.key.unlabeled(), key.owner) {
+            raise(env, owner, *index, Constraint::Ord);
+        }
+    }
     loop {
         let mut changed = false;
         for (caller, callee, args, _) in &findings.instances {
@@ -622,6 +639,38 @@ pub(crate) fn generic_constraints(
         if !changed {
             break;
         }
+    }
+    let mut reported = BTreeSet::new();
+    for key in &map_keys {
+        let constraints = key
+            .owner
+            .and_then(|owner| env.functions.get(owner))
+            .map(|def| def.constraints.clone())
+            .unwrap_or_default();
+        if satisfies(env, facts, &key.key, Constraint::Ord, &constraints)
+            || !reported.insert(key.span)
+        {
+            continue;
+        }
+        let params = key
+            .owner
+            .and_then(|owner| env.functions.get(owner))
+            .map(|def| def.type_params.clone())
+            .unwrap_or_default();
+        let shown = Show(
+            &key.key,
+            &CallerNames {
+                env,
+                params: &params,
+            },
+        )
+        .to_string();
+        let message = match (key.key.unlabeled(), key.owner) {
+            // `spec/20 §2` rule 1: kinds cannot carry constraints (N-15).
+            (Ty::Param(_), None) => "a map's key type must satisfy `Ord`, and a type parameter of a kind or alias cannot be constrained; use a concrete key type".to_owned(),
+            _ => format!("a map's key type must satisfy `Ord`, and `{shown}` does not"),
+        };
+        report.error(Code::U2025, key.span, message);
     }
     for (caller, callee, args, span) in &findings.instances {
         let Some(def) = env.functions.get(*callee) else {

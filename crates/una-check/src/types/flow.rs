@@ -65,6 +65,8 @@ fn violation(
     }
     match (found.unlabeled(), expected.unlabeled()) {
         (Ty::List(x), Ty::List(y)) => violation(x, y, covariant, top, kinds),
+        (Ty::Map(xk, xv), Ty::Map(yk, yv)) => violation(xk, yk, covariant, top, kinds)
+            .or_else(|| violation(xv, yv, covariant, top, kinds)),
         (Ty::Kind(i, xs), Ty::Kind(j, ys)) if i == j => {
             xs.iter().zip(ys).enumerate().find_map(|(index, (x, y))| {
                 violation(x, y, covariant, top, kinds).or_else(|| {
