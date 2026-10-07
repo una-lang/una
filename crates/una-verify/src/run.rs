@@ -154,6 +154,15 @@ fn uninterpreted(obligation: &Obligation) -> Vec<(F, F, F)> {
 const ARITHMETIC: [&str; 3] = ["i!mul!Int", "i!div!Int", "i!mod!Int"];
 
 /// The reason of an obligation whose model disagrees with real arithmetic (ADR 0053).
+/// The reason of an obligation whose refutation sets values a loop made fresh (ADR 0071 D3).
+fn forgotten(names: &[String]) -> String {
+    let names: Vec<String> = names.iter().map(|name| format!("`{name}`")).collect();
+    let names = names.join(" and ");
+    format!(
+        "the loop forgets every fact about {names} but the refinements of its type, and its length when the loop only `set`s a list, as `spec/17 §5` rule 3 says, so the counterexample sets {names} freely; guard the use with an `if`, or check the value with `checked`"
+    )
+}
+
 pub(crate) const UNINTERPRETED: &str = "the refutation depends on a product, quotient or remainder of two values, which the encoding of `spec/12 §2` leaves uninterpreted";
 
 /// Whether the model agrees with real arithmetic at every application of uninterpreted
@@ -450,6 +459,17 @@ fn outcome(
                 bindings: Vec::new(),
             };
         }
+    }
+    // ADR 0071 D3: a counterexample that sets a value a loop made fresh may be no execution,
+    // since the loop forgot the facts that exclude it.
+    if answer.status == Status::Refuted && !obligation.forgotten.is_empty() {
+        return Outcome {
+            status: ObligationStatus::Unknown,
+            reason: Some(forgotten(&obligation.forgotten)),
+            cached,
+            path: None,
+            bindings: Vec::new(),
+        };
     }
     let mut bindings = Vec::new();
     let mut path = None;
