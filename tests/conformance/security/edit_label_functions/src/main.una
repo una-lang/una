@@ -1,0 +1,17 @@
+-- test: an open position that holds a function type is U4001, asking for an annotation of the binding's own outer type
+-- spec: spec/17 §2
+-- expect: error U4001 at src/main.una:9:12
+-- expect: error U4001 at src/main.una:15:12
+module main
+
+pub functions_in_a_map() -> Int
+=
+  let edit m = empty_map()
+  edit m.set(key: "a", value: fn(n: Int) -> n)
+  m.len
+
+pub functions_in_a_list() -> Int
+=
+  let edit fs = []
+  fs = fs.append(item: fn(n: Int) -> n)
+  fs.len

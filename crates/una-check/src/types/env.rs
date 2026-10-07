@@ -311,6 +311,19 @@ pub(crate) struct Env<'a> {
     /// The labels that each kind's fields declare and the variance of its type parameters
     /// (re-review N-001, ADR 0046), computed once the signatures are lowered.
     pub(crate) kind_labels: Rc<KindLabels>,
+    /// The solved label variables of editable bindings, by symbol (ADR 0075).
+    pub(crate) edit_labels: BTreeMap<String, Label>,
+    /// Whether any editable binding has label variables, so pass 1 runs once more after the
+    /// summaries reach their fixpoint (ADR 0075 rule 5).
+    pub(crate) edit_labels_seen: bool,
+    /// Whether a check of pass 1 changed a solution of `edit_labels`, and one that changed.
+    pub(crate) edit_labels_changed: bool,
+    pub(crate) edit_labels_changed_name: Option<String>,
+    /// The binding of each label variable, for a diagnostic that names it.
+    pub(crate) edit_label_spans: BTreeMap<String, Span>,
+    /// The type an open position of an editable binding resolved to, without labels, by the
+    /// name of its variable: later checks give each label position inside it a variable.
+    pub(crate) edit_shapes: BTreeMap<String, super::ty::Ty>,
     alias_state: Vec<AliasState>,
     /// The package's edition (`spec/13 §7`).
     pub(crate) edition: Edition,
@@ -393,6 +406,12 @@ impl<'a> Env<'a> {
             categories,
             vias: BTreeMap::new(),
             kind_labels: Rc::new(KindLabels::default()),
+            edit_labels: BTreeMap::new(),
+            edit_labels_seen: false,
+            edit_labels_changed: false,
+            edit_labels_changed_name: None,
+            edit_label_spans: BTreeMap::new(),
+            edit_shapes: BTreeMap::new(),
             alias_state: Vec::new(),
             edition,
             summaries: BTreeMap::new(),
