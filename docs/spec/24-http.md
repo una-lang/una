@@ -1,0 +1,91 @@
+# 24. HTTP
+
+Status: Normative, v0.2 (ADR 0074). Not implemented yet; planned (#239).
+
+The host capability `Http` sends HTTP/1.1 requests to the origins that grants allow, and returns their responses.
+
+**Editions.** The constructs of this chapter exist only in packages of edition `0.2` (`spec/13 §7`). In edition `0.1`, `Http`, `Header`, `Response` and `HttpError` are ordinary names.
+
+## 1. The capability
+
+1. **Declarations.** `std.host` declares, in the prelude (`spec/14 §3`):
+
+   ```una
+   pub kind Header
+     name: Text
+     value: Text
+
+   pub kind Response
+     status: Int
+     headers: List[Header]
+     body: Text
+
+   pub kind HttpError = Denied | BadUrl | Unreachable | TimedOut | TooLarge | Tls | Protocol
+
+   pub capability Http
+     op get(url: Text, headers: List[Header], key_name: Option[Text]) -> internal Response
+       fails HttpError
+       accepts internal
+     op post(url: Text, headers: List[Header], body: Text, key_name: Option[Text]) -> internal Response
+       fails HttpError
+       accepts internal
+     op put(url: Text, headers: List[Header], body: Text, key_name: Option[Text]) -> internal Response
+       fails HttpError
+       accepts internal
+     op delete(url: Text, headers: List[Header], key_name: Option[Text]) -> internal Response
+       fails HttpError
+       accepts internal
+   ```
+
+2. **Names.** A user kind or capability named `Http`, `Header`, `Response` or `HttpError` is U1002 in edition 0.2.
+3. **Statuses.** Every HTTP response is a `Response`, whatever its status. A request fails only when it gets no response it may return:
+   - `Denied`: no grant allows the URL's origin with the method, or `key_name` names no key of the grants;
+   - `BadUrl`: the URL is not an absolute `http` or `https` URL, or it has user info;
+   - `Unreachable`: name resolution or the connection failed;
+   - `TimedOut`: the request passed its deadline (§4 rule 2);
+   - `TooLarge`: the response passed a limit of §4 rule 1;
+   - `Tls`: the TLS handshake or the certificate failed;
+   - `Protocol`: the response is not valid HTTP/1.1 as §3 reads it, or its body is not UTF-8.
+
+## 2. Grants
+
+1. **Syntax.** `http:<origin>` or `http:<origin>:<methods>`, in `[run] grants` and in `--grant` (`spec/13 §5`):
+   - `<origin>` is `http://` or `https://`, a host, and an optional `:<port>`;
+   - the host's leftmost label MAY be `*`, which matches exactly one label;
+   - `<methods>` is a comma-separated list of `get`, `post`, `put` and `delete`, by default `get`.
+2. **Deny by default.** A request is allowed when a grant matches its scheme, its host and its port (the scheme's default when absent), and allows its method. Otherwise it fails with `Denied`, before any connection.
+3. **Redirects.** For `301`, `302`, `303`, `307` and `308`, the client follows the `Location` when the method is `get`, or the status is `303` (which it follows as `get`), and a grant allows the target with that method. It follows at most 5 redirects in a row. Otherwise the redirect response is returned.
+4. **Checks.** `una check` and `una run` report a `uses` of an `Http` operation that no grant allows as U3012, as for every host capability.
+
+## 3. Requests and responses
+
+1. **HTTP/1.1, directly.** The client speaks HTTP/1.1 to the origin of each request, with no proxy. It MUST ignore `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and `NO_PROXY`, in any letter case.
+2. **Requests.** A request carries the method, the URL's path and query, `Host`, `Content-Length` for a body, `Accept-Encoding: identity`, `Connection: close`, and the program's headers in order. With `key_name: Some(n)` it also carries `Authorization: Bearer <key>`, with the key named `n` of the `keys:` grants (`spec/13 §5`).
+3. **Responses.**
+   - The client reads the status line and the headers.
+   - It reads the body by `Content-Length`, by `chunked` transfer coding (trailers are read and dropped), or to the end of the connection when neither is present.
+   - Header names are kept as received, in order.
+4. **TLS** verifies the server's certificate chain against the Mozilla root store that the implementation compiles in, and the host name. There is no option to skip verification.
+
+## 4. Limits and time
+
+1. **Size.** A response's headers are at most 100, and at most 64 KiB together, else `Protocol`. Its body is at most `--max-response <MiB>` (default 16), else `TooLarge`, and the client reads no further.
+2. **Time.** Each request has one deadline, `--http-timeout <seconds>` (default 30): the total wall-clock time of the request, covering name resolution, connecting, the TLS handshake, writing and reading, across its redirects. Past it the request fails with `TimedOut`.
+3. **Complexity.** A request takes time and space linear in the URL, headers and body it sends. A response takes time and space linear in what it reads, which rule 1 bounds.
+4. **Tasks.** A request blocks only its task's thread (`spec/19 §8`).
+
+## 5. Information flow
+
+1. Every argument of every operation is a sink with `accepts internal` (`spec/07 §7` rule 4): a `secret` URL, header, body or key name is U4003.
+2. Every response is `internal`.
+3. A key sent by `key_name` never becomes a value of the program, so it has no label in it. It appears in no trace, outcome or diagnostic.
+
+## 6. Traces
+
+An operation of `Http` is a trace event of `spec/11 §5`, with `instance` `host:Http` and `op` the method's name. Its arguments are written and redacted as any operation's are, and so is its outcome, by the label of the binder of its result.
+
+## 7. Examples and determinism
+
+1. Examples cannot use `Http` (U3014). A program's tests install handlers for it (`spec/05 §5`).
+2. The network is outside the model: two runs MAY get different responses. Grants, redirects, limits and the requests the client writes are deterministic.
+3. Both engines use one client, and give the same requests, responses and failures for the same server (`spec/16 §5`).
