@@ -503,14 +503,14 @@ Every type may carry a label: a level, `public` (the default), `internal`, `conf
 ```una
 module demo
 
-pub kind Entry
+pub kind Note
   day: Int
   body: secret Text
 
 pub kind Mood = Calm | Busy
 
 --- The answer depends on the text, so it is as secret as the text.
-pub mood(entry: Entry) -> secret Mood = if entry.body.len > 280 then Busy else Calm
+pub mood(note: Note) -> secret Mood = if note.body.len > 280 then Busy else Calm
 ```
 
 ```una

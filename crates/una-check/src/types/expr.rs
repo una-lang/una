@@ -313,6 +313,9 @@ impl<'a> Checker<'_, 'a, '_> {
             Ty::Fn(_) => Some("this value is a function".to_owned()),
             Ty::Hashed => Some("this value is a `Hashed`".to_owned()),
             Ty::List(element) => self.unwritable(element, seen),
+            Ty::Map(key, value) => self
+                .unwritable(key, seen)
+                .or_else(|| self.unwritable(value, seen)),
             Ty::Kind(id, args) => {
                 if !seen.insert(*id) {
                     return None;
@@ -355,6 +358,9 @@ impl<'a> Checker<'_, 'a, '_> {
     ) -> Option<(String, String, Label)> {
         match ty.unlabeled() {
             Ty::List(element) => self.labeled_field(element, seen),
+            Ty::Map(key, value) => self
+                .labeled_field(key, seen)
+                .or_else(|| self.labeled_field(value, seen)),
             Ty::Kind(id, args) => {
                 if !seen.insert(*id) {
                     return None;
@@ -1287,9 +1293,11 @@ impl<'a> Checker<'_, 'a, '_> {
             let (ty, param_ty) = match (&param.ty, from_shape) {
                 (Some(written), from_shape) => {
                     let type_params = self.type_params.clone();
+                    self.env.owner = self.current;
                     let lowered =
                         self.env
                             .lower_type(self.module, written, &type_params, self.report);
+                    self.env.owner = None;
                     written_refinements = Some(lowered.refinements);
                     let lowered = self.symbolic(&lowered.base);
                     match from_shape {

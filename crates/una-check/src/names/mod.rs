@@ -405,6 +405,21 @@ impl<'p, 'a> Checker<'p, 'a> {
             );
             self.diagnostics.push(diagnostic);
         }
+        // Edition 0.2: maps and their entries are built in (`spec/21 §1` rule 1).
+        if upper
+            && self.package.settings.edition >= Edition::V0_2
+            && matches!(name, "Map" | "Entry")
+        {
+            let diagnostic = self.make(
+                Code::U1002,
+                ident.span,
+                format!(
+                    "`{name}` is a built-in type of maps in edition 0.2, so a {} cannot take its name",
+                    what.word()
+                ),
+            );
+            self.diagnostics.push(diagnostic);
+        }
         // Edition 0.2: the constraints are names of the prelude (`spec/20 §2` rule 3).
         if upper
             && self.package.settings.edition >= Edition::V0_2
