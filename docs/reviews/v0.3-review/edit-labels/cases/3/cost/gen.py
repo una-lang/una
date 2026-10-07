@@ -1,6 +1,8 @@
 """Writes src/main.una for `shape` at size n (ADR 0075 rule 5: checking stays linear).
 - cycle: one function with n editable lists that flow into each other in a cycle, one SCC.
 - annotated: the cycle with annotated bindings, which have no label variables (a control).
+- deep: one editable binding whose type nests List and Option to depth n, built twice and read
+  in a loop (N-44: a variable at every label position, linear in the type's size).
 - ring: n mutually recursive generic functions, each feeding its label variable from the next.
 - maps: n generic functions, caller first, each storing the next one's solved map in its own.
 - chain (rchain: declared callee first): n generic functions, each with an editable list fed by the next one's result.
@@ -18,6 +20,15 @@ if shape in ("cycle", "annotated"):
     out += ["  for k in 0..<2"]
     out += [f"    b{i} = b{(i + 1) % n}" for i in range(n)]
     out += ["    b0 = b0.append(item: x)", "  b0.len"]
+elif shape == "deep":
+    def value(d, leaf):
+        v = leaf
+        for i in range(d):
+            v = f"[{v}]" if i % 2 == 0 else f"Some({v})"
+        return v
+    out += ["pub f(x: internal Int) -> internal Int", "=", "  let edit v = []"]
+    out += ["  for k in 0..<2", f"    v = v.append(item: {value(n, '0')})", f"    v = v.append(item: {value(n, 'x')})"]
+    out += ["  v.len"]
 elif shape == "ring":
     # n mutually recursive generic functions, each feeding its label variable from the next.
     for i in range(n):
