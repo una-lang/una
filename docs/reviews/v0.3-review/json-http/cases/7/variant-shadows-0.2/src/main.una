@@ -1,0 +1,5 @@
+module main
+
+pub kind Mine = Null | Str(value: Int)
+
+pub f() -> Mine = Str(value: 1)

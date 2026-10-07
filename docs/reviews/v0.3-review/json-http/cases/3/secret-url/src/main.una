@@ -1,0 +1,8 @@
+module main
+
+h(u: secret Text) -> internal Response
+  uses @http: Http[get]
+  fails HttpError
+=
+  @http.get(u, headers: [], key_name: None)
+    if error pass
