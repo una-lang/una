@@ -1490,3 +1490,62 @@ fn a_reader_that_went_away_is_a_failed_write() {
     let output = child.wait_with_output().unwrap();
     assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
 }
+
+/// A program that appends `steps` items to a list in a loop, through `shape`: an `edit`
+/// argument one, two or three calls deep, or a binding rebound from a call's result (#262).
+fn appends_through_calls(shape: &str, steps: usize) -> String {
+    let call = match shape {
+        "edit1" => "push_one(edit a, i: i)",
+        "edit2" => "push_two(edit a, i: i)",
+        "edit3" => "push_three(edit a, i: i)",
+        _ => "a = pushed(a, i: i)",
+    };
+    format!(
+        "module grow\n\npush_one(edit acc: List[Int], i: Int) -> Unit\n=\n  acc = acc.append(item: i)\n\npush_two(edit acc: List[Int], i: Int) -> Unit\n=\n  push_one(edit acc, i: i)\n\npush_three(edit acc: List[Int], i: Int) -> Unit\n=\n  push_two(edit acc, i: i)\n\npushed(acc: List[Int], i: Int) -> List[Int] = acc.append(item: i)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit a: List[Int] = []\n  for i in 0..<{steps}\n    {call}\n  @console.print(\"{{a.len}}\")\n"
+    )
+}
+
+#[test]
+fn a_list_appended_through_calls_grows_in_linear_time() {
+    // ADR 0072 D1 and D3 (#262): an `edit` argument, or a binding at its last use rebound from
+    // the result, moves into the callee, which appends in place through any number of call
+    // levels. Each tenfold step stays under 30x: about 4x to 10x with the run's fixed cost,
+    // against about 100x when every call copies the list.
+    let root = package("edit-append", "\n[run]\nentry = \"grow\"\n", &[]);
+    let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let dir = root.to_str().unwrap();
+    let runs: &[(&str, &[usize])] = &[
+        ("edit1", &[10_000, 100_000]),
+        ("edit2", &[10_000, 100_000]),
+        ("edit3", &[10_000, 100_000, 1_000_000]),
+        ("rebound", &[10_000, 100_000]),
+    ];
+    for &(shape, sizes) in runs {
+        let mut times = Vec::new();
+        for &steps in sizes {
+            std::fs::write(
+                root.join("src/grow.una"),
+                appends_through_calls(shape, steps),
+            )
+            .unwrap();
+            let started = std::time::Instant::now();
+            let output = una(&["run", dir, "--grant", "console"]);
+            times.push(started.elapsed().as_secs_f64().max(0.05));
+            assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+            assert_eq!(stdout(&output), format!("{steps}\n"));
+        }
+        for pair in times.windows(2) {
+            assert!(
+                pair[1] < 30.0 * pair[0],
+                "{shape}: 10x the appends took {:.1}x as long: {times:?}",
+                pair[1] / pair[0]
+            );
+        }
+    }
+}
