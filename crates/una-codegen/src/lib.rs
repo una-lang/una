@@ -48,6 +48,7 @@
 
 mod describe;
 mod lower;
+mod owned;
 mod range;
 
 pub use range::{machine_width, proven_range};
@@ -216,6 +217,8 @@ fn callee<'p>(
                     )
                     .collect(),
                 constraints: fun.constraints.clone(),
+                // Set by `Emitter::function` from the package's borrow inference.
+                owned: Vec::new(),
                 uses: fun.uses.iter().map(|u| u.cap.clone()).collect(),
                 result: Some(fun.result.clone()),
                 exact: false,
@@ -230,6 +233,7 @@ fn callee<'p>(
             } if pred == name => Some(Ok(Body {
                 this: None,
                 constraints: Vec::new(),
+                owned: Vec::new(),
                 params: params
                     .iter()
                     .map(|(name, ty)| (name.clone(), range::unrefined(ty)))
@@ -356,6 +360,9 @@ struct Callee {
     /// The constraint of each type parameter: each one but `None` takes a type descriptor
     /// after the parameters (`spec/20 §7`).
     constraints: Vec<Constraint>,
+    /// Which parameters the function owns (ADR 0072 D2): the caller gives up or retains a
+    /// reference for each of them. Empty when every parameter is borrowed.
+    owned: Vec<bool>,
 }
 
 /// A handler of the package.
@@ -376,6 +383,8 @@ struct Emitter<'p> {
     /// The compiled functions, by qualified name, with whether they can fail and the
     /// capabilities they take, and the bodies still to compile.
     functions: BTreeMap<String, Callee>,
+    /// The owned parameters of each function of the package (ADR 0072 D2).
+    owned: BTreeMap<String, Vec<bool>>,
     pending: Vec<(FuncId, Body<'p>)>,
     /// The number of lambdas declared so far.
     lambdas: usize,
@@ -412,6 +421,7 @@ impl<'p> Emitter<'p> {
             module,
             runtime,
             functions: BTreeMap::new(),
+            owned: owned::owned_params(program),
             pending: Vec::new(),
             lambdas: 0,
             data: BTreeMap::new(),
@@ -433,12 +443,15 @@ impl<'p> Emitter<'p> {
                 "calls of `{qualified}`, which is not a function of the package"
             ))
         })??;
+        let mut body = body;
+        body.owned = self.owned.get(&qualified).cloned().unwrap_or_default();
         let name = format!("una_fn_{}", self.functions.len());
         let id = self.declare(&name, body.params.len() + body.uses.len())?;
         let callee = Callee {
             id,
             uses: body.uses.clone(),
             constraints: body.constraints.clone(),
+            owned: body.owned.clone(),
         };
         self.functions.insert(qualified, callee.clone());
         self.pending.push((id, body));
@@ -465,6 +478,7 @@ impl<'p> Emitter<'p> {
             Body {
                 this: Some((captures, caps)),
                 constraints: Vec::new(),
+                owned: Vec::new(),
                 // A lambda's refinements are not proven of its arguments (`range`).
                 params: params
                     .iter()
@@ -553,12 +567,14 @@ impl<'p> Emitter<'p> {
                 id,
                 uses: Vec::new(),
                 constraints: Vec::new(),
+                owned: Vec::new(),
             },
         );
         self.pending.push((
             id,
             Body {
                 constraints: Vec::new(),
+                owned: Vec::new(),
                 this: Some((
                     handler
                         .params

@@ -5,9 +5,9 @@
 //! - a `let` owns what its right-hand side makes, and every right-hand side returns an owned
 //!   word, retaining a borrowed one;
 //! - parameters, captured values and the fields that a `case` arm binds are borrowed from the
-//!   caller, the closure and the scrutinee;
+//!   caller, the closure and the scrutinee, except the parameters a function owns (below);
 //! - literals are borrowed from the runtime, which keeps them for the whole run;
-//! - calls borrow their arguments and return an owned word.
+//! - calls borrow their arguments, but for owned parameters, and return an owned word.
 //!
 //! Each path through an expression ends with its result: it retains the result, then releases
 //! every word its scope owns.
@@ -17,7 +17,12 @@
 //! update a list in place when nothing else holds it, into a record of its kind rebuilt there,
 //! into a loop as its initial state, or into a nested expression that uses it last. A loop's
 //! iteration owns its state. A binding something borrows from (a `when` scrutinee, a `let (...)`
-//! tuple, a list a loop visits) never moves, nor does anything passed to a function.
+//! tuple, a list a loop visits) never moves.
+//!
+//! **Owned parameters** (ADR 0072, #262). A function of the package owns the parameters it
+//! consumes, by borrow inference (`owned`): a call gives each of them a reference, by moving
+//! an argument at its last use, or by retaining it otherwise. An owned parameter belongs to
+//! the body's scope, which releases or moves it like a `let` binding.
 //!
 //! **Failures** are returned values (`spec/16 §4` rule 3). A body returns its value and a flag,
 //! 1 when the value is a failure. A failure releases what the code owns since the innermost
@@ -289,6 +294,9 @@ pub(crate) struct Body<'p> {
     /// The constraint of each type parameter of a function; its `params` end with the type
     /// descriptors of the constrained ones (`spec/20 §7`).
     pub(crate) constraints: Vec<Constraint>,
+    /// Which of `params` the body owns (ADR 0072 D2): it releases them at the end of its
+    /// scope, or moves them at their last use. The others, and any past its end, are borrowed.
+    pub(crate) owned: Vec<bool>,
     /// The parameters.
     pub(crate) params: Vec<(Name, Type)>,
     /// The capabilities a function takes after its parameters, by name (`spec/16 §4` rule 4).
@@ -354,12 +362,16 @@ pub(crate) fn function<'p>(
             env.insert(cap_key(name), (value, unknown()));
         }
     }
-    for (name, ty) in &body.params {
-        kind(ty)?;
+    let mut scope = Scope::new();
+    for (index, (name, ty)) in body.params.iter().enumerate() {
+        let parameter = kind(ty)?;
         let value = params
             .next()
             .ok_or_else(|| internal("a body lost a parameter"))?;
         env.insert(name.clone(), (value, ty.clone()));
+        if body.owned.get(index).copied().unwrap_or(false) {
+            scope.push((value, parameter));
+        }
     }
     for name in &body.uses {
         let value = params
@@ -377,7 +389,7 @@ pub(crate) fn function<'p>(
         outer: Scope::new(),
         base: 0,
     };
-    if let Some(result) = lowerer.expr(body.body, &mut env, &mut Scope::new(), &catch)? {
+    if let Some(result) = lowerer.expr(body.body, &mut env, &mut scope, &catch)? {
         let ok = lowerer.builder.ins().iconst(types::I64, 0);
         lowerer.builder.ins().return_(&[result, ok]);
     }
@@ -1155,6 +1167,40 @@ impl<'p> Lowerer<'_, 'p, '_> {
         Ok(object)
     }
 
+    /// The references a call of `function` gives its owned parameters (ADR 0072 D2): an
+    /// argument at its last use moves out of `scope`, unless its word is also another argument,
+    /// which the callee borrows; any other argument is retained. The callee releases them.
+    #[allow(clippy::too_many_arguments)]
+    fn give(
+        &mut self,
+        function: &Path,
+        args: &[Atom],
+        values: &[Value],
+        env: &Env,
+        scope: &mut Scope,
+        catch: &Catch,
+        rest: &Expr,
+    ) -> Result<(), CodegenError> {
+        let owned = self.emitter.function(function)?.owned;
+        for (index, arg) in args.iter().enumerate() {
+            if !owned.get(index).copied().unwrap_or(false) {
+                continue;
+            }
+            let (value, kind) = self.atom(arg, env)?;
+            let shared = values
+                .iter()
+                .enumerate()
+                .any(|(other, word)| other != index && *word == value);
+            match self.moving(arg, env, scope, catch, rest) {
+                Some(position) if !shared => {
+                    scope.remove(position);
+                }
+                _ => self.retain(value, kind),
+            }
+        }
+        Ok(())
+    }
+
     /// The owned result of a call of the function or predicate `function` with `args` at
     /// `span`; its failure goes to `catch`.
     #[allow(clippy::too_many_arguments)]
@@ -1562,6 +1608,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     }
                     return self.prelude(&function.name, &values, *span, scope, catch);
                 }
+                self.give(function, args, &values, env, scope, catch, rest)?;
                 self.call_function(function, type_args, &values, *span, env, scope, catch)
             }
             Rhs::Apply {
@@ -1648,6 +1695,15 @@ impl<'p> Lowerer<'_, 'p, '_> {
             }
             Rhs::Declassify { via, arg, span, .. } => {
                 let (value, _) = self.atom(arg, env)?;
+                self.give(
+                    via,
+                    std::slice::from_ref(arg),
+                    &[value],
+                    env,
+                    scope,
+                    catch,
+                    rest,
+                )?;
                 self.call_function(via, &[], &[value], *span, env, scope, catch)
             }
         }

@@ -1397,3 +1397,74 @@ fn a_closed_stream_discards_the_output_and_a_broken_pipe_fails_natively() {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+/// A program that appends `steps` items to a list in a loop, through `shape`: an `edit`
+/// argument one, two or three calls deep, or a binding rebound from a call's result (#262).
+fn appends_through_calls(shape: &str, steps: usize) -> String {
+    let call = match shape {
+        "edit1" => "push_one(edit a, i: i)",
+        "edit2" => "push_two(edit a, i: i)",
+        "edit3" => "push_three(edit a, i: i)",
+        _ => "a = pushed(a, i: i)",
+    };
+    format!(
+        "module grow\n\npush_one(edit acc: List[Int], i: Int) -> Unit\n=\n  acc = acc.append(item: i)\n\npush_two(edit acc: List[Int], i: Int) -> Unit\n=\n  push_one(edit acc, i: i)\n\npush_three(edit acc: List[Int], i: Int) -> Unit\n=\n  push_two(edit acc, i: i)\n\npushed(acc: List[Int], i: Int) -> List[Int] = acc.append(item: i)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit a: List[Int] = []\n  for i in 0..<{steps}\n    {call}\n  @console.print(\"{{a.len}}\")\n"
+    )
+}
+
+#[test]
+fn a_list_appended_through_calls_grows_in_linear_time() {
+    // ADR 0072 D1 and D2 (#262): natively too, an `edit` argument, or a binding at its last
+    // use rebound from the result, moves into the callee's owned parameter, which appends in
+    // place through any number of call levels, copying nothing. Each tenfold step stays under
+    // 30x, against about 100x when every call copies the list.
+    let runs: &[(&str, &[usize])] = &[
+        ("edit1", &[10_000, 100_000]),
+        ("edit2", &[10_000, 100_000]),
+        ("edit3", &[10_000, 100_000, 1_000_000]),
+        ("rebound", &[10_000, 100_000]),
+    ];
+    for &(shape, sizes) in runs {
+        let mut times = Vec::new();
+        for &steps in sizes {
+            let name = format!("calls-{shape}-{steps}");
+            let dir = package(
+                &name,
+                "\n[run]\nentry = \"grow\"\ngrants = [\"console\"]\n",
+                &[("src/grow.una", &appends_through_calls(shape, steps))],
+            );
+            let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+            std::fs::write(
+                dir.join("una.toml"),
+                manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+            )
+            .unwrap();
+            let built = una(&dir, &["build"]);
+            assert_eq!(built.status.code(), Some(0), "{built:?}");
+            let started = std::time::Instant::now();
+            let output = Command::new(dir.join("target/una").join(&name))
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+            times.push(started.elapsed().as_secs_f64().max(0.05));
+            assert_eq!(output.status.code(), Some(0), "{output:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                format!("{steps}\n")
+            );
+            // Nothing is copied: every call takes the list over.
+            assert!(
+                !String::from_utf8_lossy(&output.stderr).contains("copied"),
+                "{shape} {steps}: {output:?}"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        for pair in times.windows(2) {
+            assert!(
+                pair[1] < 30.0 * pair[0],
+                "{shape}: 10x the appends took {:.1}x as long: {times:?}",
+                pair[1] / pair[0]
+            );
+        }
+    }
+}
