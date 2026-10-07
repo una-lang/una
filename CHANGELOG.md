@@ -22,6 +22,11 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 - **`attempt` over a `fails of` parameter no longer implies effects** (#270). A private relay whose body is `let r = attempt f(x)` infers `uses of f`, as with a plain call, so another relay can pass its own parameter to it without a false U3003.
 - **Every handling clause written on its expression's line is reported in one check** (#268). The parser goes on past the first such line of a body, so each one gets its U0101 and its edit, and applying them all converges in one round.
 
+
+### Documentation
+
+- **A getting-started tutorial** (#245, `docs/guide/getting-started.md`): from install to a verified, natively built program, `examples/wordfreq`, through a contract, a refuted proof and its counterexample, examples, grants, `una run`, `una build` and the editor. The guide test checks every block, and the tutorial's last package is the example.
+
 ### Verification
 
 - **The counterexample of an assignment shows the value before it** (#277). For `n = n - 1` on `n: Pos`, it shows `n = 1, n (assigned) = 0`, where it showed `n = 0`.

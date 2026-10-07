@@ -5,7 +5,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use una_syntax::{Interner, SourceDb, dump, lex, parse};
+use una_syntax::{Interner, KeywordSet, SourceDb, dump, lex_in, parse};
 
 fn examples_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples")
@@ -40,6 +40,19 @@ fn example_files() -> Vec<(String, PathBuf)> {
         .collect()
 }
 
+/// The keywords of the edition of the example package that holds `name`, a path relative to
+/// `examples/`: its `una.toml` says (`spec/13 §7`).
+fn keywords(name: &str) -> KeywordSet {
+    let package = name.split('/').next().unwrap_or("");
+    let manifest =
+        fs::read_to_string(examples_root().join(package).join("una.toml")).unwrap_or_default();
+    if manifest.contains("edition = \"0.2\"") {
+        KeywordSet::V0_2
+    } else {
+        KeywordSet::V0_1
+    }
+}
+
 #[test]
 fn every_example_parses_without_diagnostics() {
     let files = example_files();
@@ -48,7 +61,7 @@ fn every_example_parses_without_diagnostics() {
         let mut db = SourceDb::new();
         let id = db.add(name.clone(), &fs::read(&path).unwrap());
         let mut interner = Interner::new();
-        let lexed = lex(db.file(id), id, &mut interner);
+        let lexed = lex_in(db.file(id), id, &mut interner, keywords(&name));
         let parsed = parse(&lexed, id, &interner);
         assert!(lexed.errors.is_empty(), "{name}: {:?}", lexed.errors);
         assert!(parsed.errors.is_empty(), "{name}: {:?}", parsed.errors);
@@ -62,7 +75,7 @@ fn example_syntax_trees_match_their_snapshots() {
         let mut db = SourceDb::new();
         let id = db.add(name.clone(), &fs::read(&path).unwrap());
         let mut interner = Interner::new();
-        let lexed = lex(db.file(id), id, &mut interner);
+        let lexed = lex_in(db.file(id), id, &mut interner, keywords(&name));
         let parsed = parse(&lexed, id, &interner);
         let snapshot = name.trim_end_matches(".una").replace('/', "__");
         insta::assert_snapshot!(snapshot, dump(&parsed.file, &interner, db.file(id).text()));
