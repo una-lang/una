@@ -26,6 +26,8 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ### Documentation
 
+- **The website** (#244, N-34). `scripts/site.sh` builds it with mdBook 0.5.4 into `target/site`, from the repository's own documents: a landing page from the README, the tutorial and the guides, the specification, the ADRs with their status, the validation records, the changelog, and a downloads page whose archive digests come from the validation records that `install.sh` trusts. The theme uses the Graúna palette in a light and a dark variant, with Una highlighting. Every page must build and every link between pages must resolve. `scripts/local-ci.sh` runs it when mdBook 0.5.4 is installed and prints that it skipped it otherwise, and the new `site` gate of `scripts/release-gates.sh` requires it (N-36). Hosting and the domain are not decided yet.
+- `docs/guide/syntax-reference.md`: the U0103 message format no longer shows as an HTML tag.
 - **A getting-started tutorial** (#245, `docs/guide/getting-started.md`): from install to a verified, natively built program, `examples/wordfreq`, through a contract, a refuted proof and its counterexample, examples, grants, `una run`, `una build` and the editor. The guide test checks every block, and the tutorial's last package is the example.
 - **Project files for the public launch** (#246). A README for newcomers, `CONTRIBUTING.md`, `SECURITY.md` with what is in scope (the checker's soundness, the runtime, the trusted base), `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), and issue templates for bug reports, soundness reports and questions.
 

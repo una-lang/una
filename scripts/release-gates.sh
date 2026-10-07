@@ -16,6 +16,8 @@
 #                twice, compared
 #   native       the interpreter against the native executable, on every runnable program of
 #                the repository (spec/16 §5): the equivalence test of crates/una-cli/tests/native.rs
+#   site         scripts/site.sh: the website builds and every link between its pages resolves;
+#                mdBook missing or at another version than the script pins is a FAIL (N-36)
 #
 # Output, in OUT: results.tsv (gate, sha, PASS or FAIL, seconds, sha256 of the gate's log),
 # logs/<gate>.log, and record.md, the validation record that docs/releases/validation.md
@@ -28,7 +30,7 @@
 # Usage: scripts/release-gates.sh SHA OUT [GATE...]
 set -u
 
-ALL=(clone build mac linux linux-arm64 release determinism native)
+ALL=(clone build mac linux linux-arm64 release determinism native site)
 
 usage() {
     echo "usage: scripts/release-gates.sh SHA OUT [GATE...]; SHA is a full 40-digit commit, GATE is one of: ${ALL[*]}" >&2
@@ -167,6 +169,8 @@ gate_native() {
     # aside. One test, so the gate and `cargo test` cannot drift apart.
     run native sh -c 'cargo test -p una-cli --test native every_runnable_program_runs_natively_as_in_the_interpreter -- --exact --nocapture'
 }
+
+gate_site() { run site scripts/site.sh; }
 
 for gate in "${GATES[@]}"; do
     "gate_$gate"
