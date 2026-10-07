@@ -426,7 +426,10 @@ impl<'a> Env<'a> {
             .collect();
         let params: Vec<usize> = env.kinds.iter().map(|kind| kind.params.len()).collect();
         let mut kind_labels = KindLabels::new(&fields, &params);
-        kind_labels.deep_symbols = env.edition >= Edition::V0_2;
+        // Both editions mark deep labels: edition 0.1 for the raise of a call of a function
+        // value with a decided argument (#253), edition 0.2 for result summaries as well.
+        kind_labels.deep_symbols = true;
+        kind_labels.deep_distinct = env.edition >= Edition::V0_2;
         env.kind_labels = Rc::new(kind_labels);
         env
     }
