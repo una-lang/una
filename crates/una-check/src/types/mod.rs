@@ -804,6 +804,75 @@ mod tests {
         }
     }
 
+    /// The diagnostics of the standard modules of `edition`, checked as a package's are.
+    fn standard_diagnostics(edition: Edition) -> Vec<String> {
+        let standard = Standard::load(edition);
+        let mut report = Report::new(&standard.sources);
+        let source = |tree| Source {
+            tree,
+            interner: &standard.interner,
+            reports: true,
+        };
+        let mut env = Env::build(
+            Vec::new(),
+            source(&standard.prelude),
+            source(&standard.testing),
+            Vec::new(),
+            edition,
+            &mut report,
+        );
+        let facts = facts::KindFacts::new(&env);
+        facts::kind_recursion(&env, &mut report);
+        let mut collected = authority::Collected::default();
+        {
+            let mut scratch = Report::new(&standard.sources);
+            let mut findings = Findings::default();
+            for module in env.prelude..env.modules.len() {
+                check::module(
+                    &mut env,
+                    &facts,
+                    &mut scratch,
+                    &mut findings,
+                    &mut collected,
+                    authority::Pass::Collect,
+                    module,
+                );
+            }
+        }
+        authority::infer(&mut env, &collected, &mut report);
+        let mut findings = Findings::default();
+        let mut unused = authority::Collected::default();
+        for module in env.prelude..env.modules.len() {
+            check::module(
+                &mut env,
+                &facts,
+                &mut report,
+                &mut findings,
+                &mut unused,
+                authority::Pass::Check,
+                module,
+            );
+        }
+        report
+            .diagnostics
+            .iter()
+            .map(|d| format!("{:?} {}", d.code, d.message))
+            .collect()
+    }
+
+    #[test]
+    fn the_standard_modules_check_without_diagnostics_in_both_editions() {
+        // A type or label error in a standard module would drop or weaken what agents call,
+        // without a word; checked as a package's, they report nothing.
+        for edition in [Edition::V0_1, Edition::V0_2] {
+            assert_eq!(
+                standard_diagnostics(edition),
+                Vec::<String>::new(),
+                "{edition:?}"
+            );
+        }
+    }
+
     #[test]
     fn closest_names_are_within_a_third_of_the_length() {
         assert_eq!(closest("nme", ["name", "seats"]), Some("name"));

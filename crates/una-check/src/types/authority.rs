@@ -714,7 +714,8 @@ impl<'a> Checker<'_, 'a, '_> {
 
     /// U3015: `std.testing` serves handler operation bodies and examples only (`spec/14 §4`).
     pub(crate) fn testing_site(&mut self, module: usize, name: &str, span: Span) {
-        if module != self.env.prelude + 1 {
+        // `std.testing` itself may use its own functions.
+        if module != self.env.prelude + 1 || self.module == module {
             return;
         }
         // ADR 0043: a handler that uses `std.testing` may be installed only by `given`.
