@@ -26,7 +26,7 @@ una trace EVENTS_3  # in examples/events
 una contract events.checkin.check_in  # in examples/events
 ```
 
-`una build` compiles a package into a native executable that behaves as `una run` (§15):
+`una build` compiles a package into a native executable that behaves as `una run` (§16):
 
 ```sh
 una build .  # copy examples/hello
@@ -40,7 +40,7 @@ Exit codes: `0` success; `1` errors in the program, an unproven obligation or a 
 - A package is a directory with `una.toml`, `verification.lock` and sources under `src/`. Module `shop.cart` lives in `src/shop/cart.una`, and a file holds exactly one module.
 - A single `.una` file is also a package, with default settings and the default lock.
 - `una.toml` has `[package]` (`name`, `version`, `edition = "0.2"`), and optionally `[labels] categories`, `[trusted] modules`, `[escape_budget] checked_per_module` (default 0) and `[run]` (`entry` module, `grants`). Unknown keys are U7002.
-- **Editions.** `edition = "0.2"` enables the constructs of v0.2: editable values and `for` loops (§11), fixed-width integers (§12), recursive kinds (§4), `uses of` and `fails of` (§8), constraints on generics (§13) and `together` (§14). A package of edition `0.1` keeps the language of v0.1 in every later compiler, and a single `.una` file outside a package is edition `0.1`. §17 lists what changes between them.
+- **Editions.** `edition = "0.2"` enables the constructs of v0.2: editable values and `for` loops (§11), fixed-width integers (§12), recursive kinds (§4), `uses of` and `fails of` (§8), constraints on generics (§13), maps (§14) and `together` (§15). A package of edition `0.1` keeps the language of v0.1 in every later compiler, and a single `.una` file outside a package is edition `0.1`. §18 lists what changes between them.
 - `verification.lock` pins the solver: Z3 at the exact version it names must be on the path, or tier 1 reports U5003. `scripts/install-z3.sh` installs it.
 
 ## 3. Syntax in brief
@@ -169,7 +169,7 @@ example "restocking adds to the amount"
 - Arguments after the first are labeled, `f(a, b: 2)`; from the second argument on, a bare name equal to the parameter's name counts as labeled (`f(a, b)` when the parameter is `b`). The first argument always binds the first parameter, so `minus(b, a)` with parameters `(a, b)` is U2006, not a swap. Constructors with two or more fields label every field.
 - Blocks bind with `let`; values are immutable, and a `let edit` binding can be rebound (§11). `if c then a else b` fits on a line; `if` and `when` also take indented blocks.
 - `when` branches on variants (`is Some(x)`, `is Err`), literals (`is 0`) and ranges (`in 1..<20`); an `else` arm comes last. Arms over variants must cover every variant (U2007).
-- The prelude has `abs`, `min`, `max`, `is_digits`, `starts_with`, `trim`, `to_int`, `is_empty`, `first`, `at`, `append`, `contains`, `map`, `filter`, `first_where`, `fold`, `sum`, `is_some`, `or_else` and `is_ok`, and in edition `0.2` also `sort` and `set`; their contracts are hypotheses for the solver (`spec/14`, `spec/20 §6`). Loop with `for` (§11), recursion, `map`, `filter` or `fold`.
+- The prelude has `abs`, `min`, `max`, `is_digits`, `starts_with`, `trim`, `to_int`, `is_empty`, `first`, `at`, `append`, `contains`, `map`, `filter`, `first_where`, `fold`, `sum`, `is_some`, `or_else` and `is_ok`, and in edition `0.2` also `sort`, `set` and `empty_map` (§14); their contracts are hypotheses for the solver (`spec/14`, `spec/20 §6`). Loop with `for` (§11), recursion, `map`, `filter` or `fold`.
 - The result of `filter` and `first_where` carries the labels of the predicate's result at its top, since which elements remain depends on it: over `secret` elements, a predicate that reads them gives a list whose top is `secret` (`spec/14`, result labels, ADR 0067). A predicate with effects whose result is labeled is U4002 in `first_where`.
 - A call of a generic function raises each position of its result only by the type arguments that position depends on; `una contract` shows them as `-- result labels: ...`. A list whose top depends on comparisons of `T` values carries `T`'s labels, and a parameter of a user function still takes only what its type allows, so build such lists with the prelude (`fold`, `append`), not by passing them to your own generic functions.
 
@@ -733,7 +733,48 @@ Known limits of edition `0.2`, which need label polymorphism (#40):
 - Passing such a list to a parameter of your own generic function, as `concat(ahead.append(item: item), back: behind)`, is U4001: the parameter's top label is public.
 - A `fold` whose step returns such a list, as an insertion sort built from `insert`, is U4001: the accumulator's label rises after the step was checked. Use `sort`.
 
-## 14. Concurrent tasks: `together`
+## 14. Maps
+
+`Map[K, V]` maps keys to values, in ascending key order (`spec/21`). It is a value, as a list is.
+
+- Keys satisfy `Ord`: `Int`, the fixed-width types, `Text`, or a sum whose variants have no payload. Any other key type is U2025, and a public generic function writes `[K: Ord]`.
+- `empty_map()` takes its type from its context, as `[]` does: `let edit m: Map[Text, Int] = empty_map()`.
+- Reads: `m.len`, `m.has(key: k)`, `m.get(key: k)`, which is `None` for a missing key and is handled with `if none`, and `m.keys()`, `m.values()` and `m.entries()`, lists in key order. An `Entry` has the fields `key` and `value`.
+- Updates: `edit m.set(key: k, value: v)` and `edit m.remove(key: k)` on an editable binding, each the whole statement. `m.with(key: k, value: v)` and `m.without(key: k)` give a new map instead.
+- Cost: `len` is O(1); `get`, `has`, `set` and `remove` are O(log n), in place when nothing else holds the map; `with` and `without` on a map another binding still holds copy it, O(n).
+- Proofs: `m.len` and `m.has(key: k)` may appear in contracts and `where` clauses. After `set`, the key is present with its value; after `remove`, it is absent. Nothing is known of the other keys.
+- Labels: which keys a map holds is part of its shape, so `len`, `has`, `get` and the listings carry the labels of the keys with the map's top label. Setting a `secret` key in a map whose top label is public is U4001 at the key: declare it `secret Map[Text, Int]`.
+- A map prints as `{"a": 1, "b": 2}`, and `{}` when empty.
+
+```una
+module words
+
+--- How often each word occurs.
+pub counts(words: List[Text]) -> Map[Text, Int]
+=
+  let edit counts: Map[Text, Int] = empty_map()
+  for word in words
+    let n = counts.get(key: word)
+      if none use 0
+    edit counts.set(key: word, value: n + 1)
+  counts
+
+--- The words seen at least `least` times, in ascending order.
+pub frequent(counts: Map[Text, Int], least: Int) -> List[Text]
+=
+  let kept = counts.entries().filter(keep: fn(e) -> e.value >= least)
+  kept.map(each: fn(e) -> e.key)
+
+--- The count of a word the map has.
+pub count_of(counts: Map[Text, Int], word: Text) -> Int
+  requires counts.has(key: word)
+=
+  let n = counts.get(key: word)
+    if none use 0
+  n
+```
+
+## 15. Concurrent tasks: `together`
 
 `together` runs independent work at once with the result and trace of a sequential run (`spec/19`).
 
@@ -784,14 +825,14 @@ pub count(xs: List[Int]) -> Int
   seen
 ```
 
-## 15. Native executables and the language server
+## 16. Native executables and the language server
 
 - `una build [path]` checks the package at tier 1, then writes a native executable to `target/una/<name>` (`spec/16`), or to `--out <file>`. It refuses a package with errors, as `una run` does; `--json` prints `una.build/1`.
 - The executable runs `main` of the entry module with the output, failures, exit codes and grants of `una run`: the `[run] grants` of `una.toml` are built in, and `--grant`, `--max-depth` and `--max-memory` work as for `una run`. Its `--trace <file>` writes the trace as a JSON array, the trace that `una --json run` reports in `una.run/1`. Its output and trace match the interpreter's.
 - Tasks of `together` run on their own threads in a native executable, and one at a time in `una run`.
 - `una lsp` is a language server (LSP 3.17 over stdin and stdout) for editors: it checks, formats and solves, and never runs programs.
 
-## 16. The Agent ABI
+## 17. The Agent ABI
 
 Every command takes `--json` and prints one document whose `schema` names its shape:
 
@@ -830,14 +871,14 @@ When the checks reject a package, `contract`, `trace`, `obligations` and `report
 
 The build report counts trivial `ensures`, clauses the solver proves with no hypothesis at all such as `ensures result == result`, as missing contracts: write contracts that say something about the result.
 
-## 17. Migrating from edition 0.1
+## 18. Migrating from edition 0.1
 
 Change `edition = "0.1"` to `"0.2"` in `una.toml`, then check. What can change:
 
 - **New keywords.** `edit`, `take`, `old` and `together` are keywords, and `for` starts a loop: rename bindings that use them.
 - **Messages.** `var`, `while`, `loop`, `async` and `await` point to `let edit`, `for` and `together`.
 - **Equality on type parameters** needs `Eq`: a public generic function that compares values of `T` writes `[T: Eq]` (U2026). Edition `0.1` inferred the bound.
-- **The prelude.** `min`, `max`, `contains` and `sum` are generic over constrained types, `sort` and `set` are new, and `map`, `filter`, `first_where` and `fold` take effectful and failing functions (`uses of`, `fails of`).
+- **The prelude.** `min`, `max`, `contains` and `sum` are generic over constrained types, `sort`, `set`, `empty_map` and the type `Map` are new (a user kind named `Map` or `Entry` must be renamed), and `map`, `filter`, `first_where` and `fold` take effectful and failing functions (`uses of`, `fails of`).
 - **Kinds.** Recursive kinds no longer need a `List` or `Option` field, but must have a finite value; `I8` to `U64` become built-in types, so a user kind with one of those names is U1002.
 - **Integers.** Values of a fixed-width type now carry overflow obligations; `Int` code is unchanged.
 

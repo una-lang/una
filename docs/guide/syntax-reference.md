@@ -339,6 +339,7 @@ pub cart_total(cart: Cart) -> Int = total(cart.items)
 | `Text` | Unicode strings | `t.len` counts Unicode scalar values |
 | `Unit` | `unit` | |
 | `List[T]` or `[T]` | `[1, 2, 3]` | values; `xs.len`; changed through `set` and `append` (§5.6) |
+| `Map[K, V]` | `empty_map().with(key: "a", value: 1)` | edition `0.2`; keys satisfy `Ord`, in ascending order; `m.len`, `has`, `get`, `keys`, `values`, `entries`, `with`, `without`, and `edit m.set` and `edit m.remove` (`spec/21`) |
 | `Option[T]` | `Some(value)`, `None` | |
 | `Result[T, E]` | `Ok(value)`, `Err(failure)` | produced by `attempt` (§6.4) |
 | `Hashed` | opaque digests | produced by the `Keys` capability; only `==` and `!=` |

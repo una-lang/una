@@ -44,7 +44,7 @@ prim            ::= + | - | * | div | mod | neg | == | != | < | <= | > | >= | no
                  | len | concat | to_text
 ```
 
-`and`, `or` and `implies` are not primitives: they desugar to `if` so that short-circuit evaluation and path conditions coincide.
+`and`, `or` and `implies` are not primitives: they desugar to `if` so that short-circuit evaluation and path conditions coincide. (v0.2, ADR 0069.) The built-in operations of the prelude's types, such as a map's methods (`spec/21 §2`), are calls `f[τ*](a, ...)` of prelude functions in this model; an implementation may represent them as primitives.
 
 (v0.2, ADR 0065.) Core IR gains `together` and `together_for` (`spec/19 §5`).
 
