@@ -727,9 +727,10 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         // ADR 0075 rule 2: pass 1 solves the label variables of the editable bindings.
         if pass == Pass::Collect
             && !edit_bounds.is_empty()
-            && super::edit_labels::solve_into(&edit_bounds, &mut env.edit_labels)
+            && let Some(name) = super::edit_labels::solve_into(&edit_bounds, &mut env.edit_labels)
         {
             env.edit_labels_changed = true;
+            env.edit_labels_changed_name = Some(name);
         }
         if pass == Pass::Check {
             super::generic::second_class(report, &vars, &instantiations, &mut escaped);

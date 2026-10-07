@@ -46,6 +46,7 @@ impl Checker<'_, '_, '_> {
             Ty::Var(var) => {
                 let name = symbol(span, *index);
                 *index += 1;
+                self.env.edit_label_spans.insert(name.clone(), span);
                 let solved = self
                     .env
                     .edit_labels
@@ -106,13 +107,19 @@ impl Checker<'_, '_, '_> {
 pub(crate) fn solve_into(
     bounds: &BTreeMap<String, Label>,
     solutions: &mut BTreeMap<String, Label>,
-) -> bool {
-    let mut changed = false;
+) -> Option<String> {
+    let mut changed = None;
     for (name, label) in solve(bounds) {
-        if solutions.get(&name) != Some(&label) {
-            changed = true;
-            solutions.insert(name, label);
+        if let Some(old) = solutions.get(&name) {
+            // Bounds only grow with the solutions and summaries they read, so a solution only
+            // rises; the loops that re-solve end on that (ADR 0075 rule 5).
+            debug_assert!(old.flows_to(&label), "the solution of {name} fell");
+            if *old == label {
+                continue;
+            }
         }
+        changed.get_or_insert_with(|| name.clone());
+        solutions.insert(name, label);
     }
     changed
 }
@@ -179,16 +186,25 @@ fn solve(bounds: &BTreeMap<String, Label>) -> BTreeMap<String, Label> {
         );
     }
     let components = tarjan(&edges);
+    // The component of each variable, so an edge inside a component is told in O(1).
+    let mut component_of = vec![usize::MAX; names.len()];
+    for (id, component) in components.iter().enumerate() {
+        for &member in component {
+            if let Some(slot) = component_of.get_mut(member) {
+                *slot = id;
+            }
+        }
+    }
     let mut solution: Vec<Label> = vec![Label::public(); names.len()];
     // Tarjan emits a component after every component it reaches, so those are solved first.
-    for component in components {
+    for (id, component) in components.into_iter().enumerate() {
         let mut label = Label::public();
         for &member in &component {
             if let Some(own) = constant.get(member) {
                 label = label.join(own);
             }
             for &next in edges.get(member).map_or(&[][..], Vec::as_slice) {
-                if !component.contains(&next)
+                if component_of.get(next) != Some(&id)
                     && let Some(solved) = solution.get(next)
                 {
                     label = label.join(solved);
@@ -311,6 +327,22 @@ mod tests {
         assert_eq!(solved.get("^a"), Some(&t));
         assert_eq!(solved.get("^b"), Some(&t));
         assert_eq!(solved.get("^c"), Some(&t.join(&u)));
+    }
+
+    #[test]
+    fn solving_a_long_cycle_is_linear() {
+        // ^i <- ^(i+1 mod n), and T into ^0: one component of n variables, each above T.
+        let n = 200_000;
+        let mut entries: BTreeMap<String, Label> = BTreeMap::new();
+        for i in 0..n {
+            entries.insert(format!("^{i}"), Label::symbol(format!("^{}", (i + 1) % n)));
+        }
+        entries.insert(
+            "^0".to_owned(),
+            Label::symbol("^1").join(&Label::symbol("T")),
+        );
+        let solved = solve(&entries);
+        assert!(solved.values().all(|label| *label == Label::symbol("T")));
     }
 
     #[test]
