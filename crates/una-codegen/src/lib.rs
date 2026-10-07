@@ -218,7 +218,6 @@ fn callee<'p>(
                 constraints: fun.constraints.clone(),
                 uses: fun.uses.iter().map(|u| u.cap.clone()).collect(),
                 result: Some(fun.result.clone()),
-                fails: fun.fails.is_some(),
                 exact: false,
                 body: &fun.body,
             })),
@@ -237,7 +236,6 @@ fn callee<'p>(
                     .collect(),
                 uses: Vec::new(),
                 result: None,
-                fails: false,
                 // The verifier defines a reflect predicate by its body as a term, exact, and
                 // makes no overflow obligation in it (#180).
                 exact: *reflect,
@@ -354,7 +352,6 @@ const RUNTIME: &[(&str, usize, bool)] = &[
 #[derive(Clone, Debug)]
 struct Callee {
     id: FuncId,
-    fails: bool,
     uses: Vec<Name>,
     /// The constraint of each type parameter: each one but `None` takes a type descriptor
     /// after the parameters (`spec/20 §7`).
@@ -440,7 +437,6 @@ impl<'p> Emitter<'p> {
         let id = self.declare(&name, body.params.len() + body.uses.len())?;
         let callee = Callee {
             id,
-            fails: body.fails,
             uses: body.uses.clone(),
             constraints: body.constraints.clone(),
         };
@@ -476,7 +472,6 @@ impl<'p> Emitter<'p> {
                     .collect(),
                 uses: Vec::new(),
                 result: None,
-                fails: false,
                 exact,
                 body,
             },
@@ -556,7 +551,6 @@ impl<'p> Emitter<'p> {
             qualified,
             Callee {
                 id,
-                fails: op.fails.is_some(),
                 uses: Vec::new(),
                 constraints: Vec::new(),
             },
@@ -576,7 +570,6 @@ impl<'p> Emitter<'p> {
                 params,
                 uses: Vec::new(),
                 result: Some(op.result.clone()),
-                fails: op.fails.is_some(),
                 exact: false,
                 body: &implementation.body,
             },
