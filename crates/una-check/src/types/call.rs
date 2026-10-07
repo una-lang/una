@@ -345,7 +345,14 @@ impl<'a> Checker<'_, 'a, '_> {
             // function's type parameters carries `ℓ*_T`. A function value cannot be checked
             // against that, so the decision raises the call's result and program counter
             // instead, as the value's own label does, and the argument flows without it.
-            let found = self.without_decisions(&found, &mut decided);
+            let stripped = self.without_decisions(&found, &mut decided);
+            // Edition 0.1 keeps every flow it checked before (#253): the decision only adds
+            // the raise below.
+            let found = if self.env.edition >= Edition::V0_2 {
+                stripped
+            } else {
+                found
+            };
             flows.push((arg.value.span, found, param.clone()));
         }
         for (arg_span, found, param) in flows {
@@ -390,9 +397,12 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// `found` without the deep symbolic labels `ℓ*_T` of the enclosing function's type
-    /// parameters, which are joined into `decided` (ADR 0067 amendment): edition 0.2 only.
+    /// parameters, which are joined into `decided` (ADR 0067 amendment, and #253 in edition
+    /// 0.1).
     fn without_decisions(&self, found: &Ty, decided: &mut Label) -> Ty {
-        if self.env.edition < Edition::V0_2 || self.type_params.is_empty() {
+        // Both editions: in edition 0.1 under D-137 as well, since a decided argument given to
+        // a function value would otherwise lose its decision (#253).
+        if self.type_params.is_empty() {
             return found.clone();
         }
         let names = self.type_params.clone();
