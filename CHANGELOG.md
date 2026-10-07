@@ -20,6 +20,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
   - The parameters `separator`, `start` and `end`, and `pattern` and `by` replace the ADR's `with`, `from` and `to`, and `old` and `new`, since `with`, `from` and `old` are keywords (N-20).
 
 - **`attempt` over a `fails of` parameter no longer implies effects** (#270). A private relay whose body is `let r = attempt f(x)` infers `uses of f`, as with a plain call, so another relay can pass its own parameter to it without a false U3003.
+- **Every handling clause written on its expression's line is reported in one check** (#268). The parser goes on past the first such line of a body, so each one gets its U0101 and its edit, and applying them all converges in one round.
 
 ### Verification
 
