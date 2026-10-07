@@ -79,7 +79,9 @@ ADR 0053 already turns a refutation that is no execution into unknown in the sam
 
 - **The class:** one pass over the loop body, in time linear in its size. A nested loop's result is computed once and reused, so a nest stays linear in total.
 - **The frame:** one equality per preserving binding.
-- **D3:** a check of the requested terms of a refuted answer, which are already computed for its counterexample.
+- **D3:**
+  - Each binder computed from a loop-fresh value is marked when it is bound. A `let` of an `if` or `case` reads the variables of its branches, so marking is linear in the body times the nesting depth of its expressions, and it only runs after a loop.
+  - A refuted answer then needs a check of the terms its counterexample shows.
 
 No query is added.
 

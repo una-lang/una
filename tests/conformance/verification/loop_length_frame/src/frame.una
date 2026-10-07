@@ -1,5 +1,6 @@
 -- test: a loop that updates a list only by `set`, by a helper that ensures the length is unchanged, under branches, failures or nested loops of the same kind keeps its length, in the body and after the loop (ADR 0071 D1, D2)
 -- spec: spec/17 §5
+-- expect: ok
 module frame
 
 pub kind Bad = Negative | TooLarge
