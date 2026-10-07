@@ -203,3 +203,9 @@ The test certificate authority of H8 is not kept in the repository's test fixtur
 Decided by the coordinator under the owner's delegation (N-32), pending Leonardo's review.
 
 H7 reads: an executable that never uses `Http` carries no TLS logic. On macOS up to 64 KiB of the TLS library's assembly primitives may remain, unreachable (amendment N-30, item 7). The size test enforces at most 64 KiB on macOS and none on Linux.
+
+## Amendment of 2026-10-07: credentials across a chain (N-35)
+
+Decided by the coordinator under the owner's delegation (N-35), pending Leonardo's review; found by the coordinator's recheck.
+
+Once a redirect leaves the request's origin, the key of `key_name` and the program's `Authorization`, `Cookie` and `Proxy-Authorization` stay dropped for the rest of the chain, as browser `fetch` does. A chain A → B → A does not send them to A at its last hop, whose path B chose.

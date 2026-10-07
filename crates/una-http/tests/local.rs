@@ -518,3 +518,63 @@ fn an_ipv6_origin_is_granted_and_reached_in_brackets() {
     let response = send(&get(&url, &[]), &[grant], &settings(5000)).unwrap();
     assert_eq!((response.status, response.body.as_str()), (200, "v6"));
 }
+
+#[test]
+fn credentials_left_behind_never_return_in_the_chain() {
+    // N-35: once a redirect leaves the first origin, the key and the program's credentials
+    // stay dropped for the rest of the chain, even back at that origin (as `fetch` does), so
+    // the other origin cannot choose where on the first one they go.
+    let b_port = Arc::new(Mutex::new(0u16));
+    let a_target = Arc::new(Mutex::new(String::new()));
+    let to_b = Arc::clone(&b_port);
+    let a = Server::start(move |index, stream| {
+        let text = if index == 0 {
+            let port = *to_b.lock().unwrap();
+            format!(
+                "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{port}/b\r\nContent-Length: 0\r\n\r\n"
+            )
+        } else {
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_owned()
+        };
+        let _ = stream.write_all(text.as_bytes());
+    });
+    *a_target.lock().unwrap() = a.url("/chosen-by-b");
+    let back = Arc::clone(&a_target);
+    let b = Server::start(move |_, stream| {
+        let location = back.lock().unwrap().clone();
+        let text =
+            format!("HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n");
+        let _ = stream.write_all(text.as_bytes());
+    });
+    *b_port.lock().unwrap() = b.port;
+    let url = a.url("/start");
+    let headers: Vec<(String, String)> = [
+        ("Cookie", "session-abc"),
+        ("Proxy-Authorization", "Basic cHJveHk="),
+        ("X-Trace", "t1"),
+    ]
+    .iter()
+    .map(|(n, v)| ((*n).to_owned(), (*v).to_owned()))
+    .collect();
+    let response = send(
+        &Request {
+            bearer: Some(b"secret-token"),
+            ..get(&url, &headers)
+        },
+        &[a.grant("get"), b.grant("get")],
+        &settings(5000),
+    )
+    .unwrap();
+    assert_eq!((response.status, response.body.as_str()), (200, "ok"));
+    let at_a = a.requests();
+    assert_eq!(at_a.len(), 2, "{at_a:?}");
+    assert!(at_a[0].contains("Authorization: Bearer secret-token\r\n"));
+    assert!(at_a[0].contains("Cookie: session-abc\r\n"));
+    let last = at_a[1].to_ascii_lowercase();
+    assert!(last.starts_with("get /chosen-by-b http/1.1\r\n"), "{last}");
+    for name in ["authorization", "cookie", "proxy-authorization"] {
+        assert!(!last.contains(&format!("\r\n{name}:")), "{last}");
+    }
+    assert!(last.contains("\r\nx-trace: t1\r\n"), "{last}");
+    assert!(!b.requests()[0].to_ascii_lowercase().contains("cookie"));
+}
