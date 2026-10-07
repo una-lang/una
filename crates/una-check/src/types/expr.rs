@@ -1550,8 +1550,15 @@ impl<'a> Checker<'_, 'a, '_> {
             .get(&inner.span)
             .cloned()
             .unwrap_or(Ty::Error);
+        let decided = self.decided_failures.get(&inner.span).cloned();
         match self.env.prelude_kind("Result") {
-            Some(result) => Ty::Kind(result, vec![ty, error]),
+            // Whether the call failed, and how, is labeled like what decided it (N-27).
+            Some(result) => match decided {
+                Some(label) if !label.is_public() => {
+                    Ty::Kind(result, vec![ty, error]).with_label(&label)
+                }
+                _ => Ty::Kind(result, vec![ty, error]),
+            },
             None => Ty::Error,
         }
     }

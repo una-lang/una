@@ -11,6 +11,11 @@ use std::collections::HashSet;
 /// The deepest nesting of arrays and objects that [`parse`] accepts (`spec/23 §3` rule 4).
 pub const MAX_DEPTH: usize = 512;
 
+/// The most digits of an integer that [`parse`] accepts (`spec/23 §3`, N-27): converting
+/// d decimal digits to an exact integer takes O(d²), so a longer literal is a failure, as in
+/// CPython.
+pub const MAX_INT_DIGITS: usize = 4300;
+
 /// A JSON value, as `Json` holds it (`spec/23 §1`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Tree {
@@ -61,6 +66,8 @@ pub enum Error {
     TooDeep(usize),
     /// This key equals an earlier key of the same object.
     DuplicateKey(usize),
+    /// The integer that starts here has more than [`MAX_INT_DIGITS`] digits.
+    NumberTooLong(usize),
 }
 
 /// An array or an object being read.
@@ -119,6 +126,9 @@ impl Parser {
             .collect();
         self.at = end;
         let integer = !text.contains(['.', 'e', 'E']);
+        if integer && text.trim_start_matches('-').len() > MAX_INT_DIGITS {
+            return Err(Error::NumberTooLong(start));
+        }
         Ok(if integer {
             Tree::Int(if text == "-0" { "0".to_owned() } else { text })
         } else {
@@ -157,28 +167,19 @@ impl Parser {
                         'r' => out.push('\r'),
                         't' => out.push('\t'),
                         'u' => {
-                            let first_at = self.at - 1;
                             self.at += 1;
-                            let unit = self.hex4()?;
-                            let scalar = match unit {
-                                0xD800..=0xDBFF => {
-                                    // A high surrogate needs a low one right after it.
-                                    if self.peek() != Some('\\')
-                                        || self.chars.get(self.at + 1) != Some(&'u')
-                                    {
-                                        return Err(Error::Syntax(first_at));
-                                    }
-                                    self.at += 2;
-                                    let low = self.hex4()?;
-                                    if !(0xDC00..=0xDFFF).contains(&low) {
-                                        return Err(Error::Syntax(first_at));
-                                    }
-                                    0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00)
-                                }
-                                0xDC00..=0xDFFF => return Err(Error::Syntax(first_at)),
-                                _ => unit,
+                            let unit = self.unit_escape(false)?;
+                            let scalar = if (0xD800..=0xDBFF).contains(&unit) {
+                                // A high surrogate needs a low one right after it: the error is
+                                // at the first character that cannot continue one (`spec/23 §3`).
+                                self.expect('\\')?;
+                                self.expect('u')?;
+                                let low = self.unit_escape(true)?;
+                                0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00)
+                            } else {
+                                unit
                             };
-                            out.push(char::from_u32(scalar).ok_or(Error::Syntax(first_at))?);
+                            out.push(char::from_u32(scalar).ok_or(Error::Syntax(self.at))?);
                             continue;
                         }
                         _ => return Err(Error::Syntax(self.at)),
@@ -194,14 +195,24 @@ impl Parser {
         }
     }
 
-    /// Four hex digits.
-    fn hex4(&mut self) -> Result<u32, Error> {
+    /// The four hex digits of a `\\u` escape, after the `u`: a low surrogate when `low`, else
+    /// anything but one. The error is at the first digit that cannot continue such an escape:
+    /// the `D` of a low surrogate decides nothing yet, and its second digit, `C` to `F`, makes it
+    /// one.
+    fn unit_escape(&mut self, low: bool) -> Result<u32, Error> {
         let mut value = 0;
-        for _ in 0..4 {
+        for index in 0..4 {
+            let at = self.at;
             let digit = self
                 .peek()
                 .and_then(|c| c.to_digit(16))
-                .ok_or(Error::Syntax(self.at))?;
+                .ok_or(Error::Syntax(at))?;
+            if index == 0 && low && digit != 0xD {
+                return Err(Error::Syntax(at));
+            }
+            if index == 1 && value == 0xD && low != (digit >= 0xC) {
+                return Err(Error::Syntax(at));
+            }
             value = value * 16 + digit;
             self.at += 1;
         }
@@ -285,10 +296,11 @@ fn number_error(chars: &[char], start: usize) -> usize {
     i
 }
 
-/// Whether `text` is exactly one JSON number (RFC 8259 §6), as `is_json_number` says.
+/// Whether `text` is exactly one JSON number (RFC 8259 §6) with a fraction or an exponent, as
+/// `is_json_number` says: the numbers that `Decimal` holds, never those of `Number` (N-27).
 pub fn is_json_number(text: &str) -> bool {
     let chars: Vec<char> = text.chars().collect();
-    number_end(&chars, 0) == Some(chars.len())
+    number_end(&chars, 0) == Some(chars.len()) && text.contains(['.', 'e', 'E'])
 }
 
 /// The one JSON value of `text` (`spec/23 §3`), or the first error in reading order.
@@ -549,9 +561,15 @@ mod tests {
         assert_eq!(parse("\"a\u{1}\""), Err(Error::Syntax(2)));
         assert_eq!(parse(r#""\x""#), Err(Error::Syntax(2)));
         // Lone surrogates, at their escape.
-        assert_eq!(parse(r#""ab\udc00""#), Err(Error::Syntax(3)));
-        assert_eq!(parse(r#""\ud800x""#), Err(Error::Syntax(1)));
-        assert_eq!(parse(r#""\ud800A""#), Err(Error::Syntax(1)));
+        // Surrogates, at the first character that cannot continue a valid escape (N-27 F5).
+        assert_eq!(parse(r#""ab\udc00""#), Err(Error::Syntax(6)));
+        assert_eq!(parse(r#""\ud800x""#), Err(Error::Syntax(7)));
+        assert_eq!(parse(r#""\ud800\u0041""#), Err(Error::Syntax(9)));
+        assert_eq!(parse(r#""\uD800"#), Err(Error::Syntax(7)));
+        assert_eq!(parse(r#""\uD800\"#), Err(Error::Syntax(8)));
+        assert_eq!(parse(r#""\uDC00"#), Err(Error::Syntax(4)));
+        assert_eq!(parse(r#""\uD800\uD800""#), Err(Error::Syntax(10)));
+        assert_eq!(parse(r#"["\uD800""#), Err(Error::Syntax(8)));
         // Positions count scalar values, not bytes.
         assert_eq!(parse("[\"é\", ?]"), Err(Error::Syntax(6)));
         // A duplicate key before a later syntax error is reported first.
@@ -604,13 +622,25 @@ mod tests {
 
     #[test]
     fn numbers_follow_the_grammar() {
-        for good in ["0", "-0", "12", "-1.5", "1e9", "1E-9", "0.0e+0"] {
+        for good in ["-1.5", "1e9", "1E-9", "0.0e+0", "5.0"] {
             assert!(is_json_number(good), "{good}");
         }
+        // Integers are `Number`, never `Decimal` (N-27 F2).
         for bad in [
-            "", "-", "01", "+1", "1.", ".5", "1e", "1e+", "0x1", " 1", "1 ",
+            "0", "-0", "12", "", "-", "01", "+1", "1.", ".5", "1e", "1e+", "0x1", " 1", "1 ",
         ] {
             assert!(!is_json_number(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn integers_past_the_digit_limit_fail_where_they_start() {
+        let at_limit = "9".repeat(MAX_INT_DIGITS);
+        assert!(matches!(parse(&at_limit), Ok(Tree::Int(_))));
+        let over = format!("[1, -{}]", "9".repeat(MAX_INT_DIGITS + 1));
+        assert_eq!(parse(&over), Err(Error::NumberTooLong(4)));
+        // A decimal keeps its text, so it has no such limit.
+        let long = format!("{}.5", "9".repeat(100_000));
+        assert!(matches!(parse(&long), Ok(Tree::Decimal(_))));
     }
 }

@@ -188,6 +188,7 @@ fn error(error: json::Error) -> i64 {
         json::Error::Syntax(at) => (0, at),
         json::Error::TooDeep(at) => (1, at),
         json::Error::DuplicateKey(at) => (2, at),
+        json::Error::NumberTooLong(at) => (3, at),
     };
     wrap(variant, int_word(&BigInt::from(at)))
 }

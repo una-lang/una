@@ -226,6 +226,10 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) returning: Option<Returning>,
     /// The error kinds of the calls checked so far, by the span of the call.
     pub(crate) call_fails: BTreeMap<Span, Ty>,
+    /// The labels that decide the failures of calls of prelude functions whose failure depends
+    /// on their arguments' values, as `parse_json` (`spec/23 §5`, `spec/07 §3`), by the span of
+    /// the call: handling such a failure branches on them (N-27).
+    pub(crate) decided_failures: BTreeMap<Span, Label>,
     /// The function or predicate whose body is checked.
     pub(crate) current: Option<usize>,
     /// The handler whose operation bodies are checked (ADR 0043).
@@ -378,6 +382,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             ctx: Ctx::plain(),
             returning: None,
             call_fails: BTreeMap::new(),
+            decided_failures: BTreeMap::new(),
             current: None,
             handler: None,
             instances: Vec::new(),

@@ -4,8 +4,9 @@
 -- expect: run-output "canonical: {\"a\":[1,2.50,-1E+3,true,null],\"b\":{},\"name\":\"Ana \\\"A\\\" \\u2028\"}"
 -- expect: run-output "big: 123456789012345678901234567891 Decimal(\"0.1\")"
 -- expect: run-output "name: \"Ana \\\"A\\\" \\u2028\", missing: ?"
--- expect: run-output "errors: syntax at 0 / syntax at 3 / syntax at 1 / duplicate key at 7 / syntax at 2 / syntax at 3 / too deep at 512 / ok"
+-- expect: run-output "errors: syntax at 0 / syntax at 3 / syntax at 1 / duplicate key at 7 / syntax at 2 / syntax at 6 / too deep at 512 / ok"
 -- expect: run-output "built: [\"x\",{\"k\":-0.5}] quoted: \"tab\\tq\\\"\""
+-- expect: run-output "long: number too long at 1 / ok, integers: null"
 module jsons
 
 shown(e: JsonError) -> Text
@@ -14,6 +15,7 @@ shown(e: JsonError) -> Text
     is Syntax(at) -> "syntax at {at}"
     is TooDeep(at) -> "too deep at {at}"
     is DuplicateKey(at) -> "duplicate key at {at}"
+    is NumberTooLong(at) -> "number too long at {at}"
 
 outcome(t: Text) -> Text
 =
@@ -79,3 +81,14 @@ pub main() -> Unit
   let built = Array([Str("x"), Object(empty.with(key: "k", value: half))])
   let raw = "tab\tq\""
   @console.print("built: {built.to_json()} quoted: {raw.quote_json()}")
+  let edit digits = "["
+  for i in 0..<4301
+    digits = "{digits}9"
+  let too_long = outcome("{digits}]")
+  let edit fits = ""
+  for i in 0..<4300
+    fits = "{fits}9"
+  let at_limit = outcome(fits)
+  let integer = decimal("5")
+    if error use Null
+  @console.print("long: {too_long} / {at_limit}, integers: {integer.to_json()}")

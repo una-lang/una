@@ -691,6 +691,14 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         if let Some(fails) = &call_fails {
             self.call_fails.insert(span, fails.clone());
+            // A prelude function that declares its own failure and whose result carries its
+            // arguments' labels fails depending on their values too, as `parse_json` does: its
+            // failure is labeled like its result (`spec/23 §5`, `spec/22 §5` rule 2, N-27). The
+            // failure of a function value given for `fails of` follows ADR 0067 instead.
+            if def.fails.is_some() && prelude_labeled(self.env.prelude, &def) {
+                let label = self.labeled(&result).top_label();
+                self.decided_failures.insert(span, label);
+            }
         }
         result
     }

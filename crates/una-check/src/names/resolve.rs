@@ -20,6 +20,7 @@ pub(crate) const JSON_NAMES: &[&str] = &[
     "Syntax",
     "TooDeep",
     "DuplicateKey",
+    "NumberTooLong",
 ];
 
 use una_core::IntType;

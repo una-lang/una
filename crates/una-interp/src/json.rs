@@ -33,6 +33,7 @@ pub(crate) fn error<'p>(error: json::Error) -> Value<'p> {
         json::Error::Syntax(at) => ("Syntax", 0, at),
         json::Error::TooDeep(at) => ("TooDeep", 1, at),
         json::Error::DuplicateKey(at) => ("DuplicateKey", 2, at),
+        json::Error::NumberTooLong(at) => ("NumberTooLong", 3, at),
     };
     Value::data(
         prelude_ctor("JsonError", name, index),
