@@ -673,7 +673,7 @@ impl<'p, 'a> Checker<'p, 'a> {
             // The importable standard modules (`spec/10 §11` rule 10, N-33).
             let standard: &[&str] = match path.as_str() {
                 prelude::STD_TESTING => &prelude::STD_TESTING_NAMES,
-                prelude::STD_HOST => &prelude::STD_HOST_NAMES,
+                prelude::STD_HOST => prelude::std_host_names(self.package.settings.edition),
                 _ => &[],
             };
             let is_std = path == prelude::STD_TESTING || path == prelude::STD_HOST;
