@@ -1249,6 +1249,11 @@ impl<'p, 'i> Walker<'p, 'i> {
                         Bound::Expr(inner) => {
                             let mut inner_leaves = Vec::new();
                             self.walk(inner, &ctx, &mut inner_leaves);
+                            // No path of the bound expression completes, as `fail`: the rest
+                            // is never reached, so it has no obligation and no return (#274).
+                            if inner_leaves.is_empty() {
+                                return;
+                            }
                             // ADR 0037 rule 2: the value of each path flows into the binder,
                             // at the bound expression.
                             self.returned_functions(&ctx, &inner_leaves, ty, Some(*span));
