@@ -225,6 +225,11 @@ impl<'p> Index<'p> {
                 ("Option", "Some") | ("Result", "Ok") => &["value"],
                 ("Result", "Err") => &["failure"],
                 ("Entry", "Entry") => &["key", "value"],
+                ("Json", "Boolean" | "Number" | "Str") => &["value"],
+                ("Json", "Decimal") => &["text"],
+                ("Json", "Array") => &["items"],
+                ("Json", "Object") => &["fields"],
+                ("JsonError", _) => &["at"],
                 _ => return Vec::new(),
             };
             return names.iter().map(|name| (*name, None)).collect();
@@ -401,7 +406,7 @@ fn level_name(level: Level) -> &'static str {
     }
 }
 
-fn prelude_ctor(kind: &str, name: &str, index: usize) -> Ctor {
+pub(crate) fn prelude_ctor(kind: &str, name: &str, index: usize) -> Ctor {
     Ctor {
         kind: Path {
             module: "prelude".to_owned(),
@@ -1565,6 +1570,17 @@ impl<'p, 'w> Machine<'p, 'w> {
                 }
             }
             "empty_map" => Value::Map(Rc::default()),
+            // JSON (`spec/23`), by the parser and writer that the native runtime shares.
+            "parse_json" => match una_core::json::parse(&text(0)?) {
+                Ok(tree) => crate::json::value(tree),
+                Err(error) => return Err(Stop::Fail(crate::json::error(error))),
+            },
+            "to_json" => {
+                let tree = crate::json::tree(&arg(0)?).ok_or_else(bad)?;
+                Value::text(&una_core::json::write(&tree))
+            }
+            "quote_json" => Value::text(&una_core::json::quote(&text(0)?)),
+            "is_json_number" => Value::Bool(una_core::json::is_json_number(&text(0)?)),
             // Ascending and stable (`spec/20 §6` rule 2).
             "sort" => {
                 let mut items = list(0)?.as_ref().clone();

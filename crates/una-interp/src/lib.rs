@@ -8,6 +8,7 @@
 
 mod harness;
 mod host;
+mod json;
 mod machine;
 mod trace;
 mod value;

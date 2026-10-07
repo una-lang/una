@@ -22,6 +22,7 @@ use cap::Cap;
 pub mod ffi;
 pub mod generic;
 pub mod host;
+mod json;
 pub mod render;
 pub mod runtime;
 pub mod tasks;
