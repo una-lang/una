@@ -13,6 +13,10 @@ All notable changes to Una are recorded here. Versions follow the milestones and
   - `m.len` and `m.has(key: k)` are in the refinement language, and each operation's contract is a hypothesis after it.
   - In edition 0.2, a user kind named `Map` or `Entry` is U1002, and `with` after `.` is a method name.
   - The native debug runtime's note now reads "lists, maps and records copied".
+- **Text functions** (#237, ADR 0070, `spec/22`). Edition 0.2 gains `split(on:)`, `join(separator:)`, `ends_with(suffix:)`, `contains_text(part:)`, `find(text:)`, `replace(pattern:, by:)`, `slice(start:, end:)`, `to_upper`, `to_lower`, `chars`, `parse_int` with the kind `ParseError`, `trim_start`, `trim_end` and `bytes`.
+  - Positions count scalar values. `find`, `split` and `replace` are linear, over Rust's Two-Way search, which `find` and `contains_text` share.
+  - Every result carries every label of every argument. The contracts are hypotheses, `slice`'s precondition is an obligation, and `find` is `Some` exactly when `contains_text` holds.
+  - The parameters `separator`, `start` and `end`, and `pattern` and `by` replace the ADR's `with`, `from` and `to`, and `old` and `new`, since `with`, `from` and `old` are keywords (N-20).
 
 ### Verification
 

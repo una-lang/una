@@ -26,7 +26,7 @@ una trace EVENTS_3  # in examples/events
 una contract events.checkin.check_in  # in examples/events
 ```
 
-`una build` compiles a package into a native executable that behaves as `una run` (§17):
+`una build` compiles a package into a native executable that behaves as `una run` (§18):
 
 ```sh
 una build .  # copy examples/hello
@@ -40,7 +40,7 @@ Exit codes: `0` success; `1` errors in the program, an unproven obligation or a 
 - A package is a directory with `una.toml`, `verification.lock` and sources under `src/`. Module `shop.cart` lives in `src/shop/cart.una`, and a file holds exactly one module.
 - A single `.una` file is also a package, with default settings and the default lock.
 - `una.toml` has `[package]` (`name`, `version`, `edition = "0.2"`), and optionally `[labels] categories`, `[trusted] modules`, `[escape_budget] checked_per_module` (default 0) and `[run]` (`entry` module, `grants`). Unknown keys are U7002.
-- **Editions.** `edition = "0.2"` enables the constructs of v0.2: editable values and `for` loops (§11), fixed-width integers (§12), recursive kinds (§4), `uses of` and `fails of` (§8), constraints on generics (§13), maps (§14), JSON (§15) and `together` (§16). A package of edition `0.1` keeps the language of v0.1 in every later compiler, and a single `.una` file outside a package is edition `0.1`. §19 lists what changes between them.
+- **Editions.** `edition = "0.2"` enables the constructs of v0.2: editable values and `for` loops (§11), fixed-width integers (§12), recursive kinds (§4), `uses of` and `fails of` (§8), constraints on generics (§13), maps (§14), JSON (§15), text functions (§16) and `together` (§17). A package of edition `0.1` keeps the language of v0.1 in every later compiler, and a single `.una` file outside a package is edition `0.1`. §20 lists what changes between them.
 - `verification.lock` pins the solver: Z3 at the exact version it names must be on the path, or tier 1 reports U5003. `scripts/install-z3.sh` installs it.
 
 ## 3. Syntax in brief
@@ -169,7 +169,7 @@ example "restocking adds to the amount"
 - Arguments after the first are labeled, `f(a, b: 2)`; from the second argument on, a bare name equal to the parameter's name counts as labeled (`f(a, b)` when the parameter is `b`). The first argument always binds the first parameter, so `minus(b, a)` with parameters `(a, b)` is U2006, not a swap. Constructors with two or more fields label every field.
 - Blocks bind with `let`; values are immutable, and a `let edit` binding can be rebound (§11). `if c then a else b` fits on a line; `if` and `when` also take indented blocks.
 - `when` branches on variants (`is Some(x)`, `is Err`), literals (`is 0`) and ranges (`in 1..<20`); an `else` arm comes last. Arms over variants must cover every variant (U2007).
-- The prelude has `abs`, `min`, `max`, `is_digits`, `starts_with`, `trim`, `to_int`, `is_empty`, `first`, `at`, `append`, `contains`, `map`, `filter`, `first_where`, `fold`, `sum`, `is_some`, `or_else` and `is_ok`, and in edition `0.2` also `sort`, `set` and `empty_map` (§14); their contracts are hypotheses for the solver (`spec/14`, `spec/20 §6`). Loop with `for` (§11), recursion, `map`, `filter` or `fold`.
+- The prelude has `abs`, `min`, `max`, `is_digits`, `starts_with`, `trim`, `to_int`, `is_empty`, `first`, `at`, `append`, `contains`, `map`, `filter`, `first_where`, `fold`, `sum`, `is_some`, `or_else` and `is_ok`, and in edition `0.2` also `sort`, `set`, `empty_map` (§14), the JSON functions (§15) and the text functions (§16); their contracts are hypotheses for the solver (`spec/14`, `spec/20 §6`). Loop with `for` (§11), recursion, `map`, `filter` or `fold`.
 - The result of `filter` and `first_where` carries the labels of the predicate's result at its top, since which elements remain depends on it: over `secret` elements, a predicate that reads them gives a list whose top is `secret` (`spec/14`, result labels, ADR 0067). A predicate with effects whose result is labeled is U4002 in `first_where`.
 - A call of a generic function raises each position of its result only by the type arguments that position depends on; `una contract` shows them as `-- result labels: ...`. A list whose top depends on comparisons of `T` values carries `T`'s labels, and a parameter of a user function still takes only what its type allows, so build such lists with the prelude (`fold`, `append`), not by passing them to your own generic functions.
 
@@ -807,7 +807,47 @@ pub port(text: internal Text) -> internal Int
 pub with_port(fields: Map[Text, Json], port: Int) -> Text = Object(fields.with(key: "port", value: Number(port))).to_json()
 ```
 
-## 16. Concurrent tasks: `together`
+## 16. Text
+
+Edition `0.2` adds functions that take a text apart, search it, change it and parse it (`spec/22`). Each is a prelude function called with method syntax.
+
+- **Positions** count Unicode scalar values from 0, as `.len` does; there are no byte offsets or graphemes.
+- **The functions:**
+  - `split(on:)`, which keeps empty parts, and `join(separator:)`, its inverse.
+  - `find(text:)`, `Some` of the first position or `None`, which is `Some` exactly when `contains_text(part:)` holds; `ends_with(suffix:)`.
+  - `replace(pattern:, by:)`, every non-overlapping occurrence, left to right.
+  - `slice(start:, end:)`, whose precondition `0 <= start and start <= end and end <= t.len` you prove at each call.
+  - `chars()`, one text per scalar value; `bytes()`, the UTF-8 encoding as `List[U8]`.
+  - `to_upper()` and `to_lower()`, which change ASCII letters only and keep the length.
+  - `trim_start()` and `trim_end()`, as `trim` at one end.
+  - `parse_int()`, which fails with `ParseError`: `Empty`, `NoDigits` for `-` alone, or `NotADigit(at: i)` at the first wrong position. Handle it as any failure.
+- **Cost:** `find`, `split` and `replace` are linear in the text; `.len` is O(1).
+- **Proofs:** the contracts are hypotheses after each call, such as `split`'s `result.len >= 1` and `slice`'s `result.len == end - start`. There is no theory of strings beyond them.
+- **Labels:** every result carries every label of every argument, including the top and the elements of `split`'s and `chars`' lists. Whether a secret parses is secret too.
+
+```una
+module csv
+
+--- The fields of a line, without the spaces around them.
+pub fields(line: Text) -> List[Text]
+=
+  let comma = ","
+  let parts = line.split(on: comma)
+  parts.map(each: fn(part) -> part.trim())
+
+--- The number at the start of a field, or 0.
+pub leading_number(field: Text) -> Int
+=
+  let space = " "
+  let end = field.find(text: space)
+    if none use field.len
+  let digits = if 0 <= end and end <= field.len then field.slice(start: 0, end: end) else field
+  let n = digits.parse_int()
+    if error use 0
+  n
+```
+
+## 17. Concurrent tasks: `together`
 
 `together` runs independent work at once with the result and trace of a sequential run (`spec/19`).
 
@@ -858,14 +898,14 @@ pub count(xs: List[Int]) -> Int
   seen
 ```
 
-## 17. Native executables and the language server
+## 18. Native executables and the language server
 
 - `una build [path]` checks the package at tier 1, then writes a native executable to `target/una/<name>` (`spec/16`), or to `--out <file>`. It refuses a package with errors, as `una run` does; `--json` prints `una.build/1`.
 - The executable runs `main` of the entry module with the output, failures, exit codes and grants of `una run`: the `[run] grants` of `una.toml` are built in, and `--grant`, `--max-depth` and `--max-memory` work as for `una run`. Its `--trace <file>` writes the trace as a JSON array, the trace that `una --json run` reports in `una.run/1`. Its output and trace match the interpreter's.
 - Tasks of `together` run on their own threads in a native executable, and one at a time in `una run`.
 - `una lsp` is a language server (LSP 3.17 over stdin and stdout) for editors: it checks, formats and solves, and never runs programs.
 
-## 18. The Agent ABI
+## 19. The Agent ABI
 
 Every command takes `--json` and prints one document whose `schema` names its shape:
 
@@ -904,7 +944,7 @@ When the checks reject a package, `contract`, `trace`, `obligations` and `report
 
 The build report counts trivial `ensures`, clauses the solver proves with no hypothesis at all such as `ensures result == result`, as missing contracts: write contracts that say something about the result.
 
-## 19. Migrating from edition 0.1
+## 20. Migrating from edition 0.1
 
 Change `edition = "0.1"` to `"0.2"` in `una.toml`, then check. What can change:
 
