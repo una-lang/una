@@ -1,8 +1,8 @@
 # 0077. Shared types in the checker
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-08
-- Deciders: Leonardo (pending); proposal by Claude (Una-2)
+- Deciders: Leonardo (2026-10-08, written), on a proposal by Claude (Una-2)
 - Resolves: issue #335 (follow-up to #331, decision N-47)
 
 ## Context
@@ -140,7 +140,9 @@ Beyond about 1,000 functions, those fixpoint workloads grow faster than linearly
   - Labels are cheaper everywhere.
 - **Cons:** it keeps the quadratic term that #335 asks to remove.
 
-## Decision (proposed)
+## Decision
+
+The owner chose option A on 2026-10-08 (written).
 
 **Option A**, in three stages. Each stage is its own pull request and is gated by the identity and scaling tests below.
 
