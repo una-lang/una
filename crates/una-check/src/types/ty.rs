@@ -244,7 +244,7 @@ impl FnRefinements {
     /// a join accepts what both accept, so its parameters carry the refinements of either and
     /// its result those both share; a meet the other way round. Every value of either type is
     /// then of the join, and the flows the verifier checks are trivially implied.
-    /// DECISION D-150: ADR 0037 does not say how branches join; this join never assumes a
+    /// D-150: ADR 0037 does not say how branches join; this join never assumes a
     /// refinement that one branch lacks.
     pub(crate) fn combine(&self, other: &FnRefinements, join: bool) -> FnRefinements {
         let count = self.params.len().max(other.params.len());
@@ -586,7 +586,7 @@ impl Ty {
 
     /// Whether the type is second-class or contains a second-class type: a function type with
     /// `uses` or `fails` at any position (`spec/05 §6`, ADR 0038 D2).
-    /// DECISION D-139: a function type whose parameter or result holds a second-class type
+    /// D-139: a function type whose parameter or result holds a second-class type
     /// holds one too, as `fn(fn() -> Unit uses @log: Log[write]) -> Unit` does.
     pub(crate) fn second_class(&self) -> bool {
         match self {

@@ -184,11 +184,11 @@ pub fn confine(world: &mut dyn World, prefix: &Path, relative: &str) -> Option<P
             Component::RootDir | Component::Prefix(_) => return None,
         }
     }
-    // DECISION D-133: a path that names the prefix itself (``, `.`, `a/..`) has no final
+    // D-133: a path that names the prefix itself (``, `.`, `a/..`) has no final
     // component to open, and is denied.
     let (last, directories) = parts.split_last()?;
     // Rule 2: every intermediate directory resolves inside the canonical prefix.
-    // DECISION D-134: each one is checked, not only the last, so a path never passes through
+    // D-134: each one is checked, not only the last, so a path never passes through
     // a directory outside the prefix even when it comes back inside.
     let mut lexical = prefix.to_path_buf();
     let Some(root) = world.canonical(prefix) else {

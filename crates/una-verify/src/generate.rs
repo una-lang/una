@@ -267,7 +267,7 @@ pub(crate) struct Index<'p> {
 /// Whether `module` is the prelude's (`spec/14 §1`). The prelude is identified by its module
 /// path, which no module of a package that reaches the verifier can have: a user module path
 /// whose first segment is `prelude` is U1009 at tier 0 (ADR 0038 D7), and tier 1 runs only
-/// when tier 0 reports nothing. DECISION D-135: the reserved path is the
+/// when tier 0 reports nothing. D-135: the reserved path is the
 /// prelude's identity, rather than a new Core IR path that no source can spell, and a kind the
 /// package declares is never taken for a prelude kind ([`Index::prelude_kind`]).
 fn is_prelude(module: &str) -> bool {
@@ -2241,9 +2241,9 @@ impl<'p, 'i> Walker<'p, 'i> {
     /// result of `target` that the result of `source` does not carry (covariant), at `span`,
     /// under the path context `ctx`. Function types nested in parameters, results and type
     /// arguments are compared the same way. The binders are fresh (rule 9).
-    /// DECISION D-153: one obligation per refinement the target position lacks, as for
+    /// D-153: one obligation per refinement the target position lacks, as for
     /// any flow, and a refinement is carried when the same refined kind or range is.
-    /// DECISION D-154: a position nested in a parameter or result is named after it
+    /// D-154: a position nested in a parameter or result is named after it
     /// (`parameter arg1 of parameter g of takes_fn`), and a value that is neither a named
     /// function nor a lambda by its source text.
     fn fn_flow(&mut self, source: &Type, target: &Type, who: &Who, span: Span, ctx: &Ctx) {
@@ -2318,7 +2318,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                         continue;
                     }
                     let shown = instantiate(&goal.clause.term, "result");
-                    // DECISION D-151: rule 6 names the expected type's position for a
+                    // D-151: rule 6 names the expected type's position for a
                     // parameter; for the result, the position to strengthen is the value's.
                     let repair = format!(
                         "strengthen the result of `{}` to a refined kind that implies `{shown}`",
@@ -2455,7 +2455,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                     .span
                     .map(|span| (span, clause_role(refinement))),
             );
-            // DECISION D-152: the repair of a lambda's result, which has no written type,
+            // D-152: the repair of a lambda's result, which has no written type,
             // is a guard in its body.
             for obligation in self.obligations.iter_mut().skip(before) {
                 obligation.site.parameter = None;
@@ -3510,7 +3510,7 @@ impl<'p, 'i> Walker<'p, 'i> {
 
     /// Where an obligation with `goal` arises (R-021). The free binders of the goal are its
     /// program constants; a temporary that stands for a pure term counts as the binders of
-    /// that term, since the goal's text shows the term. DECISION D-147: a goal outside the
+    /// that term, since the goal's text shows the term. D-147: a goal outside the
     /// encoding, and the `false` of an exhaustiveness obligation, are never ground, and the
     /// value is a parameter only when the goal's only constant, before any temporary is
     /// expanded, is a parameter of the enclosing function. A `requires` clause can state the

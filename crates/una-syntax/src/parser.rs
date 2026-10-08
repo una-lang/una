@@ -2097,7 +2097,7 @@ impl<'a> Parser<'a> {
 
     /// U0101 for a pattern where `spec/02 §6` allows only a name in a field of a variant
     /// pattern, such as `is Some(Circle(radius))` or `is Ok(value: is 0)` (benchmark finding
-    /// B-001). DECISION D-155: a variant, `is`, `in` or a literal where a field or local name
+    /// B-001). D-155: a variant, `is`, `in` or a literal where a field or local name
     /// is expected starts a nested pattern; the repair has no mechanical edit, because moving the
     /// arm body under a second `when` also regroups the arms that share the outer variant. A
     /// literal is named as such, with a second `when` or a comparison in the arm as its repair

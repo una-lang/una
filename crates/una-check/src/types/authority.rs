@@ -1023,7 +1023,7 @@ impl<'a> Checker<'_, 'a, '_> {
         if !self.authority() {
             // The body of an opaque predicate is a line too (`spec/04 §4`, R-029). U2015
             // already reports effects and unhandled failures there, so U3013 names only a
-            // nested call whose failure `attempt` handles (DECISION D-156).
+            // nested call whose failure `attempt` handles (D-156).
             if self.pass == Pass::Check
                 && self.ctx.opaque
                 && !top
@@ -1548,7 +1548,7 @@ pub(crate) fn budget(
 }
 
 /// U3006: a field of a kind whose type is a function type with `uses` or `fails` (`spec/03 §1`).
-/// DECISION D-143: such a type under a type argument, as in `List[...]`,
+/// D-143: such a type under a type argument, as in `List[...]`,
 /// is U3016 at the type argument instead (ADR 0038 D2), and not U3006 too.
 pub(crate) fn stored_effects(env: &Env<'_>, report: &mut Report<'_>) {
     fn holds(ty: &Ty) -> bool {
