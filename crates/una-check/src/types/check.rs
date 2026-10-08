@@ -1477,7 +1477,10 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                     let mut diagnostic = self.report.make(
                         Code::U3010,
                         op.name.span,
-                        format!("capability `{}` has no operation `{name}`", capability.name),
+                        format!(
+                            "capability `{}` has no operation `{name}`",
+                            self.env.cap_def_name(&capability)
+                        ),
                     );
                     if let Some(close) = super::closest(name, names) {
                         diagnostic.repairs.push(self.report.edit(
@@ -1523,7 +1526,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                         op.span,
                         format!(
                             "capability `{}` has no operation `{op_name}`",
-                            capability.name
+                            self.env.cap_def_name(capability)
                         ),
                     );
                 }

@@ -951,7 +951,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     {
                         let kind = self
                             .sum_of(&scrutinee)
-                            .map_or("?", |(kind, _)| self.env.kind_name(kind));
+                            .map_or_else(|| "?".to_owned(), |(kind, _)| self.env.kind_name(kind));
                         self.report.error(
                             Code::U2008,
                             pattern,

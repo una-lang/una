@@ -2,7 +2,7 @@
 //! the package, the prelude and `std.testing`, the scopes of each module (ADR 0023), and the
 //! lowering of written types (U2002, U2003).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use una_core::IntType;
@@ -294,6 +294,20 @@ enum AliasState {
     Done,
 }
 
+/// For each `(name, module)` of `decls`, whether a declaration of another module has the same
+/// name: O(n log n), by a sort of the names.
+fn shared<'a>(decls: impl Iterator<Item = (&'a str, usize)>) -> Vec<bool> {
+    let decls: Vec<(&str, usize)> = decls.collect();
+    let mut modules: BTreeMap<&str, BTreeSet<usize>> = BTreeMap::new();
+    for (name, module) in &decls {
+        modules.entry(name).or_default().insert(*module);
+    }
+    decls
+        .iter()
+        .map(|(name, _)| modules.get(name).is_some_and(|m| m.len() > 1))
+        .collect()
+}
+
 /// The environment.
 pub(crate) struct Env<'a> {
     pub(crate) modules: Vec<Module<'a>>,
@@ -302,6 +316,11 @@ pub(crate) struct Env<'a> {
     pub(crate) functions: Vec<FnDef<'a>>,
     pub(crate) capabilities: Vec<CapDef<'a>>,
     pub(crate) handlers: Vec<HandlerDef<'a>>,
+    /// For each kind, and each capability, whether another one of another module shares its
+    /// bare name, the standard library's included: messages then name it with its module's
+    /// path (#13, #17).
+    pub(crate) shared_kind_names: Vec<bool>,
+    pub(crate) shared_cap_names: Vec<bool>,
     /// The index of the prelude in `modules`; `std.testing` follows it.
     pub(crate) prelude: usize,
     /// The label categories that `una.toml` declares (`spec/07 §2`).
@@ -397,6 +416,8 @@ impl<'a> Env<'a> {
         let count = package.len();
         let mut env = Env {
             modules: Vec::new(),
+            shared_kind_names: Vec::new(),
+            shared_cap_names: Vec::new(),
             kinds: Vec::new(),
             aliases: Vec::new(),
             functions: Vec::new(),
@@ -442,6 +463,8 @@ impl<'a> Env<'a> {
         }
         env.imports(count);
         env.alias_state = vec![AliasState::Pending; env.aliases.len()];
+        env.shared_kind_names = shared(env.kinds.iter().map(|k| (k.name, k.module)));
+        env.shared_cap_names = shared(env.capabilities.iter().map(|c| (c.name, c.module)));
         env.signatures(report);
         for id in 0..env.functions.len() {
             let Some((module, FnAst::Policy(policy))) =
@@ -768,9 +791,57 @@ impl<'a> Env<'a> {
         }
     }
 
-    /// The name of a kind, for messages.
-    pub(crate) fn kind_name(&self, id: KindId) -> &'a str {
-        self.kinds.get(id).map_or("?", |kind| kind.name)
+    /// The name of a kind, for messages: with its module's path when another module declares
+    /// a kind of the same name (#17).
+    pub(crate) fn kind_name(&self, id: KindId) -> String {
+        match self.kinds.get(id) {
+            Some(kind) if self.shared_kind_names.get(id).copied().unwrap_or(false) => {
+                self.qualified(kind.module, kind.name)
+            }
+            Some(kind) => kind.name.to_owned(),
+            None => "?".to_owned(),
+        }
+    }
+
+    /// The name of a capability, for messages: with its module's path when another module
+    /// declares a capability of the same name, as a module's own `Console` and the host's do
+    /// (#13, #17).
+    pub(crate) fn cap_display(&self, id: CapId) -> String {
+        match self.capabilities.get(id) {
+            Some(cap) if self.shared_cap_names.get(id).copied().unwrap_or(false) => {
+                self.qualified(cap.module, cap.name)
+            }
+            Some(cap) => cap.name.to_owned(),
+            None => "?".to_owned(),
+        }
+    }
+
+    /// [`Env::cap_display`] for a capability at hand: O(capabilities), for a message.
+    pub(crate) fn cap_def_name(&self, cap: &CapDef<'_>) -> String {
+        if self
+            .capabilities
+            .iter()
+            .any(|other| other.name == cap.name && other.module != cap.module)
+        {
+            self.qualified(cap.module, cap.name)
+        } else {
+            cap.name.to_owned()
+        }
+    }
+
+    /// `name` with the path of `module`. The host capabilities and their failure kinds are
+    /// declared in the prelude and named by the module that exports them, `std.host`
+    /// (`spec/14 §3`).
+    fn qualified(&self, module: usize, name: &str) -> String {
+        if module == self.prelude
+            && crate::names::prelude::std_host_names(self.edition).contains(&name)
+        {
+            return format!("{}.{name}", crate::names::prelude::STD_HOST);
+        }
+        match self.modules.get(module) {
+            Some(module) => format!("{}.{name}", module.path),
+            None => name.to_owned(),
+        }
     }
 
     /// Lowers every signature: aliases, capabilities, kinds, functions and handlers. Capabilities
@@ -1236,7 +1307,11 @@ impl<'a> Env<'a> {
                     let mut diagnostic = report.make(
                         Code::U1001,
                         ident.span,
-                        format!("capability `{cap_name}` has no operation `{op}`"),
+                        format!(
+                            "capability `{}` has no operation `{op}`",
+                            capability
+                                .map_or_else(|| cap_name.to_owned(), |id| self.cap_display(id))
+                        ),
                     );
                     if let Some(close) = closest(op, declared.iter().copied()) {
                         diagnostic.repairs.push(report.edit(

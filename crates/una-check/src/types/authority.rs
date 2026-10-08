@@ -270,10 +270,8 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// The name of a capability, for messages.
-    pub(crate) fn cap_name(&self, capability: Option<CapId>) -> &'a str {
-        capability
-            .and_then(|id| self.env.capabilities.get(id))
-            .map_or("?", |c| c.name)
+    pub(crate) fn cap_name(&self, capability: Option<CapId>) -> String {
+        capability.map_or_else(|| "?".to_owned(), |id| self.env.cap_display(id))
     }
 
     /// `@name: C[ops]`, for messages.
