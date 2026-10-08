@@ -335,510 +335,422 @@ impl Code {
         self.entry().meaning
     }
 
-    /// The text that `una explain` prints for the code.
-    pub fn explain_text(self) -> &'static str {
-        self.entry().explain
-    }
-
     fn entry(self) -> &'static Entry {
         match self {
             Code::U0001 => &Entry {
                 code: "U0001",
                 domain: Domain::Syntax,
                 meaning: "Invalid character, byte order mark or lone carriage return",
-                explain: include_str!("../explain/U0001.md"),
             },
             Code::U0002 => &Entry {
                 code: "U0002",
                 domain: Domain::Syntax,
                 meaning: "Tab in indentation",
-                explain: include_str!("../explain/U0002.md"),
             },
             Code::U0003 => &Entry {
                 code: "U0003",
                 domain: Domain::Syntax,
                 meaning: "Inconsistent indentation",
-                explain: include_str!("../explain/U0003.md"),
             },
             Code::U0004 => &Entry {
                 code: "U0004",
                 domain: Domain::Syntax,
                 meaning: "Unterminated text literal",
-                explain: include_str!("../explain/U0004.md"),
             },
             Code::U0005 => &Entry {
                 code: "U0005",
                 domain: Domain::Syntax,
                 meaning: "Invalid escape sequence",
-                explain: include_str!("../explain/U0005.md"),
             },
             Code::U0006 => &Entry {
                 code: "U0006",
                 domain: Domain::Syntax,
                 meaning: "Text literal inside interpolation",
-                explain: include_str!("../explain/U0006.md"),
             },
             Code::U0007 => &Entry {
                 code: "U0007",
                 domain: Domain::Syntax,
                 meaning: "Malformed literal",
-                explain: include_str!("../explain/U0007.md"),
             },
             Code::U0101 => &Entry {
                 code: "U0101",
                 domain: Domain::Syntax,
                 meaning: "Unexpected token",
-                explain: include_str!("../explain/U0101.md"),
             },
             Code::U0102 => &Entry {
                 code: "U0102",
                 domain: Domain::Syntax,
                 meaning: "Clause out of order or repeated",
-                explain: include_str!("../explain/U0102.md"),
             },
             Code::U0103 => &Entry {
                 code: "U0103",
                 domain: Domain::Syntax,
                 meaning: "Reserved keyword not available in v0.1",
-                explain: include_str!("../explain/U0103.md"),
             },
             Code::U1001 => &Entry {
                 code: "U1001",
                 domain: Domain::Names,
                 meaning: "Unresolved name",
-                explain: include_str!("../explain/U1001.md"),
             },
             Code::U1002 => &Entry {
                 code: "U1002",
                 domain: Domain::Names,
                 meaning: "Duplicate definition",
-                explain: include_str!("../explain/U1002.md"),
             },
             Code::U1003 => &Entry {
                 code: "U1003",
                 domain: Domain::Names,
                 meaning: "Import cycle",
-                explain: include_str!("../explain/U1003.md"),
             },
             Code::U1004 => &Entry {
                 code: "U1004",
                 domain: Domain::Names,
                 meaning: "Use of a private declaration from another module",
-                explain: include_str!("../explain/U1004.md"),
             },
             Code::U1005 => &Entry {
                 code: "U1005",
                 domain: Domain::Names,
                 meaning: "Naming convention violation",
-                explain: include_str!("../explain/U1005.md"),
             },
             Code::U1006 => &Entry {
                 code: "U1006",
                 domain: Domain::Names,
                 meaning: "Undeclared requirement in `derived from`",
-                explain: include_str!("../explain/U1006.md"),
             },
             Code::U1007 => &Entry {
                 code: "U1007",
                 domain: Domain::Names,
                 meaning: "Generated requirement marked active",
-                explain: include_str!("../explain/U1007.md"),
             },
             Code::U1008 => &Entry {
                 code: "U1008",
                 domain: Domain::Names,
                 meaning: "Module path does not match file path",
-                explain: include_str!("../explain/U1008.md"),
             },
             Code::U1009 => &Entry {
                 code: "U1009",
                 domain: Domain::Names,
                 meaning: "Reserved module name",
-                explain: include_str!("../explain/U1009.md"),
             },
             Code::U2001 => &Entry {
                 code: "U2001",
                 domain: Domain::Types,
                 meaning: "Type mismatch",
-                explain: include_str!("../explain/U2001.md"),
             },
             Code::U2002 => &Entry {
                 code: "U2002",
                 domain: Domain::Types,
                 meaning: "Unknown or ill-formed type",
-                explain: include_str!("../explain/U2002.md"),
             },
             Code::U2003 => &Entry {
                 code: "U2003",
                 domain: Domain::Types,
                 meaning: "Wrong number of type arguments",
-                explain: include_str!("../explain/U2003.md"),
             },
             Code::U2004 => &Entry {
                 code: "U2004",
                 domain: Domain::Types,
                 meaning: "Missing argument label",
-                explain: include_str!("../explain/U2004.md"),
             },
             Code::U2005 => &Entry {
                 code: "U2005",
                 domain: Domain::Types,
                 meaning: "Unknown argument label",
-                explain: include_str!("../explain/U2005.md"),
             },
             Code::U2006 => &Entry {
                 code: "U2006",
                 domain: Domain::Types,
                 meaning: "Duplicate argument",
-                explain: include_str!("../explain/U2006.md"),
             },
             Code::U2007 => &Entry {
                 code: "U2007",
                 domain: Domain::Types,
                 meaning: "Non-exhaustive `when` over variants",
-                explain: include_str!("../explain/U2007.md"),
             },
             Code::U2008 => &Entry {
                 code: "U2008",
                 domain: Domain::Types,
                 meaning: "Unreachable arm or misplaced `else`",
-                explain: include_str!("../explain/U2008.md"),
             },
             Code::U2009 => &Entry {
                 code: "U2009",
                 domain: Domain::Types,
                 meaning: "Missing or unknown field in constructor",
-                explain: include_str!("../explain/U2009.md"),
             },
             Code::U2010 => &Entry {
                 code: "U2010",
                 domain: Domain::Types,
                 meaning: "Cannot infer lambda parameter type",
-                explain: include_str!("../explain/U2010.md"),
             },
             Code::U2011 => &Entry {
                 code: "U2011",
                 domain: Domain::Types,
                 meaning: "Statement value is not `Unit`",
-                explain: include_str!("../explain/U2011.md"),
             },
             Code::U2012 => &Entry {
                 code: "U2012",
                 domain: Domain::Types,
                 meaning: "`result` outside `ensures` or `expect`",
-                explain: include_str!("../explain/U2012.md"),
             },
             Code::U2013 => &Entry {
                 code: "U2013",
                 domain: Domain::Types,
                 meaning: "`it` or `error` outside its allowed position",
-                explain: include_str!("../explain/U2013.md"),
             },
             Code::U2014 => &Entry {
                 code: "U2014",
                 domain: Domain::Types,
                 meaning: "Expression outside the refinement language",
-                explain: include_str!("../explain/U2014.md"),
             },
             Code::U2015 => &Entry {
                 code: "U2015",
                 domain: Domain::Types,
                 meaning: "Invalid predicate body (impure, failing, recursive or outside RL for `reflect`)",
-                explain: include_str!("../explain/U2015.md"),
             },
             Code::U2016 => &Entry {
                 code: "U2016",
                 domain: Domain::Types,
                 meaning: "Opaque predicate called outside `checked`",
-                explain: include_str!("../explain/U2016.md"),
             },
             Code::U2017 => &Entry {
                 code: "U2017",
                 domain: Domain::Types,
                 meaning: "Use of a binding after it was passed by `take`",
-                explain: include_str!("../explain/U2017.md"),
             },
             Code::U2018 => &Entry {
                 code: "U2018",
                 domain: Domain::Types,
                 meaning: "An `edit` argument together with another use of its binding in the same call",
-                explain: include_str!("../explain/U2018.md"),
             },
             Code::U2019 => &Entry {
                 code: "U2019",
                 domain: Domain::Types,
                 meaning: "Assignment to a binding that is not editable",
-                explain: include_str!("../explain/U2019.md"),
             },
             Code::U2020 => &Entry {
                 code: "U2020",
                 domain: Domain::Types,
                 meaning: "A parameter convention (`edit`, `take`) not matched at the call site, or declared where none is allowed",
-                explain: include_str!("../explain/U2020.md"),
             },
             Code::U2021 => &Entry {
                 code: "U2021",
                 domain: Domain::Types,
                 meaning: "A function with `edit` or `take` parameters used as a value",
-                explain: include_str!("../explain/U2021.md"),
             },
             Code::U2022 => &Entry {
                 code: "U2022",
                 domain: Domain::Types,
                 meaning: "Integer literal does not fit its type",
-                explain: include_str!("../explain/U2022.md"),
             },
             Code::U2023 => &Entry {
                 code: "U2023",
                 domain: Domain::Types,
                 meaning: "A binding declared outside a `together` branch assigned, or passed as `edit` or `take`, inside it",
-                explain: include_str!("../explain/U2023.md"),
             },
             Code::U2024 => &Entry {
                 code: "U2024",
                 domain: Domain::Types,
                 meaning: "A `together` body with a statement other than `let`, or fewer than two branches",
-                explain: include_str!("../explain/U2024.md"),
             },
             Code::U2025 => &Entry {
                 code: "U2025",
                 domain: Domain::Types,
                 meaning: "A type argument does not satisfy the constraint of its parameter",
-                explain: include_str!("../explain/U2025.md"),
             },
             Code::U2026 => &Entry {
                 code: "U2026",
                 domain: Domain::Types,
                 meaning: "An operation on a type parameter that its constraint does not allow",
-                explain: include_str!("../explain/U2026.md"),
             },
             Code::U2027 => &Entry {
                 code: "U2027",
                 domain: Domain::Types,
                 meaning: "An unknown constraint name",
-                explain: include_str!("../explain/U2027.md"),
             },
             Code::U3001 => &Entry {
                 code: "U3001",
                 domain: Domain::Authority,
                 meaning: "Capability not in scope",
-                explain: include_str!("../explain/U3001.md"),
             },
             Code::U3002 => &Entry {
                 code: "U3002",
                 domain: Domain::Authority,
                 meaning: "Operation not permitted by capability type",
-                explain: include_str!("../explain/U3002.md"),
             },
             Code::U3003 => &Entry {
                 code: "U3003",
                 domain: Domain::Authority,
                 meaning: "Effects exceed declared `uses`",
-                explain: include_str!("../explain/U3003.md"),
             },
             Code::U3004 => &Entry {
                 code: "U3004",
                 domain: Domain::Authority,
                 meaning: "Capability used in a pure function",
-                explain: include_str!("../explain/U3004.md"),
             },
             Code::U3005 => &Entry {
                 code: "U3005",
                 domain: Domain::Authority,
                 meaning: "Capability reference used as a value",
-                explain: include_str!("../explain/U3005.md"),
             },
             Code::U3006 => &Entry {
                 code: "U3006",
                 domain: Domain::Authority,
                 meaning: "Effectful or failing lambda escapes",
-                explain: include_str!("../explain/U3006.md"),
             },
             Code::U3007 => &Entry {
                 code: "U3007",
                 domain: Domain::Authority,
                 meaning: "Fallible expression without handling",
-                explain: include_str!("../explain/U3007.md"),
             },
             Code::U3008 => &Entry {
                 code: "U3008",
                 domain: Domain::Authority,
                 meaning: "`if error pass` with a different error kind",
-                explain: include_str!("../explain/U3008.md"),
             },
             Code::U3009 => &Entry {
                 code: "U3009",
                 domain: Domain::Authority,
                 meaning: "Failure variant not in the declared error kind",
-                explain: include_str!("../explain/U3009.md"),
             },
             Code::U3010 => &Entry {
                 code: "U3010",
                 domain: Domain::Authority,
                 meaning: "Handler does not match its capability",
-                explain: include_str!("../explain/U3010.md"),
             },
             Code::U3011 => &Entry {
                 code: "U3011",
                 domain: Domain::Authority,
                 meaning: "Handler missing an operation",
-                explain: include_str!("../explain/U3011.md"),
             },
             Code::U3012 => &Entry {
                 code: "U3012",
                 domain: Domain::Authority,
                 meaning: "Host capability in `main` not granted by `una run`",
-                explain: include_str!("../explain/U3012.md"),
             },
             Code::U3013 => &Entry {
                 code: "U3013",
                 domain: Domain::Authority,
                 meaning: "Effectful or fallible call nested inside an expression",
-                explain: include_str!("../explain/U3013.md"),
             },
             Code::U3014 => &Entry {
                 code: "U3014",
                 domain: Domain::Authority,
                 meaning: "Host capability used in an example",
-                explain: include_str!("../explain/U3014.md"),
             },
             Code::U3015 => &Entry {
                 code: "U3015",
                 domain: Domain::Authority,
                 meaning: "`std.testing` used outside a handler or example",
-                explain: include_str!("../explain/U3015.md"),
             },
             Code::U3016 => &Entry {
                 code: "U3016",
                 domain: Domain::Authority,
                 meaning: "Second-class type used as a type argument",
-                explain: include_str!("../explain/U3016.md"),
             },
             Code::U3017 => &Entry {
                 code: "U3017",
                 domain: Domain::Authority,
                 meaning: "`of` clause that names no parameter",
-                explain: include_str!("../explain/U3017.md"),
             },
             Code::U3018 => &Entry {
                 code: "U3018",
                 domain: Domain::Authority,
                 meaning: "`of` clause that names a parameter not of function type",
-                explain: include_str!("../explain/U3018.md"),
             },
             Code::U3019 => &Entry {
                 code: "U3019",
                 domain: Domain::Authority,
                 meaning: "`of` clause that names a function type with its own `uses` or `fails`",
-                explain: include_str!("../explain/U3019.md"),
             },
             Code::U4001 => &Entry {
                 code: "U4001",
                 domain: Domain::Security,
                 meaning: "Flow to a lower label",
-                explain: include_str!("../explain/U4001.md"),
             },
             Code::U4002 => &Entry {
                 code: "U4002",
                 domain: Domain::Security,
                 meaning: "Implicit flow through control, failure or call under raised pc",
-                explain: include_str!("../explain/U4002.md"),
             },
             Code::U4003 => &Entry {
                 code: "U4003",
                 domain: Domain::Security,
                 meaning: "Sink label exceeded",
-                explain: include_str!("../explain/U4003.md"),
             },
             Code::U4004 => &Entry {
                 code: "U4004",
                 domain: Domain::Security,
                 meaning: "`policy` outside a trusted module",
-                explain: include_str!("../explain/U4004.md"),
             },
             Code::U4005 => &Entry {
                 code: "U4005",
                 domain: Domain::Security,
                 meaning: "Invalid policy (public `via`, or type mismatch)",
-                explain: include_str!("../explain/U4005.md"),
             },
             Code::U4007 => &Entry {
                 code: "U4007",
                 domain: Domain::Security,
                 meaning: "Unknown label category",
-                explain: include_str!("../explain/U4007.md"),
             },
             Code::U5001 => &Entry {
                 code: "U5001",
                 domain: Domain::Verification,
                 meaning: "Obligation refuted",
-                explain: include_str!("../explain/U5001.md"),
             },
             Code::U5002 => &Entry {
                 code: "U5002",
                 domain: Domain::Verification,
                 meaning: "Obligation unknown",
-                explain: include_str!("../explain/U5002.md"),
             },
             Code::U5003 => &Entry {
                 code: "U5003",
                 domain: Domain::Verification,
                 meaning: "Solver missing or version mismatch",
-                explain: include_str!("../explain/U5003.md"),
             },
             Code::U6001 => &Entry {
                 code: "U6001",
                 domain: Domain::Runtime,
                 meaning: "`main` failed",
-                explain: include_str!("../explain/U6001.md"),
             },
             Code::U6003 => &Entry {
                 code: "U6003",
                 domain: Domain::Runtime,
                 meaning: "Call depth or memory limit exceeded",
-                explain: include_str!("../explain/U6003.md"),
             },
             Code::U6004 => &Entry {
                 code: "U6004",
                 domain: Domain::Runtime,
                 meaning: "A header value contains a control character",
-                explain: include_str!("../explain/U6004.md"),
             },
             Code::U7001 => &Entry {
                 code: "U7001",
                 domain: Domain::Project,
                 meaning: "Non-canonical formatting",
-                explain: include_str!("../explain/U7001.md"),
             },
             Code::U7002 => &Entry {
                 code: "U7002",
                 domain: Domain::Project,
                 meaning: "Invalid `una.toml`",
-                explain: include_str!("../explain/U7002.md"),
             },
             Code::U7003 => &Entry {
                 code: "U7003",
                 domain: Domain::Project,
                 meaning: "Escape budget exceeded",
-                explain: include_str!("../explain/U7003.md"),
             },
             Code::U7004 => &Entry {
                 code: "U7004",
                 domain: Domain::Project,
                 meaning: "Missing or invalid `verification.lock`",
-                explain: include_str!("../explain/U7004.md"),
             },
             Code::U7005 => &Entry {
                 code: "U7005",
                 domain: Domain::Project,
                 meaning: "Trusted module not declared in both header and `una.toml`",
-                explain: include_str!("../explain/U7005.md"),
             },
             Code::U8001 => &Entry {
                 code: "U8001",
                 domain: Domain::Internal,
                 meaning: "Internal compiler error (always a bug)",
-                explain: include_str!("../explain/U8001.md"),
             },
         }
     }
@@ -886,12 +798,12 @@ impl fmt::Display for UnknownCode {
 
 impl std::error::Error for UnknownCode {}
 
-/// One row of the registry table, with its explain text.
+/// One row of the registry table. The explain texts live in `una-explain`, which the runtime
+/// never links (#413).
 struct Entry {
     code: &'static str,
     domain: Domain,
     meaning: &'static str,
-    explain: &'static str,
 }
 
 #[cfg(test)]

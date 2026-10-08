@@ -1,9 +1,8 @@
-//! The code registry mirrors the table of `spec/13 §4`, and every code has an explain text.
+//! The code registry mirrors the table of `spec/13 §4`. Its explain texts are tested in `una-explain`.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
-use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use pretty_assertions::assert_eq;
@@ -59,35 +58,5 @@ fn codes_are_unique_and_in_numeric_order() {
     for pair in Code::ALL.windows(2) {
         assert!(pair[0] < pair[1], "{} must precede {}", pair[0], pair[1]);
         assert!(pair[0].as_str() < pair[1].as_str());
-    }
-}
-
-#[test]
-fn every_code_has_exactly_one_explain_file() {
-    let files: BTreeSet<String> = std::fs::read_dir(crate_dir().join("explain"))
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .collect();
-    let expected: BTreeSet<String> = Code::ALL.iter().map(|code| format!("{code}.md")).collect();
-    assert_eq!(files, expected);
-}
-
-#[test]
-fn explain_texts_start_with_code_and_meaning() {
-    for code in Code::ALL {
-        let title = format!("# {}: {}\n\n", code.as_str(), code.meaning());
-        assert!(
-            code.explain_text().starts_with(&title),
-            "the explain text of {code} must start with {title:?}"
-        );
-        assert!(code.explain_text().ends_with('\n'));
-    }
-}
-
-#[test]
-fn every_explain_file_is_embedded() {
-    for code in Code::ALL {
-        let path = crate_dir().join("explain").join(format!("{code}.md"));
-        assert_eq!(code.explain_text(), std::fs::read_to_string(path).unwrap());
     }
 }

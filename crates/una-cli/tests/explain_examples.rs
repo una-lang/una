@@ -148,7 +148,7 @@ fn codes(code: Code, name: &str, example: &Example, fixed: bool) -> Vec<Code> {
 fn failing_examples_yield_their_code_and_fixed_examples_yield_nothing() {
     let mut checked = Vec::new();
     for code in Code::ALL {
-        let text = code.explain_text();
+        let text = una_explain::text(code);
         let (Some(failing), Some(_)) = (
             example(text, "## Failing example"),
             example(text, "## Fixed example"),
@@ -176,7 +176,7 @@ fn failing_examples_yield_their_code_and_fixed_examples_yield_nothing() {
     for code in Code::ALL {
         if code == Code::U8001 {
             assert!(
-                !code.explain_text().contains("Stub explanation."),
+                !una_explain::text(code).contains("Stub explanation."),
                 "U8001 has its text"
             );
             continue;
