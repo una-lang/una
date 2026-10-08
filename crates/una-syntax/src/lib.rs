@@ -15,7 +15,7 @@ mod token;
 pub use dump::dump;
 pub use error::{SyntaxError, SyntaxRepair};
 pub use intern::{Interner, Symbol};
-pub use lexer::{Lexed, lex, lex_in};
+pub use lexer::{Lexed, Rename, lex, lex_in, rename_across};
 pub use parser::{MAX_NESTING, Parsed, parse};
 pub use source::{FileId, SourceDb, SourceFile, Span};
 pub use token::{Comment, Keyword, KeywordSet, Token, TokenKind};

@@ -10,6 +10,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ### Diagnostics
 
+- **A U0103 rename never makes a call reach another function** (#125, R-1 and R-2 of the deferred review). The rename edit for a word reserved for a later version chose a new name one file at a time, so a declaration and its uses in another module could get different names, and the use's name could be another function that module already had: renaming the import line alike, as the rest of the file was, made `table(1)` call `a.the_table` and print 101 instead of 1. The name is now chosen once for the whole package, none of its modules' names, the private ones included; and a name an `import` line lists gets the same edit, where it got advice to rename the module. Applying every edit gives a program that means what the source meant.
 - **Edition 0.1 names a decision on `T` values in its messages** (#362). Since #354, edition 0.1 tells `label(T*)` from `label(T)` in its flows, as edition 0.2 does, but its messages still wrote `label(T*)` as `label(T)`, so a rejected flow could read "a flow from `label(T)` to `label(T)`". They now name `label(T*)` as edition 0.2's do. Only the text changes: over 2164 targets (conformance, examples and the review corpora under `docs/`), every exit code and every edition 0.2 message is unchanged, and every edition 0.1 message is unchanged once `label(T*)` is read as `label(T)`.
 
 ### Documentation

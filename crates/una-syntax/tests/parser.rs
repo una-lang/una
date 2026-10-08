@@ -980,6 +980,27 @@ fn a_word_reserved_for_a_later_version_gets_a_rename_repair() {
             "{header}"
         );
     }
+    // #125 (R-2): a name an `import` line lists is not part of the module path, so it gets the
+    // rename edit, the same as its declaration and its uses.
+    assert_eq!(
+        repairs("import app.events (table)\n\npub f() -> Int = table(1)\n"),
+        [
+            (
+                "U0103 `table` is reserved for v0.4 (platform)".to_owned(),
+                vec![(
+                    "rename it to `the_table`".to_owned(),
+                    Some("the_table".to_owned())
+                )],
+            ),
+            (
+                "U0103 `table` is reserved for v0.4 (platform)".to_owned(),
+                vec![(
+                    "rename it to `the_table`".to_owned(),
+                    Some("the_table".to_owned())
+                )],
+            ),
+        ]
+    );
     // A word that names a construct Una writes differently says what to write instead.
     assert_eq!(
         repairs("pub f(x: Int) -> Int = return x\n"),
@@ -1151,4 +1172,52 @@ fn a_reserved_keyword_as_a_binding_name_says_so() {
             vec![("choose another name, such as `when_value`".to_owned(), None)]
         )]
     );
+}
+
+#[test]
+fn renames_are_chosen_across_the_files_of_a_package_125() {
+    // #125 (R-1): a word gets one new name for the whole package, which no file has, so a
+    // renamed declaration and its uses in another module never come to name another
+    // declaration. Here `a` has `the_table` and `the_table_2`, `b` imports `table` and `c`
+    // has a private `the_table_3`: every occurrence becomes `the_table_4`.
+    let files = [
+        "module a\n\npub the_table(x: Int) -> Int = x + 100\n\nthe_table_2() -> Int = 2\n\npub table(x: Int) -> Int = x\n",
+        "module b\n\nimport a (table)\n\npub g() -> Int = table(1)\n",
+        "module c\n\nthe_table_3() -> Int = 3\n",
+    ];
+    let mut db = SourceDb::new();
+    let mut interner = Interner::new();
+    let ids: Vec<_> = files
+        .iter()
+        .enumerate()
+        .map(|(n, text)| db.add(format!("{n}.una"), text.as_bytes()))
+        .collect();
+    let mut lexed: Vec<_> = ids
+        .iter()
+        .map(|&id| lex(db.file(id), id, &mut interner))
+        .collect();
+    // One file at a time, `a` and `b` would choose different names.
+    let alone: Vec<Option<String>> = lexed
+        .iter()
+        .flat_map(|l| l.errors.iter())
+        .map(|e| e.repairs[0].edit.as_ref().map(|(_, name)| name.clone()))
+        .collect();
+    assert_eq!(
+        alone,
+        [
+            Some("the_table_3".to_owned()),
+            Some("the_table".to_owned()),
+            Some("the_table".to_owned())
+        ]
+    );
+    una_syntax::rename_across(&mut lexed, &interner);
+    let together: Vec<Option<String>> = lexed
+        .iter()
+        .flat_map(|l| l.errors.iter())
+        .map(|e| {
+            assert_eq!(e.repairs.len(), 1);
+            e.repairs[0].edit.as_ref().map(|(_, name)| name.clone())
+        })
+        .collect();
+    assert_eq!(together, vec![Some("the_table_4".to_owned()); 3]);
 }

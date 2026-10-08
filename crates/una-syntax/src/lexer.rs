@@ -25,6 +25,20 @@ pub struct Lexed {
     pub keywords: KeywordSet,
     /// The text of the file, for repairs that rewrite a range of it.
     pub text: String,
+    /// The U0103 errors that get a rename edit, so that a package can choose each new name
+    /// across its files ([`rename_across`]).
+    pub renames: Vec<Rename>,
+}
+
+/// A U0103 error of [`Lexed::errors`] that gets a rename edit (issue #75, #105, #125).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rename {
+    /// The error's index in [`Lexed::errors`].
+    pub error: usize,
+    /// The reserved word.
+    pub word: String,
+    /// Whether this occurrence names a kind or capability.
+    pub upper: bool,
 }
 
 /// Lexes `source`, which is the file `file` of its database, with the keywords of edition 0.1.
@@ -53,11 +67,95 @@ pub fn lex_in(
         indents: vec![0],
         brackets: Vec::new(),
         line_has_tokens: false,
-        renames: Vec::new(),
     };
     lexer.run();
-    lexer.name_renames();
+    let used = names(&lexer.out, lexer.interner);
+    let chosen = choose(&lexer.out.renames, &used);
+    apply(&mut lexer.out, &chosen);
     lexer.out
+}
+
+/// Chooses the rename edits of the U0103 errors of every file of a package together (#125):
+/// one new name per word for the whole package, which no file of the package already has, so
+/// that applying every edit of every file renames a declaration and each of its uses, in any
+/// module, alike, and never makes a name refer to another declaration. [`lex_in`] chooses
+/// them for one file; a package calls this with all its files once they are lexed.
+pub fn rename_across(files: &mut [Lexed], interner: &Interner) {
+    let mut used = BTreeSet::new();
+    let mut renames = Vec::new();
+    for lexed in files.iter() {
+        used.extend(names(lexed, interner));
+        renames.extend(lexed.renames.iter().cloned());
+    }
+    let chosen = choose(&renames, &used);
+    for lexed in files.iter_mut() {
+        apply(lexed, &chosen);
+    }
+}
+
+/// Every name the tokens of `lexed` spell.
+fn names(lexed: &Lexed, interner: &Interner) -> BTreeSet<String> {
+    lexed
+        .tokens
+        .iter()
+        .filter_map(|token| match token.kind {
+            TokenKind::LowerIdent(name)
+            | TokenKind::UpperIdent(name)
+            | TokenKind::Reserved(name)
+            | TokenKind::CapRef(name) => Some(interner.resolve(name).to_owned()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// One new name per word of `renames`, none of them in `used` (V12-002). It is capitalized
+/// when any occurrence is a kind or capability name: `Service`, else `the_table`; a clash adds
+/// a number, `the_table_2`.
+fn choose(renames: &[Rename], used: &BTreeSet<String>) -> BTreeMap<String, String> {
+    let mut chosen: BTreeMap<String, String> = BTreeMap::new();
+    for rename in renames {
+        if chosen.contains_key(&rename.word) {
+            continue;
+        }
+        let word = &rename.word;
+        let upper = renames.iter().any(|r| &r.word == word && r.upper);
+        let base = if upper {
+            let mut chars = word.chars();
+            chars.next().map_or_else(String::new, |first| {
+                first.to_ascii_uppercase().to_string() + chars.as_str()
+            })
+        } else {
+            format!("the_{word}")
+        };
+        let taken = |name: &str| used.contains(name) || chosen.values().any(|v| v == name);
+        let mut name = base.clone();
+        let mut number = 2;
+        while taken(&name) {
+            name = if upper {
+                format!("{base}{number}")
+            } else {
+                format!("{base}_{number}")
+            };
+            number += 1;
+        }
+        chosen.insert(word.clone(), name);
+    }
+    chosen
+}
+
+/// Sets the rename edit of each error of `lexed.renames` to the name `chosen` gives its word.
+fn apply(lexed: &mut Lexed, chosen: &BTreeMap<String, String>) {
+    for rename in &lexed.renames {
+        let (Some(name), Some(error)) =
+            (chosen.get(&rename.word), lexed.errors.get_mut(rename.error))
+        else {
+            continue;
+        };
+        error.repairs = vec![SyntaxRepair {
+            description: format!("rename it to `{name}`"),
+            edit: Some((error.span, name.clone())),
+        }];
+    }
 }
 
 /// Keywords that start a declaration at column 1 (`compiler/architecture.md §5`).
@@ -178,9 +276,6 @@ struct Lexer<'a> {
     indents: Vec<usize>,
     brackets: Vec<OpenBracket>,
     line_has_tokens: bool,
-    /// The U0103 errors that get a rename edit once the file is read: the error's index, the
-    /// word, and whether this occurrence names a kind or capability.
-    renames: Vec<(usize, String, bool)>,
 }
 
 impl Lexer<'_> {
@@ -235,17 +330,15 @@ impl Lexer<'_> {
 
     /// U0103 for `word`, reserved with `message`, from `start` to the current position. A word
     /// reserved for a later version gets a rename repair, chosen after the whole file is read
-    /// ([`Lexer::name_renames`], issue #75, #105); a word naming a construct Una writes
-    /// differently says what to write instead. On a `module` or `import` line the repair is
-    /// advice, since the file must move with the module (U1008).
+    /// ([`lex_in`], [`rename_across`], issue #75, #105, #125); a word naming a construct Una
+    /// writes differently says what to write instead. In the module path of a `module` or
+    /// `import` line the repair is advice, since the file must move with the module (U1008); a
+    /// name an `import` line lists, after its `(`, is renamed as its declaration is (#125).
     fn reserved(&mut self, word: &str, message: &str, start: usize) {
         let span = self.span(start, self.pos);
         let mut error = SyntaxError::new(Code::U0103, span, format!("`{word}` is {message}"));
         if message.starts_with("reserved for") {
-            if matches!(
-                self.line_head(),
-                Some(TokenKind::Keyword(Keyword::Module | Keyword::Import))
-            ) {
+            if self.in_module_path() {
                 error.repairs.push(SyntaxRepair {
                     description: format!(
                         "rename the module so that no part of its path is `{word}`, and move its file to match"
@@ -258,79 +351,36 @@ impl Lexer<'_> {
                     self.out.tokens.last().map(|t| &t.kind),
                     Some(TokenKind::Keyword(Keyword::Kind | Keyword::Capability))
                 );
-                self.renames
-                    .push((self.out.errors.len(), word.to_owned(), upper));
+                self.out.renames.push(Rename {
+                    error: self.out.errors.len(),
+                    word: word.to_owned(),
+                    upper,
+                });
             }
         }
         self.out.errors.push(error);
     }
 
-    /// The first token of the current line, if any.
-    fn line_head(&self) -> Option<&TokenKind> {
+    /// Whether the next token is in the module path of a `module` or `import` line: the line
+    /// starts with one of them, and, for `import`, its `(` has not come yet.
+    fn in_module_path(&self) -> bool {
         let mut head = None;
+        let mut listed = false;
         for token in self.out.tokens.iter().rev() {
             match token.kind {
                 TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent => break,
+                TokenKind::LParen => {
+                    listed = true;
+                    head = Some(&token.kind);
+                }
                 ref kind => head = Some(kind),
             }
         }
-        head
-    }
-
-    /// The rename edits of the U0103 errors of [`Lexer::reserved`]: one name per word for the
-    /// whole file, so applying every edit keeps the program consistent, and one that no name
-    /// of the file already has (V12-002). It is capitalized when any occurrence is a kind or
-    /// capability name: `Service`, else `the_table`; a clash adds a number, `the_table_2`.
-    fn name_renames(&mut self) {
-        let used: BTreeSet<String> = self
-            .out
-            .tokens
-            .iter()
-            .filter_map(|token| match token.kind {
-                TokenKind::LowerIdent(name)
-                | TokenKind::UpperIdent(name)
-                | TokenKind::Reserved(name)
-                | TokenKind::CapRef(name) => Some(self.interner.resolve(name).to_owned()),
-                _ => None,
-            })
-            .collect();
-        let mut chosen: BTreeMap<String, String> = BTreeMap::new();
-        for (_, word, _) in &self.renames {
-            if chosen.contains_key(word) {
-                continue;
-            }
-            let upper = self.renames.iter().any(|(_, w, upper)| w == word && *upper);
-            let base = if upper {
-                let mut chars = word.chars();
-                chars.next().map_or_else(String::new, |first| {
-                    first.to_ascii_uppercase().to_string() + chars.as_str()
-                })
-            } else {
-                format!("the_{word}")
-            };
-            let taken = |name: &str| used.contains(name) || chosen.values().any(|v| v == name);
-            let mut name = base.clone();
-            let mut number = 2;
-            while taken(&name) {
-                name = if upper {
-                    format!("{base}{number}")
-                } else {
-                    format!("{base}_{number}")
-                };
-                number += 1;
-            }
-            chosen.insert(word.clone(), name);
-        }
-        for (index, word, _) in std::mem::take(&mut self.renames) {
-            let (Some(name), Some(error)) = (chosen.get(&word), self.out.errors.get_mut(index))
-            else {
-                continue;
-            };
-            error.repairs.push(SyntaxRepair {
-                description: format!("rename it to `{name}`"),
-                edit: Some((error.span, name.clone())),
-            });
-        }
+        !listed
+            && matches!(
+                head,
+                Some(TokenKind::Keyword(Keyword::Module | Keyword::Import))
+            )
     }
 
     fn consume_while(&mut self, accept: impl Fn(char) -> bool) {
