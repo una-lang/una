@@ -45,6 +45,7 @@ F1 is the smallest part of Core (`spec/09`) in which every one of S-01 to S-12 c
 - **Effects:** one capability with one operation, whose argument is a sink with an `accepts` label (rule 4). A failure, with `fail`, `attempt` and `if error`, and U4002's rule.
 - **The prelude** as axioms: `map`, `filter`, `first_where` and `fold`, and one partial primitive, a parser whose outcome depends on its input. Each axiom is a typing signature together with a semantic function. Its soundness, that the result and the failure carry what decides them, is a proof obligation per primitive, discharged against that semantic function.
 - **Host failures:** one host operation whose failure is decided by an argument, as `Http.get`'s by its URL (rule 4, N-39).
+- **Declassification:** one policy and its call (`Decl::Policy`, `Rhs::Declassify`), since T6 holds *up to declassification* (`spec/07 §1`, §5). Without it the theorem could not be stated as the specification states it, and the examples could not be re-checked.
 - **Semantics:** big-step with traces of events and an explicit outcome, a value or a failure. Termination-insensitive: the theorem speaks of two runs that both end.
 
 **Left out of F1, with the reason:**
@@ -109,6 +110,30 @@ A proof about a Lean model says nothing about `una` unless something connects th
   - the export.
 
   The identity runs of #397 and #407 already guard elaboration's output, and the corpus does.
+
+**What the export covers, measured** (main 991d77d):
+
+| Part | Where | Size |
+| --- | --- | --- |
+| Core IR's types, the input of the export | `una-core/src/ir.rs` | 1,268 lines |
+| Labels: the lattice and the symbolic labels `T` and `T*` | `una-core/src/label.rs` | 522 lines |
+| The present text form, `--dump-core` | `una-core/src/print.rs` | 827 lines |
+| Elaboration, trusted by option B | `una-check/src/types/elab.rs` | 3,740 lines |
+| The Rust label rules the Lean checker re-derives | `una-check/src/types/` `flow.rs` (469), `summary.rs` (300), `generic.rs` (111), and the label parts of `check.rs`, `effects.rs`, `expr.rs` and `call.rs`, which hold 19 of the 46 lines that name U4001 to U4007 (`flow.rs` holds 21) | about 900 lines in their own modules, plus those sites |
+| F1+'s label rules of the memory model | `edit_labels.rs` (455), `memory.rs` (399) | 854 lines |
+| The rules as specified | `spec/07` (113), `spec/09` (84), `spec/10` (225) | 422 lines |
+
+Core IR's forms, and how many of them F1 needs:
+
+| Form | Variants | In F1 | Left for later |
+| --- | --- | --- | --- |
+| `Expr` | 13 | `Atom`, `Let`, `If`, `Case`, `Fail`, `Attempt`, `Handle` (7) | `LetTuple`, `Loop` (F1+); `With` (F2); `Together`, `TogetherFor`; `Unreachable` |
+| `Rhs` | 12 | `Atom`, `Prim`, `Call`, `Apply`, `Op`, `Construct`, `Field`, `List`, `Lambda`, `Declassify` (10) | `Tuple` (F1+); `Checked` (T5) |
+| `Decl` | 7 | `Data`, `Fun`, `Cap`, `Policy` (4) | `Handler` (F2); `Pred` (T5); `Alias`, which elaboration expands |
+| `Base` | 10 | `Int`, `Bool`, `Text`, `Unit`, `Named`, `Param` (6) | `Fixed`, `Hashed`, `Tuple`, `Unknown` |
+| `Prim` | 19 | the comparisons, `Eq`, `Ne`, `Not`, `Add`, `Sub`, `Len`, `Concat`, `ToText` | the rest, as axioms of the same shape when they are needed |
+
+So `una.core/1` serializes about 1,800 lines' worth of Rust types (`ir.rs` and `label.rs`), of which F1 reads about two thirds of the forms. The schema can be complete from M0, while the Lean checker rejects, as "outside the fragment", every program that uses a form F1 lacks. Such a program is reported as not re-checked, never as accepted.
 
 **A as the first deliverable.** Before T6 is proven, the Lean checker can already be compared with `una check` on the corpus. Replaying the regression programs of S-01 to S-12 through it shows the "re-check" column of §4 on real programs, the evidence for the owner before the proof effort grows.
 
