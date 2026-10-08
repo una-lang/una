@@ -1173,11 +1173,18 @@ impl<'a> Checker<'_, 'a, '_> {
             // ADR 0050: the argument flows into the declared parameter type at its
             // contravariant positions and invariant kind arguments, which a handler body
             // assumes; `accepts` bounds its data.
+            // The program cannot raise the label of a host operation's parameter (#404).
+            let advice = host.then(|| {
+                format!(
+                    "a parameter of {callee}, an operation of a host capability, keeps its declared label: lower this value through a `policy`"
+                )
+            });
             self.op_argument_flow(
                 arg_span,
                 &found,
                 &expected,
                 &format!("parameter `{param}` of {callee}"),
+                advice,
             );
             let is_carried = def
                 .carried
@@ -1911,14 +1918,27 @@ impl<'a> Checker<'_, 'a, '_> {
             let (params, kind_name) = self.kind_params(kind);
             self.instantiation(kind_name, &params, targs.to_vec(), values, span);
         }
-        // Fields flow once the whole constructor is typed.
+        // Fields flow once the whole constructor is typed. The program cannot raise the label
+        // of a field of a kind of the standard library (#404).
+        let standard = self
+            .env
+            .kinds
+            .get(kind)
+            .is_some_and(|k| !self.env.in_package(k.module));
         for (arg_span, found, expected, field) in flows {
-            self.flow(
-                arg_span,
-                &found,
-                &expected,
-                &format!("field `{field}` of `{constructor}`"),
-            );
+            let into = format!("field `{field}` of `{constructor}`");
+            if standard {
+                let kind_name = self.env.kind_name(kind);
+                let mut advice = format!(
+                    "a field of `{kind_name}`, a kind of the standard library, keeps its declared label: lower this value through a `policy`"
+                );
+                if kind_name == "Header" {
+                    advice.push_str(", or give a token by the name of its key, as `key_name` of the request, rather than in a header");
+                }
+                self.flow_fixed(arg_span, &found, &expected, &into, advice);
+            } else {
+                self.flow(arg_span, &found, &expected, &into);
+            }
         }
         if !problem {
             let missing: Vec<String> = fields

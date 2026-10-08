@@ -5,6 +5,7 @@
 use una_diag::Code;
 use una_syntax::Span;
 
+use super::Report;
 use super::authority::{Base, Pass};
 use super::check::Checker;
 use super::label::{Accepts, Label};
@@ -120,7 +121,21 @@ impl Checker<'_, '_, '_> {
     /// U4001: the value at `span`, of type `found`, flows into `expected`, a declared type
     /// described by `into` (`spec/07 §3` rule 5, `spec/10 §2`).
     pub(crate) fn flow(&mut self, span: Span, found: &Ty, expected: &Ty, into: &str) {
-        self.flow_as(span, found, expected, None, into);
+        self.flow_as(span, found, expected, None, into, None);
+    }
+
+    /// [`Checker::flow`] into a declared type that the program cannot change, a field of a
+    /// kind of the standard library or a parameter of a host operation, with `advice` on
+    /// what can apply instead of raising it (#404).
+    pub(crate) fn flow_fixed(
+        &mut self,
+        span: Span,
+        found: &Ty,
+        expected: &Ty,
+        into: &str,
+        advice: String,
+    ) {
+        self.flow_as(span, found, expected, None, into, Some(advice));
     }
 
     /// U4001: an argument at `span`, of type `found`, of an operation whose parameter, described
@@ -128,18 +143,34 @@ impl Checker<'_, '_, '_> {
     /// declared type with every covariant position taken as `⊤`, since `accepts` bounds the
     /// data there ([`Checker::sink`]); contravariant positions and invariant kind arguments are
     /// compared as at any other call argument.
-    pub(crate) fn op_argument_flow(&mut self, span: Span, found: &Ty, declared: &Ty, into: &str) {
+    pub(crate) fn op_argument_flow(
+        &mut self,
+        span: Span,
+        found: &Ty,
+        declared: &Ty,
+        into: &str,
+        advice: Option<String>,
+    ) {
         if !self.labels() {
             return;
         }
         let view = self
             .labeled(declared)
             .op_parameter(true, &self.top(), &self.env.kind_labels);
-        self.flow_as(span, found, &view, Some(declared), into);
+        self.flow_as(span, found, &view, Some(declared), into, advice);
     }
 
-    /// [`Checker::flow`] into `expected`; the message shows `shown` instead when given.
-    fn flow_as(&mut self, span: Span, found: &Ty, expected: &Ty, shown: Option<&Ty>, into: &str) {
+    /// [`Checker::flow`] into `expected`; the message shows `shown` instead when given, and
+    /// `advice` is offered as a repair without an edit.
+    fn flow_as(
+        &mut self,
+        span: Span,
+        found: &Ty,
+        expected: &Ty,
+        shown: Option<&Ty>,
+        into: &str,
+        advice: Option<String>,
+    ) {
         if !self.labels() {
             return;
         }
@@ -155,13 +186,17 @@ impl Checker<'_, '_, '_> {
             ShowLabeled(&found_ty, self).to_string(),
             ShowLabeled(&expected_ty, self).to_string(),
         );
-        self.report.error(
+        let mut diagnostic = self.report.make(
             Code::U4001,
             span,
             format!(
                 "{into} is `{expected_shown}`, and this value is `{found_shown}`: a flow from `{from}` to `{to}`"
             ),
         );
+        if let Some(advice) = advice {
+            diagnostic.repairs.push(Report::advice(advice));
+        }
+        self.report.push(diagnostic);
     }
 
     /// U4001: each branch of a construct, at its span and of its type, flows into the value

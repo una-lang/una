@@ -7,10 +7,10 @@ use std::time::Duration;
 
 use rayon::prelude::*;
 
-use una_diag::{Binding, ObligationStatus};
+use una_diag::{Binding, ObligationKind, ObligationStatus};
 
 use crate::cache;
-use crate::generate::{Obligation, Show};
+use crate::generate::{Collection, Obligation, Show};
 use crate::smt::{Const, ConstRole, F, path_selector};
 use crate::solver::{self, Answer, Status};
 
@@ -166,16 +166,50 @@ fn uninterpreted(obligation: &Obligation) -> Vec<(F, F, F)> {
 /// The uninterpreted arithmetic of `spec/12 §2`.
 const ARITHMETIC: [&str; 3] = ["i!mul!Int", "i!div!Int", "i!mod!Int"];
 
-/// The reason of an obligation whose model disagrees with real arithmetic (ADR 0053).
-/// The reason of an obligation whose refutation sets values a loop made fresh (ADR 0071 D3).
-fn forgotten(names: &[String]) -> String {
-    let names: Vec<String> = names.iter().map(|name| format!("`{name}`")).collect();
-    let (its, names) = match names.as_slice() {
-        [one] => ("its type, and its length", one.clone()),
-        _ => ("their types, and their lengths", names.join(" and ")),
+/// The reason of an obligation whose refutation sets values a loop made fresh (ADR 0071 D3):
+/// what the loop keeps of each one, and what to do instead, which for a postcondition is the
+/// contract on a helper one iteration calls (#404).
+fn forgotten(items: &[(String, Collection)], kind: ObligationKind) -> String {
+    let shown = |(name, collection): &(String, Collection)| match collection {
+        Collection::List => format!("the list `{name}`"),
+        Collection::Map => format!("the map `{name}`"),
+        Collection::Other => format!("`{name}`"),
+    };
+    let about: Vec<String> = items.iter().map(shown).collect();
+    let names: Vec<String> = items.iter().map(|(name, _)| format!("`{name}`")).collect();
+    let lists: Vec<&String> = items
+        .iter()
+        .zip(&names)
+        .filter(|((_, collection), _)| *collection == Collection::List)
+        .map(|(_, name)| name)
+        .collect();
+    let types = if items.len() == 1 {
+        "its type"
+    } else {
+        "their types"
+    };
+    let length = match lists.as_slice() {
+        [] => String::new(),
+        [_] if items.len() == 1 => {
+            ", and its length when the loop only `set`s its elements".to_owned()
+        }
+        _ => {
+            let lists: Vec<&str> = lists.iter().map(|name| name.as_str()).collect();
+            format!(
+                ", and the length of {} when the loop only `set`s its elements",
+                lists.join(" and ")
+            )
+        }
+    };
+    let advice = if kind == ObligationKind::Postcondition {
+        "state what one iteration does as the `ensures` of a helper with an `edit` parameter, and call the helper in the loop"
+    } else {
+        "guard the use with an `if`, or move the update into a helper with an `edit` parameter whose `ensures` states what the use needs"
     };
     format!(
-        "the loop forgets every fact about {names} but the refinements of {its} when the loop only `set`s a list, as `spec/17 §5` rule 3 says, so the counterexample sets {names} freely; guard the use with an `if`, or check the value with `checked`"
+        "the loop forgets every fact about {} but the refinements of {types}{length}, so the counterexample sets {} freely; {advice}",
+        about.join(" and "),
+        names.join(" and ")
     )
 }
 
@@ -402,7 +436,8 @@ pub fn verify(obligations: &[Obligation], settings: &Settings) -> Result<Vec<Out
         .map(|(obligation, outcome)| {
             let forgot = outcome.status == ObligationStatus::Unknown
                 && !obligation.forgotten.is_empty()
-                && outcome.reason.as_deref() == Some(forgotten(&obligation.forgotten).as_str());
+                && outcome.reason.as_deref()
+                    == Some(forgotten(&obligation.forgotten, obligation.kind).as_str());
             (forgot && !obligation.entry.is_empty()).then(|| {
                 let mut first = obligation.clone();
                 first.query.assertions.append(&mut first.entry);
@@ -546,7 +581,7 @@ fn outcome(
     if answer.status == Status::Refuted && !obligation.forgotten.is_empty() {
         return Outcome {
             status: ObligationStatus::Unknown,
-            reason: Some(forgotten(&obligation.forgotten)),
+            reason: Some(forgotten(&obligation.forgotten, obligation.kind)),
             cached,
             path: None,
             bindings: Vec::new(),
@@ -686,16 +721,38 @@ mod arithmetic_tests {
 
 #[cfg(test)]
 mod forgotten_tests {
+    use una_diag::ObligationKind;
+
     use super::forgotten;
+    use crate::generate::Collection;
 
     #[test]
-    fn the_reason_names_each_forgotten_binding() {
-        let one = forgotten(&["xs".to_owned()]);
-        assert!(one.starts_with(
-            "the loop forgets every fact about `xs` but the refinements of its type, and its length"
-        ));
-        let two = forgotten(&["xs".to_owned(), "ys".to_owned()]);
-        assert!(two.starts_with("the loop forgets every fact about `xs` and `ys` but the refinements of their types, and their lengths"));
-        assert!(two.contains("sets `xs` and `ys` freely"));
+    fn the_reason_names_each_forgotten_binding_and_what_it_holds() {
+        let list = |name: &str| (name.to_owned(), Collection::List);
+        let one = forgotten(&[list("xs")], ObligationKind::Precondition);
+        assert_eq!(
+            one,
+            "the loop forgets every fact about the list `xs` but the refinements of its type, and its length when the loop only `set`s its elements, so the counterexample sets `xs` freely; guard the use with an `if`, or move the update into a helper with an `edit` parameter whose `ensures` states what the use needs"
+        );
+        let two = forgotten(
+            &[list("xs"), ("n".to_owned(), Collection::Other)],
+            ObligationKind::Precondition,
+        );
+        assert!(two.starts_with("the loop forgets every fact about the list `xs` and `n` but the refinements of their types, and the length of `xs` when the loop only `set`s its elements"), "{two}");
+        assert!(two.contains("sets `xs` and `n` freely"), "{two}");
+    }
+
+    #[test]
+    fn a_map_has_no_length_and_a_postcondition_points_at_the_helper() {
+        // #404 (dogfood D-3): the reason of a contract across a loop that updates a map.
+        let reason = forgotten(
+            &[("counts".to_owned(), Collection::Map)],
+            ObligationKind::Postcondition,
+        );
+        assert_eq!(
+            reason,
+            "the loop forgets every fact about the map `counts` but the refinements of its type, so the counterexample sets `counts` freely; state what one iteration does as the `ensures` of a helper with an `edit` parameter, and call the helper in the loop"
+        );
+        assert!(!reason.contains("spec/") && !reason.contains("length"));
     }
 }

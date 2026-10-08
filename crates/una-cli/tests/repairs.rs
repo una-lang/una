@@ -415,3 +415,39 @@ fn an_edit_marker_before_a_call_moves_to_its_first_argument_403() {
     assert!(repaired(&root).contains("  add(edit t, by: 2)\n"));
     assert_eq!(run(&root), "2\n");
 }
+
+#[test]
+fn a_labeled_value_in_a_prelude_kind_is_told_of_a_policy_and_of_key_name() {
+    // #404 (dogfood D-5): the declared label of a field of a prelude kind cannot be raised, so
+    // U4001 there names what can apply: a policy, and for a header's value, `key_name`.
+    let root = package(
+        "prelude-field-label",
+        "0.2",
+        "module m\n\npub accept(token: secret Text) -> Header = Header(name: \"X-Api-Token\", value: token)\n\npub shown(text: secret Text) -> Json = Str(value: text)\n",
+    );
+    let found: Vec<(String, Vec<String>)> = diagnostics(&root)
+        .iter()
+        .map(|d| {
+            let advice = d["repairs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["description"].as_str().unwrap().to_owned())
+                .collect();
+            (d["code"].as_str().unwrap().to_owned(), advice)
+        })
+        .collect();
+    assert_eq!(
+        found,
+        [
+            (
+                "U4001".to_owned(),
+                vec!["a field of `Header`, a kind of the standard library, keeps its declared label: lower this value through a `policy`, or give a token by the name of its key, as `key_name` of the request, rather than in a header".to_owned()]
+            ),
+            (
+                "U4001".to_owned(),
+                vec!["a field of `Json`, a kind of the standard library, keeps its declared label: lower this value through a `policy`".to_owned()]
+            ),
+        ]
+    );
+}

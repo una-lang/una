@@ -1797,3 +1797,29 @@ fn every_family_of_the_prelude_verifies_without_an_internal_error() {
         assert_eq!(found, Vec::<String>::new(), "{family}");
     }
 }
+
+#[test]
+fn a_contract_across_a_loop_names_the_map_and_the_helper_pattern() {
+    // #404 (dogfood D-3): the reason names a map as a map, with no length and no citation of
+    // the specification, and points at the pattern that proves such a contract.
+    let root = package_of_edition(
+        "loop_contract_map",
+        "0.2",
+        &[(
+            "src/t.una",
+            "module t\n\npub tally(votes: List[Text]) -> Map[Text, Int]\n  ensures result.len <= votes.len\n=\n  let edit counts: Map[Text, Int] = empty_map()\n  for vote in votes\n    let n = counts.get(key: vote)\n      if none use 0\n    edit counts.set(key: vote, value: n + 1)\n  counts\n",
+        )],
+    );
+    let checked = una_cli::check(&root, Tier::One).unwrap();
+    let messages: Vec<String> = checked
+        .diagnostics
+        .iter()
+        .map(|d| format!("{} {}", d.code, d.message))
+        .collect();
+    assert_eq!(
+        messages,
+        [
+            "U5002 postcondition of `tally` could not be proven (the loop forgets every fact about the map `counts` but the refinements of its type, so the counterexample sets `counts` freely; state what one iteration does as the `ensures` of a helper with an `edit` parameter, and call the helper in the loop)"
+        ]
+    );
+}
