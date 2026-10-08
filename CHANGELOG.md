@@ -11,6 +11,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 ### Documentation
 
 - **Decisions on type-parameter values given to function values** (#364): the guide's section on labels shows why `[if a == b then p else q].map(each: k)` is U4001 at `each: k`, in both editions, and how to pass values of `T` through or return the decision; `una explain U4001` points to it.
+- **Agent ABI versioning** (ADR 0076, #370): adding a key to a JSON document, at any position, keeps its `una.*/N` version, and consumers ignore unknown keys; removing, renaming or retyping a key, changing a meaning, or adding a value to a closed set of strings bumps it. The diagnostic `code` and the obligation `kind` are open sets. No schema changes version.
 
 ## v0.3.2
 

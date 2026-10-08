@@ -1,6 +1,6 @@
 # 13. Diagnostics, Agent ABI and project files
 
-Status: Normative, v0.1. The JSON shapes in this file are the Agent ABI, schema version 1: agents consume them, so changes follow the ADR process and bump the version in the `schema` strings. Schema versions freeze at the `v0.1.0` tag: before it, the shapes of version 1 may still change, and after it, any change bumps the version.
+Status: Normative, v0.1. The JSON shapes in this file are the Agent ABI, schema version 1: agents consume them, so changes follow the ADR process and bump the version in the `schema` strings. Schema versions freeze at the `v0.1.0` tag: before it, the shapes of version 1 may still change. After it, versions follow ADR 0076. A key added to an object, at any position, keeps the version: consumers MUST ignore unknown keys and MUST NOT depend on the position of a key, and the order this file gives is the printed order. Removing or renaming a key, changing its type, or changing what a key or a value means bumps the version. Fields whose values come from a set of strings are closed, and adding a value to one bumps the version, except two open fields: the diagnostic `code` (§4), whose new codes have a `domain` and a `severity` from their closed sets, and the obligation `kind` (`spec/12 §3`), whose new kinds use the existing `status` values. Consumers MUST accept unknown values of these two fields, and decide what to do from `severity`, `domain` and `status`.
 
 ## 1. Diagnostic model
 
