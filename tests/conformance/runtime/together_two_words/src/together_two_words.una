@@ -6,14 +6,14 @@
 -- expect: run-output "Bad 4098"
 module together_two_words
 
-pub kind Bad = | Bad(code: Int)
+pub kind Oops = | Bad(code: Int)
 
 --- A value no other task returns, past the range of a machine word for `i` from 2 on.
 big(i: Int) -> Int = i * 4611686018427387904 + 12345
 
 --- `big(i)`, or a failure with the payload `4096 + i` when `i` is 2.
 maybe(i: Int) -> Int
-  fails Bad
+  fails Oops
 =
   if i == 2
     fail Bad(code: 4096 + i)
@@ -21,7 +21,7 @@ maybe(i: Int) -> Int
 
 --- Two tasks, the second failing.
 pick() -> Int
-  fails Bad
+  fails Oops
 =
   together
     let x = maybe(1)
@@ -31,7 +31,7 @@ pick() -> Int
   x + y
 
 --- The payload of a failure.
-describe(e: Bad) -> Text
+describe(e: Oops) -> Text
 =
   when e
     is Bad(code) -> "Bad {code}"
