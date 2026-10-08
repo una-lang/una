@@ -31,6 +31,8 @@ mod map;
 mod memory;
 mod records;
 mod shared;
+#[cfg(test)]
+mod sharing_tests;
 mod stmt;
 mod summary;
 mod ty;

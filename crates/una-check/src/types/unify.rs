@@ -6,7 +6,7 @@ use std::rc::Rc;
 use una_syntax::Span;
 
 use super::label::Label;
-use super::ty::{FnTy, FnUse, KindLabels, Shared, Ty};
+use super::ty::{FnTy, FnUse, KindLabels, Shared, Ty, map_args, map_function, map_same, reuse};
 
 /// Why a unification variable exists, for the diagnostic when inference leaves it unknown.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -125,31 +125,25 @@ impl Vars {
 
     /// `ty` with every solved variable replaced by its value, labels included, and the labels
     /// of variables left symbolic.
-    fn resolve_shape(&self, ty: &Ty) -> Ty {
+    pub(super) fn resolve_shape(&self, ty: &Ty) -> Ty {
         // Through references, so each node of the type is visited once (#331).
-        match self.shallow_ref(ty) {
-            Ty::Labeled(label, inner) => self.resolve_shape(inner).with_label(label),
-            Ty::List(element) => Ty::List(Shared::new(self.resolve_shape(element))),
+        // A part that holds no solved variable comes back as the same node (ADR 0077 stage 2b).
+        let node = self.shallow_ref(ty);
+        match node {
+            Ty::Labeled(label, inner) => node.relabeled(self.resolve_shape(inner), label),
+            Ty::List(element) => Ty::List(reuse(element, self.resolve_shape(element))),
             Ty::Map(key, value) => Ty::Map(
-                Shared::new(self.resolve_shape(key)),
-                Shared::new(self.resolve_shape(value)),
+                reuse(key, self.resolve_shape(key)),
+                reuse(value, self.resolve_shape(value)),
             ),
-            Ty::Kind(id, args) => Ty::Kind(
-                *id,
-                args.iter().map(|arg| self.resolve_shape(arg)).collect(),
-            ),
-            Ty::Fn(function) => Ty::Fn(Shared::new(FnTy {
-                params: function
-                    .params
-                    .iter()
-                    .map(|p| self.resolve_shape(p))
-                    .collect(),
-                result: self.resolve_shape(&function.result),
-                uses: function.uses.clone(),
-                // The failure kind keeps its labels too, as every part of the type does (#216).
-                fails: function.fails.as_ref().map(|f| self.resolve_shape(f)),
-                refinements: function.refinements.clone(),
-            })),
+            Ty::Kind(id, args) => Ty::Kind(*id, map_args(args, |arg| self.resolve_shape(arg))),
+            // The failure kind keeps its labels too, as every part of the type does (#216).
+            Ty::Fn(function) => Ty::Fn(map_function(
+                function,
+                |p| self.resolve_shape(p),
+                |r| self.resolve_shape(r),
+                Some(&|f: &Ty| self.resolve_shape(f)),
+            )),
             other => other.clone(),
         }
     }
@@ -376,54 +370,84 @@ impl Vars {
 /// by position; function parameters take the other operation. An argument of an invariant
 /// parameter of a kind keeps the labels of `a` (ADR 0046 rule 2): a value of `b` flows into
 /// it only at equal labels, which the flow that follows checks (D-160).
-fn combine(a: &Ty, b: &Ty, join: bool, kinds: &KindLabels) -> Ty {
+pub(super) fn combine(a: &Ty, b: &Ty, join: bool, kinds: &KindLabels) -> Ty {
     let (la, lb) = (a.top_label(), b.top_label());
     let label = if join { la.join(&lb) } else { la.meet(&lb) };
     let base = match (a.unlabeled(), b.unlabeled()) {
         (Ty::Never, other) | (other, Ty::Never) => return other.clone().with_label(&label),
         (Ty::Error, _) | (_, Ty::Error) => return Ty::Error,
-        (Ty::List(x), Ty::List(y)) => Ty::List(Shared::new(combine(x, y, join, kinds))),
+        (Ty::List(x), Ty::List(y)) => Ty::List(reuse(x, combine(x, y, join, kinds))),
         (Ty::Map(xk, xv), Ty::Map(yk, yv)) => Ty::Map(
-            Shared::new(combine(xk, yk, join, kinds)),
-            Shared::new(combine(xv, yv, join, kinds)),
+            reuse(xk, combine(xk, yk, join, kinds)),
+            reuse(xv, combine(xv, yv, join, kinds)),
         ),
-        (Ty::Kind(i, xs), Ty::Kind(j, ys)) if i == j && xs.len() == ys.len() => Ty::Kind(
-            *i,
-            xs.iter()
-                .zip(ys)
-                .enumerate()
-                .map(|(index, (x, y))| {
-                    if kinds.is_invariant(*i, index) {
-                        x.clone()
-                    } else {
-                        combine(x, y, join, kinds)
-                    }
-                })
-                .collect(),
-        ),
-        (Ty::Fn(f), Ty::Fn(g)) if f.params.len() == g.params.len() => Ty::Fn(Shared::new(FnTy {
-            params: f
-                .params
-                .iter()
-                .zip(&g.params)
-                .map(|(x, y)| combine(x, y, !join, kinds))
-                .collect(),
-            result: combine(&f.result, &g.result, join, kinds),
-            // ADR 0038 D1: a joined function type keeps the `uses` and `fails` of both.
-            uses: union_uses(&f.uses, &g.uses),
-            fails: f.fails.clone().or_else(|| g.fails.clone()),
-            // ADR 0037 rule 1: the refinements of a join, position by position.
-            refinements: f.refinements.combine(&g.refinements, join),
-        })),
+        (Ty::Kind(i, xs), Ty::Kind(j, ys)) if i == j && xs.len() == ys.len() => {
+            let mut index = 0;
+            Ty::Kind(
+                *i,
+                map_args(xs, |x| {
+                    let combined = match ys.get(index) {
+                        Some(y) if !kinds.is_invariant(*i, index) => combine(x, y, join, kinds),
+                        _ => x.clone(),
+                    };
+                    index += 1;
+                    combined
+                }),
+            )
+        }
+        (Ty::Fn(f), Ty::Fn(g)) if f.params.len() == g.params.len() => {
+            let mut index = 0;
+            let params = map_same(&f.params, |x| {
+                let combined = match g.params.get(index) {
+                    Some(y) => combine(x, y, !join, kinds),
+                    None => x.clone(),
+                };
+                index += 1;
+                combined
+            });
+            let result = combine(&f.result, &g.result, join, kinds);
+            if Shared::ptr_eq(f, g)
+                && params.is_none()
+                && result.same(&f.result)
+                && distinct_uses(&f.uses)
+            {
+                // A function node met with itself: its own `uses`, `fails` and refinements, as
+                // `union_uses` and `FnRefinements::combine` of a value with itself give back.
+                // Only the same node qualifies: `==` ignores refinements (D-150). `union_uses`
+                // gives `uses` back only when no two of them name the same capability: the
+                // first of two such would take the operations of the second.
+                Ty::Fn(f.clone())
+            } else {
+                Ty::Fn(Shared::new(FnTy {
+                    params: params.unwrap_or_else(|| f.params.clone()),
+                    result,
+                    // ADR 0038 D1: a joined function type keeps the `uses` and `fails` of both.
+                    uses: union_uses(&f.uses, &g.uses),
+                    fails: f.fails.clone().or_else(|| g.fails.clone()),
+                    // ADR 0037 rule 1: the refinements of a join, position by position.
+                    refinements: f.refinements.combine(&g.refinements, join),
+                }))
+            }
+        }
         (Ty::Var(_), other) if !matches!(other, Ty::Var(_)) => other.clone(),
         (same, _) => same.clone(),
     };
-    base.with_label(&label)
+    a.relabeled(base, &label)
 }
 
 /// The capabilities of `a` and those of `b`: a reference both name keeps the operations of
 /// both, in the order of `a`, then `b`.
-fn union_uses(a: &[FnUse], b: &[FnUse]) -> Vec<FnUse> {
+/// Whether no two of `uses` name the same capability, so that `union_uses(uses, uses)` is
+/// `uses` itself.
+fn distinct_uses(uses: &[FnUse]) -> bool {
+    uses.iter().enumerate().all(|(index, u)| {
+        uses.iter()
+            .skip(index + 1)
+            .all(|other| other.name != u.name || other.capability != u.capability)
+    })
+}
+
+pub(super) fn union_uses(a: &[FnUse], b: &[FnUse]) -> Vec<FnUse> {
     let mut uses = a.to_vec();
     for need in b {
         match uses
