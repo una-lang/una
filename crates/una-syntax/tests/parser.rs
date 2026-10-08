@@ -613,6 +613,63 @@ fn expression_errors() {
     );
 }
 
+// ----- literals Una does not have (#12, review R-045) -----
+
+#[test]
+fn a_hexadecimal_exponent_or_fractional_literal_is_named_in_the_message() {
+    // D-016: a name right after digits stays a name, and U0101 stays at it; the message names
+    // the literal it was meant to be.
+    let cases = [
+        (
+            "0x1F",
+            "3:15",
+            "`0x1F` is a hexadecimal literal; Una's integer literals are decimal",
+        ),
+        (
+            "0b101",
+            "3:15",
+            "`0b101` is a binary literal; Una's integer literals are decimal",
+        ),
+        (
+            "0o17",
+            "3:15",
+            "`0o17` is an octal literal; Una's integer literals are decimal",
+        ),
+        (
+            "1e5",
+            "3:15",
+            "`1e5` is a literal with an exponent; Una's integer literals are decimal",
+        ),
+        (
+            "3.14",
+            "3:16",
+            "`3.14` is a fractional literal; Una's integer literals are decimal",
+        ),
+        (
+            "1.0e3",
+            "3:16",
+            "`1.0e3` is a fractional literal; Una's integer literals are decimal",
+        ),
+    ];
+    for (literal, at, message) in cases {
+        assert_eq!(
+            errors(&format!("f() -> Int = {literal}\n")),
+            [format!("U0101 {at} {message}")],
+            "{literal}"
+        );
+    }
+    // Names after digits that are no such prefix keep the message they had.
+    assert_eq!(
+        errors("f() -> Int = 12abc\n"),
+        ["U0101 3:16 unexpected `abc`, expected end of line"]
+    );
+    // A space between the digits and the rest is no literal at all.
+    assert_eq!(
+        errors("f() -> Int = 0 x1\n"),
+        ["U0101 3:16 unexpected `x1`, expected end of line"]
+    );
+}
+
 // ----- reserved words (spec/01 §5, approved M1 plan) -----
 
 #[test]
