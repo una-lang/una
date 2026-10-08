@@ -1,10 +1,10 @@
 # 0082. One code for an operation a capability does not declare
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-08
-- Deciders: Leonardo (owner); proposed by Claude (Una-1) at the coordinator's request
+- Deciders: Leonardo (2026-10-08, written); proposed by Claude (Una-1) at the coordinator's request
 - Resolves: issue #42 (v0.1 review R-028)
-- Amends, if accepted: ADR 0028 rule 5 and `spec/05 §9` rule 5
+- Amends: ADR 0028 rule 5 (by a dated amendment) and `spec/05 §9` rule 5
 
 ## Context
 
@@ -75,6 +75,13 @@ U3002 stays at the example and U1001 in the body, but each message says what the
 - **Edition 0.1, Gate 1:** no change.
 - **Cost:** none. #42 closes as decided.
 
+## Decision
+
+**A**, as recommended, with no edition gate (Leonardo, 2026-10-08, written):
+- `expect performed @x.op` and `expect not performed @x.op` give U1001 for an `op` that the capability of `@x` does not declare, with the message and the closest-operation edit of a call in a body, in both editions.
+- U3010 for a handler's operation stays as it is.
+- U3002 is no longer given at an example; in bodies and calls its meaning is unchanged.
+
 ## Recommendation
 
 A, with no edition gate.
@@ -84,7 +91,7 @@ A, with no edition gate.
 
 B is the fallback if the owner prefers not to touch a code that edition `0.1` has given since v0.1.
 
-## Consequences (if A is accepted)
+## Consequences
 
 - `spec/05 §9` rule 5 and ADR 0028 rule 5 get a dated amendment. The accepted text is untouched (`docs/adr/` immutability).
 - `expect performed` and `expect not performed` with an undeclared operation give U1001 and the closest-operation edit in both editions. U3002 is no longer given at an example; in bodies and calls it is unchanged.

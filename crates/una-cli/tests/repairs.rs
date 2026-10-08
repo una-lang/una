@@ -135,6 +135,31 @@ fn a_variant_compared_in_a_clause_is_repaired_once_f1() {
 }
 
 #[test]
+fn a_misspelled_operation_is_one_code_with_one_edit_in_a_body_and_an_example() {
+    // ADR 0082: an operation the capability does not declare is U1001 with the closest
+    // operation as an edit, in a body and after `expect performed` alike, in both editions.
+    for edition in ["0.1", "0.2"] {
+        let root = package(
+            "undeclared-op",
+            edition,
+            "module m\n\npub capability Log\n  op write(line: Text) -> Unit\n\npub handler quiet() for Log\n  op write(line) = unit\n\npub note() -> Unit\n  uses @log: Log\n=\n  @log.wirte(\"x\")\n\nexample \"a note is written\"\n  given @log = quiet()\n  do note()\n  expect performed @log.wirte\n",
+        );
+        let codes: Vec<String> = diagnostics(&root)
+            .iter()
+            .map(|d| d["code"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(codes, ["U1001", "U1001"]);
+        assert_eq!(
+            apply_all(&root),
+            Vec::<String>::new(),
+            "{}",
+            repaired(&root)
+        );
+        assert!(repaired(&root).contains("expect performed @log.write\n"));
+    }
+}
+
+#[test]
 fn two_result_bindings_of_one_scope_get_distinct_names_f2() {
     // Each `let result` gets its own fresh name, and each use the name of the binding it
     // reads: `let result = result + 3` reads the first one.

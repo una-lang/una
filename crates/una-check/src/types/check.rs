@@ -12,6 +12,7 @@ use una_syntax::ast::{
 };
 
 use super::authority::{Base, Bound, Collected, Frame, Pass};
+use super::closest;
 use super::env::{Constraint, Entity, Env, FnAst, FnDef, FnKind, HandlerDef};
 use super::facts::KindFacts;
 use super::label::Label;
@@ -1529,7 +1530,8 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     }
 
     /// `expect performed @x.op`: `@x` is bound by a `given` line, and `op` is an operation of
-    /// its capability.
+    /// its capability. An operation the capability does not declare is U1001, with the message
+    /// and the closest-operation edit of a call in a body (ADR 0082).
     fn performed(&mut self, cap: &Ident, op: &Ident) {
         if self.pass != Pass::Check {
             return;
@@ -1541,14 +1543,22 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 if let Some(capability) = capability.and_then(|c| self.env.capabilities.get(c))
                     && !capability.ops.iter().any(|o| o.name == op_name)
                 {
-                    self.report.error(
-                        Code::U3002,
+                    let mut diagnostic = self.report.make(
+                        Code::U1001,
                         op.span,
                         format!(
                             "capability `{}` has no operation `{op_name}`",
                             self.env.cap_def_name(capability)
                         ),
                     );
+                    if let Some(close) = closest(op_name, capability.ops.iter().map(|o| o.name)) {
+                        diagnostic.repairs.push(self.report.edit(
+                            format!("write `{close}`"),
+                            op.span,
+                            close,
+                        ));
+                    }
+                    self.report.push(diagnostic);
                 }
             }
             _ => self.report.error(
