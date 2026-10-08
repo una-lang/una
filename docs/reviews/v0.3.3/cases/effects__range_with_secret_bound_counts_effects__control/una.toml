@@ -1,0 +1,8 @@
+[package]
+name = "effects__range_with_secret_bound_counts_effects__control"
+version = "0.1.0"
+edition = "0.2"
+
+[run]
+entry = "sw"
+grants = ["console"]

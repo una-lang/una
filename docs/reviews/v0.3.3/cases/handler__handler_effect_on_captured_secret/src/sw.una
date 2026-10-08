@@ -1,0 +1,31 @@
+-- expect: reject: handler__handler_effect_on_captured_secret
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub handler to_console() for Log
+  uses @console: Console[print]
+  op write(n) = @console.print("{n}")
+
+pub kind Bad = | Oops
+
+pub handler gated(limit: secret Int) for Log
+  uses @console: Console[print]
+  op write(n) = report(n, limit: limit)
+
+report(n: Int, limit: secret Int) -> Unit
+  uses @console: Console[print]
+=
+  if n > limit
+    @console.print("big")
+
+probe() -> Unit
+  uses @log: Log[write]
+=
+  @log.write(5)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  probe() with @log = gated(3)
