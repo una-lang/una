@@ -140,6 +140,114 @@ If the owner wants checking linear end to end, A is the option that does it.
   The time test of `checking_deeply_nested_types_is_not_cubic_in_their_depth` tightens from 24× to 10× only with A. B alone takes it to about 12×, to be measured.
 - **Review:** an independent adversarial check of the verifier's and the backend's outputs. A is a TCB change.
 
+## Implementation plan for option B
+
+A concrete plan, so that B can start as soon as it is chosen. It changes una-check's index, una-cli's `lsp.rs` and una-lsp's hover store. It changes no Core IR, no verifier input and no executable.
+
+### What is formatted today
+
+`types::index::build` walks `Records::types`, a `BTreeMap<Span, Ty>`. For every span it formats `ShowLabeled(ty, &DeclNames)` into a `String`, and `una lsp` (`lsp.rs::index`) wraps each one in Markdown into `Checked::hovers: Vec<(Location, String)>`. The server keeps them per file in `Found::hovers` and, on `textDocument/hover`, returns every text of the innermost range that contains the cursor, without repeats.
+
+`ShowLabeled` and `Show` (`ty.rs`) read only:
+- the shape of a type: `List`, `Map`, `Kind` with its arguments, `Fn` with its parameters and result, `Labeled`, and the leaves `Int`, `Fixed`, `Bool`, `Text`, `Unit`, `Hashed`, `Param`, `Var` (`_`), `Never` and `Error` (`?`);
+- the label of each `Labeled` node;
+- a kind's name, through `Names::kind_name`, and a type parameter's name, through `Names::param_name`.
+
+A function type prints as `fn(params) -> result`: its `uses`, `fails` and refinements are not shown, so a snapshot need not hold them.
+
+### 1. A `Send` snapshot of the checker's types
+
+The checker's types share their nodes through `Rc` (ADR 0077), which cannot leave the checking thread; the index must, since `TypeCheck: Send`. A new module, `types/hover.rs`, defines the snapshot:
+
+```text
+pub struct HoverType(Arc<Node>);          // Send + Sync, immutable
+
+enum Node {
+    Leaf(&'static str),                   // Int, Bool, Text, Unit, Hashed, Never, `_`, `?`, I8..U64
+    Param(usize),                         // printed through the declaration's names
+    List(HoverType),
+    Map(HoverType, HoverType),
+    Kind(KindId, Arc<[HoverType]>),       // printed through the package's kind names
+    Fn(Arc<[HoverType]>, HoverType),
+    Labeled(Label, HoverType),            // una_core::Label: plain data
+}
+
+pub struct HoverNames {                   // one per check, shared by every hover
+    kinds: Arc<[String]>,                 // Env::kind_name of each KindId
+}
+
+pub struct Hover {                        // one per span
+    ty: HoverType,
+    params: Arc<[String]>,                // the type parameters of the enclosing declaration
+    names: Arc<HoverNames>,
+}
+```
+
+- `Param` and `Kind` keep indices, not text, so a node does not depend on the declaration it appears in, and one node serves every declaration.
+- `HoverNames::kinds` holds `Env::kind_name` of each kind, the bare name that `DeclNames` prints today; "Text" below says why, and how to show the qualified name instead.
+- `params` is the `Vec<String>` that `params_at` already computes. It becomes one `Arc<[String]>` per declaration, built once and cloned per span.
+
+### 2. Built once per node, under ADR 0077's memo rules
+
+`hover::snapshot(ty, memo)` converts a checker `Ty` bottom-up:
+- **Memo.** It is keyed by the address of each `Shared` node, as `erase` is, and it stores the `Shared` handle beside the result, so no key is freed and reused while the memo lives (ADR 0077, memo rule 1). It lives for one call of `index::build` and is dropped after it.
+- **Independence.** No result depends on a solved variable: `Records::types` holds types after `Records::absorb`, and a `Var` that is left prints as `_` whatever its number.
+- **Leaves** are not memoized; each is a constant node.
+
+Each distinct checker node is converted once. Since ADR 0077 stage 3a the checker holds O(n) nodes for a program of size n, so building every hover is O(n) time and space, where formatting them was O(n·d).
+
+### 3. The index holds handles, not text
+
+`Index::types: Vec<(Span, String)>` becomes `Vec<(Span, Hover)>`. `Hover` implements `Display` with the printer of step 4, and `Hover::text()` returns the `String`.
+
+### 4. One printer, two trees
+
+Two printers that must agree would drift. `ShowLabeled` and `Show` become generic over a small trait:
+
+```text
+trait TypeView {
+    fn view(&self) -> View<'_, Self>;     // the shape above, borrowing the children
+}
+```
+
+`Ty` implements it with its `Names`, and `HoverType` with `Hover`'s `params` and `names`. The printer is written once, over `View`, and both trees print through it. Messages keep `ShowLabeled(&Ty, names)` as their entry point, so no call site of a message changes.
+
+### 5. The language server formats on request
+
+- `una_lsp::Checked::hovers` becomes `Vec<(Location, HoverText)>`, where `HoverText` is either `Ready(String)`, for contracts, obligations and lenses, or `Lazy(Arc<dyn HoverSource>)`, with `trait HoverSource: Send + Sync { fn text(&self) -> String; }`. Debug and Clone are implemented by hand, for the trait object.
+- `lsp.rs::index` pushes `Lazy(Arc::new(TypeHover(hover)))`, whose `text()` wraps `hover.text()` in the same ```` ```una ```` fence as today.
+- `Server::hover` finds the innermost range as now, from locations only. Then it formats only the hovers of that range: one type, plus perhaps a contract and an obligation. The duplicate check compares texts after formatting, as now.
+- The cost of a hover is O(size of the one type shown) per request, where the check paid for every hover of the package.
+
+### 6. Text
+
+Every hover must keep its text, byte for byte, with one deliberate exception to settle before coding. `DeclNames` prints a kind by `kind_name`, the bare name, while messages use `kind_display` since #397. B can keep the bare name, a byte-identical change, or show the qualified name where two kinds share one, a visible improvement. The plan assumes **bare**, so that identity holds everywhere. The qualified form can be a later one-line change of `HoverNames`.
+
+### Tests
+
+- **Same text, whole corpus.** A una-check test checks every conformance case, example package and guide block. For every span of `Records::types`, it asserts that `ShowLabeled(ty, &DeclNames)` and `snapshot(ty).text()` are the same string. This is the old printer against the new tree, inside one binary.
+- **Language server.** The existing `crates/una-cli/tests/lsp.rs` hover tests pass unchanged. A new test hovers every expression of one example package through the server and compares the texts with a dump taken before the change: `una lsp`'s answers, old binary against new.
+- **Send.** A compile-time assertion that `Index: Send` and `Hover: Send + Sync`.
+- **Scaling, by deterministic counters.** Each `index::build` returns its counts in a `HoverStats` struct, not in a process-wide counter: #335 stage 3a showed a global counter makes concurrent tests flaky.
+  - Snapshot nodes made at depth 40 and 160 of the #331 program: at most 6× for 4× the depth.
+  - Characters formatted for types while checking: zero.
+  - Timing stays a wide secondary check, as the owner's rule asks.
+- **Identity.** `una --json check`, `report`, `obligations`, `test` and the proof-cache names are byte-identical on every target, and so are builds with one runtime. B touches none of them, and the run proves it.
+
+### Steps and size
+
+1. `types/hover.rs`: the snapshot and its memo, with the corpus text test, and the printer made generic (step 4). About 250 lines with tests, in una-check only.
+2. `Index::types` holds `Hover`, and `lsp.rs` and una-lsp's `HoverText` follow (steps 3 and 5). About 120 lines in three crates outside the TCB.
+3. Counters and the scaling test. The time bound of `checking_deeply_nested_types_is_not_cubic_in_their_depth` is then measured again; ADR 0080 expects about 12× of the 14× to remain, from Core IR.
+
+One pull request. Review: the language server's behavior, and the memo against ADR 0077's rules. No TCB review is needed, since no output of the verifier, the interpreter or the backend can change, and the identity run shows that.
+
+### Risks
+
+- **Hover latency.** A hover now formats on request. The largest type at the nesting bound prints in about 256 levels, well under a millisecond, but a test asserts no hover of the examples takes more than 10 ms.
+- **Lifetime of a check's data.** A `Hover` keeps its nodes alive for as long as the server keeps the check, until the next one replaces it. That is O(n) memory, where the strings were O(n·d).
+- **A wrong memo key** would show another type's text. The corpus text test catches it, and the memo keeps its keys alive (ADR 0077).
+
 ## Consequences
 
 - **With A:** checking is linear in the program's size end to end, and Core IR uses less memory. Every construction of a Core IR type changes, in three crates of the TCB.
