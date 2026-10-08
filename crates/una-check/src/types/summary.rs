@@ -8,7 +8,7 @@ use super::authority::Pass;
 use super::check::Checker;
 use super::env::{FnKind, Step, Summary};
 use super::label::Label;
-use super::ty::{FnTy, Ty};
+use super::ty::{FnTy, Shared, Ty};
 use super::unify::Vars;
 use una_project::Edition;
 
@@ -199,27 +199,29 @@ fn raise_at(
     };
     let raised = match (declared.unlabeled(), actual.unlabeled().clone()) {
         (Ty::Param(_), other) => other,
-        (Ty::List(declared), Ty::List(actual)) => {
-            Ty::List(Box::new(inner(Step::Element, declared, *actual)))
-        }
+        (Ty::List(declared), Ty::List(actual)) => Ty::List(Shared::new(inner(
+            Step::Element,
+            declared,
+            (*actual).clone(),
+        ))),
         (Ty::Map(declared_key, declared_value), Ty::Map(actual_key, actual_value)) => Ty::Map(
-            Box::new(inner(Step::Arg(0), declared_key, *actual_key)),
-            Box::new(inner(Step::Arg(1), declared_value, *actual_value)),
+            Shared::new(inner(Step::Arg(0), declared_key, (*actual_key).clone())),
+            Shared::new(inner(Step::Arg(1), declared_value, (*actual_value).clone())),
         ),
         (Ty::Kind(_, declared), Ty::Kind(id, actual)) => Ty::Kind(
             id,
             actual
-                .into_iter()
+                .iter()
                 .enumerate()
                 .map(|(index, actual)| match declared.get(index) {
-                    Some(declared) => inner(Step::Arg(index), declared, actual),
-                    None => actual,
+                    Some(declared) => inner(Step::Arg(index), declared, actual.clone()),
+                    None => actual.clone(),
                 })
                 .collect(),
         ),
         (Ty::Fn(declared), Ty::Fn(actual)) => {
-            let actual = *actual;
-            Ty::Fn(Box::new(FnTy {
+            let actual = (*actual).clone();
+            Ty::Fn(Shared::new(FnTy {
                 result: inner(Step::Result, &declared.result, actual.result.clone()),
                 ..actual
             }))

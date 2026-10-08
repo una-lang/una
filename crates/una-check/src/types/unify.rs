@@ -6,7 +6,7 @@ use std::rc::Rc;
 use una_syntax::Span;
 
 use super::label::Label;
-use super::ty::{FnTy, FnUse, KindLabels, Ty};
+use super::ty::{FnTy, FnUse, KindLabels, Shared, Ty};
 
 /// Why a unification variable exists, for the diagnostic when inference leaves it unknown.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -118,7 +118,7 @@ impl Vars {
         let mut ty = self.resolve_shape(ty);
         while let Ty::Labeled(top, inner) = ty {
             label = label.join(&top);
-            ty = *inner;
+            ty = (*inner).clone();
         }
         (label, ty)
     }
@@ -129,16 +129,16 @@ impl Vars {
         // Through references, so each node of the type is visited once (#331).
         match self.shallow_ref(ty) {
             Ty::Labeled(label, inner) => self.resolve_shape(inner).with_label(label),
-            Ty::List(element) => Ty::List(Box::new(self.resolve_shape(element))),
+            Ty::List(element) => Ty::List(Shared::new(self.resolve_shape(element))),
             Ty::Map(key, value) => Ty::Map(
-                Box::new(self.resolve_shape(key)),
-                Box::new(self.resolve_shape(value)),
+                Shared::new(self.resolve_shape(key)),
+                Shared::new(self.resolve_shape(value)),
             ),
             Ty::Kind(id, args) => Ty::Kind(
                 *id,
                 args.iter().map(|arg| self.resolve_shape(arg)).collect(),
             ),
-            Ty::Fn(function) => Ty::Fn(Box::new(FnTy {
+            Ty::Fn(function) => Ty::Fn(Shared::new(FnTy {
                 params: function
                     .params
                     .iter()
@@ -245,7 +245,7 @@ impl Vars {
         let mut current = ty.clone();
         loop {
             match current {
-                Ty::Labeled(_, inner) => current = *inner,
+                Ty::Labeled(_, inner) => current = (*inner).clone(),
                 Ty::Var(var) => match self.slots.get(var).and_then(|slot| slot.value.clone()) {
                     Some(Ty::Var(next)) => current = Ty::Var(next),
                     Some(Ty::Labeled(label, inner)) if matches!(*inner, Ty::Var(_)) => {
@@ -382,10 +382,10 @@ fn combine(a: &Ty, b: &Ty, join: bool, kinds: &KindLabels) -> Ty {
     let base = match (a.unlabeled(), b.unlabeled()) {
         (Ty::Never, other) | (other, Ty::Never) => return other.clone().with_label(&label),
         (Ty::Error, _) | (_, Ty::Error) => return Ty::Error,
-        (Ty::List(x), Ty::List(y)) => Ty::List(Box::new(combine(x, y, join, kinds))),
+        (Ty::List(x), Ty::List(y)) => Ty::List(Shared::new(combine(x, y, join, kinds))),
         (Ty::Map(xk, xv), Ty::Map(yk, yv)) => Ty::Map(
-            Box::new(combine(xk, yk, join, kinds)),
-            Box::new(combine(xv, yv, join, kinds)),
+            Shared::new(combine(xk, yk, join, kinds)),
+            Shared::new(combine(xv, yv, join, kinds)),
         ),
         (Ty::Kind(i, xs), Ty::Kind(j, ys)) if i == j && xs.len() == ys.len() => Ty::Kind(
             *i,
@@ -401,7 +401,7 @@ fn combine(a: &Ty, b: &Ty, join: bool, kinds: &KindLabels) -> Ty {
                 })
                 .collect(),
         ),
-        (Ty::Fn(f), Ty::Fn(g)) if f.params.len() == g.params.len() => Ty::Fn(Box::new(FnTy {
+        (Ty::Fn(f), Ty::Fn(g)) if f.params.len() == g.params.len() => Ty::Fn(Shared::new(FnTy {
             params: f
                 .params
                 .iter()
@@ -459,7 +459,10 @@ mod tests {
     fn variables_are_solved_and_resolved() {
         let mut vars = Vars::default();
         let a = vars.fresh(Origin::Element, span());
-        assert!(vars.unify(&Ty::List(Box::new(a.clone())), &Ty::List(Box::new(Ty::Int))));
+        assert!(vars.unify(
+            &Ty::List(Shared::new(a.clone())),
+            &Ty::List(Shared::new(Ty::Int))
+        ));
         assert_eq!(vars.resolve(&a), Ty::Int);
         assert!(!vars.unify(&a, &Ty::Text));
         assert!(vars.unsolved().is_empty());
@@ -487,7 +490,7 @@ mod tests {
             symbols: una_core::Names::new(),
         };
         let vars = Vars::default();
-        let function = Ty::Fn(Box::new(FnTy {
+        let function = Ty::Fn(Shared::new(FnTy {
             params: vec![Ty::Int],
             result: Ty::Bool,
             uses: Vec::new(),
@@ -511,7 +514,10 @@ mod tests {
         };
         let mut vars = Vars::default();
         let t = vars.fresh(Origin::Element, span());
-        assert!(vars.unify(&Ty::List(Box::new(t.clone())), &Ty::List(Box::new(Ty::Int))));
+        assert!(vars.unify(
+            &Ty::List(Shared::new(t.clone())),
+            &Ty::List(Shared::new(Ty::Int))
+        ));
         assert!(vars.unify(&t, &Ty::Int.with_label(&secret)));
         assert_eq!(vars.resolve_labeled(&t), Ty::Int.with_label(&secret));
         assert_eq!(vars.resolve(&t), Ty::Int);
@@ -524,7 +530,7 @@ mod tests {
     fn the_occurs_check_rejects_infinite_types() {
         let mut vars = Vars::default();
         let a = vars.fresh(Origin::Element, span());
-        assert!(!vars.unify(&a, &Ty::List(Box::new(a.clone()))));
+        assert!(!vars.unify(&a, &Ty::List(Shared::new(a.clone()))));
     }
 
     #[test]

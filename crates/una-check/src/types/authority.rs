@@ -931,7 +931,10 @@ impl<'a> Checker<'_, 'a, '_> {
     /// that cannot fail. `kind` is the variant's kind, when it was found.
     pub(crate) fn fail_site(&mut self, variant: &Ident, kind: Option<usize>) {
         if let Some(kind) = kind {
-            self.raised_fact(Raised::Kind(Ty::Kind(kind, Vec::new())), variant.span);
+            self.raised_fact(
+                Raised::Kind(Ty::Kind(kind, Vec::new().into())),
+                variant.span,
+            );
         }
         // The lambda of a `fails of` parameter fails with the kind it raises (ADR 0062).
         if self.of_lambda_fails(kind, variant.span) {

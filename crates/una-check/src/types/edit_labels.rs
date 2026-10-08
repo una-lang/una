@@ -16,7 +16,7 @@ use una_syntax::Span;
 use super::authority::Pass;
 use super::check::Checker;
 use super::label::Label;
-use super::ty::Ty;
+use super::ty::{Shared, Ty};
 
 /// The first character of the symbols that name label variables of editable bindings. No type
 /// parameter or unification variable has a name that starts with it.
@@ -102,18 +102,21 @@ impl Checker<'_, '_, '_> {
             }
             Ty::Labeled(label, inner) => {
                 // An unsolved variable under a label keeps that label too.
-                let inner = self.open(*inner, span, index);
+                let inner = self.open((*inner).clone(), span, index);
                 inner.with_label(&label)
             }
-            Ty::List(element) => Ty::List(Box::new(self.open(*element, span, index))),
+            Ty::List(element) => Ty::List(Shared::new(self.open((*element).clone(), span, index))),
             Ty::Map(key, value) => {
-                let key = self.open(*key, span, index);
-                Ty::Map(Box::new(key), Box::new(self.open(*value, span, index)))
+                let key = self.open((*key).clone(), span, index);
+                Ty::Map(
+                    Shared::new(key),
+                    Shared::new(self.open((*value).clone(), span, index)),
+                )
             }
             Ty::Kind(kind, args) => Ty::Kind(
                 kind,
-                args.into_iter()
-                    .map(|arg| self.open(arg, span, index))
+                args.iter()
+                    .map(|arg| self.open(arg.clone(), span, index))
                     .collect(),
             ),
             // A function's positions are fixed by its type, and the others hold no variable.
@@ -145,10 +148,10 @@ impl Checker<'_, '_, '_> {
     fn shaped(&mut self, shape: &Ty, name: &str) -> Ty {
         let label = self.variable_label(name);
         let inner = match shape {
-            Ty::List(element) => Ty::List(Box::new(self.shaped(element, &derived(name, "e")))),
+            Ty::List(element) => Ty::List(Shared::new(self.shaped(element, &derived(name, "e")))),
             Ty::Map(key, value) => Ty::Map(
-                Box::new(self.shaped(key, &derived(name, "k"))),
-                Box::new(self.shaped(value, &derived(name, "v"))),
+                Shared::new(self.shaped(key, &derived(name, "k"))),
+                Shared::new(self.shaped(value, &derived(name, "v"))),
             ),
             Ty::Kind(kind, args) => Ty::Kind(
                 *kind,

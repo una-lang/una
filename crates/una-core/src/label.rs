@@ -314,8 +314,8 @@ impl FromIterator<String> for Names {
     }
 }
 
-/// Counts the allocations of [`Names`], for the scaling tests of ADR 0077: the sets and the
-/// names made. Only with the feature `counters`, which tests enable; a release build counts
+/// Counts allocations for the scaling tests of ADR 0077: the sets and names of [`Names`], and
+/// the type nodes of the checker. Only with the feature `counters`, which tests enable; a release build counts
 /// nothing. The counts never reach any output.
 pub mod counters {
     #[cfg(feature = "counters")]
@@ -325,6 +325,8 @@ pub mod counters {
     static SETS: AtomicUsize = AtomicUsize::new(0);
     #[cfg(feature = "counters")]
     static STRINGS: AtomicUsize = AtomicUsize::new(0);
+    #[cfg(feature = "counters")]
+    static NODES: AtomicUsize = AtomicUsize::new(0);
 
     /// A set was made.
     #[inline]
@@ -338,6 +340,26 @@ pub mod counters {
     pub(crate) fn string() {
         #[cfg(feature = "counters")]
         STRINGS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A type node of the checker was made (ADR 0077 stage 2).
+    #[inline]
+    pub fn node() {
+        #[cfg(feature = "counters")]
+        NODES.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The type nodes the checker made so far in this process; always 0 without the feature
+    /// `counters`.
+    pub fn nodes_made() -> usize {
+        #[cfg(feature = "counters")]
+        {
+            NODES.load(Ordering::Relaxed)
+        }
+        #[cfg(not(feature = "counters"))]
+        {
+            0
+        }
     }
 
     /// The sets and names made so far by this process: `(sets, names)`. Always `(0, 0)`
@@ -356,6 +378,14 @@ pub mod counters {
         }
     }
 }
+
+// Labels hold no interior mutability: they are shared between types and threads only as values
+// that nothing changes (ADR 0077). This fails to compile if a field ever makes them `!Sync`.
+const _: () = {
+    const fn assert_sync<T: Sync>() {}
+    assert_sync::<Label>();
+    assert_sync::<Names>();
+};
 
 /// The sink label of an operation: `None` when it accepts every label.
 pub type Accepts = Option<Label>;

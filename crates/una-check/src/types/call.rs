@@ -14,7 +14,7 @@ use super::env::{Entity, FieldDef, FnDef, FnKind, ParamDef};
 use super::expr::count;
 use super::label::Label;
 use super::records::Res;
-use super::ty::{FnTy, FnUse, KindId, Refinement, Ty};
+use super::ty::{FnTy, FnUse, KindId, Refinement, Shared, Ty};
 use super::unify::{Origin, Vars};
 
 /// A checked argument: where it is, its type, the type of its parameter, and the parameter.
@@ -290,7 +290,7 @@ impl<'a> Checker<'_, 'a, '_> {
         // may still solve (ADR 0038 D3.2, D-137, re-review N-003).
         let head = self.vars.head(ty);
         let function = match head.unlabeled().clone() {
-            Ty::Fn(function) => *function,
+            Ty::Fn(function) => (*function).clone(),
             Ty::Labeled(..) => {
                 self.unchecked(args);
                 return Ty::Error;
@@ -1252,7 +1252,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// `keep`'s expected type `fn(T) -> Bool` with the result a fresh variable bound to
     /// `Bool`, whose label rises with the predicate's result (ADR 0067 L4).
     fn labeled_predicate(&mut self, expected: Ty, span: Span) -> Ty {
-        let Ty::Fn(mut function) = expected else {
+        let Ty::Fn(function) = expected else {
             return expected;
         };
         let result = self.vars.fresh(
@@ -1263,8 +1263,9 @@ impl<'a> Checker<'_, 'a, '_> {
             span,
         );
         self.vars.unify(&result, &function.result);
+        let mut function = (*function).clone();
         function.result = result;
-        Ty::Fn(function)
+        Ty::Fn(Shared::new(function))
     }
 
     /// The arguments of a call of a function, operation or handler (`spec/04 §3`): the first
@@ -1631,7 +1632,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     ident.span,
                     span,
                 );
-                return Ty::Kind(kind, targs);
+                return Ty::Kind(kind, targs.into());
             }
             Some(Entity::Kind(id)) if self.env.kinds.get(id).is_some_and(|k| !k.is_sum()) => {
                 let (params, kind_name) = self.kind_params(id);
@@ -1646,7 +1647,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 );
                 let hint = self.expected_args(id, expected);
                 self.construct(id, None, &targs, hint.as_deref(), args, ident.span, span);
-                return Ty::Kind(id, targs);
+                return Ty::Kind(id, targs.into());
             }
             Some(Entity::Kind(_)) => {
                 format!("`{name}` is a sum kind; construct one of its variants")
@@ -1706,7 +1707,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// The type arguments of `expected` when it is a type of `kind` (#187).
     fn expected_args(&self, kind: KindId, expected: Option<&Ty>) -> Option<Vec<Ty>> {
         match self.labeled(expected?).unlabeled() {
-            Ty::Kind(id, args) if *id == kind => Some(args.clone()),
+            Ty::Kind(id, args) if *id == kind => Some(args.to_vec()),
             _ => None,
         }
     }

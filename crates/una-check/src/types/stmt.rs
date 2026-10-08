@@ -18,7 +18,7 @@ use super::env::KindDef;
 use super::label::Label;
 use super::locals::TakenState;
 use super::records::Res;
-use super::ty::{KindId, Ty};
+use super::ty::{KindId, Shared, Ty};
 use super::unify::Origin;
 
 impl<'a> Checker<'_, 'a, '_> {
@@ -402,7 +402,7 @@ impl<'a> Checker<'_, 'a, '_> {
         self.task_mark = saved_mark;
         self.restore_pc(saved_pc);
         // How many elements there are depends on the label of what the tasks visit.
-        let ty = Ty::List(Box::new(element)).with_label(&label);
+        let ty = Ty::List(Shared::new(element)).with_label(&label);
         if tail {
             self.returned_value(together.span, &ty, expected, role);
         }
@@ -419,7 +419,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 let element = self.vars.fresh(Origin::Element, list.span);
                 self.unify_at(
                     list.span,
-                    &Ty::List(Box::new(element.clone())),
+                    &Ty::List(Shared::new(element.clone())),
                     &found,
                     Role::Plain,
                 );
@@ -682,7 +682,7 @@ impl<'a> Checker<'_, 'a, '_> {
         };
         let labeled = self.labeled(ty);
         match labeled.unlabeled().clone() {
-            Ty::Kind(id, args) if id == option => args.into_iter().next().unwrap_or(Ty::Error),
+            Ty::Kind(id, args) if id == option => args.first().cloned().unwrap_or(Ty::Error),
             Ty::Error | Ty::Never => Ty::Error,
             Ty::Var(_) => {
                 let origin = Origin::Instance {
@@ -690,7 +690,8 @@ impl<'a> Checker<'_, 'a, '_> {
                     of: "Option".to_owned(),
                 };
                 let inner = self.vars.fresh(origin, span);
-                self.vars.unify(ty, &Ty::Kind(option, vec![inner.clone()]));
+                self.vars
+                    .unify(ty, &Ty::Kind(option, vec![inner.clone()].into()));
                 inner
             }
             other => {
@@ -782,7 +783,7 @@ impl<'a> Checker<'_, 'a, '_> {
     fn sum_of(&self, ty: &Ty) -> Option<(KindId, Vec<Ty>)> {
         match self.resolve(ty) {
             Ty::Kind(id, args) if self.env.kinds.get(id).is_some_and(KindDef::is_sum) => {
-                Some((id, args))
+                Some((id, args.to_vec()))
             }
             _ => None,
         }
@@ -874,7 +875,7 @@ impl<'a> Checker<'_, 'a, '_> {
                             // arguments, raised by its top label.
                             let targs = match self.labeled(&scrutinee).unlabeled() {
                                 Ty::Kind(id, args) if *id == kind => args.clone(),
-                                _ => targs,
+                                _ => targs.into(),
                             };
                             self.bind_fields(kind, index, &targs, binds, &label, pattern);
                         }

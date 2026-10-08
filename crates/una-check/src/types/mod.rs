@@ -30,6 +30,7 @@ mod locals;
 mod map;
 mod memory;
 mod records;
+mod shared;
 mod stmt;
 mod summary;
 mod ty;

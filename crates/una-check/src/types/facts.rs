@@ -360,7 +360,7 @@ fn regular_recursion(env: &Env<'_>, report: &mut Report<'_>) {
                 mentioned(value, out);
             }
             Ty::Kind(kind, args) => {
-                out.push((*kind, args.clone()));
+                out.push((*kind, args.to_vec()));
                 for arg in args {
                     mentioned(arg, out);
                 }
