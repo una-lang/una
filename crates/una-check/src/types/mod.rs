@@ -882,6 +882,7 @@ mod tests {
         // type parameter of the kind by position or `Int`, with no label.
         use una_core::PreludeField;
         use una_syntax::ast::{DeclKind, Field, KindBody, TypeCore};
+        type Variants = Vec<(String, Vec<(String, Option<PreludeField>)>)>;
         let v0_2 = format!("{}\n{PRELUDE_0_2}", of_prelude());
         let mut sources = SourceDb::new();
         let mut interner = Interner::new();
@@ -917,7 +918,7 @@ mod tests {
                 };
                 (interner.resolve(field.name.name).to_owned(), of)
             };
-            let declared: Vec<(String, Vec<(String, Option<PreludeField>)>)> = match &kind.body {
+            let declared: Variants = match &kind.body {
                 KindBody::Sum(variants) => variants
                     .iter()
                     .map(|v| {
@@ -930,7 +931,7 @@ mod tests {
                 }
                 KindBody::Alias { .. } => panic!("`{name}` is an alias"),
             };
-            let tabled: Vec<(String, Vec<(String, Option<PreludeField>)>)> = table
+            let tabled: Variants = table
                 .iter()
                 .map(|(variant, fields)| {
                     let fields = fields
