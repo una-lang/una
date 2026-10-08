@@ -7,6 +7,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 ### Documentation
 
 - **A fresh agent's dogfood pass on the v0.3.3 archive** (#418, N-64), in `docs/reviews/v0.3.4/dogfood-fresh.md`: Opus 5.5 subagents with no knowledge of Una wrote the same five programs as #402 from the archive alone. With the guides that #410 ships, 7 `una check` runs, twice, against the 12 of #402; without them, 11 to 23, depending on how the agent found the library. Nine new findings go to #419.
+- **The guide closes the gaps a fresh agent met** (#419, N-64). The HTTP section gives every operation's parameters, the fields of `Header` and `Response`, that `key_name` sends `Authorization: Bearer <key>` (a token in another header is a header value, through a policy when `secret`), and a stand-in handler with an example; the syntax reference lists `Http` with the host capabilities. The guide also says that there is no `\r` escape (`\u{D}`), that a one-field value prints without its field name, that a label labels one position (`internal Option[internal Int]`), how an example expects a failure, that a `when` arm may `fail` while binding, and how a loop's helper states its contract with `old(p)`. `una explain U4001` and `U5002` say the same.
 
 ### Performance
 

@@ -48,7 +48,7 @@ Exit codes: `0` success; `1` errors in the program, an unproven obligation or a 
 - Indentation is significant: two spaces per level, no tabs. A line break inside brackets continues the line, but the canonical form joins such lines, so `una check` reports the split as U7001 (and `una fmt` joins it) unless a comment sits inside the brackets. Write each call on one line.
 - `--` starts a comment, `---` a doc comment attached to the next declaration.
 - Names: `lower_snake` for values, functions, fields, modules, handlers and operations; `UpperCamel` for kinds, variants, capabilities and label categories; `@name` for capability references; `UPPER_SNAKE_1` for requirements.
-- Literals: integers without leading zeros (`1_000` is fine), `true`, `false`, `unit`, and single-line text with `{expression}` interpolation. Text escapes are `\"`, `\\`, `\n`, `\t`, `\{`, `\}` and `\u{H}`: a literal brace is `\{` or `\}`, so JSON written in text reads `"\{\"id\": 7\}"`. A bare brace that cannot start or end an interpolation is U0007, with the edit that escapes it.
+- Literals: integers without leading zeros (`1_000` is fine), `true`, `false`, `unit`, and single-line text with `{expression}` interpolation. Text escapes are `\"`, `\\`, `\n`, `\t`, `\{`, `\}` and `\u{H}`: a literal brace is `\{` or `\}`, so JSON written in text reads `"\{\"id\": 7\}"`. A bare brace that cannot start or end an interpolation is U0007, with the edit that escapes it. There is no `\r`: a carriage return is `\u{D}`.
 - Operators, tightest first: calls and `.field`; unary `-`; `*` `/` `mod`; `+` `-`; comparisons `==` `!=` `<` `<=` `>` `>=`, `is Variant` and `in 0..5`, which do not chain; `not`; `and`; `or`; `implies`.
 - Edition `0.2` adds the keywords `edit`, `take`, `old` and `together`; `for` also starts a loop.
 - Words that are keywords in other languages are errors with a hint (U0103): `match` (use `when`), `return` (the last expression is the result), `var` (use `let edit`), `while` and `loop` (use `for` or recursion), `type` (use `kind`), `async` and `await` (use `together`). Reserved for later versions: `shared`, `iso`, `weak`, `all`, `table`, `query` and others.
@@ -116,7 +116,7 @@ module demo
 pub kind Stream = | Next(head: Int, tail: Stream)
 ```
 
-Interpolation writes any value that holds no function in its Una form, the one `una test` shows: `Point(x: 1, y: -2)`, `[1, 2]`, `Some(3)`, `Err(NotFound)`. Text inside a structure is quoted. A field that holds a function is U2001. A value of a type parameter `T` needs `[T: Eq]`. The text keeps the labels of every field, so a record with a `secret` field cannot be printed (U4003) (ADR 0068).
+Interpolation writes any value that holds no function in its Una form, the one `una test` shows: `Point(x: 1, y: -2)`, `[1, 2]`, `Some(3)`, `Err(NotFound)`. Text inside a structure is quoted. A record or variant with one field prints it without its name, as `Some(3)` or `Offline("south")`; with two or more fields, each is named. A field that holds a function is U2001. A value of a type parameter `T` needs `[T: Eq]`. The text keeps the labels of every field, so a record with a `secret` field cannot be printed (U4003) (ADR 0068).
 
 ```una
 module demo
@@ -333,6 +333,23 @@ pub bump_or_same(n: Int) -> Int
     is Err -> n
 ```
 
+An arm of `when` or a branch of `if` may `fail`, so a binding takes the value of the arms that do not:
+
+```una
+module demo
+
+pub kind Unreadable = | NotANumber
+
+--- The integer a JSON value holds.
+pub number(j: Json) -> Int
+  fails Unreadable
+=
+  let n = when j
+    is Number(value) -> value
+    else -> fail NotANumber
+  n
+```
+
 ```una
 -- fails with U3007
 module demo
@@ -508,7 +525,7 @@ pub parse_all(xs: List[Text]) -> List[Int]
 
 ## 9. Labels and information flow
 
-Every type may carry a label: a level, `public` (the default), `internal`, `confidential`, `secret` or `restricted`, and categories declared in `una.toml`, as in `secret[PII] Text`. Values flow up, never down: the result of an operation joins its operands' labels; branching on a labeled value raises the program counter, so what the branches produce is labeled too, and they may not fail; each operation argument is a sink bounded by its `accepts` (`Console.print` accepts `public`). `Env.get` and `Files.read` return `internal` text.
+Every type may carry a label: a level, `public` (the default), `internal`, `confidential`, `secret` or `restricted`, and categories declared in `una.toml`, as in `secret[PII] Text`. Values flow up, never down: the result of an operation joins its operands' labels; branching on a labeled value raises the program counter, so what the branches produce is labeled too, and they may not fail; each operation argument is a sink bounded by its `accepts` (`Console.print` accepts `public`). `Env.get` and `Files.read` return `internal` text. A label labels one position of a type: in `internal Option[Int]` which variant the value is, `Some` or `None`, is `internal`, but the `Int` inside is `public`, so a function that returns a labeled element writes `internal Option[internal Int]`.
 
 **Printing what you read from `Env` or `Files` takes a policy.** That text, and anything computed from it, even its length, is `internal`, so printing it is U4003, as in the second block below. No label of your program can be lowered to fix that: declassify the value through a `policy` in a trusted module, as the `journal` package after it does, and call the policy where you print. `una explain U4003` shows the same pattern for a name read from `Env`.
 
@@ -599,7 +616,7 @@ Pass the values of `T` through unchanged (`[p, q].map(each: k)` is accepted), or
 
 A requirement records a statement with its source and owner; `derived from` traces functions to it, and `una trace <ID>` lists them with their obligations. A `generated` requirement stays `proposed` until a person changes its source.
 
-Examples are executable evidence next to the code: `given` installs handlers (never host capabilities), `do` runs one expression, and each `expect` checks `result`, `fails V`, `performed @x.op` or `not performed @x.op`. `una test` runs them with their effect traces.
+Examples are executable evidence next to the code: `given` installs handlers (never host capabilities), `do` runs one expression, and each `expect` checks `result`, `fails V`, `performed @x.op` or `not performed @x.op`. `una test` runs them with their effect traces. A `do` line whose call fails is checked with `expect fails V`, as `parse_slug` in §6 shows; `do attempt f(x)` with `expect result == Err(V)` checks the same through the `Result`.
 
 ```una
 module demo
@@ -635,7 +652,7 @@ Values stay immutable and there are no references; what changes is which value a
 - `for x in xs` visits a list in order, and `for i in a..b` or `a..<b` the integers of a range; the bounds are evaluated once, before the first iteration. The loop variable has the element type, or the integer type of the bounds. There is no `break` or `continue`. The refinements of the bindings a loop updates are its invariant; no other fact about them survives the loop.
 - `if c` with an indented block and no `else` is a statement. `edit xs.set(index: i, item: v)` replaces a list element.
 - A loop keeps the length of a list it changes only with `set`, or with a helper whose `ensures` is exactly `xs.len == old(xs).len`, so `for i in 0..<xs.len` with `edit xs.set(index: i, item: v)` verifies. After an `append` or any other change, the loop forgets the length, and a check that needs it is U5002, "the loop forgets every fact about the list `xs` ...": guard it with `if i < xs.len`.
-- **A contract about what a loop builds goes on the helper one iteration calls.** The loop forgets every fact about the bindings it updates but their refinements, so an `ensures` that needs one after the loop, such as `counts.has(key: vote)` after a loop of `counts.set`, is U5002, and neither an `if` guard nor `checked` proves it. Move the update into a helper with an `edit` parameter and give the helper the contract, as `add_vote` below: the solver proves it once, for every call, and a caller has it right after each call.
+- **A contract about what a loop builds goes on the helper one iteration calls.** The loop forgets every fact about the bindings it updates but their refinements, so an `ensures` that needs one after the loop, such as `counts.has(key: vote)` after a loop of `counts.set`, is U5002, and neither an `if` guard nor `checked` proves it. Move the update into a helper with an `edit` parameter and give the helper the contract, as `add_vote` below: the solver proves it once, for every call, and a caller has it right after each call. The helper's `ensures` names the parameter's value on entry as `old(p)`, as `counts.len <= old(counts).len + 1`. The loop's own `ensures` about everything it built, such as `result.len <= votes.len`, still cannot be proven, since the loop keeps no fact from one iteration to the next: state what callers need on the helper.
 - A call that fails leaves its `edit` arguments unchanged for the caller; operations it performed stay performed.
 - **Cost.** A list, map or text that nothing else holds is updated in place, so `acc = acc.append(item: x)` in a loop, or through helpers that take `acc` and return it, is linear (ADR 0072).
 - **Known limit: keeping the old value on failure.** `acc = step(acc, item: x)` followed by `if error use acc` reads `acc` after the call, so the call cannot take it over and copies it: every iteration copies the whole list, and the loop is quadratic. The old value is kept because a failed call changes nothing for its caller (`spec/17`). For a linear loop, check first and then update, or make the update unable to fail and return a status with the new value (N-42).
@@ -1001,14 +1018,20 @@ pub leading_number(field: Text) -> Int
 
 The host capability `Http` sends HTTP/1.1 requests (`spec/24`, edition 0.2).
 
-- **Operations.** `get(url, headers, key_name)`, `post(url, headers, body, key_name)`, `put` and `delete`, one per method, so `uses @http: Http[get]` can never post. Each returns an `internal Response` (`status`, `headers`, `body`) or fails with `HttpError`.
+- **Operations.** One per method, so `uses @http: Http[get]` can never post:
+  - `get(url: Text, headers: List[Header], key_name: Option[Text]) -> internal Response`;
+  - `post(url: Text, headers: List[Header], body: Text, key_name: Option[Text]) -> internal Response`;
+  - `put`, with the parameters of `post`;
+  - `delete`, with the parameters of `get`.
+
+  Each fails with `HttpError` and accepts `internal`. `Header` has `name: Text` and `value: internal Text`, and `Response` has `status: Int`, `headers: List[Header]` and `body: Text`.
 - **Statuses are not failures.** A 404 is a `Response`. `HttpError` is for requests that got no response: `Denied`, `BadUrl`, `BadRequest`, `Unreachable`, `TimedOut`, `TooLarge`, `Tls` or `Protocol`.
 - **Grants.** `http:<origin>` or `http:<origin>:<methods>`, by default `get`: `http:https://api.example.com:get,post`. A request outside them fails with `Denied`, before any connection. Plain `http` only where a grant says so.
-- **Credentials.** `key_name: Some("name")` sends the key `name` of the run's `keys:` grant as a bearer token, to that origin only. The program never sees it, and no trace shows it.
+- **Credentials.** `key_name: Some("name")` sends the key `name` of the run's `keys:` grant as `Authorization: Bearer <key>`, to that origin only. The program never sees it, and no trace shows it. An API that wants its token in another header, as `X-Api-Token`, takes it as a header value: a `secret` token needs a policy to `internal` first (§9).
 - **Labels.** Arguments accept `internal` data: a `secret` URL, body or header value needs a policy first. Responses are `internal`, so a function that returns what it read declares an `internal` result, and its `Option` or `Result` too, since which one it returns depends on the response.
 - **Failures of `internal` requests.** Whether a request fails depends on its URL, headers and key name, so with an `internal` URL or key name its failure is `internal`: `attempt` gives an `internal` `Result`, and `if error pass` or `if error fail` is U4002. Handle it with `attempt` and return a labeled value. The body does not count.
 - **Header values.** A header value with a control character other than a tab, such as a newline, aborts the run with U6004, since the value is `internal`. Remove them from values built from data first: `value.replace(pattern: "\n", by: "")`.
-- **Limits.** `--max-response <MiB>` (default 16) and `--http-timeout <seconds>` (default 30, the total time of a request). Tests give `Http` a handler, since examples cannot use it.
+- **Limits.** `--max-response <MiB>` (default 16) and `--http-timeout <seconds>` (default 30, the total time of a request). Tests give `Http` a handler, since examples cannot use it. As any handler, it implements every operation of the capability, all four (U3011), as `fixed_answer` below.
 
 ```una
 module weather
@@ -1037,6 +1060,33 @@ degrees(body: internal Text) -> internal Option[internal Int]
         is Number(n) -> Some(n)
         else -> None
     else -> None
+```
+
+A test of a function that uses `Http` installs a stand-in with `given`. Its parameter is named `answer`, not `body`, since an operation's parameter of the same name would clash with it (U1002):
+
+```una
+module stand_in
+
+--- The status of a GET, or `None` when the request gets no response.
+pub status_of(url: Text) -> internal Option[internal Int]
+  uses @http: Http[get]
+=
+  let r = attempt @http.get(url, headers: [], key_name: None)
+  when r
+    is Ok(response) -> Some(response.status)
+    is Err(e) -> None
+
+--- A stand-in for an API: every GET answers 200 with `answer`, and the other methods 405.
+pub handler fixed_answer(answer: Text) for Http
+  op get(url, headers, key_name) = Response(status: 200, headers: [], body: answer)
+  op post(url, headers, body, key_name) = Response(status: 405, headers: [], body: "")
+  op put(url, headers, body, key_name) = Response(status: 405, headers: [], body: "")
+  op delete(url, headers, key_name) = Response(status: 405, headers: [], body: "")
+
+example "the stand-in answers every GET"
+  given @http = fixed_answer(answer: "ok")
+  do status_of("https://api.example.com/v1/now")
+  expect result == Some(200)
 ```
 
 ## 18. Concurrent tasks: `together`
