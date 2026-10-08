@@ -465,17 +465,21 @@ impl Ty {
     /// value, that is when `self` is a labeled node in the form `with_label` builds whose
     /// inner node and label the operation left as they were.
     pub(crate) fn relabeled(&self, inner: Ty, label: &Label) -> Ty {
-        match self {
-            Ty::Labeled(own, old)
-                if own == label
-                    && inner.same(old)
-                    && !own.is_public()
-                    && !matches!(**old, Ty::Labeled(..) | Ty::Error | Ty::Never) =>
-            {
-                self.clone()
-            }
-            _ => inner.with_label(label),
+        if self.keeps(&inner, label) {
+            self.clone()
+        } else {
+            inner.with_label(label)
         }
+    }
+
+    /// Whether `inner.with_label(label)` is `self` itself: `self` is a labeled node in the form
+    /// `with_label` builds, with `label` and with `inner` as the node it labels.
+    pub(crate) fn keeps(&self, inner: &Ty, label: &Label) -> bool {
+        matches!(self, Ty::Labeled(own, old)
+            if own == label
+                && inner.same(old)
+                && !own.is_public()
+                && !matches!(**old, Ty::Labeled(..) | Ty::Error | Ty::Never))
     }
 
     /// `self` with its top label raised by `label`; `Error` and `Never` carry no label.

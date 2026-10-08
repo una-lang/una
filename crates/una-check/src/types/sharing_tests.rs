@@ -569,15 +569,15 @@ fn walked_flags(ty: &Ty) -> Flags {
 /// Types built to defeat each flag: what an operation changes, deep below positions that
 /// change nothing.
 fn adversarial() -> Vec<Ty> {
-    let deep = |ty: Ty| {
-        (0..6).fold(ty, |ty, i| {
-            if i % 2 == 0 {
-                Ty::List(Shared::new(ty))
-            } else {
-                Ty::Kind(0, vec![ty].into())
-            }
+    let nested = |ty: Ty, shape: usize| {
+        (0..6).fold(ty, |ty, i| match (shape, i % 2) {
+            (0, 0) | (1, _) => Ty::List(Shared::new(ty)),
+            _ => Ty::Kind(0, vec![ty].into()),
         })
     };
+    // Lists and kinds in turn, lists only, and kinds only: a kind's arguments hold no type node
+    // between nested kinds.
+    let deep = |ty: Ty| -> Vec<Ty> { (0..3).map(|shape| nested(ty.clone(), shape)).collect() };
     let function = |fails: Ty| {
         Ty::Fn(Shared::new(FnTy {
             params: vec![Ty::Int],
@@ -587,7 +587,7 @@ fn adversarial() -> Vec<Ty> {
             refinements: FnRefinements::default(),
         }))
     };
-    vec![
+    [
         // A variable under a label.
         deep(Ty::Var(0).with_label(&Label::symbol("T"))),
         // A label not in normal form, deep down: `public`, and a label under a label.
@@ -604,6 +604,9 @@ fn adversarial() -> Vec<Ty> {
         // A variable's label, deep down.
         deep(Ty::Int.with_label(&Label::symbol("?1"))),
     ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 #[test]

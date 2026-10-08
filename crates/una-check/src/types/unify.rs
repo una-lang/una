@@ -28,8 +28,17 @@ struct Slot {
     span: Span,
 }
 
-/// Each labeled node erased, by its address, with the node itself and its erased form.
-type ErasedMemo = HashMap<*const (), (Shared<Ty>, Shared<Ty>)>;
+/// Each node with a label below it that was erased, by its address, with the node itself and
+/// its erased form: type nodes, a kind's arguments and function types, each in its own map.
+#[derive(Clone, Debug, Default)]
+struct ErasedMemo {
+    types: Erased<Ty>,
+    args: Erased<[Ty]>,
+    functions: Erased<FnTy>,
+}
+
+/// Nodes by their address, each with the node itself and its erased form.
+type Erased<T> = HashMap<*const (), (Shared<T>, Shared<T>)>;
 
 /// The unification variables of one declaration.
 #[derive(Clone, Debug, Default)]
@@ -54,7 +63,7 @@ impl Vars {
             slots: Vec::new(),
             kinds,
             generation: 0,
-            erased: RefCell::new(HashMap::new()),
+            erased: RefCell::new(ErasedMemo::default()),
         }
     }
 
@@ -107,27 +116,61 @@ impl Vars {
             Ty::Labeled(_, inner) => (*self.erase_node(inner)).clone(),
             Ty::List(element) => Ty::List(self.erase_node(element)),
             Ty::Map(key, value) => Ty::Map(self.erase_node(key), self.erase_node(value)),
-            Ty::Kind(id, args) => Ty::Kind(*id, map_args(args, |a| self.erase(a))),
-            Ty::Fn(function) => Ty::Fn(map_function(
-                function,
-                |p| self.erase(p),
-                |r| self.erase(r),
-                Some(&|f: &Ty| self.erase(f)),
-            )),
+            Ty::Kind(id, args) => Ty::Kind(*id, self.erase_args(args)),
+            Ty::Fn(function) => Ty::Fn(self.erase_function(function)),
             other => other.clone(),
         }
+    }
+
+    /// A kind's arguments erased, once per node in this declaration: nested kinds, as
+    /// `Some(Some(…))`, are arguments within arguments, with no type node between them.
+    fn erase_args(&self, args: &Shared<[Ty]>) -> Shared<[Ty]> {
+        if !args.flags().label {
+            return args.clone();
+        }
+        if let Some((_, erased)) = self.erased.borrow().args.get(&args.address()) {
+            return erased.clone();
+        }
+        let erased = map_args(args, |a| self.erase(a));
+        self.erased
+            .borrow_mut()
+            .args
+            .insert(args.address(), (args.clone(), erased.clone()));
+        erased
+    }
+
+    /// A function type erased, once per node in this declaration.
+    fn erase_function(&self, function: &Shared<FnTy>) -> Shared<FnTy> {
+        if !function.flags().label {
+            return function.clone();
+        }
+        if let Some((_, erased)) = self.erased.borrow().functions.get(&function.address()) {
+            return erased.clone();
+        }
+        let erased = map_function(
+            function,
+            |p| self.erase(p),
+            |r| self.erase(r),
+            Some(&|f: &Ty| self.erase(f)),
+        );
+        self.erased
+            .borrow_mut()
+            .functions
+            .insert(function.address(), (function.clone(), erased.clone()));
+        erased
     }
 
     fn erase_node(&self, node: &Shared<Ty>) -> Shared<Ty> {
         if !node.flags().label {
             return node.clone();
         }
-        if let Some((_, erased)) = self.erased.borrow().get(&node.address()) {
+        if let Some((_, erased)) = self.erased.borrow().types.get(&node.address()) {
             return erased.clone();
         }
         let erased = reuse(node, self.erase(node));
         self.erased
             .borrow_mut()
+            .types
             .insert(node.address(), (node.clone(), erased.clone()));
         erased
     }
@@ -495,24 +538,34 @@ pub(super) fn combine(a: &Ty, b: &Ty, join: bool, kinds: &KindLabels) -> Ty {
     let base = match (a.unlabeled(), b.unlabeled()) {
         (Ty::Never, other) | (other, Ty::Never) => return other.clone().with_label(&label),
         (Ty::Error, _) | (_, Ty::Error) => return Ty::Error,
-        (Ty::List(x), Ty::List(y)) => Ty::List(reuse(x, combine(x, y, join, kinds))),
+        // A child that comes out as either side's child is that child's node: a join often
+        // gives back `b`, as when `a` is `b` without its labels (ADR 0077 stage 3a, R-1).
+        (Ty::List(x), Ty::List(y)) => Ty::List(either(x, y, combine(x, y, join, kinds))),
         (Ty::Map(xk, xv), Ty::Map(yk, yv)) => Ty::Map(
-            reuse(xk, combine(xk, yk, join, kinds)),
-            reuse(xv, combine(xv, yv, join, kinds)),
+            either(xk, yk, combine(xk, yk, join, kinds)),
+            either(xv, yv, combine(xv, yv, join, kinds)),
         ),
         (Ty::Kind(i, xs), Ty::Kind(j, ys)) if i == j && xs.len() == ys.len() => {
-            let mut index = 0;
-            Ty::Kind(
-                *i,
-                map_args(xs, |x| {
-                    let combined = match ys.get(index) {
-                        Some(y) if !kinds.is_invariant(*i, index) => combine(x, y, join, kinds),
-                        _ => x.clone(),
-                    };
-                    index += 1;
-                    combined
-                }),
-            )
+            let args: Vec<Ty> = xs
+                .iter()
+                .zip(ys)
+                .enumerate()
+                .map(|(index, (x, y))| {
+                    if kinds.is_invariant(*i, index) {
+                        x.clone()
+                    } else {
+                        combine(x, y, join, kinds)
+                    }
+                })
+                .collect();
+            let all = |side: &[Ty]| args.iter().zip(side).all(|(new, old)| new.same(old));
+            if all(xs) {
+                Ty::Kind(*i, xs.clone())
+            } else if all(ys) {
+                Ty::Kind(*i, ys.clone())
+            } else {
+                Ty::Kind(*i, args.into_iter().collect())
+            }
         }
         (Ty::Fn(f), Ty::Fn(g)) if f.params.len() == g.params.len() => {
             let mut index = 0;
@@ -551,7 +604,22 @@ pub(super) fn combine(a: &Ty, b: &Ty, join: bool, kinds: &KindLabels) -> Ty {
         (Ty::Var(_), other) if !matches!(other, Ty::Var(_)) => other.clone(),
         (same, _) => same.clone(),
     };
+    // `base.with_label(&label)`, or the side that is already that value.
+    if b.keeps(&base, &label) && !a.keeps(&base, &label) {
+        return b.clone();
+    }
     a.relabeled(base, &label)
+}
+
+/// `new` as a child node: the node of `x` or of `y` when `new` is the same value as it.
+fn either(x: &Shared<Ty>, y: &Shared<Ty>, new: Ty) -> Shared<Ty> {
+    if new.same(x) {
+        x.clone()
+    } else if new.same(y) {
+        y.clone()
+    } else {
+        Shared::new(new)
+    }
 }
 
 /// The capabilities of `a` and those of `b`: a reference both name keeps the operations of
