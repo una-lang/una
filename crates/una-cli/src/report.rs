@@ -52,6 +52,7 @@ struct Report {
     proven: ProvenDoc,
     obligations: Counts,
     authority: Vec<AuthorityDoc>,
+    handler_authority: Vec<HandlerAuthorityDoc>,
     information: InformationDoc,
     escapes: EscapesDoc,
     assumptions: Vec<AssumptionDoc>,
@@ -128,6 +129,15 @@ struct AuthorityDoc {
     public: bool,
     uses: Vec<String>,
     inferred: bool,
+}
+
+/// A handler with `uses` clauses (ADR 0081, #14): additive under ADR 0076.
+#[derive(Serialize)]
+struct HandlerAuthorityDoc {
+    handler: String,
+    capability: String,
+    public: bool,
+    uses: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -420,6 +430,43 @@ fn build(
         });
     }
     authority.sort_by(|a, b| a.function.cmp(&b.function));
+    // ADR 0081 (#14): every handler with `uses`, whose host capabilities count for the TCB too.
+    let public_handlers = public_handlers(&modules);
+    let mut handler_authority = Vec::new();
+    for module in &program.modules {
+        for decl in &module.decls {
+            let Decl::Handler {
+                name,
+                capability_path,
+                uses,
+                ..
+            } = decl
+            else {
+                continue;
+            };
+            if uses.is_empty() {
+                continue;
+            }
+            for used in uses {
+                if HOST_CAPABILITIES.contains(&used.capability.as_str())
+                    && !declared_capabilities.contains(used.capability.as_str())
+                {
+                    host.insert(used.capability.clone());
+                }
+            }
+            let handler = format!("{}.{name}", module.path);
+            handler_authority.push(HandlerAuthorityDoc {
+                public: public_handlers.contains(&handler),
+                handler,
+                capability: capability_path.qualified(),
+                uses: uses
+                    .iter()
+                    .map(|u| format!("@{}: {}[{}]", u.cap, u.capability, u.ops.join(", ")))
+                    .collect(),
+            });
+        }
+    }
+    handler_authority.sort_by(|a, b| a.handler.cmp(&b.handler));
     // Policy calls and `checked`, from Core IR.
     let mut calls: Vec<(Span, String)> = Vec::new();
     let mut checked: BTreeMap<String, usize> = BTreeMap::new();
@@ -538,6 +585,7 @@ fn build(
         },
         obligations: counts,
         authority,
+        handler_authority,
         information: InformationDoc { policy_calls },
         escapes,
         assumptions,
@@ -676,6 +724,24 @@ impl Sites {
 }
 
 /// The purpose and owner of every policy, by qualified name.
+/// The `pub` handlers of the package, by qualified name.
+fn public_handlers(modules: &Modules<'_>) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for (_, tree) in modules.trees {
+        let Some(path) = modules.path(tree) else {
+            continue;
+        };
+        for decl in &tree.decls {
+            if let DeclKind::Handler(handler) = &decl.kind
+                && handler.public
+            {
+                out.insert(format!("{path}.{}", modules.name(handler.name.name)));
+            }
+        }
+    }
+    out
+}
+
 fn policies(modules: &Modules<'_>) -> BTreeMap<String, (String, String)> {
     let mut out = BTreeMap::new();
     for (_, tree) in modules.trees {
@@ -797,6 +863,16 @@ fn human(report: &Report) -> String {
         line(format!(
             "  {} ({visibility}{inferred}): {}",
             entry.function,
+            entry.uses.join(", ")
+        ));
+    }
+    line("handler authority:".to_owned());
+    for entry in &report.handler_authority {
+        let visibility = if entry.public { "pub" } else { "private" };
+        line(format!(
+            "  {} for {} ({visibility}): {}",
+            entry.handler,
+            entry.capability,
             entry.uses.join(", ")
         ));
     }

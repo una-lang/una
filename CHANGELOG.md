@@ -27,6 +27,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ### Command line
 
+- **The report lists handlers that hold authority** (ADR 0081, #14). `una report` listed under `authority` only the functions with `uses`, so a handler with `uses` clauses, which performs operations of its own, did not appear, and a host capability that only a handler used was missing from `tcb.host_capabilities`. The new key `handler_authority`, after `authority`, lists each such handler with the capability it implements, `public` and its `uses`, and `tcb.host_capabilities` counts handlers. Both are additive under ADR 0076: the schema stays `una.report/2`, and `authority` still lists functions only.
 - **A crash of the compiler is an internal compiler error, as `spec/13 §5` says** (#376). A panic in any command, on the main thread or a worker thread (the checker, `una run`, `una test`, `una build`), exited with code 101 and, with `--json`, printed no document. It is now U8001 with exit code 3: one line on stderr in human mode, and one `una.diagnostics/1` document on stdout with `--json`. Rust's own panic message stays on stderr.
 
 ### Checks
