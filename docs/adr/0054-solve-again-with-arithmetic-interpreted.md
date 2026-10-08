@@ -34,3 +34,23 @@ It also counted a zero divisor as disagreeing, even in an arm the model never ta
 
 - **Pin each disagreeing application to its real value at the model's point, and solve again a bounded number of times.** Not chosen: the solver can pick a new failing point every round, so `a * a` as `Pos` may never converge. Defining the operations covers every point at once.
 - **Report `proven` when the second query is unsatisfiable.** Not chosen for a patch release: it would accept programs that v0.1.1 rejects.
+
+## Amendment of 2026-10-08: a counterexample that divides by zero
+
+- Deciders: the coordinator session, on Leonardo's behalf, under the delegation of 2026-10-06 (decision N-61, issue #399), on finding V-1 of the deferred review of this ADR (`docs/reviews/v0.3.3/repairs-and-0054.md`, #124).
+
+**Context.** Rule 2 lets any value agree at a zero divisor, which keeps the obligation sound: a run that reaches the division fails there, and that division's own obligation reports it. The model is no run, though, and U5001 showed it as one.
+- `divided(a, b) = a / b` with `ensures result == 7` was refuted with the counterexample `a = -1, b = 0, result = 0`.
+- Its help said to add a guard so that this path returns 7, a path that cannot run.
+
+**Decision.** A refuted obligation keeps its status, but when its model sets to zero the divisor of a division that its own path evaluates, the obligation shows no counterexample and no repair of its own. U5001 instead names that division as a related location: "the refuting path divides by zero here, so it is no run: fix this division, whose own obligation reports it".
+- Only a division by a value that is not a literal counts, since it is one with a division obligation.
+- The division must be evaluated on the obligation's path, before the obligation's site: in Core IR's A-normal form, the `let` of the division is in the obligation's context.
+- For a return obligation, the path is the one the model takes.
+- A division on another path does not count. In `if b == 0 then 5 else a / b`, a model with `b = 0` takes the other arm, and keeps its counterexample.
+
+**Consequences.**
+- The divisors are read from the model's values of the operands that ADR 0053 already requests. The query, its text and the proof cache key are unchanged.
+- The status of every obligation is unchanged. Only the counterexample and the repairs of these diagnostics change.
+- The cost is a scan of the divisions on the model's path for each refuted obligation.
+

@@ -854,6 +854,64 @@ fn a_function_value_repair_guards_every_precondition_v12_003() {
 }
 
 #[test]
+fn a_counterexample_that_divides_by_zero_points_at_the_division_399() {
+    // ADR 0054, amendment of 2026-10-08 (#399, V-1): a model whose path divides by zero is
+    // no run, so the refuted postcondition shows no counterexample and no repair, and points
+    // at the division, whose own obligation keeps its counterexample `b = 0`. A zero divisor on
+    // a path that does not divide keeps the counterexample.
+    let root = package(
+        "zero-divisor",
+        &[(
+            "src/app.una",
+            "module app\n\npub divided(a: Int, b: Int) -> Int\n  ensures result == 7\n=\n  a / b\n\npub skipped(a: Int, b: Int) -> Int\n  ensures result != 5\n=\n  if b == 0 then 5 else a / b\n",
+        )],
+    );
+    let output = una(&["--json", "check", root.to_str().unwrap()]);
+    let json: Value = serde_json::from_str(stdout(&output)).unwrap();
+    let found = json["diagnostics"].as_array().unwrap();
+    let by_message = |message: &str| {
+        found
+            .iter()
+            .find(|d| d["message"] == message)
+            .unwrap_or_else(|| panic!("no `{message}` in {found:?}"))
+    };
+    let divided = by_message("postcondition of `divided` is refuted");
+    assert!(divided["counterexample"].is_null(), "{divided}");
+    assert_eq!(divided["repairs"], json!([]));
+    let note = divided["related"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| {
+            r["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("the refuting path divides by zero")
+        })
+        .unwrap_or_else(|| panic!("no note in {divided}"));
+    assert_eq!(
+        note["message"],
+        "the refuting path divides by zero here, so it is no run: fix this division, whose own obligation reports it"
+    );
+    assert_eq!(note["start"], json!({"line": 6, "col": 3}));
+    let division = by_message("division obligation `b != 0` is refuted");
+    assert_eq!(
+        division["counterexample"],
+        json!({"bindings": [{"name": "b", "value": 0}]})
+    );
+    let skipped = by_message("postcondition of `skipped` is refuted");
+    assert_eq!(
+        skipped["counterexample"]["bindings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["name"] == "result")
+            .unwrap()["value"],
+        5
+    );
+}
+
+#[test]
 fn a_helper_repair_writes_the_header_as_the_value_is_used_p1_126() {
     // #126 (P-1 of the deferred review): the helper of a failing callee printed its header
     // without labels, so written as described it was U4001. It now has the labels, the

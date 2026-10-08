@@ -51,6 +51,11 @@ pub struct Obligation {
     /// The equalities that put the enclosing loops at their first iteration, for the second
     /// query of a refutation that sets loop-fresh values (ADR 0071 D3).
     pub(crate) entry: Vec<F>,
+    /// The divisions by a value that is not a literal that each path evaluates before the
+    /// obligation, in the order of `paths` (one entry for an obligation at one site): the
+    /// divisor and the division. A model that sets one of them to zero is no run (ADR 0054,
+    /// amendment of 2026-10-08).
+    pub(crate) divisions: Vec<Vec<(F, Span)>>,
 }
 
 /// Where an obligation arises: what decides which repair candidates of `spec/13 §3` apply
@@ -696,6 +701,9 @@ struct Ctx {
     /// each state binding at its value on entry, and a range's variable at its lower bound
     /// (ADR 0071 D3, decision N-13). Shared until changed, as `types`.
     entry: std::rc::Rc<Vec<F>>,
+    /// The divisions by a value that is not a literal evaluated on this path, with their
+    /// divisors (ADR 0054, amendment of 2026-10-08). Shared until changed, as `types`.
+    divisions: std::rc::Rc<Vec<(F, Span)>>,
 }
 
 impl Ctx {
@@ -712,6 +720,8 @@ impl Ctx {
 #[derive(Clone, Debug)]
 struct Leaf {
     hyps: Hyps,
+    /// The divisions its path evaluates, as [`Ctx::divisions`].
+    divisions: std::rc::Rc<Vec<(F, Span)>>,
     value: Option<Tv>,
     span: Span,
     /// For the value of an `attempt`, the normal returns of the attempted call.
@@ -1079,6 +1089,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 Expr::Atom { atom, span } => {
                     leaves.push(Leaf {
                         hyps: ctx.hyps.clone(),
+                        divisions: ctx.divisions.clone(),
                         value: Some(self.atom(atom, &ctx)),
                         span: *span,
                         returns: Vec::new(),
@@ -1161,6 +1172,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                     self.walk(body, &body_ctx, &mut body_leaves);
                     leaves.push(Leaf {
                         hyps: ctx.hyps.clone(),
+                        divisions: ctx.divisions.clone(),
                         value: None,
                         span: *span,
                         returns: Vec::new(),
@@ -1197,6 +1209,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                     self.walk(task, &task_ctx, &mut task_leaves);
                     leaves.push(Leaf {
                         hyps: ctx.hyps.clone(),
+                        divisions: ctx.divisions.clone(),
                         value: None,
                         span: *span,
                         returns: Vec::new(),
@@ -1212,6 +1225,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                     }
                     leaves.push(Leaf {
                         hyps: ctx.hyps.clone(),
+                        divisions: ctx.divisions.clone(),
                         value: None,
                         span: *span,
                         returns: Vec::new(),
@@ -1506,6 +1520,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                     self.walk(body, &ctx, &mut returns);
                     leaves.push(Leaf {
                         hyps: ctx.hyps.clone(),
+                        divisions: ctx.divisions.clone(),
                         value: None,
                         span: *span,
                         returns,
@@ -1692,6 +1707,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                         *span,
                         None,
                     );
+                    std::rc::Rc::make_mut(&mut ctx.divisions).push((divisor.f.clone(), *span));
                 }
                 self.fixed_sites(ty, *prim, args, &values, arg_spans, *span, ctx);
                 if let Prim::Fixed(op, int) = prim {
@@ -2445,6 +2461,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             assertions,
             ctx,
             place,
+            vec![ctx.divisions.to_vec()],
         );
     }
 
@@ -2877,6 +2894,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             assertions,
             ctx,
             place,
+            vec![ctx.divisions.to_vec()],
         );
     }
 
@@ -3314,6 +3332,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             assertions,
             ctx,
             place,
+            vec![ctx.divisions.to_vec()],
         );
     }
 
@@ -3348,6 +3367,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             assertions,
             ctx,
             place,
+            vec![ctx.divisions.to_vec()],
         );
     }
 
@@ -3394,8 +3414,9 @@ impl<'p, 'i> Walker<'p, 'i> {
                 .iter()
                 .filter_map(|leaf| leaf.value.as_ref().map(|v| &v.f)),
         );
+        let divisions = leaves.iter().map(|leaf| leaf.divisions.to_vec()).collect();
         self.push(
-            kind, text, source, related, paths, hypotheses, assertions, &ctx, place,
+            kind, text, source, related, paths, hypotheses, assertions, &ctx, place, divisions,
         );
     }
 
@@ -3411,6 +3432,7 @@ impl<'p, 'i> Walker<'p, 'i> {
         assertions: Vec<F>,
         ctx: &Ctx,
         site: Site,
+        divisions: Vec<Vec<(F, Span)>>,
     ) {
         let mut query = Query {
             assertions,
@@ -3469,6 +3491,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             site,
             forgotten,
             entry,
+            divisions,
         });
     }
 

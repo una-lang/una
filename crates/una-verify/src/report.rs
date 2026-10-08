@@ -58,7 +58,17 @@ pub fn diagnostics(
                 bindings: outcome.bindings.clone(),
             });
         }
-        diagnostic.repairs = repairs(obligation);
+        // ADR 0054, amendment of 2026-10-08: a model that divides by zero on its path is no
+        // run, so the diagnostic points at that division, whose own obligation reports it, and
+        // offers no repair of this obligation's path.
+        if let Some(division) = outcome.division {
+            diagnostic.related.push(Related {
+                location: sources.location(division),
+                message: "the refuting path divides by zero here, so it is no run: fix this division, whose own obligation reports it".to_owned(),
+            });
+        } else {
+            diagnostic.repairs = repairs(obligation);
+        }
         out.push(diagnostic);
     }
     out
