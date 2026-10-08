@@ -1,0 +1,10 @@
+[package]
+name = "via_exemption_body_only"
+version = "0.1.0"
+edition = "0.2"
+
+[labels]
+categories = ["Pin"]
+
+[trusted]
+modules = ["release"]
