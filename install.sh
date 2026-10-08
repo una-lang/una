@@ -194,8 +194,14 @@ if [ -d "$unpacked/docs/guide" ]; then
     mkdir -p "$home/docs/guide"
     for guide in "$unpacked"/docs/guide/*.md; do
         [ -f "$guide" ] || continue
-        cp "$guide" "$home/docs/guide/"
-        files="$files docs/guide/$(basename "$guide")"
+        base=$(basename "$guide")
+        # The record is one path per word, and `cp` takes options: refuse a name that would break
+        # either, though no released archive has one.
+        case $base in
+            -* | *[[:space:]]*) fail "$archive holds a guide named '$base', which this installer refuses" ;;
+        esac
+        cp "$guide" "$home/docs/guide/$base"
+        files="$files docs/guide/$base"
     done
 fi
 {
