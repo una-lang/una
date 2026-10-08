@@ -13,7 +13,7 @@ Tiers 2 (quantified laws) and 3 (property tests, benchmarks) are deferred (`plan
 
 ## 2. The decidable fragment
 
-Every v0.1 query is in **QF_UFLIA**: quantifier-free linear integer arithmetic with uninterpreted functions and Booleans. `div` and `mod` appear only with nonzero literal divisors in RL. General division by a variable is allowed in code and produces a nonzero obligation; since QF_UFLIA has no nonlinear terms, its result is the uninterpreted function `i!div!Int` or `i!mod!Int`, as the product of two values that are not literals is `i!mul!Int` (ADR 0033, §4).
+Every v0.1 query is in **QF_UFLIA**: quantifier-free linear integer arithmetic with uninterpreted functions and Booleans. `div` and `mod` appear only with nonzero literal divisors in RL. General division by a variable is allowed in code and produces a nonzero obligation; since QF_UFLIA has no nonlinear terms, its result is the uninterpreted function `i!div!Int` or `i!mod!Int`, as the product of two values that are not literals is `i!mul!Int` (ADR 0033, §4). A literal here is an integer literal or `-` applied to one: `x * -2` is linear multiplication, and `a div -k` and `a mod -k` divide by a literal, with no nonzero obligation (#10).
 
 No query ever contains a quantifier. Axioms that would need quantifiers are instantiated as ground facts for the terms that occur in the query (§4).
 
@@ -80,7 +80,7 @@ Besides the hypotheses above, a query holds ground facts for every term in it: `
 | Text literals | One constant per distinct literal, with a `distinct` assertion over all literal constants in the query |
 | `predicate reflect p` | `define-fun` (non-recursive, so expandable) |
 | `predicate opaque p` | `declare-fun` (no definition, no axioms) |
-| `a div k`, `a mod k` | SMT-LIB `div`, `mod` (Euclidean); by a value that is not a literal, the uninterpreted `i!div!Int`, `i!mod!Int` (§2) |
+| `a div k`, `a mod k` | SMT-LIB `div`, `mod` (Euclidean), `k` a literal or `-` applied to one; by a value that is not a literal, the uninterpreted `i!div!Int`, `i!mod!Int` (§2) |
 
 **Namespaces** (ADR 0038 D8). Every SMT symbol derived from user content carries the prefix `u!`, and every symbol the encoder introduces carries the prefix `i!`, so the two cannot collide by construction, whatever names a program declares. Only the SMT-LIB sorts `Int` and `Bool` and the SMT-LIB operators are unprefixed.
 
