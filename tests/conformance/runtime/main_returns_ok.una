@@ -1,0 +1,10 @@
+-- test: a main that returns normally exits with 0 and prints its output; a main that fails is U6001 (positive twin, #11)
+-- spec: spec/04 §8
+-- grant: console
+-- expect: run-output "done"
+module main_returns_ok
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  @console.print("done")

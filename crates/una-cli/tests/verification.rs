@@ -1345,6 +1345,142 @@ fn a_forged_or_foreign_cache_entry_is_solved_again() {
 }
 
 #[test]
+fn a_damaged_cache_entry_is_solved_again_and_never_reused_11() {
+    // #11 (R-037, cache robustness): every entry of a refuted package's cache, damaged in each
+    // way a disk or an editor can damage it, reads as no answer. The query is solved again:
+    // the obligation stays refuted and none of its results comes from the cache.
+    let scratch = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("damaged-cache");
+    let _ = std::fs::remove_dir_all(&scratch);
+    let package = scratch.join("div0");
+    std::fs::create_dir_all(package.join("src")).unwrap();
+    let source =
+        repository().join("docs/reviews/v0.1-review/adversarial/escape-proof-cache-forgery");
+    for file in ["una.toml", "verification.lock", "src/div0.una"] {
+        std::fs::copy(source.join(file), package.join(file)).unwrap();
+    }
+    let report = || {
+        let output = Command::new(env!("CARGO_BIN_EXE_una"))
+            .env("HOME", scratch.join("home"))
+            .env_remove("UNA_PROOF_KEY")
+            .args(["--json", "report"])
+            .arg(&package)
+            .output()
+            .unwrap();
+        let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+        document["obligations"].clone()
+    };
+    assert_eq!(
+        report(),
+        json!({"proven": 0, "refuted": 1, "unknown": 0, "cached": 0})
+    );
+    let proofs = package.join(".una/cache/proofs");
+    let entries = || -> Vec<PathBuf> {
+        std::fs::read_dir(&proofs)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|e| e == "json"))
+            .collect()
+    };
+    assert!(!entries().is_empty());
+    // The refutation, answered by the cache on the second run.
+    assert_eq!(
+        report(),
+        json!({"proven": 0, "refuted": 1, "unknown": 0, "cached": 1})
+    );
+    let flip = |text: &str| {
+        let mut entry: Value = serde_json::from_str(text).unwrap();
+        entry["answer"]["status"] = json!("proven");
+        entry["answer"]["values"] = json!([]);
+        serde_json::to_vec(&entry).unwrap()
+    };
+    type Damage = fn(&str, &dyn Fn(&str) -> Vec<u8>) -> Vec<u8>;
+    let damages: [(&str, Damage); 5] = [
+        ("an answer flipped to proven under its tag", |text, flip| {
+            flip(text)
+        }),
+        ("a truncated file", |text, _| {
+            text.as_bytes()[..text.len() / 2].to_vec()
+        }),
+        ("bytes that are not utf-8", |_, _| vec![0xff, 0xfe, 0x7b]),
+        ("an empty file", |_, _| Vec::new()),
+        ("an entry with no tag", |_, _| {
+            br#"{"status":"proven","reason":null,"values":[]}"#.to_vec()
+        }),
+    ];
+    for (what, damage) in damages {
+        for path in entries() {
+            let text = std::fs::read_to_string(&path).unwrap();
+            std::fs::write(&path, damage(&text, &flip)).unwrap();
+        }
+        assert_eq!(
+            report(),
+            json!({"proven": 0, "refuted": 1, "unknown": 0, "cached": 0}),
+            "{what}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_query_the_solver_rejects_is_an_internal_error_11() {
+    // #11 (R-037): a solver that answers `(error ...)` rejected a query the encoder wrote, a
+    // bug of the encoding: U8001 with exit code 3 (`spec/13 §5`), never a verdict. A stand-in
+    // `z3` on the PATH reports the locked version and rejects every query.
+    use std::os::unix::fs::PermissionsExt;
+    let scratch = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("solver-error");
+    let _ = std::fs::remove_dir_all(&scratch);
+    let bin = scratch.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let lock = std::fs::read_to_string(repository().join("verification.lock")).unwrap();
+    let version = lock
+        .lines()
+        .find_map(|line| line.strip_prefix("solver_version"))
+        .and_then(|rest| rest.split('"').nth(1))
+        .unwrap()
+        .to_owned();
+    let staged = bin.join("z3.tmp");
+    std::fs::write(
+        &staged,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"Z3 version {version} - 64 bit\"; exit 0; fi\ncat > /dev/null\necho '(error \"line 1 column 1: unknown constant\")'\n"
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::rename(&staged, bin.join("z3")).unwrap();
+    let root = package(
+        "solver-error",
+        &[(
+            "src/app.una",
+            "module app\n\npub kind Pos = Int where it > 0\n\npub one() -> Pos = 1\n",
+        )],
+    );
+    // The stand-in first, and the system's own `cat` for it to read the query with.
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    let output = Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", scratch.join("home"))
+        .env("PATH", path)
+        .env_remove("UNA_PROOF_KEY")
+        .args(["--json", "check"])
+        .arg(&root)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3), "{}", stdout(&output));
+    let document: Value = serde_json::from_str(stdout(&output)).unwrap();
+    let diagnostics = document["diagnostics"].as_array().unwrap();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(diagnostics[0]["code"], "U8001");
+    let message = diagnostics[0]["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("internal error: obligation ob-")
+            && message.contains("could not be encoded: the solver rejected the query: (error"),
+        "{message}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+#[test]
 fn an_interpolation_names_what_it_cannot_write_and_the_constraint_it_needs() {
     // ADR 0068 D4 and D8: U2001 names the position of the function, through a list, and U2026
     // says that interpolation needs `Eq`, with the repair that writes it.

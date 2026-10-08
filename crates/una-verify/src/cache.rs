@@ -197,4 +197,48 @@ mod tests {
         assert_eq!(get(&mine, &query), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn a_damaged_entry_is_never_an_answer_11() {
+        // #11 (R-037, cache robustness): an entry whose answer changed under its tag, a
+        // truncated file, bytes that are not JSON or not UTF-8, an empty file, and the entry of
+        // another query under this one's name all read as no answer, so the query is solved
+        // again and no verdict is reused.
+        let dir = std::env::temp_dir().join(format!("una-cache-damaged-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mine = cache(&dir, b"0123456789abcdef0123456789abcdef");
+        let refuted = Answer {
+            status: Status::Refuted,
+            reason: None,
+            values: vec!["0".to_owned()],
+        };
+        let query = key("lock", "(check-sat)");
+        put(&mine, &query, &refuted);
+        let file = entry(&dir, &query);
+        let good = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(get(&mine, &query), Some(refuted.clone()));
+        // The answer flipped to `proven` under the tag of the refutation.
+        let mut flipped: serde_json::Value = serde_json::from_str(&good).unwrap();
+        flipped["answer"]["status"] = serde_json::json!("proven");
+        flipped["answer"]["values"] = serde_json::json!([]);
+        let other = key("lock", "(check-sat) (other)");
+        put(&mine, &other, &proven());
+        let foreign = std::fs::read(entry(&dir, &other)).unwrap();
+        let damaged: Vec<(&str, Vec<u8>)> = vec![
+            ("flipped", serde_json::to_vec(&flipped).unwrap()),
+            ("truncated", good.as_bytes()[..good.len() / 2].to_vec()),
+            ("not json", b"proven".to_vec()),
+            ("not utf-8", vec![0xff, 0xfe, 0x7b, 0x22]),
+            ("empty", Vec::new()),
+            ("another query's entry", foreign),
+        ];
+        for (what, bytes) in damaged {
+            std::fs::write(&file, bytes).unwrap();
+            assert_eq!(get(&mine, &query), None, "{what}");
+        }
+        // Once solved again, the answer is stored afresh and reads back.
+        put(&mine, &query, &refuted);
+        assert_eq!(get(&mine, &query), Some(refuted));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

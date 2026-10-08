@@ -1,0 +1,12 @@
+-- test: arguments after the first are labeled with the callee's parameter names, punned or written, and an unlabeled first argument binds the first parameter; none is U2004, U2005 or U2006 (positive twin, #11)
+-- spec: spec/04 §3
+-- expect: ok
+module call_labels_ok
+
+pub minus(a: Int, b: Int) -> Int = a - b
+
+pub labeled(x: Int) -> Int = minus(x, b: 10)
+
+pub punned(a: Int, b: Int) -> Int = minus(a, b)
+
+pub all_labeled(x: Int, y: Int) -> Int = minus(a: y, b: x)

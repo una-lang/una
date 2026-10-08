@@ -1,0 +1,6 @@
+-- test: a package that commits its verification.lock checks at tier 1; a missing lock is U7004 (positive twin, #11)
+-- spec: spec/12 §9
+-- expect: ok
+module main
+
+pub one() -> Int = 1
