@@ -51,11 +51,47 @@ pub struct Checked {
     /// Each resolved name, call or constructor, and where what it names is declared.
     pub definitions: Vec<(Location, Location)>,
     /// Markdown to show over a range: a contract, a type, an obligation's status.
-    pub hovers: Vec<(Location, String)>,
+    pub hovers: Vec<(Location, HoverText)>,
     /// The declarations of each module, for its outline.
     pub symbols: Vec<Symbol>,
     /// A line to show over a function's name: its proof counts, after tier 1.
     pub lenses: Vec<(Location, String)>,
+}
+
+/// The Markdown of a hover: ready, or made when the editor asks for it (ADR 0080). A type's
+/// hover is made on request, so a check does not print every expression's type, of which the
+/// editor shows one at a time.
+#[derive(Clone)]
+pub enum HoverText {
+    /// Text made by the check.
+    Ready(String),
+    /// Text made when the hover is shown, by this function.
+    Lazy(Arc<dyn Fn() -> String + Send + Sync>),
+}
+
+impl HoverText {
+    /// The Markdown.
+    pub fn text(&self) -> String {
+        match self {
+            HoverText::Ready(text) => text.clone(),
+            HoverText::Lazy(make) => make(),
+        }
+    }
+}
+
+impl From<String> for HoverText {
+    fn from(text: String) -> HoverText {
+        HoverText::Ready(text)
+    }
+}
+
+impl std::fmt::Debug for HoverText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HoverText::Ready(text) => f.debug_tuple("Ready").field(text).finish(),
+            HoverText::Lazy(_) => f.write_str("Lazy"),
+        }
+    }
 }
 
 /// A declaration in a module's outline.
@@ -75,7 +111,7 @@ pub struct Symbol {
 #[derive(Default)]
 struct Found {
     definitions: Vec<(Location, PathBuf, Location)>,
-    hovers: Vec<(Location, String)>,
+    hovers: Vec<(Location, HoverText)>,
     symbols: Vec<Symbol>,
     lenses: Vec<(Location, String)>,
 }
@@ -628,12 +664,17 @@ impl<W: Workspace> Server<W> {
         let Some(size) = innermost else {
             return Value::Null;
         };
-        let mut texts: Vec<&str> = Vec::new();
+        // Only the hovers of the innermost range are made, the types among them included
+        // (ADR 0080).
+        let mut texts: Vec<String> = Vec::new();
         let mut range = Value::Null;
         for (at, text) in &found.hovers {
-            if Self::contains(at, position) == Some(size) && !texts.contains(&text.as_str()) {
-                texts.push(text);
-                range = self.range(&file, at);
+            if Self::contains(at, position) == Some(size) {
+                let text = text.text();
+                if !texts.contains(&text) {
+                    texts.push(text);
+                    range = self.range(&file, at);
+                }
             }
         }
         json!({

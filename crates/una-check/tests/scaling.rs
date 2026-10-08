@@ -21,9 +21,9 @@ enum Shape {
 }
 
 /// Checks the #331 program of ten bindings `depth` deep, and returns the label sets, label names
-/// and type nodes made while checking it. With `generic`, the bindings are in a generic body and hold a value
+/// and type nodes made while checking it, and the nodes of the editor index's hover types. With `generic`, the bindings are in a generic body and hold a value
 /// of `T` at their leaves, so every position carries the symbolic label `ℓ_T`.
-fn made_checking(depth: usize, generic: bool, shape: Shape) -> (usize, usize, usize) {
+fn made_checking(depth: usize, generic: bool, shape: Shape) -> (usize, usize, usize, usize) {
     let mut value = String::from(if generic { "p" } else { "1" });
     for level in 0..depth {
         let list = match shape {
@@ -77,7 +77,12 @@ fn made_checking(depth: usize, generic: bool, shape: Shape) -> (usize, usize, us
     let after = una_core::label_counters::made();
     let nodes = una_core::label_counters::nodes_made() - nodes_before;
     assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
-    (after.0 - before.0, after.1 - before.1, nodes)
+    (
+        after.0 - before.0,
+        after.1 - before.1,
+        nodes,
+        checked.index.hover_stats.nodes,
+    )
 }
 
 #[test]
@@ -130,6 +135,16 @@ fn labels_and_type_nodes_made_grow_at_most_as_their_bounds() {
             assert!(
                 large.2 <= 6 * small.2,
                 "{shape:?}: nodes: {small:?} then {large:?}"
+            );
+            // ADR 0080: the editor index copies each shared node of the checker's types once,
+            // and prints none while checking, so its nodes grow as the checker's do.
+            assert!(
+                small.3 > 0,
+                "{shape:?}: the hover counter counts: {small:?}"
+            );
+            assert!(
+                large.3 <= 6 * small.3,
+                "{shape:?}: hover nodes: {small:?} then {large:?}"
             );
         }
     }
