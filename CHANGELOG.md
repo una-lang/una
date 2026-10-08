@@ -17,6 +17,10 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 - **Checking many generic functions is linear in their number** (#375). The least fixpoint of result summaries built each component's callers from every edge and found each function it checked by scanning every declaration, and the language-server index found each type's declaration by a linear search: each was quadratic in the number of functions. They are now one pass over the edges, a map from function to declaration, and a binary search, so a check is O((n + E) log n): 16,000 generic functions take 14 G instructions, from 37 G, and doubling them doubles the work. Outputs are byte-identical.
 
+### Command line
+
+- **A crash of the compiler is an internal compiler error, as `spec/13 §5` says** (#376). A panic in any command, on the main thread or a worker thread (the checker, `una run`, `una test`, `una build`), exited with code 101 and, with `--json`, printed no document. It is now U8001 with exit code 3: one line on stderr in human mode, and one `una.diagnostics/1` document on stdout with `--json`. Rust's own panic message stays on stderr.
+
 ## v0.3.2
 
 A security patch of the Beta, completing v0.3.1's edition 0.1 fixes at their root: edition 0.1 now tells a decision on `T` values apart in every flow, as edition 0.2 always has. Edition 0.2 is unchanged. In edition 0.1, binding a value decided by comparing `T` values to a written annotation that mentions `T` (`let y: T = ...`, `List[T]`, a kind of `T`) is now U4001, as in edition 0.2, even where the program would not leak: leave the annotation out, since inference keeps the decision (`docs/guide/una-for-agents.md` §13, #345).
