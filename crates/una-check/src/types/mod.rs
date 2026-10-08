@@ -765,6 +765,26 @@ pub(crate) fn closest<'n>(
     best.map(|(_, candidate)| candidate)
 }
 
+/// The candidates close enough to `name` to be the intended name, by edit distance within the
+/// limit of [`closest`], each once, in a fixed order: by distance, then bytewise; at most
+/// three, each with its distance. U1001 offers them (#419).
+pub(crate) fn nearest<'n>(
+    name: &str,
+    candidates: impl IntoIterator<Item = &'n str>,
+) -> Vec<(usize, &'n str)> {
+    let limit = (name.chars().count() / 3).clamp(1, 3);
+    let mut close: Vec<(usize, &'n str)> = candidates
+        .into_iter()
+        .filter(|candidate| *candidate != name)
+        .map(|candidate| (edit_distance(name, candidate), candidate))
+        .filter(|(distance, _)| *distance <= limit)
+        .collect();
+    close.sort_unstable();
+    close.dedup();
+    close.truncate(3);
+    close
+}
+
 /// The edit distance between `a` and `b` over scalar values, counting an insertion, a
 /// deletion, a substitution or a transposition of two neighbors as one edit.
 fn edit_distance(a: &str, b: &str) -> usize {
@@ -1025,6 +1045,27 @@ mod tests {
                 "{edition:?}"
             );
         }
+    }
+
+    #[test]
+    fn nearest_names_come_by_distance_then_bytewise_three_at_most() {
+        // #419: U1001's candidates, deterministic whatever the order of the scopes.
+        let scope = ["car", "can", "cap", "cat", "caz", "cart", "zebra"];
+        assert_eq!(
+            nearest("caz", scope),
+            vec![(1, "can"), (1, "cap"), (1, "car")]
+        );
+        let reversed: Vec<&str> = scope.iter().rev().copied().collect();
+        assert_eq!(nearest("caz", reversed), nearest("caz", scope));
+        // The limit grows with the name, a third of its length, from 1 to 3.
+        assert_eq!(nearest("cr", ["car", "cat"]), vec![(1, "car")]);
+        assert_eq!(
+            nearest("totals", ["total", "tots"]),
+            vec![(1, "total"), (2, "tots")]
+        );
+        assert_eq!(nearest("zzzzzzzz", scope), Vec::new());
+        // A repeated candidate counts once, and the name itself is never offered.
+        assert_eq!(nearest("cat", ["cat", "bat", "bat"]), vec![(1, "bat")]);
     }
 
     #[test]

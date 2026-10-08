@@ -451,3 +451,85 @@ fn a_labeled_value_in_a_prelude_kind_is_told_of_a_policy_and_of_key_name() {
         ]
     );
 }
+
+/// The code and the repairs of each diagnostic of `una --json check`, as (code, [(description,
+/// replacement)]).
+/// A diagnostic's code and its repairs, as (description, replacement).
+type Repairs = (String, Vec<(String, Option<String>)>);
+
+fn repairs_of(root: &Path) -> Vec<Repairs> {
+    diagnostics(root)
+        .iter()
+        .map(|d| {
+            let repairs = d["repairs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| {
+                    (
+                        r["description"].as_str().unwrap().to_owned(),
+                        r["edit"]["replacement"].as_str().map(str::to_owned),
+                    )
+                })
+                .collect();
+            (d["code"].as_str().unwrap().to_owned(), repairs)
+        })
+        .collect()
+}
+
+#[test]
+fn an_unknown_name_close_to_one_name_in_scope_is_offered_it_as_advice_419() {
+    // #419 (N-64): U1001 offers the closest name in scope, for a value and for a type, as
+    // advice without an edit, even when it is the only close one: a typo's fix is a guess, and
+    // an edit applied unread could bind another name that checks (R-1, #125).
+    let root = package(
+        "unknown-name-one",
+        "0.2",
+        "module m\n\nshow(n: Txt) -> Text = \"{n}\"\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let total = 3\n  @console.print(show(\"{totl}\"))\n",
+    );
+    assert_eq!(
+        repairs_of(&root),
+        [
+            (
+                "U1001".to_owned(),
+                vec![("names in scope close to `Txt`: `Text`".to_owned(), None)]
+            ),
+            (
+                "U1001".to_owned(),
+                vec![("names in scope close to `totl`: `total`".to_owned(), None)]
+            ),
+        ]
+    );
+}
+
+#[test]
+fn an_unknown_name_close_to_several_lists_three_in_a_fixed_order_419() {
+    // #419: several candidates at the same distance are listed by distance, then bytewise,
+    // three at most, and none is written for the agent.
+    let root = package(
+        "unknown-name-several",
+        "0.2",
+        "module m\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let cat = 1\n  let car = 2\n  let cap = 3\n  let can = 4\n  @console.print(\"{cat + car + cap + can + caz}\")\n",
+    );
+    assert_eq!(
+        repairs_of(&root),
+        [(
+            "U1001".to_owned(),
+            vec![(
+                "names in scope close to `caz`: `can`, `cap`, `car`".to_owned(),
+                None
+            )]
+        )]
+    );
+}
+
+#[test]
+fn an_unknown_name_far_from_every_name_in_scope_has_no_repair_419() {
+    // #419: nothing is offered when no name in scope is close.
+    let root = package(
+        "unknown-name-none",
+        "0.2",
+        "module m\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  @console.print(\"{zzzzzzzz}\")\n",
+    );
+    assert_eq!(repairs_of(&root), [("U1001".to_owned(), Vec::new())]);
+}
