@@ -10,5 +10,9 @@ publish.workspace = true
 una-diag.workspace = true
 una-syntax.workspace = true
 
+[features]
+# Counts the sets and names that labels make, for the scaling tests of ADR 0077.
+counters = []
+
 [lints]
 workspace = true
