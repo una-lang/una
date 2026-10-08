@@ -1,0 +1,33 @@
+module tally
+
+--- The counts with one more vote for `name`: the map gains at most the one key `name`, and never loses one.
+pub add_vote(counts: Map[Text, Int], name: Text) -> Map[Text, Int]
+  ensures result.len >= 1
+  ensures result.len >= counts.len
+  ensures result.len <= counts.len + 1
+=
+  let seen = counts.get(key: name)
+    if none use 0
+  let edit next = counts
+  edit next.set(key: name, value: seen + 1)
+  next
+
+--- How many votes each candidate received.
+pub tally(votes: List[Text]) -> Map[Text, Int]
+=
+  let edit counts: Map[Text, Int] = empty_map()
+  for name in votes
+    counts = add_vote(counts, name: name)
+  counts
+
+example "three votes for two candidates"
+  do tally(["ana", "bo", "ana"])
+  expect result.get(key: "ana") == Some(2) and result.get(key: "bo") == Some(1) and result.len == 2
+
+example "no votes"
+  do tally([])
+  expect result.len == 0
+
+example "a first vote adds one key"
+  do add_vote(empty_map(), name: "ana")
+  expect result.get(key: "ana") == Some(1) and result.len == 1

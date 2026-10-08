@@ -4,6 +4,10 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ## Unreleased
 
+### Documentation
+
+- **A fresh agent's dogfood pass on the v0.3.3 archive** (#418, N-64), in `docs/reviews/v0.3.4/dogfood-fresh.md`: Opus 5.5 subagents with no knowledge of Una wrote the same five programs as #402 from the archive alone. With the guides that #410 ships, 7 `una check` runs, twice, against the 12 of #402; without them, 11 to 23, depending on how the agent found the library. Nine new findings go to #419.
+
 ### Performance
 
 - **Native executables no longer carry the `una explain` texts** (#413, N-66). The runtime linked `una-diag`, whose code table held all 83 explain texts by `include_str!`, so every executable `una build` made carried them, unused: 75,708 bytes of text. They now live in the crate `una-explain`, which only the command line links. `examples/hello` drops from 1,430,552 to 1,347,992 bytes (82,560 bytes, 5.8 %). `una explain` prints the same text for every code.

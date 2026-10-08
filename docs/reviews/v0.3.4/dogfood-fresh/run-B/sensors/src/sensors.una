@@ -1,0 +1,51 @@
+module sensors
+
+--- Why a sensor gave no reading.
+pub kind SensorError = Offline(sensor: Int) | Garbled(sensor: Int)
+
+--- A bank of sensors, each read by its number.
+pub capability SensorBank
+  op read(sensor: Int) -> Int
+    fails SensorError
+
+--- The readings of `sensors`, in their order, read concurrently; fails with the failure of the first sensor in list order that fails.
+pub read_all(sensors: List[Int]) -> List[Int]
+  uses @bank: SensorBank[read]
+  fails SensorError
+=
+  let readings = together for sensor in sensors
+    @bank.read(sensor)
+      if error pass
+  readings
+
+--- How many of `sensors` answered, read concurrently.
+pub count_answered(sensors: List[Int]) -> Int
+  uses @bank: SensorBank[read]
+=
+  let answers = together for sensor in sensors
+    attempt @bank.read(sensor)
+  answers.filter(keep: fn(answer) -> answer.is_ok()).len
+
+--- A stand-in bank: sensor 3 is offline, sensor 5 is garbled, every other sensor reads ten times its number.
+handler stand_in_bank() for SensorBank
+  op read(sensor) = if sensor == 3 then fail Offline(sensor: sensor) else if sensor == 5 then fail Garbled(sensor: sensor) else sensor * 10
+
+example "all sensors answer"
+  given @bank = stand_in_bank()
+  do read_all([1, 2, 4])
+  expect result == [10, 20, 40]
+
+example "the first failure in list order wins"
+  given @bank = stand_in_bank()
+  do attempt read_all([1, 3, 2, 5])
+  expect result == Err(Offline(sensor: 3))
+
+example "the first failure in list order wins, whichever sensor it is"
+  given @bank = stand_in_bank()
+  do attempt read_all([5, 1, 3])
+  expect result == Err(Garbled(sensor: 5))
+
+example "three of four sensors answer"
+  given @bank = stand_in_bank()
+  do count_answered([1, 2, 3, 4])
+  expect result == 3
