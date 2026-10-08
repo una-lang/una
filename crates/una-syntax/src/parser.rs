@@ -2628,10 +2628,32 @@ impl<'a> Parser<'a> {
                     expr.span = start.to(expr.span);
                     Ok(expr)
                 }
-                _ => Err(self.report(
-                    start,
-                    "`edit` marks an argument, as in `f(edit x)`, or the receiver of a method call, as in `edit total.record(e)`".to_owned(),
-                )),
+                kind => {
+                    let mut error = SyntaxError::new(
+                        Code::U0101,
+                        start,
+                        "`edit` marks an argument, as in `f(edit x)`, or the receiver of a method call, as in `edit total.record(e)`",
+                    );
+                    // Before a call, the edit moves the marker to its first argument, as a
+                    // receiver's marker stands for the first parameter (#403, D-8).
+                    if let ExprKind::Call { args, .. } = kind
+                        && let Some(first) = args.first()
+                        && first.marker.is_none()
+                    {
+                        let at = first.span.start;
+                        let replacement = format!(
+                            "{}edit {}",
+                            self.text.get(expr.span.start..at).unwrap_or(""),
+                            self.text.get(at..expr.span.end).unwrap_or("")
+                        );
+                        error = error.with_edit(
+                            "mark the first argument instead",
+                            start.to(expr.span),
+                            replacement,
+                        );
+                    }
+                    Err(self.report_error(error))
+                }
             };
         }
         let outer = self.nesting;

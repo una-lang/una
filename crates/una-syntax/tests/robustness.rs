@@ -149,12 +149,13 @@ fn nesting_up_to_the_limit_parses() {
 #[test]
 fn text_nested_in_interpolations_is_bounded() {
     // A literal nested in an interpolation is U0006 and has no interpolation of
-    // its own, so `{` inside it is text.
+    // its own, so `{` inside it is text. Each interpolation starts with an expression: a
+    // `{` followed by a quote is a literal brace (#403).
     let depth = 5_000;
     let text = format!(
         "module t\n\nf() -> Text = \"{}\"{}\n",
-        "{\"".repeat(depth),
-        "}\"".repeat(depth)
+        "{f(\"".repeat(depth),
+        "\")}\"".repeat(depth)
     );
     let (errors, _) = check(&text);
     assert!(

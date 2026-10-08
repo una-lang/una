@@ -107,7 +107,7 @@ The new rows are in `spec/17 §9`. (v0.2, ADR 0065.) In edition `0.2`, `together
 | Literal | Syntax | Notes |
 | --- | --- | --- |
 | Integer | `0`, `42`, `1_000_000` | Decimal only. `_` only between digits. No leading zeros except `0` itself. Negative numbers use unary `-`. Values are unbounded (ADR 0004). A leading zero, or a doubled, leading or trailing `_`, is a malformed literal (U0007, ADR 0017). |
-| Text | `"..."` | Single line. Escapes: `\"`, `\\`, `\n`, `\t`, `\{`, `\}`, `\u{H..H}` (1 to 6 hex digits, valid scalar value). Unknown escape: U0005. Unterminated: U0004. A `}` outside an interpolation MUST be escaped as `\}` (U0007, ADR 0017). |
+| Text | `"..."` | Single line. Escapes: `\"`, `\\`, `\n`, `\t`, `\{`, `\}`, `\u{H..H}` (1 to 6 hex digits, valid scalar value). Unknown escape: U0005. Unterminated: U0004. A `}` outside an interpolation MUST be escaped as `\}` (U0007, ADR 0017). A `{` that no expression can follow, a quote, a backslash or a `}` after any blanks, is a literal brace written without its escape: U0007, with an edit to `\{`, and the literal continues (#403). |
 | Interpolation | `"seats {e.remaining}"` | `{` expr `}` inside a text literal. The expression MUST NOT contain a text literal (U0006). A missing `}` leaves the literal unterminated (U0004 at its opening quote, ADR 0017). |
 | Boolean | `true`, `false` | |
 | Unit | `unit` | The only value of type `Unit`. |
