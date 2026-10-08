@@ -1,0 +1,11 @@
+trusted module release
+
+--- Lowers the length of the user name to public, to greet without echoing the name.
+pub policy name_length
+  from internal Text
+  to public Int
+  via length_of
+  purpose "say how long the user's name is without printing it"
+  owner greet_owner
+
+length_of(name: internal Text) -> public Int = name.len

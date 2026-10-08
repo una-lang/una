@@ -1,0 +1,11 @@
+trusted module token_policy
+
+--- Lets the inventory API token leave the program, only as the value of an HTTP header.
+pub policy api_token_header
+  from secret Text
+  to internal Text
+  via as_header_value
+  purpose "send the inventory API token in the X-Api-Token header of its requests"
+  owner inventory_owner
+
+as_header_value(token: secret Text) -> internal Text = token
