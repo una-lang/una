@@ -855,6 +855,62 @@ fn contract_and_report_show_result_summaries() {
 }
 
 #[test]
+fn report_lists_handlers_with_uses_14() {
+    // ADR 0081 (#14): `handler_authority` lists every handler with `uses`, after `authority`,
+    // which keeps listing functions only; a host capability only a handler uses counts in
+    // `tcb.host_capabilities`.
+    let root = scratch("report-handlers");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        "[package]\nname = \"h\"\nversion = \"0.1.0\"\nedition = \"0.1\"\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../verification.lock"),
+        root.join("verification.lock"),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/h.una"),
+        "module h\n\npub capability Audit\n  op record(line: Text) -> Unit\n\npub handler printed() for Audit\n  uses @console: Console[print]\n  op record(line) = @console.print(line)\n\nhandler clocked() for Audit\n  uses @clock: Clock[now]\n  op record(line) =\n    let t = @clock.now()\n    unit\n\npub handler silent() for Audit\n  op record(line) = unit\n\npub log(line: Text) -> Unit\n  uses @audit: Audit[record]\n=\n  @audit.record(line)\n",
+    )
+    .unwrap();
+    let report = una_in(&root, &["report", "--json", "."]);
+    let document: serde_json::Value = serde_json::from_str(stdout(&report)).unwrap();
+    assert_eq!(
+        document["handler_authority"],
+        serde_json::json!([
+            {"handler": "h.clocked", "capability": "h.Audit", "public": false, "uses": ["@clock: Clock[now]"]},
+            {"handler": "h.printed", "capability": "h.Audit", "public": true, "uses": ["@console: Console[print]"]}
+        ])
+    );
+    assert_eq!(
+        document["authority"],
+        serde_json::json!([
+            {"function": "h.log", "public": true, "uses": ["@audit: Audit[record]"], "inferred": false}
+        ])
+    );
+    assert_eq!(
+        document["tcb"]["host_capabilities"],
+        serde_json::json!(["Clock", "Console"])
+    );
+    // The key comes right after `authority`, as `spec/13 §6` orders them.
+    let text = stdout(&report);
+    let at = |key: &str| text.find(&format!("\"{key}\":")).unwrap();
+    assert!(
+        at("authority") < at("handler_authority") && at("handler_authority") < at("information")
+    );
+    let human = una_in(&root, &["report", "."]);
+    assert!(
+        stdout(&human).contains("handler authority:\n  h.clocked for h.Audit (private): @clock: Clock[now]\n  h.printed for h.Audit (pub): @console: Console[print]\n"),
+        "{}",
+        stdout(&human)
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
 fn version_names_the_editions_and_the_pinned_z3() {
     // #305: `una --version`, with no commit hash, and its `una.version/1` document.
     let version = env!("CARGO_PKG_VERSION");
