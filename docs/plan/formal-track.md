@@ -1,6 +1,6 @@
 # The formal track: a plan for mechanizing Una Core
 
-- Status: Proposal, for the owner's decision (N-67)
+- Status: Approved: M0 to M2 (Leonardo, 2026-10-08, written), with the go/no-go at the spike review of M1; M3 and later are decided then
 - Date: 2026-10-08
 - Issue: #46, the Lean 4 mechanization of Una Core (`spec/10 §10`, theorems T1 to T7)
 - Author: Claude (Una-2), at the coordinator's request
