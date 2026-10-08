@@ -58,6 +58,7 @@ A security patch of the Beta (S-13: executables and releases no longer carry pat
 - **A dogfood pass of edition 0.2 from the guide alone** (#402, N-62), in `docs/reviews/v0.3.3/dogfood.md`: five programs written as a fresh agent from the agents' guide, the syntax reference and `una explain`, with every diagnostic logged, and eight findings ranked by what they cost an agent (#403, #404).
 - **Deferred reviews of ADR 0054, the U0103 rename and the precondition repair** (#124, #125, #126), in `docs/reviews/v0.3.3/repairs-and-0054.md`: the re-solve of ADR 0054 never gives `proven`; four findings, none unsound by itself, are triaged there.
 - **Constructor argument order and inline lambdas at operations** (ADR 0081, #8, #85). `spec/04 §3` rule 5 says a constructor's arguments are evaluated in the order its kind declares its fields, which canonical form gives them, so `una fmt` cannot change what a program does (R-023). `spec/07 §7` rule 4 says an inline lambda given as an operation argument is typed against the declared parameter type, so `@p.grab(fn() -> pin)` is U4001 where the same lambda bound with `let` is accepted; two conformance cases record both forms (R3-N1). Nothing in the implementation changes. ADR 0081 also decides #14, the report's handlers, which follows.
+- **Proposed: ADR 0078, redaction across `una test`, counterexamples and traces** (#9). Options and a recommendation, for Leonardo; no behavior changes.
 
 ### Performance
 
