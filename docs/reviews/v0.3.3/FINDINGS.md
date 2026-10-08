@@ -65,6 +65,10 @@ No leak was found, so there is no S-number.
 - Guard both checks with `self.labels()`.
 - Consider routing them through `below`, so that symbolic labels and `⊤` are treated as in every other flow.
 
+### Design note: a `via` may return a pure function (no finding)
+
+A policy's `to` may be a function type. In `to public fn(Int) -> Int via offset_by` with `offset_by(s) = fn(x) -> x + s`, the lambda's body is part of the `via` body, so it is exempt from label checks, and it runs later, each time the caller calls the function. This declassifies no more than `to public Int` returning `s`. The policy is listed in the build report, its code is the TCB, and a function with `uses` or `fails` cannot be returned (U3006), so only pure computation of the captured value escapes. The coordinator ruled it a design note, with no ADR. It is pinned by the conformance case `security/via_exemption_body_only` (#384), which also shows that the exemption reaches only `via` bodies.
+
 ### Observations: redaction differs between outputs (outside the model, reported as asked)
 
 - **O-1 (known, #9).** `una test` prints the result of a `do` line whose *type* is labeled, for example `secret Int` from `reveal(21)`, in clear, in `result.value` and in the failure `reason`. Yet inside the same output, a kind's field declared `secret` is `<redacted:secret>`. Runtime traces redact by static argument labels (spec/11 §5).
