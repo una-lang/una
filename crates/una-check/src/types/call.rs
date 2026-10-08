@@ -1112,7 +1112,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 op.span,
                 format!(
                     "capability `{}` has no operation `{op_name}`",
-                    capability.name
+                    self.env.cap_def_name(&capability)
                 ),
             );
             if let Some(close) = closest(op_name, names) {
@@ -1134,7 +1134,10 @@ impl<'a> Checker<'_, 'a, '_> {
                 },
             );
         }
-        let callee = format!("operation `{}.{op_name}`", capability.name);
+        let callee = format!(
+            "operation `{}.{op_name}`",
+            self.env.cap_def_name(&capability)
+        );
         let checked = self.arguments(
             &callee,
             &def.params,

@@ -339,27 +339,100 @@ impl<'a> Parser<'a> {
 
     /// U0101 at the current token: "unexpected `<found>`, expected `<expected>`".
     fn unexpected(&mut self, expected: &str) -> Stop {
+        let message = self.unexpected_message(expected);
+        self.report(self.span(), message)
+    }
+
+    /// "unexpected …, expected …", or, when the token is part of a number written as Una does
+    /// not write numbers, what that number is (#12, review R-045).
+    fn unexpected_message(&self, expected: &str) -> String {
+        if let Some(literal) = self.literal_hint() {
+            return literal;
+        }
         let found = match self.peek() {
             TokenKind::Keyword(keyword) => format!("keyword `{}`", keyword.as_str()),
             kind => kind.describe(self.interner),
         };
-        self.report(
-            self.span(),
-            format!("unexpected {found}, expected {expected}"),
-        )
+        format!("unexpected {found}, expected {expected}")
+    }
+
+    /// When the current token continues an integer literal with no space between them, as
+    /// `x1F` does in `0x1F`, `e5` in `1e5` and `14` in `3.14`: the message naming that literal.
+    /// D-016 keeps such a token a token of its own, and U0101 at it.
+    fn literal_hint(&self) -> Option<String> {
+        let at = |offset: usize| {
+            self.pos
+                .checked_sub(offset)
+                .and_then(|i| self.tokens.get(i))
+        };
+        let current = self.tokens.get(self.pos)?;
+        let touches = |a: &Token, b: &Token| a.span.end == b.span.start;
+        let is_name = |token: &Token| {
+            matches!(
+                token.kind,
+                TokenKind::LowerIdent(_) | TokenKind::UpperIdent(_) | TokenKind::Reserved(_)
+            )
+        };
+        let text = |token: &Token| {
+            self.text
+                .get(token.span.start..token.span.end)
+                .unwrap_or("")
+        };
+        // Where the literal starts: the integer the current token touches, through a `.` for a
+        // fraction.
+        let (start, what) = match (at(2), at(1)) {
+            (Some(int), Some(dot))
+                if matches!(int.kind, TokenKind::Int(_))
+                    && matches!(dot.kind, TokenKind::Dot)
+                    && touches(int, dot)
+                    && touches(dot, current)
+                    && matches!(current.kind, TokenKind::Int(_)) =>
+            {
+                (int, "a fractional literal")
+            }
+            (_, Some(int))
+                if matches!(int.kind, TokenKind::Int(_))
+                    && touches(int, current)
+                    && is_name(current) =>
+            {
+                let digits = text(int);
+                let rest = text(current);
+                let mut chars = rest.chars();
+                let first = chars.next()?;
+                let base = match first.to_ascii_lowercase() {
+                    'x' if digits == "0" => "a hexadecimal literal",
+                    'b' if digits == "0" => "a binary literal",
+                    'o' if digits == "0" => "an octal literal",
+                    'e' if chars.next().is_some_and(|c| c.is_ascii_digit()) => {
+                        "a literal with an exponent"
+                    }
+                    _ => return None,
+                };
+                (int, base)
+            }
+            _ => return None,
+        };
+        // The literal runs on through every token that touches the one before it and could
+        // be part of a number: digits, names, `.`.
+        let mut end = self.pos;
+        while let (Some(this), Some(next)) = (self.tokens.get(end), self.tokens.get(end + 1)) {
+            let numeric = matches!(next.kind, TokenKind::Int(_) | TokenKind::Dot) || is_name(next);
+            if !touches(this, next) || !numeric {
+                break;
+            }
+            end += 1;
+        }
+        let last = self.tokens.get(end)?;
+        let literal = self.text.get(start.span.start..last.span.end)?;
+        Some(format!(
+            "`{literal}` is {what}; Una's integer literals are decimal"
+        ))
     }
 
     /// [`Parser::unexpected`], with `advice` as a repair without an edit (issue #75).
     fn unexpected_with(&mut self, expected: &str, advice: impl Into<String>) -> Stop {
-        let found = match self.peek() {
-            TokenKind::Keyword(keyword) => format!("keyword `{}`", keyword.as_str()),
-            kind => kind.describe(self.interner),
-        };
-        let mut error = SyntaxError::new(
-            Code::U0101,
-            self.span(),
-            format!("unexpected {found}, expected {expected}"),
-        );
+        let message = self.unexpected_message(expected);
+        let mut error = SyntaxError::new(Code::U0101, self.span(), message);
         error.repairs.push(SyntaxRepair {
             description: advice.into(),
             edit: None,

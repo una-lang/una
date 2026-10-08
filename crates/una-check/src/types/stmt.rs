@@ -949,9 +949,10 @@ impl<'a> Checker<'_, 'a, '_> {
                         && !covered.is_empty()
                         && covered.iter().all(Option::is_some)
                     {
-                        let kind = self
-                            .sum_of(&scrutinee)
-                            .map_or("?", |(kind, _)| self.env.kind_name(kind));
+                        let kind = self.sum_of(&scrutinee).map_or_else(
+                            || "?".to_owned(),
+                            |(kind, _)| self.env.kind_display(kind),
+                        );
                         self.report.error(
                             Code::U2008,
                             pattern,
