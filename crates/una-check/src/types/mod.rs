@@ -874,6 +874,89 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_engines_table_of_prelude_kinds_is_the_prelude_s_declarations() {
+        // #415: the interpreter names, and the native backend describes, the fields of the
+        // prelude's kinds that Core does not declare by `una_core::prelude_variants`. It must
+        // be what the prelude declares: each variant, its fields, and each field's type, a
+        // type parameter of the kind by position or `Int`, with no label.
+        use una_core::PreludeField;
+        use una_syntax::ast::{DeclKind, Field, KindBody, TypeCore};
+        let v0_2 = format!("{}\n{PRELUDE_0_2}", of_prelude());
+        let mut sources = SourceDb::new();
+        let mut interner = Interner::new();
+        let id = sources.add("prelude", v0_2.as_bytes());
+        let lexed = lex_in(sources.file(id), id, &mut interner, KeywordSet::V0_2);
+        let parsed = parse(&lexed, id, &interner);
+        let mut seen = Vec::new();
+        for decl in &parsed.file.decls {
+            let DeclKind::Kind(kind) = &decl.kind else {
+                continue;
+            };
+            let name = interner.resolve(kind.name.name);
+            let Some(table) = una_core::prelude_variants(name) else {
+                continue;
+            };
+            seen.push(name.to_owned());
+            let params: Vec<&str> = kind
+                .params
+                .iter()
+                .map(|p| interner.resolve(p.name))
+                .collect();
+            let field = |field: &Field| -> (String, Option<PreludeField>) {
+                assert!(field.ty.label.is_none(), "`{name}` declares a label");
+                let of = match &field.ty.core {
+                    TypeCore::Named { name: ty, args } if args.is_empty() => {
+                        let ty = interner.resolve(ty.name);
+                        match params.iter().position(|p| *p == ty) {
+                            Some(position) => Some(PreludeField::Arg(position)),
+                            None => (ty == "Int").then_some(PreludeField::Int),
+                        }
+                    }
+                    _ => None,
+                };
+                (interner.resolve(field.name.name).to_owned(), of)
+            };
+            let declared: Vec<(String, Vec<(String, Option<PreludeField>)>)> = match &kind.body {
+                KindBody::Sum(variants) => variants
+                    .iter()
+                    .map(|v| {
+                        let fields = v.fields.iter().map(field).collect();
+                        (interner.resolve(v.name.name).to_owned(), fields)
+                    })
+                    .collect(),
+                KindBody::Record(fields) => {
+                    vec![(name.to_owned(), fields.iter().map(field).collect())]
+                }
+                KindBody::Alias { .. } => panic!("`{name}` is an alias"),
+            };
+            let tabled: Vec<(String, Vec<(String, Option<PreludeField>)>)> = table
+                .iter()
+                .map(|(variant, fields)| {
+                    let fields = fields
+                        .iter()
+                        .map(|(field, of)| ((*field).to_owned(), Some(*of)))
+                        .collect();
+                    ((*variant).to_owned(), fields)
+                })
+                .collect();
+            assert_eq!(tabled, declared, "`{name}`");
+        }
+        let mut expected: Vec<String> = una_core::PRELUDE_ENGINE_KINDS
+            .iter()
+            .filter(|kind| !["List", "Map"].contains(kind))
+            .map(|kind| (*kind).to_owned())
+            .collect();
+        expected.sort();
+        seen.sort();
+        assert_eq!(
+            seen, expected,
+            "every kind of the table is declared in the prelude"
+        );
+        assert!(una_core::prelude_variants("List").is_none());
+        assert!(una_core::prelude_variants("Map").is_none());
+    }
+
     /// The diagnostics of the standard modules of `edition`, checked as a package's are.
     fn standard_diagnostics(edition: Edition) -> Vec<String> {
         let standard = Standard::load(edition);

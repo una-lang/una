@@ -51,6 +51,39 @@ pub enum Type {
     },
 }
 
+impl Type {
+    /// The join of the labels at every position of the type that holds data: its own label,
+    /// and its type arguments' deeply, the elements of a list or a map included. A function
+    /// type holds no data but itself. The interpreter and the native backend redact the values
+    /// of a trace, and the fields of a kind, by it (`spec/11 §5`); one definition keeps their
+    /// traces alike (#415).
+    pub fn deep_label(&self) -> Label {
+        match self {
+            Type::Base { base, label, .. } => match base {
+                Base::Named { args, .. } => args
+                    .iter()
+                    .fold(label.clone(), |acc, arg| acc.join(&arg.deep_label())),
+                _ => label.clone(),
+            },
+            Type::Fn { label, .. } => label.clone(),
+        }
+    }
+
+    /// Whether the type is or holds a type parameter, or a type that inference left open,
+    /// outside function types: its label is known only at run time, so U6001 does not show a
+    /// field of such a type (`spec/04 §8`).
+    pub fn has_param(&self) -> bool {
+        match self {
+            Type::Base { base, .. } => match base {
+                Base::Param(_) | Base::Unknown => true,
+                Base::Named { args, .. } => args.iter().any(Type::has_param),
+                _ => false,
+            },
+            Type::Fn { .. } => false,
+        }
+    }
+}
+
 /// A fixed-width integer type of edition `0.2` (`spec/18 §1`, ADR 0057).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum IntType {
@@ -1194,3 +1227,42 @@ pub const PRELUDE_ENGINE_KINDS: [&str; 8] = [
     "KeyError",
     "ParseError",
 ];
+
+/// The type of a field of a variant of a kind of [`PRELUDE_ENGINE_KINDS`]: one of the kind's
+/// type arguments, by position, or `Int`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreludeField {
+    /// The type argument at this position.
+    Arg(usize),
+    /// `Int`.
+    Int,
+}
+
+/// A variant of a kind of [`PRELUDE_ENGINE_KINDS`]: its name, and the names and types of its
+/// fields, in order.
+pub type PreludeVariant = (&'static str, &'static [(&'static str, PreludeField)]);
+
+/// The variants of a kind of [`PRELUDE_ENGINE_KINDS`] that holds data, in the order the
+/// prelude declares them (`spec/14 §1`, `spec/21 §2`, `spec/22 §4`). The interpreter names the
+/// fields of these values by it and the native backend describes them by it, so that a trace
+/// shows them alike (#415). None of their fields declares a label: the label of what they hold
+/// is their type arguments'. `None` for the collections, which are not data, and any other name.
+pub fn prelude_variants(kind: &str) -> Option<&'static [PreludeVariant]> {
+    use PreludeField::{Arg, Int};
+    match kind {
+        "Option" => Some(&[("Some", &[("value", Arg(0))]), ("None", &[])]),
+        "Result" => Some(&[
+            ("Ok", &[("value", Arg(0))]),
+            ("Err", &[("failure", Arg(1))]),
+        ]),
+        "Entry" => Some(&[("Entry", &[("key", Arg(0)), ("value", Arg(1))])]),
+        "FileError" => Some(&[("NotFound", &[]), ("Denied", &[]), ("Io", &[])]),
+        "KeyError" => Some(&[("UnknownKey", &[])]),
+        "ParseError" => Some(&[
+            ("Empty", &[]),
+            ("NotADigit", &[("at", Int)]),
+            ("NoDigits", &[]),
+        ]),
+        _ => None,
+    }
+}

@@ -1332,7 +1332,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
         }
         let result = serde_json::json!({
             "type": self.emitter.types.of(ty),
-            "redacted": redaction(&describe::deep_label(ty)),
+            "redacted": redaction(&ty.deep_label()),
         });
         let error = match (&declared.fails, &declared.error) {
             (None, _) => None,
