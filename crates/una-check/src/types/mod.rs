@@ -834,6 +834,46 @@ mod tests {
         }
     }
 
+    #[test]
+    fn every_kind_of_the_prelude_is_declared_in_core_or_known_to_every_engine() {
+        // #407: the verifier and the native backend stop on a `Named` kind they cannot
+        // resolve, so a sum or record of the prelude that Core does not declare must be one
+        // each engine knows itself. A new kind of the prelude fails here until it is one or
+        // the other, never both.
+        use una_syntax::ast::{DeclKind, KindBody};
+        let v0_2 = format!("{}\n{PRELUDE_0_2}", of_prelude());
+        let mut kinds = Vec::new();
+        for text in [PRELUDE, v0_2.as_str()] {
+            let mut sources = SourceDb::new();
+            let mut interner = Interner::new();
+            let id = sources.add("prelude", text.as_bytes());
+            let lexed = lex_in(sources.file(id), id, &mut interner, KeywordSet::V0_2);
+            let parsed = parse(&lexed, id, &interner);
+            for decl in &parsed.file.decls {
+                if let DeclKind::Kind(kind) = &decl.kind
+                    && !matches!(kind.body, KindBody::Alias { .. })
+                {
+                    kinds.push(interner.resolve(kind.name.name).to_owned());
+                }
+            }
+        }
+        assert!(kinds.contains(&"Entry".to_owned()), "{kinds:?}");
+        for kind in &kinds {
+            let core = elab::PRELUDE_CORE_KINDS.contains(&kind.as_str());
+            let engine = una_core::PRELUDE_ENGINE_KINDS.contains(&kind.as_str());
+            assert!(
+                core != engine,
+                "`{kind}`: declared in Core {core}, known to the engines {engine}"
+            );
+        }
+        for kind in una_core::PRELUDE_ENGINE_KINDS {
+            assert!(
+                kinds.iter().any(|k| k == kind) || ["List", "Map"].contains(&kind),
+                "`{kind}` is not a kind of the prelude"
+            );
+        }
+    }
+
     /// The diagnostics of the standard modules of `edition`, checked as a package's are.
     fn standard_diagnostics(edition: Edition) -> Vec<String> {
         let standard = Standard::load(edition);

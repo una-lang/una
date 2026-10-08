@@ -294,11 +294,6 @@ fn is_prelude(module: &str) -> bool {
     module == una_core::PRELUDE_MODULE
 }
 
-/// The kinds of the prelude that Core does not declare and that have no table here: the
-/// collections, a map's `Entry`, and `ParseError`, whose values the verifier does not look
-/// into. Any other kind without a declaration is a bug of elaboration (#407).
-const PRELUDE_OPAQUE: [&str; 4] = ["List", "Map", "Entry", "ParseError"];
-
 /// The variants of the prelude's kinds, which the program does not declare: names and field
 /// counts (`spec/14 §1, §3`).
 fn prelude_variants(kind: &str) -> Option<&'static [(&'static str, &'static [&'static str])]> {
@@ -446,7 +441,9 @@ impl<'p> Index<'p> {
             return false;
         }
         let prelude = is_prelude(module);
-        if !(prelude && (prelude_variants(name).is_some() || PRELUDE_OPAQUE.contains(&name))) {
+        // The kinds Core does not declare: `prelude_variants` has the variants of some, and
+        // the verifier does not look into the others' values.
+        if !(prelude && una_core::PRELUDE_ENGINE_KINDS.contains(&name)) {
             self.unresolved
                 .borrow_mut()
                 .insert((module.to_owned(), name.to_owned()));

@@ -1747,3 +1747,53 @@ fn a_kind_core_does_not_declare_stops_tier_1() {
         })
     );
 }
+
+#[test]
+fn every_family_of_the_prelude_verifies_without_an_internal_error() {
+    // #407: the verifier stops on a kind it cannot resolve, so a program that inspects each
+    // family of the prelude's kinds under a contract verifies cleanly at tier 1.
+    let families: [(&str, &str); 7] = [
+        (
+            "map",
+            "module family\n\npub frequent(counts: Map[Text, Int]) -> Int\n  ensures result >= 0\n=\n  let kept = counts.entries().filter(keep: fn(e) -> e.value >= 1)\n  kept.len\n",
+        ),
+        (
+            "json",
+            "module family\n\npub port(text: Text) -> Int\n  ensures result >= 0\n=\n  let r = attempt text.parse_json()\n  when r\n    is Ok(doc) ->\n      when doc\n        is Object(fields) -> 1\n        is Number(n) -> 2\n        else -> 0\n    is Err(e) ->\n      when e\n        is Syntax(at) -> 3\n        else -> 4\n",
+        ),
+        (
+            "text",
+            "module family\n\npub leading(field: Text) -> Int\n  ensures result >= 0\n=\n  let r = attempt field.parse_int()\n  when r\n    is Ok(n) -> if n >= 0 then n else 0\n    is Err(e) ->\n      when e\n        is NotADigit(at) -> 1\n        else -> 0\n",
+        ),
+        (
+            "http",
+            "module family\n\npub status(city: Text) -> internal Int\n  ensures result >= 0\n  uses @http: Http[get]\n=\n  let accept = Header(name: \"Accept\", value: \"application/json\")\n  let r = attempt @http.get(\"https://api.example.com/v1/now?city={city}\", headers: [accept], key_name: None)\n  when r\n    is Ok(response) -> if response.status >= 0 then response.status else 0\n    is Err(e) ->\n      when e\n        is Denied -> 1\n        else -> 0\n",
+        ),
+        (
+            "files",
+            "module family\n\npub size(path: Text) -> internal Int\n  ensures result >= 0\n  uses @files: Files[read]\n=\n  let r = attempt @files.read(path)\n  when r\n    is Ok(text) -> text.len\n    is Err(e) ->\n      when e\n        is NotFound -> 1\n        else -> 0\n",
+        ),
+        (
+            "keys",
+            "module family\n\npub signed(name: Text) -> internal Int\n  ensures result >= 0\n  uses @keys: Keys[hmac]\n=\n  let r = attempt @keys.hmac(key_name: \"pepper\", data: name)\n  when r\n    is Ok(h) -> 1\n    is Err(e) ->\n      when e\n        is UnknownKey -> 2\n",
+        ),
+        (
+            "option",
+            "module family\n\npub first(o: Option[Int]) -> Int\n  ensures result >= 0\n=\n  when o\n    is Some(x) -> if x >= 0 then x else 0\n    is None -> 0\n",
+        ),
+    ];
+    for (family, source) in families {
+        let root = package_of_edition(
+            &format!("prelude_family_{family}"),
+            "0.2",
+            &[("src/family.una", source)],
+        );
+        let checked = una_cli::check(&root, Tier::One).unwrap();
+        let found: Vec<String> = checked
+            .diagnostics
+            .iter()
+            .map(|d| format!("{} {}", d.code, d.message))
+            .collect();
+        assert_eq!(found, Vec::<String>::new(), "{family}");
+    }
+}
