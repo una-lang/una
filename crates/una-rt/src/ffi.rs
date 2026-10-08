@@ -451,6 +451,19 @@ mod tests {
         }
     }
 
+    /// A lambda with one parameter that says on stderr that it ran, for the scenario that runs
+    /// in a process of its own, where no other trace of a call survives the abort.
+    extern "C" fn marked(_closure: i64, _arg: i64) -> Returned {
+        eprintln!("{MARK}");
+        Returned {
+            value: 0,
+            status: 0,
+        }
+    }
+
+    /// What [`marked`] says.
+    const MARK: &str = "una-rt test: the refused lambda ran";
+
     fn none() -> Code {
         Code(i64::try_from(no_parameter as extern "C" fn(i64) -> Returned as usize).unwrap())
     }
@@ -503,10 +516,11 @@ mod tests {
     fn a_refused_task_aborts_the_run_scenario() {
         // A block of one task whose closure takes a parameter, which `together` does not give.
         let meta = r#"{"grants":[],"uses":[],"sites":[{"file":"src/t.una","start":{"line":3,"col":3},"end":{"line":4,"col":10}}]}"#;
-        let one = one();
+        let marked =
+            Code(i64::try_from(marked as extern "C" fn(i64, i64) -> Returned as usize).unwrap());
         runtime::start(&[], meta, move || {
             let closures = values::list();
-            let closure = values::closure(one, 1);
+            let closure = values::closure(marked, 1);
             values::push(closures, closure);
             values::release(closure);
             let value = tasks::together(closures, 0);
@@ -534,6 +548,7 @@ mod tests {
         assert_eq!(output.status.code(), Some(3), "{stderr}");
         assert!(stderr.contains("U8001"), "{stderr}");
         assert!(stderr.contains("src/t.una"), "{stderr}");
+        assert!(!stderr.contains(MARK), "the lambda ran: {stderr}");
         assert!(
             stderr
                 .contains("a task of `together` holds no compiled lambda that takes its arguments"),
