@@ -231,8 +231,10 @@ impl From<Vec<Ty>> for Shared<[Ty]> {
 }
 
 impl FromIterator<Ty> for Shared<[Ty]> {
+    /// One allocation when the iterator knows its length, as a map over a slice does.
     fn from_iter<I: IntoIterator<Item = Ty>>(args: I) -> Shared<[Ty]> {
-        args.into_iter().collect::<Vec<Ty>>().into()
+        una_core::label_counters::node();
+        Shared(args.into_iter().collect())
     }
 }
 
