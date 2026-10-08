@@ -266,5 +266,5 @@ code --install-extension una-language-support-0.2.0.vsix
 
 - [The guide for agents](una-for-agents.md) is the compact reference to the whole language.
 - [The syntax reference](syntax-reference.md) lists every construct.
-- [The specification](../spec/) is the normative definition.
+- [The specification](https://github.com/una-lang/una/tree/main/docs/spec) is the normative definition.
 - `una explain <code>` explains any diagnostic, with examples.
