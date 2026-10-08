@@ -210,7 +210,9 @@ impl<'a> Checker<'_, 'a, '_> {
         self.record_edit_bounds(value, place_ty);
         self.flow(span, value, place_ty, &format!("`{shown}`"));
         let top = self.labeled(place_ty).top_label();
-        if !self.ctx.pc.flows_to(&top) {
+        // Label premises only where labels are checked: not in a `via` body (`spec/07 §6`
+        // rule 6, #384).
+        if self.labels() && !self.ctx.pc.flows_to(&top) {
             let pc = self.ctx.pc.clone();
             self.report.error(
                 Code::U4001,

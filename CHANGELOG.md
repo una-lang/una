@@ -25,6 +25,10 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 - **A crash of the compiler is an internal compiler error, as `spec/13 §5` says** (#376). A panic in any command, on the main thread or a worker thread (the checker, `una run`, `una test`, `una build`), exited with code 101 and, with `--json`, printed no document. It is now U8001 with exit code 3: one line on stderr in human mode, and one `una.diagnostics/1` document on stdout with `--json`. Rust's own panic message stays on stderr.
 
+### Checks
+
+- **A `via` body is exempt from label checks in edition 0.2 too** (#384). Two edition 0.2 rules, the program counter of an update of an editable binding and a map key above the map's top label, reported U4001 inside the `via` function of a policy, which `spec/07 §6` rule 6 exempts from label checks; a `via` written with `let edit`, a `for` loop or a map was rejected. Both now follow the exemption as the other rules do. Every other function of a trusted module, including one a `via` calls, is checked as before.
+
 ## v0.3.2
 
 A security patch of the Beta, completing v0.3.1's edition 0.1 fixes at their root: edition 0.1 now tells a decision on `T` values apart in every flow, as edition 0.2 always has. Edition 0.2 is unchanged. In edition 0.1, binding a value decided by comparing `T` values to a written annotation that mentions `T` (`let y: T = ...`, `List[T]`, a kind of `T`) is now U4001, as in edition 0.2, even where the program would not leak: leave the annotation out, since inference keeps the decision (`docs/guide/una-for-agents.md` §13, #345).

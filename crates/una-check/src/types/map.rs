@@ -168,7 +168,10 @@ impl Checker<'_, '_, '_> {
                 Ty::Map(place_key, _) => place.top_label().join(&place_key.every_label(&kinds)),
                 _ => place.top_label(),
             };
+            // Label premises only where labels are checked: not in a `via` body (`spec/07 §6`
+            // rule 6, #384).
             if let Some((key_span, _)) = found.first()
+                && self.labels()
                 && !key_label.flows_to(&place_top)
             {
                 self.report.error(
