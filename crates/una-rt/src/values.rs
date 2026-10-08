@@ -148,9 +148,13 @@ struct Heap {
     /// never does.
     faults: usize,
     /// The lists that `append` and `set` copied so far, the maps that `with` and `without`
-    /// copied, and the records rebuilt into a new object rather than reused: a copy happens
-    /// when the value is borrowed or something else holds it (#30).
+    /// copied, and the texts concatenated into a new one: a copy, in time proportional to the
+    /// value's size, happens when the value is borrowed or something else holds it (#30).
     copies: usize,
+    /// The records and variants that `reuse` made as a new object because something else held
+    /// the dying one (#30). Each is a constant cost, the fields being pushed in any case, so it
+    /// is counted apart from the copies, which scaling tests bound (#292).
+    fallbacks: usize,
 }
 
 thread_local! {
@@ -279,14 +283,23 @@ pub fn live() -> usize {
     })
 }
 
-/// The number of lists, maps, records and texts copied so far, rather than updated in place
-/// (#30, #261).
+/// The number of lists, maps and texts copied so far, rather than updated in place (#30, #261).
 pub fn copies() -> usize {
     HEAP.with(|heap| heap.borrow().copies)
 }
 
 fn copied() {
     HEAP.with(|heap| heap.borrow_mut().copies += 1);
+}
+
+/// The number of records and variants made anew so far because another value held the one
+/// they could have reused (#30, #292).
+pub fn fallbacks() -> usize {
+    HEAP.with(|heap| heap.borrow().fallbacks)
+}
+
+fn fell_back() {
+    HEAP.with(|heap| heap.borrow_mut().fallbacks += 1);
 }
 
 /// Whether `word` is a handle that nothing but the caller references: an object the caller
@@ -1276,7 +1289,7 @@ pub fn reuse(old: i64, tag: i64) -> i64 {
         }
     }
     if is_handle(old) {
-        copied();
+        fell_back();
     }
     release(old);
     data(tag)
@@ -1652,6 +1665,34 @@ mod tests {
         assert_eq!(count(reused), 0);
         push(reused, n(2));
         release(reused);
+        assert_eq!(live(), before.0);
+        assert_eq!(faults(), 0);
+    }
+
+    #[test]
+    fn a_record_made_anew_is_a_fallback_and_a_shared_list_a_copy_292() {
+        // #292: a record or variant that `reuse` makes anew, because another value holds the
+        // dying one, costs a constant and is counted apart from the copies, which grow with
+        // a value's size; a shared list that `append` copies is a copy, never a fallback.
+        let before = (live(), copies(), fallbacks());
+        let record = data(0);
+        push(record, n(1));
+        retain(record);
+        let held = record;
+        let made = reuse(record, 0);
+        assert_ne!(made, held, "a held record is not reused");
+        assert_eq!((copies(), fallbacks()), (before.1, before.2 + 1));
+        push(made, n(2));
+        release(made);
+        release(held);
+        let mut xs = list();
+        xs = append_owned(xs, n(1));
+        retain(xs);
+        let other = xs;
+        let longer = append_owned(xs, n(2));
+        assert_eq!((copies(), fallbacks()), (before.1 + 1, before.2 + 1));
+        release(longer);
+        release(other);
         assert_eq!(live(), before.0);
         assert_eq!(faults(), 0);
     }
