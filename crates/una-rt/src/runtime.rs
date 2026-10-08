@@ -896,8 +896,10 @@ fn site_location(state: &State, site: usize) -> Location {
 }
 
 /// Ends the run with `code`, U6003 or U6004, at `location`, as the interpreter's abort does: the output so far
-/// stays printed, the trace is written, and the executable exits with code 1.
+/// stays printed, the trace is written, and the executable exits with code 1; with U8001, an
+/// internal error of the runtime (#424), it exits with code 3 (`spec/13 §5`).
 fn abort_run(state: State, code: Code, location: Location, message: String) {
+    let least = if code == Code::U8001 { 3 } else { 1 };
     crate::ceiling(usize::MAX);
     let _ = io::stdout().flush();
     let diagnostic = Diagnostic::error(code, message, location);
@@ -906,7 +908,7 @@ fn abort_run(state: State, code: Code, location: Location, message: String) {
         "{}",
         render_human(&[diagnostic], &Default::default(), false)
     );
-    let mut code = finish(state).max(1);
+    let mut code = finish(state).max(least);
     if written.is_err() {
         code = USAGE;
     }

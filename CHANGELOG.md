@@ -24,7 +24,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ### Security
 
-- **The runtime checks a task's code before it calls it** (#424). Running a task of `together` called the compiled code a closure held, trusting the caller in the runtime to give the right code and the right number of arguments. That check is now in the runtime's C boundary (ADR 0058), where the call is made: a closure records how many parameters its code takes, and a word that is no closure, a closure without code, or a call with another number of arguments stops the task as a fault, and nothing is called. No program changes behavior. The comments of that boundary name the three targets, and a test checks that a task's value and status cross from compiled code in order.
+- **The runtime checks a task's code before it calls it** (#424). Running a task of `together` called the compiled code a closure held, trusting the caller in the runtime to give the right code and the right number of arguments. That check is now in the runtime's C boundary (ADR 0058), where the call is made: a closure records how many parameters its code takes, only that boundary can give a closure its code, and a word that is no closure, a closure without code, or a call with another number of arguments is an internal error: nothing is called, and the run ends with U8001 and exit code 3. A debug build now also reports the faults of a task that stopped. No program changes behavior. The comments of that boundary name the three targets, and a test checks that a task's value and status cross from compiled code in order.
 
 ## v0.3.3
 

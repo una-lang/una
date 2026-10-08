@@ -28,6 +28,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use num_bigint::{BigInt, Sign};
 use una_core::Text;
 
+use crate::ffi::Code;
+
 /// The smallest integer that a tagged word holds.
 const SMALL_MIN: i64 = -(1 << 62);
 /// The largest integer that a tagged word holds.
@@ -46,9 +48,10 @@ enum Object {
     List(Vec<i64>),
     /// A closure: the address of its code, and the values it captures.
     Closure {
-        code: i64,
-        /// How many parameters the compiled lambda at `code` takes, besides the closure
-        /// itself: [`crate::ffi::invoke`] checks it before calling the code (#424).
+        /// Its compiled lambda, which only [`crate::ffi`] makes (#424).
+        code: Code,
+        /// How many parameters the compiled lambda takes, besides the closure itself:
+        /// [`crate::ffi::invoke`] checks it before calling the code (#424).
         arity: usize,
         env: Vec<i64>,
     },
@@ -557,10 +560,10 @@ pub fn list() -> i64 {
     alloc(Object::List(Vec::new()))
 }
 
-/// A new closure of the code at `code`, a compiled lambda that takes `arity` parameters
-/// besides the closure, whose captured values [`push`] adds in order. A negative `arity` is
-/// no lambda's, and recorded as one that no call matches.
-pub fn closure(code: i64, arity: i64) -> i64 {
+/// A new closure of the compiled lambda `code`, which takes `arity` parameters besides the
+/// closure, whose captured values [`push`] adds in order. A negative `arity` is no lambda's,
+/// and recorded as one that no call matches. Only [`crate::ffi`] makes a [`Code`].
+pub(crate) fn closure(code: Code, arity: i64) -> i64 {
     alloc(Object::Closure {
         code,
         arity: usize::try_from(arity).unwrap_or(usize::MAX),
@@ -614,17 +617,17 @@ pub fn tag(value: i64) -> i64 {
 /// The address of a closure's code.
 pub fn closure_code(value: i64) -> i64 {
     with(value, |object| match object {
-        Object::Closure { code, .. } => *code,
+        Object::Closure { code, .. } => code.word(),
         _ => 0,
     })
     .unwrap_or(0)
 }
 
-/// The number of parameters of the closure `value`'s code, besides the closure; `None` when
-/// `value` is no closure.
-pub(crate) fn closure_arity(value: i64) -> Option<usize> {
+/// The compiled lambda of the closure `value` and the number of its parameters besides the
+/// closure; `None` when `value` is no closure.
+pub(crate) fn closure_target(value: i64) -> Option<(Code, usize)> {
     with(value, |object| match object {
-        Object::Closure { arity, .. } => Some(*arity),
+        Object::Closure { code, arity, .. } => Some((*code, *arity)),
         _ => None,
     })
     .flatten()
@@ -791,7 +794,7 @@ enum Node {
     },
     List(Vec<Cell>),
     Closure {
-        code: i64,
+        code: Code,
         arity: usize,
         env: Vec<Cell>,
     },
@@ -1605,7 +1608,7 @@ mod tests {
         let items = list();
         push(items, record);
         push(items, record);
-        let captured = closure(0);
+        let captured = closure(Code::NONE, 0);
         push(captured, items);
         assert_eq!(live(), before + 5);
         // Only the closure keeps the list, which keeps the record, which keeps the rest.

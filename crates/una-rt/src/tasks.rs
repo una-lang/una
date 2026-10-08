@@ -31,7 +31,7 @@ use crate::values::{self, Portable};
 /// Calls the compiled closure `closure` with `arg` when it takes one: its value, and 0, 1 when
 /// the value is a failure, or 2 when the task stopped. Reading the closure's code and calling
 /// it by its address is [`crate::ffi`]'s, the only `unsafe` of the runtime (ADR 0058, #424).
-pub type Invoke = fn(closure: i64, arg: Option<i64>) -> (i64, i64);
+pub type Invoke = fn(closure: i64, arg: Option<i64>, site: usize) -> (i64, i64);
 
 /// How many tasks run at once at most: the tasks after them start as earlier ones end. Each
 /// task still has its own thread (`spec/19 §8`).
@@ -134,7 +134,15 @@ fn run(tasks: &[(i64, Option<i64>)], tuple: bool, site: usize, invoke: Invoke) -
                         .name(format!("una-task-{}", index + 1))
                         .stack_size(template.stack)
                         .spawn_scoped(scope, move || {
-                            task(index, &closure, arg.as_ref(), &template, flags, invoke)
+                            task(
+                                index,
+                                &closure,
+                                arg.as_ref(),
+                                &template,
+                                flags,
+                                site,
+                                invoke,
+                            )
                         })
                 })
                 .collect();
@@ -169,6 +177,7 @@ fn task(
     arg: Option<&Portable>,
     template: &TaskTemplate,
     flags: &[Arc<AtomicBool>],
+    site: usize,
     invoke: Invoke,
 ) -> Outcome {
     let flag = flags.get(index).cloned().unwrap_or_default();
@@ -189,7 +198,7 @@ fn task(
     runtime::enter_task(template, path, flag);
     let closure = values::import(closure);
     let arg = arg.map(values::import);
-    let (value, status) = invoke(closure, arg);
+    let (value, status) = invoke(closure, arg, site);
     let ended = match status {
         0 => Ended::Returned(values::export(value)),
         1 => Ended::Failed(values::export(value)),
@@ -207,14 +216,19 @@ fn task(
     if status != 2 {
         values::release(value);
         values::release(closure);
-        // The task's argument went to the lambda, which owns its parameters (N-42).
-        // A debug build checks the task's reference counting as `main`'s (`runtime::start`).
+        // The task's argument went to the lambda, which owns its parameters (N-42). A debug
+        // build checks that nothing stays referenced, as for `main` (`runtime::start`); a task
+        // that stopped ended in the middle of its body, so what it held is not counted.
         if cfg!(debug_assertions) {
-            TASK_FAULTS.fetch_add(values::faults(), Ordering::SeqCst);
             TASK_LEAKS.fetch_add(values::live(), Ordering::SeqCst);
-            TASK_COPIES.fetch_add(values::copies(), Ordering::SeqCst);
-            TASK_FALLBACKS.fetch_add(values::fallbacks(), Ordering::SeqCst);
         }
+    }
+    // Faults, copies and reuse fallbacks count whatever the task's end, a stop included, so
+    // that a fault in a task that stopped is reported (#424).
+    if cfg!(debug_assertions) {
+        TASK_FAULTS.fetch_add(values::faults(), Ordering::SeqCst);
+        TASK_COPIES.fetch_add(values::copies(), Ordering::SeqCst);
+        TASK_FALLBACKS.fetch_add(values::fallbacks(), Ordering::SeqCst);
     }
     match state {
         Some(state) => Outcome {
