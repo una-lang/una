@@ -128,6 +128,11 @@ impl<'a> Frames<'a> {
     fn find(&self, name: &str) -> Option<Span> {
         self.index.get(name).and_then(|spans| spans.last().copied())
     }
+
+    /// The names bound in every frame, innermost frame last, in the order they were bound.
+    fn names(&self) -> impl Iterator<Item = &'a str> + '_ {
+        self.frames.iter().flatten().map(|local| local.name)
+    }
 }
 
 /// The namespace a name is looked up in.
@@ -208,12 +213,87 @@ impl<'a> Resolver<'_, '_, 'a> {
             self.checker.references.push((ident.span, declared));
         }
         if !self.visible(name, space) {
-            self.checker.error(
+            let mut diagnostic = self.checker.make(
                 Code::U1001,
                 ident.span,
                 format!("cannot find {what} `{name}` in this module, its imports or the prelude"),
             );
+            // #419: the names in scope closest to it. One within an edit distance of 2 is
+            // written for the agent; several are listed.
+            let near = crate::types::nearest(name, self.candidates(space));
+            let within: Vec<&str> = near
+                .iter()
+                .filter(|(distance, _)| *distance <= 2)
+                .map(|(_, candidate)| *candidate)
+                .collect();
+            if let [only] = within.as_slice() {
+                diagnostic.repairs.push(self.checker.edit(
+                    format!("write `{only}`"),
+                    ident.span,
+                    (*only).to_owned(),
+                ));
+            } else if !near.is_empty() {
+                let listed: Vec<String> = near
+                    .iter()
+                    .map(|(_, candidate)| format!("`{candidate}`"))
+                    .collect();
+                diagnostic.repairs.push(Checker::advice(format!(
+                    "names in scope close to `{name}`: {}",
+                    listed.join(", ")
+                )));
+            }
+            self.checker.diagnostics.push(diagnostic);
         }
+    }
+
+    /// Every name that [`Resolver::visible`] finds in `space` here, each scope in a fixed
+    /// order, for the suggestions of U1001; only built when a name is not found.
+    fn candidates(&self, space: Space) -> Vec<&'a str> {
+        let table = self.table;
+        let edition_0_2 = self.checker.package.settings.edition >= Edition::V0_2;
+        let lower = |name: &&str| name.starts_with(|c: char| c.is_lowercase());
+        let mut names: Vec<&'a str> = Vec::new();
+        match space {
+            Space::Lower => {
+                names.extend(self.locals.names());
+                names.extend(table.lower.keys().copied());
+                names.extend(table.imported.keys().copied().filter(lower));
+                names.extend(prelude::LOWER);
+                if edition_0_2 {
+                    names.extend([
+                        "set",
+                        "sort",
+                        "empty_map",
+                        "parse_json",
+                        "to_json",
+                        "quote_json",
+                        "is_json_number",
+                    ]);
+                    names.extend(prelude::TEXT_0_2);
+                }
+            }
+            Space::Upper => {
+                names.extend(self.types.names());
+                names.extend(table.upper.keys().copied());
+                names.extend(table.imported.keys().copied().filter(|n| !lower(n)));
+                names.extend(table.imported_variants.iter().copied());
+                names.extend(prelude::UPPER);
+                if edition_0_2 {
+                    names.extend(IntType::ALL.iter().map(|int| int.as_str()));
+                    names.extend([
+                        "Map",
+                        "Entry",
+                        "ParseError",
+                        "Empty",
+                        "NotADigit",
+                        "NoDigits",
+                    ]);
+                    names.extend(JSON_NAMES.iter().copied());
+                    names.extend(HTTP_NAMES.iter().copied());
+                }
+            }
+        }
+        names
     }
 
     fn enter(&mut self) {

@@ -12,6 +12,10 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 - **Traces redact by one rule in both engines** (#415). The label that redacts a value in a trace, and a field of a kind by its declared type, was defined twice, once in the interpreter and once in the native backend; it is now `Type::deep_label` of Core IR, with `Type::has_param`. The fields of the prelude's kinds that Core does not declare, `Option`, `Result`, `Entry`, `FileError`, `KeyError` and `ParseError`, come from one table, `una_core::prelude_variants`, which a test checks against the prelude's declarations. Traces and executables are unchanged.
 
+### Diagnostics
+
+- **U1001 offers the closest names in scope** (#419, N-64). An unknown name, of a value or a type, is compared by edit distance with every name in scope: locals, the module's declarations and imports, and the prelude of the package's edition. When exactly one is within a distance of 2, the repair writes it ("write `total`"); otherwise up to three are listed, by distance and then bytewise ("names in scope close to `caz`: `can`, `cap`, `car`"). The message and its position are unchanged.
+
 ## v0.3.3
 
 A security patch of the Beta (S-13: executables and releases no longer carry paths of the machine that built them), released with everything validated on `main` since v0.3.2: the checker shares its types (ADR 0077), checking many generic functions is linear, diagnostics and repairs fixed by three reviews and a dogfood pass, a crash is U8001, and the release archive ships the guides. Edition 0.1's behavior is unchanged; edition 0.2 gains two checks (ADR 0079, and #407's fail-closed verifier) and loses one false positive (#384). Validation: `docs/releases/v0.3.3-validation.md`.
