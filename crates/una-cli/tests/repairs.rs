@@ -257,3 +257,98 @@ fn every_same_line_clause_of_a_body_is_repaired_in_one_round() {
         );
     }
 }
+
+/// A package of edition 0.1 with the modules `files`, by name, whose entry is `b`.
+fn package_of(name: &str, files: &[(&str, &str)]) -> PathBuf {
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("repairs")
+        .join(name);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        "[package]\nname = \"c\"\nversion = \"0.1.0\"\nedition = \"0.1\"\n\n[run]\nentry = \"b\"\ngrants = [\"console\"]\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../verification.lock"),
+        root.join("verification.lock"),
+    )
+    .unwrap();
+    for (module, source) in files {
+        std::fs::write(root.join(format!("src/{module}.una")), source).unwrap();
+    }
+    root
+}
+
+/// Applies the first repair's edit of every diagnostic of one check, in every file, and returns
+/// the codes of the check that follows. Every diagnostic must carry an edit: an agent applies
+/// them with no step of its own.
+fn apply_all_files(root: &Path) -> Vec<String> {
+    let mut edits: std::collections::BTreeMap<String, Vec<(Value, Value, String)>> =
+        std::collections::BTreeMap::new();
+    for diagnostic in diagnostics(root) {
+        let edit = diagnostic["repairs"][0]["edit"].clone();
+        assert!(!edit.is_null(), "a diagnostic with no edit: {diagnostic}");
+        edits
+            .entry(edit["file"].as_str().unwrap().to_owned())
+            .or_default()
+            .push((
+                edit["start"].clone(),
+                edit["end"].clone(),
+                edit["replacement"].as_str().unwrap().to_owned(),
+            ));
+    }
+    for (file, edits) in edits {
+        let path = root.join(file);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let mut edits: Vec<(usize, usize, String)> = edits
+            .into_iter()
+            .map(|(start, end, replacement)| {
+                (offset(&text, &start), offset(&text, &end), replacement)
+            })
+            .collect();
+        edits.sort();
+        let mut chars: Vec<char> = text.chars().collect();
+        for (start, end, replacement) in edits.iter().rev() {
+            chars.splice(start..end, replacement.chars());
+        }
+        std::fs::write(&path, chars.into_iter().collect::<String>()).unwrap();
+    }
+    diagnostics(root)
+        .iter()
+        .map(|d| d["code"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn a_rename_never_makes_a_call_reach_another_function_125() {
+    // #125 (R-1, R-2): `a` already has a `the_table` of its own. Renamed one file at a time,
+    // `a`'s `table` became `the_table_2` and `b`'s call `the_table`, and renaming `b`'s import
+    // line alike made the call reach `a.the_table`: the program printed 101. The new name is
+    // now chosen across the package, and the import line gets the edit too.
+    let a = "module a\n\n--- Another function, which already has the name.\npub the_table(x: Int) -> Int = x + 100\n\npub table(x: Int) -> Int = x\n";
+    let b = "module b\n\nimport a (table)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let n = table(1)\n  @console.print(\"{n}\")\n";
+    let root = package_of("rename-across-modules", &[("a", a), ("b", b)]);
+    assert_eq!(apply_all_files(&root), Vec::<String>::new());
+    assert_eq!(run(&root), "1\n");
+    let b = std::fs::read_to_string(root.join("src/b.una")).unwrap();
+    assert!(b.contains("import a (the_table_2)\n"), "{b}");
+}
+
+#[test]
+fn a_rename_takes_no_name_of_another_module_125() {
+    // The new name is none of the package's names, a private one of another module included,
+    // and a kind renamed in its module is renamed alike where another module names it.
+    let a = "module a\n\npub kind service = Open | Closed\n\npub table(x: Int) -> Int = x\n";
+    let b = "module b\n\nimport a (Open, service, table)\nimport c (helper)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let s: service = Open\n  let n = table(1) + helper()\n  @console.print(\"{n} {s is Open}\")\n";
+    let c = "module c\n\nthe_table() -> Int = 10\n\npub helper() -> Int = the_table()\n";
+    let root = package_of("rename-private-clash", &[("a", a), ("b", b), ("c", c)]);
+    assert_eq!(apply_all_files(&root), Vec::<String>::new());
+    assert_eq!(run(&root), "11 true\n");
+    let a = std::fs::read_to_string(root.join("src/a.una")).unwrap();
+    assert!(
+        a.contains("pub kind Service = ") && a.contains("pub the_table_2("),
+        "{a}"
+    );
+}

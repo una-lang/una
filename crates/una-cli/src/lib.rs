@@ -208,18 +208,25 @@ struct FileCheck {
     canonical: Option<String>,
 }
 
-/// Lexes and parses the files `modules` of a package, then prints each one that parsed in its
-/// canonical form, knowing the constructors that every such file declares (ADR 0020 rule 6).
+/// Lexes the files `modules` of a package, chooses their renames together (#125), parses
+/// them, then prints each one that parsed in its canonical form, knowing the constructors that
+/// every such file declares (ADR 0020 rule 6).
 fn check_files(
     sources: &SourceDb,
     modules: &[FileId],
     interner: &mut Interner,
     keywords: KeywordSet,
 ) -> Vec<FileCheck> {
+    let mut lexed: Vec<Lexed> = modules
+        .iter()
+        .map(|&id| lex_in(sources.file(id), id, interner, keywords))
+        .collect();
+    // A word renamed in one module is renamed alike in every module that names it (#125).
+    una_syntax::rename_across(&mut lexed, interner);
     let parsed: Vec<(FileId, Lexed, File, Vec<Diagnostic>)> = modules
         .iter()
-        .map(|&id| {
-            let lexed = lex_in(sources.file(id), id, interner, keywords);
+        .zip(lexed)
+        .map(|(&id, lexed)| {
             let parsed = parse(&lexed, id, interner);
             let syntax: Vec<Diagnostic> = lexed
                 .errors
