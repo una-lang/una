@@ -1,0 +1,36 @@
+module tally
+
+--- Counts one more vote for `vote`; afterwards the candidate is in the map.
+pub add_vote(edit counts: Map[Text, Int], vote: Text) -> Unit
+  ensures counts.has(key: vote)
+=
+  let n = counts.get(key: vote)
+    if none use 0
+  edit counts.set(key: vote, value: n + 1)
+
+--- Votes per candidate.
+pub tally(votes: List[Text]) -> Map[Text, Int]
+=
+  let edit counts: Map[Text, Int] = empty_map()
+  for vote in votes
+    add_vote(edit counts, vote)
+  counts
+
+--- The count of a candidate the map has.
+pub votes_for(counts: Map[Text, Int], candidate: Text) -> Int
+  requires counts.has(key: candidate)
+=
+  let n = counts.get(key: candidate)
+    if none use 0
+  n
+
+--- The count of the candidate just voted for, which the map then has.
+pub after_vote(counts: Map[Text, Int], vote: Text) -> Int
+=
+  let edit next = counts
+  add_vote(edit next, vote)
+  votes_for(next, candidate: vote)
+
+example "three votes, two candidates"
+  do tally(["ana", "bo", "ana"])
+  expect result.len == 2
