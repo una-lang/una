@@ -1544,9 +1544,14 @@ The runtime implements these; they are part of the prelude.
 | `Files` | `read(path: Text) -> internal Text` | `FileError` | `public` |
 | `Files` | `write(path: Text, content: Text) -> Unit` | `FileError` | `internal` |
 | `Keys` | `hmac(key_name: Text, data: Text) -> internal Hashed` | `KeyError` | `public` for `key_name`, any label for `data`; the result carries the label of `data` |
+| `Http` (edition `0.2`) | `get(url: Text, headers: List[Header], key_name: Option[Text]) -> internal Response` | `HttpError` | `internal` |
+| `Http` | `post(url: Text, headers: List[Header], body: Text, key_name: Option[Text]) -> internal Response` | `HttpError` | `internal` |
+| `Http` | `put(url: Text, headers: List[Header], body: Text, key_name: Option[Text]) -> internal Response` | `HttpError` | `internal` |
+| `Http` | `delete(url: Text, headers: List[Header], key_name: Option[Text]) -> internal Response` | `HttpError` | `internal` |
 
 - **Entry.** Host capabilities enter only through `main`'s `uses`, and only if `una run`, or the native executable, grants them. An ungranted capability is U3012 before execution starts.
-- **Grant syntax:** `console`, `clock`, `env`, `keys:<keyfile>`, `files:<path>:read`, `files:<path>:write`.
+- **Grant syntax:** `console`, `clock`, `env`, `keys:<keyfile>`, `files:<path>:read`, `files:<path>:write`, and in edition `0.2` `http:<origin>` or `http:<origin>:<methods>` (by default `get`).
+- **`Http`** (`spec/24`). `Header` has `name: Text` and `value: internal Text`, and `Response` has `status: Int`, `headers: List[Header]` and `body: Text`. A status is not a failure: `HttpError` is `Denied`, `BadUrl`, `BadRequest`, `Unreachable`, `TimedOut`, `TooLarge`, `Tls` or `Protocol`. `key_name: Some(n)` sends the key `n` of the `keys:` grants as `Authorization: Bearer <key>`; a token another header carries goes in as a header value, through a policy to `internal` when it is `secret`. The guide for agents, §17, has an example with a stand-in handler.
 - **`Files` confinement.** Paths are confined to the granted prefix; escaping it fails with `Denied`.
 - **Tests and handlers.** You can write handlers for host capabilities, for example a fake `Keys` in tests (§17).
 
