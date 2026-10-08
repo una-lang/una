@@ -292,15 +292,24 @@ fn some_type(random: &mut Random, depth: u32, pool: &mut Vec<Shared<Ty>>) -> Ty 
             Ty::Fn(Shared::new(FnTy {
                 params,
                 result: (*child(random, pool)).clone(),
-                uses: if random.below(4) == 0 {
-                    vec![FnUse {
-                        name: "log".to_owned(),
-                        capability: None,
-                        ops: vec!["write".to_owned()],
-                    }]
-                } else {
-                    Vec::new()
-                },
+                // Sometimes two of them name the same capability, which no checked program has
+                // (U1002, U3006) and the fast paths must not rely on.
+                uses: (0..random.below(4))
+                    .map(|_| FnUse {
+                        name: if random.below(2) == 0 { "log" } else { "out" }.to_owned(),
+                        capability: (random.below(3) == 0).then_some(0),
+                        ops: (0..1 + random.below(2))
+                            .map(|_| {
+                                if random.below(2) == 0 {
+                                    "write"
+                                } else {
+                                    "read"
+                                }
+                                .to_owned()
+                            })
+                            .collect(),
+                    })
+                    .collect(),
                 fails: (random.below(4) == 0).then(|| (*child(random, pool)).clone()),
                 refinements: some_refinements(random, count),
             }))
@@ -450,12 +459,12 @@ fn function_types_that_differ_only_in_refinements_are_never_taken_for_each_other
 }
 
 #[test]
-fn an_operation_that_changes_nothing_allocates_nothing() {
-    let start = una_core::label_counters::nodes_made();
+fn an_operation_that_changes_nothing_returns_its_input() {
+    // The same top node means nothing of the result was rebuilt. The node counter is
+    // process-wide, and the tests of this binary run at once, so the count of nodes made is
+    // checked by `tests/scaling.rs`, alone in its binary.
     let element = Shared::new(Ty::Kind(0, vec![Ty::Int, Ty::Text].into()));
     let ty = Ty::List(element).with_label(&Label::symbol("T"));
-    let made = una_core::label_counters::nodes_made() - start;
-    let before = una_core::label_counters::nodes_made();
     let vars = Vars::default();
     for same in [
         vars.resolve_shape(&ty),
@@ -466,8 +475,54 @@ fn an_operation_that_changes_nothing_allocates_nothing() {
     ] {
         assert!(same.same(&ty), "{same:?}");
     }
-    // Only meaningful where the counters count (una-check's tests enable them).
-    if made > 0 {
-        assert_eq!(una_core::label_counters::nodes_made(), before);
+}
+
+#[test]
+fn map_labels_calls_its_function_on_the_same_labels_in_the_same_order() {
+    // `without_decisions` gathers what its function sees, so the order and the number of the
+    // calls are part of what `map_labels` does: the fast paths must not change them.
+    use std::cell::RefCell;
+    let mut random = Random(0x0de5);
+    for case in 0..2000 {
+        let mut pool = Vec::new();
+        let ty = some_type(&mut random, 5, &mut pool);
+        let seen_new = RefCell::new(Vec::new());
+        let seen_old = RefCell::new(Vec::new());
+        let new = ty.map_labels(&|l: &Label| {
+            seen_new.borrow_mut().push(l.clone());
+            l.clone()
+        });
+        let old = old_map_labels(&ty, &|l: &Label| {
+            seen_old.borrow_mut().push(l.clone());
+            l.clone()
+        });
+        assert_eq!(dump(&new), dump(&old), "case {case}");
+        assert_eq!(
+            seen_new.into_inner(),
+            seen_old.into_inner(),
+            "case {case}: {ty:?}"
+        );
     }
+}
+
+#[test]
+fn a_function_node_with_two_uses_of_one_capability_is_rebuilt_when_met_with_itself() {
+    // `union_uses` of such `uses` with themselves merges the second's operations into the
+    // first: unreachable from a checked program, but the fast path must not keep the node.
+    let uses = |ops: &[&str]| FnUse {
+        name: "log".to_owned(),
+        capability: None,
+        ops: ops.iter().map(|o| (*o).to_owned()).collect(),
+    };
+    let f = Ty::Fn(Shared::new(FnTy {
+        params: Vec::new(),
+        result: Ty::Unit,
+        uses: vec![uses(&["write"]), uses(&["read"])],
+        fails: None,
+        refinements: FnRefinements::default(),
+    }));
+    let kinds = KindLabels::default();
+    let met = combine(&f, &f, true, &kinds);
+    assert_eq!(dump(&met), dump(&old_combine(&f, &f, true, &kinds)));
+    assert!(!met.same(&f));
 }

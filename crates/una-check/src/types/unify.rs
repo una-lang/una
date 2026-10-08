@@ -406,10 +406,16 @@ pub(super) fn combine(a: &Ty, b: &Ty, join: bool, kinds: &KindLabels) -> Ty {
                 combined
             });
             let result = combine(&f.result, &g.result, join, kinds);
-            if Shared::ptr_eq(f, g) && params.is_none() && result.same(&f.result) {
+            if Shared::ptr_eq(f, g)
+                && params.is_none()
+                && result.same(&f.result)
+                && distinct_uses(&f.uses)
+            {
                 // A function node met with itself: its own `uses`, `fails` and refinements, as
                 // `union_uses` and `FnRefinements::combine` of a value with itself give back.
-                // Only the same node qualifies: `==` ignores refinements (D-150).
+                // Only the same node qualifies: `==` ignores refinements (D-150). `union_uses`
+                // gives `uses` back only when no two of them name the same capability: the
+                // first of two such would take the operations of the second.
                 Ty::Fn(f.clone())
             } else {
                 Ty::Fn(Shared::new(FnTy {
@@ -431,6 +437,16 @@ pub(super) fn combine(a: &Ty, b: &Ty, join: bool, kinds: &KindLabels) -> Ty {
 
 /// The capabilities of `a` and those of `b`: a reference both name keeps the operations of
 /// both, in the order of `a`, then `b`.
+/// Whether no two of `uses` name the same capability, so that `union_uses(uses, uses)` is
+/// `uses` itself.
+fn distinct_uses(uses: &[FnUse]) -> bool {
+    uses.iter().enumerate().all(|(index, u)| {
+        uses.iter()
+            .skip(index + 1)
+            .all(|other| other.name != u.name || other.capability != u.capability)
+    })
+}
+
 pub(super) fn union_uses(a: &[FnUse], b: &[FnUse]) -> Vec<FnUse> {
     let mut uses = a.to_vec();
     for need in b {
