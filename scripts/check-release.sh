@@ -73,8 +73,14 @@ if ! cmp -s "$tmp/install-one/out/hello" "$tmp/a-second-install-elsewhere/out/he
     echo "error: examples/hello built by $name in two places gives two different executables" >&2
     exit 1
 fi
+# The builder's user name is refused too, in any form (`~name`, a home elsewhere), when it is long
+# enough to mean something; inside Rust's own path, as a CI runner's user is, it is allowed.
+user=$(id -un 2>/dev/null || true)
 for file in "$tmp/$name/una" "$tmp/$name/lib/libuna_rt.a" "$tmp/install-one/out/hello"; do
     found=$(grep -a -o -E '(/Users|/home)/[^[:space:][:cntrl:]"]*' "$file" | grep -v '^/Users/runner/work/rust/' | LC_ALL=C sort -u | head -5 || true)
+    if [ "${#user}" -ge 4 ] && [ -z "$found" ]; then
+        found=$(LC_ALL=C grep -a -o -E ".{0,16}$user.{0,16}" "$file" | grep -v -F '/Users/runner/work/rust' | LC_ALL=C sort -u | head -5 || true)
+    fi
     if [ -n "$found" ] || grep -a -q -F "$root" "$file"; then
         echo "error: $file names a path of the machine that built it:" >&2
         echo "${found:-$root}" >&2
