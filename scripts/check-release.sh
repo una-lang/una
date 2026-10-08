@@ -59,4 +59,26 @@ for example in examples/*/; do
         exit 1
     fi
 done
+# The archive and what it builds carry no path of a machine (#382, S-13). The same program built
+# by the archive unpacked in two places is the same executable; and neither the packed `una`, nor
+# its runtime, nor that executable names a home directory or the source tree it was built from.
+# Rust's own standard library names the machine it was built on, `/Users/runner/work/rust`.
+cp -R examples/hello "$tmp/placed"
+for install in "$tmp/install-one" "$tmp/a-second-install-elsewhere"; do
+    mkdir -p "$install"
+    cp -R "$tmp/$name/." "$install/"
+    "$install/una" build "$tmp/placed" --out "$install/out/hello" > /dev/null
+done
+if ! cmp -s "$tmp/install-one/out/hello" "$tmp/a-second-install-elsewhere/out/hello"; then
+    echo "error: examples/hello built by $name in two places gives two different executables" >&2
+    exit 1
+fi
+for file in "$tmp/$name/una" "$tmp/$name/lib/libuna_rt.a" "$tmp/install-one/out/hello"; do
+    found=$(grep -a -o -E '(/Users|/home)/[^[:space:][:cntrl:]"]*' "$file" | grep -v '^/Users/runner/work/rust/' | LC_ALL=C sort -u | head -5 || true)
+    if [ -n "$found" ] || grep -a -q -F "$root" "$file"; then
+        echo "error: $file names a path of the machine that built it:" >&2
+        echo "${found:-$root}" >&2
+        exit 1
+    fi
+done
 echo "ok: $name.tar.gz checks and runs the examples, and builds each of them natively"

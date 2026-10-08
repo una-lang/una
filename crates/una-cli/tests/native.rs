@@ -511,6 +511,61 @@ fn una_build_finds_the_runtime_through_a_symlinked_una() {
 }
 
 #[test]
+fn an_executable_does_not_depend_on_where_una_and_its_runtime_are_installed() {
+    // #382 (S-13): a built executable carries no path of the machine that built it. The link
+    // used to keep the absolute path of `libuna_rt.a` in the macOS debug map (an `OSO` entry
+    // per object), so an executable named its builder's install directory, home included, and
+    // two installs made different bytes. The same program, linked with the same runtime from
+    // two install directories, gives the same executable, which names neither.
+    runtime();
+    let dir = package(
+        "placed",
+        "\n[run]\nentry = \"hello\"\ngrants = [\"console\"]\n",
+        &[("src/hello.una", HELLO)],
+    );
+    let built = Path::new(env!("CARGO_BIN_EXE_una"))
+        .parent()
+        .unwrap()
+        .join("libuna_rt.a");
+    let mut executables = Vec::new();
+    for install in ["first-install/lib", "a-second-install-elsewhere/lib"] {
+        let lib = dir.join(install);
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::copy(&built, lib.join("libuna_rt.a")).unwrap();
+        let out = dir.join(install).join("out");
+        let output = Command::new(env!("CARGO_BIN_EXE_una"))
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .env("UNA_RT_LIB", lib.join("libuna_rt.a"))
+            .args(["build", "--out"])
+            .arg(out.join("hello"))
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let run = Command::new(out.join("hello")).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&run.stdout), "Hello, Una\n");
+        executables.push(std::fs::read(out.join("hello")).unwrap());
+    }
+    assert!(
+        executables[0] == executables[1],
+        "the executables differ by where the runtime was installed"
+    );
+    let text = String::from_utf8_lossy(&executables[0]);
+    for path in [
+        dir.display().to_string(),
+        built.parent().unwrap().display().to_string(),
+    ] {
+        assert!(!text.contains(&path), "the executable names {path}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn una_build_rejects_a_package_that_does_not_check() {
     let dir = package(
         "broken",

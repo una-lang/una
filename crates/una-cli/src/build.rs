@@ -265,6 +265,12 @@ fn link(object: &Path, output: &Path, environment: crate::Environment<'_>) -> Re
     let runtime = runtime_library(environment)?;
     let mut command = Command::new("cc");
     command.arg(object).arg(&runtime).arg("-o").arg(output);
+    // No debug information (#382, S-13): the macOS debug map names each object by the absolute
+    // path of `libuna_rt.a`, and DWARF names the directories the runtime was built in, so an
+    // executable would carry the paths of the machine that built it and differ between two
+    // installs. The behavior of the program does not depend on them. `-S` means this to both
+    // ld64 and GNU ld.
+    command.arg("-Wl,-S");
     // Only the runtime functions the program calls are kept: an executable that never uses
     // `Http` carries no TLS stack (ADR 0074 H7, N-26).
     if cfg!(target_os = "macos") {
