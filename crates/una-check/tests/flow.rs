@@ -442,3 +442,24 @@ fn lambda_bodies_keep_the_labels_they_assume_for_their_parameters() {
         ]
     );
 }
+
+// ----- decisions on values of a type parameter (#354, #362) -----
+
+#[test]
+fn edition_0_1_names_a_decision_in_its_messages_as_edition_0_2_does() {
+    // Since #354 edition 0.1 tells `ℓ*_T` from `ℓ_T` in its flows, so its messages name
+    // `label(T*)` too: written as `label(T)`, the flow read "from `label(T)` to `label(T)`".
+    assert_eq!(
+        package(
+            "",
+            &[(
+                "src/t.una",
+                "module t\n\npub choose[T](a: T, b: T, p: T, q: T) -> T\n=\n  \
+                 let picked: T = if a == b then p else q\n  picked\n"
+            )]
+        ),
+        [
+            "U4001 src/t.una:5:19 `picked` is `label(T) T`, and this value is `label(T) + label(T*) T`: a flow from `label(T) + label(T*)` to `label(T)`",
+        ]
+    );
+}
