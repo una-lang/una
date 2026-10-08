@@ -1287,9 +1287,17 @@ impl<'a> Env<'a> {
             // An unknown name is U1001, reported by M3.
             None => None,
         };
+        // The names come from the declaration, not from `CapDef::ops`, which is filled only
+        // after aliases are lowered: a kind alias's `uses` lists operations too (N-012).
         let declared: Vec<&'a str> = capability
             .and_then(|id| self.capabilities.get(id))
-            .map(|c| c.ops.iter().map(|op| op.name).collect())
+            .map(|c| {
+                c.ast
+                    .ops
+                    .iter()
+                    .map(|op| self.text(c.module, op.name.name))
+                    .collect()
+            })
             .unwrap_or_default();
         let listed: Vec<&'a str> = uses
             .cap_type
