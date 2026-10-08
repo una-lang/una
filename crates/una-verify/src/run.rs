@@ -59,6 +59,10 @@ pub struct Outcome {
     pub path: Option<usize>,
     /// The counterexample of a refuted obligation.
     pub bindings: Vec<Binding>,
+    /// For a refuted obligation whose model divides by zero on its path: that division. The
+    /// model is no run, since a run fails there, and the division's own obligation reports it,
+    /// so the outcome shows no counterexample (ADR 0054, amendment of 2026-10-08).
+    pub division: Option<una_syntax::Span>,
 }
 
 /// Why obligations could not be discharged at all.
@@ -524,6 +528,7 @@ fn outcome(
                 cached,
                 path,
                 bindings: Vec::new(),
+                division: None,
             };
         }
     }
@@ -536,6 +541,7 @@ fn outcome(
             cached,
             path: None,
             bindings: Vec::new(),
+            division: None,
         };
     }
     let mut bindings = Vec::new();
@@ -590,12 +596,34 @@ fn outcome(
             }
         }
     }
+    // ADR 0054, amendment of 2026-10-08: a model whose path divides by zero is no run.
+    let division = (answer.status == Status::Refuted)
+        .then(|| {
+            let value = values(requested, answer);
+            // An obligation at one site has one entry; a return obligation one per path.
+            let taken = if obligation.paths.is_empty() {
+                Some(0)
+            } else {
+                path
+            };
+            obligation
+                .divisions
+                .get(taken?)?
+                .iter()
+                .find(|(divisor, _)| integer(&value(divisor)) == Some(0))
+                .map(|(_, span)| *span)
+        })
+        .flatten();
+    if division.is_some() {
+        bindings.clear();
+    }
     Outcome {
         status,
         reason: answer.reason.clone(),
         cached,
         path,
         bindings,
+        division,
     }
 }
 
