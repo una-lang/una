@@ -1,0 +1,473 @@
+//! ADR 0077 stage 2b: the type operations that return unchanged nodes as they are give the
+//! same values as the operations they replace, which rebuild every node. The reference
+//! operations below are those of main before stage 2b; values are compared by their `Debug`
+//! dump, which shows every label and every refinement (`==` ignores refinements).
+
+use una_core::Level;
+use una_syntax::{FileId, SourceDb, Span};
+
+use super::label::Label;
+use super::ty::{FnRefinements, FnTy, FnUse, KindLabels, Refinement, Shared, Ty, starred};
+use super::unify::{Vars, combine, union_uses};
+
+fn span() -> Span {
+    let mut db = SourceDb::new();
+    let file: FileId = db.add("a.una", b"x");
+    Span::at(file, 0)
+}
+
+fn dump(ty: &Ty) -> String {
+    format!("{ty:?}")
+}
+
+// ----- the operations before stage 2b, rebuilding every node -----
+
+fn old_function(function: &FnTy, mut map: impl FnMut(&Ty) -> Ty, fails: bool) -> Ty {
+    Ty::Fn(Shared::new(FnTy {
+        params: function.params.iter().map(&mut map).collect(),
+        result: map(&function.result),
+        uses: function.uses.clone(),
+        fails: if fails {
+            function.fails.as_ref().map(&mut map)
+        } else {
+            function.fails.clone()
+        },
+        refinements: function.refinements.clone(),
+    }))
+}
+
+fn old_erase(ty: &Ty) -> Ty {
+    match ty {
+        Ty::Labeled(_, inner) => old_erase(inner),
+        Ty::List(element) => Ty::List(Shared::new(old_erase(element))),
+        Ty::Map(key, value) => Ty::Map(Shared::new(old_erase(key)), Shared::new(old_erase(value))),
+        Ty::Kind(id, args) => Ty::Kind(*id, args.iter().map(old_erase).collect()),
+        Ty::Fn(function) => old_function(function, old_erase, true),
+        other => other.clone(),
+    }
+}
+
+fn old_substitute(ty: &Ty, args: &[Ty]) -> Ty {
+    match ty {
+        Ty::Labeled(label, inner) => old_substitute(inner, args).with_label(label),
+        Ty::Param(index) => args.get(*index).cloned().unwrap_or(Ty::Error),
+        Ty::List(element) => Ty::List(Shared::new(old_substitute(element, args))),
+        Ty::Map(key, value) => Ty::Map(
+            Shared::new(old_substitute(key, args)),
+            Shared::new(old_substitute(value, args)),
+        ),
+        Ty::Kind(id, kind_args) => Ty::Kind(
+            *id,
+            kind_args.iter().map(|a| old_substitute(a, args)).collect(),
+        ),
+        Ty::Fn(function) => old_function(function, |t| old_substitute(t, args), true),
+        other => other.clone(),
+    }
+}
+
+fn old_raise_deep(ty: &Ty, label: &Label) -> Ty {
+    let inner = match ty.unlabeled() {
+        Ty::List(element) => Ty::List(Shared::new(old_raise_deep(element, label))),
+        Ty::Map(key, value) => Ty::Map(
+            Shared::new(old_raise_deep(key, label)),
+            Shared::new(old_raise_deep(value, label)),
+        ),
+        Ty::Kind(id, args) => {
+            Ty::Kind(*id, args.iter().map(|a| old_raise_deep(a, label)).collect())
+        }
+        other => other.clone(),
+    };
+    inner.with_label(&ty.top_label().join(label))
+}
+
+fn old_map_labels(ty: &Ty, f: &dyn Fn(&Label) -> Label) -> Ty {
+    match ty {
+        Ty::Labeled(label, inner) => old_map_labels(inner, f).with_label(&f(label)),
+        Ty::List(element) => Ty::List(Shared::new(old_map_labels(element, f))),
+        Ty::Map(key, value) => Ty::Map(
+            Shared::new(old_map_labels(key, f)),
+            Shared::new(old_map_labels(value, f)),
+        ),
+        Ty::Kind(id, args) => Ty::Kind(*id, args.iter().map(|a| old_map_labels(a, f)).collect()),
+        Ty::Fn(function) => old_function(function, |t| old_map_labels(t, f), false),
+        other => other.clone(),
+    }
+}
+
+/// `Vars::resolve_shape` before stage 2b, for a type whose variables are all unsolved: every
+/// node rebuilt, its failure kind included (#216), and each label put in normal form.
+fn old_resolve_shape(ty: &Ty) -> Ty {
+    match ty {
+        Ty::Labeled(label, inner) => old_resolve_shape(inner).with_label(label),
+        Ty::List(element) => Ty::List(Shared::new(old_resolve_shape(element))),
+        Ty::Map(key, value) => Ty::Map(
+            Shared::new(old_resolve_shape(key)),
+            Shared::new(old_resolve_shape(value)),
+        ),
+        Ty::Kind(id, args) => Ty::Kind(*id, args.iter().map(old_resolve_shape).collect()),
+        Ty::Fn(function) => old_function(function, old_resolve_shape, true),
+        other => other.clone(),
+    }
+}
+
+fn old_symbolic(ty: &Ty, names: &[String]) -> Ty {
+    match ty {
+        Ty::Labeled(label, inner) => old_symbolic(inner, names).with_label(label),
+        Ty::Param(index) => match names.get(*index) {
+            Some(name) => Ty::Param(*index).with_label(&Label::symbol(name.clone())),
+            None => Ty::Param(*index),
+        },
+        Ty::List(element) => Ty::List(Shared::new(old_symbolic(element, names))),
+        Ty::Map(key, value) => Ty::Map(
+            Shared::new(old_map_labels(&old_symbolic(key, names), &starred)),
+            Shared::new(old_symbolic(value, names)),
+        ),
+        Ty::Kind(id, args) => Ty::Kind(*id, args.iter().map(|a| old_symbolic(a, names)).collect()),
+        Ty::Fn(function) => old_function(function, |t| old_symbolic(t, names), false),
+        other => other.clone(),
+    }
+}
+
+fn old_op_parameter(ty: &Ty, positive: bool, top: &Label, kinds: &KindLabels) -> Ty {
+    let inner = match ty.unlabeled() {
+        Ty::List(element) => Ty::List(Shared::new(old_op_parameter(element, positive, top, kinds))),
+        Ty::Map(key, value) => Ty::Map(
+            Shared::new(old_op_parameter(key, positive, top, kinds)),
+            Shared::new(old_op_parameter(value, positive, top, kinds)),
+        ),
+        Ty::Kind(id, args) => Ty::Kind(
+            *id,
+            args.iter()
+                .enumerate()
+                .map(|(index, arg)| {
+                    if kinds.is_invariant(*id, index) {
+                        arg.clone()
+                    } else {
+                        old_op_parameter(arg, positive, top, kinds)
+                    }
+                })
+                .collect(),
+        ),
+        Ty::Fn(function) => Ty::Fn(Shared::new(FnTy {
+            params: function
+                .params
+                .iter()
+                .map(|p| old_op_parameter(p, !positive, top, kinds))
+                .collect(),
+            result: old_op_parameter(&function.result, positive, top, kinds),
+            uses: function.uses.clone(),
+            fails: function.fails.clone(),
+            refinements: function.refinements.clone(),
+        })),
+        other => other.clone(),
+    };
+    if positive {
+        inner.with_label(top)
+    } else {
+        inner.with_label(&ty.top_label())
+    }
+}
+
+fn old_combine(a: &Ty, b: &Ty, join: bool, kinds: &KindLabels) -> Ty {
+    let (la, lb) = (a.top_label(), b.top_label());
+    let label = if join { la.join(&lb) } else { la.meet(&lb) };
+    let base = match (a.unlabeled(), b.unlabeled()) {
+        (Ty::Never, other) | (other, Ty::Never) => return other.clone().with_label(&label),
+        (Ty::Error, _) | (_, Ty::Error) => return Ty::Error,
+        (Ty::List(x), Ty::List(y)) => Ty::List(Shared::new(old_combine(x, y, join, kinds))),
+        (Ty::Map(xk, xv), Ty::Map(yk, yv)) => Ty::Map(
+            Shared::new(old_combine(xk, yk, join, kinds)),
+            Shared::new(old_combine(xv, yv, join, kinds)),
+        ),
+        (Ty::Kind(i, xs), Ty::Kind(j, ys)) if i == j && xs.len() == ys.len() => Ty::Kind(
+            *i,
+            xs.iter()
+                .zip(ys)
+                .enumerate()
+                .map(|(index, (x, y))| {
+                    if kinds.is_invariant(*i, index) {
+                        x.clone()
+                    } else {
+                        old_combine(x, y, join, kinds)
+                    }
+                })
+                .collect(),
+        ),
+        (Ty::Fn(f), Ty::Fn(g)) if f.params.len() == g.params.len() => Ty::Fn(Shared::new(FnTy {
+            params: f
+                .params
+                .iter()
+                .zip(&g.params)
+                .map(|(x, y)| old_combine(x, y, !join, kinds))
+                .collect(),
+            result: old_combine(&f.result, &g.result, join, kinds),
+            uses: union_uses(&f.uses, &g.uses),
+            fails: f.fails.clone().or_else(|| g.fails.clone()),
+            refinements: f.refinements.combine(&g.refinements, join),
+        })),
+        (Ty::Var(_), other) if !matches!(other, Ty::Var(_)) => other.clone(),
+        (same, _) => same.clone(),
+    };
+    base.with_label(&label)
+}
+
+// ----- random types, deterministic -----
+
+/// A linear congruential generator: the same sequence on every run.
+struct Random(u64);
+
+impl Random {
+    fn below(&mut self, n: u64) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (self.0 >> 33) % n
+    }
+}
+
+fn some_label(random: &mut Random) -> Label {
+    let mut label = match random.below(4) {
+        0 => Label::public(),
+        1 => Label::symbol("T"),
+        2 => Label::symbol("T*"),
+        _ => Label::symbol("?3"),
+    };
+    if random.below(3) == 0 {
+        label.level = Level::Secret;
+    }
+    if random.below(4) == 0 {
+        label.categories.insert("PII");
+    }
+    label
+}
+
+fn some_refinements(random: &mut Random, params: usize) -> FnRefinements {
+    let range = |random: &mut Random| -> Vec<Refinement> {
+        (0..random.below(3))
+            .map(|i| Refinement::Range(format!("in 0..{}", 5 + i), span()))
+            .collect()
+    };
+    FnRefinements {
+        params: (0..params).map(|_| range(random)).collect(),
+        result: range(random),
+    }
+}
+
+/// A random type of at most `depth` levels. `pool` holds nodes already made, which later
+/// positions share: types with shared children, as unification makes them.
+fn some_type(random: &mut Random, depth: u32, pool: &mut Vec<Shared<Ty>>) -> Ty {
+    if depth == 0 || random.below(5) == 0 {
+        return match random.below(9) {
+            0 => Ty::Int,
+            1 => Ty::Text,
+            2 => Ty::Param(0),
+            3 => Ty::Param(1),
+            4 => Ty::Var(random.below(3) as usize),
+            5 => Ty::Never,
+            6 => Ty::Error,
+            7 => Ty::Bool,
+            _ => Ty::Unit,
+        };
+    }
+    let child = |random: &mut Random, pool: &mut Vec<Shared<Ty>>| -> Shared<Ty> {
+        if !pool.is_empty() && random.below(3) == 0 {
+            return pool[random.below(pool.len() as u64) as usize].clone();
+        }
+        let node = Shared::new(some_type(random, depth - 1, pool));
+        pool.push(node.clone());
+        node
+    };
+    match random.below(7) {
+        0 => Ty::List(child(random, pool)),
+        1 => Ty::Map(child(random, pool), child(random, pool)),
+        2 => {
+            let count = random.below(3) as usize;
+            let args: Vec<Ty> = (0..count).map(|_| (*child(random, pool)).clone()).collect();
+            Ty::Kind(random.below(2) as usize, args.into())
+        }
+        3 => {
+            let count = random.below(3) as usize;
+            let params: Vec<Ty> = (0..count).map(|_| (*child(random, pool)).clone()).collect();
+            Ty::Fn(Shared::new(FnTy {
+                params,
+                result: (*child(random, pool)).clone(),
+                uses: if random.below(4) == 0 {
+                    vec![FnUse {
+                        name: "log".to_owned(),
+                        capability: None,
+                        ops: vec!["write".to_owned()],
+                    }]
+                } else {
+                    Vec::new()
+                },
+                fails: (random.below(4) == 0).then(|| (*child(random, pool)).clone()),
+                refinements: some_refinements(random, count),
+            }))
+        }
+        4 => (*child(random, pool))
+            .clone()
+            .with_label(&some_label(random)),
+        // Not in the form `with_label` builds: a label under a label, or a `public` one.
+        5 => Ty::Labeled(some_label(random), child(random, pool)),
+        _ => Ty::Labeled(Label::public(), child(random, pool)),
+    }
+}
+
+/// Kinds 0 and 1, of one and two parameters; the first parameter of kind 1 is invariant.
+fn kinds() -> KindLabels {
+    let invariant_field = Ty::Fn(Shared::new(FnTy {
+        params: vec![Ty::Param(0)],
+        result: Ty::Unit,
+        uses: Vec::new(),
+        fails: None,
+        refinements: FnRefinements::default(),
+    }));
+    let plain_field = Ty::Param(0);
+    KindLabels::new(&[vec![&plain_field], vec![&invariant_field]], &[1, 2])
+}
+
+#[test]
+fn every_fast_path_gives_the_value_the_rebuilding_operation_gave() {
+    let kinds = kinds();
+    let names = ["T".to_owned(), "U".to_owned()];
+    let args = [
+        Ty::Int.with_label(&Label::symbol("A")),
+        Ty::List(Shared::new(Ty::Text)),
+    ];
+    let mut random = Random(0x5eed);
+    let vars = Vars::default();
+    for case in 0..4000 {
+        let mut pool = Vec::new();
+        let ty = some_type(&mut random, 5, &mut pool);
+        let label = some_label(&mut random);
+        let f = |l: &Label| {
+            if l.is_public() {
+                l.clone()
+            } else {
+                l.join(&Label::symbol("X"))
+            }
+        };
+        let at = |what: &str| format!("case {case}, {what}: {ty:?}");
+        assert_eq!(dump(&ty.erase()), dump(&old_erase(&ty)), "{}", at("erase"));
+        assert_eq!(
+            dump(&ty.substitute(&args)),
+            dump(&old_substitute(&ty, &args)),
+            "{}",
+            at("substitute")
+        );
+        assert_eq!(
+            dump(&ty.raise_deep(&label)),
+            dump(&old_raise_deep(&ty, &label)),
+            "{}",
+            at("raise_deep")
+        );
+        assert_eq!(
+            dump(&ty.map_labels(&f)),
+            dump(&old_map_labels(&ty, &f)),
+            "{}",
+            at("map_labels")
+        );
+        assert_eq!(
+            dump(&ty.map_labels(&|l: &Label| l.clone())),
+            dump(&old_map_labels(&ty, &|l: &Label| l.clone())),
+            "{}",
+            at("map_labels by identity")
+        );
+        assert_eq!(
+            dump(&ty.symbolic(&names)),
+            dump(&old_symbolic(&ty, &names)),
+            "{}",
+            at("symbolic")
+        );
+        for positive in [true, false] {
+            assert_eq!(
+                dump(&ty.op_parameter(positive, &label, &kinds)),
+                dump(&old_op_parameter(&ty, positive, &label, &kinds)),
+                "{}",
+                at("op_parameter")
+            );
+        }
+        // No variable is solved: resolving rebuilds the type with its labels in normal form.
+        assert_eq!(
+            dump(&vars.resolve_shape(&ty)),
+            dump(&old_resolve_shape(&ty)),
+            "{}",
+            at("resolve_shape")
+        );
+        let other = some_type(&mut random, 5, &mut pool);
+        for join in [true, false] {
+            for (a, b) in [(&ty, &ty), (&ty, &other), (&other, &ty)] {
+                assert_eq!(
+                    dump(&combine(a, b, join, &kinds)),
+                    dump(&old_combine(a, b, join, &kinds)),
+                    "case {case}, combine {a:?} with {b:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn function_types_that_differ_only_in_refinements_are_never_taken_for_each_other() {
+    // `==` ignores refinements (D-150), so only the same node may stand for a function type:
+    // the join of two function nodes equal but for their refinements keeps the refinements
+    // both share in its result and those of either in its parameters.
+    let kinds = KindLabels::default();
+    let refined = |result: &[&str], param: &[&str]| {
+        let refinements = |names: &[&str]| -> Vec<Refinement> {
+            names
+                .iter()
+                .map(|n| Refinement::Range((*n).to_owned(), span()))
+                .collect()
+        };
+        Ty::Fn(Shared::new(FnTy {
+            params: vec![Ty::Int],
+            result: Ty::Int,
+            uses: Vec::new(),
+            fails: None,
+            refinements: FnRefinements {
+                params: vec![refinements(param)],
+                result: refinements(result),
+            },
+        }))
+    };
+    let a = refined(&["in 0..5", "in 1..9"], &["in 0..3"]);
+    let b = refined(&["in 0..5"], &["in 4..8"]);
+    assert_eq!(a, b, "`==` ignores refinements");
+    for join in [true, false] {
+        for (x, y) in [(&a, &b), (&b, &a), (&a, &a)] {
+            let new = combine(x, y, join, &kinds);
+            assert_eq!(dump(&new), dump(&old_combine(x, y, join, &kinds)));
+        }
+    }
+    let joined = combine(&a, &b, true, &kinds);
+    assert_ne!(dump(&joined), dump(&a), "the join changes the refinements");
+    assert!(
+        combine(&a, &a, true, &kinds).same(&a),
+        "a node joined with itself is itself"
+    );
+}
+
+#[test]
+fn an_operation_that_changes_nothing_allocates_nothing() {
+    let start = una_core::label_counters::nodes_made();
+    let element = Shared::new(Ty::Kind(0, vec![Ty::Int, Ty::Text].into()));
+    let ty = Ty::List(element).with_label(&Label::symbol("T"));
+    let made = una_core::label_counters::nodes_made() - start;
+    let before = una_core::label_counters::nodes_made();
+    let vars = Vars::default();
+    for same in [
+        vars.resolve_shape(&ty),
+        ty.substitute(&[]),
+        ty.map_labels(&|l: &Label| l.clone()),
+        ty.raise_deep(&Label::public()),
+        combine(&ty, &ty, true, &KindLabels::default()),
+    ] {
+        assert!(same.same(&ty), "{same:?}");
+    }
+    // Only meaningful where the counters count (una-check's tests enable them).
+    if made > 0 {
+        assert_eq!(una_core::label_counters::nodes_made(), before);
+    }
+}

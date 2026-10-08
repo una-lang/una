@@ -24,6 +24,14 @@ impl<T> Shared<T> {
     }
 }
 
+impl<T: ?Sized> Shared<T> {
+    /// Whether `a` and `b` are the same node. Only ever a fast path to "the same value": two
+    /// different nodes may hold equal values, so `false` says nothing about equality.
+    pub(crate) fn ptr_eq(a: &Shared<T>, b: &Shared<T>) -> bool {
+        Rc::ptr_eq(&a.0, &b.0)
+    }
+}
+
 impl<T: ?Sized> Clone for Shared<T> {
     fn clone(&self) -> Shared<T> {
         Shared(Rc::clone(&self.0))

@@ -85,10 +85,16 @@ fn labels_and_type_nodes_made_grow_at_most_as_their_bounds() {
         assert!(small.0 > 0 && small.1 > 0, "the counters count: {small:?}");
         assert!(large.0 <= 6 * small.0, "sets: {small:?} then {large:?}");
         assert!(large.1 <= 6 * small.1, "names: {small:?} then {large:?}");
-        // ADR 0077 stage 2a: the type nodes made still grow with the copies each expression
-        // keeps of its type, about 15x for 4x the depth (quadratic is 16x). Stage 2b, whose
-        // operations keep unchanged nodes shared, lowers this bound to 6x.
         assert!(small.2 > 0, "the node counter counts: {small:?}");
-        assert!(large.2 <= 16 * small.2, "nodes: {small:?} then {large:?}");
     }
+    // ADR 0077 stage 2b: an operation that changes nothing below a node keeps it, so checking
+    // the monomorphic program makes nodes in proportion to its size: about 4x for 4x the depth
+    // (quadratic is 16x). In the generic one, every leaf is labeled `ℓ_T`, and `resolve` erases
+    // labels at each expression, rebuilding the path to every leaf: it stays quadratic until
+    // stage 3 keeps the erased form of each node across the walks of a declaration.
+    assert!(large.2 <= 6 * small.2, "nodes: {small:?} then {large:?}");
+    assert!(
+        large_generic.2 <= 16 * small_generic.2,
+        "nodes: {small_generic:?} then {large_generic:?}"
+    );
 }
