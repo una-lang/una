@@ -11,6 +11,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ### Performance
 
+- **The debug runtime counts records made anew apart from copies** (#292). A debug executable's note counted, as a copy, each record or variant that a field edit or a rebuild made as a new object because another value held the old one (#30). Each is a constant cost, so a program that made one per iteration looked like one that copied: a scaling test bounding copies could fail on a linear program. The note now says `lists, maps and texts copied: N` for the copies, which grow with a value's size, and `records and variants made anew, not reused: M` on its own line; scaling tests read the copies alone. Release executables say nothing, as before, and what programs print, return and trace is unchanged.
 - **Native executables no longer carry the `una explain` texts** (#413, N-66). The runtime linked `una-diag`, whose code table held all 83 explain texts by `include_str!`, so every executable `una build` made carried them, unused: 75,708 bytes of text. They now live in the crate `una-explain`, which only the command line links. `examples/hello` drops from 1,430,552 to 1,347,992 bytes (82,560 bytes, 5.8 %). `una explain` prints the same text for every code.
 
 ### Information flow

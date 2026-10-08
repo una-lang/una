@@ -907,7 +907,7 @@ fn a_text_appended_in_a_loop_grows_in_linear_time() {
         // never updated in place.
         assert_eq!(
             String::from_utf8_lossy(&output.stderr),
-            "note: una-rt (debug build): lists, maps, records and texts copied: 1\n"
+            "note: una-rt (debug build): lists, maps and texts copied: 1\n"
         );
         seconds
     };
@@ -956,8 +956,9 @@ fn a_loop_runs_in_constant_memory() {
 #[test]
 fn updates_of_values_nothing_else_holds_are_in_place() {
     // #30: 200,000 appends in a loop, 200,000 `set`s and 200,000 field edits copy only what
-    // another holder still sees: the caller's list, once, and the caller's point, once. The
-    // debug runtime reports its copies (no flag; release builds say nothing).
+    // another holder still sees: the caller's list, once, and the caller's point, made anew
+    // once. The debug runtime reports its copies and, apart, the records made anew (#292; no
+    // flag; release builds say nothing).
     let program = "module linear\n\npub kind Point\n  x: Int\n  y: Int\n\npub build(n: Int) -> List[Int]\n=\n  let edit acc: List[Int] = []\n  for i in 0..<n\n    acc = acc.append(item: i)\n  acc\n\npub overwrite(xs: List[Int]) -> List[Int]\n=\n  let edit ys = xs\n  for i in 0..<xs.len\n    if i < ys.len\n      edit ys.set(index: i, item: i * 2)\n    else\n      unit\n  ys\n\npub shift(p: Point, times: Int) -> Point\n=\n  let edit q = p\n  for i in 0..<times\n    q.x = q.x + 1\n  q\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let xs = build(200000)\n  let ys = overwrite(xs)\n  let p = shift(Point(x: 0, y: 7), times: 200000)\n  let third = ys.at(index: 3).or_else(default: 0)\n  @console.print(\"{xs.len} {ys.len} {third} {p.x} {p.y}\")\n";
     let dir = package(
         "linear",
@@ -983,7 +984,7 @@ fn updates_of_values_nothing_else_holds_are_in_place() {
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
-        "note: una-rt (debug build): lists, maps, records and texts copied: 2\n"
+        "note: una-rt (debug build): lists, maps and texts copied: 1\nnote: una-rt (debug build): records and variants made anew, not reused: 1\n"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1062,7 +1063,7 @@ fn map_updates_are_in_place_and_scale_as_n_log_n() {
         );
         assert_eq!(
             String::from_utf8_lossy(&output.stderr),
-            "note: una-rt (debug build): lists, maps, records and texts copied: 1\n"
+            "note: una-rt (debug build): lists, maps and texts copied: 1\n"
         );
         seconds
     };
@@ -2059,6 +2060,15 @@ fn a_list_built_through_function_values_grows_in_linear_time() {
 }
 
 /// The copies the debug runtime reports on stderr, 0 when it reports none.
+/// The records and variants the debug runtime made anew, from its note (#292), or 0.
+fn made_anew(output: &std::process::Output) -> u64 {
+    String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .find_map(|line| line.split("made anew, not reused: ").nth(1))
+        .and_then(|count| count.trim().parse().ok())
+        .unwrap_or(0)
+}
+
 fn copied(output: &std::process::Output) -> u64 {
     String::from_utf8_lossy(&output.stderr)
         .lines()
@@ -2126,4 +2136,49 @@ fn a_native_executable_carries_no_explain_text_413() {
         );
     }
     let _ = std::fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn records_made_anew_grow_with_the_loop_and_copies_do_not_292() {
+    // #292: a field edit of a record that a list still holds makes the record anew, a constant
+    // cost each time, so the count of records made anew grows with the loop while the copies,
+    // which scaling tests bound, stay the same at every size.
+    let program = |steps: usize| {
+        format!(
+            "module history\n\npub kind Point\n  x: Int\n  y: Int\n\npub walk(n: Int) -> Int\n=\n  let edit q = Point(x: 0, y: 0)\n  let edit seen: List[Point] = []\n  for i in 0..<n\n    seen = seen.append(item: q)\n    q.x = q.x + 1\n  q.x + seen.len\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let walked = walk({steps})\n  @console.print(\"{{walked}}\")\n"
+        )
+    };
+    let mut first_copies = None;
+    for steps in [1_000_usize, 4_000] {
+        let dir = package(
+            "history",
+            "\n[run]\nentry = \"history\"\ngrants = [\"console\"]\n",
+            &[("src/history.una", &program(steps))],
+        );
+        let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+        std::fs::write(
+            dir.join("una.toml"),
+            manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+        )
+        .unwrap();
+        let built = una(&dir, &["build"]);
+        assert_eq!(built.status.code(), Some(0), "{built:?}");
+        let output = Command::new(dir.join("target/una/history"))
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(0));
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("{}\n", 2 * steps)
+        );
+        assert_eq!(made_anew(&output), steps as u64, "{steps}: {output:?}");
+        let copies = copied(&output);
+        assert_eq!(
+            *first_copies.get_or_insert(copies),
+            copies,
+            "{steps}: {output:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

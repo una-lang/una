@@ -505,37 +505,47 @@ pub fn start(args: &[String], meta: &str, entry: impl FnOnce() -> i64 + Send + '
                     values::faults() + crate::tasks::TASK_FAULTS.load(Ordering::SeqCst),
                     values::live() + crate::tasks::TASK_LEAKS.load(Ordering::SeqCst),
                     values::copies() + crate::tasks::TASK_COPIES.load(Ordering::SeqCst),
+                    values::fallbacks() + crate::tasks::TASK_FALLBACKS.load(Ordering::SeqCst),
                 )
             } else {
-                (0, 0, 0)
+                (0, 0, 0, 0)
             };
             let state = STATE.with(|cell| cell.borrow_mut().take());
             (status, state, faults)
         });
-    let (status, state, (faults, leaked, copies)) = match worker.map(std::thread::JoinHandle::join)
-    {
-        Ok(Ok(result)) => result,
-        _ => {
-            let _ = writeln!(
-                stderr,
-                "error: cannot start `main` with the stack that `--max-depth {}` needs",
-                options.max_depth
-            );
-            return USAGE;
-        }
-    };
+    let (status, state, (faults, leaked, copies, fallbacks)) =
+        match worker.map(std::thread::JoinHandle::join) {
+            Ok(Ok(result)) => result,
+            _ => {
+                let _ = writeln!(
+                    stderr,
+                    "error: cannot start `main` with the stack that `--max-depth {}` needs",
+                    options.max_depth
+                );
+                return USAGE;
+            }
+        };
     let mut code = if status == 0 { 0 } else { 1 };
     if let Some(state) = state {
         code = code.max(finish(state));
     }
-    // A debug build also says how many lists, maps, records and texts were copied rather than
+    // A debug build also says how many lists, maps and texts were copied rather than
     // updated in place (#30, #236, #261), so tests can check that an update the code owns is in
     // place. As with the checks above, only a debug build says it, and it changes neither output
     // nor exit status.
     if copies > 0 {
         let _ = writeln!(
             stderr,
-            "note: una-rt (debug build): lists, maps, records and texts copied: {copies}"
+            "note: una-rt (debug build): lists, maps and texts copied: {copies}"
+        );
+    }
+    // A record or variant made anew because another value held the one it could reuse costs
+    // a constant, so it is counted apart from the copies, which grow with a value's size
+    // (#292): a scaling test bounds the copies alone.
+    if fallbacks > 0 {
+        let _ = writeln!(
+            stderr,
+            "note: una-rt (debug build): records and variants made anew, not reused: {fallbacks}"
         );
     }
     if faults > 0 {

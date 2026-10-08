@@ -41,8 +41,10 @@ const WAVE: usize = 64;
 /// ended, which a debug build reports at the end of the run with `main`'s (`runtime::start`).
 pub(crate) static TASK_FAULTS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static TASK_LEAKS: AtomicUsize = AtomicUsize::new(0);
-/// The lists and records that tasks copied rather than updated in place (#30).
+/// The lists, maps and texts that tasks copied rather than updated in place (#30).
 pub(crate) static TASK_COPIES: AtomicUsize = AtomicUsize::new(0);
+/// The records and variants that tasks made anew rather than reused (#292).
+pub(crate) static TASK_FALLBACKS: AtomicUsize = AtomicUsize::new(0);
 
 thread_local! {
     /// How the last block that the thread ran ended: 0, 1 when it failed, 2 when the task
@@ -211,6 +213,7 @@ fn task(
             TASK_FAULTS.fetch_add(values::faults(), Ordering::SeqCst);
             TASK_LEAKS.fetch_add(values::live(), Ordering::SeqCst);
             TASK_COPIES.fetch_add(values::copies(), Ordering::SeqCst);
+            TASK_FALLBACKS.fetch_add(values::fallbacks(), Ordering::SeqCst);
         }
     }
     match state {
