@@ -1,0 +1,9 @@
+module b
+
+import a (the_table)
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let n = the_table(1)
+  @console.print("{n}")

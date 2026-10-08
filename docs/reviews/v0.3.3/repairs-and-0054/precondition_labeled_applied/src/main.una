@@ -1,0 +1,42 @@
+module main
+
+pub kind Bad = | Broke
+
+pub same(a: secret Int, b: Int) -> secret Int
+  requires a == b
+=
+  a - b
+
+pub apply(f: fn(secret Int, Int) -> secret Int) -> secret Int = f(1, 2)
+
+pub labeled() -> secret Int = apply(fn(a, b) -> if a == b then same(a, b) else 0)
+
+pub risky(a: secret Int, b: Int) -> secret Int
+  requires a == b
+  fails Bad
+=
+  if b > 5 then fail Broke else a - b
+
+pub apply_failing(f: fn(secret Int, Int) -> secret Int fails Bad) -> secret Int
+  fails Bad
+=
+  let v = f(1, 2)
+    if error pass
+  v
+
+pub failing() -> secret Int
+  fails Bad
+=
+  let v = apply_failing(risky_where_defined)
+    if error pass
+  v
+
+risky_where_defined(a: Int, b: Int) -> Int
+  fails Bad
+=
+  if a == b
+    let v = risky(a, b)
+      if error pass
+    v
+  else
+    0
