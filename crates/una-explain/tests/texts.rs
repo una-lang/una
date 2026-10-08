@@ -39,6 +39,9 @@ fn explain_texts_start_with_code_and_meaning() {
 fn every_explain_file_is_embedded() {
     for code in Code::ALL {
         let path = crate_dir().join("explain").join(format!("{code}.md"));
-        assert_eq!(una_explain::text(code), std::fs::read_to_string(path).unwrap());
+        assert_eq!(
+            una_explain::text(code),
+            std::fs::read_to_string(path).unwrap()
+        );
     }
 }

@@ -2104,10 +2104,17 @@ fn a_native_executable_carries_no_explain_text_413() {
     let package = copy(&root().join("examples/hello"), &scratch);
     let exe = scratch.join("hello-exe");
     let built = una(&package, &["build", ".", "--out", exe.to_str().unwrap()]);
-    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
     let bytes = std::fs::read(&exe).unwrap();
     let holds = |needle: &str| bytes.windows(needle.len()).any(|w| w == needle.as_bytes());
-    assert!(!holds("## Failing example"), "the executable holds an explain text");
+    assert!(
+        !holds("## Failing example"),
+        "the executable holds an explain text"
+    );
     for code in una_diag::Code::ALL {
         // The first sentence of each text, which no other string of the runtime repeats.
         let text = una_explain::text(code);
