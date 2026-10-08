@@ -194,8 +194,9 @@ impl Names {
     }
 
     /// Keeps the names for which `keep` holds; the set is shared when it keeps them all.
-    pub fn retain(&mut self, mut keep: impl FnMut(&Arc<str>) -> bool) {
-        if self.iter().all(&mut keep) {
+    /// `keep` may be called twice for a name, so it must not count or change anything: a `Fn`.
+    pub fn retain(&mut self, keep: impl Fn(&Arc<str>) -> bool) {
+        if self.iter().all(&keep) {
             return;
         }
         let names: Vec<Arc<str>> = self.iter().filter(|name| keep(name)).cloned().collect();
