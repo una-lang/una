@@ -802,7 +802,7 @@ fn files_grants_never_follow_a_final_link_and_keep_directories_inside_r011() {
     // absolute path or a `..` that leaves the prefix is `Denied`; (2) every intermediate
     // directory resolves, links followed, inside the canonical prefix; (3) the final component
     // is never followed: a link there, dangling or not, inside or outside, is `Denied`, and a
-    // write never creates a file through a link. DECISION D-133: a path naming the prefix
+    // write never creates a file through a link. D-133: a path naming the prefix
     // itself (`.`, `sub/..`) has no final component and is `Denied`.
     use std::os::unix::fs::symlink;
     let absolute = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))

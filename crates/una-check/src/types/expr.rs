@@ -546,7 +546,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 .collect(),
             // The result of a generic function carries the labels of its type arguments, which
             // the value's type records lazily, since they are known only once the value flows
-            // somewhere (`spec/10 §5`, generic instantiation; DECISION D-137).
+            // somewhere (`spec/10 §5`, generic instantiation; D-137).
             result: if args.is_empty() {
                 def.result.base.substitute(&args)
             } else {
@@ -712,7 +712,7 @@ impl<'a> Checker<'_, 'a, '_> {
             }
         }
         // ADR 0038 D2: the element type instantiates the type parameter of `List`.
-        // DECISION D-140: so a list literal of second-class values is U3016 at its first
+        // D-140: so a list literal of second-class values is U3016 at its first
         // such element.
         let values = items
             .iter()
@@ -1316,7 +1316,7 @@ impl<'a> Checker<'_, 'a, '_> {
                         }
                         Some(from_shape) => {
                             // ADR 0038 D1: the values the lambda receives flow into the type
-                            // its body assumes for the parameter. DECISION D-145: a label
+                            // its body assumes for the parameter. D-145: a label
                             // or function type the written type drops is U4001 or U3003 at it.
                             self.fn_flow_param(written.span, &lowered, &from_shape);
                             let given = self.labeled(&from_shape);

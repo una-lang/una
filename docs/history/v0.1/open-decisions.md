@@ -2,7 +2,9 @@
 
 Decision log of the autonomous run (`OVERNIGHT.md`, C.4). Every choice not literally dictated by the specification is recorded here. Entries are sorted by review priority: low confidence combined with high reversal cost first. Code and tests implementing a decision carry the comment `DECISION D-NNN`.
 
-**Reviewed on 2026-09-30.** The independent review of v0.1 (`docs/reviews/v0.1-review/decisions.md`) recommended keeping 131 decisions and escalated D-093; the owner kept all 131 and resolved D-093 through ADR 0038 D4. Each entry records it on a `- Review` line. D-001 to D-132 are final, so their `DECISION D-NNN` tags were removed from the code and tests: the entries and their ADRs are the record. Decisions from D-133 on belong to the v0.1 closure run, await the owner's answer, and keep their tags until then.
+**Reviewed on 2026-09-30.** The independent review of v0.1 (`docs/reviews/v0.1-review/decisions.md`) recommended keeping 131 decisions and escalated D-093; the owner kept all 131 and resolved D-093 through ADR 0038 D4. Each entry records it on a `- Review` line. D-001 to D-132 are final, so their `DECISION D-NNN` tags were removed from the code and tests: the entries and their ADRs are the record. Decisions from D-133 to D-159 belong to the v0.1 closure run; the owner answered them on 2026-10-08 (below).
+
+**Answered on 2026-10-08.** The owner kept 23 of the closure run's decisions, D-133 to D-159, and marked four as superseded by later work: D-137 (ADR 0067), D-144 (ADR 0045), D-148 (ADR 0055) and D-159 (R-031, #10). Their entries record it, and their `DECISION` tags were removed from the code and tests (#372).
 
 **Answered on 2026-10-01.** After the limited re-review (`docs/reviews/v0.1-final-review/decisions.md`), the owner kept D-160 to D-169 and switched D-170 to B. Their entries record it, and their `DECISION` tags were removed from the code and tests.
 
@@ -1745,6 +1747,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `342fe7b`, `crates/una-interp/src/host.rs`, `crates/una-cli/tests/runtime.rs`, tag `DECISION D-133`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-08)
 
 ### D-134: Every intermediate directory of a `Files` path stays inside the prefix (closure, R-011)
 - Question: ADR 0038 D9 rule 2 says the resolved directory lies inside the canonical prefix. A path can pass through a directory outside the prefix and come back inside, for example through a link and `..`.
@@ -1756,6 +1759,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `342fe7b`, `crates/una-interp/src/host.rs`, tag `DECISION D-134`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-08)
 
 ### D-135: How the verifier recognizes the prelude (closure, R-010)
 - Question: ADR 0038 D7 asks that prelude kinds be identified by an identity user code cannot spell. The Core path of the prelude is `prelude`.
@@ -1767,6 +1771,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `eab57c7`, `crates/una-verify/src/generate.rs`, tag `DECISION D-135`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-08)
 
 ### D-136: Labeled arguments of prelude functions (closure, R-005)
 - Question: ADR 0038 D3.4 labels the results of the listed prelude functions by their arguments; it does not say whether those arguments may carry any label.
@@ -1779,6 +1784,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
 - Answer (Leonardo, 2026-09-30): add `is_some`, `is_ok` and `append` to the functions whose results join the labels of their arguments, as ADR 0038 D3.4 requires for any result that depends on its arguments; `spec/14 §1` lists them.
+- Answer: kept the chosen option (Leonardo, 2026-10-08)
 
 ### D-137: Which positions of a generic call's result are raised (closure, R-004)
 - Question: `spec/10 §5` (generic instantiation) replaces each symbolic label of the result by the labels of the instantiating type.
@@ -1791,6 +1797,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
 - Answer: switch to B in edition `0.2`, as ADR 0067 L1 to L4 (Leonardo, 2026-10-06): a per-position summary of each user generic function's result, the least fixpoint over recursion, inferred and shown; edition `0.1` keeps A
+- Answer: superseded (Leonardo, 2026-10-08): edition `0.2` raises each position by ADR 0067's per-position summaries, and edition `0.1` keeps A
 
 ### D-138: Where an inferred U3016 is reported (closure, R-002)
 - Question: `spec/05 §9` rule 6: at the value whose type instantiates the type parameter.
@@ -1802,6 +1809,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `c4aea7c` (track a), tag `DECISION D-138`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-08)
 
 ### D-139: A function type with a second-class parameter or result (closure, R-002)
 - Question: ADR 0038 D2: a type that contains a second-class type is not a type argument.
@@ -1813,6 +1821,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `c4aea7c` (track a), tag `DECISION D-139`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-08)
 
 ### D-140: List literals instantiate `List` (closure, R-002)
 - Question: ADR 0038 D2 names type parameters; a list literal fills the element type of `List`.
@@ -1824,6 +1833,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `c4aea7c` (track a), tag `DECISION D-140`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-08)
 
 ### D-141: The effect floor of an operation that accepts every label (closure, R-003)
 - Question: ADR 0038 D4 checks handler bodies at the operation's `accepts`; `Keys.hmac` accepts every label.
@@ -1835,6 +1845,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `c4aea7c` (track a), tag `DECISION D-141`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-08)
 
 ### D-142: Where a written U3016 is reported (closure, R-002)
 - Question: `spec/05 §9` rule 6: at the written type argument.
@@ -1846,6 +1857,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `c4aea7c` (track a), tag `DECISION D-142`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-08)
 
 ### D-143: U3006 or U3016 for a field under a type argument (closure, R-002)
 - Question: `spec/05 §9` rule 6 gives U3006 for a field whose type is an effectful function type, and U3016 for a type argument.
@@ -1857,6 +1869,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `c4aea7c` (track a), tag `DECISION D-143`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-08)
 
 ### D-144: The Core consistency check runs in debug builds (closure, R-001)
 - Question: ADR 0038 D1: "A debug-build consistency check compares checker types with Core IR binder types."
@@ -1868,6 +1881,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `c4aea7c` (track a), tag `DECISION D-144`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: superseded (Leonardo, 2026-10-08): ADR 0045 rule 3 runs the Core consistency check in every build
 
 ### D-145: A lambda annotation weaker than the expected parameter (closure, R-001)
 - Question: S-Fun makes a lambda's written parameter type bound what it receives.
@@ -1879,6 +1893,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `c4aea7c` (track a), tag `DECISION D-145`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-08)
 
 ### D-146: The effect floor of calls in handler bodies (closure, R-003)
 - Question: ADR 0038 D4: "Every call inside must satisfy accepts ⊔ pc ⊑ bound(f)", and failures follow data flow with the body at `pc = ⊥`; `bound(f)` is `⊥` for a failing `f` (`spec/10 §5`), so the literal rule forbids every failing call in a handler of an operation that accepts a label above `public`.
@@ -1890,6 +1905,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `cf9a0a5` (spec text), `c4aea7c` (track a)
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-08)
 
 ### D-147: When a verification repair applies (closure, R-021)
 - Question: `spec/13 §3` proposes "a stronger parameter type when the value is a parameter, a `requires` clause for a private function, a guard, and `checked`", each "when applicable", without defining when the value is a parameter or when a `requires` can reach the goal.
@@ -1901,6 +1917,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `dd116aa`, tag `DECISION D-147`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-08)
 
 ### D-148: The report keeps the schema `una.report/1` with two new fields (closure, R-018)
 - Question: ADR 0041 adds `obligations.cached` and `tcb.proof_cache` to the build report. `spec/13` says that changes to the Agent ABI "follow the ADR process and bump the version in the `schema` strings".
@@ -1913,6 +1930,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - ADR: `docs/adr/0041-proof-cache-trusted.md` (Accepted), consequences
 - Answer needed: Keep A? Or switch to B?
 - Answer (Leonardo, 2026-09-30): kept A. No schema has been released yet; schema versions freeze at the `v0.1.0` tag, and any change after that bumps the version (`spec/13`, preamble).
+- Answer: superseded (Leonardo, 2026-10-08): the report has been `una.report/2` since ADR 0055
 
 ### D-149: Which clauses may name an opaque predicate (closure, R-016)
 - Question: ADR 0042 allows an opaque predicate only inside `checked` and opaque bodies, and makes "any other call, in code, a clause or an example" U2016. But `spec/03 §4` defines opaque refined kinds such as `kind Slug = Text where valid_slug(it)`, and an operation's `ensures` may establish an opaque fact.
@@ -1924,6 +1942,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `b832ee9`, tag `DECISION D-149`; ADR 0042 rules 1 and 2 state it
 - ADR: `docs/adr/0042-opaque-predicates-only-in-checked.md` (Accepted)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-08)
 
 ### D-150: Joins of refined function types (closure, F-0001-02)
 - Question: ADR 0037 rule 1 carries refinements in function types; branches of `if` and `when` join their types.
@@ -1935,6 +1954,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `9cf2b99`, tag `DECISION D-150`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-08)
 
 ### D-151: The repair of a refuted result refinement (closure, F-0001-02)
 - Question: ADR 0037 rule 6 names the expected function type's position for a parameter; for the result it gives no wording.
@@ -1946,6 +1966,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `9cf2b99`, tag `DECISION D-151`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-08)
 
 ### D-152: A lambda's result against its expected type (closure, F-0001-02)
 - Question: ADR 0037 rule 2 gives a covariant result goal; a lambda has no declared result.
@@ -1957,6 +1978,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `9cf2b99`, tag `DECISION D-152`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-08)
 
 ### D-153: When a refinement counts as carried (closure, F-0001-02)
 - Question: ADR 0037 rule 2: "a goal that is trivially implied (no refinement in the target, or the same refined kind) gives no obligation".
@@ -1968,6 +1990,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `9cf2b99`, tag `DECISION D-153`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-08)
 
 ### D-154: Names of nested positions in goal text (closure, F-0001-02)
 - Question: ADR 0037 rule 4 names the flowing function; a function type nested in a parameter has no name of its own.
@@ -1979,6 +2002,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `9cf2b99`, tag `DECISION D-154`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-08)
 
 ### D-155: The nested-pattern repair is a help, not an edit (closure, B-001)
 - Question: the owner asked that a nested pattern report that nested patterns are not supported in v0.1, "with a repair that binds and matches in two steps". A repair can be a help text or a mechanical edit (`spec/13 §3`).
@@ -1990,6 +2014,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `9902633`, tag `DECISION D-155`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-08)
 
 ### D-156: U3013 in predicate bodies (closure, R-029)
 - Question: `spec/04 §4` puts one effect on each line; a predicate body is pure, and U2015 already reports effects and unhandled failures there.
@@ -2001,6 +2026,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `73f90b9` (merge), tag `DECISION D-156`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-08)
 
 ### D-157: The U2005 and U2009 advice when nothing is left to suggest (closure, R-030)
 - Question: The repairs now suggest only parameters or fields that no other argument gives.
@@ -2012,6 +2038,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `73f90b9` (merge), tag `DECISION D-157`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-08)
 
 ### D-158: U1002 when both definitions have the same kind (closure, R-034)
 - Question: The message named the construct twice ("as a function and as a function").
@@ -2023,6 +2050,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `73f90b9` (merge), tag `DECISION D-158`
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: kept the chosen option (Leonardo, 2026-10-08)
 
 ### D-159: A case left out of the promoted Euclidean division program (closure, adversarial)
 - Question: The adversarial `runtime-euclidean-division` has a line with negative literal divisors, on which the verifier and the checker disagree about division obligations (R-031).
@@ -2034,6 +2062,7 @@ Choices of the closure run that neither the specification nor an ADR dictates (`
 - Implemented in: `73f90b9` (merge), `tests/conformance/runtime/euclidean_division_signs.una` (no tag: the case is left out, and the backlog row records it)
 - ADR: none (minor)
 - Answer needed: Keep A? Or switch to B?
+- Answer: superseded (Leonardo, 2026-10-08): the line is back in `runtime/euclidean_division_signs.una` with R-031 (#10, #340)
 
 ### D-160: Branch joins at an invariant kind argument (re-review, N-002)
 - Question: ADR 0046 makes some kind arguments invariant for labels; a branch join must pick one type.

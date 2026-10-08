@@ -1258,7 +1258,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 .as_ref()
                 .and_then(|capability| capability.ops.iter().find(|o| o.name == name));
             // Callers may pass anything up to `accepts`.
-            // DECISION D-141: an operation that accepts every label has the effect floor `⊤`
+            // D-141: an operation that accepts every label has the effect floor `⊤`
             // (ADR 0038 D4). `Keys.hmac` accepts `public`; its `data` is carried (ADR 0039).
             let accepts = op_def
                 .and_then(|o| o.accepts.clone())

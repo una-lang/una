@@ -287,7 +287,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let value_label = self.labeled(ty).top_label();
         // The function type is taken before its labels are settled: the result of a generic
         // function value carries the labels of type arguments that the arguments of this call
-        // may still solve (ADR 0038 D3.2, DECISION D-137, re-review N-003).
+        // may still solve (ADR 0038 D3.2, D-137, re-review N-003).
         let head = self.vars.head(ty);
         let function = match head.unlabeled().clone() {
             Ty::Fn(function) => *function,
@@ -531,7 +531,7 @@ impl<'a> Checker<'_, 'a, '_> {
             );
         }
         // ADR 0042: an opaque predicate is called only as the predicate of `checked` and in
-        // opaque bodies. DECISION D-149: also in the `where` clause of a kind and in the
+        // opaque bodies. D-149: also in the `where` clause of a kind and in the
         // clauses of a capability operation, which name the fact without establishing it.
         if def.kind == (FnKind::Predicate { reflect: false })
             && !self.ctx.opaque
@@ -728,7 +728,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// replaces by `ℓ*(σ)`, the join of every label of each type argument (`spec/10 §5`,
     /// generic instantiation, rule 3).
     /// - Edition 0.2 (ADR 0067): each position is raised by the type arguments of its summary.
-    /// - Edition 0.1, DECISION D-137: every position that holds data is raised by the join of
+    /// - Edition 0.1, D-137: every position that holds data is raised by the join of
     ///   `ℓ*(σ)` over all the type arguments.
     pub(crate) fn generic_result(
         &self,
@@ -1760,7 +1760,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let names: Vec<&str> = fields.iter().map(|f| f.name).collect();
         let mut taken: Vec<bool> = fields.iter().map(|_| false).collect();
         // R-030: the repair of an unknown field suggests only a field that no other argument
-        // gives, so applying it cannot make the argument a duplicate (U2006; DECISION D-157).
+        // gives, so applying it cannot make the argument a duplicate (U2006; D-157).
         let mut given_fields = taken.clone();
         for (position, arg) in args.iter().enumerate() {
             let target = match &arg.label {
@@ -1802,7 +1802,7 @@ impl<'a> Checker<'_, 'a, '_> {
                             "every field is given by another argument; remove this one",
                         ));
                     } else {
-                        // DECISION D-157, as for U2005 (re-review N-016).
+                        // D-157, as for U2005 (re-review N-016).
                         let listed: Vec<String> = open.iter().map(|n| format!("`{n}`")).collect();
                         diagnostic.repairs.push(Report::advice(format!(
                             "the fields that no other argument gives are {}",
@@ -2016,7 +2016,7 @@ fn decides_failure(capability: &str, op: &str, param: &str) -> bool {
 }
 
 /// Whether `def` is a prelude function whose result carries the labels of its arguments.
-/// DECISION D-136: its parameters that are not functions accept arguments of any label,
+/// D-136: its parameters that are not functions accept arguments of any label,
 /// since the result carries all of them, at the positions that hold them for the structural
 /// functions (ADR 0051); the other prelude functions keep the labels of their parameter types.
 fn prelude_labeled(prelude: usize, def: &FnDef<'_>) -> bool {

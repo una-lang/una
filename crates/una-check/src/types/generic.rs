@@ -83,7 +83,7 @@ impl Checker<'_, '_, '_> {
 /// instantiation when none does (re-review N-011, D-167). Instantiations are
 /// judged in the order they were checked, inner ones first, and one whose site contains a site already reported is not reported
 /// again, so that `Box(value: id(note))` yields one diagnostic, at `note`.
-/// DECISION D-138: the site is the first value whose declared type mentions the type
+/// D-138: the site is the first value whose declared type mentions the type
 /// parameter, and a site already reported, by U3016 or by U3006 for an escaping function
 /// value, is not reported again.
 pub(crate) fn second_class(
