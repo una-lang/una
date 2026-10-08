@@ -77,7 +77,7 @@ fn generated(path: &Path) -> (una_cli::Checked, Vec<una_verify::Obligation>) {
             .join()
             .unwrap()
     });
-    (checked, obligations)
+    (checked, obligations.unwrap())
 }
 
 #[test]
@@ -1698,4 +1698,102 @@ fn no_two_tuple_sorts_share_a_name() {
         tuple_sorts > 0,
         "no query of the repository projects a tuple"
     );
+}
+
+#[test]
+fn a_kind_core_does_not_declare_stops_tier_1() {
+    // #407: generating this package's obligations looks `Holder` up by its declaration, for
+    // its constructor and the function value in its field (ADR 0037 rule 2). When Core names a
+    // kind that no declaration has, generation stops with an internal error, rather than go on
+    // with the facts or checks that the lookup would have given.
+    let root = package_of_edition(
+        "unresolved_kind",
+        "0.2",
+        &[(
+            "src/app.una",
+            "module app\n\npub kind Pos = Int where it > 0\n\npub kind Holder[T]\n  f: T\n\nsame(x: Int) -> Int = x\n\npub make() -> Holder[fn(Int) -> Pos] = Holder(f: same)\n",
+        )],
+    );
+    let (mut checked, obligations) = generated(&root);
+    assert!(
+        obligations.iter().any(|o| o.goal.contains("result > 0")),
+        "the function value has its obligation: {:?}",
+        obligations.iter().map(|o| &o.goal).collect::<Vec<_>>()
+    );
+    for module in &mut checked.program.modules {
+        for decl in &mut module.decls {
+            if let una_core::Decl::Data { name, .. } = decl
+                && name == "Holder"
+            {
+                *name = "Renamed".to_owned();
+            }
+        }
+    }
+    let regenerated = std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn_scoped(scope, || {
+                una_verify::obligations(&checked.program, &checked.sources)
+            })
+            .unwrap()
+            .join()
+            .unwrap()
+    });
+    assert_eq!(
+        regenerated.map(|o| o.len()),
+        Err(una_verify::Problem::UnresolvedKind {
+            module: "app".to_owned(),
+            name: "Holder".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn every_family_of_the_prelude_verifies_without_an_internal_error() {
+    // #407: the verifier stops on a kind it cannot resolve, so a program that inspects each
+    // family of the prelude's kinds under a contract verifies cleanly at tier 1.
+    let families: [(&str, &str); 7] = [
+        (
+            "map",
+            "module family\n\npub frequent(counts: Map[Text, Int]) -> Int\n  ensures result >= 0\n=\n  let kept = counts.entries().filter(keep: fn(e) -> e.value >= 1)\n  kept.len\n",
+        ),
+        (
+            "json",
+            "module family\n\npub port(text: Text) -> Int\n  ensures result >= 0\n=\n  let r = attempt text.parse_json()\n  when r\n    is Ok(doc) ->\n      when doc\n        is Object(fields) -> 1\n        is Number(n) -> 2\n        else -> 0\n    is Err(e) ->\n      when e\n        is Syntax(at) -> 3\n        else -> 4\n",
+        ),
+        (
+            "text",
+            "module family\n\npub leading(field: Text) -> Int\n  ensures result >= 0\n=\n  let r = attempt field.parse_int()\n  when r\n    is Ok(n) -> if n >= 0 then n else 0\n    is Err(e) ->\n      when e\n        is NotADigit(at) -> 1\n        else -> 0\n",
+        ),
+        (
+            "http",
+            "module family\n\npub status(city: Text) -> internal Int\n  ensures result >= 0\n  uses @http: Http[get]\n=\n  let accept = Header(name: \"Accept\", value: \"application/json\")\n  let r = attempt @http.get(\"https://api.example.com/v1/now?city={city}\", headers: [accept], key_name: None)\n  when r\n    is Ok(response) -> if response.status >= 0 then response.status else 0\n    is Err(e) ->\n      when e\n        is Denied -> 1\n        else -> 0\n",
+        ),
+        (
+            "files",
+            "module family\n\npub size(path: Text) -> internal Int\n  ensures result >= 0\n  uses @files: Files[read]\n=\n  let r = attempt @files.read(path)\n  when r\n    is Ok(text) -> text.len\n    is Err(e) ->\n      when e\n        is NotFound -> 1\n        else -> 0\n",
+        ),
+        (
+            "keys",
+            "module family\n\npub signed(name: Text) -> internal Int\n  ensures result >= 0\n  uses @keys: Keys[hmac]\n=\n  let r = attempt @keys.hmac(key_name: \"pepper\", data: name)\n  when r\n    is Ok(h) -> 1\n    is Err(e) ->\n      when e\n        is UnknownKey -> 2\n",
+        ),
+        (
+            "option",
+            "module family\n\npub first(o: Option[Int]) -> Int\n  ensures result >= 0\n=\n  when o\n    is Some(x) -> if x >= 0 then x else 0\n    is None -> 0\n",
+        ),
+    ];
+    for (family, source) in families {
+        let root = package_of_edition(
+            &format!("prelude_family_{family}"),
+            "0.2",
+            &[("src/family.una", source)],
+        );
+        let checked = una_cli::check(&root, Tier::One).unwrap();
+        let found: Vec<String> = checked
+            .diagnostics
+            .iter()
+            .map(|d| format!("{} {}", d.code, d.message))
+            .collect();
+        assert_eq!(found, Vec::<String>::new(), "{family}");
+    }
 }

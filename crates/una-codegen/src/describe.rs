@@ -353,3 +353,44 @@ pub(crate) fn slot_name(position: usize) -> String {
 fn slot(name: &str) -> Option<usize> {
     name.strip_prefix('#')?.parse().ok()
 }
+
+#[cfg(test)]
+mod tests {
+    use una_core::{Base, Label, PRELUDE_ENGINE_KINDS, PRELUDE_MODULE, Program, Type};
+
+    use super::Types;
+
+    fn named(module: &str, name: &str, args: Vec<Type>) -> Type {
+        Type::Base {
+            base: Base::Named {
+                module: module.to_owned(),
+                name: name.to_owned(),
+                args,
+            },
+            refinements: Vec::new(),
+            label: Label::public(),
+        }
+    }
+
+    #[test]
+    fn every_kind_core_leaves_to_the_engines_is_described_and_no_other() {
+        // #407: the build stops when a described kind has no declaration, so each kind of the
+        // prelude that Core does not declare must be described here.
+        let program = Program::default();
+        for kind in PRELUDE_ENGINE_KINDS {
+            let mut types = Types::new(&program);
+            let int = Type::Base {
+                base: Base::Int,
+                refinements: Vec::new(),
+                label: Label::public(),
+            };
+            types.of(&named(PRELUDE_MODULE, kind, vec![int.clone(), int]));
+            assert!(!types.unknown(), "`{kind}` is described");
+        }
+        for (module, kind) in [(PRELUDE_MODULE, "Gone"), ("app", "Gone")] {
+            let mut types = Types::new(&program);
+            types.of(&named(module, kind, Vec::new()));
+            assert!(types.unknown(), "`{module}.{kind}` has no declaration");
+        }
+    }
+}

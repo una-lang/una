@@ -1,6 +1,7 @@
 //! Obligation generation (`spec/12 §3`): a walk over Core IR that keeps the path context Π,
 //! and builds the query of each obligation (`spec/12 §4`).
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use sha2::{Digest, Sha256};
@@ -12,6 +13,7 @@ use una_core::{
 use una_diag::ObligationKind;
 use una_syntax::{SourceDb, Span};
 
+use crate::run::Problem;
 use crate::smt::{
     Const, ConstRole, Definition, F, Fun as SmtFun, FunRole, HASHED, LIST, MAP, Query, Sort, TEXT,
     UNIT, kind_sort, path_selector,
@@ -118,7 +120,12 @@ pub(crate) enum Show {
 }
 
 /// The obligations of `program`, in the order of `spec/12 §5`: file, start offset, kind.
-pub fn obligations(program: &Program, sources: &SourceDb) -> Vec<Obligation> {
+///
+/// # Errors
+///
+/// [`Problem::UnresolvedKind`] when Core IR names a kind that no declaration has: a lookup
+/// that finds nothing would drop a fact or skip a check, so generation fails closed (#407).
+pub fn obligations(program: &Program, sources: &SourceDb) -> Result<Vec<Obligation>, Problem> {
     let index = Index::new(program);
     let mut all = Vec::new();
     for module in &program.modules {
@@ -180,8 +187,11 @@ pub fn obligations(program: &Program, sources: &SourceDb) -> Vec<Obligation> {
             all.extend(walker.obligations);
         }
     }
+    if let Some((module, name)) = index.unresolved().into_iter().next() {
+        return Err(Problem::UnresolvedKind { module, name });
+    }
     all.sort_by_key(|o| (o.source.file, o.source.start, o.kind));
-    all
+    Ok(all)
 }
 
 /// For each `ensures` clause of a public function, a query without any hypothesis, its
@@ -270,6 +280,8 @@ pub(crate) struct Index<'p> {
     policies: BTreeMap<(&'p str, &'p str), (&'p Type, &'p Type)>,
     /// The `to` type of each policy, by its `via` function.
     vias: BTreeMap<(&'p str, &'p str), Vec<&'p Type>>,
+    /// The kinds looked up that resolve to nothing (#407): [`obligations`] stops on them.
+    unresolved: RefCell<BTreeSet<(String, String)>>,
 }
 
 /// Whether `module` is the prelude's (`spec/14 §1`). The prelude is identified by its module
@@ -304,6 +316,7 @@ impl<'p> Index<'p> {
             kinds: BTreeMap::new(),
             policies: BTreeMap::new(),
             vias: BTreeMap::new(),
+            unresolved: RefCell::new(BTreeSet::new()),
         };
         for signature in &program.library {
             index.contracts.insert(
@@ -421,9 +434,26 @@ impl<'p> Index<'p> {
     }
 
     /// Whether the kind at (`module`, `name`) is a kind of the prelude. A kind the package
-    /// declares never is, whatever its module is called.
+    /// declares never is, whatever its module is called. Every lookup of a kind starts here,
+    /// so a kind that resolves to nothing is recorded (#407).
     fn prelude_kind(&self, module: &str, name: &str) -> bool {
-        is_prelude(module) && !self.kinds.contains_key(&(module, name))
+        if self.kinds.contains_key(&(module, name)) {
+            return false;
+        }
+        let prelude = is_prelude(module);
+        // The kinds Core does not declare: `prelude_variants` has the variants of some, and
+        // the verifier does not look into the others' values.
+        if !(prelude && una_core::PRELUDE_ENGINE_KINDS.contains(&name)) {
+            self.unresolved
+                .borrow_mut()
+                .insert((module.to_owned(), name.to_owned()));
+        }
+        prelude
+    }
+
+    /// The kinds looked up that resolve to nothing, in order.
+    fn unresolved(&self) -> Vec<(String, String)> {
+        self.unresolved.borrow().iter().cloned().collect()
     }
 
     /// The number of variants of the kind at (`module`, `name`), and their names.
@@ -4919,7 +4949,7 @@ mod tests {
         let span = Span::new(file, 0, 6);
         let first = namespace_program(&[], span);
         let mut internal: BTreeSet<String> = BTreeSet::new();
-        let obligations = super::obligations(&first, &sources);
+        let obligations = super::obligations(&first, &sources).unwrap();
         assert!(obligations.len() >= 2, "{}", obligations.len());
         for obligation in &obligations {
             for symbol in declared(&obligation.query.text()) {
@@ -4948,7 +4978,7 @@ mod tests {
         }
         let names: Vec<String> = internal.iter().cloned().collect();
         let second = namespace_program(&names, span);
-        let obligations = super::obligations(&second, &sources);
+        let obligations = super::obligations(&second, &sources).unwrap();
         let mut users = 0;
         for obligation in &obligations {
             // No symbol stands for two things: a declaration is emitted once per symbol, so two
@@ -5029,6 +5059,81 @@ mod tests {
             index.variant_names("prelude", "KeyError"),
             vec!["UnknownKey"]
         );
+    }
+
+    #[test]
+    fn a_kind_core_does_not_declare_is_recorded_at_every_lookup() {
+        // #407: a `Named` that resolves to no declaration, no table of the prelude and no
+        // opaque kind of the prelude is recorded at each lookup, never skipped silently.
+        let program = Program {
+            modules: vec![una_core::Module {
+                path: "m".to_owned(),
+                decls: vec![Decl::Data {
+                    name: "Here".to_owned(),
+                    params: Vec::new(),
+                    variants: vec![DataVariant {
+                        name: "Only".to_owned(),
+                        fields: Vec::new(),
+                    }],
+                    record: false,
+                }],
+                examples: Vec::new(),
+            }],
+            ..Program::default()
+        };
+        let named = |module: &str, name: &str| Type::Base {
+            base: Base::Named {
+                module: module.to_owned(),
+                name: name.to_owned(),
+                args: Vec::new(),
+            },
+            refinements: Vec::new(),
+            label: una_core::Label::public(),
+        };
+        type Lookup<'l> = &'l dyn Fn(&Index<'_>, &str, &str);
+        let lookups: [Lookup<'_>; 4] = [
+            &|index, module, name| {
+                index.prelude_kind(module, name);
+            },
+            &|index, module, name| {
+                index.variant_names(module, name);
+            },
+            &|index, module, name| {
+                index.payload_free(module, name);
+            },
+            &|index, module, name| {
+                index.field_type(&named(module, name), 0, 0);
+            },
+        ];
+        for lookup in lookups {
+            let index = Index::new(&program);
+            lookup(&index, "m", "Gone");
+            lookup(&index, "prelude", "Gone");
+            lookup(&index, "", "Here");
+            assert_eq!(
+                index.unresolved(),
+                vec![
+                    ("".to_owned(), "Here".to_owned()),
+                    ("m".to_owned(), "Gone".to_owned()),
+                    ("prelude".to_owned(), "Gone".to_owned()),
+                ]
+            );
+            let index = Index::new(&program);
+            lookup(&index, "m", "Here");
+            for prelude in [
+                "Option",
+                "Result",
+                "FileError",
+                "KeyError",
+                "List",
+                "Map",
+                "Entry",
+                "ParseError",
+            ] {
+                lookup(&index, "prelude", prelude);
+            }
+            assert_eq!(index.unresolved(), Vec::<(String, String)>::new());
+        }
     }
 
     #[test]

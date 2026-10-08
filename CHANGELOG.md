@@ -39,6 +39,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ### Checks
 
+- **A kind that Core IR names but nothing declares stops verification and the build** (#407). The verifier looks kinds up by module and name; a lookup that found nothing dropped facts, and one site, the function values given to a generic kind's fields, skipped its check. Every lookup now records such a kind, and tier 1 reports an internal error (U8001) instead of generating obligations. `una build` does the same when a type it describes for printing has no declaration. No release produced such a name; this closes the path for a future bug of elaboration.
 - **A `via` body is exempt from label checks in edition 0.2 too** (#384). Two edition 0.2 rules, the program counter of an update of an editable binding and a map key above the map's top label, reported U4001 inside the `via` function of a policy, which `spec/07 §6` rule 6 exempts from label checks; a `via` written with `let edit`, a `for` loop or a map was rejected. Both now follow the exemption as the other rules do. Every other function of a trusted module, including one a `via` calls, is checked as before.
 - **A kind cannot take the name of a built-in type in edition 0.2** (ADR 0079, #130). A kind, a variant or a capability named `Int`, `Nat`, `Bool`, `Text`, `Unit`, `Hashed`, `List`, `Option` or `Result` silently replaced the built-in type in its module; in edition 0.2 it is U1002, as the fixed-width names and `Map` already were. Edition 0.1 is unchanged.
 

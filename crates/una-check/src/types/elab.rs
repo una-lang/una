@@ -99,6 +99,11 @@ pub(crate) fn program(
     )
 }
 
+/// The kinds of the prelude that Core IR declares, in the module `prelude`; the others are
+/// [`una_core::PRELUDE_ENGINE_KINDS`], which each engine knows itself (#407).
+pub(crate) const PRELUDE_CORE_KINDS: [&str; 5] =
+    ["Json", "JsonError", "Header", "Response", "HttpError"];
+
 /// The kinds of JSON and their opaque predicate `is_json_number`, which the prelude declares in
 /// edition 0.2 (`spec/23 §1`), in a module of the prelude's path: so the verifier generates the
 /// obligations of the refinements of their fields, as `Decimal`'s `JsonNumber`, proves them
@@ -117,10 +122,7 @@ fn prelude_kinds(env: &Env<'_>, findings: &Findings, dbs: Dbs<'_>) -> Option<Cor
             continue;
         };
         let json = match &core {
-            Decl::Data { name, .. } => matches!(
-                name.as_str(),
-                "Json" | "JsonError" | "Header" | "Response" | "HttpError"
-            ),
+            Decl::Data { name, .. } => PRELUDE_CORE_KINDS.contains(&name.as_str()),
             Decl::Pred { name, .. } => name == "is_json_number",
             _ => false,
         };

@@ -1178,3 +1178,19 @@ pub const HOST_MODULE: &str = "std.host";
 /// it: a module path whose first segment is `prelude` is reserved (U1009, `spec/10 §11`
 /// rule 8), and tier 1 and the interpreter only see packages without diagnostics.
 pub const PRELUDE_MODULE: &str = "prelude";
+
+/// The kinds of the prelude that Core IR does not declare, which each engine knows itself: the
+/// collections and a map's `Entry`, `Option` and `Result`, the failure kinds of `Files` and
+/// `Keys`, and `ParseError`. Every other kind of the prelude is a [`Decl::Data`] of the module
+/// [`PRELUDE_MODULE`]. A `Named` kind that is neither, nor declared by the package, is a bug of
+/// elaboration, and the verifier and the native backend stop on it (#407).
+pub const PRELUDE_ENGINE_KINDS: [&str; 8] = [
+    "List",
+    "Map",
+    "Entry",
+    "Option",
+    "Result",
+    "FileError",
+    "KeyError",
+    "ParseError",
+];
