@@ -1,8 +1,8 @@
 # 0080. Shared Core IR types and a lazy editor index
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-08
-- Deciders: Leonardo (pending); proposal by Claude (Una-2), at the coordinator's request (N-58)
+- Deciders: Leonardo (2026-10-08, written); proposal by Claude (Una-2), at the coordinator's request (N-58)
 - Follows: ADR 0077 (shared types in the checker), issue #335
 
 ## Context
@@ -104,13 +104,16 @@ Core IR as it is. The index stores at most a fixed number of characters per type
 
 The quadratic term stays where it is: at the parser's nesting bound, in Core IR and in the index. ADR 0077 already took the checker's own part.
 
-## Decision (proposed)
+## Decision
 
-None yet: the choice is the owner's. My recommendation is **B now and A later, if a measured workload needs it**:
+**Option B: a lazy editor index.** Decided by Leonardo on 2026-10-08, in writing.
+- The editor index holds `Send` handles to types and formats each hover when it is asked for, as "Implementation plan for option B" below describes. Building the index becomes O(n).
+- Core IR keeps its owned types. Option A, shared Core IR types, is not chosen: it changes what the verifier, the interpreter and the native backend read, a TCB change, for a gain that appears only near the parser's nesting bound. It stays the option to take if a measured workload needs checking linear end to end.
+- Hover text stays byte-identical, with kinds named as declared, the choice of "Text" below.
+
+The recommendation was B now and A later if a measured workload needs it:
 - B is outside the TCB and removes one of the two remaining quadratic terms.
-- A pays off only near the nesting bound, and it changes what the verifier, the interpreter and the backend read. The owner's rule asks for the best average case (CLAUDE.md, "Performance"), and the average program does not nest deeply enough for A's gain to outweigh a TCB change.
-
-If the owner wants checking linear end to end, A is the option that does it.
+- A pays off only near the nesting bound. The owner's rule asks for the best average case (CLAUDE.md, "Performance"), and the average program does not nest deeply enough for A's gain to outweigh a TCB change.
 
 ## Soundness and the TCB
 
