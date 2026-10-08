@@ -2,7 +2,9 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
-## Unreleased
+## v0.3.3
+
+A security patch of the Beta (S-13: executables and releases no longer carry paths of the machine that built them), released with everything validated on `main` since v0.3.2: the checker shares its types (ADR 0077), checking many generic functions is linear, diagnostics and repairs fixed by three reviews and a dogfood pass, a crash is U8001, and the release archive ships the guides. Edition 0.1's behavior is unchanged; edition 0.2 gains two checks (ADR 0079, and #407's fail-closed verifier) and loses one false positive (#384). Validation: `docs/releases/v0.3.3-validation.md`.
 
 ### Security
 
@@ -22,6 +24,8 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ### Documentation
 
+- **Negative literals in the refinement language** (#10, R-031): `spec/12 §2` states that `-k` is a literal, so `x * -2` is linear and `a div -k` has no nonzero obligation, as the verifier already did; `runtime/euclidean_division_signs` checks negative divisors again (D-159).
+- **A cross-feature adversarial review of edition 0.2** (#177), in `docs/reviews/v0.3.3/`: 224 generated cells over the edition 0.2 features, each checked, and each accepted one run under the interpreter and natively: 0 leaks, 0 native divergences, and one false positive, fixed by #384.
 - **The guide and the explain texts from the dogfood pass** (#404, D-2, D-4, D-6, D-7). `una explain U4003` has a second fixed example, a policy for text read from `Env`, and the guide's section on labels opens with it; the explain test checks every fixed example. The guide says that refined kinds cannot be type arguments (`Map[Text, Nat]` is U2002), that a local name cannot shadow another (U1002), and that every built-in type name is U1002 for a declaration in edition `0.2` (ADR 0079); the loop section shows the helper pattern for contracts across a loop. `spec/12` quotes U5002's new reason, and ADR 0071 has an amendment for it.
 - **Decisions on type-parameter values given to function values** (#364): the guide's section on labels shows why `[if a == b then p else q].map(each: k)` is U4001 at `each: k`, in both editions, and how to pass values of `T` through or return the decision; `una explain U4001` points to it.
 - **Agent ABI versioning** (ADR 0076, #370): adding a key to a JSON document, at any position, keeps its `una.*/N` version, and consumers ignore unknown keys; removing, renaming or retyping a key, changing a meaning, or adding a value to a closed set of strings bumps it. The diagnostic `code` and the obligation `kind` are open sets. No schema changes version.
@@ -33,6 +37,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ### Performance
 
+- **The checker shares its types** (ADR 0077, stages 1, 2a, 2b and 3a, #335). Labels share their sets of names; a type's children are shared nodes that are never mutated; an operation that changes nothing below a node returns the node itself; and each node carries flags that let `resolve`, `settle` and `erase` skip what they would not change. Each labeled node, kind-argument list and function type is erased once per declaration, and each solved variable is resolved once at its end. Type nodes now grow linearly with nesting depth (4x the depth makes about 4x the nodes for lists, options and both mixed, bounded at 6x by a scaling test; it was 13x to 16x). Every output is byte-identical over the identity runs (2,164 to 2,427 targets), native builds included. Total time still grows faster than linearly at extreme depths, because Core IR and the editor index copy types; that part is Proposed ADR 0080.
 - **Checking many generic functions is linear in their number** (#375). The least fixpoint of result summaries built each component's callers from every edge and found each function it checked by scanning every declaration, and the language-server index found each type's declaration by a linear search: each was quadratic in the number of functions. They are now one pass over the edges, a map from function to declaration, and a binary search, so a check is O((n + E) log n): 16,000 generic functions take 14 G instructions, from 37 G, and doubling them doubles the work. Outputs are byte-identical.
 
 ### Command line
