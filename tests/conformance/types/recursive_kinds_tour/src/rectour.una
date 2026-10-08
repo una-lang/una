@@ -3,8 +3,6 @@
 -- expect: ok
 module rectour
 
-pub kind Nat = Int where it >= 0
-
 pub kind Expr = Lit(value: Int) | Add(left: Expr, right: Expr) | Neg(operand: Expr)
 
 --- Evaluates an expression.

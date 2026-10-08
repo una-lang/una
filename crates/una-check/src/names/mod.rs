@@ -405,6 +405,26 @@ impl<'p, 'a> Checker<'p, 'a> {
             );
             self.diagnostics.push(diagnostic);
         }
+        // Edition 0.2: the built-in types, and the types of the prelude that every program
+        // uses, cannot be shadowed by a declaration (`spec/03 §1`, ADR 0079): in edition 0.1 a
+        // kind named `Int` silently replaced it (#130).
+        if upper
+            && self.package.settings.edition >= Edition::V0_2
+            && matches!(
+                name,
+                "Int" | "Nat" | "Bool" | "Text" | "Unit" | "Hashed" | "List" | "Option" | "Result"
+            )
+        {
+            let diagnostic = self.make(
+                Code::U1002,
+                ident.span,
+                format!(
+                    "`{name}` is a built-in type in edition 0.2, so a {} cannot take its name",
+                    what.word()
+                ),
+            );
+            self.diagnostics.push(diagnostic);
+        }
         // Edition 0.2: maps and their entries are built in (`spec/21 §1` rule 1).
         if upper
             && self.package.settings.edition >= Edition::V0_2
