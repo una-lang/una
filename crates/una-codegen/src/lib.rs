@@ -158,6 +158,13 @@ pub fn compile(
         name: "main".to_owned(),
     })?;
     emitter.drain()?;
+    // #407: a type described for printing or comparison names a kind that nothing declares,
+    // a bug of elaboration; it would print as `?` rather than as its declaration says.
+    if emitter.types.unknown() {
+        return Err(CodegenError::Internal(
+            "a type of the program holds a kind that has no declaration".to_owned(),
+        ));
+    }
     let meta = meta(&Described {
         sites: &emitter.sites,
         types: emitter.types.shapes(),

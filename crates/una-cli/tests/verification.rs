@@ -77,7 +77,7 @@ fn generated(path: &Path) -> (una_cli::Checked, Vec<una_verify::Obligation>) {
             .join()
             .unwrap()
     });
-    (checked, obligations)
+    (checked, obligations.unwrap())
 }
 
 #[test]
@@ -1697,5 +1697,53 @@ fn no_two_tuple_sorts_share_a_name() {
     assert!(
         tuple_sorts > 0,
         "no query of the repository projects a tuple"
+    );
+}
+
+#[test]
+fn a_kind_core_does_not_declare_stops_tier_1() {
+    // #407: generating this package's obligations looks `Holder` up by its declaration, for
+    // its constructor and the function value in its field (ADR 0037 rule 2). When Core names a
+    // kind that no declaration has, generation stops with an internal error, rather than go on
+    // with the facts or checks that the lookup would have given.
+    let root = package_of_edition(
+        "unresolved_kind",
+        "0.2",
+        &[(
+            "src/app.una",
+            "module app\n\npub kind Pos = Int where it > 0\n\npub kind Holder[T]\n  f: T\n\nsame(x: Int) -> Int = x\n\npub make() -> Holder[fn(Int) -> Pos] = Holder(f: same)\n",
+        )],
+    );
+    let (mut checked, obligations) = generated(&root);
+    assert!(
+        obligations.iter().any(|o| o.goal.contains("result > 0")),
+        "the function value has its obligation: {:?}",
+        obligations.iter().map(|o| &o.goal).collect::<Vec<_>>()
+    );
+    for module in &mut checked.program.modules {
+        for decl in &mut module.decls {
+            if let una_core::Decl::Data { name, .. } = decl
+                && name == "Holder"
+            {
+                *name = "Renamed".to_owned();
+            }
+        }
+    }
+    let regenerated = std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn_scoped(scope, || {
+                una_verify::obligations(&checked.program, &checked.sources)
+            })
+            .unwrap()
+            .join()
+            .unwrap()
+    });
+    assert_eq!(
+        regenerated.map(|o| o.len()),
+        Err(una_verify::Problem::UnresolvedKind {
+            module: "app".to_owned(),
+            name: "Holder".to_owned(),
+        })
     );
 }

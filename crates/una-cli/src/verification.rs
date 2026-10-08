@@ -69,7 +69,15 @@ pub(crate) fn tier_one_cancellable(
     solving: &Solving,
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> TierOne {
-    let obligations = on_large_stack(|| una_verify::obligations(program, &package.sources));
+    let obligations = match on_large_stack(|| una_verify::obligations(program, &package.sources)) {
+        Ok(obligations) => obligations,
+        Err(problem) => {
+            return TierOne {
+                diagnostics: vec![problem_diagnostic(package, problem)],
+                verification: None,
+            };
+        }
+    };
     if obligations.is_empty() {
         return TierOne {
             diagnostics: Vec::new(),
@@ -102,6 +110,13 @@ pub(crate) fn problem_diagnostic(package: &Package, problem: Problem) -> Diagnos
         Problem::Query { id, message } => Diagnostic::error(
             Code::U8001,
             format!("internal error: obligation {id} could not be encoded: {message}"),
+            root_location(package),
+        ),
+        Problem::UnresolvedKind { module, name } => Diagnostic::error(
+            Code::U8001,
+            format!(
+                "internal error: Core IR names the kind `{name}` of module `{module}`, which nothing declares, so no obligation was generated"
+            ),
             root_location(package),
         ),
     }

@@ -77,6 +77,15 @@ pub enum Problem {
         /// What the solver said.
         message: String,
     },
+    /// Core IR names a kind that no declaration, and no kind of the prelude, has: a bug of
+    /// elaboration (U8001). Generation stops rather than skip what it would have looked up
+    /// (#407).
+    UnresolvedKind {
+        /// The module Core names.
+        module: String,
+        /// The kind's name.
+        name: String,
+    },
 }
 
 /// The full script of an obligation's query: the preamble of `spec/12 §5`, the query, and the
