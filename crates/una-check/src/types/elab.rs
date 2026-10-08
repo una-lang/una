@@ -3798,8 +3798,8 @@ mod tests {
     fn the_consistency_check_finds_lost_uses_fails_and_labels() {
         let secret = Label {
             level: una_core::Level::Secret,
-            categories: std::collections::BTreeSet::new(),
-            symbols: std::collections::BTreeSet::new(),
+            categories: una_core::Names::new(),
+            symbols: una_core::Names::new(),
         };
         let function = Ty::Fn(Box::new(super::super::ty::FnTy {
             params: vec![Ty::Text],

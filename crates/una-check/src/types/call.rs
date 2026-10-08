@@ -865,15 +865,13 @@ impl<'a> Checker<'_, 'a, '_> {
             for (index, (function, field)) in inner.into_iter().enumerate() {
                 let mut accepted = Label::public();
                 if index == 0 && !field && inline.is_some() && !function.params.is_empty() {
-                    let mut every: Option<std::collections::BTreeSet<String>> = None;
+                    let mut every: Option<super::label::Names> = None;
                     for input in &function.params {
                         let mut carried = Label::public();
                         self.without_decisions(input, &mut carried);
                         every = Some(match every {
                             None => carried.symbols,
-                            Some(so_far) => {
-                                so_far.intersection(&carried.symbols).cloned().collect()
-                            }
+                            Some(so_far) => so_far.intersection(&carried.symbols),
                         });
                     }
                     accepted.symbols = every.unwrap_or_default();

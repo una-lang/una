@@ -245,15 +245,15 @@ pub(crate) fn solve_into(
 fn pair_labels(found: &Ty, expected: &Ty, outer: Option<&str>, out: &mut Vec<(String, Label)>) {
     let (found_label, found) = strip(found);
     let (expected_label, expected) = strip(expected);
-    let own: Vec<&String> = expected_label
+    let own: Vec<&std::sync::Arc<str>> = expected_label
         .symbols
         .iter()
         .filter(|s| is_variable(s))
         .collect();
     for name in &own {
-        out.push(((*name).clone(), found_label.clone()));
+        out.push((name.to_string(), found_label.clone()));
     }
-    let here = own.first().map(|name| name.as_str()).or(outer);
+    let here = own.first().map(|name| &***name).or(outer);
     if own.is_empty()
         && let Some(name) = outer
     {
@@ -318,10 +318,10 @@ fn strip(ty: &Ty) -> (Label, &Ty) {
 /// after the components it flows from, so every bound is joined once.
 fn solve(bounds: &BTreeMap<String, Label>) -> BTreeMap<String, Label> {
     let names: Vec<&String> = bounds.keys().collect();
-    let index_of: BTreeMap<&String, usize> = names
+    let index_of: BTreeMap<&str, usize> = names
         .iter()
         .enumerate()
-        .map(|(i, name)| (*name, i))
+        .map(|(i, name)| (name.as_str(), i))
         .collect();
     // The constant part of each bound, and the variables it names.
     let mut constant = Vec::with_capacity(names.len());
@@ -336,7 +336,7 @@ fn solve(bounds: &BTreeMap<String, Label>) -> BTreeMap<String, Label> {
                 .symbols
                 .iter()
                 .filter(|s| is_variable(s))
-                .filter_map(|s| index_of.get(s).copied())
+                .filter_map(|s| index_of.get(&**s).copied())
                 .collect(),
         );
     }

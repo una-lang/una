@@ -105,7 +105,7 @@ impl Vars {
         let mut label = Label::public();
         for ty in tys {
             if let Ty::Var(var) = ty {
-                label.symbols.insert(format!("?{var}"));
+                label.symbols.insert(&format!("?{var}"));
             }
         }
         label
@@ -179,7 +179,7 @@ impl Vars {
             }
             let value = self.resolve_shape(&Ty::Var(var));
             if keep && let Ty::Var(unsolved) = value {
-                settled.symbols.insert(format!("?{unsolved}"));
+                settled.symbols.insert(&format!("?{unsolved}"));
                 continue;
             }
             visiting.push(var);
@@ -483,8 +483,8 @@ mod tests {
         use una_core::{Label, Level};
         let secret = Label {
             level: Level::Secret,
-            categories: std::collections::BTreeSet::new(),
-            symbols: std::collections::BTreeSet::new(),
+            categories: una_core::Names::new(),
+            symbols: una_core::Names::new(),
         };
         let vars = Vars::default();
         let function = Ty::Fn(Box::new(FnTy {
@@ -506,8 +506,8 @@ mod tests {
         use una_core::{Label, Level};
         let secret = Label {
             level: Level::Secret,
-            categories: std::collections::BTreeSet::new(),
-            symbols: std::collections::BTreeSet::new(),
+            categories: una_core::Names::new(),
+            symbols: una_core::Names::new(),
         };
         let mut vars = Vars::default();
         let t = vars.fresh(Origin::Element, span());

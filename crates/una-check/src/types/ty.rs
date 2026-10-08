@@ -56,9 +56,9 @@ pub(crate) fn starred(label: &Label) -> Label {
         .iter()
         .map(|s| {
             if s.starts_with('?') || s.ends_with('*') {
-                s.clone()
+                std::sync::Arc::clone(s)
             } else {
-                format!("{s}*")
+                una_core::Names::name(&format!("{s}*"))
             }
         })
         .collect();

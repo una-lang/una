@@ -708,7 +708,7 @@ impl Checker<'_, '_, '_> {
     /// parameters, and the rest (ADR 0067 amendment).
     pub(crate) fn split_decisions(&self, label: &Label) -> (Label, Label) {
         let names = &self.type_params;
-        let own = |s: &String| {
+        let own = |s: &std::sync::Arc<str>| {
             s.strip_suffix('*')
                 .is_some_and(|name| names.contains(&name))
         };
@@ -755,8 +755,8 @@ mod tests {
     fn at(level: Level) -> Label {
         Label {
             level,
-            categories: std::collections::BTreeSet::new(),
-            symbols: std::collections::BTreeSet::new(),
+            categories: una_core::Names::new(),
+            symbols: una_core::Names::new(),
         }
     }
 

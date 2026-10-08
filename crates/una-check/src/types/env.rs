@@ -1560,13 +1560,13 @@ impl<'a> Env<'a> {
     ) -> Label {
         let mut lowered = Label {
             level: label.level,
-            categories: std::collections::BTreeSet::new(),
-            symbols: std::collections::BTreeSet::new(),
+            categories: una_core::Names::new(),
+            symbols: una_core::Names::new(),
         };
         for category in &label.categories {
             let name = self.text(module, category.name);
             if self.categories.iter().any(|declared| declared == name) {
-                lowered.categories.insert(name.to_owned());
+                lowered.categories.insert(name);
             } else if self.reports(module) {
                 let mut diagnostic = report.make(
                     Code::U4007,
