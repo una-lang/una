@@ -46,7 +46,7 @@ Rules:
 2. A call with two or more arguments MAY omit the label of the first argument and MUST label all others (U2004). An unlabeled first argument always binds the first parameter, whatever its name (ADR 0049). Unknown labels are U2005; duplicates U2006.
 3. **Punning:** from the second argument on, an argument that is a bare identifier equal to the parameter name counts as labeled: `record(key, decision)` is `record(key: key, decision: decision)` when those are the parameter names. With parameters `(a, b)`, `minus(b, a)` binds `b` to `a` and gives `a` twice (U2006).
 4. Record and variant constructors with two or more fields require every field labeled (punning allowed), in any order; missing or unknown fields are U2009. The formatter orders them by declaration. A constructor with exactly one field MAY omit the label (`Some(a)`), and a pattern on a single-field variant MAY bind the field under any name (`is Some(a)`).
-5. Arguments are evaluated left to right in source order.
+5. Arguments are evaluated left to right in source order. A constructor's arguments are evaluated in the order its kind declares its fields, the order canonical form gives them (rule 4, `spec/15`), so the two orders agree on every program that checks; a source that writes them in another order is U7001 (ADR 0081).
 
 **Method-call syntax.** `e.f(args)` means field access followed by a call if the type of `e` has a field `f` of function type; otherwise it means `f(e, args)` with `f` resolved in scope, `e` taking the first parameter unlabeled. `e.f` without arguments is field access, or `f(e)` if no field `f` exists and `f` is a function with one parameter. `xs.len` and `t.len` are built in.
 
