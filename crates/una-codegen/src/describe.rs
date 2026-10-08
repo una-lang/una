@@ -7,7 +7,9 @@
 use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
-use una_core::{Base, Decl, Label, Level, PRELUDE_MODULE, Program, Type};
+use una_core::{
+    Base, Decl, Label, Level, PRELUDE_MODULE, PreludeField, Program, Type, prelude_variants,
+};
 
 /// The types described so far, by index, and the index of each by its name.
 pub(crate) struct Types<'p> {
@@ -78,39 +80,6 @@ impl<'p> Types<'p> {
                         let (key, value) = (self.of(&arg(0)), self.of(&arg(1)));
                         json!({ "shape": "map", "key": key, "value": value })
                     }
-                    "Entry" => {
-                        let (key, value) = (self.of(&arg(0)), self.of(&arg(1)));
-                        data(vec![variant(
-                            "Entry",
-                            vec![
-                                field("key", key, None, false),
-                                field("value", value, None, false),
-                            ],
-                        )])
-                    }
-                    // The fields of the prelude's variants have no declared type that the
-                    // interpreter reads: they are never redacted, and U6001 never shows them.
-                    "Option" => {
-                        let value = self.of(&arg(0));
-                        data(vec![
-                            variant("Some", vec![field("value", value, None, false)]),
-                            variant("None", Vec::new()),
-                        ])
-                    }
-                    "Result" => {
-                        let (value, failure) = (self.of(&arg(0)), self.of(&arg(1)));
-                        data(vec![
-                            variant("Ok", vec![field("value", value, None, false)]),
-                            variant("Err", vec![field("failure", failure, None, false)]),
-                        ])
-                    }
-                    "FileError" => data(
-                        ["NotFound", "Denied", "Io"]
-                            .into_iter()
-                            .map(|name| variant(name, Vec::new()))
-                            .collect(),
-                    ),
-                    "KeyError" => data(vec![variant("UnknownKey", Vec::new())]),
                     // JSON (`spec/23 §1`): `Json` holds itself through its arrays and objects,
                     // which refer to its own index.
                     "Json" => {
@@ -159,18 +128,28 @@ impl<'p> Types<'p> {
                                 .collect(),
                         )
                     }
-                    // `spec/22 §4`.
-                    "ParseError" => {
-                        let int = self.of(&Type::Base {
-                            base: Base::Int,
-                            refinements: Vec::new(),
-                            label: Label::public(),
-                        });
-                        data(vec![
-                            variant("Empty", Vec::new()),
-                            variant("NotADigit", vec![field("at", int, None, false)]),
-                            variant("NoDigits", Vec::new()),
-                        ])
+                    // The kinds that Core leaves to the engines, from the table by which the
+                    // interpreter names their fields (#415): none of their fields declares a
+                    // label, and U6001 never shows them. Each field is described in the
+                    // table's order, which numbers the descriptions.
+                    other if let Some(variants) = prelude_variants(other) => {
+                        let mut described = Vec::new();
+                        for (name, fields) in variants {
+                            let mut shown = Vec::new();
+                            for (field_name, of) in *fields {
+                                let ty = match of {
+                                    PreludeField::Arg(position) => self.of(&arg(*position)),
+                                    PreludeField::Int => self.of(&Type::Base {
+                                        base: Base::Int,
+                                        refinements: Vec::new(),
+                                        label: Label::public(),
+                                    }),
+                                };
+                                shown.push(field(field_name, ty, None, false));
+                            }
+                            described.push(variant(name, shown));
+                        }
+                        data(described)
                     }
                     // The other kinds of the prelude that Core holds, as `Response`
                     // (`spec/24 §1`), by their declarations.
@@ -223,10 +202,10 @@ impl<'p> Types<'p> {
                     .fields
                     .iter()
                     .map(|(name, declared)| {
-                        let label = deep_label(declared);
+                        let label = declared.deep_label();
                         let ty = self.of(&substitute(declared, params, args));
                         let redacted = (!label.is_public()).then(|| level(label.level));
-                        let shown = !has_param(declared) && label.is_public();
+                        let shown = !declared.has_param() && label.is_public();
                         field(name, ty, redacted, shown)
                     })
                     .collect();
@@ -307,31 +286,6 @@ fn substitute(ty: &Type, params: &[String], args: &[Type]) -> Type {
     }
 }
 
-/// The join of the labels at every position of `ty` that holds data, as the interpreter reads a
-/// field's declared type.
-pub(crate) fn deep_label(ty: &Type) -> Label {
-    match ty {
-        Type::Base { base, label, .. } => match base {
-            Base::Named { args, .. } => args
-                .iter()
-                .fold(label.clone(), |acc, arg| acc.join(&deep_label(arg))),
-            _ => label.clone(),
-        },
-        Type::Fn { label, .. } => label.clone(),
-    }
-}
-
-fn has_param(ty: &Type) -> bool {
-    match ty {
-        Type::Base { base, .. } => match base {
-            Base::Param(_) | Base::Unknown => true,
-            Base::Named { args, .. } => args.iter().any(has_param),
-            _ => false,
-        },
-        Type::Fn { .. } => false,
-    }
-}
-
 /// The name of a level, as `<redacted:level>` shows it.
 pub(crate) fn level(level: Level) -> &'static str {
     match level {
@@ -356,9 +310,62 @@ fn slot(name: &str) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use una_core::{Base, Label, PRELUDE_ENGINE_KINDS, PRELUDE_MODULE, Program, Type};
+    use una_core::{
+        Base, Label, PRELUDE_ENGINE_KINDS, PRELUDE_MODULE, Program, Type, prelude_variants,
+    };
 
     use super::Types;
+
+    #[test]
+    fn the_prelude_kinds_core_leaves_to_the_engines_are_described_by_the_shared_table() {
+        // #415: each variant and field, in the table's order, none of them redacted, as the
+        // interpreter names them from the same table.
+        let program = Program::default();
+        let int = Type::Base {
+            base: Base::Int,
+            refinements: Vec::new(),
+            label: Label::public(),
+        };
+        for kind in PRELUDE_ENGINE_KINDS {
+            let Some(variants) = prelude_variants(kind) else {
+                continue;
+            };
+            let mut types = Types::new(&program);
+            let root = types.of(&named(PRELUDE_MODULE, kind, vec![int.clone(), int.clone()]));
+            let shape = &types.shapes()[root];
+            assert_eq!(shape["shape"], "data", "{kind}");
+            let described: Vec<(String, Vec<(String, bool)>)> = shape["variants"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| {
+                    let fields = v["fields"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|f| {
+                            (
+                                f["name"].as_str().unwrap().to_owned(),
+                                f["redacted"].is_null(),
+                            )
+                        })
+                        .collect();
+                    (v["name"].as_str().unwrap().to_owned(), fields)
+                })
+                .collect();
+            let tabled: Vec<(String, Vec<(String, bool)>)> = variants
+                .iter()
+                .map(|(variant, fields)| {
+                    let fields = fields
+                        .iter()
+                        .map(|(f, _)| ((*f).to_owned(), true))
+                        .collect();
+                    ((*variant).to_owned(), fields)
+                })
+                .collect();
+            assert_eq!(described, tabled, "{kind}");
+        }
+    }
 
     fn named(module: &str, name: &str, args: Vec<Type>) -> Type {
         Type::Base {

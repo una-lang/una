@@ -7,7 +7,7 @@ use std::rc::Rc;
 use num_bigint::{BigInt, Sign};
 use una_core::json::Halt;
 use una_core::{
-    Atom, Base, Bound, CapOp, Ctor, Decl, Expr, FixedOp, Fun, HandlerOp, IntType, Label, Level,
+    Atom, Bound, CapOp, Ctor, Decl, Expr, FixedOp, Fun, HandlerOp, IntType, Label, Level,
     LoopSource, MapOp, Name, Path, Prim, Program, Rhs, Source, Type, Use,
 };
 use una_syntax::Span;
@@ -228,6 +228,9 @@ impl<'p> Index<'p> {
     /// The names of the fields of `ctor`, with their declared types when they are known: a
     /// kind that Core declares, the program's or the prelude's as `Header` (`spec/24 §1`), by
     /// its declaration, so that its labeled fields are redacted as the executable redacts them.
+    /// A kind of the prelude that Core does not declare has its fields' names from
+    /// [`una_core::prelude_variants`], as the native backend's descriptions do, and no
+    /// declared type, since none of them declares a label (#415).
     fn fields(&self, ctor: &Ctor) -> Vec<(&'p str, Option<&'p Type>)> {
         let declared = self
             .data
@@ -236,22 +239,11 @@ impl<'p> Index<'p> {
         if let Some(fields) = declared {
             return fields.iter().map(|(f, t)| (*f, Some(*t))).collect();
         }
-        if ctor.kind.module == "prelude" {
-            let names: &[&'static str] = match (ctor.kind.name.as_str(), ctor.name.as_str()) {
-                ("Option", "Some") | ("Result", "Ok") => &["value"],
-                ("Result", "Err") => &["failure"],
-                ("Entry", "Entry") => &["key", "value"],
-                ("Header", "Header") => &["name", "value"],
-                ("Response", "Response") => &["status", "headers", "body"],
-                ("Json", "Boolean" | "Number" | "Str") => &["value"],
-                ("Json", "Decimal") => &["text"],
-                ("Json", "Array") => &["items"],
-                ("Json", "Object") => &["fields"],
-                ("JsonError", _) => &["at"],
-                ("ParseError", "NotADigit") => &["at"],
-                _ => return Vec::new(),
-            };
-            return names.iter().map(|name| (*name, None)).collect();
+        if ctor.kind.module == una_core::PRELUDE_MODULE
+            && let Some((_, fields)) = una_core::prelude_variants(&ctor.kind.name)
+                .and_then(|variants| variants.iter().find(|(name, _)| *name == ctor.name))
+        {
+            return fields.iter().map(|(name, _)| (*name, None)).collect();
         }
         Vec::new()
     }
@@ -342,7 +334,7 @@ impl<'p> Index<'p> {
                         if named {
                             parts.push(Task::Text(format!("{name}: ")));
                         }
-                        let label = ty.map_or_else(Label::public, deep_label);
+                        let label = ty.map_or_else(Label::public, Type::deep_label);
                         if !redact || label.is_public() || matches!(field, Value::Unit) {
                             parts.push(Task::Value(field));
                         } else {
@@ -380,34 +372,10 @@ impl<'p> Index<'p> {
             .iter()
             .zip(names)
             .filter(|(_, (_, ty))| {
-                ty.is_some_and(|ty| !has_param(ty) && deep_label(ty).is_public())
+                ty.is_some_and(|ty| !ty.has_param() && ty.deep_label().is_public())
             })
             .map(|(v, (name, _))| (name.to_owned(), self.render(v)))
             .collect()
-    }
-}
-
-/// The join of the labels at every position of `ty` that holds data.
-pub(crate) fn deep_label(ty: &Type) -> Label {
-    match ty {
-        Type::Base { base, label, .. } => match base {
-            Base::Named { args, .. } => args
-                .iter()
-                .fold(label.clone(), |acc, arg| acc.join(&deep_label(arg))),
-            _ => label.clone(),
-        },
-        Type::Fn { label, .. } => label.clone(),
-    }
-}
-
-fn has_param(ty: &Type) -> bool {
-    match ty {
-        Type::Base { base, .. } => match base {
-            Base::Param(_) | Base::Unknown => true,
-            Base::Named { args, .. } => args.iter().any(has_param),
-            _ => false,
-        },
-        Type::Fn { .. } => false,
     }
 }
 
@@ -1296,7 +1264,7 @@ impl<'p, 'w> Machine<'p, 'w> {
                     capability,
                     op,
                     labels,
-                    result: deep_label(ty),
+                    result: ty.deep_label(),
                     span: *span,
                 };
                 self.op(caps, &request, args)
@@ -2273,6 +2241,34 @@ fn update<'p>(name: &str, args: Vec<Value<'p>>) -> Flow<'p> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_prelude_kinds_core_leaves_to_the_engines_are_named_by_the_shared_table() {
+        // #415: a value of a kind Core does not declare has its fields' names from
+        // `una_core::prelude_variants`, the table the native backend describes it by, and no
+        // declared type, so no field of it is redacted on its own.
+        let program = Program::default();
+        let index = Index::new(&program);
+        for kind in una_core::PRELUDE_ENGINE_KINDS {
+            for (position, (variant, fields)) in una_core::prelude_variants(kind)
+                .unwrap_or_default()
+                .iter()
+                .enumerate()
+            {
+                let ctor = Ctor {
+                    kind: una_core::Path {
+                        module: una_core::PRELUDE_MODULE.to_owned(),
+                        name: kind.to_owned(),
+                    },
+                    name: (*variant).to_owned(),
+                    index: position,
+                };
+                let named: Vec<(&str, Option<&Type>)> =
+                    fields.iter().map(|(f, _)| (*f, None)).collect();
+                assert_eq!(index.fields(&ctor), named, "{kind}.{variant}");
+            }
+        }
+    }
 
     #[test]
     fn calls_stop_at_the_maximum_depth_or_when_the_stack_runs_short() {
