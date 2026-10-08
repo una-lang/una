@@ -41,6 +41,7 @@ What the implementation does today:
 - **#8.** No program changes meaning. The rule removes the doubt R-023 raised: `una fmt` cannot change what a program does, since a program whose order differs is not yet one that runs.
 - **#14.**
   - A reader of the report sees every handler that holds authority, and every host capability the package reaches.
+  - Counting the host capabilities that handlers use in `tcb.host_capabilities` corrects what the field already promises, the host capabilities the package's code reaches. It does not change the field's meaning, so under ADR 0076 it needs no new version.
   - It costs one pass over the handlers: `O(handlers + their uses)`.
   - The text form of the report gains a `handler authority:` section after `authority:`.
 - **#85.**
