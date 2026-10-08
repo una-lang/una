@@ -1,6 +1,7 @@
 //! Types of the type checker (`spec/03`, `spec/10 §1`).
 
 use std::fmt;
+use std::rc::Rc;
 
 use una_syntax::Span;
 
@@ -169,6 +170,72 @@ impl KindLabels {
     }
 }
 
+/// A node of a type, shared by every type that holds it (ADR 0077 stage 2): cloning a handle
+/// costs O(1) and allocates nothing. A node is immutable once made: this type has no mutable
+/// access to what it holds (no `DerefMut`, no `get_mut`, no access to the `Rc`), so no code can
+/// change a node that another type shares. To change a type, build a new node; its unchanged
+/// children stay shared. Equality is by content, never by address.
+#[derive(PartialEq, Eq)]
+pub(crate) struct Shared<T: ?Sized>(Rc<T>);
+
+impl<T> Shared<T> {
+    /// A new node holding `value`.
+    pub(crate) fn new(value: T) -> Shared<T> {
+        una_core::label_counters::node();
+        Shared(Rc::new(value))
+    }
+}
+
+impl<T: ?Sized> Clone for Shared<T> {
+    fn clone(&self) -> Shared<T> {
+        Shared(Rc::clone(&self.0))
+    }
+}
+
+impl<T: ?Sized> std::ops::Deref for Shared<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T: ?Sized + fmt::Debug> fmt::Debug for Shared<T> {
+    /// As the value it holds.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl<T: ?Sized> AsRef<T> for Shared<T> {
+    fn as_ref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<'a> IntoIterator for &'a Shared<[Ty]> {
+    type Item = &'a Ty;
+    type IntoIter = std::slice::Iter<'a, Ty>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl From<Vec<Ty>> for Shared<[Ty]> {
+    /// The type arguments of a kind, as one node.
+    fn from(args: Vec<Ty>) -> Shared<[Ty]> {
+        una_core::label_counters::node();
+        Shared(Rc::from(args))
+    }
+}
+
+impl FromIterator<Ty> for Shared<[Ty]> {
+    fn from_iter<I: IntoIterator<Item = Ty>>(args: I) -> Shared<[Ty]> {
+        args.into_iter().collect::<Vec<Ty>>().into()
+    }
+}
+
 /// A base type: what type checking compares (`spec/03 §2`). Refinements and labels are kept
 /// beside it, in [`Declared`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -180,15 +247,15 @@ pub(crate) enum Ty {
     Text,
     Unit,
     Hashed,
-    List(Box<Ty>),
+    List(Shared<Ty>),
     /// `Map[K, V]`, keyed by an `Ord` type, from edition 0.2 (`spec/21 §1`). Its keys are part
     /// of its shape, so a read takes the labels of the key position with the top label (§3).
-    Map(Box<Ty>, Box<Ty>),
+    Map(Shared<Ty>, Shared<Ty>),
     /// A record or sum kind and its type arguments; nominal (`spec/03 §2.1`).
-    Kind(KindId, Vec<Ty>),
+    Kind(KindId, Shared<[Ty]>),
     /// The type parameter with this index in the declaration being checked.
     Param(usize),
-    Fn(Box<FnTy>),
+    Fn(Shared<FnTy>),
     /// A unification variable.
     Var(usize),
     /// The type of `fail`, below every type (ADR 0024 rule 2).
@@ -198,7 +265,7 @@ pub(crate) enum Ty {
     Error,
     /// A type whose top position carries a label above `public` (`spec/03 §5`, `spec/09 §2`).
     /// Type equality ignores labels.
-    Labeled(Label, Box<Ty>),
+    Labeled(Label, Shared<Ty>),
 }
 
 /// A function type `fn(params) -> result uses ... fails ...`.
@@ -322,7 +389,7 @@ impl Ty {
         match self {
             Ty::Labeled(own, inner) => Ty::Labeled(own.join(label), inner),
             Ty::Error | Ty::Never => self,
-            other => Ty::Labeled(label.clone(), Box::new(other)),
+            other => Ty::Labeled(label.clone(), Shared::new(other)),
         }
     }
 
@@ -399,10 +466,10 @@ impl Ty {
     /// function types, and invariant kind arguments keep their declared labels.
     pub(crate) fn op_parameter(&self, positive: bool, top: &Label, kinds: &KindLabels) -> Ty {
         let inner = match self.unlabeled() {
-            Ty::List(element) => Ty::List(Box::new(element.op_parameter(positive, top, kinds))),
+            Ty::List(element) => Ty::List(Shared::new(element.op_parameter(positive, top, kinds))),
             Ty::Map(key, value) => Ty::Map(
-                Box::new(key.op_parameter(positive, top, kinds)),
-                Box::new(value.op_parameter(positive, top, kinds)),
+                Shared::new(key.op_parameter(positive, top, kinds)),
+                Shared::new(value.op_parameter(positive, top, kinds)),
             ),
             Ty::Kind(id, args) => Ty::Kind(
                 *id,
@@ -417,7 +484,7 @@ impl Ty {
                     })
                     .collect(),
             ),
-            Ty::Fn(function) => Ty::Fn(Box::new(FnTy {
+            Ty::Fn(function) => Ty::Fn(Shared::new(FnTy {
                 params: function
                     .params
                     .iter()
@@ -481,10 +548,10 @@ impl Ty {
     /// `self` with every position that holds data raised by `label`.
     pub(crate) fn raise_deep(&self, label: &Label) -> Ty {
         let inner = match self.unlabeled() {
-            Ty::List(element) => Ty::List(Box::new(element.raise_deep(label))),
+            Ty::List(element) => Ty::List(Shared::new(element.raise_deep(label))),
             Ty::Map(key, value) => Ty::Map(
-                Box::new(key.raise_deep(label)),
-                Box::new(value.raise_deep(label)),
+                Shared::new(key.raise_deep(label)),
+                Shared::new(value.raise_deep(label)),
             ),
             Ty::Kind(id, args) => Ty::Kind(*id, args.iter().map(|a| a.raise_deep(label)).collect()),
             other => other.clone(),
@@ -496,10 +563,10 @@ impl Ty {
     pub(crate) fn erase(&self) -> Ty {
         match self {
             Ty::Labeled(_, inner) => inner.erase(),
-            Ty::List(element) => Ty::List(Box::new(element.erase())),
-            Ty::Map(key, value) => Ty::Map(Box::new(key.erase()), Box::new(value.erase())),
+            Ty::List(element) => Ty::List(Shared::new(element.erase())),
+            Ty::Map(key, value) => Ty::Map(Shared::new(key.erase()), Shared::new(value.erase())),
             Ty::Kind(id, args) => Ty::Kind(*id, args.iter().map(Ty::erase).collect()),
-            Ty::Fn(function) => Ty::Fn(Box::new(FnTy {
+            Ty::Fn(function) => Ty::Fn(Shared::new(FnTy {
                 params: function.params.iter().map(Ty::erase).collect(),
                 result: function.result.erase(),
                 uses: function.uses.clone(),
@@ -515,16 +582,16 @@ impl Ty {
         match self {
             Ty::Labeled(label, inner) => inner.substitute(args).with_label(label),
             Ty::Param(index) => args.get(*index).cloned().unwrap_or(Ty::Error),
-            Ty::List(element) => Ty::List(Box::new(element.substitute(args))),
+            Ty::List(element) => Ty::List(Shared::new(element.substitute(args))),
             Ty::Map(key, value) => Ty::Map(
-                Box::new(key.substitute(args)),
-                Box::new(value.substitute(args)),
+                Shared::new(key.substitute(args)),
+                Shared::new(value.substitute(args)),
             ),
             Ty::Kind(id, kind_args) => Ty::Kind(
                 *id,
                 kind_args.iter().map(|arg| arg.substitute(args)).collect(),
             ),
-            Ty::Fn(function) => Ty::Fn(Box::new(FnTy {
+            Ty::Fn(function) => Ty::Fn(Shared::new(FnTy {
                 params: function.params.iter().map(|p| p.substitute(args)).collect(),
                 result: function.result.substitute(args),
                 uses: function.uses.clone(),
@@ -539,12 +606,13 @@ impl Ty {
     pub(crate) fn map_labels(&self, f: &dyn Fn(&Label) -> Label) -> Ty {
         match self {
             Ty::Labeled(label, inner) => inner.map_labels(f).with_label(&f(label)),
-            Ty::List(element) => Ty::List(Box::new(element.map_labels(f))),
-            Ty::Map(key, value) => {
-                Ty::Map(Box::new(key.map_labels(f)), Box::new(value.map_labels(f)))
-            }
+            Ty::List(element) => Ty::List(Shared::new(element.map_labels(f))),
+            Ty::Map(key, value) => Ty::Map(
+                Shared::new(key.map_labels(f)),
+                Shared::new(value.map_labels(f)),
+            ),
             Ty::Kind(id, args) => Ty::Kind(*id, args.iter().map(|a| a.map_labels(f)).collect()),
-            Ty::Fn(function) => Ty::Fn(Box::new(FnTy {
+            Ty::Fn(function) => Ty::Fn(Shared::new(FnTy {
                 params: function.params.iter().map(|p| p.map_labels(f)).collect(),
                 result: function.result.map_labels(f),
                 uses: function.uses.clone(),
@@ -565,15 +633,15 @@ impl Ty {
                 Some(name) => Ty::Param(*index).with_label(&Label::symbol(name.clone())),
                 None => Ty::Param(*index),
             },
-            Ty::List(element) => Ty::List(Box::new(element.symbolic(names))),
+            Ty::List(element) => Ty::List(Shared::new(element.symbolic(names))),
             // A key of type `T` carries `ℓ*_T` (`spec/21 §3` rule 5): it is a scalar of `T`'s
             // argument, whose every label is its top.
             Ty::Map(key, value) => Ty::Map(
-                Box::new(key.symbolic(names).map_labels(&starred)),
-                Box::new(value.symbolic(names)),
+                Shared::new(key.symbolic(names).map_labels(&starred)),
+                Shared::new(value.symbolic(names)),
             ),
             Ty::Kind(id, args) => Ty::Kind(*id, args.iter().map(|a| a.symbolic(names)).collect()),
-            Ty::Fn(function) => Ty::Fn(Box::new(FnTy {
+            Ty::Fn(function) => Ty::Fn(Shared::new(FnTy {
                 params: function.params.iter().map(|p| p.symbolic(names)).collect(),
                 result: function.result.symbolic(names),
                 uses: function.uses.clone(),

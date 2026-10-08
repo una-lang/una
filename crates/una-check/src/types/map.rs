@@ -8,7 +8,7 @@ use una_syntax::ast::{Arg, Convention, Expr};
 
 use super::check::{Checker, Role};
 use super::records::Res;
-use super::ty::Ty;
+use super::ty::{Shared, Ty};
 
 impl Checker<'_, '_, '_> {
     /// `m.op(args)` when `m` is a map in edition 0.2 and `op` is one of its built-in methods
@@ -140,11 +140,11 @@ impl Checker<'_, '_, '_> {
                     }
                     None => value.as_ref().clone(),
                 };
-                Ty::Map(key.clone(), Box::new(value)).with_label(&labeled.top_label())
+                Ty::Map(key.clone(), Shared::new(value)).with_label(&labeled.top_label())
             }
             MapOp::Keys => Ty::List(key.clone()).with_label(&top),
             MapOp::Values => Ty::List(value.clone()).with_label(&top),
-            MapOp::Entries => Ty::List(Box::new(
+            MapOp::Entries => Ty::List(Shared::new(
                 self.prelude_kind_of("Entry", vec![key.as_ref().clone(), value.as_ref().clone()]),
             ))
             .with_label(&top),
@@ -188,7 +188,7 @@ impl Checker<'_, '_, '_> {
     /// The prelude kind `name` at `args`, or `Error` when the prelude lacks it.
     fn prelude_kind_of(&self, name: &str, args: Vec<Ty>) -> Ty {
         match self.env.prelude_kind(name) {
-            Some(id) => Ty::Kind(id, args),
+            Some(id) => Ty::Kind(id, args.into()),
             None => Ty::Error,
         }
     }

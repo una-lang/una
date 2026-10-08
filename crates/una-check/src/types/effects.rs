@@ -10,7 +10,7 @@ use una_syntax::ast::{
 
 use super::check::Checker;
 use super::label::Label;
-use super::ty::Ty;
+use super::ty::{Shared, Ty};
 
 /// How a body mentions a parameter.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -374,7 +374,7 @@ impl Checker<'_, '_, '_> {
         let Some(kind) = kind else {
             return true;
         };
-        let raised = Ty::Kind(kind, Vec::new());
+        let raised = Ty::Kind(kind, Vec::new().into());
         match lambda.fails.clone() {
             Some(Ty::Kind(first, _)) if first != kind => {
                 let (first, kind) = (
@@ -596,7 +596,7 @@ impl<'a> Checker<'_, 'a, '_> {
         };
         // Running a labeled function value is running it under its label (`spec/07 §3` rule 4).
         let raise = &value_raise(raise, &label);
-        let mut function = *function;
+        let mut function = (*function).clone();
         let slot = OfArgument {
             uses,
             fails,
@@ -632,7 +632,7 @@ impl<'a> Checker<'_, 'a, '_> {
         if fails {
             function.fails = None;
         }
-        Ty::Fn(Box::new(function)).with_label(&label)
+        Ty::Fn(Shared::new(function)).with_label(&label)
     }
 }
 
@@ -693,7 +693,7 @@ impl<'a> Checker<'_, 'a, '_> {
             self.stops_by_result(span, &label, "this lambda");
         }
         self.record_of(&argument, OfFound { effects, fails }, span, "this lambda");
-        Ty::Fn(Box::new(super::ty::FnTy {
+        Ty::Fn(Shared::new(super::ty::FnTy {
             params: types,
             result: result.unwrap_or(body_ty),
             uses: Vec::new(),

@@ -11,10 +11,10 @@ use una_syntax::{Interner, SourceDb, lex, parse};
 
 const MANIFEST: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"0.1\"\n";
 
-/// Checks the #331 program of ten bindings `depth` deep, and returns the label sets and names
-/// made while checking it. With `generic`, the bindings are in a generic body and hold a value
+/// Checks the #331 program of ten bindings `depth` deep, and returns the label sets, label names
+/// and type nodes made while checking it. With `generic`, the bindings are in a generic body and hold a value
 /// of `T` at their leaves, so every position carries the symbolic label `ℓ_T`.
-fn made_checking(depth: usize, generic: bool) -> (usize, usize) {
+fn made_checking(depth: usize, generic: bool) -> (usize, usize, usize) {
     let mut value = String::from(if generic { "p" } else { "1" });
     for level in 0..depth {
         value = if level % 2 == 0 {
@@ -57,15 +57,17 @@ fn made_checking(depth: usize, generic: bool) -> (usize, usize) {
         run: None,
     };
     let before = una_core::label_counters::made();
+    let nodes_before = una_core::label_counters::nodes_made();
     assert!(check_names(&input).is_empty());
     let checked = check_types(&input);
     let after = una_core::label_counters::made();
+    let nodes = una_core::label_counters::nodes_made() - nodes_before;
     assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
-    (after.0 - before.0, after.1 - before.1)
+    (after.0 - before.0, after.1 - before.1, nodes)
 }
 
 #[test]
-fn label_sets_and_names_made_grow_with_the_program_not_with_its_copies() {
+fn labels_and_type_nodes_made_grow_at_most_as_their_bounds() {
     // ADR 0077 stage 1: a label shares its sets, so copying a type copies no label. For 4x the
     // depth, the sets and names made grow by at most 6x (linear is 4x, quadratic 16x).
     // The passes recurse over the syntax tree: a large stack, as `una-cli` gives them.
@@ -83,5 +85,10 @@ fn label_sets_and_names_made_grow_with_the_program_not_with_its_copies() {
         assert!(small.0 > 0 && small.1 > 0, "the counters count: {small:?}");
         assert!(large.0 <= 6 * small.0, "sets: {small:?} then {large:?}");
         assert!(large.1 <= 6 * small.1, "names: {small:?} then {large:?}");
+        // ADR 0077 stage 2a: the type nodes made still grow with the copies each expression
+        // keeps of its type, about 15x for 4x the depth (quadratic is 16x). Stage 2b, whose
+        // operations keep unchanged nodes shared, lowers this bound to 6x.
+        assert!(small.2 > 0, "the node counter counts: {small:?}");
+        assert!(large.2 <= 16 * small.2, "nodes: {small:?} then {large:?}");
     }
 }

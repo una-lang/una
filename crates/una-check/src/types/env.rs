@@ -20,7 +20,7 @@ use super::closest;
 use super::label::{Accepts, Label};
 use super::ty::{
     AliasId, CapId, Declared, FnRefinements, FnTy, FnUse, KindId, KindLabels, Names, Refinement,
-    Show, Ty,
+    Shared, Show, Ty,
 };
 use crate::names::prelude;
 
@@ -1277,7 +1277,7 @@ impl<'a> Env<'a> {
             None => return Ty::Error,
             Some(Entity::Kind(id)) => match self.kinds.get(*id) {
                 Some(kind) if kind.is_sum() && kind.params.is_empty() => {
-                    return Ty::Kind(*id, Vec::new());
+                    return Ty::Kind(*id, Vec::new().into());
                 }
                 Some(kind) if kind.is_sum() => {
                     format!("error kind `{name}` has type parameters, which `fails` cannot give")
@@ -1365,7 +1365,7 @@ impl<'a> Env<'a> {
                 let lowered = self.lower_type(module, element, type_params, report);
                 self.type_argument(module, element.span, &lowered.base, report);
                 self.refined_argument(module, element, &lowered, type_params, report);
-                Declared::plain(Ty::List(Box::new(lowered.base)))
+                Declared::plain(Ty::List(Shared::new(lowered.base)))
             }
             TypeCore::Function {
                 params,
@@ -1415,7 +1415,7 @@ impl<'a> Env<'a> {
                 .into_iter()
                 .map(|need| need.usage)
                 .collect();
-                Declared::plain(Ty::Fn(Box::new(FnTy {
+                Declared::plain(Ty::Fn(Shared::new(FnTy {
                     params,
                     result,
                     uses,
@@ -1645,7 +1645,7 @@ impl<'a> Env<'a> {
                     Builtin::Unit => Ty::Unit,
                     Builtin::Hashed => Ty::Hashed,
                     Builtin::List => {
-                        Ty::List(Box::new(bases.into_iter().next().unwrap_or(Ty::Error)))
+                        Ty::List(Shared::new(bases.into_iter().next().unwrap_or(Ty::Error)))
                     }
                     Builtin::Map => {
                         let mut bases = bases.into_iter();
@@ -1658,7 +1658,7 @@ impl<'a> Env<'a> {
                                 owner: self.owner,
                             });
                         }
-                        Ty::Map(Box::new(key), Box::new(value))
+                        Ty::Map(Shared::new(key), Shared::new(value))
                     }
                 };
                 return Declared::plain(base);
@@ -1668,7 +1668,7 @@ impl<'a> Env<'a> {
                 if bases.len() != expected {
                     return arity(expected, bases.len());
                 }
-                return Declared::plain(Ty::Kind(id, bases));
+                return Declared::plain(Ty::Kind(id, bases.into()));
             }
             Some(Entity::Alias(id)) => {
                 let expected = self.aliases.get(id).map_or(0, |a| a.params.len());

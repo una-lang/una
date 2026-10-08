@@ -647,7 +647,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             .unwrap_or(Ty::Error);
         let args = match record.unlabeled() {
             Ty::Kind(_, args) => args.clone(),
-            _ => Vec::new(),
+            _ => Vec::new().into(),
         };
         let declared = self
             .env
@@ -3801,11 +3801,11 @@ mod tests {
             categories: una_core::Names::new(),
             symbols: una_core::Names::new(),
         };
-        let function = Ty::Fn(Box::new(super::super::ty::FnTy {
+        let function = Ty::Fn(super::super::ty::Shared::new(super::super::ty::FnTy {
             params: vec![Ty::Text],
             result: Ty::Unit,
             uses: vec![logging()],
-            fails: Some(Ty::Kind(0, Vec::new())),
+            fails: Some(Ty::Kind(0, Vec::new().into())),
             refinements: super::super::ty::FnRefinements::default(),
         }));
         let kept = core_fn(
@@ -3830,7 +3830,9 @@ mod tests {
             Label::public(),
         );
         assert!(lost(&function, &no_fails).is_some());
-        let listed = Ty::List(Box::new(function.clone().with_label(&secret)));
+        let listed = Ty::List(super::super::ty::Shared::new(
+            function.clone().with_label(&secret),
+        ));
         let dropped = Type::Base {
             base: Base::Named {
                 module: "prelude".to_owned(),
@@ -3847,7 +3849,7 @@ mod tests {
     fn the_consistency_check_finds_a_lost_refinement_of_a_function_type() {
         // ADR 0037 rule 11: `fn(Small) -> Pos` keeps both refinements.
         let alias = |id: usize| super::super::ty::Refinement::Alias(id, Vec::new());
-        let function = Ty::Fn(Box::new(super::super::ty::FnTy {
+        let function = Ty::Fn(super::super::ty::Shared::new(super::super::ty::FnTy {
             params: vec![Ty::Int],
             result: Ty::Int,
             uses: Vec::new(),

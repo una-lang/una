@@ -19,7 +19,7 @@ use super::env::{Constraint, Entity, FnKind, KindDef};
 use super::fixed;
 use super::label::Label;
 use super::records::Res;
-use super::ty::{FnRefinements, FnTy, FnUse, KindId, Refinement, Ty};
+use super::ty::{FnRefinements, FnTy, FnUse, KindId, Refinement, Shared, Ty};
 use super::unify::Origin;
 
 impl<'a> Checker<'_, 'a, '_> {
@@ -538,7 +538,7 @@ impl<'a> Checker<'_, 'a, '_> {
         if def.requires {
             self.obligation(ObligationKind::Precondition, span, None);
         }
-        Ty::Fn(Box::new(FnTy {
+        Ty::Fn(Shared::new(FnTy {
             params: def
                 .params
                 .iter()
@@ -602,7 +602,7 @@ impl<'a> Checker<'_, 'a, '_> {
                             variant: Some(index),
                         },
                     );
-                    return Ty::Kind(kind, args);
+                    return Ty::Kind(kind, args.into());
                 }
                 self.needs_fields.push(span);
                 (
@@ -720,7 +720,7 @@ impl<'a> Checker<'_, 'a, '_> {
             .map(|(item, found)| (item.span, Ty::Param(0), found))
             .collect();
         self.instantiation("List", &["T"], vec![element.clone()], values, span);
-        Ty::List(Box::new(element))
+        Ty::List(Shared::new(element))
     }
 
     /// A binary operation; its result joins every label of its operands.
@@ -1055,7 +1055,7 @@ impl<'a> Checker<'_, 'a, '_> {
         match self.resolve(ty) {
             Ty::Kind(id, args) if self.env.kinds.get(id).is_some_and(KindDef::is_sum) => {
                 if let Some(index) = self.variant_index(id, name) {
-                    return Some((id, index, args));
+                    return Some((id, index, args.to_vec()));
                 }
                 let kind = self.env.kind_name(id);
                 let variants: Vec<&str> = self
@@ -1083,7 +1083,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 Some(Entity::Variant(id, index)) => {
                     let (params, kind) = self.kind_params(id);
                     let args = self.instantiate(&params, kind, ident.span);
-                    self.vars.unify(ty, &Ty::Kind(id, args.clone()));
+                    self.vars.unify(ty, &Ty::Kind(id, args.clone().into()));
                     Some((id, index, args))
                 }
                 _ => None,
@@ -1247,9 +1247,9 @@ impl<'a> Checker<'_, 'a, '_> {
         // The expected function type, whose result may still be a variable that the body's
         // labels join.
         let mut shape = match expected.map(|ty| self.vars.head(ty)) {
-            Some(Ty::Fn(function)) => Some(*function),
-            Some(Ty::Labeled(_, inner)) => match *inner {
-                Ty::Fn(function) => Some(*function),
+            Some(Ty::Fn(function)) => Some((*function).clone()),
+            Some(Ty::Labeled(_, inner)) => match &*inner {
+                Ty::Fn(function) => Some((**function).clone()),
                 _ => None,
             },
             _ => None,
@@ -1444,7 +1444,7 @@ impl<'a> Checker<'_, 'a, '_> {
             return Ty::Error;
         }
         let result = result.unwrap_or(body_ty);
-        let lambda = Ty::Fn(Box::new(FnTy {
+        let lambda = Ty::Fn(Shared::new(FnTy {
             params: types,
             result: result.clone(),
             uses: uses.clone(),
@@ -1454,7 +1454,7 @@ impl<'a> Checker<'_, 'a, '_> {
         if self.pass == Pass::Check && shape.is_some() {
             // ADR 0037 rule 2: the lambda's own type, with the parameter types its body
             // assumes, flows into the type it is given.
-            let own = Ty::Fn(Box::new(FnTy {
+            let own = Ty::Fn(Shared::new(FnTy {
                 params: own_types,
                 result,
                 uses,
@@ -1466,14 +1466,17 @@ impl<'a> Checker<'_, 'a, '_> {
             }));
             let (expected, own) = (self.resolve(&lambda), self.resolve(&own));
             let own = match own {
-                Ty::Fn(mut function) => {
+                Ty::Fn(function) => {
                     if let Ty::Fn(expected) = &expected {
+                        let mut function = (*function).clone();
                         function
                             .refinements
                             .result
                             .clone_from(&expected.refinements.result);
+                        Ty::Fn(Shared::new(function))
+                    } else {
+                        Ty::Fn(function)
                     }
-                    Ty::Fn(function)
                 }
                 other => other,
             };
@@ -1557,9 +1560,9 @@ impl<'a> Checker<'_, 'a, '_> {
             // Whether the call failed, and how, is labeled like what decided it (N-27).
             Some(result) => match decided {
                 Some(label) if !label.is_public() => {
-                    Ty::Kind(result, vec![ty, error]).with_label(&label)
+                    Ty::Kind(result, vec![ty, error].into()).with_label(&label)
                 }
-                _ => Ty::Kind(result, vec![ty, error]),
+                _ => Ty::Kind(result, vec![ty, error].into()),
             },
             None => Ty::Error,
         }
@@ -1583,7 +1586,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 Some(Entity::Variant(id, index)) => {
                     let (params, kind) = self.kind_params(id);
                     let args = self.instantiate(&params, kind, variant.name.span);
-                    found = Some((id, index, args));
+                    found = Some((id, index, args.into()));
                 }
                 Some(_) => self.report.error(
                     Code::U2001,
