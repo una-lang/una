@@ -854,6 +854,48 @@ fn a_function_value_repair_guards_every_precondition_v12_003() {
 }
 
 #[test]
+fn a_helper_repair_writes_the_header_as_the_value_is_used_p1_126() {
+    // #126 (P-1 of the deferred review): the helper of a failing callee printed its header
+    // without labels, so written as described it was U4001. It now has the labels, the
+    // refinements and the type arguments of the use, and checks once written. A guard on
+    // labeled data around a call that can fail would reveal that data (U4002), so there the
+    // repair says why no helper fits.
+    let callee = "module app\n\npub kind Bad = | Broke\n\npub kind Pos = Int where it > 0\n\npub pick[T](a: Int, b: Pos, x: secret T) -> secret T\n  requires a == b\n  fails Bad\n=\n  if b > 5 then fail Broke else x\n\npub apply(f: fn(Int, Pos, secret Text) -> secret Text fails Bad) -> secret Text\n  fails Bad\n=\n  let v = f(1, 2, \"x\")\n    if error pass\n  v\n";
+    let check = |name: &str, source: &str| -> Vec<Value> {
+        let root = package(name, &[("src/app.una", source)]);
+        let output = una(&["--json", "check", root.to_str().unwrap()]);
+        let json: Value = serde_json::from_str(stdout(&output)).unwrap();
+        json["diagnostics"].as_array().unwrap().clone()
+    };
+    let passed = format!(
+        "{callee}\npub use_it() -> secret Text\n  fails Bad\n=\n  let v = apply(pick)\n    if error pass\n  v\n"
+    );
+    let found = check("helper-labeled", &passed);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(
+        found[0]["repairs"][0]["description"],
+        "pass a named function that calls `pick` only where `a == b` holds: `pick_where_defined(a: Int, b: Pos, x: secret Text) -> secret Text fails Bad`, whose body is `if a == b` with `let v = pick(a, b, x)`, `if error pass` and `v` in its block, and a value in its `else` block"
+    );
+    // The helper as the repair describes it, with `x` in its `else` block.
+    let applied = format!(
+        "{callee}\npub use_it() -> secret Text\n  fails Bad\n=\n  let v = apply(pick_where_defined)\n    if error pass\n  v\n\npick_where_defined(a: Int, b: Pos, x: secret Text) -> secret Text\n  fails Bad\n=\n  if a == b\n    let v = pick(a, b, x)\n      if error pass\n    v\n  else\n    x\n"
+    );
+    assert_eq!(
+        check("helper-labeled-applied", &applied),
+        Vec::<Value>::new()
+    );
+    let guarded = check(
+        "helper-secret-guard",
+        "module app\n\npub kind Bad = | Broke\n\npub hidden(a: secret Int, b: Int) -> Int\n  requires a == b\n  fails Bad\n=\n  if b > 5 then fail Broke else b\n\npub apply(f: fn(secret Int, Int) -> Int fails Bad) -> Int\n  fails Bad\n=\n  let v = f(1, 2)\n    if error pass\n  v\n\npub use_it() -> Int\n  fails Bad\n=\n  let v = apply(hidden)\n    if error pass\n  v\n",
+    );
+    assert_eq!(guarded.len(), 1, "{guarded:?}");
+    assert_eq!(
+        guarded[0]["repairs"][0]["description"],
+        "`hidden` can fail, and `a == b` reads `secret` data, so a guard around the call would reveal that data through its failure (U4002): pass a function whose type has no precondition and that cannot fail on these values, or make `hidden`'s precondition hold for every argument"
+    );
+}
+
+#[test]
 fn a_function_value_flowing_into_a_function_type_names_its_obligation() {
     // ADR 0037 rules 2 to 6 (F-0001-02, R-013): the goal names the position and the binder,
     // the counterexample binds the binder by its source name, and the only repair is a

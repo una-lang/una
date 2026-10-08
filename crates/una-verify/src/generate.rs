@@ -239,6 +239,9 @@ struct Contract<'p> {
     ensures: &'p [Clause],
     /// The error kind of a function that can fail.
     fails: Option<&'p str>,
+    /// The result at the callee's type arguments, for the text of a repair; the result
+    /// itself when the callee is not generic.
+    instantiated_result: Option<&'p Type>,
 }
 
 /// A predicate: its parameters, and the definition of a reflect one.
@@ -307,6 +310,7 @@ impl<'p> Index<'p> {
                     requires: &signature.requires,
                     ensures: &signature.ensures,
                     fails: None,
+                    instantiated_result: None,
                 },
             );
         }
@@ -332,6 +336,7 @@ impl<'p> Index<'p> {
                                 requires: &fun.requires,
                                 ensures: &fun.ensures,
                                 fails: fun.fails.as_deref(),
+                                instantiated_result: None,
                             },
                         );
                     }
@@ -1731,8 +1736,10 @@ impl<'p, 'i> Walker<'p, 'i> {
                             )
                         })
                         .collect();
+                    let result = substitute(contract.result, contract.type_params, type_args);
                     let contract = Contract {
                         params: &params,
+                        instantiated_result: Some(&result),
                         ..*contract
                     };
                     self.call(&contract, &values, arg_spans, *span, &x, ctx);
@@ -1786,6 +1793,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                         requires: &signature.requires,
                         ensures: &signature.ensures,
                         fails: signature.fails.as_deref(),
+                        instantiated_result: None,
                     };
                     self.call(&contract, &values, arg_spans, *span, &x, ctx);
                 }
@@ -2011,23 +2019,48 @@ impl<'p, 'i> Walker<'p, 'i> {
             })
             .collect();
         let all = shown.join(" and ");
+        // The label of the parameters the precondition reads, which a guard on it branches on.
+        let read = std::cell::RefCell::new(BTreeSet::new());
+        for clause in contract.requires {
+            print_term_with(&clause.term, &|term| {
+                if let Term::Var(name) = term {
+                    read.borrow_mut().insert(name.clone());
+                }
+                None
+            });
+        }
+        let read = read.into_inner();
+        let guard_label = contract
+            .params
+            .iter()
+            .filter(|(param, _)| read.contains(param.as_str()))
+            .fold(una_core::Label::public(), |label, (_, ty)| {
+                label.join(&type_label(ty).concrete())
+            });
         let value_repair = self.eta.as_ref().zip(self.eta_name.clone()).map(|(params, name)| {
             let args = params.join(", ");
             let repair = match contract.fails {
                 None => format!(
                     "pass a lambda that calls `{name}` only where `{all}` holds, as in `fn({args}) -> if {all} then {name}({args}) else ...`"
                 ),
+                // A guard on labeled data around a call that can fail reveals that data through
+                // the failure (U4002), so no helper checks: the repair says so instead (#126).
+                Some(_) if !guard_label.is_public() => format!(
+                    "`{name}` can fail, and `{all}` reads `{guard_label}` data, so a guard around the call would reveal that data through its failure (U4002): pass a function whose type has no precondition and that cannot fail on these values, or make `{name}`'s precondition hold for every argument"
+                ),
                 Some(kind) => {
                     let kind = kind.rsplit('.').next().unwrap_or(kind);
                     let typed: Vec<String> = params
                         .iter()
                         .zip(contract.params)
-                        .map(|(param, (_, ty))| format!("{param}: {}", show_type(ty)))
+                        .map(|(param, (_, ty))| format!("{param}: {}", written_type(ty)))
                         .collect();
+                    // The types as the value's use instantiates them, labels and refinements
+                    // included, so the helper checks once written (P-1, #126).
                     format!(
                         "pass a named function that calls `{name}` only where `{all}` holds: `{name}_where_defined({}) -> {} fails {kind}`, whose body is `if {all}` with `let v = {name}({args})`, `if error pass` and `v` in its block, and a value in its `else` block",
                         typed.join(", "),
-                        show_type(contract.result)
+                        written_type(contract.instantiated_result.unwrap_or(contract.result))
                     )
                 }
             };
@@ -4404,6 +4437,60 @@ fn contains_fn(ty: &Type) -> bool {
 }
 
 /// A type as Una writes it, for repairs: a refined position by its kind or range.
+/// The label at the top of `ty`.
+fn type_label(ty: &Type) -> &una_core::Label {
+    match ty {
+        Type::Fn { label, .. } | Type::Base { label, .. } => label,
+    }
+}
+
+/// `ty` as a header writes it: [`show_type`] with the label of each position that has one
+/// above `public`, as `secret Int` or `List[secret[PII] Text]`. A type parameter's symbolic
+/// label `ℓ_T` is not written (`spec/07 §7` rule 8).
+fn written_type(ty: &Type) -> String {
+    let (label, shown) = match ty {
+        Type::Fn {
+            params,
+            result,
+            label,
+            ..
+        } => {
+            let params: Vec<String> = params.iter().map(written_type).collect();
+            (
+                label,
+                format!("fn({}) -> {}", params.join(", "), written_type(result)),
+            )
+        }
+        Type::Base {
+            base,
+            refinements,
+            label,
+        } => {
+            let shown = match (base, refinements.last()) {
+                (_, Some(refinement)) if !refinement.name.starts_with("in ") => {
+                    refinement.name.clone()
+                }
+                (Base::Named { name, args, .. }, refinement) if !args.is_empty() => {
+                    let args: Vec<String> = args.iter().map(written_type).collect();
+                    let plain = format!("{name}[{}]", args.join(", "));
+                    match refinement {
+                        Some(range) => format!("{plain} {}", range.name),
+                        None => plain,
+                    }
+                }
+                _ => show_type(ty),
+            };
+            (label, shown)
+        }
+    };
+    let concrete = label.concrete();
+    if concrete.is_public() {
+        shown
+    } else {
+        format!("{concrete} {shown}")
+    }
+}
+
 fn show_type(ty: &Type) -> String {
     match ty {
         Type::Fn { params, result, .. } => {
