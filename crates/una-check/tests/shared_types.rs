@@ -48,3 +48,37 @@ fn no_code_of_the_types_can_reach_a_shared_node_mutably() {
     }
     assert!(found.is_empty(), "{found:#?}");
 }
+
+#[test]
+fn the_node_module_gives_no_mutable_access() {
+    // ADR 0077 stage 2: `types/shared.rs` alone holds the `Rc` of a node, in a private field,
+    // so no other module can reach it. Within it: no `&mut` but the `Formatter` of `Debug`,
+    // `Rc` imported under its own name only, named in a type only by the struct itself, and
+    // no `Rc` function but those that make, clone or compare a handle.
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/types/shared.rs");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let allowed = ["Rc::new(", "Rc::clone(", "Rc::from(", "Rc::ptr_eq("];
+    let mut found = Vec::new();
+    for (number, line) in text.lines().enumerate() {
+        let code = line.split("//").next().unwrap_or("");
+        let at = |what: &str| format!("shared.rs:{}: {what}: {line}", number + 1);
+        if code.replace("&mut fmt::Formatter", "").contains("&mut") {
+            found.push(at("&mut"));
+        }
+        if code.contains("use ") && code.contains("rc") && code.trim() != "use std::rc::Rc;" {
+            found.push(at("an import of rc other than `use std::rc::Rc;`"));
+        }
+        if code.contains("Rc<") && !code.contains("pub(crate) struct Shared<T: ?Sized>(Rc<T>);") {
+            found.push(at("a type that names Rc"));
+        }
+        let mut rest = code;
+        while let Some(index) = rest.find("Rc::") {
+            let call = &rest[index..];
+            if !allowed.iter().any(|allowed| call.starts_with(allowed)) {
+                found.push(at("an Rc function"));
+            }
+            rest = &rest[index + 4..];
+        }
+    }
+    assert!(found.is_empty(), "{found:#?}");
+}

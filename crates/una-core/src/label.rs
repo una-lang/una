@@ -379,6 +379,14 @@ pub mod counters {
     }
 }
 
+// Labels hold no interior mutability: they are shared between types and threads only as values
+// that nothing changes (ADR 0077). This fails to compile if a field ever makes them `!Sync`.
+const _: () = {
+    const fn assert_sync<T: Sync>() {}
+    assert_sync::<Label>();
+    assert_sync::<Names>();
+};
+
 /// The sink label of an operation: `None` when it accepts every label.
 pub type Accepts = Option<Label>;
 
