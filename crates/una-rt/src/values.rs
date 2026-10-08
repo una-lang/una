@@ -45,7 +45,13 @@ enum Object {
     /// A list.
     List(Vec<i64>),
     /// A closure: the address of its code, and the values it captures.
-    Closure { code: i64, env: Vec<i64> },
+    Closure {
+        code: i64,
+        /// How many parameters the compiled lambda at `code` takes, besides the closure
+        /// itself: [`crate::ffi::invoke`] checks it before calling the code (#424).
+        arity: usize,
+        env: Vec<i64>,
+    },
     /// A keyed hash.
     Hashed(Vec<u8>),
     /// An instance of a capability (`spec/11 §2`): its id in traces, the code of each of its
@@ -551,10 +557,13 @@ pub fn list() -> i64 {
     alloc(Object::List(Vec::new()))
 }
 
-/// A new closure of the code at `code`, whose captured values [`push`] adds in order.
-pub fn closure(code: i64) -> i64 {
+/// A new closure of the code at `code`, a compiled lambda that takes `arity` parameters
+/// besides the closure, whose captured values [`push`] adds in order. A negative `arity` is
+/// no lambda's, and recorded as one that no call matches.
+pub fn closure(code: i64, arity: i64) -> i64 {
     alloc(Object::Closure {
         code,
+        arity: usize::try_from(arity).unwrap_or(usize::MAX),
         env: Vec::new(),
     })
 }
@@ -609,6 +618,16 @@ pub fn closure_code(value: i64) -> i64 {
         _ => 0,
     })
     .unwrap_or(0)
+}
+
+/// The number of parameters of the closure `value`'s code, besides the closure; `None` when
+/// `value` is no closure.
+pub(crate) fn closure_arity(value: i64) -> Option<usize> {
+    with(value, |object| match object {
+        Object::Closure { arity, .. } => Some(*arity),
+        _ => None,
+    })
+    .flatten()
 }
 
 /// The number of items of a list, as a machine integer.
@@ -773,6 +792,7 @@ enum Node {
     List(Vec<Cell>),
     Closure {
         code: i64,
+        arity: usize,
         env: Vec<Cell>,
     },
     Instance {
@@ -813,8 +833,9 @@ pub fn export(word: i64) -> Portable {
                 fields: cells(fields),
             },
             Object::List(items) => Node::List(cells(items)),
-            Object::Closure { code, env } => Node::Closure {
+            Object::Closure { code, arity, env } => Node::Closure {
                 code: *code,
+                arity: *arity,
                 env: cells(env),
             },
             Object::Instance {
@@ -871,8 +892,8 @@ pub fn import(portable: &Portable) -> i64 {
                 }
                 object
             }
-            Node::Closure { code, env } => {
-                let object = closure(*code);
+            Node::Closure { code, arity, env } => {
+                let object = closure(*code, i64::try_from(*arity).unwrap_or(-1));
                 for cell in env {
                     push(object, word_of(cell, &words));
                 }

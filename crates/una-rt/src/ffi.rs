@@ -49,8 +49,9 @@ pub unsafe extern "C" fn una_rt_start(
     runtime::start(&args, &meta, move || entry())
 }
 
-/// `SIGPIPE` and `SIG_IGN`, which are 13 and 1 on both targets (`aarch64-apple-darwin`,
-/// `x86_64-unknown-linux-gnu`).
+/// `SIGPIPE` and `SIG_IGN`, which are 13 and 1 on the three targets (`aarch64-apple-darwin`,
+/// `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`, whose Linux numbers are the
+/// generic ones).
 const SIGPIPE: c_int = 13;
 const SIG_IGN: usize = 1;
 
@@ -128,7 +129,7 @@ exported! {
     una_rt_data => values::data, (tag);
     una_rt_list => values::list, ();
     una_rt_map_empty => values::map_empty, ();
-    una_rt_closure => values::closure, (code);
+    una_rt_closure => values::closure, (code, arity);
     una_rt_field => values::field, (object, index);
     una_rt_tag => values::tag, (value);
     una_rt_closure_code => values::closure_code, (value);
@@ -311,31 +312,43 @@ pub extern "C" fn una_rt_together_status() -> i64 {
 }
 
 /// What compiled code returns: its value, and 0, 1 when the value is a failure, or 2 when the
-/// task stopped (`spec/16 §4` rule 3). Two words, which the C calling conventions of both
-/// targets return in two registers, as Cranelift returns a body's two results.
+/// task stopped (`spec/16 §4` rule 3). Two words, which the C calling conventions of the three
+/// targets return in two registers, `rax` and `rdx` on x86-64 System V and `x0` and `x1` on
+/// AArch64, Apple's and the standard one alike, as Cranelift returns a body's two results with
+/// the target's default convention (`Emitter::declare`). `together_two_words` checks it on
+/// each target, through the native gate.
 #[repr(C)]
 struct Returned {
     value: i64,
     status: i64,
 }
 
-/// Calls the closure `closure`, whose code is at `code`, with `arg` when it takes one, on the
-/// thread of a task ([`tasks::Invoke`]).
-pub(crate) fn invoke(code: i64, closure: i64, arg: Option<i64>) -> (i64, i64) {
-    if code == 0 {
+/// Calls the closure `closure` with `arg` when its lambda takes one, on the thread of a task
+/// ([`tasks::Invoke`]). The code and its arity are read here, from the closure, so the call's
+/// soundness rests on this module alone (ADR 0058, #424): a word that is no closure, a closure
+/// without code, or one whose lambda takes another number of parameters than the call gives
+/// stops the task, as a fault, and nothing is called.
+pub(crate) fn invoke(closure: i64, arg: Option<i64>) -> (i64, i64) {
+    let code = values::closure_code(closure);
+    let given = usize::from(arg.is_some());
+    if code == 0 || values::closure_arity(closure) != Some(given) {
+        values::fault();
         return (0, 2);
     }
     let address = code as usize as *const ();
     let returned = match arg {
         None => {
-            // SAFETY: `code` is the address of a compiled lambda that `una_rt_closure` stored
-            // in the closure: generated code with the default calling convention, that takes
-            // the closure and returns two words (`Emitter::lambda`, with no parameter).
+            // SAFETY: `code` is the code of an `Object::Closure`, which only `una_rt_closure`
+            // makes, from the address of a compiled lambda that the generated code gives it with
+            // the lambda's arity (`Lowerer::closure`), and which a task's thread receives
+            // unchanged (`values::export`, `values::import`). That lambda has the default
+            // calling convention, takes the closure and its `arity` parameters, and returns two
+            // words (`Emitter::lambda`, `Emitter::declare`). Its arity is 0, checked above.
             let function: extern "C" fn(i64) -> Returned = unsafe { std::mem::transmute(address) };
             function(closure)
         }
         Some(arg) => {
-            // SAFETY: as above, for a lambda with one parameter (`together for`).
+            // SAFETY: as above, for a lambda whose arity is 1, checked above (`together for`).
             let function: extern "C" fn(i64, i64) -> Returned =
                 unsafe { std::mem::transmute(address) };
             function(closure, arg)
@@ -364,4 +377,93 @@ unsafe fn text(pointer: *const u8, len: usize) -> Option<String> {
     // contract).
     let bytes = unsafe { std::slice::from_raw_parts(pointer, len) };
     String::from_utf8(bytes.to_vec()).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use super::{Returned, invoke};
+    use crate::values;
+
+    thread_local! {
+        /// How many times the test lambdas below ran on this thread.
+        static CALLS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// A lambda with no parameter, as `together` makes, returning a value that no other
+    /// word has and the status of a failure, so that two words crossed in order show.
+    extern "C" fn no_parameter(_closure: i64) -> Returned {
+        CALLS.with(|calls| calls.set(calls.get() + 1));
+        Returned {
+            value: 0x0123_4567_89ab_cdef,
+            status: 1,
+        }
+    }
+
+    /// A lambda with one parameter, as `together for` makes.
+    extern "C" fn one_parameter(_closure: i64, arg: i64) -> Returned {
+        CALLS.with(|calls| calls.set(calls.get() + 1));
+        Returned {
+            value: arg.wrapping_mul(3),
+            status: 0,
+        }
+    }
+
+    fn code(address: usize) -> i64 {
+        i64::try_from(address).unwrap()
+    }
+
+    #[test]
+    fn a_closure_is_called_with_the_arguments_its_arity_takes_and_returns_two_words_in_order() {
+        // #424 (F3): the value and the status come back as the two words the code returned.
+        let none = values::closure(
+            code(no_parameter as extern "C" fn(i64) -> Returned as usize),
+            0,
+        );
+        assert_eq!(invoke(none, None), (0x0123_4567_89ab_cdef, 1));
+        let one = values::closure(
+            code(one_parameter as extern "C" fn(i64, i64) -> Returned as usize),
+            1,
+        );
+        assert_eq!(invoke(one, Some(14)), (42, 0));
+        assert_eq!(CALLS.with(Cell::get), 2);
+    }
+
+    #[test]
+    fn a_closure_of_another_arity_or_a_word_that_is_no_closure_stops_without_a_call() {
+        // #424 (F1): `invoke` checks what it calls before the transmute; a mismatch is a fault
+        // and stops the task, and no code runs.
+        let faults = values::faults();
+        let none = values::closure(
+            code(no_parameter as extern "C" fn(i64) -> Returned as usize),
+            0,
+        );
+        let one = values::closure(
+            code(one_parameter as extern "C" fn(i64, i64) -> Returned as usize),
+            1,
+        );
+        assert_eq!(invoke(none, Some(5)), (0, 2));
+        assert_eq!(invoke(one, None), (0, 2));
+        // A list is no closure, and neither is a word that names no object.
+        assert_eq!(invoke(values::list(), None), (0, 2));
+        assert_eq!(invoke(7, None), (0, 2));
+        // A closure without code, and one whose arity no lambda has.
+        assert_eq!(invoke(values::closure(0, 0), None), (0, 2));
+        assert_eq!(
+            invoke(
+                values::closure(
+                    code(no_parameter as extern "C" fn(i64) -> Returned as usize),
+                    -1
+                ),
+                None
+            ),
+            (0, 2)
+        );
+        assert_eq!(CALLS.with(Cell::get), 0);
+        assert!(
+            values::faults() >= faults + 6,
+            "every refused call is a fault"
+        );
+    }
 }

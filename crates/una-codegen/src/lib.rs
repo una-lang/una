@@ -298,7 +298,7 @@ const RUNTIME: &[(&str, usize, bool)] = &[
     ("una_rt_push", 2, false),
     ("una_rt_data", 1, true),
     ("una_rt_list", 0, true),
-    ("una_rt_closure", 1, true),
+    ("una_rt_closure", 2, true),
     ("una_rt_field", 2, true),
     ("una_rt_tag", 1, true),
     ("una_rt_closure_code", 1, true),

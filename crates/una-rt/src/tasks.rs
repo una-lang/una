@@ -28,10 +28,10 @@ use una_interp::Event;
 use crate::runtime::{self, TaskTemplate, with_state};
 use crate::values::{self, Portable};
 
-/// Calls the compiled closure `closure`, whose code is `code`, with `arg` when it takes one:
-/// its value, and 0, 1 when the value is a failure, or 2 when the task stopped. Calling code by
-/// its address is [`crate::ffi`]'s, the only `unsafe` of the runtime (ADR 0058).
-pub type Invoke = fn(code: i64, closure: i64, arg: Option<i64>) -> (i64, i64);
+/// Calls the compiled closure `closure` with `arg` when it takes one: its value, and 0, 1 when
+/// the value is a failure, or 2 when the task stopped. Reading the closure's code and calling
+/// it by its address is [`crate::ffi`]'s, the only `unsafe` of the runtime (ADR 0058, #424).
+pub type Invoke = fn(closure: i64, arg: Option<i64>) -> (i64, i64);
 
 /// How many tasks run at once at most: the tasks after them start as earlier ones end. Each
 /// task still has its own thread (`spec/19 §8`).
@@ -189,7 +189,7 @@ fn task(
     runtime::enter_task(template, path, flag);
     let closure = values::import(closure);
     let arg = arg.map(values::import);
-    let (value, status) = invoke(values::closure_code(closure), closure, arg);
+    let (value, status) = invoke(closure, arg);
     let ended = match status {
         0 => Ended::Returned(values::export(value)),
         1 => Ended::Failed(values::export(value)),

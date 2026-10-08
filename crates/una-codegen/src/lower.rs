@@ -1020,7 +1020,11 @@ impl<'p> Lowerer<'_, 'p, '_> {
             .module
             .declare_func_in_func(id, self.builder.func);
         let address = self.builder.ins().func_addr(types::I64, code);
-        let closure = self.call("una_rt_closure", &[address])?;
+        // The lambda takes the closure and `params`, as `Emitter::lambda` declares it: the
+        // runtime checks this arity before it calls the code on a task's thread (#424).
+        let arity = i64::try_from(params.len()).map_err(crate::internal)?;
+        let arity = self.builder.ins().iconst(types::I64, arity);
+        let closure = self.call("una_rt_closure", &[address, arity])?;
         for value in values {
             self.runtime("una_rt_push", &[closure, value]);
         }

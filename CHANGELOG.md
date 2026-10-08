@@ -22,6 +22,10 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 - **U1001 offers the closest names in scope** (#419, N-64). An unknown name, of a value or a type, is compared by edit distance with every name in scope: locals, the module's declarations and imports, and the prelude of the package's edition. Up to three are listed, by distance and then bytewise, as advice without an edit ("names in scope close to `caz`: `can`, `cap`, `car`"): a typo's fix is a guess, and the agent chooses. The message and its position are unchanged.
 
+### Security
+
+- **The runtime checks a task's code before it calls it** (#424). Running a task of `together` called the compiled code a closure held, trusting the caller in the runtime to give the right code and the right number of arguments. That check is now in the runtime's C boundary (ADR 0058), where the call is made: a closure records how many parameters its code takes, and a word that is no closure, a closure without code, or a call with another number of arguments stops the task as a fault, and nothing is called. No program changes behavior. The comments of that boundary name the three targets, and a test checks that a task's value and status cross from compiled code in order.
+
 ## v0.3.3
 
 A security patch of the Beta (S-13: executables and releases no longer carry paths of the machine that built them), released with everything validated on `main` since v0.3.2: the checker shares its types (ADR 0077), checking many generic functions is linear, diagnostics and repairs fixed by three reviews and a dogfood pass, a crash is U8001, and the release archive ships the guides. Edition 0.1's behavior is unchanged; edition 0.2 gains two checks (ADR 0079, and #407's fail-closed verifier) and loses one false positive (#384). Validation: `docs/releases/v0.3.3-validation.md`.
