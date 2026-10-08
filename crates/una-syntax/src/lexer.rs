@@ -840,6 +840,21 @@ impl Lexer<'_> {
                     return;
                 }
                 Some('\\') => self.escape(&mut chunk),
+                // A `{` that no expression can follow, as in JSON written in text
+                // (`"{\"a\": 1}"`), is a literal brace written without its escape: one
+                // U0007 with the edit, and the literal goes on, so no cascade follows (#403).
+                Some('{') if interpolate && self.brace_is_literal(here + 1) => {
+                    let span = self.span(here, here + 1);
+                    let error = SyntaxError::new(
+                        Code::U0007,
+                        span,
+                        "unescaped `{` in text, where no interpolation can start; write `\\{`",
+                    )
+                    .with_edit("write `\\{`", span, "\\{");
+                    self.out.errors.push(error);
+                    chunk.push('{');
+                    self.pos += 1;
+                }
                 Some('{') if interpolate => {
                     self.flush_chunk(&mut chunk, chunk_start, here);
                     self.push(TokenKind::InterpStart, here, here + 1);
@@ -868,6 +883,16 @@ impl Lexer<'_> {
                 }
             }
         }
+    }
+
+    /// Whether the `{` before `from` is a literal brace: after any blanks, a quote, a
+    /// backslash or a `}` follows it, none of which can start an expression.
+    fn brace_is_literal(&self, from: usize) -> bool {
+        let rest = self.text.get(from..).unwrap_or("");
+        matches!(
+            rest.trim_start_matches([' ', '\t']).chars().next(),
+            Some('"' | '\\' | '}')
+        )
     }
 
     fn flush_chunk(&mut self, chunk: &mut String, start: usize, end: usize) {

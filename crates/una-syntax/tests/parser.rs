@@ -590,10 +590,31 @@ fn expression_forms() {
 }
 
 #[test]
+fn a_brace_no_expression_can_follow_is_one_u0007_403() {
+    // #403 (D-1): JSON written in text was a cascade of U0101, U0004, U0001 and U0006; each
+    // brace that cannot start or end an interpolation is now one U0007, and `{n}` still
+    // interpolates.
+    assert_eq!(
+        errors("f(n: Int) -> Text = \"{\\\"a\\\": {n}, \\\"b\\\": { \\\"c\\\": 1}}\"\n"),
+        [
+            "U0007 3:22 unescaped `{` in text, where no interpolation can start; write `\\{`",
+            "U0007 3:42 unescaped `{` in text, where no interpolation can start; write `\\{`",
+            "U0007 3:52 unescaped `}` in text; write `\\}`",
+            "U0007 3:53 unescaped `}` in text; write `\\}`"
+        ]
+    );
+}
+
+#[test]
 fn expression_errors() {
+    // #403: `{}` holds no expression, so it is a literal brace pair, as in an empty JSON
+    // object: each brace is one U0007 with its edit.
     assert_eq!(
         errors("f() -> Int = \"{}\"\n"),
-        ["U0101 3:16 unexpected `}`, expected an expression"]
+        [
+            "U0007 3:15 unescaped `{` in text, where no interpolation can start; write `\\{`",
+            "U0007 3:16 unescaped `}` in text; write `\\}`"
+        ]
     );
     assert_eq!(
         errors("f() -> Int = 1 +\n"),

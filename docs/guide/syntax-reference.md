@@ -206,7 +206,7 @@ A package of edition `0.1` keeps the table of v0.1 in every version of the compi
 - Double quotes on a single line: `"hello"`. An unterminated literal is U0004.
 - Escapes: `\"`, `\\`, `\n`, `\t`, `\{`, `\}`, and `\u{H}` with 1 to 6 hex digits naming a Unicode scalar value.
 - An unknown or invalid escape (`"C:\data"`, `\u{D800}`, `\u{110000}`, `\u0041`) is U0005.
-- A bare `}` outside an interpolation is U0007: write `\}`.
+- A bare `}` outside an interpolation is U0007: write `\}`. So is a `{` that no expression can follow, a quote, a backslash or a `}` after any blanks, as in JSON written in text: write `\{`. Each comes with the edit, and the literal goes on, so one brace is one diagnostic.
 
 **Interpolation**
 

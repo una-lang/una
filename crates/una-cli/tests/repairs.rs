@@ -352,3 +352,66 @@ fn a_rename_takes_no_name_of_another_module_125() {
         "{a}"
     );
 }
+
+#[test]
+fn json_written_in_text_is_one_edit_per_brace_403() {
+    // #403 (D-1 of the dogfood pass): a `{` that no expression can follow is a literal brace
+    // written without its escape. It was a cascade of U0101, U0004, U0001 and U0006 that
+    // pointed elsewhere; now each brace is one U0007 with the edit to `\{` or `\}`, an
+    // interpolation still interpolates, and applying the edits prints the JSON meant.
+    let root = package(
+        "json-in-text",
+        "0.2",
+        "module m\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let n = 2\n  @console.print(\"{\\\"a\\\": [{\\\"b\\\": {n}}], \\\"c\\\": {}}\")\n",
+    );
+    let found: Vec<(String, String)> = diagnostics(&root)
+        .iter()
+        .map(|d| {
+            (
+                d["code"].as_str().unwrap().to_owned(),
+                d["repairs"][0]["edit"]["replacement"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+            )
+        })
+        .collect();
+    let brace = |r: &str| ("U0007".to_owned(), r.to_owned());
+    assert_eq!(
+        found,
+        [
+            brace("\\{"),
+            brace("\\{"),
+            brace("\\}"),
+            brace("\\{"),
+            brace("\\}"),
+            brace("\\}")
+        ]
+    );
+    assert_eq!(
+        apply_all(&root),
+        Vec::<String>::new(),
+        "{}",
+        repaired(&root)
+    );
+    assert_eq!(run(&root), "{\"a\": [{\"b\": 2}], \"c\": {}}\n");
+}
+
+#[test]
+fn an_edit_marker_before_a_call_moves_to_its_first_argument_403() {
+    // #403 (D-8): `edit f(x, ...)` marks the call, which no marker can; the edit moves it to
+    // the first argument, as a method receiver's marker stands for the first parameter.
+    let root = package(
+        "edit-marker",
+        "0.2",
+        "module m\n\npub kind Tally\n  count: Int\n\nadd(edit t: Tally, by: Int) -> Unit\n=\n  t.count = t.count + by\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit t = Tally(count: 0)\n  edit add(t, by: 2)\n  @console.print(\"{t.count}\")\n",
+    );
+    assert_eq!(
+        apply_all(&root),
+        Vec::<String>::new(),
+        "{}",
+        repaired(&root)
+    );
+    assert!(repaired(&root).contains("  add(edit t, by: 2)\n"));
+    assert_eq!(run(&root), "2\n");
+}

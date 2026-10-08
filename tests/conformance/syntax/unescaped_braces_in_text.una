@@ -1,0 +1,9 @@
+-- test: a `{` that no expression can follow, a quote, a backslash or a `}`, is a literal brace written without its escape: one U0007 per brace, and an interpolation in the same text still interpolates (#403)
+-- spec: spec/01 §6
+-- expect: error U0007 at 9:28
+-- expect: error U0007 at 9:52
+-- expect: error U0007 at 9:53
+-- expect: error U0007 at 9:54
+module unescaped_braces_in_text
+
+pub doc(n: Int) -> Text = "{\"n\": {n}, \"empty\": {}}"
