@@ -1,0 +1,34 @@
+-- expect: accept: generic__generic_over_map_with_secret_key__control (control)
+module sw
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub handler to_console() for Log
+  uses @console: Console[print]
+  op write(n) = @console.print("{n}")
+
+pub kind Bad = | Oops
+
+firsts[K: Ord](m: Map[K, Int]) -> Int
+=
+  let vs = m.values()
+  let v = vs.first()
+    if none use 0
+  v
+
+probe(s: public Int) -> Unit
+  uses @log: Log[write]
+=
+  let m: Map[Int, Int] = empty_map()
+  @log.write(firsts(m.with(key: s, value: 1).with(key: 4, value: 2)))
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  run_cell() with @log = to_console()
+
+run_cell() -> Unit
+  uses @log: Log[write]
+=
+  probe(3)

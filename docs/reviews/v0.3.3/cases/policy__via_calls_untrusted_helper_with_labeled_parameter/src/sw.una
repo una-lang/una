@@ -1,0 +1,28 @@
+-- expect: accept: policy__via_calls_untrusted_helper_with_labeled_parameter (a policy's via function calls a module that is not trusted; via bodies are not checked for labels (spec/07 §6 rule 6))
+module sw
+
+import release (digit_count)
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub handler to_console() for Log
+  uses @console: Console[print]
+  op write(n) = @console.print("{n}")
+
+pub kind Bad = | Oops
+
+probe(pin: secret[Pin] Text) -> Unit
+  uses @log: Log[write]
+=
+  @log.write(digit_count(pin))
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  run_cell() with @log = to_console()
+
+run_cell() -> Unit
+  uses @log: Log[write]
+=
+  probe("1234")

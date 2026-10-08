@@ -1,0 +1,8 @@
+[package]
+name = "labelvar__list_elements_from_secret"
+version = "0.1.0"
+edition = "0.2"
+
+[run]
+entry = "sw"
+grants = ["console"]
