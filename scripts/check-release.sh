@@ -29,10 +29,23 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 tar -xzf "$out/$name.tar.gz" -C "$tmp"
 contents=$(cd "$tmp/$name" && LC_ALL=C ls | tr '\n' ' ')
-if [ "$contents" != "LICENSE README.md lib una " ]; then
-    echo "error: $name.tar.gz holds $contents; expected LICENSE README.md lib una" >&2
+if [ "$contents" != "LICENSE README.md docs lib una " ]; then
+    echo "error: $name.tar.gz holds $contents; expected LICENSE README.md docs lib una" >&2
     exit 1
 fi
+# The guides, byte for byte the tree's, and nothing else under docs/ (#410, N-65): an agent's
+# first contact with Una is the archive.
+guides=$(cd "$tmp/$name/docs" && LC_ALL=C find . -type f | LC_ALL=C sort | tr '\n' ' ')
+if [ "$guides" != "./guide/getting-started.md ./guide/syntax-reference.md ./guide/una-for-agents.md " ]; then
+    echo "error: $name.tar.gz holds docs/ $guides; expected the three guides under docs/guide/" >&2
+    exit 1
+fi
+for guide in getting-started.md syntax-reference.md una-for-agents.md; do
+    if ! cmp -s "$tmp/$name/docs/guide/$guide" "docs/guide/$guide"; then
+        echo "error: $name.tar.gz holds a docs/guide/$guide that differs from the tree's" >&2
+        exit 1
+    fi
+done
 if [ ! -f "$tmp/$name/lib/libuna_rt.a" ]; then
     echo "error: $name.tar.gz has no lib/libuna_rt.a" >&2
     exit 1

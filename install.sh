@@ -5,6 +5,7 @@
 #   UNA_HOME/bin/una
 #   UNA_HOME/lib/libuna_rt.a        (where `una build` looks, beside `bin/`)
 #   UNA_HOME/z3/bin/z3, and UNA_HOME/bin/z3 linking to it
+#   UNA_HOME/docs/guide/*.md        (the guides, from releases that ship them, #410)
 #
 # Every download is checked before anything is installed:
 # - the release archive, against the SHA-256 that the release's validation record lists
@@ -185,6 +186,18 @@ for doc in README.md LICENSE; do
         files="$files $doc"
     fi
 done
+# The guides, from releases that ship them (#410), at the paths the README links.
+if [ -d "$unpacked/docs/guide" ]; then
+    for dir in docs docs/guide; do
+        [ -d "$home/$dir" ] || echo "$dir" >> "$created"
+    done
+    mkdir -p "$home/docs/guide"
+    for guide in "$unpacked"/docs/guide/*.md; do
+        [ -f "$guide" ] || continue
+        cp "$guide" "$home/docs/guide/"
+        files="$files docs/guide/$(basename "$guide")"
+    done
+fi
 {
     echo "# Una $version, installed by install.sh; \`sh install.sh --uninstall\` removes what follows."
     echo "version $version"
