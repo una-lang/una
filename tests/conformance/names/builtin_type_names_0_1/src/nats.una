@@ -1,0 +1,3 @@
+module nats
+
+pub kind Nat = Zero | One

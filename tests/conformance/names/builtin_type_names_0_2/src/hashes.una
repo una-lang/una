@@ -1,0 +1,3 @@
+module hashes
+
+pub kind Hashed = Digest | Raw

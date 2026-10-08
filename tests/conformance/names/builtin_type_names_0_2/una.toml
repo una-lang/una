@@ -1,0 +1,4 @@
+[package]
+name = "builtin_type_names_0_2"
+version = "0.1.0"
+edition = "0.2"

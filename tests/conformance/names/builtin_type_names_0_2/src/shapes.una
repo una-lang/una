@@ -1,0 +1,3 @@
+module shapes
+
+pub kind Shape = Unit | Square

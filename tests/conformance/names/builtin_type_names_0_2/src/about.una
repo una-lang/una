@@ -1,0 +1,12 @@
+-- test: in edition 0.2, a kind, a variant or a capability cannot take the name of a built-in type or of the prelude's Nat, Option and Result, which in edition 0.1 it silently shadowed (spec/03 §1, ADR 0079, #130)
+-- spec: spec/03 §1
+-- expect: error U1002 at src/bools.una:3:16
+-- expect: error U1002 at src/hashes.una:3:10
+-- expect: error U1002 at src/ints.una:3:10
+-- expect: error U1002 at src/lists.una:3:10
+-- expect: error U1002 at src/nats.una:3:10
+-- expect: error U1002 at src/options.una:3:10
+-- expect: error U1002 at src/results.una:3:10
+-- expect: error U1002 at src/shapes.una:3:18
+-- expect: error U1002 at src/texts.una:3:10
+module about
