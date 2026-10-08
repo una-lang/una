@@ -9,6 +9,7 @@ Status: Normative for the reference implementation.
 - `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all --check` pass on every commit.
 - No `unwrap`, `expect`, `panic!`, `unreachable!` or indexing that can panic in library crates, except for internal invariants written as `// INVARIANT: <why this cannot fail>` next to the call. Tests may unwrap freely.
 - Library crates return `Result<T, Vec<Diagnostic>>` or accumulate into a `Diagnostics` sink; they never print, exit or read environment variables.
+- The `una` binary holds the stderr lock for the whole run, and the checker, the interpreter and the tests run on worker threads. A temporary `eprintln!` on a worker thread therefore blocks forever: write debugging output to a file instead (#376). A panic on any thread is caught where `run` returns and is reported as U8001 with exit code 3 (`spec/13 §5`).
 - Prefer plain enums and exhaustive `match` over trait objects. Avoid macros except `derive`.
 - Name things after the spec: `T-Call` is implemented in `fn check_call`, with a doc comment linking `spec/10 §5`.
 

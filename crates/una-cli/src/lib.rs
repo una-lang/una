@@ -303,7 +303,11 @@ impl Heap<'static> {
 /// Runs the `una` command line. `args` starts with the program name; `stderr_is_terminal`
 /// decides `--color auto`, since human diagnostics go to stderr (ADR 0015 D1).
 ///
-/// A failure to write the output is reported as a usage error (exit code 2, ADR 0015 D1).
+/// A failure to write the output is reported as a usage error (exit code 2, ADR 0015 D1). A
+/// panic anywhere in a command, on this thread or on a worker thread that hands it back when
+/// joined, is an internal compiler error: U8001, exit code 3, and with `--json` one
+/// `una.diagnostics/1` document on stdout (`spec/13 §5`, #376). Rust's own panic message stays
+/// on stderr, as `spec/13 §5` allows for U8001.
 pub fn run<I, T>(
     args: I,
     stdout: &mut dyn Write,
@@ -316,6 +320,166 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
+    let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    // `--json` is a global flag without a value, so its presence decides the shape of the
+    // report even when parsing is what panicked.
+    let json = args.iter().skip(1).any(|arg| arg == "--json");
+    // What a panic report needs from the command line, read before the command runs; parsing
+    // is guarded too, and a panic in it leaves both unknown.
+    let parsed = std::panic::catch_unwind(|| Cli::try_parse_from(args.clone()).ok())
+        .ok()
+        .flatten();
+    let command = parsed.as_ref().and_then(|cli| cli.command.as_ref());
+    let location = panic_location(command);
+    // With `--json`, a command's stdout is held until it returns, so a panic never leaves a
+    // fragment of its document before the U8001 one (`spec/13 §5`: one document). No `--json`
+    // command streams: `una run` puts the program's output inside `una.run/1`. The language
+    // server speaks its protocol on stdout as it goes, so it is never held.
+    let held = json && !matches!(command, Some(Command::Lsp));
+    let guard = Guard {
+        json,
+        held,
+        location,
+    };
+    guard.run(stdout, stderr, |stdout, stderr| {
+        run_command(args, stdout, stderr, stderr_is_terminal, environment, heap)
+    })
+}
+
+/// Where U8001 for a panic goes (ADR 0022 rule 2): 1:1 of the `una.toml` of the package the
+/// command checks, or of the checked file for a package of one file, as the commands locate
+/// a diagnostic without a source position. A command without a package (`una explain`,
+/// `una lsp`, `--version`), a path that names neither, or a panic while parsing the command
+/// line leaves no file to point at: the location is then the empty `file` at 1:1, as
+/// `root_location` already writes for a package without files, rather than a file that the
+/// command never read.
+fn panic_location(command: Option<&Command>) -> una_diag::Location {
+    let root = match command {
+        Some(
+            Command::Check { path, .. }
+            | Command::Report { path, .. }
+            | Command::Obligations { path, .. }
+            | Command::Fmt { path, .. }
+            | Command::Run { path, .. }
+            | Command::Build { path, .. }
+            | Command::Test { path, .. },
+        ) => Some(path.clone()),
+        // `una trace` and `una contract` read the package in the current directory.
+        Some(Command::Trace { .. } | Command::Contract { .. }) => Some(".".into()),
+        _ => None,
+    };
+    let file = root.and_then(|root| {
+        if root.is_file() {
+            root.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        } else if root.join("una.toml").is_file() {
+            Some("una.toml".to_owned())
+        } else {
+            None
+        }
+    });
+    let position = una_diag::Position { line: 1, col: 1 };
+    una_diag::Location {
+        file: file.unwrap_or_default(),
+        start: position,
+        end: position,
+    }
+}
+
+/// How [`run`] turns a panic into an internal compiler error (#376).
+struct Guard {
+    /// Whether the report is a JSON document.
+    json: bool,
+    /// Whether the command's stdout is held until it returns.
+    held: bool,
+    /// Where the U8001 diagnostic goes.
+    location: una_diag::Location,
+}
+
+impl Guard {
+    /// Runs `command`. On a panic, nothing it held reaches stdout, and U8001 is reported in its
+    /// place, with exit code 3.
+    fn run(
+        &self,
+        stdout: &mut dyn Write,
+        stderr: &mut dyn Write,
+        command: impl FnOnce(&mut dyn Write, &mut dyn Write) -> ExitStatus,
+    ) -> ExitStatus {
+        let mut buffer: Vec<u8> = Vec::new();
+        // The writers are only written again on the panicking path to report it.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if self.held {
+                command(&mut buffer, &mut *stderr)
+            } else {
+                command(&mut *stdout, &mut *stderr)
+            }
+        }));
+        match outcome {
+            Ok(status) => {
+                if self.held
+                    && stdout
+                        .write_all(&buffer)
+                        .and_then(|()| stdout.flush())
+                        .is_err()
+                {
+                    // A failure to write the output (ADR 0015 D1): a closed stdout discards it
+                    // without an error, as before (#259).
+                    return ExitStatus::Usage;
+                }
+                status
+            }
+            Err(payload) => {
+                let what = payload
+                    .downcast_ref::<&str>()
+                    .map(|text| (*text).to_owned())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "a panic without a message".to_owned());
+                internal_error(self.json, &self.location, &what, stdout, stderr);
+                ExitStatus::Internal
+            }
+        }
+    }
+}
+
+/// Reports a panic as U8001 at `location`: one `una.diagnostics/1` document on stdout with
+/// `--json`, or one line on stderr. A failure to write it changes nothing: the exit code says
+/// it (#376).
+fn internal_error(
+    json: bool,
+    location: &una_diag::Location,
+    what: &str,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) {
+    let message = format!("internal error: the compiler stopped on a bug: {what}");
+    if json {
+        let diagnostic = Diagnostic::error(Code::U8001, message.clone(), location.clone());
+        match render_json(&[diagnostic]) {
+            Ok(document) => {
+                let _ = writeln!(stdout, "{document}").and_then(|()| stdout.flush());
+            }
+            Err(error) => {
+                let _ = writeln!(
+                    stderr,
+                    "internal compiler error (U8001): {message}; rendering it as JSON failed: {error}"
+                );
+            }
+        }
+    } else {
+        let _ = writeln!(stderr, "internal compiler error (U8001): {message}")
+            .and_then(|()| stderr.flush());
+    }
+}
+
+/// [`run`] without the guard: parses `args` and runs the command.
+fn run_command(
+    args: Vec<OsString>,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+    stderr_is_terminal: bool,
+    environment: Environment<'_>,
+    heap: Heap<'_>,
+) -> ExitStatus {
     // The key of the proof cache is resolved when a command verifies, and not before: `una fmt`
     // never makes one (ADR 0064).
     let solving = |seconds: u64| Solving {
@@ -831,5 +995,137 @@ fn keyword_set(edition: una_project::Edition) -> KeywordSet {
     match edition {
         una_project::Edition::V0_1 => KeywordSet::V0_1,
         una_project::Edition::V0_2 => KeywordSet::V0_2,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ExitStatus, Guard, on_large_stack, panic_location};
+    use crate::args::Command;
+
+    /// The test-only hook of #376: a command that panics on the checker's own thread, as a bug
+    /// in a pass would, joined and handed back as [`on_large_stack`] does.
+    fn panicking(_: &mut dyn std::io::Write, _: &mut dyn std::io::Write) -> ExitStatus {
+        on_large_stack(|| -> ExitStatus { panic!("a forced panic for #376") })
+    }
+
+    fn guard(json: bool, file: &str) -> Guard {
+        let position = una_diag::Position { line: 1, col: 1 };
+        Guard {
+            json,
+            held: json,
+            location: una_diag::Location {
+                file: file.to_owned(),
+                start: position,
+                end: position,
+            },
+        }
+    }
+
+    /// The one document on `stdout`, parsed.
+    fn one_document(stdout: Vec<u8>) -> serde_json::Value {
+        let stdout = String::from_utf8(stdout).unwrap();
+        assert_eq!(stdout.lines().count(), 1, "{stdout}");
+        serde_json::from_str(&stdout).unwrap()
+    }
+
+    #[test]
+    fn a_panic_in_a_command_is_u8001_with_exit_code_3() {
+        let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+        let status = guard(false, "una.toml").run(&mut stdout, &mut stderr, panicking);
+        assert_eq!(status.code(), 3);
+        assert!(stdout.is_empty());
+        let stderr = String::from_utf8(stderr).unwrap();
+        assert!(
+            stderr.starts_with(
+                "internal compiler error (U8001): internal error: the compiler stopped on a bug: a forced panic for #376"
+            ),
+            "{stderr}"
+        );
+    }
+
+    #[test]
+    fn a_panic_with_json_prints_one_diagnostics_document_at_1_1_of_una_toml() {
+        let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+        let status = guard(true, "una.toml").run(&mut stdout, &mut stderr, panicking);
+        assert_eq!(status.code(), 3);
+        // `spec/13 §5`: one JSON document on stdout; Rust's hook writes to the process's
+        // stderr, not to ours.
+        assert!(stderr.is_empty());
+        let document = one_document(stdout);
+        assert_eq!(document["schema"], "una.diagnostics/1");
+        let diagnostics = document["diagnostics"].as_array().unwrap();
+        assert_eq!(diagnostics.len(), 1);
+        let diagnostic = &diagnostics[0];
+        assert_eq!(diagnostic["code"], "U8001");
+        assert_eq!(diagnostic["severity"], "error");
+        assert!(
+            diagnostic["message"]
+                .as_str()
+                .unwrap()
+                .ends_with("a forced panic for #376")
+        );
+        // ADR 0022 rule 2.
+        assert_eq!(diagnostic["primary"]["file"], "una.toml");
+        assert_eq!(
+            diagnostic["primary"]["start"],
+            serde_json::json!({"line": 1, "col": 1})
+        );
+    }
+
+    #[test]
+    fn a_panic_after_part_of_a_document_still_leaves_exactly_one_document() {
+        let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+        let status = guard(true, "una.toml").run(&mut stdout, &mut stderr, |stdout, _| {
+            let _ = write!(stdout, "{{\"schema\":\"una.report/2\",\"package\":");
+            panic!("a forced panic in the middle of a document")
+        });
+        assert_eq!(status.code(), 3);
+        let document = one_document(stdout);
+        assert_eq!(document["schema"], "una.diagnostics/1");
+        assert_eq!(document["diagnostics"][0]["code"], "U8001");
+    }
+
+    #[test]
+    fn a_command_that_does_not_panic_keeps_its_status_and_its_output() {
+        let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+        let status = guard(true, "una.toml").run(&mut stdout, &mut stderr, |stdout, _| {
+            let _ = writeln!(
+                stdout,
+                "{{\"schema\":\"una.diagnostics/1\",\"diagnostics\":[]}}"
+            );
+            ExitStatus::Errors
+        });
+        assert_eq!(status.code(), 1);
+        assert_eq!(
+            String::from_utf8(stdout).unwrap(),
+            "{\"schema\":\"una.diagnostics/1\",\"diagnostics\":[]}\n"
+        );
+        assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn a_panic_is_located_at_the_package_file_or_nowhere() {
+        let root = std::env::temp_dir().join(format!("una-376-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("una.toml"), "").unwrap();
+        std::fs::write(root.join("src/one.una"), "").unwrap();
+        let check = |path: std::path::PathBuf| Command::Check {
+            path,
+            tier: crate::args::TierArg::Zero,
+            dump_core: None,
+            solver_wallclock: 60,
+        };
+        // A package: 1:1 of its `una.toml`; a file: 1:1 of that file; no package: nowhere.
+        assert_eq!(panic_location(Some(&check(root.clone()))).file, "una.toml");
+        assert_eq!(
+            panic_location(Some(&check(root.join("src/one.una")))).file,
+            "one.una"
+        );
+        assert_eq!(panic_location(Some(&check(root.join("missing")))).file, "");
+        assert_eq!(panic_location(Some(&Command::Lsp)).file, "");
+        assert_eq!(panic_location(None).file, "");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
