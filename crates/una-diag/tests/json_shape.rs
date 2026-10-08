@@ -66,10 +66,12 @@ fn spec_example() -> Diagnostic {
             Binding {
                 name: "e.remaining".to_owned(),
                 value: json!(0),
+                label: None,
             },
             Binding {
                 name: "result".to_owned(),
                 value: json!("Few"),
+                label: None,
             },
         ],
     });
@@ -233,4 +235,28 @@ fn every_element_keeps_its_own_schema() {
     let value: Value = serde_json::from_str(&render_json(&diagnostics).unwrap()).unwrap();
     assert_eq!(value["schema"], "una.diagnostics/1");
     assert_eq!(value["diagnostics"][0]["schema"], "una.diagnostic/1");
+}
+
+#[test]
+fn a_binding_label_is_written_only_when_not_public() {
+    let bindings = [
+        Binding {
+            name: "pin".to_owned(),
+            value: json!(-1),
+            label: Some("secret".to_owned()),
+        },
+        Binding {
+            name: "result".to_owned(),
+            value: json!(0),
+            label: None,
+        },
+    ];
+    let value = serde_json::to_value(bindings).unwrap();
+    assert_eq!(
+        value,
+        json!([
+            {"name": "pin", "value": -1, "label": "secret"},
+            {"name": "result", "value": 0},
+        ])
+    );
 }

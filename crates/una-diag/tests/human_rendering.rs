@@ -63,10 +63,12 @@ fn refuted() -> Diagnostic {
             Binding {
                 name: "remaining".to_owned(),
                 value: json!(0),
+                label: None,
             },
             Binding {
                 name: "result".to_owned(),
                 value: json!(false),
+                label: None,
             },
         ],
     });

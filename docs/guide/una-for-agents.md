@@ -257,6 +257,8 @@ pub double(x: Int) -> Int
 }
 ```
 
+The counterexample's values are the solver's, not data from a run. A binding whose declared type is labeled, such as `pin: secret Int`, also carries `"label": "secret"`; its value is still shown, since it is hypothetical. In `una test`, a package of edition `0.2` shows an example's result and failure reason with every field, since example data come from the source; edition `0.1` redacts labeled fields there, and the document's `redacted` key says which rule applies. Traces are redacted in both.
+
 A package that establishes an opaque fact once, at its boundary, and declares the budget for it:
 
 `una.toml`

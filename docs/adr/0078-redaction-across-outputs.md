@@ -1,10 +1,10 @@
 # 0078. Redaction across `una test`, counterexamples and traces
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-08
-- Deciders: Leonardo (pending); proposal by Claude (Una-1), from the cross-feature review of edition 0.2 (#177, O-1 and O-2)
+- Deciders: Leonardo (2026-10-08, written); proposal by Claude (Una-1), from the cross-feature review of edition 0.2 (#177, O-1 and O-2)
 - Resolves: issue #9 (v0.1 review R-025), and observation O-2 of `docs/reviews/v0.3.3/FINDINGS.md`
-- Would amend: `spec/11 §5`, `spec/13 §2` and `§5`
+- Amends: `spec/11 §5`, `spec/13 §1` and `§5`
 
 ## Context
 
@@ -51,7 +51,7 @@ Three outputs show values that labeled code computed, and today they redact diff
 2. **Example results.** A `do` result is rendered without redaction at any position, since example data are source literals (U3014). This removes the inconsistency of O-1 by showing the labeled field, not by hiding the labeled result.
 3. **Counterexamples.** Bindings keep their values. Each binding gains an additive `label` key (`"label": "secret"`, omitted when `public`) so that an agent sees the value is hypothetical data of a labeled type. Under ADR 0076 that is an added key, so the schema stays `una.diagnostic/1`.
 4. **Traces** are unchanged.
-5. **Editions.** Points 2 and 3 apply in **edition 0.2** packages, from the release that ships them. Edition 0.1 packages keep their current output in every later compiler, as edition 0.1's frozen behavior requires, so the Gate 1 pin and v0.1.x need no amendment.
+5. **Editions.** Point 2 applies in **edition 0.2** packages, from the release that ships it. Edition 0.1 packages keep their current values in every later compiler, as edition 0.1's frozen behavior requires, so the Gate 1 pin and v0.1.x need no amendment. Point 3 adds a key and changes no value, so it applies in every edition.
 6. **ABI.**
    - For edition 0.2 packages, point 2 changes what `result.value` shows for examples with labeled fields. That is a change of meaning under ADR 0076, so `una.test/1` becomes `una.test/2` for edition 0.2 packages.
    - Alternatively, keep `una.test/1`, and add a `redacted: false` key at the document level that tells the agent the rendering rule. That is additive, so there is no bump.
@@ -70,7 +70,14 @@ Three outputs show values that labeled code computed, and today they redact diff
 
 ## Decision
 
-Proposed: **C**, with the additive `redacted` and `label` keys rather than a schema bump. Leonardo decides on his return.
+**C**, with the additive `redacted` and `label` keys rather than a schema bump (Leonardo, 2026-10-08, written):
+- Traces are unchanged: they redact by static label and by declared field labels.
+- In a package of edition `0.2`, `una test` renders an example's result and every value in its failure `reason` without redaction at any position. A `Hashed` keeps `hashed:<hex>`, as traces and diagnostics show it; only interpolation writes `<hashed>`.
+- In a package of edition `0.1`, those values are unchanged: field redaction, as before.
+- The `una.test/1` document gains `redacted`, after `tier`: `true` for edition `0.1`, `false` for edition `0.2`. It is additive (ADR 0076), so the schema stays `una.test/1`.
+- Each counterexample binding gains `label`, in every edition, when the label of its declared type is above `public`, as `"secret"` or `"secret[PII]"`, and is omitted when public. The label is the type's deep label (the one traces redact by), joined with the owner's label for a field or a length. Values are unchanged, and so is the human output. The key is additive, so the schema stays `una.diagnostic/1`.
+
+**Gate 1.** una-bench pins v0.1.5, which this change does not touch. Checked against una-bench `a9357d0`: every task package is edition `0.1`, and the oracle (`harness/bench/oracle.py`) reads `una.test` by key (`examples`, `result`, `reason`, `trace`) and reads no counterexample. A later re-pin would see the same edition `0.1` values plus two keys it ignores.
 
 ## Consequences
 

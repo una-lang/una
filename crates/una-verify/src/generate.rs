@@ -136,6 +136,9 @@ pub(crate) struct Shown {
     pub(crate) name: String,
     pub(crate) term: F,
     pub(crate) show: Show,
+    /// The label of its declared type, deeply, joined with its owner's for a field or a
+    /// length (ADR 0078).
+    pub(crate) label: una_core::Label,
 }
 
 /// How a value shows.
@@ -3888,6 +3891,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                             name: source,
                             term: term.clone(),
                             show: self.show_kind(&value),
+                            label: ty.deep_label(),
                         },
                     );
                 }
@@ -3917,6 +3921,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                         }
                         _ => (format!("{owner}.len"), base_type(Base::Int)),
                     };
+                    let label = self.term_label(&term, ctx);
                     let value = Tv {
                         f: term.clone(),
                         ty,
@@ -3927,6 +3932,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                             name,
                             term: term.clone(),
                             show: self.show_kind(&value),
+                            label,
                         },
                     );
                 }
@@ -3934,6 +3940,39 @@ impl<'p, 'i> Walker<'p, 'i> {
             }
         }
         out.into_values().collect()
+    }
+
+    /// The label of a shown term: its binder's declared type, deeply, and for a field or a
+    /// length, its owner's label joined with the field's declared type, deeply.
+    fn term_label(&self, f: &F, ctx: &Ctx) -> una_core::Label {
+        match f {
+            F::Const(Const { name, .. }) => ctx
+                .types
+                .get(name)
+                .map_or_else(una_core::Label::public, Type::deep_label),
+            F::App { fun, args } => {
+                let owner = args
+                    .first()
+                    .map_or_else(una_core::Label::public, |a| self.term_label(a, ctx));
+                match &fun.role {
+                    FunRole::Field {
+                        module,
+                        kind,
+                        variant,
+                        index,
+                        ..
+                    } => self
+                        .index
+                        .kinds
+                        .get(&(module.as_str(), kind.as_str()))
+                        .and_then(|k| k.variants.get(*variant))
+                        .and_then(|v| v.fields.get(*index))
+                        .map_or(owner.clone(), |(_, t)| owner.join(&t.deep_label())),
+                    _ => owner,
+                }
+            }
+            _ => una_core::Label::public(),
+        }
     }
 
     /// The source name of a shown term: a named binder or a field of one.
