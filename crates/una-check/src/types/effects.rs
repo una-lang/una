@@ -377,10 +377,7 @@ impl Checker<'_, '_, '_> {
         let raised = Ty::Kind(kind, Vec::new().into());
         match lambda.fails.clone() {
             Some(Ty::Kind(first, _)) if first != kind => {
-                let (first, kind) = (
-                    self.env.kind_name(first).to_owned(),
-                    self.env.kind_name(kind).to_owned(),
-                );
+                let (first, kind) = (self.env.kind_display(first), self.env.kind_display(kind));
                 self.report.error(
                     Code::U3009,
                     span,

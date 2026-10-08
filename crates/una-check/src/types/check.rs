@@ -285,13 +285,26 @@ pub(crate) struct Statement {
 
 impl Names for Checker<'_, '_, '_> {
     fn kind_name(&self, id: KindId) -> String {
-        self.env.kind_name(id).to_owned()
+        self.env.kind_display(id)
     }
 
     fn param_name(&self, index: usize) -> String {
         self.type_params
             .get(index)
             .map_or_else(|| "?".to_owned(), |name| (*name).to_owned())
+    }
+}
+
+/// A checker's names as source writes them, for repairs.
+struct Written<'w, 'c, 'a, 's>(&'w Checker<'c, 'a, 's>);
+
+impl Names for Written<'_, '_, '_, '_> {
+    fn kind_name(&self, id: KindId) -> String {
+        self.0.env.kind_name(id).to_owned()
+    }
+
+    fn param_name(&self, index: usize) -> String {
+        self.0.param_name(index)
     }
 }
 
@@ -444,6 +457,13 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     pub(crate) fn show(&self, ty: &Ty) -> String {
         let resolved = self.vars.resolve(ty);
         Show(&resolved, self).to_string()
+    }
+
+    /// A type as source writes it, for a repair's text: kinds by their declared names, which
+    /// [`Checker::show`] qualifies when two modules share one.
+    pub(crate) fn show_written(&self, ty: &Ty) -> String {
+        let resolved = self.vars.resolve(ty);
+        Show(&resolved, &Written(self)).to_string()
     }
 
     /// A written type as Una names it: a refined type by its refined kind or range, without

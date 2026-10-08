@@ -670,7 +670,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let kinds: Vec<String> = candidates
             .iter()
             .filter_map(|candidate| match candidate {
-                Entity::Variant(kind, _) => Some(format!("`{}`", self.env.kind_name(*kind))),
+                Entity::Variant(kind, _) => Some(format!("`{}`", self.env.kind_display(*kind))),
                 _ => None,
             })
             .collect();
@@ -1057,7 +1057,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 if let Some(index) = self.variant_index(id, name) {
                     return Some((id, index, args.to_vec()));
                 }
-                let kind = self.env.kind_name(id);
+                let kind = self.env.kind_display(id);
                 let variants: Vec<&str> = self
                     .env
                     .kinds
@@ -1636,7 +1636,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let message = match kind {
             Some(id) => format!(
                 "cannot find variant `{name}` in error kind `{}` or in scope",
-                self.env.kind_name(id)
+                self.env.kind_display(id)
             ),
             None => {
                 format!("cannot find variant `{name}` in this module, its imports or the prelude")

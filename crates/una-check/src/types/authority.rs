@@ -641,11 +641,11 @@ impl<'a> Checker<'_, 'a, '_> {
             .into_iter()
             .filter(|op| ops.iter().any(|o| o == op))
             .collect();
-        format!(
-            "uses @{name}: {}[{}]",
-            self.cap_name(capability),
-            ops.join(", ")
-        )
+        // Repair text: the capability as source names it, never qualified for a message.
+        let declared = capability
+            .and_then(|c| self.env.capabilities.get(c))
+            .map_or("?", |c| c.name);
+        format!("uses @{name}: {declared}[{}]", ops.join(", "))
     }
 
     /// An edit of the `uses` clause at `clause`, which declares `@name` with `ops`, that
@@ -842,7 +842,7 @@ impl<'a> Checker<'_, 'a, '_> {
                         ),
                     );
                     if matches!(passed, Ty::Kind(..)) {
-                        let clause = [format!("fails {shown}")];
+                        let clause = [format!("fails {}", self.show_written(&passed))];
                         diagnostic
                             .repairs
                             .extend(self.add_clause(&clause, before_fails));
@@ -967,8 +967,8 @@ impl<'a> Checker<'_, 'a, '_> {
                         variant.span,
                         format!(
                             "`{name}` is a variant of `{}`, and this code fails with `{}`",
-                            self.env.kind_name(kind),
-                            self.env.kind_name(declared)
+                            self.env.kind_display(kind),
+                            self.env.kind_display(declared)
                         ),
                     );
                 }

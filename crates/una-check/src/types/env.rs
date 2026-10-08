@@ -791,9 +791,15 @@ impl<'a> Env<'a> {
         }
     }
 
+    /// The name of a kind as declared, for Core IR, reports, repairs and the index, which name
+    /// it as source does.
+    pub(crate) fn kind_name(&self, id: KindId) -> &'a str {
+        self.kinds.get(id).map_or("?", |kind| kind.name)
+    }
+
     /// The name of a kind, for messages: with its module's path when another module declares
     /// a kind of the same name (#17).
-    pub(crate) fn kind_name(&self, id: KindId) -> String {
+    pub(crate) fn kind_display(&self, id: KindId) -> String {
         match self.kinds.get(id) {
             Some(kind) if self.shared_kind_names.get(id).copied().unwrap_or(false) => {
                 self.qualified(kind.module, kind.name)
@@ -1763,7 +1769,7 @@ impl<'a> Env<'a> {
             Some(Entity::Variant(kind, _)) => {
                 format!(
                     "`{name}` is a variant of `{}`, not a type",
-                    self.kind_name(kind)
+                    self.kind_display(kind)
                 )
             }
             Some(Entity::Capability(_)) => {
@@ -1836,7 +1842,7 @@ struct LowerNames<'e, 'a> {
 
 impl Names for LowerNames<'_, '_> {
     fn kind_name(&self, id: KindId) -> String {
-        self.env.kind_name(id).to_owned()
+        self.env.kind_display(id)
     }
 
     fn param_name(&self, index: usize) -> String {

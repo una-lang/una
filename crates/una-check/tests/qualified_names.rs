@@ -157,3 +157,79 @@ fn a_name_no_other_declaration_shares_stays_bare() {
         ["U2001 src/a.una:8:28 argument `x` of `use_thing` must be `Thing`, found `Int`"]
     );
 }
+
+/// Each diagnostic of a package with `una.toml` and `modules`, with the replacement text of
+/// each of its repairs, as "code message => [replacements]".
+fn repairs(modules: &[(&str, &str)]) -> Vec<String> {
+    let mut files = vec![("una.toml", MANIFEST)];
+    files.extend_from_slice(modules);
+    let (names, types) = run(&files, false);
+    names
+        .iter()
+        .chain(&types.diagnostics)
+        .map(|d| {
+            let edits: Vec<&str> = d
+                .repairs
+                .iter()
+                .filter_map(|r| r.edit.as_ref().map(|e| e.replacement.as_str()))
+                .collect();
+            format!("{} {} => {edits:?}", d.code, d.message)
+        })
+        .collect()
+}
+
+/// A shared name is qualified in a message only: a repair writes the name as the module's
+/// source does, since `uses @console: m.Console[shout]` is not a clause Una can parse.
+#[test]
+fn a_repair_writes_the_declared_name_where_the_message_qualifies_it() {
+    let found = repairs(&[(
+        "src/m.una",
+        "module m\n\npub capability Console\n  op shout(text: Text) -> Unit\n\npub kind FileError = | Missing\n\npub say() -> Unit\n  uses @console: Console[shout]\n=\n  @console.shout(\"a\")\n\npub caller() -> Unit = say()\n\npub f(n: Int) -> Int\n  fails FileError\n=\n  fail Missing\n\npub g(n: Int) -> Int\n=\n  let r = f(n)\n    if error pass\n  r\n",
+    )]);
+    let reported = |what: &str| -> (String, String) {
+        let line = found
+            .iter()
+            .find(|d| d.contains(what))
+            .unwrap_or_else(|| panic!("{what} is reported: {found:?}"));
+        let (message, edits) = line.split_once(" => ").unwrap();
+        (message.to_owned(), edits.to_owned())
+    };
+    let (message, edits) = reported("`say` uses");
+    assert!(
+        message.contains("`@console: m.Console[shout]`"),
+        "{message}"
+    );
+    assert!(edits.contains("uses @console: Console[shout]"), "{edits}");
+    assert!(!edits.contains("m.Console"), "{edits}");
+    let (message, edits) = reported("`if error pass` passes");
+    assert!(message.contains("`m.FileError` failure"), "{message}");
+    assert!(edits.contains("fails FileError"), "{edits}");
+    assert!(!edits.contains("m.FileError"), "{edits}");
+}
+
+/// Core IR names a kind as it is declared: the module is a separate part of its identity
+/// (`spec/12 §4`), so a qualified name there would not resolve. A hypothesis of the verifier
+/// was lost that way when two modules declared `K`.
+#[test]
+fn core_names_a_shared_kind_as_declared() {
+    let mut files = vec![("una.toml", MANIFEST)];
+    files.extend_from_slice(&[
+        ("src/a.una", "module a\n\npub kind K = First | Second\n"),
+        (
+            "src/b.una",
+            "module b\n\npub kind K = One | Two\n\npub pick(k: K) -> Int\n=\n  when k\n    is One -> 1\n    is Two -> 2\n",
+        ),
+    ]);
+    let (names, types) = run(&files, false);
+    assert!(
+        names.is_empty() && types.diagnostics.is_empty(),
+        "{names:?} {:?}",
+        types.diagnostics
+    );
+    let core = format!("{:?}", types.program);
+    assert!(core.contains("\"K\""), "the kind is named `K` in Core");
+    assert!(
+        !core.contains("\"a.K\"") && !core.contains("\"b.K\""),
+        "{core}"
+    );
+}

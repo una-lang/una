@@ -195,7 +195,7 @@ pub(crate) fn kind_recursion(env: &Env<'_>, report: &mut Report<'_>) {
         let through = if target == id {
             String::new()
         } else {
-            format!(" (through `{}`)", env.kind_name(target))
+            format!(" (through `{}`)", env.kind_display(target))
         };
         let mut diagnostic = report.make(
             Code::U2002,
@@ -425,7 +425,7 @@ fn regular_recursion(env: &Env<'_>, report: &mut Report<'_>) {
                     field.span,
                     format!(
                         "`{}` occurs in its own recursion with the argument `{}`; inside a recursive kind, the kinds of its recursion take only type parameters",
-                        env.kind_name(other),
+                        env.kind_display(other),
                         written(env, kind, &arg)
                     ),
                 );
@@ -787,7 +787,7 @@ struct CallerNames<'e, 'a> {
 
 impl Names for CallerNames<'_, '_> {
     fn kind_name(&self, id: KindId) -> String {
-        self.env.kind_name(id).to_owned()
+        self.env.kind_display(id)
     }
 
     fn param_name(&self, index: usize) -> String {
