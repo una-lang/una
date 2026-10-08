@@ -4,6 +4,10 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ## Unreleased
 
+### Security
+
+- **Executables and releases carry no path of the machine that built them** (#382, S-13). On macOS, `una build` kept the absolute path of `libuna_rt.a` in the executable's debug map, so every executable named its builder's install directory, usually with the home directory and user name, and two installs gave different bytes. Released archives also named the path of the machine that built them: the cargo registry and the toolchain under its home directory, and its source tree. `una build` now links without debug information (`-Wl,-S`, on macOS and Linux), and `scripts/release.sh` remaps the source root, the cargo home and the toolchain to `/una`, `/cargo` and `/rust`, for Rust and for C. What a program does is unchanged. `scripts/check-release.sh`, which local-ci and the release gate run, checks that the same program built by the archive unpacked in two places is the same executable, and that neither the archive nor that executable names a home directory or the source tree.
+
 ### Diagnostics
 
 - **Edition 0.1 names a decision on `T` values in its messages** (#362). Since #354, edition 0.1 tells `label(T*)` from `label(T)` in its flows, as edition 0.2 does, but its messages still wrote `label(T*)` as `label(T)`, so a rejected flow could read "a flow from `label(T)` to `label(T)`". They now name `label(T*)` as edition 0.2's do. Only the text changes: over 2164 targets (conformance, examples and the review corpora under `docs/`), every exit code and every edition 0.2 message is unchanged, and every edition 0.1 message is unchanged once `label(T*)` is read as `label(T)`.
