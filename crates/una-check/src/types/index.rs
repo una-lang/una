@@ -69,10 +69,16 @@ pub(crate) fn build(env: &Env<'_>, findings: &Findings) -> Index {
             }
         }
     }
+    // Top-level declarations of one file do not overlap, so the one that contains a span is
+    // the last that starts at or before it: a binary search, O(log n) per span (#375).
+    scopes.sort_by_key(|(decl, _)| (decl.file, decl.start));
     let params_at = |span: Span| -> Vec<String> {
-        scopes
-            .iter()
-            .find(|(decl, _)| {
+        let after =
+            scopes.partition_point(|(decl, _)| (decl.file, decl.start) <= (span.file, span.start));
+        after
+            .checked_sub(1)
+            .and_then(|last| scopes.get(last))
+            .filter(|(decl, _)| {
                 decl.file == span.file && decl.start <= span.start && span.end <= decl.end
             })
             .map(|(_, params)| params.clone())
