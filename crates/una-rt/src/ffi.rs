@@ -10,6 +10,24 @@ use std::ffi::{CStr, c_char, c_int};
 
 use crate::{generic, host, json, runtime, tasks, values};
 
+/// The address of a compiled lambda, as a closure holds it. Its field is private to this
+/// module, so only this module makes one: [`una_rt_closure`], from what the generated code
+/// passes, and [`Code::NONE`]. A task's thread receives a copy of it. So no other code of the
+/// runtime can put an address into a closure that [`invoke`] would call (ADR 0058, #424).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Code(i64);
+
+impl Code {
+    /// No code: [`invoke`] refuses it.
+    pub(crate) const NONE: Code = Code(0);
+
+    /// The address as a word, for the generated code that calls a function value itself
+    /// (`una_rt_closure_code`).
+    pub(crate) fn word(self) -> i64 {
+        self.0
+    }
+}
+
 /// Starts the executable: the generated `main` calls it with the process arguments, the
 /// embedded description of the program (`meta`, `meta_len` bytes of UTF-8 JSON) and the
 /// compiled `main` of Una (`entry`), and returns its result as the exit code.
@@ -49,8 +67,9 @@ pub unsafe extern "C" fn una_rt_start(
     runtime::start(&args, &meta, move || entry())
 }
 
-/// `SIGPIPE` and `SIG_IGN`, which are 13 and 1 on both targets (`aarch64-apple-darwin`,
-/// `x86_64-unknown-linux-gnu`).
+/// `SIGPIPE` and `SIG_IGN`, which are 13 and 1 on the three targets (`aarch64-apple-darwin`,
+/// `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`, whose Linux numbers are the
+/// generic ones).
 const SIGPIPE: c_int = 13;
 const SIG_IGN: usize = 1;
 
@@ -128,7 +147,6 @@ exported! {
     una_rt_data => values::data, (tag);
     una_rt_list => values::list, ();
     una_rt_map_empty => values::map_empty, ();
-    una_rt_closure => values::closure, (code);
     una_rt_field => values::field, (object, index);
     una_rt_tag => values::tag, (value);
     una_rt_closure_code => values::closure_code, (value);
@@ -209,6 +227,21 @@ exported! {
     una_rt_host_instance => host::host_instance, (capability);
     una_rt_handler_instance => host::handler_instance, (name);
     una_rt_event => host::event, (site, instance);
+}
+
+/// A new closure of the compiled lambda at `code`, which takes the closure and `arity`
+/// parameters ([`values::closure`]).
+///
+/// # Safety
+///
+/// `code` is the address of a lambda that `una build` compiled into this executable, with the
+/// default calling convention, taking the closure and `arity` words and returning two words
+/// (`Lowerer::closure`, `Emitter::lambda`): [`invoke`] calls it with those arguments when the
+/// arity matches its call. Only the generated code calls this function; no code of the runtime
+/// does, so a closure's code is always one the compiler made.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn una_rt_closure(code: i64, arity: i64) -> i64 {
+    values::closure(Code(code), arity)
 }
 
 /// Adds the code of an operation to an instance being built ([`values::push_op`]).
@@ -311,31 +344,51 @@ pub extern "C" fn una_rt_together_status() -> i64 {
 }
 
 /// What compiled code returns: its value, and 0, 1 when the value is a failure, or 2 when the
-/// task stopped (`spec/16 §4` rule 3). Two words, which the C calling conventions of both
-/// targets return in two registers, as Cranelift returns a body's two results.
+/// task stopped (`spec/16 §4` rule 3). Two words, which the C calling conventions of the three
+/// targets return in two registers, `rax` and `rdx` on x86-64 System V and `x0` and `x1` on
+/// AArch64, Apple's and the standard one alike, as Cranelift returns a body's two results with
+/// the target's default convention (`Emitter::declare`). `together_two_words` checks it on
+/// each target, through the native gate.
 #[repr(C)]
 struct Returned {
     value: i64,
     status: i64,
 }
 
-/// Calls the closure `closure`, whose code is at `code`, with `arg` when it takes one, on the
-/// thread of a task ([`tasks::Invoke`]).
-pub(crate) fn invoke(code: i64, closure: i64, arg: Option<i64>) -> (i64, i64) {
-    if code == 0 {
-        return (0, 2);
-    }
-    let address = code as usize as *const ();
+/// Calls the closure `closure` with `arg` when its lambda takes one, on the thread of a task of
+/// the block at `site` ([`tasks::Invoke`]). The code and its arity are read here, from the
+/// closure, so the call's soundness rests on this module alone (ADR 0058, #424). A word that is
+/// no closure, a closure without code, or one whose lambda takes another number of parameters
+/// than the call gives is an internal error: nothing is called, and the task aborts with U8001,
+/// which ends the run with exit code 3 (`spec/13 §5`).
+pub(crate) fn invoke(closure: i64, arg: Option<i64>, site: usize) -> (i64, i64) {
+    let given = usize::from(arg.is_some());
+    let code = match values::closure_target(closure) {
+        Some((code, arity)) if code != Code::NONE && arity == given => code,
+        _ => {
+            values::fault();
+            let value = runtime::abort_at(
+                site,
+                una_diag::Code::U8001,
+                "internal error: a task of `together` holds no compiled lambda that takes its arguments".to_owned(),
+            );
+            return (value, 2);
+        }
+    };
+    let address = code.word() as usize as *const ();
     let returned = match arg {
         None => {
-            // SAFETY: `code` is the address of a compiled lambda that `una_rt_closure` stored
-            // in the closure: generated code with the default calling convention, that takes
-            // the closure and returns two words (`Emitter::lambda`, with no parameter).
+            // SAFETY: `code` is a `Code`, which only this module makes: `una_rt_closure`, whose
+            // contract is that the generated code passes the address of a compiled lambda with
+            // the default calling convention, taking the closure and `arity` words and returning
+            // two words (`Lowerer::closure`, `Emitter::lambda`, `Emitter::declare`); a task's
+            // thread receives it unchanged (`values::export`, `values::import`). It is not
+            // `Code::NONE`, and its arity is 0, both checked above.
             let function: extern "C" fn(i64) -> Returned = unsafe { std::mem::transmute(address) };
             function(closure)
         }
         Some(arg) => {
-            // SAFETY: as above, for a lambda with one parameter (`together for`).
+            // SAFETY: as above, for a lambda whose arity is 1, checked above (`together for`).
             let function: extern "C" fn(i64, i64) -> Returned =
                 unsafe { std::mem::transmute(address) };
             function(closure, arg)
@@ -364,4 +417,142 @@ unsafe fn text(pointer: *const u8, len: usize) -> Option<String> {
     // contract).
     let bytes = unsafe { std::slice::from_raw_parts(pointer, len) };
     String::from_utf8(bytes.to_vec()).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::process::Command;
+
+    use super::{Code, Returned, invoke};
+    use crate::{runtime, tasks, values};
+
+    thread_local! {
+        /// How many times the test lambdas below ran on this thread.
+        static CALLS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// A lambda with no parameter, as `together` makes, returning a value that no other
+    /// word has and the status of a failure, so that two words crossed in order show.
+    extern "C" fn no_parameter(_closure: i64) -> Returned {
+        CALLS.with(|calls| calls.set(calls.get() + 1));
+        Returned {
+            value: 0x0123_4567_89ab_cdef,
+            status: 1,
+        }
+    }
+
+    /// A lambda with one parameter, as `together for` makes.
+    extern "C" fn one_parameter(_closure: i64, arg: i64) -> Returned {
+        CALLS.with(|calls| calls.set(calls.get() + 1));
+        Returned {
+            value: arg.wrapping_mul(3),
+            status: 0,
+        }
+    }
+
+    /// A lambda with one parameter that says on stderr that it ran, for the scenario that runs
+    /// in a process of its own, where no other trace of a call survives the abort.
+    extern "C" fn marked(_closure: i64, _arg: i64) -> Returned {
+        eprintln!("{MARK}");
+        Returned {
+            value: 0,
+            status: 0,
+        }
+    }
+
+    /// What [`marked`] says.
+    const MARK: &str = "una-rt test: the refused lambda ran";
+
+    fn none() -> Code {
+        Code(i64::try_from(no_parameter as extern "C" fn(i64) -> Returned as usize).unwrap())
+    }
+
+    fn one() -> Code {
+        Code(i64::try_from(one_parameter as extern "C" fn(i64, i64) -> Returned as usize).unwrap())
+    }
+
+    #[test]
+    fn a_closure_is_called_with_the_arguments_its_arity_takes_and_returns_two_words_in_order() {
+        // #424 (F3): the value and the status come back as the two words the code returned.
+        assert_eq!(
+            invoke(values::closure(none(), 0), None, 0),
+            (0x0123_4567_89ab_cdef, 1)
+        );
+        assert_eq!(invoke(values::closure(one(), 1), Some(14), 0), (42, 0));
+        assert_eq!(CALLS.with(Cell::get), 2);
+    }
+
+    #[test]
+    fn a_closure_of_another_arity_or_a_word_that_is_no_closure_is_refused_without_a_call() {
+        // #424 (F1): `invoke` checks what it calls before the transmute; each refusal is a
+        // fault and stops the task, and no code runs. Here, outside a run, the abort it asks
+        // for has no state to record it in.
+        let faults = values::faults();
+        let refused = [
+            invoke(values::closure(none(), 0), Some(5), 0),
+            invoke(values::closure(one(), 1), None, 0),
+            // A list is no closure, and neither is a word that names no object.
+            invoke(values::list(), None, 0),
+            invoke(7, None, 0),
+            // A closure without code, and one whose arity no lambda has.
+            invoke(values::closure(Code::NONE, 0), None, 0),
+            invoke(values::closure(none(), -1), None, 0),
+        ];
+        assert_eq!(refused, [(0, 2); 6]);
+        assert_eq!(CALLS.with(Cell::get), 0);
+        assert!(
+            values::faults() >= faults + 6,
+            "every refused call is a fault"
+        );
+    }
+
+    /// The name of [`a_refused_task_aborts_the_run`]'s scenario, run in a process of its own
+    /// since an abort ends the process.
+    const SCENARIO: &str = "ffi::tests::a_refused_task_aborts_the_run_scenario";
+
+    #[test]
+    #[ignore = "run by `a_refused_task_aborts_the_run`, in a process of its own"]
+    fn a_refused_task_aborts_the_run_scenario() {
+        // A block of one task whose closure takes a parameter, which `together` does not give.
+        let meta = r#"{"grants":[],"uses":[],"sites":[{"file":"src/t.una","start":{"line":3,"col":3},"end":{"line":4,"col":10}}]}"#;
+        let marked =
+            Code(i64::try_from(marked as extern "C" fn(i64, i64) -> Returned as usize).unwrap());
+        runtime::start(&[], meta, move || {
+            let closures = values::list();
+            let closure = values::closure(marked, 1);
+            values::push(closures, closure);
+            values::release(closure);
+            let value = tasks::together(closures, 0);
+            values::release(closures);
+            value
+        });
+    }
+
+    #[test]
+    fn a_refused_task_aborts_the_run() {
+        // #424 (Una-1's read): a refused call is an internal error, not a quiet cancellation:
+        // the run ends with U8001 at the block and exit code 3, and the lambda never ran.
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                SCENARIO,
+                "--nocapture",
+                "--test-threads",
+                "1",
+            ])
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(3), "{stderr}");
+        assert!(stderr.contains("U8001"), "{stderr}");
+        assert!(stderr.contains("src/t.una"), "{stderr}");
+        assert!(!stderr.contains(MARK), "the lambda ran: {stderr}");
+        assert!(
+            stderr
+                .contains("a task of `together` holds no compiled lambda that takes its arguments"),
+            "{stderr}"
+        );
+    }
 }
