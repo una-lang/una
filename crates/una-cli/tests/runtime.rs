@@ -500,6 +500,55 @@ fn checking_deeply_nested_types_is_not_cubic_in_their_depth() {
 }
 
 #[test]
+fn checking_many_generic_functions_is_linear_in_their_number() {
+    // #375: the least fixpoint of result summaries built each component's callers from every
+    // edge, checked one function by scanning every declaration, and the index looked up each
+    // recorded type's declaration by a linear search; each was quadratic in the number of
+    // functions. They are now one pass over the edges, a map from function to declaration
+    // and a binary search: O((n + E) log n). A chain of n generic functions, each calling the
+    // previous one, is checked at two sizes; the fixed cost is measured on 50 functions, the
+    // best of three, and taken out of both (N-29). 4x the functions took about 4x as long
+    // measured, and about 8.6x before the fix; the bound of 6.5x is between them. A miss is
+    // measured twice more before it fails (#341).
+    let root = package("many-generics", "", &[]);
+    let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let dir = root.to_str().unwrap();
+    // Writes the chain of `count` functions (untimed), then times its check.
+    let measure = |count: usize| {
+        let functions: Vec<String> = (0..count)
+            .map(|i| {
+                let body = if i == 0 {
+                    "[Some(x), None]".to_owned()
+                } else {
+                    format!("f{}(x, k: k, y: y)", i - 1)
+                };
+                format!("f{i}[T](x: T, k: Int, y: T) -> List[Option[T]] = {body}\n")
+            })
+            .collect();
+        let source = format!("module chain\n\n{}", functions.join("\n"));
+        std::fs::write(root.join("src/chain.una"), source).unwrap();
+        let (output, seconds) = timing::timed(|| una(&["check", "--tier", "0", dir]));
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        seconds
+    };
+    let fixed = timing::best_of_three(|| measure(50));
+    timing::assert_growth(
+        "functions",
+        &[2000, 8000],
+        fixed,
+        timing::FLOOR,
+        6.5,
+        measure,
+    );
+}
+
+#[test]
 fn a_text_appended_in_a_loop_grows_in_linear_time() {
     // ADR 0070 X10, `spec/22 §6` rule 2 (#261): `t = "{t}x"` appends in place when nothing
     // else holds `t`, so ten times the appends take about ten times as long, not a hundred. The

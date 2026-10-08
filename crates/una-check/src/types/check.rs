@@ -316,35 +316,55 @@ pub(crate) fn module<'a>(
     }
 }
 
-/// Checks, in `pass`, only the declarations of the functions in `ids`, in every module that
-/// reports: a round of the least fixpoint of result summaries over one strongly connected
-/// component (ADR 0067 L2).
-pub(crate) fn functions<'a>(
+/// Where each function of the package is declared: the module and the index in its
+/// declarations, of each declaration that defines it (repeats included), in module order, for
+/// modules whose diagnostics are reported. Built once, so that checking one function finds it
+/// in O(log n) instead of scanning every declaration (#375).
+pub(crate) fn places(env: &Env<'_>) -> std::collections::BTreeMap<usize, Vec<(usize, usize)>> {
+    let mut places: std::collections::BTreeMap<usize, Vec<(usize, usize)>> =
+        std::collections::BTreeMap::new();
+    for module in 0..env.prelude {
+        if !env.reports(module) {
+            continue;
+        }
+        let Some(m) = env.modules.get(module) else {
+            continue;
+        };
+        for (index, entity) in m.decls.iter().enumerate() {
+            if let Some(Entity::Function(id)) = entity {
+                places.entry(*id).or_default().push((module, index));
+            }
+        }
+    }
+    places
+}
+
+/// Checks the declarations at `at`, as [`places`] gives them, each as a module's check does,
+/// without scanning the package (#375).
+pub(crate) fn declarations_at<'a>(
     env: &mut Env<'a>,
     facts: &KindFacts,
     report: &mut Report<'_>,
     findings: &mut Findings,
     collected: &mut Collected,
     pass: Pass,
-    ids: &std::collections::BTreeSet<usize>,
+    at: &[(usize, usize)],
 ) {
-    for module in 0..env.prelude {
-        if !env.reports(module) {
-            continue;
-        }
-        let Some((tree, entities)) = env.modules.get(module).map(|m| (m.tree, m.decls.clone()))
+    for &(module, index) in at {
+        let Some((tree, entity)) = env
+            .modules
+            .get(module)
+            .map(|m| (m.tree, m.decls.get(index).copied().flatten()))
         else {
             continue;
         };
-        for (decl, entity) in tree.decls.iter().zip(entities) {
-            if !matches!(entity, Some(Entity::Function(id)) if ids.contains(&id)) {
-                continue;
-            }
-            let mut checker = Checker::new(env, facts, report, findings, collected, pass, module);
-            checker.decl_span = Some(decl.span);
-            checker.decl(&decl.kind, entity);
-            checker.finish();
-        }
+        let Some(decl) = tree.decls.get(index) else {
+            continue;
+        };
+        let mut checker = Checker::new(env, facts, report, findings, collected, pass, module);
+        checker.decl_span = Some(decl.span);
+        checker.decl(&decl.kind, entity);
+        checker.finish();
     }
 }
 

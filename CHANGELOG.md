@@ -13,6 +13,10 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 - **Decisions on type-parameter values given to function values** (#364): the guide's section on labels shows why `[if a == b then p else q].map(each: k)` is U4001 at `each: k`, in both editions, and how to pass values of `T` through or return the decision; `una explain U4001` points to it.
 - **Agent ABI versioning** (ADR 0076, #370): adding a key to a JSON document, at any position, keeps its `una.*/N` version, and consumers ignore unknown keys; removing, renaming or retyping a key, changing a meaning, or adding a value to a closed set of strings bumps it. The diagnostic `code` and the obligation `kind` are open sets. No schema changes version.
 
+### Performance
+
+- **Checking many generic functions is linear in their number** (#375). The least fixpoint of result summaries built each component's callers from every edge and found each function it checked by scanning every declaration, and the language-server index found each type's declaration by a linear search: each was quadratic in the number of functions. They are now one pass over the edges, a map from function to declaration, and a binary search, so a check is O((n + E) log n): 16,000 generic functions take 14 G instructions, from 37 G, and doubling them doubles the work. Outputs are byte-identical.
+
 ## v0.3.2
 
 A security patch of the Beta, completing v0.3.1's edition 0.1 fixes at their root: edition 0.1 now tells a decision on `T` values apart in every flow, as edition 0.2 always has. Edition 0.2 is unchanged. In edition 0.1, binding a value decided by comparing `T` values to a written annotation that mentions `T` (`let y: T = ...`, `List[T]`, a kind of `T`) is now U4001, as in edition 0.2, even where the program would not leak: leave the annotation out, since inference keeps the decision (`docs/guide/una-for-agents.md` §13, #345).

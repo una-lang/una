@@ -577,17 +577,32 @@ fn summary_fixpoint(
         })
         .map(|(id, _)| id)
         .collect();
-    for component in summary::components(&generic, edges) {
+    let components = summary::components(&generic, edges);
+    // The callers of each function within its own component, by component, from one pass over
+    // the edges in their order (#375): O(E log n) in all, not a pass per component.
+    let mut component_of: std::collections::BTreeMap<usize, usize> =
+        std::collections::BTreeMap::new();
+    for (index, component) in components.iter().enumerate() {
+        for &function in component {
+            component_of.insert(function, index);
+        }
+    }
+    let mut callers_in: Vec<std::collections::BTreeMap<usize, Vec<usize>>> =
+        vec![std::collections::BTreeMap::new(); components.len()];
+    for &(caller, callee) in edges {
+        if let (Some(&from), Some(&to)) = (component_of.get(&caller), component_of.get(&callee))
+            && from == to
+            && let Some(callers) = callers_in.get_mut(to)
+        {
+            callers.entry(callee).or_default().push(caller);
+        }
+    }
+    // Where each function is declared, so that checking one does not scan the package (#375).
+    let places = check::places(env);
+    for (component, callers) in components.iter().zip(&callers_in) {
         // A worklist: a function is checked again only when the summary of a function it
         // calls has grown, so a cycle of n functions takes about n checks, not n rounds of n.
         let members: std::collections::BTreeSet<usize> = component.iter().copied().collect();
-        let mut callers: std::collections::BTreeMap<usize, Vec<usize>> =
-            std::collections::BTreeMap::new();
-        for &(caller, callee) in edges {
-            if members.contains(&caller) && members.contains(&callee) {
-                callers.entry(callee).or_default().push(caller);
-            }
-        }
         let mut queue: std::collections::VecDeque<usize> = component.iter().copied().collect();
         let mut queued = members.clone();
         while let Some(function) = queue.pop_front() {
@@ -600,14 +615,14 @@ fn summary_fixpoint(
                 let mut scratch = Report::new(sources);
                 let mut findings = Findings::default();
                 let mut collected = authority::Collected::default();
-                check::functions(
+                check::declarations_at(
                     env,
                     facts,
                     &mut scratch,
                     &mut findings,
                     &mut collected,
                     authority::Pass::Collect,
-                    &std::collections::BTreeSet::from([function]),
+                    places.get(&function).map_or(&[][..], Vec::as_slice),
                 );
                 if !env.edit_labels_changed {
                     break;
