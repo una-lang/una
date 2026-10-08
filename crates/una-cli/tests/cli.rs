@@ -38,7 +38,7 @@ fn explain_u0001_prints_its_text() {
         stdout(&output)
             .starts_with("# U0001: Invalid character, byte order mark or lone carriage return\n\n")
     );
-    assert_eq!(stdout(&output), Code::U0001.explain_text());
+    assert_eq!(stdout(&output), una_explain::text(Code::U0001));
     assert_eq!(stderr(&output), "");
 }
 
@@ -47,7 +47,7 @@ fn explain_prints_the_text_of_every_registered_code() {
     for code in Code::ALL {
         let output = una(&["explain", code.as_str()]);
         assert_eq!(output.status.code(), Some(0), "{code}");
-        assert_eq!(stdout(&output), code.explain_text(), "{code}");
+        assert_eq!(stdout(&output), una_explain::text(code), "{code}");
     }
 }
 
@@ -81,7 +81,7 @@ fn explain_json_prints_its_document() {
             "code": "U0001",
             "domain": "syntax",
             "meaning": Code::U0001.meaning(),
-            "text": Code::U0001.explain_text(),
+            "text": una_explain::text(Code::U0001),
         })
     );
     assert!(stdout(&output).starts_with("{\"schema\":\"una.explain/1\""));

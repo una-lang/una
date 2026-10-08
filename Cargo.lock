@@ -1219,6 +1219,7 @@ dependencies = [
  "una-codegen",
  "una-core",
  "una-diag",
+ "una-explain",
  "una-fmt",
  "una-http",
  "una-interp",
@@ -1260,6 +1261,13 @@ dependencies = [
  "pretty_assertions",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "una-explain"
+version = "0.3.3"
+dependencies = [
+ "una-diag",
 ]
 
 [[package]]

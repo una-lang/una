@@ -961,7 +961,7 @@ fn explain_command(
                 code: code.as_str(),
                 domain: code.domain().as_str(),
                 meaning: code.meaning(),
-                text: code.explain_text(),
+                text: una_explain::text(code),
             };
             match serde_json::to_string(&document) {
                 Ok(text) => writeln!(stdout, "{text}")?,
@@ -977,7 +977,7 @@ fn explain_command(
             Ok(ExitStatus::Success)
         }
         Ok(code) => {
-            write!(stdout, "{}", code.explain_text())?;
+            write!(stdout, "{}", una_explain::text(code))?;
             stdout.flush()?;
             Ok(ExitStatus::Success)
         }

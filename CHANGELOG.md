@@ -2,6 +2,12 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
+## Unreleased
+
+### Performance
+
+- **Native executables no longer carry the `una explain` texts** (#413, N-66). The runtime linked `una-diag`, whose code table held all 83 explain texts by `include_str!`, so every executable `una build` made carried them, unused: 75,708 bytes of text. They now live in the crate `una-explain`, which only the command line links. `examples/hello` drops from 1,430,552 to 1,347,992 bytes (82,560 bytes, 5.8 %). `una explain` prints the same text for every code.
+
 ## v0.3.3
 
 A security patch of the Beta (S-13: executables and releases no longer carry paths of the machine that built them), released with everything validated on `main` since v0.3.2: the checker shares its types (ADR 0077), checking many generic functions is linear, diagnostics and repairs fixed by three reviews and a dogfood pass, a crash is U8001, and the release archive ships the guides. Edition 0.1's behavior is unchanged; edition 0.2 gains two checks (ADR 0079, and #407's fail-closed verifier) and loses one false positive (#384). Validation: `docs/releases/v0.3.3-validation.md`.

@@ -15,7 +15,7 @@ Status: Normative for the reference implementation.
 
 ## 2. Diagnostics
 
-- Every diagnostic uses a code from `una-diag/src/codes.rs`, which mirrors `spec/13 §4` exactly. Adding a code means updating both, plus `una-diag/explain/U####.md`.
+- Every diagnostic uses a code from `una-diag/src/codes.rs`, which mirrors `spec/13 §4` exactly. Adding a code means updating both, plus `una-explain/explain/U####.md`, which only the command line links (#413).
 - Messages follow `CLAUDE.md` writing conventions.
 - Spans point at the smallest construct that explains the error; related spans explain the other side (declaration, contract, capability).
 - Internal errors use U8001 and include the stage and a short description; they are always bugs.

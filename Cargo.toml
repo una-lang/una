@@ -15,6 +15,7 @@ una-check = { path = "crates/una-check" }
 una-codegen = { path = "crates/una-codegen" }
 una-core = { path = "crates/una-core" }
 una-diag = { path = "crates/una-diag" }
+una-explain = { path = "crates/una-explain" }
 una-fmt = { path = "crates/una-fmt" }
 una-http = { path = "crates/una-http" }
 una-interp = { path = "crates/una-interp" }

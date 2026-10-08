@@ -2092,3 +2092,38 @@ fn function_values_never_change_a_list_another_name_holds() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), ALIASED_OUTPUT);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_native_executable_carries_no_explain_text_413() {
+    // #413 (N-66): the explain texts live in `una-explain`, which only the command line links;
+    // the runtime links `una-diag` for codes and rendering, so an executable holds none of them.
+    // They were 75,708 bytes, about 5.3 % of `examples/hello`'s 1,430,424.
+    let scratch = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("no-explain-text");
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).unwrap();
+    let package = copy(&root().join("examples/hello"), &scratch);
+    let exe = scratch.join("hello-exe");
+    let built = una(&package, &["build", ".", "--out", exe.to_str().unwrap()]);
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let bytes = std::fs::read(&exe).unwrap();
+    let holds = |needle: &str| bytes.windows(needle.len()).any(|w| w == needle.as_bytes());
+    assert!(
+        !holds("## Failing example"),
+        "the executable holds an explain text"
+    );
+    for code in una_diag::Code::ALL {
+        // The first sentence of each text, which no other string of the runtime repeats.
+        let text = una_explain::text(code);
+        let body = text.split("\n\n").nth(1).unwrap_or("");
+        let sentence: String = body.chars().take(60).collect();
+        assert!(
+            sentence.len() < 20 || !holds(&sentence),
+            "the executable holds the explain text of {code}: {sentence:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&scratch);
+}

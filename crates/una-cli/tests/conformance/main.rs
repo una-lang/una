@@ -31,7 +31,7 @@ use crate::outcome::{RunResult, TestResult, Verdict, classify, mismatches, repor
 
 /// Whether `code` is implemented: its explain text is no longer the stub of `spec/13 §4`.
 fn implemented(code: Code) -> bool {
-    !code.explain_text().contains("Stub explanation.")
+    !una_explain::text(code).contains("Stub explanation.")
 }
 
 /// Runs the `una` command line in-process with `args` and returns its standard output.
