@@ -1,12 +1,16 @@
 //! Unification variables, for generic instantiations, empty lists and lambda parameters
 //! (`spec/03 §7`).
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use una_syntax::Span;
 
 use super::label::Label;
-use super::ty::{FnTy, FnUse, KindLabels, Shared, Ty, map_args, map_function, map_same, reuse};
+use super::ty::{
+    Flagged, FnTy, FnUse, KindLabels, Shared, Ty, map_args, map_function, map_same, reuse,
+};
 
 /// Why a unification variable exists, for the diagnostic when inference leaves it unknown.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,12 +28,32 @@ struct Slot {
     span: Span,
 }
 
+/// Each node with a label below it that was erased, by its address, with the node itself and
+/// its erased form: type nodes, a kind's arguments and function types, each in its own map.
+#[derive(Clone, Debug, Default)]
+struct ErasedMemo {
+    types: Erased<Ty>,
+    args: Erased<[Ty]>,
+    functions: Erased<FnTy>,
+}
+
+/// Nodes by their address, each with the node itself and its erased form.
+type Erased<T> = HashMap<*const (), (Shared<T>, Shared<T>)>;
+
 /// The unification variables of one declaration.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Vars {
     slots: Vec<Slot>,
     /// The labels of the kinds' fields, for the deep labels of the variables' values.
     kinds: Rc<KindLabels>,
+    /// How many times a variable was solved: a memo of what variables resolve to is valid
+    /// only while this stays as it was when the memo was made (ADR 0077 memo rule 3).
+    generation: usize,
+    /// The erased form of each labeled node erased in this declaration (ADR 0077 stage 3a).
+    /// Keyed by the node's address, so each entry holds the node itself as long as it holds
+    /// its address, and no freed node's address can come back to it (memo rule 1). Erasing
+    /// reads no variable, so it stays valid as variables are solved.
+    erased: RefCell<ErasedMemo>,
 }
 
 impl Vars {
@@ -38,6 +62,8 @@ impl Vars {
         Vars {
             slots: Vec::new(),
             kinds,
+            generation: 0,
+            erased: RefCell::new(ErasedMemo::default()),
         }
     }
 
@@ -78,7 +104,86 @@ impl Vars {
     /// `ty` with every solved variable replaced by its value, and without labels: what type
     /// checking compares.
     pub(crate) fn resolve(&self, ty: &Ty) -> Ty {
-        self.resolve_shape(ty).erase()
+        self.erase(&self.resolve_shape(ty))
+    }
+
+    /// [`Ty::erase`], each labeled node erased once in this declaration.
+    pub(crate) fn erase(&self, ty: &Ty) -> Ty {
+        if !ty.flags().label {
+            return ty.clone();
+        }
+        match ty {
+            Ty::Labeled(_, inner) => (*self.erase_node(inner)).clone(),
+            Ty::List(element) => Ty::List(self.erase_node(element)),
+            Ty::Map(key, value) => Ty::Map(self.erase_node(key), self.erase_node(value)),
+            Ty::Kind(id, args) => Ty::Kind(*id, self.erase_args(args)),
+            Ty::Fn(function) => Ty::Fn(self.erase_function(function)),
+            other => other.clone(),
+        }
+    }
+
+    /// A kind's arguments erased, once per node in this declaration: nested kinds, as
+    /// `Some(Some(…))`, are arguments within arguments, with no type node between them.
+    fn erase_args(&self, args: &Shared<[Ty]>) -> Shared<[Ty]> {
+        if !args.flags().label {
+            return args.clone();
+        }
+        if let Some((_, erased)) = self.erased.borrow().args.get(&args.address()) {
+            return erased.clone();
+        }
+        let erased = map_args(args, |a| self.erase(a));
+        self.erased
+            .borrow_mut()
+            .args
+            .insert(args.address(), (args.clone(), erased.clone()));
+        erased
+    }
+
+    /// A function type erased, once per node in this declaration.
+    fn erase_function(&self, function: &Shared<FnTy>) -> Shared<FnTy> {
+        if !function.flags().label {
+            return function.clone();
+        }
+        if let Some((_, erased)) = self.erased.borrow().functions.get(&function.address()) {
+            return erased.clone();
+        }
+        let erased = map_function(
+            function,
+            |p| self.erase(p),
+            |r| self.erase(r),
+            Some(&|f: &Ty| self.erase(f)),
+        );
+        self.erased
+            .borrow_mut()
+            .functions
+            .insert(function.address(), (function.clone(), erased.clone()));
+        erased
+    }
+
+    fn erase_node(&self, node: &Shared<Ty>) -> Shared<Ty> {
+        if !node.flags().label {
+            return node.clone();
+        }
+        if let Some((_, erased)) = self.erased.borrow().types.get(&node.address()) {
+            return erased.clone();
+        }
+        let erased = reuse(node, self.erase(node));
+        self.erased
+            .borrow_mut()
+            .types
+            .insert(node.address(), (node.clone(), erased.clone()));
+        erased
+    }
+
+    /// A resolver for the end of a declaration, once its variables are all solved: it resolves
+    /// each variable once, however many types name it (ADR 0077 stage 3a, `Records::absorb`).
+    /// It borrows `self`, so no variable can be solved while it lives, and it checks that too.
+    pub(crate) fn resolver(&self) -> Resolver<'_> {
+        Resolver {
+            vars: self,
+            generation: self.generation,
+            shapes: RefCell::new(HashMap::new()),
+        }
     }
 
     /// `ty` with every solved variable replaced by its value, labels included,
@@ -126,24 +231,42 @@ impl Vars {
     /// `ty` with every solved variable replaced by its value, labels included, and the labels
     /// of variables left symbolic.
     pub(super) fn resolve_shape(&self, ty: &Ty) -> Ty {
+        self.resolve_shape_in(ty, None)
+    }
+
+    /// [`Vars::resolve_shape`], with `shapes` holding what each solved variable resolves to
+    /// when a [`Resolver`] asks.
+    fn resolve_shape_in(&self, ty: &Ty, shapes: Option<&RefCell<HashMap<usize, Ty>>>) -> Ty {
+        if let (Ty::Var(var), Some(shapes)) = (ty, shapes) {
+            if let Some(shape) = shapes.borrow().get(var) {
+                return shape.clone();
+            }
+            let node = self.shallow_ref(ty);
+            if matches!(node, Ty::Var(_)) {
+                return node.clone();
+            }
+            let shape = self.resolve_shape_in(node, Some(shapes));
+            shapes.borrow_mut().insert(*var, shape.clone());
+            return shape;
+        }
         // Through references, so each node of the type is visited once (#331).
         // A part that holds no solved variable comes back as the same node (ADR 0077 stage 2b).
         let node = self.shallow_ref(ty);
+        // What the walk below changes: a solved variable, anywhere, the failure kind of a
+        // function type included (#216), and a label not in normal form. A node that holds no
+        // variable and only normal labels is its own result (ADR 0077 stage 3a).
+        let flags = node.flags();
+        if !flags.var && flags.normal {
+            return node.clone();
+        }
+        let resolve = |ty: &Ty| self.resolve_shape_in(ty, shapes);
         match node {
-            Ty::Labeled(label, inner) => node.relabeled(self.resolve_shape(inner), label),
-            Ty::List(element) => Ty::List(reuse(element, self.resolve_shape(element))),
-            Ty::Map(key, value) => Ty::Map(
-                reuse(key, self.resolve_shape(key)),
-                reuse(value, self.resolve_shape(value)),
-            ),
-            Ty::Kind(id, args) => Ty::Kind(*id, map_args(args, |arg| self.resolve_shape(arg))),
+            Ty::Labeled(label, inner) => node.relabeled(resolve(inner), label),
+            Ty::List(element) => Ty::List(reuse(element, resolve(element))),
+            Ty::Map(key, value) => Ty::Map(reuse(key, resolve(key)), reuse(value, resolve(value))),
+            Ty::Kind(id, args) => Ty::Kind(*id, map_args(args, resolve)),
             // The failure kind keeps its labels too, as every part of the type does (#216).
-            Ty::Fn(function) => Ty::Fn(map_function(
-                function,
-                |p| self.resolve_shape(p),
-                |r| self.resolve_shape(r),
-                Some(&|f: &Ty| self.resolve_shape(f)),
-            )),
+            Ty::Fn(function) => Ty::Fn(map_function(function, resolve, resolve, Some(&resolve))),
             other => other.clone(),
         }
     }
@@ -152,10 +275,21 @@ impl Vars {
     /// variables being replaced, whose labels are not counted twice.
     /// `keep` keeps the labels of unsolved variables (see [`Vars::resolve_bound`]).
     fn settle(&self, ty: &Ty, visiting: &[usize], keep: bool) -> Ty {
+        // What settling changes: a label that names a variable's label, and, as `map_labels`
+        // rebuilds, a label not in normal form (ADR 0077 stage 3a).
+        let flags = ty.flags();
+        if !flags.var_label && flags.normal {
+            return ty.clone();
+        }
         ty.map_labels(&|label| self.settle_label(label, &mut visiting.to_vec(), keep))
     }
 
-    fn settle_label(&self, label: &Label, visiting: &mut Vec<usize>, keep: bool) -> Label {
+    pub(super) fn settle_label(
+        &self,
+        label: &Label,
+        visiting: &mut Vec<usize>,
+        keep: bool,
+    ) -> Label {
         if !label.symbols.iter().any(|s| s.starts_with('?')) {
             return label.clone();
         }
@@ -228,9 +362,16 @@ impl Vars {
         }
     }
 
+    /// Solves `var` as `ty`, as it is: for the tests of what resolving gives.
+    #[cfg(test)]
+    pub(super) fn solve(&mut self, var: usize, ty: Ty) {
+        self.bind(var, ty);
+    }
+
     fn bind(&mut self, var: usize, ty: Ty) {
         if let Some(slot) = self.slots.get_mut(var) {
             slot.value = Some(ty);
+            self.generation += 1;
         }
     }
 
@@ -366,6 +507,27 @@ impl Vars {
     }
 }
 
+/// [`Vars::resolver`]: what each solved variable resolves to, computed once.
+pub(crate) struct Resolver<'v> {
+    vars: &'v Vars,
+    /// The variables' generation when the resolver was made.
+    generation: usize,
+    /// What each solved variable resolves to, by its index: no address is a key.
+    shapes: RefCell<HashMap<usize, Ty>>,
+}
+
+impl Resolver<'_> {
+    /// [`Vars::resolve_labeled`], each solved variable resolved once.
+    pub(crate) fn resolve_labeled(&self, ty: &Ty) -> Ty {
+        debug_assert_eq!(
+            self.generation, self.vars.generation,
+            "a variable was solved while a resolver lived"
+        );
+        let shape = self.vars.resolve_shape_in(ty, Some(&self.shapes));
+        self.vars.settle(&shape, &[], false)
+    }
+}
+
 /// `a` and `b`, of one shape, with their labels joined (`join`) or met (not `join`) position
 /// by position; function parameters take the other operation. An argument of an invariant
 /// parameter of a kind keeps the labels of `a` (ADR 0046 rule 2): a value of `b` flows into
@@ -376,24 +538,34 @@ pub(super) fn combine(a: &Ty, b: &Ty, join: bool, kinds: &KindLabels) -> Ty {
     let base = match (a.unlabeled(), b.unlabeled()) {
         (Ty::Never, other) | (other, Ty::Never) => return other.clone().with_label(&label),
         (Ty::Error, _) | (_, Ty::Error) => return Ty::Error,
-        (Ty::List(x), Ty::List(y)) => Ty::List(reuse(x, combine(x, y, join, kinds))),
+        // A child that comes out as either side's child is that child's node: a join often
+        // gives back `b`, as when `a` is `b` without its labels (ADR 0077 stage 3a, R-1).
+        (Ty::List(x), Ty::List(y)) => Ty::List(either(x, y, combine(x, y, join, kinds))),
         (Ty::Map(xk, xv), Ty::Map(yk, yv)) => Ty::Map(
-            reuse(xk, combine(xk, yk, join, kinds)),
-            reuse(xv, combine(xv, yv, join, kinds)),
+            either(xk, yk, combine(xk, yk, join, kinds)),
+            either(xv, yv, combine(xv, yv, join, kinds)),
         ),
         (Ty::Kind(i, xs), Ty::Kind(j, ys)) if i == j && xs.len() == ys.len() => {
-            let mut index = 0;
-            Ty::Kind(
-                *i,
-                map_args(xs, |x| {
-                    let combined = match ys.get(index) {
-                        Some(y) if !kinds.is_invariant(*i, index) => combine(x, y, join, kinds),
-                        _ => x.clone(),
-                    };
-                    index += 1;
-                    combined
-                }),
-            )
+            let args: Vec<Ty> = xs
+                .iter()
+                .zip(ys)
+                .enumerate()
+                .map(|(index, (x, y))| {
+                    if kinds.is_invariant(*i, index) {
+                        x.clone()
+                    } else {
+                        combine(x, y, join, kinds)
+                    }
+                })
+                .collect();
+            let all = |side: &[Ty]| args.iter().zip(side).all(|(new, old)| new.same(old));
+            if all(xs) {
+                Ty::Kind(*i, xs.clone())
+            } else if all(ys) {
+                Ty::Kind(*i, ys.clone())
+            } else {
+                Ty::Kind(*i, args.into_iter().collect())
+            }
         }
         (Ty::Fn(f), Ty::Fn(g)) if f.params.len() == g.params.len() => {
             let mut index = 0;
@@ -432,7 +604,22 @@ pub(super) fn combine(a: &Ty, b: &Ty, join: bool, kinds: &KindLabels) -> Ty {
         (Ty::Var(_), other) if !matches!(other, Ty::Var(_)) => other.clone(),
         (same, _) => same.clone(),
     };
+    // `base.with_label(&label)`, or the side that is already that value.
+    if b.keeps(&base, &label) && !a.keeps(&base, &label) {
+        return b.clone();
+    }
     a.relabeled(base, &label)
+}
+
+/// `new` as a child node: the node of `x` or of `y` when `new` is the same value as it.
+fn either(x: &Shared<Ty>, y: &Shared<Ty>, new: Ty) -> Shared<Ty> {
+    if new.same(x) {
+        x.clone()
+    } else if new.same(y) {
+        y.clone()
+    } else {
+        Shared::new(new)
+    }
 }
 
 /// The capabilities of `a` and those of `b`: a reference both name keeps the operations of

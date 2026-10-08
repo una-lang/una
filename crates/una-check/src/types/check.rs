@@ -767,9 +767,11 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         }
         if pass == Pass::Check {
             super::generic::second_class(report, &vars, &instantiations, &mut escaped);
+            // Each solved variable resolved once, however many types name it (ADR 0077 3a).
+            let resolver = vars.resolver();
             findings
                 .records
-                .absorb(records, |ty| vars.resolve_labeled(ty));
+                .absorb(records, |ty| resolver.resolve_labeled(ty));
             if report.count() != started
                 && let Some(span) = decl_span
             {
