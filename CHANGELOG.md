@@ -14,7 +14,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ### Diagnostics
 
-- **U1001 offers the closest names in scope** (#419, N-64). An unknown name, of a value or a type, is compared by edit distance with every name in scope: locals, the module's declarations and imports, and the prelude of the package's edition. When exactly one is within a distance of 2, the repair writes it ("write `total`"); otherwise up to three are listed, by distance and then bytewise ("names in scope close to `caz`: `can`, `cap`, `car`"). The message and its position are unchanged.
+- **U1001 offers the closest names in scope** (#419, N-64). An unknown name, of a value or a type, is compared by edit distance with every name in scope: locals, the module's declarations and imports, and the prelude of the package's edition. Up to three are listed, by distance and then bytewise, as advice without an edit ("names in scope close to `caz`: `can`, `cap`, `car`"): a typo's fix is a guess, and the agent chooses. The message and its position are unchanged.
 
 ## v0.3.3
 

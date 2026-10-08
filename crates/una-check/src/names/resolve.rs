@@ -218,21 +218,11 @@ impl<'a> Resolver<'_, '_, 'a> {
                 ident.span,
                 format!("cannot find {what} `{name}` in this module, its imports or the prelude"),
             );
-            // #419: the names in scope closest to it. One within an edit distance of 2 is
-            // written for the agent; several are listed.
+            // #419: the names in scope closest to it, as advice only. A typo's fix is a guess,
+            // and an edit that an agent applies unread could bind another name that checks
+            // (an edit comes only when the fix is unambiguous; R-1, #125).
             let near = crate::types::nearest(name, self.candidates(space));
-            let within: Vec<&str> = near
-                .iter()
-                .filter(|(distance, _)| *distance <= 2)
-                .map(|(_, candidate)| *candidate)
-                .collect();
-            if let [only] = within.as_slice() {
-                diagnostic.repairs.push(self.checker.edit(
-                    format!("write `{only}`"),
-                    ident.span,
-                    (*only).to_owned(),
-                ));
-            } else if !near.is_empty() {
+            if !near.is_empty() {
                 let listed: Vec<String> = near
                     .iter()
                     .map(|(_, candidate)| format!("`{candidate}`"))

@@ -478,10 +478,10 @@ fn repairs_of(root: &Path) -> Vec<Repairs> {
 }
 
 #[test]
-fn an_unknown_name_close_to_one_name_in_scope_gets_its_edit_419() {
-    // #419 (N-64): U1001 offers the closest name in scope. When exactly one candidate is
-    // within an edit distance of 2, the repair writes it, and applying it gives a program that
-    // runs; a type name is offered among the types in scope.
+fn an_unknown_name_close_to_one_name_in_scope_is_offered_it_as_advice_419() {
+    // #419 (N-64): U1001 offers the closest name in scope, for a value and for a type, as
+    // advice without an edit, even when it is the only close one: a typo's fix is a guess, and
+    // an edit applied unread could bind another name that checks (R-1, #125).
     let root = package(
         "unknown-name-one",
         "0.2",
@@ -492,21 +492,14 @@ fn an_unknown_name_close_to_one_name_in_scope_gets_its_edit_419() {
         [
             (
                 "U1001".to_owned(),
-                vec![("write `Text`".to_owned(), Some("Text".to_owned()))]
+                vec![("names in scope close to `Txt`: `Text`".to_owned(), None)]
             ),
             (
                 "U1001".to_owned(),
-                vec![("write `total`".to_owned(), Some("total".to_owned()))]
+                vec![("names in scope close to `totl`: `total`".to_owned(), None)]
             ),
         ]
     );
-    assert_eq!(
-        apply_all(&root),
-        Vec::<String>::new(),
-        "{}",
-        repaired(&root)
-    );
-    assert_eq!(run(&root), "3\n");
 }
 
 #[test]
