@@ -521,17 +521,17 @@ fn checking_many_generic_functions_is_linear_in_their_number() {
     let dir = root.to_str().unwrap();
     // Writes the chain of `count` functions (untimed), then times its check.
     let measure = |count: usize| {
-        let mut source = String::from("module chain\n\n");
-        for i in 0..count {
-            let body = if i == 0 {
-                "[Some(x), None]".to_owned()
-            } else {
-                format!("f{}(x, k: k, y: y)", i - 1)
-            };
-            source.push_str(&format!(
-                "f{i}[T](x: T, k: Int, y: T) -> List[Option[T]] = {body}\n\n"
-            ));
-        }
+        let functions: Vec<String> = (0..count)
+            .map(|i| {
+                let body = if i == 0 {
+                    "[Some(x), None]".to_owned()
+                } else {
+                    format!("f{}(x, k: k, y: y)", i - 1)
+                };
+                format!("f{i}[T](x: T, k: Int, y: T) -> List[Option[T]] = {body}\n")
+            })
+            .collect();
+        let source = format!("module chain\n\n{}", functions.join("\n"));
         std::fs::write(root.join("src/chain.una"), source).unwrap();
         let (output, seconds) = timing::timed(|| una(&["check", "--tier", "0", dir]));
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
