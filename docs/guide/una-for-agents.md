@@ -167,7 +167,7 @@ example "restocking adds to the amount"
 ```
 
 - Arguments after the first are labeled, `f(a, b: 2)`; from the second argument on, a bare name equal to the parameter's name counts as labeled (`f(a, b)` when the parameter is `b`). The first argument always binds the first parameter, so `minus(b, a)` with parameters `(a, b)` is U2006, not a swap. Constructors with two or more fields label every field.
-- Blocks bind with `let`; values are immutable, and a `let edit` binding can be rebound (§11). `if c then a else b` fits on a line; `if` and `when` also take indented blocks.
+- Blocks bind with `let`; values are immutable, and a `let edit` binding can be rebound (§11). A name is bound once in its scope: a `let`, a pattern or a lambda parameter named like a binding already in scope, a parameter or an outer `let`, is U1002 ("`items` is already bound in this scope"). Rename the inner one; there is no shadowing. Two sibling blocks, as the arms of one `when`, may each bind the same name. `if c then a else b` fits on a line; `if` and `when` also take indented blocks.
 - `when` branches on variants (`is Some(x)`, `is Err`), literals (`is 0`) and ranges (`in 1..<20`); an `else` arm comes last. Arms over variants must cover every variant (U2007).
 - The prelude has `abs`, `min`, `max`, `is_digits`, `starts_with`, `trim`, `to_int`, `is_empty`, `first`, `at`, `append`, `contains`, `map`, `filter`, `first_where`, `fold`, `sum`, `is_some`, `or_else` and `is_ok`, and in edition `0.2` also `sort`, `set`, `empty_map` (§14), the JSON functions (§15) and the text functions (§16); their contracts are hypotheses for the solver (`spec/14`, `spec/20 §6`). Loop with `for` (§11), recursion, `map`, `filter` or `fold`.
 - The result of `filter` and `first_where` carries the labels of the predicate's result at its top, since which elements remain depends on it: over `secret` elements, a predicate that reads them gives a list whose top is `secret` (`spec/14`, result labels, ADR 0067). A predicate with effects whose result is labeled is U4002 in `first_where`.
@@ -180,6 +180,16 @@ module demo
 pub add(a: Int, b: Int) -> Int = a + b
 
 pub three() -> Int = add(1, 2)
+```
+
+```una
+-- fails with U1002
+module demo
+
+pub total(items: List[Int]) -> Int
+=
+  let items = items.filter(keep: fn(n) -> n > 0)
+  items.sum()
 ```
 
 ## 6. Contracts and proofs
@@ -500,6 +510,8 @@ pub parse_all(xs: List[Text]) -> List[Int]
 
 Every type may carry a label: a level, `public` (the default), `internal`, `confidential`, `secret` or `restricted`, and categories declared in `una.toml`, as in `secret[PII] Text`. Values flow up, never down: the result of an operation joins its operands' labels; branching on a labeled value raises the program counter, so what the branches produce is labeled too, and they may not fail; each operation argument is a sink bounded by its `accepts` (`Console.print` accepts `public`). `Env.get` and `Files.read` return `internal` text.
 
+**Printing what you read from `Env` or `Files` takes a policy.** That text, and anything computed from it, even its length, is `internal`, so printing it is U4003, as in the second block below. No label of your program can be lowered to fix that: declassify the value through a `policy` in a trusted module, as the `journal` package after it does, and call the policy where you print. `una explain U4003` shows the same pattern for a name read from `Env`.
+
 ```una
 module demo
 
@@ -622,7 +634,8 @@ Values stay immutable and there are no references; what changes is which value a
 - Markers match declarations exactly (U2020); an `edit` argument and another use of the same binding in one call is U2018; a function with `edit` or `take` parameters cannot be used as a value (U2021). A call with a marker is the whole expression of its statement.
 - `for x in xs` visits a list in order, and `for i in a..b` or `a..<b` the integers of a range; the bounds are evaluated once, before the first iteration. The loop variable has the element type, or the integer type of the bounds. There is no `break` or `continue`. The refinements of the bindings a loop updates are its invariant; no other fact about them survives the loop.
 - `if c` with an indented block and no `else` is a statement. `edit xs.set(index: i, item: v)` replaces a list element.
-- A loop keeps the length of a list it changes only with `set`, or with a helper whose `ensures` is exactly `xs.len == old(xs).len`, so `for i in 0..<xs.len` with `edit xs.set(index: i, item: v)` verifies. After an `append` or any other change, the loop forgets the length, and a check that needs it is U5002, "the loop forgets every fact about `xs` ...": guard it with `if i < xs.len`.
+- A loop keeps the length of a list it changes only with `set`, or with a helper whose `ensures` is exactly `xs.len == old(xs).len`, so `for i in 0..<xs.len` with `edit xs.set(index: i, item: v)` verifies. After an `append` or any other change, the loop forgets the length, and a check that needs it is U5002, "the loop forgets every fact about the list `xs` ...": guard it with `if i < xs.len`.
+- **A contract about what a loop builds goes on the helper one iteration calls.** The loop forgets every fact about the bindings it updates but their refinements, so an `ensures` that needs one after the loop, such as `counts.has(key: vote)` after a loop of `counts.set`, is U5002, and neither an `if` guard nor `checked` proves it. Move the update into a helper with an `edit` parameter and give the helper the contract, as `add_vote` below: the solver proves it once, for every call, and a caller has it right after each call.
 - A call that fails leaves its `edit` arguments unchanged for the caller; operations it performed stay performed.
 - **Cost.** A list, map or text that nothing else holds is updated in place, so `acc = acc.append(item: x)` in a loop, or through helpers that take `acc` and return it, is linear (ADR 0072).
 - **Known limit: keeping the old value on failure.** `acc = step(acc, item: x)` followed by `if error use acc` reads `acc` after the call, so the call cannot take it over and copies it: every iteration copies the whole list, and the loop is quadratic. The old value is kept because a failed call changes nothing for its caller (`spec/17`). For a linear loop, check first and then update, or make the update unable to fail and return a status with the new value (N-42).
@@ -671,6 +684,35 @@ pub cleared(xs: List[Int], index: Int) -> List[Int]
   let edit copy = xs
   edit copy.set(index: index, item: 0)
   copy
+```
+
+```una
+module tally
+
+--- One vote counted. The key is in the map afterwards: a fact a loop would forget, which
+--- each call of the helper keeps.
+add_vote(edit counts: Map[Text, Int], vote: Text) -> Unit
+  ensures counts.has(key: vote)
+=
+  let n = counts.get(key: vote)
+    if none use 0
+  edit counts.set(key: vote, value: n + 1)
+
+--- The votes counted, one call of the helper per vote.
+pub tally(votes: List[Text]) -> Map[Text, Int]
+=
+  let edit counts: Map[Text, Int] = empty_map()
+  for vote in votes
+    add_vote(edit counts, vote)
+  counts
+
+--- A vote counted on top of the others: its key is there, by the helper's contract.
+pub with_vote(votes: List[Text], vote: Text) -> Map[Text, Int]
+  ensures result.has(key: vote)
+=
+  let edit counts = tally(votes)
+  add_vote(edit counts, vote)
+  counts
 ```
 
 ```una
@@ -844,6 +886,7 @@ pub choose[T](a: T, b: T, p: T, q: T) -> T
 - Cost: `len` is O(1); `get`, `has`, `set` and `remove` are O(log n), in place when nothing else holds the map; `with` and `without` on a map another binding still holds copy it, O(n).
 - Proofs: `m.len` and `m.has(key: k)` may appear in contracts and `where` clauses. After `set`, the key is present with its value; after `remove`, it is absent. Nothing is known of the other keys.
 - Labels: which keys a map holds is part of its shape, so `len`, `has`, `get` and the listings carry the labels of the keys with the map's top label. Setting a `secret` key in a map whose top label is public is U4001 at the key: declare it `secret Map[Text, Int]`.
+- Type arguments are never refined: a refined kind such as `Nat`, or `Int in 0..5`, cannot instantiate a type parameter, so `Map[Text, Nat]` and `List[Nat]` are U2002, as is any generic kind given one. Write the base type, `Map[Text, Int]`, and refine where a value is used: a function that returns a count as `-> Nat` checks it there, for instance with `if n >= 0 then n else 0`. The values a map holds are then any `Int`, so a contract about them needs that check too.
 - A map prints as `{"a": 1, "b": 2}`, and `{}` when empty.
 
 ```una
@@ -872,6 +915,13 @@ pub count_of(counts: Map[Text, Int], word: Text) -> Int
   let n = counts.get(key: word)
     if none use 0
   n
+```
+
+```una
+-- fails with U2002
+module demo
+
+pub empty_counts() -> Map[Text, Nat] = empty_map()
 ```
 
 ## 15. JSON
@@ -1094,7 +1144,7 @@ Change `edition = "0.1"` to `"0.2"` in `una.toml`, then check. What can change:
 - **Messages.** `var`, `while`, `loop`, `async` and `await` point to `let edit`, `for` and `together`.
 - **Equality on type parameters** needs `Eq`: a public generic function that compares values of `T` writes `[T: Eq]` (U2026). Edition `0.1` inferred the bound.
 - **The prelude.** `min`, `max`, `contains` and `sum` are generic over constrained types, `sort`, `set`, `empty_map` and the type `Map` are new (a user kind named `Map` or `Entry` must be renamed), and `map`, `filter`, `first_where` and `fold` take effectful and failing functions (`uses of`, `fails of`).
-- **Kinds.** Recursive kinds no longer need a `List` or `Option` field, but must have a finite value; `I8` to `U64` become built-in types, so a user kind with one of those names is U1002.
+- **Kinds.** Recursive kinds no longer need a `List` or `Option` field, but must have a finite value; `I8` to `U64` become built-in types, and a kind, variant or capability named like any built-in type, `Int`, `Nat`, `Bool`, `Text`, `Unit`, `Hashed`, `List`, `Option`, `Result`, `Map` or `I8` to `U64`, is U1002 (ADR 0079). A package that declares its own `kind Result` renames it before it moves to edition `0.2`.
 - **Integers.** Values of a fixed-width type now carry overflow obligations; `Int` code is unchanged.
 
 The same module can stay in edition `0.1`, where for example `type` keeps its hint and `edit` is still reserved:

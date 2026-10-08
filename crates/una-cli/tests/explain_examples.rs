@@ -66,6 +66,15 @@ fn example(text: &str, heading: &str) -> Option<Example> {
     }
 }
 
+/// The headings of the fixed examples of `text`, in order: `## Fixed example`, and
+/// `## Fixed example: <case>` for each further case.
+fn fixed_headings(text: &str) -> Vec<String> {
+    text.lines()
+        .filter(|line| line.starts_with("## Fixed example"))
+        .map(|line| format!("{}\n", line.trim_end()))
+        .collect()
+}
+
 /// The codes `check` reports for `example`, written under a directory named after the code.
 /// A fixed example is checked at tier 1, a failing one at the tier of its code.
 fn codes(code: Code, name: &str, example: &Example, fixed: bool) -> Vec<Code> {
@@ -140,7 +149,7 @@ fn failing_examples_yield_their_code_and_fixed_examples_yield_nothing() {
     let mut checked = Vec::new();
     for code in Code::ALL {
         let text = code.explain_text();
-        let (Some(failing), Some(fixed)) = (
+        let (Some(failing), Some(_)) = (
             example(text, "## Failing example"),
             example(text, "## Fixed example"),
         ) else {
@@ -151,11 +160,15 @@ fn failing_examples_yield_their_code_and_fixed_examples_yield_nothing() {
             !reported.is_empty() && reported.iter().all(|found| *found == code),
             "{code}: the failing example reports {reported:?}"
         );
-        assert_eq!(
-            codes(code, "fixed", &fixed, true),
-            [],
-            "{code}: fixed example"
-        );
+        // Every fixed example, as `## Fixed example` and `## Fixed example: <case>` (#404).
+        for (n, heading) in fixed_headings(text).iter().enumerate() {
+            let fixed = example(text, heading).unwrap();
+            assert_eq!(
+                codes(code, &format!("fixed{n}"), &fixed, true),
+                [],
+                "{code}: {heading}"
+            );
+        }
         checked.push(code.as_str());
     }
     // Every code has its examples, but U8001, an internal error, which no

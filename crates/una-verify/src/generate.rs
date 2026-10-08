@@ -48,8 +48,8 @@ pub struct Obligation {
     /// Where the obligation arises, which decides its repairs (`spec/13 §3`).
     pub site: Site,
     /// The source names of the values that a loop made fresh and that the counterexample
-    /// shows (ADR 0071 D3): a refutation is then unknown.
-    pub(crate) forgotten: Vec<String>,
+    /// shows, with what each one holds (ADR 0071 D3): a refutation is then unknown.
+    pub(crate) forgotten: Vec<(String, Collection)>,
     /// The equalities that put the enclosing loops at their first iteration, for the second
     /// query of a refutation that sets loop-fresh values (ADR 0071 D3).
     pub(crate) entry: Vec<F>,
@@ -58,6 +58,36 @@ pub struct Obligation {
     /// divisor and the division. A model that sets one of them to zero is no run (ADR 0054,
     /// amendment of 2026-10-08).
     pub(crate) divisions: Vec<Vec<(F, Span)>>,
+}
+
+/// What a binding that a loop updates holds, for the reason of an obligation the loop leaves
+/// unknown: a loop keeps a list's length when it only `set`s its elements (ADR 0071 D2), and
+/// keeps nothing else of a map or another value (#404).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Collection {
+    /// A list.
+    List,
+    /// A map.
+    Map,
+    /// Any other value.
+    Other,
+}
+
+impl Collection {
+    /// What `ty` holds.
+    fn of(ty: &Type) -> Collection {
+        match ty {
+            Type::Base {
+                base: Base::Named { module, name, .. },
+                ..
+            } if is_prelude(module) && name == "List" => Collection::List,
+            Type::Base {
+                base: Base::Named { module, name, .. },
+                ..
+            } if is_prelude(module) && name == "Map" => Collection::Map,
+            _ => Collection::Other,
+        }
+    }
 }
 
 /// Where an obligation arises: what decides which repair candidates of `spec/13 §3` apply
@@ -800,6 +830,8 @@ struct Walker<'p, 'i> {
     frames: BTreeMap<Span, Vec<bool>>,
     /// The values that loops make fresh, by binder, with their source names (ADR 0071 D3).
     loop_fresh: BTreeMap<String, BTreeSet<String>>,
+    /// What each source name of [`Walker::loop_fresh`] holds (#404).
+    loop_collections: BTreeMap<String, Collection>,
     /// The binders of loops' final values, with the source names of their components.
     loop_results: BTreeMap<Name, Vec<String>>,
     /// The loop-fresh binders that come from a loop's final value, which no equality of an
@@ -808,7 +840,7 @@ struct Walker<'p, 'i> {
     /// Whether the paths of the return obligation being pushed return such a value.
     returned_unpinned: bool,
     /// The loop-fresh values that the paths of the return obligation being pushed return.
-    returned_forgotten: Vec<String>,
+    returned_forgotten: Vec<(String, Collection)>,
 }
 
 /// How the obligations of a function value flowing into a function type name the value and
@@ -842,6 +874,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             assigned: None,
             frames: BTreeMap::new(),
             loop_fresh: BTreeMap::new(),
+            loop_collections: BTreeMap::new(),
             loop_results: BTreeMap::new(),
             returned_forgotten: Vec::new(),
             unpinned: BTreeSet::new(),
@@ -1171,6 +1204,8 @@ impl<'p, 'i> Walker<'p, 'i> {
                         self.bind(&mut body_ctx, name, ty);
                         self.loop_fresh
                             .insert(name.clone(), BTreeSet::from([source_name(name)]));
+                        self.loop_collections
+                            .insert(source_name(name), Collection::of(ty));
                         // A state that starts from an earlier loop's final value is fixed by
                         // no first iteration (ADR 0071 D3, #278).
                         if let Atom::Var(start) = atom
@@ -1404,6 +1439,10 @@ impl<'p, 'i> Walker<'p, 'i> {
                                 let preserved = self.preserved(*loop_span, state, body);
                                 let sources = state.iter().map(|(name, _)| source_name(name));
                                 self.loop_results.insert(name.clone(), sources.collect());
+                                for (name, ty) in state {
+                                    self.loop_collections
+                                        .insert(source_name(name), Collection::of(ty));
+                                }
                                 for (index, ((_, _), atom)) in state.iter().zip(init).enumerate() {
                                     let Some(component) = projection(&x, index) else {
                                         continue;
@@ -3528,6 +3567,7 @@ impl<'p, 'i> Walker<'p, 'i> {
     /// Starts a body: the loops of another one made nothing fresh here (ADR 0071 D3).
     fn forget_loops(&mut self) {
         self.loop_fresh.clear();
+        self.loop_collections.clear();
         self.loop_results.clear();
         self.unpinned.clear();
     }
@@ -3570,7 +3610,10 @@ impl<'p, 'i> Walker<'p, 'i> {
 
     /// The source names of the loop-fresh values that the terms a counterexample shows
     /// depend on, through the definitions of temporaries (ADR 0071 D3).
-    fn forgotten<'t>(&self, terms: impl IntoIterator<Item = &'t F>) -> (Vec<String>, bool) {
+    fn forgotten<'t>(
+        &self,
+        terms: impl IntoIterator<Item = &'t F>,
+    ) -> (Vec<(String, Collection)>, bool) {
         let mut names = Vec::new();
         let mut unpinned = false;
         for term in terms {
@@ -3582,8 +3625,13 @@ impl<'p, 'i> Walker<'p, 'i> {
                 }
                 unpinned |= self.unpinned.contains(&name);
                 for source in self.loop_fresh.get(&name).into_iter().flatten() {
-                    if !names.contains(source) {
-                        names.push(source.clone());
+                    if !names.iter().any(|(known, _)| known == source) {
+                        let collection = self
+                            .loop_collections
+                            .get(source)
+                            .copied()
+                            .unwrap_or(Collection::Other);
+                        names.push((source.clone(), collection));
                     }
                 }
                 if let Some(term) = self.defs.get(&name) {

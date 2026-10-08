@@ -160,7 +160,7 @@ result secret then true trusted unit use uses when where with
 active generated human owner proposed purpose regulation source status text to via
 ```
 
-`Eq`, `Ord` and `Integer` are prelude names of edition `0.2`, the built-in constraints of §3.3, and `I8` to `U64` are built-in kinds (§3.1). A kind, variant or capability with one of these names is U1002.
+`Eq`, `Ord` and `Integer` are prelude names of edition `0.2`, the built-in constraints of §3.3, and `I8` to `U64` are built-in kinds (§3.1). A kind, variant or capability with one of these names is U1002, as is one named like any other built-in type: `Int`, `Nat`, `Bool`, `Text`, `Unit`, `Hashed`, `List`, `Option`, `Result` or `Map` (ADR 0079).
 
 **Reserved for later, or deliberately absent** (U0103). The message is `` `<word>` is `` followed by the text below, as in "`macro` is not supported (charter §6)", and names the plan or the Una alternative. In edition `0.2`:
 
