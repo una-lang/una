@@ -7,8 +7,10 @@ use una_core::Level;
 use una_syntax::{FileId, SourceDb, Span};
 
 use super::label::Label;
-use super::ty::{FnRefinements, FnTy, FnUse, KindLabels, Refinement, Shared, Ty, starred};
-use super::unify::{Vars, combine, union_uses};
+use super::ty::{
+    Flagged, Flags, FnRefinements, FnTy, FnUse, KindLabels, Refinement, Shared, Ty, starred,
+};
+use super::unify::{Origin, Vars, combine, union_uses};
 
 fn span() -> Span {
     let mut db = SourceDb::new();
@@ -231,6 +233,7 @@ fn some_label(random: &mut Random) -> Label {
         0 => Label::public(),
         1 => Label::symbol("T"),
         2 => Label::symbol("T*"),
+        _ if random.below(2) == 0 => Label::symbol("?1"),
         _ => Label::symbol("?3"),
     };
     if random.below(3) == 0 {
@@ -525,4 +528,261 @@ fn a_function_node_with_two_uses_of_one_capability_is_rebuilt_when_met_with_itse
     let met = combine(&f, &f, true, &kinds);
     assert_eq!(dump(&met), dump(&old_combine(&f, &f, true, &kinds)));
     assert!(!met.same(&f));
+}
+
+// ----- stage 3a: flags, the erase memo and the resolver -----
+
+/// The flags of `ty` by a walk of the whole type, as the operations see it.
+fn walked_flags(ty: &Ty) -> Flags {
+    match ty {
+        Ty::Var(_) => Flags {
+            var: true,
+            ..Flags::LEAF
+        },
+        Ty::List(element) => walked_flags(element),
+        Ty::Map(key, value) => walked_flags(key).and(walked_flags(value)),
+        Ty::Kind(_, args) => args.iter().fold(Flags::LEAF, |f, a| f.and(walked_flags(a))),
+        Ty::Fn(function) => {
+            let flags = function
+                .params
+                .iter()
+                .fold(walked_flags(&function.result), |f, p| {
+                    f.and(walked_flags(p))
+                });
+            match &function.fails {
+                Some(fails) => flags.and(walked_flags(fails)),
+                None => flags,
+            }
+        }
+        Ty::Labeled(label, inner) => Flags {
+            var: false,
+            label: true,
+            var_label: label.symbols.iter().any(|s| s.starts_with('?')),
+            normal: !label.is_public()
+                && !matches!(**inner, Ty::Labeled(..) | Ty::Error | Ty::Never),
+        }
+        .and(walked_flags(inner)),
+        _ => Flags::LEAF,
+    }
+}
+
+/// Types built to defeat each flag: what an operation changes, deep below positions that
+/// change nothing.
+fn adversarial() -> Vec<Ty> {
+    let deep = |ty: Ty| {
+        (0..6).fold(ty, |ty, i| {
+            if i % 2 == 0 {
+                Ty::List(Shared::new(ty))
+            } else {
+                Ty::Kind(0, vec![ty].into())
+            }
+        })
+    };
+    let function = |fails: Ty| {
+        Ty::Fn(Shared::new(FnTy {
+            params: vec![Ty::Int],
+            result: Ty::Int,
+            uses: Vec::new(),
+            fails: Some(fails),
+            refinements: FnRefinements::default(),
+        }))
+    };
+    vec![
+        // A variable under a label.
+        deep(Ty::Var(0).with_label(&Label::symbol("T"))),
+        // A label not in normal form, deep down: `public`, and a label under a label.
+        deep(Ty::Labeled(Label::public(), Shared::new(Ty::Int))),
+        deep(Ty::Labeled(
+            Label::symbol("T"),
+            Shared::new(Ty::Int.with_label(&Label::symbol("U"))),
+        )),
+        // A label on `Error` and on `Never`.
+        deep(Ty::Labeled(Label::symbol("T"), Shared::new(Ty::Error))),
+        // A failure kind with a variable, and with a label (#216).
+        deep(function(Ty::Var(1))),
+        deep(function(Ty::Text.with_label(&Label::symbol("T")))),
+        // A variable's label, deep down.
+        deep(Ty::Int.with_label(&Label::symbol("?1"))),
+    ]
+}
+
+#[test]
+fn the_flags_of_a_node_are_those_of_everything_below_it() {
+    let mut random = Random(0xf1a9);
+    let mut types = adversarial();
+    for _ in 0..3000 {
+        let mut pool = Vec::new();
+        types.push(some_type(&mut random, 5, &mut pool));
+    }
+    for ty in &types {
+        assert_eq!(ty.flags(), walked_flags(ty), "{ty:?}");
+    }
+}
+
+#[test]
+fn erasing_through_the_memo_gives_what_erasing_gives() {
+    let vars = Vars::default();
+    let mut random = Random(0xe5a5e);
+    let mut types = adversarial();
+    for _ in 0..3000 {
+        let mut pool = Vec::new();
+        types.push(some_type(&mut random, 5, &mut pool));
+    }
+    // Twice, so the second pass reads what the first left in the memo.
+    for _ in 0..2 {
+        for ty in &types {
+            assert_eq!(dump(&vars.erase(ty)), dump(&old_erase(ty)), "{ty:?}");
+            assert_eq!(dump(&ty.erase()), dump(&old_erase(ty)), "{ty:?}");
+        }
+    }
+}
+
+#[test]
+fn the_erase_memo_keeps_its_keys_so_a_freed_address_cannot_answer_for_another_node() {
+    // ADR 0077 memo rule 1: a memo keyed by a node's address holds the node. Temporaries are
+    // made, erased and dropped in a loop, so the allocator reuses their addresses; each new
+    // node at a reused address must be erased as itself, never as the node that was there.
+    let vars = Vars::default();
+    for round in 0..2000_usize {
+        let label = if round % 2 == 0 {
+            Label::symbol("T")
+        } else {
+            Label::symbol("U")
+        };
+        let leaf = if round % 3 == 0 { Ty::Int } else { Ty::Text };
+        let temporary = Ty::List(Shared::new(leaf.clone().with_label(&label)));
+        assert_eq!(dump(&vars.erase(&temporary)), dump(&old_erase(&temporary)));
+        drop(temporary);
+        let other = Ty::List(Shared::new(Ty::List(Shared::new(leaf.with_label(&label)))));
+        assert_eq!(
+            dump(&vars.erase(&other)),
+            dump(&old_erase(&other)),
+            "round {round}"
+        );
+    }
+}
+
+/// `ty` with each solved variable of `values` replaced by its value, recursively.
+fn substitute_vars(ty: &Ty, values: &[Option<Ty>]) -> Ty {
+    match ty {
+        Ty::Var(var) => match values.get(*var) {
+            Some(Some(value)) => substitute_vars(value, values),
+            _ => ty.clone(),
+        },
+        Ty::Labeled(label, inner) => {
+            Ty::Labeled(label.clone(), Shared::new(substitute_vars(inner, values)))
+        }
+        Ty::List(element) => Ty::List(Shared::new(substitute_vars(element, values))),
+        Ty::Map(key, value) => Ty::Map(
+            Shared::new(substitute_vars(key, values)),
+            Shared::new(substitute_vars(value, values)),
+        ),
+        Ty::Kind(id, args) => Ty::Kind(
+            *id,
+            args.iter().map(|a| substitute_vars(a, values)).collect(),
+        ),
+        Ty::Fn(function) => Ty::Fn(Shared::new(FnTy {
+            params: function
+                .params
+                .iter()
+                .map(|p| substitute_vars(p, values))
+                .collect(),
+            result: substitute_vars(&function.result, values),
+            uses: function.uses.clone(),
+            fails: function.fails.as_ref().map(|f| substitute_vars(f, values)),
+            refinements: function.refinements.clone(),
+        })),
+        other => other.clone(),
+    }
+}
+
+/// `uses` without a second entry for a capability: binding a variable joins function types
+/// (`union_uses`), which merges such entries, so a variable's value holds none.
+fn distinct(uses: &[FnUse]) -> Vec<FnUse> {
+    let mut out: Vec<FnUse> = Vec::new();
+    for u in uses {
+        if !out
+            .iter()
+            .any(|o| o.name == u.name && o.capability == u.capability)
+        {
+            out.push(u.clone());
+        }
+    }
+    out
+}
+
+/// `ty` with every variable whose index is not below `limit` made `Int`, and the `uses` of its
+/// function types distinct.
+fn below(ty: &Ty, limit: usize) -> Ty {
+    match ty {
+        Ty::Var(var) if *var >= limit => Ty::Int,
+        Ty::Labeled(label, inner) => Ty::Labeled(label.clone(), Shared::new(below(inner, limit))),
+        Ty::List(element) => Ty::List(Shared::new(below(element, limit))),
+        Ty::Map(key, value) => Ty::Map(
+            Shared::new(below(key, limit)),
+            Shared::new(below(value, limit)),
+        ),
+        Ty::Kind(id, args) => Ty::Kind(*id, args.iter().map(|a| below(a, limit)).collect()),
+        Ty::Fn(function) => Ty::Fn(Shared::new(FnTy {
+            params: function.params.iter().map(|p| below(p, limit)).collect(),
+            result: below(&function.result, limit),
+            uses: distinct(&function.uses),
+            fails: function.fails.as_ref().map(|f| below(f, limit)),
+            refinements: function.refinements.clone(),
+        })),
+        other => other.clone(),
+    }
+}
+
+#[test]
+fn resolving_with_solved_variables_and_the_resolver_give_what_rebuilding_gave() {
+    let mut random = Random(0x5e77);
+    let span = span();
+    for case in 0..1500 {
+        let mut vars = Vars::default();
+        let mut values = Vec::new();
+        for index in 0..3 {
+            let var = vars.fresh(Origin::Element, span);
+            let mut pool = Vec::new();
+            // A variable's value names only earlier variables: no cycle. It is solved as it is,
+            // without the join `unify` does, so the reference knows what it holds.
+            let value = below(&some_type(&mut random, 4, &mut pool), index);
+            let Ty::Var(var) = var else {
+                panic!("a fresh variable is a variable");
+            };
+            vars.solve(var, value.clone());
+            values.push(Some(value));
+        }
+        let mut cases = adversarial();
+        let mut pool = Vec::new();
+        cases.push(below(&some_type(&mut random, 5, &mut pool), 3));
+        for ty in &cases {
+            let expected = old_resolve_shape(&substitute_vars(ty, &values));
+            assert_eq!(
+                dump(&vars.resolve_shape(ty)),
+                dump(&expected),
+                "case {case}: {ty:?}"
+            );
+            let settled_old = old_map_labels(&vars.resolve_shape(ty), &|l: &Label| {
+                vars.settle_label(l, &mut Vec::new(), false)
+            });
+            assert_eq!(
+                dump(&vars.resolve_labeled(ty)),
+                dump(&settled_old),
+                "case {case}: {ty:?}"
+            );
+            let resolver = vars.resolver();
+            assert_eq!(
+                dump(&resolver.resolve_labeled(ty)),
+                dump(&vars.resolve_labeled(ty)),
+                "case {case}: {ty:?}"
+            );
+            // Asked again, the resolver answers from its memo.
+            assert_eq!(
+                dump(&resolver.resolve_labeled(ty)),
+                dump(&vars.resolve_labeled(ty)),
+                "case {case}: {ty:?}"
+            );
+        }
+    }
 }

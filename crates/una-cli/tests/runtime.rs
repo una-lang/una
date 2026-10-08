@@ -460,11 +460,15 @@ fn checking_a_body_takes_linear_time_in_its_locals() {
 #[test]
 fn checking_deeply_nested_types_is_not_cubic_in_their_depth() {
     // #331 (N-47): unification and resolution follow solved variables by reference instead of
-    // copying their whole value at each node, so a type nested d deep costs O(d) to walk. A
-    // check is then quadratic in d, since each expression node keeps its own type (#335),
-    // where it was cubic. The fixed cost is measured at depth 10, the best of three, and taken
-    // out of both sizes (N-29): 4x the depth took about 20x as long measured, 16x for
-    // quadratic, and about 64x when it was cubic; the bound of 40x is between them. A miss is
+    // copying their whole value at each node, where checking was cubic in d. ADR 0077 (#335)
+    // shares the checker's type nodes, keeps unchanged ones, erases each labeled node once per
+    // declaration and resolves each variable once at its end, so the checker makes nodes in
+    // proportion to the program (`una-check`'s scaling test counts them). What stays
+    // quadratic is outside the checker's types: Core IR gives each binder its own owned type,
+    // and the editor index stores each expression's type as text (ADR 0080, proposed). The
+    // fixed cost is measured at depth 10, the best of three, and taken out of both sizes
+    // (N-29): 4x the depth took about 14x as long measured (20x before ADR 0077), 16x for
+    // quadratic, and about 64x when it was cubic; the bound of 24x is between them. A miss is
     // measured twice more before it fails (#341).
     let root = package("deep-nesting", "", &[]);
     let manifest = std::fs::read_to_string(root.join("una.toml")).unwrap();
@@ -496,7 +500,7 @@ fn checking_deeply_nested_types_is_not_cubic_in_their_depth() {
         seconds
     };
     let fixed = timing::best_of_three(|| measure(10));
-    timing::assert_growth("depth", &[40, 160], fixed, timing::FLOOR, 40.0, measure);
+    timing::assert_growth("depth", &[40, 160], fixed, timing::FLOOR, 24.0, measure);
 }
 
 #[test]

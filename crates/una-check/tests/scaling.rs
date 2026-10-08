@@ -87,14 +87,13 @@ fn labels_and_type_nodes_made_grow_at_most_as_their_bounds() {
         assert!(large.1 <= 6 * small.1, "names: {small:?} then {large:?}");
         assert!(small.2 > 0, "the node counter counts: {small:?}");
     }
-    // ADR 0077 stage 2b: an operation that changes nothing below a node keeps it, so checking
-    // the monomorphic program makes nodes in proportion to its size: about 4x for 4x the depth
-    // (quadratic is 16x). In the generic one, every leaf is labeled `ℓ_T`, and `resolve` erases
-    // labels at each expression, rebuilding the path to every leaf: it stays quadratic until
-    // stage 3 keeps the erased form of each node across the walks of a declaration.
+    // ADR 0077 stage 2b: an operation that changes nothing below a node keeps it; stage 3a: a
+    // labeled node is erased once per declaration, and each solved variable resolved once at
+    // its end. Checking makes nodes in proportion to the program's size in both programs:
+    // about 4x for 4x the depth (quadratic is 16x).
     assert!(large.2 <= 6 * small.2, "nodes: {small:?} then {large:?}");
     assert!(
-        large_generic.2 <= 16 * small_generic.2,
+        large_generic.2 <= 6 * small_generic.2,
         "nodes: {small_generic:?} then {large_generic:?}"
     );
 }

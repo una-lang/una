@@ -8,19 +8,67 @@ use std::rc::Rc;
 
 use super::ty::Ty;
 
+/// What a type node holds, anywhere below it, computed once when the node is made from the
+/// flags of its children (ADR 0077 stage 3a). A node never changes, so neither do its flags:
+/// the operations that can only change what a flag says is absent return the node as it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Flags {
+    /// A unification variable, `Ty::Var`.
+    pub(crate) var: bool,
+    /// A labeled position, `Ty::Labeled`.
+    pub(crate) label: bool,
+    /// A label that names a variable's label, `?n`.
+    pub(crate) var_label: bool,
+    /// Every labeled position in the form `Ty::with_label` builds: its label is not `public`,
+    /// and what it labels is not labeled, `Error` or `Never`.
+    pub(crate) normal: bool,
+}
+
+impl Flags {
+    /// A leaf's flags: nothing below it.
+    pub(crate) const LEAF: Flags = Flags {
+        var: false,
+        label: false,
+        var_label: false,
+        normal: true,
+    };
+
+    /// What `self` or `other` holds.
+    pub(crate) fn and(self, other: Flags) -> Flags {
+        Flags {
+            var: self.var || other.var,
+            label: self.label || other.label,
+            var_label: self.var_label || other.var_label,
+            normal: self.normal && other.normal,
+        }
+    }
+}
+
+/// A value whose flags follow from those of its immediate children, in O(its arity).
+pub(crate) trait Flagged {
+    /// The flags of the value.
+    fn flags(&self) -> Flags;
+}
+
 /// A node of a type, shared by every type that holds it (ADR 0077 stage 2): cloning a handle
 /// costs O(1) and allocates nothing. A node is immutable once made: this type has no mutable
 /// access to what it holds (no `DerefMut`, no `get_mut`, no access to the `Rc`), so no code can
 /// change a node that another type shares. To change a type, build a new node; its unchanged
-/// children stay shared. Equality is by content, never by address.
-#[derive(PartialEq, Eq)]
-pub(crate) struct Shared<T: ?Sized>(Rc<T>);
+/// children stay shared. Equality is by content, never by address. The handle carries the
+/// node's flags, computed when it is made.
+pub(crate) struct Shared<T: ?Sized> {
+    flags: Flags,
+    node: Rc<T>,
+}
 
-impl<T> Shared<T> {
+impl<T: Flagged> Shared<T> {
     /// A new node holding `value`.
     pub(crate) fn new(value: T) -> Shared<T> {
         una_core::label_counters::node();
-        Shared(Rc::new(value))
+        Shared {
+            flags: value.flags(),
+            node: Rc::new(value),
+        }
     }
 }
 
@@ -28,13 +76,36 @@ impl<T: ?Sized> Shared<T> {
     /// Whether `a` and `b` are the same node. Only ever a fast path to "the same value": two
     /// different nodes may hold equal values, so `false` says nothing about equality.
     pub(crate) fn ptr_eq(a: &Shared<T>, b: &Shared<T>) -> bool {
-        Rc::ptr_eq(&a.0, &b.0)
+        Rc::ptr_eq(&a.node, &b.node)
+    }
+
+    /// The flags of the node.
+    pub(crate) fn flags(&self) -> Flags {
+        self.flags
+    }
+
+    /// The node's address, for a memo that holds the handle as long as it holds the address
+    /// (ADR 0077 memo rule 1): never compared to decide anything about the value.
+    pub(crate) fn address(&self) -> *const () {
+        Rc::as_ptr(&self.node).cast::<()>()
     }
 }
 
+impl<T: ?Sized + PartialEq> PartialEq for Shared<T> {
+    /// By content: the flags follow from it.
+    fn eq(&self, other: &Shared<T>) -> bool {
+        *self.node == *other.node
+    }
+}
+
+impl<T: ?Sized + Eq> Eq for Shared<T> {}
+
 impl<T: ?Sized> Clone for Shared<T> {
     fn clone(&self) -> Shared<T> {
-        Shared(Rc::clone(&self.0))
+        Shared {
+            flags: self.flags,
+            node: Rc::clone(&self.node),
+        }
     }
 }
 
@@ -42,20 +113,20 @@ impl<T: ?Sized> std::ops::Deref for Shared<T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        &self.0
+        &self.node
     }
 }
 
 impl<T: ?Sized + fmt::Debug> fmt::Debug for Shared<T> {
     /// As the value it holds.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        self.node.fmt(f)
     }
 }
 
 impl<T: ?Sized> AsRef<T> for Shared<T> {
     fn as_ref(&self) -> &T {
-        &self.0
+        &self.node
     }
 }
 
@@ -64,7 +135,7 @@ impl<'a> IntoIterator for &'a Shared<[Ty]> {
     type IntoIter = std::slice::Iter<'a, Ty>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.0.iter()
+        self.node.iter()
     }
 }
 
@@ -72,7 +143,10 @@ impl From<Vec<Ty>> for Shared<[Ty]> {
     /// The type arguments of a kind, as one node.
     fn from(args: Vec<Ty>) -> Shared<[Ty]> {
         una_core::label_counters::node();
-        Shared(Rc::from(args))
+        Shared {
+            flags: args.as_slice().flags(),
+            node: Rc::from(args),
+        }
     }
 }
 
@@ -80,6 +154,10 @@ impl FromIterator<Ty> for Shared<[Ty]> {
     /// One allocation when the iterator knows its length, as a map over a slice does.
     fn from_iter<I: IntoIterator<Item = Ty>>(args: I) -> Shared<[Ty]> {
         una_core::label_counters::node();
-        Shared(args.into_iter().collect())
+        let node: Rc<[Ty]> = args.into_iter().collect();
+        Shared {
+            flags: node.flags(),
+            node,
+        }
     }
 }

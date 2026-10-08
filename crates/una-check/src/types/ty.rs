@@ -7,7 +7,7 @@ use una_syntax::Span;
 use una_core::IntType;
 
 use super::label::Label;
-pub(crate) use super::shared::Shared;
+pub(crate) use super::shared::{Flagged, Flags, Shared};
 
 /// An index into the kinds (records and sums) of the environment.
 pub(crate) type KindId = usize;
@@ -381,6 +381,61 @@ pub(crate) fn map_function(
     })
 }
 
+impl Flagged for Ty {
+    /// From the flags of the children's nodes, in O(1) but for a kind's arguments, whose node
+    /// carries their flags too.
+    fn flags(&self) -> Flags {
+        match self {
+            Ty::Var(_) => Flags {
+                var: true,
+                ..Flags::LEAF
+            },
+            Ty::List(element) => element.flags(),
+            Ty::Map(key, value) => key.flags().and(value.flags()),
+            Ty::Kind(_, args) => args.flags(),
+            Ty::Fn(function) => function.flags(),
+            Ty::Labeled(label, inner) => {
+                let own = Flags {
+                    var: false,
+                    label: true,
+                    var_label: label.symbols.iter().any(|s| s.starts_with('?')),
+                    normal: !label.is_public()
+                        && !matches!(**inner, Ty::Labeled(..) | Ty::Error | Ty::Never),
+                };
+                own.and(inner.flags())
+            }
+            Ty::Int
+            | Ty::Fixed(_)
+            | Ty::Bool
+            | Ty::Text
+            | Ty::Unit
+            | Ty::Hashed
+            | Ty::Param(_)
+            | Ty::Never
+            | Ty::Error => Flags::LEAF,
+        }
+    }
+}
+
+impl Flagged for [Ty] {
+    fn flags(&self) -> Flags {
+        self.iter()
+            .fold(Flags::LEAF, |flags, ty| flags.and(ty.flags()))
+    }
+}
+
+impl Flagged for FnTy {
+    /// The parameters, the result and the failure kind: what the operations walk. `uses` and
+    /// refinements hold no type that an operation changes.
+    fn flags(&self) -> Flags {
+        let flags = self.params.flags().and(self.result.flags());
+        match &self.fails {
+            Some(fails) => flags.and(fails.flags()),
+            None => flags,
+        }
+    }
+}
+
 impl Ty {
     /// Whether `self` and `other` are the same value by identity: the same variant, with the
     /// same nodes as children and equal labels. Only ever a fast path to "unchanged" (ADR 0077
@@ -601,7 +656,14 @@ impl Ty {
     }
 
     /// `self` without any label.
+    /// The checker erases through [`super::unify::Vars::erase`], which memoizes this per
+    /// declaration; the tests compare it with this.
+    #[cfg(test)]
     pub(crate) fn erase(&self) -> Ty {
+        // Erasing changes only labeled positions (ADR 0077 stage 3a).
+        if !self.flags().label {
+            return self.clone();
+        }
         match self {
             Ty::Labeled(_, inner) => inner.erase(),
             Ty::List(element) => Ty::List(reuse(element, element.erase())),
