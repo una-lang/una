@@ -140,6 +140,62 @@ fn json_documents_carry_the_tier() {
     assert_eq!(document["failed"], 0);
 }
 
+/// An example whose `do` line returns a record with a labeled field, and fails.
+const BADGE: &str = "module badge
+
+pub kind Badge
+  holder: Text
+  code: secret Text
+
+pub make(code: secret Text) -> Badge = Badge(holder: \"Ana\", code: code)
+
+example \"a badge holds its code\"
+  do make(\"QX-7731\")
+  expect result.holder == \"Bo\"
+";
+
+#[test]
+fn example_results_redact_labeled_fields_in_edition_0_1_only() {
+    // ADR 0078: an example's data come from the source, so edition 0.2 shows its results and
+    // reasons with every field; edition 0.1 keeps its output, with labeled fields redacted.
+    // The document says which rule it follows in `redacted`.
+    let root = package("badge-0-1", "", &[("src/badge.una", BADGE)]);
+    let output = una(&["--json", "test", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let document = json(&output);
+    assert_eq!(document["redacted"], true);
+    let redacted = "Badge(holder: \"Ana\", code: <redacted:secret>)";
+    assert_eq!(document["examples"][0]["result"]["value"], redacted);
+    assert_eq!(
+        document["examples"][0]["reason"],
+        format!("it is false, with `result` = `{redacted}`")
+    );
+    let root = package("badge-0-2", "", &[("src/badge.una", BADGE)]);
+    let manifest = root.join("una.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        &manifest,
+        text.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+    let output = una(&["--json", "test", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let document = json(&output);
+    assert_eq!(document["redacted"], false);
+    let shown = "Badge(holder: \"Ana\", code: \"QX-7731\")";
+    assert_eq!(document["examples"][0]["result"]["value"], shown);
+    assert_eq!(
+        document["examples"][0]["reason"],
+        format!("it is false, with `result` = `{shown}`")
+    );
+    let output = una(&["test", root.to_str().unwrap()]);
+    assert!(
+        stdout(&output).contains(&format!("  it is false, with `result` = `{shown}`\n")),
+        "{}",
+        stdout(&output)
+    );
+}
+
 /// A capability whose arguments carry labeled data, and a record with a labeled field.
 const VAULT: &str = "module vault
 

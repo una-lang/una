@@ -6,7 +6,7 @@ use una_core::{Atom, Bound, Example, Expectation, Expr, LoopSource, Program, Rhs
 
 use crate::host::{Grant, NoWorld, World};
 use crate::machine::{
-    Abort, Env, Event, EventOutcome, Flow, Index, Limits, Machine, Stop, variant,
+    Abort, Env, Event, EventOutcome, Flow, Form, Index, Limits, Machine, Stop, variant,
 };
 use crate::value::Value;
 
@@ -60,19 +60,19 @@ pub fn run_main(
     let main = index.function(module, "main")?;
     let mut machine = Machine::new(&index, world, &host.grants, &host.keys, limits);
     let result = machine.run_main(main);
-    let completion = completion(&index, result);
+    let completion = completion(&index, result, Form::Redacted);
     Some(Run {
         completion,
         trace: machine.trace,
     })
 }
 
-fn completion(index: &Index<'_>, result: Flow<'_>) -> Completion {
+fn completion(index: &Index<'_>, result: Flow<'_>, form: Form) -> Completion {
     match result {
-        Ok(value) => Completion::Ok(index.render(&value)),
+        Ok(value) => Completion::Ok(index.shown(&value, form)),
         Err(Stop::Fail(failure)) => Completion::Failed {
             variant: variant(&failure),
-            value: index.render(&failure),
+            value: index.shown(&failure, form),
             public: index.public_fields(&failure),
         },
         Err(Stop::Abort(abort)) => Completion::Aborted(abort),
@@ -105,9 +105,13 @@ pub struct ExampleFailure {
 }
 
 /// Runs every example of `program`, by module in path order, then in source order, each in a
-/// fresh machine with an empty environment and an empty world (`spec/11 §6`).
-pub fn run_examples(program: &Program, limits: Limits<'_>) -> Vec<ExampleRun> {
+/// fresh machine with an empty environment and an empty world (`spec/11 §6`). With `redact`,
+/// as in edition `0.1`, results and reasons show a field whose declared type is labeled above
+/// `public` as `<redacted:level>`; without it, as in edition `0.2`, they show every field, since
+/// an example's data come from the source (ADR 0078).
+pub fn run_examples(program: &Program, limits: Limits<'_>, redact: bool) -> Vec<ExampleRun> {
     let index = Index::new(program);
+    let form = if redact { Form::Redacted } else { Form::Shown };
     program
         .modules
         .iter()
@@ -117,7 +121,7 @@ pub fn run_examples(program: &Program, limits: Limits<'_>) -> Vec<ExampleRun> {
                 .iter()
                 .map(|example| (module.path.as_str(), example))
         })
-        .map(|(module, example)| run_example(&index, module, example, limits))
+        .map(|(module, example)| run_example(&index, module, example, limits, form))
         .collect()
 }
 
@@ -126,6 +130,7 @@ fn run_example<'p>(
     module: &str,
     example: &'p Example,
     limits: Limits<'_>,
+    form: Form,
 ) -> ExampleRun {
     let mut world = NoWorld;
     let grants: Vec<Grant> = Vec::new();
@@ -137,14 +142,14 @@ fn run_example<'p>(
             expectation: None,
             reason: "the `do` line aborted".to_owned(),
         }),
-        _ => judge(&mut machine, index, example, &result),
+        _ => judge(&mut machine, index, example, &result, form),
     };
     let trace = std::mem::take(&mut machine.trace);
     ExampleRun {
         module: module.to_owned(),
         name: example.name.clone(),
         failure,
-        completion: completion(index, result),
+        completion: completion(index, result, form),
         trace,
     }
 }
@@ -157,9 +162,10 @@ fn judge<'p>(
     index: &Index<'p>,
     example: &'p Example,
     result: &Flow<'p>,
+    form: Form,
 ) -> Option<ExampleFailure> {
     for expectation in &example.expectations {
-        if let Some((line, text, reason)) = check(machine, index, expectation, result) {
+        if let Some((line, text, reason)) = check(machine, index, expectation, result, form) {
             return Some(ExampleFailure {
                 expectation: Some((line, text.to_owned())),
                 reason,
@@ -175,7 +181,7 @@ fn judge<'p>(
             expectation: None,
             reason: format!(
                 "the `do` line failed with `{}`, and no `expect fails` line expects a failure",
-                index.render(failure)
+                index.shown(failure, form)
             ),
         }),
         _ => None,
@@ -188,6 +194,7 @@ fn check<'p, 'e>(
     index: &Index<'p>,
     expectation: &'p Expectation,
     result: &Flow<'p>,
+    form: Form,
 ) -> Option<(u32, &'e str, String)>
 where
     'p: 'e,
@@ -206,7 +213,7 @@ where
                 Err(Stop::Fail(failure)) if mentions_result => {
                     let reason = format!(
                         "the `do` line failed with `{}`, so `result` has no value",
-                        index.render(failure)
+                        index.shown(failure, form)
                     );
                     return Some((*line, text, reason));
                 }
@@ -216,12 +223,15 @@ where
                 Ok(Value::Bool(true)) => return None,
                 Ok(_) => match result {
                     Ok(value) if mentions_result => {
-                        format!("it is false, with `result` = `{}`", index.render(value))
+                        format!(
+                            "it is false, with `result` = `{}`",
+                            index.shown(value, form)
+                        )
                     }
                     _ => "it is false".to_owned(),
                 },
                 Err(Stop::Fail(failure)) => {
-                    format!("it failed with `{}`", index.render(&failure))
+                    format!("it failed with `{}`", index.shown(&failure, form))
                 }
                 Err(Stop::Abort(_)) => "it aborted".to_owned(),
             };
@@ -235,9 +245,12 @@ where
             let reason = match result {
                 Err(Stop::Fail(failure)) if variant(failure) == *expected => return None,
                 Err(Stop::Fail(failure)) => {
-                    format!("the `do` line failed with `{}`", index.render(failure))
+                    format!("the `do` line failed with `{}`", index.shown(failure, form))
                 }
-                Ok(value) => format!("the `do` line completed with `{}`", index.render(value)),
+                Ok(value) => format!(
+                    "the `do` line completed with `{}`",
+                    index.shown(value, form)
+                ),
                 Err(Stop::Abort(_)) => "the `do` line aborted".to_owned(),
             };
             Some((*line, text, reason))

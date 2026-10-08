@@ -548,6 +548,9 @@ pub(crate) fn test_command(
             return Ok(ExitStatus::Usage);
         }
     };
+    // Edition `0.1` redacts labeled fields in an example's results and reasons; edition `0.2`
+    // shows every field, since an example's data come from the source (ADR 0078).
+    let redact = crate::package::project(&package).0.edition == una_project::Edition::V0_1;
     let mut analysis = on_large_stack(|| analyze(&package, None));
     if analysis.diagnostics.is_empty() {
         let found = tier_one(&package, &analysis.program, &options.solving);
@@ -557,6 +560,7 @@ pub(crate) fn test_command(
         let document = TestDocument {
             schema: TEST_SCHEMA,
             tier: TIER,
+            redacted: redact,
             diagnostics: in_output_order(&analysis.diagnostics),
             examples: Vec::new(),
             passed: 0,
@@ -588,7 +592,9 @@ pub(crate) fn test_command(
         let worker = std::thread::Builder::new()
             .name("una-test".to_owned())
             .stack_size(stack)
-            .spawn_scoped(scope, move || una_interp::run_examples(program, limits))?;
+            .spawn_scoped(scope, move || {
+                una_interp::run_examples(program, limits, redact)
+            })?;
         Ok::<_, io::Error>(
             worker
                 .join()
@@ -627,6 +633,7 @@ pub(crate) fn test_command(
         let document = TestDocument {
             schema: TEST_SCHEMA,
             tier: TIER,
+            redacted: redact,
             diagnostics: in_output_order(&diagnostics),
             examples: runs
                 .iter()
@@ -743,6 +750,9 @@ struct FailureDoc<'a> {
 struct TestDocument<'a> {
     schema: &'static str,
     tier: u8,
+    /// Whether results and reasons redact labeled fields: edition `0.1` does, edition `0.2`
+    /// does not (ADR 0078). An added key, so the schema stays `una.test/1` (ADR 0076).
+    redacted: bool,
     diagnostics: Vec<&'a Diagnostic>,
     examples: Vec<ExampleDoc<'a>>,
     passed: usize,

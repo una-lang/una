@@ -116,6 +116,11 @@ Each operation invocation appends one event:
 
 Values in traces and outputs are JSON strings holding their Una form: `"42"`, `"\"Ana\""`, `"true"`, `"unit"`, `"Open"`, `"Some(3)"`, `"Registration(name: \"Ana\", event: ...)"`, `"[1, 2]"`; a `Hashed` value is `"hashed:<hex>"`, and a function `"<function>"`. Inside any rendered value, a field whose declared type is labeled above `public` is `<redacted:level>`, with the label's level only; an operation's outcome is redacted by the label of the binder of its result; `unit` carries no information and is never redacted. An event's outcome is `{"kind":"ok","value":...}`, `{"kind":"fail","variant":...,"value":...}` or `{"kind":"aborted"}` (ADR 0032).
 
+(v0.2, ADR 0078.) Redaction follows where data come from. It applies to traces, which record what a run exchanged with its host capabilities, data from outside the program. The results of examples, and the values of a counterexample (`spec/12 §7`), come from the source and from the solver, so they are shown in full:
+- In a package of edition `0.2`, `una test` renders the result of an example's `do` line, and every value in the reason it fails, without redaction at any position; a `Hashed` stays `hashed:<hex>`. The trace of an example is redacted as above.
+- In a package of edition `0.1`, `una test` renders them with the field redaction above, as edition `0.1` always has.
+- A counterexample shows the solver's value of every binding, in every edition. A binding whose declared type is labeled above `public`, deeply and joined with its owner's label for a field, carries that label (`spec/13 §1`), since the value is hypothetical data of a labeled type.
+
 (v0.2, ADR 0068.) Interpolation (`spec/10 §12` rule 14) writes a value in this Una form, without redaction, since its text carries the value's labels:
 - Integers are written in decimal, `Bool` as `true` or `false`, and `Unit` as `unit`.
 - A variant without fields is written as its name. A variant or record with one field is `Name(value)`, and one with several fields is `Name(f: value, g: value)`, in declaration order.

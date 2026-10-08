@@ -160,6 +160,11 @@ pub struct Binding {
     pub name: String,
     /// The value. How `Int` values beyond 64 bits are written is decided with verification (M8).
     pub value: serde_json::Value,
+    /// The label of the name's declared type, as `secret`, when it is not `public`: the value
+    /// is the solver's, hypothetical data of a labeled type (ADR 0078). An added key, omitted
+    /// when `public`, so the schema stays `una.diagnostic/1` (ADR 0076).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// A repair candidate (`spec/13 §3`).

@@ -630,6 +630,8 @@ fn outcome(
             bindings.push(Binding {
                 name: shown.name.clone(),
                 value: json,
+                // A label of inference variables only prints as `public`.
+                label: Some(shown.label.to_string()).filter(|text| text != "public"),
             });
         }
         for number in 1..=obligation.paths.len() {

@@ -251,18 +251,23 @@ impl<'p> Index<'p> {
     /// The Una form of `value`. A field whose declared type is labeled above
     /// `public` is `<redacted:level>`.
     pub(crate) fn render(&self, value: &Value<'_>) -> String {
-        self.una_form(value, true)
+        self.una_form(value, Form::Redacted)
     }
 
     /// The Una form of `value` with every field, which interpolation writes: its text carries
     /// the value's labels (`spec/11 §5`, ADR 0068).
     pub(crate) fn written(&self, value: &Value<'_>) -> String {
-        self.una_form(value, false)
+        self.una_form(value, Form::Written)
     }
 
-    /// The Una form of `value` (`spec/11 §5`); with `redact`, a field whose declared type is
-    /// labeled above `public` is `<redacted:level>`.
-    fn una_form(&self, value: &Value<'_>, redact: bool) -> String {
+    /// The Una form of `value` in `form`: an example's results and reasons, which edition `0.2`
+    /// shows with every field (`spec/11 §5`, ADR 0078).
+    pub(crate) fn shown(&self, value: &Value<'_>, form: Form) -> String {
+        self.una_form(value, form)
+    }
+
+    /// The Una form of `value` (`spec/11 §5`), in `form`.
+    fn una_form(&self, value: &Value<'_>, form: Form) -> String {
         // A worklist instead of recursion: a value built by a loop can be deeper than the
         // native stack allows (`spec/17 §4`, ADR 0032).
         enum Task<'v, 'p> {
@@ -286,8 +291,8 @@ impl<'p> Index<'p> {
                 Value::Text(t) => out.push_str(&una_core::quote(t)),
                 Value::Unit => out.push_str("unit"),
                 // Interpolation writes no bytes of a hash (ADR 0068, amendment of
-                // 2026-10-06); traces and diagnostics show them.
-                Value::Hashed(_) if !redact => out.push_str("<hashed>"),
+                // 2026-10-06); traces, examples and diagnostics show them.
+                Value::Hashed(_) if form == Form::Written => out.push_str("<hashed>"),
                 Value::Hashed(bytes) => out.push_str(&format!("hashed:{}", host::hex(bytes))),
                 Value::Closure(_) => out.push_str("<function>"),
                 Value::List(items) | Value::Tuple(items) => {
@@ -335,7 +340,10 @@ impl<'p> Index<'p> {
                             parts.push(Task::Text(format!("{name}: ")));
                         }
                         let label = ty.map_or_else(Label::public, Type::deep_label);
-                        if !redact || label.is_public() || matches!(field, Value::Unit) {
+                        if form != Form::Redacted
+                            || label.is_public()
+                            || matches!(field, Value::Unit)
+                        {
                             parts.push(Task::Value(field));
                         } else {
                             parts.push(Task::Text(format!(
@@ -429,6 +437,19 @@ fn host_params(capability: &str, op: &str) -> &'static [&'static str] {
         ("Http", "post" | "put") => &["url", "headers", "body", "key_name"],
         _ => &[],
     }
+}
+
+/// How a value's Una form treats labeled fields and hashes (`spec/11 §5`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Form {
+    /// Traces, and the examples of edition `0.1`: a field whose declared type is labeled above
+    /// `public` is `<redacted:level>`, and a hash shows its bytes.
+    Redacted,
+    /// Interpolation: every field, and no bytes of a hash (ADR 0068).
+    Written,
+    /// The examples of edition `0.2`: every field, and a hash shows its bytes, since their data
+    /// come from the source (ADR 0078).
+    Shown,
 }
 
 /// The limits of a run (`spec/11 §7`): its maximum call depth, and its memory budget, in MiB,

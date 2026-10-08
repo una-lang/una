@@ -539,6 +539,58 @@ fn only_diagnostic(name: &str, source: &str) -> Value {
     diagnostics[0].clone()
 }
 
+#[test]
+fn a_counterexample_binding_of_a_labeled_type_carries_its_label() {
+    // ADR 0078: the solver's values are shown, and a binding whose declared type is labeled
+    // above `public`, directly or through its owner, carries the label; a public one has no
+    // `label` key. The key is added in every edition, and the human output is unchanged.
+    let source = "module app
+
+pub kind Card
+  owner: Text
+  pin: secret Int
+
+pub card_pin(card: Card) -> secret Int
+  ensures result > 0
+=
+  card.pin + 1
+";
+    for edition in ["0.1", "0.2"] {
+        let name = format!("counterexample-labels-{edition}");
+        let root = package_of_edition(&name, edition, &[("src/app.una", source)]);
+        let output = una(&["--json", "check", root.to_str().unwrap()]);
+        assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+        let document: Value = serde_json::from_str(stdout(&output)).unwrap();
+        let diagnostic = &document["diagnostics"][0];
+        assert_eq!(diagnostic["code"], "U5001", "{diagnostic}");
+        let labels: Vec<(&str, Option<&str>)> = diagnostic["counterexample"]["bindings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| {
+                (
+                    b["name"].as_str().unwrap(),
+                    b.get("label").map(|l| l.as_str().unwrap()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                ("card", None),
+                ("card.pin", Some("secret")),
+                ("result", Some("secret"))
+            ]
+        );
+        let output = una(&["check", root.to_str().unwrap()]);
+        assert!(
+            stderr(&output).contains("counterexample: card = Card#0, card.pin = "),
+            "{}",
+            stderr(&output)
+        );
+    }
+}
+
 /// The descriptions of a diagnostic's repairs, in order.
 fn repair_descriptions(diagnostic: &Value) -> Vec<String> {
     diagnostic["repairs"]

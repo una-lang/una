@@ -21,6 +21,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 ### Diagnostics
 
 - **U1001 offers the closest names in scope** (#419, N-64). An unknown name, of a value or a type, is compared by edit distance with every name in scope: locals, the module's declarations and imports, and the prelude of the package's edition. Up to three are listed, by distance and then bytewise, as advice without an edit ("names in scope close to `caz`: `can`, `cap`, `car`"): a typo's fix is a guess, and the agent chooses. The message and its position are unchanged.
+- **Redaction follows where data come from** (#9, ADR 0078, accepted). In a package of edition `0.2`, `una test` shows an example's result and failure reason with every field, since example data come from the source; edition `0.1` keeps its field redaction, and traces are unchanged in both. The `una.test/1` document gains `redacted` (`true` for edition `0.1`, `false` for `0.2`), and each counterexample binding of a labeled type gains `label`, as `"secret"`, in every edition. Both keys are additive (ADR 0076): no schema changes version, and no edition `0.1` value changes.
 
 ### Security
 
