@@ -1,0 +1,33 @@
+-- test: a handler operation whose body writes may be entered with data up to its operation's `accepts`, so its write labels the reads (S-14)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/main.una:28:3
+module main
+
+pub capability Marker
+  op mark(on: Bool) -> Unit
+    accepts internal
+
+mark_file() -> Unit
+  uses @files: Files[write]
+=
+  let w = attempt @files.write("marker.txt", content: "")
+  unit
+
+pub handler on_disk() for Marker
+  uses @files: Files[write]
+  op mark(on) =
+    if on
+      mark_file()
+    unit
+
+pub probe(flag: internal Bool) -> Bool
+  uses @files: Files[read, write]
+=
+  mark_it(flag) with @marker = on_disk()
+  let r = attempt @files.read("marker.txt")
+  is_ok(r)
+
+mark_it(flag: internal Bool) -> Unit
+  uses @marker: Marker[mark]
+=
+  @marker.mark(flag)

@@ -72,15 +72,23 @@ F-C is more precise, since a read before every labeled write would stay public. 
 
 4. **Across runs.** The label is static and joins every write of the package, whatever run it happens in. So a previous run's write to an `internal` path labels this run's reads too. Writes by other programs or people are outside the model (`spec/07 §1`, external systems).
 
-5. **Computing it.** Labels are checked in pass 2, and a read may be checked before the write that decides it. So when pass 1 meets a `Files.write`, pass 2 is first run as a probe, with its diagnostics dropped, to compute the label; then pass 2 runs with it.
+5. **The call graph is the whole program's.** A module imports only modules of its own package and the standard modules (`spec/10 §4` rules 4 and 10), and `una run` and `una build` run one package. So every caller of a function, `pub` ones included, is in the package's call graph. Other call paths are covered as follows:
+   - **Recursion:** the propagation is a fixpoint over every recorded call, so mutual recursion (a strongly connected component) is covered.
+   - **Handlers:** a call made in a handler operation's body is entered at the operation's floor, its `accepts`.
+   - **`together`:** a call in a branch of `together` is a call of the enclosing function, under its program counter.
+   - **Lambdas and `of` arguments:** a call in a lambda is entered at the cap. A function passed as an `of` argument by name is used as a value, so it takes its bound.
+
+   If packages may ever import other packages, every `pub` function, and everything reachable from one, must take its effect bound, as functions used as values do, unless the whole program is known when the label is computed. ADR 0085 must be amended with that change.
+
+6. **Computing it.** Labels are checked in pass 2, and a read may be checked before the write that decides it. So when pass 1 meets a `Files.write`, pass 2 is first run as a probe, with its diagnostics dropped, to compute the label; then pass 2 runs with it.
    - The probe's label is the least fixpoint. Labels are joins, so what the file-state label raises in pass 2 (a read's failure used as a condition, for instance) adds only itself.
    - After pass 2, a label above the probe's is U8001, never a silent miss.
 
-6. **Http.** Every argument of an `Http` operation labels its failure: URL, headers with their values, body and key name, capped at what the operation accepts.
+7. **Http.** Every argument of an `Http` operation labels its failure: URL, headers with their values, body and key name, capped at what the operation accepts.
    - `Header` declares its value `internal`, so every request's failure is `internal`, as its response is.
    - `attempt` gives an `internal` `Result`, and `if error pass` and `if error fail` are U4002.
 
-7. **Editions.** Both. This is a security fix: edition `0.1` gets it too, in v0.1.6 for the una-bench pin.
+8. **Editions.** Both. This is a security fix: edition `0.1` gets it too, in v0.1.6 for the una-bench pin.
 
 ## Consequences
 
