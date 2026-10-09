@@ -64,3 +64,4 @@ import UnaFormal
 #print axioms Una.F1.t6_ground
 #print axioms Una.F1.T6Example.genericCall_typed
 #print axioms Una.F1.T6Example.genericCall_noninterferent
+#print axioms Una.F1.T6Example.pickPublic_result_equal

@@ -234,5 +234,53 @@ theorem genericCall_noninterferent (w : World) :
     (.cons .int (.cons .bool .nil)) (.cons .int (.cons .bool .nil))
     (.cons (.hidden hsec) (.cons .bool .nil)) genericCall_typed 5 trivial trivial
 
+/-! ### The result of a generic call -/
+
+/-- `s: secret Int`, which the call does not read. -/
+def Γs : LCtx := [("s", .int sec)]
+
+/-- `pick[Int](1, 2, true)` typed with the secret in scope. -/
+theorem callPick_typedΓ :
+    LExprTy Examples.prog [] Γs .bot Examples.callPick Examples.pickInt
+      ((Eff.ofFn false false false).union .none) := by
+  refine .letR (t := Examples.pickInt) ?_ (.int (LExpr.le_refl _)) (.atom (.var rfl)) ?ip
+  case ip => simp [Examples.pickInt, Program.lsub, LTy.lsubst, Examples.pick, Examples.lT,
+    LTy.InPlace, LTy.raise, LExpr.join, LExpr.inst, LExpr.dropPlain, LExpr.joinAll, LExpr.bot,
+    LExpr.ofLabel]
+  refine LRhsTy.call (fn := Examples.pick) (targs := [.int .bot]) rfl ?_ rfl rfl ?_
+    (by simp [LTy.GroundAll, LTy.Ground, LExpr.SymFree, LExpr.bot, LExpr.ofLabel])
+    (.cons .int (.cons .int (.cons .bool .nil)))
+    (.cons (.int (LExpr.bot_le _)) (.cons (.int (LExpr.bot_le _)) (.cons (.bool (LExpr.bot_le _)) .nil)))
+    ⟨fun h => (by cases h), fun h => (by cases h), fun h => (by cases h)⟩
+  · intro ⟨_, h, _⟩; simp [Examples.prog] at h
+  · intro q _ h; simp [Examples.pick] at h
+
+def sEnv₁ : Env := [("s", .int 1)]
+def sEnv₂ : Env := [("s", .int 2)]
+
+/-- The runs do return a value: `pick[Int](1, 2, true)` is 1. -/
+example (w : World) : (eval 5 Examples.prog w sEnv₁ Examples.callPick).2 = .ok (.int 1) := rfl
+
+/-- **T6 on the result of a generic call.** Two runs that differ in a secret return, when both
+return, equal values of `pick[public Int]`: the relation at the instance type `pickInt`, from
+`t6_ground` alone, makes them equal for a public observer, without computing either run. -/
+theorem pickPublic_result_equal (w : World) {v₁ v₂ : Val}
+    (h₁ : (eval 5 Examples.prog w sEnv₁ Examples.callPick).2 = .ok v₁)
+    (h₂ : (eval 5 Examples.prog w sEnv₂ Examples.callPick).2 = .ok v₂) : v₁ = v₂ := by
+  have hsec : ¬ Vis Examples.prog Label.bot sec := by
+    rintro (⟨h, _⟩ | ⟨⟨h, _⟩, _, _⟩) <;>
+      simp [Examples.prog, Program.top, sec, LExpr.ofLabel, Label.bot] at h <;> revert h <;> decide
+  have h := t6_ground (e₁ := sEnv₁) (e₂ := sEnv₂) Examples.prog_wf rfl (LExpr.le_refl _) w
+    (fun q hq => by simp only [List.mem_cons, List.not_mem_nil, or_false] at hq
+                    subst hq; rfl) rfl
+    (.cons .int .nil) (.cons .int .nil) (.cons (.hidden hsec) .nil) callPick_typedΓ 5
+    (by rw [h₁]; trivial) (by rw [h₂]; trivial)
+  rw [h₁, h₂] at h
+  have hv : V Examples.prog Label.bot (.int _) v₁ v₂ := h.2
+  refine V.eq_int hv ?_
+  simp [Vis, Program.le, LExpr.le, Label.le, LExpr.join, LExpr.inst, LExpr.dropPlain,
+    LExpr.joinAll, LExpr.bot, LExpr.ofLabel, Label.bot, Label.join, Examples.lT, Level.join]
+  exact Or.inr (Level.le_refl _)
+
 end Una.F1.T6Example
 

@@ -8,7 +8,7 @@
 
 ## 1. What is proven
 
-All of it is in `formal/UnaFormal/F1/`. `scripts/formal.sh` passes with 59 stated theorems, and none of them depends on `sorry`.
+All of it is in `formal/UnaFormal/F1/`. `scripts/formal.sh` passes with 60 stated theorems, and none of them depends on `sorry`.
 
 | File | Result |
 | --- | --- |
@@ -18,7 +18,7 @@ All of it is in `formal/UnaFormal/F1/`. `scripts/formal.sh` passes with 59 state
 | `UnarySound.lean` | The unary half, now parametric: a body typed in a generic context runs well at every ground instance of it. |
 | `T6.lean` | **T6 for F1 with generic functions** (`t6`, parametric in a ground substitution `σ`), and `t6_ground` for a body typed with no type parameters in scope, which is what `main` and every call site is. |
 | `Mono.lean` | `t6_ended` now rests on `t6_ground`. |
-| `T6Example.lean` | Non-vacuity of the generic case: `pick[secret Int]` is typed and called, and two runs with different secrets are related (`genericCall_noninterferent`). |
+| `T6Example.lean` | Non-vacuity of the generic case. `pick[secret Int]` is typed and called, and two runs with different secrets are related (`genericCall_noninterferent`). The result of `pick[public Int]` is equal in two runs that differ in a secret, by the relation at the instance type alone (`pickPublic_result_equal`). |
 
 **The theorem.** It is the theorem of M3, with one change. A body may call generic functions at ground type arguments, and closures may come from generic bodies. The relation of two closures at a visible function type carries the substitution under which their body was typed.
 

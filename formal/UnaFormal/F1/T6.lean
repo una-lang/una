@@ -1,8 +1,10 @@
 /-
-**T6, noninterference, for the generic-free part of F1** (`spec/10 §10`, M3 of
-`docs/plan/formal-track.md`): two runs of a body the labeled typing accepts, in environments
-related for an observer at `L`, end, when both end at the same fuel, with the same events the
-observer sees and related outcomes (`t6`); `t6_ended` (`Mono.lean`) drops the common fuel.
+**T6, noninterference, for F1** (`spec/10 §10`, M3 and M4 of `docs/plan/formal-track.md`):
+two runs of a body the labeled typing accepts, in environments related for an observer at `L`,
+end, when both end at the same fuel, with the same events the observer sees and related outcomes.
+`t6` holds at every ground substitution `σ` of the type parameters in scope, so a generic body
+is covered at each of its ground instances; `t6_ground` is the case of a body with no type
+parameter in scope, every call site and `main`; `t6_ended` (`Mono.lean`) drops the common fuel.
 
 **Scope.** What the theorem covers is F1 as `Syntax.lean` defines it, and no more:
 - one capability with one operation (`op`) and one host operation (`get`), each with one
@@ -13,8 +15,11 @@ observer sees and related outcomes (`t6`); `t6_ended` (`Mono.lean`) drops the co
   hosts break this, and their fix discharges the assumption;
 - failures are codes without payloads;
 - no sums but `Option` and `Result`, no `Map`, no `with` or handlers of capabilities, no
-  `together`, no generics and no declassification (`Program.GenericFree`); generics and
-  declassification are M4's;
+  `together`;
+- generic functions at ground instances only: the type arguments of a call are ground (the
+  premise `LTy.GroundAll` of T-Call and of a function reference), so a generic body that calls a
+  generic function at its own type parameters, two levels of generics, is outside the model;
+- no declassification (`p.policies = []`), which is option B1, after M2;
 - the host's response is labeled at least what its operation accepts (`hget`), which
   `spec/24 §5` meets and `crates/una-check/tests/host_table.rs` checks of the prelude.
 
