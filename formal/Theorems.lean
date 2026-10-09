@@ -93,3 +93,16 @@ import UnaFormal
 #print axioms Una.F1.reach_closed
 #print axioms Una.F1.CheckProgramExample.prog3_certified
 #print axioms Una.F1.CheckProgramExample.caller_reach
+#print axioms Una.F1.eval_anon
+#print axioms Una.F1.eval_erasure
+#print axioms Una.F1.Term_anon
+#print axioms Una.F1.proj_anon
+#print axioms Una.F1.rhsSim_sound
+#print axioms Una.F1.exprSim_sound
+#print axioms Una.F1.funSim_sound
+#print axioms Una.F1.progSim_sound
+#print axioms Una.F1.t6_release_erasure
+#print axioms Una.F1.Import.finalize_sound
+#print axioms Una.F1.MonomorphExample.sim
+#print axioms Una.F1.MonomorphExample.certified
+#print axioms Una.F1.MonomorphExample.runs_agree

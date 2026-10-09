@@ -24,6 +24,7 @@ assumption, stated in `docs/plan/formal-track-m2.md` §1.
 -/
 import Lean.Data.Json
 import UnaFormal.F1.CheckProgram
+import UnaFormal.F1.Monomorph
 
 namespace Una.F1
 
@@ -695,6 +696,89 @@ outside B1, so it is not re-checked (ADR 0008). -/
 def classify (why : String) : Outcome :=
   if (why.splitOn "B1 restriction").length > 1 then .notRechecked why else .rejected why
 
+/-- The key of an instance: its type arguments, written. -/
+def instKey (ts : List LTy) : String := ", ".intercalate (ts.map Check.fmtTy)
+
+mutual
+  /-- A call of a function checked at its instances, at ground type arguments, made a call of
+  the instance, `f[key]`, as the instance search names it. -/
+  def Rhs.toInst (cond : List String) : Rhs → Rhs
+    | .call g targs args =>
+      if cond.contains g && Check.groundAll targs then .call s!"{g}[{instKey targs}]" [] args
+      else .call g targs args
+    | .funRef g targs =>
+      if cond.contains g && Check.groundAll targs then .funRef s!"{g}[{instKey targs}]" []
+      else .funRef g targs
+    | .lambda ps b => .lambda ps (Expr.toInst cond b)
+    | r => r
+
+  def Expr.toInst (cond : List String) : Expr → Expr
+    | .atom a => .atom a
+    | .letR x t v b => .letR x t (Rhs.toInst cond v) (Expr.toInst cond b)
+    | .letE x t v b => .letE x t (Expr.toInst cond v) (Expr.toInst cond b)
+    | .ite c t e => .ite c (Expr.toInst cond t) (Expr.toInst cond e)
+    | .caseOption sc n x sm => .caseOption sc (Expr.toInst cond n) x (Expr.toInst cond sm)
+    | .caseResult sc x o y er => .caseResult sc x (Expr.toInst cond o) y (Expr.toInst cond er)
+    | .fail c => .fail c
+    | .attempt b => .attempt (Expr.toInst cond b)
+    | .handle b x h => .handle (Expr.toInst cond b) x (Expr.toInst cond h)
+end
+
+/-- **The verdicts, from the certificates alone** (M4 completion, A2 and A3). Every declaration
+the steps before report accepted gets its verdict here, and only from a certificate:
+
+- accepted, when the program checked at instances, `P₁` (`mono`, with `pAll`'s other fields),
+  passes `progOk []` and agrees with the document's program `pAll` up to annotations (`progSim`),
+  and the declaration is a function of `pAll`; or when the program of the declarations that reach
+  no function checked at its instances, `pPlain`, passes `progOk []` and has it;
+- accepted, conditional on A3, when only `pAll` passes `progOk cond`;
+- not re-checked otherwise.
+
+`finalize_sound` states it. -/
+def finalize (pAll pPlain : Program) (cond : List String) (mono : List Fun)
+    (ren : List (String × String)) (outs : List (String × Outcome)) : List (String × Outcome) :=
+  let p₁ : Program := { pAll with funs := mono }
+  let monoOk := Check.progOk [] p₁ && progSim ren p₁ pAll
+  let plainOk := Check.progOk [] pPlain
+  let condOk := Check.progOk cond pAll
+  outs.map fun (f, o) =>
+    let verdict := fun (note : String) =>
+      if monoOk && pAll.funs.any (·.name == f) then Outcome.accepted note
+      else if plainOk && pPlain.funs.any (·.name == f) then .accepted note
+      else if condOk && pAll.funs.any (·.name == f) then .acceptedIfA3 note
+      else .notRechecked "whole program: no certificate"
+    match o with
+    | .accepted note => (f, verdict note)
+    | .acceptedIfA3 note => (f, verdict note)
+    | o => (f, o)
+
+/-- **A declaration reported accepted has a certificate**: it is a function of a program that
+passes `progOk []`, the program of the declarations that reach no function checked at its
+instances, or the document's program, which the program checked at instances agrees with up to
+annotations. One reported accepted on the condition of A3 is a function of a program that passes
+`progOk cond`. -/
+theorem finalize_sound {pAll pPlain : Program} {cond : List String} {mono : List Fun}
+    {ren : List (String × String)} {outs : List (String × Outcome)} {f : String} :
+    ((∃ note, (f, Outcome.accepted note) ∈ finalize pAll pPlain cond mono ren outs) →
+      (Check.progOk [] pPlain = true ∧ pPlain.funs.any (·.name == f) = true) ∨
+      (Check.progOk [] { pAll with funs := mono } = true ∧
+        progSim ren { pAll with funs := mono } pAll = true ∧ pAll.funs.any (·.name == f) = true)) ∧
+    ((∃ note, (f, Outcome.acceptedIfA3 note) ∈ finalize pAll pPlain cond mono ren outs) →
+      Check.progOk cond pAll = true ∧ pAll.funs.any (·.name == f) = true) := by
+  constructor
+  · rintro ⟨note, h⟩
+    simp only [finalize, List.mem_map] at h
+    obtain ⟨⟨g, o⟩, _, ho⟩ := h
+    cases o <;> simp only [Prod.mk.injEq] at ho <;> obtain ⟨rfl, hv⟩ := ho <;>
+      (try split at hv) <;> (try split at hv) <;> (try split at hv) <;>
+      simp_all [Bool.and_eq_true]
+  · rintro ⟨note, h⟩
+    simp only [finalize, List.mem_map] at h
+    obtain ⟨⟨g, o⟩, _, ho⟩ := h
+    cases o <;> simp only [Prod.mk.injEq] at ho <;> obtain ⟨rfl, hv⟩ := ho <;>
+      (try split at hv) <;> (try split at hv) <;> (try split at hv) <;>
+      simp_all [Bool.and_eq_true]
+
 /-- How far instances are followed: the depth of an instance chain, past which the function is
 in polymorphic recursion, the number of instances of a document, and the steps of the search,
 past which what is left in its queue is unknown. -/
@@ -800,6 +884,8 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
         | none => incomplete := incomplete ++ [(f, s!"instantiated in `{named d}` at types outside F1")]
   let mut done : List (String × List String) := []
   let mut results : List (String × Outcome) := []
+  -- The instances checked, with their generic function, for the program of part A3.
+  let mut instFuns : List (String × Fun) := []
   let mut depthHit : List String := []
   let mut countHit : Bool := false
   let mut seen : Nat := 0
@@ -832,6 +918,7 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
           | .ok () => Outcome.accepted ""
           | .error why => classify s!"at its instance `{inst.name}`, instantiated in `{origin}`: {why}"
         results := results ++ [(f, outcome)]
+        instFuns := instFuns ++ [(f, inst)]
         for (g, us) in Check.Expr.genericCalls inst.body do
           if isNested g then
             if Check.groundAll us then
@@ -998,11 +1085,12 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
     final := demote final bad
   if !settled then
     return demote final ((accepted final).map fun f => (f, "whole program: the check did not settle"))
-  -- The certificate: the last program, checked whole. Those that reach no function checked at
-  -- its instances are certified again, in their own program, with no hypothesis left.
+  -- The certificates. `P`, the document's program, with the functions checked at their
+  -- instances as they are (part A2's hypothesis `hA3` for them); the program of the declarations
+  -- that reach none of them; and `P₁`, where each of them is replaced by its instances and the
+  -- calls of it are renamed to the instance they reach (part A3), which agrees with `P` up to
+  -- annotations. `finalize` gives every verdict from them.
   let members := accepted final
-  if !Check.progOk cond (mkProg members) then
-    return demote final (members.map fun f => (f, "whole program: the final check failed"))
   let reachesCond := Id.run do
     let mut rc := cond
     for _ in [0:members.length + 1] do
@@ -1010,12 +1098,12 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
         rc.contains f || ((List.lookup f reach).getD []).any rc.contains
     pure rc
   let plain := members.filter fun f => !reachesCond.contains f
-  if !Check.progOk [] (mkProg plain) then
-    return demote final (members.map fun f =>
-      (f, "whole program: the check without functions checked at their instances failed"))
-  pure (final.map fun (f, o) => match o with
-    | .accepted note => if reachesCond.contains f then (f, .acceptedIfA3 note) else (f, o)
-    | o => (f, o))
+  let insts := instFuns.filter fun (g, _) => cond.contains g
+  let toInstFn := fun (fn : Fun) => { fn with body := Expr.toInst cond fn.body }
+  let mono := (members.filter (!cond.contains ·)).filterMap (fun f => (readOf f).map (toInstFn ·.fn)) ++
+    insts.map (toInstFn ·.2) ++ viaFuns
+  let ren := insts.map (fun (g, inst) => (inst.name, g)) ++ cond.map (fun g => (g, s!"{g}[]"))
+  pure (finalize (mkProg members) (mkProg plain) cond mono ren final)
 
 /-- `checkDocumentWith` with labeled instantiation, `LTy.lsubst`. -/
 def checkDocument (doc : J) : Except String (List (String × Outcome)) :=

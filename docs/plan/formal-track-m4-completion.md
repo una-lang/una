@@ -3,7 +3,7 @@
 - Issue: #46
 - Plan: `docs/plan/formal-track.md` §7; previous steps `formal-track-m2.md` (the re-check) and `formal-track-m4.md` (T6 with generics, option B1)
 - Date: 2026-10-09
-- Status: parts A1 and A2 done, each its own pull request; A3 to come
+- Status: parts A1, A2 and A3 done, each its own pull request
 
 ## 1. Why
 
@@ -15,7 +15,7 @@ M4 completion closes that gap in three parts:
 | --- | --- | --- |
 | A1 | The checker is sound: what `checkRhs`, `checkExpr`, `checkFun` and `checkB1` accept, the labeled typing accepts. | Done |
 | A2 | The re-check certifies one whole program per document, and `progOk_sound` proves that it passes `Program.LWellFormed` and `Program.B1WellFormed`, with `t6`'s `hget` discharged. `reach_closed` is the reachability rule's formal side. | Done (§4) |
-| A3 | Instances: a generic function checked at each ground instance the program reaches runs as its instances do, since evaluation reads no annotation (eval-erasure; `docs/reviews/formal-m2-replay/README.md`, "Why it is sound"). It discharges A2's one hypothesis, `hA3`. | Next |
+| A3 | Instances: a generic function checked at each ground instance the program reaches runs as its instances do, since evaluation reads no annotation (eval-erasure; `docs/reviews/formal-m2-replay/README.md`, "Why it is sound"). Its program checked at instances replaces A2's hypothesis `hA3`. | Done (§5) |
 
 With A3, an "accepted" from the re-check is a corollary of `t6_release`, with the reading of `una.core/1` (`Import.lean`) as the remaining trusted base.
 
@@ -46,7 +46,7 @@ A declaration is checked against its callees' signatures, and T6 needs every fun
 
 On the corpus (the export of `main` with #443's keys, 1,327 documents) and on the replay of S-01 to S-12, the new reason fires nowhere: in today's `una.core/1`, a lambda's body calls the function it wraps, and the reading already reports a call outside the document as outside F1. The rule closes the case where the two would disagree. The corpus totals are unchanged: 641 accepted, 0 rejected, 1,122 not re-checked. The replay is unchanged: 16 rejection lines, and both mutants are caught.
 
-**Handler bodies.** A declaration reaches everything it calls or uses as a value, **except handler bodies**. F1's operation is an event of the trace; what a capability's handler does with it is not modeled, so a handler's body is not in the reach set. This is M2's assumption, not a theorem. It is stated in `Import.lean`'s header and in `rawCallees`, in `formal-track-m2.md` §1, and in `docs/reviews/formal-m2-replay/README.md`. A handler declaration itself is reported as not re-checked ("a `handler` declaration"). T4 and F2 (M6) model handlers.
+**Handler bodies.** A declaration reaches everything it calls or uses as a value, **except handler bodies**. F1's operation is an event of the trace; what a capability's handler does with it is not modeled, so a handler's body is not in the reach set. This is M2's assumption, not a theorem. It is stated in `Import.lean`'s header and in `rawCallees`, in `formal-track-m2.md` §1, and in `docs/reviews/formal-m2-replay/README.md`. A handler declaration itself is reported as not re-checked ("a `handler` declaration"). T4 and F2 (M7) model handlers.
 
 ## 4. A2: the whole program
 
@@ -100,10 +100,40 @@ Non-vacuity is in `CheckProgramExample.lean`. A program of three functions, the 
 
 The 3 moves to not re-checked are all G3, in `types/alias_effectful_fn`: `run` and `shout` use `Console.print`, and `record` uses `Log.write`. G1, G2, `hget` and the `via` functions' structural typing demote nothing, and no declaration accepted in its own program fails in the whole program. The replay of S-01 to S-12 is unchanged: 16 rejection lines, and both mutants are caught.
 
-## 5. A3
+## 5. A3: a program checked at its instances
 
-For a function checked at its instances: an instance's run equals its generic function's run up to the annotations inside closures, so a program whose reachable instances all pass is the generic-free program of its instances, which `t6_ground` covers. A3 discharges `hA3`, and the 82 declarations conditional on it move to accepted.
+**Why.** A generic function that calls a generic function at its own type parameters is outside F1's one level of generics, so the re-check checks it at each ground instance the program reaches (`formal-track-m2.md`). Its generic body has no T-Fun, which A2 took as the named hypothesis `hA3`. A3 replaces the hypothesis with a program that needs none, and a theorem that carries T6 from it to the document's program.
 
-## 6. Later: a stateful host
+**The program checked at instances.** For each function `g` checked at its instances, the re-check builds `P₁` from the document's program `P₂`:
 
-The coordinator proposed a stateful host for `Files` and `Http` as the next milestone (B), pending Leonardo. Nothing in this plan depends on it, and nothing is renamed until he answers. #453 holds the widening of `checked` (backlog).
+- `g` is replaced by its checked instances, `g[key]`: its signature and body with the type parameters instantiated (`Check.instantiate`), named as the instance search names them;
+- every call or function value of `g` at ground type arguments, in every function of `P₁`, is renamed to the instance it reaches (`Import.Expr.toInst`);
+- everything else is `P₂`'s.
+
+`P₁` must pass `progOk []`, with no hypothesis. `progSim` must also hold, as a Boolean: `P₁` agrees with `P₂` up to annotations, an instance's name standing for its generic function's. The renaming maps `g[key]` to `g` and `g` to a name no function has.
+
+**The theorems.**
+
+| Theorem | Statement |
+| --- | --- |
+| `eval_anon` | **Evaluation reads no annotation.** A run of a program, with every type annotation, type argument and parameter type forgotten and the functions renamed, is the run of the forgotten program on the forgotten body and environment. |
+| `eval_erasure` | Two programs that agree up to annotations (`Sim`) run the same, up to annotations, on bodies and environments that agree up to annotations. |
+| `progSim_sound` | The Boolean `progSim` gives `Sim`. |
+| `t6_release_erasure` | **T6 for a program checked at its instances.** When `P₁` passes the labeled typing within B1 and agrees with `P₂`, two runs of a body of `P₂` are, up to the annotations inside closures, two runs of the corresponding body of `P₁` that `t6_release` relates. |
+| `Import.finalize_sound` | **A declaration reported accepted has a certificate.** It is a function of `P₂`, where `progOk [] P₁` and `progSim` hold, or a function of the program of the declarations that reach no function checked at its instances, where `progOk []` holds. One reported accepted on the condition of A3 has `progOk cond` on `P₂`. |
+
+`eval_erasure` is the README's "equivalence of runs up to the annotations inside closures" (`docs/reviews/formal-m2-replay/README.md`, "Why it is sound"), now proven. A closure keeps its parameters' types and its body's annotations. So the runs agree once those are forgotten, and the trace's events and the outcome's kind agree exactly (`proj_anon`, `Term_anon`).
+
+**Una-1's observation on #456.** "Accepted ⇒ the final certificate" held by the importer's code structure. Every final verdict now comes from one total function, `Import.finalize`, which `checkDocumentWith` calls last, and `finalize_sound` is a theorem about it. A `#guard` checks that `finalize` gives no verdict without a certificate. The reading of `una.core/1` into those inputs stays the trusted base.
+
+**Accepted, conditional on A3** remains only for a document where `P₁` fails its certificate and `P₂` passes `progOk cond`, tied to `progOk_sound`'s hypothesis by `finalize_sound`. The corpus has none.
+
+**Non-vacuity** (`MonomorphExample.lean`). `main` calls `g[T](x: T) -> T` at `Int`. `P₁`, with `g[public Int]` and `main`'s call renamed, passes `progOk []` (`certified`) and agrees with `P₂` (`sim`), both by evaluation. `runs_agree` gives the run of `main`. `#guard`s check that the instance and the renamed call are what the re-check computes, and that the agreement fails when an instance's body differs from its generic function's.
+
+**The corpus**, A2 → A3: accepted 556 → 638; accepted, conditional on A3 82 → 0; rejected 0 → 0; not re-checked 1,125 → 1,125. The 82 move to accepted, and nothing else moves.
+
+**The replay.** The verdicts of S-01 to S-12 are unchanged: 16 rejection lines. In the mutants section, the column under labeled instantiation is unchanged. The two mutant columns move from "accepted, conditional on A3" to "accepted", as the 82 do, and both mutants are caught. `run.sh` now builds both of its executables first. Before, it ran whatever `lake build` had left. The mutants section of the replays reported in #455 and #456 came from a stale `replay-mutants`, as the comments on those pull requests record.
+
+## 6. Next: M5, a stateful host
+
+The owner approved the renumbering on 2026-10-09: the stateful host model for `Files` and `Http` is M5, the former M5 (`edit` and loops) is M6, and the former M6 (F2 and T4) is M7 (`formal-track.md` §7). M4's completion stays M4. M5's statement draft goes to the coordinator before any proof. #453 holds the widening of `checked` (backlog).

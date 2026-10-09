@@ -3,13 +3,14 @@
 # `una check --dump-core` of the finding's repro (dumps/) into una.core/1 and runs
 # `una-core-check` on it; then runs the synthetic tests of the instance checking (tests/), and
 # the two mutants of labeled instantiation on the test that only instantiation can reject, which
-# must catch both. Build first: (cd formal && lake build una-core-check replay-mutants).
+# must catch both. It builds both executables first, so that it never runs stale ones.
 #
 # Usage: docs/reviews/formal-m2-replay/run.sh
 set -eu
 here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH='' cd -- "$here/../../.." && pwd)
 out=$(mktemp -d)
+(cd "$root/formal" && lake build una-core-check replay-mutants > /dev/null)
 for dump in "$here"/dumps/*.txt "$here"/tests/*.txt; do
     name=$(basename "$dump" .txt)
     module=$(grep -m1 '^module ' "$dump" | cut -d' ' -f2)

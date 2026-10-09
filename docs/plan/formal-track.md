@@ -159,12 +159,15 @@ Estimates are in agent-days of one session with the machine available for light 
 | M2 | The executable Lean checker for F1 and the differential run (option A). Replay of S-01 to S-12 | Each leaking program of S-01 to S-12 (11 in F1) rejected by the Lean checker; disagreements on the corpus triaged | 4 to 6 |
 | M3 | **T6** for F1 without generics: pc, explicit flows, sinks, failures, the prelude axioms | T6 proven for the generic-free part | 8 to 12 |
 | M4 | **T6** with generics: `ℓ_T`, `ℓ*_T`, T-App, instantiation; T2 and T3 as corollaries | T6 for F1 proven; the checker of M2 proven sound (option B) | 8 to 15 |
-| M5 | F1+: `edit` and loops (ADR 0071, 0075), for S-04 | The re-check covers the memory model's label rules | 5 to 8 |
-| M6 | F2 and **T4**: capabilities as parameters, `with`, handlers, second-class function types | T4 for F2 | 8 to 12 |
+| M5 | A stateful host model for `Files` and `Http` | Stated first, with its statement draft reviewed before any proof | To be estimated with its statement |
+| M6 | F1+: `edit` and loops (ADR 0071, 0075), for S-04 | The re-check covers the memory model's label rules | 5 to 8 |
+| M7 | F2 and **T4**: capabilities as parameters, `with`, handlers, second-class function types | T4 for F2 | 8 to 12 |
 | Later | T5 relative to the solver; T6 with `together` (ADR 0065); edition 0.1's own rules | By the owner's priority | Not estimated |
 
 **Total to T6 with the re-check in the gate (M0 to M4): 27 to 44 agent-days.**
-**With F1+ and T4 (to M6): 40 to 64.**
+**With F1+ and T4 (to M7): 40 to 64, plus M5.**
+
+**Renumbering** (the owner's approval, 2026-10-09): the stateful host model is the new M5; the former M5, `edit` and loops, is M6; the former M6, F2 and T4, is M7. M4's completion (parts A1 to A3, `formal-track-m4-completion.md`) stays M4.
 
 The value comes early:
 - M2 alone, in about two weeks, adds an independent checker on the whole corpus;
