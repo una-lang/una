@@ -135,6 +135,19 @@ fn collect(found: &Ty, declared: &Ty, params: &[&str], path: &mut Vec<Step>, out
         Ty::Param(index) => Some(*index),
         _ => None,
     };
+    // INVARIANT: a plain symbolic label `ℓ_T` labels only a position of type `T`; everywhere
+    // else a symbol of the function's type parameters is starred, `ℓ*_T`. `own` drops `ℓ_T` at
+    // its own position, which would lose a decision if a rule ever put `ℓ_T` elsewhere (the
+    // formal model's `LTy.InPlace`, #440).
+    debug_assert!(
+        found.top_label().symbols.iter().all(|symbol| {
+            symbol.starts_with('?')
+                || symbol.ends_with('*')
+                || !params.contains(&symbol.as_ref())
+                || inherent.is_some_and(|index| params.get(index) == Some(&symbol.as_ref()))
+        }),
+        "a plain symbolic label off its own type parameter (#440)"
+    );
     let at = own(&found.top_label(), params, inherent);
     let param = inherent.is_some();
     if !at.is_empty() {

@@ -533,8 +533,13 @@ impl Ty {
     /// for the arguments of an operation and interpolated values, since the runtime redacts
     /// the fields of a kind value by their own declared labels (`spec/11 §5`).
     /// D-165: traces keep redacting field by field, as before N-001.
+    ///
+    /// The label sits on a position that is not a type parameter, an argument or a `Text`
+    /// temporary, so a symbolic label it joins is starred: a plain `ℓ_T` labels only a position
+    /// of type `T` (`spec/07 §7` rule 8, the formal model's `LTy.InPlace`, #440). Redaction asks
+    /// only whether the label is `public`, which starring does not change.
     pub(crate) fn argument_label(&self) -> Label {
-        self.deep_label(&KindLabels::default())
+        starred(&self.deep_label(&KindLabels::default()))
     }
 
     /// The join of every label of the type, at every position: [`Ty::deep_label`] and the

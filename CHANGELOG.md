@@ -4,6 +4,10 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ## Unreleased
 
+### Information flow
+
+- **A plain `ℓ_T` labels only a position of type `T`** (#440, `spec/07 §7` rule 8). The labels that Core IR gives an operation's arguments and an interpolation's `Text` temporaries star a type parameter's symbol, `T*`, as every other position off `T` already did, so `una core --json` never exports a plain `T` off its own type parameter; redaction, which asks only whether a label is `public`, is unchanged. A test over the corpus's Core export checks it, and the checker's result summaries assert it in debug builds. The formal track's model needs it (`LTy.InPlace`).
+
 ### Tools
 
 - **T6 for generic functions** (#46, M4 of `docs/plan/formal-track.md`). `formal/UnaFormal/F1/T6.lean` proves noninterference for bodies that call generic functions and use closures from generic bodies, at every ground instance: rule 8's order and flows are stable under instantiation, and the typing rules keep `ℓ_T` only in place, a new premise of well-formedness that #440 ties to the checker. `T6Example.lean` relates two runs of `pick[secret Int]`. Declassification follows the checker of M2. Progress: `docs/plan/formal-track-m4.md`.
