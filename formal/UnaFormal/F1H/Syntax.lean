@@ -49,6 +49,12 @@ def HostFx.or (a b : HostFx) : HostFx := ⟨a.rd || b.rd, a.wr || b.wr, a.rq || 
 def HostFx.Le (a b : HostFx) : Prop :=
   (a.rd = true → b.rd = true) ∧ (a.wr = true → b.wr = true) ∧ (a.rq = true → b.rq = true)
 
+theorem HostFx.Le.refl (a : HostFx) : HostFx.Le a a := ⟨id, id, id⟩
+
+theorem HostFx.Le.trans {a b c : HostFx} (h₁ : HostFx.Le a b) (h₂ : HostFx.Le b c) :
+    HostFx.Le a c :=
+  ⟨h₂.1 ∘ h₁.1, h₂.2.1 ∘ h₁.2.1, h₂.2.2 ∘ h₁.2.2⟩
+
 /-- No host effect, as a Boolean. -/
 def HostFx.isNone (a : HostFx) : Bool := !a.rd && !a.wr && !a.rq
 
