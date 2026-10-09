@@ -33,3 +33,7 @@ import UnaFormal
 #print axioms Una.F1.Examples.choose_decision
 #print axioms Una.F1.Examples.choose_ok
 #print axioms Una.F1.Examples.eq_needs_Eq
+#print axioms Una.F1.LExpr.interp_inst
+#print axioms Una.F1.LTy.top_lsubst
+#print axioms Una.F1.LTy.var_lsubst
+#print axioms Una.F1.extend_deep

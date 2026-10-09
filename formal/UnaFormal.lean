@@ -9,3 +9,4 @@ import UnaFormal.F1.T1
 import UnaFormal.F1.Erase
 import UnaFormal.F1.Spike
 import UnaFormal.F1.Examples
+import UnaFormal.F1.Inst
