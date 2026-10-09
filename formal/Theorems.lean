@@ -83,3 +83,13 @@ import UnaFormal
 #print axioms Una.F1.Check.checkB1_sound
 #print axioms Una.F1.CheckSoundExample.rev_ok
 #print axioms Una.F1.CheckSoundExample.prog_b1_checked
+#print axioms Una.F1.Check.progOk_sound
+#print axioms Una.F1.Check.progOk_sound_nil
+#print axioms Una.F1.Check.viaTyped_sound
+#print axioms Una.F1.Check.policyOk_sound
+#print axioms Una.F1.Check.catsDeclared_sound
+#print axioms Una.F1.Check.tyEq_sound
+#print axioms Una.F1.Check.tyClosed_sound
+#print axioms Una.F1.reach_closed
+#print axioms Una.F1.CheckProgramExample.prog3_certified
+#print axioms Una.F1.CheckProgramExample.caller_reach

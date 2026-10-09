@@ -14,6 +14,7 @@ open Una.F1 Una.F1.Import Una.F1.CheckTests
 
 def verdict : Outcome → String
   | .accepted _ => "accepted"
+  | .acceptedIfA3 _ => "accepted, conditional on A3"
   | .rejected _ => "rejected"
   | .notRechecked _ => "not re-checked"
 

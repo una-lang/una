@@ -23,7 +23,7 @@ of it does is not modeled, so a handler's body is not in the reach set. That is 
 assumption, stated in `docs/plan/formal-track-m2.md` §1.
 -/
 import Lean.Data.Json
-import UnaFormal.F1.Check
+import UnaFormal.F1.CheckProgram
 
 namespace Una.F1
 
@@ -492,9 +492,12 @@ def records (decls : List Decl) (funs : List String) : List Record := Id.run do
     deep := out.map fun (q, ts) => (q, (LTy.deeps rd ts).base)
   pure (out.map fun (q, ts) => ⟨q, ts, (List.lookup q deep).getD Label.bot⟩)
 
-/-- The outcome of a declaration. -/
+/-- The outcome of a declaration. `acceptedIfA3` is accepted on the condition of part A3 of M4
+completion (instance erasure): the declaration is, or reaches, a function checked at its
+instances, whose T-Fun the whole-program theorem takes as a named hypothesis. -/
 inductive Outcome where
   | accepted (note : String)
+  | acceptedIfA3 (note : String)
   | rejected (why : String)
   | notRechecked (why : String)
 
@@ -506,6 +509,8 @@ structure Prep where
   callees : List Fun
   pols : List Policy
   acceptsOp : Label
+  /-- The one operation the function mentions, if any. -/
+  op : Option (String × String)
   nested : Bool
 
 /-- A substitution of type arguments: `LTy.lsubst` with the record labels of the document, or a
@@ -574,7 +579,7 @@ def prepare (c : Ctx) (caps : List (String × J)) (decls : List Decl) (d : Decl)
           pure a.base
         | _, _ => throw s!"the operation `{cap}.{o}`, which does not take a scalar and give `Unit`"
     | _ => throw "several operations"
-  pure { fn, callees, pols, acceptsOp, nested := refs.nested }
+  pure { fn, callees, pols, acceptsOp, op := refs.ops.head?, nested := refs.nested }
 
 /-- Checks `fn` (the prepared function, or one of its instances) in the program of `prep`. -/
 def checkWith (cats : List String) (recs : List Record) (prep : Prep) (fn : Fun) :
@@ -876,25 +881,141 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
   let reach : List (String × List String) := (decls.filter (·.kind == "fun")).map fun d =>
     (named d, (rawCallees (d.value.getObjValD "body")).eraseDups)
   let isVia := fun (f : String) => (vias.find? (·.1 == f)).isSome
-  let mut final := own
-  for _ in [0:reach.length + 1] do
-    final := final.map fun (f, o) =>
-      match o with
-      | .accepted note =>
-        let bad := ((List.lookup f reach).getD []).filterMap fun g =>
-          if g == f || isVia g then none
-          else match List.lookup g final with
-            | some (.accepted _) => none
-            | none =>
-              if preludeF1.contains g then none
-              else some s!"reaches `{g}`, outside the document"
-            | some (.rejected _) => some s!"reaches `{g}`, which is rejected"
-            | some (.notRechecked why) => some s!"reaches `{g}`, which is not re-checked ({why})"
-        match bad with
-        | why :: _ => (f, .notRechecked why)
-        | [] => (f, .accepted note)
-      | o => (f, o)
-  pure final
+  let close := fun (start : List (String × Outcome)) => Id.run do
+    let mut final := start
+    for _ in [0:reach.length + 1] do
+      final := final.map fun (f, o) =>
+        match o with
+        | .accepted note =>
+          let bad := ((List.lookup f reach).getD []).filterMap fun g =>
+            if g == f || isVia g then none
+            else match List.lookup g final with
+              | some (.accepted _) | some (.acceptedIfA3 _) => none
+              | none =>
+                if preludeF1.contains g then none
+                else some s!"reaches `{g}`, outside the document"
+              | some (.rejected _) => some s!"reaches `{g}`, which is rejected"
+              | some (.notRechecked why) => some s!"reaches `{g}`, which is not re-checked ({why})"
+          match bad with
+          | why :: _ => (f, .notRechecked why)
+          | [] => (f, .accepted note)
+        | o => (f, o)
+    pure final
+  let mut final := close own
+  -- **The whole program (M4 completion, part A2).** The declarations accepted so far, each
+  -- checked in its own program with its callees' signatures, are read into one F1 program `P`
+  -- with their real bodies, every `via` function, the document's policies, records and
+  -- categories, its one operation and the host's labels. A declaration stays accepted only if
+  -- `P` passes `Check.progOk`, whose soundness (`Check.progOk_sound`) gives
+  -- `P.LWellFormed ∧ P.B1WellFormed` and `t6`'s `hget`. A function that fails in `P` is demoted
+  -- with what reaches it, and `P` is checked again, at most once per declaration; the verdict
+  -- rests on the last check, of `P` itself.
+  let readOf := fun (f : String) => match prepOf f with
+    | some (.ok pr) => some pr
+    | _ => none
+  let accepted := fun (outs : List (String × Outcome)) =>
+    outs.filterMap fun (f, o) => match o with
+      | .accepted _ => some f
+      | _ => none
+  let demote := fun (outs : List (String × Outcome)) (fs : List (String × String)) =>
+    close (outs.map fun (f, o) => match List.lookup f fs with
+      | some why => (f, .notRechecked why)
+      | none => (f, o))
+  -- One operation: F1's program has one (G3).
+  let ops := ((accepted final).filterMap fun f => (readOf f).bind (·.op)).eraseDups
+  if ops.length > 1 then
+    final := demote final ((accepted final).filterMap fun f =>
+      match (readOf f).bind (·.op) with
+      | some _ => some (f, "the document's accepted declarations use several operations; F1 has one")
+      | none => none)
+  let acceptsOp := match (accepted final).findSome? fun f =>
+      (readOf f).bind fun pr => pr.op.map fun _ => pr.acceptsOp with
+    | some a => a
+    | none => Label.bot
+  -- The host's labels: those of `Http.get`, the host operation F1 models, or `⊥` when the host
+  -- has none.
+  let httpGet := host.findSome? fun cj =>
+    match plainRun (do str (← field cj "name")) with
+    | .ok "Http" =>
+      match plainRun (do arr (← field cj "ops")) with
+      | .ok ops => ops.find? fun o => match plainRun (do str (← field o "name")) with
+        | .ok n => n == "get"
+        | .error _ => false
+      | .error _ => none
+    | _ => none
+  let hostLabels : Except String (Label × Label) := match httpGet with
+    | none => .ok (Label.bot, Label.bot)
+    | some o => plainRun do
+      pure ((← label (← field o "accepts")).base, (← label (← field (← field o "result") "label")).base)
+  let some pr0 := (accepted final).findSome? readOf | pure final
+  let (acceptsGet, getResult) ← match hostLabels with
+    | .ok q => pure q
+    | .error why =>
+      return demote final ((accepted final).map fun f => (f, s!"the host's `Http.get` labels: {why}"))
+  let viaFuns := pr0.callees.filter fun fn => isVia fn.name
+  let mkProg := fun (members : List String) => ({
+    categories := cats, acceptsOp, acceptsGet, getResult, records := recs, policies := pr0.pols,
+    funs := members.filterMap (fun f => (readOf f).map (·.fn)) ++ viaFuns } : Program)
+  -- The functions checked at their instances: their T-Fun is part A3's hypothesis.
+  let cond := (accepted final).filter isNested
+  let docWhy := fun (P : Program) =>
+    if !Check.leB P.top (.ofLabel P.acceptsGet) (.ofLabel P.getResult) then
+      "the host's response is labeled below what `Http.get` accepts"
+    else if !Check.b1Ok P then "B1 restriction"
+    else if !Check.catsDeclared P then "a declared label names a category the document does not"
+    else match P.policies.find? (!Check.policyOk P ·), P.records.find? (!Check.recordOk P ·) with
+      | some po, _ =>
+        s!"the policy `{po.name}` and its `via` function `{po.via}` do not agree on its types, \
+          or a type of it is not closed"
+      | none, some rec => s!"the record `{rec.name}`: a field that is not ground, or above its deep label"
+      | none, none => "the whole-program check"
+  let p0 := mkProg (accepted final)
+  if !Check.progDocOk p0 then
+    let why := docWhy p0
+    return demote final ((accepted final).map fun f => (f, s!"whole program: {why}"))
+  match viaFuns.find? fun fn => !Check.progFunOk cond p0 fn with
+  | some v =>
+    return demote final ((accepted final).map fun f =>
+      (f, s!"whole program: the `via` function `{v.name}` has no structural typing the checker derives"))
+  | none => pure ()
+  let rounds := (accepted final).length + 1
+  let mut settled := false
+  for _ in [0:rounds] do
+    let members := accepted final
+    let P := mkProg members
+    let bad := members.filterMap fun f => match readOf f with
+      | some pr =>
+        if Check.progFunOk cond P pr.fn then none
+        else
+          let why := match Check.checkFun P pr.fn with
+            | .error e => e
+            | .ok () => "its signature"
+          some (f, s!"whole program: {why}")
+      | none => some (f, "whole program: not read")
+    if bad.isEmpty then
+      settled := true
+      break
+    final := demote final bad
+  if !settled then
+    return demote final ((accepted final).map fun f => (f, "whole program: the check did not settle"))
+  -- The certificate: the last program, checked whole. Those that reach no function checked at
+  -- its instances are certified again, in their own program, with no hypothesis left.
+  let members := accepted final
+  if !Check.progOk cond (mkProg members) then
+    return demote final (members.map fun f => (f, "whole program: the final check failed"))
+  let reachesCond := Id.run do
+    let mut rc := cond
+    for _ in [0:members.length + 1] do
+      rc := members.filter fun f =>
+        rc.contains f || ((List.lookup f reach).getD []).any rc.contains
+    pure rc
+  let plain := members.filter fun f => !reachesCond.contains f
+  if !Check.progOk [] (mkProg plain) then
+    return demote final (members.map fun f =>
+      (f, "whole program: the check without functions checked at their instances failed"))
+  pure (final.map fun (f, o) => match o with
+    | .accepted note => if reachesCond.contains f then (f, .acceptedIfA3 note) else (f, o)
+    | o => (f, o))
 
 /-- `checkDocumentWith` with labeled instantiation, `LTy.lsubst`. -/
 def checkDocument (doc : J) : Except String (List (String × Outcome)) :=

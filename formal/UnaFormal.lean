@@ -27,3 +27,6 @@ import UnaFormal.F1.ReleaseExample
 import UnaFormal.F1.CheckSound
 import UnaFormal.F1.CheckSoundCore
 import UnaFormal.F1.CheckSoundExample
+import UnaFormal.F1.CheckProgram
+import UnaFormal.F1.CheckProgramSound
+import UnaFormal.F1.CheckProgramExample

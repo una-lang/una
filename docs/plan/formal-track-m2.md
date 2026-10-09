@@ -18,6 +18,8 @@
 
 **A program is re-checked** when every declaration of its document with code is accepted. A declaration is checked against the signatures of the functions it calls, so an accepted caller of an unaccepted callee says nothing on its own.
 
+Since M4 completion part A2, an accepted declaration is also a function of the document's whole program, which the re-check certifies with `Check.progOk` and whose soundness theorem gives `LWellFormed` and B1 (`formal-track-m4-completion.md` §4).
+
 **What a declaration reaches** is everything it calls or uses as a value, transitively, except handler bodies. F1's operation is an event of the trace, so what a capability's handler does with it is not modeled, and a handler's body is not in the reach set. This is the model's assumption, not a theorem. A function outside the document, a library function or a prelude function F1 does not model, is not re-checked, and neither is what reaches it (M4 completion, `formal-track-m4-completion.md`).
 
 **Changes to the model**, with every proof carried (`scripts/formal.sh`: 59 theorems, no `sorry`):
