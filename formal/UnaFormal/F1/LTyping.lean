@@ -343,6 +343,32 @@ def Program.FunOk (p : Program) (fn : Fun) : Prop :=
     (ε.op = true → fn.op = true) ∧ (ε.get = true → fn.get = true) ∧
     (ε.fails.isSome = true → fn.fails = true) ∧ p.le ε.failLabel .bot
 
+/-- The categories of a label are among `cats`. -/
+def LExpr.CatsIn (cats : List String) (e : LExpr) : Prop := ∀ c ∈ e.base.cats, c ∈ cats
+
+mutual
+  /-- Every label of a type uses only categories among `cats`. -/
+  def LTy.CatsIn (cats : List String) : LTy → Prop
+    | .int l | .bool l | .text l | .unit l | .record _ l | .var _ l => l.CatsIn cats
+    | .list t l | .option t l | .result t l => t.CatsIn cats ∧ l.CatsIn cats
+    | .fn ps r _ _ _ l => LTy.CatsInAll cats ps ∧ r.CatsIn cats ∧ l.CatsIn cats
+
+  def LTy.CatsInAll (cats : List String) : List LTy → Prop
+    | [] => True
+    | t :: ts => t.CatsIn cats ∧ LTy.CatsInAll cats ts
+end
+
+/-- Every label the program declares uses only its declared categories (U4007, `spec/07 §7`
+rule 7): the `accepts` labels, the response label, and the types of functions, records and
+policies. The annotations inside bodies are the checker's, which reports U4007 at each; the model
+needs the declared ones, against which `⊤` is defined. -/
+def Program.CatsDeclared (p : Program) : Prop :=
+  (∀ c ∈ p.acceptsOp.cats, c ∈ p.categories) ∧ (∀ c ∈ p.acceptsGet.cats, c ∈ p.categories) ∧
+  (∀ c ∈ p.getResult.cats, c ∈ p.categories) ∧
+  (∀ fn ∈ p.funs, (∀ q ∈ fn.params, q.2.CatsIn p.categories) ∧ fn.result.CatsIn p.categories) ∧
+  (∀ rec ∈ p.records, ∀ t ∈ rec.fields, t.CatsIn p.categories) ∧
+  (∀ po ∈ p.policies, po.src.CatsIn p.categories ∧ po.dst.CatsIn p.categories)
+
 /-- A program the labeled typing accepts: every function but a `via` function passes T-Fun, a
 `via` function has its structural type, the declared deep labels of records bound their
 fields', and records and policies are as structural well-formedness requires. -/
@@ -354,5 +380,6 @@ structure Program.LWellFormed (p : Program) : Prop where
   policies : ∀ po ∈ p.policies, po.src.erase.Closed ∧ po.dst.erase.Closed ∧
     ∃ fn, p.find po.via = some fn ∧ fn.paramTys [] = [po.src.erase] ∧
       fn.result.erase = po.dst.erase
+  categories : p.CatsDeclared
 
 end Una.F1

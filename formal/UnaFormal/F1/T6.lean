@@ -1,18 +1,27 @@
 /-
 **T6, noninterference, for the generic-free part of F1** (`spec/10 §10`, M3 of
 `docs/plan/formal-track.md`): two runs of a body the labeled typing accepts, in environments
-related for an observer at `L`, end, when both end, with the same events the observer sees and
-related outcomes (`t6`).
+related for an observer at `L`, end, when both end at the same fuel, with the same events the
+observer sees and related outcomes (`t6`); `t6_ended` (`Mono.lean`) drops the common fuel.
 
-Assumptions, stated as hypotheses or in the model:
-- the generic-free part: no type parameter and no policy (`Program.GenericFree`); declassification
-  and generics are M4's;
-- the host's response is labeled at least what its operation accepts (`hget`), which `spec/24 §5`
-  meets;
-- the host is the same `World` in both runs, a function of the request: its failures depend only
-  on the URL, and no operation of the program changes it. S-14 (a file's existence written by an
-  internal path and observed by a public read) and S-15 (a server's failures decided by a body)
-  are the findings that show real hosts break this; their fix discharges the assumption.
+**Scope.** What the theorem covers is F1 as `Syntax.lean` defines it, and no more:
+- one capability with one operation (`op`) and one host operation (`get`), each with one
+  `accepts` label for the whole program;
+- a stateless host, the same `World` in both runs, whose failures depend only on the URL and which
+  no operation of the program changes: S-14 (a file's existence written through an internal path
+  and seen by a public read) and S-15 (a server's failures decided by a body) show that real
+  hosts break this, and their fix discharges the assumption;
+- failures are codes without payloads;
+- no sums but `Option` and `Result`, no `Map`, no `with` or handlers of capabilities, no
+  `together`, no generics and no declassification (`Program.GenericFree`); generics and
+  declassification are M4's;
+- the host's response is labeled at least what its operation accepts (`hget`), which
+  `spec/24 §5` meets and `crates/una-check/tests/host_table.rs` checks of the prelude.
+
+**What "related" means** (`V`): at a position the observer sees, scalars and texts are equal,
+lists have the same length and related elements, options and results the same tag and related
+contents, records related fields; closures are related, not equal (the same code and related
+captured environments); a `Unit` position relates any two values, since it carries nothing.
 -/
 import UnaFormal.F1.BinaryLemmas
 
@@ -640,10 +649,11 @@ namespace Una.F1
 variable {p : Program} {L : Label}
 
 /-- **T6, noninterference, for the generic-free part of F1.** Two runs of a body the labeled
-typing accepts, at any fuel, in environments of its context's labeled types that the observer at
+typing accepts, at one fuel, in environments of its context's labeled types that the observer at
 `L` cannot tell apart, show that observer the same events and related outcomes whenever both
-end: equal values at every position it sees, the same failure when it sees what decides
-failure, and one failing while the other ends with a value only when it does not. -/
+end: values related by `V` (equal scalars at the positions it sees, related closures), the same
+failure when it sees what decides failure, and one failing while the other ends with a value
+only when it does not. -/
 theorem t6 (hwf : p.LWellFormed) (hgf : p.GenericFree)
     (hget : p.le (.ofLabel p.acceptsGet) (.ofLabel p.getResult)) (w : World)
     {e₁ e₂ : Env} {Γ : LCtx} {E : List String} {pc : LExpr} {e : Expr} {t : LTy} {ε : Eff}

@@ -1,6 +1,6 @@
 //! The host table against the formal model (#46, M3): the response of every host operation is
 //! labeled at least what the operation accepts. A response may depend on everything the request
-//! sent, so a label below `accepts` would let data the sink accepted come back at a lower label.
+//! sent, so a label not above `accepts`, by level and by categories, would let data the sink accepted come back at a lower label.
 //! T6 in `formal/UnaFormal/F1/T6.lean` assumes this property of the host (`hget`); this test keeps
 //! the prelude's declarations and that assumption from drifting apart.
 
@@ -17,10 +17,31 @@ fn rank(level: &str) -> Option<usize> {
         .position(|l| *l == level)
 }
 
-/// The top label of a declared result type: its leading level, `public` when it has none.
-fn top_rank(result: &str) -> usize {
-    let first = result.split_whitespace().next().unwrap_or("");
-    rank(first).unwrap_or(0)
+/// A label as the prelude writes it, `level` or `level[Cat, ...]`: its level's rank and its
+/// categories; `None` when the text starts with no level.
+fn label(text: &str) -> Option<(usize, Vec<String>)> {
+    let word = text.split_whitespace().next().unwrap_or("");
+    let (level, cats) = match word.split_once('[') {
+        Some((level, rest)) => (level, rest.trim_end_matches(']')),
+        None => (word, ""),
+    };
+    let cats = cats
+        .split(',')
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .map(str::to_string)
+        .collect();
+    rank(level).map(|r| (r, cats))
+}
+
+/// The top label of a declared result type: its leading label, `public` when it has none.
+fn top_label(result: &str) -> (usize, Vec<String>) {
+    label(result).unwrap_or((0, Vec::new()))
+}
+
+/// `a ⊑ b`: the level at most, and the categories a subset (`spec/07 §2`).
+fn below(a: &(usize, Vec<String>), b: &(usize, Vec<String>)) -> bool {
+    a.0 <= b.0 && a.1.iter().all(|c| b.1.contains(c))
 }
 
 /// One host operation: its capability, name, declared result and `accepts`, if declared.
@@ -68,16 +89,16 @@ fn every_host_response_is_labeled_at_least_what_its_operation_accepts() {
                 // `Keys.hmac` declares its labels in the checker (ADR 0039): `key_name` accepts
                 // `public`, and its result carries the label of `data`, whatever it is.
                 assert_eq!(qualified, "Keys.hmac", "{qualified} declares no accepts");
-                assert!(top_rank(&op.result) >= rank("public").unwrap());
+                assert!(below(&(0, Vec::new()), &top_label(&op.result)));
                 continue;
             };
             let accepts =
-                rank(&accepts).unwrap_or_else(|| panic!("{qualified}: accepts {accepts}"));
+                label(&accepts).unwrap_or_else(|| panic!("{qualified}: accepts {accepts}"));
             if op.result == "Unit" {
                 continue;
             }
             assert!(
-                top_rank(&op.result) >= accepts,
+                below(&accepts, &top_label(&op.result)),
                 "{qualified} returns {} below what it accepts",
                 op.result
             );

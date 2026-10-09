@@ -8,7 +8,7 @@
 
 ## 1. What is proven
 
-All of it is in `formal/UnaFormal/F1/`, and `scripts/formal.sh` passes with 43 stated theorems, none depending on `sorry`.
+All of it is in `formal/UnaFormal/F1/`, and `scripts/formal.sh` passes with 46 stated theorems, none depending on `sorry`.
 
 | File | Result |
 | --- | --- |
@@ -23,7 +23,7 @@ All of it is in `formal/UnaFormal/F1/`, and `scripts/formal.sh` passes with 43 s
 **The theorem.** Take two runs of a body that the labeled typing accepts, at the same fuel. Suppose their environments have the context's labeled types and an observer at `L` cannot tell them apart. Whenever both runs end:
 
 - the observer sees the same events;
-- they end with values related at every position the observer sees;
+- they end with related values: equal scalars, texts and shapes at the positions the observer sees, closures with the same code and related environments, and anything at `Unit`;
 - they fail with the same failure when the observer sees what decides failure;
 - one fails while the other ends with a value only when the observer does not see what decides failure.
 
@@ -42,6 +42,18 @@ A related pair of closures at a visible function type has the same code and rela
 - `==` over values with equality;
 - `let`, `if`, `case` on options and results, `fail`, `attempt` and handlers.
 
+**Scope, stated as `T6.lean` states it.** The theorem covers F1 as `Syntax.lean` defines it, and no more:
+
+- one capability with one operation and one host operation, each with one `accepts` for the whole program;
+- a stateless host (S-14 and S-15 are open);
+- failures as codes, without payloads;
+- no sums but `Option` and `Result`, no `Map`, no `with` or handlers of capabilities, no `together`, no generics and no declassification.
+
+`T6Example.lean` has a worked instance and its negative:
+
+- **The instance.** A body branches on a `secret` comparison, so two runs with different secrets take different branches and return 1 and 2. They show a public observer the same line, and their values are related at the hidden type (`branching_noninterferent`).
+- **The negative.** A body that writes a different line in each branch of a `secret` condition has no typing (`leaking_untyped`).
+
 ## 2. Assumptions, and what M3 found
 
 T6 here assumes the following. Each assumption is a hypothesis of `t6` or part of the model, and is stated in `T6.lean`.
@@ -56,6 +68,19 @@ T6 here assumes the following. Each assumption is a hypothesis of `t6` or part o
 - **S-15 (a candidate):** a server's failures. They can depend on a request's body and header values, which do not label them.
 
 Their fix, under way separately, discharges the assumption. The model can then drop it, or model state.
+
+**`spec/10` against the model and the checker.** The model has two rules that `spec/10`'s formal rules lack:
+
+- its T-Let runs the body after a failable right-hand side under the label of what decides the failure;
+- its T-Handle runs the handler under that label and raises the value by it.
+
+Both rules follow `spec/07 §7` rule 4 (edition 0.2); `spec/10`'s formal T-Let and T-Handle do not have them. The shipped checker is not laxer than the model, because the surface language cannot write the programs where the two differ. Checked with `una check` (debug build of 2026-10-09) in both editions:
+
+- `if error pass` and `if error fail` on a failure decided by an `internal` path are U4002;
+- a handler with an effect is U3013, since an effectful call must be a whole statement;
+- a failure recovered by `attempt` lets the next statement run, which is right, since `attempt` does not fail.
+
+So there is no finding. `spec/10` needs an append-only correction to state the two rules as `spec/07` does.
 
 No rule of `spec/07` or `spec/10` had to change for the proof. The readings of the M1 review §4 held as written.
 

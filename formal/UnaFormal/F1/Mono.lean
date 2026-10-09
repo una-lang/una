@@ -34,9 +34,9 @@ theorem applyWith_mono {run run' : Env → Expr → Trace × Res} {fv : Val} {vs
   | closure params body cenv =>
     simp only [applyWith] at ht ⊢
     by_cases hl : vs.length = params.length
-    · simp only [hl, if_true] at ht ⊢
+    · simp only [hl, ite_true] at ht ⊢
       exact h _ _ ht
-    · simp only [hl, if_false]
+    · simp only [hl, ite_false]
   | _ => rfl
 
 theorem walkMap_mono {app app' : Val → Trace × Res} (h : Agrees app' app) :
@@ -97,9 +97,9 @@ theorem eval_mono : ∀ n m : Nat, n ≤ m →
         cases hf : p.find f <;> cases ha : evalAtoms env args <;> simp only [hf, ha] at ht ⊢
         rename_i fn vs
         by_cases hl : vs.length = fn.params.length
-        · simp only [hl, if_true] at ht ⊢
+        · simp only [hl, ite_true] at ht ⊢
           exact ihE _ _ ht
-        · simp only [hl, if_false]
+        · simp only [hl, ite_false]
       | apply f args =>
         simp only [evalRhs] at ht ⊢
         split at ht
@@ -112,9 +112,9 @@ theorem eval_mono : ∀ n m : Nat, n ≤ m →
         cases hfn : p.find po.via <;> simp only [hfn] at ht ⊢
         rename_i fn
         by_cases hl : 1 = fn.params.length
-        · simp only [hl, if_true] at ht ⊢
+        · simp only [hl, ite_true] at ht ⊢
           exact ihE _ _ ht
-        · simp only [hl, if_false]
+        · simp only [hl, ite_false]
       | map xs f =>
         simp only [evalRhs] at ht ⊢
         split at ht

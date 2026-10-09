@@ -68,6 +68,10 @@ theorem prog_wf : prog.LWellFormed where
   records rec h := by simp [prog] at h
   recordDeep rec h := by simp [prog] at h
   policies po h := by simp [prog] at h
+  categories := by
+    refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩ <;>
+      simp [prog, pick, lT, Label.bot, LTy.CatsIn, LExpr.CatsIn, LExpr.bot, LExpr.ofLabel]
+    rintro _ _ (⟨_, rfl⟩ | ⟨_, rfl⟩ | ⟨_, rfl⟩) <;> simp [LTy.CatsIn, LExpr.CatsIn]
 
 /-- The type of `pick[Int](...)`: `Int`, with `ℓ_T` replaced in place by the argument's labels. -/
 def pickInt : LTy := prog.lsub [("T", .int .bot)] pick.result
