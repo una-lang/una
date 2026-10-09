@@ -4,7 +4,7 @@
 - Plan: `docs/plan/formal-track.md` §7 (M5, renumbered with the owner's approval of 2026-10-09)
 - Previous step: `docs/plan/formal-track-m4-completion.md`
 - Date: 2026-10-09
-- Status: **statement draft, for the coordinator's review before any proof**
+- Status: statement approved in shape by the coordinator (2026-10-09), with the answers and additions of §7; parts 1 and 2 under way
 
 ## 1. Why
 
@@ -55,7 +55,9 @@ structure Server where
 
 Nothing constrains it. ADR 0085 decision 7 makes every request's failure, and its response, `internal`, so a public observer cannot see what the server decides.
 
-**Events.** `out` (the console line), `req` (the request sent, a sink at `Http`'s `accepts`), `write` (a sink at `Files.write`'s `accepts`, path only), and `release`. A read sends nothing.
+**Events.** `out` (the console line), `req` (the request sent, a sink at `Http`'s `accepts`), `write` (a sink at `Files.write`'s `accepts`, path only), `read` (a sink at `Files.read`'s `accepts`, `public`: the path goes to the operating system, as the checker already requires), and `release`.
+
+**Every operation of the stateful capabilities is covered.** `spec/14 §3` gives `Files` two operations, `read` and `write`, and both are modeled. `spec/24 §1` gives `Http` four, `get`, `post`, `put` and `delete`. They differ only in their method and in whether they send a body, so one form covers them: `req m url headers body key`, with `m` the method and `body` absent for `get` and `delete`. All four accept `internal`, fail with `HttpError` and return an `internal` `Response`, so one rule types them. The abort of a header value with a control character (U6004, N-40) is outside the model, as aborts are (`spec/07 §1`).
 
 **Evaluation** threads the world: `eval : Nat → Program → World → Env → Expr → Trace × Res × World`.
 
@@ -79,6 +81,13 @@ def WorldRel (p : Program) (L : Label) (w₁ w₂ : World) : Prop :=
   (Vis p L (.ofLabel internal) → w₁ = w₂)                           -- everything, for an observer who sees internal
 ```
 
+**A premise of well-formedness, not an accident of the host table:** every sink of a stateful host capability accepts at most `internal`. For an observer who sees `internal`, the theorem keeps the two worlds equal, and that holds only if no host state can receive data above `internal`. The sinks are:
+- `Files.write`'s path and content, which accept `internal` (`spec/14 §3`);
+- `Files.read`'s path, which accepts `public`;
+- every argument of the four `Http` operations, which accept `internal` (`spec/24 §1`).
+
+`Keys.hmac`'s data accepts every label. That is sound only because `Keys` is stateless, which is assumption 6 of §5.
+
 - For a `public` observer, in a package that writes only at `public` (`fileState = public`), two worlds must have the same shape, but their contents and servers may differ.
 - When some write is `internal` (`fileState = internal`), the shapes may differ too. Every `Files` failure is then `internal`.
 - An observer at `internal` or above sees everything the host holds.
@@ -98,7 +107,9 @@ The second conclusion is new. By induction it gives **across runs** (ADR 0085 de
 | `s15_old_leaks`, `s15_untyped` | The same for a request whose failure a stateful server decides by an `internal` body. |
 | `t6_host` | Every program the new rules accept is noninterferent, with a stateful host. |
 
-Non-vacuity: a package with only public writes, whose read failures stay `public`, and two runs whose public reads agree.
+Non-vacuity, two examples:
+- **public writes:** a package whose writes are all `public` (`fileState = public`). Its read failures stay `public`, and two runs from worlds of the same shape agree on them;
+- **an internal write, the S-14 fix proven positively:** a package with an `internal` write (`fileState = internal`). Two runs, from worlds whose shapes differ, agree for a `public` observer, because every `Files` failure is then `internal`.
 
 ## 5. What stays assumed
 
@@ -120,7 +131,27 @@ Each assumption is a hypothesis of the theorem or part of the model, stated wher
 
 **Effort.** Parts 1 and 2 are small. Part 3 rebuilds every proof over the threaded world. On M3 and M4's evidence, the cost is in where the model and the checker disagree, which parts 1 and 2 bring out first.
 
-## 7. Questions for the coordinator
+## 7. What the 638 accepted declarations rely on today
+
+"No accept without a theorem" applies to the host assumption too. The re-check's 638 accepted declarations (after A3) use these operations, counted over their bodies and signatures in the corpus:
+- `Log.write` (182 signatures, 84 bodies), `Vault.keep` and `Ledger.record` (1 each): capabilities of the packages themselves, whose handler bodies are not in the reach set (`formal-track-m4-completion.md` §3);
+- `Console.print` (7): a stateless sink, assumption 6.
+
+None uses `Files`, `Http`, `Env` or `Keys`. F1's host operation `get` is never read from Core: the import reads only an operation from a scalar to `Unit` that does not fail (`Import.lean`'s header), which no `Http` or `Files` operation is. Every function is read with `get := false`. So no accepted declaration rests on the stateless-host assumption that M5 removes, and none moves.
+
+A handler of a package's capability could itself call `Files` or `Http`. Its body is outside the reach set, as §3 of the completion plan states, and T4 and F2 (M7) model handlers.
+
+## 8. The coordinator's answers (2026-10-09)
+
+1. **`WorldRel`:** the reading above, with the premise that every stateful sink accepts at most `internal` (§4).
+2. **A read's path is a sink:** yes, an event `read` at `Files.read`'s `accepts` (§2).
+3. **The re-check:** after the theorem, as its own item, M5b. §7 answers which accepted declarations rely on the host today.
+4. **Every operation is covered:** `Files.read`, `Files.write`, and `Http`'s `get`, `post`, `put` and `delete` (§2).
+5. **Two non-vacuity examples:** public writes, and an internal write seen by a public observer (§4).
+
+Parts 1 and 2 go first. The counterexamples, `s14_old_leaks` and `s15_old_leaks`, go to the coordinator before `t6_host` starts.
+
+## 9. Questions asked (answered in §8)
 
 1. **Shape for the public observer.** `WorldRel` asks equal shapes only when the file-state label is visible. Is that the reading you want of "low-equivalence of worlds"? A stricter one, equal shapes always, would make the theorem weaker: it would say nothing about a package with internal writes.
 2. **`Files.read` as a sink.** The model makes a read send nothing. The real path of a read goes to the operating system. Should a read's path be a sink at `Files.read`'s `accepts` (`public`), as the checker already requires? I propose yes, as an event `read path`, for symmetry with `req`.
