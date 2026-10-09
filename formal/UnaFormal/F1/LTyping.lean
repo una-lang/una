@@ -141,6 +141,24 @@ inductive LAtomsTy : LCtx → List Atom → List LTy → Prop where
 /-- A symbolic decision `ℓ*_T` for each name. -/
 def decision (d : List String) : LExpr := ⟨Label.bot, [], d⟩
 
+/-- The decisions the arguments of a call carry at their top: the `ℓ*_T` that a comparison of
+`T` values, a condition on them or another deep join put there (`spec/07 §7` rules 3 and 8). -/
+def decisionsOf (ts : List LTy) : List String := ts.flatMap (fun t => t.top.star)
+
+/-- A type with equality: no function type at any position (`Eq`, `spec/20`). -/
+def LTy.eqable : LTy → Bool
+  | .list t _ | .option t _ | .result t _ => t.eqable
+  | .fn _ _ _ _ _ _ => false
+  | _ => true
+
+/-- A function is the `via` function of a policy, whose body no label rule checks
+(`spec/07 §5` rule 3), and which only its policy may call (`spec/07 §7` rule 5, U4005). -/
+def Program.IsVia (p : Program) (f : String) : Prop := ∃ po ∈ p.policies, po.via = f
+
+/-- The type arguments of the parameters a function constrains by `Eq` have equality. -/
+def Fun.EqArgs (fn : Fun) (targs : List LTy) : Prop :=
+  ∀ q ∈ fn.tparams.zip targs, q.1 ∈ fn.eqParams → q.2.eqable = true
+
 mutual
   inductive LRhsTy (p : Program) : LCtx → LExpr → Rhs → LTy → Eff → Prop where
     | atom {Γ pc a t} : LAtomTy Γ a t → LRhsTy p Γ pc (.atom a) t .none
@@ -150,24 +168,29 @@ mutual
         LRhsTy p Γ pc (.prim pr args) (ofScalar t (p.primLabel pr ts)) .none
     /-- T-Call with generic instantiation: the arguments flow into the parameters instantiated,
     and the result is the declared result instantiated, whose symbolic labels are the result
-    summary of ADR 0067 at each position. -/
+    summary of ADR 0067 at each position. A `via` function is not callable but through its
+    policy (U4005). -/
     | call {Γ pc f targs args fn ts} :
-        p.find f = some fn → targs.length = fn.tparams.length →
-        LTy.firstClasses targs = true → LAtomsTy Γ args ts →
+        p.find f = some fn → ¬ p.IsVia f → targs.length = fn.tparams.length →
+        LTy.firstClasses targs = true → fn.EqArgs targs → LAtomsTy Γ args ts →
         Flows p.top ts (fn.params.map (fun q => p.lsub (fn.tparams.zip targs) q.2)) →
         p.Bound pc fn.op fn.get fn.fails →
         LRhsTy p Γ pc (.call f targs args) (p.lsub (fn.tparams.zip targs) fn.result)
           (.ofFn fn.op fn.get fn.fails)
     /-- T-App. An argument that carries decisions `ℓ*_T` its parameter's type does not accept
     raises the call's result and program counter instead, as the value's label does
-    (`spec/07 §7` rule 8, "decisions given to functions"); the model takes the decisions `d`
-    as part of the argument's top label. -/
-    | apply {Γ pc f args ps r o g fl lf ts d} :
+    (`spec/07 §7` rule 8, "decisions given to functions"). The decisions are those the
+    arguments carry at their top, which only a deep join, such as a comparison of `T` values,
+    puts there (`decisionsOf`). -/
+    | apply {Γ pc f args ps r o g fl lf ts} :
         LAtomTy Γ f (.fn ps r o g fl lf) → LAtomsTy Γ args ts →
-        Flows p.top ts (ps.map (LTy.raise (decision d))) →
-        p.Bound (pc.join (lf.join (decision d))) o g fl →
-        LRhsTy p Γ pc (.apply f args) (r.raise (lf.join (decision d))) (.ofFn o g fl)
-    /-- T-Op: the argument is a sink. -/
+        Flows p.top ts (ps.map (LTy.raise (decision (decisionsOf ts)))) →
+        p.Bound (pc.join (lf.join (decision (decisionsOf ts)))) o g fl →
+        LRhsTy p Γ pc (.apply f args) (r.raise (lf.join (decision (decisionsOf ts))))
+          (.ofFn o g fl)
+    /-- T-Op: the argument is a sink. F1's arguments are texts, for which `ℓ⁺`, the labels at
+    covariant positions of rule 4, is every label, so the model writes `deep`; an argument with
+    a function type would need `ℓ⁺`. -/
     | op {Γ pc line t} :
         LAtomTy Γ line t → t.erase = .text →
         p.le (pc.join (p.deep t)) (.ofLabel p.acceptsOp) → pc.SymFree →
@@ -199,8 +222,8 @@ mutual
         LRhsTy p Γ pc (.lambda params body)
           (.fn (params.map Prod.snd) t ε.op ε.get ε.fails.isSome .bot) .none
     | funRef {Γ pc f targs fn} :
-        p.find f = some fn → targs.length = fn.tparams.length →
-        LTy.firstClasses targs = true →
+        p.find f = some fn → ¬ p.IsVia f → targs.length = fn.tparams.length →
+        LTy.firstClasses targs = true → fn.EqArgs targs →
         LRhsTy p Γ pc (.funRef f targs)
           (.fn (fn.params.map (fun q => p.lsub (fn.tparams.zip targs) q.2))
             (p.lsub (fn.tparams.zip targs) fn.result) fn.op fn.get fn.fails .bot) .none
@@ -239,6 +262,12 @@ mutual
     | parse {Γ pc s t} :
         LAtomTy Γ s t → t.erase = .text →
         LRhsTy p Γ pc (.parse s) (.int (p.deep t)) ⟨false, false, some (pc.join (p.deep t))⟩
+    /-- `==` (`spec/07 §7` rule 3): both operands flow into one type with equality, and the
+    result carries every label of both. Over values of `T`, that is `ℓ*_T`, the decision of
+    rule 8. -/
+    | eq {Γ pc a b t₁ t₂ t} :
+        LAtomTy Γ a t₁ → LAtomTy Γ b t₂ → Flow p.top t₁ t → Flow p.top t₂ t → t.eqable = true →
+        LRhsTy p Γ pc (.eq a b) (.bool ((p.deep t₁).join (p.deep t₂))) .none
 
   inductive LExprTy (p : Program) : LCtx → LExpr → Expr → LTy → Eff → Prop where
     | atom {Γ pc a t} : LAtomTy Γ a t → LExprTy p Γ pc (.atom a) t .none
@@ -296,10 +325,6 @@ def Program.FunOk (p : Program) (fn : Fun) : Prop :=
   ∃ t ε, LExprTy p fn.params .bot fn.body t ε ∧ Flow p.top t fn.result ∧
     (ε.op = true → fn.op = true) ∧ (ε.get = true → fn.get = true) ∧
     (ε.fails.isSome = true → fn.fails = true) ∧ p.le ε.failLabel .bot
-
-/-- A function is the `via` function of a policy, whose body no label rule checks
-(`spec/07 §5` rule 3). -/
-def Program.IsVia (p : Program) (f : String) : Prop := ∃ po ∈ p.policies, po.via = f
 
 /-- A program the labeled typing accepts: every function but a `via` function passes T-Fun, a
 `via` function has its structural type, the declared deep labels of records bound their

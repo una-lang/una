@@ -90,6 +90,9 @@ mutual
     | fold (xs init f : Atom)
     /-- The partial primitive: the integer a text spells, or a failure. -/
     | parse (s : Atom)
+    /-- `a == b` on values of any type with equality, `T` with `Eq` included (`spec/20`):
+    the comparison whose result carries the decision `ℓ*_T` of `spec/07 §7` rule 8. -/
+    | eq (a b : Atom)
 
   /-- A body in A-normal form. -/
   inductive Expr where
@@ -110,10 +113,12 @@ mutual
 end
 
 /-- A function of the program: its type parameters (one level of generics, `spec/07 §7`
-rule 8), its signature with its `uses` and `fails`, and its body. -/
+rule 8), those of them constrained by `Eq` (`spec/20`), its signature with its `uses` and
+`fails`, and its body. -/
 structure Fun where
   name : String
   tparams : List String
+  eqParams : List String
   params : List (String × LTy)
   result : LTy
   op : Bool

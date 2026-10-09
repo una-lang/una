@@ -5,7 +5,7 @@
 - Date: 2026-10-09
 - Status: for the owner's go/no-go on M3 and M4
 
-M1's exit criterion is met: T1 for F1 is proven without `sorry`, and `scripts/formal.sh` checks that each of the 22 stated theorems depends only on Lean's own three axioms. The plan asks the spike two questions: what the work really cost against the estimate, and whether `ℓ*_T` has a clean semantic reading. This review answers both.
+M1's exit criterion is met: T1 for F1 is proven without `sorry`, and `scripts/formal.sh` checks that each of the 25 stated theorems depends only on Lean's own three axioms. The plan asks the spike two questions: what the work really cost against the estimate, and whether `ℓ*_T` has a clean semantic reading. This review answers both.
 
 ## 1. What M1 delivered
 
@@ -22,7 +22,7 @@ All of it is in `formal/UnaFormal/F1/`, about 2,300 lines of Lean with Batteries
 | `LTyping.lean` | The labeled judgment `Γ; pc ⊢ e : τ ! ε` of `spec/10 §1` (§4 lists its readings). |
 | `Erase.lean` | The labeled typing refines the structural one, so T1 holds for it too (`t1_labeled`). |
 | `Spike.lean` | The semantic reading of the symbolic labels (§3). |
-| `Examples.lean` | Shows the definitions are not vacuous: a generic function the labeled typing accepts, and a run of it. |
+| `Examples.lean` | Shows the definitions are not vacuous: a program the labeled typing accepts, a typed call of its generic function, and `t1_labeled` applied to the call's run. |
 
 The stated theorems are listed in `formal/Theorems.lean`. The main ones:
 
@@ -46,7 +46,9 @@ The 30 minutes break down as follows:
 - **About 15 minutes:** extending the core to all of F1, then proving T1 again.
 - **About 10 minutes:** the labeled rules, erasure, the spike lemmas and the examples.
 
-There were about 20 compile iterations. Most errors were Lean API details, such as deprecated lemma names and `List.lookup`'s argument order. No error was a wrong statement.
+The owner's conditions (§5) took about 15 more minutes, from 11:37 to 11:52 UTC.
+
+There were about 20 compile iterations in M1 itself. Most errors were Lean API details, such as deprecated lemma names and `List.lookup`'s argument order. No error was a wrong statement.
 
 Build times, the measurement the plan asked of the spike (§6):
 
@@ -91,8 +93,8 @@ A value of a generic body at a type with `T` is related at the type instantiated
 **What is proven:**
 
 1. **The checker's order is sound for the reading** (`LExpr.le_sound`). When rule 8's static order finds `a ⊑ b` between labels with symbolic parts, the reading of `a` is below the reading of `b` for every instantiation. This includes `ℓ_T ⊑ ℓ*_T` and "a symbolic label is below a declared one only if that one is `⊤` or holds it". A check on symbolic labels is therefore a check for all instances at once.
-2. **`ℓ*_T` is the right label for anything computed from values of `T`.** Values related at `σ(T)` are equal when every label of `σ(T)` is visible (`Rel.eq_of_deep`). So a comparison, an equality, a field, or any other operation over `T` values gives the same result in both runs whenever `ℓ*(σ(T))` is visible (`derived_agrees`). That is the label rule 8 gives such a result.
-3. **`ℓ_T` would not be enough** (`top_label_not_enough`). At `List[secret Int]` with a public top label, the top label is visible to a public observer, yet two related values differ. An equality of two such values labeled `ℓ_T`, read as the top label, would reveal the secret. This is the exact reason the checker has two symbolic labels (#354).
+2. **`ℓ*_T` is the right label for anything computed from values of `T`.** Values related at `σ(T)` are equal when every label of `σ(T)` is visible (`Rel.eq_of_deep`, the lemma). As a corollary (`derived_agrees`), a comparison, an equality, a field, or any other operation over `T` values gives the same result in both runs whenever `ℓ*(σ(T))` is visible. That is the label rule 8 gives such a result.
+3. **`ℓ_T` would not be enough** (`top_label_not_enough`). This is a semantic argument about the relation, not a leaking F1 program. At `List[secret Int]` with a public top label, the top label is visible to a public observer, yet two related values differ. So an equality of two such values, if it were labeled `ℓ_T` read as the top label, could reveal the secret. This is why the checker has two symbolic labels (#354).
 4. **T-App with a decision is sound in the reading.** This is argued here, and M3 proves it. Suppose an argument carries `ℓ*_T` that its parameter `T` does not accept, as in `k(if a == b then a else b)`. Two cases:
    - if `ℓ*(σ(T))` is visible, both runs choose the same value, and the call is related;
    - if not, the arguments may be unrelated, so the result and the effects of `k` may differ. They must then be invisible, which is what raising the call's result and program counter by the decision does.
@@ -111,18 +113,34 @@ The relation's shape makes none of these look like a new risk. Function values a
 The labeled rules follow `spec/07` and `spec/10`. In some places they choose a reading the text does not spell out. Each choice is marked in `LTyping.lean`. M3's proof either confirms it or shows the rule to change. None of them is a finding against the Rust checker yet; M2's differential run is where any disagreement would show.
 
 1. **A failure that propagates through `let`.** The body after a right-hand side that may fail runs under the label of what decides the failure. A function's own failure must be decided at `⊥`. This is the model's reading of U4002 for `if error pass` (rule 4). A host failure decided by a labeled URL may therefore propagate only inside an `attempt` or a handler.
-2. **T-App with a decision.** The model takes the decision `d`, a set of `ℓ*_T`, as part of the argument's top label. The parameter's type is raised by `d` for the flow, and the call's program counter and result are raised by `d`.
+2. **T-App with a decision.** The decisions are the `ℓ*_T` the arguments carry at their top (`decisionsOf`), which only a deep join puts there, such as the `==` on `T` values that F1 now has. The parameter's type is raised by them for the flow, and the call's program counter and result are raised by them. They are computed, not chosen.
 3. **The elements of `map`'s result are raised by the function's top label**, as T-App raises a call's result. ADR 0051 names only the top label of the result, so this reading may be stricter than the checker.
 4. **`first_where`'s program counter** includes every label of the elements and the predicate's result label, as rule 9 says.
 5. **The host operation's failure label** is the program counter joined with every label of the URL. The program counter decides whether the operation runs.
 6. **Labels of literals and constructed values are `⊥`.** The enclosing `if` or `case` raises them by the condition, as T-If does.
-7. **Not modeled in F1, as the plan's §3 says:**
+7. **Sinks at `ℓ⁺`.** T-Op and the host operation bound every label of their argument (`deep`). The arguments are texts in F1, where that equals rule 4's `ℓ⁺`. An argument type with function positions would need `ℓ⁺` itself.
+8. **Categories are not checked against the declared ones** (U4007). This is harmless for the model: an undeclared category only makes a label incomparable, never smaller.
+9. **Not modeled in F1, as the plan's §3 says:**
    - edition 0.1's defense-in-depth rules;
    - `of` clauses (rule 9's callee half);
    - the syntactic placement of second-class lambdas (`spec/10 §9` rule 2); only type arguments are checked for being first-class;
    - generic records.
 
-## 5. Go/no-go
+## 5. The owner's conditions, met in this pull request
+
+Leonardo's decision on 2026-10-09 was "go, with 3 conditions". Two of them are met here, and the third opens M3.
+
+1. **A `via` function is callable only through its policy.** Before this change, a direct `call` of a `via` function, whose body no label rule checks, would launder (`let y = hundreds(secret)`), and T6 would be false. T-Call and the function-value rule now require `¬ p.IsVia f`, which is the model of U4005.
+2. **`==` on values with equality, `T` with `Eq` included.** F1 has `Rhs.eq`, with `Fun.eqParams` and a check at instantiation that the type arguments of `Eq` parameters have no function type. Its result carries every label of both operands, which over `T` values is `ℓ*_T`. So `if a == b then p else q` over `T` is writable, and T-App's decisions come from the arguments' labels (§4 item 2) instead of an existential.
+3. **The lemma that instantiation commutes with the reading** (`interp` after `lsubst`) is the first item of M3, before the relation at function types.
+
+Una-1's other points are also in this pull request:
+
+- **A checked non-vacuity example.** `Examples.lean` types a call of a generic function with the labeled rules and applies `t1_labeled` to its run (`callPick_safe`), against a program proven well formed (`prog_wf`).
+- **Notes in §4** on sinks at `ℓ⁺` and on unchecked categories.
+- **The wording of §3.**
+
+## 6. Go/no-go
 
 The spike found no reason to stop.
 

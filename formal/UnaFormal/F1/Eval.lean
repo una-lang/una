@@ -141,6 +141,28 @@ def walkFold (app : Val → Val → Trace × Res) (acc : Val) : List Val → Tra
   | [] => done acc
   | v :: vs => andThen (app acc v) fun acc' => walkFold app acc' vs
 
+mutual
+  /-- Structural equality of values, the semantic function of `==`. Function values have no
+  equality (`Eq` excludes them, `spec/20`), and compare unequal. -/
+  def Val.beq : Val → Val → Bool
+    | .int a, .int b => a == b
+    | .bool a, .bool b => a == b
+    | .text a, .text b => a == b
+    | .unit, .unit => true
+    | .list xs, .list ys => Val.beqs xs ys
+    | .none, .none => true
+    | .some a, .some b => Val.beq a b
+    | .ok a, .ok b => Val.beq a b
+    | .err a, .err b => a == b
+    | .record r xs, .record s ys => r == s && Val.beqs xs ys
+    | _, _ => false
+
+  def Val.beqs : List Val → List Val → Bool
+    | [], [] => true
+    | x :: xs, y :: ys => Val.beq x y && Val.beqs xs ys
+    | _, _ => false
+end
+
 /-- The partial primitive's semantic function: the integer a text spells, or a failure. -/
 def parseInt (s : String) : Trace × Res :=
   match s.toInt? with
@@ -222,6 +244,10 @@ mutual
         match evalAtom env s with
         | some (.text t) => parseInt t
         | _ => stuck
+      | .eq a b =>
+        match evalAtom env a, evalAtom env b with
+        | some va, some vb => done (.bool (Val.beq va vb))
+        | _, _ => stuck
 
   def eval : Nat → Program → World → Env → Expr → Trace × Res
     | 0, _, _, _, _ => ([], .outOfFuel)

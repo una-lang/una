@@ -230,6 +230,11 @@ theorem sound (hwf : p.WellFormed) (w : World) : ∀ n : Nat,
         | @text s =>
           simp only [evalRhs, hv]
           exact parseInt_good s
+      | eq ha hb =>
+        obtain ⟨va, hva, _⟩ := atom_typed henv ha
+        obtain ⟨vb, hvb, _⟩ := atom_typed henv hb
+        simp only [evalRhs, hva, hvb, done, Good]
+        exact .bool
     · intro env ctx e t henv he
       cases he with
       | atom ha =>

@@ -27,3 +27,6 @@ import UnaFormal
 #print axioms Una.F1.derived_agrees
 #print axioms Una.F1.top_label_not_enough
 #print axioms Una.F1.Examples.pick_ok
+#print axioms Una.F1.Examples.prog_wf
+#print axioms Una.F1.Examples.callPick_typed
+#print axioms Una.F1.Examples.callPick_safe

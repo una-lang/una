@@ -101,7 +101,7 @@ mutual
     | _, _, _, _, _, .prim has hp => by
       rw [ofScalar_erase _ hp]
       exact .prim (latoms_erase has) hp
-    | _, _, _, _, _, .call (fn := fn) (targs := targs) hf _ _ has hflows _ => by
+    | _, _, _, _, _, .call (fn := fn) (targs := targs) hf _ _ _ _ has hflows _ => by
       have h := latoms_erase has
       rw [← Flows.erase hflows, lsub_params_erase] at h
       rw [Program.lsub, LTy.erase_lsubst]
@@ -140,7 +140,7 @@ mutual
       rw [params_erase] at h
       simp only [LTy.erase, LTy.erases_eq, List.map_map]
       exact .lambda (by simp) h
-    | _, _, _, _, _, .funRef (fn := fn) (targs := targs) hf _ _ => by
+    | _, _, _, _, _, .funRef (fn := fn) (targs := targs) hf _ _ _ _ => by
       simp only [LTy.erase, LTy.erases_eq]
       rw [lsub_params_erase, Program.lsub, LTy.erase_lsubst]
       exact .funRef hf
@@ -172,6 +172,12 @@ mutual
       rw [Flow.erase hinit] at h2
       rw [LTy.erase_raise]
       exact .fold h1 h2 h3
+    | _, _, _, _, _, .eq ha hb h₁ h₂ _ => by
+      have ha' := latom_erase ha
+      have hb' := latom_erase hb
+      rw [Flow.erase h₁] at ha'
+      rw [Flow.erase h₂] at hb'
+      exact .eq ha' hb'
     | _, _, _, _, _, .parse hs ht => by
       have h := latom_erase hs
       rw [ht] at h

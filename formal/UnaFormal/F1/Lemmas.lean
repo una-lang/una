@@ -138,6 +138,7 @@ mutual
       simp only [Ty.subst, Ty.substs] at h1 h3 ⊢
       exact .fold h1 h2 h3
     | _, _, _, .parse h => .parse (atom_subst τ h)
+    | _, _, _, .eq ha hb => .eq (atom_subst τ ha) (atom_subst τ hb)
 
   /-- A typing of a body is closed under substitution. -/
   theorem ExprTy.subst (hwf : p.WellFormed) (τ : List (String × Ty)) :
