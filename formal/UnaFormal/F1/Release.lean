@@ -24,34 +24,6 @@ def Event.isRelease : Event → Bool
   | .release _ _ => true
   | _ => false
 
-mutual
-  /-- A right-hand side that performs no event and cannot fail or call: the `via` functions of
-  option B1. -/
-  def Rhs.Pure : Rhs → Prop
-    | .atom _ | .prim _ _ | .construct _ _ | .field _ _ | .list _ | .none | .some _ | .eq _ _
-    | .lambda _ _ | .funRef _ _ => True
-    | _ => False
-
-  /-- A body that performs no event, cannot fail, and calls nothing. -/
-  def Expr.Pure : Expr → Prop
-    | .atom _ => True
-    | .letR _ _ v b => Rhs.Pure v ∧ Expr.Pure b
-    | .letE _ _ v b => Expr.Pure v ∧ Expr.Pure b
-    | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e =>
-      Expr.Pure t ∧ Expr.Pure e
-    | .attempt b => Expr.Pure b
-    | .fail _ => False
-end
-
-/-- **The restrictions of option B1**, on the policies. Each `to` is a scalar type with a
-concrete label, and each `via` function is pure: no operation, no failure, no call. `spec/07 §5`
-requires neither (rule 1 gives a policy the `uses` and `fails` of its `via` function); they are
-the model's, and cost 2.5% of the corpus's policies each. -/
-structure Program.B1WellFormed (p : Program) : Prop where
-  dst : ∀ po ∈ p.policies, po.dst.Ground ∧ po.dst.erase.Scalar
-  via : ∀ po ∈ p.policies, ∃ fn, p.find po.via = some fn ∧ fn.op = false ∧ fn.get = false ∧
-    fn.fails = false ∧ fn.body.Pure
-
 variable (p : Program) (L : Label)
 
 /-- **The runs diverge at a release**: after a common prefix of what the observer sees, both

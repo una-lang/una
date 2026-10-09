@@ -3,6 +3,7 @@ The unary half's theorem for the generic-free part of F1: a run keeps to its lab
 (`unary_sound`).
 -/
 import UnaFormal.F1.InstVal
+import UnaFormal.F1.B1
 
 namespace Una.F1
 
@@ -228,9 +229,36 @@ theorem flag_of_fails {pc : LExpr} {s : List (String × LExpr)} {ε : Eff} {f : 
 
 end
 
+/-- A ground type's top label is concrete. -/
+theorem LTy.Ground.top_symFree : ∀ {t : LTy}, t.Ground → t.top.SymFree
+  | .int _, h | .bool _, h | .text _, h | .unit _, h | .record _ _, h => h
+  | .list _ _, h | .option _ _, h | .result _ _, h => h.2
+  | .fn _ _ _ _ _ _, h => h.2.2
+  | .var _ _, h => h.elim
+
+/-- A value of a scalar type, labeled or not. -/
+theorem lvalTy_of_scalar {v : Val} : ∀ {t : LTy}, t.erase.Scalar → ValTy p v t.erase → LValTy p v t
+  | .int _, _, h | .bool _, _, h | .text _, _, h => by cases h <;> constructor
+  | .unit _, hs, _ | .list _ _, hs, _ | .option _ _, hs, _ | .result _ _, hs, _ | .record _ _, hs, _
+  | .fn _ _ _ _ _ _, hs, _ | .var _ _, hs, _ => by simp [LTy.erase, Ty.Scalar] at hs
+
+theorem valTy_of_scalar {v : Val} : ∀ {t : LTy}, t.erase.Scalar → LValTy p v t → ValTy p v t.erase
+  | .int _, _, h | .bool _, _, h | .text _, _, h => by cases h <;> constructor
+  | .unit _, hs, _ | .list _ _, hs, _ | .option _ _, hs, _ | .result _ _, hs, _ | .record _ _, hs, _
+  | .fn _ _ _ _ _ _, hs, _ | .var _ _, hs, _ => by simp [LTy.erase, Ty.Scalar] at hs
+
+theorem Ty.Scalar.subst {t : Ty} (σ : List (String × Ty)) (h : t.Scalar) : t.subst σ = t := by
+  cases t <;> simp_all [Ty.Scalar, Ty.subst]
+
+/-- Below a concrete label, at every instance. -/
+theorem le_inst_of_symFree {pc d : LExpr} (s : List (String × LExpr)) (hd : d.SymFree)
+    (h : p.le pc d) : p.le (pc.inst s) d := by
+  rw [LExpr.eq_ofLabel_of_symFree hd] at h ⊢
+  exact LExpr.le_of_le_inst_ofLabel (LExpr.le_inst s h)
+
 /-- **The unary half, at every ground instance.** A run of a body the labeled typing accepts,
 in an environment of the instance of its context, keeps to the instance of its typing. -/
-theorem unary_sound (hwf : p.LWellFormed) (hpol : p.policies = []) (w : World) : ∀ n : Nat,
+theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (w : World) : ∀ n : Nat,
     (∀ {σ : List (String × LTy)} {env : Env} {Γ : LCtx} {E : List String} {pc : LExpr} {r : Rhs}
       {t : LTy} {ε : Eff}, GroundSubst σ → LEnvTy p env (Γ.lsub p.recordDeep σ) →
       LRhsTy p E Γ pc r t ε →
@@ -242,7 +270,8 @@ theorem unary_sound (hwf : p.LWellFormed) (hpol : p.policies = []) (w : World) :
   | 0 => ⟨fun _ _ _ => by simp [evalRhs, UGood, UOk, URes],
       fun _ _ _ => by simp [eval, UGood, UOk, URes]⟩
   | n + 1 => by
-    obtain ⟨ihR, ihE⟩ := unary_sound hwf hpol w n
+    obtain ⟨ihR, ihE⟩ := unary_soundR hwf hb1 w n
+    have hdst : ∀ po ∈ p.policies, po.dst.top.SymFree := fun po h => (hb1.dst po h).1.top_symFree
     have hrun : ∀ {σ : List (String × LTy)} {env : Env} {Γ : LCtx} {E : List String} {e : Expr}
         {t : LTy} {ε : Eff}, GroundSubst σ → LEnvTy p env (Γ.lsub p.recordDeep σ) →
         LExprTy p E Γ .bot e t ε →
@@ -266,8 +295,8 @@ theorem unary_sound (hwf : p.LWellFormed) (hpol : p.policies = []) (w : World) :
           show LValTy p v _
           rw [ofScalar_lsubst]
           exact prim_ltyped _ hp he
-      | @call _ _ f targs args fn ts hf _ hlen _ _ hg has hfl hb hrb =>
-        obtain ⟨tb, εb, hbody, hflow, ho, hgo, hfs, _, hrs⟩ := funOk_of_find hwf hpol hf
+      | @call _ _ f targs args fn ts hf hnv hlen _ _ hg has hfl hb hrb =>
+        obtain ⟨tb, εb, hbody, hflow, ho, hgo, hfs, _, hrs⟩ := funOk_of_nvia hwf hnv hf
         have hτ : GroundSubst (fn.tparams.zip targs) := zip_ground hg
         have hcov := lookup_zip_cover (xs := fn.tparams) hlen
         obtain ⟨hps, hres⟩ := hwf.sigsScoped fn (find_mem hf)
@@ -285,7 +314,6 @@ theorem unary_sound (hwf : p.LWellFormed) (hpol : p.policies = []) (w : World) :
         rw [List.append_nil] at henv'
         have henv'' : LEnvTy p (bindParams fn.params vs []) (LCtx.lsub p.recordDeep (fn.tparams.zip targs) fn.params) := by
           simpa [bindParams, LCtx.lsub, List.map_map, Function.comp_def] using henv'
-        have hdst : ∀ po ∈ p.policies, po.dst.top.SymFree := by rw [hpol]; intro _ h; nomatch h
         refine UOk.mono (call_allowed_inst hdst hb hrb (LExpr.le_refl _) ho hgo hrs)
           (fun v hv => ?_)
           (fun h => bound_fails_instR hb (LExpr.le_refl _) (flag_of_fails hfs h))
@@ -364,8 +392,8 @@ theorem unary_sound (hwf : p.LWellFormed) (hpol : p.policies = []) (w : World) :
         simp only [LTy.lsubst]
         exact .closure hσ henv hb hfl hrl (by rw [LTy.lsubsts_eq]; exact Flows.refl _) (Flow.refl _)
           id id id
-      | @funRef _ _ f targs fn hf _ hlen _ _ hg hfr =>
-        obtain ⟨tb, εb, hbody, hflow, ho, hgo, hfs, hfl, hrs⟩ := funOk_of_find hwf hpol hf
+      | @funRef _ _ f targs fn hf hnv hlen _ _ hg hfr =>
+        obtain ⟨tb, εb, hbody, hflow, ho, hgo, hfs, hfl, hrs⟩ := funOk_of_nvia hwf hnv hf
         have hrl : εb.rels = [] :=
           List.eq_nil_iff_forall_not_mem.mpr (fun x hx => by simpa [hfr] using hrs x hx)
         have hτ : GroundSubst (fn.tparams.zip targs) := zip_ground hg
@@ -390,10 +418,53 @@ theorem unary_sound (hwf : p.LWellFormed) (hpol : p.policies = []) (w : World) :
           exact this fn.params hps
         · exact Flow.trans (Flow.lsubst _ _ hflow)
             (Flow.lsubst_ground _ σ (LTy.lsubst_ground _ hτ hcov hres)).2
-      | declassify hpo =>
-        have := policy_mem hpo
-        rw [hpol] at this
-        nomatch this
+      | @declassify _ _ pol a po fn t hpo hfn ha hflow hle _ =>
+        obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv ha
+        have hmem := policy_mem hpo
+        obtain ⟨_, _, fn', hfn', hps, hres⟩ := hwf.wellFormed.policies _ hmem
+        rw [hfn] at hfn'
+        cases hfn'
+        obtain ⟨fnv, hfnv, _, _, _, hpure⟩ := hb1.via po hmem
+        rw [hfn] at hfnv
+        cases hfnv
+        obtain ⟨hdg, hds⟩ := hb1.dst po hmem
+        have hsrc : (t.lsubst p.recordDeep σ).erase = po.src.erase := by
+          rw [LTy.erase_lsubst, Flow.erase hflow, Ty.Scalar.subst _ (hb1.src po hmem)]
+        have hlen := paramTys_length fn []
+        rw [hps] at hlen
+        simp only [evalRhs, hpo, hv, hfn]
+        rw [ite_eq_left (by simpa using hlen)]
+        have hvs : ValsTy p [v] (fn.paramTys []) := by
+          rw [hps, ← hsrc]
+          exact .cons (valTy_of_scalar (by rw [hsrc]; exact hb1.src po hmem) hvt) .nil
+        have henv' := bindParams_typed hvs (paramTys_length fn []) (EnvTy.nil (p := p))
+        rw [List.append_nil] at henv'
+        have hbody := body_typed hwf.wellFormed hfn []
+        rw [Ty.subst_nil, hres] at hbody
+        have hgood := (sound hwf.wellFormed w n).2 henv' hbody
+        have hq := (pure_run p w n).2 (bindParams fn.params [v] []) fn.body hpure
+        revert hgood hq
+        generalize eval n p w (bindParams fn.params [v] []) fn.body = run
+        obtain ⟨tr, res⟩ := run
+        intro hgood hq
+        obtain ⟨htr, hnf⟩ := hq
+        simp only at htr hnf
+        subst htr
+        cases res with
+        | ok r =>
+          simp only [Good] at hgood
+          refine ⟨fun ev hev => ?_, ?_⟩
+          · simp only [List.nil_append, List.mem_singleton] at hev
+            subst hev
+            exact ⟨by simp [Eff.ofFnR, Eff.ofFn, Eff.inst], po, hpo,
+              le_inst_of_symFree _ hdg.top_symFree hle⟩
+          · show LValTy p r (po.dst.lsubst p.recordDeep σ)
+            refine lvalTy_of_scalar ?_ ?_
+            · rw [LTy.erase_lsubst, Ty.Scalar.subst _ hds]; exact hds
+            · rw [LTy.erase_lsubst, Ty.Scalar.subst _ hds]; exact hgood
+        | failed c => exact absurd rfl (hnf c)
+        | stuck => exact ⟨fun _ h => (nomatch h), trivial⟩
+        | outOfFuel => exact ⟨fun _ h => (nomatch h), trivial⟩
       | map hxs hf hte hb =>
         obtain ⟨xv, hxv, hxt⟩ := latom_ltypedσ henv hxs
         obtain ⟨fv, hfv, hft⟩ := latom_ltypedσ henv hf
@@ -584,5 +655,18 @@ theorem unary_sound (hwf : p.LWellFormed) (hpol : p.policies = []) (w : World) :
           | ok v => exact ⟨hev, LValTy.lsubst_raise (LValTy.flow h.2 (Flow.lsubst _ _ h₁))⟩
           | stuck => exact ⟨hev, trivial⟩
           | outOfFuel => exact ⟨hev, trivial⟩
+
+/-- **The unary half without policies**, as M3 and M4 state it: `unary_soundR`, whose
+restrictions hold when there is no policy. -/
+theorem unary_sound (hwf : p.LWellFormed) (hpol : p.policies = []) (w : World) : ∀ n : Nat,
+    (∀ {σ : List (String × LTy)} {env : Env} {Γ : LCtx} {E : List String} {pc : LExpr} {r : Rhs}
+      {t : LTy} {ε : Eff}, GroundSubst σ → LEnvTy p env (Γ.lsub p.recordDeep σ) →
+      LRhsTy p E Γ pc r t ε →
+      UGood p (pc.inst (p.sd σ)) (t.lsubst p.recordDeep σ) (ε.inst (p.sd σ)) (evalRhs n p w env r)) ∧
+    (∀ {σ : List (String × LTy)} {env : Env} {Γ : LCtx} {E : List String} {pc : LExpr} {e : Expr}
+      {t : LTy} {ε : Eff}, GroundSubst σ → LEnvTy p env (Γ.lsub p.recordDeep σ) →
+      LExprTy p E Γ pc e t ε →
+      UGood p (pc.inst (p.sd σ)) (t.lsubst p.recordDeep σ) (ε.inst (p.sd σ)) (eval n p w env e)) :=
+  unary_soundR hwf (.of_nil hpol) w
 
 end Una.F1
