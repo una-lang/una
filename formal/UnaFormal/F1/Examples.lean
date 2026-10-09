@@ -49,8 +49,8 @@ theorem lT_join_le : LExpr.le prog.top (lT.join LExpr.bot) lT :=
 /-- The labeled typing accepts `pick`: its result is `T` with `ℓ_T`, which a call replaces by
 the type argument's own labels. -/
 theorem pick_ok : prog.FunOk pick := by
-  refine ⟨.var "T" (lT.join .bot), ⟨false || false, false || false, Option.none⟩,
-    ?_, .var lT_join_le, by simp, by simp, by simp, ?_⟩
+  refine ⟨.var "T" (lT.join .bot), ⟨false || false, false || false, Option.none, [] ++ []⟩,
+    ?_, .var lT_join_le, by simp, by simp, by simp, ?_, by simp⟩
   · have hthen : LExprTy prog [] [("a", .var "T" lT), ("b", .var "T" lT), ("c", .bool .bot)]
         (LExpr.bot.join .bot) (.atom (.var "a")) (.var "T" lT) .none :=
       .atom (.var rfl)
@@ -102,7 +102,7 @@ theorem callPick_typed :
   refine LRhsTy.call (fn := pick) (targs := [.int .bot]) rfl ?_ rfl rfl ?_
     (by simp [LTy.GroundAll, LTy.Ground, LExpr.SymFree, LExpr.bot, LExpr.ofLabel]) (.cons .int (.cons .int (.cons .bool .nil)))
     (.cons (.int (bot_le _)) (.cons (.int (bot_le _)) (.cons (.bool (bot_le _)) .nil)))
-    ⟨fun h => (by cases h), fun h => (by cases h), fun h => (by cases h)⟩
+    ⟨fun h => (by cases h), fun h => (by cases h), fun h => (by cases h)⟩ (fun _ h => nomatch h)
   · intro ⟨_, h, _⟩
     simp [prog] at h
   · intro q _ h
@@ -168,7 +168,8 @@ def chooseEff : Eff :=
 
 /-- The labeled typing accepts `choose`, `Eq` constraint, comparison, decision and all. -/
 theorem choose_ok : prog2.FunOk choose := by
-  refine ⟨rTy, chooseEff, ?hty, .int (choose_le _ _ ?_ ?_ ?_), ?_, ?_, ?_, le_self _⟩
+  refine ⟨rTy, chooseEff, ?hty, .int (choose_le _ _ ?_ ?_ ?_), ?_, ?_, ?_, le_self _,
+    fun _ h => by simp [chooseEff, Eff.union, Eff.none, Eff.ofFn] at h⟩
   case hty =>
     dsimp only [choose]
     refine .letR ?r1 (.bool (le_self _)) ?b1 (by simp [LTy.InPlace, cLabel, tT, lT, LTy.deep, LExpr.promote, LExpr.join])

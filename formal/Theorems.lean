@@ -65,3 +65,13 @@ import UnaFormal
 #print axioms Una.F1.T6Example.genericCall_typed
 #print axioms Una.F1.T6Example.genericCall_noninterferent
 #print axioms Una.F1.T6Example.pickPublic_result_equal
+#print axioms Una.F1.pure_run
+#print axioms Una.F1.unary_soundR
+#print axioms Una.F1.t6_soundR
+#print axioms Una.F1.t6_release
+#print axioms Una.F1.t6_release_agree
+#print axioms Una.F1.ReleaseExample.body_typed
+#print axioms Una.F1.ReleaseExample.pin_diverges
+#print axioms Una.F1.ReleaseExample.guesses_agree
+#print axioms Una.F1.ReleaseExample.hidden_release_related
+#print axioms Una.F1.ReleaseExample.release_under_secret_untyped

@@ -22,3 +22,5 @@ import UnaFormal.F1.Check
 import UnaFormal.F1.Import
 import UnaFormal.F1.CheckTests
 import UnaFormal.F1.ImportTests
+import UnaFormal.F1.Release
+import UnaFormal.F1.ReleaseExample

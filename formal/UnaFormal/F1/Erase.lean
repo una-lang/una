@@ -101,7 +101,7 @@ mutual
     | _, _, _, _, _, .prim has hp => by
       rw [ofScalar_erase _ hp]
       exact .prim (latoms_erase has) hp
-    | _, _, _, _, _, .call (fn := fn) (targs := targs) hf _ _ _ _ _ has hflows _ => by
+    | _, _, _, _, _, .call (fn := fn) (targs := targs) hf _ _ _ _ _ has hflows _ _ => by
       have h := latoms_erase has
       rw [← Flows.erase hflows, lsub_params_erase] at h
       rw [Program.lsub, LTy.erase_lsubst]
@@ -132,16 +132,16 @@ mutual
       exact .list h
     | _, _, _, _, _, .none _ => .none
     | _, _, _, _, _, .some h => .some (latom_erase h)
-    | _, _, _, _, _, .lambda (params := params) hb _ _ => by
+    | _, _, _, _, _, .lambda (params := params) hb _ _ _ => by
       have h := LExprTy.toStruct hb
       rw [params_erase] at h
       simp only [LTy.erase, LTy.erases_eq, List.map_map]
       exact .lambda (by simp) h
-    | _, _, _, _, _, .funRef (fn := fn) (targs := targs) hf _ _ _ _ _ => by
+    | _, _, _, _, _, .funRef (fn := fn) (targs := targs) hf _ _ _ _ _ _ => by
       simp only [LTy.erase, LTy.erases_eq]
       rw [lsub_params_erase, Program.lsub, LTy.erase_lsubst]
       exact .funRef hf
-    | _, _, _, _, _, .declassify hpo _ ha hflow _ => by
+    | _, _, _, _, _, .declassify hpo _ ha hflow _ _ => by
       have h := latom_erase ha
       rw [Flow.erase hflow] at h
       exact .declassify hpo h

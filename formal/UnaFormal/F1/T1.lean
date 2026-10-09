@@ -192,7 +192,11 @@ theorem sound (hwf : p.WellFormed) (w : World) : ∀ n : Nat,
         rw [List.append_nil] at henv'
         have hbody := body_typed hwf hfn []
         rw [Ty.subst_nil, hres] at hbody
-        exact ihE henv' hbody
+        have h := ihE henv' hbody
+        revert h
+        generalize eval _ p w (bindParams fn.params [v] []) fn.body = r
+        obtain ⟨tr, res⟩ := r
+        cases res <;> simp [Good]
       | map hxs hf =>
         obtain ⟨xv, hxv, hxt⟩ := atom_typed henv hxs
         obtain ⟨fv, hfv, hft⟩ := atom_typed henv hf

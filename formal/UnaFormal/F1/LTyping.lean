@@ -85,24 +85,29 @@ structure Eff where
   op : Bool
   get : Bool
   fails : Option LExpr
+  /-- The policies whose release the code may perform (option B1). -/
+  rels : List String
 
 namespace Eff
 
-def none : Eff := ⟨false, false, Option.none⟩
+def none : Eff := ⟨false, false, Option.none, []⟩
 
 def union (a b : Eff) : Eff :=
   ⟨a.op || b.op, a.get || b.get,
     match a.fails, b.fails with
     | some l₁, some l₂ => some (l₁.join l₂)
     | some l, Option.none | Option.none, some l => some l
-    | Option.none, Option.none => Option.none⟩
+    | Option.none, Option.none => Option.none, a.rels ++ b.rels⟩
 
 /-- The label of what decides whether the code fails, `⊥` when it cannot. -/
 def failLabel (e : Eff) : LExpr := e.fails.getD LExpr.bot
 
 /-- The effects of a call of a function with these `uses` and `fails`. A function's failure is
 decided at its public program counter (T-Fail, T-Fun), so its label is `⊥`. -/
-def ofFn (o g f : Bool) : Eff := ⟨o, g, if f then some LExpr.bot else Option.none⟩
+def ofFn (o g f : Bool) : Eff := ⟨o, g, if f then some LExpr.bot else Option.none, []⟩
+
+/-- The effects of a call of a function that may also release through the policies `rs`. -/
+def ofFnR (o g f : Bool) (rs : List String) : Eff := { ofFn o g f with rels := rs }
 
 end Eff
 
@@ -113,6 +118,12 @@ def Program.Bound (p : Program) (pc : LExpr) (o g f : Bool) : Prop :=
   (o = true → p.le pc (.ofLabel p.acceptsOp) ∧ pc.SymFree) ∧
   (g = true → p.le pc (.ofLabel p.acceptsGet) ∧ pc.SymFree) ∧
   (f = true → p.le pc LExpr.bot ∧ pc.SymFree)
+
+/-- A call of a function that may release through the policies `rs` (option B1): each release
+happens at the label of its policy's `to`, so the program counter is below it, as at the
+declassification itself (`spec/07 §5` rule 2), and has no symbolic label. -/
+def Program.RelBound (p : Program) (pc : LExpr) (rs : List String) : Prop :=
+  ∀ pol ∈ rs, ∃ po, p.policy pol = some po ∧ p.le pc po.dst.top ∧ pc.SymFree
 
 /-- A scalar type with a label: the result of a primitive. -/
 def ofScalar (t : Ty) (l : LExpr) : LTy :=
@@ -242,9 +253,9 @@ mutual
         LTy.firstClasses targs = true → fn.EqArgs p E targs → LTy.GroundAll targs →
         LAtomsTy Γ args ts →
         Flows p.top ts (fn.params.map (fun q => p.lsub (fn.tparams.zip targs) q.2)) →
-        p.Bound pc fn.op fn.get fn.fails →
+        p.Bound pc fn.op fn.get fn.fails → p.RelBound pc fn.rels →
         LRhsTy p E Γ pc (.call f targs args) (p.lsub (fn.tparams.zip targs) fn.result)
-          (.ofFn fn.op fn.get fn.fails)
+          (.ofFnR fn.op fn.get fn.fails fn.rels)
     /-- T-App. An argument that carries decisions `ℓ*_T` its parameter's type does not accept
     raises the call's result and program counter instead, as the value's label does
     (`spec/07 §7` rule 8, "decisions given to functions"). The decisions are those the
@@ -262,14 +273,14 @@ mutual
     | op {Γ pc line t} :
         LAtomTy Γ line t → t.erase.Scalar →
         p.le (pc.join (p.deep t)) (.ofLabel p.acceptsOp) → pc.SymFree →
-        LRhsTy p E Γ pc (.op line) (.unit .bot) ⟨true, false, Option.none⟩
+        LRhsTy p E Γ pc (.op line) (.unit .bot) ⟨true, false, Option.none, []⟩
     /-- The host operation: a sink whose failure its argument decides, and which the program
     counter decides too, since it decides whether the operation runs. -/
     | get {Γ pc url t} :
         LAtomTy Γ url t → t.erase = .text →
         p.le (pc.join (p.deep t)) (.ofLabel p.acceptsGet) → pc.SymFree →
         LRhsTy p E Γ pc (.get url) (.text (.ofLabel p.getResult))
-          ⟨false, true, some (pc.join (p.deep t))⟩
+          ⟨false, true, some (pc.join (p.deep t)), []⟩
     | construct {Γ pc record fields rec ts} :
         p.record record = some rec → LAtomsTy Γ fields ts → Flows p.top ts rec.fields →
         LRhsTy p E Γ pc (.construct record fields) (.record record .bot) .none
@@ -286,21 +297,23 @@ mutual
     /-- A lambda's body is checked at the public program counter (ADR 0031 rule 4), and, as a
     function's, its failures must be decided there. -/
     | lambda {Γ pc params body t ε} :
-        LExprTy p E (params ++ Γ) .bot body t ε → p.le ε.failLabel .bot →
+        LExprTy p E (params ++ Γ) .bot body t ε → p.le ε.failLabel .bot → ε.rels = [] →
         (∀ q ∈ params, q.2.InPlace) →
         LRhsTy p E Γ pc (.lambda params body)
           (.fn (params.map Prod.snd) t ε.op ε.get ε.fails.isSome .bot) .none
     | funRef {Γ pc f targs fn} :
         p.find f = some fn → ¬ p.IsVia f → targs.length = fn.tparams.length →
-        LTy.firstClasses targs = true → fn.EqArgs p E targs → LTy.GroundAll targs →
+        LTy.firstClasses targs = true → fn.EqArgs p E targs → LTy.GroundAll targs → fn.rels = [] →
         LRhsTy p E Γ pc (.funRef f targs)
           (.fn (fn.params.map (fun q => p.lsub (fn.tparams.zip targs) q.2))
             (p.lsub (fn.tparams.zip targs) fn.result) fn.op fn.get fn.fails .bot) .none
-    /-- T-Declassify. -/
+    /-- T-Declassify (`spec/07 §5` rule 2): the argument flows into `from`, and the program
+    counter is below the label of `to`. The call releases its value through the policy (option
+    B1), an effect a function that declassifies declares (`Fun.rels`). -/
     | declassify {Γ pc pol a po fn t} :
         p.policy pol = some po → p.find po.via = some fn → LAtomTy Γ a t → Flow p.top t po.src →
-        p.le pc po.dst.top →
-        LRhsTy p E Γ pc (.declassify pol a) po.dst (.ofFn fn.op fn.get fn.fails)
+        p.le pc po.dst.top → pc.SymFree →
+        LRhsTy p E Γ pc (.declassify pol a) po.dst (.ofFnR fn.op fn.get fn.fails [pol])
     /-- `map` (`spec/14 §1`, ADR 0051): the function runs under the top labels of `xs` and of
     itself (`spec/07 §7` rule 9); the result's top label is theirs, and each element is the
     function's result raised by its label (T-App). -/
@@ -330,7 +343,7 @@ mutual
     /-- The partial primitive: its result and its failure carry every label of its input. -/
     | parse {Γ pc s t} :
         LAtomTy Γ s t → t.erase = .text →
-        LRhsTy p E Γ pc (.parse s) (.int (p.deep t)) ⟨false, false, some (pc.join (p.deep t))⟩
+        LRhsTy p E Γ pc (.parse s) (.int (p.deep t)) ⟨false, false, some (pc.join (p.deep t)), []⟩
     /-- `==` (`spec/07 §7` rule 3): both operands flow into one type with equality, and the
     result carries every label of both. Over values of `T`, that is `ℓ*_T`, the decision of
     rule 8. -/
@@ -372,11 +385,11 @@ mutual
         LExprTy p E Γ pc (.caseResult scrutinee x okE y errE) (s.raise ls) (ε₁.union ε₂)
     /-- T-Fail: only at the public program counter (U4002). -/
     | fail {Γ pc code s} :
-        p.le pc .bot → pc.SymFree → s.InPlace → LExprTy p E Γ pc (.fail code) s ⟨false, false, some .bot⟩
+        p.le pc .bot → pc.SymFree → s.InPlace → LExprTy p E Γ pc (.fail code) s ⟨false, false, some .bot, []⟩
     /-- T-Attempt: the result carries the label of what decides the failure. -/
     | attempt {Γ pc body t ε} :
         LExprTy p E Γ pc body t ε →
-        LExprTy p E Γ pc (.attempt body) (.result t ε.failLabel) ⟨ε.op, ε.get, Option.none⟩
+        LExprTy p E Γ pc (.attempt body) (.result t ε.failLabel) ⟨ε.op, ε.get, Option.none, ε.rels⟩
     /-- T-Handle: the handler runs under the label of what decides the failure, which binds its
     code, and the value is raised by it, since it decides which branch gives the value. -/
     | handle {Γ pc body x handler t₁ t₂ s ε₁ ε₂} :
@@ -384,7 +397,7 @@ mutual
         LExprTy p E ((x, .int ε₁.failLabel) :: Γ) (pc.join ε₁.failLabel) handler t₂ ε₂ →
         Flow p.top t₁ s → Flow p.top t₂ s → s.InPlace →
         LExprTy p E Γ pc (.handle body x handler) (s.raise ε₁.failLabel)
-          ⟨ε₁.op || ε₂.op, ε₁.get || ε₂.get, ε₂.fails⟩
+          ⟨ε₁.op || ε₂.op, ε₁.get || ε₂.get, ε₂.fails, ε₁.rels ++ ε₂.rels⟩
 end
 
 /-- T-Fun: the body, at the public program counter, flows into the declared result, which may
@@ -393,7 +406,7 @@ declared, and its failures are decided at the public program counter (U4002). -/
 def Program.FunOk (p : Program) (fn : Fun) : Prop :=
   ∃ t ε, LExprTy p fn.eqParams fn.params .bot fn.body t ε ∧ Flow p.top t fn.result ∧
     (ε.op = true → fn.op = true) ∧ (ε.get = true → fn.get = true) ∧
-    (ε.fails.isSome = true → fn.fails = true) ∧ p.le ε.failLabel .bot
+    (ε.fails.isSome = true → fn.fails = true) ∧ p.le ε.failLabel .bot ∧ (∀ x ∈ ε.rels, x ∈ fn.rels)
 
 /-- The categories of a label are among `cats`. -/
 def LExpr.CatsIn (cats : List String) (e : LExpr) : Prop := ∀ c ∈ e.base.cats, c ∈ cats

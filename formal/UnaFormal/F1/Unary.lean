@@ -35,7 +35,7 @@ mutual
     | closure {params body env Γ E t ε ps r o g f l σ} :
         (∀ q ∈ σ, q.2.Ground) →
         LEnvTy p env (Γ.lsub p.recordDeep σ) → LExprTy p E (params ++ Γ) .bot body t ε →
-        p.le ε.failLabel .bot →
+        p.le ε.failLabel .bot → ε.rels = [] →
         Flows p.top ps ((params.map Prod.snd).map (LTy.lsubst p.recordDeep σ)) →
         Flow p.top (t.lsubst p.recordDeep σ) r →
         (ε.op = true → o = true) → (ε.get = true → g = true) → (ε.fails.isSome = true → f = true) →
@@ -70,8 +70,8 @@ mutual
     | _, _, _, .ok h, .result f _ => .ok (LValTy.flow h f)
     | _, _, _, .err, .result _ _ => .err
     | _, _, _, .record hr hfs, .record _ => .record hr hfs
-    | _, _, _, .closure hσ henv hb hfl hps hr ho hg hf, .fn fps fr fo fg ff _ =>
-      .closure hσ henv hb hfl (Flows.trans fps hps) (Flow.trans hr fr) (fo ∘ ho) (fg ∘ hg) (ff ∘ hf)
+    | _, _, _, .closure hσ henv hb hfl hrl hps hr ho hg hf, .fn fps fr fo fg ff _ =>
+      .closure hσ henv hb hfl hrl (Flows.trans fps hps) (Flow.trans hr fr) (fo ∘ ho) (fg ∘ hg) (ff ∘ hf)
 
   theorem LValsAll.flow : ∀ {vs : List Val} {t t' : LTy}, LValsAll p vs t → Flow p.top t t' →
       LValsAll p vs t'
@@ -278,6 +278,7 @@ is above `pc`. -/
 def Allowed (p : Program) (pc : LExpr) (ε : Eff) : Event → Prop
   | .out _ => ε.op = true ∧ p.le pc (.ofLabel p.acceptsOp)
   | .get _ => ε.get = true ∧ p.le pc (.ofLabel p.acceptsGet)
+  | .release pol _ => pol ∈ ε.rels ∧ ∃ po, p.policy pol = some po ∧ p.le pc po.dst.top
 
 /-- A failure, whose label is above `pc`. -/
 abbrev Fails (p : Program) (pc : LExpr) (ε : Eff) : Prop := ∃ l, ε.fails = some l ∧ p.le pc l
@@ -287,10 +288,12 @@ abbrev UGood (p : Program) (pc : LExpr) (t : LTy) (ε : Eff) (run : Trace × Res
   UOk (Allowed p pc ε) (fun v => LValTy p v t) (Fails p pc ε) run
 
 theorem Allowed.mono {pc pc' : LExpr} {ε ε' : Eff} (hpc : p.le pc pc')
-    (ho : ε'.op = true → ε.op = true) (hg : ε'.get = true → ε.get = true) :
+    (ho : ε'.op = true → ε.op = true) (hg : ε'.get = true → ε.get = true)
+    (hr : ∀ x ∈ ε'.rels, x ∈ ε.rels) :
     ∀ ev, Allowed p pc' ε' ev → Allowed p pc ε ev
   | .out _, ⟨h1, h2⟩ => ⟨ho h1, LExpr.le_trans hpc h2⟩
   | .get _, ⟨h1, h2⟩ => ⟨hg h1, LExpr.le_trans hpc h2⟩
+  | .release _ _, ⟨h1, po, hpo, h2⟩ => ⟨hr _ h1, po, hpo, LExpr.le_trans hpc h2⟩
 
 theorem Fails.mono {pc pc' : LExpr} {ε ε' : Eff} (hpc : p.le pc pc')
     (hf : ∀ l, ε'.fails = some l → ∃ l', ε.fails = some l' ∧ p.le l l') :
@@ -322,14 +325,19 @@ theorem union_fails_right {ε₁ ε₂ : Eff} :
   | none => exact ⟨l, by simp [Eff.union, h, h₁], LExpr.le_refl l⟩
   | some l₁ => exact ⟨l₁.join l, by simp [Eff.union, h, h₁], LExpr.le_join_right _ _⟩
 
+theorem union_rels_left {ε₁ ε₂ : Eff} : ∀ x ∈ ε₁.rels, x ∈ (ε₁.union ε₂).rels := by
+  intro x hx; simp [Eff.union, hx]
+theorem union_rels_right {ε₁ ε₂ : Eff} : ∀ x ∈ ε₂.rels, x ∈ (ε₁.union ε₂).rels := by
+  intro x hx; simp [Eff.union, hx]
+
 /-- A union of effects allows what either allows. -/
 theorem allowed_union_left {pc : LExpr} {ε₁ ε₂ : Eff} :
     ∀ ev, Allowed p pc ε₁ ev → Allowed p pc (ε₁.union ε₂) ev :=
-  Allowed.mono (LExpr.le_refl pc) union_op_left union_get_left
+  Allowed.mono (LExpr.le_refl pc) union_op_left union_get_left union_rels_left
 
 theorem allowed_union_right {pc pc' : LExpr} {ε₁ ε₂ : Eff} (hpc : p.le pc pc') :
     ∀ ev, Allowed p pc' ε₂ ev → Allowed p pc (ε₁.union ε₂) ev :=
-  Allowed.mono hpc union_op_right union_get_right
+  Allowed.mono hpc union_op_right union_get_right union_rels_right
 
 theorem fails_union_left {pc : LExpr} {ε₁ ε₂ : Eff} : Fails p pc ε₁ → Fails p pc (ε₁.union ε₂) :=
   Fails.mono (LExpr.le_refl pc) union_fails_left
@@ -342,6 +350,7 @@ theorem fails_union_right {pc pc' : LExpr} {ε₁ ε₂ : Eff} (hpc : p.le pc pc
 def FnAllowed (o g : Bool) : Event → Prop
   | .out _ => o = true
   | .get _ => g = true
+  | .release _ _ => False
 
 /-- At a call whose program counter `pc'` the function's bound allows (`pc ⊑ pc'`), its events
 are allowed, and so is its failure. -/
@@ -349,6 +358,7 @@ theorem bound_allowed {pc pc' : LExpr} {o g f : Bool} (hb : p.Bound pc' o g f)
     (hpc : p.le pc pc') : ∀ ev, FnAllowed o g ev → Allowed p pc (Eff.ofFn o g f) ev
   | .out _, h => ⟨h, LExpr.le_trans hpc (hb.1 h).1⟩
   | .get _, h => ⟨h, LExpr.le_trans hpc (hb.2.1 h).1⟩
+  | .release _ _, h => h.elim
 
 theorem bound_fails {pc pc' : LExpr} {o g f : Bool} (hb : p.Bound pc' o g f)
     (hpc : p.le pc pc') (hf : f = true) : Fails p pc (Eff.ofFn o g f) :=
@@ -359,7 +369,7 @@ def Program.sd (p : Program) (σ : List (String × LTy)) : List (String × LExpr
   σ.map (fun q => (q.1, q.2.deep p.recordDeep))
 
 /-- Effects instantiated: the labels of failures. -/
-def Eff.inst (s : List (String × LExpr)) (ε : Eff) : Eff := ⟨ε.op, ε.get, ε.fails.map (·.inst s)⟩
+def Eff.inst (s : List (String × LExpr)) (ε : Eff) : Eff := ⟨ε.op, ε.get, ε.fails.map (·.inst s), ε.rels⟩
 
 /-- A ground instantiation. -/
 abbrev GroundSubst (σ : List (String × LTy)) : Prop := ∀ q ∈ σ, q.2.Ground
@@ -382,7 +392,7 @@ theorem applyWith_uok {run : Env → Expr → Trace × Res} {fv : Val} {vs : Lis
     (hf : LValTy p fv (.fn ps r o g f lf)) (hvs : LValsTy p vs ps) :
     UOk (FnAllowed o g) (fun v => LValTy p v r) (f = true) (applyWith run fv vs) := by
   cases hf with
-  | @closure params _ cenv Γc _ _ _ _ _ _ _ _ _ σc hσ henv hb hfl hps hr ho hg hfs =>
+  | @closure params _ cenv Γc _ _ _ _ _ _ _ _ _ σc hσ henv hb hfl hrl hps hr ho hg hfs =>
     have hvs' := LValsTy.flows hvs hps
     rw [applyWith, ite_eq_left (by rw [LValsTy.length hvs', List.length_map, List.length_map])]
     have henv' : LEnvTy p (bindParams params vs cenv) ((params ++ Γc).lsub p.recordDeep σc) := by
@@ -395,6 +405,7 @@ theorem applyWith_uok {run : Env → Expr → Trace × Res} {fv : Val} {vs : Lis
       cases ev with
       | out _ => exact ho hev.1
       | get _ => exact hg hev.1
+      | release _ _ => have h := hev.1; simp [Eff.inst, hrl] at h
     · rintro ⟨l, hl, _⟩
       exact hfs (by simp [Eff.inst] at hl; obtain ⟨l', hl', _⟩ := hl; simp [hl'])
 

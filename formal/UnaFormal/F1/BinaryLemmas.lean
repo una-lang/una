@@ -265,7 +265,7 @@ theorem applyWith_brel {run : Env → Expr → Trace × Res}
     (hrun : ∀ {σ : List (String × LTy)} {e₁ e₂ : Env} {Γ : LCtx} {E : List String} {body : Expr}
       {t : LTy} {ε : Eff}, GroundSubst σ → p.EqArgsOK σ E → LCtx.InPlace Γ →
       LEnvTy p e₁ (Γ.lsub p.recordDeep σ) → LEnvTy p e₂ (Γ.lsub p.recordDeep σ) →
-      EnvRel p L (Γ.lsub p.recordDeep σ) e₁ e₂ → LExprTy p E Γ .bot body t ε →
+      EnvRel p L (Γ.lsub p.recordDeep σ) e₁ e₂ → LExprTy p E Γ .bot body t ε → ε.rels = [] →
       BRel p L (V p L (t.lsubst p.recordDeep σ)) (Vis p L (ε.inst (p.sd σ)).failLabel)
         (run e₁ body) (run e₂ body))
     {ps : List LTy} {r : LTy} {o g f : Bool} {l : LExpr} {c₁ c₂ : Val} {as₁ as₂ : List Val}
@@ -274,7 +274,7 @@ theorem applyWith_brel {run : Env → Expr → Trace × Res}
     BRel p L (V p L r) vf (applyWith run c₁ as₁) (applyWith run c₂ as₂) := by
   cases hc with
   | hidden h => exact absurd hl h
-  | @closure params _ cenv₁ cenv₂ Γc _ _ _ _ _ _ _ _ _ σc hσ hE hΓ hrel he₁ he₂ hb hfl hps hr _ _ _ =>
+  | @closure params _ cenv₁ cenv₂ Γc _ _ _ _ _ _ _ _ _ σc hσ hE hΓ hrel he₁ he₂ hb hfl hrl hps hr _ _ _ =>
     have hlen₁ : as₁.length = _ := (LValsTy.length hu₁).trans (Flows.length' hps)
     have hlen₂ : as₂.length = _ := (LValsTy.length hu₂).trans (Flows.length' hps)
     simp only [List.length_map] at hlen₁ hlen₂
@@ -294,7 +294,7 @@ theorem applyWith_brel {run : Env → Expr → Trace × Res}
         (by rw [LCtx.lsub_snd]; exact VList.flows hvs hps) hrel
       simpa [bindParams, LCtx.lsub, List.map_map, Function.comp_def] using this
     exact BRel.mono (fun _ _ h => V.flow h hr) (fun _ => vis_failLabel_inst _ hfl)
-      (hrun hσ hE hΓ (hen hu₁ he₁) (hen hu₂ he₂) hrel' hb)
+      (hrun hσ hE hΓ (hen hu₁ he₁) (hen hu₂ he₂) hrel' hb hrl)
 
 /-- Two related lists, as values of a list type. -/
 def ListRel (p : Program) (L : Label) (t : LTy) (v₁ v₂ : Val) : Prop :=
