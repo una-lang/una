@@ -15,3 +15,4 @@ import UnaFormal.F1.T6
 import UnaFormal.F1.Mono
 import UnaFormal.F1.T6Example
 import UnaFormal.F1.Subst
+import UnaFormal.F1.InPlace

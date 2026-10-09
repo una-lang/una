@@ -147,7 +147,7 @@ theorem t6_sound (hwf : p.LWellFormed) (hgf : p.GenericFree)
         · refine brel_quiet rfl (fun a b => .hidden (by rw [ofScalar_top]; exact hv)) ?_ ?_
           · intro c hc; cases h : evalPrim pr vs₁ <;> simp [h] at hc
           · intro c hc; cases h : evalPrim pr vs₂ <;> simp [h] at hc
-      | @call _ _ f targs args fn ts hf _ _ _ _ has hfl hb =>
+      | @call _ _ f targs args fn ts hf _ _ _ _ _ has hfl hb =>
         obtain ⟨⟨tb, εb, hbody, hflow, ho, hg, hfs, hfail⟩, htp⟩ := funOk_of_find hwf hgf hf
         obtain ⟨vs₁, vs₂, h₁, h₂, hvs, hu₁, hu₂⟩ := latoms_both he₁ he₂ hrel has
         have hfl' : Flows p.top ts (fn.params.map Prod.snd) := by
@@ -258,7 +258,7 @@ theorem t6_sound (hwf : p.LWellFormed) (hgf : p.GenericFree)
         exact brel_done (.some hv)
       | lambda hb hfl _ =>
         exact brel_done (.closure hrel he₁ he₂ hb hfl (Flows.refl _) (Flow.refl _) id id id)
-      | @funRef _ _ f targs fn hf _ _ _ _ =>
+      | @funRef _ _ f targs fn hf _ _ _ _ _ =>
         obtain ⟨⟨tb, εb, hbody, hflow, ho, hg, hfs, hfail⟩, htp⟩ := funOk_of_find hwf hgf hf
         simp only [evalRhs, hf]
         refine brel_done ?_

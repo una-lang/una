@@ -53,3 +53,6 @@ import UnaFormal
 #print axioms Una.F1.T6Example.leaking_untyped
 #print axioms Una.F1.LExpr.le_inst
 #print axioms Una.F1.Flow.lsubst
+#print axioms Una.F1.LTy.lsubst_inPlace
+#print axioms Una.F1.LExprTy.inPlace
+#print axioms Una.F1.Examples.callPick_inPlace

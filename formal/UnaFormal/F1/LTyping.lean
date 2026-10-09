@@ -157,6 +157,20 @@ mutual
     | t :: ts => t.InPlace ∧ LTy.InPlaceAll ts
 end
 
+mutual
+  /-- A ground type: no type parameter and no symbolic label. F1 has one level of generic
+  functions (`docs/plan/formal-track.md` §3), so the type arguments of a call are ground. -/
+  def LTy.Ground : LTy → Prop
+    | .var _ _ => False
+    | .int l | .bool l | .text l | .unit l | .record _ l => l.SymFree
+    | .list t l | .option t l | .result t l => t.Ground ∧ l.SymFree
+    | .fn ps r _ _ _ l => LTy.GroundAll ps ∧ r.Ground ∧ l.SymFree
+
+  def LTy.GroundAll : List LTy → Prop
+    | [] => True
+    | t :: ts => t.Ground ∧ LTy.GroundAll ts
+end
+
 /-- A symbolic decision `ℓ*_T` for each name. -/
 def decision (d : List String) : LExpr := ⟨Label.bot, [], d⟩
 
@@ -208,7 +222,8 @@ mutual
     policy (U4005). -/
     | call {Γ pc f targs args fn ts} :
         p.find f = some fn → ¬ p.IsVia f → targs.length = fn.tparams.length →
-        LTy.firstClasses targs = true → fn.EqArgs p E targs → LAtomsTy Γ args ts →
+        LTy.firstClasses targs = true → fn.EqArgs p E targs → LTy.GroundAll targs →
+        LAtomsTy Γ args ts →
         Flows p.top ts (fn.params.map (fun q => p.lsub (fn.tparams.zip targs) q.2)) →
         p.Bound pc fn.op fn.get fn.fails →
         LRhsTy p E Γ pc (.call f targs args) (p.lsub (fn.tparams.zip targs) fn.result)
@@ -260,7 +275,7 @@ mutual
           (.fn (params.map Prod.snd) t ε.op ε.get ε.fails.isSome .bot) .none
     | funRef {Γ pc f targs fn} :
         p.find f = some fn → ¬ p.IsVia f → targs.length = fn.tparams.length →
-        LTy.firstClasses targs = true → fn.EqArgs p E targs →
+        LTy.firstClasses targs = true → fn.EqArgs p E targs → LTy.GroundAll targs →
         LRhsTy p E Γ pc (.funRef f targs)
           (.fn (fn.params.map (fun q => p.lsub (fn.tparams.zip targs) q.2))
             (p.lsub (fn.tparams.zip targs) fn.result) fn.op fn.get fn.fails .bot) .none

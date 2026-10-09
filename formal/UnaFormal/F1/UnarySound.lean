@@ -110,7 +110,7 @@ theorem unary_sound (hwf : p.LWellFormed) (hgf : p.GenericFree) (w : World) : �
         cases he : evalPrim _ vs with
         | none => trivial
         | some v => exact prim_ltyped _ hp he
-      | @call _ _ f targs args fn ts hf _ _ _ _ has hfl hb =>
+      | @call _ _ f targs args fn ts hf _ _ _ _ _ has hfl hb =>
         obtain ⟨⟨tb, εb, hbody, hflow, ho, hg, hfs, _⟩, htp⟩ := funOk_of_find hwf hgf hf
         obtain ⟨vs, hvs, hvst⟩ := latoms_ltyped henv has
         have hargs := args_of_call htp hvst hfl
@@ -182,7 +182,7 @@ theorem unary_sound (hwf : p.LWellFormed) (hgf : p.GenericFree) (w : World) : �
         exact ⟨fun _ h => by simp [evalRhs] at h, by simpa [evalRhs, hv, URes] using LValTy.some hvt⟩
       | lambda hb hfl _ =>
         exact uok_done (LValTy.closure henv hb hfl (Flows.refl _) (Flow.refl _) id id id)
-      | @funRef _ _ f targs fn hf _ _ _ _ =>
+      | @funRef _ _ f targs fn hf _ _ _ _ _ =>
         obtain ⟨⟨tb, εb, hbody, hflow, ho, hg, hfs, hfl⟩, htp⟩ := funOk_of_find hwf hgf hf
         simp only [evalRhs, hf]
         apply uok_done

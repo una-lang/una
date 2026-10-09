@@ -4,6 +4,7 @@ accepts, whose result carries `ℓ_T` in place, a program it accepts, and T1 app
 call of the function and to its run.
 -/
 import UnaFormal.F1.Erase
+import UnaFormal.F1.InPlace
 
 namespace Una.F1.Examples
 
@@ -88,7 +89,8 @@ theorem callPick_typed :
     LExprTy prog [] [] .bot callPick pickInt ((Eff.ofFn false false false).union .none) := by
   refine .letR (t := pickInt) ?_ (.int (le_self _)) (.atom (.var rfl)) ?ip
   case ip => simp [pickInt, Program.lsub, LTy.lsubst, pick, lT, LTy.InPlace, LTy.raise, LExpr.join, LExpr.inst, LExpr.dropPlain, LExpr.joinAll, LExpr.bot, LExpr.ofLabel]
-  refine LRhsTy.call (fn := pick) (targs := [.int .bot]) rfl ?_ rfl rfl ?_ (.cons .int (.cons .int (.cons .bool .nil)))
+  refine LRhsTy.call (fn := pick) (targs := [.int .bot]) rfl ?_ rfl rfl ?_
+    (by simp [LTy.GroundAll, LTy.Ground, LExpr.SymFree, LExpr.bot, LExpr.ofLabel]) (.cons .int (.cons .int (.cons .bool .nil)))
     (.cons (.int (bot_le _)) (.cons (.int (bot_le _)) (.cons (.bool (bot_le _)) .nil)))
     ⟨fun h => (by cases h), fun h => (by cases h), fun h => (by cases h)⟩
   · intro ⟨_, h, _⟩
@@ -163,7 +165,7 @@ theorem choose_ok : prog2.FunOk choose := by
     · exact .eq (.var rfl) (.var rfl) (.var (le_self _)) (.var (le_self _)) rfl
     refine .letE ?r2 (.var (le_self _)) ?b2 (by simp [LTy.InPlace, xTy, cLabel, tT, lT, LTy.raise, LTy.deep, LExpr.promote, LExpr.join])
     · exact .ite (.var rfl) (.atom (.var rfl)) (.atom (.var rfl)) (.var (le_self _))
-        (.var (le_self _)) (by simp [LTy.InPlace, tT, lT])
+        (.var (le_self _)) (by simp [LTy.InPlace, lT])
     refine .letR ?r3 (.int (le_self _)) (.atom (.var rfl)) (by simp [LTy.InPlace, rTy, LTy.raise, LExpr.join, LExpr.bot, LExpr.ofLabel, decision])
     refine LRhsTy.apply (ps := [tT]) (r := .int .bot) (o := false) (g := false) (fl := false)
       (lf := .bot) (ts := [xTy]) ?hf ?has ?fl ?bd
@@ -195,5 +197,13 @@ theorem eq_needs_Eq {p : Program} {Γ : LCtx} {pc : LExpr} {b : Atom} {t : LTy} 
       cases hx
       cases hf₁
       simp [Program.eqIn, LTy.eqIn] at he
+
+end Una.F1.Examples
+
+namespace Una.F1.Examples
+
+/-- The preservation of `ℓ_T` in place, applied: the typed call of `pick` keeps it. -/
+theorem callPick_inPlace : pickInt.InPlace :=
+  (LExprTy.inPlace prog_wf (fun _ h => by simp at h) rfl callPick_typed).1
 
 end Una.F1.Examples
