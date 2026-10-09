@@ -74,7 +74,7 @@ mutual
     | _, _, _, .err, .result _ _ => .err
     | _, _, _, .record hr hfs, .record _ => .record hr hfs
     | _, _, _, .closure hσ henv hb hfl hrl hps hr ho hg hf, .fn fps fr fo fg ff _ =>
-      .closure hσ henv hb hfl hrl (Flows.trans fps hps) (Flow.trans hr fr) (fo ∘ ho) (fg ∘ hg) (ff ∘ hf)
+      .closure hσ henv hb hfl hrl (Flows.trans fps hps) (Flow.trans hr fr) (fo ∘ ho) (hg.trans fg) (ff ∘ hf)
 
   theorem LValsAll.flow : ∀ {vs : List Val} {t t' : LTy}, LValsAll p vs t → Flow p.top t t' →
       LValsAll p vs t'
@@ -182,8 +182,8 @@ mutual
         .result (Flow.lsubst_nil rd t).2 (LExpr.le_inst_nil l)⟩
     | .record _ l => ⟨.record (LExpr.inst_nil_le l), .record (LExpr.le_inst_nil l)⟩
     | .fn ps r _ _ _ l =>
-      ⟨.fn (Flows.lsubst_nil rd ps).2 (Flow.lsubst_nil rd r).1 id id id (LExpr.inst_nil_le l),
-        .fn (Flows.lsubst_nil rd ps).1 (Flow.lsubst_nil rd r).2 id id id (LExpr.le_inst_nil l)⟩
+      ⟨.fn (Flows.lsubst_nil rd ps).2 (Flow.lsubst_nil rd r).1 id (HostFx.Le.refl _) id (LExpr.inst_nil_le l),
+        .fn (Flows.lsubst_nil rd ps).1 (Flow.lsubst_nil rd r).2 id (HostFx.Le.refl _) id (LExpr.le_inst_nil l)⟩
     | .var _ l => ⟨.var (LExpr.inst_nil_le l), .var (LExpr.le_inst_nil l)⟩
 
   theorem Flows.lsubst_nil {top : Label} (rd : String → Label) :
@@ -252,11 +252,11 @@ abbrev UOk (A : Event → Prop) (P : Val → Prop) (F : Prop) (G : HostFx) (w : 
 
 theorem uok_done {A : Event → Prop} {P : Val → Prop} {F : Prop} {G : HostFx} {w : World H}
     {v : Val} (h : P v) : UOk A P F G w (done w v) :=
-  ⟨fun _ h => nomatch h, h, WEff.refl G w⟩
+  ⟨fun _ h' => (nomatch h'), h, WEff.refl G w⟩
 
 theorem uok_stuck {A : Event → Prop} {P : Val → Prop} {F : Prop} {G : HostFx} {w : World H} :
     UOk A P F G w (stuck w) :=
-  ⟨fun _ h => nomatch h, trivial, WEff.refl G w⟩
+  ⟨fun _ h' => (nomatch h'), trivial, WEff.refl G w⟩
 
 theorem UOk.mono {A A' : Event → Prop} {P P' : Val → Prop} {F F' : Prop} {G G' : HostFx}
     {w : World H} (hA : ∀ ev, A ev → A' ev) (hP : ∀ v, P v → P' v) (hF : F → F')
