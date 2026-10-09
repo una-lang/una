@@ -41,7 +41,12 @@ fn operations(source: &str) -> Vec<Op> {
         } else if let Some(rest) = line.strip_prefix("  op ") {
             let name = rest.split('(').next().unwrap().trim().to_string();
             let result = rest.rsplit("->").next().unwrap().trim().to_string();
-            ops.push(Op { capability: capability.clone(), name, result, accepts: None });
+            ops.push(Op {
+                capability: capability.clone(),
+                name,
+                result,
+                accepts: None,
+            });
         } else if let Some(rest) = line.trim_start().strip_prefix("accepts ") {
             if line.starts_with("    ") {
                 ops.last_mut().unwrap().accepts = Some(rest.trim().to_string());
@@ -66,7 +71,8 @@ fn every_host_response_is_labeled_at_least_what_its_operation_accepts() {
                 assert!(top_rank(&op.result) >= rank("public").unwrap());
                 continue;
             };
-            let accepts = rank(&accepts).unwrap_or_else(|| panic!("{qualified}: accepts {accepts}"));
+            let accepts =
+                rank(&accepts).unwrap_or_else(|| panic!("{qualified}: accepts {accepts}"));
             if op.result == "Unit" {
                 continue;
             }
