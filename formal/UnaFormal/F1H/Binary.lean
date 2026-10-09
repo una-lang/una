@@ -278,6 +278,7 @@ state can receive data above it; and what the host returns, a read's content, a 
 what decides a request's failure, is at least `internal`. -/
 structure Program.HostWF (p : Program) : Prop where
   oldHost : p.oldHost = false
+  read : p.le (.ofLabel p.acceptsRead) (.ofLabel internalLabel)
   write : p.le (.ofLabel p.acceptsWrite) (.ofLabel internalLabel)
   req : p.le (.ofLabel p.acceptsReq) (.ofLabel internalLabel)
   readResult : p.le (.ofLabel internalLabel) (.ofLabel p.readResult)
