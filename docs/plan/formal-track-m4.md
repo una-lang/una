@@ -123,4 +123,18 @@ The exclusion is the model's, and it is needed because B1 makes the release an e
 - **What does not change.** No declaration moves into rejected, and the replay of S-01 to S-12 is unchanged.
 - **The guard.** `ImportTests.lean` fails the build if a declaration is accepted in a document whose policies are outside B1, even one that declassifies nothing.
 
+**A second correction: no accept without a theorem** (the adversarial review of #452). The re-check checks each declaration against its callees' signatures. T6 needs every function of the program to pass T-Fun. So on `main` a caller was "accepted" even when a callee it reaches was not re-checked or was rejected, with no theorem behind it.
+
+- **The rule.** A declaration is now accepted only when every function it reaches, transitively, is accepted too. It reaches a function through a call, a call inside a lambda, or a use as a value.
+- **The exceptions.** A `via` function is covered by `checkB1` instead. The prelude's functions are axioms.
+- **Precedence.** A declaration's own rejection is kept.
+- **What the corpus shows.** 35 declarations in 22 documents move from accepted to not re-checked:
+  - 29 reach a function that is not re-checked. The most common causes are `div` (11), `prelude.append` (4) and generic records (4).
+  - 6 reach a function that is rejected for want of #443's export keys.
+- **Release sets.** They now count the declarations inside lambdas too, so a caller is never checked against a set that misses one (Una-1's case).
+- **Unreadable policies.** A policy F1 cannot read makes its document not re-checked.
+- **The proof to come.** The theorem of M4 completion part A2, "every declaration accepted ⇒ the whole program passes `LWellFormed`", will prove this rule.
+
+The corpus totals, `main` → B1: 647 → 610 accepted, 7 → 7 rejected, 1,044 → 1,081 not re-checked. No declaration moves into rejected, and the replay of S-01 to S-12 is unchanged.
+
 `scripts/formal.sh` passes with 70 stated theorems.
