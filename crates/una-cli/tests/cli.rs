@@ -1026,7 +1026,7 @@ fn core_exports_the_facts_inference_adds() {
         .join("../../tests/conformance/types/effect_polymorphism_tour");
     let output = una(&["--json", "core", tour.to_str().unwrap()]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    let document: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    let document: serde_json::Value = serde_json::from_str(stdout(&output)).unwrap();
     let fun = |name: &str| {
         document["modules"][0]["decls"]
             .as_array()
@@ -1066,7 +1066,7 @@ fn core_exports_the_facts_inference_adds() {
     .unwrap();
     let output = una(&["--json", "core", root.to_str().unwrap()]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    let document: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    let document: serde_json::Value = serde_json::from_str(stdout(&output)).unwrap();
     assert_eq!(
         document["modules"][0]["decls"][0]["value"]["result_labels"],
         serde_json::json!([{"position": "top", "from": ["T"]}])
