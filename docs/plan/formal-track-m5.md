@@ -4,7 +4,7 @@
 - Plan: `docs/plan/formal-track.md` §7 (M5, renumbered with the owner's approval of 2026-10-09)
 - Previous step: `docs/plan/formal-track-m4-completion.md`
 - Date: 2026-10-09
-- Status: statement approved in shape by the coordinator (2026-10-09), with the answers and additions of §8; parts 1 and 2 done (`formal/UnaFormal/F1H/`), part 3 (`t6_host`) next
+- Status: done. Parts 1 to 3 are proven, with no `sorry` (§10). The re-check of `Files` and `Http` is M5b
 
 ## 1. Why
 
@@ -167,3 +167,35 @@ Parts 1 and 2 go first. The counterexamples, `s14_old_leaks` and `s15_old_leaks`
 1. **Shape for the public observer.** `WorldRel` asks equal shapes only when the file-state label is visible. Is that the reading you want of "low-equivalence of worlds"? A stricter one, equal shapes always, would make the theorem weaker: it would say nothing about a package with internal writes.
 2. **`Files.read` as a sink.** The model makes a read send nothing. The real path of a read goes to the operating system. Should a read's path be a sink at `Files.read`'s `accepts` (`public`), as the checker already requires? I propose yes, as an event `read path`, for symmetry with `req`.
 3. **The re-check (§6 item 4).** In M5, or after it?
+
+## 10. What is proven
+
+Everything is in `formal/UnaFormal/F1H/`. `scripts/formal.sh` passes with 140 stated theorems, none of them depending on `sorry`.
+
+**The model, F1H.** F1's core is staged beside F1 with the host as state:
+- `Syntax.lean`: the forms `read`, `write` and `req`, and host effects (`HostFx`: read, write, request) in function types;
+- `Eval.lean`: an abstract `Host` (file system, servers), with H1 and H2 as `Host.Lawful`, and an evaluation that threads the `World` and returns the world it leaves;
+- `LTyping.lean`: ADR 0085's rules. Failures go through `Program.fsFail` and `Program.reqFail`. `Bound` has a write case that asks `pc ⊑ fileState`. The switch `oldHost` states the rules before the ADR.
+
+Every proof of M3 and M4 is carried over (T1, the unary and binary halves, instances, B1). F1 itself is unchanged, and its 109 theorems still pass. Folding F1H into F1, so that one model remains, is a follow-up.
+
+| Part | Theorems |
+| --- | --- |
+| 1, the old rules leak | `OldLeaks.s14_old_typed`, `s14_old_leaks`, `s15_old_typed`, `s15_old_leaks`, on a lawful host (`demo_lawful`) |
+| 2, the new rules reject the probes | `Untyped.s14_untyped`, `s15_untyped`, `s14rbw_untyped` (read before write), `s14cond_untyped` (write under a secret condition): no typing for any file-state label and any annotation. `NewRules.s14_rejected`, `s15_rejected`, `shapes_rejected` instantiate them, and `s14_same_probe` and `s15_same_probe` show by `rfl` that they are the very programs `OldLeaks` types. |
+| 3, T6 with a stateful host | `t6_host`, `t6_host_ground`: two runs from worlds the observer cannot tell apart (`WorldRel`), in related environments, show it the same events and related outcomes, and leave worlds it cannot tell apart. `t6_release_host` is the same with declassification. `across_runs` and `across_runs_events` cover a sequence of runs (decision 4). |
+| Non-vacuity | `HostExamples.exA`, `exA_runs`: public writes, from worlds with the same files and different contents. `exB`, `exB_runs`: an internal write, from worlds with different files and different secret paths, whose runs return 1 and 2 and still agree for a public observer. |
+
+**The premises** (`Program.HostWF`, `Binary.lean`):
+- the rules of ADR 0085 (`oldHost = false`);
+- every stateful sink accepts at most `internal`: `Files.read`'s path, `Files.write`'s path and content, and every `Http` argument;
+- what the host returns, a read's content and a response, and what decides a request's failure, are at least `internal`.
+
+`acceptsRead ⊑ internal` was added in the proof. Without it, a read's content could reveal a path the observer cannot see. `Files.read` accepts `public`, so it holds. The host must also be lawful: H1 and H2 (`Host.Lawful`).
+
+**How the proof goes.**
+- The unary half records that a run changes the file system only if its trace holds a write, and the servers only if it holds a request. A write is allowed only at a program counter below the file-state label.
+- So a run at a program counter the observer does not see leaves a world it cannot tell from the one it started from (`confined`).
+- When the observer sees `internal`, the two worlds are equal and so are the sinks' arguments, so the host operations coincide.
+- Otherwise, contents and responses are hidden. Read and write failures agree by H1 and H2 when the observer sees the file-state label, and so the path. A request's failure is hidden.
+
