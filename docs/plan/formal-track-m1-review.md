@@ -46,7 +46,7 @@ The 30 minutes break down as follows:
 - **About 15 minutes:** extending the core to all of F1, then proving T1 again.
 - **About 10 minutes:** the labeled rules, erasure, the spike lemmas and the examples.
 
-The owner's conditions (§5) took about 15 more minutes, from 11:37 to 11:52 UTC.
+The owner's conditions (§5) took about 5 more minutes, from 11:37 to 11:41 UTC.
 
 There were about 20 compile iterations in M1 itself. Most errors were Lean API details, such as deprecated lemma names and `List.lookup`'s argument order. No error was a wrong statement.
 
