@@ -23,10 +23,11 @@ fn manifest(edition: &str) -> String {
 }
 
 /// The guides whose blocks are checked.
-const GUIDES: [&str; 3] = [
+const GUIDES: [&str; 4] = [
     "docs/guide/una-for-agents.md",
     "docs/guide/syntax-reference.md",
     "docs/guide/getting-started.md",
+    "docs/guide/una-compact.md",
 ];
 
 /// The schemas the CLI prints (`spec/13 §1, §2, §6`, ADRs 0029, 0032 and 0034).
@@ -466,4 +467,24 @@ fn every_block_of_the_getting_started_tutorial_is_checked() {
             "`{path}` of the tutorial's last package differs from examples/wordfreq"
         );
     }
+}
+
+/// The most characters `una-compact.md` may hold. The model's tokenizer (Claude Opus 5.5,
+/// measured on 2026-10-08 as the difference in input tokens between two identical sessions,
+/// one of which reads the file) counted 1,940 tokens for its 4,506 characters, 2.32 per token;
+/// 4,550 characters stay under its budget of 2,000 tokens (#430).
+const COMPACT_MAX_CHARS: usize = 4_550;
+
+#[test]
+fn the_compact_reference_is_checked_and_within_its_token_budget() {
+    // #430: every block of the compact reference is checked, as in the other guides, and its
+    // size stays under the budget that agents load into their context.
+    let checked = check_guide(GUIDES[3], 600_000);
+    assert!(checked[0] > 0, "{checked:?}");
+    let text = std::fs::read_to_string(repository().join(GUIDES[3])).unwrap();
+    let chars = text.chars().count();
+    assert!(
+        chars <= COMPACT_MAX_CHARS,
+        "una-compact.md holds {chars} characters, over {COMPACT_MAX_CHARS} (about 2,000 tokens)"
+    );
 }

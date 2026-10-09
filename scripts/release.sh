@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds `una` and the native runtime library in release mode and packs them with the license
 # and the readme into target/release-archives/una-<version>-<target>.tar.gz, with `una`,
-# `lib/libuna_rt.a`, `LICENSE`, `README.md` and the three guides under `docs/guide/` (#410), and its SHA-256 digest beside it in a .sha256
+# `lib/libuna_rt.a`, `LICENSE`, `README.md` and the four guides under `docs/guide/` (#410, #430), and its SHA-256 digest beside it in a .sha256
 # file (ADR 0035 rule 3, ADR 0059). Each target builds natively on its own
 # runner, so TARGET must be the host's.
 #
@@ -53,7 +53,7 @@ rm -rf "${out:?}/$name" "$out/$name.tar.gz" "$out/$name.tar.gz.sha256"
 mkdir -p "$out/$name/lib" "$out/$name/docs/guide"
 cp "$built/release/una" LICENSE README.md "$out/$name/"
 # The guides, at the paths the README links, so the archive alone teaches Una (#410, N-65).
-cp docs/guide/getting-started.md docs/guide/syntax-reference.md docs/guide/una-for-agents.md "$out/$name/docs/guide/"
+cp docs/guide/getting-started.md docs/guide/syntax-reference.md docs/guide/una-compact.md docs/guide/una-for-agents.md "$out/$name/docs/guide/"
 cp "$built/release/libuna_rt.a" "$out/$name/lib/"
 tar -C "$out" -czf "$out/$name.tar.gz" "$name"
 rm -rf "${out:?}/$name"
