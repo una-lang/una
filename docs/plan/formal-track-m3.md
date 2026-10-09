@@ -109,3 +109,8 @@ That time includes checking the host table, which found S-14 and S-15. About 45 
 - **M4:** a few session-hours. The uncertainty is the labeled substitution lemma: whether the static order of rule 8 is stable under instantiation, so that a generic body's typing transfers to every instance. If it is not, the rule changes, and that would be a finding.
 
 The table's agent-day ranges overestimated proof volume by about two orders of magnitude. On M1 and M3's evidence, the cost of the track is in finding where the specification and the shipped checker disagree with the model, as S-14 shows, not in proof engineering.
+
+## 5. Notes for the checker (#440)
+
+- **`ℓ_T` only in place.** The model's reading of `ℓ_T` needs a plain symbol to label only a position of its own type parameter (`LTy.InPlace`, M4). The checker places plain symbols only on type parameters (`crates/una-check/src/types/ty.rs`). The labels that Core IR gives an operation's arguments and interpolation temporaries now star them, so the export keeps the invariant too; `crates/una-cli/tests/core_symbols.rs` checks it over the corpus, and `summary.rs` asserts it in debug builds.
+- **`when` on a value of `T`.** `when x`, with `x` of a type parameter, raises the program counter by the plain label of `x` (`crates/una-check/src/types/stmt.rs`, `fn when`). That is harmless today because such a `when` can have only an `else` arm: no arm tests the value. A rule that let arms inspect a value of `T` would need the raise to use `ℓ*_T` instead.
