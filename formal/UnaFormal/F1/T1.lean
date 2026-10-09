@@ -144,10 +144,9 @@ theorem sound (hwf : p.WellFormed) (w : World) : ∀ n : Nat,
         obtain ⟨vs, hvs, hvst⟩ := atoms_typed henv has
         simp only [evalRhs, hv, hvs]
         exact applyWith_good ihE hvt hvst
-      | op hl =>
+      | op hl hs =>
         obtain ⟨v, hv, hvt⟩ := atom_typed henv hl
-        cases hvt
-        simp [evalRhs, hv, Good, ValTy.unit]
+        cases hvt <;> simp_all [evalRhs, Good, ValTy.unit, Val.line, Ty.Scalar]
       | get hu =>
         obtain ⟨v, hv, hvt⟩ := atom_typed henv hu
         cases hvt with

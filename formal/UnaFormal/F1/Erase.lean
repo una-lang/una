@@ -114,10 +114,7 @@ mutual
       rw [LTy.erase_raise]
       simp only [Function.comp_def, LTy.erase_raise] at h
       exact .apply hf' h
-    | _, _, _, _, _, .op hl ht _ _ => by
-      have h := latom_erase hl
-      rw [ht] at h
-      exact .op h
+    | _, _, _, _, _, .op hl ht _ _ => .op (latom_erase hl) ht
     | _, _, _, _, _, .get hu ht _ _ => by
       have h := latom_erase hu
       rw [ht] at h

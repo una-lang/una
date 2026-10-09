@@ -1,0 +1,94 @@
+module callback
+
+cap Log {
+  op write(n: Int) : Unit accepts public
+}
+
+fun mapped[T](a: T, b: T, p: T, q: T, k: fn(T) -> Int) : Unit uses {log ↦ Log[write]} =
+  let %t0: label(T*) Bool = ==(a, b) in
+  let %t1: label(T) + label(T*) T =
+    if %t0 then
+      p
+    else
+      q
+  in
+  let %t2: List[label(T) + label(T*) T] = [%t1] in
+  let ns: List[Int] = prelude.map[label(T) + label(T*) T, Int](%t2, k) in
+  let %t4: Int = prelude.sum(ns) in
+  let %t5: Unit = log.write(%t4) in
+  %t5
+
+fun kept[T](a: T, b: T, p: T, q: T, keep: fn(T) -> Bool) : Unit uses {log ↦ Log[write]} =
+  let %t0: label(T*) Bool = ==(a, b) in
+  let %t1: label(T) + label(T*) T =
+    if %t0 then
+      p
+    else
+      q
+  in
+  let %t2: List[label(T) + label(T*) T] = [%t1] in
+  let xs: List[label(T) + label(T*) T] = prelude.filter[label(T) + label(T*) T](%t2, keep) in
+  let %t4: Int = len(xs) in
+  let %t5: Unit = log.write(%t4) in
+  %t5
+
+fun folded[T](a: T, b: T, p: T, q: T, step: fn(Int, T) -> Int) : Unit uses {log ↦ Log[write]} =
+  let %t0: label(T*) Bool = ==(a, b) in
+  let %t1: label(T) + label(T*) T =
+    if %t0 then
+      p
+    else
+      q
+  in
+  let %t2: List[label(T) + label(T*) T] = [%t1] in
+  let n: Int = prelude.fold[label(T) + label(T*) T, Int](%t2, 0, step) in
+  let %t4: Unit = log.write(n) in
+  %t4
+
+fun passed[T](p: T, q: T, k: fn(T) -> Int) : Unit uses {log ↦ Log[write]} =
+  let %t0: List[label(T) T] = [p, q] in
+  let ns: List[Int] = prelude.map[label(T) T, Int](%t0, k) in
+  let %t2: Int = prelude.sum(ns) in
+  let %t3: Unit = log.write(%t2) in
+  %t3
+
+fun counted[T](a: T, b: T, p: T, q: T) : Unit uses {log ↦ Log[write]} =
+  let %t0: label(T*) Bool = ==(a, b) in
+  let %t1: label(T) + label(T*) T =
+    if %t0 then
+      p
+    else
+      q
+  in
+  let %t2: List[label(T) + label(T*) T] = [%t1] in
+  let %t3: fn(label(T) + label(T*) T) -> Int =
+    λ(x: label(T) + label(T*) T).
+      1
+  in
+  let ns: List[Int] = prelude.map[label(T) + label(T*) T, Int](%t2, %t3) in
+  let %t5: Int = prelude.sum(ns) in
+  let %t6: Unit = log.write(%t5) in
+  %t6
+
+fun leak(s: secret Int) : Unit uses {log ↦ Log[write]} =
+  let %t0: List[secret Int] = [s] in
+  let %t1: List[secret Int] = [0] in
+  let %t2: List[secret Int] = [] in
+  let %t3: List[secret Int] = [1, 2] in
+  let %t5: fn(List[secret Int]) -> Int =
+    λ(xs: List[secret Int]).
+      let %t4: Int = len(xs) in
+      %t4
+  in
+  let %t6: secret Unit = callback.mapped[List[secret Int]](%t0, %t1, %t2, %t3, %t5) in
+  %t6
+
+fun fine(xs: List[Int]) : Unit uses {log ↦ Log[write]} =
+  let %t0: List[Int] = [] in
+  let %t2: fn(List[Int]) -> Int =
+    λ(ys: List[Int]).
+      let %t1: Int = len(ys) in
+      %t1
+  in
+  let %t3: Unit = callback.passed[List[Int]](xs, %t0, %t2) in
+  %t3

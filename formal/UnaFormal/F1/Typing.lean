@@ -59,6 +59,7 @@ inductive PrimTy : Prim → List Ty → Ty → Prop where
   | not : PrimTy .not [.bool] .bool
   | lenList {t} : PrimTy .len [.list t] .int
   | lenText : PrimTy .len [.text] .int
+  | sum : PrimTy .sum [.list .int] .int
 
 mutual
   inductive RhsTy (p : Program) : Ctx → Rhs → Ty → Prop where
@@ -69,7 +70,7 @@ mutual
         RhsTy p ctx (.call f targs args) (fn.result.erase.subst σ)
     | apply {ctx f args ts r} :
         AtomTy ctx f (.fn ts r) → AtomsTy ctx args ts → RhsTy p ctx (.apply f args) r
-    | op {ctx line} : AtomTy ctx line .text → RhsTy p ctx (.op line) .unit
+    | op {ctx line t} : AtomTy ctx line t → t.Scalar → RhsTy p ctx (.op line) .unit
     | get {ctx url} : AtomTy ctx url .text → RhsTy p ctx (.get url) .text
     | construct {ctx record fields rec} :
         p.record record = some rec → AtomsTy ctx fields rec.fieldTys →

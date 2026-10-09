@@ -40,6 +40,11 @@ inductive LTy where
   | fn (params : List LTy) (result : LTy) (op get fails : Bool) (l : LExpr)
   | var (name : String) (l : LExpr)
 
+/-- The scalar types, which the operation writes. -/
+def Ty.Scalar : Ty → Prop
+  | .int | .bool | .text => True
+  | _ => False
+
 /-- A variable or a literal (`spec/09 §2`). -/
 inductive Atom where
   | var (name : String)
@@ -56,6 +61,8 @@ inductive Prim where
   | eqInt
   | not
   | len
+  /-- The prelude's `sum` of a list of integers. -/
+  | sum
 
 mutual
   /-- What a `let` binds. -/
@@ -67,7 +74,8 @@ mutual
     /-- A call of a function value (T-App). -/
     | apply (f : Atom) (args : List Atom)
     /-- The one operation of the one capability, `@log.write(line)`: a sink, recorded in the
-    trace (T-Op). -/
+    trace (T-Op). Its argument is a scalar, an `Int`, a `Bool` or a `Text`, written as its
+    text. -/
     | op (line : Atom)
     /-- The host operation, `Http.get(url)`: a sink whose failure its argument decides
     (`spec/07 §7` rule 4, N-39). -/

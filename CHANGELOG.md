@@ -7,6 +7,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 ### Tools
 
 - **T6 for generic functions** (#46, M4 of `docs/plan/formal-track.md`). `formal/UnaFormal/F1/T6.lean` proves noninterference for bodies that call generic functions and use closures from generic bodies, at every ground instance: rule 8's order and flows are stable under instantiation, and the typing rules keep `ℓ_T` only in place, a new premise of well-formedness that #440 ties to the checker. `T6Example.lean` relates two runs of `pick[secret Int]`. Declassification follows the checker of M2. Progress: `docs/plan/formal-track-m4.md`.
+- **The re-check of Core** (#46, M2 of `docs/plan/formal-track.md`). `lake exe una-core-check` reads `una core --json` documents and checks every function in the fragment F1 against the labeled typing of the formal model, reporting each other form as not re-checked. On the corpus it accepts 601 declarations and rejects 7, whose facts the export lacks (#443). Replayed on the Core that the releases before each fix printed for the repros of S-01 to S-12, it rejects S-01, S-06, S-07, S-09 and S-12 at the label the checker got wrong. Progress: `docs/plan/formal-track-m2.md`.
 
 ## v0.3.4
 

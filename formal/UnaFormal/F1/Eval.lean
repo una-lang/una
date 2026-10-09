@@ -23,6 +23,13 @@ inductive Val where
   | record (name : String) (fields : List Val)
   | closure (params : List (String × LTy)) (body : Expr) (env : List (String × Val))
 
+/-- The line the operation writes for a scalar. -/
+def Val.line : Val → Option String
+  | .int n => Option.some (toString n)
+  | .bool b => Option.some (toString b)
+  | .text s => Option.some s
+  | _ => Option.none
+
 /-- An environment: the values of the variables in scope, innermost first. -/
 abbrev Env := List (String × Val)
 
@@ -68,6 +75,12 @@ def evalAtoms (env : Env) : List Atom → Option (List Val)
     let vs ← evalAtoms env rest
     pure (v :: vs)
 
+/-- The sum of a list of integers; `none` when an item is not one. -/
+def sumInts : List Val → Option Int
+  | [] => some 0
+  | .int n :: rest => (sumInts rest).map (n + ·)
+  | _ => none
+
 /-- A primitive on the values of its arguments. -/
 def evalPrim : Prim → List Val → Option Val
   | .add, [.int a, .int b] => some (.int (a + b))
@@ -77,6 +90,7 @@ def evalPrim : Prim → List Val → Option Val
   | .not, [.bool b] => some (.bool (!b))
   | .len, [.list items] => some (.int items.length)
   | .len, [.text s] => some (.int s.length)
+  | .sum, [.list items] => (sumInts items).map .int
   | _, _ => none
 
 /-- The parameters bound to the arguments, in front of `env`. -/
@@ -189,8 +203,11 @@ mutual
         | _, _ => stuck
       | .op line =>
         match evalAtom env line with
-        | some (.text s) => ([.out s], .ok .unit)
-        | _ => stuck
+        | some v =>
+          match v.line with
+          | some s => ([.out s], .ok .unit)
+          | none => stuck
+        | none => stuck
       | .get url =>
         match evalAtom env url with
         | some (.text s) =>
