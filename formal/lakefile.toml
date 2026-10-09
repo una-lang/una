@@ -1,0 +1,13 @@
+# The Lean 4 development of the formal track (docs/plan/formal-track.md, #46): a model of Una
+# Core, its theorems, and the checker of M2. Lean is pinned in `lean-toolchain`, and every
+# dependency by commit in `lake-manifest.json`; Batteries is the only one (no Mathlib).
+name = "una_formal"
+defaultTargets = ["UnaFormal"]
+
+[[require]]
+name = "batteries"
+git = "https://github.com/leanprover-community/batteries"
+rev = "v4.34.0"
+
+[[lean_lib]]
+name = "UnaFormal"

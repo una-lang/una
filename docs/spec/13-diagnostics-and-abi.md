@@ -195,6 +195,7 @@ Codes are never reused. Retired codes stay in this table marked retired. Gaps in
 | `una obligations [path]` | List obligations with status |
 | `una contract <qualified.name>` | Print the full header, declared or inferred, with doc comments and requirements |
 | `una trace <REQUIREMENT_ID>` | Requirement to contract to obligation chain |
+| `una core [path]` | (v0.3, ADR 0083) Check at tier 0 and print the package's Core IR: with `--json`, one `una.core/1` document (§8); otherwise the text syntax of `spec/09`, every module in turn |
 | `una report [path]` | Build report (§6) |
 | `una explain <code>` | Explanation of a diagnostic code |
 | `una lsp` | (v0.2, ADR 0063) The language server: LSP 3.17 over stdin and stdout, for editors. It checks, formats and solves; it never runs programs |
@@ -342,3 +343,55 @@ A TOML syntax error, a missing required key, and a value of the wrong type or ou
 `verification.lock` is a TOML document with exactly the keys of `spec/12 §9`: `encoding_version = "una-smt-1"`, `solver = "z3"`, `solver_version` a non-empty string, `logic = "QF_UFLIA"`, `step_budget` an integer of at least 1, and `random_seed` an integer of at least 0. A missing file, a TOML syntax error, a missing or unknown key and a wrong value are U7004; a solver of another version is U5003. A single file uses the default lock, which holds the values of the repository's `verification.lock`.
 
 Project errors do not stop checking: the modules are still checked, with the default settings in place of an invalid `una.toml`.
+
+## 8. Core export
+
+(v0.3, ADR 0083.) `una --json core [path]` prints the package's Core IR (`spec/09`) as one `una.core/1` document, for programs outside the compiler, such as the checker of the formal track. The text form of `spec/09 §4` stays a debug output; this document is the stable form.
+
+```json
+{
+  "schema": "una.core/1",
+  "edition": "0.2",
+  "complete": true,
+  "modules": [ { "path": "app", "decls": [ ... ], "examples": [ ... ] } ],
+  "library": [ ... ],
+  "host": [ ... ]
+}
+```
+
+- `complete` is `true` when the package checked clean at tier 0, so Core holds every declaration; otherwise Core holds only the declarations without diagnostics, which go to stderr, and the exit code follows them.
+- `modules` are in the order of Core IR; `library` holds the prelude's signatures and `host` the host capabilities' declarations.
+
+**Encoding.** The document is a mechanical image of `una_core::ir`:
+1. A value of an enum is an object whose first key is `kind`, the name of its variant in snake case (`LetTuple` is `let_tuple`), followed by the variant's fields under their Rust names, in declaration order. A field named `kind` is written `kind_of`. A tuple variant's one field is `value`, and its several fields `values`, an array.
+2. A struct is an object of its fields under their Rust names, in declaration order.
+3. A tuple is an array, an `Option` its value or `null`, a `Box` its content, a `usize` or `u32` a number, a name or an integer literal a string, as Core holds it (`x%2`, `-12`).
+4. A label is `{"level": "secret", "categories": ["PII"], "symbols": ["T", "T*"]}`: its level, then its categories and its symbolic labels in their sorted order (`spec/07 §7` rule 8).
+5. A source span is `{"file": "src/app.una", "start": [3, 5], "end": [3, 9]}`, lines and columns from 1, as the locations of diagnostics are.
+6. A path is `{"module": "app", "name": "main"}`.
+
+Keys are printed in this order, and two runs over the same sources print the same bytes.
+
+**The kinds.** The variants of each enum, which a test compares with the source of `una_core::ir`:
+
+| Enum | Kinds |
+| --- | --- |
+| `Atom` | `var`, `int`, `bool`, `text`, `unit` |
+| `Base` | `int`, `fixed`, `bool`, `text`, `unit`, `hashed`, `named`, `param`, `tuple`, `unknown` |
+| `BinOp` | `add`, `sub`, `mul`, `div`, `mod`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `and`, `or`, `implies` |
+| `Bound` | `rhs`, `expr` |
+| `Constraint` | `none`, `eq`, `ord`, `integer` |
+| `Decl` | `alias`, `data`, `pred`, `cap`, `handler`, `fun`, `policy` |
+| `Expectation` | `holds`, `fails`, `performed` |
+| `Expr` | `atom`, `let`, `let_tuple`, `loop`, `together`, `together_for`, `if`, `case`, `fail`, `handle`, `attempt`, `with`, `unreachable` |
+| `FixedOp` | `wrapping_add`, `wrapping_sub`, `wrapping_mul`, `saturating_add`, `saturating_sub`, `saturating_mul`, `bit_and`, `bit_or`, `bit_xor`, `bit_not`, `shift_right`, `wrapping_shift_left` |
+| `IntType` | `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64` |
+| `LoopSource` | `list`, `range` |
+| `MapOp` | `has`, `get`, `with`, `without`, `keys`, `values`, `entries` |
+| `Prim` | `add`, `sub`, `mul`, `div`, `mod`, `neg`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `not`, `len`, `concat`, `to_text`, `convert`, `fixed`, `map` |
+| `Rhs` | `atom`, `tuple`, `prim`, `call`, `apply`, `op`, `construct`, `field`, `list`, `lambda`, `checked`, `declassify` |
+| `Source` | `rebind`, `handler` |
+| `Term` | `var`, `it`, `result`, `int`, `bool`, `text`, `unit`, `ctor`, `field`, `len`, `has`, `proj`, `neg`, `not`, `binary`, `is`, `in`, `call` |
+| `Type` | `base`, `fn` |
+
+**Versioning** (ADR 0076). The `kind` of a node is an **open** field: Core gains forms as the language grows, and adding one keeps `una.core/1`. A consumer MUST report a declaration that holds a `kind` it does not know as not understood, never as accepted or checked. A label's `level` is closed. Any other change follows ADR 0076.

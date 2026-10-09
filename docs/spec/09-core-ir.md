@@ -81,4 +81,4 @@ Examples are not Core IR declarations. The test harness (`spec/11 §6`) runs the
 
 ## 4. Debug output
 
-`una check --dump-core <module> [path]` prints the Core IR of the module's declarations on stdout, in the text syntax above, with every binder's type, label and refinements, deterministically (ADR 0032). The diagnostics of the package still go to stderr, and the exit code follows them. The dump is used by snapshot tests and is not a stable interface.
+`una check --dump-core <module> [path]` prints the Core IR of the module's declarations on stdout, in the text syntax above, with every binder's type, label and refinements, deterministically (ADR 0032). The diagnostics of the package still go to stderr, and the exit code follows them. The dump is used by snapshot tests and is not a stable interface. (v0.3, ADR 0083.) `una --json core [path]` prints the Core IR of every module as one `una.core/1` document, the stable form (`spec/13 §8`).

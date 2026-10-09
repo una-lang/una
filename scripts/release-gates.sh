@@ -18,6 +18,8 @@
 #                the repository (spec/16 §5): the equivalence test of crates/una-cli/tests/native.rs
 #   site         scripts/site.sh: the website builds and every link between its pages resolves;
 #                mdBook missing or at another version than the script pins is a FAIL (N-36)
+#   formal       scripts/formal.sh: the Lean development of the formal track builds with its pinned
+#                toolchain, and no stated theorem depends on `sorry` (#46)
 #
 # Output, in OUT: results.tsv (gate, sha, PASS or FAIL, seconds, sha256 of the gate's log),
 # logs/<gate>.log, and record.md, the validation record that docs/releases/validation.md
@@ -30,7 +32,7 @@
 # Usage: scripts/release-gates.sh SHA OUT [GATE...]
 set -u
 
-ALL=(clone build mac linux linux-arm64 release determinism native site)
+ALL=(clone build mac linux linux-arm64 release determinism native site formal)
 
 usage() {
     echo "usage: scripts/release-gates.sh SHA OUT [GATE...]; SHA is a full 40-digit commit, GATE is one of: ${ALL[*]}" >&2
@@ -171,6 +173,7 @@ gate_native() {
 }
 
 gate_site() { run site scripts/site.sh; }
+gate_formal() { run formal scripts/formal.sh; }
 
 for gate in "${GATES[@]}"; do
     "gate_$gate"

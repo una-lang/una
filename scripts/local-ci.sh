@@ -46,6 +46,8 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
         --volume una-local-ci-registry:/opt/cargo/registry \
         --volume "una-local-ci-z3$suffix:/opt/z3" \
         --env UNA_LOCAL_CI_Z3=/opt/z3 \
+        --volume "una-local-ci-lean$suffix:/opt/lean" \
+        --env UNA_FORMAL_LEAN=/opt/lean \
         --env "UNA_LOCAL_CI_SERIAL=$serial" \
         "$image" scripts/local-ci.sh || fail "the Linux run failed; its output is above"
     echo "local CI: PASS ($target, in the container)"
@@ -97,6 +99,10 @@ if [ -z "${UNA_LOCAL_CI_Z3:-}" ]; then
         echo "skipped: mdbook $mdbook_version not installed (cargo install mdbook --version $mdbook_version --locked)"
     fi
 fi
+
+# The formal track (docs/plan/formal-track.md §6, #46): the Lean development builds with the
+# pinned toolchain, and no stated theorem depends on `sorry`.
+step "Formal (Lean)" scripts/formal.sh
 
 # A release build never trusts the test certificate authority of una-http (ADR 0074, N-28).
 step "Test (release, TLS trust)" cargo test --release --locked -p una-http --test tls

@@ -944,3 +944,100 @@ fn version_names_the_editions_and_the_pinned_z3() {
         stderr(&output)
     );
 }
+
+#[test]
+fn core_prints_the_package_s_core_ir_as_una_core_1() {
+    // ADR 0083, `spec/13 §8`: one document on stdout, the same bytes on every run, every node an
+    // object with its `kind` first.
+    let first = una(&["--json", "core", "examples/hello"]);
+    assert_eq!(first.status.code(), Some(0), "{}", stderr(&first));
+    let again = una(&["--json", "core", "examples/hello"]);
+    assert_eq!(stdout(&first), stdout(&again), "deterministic");
+    let text = stdout(&first);
+    assert!(
+        text.starts_with("{\"schema\":\"una.core/1\",\"edition\":"),
+        "{text}"
+    );
+    let document: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(document["complete"], true);
+    let module = &document["modules"][0];
+    assert_eq!(module["path"], "hello");
+    let main = &module["decls"][0];
+    assert_eq!(main["kind"], "fun");
+    assert_eq!(main["value"]["name"], "main");
+    assert_eq!(main["value"]["result"]["kind"], "base");
+    assert_eq!(main["value"]["result"]["base"]["kind"], "unit");
+    assert_eq!(
+        main["value"]["result"]["label"],
+        json!({ "level": "public", "categories": [], "symbols": [] })
+    );
+    let span = &main["value"]["span"];
+    assert_eq!(span["file"], "src/hello.una");
+    assert!(span["start"][0].as_u64().unwrap() >= 1);
+    // The body's operation records its argument's label, as T-Op reads it (`spec/07 §7`).
+    let body = serde_json::to_string(&main["value"]["body"]).unwrap();
+    assert!(body.contains("\"kind\":\"op\""), "{body}");
+    assert!(document["library"].as_array().unwrap().len() > 10);
+    assert!(
+        document["host"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|decl| decl["kind"] == "cap" && decl["name"] == "Console")
+    );
+}
+
+#[test]
+fn core_keeps_the_symbolic_labels_of_a_generic_body() {
+    // ADR 0083: the labels of a generic body carry `T` and `T*` (`spec/07 §7` rule 8), which the
+    // formal checker reads.
+    // Constraints on type parameters are edition 0.2's (`spec/20`).
+    let root = scratch("core-generic");
+    std::fs::write(
+        root.join("una.toml"),
+        "[package]\nname = \"g\"\nversion = \"0.1.0\"\nedition = \"0.2\"\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../verification.lock"),
+        root.join("verification.lock"),
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("src/g.una"),
+        "module g\n\npub same[T: Eq](a: T, b: T) -> Bool = a == b\n",
+    )
+    .unwrap();
+    let output = una(&["--json", "core", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(
+        text.contains("\"symbols\":[\"T*\"]") || text.contains("\"symbols\":[\"T\",\"T*\"]"),
+        "{text}"
+    );
+}
+
+#[test]
+fn core_of_a_package_with_errors_is_incomplete_and_still_one_document() {
+    // ADR 0083: Core holds the declarations without diagnostics; `complete` says so, the
+    // diagnostics go to stderr, and the exit code follows them.
+    let root = scratch("core-broken");
+    std::fs::write(
+        root.join("b.una"),
+        "module b\n\npub ok() -> Int = 1\n\npub broken() -> Int = missing\n",
+    )
+    .unwrap();
+    let output = una(&["--json", "core", root.join("b.una").to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1));
+    let document: Value = serde_json::from_str(stdout(&output)).unwrap();
+    assert_eq!(document["complete"], false);
+    assert!(stderr(&output).contains("U1001"), "{}", stderr(&output));
+    let names: Vec<&str> = document["modules"][0]["decls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|decl| decl["value"]["name"].as_str())
+        .collect();
+    assert_eq!(names, ["ok"]);
+}

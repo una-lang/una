@@ -76,6 +76,12 @@ pub(crate) enum Command {
         #[arg(long, value_name = "SECONDS", default_value_t = 60)]
         solver_wallclock: u64,
     },
+    /// Print the package's Core IR; with --json, as `una.core/1` (ADR 0083)
+    Core {
+        /// The package directory, or a single file
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
     /// Print the build report: proofs, authority, information flow, trust and coverage
     Report {
         /// The package directory, or a single file
