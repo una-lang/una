@@ -1552,7 +1552,7 @@ The runtime implements these; they are part of the prelude.
 - **Entry.** Host capabilities enter only through `main`'s `uses`, and only if `una run`, or the native executable, grants them. An ungranted capability is U3012 before execution starts.
 - **Grant syntax:** `console`, `clock`, `env`, `keys:<keyfile>`, `files:<path>:read`, `files:<path>:write`, and in edition `0.2` `http:<origin>` or `http:<origin>:<methods>` (by default `get`).
 - **`Http`** (`spec/24`). `Header` has `name: Text` and `value: internal Text`, and `Response` has `status: Int`, `headers: List[Header]` and `body: Text`. A status is not a failure: `HttpError` is `Denied`, `BadUrl`, `BadRequest`, `Unreachable`, `TimedOut`, `TooLarge`, `Tls` or `Protocol`. `key_name: Some(n)` sends the key `n` of the `keys:` grants as `Authorization: Bearer <key>`; a token another header carries goes in as a header value, through a policy to `internal` when it is `secret`. The guide for agents, §17, has an example with a stand-in handler.
-- **`Files` confinement.** Paths are confined to the granted prefix; escaping it fails with `Denied`.
+- **`Files` paths.** A path is relative to the grant's prefix: with `files:data:read`, `@files.read("readings.txt")` reads `data/readings.txt`, and `"data/readings.txt"` would look for `data/data/readings.txt` and fail with `NotFound`. A path stays confined to the prefix: an absolute path, or a `..` that leaves it, fails with `Denied`. `FileError` is `NotFound`, `Denied` or `Io`, and `KeyError` is `UnknownKey`.
 - **Tests and handlers.** You can write handlers for host capabilities, for example a fake `Keys` in tests (§17).
 
 ---

@@ -4,6 +4,18 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ## Unreleased
 
+### Documentation
+
+- **The guides close the gaps the compact-reference arms met** (#449, from #430's measurement). The agent guide now:
+  - says that a `Files` path is relative to its grant's prefix (`files:data:read` reads `readings.txt`, not `data/readings.txt`), which every arm got wrong, the full-guide ones included;
+  - states how imports work;
+  - says that a one-variant sum keeps its leading `|`, and what `kind E = V` is without it;
+  - gives the host operations' signatures with `FileError` and `KeyError`;
+  - explains `fake_hash` and the stand-in for `Keys`, with a checked example that compares only hashes;
+  - says that `old` takes the parameter itself (`old(xs).len`), and that `to_int` returns an `Option` where `parse_int` fails.
+
+  The syntax reference states the `Files` path rule too. The compact reference is unchanged while its measurement is open.
+
 ### Information flow
 
 - **A plain `ℓ_T` labels only a position of type `T`** (#440, `spec/07 §7` rule 8). The labels that Core IR gives an operation's arguments and an interpolation's `Text` temporaries star a type parameter's symbol, `T*`, as every other position off `T` already did, so `una core --json` never exports a plain `T` off its own type parameter; redaction, which asks only whether a label is `public`, is unchanged. A test over the corpus's Core export checks it, and the checker's result summaries assert it in debug builds. The formal track's model needs it (`LTy.InPlace`).
