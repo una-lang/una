@@ -2,7 +2,9 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
-## Unreleased
+## v0.3.4
+
+A security patch of the Beta: S-14 (whether a file exists or a read fails could reveal an earlier write to a labeled path) and S-15 (a server could decide a public failure from the internal data it received) are fixed in both editions (ADR 0085), and the runtime checks a task's code before calling it (#424). It also carries what was validated on `main` since v0.3.3: `una fix`, `una core`, redaction by provenance (ADR 0078), one code for an undeclared operation (ADR 0082), a lazy editor index (ADR 0080), smaller native executables, U1001 suggestions, the guide's fixes from two dogfood passes, and the formal track's first proofs. Validation: `docs/releases/0.3.4-validation.md`.
 
 ### Commands
 
