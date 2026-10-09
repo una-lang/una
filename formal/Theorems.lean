@@ -13,3 +13,17 @@ import UnaFormal
 #print axioms Una.Level.le_join_right
 #print axioms Una.F1.sound
 #print axioms Una.F1.t1
+#print axioms Una.F1.Ty.subst_subst
+#print axioms Una.F1.LTy.erase_lsubst
+#print axioms Una.F1.RhsTy.subst
+#print axioms Una.F1.ExprTy.subst
+#print axioms Una.F1.Flow.erase
+#print axioms Una.F1.LRhsTy.toStruct
+#print axioms Una.F1.LExprTy.toStruct
+#print axioms Una.F1.Program.LWellFormed.wellFormed
+#print axioms Una.F1.t1_labeled
+#print axioms Una.F1.LExpr.le_sound
+#print axioms Una.F1.Rel.eq_of_deep
+#print axioms Una.F1.derived_agrees
+#print axioms Una.F1.top_label_not_enough
+#print axioms Una.F1.Examples.pick_ok
