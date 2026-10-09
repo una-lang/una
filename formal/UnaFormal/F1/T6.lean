@@ -173,7 +173,7 @@ theorem t6_sound (hwf : p.LWellFormed) (hpol : p.policies = [])
           · intro c hc; cases h : evalPrim pr vs₁ <;> simp [h] at hc
           · intro c hc; cases h : evalPrim pr vs₂ <;> simp [h] at hc
       | @call _ _ f targs args fn ts hf _ hlen _ heqa hg has hfl hb =>
-        obtain ⟨tb, εb, hbody, hflow, _, _, _, hfail⟩ := funOk_of_find hwf hpol hf
+        obtain ⟨tb, εb, hbody, hflow, _, _, _, hfail, _⟩ := funOk_of_find hwf hpol hf
         have hτ : GroundSubst (fn.tparams.zip targs) := zip_ground hg
         have hcov := lookup_zip_cover (xs := fn.tparams) hlen
         have hEτ := eqArgsOK_of_call hwf hf hlen hg heqa
@@ -271,7 +271,7 @@ theorem t6_sound (hwf : p.LWellFormed) (hpol : p.policies = [])
               (LExpr.le_of_le_inst_ofLabel (LExpr.le_inst _ hle))) h)
           have hres : ¬ Vis p L ((LExpr.ofLabel p.getResult).inst (p.sd σ)) := fun h =>
             hacc (Vis.of_le hget (Vis.of_le (by rw [LExpr.inst_ofLabel]; exact LExpr.le_join_right _ _) h))
-          have hvf : ¬ Vis p L ((⟨false, true, some (pc.join (p.deep (.text l)))⟩ : Eff).inst (p.sd σ)).failLabel :=
+          have hvf : ¬ Vis p L ((⟨false, true, some (pc.join (p.deep (.text l))), []⟩ : Eff).inst (p.sd σ)).failLabel :=
             fun h => hd (Vis.of_le (LExpr.inst_le_join_inst _ _ _) h)
           refine brel_quiet ?_ (fun _ _ => .hidden hres) (fun _ _ => hvf) (fun _ _ => hvf)
           cases w.get s₁ <;> cases w.get s₂ <;>
@@ -320,17 +320,19 @@ theorem t6_sound (hwf : p.LWellFormed) (hpol : p.policies = [])
         obtain ⟨v₁, v₂, h₁, h₂, hv, _, _⟩ := latom_bothσ he₁ he₂ hrel ha
         simp only [evalRhs, h₁, h₂, Option.map, Option.elim, LTy.lsubst]
         exact brel_done (.some hv)
-      | @lambda _ _ params body tb εl hb hfl hps =>
+      | @lambda _ _ params body tb εl hb hfl hrl hps =>
         have hΓ' : LCtx.InPlace (params ++ Γ) := fun q hq => by
           rcases List.mem_append.mp hq with hq | hq
           · exact hps q hq
           · exact hΓ q hq
         refine brel_done ?_
         simp only [LTy.lsubst]
-        exact .closure hσ hE hΓ' hrel he₁ he₂ hb hfl (by rw [LTy.lsubsts_eq]; exact Flows.refl _)
+        exact .closure hσ hE hΓ' hrel he₁ he₂ hb hfl hrl (by rw [LTy.lsubsts_eq]; exact Flows.refl _)
           (Flow.refl _) id id id
-      | @funRef _ _ f targs fn hf _ hlen _ heqa hg =>
-        obtain ⟨tb, εb, hbody, hflow, ho, hgo, hfs, hfail⟩ := funOk_of_find hwf hpol hf
+      | @funRef _ _ f targs fn hf _ hlen _ heqa hg hfr =>
+        obtain ⟨tb, εb, hbody, hflow, ho, hgo, hfs, hfail, hrs⟩ := funOk_of_find hwf hpol hf
+        have hrl : εb.rels = [] :=
+          List.eq_nil_iff_forall_not_mem.mpr (fun x hx => by simpa [hfr] using hrs x hx)
         have hτ : GroundSubst (fn.tparams.zip targs) := zip_ground hg
         have hcov := lookup_zip_cover (xs := fn.tparams) hlen
         have hEτ := eqArgsOK_of_call hwf hf hlen hg heqa
@@ -341,7 +343,7 @@ theorem t6_sound (hwf : p.LWellFormed) (hpol : p.policies = [])
         refine brel_done ?_
         simp only [LTy.lsubst, Program.lsub]
         refine .closure (Γ := []) (E := fn.eqParams) hτ hEτ hΓf .nil .nil .nil (by simpa using hbody)
-          hfail ?_ ?_ ho hgo hfs
+          hfail hrl ?_ ?_ ho hgo hfs
         · rw [LTy.lsubsts_eq]
           have : ∀ qs : List (String × LTy), (∀ q ∈ qs, q.2.ScopedIn fn.tparams) →
               Flows p.top ((qs.map (fun q => q.2.lsubst p.recordDeep (fn.tparams.zip targs))).map
@@ -532,7 +534,7 @@ theorem t6_sound (hwf : p.LWellFormed) (hpol : p.policies = [])
           split at hv' <;> simp [done] at hv'
           subst hv'
           exact .int
-        · have hvf : ¬ Vis p L ((⟨false, false, some (pc.join (p.deep (.text l)))⟩ : Eff).inst (p.sd σ)).failLabel :=
+        · have hvf : ¬ Vis p L ((⟨false, false, some (pc.join (p.deep (.text l))), []⟩ : Eff).inst (p.sd σ)).failLabel :=
             fun h => hd (Vis.of_le (LExpr.inst_le_join_inst _ _ _) h)
           refine brel_quiet ?_ (fun _ _ => .hidden hd) (fun _ _ => hvf) (fun _ _ => hvf)
           unfold parseInt

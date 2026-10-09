@@ -33,10 +33,12 @@ def Val.line : Val → Option String
 /-- An environment: the values of the variables in scope, innermost first. -/
 abbrev Env := List (String × Val)
 
-/-- The events of a trace: a line the operation wrote, and a request of the host. -/
+/-- The events of a trace: a line the operation wrote, a request of the host, and a release, the
+value a call of the policy `pol` declassified (option B1 of `docs/plan/formal-track-m4.md` §3). -/
 inductive Event where
   | out (line : String)
   | get (url : String)
+  | release (pol : String) (value : Val)
 
 abbrev Trace := List Event
 
@@ -234,7 +236,10 @@ mutual
         | some po, some v =>
           match p.find po.via with
           | some fn =>
-            if 1 = fn.params.length then eval n p w (bindParams fn.params [v] []) fn.body
+            if 1 = fn.params.length then
+              match eval n p w (bindParams fn.params [v] []) fn.body with
+              | (t, .ok r) => (t ++ [.release pol r], .ok r)
+              | res => res
             else stuck
           | none => stuck
         | _, _ => stuck

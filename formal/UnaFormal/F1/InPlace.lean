@@ -176,6 +176,9 @@ theorem Eff.plainFree_ofFn (o g f : Bool) : (Eff.ofFn o g f).PlainFree := by
   cases f <;> simp [Eff.ofFn] at hl
   subst hl; rfl
 
+theorem Eff.plainFree_ofFnR (o g f : Bool) (rs : List String) : (Eff.ofFnR o g f rs).PlainFree :=
+  Eff.plainFree_ofFn o g f
+
 theorem Eff.plainFree_none : Eff.none.PlainFree := fun _ h => by simp [Eff.none] at h
 
 theorem lctxLookup_mem {x : String} {t : LTy} : ∀ {Γ : LCtx}, lctxLookup Γ x = some t → (x, t) ∈ Γ
@@ -265,8 +268,8 @@ mutual
     | _, _, _, _, _, _, hΓ, _, .atom h => ⟨latom_inPlace hΓ h, Eff.plainFree_none⟩
     | _, _, _, _, _, _, hΓ, _, .prim (ts := ts) has hp =>
       ⟨prim_inPlace (latoms_inPlace hΓ has) hp, Eff.plainFree_none⟩
-    | _, _, _, _, _, _, _, _, .call (fn := fn) hf _ _ _ _ hg _ _ _ =>
-      ⟨(params_inPlace hwf hf _ (zip_ground hg)).2, Eff.plainFree_ofFn _ _ _⟩
+    | _, _, _, _, _, _, _, _, .call (fn := fn) hf _ _ _ _ hg _ _ _ _ =>
+      ⟨(params_inPlace hwf hf _ (zip_ground hg)).2, Eff.plainFree_ofFnR _ _ _ _⟩
     | _, _, _, _, _, _, hΓ, _, .apply hf _ _ _ => by
       have h := latom_inPlace hΓ hf
       simp only [LTy.InPlace] at h
@@ -284,7 +287,7 @@ mutual
     | _, _, _, _, _, _, _, _, .list _ _ ht => ⟨⟨ht, rfl⟩, Eff.plainFree_none⟩
     | _, _, _, _, _, _, _, _, .none ht => ⟨⟨ht, rfl⟩, Eff.plainFree_none⟩
     | _, _, _, _, _, _, hΓ, _, .some ha => ⟨⟨latom_inPlace hΓ ha, rfl⟩, Eff.plainFree_none⟩
-    | _, Γ, _, _, _, _, hΓ, _, .lambda (params := params) hb _ hps => by
+    | _, Γ, _, _, _, _, hΓ, _, .lambda (params := params) hb _ _ hps => by
       have hΓ' : LCtx.InPlace (params ++ Γ) := by
         intro q hq
         rcases List.mem_append.mp hq with hq | hq
@@ -294,11 +297,11 @@ mutual
         Eff.plainFree_none⟩
       obtain ⟨q, hq, rfl⟩ := List.mem_map.mp ht
       exact hps q hq
-    | _, _, _, _, _, _, _, _, .funRef (fn := fn) hf _ _ _ _ hg =>
+    | _, _, _, _, _, _, _, _, .funRef (fn := fn) hf _ _ _ _ hg _ =>
       ⟨⟨(params_inPlace hwf hf _ (zip_ground hg)).1, (params_inPlace hwf hf _ (zip_ground hg)).2, rfl⟩,
         Eff.plainFree_none⟩
-    | _, _, _, _, _, _, _, _, .declassify hpo _ _ _ _ =>
-      ⟨(hwf.inPlace.2.2 _ (List.mem_of_find?_eq_some hpo)).2, Eff.plainFree_ofFn _ _ _⟩
+    | _, _, _, _, _, _, _, _, .declassify hpo _ _ _ _ _ =>
+      ⟨(hwf.inPlace.2.2 _ (List.mem_of_find?_eq_some hpo)).2, Eff.plainFree_ofFnR _ _ _ _⟩
     | _, _, _, _, _, _, hΓ, _, .map hxs hf _ _ => by
       have hx := latom_inPlace hΓ hxs
       have h := latom_inPlace hΓ hf

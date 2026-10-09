@@ -274,7 +274,7 @@ theorem applyWith_brel {run : Env → Expr → Trace × Res}
     BRel p L (V p L r) vf (applyWith run c₁ as₁) (applyWith run c₂ as₂) := by
   cases hc with
   | hidden h => exact absurd hl h
-  | @closure params _ cenv₁ cenv₂ Γc _ _ _ _ _ _ _ _ _ σc hσ hE hΓ hrel he₁ he₂ hb hfl hps hr _ _ _ =>
+  | @closure params _ cenv₁ cenv₂ Γc _ _ _ _ _ _ _ _ _ σc hσ hE hΓ hrel he₁ he₂ hb hfl _ hps hr _ _ _ =>
     have hlen₁ : as₁.length = _ := (LValsTy.length hu₁).trans (Flows.length' hps)
     have hlen₂ : as₂.length = _ := (LValsTy.length hu₂).trans (Flows.length' hps)
     simp only [List.length_map] at hlen₁ hlen₂

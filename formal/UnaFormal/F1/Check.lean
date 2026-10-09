@@ -108,6 +108,12 @@ def boundB (p : Program) (pc : LExpr) (o g f : Bool) : Bool :=
   (!g || (leB p.top pc (.ofLabel p.acceptsGet) && symFree pc)) &&
   (!f || (leB p.top pc LExpr.bot && symFree pc))
 
+/-- `Program.RelBound`. -/
+def relBoundB (p : Program) (pc : LExpr) (rs : List String) : Bool :=
+  rs.all fun pol => match p.policy pol with
+    | some po => leB p.top pc po.dst.top && symFree pc
+    | none => false
+
 def isVia (p : Program) (f : String) : Bool := p.policies.any (·.via == f)
 
 /-- The structural type of a primitive's result (`PrimTy`). -/
@@ -220,8 +226,10 @@ mutual
         s!"an argument of `{f}` does not flow into its parameter"
       need (boundB p pc fn.op fn.get fn.fails)
         s!"`{f}` has effects or failures under a program counter above its bound"
+      need (relBoundB p pc fn.rels)
+        s!"`{f}` declassifies, and is called under a program counter above its policy's `to`"
       flowTo p (p.lsub σ fn.result) ann s!"the result of `{f}`"
-      pure (.ofFn fn.op fn.get fn.fails)
+      pure (.ofFnR fn.op fn.get fn.fails fn.rels)
     | .apply f args => do
       match ← atomTy Γ f with
       | .fn ps r o g fl lf =>
@@ -241,7 +249,7 @@ mutual
         "the operation's argument or program counter is above what it accepts"
       need (symFree pc) "an operation under a symbolic program counter"
       flowTo p (.unit .bot) ann "the operation's result"
-      pure ⟨true, false, Option.none⟩
+      pure ⟨true, false, Option.none, []⟩
     | .get url => do
       let t ← atomTy Γ url
       need (isText t) "the host operation's argument is not a text"
@@ -249,7 +257,7 @@ mutual
         "the host operation's argument or program counter is above what it accepts"
       need (symFree pc) "a host operation under a symbolic program counter"
       flowTo p (.text (.ofLabel p.getResult)) ann "the host operation's result"
-      pure ⟨false, true, some (pc.join (p.deep t))⟩
+      pure ⟨false, true, some (pc.join (p.deep t)), []⟩
     | .construct record fields => do
       let rec ← some! (p.record record) s!"no record `{record}`"
       need (flowsB p.top (← atomsTy Γ fields) rec.fields)
@@ -288,6 +296,7 @@ mutual
         need (params.all (fun q => inPlace q.2)) "`ℓ_T` off a position of type `T`"
         let ε ← checkExpr p E (params ++ Γ) .bot r body
         le p ε.failLabel .bot "a lambda's failure is decided above `public`"
+        need ε.rels.isEmpty "a lambda that declassifies (outside option B1)"
         need (flowsB p.top ps (params.map Prod.snd))
           "the declared parameters do not flow into the lambda's"
         need ((!ε.op || o) && (!ε.get || g) && (!ε.fails.isSome || fl))
@@ -296,6 +305,7 @@ mutual
       | _ => throw "a lambda bound at a type that is not a function type"
     | .funRef f targs => do
       let fn ← callable p E f targs
+      need fn.rels.isEmpty s!"`{f}` declassifies, and is used as a value (outside option B1)"
       let σ := fn.tparams.zip targs
       flowTo p (.fn (fn.params.map (fun q => p.lsub σ q.2)) (p.lsub σ fn.result)
         fn.op fn.get fn.fails .bot) ann s!"`{f}` as a value"
@@ -305,8 +315,9 @@ mutual
       let fn ← some! (p.find po.via) s!"no function `{po.via}`"
       flowTo p (← atomTy Γ a) po.src s!"the argument of `{pol}`"
       le p pc po.dst.top s!"`{pol}` is called under a program counter above its `to`"
+      need (symFree pc) s!"`{pol}` is called under a symbolic program counter"
       flowTo p po.dst ann s!"the result of `{pol}`"
-      pure (.ofFn fn.op fn.get fn.fails)
+      pure (.ofFnR fn.op fn.get fn.fails [pol])
     | .map xs f => do
       match ← atomTy Γ xs, ← atomTy Γ f with
       | .list te lx, .fn [tp] tr o g fl lf =>
@@ -349,7 +360,7 @@ mutual
       let t ← atomTy Γ s
       need (isText t) "`parse_int` of a value that is not a text"
       flowTo p (.int (p.deep t)) ann "the result of `parse_int`"
-      pure ⟨false, false, some (pc.join (p.deep t))⟩
+      pure ⟨false, false, some (pc.join (p.deep t)), []⟩
     | .eq a b => do
       let t₁ ← atomTy Γ a
       let t₂ ← atomTy Γ b
@@ -405,20 +416,20 @@ mutual
       le p pc .bot "a failure under a program counter above `public` (U4002)"
       need (symFree pc) "a failure under a symbolic program counter"
       need (inPlace s) "`ℓ_T` off a position of type `T`"
-      pure ⟨false, false, some .bot⟩
+      pure ⟨false, false, some .bot, []⟩
     | .attempt body => do
       match s with
       | .result t l =>
         let ε ← checkExpr p E Γ pc t body
         le p ε.failLabel l "the result of `attempt` is below what decides the failure"
-        pure ⟨ε.op, ε.get, Option.none⟩
+        pure ⟨ε.op, ε.get, Option.none, ε.rels⟩
       | _ => throw "`attempt` at a type that is not a result"
     | .handle body x handler => do
       need (inPlace s) "`ℓ_T` off a position of type `T`"
       let ε₁ ← checkExpr p E Γ pc s body
       let ε₂ ← checkExpr p E ((x, .int ε₁.failLabel) :: Γ) (pc.join ε₁.failLabel) s handler
       flowTo p (s.raise ε₁.failLabel) s "the value of a handled expression, raised by its failure,"
-      pure ⟨ε₁.op || ε₂.op, ε₁.get || ε₂.get, ε₂.fails⟩
+      pure ⟨ε₁.op || ε₂.op, ε₁.get || ε₂.get, ε₂.fails, ε₁.rels ++ ε₂.rels⟩
 end
 
 /-- T-Fun (`Program.FunOk`). -/
@@ -428,6 +439,7 @@ def checkFun (p : Program) (fn : Fun) : Result Unit := do
   need (!ε.get || fn.get) s!"`{fn.name}` performs a host operation it does not declare"
   need (!ε.fails.isSome || fn.fails) s!"`{fn.name}` may fail, and does not declare it"
   le p ε.failLabel .bot s!"a failure of `{fn.name}` is decided above `public` (U4002)"
+  need (ε.rels.all (fn.rels.contains ·)) s!"`{fn.name}` declassifies through a policy it does not declare"
 
 /-- The parts of `Program.LWellFormed` about one function's signature. -/
 def checkSignature (fn : Fun) : Result Unit := do

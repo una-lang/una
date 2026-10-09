@@ -113,7 +113,11 @@ theorem eval_mono : ∀ n m : Nat, n ≤ m →
         rename_i fn
         by_cases hl : 1 = fn.params.length
         · simp only [hl, ite_true] at ht ⊢
-          exact ihE _ _ ht
+          have hin : Term (eval n p w (bindParams fn.params [v] []) fn.body).2 := by
+            revert ht
+            rcases eval n p w (bindParams fn.params [v] []) fn.body with ⟨t, r⟩
+            cases r <;> simp [Term]
+          rw [ihE _ _ hin]
         · simp only [hl, ite_false]
       | map xs f =>
         simp only [evalRhs] at ht ⊢

@@ -27,7 +27,7 @@ def body : Expr :=
   .letR "y" (.int sec) (.prim .add [.var "s", .var "x"])
     (.letR "u" (.unit .bot) (.op (.text "hi")) (.atom (.var "x")))
 
-def eff : Eff := Eff.none.union ((⟨true, false, Option.none⟩ : Eff).union Eff.none)
+def eff : Eff := Eff.none.union ((⟨true, false, Option.none, []⟩ : Eff).union Eff.none)
 
 theorem body_typed : LExprTy prog [] Γ .bot body (.int .bot) eff := by
   refine .letR (t := .int ((LExpr.joinAll [sec, LExpr.bot]))) ?_ (.int ?_) ?_ (by simp [LTy.InPlace, sec, LExpr.ofLabel])
@@ -107,7 +107,7 @@ theorem le_sec {a : LExpr} (hb : a.base.level.rank ≤ 3) (hc : a.base.cats = []
     fun _ h => (by rw [hs] at h; nomatch h)⟩
 
 def brEff : Eff :=
-  Eff.none.union ((Eff.none.union Eff.none).union ((⟨true, false, Option.none⟩ : Eff).union Eff.none))
+  Eff.none.union ((Eff.none.union Eff.none).union ((⟨true, false, Option.none, []⟩ : Eff).union Eff.none))
 
 theorem branching_typed : LExprTy prog [] Γb .bot branching (.int sec) brEff := by
   refine .letR (t := .bool cl) ?r1 (.bool ?l1) ?b1 (by simp [LTy.InPlace, sec, LExpr.ofLabel])
@@ -212,7 +212,7 @@ theorem genericCall_typed :
   refine LRhsTy.call (fn := Examples.pick) (targs := [.int sec]) rfl ?_ rfl rfl ?_ ⟨⟨rfl, rfl⟩, trivial⟩
     (.cons (.var rfl) (.cons .int (.cons (.var rfl) .nil)))
     (.cons (.int (LExpr.le_join_left _ _)) (.cons (.int (LExpr.bot_le _)) (.cons (.bool (LExpr.bot_le _)) .nil)))
-    ⟨fun h => (by cases h), fun h => (by cases h), fun h => (by cases h)⟩
+    ⟨fun h => (by cases h), fun h => (by cases h), fun h => (by cases h)⟩ (fun _ h => nomatch h)
   · intro ⟨_, h, _⟩; simp [Examples.prog] at h
   · intro q _ h; simp [Examples.pick] at h
 
@@ -251,7 +251,7 @@ theorem callPick_typedΓ :
     (by simp [LTy.GroundAll, LTy.Ground, LExpr.SymFree, LExpr.bot, LExpr.ofLabel])
     (.cons .int (.cons .int (.cons .bool .nil)))
     (.cons (.int (LExpr.bot_le _)) (.cons (.int (LExpr.bot_le _)) (.cons (.bool (LExpr.bot_le _)) .nil)))
-    ⟨fun h => (by cases h), fun h => (by cases h), fun h => (by cases h)⟩
+    ⟨fun h => (by cases h), fun h => (by cases h), fun h => (by cases h)⟩ (fun _ h => nomatch h)
   · intro ⟨_, h, _⟩; simp [Examples.prog] at h
   · intro q _ h; simp [Examples.pick] at h
 

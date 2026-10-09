@@ -40,7 +40,7 @@ mutual
         GroundSubst σ → p.EqArgsOK σ E → LCtx.InPlace (params ++ Γ) →
         EnvRel (Γ.lsub p.recordDeep σ) env₁ env₂ → LEnvTy p env₁ (Γ.lsub p.recordDeep σ) →
         LEnvTy p env₂ (Γ.lsub p.recordDeep σ) →
-        LExprTy p E (params ++ Γ) .bot body tb ε → p.le ε.failLabel .bot →
+        LExprTy p E (params ++ Γ) .bot body tb ε → p.le ε.failLabel .bot → ε.rels = [] →
         Flows p.top ps ((params.map Prod.snd).map (LTy.lsubst p.recordDeep σ)) →
         Flow p.top (tb.lsubst p.recordDeep σ) r →
         (ε.op = true → o = true) → (ε.get = true → g = true) → (ε.fails.isSome = true → f = true) →
@@ -64,6 +64,7 @@ end
 def EvVis : Event → Prop
   | .out _ => Vis p L (.ofLabel p.acceptsOp)
   | .get _ => Vis p L (.ofLabel p.acceptsGet)
+  | .release pol _ => ∃ po, p.policy pol = some po ∧ Vis p L po.dst.top
 
 open Classical in
 /-- The events the observer sees, in order. -/
@@ -129,8 +130,8 @@ mutual
     | _, _, _, _, .ok h, .result f _ => .ok (V.flow h f)
     | _, _, _, _, .err, .result _ _ => .err
     | _, _, _, _, .record hr hfs, .record _ => .record hr hfs
-    | _, _, _, _, .closure hσ hE hΓ hrel h₁ h₂ hb hfl hps hr ho hg hf, .fn fps fr fo fg ff _ =>
-      .closure hσ hE hΓ hrel h₁ h₂ hb hfl (Flows.trans fps hps) (Flow.trans hr fr) (fo ∘ ho) (fg ∘ hg)
+    | _, _, _, _, .closure hσ hE hΓ hrel h₁ h₂ hb hfl hrl hps hr ho hg hf, .fn fps fr fo fg ff _ =>
+      .closure hσ hE hΓ hrel h₁ h₂ hb hfl hrl (Flows.trans fps hps) (Flow.trans hr fr) (fo ∘ ho) (fg ∘ hg)
         (ff ∘ hf)
 
   theorem VAll.flow : ∀ {t t' : LTy} {as bs : List Val}, VAll p L t as bs → Flow p.top t t' →
@@ -160,7 +161,7 @@ theorem V.unraise {t : LTy} {e : LExpr} {a b : Val} (he : Vis p L e) (h : V p L 
       | (exfalso; rename_i hh; exact hh (by simp only [LTy.top] at ht ⊢; exact Vis.join ht he))
       | exact .int | exact .bool | exact .text | exact .unit | exact .list ‹_› | exact .none
       | exact .some ‹_› | exact .ok ‹_› | exact .err | exact .record ‹_› ‹_›
-      | exact .closure ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_›
+      | exact .closure ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_›
   · exact .hidden ht
 
 theorem VList.unraise : ∀ {ts : List LTy} {e : LExpr} {as bs : List Val}, Vis p L e →
@@ -264,6 +265,12 @@ theorem confined {pc : LExpr} {ε : Eff} {P : Val → Prop} {run : Trace × Res}
     cases ev with
     | out _ => exact hpc (Vis.of_le ha.2 hvis)
     | get _ => exact hpc (Vis.of_le ha.2 hvis)
+    | release _ _ =>
+      obtain ⟨_, po, hpo, hle⟩ := ha
+      obtain ⟨po', hpo', hv⟩ := hvis
+      rw [hpo] at hpo'
+      cases hpo'
+      exact hpc (Vis.of_le hle hv)
   · have hf := h.2
     rw [hc] at hf
     obtain ⟨l, hl, hle⟩ := hf

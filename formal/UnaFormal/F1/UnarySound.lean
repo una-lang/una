@@ -76,6 +76,25 @@ theorem funOk_of_find (hwf : p.LWellFormed) (hpol : p.policies = []) {f : String
   · rw [hpol] at hpo
     nomatch hpo
 
+/-- A function that is not the `via` function of a policy passes T-Fun (option B1). -/
+theorem funOk_of_nvia (hwf : p.LWellFormed) {f : String} {fn : Fun} (hnv : ¬ p.IsVia f)
+    (h : p.find f = some fn) : p.FunOk fn := by
+  have hmem := find_mem h
+  have hname : fn.name = f := by
+    have := List.find?_some h
+    simpa using this
+  rcases hwf.funs fn hmem with hok | ⟨hv, _⟩
+  · exact hok
+  · exact absurd (hname ▸ hv) hnv
+
+/-- A symbol-free label is the concrete label it holds. -/
+theorem LExpr.eq_ofLabel_of_symFree {e : LExpr} (h : e.SymFree) : e = .ofLabel e.base := by
+  obtain ⟨b, pl, st⟩ := e
+  obtain ⟨h1, h2⟩ := h
+  simp only at h1 h2
+  subst h1 h2
+  rfl
+
 /-! ### At an instance -/
 
 section
@@ -149,11 +168,11 @@ theorem Fails.union_right_inst {pc pc' : LExpr} {s : List (String × LExpr)} {ε
 
 theorem allowed_union_left_inst {pc : LExpr} {s : List (String × LExpr)} {ε₁ ε₂ : Eff} :
     ∀ ev, Allowed p pc (ε₁.inst s) ev → Allowed p pc ((ε₁.union ε₂).inst s) ev :=
-  Allowed.mono (LExpr.le_refl pc) union_op_left union_get_left
+  Allowed.mono (LExpr.le_refl pc) union_op_left union_get_left (fun x h => union_rels_left x h)
 
 theorem allowed_union_right_inst {pc pc' : LExpr} {s : List (String × LExpr)} {ε₁ ε₂ : Eff}
     (hpc : p.le pc pc') : ∀ ev, Allowed p pc' (ε₂.inst s) ev → Allowed p pc ((ε₁.union ε₂).inst s) ev :=
-  Allowed.mono hpc union_op_right union_get_right
+  Allowed.mono hpc union_op_right union_get_right (fun x h => union_rels_right x h)
 
 /-- At a call whose program counter's instance the function's bound allows. -/
 theorem bound_allowed_inst {pc pc' : LExpr} {s : List (String × LExpr)} {o g f : Bool}
@@ -168,11 +187,36 @@ theorem bound_fails_inst {pc pc' : LExpr} {s : List (String × LExpr)} {o g f : 
   exact LExpr.le_trans hpc (LExpr.le_trans ((hb.inst s).2.2 hf).1
     (by rw [show LExpr.bot = LExpr.ofLabel Label.bot from rfl, LExpr.inst_ofLabel]; exact LExpr.le_join_right _ _))
 
+theorem bound_fails_instR {pc pc' : LExpr} {s : List (String × LExpr)} {o g f : Bool}
+    {rs : List String} (hb : p.Bound pc' o g f) (hpc : p.le pc (pc'.inst s)) (hf : f = true) :
+    Fails p pc ((Eff.ofFnR o g f rs).inst s) :=
+  bound_fails_inst hb hpc hf
+
 theorem fnAllowed_of {pc : LExpr} {s : List (String × LExpr)} {ε : Eff} {o g : Bool}
-    (ho : ε.op = true → o = true) (hg : ε.get = true → g = true) :
+    (ho : ε.op = true → o = true) (hg : ε.get = true → g = true) (hr : ε.rels = []) :
     ∀ ev, Allowed p pc (ε.inst s) ev → FnAllowed o g ev
   | .out _, h => ho h.1
   | .get _, h => hg h.1
+  | .release _ _, h => by have := h.1; simp [Eff.inst, hr] at this
+
+/-- **The events of a call** (option B1): the callee's operations, which its bound allows, and
+its releases, through policies it declares (`Fun.rels`), each above the program counter of the
+call (`Program.RelBound`). The policies' `to` labels are concrete. -/
+theorem call_allowed_inst {pc pc₀ pc' : LExpr} {s s' : List (String × LExpr)} {εb : Eff}
+    {o g f : Bool} {rs : List String} (hdst : ∀ po ∈ p.policies, po.dst.top.SymFree)
+    (hb : p.Bound pc' o g f) (hrb : p.RelBound pc' rs) (hpc : p.le pc (pc'.inst s))
+    (ho : εb.op = true → o = true) (hg : εb.get = true → g = true) (hr : ∀ x ∈ εb.rels, x ∈ rs) :
+    ∀ ev, Allowed p pc₀ (εb.inst s') ev → Allowed p pc ((Eff.ofFnR o g f rs).inst s) ev
+  | .out _, h => ⟨ho h.1, LExpr.le_trans hpc ((hb.inst s).1 (ho h.1)).1⟩
+  | .get _, h => ⟨hg h.1, LExpr.le_trans hpc ((hb.inst s).2.1 (hg h.1)).1⟩
+  | .release pol _, ⟨hm, po, hpo, _⟩ => by
+    obtain ⟨po', hpo', hle, _⟩ := hrb pol (hr pol hm)
+    rw [hpo] at hpo'
+    cases hpo'
+    refine ⟨hr pol hm, po, hpo, LExpr.le_trans hpc ?_⟩
+    have hsf := hdst po (List.mem_of_find?_eq_some hpo)
+    rw [LExpr.eq_ofLabel_of_symFree hsf] at hle ⊢
+    exact LExpr.le_of_le_inst_ofLabel (LExpr.le_inst s hle)
 
 theorem flag_of_fails {pc : LExpr} {s : List (String × LExpr)} {ε : Eff} {f : Bool}
     (hf : ε.fails.isSome = true → f = true) : Fails p pc (ε.inst s) → f = true := by
@@ -222,8 +266,8 @@ theorem unary_sound (hwf : p.LWellFormed) (hpol : p.policies = []) (w : World) :
           show LValTy p v _
           rw [ofScalar_lsubst]
           exact prim_ltyped _ hp he
-      | @call _ _ f targs args fn ts hf _ hlen _ _ hg has hfl hb =>
-        obtain ⟨tb, εb, hbody, hflow, ho, hgo, hfs, _⟩ := funOk_of_find hwf hpol hf
+      | @call _ _ f targs args fn ts hf _ hlen _ _ hg has hfl hb hrb =>
+        obtain ⟨tb, εb, hbody, hflow, ho, hgo, hfs, _, hrs⟩ := funOk_of_find hwf hpol hf
         have hτ : GroundSubst (fn.tparams.zip targs) := zip_ground hg
         have hcov := lookup_zip_cover (xs := fn.tparams) hlen
         obtain ⟨hps, hres⟩ := hwf.sigsScoped fn (find_mem hf)
@@ -241,9 +285,10 @@ theorem unary_sound (hwf : p.LWellFormed) (hpol : p.policies = []) (w : World) :
         rw [List.append_nil] at henv'
         have henv'' : LEnvTy p (bindParams fn.params vs []) (LCtx.lsub p.recordDeep (fn.tparams.zip targs) fn.params) := by
           simpa [bindParams, LCtx.lsub, List.map_map, Function.comp_def] using henv'
-        refine UOk.mono (fun ev hev => bound_allowed_inst hb (LExpr.le_refl _) ev
-            (fnAllowed_of ho hgo ev hev)) (fun v hv => ?_)
-          (fun h => bound_fails_inst hb (LExpr.le_refl _) (flag_of_fails hfs h))
+        have hdst : ∀ po ∈ p.policies, po.dst.top.SymFree := by rw [hpol]; intro _ h; nomatch h
+        refine UOk.mono (call_allowed_inst hdst hb hrb (LExpr.le_refl _) ho hgo hrs)
+          (fun v hv => ?_)
+          (fun h => bound_fails_instR hb (LExpr.le_refl _) (flag_of_fails hfs h))
           (ihE hτ (by simpa using henv'') hbody)
         have hr := LTy.lsubst_ground p.recordDeep hτ hcov hres
         exact (LValTy.ground_lsubst hr).mpr (LValTy.flow hv (Flow.lsubst _ _ hflow))
@@ -314,20 +359,22 @@ theorem unary_sound (hwf : p.LWellFormed) (hpol : p.policies = []) (w : World) :
       | some ha =>
         obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv ha
         exact ⟨fun _ h => by simp [evalRhs] at h, by simpa [evalRhs, hv, URes, LTy.lsubst] using LValTy.some hvt⟩
-      | lambda hb hfl _ =>
+      | lambda hb hfl hrl _ =>
         refine uok_done ?_
         simp only [LTy.lsubst]
-        exact .closure hσ henv hb hfl (by rw [LTy.lsubsts_eq]; exact Flows.refl _) (Flow.refl _)
+        exact .closure hσ henv hb hfl hrl (by rw [LTy.lsubsts_eq]; exact Flows.refl _) (Flow.refl _)
           id id id
-      | @funRef _ _ f targs fn hf _ hlen _ _ hg =>
-        obtain ⟨tb, εb, hbody, hflow, ho, hgo, hfs, hfl⟩ := funOk_of_find hwf hpol hf
+      | @funRef _ _ f targs fn hf _ hlen _ _ hg hfr =>
+        obtain ⟨tb, εb, hbody, hflow, ho, hgo, hfs, hfl, hrs⟩ := funOk_of_find hwf hpol hf
+        have hrl : εb.rels = [] :=
+          List.eq_nil_iff_forall_not_mem.mpr (fun x hx => by simpa [hfr] using hrs x hx)
         have hτ : GroundSubst (fn.tparams.zip targs) := zip_ground hg
         have hcov := lookup_zip_cover (xs := fn.tparams) hlen
         obtain ⟨hps, hres⟩ := hwf.sigsScoped fn (find_mem hf)
         simp only [evalRhs, hf]
         refine uok_done ?_
         simp only [LTy.lsubst, Program.lsub]
-        refine .closure (Γ := []) (E := fn.eqParams) hτ .nil (by simpa using hbody) hfl ?_ ?_ ho hgo hfs
+        refine .closure (Γ := []) (E := fn.eqParams) hτ .nil (by simpa using hbody) hfl hrl ?_ ?_ ho hgo hfs
         · rw [LTy.lsubsts_eq]
           have : ∀ ts : List (String × LTy), (∀ q ∈ ts, q.2.ScopedIn fn.tparams) →
               Flows p.top ((ts.map (fun q => q.2.lsubst p.recordDeep (fn.tparams.zip targs))).map
@@ -452,7 +499,7 @@ theorem unary_sound (hwf : p.LWellFormed) (hpol : p.policies = []) (w : World) :
               (fun _ h => LValTy.lsubst_raise (LValTy.flow h (Flow.lsubst _ _ h₂)))
               (Fails.union_right_inst (hpc0 _)) (ihE hσ henv he)
           · simp only [eval, hv]
-            exact UOk.mono (Allowed.mono (hpc0 _) union_op_left union_get_left)
+            exact UOk.mono (Allowed.mono (hpc0 _) union_op_left union_get_left (fun x h => union_rels_left x h))
               (fun _ h => LValTy.lsubst_raise (LValTy.flow h (Flow.lsubst _ _ h₁)))
               (fun h => Fails.union_left_inst (Fails.mono (hpc0 _) (fun l hl => ⟨l, hl, LExpr.le_refl l⟩) h))
               (ihE hσ henv ht)
@@ -462,7 +509,7 @@ theorem unary_sound (hwf : p.LWellFormed) (hpol : p.policies = []) (w : World) :
         cases hvt with
         | none =>
           simp only [eval, hv]
-          exact UOk.mono (Allowed.mono (hpc0 _) union_op_left union_get_left)
+          exact UOk.mono (Allowed.mono (hpc0 _) union_op_left union_get_left (fun x h => union_rels_left x h))
             (fun _ h => LValTy.lsubst_raise (LValTy.flow h (Flow.lsubst _ _ h₁)))
             (fun h => Fails.union_left_inst (Fails.mono (hpc0 _) (fun l hl => ⟨l, hl, LExpr.le_refl l⟩) h))
             (ihE hσ henv hn)
@@ -478,7 +525,7 @@ theorem unary_sound (hwf : p.LWellFormed) (hpol : p.policies = []) (w : World) :
         cases hvt with
         | ok hw =>
           simp only [eval, hv]
-          exact UOk.mono (Allowed.mono (hpc0 _) union_op_left union_get_left)
+          exact UOk.mono (Allowed.mono (hpc0 _) union_op_left union_get_left (fun x h => union_rels_left x h))
             (fun _ h => LValTy.lsubst_raise (LValTy.flow h (Flow.lsubst _ _ h₁)))
             (fun h => Fails.union_left_inst (Fails.mono (hpc0 _) (fun l hl => ⟨l, hl, LExpr.le_refl l⟩) h))
             (ihE hσ (.cons (LValTy.lsubst_raise hw) henv) hok)
@@ -499,8 +546,8 @@ theorem unary_sound (hwf : p.LWellFormed) (hpol : p.policies = []) (w : World) :
         cases eval n p w env _ with
         | mk tr r =>
           intro h
-          have hev : ∀ ev ∈ tr, Allowed p (pc.inst (p.sd σ)) ((⟨_, _, Option.none⟩ : Eff).inst (p.sd σ)) ev :=
-            fun ev hev => Allowed.mono (LExpr.le_refl _) id id ev (h.1 ev hev)
+          have hev : ∀ ev ∈ tr, Allowed p (pc.inst (p.sd σ)) ((⟨_, _, Option.none, _⟩ : Eff).inst (p.sd σ)) ev :=
+            fun ev hev => Allowed.mono (LExpr.le_refl _) id id (fun _ h => h) ev (h.1 ev hev)
           cases r with
           | ok v => exact ⟨hev, .ok h.2⟩
           | failed c => exact ⟨hev, .err⟩
@@ -514,9 +561,10 @@ theorem unary_sound (hwf : p.LWellFormed) (hpol : p.policies = []) (w : World) :
         | mk tr r =>
           intro h
           have hev : ∀ ev ∈ tr, Allowed p (pc.inst (p.sd σ))
-              ((⟨ε₁.op || ε₂.op, ε₁.get || ε₂.get, ε₂.fails⟩ : Eff).inst (p.sd σ)) ev :=
+              ((⟨ε₁.op || ε₂.op, ε₁.get || ε₂.get, ε₂.fails, ε₁.rels ++ ε₂.rels⟩ : Eff).inst (p.sd σ)) ev :=
             fun ev hev => Allowed.mono (LExpr.le_refl _) (fun h => by simp only [Eff.inst] at h ⊢; simp [h])
-              (fun h => by simp only [Eff.inst] at h ⊢; simp [h]) ev (h.1 ev hev)
+              (fun h => by simp only [Eff.inst] at h ⊢; simp [h])
+              (fun x h => by simp only [Eff.inst] at h ⊢; simp [h]) ev (h.1 ev hev)
           cases r with
           | failed code =>
             have hh' := ihE hσ (.cons (LValTy.int (n := (code : Int))) henv) hh
@@ -527,7 +575,8 @@ theorem unary_sound (hwf : p.LWellFormed) (hpol : p.policies = []) (w : World) :
             · rcases List.mem_append.mp hev' with hev' | hev'
               · exact hev ev hev'
               · exact Allowed.mono (hpc0 _) (fun h => by simp only [Eff.inst] at h ⊢; simp [h])
-                  (fun h => by simp only [Eff.inst] at h ⊢; simp [h]) ev (hh'.1 ev hev')
+                  (fun h => by simp only [Eff.inst] at h ⊢; simp [h])
+                  (fun x h => by simp only [Eff.inst] at h ⊢; simp [h]) ev (hh'.1 ev hev')
             · have h2 := hh'.2
               cases r' <;> simp only [URes] at h2 ⊢
               · exact LValTy.lsubst_raise (LValTy.flow h2 (Flow.lsubst _ _ h₂))

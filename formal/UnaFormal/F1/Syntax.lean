@@ -133,6 +133,9 @@ structure Fun where
   get : Bool
   fails : Bool
   body : Expr
+  /-- The policies whose release a call may perform (option B1): its body's declassifications
+  and those of the functions it calls. -/
+  rels : List String := []
 
 /-- A record kind of the program: its field types, with their declared labels, in order, and
 the join of every label they declare, which the checker computes over nested records (the
