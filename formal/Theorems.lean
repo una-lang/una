@@ -40,3 +40,7 @@ import UnaFormal
 #print axioms Una.F1.LValTy.flow
 #print axioms Una.F1.Flow.trans
 #print axioms Una.F1.unary_sound
+#print axioms Una.F1.V.eq_of_deep
+#print axioms Una.F1.andThen_brel
+#print axioms Una.F1.t6_sound
+#print axioms Una.F1.t6

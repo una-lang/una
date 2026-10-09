@@ -11,3 +11,4 @@ import UnaFormal.F1.Spike
 import UnaFormal.F1.Examples
 import UnaFormal.F1.Inst
 import UnaFormal.F1.UnarySound
+import UnaFormal.F1.T6
