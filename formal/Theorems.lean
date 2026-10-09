@@ -51,3 +51,5 @@ import UnaFormal
 #print axioms Una.F1.T6Example.branching_typed
 #print axioms Una.F1.T6Example.branching_noninterferent
 #print axioms Una.F1.T6Example.leaking_untyped
+#print axioms Una.F1.LExpr.le_inst
+#print axioms Una.F1.Flow.lsubst
