@@ -280,4 +280,91 @@ theorem t6_release_erasure {ρ : String → String} {P₁ P₂ : Program} (L : L
   ⟨_, _, t6_release P₁ L hwf hb1 hget w hσ hE hΓ hpc h₁ h₂ hrel he n,
     eval_erasure hsim w n he₁ hee, eval_erasure hsim w n he₂ hee⟩
 
+/-- A release in an erased trace comes from a release, whose value erases to the same. -/
+theorem split_release {ρ : String → String} {t pre rest : Trace} {pol : String} {v : Val}
+    (h : t.map (Event.anon id) = pre.map (Event.anon ρ) ++ Event.release pol (v.anon ρ) :: rest) :
+    ∃ A v' C, t = A ++ Event.release pol v' :: C ∧ A.map (Event.anon id) = pre.map (Event.anon ρ) ∧
+      v'.anon id = v.anon ρ := by
+  obtain ⟨A, B, rfl, hA, hB⟩ := List.map_eq_append_iff.mp h
+  obtain ⟨x, C, rfl, hx, _⟩ := List.map_eq_cons_iff.mp hB
+  cases x with
+  | release pol' v' =>
+    simp only [Event.anon, Event.release.injEq] at hx
+    obtain ⟨rfl, hv⟩ := hx
+    exact ⟨A, v', C, rfl, hA, hv⟩
+  | out _ | get _ => simp [Event.anon] at hx
+
+/-- **What the observer sees of the document's runs.** With `P₁` as in `t6_release_erasure`, and
+`proj` the same in both programs (it reads no function), two runs of a body of `P₂` that end,
+whose events carry first-order values, are equal to the observer, or diverge at a release: what
+`t6_release` says of `P₁`, now of `P₂`'s own runs. -/
+theorem t6_release_erasure_obs {ρ : String → String} {P₁ P₂ : Program} (L : Label)
+    (hsim : Sim ρ P₁ P₂) (hproj : ∀ t, proj P₁ L t = proj P₂ L t)
+    (hwf : P₁.LWellFormed) (hb1 : P₁.B1WellFormed)
+    (hget : P₁.le (.ofLabel P₁.acceptsGet) (.ofLabel P₁.getResult)) (w : World)
+    {σ : List (String × LTy)} {e₁ e₂ : Env} {Γ : LCtx} {E : List String} {pc : LExpr} {e : Expr}
+    {t : LTy} {ε : Eff} (hσ : GroundSubst σ) (hE : P₁.EqArgsOK σ E) (hΓ : Γ.InPlace)
+    (hpc : pc.PlainFree) (h₁ : LEnvTy P₁ e₁ (Γ.lsub P₁.recordDeep σ))
+    (h₂ : LEnvTy P₁ e₂ (Γ.lsub P₁.recordDeep σ)) (hrel : EnvRel P₁ L (Γ.lsub P₁.recordDeep σ) e₁ e₂)
+    (he : LExprTy P₁ E Γ pc e t ε) {e' : Expr} {e₁' e₂' : Env} (hee : e.anon ρ = e'.anon id)
+    (he₁ : Val.anonEnv ρ e₁ = Val.anonEnv id e₁') (he₂ : Val.anonEnv ρ e₂ = Val.anonEnv id e₂')
+    (n : Nat) (hT₁ : Term (eval n P₂ w e₁' e').2) (hT₂ : Term (eval n P₂ w e₂' e').2)
+    (hfo₁ : ∀ ev ∈ (eval n P₂ w e₁' e').1, ev.FirstOrder)
+    (hfo₂ : ∀ ev ∈ (eval n P₂ w e₂' e').1, ev.FirstOrder) :
+    proj P₂ L (eval n P₂ w e₁' e').1 = proj P₂ L (eval n P₂ w e₂' e').1 ∨
+      Diverged P₂ L (eval n P₂ w e₁' e').1 (eval n P₂ w e₂' e').1 := by
+  have hbr := t6_release P₁ L hwf hb1 hget w hσ hE hΓ hpc h₁ h₂ hrel he n
+  have ha := eval_erasure hsim w n he₁ hee
+  have hb := eval_erasure hsim w n he₂ hee
+  generalize eval n P₁ w e₁ e = r₁ at hbr ha
+  generalize eval n P₁ w e₂ e = r₂ at hbr hb
+  generalize eval n P₂ w e₁' e' = s₁ at ha hT₁ hfo₁ ⊢
+  generalize eval n P₂ w e₂' e' = s₂ at hb hT₂ hfo₂ ⊢
+  obtain ⟨t₁, o₁⟩ := r₁
+  obtain ⟨t₂, o₂⟩ := r₂
+  obtain ⟨u₁, q₁⟩ := s₁
+  obtain ⟨u₂, q₂⟩ := s₂
+  simp only [runAnon, Prod.mk.injEq] at ha hb
+  have hterm : ∀ {o : Res} {q : Res}, o.anon ρ = q.anon id → Term q → Term o := fun h hq => by
+    rw [← Term_anon (ρ := ρ), h, Term_anon]; exact hq
+  -- What the observer sees of `P₂`'s run, erased, is what it sees of `P₁`'s.
+  have hview : ∀ {tt : Trace} {uu : Trace}, tt.map (Event.anon ρ) = uu.map (Event.anon id) →
+      (proj P₂ L uu).map (Event.anon id) = (proj P₁ L tt).map (Event.anon ρ) := fun h => by
+    rw [← proj_anon, ← h, ← hproj, proj_anon]
+  have hfoP : ∀ {uu : Trace}, (∀ ev ∈ uu, ev.FirstOrder) → ∀ ev ∈ proj P₂ L uu, ev.FirstOrder :=
+    fun h ev hev => h ev (List.mem_filter.mp hev).1
+  rcases hbr (hterm ha.2 hT₁) (hterm hb.2 hT₂) with ⟨hp, _⟩ | ⟨pre, pol, v₁, v₂, r₁, r₂, hne, hp₁, hp₂⟩
+  · left
+    apply trace_anon_inj (ρ := id) (ρ' := id) (hfoP hfo₁) (hfoP hfo₂)
+    simp only at hp ⊢
+    rw [hview ha.1, hview hb.1, hp]
+  · right
+    have h₁' := hview ha.1
+    have h₂' := hview hb.1
+    simp only at hp₁ hp₂
+    rw [hp₁, List.map_append, List.map_cons, Event.anon] at h₁'
+    rw [hp₂, List.map_append, List.map_cons, Event.anon] at h₂'
+    obtain ⟨A, v₁', C, hA, hpre₁, hv₁⟩ := split_release h₁'
+    obtain ⟨A', v₂', C', hA', hpre₂, hv₂⟩ := split_release h₂'
+    have hfoA : ∀ ev ∈ A, ev.FirstOrder := fun ev hev => hfoP hfo₁ ev (by rw [hA]; simp [hev])
+    have hfoA' : ∀ ev ∈ A', ev.FirstOrder := fun ev hev => hfoP hfo₂ ev (by rw [hA']; simp [hev])
+    have hAA : A = A' := trace_anon_inj (ρ := id) (ρ' := id) hfoA hfoA' (by rw [hpre₁, hpre₂])
+    have hfo₁' : v₁'.FirstOrder := by
+      have := hfoP hfo₁ (Event.release pol v₁') (by rw [hA]; simp)
+      simpa [Event.FirstOrder] using this
+    have hfo₂' : v₂'.FirstOrder := by
+      have := hfoP hfo₂ (Event.release pol v₂') (by rw [hA']; simp)
+      simpa [Event.FirstOrder] using this
+    refine ⟨A, pol, v₁', v₂', C, C', fun heq => hne ?_, hA, hAA ▸ hA'⟩
+    have hv₁fo : v₁.FirstOrder := by
+      rw [← Val.firstOrder_anon (ρ := ρ), ← hv₁, Val.firstOrder_anon]; exact hfo₁'
+    have hv₂fo : v₂.FirstOrder := by
+      rw [← Val.firstOrder_anon (ρ := ρ), ← hv₂, Val.firstOrder_anon]; exact hfo₂'
+    apply Val.anon_inj (ρ := ρ) (ρ' := ρ) v₁ v₂ hv₁fo hv₂fo
+    rw [← hv₁, ← hv₂, heq]
+
+/-- `proj` reads no function: it is the same in a program checked at instances. -/
+theorem proj_funs (P₂ : Program) (fs : List Fun) (L : Label) (t : Trace) :
+    proj ({ P₂ with funs := fs } : Program) L t = proj P₂ L t := rfl
+
 end Una.F1

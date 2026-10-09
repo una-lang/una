@@ -120,15 +120,18 @@ The 3 moves to not re-checked are all G3, in `types/alias_effectful_fn`: `run` a
 | `eval_erasure` | Two programs that agree up to annotations (`Sim`) run the same, up to annotations, on bodies and environments that agree up to annotations. |
 | `progSim_sound` | The Boolean `progSim` gives `Sim`. |
 | `t6_release_erasure` | **T6 for a program checked at its instances.** When `P₁` passes the labeled typing within B1 and agrees with `P₂`, two runs of a body of `P₂` are, up to the annotations inside closures, two runs of the corresponding body of `P₁` that `t6_release` relates. |
+| `Val.anon_inj`, `trace_anon_inj`, `t6_release_erasure_obs` | Erasure is injective on first-order values. So two runs of a body of `P₂` itself that end, whose events carry first-order values, are equal to the observer or diverge at a release: `t6_release`'s conclusion, stated of the document's own runs. |
 | `Import.finalize_sound` | **A declaration reported accepted has a certificate.** It is a function of `P₂`, where `progOk [] P₁` and `progSim` hold, or a function of the program of the declarations that reach no function checked at its instances, where `progOk []` holds. One reported accepted on the condition of A3 has `progOk cond` on `P₂`. |
 
 `eval_erasure` is the README's "equivalence of runs up to the annotations inside closures" (`docs/reviews/formal-m2-replay/README.md`, "Why it is sound"), now proven. A closure keeps its parameters' types and its body's annotations. So the runs agree once those are forgotten, and the trace's events and the outcome's kind agree exactly (`proj_anon`, `Term_anon`).
 
 **Una-1's observation on #456.** "Accepted ⇒ the final certificate" held by the importer's code structure. Every final verdict now comes from one total function, `Import.finalize`, which `checkDocumentWith` calls last, and `finalize_sound` is a theorem about it. A `#guard` checks that `finalize` gives no verdict without a certificate. The reading of `una.core/1` into those inputs stays the trusted base.
 
+**The functions checked at their instances are taken from the final members** (`Import.monoParts`, Una-1's note on A3). One demoted before the certificates leaves with its instances, so it cannot keep `P₁` from agreeing with `P₂` for the rest of the document. A `#guard` shows the agreement with the recomputed set, and its failure with the stale one.
+
 **Accepted, conditional on A3** remains only for a document where `P₁` fails its certificate and `P₂` passes `progOk cond`, tied to `progOk_sound`'s hypothesis by `finalize_sound`. The corpus has none.
 
-**Non-vacuity** (`MonomorphExample.lean`). `main` calls `g[T](x: T) -> T` at `Int`. `P₁`, with `g[public Int]` and `main`'s call renamed, passes `progOk []` (`certified`) and agrees with `P₂` (`sim`), both by evaluation. `runs_agree` gives the run of `main`. `#guard`s check that the instance and the renamed call are what the re-check computes, and that the agreement fails when an instance's body differs from its generic function's.
+**Non-vacuity** (`MonomorphExample.lean`). `main` calls `g[T](x: T) -> T` at `Int`. `P₁`, with `g[public Int]` and `main`'s call renamed, passes `progOk []` (`certified`) and agrees with `P₂` (`sim`), both by evaluation. `runs_agree` gives the run of `main`, and `main_obs` applies `t6_release_erasure_obs` to it in `P₂`. `#guard`s check that the instance and the renamed call are what the re-check computes, and that the agreement fails when an instance's body differs from its generic function's.
 
 **The corpus**, A2 → A3: accepted 556 → 638; accepted, conditional on A3 82 → 0; rejected 0 → 0; not re-checked 1,125 → 1,125. The 82 move to accepted, and nothing else moves.
 

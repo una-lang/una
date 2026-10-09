@@ -106,3 +106,7 @@ import UnaFormal
 #print axioms Una.F1.MonomorphExample.sim
 #print axioms Una.F1.MonomorphExample.certified
 #print axioms Una.F1.MonomorphExample.runs_agree
+#print axioms Una.F1.Val.anon_inj
+#print axioms Una.F1.trace_anon_inj
+#print axioms Una.F1.t6_release_erasure_obs
+#print axioms Una.F1.MonomorphExample.main_obs

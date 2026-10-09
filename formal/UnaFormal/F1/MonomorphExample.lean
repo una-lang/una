@@ -92,6 +92,22 @@ theorem runs_agree (w : World) (n : Nat) :
       runAnon id (eval n P₂ w [] main.body) :=
   eval_erasure sim w n rfl (by rfl)
 
+/-- `main`'s runs in the document's program `P₂` itself are related as `t6_release` says, through
+`t6_release_erasure_obs`: its hypotheses hold of a real document. -/
+theorem main_obs (L : Label) (w : World) :
+    proj P₂ L (eval 5 P₂ w [] main.body).1 = proj P₂ L (eval 5 P₂ w [] main.body).1 ∨
+      Diverged P₂ L (eval 5 P₂ w [] main.body).1 (eval 5 P₂ w [] main.body).1 := by
+  obtain ⟨hwf, hb1, hget⟩ := certified
+  rcases hwf.funs mainMono (by simp [monoFuns]) with hok | ⟨hv, _⟩
+  · obtain ⟨t, ε, ht, _⟩ := hok
+    have hrun : eval 5 P₂ w [] main.body = ([], .ok (.int 5)) := rfl
+    exact t6_release_erasure_obs L sim (proj_funs P₂ monoFuns L) hwf hb1 hget w (σ := []) (Γ := []) (E := [])
+      (fun _ h => nomatch h) (fun _ h => by simp at h) (fun _ h => nomatch h) rfl .nil .nil .nil ht
+      (e' := main.body) (by rfl) rfl rfl 5 (by rw [hrun]; trivial) (by rw [hrun]; trivial)
+      (by rw [hrun]; simp) (by rw [hrun]; simp)
+  · obtain ⟨po, hpo, _⟩ := hv
+    simp [P₂] at hpo
+
 -- `gInt` and `mainMono` are what the re-check computes: the instance search's instance of `g` at
 -- `Int` (its name, signature and body), and `main` with its call renamed.
 #guard s!"g[{instKey [.int .bot]}]" == gInt.name
@@ -106,5 +122,19 @@ theorem runs_agree (w : World) (n : Nat) :
   | _ => false
 -- The agreement fails when the instance's body is not `g`'s.
 #guard !progSim ren { P₂ with funs := [mainMono, { gInt with body := .atom (.int 0) }] } P₂
+
+-- `cond` is recomputed from the final members (Una-1's note on A3): `g1`, checked at its
+-- instances but demoted before the certificates, leaves with its instance, so the program checked
+-- at instances still agrees with the document's; built from a `cond` that still holds `g1`, it
+-- would not, and every declaration of the document would lose its certificate.
+#guard
+  let g1Int : Fun := { gInt with name := "g1[public Int]" }
+  let read : String → Option Fun := fun f => if f == "main" then some main else if f == "g" then some g else none
+  let nested : String → Bool := fun f => f == "g" || f == "g1"
+  let insts := [("g", gInt), ("g1", g1Int)]
+  let (cond, mono, ren') := monoParts ["main", "g"] nested read insts []
+  cond == ["g"] && progSim ren' { P₂ with funs := mono } P₂ &&
+    -- the same parts with the stale `cond`, `g1` included
+    !progSim (ren' ++ [("g1[public Int]", "g1")]) { P₂ with funs := mono ++ [g1Int] } P₂
 
 end Una.F1.MonomorphExample

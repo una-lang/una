@@ -587,6 +587,101 @@ theorem proj_anon {ρ : String → String} (p : Program) (L : Label) (t : Trace)
   intro ev _
   cases ev <;> simp only [Function.comp, Event.anon, EvVis] <;> exact decide_eq_decide.mpr Iff.rfl
 
+/-! ### Erasure is injective on first-order values -/
+
+mutual
+  /-- A value without a closure in it. -/
+  def Val.FirstOrder : Val → Prop
+    | .closure _ _ _ => False
+    | .list items => Val.FirstOrderAll items
+    | .some v | .ok v => v.FirstOrder
+    | .record _ fs => Val.FirstOrderAll fs
+    | .int _ | .bool _ | .text _ | .unit | .none | .err _ => True
+
+  def Val.FirstOrderAll : List Val → Prop
+    | [] => True
+    | v :: vs => v.FirstOrder ∧ Val.FirstOrderAll vs
+end
+
+/-- An event whose value, if any, is first-order. -/
+def Event.FirstOrder : Event → Prop
+  | .release _ v => v.FirstOrder
+  | _ => True
+
+mutual
+  /-- Erasure keeps whether a value is first-order. -/
+  theorem Val.firstOrder_anon {ρ : String → String} : ∀ v : Val, (v.anon ρ).FirstOrder ↔ v.FirstOrder
+    | .list items => by simp only [Val.anon, Val.FirstOrder]; exact Val.firstOrderAll_anon items
+    | .record _ fs => by simp only [Val.anon, Val.FirstOrder]; exact Val.firstOrderAll_anon fs
+    | .some v | .ok v => by simp only [Val.anon, Val.FirstOrder]; exact Val.firstOrder_anon v
+    | .closure _ _ _ | .int _ | .bool _ | .text _ | .unit | .none | .err _ => by
+      simp [Val.anon, Val.FirstOrder]
+
+  theorem Val.firstOrderAll_anon {ρ : String → String} :
+      ∀ vs : List Val, Val.FirstOrderAll (Val.anons ρ vs) ↔ Val.FirstOrderAll vs
+    | [] => by simp [Val.anons, Val.FirstOrderAll]
+    | v :: vs => by
+      simp only [Val.anons, Val.FirstOrderAll, Val.firstOrder_anon v, Val.firstOrderAll_anon vs]
+end
+
+mutual
+  /-- **Erasure is injective on first-order values**, whatever the renamings. -/
+  theorem Val.anon_inj {ρ ρ' : String → String} :
+      ∀ (a b : Val), a.FirstOrder → b.FirstOrder → a.anon ρ = b.anon ρ' → a = b
+    | .list xs, b, ha, hb, h => by
+      cases b with
+      | list ys =>
+        simp only [Val.anon, Val.list.injEq] at h
+        rw [Val.anons_inj xs ys ha hb h]
+      | _ => simp [Val.anon] at h
+    | .record r xs, b, ha, hb, h => by
+      cases b with
+      | record s ys =>
+        simp only [Val.anon, Val.record.injEq] at h
+        rw [h.1, Val.anons_inj xs ys ha hb h.2]
+      | _ => simp [Val.anon] at h
+    | .some x, b, ha, hb, h => by
+      cases b with
+      | some y => simp only [Val.anon, Val.some.injEq] at h; rw [Val.anon_inj x y ha hb h]
+      | _ => simp [Val.anon] at h
+    | .ok x, b, ha, hb, h => by
+      cases b with
+      | ok y => simp only [Val.anon, Val.ok.injEq] at h; rw [Val.anon_inj x y ha hb h]
+      | _ => simp [Val.anon] at h
+    | .closure _ _ _, _, ha, _, _ => absurd ha (by simp [Val.FirstOrder])
+    | .int _, b, _, _, h | .bool _, b, _, _, h | .text _, b, _, _, h | .unit, b, _, _, h
+    | .none, b, _, _, h | .err _, b, _, _, h => by
+      cases b <;> simp_all [Val.anon]
+
+  theorem Val.anons_inj {ρ ρ' : String → String} :
+      ∀ (xs ys : List Val), Val.FirstOrderAll xs → Val.FirstOrderAll ys →
+        Val.anons ρ xs = Val.anons ρ' ys → xs = ys
+    | [], [], _, _, _ => rfl
+    | x :: xs, y :: ys, hx, hy, h => by
+      simp only [Val.anons, List.cons.injEq] at h
+      rw [Val.anon_inj x y hx.1 hy.1 h.1, Val.anons_inj xs ys hx.2 hy.2 h.2]
+    | [], _ :: _, _, _, h | _ :: _, [], _, _, h => by simp [Val.anons] at h
+end
+
+theorem Event.anon_inj {ρ ρ' : String → String} {a b : Event} (ha : a.FirstOrder)
+    (hb : b.FirstOrder) (h : a.anon ρ = b.anon ρ') : a = b := by
+  cases a <;> cases b <;> simp_all [Event.anon, Event.FirstOrder]
+  exact Val.anon_inj _ _ ha hb h.2
+
+theorem Event.firstOrder_anon {ρ : String → String} (ev : Event) :
+    (ev.anon ρ).FirstOrder ↔ ev.FirstOrder := by
+  cases ev <;> simp [Event.anon, Event.FirstOrder, Val.firstOrder_anon]
+
+theorem trace_anon_inj {ρ ρ' : String → String} :
+    ∀ {t u : Trace}, (∀ ev ∈ t, ev.FirstOrder) → (∀ ev ∈ u, ev.FirstOrder) →
+      t.map (Event.anon ρ) = u.map (Event.anon ρ') → t = u
+  | [], [], _, _, _ => rfl
+  | a :: t, b :: u, ht, hu, h => by
+    simp only [List.map_cons, List.cons.injEq] at h
+    rw [Event.anon_inj (ht a (by simp)) (hu b (by simp)) h.1,
+      trace_anon_inj (fun ev hev => ht ev (by simp [hev])) (fun ev hev => hu ev (by simp [hev])) h.2]
+  | [], _ :: _, _, _, h | _ :: _, [], _, _, h => by simp at h
+
 end Main
 
 end Una.F1

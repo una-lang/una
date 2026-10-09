@@ -724,6 +724,22 @@ mutual
     | .handle b x h => .handle (Expr.toInst cond b) x (Expr.toInst cond h)
 end
 
+/-- The parts of the program checked at instances, from the final members: the functions checked
+at their instances among them (`cond`), recomputed so that one demoted earlier leaves with its
+instances; `P₁`'s functions, with the calls renamed and the instances of `cond` in place of it;
+and the renaming, an instance to its generic function and a function of `cond` to a name no
+function has. -/
+def monoParts (members : List String) (isNested : String → Bool) (readFn : String → Option Fun)
+    (instFuns : List (String × Fun)) (viaFuns : List Fun) :
+    List String × List Fun × List (String × String) :=
+  let cond := members.filter isNested
+  let insts := instFuns.filter fun (g, _) => cond.contains g
+  let toInstFn := fun (fn : Fun) => { fn with body := Expr.toInst cond fn.body }
+  let mono := (members.filter (!cond.contains ·)).filterMap (fun f => (readFn f).map toInstFn) ++
+    insts.map (toInstFn ·.2) ++ viaFuns
+  let ren := insts.map (fun (g, inst) => (inst.name, g)) ++ cond.map (fun g => (g, s!"{g}[]"))
+  (cond, mono, ren)
+
 /-- **The verdicts, from the certificates alone** (M4 completion, A2 and A3). Every declaration
 the steps before report accepted gets its verdict here, and only from a certificate:
 
@@ -1091,6 +1107,9 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
   -- calls of it are renamed to the instance they reach (part A3), which agrees with `P` up to
   -- annotations. `finalize` gives every verdict from them.
   let members := accepted final
+  -- The functions checked at their instances among the final members: one demoted in the rounds
+  -- above leaves with its instances, which would otherwise keep `P₁` from agreeing with `P`.
+  let (cond, mono, ren) := monoParts members isNested (fun f => (readOf f).map (·.fn)) instFuns viaFuns
   let reachesCond := Id.run do
     let mut rc := cond
     for _ in [0:members.length + 1] do
@@ -1098,11 +1117,6 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
         rc.contains f || ((List.lookup f reach).getD []).any rc.contains
     pure rc
   let plain := members.filter fun f => !reachesCond.contains f
-  let insts := instFuns.filter fun (g, _) => cond.contains g
-  let toInstFn := fun (fn : Fun) => { fn with body := Expr.toInst cond fn.body }
-  let mono := (members.filter (!cond.contains ·)).filterMap (fun f => (readOf f).map (toInstFn ·.fn)) ++
-    insts.map (toInstFn ·.2) ++ viaFuns
-  let ren := insts.map (fun (g, inst) => (inst.name, g)) ++ cond.map (fun g => (g, s!"{g}[]"))
   pure (finalize (mkProg members) (mkProg plain) cond mono ren final)
 
 /-- `checkDocumentWith` with labeled instantiation, `LTy.lsubst`. -/
