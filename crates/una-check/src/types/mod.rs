@@ -168,6 +168,10 @@ pub struct TypeCheck {
     /// Where each `let` whose right-hand side is in the refinement language binds its name.
     /// Such a binding has the selfified type `{v: B | v == e}` (`spec/03 §7`).
     pub selfified: Vec<Location>,
+    /// The lambdas given to `of` parameters (ADR 0062), by span: whether the body performs
+    /// effects and whether it can fail. Their function types in Core carry neither, since they
+    /// are their caller's; `una core` exports them (#443).
+    pub of_lambdas: Vec<(Span, bool, bool)>,
     /// The headers of the functions of the modules checked, by module, then declaration.
     pub headers: Vec<Header>,
     /// The Core IR of the declarations without diagnostics (`spec/09`).
@@ -419,6 +423,7 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
             .iter()
             .map(|span| report.location(*span))
             .collect(),
+        of_lambdas: findings.of_lambdas.clone(),
         diagnostics: report.diagnostics,
     }
 }
@@ -529,6 +534,9 @@ pub(crate) struct Findings {
     /// Instantiations of generic functions: the caller when it is a function, the callee, its
     /// type arguments and where.
     pub(crate) instances: Vec<(Option<usize>, usize, Vec<ty::Ty>, Span)>,
+    /// The lambdas given to `of` parameters, checked in their caller's context (ADR 0062): the
+    /// span of each, whether its body performs effects, and whether it can fail.
+    pub(crate) of_lambdas: Vec<(Span, bool, bool)>,
     /// For each generic function, the type parameters whose values its body compares with
     /// `==` or `!=`.
     pub(crate) compared: std::collections::BTreeMap<usize, std::collections::BTreeSet<usize>>,

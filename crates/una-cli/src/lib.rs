@@ -129,6 +129,8 @@ struct Analysis {
     references: Vec<(una_syntax::Span, una_syntax::Span)>,
     /// What the type checker resolved, by span (ADR 0063).
     index: una_check::Index,
+    /// The lambdas given to `of` parameters, by span, with their effects and failure (#443).
+    of_lambdas: Vec<(una_syntax::Span, bool, bool)>,
 }
 
 /// Checks `package`; with `run_grants`, for `una run`, whose grants are final (U3012).
@@ -198,6 +200,7 @@ fn analyze(package: &Package, run_grants: Option<&[String]>) -> Analysis {
         pending: types.obligations,
         references,
         index: types.index,
+        of_lambdas: types.of_lambdas,
     }
 }
 
@@ -780,13 +783,25 @@ fn core_command(
         }
     };
     let (manifest, _) = package::project(&package);
-    let (diagnostics, program) = on_large_stack(|| {
+    let (diagnostics, program, headers, of_lambdas) = on_large_stack(|| {
         let analysis = analyze(&package, None);
-        (analysis.diagnostics, analysis.program)
+        (
+            analysis.diagnostics,
+            analysis.program,
+            analysis.headers,
+            analysis.of_lambdas,
+        )
     });
     let complete = diagnostics.is_empty();
     if json {
-        match core_json::document(&program, &package.sources, manifest.edition, complete) {
+        match core_json::document(
+            &program,
+            &package.sources,
+            &headers,
+            &of_lambdas,
+            manifest.edition,
+            complete,
+        ) {
             Ok(document) => writeln!(stdout, "{document}")?,
             Err(error) => {
                 writeln!(

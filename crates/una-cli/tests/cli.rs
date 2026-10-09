@@ -1019,6 +1019,61 @@ fn core_keeps_the_symbolic_labels_of_a_generic_body() {
 }
 
 #[test]
+fn core_exports_the_facts_inference_adds() {
+    // #443: a function's `of` clauses and result summary (ADR 0062, ADR 0067), and the effects
+    // of a lambda given to an `of` parameter, which its function type in Core does not carry.
+    let tour = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/conformance/types/effect_polymorphism_tour");
+    let output = una(&["--json", "core", tour.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let document: serde_json::Value = serde_json::from_str(stdout(&output)).unwrap();
+    let fun = |name: &str| {
+        document["modules"][0]["decls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["kind"] == "fun" && d["value"]["name"] == name)
+            .map(|d| d["value"].clone())
+            .unwrap()
+    };
+    assert_eq!(fun("log_each")["uses_of"], serde_json::json!(["each"]));
+    assert_eq!(fun("run_one")["fails_of"], serde_json::json!("f"));
+    assert_eq!(fun("logged")["result_labels"], serde_json::json!([]));
+    assert_eq!(fun("logged")["of_raises"], serde_json::json!([]));
+    // `logged` gives `map` a lambda that writes: the let that binds it says so.
+    let text = serde_json::to_string(&fun("logged")["body"]).unwrap();
+    assert!(
+        text.contains("\"of_lambda\":{\"effects\":true,\"fails\":false}"),
+        "{text}"
+    );
+
+    let root = scratch("core-summary");
+    std::fs::write(
+        root.join("una.toml"),
+        "[package]\nname = \"g\"\nversion = \"0.1.0\"\nedition = \"0.2\"\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../verification.lock"),
+        root.join("verification.lock"),
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("src/g.una"),
+        "module g\n\npub same[T: Eq](a: T, b: T) -> Bool = a == b\n",
+    )
+    .unwrap();
+    let output = una(&["--json", "core", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let document: serde_json::Value = serde_json::from_str(stdout(&output)).unwrap();
+    assert_eq!(
+        document["modules"][0]["decls"][0]["value"]["result_labels"],
+        serde_json::json!([{"position": "top", "from": ["T"]}])
+    );
+}
+
+#[test]
 fn core_of_a_package_with_errors_is_incomplete_and_still_one_document() {
     // ADR 0083: Core holds the declarations without diagnostics; `complete` says so, the
     // diagnostics go to stderr, and the exit code follows them.

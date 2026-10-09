@@ -689,6 +689,11 @@ impl<'a> Checker<'_, 'a, '_> {
             let label = self.labeled(&body_ty).top_label();
             self.stops_by_result(span, &label, "this lambda");
         }
+        if self.pass == super::authority::Pass::Check {
+            self.findings
+                .of_lambdas
+                .push((span, effects, fails.is_some()));
+        }
         self.record_of(&argument, OfFound { effects, fails }, span, "this lambda");
         Ty::Fn(Shared::new(super::ty::FnTy {
             params: types,
