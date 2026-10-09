@@ -83,7 +83,7 @@ The host capability `Http` sends HTTP/1.1 requests to the origins that grants al
 
 1. Every argument of every operation is a sink with `accepts internal` (`spec/07 §7` rule 4): a `secret` URL, header, body or key name is U4003.
 2. Every response is `internal`.
-3. **Failures** (N-39, N-40). Whether an operation fails, and how, is labeled by its URL, its key name and its headers, through the list's labels and the names but not the values, and not by its body (`spec/07 §7` rule 4). So `attempt` gives a `Result` with that label, and `if error pass` and `if error fail` are U4002 when it is above `public`; with `public` arguments nothing changes.
+3. **Failures** (N-39, N-40, S-15, ADR 0085). Whether an operation fails, and how, is labeled by every argument: the URL, the key name, the headers with their values, and the body (`spec/07 §7` rule 4). The server receives them all and may decide the failure by them, as `TooLarge`, `Protocol` and `TimedOut` are. Since `Header` declares its value `internal`, the failure of every request is `internal`, as its response is. So `attempt` gives an `internal` `Result`, and `if error pass` and `if error fail` are U4002.
 4. A key sent by `key_name` never becomes a value of the program, so it has no label in it. It appears in no trace, outcome or diagnostic.
 
 ## 6. Traces

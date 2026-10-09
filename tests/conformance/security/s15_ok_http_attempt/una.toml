@@ -1,0 +1,4 @@
+[package]
+name = "s15_ok_http_attempt"
+version = "0.1.0"
+edition = "0.2"

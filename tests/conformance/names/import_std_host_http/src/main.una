@@ -5,12 +5,13 @@ module main
 
 import std.host (Header, Http, HttpError, Response)
 
---- The status of a page, or its failure passed on.
-pub status(url: Text) -> internal Int
+--- The status of a page, or the failure of its request. A request's failure is `internal`, as
+--- its response is (S-15), so it is returned rather than passed on.
+pub status(url: Text) -> internal Result[internal Int, internal HttpError]
   uses @http: Http[get]
-  fails HttpError
 =
   let headers: List[Header] = []
-  let response: internal Response = @http.get(url, headers: headers, key_name: None)
-    if error pass
-  response.status
+  let r = attempt @http.get(url, headers: headers, key_name: None)
+  when r
+    is Ok(response) -> Ok(response.status)
+    is Err(e) -> Err(e)

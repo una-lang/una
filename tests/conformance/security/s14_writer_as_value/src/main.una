@@ -1,0 +1,17 @@
+-- test: a function used as a value may be called anywhere under its effect bound, `internal` for a writer that keeps its failure, so its write labels the reads of the package (S-14)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/main.una:17:3
+module main
+
+mark(n: Int) -> Int
+  uses @files: Files[write]
+=
+  let w = attempt @files.write("marker.txt", content: "")
+  n
+
+pub probe(xs: List[Int]) -> Bool
+  uses @files: Files[read, write]
+=
+  let ys = xs.map(each: mark)
+  let r = attempt @files.read("marker.txt")
+  is_ok(r)

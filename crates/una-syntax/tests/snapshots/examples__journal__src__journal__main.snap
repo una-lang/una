@@ -14,7 +14,7 @@ expression: "dump(&parsed.file, &interner, db.file(id).text())"
   (uses @env {Env[get]})
   (fails FileError)
   (block
-    (let text (handled (@files.read "today.txt") (if-error-pass)))
+    (let text (handled (@files.read "today.txt") (if-error-use "")))
     (let hundreds (call length_band text))
     (@console.print (text "today's entry runs to about " hundreds " hundred characters"))
     (let copy_to (handled (@env.get "JOURNAL_COPY") (if-none-use "")))
