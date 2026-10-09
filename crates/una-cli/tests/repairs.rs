@@ -71,6 +71,13 @@ fn offset(text: &str, position: &Value) -> usize {
 /// Applies the first repair's edit of every diagnostic of one check together, after checking
 /// that no two of them touch the same text, and returns the codes of the check that follows.
 fn apply_all(root: &Path) -> Vec<String> {
+    let fixed = fix_copy(root);
+    let codes = apply_all_by_hand(root);
+    agrees_with_fix(root, &fixed, &codes);
+    codes
+}
+
+fn apply_all_by_hand(root: &Path) -> Vec<String> {
     let path = root.join("src/m.una");
     let text = std::fs::read_to_string(&path).unwrap();
     let mut edits: Vec<(usize, usize, String)> = diagnostics(root)
@@ -102,6 +109,95 @@ fn apply_all(root: &Path) -> Vec<String> {
         .iter()
         .map(|d| d["code"].as_str().unwrap().to_owned())
         .collect()
+}
+
+/// A fresh copy of the package at `root`, next to it, with `suffix` added to its name.
+fn copy_package(root: &Path, suffix: &str) -> PathBuf {
+    let copy = root.with_file_name(format!(
+        "{}-{suffix}",
+        root.file_name().unwrap().to_string_lossy()
+    ));
+    let _ = std::fs::remove_dir_all(&copy);
+    for file in files_of(root) {
+        let target = copy.join(&file);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::copy(root.join(&file), target).unwrap();
+    }
+    copy
+}
+
+/// Every file of the package at `root`, relative to it, in path order.
+fn files_of(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut pending = vec![PathBuf::new()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(root.join(&dir)).unwrap() {
+            let entry = entry.unwrap();
+            let relative = dir.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                pending.push(relative);
+            } else {
+                out.push(relative);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// The modules of the package at `root`, by path.
+fn modules_of(root: &Path) -> std::collections::BTreeMap<PathBuf, String> {
+    files_of(root)
+        .into_iter()
+        .filter(|file| file.extension().is_some_and(|e| e == "una"))
+        .map(|file| {
+            let text = std::fs::read_to_string(root.join(&file)).unwrap();
+            (file, text)
+        })
+        .collect()
+}
+
+/// A copy of the package at `root` that `una fix` repaired, before the test applies the
+/// edits by hand to `root` itself, with the `una.fix/1` document.
+fn fix_copy(root: &Path) -> (PathBuf, Value) {
+    let copy = copy_package(root, "fix");
+    let output = una(&copy, &["--json", "fix", "--tier", "0", "."]);
+    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(document["schema"], "una.fix/1", "{document}");
+    assert!(
+        output.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (copy, document)
+}
+
+/// ADR 0084: `una fix` applies what the test applies by hand, in safe rounds. What remains
+/// after it carries no edit it could apply: every remaining first repair with an edit is
+/// listed as skipped. When the edits by hand leave nothing, `una fix` leaves nothing either,
+/// and its files are the hand-repaired ones in canonical form.
+fn agrees_with_fix(root: &Path, (fixed, document): &(PathBuf, Value), codes: &[String]) {
+    assert_eq!(document["stopped"], "done", "{document}");
+    let skipped = document["skipped"].as_array().unwrap();
+    for diagnostic in document["diagnostics"].as_array().unwrap() {
+        let edit = &diagnostic["repairs"][0]["edit"];
+        if edit.is_null() {
+            continue;
+        }
+        assert!(
+            skipped.iter().any(|s| s["code"] == diagnostic["code"]
+                && s["file"] == edit["file"]
+                && s["start"] == edit["start"]),
+            "a mechanical edit left unapplied and not skipped: {diagnostic}"
+        );
+    }
+    if codes.is_empty() && skipped.is_empty() {
+        assert_eq!(document["diagnostics"], serde_json::json!([]), "{document}");
+        let canonical = copy_package(root, "canonical");
+        let output = una(&canonical, &["fmt", "."]);
+        assert_eq!(output.status.code(), Some(0));
+        assert_eq!(modules_of(fixed), modules_of(&canonical));
+    }
 }
 
 /// What `una run` prints.
@@ -310,6 +406,13 @@ fn package_of(name: &str, files: &[(&str, &str)]) -> PathBuf {
 /// the codes of the check that follows. Every diagnostic must carry an edit: an agent applies
 /// them with no step of its own.
 fn apply_all_files(root: &Path) -> Vec<String> {
+    let fixed = fix_copy(root);
+    let codes = apply_all_files_by_hand(root);
+    agrees_with_fix(root, &fixed, &codes);
+    codes
+}
+
+fn apply_all_files_by_hand(root: &Path) -> Vec<String> {
     let mut edits: std::collections::BTreeMap<String, Vec<(Value, Value, String)>> =
         std::collections::BTreeMap::new();
     for diagnostic in diagnostics(root) {
@@ -557,4 +660,75 @@ fn an_unknown_name_far_from_every_name_in_scope_has_no_repair_419() {
         "module m\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  @console.print(\"{zzzzzzzz}\")\n",
     );
     assert_eq!(repairs_of(&root), [("U1001".to_owned(), Vec::new())]);
+}
+
+#[test]
+fn una_fix_never_widens_authority_or_visibility_0084() {
+    // ADR 0084 (Leonardo, 2026-10-08: "Never apply, no flag"): the edit that adds `flush` to
+    // the `uses` clause and the one that makes `helper` public are reported as skipped, and
+    // the files keep their `uses` clause and their private declaration.
+    for edition in ["0.1", "0.2"] {
+        let root = package_of(
+            &format!("fix-authority-{edition}"),
+            &[
+                ("a", "module a\n\nhelper(x: Int) -> Int = x\n"),
+                (
+                    "b",
+                    "module b\n\nimport a (helper)\n\npub capability Log\n  op write(line: Text) -> Unit\n  op flush() -> Unit\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  @console.print(\"{helper(1)}\")\n\npub finish() -> Unit\n  uses @log: Log[write]\n=\n  @log.flush()\n",
+                ),
+            ],
+        );
+        let manifest = root.join("una.toml");
+        let text = std::fs::read_to_string(&manifest).unwrap();
+        std::fs::write(
+            &manifest,
+            text.replace("edition = \"0.1\"", &format!("edition = \"{edition}\"")),
+        )
+        .unwrap();
+        let before = modules_of(&root);
+        let output = una(&root, &["--json", "fix", "--tier", "0", "."]);
+        assert_eq!(output.status.code(), Some(1));
+        let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(document["applied"], serde_json::json!([]), "{document}");
+        let skipped: Vec<(&str, &str)> = document["skipped"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| (s["code"].as_str().unwrap(), s["reason"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            skipped,
+            [("U1004", "widens authority"), ("U3002", "widens authority")]
+        );
+        assert_eq!(modules_of(&root), before);
+    }
+}
+
+#[test]
+fn una_fix_dry_run_writes_nothing_and_reports_the_edits_0084() {
+    let source = "module m\n\npub kind P = Over(index: Int) | Fine\n\npub f(p: P) -> Int\n  requires p != Over\n=\n  1\n";
+    let root = package("fix-dry-run", "0.2", source);
+    let output = una(&root, &["--json", "fix", "--dry-run", "--tier", "0", "."]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(document["dry_run"], true);
+    assert_eq!(document["rounds"], 1);
+    assert_eq!(document["applied"][0]["replacement"], "not (p is Over)");
+    assert_eq!(repaired(&root), source);
+    // The same run without `--dry-run` writes what the dry run reported, and prints one line
+    // per edit.
+    let output = una(&root, &["fix", "--tier", "0", "."]);
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.starts_with("fixed src/m.una:6:12 U2014 "),
+        "{stdout}"
+    );
+    assert!(repaired(&root).contains("requires not (p is Over)\n"));
+    assert!(una(&root, &["check", "--tier", "0", "."]).status.success());
 }

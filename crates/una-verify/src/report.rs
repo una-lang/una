@@ -125,6 +125,7 @@ fn repairs(obligation: &Obligation) -> Vec<Repair> {
     // reaches a value that exists only when the function is called.
     if let Some(flow) = &site.flow {
         return vec![Repair {
+            widens_authority: false,
             rank: 1,
             escape_cost: 0,
             description: flow.clone(),
@@ -198,6 +199,7 @@ fn repairs(obligation: &Obligation) -> Vec<Repair> {
         .into_iter()
         .enumerate()
         .map(|(rank, (escape_cost, description))| Repair {
+            widens_authority: false,
             rank: u32::try_from(rank + 1).unwrap_or(u32::MAX),
             escape_cost,
             description,

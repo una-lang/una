@@ -559,7 +559,7 @@ impl<'a> Checker<'_, 'a, '_> {
                                 .filter(|n| n.capability.is_some())
                                 .map(|n| self.uses_text(&n.name, n.capability, &n.ops))
                                 .collect();
-                            diagnostic.repairs.extend(self.add_clause(&clauses, before_uses));
+                            diagnostic.repairs.extend(self.add_clause(&clauses, before_uses).map(widening));
                             self.report.push(diagnostic);
                         }
                     }
@@ -589,7 +589,7 @@ impl<'a> Checker<'_, 'a, '_> {
                             ),
                         );
                         let clause = [self.uses_text(&need.name, need.capability, &need.ops)];
-                        diagnostic.repairs.extend(self.add_clause(&clause, before_uses));
+                        diagnostic.repairs.extend(self.add_clause(&clause, before_uses).map(widening));
                         self.report.push(diagnostic);
                     }
                 },
@@ -662,14 +662,14 @@ impl<'a> Checker<'_, 'a, '_> {
         capability?;
         let all: Vec<String> = ops.iter().chain(extra).cloned().collect();
         let listed: Vec<String> = extra.iter().map(|op| format!("`{op}`")).collect();
-        Some(self.report.edit(
+        Some(widening(self.report.edit(
             format!(
                 "add {} to the `uses` clause of `@{name}`",
                 listed.join(", ")
             ),
             clause,
             self.uses_text(name, capability, &all),
-        ))
+        )))
     }
 
     /// An edit that adds `clauses` to the header of the function being checked, in canonical
@@ -1604,4 +1604,10 @@ pub(crate) fn testing_installs(findings: &Findings, report: &mut Report<'_>) {
             .push(report.related(*used, "the use of `std.testing`"));
         report.push(diagnostic);
     }
+}
+
+/// `repair`, marked as widening authority: `una fix` never applies it (ADR 0084).
+fn widening(mut repair: Repair) -> Repair {
+    repair.widens_authority = true;
+    repair
 }

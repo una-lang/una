@@ -30,8 +30,9 @@ const GUIDES: [&str; 3] = [
 ];
 
 /// The schemas the CLI prints (`spec/13 §1, §2, §6`, ADRs 0029, 0032 and 0034).
-const SCHEMAS: [&str; 11] = [
+const SCHEMAS: [&str; 12] = [
     "una.diagnostics/1",
+    "una.fix/1",
     "una.diagnostic/1",
     "una.obligations/1",
     "una.test/1",

@@ -88,7 +88,7 @@ By kind (ADR 0033): a refuted or unknown `refinement` or `precondition` proposes
 
 A `refinement` obligation of a function value flowing into a function type (`spec/12 §3`, ADR 0037) proposes only a stronger type at the position of a function type: for a parameter, of the expected function type ("strengthen parameter 1 of `fn(Int) -> Int` to a refined kind that implies `x > 0`"); for the result, of the value's function type ("strengthen the result of `fn(Int) -> Int` to a refined kind that implies `result > 0`"). No `requires` clause, guard or `checked` is proposed, since none of them reaches a value that exists only when the function is called. The result obligation of a lambda, whose result type is not written, proposes a guard in the lambda's body.
 
-Other diagnostics MAY include repairs (for example, a missing label with its mechanical edit). Repairs are never applied automatically.
+Other diagnostics MAY include repairs (for example, a missing label with its mechanical edit). `una check` and the other commands never apply repairs. (v0.2, ADR 0084.) `una fix` applies mechanical ones on request (§5). A repair whose edit widens authority or visibility, by adding operations to a `uses` clause, declaring a `uses` clause or making a declaration `pub`, is marked so where it is built, and `una fix` never applies it.
 
 ## 4. Code registry
 
@@ -188,6 +188,7 @@ Codes are never reused. Retired codes stay in this table marked retired. Gaps in
 | --- | --- |
 | `una check [path]` | Tiers 0 and 1; `--tier 0` skips the solver; `--dump-core <module>` prints Core IR |
 | `una fmt [path]` | Rewrite to canonical form; `--check` reports U7001 without writing |
+| `una fix [path]` | (v0.2, ADR 0084) Apply the mechanical repairs that `una check` reports, then format; `--dry-run` writes nothing; `--tier 0` skips the solver in the final check |
 | `una run [path]` | Run `main` of `[run] entry`; `--grant <spec>` repeated |
 | `una build [path]` | (v0.2, ADR 0055) Compile `main` of `[run] entry` into a native executable; `--out <file>` (`spec/16 §2`) |
 | `una test [path]` | Run all examples |
@@ -209,6 +210,24 @@ Grant specs: `console`, `clock`, `env`, `keys:<keyfile>`, `files:<path>:read`, `
 In human mode, the lines the program prints go to stdout as it prints them, and U6001, U6003 and U6004 go to stderr, with exit code 1. U6001 points at the name of `main` and names the variant, with the payload fields whose labels are `public`; U6003 points at the call that exceeds the depth, or that finds the run over its memory budget. U6004 points at the operation of `Http` given a header value with a control character (`spec/24 §1`, N-40). With `--json`, `una run` prints `{"schema":"una.run/1","tier":...,"status":...,"output":[...],"failure":...,"diagnostics":[...],"trace":[...]}` with keys in that order: `tier` is the tier the checks ran at; `status` is `ok`, `failed` (U6001), `aborted` (U6003, U6004 or U8001) or `rejected` (the checks reported errors, which `diagnostics` holds, and nothing ran); `failure` is `null` or `{"variant":...,"fields":{...}}` with the `public` fields only.
 
 `una test [path]` prints, in human mode, one line per example on stdout, `example <module> "<name>" ... ok` or `... FAILED`, followed for a failed example by the file, line and text of the expectation to blame, when there is one, and the reason; then a blank line and `<n> examples: <p> passed, <f> failed`. It exits with code 1 when an example fails. With `--json` it prints `{"schema":"una.test/1","tier":...,"diagnostics":[...],"examples":[...],"passed":p,"failed":f}`: `diagnostics` holds the errors of the checks when nothing ran, or U6003 and U8001 of aborted examples; each example has `module`, `name`, `outcome` (`pass` or `fail`), `reason` (`null`, or why it fails), `expectation` (`null`, or `{"file":...,"line":...,"text":...}`), `result` (`{"kind":"ok","value":...}`, `{"kind":"fail","variant":...,"value":...}` or `{"kind":"aborted"}`) and `trace` (`spec/11 §5`). (v0.2, ADR 0078.) The document also holds `redacted`, after `tier`: `true` when the results and reasons of its examples redact labeled fields, as in a package of edition `0.1`, and `false` when they show every field, as in a package of edition `0.2` (`spec/11 §5`). The key is additive, and the schema stays `una.test/1`.
+
+(v0.2, ADR 0084.) `una fix [path]` applies, in rounds, the mechanical repairs of the package.
+- **Candidates.** Of each diagnostic, only its first repair (by `escape_cost`, then `rank`) is a candidate. It is applied when all of these hold:
+  - its `edit` is not `null`;
+  - its `escape_cost` is 0;
+  - it does not widen authority or visibility (§3), with no flag to change that;
+  - its file is a module of the package, never `una.toml` or `verification.lock`, and holds valid UTF-8;
+  - it is not U7001.
+- **Rounds.** Each round checks the package at tier 0, in memory. Within a file it takes candidates in order of start, end and diagnostic. An edit that overlaps one already taken, or touches it at a point where either inserts, waits for the next round; an identical edit is merged. Rounds stop when one takes no edit (`done`), when the texts return to an earlier state (`cycle`), or after 16 rounds (`limit`).
+- **Format and write.** Every module that parses is then formatted, as `una fmt` does. Each changed file is written once, through a temporary file and a rename; `--dry-run` writes nothing.
+- **Final check.** The package is checked at the requested tier, 1 by default, and its diagnostics are those that remain.
+- **Human output.** On stdout, one line per applied edit, `fixed <file>:<line>:<col> <code> <description>`, at its position in the text of its round. Then one line per first repair with an edit that remains and was not applied, `skipped <file>:<line>:<col> <code> <description>: <reason>`. Then, when the rounds did not finish, a `stopped:` line. The remaining diagnostics go to stderr.
+- **`--json`.** It prints `{"schema":"una.fix/1","dry_run":...,"rounds":n,"stopped":"done"|"cycle"|"limit","applied":[...],"skipped":[...],"formatted":[...],"diagnostics":[...]}`, with keys in that order:
+  - each applied edit is `{"round","file","code","description","start","end","replacement"}`;
+  - each skipped repair is `{"file","code","start","description","reason"}`, where `reason` is `widens authority`, `escape cost`, `not a module`, `invalid UTF-8` or `round limit`;
+  - `formatted` lists the files the format step changed;
+  - `diagnostics` holds the remaining diagnostics.
+- **Exit codes.** As for `una check`, from the remaining diagnostics.
 
 `una obligations [path]` prints one line per obligation, `<status> <id> <kind> <file>:<line>:<col> <goal>`, with `(cached)` for a cached result, and exits with code 1 when an obligation is not proven (ADR 0033).
 
