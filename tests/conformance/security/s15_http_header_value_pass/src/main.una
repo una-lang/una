@@ -1,0 +1,13 @@
+-- test: the server receives the values of the headers, which `Header` declares `internal`, so a request's failure is `internal` even when its body and URL are public (S-15)
+-- spec: spec/07 §7
+-- expect: error U4002 at src/main.una:12:5
+module main
+
+pub fetch(url: Text, token: internal Text) -> internal Int
+  uses @http: Http[get]
+  fails HttpError
+=
+  let auth = Header(name: "X-Token", value: token)
+  let response = @http.get(url, headers: [auth], key_name: None)
+    if error pass
+  response.status

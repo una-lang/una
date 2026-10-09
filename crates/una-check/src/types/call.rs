@@ -580,6 +580,17 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         self.edge(id, span);
         self.call_targets.insert(span, id);
+        if self.pass == super::authority::Pass::Check {
+            // In a body no label rule checks, the program counter is unknown: the call is
+            // entered at the cap, `⊤` here, which `file_state` caps.
+            let entry = self.entry();
+            let pc = if self.labels() {
+                self.ctx.pc.clone()
+            } else {
+                Label::top(&self.env.categories)
+            };
+            self.env.file_calls.push((entry, id, pc));
+        }
         self.testing_site(def.module, def.name, span);
         let needs: Vec<FnUse> = def.uses.iter().map(|need| need.usage.clone()).collect();
         let level = self.frames.len();
@@ -1154,21 +1165,28 @@ impl<'a> Checker<'_, 'a, '_> {
         // and how (N-39).
         let mut decided = Label::public();
         let host = capability.module == self.env.prelude;
+        // S-14 (ADR 0085): what a `Files.write` writes, and where, decides the outcome of every
+        // later `Files` operation, in this run or a later one.
+        let file_write = host && capability.name == "Files" && op_name == "write";
+        if file_write && self.pass == super::authority::Pass::Collect {
+            self.env.files_written = true;
+        }
+        let mut written = Label::public();
         let mut sinks: Vec<(Span, Ty)> = Vec::new();
         for (arg_span, found, expected, param) in checked {
             if host && decides_failure(capability.name, op_name, param) {
-                // Headers decide by the list's labels and their names, not by the `value` that
-                // `Header` declares `internal`: a control character there aborts the run with
-                // U6004 rather than failing (N-40).
-                let label = if param == "headers" {
-                    self.labeled(&found).argument_label()
-                } else {
-                    self.deep(&found)
-                };
                 // Capped at what the operation accepts: an argument above it is U4003 already,
                 // so `Keys.hmac` and `Files.read`, which accept only `public`, are unchanged.
+                // Every argument of `Http` counts, the values of its headers included, since
+                // the server that receives them may decide the failure (S-15, ADR 0085).
                 let accepted = def.accepts.clone().unwrap_or_else(Label::public);
-                decided = decided.join(&label.meet(&accepted));
+                decided = decided.join(&self.deep(&found).meet(&accepted));
+            }
+            // Where a write lands decides which files exist; what it writes decides nothing
+            // later operations observe but resource consumption, outside the model
+            // (`spec/07 §1`), and a later read returns it `internal` anyway.
+            if file_write && param == "path" {
+                written = written.join(&self.deep(&found));
             }
             // ADR 0050: the argument flows into the declared parameter type at its
             // contravariant positions and invariant kind arguments, which a handler body
@@ -1204,6 +1222,24 @@ impl<'a> Checker<'_, 'a, '_> {
         );
         if def.requires {
             self.obligation(ObligationKind::Precondition, span, None);
+        }
+        if host && capability.name == "Files" {
+            if file_write && self.pass == super::authority::Pass::Check {
+                // The path and the program counter; the highest program counter the code can be
+                // entered under joins them once every call is known (`file_state`). In a body no
+                // label rule checks, a policy's `via` function, the labels are unknown: the write
+                // counts at the cap.
+                let cap = def.accepts.clone().unwrap_or_else(Label::public);
+                self.env.file_cap = cap.clone();
+                let entry = self.entry();
+                let site = if self.labels() {
+                    written.join(&self.ctx.pc)
+                } else {
+                    cap
+                };
+                self.env.file_writes.push((entry, site, span));
+            }
+            decided = decided.join(&self.env.file_state);
         }
         if let Some(fails) = &def.fails {
             // Whether a host operation fails, and how, is labeled like the arguments that
@@ -2026,11 +2062,13 @@ fn structural_inputs(name: &str) -> Option<&'static [(&'static str, bool)]> {
 }
 
 /// Whether the parameter `param` of the host operation `capability.op` decides whether it
-/// fails, and how (`spec/07 §7`, N-39, N-40): the URL, headers and key name of `Http`, not its body;
-/// the path of `Files`, not the content; the key name of `Keys`, not the data.
+/// fails, and how (`spec/07 §7`, N-39, N-40, S-15): every argument of `Http`, since the server
+/// receives them all;
+/// the path of `Files`, not the content, besides the file-state label of every `Files` operation
+/// (ADR 0085); the key name of `Keys`, not the data.
 fn decides_failure(capability: &str, op: &str, param: &str) -> bool {
     match (capability, op) {
-        ("Http", _) => matches!(param, "url" | "headers" | "key_name"),
+        ("Http", _) => true,
         ("Files", _) => param == "path",
         ("Keys", "hmac") => param == "key_name",
         _ => false,

@@ -1,0 +1,21 @@
+-- test: a call in a branch of `together` is a call of the enclosing function, under its program counter, so a write it makes under an `internal` condition labels the reads (S-14)
+-- spec: spec/07 §7
+-- expect: error U4001 at src/main.una:21:3
+module main
+
+mark() -> Int
+  uses @files: Files[write]
+=
+  let w = attempt @files.write("marker.txt", content: "")
+  1
+
+pub probe(flag: internal Bool) -> Bool
+  uses @files: Files[read, write]
+=
+  if flag
+    together
+      let a = mark()
+      let b = mark()
+    unit
+  let r = attempt @files.read("marker.txt")
+  is_ok(r)

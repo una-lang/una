@@ -144,7 +144,7 @@ fn program(port: u16) -> String {
     format!(
         r#"module web
 
-shown(r: Result[internal Response, HttpError]) -> internal Text
+shown(r: internal Result[internal Response, internal HttpError]) -> internal Text
 =
   when r
     is Ok(response) -> "{{response.status}} {{response.body}}"

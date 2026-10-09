@@ -167,6 +167,20 @@ pub(crate) struct Need {
     pub(crate) span: Span,
 }
 
+/// The code a write or a call is in, for the highest program counter it can be entered under
+/// (S-14, ADR 0085).
+#[derive(Clone, Debug)]
+pub(crate) enum Entry {
+    /// The body of a declared function, predicate or policy.
+    Function(usize),
+    /// A handler operation's body, which its callers may enter with data up to this floor.
+    Floor(Label),
+    /// A lambda's body, which a caller may run under the cap.
+    Lambda,
+    /// An example, run at the public program counter.
+    Root,
+}
+
 /// A function, predicate or policy, with its signature.
 #[derive(Clone, Debug)]
 pub(crate) struct FnDef<'a> {
@@ -340,6 +354,21 @@ pub(crate) struct Env<'a> {
     pub(crate) edit_labels_changed_name: Option<String>,
     /// The binding of each label variable, for a diagnostic that names it.
     pub(crate) edit_label_spans: BTreeMap<String, Span>,
+    /// Whether pass 1 met a call of the host operation `Files.write`, so that pass 2 is
+    /// probed first for the file-state label (S-14, ADR 0085).
+    pub(crate) files_written: bool,
+    /// The file-state label: the join of the labels that decide where every `Files.write` of
+    /// the package writes, and whether it runs, whatever run it happens in, which labels the failure of every
+    /// `Files` operation (S-14, ADR 0085). Public until the probe of pass 2 sets it.
+    pub(crate) file_state: Label,
+    /// What a check of pass 2 records for the file-state label: each `Files.write`, with the
+    /// labels of its path and the program counter, and the code it is in; each direct call
+    /// of a function, with the program counter; the functions used as values, which a caller
+    /// may run under their effect bound; and the cap, what `Files.write` accepts.
+    pub(crate) file_writes: Vec<(Entry, Label, Span)>,
+    pub(crate) file_calls: Vec<(Entry, usize, Label)>,
+    pub(crate) file_escaped: BTreeSet<usize>,
+    pub(crate) file_cap: Label,
     /// The type an open position of an editable binding resolved to, without labels, by the
     /// name of its variable: later checks give each label position inside it a variable.
     pub(crate) edit_shapes: BTreeMap<String, super::ty::Ty>,
@@ -432,6 +461,12 @@ impl<'a> Env<'a> {
             edit_labels_changed: false,
             edit_labels_changed_name: None,
             edit_label_spans: BTreeMap::new(),
+            files_written: false,
+            file_state: Label::public(),
+            file_writes: Vec::new(),
+            file_calls: Vec::new(),
+            file_escaped: BTreeSet::new(),
+            file_cap: Label::public(),
             edit_shapes: BTreeMap::new(),
             alias_state: Vec::new(),
             edition,
