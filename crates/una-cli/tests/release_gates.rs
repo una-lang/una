@@ -106,7 +106,7 @@ fn the_clone_gate_checks_out_exactly_the_commit_and_records_it() {
     // A run of some gates is not a validation of the commit.
     assert!(
         record.contains(
-            "Verdict: INCOMPLETE (not run: build, mac, linux, linux-arm64, release, determinism, native, site)"
+            "Verdict: INCOMPLETE (not run: build, mac, linux, linux-arm64, release, determinism, native, site, formal)"
         ),
         "{record}"
     );
