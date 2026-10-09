@@ -70,3 +70,8 @@ import UnaFormal
 #print axioms Una.F1.t6_soundR
 #print axioms Una.F1.t6_release
 #print axioms Una.F1.t6_release_agree
+#print axioms Una.F1.ReleaseExample.body_typed
+#print axioms Una.F1.ReleaseExample.pin_diverges
+#print axioms Una.F1.ReleaseExample.guesses_agree
+#print axioms Una.F1.ReleaseExample.hidden_release_related
+#print axioms Una.F1.ReleaseExample.release_under_secret_untyped
