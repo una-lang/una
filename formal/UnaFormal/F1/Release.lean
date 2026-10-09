@@ -19,25 +19,7 @@ import UnaFormal.F1.T6
 
 namespace Una.F1
 
-/-- A release event. -/
-def Event.isRelease : Event → Bool
-  | .release _ _ => true
-  | _ => false
-
 variable (p : Program) (L : Label)
-
-/-- **The runs diverge at a release**: after a common prefix of what the observer sees, both
-release through the same policy, with different values. -/
-def Diverged (t₁ t₂ : Trace) : Prop :=
-  ∃ pre pol v₁ v₂ rest₁ rest₂, v₁ ≠ v₂ ∧
-    proj p L t₁ = pre ++ Event.release pol v₁ :: rest₁ ∧
-    proj p L t₂ = pre ++ Event.release pol v₂ :: rest₂
-
-/-- Two runs related up to their first different release: when both end, the observer sees the
-same events and related outcomes (`BRel`), or the runs diverge at a release. -/
-def BRelR (R : Val → Val → Prop) (vf : Prop) (r₁ r₂ : Trace × Res) : Prop :=
-  Term r₁.2 → Term r₂.2 → (proj p L r₁.1 = proj p L r₂.1 ∧ OutRel R vf r₁.2 r₂.2) ∨
-    Diverged p L r₁.1 r₂.1
 
 /-- **The statement of T6 with declassification (B1)**: `t6` without `p.policies = []`, for the
 programs of option B1, up to the first visible release whose values differ. -/
@@ -78,5 +60,14 @@ theorem t6ReleaseAgree_of (h : T6Release p L) : T6ReleaseAgree p L := by
     have := List.append_cancel_left hagree
     simp only [List.cons.injEq, Event.release.injEq] at this
     exact absurd this.1.2 hne
+
+/-- **T6 with declassification (option B1)**: the runs of a typed body, related for the
+observer, agree as `t6` says, or diverge at a visible release with different values. -/
+theorem t6_release : T6Release p L :=
+  fun hwf hb1 hget w _ _ _ _ _ _ _ _ _ hσ hE hΓ hpc h₁ h₂ hrel he n =>
+    (t6_soundR hwf hb1 hget w n).2 hσ hE hΓ hpc h₁ h₂ hrel he
+
+/-- **Runs whose visible releases agree** are related as `t6` says. -/
+theorem t6_release_agree : T6ReleaseAgree p L := t6ReleaseAgree_of p L (t6_release p L)
 
 end Una.F1
