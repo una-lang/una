@@ -61,19 +61,22 @@ fn plain_symbols(label: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Walks a node, recording each label with a plain symbol off its own type parameter.
-fn walk(node: &Value, path: &str, out: &mut Vec<String>) {
+/// Walks a node, recording each label with a plain symbol off its own type parameter, and
+/// counting the plain symbols in place.
+fn walk(node: &Value, path: &str, out: &mut Vec<String>, in_place: &mut usize) {
     match node {
         Value::Object(fields) => {
-            let own = (fields.get("kind").and_then(Value::as_str) == Some("Base"))
+            let own = (fields.get("kind").and_then(Value::as_str) == Some("base"))
                 .then(|| &fields["base"])
-                .filter(|base| base["kind"] == "Param")
+                .filter(|base| base["kind"] == "param")
                 .and_then(|base| base["value"].as_str());
             for (key, value) in fields {
                 let here = format!("{path}.{key}");
                 if key == "label" && value.get("symbols").is_some() {
                     for symbol in plain_symbols(value) {
-                        if own != Some(symbol.as_str()) {
+                        if own == Some(symbol.as_str()) {
+                            *in_place += 1;
+                        } else {
                             out.push(format!("{here}: plain `{symbol}`"));
                         }
                     }
@@ -84,13 +87,13 @@ fn walk(node: &Value, path: &str, out: &mut Vec<String>) {
                         }
                     }
                 } else {
-                    walk(value, &here, out);
+                    walk(value, &here, out, in_place);
                 }
             }
         }
         Value::Array(items) => {
             for (index, item) in items.iter().enumerate() {
-                walk(item, &format!("{path}[{index}]"), out);
+                walk(item, &format!("{path}[{index}]"), out, in_place);
             }
         }
         _ => {}
@@ -101,6 +104,7 @@ fn walk(node: &Value, path: &str, out: &mut Vec<String>) {
 fn core_exports_a_plain_symbolic_label_only_on_its_own_type_parameter() {
     let mut failures = Vec::new();
     let mut checked = 0;
+    let mut in_place = 0;
     for case in corpus() {
         let output = Command::new(env!("CARGO_BIN_EXE_una"))
             .env("HOME", env!("CARGO_TARGET_TMPDIR"))
@@ -114,11 +118,13 @@ fn core_exports_a_plain_symbolic_label_only_on_its_own_type_parameter() {
         };
         checked += 1;
         let mut found = Vec::new();
-        walk(&document, "", &mut found);
+        walk(&document, "", &mut found, &mut in_place);
         for finding in found {
             failures.push(format!("{}: {finding}", case.display()));
         }
     }
     assert!(checked > 500, "only {checked} cases exported Core IR");
+    // The corpus has generic bodies, so the walk must see `ℓ_T` in place, or it checks nothing.
+    assert!(in_place > 0, "no plain symbolic label found in place");
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
