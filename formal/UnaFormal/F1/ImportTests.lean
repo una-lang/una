@@ -33,10 +33,12 @@ that carries type arguments. -/
 def otherNode : String := r#"{"schema": "una.core/1", "edition": "0.2", "complete": true, "modules": [{"path": "m", "decls": [{"kind": "fun", "value": {"name": "h", "type_params": ["U"], "constraints": [{"kind": "none"}], "params": [["x", {"kind": "base", "base": {"kind": "param", "value": "U"}, "label": {"level": "public", "categories": [], "symbols": []}}]], "result": {"kind": "base", "base": {"kind": "unit"}, "label": {"level": "public", "categories": [], "symbols": []}}, "uses": [], "fails": null, "error": null, "body": {"kind": "atom", "atom": {"kind": "unit"}}}}, {"kind": "fun", "value": {"name": "g", "type_params": ["T"], "constraints": [{"kind": "none"}], "params": [["x", {"kind": "base", "base": {"kind": "param", "value": "T"}, "label": {"level": "public", "categories": [], "symbols": []}}]], "result": {"kind": "base", "base": {"kind": "unit"}, "label": {"level": "public", "categories": [], "symbols": []}}, "uses": [], "fails": null, "error": null, "body": {"kind": "let", "name": "r", "ty": {"kind": "base", "base": {"kind": "unit"}, "label": {"level": "public", "categories": [], "symbols": []}}, "value": {"kind": "rhs", "value": {"kind": "call", "function": {"module": "m", "name": "h"}, "type_args": [{"kind": "base", "base": {"kind": "param", "value": "T"}, "label": {"level": "public", "categories": [], "symbols": []}}], "args": [{"kind": "var", "value": "x"}]}}, "body": {"kind": "atom", "atom": {"kind": "var", "value": "r"}}}}}, {"kind": "fun", "value": {"name": "main", "type_params": [], "constraints": [], "params": [], "result": {"kind": "base", "base": {"kind": "unit"}, "label": {"level": "public", "categories": [], "symbols": []}}, "uses": [], "fails": null, "error": null, "body": {"kind": "let", "name": "a", "ty": {"kind": "base", "base": {"kind": "unit"}, "label": {"level": "public", "categories": [], "symbols": []}}, "value": {"kind": "rhs", "value": {"kind": "call", "function": {"module": "m", "name": "g"}, "type_args": [{"kind": "base", "base": {"kind": "int"}, "label": {"level": "public", "categories": [], "symbols": []}}], "args": [{"kind": "int", "value": "1"}]}}, "body": {"kind": "let", "name": "b", "ty": {"kind": "base", "base": {"kind": "unit"}, "label": {"level": "public", "categories": [], "symbols": []}}, "value": {"kind": "rhs", "value": {"kind": "spawn", "function": {"module": "m", "name": "g"}, "type_args": [{"kind": "base", "base": {"kind": "bool"}, "label": {"level": "public", "categories": [], "symbols": []}}], "args": [{"kind": "bool", "value": true}]}}, "body": {"kind": "atom", "atom": {"kind": "var", "value": "b"}}}}}}]}], "library": [], "host": []}"#
 
 -- With room, both instances are checked and pass.
-#guard run fanout "m.g" == "accepted, conditional on A3"
--- `main` reaches `g`, so it is conditional on A3 too; `h` is checked generically, in a program
--- without `g` and `main`, with no hypothesis.
-#guard run fanout "m.main" == "accepted, conditional on A3"
+-- `g` is checked at its instances: the program where `g` is replaced by `g[Int]` and `g[Bool]`,
+-- and `main`'s calls renamed to them, passes `progOk []` and agrees with the document's program
+-- up to annotations (part A3), so `g` and `main`, which reaches it, are accepted. `h` is checked
+-- generically.
+#guard run fanout "m.g" == "accepted"
+#guard run fanout "m.main" == "accepted"
 #guard run fanout "m.h" == "accepted"
 -- A search out of fuel with an instance left in its queue: unknown, not accepted.
 #guard run fanout "m.g" { fuel := 1 } == "not re-checked"
@@ -121,6 +123,17 @@ def g3OneOp : String := r#"{"schema": "una.core/1", "edition": "0.2", "complete"
 #guard run g3TwoOps "m.audits" == "not re-checked"
 #guard run g3TwoOps "m.plain" == "accepted"
 #guard run g3OneOp "m.logs" == "accepted"
+
+/-- An empty program. -/
+def emptyProg : Program :=
+  { categories := [], acceptsOp := Label.bot, acceptsGet := Label.bot, getResult := Label.bot,
+    records := [], policies := [], funs := [] }
+
+-- `finalize` gives no verdict without a certificate: a declaration that is not a function of a
+-- certified program is not re-checked, whatever the steps before reported.
+#guard match finalize emptyProg emptyProg [] [] [] [("m.f", .accepted ""), ("m.g", .acceptedIfA3 "")] with
+  | [(_, .notRechecked _), (_, .notRechecked _)] => true
+  | _ => false
 
 /-- A policy without a name. -/
 def badPolicy : String := r#"{"schema": "una.core/1", "edition": "0.2", "complete": true, "modules": [{"path": "rel", "decls": [{"kind": "fun", "value": {"name": "shown", "type_params": [], "constraints": [], "params": [["x", {"kind": "base", "base": {"kind": "int"}, "label": {"level": "internal", "categories": [], "symbols": []}}]], "result": {"kind": "base", "base": {"kind": "int"}, "label": {"level": "public", "categories": [], "symbols": []}}, "uses": [], "fails": null, "error": null, "body": {"kind": "atom", "atom": {"kind": "var", "value": "x"}}}}, {"kind": "policy", "from": {"kind": "base", "base": {"kind": "int"}, "label": {"level": "internal", "categories": [], "symbols": []}}, "to": {"kind": "base", "base": {"kind": "int"}, "label": {"level": "public", "categories": [], "symbols": []}}, "via": {"module": "rel", "name": "shown"}}]}, {"path": "m", "decls": [{"kind": "fun", "value": {"name": "plain", "type_params": [], "constraints": [], "params": [], "result": {"kind": "base", "base": {"kind": "int"}, "label": {"level": "public", "categories": [], "symbols": []}}, "uses": [], "fails": null, "error": null, "body": {"kind": "atom", "atom": {"kind": "int", "value": "1"}}}}]}], "library": [], "host": []}"#

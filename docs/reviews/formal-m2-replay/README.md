@@ -71,7 +71,7 @@ A function whose instances cannot all be known is reported as not re-checked, ne
 
   `formal/UnaFormal/F1/CheckTests.lean` checks `lsubst` itself at build time. It covers `ℓ_T`, `ℓ*_T`, and a decision off a position of type `T`, alone and through two levels: `h[List[internal T]]` at `T := Int`.
 
-**Why it is sound**, for the proof of option B, which is later:
+**Why it is sound**, proven in M4 completion part A3 (`formal/UnaFormal/F1/Erasure.lean`, `eval_erasure`, and `Monomorph.lean`, `t6_release_erasure`):
 - An instance runs as its generic function does, because evaluation reads no annotation. `eval` ignores the type of every `let` and the type arguments of every call. A closure keeps its parameters' types, but a call binds the parameters by name only. So the lemma is an equivalence of runs up to the annotations inside closures, not an equality.
 - A program whose reachable instances all pass is therefore the generic-free program of its instances, which `t6_ground` covers.
 
