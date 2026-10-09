@@ -75,3 +75,11 @@ import UnaFormal
 #print axioms Una.F1.ReleaseExample.guesses_agree
 #print axioms Una.F1.ReleaseExample.hidden_release_related
 #print axioms Una.F1.ReleaseExample.release_under_secret_untyped
+#print axioms Una.F1.Check.checkRhs_sound
+#print axioms Una.F1.Check.checkExpr_sound
+#print axioms Una.F1.Check.checkFun_sound
+#print axioms Una.F1.Check.exprPure_sound
+#print axioms Una.F1.Check.b1Ok_sound
+#print axioms Una.F1.Check.checkB1_sound
+#print axioms Una.F1.CheckSoundExample.rev_ok
+#print axioms Una.F1.CheckSoundExample.prog_b1_checked

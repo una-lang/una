@@ -79,6 +79,10 @@ Two behaviors of the real runtime read types. Neither reads the labels of a type
 - **(i) Type descriptors.** The native backend passes a type descriptor for each constrained type parameter (`spec/20 §7`) and dispatches `==` and ordering on it. A descriptor depends only on the structure of the type argument, which instantiation keeps (`LTy.erase_lsubst`).
 - **(ii) Trace rendering.** The interpreter and the native backend redact a record's fields in a trace by their declared deep labels, and hide a field of a type parameter's type. They read declared kinds, never type arguments. F1's trace has no rendering, so this is an assumption about the real runtime, stated here.
 
+## What a declaration reaches
+
+A declaration is accepted only when everything it reaches is accepted too, except handler bodies. An operation is an event of F1's trace, so a capability handler's body is not in the reach set: this is M2's assumption (`docs/plan/formal-track-m2.md` §1). A function outside the document, from a library or a prelude function F1 does not model, makes what reaches it not re-checked.
+
 ## What changed in the model for the replay
 
 - The operation writes any scalar, `Int`, `Bool` or `Text`, since every repro writes an `Int`.

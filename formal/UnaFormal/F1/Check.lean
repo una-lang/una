@@ -467,6 +467,13 @@ mutual
     | .fail _ => false
 end
 
+/-- The restrictions of option B1 on the policies, as one Boolean. -/
+def b1Ok (p : Program) : Bool :=
+  p.policies.all fun po => isScalar po.src && ground po.dst && isScalar po.dst &&
+    match p.find po.via with
+    | some fn => !fn.op && !fn.get && !fn.fails && exprPure fn.body
+    | none => false
+
 /-- `Program.B1WellFormed`: the restrictions of option B1 on the policies. A program outside them
 is not re-checked, never rejected: `spec/07 §5` requires none of them. -/
 def checkB1 (p : Program) : Result Unit := do
@@ -478,6 +485,9 @@ def checkB1 (p : Program) : Result Unit := do
       need (!fn.op && !fn.get && !fn.fails && exprPure fn.body)
         s!"B1 restriction (impure via): `{po.via}`"
     | none => throw s!"no `via` function `{po.via}`"
+  -- The same test as one Boolean, which the proof of soundness reads (`checkB1_sound`); the loop
+  -- above gives each restriction its own message.
+  need (b1Ok p) "B1 restriction"
 
 /-- The parts of `Program.LWellFormed` about records and policies. -/
 def checkDecls (p : Program) : Result Unit := do
