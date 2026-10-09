@@ -223,55 +223,58 @@ abbrev URes (P : Val → Prop) (F : Prop) : Res → Prop
   | .stuck => True
   | .outOfFuel => True
 
-/-- What a code with host effects `g` may do to the world it starts from, `w`: change the file
-system only if it writes, and the servers only if it sends a request (M5). -/
-def WEff (g : HostFx) (w w' : World H) : Prop :=
-  (g.wr = false → w'.fs = w.fs) ∧ (g.rq = false → w'.srv = w.srv)
+/-- A write event. -/
+def Event.isWrite : Event → Bool
+  | .write _ _ => true
+  | _ => false
 
-theorem WEff.refl (g : HostFx) (w : World H) : WEff g w w := ⟨fun _ => rfl, fun _ => rfl⟩
+/-- A request event. -/
+def Event.isReq : Event → Bool
+  | .req _ _ => true
+  | _ => false
 
-theorem WEff.trans {g : HostFx} {w₁ w₂ w₃ : World H} (h₁ : WEff g w₁ w₂) (h₂ : WEff g w₂ w₃) :
-    WEff g w₁ w₃ :=
-  ⟨fun h => (h₂.1 h).trans (h₁.1 h), fun h => (h₂.2 h).trans (h₁.2 h)⟩
+/-- What a run with trace `tr` may do to the world it starts from, `w` (M5): change the file
+system only if it wrote, and the servers only if it sent a request. -/
+def WEff (tr : Trace) (w w' : World H) : Prop :=
+  (tr.any Event.isWrite = false → w'.fs = w.fs) ∧ (tr.any Event.isReq = false → w'.srv = w.srv)
 
-theorem WEff.mono {g g' : HostFx} {w w' : World H} (hg : HostFx.Le g g') (h : WEff g w w') :
-    WEff g' w w' := by
-  refine ⟨fun hw => h.1 ?_, fun hq => h.2 ?_⟩
-  · cases hgw : g.wr
-    · rfl
-    · exact absurd (hg.2.1 hgw) (by simp [hw])
-  · cases hgq : g.rq
-    · rfl
-    · exact absurd (hg.2.2 hgq) (by simp [hq])
+theorem WEff.self (tr : Trace) (w : World H) : WEff tr w w := ⟨fun _ => rfl, fun _ => rfl⟩
+
+theorem WEff.trans {t₁ t₂ : Trace} {w₁ w₂ w₃ : World H} (h₁ : WEff t₁ w₁ w₂) (h₂ : WEff t₂ w₂ w₃) :
+    WEff (t₁ ++ t₂) w₁ w₃ := by
+  refine ⟨fun h => ?_, fun h => ?_⟩
+  · simp only [List.any_append, Bool.or_eq_false_iff] at h
+    exact (h₂.1 h.2).trans (h₁.1 h.1)
+  · simp only [List.any_append, Bool.or_eq_false_iff] at h
+    exact (h₂.2 h.2).trans (h₁.2 h.1)
 
 /-- A run from `w` whose events satisfy `A`, whose outcome satisfies `P` and `F`, and whose
-changes to the world are those of the host effects `G`. -/
-abbrev UOk (A : Event → Prop) (P : Val → Prop) (F : Prop) (G : HostFx) (w : World H)
-    (run : Run H) : Prop :=
-  (∀ ev ∈ run.1, A ev) ∧ URes P F run.2.1 ∧ WEff G w run.2.2
+changes to the world are those its events allow. -/
+abbrev UOk (A : Event → Prop) (P : Val → Prop) (F : Prop) (w : World H) (run : Run H) : Prop :=
+  (∀ ev ∈ run.1, A ev) ∧ URes P F run.2.1 ∧ WEff run.1 w run.2.2
 
-theorem uok_done {A : Event → Prop} {P : Val → Prop} {F : Prop} {G : HostFx} {w : World H}
-    {v : Val} (h : P v) : UOk A P F G w (done w v) :=
-  ⟨fun _ h' => (nomatch h'), h, WEff.refl G w⟩
+theorem uok_done {A : Event → Prop} {P : Val → Prop} {F : Prop} {w : World H}
+    {v : Val} (h : P v) : UOk A P F w (done w v) :=
+  ⟨fun _ h' => (nomatch h'), h, WEff.self _ w⟩
 
-theorem uok_stuck {A : Event → Prop} {P : Val → Prop} {F : Prop} {G : HostFx} {w : World H} :
-    UOk A P F G w (stuck w) :=
-  ⟨fun _ h' => (nomatch h'), trivial, WEff.refl G w⟩
+theorem uok_stuck {A : Event → Prop} {P : Val → Prop} {F : Prop} {w : World H} :
+    UOk A P F w (stuck w) :=
+  ⟨fun _ h' => (nomatch h'), trivial, WEff.self _ w⟩
 
-theorem UOk.mono {A A' : Event → Prop} {P P' : Val → Prop} {F F' : Prop} {G G' : HostFx}
+theorem UOk.mono {A A' : Event → Prop} {P P' : Val → Prop} {F F' : Prop}
     {w : World H} (hA : ∀ ev, A ev → A' ev) (hP : ∀ v, P v → P' v) (hF : F → F')
-    (hG : HostFx.Le G G') {run : Run H} (h : UOk A P F G w run) : UOk A' P' F' G' w run := by
+    {run : Run H} (h : UOk A P F w run) : UOk A' P' F' w run := by
   obtain ⟨tr, r, w'⟩ := run
-  refine ⟨fun ev hev => hA ev (h.1 ev hev), ?_, WEff.mono hG h.2.2⟩
+  refine ⟨fun ev hev => hA ev (h.1 ev hev), ?_, h.2.2⟩
   have h2 := h.2.1
   cases r <;> simp only [URes] at h2 ⊢
   · exact hP _ h2
   · exact hF h2
 
-theorem andThen_uok {A : Event → Prop} {P Q : Val → Prop} {F : Prop} {G : HostFx} {w : World H}
-    {first : Run H} {rest : World H → Val → Run H} (h1 : UOk A P F G w first)
-    (h2 : ∀ w' v, P v → UOk A Q F G w' (rest w' v)) :
-    UOk A Q F G w (andThen first rest) := by
+theorem andThen_uok {A : Event → Prop} {P Q : Val → Prop} {F : Prop} {w : World H}
+    {first : Run H} {rest : World H → Val → Run H} (h1 : UOk A P F w first)
+    (h2 : ∀ w' v, P v → UOk A Q F w' (rest w' v)) :
+    UOk A Q F w (andThen first rest) := by
   obtain ⟨tr, r, w₁⟩ := first
   cases r with
   | ok v =>
@@ -292,7 +295,8 @@ is above `pc`. -/
 def Allowed (p : Program) (pc : LExpr) (ε : Eff) : Event → Prop
   | .out _ => ε.op = true ∧ p.le pc (.ofLabel p.acceptsOp)
   | .read _ => ε.host.rd = true ∧ p.le pc (.ofLabel p.acceptsRead)
-  | .write _ _ => ε.host.wr = true ∧ p.le pc (.ofLabel p.acceptsWrite)
+  | .write _ _ => ε.host.wr = true ∧ p.le pc (.ofLabel p.acceptsWrite) ∧
+      (p.oldHost = false → p.le pc (.ofLabel p.fileState))
   | .req _ _ => ε.host.rq = true ∧ p.le pc (.ofLabel p.acceptsReq)
   | .release pol _ => pol ∈ ε.rels ∧ ∃ po, p.policy pol = some po ∧ p.le pc po.dst.top
 
@@ -301,7 +305,7 @@ abbrev Fails (p : Program) (pc : LExpr) (ε : Eff) : Prop := ∃ l, ε.fails = s
 
 /-- A run from `w` that keeps to a typing at `pc` with type `t` and effects `ε`. -/
 abbrev UGood (p : Program) (pc : LExpr) (t : LTy) (ε : Eff) (w : World H) (run : Run H) : Prop :=
-  UOk (Allowed p pc ε) (fun v => LValTy p v t) (Fails p pc ε) ε.host w run
+  UOk (Allowed p pc ε) (fun v => LValTy p v t) (Fails p pc ε) w run
 
 theorem Allowed.mono {pc pc' : LExpr} {ε ε' : Eff} (hpc : p.le pc pc')
     (ho : ε'.op = true → ε.op = true) (hg : HostFx.Le ε'.host ε.host)
@@ -309,7 +313,7 @@ theorem Allowed.mono {pc pc' : LExpr} {ε ε' : Eff} (hpc : p.le pc pc')
     ∀ ev, Allowed p pc' ε' ev → Allowed p pc ε ev
   | .out _, ⟨h1, h2⟩ => ⟨ho h1, LExpr.le_trans hpc h2⟩
   | .read _, ⟨h1, h2⟩ => ⟨hg.1 h1, LExpr.le_trans hpc h2⟩
-  | .write _ _, ⟨h1, h2⟩ => ⟨hg.2.1 h1, LExpr.le_trans hpc h2⟩
+  | .write _ _, ⟨h1, h2, h3⟩ => ⟨hg.2.1 h1, LExpr.le_trans hpc h2, fun h => LExpr.le_trans hpc (h3 h)⟩
   | .req _ _, ⟨h1, h2⟩ => ⟨hg.2.2 h1, LExpr.le_trans hpc h2⟩
   | .release _ _, ⟨h1, po, hpo, h2⟩ => ⟨hr _ h1, po, hpo, LExpr.le_trans hpc h2⟩
 
@@ -380,7 +384,7 @@ theorem bound_allowed {pc pc' : LExpr} {o : Bool} {g : HostFx} {f : Bool} (hb : 
     (hpc : p.le pc pc') : ∀ ev, FnAllowed o g ev → Allowed p pc (Eff.ofFn o g f) ev
   | .out _, h => ⟨h, LExpr.le_trans hpc (hb.1 h).1⟩
   | .read _, h => ⟨h, LExpr.le_trans hpc (hb.2.1 h).1⟩
-  | .write _ _, h => ⟨h, LExpr.le_trans hpc (hb.2.2.1 h).1⟩
+  | .write _ _, h => ⟨h, LExpr.le_trans hpc (hb.2.2.1 h).1, fun ho => LExpr.le_trans hpc ((hb.2.2.1 h).2.1 ho)⟩
   | .req _ _, h => ⟨h, LExpr.le_trans hpc (hb.2.2.2.1 h).1⟩
   | .release _ _, h => h.elim
 
@@ -414,7 +418,7 @@ theorem applyWith_uok {run : World H → Env → Expr → Run H} {fv : Val} {vs 
       LExprTy p E Γ .bot e t ε →
       UGood p (LExpr.bot.inst (p.sd σ)) (t.lsubst p.recordDeep σ) (ε.inst (p.sd σ)) w (run w env e))
     (hf : LValTy p fv (.fn ps r o g f lf)) (hvs : LValsTy p vs ps) (w : World H) :
-    UOk (FnAllowed o g) (fun v => LValTy p v r) (f = true) g w (applyWith run w fv vs) := by
+    UOk (FnAllowed o g) (fun v => LValTy p v r) (f = true) w (applyWith run w fv vs) := by
   cases hf with
   | @closure params _ cenv Γc _ _ _ _ _ _ _ _ _ σc hσ henv hb hfl hrl hps hr ho hg hfs =>
     have hvs' := LValsTy.flows hvs hps
@@ -424,7 +428,7 @@ theorem applyWith_uok {run : World H → Env → Expr → Run H} {fv : Val} {vs 
       have := bindParams_ltyped (params := params.lsub p.recordDeep σc)
         (by rw [LCtx.lsub_snd]; exact hvs') henv
       simpa [bindParams, LCtx.lsub, List.map_map, Function.comp_def] using this
-    refine UOk.mono ?_ (fun v hv => LValTy.flow hv hr) ?_ hg (hrun (w := w) hσ henv' hb)
+    refine UOk.mono ?_ (fun v hv => LValTy.flow hv hr) ?_ (hrun (w := w) hσ henv' hb)
     · intro ev hev
       cases ev with
       | out _ => exact ho hev.1
