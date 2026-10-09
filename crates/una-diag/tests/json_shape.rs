@@ -76,6 +76,7 @@ fn spec_example() -> Diagnostic {
         ],
     });
     diagnostic.repairs.push(Repair {
+        widens_authority: false,
         rank: 1,
         escape_cost: 0,
         description:
@@ -140,6 +141,7 @@ fn minimal_diagnostic_is_exact_and_omits_absent_fields() {
 fn edit_is_null_or_a_located_replacement() {
     let mut diagnostic = minimal(Code::U7001, "src/a.una", 3);
     diagnostic.repairs.push(Repair {
+        widens_authority: false,
         rank: 2,
         escape_cost: 0,
         description: "reindent the line".to_owned(),
@@ -149,6 +151,7 @@ fn edit_is_null_or_a_located_replacement() {
         }),
     });
     diagnostic.repairs.push(Repair {
+        widens_authority: false,
         rank: 1,
         escape_cost: 0,
         description: "run una fmt".to_owned(),
@@ -172,6 +175,7 @@ fn repairs_are_ordered_by_escape_cost_then_rank() {
     let mut diagnostic = minimal(Code::U5002, "src/a.una", 1);
     for (rank, escape_cost) in [(2, 1), (1, 1), (2, 0), (1, 0)] {
         diagnostic.repairs.push(Repair {
+            widens_authority: false,
             rank,
             escape_cost,
             description: format!("rank {rank}, cost {escape_cost}"),

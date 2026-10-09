@@ -9,6 +9,7 @@
 mod args;
 mod build;
 mod contract;
+mod fix;
 mod lsp;
 mod package;
 mod proof_key;
@@ -367,6 +368,7 @@ fn panic_location(command: Option<&Command>) -> una_diag::Location {
             | Command::Report { path, .. }
             | Command::Obligations { path, .. }
             | Command::Fmt { path, .. }
+            | Command::Fix { path, .. }
             | Command::Run { path, .. }
             | Command::Build { path, .. }
             | Command::Test { path, .. },
@@ -559,6 +561,24 @@ fn run_command(
                     solving: solving(solver_wallclock),
                 };
                 verification::obligations_command(&path, options, stdout, stderr)
+            }
+            Command::Fix {
+                path,
+                tier,
+                dry_run,
+                solver_wallclock,
+            } => {
+                let options = fix::FixOptions {
+                    tier: match tier {
+                        TierArg::Zero => Tier::Zero,
+                        TierArg::One => Tier::One,
+                    },
+                    dry_run,
+                    json,
+                    color: use_color(color, stderr_is_terminal),
+                    solving: solving(solver_wallclock),
+                };
+                fix::fix_command(&path, options, stdout, stderr)
             }
             Command::Fmt { path, check } => {
                 let options = FmtOptions {

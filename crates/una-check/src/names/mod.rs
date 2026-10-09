@@ -180,6 +180,7 @@ impl<'p, 'a> Checker<'p, 'a> {
     /// A repair without an edit.
     fn advice(description: String) -> Repair {
         Repair {
+            widens_authority: false,
             rank: 1,
             escape_cost: 0,
             description,
@@ -190,6 +191,7 @@ impl<'p, 'a> Checker<'p, 'a> {
     /// A repair that replaces `span` with `replacement`.
     fn edit(&self, description: String, span: Span, replacement: String) -> Repair {
         Repair {
+            widens_authority: false,
             rank: 1,
             escape_cost: 0,
             description,
@@ -769,11 +771,15 @@ impl<'p, 'a> Checker<'p, 'a> {
         diagnostic
             .related
             .push(self.related(declared.span, "declared here without `pub`"));
-        diagnostic.repairs.push(self.edit(
+        // Exporting a declaration widens what other modules may call: `una fix` never applies
+        // this edit (ADR 0084).
+        let mut repair = self.edit(
             format!("declare `{name}` with `pub`"),
             Span::at(file, declared.start),
             "pub ".to_owned(),
-        ));
+        );
+        repair.widens_authority = true;
+        diagnostic.repairs.push(repair);
         self.diagnostics.push(diagnostic);
     }
 

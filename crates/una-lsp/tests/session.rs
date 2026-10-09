@@ -69,12 +69,14 @@ impl Workspace for Stub {
         );
         unknown.repairs = vec![
             Repair {
+                widens_authority: false,
                 rank: 2,
                 escape_cost: 0,
                 description: "declare `y`".to_owned(),
                 edit: None,
             },
             Repair {
+                widens_authority: false,
                 rank: 1,
                 escape_cost: 0,
                 description: "use `x`".to_owned(),

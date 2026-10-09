@@ -9,6 +9,7 @@ How to read the blocks: every `una` block is a whole module that `una check` acc
 1. Write or edit `.una` files, then run `una fmt <path>`. The canonical form is part of the language: `una check` reports any other layout as U7001, so generated code goes through `una fmt` before `una check`.
 2. Check: `una --json check <path>`. Exit code 0 means the package parses, is canonical, types, respects authority and information flow, and every proof obligation is proven by the solver.
 3. Otherwise read the diagnostics. Each has a `code`, a one-line `message`, a `primary` position and often ranked `repairs`; a repair with an `edit` is mechanical: replace the range with `replacement`.
+   `una fix <path>` applies the mechanical ones for you, in safe rounds, then formats and prints what remains (`--dry-run` writes nothing). It never applies an edit that widens authority or visibility (a `uses` clause, an operation, `pub`): those are listed as `skipped`, for you to decide.
 4. When unsure, `una explain <code>` prints the rule with a failing and a fixed example.
 5. Run the examples with `una --json test <path>`, list every proof with `una --json obligations <path>`, and read the build report with `una --json report <path>`.
 
@@ -16,6 +17,7 @@ How to read the blocks: every `una` block is a whole module that `una check` acc
 una check examples/events
 una --json check examples/toolshelf
 una fmt --check examples/pantry
+una fix --dry-run examples/pantry
 una --json test examples/journal
 una --json obligations examples/greenhouse
 una --json report examples/shortlinks
@@ -1156,6 +1158,7 @@ Every command takes `--json` and prints one document whose `schema` names its sh
 | Command | Document |
 | --- | --- |
 | `una check`, `una fmt --check` | `una.diagnostics/1` |
+| `una fix` | `una.fix/1`, the edits applied and skipped, and the diagnostics that remain (v0.2) |
 | `una obligations` | `una.obligations/1`, every obligation with `status`, `goal` and `hypotheses` |
 | `una test` | `una.test/1`, every example with its outcome and effect trace |
 | `una run` | `una.run/1`, the program's output and trace |

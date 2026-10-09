@@ -178,6 +178,11 @@ pub struct Repair {
     pub description: String,
     /// The mechanical edit, when the repair is mechanical.
     pub edit: Option<Edit>,
+    /// Whether the edit widens authority or visibility: it adds operations or a `uses` clause,
+    /// or makes a declaration `pub`. `una fix` never applies such an edit (ADR 0084). Not part
+    /// of the JSON shape.
+    #[serde(skip)]
+    pub widens_authority: bool,
 }
 
 /// A mechanical edit: replace a range of a file with new text.

@@ -96,6 +96,24 @@ pub(crate) enum Command {
         #[arg(long, value_name = "SECONDS", default_value_t = 60)]
         solver_wallclock: u64,
     },
+    /// Apply the mechanical repairs of `una check`, then format, and report what remains
+    Fix {
+        /// The package directory, or a single file
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// The tier of the final check: 0 skips the solver, 1 also proves every obligation
+        #[arg(long, value_enum, value_name = "TIER", default_value_t = TierArg::One)]
+        tier: TierArg,
+
+        /// Report what would be applied, and write no file
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Stop a solver query after this many seconds; the obligation is then unknown
+        #[arg(long, value_name = "SECONDS", default_value_t = 60)]
+        solver_wallclock: u64,
+    },
     /// Rewrite files in canonical form, or report where they differ from it
     Fmt {
         /// The package directory, or a single file

@@ -410,6 +410,11 @@ fn every_command_prints_one_json_document_with_its_schema() {
         ),
         (
             Path::new("."),
+            vec!["--json", "fix", "--dry-run", "examples/events"],
+            "una.fix/1",
+        ),
+        (
+            Path::new("."),
             vec!["--json", "run", "examples/hello"],
             "una.run/1",
         ),

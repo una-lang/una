@@ -60,6 +60,7 @@ impl SyntaxError {
             .iter()
             .enumerate()
             .map(|(index, repair)| Repair {
+                widens_authority: false,
                 rank: u32::try_from(index + 1).unwrap_or(u32::MAX),
                 escape_cost: 0,
                 description: repair.description.clone(),
