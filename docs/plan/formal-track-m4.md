@@ -126,7 +126,7 @@ The exclusion is the model's, and it is needed because B1 makes the release an e
 **A second correction: no accept without a theorem** (the adversarial review of #452). The re-check checks each declaration against its callees' signatures. T6 needs every function of the program to pass T-Fun. So on `main` a caller was "accepted" even when a callee it reaches was not re-checked or was rejected, with no theorem behind it.
 
 - **The rule.** A declaration is now accepted only when every function it reaches, transitively, is accepted too. It reaches a function through a call, a call inside a lambda, or a use as a value.
-- **The exceptions.** A `via` function is covered by `checkB1` instead. The prelude's functions are axioms.
+- **The exceptions.** A `via` function is covered by `checkB1` instead. A prelude function is exempt only when F1 gives it a semantics: `map`, `filter`, `first_where`, `fold`, `parse_int` and `sum`. A call of any other prelude function, such as `prelude.append`, is outside F1.
 - **Precedence.** A declaration's own rejection is kept.
 - **What the corpus shows.** 35 declarations in 22 documents move from accepted to not re-checked:
   - 29 reach a function that is not re-checked. The most common causes are `div` (11), `prelude.append` (4) and generic records (4).

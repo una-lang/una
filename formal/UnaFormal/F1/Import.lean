@@ -770,7 +770,9 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
   -- **No accept without a theorem.** A declaration is checked against its callees' signatures,
   -- and T6 needs every function of the program to pass T-Fun, so a declaration is accepted only
   -- when every function it reaches, transitively, is accepted too. A `via` function is checked by
-  -- B1's restrictions instead (`checkB1`), and the prelude's functions are axioms. A declaration's
+  -- B1's restrictions instead (`checkB1`). A prelude function is exempt only as one F1 gives a
+  -- semantics to (`map`, `filter`, `first_where`, `fold`, `parse_int`, `sum`): the reading reports
+  -- a call of any other one, such as `prelude.append`, as outside F1. A declaration's
   -- own rejection is kept: it is a flow the model forbids, whatever it reaches.
   let reach : List (String × List String) := (decls.filter (·.kind == "fun")).map fun d =>
     (named d, (rawCallees (d.value.getObjValD "body")).eraseDups)
