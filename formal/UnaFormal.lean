@@ -39,3 +39,5 @@ import UnaFormal.F1H.Eval
 import UnaFormal.F1H.Typing
 import UnaFormal.F1H.LTyping
 import UnaFormal.F1H.OldLeaks
+import UnaFormal.F1H.Untyped
+import UnaFormal.F1H.NewRules

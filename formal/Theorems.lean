@@ -119,3 +119,12 @@ import UnaFormal
 #print axioms Una.F1H.OldLeaks.s14_old_leaks
 #print axioms Una.F1H.OldLeaks.s15_old_typed
 #print axioms Una.F1H.OldLeaks.s15_old_leaks
+#print axioms Una.F1H.Untyped.s14_untyped
+#print axioms Una.F1H.Untyped.s15_untyped
+#print axioms Una.F1H.Untyped.s14rbw_untyped
+#print axioms Una.F1H.Untyped.s14cond_untyped
+#print axioms Una.F1H.NewRules.s14_rejected
+#print axioms Una.F1H.NewRules.s15_rejected
+#print axioms Una.F1H.NewRules.shapes_rejected
+#print axioms Una.F1H.NewRules.s14_same_probe
+#print axioms Una.F1H.NewRules.s15_same_probe

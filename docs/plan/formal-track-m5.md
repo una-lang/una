@@ -4,7 +4,7 @@
 - Plan: `docs/plan/formal-track.md` §7 (M5, renumbered with the owner's approval of 2026-10-09)
 - Previous step: `docs/plan/formal-track-m4-completion.md`
 - Date: 2026-10-09
-- Status: statement approved in shape by the coordinator (2026-10-09), with the answers and additions of §7; parts 1 and 2 under way
+- Status: statement approved in shape by the coordinator (2026-10-09), with the answers and additions of §8; parts 1 and 2 done (`formal/UnaFormal/F1H/`), part 3 (`t6_host`) next
 
 ## 1. Why
 
@@ -58,6 +58,17 @@ Nothing constrains it. ADR 0085 decision 7 makes every request's failure, and it
 **Events.** `out` (the console line), `req` (the request sent, a sink at `Http`'s `accepts`), `write` (a sink at `Files.write`'s `accepts`, path only), `read` (a sink at `Files.read`'s `accepts`, `public`: the path goes to the operating system, as the checker already requires), and `release`.
 
 **Every operation of the stateful capabilities is covered.** `spec/14 §3` gives `Files` two operations, `read` and `write`, and both are modeled. `spec/24 §1` gives `Http` four, `get`, `post`, `put` and `delete`. They differ only in their method and in whether they send a body, so one form covers them: `req m url headers body key`, with `m` the method and `body` absent for `get` and `delete`. All four accept `internal`, fail with `HttpError` and return an `internal` `Response`, so one rule types them. The abort of a header value with a control character (U6004, N-40) is outside the model, as aborts are (`spec/07 §1`).
+
+| Operation (`spec/24 §1`, `spec/14 §3`) | Model form | Sinks, at `accepts` | Failure label | Result |
+| --- | --- | --- | --- | --- |
+| `Files.read(path)` | `read path` | path, `public` | `pc ⊔ ℓ(path) ⊔ fileState` | content, `internal` |
+| `Files.write(path, content)` | `write path content` | path and content, `internal`; also `pc ⊔ ℓ(path) ⊑ fileState` | `pc ⊔ ℓ(path) ⊔ fileState` | `Unit` |
+| `Http.get(url, headers, key_name)` | `req "get" args` | every argument, `internal` | `pc ⊔ ℓ(args) ⊔ internal` (headers) | `Response`, `internal` |
+| `Http.post(url, headers, body, key_name)` | `req "post" args` | every argument, `internal` | `pc ⊔ ℓ(args) ⊔ internal` | `Response`, `internal` |
+| `Http.put(url, headers, body, key_name)` | `req "put" args` | every argument, `internal` | `pc ⊔ ℓ(args) ⊔ internal` | `Response`, `internal` |
+| `Http.delete(url, headers, key_name)` | `req "delete" args` | every argument, `internal` | `pc ⊔ ℓ(args) ⊔ internal` | `Response`, `internal` |
+
+In F1H the request's arguments are texts, and its response is the body's text: the structure of `Header` and `Response` adds nothing the labels above do not cover.
 
 **Evaluation** threads the world: `eval : Nat → Program → World → Env → Expr → Trace × Res × World`.
 
