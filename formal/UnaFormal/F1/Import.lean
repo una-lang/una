@@ -16,6 +16,11 @@ rule 3). The reading is part of the trusted base of the re-check (`docs/plan/for
   its types and the signatures of what it calls mention at most one operation, of that shape,
   whose `accepts` becomes F1's;
 - `⊤` is `restricted` with every category the document names.
+
+A declaration is accepted only when everything it reaches, except handler bodies, is accepted
+too (`checkDocumentWith`). F1's operation is an event of the trace: what the program's handler
+of it does is not modeled, so a handler's body is not in the reach set. That is M2's
+assumption, stated in `docs/plan/formal-track-m2.md` §1.
 -/
 import Lean.Data.Json
 import UnaFormal.F1.Check
@@ -651,8 +656,11 @@ partial def rawRels (j : J) : List String × List String :=
       (acc.1 ++ r.1, acc.2 ++ r.2)) ([], [])
   | _ => ([], [])
 
-/-- The functions of the document a declaration reaches directly: the calls in its body, lambdas
-included, and the functions it uses as values (a lambda around a call, `function` in Core). -/
+/-- The functions a declaration reaches directly: the calls in its body, lambdas included, and the
+functions it uses as values (a lambda around a call, `function` in Core). Prelude and library
+functions are kept: the fixpoint exempts only the prelude functions F1 models. A capability
+operation (`op`) is not a call: what it reaches is its handler's body, which is not in the reach
+set (M2's assumption that an operation is an event, `docs/plan/formal-track-m2.md`). -/
 partial def rawCallees (j : J) : List String :=
   match j with
   | .obj kvs =>
@@ -660,7 +668,7 @@ partial def rawCallees (j : J) : List String :=
       match j.getObjValD "kind" with
       | .str "call" =>
         match plainRun (do path (← field j "function")) with
-        | .ok f => if f.startsWith "prelude." then [] else [f]
+        | .ok f => [f]
         | .error _ => []
       | .str "lambda" =>
         match plainRun (do path (← field j "function")) with
@@ -670,6 +678,12 @@ partial def rawCallees (j : J) : List String :=
     here ++ kvs.toArray.toList.flatMap (fun kv => rawCallees kv.2)
   | .arr items => items.toList.flatMap rawCallees
   | _ => []
+
+/-- The prelude functions F1 gives a semantics to: the only functions outside the document a
+declaration may reach and still be accepted. -/
+def preludeF1 : List String :=
+  ["prelude.map", "prelude.filter", "prelude.first_where", "prelude.fold", "prelude.parse_int",
+    "prelude.sum"]
 
 /-- A rejection by a restriction of option B1 is not a flow the model forbids: the program is
 outside B1, so it is not re-checked (ADR 0008). -/
@@ -854,9 +868,11 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
   -- and T6 needs every function of the program to pass T-Fun, so a declaration is accepted only
   -- when every function it reaches, transitively, is accepted too. A `via` function is checked by
   -- B1's restrictions instead (`checkB1`). A prelude function is exempt only as one F1 gives a
-  -- semantics to (`map`, `filter`, `first_where`, `fold`, `parse_int`, `sum`): the reading reports
-  -- a call of any other one, such as `prelude.append`, as outside F1. A declaration's
-  -- own rejection is kept: it is a flow the model forbids, whatever it reaches.
+  -- semantics to (`map`, `filter`, `first_where`, `fold`, `parse_int`, `sum`): any other function
+  -- outside the document, such as `prelude.append` or a library function, is not re-checked. A
+  -- declaration's own rejection is kept: it is a flow the model forbids, whatever it reaches.
+  -- What it reaches is everything except capability handler bodies: an operation is an event of
+  -- the model (M2), so a handler's body is not in the reach set.
   let reach : List (String × List String) := (decls.filter (·.kind == "fun")).map fun d =>
     (named d, (rawCallees (d.value.getObjValD "body")).eraseDups)
   let isVia := fun (f : String) => (vias.find? (·.1 == f)).isSome
@@ -868,7 +884,10 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
         let bad := ((List.lookup f reach).getD []).filterMap fun g =>
           if g == f || isVia g then none
           else match List.lookup g final with
-            | some (.accepted _) | none => none
+            | some (.accepted _) => none
+            | none =>
+              if preludeF1.contains g then none
+              else some s!"reaches `{g}`, outside the document"
             | some (.rejected _) => some s!"reaches `{g}`, which is rejected"
             | some (.notRechecked why) => some s!"reaches `{g}`, which is not re-checked ({why})"
         match bad with

@@ -24,3 +24,6 @@ import UnaFormal.F1.CheckTests
 import UnaFormal.F1.ImportTests
 import UnaFormal.F1.Release
 import UnaFormal.F1.ReleaseExample
+import UnaFormal.F1.CheckSound
+import UnaFormal.F1.CheckSoundCore
+import UnaFormal.F1.CheckSoundExample
