@@ -5,9 +5,10 @@ theorems the `formal` gate checks for `sorry`.
 -/
 namespace Una
 
-/-- The levels of `spec/07 §2`, in order. -/
+/-- The levels of `spec/07 §2`, in order. `public` is a keyword of Lean, so its name is written
+`«public»`. -/
 inductive Level where
-  | public
+  | «public»
   | internal
   | confidential
   | secret
@@ -18,7 +19,7 @@ namespace Level
 
 /-- The rank of a level in the order of `spec/07 §2`. -/
 def rank : Level → Nat
-  | .public => 0
+  | .«public» => 0
   | .internal => 1
   | .confidential => 2
   | .secret => 3
@@ -45,7 +46,7 @@ theorem le_antisymm {a b : Level} (h₁ : a ≤ b) (h₂ : b ≤ a) : a = b :=
   rank_injective (Nat.le_antisymm h₁ h₂)
 
 /-- `public` is the bottom level. -/
-theorem public_le (a : Level) : Level.public ≤ a := Nat.zero_le a.rank
+theorem public_le (a : Level) : Level.«public» ≤ a := Nat.zero_le a.rank
 
 /-- The join of two levels, the higher one. -/
 def join (a b : Level) : Level := if a.rank ≤ b.rank then b else a
