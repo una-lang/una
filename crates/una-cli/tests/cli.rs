@@ -991,13 +991,25 @@ fn core_prints_the_package_s_core_ir_as_una_core_1() {
 fn core_keeps_the_symbolic_labels_of_a_generic_body() {
     // ADR 0083: the labels of a generic body carry `T` and `T*` (`spec/07 §7` rule 8), which the
     // formal checker reads.
+    // Constraints on type parameters are edition 0.2's (`spec/20`).
     let root = scratch("core-generic");
     std::fs::write(
-        root.join("g.una"),
+        root.join("una.toml"),
+        "[package]\nname = \"g\"\nversion = \"0.1.0\"\nedition = \"0.2\"\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../verification.lock"),
+        root.join("verification.lock"),
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("src/g.una"),
         "module g\n\npub same[T: Eq](a: T, b: T) -> Bool = a == b\n",
     )
     .unwrap();
-    let output = una(&["--json", "core", root.join("g.una").to_str().unwrap()]);
+    let output = una(&["--json", "core", root.to_str().unwrap()]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let text = stdout(&output);
     assert!(
