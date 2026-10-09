@@ -394,4 +394,13 @@ Keys are printed in this order, and two runs over the same sources print the sam
 | `Term` | `var`, `it`, `result`, `int`, `bool`, `text`, `unit`, `ctor`, `field`, `len`, `has`, `proj`, `neg`, `not`, `binary`, `is`, `in`, `call` |
 | `Type` | `base`, `fn` |
 
+**What inference adds** (#443). Core holds what elaboration gives it. The document adds facts the checker infers, each as an additive key, in the order shown:
+
+- **On the object of a function** (`fun`), after `public`, as `una contract` prints them (`§5`):
+  - `uses_of`, the parameters its `uses of` clauses name, written or inferred;
+  - `fails_of`, the parameter its `fails of` clause names, or `null`;
+  - `result_labels`, its result summary, as `{"position": "top", "from": ["T"]}`;
+  - `of_raises`, as `{"param": "k", "from": ["T"]}` (ADR 0062, ADR 0067).
+- **On a `let` that binds a lambda given to an `of` parameter**, after `written`: `of_lambda`, as `{"effects": true, "fails": false}`. It says whether the lambda's body performs effects and whether it can fail. Its function type in Core carries neither, since they are its caller's (ADR 0062).
+
 **Versioning** (ADR 0076). The `kind` of a node is an **open** field: Core gains forms as the language grows, and adding one keeps `una.core/1`. A consumer MUST report a declaration that holds a `kind` it does not know as not understood, never as accepted or checked. A label's `level` is closed. Any other change follows ADR 0076.

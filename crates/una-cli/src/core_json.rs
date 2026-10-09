@@ -10,7 +10,10 @@
 //! Every `match` below is exhaustive, so a new form of Core does not compile until it is encoded,
 //! and every `kind` comes from the variant's own name through `stringify!`.
 
+use std::collections::BTreeMap;
+
 use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
+use una_check::Header;
 use una_core::{
     Arm, Atom, Base, BinOp, Bound, CapOp, Clause, Constraint, Ctor, DataVariant, Decl, Example,
     Expectation, Expr, FixedOp, Fun, HandlerOp, IntType, Label, LoopSource, MapOp, Module, Path,
@@ -103,6 +106,12 @@ fn strings(items: &[String]) -> J {
 /// The writer of one document: the sources, for the spans.
 struct Writer<'s> {
     sources: &'s SourceDb,
+    /// The headers of the package's functions after inference, for the facts Core does not
+    /// hold: `of` clauses and result summaries (#443).
+    headers: &'s [Header],
+    /// The lambdas given to `of` parameters, by span: whether each performs effects and whether
+    /// it can fail (ADR 0062, #443).
+    of_lambdas: &'s BTreeMap<Span, (bool, bool)>,
 }
 
 impl Writer<'_> {
@@ -578,14 +587,30 @@ impl Writer<'_> {
                 body,
                 span,
                 written,
-            } => node!(Let,
-                "name" => s(name),
-                "ty" => self.ty(ty),
-                "value" => self.bound(value),
-                "body" => self.expr(body),
-                "span" => self.span(*span),
-                "written" => J::Bool(*written),
-            ),
+            } => {
+                let mut node = node!(Let,
+                    "name" => s(name),
+                    "ty" => self.ty(ty),
+                    "value" => self.bound(value),
+                    "body" => self.expr(body),
+                    "span" => self.span(*span),
+                    "written" => J::Bool(*written),
+                );
+                // A lambda given to an `of` parameter has a function type without its effects,
+                // which are its caller's (ADR 0062): the let that binds it says what they are.
+                if let (Bound::Rhs(Rhs::Lambda { .. }), Some(&(effects, fails)), J::Obj(fields)) =
+                    (value.as_ref(), self.of_lambdas.get(span), &mut node)
+                {
+                    fields.push((
+                        "of_lambda",
+                        J::Obj(vec![
+                            ("effects", J::Bool(effects)),
+                            ("fails", J::Bool(fails)),
+                        ]),
+                    ));
+                }
+                node
+            }
             Expr::LetTuple {
                 names,
                 value,
@@ -738,6 +763,28 @@ impl Writer<'_> {
         ])
     }
 
+    /// A function of the module `module`, with what its header adds after inference (#443):
+    /// its `of` clauses, and its result summary and `of` raises (ADR 0062, ADR 0067).
+    fn fun_in(&self, module: &str, fun: &Fun) -> J {
+        let mut node = self.fun(fun);
+        let header = self
+            .headers
+            .iter()
+            .find(|h| h.module == module && h.name == fun.name);
+        if let (Some(header), J::Obj(fields)) = (header, &mut node) {
+            let pairs = |items: &[(String, Vec<String>)], key: &'static str| {
+                list(items, |(name, from)| {
+                    J::Obj(vec![(key, s(name)), ("from", strings(from))])
+                })
+            };
+            fields.push(("uses_of", strings(&header.uses_of)));
+            fields.push(("fails_of", opt(header.fails_of.as_ref(), |f| s(f))));
+            fields.push(("result_labels", pairs(&header.result_labels, "position")));
+            fields.push(("of_raises", pairs(&header.of_raises, "param")));
+        }
+        node
+    }
+
     fn signature(&self, signature: &Signature) -> J {
         J::Obj(vec![
             ("path", self.path(&signature.path)),
@@ -873,7 +920,13 @@ impl Writer<'_> {
     fn module(&self, module: &Module) -> J {
         J::Obj(vec![
             ("path", s(&module.path)),
-            ("decls", list(&module.decls, |d| self.decl(d))),
+            (
+                "decls",
+                list(&module.decls, |d| match d {
+                    Decl::Fun(fun) => node!(Fun, "value" => self.fun_in(&module.path, fun)),
+                    d => self.decl(d),
+                }),
+            ),
             ("examples", list(&module.examples, |e| self.example(e))),
         ])
     }
@@ -896,10 +949,20 @@ fn level(label: &Label) -> &'static str {
 pub(crate) fn document(
     program: &Program,
     sources: &SourceDb,
+    headers: &[Header],
+    of_lambdas: &[(Span, bool, bool)],
     edition: Edition,
     complete: bool,
 ) -> Result<String, serde_json::Error> {
-    let writer = Writer { sources };
+    let of_lambdas: BTreeMap<Span, (bool, bool)> = of_lambdas
+        .iter()
+        .map(|&(span, effects, fails)| (span, (effects, fails)))
+        .collect();
+    let writer = Writer {
+        sources,
+        headers,
+        of_lambdas: &of_lambdas,
+    };
     let document = J::Obj(vec![
         ("schema", s(SCHEMA)),
         ("edition", s(edition.name())),

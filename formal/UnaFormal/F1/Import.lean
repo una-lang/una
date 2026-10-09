@@ -20,6 +20,53 @@ rule 3). The reading is part of the trusted base of the re-check (`docs/plan/for
 import Lean.Data.Json
 import UnaFormal.F1.Check
 
+namespace Una.F1
+
+/-- `t` with the symbolic labels `ℓ*_x`, `x ∈ xs`, added to its top label. -/
+def LTy.addStarTop (xs : List String) : LTy → LTy
+  | .int l => .int { l with star := l.star ++ xs }
+  | .bool l => .bool { l with star := l.star ++ xs }
+  | .text l => .text { l with star := l.star ++ xs }
+  | .unit l => .unit { l with star := l.star ++ xs }
+  | .list t l => .list t { l with star := l.star ++ xs }
+  | .option t l => .option t { l with star := l.star ++ xs }
+  | .result t l => .result t { l with star := l.star ++ xs }
+  | .record r l => .record r { l with star := l.star ++ xs }
+  | .fn ps r o g f l => .fn ps r o g f { l with star := l.star ++ xs }
+  | .var a l => .var a { l with star := l.star ++ xs }
+
+/-- `t` with `ℓ*_x`, `x ∈ xs`, added at the position `steps` of a result summary, as
+`spec/13 §5` writes it (`element`, `arg N`, `result`); `none` at a position F1 does not have. -/
+def LTy.addStarAt (xs : List String) : List String → LTy → Option LTy
+  | [], t => some (t.addStarTop xs)
+  | "element" :: rest, .list t l => (LTy.addStarAt xs rest t).map (.list · l)
+  | "arg 1" :: rest, .option t l => (LTy.addStarAt xs rest t).map (.option · l)
+  | "arg 1" :: rest, .result t l => (LTy.addStarAt xs rest t).map (.result · l)
+  | "result" :: rest, .fn ps r o g f l => (LTy.addStarAt xs rest r).map (.fn ps · o g f l)
+  | _, _ => none
+
+mutual
+  /-- `t` with `ℓ*_x`, `x ∈ xs`, added at every position: edition 0.1 raises every position of
+  a generic function's result by every type argument (D-137). -/
+  def LTy.addStarAll (xs : List String) : LTy → LTy
+    | .list t l => (LTy.list (LTy.addStarAll xs t) l).addStarTop xs
+    | .option t l => (LTy.option (LTy.addStarAll xs t) l).addStarTop xs
+    | .result t l => (LTy.result (LTy.addStarAll xs t) l).addStarTop xs
+    | .fn ps r o g f l => (LTy.fn (LTy.addStarAlls xs ps) (LTy.addStarAll xs r) o g f l).addStarTop xs
+    | t => t.addStarTop xs
+
+  def LTy.addStarAlls (xs : List String) : List LTy → List LTy
+    | [] => []
+    | t :: ts => LTy.addStarAll xs t :: LTy.addStarAlls xs ts
+end
+
+/-- A function type that may perform effects (`op`) or fail, at the top of `t`. -/
+def LTy.withFlags (op fails : Bool) : LTy → LTy
+  | .fn ps r o g f l => .fn ps r (o || op) g (f || fails) l
+  | t => t
+
+end Una.F1
+
 namespace Una.F1.Import
 
 abbrev J := Lean.Json
@@ -256,6 +303,14 @@ mutual
     | "let" =>
       let x ← str (← field j "name")
       let t ← ty c (← field j "ty")
+      -- A lambda given to an `of` parameter has a function type without its effects, which are
+      -- its caller's (ADR 0062); the export says what they are (#443).
+      let t ← match j.getObjVal? "of_lambda" with
+        | .ok ol => do
+          let effects := ol.getObjValD "effects" == .bool true
+          let fails := ol.getObjValD "fails" == .bool true
+          pure (t.withFlags effects fails)
+        | .error _ => pure t
       let v ← field j "value"
       let body ← expr c (← field j "body")
       match ← kind v with
@@ -328,10 +383,37 @@ def signature (c : Ctx) (module : String) (v : J) (body : Expr) : M Fun := do
   let cs ← arr (← field v "constraints")
   let eqs ← (tps.zip cs).filterMapM (fun q => constraintEq q.1 q.2)
   let eqs := if c.allEq && comparesValues (v.getObjValD "body") then tps else eqs
+  -- The parameters `uses of` and `fails of` name (ADR 0062, exported by #443): their function
+  -- types perform the effects, and may fail, as the function itself does.
+  let usesOf ← match v.getObjVal? "uses_of" with
+    | .ok j => (← arr j).mapM str
+    | .error _ => pure []
+  let failsOf : Option String ← match v.getObjVal? "fails_of" with
+    | .ok (.str x) => pure (some x)
+    | _ => pure none
   let ps ← (← arr (← field v "params")).mapM fun q => do
     match ← arr q with
-    | [x, t] => pure (← str x, ← ty c t)
+    | [x, t] => do
+      let x' ← str x
+      pure (x', (← ty c t).withFlags (usesOf.contains x') (failsOf == some x'))
     | _ => throw "a parameter"
+  -- The result summary (ADR 0067), exported by #443: the symbolic labels a call puts at each
+  -- position of the result; in edition 0.1, every position by every type parameter (D-137).
+  match v.getObjVal? "of_raises" with
+  | .ok (.arr rs) => if !rs.isEmpty then throw "`of` raises (ADR 0067 amendment), outside F1"
+  | _ => pure ()
+  let declared ← ty c (← field v "result")
+  let result ← if tps.isEmpty then pure declared
+    else if c.allEq then pure (declared.addStarAll tps)
+    else match v.getObjVal? "result_labels" with
+      | .ok j => (← arr j).foldlM (fun acc rl => do
+          let pos ← str (← field rl "position")
+          let from_ ← (← arr (← field rl "from")).mapM str
+          let steps := if pos == "top" then [] else pos.splitOn "."
+          match acc.addStarAt from_ steps with
+          | some t => pure t
+          | none => throw s!"a result summary at `{pos}`, outside F1") declared
+      | .error _ => pure declared
   let uses ← arr (← field v "uses")
   for u in uses do
     let cap ← str (← field u "capability")
@@ -339,8 +421,9 @@ def signature (c : Ctx) (module : String) (v : J) (body : Expr) : M Fun := do
       let o ← str o
       modify fun s => { s with ops := if s.ops.contains (cap, o) then s.ops else s.ops ++ [(cap, o)] }
   pure {
-    name, tparams := tps, eqParams := eqs, params := ps, result := ← ty c (← field v "result"),
-    op := !uses.isEmpty, get := false, fails := !isNull (← field v "fails"), body,
+    name, tparams := tps, eqParams := eqs, params := ps, result,
+    op := !uses.isEmpty || !usesOf.isEmpty, get := false,
+    fails := !isNull (← field v "fails") || failsOf.isSome, body,
     rels := (List.lookup name c.rels).getD [] }
 
 /-- Every category a label of the document names. -/
