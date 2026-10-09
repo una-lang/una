@@ -4,3 +4,4 @@ M0 sets up the toolchain, the gate and the first definitions; the fragment F1, i
 T1 come in M1.
 -/
 import UnaFormal.Label
+import UnaFormal.F1.T1

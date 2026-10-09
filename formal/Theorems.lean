@@ -11,3 +11,5 @@ import UnaFormal
 #print axioms Una.Level.public_le
 #print axioms Una.Level.le_join_left
 #print axioms Una.Level.le_join_right
+#print axioms Una.F1.sound
+#print axioms Una.F1.t1
