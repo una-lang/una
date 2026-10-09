@@ -2,6 +2,12 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
+## Unreleased
+
+### Tools
+
+- **T6 for generic functions** (#46, M4 of `docs/plan/formal-track.md`). `formal/UnaFormal/F1/T6.lean` proves noninterference for bodies that call generic functions and use closures from generic bodies, at every ground instance: rule 8's order and flows are stable under instantiation, and the typing rules keep `ℓ_T` only in place, a new premise of well-formedness that #440 ties to the checker. `T6Example.lean` relates two runs of `pick[secret Int]`. Declassification follows the checker of M2. Progress: `docs/plan/formal-track-m4.md`.
+
 ## v0.3.4
 
 A security patch of the Beta: S-14 (whether a file exists or a read fails could reveal an earlier write to a labeled path) and S-15 (a server could decide a public failure from the internal data it received) are fixed in both editions (ADR 0085), and the runtime checks a task's code before calling it (#424). It also carries what was validated on `main` since v0.3.3: `una fix`, `una core`, redaction by provenance (ADR 0078), one code for an undeclared operation (ADR 0082), a lazy editor index (ADR 0080), smaller native executables, U1001 suggestions, the guide's fixes from two dogfood passes, and the formal track's first proofs. Validation: `docs/releases/0.3.4-validation.md`.

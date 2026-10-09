@@ -4,6 +4,7 @@ accepts, whose result carries `ℓ_T` in place, a program it accepts, and T1 app
 call of the function and to its run.
 -/
 import UnaFormal.F1.Erase
+import UnaFormal.F1.InPlace
 
 namespace Una.F1.Examples
 
@@ -56,7 +57,7 @@ theorem pick_ok : prog.FunOk pick := by
     have helse : LExprTy prog [] [("a", .var "T" lT), ("b", .var "T" lT), ("c", .bool .bot)]
         (LExpr.bot.join .bot) (.atom (.var "b")) (.var "T" lT) .none :=
       .atom (.var rfl)
-    exact .ite (.var rfl) hthen helse (.var (le_self lT)) (.var (le_self lT))
+    exact .ite (.var rfl) hthen helse (.var (le_self lT)) (.var (le_self lT)) (by simp [LTy.InPlace, lT])
   · exact le_self _
 
 /-- The labeled typing accepts the program. -/
@@ -72,6 +73,19 @@ theorem prog_wf : prog.LWellFormed where
     refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩ <;>
       simp [prog, pick, lT, Label.bot, LTy.CatsIn, LExpr.CatsIn, LExpr.bot, LExpr.ofLabel]
     rintro _ _ (⟨_, rfl⟩ | ⟨_, rfl⟩ | ⟨_, rfl⟩) <;> simp [LTy.CatsIn, LExpr.CatsIn]
+  recordsGround _ h := by simp [prog] at h
+  eqScoped := by simp [prog, pick]
+  sigsScoped := by
+    simp only [prog, List.mem_singleton]
+    rintro _ rfl
+    refine ⟨?_, ?_⟩
+    · simp only [pick, List.mem_cons, List.not_mem_nil, or_false]
+      rintro _ (rfl | rfl | rfl) <;>
+        simp [LTy.ScopedIn, LExpr.SymsIn, lT, LExpr.bot, LExpr.ofLabel]
+    · simp [pick, LTy.ScopedIn, LExpr.SymsIn, lT]
+  inPlace := by
+    refine ⟨?_, ?_, ?_⟩ <;> simp [prog, pick, lT, LTy.InPlace, LExpr.bot, LExpr.ofLabel]
+    rintro _ _ (⟨_, rfl⟩ | ⟨_, rfl⟩ | ⟨_, rfl⟩) <;> simp [LTy.InPlace]
 
 /-- The type of `pick[Int](...)`: `Int`, with `ℓ_T` replaced in place by the argument's labels. -/
 def pickInt : LTy := prog.lsub [("T", .int .bot)] pick.result
@@ -83,8 +97,10 @@ def callPick : Expr :=
 /-- The labeled typing accepts the call at the public program counter. -/
 theorem callPick_typed :
     LExprTy prog [] [] .bot callPick pickInt ((Eff.ofFn false false false).union .none) := by
-  refine .letR (t := pickInt) ?_ (.int (le_self _)) (.atom (.var rfl))
-  refine LRhsTy.call (fn := pick) (targs := [.int .bot]) rfl ?_ rfl rfl ?_ (.cons .int (.cons .int (.cons .bool .nil)))
+  refine .letR (t := pickInt) ?_ (.int (le_self _)) (.atom (.var rfl)) ?ip
+  case ip => simp [pickInt, Program.lsub, LTy.lsubst, pick, lT, LTy.InPlace, LTy.raise, LExpr.join, LExpr.inst, LExpr.dropPlain, LExpr.joinAll, LExpr.bot, LExpr.ofLabel]
+  refine LRhsTy.call (fn := pick) (targs := [.int .bot]) rfl ?_ rfl rfl ?_
+    (by simp [LTy.GroundAll, LTy.Ground, LExpr.SymFree, LExpr.bot, LExpr.ofLabel]) (.cons .int (.cons .int (.cons .bool .nil)))
     (.cons (.int (bot_le _)) (.cons (.int (bot_le _)) (.cons (.bool (bot_le _)) .nil)))
     ⟨fun h => (by cases h), fun h => (by cases h), fun h => (by cases h)⟩
   · intro ⟨_, h, _⟩
@@ -155,12 +171,12 @@ theorem choose_ok : prog2.FunOk choose := by
   refine ⟨rTy, chooseEff, ?hty, .int (choose_le _ _ ?_ ?_ ?_), ?_, ?_, ?_, le_self _⟩
   case hty =>
     dsimp only [choose]
-    refine .letR ?r1 (.bool (le_self _)) ?b1
+    refine .letR ?r1 (.bool (le_self _)) ?b1 (by simp [LTy.InPlace, cLabel, tT, lT, LTy.deep, LExpr.promote, LExpr.join])
     · exact .eq (.var rfl) (.var rfl) (.var (le_self _)) (.var (le_self _)) rfl
-    refine .letE ?r2 (.var (le_self _)) ?b2
+    refine .letE ?r2 (.var (le_self _)) ?b2 (by simp [LTy.InPlace, xTy, cLabel, tT, lT, LTy.raise, LTy.deep, LExpr.promote, LExpr.join])
     · exact .ite (.var rfl) (.atom (.var rfl)) (.atom (.var rfl)) (.var (le_self _))
-        (.var (le_self _))
-    refine .letR ?r3 (.int (le_self _)) (.atom (.var rfl))
+        (.var (le_self _)) (by simp [LTy.InPlace, lT])
+    refine .letR ?r3 (.int (le_self _)) (.atom (.var rfl)) (by simp [LTy.InPlace, rTy, LTy.raise, LExpr.join, LExpr.bot, LExpr.ofLabel, decision])
     refine LRhsTy.apply (ps := [tT]) (r := .int .bot) (o := false) (g := false) (fl := false)
       (lf := .bot) (ts := [xTy]) ?hf ?has ?fl ?bd
     case hf => exact .var rfl
@@ -191,5 +207,13 @@ theorem eq_needs_Eq {p : Program} {Γ : LCtx} {pc : LExpr} {b : Atom} {t : LTy} 
       cases hx
       cases hf₁
       simp [Program.eqIn, LTy.eqIn] at he
+
+end Una.F1.Examples
+
+namespace Una.F1.Examples
+
+/-- The preservation of `ℓ_T` in place, applied: the typed call of `pick` keeps it. -/
+theorem callPick_inPlace : pickInt.InPlace :=
+  (LExprTy.inPlace prog_wf (fun _ h => by simp at h) rfl callPick_typed).1
 
 end Una.F1.Examples

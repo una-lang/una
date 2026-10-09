@@ -138,6 +138,56 @@ inductive LAtomsTy : LCtx → List Atom → List LTy → Prop where
   | nil {Γ} : LAtomsTy Γ [] []
   | cons {Γ a as t ts} : LAtomTy Γ a t → LAtomsTy Γ as ts → LAtomsTy Γ (a :: as) (t :: ts)
 
+mutual
+  /-- **`ℓ_T` only in place** (`spec/07 §7` rule 8): a plain symbolic label `ℓ_T` stands for the
+  labels a value of `T` was passed with, so it labels only positions of type `T`. Everywhere
+  else the labels have no plain symbol; `ℓ*_T` may appear anywhere. The reading of `ℓ_T` at a
+  position of type `T` as the type argument's own labels needs it: an `ℓ_T` joined onto such a
+  position from elsewhere, such as a condition of type `Bool` labeled `ℓ_T`, would be dropped
+  by instantiation, and a branch on it would leak. The checker places plain symbols only on type
+  parameters (`crates/una-check/src/types/ty.rs`), and the model's rules keep the invariant. -/
+  def LTy.InPlace : LTy → Prop
+    | .var a l => ∀ x ∈ l.plain, x = a
+    | .int l | .bool l | .text l | .unit l | .record _ l => l.plain = []
+    | .list t l | .option t l | .result t l => t.InPlace ∧ l.plain = []
+    | .fn ps r _ _ _ l => LTy.InPlaceAll ps ∧ r.InPlace ∧ l.plain = []
+
+  def LTy.InPlaceAll : List LTy → Prop
+    | [] => True
+    | t :: ts => t.InPlace ∧ LTy.InPlaceAll ts
+end
+
+mutual
+  /-- A ground type: no type parameter and no symbolic label. F1 has one level of generic
+  functions (`docs/plan/formal-track.md` §3), so the type arguments of a call are ground. -/
+  def LTy.Ground : LTy → Prop
+    | .var _ _ => False
+    | .int l | .bool l | .text l | .unit l | .record _ l => l.SymFree
+    | .list t l | .option t l | .result t l => t.Ground ∧ l.SymFree
+    | .fn ps r _ _ _ l => LTy.GroundAll ps ∧ r.Ground ∧ l.SymFree
+
+  def LTy.GroundAll : List LTy → Prop
+    | [] => True
+    | t :: ts => t.Ground ∧ LTy.GroundAll ts
+end
+
+/-- The symbols of a label are among `xs`. -/
+def LExpr.SymsIn (xs : List String) (e : LExpr) : Prop := ∀ x ∈ e.plain ++ e.star, x ∈ xs
+
+mutual
+  /-- A type of a signature mentions only the function's own type parameters `xs`, as types
+  and in its labels. -/
+  def LTy.ScopedIn (xs : List String) : LTy → Prop
+    | .var a l => a ∈ xs ∧ l.SymsIn xs
+    | .int l | .bool l | .text l | .unit l | .record _ l => l.SymsIn xs
+    | .list t l | .option t l | .result t l => t.ScopedIn xs ∧ l.SymsIn xs
+    | .fn ps r _ _ _ l => LTy.ScopedInAll xs ps ∧ r.ScopedIn xs ∧ l.SymsIn xs
+
+  def LTy.ScopedInAll (xs : List String) : List LTy → Prop
+    | [] => True
+    | t :: ts => t.ScopedIn xs ∧ LTy.ScopedInAll xs ts
+end
+
 /-- A symbolic decision `ℓ*_T` for each name. -/
 def decision (d : List String) : LExpr := ⟨Label.bot, [], d⟩
 
@@ -189,7 +239,8 @@ mutual
     policy (U4005). -/
     | call {Γ pc f targs args fn ts} :
         p.find f = some fn → ¬ p.IsVia f → targs.length = fn.tparams.length →
-        LTy.firstClasses targs = true → fn.EqArgs p E targs → LAtomsTy Γ args ts →
+        LTy.firstClasses targs = true → fn.EqArgs p E targs → LTy.GroundAll targs →
+        LAtomsTy Γ args ts →
         Flows p.top ts (fn.params.map (fun q => p.lsub (fn.tparams.zip targs) q.2)) →
         p.Bound pc fn.op fn.get fn.fails →
         LRhsTy p E Γ pc (.call f targs args) (p.lsub (fn.tparams.zip targs) fn.result)
@@ -228,19 +279,20 @@ mutual
         rec.fields[index]? = some t → LRhsTy p E Γ pc (.field value index) (t.raise l) .none
     /-- A list literal: each element flows into the element type. -/
     | list {Γ pc items ts t} :
-        LAtomsTy Γ items ts → (∀ u ∈ ts, Flow p.top u t) →
+        LAtomsTy Γ items ts → (∀ u ∈ ts, Flow p.top u t) → t.InPlace →
         LRhsTy p E Γ pc (.list items) (.list t .bot) .none
-    | none {Γ pc t} : LRhsTy p E Γ pc .none (.option t .bot) .none
+    | none {Γ pc t} : t.InPlace → LRhsTy p E Γ pc .none (.option t .bot) .none
     | some {Γ pc a t} : LAtomTy Γ a t → LRhsTy p E Γ pc (.some a) (.option t .bot) .none
     /-- A lambda's body is checked at the public program counter (ADR 0031 rule 4), and, as a
     function's, its failures must be decided there. -/
     | lambda {Γ pc params body t ε} :
         LExprTy p E (params ++ Γ) .bot body t ε → p.le ε.failLabel .bot →
+        (∀ q ∈ params, q.2.InPlace) →
         LRhsTy p E Γ pc (.lambda params body)
           (.fn (params.map Prod.snd) t ε.op ε.get ε.fails.isSome .bot) .none
     | funRef {Γ pc f targs fn} :
         p.find f = some fn → ¬ p.IsVia f → targs.length = fn.tparams.length →
-        LTy.firstClasses targs = true → fn.EqArgs p E targs →
+        LTy.firstClasses targs = true → fn.EqArgs p E targs → LTy.GroundAll targs →
         LRhsTy p E Γ pc (.funRef f targs)
           (.fn (fn.params.map (fun q => p.lsub (fn.tparams.zip targs) q.2))
             (p.lsub (fn.tparams.zip targs) fn.result) fn.op fn.get fn.fails .bot) .none
@@ -293,34 +345,34 @@ mutual
     rule 4), whose failure reaches the function's boundary, where it must be public. -/
     | letR {Γ pc x ann value body t s ε₁ ε₂} :
         LRhsTy p E Γ pc value t ε₁ → Flow p.top t ann →
-        LExprTy p E ((x, ann) :: Γ) (pc.join ε₁.failLabel) body s ε₂ →
+        LExprTy p E ((x, ann) :: Γ) (pc.join ε₁.failLabel) body s ε₂ → ann.InPlace →
         LExprTy p E Γ pc (.letR x ann value body) s (ε₁.union ε₂)
     | letE {Γ pc x ann value body t s ε₁ ε₂} :
         LExprTy p E Γ pc value t ε₁ → Flow p.top t ann →
-        LExprTy p E ((x, ann) :: Γ) (pc.join ε₁.failLabel) body s ε₂ →
+        LExprTy p E ((x, ann) :: Γ) (pc.join ε₁.failLabel) body s ε₂ → ann.InPlace →
         LExprTy p E Γ pc (.letE x ann value body) s (ε₁.union ε₂)
     /-- T-If: the branches run under the condition's label, flow into the joined type, and the
     value is raised by it. -/
     | ite {Γ pc cond thenE elseE lc t₁ t₂ s ε₁ ε₂} :
         LAtomTy Γ cond (.bool lc) → LExprTy p E Γ (pc.join lc) thenE t₁ ε₁ →
-        LExprTy p E Γ (pc.join lc) elseE t₂ ε₂ → Flow p.top t₁ s → Flow p.top t₂ s →
+        LExprTy p E Γ (pc.join lc) elseE t₂ ε₂ → Flow p.top t₁ s → Flow p.top t₂ s → s.InPlace →
         LExprTy p E Γ pc (.ite cond thenE elseE) (s.raise lc) (ε₁.union ε₂)
     /-- T-Case on an option: the pattern binding takes the element type raised by the
     scrutinee's top label. -/
     | caseOption {Γ pc scrutinee noneE x someE te ls t₁ t₂ s ε₁ ε₂} :
         LAtomTy Γ scrutinee (.option te ls) → LExprTy p E Γ (pc.join ls) noneE t₁ ε₁ →
         LExprTy p E ((x, te.raise ls) :: Γ) (pc.join ls) someE t₂ ε₂ →
-        Flow p.top t₁ s → Flow p.top t₂ s →
+        Flow p.top t₁ s → Flow p.top t₂ s → s.InPlace →
         LExprTy p E Γ pc (.caseOption scrutinee noneE x someE) (s.raise ls) (ε₁.union ε₂)
     | caseResult {Γ pc scrutinee x okE y errE te ls t₁ t₂ s ε₁ ε₂} :
         LAtomTy Γ scrutinee (.result te ls) →
         LExprTy p E ((x, te.raise ls) :: Γ) (pc.join ls) okE t₁ ε₁ →
         LExprTy p E ((y, .int ls) :: Γ) (pc.join ls) errE t₂ ε₂ →
-        Flow p.top t₁ s → Flow p.top t₂ s →
+        Flow p.top t₁ s → Flow p.top t₂ s → s.InPlace →
         LExprTy p E Γ pc (.caseResult scrutinee x okE y errE) (s.raise ls) (ε₁.union ε₂)
     /-- T-Fail: only at the public program counter (U4002). -/
     | fail {Γ pc code s} :
-        p.le pc .bot → pc.SymFree → LExprTy p E Γ pc (.fail code) s ⟨false, false, some .bot⟩
+        p.le pc .bot → pc.SymFree → s.InPlace → LExprTy p E Γ pc (.fail code) s ⟨false, false, some .bot⟩
     /-- T-Attempt: the result carries the label of what decides the failure. -/
     | attempt {Γ pc body t ε} :
         LExprTy p E Γ pc body t ε →
@@ -330,7 +382,7 @@ mutual
     | handle {Γ pc body x handler t₁ t₂ s ε₁ ε₂} :
         LExprTy p E Γ pc body t₁ ε₁ →
         LExprTy p E ((x, .int ε₁.failLabel) :: Γ) (pc.join ε₁.failLabel) handler t₂ ε₂ →
-        Flow p.top t₁ s → Flow p.top t₂ s →
+        Flow p.top t₁ s → Flow p.top t₂ s → s.InPlace →
         LExprTy p E Γ pc (.handle body x handler) (s.raise ε₁.failLabel)
           ⟨ε₁.op || ε₂.op, ε₁.get || ε₂.get, ε₂.fails⟩
 end
@@ -381,5 +433,16 @@ structure Program.LWellFormed (p : Program) : Prop where
     ∃ fn, p.find po.via = some fn ∧ fn.paramTys [] = [po.src.erase] ∧
       fn.result.erase = po.dst.erase
   categories : p.CatsDeclared
+  /-- Records declare ground field types. -/
+  recordsGround : ∀ rec ∈ p.records, ∀ t ∈ rec.fields, t.Ground
+  /-- A function constrains by `Eq` only its own type parameters. -/
+  eqScoped : ∀ fn ∈ p.funs, ∀ a ∈ fn.eqParams, a ∈ fn.tparams
+  /-- A signature mentions only its own type parameters. -/
+  sigsScoped : ∀ fn ∈ p.funs, (∀ q ∈ fn.params, q.2.ScopedIn fn.tparams) ∧
+    fn.result.ScopedIn fn.tparams
+  /-- Signatures and declared types keep `ℓ_T` in place. -/
+  inPlace : (∀ fn ∈ p.funs, (∀ q ∈ fn.params, q.2.InPlace) ∧ fn.result.InPlace) ∧
+    (∀ rec ∈ p.records, ∀ t ∈ rec.fields, t.InPlace) ∧
+    (∀ po ∈ p.policies, po.src.InPlace ∧ po.dst.InPlace)
 
 end Una.F1
