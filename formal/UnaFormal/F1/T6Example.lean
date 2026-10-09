@@ -1,0 +1,180 @@
+/-
+A worked instance of T6: a typed body reads a secret and a public input, computes with the
+secret, prints a line to a public sink and returns the public input. Two runs whose secrets differ
+show a public observer the same events, and the same value, as `t6` says.
+-/
+import UnaFormal.F1.Mono
+
+namespace Una.F1.T6Example
+
+def sec : LExpr := .ofLabel ⟨.secret, []⟩
+
+def prog : Program where
+  categories := []
+  acceptsOp := Label.bot
+  acceptsGet := Label.bot
+  getResult := Label.bot
+  records := []
+  policies := []
+  funs := []
+
+/-- `s: secret Int, x: Int`. -/
+def Γ : LCtx := [("s", .int sec), ("x", .int .bot)]
+
+/-- `let y: secret Int = s + x; let u = @log.write("hi"); x`. -/
+def body : Expr :=
+  .letR "y" (.int sec) (.prim .add [.var "s", .var "x"])
+    (.letR "u" (.unit .bot) (.op (.text "hi")) (.atom (.var "x")))
+
+def eff : Eff := Eff.none.union ((⟨true, false, Option.none⟩ : Eff).union Eff.none)
+
+theorem body_typed : LExprTy prog [] Γ .bot body (.int .bot) eff := by
+  refine .letR (t := .int ((LExpr.joinAll [sec, LExpr.bot]))) ?_ (.int ?_) ?_
+  · exact .prim (ts := [.int sec, .int .bot]) (.cons (.var rfl) (.cons (.var rfl) .nil)) .add
+  · refine .inr ⟨⟨?_, ?_⟩, ?_, ?_⟩ <;>
+      simp [sec, LExpr.joinAll, LExpr.join, LExpr.bot, LExpr.ofLabel, Label.join, Label.bot,
+        Level.join, Level.rank] <;> decide
+  · refine .letR (t := .unit .bot) (.op .text rfl ?_ ?_) .unit (.atom (.var rfl))
+    · refine .inr ⟨⟨?_, ?_⟩, ?_, ?_⟩ <;>
+        simp [prog, LExpr.join, LExpr.bot, LExpr.ofLabel, Label.join, Label.bot, Eff.failLabel,
+          Eff.none, Program.deep, LTy.deep, Level.join, Level.rank] <;> decide
+    · simp [LExpr.SymFree, LExpr.join, LExpr.bot, LExpr.ofLabel, Eff.failLabel, Eff.none]
+
+theorem prog_wf : prog.LWellFormed where
+  funs _ h := nomatch h
+  records _ h := nomatch h
+  recordDeep _ h := nomatch h
+  policies _ h := nomatch h
+  categories := by
+    refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩ <;> simp [prog, Label.bot]
+
+theorem prog_gf : prog.GenericFree := ⟨(fun _ h => nomatch h), rfl⟩
+
+theorem prog_get : prog.le (.ofLabel prog.acceptsGet) (.ofLabel prog.getResult) :=
+  LExpr.le_refl _
+
+/-- Two inputs with different secrets and the same public value. -/
+def env₁ : Env := [("s", .int 1), ("x", .int 5)]
+def env₂ : Env := [("s", .int 2), ("x", .int 5)]
+
+/-- A public observer does not see a secret. -/
+theorem sec_hidden : ¬ Vis prog Label.bot sec := by
+  rintro (⟨h, _⟩ | ⟨⟨h, _⟩, _, _⟩) <;> simp [prog, Program.top, sec, LExpr.ofLabel, Label.bot] at h <;>
+    revert h <;> decide
+
+theorem envs_rel : EnvRel prog Label.bot Γ env₁ env₂ :=
+  .cons (.hidden sec_hidden) (.cons .int .nil)
+
+/-- **T6, applied.** The two runs, at a fuel at which both end, show a public observer the same
+events and return the same public value, although their secrets differ. -/
+theorem body_noninterferent (w : World) (n : Nat)
+    (h₁ : Term (eval n prog w env₁ body).2) (h₂ : Term (eval n prog w env₂ body).2) :
+    proj prog Label.bot (eval n prog w env₁ body).1 = proj prog Label.bot (eval n prog w env₂ body).1 ∧
+      OutRel (V prog Label.bot (.int .bot)) (Vis prog Label.bot eff.failLabel)
+        (eval n prog w env₁ body).2 (eval n prog w env₂ body).2 :=
+  t6 prog_wf prog_gf prog_get w (.cons .int (.cons .int .nil)) (.cons .int (.cons .int .nil))
+    envs_rel body_typed n h₁ h₂
+
+/-- The runs do end, and both print the line and return 5. -/
+example (w : World) :
+    eval 3 prog w env₁ body = ([.out "hi"], .ok (.int 5)) ∧
+      eval 3 prog w env₂ body = ([.out "hi"], .ok (.int 5)) := ⟨rfl, rfl⟩
+
+/-! ### Branching on the secret -/
+
+/-- `s: secret Int, x: Text`. -/
+def Γb : LCtx := [("s", .int sec), ("x", .text .bot)]
+
+/-- The label `secret ⊔ ⊥` that the comparison and the branch give. -/
+def cl : LExpr := LExpr.joinAll [sec, LExpr.bot]
+
+/-- `let c: secret Bool = s < 0; let y: secret Int = if c then 1 else 2; @log.write(x); y`. -/
+def branching : Expr :=
+  .letR "c" (.bool sec) (.prim .lt [.var "s", .int 0])
+    (.letE "y" (.int sec) (.ite (.var "c") (.atom (.int 1)) (.atom (.int 2)))
+      (.letR "u" (.unit .bot) (.op (.var "x")) (.atom (.var "y"))))
+
+theorem le_sec {a : LExpr} (hb : a.base.level.rank ≤ 3) (hc : a.base.cats = [])
+    (hp : a.plain = []) (hs : a.star = []) : LExpr.le prog.top a sec :=
+  .inr ⟨⟨hb, fun _ h => (by rw [hc] at h; nomatch h)⟩, fun _ h => (by rw [hp] at h; nomatch h),
+    fun _ h => (by rw [hs] at h; nomatch h)⟩
+
+def brEff : Eff :=
+  Eff.none.union ((Eff.none.union Eff.none).union ((⟨true, false, Option.none⟩ : Eff).union Eff.none))
+
+theorem branching_typed : LExprTy prog [] Γb .bot branching (.int sec) brEff := by
+  refine .letR (t := .bool cl) ?r1 (.bool ?l1) ?b1
+  case r1 => exact .prim (ts := [.int sec, .int .bot]) (.cons (.var rfl) (.cons .int .nil)) .lt
+  case l1 =>
+    apply le_sec <;> simp [cl, sec, LExpr.joinAll, LExpr.join, LExpr.bot, LExpr.ofLabel,
+      Label.join, Label.bot, Level.join, Level.rank]
+  case b1 =>
+    refine .letE (t := (LTy.int .bot).raise sec) ?r2 (.int ?l2) ?b2
+    case r2 =>
+      exact .ite (.var rfl) (.atom .int) (.atom .int) (.int (LExpr.le_refl _))
+        (.int (LExpr.le_refl _))
+    case l2 =>
+      apply le_sec <;> simp [sec, LExpr.join, LExpr.bot, LExpr.ofLabel, Label.join,
+        Label.bot, Level.join, Level.rank]
+    case b2 =>
+      refine .letR (t := .unit .bot) (.op (.var rfl) rfl ?le ?sf) .unit (.atom (.var rfl))
+      case le =>
+        refine .inr ⟨⟨?_, ?_⟩, ?_, ?_⟩ <;>
+          simp [prog, LExpr.join, LExpr.bot, LExpr.ofLabel, Label.join, Label.bot, Eff.failLabel,
+            Eff.none, Eff.union, Program.deep, LTy.deep, Level.join, Level.rank] <;> decide
+      case sf =>
+        simp [LExpr.SymFree, LExpr.join, LExpr.bot, LExpr.ofLabel, Eff.failLabel, Eff.none,
+          Eff.union]
+
+/-- Two runs whose secrets send them down different branches. -/
+def envNeg : Env := [("s", .int (-1)), ("x", .text "hi")]
+def envPos : Env := [("s", .int 5), ("x", .text "hi")]
+
+theorem branch_envs_rel : EnvRel prog Label.bot Γb envNeg envPos :=
+  .cons (.hidden sec_hidden) (.cons .text .nil)
+
+/-- The runs take different branches and return different values, 1 and 2, after the same line. -/
+example (w : World) :
+    eval 4 prog w envNeg branching = ([.out "hi"], .ok (.int 1)) ∧
+      eval 4 prog w envPos branching = ([.out "hi"], .ok (.int 2)) := ⟨rfl, rfl⟩
+
+/-- **T6 on a branch over the secret.** The public observer sees the same events from both runs,
+and their values, 1 and 2, are related at the type whose label it does not see. -/
+theorem branching_noninterferent (w : World) :
+    proj prog Label.bot (eval 4 prog w envNeg branching).1 =
+        proj prog Label.bot (eval 4 prog w envPos branching).1 ∧
+      V prog Label.bot (.int sec) (.int 1) (.int 2) := by
+  have h := t6 (e₁ := envNeg) (e₂ := envPos) prog_wf prog_gf prog_get w
+    (.cons .int (.cons .text .nil)) (.cons .int (.cons .text .nil)) branch_envs_rel
+    branching_typed 4 trivial trivial
+  have r₁ : eval 4 prog w envNeg branching = ([.out "hi"], .ok (.int 1)) := rfl
+  have r₂ : eval 4 prog w envPos branching = ([.out "hi"], .ok (.int 2)) := rfl
+  rw [r₁, r₂] at h ⊢
+  exact h
+
+/-- `c: secret Bool`. -/
+def Γc : LCtx := [("c", .bool sec)]
+
+/-- `if c then @log.write("a") else @log.write("b")`: which line is written reveals `c`. -/
+def leaking : Expr :=
+  .ite (.var "c") (.letR "u" (.unit .bot) (.op (.text "a")) (.atom (.var "u")))
+    (.letR "u" (.unit .bot) (.op (.text "b")) (.atom (.var "u")))
+
+/-- **The labeled typing rejects it**: under the secret program counter, the sink, which accepts
+`public`, is U4003. -/
+theorem leaking_untyped {E : List String} {pc : LExpr} {t : LTy} {ε : Eff} :
+    ¬ LExprTy prog E Γc pc leaking t ε := by
+  intro h
+  cases h with
+  | ite hc ht _ _ _ =>
+    cases hc with
+    | var hx =>
+      simp only [Γc, lctxLookup, ite_true] at hx
+      cases hx
+      cases ht with
+      | letR hr _ _ =>
+        cases hr with
+        | op _ _ hle _ =>
+          exact sec_hidden (LExpr.le_of_join_right (LExpr.le_of_join_left hle))
+
+end Una.F1.T6Example
