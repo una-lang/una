@@ -33,3 +33,9 @@ import UnaFormal.F1.CheckProgramExample
 import UnaFormal.F1.Erasure
 import UnaFormal.F1.Monomorph
 import UnaFormal.F1.MonomorphExample
+import UnaFormal.F1H.Syntax
+import UnaFormal.F1H.Types
+import UnaFormal.F1H.Eval
+import UnaFormal.F1H.Typing
+import UnaFormal.F1H.LTyping
+import UnaFormal.F1H.OldLeaks

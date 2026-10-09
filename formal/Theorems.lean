@@ -114,3 +114,8 @@ import UnaFormal
 #print axioms Una.F1.MonomorphExample.rCertified
 #print axioms Una.F1.MonomorphExample.caller_obs
 #print axioms Una.F1.MonomorphExample.caller_diverges
+#print axioms Una.F1H.OldLeaks.demo_lawful
+#print axioms Una.F1H.OldLeaks.s14_old_typed
+#print axioms Una.F1H.OldLeaks.s14_old_leaks
+#print axioms Una.F1H.OldLeaks.s15_old_typed
+#print axioms Una.F1H.OldLeaks.s15_old_leaks
