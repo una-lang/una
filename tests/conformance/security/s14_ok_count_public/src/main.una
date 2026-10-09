@@ -1,0 +1,19 @@
+-- test: with public writes only, how many of a list of files exist stays public (S-14 twin)
+-- spec: spec/07 §7
+-- expect: ok
+module main
+
+exists(name: Text) -> Int
+  uses @files: Files[read]
+=
+  let r = attempt @files.read(name)
+  if is_ok(r) then 1 else 0
+
+pub probe(name: Text) -> Unit
+  uses @files: Files[read, write]
+  uses @console: Console[print]
+=
+  let w = attempt @files.write(name, content: "x")
+  let a = exists("a.txt")
+  let b = exists("b.txt")
+  @console.print("{a + b} of the files exist")

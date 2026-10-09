@@ -1,0 +1,15 @@
+-- test: writes whose paths are public, at a public program counter, leave the failures of reads public: branching on them and passing them on stay allowed (S-14 twin)
+-- spec: spec/07 §7
+-- expect: ok
+module main
+
+pub copy(name: Text, content: internal Text) -> Bool
+  uses @files: Files[read, write]
+  fails FileError
+=
+  @files.write("{name}.bak", content: content)
+    if error pass
+  let r = attempt @files.read("{name}.txt")
+  when r
+    is Ok(v) -> true
+    is Err(e) -> false

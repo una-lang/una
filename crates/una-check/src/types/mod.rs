@@ -148,6 +148,32 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
         }
     }
     authority::infer(&mut env, &collected, &mut report);
+    // S-14 (ADR 0085): a package that writes files labels the failure of every `Files`
+    // operation with what decides its writes. Pass 2 is probed first, its diagnostics dropped,
+    // so that a read checked before a write has the label too. The probe's label is the least
+    // fixpoint: what the label itself raises in pass 2 is below it.
+    if env.files_written {
+        let mut scratch = Report::new(package.sources);
+        let mut findings = Findings::default();
+        let mut unused = authority::Collected::default();
+        for module in 0..package.modules.len() {
+            if env.reports(module) {
+                check::module(
+                    &mut env,
+                    &facts,
+                    &mut scratch,
+                    &mut findings,
+                    &mut unused,
+                    authority::Pass::Check,
+                    module,
+                );
+            }
+        }
+        env.file_state = file_state(&env).0;
+        env.file_writes.clear();
+        env.file_calls.clear();
+        env.file_escaped.clear();
+    }
     let mut findings = Findings::default();
     let mut unused = authority::Collected::default();
     for module in 0..package.modules.len() {
@@ -162,6 +188,21 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
                 module,
             );
         }
+    }
+    // The label pass 2 found is never above the probe's: an internal error otherwise, never a
+    // read whose failure the label would have missed.
+    let (found, raised) = file_state(&env);
+    if !found.flows_to(&env.file_state)
+        && let Some(span) = raised
+    {
+        report.error(
+            Code::U8001,
+            span,
+            format!(
+                "internal error: this write raises the file-state label to `{found}`, above the `{}` that the checks used (ADR 0085)",
+                env.file_state
+            ),
+        );
     }
     // The standard modules are checked silently, for the records that their
     // contracts are elaborated from.
@@ -476,6 +517,69 @@ fn edit_distance(a: &str, b: &str) -> usize {
         }
     }
     rows.last().and_then(|row| row.last()).copied().unwrap_or(0)
+}
+
+/// The file-state label of the package from what a check of pass 2 recorded (S-14, ADR 0085),
+/// and the first write that raises it above the label the checks used.
+///
+/// Each write contributes its path, its program counter and the highest program counter its
+/// code can be entered under. A function's is the join of the program counters of its direct
+/// calls, each raised by the caller's own, up to a fixpoint over the call graph; a function
+/// used as a value, or a policy's `via` function, may be called anywhere under its effect
+/// bound (`spec/07 §7` rule 4), `public` when it can fail; a handler operation's is its effect
+/// floor, a lambda's the cap, an example's `public`. Everything is capped at what `Files.write`
+/// accepts. The fixpoint ends: each round raises some function's label, within a finite
+/// lattice.
+fn file_state(env: &env::Env<'_>) -> (label::Label, Option<Span>) {
+    use env::Entry;
+    let cap = env.file_cap.clone();
+    let mut entries: std::collections::BTreeMap<usize, label::Label> =
+        std::collections::BTreeMap::new();
+    for &f in env.file_escaped.iter().chain(env.vias.keys()) {
+        let label = match env.functions.get(f) {
+            Some(def) if def.fails.is_some() => label::Label::public(),
+            Some(def) => {
+                let uses: Vec<ty::FnUse> = def.uses.iter().map(|n| n.usage.clone()).collect();
+                flow::bound_of(env, &uses).map_or_else(|| cap.clone(), |b| b.meet(&cap))
+            }
+            None => cap.clone(),
+        };
+        let current = entries.entry(f).or_insert_with(label::Label::public);
+        *current = current.join(&label).meet(&cap);
+    }
+    let entry_of = |entries: &std::collections::BTreeMap<usize, label::Label>, e: &Entry| match e {
+        Entry::Function(f) => entries.get(f).cloned().unwrap_or_else(label::Label::public),
+        Entry::Floor(floor) => floor.meet(&cap),
+        Entry::Lambda => cap.clone(),
+        Entry::Root => label::Label::public(),
+    };
+    loop {
+        let mut changed = false;
+        for (caller, callee, pc) in &env.file_calls {
+            let raised = pc.join(&entry_of(&entries, caller)).meet(&cap);
+            let current = entries
+                .get(callee)
+                .cloned()
+                .unwrap_or_else(label::Label::public);
+            if !raised.flows_to(&current) {
+                entries.insert(*callee, current.join(&raised).meet(&cap));
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let mut state = label::Label::public();
+    let mut raised = None;
+    for (entry, site, span) in &env.file_writes {
+        let contribution = site.join(&entry_of(&entries, entry)).meet(&cap);
+        if raised.is_none() && !contribution.flows_to(&env.file_state) {
+            raised = Some(*span);
+        }
+        state = state.join(&contribution);
+    }
+    (state, raised)
 }
 
 #[cfg(test)]
