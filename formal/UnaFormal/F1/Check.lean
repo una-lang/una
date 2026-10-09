@@ -448,3 +448,58 @@ def checkDecls (p : Program) : Result Unit := do
     need (p.find po.via).isSome s!"no `via` function `{po.via}`"
 
 end Una.F1.Check
+
+namespace Una.F1.Check
+
+mutual
+  /-- `f` applied to every type a right-hand side writes: lambda parameters and the type
+  arguments of calls. -/
+  def Rhs.mapTypes (f : LTy → LTy) : Rhs → Rhs
+    | .call g targs args => .call g (targs.map f) args
+    | .funRef g targs => .funRef g (targs.map f)
+    | .lambda params body => .lambda (params.map fun q => (q.1, f q.2)) (Expr.mapTypes f body)
+    | r => r
+
+  /-- `f` applied to every type a body writes: the types of its `let`s and what its right-hand
+  sides write. -/
+  def Expr.mapTypes (f : LTy → LTy) : Expr → Expr
+    | .atom a => .atom a
+    | .letR x t v b => .letR x (f t) (Rhs.mapTypes f v) (Expr.mapTypes f b)
+    | .letE x t v b => .letE x (f t) (Expr.mapTypes f v) (Expr.mapTypes f b)
+    | .ite c t e => .ite c (Expr.mapTypes f t) (Expr.mapTypes f e)
+    | .caseOption s n x so => .caseOption s (Expr.mapTypes f n) x (Expr.mapTypes f so)
+    | .caseResult s x o y e => .caseResult s x (Expr.mapTypes f o) y (Expr.mapTypes f e)
+    | .fail c => .fail c
+    | .attempt b => .attempt (Expr.mapTypes f b)
+    | .handle b x h => .handle (Expr.mapTypes f b) x (Expr.mapTypes f h)
+end
+
+mutual
+  /-- The calls and function references of a right-hand side with type arguments. -/
+  def Rhs.genericCalls : Rhs → List (String × List LTy)
+    | .call g targs _ | .funRef g targs => if targs.isEmpty then [] else [(g, targs)]
+    | .lambda _ body => Expr.genericCalls body
+    | _ => []
+
+  /-- The calls and function references of a body with type arguments. -/
+  def Expr.genericCalls : Expr → List (String × List LTy)
+    | .letR _ _ v b => Rhs.genericCalls v ++ Expr.genericCalls b
+    | .letE _ _ v b => Expr.genericCalls v ++ Expr.genericCalls b
+    | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e =>
+      Expr.genericCalls t ++ Expr.genericCalls e
+    | .attempt b => Expr.genericCalls b
+    | _ => []
+end
+
+/-- The instance of a generic function at ground type arguments: its signature and body with
+the type parameters instantiated (`LTy.lsubst`), and no type parameters. The instance runs as the
+generic function does, since evaluation reads no type, so a program whose reachable instances
+pass the checker is the generic-free program of its instances, which T6 covers. -/
+def instantiate (subst : List (String × LTy) → LTy → LTy) (fn : Fun) (targs : List LTy)
+    (name : String) : Fun :=
+  let σ := fn.tparams.zip targs
+  { name, tparams := [], eqParams := [],
+    params := fn.params.map fun q => (q.1, subst σ q.2), result := subst σ fn.result,
+    op := fn.op, get := fn.get, fails := fn.fails, body := Expr.mapTypes (subst σ) fn.body }
+
+end Una.F1.Check

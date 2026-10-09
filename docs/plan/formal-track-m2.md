@@ -62,14 +62,35 @@ The Core that each leaking program had is the one the release before its fix pri
 | | Findings |
 | --- | --- |
 | Rejected at the label the pre-fix checker got wrong | S-01, S-06, S-07, S-09, S-12 |
-| Out of fragment: a generic call inside a generic body | S-08, S-10, S-11 |
+| Rejected at the instance where the decided value reaches the callback | S-08, S-10, S-11 |
 | Out of fragment: other forms | S-02 (`Json`), S-03 (`Http`), S-04 (`edit`, F1+), S-05 (`Files.write`) |
 
 For S-07, the checker rejects the three leaking functions and accepts the two that today's `una check` accepts.
 
-## 4. What comes next
+## 4. Instance checking
 
-- Generic calls inside generic bodies, which bring S-08, S-10 and S-11 into the replay (the coordinator's order, 2026-10-09).
+A function that calls a generic function at its own type parameters, two levels of generics, is checked at every ground instance the program reaches. The model's labeled instantiation gives each instance (`docs/reviews/formal-m2-replay/README.md`, "Instance checking").
+
+**Claim scope.** This re-checks programs at their instances. It is not a modular check of generic declarations.
+- It validates every run of the program given.
+- It does not validate the shipped checker's judgment of such a generic function for code it has never seen.
+
+**Outcomes.** A function whose instances cannot all be known, or are never reached, is not re-checked, with its reason. The causes are a source outside F1, no ground instance, polymorphic recursion past a depth of 16, and more than 256 instances. None of these is a pass.
+
+**On the corpus.** It moves the 62 declarations with generic calls inside generic bodies:
+- 46 accepted at their instances;
+- 5 never instantiated;
+- 1 with a source outside F1;
+- 10 blocked by other forms.
+
+Totals: 647 accepted, the same 7 rejections, 1,044 not re-checked. No polymorphic recursion or cap is met.
+
+**Soundness, for option B.** Evaluation reads no annotation, so an instance runs as its function does, up to the annotations inside closures. The generic-free program of the instances is covered by `t6_ground`. Two behaviors of the real runtime read types, and neither reads a type argument's labels:
+- the type descriptors of constrained type parameters depend only on structure, which instantiation keeps;
+- trace rendering redacts by declared kinds, which is outside F1's trace and stated as an assumption.
+
+## 5. What comes next
+
 - Declassification, option B1 (`docs/plan/formal-track-m4.md` §3).
 - #443, the export's missing facts.
 - Option B of the plan: a proof that an accepted function passes T-Fun, which makes the re-check a proven one.

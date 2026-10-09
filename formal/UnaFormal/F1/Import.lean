@@ -30,6 +30,9 @@ structure Refs where
   ops : List (String × String) := []
   funs : List String := []
   policies : List String := []
+  /-- Whether a call's type arguments mention type parameters: two levels of generics, which
+  the checker covers at the function's instances. -/
+  nested : Bool := false
 
 /-- Reading fails with the reason a declaration is outside F1. -/
 abbrev M := StateT Refs (Except String)
@@ -208,8 +211,7 @@ mutual
           -- A call of a `via` function brings its policy, which makes the call U4005.
           if let some pol := List.lookup f c.vias then refPolicy pol
           let targs ← (← arr (← field j "type_args")).mapM (ty c)
-          if !Check.groundAll targs then
-            throw "a call with type parameters as type arguments (F1 has one level of generics)"
+          if !Check.groundAll targs then modify fun s => { s with nested := true }
           pure (.call f targs args)
         else throw s!"a call of `{f}`"
     | "apply" => pure (.apply (← atom (← field j "callee")) (← atoms (← field j "args")))
@@ -399,28 +401,29 @@ def records (decls : List Decl) (funs : List String) : List Record := Id.run do
     deep := out.map fun (q, ts) => (q, (LTy.deeps rd ts).base)
   pure (out.map fun (q, ts) => ⟨q, ts, (List.lookup q deep).getD Label.bot⟩)
 
-/-- The `kind` of a node the checker does not know: an outcome per declaration. -/
+/-- The outcome of a declaration. -/
 inductive Outcome where
-  | accepted
+  | accepted (note : String)
   | rejected (why : String)
   | notRechecked (why : String)
 
-/-- Checks one function declaration of a document. -/
-def checkFun (edition : String) (cats : List String) (caps : List (String × J)) (decls : List Decl)
-    (recs : List Record) (d : Decl) : Outcome :=
-  let funNames := decls.filterMap fun e =>
-    if e.kind == "fun" then
-      match plainRun (do pure s!"{e.module}.{← str (← field e.value "name")}") with
-      | .ok n => some n
-      | .error _ => none
-    else none
-  let vias := decls.filterMap fun e =>
-    if e.kind == "policy" then
-      match plainRun (do pure (← path (← field e.value "via"), s!"{e.module}.{← str (← field e.value "name")}")) with
-      | .ok q => some q
-      | .error _ => none
-    else none
-  let c : Ctx := { records := recs.map (·.name), funs := funNames, vias, allEq := edition == "0.1" }
+/-- What checking a function declaration needs: the function as F1 reads it, the signatures of
+what it calls, its policies, the `accepts` of its operation, and whether it calls a generic
+function at its own type parameters. -/
+structure Prep where
+  fn : Fun
+  callees : List Fun
+  pols : List Policy
+  acceptsOp : Label
+  nested : Bool
+
+/-- A substitution of type arguments: `LTy.lsubst` with the record labels of the document, or a
+mutant of it in the tests. -/
+abbrev Subst := (String → Label) → List (String × LTy) → LTy → LTy
+
+/-- Reads one function declaration of a document; the error is why it is outside F1. -/
+def prepare (c : Ctx) (caps : List (String × J)) (decls : List Decl) (d : Decl) :
+    Except String Prep := do
   let findDecl := fun (q : String) => decls.find? fun e =>
     match plainRun (do pure s!"{e.module}.{← str (← field e.value "name")}") with
     | .ok n => n == q && (e.kind == "fun" || e.kind == "policy")
@@ -438,53 +441,101 @@ def checkFun (edition : String) (cats : List String) (caps : List (String × J))
       let some e := findDecl f | throw s!"the function `{f}`"
       signature c e.module e.value (.atom .unit)
     pure (fn, callees, pols)
-  match run read with
-  | .error why => .notRechecked why
-  | .ok ((fn, callees, pols), refs) =>
-    if (List.lookup fn.name vias).isSome then .notRechecked "a `via` function, which no label rule checks"
-    else
-      let acc : Except String Label := match refs.ops with
-        | [] => pure Label.bot
-        | [(cap, o)] => do
-          let some (_, capJ) := caps.find? (·.1 == cap) | throw s!"the capability `{cap}`"
-          let ops ← plainRun (arr (← plainRun (field capJ "ops")))
-          let some opJ := ops.find? (fun o' => match plainRun (do str (← field o' "name")) with
-              | .ok n => n == o
-              | .error _ => false)
-            | throw s!"the operation `{cap}.{o}`"
-          plainRun do
-            let ps ← arr (← field opJ "params")
-            let c0 : Ctx := { records := [], funs := [] }
-            let shape ← match ps with
-              | [q] => do
-                match ← arr q with
-                | [_, t] => pure (← ty c0 t)
-                | _ => throw "a parameter"
-              | _ => throw s!"the operation `{cap}.{o}`, which does not take one argument"
-            let r ← ty c0 (← field opJ "result")
-            match shape, r with
-            | .int _, .unit _ | .bool _, .unit _ | .text _, .unit _ =>
-              if !isNull (← field opJ "fails") then throw s!"the operation `{cap}.{o}`, which may fail"
-              let a ← label (← field opJ "accepts")
-              pure a.base
-            | _, _ => throw s!"the operation `{cap}.{o}`, which does not take a scalar and give `Unit`"
-        | _ => throw "several operations"
-      match acc with
-      | .error why => .notRechecked why
-      | .ok acceptsOp =>
-        let p : Program := {
-          categories := cats, acceptsOp, acceptsGet := Label.bot, getResult := Label.bot,
-          records := recs, policies := pols, funs := fn :: callees }
-        match (do
-            Check.checkDecls p
-            for f in p.funs do Check.checkSignature f
-            Check.checkFun p fn : Check.Result Unit) with
-        | .ok () => .accepted
-        | .error why => .rejected why
+  let ((fn, callees, pols), refs) ← run read
+  if (List.lookup fn.name c.vias).isSome then throw "a `via` function, which no label rule checks"
+  let acceptsOp ← match refs.ops with
+    | [] => pure Label.bot
+    | [(cap, o)] => do
+      let some (_, capJ) := caps.find? (·.1 == cap) | throw s!"the capability `{cap}`"
+      let ops ← plainRun (arr (← plainRun (field capJ "ops")))
+      let some opJ := ops.find? (fun o' => match plainRun (do str (← field o' "name")) with
+          | .ok n => n == o
+          | .error _ => false)
+        | throw s!"the operation `{cap}.{o}`"
+      plainRun do
+        let ps ← arr (← field opJ "params")
+        let c0 : Ctx := { records := [], funs := [] }
+        let shape ← match ps with
+          | [q] => do
+            match ← arr q with
+            | [_, t] => pure (← ty c0 t)
+            | _ => throw "a parameter"
+          | _ => throw s!"the operation `{cap}.{o}`, which does not take one argument"
+        let r ← ty c0 (← field opJ "result")
+        match shape, r with
+        | .int _, .unit _ | .bool _, .unit _ | .text _, .unit _ =>
+          if !isNull (← field opJ "fails") then throw s!"the operation `{cap}.{o}`, which may fail"
+          let a ← label (← field opJ "accepts")
+          pure a.base
+        | _, _ => throw s!"the operation `{cap}.{o}`, which does not take a scalar and give `Unit`"
+    | _ => throw "several operations"
+  pure { fn, callees, pols, acceptsOp, nested := refs.nested }
+
+/-- Checks `fn` (the prepared function, or one of its instances) in the program of `prep`. -/
+def checkWith (cats : List String) (recs : List Record) (prep : Prep) (fn : Fun) :
+    Check.Result Unit := do
+  let p : Program := {
+    categories := cats, acceptsOp := prep.acceptsOp, acceptsGet := Label.bot,
+    getResult := Label.bot, records := recs, policies := prep.pols, funs := fn :: prep.callees }
+  Check.checkDecls p
+  for f in p.funs do Check.checkSignature f
+  Check.checkFun p fn
+
+/-- The calls of `j` with type arguments, as F1 reads them: the generic function, its type
+arguments (`none` when F1 does not read them), and whether they are ground. Every node is
+searched, inside every kind of declaration, so that a function value, a handler or `main` is an
+instantiation source too. -/
+partial def rawGenericCalls (c : Ctx) (j : J) : List (String × Option (List LTy)) :=
+  match j with
+  | .obj kvs =>
+    let here : List (String × Option (List LTy)) :=
+      if j.getObjValD "kind" != .str "call" then []
+      else
+        match plainRun (do
+            let f ← path (← field j "function")
+            let targs ← arr (← field j "type_args")
+            pure (f, targs)) with
+        | .ok (f, targs) =>
+          if targs.isEmpty then []
+          else [(f, match plainRun (targs.mapM (ty c)) with
+            | .ok ts => some ts
+            | .error _ => none)]
+        | .error _ => []
+    here ++ kvs.toArray.toList.flatMap (fun kv => rawGenericCalls c kv.2)
+  | .arr items => items.toList.flatMap (rawGenericCalls c)
+  | _ => []
+
+/-- The nodes of `j` other than calls that carry type arguments, by kind, with the function they
+name if any. Today's `una.core/1` writes type arguments only on calls; a later form that
+instantiates a function another way is a source the search does not read, so it makes the
+instances of what it names, or of every function checked at its instances, unknown. -/
+partial def otherInstantiations (j : J) : List (String × Option String) :=
+  match j with
+  | .obj kvs =>
+    let here : List (String × Option String) :=
+      match j.getObjValD "kind", j.getObjVal? "type_args" with
+      | .str k, .ok (.arr targs) =>
+        if k == "call" || targs.isEmpty then []
+        else [(k, match plainRun (do path (← field j "function")) with
+          | .ok f => some f
+          | .error _ => none)]
+      | _, _ => []
+    here ++ kvs.toArray.toList.flatMap (fun kv => otherInstantiations kv.2)
+  | .arr items => items.toList.flatMap otherInstantiations
+  | _ => []
+
+/-- How far instances are followed: the depth of an instance chain, past which the function is
+in polymorphic recursion, the number of instances of a document, and the steps of the search,
+past which what is left in its queue is unknown. -/
+structure Caps where
+  depth : Nat := 16
+  count : Nat := 256
+  fuel : Nat := 256 * 18
 
 /-- The outcome of every declaration with code, by qualified name; an error when the document is
 not one the checker reads. -/
-def checkDocument (doc : J) : Except String (List (String × Outcome)) := do
+def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
+    Except String (List (String × Outcome)) := do
   let edition := match doc.getObjValD "edition" with
     | .str e => e
     | _ => "?"
@@ -509,16 +560,134 @@ def checkDocument (doc : J) : Except String (List (String × Outcome)) := do
   if !complete then
     return code.map fun d => (named d, .notRechecked "the document is not complete")
   let host ← get (do arr (← field doc "host"))
-  let caps := (decls.filter (·.kind == "cap")).map (fun d => d.value) ++ host
-  let caps := caps.filterMap fun cj =>
+  let capDecls := (decls.filter (·.kind == "cap")).map (fun d => d.value) ++ host
+  let capDecls := capDecls.filterMap fun cj =>
     match plainRun (do str (← field cj "name")) with
     | .ok n => some (n, cj)
     | .error _ => none
   let cats := categories doc []
   let funNames := (decls.filter (·.kind == "fun")).map named
   let recs := records decls funNames
+  let vias := decls.filterMap fun e =>
+    if e.kind == "policy" then
+      match plainRun (do pure (← path (← field e.value "via"), s!"{e.module}.{← str (← field e.value "name")}")) with
+      | .ok q => some q
+      | .error _ => none
+    else none
+  let c : Ctx := { records := recs.map (·.name), funs := funNames, vias, allEq := edition == "0.1" }
+  let rd : String → Label := fun r => match recs.find? (·.name == r) with
+    | some rec => rec.deep
+    | none => Label.bot
+  let preps : List (String × Except String Prep) :=
+    (decls.filter (·.kind == "fun")).map fun d => (named d, prepare c capDecls decls d)
+  let prepOf := fun (f : String) => List.lookup f preps
+  let isNested := fun (f : String) => match prepOf f with
+    | some (.ok pr) => pr.nested && !pr.fn.tparams.isEmpty
+    | _ => false
+  -- The instances of the functions checked at their instances: every source of a call with
+  -- type arguments, in every declaration. A source F1 cannot read makes the function's set of
+  -- instances unknown.
+  let mut incomplete : List (String × String) := []
+  let mut queue : List (String × List LTy × String × Nat) := []
+  -- Every instance enqueued once, so the search's steps count distinct instances.
+  let mut enqueued : List (String × String) := []
+  let keyOf := fun (ts : List LTy) => ", ".intercalate (ts.map Check.fmtTy)
+  let nestedNames := preps.filterMap fun (f, _) => if isNested f then some f else none
+  for d in decls do
+    for (k, named?) in otherInstantiations d.value do
+      match named? with
+      | some f => incomplete := incomplete ++ [(f, s!"instantiated by a `{k}` node, which F1 does not read")]
+      | none => incomplete := incomplete ++ nestedNames.map fun f =>
+          (f, s!"a `{k}` node instantiates a function F1 cannot name")
+    for (f, targs) in rawGenericCalls c d.value do
+      if isNested f then
+        match targs with
+        | some ts =>
+          if Check.groundAll ts then
+            if !enqueued.contains (f, keyOf ts) then
+              enqueued := enqueued ++ [(f, keyOf ts)]
+              queue := queue ++ [(f, ts, named d, 0)]
+          else
+            match prepOf (named d) with
+            | some (.ok pr) =>
+              if !(pr.nested && !pr.fn.tparams.isEmpty) then
+                incomplete := incomplete ++ [(f, s!"a call in `{named d}` at type parameters it does not instantiate")]
+            | _ => incomplete := incomplete ++ [(f, s!"instantiated from `{named d}`, which is outside F1")]
+        | none => incomplete := incomplete ++ [(f, s!"instantiated in `{named d}` at types outside F1")]
+  let mut done : List (String × List String) := []
+  let mut results : List (String × Outcome) := []
+  let mut depthHit : List String := []
+  let mut countHit : Bool := false
+  let mut seen : Nat := 0
+  let mut fuel := caps.fuel
+  while !queue.isEmpty && fuel > 0 do
+    fuel := fuel - 1
+    match queue with
+    | [] => pure ()
+    | (f, ts, origin, depth) :: rest =>
+      queue := rest
+      let key := ts.map Check.fmtTy
+      let already := match List.lookup f done with
+        | some ks => ks.contains (", ".intercalate key)
+        | none => false
+      if already then continue
+      if depth > caps.depth then
+        depthHit := depthHit ++ [f]
+        continue
+      if seen ≥ caps.count then
+        countHit := true
+        continue
+      seen := seen + 1
+      done := match List.lookup f done with
+        | some ks => (f, ks ++ [", ".intercalate key]) :: done.filter (·.1 != f)
+        | none => (f, [", ".intercalate key]) :: done
+      match prepOf f with
+      | some (.ok pr) =>
+        let inst := Check.instantiate (subst rd) pr.fn ts s!"{f}[{", ".intercalate key}]"
+        let outcome := match checkWith cats recs pr inst with
+          | .ok () => Outcome.accepted ""
+          | .error why => Outcome.rejected s!"at its instance `{inst.name}`, instantiated in `{origin}`: {why}"
+        results := results ++ [(f, outcome)]
+        for (g, us) in Check.Expr.genericCalls inst.body do
+          if isNested g then
+            if Check.groundAll us then
+              if !enqueued.contains (g, keyOf us) then
+                enqueued := enqueued ++ [(g, keyOf us)]
+                queue := queue ++ [(g, us, inst.name, depth + 1)]
+            else incomplete := incomplete ++ [(g, s!"a call in `{inst.name}` that is not ground")]
+      | _ => pure ()
+  -- What the search did not reach is unknown: never accepted.
+  for (f, _, _, _) in queue do
+    incomplete := incomplete ++ [(f, "the instance search stopped at its fuel")]
+  let instanceOutcome := fun (f : String) =>
+    match incomplete.find? (·.1 == f) with
+    | some (_, why) => Outcome.notRechecked s!"not every instance is re-checked: {why}"
+    | none =>
+      if depthHit.contains f then
+        .notRechecked s!"polymorphic recursion: an instance chain deeper than {caps.depth}"
+      else if countHit then .notRechecked s!"more than {caps.count} instances in the document"
+      else
+        let mine := results.filter (·.1 == f) |>.map (·.2)
+        match mine.find? (fun o => match o with | .rejected _ => true | _ => false) with
+        | some o => o
+        | none =>
+          if mine.isEmpty then .notRechecked "never instantiated at a ground type"
+          else .accepted s!"at {mine.length} instance(s)"
   pure (code.map fun d =>
-    (named d, if d.kind == "fun" then checkFun edition cats caps decls recs d
-      else .notRechecked s!"a `{d.kind}` declaration"))
+    (named d, if d.kind != "fun" then .notRechecked s!"a `{d.kind}` declaration"
+      else match prepOf (named d) with
+        | some (.ok pr) =>
+          if pr.nested then
+            if pr.fn.tparams.isEmpty then .notRechecked "a call at type arguments that are not ground"
+            else instanceOutcome (named d)
+          else match checkWith cats recs pr pr.fn with
+            | .ok () => .accepted ""
+            | .error why => .rejected why
+        | some (.error why) => .notRechecked why
+        | none => .notRechecked "not read"))
+
+/-- `checkDocumentWith` with labeled instantiation, `LTy.lsubst`. -/
+def checkDocument (doc : J) : Except String (List (String × Outcome)) :=
+  checkDocumentWith (fun rd σ t => t.lsubst rd σ) doc
 
 end Una.F1.Import

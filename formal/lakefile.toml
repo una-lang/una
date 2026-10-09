@@ -16,3 +16,8 @@ name = "UnaFormal"
 [[lean_exe]]
 name = "una-core-check"
 root = "Recheck"
+
+# The mutants of labeled instantiation, run on the replay (docs/reviews/formal-m2-replay).
+[[lean_exe]]
+name = "replay-mutants"
+root = "ReplayMutants"
