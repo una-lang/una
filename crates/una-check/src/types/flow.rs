@@ -244,31 +244,27 @@ impl Checker<'_, '_, '_> {
         self.report.push(diagnostic);
     }
 
+    /// The code checked, for the highest program counter it can be entered under (S-14,
+    /// ADR 0085).
+    pub(crate) fn entry(&self) -> super::env::Entry {
+        use super::env::Entry;
+        if self.lambda_depth > 0 {
+            Entry::Lambda
+        } else if let Some(floor) = &self.ctx.floor {
+            Entry::Floor(floor.clone())
+        } else if let Some(f) = self.current {
+            Entry::Function(f)
+        } else {
+            Entry::Root
+        }
+    }
+
     /// The meet of the `accepts` labels of the operations in `uses`, `bound_eff` of
     /// `spec/07 §7` rule 4, and `⊤` (`None`) when none of them bounds its arguments
     /// (`spec/10 §5`). A callee that can fail is bounded by `⊥` besides, which
     /// [`Checker::call_under_pc`] checks at the program counter of the call.
     pub(crate) fn bound(&self, uses: &[FnUse]) -> Option<Label> {
-        let mut bound: Option<Label> = None;
-        for need in uses {
-            let Some(capability) = need.capability.and_then(|c| self.env.capabilities.get(c))
-            else {
-                continue;
-            };
-            for op in capability
-                .ops
-                .iter()
-                .filter(|o| need.ops.iter().any(|n| n == o.name))
-            {
-                if let Some(accepts) = &op.accepts {
-                    bound = Some(match bound {
-                        Some(bound) => bound.meet(accepts),
-                        None => accepts.clone(),
-                    });
-                }
-            }
-        }
-        bound
+        bound_of(self.env, uses)
     }
 
     /// U4002: a call of `callee`, or the installation of a handler (`installed`), with the
@@ -466,4 +462,28 @@ fn article(label: &str) -> &'static str {
         Some('a' | 'e' | 'i' | 'o' | 'u' | 'A' | 'E' | 'I' | 'O' | 'U') => "an",
         _ => "a",
     }
+}
+
+/// The meet of the `accepts` labels of the operations in `uses`, and `None` when none of them
+/// bounds its arguments: `bound_eff` of `spec/07 §7` rule 4.
+pub(crate) fn bound_of(env: &super::env::Env<'_>, uses: &[FnUse]) -> Option<Label> {
+    let mut bound: Option<Label> = None;
+    for need in uses {
+        let Some(capability) = need.capability.and_then(|c| env.capabilities.get(c)) else {
+            continue;
+        };
+        for op in capability
+            .ops
+            .iter()
+            .filter(|o| need.ops.iter().any(|n| n == o.name))
+        {
+            if let Some(accepts) = &op.accepts {
+                bound = Some(match bound {
+                    Some(bound) => bound.meet(accepts),
+                    None => accepts.clone(),
+                });
+            }
+        }
+    }
+    bound
 }

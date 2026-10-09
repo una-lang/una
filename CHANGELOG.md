@@ -2,6 +2,14 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
+## v0.1.6
+
+v0.1.5 with the S-14 fix: a write to a labeled path no longer leaks through later file failures (#436, ADR 0085).
+
+### Security
+
+- **A write to a labeled path no longer leaks through later file failures** (#436, S-14, ADR 0085). The file system outlives a write: `@files.write(secret_path, ...)` followed by `attempt @files.read("a.txt")` revealed, by the read's success or failure, whether the secret path was `a.txt`, in the same run or a later one. Every `Files` failure now also carries the package's file-state label: the join, over its `Files.write` calls, of the path's labels, the program counter at the call, and the highest one its code can be entered under, capped at `internal`. A package whose writes go to public paths at a public program counter is unchanged. `examples/journal`, which copies its entry to a path an environment variable names, now handles its read with `if error use`.
+
 ## v0.1.5
 
 A security patch release of Una Core, cut from v0.1.4. Edition 0.1 only; report schema versions are unchanged. It closes the class of leaks that v0.1.4 began to close: a decision on values of a type parameter given to function values. The fix rejects programs that v0.1.0 to v0.1.4 accept.

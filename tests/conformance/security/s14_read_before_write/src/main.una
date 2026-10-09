@@ -1,0 +1,19 @@
+-- test: a read checked before the write that decides it still carries the file-state label, which every write of the package gives, in this run or a later one (S-14)
+-- spec: spec/07 §7
+-- expect: error U4002 at src/main.una:12:5
+module main
+
+pub look() -> Unit
+  uses @files: Files[read]
+  uses @console: Console[print]
+  fails FileError
+=
+  let text = @files.read("a.txt")
+    if error pass
+  @console.print("found")
+
+pub save(secret_path: internal Text) -> Unit
+  uses @files: Files[write]
+=
+  let w = attempt @files.write(secret_path, content: "x")
+  unit
