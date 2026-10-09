@@ -8,7 +8,7 @@
 
 ## 1. What is proven
 
-All of it is in `formal/UnaFormal/F1/`, and `scripts/formal.sh` passes with 39 stated theorems, none depending on `sorry`.
+All of it is in `formal/UnaFormal/F1/`, and `scripts/formal.sh` passes with 43 stated theorems, none depending on `sorry`.
 
 | File | Result |
 | --- | --- |
@@ -16,7 +16,9 @@ All of it is in `formal/UnaFormal/F1/`, and `scripts/formal.sh` passes with 39 s
 | `Order.lean` | The static order of labels and flows are preorders, and joins are least upper bounds. |
 | `Unary.lean`, `UnarySound.lean` | **The unary half** (`unary_sound`). A run of a body the labeled typing accepts does three things. It performs only the events its effects allow, each at a sink whose `accepts` is above the program counter: T2, with the program counter, which is confinement. It fails only with a failure labeled above the program counter: T3 with labels. It ends with a value of its labeled type. |
 | `Binary.lean`, `BinaryLemmas.lean` | The two-run relation for an observer at `L`, and its lemmas. |
-| `T6.lean` | **T6 for the generic-free part of F1** (`t6`). |
+| `T6.lean` | **T6 for the generic-free part of F1** (`t6`), at one fuel. |
+| `Mono.lean` | Fuel monotonicity (`eval_mono`): a run that ends at some fuel ends the same way at any larger one. So `t6_ended` compares any two runs that end, whatever fuel each needed. |
+| `T6Example.lean` | A worked instance. A typed body computes with a `secret` input, prints a line to a `public` sink and returns its `public` input. `t6` is applied to two runs whose secrets differ, and the runs are computed. |
 
 **The theorem.** Take two runs of a body that the labeled typing accepts, at the same fuel. Suppose their environments have the context's labeled types and an observer at `L` cannot tell them apart. Whenever both runs end:
 
@@ -59,12 +61,9 @@ No rule of `spec/07` or `spec/10` had to change for the proof. The readings of t
 
 ## 3. What remains
 
-**Of M3:**
+**Of M3:** nothing. Fuel monotonicity and the worked example are proven too (`t6_ended`, `T6Example.lean`).
 
-- **Fuel monotonicity.** A run that ends at some fuel ends the same way at any larger one. `t6` compares two runs at the same fuel, so this lemma is what lifts it to two runs that end at different fuels. The lemma is routine.
-- **A worked non-vacuity example of `t6`.**
-
-**Of M4:**
+**Of M4**, held until the adversarial review of `t6`'s statement returns:
 
 - generic functions: the labeled substitution lemma, with T-App's decisions over `ℓ*_T`;
 - declassification, for "up to declassification";

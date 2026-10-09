@@ -44,3 +44,7 @@ import UnaFormal
 #print axioms Una.F1.andThen_brel
 #print axioms Una.F1.t6_sound
 #print axioms Una.F1.t6
+#print axioms Una.F1.eval_mono
+#print axioms Una.F1.t6_ended
+#print axioms Una.F1.T6Example.body_typed
+#print axioms Una.F1.T6Example.body_noninterferent
