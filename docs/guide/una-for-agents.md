@@ -40,6 +40,7 @@ Exit codes: `0` success; `1` errors in the program, an unproven obligation or a 
 ## 2. Files and packages
 
 - A package is a directory with `una.toml`, `verification.lock` and sources under `src/`. Module `shop.cart` lives in `src/shop/cart.una`, and a file holds exactly one module.
+- **Imports** name a module of the same package by its path and list what they take from it: `import shop.prices (Item, total)`. Only `pub` declarations can be imported (U1004, with an edit that adds `pub`). Importing a sum kind brings its variants too. The only other modules are the standard ones, `std.host` and `std.testing` (§8). The prelude is always in scope and is never imported, and no package imports another.
 - A single `.una` file is also a package, with default settings and the default lock.
 - `una.toml` has `[package]` (`name`, `version`, `edition = "0.2"`), and optionally `[labels] categories`, `[trusted] modules`, `[escape_budget] checked_per_module` (default 0) and `[run]` (`entry` module, `grants`). Unknown keys are U7002.
 - **Editions.** `edition = "0.2"` enables the constructs of v0.2: editable values and `for` loops (§11), fixed-width integers (§12), recursive kinds (§4), `uses of` and `fails of` (§8), constraints on generics (§13), maps (§14), JSON (§15), text functions (§16), HTTP (§17) and `together` (§18). A package of edition `0.1` keeps the language of v0.1 in every later compiler, and a single `.una` file outside a package is edition `0.1`. §21 lists what changes between them.
@@ -92,6 +93,8 @@ pub kind Bin[T]
 
 pub kind NonEmpty[T] = List[T] where it.len > 0
 ```
+
+**A sum of one variant keeps its leading `|`:** write `kind Oops = | TooLarge`. Without it, `kind Oops = TooLarge` is an alias of a type named `TooLarge`. That is U1001 when no such type exists, or U2002 when `TooLarge` is a variant of some other kind. A sum of two or more variants has no leading `|`.
 
 Built-in types: `Int` (unbounded), `Nat` (`Int` at least 0), `Bool`, `Text`, `Unit`, `List[T]` (`[a, b]`, `xs.len`), `Option[T]` (`Some(value)`, `None`), `Result[T, E]` (`Ok(value)`, `Err(failure)`), `Hashed` (from `Keys` only) and function types `fn(A) -> B`. Records and sums are nominal; aliases and refinements are their base type. Recursive kinds go only through `List` or `Option` in edition `0.1`; edition `0.2` allows any recursion with a base variant, as `kind Expr = Lit(value: Int) | Add(left: Expr, right: Expr)` (ADR 0060).
 
@@ -393,6 +396,14 @@ There is no ambient authority. A capability is declared with operations; a funct
 - Operation clauses: `requires` (a proof at each call), `ensures` (an assumption the build report lists), `fails E`, and `accepts label` (the highest label its arguments may carry).
 - A handler implements every operation in Una. Its bodies are verified against the operations' `ensures`, and it may have its own `uses`.
 - Host capabilities come from the runtime into `main` only, as `una run` grants them: `Console[print]`, `Clock[now]`, `Env[get]`, `Files[read, write]` and `Keys[hmac]` (`spec/14 §3`). Grants are `console`, `clock`, `env`, `keys:<file>` and `files:<path>:read`, `:write` or `:read,write`, in `[run] grants` or with `--grant`.
+- Their signatures (`spec/14 §3`; `Http` is in §17):
+  - `print(line: Text) -> Unit`;
+  - `now() -> Int`, in milliseconds since 1970;
+  - `get(name: Text) -> Option[internal Text]`;
+  - `read(path: Text) -> internal Text` and `write(path: Text, content: Text) -> Unit`, which fail with `FileError = NotFound | Denied | Io`;
+  - `hmac(key_name: Text, data: Text) -> internal Hashed`, which fails with `KeyError = | UnknownKey`. Its result is `internal`, joined with every label of `data`. A `Hashed` supports only `==` and `!=`: compare hashes, never the text they were made from.
+- **A `Files` path is relative to the grant's prefix.** With the grant `files:data:read`, `@files.read("readings.txt")` reads the file `data/readings.txt`. `@files.read("data/readings.txt")` would look for `data/data/readings.txt` and fail with `NotFound`. An absolute path, or a `..` that leaves the prefix, fails with `Denied`.
+- **Stand-ins in tests.** An example cannot use a host capability, so it installs a handler with `given`. A stand-in for `Keys` makes hashes with `fake_hash(seed: Int) -> internal Hashed` from `std.testing`, where equal seeds give equal hashes. A handler of `Keys` sees `data` with every label, so it may branch on it but not pass it to `fake_hash`, as `allowlisted` below does.
 
 ```una
 module demo
@@ -439,6 +450,30 @@ example "the backup shelf has what the main one lacks"
   do check_out_anywhere("saw")
   expect result.name == "saw"
   expect performed @backup.pick
+```
+
+```una
+module allowlist
+
+import std.testing (fake_hash)
+
+--- Whether an address is on a list kept only as HMAC hashes with the key `pepper`.
+pub allowlisted(address: secret Text, hashes: List[internal Hashed]) -> secret Bool
+  uses @keys: Keys[hmac]
+  fails KeyError
+=
+  let hashed = @keys.hmac(key_name: "pepper", data: address)
+    if error pass
+  hashes.filter(keep: fn(h) -> h == hashed).len > 0
+
+--- A stand-in for the key service: one known address, the others another hash.
+handler fake_keys() for Keys
+  op hmac(key_name, data) = if data == "ana@example.com" then fake_hash(1) else fake_hash(2)
+
+example "a listed address is found"
+  given @keys = fake_keys()
+  do allowlisted("ana@example.com", hashes: [fake_hash(1)])
+  expect result == true
 ```
 
 ```una
@@ -652,7 +687,7 @@ Values stay immutable and there are no references; what changes is which value a
 
 - `let edit x = e` declares an editable binding, and `x = e` or `x.field = e` rebinds it. Assigning anything else is U2019. An editable binding keeps its declared type, refinement and label at every rebind.
 - Without an annotation, the positions that its initial value leaves open, as the key and value of `empty_map()` or the element of `[]`, take the labels of everything assigned there, so a generic `tally[T: Ord](xs: List[T]) -> Map[T, Int]` built with `let edit m = empty_map()` checks, and its counts carry the labels of `T` (ADR 0075). The binding's own top label stays the one its initial value gives it.
-- A parameter declared `edit p: T` is passed in and out: the caller writes `edit place` and gets the final value back; `old(p)` in `ensures` is its value on entry. A method receiver is marked before it: `edit tally.record(amount)`.
+- A parameter declared `edit p: T` is passed in and out: the caller writes `edit place` and gets the final value back; `old(p)` in `ensures` is its value on entry. `old` takes the parameter itself, so write `old(xs).len`, not `old(xs.len)` (U2012). A method receiver is marked before it: `edit tally.record(amount)`.
 - A parameter declared `take p: T` consumes its argument: the caller writes `take x`, and `x` cannot be used afterwards (U2017) until it is assigned again.
 - Markers match declarations exactly (U2020); an `edit` argument and another use of the same binding in one call is U2018; a function with `edit` or `take` parameters cannot be used as a value (U2021). A call with a marker is the whole expression of its statement.
 - `for x in xs` visits a list in order, and `for i in a..b` or `a..<b` the integers of a range; the bounds are evaluated once, before the first iteration. The loop variable has the element type, or the integer type of the bounds. There is no `break` or `continue`. The refinements of the bindings a loop updates are its invariant; no other fact about them survives the loop.
@@ -993,7 +1028,7 @@ Edition `0.2` adds functions that take a text apart, search it, change it and pa
   - `chars()`, one text per scalar value; `bytes()`, the UTF-8 encoding as `List[U8]`.
   - `to_upper()` and `to_lower()`, which change ASCII letters only and keep the length.
   - `trim_start()` and `trim_end()`, as `trim` at one end.
-  - `parse_int()`, which fails with `ParseError`: `Empty`, `NoDigits` for `-` alone, or `NotADigit(at: i)` at the first wrong position. Handle it as any failure.
+  - `parse_int()`, which fails with `ParseError`: `Empty`, `NoDigits` for `-` alone, or `NotADigit(at: i)` at the first wrong position. Handle it as any failure. The prelude's `to_int(t)` gives an `Option[Int]` instead, `None` for any text that is not an integer.
 - **Cost:** `find`, `split` and `replace` are linear in the text; `.len` is O(1).
 - **Proofs:** the contracts are hypotheses after each call, such as `split`'s `result.len >= 1` and `slice`'s `result.len == end - start`. There is no theory of strings beyond them.
 - **Labels:** every result carries every label of every argument, including the top and the elements of `split`'s and `chars`' lists. Whether a secret parses is secret too.
