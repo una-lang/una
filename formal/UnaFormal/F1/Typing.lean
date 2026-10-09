@@ -1,10 +1,16 @@
 /-
-The typing of F1a (`spec/10`): of atoms, the right-hand sides of `let`, bodies, and, for T1,
-of values and environments. A context lists the types of the variables in scope in the order
-the evaluator binds them, so that the innermost binding comes first in both.
+The structural typing of F1 (`spec/10` without labels, effects and failure kinds), which T1 needs,
+and the typing of values and environments. The labeled typing of `spec/07` and `spec/10`
+(`LTyping.lean`) refines it: a program it accepts, this one accepts (`Erase.lean`).
 
-Failure is a legitimate end of a run (T1: a value or a failure), so the typing of F1a does not
-track which code can fail; T3 adds it.
+The rules read types from the data, as a checker that has inferred them would, and not from the
+annotations of the syntax, which the labeled typing checks: so a typing is closed under
+substitution of type arguments (`Lemmas.lean`, `ExprTy.subst`), which the call of a generic
+function needs. A context lists the types of the variables in scope in the order the
+evaluator binds them, so that the innermost binding comes first in both.
+
+Failure is a legitimate end of a run (T1: a value or a failure), so this typing does not track
+which code can fail; the labeled one does.
 -/
 import UnaFormal.F1.Eval
 
@@ -19,9 +25,19 @@ def ctxLookup (ctx : Ctx) (x : String) : Option Ty :=
   | [] => none
   | (y, t) :: rest => if x = y then some t else ctxLookup rest x
 
-/-- The field types of the record kind `r` of the program. -/
-def Program.fields (p : Program) (r : String) : Option (List Ty) :=
-  (p.records.find? (fun rec => rec.name = r)).map Record.fields
+/-- A context with a substitution applied to every type. -/
+def Ctx.subst (σ : List (String × Ty)) (ctx : Ctx) : Ctx := ctx.map (fun q => (q.1, q.2.subst σ))
+
+/-- The parameters named with the types `ts`, in front. -/
+def bindTys {α : Type} (params : List (String × α)) (ts : List Ty) : Ctx :=
+  (params.map Prod.fst).zip ts
+
+/-- The structural types of a function's parameters under a substitution. -/
+def Fun.paramTys (fn : Fun) (σ : List (String × Ty)) : List Ty :=
+  fn.params.map (fun q => q.2.erase.subst σ)
+
+/-- The structural types of the fields of a record kind. -/
+def Record.fieldTys (rec : Record) : List Ty := rec.fields.map LTy.erase
 
 inductive AtomTy : Ctx → Atom → Ty → Prop where
   | var {ctx x t} : ctxLookup ctx x = some t → AtomTy ctx (.var x) t
@@ -48,37 +64,64 @@ mutual
   inductive RhsTy (p : Program) : Ctx → Rhs → Ty → Prop where
     | atom {ctx a t} : AtomTy ctx a t → RhsTy p ctx (.atom a) t
     | prim {ctx pr args ts t} : AtomsTy ctx args ts → PrimTy pr ts t → RhsTy p ctx (.prim pr args) t
-    | call {ctx f args fn} :
-        p.find f = some fn → AtomsTy ctx args (fn.params.map Prod.snd) →
-        RhsTy p ctx (.call f args) fn.result
-    | apply {ctx f args ts r fails} :
-        AtomTy ctx f (.fn ts r fails) → AtomsTy ctx args ts → RhsTy p ctx (.apply f args) r
+    | call {ctx f targs args fn σ} :
+        p.find f = some fn → AtomsTy ctx args (fn.paramTys σ) →
+        RhsTy p ctx (.call f targs args) (fn.result.erase.subst σ)
+    | apply {ctx f args ts r} :
+        AtomTy ctx f (.fn ts r) → AtomsTy ctx args ts → RhsTy p ctx (.apply f args) r
     | op {ctx line} : AtomTy ctx line .text → RhsTy p ctx (.op line) .unit
-    | construct {ctx record fields ts} :
-        p.fields record = some ts → AtomsTy ctx fields ts →
+    | get {ctx url} : AtomTy ctx url .text → RhsTy p ctx (.get url) .text
+    | construct {ctx record fields rec} :
+        p.record record = some rec → AtomsTy ctx fields rec.fieldTys →
         RhsTy p ctx (.construct record fields) (.record record)
-    | field {ctx value record index ts t} :
-        AtomTy ctx value (.record record) → p.fields record = some ts → ts[index]? = some t →
-        RhsTy p ctx (.field value index) t
-    | list {ctx items t} : AtomsTy ctx items (items.map (fun _ => t)) → RhsTy p ctx (.list items) (.list t)
+    | field {ctx value record index rec t} :
+        AtomTy ctx value (.record record) → p.record record = some rec →
+        rec.fieldTys[index]? = some t → RhsTy p ctx (.field value index) t
+    | list {ctx items t} :
+        AtomsTy ctx items (items.map (fun _ => t)) → RhsTy p ctx (.list items) (.list t)
     | none {ctx t} : RhsTy p ctx .none (.option t)
     | some {ctx a t} : AtomTy ctx a t → RhsTy p ctx (.some a) (.option t)
-    | lambda {ctx params body r fails} :
-        ExprTy p (params ++ ctx) body r →
-        RhsTy p ctx (.lambda params body) (.fn (params.map Prod.snd) r fails)
+    | lambda {ctx params body ts r} :
+        ts.length = params.length → ExprTy p (bindTys params ts ++ ctx) body r →
+        RhsTy p ctx (.lambda params body) (.fn ts r)
+    | funRef {ctx f targs fn σ} :
+        p.find f = some fn →
+        RhsTy p ctx (.funRef f targs) (.fn (fn.paramTys σ) (fn.result.erase.subst σ))
+    | declassify {ctx pol a po} :
+        p.policy pol = some po → AtomTy ctx a po.src.erase →
+        RhsTy p ctx (.declassify pol a) po.dst.erase
+    | map {ctx xs f a b} :
+        AtomTy ctx xs (.list a) → AtomTy ctx f (.fn [a] b) → RhsTy p ctx (.map xs f) (.list b)
+    | filter {ctx xs keep a} :
+        AtomTy ctx xs (.list a) → AtomTy ctx keep (.fn [a] .bool) →
+        RhsTy p ctx (.filter xs keep) (.list a)
+    | firstWhere {ctx xs keep a} :
+        AtomTy ctx xs (.list a) → AtomTy ctx keep (.fn [a] .bool) →
+        RhsTy p ctx (.firstWhere xs keep) (.option a)
+    | fold {ctx xs init f a b} :
+        AtomTy ctx xs (.list a) → AtomTy ctx init b → AtomTy ctx f (.fn [b, a] b) →
+        RhsTy p ctx (.fold xs init f) b
+    | parse {ctx s} : AtomTy ctx s .text → RhsTy p ctx (.parse s) .int
 
   inductive ExprTy (p : Program) : Ctx → Expr → Ty → Prop where
     | atom {ctx a t} : AtomTy ctx a t → ExprTy p ctx (.atom a) t
-    | letR {ctx x t value body s} :
-        RhsTy p ctx value t → ExprTy p ((x, t) :: ctx) body s → ExprTy p ctx (.letR x t value body) s
-    | letE {ctx x t value body s} :
-        ExprTy p ctx value t → ExprTy p ((x, t) :: ctx) body s → ExprTy p ctx (.letE x t value body) s
+    | letR {ctx x ann value body t s} :
+        RhsTy p ctx value t → ExprTy p ((x, t) :: ctx) body s →
+        ExprTy p ctx (.letR x ann value body) s
+    | letE {ctx x ann value body t s} :
+        ExprTy p ctx value t → ExprTy p ((x, t) :: ctx) body s →
+        ExprTy p ctx (.letE x ann value body) s
     | ite {ctx cond thenE elseE s} :
         AtomTy ctx cond .bool → ExprTy p ctx thenE s → ExprTy p ctx elseE s →
         ExprTy p ctx (.ite cond thenE elseE) s
     | caseOption {ctx scrutinee noneE x someE t s} :
-        AtomTy ctx scrutinee (.option t) → ExprTy p ctx noneE s → ExprTy p ((x, t) :: ctx) someE s →
+        AtomTy ctx scrutinee (.option t) → ExprTy p ctx noneE s →
+        ExprTy p ((x, t) :: ctx) someE s →
         ExprTy p ctx (.caseOption scrutinee noneE x someE) s
+    | caseResult {ctx scrutinee x okE y errE t s} :
+        AtomTy ctx scrutinee (.result t) → ExprTy p ((x, t) :: ctx) okE s →
+        ExprTy p ((y, .int) :: ctx) errE s →
+        ExprTy p ctx (.caseResult scrutinee x okE y errE) s
     | fail {ctx code s} : ExprTy p ctx (.fail code) s
     | attempt {ctx body t} : ExprTy p ctx body t → ExprTy p ctx (.attempt body) (.result t)
     | handle {ctx body x handler s} :
@@ -87,9 +130,15 @@ mutual
 end
 
 /-- A program is well formed when each function's body has its declared result type under its
-parameters. -/
-def Program.WellFormed (p : Program) : Prop :=
-  ∀ fn ∈ p.funs, ExprTy p fn.params fn.body fn.result
+parameters, with its type parameters abstract; the fields of records and the types of
+policies have no type parameters; and the `via` function of each policy exists and has the
+policy's structure. -/
+structure Program.WellFormed (p : Program) : Prop where
+  funs : ∀ fn ∈ p.funs, ExprTy p (bindTys fn.params (fn.paramTys [])) fn.body fn.result.erase
+  records : ∀ rec ∈ p.records, ∀ t ∈ rec.fieldTys, t.Closed
+  policies : ∀ po ∈ p.policies, po.src.erase.Closed ∧ po.dst.erase.Closed ∧
+    ∃ fn, p.find po.via = some fn ∧ fn.paramTys [] = [po.src.erase] ∧
+      fn.result.erase = po.dst.erase
 
 mutual
   /-- The typing of values (for T1). A closure has a function type when its body has the
@@ -99,16 +148,18 @@ mutual
     | bool {b} : ValTy p (.bool b) .bool
     | text {s} : ValTy p (.text s) .text
     | unit : ValTy p .unit .unit
-    | list {items t} : ValsTy p items (items.map (fun _ => t)) → ValTy p (.list items) (.list t)
+    | list {items t} : (∀ v ∈ items, ValTy p v t) → ValTy p (.list items) (.list t)
     | none {t} : ValTy p .none (.option t)
     | some {v t} : ValTy p v t → ValTy p (.some v) (.option t)
     | ok {v t} : ValTy p v t → ValTy p (.ok v) (.result t)
     | err {code t} : ValTy p (.err code) (.result t)
-    | record {record fields ts} :
-        p.fields record = some ts → ValsTy p fields ts → ValTy p (.record record fields) (.record record)
-    | closure {params body env ctx r fails} :
-        EnvTy p env ctx → ExprTy p (params ++ ctx) body r →
-        ValTy p (.closure params body env) (.fn (params.map Prod.snd) r fails)
+    | record {record fields rec} :
+        p.record record = some rec → ValsTy p fields rec.fieldTys →
+        ValTy p (.record record fields) (.record record)
+    | closure {params body env ctx ts r} :
+        EnvTy p env ctx → ts.length = params.length →
+        ExprTy p (bindTys params ts ++ ctx) body r →
+        ValTy p (.closure params body env) (.fn ts r)
 
   inductive ValsTy (p : Program) : List Val → List Ty → Prop where
     | nil : ValsTy p [] []

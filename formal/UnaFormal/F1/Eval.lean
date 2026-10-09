@@ -1,14 +1,15 @@
 /-
-The big-step semantics of F1a (`spec/11`), with fuel: evaluation takes a number of steps it may
-use, and running out of them is its own result, so that a program that does not terminate
-has a semantics too (T1 and T6 are termination-insensitive, `spec/10 §10`). The trace holds
-the events of the operation, in order (`spec/11 §5`).
+The big-step semantics of F1 (`spec/11`), with fuel: evaluation takes a number of steps it may
+use, and running out of them is its own result, so that a program that does not terminate has
+a semantics too (T1 and T6 are termination-insensitive, `spec/10 §10`). The trace holds the
+events of the run, in order (`spec/11 §5`). The host is a parameter, the `World`, so that two
+runs can differ in it.
 -/
-import UnaFormal.F1.Syntax
+import UnaFormal.F1.Types
 
 namespace Una.F1
 
-/-- The values of F1a. A closure keeps the environment where its lambda was made. -/
+/-- The values of F1. A closure keeps the environment where its lambda was made. -/
 inductive Val where
   | int (n : Int)
   | bool (b : Bool)
@@ -20,10 +21,24 @@ inductive Val where
   | ok (value : Val)
   | err (code : Nat)
   | record (name : String) (fields : List Val)
-  | closure (params : List (String × Ty)) (body : Expr) (env : List (String × Val))
+  | closure (params : List (String × LTy)) (body : Expr) (env : List (String × Val))
 
 /-- An environment: the values of the variables in scope, innermost first. -/
 abbrev Env := List (String × Val)
+
+/-- The events of a trace: a line the operation wrote, and a request of the host. -/
+inductive Event where
+  | out (line : String)
+  | get (url : String)
+
+abbrev Trace := List Event
+
+/-- The host: what `get` returns for each URL, or nothing when it fails. -/
+structure World where
+  get : String → Option String
+
+/-- The code of a failure of the host or of `parse`. -/
+def hostFailure : Nat := 0
 
 /-- How an evaluation ends: with a value, with a failure, stuck (no rule applies, which T1
 says never happens to a well-typed program), or out of fuel. -/
@@ -65,85 +80,183 @@ def evalPrim : Prim → List Val → Option Val
   | _, _ => none
 
 /-- The parameters bound to the arguments, in front of `env`. -/
-def bindParams (params : List (String × Ty)) (args : List Val) (env : Env) : Env :=
+def bindParams {α : Type} (params : List (String × α)) (args : List Val) (env : Env) : Env :=
   (params.map Prod.fst).zip args ++ env
-
-/-- The function `f` of the program. -/
-def Program.find (p : Program) (f : String) : Option Fun :=
-  p.funs.find? (fun fn => fn.name = f)
 
 /-- The result of a `let`: the body runs when the bound value is a value; a failure, a stuck
 evaluation or the end of fuel ends the whole. -/
-def andThen (first : List String × Res) (rest : Val → List String × Res) :
-    List String × Res :=
+def andThen (first : Trace × Res) (rest : Val → Trace × Res) : Trace × Res :=
   match first with
   | (t, .ok v) =>
     match rest v with
     | (t', r) => (t ++ t', r)
   | (t, r) => (t, r)
 
+/-- A value ends the run. -/
+def done (v : Val) : Trace × Res := ([], .ok v)
+
+def stuck : Trace × Res := ([], .stuck)
+
+/-- A call of the function value `fv` on `vs`, with `run` the evaluation of a body. -/
+def applyWith (run : Env → Expr → Trace × Res) (fv : Val) (vs : List Val) : Trace × Res :=
+  match fv with
+  | .closure params body cenv =>
+    if vs.length = params.length then run (bindParams params vs cenv) body else stuck
+  | _ => stuck
+
+/-- The semantic functions of the prelude's higher-order functions (`spec/14 §1`), with `app`
+the call of the function value: `map` calls it once per element, in order. -/
+def walkMap (app : Val → Trace × Res) : List Val → Trace × Res
+  | [] => done (.list [])
+  | v :: vs =>
+    andThen (app v) fun r =>
+      andThen (walkMap app vs) fun rest =>
+        match rest with
+        | .list rs => done (.list (r :: rs))
+        | _ => stuck
+
+def walkFilter (app : Val → Trace × Res) : List Val → Trace × Res
+  | [] => done (.list [])
+  | v :: vs =>
+    andThen (app v) fun b =>
+      match b with
+      | .bool keep =>
+        andThen (walkFilter app vs) fun rest =>
+          match rest with
+          | .list rs => done (.list (if keep then v :: rs else rs))
+          | _ => stuck
+      | _ => stuck
+
+/-- `first_where` stops at the first element its predicate accepts. -/
+def walkFirst (app : Val → Trace × Res) : List Val → Trace × Res
+  | [] => done .none
+  | v :: vs =>
+    andThen (app v) fun b =>
+      match b with
+      | .bool true => done (.some v)
+      | .bool false => walkFirst app vs
+      | _ => stuck
+
+def walkFold (app : Val → Val → Trace × Res) (acc : Val) : List Val → Trace × Res
+  | [] => done acc
+  | v :: vs => andThen (app acc v) fun acc' => walkFold app acc' vs
+
+/-- The partial primitive's semantic function: the integer a text spells, or a failure. -/
+def parseInt (s : String) : Trace × Res :=
+  match s.toInt? with
+  | some n => done (.int n)
+  | none => ([], .failed hostFailure)
+
 mutual
-  def evalRhs : Nat → Program → Env → Rhs → List String × Res
-    | 0, _, _, _ => ([], .outOfFuel)
-    | n + 1, p, env, r =>
+  def evalRhs : Nat → Program → World → Env → Rhs → Trace × Res
+    | 0, _, _, _, _ => ([], .outOfFuel)
+    | n + 1, p, w, env, r =>
       match r with
       | .atom a => ([], (evalAtom env a).elim .stuck .ok)
       | .prim pr args =>
         ([], ((evalAtoms env args).bind (evalPrim pr)).elim .stuck .ok)
-      | .call f args =>
+      | .call f _ args =>
         match p.find f, evalAtoms env args with
         | some fn, some vs =>
-          if vs.length = fn.params.length then eval n p (bindParams fn.params vs []) fn.body
-          else ([], .stuck)
-        | _, _ => ([], .stuck)
+          if vs.length = fn.params.length then eval n p w (bindParams fn.params vs []) fn.body
+          else stuck
+        | _, _ => stuck
       | .apply f args =>
         match evalAtom env f, evalAtoms env args with
-        | some (.closure params body cenv), some vs =>
-          if vs.length = params.length then eval n p (bindParams params vs cenv) body
-          else ([], .stuck)
-        | _, _ => ([], .stuck)
+        | some fv, some vs => applyWith (eval n p w) fv vs
+        | _, _ => stuck
       | .op line =>
         match evalAtom env line with
-        | some (.text s) => ([s], .ok .unit)
-        | _ => ([], .stuck)
+        | some (.text s) => ([.out s], .ok .unit)
+        | _ => stuck
+      | .get url =>
+        match evalAtom env url with
+        | some (.text s) =>
+          match w.get s with
+          | some body => ([.get s], .ok (.text body))
+          | none => ([.get s], .failed hostFailure)
+        | _ => stuck
       | .construct record fields =>
         ([], ((evalAtoms env fields).map (Val.record record)).elim .stuck .ok)
       | .field value index =>
         match evalAtom env value with
         | some (.record _ fields) => ([], (fields[index]?).elim .stuck .ok)
-        | _ => ([], .stuck)
+        | _ => stuck
       | .list items => ([], ((evalAtoms env items).map Val.list).elim .stuck .ok)
-      | .none => ([], .ok .none)
+      | .none => done .none
       | .some a => ([], ((evalAtom env a).map Val.some).elim .stuck .ok)
-      | .lambda params body => ([], .ok (.closure params body env))
+      | .lambda params body => done (.closure params body env)
+      | .funRef f _ =>
+        match p.find f with
+        | some fn => done (.closure fn.params fn.body [])
+        | none => stuck
+      | .declassify pol a =>
+        match p.policy pol, evalAtom env a with
+        | some po, some v =>
+          match p.find po.via with
+          | some fn =>
+            if 1 = fn.params.length then eval n p w (bindParams fn.params [v] []) fn.body
+            else stuck
+          | none => stuck
+        | _, _ => stuck
+      | .map xs f =>
+        match evalAtom env xs, evalAtom env f with
+        | some (.list items), some fv => walkMap (fun v => applyWith (eval n p w) fv [v]) items
+        | _, _ => stuck
+      | .filter xs keep =>
+        match evalAtom env xs, evalAtom env keep with
+        | some (.list items), some fv =>
+          walkFilter (fun v => applyWith (eval n p w) fv [v]) items
+        | _, _ => stuck
+      | .firstWhere xs keep =>
+        match evalAtom env xs, evalAtom env keep with
+        | some (.list items), some fv =>
+          walkFirst (fun v => applyWith (eval n p w) fv [v]) items
+        | _, _ => stuck
+      | .fold xs init f =>
+        match evalAtom env xs, evalAtom env init, evalAtom env f with
+        | some (.list items), some acc, some fv =>
+          walkFold (fun a v => applyWith (eval n p w) fv [a, v]) acc items
+        | _, _, _ => stuck
+      | .parse s =>
+        match evalAtom env s with
+        | some (.text t) => parseInt t
+        | _ => stuck
 
-  def eval : Nat → Program → Env → Expr → List String × Res
-    | 0, _, _, _ => ([], .outOfFuel)
-    | n + 1, p, env, e =>
+  def eval : Nat → Program → World → Env → Expr → Trace × Res
+    | 0, _, _, _, _ => ([], .outOfFuel)
+    | n + 1, p, w, env, e =>
       match e with
       | .atom a => ([], (evalAtom env a).elim .stuck .ok)
-      | .letR x _ value body => andThen (evalRhs n p env value) (fun v => eval n p ((x, v) :: env) body)
-      | .letE x _ value body => andThen (eval n p env value) (fun v => eval n p ((x, v) :: env) body)
+      | .letR x _ value body =>
+        andThen (evalRhs n p w env value) (fun v => eval n p w ((x, v) :: env) body)
+      | .letE x _ value body =>
+        andThen (eval n p w env value) (fun v => eval n p w ((x, v) :: env) body)
       | .ite cond thenE elseE =>
         match evalAtom env cond with
-        | some (.bool true) => eval n p env thenE
-        | some (.bool false) => eval n p env elseE
-        | _ => ([], .stuck)
+        | some (.bool true) => eval n p w env thenE
+        | some (.bool false) => eval n p w env elseE
+        | _ => stuck
       | .caseOption scrutinee noneE x someE =>
         match evalAtom env scrutinee with
-        | some .none => eval n p env noneE
-        | some (.some v) => eval n p ((x, v) :: env) someE
-        | _ => ([], .stuck)
+        | some .none => eval n p w env noneE
+        | some (.some v) => eval n p w ((x, v) :: env) someE
+        | _ => stuck
+      | .caseResult scrutinee x okE y errE =>
+        match evalAtom env scrutinee with
+        | some (.ok v) => eval n p w ((x, v) :: env) okE
+        | some (.err code) => eval n p w ((y, .int code) :: env) errE
+        | _ => stuck
       | .fail code => ([], .failed code)
       | .attempt body =>
-        match eval n p env body with
+        match eval n p w env body with
         | (t, .ok v) => (t, .ok (.ok v))
         | (t, .failed code) => (t, .ok (.err code))
         | (t, r) => (t, r)
       | .handle body x handler =>
-        match eval n p env body with
+        match eval n p w env body with
         | (t, .failed code) =>
-          match eval n p ((x, .int code) :: env) handler with
+          match eval n p w ((x, .int code) :: env) handler with
           | (t', r) => (t ++ t', r)
         | (t, r) => (t, r)
 end
