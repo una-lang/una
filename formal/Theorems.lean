@@ -110,3 +110,7 @@ import UnaFormal
 #print axioms Una.F1.trace_anon_inj
 #print axioms Una.F1.t6_release_erasure_obs
 #print axioms Una.F1.MonomorphExample.main_obs
+#print axioms Una.F1.MonomorphExample.rSim
+#print axioms Una.F1.MonomorphExample.rCertified
+#print axioms Una.F1.MonomorphExample.caller_obs
+#print axioms Una.F1.MonomorphExample.caller_diverges

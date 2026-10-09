@@ -9,6 +9,7 @@ differs from `g`'s.
 -/
 import UnaFormal.F1.Import
 import UnaFormal.F1.CheckTests
+import UnaFormal.F1.ReleaseExample
 
 namespace Una.F1.MonomorphExample
 
@@ -107,6 +108,116 @@ theorem main_obs (L : Label) (w : World) :
       (by rw [hrun]; simp) (by rw [hrun]; simp)
   · obtain ⟨po, hpo, _⟩ := hv
     simp [P₂] at hpo
+
+/-! ### Two runs with releases -/
+
+section Releases
+
+open ReleaseExample (check rev sec env Γ Γ_inPlace)
+
+/-- `g`'s instance at `Bool`. -/
+def gBool : Fun where
+  name := "g[public Bool]"
+  tparams := []
+  eqParams := []
+  params := [("x", .bool .bot)]
+  result := .bool .bot
+  op := false
+  get := false
+  fails := false
+  body := .atom (.var "x")
+
+/-- `caller(s: secret Int) -> Bool = g[Bool](rev(s))`: it releases whether `s` is 1234 through
+`reveal`, then passes the result through the generic `g`. -/
+def caller : Fun where
+  name := "caller"
+  tparams := []
+  eqParams := []
+  params := [("s", .int sec)]
+  result := .bool .bot
+  op := false
+  get := false
+  fails := false
+  body := .letR "b" (.bool .bot) (.call "rev" [] [.var "s"])
+    (.letR "r" (.bool .bot) (.call "g" [.bool .bot] [.var "b"]) (.atom (.var "r")))
+  rels := ["reveal"]
+
+/-- `caller` with its call renamed to the instance. -/
+def callerMono : Fun where
+  name := "caller"
+  tparams := []
+  eqParams := []
+  params := [("s", .int sec)]
+  result := .bool .bot
+  op := false
+  get := false
+  fails := false
+  body := .letR "b" (.bool .bot) (.call "rev" [] [.var "s"])
+    (.letR "r" (.bool .bot) (.call "g[public Bool]" [] [.var "b"]) (.atom (.var "r")))
+  rels := ["reveal"]
+
+/-- The document's program: `ReleaseExample.prog`'s policies, its `via` function `check`, `rev`,
+the generic `g` and `caller`. -/
+def R₂ : Program := { ReleaseExample.prog with funs := [check, rev, g, caller] }
+
+def rFuns : List Fun := [check, rev, callerMono, gBool]
+
+def rRen : List (String × String) := [("g[public Bool]", "g"), ("g", "g[]")]
+
+theorem rSim : Sim (renOf rRen) { R₂ with funs := rFuns } R₂ := progSim_sound (by rfl)
+
+unseal flowB flowsB in
+theorem rCertified :
+    ({ R₂ with funs := rFuns } : Program).LWellFormed ∧
+      ({ R₂ with funs := rFuns } : Program).B1WellFormed ∧
+      ({ R₂ with funs := rFuns } : Program).le (.ofLabel Label.bot) (.ofLabel Label.bot) :=
+  progOk_sound_nil (by rfl)
+
+theorem sec_hidden' : ¬ Vis ({ R₂ with funs := rFuns } : Program) Label.bot (LExpr.bot.join sec) := by
+  rintro (⟨h, _⟩ | ⟨⟨h, _⟩, _, _⟩) <;>
+    simp [R₂, ReleaseExample.prog, Program.top, sec, LExpr.ofLabel, LExpr.join, LExpr.bot,
+      Label.bot, Label.join, Level.join] at h <;> revert h <;> decide
+
+/-- **Two runs of the document's `caller` on different secrets, through `t6_release_erasure_obs`.**
+PIN 1234 releases `true` and PIN 1 releases `false`, both visible at `public`, and the first-order
+hypothesis is discharged on the two traces: the runs diverge at the release, as `t6_release`
+says. -/
+theorem caller_obs (w : World) :
+    proj R₂ Label.bot (eval 8 R₂ w (env 1234) caller.body).1 =
+        proj R₂ Label.bot (eval 8 R₂ w (env 1) caller.body).1 ∨
+      Diverged R₂ Label.bot (eval 8 R₂ w (env 1234) caller.body).1 (eval 8 R₂ w (env 1) caller.body).1 := by
+  obtain ⟨hwf, hb1, hget⟩ := rCertified
+  rcases hwf.funs callerMono (by simp [rFuns]) with hok | ⟨hv, _⟩
+  · obtain ⟨t, ε, ht, _⟩ := hok
+    have r₁ : eval 8 R₂ w (env 1234) caller.body =
+        ([.release "reveal" (.bool true)], .ok (.bool true)) := rfl
+    have r₂ : eval 8 R₂ w (env 1) caller.body =
+        ([.release "reveal" (.bool false)], .ok (.bool false)) := rfl
+    exact t6_release_erasure_obs Label.bot rSim (proj_funs R₂ rFuns Label.bot) hwf hb1 hget w
+      (σ := []) (Γ := Γ) (E := []) (fun _ h => nomatch h) (fun _ h => by simp at h) Γ_inPlace rfl
+      (.cons .int .nil) (.cons .int .nil) (.cons (.hidden sec_hidden') .nil) ht
+      (e' := caller.body) (by rfl) rfl rfl 8 (by rw [r₁]; trivial) (by rw [r₂]; trivial)
+      (by rw [r₁]; simp [Event.FirstOrder, Val.FirstOrder])
+      (by rw [r₂]; simp [Event.FirstOrder, Val.FirstOrder])
+  · obtain ⟨po, hpo, hvia⟩ := hv
+    simp [R₂, ReleaseExample.prog, ReleaseExample.reveal, ReleaseExample.peek] at hpo
+    rcases hpo with rfl | rfl <;> simp [callerMono, caller, ReleaseExample.reveal, ReleaseExample.peek] at hvia
+
+/-- The two runs do release different values: the conclusion is the divergence, not equality. -/
+theorem caller_diverges (w : World) :
+    proj R₂ Label.bot (eval 8 R₂ w (env 1234) caller.body).1 ≠
+      proj R₂ Label.bot (eval 8 R₂ w (env 1) caller.body).1 := by
+  have r₁ : eval 8 R₂ w (env 1234) caller.body =
+      ([.release "reveal" (.bool true)], .ok (.bool true)) := rfl
+  have r₂ : eval 8 R₂ w (env 1) caller.body =
+      ([.release "reveal" (.bool false)], .ok (.bool false)) := rfl
+  rw [r₁, r₂]
+  intro h
+  have hv : ∀ v, EvVis R₂ Label.bot (Event.release "reveal" v) := fun v =>
+    ⟨_, rfl, Examples.le_self _⟩
+  simp [proj, hv] at h
+
+end Releases
 
 -- `gInt` and `mainMono` are what the re-check computes: the instance search's instance of `g` at
 -- `Int` (its name, signature and body), and `main` with its call renamed.
