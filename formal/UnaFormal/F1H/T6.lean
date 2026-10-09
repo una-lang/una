@@ -122,6 +122,45 @@ theorem le_pc_xlb {top : Label} (pc a b c d : LExpr) :
     LExpr.le top ((a.join b).join d) ((((pc.join a).join b).join c).join d) :=
   LExpr.join_mono (LExpr.le_trans (le_pc_xl pc a b) (LExpr.le_join_left _ c)) (LExpr.le_refl d)
 
+/-! ### The host's operations -/
+
+theorem text_of_erase : ∀ {t : LTy}, t.erase = .text → ∃ l, t = .text l
+  | .text l, _ => ⟨l, rfl⟩
+  | .int _, h | .bool _, h | .unit _, h | .list _ _, h | .option _ _, h | .result _ _, h
+  | .record _ _, h | .fn _ _ _ _ _ _, h | .var _ _, h => by simp [LTy.erase] at h
+
+/-- Related texts the observer sees are equal. -/
+theorem VList.eq_texts : ∀ {ts : List LTy} {vs₁ vs₂ : List Val}, VList p L ts vs₁ vs₂ →
+    (∀ t ∈ ts, ∃ l, t = .text l ∧ Vis p L l) → vs₁ = vs₂
+  | [], _, _, .nil, _ => rfl
+  | _ :: _, _, _, .cons h hs, ht => by
+    obtain ⟨l, rfl, hl⟩ := ht _ List.mem_cons_self
+    rw [V.eq_text h hl, VList.eq_texts hs (fun t ht' => ht t (List.mem_cons_of_mem _ ht'))]
+
+theorem vis_ofLabel_of_inst {s : List (String × LExpr)} {l : Label}
+    (h : Vis p L ((LExpr.ofLabel l).inst s)) : Vis p L (.ofLabel l) := by
+  rw [LExpr.inst_ofLabel] at h; exact Vis.right h
+
+/-- Seeing an `accepts` shows the instance of what flows into it. -/
+theorem vis_of_le_accepts {s : List (String × LExpr)} {x : LExpr} {l : Label}
+    (hle : p.le x (.ofLabel l)) (h : Vis p L (.ofLabel l)) : Vis p L (x.inst s) :=
+  Vis.of_le (LExpr.le_of_le_inst_ofLabel (LExpr.le_inst s hle)) h
+
+/-- The failure of a `Files` operation decided at `pc ⊔ ℓ`, as the observer sees it: it sees the
+path's label and the file-state label. -/
+theorem vis_fsFail {s : List (String × LExpr)} (hh : p.HostWF) {pc l : LExpr}
+    (h : Vis p L ((p.fsFail (pc.join l)).inst s)) :
+    Vis p L (l.inst s) ∧ Vis p L (.ofLabel p.fileState) := by
+  simp only [Program.fsFail, hh.oldHost, Bool.false_eq_true, ite_false] at h
+  exact ⟨Vis.of_le (LExpr.inst_le_join_inst _ _ _) (Vis.of_le (LExpr.le_inst _ (LExpr.le_join_left _ _)) h),
+    vis_ofLabel_of_inst (Vis.of_le (LExpr.inst_le_join_inst _ _ _) h)⟩
+
+/-- A request's failure, under ADR 0085's rules, is at least `internal`. -/
+theorem vis_reqFail {s : List (String × LExpr)} (hh : p.HostWF) {pc : LExpr} {ts : List LTy}
+    (h : Vis p L ((p.reqFail pc ts).inst s)) : Vis p L (.ofLabel internalLabel) := by
+  simp only [Program.reqFail, hh.oldHost, Bool.false_eq_true, ite_false] at h
+  exact Vis.of_le hh.reqFloor (vis_ofLabel_of_inst (Vis.of_le (LExpr.inst_le_join_inst _ _ _) h))
+
 /-- **T6 for F1 with declassification (option B1), at every ground instance**: runs related up
 to their first different release. -/
 theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
@@ -266,9 +305,153 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
               exact brel_quiet hw
                 (by simp only [proj_single_hidden (ev := .out _) (fun h => hd (hacc h))])
                 (fun _ _ => .unit) (fun _ h => nomatch h) (fun _ h => nomatch h)
-      | @read _ _ path t hu ht hle _ => sorry
-      | @write _ _ path content t c hu ht hc hct hle hst _ => sorry
-      | @req _ _ m args ts has hts hle _ => sorry
+      | @read _ _ path t hu ht hle _ =>
+        refine BRelR.of_brel ?_
+        cases t <;> simp [LTy.erase] at ht
+        rename_i l
+        obtain ⟨v₁, v₂, h₁, h₂, hv, hu₁, hu₂⟩ := latom_bothσ he₁ he₂ hrel hu
+        simp only [LTy.lsubst] at hv hu₁ hu₂
+        cases hu₁
+        cases hu₂
+        rename_i s₁ s₂
+        simp only [evalRhs, h₁, h₂]
+        have hacc : Vis p L (.ofLabel p.acceptsRead) → Vis p L (l.inst (p.sd σ)) := fun h =>
+          Vis.of_le (LExpr.inst_le_join_inst _ _ _) (vis_of_le_accepts hle h)
+        have hpath : Vis p L (l.inst (p.sd σ)) → s₁ = s₂ := fun hd => by
+          have := V.eq_text hv hd; injection this
+        have hev : proj p L [Event.read s₁] = proj p L [Event.read s₂] := by
+          by_cases ha : Vis p L (.ofLabel p.acceptsRead)
+          · rw [hpath (hacc ha)]
+          · rw [proj_single_hidden (ev := .read s₁) ha, proj_single_hidden (ev := .read s₂) ha]
+        by_cases hi : Vis p L (.ofLabel internalLabel)
+        · have hweq := hw.2 hi
+          subst hweq
+          have hs := hpath (hacc (Vis.of_le hh.read hi))
+          subst hs
+          refine brel_same (WorldRel.refl _) (fun v hv' => ?_)
+          split at hv' <;> simp at hv'
+          subst hv'
+          exact .text
+        · have hres : ¬ Vis p L ((LExpr.ofLabel p.readResult).inst (p.sd σ)) := fun h =>
+            hi (Vis.of_le hh.readResult (vis_ofLabel_of_inst h))
+          have hsame : Vis p L ((p.fsFail (pc.join (p.deep (.text l)))).inst (p.sd σ)) →
+              ((H.read s₁ w₁.fs).isSome ↔ (H.read s₂ w₂.fs).isSome) := fun hvf => by
+            obtain ⟨hl, hfs⟩ := vis_fsFail hh hvf
+            rw [hpath hl]
+            exact hlaw.read_fails s₂ (hw.1 hfs)
+          intro ht₁ ht₂
+          cases hr₁ : H.read s₁ w₁.fs <;> cases hr₂ : H.read s₂ w₂.fs <;>
+            simp only [hr₁, hr₂] at ht₁ ht₂ ⊢ <;> refine ⟨hev, ?_, hw⟩ <;> simp only [OutRel]
+          all_goals first
+            | exact fun _ => rfl
+            | trivial
+            | exact .hidden hres
+            | exact fun _ => trivial
+            | exact fun hvf => by
+                have := hsame (by simpa [Eff.inst, Eff.failLabel] using hvf)
+                simp [hr₁, hr₂] at this
+      | @write _ _ path content t c hu ht hc hct hle hst _ =>
+        refine BRelR.of_brel ?_
+        cases t <;> simp [LTy.erase] at ht
+        cases c <;> simp [LTy.erase] at hct
+        rename_i l lc
+        obtain ⟨v₁, v₂, h₁, h₂, hv, hu₁, hu₂⟩ := latom_bothσ he₁ he₂ hrel hu
+        obtain ⟨c₁, c₂, hc₁, hc₂, hcv, hcu₁, hcu₂⟩ := latom_bothσ he₁ he₂ hrel hc
+        simp only [LTy.lsubst] at hv hu₁ hu₂ hcv hcu₁ hcu₂
+        cases hu₁
+        cases hu₂
+        cases hcu₁
+        cases hcu₂
+        rename_i s₁ s₂ cs₁ cs₂
+        simp only [evalRhs, h₁, h₂, hc₁, hc₂]
+        have hpath : Vis p L (l.inst (p.sd σ)) → s₁ = s₂ := fun hd => by
+          have := V.eq_text hv hd; injection this
+        have hcont : Vis p L (lc.inst (p.sd σ)) → cs₁ = cs₂ := fun hd => by
+          have := V.eq_text hcv hd; injection this
+        have hacc : Vis p L (.ofLabel p.acceptsWrite) →
+            Vis p L (l.inst (p.sd σ)) ∧ Vis p L (lc.inst (p.sd σ)) := fun h =>
+          ⟨Vis.of_le (LExpr.inst_le_join_inst _ _ _)
+              (Vis.of_le (LExpr.le_inst _ (LExpr.le_join_left _ _)) (vis_of_le_accepts hle h)),
+            Vis.of_le (LExpr.inst_le_join_inst _ _ _) (vis_of_le_accepts hle h)⟩
+        have hstate : Vis p L (.ofLabel p.fileState) → Vis p L (l.inst (p.sd σ)) := fun h =>
+          Vis.of_le (LExpr.inst_le_join_inst _ _ _) (vis_of_le_accepts (hst hh.oldHost) h)
+        have hev : proj p L [Event.write s₁ cs₁] = proj p L [Event.write s₂ cs₂] := by
+          by_cases ha : Vis p L (.ofLabel p.acceptsWrite)
+          · rw [hpath (hacc ha).1, hcont (hacc ha).2]
+          · rw [proj_single_hidden (ev := .write s₁ cs₁) ha, proj_single_hidden (ev := .write s₂ cs₂) ha]
+        by_cases hi : Vis p L (.ofLabel internalLabel)
+        · have hweq := hw.2 hi
+          subst hweq
+          have ha := hacc (Vis.of_le hh.write hi)
+          have hs := hpath ha.1
+          have hcs := hcont ha.2
+          subst hs hcs
+          refine brel_same (WorldRel.refl _) (fun v hv' => ?_)
+          split at hv' <;> simp at hv'
+          subst hv'
+          exact .unit
+        · intro ht₁ ht₂
+          by_cases hfv : Vis p L (.ofLabel p.fileState)
+          · have hs := hpath (hstate hfv)
+            subst hs
+            have hlaw' := hlaw.write_shape s₁ cs₁ cs₂ (hw.1 hfv)
+            cases hr₁ : H.write s₁ cs₁ w₁.fs <;> cases hr₂ : H.write s₁ cs₂ w₂.fs <;>
+              simp only [hr₁, hr₂, Option.map_none, Option.map_some, reduceCtorEq,
+                Option.some.injEq] at hlaw' ht₁ ht₂ ⊢
+            · exact ⟨hev, fun _ => rfl, hw⟩
+            · exact ⟨hev, .unit, fun _ => hlaw', fun h => absurd h hi⟩
+          · have hnvf : ¬ Vis p L ((p.fsFail (pc.join (p.deep (.text l)))).inst (p.sd σ)) :=
+              fun h => hfv (vis_fsFail hh h).2
+            have hw' : ∀ {u₁ u₂ : World H}, WorldRel p L u₁ u₂ :=
+              ⟨fun h => absurd h hfv, fun h => absurd h hi⟩
+            cases hr₁ : H.write s₁ cs₁ w₁.fs <;> cases hr₂ : H.write s₂ cs₂ w₂.fs <;>
+              simp only [hr₁, hr₂] at ht₁ ht₂ ⊢ <;> refine ⟨hev, ?_, hw'⟩ <;> simp only [OutRel]
+            all_goals first
+              | exact fun _ => rfl
+              | trivial
+              | exact .unit
+              | exact fun h => absurd (by simpa [Eff.inst, Eff.failLabel] using h) hnvf
+              | exact fun _ => trivial
+      | @req _ _ m args ts has hts hle _ =>
+        refine BRelR.of_brel ?_
+        obtain ⟨vs₁, vs₂, h₁, h₂, hvs, _, _⟩ := latoms_bothσ he₁ he₂ hrel has
+        simp only [evalRhs, h₁, h₂]
+        have hargs : Vis p L (.ofLabel p.acceptsReq) → vs₁ = vs₂ := fun ha => by
+          refine VList.eq_texts hvs (fun t ht => ?_)
+          obtain ⟨u, hu, rfl⟩ := List.mem_map.mp ht
+          obtain ⟨l, rfl⟩ := text_of_erase (hts u hu)
+          refine ⟨_, rfl, ?_⟩
+          refine Vis.of_le (LExpr.le_inst _ ?_) (Vis.of_le (LExpr.inst_le_join_inst _ _ _) (vis_of_le_accepts hle ha))
+          exact LExpr.le_joinAll (List.mem_map.mpr ⟨_, hu, rfl⟩)
+        have hev : proj p L [Event.req m vs₁] = proj p L [Event.req m vs₂] := by
+          by_cases ha : Vis p L (.ofLabel p.acceptsReq)
+          · rw [hargs ha]
+          · rw [proj_single_hidden (ev := .req m vs₁) ha, proj_single_hidden (ev := .req m vs₂) ha]
+        by_cases hi : Vis p L (.ofLabel internalLabel)
+        · have hweq := hw.2 hi
+          subst hweq
+          have hv := hargs (Vis.of_le hh.req hi)
+          subst hv
+          refine brel_same (WorldRel.refl _) (fun v hv' => ?_)
+          split at hv' <;> simp at hv'
+          subst hv'
+          exact .text
+        · have hres : ¬ Vis p L ((LExpr.ofLabel p.reqResult).inst (p.sd σ)) := fun h =>
+            hi (Vis.of_le hh.reqResult (vis_ofLabel_of_inst h))
+          have hnvf : ¬ Vis p L ((p.reqFail pc ts).inst (p.sd σ)) := fun h => hi (vis_reqFail hh h)
+          intro ht₁ ht₂
+          rcases hq₁ : H.request m vs₁ w₁.srv with ⟨o₁, srv₁⟩
+          rcases hq₂ : H.request m vs₂ w₂.srv with ⟨o₂, srv₂⟩
+          have hw' : WorldRel p L { w₁ with srv := srv₁ } { w₂ with srv := srv₂ } :=
+            ⟨fun h => hw.1 h, fun h => absurd h hi⟩
+          cases o₁ <;> cases o₂ <;> simp only [hq₁, hq₂] at ht₁ ht₂ ⊢ <;> refine ⟨hev, ?_, hw'⟩ <;>
+            simp only [OutRel]
+          all_goals first
+            | exact fun _ => rfl
+            | trivial
+            | exact .hidden hres
+            | exact fun h => absurd (by simpa [Eff.inst, Eff.failLabel] using h) hnvf
+            | exact fun _ => trivial
       | construct hrec has hfl =>
         refine BRelR.of_brel ?_
         obtain ⟨vs₁, vs₂, h₁, h₂, hvs, _, _⟩ := latoms_bothσ he₁ he₂ hrel has

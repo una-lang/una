@@ -128,3 +128,11 @@ import UnaFormal
 #print axioms Una.F1H.NewRules.shapes_rejected
 #print axioms Una.F1H.NewRules.s14_same_probe
 #print axioms Una.F1H.NewRules.s15_same_probe
+#print axioms Una.F1H.t1
+#print axioms Una.F1H.unary_soundR
+#print axioms Una.F1H.confined
+#print axioms Una.F1H.andThen_brel
+#print axioms Una.F1H.t6_soundR
+#print axioms Una.F1H.t6_host
+#print axioms Una.F1H.t6_host_ground
+#print axioms Una.F1H.t6_release_host
