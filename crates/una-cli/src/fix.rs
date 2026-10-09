@@ -153,7 +153,7 @@ pub(crate) fn fix_command(
     applied.sort_by(|a, b| {
         (a.round, &a.file, a.start.line, a.start.col).cmp(&(b.round, &b.file, b.start.line, b.start.col))
     });
-    let Some(formatted) = format(path, &mut modules, stderr)? else {
+    let Some(formatted) = format_modules(path, &mut modules, stderr)? else {
         return Ok(ExitStatus::Usage);
     };
     if !options.dry_run {
@@ -178,7 +178,7 @@ pub(crate) fn fix_command(
         let analysis = analyze(&package, None);
         (analysis.diagnostics, analysis.program)
     });
-    let skipped = skipped(&diagnostics, &modules, stopped);
+    let skipped = skipped_repairs(&diagnostics, &modules, stopped);
     if options.tier == Tier::One && diagnostics.is_empty() {
         diagnostics = verification::tier_one(&package, &program, &options.solving).diagnostics;
     }
@@ -409,7 +409,7 @@ fn offset(text: &str, line_starts: &[usize], position: Position) -> Option<usize
 
 /// Formats every module that parses (ADR 0084 rule 4), and returns the paths of those it
 /// changed. `None` when the package cannot be loaded any more.
-fn format(
+fn format_modules(
     path: &Path,
     modules: &mut BTreeMap<String, Module>,
     stderr: &mut dyn Write,
@@ -446,7 +446,7 @@ fn format(
 /// The first repairs with an edit that the final check still reports and that `una fix` did
 /// not apply, with the reason; an edit that is still a candidate waited on a conflict when the
 /// rounds stopped.
-fn skipped(
+fn skipped_repairs(
     diagnostics: &[Diagnostic],
     modules: &BTreeMap<String, Module>,
     stopped: Stopped,
