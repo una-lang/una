@@ -344,6 +344,25 @@ theorem prim_agreeσ {σ : List (String × LTy)} {pr : Prim} {ts : List LTy} {t 
       simp only [LTy.lsubst] at h₁
       rw [V.eq_text h₁ hv]
     | [], _, hes | _ :: _ :: _, _, hes => simp at hes
+  | sum =>
+    match ts, hvs, hes with
+    | [u], .cons h₁ .nil, hes =>
+      simp only [List.map_cons, List.map_nil, List.cons.injEq] at hes
+      cases u <;> simp [LTy.erase] at hes
+      rename_i e lx
+      cases e <;> simp [LTy.erase] at hes
+      rename_i l
+      have hd := hdeep (fun h => Prim.noConfusion h) _ (List.mem_singleton_self _)
+      simp only [Program.deep, LTy.deep] at hd
+      have hx : Vis p L (lx.inst (p.sd σ)) :=
+        Vis.of_le (LExpr.le_inst _ (LExpr.le_join_left _ _)) hd
+      have he : Vis p L (l.inst (p.sd σ)) :=
+        Vis.of_le (LExpr.le_inst _ (LExpr.le_join_right _ _)) hd
+      simp only [LTy.lsubst] at h₁
+      cases h₁ with
+      | hidden h => exact absurd hx h
+      | list hall => rw [VAll.eq_int he hall]
+    | [], _, hes | _ :: _ :: _, _, hes => simp at hes
 
 mutual
   theorem LTy.Ground.eqIn {E E' : List String} {f : String → Bool} :

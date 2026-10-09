@@ -86,6 +86,11 @@ structure Ctx where
   funs : List String
   /-- The `via` functions of the document's policies, with their policy. -/
   vias : List (String × String) := []
+  /-- Edition 0.1 has no `Eq` constraint: `==` applies to values of any type parameter
+  (U2026 is edition 0.2's). The reading constrains every type parameter of a function whose
+  body compares values by `Eq`, which only adds the check, at each call, that the type argument
+  has equality. -/
+  allEq : Bool := false
 
 partial def ty (c : Ctx) (j : J) : M LTy := do
   let l ← label (← field j "label")
@@ -151,6 +156,17 @@ partial def reads (x : String) (j : J) : Bool :=
   | .arr items => items.any (reads x)
   | _ => false
 
+/-- Whether `j` applies `==` or `!=`. -/
+partial def comparesValues (j : J) : Bool :=
+  match j with
+  | .obj kvs =>
+    (j.getObjValD "kind" == .str "prim" &&
+      ((j.getObjValD "prim").getObjValD "kind" == .str "eq" ||
+        (j.getObjValD "prim").getObjValD "kind" == .str "ne")) ||
+      kvs.toArray.any (fun kv => comparesValues kv.2)
+  | .arr items => items.any comparesValues
+  | _ => false
+
 def refFun (f : String) : M Unit :=
   modify fun s => { s with funs := if s.funs.contains f then s.funs else s.funs ++ [f] }
 
@@ -185,6 +201,7 @@ mutual
       | "prelude.first_where", [xs, g] => pure (.firstWhere xs g)
       | "prelude.fold", [xs, i, g] => pure (.fold xs i g)
       | "prelude.parse_int", [s] => pure (.parse s)
+      | "prelude.sum", [xs] => pure (.prim .sum [xs])
       | _, _ =>
         if c.funs.contains f then
           refFun f
@@ -306,6 +323,7 @@ def signature (c : Ctx) (module : String) (v : J) (body : Expr) : M Fun := do
   let tps ← (← arr (← field v "type_params")).mapM str
   let cs ← arr (← field v "constraints")
   let eqs ← (tps.zip cs).filterMapM (fun q => constraintEq q.1 q.2)
+  let eqs := if c.allEq && comparesValues (v.getObjValD "body") then tps else eqs
   let ps ← (← arr (← field v "params")).mapM fun q => do
     match ← arr q with
     | [x, t] => pure (← str x, ← ty c t)
@@ -388,7 +406,7 @@ inductive Outcome where
   | notRechecked (why : String)
 
 /-- Checks one function declaration of a document. -/
-def checkFun (cats : List String) (caps : List (String × J)) (decls : List Decl)
+def checkFun (edition : String) (cats : List String) (caps : List (String × J)) (decls : List Decl)
     (recs : List Record) (d : Decl) : Outcome :=
   let funNames := decls.filterMap fun e =>
     if e.kind == "fun" then
@@ -402,7 +420,7 @@ def checkFun (cats : List String) (caps : List (String × J)) (decls : List Decl
       | .ok q => some q
       | .error _ => none
     else none
-  let c : Ctx := { records := recs.map (·.name), funs := funNames, vias }
+  let c : Ctx := { records := recs.map (·.name), funs := funNames, vias, allEq := edition == "0.1" }
   let findDecl := fun (q : String) => decls.find? fun e =>
     match plainRun (do pure s!"{e.module}.{← str (← field e.value "name")}") with
     | .ok n => n == q && (e.kind == "fun" || e.kind == "policy")
@@ -464,15 +482,6 @@ def checkFun (cats : List String) (caps : List (String × J)) (decls : List Decl
         | .ok () => .accepted
         | .error why => .rejected why
 
-/-- Edition 0.1 allows `==` on a type parameter without `Eq` (U2026 is edition 0.2's); F1 is
-edition 0.2, so such a function is outside it. -/
-def edition01 (edition : String) : Outcome → Outcome
-  | .rejected why =>
-    if edition == "0.1" && why.startsWith "`==` on a type without equality" then
-      .notRechecked "edition 0.1's `==` on a type parameter without `Eq`"
-    else .rejected why
-  | o => o
-
 /-- The outcome of every declaration with code, by qualified name; an error when the document is
 not one the checker reads. -/
 def checkDocument (doc : J) : Except String (List (String × Outcome)) := do
@@ -509,7 +518,7 @@ def checkDocument (doc : J) : Except String (List (String × Outcome)) := do
   let funNames := (decls.filter (·.kind == "fun")).map named
   let recs := records decls funNames
   pure (code.map fun d =>
-    (named d, if d.kind == "fun" then edition01 edition (checkFun cats caps decls recs d)
+    (named d, if d.kind == "fun" then checkFun edition cats caps decls recs d
       else .notRechecked s!"a `{d.kind}` declaration"))
 
 end Una.F1.Import

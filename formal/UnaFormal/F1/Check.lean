@@ -116,6 +116,7 @@ def primTy : Prim → List Ty → Option Ty
   | .lt, [.int, .int] | .eqInt, [.int, .int] => some .bool
   | .not, [.bool] => some .bool
   | .len, [.list _] | .len, [.text] => some .int
+  | .sum, [.list .int] => some .int
   | _, _ => none
 
 def atomTy (Γ : LCtx) : Atom → Result LTy

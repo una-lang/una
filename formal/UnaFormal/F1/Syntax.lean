@@ -61,6 +61,8 @@ inductive Prim where
   | eqInt
   | not
   | len
+  /-- The prelude's `sum` of a list of integers. -/
+  | sum
 
 mutual
   /-- What a `let` binds. -/

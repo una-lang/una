@@ -210,10 +210,28 @@ theorem valsTy_const {t : Ty} :
     · exact hv
     · exact valsTy_const hvs u hu
 
+theorem sumInts_typed : ∀ {items : List Val}, (∀ v ∈ items, ValTy p v .int) →
+    ∃ n, sumInts items = some n
+  | [], _ => ⟨0, rfl⟩
+  | v :: rest, h => by
+    have hv := h v (List.mem_cons_self ..)
+    cases hv
+    rename_i k
+    obtain ⟨m, hm⟩ := sumInts_typed (fun u hu => h u (List.mem_cons_of_mem _ hu))
+    exact ⟨k + m, by simp [sumInts, hm]⟩
+
 theorem prim_typed {pr : Prim} {ts : List Ty} {t : Ty} {vs : List Val}
     (hp : PrimTy pr ts t) (hvs : ValsTy p vs ts) :
     ∃ v, evalPrim pr vs = some v ∧ ValTy p v t := by
-  cases hp <;>
+  cases hp
+  case sum =>
+    rcases hvs with _ | ⟨hv, hvs⟩
+    cases hvs
+    cases hv
+    rename_i hall
+    obtain ⟨n, hn⟩ := sumInts_typed hall
+    exact ⟨.int n, by simp [evalPrim, hn], .int⟩
+  all_goals
   · repeat (rcases hvs with _ | ⟨hv, hvs⟩; try cases hv)
     all_goals exact ⟨_, rfl, by constructor⟩
 

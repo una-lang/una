@@ -56,6 +56,12 @@ theorem V.eq_int {l : LExpr} {a b : Val} (h : V p L (.int l) a b) (hv : Vis p L 
   | hidden h => exact absurd hv h
   | int => rfl
 
+/-- A list of integers whose labels the observer sees is the same list in both runs. -/
+theorem VAll.eq_int {l : LExpr} (hv : Vis p L l) :
+    ∀ {as bs : List Val}, VAll p L (.int l) as bs → as = bs
+  | _, _, .nil => rfl
+  | _, _, .cons h hs => by rw [V.eq_int h hv, VAll.eq_int hv hs]
+
 theorem V.eq_bool {l : LExpr} {a b : Val} (h : V p L (.bool l) a b) (hv : Vis p L l) : a = b := by
   cases h with
   | hidden h => exact absurd hv h
@@ -132,6 +138,19 @@ theorem prim_agree {pr : Prim} {ts : List LTy} {t : Ty} {vs₁ vs₂ : List Val}
       cases u <;> simp [LTy.erase] at hes
       simp only [Program.primLabel, LTy.top] at hv
       rw [V.eq_text h₁ hv]
+    | [], _, hes | _ :: _ :: _, _, hes => simp at hes
+  | sum =>
+    match ts, hvs, hes with
+    | [u], .cons h₁ .nil, hes =>
+      simp only [List.map_cons, List.map_nil, List.cons.injEq] at hes
+      cases u <;> simp [LTy.erase] at hes
+      rename_i e lx
+      cases e <;> simp [LTy.erase] at hes
+      have hd := hdeep (fun h => Prim.noConfusion h) _ (List.mem_singleton_self _)
+      simp only [Program.deep, LTy.deep] at hd
+      cases h₁ with
+      | hidden h => exact absurd (Vis.left hd) h
+      | list hall => rw [VAll.eq_int (Vis.right hd) hall]
     | [], _, hes | _ :: _ :: _, _, hes => simp at hes
 
 theorem eqIn_flow {E : List String} {f : String → Bool} :

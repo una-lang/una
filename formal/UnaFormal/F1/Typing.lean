@@ -59,6 +59,7 @@ inductive PrimTy : Prim → List Ty → Ty → Prop where
   | not : PrimTy .not [.bool] .bool
   | lenList {t} : PrimTy .len [.list t] .int
   | lenText : PrimTy .len [.text] .int
+  | sum : PrimTy .sum [.list .int] .int
 
 mutual
   inductive RhsTy (p : Program) : Ctx → Rhs → Ty → Prop where

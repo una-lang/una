@@ -153,8 +153,10 @@ theorem bindParams_ltyped :
 
 theorem prim_ltyped {pr : Prim} {ts : List Ty} {t : Ty} {vs : List Val} {v : Val} (l : LExpr)
     (hp : PrimTy pr ts t) (he : evalPrim pr vs = some v) : LValTy p v (ofScalar t l) := by
-  cases hp <;> unfold evalPrim at he <;> split at he <;> simp_all [ofScalar] <;> subst he <;>
-    constructor
+  cases hp <;> unfold evalPrim at he <;> split at he <;> simp_all [ofScalar]
+  all_goals (try obtain ⟨_, _, rfl⟩ := he)
+  all_goals (try subst he)
+  all_goals constructor
 
 /-! ### Instantiation with no type argument -/
 
