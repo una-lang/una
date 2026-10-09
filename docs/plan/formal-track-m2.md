@@ -89,6 +89,26 @@ Totals: 647 accepted, the same 7 rejections, 1,044 not re-checked. No polymorphi
 - the type descriptors of constrained type parameters depend only on structure, which instantiation keeps;
 - trace rendering redacts by declared kinds, which is outside F1's trace and stated as an assumption.
 
+## 4b. Facts from the export (#443)
+
+`una core --json` adds what inference knows and Core does not hold (`spec/13 §8`):
+
+- on a function: `uses_of`, `fails_of`, `result_labels` and `of_raises`;
+- on a `let` that binds a lambda given to an `of` parameter: `of_lambda`.
+
+The re-check reads them as follows:
+
+| Key | What the re-check does with it | Why a wrong value cannot give an accept |
+| --- | --- | --- |
+| `result_labels` | Adds `ℓ*_T` at each position of the declared result. In edition 0.1, D-137 adds it at every position instead. | The body is checked against the raised result (T-Fun). A summary that is too small makes the body fail its check. One that is too large only raises what callers see. |
+| `uses_of`, `fails_of` | Gives the named parameters' function types, and the function, their effects and failure. | A missing clause leaves the parameter without effects, so an effectful argument does not flow into it, and a call of it in the body exceeds the function's flags. An extra one only raises the callers' bound. |
+| `of_lambda` | Gives the lambda's binder type its effects and failure. | The lambda rule checks the body's effects against the binder type, so under-reported effects are a rejection. Over-reported ones only raise the bound where the lambda is used. |
+| `of_raises` | Makes a non-empty one not re-checked. | If it is missing, the body is checked under F1's own rules, where a decision over an effectful call fails the bound. |
+
+**The rule.** Every fact the re-check reads from the export may only raise a signature: labels, effects, failures. The body is checked against the raised signature. A future key that could lower a label or drop an effect must not be added on this assumption. It needs its own soundness argument, or what depends on it stays not re-checked. The trusted base of the re-check is unchanged: the export's facts are checked, not trusted.
+
+Una-1's adversarial review of #454 confirmed it. Tampering with the facts gives rejections. Facts made as permissive as possible and injected into the eight S dumps lose no rejection, in either edition.
+
 ## 5. What comes next
 
 - Declassification, option B1 (`docs/plan/formal-track-m4.md` §3).
