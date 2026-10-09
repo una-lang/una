@@ -1,0 +1,60 @@
+module orders
+
+--- Why an order text could not be summarized.
+pub kind OrderError = NotJson | NoLines | BadLine
+
+--- One line of an order.
+pub kind Line
+  name: Text
+  qty: Int
+
+--- A line read from its JSON object.
+line_of(item: Json) -> Line
+  fails OrderError
+=
+  let fields = when item
+    is Object(fields) -> fields
+    else -> fail BadLine
+  let name_json = fields.get(key: "name")
+    if none fail BadLine
+  let qty_json = fields.get(key: "qty")
+    if none fail BadLine
+  let name = when name_json
+    is Str(value) -> value
+    else -> fail BadLine
+  let qty = when qty_json
+    is Number(value) -> value
+    else -> fail BadLine
+  Line(name: name, qty: qty)
+
+--- The summary of an order: how many lines, their names in order, and the total quantity.
+pub summary(order: Text) -> Text
+  fails OrderError
+=
+  let doc = order.parse_json()
+    if error fail NotJson
+  let top = when doc
+    is Object(fields) -> fields
+    else -> fail NoLines
+  let lines_json = top.get(key: "lines")
+    if none fail NoLines
+  let items = when lines_json
+    is Array(items) -> items
+    else -> fail NoLines
+  let lines = items.map(each: line_of)
+    if error pass
+  let names = lines.map(each: fn(l) -> Str(l.name))
+  let total = lines.map(each: fn(l) -> l.qty).sum()
+  let edit out: Map[Text, Json] = empty_map()
+  edit out.set(key: "count", value: Number(lines.len))
+  edit out.set(key: "names", value: Array(names))
+  edit out.set(key: "total", value: Number(total))
+  Object(out).to_json()
+
+example "two lines are counted, named and totalled"
+  do summary("\{\"lines\": [\{\"name\": \"a\", \"qty\": 2\}, \{\"name\": \"b\", \"qty\": 3\}]\}")
+  expect result == "\{\"count\":2,\"names\":[\"a\",\"b\"],\"total\":5\}"
+
+example "text that is not JSON fails"
+  do summary("lines")
+  expect fails NotJson

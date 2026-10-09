@@ -1,0 +1,57 @@
+module stock
+
+import token (token_header)
+
+--- Whether an item name can stand as one path segment of the URL.
+pub safe_item(item: Text) -> Bool = item.len > 0 and not item.contains_text(part: "/") and not item.contains_text(part: "?") and not item.contains_text(part: "#")
+
+--- The `count` field of a JSON object, when it is an integer.
+pub count_of(body: internal Text) -> internal Option[internal Int]
+=
+  let doc = body.parse_json()
+    if error use Null
+  when doc
+    is Object(fields) ->
+      let value = fields.get(key: "count")
+        if none use Null
+      when value
+        is Number(n) -> Some(n)
+        else -> None
+    else -> None
+
+--- The stock level of an item, from the inventory API, or `None` when anything fails.
+--- The caller's secret token goes out only in the `X-Api-Token` header.
+pub stock_level(item: Text, token: secret Text) -> internal Option[internal Int]
+  uses @http: Http[get]
+=
+  let raw = token_header(token)
+  let cr = "\u{D}"
+  let lf = "\n"
+  let value = raw.replace(pattern: cr, by: "").replace(pattern: lf, by: "")
+  let header = Header(name: "X-Api-Token", value: value)
+  if safe_item(item)
+    let r = attempt @http.get("https://inventory.example.com/v1/items/{item}", headers: [header], key_name: None)
+    when r
+      is Ok(response) -> if response.status == 200 then count_of(response.body) else None
+      is Err(e) -> None
+  else
+    None
+
+--- A stand-in for the inventory API: a GET with an `X-Api-Token` header answers 200 with `answer`,
+--- one without it 401, and the other methods 405.
+pub handler inventory(answer: Text) for Http
+  op get(url, headers, key_name) = if headers.first_where(keep: fn(h) -> h.name == "X-Api-Token").is_some() then Response(status: 200, headers: [], body: answer) else Response(status: 401, headers: [], body: "")
+  op post(url, headers, body, key_name) = Response(status: 405, headers: [], body: "")
+  op put(url, headers, body, key_name) = Response(status: 405, headers: [], body: "")
+  op delete(url, headers, key_name) = Response(status: 405, headers: [], body: "")
+
+example "the API answers a count of 7"
+  given @http = inventory(answer: "\{\"count\": 7\}")
+  do stock_level("widget", token: "s3cret-token")
+  expect result == Some(7)
+  expect performed @http.get
+
+example "an answer without a count is nothing"
+  given @http = inventory(answer: "\{\"items\": 7\}")
+  do stock_level("widget", token: "s3cret-token")
+  expect result == None

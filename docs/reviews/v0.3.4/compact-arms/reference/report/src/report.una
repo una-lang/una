@@ -1,0 +1,41 @@
+module report
+
+import release (summary)
+
+pub kind Totals
+  valid: internal Int
+  total: internal Int
+
+--- One line counted, when it holds an integer.
+add_line(edit t: internal Totals, line: internal Text) -> Unit
+  ensures t.valid <= old(t).valid + 1
+  ensures t.valid >= old(t).valid
+=
+  let parsed = attempt line.trim().parse_int()
+  when parsed
+    is Ok(n) ->
+      t.valid = t.valid + 1
+      t.total = t.total + n
+    is Err -> unit
+
+--- The number of valid readings and their sum.
+pub totals(text: internal Text) -> internal Totals
+=
+  let edit t: internal Totals = Totals(valid: 0, total: 0)
+  for line in text.split(on: "\n")
+    add_line(edit t, line)
+  t
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @files: Files[read]
+  fails FileError
+=
+  let text = @files.read("readings.txt")
+    if error pass
+  let t = totals(text)
+  @console.print(summary("{t.valid} readings, total {t.total}"))
+
+example "malformed lines are skipped"
+  do totals("12\n7\nx\n-3\n\n40")
+  expect result.valid == 4 and result.total == 56

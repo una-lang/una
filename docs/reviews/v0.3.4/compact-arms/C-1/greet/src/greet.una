@@ -1,0 +1,12 @@
+module greet
+
+import release (shown)
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let name = @env.get("USER")
+    if none use "stranger"
+  let public_name = shown(name)
+  @console.print("Hello, {public_name}!")

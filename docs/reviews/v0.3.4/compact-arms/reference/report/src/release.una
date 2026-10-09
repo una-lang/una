@@ -1,0 +1,10 @@
+trusted module release
+
+pub policy summary
+  from internal Text
+  to public Text
+  via copy
+  purpose "print the totals of a readings file"
+  owner ops
+
+copy(t: internal Text) -> public Text = t

@@ -68,3 +68,73 @@ Also recorded:
 - **The compiler differs from run A's.** The archive is v0.3.3 plus `una fix`, ADR 0078 and ADR 0082, and the full guide now names `una fix`. So F, not run A, is the fair baseline for C and CF. The comparison with 7 is reported, but as context only.
 - **Teaching to the test.** The compact reference was written after N-64. It covers the rules N-64 found agents missing, and those rules are general: labels and policies, JSON escapes, `Map[Text, Nat]`, a loop's contract on a helper. It names no task. Its two snippets are a trusted policy and a map tally. The full guide has the same tally helper (§11), so F and CF see it too. I report this as a limit: a held-out task set would be the stronger test, and it is not part of this decision.
 - **Gate 1 is untouched.** una-bench pins v0.1.5, which keeps its guide.
+
+## Results (2026-10-09; arm C's rerun pending)
+
+The arms ran one at a time, on the archive built from 15ed392f (sha256 `8c602dd32dd35d9417d3f70a63fff3a1b83379de4c33706b11c22d753dd8c549`). Each had a fresh `$W` and N-64's exact prompt, with the two held-out tasks and the temp-file sentence from the start.
+
+`una check` runs per task are counted as N-64 counted run A: every run that changed something, without a final run with no change. The run that first passed is in parentheses.
+
+| Task | C, compact only | F, full guides | CF, both | N-64 run A (v0.3.3) |
+| --- | --- | --- | --- | --- |
+| greet | 2 (2) | 1 (1) | 1 (1) | 1 |
+| orders | 4 (3) | 1 (1) | 1 (1) | 1 |
+| stock | 4 (3) | 1 (1) | 2 (1) | 3 |
+| tally | 2 (2) | 1 (1) | 1 (1) | 1 |
+| sensors | 2 (2) | 3 (1) | 1 (1) | 1 |
+| **Original five** | **14 (12)** | **7 (5)** | **6 (5)** | **7** |
+| report (held out) | 3 (2) | 3 (2) | 3 (2) | – |
+| allow (held out) | 6 (6) | 1 (1) | 2 (2) | – |
+| **Held-out two** | **9 (8)** | **4 (3)** | **5 (4)** | – |
+| Passed / gave up | 7 / 0 | 7 / 0 | 7 / 0 | 5 / 0 |
+| Guide text read | ~6 KB, plus a dump of the 83 `una explain` texts it searched | ~119 KB | ~85 KB | – |
+| `DOC:` notes | 14 | 9 | 3 | 2 |
+| `una fix` used | no | no | no | – |
+
+**Acceptance.** I reran `una check`, `una test` and `una run` on every final package, and every arm met every acceptance item:
+- greet prints through a policy;
+- orders checks the exact output;
+- stock's token is `secret` and reaches `X-Api-Token` through a policy;
+- tally has a proven contract over the map;
+- sensors uses `together for`;
+- report prints 4 and 56, with a read-only grant and a proven contract;
+- allow's address is `secret`, goes through `Keys.hmac` with `pepper`, and only `Hashed` values are compared.
+
+No package uses `checked`, and no obligation was a wallclock unknown.
+
+**Audit.** Every tool call of every arm was scanned for paths outside `$W`.
+- C and F are clean.
+- CF is clean with the harness exception N-64 accepted for run B: one Read of a Claude Code persisted-output file, which held only the agent's own `cat` of `readings.txt` and `una-for-agents.md`.
+- F's first attempt stopped after its first task on the session's weekly usage limit. It is void, kept in `compact-arms/F-voided/`, and was rerun from a fresh `$W`.
+
+### Findings
+
+- **The compact reference does not replace the guides.**
+  - Alone, it cost twice the check runs of the full guides on the original five tasks (14 against 7) and on the held-out two (9 against 4).
+  - The gap is the same on tasks it was not written after, so it is not an artifact of teaching to the test: what it leaves out costs iterations on any task.
+- **Added to the full guides, it gains nothing measurable** (6 against 7, and 5 against 4, both within noise).
+- **What it saves is reading:** about 6 KB against about 85 to 119 KB, roughly a twentieth.
+- **Where C stumbled, from its `DOC:` notes:** what the compact reference omits.
+  - The `import` syntax and the content of `verification.lock`.
+  - One `uses` line per capability.
+  - The leading `|` of a one-variant sum, without which `kind E = V` is an alias.
+  - `old(p).len`, not `old(p.len)`.
+  - That `parse_int` fails rather than returning an `Option`.
+  - The signatures of `Keys.hmac`, of the other `Http` operations, and of `std.testing`.
+  - How a `files:` grant resolves a path.
+
+  Each item is short, but together they would take the reference past 2,000 tokens.
+- **A gap in the full guides too:** every arm, F and CF included, wrote `data/readings.txt` for a grant of `files:data:read`. Under that grant the path is `readings.txt`, and no guide says how a `Files` path relates to its grant.
+
+### Recommendation
+
+Ship `una-compact.md` as a quick start that points to the full guide, not as a substitute.
+- The DOC gaps above go to an issue for the full guide, the path of a `files:` grant first.
+- The reference stays under its cap.
+
+The weaker-model question is separate and is not part of this measurement.
+
+### Pending
+
+- **Arm C's rerun.** The plan's rule: C differs from 7 by 7. It waits until the session's usage allows agent arms again.
+- **`compact-arms/reference/`:** my solutions of the two held-out tasks, written before any arm ran.
