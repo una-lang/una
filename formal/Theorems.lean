@@ -56,3 +56,11 @@ import UnaFormal
 #print axioms Una.F1.LTy.lsubst_inPlace
 #print axioms Una.F1.LExprTy.inPlace
 #print axioms Una.F1.Examples.callPick_inPlace
+#print axioms Una.F1.LTy.lsubst_ground
+#print axioms Una.F1.applyWith_brel
+#print axioms Una.F1.LTy.deep_lsub_le
+#print axioms Una.F1.LTy.eqIn_lsub
+#print axioms Una.F1.prim_agreeσ
+#print axioms Una.F1.t6_ground
+#print axioms Una.F1.T6Example.genericCall_typed
+#print axioms Una.F1.T6Example.genericCall_noninterferent

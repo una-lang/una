@@ -73,6 +73,16 @@ theorem prog_wf : prog.LWellFormed where
     refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩ <;>
       simp [prog, pick, lT, Label.bot, LTy.CatsIn, LExpr.CatsIn, LExpr.bot, LExpr.ofLabel]
     rintro _ _ (⟨_, rfl⟩ | ⟨_, rfl⟩ | ⟨_, rfl⟩) <;> simp [LTy.CatsIn, LExpr.CatsIn]
+  recordsGround _ h := by simp [prog] at h
+  eqScoped := by simp [prog, pick]
+  sigsScoped := by
+    simp only [prog, List.mem_singleton]
+    rintro _ rfl
+    refine ⟨?_, ?_⟩
+    · simp only [pick, List.mem_cons, List.not_mem_nil, or_false]
+      rintro _ (rfl | rfl | rfl) <;>
+        simp [LTy.ScopedIn, LExpr.SymsIn, lT, LExpr.bot, LExpr.ofLabel]
+    · simp [pick, LTy.ScopedIn, LExpr.SymsIn, lT]
   inPlace := by
     refine ⟨?_, ?_, ?_⟩ <;> simp [prog, pick, lT, LTy.InPlace, LExpr.bot, LExpr.ofLabel]
     rintro _ _ (⟨_, rfl⟩ | ⟨_, rfl⟩ | ⟨_, rfl⟩) <;> simp [LTy.InPlace]

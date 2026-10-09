@@ -11,6 +11,10 @@ import UnaFormal.F1.UnarySound
 
 namespace Una.F1
 
+/-- Every type parameter a body constrains by `Eq` has a type argument with equality. -/
+def Program.EqArgsOK (p : Program) (σ : List (String × LTy)) (E : List String) : Prop :=
+  ∀ a ∈ E, ∃ u, List.lookup a σ = some u ∧ p.eqIn [] u = true
+
 variable (p : Program) (L : Label)
 
 /-- The observer at `L` sees `e`. -/
@@ -32,10 +36,13 @@ mutual
     | err {te l c} : V (.result te l) (.err c) (.err c)
     | record {r l rec fs₁ fs₂} :
         p.record r = some rec → VList rec.fields fs₁ fs₂ → V (.record r l) (.record r fs₁) (.record r fs₂)
-    | closure {params body env₁ env₂ Γ E tb ε ps r o g f l} :
-        EnvRel Γ env₁ env₂ → LEnvTy p env₁ Γ → LEnvTy p env₂ Γ →
+    | closure {params body env₁ env₂ Γ E tb ε ps r o g f l σ} :
+        GroundSubst σ → p.EqArgsOK σ E → LCtx.InPlace (params ++ Γ) →
+        EnvRel (Γ.lsub p.recordDeep σ) env₁ env₂ → LEnvTy p env₁ (Γ.lsub p.recordDeep σ) →
+        LEnvTy p env₂ (Γ.lsub p.recordDeep σ) →
         LExprTy p E (params ++ Γ) .bot body tb ε → p.le ε.failLabel .bot →
-        Flows p.top ps (params.map Prod.snd) → Flow p.top tb r →
+        Flows p.top ps ((params.map Prod.snd).map (LTy.lsubst p.recordDeep σ)) →
+        Flow p.top (tb.lsubst p.recordDeep σ) r →
         (ε.op = true → o = true) → (ε.get = true → g = true) → (ε.fails.isSome = true → f = true) →
         V (.fn ps r o g f l) (.closure params body env₁) (.closure params body env₂)
 
@@ -122,8 +129,8 @@ mutual
     | _, _, _, _, .ok h, .result f _ => .ok (V.flow h f)
     | _, _, _, _, .err, .result _ _ => .err
     | _, _, _, _, .record hr hfs, .record _ => .record hr hfs
-    | _, _, _, _, .closure hrel h₁ h₂ hb hfl hps hr ho hg hf, .fn fps fr fo fg ff _ =>
-      .closure hrel h₁ h₂ hb hfl (Flows.trans fps hps) (Flow.trans hr fr) (fo ∘ ho) (fg ∘ hg)
+    | _, _, _, _, .closure hσ hE hΓ hrel h₁ h₂ hb hfl hps hr ho hg hf, .fn fps fr fo fg ff _ =>
+      .closure hσ hE hΓ hrel h₁ h₂ hb hfl (Flows.trans fps hps) (Flow.trans hr fr) (fo ∘ ho) (fg ∘ hg)
         (ff ∘ hf)
 
   theorem VAll.flow : ∀ {t t' : LTy} {as bs : List Val}, VAll p L t as bs → Flow p.top t t' →
@@ -153,7 +160,7 @@ theorem V.unraise {t : LTy} {e : LExpr} {a b : Val} (he : Vis p L e) (h : V p L 
       | (exfalso; rename_i hh; exact hh (by simp only [LTy.top] at ht ⊢; exact Vis.join ht he))
       | exact .int | exact .bool | exact .text | exact .unit | exact .list ‹_› | exact .none
       | exact .some ‹_› | exact .ok ‹_› | exact .err | exact .record ‹_› ‹_›
-      | exact .closure ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_›
+      | exact .closure ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_›
   · exact .hidden ht
 
 theorem VList.unraise : ∀ {ts : List LTy} {e : LExpr} {as bs : List Val}, Vis p L e →

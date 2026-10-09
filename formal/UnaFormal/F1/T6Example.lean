@@ -4,6 +4,7 @@ secret, prints a line to a public sink and returns the public input. Two runs wh
 show a public observer the same events, and the same value, as `t6` says.
 -/
 import UnaFormal.F1.Mono
+import UnaFormal.F1.Examples
 
 namespace Una.F1.T6Example
 
@@ -47,6 +48,9 @@ theorem prog_wf : prog.LWellFormed where
   policies _ h := nomatch h
   categories := by
     refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩ <;> simp [prog, Label.bot]
+  recordsGround _ h := nomatch h
+  eqScoped _ h := nomatch h
+  sigsScoped _ h := nomatch h
   inPlace := by refine ⟨?_, ?_, ?_⟩ <;> simp [prog]
 
 theorem prog_gf : prog.GenericFree := ⟨(fun _ h => nomatch h), rfl⟩
@@ -73,8 +77,10 @@ theorem body_noninterferent (w : World) (n : Nat)
     proj prog Label.bot (eval n prog w env₁ body).1 = proj prog Label.bot (eval n prog w env₂ body).1 ∧
       OutRel (V prog Label.bot (.int .bot)) (Vis prog Label.bot eff.failLabel)
         (eval n prog w env₁ body).2 (eval n prog w env₂ body).2 :=
-  t6 prog_wf prog_gf prog_get w (.cons .int (.cons .int .nil)) (.cons .int (.cons .int .nil))
-    envs_rel body_typed n h₁ h₂
+  t6_ground prog_wf rfl prog_get w
+    (fun q hq => by simp only [List.mem_cons, List.not_mem_nil, or_false] at hq
+                    rcases hq with rfl | rfl <;> rfl) rfl
+    (.cons .int (.cons .int .nil)) (.cons .int (.cons .int .nil)) envs_rel body_typed n h₁ h₂
 
 /-- The runs do end, and both print the line and return 5. -/
 example (w : World) :
@@ -145,7 +151,9 @@ theorem branching_noninterferent (w : World) :
     proj prog Label.bot (eval 4 prog w envNeg branching).1 =
         proj prog Label.bot (eval 4 prog w envPos branching).1 ∧
       V prog Label.bot (.int sec) (.int 1) (.int 2) := by
-  have h := t6 (e₁ := envNeg) (e₂ := envPos) prog_wf prog_gf prog_get w
+  have h := t6_ground (e₁ := envNeg) (e₂ := envPos) prog_wf rfl prog_get w
+    (fun q hq => by simp only [List.mem_cons, List.not_mem_nil, or_false] at hq
+                    rcases hq with rfl | rfl <;> rfl) rfl
     (.cons .int (.cons .text .nil)) (.cons .int (.cons .text .nil)) branch_envs_rel
     branching_typed 4 trivial trivial
   have r₁ : eval 4 prog w envNeg branching = ([.out "hi"], .ok (.int 1)) := rfl
@@ -178,4 +186,53 @@ theorem leaking_untyped {E : List String} {pc : LExpr} {t : LTy} {ε : Eff} :
         | op _ _ hle _ =>
           exact sec_hidden (LExpr.le_of_join_right (LExpr.le_of_join_left hle))
 
+/-! ### A generic call -/
+
+/-- `s: secret Int, c: Bool`. -/
+def Γg : LCtx := [("s", .int sec), ("c", .bool .bot)]
+
+/-- The type `pick[secret Int]` returns. -/
+def pickSec : LTy := Examples.prog.lsub [("T", .int sec)] Examples.pick.result
+
+/-- `let y = pick[secret Int](s, 0, c); c`: a generic function instantiated with a secret type. -/
+def genericCall : Expr :=
+  .letR "y" pickSec (.call "pick" [.int sec] [.var "s", .int 0, .var "c"]) (.atom (.var "c"))
+
+theorem ground_sec : GroundSubst [("T", LTy.int sec)] := by
+  intro q hq
+  simp only [List.mem_singleton] at hq
+  subst hq
+  exact ⟨rfl, rfl⟩
+
+theorem genericCall_typed :
+    LExprTy Examples.prog [] Γg .bot genericCall (.bool .bot)
+      ((Eff.ofFn false false false).union .none) := by
+  refine .letR (t := pickSec) ?_ (Flow.refl _) (.atom (.var rfl))
+    (LTy.lsubst_inPlace _ ground_sec (by simp [Examples.pick, LTy.InPlace, Examples.lT]))
+  refine LRhsTy.call (fn := Examples.pick) (targs := [.int sec]) rfl ?_ rfl rfl ?_ ⟨⟨rfl, rfl⟩, trivial⟩
+    (.cons (.var rfl) (.cons .int (.cons (.var rfl) .nil)))
+    (.cons (.int (LExpr.le_join_left _ _)) (.cons (.int (LExpr.bot_le _)) (.cons (.bool (LExpr.bot_le _)) .nil)))
+    ⟨fun h => (by cases h), fun h => (by cases h), fun h => (by cases h)⟩
+  · intro ⟨_, h, _⟩; simp [Examples.prog] at h
+  · intro q _ h; simp [Examples.pick] at h
+
+def genEnv₁ : Env := [("s", .int 1), ("c", .bool true)]
+def genEnv₂ : Env := [("s", .int 2), ("c", .bool true)]
+
+theorem genericCall_noninterferent (w : World) :
+    proj Examples.prog Label.bot (eval 5 Examples.prog w genEnv₁ genericCall).1 =
+        proj Examples.prog Label.bot (eval 5 Examples.prog w genEnv₂ genericCall).1 ∧
+      OutRel (V Examples.prog Label.bot (.bool .bot))
+        (Vis Examples.prog Label.bot ((Eff.ofFn false false false).union .none).failLabel)
+        (eval 5 Examples.prog w genEnv₁ genericCall).2 (eval 5 Examples.prog w genEnv₂ genericCall).2 := by
+  have hsec : ¬ Vis Examples.prog Label.bot sec := by
+    rintro (⟨h, _⟩ | ⟨⟨h, _⟩, _, _⟩) <;>
+      simp [Examples.prog, Program.top, sec, LExpr.ofLabel, Label.bot] at h <;> revert h <;> decide
+  exact t6_ground (e₁ := genEnv₁) (e₂ := genEnv₂) Examples.prog_wf rfl (LExpr.le_refl _) w
+    (fun q hq => by simp only [List.mem_cons, List.not_mem_nil, or_false] at hq
+                    rcases hq with rfl | rfl <;> rfl) rfl
+    (.cons .int (.cons .bool .nil)) (.cons .int (.cons .bool .nil))
+    (.cons (.hidden hsec) (.cons .bool .nil)) genericCall_typed 5 trivial trivial
+
 end Una.F1.T6Example
+

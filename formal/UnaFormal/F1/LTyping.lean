@@ -171,6 +171,23 @@ mutual
     | t :: ts => t.Ground ∧ LTy.GroundAll ts
 end
 
+/-- The symbols of a label are among `xs`. -/
+def LExpr.SymsIn (xs : List String) (e : LExpr) : Prop := ∀ x ∈ e.plain ++ e.star, x ∈ xs
+
+mutual
+  /-- A type of a signature mentions only the function's own type parameters `xs`, as types
+  and in its labels. -/
+  def LTy.ScopedIn (xs : List String) : LTy → Prop
+    | .var a l => a ∈ xs ∧ l.SymsIn xs
+    | .int l | .bool l | .text l | .unit l | .record _ l => l.SymsIn xs
+    | .list t l | .option t l | .result t l => t.ScopedIn xs ∧ l.SymsIn xs
+    | .fn ps r _ _ _ l => LTy.ScopedInAll xs ps ∧ r.ScopedIn xs ∧ l.SymsIn xs
+
+  def LTy.ScopedInAll (xs : List String) : List LTy → Prop
+    | [] => True
+    | t :: ts => t.ScopedIn xs ∧ LTy.ScopedInAll xs ts
+end
+
 /-- A symbolic decision `ℓ*_T` for each name. -/
 def decision (d : List String) : LExpr := ⟨Label.bot, [], d⟩
 
@@ -416,6 +433,13 @@ structure Program.LWellFormed (p : Program) : Prop where
     ∃ fn, p.find po.via = some fn ∧ fn.paramTys [] = [po.src.erase] ∧
       fn.result.erase = po.dst.erase
   categories : p.CatsDeclared
+  /-- Records declare ground field types. -/
+  recordsGround : ∀ rec ∈ p.records, ∀ t ∈ rec.fields, t.Ground
+  /-- A function constrains by `Eq` only its own type parameters. -/
+  eqScoped : ∀ fn ∈ p.funs, ∀ a ∈ fn.eqParams, a ∈ fn.tparams
+  /-- A signature mentions only its own type parameters. -/
+  sigsScoped : ∀ fn ∈ p.funs, (∀ q ∈ fn.params, q.2.ScopedIn fn.tparams) ∧
+    fn.result.ScopedIn fn.tparams
   /-- Signatures and declared types keep `ℓ_T` in place. -/
   inPlace : (∀ fn ∈ p.funs, (∀ q ∈ fn.params, q.2.InPlace) ∧ fn.result.InPlace) ∧
     (∀ rec ∈ p.records, ∀ t ∈ rec.fields, t.InPlace) ∧

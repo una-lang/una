@@ -32,9 +32,12 @@ mutual
     | record {record fields rec l} :
         p.record record = some rec → LValsTy p fields rec.fields →
         LValTy p (.record record fields) (.record record l)
-    | closure {params body env Γ E t ε ps r o g f l} :
-        LEnvTy p env Γ → LExprTy p E (params ++ Γ) .bot body t ε → p.le ε.failLabel .bot →
-        Flows p.top ps (params.map Prod.snd) → Flow p.top t r →
+    | closure {params body env Γ E t ε ps r o g f l σ} :
+        (∀ q ∈ σ, q.2.Ground) →
+        LEnvTy p env (Γ.lsub p.recordDeep σ) → LExprTy p E (params ++ Γ) .bot body t ε →
+        p.le ε.failLabel .bot →
+        Flows p.top ps ((params.map Prod.snd).map (LTy.lsubst p.recordDeep σ)) →
+        Flow p.top (t.lsubst p.recordDeep σ) r →
         (ε.op = true → o = true) → (ε.get = true → g = true) → (ε.fails.isSome = true → f = true) →
         LValTy p (.closure params body env) (.fn ps r o g f l)
 
@@ -67,8 +70,8 @@ mutual
     | _, _, _, .ok h, .result f _ => .ok (LValTy.flow h f)
     | _, _, _, .err, .result _ _ => .err
     | _, _, _, .record hr hfs, .record _ => .record hr hfs
-    | _, _, _, .closure henv hb hfl hps hr ho hg hf, .fn fps fr fo fg ff _ =>
-      .closure henv hb hfl (Flows.trans fps hps) (Flow.trans hr fr) (fo ∘ ho) (fg ∘ hg) (ff ∘ hf)
+    | _, _, _, .closure hσ henv hb hfl hps hr ho hg hf, .fn fps fr fo fg ff _ =>
+      .closure hσ henv hb hfl (Flows.trans fps hps) (Flow.trans hr fr) (fo ∘ ho) (fg ∘ hg) (ff ∘ hf)
 
   theorem LValsAll.flow : ∀ {vs : List Val} {t t' : LTy}, LValsAll p vs t → Flow p.top t t' →
       LValsAll p vs t'
@@ -349,23 +352,48 @@ theorem bound_fails {pc pc' : LExpr} {o g f : Bool} (hb : p.Bound pc' o g f)
     (hpc : p.le pc pc') (hf : f = true) : Fails p pc (Eff.ofFn o g f) :=
   ⟨.bot, by simp [Eff.ofFn, hf], LExpr.le_trans hpc (hb.2.2 hf).1⟩
 
-/-- A call of a typed function value on typed arguments keeps to the function's type. -/
+/-- What instantiation by `σ` gives the symbolic labels: `ℓ*` of each type argument. -/
+def Program.sd (p : Program) (σ : List (String × LTy)) : List (String × LExpr) :=
+  σ.map (fun q => (q.1, q.2.deep p.recordDeep))
+
+/-- Effects instantiated: the labels of failures. -/
+def Eff.inst (s : List (String × LExpr)) (ε : Eff) : Eff := ⟨ε.op, ε.get, ε.fails.map (·.inst s)⟩
+
+/-- A ground instantiation. -/
+abbrev GroundSubst (σ : List (String × LTy)) : Prop := ∀ q ∈ σ, q.2.Ground
+
+theorem LCtx.lsub_append (rd : String → Label) (σ : List (String × LTy)) (a b : LCtx) :
+    (a ++ b).lsub rd σ = a.lsub rd σ ++ b.lsub rd σ := List.map_append
+
+theorem LCtx.lsub_snd (rd : String → Label) (σ : List (String × LTy)) (a : LCtx) :
+    (a.lsub rd σ).map Prod.snd = (a.map Prod.snd).map (LTy.lsubst rd σ) := by
+  simp [LCtx.lsub, List.map_map, Function.comp_def]
+
+/-- A call of a typed function value on typed arguments keeps to the function's type, when every
+body keeps to its typing at every ground instantiation. -/
 theorem applyWith_uok {run : Env → Expr → Trace × Res} {fv : Val} {vs : List Val}
     {ps : List LTy} {r : LTy} {o g f : Bool} {lf : LExpr}
-    (hrun : ∀ {env : Env} {Γ : LCtx} {E : List String} {e : Expr} {t : LTy} {ε : Eff},
-      LEnvTy p env Γ → LExprTy p E Γ .bot e t ε → UGood p .bot t ε (run env e))
+    (hrun : ∀ {σ : List (String × LTy)} {env : Env} {Γ : LCtx} {E : List String} {e : Expr}
+      {t : LTy} {ε : Eff}, GroundSubst σ → LEnvTy p env (Γ.lsub p.recordDeep σ) →
+      LExprTy p E Γ .bot e t ε →
+      UGood p (LExpr.bot.inst (p.sd σ)) (t.lsubst p.recordDeep σ) (ε.inst (p.sd σ)) (run env e))
     (hf : LValTy p fv (.fn ps r o g f lf)) (hvs : LValsTy p vs ps) :
     UOk (FnAllowed o g) (fun v => LValTy p v r) (f = true) (applyWith run fv vs) := by
   cases hf with
-  | closure henv hb hfl hps hr ho hg hfs =>
+  | @closure params _ cenv Γc _ _ _ _ _ _ _ _ _ σc hσ henv hb hfl hps hr ho hg hfs =>
     have hvs' := LValsTy.flows hvs hps
-    rw [applyWith, ite_eq_left (by rw [LValsTy.length hvs', List.length_map])]
-    refine UOk.mono ?_ (fun v hv => LValTy.flow hv hr) ?_ (hrun (bindParams_ltyped hvs' henv) hb)
+    rw [applyWith, ite_eq_left (by rw [LValsTy.length hvs', List.length_map, List.length_map])]
+    have henv' : LEnvTy p (bindParams params vs cenv) ((params ++ Γc).lsub p.recordDeep σc) := by
+      rw [LCtx.lsub_append]
+      have := bindParams_ltyped (params := params.lsub p.recordDeep σc)
+        (by rw [LCtx.lsub_snd]; exact hvs') henv
+      simpa [bindParams, LCtx.lsub, List.map_map, Function.comp_def] using this
+    refine UOk.mono ?_ (fun v hv => LValTy.flow hv hr) ?_ (hrun hσ henv' hb)
     · intro ev hev
       cases ev with
       | out _ => exact ho hev.1
       | get _ => exact hg hev.1
     · rintro ⟨l, hl, _⟩
-      exact hfs (by simp [hl])
+      exact hfs (by simp [Eff.inst] at hl; obtain ⟨l', hl', _⟩ := hl; simp [hl'])
 
 end Una.F1

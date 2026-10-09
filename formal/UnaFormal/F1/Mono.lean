@@ -192,17 +192,18 @@ variable {p : Program} {L : Label}
 /-- **T6 for runs that end, at any fuels.** Two runs of a body the labeled typing accepts, in
 environments the observer at `L` cannot tell apart, that both end, whatever fuel each needed,
 show that observer the same events and related outcomes. -/
-theorem t6_ended (hwf : p.LWellFormed) (hgf : p.GenericFree)
+theorem t6_ended (hwf : p.LWellFormed) (hpol : p.policies = [])
     (hget : p.le (.ofLabel p.acceptsGet) (.ofLabel p.getResult)) (w : World)
-    {e₁ e₂ : Env} {Γ : LCtx} {E : List String} {pc : LExpr} {e : Expr} {t : LTy} {ε : Eff}
-    (h₁ : LEnvTy p e₁ Γ) (h₂ : LEnvTy p e₂ Γ) (hrel : EnvRel p L Γ e₁ e₂)
-    (he : LExprTy p E Γ pc e t ε) {n₁ n₂ : Nat}
+    {e₁ e₂ : Env} {Γ : LCtx} {pc : LExpr} {e : Expr} {t : LTy} {ε : Eff}
+    (hΓ : Γ.InPlace) (hpc : pc.PlainFree) (h₁ : LEnvTy p e₁ Γ) (h₂ : LEnvTy p e₂ Γ)
+    (hrel : EnvRel p L Γ e₁ e₂) (he : LExprTy p [] Γ pc e t ε) {n₁ n₂ : Nat}
     (ht₁ : Term (eval n₁ p w e₁ e).2) (ht₂ : Term (eval n₂ p w e₂ e).2) :
     proj p L (eval n₁ p w e₁ e).1 = proj p L (eval n₂ p w e₂ e).1 ∧
       OutRel (V p L t) (Vis p L ε.failLabel) (eval n₁ p w e₁ e).2 (eval n₂ p w e₂ e).2 := by
   have m₁ := (eval_mono (p := p) (w := w) n₁ (max n₁ n₂) (Nat.le_max_left _ _)).2 e₁ e ht₁
   have m₂ := (eval_mono (p := p) (w := w) n₂ (max n₁ n₂) (Nat.le_max_right _ _)).2 e₂ e ht₂
-  have h := t6 hwf hgf hget w h₁ h₂ hrel he (max n₁ n₂) (by rw [m₁]; exact ht₁) (by rw [m₂]; exact ht₂)
+  have h := t6_ground hwf hpol hget w hΓ hpc h₁ h₂ hrel he (max n₁ n₂)
+    (by rw [m₁]; exact ht₁) (by rw [m₂]; exact ht₂)
   rw [m₁, m₂] at h
   exact h
 
