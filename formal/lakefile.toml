@@ -11,3 +11,8 @@ rev = "v4.34.0"
 
 [[lean_lib]]
 name = "UnaFormal"
+
+# The checker of M2 over `una core --json` (docs/plan/formal-track.md §5).
+[[lean_exe]]
+name = "una-core-check"
+root = "Recheck"

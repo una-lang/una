@@ -18,3 +18,5 @@ import UnaFormal.F1.Mono
 import UnaFormal.F1.T6Example
 import UnaFormal.F1.Subst
 import UnaFormal.F1.InPlace
+import UnaFormal.F1.Check
+import UnaFormal.F1.Import
