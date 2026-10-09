@@ -59,3 +59,5 @@ import UnaFormal.F1H.BinaryInst
 import UnaFormal.F1H.BinaryR
 import UnaFormal.F1H.T6
 import UnaFormal.F1H.Release
+import UnaFormal.F1H.Runs
+import UnaFormal.F1H.HostExamples

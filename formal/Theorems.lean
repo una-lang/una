@@ -136,3 +136,12 @@ import UnaFormal
 #print axioms Una.F1H.t6_host
 #print axioms Una.F1H.t6_host_ground
 #print axioms Una.F1H.t6_release_host
+#print axioms Una.F1H.across_runs
+#print axioms Una.F1H.across_runs_events
+#print axioms Una.F1H.HostExamples.files_lawful
+#print axioms Una.F1H.HostExamples.eA_typed
+#print axioms Una.F1H.HostExamples.exA
+#print axioms Una.F1H.HostExamples.exA_runs
+#print axioms Una.F1H.HostExamples.eB_typed
+#print axioms Una.F1H.HostExamples.exB
+#print axioms Una.F1H.HostExamples.exB_runs
