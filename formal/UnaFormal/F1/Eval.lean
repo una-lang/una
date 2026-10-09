@@ -23,6 +23,13 @@ inductive Val where
   | record (name : String) (fields : List Val)
   | closure (params : List (String × LTy)) (body : Expr) (env : List (String × Val))
 
+/-- The line the operation writes for a scalar. -/
+def Val.line : Val → Option String
+  | .int n => Option.some (toString n)
+  | .bool b => Option.some (toString b)
+  | .text s => Option.some s
+  | _ => Option.none
+
 /-- An environment: the values of the variables in scope, innermost first. -/
 abbrev Env := List (String × Val)
 
@@ -189,8 +196,11 @@ mutual
         | _, _ => stuck
       | .op line =>
         match evalAtom env line with
-        | some (.text s) => ([.out s], .ok .unit)
-        | _ => stuck
+        | some v =>
+          match v.line with
+          | some s => ([.out s], .ok .unit)
+          | none => stuck
+        | none => stuck
       | .get url =>
         match evalAtom env url with
         | some (.text s) =>

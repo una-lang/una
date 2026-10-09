@@ -86,7 +86,9 @@ mutual
       have h := atom_subst τ hf
       simp only [Ty.subst, Ty.substs_eq] at h
       exact .apply h (atoms_subst τ has)
-    | _, _, _, .op h => .op (atom_subst τ h)
+    | _, _, _, .op (t := t) h hs => by
+      have h' := atom_subst τ h
+      cases t <;> simp only [Ty.Scalar] at hs <;> exact .op h' (by simp [Ty.subst, Ty.Scalar])
     | _, _, _, .get h => .get (atom_subst τ h)
     | _, _, _, .construct hr has => by
       have h := atoms_subst τ has

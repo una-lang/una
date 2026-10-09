@@ -131,6 +131,11 @@ def isText : LTy → Bool
   | .text _ => true
   | _ => false
 
+/-- `Ty.Scalar` of the type's structure. -/
+def isScalar : LTy → Bool
+  | .int _ | .bool _ | .text _ => true
+  | _ => false
+
 /-- One type both operands of `==` flow into: the same structure, each label the join. `None`
 when the structures differ or hold a function type, which has no equality. -/
 def joinTy : LTy → LTy → Option LTy
@@ -230,7 +235,7 @@ mutual
       | _ => throw "a call of a value that is not a function"
     | .op line => do
       let t ← atomTy Γ line
-      need (isText t) "the operation's argument is not a text"
+      need (isScalar t) "the operation's argument is not a scalar"
       le p (pc.join (p.deep t)) (.ofLabel p.acceptsOp)
         "the operation's argument or program counter is above what it accepts"
       need (symFree pc) "an operation under a symbolic program counter"

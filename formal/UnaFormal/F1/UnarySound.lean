@@ -259,14 +259,15 @@ theorem unary_sound (hwf : p.LWellFormed) (hpol : p.policies = []) (w : World) :
           (applyWith_uok hrun hft hargs)
       | @op _ _ line t hl ht hle _ =>
         obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv hl
-        cases t <;> simp [LTy.erase] at ht
-        simp only [LTy.lsubst] at hvt
-        cases hvt
-        simp only [evalRhs, hv]
-        refine ⟨fun ev hev => ?_, LValTy.unit⟩
-        simp only [List.mem_singleton] at hev
-        subst hev
-        exact ⟨rfl, LExpr.le_trans (hpc0 _) (LExpr.le_of_le_inst_ofLabel (LExpr.le_inst _ hle))⟩
+        cases t <;> simp [LTy.erase, Ty.Scalar] at ht
+        all_goals
+          simp only [LTy.lsubst] at hvt
+          cases hvt
+          simp only [evalRhs, hv, Val.line]
+          refine ⟨fun ev hev => ?_, LValTy.unit⟩
+          simp only [List.mem_singleton] at hev
+          subst hev
+          exact ⟨rfl, LExpr.le_trans (hpc0 _) (LExpr.le_of_le_inst_ofLabel (LExpr.le_inst _ hle))⟩
       | @get _ _ url t hu ht hle _ =>
         obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv hu
         cases t <;> simp [LTy.erase] at ht

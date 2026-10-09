@@ -12,7 +12,7 @@ rule 3). The reading is part of the trusted base of the re-check (`docs/plan/for
   dropped: F1's failures are codes, so a failure with a payload, a `case` or a handler that reads
   the failure, is outside F1;
 - a kind with one variant and no type parameters is a record;
-- F1 has one operation, `Text -> Unit`, which never fails: a function is read only when its body,
+- F1 has one operation, from a scalar (`Int`, `Bool` or `Text`) to `Unit`, which never fails: a function is read only when its body,
   its types and the signatures of what it calls mention at most one operation, of that shape,
   whose `accepts` becomes F1's;
 - `⊤` is `restricted` with every category the document names.
@@ -442,14 +442,14 @@ def checkFun (cats : List String) (caps : List (String × J)) (decls : List Decl
                 match ← arr q with
                 | [_, t] => pure (← ty c0 t)
                 | _ => throw "a parameter"
-              | _ => throw s!"the operation `{cap}.{o}`, which does not take one text"
+              | _ => throw s!"the operation `{cap}.{o}`, which does not take one argument"
             let r ← ty c0 (← field opJ "result")
             match shape, r with
-            | .text _, .unit _ =>
+            | .int _, .unit _ | .bool _, .unit _ | .text _, .unit _ =>
               if !isNull (← field opJ "fails") then throw s!"the operation `{cap}.{o}`, which may fail"
               let a ← label (← field opJ "accepts")
               pure a.base
-            | _, _ => throw s!"the operation `{cap}.{o}`, which is not `Text -> Unit`"
+            | _, _ => throw s!"the operation `{cap}.{o}`, which does not take a scalar and give `Unit`"
         | _ => throw "several operations"
       match acc with
       | .error why => .notRechecked why

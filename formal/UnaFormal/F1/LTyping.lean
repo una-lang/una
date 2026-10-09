@@ -260,7 +260,7 @@ mutual
     covariant positions of rule 4, is every label, so the model writes `deep`; an argument with
     a function type would need `ℓ⁺`. -/
     | op {Γ pc line t} :
-        LAtomTy Γ line t → t.erase = .text →
+        LAtomTy Γ line t → t.erase.Scalar →
         p.le (pc.join (p.deep t)) (.ofLabel p.acceptsOp) → pc.SymFree →
         LRhsTy p E Γ pc (.op line) (.unit .bot) ⟨true, false, Option.none⟩
     /-- The host operation: a sink whose failure its argument decides, and which the program

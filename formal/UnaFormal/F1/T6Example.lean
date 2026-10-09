@@ -35,7 +35,7 @@ theorem body_typed : LExprTy prog [] Γ .bot body (.int .bot) eff := by
   · refine .inr ⟨⟨?_, ?_⟩, ?_, ?_⟩ <;>
       simp [sec, LExpr.joinAll, LExpr.join, LExpr.bot, LExpr.ofLabel, Label.join, Label.bot,
         Level.join, Level.rank] <;> decide
-  · refine .letR (t := .unit .bot) (.op .text rfl ?_ ?_) .unit (.atom (.var rfl)) (by simp [LTy.InPlace, LExpr.bot, LExpr.ofLabel])
+  · refine .letR (t := .unit .bot) (.op .text trivial ?_ ?_) .unit (.atom (.var rfl)) (by simp [LTy.InPlace, LExpr.bot, LExpr.ofLabel])
     · refine .inr ⟨⟨?_, ?_⟩, ?_, ?_⟩ <;>
         simp [prog, LExpr.join, LExpr.bot, LExpr.ofLabel, Label.join, Label.bot, Eff.failLabel,
           Eff.none, Program.deep, LTy.deep, Level.join, Level.rank] <;> decide
@@ -124,7 +124,7 @@ theorem branching_typed : LExprTy prog [] Γb .bot branching (.int sec) brEff :=
       apply le_sec <;> simp [sec, LExpr.join, LExpr.bot, LExpr.ofLabel, Label.join,
         Label.bot, Level.join, Level.rank]
     case b2 =>
-      refine .letR (t := .unit .bot) (.op (.var rfl) rfl ?le ?sf) .unit (.atom (.var rfl)) (by simp [LTy.InPlace, LExpr.bot, LExpr.ofLabel])
+      refine .letR (t := .unit .bot) (.op (.var rfl) trivial ?le ?sf) .unit (.atom (.var rfl)) (by simp [LTy.InPlace, LExpr.bot, LExpr.ofLabel])
       case le =>
         refine .inr ⟨⟨?_, ?_⟩, ?_, ?_⟩ <;>
           simp [prog, LExpr.join, LExpr.bot, LExpr.ofLabel, Label.join, Label.bot, Eff.failLabel,

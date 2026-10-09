@@ -232,25 +232,24 @@ theorem t6_sound (hwf : p.LWellFormed) (hpol : p.policies = [])
             (hof_uok (hb.inst _) (applyWith_uok hrunU hft₂ (LValsTy.lsubst_unraise (LValsTy.flowsσ hu₂ hfl))))
             hpc' (fun a b => V.hideσ hdp a b hvis) (fun _ => Vis.ofFn_plain) (fun _ => Vis.ofFn_plain)
       | @op _ _ line t hl ht hle _ =>
-        cases t <;> simp [LTy.erase] at ht
-        rename_i l
-        obtain ⟨v₁, v₂, h₁, h₂, hv, hu₁, hu₂⟩ := latom_bothσ he₁ he₂ hrel hl
-        simp only [LTy.lsubst] at hv hu₁ hu₂
-        cases hu₁
-        cases hu₂
-        rename_i s₁ s₂
-        simp only [evalRhs, h₁, h₂]
-        have hacc : Vis p L (.ofLabel p.acceptsOp) → Vis p L (l.inst (p.sd σ)) := fun h =>
-          Vis.of_le (LExpr.le_trans (LExpr.inst_le_join_inst _ _ _)
-            (LExpr.le_of_le_inst_ofLabel (LExpr.le_inst _ hle))) h
-        by_cases hd : Vis p L (l.inst (p.sd σ))
-        · have hs : s₁ = s₂ := by have := V.eq_text hv hd; injection this
-          subst hs
-          exact brel_same (fun _ h => by cases h; exact .unit)
-        · have h₁' : ¬ EvVis p L (.out s₁) := fun h => hd (hacc h)
-          have h₂' : ¬ EvVis p L (.out s₂) := fun h => hd (hacc h)
-          exact brel_quiet (by simp only [proj_single_hidden h₁', proj_single_hidden h₂'])
-            (fun _ _ => .unit) (fun _ h => nomatch h) (fun _ h => nomatch h)
+        cases t <;> simp [LTy.erase, Ty.Scalar] at ht
+        all_goals
+          rename_i l
+          obtain ⟨v₁, v₂, h₁, h₂, hv, hu₁, hu₂⟩ := latom_bothσ he₁ he₂ hrel hl
+          simp only [LTy.lsubst] at hv hu₁ hu₂
+          have hacc : Vis p L (.ofLabel p.acceptsOp) → Vis p L (l.inst (p.sd σ)) := fun h =>
+            Vis.of_le (LExpr.le_trans (LExpr.inst_le_join_inst _ _ _)
+              (LExpr.le_of_le_inst_ofLabel (LExpr.le_inst _ hle))) h
+          by_cases hd : Vis p L (l.inst (p.sd σ))
+          · have hs : v₁ = v₂ := by
+              first | exact V.eq_int hv hd | exact V.eq_bool hv hd | exact V.eq_text hv hd
+            subst hs
+            cases hu₁ <;> simp only [evalRhs, h₁, h₂, Val.line] <;>
+              exact brel_same (fun _ h => by cases h; exact .unit)
+          · cases hu₁ <;> cases hu₂ <;> simp only [evalRhs, h₁, h₂, Val.line] <;>
+              exact brel_quiet
+                (by simp only [proj_single_hidden (ev := .out _) (fun h => hd (hacc h))])
+                (fun _ _ => .unit) (fun _ h => nomatch h) (fun _ h => nomatch h)
       | @get _ _ url t hu ht hle _ =>
         cases t <;> simp [LTy.erase] at ht
         rename_i l
