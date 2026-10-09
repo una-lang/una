@@ -19,7 +19,9 @@ parameter in scope, every call site and `main`; `t6_ended` (`Mono.lean`) drops t
 - generic functions at ground instances only: the type arguments of a call are ground (the
   premise `LTy.GroundAll` of T-Call and of a function reference), so a generic body that calls a
   generic function at its own type parameters, two levels of generics, is outside the model;
-- no declassification (`p.policies = []`), which is option B1, after M2;
+- no policy (`p.policies = []`): declassification is `t6_release` (`Release.lean`, option B1),
+  which `t6_soundR` proves for programs within B1's restrictions, up to the first visible release
+  whose values differ; `t6_sound` and `t6` are its case without policies;
 - the host's response is labeled at least what its operation accepts (`hget`), which
   `spec/24 §5` meets and `crates/una-check/tests/host_table.rs` checks of the prelude.
 

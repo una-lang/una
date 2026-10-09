@@ -10,6 +10,10 @@ says, or, after a common visible prefix, release through the same policy two dif
 after which nothing is claimed. Its corollary: runs whose visible releases agree are related as
 `t6` says.
 
+B1's restrictions (`B1WellFormed`, `B1.lean`) are the model's, not the specification's: a scalar
+`from` and `to`, a pure `via` function, and no release in a function value or under a raised
+program counter (`Program.RelBound`). A program outside them is not re-checked.
+
 What B1 does not claim:
 - anything after the first visible release whose values differ;
 - any bound on what `via` reveals of the secret it is given: that is the policy's

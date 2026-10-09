@@ -438,13 +438,17 @@ def prepare (c : Ctx) (caps : List (String × J)) (decls : List Decl) (d : Decl)
     for pol in fn.rels do refPolicy pol
     for f in (← get).funs do
       for pol in (List.lookup f c.rels).getD [] do refPolicy pol
+    -- Every policy of the document, so that B1's restrictions are checked over the whole
+    -- program's policies (`Program.B1WellFormed`), not only those the function reaches.
+    for (_, pol) in c.vias do refPolicy pol
     let pols ← (← get).policies.mapM fun pol => do
       let some e := findDecl pol | throw s!"the policy `{pol}`"
       let via ← path (← field e.value "via")
       refFun via
-      let src ← ty c (← field e.value "from")
-      let dst ← ty c (← field e.value "to")
-      pure ({ name := pol, src, dst, via } : Policy)
+      let types : M (LTy × LTy) := do pure (← ty c (← field e.value "from"), ← ty c (← field e.value "to"))
+      match plainRun types with
+      | .ok (src, dst) => pure ({ name := pol, src, dst, via } : Policy)
+      | .error why => throw s!"B1 restriction (a policy outside F1): `{pol}`: {why}"
     let callees ← (← get).funs.mapM fun f => do
       let some e := findDecl f | throw s!"the function `{f}`"
       -- A `via` function's body is read: option B1 asks it to be pure (`Check.checkB1`).
