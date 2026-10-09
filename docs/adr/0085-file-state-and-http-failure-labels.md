@@ -59,6 +59,8 @@ F-C is more precise, since a read before every labeled write would stay public. 
      - for a lambda, `internal`;
      - for an example, `public`.
 
+   - for a write or a call in a body that no label rule checks, a policy's `via` function (`spec/07 §5` rule 3): the cap itself, since its labels are unknown. Una-2's review of this ADR found that a `via` body writing a file only when its argument was `"a"` checked clean. Two runs with the secret `a` and `b` printed `SET` and `NOT SET`. Such a body is trusted code, which could print its argument anyway, but it now counts at the cap. Conformance case `s14_write_in_via` covers it.
+
    It is capped at `internal`. `Files.write` accepts at most `internal` for its path (`spec/14 §3`: "`write(path: Text, content: Text) -> Unit` | `FileError` | `internal`"). So a higher path is U4003 and a higher program counter U4002 already; conformance case `security/s14_secret_write_rejected` checks both.
 
 2. **Every `Files` operation carries it.** The failure of every `Files.read` and `Files.write` in the package is also labeled by the file-state label, and so is what depends on the failure: an `attempt`'s `Result`, and a branch on it. `Files` has no other operation (`spec/14 §3`), and neither has a `Bool` or `Option` outcome.

@@ -580,9 +580,15 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         self.edge(id, span);
         self.call_targets.insert(span, id);
-        if self.labels() {
+        if self.pass == super::authority::Pass::Check {
+            // In a body no label rule checks, the program counter is unknown: the call is
+            // entered at the cap, `⊤` here, which `file_state` caps.
             let entry = self.entry();
-            let pc = self.ctx.pc.clone();
+            let pc = if self.labels() {
+                self.ctx.pc.clone()
+            } else {
+                Label::top(&self.env.categories)
+            };
             self.env.file_calls.push((entry, id, pc));
         }
         self.testing_site(def.module, def.name, span);
@@ -1218,12 +1224,19 @@ impl<'a> Checker<'_, 'a, '_> {
             self.obligation(ObligationKind::Precondition, span, None);
         }
         if host && capability.name == "Files" {
-            if file_write && self.labels() {
+            if file_write && self.pass == super::authority::Pass::Check {
                 // The path and the program counter; the highest program counter the code can be
-                // entered under joins them once every call is known (`file_state`).
-                self.env.file_cap = def.accepts.clone().unwrap_or_else(Label::public);
+                // entered under joins them once every call is known (`file_state`). In a body no
+                // label rule checks, a policy's `via` function, the labels are unknown: the write
+                // counts at the cap.
+                let cap = def.accepts.clone().unwrap_or_else(Label::public);
+                self.env.file_cap = cap.clone();
                 let entry = self.entry();
-                let site = written.join(&self.ctx.pc);
+                let site = if self.labels() {
+                    written.join(&self.ctx.pc)
+                } else {
+                    cap
+                };
                 self.env.file_writes.push((entry, site, span));
             }
             decided = decided.join(&self.env.file_state);
