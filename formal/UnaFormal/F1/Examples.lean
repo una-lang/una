@@ -31,7 +31,7 @@ def prog : Program where
   policies := []
   funs := [pick]
 
-theorem le_self (e : LExpr) : LExpr.le prog.top e e :=
+theorem le_self {top : Label} (e : LExpr) : LExpr.le top e e :=
   .inr ⟨Label.le_refl _, fun _ hx => .inl hx, fun _ hx => hx⟩
 
 theorem bot_le (e : LExpr) : LExpr.le prog.top LExpr.bot e :=
@@ -50,10 +50,10 @@ the type argument's own labels. -/
 theorem pick_ok : prog.FunOk pick := by
   refine ⟨.var "T" (lT.join .bot), ⟨false || false, false || false, Option.none⟩,
     ?_, .var lT_join_le, by simp, by simp, by simp, ?_⟩
-  · have hthen : LExprTy prog [("a", .var "T" lT), ("b", .var "T" lT), ("c", .bool .bot)]
+  · have hthen : LExprTy prog [] [("a", .var "T" lT), ("b", .var "T" lT), ("c", .bool .bot)]
         (LExpr.bot.join .bot) (.atom (.var "a")) (.var "T" lT) .none :=
       .atom (.var rfl)
-    have helse : LExprTy prog [("a", .var "T" lT), ("b", .var "T" lT), ("c", .bool .bot)]
+    have helse : LExprTy prog [] [("a", .var "T" lT), ("b", .var "T" lT), ("c", .bool .bot)]
         (LExpr.bot.join .bot) (.atom (.var "b")) (.var "T" lT) .none :=
       .atom (.var rfl)
     exact .ite (.var rfl) hthen helse (.var (le_self lT)) (.var (le_self lT))
@@ -78,7 +78,7 @@ def callPick : Expr :=
 
 /-- The labeled typing accepts the call at the public program counter. -/
 theorem callPick_typed :
-    LExprTy prog [] .bot callPick pickInt ((Eff.ofFn false false false).union .none) := by
+    LExprTy prog [] [] .bot callPick pickInt ((Eff.ofFn false false false).union .none) := by
   refine .letR (t := pickInt) ?_ (.int (le_self _)) (.atom (.var rfl))
   refine LRhsTy.call (fn := pick) (targs := [.int .bot]) rfl ?_ rfl rfl ?_ (.cons .int (.cons .int (.cons .bool .nil)))
     (.cons (.int (bot_le _)) (.cons (.int (bot_le _)) (.cons (.bool (bot_le _)) .nil)))
@@ -100,5 +100,92 @@ example :
       (.letR "x" (.int .bot) (.call "pick" [.int .bot] [.int 1, .int 2, .bool true])
         (.atom (.var "x")))).2 = .ok (.int 1) := by
   rfl
+
+/-! ### A decision given to a function value -/
+
+/-- `ℓ*_T`. -/
+def lsT : LExpr := ⟨Label.bot, [], ["T"]⟩
+
+def tT : LTy := .var "T" lT
+
+/-- The label of `a == b` over `T` values: every label of both, `ℓ*_T`. -/
+def cLabel : LExpr := (tT.deep (fun _ => Label.bot)).join (tT.deep (fun _ => Label.bot))
+
+def xTy : LTy := tT.raise cLabel
+
+def rTy : LTy := (LTy.int .bot).raise (LExpr.bot.join (decision (decisionsOf [xTy])))
+
+/-- `choose[T: Eq](a: T, b: T, k: fn(T) -> Int) -> Int = let c = a == b; let x = if c then a
+else b; k(x)`: `x` carries the decision `ℓ*_T`, which `k`'s parameter `T` does not accept, so
+T-App raises the call's result by it. -/
+def choose : Fun where
+  name := "choose"
+  tparams := ["T"]
+  eqParams := ["T"]
+  params := [("a", tT), ("b", tT), ("k", .fn [tT] (.int .bot) false false false .bot)]
+  result := .int lsT
+  op := false
+  get := false
+  fails := false
+  body :=
+    .letR "c" (.bool cLabel) (.eq (.var "a") (.var "b"))
+      (.letE "x" xTy (.ite (.var "c") (.atom (.var "a")) (.atom (.var "b")))
+        (.letR "r" rTy (.apply (.var "k") [.var "x"]) (.atom (.var "r"))))
+
+def prog2 : Program := { prog with funs := [choose] }
+
+/-- The decision `x` carries is `ℓ*_T`, computed from the comparison. -/
+theorem choose_decision : decisionsOf [xTy] = ["T"] := by decide
+
+theorem choose_le (a b : LExpr) (hb : a.base.level = .«public» ∧ a.base.cats = [])
+    (hp : ∀ x ∈ a.plain, x ∈ b.plain ∨ x ∈ b.star) (hs : ∀ x ∈ a.star, x ∈ b.star) :
+    LExpr.le prog2.top a b :=
+  .inr ⟨⟨by rw [hb.1]; exact Level.public_le _, fun _ h => by rw [hb.2] at h; nomatch h⟩, hp, hs⟩
+
+/-- What `choose`'s body may do: nothing. -/
+def chooseEff : Eff :=
+  Eff.none.union ((Eff.none.union Eff.none).union ((Eff.ofFn false false false).union Eff.none))
+
+/-- The labeled typing accepts `choose`, `Eq` constraint, comparison, decision and all. -/
+theorem choose_ok : prog2.FunOk choose := by
+  refine ⟨rTy, chooseEff, ?hty, .int (choose_le _ _ ?_ ?_ ?_), ?_, ?_, ?_, le_self _⟩
+  case hty =>
+    dsimp only [choose]
+    refine .letR ?r1 (.bool (le_self _)) ?b1
+    · exact .eq (.var rfl) (.var rfl) (.var (le_self _)) (.var (le_self _)) rfl
+    refine .letE ?r2 (.var (le_self _)) ?b2
+    · exact .ite (.var rfl) (.atom (.var rfl)) (.atom (.var rfl)) (.var (le_self _))
+        (.var (le_self _))
+    refine .letR ?r3 (.int (le_self _)) (.atom (.var rfl))
+    refine LRhsTy.apply (ps := [tT]) (r := .int .bot) (o := false) (g := false) (fl := false)
+      (lf := .bot) (ts := [xTy]) ?hf ?has ?fl ?bd
+    case hf => exact .var rfl
+    case has => exact .cons (.var rfl) .nil
+    case bd => exact ⟨fun h => (by cases h), fun h => (by cases h), fun h => (by cases h)⟩
+    case fl =>
+      refine .cons (.var (choose_le _ _ ?_ ?_ ?_)) .nil
+      all_goals simp [xTy, tT, lT, cLabel, LTy.raise, LTy.deep, LExpr.join, LExpr.promote,
+        Label.join, Label.bot, decision, Level.join, Level.rank]
+      all_goals decide
+  all_goals simp [xTy, rTy, tT, lT, lsT, cLabel, LTy.raise, LTy.deep, LExpr.join,
+    LExpr.promote, LExpr.bot, LExpr.ofLabel, Label.join, Label.bot, decision,
+    Level.join, Level.rank, choose, chooseEff]
+  all_goals decide
+
+/-- **`==` needs `Eq`.** In a function that does not constrain `T` by `Eq`, such as
+`same[T](a: T, b: T) -> Bool = a == b`, no typing of `a == b` exists over values of `T`
+(U2026, `spec/20`). -/
+theorem eq_needs_Eq {p : Program} {Γ : LCtx} {pc : LExpr} {b : Atom} {t : LTy} {ε : Eff}
+    {l : LExpr} (ha : lctxLookup Γ "a" = some (.var "T" l)) :
+    ¬ LRhsTy p [] Γ pc (.eq (.var "a") b) t ε := by
+  intro h
+  cases h with
+  | eq ha' _ hf₁ _ he =>
+    cases ha' with
+    | var hx =>
+      rw [ha] at hx
+      cases hx
+      cases hf₁
+      simp [Program.eqIn, LTy.eqIn] at he
 
 end Una.F1.Examples

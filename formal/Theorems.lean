@@ -30,3 +30,6 @@ import UnaFormal
 #print axioms Una.F1.Examples.prog_wf
 #print axioms Una.F1.Examples.callPick_typed
 #print axioms Una.F1.Examples.callPick_safe
+#print axioms Una.F1.Examples.choose_decision
+#print axioms Una.F1.Examples.choose_ok
+#print axioms Una.F1.Examples.eq_needs_Eq

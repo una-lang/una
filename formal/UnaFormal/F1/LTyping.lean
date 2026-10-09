@@ -143,39 +143,56 @@ def decision (d : List String) : LExpr := ⟨Label.bot, [], d⟩
 
 /-- The decisions the arguments of a call carry at their top: the `ℓ*_T` that a comparison of
 `T` values, a condition on them or another deep join put there (`spec/07 §7` rules 3 and 8). -/
-def decisionsOf (ts : List LTy) : List String := ts.flatMap (fun t => t.top.star)
+def decisionsOf (ts : List LTy) : List String := (ts.flatMap (fun t => t.top.star)).eraseDups
 
-/-- A type with equality: no function type at any position (`Eq`, `spec/20`). -/
-def LTy.eqable : LTy → Bool
-  | .list t _ | .option t _ | .result t _ => t.eqable
+/-- A type with equality (`Eq`, `spec/20`): no function type at any position, a type parameter
+only when it is among `E`, those the enclosing function constrains by `Eq` (U2026), and a record
+when `recEq` says so of its kind. -/
+def LTy.eqIn (E : List String) (recEq : String → Bool) : LTy → Bool
+  | .list t _ | .option t _ | .result t _ => t.eqIn E recEq
   | .fn _ _ _ _ _ _ => false
+  | .var a _ => E.contains a
+  | .record r _ => recEq r
   | _ => true
+
+/-- Whether the fields of record kind `r` have equality, records within records included, up to
+`n` levels; the program's records are not generic, so no type parameter is constrained. -/
+def Program.recordEq (p : Program) : Nat → String → Bool
+  | 0, _ => false
+  | n + 1, r =>
+    match p.record r with
+    | some rec => rec.fields.all (LTy.eqIn [] (p.recordEq n))
+    | none => false
+
+/-- A type with equality in a function whose `Eq` parameters are `E`. -/
+def Program.eqIn (p : Program) (E : List String) (t : LTy) : Bool :=
+  t.eqIn E (p.recordEq (p.records.length + 1))
 
 /-- A function is the `via` function of a policy, whose body no label rule checks
 (`spec/07 §5` rule 3), and which only its policy may call (`spec/07 §7` rule 5, U4005). -/
 def Program.IsVia (p : Program) (f : String) : Prop := ∃ po ∈ p.policies, po.via = f
 
 /-- The type arguments of the parameters a function constrains by `Eq` have equality. -/
-def Fun.EqArgs (fn : Fun) (targs : List LTy) : Prop :=
-  ∀ q ∈ fn.tparams.zip targs, q.1 ∈ fn.eqParams → q.2.eqable = true
+def Fun.EqArgs (p : Program) (E : List String) (fn : Fun) (targs : List LTy) : Prop :=
+  ∀ q ∈ fn.tparams.zip targs, q.1 ∈ fn.eqParams → p.eqIn E q.2 = true
 
 mutual
-  inductive LRhsTy (p : Program) : LCtx → LExpr → Rhs → LTy → Eff → Prop where
-    | atom {Γ pc a t} : LAtomTy Γ a t → LRhsTy p Γ pc (.atom a) t .none
+  inductive LRhsTy (p : Program) (E : List String) : LCtx → LExpr → Rhs → LTy → Eff → Prop where
+    | atom {Γ pc a t} : LAtomTy Γ a t → LRhsTy p E Γ pc (.atom a) t .none
     /-- T-Arith and its kin. -/
     | prim {Γ pc pr args ts t} :
         LAtomsTy Γ args ts → PrimTy pr (ts.map LTy.erase) t →
-        LRhsTy p Γ pc (.prim pr args) (ofScalar t (p.primLabel pr ts)) .none
+        LRhsTy p E Γ pc (.prim pr args) (ofScalar t (p.primLabel pr ts)) .none
     /-- T-Call with generic instantiation: the arguments flow into the parameters instantiated,
     and the result is the declared result instantiated, whose symbolic labels are the result
     summary of ADR 0067 at each position. A `via` function is not callable but through its
     policy (U4005). -/
     | call {Γ pc f targs args fn ts} :
         p.find f = some fn → ¬ p.IsVia f → targs.length = fn.tparams.length →
-        LTy.firstClasses targs = true → fn.EqArgs targs → LAtomsTy Γ args ts →
+        LTy.firstClasses targs = true → fn.EqArgs p E targs → LAtomsTy Γ args ts →
         Flows p.top ts (fn.params.map (fun q => p.lsub (fn.tparams.zip targs) q.2)) →
         p.Bound pc fn.op fn.get fn.fails →
-        LRhsTy p Γ pc (.call f targs args) (p.lsub (fn.tparams.zip targs) fn.result)
+        LRhsTy p E Γ pc (.call f targs args) (p.lsub (fn.tparams.zip targs) fn.result)
           (.ofFn fn.op fn.get fn.fails)
     /-- T-App. An argument that carries decisions `ℓ*_T` its parameter's type does not accept
     raises the call's result and program counter instead, as the value's label does
@@ -186,7 +203,7 @@ mutual
         LAtomTy Γ f (.fn ps r o g fl lf) → LAtomsTy Γ args ts →
         Flows p.top ts (ps.map (LTy.raise (decision (decisionsOf ts)))) →
         p.Bound (pc.join (lf.join (decision (decisionsOf ts)))) o g fl →
-        LRhsTy p Γ pc (.apply f args) (r.raise (lf.join (decision (decisionsOf ts))))
+        LRhsTy p E Γ pc (.apply f args) (r.raise (lf.join (decision (decisionsOf ts))))
           (.ofFn o g fl)
     /-- T-Op: the argument is a sink. F1's arguments are texts, for which `ℓ⁺`, the labels at
     covariant positions of rule 4, is every label, so the model writes `deep`; an argument with
@@ -194,127 +211,127 @@ mutual
     | op {Γ pc line t} :
         LAtomTy Γ line t → t.erase = .text →
         p.le (pc.join (p.deep t)) (.ofLabel p.acceptsOp) → pc.SymFree →
-        LRhsTy p Γ pc (.op line) (.unit .bot) ⟨true, false, Option.none⟩
+        LRhsTy p E Γ pc (.op line) (.unit .bot) ⟨true, false, Option.none⟩
     /-- The host operation: a sink whose failure its argument decides, and which the program
     counter decides too, since it decides whether the operation runs. -/
     | get {Γ pc url t} :
         LAtomTy Γ url t → t.erase = .text →
         p.le (pc.join (p.deep t)) (.ofLabel p.acceptsGet) → pc.SymFree →
-        LRhsTy p Γ pc (.get url) (.text (.ofLabel p.getResult))
+        LRhsTy p E Γ pc (.get url) (.text (.ofLabel p.getResult))
           ⟨false, true, some (pc.join (p.deep t))⟩
     | construct {Γ pc record fields rec ts} :
         p.record record = some rec → LAtomsTy Γ fields ts → Flows p.top ts rec.fields →
-        LRhsTy p Γ pc (.construct record fields) (.record record .bot) .none
+        LRhsTy p E Γ pc (.construct record fields) (.record record .bot) .none
     /-- A field takes its declared type, with its top label raised by the record's. -/
     | field {Γ pc value record index rec l t} :
         LAtomTy Γ value (.record record l) → p.record record = some rec →
-        rec.fields[index]? = some t → LRhsTy p Γ pc (.field value index) (t.raise l) .none
+        rec.fields[index]? = some t → LRhsTy p E Γ pc (.field value index) (t.raise l) .none
     /-- A list literal: each element flows into the element type. -/
     | list {Γ pc items ts t} :
         LAtomsTy Γ items ts → (∀ u ∈ ts, Flow p.top u t) →
-        LRhsTy p Γ pc (.list items) (.list t .bot) .none
-    | none {Γ pc t} : LRhsTy p Γ pc .none (.option t .bot) .none
-    | some {Γ pc a t} : LAtomTy Γ a t → LRhsTy p Γ pc (.some a) (.option t .bot) .none
+        LRhsTy p E Γ pc (.list items) (.list t .bot) .none
+    | none {Γ pc t} : LRhsTy p E Γ pc .none (.option t .bot) .none
+    | some {Γ pc a t} : LAtomTy Γ a t → LRhsTy p E Γ pc (.some a) (.option t .bot) .none
     /-- A lambda's body is checked at the public program counter (ADR 0031 rule 4), and, as a
     function's, its failures must be decided there. -/
     | lambda {Γ pc params body t ε} :
-        LExprTy p (params ++ Γ) .bot body t ε → p.le ε.failLabel .bot →
-        LRhsTy p Γ pc (.lambda params body)
+        LExprTy p E (params ++ Γ) .bot body t ε → p.le ε.failLabel .bot →
+        LRhsTy p E Γ pc (.lambda params body)
           (.fn (params.map Prod.snd) t ε.op ε.get ε.fails.isSome .bot) .none
     | funRef {Γ pc f targs fn} :
         p.find f = some fn → ¬ p.IsVia f → targs.length = fn.tparams.length →
-        LTy.firstClasses targs = true → fn.EqArgs targs →
-        LRhsTy p Γ pc (.funRef f targs)
+        LTy.firstClasses targs = true → fn.EqArgs p E targs →
+        LRhsTy p E Γ pc (.funRef f targs)
           (.fn (fn.params.map (fun q => p.lsub (fn.tparams.zip targs) q.2))
             (p.lsub (fn.tparams.zip targs) fn.result) fn.op fn.get fn.fails .bot) .none
     /-- T-Declassify. -/
     | declassify {Γ pc pol a po fn t} :
         p.policy pol = some po → p.find po.via = some fn → LAtomTy Γ a t → Flow p.top t po.src →
         p.le pc po.dst.top →
-        LRhsTy p Γ pc (.declassify pol a) po.dst (.ofFn fn.op fn.get fn.fails)
+        LRhsTy p E Γ pc (.declassify pol a) po.dst (.ofFn fn.op fn.get fn.fails)
     /-- `map` (`spec/14 §1`, ADR 0051): the function runs under the top labels of `xs` and of
     itself (`spec/07 §7` rule 9); the result's top label is theirs, and each element is the
     function's result raised by its label (T-App). -/
     | map {Γ pc xs f te lx tp tr o g fl lf} :
         LAtomTy Γ xs (.list te lx) → LAtomTy Γ f (.fn [tp] tr o g fl lf) → Flow p.top te tp →
         p.Bound ((pc.join lx).join lf) o g fl →
-        LRhsTy p Γ pc (.map xs f) (.list (tr.raise lf) (lx.join lf)) (.ofFn o g fl)
+        LRhsTy p E Γ pc (.map xs f) (.list (tr.raise lf) (lx.join lf)) (.ofFn o g fl)
     /-- `filter`: which elements remain depends on the predicate's result, whose label joins the
     result's top label (edition 0.2, ADR 0067). -/
     | filter {Γ pc xs keep te lx tp lb o g fl lf} :
         LAtomTy Γ xs (.list te lx) → LAtomTy Γ keep (.fn [tp] (.bool lb) o g fl lf) →
         Flow p.top te tp → p.Bound ((pc.join lx).join lf) o g fl →
-        LRhsTy p Γ pc (.filter xs keep) (.list te ((lx.join lf).join lb)) (.ofFn o g fl)
+        LRhsTy p E Γ pc (.filter xs keep) (.list te ((lx.join lf).join lb)) (.ofFn o g fl)
     /-- `first_where` calls its predicate only up to the first accepted element, so the
     elements and the predicate's results decide which calls happen (`spec/07 §7` rule 9). -/
     | firstWhere {Γ pc xs keep te lx tp lb o g fl lf} :
         LAtomTy Γ xs (.list te lx) → LAtomTy Γ keep (.fn [tp] (.bool lb) o g fl lf) →
         Flow p.top te tp →
         p.Bound ((((pc.join lx).join lf).join (p.deep te)).join lb) o g fl →
-        LRhsTy p Γ pc (.firstWhere xs keep) (.option te ((lx.join lf).join lb)) (.ofFn o g fl)
+        LRhsTy p E Γ pc (.firstWhere xs keep) (.option te ((lx.join lf).join lb)) (.ofFn o g fl)
     /-- `fold`: the accumulator type, raised by the top labels of `xs` and of the function. -/
     | fold {Γ pc xs init f te lx ti ta tp tr o g fl lf} :
         LAtomTy Γ xs (.list te lx) → LAtomTy Γ init ti → LAtomTy Γ f (.fn [ta, tp] tr o g fl lf) →
         Flow p.top te tp → Flow p.top ti ta → Flow p.top tr ta →
         p.Bound ((pc.join lx).join lf) o g fl →
-        LRhsTy p Γ pc (.fold xs init f) (ta.raise (lx.join lf)) (.ofFn o g fl)
+        LRhsTy p E Γ pc (.fold xs init f) (ta.raise (lx.join lf)) (.ofFn o g fl)
     /-- The partial primitive: its result and its failure carry every label of its input. -/
     | parse {Γ pc s t} :
         LAtomTy Γ s t → t.erase = .text →
-        LRhsTy p Γ pc (.parse s) (.int (p.deep t)) ⟨false, false, some (pc.join (p.deep t))⟩
+        LRhsTy p E Γ pc (.parse s) (.int (p.deep t)) ⟨false, false, some (pc.join (p.deep t))⟩
     /-- `==` (`spec/07 §7` rule 3): both operands flow into one type with equality, and the
     result carries every label of both. Over values of `T`, that is `ℓ*_T`, the decision of
     rule 8. -/
     | eq {Γ pc a b t₁ t₂ t} :
-        LAtomTy Γ a t₁ → LAtomTy Γ b t₂ → Flow p.top t₁ t → Flow p.top t₂ t → t.eqable = true →
-        LRhsTy p Γ pc (.eq a b) (.bool ((p.deep t₁).join (p.deep t₂))) .none
+        LAtomTy Γ a t₁ → LAtomTy Γ b t₂ → Flow p.top t₁ t → Flow p.top t₂ t → p.eqIn E t = true →
+        LRhsTy p E Γ pc (.eq a b) (.bool ((p.deep t₁).join (p.deep t₂))) .none
 
-  inductive LExprTy (p : Program) : LCtx → LExpr → Expr → LTy → Eff → Prop where
-    | atom {Γ pc a t} : LAtomTy Γ a t → LExprTy p Γ pc (.atom a) t .none
+  inductive LExprTy (p : Program) (E : List String) : LCtx → LExpr → Expr → LTy → Eff → Prop where
+    | atom {Γ pc a t} : LAtomTy Γ a t → LExprTy p E Γ pc (.atom a) t .none
     /-- T-Let. The body runs only when the bound code did not fail, so it runs under the label
     of what decides that: the model's reading of U4002 for `if error pass` (`spec/07 §7`
     rule 4), whose failure reaches the function's boundary, where it must be public. -/
     | letR {Γ pc x ann value body t s ε₁ ε₂} :
-        LRhsTy p Γ pc value t ε₁ → Flow p.top t ann →
-        LExprTy p ((x, ann) :: Γ) (pc.join ε₁.failLabel) body s ε₂ →
-        LExprTy p Γ pc (.letR x ann value body) s (ε₁.union ε₂)
+        LRhsTy p E Γ pc value t ε₁ → Flow p.top t ann →
+        LExprTy p E ((x, ann) :: Γ) (pc.join ε₁.failLabel) body s ε₂ →
+        LExprTy p E Γ pc (.letR x ann value body) s (ε₁.union ε₂)
     | letE {Γ pc x ann value body t s ε₁ ε₂} :
-        LExprTy p Γ pc value t ε₁ → Flow p.top t ann →
-        LExprTy p ((x, ann) :: Γ) (pc.join ε₁.failLabel) body s ε₂ →
-        LExprTy p Γ pc (.letE x ann value body) s (ε₁.union ε₂)
+        LExprTy p E Γ pc value t ε₁ → Flow p.top t ann →
+        LExprTy p E ((x, ann) :: Γ) (pc.join ε₁.failLabel) body s ε₂ →
+        LExprTy p E Γ pc (.letE x ann value body) s (ε₁.union ε₂)
     /-- T-If: the branches run under the condition's label, flow into the joined type, and the
     value is raised by it. -/
     | ite {Γ pc cond thenE elseE lc t₁ t₂ s ε₁ ε₂} :
-        LAtomTy Γ cond (.bool lc) → LExprTy p Γ (pc.join lc) thenE t₁ ε₁ →
-        LExprTy p Γ (pc.join lc) elseE t₂ ε₂ → Flow p.top t₁ s → Flow p.top t₂ s →
-        LExprTy p Γ pc (.ite cond thenE elseE) (s.raise lc) (ε₁.union ε₂)
+        LAtomTy Γ cond (.bool lc) → LExprTy p E Γ (pc.join lc) thenE t₁ ε₁ →
+        LExprTy p E Γ (pc.join lc) elseE t₂ ε₂ → Flow p.top t₁ s → Flow p.top t₂ s →
+        LExprTy p E Γ pc (.ite cond thenE elseE) (s.raise lc) (ε₁.union ε₂)
     /-- T-Case on an option: the pattern binding takes the element type raised by the
     scrutinee's top label. -/
     | caseOption {Γ pc scrutinee noneE x someE te ls t₁ t₂ s ε₁ ε₂} :
-        LAtomTy Γ scrutinee (.option te ls) → LExprTy p Γ (pc.join ls) noneE t₁ ε₁ →
-        LExprTy p ((x, te.raise ls) :: Γ) (pc.join ls) someE t₂ ε₂ →
+        LAtomTy Γ scrutinee (.option te ls) → LExprTy p E Γ (pc.join ls) noneE t₁ ε₁ →
+        LExprTy p E ((x, te.raise ls) :: Γ) (pc.join ls) someE t₂ ε₂ →
         Flow p.top t₁ s → Flow p.top t₂ s →
-        LExprTy p Γ pc (.caseOption scrutinee noneE x someE) (s.raise ls) (ε₁.union ε₂)
+        LExprTy p E Γ pc (.caseOption scrutinee noneE x someE) (s.raise ls) (ε₁.union ε₂)
     | caseResult {Γ pc scrutinee x okE y errE te ls t₁ t₂ s ε₁ ε₂} :
         LAtomTy Γ scrutinee (.result te ls) →
-        LExprTy p ((x, te.raise ls) :: Γ) (pc.join ls) okE t₁ ε₁ →
-        LExprTy p ((y, .int ls) :: Γ) (pc.join ls) errE t₂ ε₂ →
+        LExprTy p E ((x, te.raise ls) :: Γ) (pc.join ls) okE t₁ ε₁ →
+        LExprTy p E ((y, .int ls) :: Γ) (pc.join ls) errE t₂ ε₂ →
         Flow p.top t₁ s → Flow p.top t₂ s →
-        LExprTy p Γ pc (.caseResult scrutinee x okE y errE) (s.raise ls) (ε₁.union ε₂)
+        LExprTy p E Γ pc (.caseResult scrutinee x okE y errE) (s.raise ls) (ε₁.union ε₂)
     /-- T-Fail: only at the public program counter (U4002). -/
     | fail {Γ pc code s} :
-        p.le pc .bot → pc.SymFree → LExprTy p Γ pc (.fail code) s ⟨false, false, some .bot⟩
+        p.le pc .bot → pc.SymFree → LExprTy p E Γ pc (.fail code) s ⟨false, false, some .bot⟩
     /-- T-Attempt: the result carries the label of what decides the failure. -/
     | attempt {Γ pc body t ε} :
-        LExprTy p Γ pc body t ε →
-        LExprTy p Γ pc (.attempt body) (.result t ε.failLabel) ⟨ε.op, ε.get, Option.none⟩
+        LExprTy p E Γ pc body t ε →
+        LExprTy p E Γ pc (.attempt body) (.result t ε.failLabel) ⟨ε.op, ε.get, Option.none⟩
     /-- T-Handle: the handler runs under the label of what decides the failure, which binds its
     code, and the value is raised by it, since it decides which branch gives the value. -/
     | handle {Γ pc body x handler t₁ t₂ s ε₁ ε₂} :
-        LExprTy p Γ pc body t₁ ε₁ →
-        LExprTy p ((x, .int ε₁.failLabel) :: Γ) (pc.join ε₁.failLabel) handler t₂ ε₂ →
+        LExprTy p E Γ pc body t₁ ε₁ →
+        LExprTy p E ((x, .int ε₁.failLabel) :: Γ) (pc.join ε₁.failLabel) handler t₂ ε₂ →
         Flow p.top t₁ s → Flow p.top t₂ s →
-        LExprTy p Γ pc (.handle body x handler) (s.raise ε₁.failLabel)
+        LExprTy p E Γ pc (.handle body x handler) (s.raise ε₁.failLabel)
           ⟨ε₁.op || ε₂.op, ε₁.get || ε₂.get, ε₂.fails⟩
 end
 
@@ -322,7 +339,7 @@ end
 carry the symbolic labels of the type parameters (`spec/07 §7` rule 8); its effects are
 declared, and its failures are decided at the public program counter (U4002). -/
 def Program.FunOk (p : Program) (fn : Fun) : Prop :=
-  ∃ t ε, LExprTy p fn.params .bot fn.body t ε ∧ Flow p.top t fn.result ∧
+  ∃ t ε, LExprTy p fn.eqParams fn.params .bot fn.body t ε ∧ Flow p.top t fn.result ∧
     (ε.op = true → fn.op = true) ∧ (ε.get = true → fn.get = true) ∧
     (ε.fails.isSome = true → fn.fails = true) ∧ p.le ε.failLabel .bot
 

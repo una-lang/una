@@ -8,7 +8,7 @@ import UnaFormal.F1.T1
 
 namespace Una.F1
 
-variable {p : Program}
+variable {p : Program} {E : List String}
 
 mutual
   /-- A flow keeps the structure. -/
@@ -96,7 +96,7 @@ mutual
   /-- Erasing labels from a labeled typing of a right-hand side gives a structural typing. -/
   theorem LRhsTy.toStruct :
       ∀ {Γ : LCtx} {pc : LExpr} {r : Rhs} {t : LTy} {ε : Eff},
-        LRhsTy p Γ pc r t ε → RhsTy p Γ.erase r t.erase
+        LRhsTy p E Γ pc r t ε → RhsTy p Γ.erase r t.erase
     | _, _, _, _, _, .atom h => .atom (latom_erase h)
     | _, _, _, _, _, .prim has hp => by
       rw [ofScalar_erase _ hp]
@@ -186,7 +186,7 @@ mutual
   /-- Erasing labels from a labeled typing of a body gives a structural typing. -/
   theorem LExprTy.toStruct :
       ∀ {Γ : LCtx} {pc : LExpr} {e : Expr} {t : LTy} {ε : Eff},
-        LExprTy p Γ pc e t ε → ExprTy p Γ.erase e t.erase
+        LExprTy p E Γ pc e t ε → ExprTy p Γ.erase e t.erase
     | _, _, _, _, _, .atom h => .atom (latom_erase h)
     | _, _, _, _, _, .letR hr hflow hb => by
       have h := LExprTy.toStruct hb
@@ -257,7 +257,7 @@ program it accepts, run in an environment of its context's types with any fuel a
 never gets stuck, and a value it ends with has its type's structure. -/
 theorem t1_labeled (hwf : p.LWellFormed) (w : World) {env : Env} {Γ : LCtx} {pc : LExpr}
     {e : Expr} {t : LTy} {ε : Eff}
-    (henv : EnvTy p env Γ.erase) (he : LExprTy p Γ pc e t ε) (n : Nat) :
+    (henv : EnvTy p env Γ.erase) (he : LExprTy p E Γ pc e t ε) (n : Nat) :
     (eval n p w env e).2 ≠ .stuck ∧ ∀ v, (eval n p w env e).2 = .ok v → ValTy p v t.erase :=
   t1 hwf.wellFormed w henv (LExprTy.toStruct he) n
 
