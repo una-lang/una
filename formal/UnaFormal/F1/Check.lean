@@ -227,7 +227,7 @@ mutual
       need (boundB p pc fn.op fn.get fn.fails)
         s!"`{f}` has effects or failures under a program counter above its bound"
       need (relBoundB p pc fn.rels)
-        s!"`{f}` declassifies, and is called under a program counter above its policy's `to`"
+        s!"B1 restriction (call of a declassifying function under a raised pc): `{f}`"
       flowTo p (p.lsub σ fn.result) ann s!"the result of `{f}`"
       pure (.ofFnR fn.op fn.get fn.fails fn.rels)
     | .apply f args => do
@@ -296,7 +296,7 @@ mutual
         need (params.all (fun q => inPlace q.2)) "`ℓ_T` off a position of type `T`"
         let ε ← checkExpr p E (params ++ Γ) .bot r body
         le p ε.failLabel .bot "a lambda's failure is decided above `public`"
-        need ε.rels.isEmpty "a lambda that declassifies (outside option B1)"
+        need ε.rels.isEmpty "B1 restriction (declassification in a lambda)"
         need (flowsB p.top ps (params.map Prod.snd))
           "the declared parameters do not flow into the lambda's"
         need ((!ε.op || o) && (!ε.get || g) && (!ε.fails.isSome || fl))
@@ -305,7 +305,7 @@ mutual
       | _ => throw "a lambda bound at a type that is not a function type"
     | .funRef f targs => do
       let fn ← callable p E f targs
-      need fn.rels.isEmpty s!"`{f}` declassifies, and is used as a value (outside option B1)"
+      need fn.rels.isEmpty s!"B1 restriction (a declassifying function as a value): `{f}`"
       let σ := fn.tparams.zip targs
       flowTo p (.fn (fn.params.map (fun q => p.lsub σ q.2)) (p.lsub σ fn.result)
         fn.op fn.get fn.fails .bot) ann s!"`{f}` as a value"
@@ -448,6 +448,36 @@ def checkSignature (fn : Fun) : Result Unit := do
     s!"the signature of `{fn.name}` mentions a type parameter it does not have"
   need (fn.params.all (fun q => inPlace q.2) && inPlace fn.result)
     s!"`ℓ_T` off a position of type `T` in the signature of `{fn.name}`"
+
+mutual
+  /-- `Rhs.Pure`. -/
+  def rhsPure : Rhs → Bool
+    | .atom _ | .prim _ _ | .construct _ _ | .field _ _ | .list _ | .none | .some _ | .eq _ _
+    | .lambda _ _ | .funRef _ _ => true
+    | _ => false
+
+  /-- `Expr.Pure`. -/
+  def exprPure : Expr → Bool
+    | .atom _ => true
+    | .letR _ _ v b => rhsPure v && exprPure b
+    | .letE _ _ v b => exprPure v && exprPure b
+    | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e =>
+      exprPure t && exprPure e
+    | .attempt b => exprPure b
+    | .fail _ => false
+end
+
+/-- `Program.B1WellFormed`: the restrictions of option B1 on the policies. A program outside them
+is not re-checked, never rejected: `spec/07 §5` requires none of them. -/
+def checkB1 (p : Program) : Result Unit := do
+  for po in p.policies do
+    need (isScalar po.src) s!"B1 restriction (non-scalar from): `{po.name}`"
+    need (ground po.dst && isScalar po.dst) s!"B1 restriction (non-scalar to): `{po.name}`"
+    match p.find po.via with
+    | some fn =>
+      need (!fn.op && !fn.get && !fn.fails && exprPure fn.body)
+        s!"B1 restriction (impure via): `{po.via}`"
+    | none => throw s!"no `via` function `{po.via}`"
 
 /-- The parts of `Program.LWellFormed` about records and policies. -/
 def checkDecls (p : Program) : Result Unit := do

@@ -94,6 +94,8 @@ structure Ctx where
   body compares values by `Eq`, which only adds the check, at each call, that the type argument
   has equality. -/
   allEq : Bool := false
+  /-- The policies each function may release through (`Fun.rels`), computed over the document. -/
+  rels : List (String × List String) := []
 
 partial def ty (c : Ctx) (j : J) : M LTy := do
   let l ← label (← field j "label")
@@ -338,7 +340,8 @@ def signature (c : Ctx) (module : String) (v : J) (body : Expr) : M Fun := do
       modify fun s => { s with ops := if s.ops.contains (cap, o) then s.ops else s.ops ++ [(cap, o)] }
   pure {
     name, tparams := tps, eqParams := eqs, params := ps, result := ← ty c (← field v "result"),
-    op := !uses.isEmpty, get := false, fails := !isNull (← field v "fails"), body }
+    op := !uses.isEmpty, get := false, fails := !isNull (← field v "fails"), body,
+    rels := (List.lookup name c.rels).getD [] }
 
 /-- Every category a label of the document names. -/
 partial def categories (j : J) (acc : List String) : List String :=
@@ -430,6 +433,11 @@ def prepare (c : Ctx) (caps : List (String × J)) (decls : List Decl) (d : Decl)
     | .error _ => false
   let read : M (Fun × List Fun × List Policy) := do
     let fn ← signature c d.module d.value (← expr c (← field d.value "body"))
+    -- The policies the function and its callees may release through, whose `to` labels bound
+    -- the calls (`Program.RelBound`).
+    for pol in fn.rels do refPolicy pol
+    for f in (← get).funs do
+      for pol in (List.lookup f c.rels).getD [] do refPolicy pol
     let pols ← (← get).policies.mapM fun pol => do
       let some e := findDecl pol | throw s!"the policy `{pol}`"
       let via ← path (← field e.value "via")
@@ -439,7 +447,12 @@ def prepare (c : Ctx) (caps : List (String × J)) (decls : List Decl) (d : Decl)
       pure ({ name := pol, src, dst, via } : Policy)
     let callees ← (← get).funs.mapM fun f => do
       let some e := findDecl f | throw s!"the function `{f}`"
-      signature c e.module e.value (.atom .unit)
+      -- A `via` function's body is read: option B1 asks it to be pure (`Check.checkB1`).
+      if (c.vias.find? (·.1 == f)).isSome then
+        match plainRun (do expr c (← field e.value "body")) with
+        | .ok b => signature c e.module e.value b
+        | .error why => throw s!"the `via` function `{f}` is outside F1: {why}"
+      else signature c e.module e.value (.atom .unit)
     pure (fn, callees, pols)
   let ((fn, callees, pols), refs) ← run read
   if (List.lookup fn.name c.vias).isSome then throw "a `via` function, which no label rule checks"
@@ -478,6 +491,7 @@ def checkWith (cats : List String) (recs : List Record) (prep : Prep) (fn : Fun)
     categories := cats, acceptsOp := prep.acceptsOp, acceptsGet := Label.bot,
     getResult := Label.bot, records := recs, policies := prep.pols, funs := fn :: prep.callees }
   Check.checkDecls p
+  Check.checkB1 p
   for f in p.funs do Check.checkSignature f
   Check.checkFun p fn
 
@@ -523,6 +537,36 @@ partial def otherInstantiations (j : J) : List (String × Option String) :=
     here ++ kvs.toArray.toList.flatMap (fun kv => otherInstantiations kv.2)
   | .arr items => items.toList.flatMap otherInstantiations
   | _ => []
+
+/-- The policies a body declassifies through and the functions it calls, outside lambdas: what
+its releases come from (option B1). -/
+partial def rawRels (j : J) : List String × List String :=
+  match j with
+  | .obj kvs =>
+    match j.getObjValD "kind" with
+    | .str "lambda" => ([], [])
+    | .str "declassify" =>
+      match plainRun (do path (← field j "policy")) with
+      | .ok pol => ([pol], [])
+      | .error _ => ([], [])
+    | k =>
+      let here : List String := if k == .str "call" then
+          match plainRun (do path (← field j "function")) with
+          | .ok f => if f.startsWith "prelude." then [] else [f]
+          | .error _ => []
+        else []
+      kvs.toArray.toList.foldl (fun acc kv =>
+        let r := rawRels kv.2
+        (acc.1 ++ r.1, acc.2 ++ r.2)) ([], here)
+  | .arr items => items.toList.foldl (fun acc i =>
+      let r := rawRels i
+      (acc.1 ++ r.1, acc.2 ++ r.2)) ([], [])
+  | _ => ([], [])
+
+/-- A rejection by a restriction of option B1 is not a flow the model forbids: the program is
+outside B1, so it is not re-checked (ADR 0008). -/
+def classify (why : String) : Outcome :=
+  if (why.splitOn "B1 restriction").length > 1 then .notRechecked why else .rejected why
 
 /-- How far instances are followed: the depth of an instance chain, past which the function is
 in polymorphic recursion, the number of instances of a document, and the steps of the search,
@@ -578,6 +622,15 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
   let rd : String → Label := fun r => match recs.find? (·.name == r) with
     | some rec => rec.deep
     | none => Label.bot
+  -- The policies each function may release through: its own declassifications and those of the
+  -- functions it calls, outside lambdas, to a fixpoint.
+  let direct := (decls.filter (·.kind == "fun")).map fun d =>
+    (named d, rawRels (d.value.getObjValD "body"))
+  let mut relMap : List (String × List String) := direct.map fun q => (q.1, q.2.1)
+  for _ in [0:direct.length + 1] do
+    relMap := direct.map fun (f, ps, cs) =>
+      (f, (ps ++ cs.flatMap fun g => (List.lookup g relMap).getD []).eraseDups)
+  let c := { c with rels := relMap }
   let preps : List (String × Except String Prep) :=
     (decls.filter (·.kind == "fun")).map fun d => (named d, prepare c capDecls decls d)
   let prepOf := fun (f : String) => List.lookup f preps
@@ -646,7 +699,7 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
         let inst := Check.instantiate (subst rd) pr.fn ts s!"{f}[{", ".intercalate key}]"
         let outcome := match checkWith cats recs pr inst with
           | .ok () => Outcome.accepted ""
-          | .error why => Outcome.rejected s!"at its instance `{inst.name}`, instantiated in `{origin}`: {why}"
+          | .error why => classify s!"at its instance `{inst.name}`, instantiated in `{origin}`: {why}"
         results := results ++ [(f, outcome)]
         for (g, us) in Check.Expr.genericCalls inst.body do
           if isNested g then
@@ -682,7 +735,7 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
             else instanceOutcome (named d)
           else match checkWith cats recs pr pr.fn with
             | .ok () => .accepted ""
-            | .error why => .rejected why
+            | .error why => classify why
         | some (.error why) => .notRechecked why
         | none => .notRechecked "not read"))
 
