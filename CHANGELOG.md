@@ -33,6 +33,14 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 - **The runtime checks a task's code before it calls it** (#424). Running a task of `together` called the compiled code a closure held, trusting the caller in the runtime to give the right code and the right number of arguments. That check is now in the runtime's C boundary (ADR 0058), where the call is made: a closure records how many parameters its code takes, only that boundary can give a closure its code, and a word that is no closure, a closure without code, or a call with another number of arguments is an internal error: nothing is called, and the run ends with U8001 and exit code 3. A debug build now also reports the faults of a task that stopped. No program changes behavior. The comments of that boundary name the three targets, and a test checks that a task's value and status cross from compiled code in order.
 
+### Command line
+
+- **`una core` prints a package's Core IR** (ADR 0083, #46). With `--json`, one `una.core/1` document: every node of Core IR an object with its `kind` first, labels with their symbolic labels, source spans and paths, in a fixed order (`spec/13 §8`). `complete` says whether the package checked clean. The node `kind` is open: a consumer reports a form it does not know as not understood. It is the input of the formal track's checker; `--dump-core` stays a debug output.
+
+### Tools
+
+- **The formal track's Lean development and its gate** (#46, M0 of `docs/plan/formal-track.md`). `formal/` builds with Lean 4.34.0 and Batteries, both pinned, no Mathlib; `scripts/install-lean.sh` installs the pinned release, checked against its published SHA-256; `scripts/formal.sh` builds it and fails when a stated theorem depends on `sorry` or on an axiom beyond Lean's own three. `scripts/local-ci.sh` runs it on macOS and in both Linux containers, and `scripts/release-gates.sh` has a `formal` gate.
+
 ## v0.3.3
 
 A security patch of the Beta (S-13: executables and releases no longer carry paths of the machine that built them), released with everything validated on `main` since v0.3.2: the checker shares its types (ADR 0077), checking many generic functions is linear, diagnostics and repairs fixed by three reviews and a dogfood pass, a crash is U8001, and the release archive ships the guides. Edition 0.1's behavior is unchanged; edition 0.2 gains two checks (ADR 0079, and #407's fail-closed verifier) and loses one false positive (#384). Validation: `docs/releases/v0.3.3-validation.md`.

@@ -9,6 +9,7 @@
 mod args;
 mod build;
 mod contract;
+mod core_json;
 mod fix;
 mod lsp;
 mod package;
@@ -365,6 +366,7 @@ fn panic_location(command: Option<&Command>) -> una_diag::Location {
     let root = match command {
         Some(
             Command::Check { path, .. }
+            | Command::Core { path }
             | Command::Report { path, .. }
             | Command::Obligations { path, .. }
             | Command::Fmt { path, .. }
@@ -529,6 +531,13 @@ fn run_command(
                 };
                 check_command(&path, options, dump_core.as_deref(), stdout, stderr)
             }
+            Command::Core { path } => core_command(
+                &path,
+                json,
+                use_color(color, stderr_is_terminal),
+                stdout,
+                stderr,
+            ),
             Command::Trace {
                 requirement,
                 solver_wallclock,
@@ -750,6 +759,49 @@ fn check_command(
         stdout,
         stderr,
     )
+}
+
+/// `una core [path]` (ADR 0083): checks the package at tier 0 and prints its Core IR, with
+/// `--json` as one `una.core/1` document on stdout, otherwise in the text syntax of `spec/09`,
+/// every module in turn. The diagnostics go to stderr, for people, in both modes, so stdout
+/// holds the one document; the exit code follows them.
+fn core_command(
+    path: &Path,
+    json: bool,
+    color: bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> io::Result<ExitStatus> {
+    let package = match load(path) {
+        Ok(package) => package,
+        Err(error) => {
+            writeln!(stderr, "error: {error}")?;
+            return Ok(ExitStatus::Usage);
+        }
+    };
+    let (manifest, _) = package::project(&package);
+    let (diagnostics, program) = on_large_stack(|| {
+        let analysis = analyze(&package, None);
+        (analysis.diagnostics, analysis.program)
+    });
+    let complete = diagnostics.is_empty();
+    if json {
+        match core_json::document(&program, &package.sources, manifest.edition, complete) {
+            Ok(document) => writeln!(stdout, "{document}")?,
+            Err(error) => {
+                writeln!(
+                    stderr,
+                    "internal compiler error (U8001): rendering Core IR as JSON failed: {error}"
+                )?;
+                return Ok(ExitStatus::Internal);
+            }
+        }
+    } else {
+        for module in &program.modules {
+            write!(stdout, "{}", una_core::print_module(module))?;
+        }
+    }
+    report(&diagnostics, &package.sources, false, color, stdout, stderr)
 }
 
 /// Prints diagnostics as JSON on stdout (ADR 0012) or for people on stderr (ADR 0015 D1), and

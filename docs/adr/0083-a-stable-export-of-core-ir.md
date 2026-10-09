@@ -1,8 +1,8 @@
 # 0083. A stable export of Core IR, `una.core/1`
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-08
-- Deciders: Leonardo (pending); proposal by Claude (Una-2), for M0 of the formal track (`docs/plan/formal-track.md`, #46)
+- Deciders: Leonardo (2026-10-08, written); proposal by Claude (Una-2), for M0 of the formal track (`docs/plan/formal-track.md`, #46)
 
 ## Context
 
@@ -72,3 +72,9 @@ The command only reads and prints: it runs no program and calls no solver. The d
 - **`--json` on `--dump-core`.** Rejected: `--json` already makes `una check` print `una.diagnostics/1`, and stdout holds one document (`spec/13 §5`); a second document under the same command would break that rule.
 - **Call the compiler from Lean through a foreign function interface.** Rejected: it ties the Lean build to the Rust toolchain and puts `unsafe` code in the path, for no gain over a file.
 - **Every `kind` closed.** Rejected: every new form of Core, which most language features add, would bump the schema, while the safe handling of an unknown form needs nothing beyond "not understood".
+
+## Amendment (2026-10-08): two details of the encoding
+
+Found while implementing the decision, with no change to it; `spec/13 §8` states both.
+- A tuple variant has no field names: its one field is written `value`, and its several fields `values`, an array (`Base::Param("T")` is `{"kind": "param", "value": "T"}`).
+- A variant's own field named `kind` is written `kind_of`, since `kind` names the variant (`Term::Field`). A struct's field named `kind`, such as `Ctor`'s, keeps its name: a struct is not a variant and has no `kind` of its own.
