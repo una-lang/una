@@ -42,3 +42,7 @@ Decision log entries: D-071 to D-080, D-085 and D-087 (`docs/history/v0.1/open-d
 - **Inferring a reference's capability from its operation's name:** ambiguous whenever two capabilities share an operation name, and it types a body without regard to what callers pass.
 - **U3001 for host capabilities in examples:** leaves U3014 without a case.
 - **Checking grants only in `una run`:** the manifest's grants are known statically, and checking them early is stricter.
+
+## Amendment (2026-10-08): one code for an undeclared operation
+
+Rule 5 is amended by ADR 0082 (Leonardo, 2026-10-08, written). After `expect performed @x.op` or `expect not performed @x.op`, an `op` that the capability of `@x` does not declare is U1001, not U3002, with the message and the closest-operation edit of a call in a body (`spec/10 §11`). It applies in every edition. U3002 keeps its meaning in bodies and calls: an operation the capability declares and the binding does not permit. `spec/05 §9` rule 5 states the amended rule.

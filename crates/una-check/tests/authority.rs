@@ -571,7 +571,7 @@ fn lambdas_capture_the_capabilities_their_type_declares() {
     );
 }
 
-// ----- examples (U3001, U3002, U3010, U3014; `spec/08 §2`) -----
+// ----- examples (U1001, U3001, U3010, U3014; `spec/08 §2`) -----
 
 #[test]
 fn examples_take_every_capability_from_given() {
@@ -602,7 +602,7 @@ fn examples_take_every_capability_from_given() {
             "U3014 t.una:53:6 `greet` needs `@console: Console[print]`, a host capability, and examples cannot use host capabilities; give it a handler with `given`",
             "U3010 t.una:57:16 this handler implements `Store`, and `write` needs `@log` to be `Log`",
             "U3001 t.una:64:20 no `given` line binds `@audit`",
-            "U3002 t.una:65:25 capability `Log` has no operation `close`",
+            "U1001 t.una:65:25 capability `Log` has no operation `close`",
         ]
     );
 }
