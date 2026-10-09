@@ -489,7 +489,8 @@ partial def rawGenericCalls (c : Ctx) (j : J) : List (String × Option (List LTy
   match j with
   | .obj kvs =>
     let here : List (String × Option (List LTy)) :=
-      if j.getObjValD "kind" == .str "call" then
+      if j.getObjValD "kind" != .str "call" then []
+      else
         match plainRun (do
             let f ← path (← field j "function")
             let targs ← arr (← field j "type_args")
@@ -500,19 +501,41 @@ partial def rawGenericCalls (c : Ctx) (j : J) : List (String × Option (List LTy
             | .ok ts => some ts
             | .error _ => none)]
         | .error _ => []
-      else []
     here ++ kvs.toArray.toList.flatMap (fun kv => rawGenericCalls c kv.2)
   | .arr items => items.toList.flatMap (rawGenericCalls c)
   | _ => []
 
+/-- The nodes of `j` other than calls that carry type arguments, by kind, with the function they
+name if any. Today's `una.core/1` writes type arguments only on calls; a later form that
+instantiates a function another way is a source the search does not read, so it makes the
+instances of what it names, or of every function checked at its instances, unknown. -/
+partial def otherInstantiations (j : J) : List (String × Option String) :=
+  match j with
+  | .obj kvs =>
+    let here : List (String × Option String) :=
+      match j.getObjValD "kind", j.getObjVal? "type_args" with
+      | .str k, .ok (.arr targs) =>
+        if k == "call" || targs.isEmpty then []
+        else [(k, match plainRun (do path (← field j "function")) with
+          | .ok f => some f
+          | .error _ => none)]
+      | _, _ => []
+    here ++ kvs.toArray.toList.flatMap (fun kv => otherInstantiations kv.2)
+  | .arr items => items.toList.flatMap otherInstantiations
+  | _ => []
+
 /-- How far instances are followed: the depth of an instance chain, past which the function is
-in polymorphic recursion, and the number of instances of a document. -/
-def depthCap : Nat := 16
-def countCap : Nat := 256
+in polymorphic recursion, the number of instances of a document, and the steps of the search,
+past which what is left in its queue is unknown. -/
+structure Caps where
+  depth : Nat := 16
+  count : Nat := 256
+  fuel : Nat := 256 * 18
 
 /-- The outcome of every declaration with code, by qualified name; an error when the document is
 not one the checker reads. -/
-def checkDocumentWith (subst : Subst) (doc : J) : Except String (List (String × Outcome)) := do
+def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
+    Except String (List (String × Outcome)) := do
   let edition := match doc.getObjValD "edition" with
     | .str e => e
     | _ => "?"
@@ -537,8 +560,8 @@ def checkDocumentWith (subst : Subst) (doc : J) : Except String (List (String ×
   if !complete then
     return code.map fun d => (named d, .notRechecked "the document is not complete")
   let host ← get (do arr (← field doc "host"))
-  let caps := (decls.filter (·.kind == "cap")).map (fun d => d.value) ++ host
-  let caps := caps.filterMap fun cj =>
+  let capDecls := (decls.filter (·.kind == "cap")).map (fun d => d.value) ++ host
+  let capDecls := capDecls.filterMap fun cj =>
     match plainRun (do str (← field cj "name")) with
     | .ok n => some (n, cj)
     | .error _ => none
@@ -556,7 +579,7 @@ def checkDocumentWith (subst : Subst) (doc : J) : Except String (List (String ×
     | some rec => rec.deep
     | none => Label.bot
   let preps : List (String × Except String Prep) :=
-    (decls.filter (·.kind == "fun")).map fun d => (named d, prepare c caps decls d)
+    (decls.filter (·.kind == "fun")).map fun d => (named d, prepare c capDecls decls d)
   let prepOf := fun (f : String) => List.lookup f preps
   let isNested := fun (f : String) => match prepOf f with
     | some (.ok pr) => pr.nested && !pr.fn.tparams.isEmpty
@@ -566,12 +589,24 @@ def checkDocumentWith (subst : Subst) (doc : J) : Except String (List (String ×
   -- instances unknown.
   let mut incomplete : List (String × String) := []
   let mut queue : List (String × List LTy × String × Nat) := []
+  -- Every instance enqueued once, so the search's steps count distinct instances.
+  let mut enqueued : List (String × String) := []
+  let keyOf := fun (ts : List LTy) => ", ".intercalate (ts.map Check.fmtTy)
+  let nestedNames := preps.filterMap fun (f, _) => if isNested f then some f else none
   for d in decls do
+    for (k, named?) in otherInstantiations d.value do
+      match named? with
+      | some f => incomplete := incomplete ++ [(f, s!"instantiated by a `{k}` node, which F1 does not read")]
+      | none => incomplete := incomplete ++ nestedNames.map fun f =>
+          (f, s!"a `{k}` node instantiates a function F1 cannot name")
     for (f, targs) in rawGenericCalls c d.value do
       if isNested f then
         match targs with
         | some ts =>
-          if Check.groundAll ts then queue := queue ++ [(f, ts, named d, 0)]
+          if Check.groundAll ts then
+            if !enqueued.contains (f, keyOf ts) then
+              enqueued := enqueued ++ [(f, keyOf ts)]
+              queue := queue ++ [(f, ts, named d, 0)]
           else
             match prepOf (named d) with
             | some (.ok pr) =>
@@ -584,7 +619,7 @@ def checkDocumentWith (subst : Subst) (doc : J) : Except String (List (String ×
   let mut depthHit : List String := []
   let mut countHit : Bool := false
   let mut seen : Nat := 0
-  let mut fuel := countCap * (depthCap + 2)
+  let mut fuel := caps.fuel
   while !queue.isEmpty && fuel > 0 do
     fuel := fuel - 1
     match queue with
@@ -596,10 +631,10 @@ def checkDocumentWith (subst : Subst) (doc : J) : Except String (List (String ×
         | some ks => ks.contains (", ".intercalate key)
         | none => false
       if already then continue
-      if depth > depthCap then
+      if depth > caps.depth then
         depthHit := depthHit ++ [f]
         continue
-      if seen ≥ countCap then
+      if seen ≥ caps.count then
         countHit := true
         continue
       seen := seen + 1
@@ -615,16 +650,22 @@ def checkDocumentWith (subst : Subst) (doc : J) : Except String (List (String ×
         results := results ++ [(f, outcome)]
         for (g, us) in Check.Expr.genericCalls inst.body do
           if isNested g then
-            if Check.groundAll us then queue := queue ++ [(g, us, inst.name, depth + 1)]
+            if Check.groundAll us then
+              if !enqueued.contains (g, keyOf us) then
+                enqueued := enqueued ++ [(g, keyOf us)]
+                queue := queue ++ [(g, us, inst.name, depth + 1)]
             else incomplete := incomplete ++ [(g, s!"a call in `{inst.name}` that is not ground")]
       | _ => pure ()
+  -- What the search did not reach is unknown: never accepted.
+  for (f, _, _, _) in queue do
+    incomplete := incomplete ++ [(f, "the instance search stopped at its fuel")]
   let instanceOutcome := fun (f : String) =>
     match incomplete.find? (·.1 == f) with
     | some (_, why) => Outcome.notRechecked s!"not every instance is re-checked: {why}"
     | none =>
       if depthHit.contains f then
-        .notRechecked s!"polymorphic recursion: an instance chain deeper than {depthCap}"
-      else if countHit then .notRechecked s!"more than {countCap} instances in the document"
+        .notRechecked s!"polymorphic recursion: an instance chain deeper than {caps.depth}"
+      else if countHit then .notRechecked s!"more than {caps.count} instances in the document"
       else
         let mine := results.filter (·.1 == f) |>.map (·.2)
         match mine.find? (fun o => match o with | .rejected _ => true | _ => false) with

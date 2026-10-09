@@ -21,3 +21,4 @@ import UnaFormal.F1.InPlace
 import UnaFormal.F1.Check
 import UnaFormal.F1.Import
 import UnaFormal.F1.CheckTests
+import UnaFormal.F1.ImportTests
