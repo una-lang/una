@@ -542,13 +542,14 @@ partial def otherInstantiations (j : J) : List (String × Option String) :=
   | .arr items => items.toList.flatMap otherInstantiations
   | _ => []
 
-/-- The policies a body declassifies through and the functions it calls, outside lambdas: what
-its releases come from (option B1). -/
+/-- The policies a body declassifies through and the functions it calls, lambdas included: what
+its releases may come from (option B1). A release inside a lambda is outside B1, which the
+checker reports; counting it here keeps a caller from being checked against a release set that
+misses it. -/
 partial def rawRels (j : J) : List String × List String :=
   match j with
   | .obj kvs =>
     match j.getObjValD "kind" with
-    | .str "lambda" => ([], [])
     | .str "declassify" =>
       match plainRun (do path (← field j "policy")) with
       | .ok pol => ([pol], [])
@@ -566,6 +567,26 @@ partial def rawRels (j : J) : List String × List String :=
       let r := rawRels i
       (acc.1 ++ r.1, acc.2 ++ r.2)) ([], [])
   | _ => ([], [])
+
+/-- The functions of the document a declaration reaches directly: the calls in its body, lambdas
+included, and the functions it uses as values (a lambda around a call, `function` in Core). -/
+partial def rawCallees (j : J) : List String :=
+  match j with
+  | .obj kvs =>
+    let here : List String :=
+      match j.getObjValD "kind" with
+      | .str "call" =>
+        match plainRun (do path (← field j "function")) with
+        | .ok f => if f.startsWith "prelude." then [] else [f]
+        | .error _ => []
+      | .str "lambda" =>
+        match plainRun (do path (← field j "function")) with
+        | .ok f => [f]
+        | .error _ => []
+      | _ => []
+    here ++ kvs.toArray.toList.flatMap (fun kv => rawCallees kv.2)
+  | .arr items => items.toList.flatMap rawCallees
+  | _ => []
 
 /-- A rejection by a restriction of option B1 is not a flow the model forbids: the program is
 outside B1, so it is not re-checked (ADR 0008). -/
@@ -622,6 +643,10 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
       | .ok q => some q
       | .error _ => none
     else none
+  -- A policy whose name or `via` F1 cannot read would be missing from B1's check: the whole
+  -- document is then not re-checked, rather than a policy silently dropped.
+  if (decls.filter (·.kind == "policy")).length != vias.length then
+    return code.map fun d => (named d, .notRechecked "a policy F1 cannot read")
   let c : Ctx := { records := recs.map (·.name), funs := funNames, vias, allEq := edition == "0.1" }
   let rd : String → Label := fun r => match recs.find? (·.name == r) with
     | some rec => rec.deep
@@ -730,7 +755,7 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
         | none =>
           if mine.isEmpty then .notRechecked "never instantiated at a ground type"
           else .accepted s!"at {mine.length} instance(s)"
-  pure (code.map fun d =>
+  let own : List (String × Outcome) := code.map fun d =>
     (named d, if d.kind != "fun" then .notRechecked s!"a `{d.kind}` declaration"
       else match prepOf (named d) with
         | some (.ok pr) =>
@@ -741,7 +766,31 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
             | .ok () => .accepted ""
             | .error why => classify why
         | some (.error why) => .notRechecked why
-        | none => .notRechecked "not read"))
+        | none => .notRechecked "not read")
+  -- **No accept without a theorem.** A declaration is checked against its callees' signatures,
+  -- and T6 needs every function of the program to pass T-Fun, so a declaration is accepted only
+  -- when every function it reaches, transitively, is accepted too. A `via` function is checked by
+  -- B1's restrictions instead (`checkB1`), and the prelude's functions are axioms. A declaration's
+  -- own rejection is kept: it is a flow the model forbids, whatever it reaches.
+  let reach : List (String × List String) := (decls.filter (·.kind == "fun")).map fun d =>
+    (named d, (rawCallees (d.value.getObjValD "body")).eraseDups)
+  let isVia := fun (f : String) => (vias.find? (·.1 == f)).isSome
+  let mut final := own
+  for _ in [0:reach.length + 1] do
+    final := final.map fun (f, o) =>
+      match o with
+      | .accepted note =>
+        let bad := ((List.lookup f reach).getD []).filterMap fun g =>
+          if g == f || isVia g then none
+          else match List.lookup g final with
+            | some (.accepted _) | none => none
+            | some (.rejected _) => some s!"reaches `{g}`, which is rejected"
+            | some (.notRechecked why) => some s!"reaches `{g}`, which is not re-checked ({why})"
+        match bad with
+        | why :: _ => (f, .notRechecked why)
+        | [] => (f, .accepted note)
+      | o => (f, o)
+  pure final
 
 /-- `checkDocumentWith` with labeled instantiation, `LTy.lsubst`. -/
 def checkDocument (doc : J) : Except String (List (String × Outcome)) :=
