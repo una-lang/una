@@ -403,7 +403,7 @@ There is no ambient authority. A capability is declared with operations; a funct
   - `read(path: Text) -> internal Text` and `write(path: Text, content: Text) -> Unit`, which fail with `FileError = NotFound | Denied | Io`;
   - `hmac(key_name: Text, data: Text) -> internal Hashed`, which fails with `KeyError = | UnknownKey`. Its result is `internal`, joined with every label of `data`. A `Hashed` supports only `==` and `!=`: compare hashes, never the text they were made from.
 - **A `Files` path is relative to the grant's prefix.** With the grant `files:data:read`, `@files.read("readings.txt")` reads the file `data/readings.txt`. `@files.read("data/readings.txt")` would look for `data/data/readings.txt` and fail with `NotFound`. An absolute path, or a `..` that leaves the prefix, fails with `Denied`.
-- **Stand-ins in tests.** An example cannot use a host capability, so it installs a handler with `given`. A stand-in for `Keys` makes hashes with `fake_hash(seed: Int) -> internal Hashed` from `std.testing`, where equal seeds give equal hashes. A handler of `Keys` sees `data` with every label, so it may branch on it but not pass it to `fake_hash`, as `allowlisted` below does.
+- **Stand-ins in tests.** An example cannot use a host capability, so it installs a handler with `given`. A stand-in for `Keys` makes hashes with `fake_hash(seed: Int) -> internal Hashed` from `std.testing`, where equal seeds give equal hashes. A handler of `Keys` sees `data` with every label, so it may branch on it but not pass it to `fake_hash`, as the handler `fake_keys` below does.
 
 ```una
 module demo
