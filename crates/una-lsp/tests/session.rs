@@ -13,7 +13,7 @@ use std::sync::{Mutex, PoisonError};
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use una_diag::{Code, Diagnostic, Edit, Location, Position, Repair};
-use una_lsp::{Checked, Server, Symbol, Workspace};
+use una_lsp::{Checked, HoverText, Server, Symbol, Workspace};
 
 /// The one file of the package at `/pkg`. `😀` is one column of Una and two UTF-16 units.
 const TEXT: &str = "module app\n\npub f(x: Int) -> Int = \"😀\" + y\n";
@@ -26,10 +26,23 @@ fn location(line: u32, start: u32, end: u32) -> Location {
     }
 }
 
-/// A workspace whose check reports an unknown `y` and records what it was asked.
+/// A workspace whose check reports an unknown `y` and records what it was asked, and which of
+/// its hovers' texts were made (ADR 0080).
 #[derive(Default)]
 struct Stub {
     asked: Mutex<Vec<(bool, Option<String>)>>,
+    made: Arc<Mutex<Vec<&'static str>>>,
+}
+
+/// A hover whose text is made on request, recording in `made` that it was.
+fn lazy(made: &Arc<Mutex<Vec<&'static str>>>, name: &'static str, text: &'static str) -> HoverText {
+    let made = Arc::clone(made);
+    HoverText::Lazy(Arc::new(move || {
+        made.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(name);
+        text.to_owned()
+    }))
 }
 
 impl Workspace for Stub {
@@ -76,8 +89,11 @@ impl Workspace for Stub {
             texts: BTreeMap::from([("src/app.una".to_owned(), TEXT.to_owned())]),
             definitions: vec![(location(3, 7, 8), location(3, 7, 8))],
             hovers: vec![
-                (location(3, 1, 31), "outer".to_owned()),
-                (location(3, 24, 27), "```una\nString\n```".to_owned()),
+                (location(3, 1, 31), lazy(&self.made, "outer", "outer")),
+                (
+                    location(3, 24, 27),
+                    lazy(&self.made, "inner", "```una\nString\n```"),
+                ),
             ],
             symbols: vec![Symbol {
                 name: "f".to_owned(),
@@ -173,6 +189,16 @@ fn a_utf_16_session() {
             "edit": { "changes": { URI: [{ "range": range((2, 30), (2, 31)), "newText": "x" }] } },
         }])
     );
+    // The check made no hover's text; the hover request makes only the innermost one's.
+    let made = |server: &Server<Stub>| {
+        server
+            .workspace()
+            .made
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    };
+    assert_eq!(made(&server), Vec::<&str>::new());
     // The innermost hover of the position.
     assert_eq!(
         request(
@@ -186,6 +212,7 @@ fn a_utf_16_session() {
             "range": range((2, 23), (2, 27)),
         })
     );
+    assert_eq!(made(&server), vec!["inner"]);
     assert_eq!(
         request(
             &mut server,

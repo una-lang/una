@@ -807,27 +807,78 @@ pub(crate) trait Names {
     fn param_name(&self, index: usize) -> String;
 }
 
-/// A type printed as written in Una, for messages.
-pub(crate) struct Show<'t, 'n, N: Names>(pub(crate) &'t Ty, pub(crate) &'n N);
+/// The shape of a type node, as the printers read it (ADR 0080): the checker's [`Ty`] and the
+/// editor index's [`super::hover::HoverType`] both give it, so [`Show`] and [`ShowLabeled`]
+/// print both alike, and a hover's text is the text a message gives the same type.
+pub(crate) enum View<'t, T> {
+    Labeled(&'t Label, &'t T),
+    Int,
+    Fixed(IntType),
+    Bool,
+    Text,
+    Unit,
+    Hashed,
+    List(&'t T),
+    Map(&'t T, &'t T),
+    Kind(KindId, &'t [T]),
+    Param(usize),
+    /// A function type's parameters and result: its `uses`, `fails` and refinements are not
+    /// printed.
+    Fn(&'t [T], &'t T),
+    Var,
+    Never,
+    Error,
+}
 
-impl<N: Names> fmt::Display for Show<'_, '_, N> {
+/// A tree of types that the printers can read (ADR 0080).
+pub(crate) trait TypeView: Sized {
+    /// The shape of this node, borrowing its children.
+    fn view(&self) -> View<'_, Self>;
+}
+
+impl TypeView for Ty {
+    fn view(&self) -> View<'_, Ty> {
+        match self {
+            Ty::Labeled(label, inner) => View::Labeled(label, inner),
+            Ty::Int => View::Int,
+            Ty::Fixed(int) => View::Fixed(*int),
+            Ty::Bool => View::Bool,
+            Ty::Text => View::Text,
+            Ty::Unit => View::Unit,
+            Ty::Hashed => View::Hashed,
+            Ty::List(element) => View::List(element),
+            Ty::Map(key, value) => View::Map(key, value),
+            Ty::Kind(id, args) => View::Kind(*id, args),
+            Ty::Param(index) => View::Param(*index),
+            Ty::Fn(function) => View::Fn(&function.params, &function.result),
+            Ty::Var(_) => View::Var,
+            Ty::Never => View::Never,
+            Ty::Error => View::Error,
+        }
+    }
+}
+
+/// A type printed as written in Una, for messages.
+pub(crate) struct Show<'t, 'n, T: TypeView, N: Names>(pub(crate) &'t T, pub(crate) &'n N);
+
+impl<T: TypeView, N: Names> fmt::Display for Show<'_, '_, T, N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let names = self.1;
-        match self.0 {
+        match self.0.view() {
             // Messages about types name their bases; labels have messages of their own.
-            Ty::Labeled(_, inner) => write!(f, "{}", Show(inner, names)),
-            Ty::Int => write!(f, "Int"),
-            Ty::Fixed(int) => write!(f, "{}", int.as_str()),
-            Ty::Bool => write!(f, "Bool"),
-            Ty::Text => write!(f, "Text"),
-            Ty::Unit => write!(f, "Unit"),
-            Ty::Hashed => write!(f, "Hashed"),
-            Ty::List(element) => write!(f, "List[{}]", Show(element, names)),
-            Ty::Map(key, value) => {
+            View::Labeled(_, inner) => write!(f, "{}", Show(inner, names)),
+            View::Int => write!(f, "Int"),
+            View::Fixed(int) => write!(f, "{}", int.as_str()),
+            View::Bool => write!(f, "Bool"),
+            View::Text => write!(f, "Text"),
+            View::Unit => write!(f, "Unit"),
+            View::Hashed => write!(f, "Hashed"),
+            View::List(element) => write!(f, "List[{}]", Show(element, names)),
+            View::Map(key, value) => {
                 write!(f, "Map[{}, {}]", Show(key, names), Show(value, names))
             }
-            Ty::Kind(id, args) => {
-                write!(f, "{}", names.kind_name(*id))?;
+            View::Kind(id, args) => {
+                write!(f, "{}", names.kind_name(id))?;
                 if !args.is_empty() {
                     let args: Vec<String> = args
                         .iter()
@@ -837,53 +888,46 @@ impl<N: Names> fmt::Display for Show<'_, '_, N> {
                 }
                 Ok(())
             }
-            Ty::Param(index) => write!(f, "{}", names.param_name(*index)),
-            Ty::Fn(function) => {
-                let params: Vec<String> = function
-                    .params
+            View::Param(index) => write!(f, "{}", names.param_name(index)),
+            View::Fn(params, result) => {
+                let params: Vec<String> = params
                     .iter()
                     .map(|param| Show(param, names).to_string())
                     .collect();
-                write!(
-                    f,
-                    "fn({}) -> {}",
-                    params.join(", "),
-                    Show(&function.result, names)
-                )
+                write!(f, "fn({}) -> {}", params.join(", "), Show(result, names))
             }
-            Ty::Var(_) => write!(f, "_"),
-            Ty::Never => write!(f, "Never"),
-            Ty::Error => write!(f, "?"),
+            View::Var => write!(f, "_"),
+            View::Never => write!(f, "Never"),
+            View::Error => write!(f, "?"),
         }
     }
 }
 
 /// A type printed with its labels, as in `secret[PII] Text` or `Option[internal Text]`, for
-/// information-flow messages.
-pub(crate) struct ShowLabeled<'t, 'n, N: Names>(pub(crate) &'t Ty, pub(crate) &'n N);
+/// information-flow messages and the editor's hovers.
+pub(crate) struct ShowLabeled<'t, 'n, T: TypeView, N: Names>(pub(crate) &'t T, pub(crate) &'n N);
 
-impl<N: Names> fmt::Display for ShowLabeled<'_, '_, N> {
+impl<T: TypeView, N: Names> fmt::Display for ShowLabeled<'_, '_, T, N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let names = self.1;
-        match self.0 {
-            Ty::Labeled(label, inner) => write!(f, "{label} {}", ShowLabeled(inner, names)),
-            Ty::List(element) => write!(f, "List[{}]", ShowLabeled(element, names)),
-            Ty::Map(key, value) => write!(
+        match self.0.view() {
+            View::Labeled(label, inner) => write!(f, "{label} {}", ShowLabeled(inner, names)),
+            View::List(element) => write!(f, "List[{}]", ShowLabeled(element, names)),
+            View::Map(key, value) => write!(
                 f,
                 "Map[{}, {}]",
                 ShowLabeled(key, names),
                 ShowLabeled(value, names)
             ),
-            Ty::Kind(id, args) if !args.is_empty() => {
+            View::Kind(id, args) if !args.is_empty() => {
                 let args: Vec<String> = args
                     .iter()
                     .map(|arg| ShowLabeled(arg, names).to_string())
                     .collect();
-                write!(f, "{}[{}]", names.kind_name(*id), args.join(", "))
+                write!(f, "{}[{}]", names.kind_name(id), args.join(", "))
             }
-            Ty::Fn(function) => {
-                let params: Vec<String> = function
-                    .params
+            View::Fn(params, result) => {
+                let params: Vec<String> = params
                     .iter()
                     .map(|param| ShowLabeled(param, names).to_string())
                     .collect();
@@ -891,10 +935,10 @@ impl<N: Names> fmt::Display for ShowLabeled<'_, '_, N> {
                     f,
                     "fn({}) -> {}",
                     params.join(", "),
-                    ShowLabeled(&function.result, names)
+                    ShowLabeled(result, names)
                 )
             }
-            other => write!(f, "{}", Show(other, names)),
+            _ => write!(f, "{}", Show(self.0, names)),
         }
     }
 }

@@ -114,10 +114,13 @@ fn index(
     {
         checked.definitions.push((location(*from), location(*to)));
     }
+    // A type's hover is printed when the editor shows it, not here (ADR 0080).
     for (span, ty) in &analysis.index.types {
-        checked
-            .hovers
-            .push((location(*span), format!("```una\n{ty}\n```")));
+        let ty = ty.clone();
+        checked.hovers.push((
+            location(*span),
+            una_lsp::HoverText::Lazy(std::sync::Arc::new(move || format!("```una\n{ty}\n```"))),
+        ));
     }
     // The contract of each function a call or a name refers to, as `una contract` prints it.
     let modules = crate::contract::Modules {
@@ -141,7 +144,7 @@ fn index(
             })
             .clone();
         if let Some(text) = text {
-            checked.hovers.push((location(*span), text));
+            checked.hovers.push((location(*span), text.into()));
         }
     }
     // Obligations: their status after tier 1, or their kind before it.
@@ -156,7 +159,8 @@ fn index(
                         outcome.status.as_str(),
                         obligation.kind.as_str(),
                         obligation.goal
-                    ),
+                    )
+                    .into(),
                 ));
             }
         }
@@ -164,7 +168,7 @@ fn index(
             for pending in &analysis.pending {
                 checked.hovers.push((
                     pending.location.clone(),
-                    format!("{} obligation, proven on save", pending.kind.as_str()),
+                    format!("{} obligation, proven on save", pending.kind.as_str()).into(),
                 ));
             }
         }

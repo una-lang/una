@@ -520,8 +520,9 @@ fn checking_deeply_nested_types_is_not_cubic_in_their_depth() {
     // shares the checker's type nodes, keeps unchanged ones, erases each labeled node once per
     // declaration and resolves each variable once at its end, so the checker makes nodes in
     // proportion to the program (`una-check`'s scaling test counts them). What stays
-    // quadratic is outside the checker's types: Core IR gives each binder its own owned type,
-    // and the editor index stores each expression's type as text (ADR 0080, proposed). The
+    // quadratic is outside the checker's types: Core IR gives each binder its own owned type
+    // (ADR 0080 keeps it); the editor index keeps each expression's type as a shared copy and
+    // prints it only when a hover asks (ADR 0080, option B). The
     // fixed cost is measured at depth 10, the best of three, and taken out of both sizes
     // (N-29): 4x the depth took about 14x as long measured alone (20x before ADR 0077), and up
     // to about 25x under the load of the whole test suite; quadratic is 16x, and it was about

@@ -24,6 +24,7 @@ mod facts;
 mod fixed;
 mod flow;
 mod generic;
+mod hover;
 mod index;
 mod label;
 mod locals;
@@ -38,6 +39,7 @@ mod summary;
 mod ty;
 mod unify;
 
+pub use hover::{Hover, HoverStats, HoverType};
 pub use index::Index;
 use una_diag::{Code, Diagnostic, Edit, Location, ObligationKind, Related, Repair};
 use una_project::Edition;

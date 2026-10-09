@@ -15,7 +15,7 @@ use std::time::Duration;
 
 pub use position::Encoding;
 use server::Event;
-pub use server::{Checked, Server, Symbol, Workspace};
+pub use server::{Checked, HoverText, Server, Symbol, Workspace};
 pub use transport::{read_message, write_message};
 pub use uri::{path_of, uri_of};
 

@@ -1,13 +1,16 @@
 //! The index of a checked package, for the language server (ADR 0063): what each resolved
 //! name refers to, the type of each expression, and the function each call names.
 
+use std::sync::Arc;
+
 use una_syntax::Span;
 use una_syntax::ast::{DeclKind, KindBody};
 
 use super::Findings;
 use super::env::{Env, FnAst};
+use super::hover::{Hover, HoverNames, HoverStats, Snapshots};
 use super::records::Res;
-use super::ty::{KindId, Names, ShowLabeled, Ty};
+use super::ty::{KindId, Ty};
 
 /// What the type checker resolved, by span, for an editor.
 #[derive(Clone, Debug, Default)]
@@ -15,31 +18,14 @@ pub struct Index {
     /// Each call, name, constructor, operation and installed handler that names a
     /// declaration of the package: its span, and the span of the declaration's name.
     pub definitions: Vec<(Span, Span)>,
-    /// Each expression and binder: its span, and its type as written, labels included.
-    pub types: Vec<(Span, String)>,
+    /// Each expression and binder: its span, and its type, printed as written, labels
+    /// included, when the editor asks for it (ADR 0080).
+    pub types: Vec<(Span, Hover)>,
+    /// What building the hovers did, for the scaling test (ADR 0080).
+    pub hover_stats: HoverStats,
     /// Each call of, or reference to, a function of the package: its span, the function's
     /// module path and its name.
     pub functions: Vec<(Span, String, String)>,
-}
-
-/// The names of types, for one declaration: the kinds of the package and its type
-/// parameters.
-struct DeclNames<'e, 'a> {
-    env: &'e Env<'a>,
-    params: Vec<String>,
-}
-
-impl Names for DeclNames<'_, '_> {
-    fn kind_name(&self, id: KindId) -> String {
-        self.env.kind_name(id).to_owned()
-    }
-
-    fn param_name(&self, index: usize) -> String {
-        self.params
-            .get(index)
-            .cloned()
-            .unwrap_or_else(|| format!("T{index}"))
-    }
 }
 
 /// The span of the name that declares the kind `kind`, or its variant `variant`, when a
@@ -55,12 +41,13 @@ fn kind_span(env: &Env<'_>, kind: KindId, variant: Option<usize>) -> Option<Span
 /// The index of the package that `env` and `findings` describe.
 pub(crate) fn build(env: &Env<'_>, findings: &Findings) -> Index {
     let mut index = Index::default();
-    // The type parameters of each declaration of the package, by its span.
-    let mut scopes: Vec<(Span, Vec<String>)> = Vec::new();
+    // The type parameters of each declaration of the package, by its span, shared by the
+    // hovers of its expressions.
+    let mut scopes: Vec<(Span, Arc<[String]>)> = Vec::new();
     for module in env.modules.iter().take(env.prelude) {
         for decl in &module.tree.decls {
             if let DeclKind::Function(function) = &decl.kind {
-                let params = function
+                let params: Arc<[String]> = function
                     .type_params
                     .iter()
                     .map(|p| module.interner.resolve(p.name).to_owned())
@@ -72,7 +59,8 @@ pub(crate) fn build(env: &Env<'_>, findings: &Findings) -> Index {
     // Top-level declarations of one file do not overlap, so the one that contains a span is
     // the last that starts at or before it: a binary search, O(log n) per span (#375).
     scopes.sort_by_key(|(decl, _)| (decl.file, decl.start));
-    let params_at = |span: Span| -> Vec<String> {
+    let none: Arc<[String]> = Arc::from(Vec::new());
+    let params_at = |span: Span| -> Arc<[String]> {
         let after =
             scopes.partition_point(|(decl, _)| (decl.file, decl.start) <= (span.file, span.start));
         after
@@ -81,8 +69,7 @@ pub(crate) fn build(env: &Env<'_>, findings: &Findings) -> Index {
             .filter(|(decl, _)| {
                 decl.file == span.file && decl.start <= span.start && span.end <= decl.end
             })
-            .map(|(_, params)| params.clone())
-            .unwrap_or_default()
+            .map_or_else(|| Arc::clone(&none), |(_, params)| Arc::clone(params))
     };
     let records = &findings.records;
     for (span, res) in &records.res {
@@ -127,17 +114,21 @@ pub(crate) fn build(env: &Env<'_>, findings: &Findings) -> Index {
             index.definitions.push((*span, target));
         }
     }
+    // ADR 0080: each type is kept as a `Send` copy, made once per shared node of the checker's
+    // types, and printed only when a hover asks for it; kinds are named as declared.
+    let names = Arc::new(HoverNames {
+        kinds: (0..env.kinds.len())
+            .map(|id: KindId| env.kind_name(id).to_owned())
+            .collect(),
+    });
+    let mut snapshots = Snapshots::default();
     for (span, ty) in &records.types {
         if matches!(ty, Ty::Error) {
             continue;
         }
-        let names = DeclNames {
-            env,
-            params: params_at(*span),
-        };
-        index
-            .types
-            .push((*span, ShowLabeled(ty, &names).to_string()));
+        let hover = Hover::new(snapshots.of(ty), params_at(*span), Arc::clone(&names));
+        index.types.push((*span, hover));
     }
+    index.hover_stats = snapshots.stats;
     index
 }
