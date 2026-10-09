@@ -37,3 +37,6 @@ import UnaFormal
 #print axioms Una.F1.LTy.top_lsubst
 #print axioms Una.F1.LTy.var_lsubst
 #print axioms Una.F1.extend_deep
+#print axioms Una.F1.LValTy.flow
+#print axioms Una.F1.Flow.trans
+#print axioms Una.F1.unary_sound
