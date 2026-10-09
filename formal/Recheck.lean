@@ -29,6 +29,8 @@ def main (args : List String) : IO UInt32 := do
         for (decl, o) in outcomes do
           match o with
           | .accepted note => IO.println s!"{path}\t{decl}\taccepted\t{note}"
+          | .acceptedIfA3 note =>
+            IO.println s!"{path}\t{decl}\taccepted, conditional on A3\t{note}"
           | .rejected why =>
             IO.println s!"{path}\t{decl}\trejected\t{why}"
             code := 1
