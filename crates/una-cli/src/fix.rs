@@ -151,7 +151,12 @@ pub(crate) fn fix_command(
     };
     // Within a round, edits were applied from the end of each file; report them in text order.
     applied.sort_by(|a, b| {
-        (a.round, &a.file, a.start.line, a.start.col).cmp(&(b.round, &b.file, b.start.line, b.start.col))
+        (a.round, &a.file, a.start.line, a.start.col).cmp(&(
+            b.round,
+            &b.file,
+            b.start.line,
+            b.start.col,
+        ))
     });
     let Some(formatted) = format_modules(path, &mut modules, stderr)? else {
         return Ok(ExitStatus::Usage);
@@ -244,10 +249,9 @@ fn modules_of(package: &Package) -> BTreeMap<String, Module> {
         .filter_map(|&id| {
             let file = package.sources.file(id);
             let disk = package.disk_paths.get(&id)?.clone();
-            let invalid = file
-                .text()
-                .char_indices()
-                .any(|(offset, c)| c == char::REPLACEMENT_CHARACTER && file.is_invalid_sequence(offset));
+            let invalid = file.text().char_indices().any(|(offset, c)| {
+                c == char::REPLACEMENT_CHARACTER && file.is_invalid_sequence(offset)
+            });
             Some((
                 file.path().to_owned(),
                 Module {
@@ -343,10 +347,19 @@ fn take_round(
         let Some((start, end)) = range(sources, edit) else {
             continue;
         };
-        by_file.entry(edit.location.file.clone()).or_default().push((
-            (start, end, edit.clone(), diagnostic.code, repair.description.clone()),
-            index,
-        ));
+        by_file
+            .entry(edit.location.file.clone())
+            .or_default()
+            .push((
+                (
+                    start,
+                    end,
+                    edit.clone(),
+                    diagnostic.code,
+                    repair.description.clone(),
+                ),
+                index,
+            ));
     }
     by_file
         .into_iter()

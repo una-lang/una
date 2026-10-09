@@ -164,7 +164,11 @@ fn fix_copy(root: &Path) -> (PathBuf, Value) {
     let output = una(&copy, &["--json", "fix", "--tier", "0", "."]);
     let document: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(document["schema"], "una.fix/1", "{document}");
-    assert!(output.stderr.is_empty(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     (copy, document)
 }
 
@@ -676,7 +680,11 @@ fn una_fix_never_widens_authority_or_visibility_0084() {
         );
         let manifest = root.join("una.toml");
         let text = std::fs::read_to_string(&manifest).unwrap();
-        std::fs::write(&manifest, text.replace("edition = \"0.1\"", &format!("edition = \"{edition}\""))).unwrap();
+        std::fs::write(
+            &manifest,
+            text.replace("edition = \"0.1\"", &format!("edition = \"{edition}\"")),
+        )
+        .unwrap();
         let before = modules_of(&root);
         let output = una(&root, &["--json", "fix", "--tier", "0", "."]);
         assert_eq!(output.status.code(), Some(1));
@@ -701,7 +709,12 @@ fn una_fix_dry_run_writes_nothing_and_reports_the_edits_0084() {
     let source = "module m\n\npub kind P = Over(index: Int) | Fine\n\npub f(p: P) -> Int\n  requires p != Over\n=\n  1\n";
     let root = package("fix-dry-run", "0.2", source);
     let output = una(&root, &["--json", "fix", "--dry-run", "--tier", "0", "."]);
-    assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stdout));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
     let document: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(document["dry_run"], true);
     assert_eq!(document["rounds"], 1);
@@ -712,7 +725,10 @@ fn una_fix_dry_run_writes_nothing_and_reports_the_edits_0084() {
     let output = una(&root, &["fix", "--tier", "0", "."]);
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.starts_with("fixed src/m.una:6:12 U2014 "), "{stdout}");
+    assert!(
+        stdout.starts_with("fixed src/m.una:6:12 U2014 "),
+        "{stdout}"
+    );
     assert!(repaired(&root).contains("requires not (p is Over)\n"));
     assert!(una(&root, &["check", "--tier", "0", "."]).status.success());
 }
