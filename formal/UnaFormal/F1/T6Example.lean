@@ -29,12 +29,12 @@ def body : Expr :=
 def eff : Eff := Eff.none.union ((⟨true, false, Option.none⟩ : Eff).union Eff.none)
 
 theorem body_typed : LExprTy prog [] Γ .bot body (.int .bot) eff := by
-  refine .letR (t := .int ((LExpr.joinAll [sec, LExpr.bot]))) ?_ (.int ?_) ?_
+  refine .letR (t := .int ((LExpr.joinAll [sec, LExpr.bot]))) ?_ (.int ?_) ?_ (by simp [LTy.InPlace, sec, LExpr.ofLabel])
   · exact .prim (ts := [.int sec, .int .bot]) (.cons (.var rfl) (.cons (.var rfl) .nil)) .add
   · refine .inr ⟨⟨?_, ?_⟩, ?_, ?_⟩ <;>
       simp [sec, LExpr.joinAll, LExpr.join, LExpr.bot, LExpr.ofLabel, Label.join, Label.bot,
         Level.join, Level.rank] <;> decide
-  · refine .letR (t := .unit .bot) (.op .text rfl ?_ ?_) .unit (.atom (.var rfl))
+  · refine .letR (t := .unit .bot) (.op .text rfl ?_ ?_) .unit (.atom (.var rfl)) (by simp [LTy.InPlace, LExpr.bot, LExpr.ofLabel])
     · refine .inr ⟨⟨?_, ?_⟩, ?_, ?_⟩ <;>
         simp [prog, LExpr.join, LExpr.bot, LExpr.ofLabel, Label.join, Label.bot, Eff.failLabel,
           Eff.none, Program.deep, LTy.deep, Level.join, Level.rank] <;> decide
@@ -47,6 +47,7 @@ theorem prog_wf : prog.LWellFormed where
   policies _ h := nomatch h
   categories := by
     refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩ <;> simp [prog, Label.bot]
+  inPlace := by refine ⟨?_, ?_, ?_⟩ <;> simp [prog]
 
 theorem prog_gf : prog.GenericFree := ⟨(fun _ h => nomatch h), rfl⟩
 
@@ -103,21 +104,21 @@ def brEff : Eff :=
   Eff.none.union ((Eff.none.union Eff.none).union ((⟨true, false, Option.none⟩ : Eff).union Eff.none))
 
 theorem branching_typed : LExprTy prog [] Γb .bot branching (.int sec) brEff := by
-  refine .letR (t := .bool cl) ?r1 (.bool ?l1) ?b1
+  refine .letR (t := .bool cl) ?r1 (.bool ?l1) ?b1 (by simp [LTy.InPlace, sec, LExpr.ofLabel])
   case r1 => exact .prim (ts := [.int sec, .int .bot]) (.cons (.var rfl) (.cons .int .nil)) .lt
   case l1 =>
     apply le_sec <;> simp [cl, sec, LExpr.joinAll, LExpr.join, LExpr.bot, LExpr.ofLabel,
       Label.join, Label.bot, Level.join, Level.rank]
   case b1 =>
-    refine .letE (t := (LTy.int .bot).raise sec) ?r2 (.int ?l2) ?b2
+    refine .letE (t := (LTy.int .bot).raise sec) ?r2 (.int ?l2) ?b2 (by simp [LTy.InPlace, sec, LExpr.ofLabel])
     case r2 =>
       exact .ite (.var rfl) (.atom .int) (.atom .int) (.int (LExpr.le_refl _))
-        (.int (LExpr.le_refl _))
+        (.int (LExpr.le_refl _)) (by simp [LTy.InPlace, LExpr.bot, LExpr.ofLabel])
     case l2 =>
       apply le_sec <;> simp [sec, LExpr.join, LExpr.bot, LExpr.ofLabel, Label.join,
         Label.bot, Level.join, Level.rank]
     case b2 =>
-      refine .letR (t := .unit .bot) (.op (.var rfl) rfl ?le ?sf) .unit (.atom (.var rfl))
+      refine .letR (t := .unit .bot) (.op (.var rfl) rfl ?le ?sf) .unit (.atom (.var rfl)) (by simp [LTy.InPlace, LExpr.bot, LExpr.ofLabel])
       case le =>
         refine .inr ⟨⟨?_, ?_⟩, ?_, ?_⟩ <;>
           simp [prog, LExpr.join, LExpr.bot, LExpr.ofLabel, Label.join, Label.bot, Eff.failLabel,

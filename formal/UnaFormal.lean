@@ -14,4 +14,4 @@ import UnaFormal.F1.UnarySound
 import UnaFormal.F1.T6
 import UnaFormal.F1.Mono
 import UnaFormal.F1.T6Example
-import UnaFormal.F1.Generic
+import UnaFormal.F1.Subst

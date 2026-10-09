@@ -8,7 +8,7 @@ its labeled type.
 The generic-free part has no type parameters (`fn.tparams = []`) and no policy, whose `via`
 functions no label rule checks; declassification is M4's.
 -/
-import UnaFormal.F1.Order
+import UnaFormal.F1.Subst
 import UnaFormal.F1.Erase
 
 namespace Una.F1

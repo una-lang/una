@@ -247,16 +247,16 @@ theorem t6_sound (hwf : p.LWellFormed) (hgf : p.GenericFree)
               cases ha'
               cases hb''
               exact V.raise _ hab
-      | list has hfl =>
+      | list has hfl _ =>
         obtain ⟨vs₁, vs₂, h₁, h₂, hvs, _, _⟩ := latoms_both he₁ he₂ hrel has
         simp only [evalRhs, h₁, h₂, Option.map, Option.elim]
         exact brel_done (.list (VAll.of_flows hvs hfl))
-      | none => exact brel_done .none
+      | none _ => exact brel_done .none
       | some ha =>
         obtain ⟨v₁, v₂, h₁, h₂, hv, _, _⟩ := latom_both he₁ he₂ hrel ha
         simp only [evalRhs, h₁, h₂, Option.map, Option.elim]
         exact brel_done (.some hv)
-      | lambda hb hfl =>
+      | lambda hb hfl _ =>
         exact brel_done (.closure hrel he₁ he₂ hb hfl (Flows.refl _) (Flow.refl _) id id id)
       | @funRef _ _ f targs fn hf _ _ _ _ =>
         obtain ⟨⟨tb, εb, hbody, hflow, ho, hg, hfs, hfail⟩, htp⟩ := funOk_of_find hwf hgf hf
@@ -426,7 +426,7 @@ theorem t6_sound (hwf : p.LWellFormed) (hgf : p.GenericFree)
         obtain ⟨v₁, v₂, h₁, h₂, hv, _, _⟩ := latom_both he₁ he₂ hrel ha
         simp only [eval, h₁, h₂, Option.elim]
         exact brel_done hv
-      | @letR _ _ x ann value body ty s ε₁ ε₂ hr hflow hb =>
+      | @letR _ _ x ann value body ty s ε₁ ε₂ hr hflow hb _ =>
         simp only [eval]
         have u₁ := uR he₁ hr
         have u₂ := uR he₂ hr
@@ -446,7 +446,7 @@ theorem t6_sound (hwf : p.LWellFormed) (hgf : p.GenericFree)
           obtain ⟨hp, hf⟩ := confined (L := L) (uE (.cons (LValTy.flow hv hflow) he₂) hb)
             (not_vis_join_right hn)
           exact ⟨hp, fun c hc hvf => hf c hc (Vis.union_right hvf)⟩
-      | @letE _ _ x ann value body ty s ε₁ ε₂ hr hflow hb =>
+      | @letE _ _ x ann value body ty s ε₁ ε₂ hr hflow hb _ =>
         simp only [eval]
         have u₁ := uE he₁ hr
         have u₂ := uE he₂ hr
@@ -466,7 +466,7 @@ theorem t6_sound (hwf : p.LWellFormed) (hgf : p.GenericFree)
           obtain ⟨hp, hf⟩ := confined (L := L) (uE (.cons (LValTy.flow hv hflow) he₂) hb)
             (not_vis_join_right hn)
           exact ⟨hp, fun c hc hvf => hf c hc (Vis.union_right hvf)⟩
-      | @ite _ _ cond thenE elseE lc t₁ t₂ s ε₁ ε₂ hc ht hel h₁ h₂ =>
+      | @ite _ _ cond thenE elseE lc t₁ t₂ s ε₁ ε₂ hc ht hel h₁ h₂ _ =>
         obtain ⟨c₁, c₂, hc₁, hc₂, hcv, hcu₁, hcu₂⟩ := latom_both he₁ he₂ hrel hc
         have U : ∀ {env : Env} {v : Val}, LEnvTy p env Γ → evalAtom env cond = some v →
             LValTy p v (.bool lc) →
@@ -495,7 +495,7 @@ theorem t6_sound (hwf : p.LWellFormed) (hgf : p.GenericFree)
                 (ihE he₁ he₂ hrel ht)
         · exact brel_confined (U he₁ hc₁ hcu₁) (U he₂ hc₂ hcu₂) (not_vis_join_right hv)
             (fun a b => V.hide a b hv) id id
-      | @caseOption _ _ scr noneE x someE te ls t₁ t₂ s ε₁ ε₂ hs hn hsome h₁ h₂ =>
+      | @caseOption _ _ scr noneE x someE te ls t₁ t₂ s ε₁ ε₂ hs hn hsome h₁ h₂ _ =>
         obtain ⟨c₁, c₂, hc₁, hc₂, hcv, hcu₁, hcu₂⟩ := latom_both he₁ he₂ hrel hs
         have U : ∀ {env : Env} {v : Val}, LEnvTy p env Γ → evalAtom env scr = some v →
             LValTy p v (.option te ls) →
@@ -528,7 +528,7 @@ theorem t6_sound (hwf : p.LWellFormed) (hgf : p.GenericFree)
                     (.cons (V.raise _ hab) hrel) hsome)
         · exact brel_confined (U he₁ hc₁ hcu₁) (U he₂ hc₂ hcu₂) (not_vis_join_right hv)
             (fun a b => V.hide a b hv) id id
-      | @caseResult _ _ scr x okE y errE te ls t₁ t₂ s ε₁ ε₂ hs hok herr h₁ h₂ =>
+      | @caseResult _ _ scr x okE y errE te ls t₁ t₂ s ε₁ ε₂ hs hok herr h₁ h₂ _ =>
         obtain ⟨c₁, c₂, hc₁, hc₂, hcv, hcu₁, hcu₂⟩ := latom_both he₁ he₂ hrel hs
         have U : ∀ {env : Env} {v : Val}, LEnvTy p env Γ → evalAtom env scr = some v →
             LValTy p v (.result te ls) →
@@ -563,7 +563,7 @@ theorem t6_sound (hwf : p.LWellFormed) (hgf : p.GenericFree)
               (ihE (.cons .int he₁) (.cons .int he₂) (.cons .int hrel) herr)
         · exact brel_confined (U he₁ hc₁ hcu₁) (U he₂ hc₂ hcu₂) (not_vis_join_right hv)
             (fun a b => V.hide a b hv) id id
-      | fail _ _ =>
+      | fail _ _ _ =>
         simp only [eval]
         exact brel_same (fun _ h => nomatch h)
       | @attempt _ _ body ty ε₀ hb =>
@@ -583,7 +583,7 @@ theorem t6_sound (hwf : p.LWellFormed) (hgf : p.GenericFree)
           by_cases hv : Vis p L ε₀.failLabel
           · rw [ho hv]; exact .err
           · exact .hidden hv
-      | @handle _ _ body x handler t₁ t₂ s ε₁ ε₂ hb hh h₁ h₂ =>
+      | @handle _ _ body x handler t₁ t₂ s ε₁ ε₂ hb hh h₁ h₂ _ =>
         have h := ihE he₁ he₂ hrel hb
         have u₁ := uE he₁ hb
         have u₂ := uE he₂ hb

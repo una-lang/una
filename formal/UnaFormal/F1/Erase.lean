@@ -129,13 +129,13 @@ mutual
     | _, _, _, _, _, .field hv hrec hi => by
       rw [LTy.erase_raise]
       exact .field (latom_erase hv) hrec (by simp [Record.fieldTys, hi])
-    | _, _, _, _, _, .list has hflow => by
+    | _, _, _, _, _, .list has hflow _ => by
       have h := latoms_erase has
       rw [map_erase_const (fun u hu => Flow.erase (hflow u hu)) (latoms_length has)] at h
       exact .list h
-    | _, _, _, _, _, .none => .none
+    | _, _, _, _, _, .none _ => .none
     | _, _, _, _, _, .some h => .some (latom_erase h)
-    | _, _, _, _, _, .lambda (params := params) hb _ => by
+    | _, _, _, _, _, .lambda (params := params) hb _ _ => by
       have h := LExprTy.toStruct hb
       rw [params_erase] at h
       simp only [LTy.erase, LTy.erases_eq, List.map_map]
@@ -188,17 +188,17 @@ mutual
       ∀ {Γ : LCtx} {pc : LExpr} {e : Expr} {t : LTy} {ε : Eff},
         LExprTy p E Γ pc e t ε → ExprTy p Γ.erase e t.erase
     | _, _, _, _, _, .atom h => .atom (latom_erase h)
-    | _, _, _, _, _, .letR hr hflow hb => by
+    | _, _, _, _, _, .letR hr hflow hb _ => by
       have h := LExprTy.toStruct hb
       simp only [LCtx.erase, List.map_cons] at h
       rw [← Flow.erase hflow] at h
       exact .letR (LRhsTy.toStruct hr) h
-    | _, _, _, _, _, .letE hv hflow hb => by
+    | _, _, _, _, _, .letE hv hflow hb _ => by
       have h := LExprTy.toStruct hb
       simp only [LCtx.erase, List.map_cons] at h
       rw [← Flow.erase hflow] at h
       exact .letE (LExprTy.toStruct hv) h
-    | _, _, _, _, _, .ite hc ht he h₁ h₂ => by
+    | _, _, _, _, _, .ite hc ht he h₁ h₂ _ => by
       have hc' := latom_erase hc
       have ht' := LExprTy.toStruct ht
       have he' := LExprTy.toStruct he
@@ -206,7 +206,7 @@ mutual
       rw [Flow.erase h₂] at he'
       rw [LTy.erase_raise]
       exact .ite hc' ht' he'
-    | _, _, _, _, _, .caseOption hs hn hsome h₁ h₂ => by
+    | _, _, _, _, _, .caseOption hs hn hsome h₁ h₂ _ => by
       have hs' := latom_erase hs
       have hn' := LExprTy.toStruct hn
       have hsome' := LExprTy.toStruct hsome
@@ -215,7 +215,7 @@ mutual
       rw [Flow.erase h₂] at hsome'
       rw [LTy.erase_raise]
       exact .caseOption hs' hn' hsome'
-    | _, _, _, _, _, .caseResult hs hok herr h₁ h₂ => by
+    | _, _, _, _, _, .caseResult hs hok herr h₁ h₂ _ => by
       have hs' := latom_erase hs
       have hok' := LExprTy.toStruct hok
       have herr' := LExprTy.toStruct herr
@@ -224,9 +224,9 @@ mutual
       rw [Flow.erase h₂] at herr'
       rw [LTy.erase_raise]
       exact .caseResult hs' hok' herr'
-    | _, _, _, _, _, .fail _ _ => .fail
+    | _, _, _, _, _, .fail _ _ _ => .fail
     | _, _, _, _, _, .attempt hb => .attempt (LExprTy.toStruct hb)
-    | _, _, _, _, _, .handle hb hh h₁ h₂ => by
+    | _, _, _, _, _, .handle hb hh h₁ h₂ _ => by
       have hb' := LExprTy.toStruct hb
       have hh' := LExprTy.toStruct hh
       simp only [LCtx.erase, List.map_cons] at hh'

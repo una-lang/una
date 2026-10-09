@@ -172,15 +172,15 @@ theorem unary_sound (hwf : p.LWellFormed) (hgf : p.GenericFree) (w : World) : �
           obtain ⟨u, hu, hut⟩ := lfield_typed hvals hi
           exact ⟨fun _ h => by simp [evalRhs, hv'] at h,
             by simpa [evalRhs, hv', hu, URes] using LValTy.raise _ hut⟩
-      | list has hfl =>
+      | list has hfl _ =>
         obtain ⟨vs, hvs, hvst⟩ := latoms_ltyped henv has
         exact ⟨fun _ h => by simp [evalRhs] at h,
           by simpa [evalRhs, hvs, URes] using LValTy.list (l := .bot) (LValsAll.of_flows hvst hfl)⟩
-      | none => exact uok_done LValTy.none
+      | none _ => exact uok_done LValTy.none
       | some ha =>
         obtain ⟨v, hv, hvt⟩ := latom_ltyped henv ha
         exact ⟨fun _ h => by simp [evalRhs] at h, by simpa [evalRhs, hv, URes] using LValTy.some hvt⟩
-      | lambda hb hfl =>
+      | lambda hb hfl _ =>
         exact uok_done (LValTy.closure henv hb hfl (Flows.refl _) (Flow.refl _) id id id)
       | @funRef _ _ f targs fn hf _ _ _ _ =>
         obtain ⟨⟨tb, εb, hbody, hflow, ho, hg, hfs, hfl⟩, htp⟩ := funOk_of_find hwf hgf hf
@@ -262,19 +262,19 @@ theorem unary_sound (hwf : p.LWellFormed) (hgf : p.GenericFree) (w : World) : �
       | atom ha =>
         obtain ⟨v, hv, hvt⟩ := latom_ltyped henv ha
         exact ⟨fun _ h => by simp [eval] at h, by simpa [eval, hv, URes] using hvt⟩
-      | letR hr hflow hb =>
+      | letR hr hflow hb _ =>
         simp only [eval]
         refine andThen_uok (UOk.mono allowed_union_left (fun v hv => LValTy.flow hv hflow)
           fails_union_left (ihR henv hr)) (fun v hv => ?_)
         exact UOk.mono (allowed_union_right (LExpr.le_join_left _ _)) (fun _ h => h)
           (fails_union_right (LExpr.le_join_left _ _)) (ihE (.cons hv henv) hb)
-      | letE hv hflow hb =>
+      | letE hv hflow hb _ =>
         simp only [eval]
         refine andThen_uok (UOk.mono allowed_union_left (fun v hv => LValTy.flow hv hflow)
           fails_union_left (ihE henv hv)) (fun v hv => ?_)
         exact UOk.mono (allowed_union_right (LExpr.le_join_left _ _)) (fun _ h => h)
           (fails_union_right (LExpr.le_join_left _ _)) (ihE (.cons hv henv) hb)
-      | ite hc ht he h₁ h₂ =>
+      | ite hc ht he h₁ h₂ _ =>
         obtain ⟨v, hv, hvt⟩ := latom_ltyped henv hc
         cases hvt with
         | @bool b =>
@@ -287,7 +287,7 @@ theorem unary_sound (hwf : p.LWellFormed) (hgf : p.GenericFree) (w : World) : �
             exact UOk.mono (Allowed.mono (LExpr.le_join_left _ _) union_op_left union_get_left)
               (fun _ h => LValTy.raise _ (LValTy.flow h h₁))
               (Fails.mono (LExpr.le_join_left _ _) union_fails_left) (ihE henv ht)
-      | caseOption hs hn hsome h₁ h₂ =>
+      | caseOption hs hn hsome h₁ h₂ _ =>
         obtain ⟨v, hv, hvt⟩ := latom_ltyped henv hs
         cases hvt with
         | none =>
@@ -300,7 +300,7 @@ theorem unary_sound (hwf : p.LWellFormed) (hgf : p.GenericFree) (w : World) : �
           exact UOk.mono (allowed_union_right (LExpr.le_join_left _ _))
             (fun _ h => LValTy.raise _ (LValTy.flow h h₂))
             (fails_union_right (LExpr.le_join_left _ _)) (ihE (.cons (LValTy.raise _ hw) henv) hsome)
-      | caseResult hs hok herr h₁ h₂ =>
+      | caseResult hs hok herr h₁ h₂ _ =>
         obtain ⟨v, hv, hvt⟩ := latom_ltyped henv hs
         cases hvt with
         | ok hw =>
@@ -313,7 +313,7 @@ theorem unary_sound (hwf : p.LWellFormed) (hgf : p.GenericFree) (w : World) : �
           exact UOk.mono (allowed_union_right (LExpr.le_join_left _ _))
             (fun _ h => LValTy.raise _ (LValTy.flow h h₂))
             (fails_union_right (LExpr.le_join_left _ _)) (ihE (.cons .int henv) herr)
-      | fail hpc _ => exact ⟨fun _ h => by simp [eval] at h, _, rfl, hpc⟩
+      | fail hpc _ _ => exact ⟨fun _ h => by simp [eval] at h, _, rfl, hpc⟩
       | attempt hb =>
         have h := ihE henv hb
         simp only [eval]
@@ -328,7 +328,7 @@ theorem unary_sound (hwf : p.LWellFormed) (hgf : p.GenericFree) (w : World) : �
           | failed c => exact ⟨hev, .err⟩
           | stuck => exact ⟨hev, trivial⟩
           | outOfFuel => exact ⟨hev, trivial⟩
-      | @handle _ _ body x handler _ _ _ ε₁ ε₂ hb hh h₁ h₂ =>
+      | @handle _ _ body x handler _ _ _ ε₁ ε₂ hb hh h₁ h₂ _ =>
         have h := ihE henv hb
         simp only [eval]
         revert h

@@ -1,8 +1,10 @@
 /-
 M4, generics: rule 8's static order of labels is stable under instantiation (`LExpr.le_inst`):
-when the checker finds `a ⊑ b` in a generic body, `a ⊑ b` holds of their instances at every call.
+when the checker finds `a ⊑ b` in a generic body, `a ⊑ b` holds of their instances at every call;
+so are flows (`Flow.lsubst`), bounds and lookups.
 -/
-import UnaFormal.F1.Mono
+import UnaFormal.F1.Order
+import UnaFormal.F1.Inst
 
 namespace Una.F1
 
