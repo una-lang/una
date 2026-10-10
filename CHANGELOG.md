@@ -2,6 +2,10 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
+## Unreleased
+
+- **T6 covers the environment's secrets** (#487, `docs/plan/formal-track-env.md`). The formal model's environment moves from the host into the world, so two runs may read different values from `Env.get`, and T6 relates them: a program that leaks a variable's value now has no typing, which a theorem shows, and one that keeps it `internal` is certified with runs from different environments. The premise is that the same variables exist in both runs, since whether a variable exists is `public` (`spec/14 §3`): it is public configuration, so an operator must not encode a secret in which variables are set. The note of a declaration that reads `Env` and the guide's `Env` section say so. Corpus: no verdict changes (756 accepted, none rejected).
+
 ## v0.3.7
 
 A security patch of the Beta: S-18 (a policy call's failure was public whatever the policy's `to` label, so a via that failed on its secret argument revealed that bit) is fixed in both editions (ADR 0090): the failure is now labeled where the release is visible. It also carries what was validated on `main` since v0.3.6: the formal track's re-check of `checked` (#453, phase A) and of `to_text`, `concat` and `Env.get` (M6b), which now rejects 6 of S-04's replayable shapes at the leak. Validation: `docs/releases/0.3.7-validation.md`.

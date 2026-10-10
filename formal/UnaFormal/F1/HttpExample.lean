@@ -63,8 +63,8 @@ theorem body_checked :
   ⟨_, rfl⟩
 
 /-- Two worlds whose servers have answered 0 and 5 requests. -/
-def w₁ : World counter := ⟨(), (0 : Nat)⟩
-def w₂ : World counter := ⟨(), (5 : Nat)⟩
+def w₁ : World counter := ⟨(), (0 : Nat), fun _ => none⟩
+def w₂ : World counter := ⟨(), (5 : Nat), fun _ => none⟩
 
 theorem internal_hidden : ¬ Vis prog Label.bot (.ofLabel internalLabel) := by
   rintro (⟨h, _⟩ | ⟨⟨h, _⟩, _, _⟩) <;>
@@ -72,7 +72,7 @@ theorem internal_hidden : ¬ Vis prog Label.bot (.ofLabel internalLabel) := by
     revert h <;> decide
 
 /-- An observer at `public` sees no server state. -/
-theorem worlds_rel : WorldRel prog Label.bot w₁ w₂ := ⟨fun _ => rfl, fun h => absurd h internal_hidden⟩
+theorem worlds_rel : WorldRel prog Label.bot w₁ w₂ := ⟨fun _ => rfl, fun h => absurd h internal_hidden, fun _ => rfl⟩
 
 /-- **T6 with a request of `Http`** (M5c): the two runs, from servers in different states, show a
 public observer the same events and related outcomes, and leave servers it cannot tell apart. -/

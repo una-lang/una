@@ -66,6 +66,7 @@ M3 also found that `spec/10`'s formal T-Let and T-Handle lack the rule-4 premise
 - **H2:** whether a write fails, and which files it leaves, does not depend on what it writes.
 - **H3:** a response does not depend on the program's type annotations (the host is given text).
 - **H4:** every successful HTTP response is a `Response` of `spec/24`. The runtime builds it so by construction.
+- **`Env`:** the environment variables that exist are the same in both runs; their values may differ, and T6 covers them (#487). Whether a variable exists is `public` (`spec/14 §3`): it is public configuration, so an operator must not encode a secret in which variables are set.
 
 A declaration whose program uses no host operation, and whose parameters cannot carry one in, needs none of these: its note is plain, and its theorem holds on any host.
 
@@ -106,4 +107,4 @@ A declaration whose program uses no host operation, and whose parameters cannot 
 | The checker is sound | `Check.checkExpr_sound`, `Check.progOk_sound`, `Check.progOk_sound_nil`, `Check.hostWfB_sound`, `reach_closed` |
 | Every accept has a certificate | `Import.finalize_sound`, `Import.withHost_ex`, `Import.guardFiles_sub` |
 | S-14 and S-15: the old rules leak, and the new rules reject the probes | `OldLeaks.s14_old_leaks`, `OldLeaks.s15_old_leaks`, `Untyped.s14_untyped`, `Untyped.s15_untyped`, `NewRules.s14_rejected`, `NewRules.s15_rejected` |
-| Non-vacuity, one example per step | `T6Example`, `ReleaseExample`, `MonomorphExample`, `HostExamples`, `HostFreeExample`, `FilesCertExample`, `HttpExample` |
+| Non-vacuity, one example per step | `T6Example`, `ReleaseExample`, `MonomorphExample`, `HostExamples`, `HostFreeExample`, `FilesCertExample`, `HttpExample`, `EnvExample` |

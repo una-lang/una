@@ -345,7 +345,7 @@ mutual
         modify fun s => { s with host := { s.host with rq := true } }
         pure (.req o (← atoms (← field j "args")))
       else if std && cap == "Env" && o == "get" then
-        -- `Env.get` reads the host's environment, the same in both runs (M6b).
+        -- `Env.get` reads the world's environment, whose variables are the same in both runs (#487).
         match ← atoms (← field j "args") with
         | [name] => pure (.envGet name)
         | _ => throw "the operation `Env.get`, with other than one argument"
@@ -1017,7 +1017,8 @@ def hostNoteFor (files http : Bool) (env : Bool := false) : String :=
       -- The certified program performs no host operation, but `f` takes a closure, which a
       -- caller may make one that does (#475).
       | false, false => closureNote
-  if env then base ++ ", and `Env`, with one environment in both runs" else base
+  if env then base ++
+    ", and `Env`, whose variables are the same in both runs: whether a variable exists is public configuration, so an operator must not encode a secret in which variables are set" else base
 
 mutual
   /-- Whether a right-hand side reads the environment (`Env.get`, M6b), in its lambdas included. -/

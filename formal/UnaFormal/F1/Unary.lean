@@ -253,19 +253,21 @@ def Event.isReq : Event → Bool
   | _ => false
 
 /-- What a run with trace `tr` may do to the world it starts from, `w` (M5): change the file
-system only if it wrote, and the servers only if it sent a request. -/
+system only if it wrote, and the servers only if it sent a request, and never the environment
+(#487). -/
 def WEff (tr : Trace) (w w' : World H) : Prop :=
-  (tr.any Event.isWrite = false → w'.fs = w.fs) ∧ (tr.any Event.isReq = false → w'.srv = w.srv)
+  (tr.any Event.isWrite = false → w'.fs = w.fs) ∧ (tr.any Event.isReq = false → w'.srv = w.srv) ∧
+    w'.env = w.env
 
-theorem WEff.self (tr : Trace) (w : World H) : WEff tr w w := ⟨fun _ => rfl, fun _ => rfl⟩
+theorem WEff.self (tr : Trace) (w : World H) : WEff tr w w := ⟨fun _ => rfl, fun _ => rfl, rfl⟩
 
 theorem WEff.trans {t₁ t₂ : Trace} {w₁ w₂ w₃ : World H} (h₁ : WEff t₁ w₁ w₂) (h₂ : WEff t₂ w₂ w₃) :
     WEff (t₁ ++ t₂) w₁ w₃ := by
-  refine ⟨fun h => ?_, fun h => ?_⟩
+  refine ⟨fun h => ?_, fun h => ?_, h₂.2.2.trans h₁.2.2⟩
   · simp only [List.any_append, Bool.or_eq_false_iff] at h
     exact (h₂.1 h.2).trans (h₁.1 h.1)
   · simp only [List.any_append, Bool.or_eq_false_iff] at h
-    exact (h₂.2 h.2).trans (h₁.2 h.1)
+    exact (h₂.2.1 h.2).trans (h₁.2.1 h.1)
 
 /-- A run from `w` whose events satisfy `A`, whose outcome satisfies `P` and `F`, and whose
 changes to the world are those its events allow. -/

@@ -407,7 +407,8 @@ mutual
     | toText {Γ pc a t} :
         LAtomTy Γ a t → p.eqIn E t = true → LRhsTy p E Γ pc (.toText a) (.text (p.deep t)) .none
     /-- `Env.get` (`spec/14 §3`): its name is `public`, its `accepts`; whether the variable exists
-    is `public`, and its value `internal`. The environment is the host's, the same in both runs. -/
+    is `public`, and its value `internal`. The environment is the world's: its values may differ
+    between two runs, and the variables that exist may not (#487). -/
     | envGet {Γ pc name t} :
         LAtomTy Γ name t → t.erase = .text → p.le (p.deep t) .bot →
         LRhsTy p E Γ pc (.envGet name) (.option (.text (.ofLabel ⟨.internal, []⟩)) .bot) .none

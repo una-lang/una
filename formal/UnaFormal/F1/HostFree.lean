@@ -765,9 +765,9 @@ theorem t6_release_hostFreeIn {S : String → Prop} (hwf : p.LWellFormed) (hb1 :
     BRelR p L (V p L (t.lsubst p.recordDeep σ)) (Vis p L (ε.inst (p.sd σ)).failLabel)
       (eval H n p w₁ e₁ e) (eval H n p w₂ e₂ e) := by
   have hU := t6_release_host p L Host.unit hwf hb1 hh Host.unit_lawful hσ hE hΓ hpc
-    (WorldRel.refl (⟨(), ()⟩ : World Host.unit)) h₁ h₂ hrel he n
-  rw [((eval_hostFreeIn hp hv n).2 w₁ ⟨(), ()⟩ e₁ e hf₁ hef hec).1,
-    ((eval_hostFreeIn hp hv n).2 w₂ ⟨(), ()⟩ e₂ e hf₂ hef hec).1]
+    (WorldRel.refl (⟨(), (), fun _ => none⟩ : World Host.unit)) h₁ h₂ hrel he n
+  rw [((eval_hostFreeIn hp hv n).2 w₁ ⟨(), (), fun _ => none⟩ e₁ e hf₁ hef hec).1,
+    ((eval_hostFreeIn hp hv n).2 w₂ ⟨(), (), fun _ => none⟩ e₂ e hf₂ hef hec).1]
   intro t₁ t₂
   rcases hU t₁ t₂ with ⟨hpj, ho, _⟩ | hd
   · exact .inl ⟨hpj, ho, hw⟩
@@ -814,8 +814,8 @@ theorem t6_release_erasure_obs_hostFreeIn {S : String → Prop} {ρ : String →
     (n : Nat) (hT₁ : Term (eval H n P₂ w₁ e₁' e').2.1) (hT₂ : Term (eval H n P₂ w₂ e₂' e').2.1) :
     proj P₂ L (eval H n P₂ w₁ e₁' e').1 = proj P₂ L (eval H n P₂ w₂ e₂' e').1 ∨
       Diverged P₂ L (eval H n P₂ w₁ e₁' e').1 (eval H n P₂ w₂ e₂' e').1 := by
-  have s₁ := ((eval_hostFreeIn (H := H) hp₂ hv₂ n).2 w₁ ⟨(), ()⟩ e₁' e' hf₁ hef hec).1
-  have s₂ := ((eval_hostFreeIn (H := H) hp₂ hv₂ n).2 w₂ ⟨(), ()⟩ e₂' e' hf₂ hef hec).1
+  have s₁ := ((eval_hostFreeIn (H := H) hp₂ hv₂ n).2 w₁ ⟨(), (), fun _ => none⟩ e₁' e' hf₁ hef hec).1
+  have s₂ := ((eval_hostFreeIn (H := H) hp₂ hv₂ n).2 w₂ ⟨(), (), fun _ => none⟩ e₂' e' hf₂ hef hec).1
   rw [s₁] at hT₁ ⊢
   rw [s₂] at hT₂ ⊢
   exact t6_release_erasure_obs L hsim hproj hwf hb1 hh Host.unit_lawful Host.unit_anonInvariant hσ
