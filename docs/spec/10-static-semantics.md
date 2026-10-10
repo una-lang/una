@@ -266,3 +266,7 @@ pc \sqcup \ell^{*}(a) \sqcup \bigsqcup_{x \in \mathrm{fv}(\varphi) \setminus \{\
 $$
 
 Otherwise the `checked` is U4002 at the `checked`, with the predicate as its related span when a value it reads raises the label, and the operand otherwise. $\ell^{*}(x)$ joins every label of the type of the local `x`, so a field path such as `limits.most` counts every label of `limits`. Names that are not locals, such as predicates and functions, are pure, and their arguments are reads. Where this section and §7 differ, this section wins.
+
+### 13.3 A policy call's failure (2026-10-10, ADR 0090, #496)
+
+Found by S-18. A policy's `via` function is not label-checked (`spec/07 §5` rule 3), and its failure is decided by the `from` value. The failure of a policy call $p(a)$ is labeled $pc \sqcup \ell(\mathit{to})$, the top label of `to`, where its release is visible: T-Declassify (§7) gives the call the failure $F_f^{\,pc \sqcup \ell(\tau_{\mathit{to}})}$ in the notation of §13.1. So `attempt` gives a `Result` with that label, `if error use` runs under it, and `if error pass` and `if error fail` are U4002 when it is above `public`. A policy whose `to` is `public` keeps a public failure. Where this section and §7 differ, this section wins.

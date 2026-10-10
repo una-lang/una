@@ -104,7 +104,7 @@ run 1 "[U6003] Error: this call exceeds the maximum call depth of 10000" "deep.u
     run "$demo/deep.una"
 
 echo "-- The examples of the reference example"
-run 0 "6 examples: 6 passed, 0 failed" "" test examples/events
+run 0 "7 examples: 7 passed, 0 failed" "" test examples/events
 
 echo "-- Their effect traces for agents, with labeled arguments redacted"
 run 0 '"instance":"given:keys","capability":"Keys","op":"hmac"' '"data":"<redacted:secret>"' \
