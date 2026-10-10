@@ -17,6 +17,7 @@ A security patch of the Beta: S-16 (whether an `internal` file or environment va
 
 ### Documentation
 
+- **A compact reference for agents** (#430), `docs/guide/una-compact.md`, under 2,000 tokens. It covers the loop, the syntax rules agents miss, failures, capabilities, labels and policies, contracts and loops, the library and examples, with three checked snippets. It ships in the release archive beside the full guides, as a quick start that points to them, and a test holds it under its token budget. Measured in three arms (`docs/reviews/v0.3.4/compact-arms.md`): alone it costs about twice the check runs of the full guides, so it complements them and does not replace them.
 - **The guides close the gaps the compact-reference arms met** (#449, from #430's measurement). The agent guide now:
   - says that a `Files` path is relative to its grant's prefix (`files:data:read` reads `readings.txt`, not `data/readings.txt`), which every arm got wrong, the full-guide ones included;
   - states how imports work;
@@ -53,7 +54,6 @@ A security patch of the Beta: S-14 (whether a file exists or a read fails could 
 
 ### Documentation
 
-- **A compact reference for agents** (#430), `docs/guide/una-compact.md`, under 2,000 tokens. It covers the loop, the syntax rules agents miss, failures, capabilities, labels and policies, contracts and loops, the library and examples, with three checked snippets. It ships in the release archive beside the full guides, and a test holds it under its token budget.
 - **A fresh agent's dogfood pass on the v0.3.3 archive** (#418, N-64), in `docs/reviews/v0.3.4/dogfood-fresh.md`: Opus 5.5 subagents with no knowledge of Una wrote the same five programs as #402 from the archive alone. With the guides that #410 ships, 7 `una check` runs, twice, against the 12 of #402; without them, 11 to 23, depending on how the agent found the library. Nine new findings go to #419.
 - **The guide closes the gaps a fresh agent met** (#419, N-64). The HTTP section gives every operation's parameters, the fields of `Header` and `Response`, that `key_name` sends `Authorization: Bearer <key>` (a token in another header is a header value, through a policy when `secret`), and a stand-in handler with an example; the syntax reference lists `Http` with the host capabilities. The guide also says that there is no `\r` escape (`\u{D}`), that a one-field value prints without its field name, that a label labels one position (`internal Option[internal Int]`), how an example expects a failure, that a `when` arm may `fail` while binding, and how a loop's helper states its contract with `old(p)`. `una explain U4001` and `U5002` say the same.
 
