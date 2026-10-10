@@ -124,9 +124,9 @@ mod tests {
         let other = dir.join("other.key");
         std::fs::write(&other, b"short").unwrap();
         let other_name = other.to_str().unwrap().to_owned();
-        let overriding = move |name: &str| (name == OVERRIDE).then(|| other_name.clone());
+        let overriding = move |name: &str| Ok((name == OVERRIDE).then(|| other_name.clone()));
         assert_eq!(resolve(&overriding), None);
-        assert_eq!(resolve(&|_: &str| None), None);
+        assert_eq!(resolve(&|_: &str| Ok(None)), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
