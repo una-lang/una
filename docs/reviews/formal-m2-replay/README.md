@@ -33,9 +33,9 @@ Nothing is edited by hand. The label that each rejection names is the pre-fix ch
 **Not replayed, out of fragment:**
 
 - **S-02** (`parse_json`): F1 has no `Json`.
-- **S-03** (Http failures): the importer does not read `Http`'s operations, which take several arguments and fail.
+- **S-03** (Http failures): not replayable from any release. `Http` first ships in v0.3.0, after the fix (#317, merge `51a7a2fc`): v0.2.0 has no `std.host` (`una check` of the repro is U1001), and the v0.2.0 alphas predate `Http` too. The coordinator decided not to build the unreleased commit before the fix, since a binary never released adds little evidence (#498).
 - **S-04** (`let edit`): the memory model, M6. Its shapes are now dumped and read (below, "S-04"), and none is re-checked yet.
-- **S-05** (`Files.write`): an operation with two arguments that fails.
+- **S-05** (`Files.write`): now replayed from v0.1.3 (below, "S-05"), with one input taken from a later release.
 
 **Summary.** The checker rejects all 8 findings that F1's forms can write.
 - **S-01, S-06, S-07, S-09 and S-12** are rejected at the label the pre-fix checker got wrong, at the binder or call where it went wrong.
@@ -121,3 +121,24 @@ It reports a body with `together` or `together_for` as that form, outside F1. Tw
 - **The `host` key.** It lists `std.host`'s `Console` and `Env` when a declaration uses them, as the export writes them: the same `print(line: Text) -> Unit` and `get(name: Text) -> Option[internal Text]`, both accepting `public`. Before, `host` was empty, which S-01 to S-12 never needed, since their repros use their packages' own capabilities.
 - **`Ok(a)` and `Err(a)`** are read as constructs of `prelude.Result`, as the export writes them, not as calls of a variable.
 
+## S-05 (#498)
+
+**Provenance.** S-05 leaked in edition 0.1 from v0.1.0 to v0.1.3, and v0.1.4 fixed it (#343). The dumps come from v0.1.3, the last release before the fix, downloaded from its GitHub release: `una-0.1.3-aarch64-apple-darwin.tar.gz`, whose sha256 matches the release's `.sha256` file. Its `una` has the sha256 `2ea67e80bd6c8d464fd7433d9c25e4362b1e6fcc275b714340e84d861e87b52b`.
+
+**The shapes.** The leaking `n39_write_path_` cases of `tests/conformance/security/`: `attempt_branch`, `error_payload`, `fail`, `pass` and `use_into_public`, each in edition 0.1. v0.1.0 and v0.1.3 accept all five (`una check` exits 0); today they are U4001, U4002 or U4003. The control is `n39_ok_public_path_content_internal_0_1` (`expect: ok`), which writes `internal` content to a `public` path and branches on the result. `dumps-s05/` holds each case's `una check --dump-core main` output from v0.1.3, edited by no one.
+
+**The one input not taken from the release: the file-state label.** The re-check reads `Files` only with the package's file-state label (ADR 0085), which v0.1.3 does not have. For each dump, `run.sh` takes the label that v0.3.6's `una core --json` infers for the same repro, the least label that covers every write. `dumps-s05/file_state.tsv` records it per dump, with the command and the binary: v0.3.6's `una` from `coordination/releases/v0.3.6/una-0.3.6-aarch64-apple-darwin.tar.gz`, sha256 `83fc3781e69f086aa8a8f0fbeb277cd5fa45c7056c16e0b62634bd13ead9815f`. It is `internal` for the five leaks and `public` for the control.
+
+**Result: 4 of 5 rejected, the control accepted.**
+- `fail` and `pass` are rejected at the failure (U4002), where `una check` of today reports them.
+- `attempt_branch` and `use_into_public` are rejected at the `attempt`: "the result of `attempt` is below what decides the failure". `una check` of today reports them where that result is used (U4003 and U4001).
+- `error_payload` is not re-checked: it branches on `FileError`'s variants, a case over a data kind, which F1 lacks.
+- The control is accepted, with "rests on a lawful host (H1 to H3): the program uses `Files`".
+
+**What this cannot separate.** S-05's rule, that a write's failure carries its path's label, and ADR 0085's file-state term coincide on these repros: the path is `internal`, and the inferred file state is `internal` because of that same path. So the rejections show that the re-check rejects S-05's programs. They do not show which of the two rules rejects them.
+
+**Why neither fixed label is faithful.** `run.sh` also reads every dump with each fixed label:
+- **`public`:** every leak is rejected by ADR 0085's write guard ("a write whose path or program counter is above the file-state label"), a rule that postdates S-05, and the control is accepted.
+- **`internal`:** the leaks are rejected as with the inferred label, but so is the control, at its `attempt`: with an `internal` file state, every write's failure is decided at `internal`, whatever its path. This is a false rejection, and it is why the coordinator's first choice, a fixed `internal`, was replaced.
+
+**The reader.** `dumpcore.py` now reads `attempt e` and `handle e with error ⇒ h` (`with error(x) ⇒ h` when the handler names the failure), reports a case over a data kind as that form, outside F1, and lists `std.host`'s `Files` in `host` as v0.1.3's `spec/14 §3` declares it, which today's keeps and v0.3.6's export writes: `read(path)` accepting `public` and returning `internal Text`, and `write(path, content)` accepting `internal`, both failing with `FileError`. It takes the file-state label as an optional fourth argument. The replay of S-01 to S-12 and S-04 is unchanged.

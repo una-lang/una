@@ -4,10 +4,11 @@ The replay of the formal track's M2 runs the Lean checker on the Core that a rel
 fix of S-01 to S-12 printed for the finding's repro. That release accepted the repro, so its Core
 holds the labels its checker inferred, the bug included. Releases before v0.3.4 have no
 `una core`, so this script reads their debug text, for the forms the repros use: functions,
-capabilities, `let`, `if`, `case`, lambdas, calls, operations, primitives and lists. A handler
-or `with` is written as a node the checker does not know, so it is reported as not re-checked.
+capabilities, `let`, `if`, `case`, `attempt`, `handle`, lambdas, calls, operations, primitives
+and lists. A capability handler or `with` is written as a node the checker does not know, so it
+is reported as not re-checked.
 
-Usage: python3 -I dumpcore.py <dump.txt> <module> <edition> > <doc.json>
+Usage: python3 -I dumpcore.py <dump.txt> <module> <edition> [<file-state level>] > <doc.json>
 """
 
 import json
@@ -45,13 +46,21 @@ def _plain(base, level="public"):
     return {"kind": "base", "base": base, "refinements": [], "label": label(level)}
 
 
-def _op(name, params, result, accepts="public"):
-    return {"name": name, "params": params, "result": result, "fails": None, "error": None,
+def _op(name, params, result, accepts="public", fails=None):
+    error = {"module": "prelude", "name": fails} if fails else None
+    return {"name": name, "params": params, "result": result, "fails": fails, "error": error,
             "requires": [], "ensures": [], "accepts": label(accepts)}
 
 
-# `std.host`'s capabilities as `una core --json` exports them (`spec/14 §3`).
+# `std.host`'s capabilities as `una core --json` exports them (`spec/14 §3`). `Files` is as
+# v0.1.3's `spec/14 §3` declares it, which today's keeps: `read` accepts `public` and returns
+# `internal Text`, `write` accepts `internal`, and both fail with `FileError`.
 HOST = {
+    "Files": {"kind": "cap", "name": "Files", "ops": [
+        _op("read", [["path", _plain({"kind": "text"})]], _plain({"kind": "text"}, "internal"),
+            fails="FileError"),
+        _op("write", [["path%2", _plain({"kind": "text"})], ["content", _plain({"kind": "text"})]],
+            _plain({"kind": "unit"}), "internal", fails="FileError")]},
     "Console": {"kind": "cap", "name": "Console", "ops": [
         _op("print", [["line", _plain({"kind": "text"})]], _plain({"kind": "unit"}))]},
     "Env": {"kind": "cap", "name": "Env", "ops": [
@@ -228,7 +237,8 @@ class Parser:
     def bound(self, caps):
         """What a `let` binds: an expression or a right-hand side."""
         tok = self.peek()
-        if tok in ("if", "case", "let", "with", "loop", "together", "together_for"):
+        if tok in ("if", "case", "let", "with", "loop", "together", "together_for", "attempt",
+                   "handle"):
             return {"kind": "expr", "value": self.expr(caps)}
         return {"kind": "rhs", "value": self.rhs(caps)}
 
@@ -364,6 +374,10 @@ class Parser:
                     self.take("⇒")
                     other = self.expr(caps)
                     break
+                if self.peek() not in ("Some", "None", "Ok", "Err"):
+                    # A case over a kind of the program or the prelude, as `FileError`: outside
+                    # F1, so the declaration is reported as not re-checked.
+                    raise Outside("case over a data kind")
                 ctor = self.take()
                 binds = []
                 if self.peek() == "(":
@@ -382,6 +396,23 @@ class Parser:
                 if self.peek() not in ("Some", "None", "Ok", "Err", "else"):
                     break
             return {"kind": "case", "scrutinee": sc, "arms": arms, "otherwise": other}
+        if tok == "attempt":
+            # `attempt e`: the value or the failure of `e`, as a `Result` (S-05's repros, v0.1).
+            self.take()
+            return {"kind": "attempt", "body": self.expr(caps)}
+        if tok == "handle":
+            # `handle e with error ⇒ h`, or `with error(x) ⇒ h` when the handler reads it.
+            self.take()
+            body = self.expr(caps)
+            self.take("with")
+            self.take("error")
+            x = "%error"
+            if self.peek() == "(":
+                self.take()
+                x = self.take()
+                self.take(")")
+            self.take("⇒")
+            return {"kind": "handle", "body": body, "error": x, "handler": self.expr(caps)}
         if tok == "fail":
             self.take()
             ctor = self.take()
@@ -413,7 +444,7 @@ def blocks(text):
     return out
 
 
-def convert(text, module, edition):
+def convert(text, module, edition, file_state=None):
     caps, decls = {}, []
     for block in blocks(text):
         head = block.split()[0]
@@ -478,15 +509,22 @@ def convert(text, module, edition):
                 "result": result, "uses": uses, "fails": fails, "error": None,
                 "body": body}})
     # The host's capabilities a declaration uses, as `una core --json` writes them in `host`
-    # (`spec/14 §3`), for those of them the re-check reads: `Console` and `Env` (M6b).
+    # (`spec/14 §3`), for those of them the re-check reads: `Console`, `Env` (M6b) and `Files` (S-05).
     used = {u["capability"] for d in decls if d["kind"] == "fun" for u in d["value"]["uses"]}
     host = [HOST[c] for c in sorted(used - capnames) if c in HOST]
     del capnames
-    return {"schema": "una.core/1", "edition": edition, "complete": True,
-            "modules": [{"path": module, "decls": decls}], "library": [], "host": host}
+    doc = {"schema": "una.core/1", "edition": edition, "complete": True,
+           "modules": [{"path": module, "decls": decls}], "library": [], "host": host}
+    # The file-state label (ADR 0085), which releases before v0.1.6 and v0.3.4 do not have: the
+    # replay supplies it, and says so (S-05, README).
+    if file_state is not None:
+        doc["file_state"] = label(file_state)
+    return doc
 
 
 if __name__ == "__main__":
     path, module, edition = sys.argv[1:4]
+    file_state = sys.argv[4] if len(sys.argv) > 4 else None
     with open(path, encoding="utf-8") as f:
-        print(json.dumps(convert(f.read(), module, edition), ensure_ascii=False, indent=1))
+        print(json.dumps(convert(f.read(), module, edition, file_state), ensure_ascii=False,
+                         indent=1))
