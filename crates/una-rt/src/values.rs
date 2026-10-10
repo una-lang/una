@@ -1238,14 +1238,41 @@ pub fn append_owned(xs: i64, item: i64) -> i64 {
     list
 }
 
-/// `set(edit xs, index, item)` of the prelude (`spec/14 §1`, v0.2): a call with an `edit`
-/// parameter returns the parameter's new value with the result, so this is the tuple of the
-/// list with `item` at `index`, and `unit`. The list is copied: updating a list that nothing
-/// else holds in place is #30. Its `requires` keeps `index` in range; outside it, the list is
-/// unchanged.
-pub fn set(xs: i64, index: i64, item: i64) -> i64 {
+/// The message of a `set` at an index outside the list, the interpreter's fault (#480).
+pub(crate) const SET_OUT_OF_RANGE: &str =
+    "evaluation stopped: `set` at an index outside the list, which its precondition excludes";
+
+/// The position `index` names in `xs`, or `None` outside it: O(1), from the list's length.
+fn set_position(xs: i64, index: i64) -> Option<usize> {
+    let len = with(xs, |object| object.cells().len()).unwrap_or(0);
+    usize::try_from(&int_value(index))
+        .ok()
+        .filter(|&at| at < len)
+}
+
+/// Aborts the run, or the task, at the `set` call `site` with U8001, as the interpreter's fault
+/// does: the precondition `0 <= index < xs.len` was not met (#480, `spec/17 §7.3`). Returns 0,
+/// the value the caller drops: a task stops, and its block reports the abort.
+fn set_outside(site: i64) -> i64 {
+    fault();
+    crate::runtime::abort_at(
+        usize::try_from(site).unwrap_or(usize::MAX),
+        una_diag::Code::U8001,
+        SET_OUT_OF_RANGE.to_owned(),
+    )
+}
+
+/// `set(edit xs, index, item)` of the prelude (`spec/14 §1`, v0.2), at the call `site`: a call
+/// with an `edit` parameter returns the parameter's new value with the result, so this is the
+/// tuple of the list with `item` at `index`, and `unit`. The list is copied: updating a list
+/// that nothing else holds in place is #30. Its `requires` keeps `index` in range; outside it,
+/// the run aborts with U8001 at the call, as in the interpreter (#480).
+pub fn set(site: i64, xs: i64, index: i64, item: i64) -> i64 {
+    let Some(position) = set_position(xs, index) else {
+        return set_outside(site);
+    };
     copied();
-    let position = usize::try_from(&int_value(index)).ok();
+    let position = Some(position);
     let updated = list();
     for (at, existing) in items(xs).into_iter().enumerate() {
         push(updated, if Some(at) == position { item } else { existing });
@@ -1259,22 +1286,24 @@ pub fn set(xs: i64, index: i64, item: i64) -> i64 {
 
 /// `set(edit xs, index, item)` when the caller gives up its reference to `xs`, at the list's
 /// last use (#30): the item is replaced in place when nothing else holds the list, and the list
-/// is copied otherwise.
-pub fn set_owned(xs: i64, index: i64, item: i64) -> i64 {
+/// is copied otherwise. Outside the range, the run aborts at the call `site` (#480).
+pub fn set_owned(site: i64, xs: i64, index: i64, item: i64) -> i64 {
+    let Some(position) = set_position(xs, index) else {
+        return set_outside(site);
+    };
     if !unique(xs) {
-        let tuple = set(xs, index, item);
+        let tuple = set(site, xs, index, item);
         release(xs);
         return tuple;
     }
     retain(item);
-    let position = usize::try_from(&int_value(index)).ok();
     let old = with_cells(xs, |cells| {
-        position
-            .and_then(|at| cells.get_mut(at))
+        cells
+            .get_mut(position)
             .map(|cell| std::mem::replace(cell, item))
     })
     .flatten();
-    // Outside the range, which the `requires` excludes, the list is unchanged.
+    // `set_position` found the cell, so `old` is the item it held.
     release(old.unwrap_or(item));
     let tuple = data(0);
     push(tuple, xs);
@@ -1668,7 +1697,7 @@ mod tests {
         // A second holder makes the next update copy, and keeps its own list.
         retain(xs);
         let other = xs;
-        let tuple = set_owned(xs, n(0), n(-1));
+        let tuple = set_owned(0, xs, n(0), n(-1));
         assert_eq!(copies(), before.1 + 1);
         assert_eq!(int_value(field(other, 0)).to_string(), "0");
         let updated = field(tuple, 0);
@@ -1676,7 +1705,7 @@ mod tests {
         // The only holder sets in place.
         retain(updated);
         release(tuple);
-        let tuple = set_owned(updated, n(1), n(-2));
+        let tuple = set_owned(0, updated, n(1), n(-2));
         assert_eq!(copies(), before.1 + 1);
         assert_eq!(field(tuple, 0), updated);
         release(tuple);
