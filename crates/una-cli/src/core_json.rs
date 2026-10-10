@@ -945,12 +945,14 @@ fn level(label: &Label) -> &'static str {
 }
 
 /// The `una.core/1` document of `program` (ADR 0083): `complete` when the package checked clean,
-/// so that Core holds every declaration.
+/// so that Core holds every declaration. `file_state` is the package's file-state label
+/// (ADR 0085), an additive key (#467).
 pub(crate) fn document(
     program: &Program,
     sources: &SourceDb,
     headers: &[Header],
     of_lambdas: &[(Span, bool, bool)],
+    file_state: &Label,
     edition: Edition,
     complete: bool,
 ) -> Result<String, serde_json::Error> {
@@ -973,6 +975,7 @@ pub(crate) fn document(
             list(&program.library, |sig| writer.signature(sig)),
         ),
         ("host", list(&program.host, |d| writer.decl(d))),
+        ("file_state", writer.label(file_state)),
     ]);
     serde_json::to_string(&document)
 }

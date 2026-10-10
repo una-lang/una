@@ -403,7 +403,10 @@ Keys are printed in this order, and two runs over the same sources print the sam
   - `result_labels`, its result summary, as `{"position": "top", "from": ["T"]}`;
   - `of_raises`, as `{"param": "k", "from": ["T"]}` (ADR 0062, ADR 0067).
 - **On a `let` that binds a lambda given to an `of` parameter**, after `written`: `of_lambda`, as `{"effects": true, "fails": false}`. It says whether the lambda's body performs effects and whether it can fail. Its function type in Core carries neither, since they are its caller's (ADR 0062).
+- **On the document**, after `host`: `file_state`, the package's file-state label (ADR 0085 decision 1), as a label. It joins what decides the package's `Files.write` calls, and it labels the failure of every `Files` operation. It is `public` when the package writes no file. (#467.)
 
 **What a consumer may rely on.** Every fact the formal track's re-check reads from these keys may only raise a signature: more labels, more effects, more failures. The re-check then checks the body against the raised signature, so a wrong fact gives a rejection, never an accept. A future key that could lower a label or drop an effect MUST NOT be added on this assumption. Such a key needs its own argument of soundness, or the re-check reports what depends on it as not re-checked.
+
+`file_state` is such a key: a lower label would label `Files` failures lower. Its argument of soundness is that the re-check does not trust it. The re-check checks every `Files.write` against it, MUST reject one whose path or program counter is above it, and MUST NOT re-check a document whose `file_state` is above `internal`. So a value too low gives a rejection or a declaration not re-checked, never an accepted one. A value too high only labels failures higher, which can reject, never accept, what the true label would reject.
 
 **Versioning** (ADR 0076). The `kind` of a node is an **open** field: Core gains forms as the language grows, and adding one keeps `una.core/1`. A consumer MUST report a declaration that holds a `kind` it does not know as not understood, never as accepted or checked. A label's `level` is closed. Any other change follows ADR 0076.

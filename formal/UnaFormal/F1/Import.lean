@@ -863,9 +863,10 @@ the steps before report accepted gets its verdict here, and only from a certific
 - accepted, conditional on A3, when only `pAll` passes `progOk cond`;
 - not re-checked otherwise.
 
-Every certificate also asks the program it is about to perform no host operation
-(`Program.hostFreeB`), so that its theorem holds on any host (`t6_release_hostFree`,
-`t6_release_erasure_obs_hostFree`), the real one included.
+A certificate whose program performs no host operation (`Program.hostFreeB`) has a theorem on any
+host (`t6_release_hostFree`, `t6_release_erasure_obs_hostFree`), the real one included. One whose
+program uses `Files` (M5b) has `t6_release_erasure_obs`, on a lawful host (H1 to H3), and the
+verdict's note says so (`withHost`).
 
 `finalize_sound` states it. -/
 def finalize (pAll pPlain : Program) (cond : List String) (mono : List Fun)
@@ -908,14 +909,14 @@ theorem finalize_sound {pAll pPlain : Program} {cond : List String} {mono : List
     obtain ⟨⟨g, o⟩, _, ho⟩ := h
     cases o <;> simp only [Prod.mk.injEq] at ho <;> obtain ⟨rfl, hv⟩ := ho <;>
       (try split at hv) <;> (try split at hv) <;> (try split at hv) <;>
-      (try (simp only [Outcome.accepted.injEq, Outcome.acceptedIfA3.injEq] at hv; subst hv)) <;>
+      (try (simp only [Outcome.accepted.injEq] at hv; subst hv)) <;>
       simp_all [Bool.and_eq_true, withHost_ex]
   · intro h
     simp only [finalize, List.mem_map] at h
     obtain ⟨⟨g, o⟩, _, ho⟩ := h
     cases o <;> simp only [Prod.mk.injEq] at ho <;> obtain ⟨rfl, hv⟩ := ho <;>
       (try split at hv) <;> (try split at hv) <;> (try split at hv) <;>
-      (try (simp only [Outcome.accepted.injEq, Outcome.acceptedIfA3.injEq] at hv; subst hv)) <;>
+      (try (simp only [Outcome.acceptedIfA3.injEq] at hv; subst hv)) <;>
       simp_all [Bool.and_eq_true, withHost_ex]
 
 /-- How far instances are followed: the depth of an instance chain, past which the function is

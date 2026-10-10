@@ -8,9 +8,9 @@ host without state (`Host.unit`), and leaves the world as it found it (`eval_hos
 So T6 needs no premise on the host for such a program: `t6_release_hostFree` is
 `t6_release_host` on any host, lawful or not (H1 and H2 are about reads and writes, which such a
 run never performs), and `t6_release_erasure_obs_hostFree` carries it to the document's runs.
-Every program the re-checker certifies is one (`Import.finalize` checks `Program.hostFreeB`), so
-its "accepted" asks nothing of the host, not even H1, which the real host meets only from v0.3.5
-(S-16).
+A program the re-checker certifies is one unless it uses `Files` (`Program.hostFreeB`, M5b): its
+"accepted" then asks nothing of the host, not even H1, which the real host meets only from v0.3.5
+(S-16). One that uses `Files` rests on a lawful host, and its note says so (`Import.withHost`).
 -/
 import UnaFormal.F1.Monomorph
 

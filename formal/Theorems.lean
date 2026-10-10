@@ -152,3 +152,7 @@ import UnaFormal
 #print axioms Una.F1.Val.firstOrder_of_scalar
 #print axioms Una.F1.events_firstOrder
 #print axioms Una.F1.MonomorphExample.release_events_firstOrder
+#print axioms Una.F1.Import.withHost_ex
+#print axioms Una.F1.FilesCertExample.certified
+#print axioms Una.F1.FilesCertExample.worlds_rel
+#print axioms Una.F1.FilesCertExample.mark_runs

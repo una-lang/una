@@ -4,7 +4,7 @@
 - Plan: `docs/plan/formal-track.md` §7 (M5, renumbered with the owner's approval of 2026-10-09)
 - Previous step: `docs/plan/formal-track-m4-completion.md`
 - Date: 2026-10-09
-- Status: done. Parts 1 to 3 are proven, with no `sorry` (§10). The re-check of `Files` and `Http` is M5b
+- Status: done. Parts 1 to 3 are proven, with no `sorry` (§10). The re-check of `Files` is M5b (§12, #467); `Http`'s is M5c (#470)
 
 ## 1. Why
 
@@ -209,7 +209,7 @@ Every proof of M3 and M4 is carried over (T1, the unary and binary halves, insta
 
 F1H is folded into F1, so one model remains: `formal/UnaFormal/F1/`, with the host forms, the threaded world and the host effects. F1's stateless operation `get` is gone; an `Http.get` is a request. The re-checker and its soundness theorems are ported to it.
 
-**The re-checker's labels for the host.** The importer reads no `Files` or `Http` operation, and the checker rejects the host forms until M5b. Every program the re-checker certifies gives the host the strictest labels `Program.HostWF` allows, every stateful sink at `⊥` and every result and failure floor at `internal` (`Import.mkProgram`). They decide no verdict, and they make `HostWF` hold by construction: `progOk` checks it (`Check.hostWfB`), so `progOk_sound` proves it.
+**The re-checker's labels for the host** (as #459 left them; M5b replaces them, §12). The importer reads no `Files` or `Http` operation, and the checker rejects the host forms until M5b. Every program the re-checker certifies gives the host the strictest labels `Program.HostWF` allows, every stateful sink at `⊥` and every result and failure floor at `internal` (`Import.mkProgram`). They decide no verdict, and they make `HostWF` hold by construction: `progOk` checks it (`Check.hostWfB`), so `progOk_sound` proves it.
 
 **Binding on M5b** (the Coordinator, from Una-1's review, 2026-10-09). Once the importer reads host operations, the host's labels in `Import.mkProgram` MUST come from the document's host signatures (`Files.read`, `Files.write` and `Http`'s `accepts`, result labels and failure floor), not be fixed by construction. Otherwise the certificate would describe a host other than the document's. This is an acceptance criterion of M5b. The importer no longer reads `Http.get`'s labels from the document, so its demotion for them is gone; no declaration of the corpus had it.
 
@@ -217,7 +217,7 @@ F1H is folded into F1, so one model remains: `formal/UnaFormal/F1/`, with the ho
 - `eval_hostFree` (`HostFree.lean`): a program none of whose functions performs a host operation, run on a body that performs none, from values whose closures perform none, runs on any host as on the host without state (`Host.unit`), and leaves the world as it found it.
 - `t6_release_hostFree`: `t6_release_host`'s conclusion on any host, lawful or not, for such a program.
 - `t6_release_erasure_obs_hostFree`: `t6_release_erasure_obs` on any host, for a document whose program, body and inputs perform no host operation.
-- `Import.finalize` asks each certificate's program to be host-free (`Program.hostFreeB`), and `finalize_sound` states it.
+- `Import.finalize` asks each certificate's program to be host-free (`Program.hostFreeB`), and `finalize_sound` states it. Since M5b, a program that uses `Files` is certified too, on a lawful host (§12).
 
 So an "accepted" of the re-checker is a corollary of `t6_release_erasure_obs_hostFree`, and asks nothing of the real host. Its premises are the certificate's, the reading of `una.core/1` (`Import.lean`, the trusted base), and inputs whose closures perform no host operation.
 
@@ -239,3 +239,35 @@ So an "accepted" of the re-checker is a corollary of `t6_release_erasure_obs_hos
 - a request carries its arguments, which T-Request types as texts, and `Allowed` now records it.
 
 The document's events erase to those of `P₁`'s typed run, so they are first-order too (`Event.firstOrder_anon`).
+
+## 12. M5b: the re-check of `Files` (#467)
+
+The re-check reads `Files.read` and `Files.write` (Coordinator's decision N-74). `Http`'s real signature does not fit the model's request: it takes `List[Header]` and `Option[Text]` and returns a `Response` record. So it stays "not re-checked: Http's signature is outside F1", and the model's extension is M5c (#470).
+
+**The export.** `una core --json` gains a document-level key, `file_state`: the package's file-state label (ADR 0085 decision 1), which the checker computes (`spec/13 §8`).
+
+**The labels come from the document** (the binding rule of §11). `Import.HostLabels` reads:
+- `Files.read`'s `accepts` and result label, and `Files.write`'s `accepts`, from the document's host signatures;
+- `Http`'s, likewise;
+- the file-state label, from `file_state`.
+
+`Header`'s value label is not exported, so a request's failure floor stays `internal`, as `Header` declares; M5c reads it. A declaration that reaches `Files` in a document without `file_state` is not re-checked. A document that declares its own capability named `Files` or `Http` is not re-checked either: `uses` names a capability without its module, so it could not be told from the host's.
+
+**`file_state` is untrusted** (`spec/13 §8`, "may rely on"). The checker types `read` and `write` by the model's rules (`Program.fsFail`; the write's `pc ⊔ ℓ(path) ⊑ fileState`; its `accepts`), with their cases in `CheckSoundCore`. `progOk` caps the file-state label at `internal` (`Check.hostWfB`). So a value too low gives a rejection or a declaration not re-checked, never an accepted one. A value too high only labels failures higher.
+
+**The tamper test** (`ImportTests`). `mark` writes an `internal` path, so the true label is `internal`, and the export claims `public`. `mark` is rejected ("a write whose path or program counter is above the file-state label"), and `probe`, whose read's failure the lowered label would make public, is not re-checked.
+
+**Certificates.**
+- A program without host operations keeps the any-host theorem.
+- A program that uses `Files` is certified too. Its theorem is `t6_release_erasure_obs`, on a lawful host (H1 to H3), and the verdict's note says so: "rests on a lawful host (H1 to H3): the program uses `Files`" (`Import.withHost`, stated by `finalize_sound`).
+- H1 holds of the real host from v0.3.5 and v0.1.7 (S-16).
+
+**Non-vacuity** (`FilesCertExample.lean`). A program that writes a file is certified by `progOk` evaluated (`certified`), and `t6_host_ground` relates its runs on the lawful host `files` from two file systems that differ in a file's content (`mark_runs`).
+
+**The corpus.** All 1,329 documents were re-exported with the new key, and `main`'s checker and this one were run on the same export:
+- 5 declarations move from not re-checked to accepted, each with the lawful-host note: `import_std_host.load`, `n39_ok_public_path_content_internal.probe`, `s14_ok_failing_writer.mark` and `.probe`, `s14_ok_helper_public_call.mark`;
+- `import_std_host.greet` stays accepted, with the note, since its certificate's program uses `Files`;
+- 5 declarations stay not re-checked, with another reason;
+- none moves into rejected. Accepted: 638 → 643.
+
+The replay of S-01 to S-12 is unchanged.
