@@ -2289,6 +2289,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_set_outside_the_list_faults_at_the_call() {
+        // #480: the fault points at the `set` call, as native code's abort does.
+        let mut sources = una_syntax::SourceDb::new();
+        let span = Span::at(sources.add("src/s.una", b"set"), 0);
+        let outcome = update(
+            "set",
+            vec![
+                Value::List(Rc::new(vec![Value::int(1)])),
+                Value::int(1),
+                Value::int(9),
+            ],
+            span,
+        );
+        match outcome {
+            Err(Stop::Abort(Abort::Fault { message, span: at })) => {
+                assert_eq!(at, Some(span));
+                assert!(
+                    message.contains("`set` at an index outside the list"),
+                    "{message}"
+                );
+            }
+            _ => panic!("an out-of-range `set` did not fault"),
+        }
+        let inside = update(
+            "set",
+            vec![
+                Value::List(Rc::new(vec![Value::int(1)])),
+                Value::int(0),
+                Value::int(9),
+            ],
+            span,
+        );
+        assert!(inside.is_ok());
+    }
+
+    #[test]
     fn the_prelude_kinds_core_leaves_to_the_engines_are_named_by_the_shared_table() {
         // #415: a value of a kind Core does not declare has its fields' names from
         // `una_core::prelude_variants`, the table the native backend describes it by, and no

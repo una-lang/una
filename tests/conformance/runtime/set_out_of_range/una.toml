@@ -1,7 +1,0 @@
-[package]
-name = "set_out_of_range"
-version = "0.1.0"
-edition = "0.2"
-
-[run]
-entry = "main"
