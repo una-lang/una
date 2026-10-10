@@ -68,8 +68,8 @@ mutual
 end
 
 /-- A function type that may perform effects (`op`) or fail, at the top of `t`. -/
-def LTy.withFlags (op fails : Bool) : LTy → LTy
-  | .fn ps r o g f l => .fn ps r (o || op) g (f || fails) l
+def LTy.withFlags (op fails : Bool) (host : HostFx := {}) : LTy → LTy
+  | .fn ps r o g f l => .fn ps r (o || op) (g.or host) (f || fails) l
   | t => t
 
 end Una.F1
@@ -143,6 +143,9 @@ def label (j : J) : M LExpr := do
 structure Ctx where
   records : List String
   funs : List String
+  /-- The host effects the function being read declares: a lambda given to an `of` parameter
+  performs its caller's effects (ADR 0062), the host's included (M6b). -/
+  host : HostFx := {}
   /-- The `via` functions of the document's policies, with their policy. -/
   vias : List (String × String) := []
   /-- Edition 0.1 has no `Eq` constraint: `==` applies to values of any type parameter
@@ -379,7 +382,7 @@ mutual
         | .ok ol => do
           let effects := ol.getObjValD "effects" == .bool true
           let fails := ol.getObjValD "fails" == .bool true
-          pure (t.withFlags effects fails)
+          pure (t.withFlags effects fails (if effects then c.host else {}))
         | .error _ => pure t
       let v ← field j "value"
       let body ← expr c (← field j "body")
@@ -654,7 +657,8 @@ def prepare (c : Ctx) (hl : HostLabels) (caps : List (String × J)) (decls : Lis
     | .ok n => n == q && (e.kind == "fun" || e.kind == "policy")
     | .error _ => false
   let read : M (Fun × List Fun × List Policy) := do
-    let fn ← signature c d.module d.value (← expr c (← field d.value "body"))
+    let (_, fnHost) ← usesEffects (← arr (← field d.value "uses"))
+    let fn ← signature c d.module d.value (← expr { c with host := fnHost } (← field d.value "body"))
     -- The policies the function and its callees may release through, whose `to` labels bound
     -- the calls (`Program.RelBound`).
     for pol in fn.rels do refPolicy pol
