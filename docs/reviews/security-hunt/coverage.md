@@ -86,7 +86,7 @@ The model assumes every policy is lawful. That a policy can exist only in a trus
 | 8. symbolic labels `ℓ_T`, `ℓ*_T` | `flow.rs::below`, `check.rs::symbolic` | in the 173 | `LExpr` `plain`, `star` | yes | covered |
 | 8. `ℓ_T` only in place (#440) | by construction | none in conformance (Rust: `core_symbols.rs`) | `LTy.InPlace` | yes | covered in the model; no conformance case |
 | 8. comparisons on constrained parameters, `sort` (ADR 0066) | `call.rs` | ~1 | none | "the constraint `ord`" | **blind** |
-| 8. result summaries (ADR 0067) | `summary.rs` (SCC fixpoint) | 6 + chains | read from the export, not recomputed | positions `element`, `arg 1`, `result` only | partial: the model trusts the export's summaries, which may only raise a signature |
+| 8. result summaries (ADR 0067) | `summary.rs` (SCC fixpoint) | 6 + chains | read from the export as facts that may only raise a signature; the body, or each instance, is checked against the raised result, so a summary that is too small is a rejection (`formal-track-m2.md`, confirmed by the adversarial review of #454) | positions `element`, `arg 1`, `result` only | covered at those positions |
 | 8. edition 0.1's defense in depth | `call.rs` (T-App), `decided_callbacks` | 17 | the model follows edition 0.2 (`addStarAll` in the importer) | partial | partial |
 | 8. no effects or failures under a symbolic pc | `flow.rs` | in the 173 | `SymFree` premises | yes | covered |
 | 8. prelude results (ADR 0051) | `call.rs` | several | `map`, `filter`, `first_where`, `fold`, `parse`, `append`, `set`, `sum` | every other prelude function is "a call of `prelude.x`" | partial |
@@ -107,16 +107,19 @@ The model has none of these, so every rule is blind on them:
 
 ## 2. What it means for the hunt
 
-1. **Blind rows are the oracle's first targets**, since only a run can check them:
+1. **Blind rows are the oracle's first targets**, since only a run can check them. In this order (the coordinator, 2026-10-10):
+   - **trusted modules and policy shapes first.** The model assumes every policy is lawful, so whether a policy can exist, where it is declared, how its `via` function is reached, and policies outside B1 rest on the checker alone. Shapes include:
+     - a policy in a module that is trusted by its header but not listed in `una.toml`, or the other way around;
+     - a `via` function reached other than through its policy;
+     - a policy whose `to` is not scalar;
+     - a `via` function with effects;
    - handler bodies and the effect floor;
    - `Keys.hmac`;
    - kinds with type parameters and invariance;
    - failure payloads;
    - `together`;
    - user sum types;
-   - `Ord`-constrained comparisons and `sort`;
-   - trusted modules;
-   - policies outside B1.
+   - `Ord`-constrained comparisons and `sort`.
    S-14 to S-18 were each in a row the model had not reached yet, or had just reached.
 2. **The checker–model comparison (part (b)) is strongest where the rows are covered:**
    - pc and failures;
@@ -133,7 +136,7 @@ The model has none of these, so every rule is blind on them:
    - `sort`;
    - expect-ok twins for the `sweep_variance` and `sweep_label` families, which have only rejected cases, so an over-strict checker would not show there.
    These are conformance cases to add, under the rules they name.
-5. **The summaries of ADR 0067 are trusted from the export.** The model reads them and checks that they only raise a signature, but does not recompute the fixpoint. A summary that is too small, and still raises the signature somewhat, is a place where the checker and the model agree only because the model believes the checker. The oracle should target generic functions whose result position is chosen by a comparison.
+5. **The summaries of ADR 0067 are checked, not trusted.** The re-check reads them from the export, but only to raise a result type, and then checks each body or instance against it. So a summary that is too small is rejected, never accepted. The gap there is coverage: a summary at a position other than `element`, `arg 1` or `result` is not re-checked.
 
 ## 3. Sources
 

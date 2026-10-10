@@ -87,6 +87,7 @@ Any difference outside §1's exemptions is a concrete leak witness, with no mode
 - For state that outlives a run, as S-15's file state does, each variant runs twice on the same file system.
 - The oracle finds only what its inputs exercise, so the generators also emit boundary literals: zero, negatives, empty and long text, and invalid UTF-8 for host inputs.
 - It sees every construct, including those F1 lacks.
+- **Targets, in order.** First, the rules no theorem covers (`docs/reviews/security-hunt/coverage.md` §2). Among them, trusted modules and policy shapes come first, since the model assumes every policy is lawful (the coordinator, 2026-10-10).
 
 ## 4. Triage
 
