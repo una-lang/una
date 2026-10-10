@@ -126,7 +126,7 @@ Non-vacuity, two examples:
 
 Each assumption is a hypothesis of the theorem or part of the model, stated where it is used:
 
-1. **(H1) and (H2)**, content-independence of failures and shapes. Una writes only UTF-8, so a read of invalid UTF-8 cannot follow a Una write (ADR 0085 decision 3). A file system where content decides a failure, such as a full disk, is resource consumption, outside the model (`spec/07 §1`). **The real host does not meet H1 today (S-16):** `Files.read` fails on a file that is not valid UTF-8, which a file written by another program can be. The fix (Una-1, ADR in progress) makes invalid text abort the run, outside the model as aborts are. After it ships, H1 holds of the real host.
+1. **(H1) and (H2)**, content-independence of failures and shapes; and, for the re-checker's erasure, **(H3)**: a response does not depend on annotations, which a host given text meets (§11). Una writes only UTF-8, so a read of invalid UTF-8 cannot follow a Una write (ADR 0085 decision 3). A file system where content decides a failure, such as a full disk, is resource consumption, outside the model (`spec/07 §1`). **The real host does not meet H1 today (S-16):** `Files.read` fails on a file that is not valid UTF-8, which a file written by another program can be. The fix (Una-1, ADR in progress) makes invalid text abort the run, outside the model as aborts are. After it ships, H1 holds of the real host.
 2. **No other writer.** During a run, and between runs, only the package's own writes change the file system. Other programs and people are outside the model (`spec/07 §1`, external systems; decision 4). That includes a server the package talks to: the model's servers do not write the file system (§10).
 3. **One package.** The file-state label joins the writes of the whole program. That holds while a package imports no other package (decision 5); the ADR records what must change if that ever does.
 4. **The checker computes a sound file-state label.** The model states it declaratively, at each write and each call of a writing function. That the checker's fixpoint over the call graph, its probe pass and its caps (lambdas at `internal`, values at their bound) meet it is the re-check's to check, not the theorem's. See §6.
@@ -223,7 +223,7 @@ So an "accepted" of the re-checker is a corollary of `t6_release_erasure_obs_hos
 
 **Other changes.**
 - Fuel monotonicity (`eval_mono`, `t6_ended`) is ported, from `t6_host_ground`.
-- Erasure (`eval_anon`, `eval_erasure`) holds on a host whose responses read no annotation (`Host.AnonInvariant`): a request is given values, and a real host is given their text. `Host.unit` is one.
+- Erasure (`eval_anon`, `eval_erasure`) asks a third property of the host, beside H1 and H2: **(H3) its responses read no annotation** (`Host.AnonInvariant`). A request whose arguments differ only in the annotations inside closures gets the same response. The model passes values to the host, and a real host is given their text, so it holds. `Host.unit` meets H1, H2 and H3, so the any-host theorems below ask none of them.
 - F1's examples run on any lawful host, or on `Host.unit`.
 - `t6_release_host_agree` is `t6_release_agree` with a stateful host.
 
