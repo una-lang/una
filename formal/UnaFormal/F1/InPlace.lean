@@ -364,6 +364,10 @@ mutual
       ⟨LTy.deep_plainFree _ (latom_inPlace hΓ hs), fun _ h => by
         simp at h; subst h
         exact LExpr.plainFree_join hpc (LTy.deep_plainFree _ (latom_inPlace hΓ hs))⟩
+    | _, _, _, _, _, _, hΓ, hpc, .checked hs _ _ _ =>
+      ⟨latom_inPlace hΓ hs, fun _ h => by
+        simp at h; subst h
+        exact LExpr.plainFree_join hpc (LTy.deep_plainFree _ (latom_inPlace hΓ hs))⟩
     | _, _, _, _, _, _, hΓ, _, .eq ha hb _ _ _ =>
       ⟨LExpr.plainFree_join (LTy.deep_plainFree _ (latom_inPlace hΓ ha))
         (LTy.deep_plainFree _ (latom_inPlace hΓ hb)), Eff.plainFree_none⟩

@@ -146,6 +146,11 @@ mutual
     | fold (xs init f : Atom)
     /-- The partial primitive: the integer a text spells, or a failure. -/
     | parse (s : Atom)
+    /-- `checked(a, φ) else fail C` (`spec/10 §7`, T-Checked, #453): `a`, when the predicate
+    named `pred` holds of it, or the failure `code`. The predicate is abstract: its meaning is
+    the program's `predSem`, so the theorems hold whatever the refinement language makes it.
+    Its operand is a scalar, which the predicate reads as its text (`Val.line`). -/
+    | checked (value : Atom) (pred : String) (code : Nat)
     /-- `a == b` on values of any type with equality, `T` with `Eq` included (`spec/20`):
     the comparison whose result carries the decision `ℓ*_T` of `spec/07 §7` rule 8. -/
     | eq (a b : Atom)
@@ -244,6 +249,10 @@ structure Program where
   oldLoop : Bool := false
   records : List Record
   policies : List Policy
+  /-- The meaning of `checked`'s predicates (#453), by name, on the text of a scalar operand:
+  any function, since the theorems quantify over the program. The refinement language that
+  defines a predicate is the verifier's, and the model trusts no evaluator of it. -/
+  predSem : String → String → Bool := fun _ _ => true
   funs : List Fun
 
 /-- `⊤`: `restricted` with every declared category. -/

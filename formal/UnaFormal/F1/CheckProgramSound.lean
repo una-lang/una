@@ -233,7 +233,8 @@ mutual
     | .filter _ _, _, _, _, _, _, _, hg | .firstWhere _ _, _, _, _, _, _, _, hg
     | .fold _ _ _, _, _, _, _, _, _, hg | .parse _, _, _, _, _, _, _, hg
     | .eq _ _, _, _, _, _, _, _, hg | .tuple _, _, _, _, _, _, _, hg
-    | .append _ _, _, _, _, _, _, _, hg | .set _ _ _, _, _, _, _, _, _, hg => by
+    | .append _ _, _, _, _, _, _, _, hg | .set _ _ _, _, _, _, _, _, _, hg
+    | .checked _ _ _, _, _, _, _, _, _, hg => by
       simp [Rhs.callees] at hg
 
   theorem expr_reach (hwf : p.LWellFormed) :

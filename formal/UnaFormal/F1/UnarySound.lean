@@ -781,6 +781,14 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         split
         · exact uok_done LValTy.int
         · exact ⟨fun _ h => (nomatch h), ⟨_, rfl, hpc0 _⟩, WEff.self _ _⟩
+      | @checked _ _ a t pred code ha hs _ _ =>
+        -- T-Checked (#453): the operand when the predicate holds of it, a failure otherwise.
+        obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv ha
+        cases t <;> simp [LTy.erase, Ty.Scalar] at hs <;> simp only [LTy.lsubst] at hvt <;>
+          cases hvt <;> simp only [evalRhs, hv, Val.line] <;> split
+        all_goals first
+          | exact uok_done (by constructor)
+          | exact ⟨fun _ h => (nomatch h), ⟨_, rfl, hpc0 _⟩, WEff.self _ _⟩
       | eq ha hb _ _ _ =>
         obtain ⟨va, hva, _⟩ := latom_ltypedσ henv ha
         obtain ⟨vb, hvb, _⟩ := latom_ltypedσ henv hb

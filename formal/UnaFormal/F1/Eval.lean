@@ -397,6 +397,13 @@ mutual
         match evalAtom env s with
         | some (.text t) => parseInt w t
         | _ => stuck w
+      | .checked a pred code =>
+        match evalAtom env a with
+        | some v =>
+          match v.line with
+          | some s => if p.predSem pred s then done w v else ([], .failed code, w)
+          | none => stuck w
+        | none => stuck w
       | .eq a b =>
         match evalAtom env a, evalAtom env b with
         | some va, some vb => done w (.bool (Val.beq va vb))
