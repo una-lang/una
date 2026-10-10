@@ -48,7 +48,7 @@ A stronger reading is possible, with the environment's values differing between 
 
 The 8 shapes that use no other form are re-checked: `edit_order_loop_` `list`, `option`, `result_ok`, `result_err`, `closure`, `edit_param`, `fold` and `generic_init`.
 - **Each leaking shape**, dumped by v0.2.0, must be rejected, at the interpolation or wherever the checker meets the wrong label first.
-- **Its fixed version** must not be rejected. That is the same source with the change ADR 0075 asks for, the binder's label raised to what flows into it, dumped by v0.3.0, which accepts it.
+- **Its fixed version** must not be rejected. That needs a version a fixed checker accepts. A shape prints the binder, and its content is `internal`, so raising the binder's label, which is what ADR 0075 does, still leaves the print rejected. The fixed version is therefore the same loop with a `public` sink: it prints the loop index instead, and the `internal` binder is returned at `internal`. It is dumped by v0.3.0 and accepted by it (question 3).
 
 ## 6. Labeled-loop conformance cases (the coordinator's request)
 
@@ -66,3 +66,4 @@ The accepted cases join the corpus, where the re-check must accept them. The rej
 
 1. **`Env.get`:** the premise of §3, one environment in both runs, as you stated it. Or the stronger reading, environments with the same names and different values, which costs a `World` change?
 2. **`to_text`'s domain:** types with equality only. A `to_text` of a type without equality would stay not re-checked; the checker allows interpolation of records and lists, which have equality when their parts do.
+3. **The fixed versions:** the shapes' leak is the print itself, so a fixed program prints something `public`, as in §5. Or should the pair be each shape against the `*_accepted` controls that exist (`list_of_lists`, `option_of_list`, `map_of_lists`)?
