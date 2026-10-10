@@ -1723,6 +1723,9 @@ impl<'p> Lowerer<'_, 'p, '_> {
                         && let Some(position) = self.moving(list, env, scope, catch, rest)
                     {
                         scope.remove(position);
+                        if function.name == "set" {
+                            return self.set(owned, &values, *span);
+                        }
                         return self.call(owned, &values);
                     }
                     // `fold` hands its state to the step as owned (N-42): an initial value at
@@ -2094,6 +2097,24 @@ impl<'p> Lowerer<'_, 'p, '_> {
         Ok(())
     }
 
+    /// `set` of the prelude, by `function` (`una_rt_set` or `una_rt_set_owned`), at the call's
+    /// site: an index outside the list aborts there with U8001, as the interpreter's fault does
+    /// (#480, `spec/17 §7.3`), and a task stopped by it stops here.
+    fn set(
+        &mut self,
+        function: &'static str,
+        args: &[Value],
+        span: Span,
+    ) -> Result<Value, CodegenError> {
+        let site = self.site(span);
+        let mut operands = vec![site];
+        operands.extend_from_slice(args);
+        let value = self.call(function, &operands)?;
+        let stopped = self.call("una_rt_stopped", &[])?;
+        self.stop_if(stopped);
+        Ok(value)
+    }
+
     /// Stops the task when `stopping` is not 0.
     fn stop_if(&mut self, stopping: Value) {
         let next = self.builder.create_block();
@@ -2230,7 +2251,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
             "at" => "una_rt_at",
             "append" => "una_rt_append",
             "contains" => "una_rt_contains",
-            "set" => "una_rt_set",
+            "set" => return self.set("una_rt_set", args, span),
             "sum" => "una_rt_sum",
             "or_else" => "una_rt_or_else",
             "empty_map" => "una_rt_map_empty",

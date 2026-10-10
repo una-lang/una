@@ -2182,3 +2182,74 @@ fn records_made_anew_grow_with_the_loop_and_copies_do_not_292() {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+#[test]
+fn a_set_outside_the_list_aborts_at_the_call_in_both_engines() {
+    // #480, `spec/17 §7.3`: `set`'s `requires` keeps its index in range. Where it is not met,
+    // the interpreter aborts with a fault, U8001 with exit code 3, and native code did nothing
+    // and went on. Both now abort at the call, after the output so far, with the same message;
+    // in a task, the task's abort ends the run, as U6004 does. The copied and the in-place
+    // updates (`set_owned`, #30) both check.
+    let programs = [
+        (
+            "copied",
+            "module copied\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit xs = [1, 2, 3]\n  let ys = xs\n  @console.print(\"before\")\n  edit xs.set(index: 3, item: 9)\n  @console.print(\"after {xs.len} {ys.len}\")\n",
+        ),
+        (
+            "owned",
+            "module owned\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let edit xs = [1, 2, 3]\n  @console.print(\"before\")\n  edit xs.set(index: -1, item: 9)\n  @console.print(\"after {xs.len}\")\n",
+        ),
+        (
+            "tasked",
+            "module tasked\n\nput(n: Int) -> Int\n=\n  let edit xs = [1, 2, 3]\n  edit xs.set(index: n, item: 9)\n  xs.len\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  @console.print(\"before\")\n  together\n    let a = put(0)\n    let b = put(7)\n  @console.print(\"after {a} {b}\")\n",
+        ),
+    ];
+    for (name, source) in programs {
+        let dir = package(
+            name,
+            &format!("\n[run]\nentry = \"{name}\"\ngrants = [\"console\"]\n"),
+            &[(&format!("src/{name}.una"), source)],
+        );
+        let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+        std::fs::write(
+            dir.join("una.toml"),
+            manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+        )
+        .unwrap();
+        let interpreted = una(&dir, &["run", "."]);
+        assert_eq!(
+            interpreted.status.code(),
+            Some(3),
+            "{name}: {interpreted:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&interpreted.stdout),
+            "before\n",
+            "{name}"
+        );
+        let message = "`set` at an index outside the list, which its precondition excludes";
+        let stderr = String::from_utf8_lossy(&interpreted.stderr);
+        assert!(
+            stderr.contains("[U8001]") && stderr.contains(message),
+            "{name}: {stderr}"
+        );
+        let built = una(&dir, &["build", "."]);
+        assert_eq!(built.status.code(), Some(0), "{name}: {built:?}");
+        let native = Command::new(dir.join("target/una").join(name))
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(native.status.code(), Some(3), "{name}: {native:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&native.stdout),
+            "before\n",
+            "{name}"
+        );
+        let stderr = String::from_utf8_lossy(&native.stderr);
+        assert!(
+            stderr.contains("[U8001]") && stderr.contains(message),
+            "{name}: {stderr}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

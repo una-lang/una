@@ -180,9 +180,9 @@ exported! {
     una_rt_at => values::at, (xs, index);
     una_rt_append => values::append, (xs, item);
     una_rt_contains => values::contains, (xs, item);
-    una_rt_set => values::set, (xs, index, item);
+    una_rt_set => values::set, (site, xs, index, item);
     una_rt_append_owned => values::append_owned, (xs, item);
-    una_rt_set_owned => values::set_owned, (xs, index, item);
+    una_rt_set_owned => values::set_owned, (site, xs, index, item);
     una_rt_map_len => values::map_len, (map);
     una_rt_map_has => values::map_has, (map, key);
     una_rt_map_get => values::map_get, (map, key);

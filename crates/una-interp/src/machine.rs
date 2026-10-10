@@ -1679,7 +1679,7 @@ impl<'p, 'w> Machine<'p, 'w> {
     /// The functions of the prelude (`spec/14 §1`).
     fn prelude(&mut self, name: &str, args: Vec<Value<'p>>, span: Span) -> Flow<'p> {
         if matches!(name, "append" | "set") {
-            return update(name, args);
+            return update(name, args, span);
         }
         let bad = || fault(format!("`{name}` applied to values of the wrong types"));
         let int = |i: usize| match args.get(i) {
@@ -2251,7 +2251,7 @@ fn parse_int<'p>(t: &str) -> Flow<'p> {
 /// `append` and `set` of the prelude (`spec/14 §1`, `spec/17 §4`). They update the list in
 /// place when they hold its only reference, which a binding at its last use gives up (#201),
 /// and copy it otherwise: no other name ever sees the change.
-fn update<'p>(name: &str, args: Vec<Value<'p>>) -> Flow<'p> {
+fn update<'p>(name: &str, args: Vec<Value<'p>>, span: Span) -> Flow<'p> {
     let bad = || fault(format!("`{name}` applied to values of the wrong types"));
     let mut args = args.into_iter();
     let Some(Value::List(mut items)) = args.next() else {
@@ -2270,8 +2270,13 @@ fn update<'p>(name: &str, args: Vec<Value<'p>>) -> Flow<'p> {
     let slot = usize::try_from(&index)
         .ok()
         .filter(|&i| i < items.len())
+        // At the call, as native code aborts (#480).
         .ok_or_else(|| {
-            fault("`set` at an index outside the list, which its precondition excludes")
+            Stop::Abort(Abort::Fault {
+                message: "`set` at an index outside the list, which its precondition excludes"
+                    .to_owned(),
+                span: Some(span),
+            })
         })?;
     if let Some(cell) = Rc::make_mut(&mut items).get_mut(slot) {
         *cell = item;

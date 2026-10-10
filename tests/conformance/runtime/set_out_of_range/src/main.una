@@ -1,0 +1,15 @@
+-- test: `set` at an index outside the list aborts at the call in both engines, after the output so far, as the interpreter's fault does (#480)
+-- spec: spec/17 §7.3
+-- grant: console
+-- expect: run-output "before"
+-- expect: error U8001 at src/main.una:14:3
+module main
+
+pub main() -> Unit
+  uses @console: Console[print]
+=
+  let edit xs = [1, 2, 3]
+  let at = 3
+  @console.print("before")
+  edit xs.set(index: at, item: 9)
+  @console.print("after {xs.len}")
