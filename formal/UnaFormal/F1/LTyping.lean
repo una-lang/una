@@ -118,6 +118,13 @@ def ofFn (o : Bool) (g : HostFx) (f : Bool) : Eff := ⟨o, g, if f then some LEx
 /-- The effects of a call of a function that may also release through the policies `rs`. -/
 def ofFnR (o : Bool) (g : HostFx) (f : Bool) (rs : List String) : Eff := { ofFn o g f with rels := rs }
 
+/-- The effects of a call of the policy `pol`, whose `via` function has these `uses` and `fails`
+and whose `to` has the top label `dst` (T-Declassify): the release, and a failure the `via`
+function decides from the `from` value, so labeled where the release is visible, `pc ⊔ dst`
+(#453 Phase B, ADR 0090). -/
+def ofPolicy (o : Bool) (g : HostFx) (f : Bool) (pc dst : LExpr) (pol : String) : Eff :=
+  ⟨o, g, if f then some (pc.join dst) else Option.none, [pol]⟩
+
 end Eff
 
 /-- `pc ⊑ bound(f)` (`spec/07 §3` rule 4, `spec/10 §5`): the meet of the `accepts` labels of
@@ -353,11 +360,12 @@ mutual
             (p.lsub (fn.tparams.zip targs) fn.result) fn.op fn.host fn.fails .bot) .none
     /-- T-Declassify (`spec/07 §5` rule 2): the argument flows into `from`, and the program
     counter is below the label of `to`. The call releases its value through the policy (option
-    B1), an effect a function that declassifies declares (`Fun.rels`). -/
+    B1), an effect a function that declassifies declares (`Fun.rels`). Its failure is the `via`
+    function's, labeled `pc ⊔ ℓ(to)` (#453 Phase B, ADR 0090). -/
     | declassify {Γ pc pol a po fn t} :
         p.policy pol = some po → p.find po.via = some fn → LAtomTy Γ a t → Flow p.top t po.src →
         p.le pc po.dst.top → pc.SymFree →
-        LRhsTy p E Γ pc (.declassify pol a) po.dst (.ofFnR fn.op fn.host fn.fails [pol])
+        LRhsTy p E Γ pc (.declassify pol a) po.dst (.ofPolicy fn.op fn.host fn.fails pc po.dst.top pol)
     /-- `map` (`spec/14 §1`, ADR 0051): the function runs under the top labels of `xs` and of
     itself (`spec/07 §7` rule 9); the result's top label is theirs, and each element is the
     function's result raised by its label (T-App). -/

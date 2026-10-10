@@ -543,7 +543,7 @@ theorem eval_anon (hH : H.AnonInvariant) (h4 : H.RespTyped) (hf : ∀ f, (P.find
                 rw [← hrun]
                 generalize eval H n P w (bindParams fn.params [v] []) fn.body = res
                 obtain ⟨t, r, w'⟩ := res
-                cases r <;> simp [runAnon, Res.anon, Event.anon]
+                cases r <;> simp [runAnon, Res.anon, Event.anon, Val.anon]
               · rfl
       | map xs f =>
         simp only [evalRhs, Rhs.anon, evalAtom_anon]

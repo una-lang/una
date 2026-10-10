@@ -113,12 +113,33 @@ def progDocOk (p : Program) : Bool :=
   catsDeclared p &&
   b1Ok p
 
-/-- A `via` function's structural typing, by the labeled checker: its body checked against its
-result raised to `⊤`, then erased (`LExprTy.toStruct`). -/
-def viaTyped (p : Program) (fn : Fun) : Bool :=
-  match checkExpr p fn.eqParams fn.params .bot (fn.result.raise (.ofLabel p.top)) fn.body with
+/-- The type with its top label lowered to `⊥`: the same structure. -/
+def _root_.Una.F1.LTy.lowerTop : LTy → LTy
+  | .int _ => .int .bot
+  | .bool _ => .bool .bot
+  | .text _ => .text .bot
+  | .unit _ => .unit .bot
+  | .list t _ => .list t .bot
+  | .option t _ => .option t .bot
+  | .result t _ => .result t .bot
+  | .record r _ => .record r .bot
+  | .fn ps r o g f _ => .fn ps r o g f .bot
+  | .var a _ => .var a .bot
+  | .tuple ts _ => .tuple ts .bot
+
+/-- A body the labeled checker types under these parameters, against the result raised to `⊤`. -/
+def viaTypedAt (p : Program) (fn : Fun) (ps : List (String × LTy)) : Bool :=
+  match checkExpr p fn.eqParams ps .bot (fn.result.raise (.ofLabel p.top)) fn.body with
   | .ok _ => true
   | .error _ => false
+
+/-- A `via` function's structural typing, by the labeled checker: its body checked against its
+result raised to `⊤`, then erased (`LExprTy.toStruct`). No label is checked in a `via` function
+(`spec/07 §5` rule 3), so when its parameters' labels stop the check, as T-Checked's premise
+does on a `checked` of the `from` value (#453 Phase B), the body is checked again under the
+parameters with their top labels at `⊥`, which have the same structure. -/
+def viaTyped (p : Program) (fn : Fun) : Bool :=
+  viaTypedAt p fn fn.params || viaTypedAt p fn (fn.params.map fun q => (q.1, q.2.lowerTop))
 
 /-- T-Fun by the checker. -/
 def funOk (p : Program) (fn : Fun) : Bool :=

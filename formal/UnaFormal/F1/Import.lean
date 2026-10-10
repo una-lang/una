@@ -911,7 +911,7 @@ partial def rawCallees (j : J) : List String :=
       | _ => []
     -- `checked`'s predicate (#453) is a term of the refinement language, pure, which the model
     -- leaves abstract (`Program.predSem`): what it calls is not run by the model, so it is not
-    -- reached.
+    -- reached. `una check` keeps a predicate's body pure and non-failing (U2015).
     let skip := j.getObjValD "kind" == .str "checked"
     here ++ (kvs.toArray.toList.filter (fun kv => !(skip && (kv.1 == "predicate" || kv.1 == "formula")))).flatMap
       (fun kv => rawCallees kv.2)

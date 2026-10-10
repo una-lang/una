@@ -396,6 +396,36 @@ theorem exprPure_sound (e : Expr) (h : exprPure e = true) : e.Pure := by
   | .fail _, h | .letTuple _ _ _, h | .loop _ _ _ _ _ _, h => simp [exprPure] at h
 termination_by sizeOf e
 
+theorem exprPureOrFails_sound (e : Expr) (h : exprPureOrFails e = true) : e.PureOrFails := by
+  match e, h with
+  | .atom _, _ => trivial
+  | .letR _ _ v b, h =>
+    simp only [exprPureOrFails, Bool.and_eq_true] at h
+    obtain ⟨hv, hb⟩ := h
+    refine ⟨?_, exprPureOrFails_sound b hb⟩
+    cases v <;> first | trivial | exact absurd hv (by simp [rhsPureOrFails, rhsPure])
+  | .letE _ _ v b, h =>
+    simp only [exprPureOrFails, Bool.and_eq_true] at h
+    exact ⟨exprPureOrFails_sound v h.1, exprPureOrFails_sound b h.2⟩
+  | .ite _ t e, h =>
+    simp only [exprPureOrFails, Bool.and_eq_true] at h
+    exact ⟨exprPureOrFails_sound t h.1, exprPureOrFails_sound e h.2⟩
+  | .caseOption _ t _ e, h =>
+    simp only [exprPureOrFails, Bool.and_eq_true] at h
+    exact ⟨exprPureOrFails_sound t h.1, exprPureOrFails_sound e h.2⟩
+  | .caseResult _ _ t _ e, h =>
+    simp only [exprPureOrFails, Bool.and_eq_true] at h
+    exact ⟨exprPureOrFails_sound t h.1, exprPureOrFails_sound e h.2⟩
+  | .handle t _ e, h =>
+    simp only [exprPureOrFails, Bool.and_eq_true] at h
+    exact ⟨exprPureOrFails_sound t h.1, exprPureOrFails_sound e h.2⟩
+  | .attempt b, h =>
+    have hb : exprPureOrFails b = true := by simpa [exprPureOrFails] using h
+    exact exprPureOrFails_sound b hb
+  | .fail _, _ => trivial
+  | .letTuple _ _ _, h | .loop _ _ _ _ _ _, h => simp [exprPureOrFails] at h
+termination_by sizeOf e
+
 /-- **A program whose policies the checker accepts is within B1's restrictions.** -/
 theorem b1Ok_sound (h : b1Ok p = true) : p.B1WellFormed := by
   simp only [b1Ok, List.all_eq_true] at h
@@ -406,8 +436,11 @@ theorem b1Ok_sound (h : b1Ok p = true) : p.B1WellFormed := by
   · obtain ⟨_, hv⟩ := this
     split at hv
     · rename_i fn hfn
-      simp only [Bool.and_eq_true, Bool.not_eq_true'] at hv
-      exact ⟨fn, hfn, hv.1.1.1, hv.1.1.2, hv.1.2, exprPure_sound _ hv.2⟩
+      simp only [Bool.and_eq_true, Bool.not_eq_true', Bool.or_eq_true] at hv
+      refine ⟨fn, hfn, hv.1.1.1, hv.1.1.2, exprPureOrFails_sound _ hv.1.2, fun hf => ?_⟩
+      rcases hv.2 with h | h
+      · rw [hf] at h; exact absurd h (by simp)
+      · exact exprPure_sound _ h
     · exact absurd hv (by simp)
 
 theorem checkB1_sound (h : checkB1 p = .ok ()) : p.B1WellFormed := by

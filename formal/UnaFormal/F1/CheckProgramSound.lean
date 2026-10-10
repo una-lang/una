@@ -79,23 +79,35 @@ theorem isVia_true {p : Program} {f : String} (h : isVia p f = true) : p.IsVia f
   obtain ⟨po, hpo, he⟩ := h
   exact ⟨po, hpo, he⟩
 
-/-- A `via` function the checker types against its result raised to `⊤` has its structural
-typing. -/
-theorem viaTyped_sound {p : Program} {fn : Fun} (h : viaTyped p fn = true) :
-    ExprTy p (bindTys fn.params (fn.paramTys [])) fn.body fn.result.erase := by
-  unfold viaTyped at h
+theorem _root_.Una.F1.LTy.erase_lowerTop (t : LTy) : t.lowerTop.erase = t.erase := by
+  cases t <;> rfl
+
+theorem viaTypedAt_sound {p : Program} {fn : Fun} {ps : List (String × LTy)}
+    (h : viaTypedAt p fn ps = true) : ExprTy p (LCtx.erase ps) fn.body fn.result.erase := by
+  unfold viaTypedAt at h
   split at h
   · rename_i ε hc
     obtain ⟨t, ht, hflow⟩ := checkExpr_sound hc
     have hs := LExprTy.toStruct ht
     rw [Flow.erase hflow, LTy.erase_raise] at hs
-    have he : LCtx.erase fn.params = bindTys fn.params (fn.paramTys []) := by
-      have := params_erase fn.params []
-      simp only [List.append_nil, LCtx.erase, List.map_nil] at this
-      rw [paramTys_nil]
-      simpa [LCtx.erase] using this
-    rwa [he] at hs
+    exact hs
   · exact absurd h (by simp)
+
+/-- A `via` function the checker types against its result raised to `⊤` has its structural
+typing, under its parameters or under their top labels at `⊥`. -/
+theorem viaTyped_sound {p : Program} {fn : Fun} (h : viaTyped p fn = true) :
+    ExprTy p (bindTys fn.params (fn.paramTys [])) fn.body fn.result.erase := by
+  have he : LCtx.erase fn.params = bindTys fn.params (fn.paramTys []) := by
+    have := params_erase fn.params []
+    simp only [List.append_nil, LCtx.erase, List.map_nil] at this
+    rw [paramTys_nil]
+    simpa [LCtx.erase] using this
+  have hl : LCtx.erase (fn.params.map fun q => (q.1, q.2.lowerTop)) = LCtx.erase fn.params := by
+    simp [LCtx.erase, LTy.erase_lowerTop]
+  unfold viaTyped at h
+  rcases Bool.or_eq_true_iff.mp h with h | h
+  · rw [← he]; exact viaTypedAt_sound h
+  · rw [← he, ← hl]; exact viaTypedAt_sound h
 
 theorem funOk_sound {p : Program} {fn : Fun} (h : funOk p fn = true) : p.FunOk fn := by
   unfold funOk at h

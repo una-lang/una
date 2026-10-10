@@ -672,7 +672,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         obtain ⟨_, _, fn', hfn', hps, hres⟩ := hwf.wellFormed.policies _ hmem
         rw [hfn] at hfn'
         cases hfn'
-        obtain ⟨fnv, hfnv, _, _, _, hpure⟩ := hb1.via po hmem
+        obtain ⟨fnv, hfnv, _, _, hpof, hpure⟩ := hb1.via po hmem
         rw [hfn] at hfnv
         cases hfnv
         obtain ⟨hdg, hds⟩ := hb1.dst po hmem
@@ -690,13 +690,17 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         have hbody := body_typed hwf.wellFormed hfn []
         rw [Ty.subst_nil, hres] at hbody
         have hgood := (sound hwf.wellFormed h4 n).2 (w := w) henv' hbody
-        have hq := (pure_run p w n).2 (bindParams fn.params [v] []) fn.body hpure
-        revert hgood hq
+        -- The `via` body performs no event; it fails only if it declares `fails` (B1).
+        have hq := (silent_run p w n).2 (bindParams fn.params [v] []) fn.body hpof
+        have hnf : fn.fails = false → ∀ c,
+            (eval H n p w (bindParams fn.params [v] []) fn.body).2.1 ≠ .failed c :=
+          fun hf => ((pure_run p w n).2 _ fn.body (hpure hf)).2.1
+        revert hgood hq hnf
         generalize eval H n p w (bindParams fn.params [v] []) fn.body = run
         obtain ⟨tr, res, w'⟩ := run
-        intro hgood hq
-        obtain ⟨htr, hnf, hw⟩ := hq
-        simp only at htr hnf hw
+        intro hgood hq hnf
+        obtain ⟨htr, hw⟩ := hq
+        simp only at htr hw hnf
         subst htr hw
         cases res with
         | ok r =>
@@ -704,13 +708,24 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
           refine ⟨fun ev hev => ?_, ?_, WEff.self _ _⟩
           · simp only [List.nil_append, List.mem_singleton] at hev
             subst hev
-            exact ⟨by simp [Eff.ofFnR, Eff.ofFn, Eff.inst], po, hpo,
-              le_inst_of_symFree _ hdg.top_symFree hle, hgood⟩
+            exact ⟨by simp [Eff.ofPolicy, Eff.inst], po, hpo,
+              le_inst_of_symFree _ hdg.top_symFree hle, .inl hgood⟩
           · show LValTy p r (po.dst.lsubst p.recordDeep σ)
             refine lvalTy_of_scalar ?_ ?_
             · rw [LTy.erase_lsubst, Ty.Scalar.subst _ hds]; exact hds
             · rw [LTy.erase_lsubst, Ty.Scalar.subst _ hds]; exact hgood
-        | failed c => exact absurd rfl (hnf c)
+        | failed c =>
+          -- A failing `via` releases `Err(c)`, and the call fails at `pc ⊔ ℓ(to)`.
+          refine ⟨fun ev hev => ?_, ?_, WEff.self _ _⟩
+          · simp only [List.nil_append, List.mem_singleton] at hev
+            subst hev
+            exact ⟨by simp [Eff.ofPolicy, Eff.inst], po, hpo,
+              le_inst_of_symFree _ hdg.top_symFree hle, .inr ⟨c, rfl⟩⟩
+          · cases hf : fn.fails with
+            | false => exact absurd rfl (hnf hf c)
+            | true =>
+              exact ⟨(pc.join po.dst.top).inst (p.sd σ), by simp [Eff.ofPolicy, Eff.inst, hf],
+                LExpr.le_inst _ (LExpr.le_join_left pc po.dst.top)⟩
         | stuck => exact ⟨fun _ h => (nomatch h), trivial, WEff.self _ _⟩
         | outOfFuel => exact ⟨fun _ h => (nomatch h), trivial, WEff.self _ _⟩
       | map hxs hf hte hb =>
