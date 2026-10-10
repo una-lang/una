@@ -223,3 +223,36 @@ The rules of §3 to §8 act on Core IR; these rules fix what the surface syntax 
     - A value of a type parameter `T` needs `T: Eq`, written or inferred for a private function (`spec/20 §3` rule 4); otherwise it is U2026, with the repair that writes `[T: Eq]`.
     - The text is the value's Una form of `spec/11 §5`, without redaction.
     - Its label is the join of every label of the value's type, deep (`spec/07 §7` rule 3), so a `secret` field makes the whole text `secret`.
+
+## 13. Corrections
+
+### 13.1 The label that decides a failure (2026-10-10, ADR 0087, #479)
+
+Found by M3 of the formal track (`docs/plan/formal-track-m3.md` §2). T-Let (§4), T-Attempt and T-Handle (§5) above omit a premise that `spec/07 §7` rule 4 states. The formal track's model has it (`formal/UnaFormal/F1/LTyping.lean`, rules `letR`, `letE`, `attempt` and `handle`), and T6 is proven for it. The checker already enforces it, so no program's verdict changes. Where this section and §4 or §5 differ, this section wins.
+
+1. **Notation.** A failure $F$ carries the label of what decides it, written $F^{\ell_F}$, with $\ell_\emptyset = \bot$. That label is the one `spec/07 §7` rule 4 gives:
+   - in T-Op, the arguments that decide the operation's failure, each capped at its `accepts`, joined for `Files` with the package's file-state label (ADR 0085);
+   - in T-Call and T-App, $\bot$, since a function's own failure is decided at the public program counter (T-Fail, and $\mathrm{bound}(f)$ is met with $\bot$ when $f$ can fail);
+   - for a labeled prelude function, the labels of its arguments (N-27).
+2. **T-Let.** The body runs only when the right-hand side did not fail, so it is typed under $pc \sqcup \ell_{F_1}$:
+
+$$
+\frac{\Gamma;K;pc \vdash r : \tau_1 \;!\; \varepsilon_1;F_1^{\ell_{F_1}} \qquad \Gamma, x{:}\tau_1;K;pc \sqcup \ell_{F_1} \vdash e : \tau_2 \;!\; \varepsilon_2;F_2^{\ell_{F_2}} \qquad \Gamma \vdash \tau_1 <: \tau_x}
+     {\Gamma;K;pc \vdash \mathtt{let}\; x{:}\tau_x = r \;\mathtt{in}\; e : \tau_2 \;!\; \varepsilon_1 \cup \varepsilon_2;\, (F_1 \sqcup F_2)^{\ell_{F_1} \sqcup \ell_{F_2}}}\;(\textsf{T-Let, corrected})
+$$
+
+3. **T-Attempt.** The `Result` carries the label of what decides it:
+
+$$
+\frac{\Gamma;K;pc \vdash e : \tau \;!\; \varepsilon;F^{\ell_F}}
+     {\Gamma;K;pc \vdash \mathtt{attempt}\; e : \mathrm{Result}[\tau, F]^{\ell_F} \;!\; \varepsilon;\emptyset}\;(\textsf{T-Attempt, corrected})
+$$
+
+4. **T-Handle.** Whether the handler runs, and so which branch gives the value, is decided by $\ell_{F_1}$:
+
+$$
+\frac{\Gamma;K;pc \vdash e : \tau \;!\; \varepsilon_1;F_1^{\ell_{F_1}} \qquad \Gamma, x{:}F_1^{\ell_{F_1}};K;pc \sqcup \ell_{F_1} \vdash e_h : \tau \;!\; \varepsilon_2;F_2^{\ell_{F_2}}}
+     {\Gamma;K;pc \vdash \mathtt{handle}\; e \;\mathtt{with}\; x \Rightarrow e_h : \tau \sqcup \ell_{F_1} \;!\; \varepsilon_1 \cup \varepsilon_2;\, F_2^{\ell_{F_2}}}\;(\textsf{T-Handle, corrected})
+$$
+
+5. **At the surface.** These are the rules that `spec/07 §7` rule 4 states for `attempt`, `if error use`, `if error pass` and `if error fail`. Since `if error pass` and `if error fail` on a failure decided above `public` are U4002, and a handler expression with an effect is U3013 (`spec/04 §4`), no program the checker accepts tells the corrected rules from the ones of §4 and §5.

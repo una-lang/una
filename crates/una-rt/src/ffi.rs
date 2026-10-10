@@ -180,9 +180,9 @@ exported! {
     una_rt_at => values::at, (xs, index);
     una_rt_append => values::append, (xs, item);
     una_rt_contains => values::contains, (xs, item);
-    una_rt_set => values::set, (xs, index, item);
+    una_rt_set => values::set, (site, xs, index, item);
     una_rt_append_owned => values::append_owned, (xs, item);
-    una_rt_set_owned => values::set_owned, (xs, index, item);
+    una_rt_set_owned => values::set_owned, (site, xs, index, item);
     una_rt_map_len => values::map_len, (map);
     una_rt_map_has => values::map_has, (map, key);
     una_rt_map_get => values::map_get, (map, key);
@@ -527,6 +527,72 @@ mod tests {
             values::release(closures);
             value
         });
+    }
+
+    /// The names of [`a_set_outside_the_list_aborts_the_run`]'s scenarios, each run in a process
+    /// of its own since an abort ends the process.
+    const SET_COPIED: &str = "ffi::tests::a_set_outside_the_list_copied_scenario";
+    const SET_OWNED: &str = "ffi::tests::a_set_outside_the_list_owned_scenario";
+
+    /// The site of the `set` call in the scenarios.
+    const SET_META: &str = r#"{"grants":[],"uses":[],"sites":[{"file":"src/s.una","start":{"line":7,"col":3},"end":{"line":7,"col":33}}]}"#;
+
+    #[test]
+    #[ignore = "run by `a_set_outside_the_list_aborts_the_run`, in a process of its own"]
+    fn a_set_outside_the_list_copied_scenario() {
+        runtime::start(&[], SET_META, || {
+            let xs = values::list();
+            values::push(xs, values::int_word(&1.into()));
+            // A second holder makes `set` copy.
+            values::retain(xs);
+            let tuple = values::set(0, xs, values::int_word(&1.into()), 0);
+            eprintln!("{MARK}: set returned {tuple}");
+            0
+        });
+    }
+
+    #[test]
+    #[ignore = "run by `a_set_outside_the_list_aborts_the_run`, in a process of its own"]
+    fn a_set_outside_the_list_owned_scenario() {
+        runtime::start(&[], SET_META, || {
+            let xs = values::list();
+            values::push(xs, values::int_word(&1.into()));
+            let tuple = values::set_owned(0, xs, values::int_word(&(-1).into()), 0);
+            eprintln!("{MARK}: set returned {tuple}");
+            0
+        });
+    }
+
+    #[test]
+    fn a_set_outside_the_list_aborts_the_run() {
+        // #480, `spec/17 §7.3`: `set`'s `requires` keeps its index in range, and outside it the
+        // interpreter aborts with a fault. Native code used to leave the list unchanged and go
+        // on; now both the copying and the in-place update abort at the call with U8001, the
+        // interpreter's message, and exit code 3, and nothing after them runs.
+        for scenario in [SET_COPIED, SET_OWNED] {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--ignored",
+                    "--exact",
+                    scenario,
+                    "--nocapture",
+                    "--test-threads",
+                    "1",
+                ])
+                .output()
+                .unwrap();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(output.status.code(), Some(3), "{scenario}: {stderr}");
+            assert!(stderr.contains("U8001"), "{scenario}: {stderr}");
+            assert!(stderr.contains("src/s.una"), "{scenario}: {stderr}");
+            assert!(
+                stderr.contains(
+                    "evaluation stopped: `set` at an index outside the list, which its precondition excludes"
+                ),
+                "{scenario}: {stderr}"
+            );
+            assert!(!stderr.contains(MARK), "{scenario}: set returned: {stderr}");
+        }
     }
 
     #[test]
