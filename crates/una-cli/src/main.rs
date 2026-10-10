@@ -38,7 +38,14 @@ fn main() -> ExitCode {
 /// A variable of the process environment, for programs that `una run` grants `env`
 /// (`spec/14 §3`). The binary reads it, so that the library never does
 /// (`compiler/conventions.md §1`).
+/// A value that is not valid UTF-8 is `NotText`, which `Env.get` aborts on (S-16, ADR 0086).
 #[allow(clippy::disallowed_methods)]
-fn environment(name: &str) -> Option<String> {
-    std::env::var(name).ok()
+fn environment(name: &str) -> Result<Option<String>, una_interp::NotText> {
+    match std::env::var_os(name) {
+        Some(value) => value
+            .into_string()
+            .map(Some)
+            .map_err(|_| una_interp::NotText),
+        None => Ok(None),
+    }
 }

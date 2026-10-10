@@ -8,7 +8,7 @@ Una enforces **termination-insensitive noninterference up to declassification** 
 
 Observable channels in the model: return values, failure variants and payloads, capability operation arguments, the occurrence of effects.
 
-Outside the model in v0.1, and reported as such in the build report (`spec/13 §6`, `out_of_model`): timing, termination and divergence, resource consumption and allocation, stack exhaustion, external systems beyond declared signatures, races between the check and the use of a file path, hard links, and order of effects across concurrent tasks (`spec/14 §3` and ADR 0048 for hard links; v0.2, ADR 0065 and `spec/19 §3` for the order of effects, which includes how far a cancelled task got). T6 holds for the result of a `together` block and for each task's own events. A run-time abort is termination: running out of depth or memory (U6003), and in v0.2 a header value with a control character (U6004, N-40).
+Outside the model in v0.1, and reported as such in the build report (`spec/13 §6`, `out_of_model`): timing, termination and divergence, resource consumption and allocation, stack exhaustion, external systems beyond declared signatures, races between the check and the use of a file path, hard links, and order of effects across concurrent tasks (`spec/14 §3` and ADR 0048 for hard links; v0.2, ADR 0065 and `spec/19 §3` for the order of effects, which includes how far a cancelled task got). T6 holds for the result of a `together` block and for each task's own events. A run-time abort is termination: running out of depth or memory (U6003), in v0.2 a header value with a control character (U6004, N-40), and host text that is not valid UTF-8 (U6005, S-16, ADR 0086).
 
 ## 2. Labels
 

@@ -4,6 +4,10 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ## Unreleased
 
+### Security
+
+- **Host text that is not valid UTF-8 aborts the run** (#460, S-16, ADR 0086). `Files.read` failed with `Io` on a file whose content was not valid UTF-8, and `Env.get` returned `None` for such a variable. Both outcomes were decided by `internal` content, yet a `public` branch could see them: a package with no labeled write printed, to the console, whether an `internal` file was valid UTF-8. Now both operations abort with the new runtime code U6005 at the operation, in the interpreter and in native executables, and in both editions. An abort is outside the noninterference model, as U6004 is. Valid text reads unchanged, and `una check` is unchanged. The model's hypothesis that a read's failure depends on its path and the file system's shape only (M5's H1) now holds for the real host. `spec/14 §3` also states two more limits as out of the model: a write's failure on resource limits, and other processes that change the granted directory.
+
 ### Documentation
 
 - **The guides close the gaps the compact-reference arms met** (#449, from #430's measurement). The agent guide now:

@@ -1404,9 +1404,14 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 ("Http", "delete") => ("una_rt_http_delete", true),
                 _ => return Err(unsupported(format!("`{capability}.{op}`"))),
             };
-            let value = if capability_path.name == "Http" {
+            let sited = matches!(
+                (capability_path.name.as_str(), op.as_str()),
+                ("Http", _) | ("Env", "get") | ("Files", "read")
+            );
+            let value = if sited {
                 // The call's site, where a header value with a control character aborts with
-                // U6004; a task stopped by it stops here (N-40).
+                // U6004 (N-40), and host text that is not valid UTF-8 with U6005 (S-16, ADR
+                // 0086); a task stopped by it stops here.
                 let site = self.site(*span);
                 let mut operands = vec![site];
                 operands.extend_from_slice(&values);

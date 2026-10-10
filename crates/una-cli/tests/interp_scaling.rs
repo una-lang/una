@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use una_interp::{FileFault, Host, Limits, World};
+use una_interp::{FileFault, Host, Limits, NotText, World};
 
 /// A world nothing reaches: the program prints nothing and uses no capability.
 struct Quiet;
@@ -22,8 +22,8 @@ impl World for Quiet {
     fn now(&mut self) -> i64 {
         0
     }
-    fn env_var(&mut self, _name: &str) -> Option<String> {
-        None
+    fn env_var(&mut self, _name: &str) -> Result<Option<String>, NotText> {
+        Ok(None)
     }
     fn read_file(&mut self, _path: &Path) -> Result<String, FileFault> {
         Err(FileFault::NotFound)

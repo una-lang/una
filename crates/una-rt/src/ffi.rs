@@ -210,8 +210,8 @@ exported! {
     una_rt_range => values::range, (low, high, inclusive);
     una_rt_console_print => host::console_print, (line);
     una_rt_clock_now => host::clock_now, ();
-    una_rt_env_get => host::env_get, (name);
-    una_rt_files_read => host::files_read, (path);
+    una_rt_env_get => host::env_get, (site, name);
+    una_rt_files_read => host::files_read, (site, path);
     una_rt_files_write => host::files_write, (path, content);
     una_rt_keys_hmac => host::keys_hmac, (key_name, data);
     una_rt_http_get => host::http_get, (site, url, headers, key_name);

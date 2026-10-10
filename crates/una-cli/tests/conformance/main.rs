@@ -45,7 +45,7 @@ fn una(args: &[String]) -> String {
         &mut stdout,
         &mut stderr,
         false,
-        &|_| None,
+        &|_| Ok(None),
         una_cli::Heap::unmeasured(),
     );
     String::from_utf8(stdout).unwrap()

@@ -289,8 +289,14 @@ fn on_large_stack<T: Send>(work: impl Fn() -> T + Sync) -> T {
 
 /// The environment variables of the process, by name, which `una run` gives to programs that
 /// use `Env.get` (`spec/14 §3`). The binary passes the real ones; the library never reads them
-/// (`compiler/conventions.md §1`).
-pub type Environment<'a> = &'a (dyn Fn(&str) -> Option<String> + Sync);
+/// (`compiler/conventions.md §1`). A value that is not valid UTF-8 is [`una_interp::NotText`]:
+/// `Env.get` aborts on it (S-16, ADR 0086), and the toolchain's own lookups treat it as unset.
+pub type Environment<'a> = &'a (dyn Fn(&str) -> Result<Option<String>, una_interp::NotText> + Sync);
+
+/// The variable `name` for the toolchain's own use: unset when its value is not valid UTF-8.
+pub(crate) fn variable(environment: Environment<'_>, name: &str) -> Option<String> {
+    environment(name).ok().flatten()
+}
 
 /// The heap of the process, as the binary counts it (ADR 0061): the bytes it holds, and how to
 /// set the ceiling past which an allocation fails. The library never touches the allocator.

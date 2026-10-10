@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
-use una_interp::{Event, EventOutcome, FileFault, Grant, World};
+use una_interp::{Event, EventOutcome, FileFault, Grant, NotText, World};
 
 use crate::render::index;
 use crate::runtime::with_state;
@@ -93,17 +93,24 @@ impl World for Machine {
             })
     }
 
-    fn env_var(&mut self, name: &str) -> Option<String> {
+    fn env_var(&mut self, name: &str) -> Result<Option<String>, NotText> {
         if name.is_empty() || name.contains(['=', '\0']) {
-            return None;
+            return Ok(None);
         }
-        // The executable is the process, as `una`'s binary is for `una run`.
+        // The executable is the process, as `una`'s binary is for `una run`. A value that is
+        // not valid UTF-8 is `NotText`, which aborts the run (S-16, ADR 0086).
         #[allow(clippy::disallowed_methods)]
-        std::env::var(name).ok()
+        match std::env::var_os(name) {
+            Some(value) => value.into_string().map(Some).map_err(|_| NotText),
+            None => Ok(None),
+        }
     }
 
     fn read_file(&mut self, path: &Path) -> Result<String, FileFault> {
-        std::fs::read_to_string(path).map_err(file_fault)
+        // Content that is not valid UTF-8 is `NotText`, which aborts the run, not `Io`, which
+        // the program could branch on (S-16, ADR 0086).
+        let bytes = std::fs::read(path).map_err(file_fault)?;
+        String::from_utf8(bytes).map_err(|_| FileFault::NotText)
     }
 
     fn write_file(&mut self, path: &Path, content: &str) -> Result<(), FileFault> {
@@ -182,12 +189,27 @@ pub fn clock_now() -> i64 {
     values::int_word(&num_bigint::BigInt::from(Machine.now()))
 }
 
-/// `Env.get(name)`: the variable, or `None`.
-pub fn env_get(name: i64) -> i64 {
+/// `Env.get(name)` at the call `site`: the variable, or `None`. A value that is not valid UTF-8
+/// aborts the run, or the task, with U6005 at the operation (S-16, ADR 0086).
+pub fn env_get(site: i64, name: i64) -> i64 {
     match Machine.env_var(&values::text_value(name)) {
-        Some(value) => values::some_owned(values::text_word(value)),
-        None => values::NONE,
+        Ok(Some(value)) => values::some_owned(values::text_word(value)),
+        Ok(None) => values::NONE,
+        Err(NotText) => not_text(
+            site,
+            "the value of this environment variable is not valid UTF-8",
+        ),
     }
+}
+
+/// Aborts the run, or the task, with U6005 at the call `site` (S-16, ADR 0086); a task's caller
+/// stops it ([`crate::runtime::stopped`]).
+fn not_text(site: i64, message: &str) -> i64 {
+    crate::runtime::abort_at(
+        usize::try_from(site).unwrap_or(usize::MAX),
+        una_diag::Code::U6005,
+        message.to_owned(),
+    )
 }
 
 /// The path that `relative` names under the first `Files` grant that allows the access, as
@@ -206,20 +228,24 @@ fn confined(relative: &str, writing: bool) -> Option<PathBuf> {
     })
 }
 
+/// The failure of a file operation. `NotText` never comes from a write, whose content is a
+/// text, and a read aborts on it before it gets here.
 fn file_failure(fault: FileFault) -> i64 {
     failed(match fault {
         FileFault::NotFound => NOT_FOUND,
-        FileFault::Io => IO,
+        FileFault::Io | FileFault::NotText => IO,
     })
 }
 
-/// `Files.read(path)`.
-pub fn files_read(path: i64) -> i64 {
+/// `Files.read(path)` at the call `site`. Content that is not valid UTF-8 aborts the run, or the
+/// task, with U6005 at the operation (S-16, ADR 0086).
+pub fn files_read(site: i64, path: i64) -> i64 {
     let Some(target) = confined(&values::text_value(path), false) else {
         return failed(DENIED);
     };
     match Machine.read_file(&target) {
         Ok(text) => values::text_word(text),
+        Err(FileFault::NotText) => not_text(site, "the content of this file is not valid UTF-8"),
         Err(fault) => file_failure(fault),
     }
 }

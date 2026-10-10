@@ -254,7 +254,7 @@ pub(crate) struct State {
     shielded: usize,
     /// The shields of the operations in progress, outermost first, to restore as each ends.
     operations: Vec<usize>,
-    /// In a task, the abort that stopped it, U6003 or U6004, which its block reports.
+    /// In a task, the abort that stopped it, U6003, U6004 or U6005, which its block reports.
     pub(crate) stopped: Option<(Code, Location, String)>,
 }
 
@@ -767,8 +767,8 @@ pub fn poll() -> i64 {
     with_state(|state| i64::from(state.cancelled())).unwrap_or(0)
 }
 
-/// 1 when an operation stopped the task the thread runs, as U6004 does in a task: its caller
-/// stops it before using the operation's value (N-40).
+/// 1 when an operation stopped the task the thread runs, as U6004 (N-40) and U6005 (S-16) do in
+/// a task: its caller stops it before using the operation's value.
 pub fn stopped() -> i64 {
     with_state(|state| i64::from(state.stopped.is_some())).unwrap_or(0)
 }
@@ -823,8 +823,9 @@ pub(crate) fn abort_from_task(code: Code, location: Location, message: String) -
 }
 
 /// Aborts the run, or the task the thread runs, with `code` at the call `site`, as a call
-/// over the depth does: U6004 for a header value with a control character (N-40). Returns 0,
-/// the value the caller drops: a task stops, and its block reports the abort.
+/// over the depth does: U6004 for a header value with a control character (N-40), U6005 for host
+/// text that is not valid UTF-8 (S-16, ADR 0086). Returns 0, the value the caller drops: a task
+/// stops, and its block reports the abort.
 pub(crate) fn abort_at(site: usize, code: Code, message: String) -> i64 {
     let abort = STATE.with(|cell| {
         let mut cell = cell.borrow_mut();
@@ -895,7 +896,7 @@ fn site_location(state: &State, site: usize) -> Location {
     })
 }
 
-/// Ends the run with `code`, U6003 or U6004, at `location`, as the interpreter's abort does: the output so far
+/// Ends the run with `code`, U6003, U6004 or U6005, at `location`, as the interpreter's abort does: the output so far
 /// stays printed, the trace is written, and the executable exits with code 1; with U8001, an
 /// internal error of the runtime (#424), it exits with code 3 (`spec/13 §5`).
 fn abort_run(state: State, code: Code, location: Location, message: String) {

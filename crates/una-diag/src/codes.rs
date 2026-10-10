@@ -218,6 +218,8 @@ pub enum Code {
     U6003,
     /// A header value contains a control character.
     U6004,
+    /// A host value is not valid UTF-8.
+    U6005,
     /// Non-canonical formatting.
     U7001,
     /// Invalid `una.toml`.
@@ -234,7 +236,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 83] = [
+    pub const ALL: [Code; 84] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -312,6 +314,7 @@ impl Code {
         Code::U6001,
         Code::U6003,
         Code::U6004,
+        Code::U6005,
         Code::U7001,
         Code::U7002,
         Code::U7003,
@@ -721,6 +724,11 @@ impl Code {
                 code: "U6004",
                 domain: Domain::Runtime,
                 meaning: "A header value contains a control character",
+            },
+            Code::U6005 => &Entry {
+                code: "U6005",
+                domain: Domain::Runtime,
+                meaning: "A host value is not valid UTF-8",
             },
             Code::U7001 => &Entry {
                 code: "U7001",

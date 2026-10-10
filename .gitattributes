@@ -3,3 +3,5 @@
 *.una text eol=lf
 tests/conformance/syntax/*.una -text
 tests/conformance/fmt/*.una -text
+# Data files of runtime cases are byte-exact: some are not valid UTF-8 on purpose (S-16).
+tests/conformance/runtime/*/data/* -text

@@ -41,14 +41,15 @@ impl std::fmt::Debug for ProofKey {
 
 /// The key, read or made, or `None` when there is none to use.
 pub(crate) fn resolve(environment: Environment<'_>) -> Option<ProofKey> {
-    let (path, shown) = match environment(OVERRIDE).filter(|value| !value.is_empty()) {
-        Some(file) => (PathBuf::from(&file), file),
-        None => {
-            let home = environment("HOME").filter(|home| !home.is_empty())?;
-            let path = Path::new(&home).join(".una").join("proof-cache.key");
-            (path, DEFAULT_SHOWN.to_owned())
-        }
-    };
+    let (path, shown) =
+        match crate::variable(environment, OVERRIDE).filter(|value| !value.is_empty()) {
+            Some(file) => (PathBuf::from(&file), file),
+            None => {
+                let home = crate::variable(environment, "HOME").filter(|home| !home.is_empty())?;
+                let path = Path::new(&home).join(".una").join("proof-cache.key");
+                (path, DEFAULT_SHOWN.to_owned())
+            }
+        };
     let secret = read_or_make(&path)?;
     (secret.len() >= MINIMUM).then_some(ProofKey { secret, shown })
 }
@@ -106,7 +107,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("una-proof-key-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let home = dir.to_str().unwrap().to_owned();
-        let environment = move |name: &str| (name == "HOME").then(|| home.clone());
+        let environment = move |name: &str| Ok((name == "HOME").then(|| home.clone()));
         let made = resolve(&environment).unwrap();
         assert_eq!(made.secret.len(), LENGTH);
         assert_eq!(made.shown, "~/.una/proof-cache.key");
@@ -123,9 +124,9 @@ mod tests {
         let other = dir.join("other.key");
         std::fs::write(&other, b"short").unwrap();
         let other_name = other.to_str().unwrap().to_owned();
-        let overriding = move |name: &str| (name == OVERRIDE).then(|| other_name.clone());
+        let overriding = move |name: &str| Ok((name == OVERRIDE).then(|| other_name.clone()));
         assert_eq!(resolve(&overriding), None);
-        assert_eq!(resolve(&|_: &str| None), None);
+        assert_eq!(resolve(&|_: &str| Ok(None)), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
