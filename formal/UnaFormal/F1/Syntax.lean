@@ -1,9 +1,8 @@
 /-
-M5 (`docs/plan/formal-track-m5.md`): **F1 with a stateful host**, F1H. It is F1 with the host
-operation `get` replaced by the operations of the stateful capabilities, `Files.read`,
-`Files.write` and a request of `Http` (its four operations differ only in their method), and with
-an evaluation that threads the host's state. Until `t6_host` is proven over it, F1H is staged
-beside F1; this file is F1's `Syntax.lean` with those changes.
+M5 (`docs/plan/formal-track-m5.md`): **F1 with a stateful host**. Its host operations are those
+of the stateful capabilities, `Files.read`, `Files.write` and a request of `Http` (its four
+operations differ only in their method), and its evaluation threads the host's state. M5 staged
+it beside the model with a stateless host, and #459 made it the one model.
 
 The fragment F1 (`docs/plan/formal-track.md` §3): the part of Una Core IR (`spec/09`) in A-normal
 form, as `una.core/1` exports it (`spec/13 §8`), in which the findings S-01 to S-12 but S-04 can

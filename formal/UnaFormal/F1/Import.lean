@@ -1035,7 +1035,7 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
   -- with their real bodies, every `via` function, the document's policies, records and
   -- categories, its one operation and the host's labels. A declaration stays accepted only if
   -- `P` passes `Check.progOk`, whose soundness (`Check.progOk_sound`) gives
-  -- `P.LWellFormed ∧ P.B1WellFormed` and `t6`'s `hget`. A function that fails in `P` is demoted
+  -- `P.LWellFormed ∧ P.B1WellFormed ∧ P.HostWF`. A function that fails in `P` is demoted
   -- with what reaches it, and `P` is checked again, at most once per declaration; the verdict
   -- rests on the last check, of `P` itself.
   let readOf := fun (f : String) => match prepOf f with

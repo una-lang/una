@@ -1,18 +1,19 @@
 /-
 **T6, noninterference, for F1** (`spec/10 §10`, M3 and M4 of `docs/plan/formal-track.md`):
 two runs of a body the labeled typing accepts, in environments related for an observer at `L`,
-end, when both end at the same fuel, with the same events the observer sees and related outcomes.
-`t6` holds at every ground substitution `σ` of the type parameters in scope, so a generic body
-is covered at each of its ground instances; `t6_ground` is the case of a body with no type
-parameter in scope, every call site and `main`; `t6_ended` (`Mono.lean`) drops the common fuel.
+end, when both end at the same fuel, with the same events the observer sees and related outcomes,
+and from worlds the observer cannot tell apart leave worlds it cannot tell apart (M5).
+`t6_host` holds at every ground substitution `σ` of the type parameters in scope, so a generic
+body is covered at each of its ground instances; `t6_host_ground` is the case of a body with no
+type parameter in scope, every call site and `main`; `t6_ended` (`Mono.lean`) drops the common
+fuel.
 
 **Scope.** What the theorem covers is F1 as `Syntax.lean` defines it, and no more:
-- one capability with one operation (`op`) and one host operation (`get`), each with one
-  `accepts` label for the whole program;
-- a stateless host, the same `World` in both runs, whose failures depend only on the URL and which
-  no operation of the program changes: S-14 (a file's existence written through an internal path
-  and seen by a public read) and S-15 (a server's failures decided by a body) show that real
-  hosts break this, and their fix discharges the assumption;
+- one capability with one operation (`op`), and the host's stateful operations, `Files.read`,
+  `Files.write` and a request of `Http`, each with one `accepts` label for the whole program;
+- a lawful host (`Host.Lawful`, H1 and H2), whose file system and servers are disjoint, under
+  ADR 0085's rules and `Program.HostWF`; a program without host operations needs no premise on
+  the host (`HostFree.lean`);
 - failures are codes without payloads;
 - no sums but `Option` and `Result`, no `Map`, no `with` or handlers of capabilities, no
   `together`;
@@ -21,9 +22,7 @@ parameter in scope, every call site and `main`; `t6_ended` (`Mono.lean`) drops t
   generic function at its own type parameters, two levels of generics, is outside the model;
 - no policy (`p.policies = []`): declassification is `t6_release` (`Release.lean`, option B1),
   which `t6_soundR` proves for programs within B1's restrictions, up to the first visible release
-  whose values differ; `t6_sound` and `t6` are its case without policies;
-- the host's response is labeled at least what its operation accepts (`hget`), which
-  `spec/24 §5` meets and `crates/una-check/tests/host_table.rs` checks of the prelude.
+  whose values differ; `t6_sound` and `t6_host` are its case without policies.
 
 **What "related" means** (`V`): at a position the observer sees, scalars and texts are equal,
 lists have the same length and related elements, options and results the same tag and related

@@ -68,7 +68,7 @@ Nothing constrains it. ADR 0085 decision 7 makes every request's failure, and it
 | `Http.put(url, headers, body, key_name)` | `req "put" args` | every argument, `internal` | `pc ⊔ ℓ(args) ⊔ internal` | `Response`, `internal` |
 | `Http.delete(url, headers, key_name)` | `req "delete" args` | every argument, `internal` | `pc ⊔ ℓ(args) ⊔ internal` | `Response`, `internal` |
 
-In F1H the request's arguments are texts, and its response is the body's text: the structure of `Header` and `Response` adds nothing the labels above do not cover.
+In the model the request's arguments are texts, and its response is the body's text: the structure of `Header` and `Response` adds nothing the labels above do not cover.
 
 **Evaluation** threads the world: `eval : Nat → Program → World → Env → Expr → Trace × Res × World`.
 
@@ -170,16 +170,16 @@ Parts 1 and 2 go first. The counterexamples, `s14_old_leaks` and `s15_old_leaks`
 
 ## 10. What is proven
 
-Everything is in `formal/UnaFormal/F1H/`. `scripts/formal.sh` passes with 140 stated theorems, none of them depending on `sorry`.
+M5 staged the model in `formal/UnaFormal/F1H/`, where `scripts/formal.sh` passed with 140 stated theorems, none of them depending on `sorry`. #459 folded it into F1 (§11): the files below are now in `formal/UnaFormal/F1/`.
 
-**The model, F1H.** F1's core is staged beside F1 with the host as state:
+**The model.** M5 staged F1's core beside F1, as F1H, with the host as state, and #459 made it F1 itself:
 - `Syntax.lean`: the forms `read`, `write` and `req`, and host effects (`HostFx`: read, write, request) in function types;
 - `Eval.lean`: an abstract `Host` (file system, servers), with H1 and H2 as `Host.Lawful`, and an evaluation that threads the `World` and returns the world it leaves;
 - `LTyping.lean`: ADR 0085's rules. Failures go through `Program.fsFail` and `Program.reqFail`. `Bound` has a write case that asks `pc ⊑ fileState`. The switch `oldHost` states the rules before the ADR.
 
-Every proof of M3 and M4 is carried over (T1, the unary and binary halves, instances, B1). F1 itself is unchanged, and its 109 theorems still pass. Folding F1H into F1, so that one model remains, is #459.
+Every proof of M3 and M4 is carried over (T1, the unary and binary halves, instances, B1).
 
-**What the re-checker's "accepted" rests on, until #459.** The re-checker (M2, M4 completion) is written over F1. An accepted declaration rests on F1's `t6_release`, whose host is stateless. That assumption does not touch any accepted declaration: none of the 638 reads `Files` or `Http`, since the import never reads them (§7). M5 proves the stateful theorem over F1H. #459 makes it the one the verdicts rest on, and M5b extends the re-check to `Files` and `Http`.
+**What the re-checker's "accepted" rests on**: §11.
 
 | Part | Theorems |
 | --- | --- |
@@ -205,3 +205,29 @@ Every proof of M3 and M4 is carried over (T1, the unary and binary halves, insta
 - When the observer sees `internal`, the two worlds are equal and so are the sinks' arguments, so the host operations coincide.
 - Otherwise, contents and responses are hidden. Read and write failures agree by H1 and H2 when the observer sees the file-state label, and so the path. A request's failure is hidden.
 
+## 11. One model (#459)
+
+F1H is folded into F1, so one model remains: `formal/UnaFormal/F1/`, with the host forms, the threaded world and the host effects. F1's stateless operation `get` is gone; an `Http.get` is a request. The re-checker and its soundness theorems are ported to it.
+
+**The re-checker's labels for the host.** The importer reads no `Files` or `Http` operation, and the checker rejects the host forms until M5b. Every program the re-checker certifies gives the host the strictest labels `Program.HostWF` allows, every stateful sink at `⊥` and every result and failure floor at `internal` (`Import.mkProgram`). They decide no verdict, and they make `HostWF` hold by construction: `progOk` checks it (`Check.hostWfB`), so `progOk_sound` proves it. The importer no longer reads `Http.get`'s labels from the document, so its demotion for them is gone; no declaration of the corpus had it.
+
+**On any host.** `t6_release_host` asks the host to be lawful, and the real host breaks H1 until S-16's fix ships. A run of a program without host operations never reads or writes a file, so the premise is never used:
+- `eval_hostFree` (`HostFree.lean`): a program none of whose functions performs a host operation, run on a body that performs none, from values whose closures perform none, runs on any host as on the host without state (`Host.unit`), and leaves the world as it found it.
+- `t6_release_hostFree`: `t6_release_host`'s conclusion on any host, lawful or not, for such a program.
+- `t6_release_erasure_obs_hostFree`: `t6_release_erasure_obs` on any host, for a document whose program, body and inputs perform no host operation.
+- `Import.finalize` asks each certificate's program to be host-free (`Program.hostFreeB`), and `finalize_sound` states it.
+
+So an "accepted" of the re-checker is a corollary of `t6_release_erasure_obs_hostFree`, and asks nothing of the real host. Its premises are the certificate's, the reading of `una.core/1` (`Import.lean`, the trusted base), and inputs whose closures perform no host operation.
+
+**Non-vacuity** (`HostFreeExample.lean`). `s16` is a host whose read fails on a file holding invalid text, as the real `Files.read` does (S-16). Two file systems with the same files, one of them holding such a file, are told apart by a read (`s16_unlawful`). `s16_guesses` applies `t6_release_hostFree` to `ReleaseExample`'s program from exactly those two file systems, and `s16_caller_obs` applies `t6_release_erasure_obs_hostFree` to `MonomorphExample`'s document.
+
+**Other changes.**
+- Fuel monotonicity (`eval_mono`, `t6_ended`) is ported, from `t6_host_ground`.
+- Erasure (`eval_anon`, `eval_erasure`) holds on a host whose responses read no annotation (`Host.AnonInvariant`): a request is given values, and a real host is given their text. `Host.unit` is one.
+- F1's examples run on any lawful host, or on `Host.unit`.
+- `t6_release_host_agree` is `t6_release_agree` with a stateful host.
+
+**Validation.**
+- `scripts/formal.sh`: **PASS**, 144 theorems, no `sorry`. F1's `t6`, `t6_ground` and `t6_release` are gone; `t6_host`, `t6_host_ground` and `t6_release_host` stand for them. The theorems M5 proved twice are listed once.
+- The corpus (`main`'s export with #443's keys, 1,327 documents) is unchanged: all 4,203 verdicts, with their reasons, are identical, and 638 declarations are accepted.
+- The replay of S-01 to S-12 is unchanged: identical to the replay at A3.

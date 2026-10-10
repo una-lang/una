@@ -4,7 +4,7 @@ use, and running out of them is its own result, so that a program that does not 
 a semantics too (T1 and T6 are termination-insensitive, `spec/10 §10`). The trace holds the
 events of the run, in order (`spec/11 §5`).
 
-F1H (M5): the host is state. A `Host` gives the file system and the servers as functions, so any
+The host is state (M5). A `Host` gives the file system and the servers as functions, so any
 host is an instance, and the properties the theorem needs of it are its hypotheses
 (`Host.Lawful`, H1 and H2 of `docs/plan/formal-track-m5.md` §2). A run threads the `World`, the
 host's state, and ends with the world it leaves, which the next run starts from.

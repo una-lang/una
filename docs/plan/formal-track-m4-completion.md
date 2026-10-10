@@ -17,7 +17,7 @@ M4 completion closes that gap in three parts:
 | A2 | The re-check certifies one whole program per document, and `progOk_sound` proves that it passes `Program.LWellFormed` and `Program.B1WellFormed`, with `t6`'s `hget` discharged. `reach_closed` is the reachability rule's formal side. | Done (§4) |
 | A3 | Instances: a generic function checked at each ground instance the program reaches runs as its instances do, since evaluation reads no annotation (eval-erasure; `docs/reviews/formal-m2-replay/README.md`, "Why it is sound"). Its program checked at instances replaces A2's hypothesis `hA3`. | Done (§5) |
 
-With A3, an "accepted" from the re-check is a corollary of `t6_release`, with the reading of `una.core/1` (`Import.lean`) as the remaining trusted base.
+With A3, an "accepted" from the re-check is a corollary of `t6_release`, with the reading of `una.core/1` (`Import.lean`) as the remaining trusted base. Since #459, it is a corollary of `t6_release_erasure_obs_hostFree`, on any host (`formal-track-m5.md` §11).
 
 ## 2. A1: the checker is sound
 
