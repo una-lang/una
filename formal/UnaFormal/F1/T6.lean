@@ -375,6 +375,14 @@ theorem tupTy_of {S : List LTy} {r : Val} (h : LValTy p r ((LTy.tuple S .bot).ls
 
 end
 
+/-- A value of a scalar type is not `Err(c)`: a successful release and a failing one never carry
+the same value (#453 Phase B). -/
+theorem release_ok_not_err {r : Val} {t : Ty} (ht : t.Scalar) (h : ValTy p r t) :
+    ∀ c, r ≠ .err c := by
+  intro c hc
+  subst hc
+  cases h <;> simp [Ty.Scalar] at ht
+
 /-- **T6 for F1 with declassification (option B1), at every ground instance**: runs related up
 to their first different release. -/
 theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
@@ -765,7 +773,7 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
         obtain ⟨_, _, fn', hfn', hps, hres⟩ := hwf.wellFormed.policies _ hmem
         rw [hfn] at hfn'
         cases hfn'
-        obtain ⟨fnv, hfnv, _, _, _, hpure⟩ := hb1.via po hmem
+        obtain ⟨fnv, hfnv, _, _, hpof, hpure⟩ := hb1.via po hmem
         rw [hfn] at hfnv
         cases hfnv
         obtain ⟨hdg, hds⟩ := hb1.dst po hmem
@@ -775,9 +783,11 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
         rw [hps] at hlen
         have hds' : (po.dst.lsubst p.recordDeep σ).erase = po.dst.erase := by
           rw [LTy.erase_lsubst, Ty.Scalar.subst _ hds]
-        -- Each run of `via`: no event, no failure, and a value of the scalar `to`.
+        -- Each run of `via`: no event, a failure only if it declares `fails`, and a value of the
+        -- scalar `to`.
         have hvia : ∀ {w : World H} {v : Val}, LValTy p v (t.lsubst p.recordDeep σ) →
-            Quiet w (eval H n p w (bindParams fn.params [v] []) fn.body) ∧
+            Silent w (eval H n p w (bindParams fn.params [v] []) fn.body) ∧
+            (fn.fails = false → ∀ c, (eval H n p w (bindParams fn.params [v] []) fn.body).2.1 ≠ .failed c) ∧
             ∀ r, (eval H n p w (bindParams fn.params [v] []) fn.body).2.1 = .ok r →
               ValTy p r po.dst.erase := by
           intro w v hvt
@@ -788,7 +798,8 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
           rw [List.append_nil] at henv'
           have hbody := body_typed hwf.wellFormed hfn []
           rw [Ty.subst_nil, hres] at hbody
-          refine ⟨(pure_run p w n).2 _ _ hpure, fun r hr => ?_⟩
+          refine ⟨(silent_run p w n).2 _ _ hpof,
+            fun hf => ((pure_run p w n).2 _ _ (hpure hf)).2.1, fun r hr => ?_⟩
           have hg := (sound hwf.wellFormed hlaw.resp_typed n).2 (w := w) henv' hbody
           rw [hr] at hg
           exact hg
@@ -801,34 +812,76 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
         rcases e₂r : eval H n p w₂ (bindParams fn.params [v₂] []) fn.body with ⟨t₂, o₂, w₂'⟩
         rw [e₁r] at q₁
         rw [e₂r] at q₂
-        obtain ⟨⟨htr₁, hnf₁, hw₁⟩, hok₁⟩ := q₁
-        obtain ⟨⟨htr₂, hnf₂, hw₂⟩, hok₂⟩ := q₂
+        obtain ⟨⟨htr₁, hw₁⟩, hnf₁, hok₁⟩ := q₁
+        obtain ⟨⟨htr₂, hw₂⟩, hnf₂, hok₂⟩ := q₂
         simp only at htr₁ htr₂ hnf₁ hnf₂ hok₁ hok₂ hw₁ hw₂
         subst htr₁ htr₂ hw₁ hw₂
-        intro ht₁ ht₂
-        cases o₁ <;> cases o₂ <;> simp only [Term] at ht₁ ht₂
-        all_goals first
-          | (exfalso; exact hnf₁ _ rfl)
-          | (exfalso; exact hnf₂ _ rfl)
-          | skip
-        rename_i r₁ r₂
-        have hr₁ := hok₁ r₁ rfl
-        have hr₂ := hok₂ r₂ rfl
-        simp only [List.nil_append]
         have hev : ∀ r, EvVis p L (Event.release pol r) ↔ Vis p L po.dst.top := fun r =>
           ⟨fun ⟨po', hpo', hv⟩ => by rw [hpo] at hpo'; cases hpo'; exact hv, fun hv => ⟨po, hpo, hv⟩⟩
-        by_cases hvd : Vis p L po.dst.top
-        · rw [proj_single_vis ((hev r₁).mpr hvd), proj_single_vis ((hev r₂).mpr hvd)]
-          by_cases heq : r₁ = r₂
+        -- The failure is seen only where the release is (`pc ⊔ ℓ(to)`).
+        have hvf : fn.fails = true →
+            Vis p L ((Eff.ofPolicy fn.op fn.host fn.fails pc po.dst.top pol).inst (p.sd σ)).failLabel →
+            Vis p L po.dst.top := fun hf h => by
+          simp only [Eff.ofPolicy, Eff.inst, Eff.failLabel, hf, if_true, Option.map_some,
+            Option.getD_some] at h
+          exact Vis.of_le (LExpr.le_trans (LExpr.le_inst_symFree _ hdg.top_symFree).2
+            (LExpr.le_inst _ (LExpr.le_join_right _ _))) h
+        -- One release each: equal when seen, or a divergence.
+        have hone : ∀ ρ₁ ρ₂ : Val, ∀ o₁ o₂ : Res,
+            (Vis p L po.dst.top → ρ₁ = ρ₂ → OutRel (V p L (po.dst.lsubst p.recordDeep σ))
+              (Vis p L ((Eff.ofPolicy fn.op fn.host fn.fails pc po.dst.top pol).inst (p.sd σ)).failLabel)
+              o₁ o₂) →
+            (¬ Vis p L po.dst.top → OutRel (V p L (po.dst.lsubst p.recordDeep σ))
+              (Vis p L ((Eff.ofPolicy fn.op fn.host fn.fails pc po.dst.top pol).inst (p.sd σ)).failLabel)
+              o₁ o₂) →
+            (proj p L [Event.release pol ρ₁] = proj p L [Event.release pol ρ₂] ∧
+              OutRel (V p L (po.dst.lsubst p.recordDeep σ))
+                (Vis p L ((Eff.ofPolicy fn.op fn.host fn.fails pc po.dst.top pol).inst (p.sd σ)).failLabel)
+                o₁ o₂ ∧ WorldRel p L w₁' w₂') ∨
+            Diverged p L [Event.release pol ρ₁] [Event.release pol ρ₂] := by
+          intro ρ₁ ρ₂ o₁ o₂ hsee hhid
+          by_cases hvd : Vis p L po.dst.top
+          · by_cases heq : ρ₁ = ρ₂
+            · subst heq
+              exact .inl ⟨rfl, hsee hvd rfl, hw⟩
+            · exact .inr ⟨[], pol, ρ₁, ρ₂, [], [], heq, by simp [proj_single_vis ((hev ρ₁).mpr hvd)],
+                by simp [proj_single_vis ((hev ρ₂).mpr hvd)]⟩
+          · rw [proj_single_hidden (fun h => hvd ((hev ρ₁).mp h)),
+              proj_single_hidden (fun h => hvd ((hev ρ₂).mp h))]
+            exact .inl ⟨rfl, hhid hvd, hw⟩
+        intro ht₁ ht₂
+        cases o₁ <;> cases o₂ <;> simp only [Term] at ht₁ ht₂ <;> simp only [List.nil_append]
+        · -- Both values.
+          rename_i r₁ r₂
+          have hr₁ := hok₁ r₁ rfl
+          refine hone r₁ r₂ (.ok r₁) (.ok r₂) (fun _ heq => ?_) (fun hvd => ?_)
           · subst heq
-            exact .inl ⟨rfl, V.refl_scalar (by rw [hds']; exact hds) (by rw [hds']; exact hr₁), hw⟩
-          · exact .inr ⟨[], pol, r₁, r₂, [], [], heq, by simp [proj_single_vis ((hev r₁).mpr hvd)],
-              by simp [proj_single_vis ((hev r₂).mpr hvd)]⟩
-        · rw [proj_single_hidden (fun h => hvd ((hev r₁).mp h)),
-            proj_single_hidden (fun h => hvd ((hev r₂).mp h))]
-          refine .inl ⟨rfl, .hidden ?_, hw⟩
-          rw [top_lsubst_of_ground hdg]
-          exact fun h => hvd (Vis.of_le (LExpr.le_join_right _ _) h)
+            exact V.refl_scalar (by rw [hds']; exact hds) (by rw [hds']; exact hr₁)
+          · refine .hidden ?_
+            rw [top_lsubst_of_ground hdg]
+            exact fun h => hvd (Vis.of_le (LExpr.le_join_right _ _) h)
+        · -- A value against a failure: their releases differ.
+          rename_i r₁ c₂
+          have hr₁ := hok₁ r₁ rfl
+          refine hone r₁ (.err c₂) (.ok r₁) (.failed c₂) (fun _ heq => ?_) (fun hvd hv => ?_)
+          · exact absurd heq (release_ok_not_err hds hr₁ c₂)
+          · cases hf : fn.fails with
+            | false => exact hnf₂ hf c₂ rfl
+            | true => exact hvd (hvf hf hv)
+        · rename_i c₁ r₂
+          have hr₂ := hok₂ r₂ rfl
+          refine hone (.err c₁) r₂ (.failed c₁) (.ok r₂) (fun _ heq => ?_) (fun hvd hv => ?_)
+          · exact absurd heq.symm (release_ok_not_err hds hr₂ c₁)
+          · cases hf : fn.fails with
+            | false => exact hnf₁ hf c₁ rfl
+            | true => exact hvd (hvf hf hv)
+        · -- Two failures: the same code when their releases agree.
+          rename_i c₁ c₂
+          refine hone (.err c₁) (.err c₂) (.failed c₁) (.failed c₂) (fun _ heq _ => by cases heq; rfl)
+            (fun hvd hv => ?_)
+          cases hf : fn.fails with
+          | false => exact absurd rfl (hnf₁ hf c₁)
+          | true => exact absurd (hvf hf hv) hvd
       | @map _ _ xs f te lx tp tr o g fl lf hxs hf hte hb =>
         refine BRelR.of_brel ?_
         obtain ⟨x₁, x₂, hx₁, hx₂, hxv, hxu₁, hxu₂⟩ := latom_bothσ he₁ he₂ hrel hxs

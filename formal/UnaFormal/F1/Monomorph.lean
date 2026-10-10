@@ -347,7 +347,7 @@ theorem Val.firstOrderAll_of_texts : ∀ {vs : List Val}, (∀ v ∈ vs, ∃ s, 
 
 /-- **The events of a typed run are first-order** (#457), in a program within B1, on any host. A
 release carries the value of its `via` function, typed at the policy's `to`, which B1 makes
-scalar; a request carries its arguments, which T-Request types at `Http`'s parameter types, whose
+scalar, or its failure `Err(c)`; a request carries its arguments, which T-Request types at `Http`'s parameter types, whose
 values hold no closure (M5c). -/
 theorem events_firstOrder {p : Program} {H : Host} (hwf : p.LWellFormed) (hb1 : p.B1WellFormed)
     (h4 : H.RespTyped)
@@ -362,7 +362,10 @@ theorem events_firstOrder {p : Program} {H : Host} (hwf : p.LWellFormed) (hb1 : 
     have hmem : po ∈ p.policies := by
       unfold Program.policy at hpo
       exact List.mem_of_find?_eq_some hpo
-    exact Val.firstOrder_of_scalar (hb1.dst po hmem).2 hv
+    rcases hv with hv | ⟨c, rfl⟩
+    · exact Val.firstOrder_of_scalar (hb1.dst po hmem).2 hv
+    · -- A failing `via` releases `Err(c)` (#453 Phase B), which is first-order.
+      trivial
   | req m vs =>
     simp only [Event.FirstOrder]
     exact ha.2.2

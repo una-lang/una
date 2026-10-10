@@ -336,8 +336,19 @@ mutual
     | _, _, _, _, _, _, _, _, .funRef (fn := fn) hf _ _ _ _ hg _ =>
       ⟨⟨(params_inPlace hwf hf _ (zip_ground hg)).1, (params_inPlace hwf hf _ (zip_ground hg)).2, rfl⟩,
         Eff.plainFree_none⟩
-    | _, _, _, _, _, _, _, _, .declassify hpo _ _ _ _ _ =>
-      ⟨(hwf.inPlace.2.2 _ (List.mem_of_find?_eq_some hpo)).2, Eff.plainFree_ofFnR _ _ _ _⟩
+    | _, _, _, _, _, _, _, hpc, .declassify hpo _ _ _ _ _ => by
+      have hmem := List.mem_of_find?_eq_some hpo
+      have hd := (hwf.inPlace.2.2 _ hmem).2
+      have hcl := (hwf.policies _ hmem).2.1
+      refine ⟨hd, fun l hl => ?_⟩
+      simp only [Eff.ofPolicy] at hl
+      split at hl
+      · cases hl
+        exact LExpr.plainFree_join hpc (LTy.top_plainFree hd (fun a l' h => by
+          rw [h] at hcl
+          have hc := hcl [(a, .int)]
+          simp [LTy.erase, Ty.subst] at hc))
+      · cases hl
     | _, _, _, _, _, _, hΓ, _, .map hxs hf _ _ => by
       have hx := latom_inPlace hΓ hxs
       have h := latom_inPlace hΓ hf

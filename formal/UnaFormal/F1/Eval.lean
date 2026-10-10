@@ -409,6 +409,9 @@ mutual
             if 1 = fn.params.length then
               match eval H n p w (bindParams fn.params [v] []) fn.body with
               | (t, .ok r, w') => (t ++ [.release pol r], .ok r, w')
+              -- A failure of the `via` function is released as its value is (#453 Phase B,
+              -- ADR 0090): the release carries `Err(c)`, and the call fails with `c`.
+              | (t, .failed c, w') => (t ++ [.release pol (.err c)], .failed c, w')
               | res => res
             else stuck w
           | none => stuck w
