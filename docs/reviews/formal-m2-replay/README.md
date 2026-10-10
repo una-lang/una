@@ -104,8 +104,8 @@ T1, the unary half and T6 carry both changes, and `scripts/formal.sh` passes wit
 
 **Result with M6b (#485): 6 of 8 rejected at the leak.** M6b models `to_text`, `concat` and `Env.get`.
 - **6 rejected**, each at the interpolation: "the primitive's result, `internal Text`, does not flow into `public Text`". These are `edit_order_loop_list`, `option`, `closure`, `edit_param`, `fold` and `generic_init`.
-- **2 not re-checked**, at "a value of `prelude.Result`": `result_ok` and `result_err` build a `Result` with `Ok` and `Err`, which F1 lacks.
-- **The other 8** are not re-checked, at "a call of `prelude.or_else`" (7) or "the form `together_for`" (1). `at`, `or_else` and `first` come in a later item.
+- **2 not re-checked**, `result_ok` and `result_err`: they build a `Result` with `Ok` and `Err`, which F1 lacks. Since #507 the reason is their type, `Result[internal Int, Int]` and `Result[Int, internal Int]`: an error type with a payload, which F1's codes cannot hold. The `Result` model with payloads is #508.
+- **The other 8** are not re-checked, at "a call of `prelude.or_else`" (6), "the form `together_for`" (1), or, for `nested_result`, its `Result` type (#507; before it, "a value of `prelude.Result`", which this list had counted under `or_else`). `at`, `or_else` and `first` come in a later item.
 
 The helpers `edit_param`'s `push` and `generic_init`'s `same` are accepted, and neither prints.
 
@@ -120,6 +120,7 @@ The helpers `edit_param`'s `push` and `generic_init`'s `same` are accepted, and 
 It reports a body with `together` or `together_for` as that form, outside F1. Two changes came with M6b, each checked against a real `una core --json` export:
 - **The `host` key.** It lists `std.host`'s `Console` and `Env` when a declaration uses them, as the export writes them: the same `print(line: Text) -> Unit` and `get(name: Text) -> Option[internal Text]`, both accepting `public`. Before, `host` was empty, which S-01 to S-12 never needed, since their repros use their packages' own capabilities.
 - **`Ok(a)` and `Err(a)`** are read as constructs of `prelude.Result`, as the export writes them, not as calls of a variable.
+- **The prelude's kinds** (#507), `FileError`, `KeyError`, `HttpError`, `ParseError`, `Json`, `JsonError`, `Header` and `Response`, are written as `prelude`'s, as the export writes them, unless the dump declares a kind of that name: the re-check now reads a `Result`'s error type, and S-05's `Result[Unit, FileError]` must name the prelude's `FileError`.
 
 ## S-05 (#498)
 
