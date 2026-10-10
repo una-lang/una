@@ -355,6 +355,16 @@ mutual
       let pol ← path (← field j "policy")
       refPolicy pol
       pure (.declassify pol (← atom (← field j "arg")))
+    -- `checked(a, φ) else fail C` (#453): the predicate is abstract in F1, named by its
+    -- formula's text, so two `checked` of one formula are one predicate; its meaning is the
+    -- program's `predSem`, and the theorems hold whatever it is. A failure with a payload is
+    -- outside F1, as for `fail`.
+    | "checked" =>
+      if !(← arr (← field j "args")).isEmpty then throw "a failure with a payload"
+      let code ← match (← field (← field j "ctor") "index").getNat? with
+        | .ok i => pure i
+        | .error _ => throw "a failure's index"
+      pure (.checked (← atom (← field j "value")) (← field j "formula").compress code)
     | k => throw s!"the form `{k}`"
 
   partial def expr (c : Ctx) (j : J) : M Expr := do

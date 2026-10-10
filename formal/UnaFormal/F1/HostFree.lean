@@ -23,7 +23,7 @@ mutual
     | .lambda _ b => b.hostFree
     | .atom _ | .prim _ _ | .call _ _ _ | .apply _ _ | .op _ | .construct _ _ | .field _ _
     | .list _ | .none | .some _ | .funRef _ _ | .declassify _ _ | .map _ _ | .filter _ _
-    | .firstWhere _ _ | .fold _ _ _ | .parse _ | .eq _ _ | .tuple _ | .append _ _ | .set _ _ _ => true
+    | .firstWhere _ _ | .fold _ _ _ | .parse _ | .checked _ _ _ | .eq _ _ | .tuple _ | .append _ _ | .set _ _ _ => true
 
   /-- A body that performs no host operation, in its lambdas included. -/
   def Expr.hostFree : Expr → Bool

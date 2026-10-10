@@ -62,6 +62,7 @@ mutual
     | .firstWhere a f, .firstWhere b g => a == b && f == g
     | .fold a i f, .fold b j g => a == b && i == j && f == g
     | .parse a, .parse b => a == b
+    | .checked a p c, .checked b q d => a == b && p == q && c == d
     | .eq a b, .eq c d => a == c && b == d
     | .tuple a, .tuple b => a == b
     | .append a x, .append b y => a == b && x == y
@@ -114,6 +115,7 @@ mutual
     | .construct _ _, s, h | .field _ _, s, h
     | .list _, s, h | .none, s, h | .some _, s, h | .declassify _ _, s, h | .map _ _, s, h
     | .filter _ _, s, h | .firstWhere _ _, s, h | .fold _ _ _, s, h | .parse _, s, h
+    | .checked _ _ _, s, h
     | .eq _ _, s, h | .tuple _, s, h | .append _ _, s, h | .set _ _ _, s, h => by
       cases s <;> simp_all [rhsSim, Rhs.anon]
 

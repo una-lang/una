@@ -40,6 +40,7 @@ mutual
     | .firstWhere xs k => .firstWhere xs k
     | .fold xs i f => .fold xs i f
     | .parse s => .parse s
+    | .checked a pred code => .checked a pred code
     | .eq a b => .eq a b
     | .tuple items => .tuple items
     | .append xs item => .append xs item
