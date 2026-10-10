@@ -21,3 +21,13 @@ pub made(pin: secret Int) -> Int
 =
   let g = make(pin).get
   g()
+
+pub read_twin(s: Src) -> secret Int
+=
+  let g = s.get
+  g()
+
+pub made_twin(pin: secret Int) -> secret Int
+=
+  let g = make(pin).get
+  g()

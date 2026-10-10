@@ -37,3 +37,20 @@ pub matched(x: Box[secret Int]) -> Unit
   when x == Box(value: 2)
     is true -> @console.print("hit")
     is false -> @console.print("miss")
+
+pub chosen_twin(x: Box[secret Int]) -> secret Int = if x == Box(value: 2) then 1 else 0
+
+pub printed_twin(x: Box[Int]) -> Unit
+  uses @console: Console[print]
+=
+  if x == Box(value: 2)
+    @console.print("hit")
+  else
+    @console.print("miss")
+
+pub matched_twin(x: Box[Int]) -> Unit
+  uses @console: Console[print]
+=
+  when x == Box(value: 2)
+    is true -> @console.print("hit")
+    is false -> @console.print("miss")

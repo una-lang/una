@@ -23,3 +23,14 @@ pub printed(pin: secret Int) -> Unit
     @console.print("hit")
   else
     @console.print("miss")
+
+pub chosen_twin(pin: secret Int) -> secret Int = if pick(pin)(1) > 0 then 1 else 0
+
+pub printed_twin(n: Int) -> Unit
+  uses @console: Console[print]
+=
+  let f = is_pin
+  if f(n, 1234) > 0
+    @console.print("hit")
+  else
+    @console.print("miss")

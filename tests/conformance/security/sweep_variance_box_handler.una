@@ -20,3 +20,9 @@ capability Give1
 
 handler giving1() for Give1
   op give(v) = v
+
+capability Give0Twin
+  op give(v: Box[secret Int]) -> Box[secret Int]
+
+handler giving0_twin() for Give0Twin
+  op give(v) = v

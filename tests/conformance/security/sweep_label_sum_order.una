@@ -29,3 +29,7 @@ pub ordered(x: Guess) -> Bool = grab(x) < 5
 pub ranged(x: Guess) -> Bool = grab(x) in 0..10
 
 pub kind_ordered(x: Guess) -> Bool = x < Hit(pin: 2)
+
+pub ordered_twin(x: Guess) -> secret Bool = grab(x) < 5
+
+pub ranged_twin(x: Guess) -> secret Bool = grab(x) in 0..10

@@ -27,3 +27,15 @@ capability Give2
 
 handler giving2() for Give2
   op give(v) = v
+
+capability Give0Twin
+  op give(v: Result[secret Int, Int]) -> Result[secret Int, secret Int]
+
+handler giving0_twin() for Give0Twin
+  op give(v) = v
+
+capability Give1Twin
+  op give(v: Result[Int, secret Int]) -> Result[secret Int, secret Int]
+
+handler giving1_twin() for Give1Twin
+  op give(v) = v

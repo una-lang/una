@@ -25,3 +25,7 @@ pub ordered(x: Box[secret Int]) -> Bool = grab(x) < 5
 pub ranged(x: Box[secret Int]) -> Bool = grab(x) in 0..10
 
 pub kind_ordered(x: Box[secret Int]) -> Bool = x < Box(value: 2)
+
+pub ordered_twin(x: Box[secret Int]) -> secret Bool = grab(x) < 5
+
+pub ranged_twin(x: Box[secret Int]) -> secret Bool = grab(x) in 0..10

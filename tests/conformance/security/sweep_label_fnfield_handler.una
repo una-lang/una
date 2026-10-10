@@ -31,3 +31,15 @@ pub fed() -> Int
 =
   let f = @source.feed()
   f.get()
+
+pub fetched_twin() -> secret Int
+  uses @source: Source[src]
+=
+  let s = @source.src()
+  s.get()
+
+pub fed_twin() -> secret Int
+  uses @source: Source[feed]
+=
+  let f = @source.feed()
+  f.get()

@@ -23,3 +23,9 @@ pub results(pin: secret Int) -> Unit
 =
   let f = fn(x: Int) -> x + pin
   @console.print("{f(1)}")
+
+pub results_twin(n: Int) -> Unit
+  uses @console: Console[print]
+=
+  let f = fn(x: Int) -> x + n
+  @console.print("{f(1)}")

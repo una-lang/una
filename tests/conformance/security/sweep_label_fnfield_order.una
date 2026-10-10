@@ -18,3 +18,7 @@ pub kinds(s: Src, t: Src) -> Bool = s < t
 pub ordered(s: Src) -> Bool = s.get() < 5
 
 pub ranged(f: Feed[secret Int]) -> Bool = f.get() in 0..10
+
+pub ordered_twin(s: Src) -> secret Bool = s.get() < 5
+
+pub ranged_twin(f: Feed[secret Int]) -> secret Bool = f.get() in 0..10

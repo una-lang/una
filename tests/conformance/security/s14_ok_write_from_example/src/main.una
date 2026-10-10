@@ -1,0 +1,29 @@
+-- test: a write in a private function reached only from an example's `do` line enters the file-state label as `public`, so a read's failure stays public and may be passed on (S-14)
+-- spec: spec/07 §7
+-- expect: ok
+-- expect: test-pass
+module main
+
+save(p: Text) -> Unit
+  uses @files: Files[write]
+  fails FileError
+=
+  @files.write(p, content: "x")
+    if error pass
+
+pub load(p: Text) -> internal Text
+  uses @files: Files[read]
+  fails FileError
+=
+  let t = @files.read(p)
+    if error pass
+  t
+
+handler fake_files() for Files
+  op read(path) = ""
+  op write(path, content) = unit
+
+example "an example saves a file"
+  given @files = fake_files()
+  do save("a.txt")
+  expect performed @files.write

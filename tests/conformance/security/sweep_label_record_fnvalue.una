@@ -37,3 +37,18 @@ pub lambda_value(x: Acct) -> Bool
 =
   let h = fn(a: Acct) -> a == Acct(id: 1, pin: 2)
   h(x)
+
+pub generic_value_twin(x: Acct) -> secret Bool
+=
+  let f = same
+  f(x, Acct(id: 1, pin: 2))
+
+pub plain_value_twin(x: Acct) -> secret Bool
+=
+  let g = equal
+  g(x, Acct(id: 1, pin: 2))
+
+pub lambda_value_twin(x: Acct) -> secret Bool
+=
+  let h = fn(a: Acct) -> a == Acct(id: 1, pin: 2)
+  h(x)

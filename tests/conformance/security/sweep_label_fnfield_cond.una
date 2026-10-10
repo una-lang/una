@@ -21,3 +21,15 @@ pub printed(s: Src) -> Unit
   when s.get()
     is 0 -> @console.print("zero")
     else -> @console.print("other")
+
+pub chosen_twin(s: Src) -> secret Int = if s.get() > 0 then 1 else 0
+
+pub printed_twin(s: PubSrc) -> Unit
+  uses @console: Console[print]
+=
+  when s.get()
+    is 0 -> @console.print("zero")
+    else -> @console.print("other")
+
+kind PubSrc
+  get: fn() -> Int
