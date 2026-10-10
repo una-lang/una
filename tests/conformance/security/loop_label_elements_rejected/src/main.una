@@ -1,0 +1,12 @@
+-- test: `internal` elements cannot decide a `public` state through a condition (M6b, #485)
+-- spec: spec/17 §6
+-- expect: error U4001 at src/main.una:11:11
+module main
+
+pub positives(xs: List[internal Int]) -> Int
+=
+  let edit c: Int = 0
+  for x in xs
+    if x > 0
+      c = c + 1
+  c

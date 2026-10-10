@@ -1,0 +1,11 @@
+-- test: a loop over a list of `internal` length cannot count into a `public` state (M6b, #485)
+-- spec: spec/17 §6
+-- expect: error U4001 at src/main.una:10:9
+module main
+
+pub count(xs: internal List[Int]) -> Int
+=
+  let edit c: Int = 0
+  for x in xs
+    c = c + 1
+  c

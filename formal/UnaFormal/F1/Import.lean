@@ -965,6 +965,11 @@ def hostFreeAt (P : Program) (f : String) : Bool :=
           (g != f || fn.params.all (·.2.cf))
       | none => true
 
+/-- The note of a declaration whose certified program performs no host operation, but which
+takes a closure a caller may make one that does (#475). -/
+def closureNote : String :=
+  "rests on a lawful host (H1 to H3): a caller may hand it a closure that uses the host"
+
 /-- The note of a declaration certified in a program that uses the host's stateful capabilities:
 its theorem is `t6_release_erasure_obs` on a lawful host, H1 to H3 for `Files`, and H4 too when
 `Http` is used (M5c). -/
@@ -975,7 +980,10 @@ def hostNoteFor (files http : Bool) (env : Bool := false) : String :=
     let base := match files, http with
       | true, true => "rests on a lawful host (H1 to H4): the program uses `Files` and `Http`"
       | false, true => "rests on a lawful host (H1 to H4): the program uses `Http`"
-      | _, _ => hostNote
+      | true, false => hostNote
+      -- The certified program performs no host operation, but `f` takes a closure, which a
+      -- caller may make one that does (#475).
+      | false, false => closureNote
     if env then base ++ ", and `Env`, with one environment in both runs" else base
 
 mutual
@@ -994,8 +1002,10 @@ mutual
     | .attempt b | .letTuple _ _ b | .loop _ _ _ _ _ b => Expr.usesEnv b
 end
 
-/-- Whether a note says that the program uses `Files`: what the file-state label decides. -/
-def usesFilesNote (note : String) : Bool := (note.splitOn "uses `Files`").length > 1
+/-- Whether a note's verdict may rest on the file-state label: the program uses `Files`, or a
+caller may hand the declaration a closure that does (#475), which the guard keeps covering. -/
+def usesFilesNote (note : String) : Bool :=
+  (note.splitOn "uses `Files`").length > 1 || (note.splitOn "a closure that uses the host").length > 1
 
 /-- A verdict's note, with the host's note unless `f` reaches no host operation and cannot be
 handed one (`hostFreeAt`). A host-free certified program is not enough on its own: it may be a part of the
