@@ -1,0 +1,29 @@
+module main
+
+fun main() : Unit uses {console ↦ Console[print], env ↦ Env[get]} =
+  let %t1: Option[internal Text] = env.get("S") in
+  let s: internal Text =
+    case %t1 of
+      Some(%t2) ⇒
+        %t2
+      else ⇒
+        "x"
+  in
+  let o: Option[List[internal Int]] = None in
+  let %t4: List[Int] = [0] in
+  let o%2: Option[List[internal Int]] = Some(%t4) in
+  let %t15: (Option[List[internal Int]]) =
+    loop i: Int in 0..<2 with (o%3: Option[List[internal Int]] = o%2) do
+      let %t6: List[Int] = [] in
+      let seen: List[Int] = prelude.or_else[List[Int]](o%3, %t6) in
+      let %t8: Text = to_text(seen) in
+      let %t9: Text = concat(%t8) in
+      let _: Unit = console.print(%t9) in
+      let %t11: internal Int = len(s) in
+      let %t12: List[internal Int] = [%t11] in
+      let o%4: Option[List[internal Int]] = Some(%t12) in
+      let %t14: (Option[List[internal Int]]) = (o%4) in
+      %t14
+  in
+  let (o%5: Option[List[internal Int]]) = %t15 in
+  unit

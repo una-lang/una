@@ -16,6 +16,28 @@ namespace Una.F1
 deriving instance DecidableEq for Atom
 deriving instance DecidableEq for Prim
 
+/-- Two loop sources are the same. -/
+def sourceEq : Source → Source → Bool
+  | .list a, .list b => a == b
+  | .range l h i, .range l' h' i' => l == l' && h == h' && i == i'
+  | _, _ => false
+
+theorem sourceEq_sound : ∀ {s t : Source}, sourceEq s t = true → s = t
+  | .list a, .list b, h => by simp only [sourceEq, beq_iff_eq] at h; rw [h]
+  | .range _ _ _, .range _ _ _, h => by
+    simp only [sourceEq, Bool.and_eq_true, beq_iff_eq] at h
+    rw [h.1.1, h.1.2, h.2]
+  | .list _, .range _ _ _, h | .range _ _ _, .list _, h => by simp [sourceEq] at h
+
+/-- Binders with the same names agree once their types are forgotten. -/
+theorem anonBinders_eq : ∀ {ps qs : List (String × LTy)}, ps.map Prod.fst = qs.map Prod.fst →
+    ps.map (fun q => (q.1, anonTy)) = qs.map (fun q => (q.1, anonTy))
+  | [], [], _ => rfl
+  | p :: ps, q :: qs, h => by
+    simp only [List.map_cons, List.cons.injEq] at h ⊢
+    exact ⟨by rw [h.1], anonBinders_eq h.2⟩
+  | [], _ :: _, h | _ :: _, [], h => by simp at h
+
 mutual
   /-- Two right-hand sides agree up to annotations, the functions of the first renamed by `ρ`. -/
   def rhsSim (ρ : String → String) : Rhs → Rhs → Bool
@@ -41,6 +63,9 @@ mutual
     | .fold a i f, .fold b j g => a == b && i == j && f == g
     | .parse a, .parse b => a == b
     | .eq a b, .eq c d => a == c && b == d
+    | .tuple a, .tuple b => a == b
+    | .append a x, .append b y => a == b && x == y
+    | .set a i x, .set b j y => a == b && i == j && x == y
     | _, _ => false
 
   /-- Two bodies agree up to annotations, the functions of the first renamed by `ρ`. -/
@@ -56,6 +81,10 @@ mutual
     | .fail c, .fail d => c == d
     | .attempt b, .attempt c => exprSim ρ b c
     | .handle b x h, .handle c y k => x == y && exprSim ρ b c && exprSim ρ h k
+    | .letTuple bs a b, .letTuple cs a' c =>
+      bs.map Prod.fst == cs.map Prod.fst && a == a' && exprSim ρ b c
+    | .loop s x _ st i b, .loop s' y _ st' j c =>
+      sourceEq s s' && x == y && st.map Prod.fst == st'.map Prod.fst && i == j && exprSim ρ b c
     | _, _ => false
 end
 
@@ -85,7 +114,7 @@ mutual
     | .construct _ _, s, h | .field _ _, s, h
     | .list _, s, h | .none, s, h | .some _, s, h | .declassify _ _, s, h | .map _ _, s, h
     | .filter _ _, s, h | .firstWhere _ _, s, h | .fold _ _ _, s, h | .parse _, s, h
-    | .eq _ _, s, h => by
+    | .eq _ _, s, h | .tuple _, s, h | .append _ _, s, h | .set _ _ _, s, h => by
       cases s <;> simp_all [rhsSim, Rhs.anon]
 
   theorem exprSim_sound {ρ : String → String} :
@@ -134,6 +163,19 @@ mutual
       | handle c y k' =>
         simp only [exprSim, Bool.and_eq_true, beq_iff_eq] at h
         simp only [Expr.anon, h.1.1, exprSim_sound b c h.1.2, exprSim_sound k k' h.2]
+      | _ => simp [exprSim] at h
+    | .letTuple bs a b, f, h => by
+      cases f with
+      | letTuple cs a' c =>
+        simp only [exprSim, Bool.and_eq_true, beq_iff_eq] at h
+        simp only [Expr.anon, anonBinders_eq h.1.1, h.1.2, exprSim_sound b c h.2]
+      | _ => simp [exprSim] at h
+    | .loop s x _ st i b, f, h => by
+      cases f with
+      | loop s' y _ st' j c =>
+        simp only [exprSim, Bool.and_eq_true, beq_iff_eq] at h
+        simp only [Expr.anon, sourceEq_sound h.1.1.1.1, h.1.1.1.2, anonBinders_eq h.1.1.2, h.1.2,
+          exprSim_sound b c h.2]
       | _ => simp [exprSim] at h
 end
 

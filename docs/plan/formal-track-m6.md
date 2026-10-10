@@ -4,7 +4,7 @@
 - Plan: `docs/plan/formal-track.md` §7 (M6, renumbered with the owner's approval of 2026-10-09)
 - Previous step: `docs/plan/formal-track-m5.md`
 - Date: 2026-10-10
-- Status: statement approved by the coordinator (2026-10-10), with the answers of §10; proofs in progress
+- Status: done. Proven with no `sorry` (§11). The proof found a gap in the draft T-Loop, now fixed (§12). The S-04 replay waits for M6b (§13)
 
 ## 1. Why
 
@@ -56,7 +56,8 @@ Each rule is the labeled typing of the desugared form, as `spec/17 §6` states i
   - **The initial values** flow into the state types: `Flow tᵢ Sᵢ` for each `aᵢ : tᵢ`.
   - **The body** is typed under `pc ⊔ ℓs`, which is `spec/17 §6` rule 3: the number of iterations is decided by the list's length. It is typed in the loop's environment with the variable at `V` and the state at `Sᵢ`, and its value must flow into `tuple [S₁, ...]`.
   - **The loop's value** is `(tuple [S₁, ...] ⊥).raise ℓs`, since the number of iterations decides it, as T-If raises by its condition. Its effects are the body's.
-  - **Failures and sinks** need no new premise. Under `pc ⊔ ℓs`, `fail` and failing calls are U4002 (T-Fail, T-Let), and every sink must accept the program counter (`Bound`, `Allowed`), by the rules F1 has.
+  - **Failures and sinks.** Under `pc ⊔ ℓs`, `fail` and failing calls are U4002 (T-Fail, T-Let), and every sink must accept the program counter (`Bound`, `Allowed`), by the rules F1 has.
+  - **An iteration's failure** decides whether the later iterations run, so it is decided by no more than what decides whether the iteration runs: `ε.failLabel ⊑ pc ⊔ ℓs`. The draft rule lacked this premise. The proof found the gap (§12).
 - **T-Loop, over a range.** For `low : int ℓ₁` and `high : int ℓ₂`, the same rule holds with `ℓs := ℓ₁ ⊔ ℓ₂`, and the variable's rule is `Flow (int (ℓ₁ ⊔ ℓ₂)) V`.
 - **T-Append.** For `xs : list te ℓs` and `item : t` with `Flow t te`, the result is `list te ℓs`, with no failure.
 - **T-Set.** For `xs : list te ℓs`, `index : int ℓi` and `item : t`:
@@ -146,3 +147,63 @@ Each shape's Core, dumped by v0.2.0, goes to `docs/reviews/formal-m2-replay/`, w
 3. **Provenance of the replay:** the commit, and both binaries' verdicts, in the replay README (§7).
 4. **An out-of-range `set` aborts** in the model, as in the UAM (N-79). The native backend's no-op is #480.
 5. **Only bounded loops** (§8).
+
+## 11. What is proven
+
+`scripts/formal.sh` passes with 194 stated theorems, none depending on `sorry` (163 before #470, 177 after it). Every proof of F1 carries the new forms:
+- type safety, `t1`, with `walkLoop_good`;
+- the checker's soundness, `checkExpr_sound`;
+- the in-place invariant;
+- the unary half, `unary_soundR`, with `walkLoop_uok`, the loop's invariant by induction on the iterations;
+- the binary half, `t6_soundR` and so `t6_host` and `t6_release_host`, with `walkLoop_brelR`: two loops over related elements, from related states, are related up to their first different release;
+- fuel monotonicity (`walkLoop_mono`), erasure (`walkLoop_anon`, `eval_erasure`), any host for host-free code (`walkLoop_same`), and the agreement of instances (`exprSim` reads loops and tuples).
+
+**The model** (`Syntax.lean`, `Eval.lean`):
+- `Ty.tuple` and `LTy.tuple`;
+- `Val.tuple`;
+- `Rhs.tuple`, `Rhs.append` and `Rhs.set`;
+- `Expr.letTuple`;
+- `Expr.loop` over a list or an `Int` range.
+
+An out-of-range `set` aborts, as `abort`, a run that does not end (N-79).
+
+**Non-vacuity:**
+- `LoopExample.lean`:
+  - `certified`: a summing loop with an `internal` state, and an `edit` parameter (`bump`) called twice through `let_tuple`, certified by `progOk`;
+  - `sum_runs`: T6 relates the loop's runs on `[1, 2]` and `[3, 4]`, whose sums are 3 and 7;
+  - `public_count_untyped`: a loop over a list of `internal` length cannot hand its count to a `public` binder.
+- `LoopLeak.lean`, §12.
+
+## 12. A finding of the proof: an iteration's failure
+
+The draft T-Loop typed the body under `pc ⊔ ℓs` only. But an iteration that fails stops the later iterations, so its failure decides them, as a failure decides T-Let's continuation.
+
+`LoopLeak.lean` shows the gap in the model, by evaluation. Over a `public` list, each iteration prints `hello` and then reads a file, whose failure the file-state label, `internal`, decides.
+- Under the draft rule (`Program.oldLoop`), the probe has a typing (`draft_typed`).
+- Two runs from worlds a `public` observer cannot tell apart (`worlds_rel`), one without the file and one with it, print one and two lines (`draft_leaks`).
+- Under the fixed rule, the probe has no typing (`fixed_untyped`).
+
+The fix is a premise of T-Loop: `ε.failLabel ⊑ pc ⊔ ℓs`. The checker checks it, and `Program.HostWF` asks `oldLoop = false`. The coordinator approved it.
+
+**Not a language finding.** `una check` 0.3.5 rejects every surface shape tried, with U4002, on `parse_int(x) if error pass`, a user function that fails on `internal` data, and a nested loop. A loop's failure propagates to the function's boundary, since `for` is a statement and cannot be attempted or handled, and T-Fun asks it to be public there.
+
+## 13. The re-check and the replay
+
+**The importer** reads:
+- tuple types;
+- `tuple`;
+- `let_tuple`;
+- `loop` over a list or an `Int` range;
+- `prelude.append` and `prelude.set`, which join the prelude functions F1 models (`preludeF1`).
+
+An `ImportTests` guard that used `append` as a prelude function F1 does not model now uses `sort`.
+
+**The corpus** (the 1,329 documents of M5b; `main`'s checker against this one):
+- 73 declarations move from not re-checked to accepted, those whose reason was `the type tuple` (89) or a call of `prelude.append` (11), and what reaches them;
+- 31 stay not re-checked with another reason: `together` (11), `concat` (10), and other forms F1 lacks;
+- none moves into rejected, and none is accepted on a condition. Accepted: 643 → 716.
+
+A first run left 2 declarations of `generic_result_summaries` "accepted, conditional on A3". The Boolean agreement of a program checked at its instances, `exprSim`, did not yet read loops, so a generic function with a loop failed it. It now reads them, with `exprSim_sound` extended.
+
+**The replay.** S-01 to S-12 are unchanged. S-04's 16 shapes, dumped by v0.2.0 (provenance in `docs/reviews/formal-m2-replay/README.md`), are all not re-checked. They read their secret with `Env.get` and print it through `to_text` and `concat`, which F1 lacks, and the dumps show the leak there. M6b (the coordinator's decision N-82) models those three and replays the 8 shapes they unlock. `dumpcore.py` reads M6's syntax.
+

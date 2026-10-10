@@ -1,0 +1,24 @@
+module main
+
+fun main() : Unit uses {console ↦ Console[print], env ↦ Env[get]} =
+  let %t1: Option[internal Text] = env.get("S") in
+  let s: internal Text =
+    case %t1 of
+      Some(%t2) ⇒
+        %t2
+      else ⇒
+        "x"
+  in
+  let xss: List[List[internal Int]] = [] in
+  let %t4: List[Int] = [1] in
+  let xss%2: List[List[internal Int]] = prelude.append[List[internal Int]](xss, %t4) in
+  let %t6: Option[List[Int]] = prelude.first[List[Int]](xss%2) in
+  let %t7: List[Int] = [] in
+  let first: List[Int] = prelude.or_else[List[Int]](%t6, %t7) in
+  let %t9: internal Int = len(s) in
+  let %t10: List[internal Int] = [%t9] in
+  let xss%3: List[List[internal Int]] = prelude.append[List[internal Int]](xss%2, %t10) in
+  let %t12: Text = to_text(first) in
+  let %t13: Text = concat(%t12) in
+  let %t14: Unit = console.print(%t13) in
+  %t14

@@ -1,0 +1,28 @@
+module main
+
+fun same[T](xs: List[T]) : List[T] =
+  xs
+
+fun main() : Unit uses {console ↦ Console[print], env ↦ Env[get]} =
+  let %t1: Option[internal Text] = env.get("S") in
+  let s: internal Text =
+    case %t1 of
+      Some(%t2) ⇒
+        %t2
+      else ⇒
+        "x"
+  in
+  let %t3: List[internal Int] = [] in
+  let xs: List[internal Int] = main.same[internal Int](%t3) in
+  let %t11: (List[internal Int]) =
+    loop i: Int in 0..<2 with (xs%2: List[internal Int] = xs) do
+      let %t5: internal Text = to_text(xs%2) in
+      let %t6: Text = concat(%t5) in
+      let _: Unit = console.print(%t6) in
+      let %t8: internal Int = len(s) in
+      let xs%3: List[internal Int] = prelude.append[internal Int](xs%2, %t8) in
+      let %t10: (List[internal Int]) = (xs%3) in
+      %t10
+  in
+  let (xs%4: List[internal Int]) = %t11 in
+  unit

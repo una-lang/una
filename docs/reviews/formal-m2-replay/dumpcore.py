@@ -45,6 +45,11 @@ def unknown(what):
     return {"kind": what}
 
 
+class Outside(Exception):
+    """A form outside F1 whose syntax the reader does not follow: its declaration's body is that
+    form, which the re-check reports as not re-checked."""
+
+
 class Parser:
     def __init__(self, toks, module, tparams=()):
         self.t, self.i, self.module, self.tparams = toks, 0, module, set(tparams)
@@ -83,6 +88,16 @@ class Parser:
             if self.peek() == "+":
                 self.take()
         lab = label(level, cats, syms)
+        if self.peek() == "(":
+            # A tuple type of the memory model's desugaring (`spec/17 §4`, M6).
+            self.take()
+            items = []
+            while self.peek() != ")":
+                items.append(self.ty())
+                if self.peek() == ",":
+                    self.take()
+            self.take(")")
+            return {"kind": "base", "base": {"kind": "tuple", "value": items}, "label": lab}
         if self.peek() == "fn":
             self.take()
             self.take("(")
@@ -193,12 +208,14 @@ class Parser:
     def bound(self, caps):
         """What a `let` binds: an expression or a right-hand side."""
         tok = self.peek()
-        if tok in ("if", "case", "let", "with"):
+        if tok in ("if", "case", "let", "with", "loop", "together", "together_for"):
             return {"kind": "expr", "value": self.expr(caps)}
         return {"kind": "rhs", "value": self.rhs(caps)}
 
     def rhs(self, caps):
         tok = self.peek()
+        if tok == "(":
+            return {"kind": "tuple", "value": self.args()}
         if tok == "λ":
             self.take()
             ps = self.params()
@@ -241,8 +258,59 @@ class Parser:
                              "index": 0 if tok == "Some" else 1}, "args": args}
         return {"kind": "atom", "value": self.atom()}
 
+    def binder(self):
+        x = self.take()
+        self.take(":")
+        return [x, self.ty()]
+
     def expr(self, caps):
         tok = self.peek()
+        if tok == "let" and self.peek(1) == "(":
+            # `let (x: T, ...) = a in e`: the components of a tuple (M6).
+            self.take()
+            self.take("(")
+            names = []
+            while self.peek() != ")":
+                names.append(self.binder())
+                if self.peek() == ",":
+                    self.take()
+            self.take(")")
+            self.take("=")
+            value = self.atom()
+            self.take("in")
+            return {"kind": "let_tuple", "names": names, "value": value, "body": self.expr(caps)}
+        if tok == "loop":
+            # `loop x: T in s with (b: T = a, ...) do e` (M6); `s` is an atom or a range.
+            self.take()
+            var = self.binder()
+            self.take("in")
+            low = self.atom()
+            if self.peek() == "." and self.peek(1) == ".":
+                self.take(".")
+                self.take(".")
+                inclusive = True
+                if self.peek() == "<":
+                    self.take()
+                    inclusive = False
+                source = {"kind": "range", "low": low, "high": self.atom(), "inclusive": inclusive}
+            else:
+                source = {"kind": "list", "value": low}
+            self.take("with")
+            self.take("(")
+            state, init = [], []
+            while self.peek() != ")":
+                state.append(self.binder())
+                self.take("=")
+                init.append(self.atom())
+                if self.peek() == ",":
+                    self.take()
+            self.take(")")
+            self.take("do")
+            return {"kind": "loop", "source": source, "var": var, "state": state, "init": init,
+                    "body": self.expr(caps)}
+        if tok in ("together", "together_for"):
+            # Outside F1 (ADR 0065): the whole body is reported as not re-checked.
+            raise Outside(tok)
         if tok == "let":
             self.take()
             x = self.take()
@@ -372,7 +440,11 @@ def convert(text, module, edition):
                 fails = p.take()
             p.take("=")
             caprefs = {u["cap"]: u["capability"] for u in uses}
-            body = p.expr(caprefs)
+            try:
+                body = p.expr(caprefs)
+            except Outside as form:
+                body = unknown(str(form))
+                p.i = len(p.t)
             if p.peek() is not None:
                 raise SyntaxError(f"{name}: unread {p.t[p.i:p.i + 10]}")
             decls.append({"kind": "fun", "value": {

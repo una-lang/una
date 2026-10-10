@@ -1,0 +1,30 @@
+module main
+
+fun main() : Unit uses {console ↦ Console[print], env ↦ Env[get]} =
+  let %t1: Option[internal Text] = env.get("S") in
+  let s: internal Text =
+    case %t1 of
+      Some(%t2) ⇒
+        %t2
+      else ⇒
+        "x"
+  in
+  let xs: List[Result[Int, internal Int]] = [] in
+  let %t4: Result[Int, internal Int] = Ok(0) in
+  let xs%2: List[Result[Int, internal Int]] = prelude.append[Result[Int, internal Int]](xs, %t4) in
+  let %t16: (List[Result[Int, internal Int]]) =
+    loop i: Int in 0..<2 with (xs%3: List[Result[Int, internal Int]] = xs%2) do
+      let %t6: Option[Result[Int, internal Int]] = prelude.at[Result[Int, internal Int]](xs%3, i) in
+      let %t7: Result[Int, internal Int] = Ok(0) in
+      let r: Result[Int, internal Int] = prelude.or_else[Result[Int, internal Int]](%t6, %t7) in
+      let %t9: internal Text = to_text(r) in
+      let %t10: Text = concat(%t9) in
+      let _: Unit = console.print(%t10) in
+      let %t12: internal Int = len(s) in
+      let %t13: Result[Int, internal Int] = Err(%t12) in
+      let xs%4: List[Result[Int, internal Int]] = prelude.append[Result[Int, internal Int]](xs%3, %t13) in
+      let %t15: (List[Result[Int, internal Int]]) = (xs%4) in
+      %t15
+  in
+  let (xs%5: List[Result[Int, internal Int]]) = %t16 in
+  unit
