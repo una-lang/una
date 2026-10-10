@@ -4,7 +4,7 @@
 - Plan: `docs/plan/formal-track.md` §7 (M6, renumbered with the owner's approval of 2026-10-09)
 - Previous step: `docs/plan/formal-track-m5.md`
 - Date: 2026-10-10
-- Status: statement draft, for the coordinator's review before any proof
+- Status: statement approved by the coordinator (2026-10-10), with the answers of §10; proofs in progress
 
 ## 1. Why
 
@@ -34,6 +34,7 @@ So M6 adds three forms to F1 and one prelude axiom, and no new kind of state. **
 - `Expr.letTuple (binders : List (String × LTy)) (value : Atom) (body : Expr)`.
 - `Expr.loop (source : Source) (var : String × LTy) (state : List (String × LTy)) (init : List Atom) (body : Expr)`, where a source is a list atom, or a range `low`, `high` with `inclusive`. Range bounds are `Int`. Fixed-width integers stay outside F1.
 - `Rhs.set (xs index item : Atom)`: the prelude's `set` (`spec/17 §8`). It returns the tuple `(xs', unit)`, as its `edit` parameter desugars.
+- `Rhs.append (xs item : Atom)`: the prelude's `append`, with which loops build lists. It is a modeled primitive, with its semantics and its typing rule proven sound as `map` and `filter` are, not a Lean `axiom`: `#print axioms` stays standard.
 
 **Values.** A tuple value is a list of values, `Val.tuple`.
 
@@ -41,7 +42,8 @@ So M6 adds three forms to F1 and one prelude axiom, and no new kind of state. **
 - `letTuple` binds the components of a tuple value in order.
 - `loop` evaluates its source once, then runs the body for each element, or for each integer from `low` to `high` in increasing order. Each iteration starts from the environment of the loop, extended with the variable and the current state. A body that ends with a tuple of the state's length gives the next state. A body that fails makes the loop fail with that failure, and the state is dropped. The loop's value is the final state as a tuple.
 - Iterations recurse on the elements, not on the fuel. So a loop over a finite source ends whenever its body does, and fuel bounds the calls inside the body, as it does today.
-- `set xs i v` replaces element `i`. Its precondition `0 <= i < xs.len` is the verifier's (T5). At run time an index out of range is a fault, which `spec/07 §1` treats as termination. So the model gives it no result, as it does for fuel that runs out, and the termination-insensitive T6 says nothing of that run.
+- `set xs i v` replaces element `i`. Its precondition `0 <= i < xs.len` is the verifier's (T5). At run time an index out of range is a fault: the interpreter, which is the UAM, aborts the run, and an abort is termination (`spec/07 §1`). So the model gives it no result, as it does for fuel that runs out, and the termination-insensitive T6 says nothing of that run (the coordinator's decision N-79). The native backend leaves the list unchanged instead, which is a conformance bug against the UAM (`spec/17 §7` rule 3), fixed in #480.
+- `append xs v` adds `v` at the end of `xs`.
 
 ## 4. The label rules
 
@@ -56,6 +58,7 @@ Each rule is the labeled typing of the desugared form, as `spec/17 §6` states i
   - **The loop's value** is `(tuple [S₁, ...] ⊥).raise ℓs`, since the number of iterations decides it, as T-If raises by its condition. Its effects are the body's.
   - **Failures and sinks** need no new premise. Under `pc ⊔ ℓs`, `fail` and failing calls are U4002 (T-Fail, T-Let), and every sink must accept the program counter (`Bound`, `Allowed`), by the rules F1 has.
 - **T-Loop, over a range.** For `low : int ℓ₁` and `high : int ℓ₂`, the same rule holds with `ℓs := ℓ₁ ⊔ ℓ₂`, and the variable's rule is `Flow (int (ℓ₁ ⊔ ℓ₂)) V`.
+- **T-Append.** For `xs : list te ℓs` and `item : t` with `Flow t te`, the result is `list te ℓs`, with no failure.
 - **T-Set.** For `xs : list te ℓs`, `index : int ℓi` and `item : t`:
   - `ℓi ⊑ ⊥`, since the index is `public` (the prelude's signature: `una check` gives U4001 for an `internal` index);
   - `Flow t te`;
@@ -107,7 +110,13 @@ The statement is `t6_host`'s, and its variants', over the larger syntax:
 
 **Corpus.** At most 89 declarations of complete documents reach a tuple today. Many will still hit another gap after M6: `prelude.append`, `concat`, `div` and `Map` are common in loops. I will report the count, and any declaration that would move into rejected, before it lands. As before, nothing moves into rejected without the coordinator's review.
 
-**The replay gains S-04.** I will dump its 11 shapes and the 2 nested shapes of the first fix with v0.2.0, the pre-fix binary, which is kept locally and was never published, and add them to `docs/reviews/formal-m2-replay/`. The exit criterion is that each one is rejected, and that today's fixed versions of them are accepted or not re-checked, never rejected.
+**The replay gains S-04.** The pre-fix binary is v0.2.0, which was never published. The release gates built it from commit `5361a0e3` (`coordination/releases/v0.2.0/record.md`), and its archive's sha256 is `ffb299c7…`, as recorded. With it, `una check` accepts 16 leaking shapes of `tests/conformance/security/`, and v0.3.0, the first release with the fix, rejects each one:
+- `edit_order_loop_` `list`, `option`, `result_ok`, `result_err`, `closure`, `edit_param`, `fold`, `generic_init`, `nested_list`, `nested_list_of_options`, `nested_option`, `nested_result` and `together`;
+- `edit_order_` `list_of_lists_leak`, `list_of_options_leak` and `option_of_list_leak`.
+
+That is more than the 13 of the finding's first count (11 on v0.2.0, and 2 nested), because #327 added shapes. `edit_order_if_no_loop` is accepted by v0.2.0 and rejected by v0.3.0 too, but it is ADR 0075's intentional tightening, not a leak, and is listed apart. The `Map` shapes do not check on v0.2.0.
+
+Each shape's Core, dumped by v0.2.0, goes to `docs/reviews/formal-m2-replay/`, with the commit, the sha256 and both binaries' exit codes in its README. The exit criterion: each leaking shape is rejected, except `together`'s, which F1 lacks and which must be not re-checked, never accepted. Today's fixed versions must not be rejected.
 
 ## 8. What stays assumed
 
@@ -118,7 +127,9 @@ The statement is `t6_host`'s, and its variants', over the larger syntax:
   - the static rules of names: U2017 (`take`), U2018 (exclusivity) and U2019 (assignment to a binding that is not editable).
 - **Backend freedom** (`spec/17 §7` rule 3, ADR 0072): updates in place, moves and reuse of memory are not observable. The model is the UAM's meaning. That the native backend agrees with the UAM is outside the formal track, and is guarded by the identity runs.
 - **Refinements:** the loop invariant, the length frame (ADR 0071) and `set`'s precondition are the verifier's (T5), not M6's.
-- **Termination:** loops are not checked to end (`spec/17 §5` rule 5). T6 is termination-insensitive, and a fault, such as `set` out of range, is termination (`spec/07 §1`).
+- **Termination:** loops are not checked to end (`spec/17 §5` rule 5). T6 is termination-insensitive.
+- **Aborts are termination** (`spec/07 §1`): running out of depth or memory (U6003), a header value with a control character (U6004), host text that is not valid UTF-8 (U6005), and, with M6, `set` at an index out of range, a fault of the UAM (N-79; the native backend's no-op is #480).
+- **Only bounded loops exist.** `for` visits a list or a range (`LoopSource` is `List` or `Range`). `while` and `loop` are not keywords (`spec/17 §9`), there is no `break` or `continue`, and edition 0.1 has no `for` loop at all. Unbounded repetition is recursion, which is calls.
 - **Out of M6:** `together` and `together_for` (ADR 0065), fixed-width integers, `Map`, and handlers (M7).
 
 ## 9. Non-vacuity
@@ -128,8 +139,10 @@ The statement is `t6_host`'s, and its variants', over the larger syntax:
 - **S-04's shape** as the v0.2.0 binary exported it, with its binder at `public`. It has no typing, so `progOk` rejects it. The same program with the binder at `internal`, as ADR 0075 solves it, is certified.
 - **An `edit` parameter:** `bump(edit n: internal Int)`, called and bound through `let_tuple`, with its runs related.
 
-## 10. Questions for the coordinator
+## 10. The coordinator's answers (2026-10-10)
 
-1. **`prelude.append`.** Loops build lists with `append` (11 declarations reach it directly today, and more through loops). It is not part of the memory model, but without it many loops stay "not re-checked". I propose it as a prelude axiom in M6: the result is a `List[T]` whose element type joins both arguments', with no failure. Or should it be a separate item?
-2. **Order.** Model and rules first, with the non-vacuity examples and S-04's shapes untyped, then the proof, then the re-check and the replay. This is the same staging as M5. Should the S-04 replay come first, as the cheapest evidence?
-3. **Effort.** The plan estimated 5 to 8 agent-days. The new forms touch every proof, as M5c did (one day for one form), and the loop's binary case is the new work, close to `fold`'s. I expect the lower end of the range.
+1. **`prelude.append` is in M6**, as a modeled primitive whose rule is proven sound, never a Lean `axiom` (§3).
+2. **Order.** First the model and the rules. Then the cheap evidence before the big proof: S-04 untyped in the model, and the S-04 replay. Then the proof, then the corpus re-check.
+3. **Provenance of the replay:** the commit, and both binaries' verdicts, in the replay README (§7).
+4. **An out-of-range `set` aborts** in the model, as in the UAM (N-79). The native backend's no-op is #480.
+5. **Only bounded loops** (§8).
