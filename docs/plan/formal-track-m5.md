@@ -233,3 +233,9 @@ So an "accepted" of the re-checker is a corollary of `t6_release_erasure_obs_hos
 - `scripts/formal.sh`: **PASS**, 144 theorems, no `sorry`. F1's `t6`, `t6_ground` and `t6_release` are gone; `t6_host`, `t6_host_ground` and `t6_release_host` stand for them. The theorems M5 proved twice are listed once.
 - The corpus (`main`'s export with #443's keys, 1,327 documents) is unchanged: all 4,203 verdicts, with their reasons, are identical, and 638 declarations are accepted.
 - The replay of S-01 to S-12 is unchanged: identical to the replay at A3.
+
+**Events are first-order (#457).** `t6_release_erasure_obs` and `t6_release_erasure_obs_hostFree` no longer assume that the document's events carry first-order values. `events_firstOrder` proves it of every typed run, in a program within B1, on any host:
+- a release carries its `via` function's value, which the unary half now records as typed at the policy's `to` (`Allowed`), and B1 makes `to` scalar;
+- a request carries its arguments, which T-Request types as texts, and `Allowed` now records it.
+
+The document's events erase to those of `P₁`'s typed run, so they are first-order too (`Event.firstOrder_anon`).

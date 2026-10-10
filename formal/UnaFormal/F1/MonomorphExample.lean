@@ -105,7 +105,6 @@ theorem main_obs (L : Label) {H : Host} (hlaw : H.Lawful) (hai : H.AnonInvariant
       (Γ := []) (E := []) (fun _ h => nomatch h) (fun _ h => by simp at h) (fun _ h => nomatch h)
       rfl (WorldRel.refl w) .nil .nil .nil ht
       (e' := main.body) (by rfl) rfl rfl 5 (by rw [hrun]; trivial) (by rw [hrun]; trivial)
-      (by rw [hrun]; simp) (by rw [hrun]; simp)
   · obtain ⟨po, hpo, _⟩ := hv
     simp [P₂, mkProgram] at hpo
 
@@ -179,9 +178,8 @@ theorem sec_hidden' : ¬ Vis ({ R₂ with funs := rFuns } : Program) Label.bot (
       Label.bot, Label.join, Level.join] at h <;> revert h <;> decide
 
 /-- **Two runs of the document's `caller` on different secrets, through `t6_release_erasure_obs`.**
-PIN 1234 releases `true` and PIN 1 releases `false`, both visible at `public`, and the first-order
-hypothesis is discharged on the two traces: the runs diverge at the release, as
-`t6_release_host` says. -/
+PIN 1234 releases `true` and PIN 1 releases `false`, both visible at `public`: the runs diverge
+at the release, as `t6_release_host` says. -/
 theorem caller_obs {H : Host} (hlaw : H.Lawful) (hai : H.AnonInvariant) (w : World H) :
     proj R₂ Label.bot (eval H 8 R₂ w (env 1234) caller.body).1 =
         proj R₂ Label.bot (eval H 8 R₂ w (env 1) caller.body).1 ∨
@@ -198,8 +196,6 @@ theorem caller_obs {H : Host} (hlaw : H.Lawful) (hai : H.AnonInvariant) (w : Wor
       (σ := []) (Γ := Γ) (E := []) (fun _ h => nomatch h) (fun _ h => by simp at h) Γ_inPlace rfl
       (WorldRel.refl w) (.cons .int .nil) (.cons .int .nil) (.cons (.hidden sec_hidden') .nil) ht
       (e' := caller.body) (by rfl) rfl rfl 8 (by rw [r₁]; trivial) (by rw [r₂]; trivial)
-      (by rw [r₁]; simp [Event.FirstOrder, Val.FirstOrder])
-      (by rw [r₂]; simp [Event.FirstOrder, Val.FirstOrder])
   · obtain ⟨po, hpo, hvia⟩ := hv
     simp [R₂, ReleaseExample.prog, ReleaseExample.reveal, ReleaseExample.peek] at hpo
     rcases hpo with rfl | rfl <;> simp [callerMono, caller, ReleaseExample.reveal, ReleaseExample.peek] at hvia
@@ -217,6 +213,18 @@ theorem caller_diverges {H : Host} (w : World H) :
   have hv : ∀ v, EvVis R₂ Label.bot (Event.release "reveal" v) := fun v =>
     ⟨_, rfl, Examples.le_self _⟩
   simp [proj, hv] at h
+
+/-- `events_firstOrder`, applied (#457): the run of `ReleaseExample.body` releases a value, and its
+events are first-order. -/
+theorem release_events_firstOrder :
+    ∀ ev ∈ (eval Host.unit 6 ReleaseExample.prog ReleaseExample.w0 (env 1234)
+      ReleaseExample.body).1, ev.FirstOrder :=
+  events_firstOrder ReleaseExample.prog_wf ReleaseExample.prog_b1 (σ := []) (fun _ h => nomatch h)
+    (ReleaseExample.envs_typed 1234) ReleaseExample.body_typed 6
+
+/-- The run does release: its first event is the release of `true`. -/
+example : (eval Host.unit 6 ReleaseExample.prog ReleaseExample.w0 (env 1234)
+    ReleaseExample.body).1.head? = some (.release "reveal" (.bool true)) := rfl
 
 end Releases
 

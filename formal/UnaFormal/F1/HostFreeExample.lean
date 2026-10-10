@@ -88,8 +88,6 @@ theorem s16_caller_obs :
       (fun _ h => by simp at h) Γ_inPlace rfl (.cons .int .nil) (.cons .int .nil)
       (.cons (.hidden sec_hidden') .nil) ht (e' := caller.body) (by rfl) rfl rfl rfl
       (env_hostFree 1234) (env_hostFree 1) 8 (by rw [r₁]; trivial) (by rw [r₂]; trivial)
-      (by rw [r₁]; simp [Event.FirstOrder, Val.FirstOrder])
-      (by rw [r₂]; simp [Event.FirstOrder, Val.FirstOrder])
   · obtain ⟨po, hpo, hvia⟩ := hv
     simp [R₂, ReleaseExample.prog, ReleaseExample.reveal, ReleaseExample.peek] at hpo
     rcases hpo with rfl | rfl <;> simp [callerMono] at hvia

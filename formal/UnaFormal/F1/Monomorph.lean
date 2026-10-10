@@ -284,6 +284,41 @@ theorem t6_release_erasure {ρ : String → String} {P₁ P₂ : Program} (L : L
   ⟨_, _, t6_release_host P₁ L H hwf hb1 hh hlaw hσ hE hΓ hpc hw h₁ h₂ hrel he n,
     eval_erasure hsim hai w₁ n he₁ hee, eval_erasure hsim hai w₂ n he₂ hee⟩
 
+/-- A value of a scalar type is first-order. -/
+theorem Val.firstOrder_of_scalar {p : Program} {v : Val} {t : Ty} (hs : t.Scalar)
+    (hv : ValTy p v t) : v.FirstOrder := by
+  cases t <;> simp [Ty.Scalar] at hs <;> cases hv <;> simp [Val.FirstOrder]
+
+/-- Texts are first-order. -/
+theorem Val.firstOrderAll_of_texts : ∀ {vs : List Val}, (∀ v ∈ vs, ∃ s, v = .text s) →
+    Val.FirstOrderAll vs
+  | [], _ => by simp [Val.FirstOrderAll]
+  | v :: vs, h => by
+    obtain ⟨s, rfl⟩ := h v (by simp)
+    simp only [Val.FirstOrderAll, Val.FirstOrder, true_and]
+    exact Val.firstOrderAll_of_texts fun u hu => h u (by simp [hu])
+
+/-- **The events of a typed run are first-order** (#457), in a program within B1, on any host. A
+release carries the value of its `via` function, typed at the policy's `to`, which B1 makes
+scalar; a request carries its arguments, which T-Request types as texts. -/
+theorem events_firstOrder {p : Program} {H : Host} (hwf : p.LWellFormed) (hb1 : p.B1WellFormed)
+    {σ : List (String × LTy)} {w : World H} {env : Env} {Γ : LCtx} {E : List String} {pc : LExpr}
+    {e : Expr} {t : LTy} {ε : Eff} (hσ : GroundSubst σ) (henv : LEnvTy p env (Γ.lsub p.recordDeep σ))
+    (he : LExprTy p E Γ pc e t ε) (n : Nat) : ∀ ev ∈ (eval H n p w env e).1, ev.FirstOrder := by
+  intro ev hev
+  have ha := ((unary_soundR hwf hb1 n).2 hσ henv he).1 ev hev
+  cases ev with
+  | release pol v =>
+    obtain ⟨_, po, hpo, _, hv⟩ := ha
+    have hmem : po ∈ p.policies := by
+      unfold Program.policy at hpo
+      exact List.mem_of_find?_eq_some hpo
+    exact Val.firstOrder_of_scalar (hb1.dst po hmem).2 hv
+  | req m vs =>
+    simp only [Event.FirstOrder]
+    exact Val.firstOrderAll_of_texts ha.2.2
+  | out _ | read _ | write _ _ => trivial
+
 /-- A release in an erased trace comes from a release, whose value erases to the same. -/
 theorem split_release {ρ : String → String} {t pre rest : Trace} {pol : String} {v : Val}
     (h : t.map (Event.anon id) = pre.map (Event.anon ρ) ++ Event.release pol (v.anon ρ) :: rest) :
@@ -300,8 +335,8 @@ theorem split_release {ρ : String → String} {t pre rest : Trace} {pol : Strin
 
 /-- **What the observer sees of the document's runs.** With `P₁` as in `t6_release_erasure`, and
 `proj` the same in both programs (it reads no function), two runs of a body of `P₂` that end,
-whose events carry first-order values, are equal to the observer, or diverge at a release: what
-`t6_release_host` says of `P₁`, now of `P₂`'s own runs. -/
+are equal to the observer, or diverge at a release: what `t6_release_host` says of `P₁`, now of
+`P₂`'s own runs. Their events are first-order (`events_firstOrder`, through erasure). -/
 theorem t6_release_erasure_obs {ρ : String → String} {P₁ P₂ : Program} (L : Label)
     (hsim : Sim ρ P₁ P₂) (hproj : ∀ t, proj P₁ L t = proj P₂ L t)
     (hwf : P₁.LWellFormed) (hb1 : P₁.B1WellFormed) (hh : P₁.HostWF) {H : Host} (hlaw : H.Lawful)
@@ -312,11 +347,23 @@ theorem t6_release_erasure_obs {ρ : String → String} {P₁ P₂ : Program} (L
     (h₂ : LEnvTy P₁ e₂ (Γ.lsub P₁.recordDeep σ)) (hrel : EnvRel P₁ L (Γ.lsub P₁.recordDeep σ) e₁ e₂)
     (he : LExprTy P₁ E Γ pc e t ε) {e' : Expr} {e₁' e₂' : Env} (hee : e.anon ρ = e'.anon id)
     (he₁ : Val.anonEnv ρ e₁ = Val.anonEnv id e₁') (he₂ : Val.anonEnv ρ e₂ = Val.anonEnv id e₂')
-    (n : Nat) (hT₁ : Term (eval H n P₂ w₁ e₁' e').2.1) (hT₂ : Term (eval H n P₂ w₂ e₂' e').2.1)
-    (hfo₁ : ∀ ev ∈ (eval H n P₂ w₁ e₁' e').1, ev.FirstOrder)
-    (hfo₂ : ∀ ev ∈ (eval H n P₂ w₂ e₂' e').1, ev.FirstOrder) :
+    (n : Nat) (hT₁ : Term (eval H n P₂ w₁ e₁' e').2.1) (hT₂ : Term (eval H n P₂ w₂ e₂' e').2.1) :
     proj P₂ L (eval H n P₂ w₁ e₁' e').1 = proj P₂ L (eval H n P₂ w₂ e₂' e').1 ∨
       Diverged P₂ L (eval H n P₂ w₁ e₁' e').1 (eval H n P₂ w₂ e₂' e').1 := by
+  -- The document's events are first-order: they erase to the events of `P₁`'s typed run.
+  have hfo : ∀ {wa : World H} {ea ea' : Env}, LEnvTy P₁ ea (Γ.lsub P₁.recordDeep σ) →
+      Val.anonEnv ρ ea = Val.anonEnv id ea' → ∀ ev ∈ (eval H n P₂ wa ea' e').1, ev.FirstOrder := by
+    intro wa ea ea' hty hea ev hev
+    have herase := congrArg Prod.fst (eval_erasure hsim hai wa n hea hee)
+    simp only [runAnon] at herase
+    have hm : ev.anon id ∈ (eval H n P₁ wa ea e).1.map (Event.anon ρ) := by
+      rw [herase]
+      exact List.mem_map_of_mem hev
+    obtain ⟨ev', hev', heq⟩ := List.mem_map.mp hm
+    rw [← Event.firstOrder_anon (ρ := id), ← heq, Event.firstOrder_anon]
+    exact events_firstOrder hwf hb1 hσ hty he n ev' hev'
+  have hfo₁ := hfo (wa := w₁) h₁ he₁
+  have hfo₂ := hfo (wa := w₂) h₂ he₂
   have hbr := t6_release_host P₁ L H hwf hb1 hh hlaw hσ hE hΓ hpc hw h₁ h₂ hrel he n
   have ha := eval_erasure hsim hai w₁ n he₁ hee
   have hb := eval_erasure hsim hai w₂ n he₂ hee
