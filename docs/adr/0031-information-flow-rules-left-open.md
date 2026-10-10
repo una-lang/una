@@ -41,3 +41,7 @@ Decision log entries: D-088 to D-097 (`docs/history/v0.1/open-decisions.md`).
 - **A separate information-flow pass after type checking:** would repeat the resolution of fields, methods and generic instantiations that the type checker already does.
 - **T-Checked's premise alone:** lets `checked` reveal a secret through its failure.
 - **Bounding operation arguments by their parameter types too:** makes `accepts` above a parameter's label unreachable, including in the prelude.
+
+## Amendment (2026-10-10, ADR 0089, S-17)
+
+T-Checked's label is not the operand's alone: it joins every label of every value the predicate reads besides `it`, and that join must be `⊥`, else U4002 (`spec/10 §13.2`). The decision above counted the operand only, which let a predicate compare its operand with a labeled value and reveal the comparison through the failure.

@@ -256,3 +256,13 @@ $$
 $$
 
 5. **At the surface.** These are the rules that `spec/07 §7` rule 4 states for `attempt`, `if error use`, `if error pass` and `if error fail`. Since `if error pass` and `if error fail` on a failure decided above `public` are U4002, and a handler expression with an effect is U3013 (`spec/04 §4`), no program the checker accepts tells the corrected rules from the ones of §4 and §5.
+
+### 13.2 A `checked` predicate's other reads (2026-10-10, ADR 0089, #488)
+
+Found by S-17. T-Checked (§7) labels the failure of `checked` by its operand alone, but the predicate φ may read other values, and its outcome then depends on them. T-Checked's premise and its failure's label take every label of every value φ reads:
+
+$$
+pc \sqcup \ell^{*}(a) \sqcup \bigsqcup_{x \in \mathrm{fv}(\varphi) \setminus \{\mathtt{it}\}} \ell^{*}(x) = \bot
+$$
+
+Otherwise the `checked` is U4002 at the `checked`, with the predicate as its related span when a value it reads raises the label, and the operand otherwise. $\ell^{*}(x)$ joins every label of the type of the local `x`, so a field path such as `limits.most` counts every label of `limits`. Names that are not locals, such as predicates and functions, are pure, and their arguments are reads. Where this section and §7 differ, this section wins.

@@ -1,0 +1,16 @@
+-- test: a `checked` predicate over its public operand, or reading a public value besides it, stays allowed (S-17 twin)
+-- spec: spec/10 §7
+-- expect: ok
+module main
+
+pub kind LenError = | TooLong
+
+pub short(raw: Text) -> Text
+  fails LenError
+=
+  checked(raw, raw.len < 80) else fail TooLong
+
+pub bounded(raw: Text, limit: Int) -> Text
+  fails LenError
+=
+  checked(raw, raw.len < limit) else fail TooLong
