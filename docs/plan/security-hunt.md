@@ -50,6 +50,7 @@ A generator or mutator writes a program. Then:
   - generics: `ℓ_T` and `ℓ*_T`, result summaries, edition 0.1's defense in depth (§7 rule 8);
   - `of` clauses and the prelude's higher-order functions (§7 rule 9).
 - Generators are Python, with no cargo, and record a seed for every program.
+- The operators, their expected verdict classes, and two cheap oracles that need only `una check` (a mutant that injects a forbidden flow must be rejected; a refactor that keeps every label must keep the verdict) are in `docs/plan/security-hunt-generators.md`.
 
 ### (b) Checker against model
 
