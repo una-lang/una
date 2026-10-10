@@ -275,7 +275,13 @@ theorem proj_single_hidden {ev : Event} (h : ¬ EvVis p L ev) : proj p L [ev] = 
 /-- **What M5 asks of a program's host operations** (`docs/plan/formal-track-m5.md` §4): the
 rules of ADR 0085; every sink of a stateful capability accepts at most `internal`, so no host
 state can receive data above it; and what the host returns, a read's content, a response, and
-what decides a request's failure, is at least `internal`. -/
+what decides a request's failure, is at least `internal`.
+
+`t6_host` also asks the host to be lawful (`Host.Lawful`, H1 and H2), and its model keeps the file
+system and the servers disjoint: a server that writes into the package's granted directory, on the
+same machine, is outside the model, as other writers are. The real host does not meet H1 today
+(S-16): `Files.read` fails on a file that is not valid UTF-8. Its fix makes invalid text abort the
+run, after which H1 holds (`docs/plan/formal-track-m5.md` §5). -/
 structure Program.HostWF (p : Program) : Prop where
   oldHost : p.oldHost = false
   read : p.le (.ofLabel p.acceptsRead) (.ofLabel internalLabel)
