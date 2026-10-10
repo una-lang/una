@@ -1507,9 +1507,28 @@ impl<'a> Checker<'_, 'a, '_> {
             self.findings.checked.push((self.module, span));
         }
         let ty = self.expr(value, None);
-        // The failure of `checked` reveals whether the predicate holds.
+        // The failure of `checked` reveals whether the predicate holds: it depends on the value
+        // and on every other value the predicate reads, each with every label of its type
+        // (S-17, ADR 0089).
+        let mut names = Vec::new();
+        super::memory::reads(predicate, &|ident| self.name(ident).to_owned(), &mut names);
+        let mut read = una_core::Label::public();
+        for name in names {
+            if let Some(local) = self
+                .local_index(&name)
+                .and_then(|index| self.locals.get(index))
+            {
+                read = read.join(&self.deep(&local.ty));
+            }
+        }
         let label = self.deep(&ty);
-        self.fail_under_pc(span, "`checked`", Some((&label, value.span)));
+        let both = label.join(&read);
+        if both == label {
+            // The predicate reads nothing the operand's labels do not already cover.
+            self.fail_under_pc(span, "`checked`", Some((&label, value.span)));
+        } else {
+            self.fail_under_pc(span, "`checked`", Some((&both, predicate.span)));
+        }
         let ctx = Ctx {
             it: Some(ty.clone()),
             rl: Rl::Clause,

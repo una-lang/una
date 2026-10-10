@@ -85,6 +85,75 @@ pub(crate) fn mentions(expr: &Expr, name: &str, resolve: &dyn Fn(&Ident) -> Stri
     }
 }
 
+/// The names `expr` reads, in order, outside the bodies of lambdas that rebind them: what a
+/// `checked` predicate depends on besides `it` (S-17, ADR 0089).
+pub(crate) fn reads(expr: &Expr, resolve: &dyn Fn(&Ident) -> String, out: &mut Vec<String>) {
+    let each = |exprs: &mut dyn Iterator<Item = &Expr>, out: &mut Vec<String>| {
+        for e in exprs {
+            reads(e, resolve, out);
+        }
+    };
+    match &expr.kind {
+        ExprKind::Name(ident) => out.push(resolve(ident)),
+        ExprKind::Paren(inner)
+        | ExprKind::Attempt(inner)
+        | ExprKind::Old(inner)
+        | ExprKind::Unary { operand: inner, .. } => reads(inner, resolve, out),
+        ExprKind::Field { target, .. } | ExprKind::In { value: target, .. } => {
+            reads(target, resolve, out);
+        }
+        ExprKind::Is { value, .. } => reads(value, resolve, out),
+        ExprKind::Binary { left, right, .. } => {
+            reads(left, resolve, out);
+            reads(right, resolve, out);
+        }
+        ExprKind::IfLine {
+            condition,
+            then,
+            otherwise,
+        } => each(
+            &mut [condition.as_ref(), then.as_ref(), otherwise.as_ref()].into_iter(),
+            out,
+        ),
+        ExprKind::List(items) => each(&mut items.iter(), out),
+        ExprKind::Call { callee, args } => {
+            reads(callee, resolve, out);
+            each(&mut args.iter().map(|a| &a.value), out);
+        }
+        ExprKind::MethodCall { target, args, .. } => {
+            reads(target, resolve, out);
+            each(&mut args.iter().map(|a| &a.value), out);
+        }
+        ExprKind::CapOp { args, .. } => each(&mut args.iter().map(|a| &a.value), out),
+        ExprKind::Lambda { params, body } => {
+            let mut inner = Vec::new();
+            reads(body, resolve, &mut inner);
+            let bound: Vec<String> = params.iter().map(|p| resolve(&p.name)).collect();
+            out.extend(inner.into_iter().filter(|name| !bound.contains(name)));
+        }
+        ExprKind::Checked {
+            value, predicate, ..
+        } => {
+            reads(value, resolve, out);
+            reads(predicate, resolve, out);
+        }
+        ExprKind::Fail(variant) => each(&mut variant.args.iter().map(|a| &a.value), out),
+        ExprKind::Literal(Literal::Text(text)) => each(
+            &mut text.parts.iter().filter_map(|part| match part {
+                TextPart::Interpolation(expr) => Some(expr),
+                TextPart::Text(_) => None,
+            }),
+            out,
+        ),
+        ExprKind::Literal(_)
+        | ExprKind::UpperName(_)
+        | ExprKind::CapRef(_)
+        | ExprKind::Result
+        | ExprKind::It
+        | ExprKind::Error => {}
+    }
+}
+
 /// The new value of an `edit` argument or receiver, which flows back into its place when the
 /// call returns (`spec/17 §3`, `§6` rule 2): the place, its type, the parameter's type, and
 /// where.
