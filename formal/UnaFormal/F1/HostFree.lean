@@ -23,7 +23,7 @@ mutual
     | .lambda _ b => b.hostFree
     | .atom _ | .prim _ _ | .call _ _ _ | .apply _ _ | .op _ | .construct _ _ | .field _ _
     | .list _ | .none | .some _ | .funRef _ _ | .declassify _ _ | .map _ _ | .filter _ _
-    | .firstWhere _ _ | .fold _ _ _ | .parse _ | .eq _ _ => true
+    | .firstWhere _ _ | .fold _ _ _ | .parse _ | .eq _ _ | .tuple _ | .append _ _ | .set _ _ _ => true
 
   /-- A body that performs no host operation, in its lambdas included. -/
   def Expr.hostFree : Expr → Bool
@@ -35,6 +35,7 @@ mutual
     | .caseResult _ _ o _ e => o.hostFree && e.hostFree
     | .attempt b => b.hostFree
     | .handle b _ h => b.hostFree && h.hostFree
+    | .letTuple _ _ b | .loop _ _ _ _ _ b => b.hostFree
 end
 
 mutual
@@ -43,7 +44,7 @@ mutual
     | .list items => Val.HostFreeAllIn S items
     | .some v => Val.HostFreeIn S v
     | .ok v => Val.HostFreeIn S v
-    | .record _ fs => Val.HostFreeAllIn S fs
+    | .record _ fs | .tuple fs => Val.HostFreeAllIn S fs
     | .closure _ b env => b.hostFree = true ∧ (∀ g ∈ b.callees, S g) ∧ Val.HostFreeEnvIn S env
     | .int _ | .bool _ | .text _ | .unit | .none | .err _ => True
 
@@ -251,6 +252,28 @@ theorem walkFold_same {w : World H} {app : World H → Val → Val → Run H}
     simp only [walkFold]
     exact andThen_same (happ u acc v hacc hvs.1) fun u' acc' _ hacc' =>
       walkFold_same happ u' acc' vs hacc' hvs.2
+
+theorem SameOn.abort (w : World H) (u : World Host.unit) : SameOn S w (abort w) (abort u) :=
+  ⟨rfl, fun _ h => nomatch h⟩
+
+theorem walkLoop_same {w : World H} {body : World H → Val → List Val → Run H}
+    {body' : World Host.unit → Val → List Val → Run Host.unit}
+    (hb : ∀ u v st, Val.HostFreeIn S v → Val.HostFreeAllIn S st → SameOn S w (body w v st) (body' u v st)) :
+    ∀ (u : World Host.unit) (st vs : List Val), Val.HostFreeAllIn S st → Val.HostFreeAllIn S vs →
+      SameOn S w (walkLoop body w st vs) (walkLoop body' u st vs)
+  | u, st, [], hst, _ => SameOn.done w u (by simp only [Val.HostFreeIn]; exact hst)
+  | u, st, v :: vs, hst, hvs => by
+    simp only [Val.HostFreeAllIn] at hvs
+    simp only [walkLoop]
+    refine andThen_same (hb u v st hvs.1 hst) fun u' r _ hr => ?_
+    cases r with
+    | tuple st' =>
+      simp only [Val.HostFreeIn] at hr
+      simp only
+      split
+      · exact walkLoop_same hb u' st' vs hr hvs.2
+      · exact SameOn.stuck w u'
+    | _ => exact SameOn.stuck w u'
 
 theorem parseInt_same (w : World H) (u : World Host.unit) (t : String) :
     SameOn S w (parseInt w t) (parseInt u t) := by
@@ -484,6 +507,60 @@ theorem eval_hostFreeIn
           cases evalAtom env b with
           | none => exact SameOn.stuck w u
           | some vb => exact SameOn.done w u (by simp [Val.HostFreeIn])
+      | tuple items =>
+        refine SameOn.ret w u fun v hv => ?_
+        cases ha : evalAtoms env items <;> simp [ha, Option.elim] at hv
+        subst hv
+        simp only [Val.HostFreeIn]
+        exact evalAtoms_hostFree hf ha
+      | append xs item =>
+        simp only [evalRhs]
+        cases hx : evalAtom env xs with
+        | none => exact SameOn.stuck w u
+        | some xv =>
+          cases hi : evalAtom env item with
+          | none => cases xv <;> exact SameOn.stuck w u
+          | some v =>
+            cases xv with
+            | list items =>
+              have hl := evalAtom_hostFree hf hx
+              have hv := evalAtom_hostFree hf hi
+              simp only [Val.HostFreeIn, Val.hostFreeAll_iff] at hl ⊢
+              refine SameOn.done w u ?_
+              simp only [Val.HostFreeIn, Val.hostFreeAll_iff, List.mem_append, List.mem_singleton]
+              rintro y (hy | rfl)
+              · exact hl y hy
+              · exact hv
+            | _ => exact SameOn.stuck w u
+      | set xs index item =>
+        simp only [evalRhs]
+        cases hx : evalAtom env xs with
+        | none => exact SameOn.stuck w u
+        | some xv =>
+          cases evalAtom env index with
+          | none => cases xv <;> exact SameOn.stuck w u
+          | some iv =>
+            cases hi : evalAtom env item with
+            | none => cases xv <;> cases iv <;> exact SameOn.stuck w u
+            | some v =>
+              cases xv with
+              | list items =>
+                cases iv with
+                | int i =>
+                  simp only
+                  split
+                  · have hl := evalAtom_hostFree hf hx
+                    have hv := evalAtom_hostFree hf hi
+                    simp only [Val.HostFreeIn, Val.hostFreeAll_iff] at hl
+                    refine SameOn.done w u ?_
+                    simp only [Val.HostFreeIn, Val.HostFreeAllIn, Val.hostFreeAll_iff, and_true]
+                    intro y hy
+                    rcases List.mem_or_eq_of_mem_set hy with hy | rfl
+                    · exact hl y hy
+                    · exact hv
+                  · exact SameOn.abort w u
+                | _ => exact SameOn.stuck w u
+              | _ => cases iv <;> exact SameOn.stuck w u
     · intro w u env e hf he hc
       cases e with
       | atom a =>
@@ -574,6 +651,58 @@ theorem eval_hostFreeIn
           have := (ihE w u env b hf he.1 (fun g hg => hc g (by simp [Expr.callees, hg]))).2 v (by rw [hres])
           exact ⟨rfl, fun _ h => by cases h; exact this⟩
         | stuck | outOfFuel => exact ⟨rfl, fun _ h => nomatch h⟩
+      | letTuple bs v b =>
+        simp only [Expr.hostFree] at he
+        simp only [eval]
+        cases hv : evalAtom env v with
+        | none => exact SameOn.stuck w u
+        | some x =>
+          cases x with
+          | tuple vs =>
+            simp only
+            split
+            · have hvs := evalAtom_hostFree hf hv
+              simp only [Val.HostFreeIn] at hvs
+              exact ihE w u _ b (bindParams_hostFree bs hvs hf) he
+                (fun g hg => hc g (by simpa [Expr.callees] using hg))
+            · exact SameOn.stuck w u
+          | _ => exact SameOn.stuck w u
+      | loop src x xt st init b =>
+        simp only [Expr.hostFree] at he
+        simp only [eval]
+        cases hs : sourceVals env src with
+        | none => exact SameOn.stuck w u
+        | some items =>
+          cases hi : evalAtoms env init with
+          | none => exact SameOn.stuck w u
+          | some stv =>
+            simp only
+            split
+            · have hitems : Val.HostFreeAllIn S items := by
+                cases src with
+                | list xs =>
+                  simp only [sourceVals] at hs
+                  split at hs
+                  · rename_i its hx
+                    cases hs
+                    have := evalAtom_hostFree hf hx
+                    simpa [Val.HostFreeIn] using this
+                  · cases hs
+                | range lo hi' inc =>
+                  simp only [sourceVals] at hs
+                  split at hs
+                  · cases hs
+                    rw [Val.hostFreeAll_iff]
+                    intro v hv
+                    simp only [rangeVals, List.mem_map] at hv
+                    obtain ⟨_, _, rfl⟩ := hv
+                    simp [Val.HostFreeIn]
+                  · cases hs
+              exact walkLoop_same (fun u' v st' hv hst => ihE w u' _ b
+                  (by simp only [Val.HostFreeEnvIn]; exact ⟨hv, bindParams_hostFree st hst hf⟩) he
+                  (fun g hg => hc g (by simpa [Expr.callees] using hg)))
+                u stv items (evalAtoms_hostFree hf hi) hitems
+            · exact SameOn.stuck w u
 
 /-- **A program without host operations runs the same on every host**: `eval_hostFreeIn` with
 every function in the set. -/
