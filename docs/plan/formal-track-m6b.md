@@ -3,7 +3,7 @@
 - Issue: #485, under #46
 - Previous step: `docs/plan/formal-track-m6.md` (M6, #478)
 - Date: 2026-10-10
-- Status: plan, for the coordinator's review before any proof (the coordinator's decision N-82)
+- Status: plan approved by the coordinator (2026-10-10), with the answers of §8; proofs in progress
 
 ## 1. Why
 
@@ -36,7 +36,7 @@ The environment is the host's: `Host.env : String → Option String`. It is the 
 
 **What this premise gives up.** With one environment in both runs, `Env.get` is not a source of secrets in T6: its result is the same in both runs, and its `internal` label is conservative. The replay is about the checker's verdicts on the dumped Core, where `internal` flows into `public` at the interpolation, so it does not need more.
 
-A stronger reading is possible, with the environment's values differing between runs while the names it holds stay the same. It would put the environment in the `World`, related by `WorldRel`, and touch every world of the proofs. I propose it as a later item if wanted, not here.
+A stronger reading is possible, with the environment's values differing between runs while the names it holds stay the same. It would put the environment in the `World`, related by `WorldRel`, and touch every world of the proofs. It is #487.
 
 ## 4. The verdict rules: what changes
 
@@ -62,8 +62,16 @@ The corpus has no loop whose source is labeled, so T-Loop's raise is exercised o
 
 The accepted cases join the corpus, where the re-check must accept them. The rejected ones have no export, since `una core` exports clean declarations only. They are the checker's half of the pair, and `LoopExample.public_count_untyped` is the model's.
 
-## 7. Questions
+## 7. Questions asked (answered in §8)
 
-1. **`Env.get`:** the premise of §3, one environment in both runs, as you stated it. Or the stronger reading, environments with the same names and different values, which costs a `World` change?
-2. **`to_text`'s domain:** types with equality only. A `to_text` of a type without equality would stay not re-checked; the checker allows interpolation of records and lists, which have equality when their parts do.
-3. **The fixed versions:** the shapes' leak is the print itself, so a fixed program prints something `public`, as in §5. Or should the pair be each shape against the `*_accepted` controls that exist (`list_of_lists`, `option_of_list`, `map_of_lists`)?
+1. `Env.get`'s premise: one environment, or the stronger reading.
+2. `to_text`'s domain.
+3. The fixed versions of the replay.
+
+## 8. The coordinator's answers (2026-10-10)
+
+1. **The one-environment premise**, stated and named as §3 writes it, with what it gives up. The stronger reading is its own issue, #487.
+2. **`to_text` only where the model matches the checker**, at types with equality. If the checker accepts `to_text` at a type without equality, such a declaration stays not re-checked, which is conservative.
+3. **The replay pairs each leaking shape with an existing `*_accepted` control**, a real program that v0.3.0 accepts, not a newly written one. Each control must not be rejected by the re-check: it is accepted, or not re-checked at a stated form. A shape with no counterpart is listed as unpaired, not given an invented one. §5's proposal of a newly written fixed version is withdrawn.
+
+The labeled-loop pairs of §6 are approved. Their rejected halves carry their `expect` lines (U4001).
