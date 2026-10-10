@@ -311,7 +311,7 @@ def gate : Fun where
   op := false
   host := HostFx.none
   fails := true
-  body := .letR "r" (.bool sec) (.eq (.var "x") (.int 1234))
+  body := .letR "r" (.bool .bot) (.eq (.var "x") (.int 1234))
     (.ite (.var "r") (.fail 7) (.atom (.var "r")))
 
 def progF : Program := { prog with policies := [⟨"guard", .int sec, .bool .bot, "gate"⟩], funs := [gate] }

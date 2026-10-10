@@ -75,6 +75,8 @@ import UnaFormal
 #print axioms Una.F1.ReleaseExample.hidden_release_related
 #print axioms Una.F1.ReleaseExample.release_under_secret_untyped
 #print axioms Una.F1.ReleaseExample.guard_ok_not_err
+#print axioms Una.F1.FailingReleaseExample.progG_certified
+#print axioms Una.F1.FailingReleaseExample.hidden_failure_related
 #print axioms Una.F1.Check.checkRhs_sound
 #print axioms Una.F1.Check.checkExpr_sound
 #print axioms Una.F1.Check.checkFun_sound

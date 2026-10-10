@@ -30,6 +30,7 @@ import UnaFormal.F1.CheckSoundExample
 import UnaFormal.F1.CheckProgram
 import UnaFormal.F1.CheckProgramSound
 import UnaFormal.F1.CheckProgramExample
+import UnaFormal.F1.FailingReleaseExample
 import UnaFormal.F1.Erasure
 import UnaFormal.F1.Monomorph
 import UnaFormal.F1.MonomorphExample
