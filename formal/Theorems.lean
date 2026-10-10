@@ -208,3 +208,5 @@ import UnaFormal
 #print axioms Una.F1.VList.eq_texts_visσ
 #print axioms Una.F1.VList.eq_texts_vis
 #print axioms Una.F1.Check.primTy_sound
+#print axioms Una.F1.brel_checked
+#print axioms Una.F1.checkRun_same

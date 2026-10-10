@@ -127,6 +127,7 @@ mutual
       simp only [Function.comp_def, LTy.erase_raise] at h
       exact .apply hf' h
     | _, _, _, _, _, .op hl ht _ _ => .op (latom_erase hl) ht
+    | _, _, _, _, _, .checked ha hs _ _ => .checked (latom_erase ha) hs
     | _, _, _, _, _, .read hu ht _ _ => by
       have h := latom_erase hu
       rw [ht] at h

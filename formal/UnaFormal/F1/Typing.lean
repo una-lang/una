@@ -122,6 +122,7 @@ mutual
         AtomTy ctx xs (.list a) → AtomTy ctx init b → AtomTy ctx f (.fn [b, a] b) →
         RhsTy p ctx (.fold xs init f) b
     | parse {ctx s} : AtomTy ctx s .text → RhsTy p ctx (.parse s) .int
+    | checked {ctx a t pred code} : AtomTy ctx a t → t.Scalar → RhsTy p ctx (.checked a pred code) t
     | eq {ctx a b t} : AtomTy ctx a t → AtomTy ctx b t → RhsTy p ctx (.eq a b) .bool
     | tuple {ctx items ts} : AtomsTy ctx items ts → RhsTy p ctx (.tuple items) (.tuple ts)
     | toText {ctx a t} : AtomTy ctx a t → RhsTy p ctx (.toText a) .text

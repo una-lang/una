@@ -328,6 +328,13 @@ mutual
     | _, _ => false
 end
 
+/-- A run of `checked` on `v` (#453): `v` when the predicate holds of its text, its failure
+`code` otherwise, and stuck on a value that is not a scalar. -/
+def checkRun (p : Program) (w : World H) (v : Val) (pred : String) (code : Nat) : Run H :=
+  match v.line with
+  | some s => if p.predSem pred s then done w v else ([], .failed code, w)
+  | none => stuck w
+
 /-- The partial primitive's semantic function: the integer a text spells, or a failure. -/
 def parseInt (w : World H) (s : String) : Run H :=
   match s.toInt? with
@@ -430,6 +437,10 @@ mutual
         match evalAtom env s with
         | some (.text t) => parseInt w t
         | _ => stuck w
+      | .checked a pred code =>
+        match evalAtom env a with
+        | some v => checkRun p w v pred code
+        | none => stuck w
       | .eq a b =>
         match evalAtom env a, evalAtom env b with
         | some va, some vb => done w (.bool (Val.beq va vb))

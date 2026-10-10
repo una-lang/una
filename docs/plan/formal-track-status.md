@@ -55,6 +55,7 @@ Each one came from an adversarial review (Una-1) or from the proof itself.
 | S-14 | Whether a file exists, or a read fails, could reveal an earlier write to an `internal` path. Found by checking M3's host assumption. | v0.3.4, v0.1.6 (ADR 0085) |
 | S-15 | A server could decide a public failure (`TooLarge`, `Protocol`, `TimedOut`) from the internal body and headers it received. | v0.3.4, v0.1.6 (ADR 0085) |
 | S-16 | A read of a file, or an environment variable, that is not valid UTF-8 failed, so a public branch could learn something about internal content. Found by the review of M5's host premise H1. | v0.3.5, v0.1.7 (ADR 0086) |
+| S-17 | A `checked` predicate that read a labeled value besides its operand failed publicly, so a caller could learn a comparison with that value. Found while widening F1 with `checked` (#453). | v0.3.6, v0.1.8 (ADR 0089) |
 
 M3 also found that `spec/10`'s formal T-Let and T-Handle lack the rule-4 premise that `spec/07` states. It is not a finding, because the surface language cannot write a program where the two differ. `spec/10 §13` corrects it, append-only (#479, ADR 0087).
 

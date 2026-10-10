@@ -234,6 +234,7 @@ mutual
     | .fold _ _ _, _, _, _, _, _, _, hg | .parse _, _, _, _, _, _, _, hg
     | .eq _ _, _, _, _, _, _, _, hg | .tuple _, _, _, _, _, _, _, hg
     | .append _ _, _, _, _, _, _, _, hg | .set _ _ _, _, _, _, _, _, _, hg
+    | .checked _ _ _, _, _, _, _, _, _, hg
     | .toText _, _, _, _, _, _, _, hg | .envGet _, _, _, _, _, _, _, hg => by
       simp [Rhs.callees] at hg
 

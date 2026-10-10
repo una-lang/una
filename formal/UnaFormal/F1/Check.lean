@@ -421,6 +421,14 @@ mutual
       need (isText t) "`parse_int` of a value that is not a text"
       flowTo p (.int (p.deep t)) ann "the result of `parse_int`"
       pure ⟨false, HostFx.none, some (pc.join (p.deep t)), []⟩
+    | .checked a _ _ => do
+      let t ← atomTy Γ a
+      need (isScalar t) "`checked` of a value that is not a scalar"
+      le p (pc.join (p.deep t)) LExpr.bot
+        "`checked` of a labeled value, or under a raised program counter (U4002)"
+      need (symFree pc) "`checked` under a symbolic program counter"
+      flowTo p t ann "the value `checked` gives"
+      pure ⟨false, HostFx.none, some (pc.join (p.deep t)), []⟩
     | .eq a b => do
       let t₁ ← atomTy Γ a
       let t₂ ← atomTy Γ b

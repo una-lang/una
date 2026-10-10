@@ -388,6 +388,12 @@ mutual
     | parse {Γ pc s t} :
         LAtomTy Γ s t → t.erase = .text →
         LRhsTy p E Γ pc (.parse s) (.int (p.deep t)) ⟨false, HostFx.none, some (pc.join (p.deep t)), []⟩
+    /-- T-Checked (`spec/10 §7`, #453): the operand is a public scalar, under a public program
+    counter (U4002 otherwise), so whether the predicate holds is public; the value keeps its type,
+    and the failure is labeled as `parse`'s, which the premise makes `⊥`. -/
+    | checked {Γ pc a t pred code} :
+        LAtomTy Γ a t → t.erase.Scalar → p.le (pc.join (p.deep t)) .bot → pc.SymFree →
+        LRhsTy p E Γ pc (.checked a pred code) t ⟨false, HostFx.none, some (pc.join (p.deep t)), []⟩
     /-- `==` (`spec/07 §7` rule 3): both operands flow into one type with equality, and the
     result carries every label of both. Over values of `T`, that is `ℓ*_T`, the decision of
     rule 8. -/
