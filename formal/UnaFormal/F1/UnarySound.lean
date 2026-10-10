@@ -124,6 +124,23 @@ theorem latoms_ltypedσ {env : Env} {Γ : LCtx} {as : List Atom} {ts : List LTy}
     obtain ⟨vs, hvs, hvst⟩ := ih
     exact ⟨v :: vs, by simp [evalAtoms, hv, hvs], .cons hvt hvst⟩
 
+/-- A value of a type whose structure is `Text` is a text. -/
+theorem LValTy.text_of {v : Val} {t : LTy} (hv : LValTy p v t) (ht : t.erase = .text) :
+    ∃ s, v = .text s := by
+  cases hv <;> simp_all [LTy.erase]
+
+/-- Values of types whose structure is `Text`, at an instance, are texts: a request's arguments
+(T-Request). -/
+theorem LValsTy.texts_lsubst : ∀ {vs : List Val} {ts : List LTy},
+    LValsTy p vs (ts.map (LTy.lsubst p.recordDeep σ)) → (∀ t ∈ ts, t.erase = .text) →
+    ∀ v ∈ vs, ∃ s, v = .text s
+  | [], _, _, _, _, h => nomatch h
+  | _ :: _, [], h, _, _, _ => nomatch h
+  | v :: vs, t :: ts, .cons hv hvs, ht, x, hx => by
+    rcases List.mem_cons.mp hx with rfl | hx
+    · exact hv.text_of (by rw [LTy.erase_lsubst, ht t (by simp)]; rfl)
+    · exact LValsTy.texts_lsubst hvs (fun u hu => ht u (by simp [hu])) x hx
+
 theorem LValsTy.flowsσ {vs : List Val} {ts us : List LTy} (h : LValsTy p vs (ts.map (LTy.lsubst p.recordDeep σ)))
     (hf : Flows p.top ts us) : LValsTy p vs (us.map (LTy.lsubst p.recordDeep σ)) := by
   have := Flows.lsubst p.recordDeep σ hf
@@ -202,7 +219,7 @@ theorem fnAllowed_of {pc : LExpr} {s : List (String × LExpr)} {ε : Eff} {o : B
   | .out _, h => ho h.1
   | .read _, h => hg.1 h.1
   | .write _ _, h => hg.2.1 h.1
-  | .req _ _, h => hg.2.2 h.1
+  | .req _ _, h => ⟨hg.2.2 h.1, h.2.2⟩
   | .release _ _, h => by have := h.1; simp [Eff.inst, hr] at this
 
 /-- **The events of a call** (option B1): the callee's operations, which its bound allows, and
@@ -217,12 +234,12 @@ theorem call_allowed_inst {pc pc₀ pc' : LExpr} {s s' : List (String × LExpr)}
   | .read _, h => ⟨hg.1 h.1, LExpr.le_trans hpc ((hb.inst s).2.1 (hg.1 h.1)).1⟩
   | .write _ _, h => ⟨hg.2.1 h.1, LExpr.le_trans hpc ((hb.inst s).2.2.1 (hg.2.1 h.1)).1,
       fun ho => LExpr.le_trans hpc (((hb.inst s).2.2.1 (hg.2.1 h.1)).2.1 ho)⟩
-  | .req _ _, h => ⟨hg.2.2 h.1, LExpr.le_trans hpc ((hb.inst s).2.2.2.1 (hg.2.2 h.1)).1⟩
-  | .release pol _, ⟨hm, po, hpo, _⟩ => by
+  | .req _ _, h => ⟨hg.2.2 h.1, LExpr.le_trans hpc ((hb.inst s).2.2.2.1 (hg.2.2 h.1)).1, h.2.2⟩
+  | .release pol _, ⟨hm, po, hpo, _, hv⟩ => by
     obtain ⟨po', hpo', hle, _⟩ := hrb pol (hr pol hm)
     rw [hpo] at hpo'
     cases hpo'
-    refine ⟨hr pol hm, po, hpo, LExpr.le_trans hpc ?_⟩
+    refine ⟨hr pol hm, po, hpo, LExpr.le_trans hpc ?_, hv⟩
     have hsf := hdst po (List.mem_of_find?_eq_some hpo)
     rw [LExpr.eq_ofLabel_of_symFree hsf] at hle ⊢
     exact LExpr.le_of_le_inst_ofLabel (LExpr.le_inst s hle)
@@ -405,7 +422,8 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) : ∀ n : Nat,
             · exact LExpr.le_join_left _ _
             · exact LExpr.le_trans (LExpr.le_join_left _ _) (LExpr.le_join_left _ _)
       | @req _ _ m args ts has hts hle _ =>
-        obtain ⟨vs, hvs, _⟩ := latoms_ltypedσ henv has
+        obtain ⟨vs, hvs, hvt⟩ := latoms_ltypedσ henv has
+        have htx := LValsTy.texts_lsubst hvt hts
         simp only [evalRhs, hvs]
         rcases H.request m vs w.srv with ⟨o, srv'⟩
         cases o with
@@ -413,12 +431,13 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) : ∀ n : Nat,
           refine ⟨fun ev hev => ?_, LValTy.text, fun _ => rfl, fun h => by simp [Event.isReq] at h⟩
           simp only [List.mem_singleton] at hev
           subst hev
-          exact ⟨rfl, LExpr.le_trans (hpc0 _) (LExpr.le_of_le_inst_ofLabel (LExpr.le_inst _ hle))⟩
+          exact ⟨rfl, LExpr.le_trans (hpc0 _) (LExpr.le_of_le_inst_ofLabel (LExpr.le_inst _ hle)), htx⟩
         | none =>
           refine ⟨fun ev hev => ?_, ⟨_, rfl, ?_⟩, fun _ => rfl, fun h => by simp [Event.isReq] at h⟩
           · simp only [List.mem_singleton] at hev
             subst hev
-            exact ⟨rfl, LExpr.le_trans (hpc0 _) (LExpr.le_of_le_inst_ofLabel (LExpr.le_inst _ hle))⟩
+            exact ⟨rfl, LExpr.le_trans (hpc0 _) (LExpr.le_of_le_inst_ofLabel (LExpr.le_inst _ hle)),
+              htx⟩
           · refine LExpr.le_inst _ ?_
             unfold Program.reqFail
             split
@@ -524,7 +543,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) : ∀ n : Nat,
           · simp only [List.nil_append, List.mem_singleton] at hev
             subst hev
             exact ⟨by simp [Eff.ofFnR, Eff.ofFn, Eff.inst], po, hpo,
-              le_inst_of_symFree _ hdg.top_symFree hle⟩
+              le_inst_of_symFree _ hdg.top_symFree hle, hgood⟩
           · show LValTy p r (po.dst.lsubst p.recordDeep σ)
             refine lvalTy_of_scalar ?_ ?_
             · rw [LTy.erase_lsubst, Ty.Scalar.subst _ hds]; exact hds

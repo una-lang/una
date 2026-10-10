@@ -607,15 +607,13 @@ theorem t6_release_erasure_obs_hostFree {ρ : String → String} {P₁ P₂ : Pr
     (he : LExprTy P₁ E Γ pc e t ε) {e' : Expr} {e₁' e₂' : Env} (hee : e.anon ρ = e'.anon id)
     (he₁ : Val.anonEnv ρ e₁ = Val.anonEnv id e₁') (he₂ : Val.anonEnv ρ e₂ = Val.anonEnv id e₂')
     (hef : e'.hostFree = true) (hf₁ : Val.HostFreeEnv e₁') (hf₂ : Val.HostFreeEnv e₂')
-    (n : Nat) (hT₁ : Term (eval H n P₂ w₁ e₁' e').2.1) (hT₂ : Term (eval H n P₂ w₂ e₂' e').2.1)
-    (hfo₁ : ∀ ev ∈ (eval H n P₂ w₁ e₁' e').1, ev.FirstOrder)
-    (hfo₂ : ∀ ev ∈ (eval H n P₂ w₂ e₂' e').1, ev.FirstOrder) :
+    (n : Nat) (hT₁ : Term (eval H n P₂ w₁ e₁' e').2.1) (hT₂ : Term (eval H n P₂ w₂ e₂' e').2.1) :
     proj P₂ L (eval H n P₂ w₁ e₁' e').1 = proj P₂ L (eval H n P₂ w₂ e₂' e').1 ∨
       Diverged P₂ L (eval H n P₂ w₁ e₁' e').1 (eval H n P₂ w₂ e₂' e').1 := by
-  rw [((eval_hostFree hp₂ n).2 w₁ ⟨(), ()⟩ e₁' e' hf₁ hef).1] at hT₁ hfo₁ ⊢
-  rw [((eval_hostFree hp₂ n).2 w₂ ⟨(), ()⟩ e₂' e' hf₂ hef).1] at hT₂ hfo₂ ⊢
+  rw [((eval_hostFree hp₂ n).2 w₁ ⟨(), ()⟩ e₁' e' hf₁ hef).1] at hT₁ ⊢
+  rw [((eval_hostFree hp₂ n).2 w₂ ⟨(), ()⟩ e₂' e' hf₂ hef).1] at hT₂ ⊢
   exact t6_release_erasure_obs L hsim hproj hwf hb1 hh Host.unit_lawful Host.unit_anonInvariant hσ
-    hE hΓ hpc (WorldRel.refl _) h₁ h₂ hrel he hee he₁ he₂ n hT₁ hT₂ hfo₁ hfo₂
+    hE hΓ hpc (WorldRel.refl _) h₁ h₂ hrel he hee he₁ he₂ n hT₁ hT₂
 
 end T6
 

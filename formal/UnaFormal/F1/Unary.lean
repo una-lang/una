@@ -311,8 +311,9 @@ def Allowed (p : Program) (pc : LExpr) (ε : Eff) : Event → Prop
   | .read _ => ε.host.rd = true ∧ p.le pc (.ofLabel p.acceptsRead)
   | .write _ _ => ε.host.wr = true ∧ p.le pc (.ofLabel p.acceptsWrite) ∧
       (p.oldHost = false → p.le pc (.ofLabel p.fileState))
-  | .req _ _ => ε.host.rq = true ∧ p.le pc (.ofLabel p.acceptsReq)
-  | .release pol _ => pol ∈ ε.rels ∧ ∃ po, p.policy pol = some po ∧ p.le pc po.dst.top
+  | .req _ vs => ε.host.rq = true ∧ p.le pc (.ofLabel p.acceptsReq) ∧ ∀ v ∈ vs, ∃ s, v = .text s
+  | .release pol v => pol ∈ ε.rels ∧ ∃ po, p.policy pol = some po ∧ p.le pc po.dst.top ∧
+      ValTy p v po.dst.erase
 
 /-- A failure, whose label is above `pc`. -/
 abbrev Fails (p : Program) (pc : LExpr) (ε : Eff) : Prop := ∃ l, ε.fails = some l ∧ p.le pc l
@@ -328,8 +329,8 @@ theorem Allowed.mono {pc pc' : LExpr} {ε ε' : Eff} (hpc : p.le pc pc')
   | .out _, ⟨h1, h2⟩ => ⟨ho h1, LExpr.le_trans hpc h2⟩
   | .read _, ⟨h1, h2⟩ => ⟨hg.1 h1, LExpr.le_trans hpc h2⟩
   | .write _ _, ⟨h1, h2, h3⟩ => ⟨hg.2.1 h1, LExpr.le_trans hpc h2, fun h => LExpr.le_trans hpc (h3 h)⟩
-  | .req _ _, ⟨h1, h2⟩ => ⟨hg.2.2 h1, LExpr.le_trans hpc h2⟩
-  | .release _ _, ⟨h1, po, hpo, h2⟩ => ⟨hr _ h1, po, hpo, LExpr.le_trans hpc h2⟩
+  | .req _ _, ⟨h1, h2, h3⟩ => ⟨hg.2.2 h1, LExpr.le_trans hpc h2, h3⟩
+  | .release _ _, ⟨h1, po, hpo, h2, h3⟩ => ⟨hr _ h1, po, hpo, LExpr.le_trans hpc h2, h3⟩
 
 theorem Fails.mono {pc pc' : LExpr} {ε ε' : Eff} (hpc : p.le pc pc')
     (hf : ∀ l, ε'.fails = some l → ∃ l', ε.fails = some l' ∧ p.le l l') :
@@ -389,7 +390,7 @@ def FnAllowed (o : Bool) (g : HostFx) : Event → Prop
   | .out _ => o = true
   | .read _ => g.rd = true
   | .write _ _ => g.wr = true
-  | .req _ _ => g.rq = true
+  | .req _ vs => g.rq = true ∧ ∀ v ∈ vs, ∃ s, v = .text s
   | .release _ _ => False
 
 /-- At a call whose program counter `pc'` the function's bound allows (`pc ⊑ pc'`), its events
@@ -399,7 +400,7 @@ theorem bound_allowed {pc pc' : LExpr} {o : Bool} {g : HostFx} {f : Bool} (hb : 
   | .out _, h => ⟨h, LExpr.le_trans hpc (hb.1 h).1⟩
   | .read _, h => ⟨h, LExpr.le_trans hpc (hb.2.1 h).1⟩
   | .write _ _, h => ⟨h, LExpr.le_trans hpc (hb.2.2.1 h).1, fun ho => LExpr.le_trans hpc ((hb.2.2.1 h).2.1 ho)⟩
-  | .req _ _, h => ⟨h, LExpr.le_trans hpc (hb.2.2.2.1 h).1⟩
+  | .req _ _, h => ⟨h.1, LExpr.le_trans hpc (hb.2.2.2.1 h.1).1, h.2⟩
   | .release _ _, h => h.elim
 
 theorem bound_fails {pc pc' : LExpr} {o : Bool} {g : HostFx} {f : Bool} (hb : p.Bound pc' o g f)
@@ -448,7 +449,7 @@ theorem applyWith_uok {run : World H → Env → Expr → Run H} {fv : Val} {vs 
       | out _ => exact ho hev.1
       | read _ => exact hg.1 hev.1
       | write _ _ => exact hg.2.1 hev.1
-      | req _ _ => exact hg.2.2 hev.1
+      | req _ _ => exact ⟨hg.2.2 hev.1, hev.2.2⟩
       | release _ _ => have h := hev.1; simp [Eff.inst, hrl] at h
     · rintro ⟨l, hl, _⟩
       exact hfs (by simp [Eff.inst] at hl; obtain ⟨l', hl', _⟩ := hl; simp [hl'])

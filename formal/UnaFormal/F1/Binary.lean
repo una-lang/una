@@ -317,9 +317,9 @@ theorem confined {pc : LExpr} {ε : Eff} {P : Val → Prop} {w : World H} {run :
     | out _ => exact hpc (Vis.of_le ha.2 hvis)
     | read _ => exact hpc (Vis.of_le ha.2 hvis)
     | write _ _ => exact hpc (Vis.of_le ha.2.1 hvis)
-    | req _ _ => exact hpc (Vis.of_le ha.2 hvis)
+    | req _ _ => exact hpc (Vis.of_le ha.2.1 hvis)
     | release _ _ =>
-      obtain ⟨_, po, hpo, hle⟩ := ha
+      obtain ⟨_, po, hpo, hle, _⟩ := ha
       obtain ⟨po', hpo', hv⟩ := hvis
       rw [hpo] at hpo'
       cases hpo'
@@ -348,7 +348,7 @@ theorem confined {pc : LExpr} {ε : Eff} {P : Val → Prop} {w : World H} {run :
       rw [List.any_eq_false]
       intro ev hev hrq
       cases ev with
-      | req _ _ => exact hpc (Vis.of_le (h.1 _ hev).2 (Vis.of_le hwf.req hv))
+      | req _ _ => exact hpc (Vis.of_le (h.1 _ hev).2.1 (Vis.of_le hwf.req hv))
       | _ => simp [Event.isReq] at hrq
     refine ⟨fun hv => ?_, fun hv => ?_⟩
     · simp only

@@ -149,3 +149,6 @@ import UnaFormal
 #print axioms Una.F1.HostFreeExample.worlds_rel
 #print axioms Una.F1.HostFreeExample.s16_guesses
 #print axioms Una.F1.HostFreeExample.s16_caller_obs
+#print axioms Una.F1.Val.firstOrder_of_scalar
+#print axioms Una.F1.events_firstOrder
+#print axioms Una.F1.MonomorphExample.release_events_firstOrder
