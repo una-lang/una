@@ -188,6 +188,8 @@ pub enum Code {
     U6001,
     /// Call depth exceeded.
     U6003,
+    /// A host value is not valid UTF-8.
+    U6005,
     /// Non-canonical formatting.
     U7001,
     /// Invalid `una.toml`.
@@ -204,7 +206,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 68] = [
+    pub const ALL: [Code; 69] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -267,6 +269,7 @@ impl Code {
         Code::U5003,
         Code::U6001,
         Code::U6003,
+        Code::U6005,
         Code::U7001,
         Code::U7002,
         Code::U7003,
@@ -668,6 +671,12 @@ impl Code {
                 domain: Domain::Runtime,
                 meaning: "Call depth exceeded",
                 explain: include_str!("../explain/U6003.md"),
+            },
+            Code::U6005 => &Entry {
+                code: "U6005",
+                domain: Domain::Runtime,
+                meaning: "A host value is not valid UTF-8",
+                explain: include_str!("../explain/U6005.md"),
             },
             Code::U7001 => &Entry {
                 code: "U7001",

@@ -96,6 +96,14 @@ pub enum Abort {
         /// The maximum depth.
         limit: usize,
     },
+    /// The operation at this span made a text from host bytes that are not valid UTF-8: a
+    /// file's content or an environment variable's value (U6005, S-16, ADR 0086).
+    NotText {
+        /// The operation.
+        span: Span,
+        /// The message, which names what the bytes were.
+        message: &'static str,
+    },
     /// A fault that a checked and verified program cannot reach, such as a division by zero
     /// while proof obligations are not verified yet (ADR 0027).
     Fault {
@@ -817,7 +825,7 @@ impl<'p, 'w> Machine<'p, 'w> {
             outcome: EventOutcome::Aborted,
         });
         let result = match instance.as_ref() {
-            Instance::Host { .. } => self.host(capability, op, &args),
+            Instance::Host { .. } => self.host(capability, op, &args, span),
             Instance::Handled {
                 handler,
                 values,
@@ -857,7 +865,7 @@ impl<'p, 'w> Machine<'p, 'w> {
     }
 
     /// A host operation, within the grants (`spec/14 §3`).
-    fn host(&mut self, capability: &str, op: &str, args: &[Value<'p>]) -> Flow<'p> {
+    fn host(&mut self, capability: &str, op: &str, args: &[Value<'p>], span: Span) -> Flow<'p> {
         let text = |i: usize| match args.get(i) {
             Some(Value::Text(t)) => t.to_string(),
             _ => String::new(),
@@ -874,10 +882,16 @@ impl<'p, 'w> Machine<'p, 'w> {
                 Ok(Value::Unit)
             }
             ("Clock", "now") => Ok(Value::int(self.world.now())),
-            ("Env", "get") => Ok(match self.world.env_var(&text(0)) {
-                Some(value) => some(Value::text(&value)),
-                None => none(),
-            }),
+            // A value that is not valid UTF-8 aborts the run: its content, not the name,
+            // would decide the `Option`'s `public` tag (S-16, ADR 0086).
+            ("Env", "get") => match self.world.env_var(&text(0)) {
+                Ok(Some(value)) => Ok(some(Value::text(&value))),
+                Ok(None) => Ok(none()),
+                Err(host::NotText) => Err(Stop::Abort(Abort::NotText {
+                    span,
+                    message: "the value of this environment variable is not valid UTF-8",
+                })),
+            },
             ("Files", "read" | "write") => {
                 let writing = op == "write";
                 let path = text(0);
@@ -909,6 +923,12 @@ impl<'p, 'w> Machine<'p, 'w> {
                 done.map_err(|problem| match problem {
                     FileFault::NotFound => file_error("NotFound", 0),
                     FileFault::Io => file_error("Io", 2),
+                    // Not a failure: the run aborts, since the content, not the path or the
+                    // file system's shape, decides it (S-16, ADR 0086).
+                    FileFault::NotText => Stop::Abort(Abort::NotText {
+                        span,
+                        message: "the content of this file is not valid UTF-8",
+                    }),
                 })
             }
             ("Keys", "hmac") => match self.keys.get(&text(0)) {
