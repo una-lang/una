@@ -282,6 +282,17 @@ theorem parseInt_same (w : World H) (u : World Host.unit) (t : String) :
   | some n => exact SameOn.done w u (by simp [Val.HostFreeIn])
   | none => exact ⟨rfl, fun _ h => nomatch h⟩
 
+/-- `checked` (#453) performs no host operation: its run is the same on any host. -/
+theorem checkRun_same {p : Program} (w : World H) (u : World Host.unit) {v : Val} {pred : String}
+    {code : Nat} (hv : Val.HostFreeIn S v) :
+    SameOn S w (checkRun p w v pred code) (checkRun p u v pred code) := by
+  unfold checkRun
+  split
+  · split
+    · exact SameOn.done w u hv
+    · exact ⟨rfl, fun _ h => nomatch h⟩
+  · exact SameOn.stuck w u
+
 variable {p : Program}
 
 /-- **A program without host operations runs the same on every host.** A run of a body that
@@ -499,6 +510,11 @@ theorem eval_hostFreeIn
           cases v with
           | text t => exact parseInt_same w u t
           | _ => exact SameOn.stuck w u
+      | checked a pred code =>
+        simp only [evalRhs]
+        cases ha : evalAtom env a with
+        | none => exact SameOn.stuck w u
+        | some v => exact checkRun_same w u (evalAtom_hostFree hf ha)
       | eq a b =>
         simp only [evalRhs]
         cases evalAtom env a with

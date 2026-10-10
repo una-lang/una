@@ -785,7 +785,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         -- T-Checked (#453): the operand when the predicate holds of it, a failure otherwise.
         obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv ha
         cases t <;> simp [LTy.erase, Ty.Scalar] at hs <;> simp only [LTy.lsubst] at hvt <;>
-          cases hvt <;> simp only [evalRhs, hv, Val.line] <;> split
+          cases hvt <;> simp only [evalRhs, hv, checkRun, Val.line] <;> split
         all_goals first
           | exact uok_done (by constructor)
           | exact ⟨fun _ h => (nomatch h), ⟨_, rfl, hpc0 _⟩, WEff.self _ _⟩

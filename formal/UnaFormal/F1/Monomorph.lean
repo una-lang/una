@@ -263,7 +263,7 @@ theorem progSim_sound {ren : List (String × String)} {P₂ : Program} {fs : Lis
     Sim (renOf ren) { P₂ with funs := fs } P₂ := by
   simp only [progSim, Bool.and_eq_true, List.all_eq_true] at h
   obtain ⟨⟨⟨hfuns, hren⟩, hcover⟩, hvia⟩ := h
-  refine ⟨fun f => ?_, rfl, fun po hpo => by simpa using hvia po hpo⟩
+  refine ⟨fun f => ?_, rfl, fun po hpo => by simpa using hvia po hpo, rfl⟩
   cases h₁ : Program.find { P₂ with funs := fs } f with
   | some fn₁ =>
     obtain ⟨hmem, hname⟩ := Program.find_some h₁
