@@ -919,6 +919,75 @@ theorem finalize_sound {pAll pPlain : Program} {cond : List String} {mono : List
       (try (simp only [Outcome.acceptedIfA3.injEq] at hv; subst hv)) <;>
       simp_all [Bool.and_eq_true, withHost_ex]
 
+/-- A node that may write a file, found anywhere in a declaration (M5b, Una-1's finding on #471):
+an operation of `Files` named `write`, a `uses` that grants `Files.write`, or an operation whose
+capability path cannot be read (missing, or neither `std.*` nor a module of the document), which
+might be one. `none` when the node and its children hold none; otherwise what was found. -/
+partial def writeSite (mods : List String) (j : J) : Option String :=
+  match j with
+  | .obj kvs =>
+    let here : Option String :=
+      if j.getObjValD "kind" == .str "op" then
+        let cap := j.getObjValD "capability"
+        let path := j.getObjValD "capability_path"
+        let pathMod := match path.getObjValD "module" with
+          | .str m => some m
+          | _ => none
+        match pathMod with
+        | none => some "an operation whose capability path cannot be read"
+        | some m =>
+          if cap == .str "Files" && m != "std.host" then
+            some "an operation of a capability named `Files` outside `std.host`"
+          else if !(m.startsWith "std." || mods.contains m) then
+            some "an operation whose capability path cannot be read"
+          else if cap == .str "Files" && j.getObjValD "op" == .str "write" then some "a `Files.write`"
+          else none
+      else if j.getObjValD "capability" == .str "Files" then
+        match j.getObjValD "ops" with
+        | .arr ops => if ops.contains (.str "write") then some "a `uses` that grants `Files.write`" else none
+        | _ => none
+      else none
+    match here with
+    | some w => some w
+    | none => kvs.toArray.foldl (fun acc kv => acc <|> writeSite mods kv.2) none
+  | .arr xs => xs.foldl (fun acc x => acc <|> writeSite mods x) none
+  | _ => none
+
+/-- **The file-state label is verified for the whole package**, or nothing that uses `Files` is
+accepted (M5b, Una-1's finding on #471). The exported `file_state` is untrusted, and the re-check
+checks it only against the writes of the programs it certifies. A write anywhere else, in a
+declaration rejected or not re-checked, in a handler, or in a node the reading cannot tell from
+one, never meets it, and a lowered label would let a read's failure reveal it (S-14). So unless
+every declaration that holds a write site (`writeSite`) is a function accepted in `out`, every
+declaration accepted on a lawful host, its note ending with `hostNote`, is not re-checked. -/
+def guardFiles (sites : List (String × String × String)) (out : List (String × Outcome)) :
+    List (String × Outcome) :=
+  let unchecked := sites.find? fun (name, kind, _) =>
+    !(kind == "fun" && match List.lookup name out with
+      | some (.accepted _) => true
+      | _ => false)
+  match unchecked with
+  | none => out
+  | some (name, _, what) =>
+    let why := s!"the file-state label is not verified for the whole package ({what} in `{name}`)"
+    out.map fun (f, o) => match o with
+      | .accepted note => if note.endsWith hostNote then (f, .notRechecked why) else (f, o)
+      | .acceptedIfA3 note => if note.endsWith hostNote then (f, .notRechecked why) else (f, o)
+      | o => (f, o)
+
+/-- **The guard only demotes**: what it reports accepted, `finalize` reported accepted, with the
+same note, so `finalize_sound` covers it. -/
+theorem guardFiles_sub {sites : List (String × String × String)} {out : List (String × Outcome)}
+    {f note : String} (h : (f, Outcome.accepted note) ∈ guardFiles sites out) :
+    (f, Outcome.accepted note) ∈ out := by
+  unfold guardFiles at h
+  dsimp only at h
+  split at h
+  · exact h
+  · simp only [List.mem_map] at h
+    obtain ⟨⟨g, o⟩, hm, ho⟩ := h
+    cases o <;> simp only at ho <;> (try split at ho) <;> simp_all
+
 /-- How far instances are followed: the depth of an instance chain, past which the function is
 in polymorphic recursion, the number of instances of a document, and the steps of the search,
 past which what is left in its queue is unknown. -/
@@ -1227,7 +1296,10 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
         rc.contains f || ((List.lookup f reach).getD []).any rc.contains
     pure rc
   let plain := members.filter fun f => !reachesCond.contains f
-  pure (finalize (mkProg members) (mkProg plain) cond mono ren final)
+  -- Every write site of the document, in a declaration of any kind (Una-1's finding on #471).
+  let mods := decls.map (·.module) |>.eraseDups
+  let sites := decls.filterMap fun d => (writeSite mods d.value).map fun w => (named d, d.kind, w)
+  pure (guardFiles sites (finalize (mkProg members) (mkProg plain) cond mono ren final))
 
 /-- `checkDocumentWith` with labeled instantiation, `LTy.lsubst`. -/
 def checkDocument (doc : J) : Except String (List (String × Outcome)) :=

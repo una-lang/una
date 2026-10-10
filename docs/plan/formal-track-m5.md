@@ -255,6 +255,13 @@ The re-check reads `Files.read` and `Files.write` (Coordinator's decision N-74).
 
 **`file_state` is untrusted** (`spec/13 §8`, "may rely on"). The checker types `read` and `write` by the model's rules (`Program.fsFail`; the write's `pc ⊔ ℓ(path) ⊑ fileState`; its `accepts`), with their cases in `CheckSoundCore`. `progOk` caps the file-state label at `internal` (`Check.hostWfB`). So a value too low gives a rejection or a declaration not re-checked, never an accepted one. A value too high only labels failures higher.
 
+**The whole package** (Una-1's finding on #471, CONFIRMED). The re-check checks `file_state` only against the writes of the programs it certifies. A write elsewhere never meets it: in a declaration rejected or not re-checked, in a handler, or in a node the reading cannot tell from one. Under a lowered label, a reader that branches on a read's failure would then be accepted, which is S-14's shape. So `Import.guardFiles` looks for every write site of the document, in a declaration of any kind (`writeSite`):
+- an operation of `Files` named `write`;
+- a `uses` that grants `Files.write`;
+- an operation whose capability path is missing or unknown.
+
+Unless every declaration that holds one is a function accepted in a certified program, every declaration accepted on a lawful host is not re-checked: "the file-state label is not verified for the whole package". `guardFiles_sub` proves that the guard only demotes. `ImportTests` checks it on Una-1's repros, a writer rejected, not re-checked through `Http`, and with its capability path stripped, and on a handler that writes, each leaving the reader not re-checked, with the honest control still accepted.
+
 **The tamper test** (`ImportTests`). `mark` writes an `internal` path, so the true label is `internal`, and the export claims `public`. `mark` is rejected ("a write whose path or program counter is above the file-state label"), and `probe`, whose read's failure the lowered label would make public, is not re-checked.
 
 **Certificates.**
@@ -265,9 +272,9 @@ The re-check reads `Files.read` and `Files.write` (Coordinator's decision N-74).
 **Non-vacuity** (`FilesCertExample.lean`). A program that writes a file is certified by `progOk` evaluated (`certified`), and `t6_host_ground` relates its runs on the lawful host `files` from two file systems that differ in a file's content (`mark_runs`).
 
 **The corpus.** All 1,329 documents were re-exported with the new key, and `main`'s checker and this one were run on the same export:
-- 5 declarations move from not re-checked to accepted, each with the lawful-host note: `import_std_host.load`, `n39_ok_public_path_content_internal.probe`, `s14_ok_failing_writer.mark` and `.probe`, `s14_ok_helper_public_call.mark`;
+- 4 declarations move from not re-checked to accepted, each with the lawful-host note: `import_std_host.load`, `n39_ok_public_path_content_internal.probe`, `s14_ok_failing_writer.mark` and `.probe`. `s14_ok_helper_public_call.mark` stays not re-checked: `probe`, in its package, has a `uses` that grants `Files.write` and is not re-checked;
 - `import_std_host.greet` stays accepted, with the note, since its certificate's program uses `Files`;
 - 5 declarations stay not re-checked, with another reason;
-- none moves into rejected. Accepted: 638 → 643.
+- none moves into rejected. Accepted: 638 → 642.
 
 The replay of S-01 to S-12 is unchanged.
