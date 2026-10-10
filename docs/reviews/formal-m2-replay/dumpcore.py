@@ -401,16 +401,12 @@ class Parser:
             self.take()
             return {"kind": "attempt", "body": self.expr(caps)}
         if tok == "handle":
-            # `handle e with error ⇒ h`, or `with error(x) ⇒ h` when the handler reads it.
+            # `handle e with x ⇒ h`, where `x` is the handler's binder as v0.1.3 prints it
+            # (`error`, `error%2`, or a name the program gives).
             self.take()
             body = self.expr(caps)
             self.take("with")
-            self.take("error")
-            x = "%error"
-            if self.peek() == "(":
-                self.take()
-                x = self.take()
-                self.take(")")
+            x = self.take()
             self.take("⇒")
             return {"kind": "handle", "body": body, "error": x, "handler": self.expr(caps)}
         if tok == "fail":
