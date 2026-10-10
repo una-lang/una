@@ -44,6 +44,7 @@ mutual
     | .list a, .list b | .option a, .option b | .result a, .result b => tyEq a b
     | .record a, .record b | .var a, .var b => a == b
     | .fn ps r, .fn qs s => tysEq ps qs && tyEq r s
+    | .tuple ps, .tuple qs => tysEq ps qs
     | _, _ => false
 
   def tysEq : List Ty → List Ty → Bool
@@ -75,6 +76,7 @@ mutual
       flowsB top ps₂ ps₁ && flowB top r₁ r₂ && (!o₁ || o₂) && hostLeB g₁ g₂ && (!f₁ || f₂) &&
         leB top l₁ l₂
     | .var x l₁, .var y l₂ => x == y && leB top l₁ l₂
+    | .tuple ts₁ l₁, .tuple ts₂ l₂ => flowsB top ts₁ ts₂ && leB top l₁ l₂
     | _, _ => false
   termination_by sizeOf a + sizeOf b
 
@@ -93,6 +95,7 @@ mutual
     | .int l | .bool l | .text l | .unit l | .record _ l => l.plain.isEmpty
     | .list t l | .option t l | .result t l => inPlace t && l.plain.isEmpty
     | .fn ps r _ _ _ l => inPlaceAll ps && inPlace r && l.plain.isEmpty
+    | .tuple ts l => inPlaceAll ts && l.plain.isEmpty
 
   def inPlaceAll : List LTy → Bool
     | [] => true
@@ -106,6 +109,7 @@ mutual
     | .int l | .bool l | .text l | .unit l | .record _ l => symFree l
     | .list t l | .option t l | .result t l => ground t && symFree l
     | .fn ps r _ _ _ l => groundAll ps && ground r && symFree l
+    | .tuple ts l => groundAll ts && symFree l
 
   def groundAll : List LTy → Bool
     | [] => true
@@ -121,6 +125,7 @@ mutual
     | .int l | .bool l | .text l | .unit l | .record _ l => symsIn xs l
     | .list t l | .option t l | .result t l => scopedIn xs t && symsIn xs l
     | .fn ps r _ _ _ l => scopedInAll xs ps && scopedIn xs r && symsIn xs l
+    | .tuple ts l => scopedInAll xs ts && symsIn xs l
 
   def scopedInAll (xs : List String) : List LTy → Bool
     | [] => true
@@ -214,6 +219,7 @@ def fmtTy : LTy → String
       (if f then " fails" else "")
     s!"{fmtLabel l} fn({", ".intercalate (ps.map fmtTy)}) -> {fmtTy r}{fx}"
   | .var a l => s!"{fmtLabel l} {a}"
+  | .tuple ts l => s!"{fmtLabel l} ({", ".intercalate (ts.map fmtTy)})"
 
 /-- `Fun.EqArgs`. -/
 def eqArgs (p : Program) (E : List String) (fn : Fun) (targs : List LTy) : Bool :=
@@ -421,6 +427,24 @@ mutual
       need (p.eqIn E t) "`==` on a type without equality"
       flowTo p (.bool ((p.deep t₁).join (p.deep t₂))) ann "the result of `==`"
       pure .none
+    | .tuple items => do
+      flowTo p (.tuple (← atomsTy Γ items) .bot) ann "the tuple"
+      pure .none
+    | .append xs item => do
+      match ← atomTy Γ xs with
+      | .list te lx =>
+        flowTo p (← atomTy Γ item) te "the item given to `append`"
+        flowTo p (.list te lx) ann "the result of `append`"
+        pure .none
+      | _ => throw "`append` to a value that is not a list"
+    | .set xs index item => do
+      match ← atomTy Γ xs, ← atomTy Γ index with
+      | .list te lx, .int li =>
+        le p li .bot "`set`'s index is above `public`"
+        flowTo p (← atomTy Γ item) te "the item given to `set`"
+        flowTo p (.tuple [.list te lx, .unit .bot] .bot) ann "the result of `set`"
+        pure .none
+      | _, _ => throw "`set` on values of the wrong types"
 
   /-- `LExprTy`, checked against the type `s` its value must flow into. -/
   def checkExpr (p : Program) (E : List String) (Γ : LCtx) (pc : LExpr) (s : LTy) :
@@ -483,6 +507,43 @@ mutual
       let ε₂ ← checkExpr p E ((x, .int ε₁.failLabel) :: Γ) (pc.join ε₁.failLabel) s handler
       flowTo p (s.raise ε₁.failLabel) s "the value of a handled expression, raised by its failure,"
       pure ⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels⟩
+    | .letTuple binders value body => do
+      match ← atomTy Γ value with
+      | .tuple ts l =>
+        need (flowsB p.top (ts.map (LTy.raise l)) (binders.map Prod.snd))
+          "a component of a tuple does not flow into its binder's type"
+        need (binders.all (fun q => inPlace q.2)) "`ℓ_T` off a position of type `T`"
+        checkExpr p E (binders ++ Γ) pc s body
+      | _ => throw "the components of a value that is not a tuple"
+    -- T-Loop: the declared state types are an invariant (ADR 0075), checked once.
+    | .loop (.list xs) x xty state init body => do
+      match ← atomTy Γ xs with
+      | .list te ls =>
+        flowTo p (te.raise ls) xty s!"an element of the list, as the loop variable `{x}`,"
+        need (inPlace xty) "`ℓ_T` off a position of type `T`"
+        need (flowsB p.top (← atomsTy Γ init) (state.map Prod.snd))
+          "a loop's initial value does not flow into its state's type"
+        need (state.all (fun q => inPlace q.2)) "`ℓ_T` off a position of type `T`"
+        let ε ← checkExpr p E ((x, xty) :: (state ++ Γ)) (pc.join ls)
+          (.tuple (state.map Prod.snd) .bot) body
+        flowTo p (.tuple (state.map Prod.snd) ls) s
+          "the value of a loop, raised by what decides its iterations,"
+        pure ε
+      | _ => throw "a loop over a value that is not a list"
+    | .loop (.range low high _) x xty state init body => do
+      match ← atomTy Γ low, ← atomTy Γ high with
+      | .int l₁, .int l₂ =>
+        flowTo p (.int (l₁.join l₂)) xty s!"the range's bounds, as the loop variable `{x}`,"
+        need (inPlace xty) "`ℓ_T` off a position of type `T`"
+        need (flowsB p.top (← atomsTy Γ init) (state.map Prod.snd))
+          "a loop's initial value does not flow into its state's type"
+        need (state.all (fun q => inPlace q.2)) "`ℓ_T` off a position of type `T`"
+        let ε ← checkExpr p E ((x, xty) :: (state ++ Γ)) (pc.join (l₁.join l₂))
+          (.tuple (state.map Prod.snd) .bot) body
+        flowTo p (.tuple (state.map Prod.snd) (l₁.join l₂)) s
+          "the value of a loop, raised by what decides its iterations,"
+        pure ε
+      | _, _ => throw "a range whose bounds are not integers"
 end
 
 /-- T-Fun (`Program.FunOk`). -/
@@ -517,7 +578,7 @@ mutual
     | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e =>
       exprPure t && exprPure e
     | .attempt b => exprPure b
-    | .fail _ => false
+    | .fail _ | .letTuple _ _ _ | .loop _ _ _ _ _ _ => false
 end
 
 /-- The restrictions of option B1 on the policies, as one Boolean. -/
@@ -577,6 +638,9 @@ mutual
     | .fail c => .fail c
     | .attempt b => .attempt (Expr.mapTypes f b)
     | .handle b x h => .handle (Expr.mapTypes f b) x (Expr.mapTypes f h)
+    | .letTuple bs v b => .letTuple (bs.map fun q => (q.1, f q.2)) v (Expr.mapTypes f b)
+    | .loop src x xt st init b =>
+      .loop src x (f xt) (st.map fun q => (q.1, f q.2)) init (Expr.mapTypes f b)
 end
 
 mutual
@@ -592,7 +656,7 @@ mutual
     | .letE _ _ v b => Expr.genericCalls v ++ Expr.genericCalls b
     | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e =>
       Expr.genericCalls t ++ Expr.genericCalls e
-    | .attempt b => Expr.genericCalls b
+    | .attempt b | .letTuple _ _ b | .loop _ _ _ _ _ b => Expr.genericCalls b
     | _ => []
 end
 

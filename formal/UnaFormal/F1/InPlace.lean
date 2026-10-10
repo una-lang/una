@@ -72,6 +72,8 @@ theorem LTy.raise_inPlace {e : LExpr} (he : e.PlainFree) :
   | .fn _ _ _ _ _ _, h => by
     simp only [LTy.raise, LTy.InPlace, LExpr.join] at h ⊢
     exact ⟨h.1, h.2.1, by rw [h.2.2, he]; rfl⟩
+  | .tuple _ _, h => by
+    simp only [LTy.raise, LTy.InPlace, LExpr.join] at h ⊢; exact ⟨h.1, by rw [h.2, he]; rfl⟩
 
 mutual
   theorem LTy.deep_plainFree (rd : String → Label) : ∀ {t : LTy}, t.InPlace → (t.deep rd).PlainFree
@@ -83,6 +85,7 @@ mutual
     | .fn _ _ _ _ _ _, h =>
       LExpr.plainFree_join h.2.2
         (LExpr.plainFree_join (LTy.deeps_plainFree rd h.1) (LTy.deep_plainFree rd h.2.1))
+    | .tuple _ _, h => LExpr.plainFree_join h.2 (LTy.deeps_plainFree rd h.1)
 
   theorem LTy.deeps_plainFree (rd : String → Label) :
       ∀ {ts : List LTy}, LTy.InPlaceAll ts → (LTy.deeps rd ts).PlainFree
@@ -96,6 +99,7 @@ mutual
     | .int _, h | .bool _, h | .text _, h | .unit _, h | .record _ _, h => h.1
     | .list _ _, h | .option _ _, h | .result _ _, h => ⟨LTy.Ground.inPlace h.1, h.2.1⟩
     | .fn _ _ _ _ _ _, h => ⟨LTy.GroundAll.inPlace h.1, LTy.Ground.inPlace h.2.1, h.2.2.1⟩
+    | .tuple _ _, h => ⟨LTy.GroundAll.inPlace h.1, h.2.1⟩
 
   theorem LTy.GroundAll.inPlace : ∀ {ts : List LTy}, LTy.GroundAll ts → LTy.InPlaceAll ts
     | [], _ => trivial
@@ -128,6 +132,11 @@ mutual
         LExpr.plainFree_of (fun x hx => by
           have := LExpr.inst_plain (deeps_ground_plainFree rd hσ) l x hx
           rw [h.2.2] at this; nomatch this)⟩
+    | .tuple ts l, h => by
+      simp only [LTy.lsubst, LTy.InPlace] at h ⊢
+      exact ⟨LTy.lsubsts_inPlace rd hσ h.1, LExpr.plainFree_of (fun x hx => by
+        have := LExpr.inst_plain (deeps_ground_plainFree rd hσ) l x hx
+        rw [h.2] at this; nomatch this)⟩
     | .var a l, h => by
       simp only [LTy.lsubst]
       cases hl : List.lookup a σ with
@@ -251,6 +260,7 @@ theorem LTy.top_plainFree {u : LTy} (h : u.InPlace) (hv : ∀ a l, u ≠ .var a 
   | int | bool | text | unit | record => exact h
   | list | option | result => exact h.2
   | fn => exact h.2.2
+  | tuple => exact h.2
 
 /-- The label of a primitive's result has no plain symbol. -/
 theorem prim_inPlace {pr : Prim} {ts : List LTy} {t : Ty} (hts : ∀ u ∈ ts, u.InPlace)
@@ -357,6 +367,11 @@ mutual
     | _, _, _, _, _, _, hΓ, _, .eq ha hb _ _ _ =>
       ⟨LExpr.plainFree_join (LTy.deep_plainFree _ (latom_inPlace hΓ ha))
         (LTy.deep_plainFree _ (latom_inPlace hΓ hb)), Eff.plainFree_none⟩
+    | _, _, _, _, _, _, hΓ, _, .tuple has =>
+      ⟨⟨inPlaceAll_of_mem (latoms_inPlace hΓ has), rfl⟩, Eff.plainFree_none⟩
+    | _, _, _, _, _, _, hΓ, _, .append hxs _ _ => ⟨latom_inPlace hΓ hxs, Eff.plainFree_none⟩
+    | _, _, _, _, _, _, hΓ, _, .set hxs _ _ _ _ =>
+      ⟨⟨⟨latom_inPlace hΓ hxs, rfl, trivial⟩, rfl⟩, Eff.plainFree_none⟩
 
   theorem LExprTy.inPlace (hwf : p.LWellFormed) :
       ∀ {E : List String} {Γ : LCtx} {pc : LExpr} {e : Expr} {t : LTy} {ε : Eff},
@@ -420,6 +435,40 @@ mutual
         · exact hl
         · exact hΓ q hq
       exact ⟨LTy.raise_inPlace hl hs, (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl) hh).2⟩
+    | _, Γ, _, _, _, _, hΓ, hpc, .letTuple (binders := bs) _ _ hbs hb => by
+      have hΓ' : LCtx.InPlace (bs ++ Γ) := fun q hq => by
+        rcases List.mem_append.mp hq with hq | hq
+        · exact hbs q hq
+        · exact hΓ q hq
+      exact LExprTy.inPlace hwf hΓ' hpc hb
+    | _, Γ, _, _, _, _, hΓ, hpc, .loopList (x := x) (xty := xty) (state := st) hxs _ hx _ _ hst hb _ => by
+      have hl := latom_inPlace hΓ hxs
+      simp only [LTy.InPlace] at hl
+      have hΓ' : LCtx.InPlace ((x, xty) :: (st ++ Γ)) := fun q hq => by
+        rcases List.mem_cons.mp hq with rfl | hq
+        · exact hx
+        · rcases List.mem_append.mp hq with hq | hq
+          · exact hst q hq
+          · exact hΓ q hq
+      refine ⟨⟨inPlaceAll_of_mem (fun t ht => ?_), hl.2⟩,
+        (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl.2) hb).2⟩
+      obtain ⟨q, hq, rfl⟩ := List.mem_map.mp ht
+      exact hst q hq
+    | _, Γ, _, _, _, _, hΓ, hpc, .loopRange (x := x) (xty := xty) (state := st) hlo hhi _ hx _ _ hst hb _ => by
+      have h₁ := latom_inPlace hΓ hlo
+      have h₂ := latom_inPlace hΓ hhi
+      simp only [LTy.InPlace] at h₁ h₂
+      have hl : LExpr.PlainFree _ := LExpr.plainFree_join h₁ h₂
+      have hΓ' : LCtx.InPlace ((x, xty) :: (st ++ Γ)) := fun q hq => by
+        rcases List.mem_cons.mp hq with rfl | hq
+        · exact hx
+        · rcases List.mem_append.mp hq with hq | hq
+          · exact hst q hq
+          · exact hΓ q hq
+      refine ⟨⟨inPlaceAll_of_mem (fun t ht => ?_), hl⟩,
+        (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl) hb).2⟩
+      obtain ⟨q, hq, rfl⟩ := List.mem_map.mp ht
+      exact hst q hq
 end
 
 end Una.F1

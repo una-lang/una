@@ -27,7 +27,7 @@ mutual
     | .letE _ _ v b => v.callees ++ b.callees
     | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e =>
       t.callees ++ e.callees
-    | .attempt b => b.callees
+    | .attempt b | .letTuple _ _ b | .loop _ _ _ _ _ b => b.callees
 end
 
 end Una.F1
@@ -41,6 +41,7 @@ mutual
     | .int | .bool | .text | .unit | .record _ => true
     | .list t | .option t | .result t => tyClosed t
     | .fn ps r => tysClosed ps && tyClosed r
+    | .tuple ts => tysClosed ts
 
   def tysClosed : List Ty → Bool
     | [] => true
@@ -56,6 +57,7 @@ mutual
     | .int l | .bool l | .text l | .unit l | .record _ l | .var _ l => labelCats cats l.base
     | .list t l | .option t l | .result t l => tyCats cats t && labelCats cats l.base
     | .fn ps r _ _ _ l => tysCats cats ps && tyCats cats r && labelCats cats l.base
+    | .tuple ts l => tysCats cats ts && labelCats cats l.base
 
   def tysCats (cats : List String) : List LTy → Bool
     | [] => true

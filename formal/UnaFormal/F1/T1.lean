@@ -125,6 +125,44 @@ theorem walkFold_good {app : World H → Val → Val → Run H} {a b : Ty}
     exact andThen_good (happ w _ v hacc (h v List.mem_cons_self))
       (fun w acc' hacc' => walkFold_good happ w hacc' (fun u hu => h u (List.mem_cons_of_mem _ hu)))
 
+/-- A loop whose body maps a typed state to a typed state ends with a typed state. -/
+theorem walkLoop_good {body : World H → Val → List Val → Run H} {a : Ty} {ts : List Ty}
+    (hbody : ∀ w v st, ValTy p v a → ValsTy p st ts → Good p (.tuple ts) (body w v st).2.1) :
+    ∀ {items : List Val} (w : World H) {st : List Val}, ValsTy p st ts →
+      (∀ v ∈ items, ValTy p v a) → Good p (.tuple ts) (walkLoop body w st items).2.1
+  | [], _, _, hst, _ => by simp only [walkLoop, done, Good]; exact .tuple hst
+  | v :: vs, w, st, hst, h => by
+    simp only [walkLoop]
+    refine andThen_good (hbody w v st (h v List.mem_cons_self) hst) (fun w r hr => ?_)
+    cases hr with
+    | tuple hvals =>
+      simp only
+      rw [ite_eq_left ((valsTy_length hvals).trans (valsTy_length hst).symm)]
+      exact walkLoop_good hbody w hvals (fun u hu => h u (List.mem_cons_of_mem _ hu))
+
+theorem rangeVals_int (a b : Int) (inc : Bool) : ∀ v ∈ rangeVals a b inc, ValTy p v .int := by
+  intro v hv
+  simp only [rangeVals, List.mem_map] at hv
+  obtain ⟨_, _, rfl⟩ := hv
+  exact .int
+
+/-- A typed source gives the loop typed elements. -/
+theorem source_typed {env : Env} {ctx : Ctx} {s : Source} {t : Ty}
+    (henv : EnvTy p env ctx) (h : SourceTy ctx s t) :
+    ∃ items, sourceVals env s = some items ∧ ∀ v ∈ items, ValTy p v t := by
+  cases h with
+  | list hx =>
+    obtain ⟨v, hv, hvt⟩ := atom_typed henv hx
+    cases hvt with
+    | list hitems => exact ⟨_, by simp [sourceVals, hv], hitems⟩
+  | @range low high inc hl hh =>
+    obtain ⟨u, hu, hut⟩ := atom_typed henv hl
+    obtain ⟨v, hv, hvt⟩ := atom_typed henv hh
+    cases hut with
+    | @int a =>
+      cases hvt with
+      | @int b => exact ⟨rangeVals a b inc, by simp only [sourceVals, hu, hv], rangeVals_int _ _ _⟩
+
 theorem parseInt_good (w : World H) (s : String) : Good p .int (parseInt w s).2.1 := by
   unfold parseInt
   split
@@ -275,6 +313,35 @@ theorem sound (hwf : p.WellFormed) (h4 : H.RespTyped) : ∀ n : Nat,
         obtain ⟨vb, hvb, _⟩ := atom_typed henv hb
         simp only [evalRhs, hva, hvb, done, Good]
         exact .bool
+      | tuple has =>
+        obtain ⟨vs, hvs, hvst⟩ := atoms_typed henv has
+        simp [evalRhs, hvs, Good]
+        exact .tuple hvst
+      | append hxs hi =>
+        obtain ⟨xv, hxv, hxt⟩ := atom_typed henv hxs
+        obtain ⟨iv, hiv, hit⟩ := atom_typed henv hi
+        cases hxt with
+        | list hitems =>
+          simp only [evalRhs, hxv, hiv, done, Good]
+          exact .list (fun u hu => by
+            rcases List.mem_append.mp hu with hu | hu
+            · exact hitems u hu
+            · simp at hu; subst hu; exact hit)
+      | set hxs hi hv =>
+        obtain ⟨xv, hxv, hxt⟩ := atom_typed henv hxs
+        obtain ⟨iv, hiv, hit⟩ := atom_typed henv hi
+        obtain ⟨vv, hvv, hvt⟩ := atom_typed henv hv
+        cases hxt with
+        | list hitems =>
+          cases hit
+          simp only [evalRhs, hxv, hiv, hvv]
+          split
+          · simp only [done, Good]
+            refine .tuple (.cons (.list fun u hu => ?_) (.cons .unit .nil))
+            rcases List.mem_or_eq_of_mem_set hu with hu | rfl
+            · exact hitems u hu
+            · exact hvt
+          · simp [abort, Good]
     · intro w env ctx e t henv he
       cases he with
       | atom ha =>
@@ -329,6 +396,20 @@ theorem sound (hwf : p.WellFormed) (h4 : H.RespTyped) : ∀ n : Nat,
           | ok v => simp
           | stuck => simp [Good]
           | outOfFuel => simp [Good]
+      | letTuple hv hlen hb =>
+        obtain ⟨v, hv', hvt⟩ := atom_typed henv hv
+        cases hvt with
+        | tuple hvals =>
+          simp only [eval, hv']
+          rw [ite_eq_left ((valsTy_length hvals).trans hlen)]
+          exact ihE (bindParams_typed hvals hlen henv) hb
+      | loop hs hi hlen hb =>
+        obtain ⟨items, hitems, hit⟩ := source_typed henv hs
+        obtain ⟨st, hst, hstt⟩ := atoms_typed henv hi
+        simp only [eval, hitems, hst]
+        rw [ite_eq_left ((valsTy_length hstt).trans hlen)]
+        exact walkLoop_good (fun w v st' hv hst' => ihE (.cons hv (bindParams_typed hst' hlen henv)) hb)
+          w hstt hit
 
 /-- **T1 for F1.** A well-typed expression of a well-formed program, run in an environment of
 its context's types with any fuel and any host, never gets stuck, and a value it ends with has

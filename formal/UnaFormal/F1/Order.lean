@@ -76,6 +76,7 @@ mutual
     | .fn ps r _ _ _ l =>
       .fn (Flows.refl ps) (Flow.refl r) id (HostFx.Le.refl _) id (LExpr.le_refl l)
     | .var _ l => .var (LExpr.le_refl l)
+    | .tuple ts l => .tuple (Flows.refl ts) (LExpr.le_refl l)
 
   theorem Flows.refl {top : Label} : ∀ ts : List LTy, Flows top ts ts
     | [] => .nil
@@ -97,6 +98,7 @@ mutual
       .fn (Flows.trans ps₂ ps₁) (Flow.trans r₁ r₂) (o₂ ∘ o₁) (g₁.trans g₂) (f₂ ∘ f₁)
         (LExpr.le_trans h₁ h₂)
     | _, _, _, .var h₁, .var h₂ => .var (LExpr.le_trans h₁ h₂)
+    | _, _, _, .tuple f₁ h₁, .tuple f₂ h₂ => .tuple (Flows.trans f₁ f₂) (LExpr.le_trans h₁ h₂)
 
   theorem Flows.trans {top : Label} :
       ∀ {a b c : List LTy}, Flows top a b → Flows top b c → Flows top a c
@@ -116,5 +118,6 @@ theorem Flow.raise {top : Label} (e : LExpr) : ∀ t : LTy, Flow top t (t.raise 
   | .record _ l => .record (LExpr.le_join_left l e)
   | .fn ps r _ _ _ l => .fn (Flows.refl ps) (Flow.refl r) id (HostFx.Le.refl _) id (LExpr.le_join_left l e)
   | .var _ l => .var (LExpr.le_join_left l e)
+  | .tuple ts l => .tuple (Flows.refl ts) (LExpr.le_join_left l e)
 
 end Una.F1

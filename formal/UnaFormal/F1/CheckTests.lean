@@ -57,6 +57,7 @@ mutual
       match List.lookup a σ with
       | some t => if raise then t.raise ((l.dropPlain a).inst (σ.map fun q => (q.1, img q.2))) else t
       | none => .var a (l.inst (σ.map fun q => (q.1, img q.2)))
+    | .tuple ts l => .tuple (lsubstsWith raise img σ ts) (l.inst (σ.map fun q => (q.1, img q.2)))
 
   def lsubstsWith (raise : Bool) (img : LTy → LExpr) (σ : List (String × LTy)) :
       List LTy → List LTy

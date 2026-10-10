@@ -19,6 +19,8 @@ mutual
       simp [LTy.erase, Flow.erase h]
     | _, _, .fn hps hr _ _ _ _ => by
       simp only [LTy.erase, LTy.erases_eq, Flows.erase hps, Flow.erase hr]
+    | _, _, .tuple hs _ => by
+      simp only [LTy.erase, LTy.erases_eq, Flows.erase hs]
 
   theorem Flows.erase {top : Label} :
       ∀ {ts₁ ts₂ : List LTy}, Flows top ts₁ ts₂ → ts₂.map LTy.erase = ts₁.map LTy.erase
@@ -74,6 +76,16 @@ theorem map_erase_const {t : LTy} :
     simp only [List.map_cons, hu u List.mem_cons_self]
     simp only [List.length_cons, Nat.add_right_cancel_iff] at hl
     rw [map_erase_const (fun v hv => hu v (List.mem_cons_of_mem _ hv)) hl]
+
+/-- The binders' structural types are those of the types that flow into them. -/
+theorem flows_erase_binders {top : Label} {ts : List LTy} {bs : List (String × LTy)}
+    (h : Flows top ts (bs.map Prod.snd)) : bs.map (fun q => q.2.erase) = ts.map LTy.erase := by
+  have := Flows.erase h
+  simpa [List.map_map, Function.comp_def] using this
+
+theorem flows_length {top : Label} : ∀ {ts₁ ts₂ : List LTy}, Flows top ts₁ ts₂ → ts₁.length = ts₂.length
+  | _, _, .nil => rfl
+  | _, _, .cons _ hs => by simp [flows_length hs]
 
 theorem params_erase (params : List (String × LTy)) (Γ : LCtx) :
     LCtx.erase (params ++ Γ) = bindTys params (params.map (fun q => q.2.erase)) ++ Γ.erase := by
@@ -186,6 +198,22 @@ mutual
       have h := latom_erase hs
       rw [ht] at h
       exact .parse h
+    | _, _, _, _, _, .tuple has => by
+      simp only [LTy.erase, LTy.erases_eq]
+      exact .tuple (latoms_erase has)
+    | _, _, _, _, _, .append hxs hi hflow => by
+      have h1 := latom_erase hxs
+      have h2 := latom_erase hi
+      simp only [LTy.erase] at h1 ⊢
+      rw [Flow.erase hflow] at h2
+      exact .append h1 h2
+    | _, _, _, _, _, .set hxs hi _ hv hflow => by
+      have h1 := latom_erase hxs
+      have h2 := latom_erase hi
+      have h3 := latom_erase hv
+      simp only [LTy.erase, LTy.erases] at h1 h2 ⊢
+      rw [Flow.erase hflow] at h3
+      exact .set h1 h2 h3
 
   /-- Erasing labels from a labeled typing of a body gives a structural typing. -/
   theorem LExprTy.toStruct :
@@ -238,6 +266,40 @@ mutual
       rw [Flow.erase h₂] at hh'
       rw [LTy.erase_raise]
       exact .handle hb' hh'
+    | _, _, _, _, _, .letTuple (binders := bs) (ts := ts) hv hflows _ hb => by
+      have h1 := latom_erase hv
+      have hb' := LExprTy.toStruct hb
+      have he : bs.map (fun q => q.2.erase) = ts.map LTy.erase := by
+        have := flows_erase_binders hflows
+        simpa [List.map_map, Function.comp_def, LTy.erase_raise] using this
+      rw [params_erase, he] at hb'
+      simp only [LTy.erase, LTy.erases_eq] at h1
+      exact .letTuple h1 (by simpa using (congrArg List.length he).symm) hb'
+    | _, _, _, _, _, .loopList (state := st) (ts := ts) hxs hx _ hi hflows _ hb hbt => by
+      have h1 := latom_erase hxs
+      have hb' := LExprTy.toStruct hb
+      have hi' := latoms_erase hi
+      have he := flows_erase_binders hflows
+      have hxe := Flow.erase hx
+      rw [LTy.erase_raise] at hxe
+      simp only [LCtx.erase, List.map_cons] at hb'
+      rw [← LCtx.erase, params_erase, he, ← hxe, Flow.erase hbt] at hb'
+      simp only [LTy.erase, LTy.erases_eq, List.map_map, Function.comp_def] at h1 hb' ⊢
+      rw [he]
+      rw [he] at hb'
+      exact .loop (.list h1) hi' (by simpa using (congrArg List.length he).symm) hb'
+    | _, _, _, _, _, .loopRange (state := st) (ts := ts) hl hh hx _ hi hflows _ hb hbt => by
+      have hb' := LExprTy.toStruct hb
+      have hi' := latoms_erase hi
+      have he := flows_erase_binders hflows
+      have hxe := Flow.erase hx
+      simp only [LCtx.erase, List.map_cons] at hb'
+      rw [← LCtx.erase, params_erase, he, ← hxe, Flow.erase hbt] at hb'
+      simp only [LTy.erase, LTy.erases_eq, List.map_map, Function.comp_def] at hb' ⊢
+      rw [he]
+      rw [he] at hb'
+      exact .loop (.range (latom_erase hl) (latom_erase hh)) hi'
+        (by simpa using (congrArg List.length he).symm) hb'
 end
 
 theorem paramTys_nil (fn : Fun) : fn.paramTys [] = fn.params.map (fun q => q.2.erase) := by
