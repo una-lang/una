@@ -3,7 +3,7 @@
 - Issue: #487, under #46
 - Previous step: `docs/plan/formal-track-m6b.md` (M6b, #485), §3
 - Date: 2026-10-10
-- Status: statement draft, for the coordinator's review before any proof
+- Status: statement approved by the coordinator (2026-10-10); proven
 
 ## 1. Why
 
@@ -51,9 +51,11 @@ So two runs from environments that differ in an `internal` value, a secret in `S
 
 **A premise, stated.** The variables that exist are the same in both runs, and their values are the secret. A program that would leak whether a variable exists is outside this premise: the label rules treat existence as `public`, which `spec/14 §3` declares. This is the honest reading of that declaration, written as a premise of the model rather than proven.
 
+**Its consequence, plainly:** whether a variable exists is treated as public configuration. An operator must not encode a secret in which variables are set: a program may branch on it and print, and T6 does not cover that. The guide says so in its `Env` section (`docs/guide/una-for-agents.md`).
+
 ## 4. What else changes
 
-- **The note** of a declaration whose program reads `Env` names the new premise: "…and `Env`, whose variables are the same in both runs".
+- **The note** of a declaration whose program reads `Env` names the new premise and its consequence: "…, and `Env`, whose variables are the same in both runs: whether a variable exists is public configuration, so an operator must not encode a secret in which variables are set".
 - **Erasure:** `Env.get`'s value is a text, which erasure keeps. The host's `AnonInvariant` is unchanged.
 - **Host-free code:** `Env.get` stays outside host-free code, since it reads the world.
 - **The re-check:** no verdict rule changes. Only the note's text changes on the declarations that read `Env`, and the corpus diff shows it.
@@ -68,7 +70,20 @@ So two runs from environments that differ in an `internal` value, a secret in `S
 
 `World` gains a field. Every proof that builds or compares worlds changes: the unary `WEff`, `confined`, `WorldRel.trans` and the T6 cases of the host operations. So does every example's world literal. On M5's evidence that is mostly mechanical, and the one new argument is `Env.get`'s binary case of §3. Lean-only, about half a day.
 
-## 7. Questions
+## 7. Decisions
 
-1. **The premise of §3:** the same variables in both runs, `public` existence. Or should existence be `internal` too? That would contradict `spec/14 §3`'s `public` tag and the checker, and needs an ADR, so I propose not.
-2. **The note's text:** "…and `Env`, whose variables are the same in both runs", in place of M6b's "with one environment in both runs".
+The coordinator approved the statement on 2026-10-10:
+1. **Existence stays `public`**, as a premise, matching `spec/14 §3` and the checker. No ADR. The premise's consequence is stated in this document, in the note, and in the guide.
+2. **The note's text** as §4 gives it.
+
+## 8. Result
+
+- **The model.** `World` gains `env`, and `Host.env` is gone. `WEff` gains `w'.env = w.env`, so every run leaves the environment unchanged. `WorldRel` gains the existence conjunct. `t6_host` and every theorem above it keep their statements.
+- **The one new argument** is `Env.get`'s binary case in `T6.lean`: the tags agree by the conjunct, and the values are equal under `internal` (the worlds are) or hidden.
+- **Non-vacuity** (`EnvExample.lean`):
+  - `leak_untyped`: the leak of §5 has no typing. The proof uses T6 itself: its two runs, from the related worlds of `set_rel`, print different lines (`leak_runs`).
+  - `read_runs` and `read_differ`: the `internal` read is certified, its runs are related, and they return `"1"` and `"2"`.
+  - `exists_runs`: the branch on existence is certified, and its runs from worlds that both set `SECRET` are related.
+  - `exists_unrelated`: worlds where `SECRET` is set in one run only are not related, for any observer. This is the premise at work.
+- **The gate:** `scripts/formal.sh` states 213 theorems, with no `sorry`.
+- **The corpus:** no verdict changes, with 756 accepted and 0 rejected, the same as after #494. Only the `Env` note's text changes, and `ImportTests` pins it.

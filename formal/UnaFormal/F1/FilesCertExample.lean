@@ -61,8 +61,8 @@ theorem callMark_checked :
     ∃ ε, checkExpr prog [] [] .bot (.unit .bot) callMark = .ok ε := ⟨_, rfl⟩
 
 /-- Two file systems with the same file and different contents. -/
-def w₁ : World HostExamples.files := ⟨[("marker.txt", "a")], ()⟩
-def w₂ : World HostExamples.files := ⟨[("marker.txt", "b")], ()⟩
+def w₁ : World HostExamples.files := ⟨[("marker.txt", "a")], (), fun _ => none⟩
+def w₂ : World HostExamples.files := ⟨[("marker.txt", "b")], (), fun _ => none⟩
 
 theorem internal_hidden : ¬ Vis prog Label.bot (.ofLabel internalLabel) := by
   rintro (⟨h, _⟩ | ⟨⟨h, _⟩, _, _⟩) <;>
@@ -70,7 +70,7 @@ theorem internal_hidden : ¬ Vis prog Label.bot (.ofLabel internalLabel) := by
     revert h <;> decide
 
 theorem worlds_rel : WorldRel prog Label.bot w₁ w₂ :=
-  ⟨fun _ => rfl, fun h => absurd h internal_hidden⟩
+  ⟨fun _ => rfl, fun h => absurd h internal_hidden, fun _ => rfl⟩
 
 /-- **T6 for a certified program that writes a file**, on the lawful host `files`, from two file
 systems that differ in a file's content: the runs show a public observer the same events and
@@ -110,7 +110,7 @@ theorem dbl_reach : ∀ f fn, prog.find f = some fn → f = "dbl" →
 def v₁ : World HostFreeExample.s16 := HostFreeExample.fsOk
 def v₂ : World HostFreeExample.s16 := HostFreeExample.fsBad
 
-theorem v_rel : WorldRel prog Label.bot v₁ v₂ := ⟨fun _ => rfl, fun h => absurd h internal_hidden⟩
+theorem v_rel : WorldRel prog Label.bot v₁ v₂ := ⟨fun _ => rfl, fun h => absurd h internal_hidden, fun _ => rfl⟩
 
 theorem sec_hidden : ¬ Vis prog Label.bot sec := by
   rintro (⟨h, _⟩ | ⟨⟨h, _⟩, _, _⟩) <;>

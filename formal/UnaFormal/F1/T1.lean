@@ -326,7 +326,7 @@ theorem sound (hwf : p.WellFormed) (h4 : H.RespTyped) : ∀ n : Nat,
         cases hvt with
         | @text s =>
           simp only [evalRhs, hv, done, Good]
-          cases H.env s
+          cases w.env s
           · exact .none
           · exact .some .text
       | tuple has =>

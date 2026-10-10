@@ -562,7 +562,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         simp only [evalRhs, hv, hcv]
         cases H.write s cs w.fs with
         | some fs' =>
-          refine ⟨fun ev hev => ?_, LValTy.unit, fun h => by simp [Event.isWrite] at h, fun _ => rfl⟩
+          refine ⟨fun ev hev => ?_, LValTy.unit, fun h => by simp [Event.isWrite] at h, fun _ => rfl, rfl⟩
           simp only [List.mem_singleton] at hev
           subst hev
           exact ⟨rfl, LExpr.le_trans (hpc0 _) (LExpr.le_of_le_inst_ofLabel (LExpr.le_inst _
@@ -588,14 +588,14 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         obtain ⟨o, srv'⟩ := q
         cases o with
         | ok body =>
-          refine ⟨fun ev hev => ?_, ?_, fun _ => rfl, fun h => by simp [Event.isReq] at h⟩
+          refine ⟨fun ev hev => ?_, ?_, fun _ => rfl, fun h => by simp [Event.isReq] at h, rfl⟩
           rotate_left
           · simpa [LTy.lsubst] using LValTy.response hr (h4 m vs w.srv srv' body hq) _
           simp only [List.mem_singleton] at hev
           subst hev
           exact ⟨rfl, LExpr.le_trans (hpc0 _) (LExpr.le_of_le_inst_ofLabel (LExpr.le_inst _ hle)), htx⟩
         | error c =>
-          refine ⟨fun ev hev => ?_, ⟨_, rfl, ?_⟩, fun _ => rfl, fun h => by simp [Event.isReq] at h⟩
+          refine ⟨fun ev hev => ?_, ⟨_, rfl, ?_⟩, fun _ => rfl, fun h => by simp [Event.isReq] at h, rfl⟩
           · simp only [List.mem_singleton] at hev
             subst hev
             exact ⟨rfl, LExpr.le_trans (hpc0 _) (LExpr.le_of_le_inst_ofLabel (LExpr.le_inst _ hle)),
@@ -805,7 +805,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         cases hvt with
         | @text s _ =>
           simp only [evalRhs, hv]
-          cases H.env s
+          cases w.env s
           · exact uok_done (by simp only [LTy.lsubst, Option.elim]; exact .none)
           · exact uok_done (by simp only [LTy.lsubst, Option.elim]; exact .some .text)
       | tuple has =>

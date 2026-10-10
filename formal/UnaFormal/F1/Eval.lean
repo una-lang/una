@@ -87,15 +87,15 @@ structure Host where
   read : String → FS → Option String
   write : String → String → FS → Option FS
   request : String → List Val → Srv → Except Nat Val × Srv
-  /-- The process environment `Env.get` reads (M6b): the host's, the same in both runs, and no
-  operation of the program changes it (M3's assumption 3). A variable that is not valid UTF-8
-  aborts the run (S-16, ADR 0086), which is termination, so the model gives texts. -/
-  env : String → Option String := fun _ => none
 
 /-- The host's state. -/
 structure World (H : Host) where
   fs : H.FS
   srv : H.Srv
+  /-- The process environment `Env.get` reads (#487): part of the world, so two runs may read
+  different values; no operation of the program changes it. A variable that is not valid UTF-8
+  aborts the run (S-16, ADR 0086), which is termination, so the model gives texts. -/
+  env : String → Option String := fun _ => none
 
 /-- **H4**: every response of the host is a `Response` (M5c). -/
 def Host.RespTyped (H : Host) : Prop :=
@@ -456,7 +456,7 @@ mutual
         | none => stuck w
       | .envGet name =>
         match evalAtom env name with
-        | some (.text s) => done w ((H.env s).elim .none (fun x => .some (.text x)))
+        | some (.text s) => done w ((w.env s).elim .none (fun x => .some (.text x)))
         | _ => stuck w
       | .set xs index item =>
         match evalAtom env xs, evalAtom env index, evalAtom env item with

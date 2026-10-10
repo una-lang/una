@@ -167,7 +167,7 @@ mutual
     (M6b). -/
     | toText (a : Atom)
     /-- `Env.get(name)` of `std.host` (`spec/14 §3`): the variable, as `Option[internal Text]`, from
-    the host's environment, which is the same in both runs (M6b). -/
+    the world's environment, where two runs may hold different values (#487). -/
     | envGet (name : Atom)
 
   /-- A body in A-normal form. -/
