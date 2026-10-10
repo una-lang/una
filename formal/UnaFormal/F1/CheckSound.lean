@@ -47,6 +47,10 @@ mutual
         simp only [tyEq, Bool.and_eq_true] at h
         rw [tysEq_sound ps qs h.1, tyEq_sound r s h.2]
       | _ => simp [tyEq] at h
+    | .tuple ps, b, h => by
+      cases b with
+      | tuple qs => simp only [tyEq] at h; rw [tysEq_sound ps qs h]
+      | _ => simp [tyEq] at h
 
   theorem tysEq_sound : ∀ (as bs : List Ty), tysEq as bs = true → as = bs
     | [], [], _ => rfl
@@ -90,6 +94,7 @@ mutual
       · intro h; cases ho with | inl h' => simp_all | inr h' => exact h'
       · intro h; cases hf with | inl h' => simp_all | inr h' => exact h'
     · obtain ⟨rfl, h⟩ := h; exact .var (leB_sound h)
+    · exact .tuple (flowsB_sound _ _ h.1) (leB_sound h.2)
     · exact absurd h (by simp)
   termination_by sizeOf a + sizeOf b
 
@@ -117,6 +122,9 @@ mutual
     | .fn _ _ _ _ _ _, h => by
       simp only [inPlace, Bool.and_eq_true, List.isEmpty_iff] at h
       exact ⟨inPlaceAll_sound h.1.1, inPlace_sound h.1.2, h.2⟩
+    | .tuple _ _, h => by
+      simp only [inPlace, Bool.and_eq_true, List.isEmpty_iff] at h
+      exact ⟨inPlaceAll_sound h.1, h.2⟩
 
   theorem inPlaceAll_sound : ∀ {ts : List LTy}, inPlaceAll ts = true → LTy.InPlaceAll ts
     | [], _ => trivial
@@ -135,6 +143,9 @@ mutual
     | .fn _ _ _ _ _ _, h => by
       simp only [ground, Bool.and_eq_true] at h
       exact ⟨groundAll_sound h.1.1, ground_sound h.1.2, symFree_sound h.2⟩
+    | .tuple _ _, h => by
+      simp only [ground, Bool.and_eq_true] at h
+      exact ⟨groundAll_sound h.1, symFree_sound h.2⟩
 
   theorem groundAll_sound : ∀ {ts : List LTy}, groundAll ts = true → LTy.GroundAll ts
     | [], _ => trivial
@@ -159,6 +170,9 @@ mutual
     | .fn _ _ _ _ _ _, h => by
       simp only [scopedIn, Bool.and_eq_true] at h
       exact ⟨scopedInAll_sound h.1.1, scopedIn_sound h.1.2, symsIn_sound h.2⟩
+    | .tuple _ _, h => by
+      simp only [scopedIn, Bool.and_eq_true] at h
+      exact ⟨scopedInAll_sound h.1, symsIn_sound h.2⟩
 
   theorem scopedInAll_sound {xs : List String} :
       ∀ {ts : List LTy}, scopedInAll xs ts = true → LTy.ScopedInAll xs ts

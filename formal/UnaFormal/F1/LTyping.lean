@@ -66,6 +66,8 @@ mutual
         HostFx.Le g₁ g₂ → (f₁ = true → f₂ = true) → LExpr.le top l₁ l₂ →
         Flow top (.fn ps₁ r₁ o₁ g₁ f₁ l₁) (.fn ps₂ r₂ o₂ g₂ f₂ l₂)
     | var {a l₁ l₂} : LExpr.le top l₁ l₂ → Flow top (.var a l₁) (.var a l₂)
+    | tuple {ts₁ ts₂ l₁ l₂} :
+        Flows top ts₁ ts₂ → LExpr.le top l₁ l₂ → Flow top (.tuple ts₁ l₁) (.tuple ts₂ l₂)
 
   inductive Flows (top : Label) : List LTy → List LTy → Prop where
     | nil : Flows top [] []
@@ -78,6 +80,7 @@ mutual
   def LTy.firstClass : LTy → Bool
     | .list t _ | .option t _ | .result t _ => t.firstClass
     | .fn ps r o g f _ => !o && g.isNone && !f && LTy.firstClasses ps && r.firstClass
+    | .tuple ts _ => LTy.firstClasses ts
     | _ => true
 
   def LTy.firstClasses : List LTy → Bool
@@ -184,6 +187,7 @@ mutual
     | .int l | .bool l | .text l | .unit l | .record _ l => l.plain = []
     | .list t l | .option t l | .result t l => t.InPlace ∧ l.plain = []
     | .fn ps r _ _ _ l => LTy.InPlaceAll ps ∧ r.InPlace ∧ l.plain = []
+    | .tuple ts l => LTy.InPlaceAll ts ∧ l.plain = []
 
   def LTy.InPlaceAll : List LTy → Prop
     | [] => True
@@ -198,6 +202,7 @@ mutual
     | .int l | .bool l | .text l | .unit l | .record _ l => l.SymFree
     | .list t l | .option t l | .result t l => t.Ground ∧ l.SymFree
     | .fn ps r _ _ _ l => LTy.GroundAll ps ∧ r.Ground ∧ l.SymFree
+    | .tuple ts l => LTy.GroundAll ts ∧ l.SymFree
 
   def LTy.GroundAll : List LTy → Prop
     | [] => True
@@ -214,6 +219,7 @@ mutual
     | .int l | .bool l | .text l | .unit l | .record _ l => l.SymsIn xs
     | .list t l | .option t l | .result t l => t.ScopedIn xs ∧ l.SymsIn xs
     | .fn ps r _ _ _ l => LTy.ScopedInAll xs ps ∧ r.ScopedIn xs ∧ l.SymsIn xs
+    | .tuple ts l => LTy.ScopedInAll xs ts ∧ l.SymsIn xs
 
   def LTy.ScopedInAll (xs : List String) : List LTy → Prop
     | [] => True
@@ -232,7 +238,7 @@ only when it is among `E`, those the enclosing function constrains by `Eq` (U202
 when `recEq` says so of its kind. -/
 def LTy.eqIn (E : List String) (recEq : String → Bool) : LTy → Bool
   | .list t _ | .option t _ | .result t _ => t.eqIn E recEq
-  | .fn _ _ _ _ _ _ => false
+  | .fn _ _ _ _ _ _ | .tuple _ _ => false
   | .var a _ => E.contains a
   | .record r _ => recEq r
   | _ => true
@@ -387,6 +393,19 @@ mutual
     | eq {Γ pc a b t₁ t₂ t} :
         LAtomTy Γ a t₁ → LAtomTy Γ b t₂ → Flow p.top t₁ t → Flow p.top t₂ t → p.eqIn E t = true →
         LRhsTy p E Γ pc (.eq a b) (.bool ((p.deep t₁).join (p.deep t₂))) .none
+    /-- A tuple of Core (`spec/17 §4`): the components' types. -/
+    | tuple {Γ pc items ts} : LAtomsTy Γ items ts → LRhsTy p E Γ pc (.tuple items) (.tuple ts .bot) .none
+    /-- `append`: the item flows into the element type; the list keeps its top label, its length's. -/
+    | append {Γ pc xs item te lx t} :
+        LAtomTy Γ xs (.list te lx) → LAtomTy Γ item t → Flow p.top t te →
+        LRhsTy p E Γ pc (.append xs item) (.list te lx) .none
+    /-- `set`: the index is `public` (its parameter's label in the prelude), and the item flows
+    into the element type. Whether the index is in range is decided by the index and the length;
+    out of it the run aborts (N-79), which is termination. -/
+    | set {Γ pc xs index item te lx li t} :
+        LAtomTy Γ xs (.list te lx) → LAtomTy Γ index (.int li) → p.le li .bot →
+        LAtomTy Γ item t → Flow p.top t te →
+        LRhsTy p E Γ pc (.set xs index item) (.tuple [.list te lx, .unit .bot] .bot) .none
 
   inductive LExprTy (p : Program) (E : List String) : LCtx → LExpr → Expr → LTy → Eff → Prop where
     | atom {Γ pc a t} : LAtomTy Γ a t → LExprTy p E Γ pc (.atom a) t .none
@@ -435,6 +454,36 @@ mutual
         Flow p.top t₁ s → Flow p.top t₂ s → s.InPlace →
         LExprTy p E Γ pc (.handle body x handler) (s.raise ε₁.failLabel)
           ⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels⟩
+    /-- T-LetTuple: each component, raised by the tuple's top label, flows into its binder's
+    declared type. -/
+    | letTuple {Γ pc binders value body ts l s ε} :
+        LAtomTy Γ value (.tuple ts l) → Flows p.top (ts.map (LTy.raise l)) (binders.map Prod.snd) →
+        (∀ q ∈ binders, q.2.InPlace) → LExprTy p E (binders ++ Γ) pc body s ε →
+        LExprTy p E Γ pc (.letTuple binders value body) s ε
+    /-- T-Loop over a list (`spec/17 §6` rule 3, ADR 0075): the declared state types are an
+    invariant. The initial values flow into them, and the body, run under the list's top label,
+    which decides how many iterations run, maps the state at those types to a tuple that flows
+    into them. The variable carries the elements' labels and the list's top label, and the
+    loop's value is the state raised by the list's top label. An iteration's failure decides
+    whether the later iterations run, as a failure decides T-Let's continuation, so it is
+    decided by no more than what decides whether the iteration runs (M6, a finding of the
+    proof; `una check` gives U4002 to any failure a loop body passes on that is not public). -/
+    | loopList {Γ pc xs x xty state init body te ls ts tb ε} :
+        LAtomTy Γ xs (.list te ls) → Flow p.top (te.raise ls) xty → xty.InPlace →
+        LAtomsTy Γ init ts → Flows p.top ts (state.map Prod.snd) → (∀ q ∈ state, q.2.InPlace) →
+        LExprTy p E ((x, xty) :: (state ++ Γ)) (pc.join ls) body tb ε →
+        Flow p.top tb (.tuple (state.map Prod.snd) .bot) → (p.oldLoop = false → p.le ε.failLabel (pc.join ls)) →
+        LExprTy p E Γ pc (.loop (.list xs) x xty state init body) (.tuple (state.map Prod.snd) ls) ε
+    /-- T-Loop over a range: as over a list, with the bounds' labels, which decide the variable's
+    values and how many iterations run. -/
+    | loopRange {Γ pc low high inclusive x xty state init body l₁ l₂ ts tb ε} :
+        LAtomTy Γ low (.int l₁) → LAtomTy Γ high (.int l₂) → Flow p.top (.int (l₁.join l₂)) xty →
+        xty.InPlace →
+        LAtomsTy Γ init ts → Flows p.top ts (state.map Prod.snd) → (∀ q ∈ state, q.2.InPlace) →
+        LExprTy p E ((x, xty) :: (state ++ Γ)) (pc.join (l₁.join l₂)) body tb ε →
+        Flow p.top tb (.tuple (state.map Prod.snd) .bot) → (p.oldLoop = false → p.le ε.failLabel (pc.join (l₁.join l₂))) →
+        LExprTy p E Γ pc (.loop (.range low high inclusive) x xty state init body)
+          (.tuple (state.map Prod.snd) (l₁.join l₂)) ε
 end
 
 /-- T-Fun: the body, at the public program counter, flows into the declared result, which may
@@ -453,6 +502,7 @@ mutual
     | .int l | .bool l | .text l | .unit l | .record _ l | .var _ l => l.CatsIn cats
     | .list t l | .option t l | .result t l => t.CatsIn cats ∧ l.CatsIn cats
     | .fn ps r _ _ _ l => LTy.CatsInAll cats ps ∧ r.CatsIn cats ∧ l.CatsIn cats
+    | .tuple ts l => LTy.CatsInAll cats ts ∧ l.CatsIn cats
 
   def LTy.CatsInAll (cats : List String) : List LTy → Prop
     | [] => True

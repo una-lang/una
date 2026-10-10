@@ -34,7 +34,7 @@ Nothing is edited by hand. The label that each rejection names is the pre-fix ch
 
 - **S-02** (`parse_json`): F1 has no `Json`.
 - **S-03** (Http failures): the importer does not read `Http`'s operations, which take several arguments and fail.
-- **S-04** (`let edit`): the memory model, F1+ (M5).
+- **S-04** (`let edit`): the memory model, M6. Its shapes are now dumped and read (below, "S-04"), and none is re-checked yet.
 - **S-05** (`Files.write`): an operation with two arguments that fails.
 
 **Summary.** The checker rejects all 8 findings that F1's forms can write.
@@ -89,3 +89,35 @@ A declaration is accepted only when everything it reaches is accepted too, excep
 - The prelude's `sum` is a primitive, a fold of `+` with every label of its list.
 
 T1, the unary half and T6 carry both changes, and `scripts/formal.sh` passes with 59 theorems. For edition 0.1 documents, the importer constrains by `Eq` every type parameter of a function that applies `==`, since edition 0.1 has no `Eq` constraint. This only adds the check, at each call, that the type argument has equality.
+
+## S-04 (M6, #478)
+
+**Provenance.** S-04 leaked in v0.2.0, which was never published. The release gates built it from commit `5361a0e364a4116cafb65a7cebe92c3733525eea` (`coordination/releases/v0.2.0/record.md`). The archive `una-0.2.0-aarch64-apple-darwin.tar.gz` has the sha256 the record states, `ffb299c770a9d6239ce0fc79620dceb35839277337f6603cb4715a2943895e7c`, and its `una` is the binary these dumps come from. Commit `2a69456`, named in N-45, only adds the validation record on top of `5361a0e3`.
+
+**The shapes.** These are the 16 conformance cases of `tests/conformance/security/` that this v0.2.0 binary accepts (`una check` exits 0) and that v0.3.0, the first release with the fix (ADR 0075), rejects (exit 1):
+- `edit_order_loop_` `list`, `option`, `result_ok`, `result_err`, `closure`, `edit_param`, `fold`, `generic_init`, `nested_list`, `nested_list_of_options`, `nested_option`, `nested_result` and `together`;
+- `edit_order_` `list_of_lists_leak`, `list_of_options_leak` and `option_of_list_leak`.
+
+`edit_order_if_no_loop` is also accepted by v0.2.0 and rejected by v0.3.0. It is ADR 0075's intentional tightening, a read printed before the only `internal` assignment, which leaks nothing, so it is not replayed. The `Map` shapes do not check on v0.2.0.
+
+`dumps-0.2/` holds each shape's `una check --dump-core main` output from that binary, edited by no one. `run.sh` reads them in edition 0.2 after S-01 to S-12.
+
+**Result: none is re-checked yet.** Each shape reads its secret with `Env.get` and prints it through interpolation, `to_text` then `concat`. The dumps show the leak at that interpolation. In `edit_order_loop_list`, for instance:
+
+```
+let %t4: internal Text = to_text(xs%2) in
+let %t5: Text = concat(%t4) in
+```
+
+The `internal` text becomes a `public` one. M6 models loops, tuples, `append` and `set`, but not `concat`, `to_text` or `Env.get`. So the re-check reports every shape as not re-checked: 15 at "the primitive `concat`", and `edit_order_loop_together` at "the form `together_for`". It reports none as accepted. Two helper functions, `edit_param`'s `push` and `generic_init`'s `same`, are accepted, and neither prints.
+
+**Next: M6b.** It models `to_text`, `concat` and `Env.get` as proven primitives. The exit criterion is that the 8 shapes that use no other form (`list`, `option`, `result_ok`, `result_err`, `closure`, `edit_param`, `fold`, `generic_init`) are rejected, and their fixed versions are not. `prelude.at`, `or_else` and `first` come in a later item (the coordinator's decision N-82).
+
+**The reader.** `dumpcore.py` reads M6's syntax:
+- tuple types `(T, ...)`;
+- tuple values `(a, ...)`;
+- `let (x: T, ...) = a in e`;
+- `loop x: T in s with (b: T = a, ...) do e`, over a list or a range.
+
+It reports a body with `together` or `together_for` as that form, outside F1.
+

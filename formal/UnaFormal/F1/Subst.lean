@@ -123,6 +123,7 @@ theorem Flow.raise_mono {top : Label} {e₁ e₂ : LExpr} (h : LExpr.le top e₁
   | .record _ l => .record (LExpr.join_mono (LExpr.le_refl l) h)
   | .fn ps r _ _ _ l => .fn (Flows.refl ps) (Flow.refl r) id (HostFx.Le.refl _) id (LExpr.join_mono (LExpr.le_refl l) h)
   | .var _ l => .var (LExpr.join_mono (LExpr.le_refl l) h)
+  | .tuple ts l => .tuple (Flows.refl ts) (LExpr.join_mono (LExpr.le_refl l) h)
 
 mutual
   /-- **Flows are stable under labeled instantiation.** A flow the checker finds between two
@@ -144,6 +145,7 @@ mutual
       cases List.lookup a σ with
       | some u => exact Flow.raise_mono (LExpr.le_inst _ (LExpr.le_dropPlain a h)) u
       | none => exact .var (LExpr.le_inst _ h)
+    | _, _, .tuple fs h => .tuple (Flows.lsubst rd σ fs) (LExpr.le_inst _ h)
 
   theorem Flows.lsubst {top : Label} (rd : String → Label) (σ : List (String × LTy)) :
       ∀ {ts₁ ts₂ : List LTy}, Flows top ts₁ ts₂ →

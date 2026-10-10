@@ -40,6 +40,7 @@ def LTy.addStarTop (xs : List String) : LTy → LTy
   | .record r l => .record r { l with star := l.star ++ xs }
   | .fn ps r o g f l => .fn ps r o g f { l with star := l.star ++ xs }
   | .var a l => .var a { l with star := l.star ++ xs }
+  | .tuple ts l => .tuple ts { l with star := l.star ++ xs }
 
 /-- `t` with `ℓ*_x`, `x ∈ xs`, added at the position `steps` of a result summary, as
 `spec/13 §5` writes it (`element`, `arg N`, `result`); `none` at a position F1 does not have. -/
@@ -205,6 +206,7 @@ partial def ty (c : Ctx) (j : J) : M LTy := do
       | "prelude.Result", t :: _ => pure (.result (← ty c t) l)
       | _, [] => if c.records.contains q then pure (.record q l) else throw s!"the type `{q}`"
       | _, _ => throw s!"the type `{q}` with type arguments"
+    | "tuple" => pure (.tuple (← (← arr (← field b "value")).mapM (ty c)) l)
     | k => throw s!"the type `{k}`"
   | k => throw s!"the type `{k}`"
 
@@ -251,6 +253,12 @@ def refFun (f : String) : M Unit :=
 def refPolicy (pol : String) : M Unit :=
   modify fun s => { s with policies := if s.policies.contains pol then s.policies else s.policies ++ [pol] }
 
+/-- A binder `[name, type]`. -/
+def binder (c : Ctx) (j : J) : M (String × LTy) := do
+  match ← arr j with
+  | [x, t] => pure (← str x, ← ty c t)
+  | _ => throw "a binder"
+
 /-- The name a pattern binds, or one nothing reads. -/
 def bindName (j : J) : M String := if isNull j then pure "%unread" else str j
 
@@ -280,6 +288,8 @@ mutual
       | "prelude.fold", [xs, i, g] => pure (.fold xs i g)
       | "prelude.parse_int", [s] => pure (.parse s)
       | "prelude.sum", [xs] => pure (.prim .sum [xs])
+      | "prelude.append", [xs, x] => pure (.append xs x)
+      | "prelude.set", [xs, i, x] => pure (.set xs i x)
       | _, _ =>
         if c.funs.contains f then
           refFun f
@@ -334,6 +344,7 @@ mutual
       | .ok i => pure (.field (← atom (← field j "value")) i)
       | .error _ => throw "a field index"
     | "list" => pure (.list (← atoms (← field j "value")))
+    | "tuple" => pure (.tuple (← atoms (← field j "value")))
     | "lambda" =>
       let ps ← (← arr (← field j "params")).mapM fun q => do
         match ← arr q with
@@ -416,6 +427,21 @@ mutual
       let h ← field j "handler"
       if reads x h then throw "a handler that reads the failure"
       pure (.handle (← expr c (← field j "body")) "%unread" (← expr c h))
+    | "let_tuple" =>
+      let bs ← (← arr (← field j "names")).mapM (binder c)
+      pure (.letTuple bs (← atom (← field j "value")) (← expr c (← field j "body")))
+    | "loop" =>
+      let src ← field j "source"
+      let source ← match ← kind src with
+        | "list" => pure (Source.list (← atom (← field src "value")))
+        | "range" =>
+          match (← field src "inclusive").getBool? with
+          | .ok inc => pure (Source.range (← atom (← field src "low")) (← atom (← field src "high")) inc)
+          | .error _ => throw "a range's `inclusive`"
+        | k => throw s!"a loop over `{k}`"
+      let (x, xt) ← binder c (← field j "var")
+      let st ← (← arr (← field j "state")).mapM (binder c)
+      pure (.loop source x xt st (← atoms (← field j "init")) (← expr c (← field j "body")))
     | k => throw s!"the form `{k}`"
 end
 
@@ -800,7 +826,7 @@ partial def rawCallees (j : J) : List String :=
 declaration may reach and still be accepted. -/
 def preludeF1 : List String :=
   ["prelude.map", "prelude.filter", "prelude.first_where", "prelude.fold", "prelude.parse_int",
-    "prelude.sum"]
+    "prelude.sum", "prelude.append", "prelude.set"]
 
 /-- A rejection by a restriction of option B1 is not a flow the model forbids: the program is
 outside B1, so it is not re-checked (ADR 0008). -/
@@ -833,6 +859,8 @@ mutual
     | .fail c => .fail c
     | .attempt b => .attempt (Expr.toInst cond b)
     | .handle b x h => .handle (Expr.toInst cond b) x (Expr.toInst cond h)
+    | .letTuple bs v b => .letTuple bs v (Expr.toInst cond b)
+    | .loop src x xt st init b => .loop src x xt st init (Expr.toInst cond b)
 end
 
 /-- The parts of the program checked at instances, from the final members: the functions checked

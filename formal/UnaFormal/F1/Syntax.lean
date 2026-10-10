@@ -29,6 +29,9 @@ inductive Ty where
   | record (name : String)
   | fn (params : List Ty) (result : Ty)
   | var (name : String)
+  /-- Core's tuples (`spec/09 §2`, ADR 0056), which only the memory model's desugaring makes:
+  a loop's state and an `edit` call's results (`spec/17 §4`). -/
+  | tuple (items : List Ty)
 
 /-- The host effects a code may perform: read a file, write a file, send a request. -/
 structure HostFx where
@@ -69,6 +72,7 @@ inductive LTy where
   | record (name : String) (l : LExpr)
   | fn (params : List LTy) (result : LTy) (op : Bool) (host : HostFx) (fails : Bool) (l : LExpr)
   | var (name : String) (l : LExpr)
+  | tuple (items : List LTy) (l : LExpr)
 
 /-- The scalar types, which the operation writes. -/
 def Ty.Scalar : Ty → Prop
@@ -93,6 +97,12 @@ inductive Prim where
   | len
   /-- The prelude's `sum` of a list of integers. -/
   | sum
+
+/-- What a loop visits (`spec/17 §4`): the elements of a list, in order, or the integers from
+`low` to `high`, in increasing order, `high` included when `inclusive`. -/
+inductive Source where
+  | list (xs : Atom)
+  | range (low high : Atom) (inclusive : Bool)
 
 mutual
   /-- What a `let` binds. -/
@@ -139,6 +149,13 @@ mutual
     /-- `a == b` on values of any type with equality, `T` with `Eq` included (`spec/20`):
     the comparison whose result carries the decision `ℓ*_T` of `spec/07 §7` rule 8. -/
     | eq (a b : Atom)
+    /-- A tuple of Core (`spec/17 §4`). -/
+    | tuple (items : List Atom)
+    /-- The prelude's `append`: `xs` with `item` at its end. -/
+    | append (xs item : Atom)
+    /-- The prelude's `set(edit xs, index, item)` (`spec/17 §8`), which returns the tuple of
+    the new list and `unit`, as its `edit` parameter desugars. -/
+    | set (xs index item : Atom)
 
   /-- A body in A-normal form. -/
   inductive Expr where
@@ -156,6 +173,13 @@ mutual
     | attempt (body : Expr)
     /-- `e if error x -> h`: `h` runs when `e` fails, with its code bound to `x`. -/
     | handle (body : Expr) (error : String) (handler : Expr)
+    /-- `let (x₁: S₁, ...) = a in e`: the components of a tuple (`spec/17 §4`). -/
+    | letTuple (binders : List (String × LTy)) (value : Atom) (body : Expr)
+    /-- `loop x: V in s with (b₁: S₁, ...) = (a₁, ...) do e` (`spec/17 §4`, ADR 0056): each
+    iteration binds `x` and the current state, and the body's value is the tuple of the new
+    state; the loop's value is the tuple of the final state. Iterations are not calls. -/
+    | loop (source : Source) (x : String) (xty : LTy) (state : List (String × LTy))
+        (init : List Atom) (body : Expr)
 end
 
 /-- A function of the program: its type parameters (one level of generics, `spec/07 §7`
@@ -215,6 +239,9 @@ structure Program where
   path alone, no condition on the file-state label at a write, and a request's failure labeled
   by its URL alone. `t6_host` requires it `false`. -/
   oldHost : Bool := false
+  /-- M6's draft rule for loops, for the counterexample only (`LoopLeak.lean`): an iteration's
+  failure not bounded by what decides whether the iteration runs. `t6_host` requires it `false`. -/
+  oldLoop : Bool := false
   records : List Record
   policies : List Policy
   funs : List Fun

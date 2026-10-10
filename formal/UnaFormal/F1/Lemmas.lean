@@ -35,6 +35,12 @@ theorem atoms_subst (τ : List (String × Ty)) {ctx : Ctx} {as : List Atom} {ts 
   | nil => exact .nil
   | cons ha _ ih => exact .cons (atom_subst τ ha) ih
 
+theorem source_subst (τ : List (String × Ty)) {ctx : Ctx} {s : Source} {t : Ty}
+    (h : SourceTy ctx s t) : SourceTy (ctx.subst τ) s (t.subst τ) := by
+  cases h with
+  | list hx => exact .list (by simpa [Ty.subst] using atom_subst τ hx)
+  | range hl hh => exact .range (atom_subst τ hl) (atom_subst τ hh)
+
 theorem prim_subst (τ : List (String × Ty)) {pr : Prim} {ts : List Ty} {t : Ty}
     (h : PrimTy pr ts t) : PrimTy pr (ts.map (Ty.subst τ)) (t.subst τ) := by
   cases h <;> simp only [List.map, Ty.subst] <;> constructor
@@ -171,6 +177,18 @@ mutual
       exact .fold h1 h2 h3
     | _, _, _, .parse h => .parse (atom_subst τ h)
     | _, _, _, .eq ha hb => .eq (atom_subst τ ha) (atom_subst τ hb)
+    | _, _, _, .tuple has => by
+      have h := atoms_subst τ has
+      simp only [Ty.subst, Ty.substs_eq]
+      exact .tuple h
+    | _, _, _, .append hxs hi => by
+      have h1 := atom_subst τ hxs
+      simp only [Ty.subst] at h1 ⊢
+      exact .append h1 (atom_subst τ hi)
+    | _, _, _, .set hxs hi hv => by
+      have h1 := atom_subst τ hxs
+      simp only [Ty.subst, Ty.substs] at h1 ⊢
+      exact .set h1 (atom_subst τ hi) (atom_subst τ hv)
 
   /-- A typing of a body is closed under substitution. -/
   theorem ExprTy.subst (hwf : p.WellFormed) (τ : List (String × Ty)) :
@@ -187,6 +205,18 @@ mutual
     | _, _, _, .fail => .fail
     | _, _, _, .attempt hb => .attempt (ExprTy.subst hwf τ hb)
     | _, _, _, .handle hb hh => .handle (ExprTy.subst hwf τ hb) (ExprTy.subst hwf τ hh)
+    | _, _, _, .letTuple hv hlen hb => by
+      have h1 := atom_subst τ hv
+      have h2 := ExprTy.subst hwf τ hb
+      rw [bindTys_subst] at h2
+      simp only [Ty.subst, Ty.substs_eq] at h1
+      exact .letTuple h1 (by simp [hlen]) h2
+    | _, _, _, .loop (x := x) (t := t) (ts := ts) hs hi hlen hb => by
+      have h2 : ExprTy p ((x, t.subst τ) :: Ctx.subst τ (bindTys _ ts ++ _)) _
+          ((Ty.tuple ts).subst τ) := ExprTy.subst hwf τ hb
+      rw [bindTys_subst] at h2
+      simp only [Ty.subst, Ty.substs_eq] at h2 ⊢
+      exact .loop (source_subst τ hs) (atoms_subst τ hi) (by simp [hlen]) h2
 end
 
 /-! ### Values -/

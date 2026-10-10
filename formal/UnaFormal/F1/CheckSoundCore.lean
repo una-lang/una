@@ -179,6 +179,26 @@ mutual
       obtain ⟨t₁, h₁, t₂, h₂, t, hj, _, heq, _, hf, rfl⟩ := h
       obtain ⟨f₁, f₂⟩ := joinTy_sound (top := p.top) hj
       exact ⟨_, .eq (atomTy_sound h₁) (atomTy_sound h₂) f₁ f₂ heq, flowTo_ok hf⟩
+    | .tuple items, ε, h => by
+      simp only [checkRhs, bind_ok, pure_ok] at h
+      obtain ⟨ts, hts, _, hf, rfl⟩ := h
+      exact ⟨_, .tuple (atomsTy_sound hts), flowTo_ok hf⟩
+    | .append xs item, ε, h => by
+      simp only [checkRhs, bind_ok] at h
+      obtain ⟨xt, hxt, h⟩ := h
+      cases xt <;> try (simp at h; done)
+      simp only [bind_ok, pure_ok] at h
+      obtain ⟨it, hit, _, hfl, _, hf, rfl⟩ := h
+      exact ⟨_, .append (atomTy_sound hxt) (atomTy_sound hit) (flowTo_ok hfl), flowTo_ok hf⟩
+    | .set xs index item, ε, h => by
+      simp only [checkRhs, bind_ok] at h
+      obtain ⟨xt, hxt, it, hit, h⟩ := h
+      cases xt <;> try (simp at h; done)
+      cases it <;> try (simp at h; done)
+      simp only [bind_ok, pure_ok] at h
+      obtain ⟨_, hle, vt, hvt, _, hfl, _, hf, rfl⟩ := h
+      exact ⟨_, .set (atomTy_sound hxt) (atomTy_sound hit) (le_ok hle) (atomTy_sound hvt)
+        (flowTo_ok hfl), flowTo_ok hf⟩
 
   theorem checkExpr_sound {Γ : LCtx} {pc : LExpr} {s : LTy} :
       ∀ {e : Expr} {ε : Eff}, checkExpr p E Γ pc s e = .ok ε →
@@ -251,6 +271,41 @@ mutual
       obtain ⟨t₁, ht₁, f₁⟩ := checkExpr_sound h₁
       obtain ⟨t₂, ht₂, f₂⟩ := checkExpr_sound h₂
       exact ⟨_, .handle ht₁ ht₂ f₁ f₂ (inPlace_sound hip), flowTo_ok hf⟩
+    | .letTuple bs value body, ε, h => by
+      simp only [checkExpr, bind_ok] at h
+      obtain ⟨vt, hvt, h⟩ := h
+      cases vt <;> try (simp at h; done)
+      simp only [bind_ok, need_ok] at h
+      obtain ⟨_, hfl, _, hip, hb⟩ := h
+      obtain ⟨t, ht, hft⟩ := checkExpr_sound hb
+      simp only [List.all_eq_true] at hip
+      exact ⟨t, .letTuple (atomTy_sound hvt) (flowsB_sound _ _ hfl)
+        (fun q hq => inPlace_sound (hip q hq)) ht, hft⟩
+    | .loop (.list xs) x xty st init body, ε, h => by
+      simp only [checkExpr, bind_ok] at h
+      obtain ⟨xt, hxt, h⟩ := h
+      cases xt <;> try (simp at h; done)
+      simp only [bind_ok, pure_ok, need_ok] at h
+      obtain ⟨_, hfx, _, hipx, ts, hts, _, hfl, _, hips, εb, hb, _, hfe, _, hf, rfl⟩ := h
+      obtain ⟨tb, htb, hftb⟩ := checkExpr_sound hb
+      simp only [List.all_eq_true] at hips
+      exact ⟨_, .loopList (atomTy_sound hxt) (flowTo_ok hfx) (inPlace_sound hipx)
+        (atomsTy_sound hts) (flowsB_sound _ _ hfl) (fun q hq => inPlace_sound (hips q hq)) htb hftb
+        (fun ho => by simp only [ho, Bool.false_or] at hfe; exact leB_sound hfe),
+        flowTo_ok hf⟩
+    | .loop (.range low high inc) x xty st init body, ε, h => by
+      simp only [checkExpr, bind_ok] at h
+      obtain ⟨lt, hlt, ht, hht, h⟩ := h
+      cases lt <;> try (simp at h; done)
+      cases ht <;> try (simp at h; done)
+      simp only [bind_ok, pure_ok, need_ok] at h
+      obtain ⟨_, hfx, _, hipx, ts, hts, _, hfl, _, hips, εb, hb, _, hfe, _, hf, rfl⟩ := h
+      obtain ⟨tb, htb, hftb⟩ := checkExpr_sound hb
+      simp only [List.all_eq_true] at hips
+      exact ⟨_, .loopRange (atomTy_sound hlt) (atomTy_sound hht) (flowTo_ok hfx) (inPlace_sound hipx)
+        (atomsTy_sound hts) (flowsB_sound _ _ hfl) (fun q hq => inPlace_sound (hips q hq)) htb hftb
+        (fun ho => by simp only [ho, Bool.false_or] at hfe; exact leB_sound hfe),
+        flowTo_ok hf⟩
 end
 
 /-- **A function the checker accepts passes T-Fun.** -/
@@ -287,7 +342,7 @@ theorem exprPure_sound (e : Expr) (h : exprPure e = true) : e.Pure := by
   | .attempt b, h =>
     have hb : exprPure b = true := by simpa [exprPure] using h
     exact exprPure_sound b hb
-  | .fail _, h => simp [exprPure] at h
+  | .fail _, h | .letTuple _ _ _, h | .loop _ _ _ _ _ _, h => simp [exprPure] at h
 termination_by sizeOf e
 
 /-- **A program whose policies the checker accepts is within B1's restrictions.** -/

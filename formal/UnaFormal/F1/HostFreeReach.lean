@@ -18,7 +18,7 @@ namespace Una.F1
 def LTy.cf : LTy → Bool
   | .int _ | .bool _ | .text _ | .unit _ | .record _ _ => true
   | .list t _ | .option t _ | .result t _ => t.cf
-  | .fn _ _ _ _ _ _ | .var _ _ => false
+  | .fn _ _ _ _ _ _ | .var _ _ | .tuple _ _ => false
 
 /-- Every record's fields are closure-free. -/
 def Program.recordsCF (p : Program) : Bool := p.records.all (·.fields.all LTy.cf)
@@ -30,7 +30,7 @@ mutual
     | .list items, h => by
       simp only [Val.FirstOrder] at h; simp only [Val.HostFreeIn]
       exact Val.hostFreeAllIn_of_firstOrder h
-    | .record _ fs, h => by
+    | .record _ fs, h | .tuple fs, h => by
       simp only [Val.FirstOrder] at h; simp only [Val.HostFreeIn]
       exact Val.hostFreeAllIn_of_firstOrder h
     | .some v, h | .ok v, h => by
@@ -71,7 +71,7 @@ mutual
         exact List.mem_of_find?_eq_some hr
       exact LValsTy.firstOrder_of_cf hrec hf
         (fun t ht => List.all_eq_true.mp (List.all_eq_true.mp hrec rec hmem) t ht)
-    | _, _, .closure .., hc => by simp [LTy.cf] at hc
+    | _, _, .closure .., hc | _, _, .tuple _, hc => by simp [LTy.cf] at hc
 
   theorem LValsAll.firstOrder_of_cf (hrec : p.recordsCF = true) :
       ∀ {vs : List Val} {t : LTy}, LValsAll p vs t → t.cf = true → Val.FirstOrderAll vs
@@ -97,7 +97,7 @@ theorem LTy.cf_lsubst (rd : String → Label) (σ : List (String × LTy)) :
     simp [LTy.lsubst, LTy.cf]
   | .list t _, h | .option t _, h | .result t _, h => by
     simp only [LTy.cf] at h; simp only [LTy.lsubst, LTy.cf]; exact LTy.cf_lsubst rd σ h
-  | .fn _ _ _ _ _ _, h | .var _ _, h => by simp [LTy.cf] at h
+  | .fn _ _ _ _ _ _, h | .var _ _, h | .tuple _ _, h => by simp [LTy.cf] at h
 
 /-- **Typed inputs of closure-free types are first-order.** -/
 theorem LEnvTy.firstOrder_of_cf (hrec : p.recordsCF = true) :

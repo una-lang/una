@@ -95,7 +95,7 @@ values M1's relation covers. -/
 def LTy.FirstOrder : LTy → Prop
   | .int _ | .bool _ | .text _ | .unit _ | .record _ _ => True
   | .list t _ | .option t _ | .result t _ => t.FirstOrder
-  | .fn _ _ _ _ _ _ | .var _ _ => False
+  | .fn _ _ _ _ _ _ | .var _ _ | .tuple _ _ => False
 
 /-- Two lists related element by element. -/
 inductive Forall2 (R : Val → Val → Prop) : List Val → List Val → Prop where
@@ -117,7 +117,7 @@ def Rel (L : Label) (rd : String → Label) : LTy → Val → Val → Prop
     l.base.le L → (v₁ = .none ∧ v₂ = .none) ∨ ∃ a b, v₁ = .some a ∧ v₂ = .some b ∧ Rel L rd t a b
   | .result t l, v₁, v₂ =>
     l.base.le L → (∃ c, v₁ = .err c ∧ v₂ = .err c) ∨ ∃ a b, v₁ = .ok a ∧ v₂ = .ok b ∧ Rel L rd t a b
-  | .fn _ _ _ _ _ _, _, _ | .var _ _, _, _ => True
+  | .fn _ _ _ _ _ _, _, _ | .var _ _, _, _ | .tuple _ _, _, _ => True
 
 theorem forall₂_eq {xs ys : List Val} {R : Val → Val → Prop} (hR : ∀ a b, R a b → a = b) :
     Forall2 R xs ys → xs = ys := by

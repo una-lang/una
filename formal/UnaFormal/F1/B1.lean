@@ -22,7 +22,7 @@ mutual
     | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e =>
       Expr.Pure t ∧ Expr.Pure e
     | .attempt b => Expr.Pure b
-    | .fail _ => False
+    | .fail _ | .letTuple _ _ _ | .loop _ _ _ _ _ _ => False
 end
 
 /-- **The restrictions of option B1**, on the policies. Each `from` is a scalar type, each `to`
@@ -135,5 +135,7 @@ theorem pure_run (p : Program) (w : World H) : ∀ n : Nat,
         | ok v => exact h
         | stuck => exact h
         | outOfFuel => exact h
+      | letTuple _ _ _ => exact (show False from he).elim
+      | loop _ _ _ _ _ _ => exact (show False from he).elim
 
 end Una.F1

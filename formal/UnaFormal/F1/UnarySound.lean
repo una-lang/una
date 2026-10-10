@@ -76,6 +76,41 @@ theorem walkFold_uok {app : World H → Val → Val → Run H} {A : Event → Pr
     simp only [walkFold]
     exact andThen_uok (happ w _ v hacc hv) (fun w acc' hacc' => walkFold_uok happ w hacc' hvs)
 
+/-- **A loop keeps its state typed** (T-Loop's invariant): when every iteration maps a typed state
+to a tuple of the same types, so does the loop, by induction on the iterations. -/
+theorem walkLoop_uok {body : World H → Val → List Val → Run H} {A : Event → Prop} {F : Prop}
+    {a : LTy} {ts : List LTy}
+    (hbody : ∀ w v st, LValTy p v a → LValsTy p st ts →
+      UOk A (fun r => ∃ st', r = .tuple st' ∧ LValsTy p st' ts) F w (body w v st)) :
+    ∀ {items : List Val} (w : World H) {st : List Val}, LValsTy p st ts → (∀ v ∈ items, LValTy p v a) →
+      UOk A (fun r => ∃ st', r = .tuple st' ∧ LValsTy p st' ts) F w (walkLoop body w st items)
+  | [], _, _, hst, _ => uok_done ⟨_, rfl, hst⟩
+  | v :: vs, w, st, hst, h => by
+    simp only [walkLoop]
+    refine andThen_uok (hbody w v st (h v List.mem_cons_self) hst) (fun w r hr => ?_)
+    obtain ⟨st', rfl, hst'⟩ := hr
+    simp only
+    rw [ite_eq_left (by rw [LValsTy.length hst', LValsTy.length hst])]
+    exact walkLoop_uok hbody w hst' (fun u hu => h u (List.mem_cons_of_mem _ hu))
+
+theorem LValsAll.mem : ∀ {items : List Val} {t : LTy}, LValsAll p items t → ∀ v ∈ items, LValTy p v t
+  | _, _, .nil => fun _ h => nomatch h
+  | _, _, .cons hv hvs => fun u hu => by
+    rcases List.mem_cons.mp hu with rfl | hu
+    · exact hv
+    · exact LValsAll.mem hvs u hu
+
+theorem LValsAll.append_one : ∀ {items : List Val} {t : LTy} {v : Val}, LValsAll p items t →
+    LValTy p v t → LValsAll p (items ++ [v]) t
+  | _, _, _, .nil, hv => .cons hv .nil
+  | _, _, _, .cons h hs, hv => .cons h (LValsAll.append_one hs hv)
+
+theorem LValsAll.set : ∀ {items : List Val} {t : LTy} {v : Val} (i : Nat), LValsAll p items t →
+    LValTy p v t → LValsAll p (items.set i v) t
+  | _, _, _, _, .nil, _ => .nil
+  | _, _, _, 0, .cons _ hs, hv => .cons hv hs
+  | _, _, _, i + 1, .cons h hs, hv => .cons h (LValsAll.set i hs hv)
+
 /-- The generic-free part of F1: no function has type parameters, and there is no policy. -/
 structure Program.GenericFree (p : Program) : Prop where
   funs : ∀ fn ∈ p.funs, fn.tparams = []
@@ -264,6 +299,12 @@ theorem LValsTy.flowsσ {vs : List Val} {ts us : List LTy} (h : LValsTy p vs (ts
   rw [LTy.lsubsts_eq, LTy.lsubsts_eq] at this
   exact LValsTy.flows h this
 
+theorem LValsTy.lsubst_raise : ∀ {vs : List Val} {ps : List LTy} (e : LExpr),
+    LValsTy p vs (ps.map (LTy.lsubst p.recordDeep σ)) →
+      LValsTy p vs ((ps.map (LTy.raise e)).map (LTy.lsubst p.recordDeep σ))
+  | [], [], _, .nil => .nil
+  | _ :: _, _ :: _, _, .cons h hs => .cons (LValTy.lsubst_raise h) (LValsTy.lsubst_raise _ hs)
+
 theorem LValsTy.lsubst_unraise : ∀ {vs : List Val} {ps : List LTy} {e : LExpr},
     LValsTy p vs ((ps.map (LTy.raise e)).map (LTy.lsubst p.recordDeep σ)) →
       LValsTy p vs (ps.map (LTy.lsubst p.recordDeep σ))
@@ -376,18 +417,19 @@ theorem LTy.Ground.top_symFree : ∀ {t : LTy}, t.Ground → t.top.SymFree
   | .int _, h | .bool _, h | .text _, h | .unit _, h | .record _ _, h => h
   | .list _ _, h | .option _ _, h | .result _ _, h => h.2
   | .fn _ _ _ _ _ _, h => h.2.2
+  | .tuple _ _, h => h.2
   | .var _ _, h => h.elim
 
 /-- A value of a scalar type, labeled or not. -/
 theorem lvalTy_of_scalar {v : Val} : ∀ {t : LTy}, t.erase.Scalar → ValTy p v t.erase → LValTy p v t
   | .int _, _, h | .bool _, _, h | .text _, _, h => by cases h <;> constructor
   | .unit _, hs, _ | .list _ _, hs, _ | .option _ _, hs, _ | .result _ _, hs, _ | .record _ _, hs, _
-  | .fn _ _ _ _ _ _, hs, _ | .var _ _, hs, _ => by simp [LTy.erase, Ty.Scalar] at hs
+  | .fn _ _ _ _ _ _, hs, _ | .var _ _, hs, _ | .tuple _ _, hs, _ => by simp [LTy.erase, Ty.Scalar] at hs
 
 theorem valTy_of_scalar {v : Val} : ∀ {t : LTy}, t.erase.Scalar → LValTy p v t → ValTy p v t.erase
   | .int _, _, h | .bool _, _, h | .text _, _, h => by cases h <;> constructor
   | .unit _, hs, _ | .list _ _, hs, _ | .option _ _, hs, _ | .result _ _, hs, _ | .record _ _, hs, _
-  | .fn _ _ _ _ _ _, hs, _ | .var _ _, hs, _ => by simp [LTy.erase, Ty.Scalar] at hs
+  | .fn _ _ _ _ _ _, hs, _ | .var _ _, hs, _ | .tuple _ _, hs, _ => by simp [LTy.erase, Ty.Scalar] at hs
 
 theorem Ty.Scalar.subst {t : Ty} (σ : List (String × Ty)) (h : t.Scalar) : t.subst σ = t := by
   cases t <;> simp_all [Ty.Scalar, Ty.subst]
@@ -744,6 +786,33 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         obtain ⟨vb, hvb, _⟩ := latom_ltypedσ henv hb
         simp only [evalRhs, hva, hvb, done]
         exact uok_done LValTy.bool
+      | tuple has =>
+        obtain ⟨vs, hvs, hvst⟩ := latoms_ltypedσ henv has
+        refine ⟨fun _ h => by simp [evalRhs] at h, ?_, WEff.self _ _⟩
+        simp only [evalRhs, hvs, Option.map_some, Option.elim, URes, LTy.lsubst, LTy.lsubsts_eq]
+        exact .tuple hvst
+      | append hxs hi hflow =>
+        obtain ⟨xv, hxv, hxt⟩ := latom_ltypedσ henv hxs
+        obtain ⟨iv, hiv, hit⟩ := latom_ltypedσ henv hi
+        simp only [LTy.lsubst] at hxt ⊢
+        cases hxt with
+        | list hitems =>
+          simp only [evalRhs, hxv, hiv]
+          exact uok_done (.list (LValsAll.append_one hitems (LValTy.flow hit (Flow.lsubst _ _ hflow))))
+      | set hxs hi _ hv hflow =>
+        obtain ⟨xv, hxv, hxt⟩ := latom_ltypedσ henv hxs
+        obtain ⟨iv, hiv, hit⟩ := latom_ltypedσ henv hi
+        obtain ⟨vv, hvv, hvt⟩ := latom_ltypedσ henv hv
+        simp only [LTy.lsubst] at hxt hit
+        cases hxt with
+        | list hitems =>
+          cases hit
+          simp only [evalRhs, hxv, hiv, hvv]
+          split
+          · simp only [LTy.lsubst, LTy.lsubsts]
+            exact uok_done (.tuple (.cons (.list (LValsAll.set _ hitems
+              (LValTy.flow hvt (Flow.lsubst _ _ hflow)))) (.cons .unit .nil)))
+          · exact ⟨fun _ h => by simp [abort] at h, by simp [abort, URes], WEff.self _ _⟩
     · intro σ w env Γ E pc e t ε hσ henv he
       have hpc0 : ∀ x : LExpr, p.le (pc.inst (p.sd σ)) ((pc.join x).inst (p.sd σ)) :=
         fun x => le_inst_join_left _ pc x
@@ -859,6 +928,87 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         | ok v => exact ⟨hev, LValTy.lsubst_raise (LValTy.flow h.2.1 (Flow.lsubst _ _ h₁)), h.2.2⟩
         | stuck => exact ⟨hev, trivial, h.2.2⟩
         | outOfFuel => exact ⟨hev, trivial, h.2.2⟩
+      | @letTuple _ _ bs value body ts l _ _ hv hflows _ hb =>
+        obtain ⟨v, hv', hvt⟩ := latom_ltypedσ henv hv
+        simp only [LTy.lsubst] at hvt
+        cases hvt with
+        | @tuple vs _ _ hvals =>
+          rw [LTy.lsubsts_eq] at hvals
+          have hbs := LValsTy.flowsσ (LValsTy.lsubst_raise l hvals) hflows
+          simp only [eval, hv']
+          rw [ite_eq_left (by rw [LValsTy.length hbs]; simp)]
+          have henv' : LEnvTy p (bindParams bs vs env) ((bs ++ Γ).lsub p.recordDeep σ) := by
+            rw [LCtx.lsub_append]
+            have := bindParams_ltyped (params := LCtx.lsub p.recordDeep σ bs)
+              (by rw [LCtx.lsub_snd]; exact hbs) henv
+            simpa [bindParams, LCtx.lsub, List.map_map, Function.comp_def] using this
+          exact ihE hσ henv' hb
+      | @loopList _ _ xs x xty st init body te ls ts tb ε hxs hx _ hi hflows _ hb hbt _ =>
+        obtain ⟨xv, hxv, hxt⟩ := latom_ltypedσ henv hxs
+        simp only [LTy.lsubst] at hxt
+        cases hxt with
+        | @list items _ _ hitems =>
+          obtain ⟨sv, hsv, hsvt⟩ := latoms_ltypedσ henv hi
+          have hst0 := LValsTy.flowsσ hsvt hflows
+          simp only [eval, sourceVals, hxv, hsv]
+          rw [ite_eq_left (by rw [LValsTy.length hst0]; simp)]
+          refine UOk.mono (fun _ h => h) (fun r hr => ?_) id (walkLoop_uok (a := te.lsubst p.recordDeep σ)
+            (fun w v st' hv hst' => ?_) w hst0 (LValsAll.mem hitems))
+          · obtain ⟨st', rfl, hst'⟩ := hr
+            simp only [LTy.lsubst, LTy.lsubsts_eq]
+            exact .tuple hst'
+          · have henv' : LEnvTy p ((x, v) :: bindParams st st' env)
+                (LCtx.lsub p.recordDeep σ ((x, xty) :: (st ++ Γ))) := by
+              have hb' : LEnvTy p (bindParams st st' env) (LCtx.lsub p.recordDeep σ (st ++ Γ)) := by
+                rw [LCtx.lsub_append]
+                have := bindParams_ltyped (params := LCtx.lsub p.recordDeep σ st)
+                  (by rw [LCtx.lsub_snd]; exact hst') henv
+                simpa [bindParams, LCtx.lsub, List.map_map, Function.comp_def] using this
+              exact .cons (LValTy.flow (LValTy.lsubst_raise hv) (Flow.lsubst _ _ hx)) hb'
+            refine UOk.mono (Allowed.mono (hpc0 ls) id (HostFx.Le.refl _) (fun _ h => h))
+              (fun r hr => ?_) (Fails.mono (hpc0 ls) (fun l hl => ⟨l, hl, LExpr.le_refl l⟩))
+              (ihE (w := w) hσ henv' hb)
+            have := LValTy.flow hr (Flow.lsubst _ _ hbt)
+            simp only [LTy.lsubst, LTy.lsubsts_eq] at this
+            cases this with
+            | tuple h => exact ⟨_, rfl, h⟩
+      | @loopRange _ _ low high inc x xty st init body l₁ l₂ ts tb ε hlo hhi hx _ hi hflows _ hb hbt _ =>
+        obtain ⟨lv, hlv, hlt⟩ := latom_ltypedσ henv hlo
+        obtain ⟨hv₀, hhv, hht⟩ := latom_ltypedσ henv hhi
+        simp only [LTy.lsubst] at hlt hht
+        cases hlt with
+        | @int a _ =>
+          cases hht with
+          | @int b _ =>
+            obtain ⟨sv, hsv, hsvt⟩ := latoms_ltypedσ henv hi
+            have hst0 := LValsTy.flowsσ hsvt hflows
+            simp only [eval, sourceVals, hlv, hhv, hsv]
+            rw [ite_eq_left (by rw [LValsTy.length hst0]; simp)]
+            refine UOk.mono (fun _ h => h) (fun r hr => ?_) id
+              (walkLoop_uok (a := (LTy.int (l₁.join l₂)).lsubst p.recordDeep σ)
+                (fun w v st' hv hst' => ?_) w hst0 (fun v hv => ?_))
+            · obtain ⟨st', rfl, hst'⟩ := hr
+              simp only [LTy.lsubst, LTy.lsubsts_eq]
+              exact .tuple hst'
+            · have henv' : LEnvTy p ((x, v) :: bindParams st st' env)
+                  (LCtx.lsub p.recordDeep σ ((x, xty) :: (st ++ Γ))) := by
+                have hb' : LEnvTy p (bindParams st st' env) (LCtx.lsub p.recordDeep σ (st ++ Γ)) := by
+                  rw [LCtx.lsub_append]
+                  have := bindParams_ltyped (params := LCtx.lsub p.recordDeep σ st)
+                    (by rw [LCtx.lsub_snd]; exact hst') henv
+                  simpa [bindParams, LCtx.lsub, List.map_map, Function.comp_def] using this
+                exact .cons (LValTy.flow hv (Flow.lsubst _ _ hx)) hb'
+              refine UOk.mono (Allowed.mono (hpc0 _) id (HostFx.Le.refl _) (fun _ h => h))
+                (fun r hr => ?_) (Fails.mono (hpc0 _) (fun l hl => ⟨l, hl, LExpr.le_refl l⟩))
+                (ihE (w := w) hσ henv' hb)
+              have := LValTy.flow hr (Flow.lsubst _ _ hbt)
+              simp only [LTy.lsubst, LTy.lsubsts_eq] at this
+              cases this with
+              | tuple h => exact ⟨_, rfl, h⟩
+            · simp only [rangeVals, List.mem_map] at hv
+              obtain ⟨_, _, rfl⟩ := hv
+              simp only [LTy.lsubst]
+              exact .int
 
 /-- **The unary half without policies**, as M3 and M4 state it: `unary_soundR`, whose
 restrictions hold when there is no policy. -/

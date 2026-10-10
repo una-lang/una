@@ -89,6 +89,22 @@ theorem walkFold_mono {app app' : World H → Val → Val → Run H}
     simp only [walkFold] at ht ⊢
     exact andThen_mono ht (h w acc v) (fun acc' _ hk => walkFold_mono h hk)
 
+theorem walkLoop_mono {b b' : World H → Val → List Val → Run H}
+    (h : ∀ w v st, Term (b w v st).2.1 → b' w v st = b w v st) :
+    ∀ {w : World H} {st xs : List Val}, Term (walkLoop b w st xs).2.1 →
+      walkLoop b' w st xs = walkLoop b w st xs
+  | _, _, [], _ => rfl
+  | w, st, v :: vs, ht => by
+    simp only [walkLoop] at ht ⊢
+    refine andThen_mono ht (h w v st) (fun r w' hk => ?_)
+    cases r with
+    | tuple st' =>
+      simp only at hk ⊢
+      split at hk
+      · rename_i hc; simp only [hc, ite_true]; exact walkLoop_mono h hk
+      · rename_i hc; simp only [hc, ite_false]
+    | _ => rfl
+
 variable {p : Program}
 
 theorem eval_mono : ∀ n m : Nat, n ≤ m →
@@ -195,6 +211,20 @@ theorem eval_mono : ∀ n m : Nat, n ≤ m →
             exact id
           rw [ihE _ _ handler hh]
         | _ => intro _; rfl
+      | letTuple binders value body =>
+        simp only [eval] at ht ⊢
+        split at ht
+        · split at ht
+          · rename_i hc; simp only [hc, ite_true]; exact ihE _ _ _ ht
+          · rename_i hc; simp only [hc, ite_false]
+        · rfl
+      | loop source x xty state init body =>
+        simp only [eval] at ht ⊢
+        split at ht
+        · split at ht
+          · rename_i hc; simp only [hc, ite_true]; exact walkLoop_mono (fun w v st hv => ihE _ _ _ hv) ht
+          · rename_i hc; simp only [hc, ite_false]
+        · rfl
 
 variable {L : Label}
 

@@ -117,6 +117,7 @@ theorem V.retop {u : LTy} {x y : LExpr} {a b : Val} (h : V p L (u.setTop x) a b)
     | exact .int | exact .bool | exact .text | exact .unit | exact .list ‹_› | exact .none
     | exact .some ‹_› | exact .ok ‹_› | exact .err | exact .record ‹_› ‹_›
     | exact .closure ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_›
+    | exact .tuple ‹_›
 
 section
 variable {σ : List (String × LTy)}
@@ -205,6 +206,7 @@ theorem LTy.deep_raise_le (rd : String → Label) {top : Label} (e : LExpr) {u :
   | list t l | option t l | result t l => exact LExpr.join_swap_le _ _ _
   | record r l => exact LExpr.join_swap_le _ _ _
   | fn ps r o g f l => exact LExpr.join_swap_le _ _ _
+  | tuple ts l => exact LExpr.join_swap_le _ _ _
 
 theorem LTy.eqIn_raise (E : List String) (f : String → Bool) (e : LExpr) (u : LTy) :
     (u.raise e).eqIn E f = u.eqIn E f := by
@@ -229,7 +231,7 @@ theorem LTy.deep_lsub_le {σ : List (String × LTy)} {E : List String} (hσ : Gr
     simp only [LTy.eqIn] at he
     exact LExpr.join_le (LExpr.le_inst _ (LExpr.le_join_left _ _))
       (LExpr.le_trans (LTy.deep_lsub_le hσ hE hi.1 he) (LExpr.le_inst _ (LExpr.le_join_right _ _)))
-  | .fn _ _ _ _ _ _, _, he => by simp [LTy.eqIn] at he
+  | .fn _ _ _ _ _ _, _, he | .tuple _ _, _, he => by simp [LTy.eqIn] at he
   | .var a l, hi, he => by
     simp only [LTy.eqIn, List.contains_iff_mem] at he
     obtain ⟨u, hu, _⟩ := hE a (by simpa using he)
@@ -258,7 +260,7 @@ theorem LTy.eqIn_lsub {σ : List (String × LTy)} {E : List String} (hE : p.EqAr
     first | rfl | exact h
   | .list t _, h | .option t _, h | .result t _, h => by
     simp only [LTy.eqIn, LTy.lsubst] at h ⊢; exact LTy.eqIn_lsub hE h
-  | .fn _ _ _ _ _ _, h => by simp [LTy.eqIn] at h
+  | .fn _ _ _ _ _ _, h | .tuple _ _, h => by simp [LTy.eqIn] at h
   | .var a _, h => by
     simp only [LTy.eqIn, List.contains_iff_mem] at h
     obtain ⟨u, hu, hue⟩ := hE a (by simpa using h)
@@ -369,7 +371,8 @@ mutual
   theorem LTy.Ground.eqIn {E E' : List String} {f : String → Bool} :
       ∀ {u : LTy}, u.Ground → u.eqIn E f = u.eqIn E' f
     | .var _ _, h => h.elim
-    | .int _, _ | .bool _, _ | .text _, _ | .unit _, _ | .record _ _, _ | .fn _ _ _ _ _ _, _ => rfl
+    | .int _, _ | .bool _, _ | .text _, _ | .unit _, _ | .record _ _, _ | .fn _ _ _ _ _ _, _
+    | .tuple _ _, _ => rfl
     | .list _ _, h | .option _ _, h | .result _ _, h => by
       simp only [LTy.eqIn]; exact LTy.Ground.eqIn h.1
 end

@@ -26,6 +26,8 @@ mutual
       simp only [tyClosed, Bool.and_eq_true] at h
       simp only [Ty.subst, tysClosed_sound ps h.1 σ, tyClosed_sound r h.2 σ]
     | .var _, h, _ => by simp [tyClosed] at h
+    | .tuple ts, h, σ => by
+      simp only [tyClosed] at h; simp only [Ty.subst, tysClosed_sound ts h σ]
 
   theorem tysClosed_sound : ∀ (ts : List Ty), tysClosed ts = true → ∀ σ, Ty.substs σ ts = ts
     | [], _, _ => rfl
@@ -48,6 +50,9 @@ mutual
     | .fn ps r _ _ _ _, h => by
       simp only [tyCats, Bool.and_eq_true] at h
       exact ⟨tysCats_sound ps h.1.1, tyCats_sound r h.1.2, labelCats_sound h.2⟩
+    | .tuple ts _, h => by
+      simp only [tyCats, Bool.and_eq_true] at h
+      exact ⟨tysCats_sound ts h.1, labelCats_sound h.2⟩
 
   theorem tysCats_sound {cats : List String} :
       ∀ (ts : List LTy), tysCats cats ts = true → LTy.CatsInAll cats ts
@@ -120,8 +125,8 @@ theorem policyOk_sound {p : Program} {po : Policy}
 
 theorem hostWfB_sound {p : Program} (h : hostWfB p = true) : p.HostWF := by
   simp only [hostWfB, Bool.and_eq_true, Bool.not_eq_true'] at h
-  obtain ⟨⟨⟨⟨⟨⟨⟨ho, hr⟩, hw⟩, hq⟩, hrr⟩, hqr⟩, hqf⟩, _⟩ := h
-  exact ⟨ho, leB_sound hr, leB_sound hw, leB_sound hq, leB_sound hrr, leB_sound hqr, leB_sound hqf⟩
+  obtain ⟨⟨⟨⟨⟨⟨⟨⟨ho, hr⟩, hw⟩, hq⟩, hrr⟩, hqr⟩, hqf⟩, _⟩, hl⟩ := h
+  exact ⟨ho, leB_sound hr, leB_sound hw, leB_sound hq, leB_sound hrr, leB_sound hqr, leB_sound hqf, hl⟩
 
 /-- **The whole-program check is sound.** A program that passes `progOk cond` is accepted by
 the labeled typing and is within B1's restrictions, and its host's labels are as
@@ -227,7 +232,9 @@ mutual
     | .declassify _ _, _, _, _, _, _, _, hg | .map _ _, _, _, _, _, _, _, hg
     | .filter _ _, _, _, _, _, _, _, hg | .firstWhere _ _, _, _, _, _, _, _, hg
     | .fold _ _ _, _, _, _, _, _, _, hg | .parse _, _, _, _, _, _, _, hg
-    | .eq _ _, _, _, _, _, _, _, hg => by simp [Rhs.callees] at hg
+    | .eq _ _, _, _, _, _, _, _, hg | .tuple _, _, _, _, _, _, _, hg
+    | .append _ _, _, _, _, _, _, _, hg | .set _ _ _, _, _, _, _, _, _, hg => by
+      simp [Rhs.callees] at hg
 
   theorem expr_reach (hwf : p.LWellFormed) :
       ∀ (e : Expr) {Γ : LCtx} {pc : LExpr} {t : LTy} {ε : Eff}, LExprTy p E Γ pc e t ε →
@@ -280,6 +287,15 @@ mutual
       simp only [Expr.callees] at hg
       cases h with
       | attempt hb => exact expr_reach hwf b hb g hg
+    | .letTuple _ _ b, _, _, _, _, h, g, hg => by
+      simp only [Expr.callees] at hg
+      cases h with
+      | letTuple _ _ _ hb => exact expr_reach hwf b hb g hg
+    | .loop _ _ _ _ _ b, _, _, _, _, h, g, hg => by
+      simp only [Expr.callees] at hg
+      cases h with
+      | loopList _ _ _ _ _ _ hb _ _ => exact expr_reach hwf b hb g hg
+      | loopRange _ _ _ _ _ _ _ hb _ _ => exact expr_reach hwf b hb g hg
 end
 
 /-- **No accept without a theorem, formally.** In a program the labeled typing accepts, every

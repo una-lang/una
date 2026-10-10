@@ -57,6 +57,7 @@ mutual
         Flow p.top (t.lsubst p.recordDeep σ) r →
         (ε.op = true → o = true) → HostFx.Le ε.host g → (ε.fails.isSome = true → f = true) →
         LValTy p (.closure params body env) (.fn ps r o g f l)
+    | tuple {items ts l} : LValsTy p items ts → LValTy p (.tuple items) (.tuple ts l)
 
   /-- Every value of a list has one type. -/
   inductive LValsAll (p : Program) : List Val → LTy → Prop where
@@ -89,17 +90,18 @@ mutual
     | _, _, _, .record hr hfs, .record _ => .record hr hfs
     | _, _, _, .closure hσ henv hb hfl hrl hps hr ho hg hf, .fn fps fr fo fg ff _ =>
       .closure hσ henv hb hfl hrl (Flows.trans fps hps) (Flow.trans hr fr) (fo ∘ ho) (hg.trans fg) (ff ∘ hf)
+    | _, _, _, .tuple h, .tuple fs _ => .tuple (LValsTy.flows h fs)
 
   theorem LValsAll.flow : ∀ {vs : List Val} {t t' : LTy}, LValsAll p vs t → Flow p.top t t' →
       LValsAll p vs t'
     | _, _, _, .nil, _ => .nil
     | _, _, _, .cons h hs, f => .cons (LValTy.flow h f) (LValsAll.flow hs f)
-end
 
-theorem LValsTy.flows : ∀ {vs : List Val} {ts ts' : List LTy}, LValsTy p vs ts →
-    Flows p.top ts ts' → LValsTy p vs ts'
-  | _, _, _, .nil, .nil => .nil
-  | _, _, _, .cons h hs, .cons f fs => .cons (LValTy.flow h f) (LValsTy.flows hs fs)
+  theorem LValsTy.flows : ∀ {vs : List Val} {ts ts' : List LTy}, LValsTy p vs ts →
+      Flows p.top ts ts' → LValsTy p vs ts'
+    | _, _, _, .nil, .nil => .nil
+    | _, _, _, .cons h hs, .cons f fs => .cons (LValTy.flow h f) (LValsTy.flows hs fs)
+end
 
 /-- Labels at the top do not constrain a value. -/
 theorem LValTy.unraise {v : Val} {t : LTy} {e : LExpr} (h : LValTy p v (t.raise e)) :
@@ -199,6 +201,9 @@ mutual
       ⟨.fn (Flows.lsubst_nil rd ps).2 (Flow.lsubst_nil rd r).1 id (HostFx.Le.refl _) id (LExpr.inst_nil_le l),
         .fn (Flows.lsubst_nil rd ps).1 (Flow.lsubst_nil rd r).2 id (HostFx.Le.refl _) id (LExpr.le_inst_nil l)⟩
     | .var _ l => ⟨.var (LExpr.inst_nil_le l), .var (LExpr.le_inst_nil l)⟩
+    | .tuple ts l =>
+      ⟨.tuple (Flows.lsubst_nil rd ts).1 (LExpr.inst_nil_le l),
+        .tuple (Flows.lsubst_nil rd ts).2 (LExpr.le_inst_nil l)⟩
 
   theorem Flows.lsubst_nil {top : Label} (rd : String → Label) :
       ∀ ts : List LTy, Flows top (LTy.lsubsts rd [] ts) ts ∧ Flows top ts (LTy.lsubsts rd [] ts)
