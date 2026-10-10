@@ -290,9 +290,13 @@ mutual
     | "op" =>
       let cap ← str (← field j "capability")
       let o ← str (← field j "op")
-      let std := match j.getObjVal? "capability_path" with
-        | .ok cp => cp.getObjValD "module" == .str "std.host"
-        | .error _ => false
+      -- The host's capabilities are named by their path, and a node whose `capability` field
+      -- is not its path's name is not read (Una-1's finding on #471).
+      let (std, pathName) : Bool × J := match j.getObjVal? "capability_path" with
+        | .ok cp => (cp.getObjValD "module" == Lean.Json.str "std.host", cp.getObjValD "name")
+        | .error _ => (false, Lean.Json.null)
+      if pathName != Lean.Json.null && pathName != Lean.Json.str cap then
+        throw s!"an operation whose capability `{cap}` is not its path's"
       -- The host's stateful operations (M5b): `Files.read` and `Files.write` are the model's
       -- `read` and `write`; `Http`'s real signature is outside the model's request (M5c, #470).
       if std && cap == "Files" then
@@ -919,38 +923,54 @@ theorem finalize_sound {pAll pPlain : Program} {cond : List String} {mono : List
       (try (simp only [Outcome.acceptedIfA3.injEq] at hv; subst hv)) <;>
       simp_all [Bool.and_eq_true, withHost_ex]
 
-/-- A node that may write a file, found anywhere in a declaration (M5b, Una-1's finding on #471):
-an operation of `Files` named `write`, a `uses` that grants `Files.write`, or an operation whose
-capability path cannot be read (missing, or neither `std.*` nor a module of the document), which
-might be one. `none` when the node and its children hold none; otherwise what was found. -/
-partial def writeSite (mods : List String) (j : J) : Option String :=
+/-- The capabilities a document declares, its own and the host's: module, name and operations. -/
+abbrev Caps' := List (String × String × List String)
+
+/-- **A node that may write a file**, found anywhere in a declaration (M5b; Una-1's findings on
+#471 and the coordinator's rule). Default-deny: a node is safe only when it is positively
+identified, and every other node counts as a site.
+- An operation is safe when its capability path resolves to a capability the document declares
+  (`known`: its own, or the host's), its `capability` field is that path's name, its operation is
+  one the capability declares, and it is not `std.host`'s `Files.write`.
+- A `uses` entry is safe when it names a capability the document declares, by name, every
+  operation it grants is one that capability declares, and it does not grant `Files.write`.
+`none` when the node and its children hold no site; otherwise what was found. -/
+partial def writeSite (known : Caps') (j : J) : Option String :=
   match j with
   | .obj kvs =>
     let here : Option String :=
-      if j.getObjValD "kind" == .str "op" then
-        let cap := j.getObjValD "capability"
+      if j.getObjValD "kind" == Lean.Json.str "op" then
         let path := j.getObjValD "capability_path"
-        let pathMod := match path.getObjValD "module" with
-          | .str m => some m
-          | _ => none
-        match pathMod with
-        | none => some "an operation whose capability path cannot be read"
-        | some m =>
-          if cap == .str "Files" && m != "std.host" then
-            some "an operation of a capability named `Files` outside `std.host`"
-          else if !(m.startsWith "std." || mods.contains m) then
-            some "an operation whose capability path cannot be read"
-          else if cap == .str "Files" && j.getObjValD "op" == .str "write" then some "a `Files.write`"
-          else none
-      else if j.getObjValD "capability" == .str "Files" then
-        match j.getObjValD "ops" with
-        | .arr ops => if ops.contains (.str "write") then some "a `uses` that grants `Files.write`" else none
-        | _ => none
-      else none
+        match j.getObjValD "capability", path.getObjValD "module", path.getObjValD "name",
+            j.getObjValD "op" with
+        | .str c, .str m, .str n, .str o =>
+          match known.find? (fun (m', n', _) => m' == m && n' == n) with
+          | none => some "an operation whose capability cannot be resolved"
+          | some (_, _, ops) =>
+            if c != n then some "an operation whose capability is not its path's"
+            else if !ops.contains o then some "an operation its capability does not declare"
+            else if m == "std.host" && n == "Files" && o == "write" then some "a `Files.write`"
+            else none
+        | _, _, _, _ => some "an operation whose capability cannot be resolved"
+      else match j.getObjValD "capability", j.getObjValD "ops" with
+        | .str c, .arr grants =>
+          match known.find? (fun (_, n', _) => n' == c) with
+          | none => some "a `uses` that names a capability the document does not declare"
+          | some (m, _, ops) =>
+            let gs := grants.toList.filterMap fun g => match g with
+              | .str o => some o
+              | _ => none
+            if gs.length != grants.size || !gs.all ops.contains then
+              some "a `uses` that grants an operation its capability does not declare"
+            else if m == "std.host" && c == "Files" && gs.contains "write" then
+              some "a `uses` that grants `Files.write`"
+            else none
+        | .str _, _ => some "a `uses` whose operations cannot be read"
+        | _, _ => none
     match here with
     | some w => some w
-    | none => kvs.toArray.foldl (fun acc kv => acc <|> writeSite mods kv.2) none
-  | .arr xs => xs.foldl (fun acc x => acc <|> writeSite mods x) none
+    | none => kvs.toArray.foldl (fun acc kv => acc <|> writeSite known kv.2) none
+  | .arr xs => xs.foldl (fun acc x => acc <|> writeSite known x) none
   | _ => none
 
 /-- **The file-state label is verified for the whole package**, or nothing that uses `Files` is
@@ -1297,8 +1317,20 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
     pure rc
   let plain := members.filter fun f => !reachesCond.contains f
   -- Every write site of the document, in a declaration of any kind (Una-1's finding on #471).
-  let mods := decls.map (·.module) |>.eraseDups
-  let sites := decls.filterMap fun d => (writeSite mods d.value).map fun w => (named d, d.kind, w)
+  let opNames := fun (cj : J) => match plainRun (do
+      (← arr (← field cj "ops")).mapM fun o => do str (← field o "name")) with
+    | .ok ns => ns
+    | .error _ => []
+  let known : Caps' :=
+    (decls.filter (·.kind == "cap")).filterMap (fun d =>
+      match plainRun (do str (← field d.value "name")) with
+      | .ok n => some (d.module, n, opNames d.value)
+      | .error _ => none) ++
+    host.filterMap fun cj => match plainRun (do str (← field cj "name")) with
+      | .ok n => some ("std.host", n, opNames cj)
+      | .error _ => none
+  let sites := decls.filterMap fun d =>
+    (writeSite known d.value).map fun w => (named d, d.kind, w)
   pure (guardFiles sites (finalize (mkProg members) (mkProg plain) cond mono ren final))
 
 /-- `checkDocumentWith` with labeled instantiation, `LTy.lsubst`. -/
