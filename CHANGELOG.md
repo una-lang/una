@@ -2,7 +2,9 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
-## Unreleased
+## v0.3.6
+
+A security patch of the Beta: S-17 (a `checked` predicate could read an `internal` value whose label its failure did not carry) is fixed in both editions (ADR 0089), and native code now aborts on a `set` outside the list as the interpreter does (#480). It also carries what was validated on `main` since v0.3.5: the compact reference for agents (#430), `spec/10`'s failure-decision label (ADR 0087), and the formal track's re-check of `Files`, `Http`, loops and `edit` (M5b, M5c, M6), with one model and an any-host claim per declaration. Validation: `docs/releases/0.3.6-validation.md`.
 
 - **Security: a `checked` predicate's other reads label its failure** (#488, S-17, ADR 0089). `checked(a, φ) else fail C` labeled its failure by `a` alone, but φ may read other values: `checked(raw, raw.len < limit)` with `limit: secret Int` failed publicly, and a caller that branched on it learned a comparison with the secret. Now the failure carries every label of every value φ reads, in both editions, so such a `checked` is U4002. An operand-only `checked`, and one that reads only public values, are unchanged; over the corpus, the only new diagnostics are the S-17 cases.
 
