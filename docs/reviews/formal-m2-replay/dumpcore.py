@@ -70,6 +70,12 @@ HOST = {
 }
 
 
+# The kinds the specification declares in the prelude (`spec/14 §3`, `spec/22`, `spec/24 §1`,
+# `spec/23`).
+PRELUDE_KINDS = {"FileError", "KeyError", "HttpError", "ParseError", "Json", "JsonError",
+                 "Header", "Response"}
+
+
 def unknown(what):
     return {"kind": what}
 
@@ -160,6 +166,10 @@ class Parser:
         elif name in self.tparams:
             base = {"kind": "param", "value": name}
         elif name in ("List", "Option", "Result"):
+            base = {"kind": "named", "module": "prelude", "name": name, "args": args}
+        elif name in PRELUDE_KINDS and name not in getattr(self, "datas", set()):
+            # A kind of the prelude, which the dump writes unqualified and `una core --json`
+            # writes as `prelude`'s (#507: the re-check reads a `Result`'s error type).
             base = {"kind": "named", "module": "prelude", "name": name, "args": args}
         else:
             mod, _, short = name.rpartition(".")
@@ -459,6 +469,7 @@ def convert(text, module, edition, file_state=None):
                             "error": None, "accepts": acc})
             decls.append({"kind": "cap", "name": name, "ops": ops})
     capnames = {d["name"] for d in decls if d["kind"] == "cap"}
+    datas = {b.split()[1] for b in blocks(text) if b.split()[0] == "data"}
     for block in blocks(text):
         head = block.split()[0]
         if head == "handler":
@@ -467,6 +478,7 @@ def convert(text, module, edition, file_state=None):
             toks = tokens(block)
             p = Parser(toks, module)
             p.capnames = capnames
+            p.datas = datas
             p.take("fun")
             name = p.take()
             tps, cons = [], []

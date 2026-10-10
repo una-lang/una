@@ -10,7 +10,9 @@ rule 3). The reading is part of the trusted base of the re-check (`docs/plan/for
 - the prelude's `map`, `filter`, `first_where`, `fold` and `parse_int` are F1's axioms of them;
 - `Option` and `Result` of the prelude are F1's options and results, the error type of a result
   dropped: F1's failures are codes, so a failure with a payload, a `case` or a handler that reads
-  the failure, is outside F1;
+  the failure, is outside F1. The error type is dropped only when it is a kind without payload
+  whose labels the result's top label carries (#507): `to_text` and `==` read an `Err` whole, so a
+  payload would be missing from the model;
 - a kind with one variant and no type parameters is a record;
 - F1 has one operation, from a scalar (`Int`, `Bool` or `Text`) to `Unit`, which never fails: a function is read only when its body,
   its types and the signatures of what it calls mention at most one operation, of that shape,
@@ -155,6 +157,9 @@ structure Ctx where
   allEq : Bool := false
   /-- The policies each function may release through (`Fun.rels`), computed over the document. -/
   rels : List (String × List String) := []
+  /-- The kinds whose values F1's failure codes represent faithfully, by qualified name: kinds
+  without type parameters whose variants carry no payload (#507). -/
+  codes : List String := []
 
 /-- The effects a `uses` entry names: `Files`'s operations (M5b) and `Http`'s (M5c) are host
 effects; every other operation is F1's one operation, gathered for G3. -/
@@ -209,7 +214,25 @@ partial def ty (c : Ctx) (j : J) : M LTy := do
       match q, args with
       | "prelude.List", [t] => pure (.list (← ty c t) l)
       | "prelude.Option", [t] => pure (.option (← ty c t) l)
-      | "prelude.Result", t :: _ => pure (.result (← ty c t) l)
+      | "prelude.Result", [t, e] =>
+        -- F1's `Err` is a code, which `to_text` and `==` read as the whole value: the error type
+        -- is dropped only when it is a kind without payload, a code, whose labels the result's
+        -- own top label already carries (#507). Otherwise a payload `to_text` renders would be
+        -- missing from the model.
+        let le ← label (← field e "label")
+        let code ← match ← kind e with
+          | "base" =>
+            let eb ← field e "base"
+            if (← kind eb) == "named" then
+              if (← arr (← field eb "args")).isEmpty then pure (c.codes.contains (← path eb))
+              else pure false
+            else pure false
+          | _ => pure false
+        if !code then throw "a `Result` whose error type is not a kind without payload"
+        if !(le.plain.isEmpty && le.star.isEmpty && decide (le.base.level ≤ l.base.level) &&
+            le.base.cats.all (l.base.cats.contains ·)) then
+          throw "a `Result` whose error type is labeled above the result"
+        pure (.result (← ty c t) l)
       | _, [] => if c.records.contains q then pure (.record q l) else throw s!"the type `{q}`"
       | _, _ => throw s!"the type `{q}` with type arguments"
     | "tuple" => pure (.tuple (← (← arr (← field b "value")).mapM (ty c)) l)
@@ -563,6 +586,31 @@ structure Decl where
 def run {α : Type} (m : M α) : Except String (α × Refs) := m.run {}
 
 def plainRun {α : Type} (m : M α) : Except String α := (run m).map Prod.fst
+
+/-- The kinds without payload (#507): the document's kinds without type parameters whose
+variants have no fields, and the specification's error kinds, `FileError` and `KeyError`
+(`spec/14 §3`) and `HttpError` (`spec/24 §1`), when the document does not declare them, as the
+export does not declare the first two. A document that declares one of them otherwise has its own
+declaration read. -/
+def codeKinds (decls : List Decl) : List String :=
+  let declared := decls.filterMap fun d =>
+    if d.kind != "data" then none
+    else match plainRun (do str (← field d.value "name")) with
+      | .ok n => some s!"{d.module}.{n}"
+      | .error _ => none
+  let own := decls.filterMap fun d =>
+    if d.kind != "data" then none
+    else
+      match plainRun (do
+          -- A kind's type parameters are its `params` in the export (ADR 0083).
+          if !(← arr (← field d.value "params")).isEmpty then throw "generic"
+          for v in ← arr (← field d.value "variants") do
+            if !(← arr (← field v "fields")).isEmpty then throw "a payload"
+          pure s!"{d.module}.{← str (← field d.value "name")}") with
+      | .ok q => some q
+      | .error _ => none
+  own ++ (["prelude.FileError", "prelude.KeyError", "prelude.HttpError"].filter
+    fun q => !declared.contains q)
 
 /-- The record kinds: kinds with one variant and no type parameters, whose fields F1 reads,
 until no more are dropped. -/
@@ -1307,7 +1355,8 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
   -- document is then not re-checked, rather than a policy silently dropped.
   if (decls.filter (·.kind == "policy")).length != vias.length then
     return code.map fun d => (named d, .notRechecked "a policy F1 cannot read")
-  let c : Ctx := { records := recs.map (·.name), funs := funNames, vias, allEq := edition == "0.1" }
+  let c : Ctx := { records := recs.map (·.name), funs := funNames, vias, allEq := edition == "0.1",
+                   codes := codeKinds decls }
   let rd : String → Label := fun r => match recs.find? (·.name == r) with
     | some rec => rec.deep
     | none => Label.bot
