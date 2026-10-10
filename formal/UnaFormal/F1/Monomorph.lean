@@ -67,6 +67,8 @@ mutual
     | .tuple a, .tuple b => a == b
     | .append a x, .append b y => a == b && x == y
     | .set a i x, .set b j y => a == b && i == j && x == y
+    | .toText a, .toText b => a == b
+    | .envGet a, .envGet b => a == b
     | _, _ => false
 
   /-- Two bodies agree up to annotations, the functions of the first renamed by `ρ`. -/
@@ -116,7 +118,8 @@ mutual
     | .list _, s, h | .none, s, h | .some _, s, h | .declassify _ _, s, h | .map _ _, s, h
     | .filter _ _, s, h | .firstWhere _ _, s, h | .fold _ _ _, s, h | .parse _, s, h
     | .checked _ _ _, s, h
-    | .eq _ _, s, h | .tuple _, s, h | .append _ _, s, h | .set _ _ _, s, h => by
+    | .eq _ _, s, h | .tuple _, s, h | .append _ _, s, h | .set _ _ _, s, h | .toText _, s, h
+    | .envGet _, s, h => by
       cases s <;> simp_all [rhsSim, Rhs.anon]
 
   theorem exprSim_sound {ρ : String → String} :

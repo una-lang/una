@@ -251,7 +251,15 @@ theorem atomsTy_sound {Γ : LCtx} : ∀ {as : List Atom} {ts : List LTy}, atomsT
 theorem primTy_sound {pr : Prim} {ts : List Ty} {t : Ty} (h : primTy pr ts = some t) :
     PrimTy pr ts t := by
   unfold primTy at h
-  split at h <;> cases h <;> constructor
+  split at h
+  all_goals first
+    | (cases h; done)
+    | (cases h; constructor)
+    | (split at h
+       · rename_i hall
+         cases h
+         exact .concat fun u hu => tyEq_sound _ _ (List.all_eq_true.mp hall u hu)
+       · cases h)
 
 /-- The type `joinTy` gives both operands of `==` flows into. -/
 theorem joinTy_sound {top : Label} : ∀ {t₁ t₂ t : LTy}, joinTy t₁ t₂ = some t →

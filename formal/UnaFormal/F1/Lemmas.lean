@@ -43,7 +43,12 @@ theorem source_subst (τ : List (String × Ty)) {ctx : Ctx} {s : Source} {t : Ty
 
 theorem prim_subst (τ : List (String × Ty)) {pr : Prim} {ts : List Ty} {t : Ty}
     (h : PrimTy pr ts t) : PrimTy pr (ts.map (Ty.subst τ)) (t.subst τ) := by
-  cases h <;> simp only [List.map, Ty.subst] <;> constructor
+  cases h with
+  | concat hts =>
+    refine .concat fun u hu => ?_
+    obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hu
+    rw [hts t ht]; rfl
+  | _ => simp only [List.map, Ty.subst]; constructor
 
 theorem bindTys_subst {α : Type} (τ : List (String × Ty)) (params : List (String × α))
     (ts : List Ty) (ctx : Ctx) :
@@ -180,6 +185,11 @@ mutual
       have h' := atom_subst τ h
       cases t <;> simp only [Ty.Scalar] at hs <;> exact .checked h' (by simp [Ty.subst, Ty.Scalar])
     | _, _, _, .eq ha hb => .eq (atom_subst τ ha) (atom_subst τ hb)
+    | _, _, _, .toText ha => .toText (atom_subst τ ha)
+    | _, _, _, .envGet ha => by
+      have h := atom_subst τ ha
+      simp only [Ty.subst] at h ⊢
+      exact .envGet h
     | _, _, _, .tuple has => by
       have h := atoms_subst τ has
       simp only [Ty.subst, Ty.substs_eq]
@@ -283,6 +293,17 @@ theorem sumInts_typed : ∀ {items : List Val}, (∀ v ∈ items, ValTy p v .int
     obtain ⟨m, hm⟩ := sumInts_typed (fun u hu => h u (List.mem_cons_of_mem _ hu))
     exact ⟨k + m, by simp [sumInts, hm]⟩
 
+theorem concatTexts_typed : ∀ {vs : List Val} {ts : List Ty}, ValsTy p vs ts →
+    (∀ t ∈ ts, t = .text) → ∃ s, concatTexts vs = some s
+  | [], [], .nil, _ => ⟨"", rfl⟩
+  | _ :: _, t :: _, .cons hv hvs, h => by
+    have ht := h t List.mem_cons_self
+    subst ht
+    cases hv
+    rename_i s
+    obtain ⟨r, hr⟩ := concatTexts_typed hvs (fun u hu => h u (List.mem_cons_of_mem _ hu))
+    exact ⟨s ++ r, by simp [concatTexts, hr]⟩
+
 theorem prim_typed {pr : Prim} {ts : List Ty} {t : Ty} {vs : List Val}
     (hp : PrimTy pr ts t) (hvs : ValsTy p vs ts) :
     ∃ v, evalPrim pr vs = some v ∧ ValTy p v t := by
@@ -294,6 +315,9 @@ theorem prim_typed {pr : Prim} {ts : List Ty} {t : Ty} {vs : List Val}
     rename_i hall
     obtain ⟨n, hn⟩ := sumInts_typed hall
     exact ⟨.int n, by simp [evalPrim, hn], .int⟩
+  case concat hts =>
+    obtain ⟨s, hs⟩ := concatTexts_typed hvs hts
+    exact ⟨.text s, by simp [evalPrim, hs], .text⟩
   all_goals
   · repeat (rcases hvs with _ | ⟨hv, hvs⟩; try cases hv)
     all_goals exact ⟨_, rfl, by constructor⟩

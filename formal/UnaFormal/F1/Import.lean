@@ -68,8 +68,8 @@ mutual
 end
 
 /-- A function type that may perform effects (`op`) or fail, at the top of `t`. -/
-def LTy.withFlags (op fails : Bool) : LTy → LTy
-  | .fn ps r o g f l => .fn ps r (o || op) g (f || fails) l
+def LTy.withFlags (op fails : Bool) (host : HostFx := {}) : LTy → LTy
+  | .fn ps r o g f l => .fn ps r (o || op) (g.or host) (f || fails) l
   | t => t
 
 end Una.F1
@@ -143,6 +143,9 @@ def label (j : J) : M LExpr := do
 structure Ctx where
   records : List String
   funs : List String
+  /-- The host effects the function being read declares: a lambda given to an `of` parameter
+  performs its caller's effects (ADR 0062), the host's included (M6b). -/
+  host : HostFx := {}
   /-- The `via` functions of the document's policies, with their policy. -/
   vias : List (String × String) := []
   /-- Edition 0.1 has no `Eq` constraint: `==` applies to values of any type parameter
@@ -171,6 +174,9 @@ def usesEffects (uses : List J) : M (Bool × HostFx) := do
         if ["get", "post", "put", "delete"].contains o then host := { host with rq := true }
         else throw s!"the operation `Http.{o}`"
         modify fun s => { s with host := s.host.or host }
+      else if cap == "Env" && o == "get" then
+        -- `Env.get` is the model's `envGet`, which performs no event (M6b).
+        pure ()
       else
         op := true
         modify fun s => { s with ops := if s.ops.contains (cap, o) then s.ops else s.ops ++ [(cap, o)] }
@@ -288,6 +294,8 @@ mutual
       | "not", _ => pure (.prim .not args)
       | "len", _ => pure (.prim .len args)
       | "eq", [a, b] => pure (.eq a b)
+      | "concat", _ => pure (.prim .concat args)
+      | "to_text", [a] => pure (.toText a)
       | k, _ => throw s!"the primitive `{k}`"
     | "call" =>
       let f ← path (← field j "function")
@@ -336,6 +344,11 @@ mutual
         if !["get", "post", "put", "delete"].contains o then throw s!"the operation `Http.{o}`"
         modify fun s => { s with host := { s.host with rq := true } }
         pure (.req o (← atoms (← field j "args")))
+      else if std && cap == "Env" && o == "get" then
+        -- `Env.get` reads the host's environment, the same in both runs (M6b).
+        match ← atoms (← field j "args") with
+        | [name] => pure (.envGet name)
+        | _ => throw "the operation `Env.get`, with other than one argument"
       else
       modify fun s => { s with ops := if s.ops.contains (cap, o) then s.ops else s.ops ++ [(cap, o)] }
       match ← atoms (← field j "args") with
@@ -398,7 +411,7 @@ mutual
         | .ok ol => do
           let effects := ol.getObjValD "effects" == .bool true
           let fails := ol.getObjValD "fails" == .bool true
-          pure (t.withFlags effects fails)
+          pure (t.withFlags effects fails (if effects then c.host else {}))
         | .error _ => pure t
       let v ← field j "value"
       let body ← expr c (← field j "body")
@@ -673,7 +686,8 @@ def prepare (c : Ctx) (hl : HostLabels) (caps : List (String × J)) (decls : Lis
     | .ok n => n == q && (e.kind == "fun" || e.kind == "policy")
     | .error _ => false
   let read : M (Fun × List Fun × List Policy) := do
-    let fn ← signature c d.module d.value (← expr c (← field d.value "body"))
+    let (_, fnHost) ← usesEffects (← arr (← field d.value "uses"))
+    let fn ← signature c d.module d.value (← expr { c with host := fnHost } (← field d.value "body"))
     -- The policies the function and its callees may release through, whose `to` labels bound
     -- the calls (`Program.RelBound`).
     for pol in fn.rels do refPolicy pol
@@ -985,24 +999,53 @@ def hostFreeAt (P : Program) (f : String) : Bool :=
           (g != f || fn.params.all (·.2.cf))
       | none => true
 
+/-- The note of a declaration whose certified program performs no host operation, but which
+takes a closure a caller may make one that does (#475). -/
+def closureNote : String :=
+  "rests on a lawful host (H1 to H3): a caller may hand it a closure that uses the host"
+
 /-- The note of a declaration certified in a program that uses the host's stateful capabilities:
 its theorem is `t6_release_erasure_obs` on a lawful host, H1 to H3 for `Files`, and H4 too when
 `Http` is used (M5c). -/
-def hostNoteFor (files http : Bool) : String :=
-  match files, http with
-  | true, true => "rests on a lawful host (H1 to H4): the program uses `Files` and `Http`"
-  | false, true => "rests on a lawful host (H1 to H4): the program uses `Http`"
-  | _, _ => hostNote
+def hostNoteFor (files http : Bool) (env : Bool := false) : String :=
+  -- An `Env`-only program keeps the closure clause, which the file-state guard reads
+  -- (`usesFilesNote`): a declaration that takes a closure may be handed one that writes (#495).
+  let base := match files, http with
+      | true, true => "rests on a lawful host (H1 to H4): the program uses `Files` and `Http`"
+      | false, true => "rests on a lawful host (H1 to H4): the program uses `Http`"
+      | true, false => hostNote
+      -- The certified program performs no host operation, but `f` takes a closure, which a
+      -- caller may make one that does (#475).
+      | false, false => closureNote
+  if env then base ++ ", and `Env`, with one environment in both runs" else base
 
-/-- Whether a note says that the program uses `Files`: what the file-state label decides. -/
-def usesFilesNote (note : String) : Bool := (note.splitOn "uses `Files`").length > 1
+mutual
+  /-- Whether a right-hand side reads the environment (`Env.get`, M6b), in its lambdas included. -/
+  def Rhs.usesEnv : Rhs → Bool
+    | .envGet _ => true
+    | .lambda _ b => Expr.usesEnv b
+    | _ => false
+
+  def Expr.usesEnv : Expr → Bool
+    | .atom _ | .fail _ => false
+    | .letR _ _ v b => Rhs.usesEnv v || Expr.usesEnv b
+    | .letE _ _ v b => Expr.usesEnv v || Expr.usesEnv b
+    | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e =>
+      Expr.usesEnv t || Expr.usesEnv e
+    | .attempt b | .letTuple _ _ b | .loop _ _ _ _ _ b => Expr.usesEnv b
+end
+
+/-- Whether a note's verdict may rest on the file-state label: the program uses `Files`, or a
+caller may hand the declaration a closure that does (#475), which the guard keeps covering. -/
+def usesFilesNote (note : String) : Bool :=
+  (note.splitOn "uses `Files`").length > 1 || (note.splitOn "a closure that uses the host").length > 1
 
 /-- A verdict's note, with the host's note unless `f` reaches no host operation and cannot be
 handed one (`hostFreeAt`). A host-free certified program is not enough on its own: it may be a part of the
 document, and a caller outside it may hand `f` a closure that writes a file (#472). -/
 def withHost (docFree : Bool) (P : Program) (f : String) (note : String) : String :=
   let fx : HostFx := P.funs.foldl (fun (acc : HostFx) fn => acc.or fn.host) {}
-  let hn := hostNoteFor (fx.rd || fx.wr) fx.rq
+  let hn := hostNoteFor (fx.rd || fx.wr) fx.rq (P.funs.any (fun fn => Expr.usesEnv fn.body))
   if docFree || hostFreeAt P f then note
   else if note == "" then hn else note ++ "; " ++ hn
 
@@ -1103,7 +1146,7 @@ def usesSite (known : Caps') (u : J) (anyHost : Bool := false) : Option String :
         some "a `uses` that grants an operation its capability does not declare"
       else if m == "std.host" && c == "Files" && gs.contains "write" then
         some "a `uses` that grants `Files.write`"
-      else if anyHost && m == "std.host" && (c == "Files" || c == "Http") then
+      else if anyHost && m == "std.host" && (c == "Files" || c == "Http" || c == "Env") then
         some s!"a `uses` that grants `{c}`"
       else none
   | _, _ => some "a `uses` entry that cannot be read"
@@ -1132,7 +1175,7 @@ partial def writeSite (known : Caps') (j : J) (anyHost : Bool := false) : Option
             if c != n then some "an operation whose capability is not its path's"
             else if !ops.contains o then some "an operation its capability does not declare"
             else if m == "std.host" && n == "Files" && o == "write" then some "a `Files.write`"
-            else if anyHost && m == "std.host" && (n == "Files" || n == "Http") then
+            else if anyHost && m == "std.host" && (n == "Files" || n == "Http" || n == "Env") then
               some s!"an operation of `{n}`"
             else none
         | _, _, _, _ => some "an operation whose capability cannot be resolved"

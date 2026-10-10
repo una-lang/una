@@ -116,7 +116,7 @@ theorem not_vis_join_right {a b : LExpr} (h : ¬ Vis p L b) : ¬ Vis p L (a.join
 theorem V.ofScalar_refl {t : Ty} {l : LExpr} {u : Val} (h : LValTy p u (ofScalar t l)) :
     V p L (ofScalar t l) u u := by
   unfold ofScalar at h ⊢
-  split at h <;> cases h <;> first | exact .bool | exact .int
+  split at h <;> cases h <;> first | exact .bool | exact .text | exact .int
 
 theorem ofScalar_top (t : Ty) (l : LExpr) : (ofScalar t l).top = l := by
   unfold ofScalar
@@ -242,6 +242,44 @@ theorem vis_reqFail {s : List (String × LExpr)} (hh : p.HostWF) {pc : LExpr} {t
 
 /-! ### M6: tuples, `append`, `set` and loops -/
 
+/-- `brel_confined` for a relation that holds of the runs' typed values (M6b). -/
+theorem brel_confined_typed {R : Val → Val → Prop} {vf : Prop} {pc : LExpr} {ε₁ ε₂ : Eff}
+    {P₁ P₂ : Val → Prop} {w₁ w₂ : World H} {r₁ r₂ : Run H} (hwf : p.HostWF)
+    (hw : WorldRel p L w₁ w₂)
+    (h₁ : UOk (Allowed p pc ε₁) P₁ (Fails p pc ε₁) w₁ r₁)
+    (h₂ : UOk (Allowed p pc ε₂) P₂ (Fails p pc ε₂) w₂ r₂)
+    (hpc : ¬ Vis p L pc) (hR : ∀ a b, P₁ a → P₂ b → R a b) (hvf₁ : vf → Vis p L ε₁.failLabel)
+    (hvf₂ : vf → Vis p L ε₂.failLabel) : BRel p L R vf r₁ r₂ := by
+  intro ht₁ ht₂
+  obtain ⟨hp₁, hf₁, hw₁⟩ := confined (L := L) hwf h₁ hpc
+  obtain ⟨hp₂, hf₂, hw₂⟩ := confined (L := L) hwf h₂ hpc
+  refine ⟨by rw [hp₁, hp₂], ?_, hw₁.symm.trans (hw.trans hw₂)⟩
+  obtain ⟨tr₁, o₁, _⟩ := r₁
+  obtain ⟨tr₂, o₂, _⟩ := r₂
+  have u₁ := h₁.2.1
+  have u₂ := h₂.2.1
+  cases o₁ <;> cases o₂ <;> simp only [Term] at ht₁ ht₂ <;> simp only [OutRel]
+  · exact hR _ _ u₁ u₂
+  · exact fun hv => hf₂ _ rfl (hvf₂ hv)
+  · exact fun hv => hf₁ _ rfl (hvf₁ hv)
+  · exact fun hv => absurd (hvf₁ hv) (hf₁ _ rfl)
+
+/-- `brel_quiet` for a relation that holds of the runs' values when they end with one. -/
+theorem brel_quiet_typed {R : Val → Val → Prop} {vf : Prop} {r₁ r₂ : Run H}
+    (hw : WorldRel p L r₁.2.2 r₂.2.2)
+    (hp : proj p L r₁.1 = proj p L r₂.1) (hR : ∀ a b, r₁.2.1 = .ok a → r₂.2.1 = .ok b → R a b)
+    (hf₁ : ∀ c, r₁.2.1 = .failed c → ¬ vf) (hf₂ : ∀ c, r₂.2.1 = .failed c → ¬ vf) :
+    BRel p L R vf r₁ r₂ := by
+  intro ht₁ ht₂
+  refine ⟨hp, ?_, hw⟩
+  obtain ⟨tr₁, o₁, _⟩ := r₁
+  obtain ⟨tr₂, o₂, _⟩ := r₂
+  cases o₁ <;> cases o₂ <;> simp only [Term] at ht₁ ht₂ <;> simp only [OutRel]
+  · exact hR _ _ rfl rfl
+  · exact hf₂ _ rfl
+  · exact hf₁ _ rfl
+  · exact fun hv => absurd hv (hf₁ _ rfl)
+
 theorem vis_bot_inst (s : List (String × LExpr)) : Vis p L (LExpr.bot.inst s) := by
   rw [show LExpr.bot = LExpr.ofLabel Label.bot from rfl, LExpr.inst_ofLabel]
   exact Vis.join Vis.bot Vis.bot
@@ -293,6 +331,32 @@ theorem VList.hideσ {e : LExpr} (he : e.PlainFree) (hv : ¬ Vis p L (e.inst (p.
     .cons (V.hideσ he _ _ hv) (VList.hideσ he hv (by simpa using h₁) (by simpa using h₂))
   | [], _ :: _, _, h, _ | [], _, _ :: _, _, h | _ :: _, [], _, h, _ | _ :: _, _, [], _, h => by
     simp at h
+
+/-- **A tuple decided by a label the observer does not see** (M6b): two tuples of the types `ts`,
+each component of which is at least the label (`Flows (ts.map (raise e)) ts`), are related
+component by component, each hidden. A `Unit` component needs nothing: any two units are related. -/
+theorem VList.hide_covσ {e : LExpr} (he : e.PlainFree) (hv : ¬ Vis p L (e.inst (p.sd σ))) :
+    ∀ {ts : List LTy} {xs ys : List Val}, Flows p.top (ts.map (LTy.raise e)) ts →
+      LValsTy p xs (ts.map (LTy.lsubst p.recordDeep σ)) →
+      LValsTy p ys (ts.map (LTy.lsubst p.recordDeep σ)) →
+      VList p L (ts.map (LTy.lsubst p.recordDeep σ)) xs ys
+  | [], [], [], _, _, _ => .nil
+  | _ :: _, x :: _, y :: _, hcov, .cons _ hx, .cons _ hy => by
+    cases hcov with
+    | cons f fs => exact .cons (V.flow (V.hideσ he x y hv) (Flow.lsubst _ _ f)) (VList.hide_covσ he hv fs hx hy)
+  | [], _ :: _, _, _, h, _ | [], _, _ :: _, _, _, h | _ :: _, [], _, _, h, _
+  | _ :: _, _, [], _, _, h => by cases h
+
+theorem V.tuple_covσ {e : LExpr} {ts : List LTy} (he : e.PlainFree) (hv : ¬ Vis p L (e.inst (p.sd σ)))
+    (hcov : Flows p.top (ts.map (LTy.raise e)) ts) {a b : Val}
+    (ha : LValTy p a ((LTy.tuple ts .bot).lsubst p.recordDeep σ))
+    (hb : LValTy p b ((LTy.tuple ts .bot).lsubst p.recordDeep σ)) :
+    V p L ((LTy.tuple ts .bot).lsubst p.recordDeep σ) a b := by
+  simp only [LTy.lsubst, LTy.lsubsts_eq] at ha hb ⊢
+  cases ha with
+  | tuple ha =>
+    cases hb with
+    | tuple hb => exact .tuple (VList.hide_covσ he hv hcov ha hb)
 
 /-- A body's tuple, at the type of a loop's state, is a related pair of states. -/
 theorem stRel_of {S : List LTy} {r₁ r₂ : Val}
@@ -994,6 +1058,35 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
             V.eq_of_deep hwf hbv hbu₁ hbu₂ (LTy.eqIn_lsub hE he₂') hd₂]
           exact .bool
         · exact .hidden hd
+      | @toText _ _ a t ha heq =>
+        refine BRelR.of_brel ?_
+        obtain ⟨a₁, a₂, ha₁, ha₂, hav, hau₁, hau₂⟩ := latom_bothσ he₁ he₂ hrel ha
+        simp only [evalRhs, ha₁, ha₂]
+        refine brel_done hw ?_
+        simp only [LTy.lsubst]
+        by_cases hd : Vis p L ((p.deep t).inst (p.sd σ))
+        · have hd₁ : Vis p L (p.deep (t.lsubst p.recordDeep σ)) :=
+            Vis.of_le (LTy.deep_lsub_le hσ hE (latom_inPlace hΓ ha) heq) hd
+          rw [V.eq_of_deep hwf hav hau₁ hau₂ (LTy.eqIn_lsub hE heq) hd₁]
+          exact .text
+        · exact .hidden hd
+      | @envGet _ _ name t ha ht hle =>
+        refine BRelR.of_brel ?_
+        obtain ⟨n₁, n₂, hn₁, hn₂, hnv, hnu₁, hnu₂⟩ := latom_bothσ he₁ he₂ hrel ha
+        cases t <;> simp [LTy.erase] at ht
+        rename_i l
+        simp only [LTy.lsubst] at hnv hnu₁ hnu₂
+        have hvl : Vis p L (l.inst (p.sd σ)) := Vis.of_le (LExpr.le_inst _ hle) (vis_bot_inst _)
+        have hnn := V.eq_text hnv hvl
+        subst hnn
+        cases hnu₁ with
+        | @text s _ =>
+          simp only [evalRhs, hn₁, hn₂]
+          refine brel_done hw ?_
+          simp only [LTy.lsubst]
+          cases H.env s
+          · exact .none
+          · exact .some .text
       | tuple has =>
         refine BRelR.of_brel ?_
         obtain ⟨vs₁, vs₂, h₁, h₂, hvs, _, _⟩ := latoms_bothσ he₁ he₂ hrel has
@@ -1335,6 +1428,219 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
           · exact .inl ⟨by simp only [proj_append]; rw [hp, hph],
               OutRel.mono (fun _ _ h => V.raiseσ _ (V.flow h (Flow.lsubst _ _ h₂))) id hoh, hwh⟩
           · exact .inr (Diverged.prepend hp hdh)
+      | @iteT _ _ cond thenE elseE lc t₁ t₂ ts ε₁ ε₂ hc ht hel h₁ h₂ _ hcov =>
+        obtain ⟨c₁, c₂, hc₁, hc₂, hcv, hcu₁, hcu₂⟩ := latom_bothσ he₁ he₂ hrel hc
+        have hlc : lc.PlainFree := latom_inPlace hΓ hc
+        have hpc' : (pc.join lc).PlainFree := LExpr.plainFree_join hpc hlc
+        simp only [LTy.lsubst] at hcv hcu₁ hcu₂
+        have U : ∀ {w : World H} {env : Env} {v : Val}, LEnvTy p env (Γ.lsub p.recordDeep σ) →
+            evalAtom env cond = some v → LValTy p v (.bool (lc.inst (p.sd σ))) →
+            UOk (Allowed p ((pc.join lc).inst (p.sd σ)) ((ε₁.union ε₂).inst (p.sd σ))) (fun v => LValTy p v ((LTy.tuple ts .bot).lsubst p.recordDeep σ))
+              (Fails p ((pc.join lc).inst (p.sd σ)) ((ε₁.union ε₂).inst (p.sd σ))) w
+              (eval H (n + 1) p w env (.ite cond thenE elseE)) := by
+          intro w env v henv hcv' hvt
+          cases hvt with
+          | @bool b _ =>
+            cases b
+            · simp only [eval, hcv']
+              exact UOk.mono (allowed_union_right_inst (LExpr.le_refl _)) (fun _ h => LValTy.flow h (Flow.lsubst _ _ h₂))
+                (Fails.union_right_inst (LExpr.le_refl _)) (uE hσ henv hel)
+            · simp only [eval, hcv']
+              exact UOk.mono allowed_union_left_inst (fun _ h => LValTy.flow h (Flow.lsubst _ _ h₁)) Fails.union_left_inst
+                (uE hσ henv ht)
+        by_cases hv : Vis p L (lc.inst (p.sd σ))
+        · cases hcu₁ with
+          | @bool b _ =>
+            have := V.eq_bool hcv hv
+            subst this
+            cases b
+            · simp only [eval, hc₁, hc₂]
+              exact BRelR.mono (fun _ _ h => V.flow h (Flow.lsubst _ _ h₂)) Vis.union_right_inst
+                (ihE hσ hE hΓ hpc' hw he₁ he₂ hrel hel)
+            · simp only [eval, hc₁, hc₂]
+              exact BRelR.mono (fun _ _ h => V.flow h (Flow.lsubst _ _ h₁)) Vis.union_left_inst
+                (ihE hσ hE hΓ hpc' hw he₁ he₂ hrel ht)
+        · exact .of_brel <| brel_confined_typed hh hw (U he₁ hc₁ hcu₁) (U he₂ hc₂ hcu₂)
+            (fun h => hv (Vis.of_le (LExpr.inst_le_join_inst _ _ _) h))
+            (fun a b ha hb => V.tuple_covσ hlc hv hcov ha hb) id id
+      | @caseOptionT _ _ scr noneE x someE te ls t₁ t₂ ts ε₁ ε₂ hs hn hsome h₁ h₂ _ hcov =>
+        obtain ⟨c₁, c₂, hc₁, hc₂, hcv, hcu₁, hcu₂⟩ := latom_bothσ he₁ he₂ hrel hs
+        have hsi := latom_inPlace hΓ hs
+        simp only [LTy.InPlace] at hsi
+        have hpc' : (pc.join ls).PlainFree := LExpr.plainFree_join hpc hsi.2
+        have hΓ' : LCtx.InPlace ((x, te.raise ls) :: Γ) := hcons (LTy.raise_inPlace hsi.2 hsi.1)
+        simp only [LTy.lsubst] at hcv hcu₁ hcu₂
+        have U : ∀ {w : World H} {env : Env} {v : Val}, LEnvTy p env (Γ.lsub p.recordDeep σ) →
+            evalAtom env scr = some v →
+            LValTy p v (.option (te.lsubst p.recordDeep σ) (ls.inst (p.sd σ))) →
+            UOk (Allowed p ((pc.join ls).inst (p.sd σ)) ((ε₁.union ε₂).inst (p.sd σ))) (fun v => LValTy p v ((LTy.tuple ts .bot).lsubst p.recordDeep σ))
+              (Fails p ((pc.join ls).inst (p.sd σ)) ((ε₁.union ε₂).inst (p.sd σ))) w
+              (eval H (n + 1) p w env (.caseOption scr noneE x someE)) := by
+          intro w env v henv hcv' hvt
+          cases hvt with
+          | none =>
+            simp only [eval, hcv']
+            exact UOk.mono allowed_union_left_inst (fun _ h => LValTy.flow h (Flow.lsubst _ _ h₁)) Fails.union_left_inst
+              (uE hσ henv hn)
+          | some hw =>
+            simp only [eval, hcv']
+            exact UOk.mono (allowed_union_right_inst (LExpr.le_refl _)) (fun _ h => LValTy.flow h (Flow.lsubst _ _ h₂))
+              (Fails.union_right_inst (LExpr.le_refl _))
+              (uE hσ (.cons (LValTy.lsubst_raise hw) henv) hsome)
+        by_cases hv : Vis p L (ls.inst (p.sd σ))
+        · cases hcv with
+          | hidden h => exact absurd hv h
+          | none =>
+            simp only [eval, hc₁, hc₂]
+            exact BRelR.mono (fun _ _ h => V.flow h (Flow.lsubst _ _ h₁)) Vis.union_left_inst
+              (ihE hσ hE hΓ hpc' hw he₁ he₂ hrel hn)
+          | some hab =>
+            cases hcu₁ with
+            | some hw₁ =>
+              cases hcu₂ with
+              | some hw₂ =>
+                simp only [eval, hc₁, hc₂]
+                exact BRelR.mono (fun _ _ h => V.flow h (Flow.lsubst _ _ h₂))
+                  Vis.union_right_inst
+                  (ihE hσ hE hΓ' hpc' hw (.cons (LValTy.lsubst_raise hw₁) he₁)
+                    (.cons (LValTy.lsubst_raise hw₂) he₂) (.cons (V.raiseσ _ hab) hrel) hsome)
+        · exact .of_brel <| brel_confined_typed hh hw (U he₁ hc₁ hcu₁) (U he₂ hc₂ hcu₂)
+            (fun h => hv (Vis.of_le (LExpr.inst_le_join_inst _ _ _) h))
+            (fun a b ha hb => V.tuple_covσ hsi.2 hv hcov ha hb) id id
+      | @caseResultT _ _ scr x okE y errE te ls t₁ t₂ ts ε₁ ε₂ hs hok herr h₁ h₂ _ hcov =>
+        obtain ⟨c₁, c₂, hc₁, hc₂, hcv, hcu₁, hcu₂⟩ := latom_bothσ he₁ he₂ hrel hs
+        have hsi := latom_inPlace hΓ hs
+        simp only [LTy.InPlace] at hsi
+        have hpc' : (pc.join ls).PlainFree := LExpr.plainFree_join hpc hsi.2
+        have hΓ₁ : LCtx.InPlace ((x, te.raise ls) :: Γ) := hcons (LTy.raise_inPlace hsi.2 hsi.1)
+        have hΓ₂ : LCtx.InPlace ((y, .int ls) :: Γ) := hcons hsi.2
+        simp only [LTy.lsubst] at hcv hcu₁ hcu₂
+        have U : ∀ {w : World H} {env : Env} {v : Val}, LEnvTy p env (Γ.lsub p.recordDeep σ) →
+            evalAtom env scr = some v →
+            LValTy p v (.result (te.lsubst p.recordDeep σ) (ls.inst (p.sd σ))) →
+            UOk (Allowed p ((pc.join ls).inst (p.sd σ)) ((ε₁.union ε₂).inst (p.sd σ))) (fun v => LValTy p v ((LTy.tuple ts .bot).lsubst p.recordDeep σ))
+              (Fails p ((pc.join ls).inst (p.sd σ)) ((ε₁.union ε₂).inst (p.sd σ))) w
+              (eval H (n + 1) p w env (.caseResult scr x okE y errE)) := by
+          intro w env v henv hcv' hvt
+          cases hvt with
+          | ok hw =>
+            simp only [eval, hcv']
+            exact UOk.mono allowed_union_left_inst (fun _ h => LValTy.flow h (Flow.lsubst _ _ h₁)) Fails.union_left_inst
+              (uE hσ (.cons (LValTy.lsubst_raise hw) henv) hok)
+          | err =>
+            simp only [eval, hcv']
+            exact UOk.mono (allowed_union_right_inst (LExpr.le_refl _)) (fun _ h => LValTy.flow h (Flow.lsubst _ _ h₂))
+              (Fails.union_right_inst (LExpr.le_refl _)) (uE hσ (.cons .int henv) herr)
+        by_cases hv : Vis p L (ls.inst (p.sd σ))
+        · cases hcv with
+          | hidden h => exact absurd hv h
+          | ok hab =>
+            cases hcu₁ with
+            | ok hw₁ =>
+              cases hcu₂ with
+              | ok hw₂ =>
+                simp only [eval, hc₁, hc₂]
+                exact BRelR.mono (fun _ _ h => V.flow h (Flow.lsubst _ _ h₁))
+                  Vis.union_left_inst
+                  (ihE hσ hE hΓ₁ hpc' hw (.cons (LValTy.lsubst_raise hw₁) he₁)
+                    (.cons (LValTy.lsubst_raise hw₂) he₂) (.cons (V.raiseσ _ hab) hrel) hok)
+          | err =>
+            simp only [eval, hc₁, hc₂]
+            exact BRelR.mono (fun _ _ h => V.flow h (Flow.lsubst _ _ h₂)) Vis.union_right_inst
+              (ihE hσ hE hΓ₂ hpc' hw (.cons .int he₁) (.cons .int he₂) (.cons .int hrel) herr)
+        · exact .of_brel <| brel_confined_typed hh hw (U he₁ hc₁ hcu₁) (U he₂ hc₂ hcu₂)
+            (fun h => hv (Vis.of_le (LExpr.inst_le_join_inst _ _ _) h))
+            (fun a b ha hb => V.tuple_covσ hsi.2 hv hcov ha hb) id id
+      | @handleT _ _ body x handler t₁ t₂ ts ε₁ ε₂ hb hh' h₁ h₂ _ hcov =>
+        have h := ihE hσ hE hΓ hpc hw he₁ he₂ hrel hb
+        have hε₁ := (LExprTy.inPlace hwf hΓ hpc hb).2
+        have hlF := Eff.failLabel_plainFree hε₁
+        have hpc' : (pc.join ε₁.failLabel).PlainFree := LExpr.plainFree_join hpc hlF
+        have hΓ' : LCtx.InPlace ((x, .int ε₁.failLabel) :: Γ) := hcons hlF
+        simp only [eval]
+        have ub₁ := uE (w := w₁) hσ he₁ hb
+        have ub₂ := uE (w := w₂) hσ he₂ hb
+        generalize eval H n p w₁ e₁ body = r₁ at h ub₁ ⊢
+        generalize eval H n p w₂ e₂ body = r₂ at h ub₂ ⊢
+        obtain ⟨tr₁, o₁, w₁'⟩ := r₁
+        obtain ⟨tr₂, o₂, w₂'⟩ := r₂
+        by_cases hd : Diverged p L tr₁ tr₂
+        · intro _ _
+          right
+          cases o₁ <;> cases o₂ <;> dsimp only
+          all_goals first
+            | exact hd
+            | exact hd.append _ _
+            | simpa using hd.append [] _
+            | simpa using hd.append _ []
+        replace h : BRel p L _ _ (tr₁, o₁, w₁') (tr₂, o₂, w₂') := fun a b => (h a b).resolve_right hd
+        cases o₁ <;> cases o₂
+        all_goals first
+          | (intro ht₁ ht₂; simp only [Term] at ht₁ ht₂; done)
+          | skip
+        · intro ht₁ ht₂
+          obtain ⟨hp, ho, hwr⟩ := h trivial trivial
+          exact .inl ⟨hp, V.flow ho (Flow.lsubst _ _ h₁), hwr⟩
+        · rename_i a c
+          dsimp only
+          obtain ⟨hp, ho, hwr⟩ := h trivial trivial
+          simp only [OutRel] at ho
+          have ho' : ¬ Vis p L (ε₁.failLabel.inst (p.sd σ)) := fun hv => ho (Vis.failLabel_inst.mpr hv)
+          have uh := uE (w := w₂') hσ (.cons (LValTy.int (n := (c : Int))) he₂) hh'
+          generalize eval H n p w₂' ((x, Val.int (c : Int)) :: e₂) handler = rh at uh ⊢
+          obtain ⟨th, oh, wh⟩ := rh
+          obtain ⟨hph, hfh, hwh⟩ := confined (L := L) hh uh
+            (fun hv => ho' (Vis.of_le (LExpr.inst_le_join_inst _ _ _) hv))
+          have ta : LValTy p a (t₁.lsubst p.recordDeep σ) := ub₁.2.1
+          have tb := uh.2.1
+          refine .of_brel <| brel_quiet_typed (hwr.trans hwh)
+            (by simp only [proj_append]; rw [hph, List.append_nil]; exact hp)
+            (fun a' b' ea eb => by
+              simp only [Res.ok.injEq] at ea eb
+              subst ea eb
+              exact V.tuple_covσ hlF ho' hcov (LValTy.flow ta (Flow.lsubst _ _ h₁))
+                (LValTy.flow tb (Flow.lsubst _ _ h₂)))
+            (fun _ h => nomatch h) (fun c' hc' => hfh c' hc')
+        · rename_i c b
+          dsimp only
+          obtain ⟨hp, ho, hwr⟩ := h trivial trivial
+          simp only [OutRel] at ho
+          have ho' : ¬ Vis p L (ε₁.failLabel.inst (p.sd σ)) := fun hv => ho (Vis.failLabel_inst.mpr hv)
+          have uh := uE (w := w₁') hσ (.cons (LValTy.int (n := (c : Int))) he₁) hh'
+          generalize eval H n p w₁' ((x, Val.int (c : Int)) :: e₁) handler = rh at uh ⊢
+          obtain ⟨th, oh, wh⟩ := rh
+          obtain ⟨hph, hfh, hwh⟩ := confined (L := L) hh uh
+            (fun hv => ho' (Vis.of_le (LExpr.inst_le_join_inst _ _ _) hv))
+          have tb : LValTy p b (t₁.lsubst p.recordDeep σ) := ub₂.2.1
+          have ta := uh.2.1
+          refine .of_brel <| brel_quiet_typed (hwh.symm.trans hwr)
+            (by simp only [proj_append]; rw [hph, List.append_nil]; exact hp)
+            (fun a' b' ea eb => by
+              simp only [Res.ok.injEq] at ea eb
+              subst ea eb
+              exact V.tuple_covσ hlF ho' hcov (LValTy.flow ta (Flow.lsubst _ _ h₂))
+                (LValTy.flow tb (Flow.lsubst _ _ h₁)))
+            (fun c' hc' => hfh c' hc') (fun _ h => nomatch h)
+        · rename_i c₁ c₂
+          dsimp only
+          obtain ⟨hp, ho, hwr⟩ := h trivial trivial
+          simp only [OutRel] at ho
+          have hcv : V p L ((LTy.int ε₁.failLabel).lsubst p.recordDeep σ) (.int (c₁ : Int)) (.int (c₂ : Int)) := by
+            simp only [LTy.lsubst]
+            by_cases hv : Vis p L (ε₁.failLabel.inst (p.sd σ))
+            · rw [ho (Vis.failLabel_inst.mpr hv)]; exact .int
+            · exact .hidden hv
+          have hh'' := ihE hσ hE hΓ' hpc' hwr (.cons (LValTy.int (n := (c₁ : Int))) he₁)
+            (.cons (LValTy.int (n := (c₂ : Int))) he₂) (.cons hcv hrel) hh'
+          generalize eval H n p w₁' ((x, Val.int (c₁ : Int)) :: e₁) handler = rh₁ at hh'' ⊢
+          generalize eval H n p w₂' ((x, Val.int (c₂ : Int)) :: e₂) handler = rh₂ at hh'' ⊢
+          obtain ⟨th₁, oh₁, wh₁⟩ := rh₁
+          obtain ⟨th₂, oh₂, wh₂⟩ := rh₂
+          intro ht₁ ht₂
+          rcases hh'' ht₁ ht₂ with ⟨hph, hoh, hwh⟩ | hdh
+          · exact .inl ⟨by simp only [proj_append]; rw [hp, hph],
+              OutRel.mono (fun _ _ h => V.flow h (Flow.lsubst _ _ h₂)) id hoh, hwh⟩
+          · exact .inr (Diverged.prepend hp hdh)
       | @letTuple _ _ bs value body ts l s ε hv hflows hbs hb =>
         obtain ⟨v₁, v₂, hv₁, hv₂, hvv, hvu₁, hvu₂⟩ := latom_bothσ he₁ he₂ hrel hv
         have hli := latom_inPlace hΓ hv
@@ -1379,7 +1685,7 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
               · exact hbs q hq
               · exact hΓ q hq
             exact ihE hσ hE hΓ' hpc hw (mk he₁ hbs₁) (mk he₂ hbs₂) hrel' hb
-      | @loopList _ _ xs x xty st init body te ls ts tb ε hxs hx hxi hi hflows hst hb hbt hfe =>
+      | @loopList _ _ xs x xty st init body te ls ts tb ε hxs hx hxi hi hflows hst hb hbt hfe hcov =>
         obtain ⟨x₁, x₂, hx₁, hx₂, hxv, hxu₁, hxu₂⟩ := latom_bothσ he₁ he₂ hrel hxs
         obtain ⟨s₁, s₂, hs₁, hs₂, hsv, hsu₁, hsu₂⟩ := latoms_bothσ he₁ he₂ hrel hi
         have hli := latom_inPlace hΓ hxs
@@ -1467,11 +1773,15 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
                 obtain ⟨_, _, rfl, rfl, h⟩ := h
                 simp only [LTy.lsubst, LTy.lsubsts_eq]
                 exact .tuple h
-            · exact .of_brel (brel_confined hh hw (UL he₁ (LValsAll.mem hl₁) hst₁)
+            · exact .of_brel (brel_confined_typed hh hw (UL he₁ (LValsAll.mem hl₁) hst₁)
                 (UL he₂ (LValsAll.mem hl₂) hst₂)
                 (fun h => hvl (Vis.of_le (LExpr.inst_le_join_inst _ _ _) h))
-                (fun _ _ => .hidden (by simp only [LTy.lsubst, LTy.top]; exact hvl)) id id)
-      | @loopRange _ _ low high inc x xty st init body l₁ l₂ ts tb ε hlo hhi hx hxi hi hflows hst hb hbt hfe =>
+                (fun a b ha hb => by
+                  obtain ⟨_, rfl, ha⟩ := ha
+                  obtain ⟨_, rfl, hb⟩ := hb
+                  simp only [LTy.lsubst, LTy.lsubsts_eq]
+                  exact .tuple (VList.hide_covσ hli.2 hvl hcov ha hb)) id id)
+      | @loopRange _ _ low high inc x xty st init body l₁ l₂ ts tb ε hlo hhi hx hxi hi hflows hst hb hbt hfe hcov =>
         obtain ⟨a₁, a₂, ha₁, ha₂, hav, hau₁, hau₂⟩ := latom_bothσ he₁ he₂ hrel hlo
         obtain ⟨b₁, b₂, hb₁, hb₂, hbv, hbu₁, hbu₂⟩ := latom_bothσ he₁ he₂ hrel hhi
         obtain ⟨s₁, s₂, hs₁, hs₂, hsv, hsu₁, hsu₂⟩ := latoms_bothσ he₁ he₂ hrel hi
@@ -1589,9 +1899,14 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
                   obtain ⟨_, _, rfl, rfl, h⟩ := h
                   simp only [LTy.lsubst, LTy.lsubsts_eq]
                   exact .tuple h
-                · exact .of_brel (brel_confined hh hw (UL he₁ hints hst₁) (UL he₂ hints hst₂)
+                · exact .of_brel (brel_confined_typed hh hw (UL he₁ hints hst₁) (UL he₂ hints hst₂)
                     (fun h => hvl (Vis.of_le (LExpr.inst_le_join_inst _ _ _) h))
-                    (fun _ _ => .hidden (by simp only [LTy.lsubst, LTy.top]; exact hvl)) id id)
+                    (fun a b ha hb => by
+                      obtain ⟨_, rfl, ha⟩ := ha
+                      obtain ⟨_, rfl, hb⟩ := hb
+                      simp only [LTy.lsubst, LTy.lsubsts_eq]
+                      exact .tuple (VList.hide_covσ (LExpr.plainFree_join hl₁i hl₂i) hvl hcov ha hb))
+                    id id)
 
 end Una.F1
 

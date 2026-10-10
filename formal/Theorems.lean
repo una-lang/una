@@ -199,5 +199,14 @@ import UnaFormal
 #print axioms Una.F1.LoopExample.certified
 #print axioms Una.F1.LoopExample.sum_runs
 #print axioms Una.F1.LoopExample.public_count_untyped
+#print axioms Una.F1.VList.hide_covσ
+#print axioms Una.F1.V.tuple_covσ
+#print axioms Una.F1.brel_confined_typed
+#print axioms Una.F1.brel_quiet_typed
+#print axioms Una.F1.concatTexts_typed
+#print axioms Una.F1.Val.render_anon
+#print axioms Una.F1.VList.eq_texts_visσ
+#print axioms Una.F1.VList.eq_texts_vis
+#print axioms Una.F1.Check.primTy_sound
 #print axioms Una.F1.brel_checked
 #print axioms Una.F1.checkRun_same

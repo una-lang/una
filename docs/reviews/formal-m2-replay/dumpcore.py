@@ -41,6 +41,26 @@ def label(level="public", cats=(), syms=()):
     return {"level": level, "categories": sorted(cats), "symbols": sorted(syms)}
 
 
+def _plain(base, level="public"):
+    return {"kind": "base", "base": base, "refinements": [], "label": label(level)}
+
+
+def _op(name, params, result, accepts="public"):
+    return {"name": name, "params": params, "result": result, "fails": None, "error": None,
+            "requires": [], "ensures": [], "accepts": label(accepts)}
+
+
+# `std.host`'s capabilities as `una core --json` exports them (`spec/14 §3`).
+HOST = {
+    "Console": {"kind": "cap", "name": "Console", "ops": [
+        _op("print", [["line", _plain({"kind": "text"})]], _plain({"kind": "unit"}))]},
+    "Env": {"kind": "cap", "name": "Env", "ops": [
+        _op("get", [["name", _plain({"kind": "text"})]],
+            _plain({"kind": "named", "module": "prelude", "name": "Option",
+                    "args": [_plain({"kind": "text"}, "internal")]}))]},
+}
+
+
 def unknown(what):
     return {"kind": what}
 
@@ -230,7 +250,7 @@ class Parser:
                     self.take()
             self.take("]")
             return {"kind": "list", "value": items}
-        if self.peek(1) in ("(", "[") and tok not in ("Some",):
+        if self.peek(1) in ("(", "[") and tok not in ("Some", "Ok", "Err"):
             name = self.take()
             if name in PRIMS:
                 return {"kind": "prim", "prim": {"kind": PRIMS[name]}, "args": self.args()}
@@ -256,6 +276,12 @@ class Parser:
             return {"kind": "construct",
                     "ctor": {"kind": {"module": "prelude", "name": "Option"}, "name": tok,
                              "index": 0 if tok == "Some" else 1}, "args": args}
+        if tok in ("Ok", "Err"):
+            # A `Result` value, as the export writes it (M6b): a construct of `prelude.Result`.
+            self.take()
+            return {"kind": "construct",
+                    "ctor": {"kind": {"module": "prelude", "name": "Result"}, "name": tok,
+                             "index": 0 if tok == "Ok" else 1}, "args": self.args()}
         return {"kind": "atom", "value": self.atom()}
 
     def binder(self):
@@ -451,9 +477,13 @@ def convert(text, module, edition):
                 "name": name, "type_params": tps, "constraints": cons, "params": ps,
                 "result": result, "uses": uses, "fails": fails, "error": None,
                 "body": body}})
+    # The host's capabilities a declaration uses, as `una core --json` writes them in `host`
+    # (`spec/14 §3`), for those of them the re-check reads: `Console` and `Env` (M6b).
+    used = {u["capability"] for d in decls if d["kind"] == "fun" for u in d["value"]["uses"]}
+    host = [HOST[c] for c in sorted(used - capnames) if c in HOST]
     del capnames
     return {"schema": "una.core/1", "edition": edition, "complete": True,
-            "modules": [{"path": module, "decls": decls}], "library": [], "host": []}
+            "modules": [{"path": module, "decls": decls}], "library": [], "host": host}
 
 
 if __name__ == "__main__":

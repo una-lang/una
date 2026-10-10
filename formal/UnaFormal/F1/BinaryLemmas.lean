@@ -91,6 +91,15 @@ theorem joinAll_vis {es : List LExpr} (h : Vis p L (LExpr.joinAll es)) : ∀ e �
     · exact Vis.left h
     · exact ih (Vis.right h) x hx
 
+/-- Texts whose every label the observer sees are the same texts in both runs. -/
+theorem VList.eq_texts_vis : ∀ {ts : List LTy} {as bs : List Val}, VList p L ts as bs →
+    (∀ u ∈ ts, u.erase = .text ∧ Vis p L (p.deep u)) → as = bs
+  | [], [], [], .nil, _ => rfl
+  | u :: _, _ :: _, _ :: _, .cons h hs, hall => by
+    obtain ⟨he, hv⟩ := hall u List.mem_cons_self
+    cases u <;> simp [LTy.erase] at he
+    rw [V.eq_text h hv, VList.eq_texts_vis hs (fun w hw => hall w (List.mem_cons_of_mem _ hw))]
+
 /-- A primitive gives the same result in both runs when the observer sees its label. -/
 theorem prim_agree {pr : Prim} {ts : List LTy} {t : Ty} {vs₁ vs₂ : List Val}
     (hp : PrimTy pr (ts.map LTy.erase) t) (hvs : VList p L ts vs₁ vs₂)
@@ -110,6 +119,9 @@ theorem prim_agree {pr : Prim} {ts : List LTy} {t : Ty} {vs₁ vs₂ : List Val}
     cases u <;> simp [LTy.erase] at he
     exact V.eq_bool h hd
   cases hp with
+  | concat hts =>
+    rw [VList.eq_texts_vis hvs (fun u hu => ⟨hts _ (hes ▸ List.mem_map_of_mem hu),
+      hdeep (fun h => Prim.noConfusion h) u hu⟩)]
   | add | sub | lt | eqInt =>
     match ts, hvs, hes with
     | [_, _], .cons h₁ (.cons h₂ .nil), hes =>

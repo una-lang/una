@@ -317,6 +317,18 @@ theorem sound (hwf : p.WellFormed) (h4 : H.RespTyped) : ∀ n : Nat,
         obtain ⟨vb, hvb, _⟩ := atom_typed henv hb
         simp only [evalRhs, hva, hvb, done, Good]
         exact .bool
+      | toText ha =>
+        obtain ⟨v, hv, _⟩ := atom_typed henv ha
+        simp only [evalRhs, hv, done, Good]
+        exact .text
+      | envGet ha =>
+        obtain ⟨v, hv, hvt⟩ := atom_typed henv ha
+        cases hvt with
+        | @text s =>
+          simp only [evalRhs, hv, done, Good]
+          cases H.env s
+          · exact .none
+          · exact .some .text
       | tuple has =>
         obtain ⟨vs, hvs, hvst⟩ := atoms_typed henv has
         simp [evalRhs, hvs, Good]

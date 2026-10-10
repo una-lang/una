@@ -154,6 +154,7 @@ def Program.RelBound (p : Program) (pc : LExpr) (rs : List String) : Prop :=
 def ofScalar (t : Ty) (l : LExpr) : LTy :=
   match t with
   | .bool => .bool l
+  | .text => .text l
   | _ => .int l
 
 /-- The label of a primitive's result (`spec/07 §7` rule 3): `.len` takes the top label of its
@@ -401,6 +402,15 @@ mutual
         LRhsTy p E Γ pc (.eq a b) (.bool ((p.deep t₁).join (p.deep t₂))) .none
     /-- A tuple of Core (`spec/17 §4`): the components' types. -/
     | tuple {Γ pc items ts} : LAtomsTy Γ items ts → LRhsTy p E Γ pc (.tuple items) (.tuple ts .bot) .none
+    /-- `to_text` (`spec/10 §5`, `spec/07 §7` rule 3): the text carries every label of the value,
+    at a type with equality, where related values the observer fully sees are equal (as `==`). -/
+    | toText {Γ pc a t} :
+        LAtomTy Γ a t → p.eqIn E t = true → LRhsTy p E Γ pc (.toText a) (.text (p.deep t)) .none
+    /-- `Env.get` (`spec/14 §3`): its name is `public`, its `accepts`; whether the variable exists
+    is `public`, and its value `internal`. The environment is the host's, the same in both runs. -/
+    | envGet {Γ pc name t} :
+        LAtomTy Γ name t → t.erase = .text → p.le (p.deep t) .bot →
+        LRhsTy p E Γ pc (.envGet name) (.option (.text (.ofLabel ⟨.internal, []⟩)) .bot) .none
     /-- `append`: the item flows into the element type; the list keeps its top label, its length's. -/
     | append {Γ pc xs item te lx t} :
         LAtomTy Γ xs (.list te lx) → LAtomTy Γ item t → Flow p.top t te →
@@ -432,6 +442,15 @@ mutual
         LAtomTy Γ cond (.bool lc) → LExprTy p E Γ (pc.join lc) thenE t₁ ε₁ →
         LExprTy p E Γ (pc.join lc) elseE t₂ ε₂ → Flow p.top t₁ s → Flow p.top t₂ s → s.InPlace →
         LExprTy p E Γ pc (.ite cond thenE elseE) (s.raise lc) (ε₁.union ε₂)
+    /-- T-If at a tuple type, Core's join of the bindings an `if` updates (`spec/17 §4`): a tuple
+    carries no label of its own, so the condition's label goes into every component, which the
+    premise asks to be at least it, as U4001 asks of a rebind under a raised program counter. A
+    `Unit` component is exempt only because any two units are related (`V.unit`, `Flow.unit`). -/
+    | iteT {Γ pc cond thenE elseE lc t₁ t₂ ts ε₁ ε₂} :
+        LAtomTy Γ cond (.bool lc) → LExprTy p E Γ (pc.join lc) thenE t₁ ε₁ →
+        LExprTy p E Γ (pc.join lc) elseE t₂ ε₂ → Flow p.top t₁ (.tuple ts .bot) →
+        Flow p.top t₂ (.tuple ts .bot) → LTy.InPlaceAll ts → Flows p.top (ts.map (LTy.raise lc)) ts →
+        LExprTy p E Γ pc (.ite cond thenE elseE) (.tuple ts .bot) (ε₁.union ε₂)
     /-- T-Case on an option: the pattern binding takes the element type raised by the
     scrutinee's top label. -/
     | caseOption {Γ pc scrutinee noneE x someE te ls t₁ t₂ s ε₁ ε₂} :
@@ -439,12 +458,27 @@ mutual
         LExprTy p E ((x, te.raise ls) :: Γ) (pc.join ls) someE t₂ ε₂ →
         Flow p.top t₁ s → Flow p.top t₂ s → s.InPlace →
         LExprTy p E Γ pc (.caseOption scrutinee noneE x someE) (s.raise ls) (ε₁.union ε₂)
+    /-- T-Case on an option at a tuple type: as `iteT`. -/
+    | caseOptionT {Γ pc scrutinee noneE x someE te ls t₁ t₂ ts ε₁ ε₂} :
+        LAtomTy Γ scrutinee (.option te ls) → LExprTy p E Γ (pc.join ls) noneE t₁ ε₁ →
+        LExprTy p E ((x, te.raise ls) :: Γ) (pc.join ls) someE t₂ ε₂ →
+        Flow p.top t₁ (.tuple ts .bot) → Flow p.top t₂ (.tuple ts .bot) → LTy.InPlaceAll ts →
+        Flows p.top (ts.map (LTy.raise ls)) ts →
+        LExprTy p E Γ pc (.caseOption scrutinee noneE x someE) (.tuple ts .bot) (ε₁.union ε₂)
     | caseResult {Γ pc scrutinee x okE y errE te ls t₁ t₂ s ε₁ ε₂} :
         LAtomTy Γ scrutinee (.result te ls) →
         LExprTy p E ((x, te.raise ls) :: Γ) (pc.join ls) okE t₁ ε₁ →
         LExprTy p E ((y, .int ls) :: Γ) (pc.join ls) errE t₂ ε₂ →
         Flow p.top t₁ s → Flow p.top t₂ s → s.InPlace →
         LExprTy p E Γ pc (.caseResult scrutinee x okE y errE) (s.raise ls) (ε₁.union ε₂)
+    /-- T-Case on a result at a tuple type: as `iteT`. -/
+    | caseResultT {Γ pc scrutinee x okE y errE te ls t₁ t₂ ts ε₁ ε₂} :
+        LAtomTy Γ scrutinee (.result te ls) →
+        LExprTy p E ((x, te.raise ls) :: Γ) (pc.join ls) okE t₁ ε₁ →
+        LExprTy p E ((y, .int ls) :: Γ) (pc.join ls) errE t₂ ε₂ →
+        Flow p.top t₁ (.tuple ts .bot) → Flow p.top t₂ (.tuple ts .bot) → LTy.InPlaceAll ts →
+        Flows p.top (ts.map (LTy.raise ls)) ts →
+        LExprTy p E Γ pc (.caseResult scrutinee x okE y errE) (.tuple ts .bot) (ε₁.union ε₂)
     /-- T-Fail: only at the public program counter (U4002). -/
     | fail {Γ pc code s} :
         p.le pc .bot → pc.SymFree → s.InPlace → LExprTy p E Γ pc (.fail code) s ⟨false, HostFx.none, some .bot, []⟩
@@ -460,6 +494,14 @@ mutual
         Flow p.top t₁ s → Flow p.top t₂ s → s.InPlace →
         LExprTy p E Γ pc (.handle body x handler) (s.raise ε₁.failLabel)
           ⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels⟩
+    /-- T-Handle at a tuple type: as `iteT`, with what decides the failure. -/
+    | handleT {Γ pc body x handler t₁ t₂ ts ε₁ ε₂} :
+        LExprTy p E Γ pc body t₁ ε₁ →
+        LExprTy p E ((x, .int ε₁.failLabel) :: Γ) (pc.join ε₁.failLabel) handler t₂ ε₂ →
+        Flow p.top t₁ (.tuple ts .bot) → Flow p.top t₂ (.tuple ts .bot) → LTy.InPlaceAll ts →
+        Flows p.top (ts.map (LTy.raise ε₁.failLabel)) ts →
+        LExprTy p E Γ pc (.handle body x handler) (.tuple ts .bot)
+          ⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels⟩
     /-- T-LetTuple: each component, raised by the tuple's top label, flows into its binder's
     declared type. -/
     | letTuple {Γ pc binders value body ts l s ε} :
@@ -469,8 +511,11 @@ mutual
     /-- T-Loop over a list (`spec/17 §6` rule 3, ADR 0075): the declared state types are an
     invariant. The initial values flow into them, and the body, run under the list's top label,
     which decides how many iterations run, maps the state at those types to a tuple that flows
-    into them. The variable carries the elements' labels and the list's top label, and the
-    loop's value is the state raised by the list's top label. An iteration's failure decides
+    into them. The variable carries the elements' labels and the list's top label. The loop's
+    value is the state, a tuple, which carries no label of its own: the list's top label goes
+    into every component, which the premise asks to be at least it (M6b), as U4001 asks of a rebind
+    under a raised program counter; a `Unit` component is exempt only because any two units are
+    related. An iteration's failure decides
     whether the later iterations run, as a failure decides T-Let's continuation, so it is
     decided by no more than what decides whether the iteration runs (M6, a finding of the
     proof; `una check` gives U4002 to any failure a loop body passes on that is not public). -/
@@ -479,7 +524,8 @@ mutual
         LAtomsTy Γ init ts → Flows p.top ts (state.map Prod.snd) → (∀ q ∈ state, q.2.InPlace) →
         LExprTy p E ((x, xty) :: (state ++ Γ)) (pc.join ls) body tb ε →
         Flow p.top tb (.tuple (state.map Prod.snd) .bot) → (p.oldLoop = false → p.le ε.failLabel (pc.join ls)) →
-        LExprTy p E Γ pc (.loop (.list xs) x xty state init body) (.tuple (state.map Prod.snd) ls) ε
+        Flows p.top ((state.map Prod.snd).map (LTy.raise ls)) (state.map Prod.snd) →
+        LExprTy p E Γ pc (.loop (.list xs) x xty state init body) (.tuple (state.map Prod.snd) .bot) ε
     /-- T-Loop over a range: as over a list, with the bounds' labels, which decide the variable's
     values and how many iterations run. -/
     | loopRange {Γ pc low high inclusive x xty state init body l₁ l₂ ts tb ε} :
@@ -488,8 +534,9 @@ mutual
         LAtomsTy Γ init ts → Flows p.top ts (state.map Prod.snd) → (∀ q ∈ state, q.2.InPlace) →
         LExprTy p E ((x, xty) :: (state ++ Γ)) (pc.join (l₁.join l₂)) body tb ε →
         Flow p.top tb (.tuple (state.map Prod.snd) .bot) → (p.oldLoop = false → p.le ε.failLabel (pc.join (l₁.join l₂))) →
+        Flows p.top ((state.map Prod.snd).map (LTy.raise (l₁.join l₂))) (state.map Prod.snd) →
         LExprTy p E Γ pc (.loop (.range low high inclusive) x xty state init body)
-          (.tuple (state.map Prod.snd) (l₁.join l₂)) ε
+          (.tuple (state.map Prod.snd) .bot) ε
 end
 
 /-- T-Fun: the body, at the public program counter, flows into the declared result, which may

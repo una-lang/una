@@ -280,5 +280,20 @@ theorem release_under_secret_untyped {E : List String} {pc : LExpr} {t : LTy} {�
           simp only [prog2, prog, Program.policy, List.find?] at hpo
           cases hpo
           exact sec_not_le_bot hle
+  | iteT hc ht _ _ _ _ _ =>
+    cases hc with
+    | var hx =>
+      simp only [Γc, lctxLookup, ite_true] at hx
+      cases hx
+      cases ht with
+      | letR hr _ _ _ =>
+        cases hr with
+        | call hf _ _ _ _ _ _ _ _ hrb =>
+          simp only [prog2, Program.find, List.find?] at hf
+          cases hf
+          obtain ⟨po, hpo, hle, _⟩ := hrb "reveal" (by simp [rev])
+          simp only [prog2, prog, Program.policy, List.find?] at hpo
+          cases hpo
+          exact sec_not_le_bot hle
 
 end Una.F1.ReleaseExample

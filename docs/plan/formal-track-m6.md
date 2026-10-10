@@ -55,7 +55,7 @@ Each rule is the labeled typing of the desugared form, as `spec/17 §6` states i
   - **The variable** carries the elements' labels and the list's top label (`spec/17 §4`): `Flow (te.raise ℓs) V`.
   - **The initial values** flow into the state types: `Flow tᵢ Sᵢ` for each `aᵢ : tᵢ`.
   - **The body** is typed under `pc ⊔ ℓs`, which is `spec/17 §6` rule 3: the number of iterations is decided by the list's length. It is typed in the loop's environment with the variable at `V` and the state at `Sᵢ`, and its value must flow into `tuple [S₁, ...]`.
-  - **The loop's value** is `(tuple [S₁, ...] ⊥).raise ℓs`, since the number of iterations decides it, as T-If raises by its condition. Its effects are the body's.
+  - **The loop's value** is `(tuple [S₁, ...] ⊥).raise ℓs`, since the number of iterations decides it, as T-If raises by its condition. Its effects are the body's. (Amended by M6b: a tuple carries no label of its own. The value is `tuple [S₁, ...] ⊥`, and every component is asked to be at least `ℓs`, as are the joins of `if`, `case` and handlers at tuple type, `docs/plan/formal-track-m6b.md` §10.)
   - **Failures and sinks.** Under `pc ⊔ ℓs`, `fail` and failing calls are U4002 (T-Fail, T-Let), and every sink must accept the program counter (`Bound`, `Allowed`), by the rules F1 has.
   - **An iteration's failure** decides whether the later iterations run, so it is decided by no more than what decides whether the iteration runs: `ε.failLabel ⊑ pc ⊔ ℓs`. The draft rule lacked this premise. The proof found the gap (§12).
 - **T-Loop, over a range.** For `low : int ℓ₁` and `high : int ℓ₂`, the same rule holds with `ℓs := ℓ₁ ⊔ ℓ₂`, and the variable's rule is `Flow (int (ℓ₁ ⊔ ℓ₂)) V`.

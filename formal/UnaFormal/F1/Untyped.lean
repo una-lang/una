@@ -53,6 +53,15 @@ theorem branch_bound {Γ : LCtx} {pc : LExpr} {a₁ a₂ s : LTy} {ε : Eff} {E 
         cases hv with
         | op _ _ hle _ =>
           exact LExpr.le_trans (LExpr.le_trans (LExpr.le_join_right _ _) (LExpr.le_join_left _ _)) hle
+  | caseResultT hs hok _ _ _ _ _ =>
+    cases hs with
+    | var hl =>
+      refine ⟨_, _, hl, ?_⟩
+      cases hok with
+      | letR hv _ _ _ =>
+        cases hv with
+        | op _ _ hle _ =>
+          exact LExpr.le_trans (LExpr.le_trans (LExpr.le_join_right _ _) (LExpr.le_join_left _ _)) hle
 
 /-- `attempt` over a `let` whose body is the bound atom: its result is labeled by what decides
 the value's failure. -/
@@ -229,6 +238,13 @@ theorem s14cond_untyped (hold : P.oldHost = false) {lc : LExpr}
     have hfs : P.le lc (.ofLabel P.fileState) := by
       cases hw with
       | ite hcond hthen _ _ _ _ =>
+        cases hcond with
+        | var hl =>
+          simp [lctxLookup] at hl
+          subst hl
+          obtain ⟨_, _, hfs⟩ := write_state hold hthen
+          exact LExpr.le_trans (LExpr.le_trans (LExpr.le_join_right _ _) (LExpr.le_join_left _ _)) hfs
+      | iteT hcond hthen _ _ _ _ _ =>
         cases hcond with
         | var hl =>
           simp [lctxLookup] at hl

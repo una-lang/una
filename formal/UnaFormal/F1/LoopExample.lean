@@ -120,7 +120,7 @@ example : (eval Host.unit 10 prog ⟨(), ()⟩ [("n", .int 5)] twiceFn.body).2.1
 /-- A loop over a list of `internal` length, whose state is `public`, handed to a `public` binder. -/
 def countBody : Expr :=
   .letE "r" (.tuple [.int .bot] intl)
-    (.loop (.list (.var "xs")) "x" (.int .bot) [("c", .int .bot)] [.int 0]
+    (.loop (.list (.var "xs")) "x" (.int intl) [("c", .int .bot)] [.int 0]
       (.letR "c1" (.int .bot) (.prim .add [.var "c", .int 1])
         (.letR "t" (.tuple [.int .bot] .bot) (.tuple [.var "c1"]) (.atom (.var "t")))))
     (.letTuple [("n", .int .bot)] (.var "r") (.atom (.var "n")))
@@ -143,4 +143,90 @@ theorem public_count_untyped {E : List String} {t : LTy} {ε : Eff} :
           | int hle =>
             apply internal_hidden
             exact LExpr.le_trans (LExpr.le_join_right _ _) hle
+/-! ### Joins at tuple type (M6b): the deciding label goes into every component -/
+
+def why : Check.Result Eff → String
+  | .ok _ => "ok"
+  | .error m => m
+
+def okB : Check.Result Eff → Bool
+  | .ok _ => true
+  | .error _ => false
+
+/-- A loop over a list of `internal` length whose state is a `Unit`, bound and returned at
+`public`: accepted. A `Unit` component is exempt from the premise only because any two units are
+related, and a `Unit` carries nothing that could depend on the iteration count. -/
+def unitLoop : Expr :=
+  .letE "r" (.tuple [.unit .bot] .bot)
+    (.loop (.list (.var "xs")) "x" (.int intl) [("u", .unit .bot)] [.unit]
+      (.letR "t" (.tuple [.unit .bot] .bot) (.tuple [.unit]) (.atom (.var "t"))))
+    (.letTuple [("v", .unit .bot)] (.var "r") (.atom (.var "v")))
+
+/-- The same loop with a `public` count: rejected (U4001). -/
+def countLoop : Expr :=
+  .letE "r" (.tuple [.int .bot] .bot)
+    (.loop (.list (.var "xs")) "x" (.int intl) [("c", .int .bot)] [.int 0]
+      (.letR "c1" (.int .bot) (.prim .add [.var "c", .int 1])
+        (.letR "t" (.tuple [.int .bot] .bot) (.tuple [.var "c1"]) (.atom (.var "t")))))
+    (.letTuple [("n", .int .bot)] (.var "r") (.atom (.var "n")))
+
+def Γlen : LCtx := [("xs", .list (.int .bot) intl)]
+
+unseal flowB flowsB in
+#guard okB (checkExpr prog [] Γlen .bot (.unit .bot) unitLoop)
+unseal flowB flowsB in
+#guard !okB (checkExpr prog [] Γlen .bot (.int .bot) countLoop)
+
+/-- `if`, `case` on an option and on a result, and a handler, each joining a `public` count
+under an `internal` decision: each is rejected at the join (U4001), as `una check` rejects the
+surface programs; a handler's join is the model's only, since a function's failure is decided at
+`public` (T-Fun), but its premise is checked all the same. -/
+def joinIf : Expr :=
+  .ite (.var "b") (.letR "t" (.tuple [.int .bot] .bot) (.tuple [.int 1]) (.atom (.var "t")))
+    (.letR "t" (.tuple [.int .bot] .bot) (.tuple [.int 2]) (.atom (.var "t")))
+
+def joinOption : Expr :=
+  .caseOption (.var "o") (.letR "t" (.tuple [.int .bot] .bot) (.tuple [.int 1]) (.atom (.var "t")))
+    "v" (.letR "t" (.tuple [.int .bot] .bot) (.tuple [.int 2]) (.atom (.var "t")))
+
+def joinResult : Expr :=
+  .caseResult (.var "q") "v" (.letR "t" (.tuple [.int .bot] .bot) (.tuple [.int 1]) (.atom (.var "t")))
+    "e" (.letR "t" (.tuple [.int .bot] .bot) (.tuple [.int 2]) (.atom (.var "t")))
+
+def joinHandle : Expr :=
+  .handle (.letR "n" (.int intl) (.parse (.var "s"))
+      (.letR "t" (.tuple [.int .bot] .bot) (.tuple [.int 1]) (.atom (.var "t"))))
+    "e" (.letR "t" (.tuple [.int .bot] .bot) (.tuple [.int 2]) (.atom (.var "t")))
+
+def Γsec : LCtx := [("b", .bool intl), ("o", .option (.int .bot) intl),
+  ("q", .result (.int .bot) intl), ("s", .text intl)]
+
+unseal flowB flowsB in
+#guard [joinIf, joinOption, joinResult, joinHandle].all fun e =>
+  !okB (checkExpr prog [] Γsec .bot (.tuple [.int .bot] .bot) e)
+
+-- The same joins at an `internal` count are accepted: the premise is what rejects them above.
+unseal flowB flowsB in
+#guard [joinIf, joinOption, joinResult].all fun e =>
+  okB (checkExpr prog [] Γsec .bot (.tuple [.int intl] .bot)
+    (match e with
+     | .ite c (.letR x _ v b) (.letR y _ u d) =>
+       .ite c (.letR x (.tuple [.int intl] .bot) v b) (.letR y (.tuple [.int intl] .bot) u d)
+     | .caseOption sc (.letR x _ v b) z (.letR y _ u d) =>
+       .caseOption sc (.letR x (.tuple [.int intl] .bot) v b) z (.letR y (.tuple [.int intl] .bot) u d)
+     | .caseResult sc z (.letR x _ v b) w (.letR y _ u d) =>
+       .caseResult sc z (.letR x (.tuple [.int intl] .bot) v b) w (.letR y (.tuple [.int intl] .bot) u d)
+     | e => e))
+
+-- Each is rejected at the premise, not elsewhere.
+unseal flowB flowsB in
+#guard ([why (checkExpr prog [] Γlen .bot (.int .bot) countLoop)] ++
+  [joinIf, joinOption, joinResult, joinHandle].map fun e =>
+    why (checkExpr prog [] Γsec .bot (.tuple [.int .bot] .bot) e)) ==
+  ["a component of a loop's state is below what decides its iterations (U4001)",
+   "a component of the joined state is below the condition's label (U4001)",
+   "a component of the joined state is below the scrutinee's label (U4001)",
+   "a component of the joined state is below the scrutinee's label (U4001)",
+   "a component of the joined state is below what decides the failure (U4001)"]
+
 end Una.F1.LoopExample

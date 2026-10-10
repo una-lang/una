@@ -5,6 +5,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 ## Unreleased
 
 - **The re-check reads `checked`** (#453, Phase A). The formal model gains `checked(a, φ) else fail C`, with T-Checked's premise that the operand and the program counter are public, and an abstract predicate (`Program.predSem`), so the theorems hold whatever the refinement language makes it: T1, the unary and binary halves of T6, erasure and the host-free simulation cover it. The re-check reads `checked` from the export, and marks one whose predicate reads a value besides its operand not re-checked (S-17). On the corpus, 3 more declarations are accepted (719) and none is rejected. A `checked` in a `via` body, which needs failing releases, is Phase B.
+- **The formal track models `to_text`, `concat` and `Env.get`** (#485, M6b, `docs/plan/formal-track-m6b.md`). The re-check now rejects 6 of S-04's 8 replayable shapes, as v0.2.0 dumped them, exactly at the leak. The labeled-loop conformance cases this adds found that M6 put the deciding label on a tuple itself, rejecting secure loops and joins that `una check` accepts. Now a tuple carries no label, and every component must be at least the deciding label, as U4001 asks. A lambda given to an `of` parameter now carries its caller's host effects, and a closure-taking declaration's note no longer claims `Files` (#475). Corpus: 716 to 753 accepted, none rejected.
 
 ## v0.3.6
 

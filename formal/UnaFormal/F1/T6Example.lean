@@ -195,6 +195,16 @@ theorem leaking_untyped {E : List String} {pc : LExpr} {t : LTy} {ε : Eff} :
         cases hr with
         | op _ _ hle _ =>
           exact sec_hidden (LExpr.le_of_join_right (LExpr.le_of_join_left hle))
+  | iteT hc ht _ _ _ _ _ =>
+    cases hc with
+    | var hx =>
+      simp only [Γc, lctxLookup, ite_true] at hx
+      cases hx
+      cases ht with
+      | letR hr _ _ =>
+        cases hr with
+        | op _ _ hle _ =>
+          exact sec_hidden (LExpr.le_of_join_right (LExpr.le_of_join_left hle))
 
 /-! ### A generic call -/
 
