@@ -11,7 +11,7 @@ stateless host, was needed by the old rules, and the host breaks it.
   `internal` body.
 -/
 import UnaFormal.F1.LTyping
-import UnaFormal.F1.CheckSound
+import UnaFormal.F1.CheckSoundCore
 
 namespace Una.F1.OldLeaks
 
@@ -32,13 +32,17 @@ def demo : Host where
   write := fun path _ fs => some (path :: fs)
   request := fun _ args _ =>
     match args with
-    | [_, .text "1"] => (none, ())
-    | _ => (some "", ())
+    | [_, _, .text "1", _] => (.error 0, ())
+    | _ => (.ok (.record "prelude.Response" [.int 200, .list [], .text ""]), ())
 
 /-- The demo host meets H1 and H2: its shape is the whole file system. -/
 theorem demo_lawful : demo.Lawful where
   read_fails := fun _ h => by simp only [demo, id] at h; rw [h]
   write_shape := fun _ _ _ h => by simp only [demo, id] at h; rw [h]; rfl
+  resp_typed := fun _ vs _ _ _ h => by
+    simp only [demo] at h
+    split at h <;> cases h
+    simp [Val.IsResponse]
 
 /-- The empty world. -/
 def w₀ : World demo := ⟨[], ()⟩
@@ -56,7 +60,8 @@ def oldProg : Program where
   reqFloor := ⟨.internal, []⟩
   fileState := Label.bot
   oldHost := true
-  records := []
+  records := [⟨"prelude.Header", [.text .bot, .text intl], ⟨.internal, []⟩⟩,
+    ⟨"prelude.Response", [.int .bot, .list (.record "prelude.Header" .bot) .bot, .text .bot], ⟨.internal, []⟩⟩]
   policies := []
   funs := []
 
@@ -77,11 +82,15 @@ def s14 : Expr :=
       (.attempt (.letR "c" (.text intl) (.read (.text "a.txt")) (.atom (.var "c"))))
       branch)
 
-/-- **S-15's probe**: send the secret as a request's body, and print whether it failed. -/
+/-- **S-15's probe**: send the secret as a request's body, with no header and no key name, and
+print whether it failed. -/
 def s15 : Expr :=
-  .letE "r" (.result (.text intl) .bot)
-    (.attempt (.letR "c" (.text intl) (.req "post" [.text "https://example.com", .var "x"])
-      (.atom (.var "c"))))
+  .letE "r" (.result (.record "prelude.Response" intl) .bot)
+    (.attempt (.letR "h" (.list (.record "prelude.Header" .bot) .bot) (.list [])
+      (.letR "k" (.option (.text .bot) .bot) .none
+        (.letR "c" (.record "prelude.Response" intl)
+          (.req "post" [.text "https://example.com", .var "h", .var "x", .var "k"])
+          (.atom (.var "c"))))))
     branch
 
 /-- The environment with the secret `s`. -/
@@ -120,26 +129,12 @@ theorem s14_old_leaks :
     (eval demo 10 oldProg w₀ (env "b.txt") s14).1.filter (· matches .out _) = [.out "no"] := by
   constructor <;> rfl
 
-/-- Under the old rules, S-15's probe has a typing. -/
+unseal Check.flowB Check.flowsB in
+/-- Under the old rules, S-15's probe has a typing: the checker accepts it. -/
 theorem s15_old_typed : ∃ t ε, LExprTy oldProg [] Γ .bot s15 t ε := by
-  have hts : ∀ t ∈ [LTy.text LExpr.bot, LTy.text intl], t.erase = .text := by
-    intro t ht
-    simp only [List.mem_cons, List.not_mem_nil, or_false] at ht
-    rcases ht with rfl | rfl <;> rfl
-  have hr : LExprTy oldProg [] Γ .bot
-      (.letR "c" (.text intl) (.req "post" [.text "https://example.com", .var "x"]) (.atom (.var "c")))
-      _ _ :=
-    .letR (.req (.cons .text (.cons (.var rfl) .nil)) hts (le_of rfl) (sf rfl)) (.text (le_of rfl))
-      (.atom (.var rfl)) rfl
-  have hall : LExprTy oldProg [] Γ .bot s15 _ _ :=
-    .letE (x := "r") (ann := .result (.text intl) .bot) (.attempt hr)
-      (.result (.text (le_of rfl)) (le_of rfl))
-      (.caseResult (s := .unit .bot) (.var rfl)
-          (.letR (.op .text trivial (le_of rfl) (sf rfl)) .unit (.atom (.var rfl)) rfl)
-          (.letR (.op .text trivial (le_of rfl) (sf rfl)) .unit (.atom (.var rfl)) rfl)
-          .unit .unit rfl)
-      (by simp [LTy.InPlace, intl, LExpr.ofLabel, LExpr.bot])
-  exact ⟨_, _, hall⟩
+  obtain ⟨t, ht, _⟩ := Check.checkExpr_sound (p := oldProg) (E := []) (Γ := Γ) (pc := .bot)
+    (s := .unit .bot) (e := s15) (ε := _) rfl
+  exact ⟨t, _, ht⟩
 
 /-- **S-15 in the model, under the old rules**: the server fails the request whose body is `"1"`,
 so two runs that differ only in the `internal` body print different lines at `Console`. -/

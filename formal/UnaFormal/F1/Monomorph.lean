@@ -282,7 +282,7 @@ theorem t6_release_erasure {ρ : String → String} {P₁ P₂ : Program} (L : L
       runAnon ρ r₁ = runAnon id (eval H n P₂ w₁ e₁' e') ∧
       runAnon ρ r₂ = runAnon id (eval H n P₂ w₂ e₂' e') :=
   ⟨_, _, t6_release_host P₁ L H hwf hb1 hh hlaw hσ hE hΓ hpc hw h₁ h₂ hrel he n,
-    eval_erasure hsim hai w₁ n he₁ hee, eval_erasure hsim hai w₂ n he₂ hee⟩
+    eval_erasure hsim hai hlaw.resp_typed w₁ n he₁ hee, eval_erasure hsim hai hlaw.resp_typed w₂ n he₂ hee⟩
 
 /-- A value of a scalar type is first-order. -/
 theorem Val.firstOrder_of_scalar {p : Program} {v : Val} {t : Ty} (hs : t.Scalar)
@@ -300,13 +300,15 @@ theorem Val.firstOrderAll_of_texts : ∀ {vs : List Val}, (∀ v ∈ vs, ∃ s, 
 
 /-- **The events of a typed run are first-order** (#457), in a program within B1, on any host. A
 release carries the value of its `via` function, typed at the policy's `to`, which B1 makes
-scalar; a request carries its arguments, which T-Request types as texts. -/
+scalar; a request carries its arguments, which T-Request types at `Http`'s parameter types, whose
+values hold no closure (M5c). -/
 theorem events_firstOrder {p : Program} {H : Host} (hwf : p.LWellFormed) (hb1 : p.B1WellFormed)
+    (h4 : H.RespTyped)
     {σ : List (String × LTy)} {w : World H} {env : Env} {Γ : LCtx} {E : List String} {pc : LExpr}
     {e : Expr} {t : LTy} {ε : Eff} (hσ : GroundSubst σ) (henv : LEnvTy p env (Γ.lsub p.recordDeep σ))
     (he : LExprTy p E Γ pc e t ε) (n : Nat) : ∀ ev ∈ (eval H n p w env e).1, ev.FirstOrder := by
   intro ev hev
-  have ha := ((unary_soundR hwf hb1 n).2 hσ henv he).1 ev hev
+  have ha := ((unary_soundR hwf hb1 h4 n).2 hσ henv he).1 ev hev
   cases ev with
   | release pol v =>
     obtain ⟨_, po, hpo, _, hv⟩ := ha
@@ -316,7 +318,7 @@ theorem events_firstOrder {p : Program} {H : Host} (hwf : p.LWellFormed) (hb1 : 
     exact Val.firstOrder_of_scalar (hb1.dst po hmem).2 hv
   | req m vs =>
     simp only [Event.FirstOrder]
-    exact Val.firstOrderAll_of_texts ha.2.2
+    exact ha.2.2
   | out _ | read _ | write _ _ => trivial
 
 /-- A release in an erased trace comes from a release, whose value erases to the same. -/
@@ -354,19 +356,19 @@ theorem t6_release_erasure_obs {ρ : String → String} {P₁ P₂ : Program} (L
   have hfo : ∀ {wa : World H} {ea ea' : Env}, LEnvTy P₁ ea (Γ.lsub P₁.recordDeep σ) →
       Val.anonEnv ρ ea = Val.anonEnv id ea' → ∀ ev ∈ (eval H n P₂ wa ea' e').1, ev.FirstOrder := by
     intro wa ea ea' hty hea ev hev
-    have herase := congrArg Prod.fst (eval_erasure hsim hai wa n hea hee)
+    have herase := congrArg Prod.fst (eval_erasure hsim hai hlaw.resp_typed wa n hea hee)
     simp only [runAnon] at herase
     have hm : ev.anon id ∈ (eval H n P₁ wa ea e).1.map (Event.anon ρ) := by
       rw [herase]
       exact List.mem_map_of_mem hev
     obtain ⟨ev', hev', heq⟩ := List.mem_map.mp hm
     rw [← Event.firstOrder_anon (ρ := id), ← heq, Event.firstOrder_anon]
-    exact events_firstOrder hwf hb1 hσ hty he n ev' hev'
+    exact events_firstOrder hwf hb1 hlaw.resp_typed hσ hty he n ev' hev'
   have hfo₁ := hfo (wa := w₁) h₁ he₁
   have hfo₂ := hfo (wa := w₂) h₂ he₂
   have hbr := t6_release_host P₁ L H hwf hb1 hh hlaw hσ hE hΓ hpc hw h₁ h₂ hrel he n
-  have ha := eval_erasure hsim hai w₁ n he₁ hee
-  have hb := eval_erasure hsim hai w₂ n he₂ hee
+  have ha := eval_erasure hsim hai hlaw.resp_typed w₁ n he₁ hee
+  have hb := eval_erasure hsim hai hlaw.resp_typed w₂ n he₂ hee
   generalize eval H n P₁ w₁ e₁ e = r₁ at hbr ha
   generalize eval H n P₁ w₂ e₂ e = r₂ at hbr hb
   generalize eval H n P₂ w₁ e₁' e' = s₁ at ha hT₁ hfo₁ ⊢

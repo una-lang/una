@@ -58,7 +58,16 @@ mutual
         (le_ok hle) (fun ho => ?_) (symFree_sound hsf), flowTo_ok hf⟩
       simp only [ho, Bool.false_or] at hfs
       exact leB_sound hfs
-    | .req _ _, _, h => by simp [checkRhs] at h
+    | .req m args, ε, h => by
+      simp only [checkRhs, bind_ok, pure_ok, need_ok] at h
+      obtain ⟨ts, hts, _, hps, _, hrec, _, hle, _, hsf, _, hf, rfl⟩ := h
+      have hm : httpParams m = some (ts.map LTy.erase) := by
+        split at hps
+        · rename_i ps hp
+          rw [hp, tysEq_sound _ _ hps]
+        · simp at hps
+      exact ⟨_, .req (atomsTy_sound hts) hm (httpRecordsB_sound hrec) (le_ok hle) (symFree_sound hsf),
+        flowTo_ok hf⟩
     | .construct record fields, ε, h => by
       simp only [checkRhs, bind_ok, pure_ok, need_ok, some_ok] at h
       obtain ⟨rec, hrec, ts, hts, _, hfl, _, hf, rfl⟩ := h

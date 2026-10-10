@@ -125,12 +125,7 @@ mutual
       rw [ht] at h
       rw [hct] at h'
       exact .write h h'
-    | _, _, _, _, _, .req has hts _ _ => by
-      refine .req (latoms_erase has) ?_
-      intro t ht
-      simp only [List.mem_map] at ht
-      obtain ⟨u, hu, rfl⟩ := ht
-      exact hts u hu
+    | _, _, _, _, _, .req has hts hr _ _ => .req (latoms_erase has) hts hr
     | _, _, _, _, _, .construct hrec has hflows => by
       have h := latoms_erase has
       rw [← Flows.erase hflows] at h
@@ -264,10 +259,11 @@ theorem Program.LWellFormed.wellFormed (hwf : p.LWellFormed) : p.WellFormed wher
 /-- **T1 for the labeled typing of F1** (`spec/10 §10`): a body the labeled typing accepts, of a
 program it accepts, run in an environment of its context's types with any fuel and any host,
 never gets stuck, and a value it ends with has its type's structure. -/
-theorem t1_labeled {H : Host} (hwf : p.LWellFormed) (w : World H) {env : Env} {Γ : LCtx}
+theorem t1_labeled {H : Host} (hwf : p.LWellFormed) (h4 : H.RespTyped) (w : World H)
+    {env : Env} {Γ : LCtx}
     {pc : LExpr} {e : Expr} {t : LTy} {ε : Eff}
     (henv : EnvTy p env Γ.erase) (he : LExprTy p E Γ pc e t ε) (n : Nat) :
     (eval H n p w env e).2.1 ≠ .stuck ∧ ∀ v, (eval H n p w env e).2.1 = .ok v → ValTy p v t.erase :=
-  t1 hwf.wellFormed w henv (LExprTy.toStruct he) n
+  t1 hwf.wellFormed h4 w henv (LExprTy.toStruct he) n
 
 end Una.F1

@@ -16,35 +16,6 @@ import UnaFormal.F1.Binary
 
 namespace Una.F1.Check
 
-mutual
-  theorem tyEq_sound : ∀ (a b : Ty), tyEq a b = true → a = b
-    | .int, b, h | .bool, b, h | .text, b, h | .unit, b, h => by cases b <;> simp_all [tyEq]
-    | .record r, b, h | .var r, b, h => by cases b <;> simp_all [tyEq]
-    | .list a, b, h => by
-      cases b with
-      | list b => simp only [tyEq] at h; rw [tyEq_sound a b h]
-      | _ => simp [tyEq] at h
-    | .option a, b, h => by
-      cases b with
-      | option b => simp only [tyEq] at h; rw [tyEq_sound a b h]
-      | _ => simp [tyEq] at h
-    | .result a, b, h => by
-      cases b with
-      | result b => simp only [tyEq] at h; rw [tyEq_sound a b h]
-      | _ => simp [tyEq] at h
-    | .fn ps r, b, h => by
-      cases b with
-      | fn qs s =>
-        simp only [tyEq, Bool.and_eq_true] at h
-        rw [tysEq_sound ps qs h.1, tyEq_sound r s h.2]
-      | _ => simp [tyEq] at h
-
-  theorem tysEq_sound : ∀ (as bs : List Ty), tysEq as bs = true → as = bs
-    | [], [], _ => rfl
-    | a :: as, b :: bs, h => by
-      simp only [tysEq, Bool.and_eq_true] at h; rw [tyEq_sound a b h.1, tysEq_sound as bs h.2]
-    | [], _ :: _, h | _ :: _, [], h => by simp [tysEq] at h
-end
 
 mutual
   theorem tyClosed_sound : ∀ (t : Ty), tyClosed t = true → ∀ σ, t.subst σ = t

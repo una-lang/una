@@ -34,6 +34,20 @@ theorem andThen_good {first : Run H} {rest : World H → Val → Run H} {t s : T
   | stuck => simp [Good] at h1
   | outOfFuel => simp [andThen, Good]
 
+/-- **A response has `Response`'s type** (H4), in a program that holds `Http`'s kinds. -/
+theorem ValTy.response (hr : p.HttpRecords) {v : Val} (h : v.IsResponse) :
+    ValTy p v (.record "prelude.Response") := by
+  obtain ⟨⟨hrec, hh, hhf⟩, ⟨rrec, hrr, hrf⟩⟩ := hr
+  unfold Val.IsResponse at h
+  split at h
+  · rename_i hs _ _
+    refine .record hrr ?_
+    rw [hrf]
+    refine .cons .int (.cons (.list fun x hx => ?_) (.cons .text .nil))
+    obtain ⟨n, y, rfl⟩ := h x hx
+    exact .record hh (by rw [hhf]; exact .cons .text (.cons .text .nil))
+  · exact h.elim
+
 /-- A call of a typed function value on typed arguments, with a sound evaluation of bodies. -/
 theorem applyWith_good {run : World H → Env → Expr → Run H} {fv : Val} {vs : List Val}
     {ts : List Ty} {r : Ty}
@@ -117,14 +131,14 @@ theorem parseInt_good (w : World H) (s : String) : Good p .int (parseInt w s).2.
   · exact .int
   · trivial
 
-theorem sound (hwf : p.WellFormed) : ∀ n : Nat,
+theorem sound (hwf : p.WellFormed) (h4 : H.RespTyped) : ∀ n : Nat,
     (∀ {w : World H} {env : Env} {ctx : Ctx} {r : Rhs} {t : Ty},
       EnvTy p env ctx → RhsTy p ctx r t → Good p t (evalRhs H n p w env r).2.1) ∧
     (∀ {w : World H} {env : Env} {ctx : Ctx} {e : Expr} {t : Ty},
       EnvTy p env ctx → ExprTy p ctx e t → Good p t (eval H n p w env e).2.1)
   | 0 => ⟨fun _ _ => by simp [evalRhs, Good], fun _ _ => by simp [eval, Good]⟩
   | n + 1 => by
-    obtain ⟨ihR, ihE⟩ := sound hwf n
+    obtain ⟨ihR, ihE⟩ := sound hwf h4 n
     constructor
     · intro w env ctx r t henv hr
       cases hr with
@@ -170,11 +184,14 @@ theorem sound (hwf : p.WellFormed) : ∀ n : Nat,
             cases H.write s c w.fs
             · trivial
             · exact .unit
-      | req has _ =>
+      | @req _ m _ _ has _ hr =>
         obtain ⟨vs, hvs, _⟩ := atoms_typed henv has
         simp only [evalRhs, hvs]
-        cases H.request _ vs w.srv with
-        | mk o srv' => cases o <;> simp [Good] <;> exact .text
+        generalize hq : H.request m vs w.srv = q
+        obtain ⟨o, srv'⟩ := q
+        cases o with
+        | error c => simp [Good]
+        | ok v => simpa [Good] using ValTy.response hr (h4 m vs w.srv srv' v hq)
       | construct hrec has =>
         obtain ⟨vs, hvs, hvst⟩ := atoms_typed henv has
         simp [evalRhs, hvs, Good]
@@ -316,10 +333,10 @@ theorem sound (hwf : p.WellFormed) : ∀ n : Nat,
 /-- **T1 for F1.** A well-typed expression of a well-formed program, run in an environment of
 its context's types with any fuel and any host, never gets stuck, and a value it ends with has
 its type. -/
-theorem t1 (hwf : p.WellFormed) (w : World H) {env : Env} {ctx : Ctx} {e : Expr} {t : Ty}
+theorem t1 (hwf : p.WellFormed) (h4 : H.RespTyped) (w : World H) {env : Env} {ctx : Ctx} {e : Expr} {t : Ty}
     (henv : EnvTy p env ctx) (he : ExprTy p ctx e t) (n : Nat) :
     (eval H n p w env e).2.1 ≠ .stuck ∧ ∀ v, (eval H n p w env e).2.1 = .ok v → ValTy p v t := by
-  have h := (sound hwf n).2 (w := w) henv he
+  have h := (sound hwf h4 n).2 (w := w) henv he
   constructor
   · intro hs
     rw [hs] at h

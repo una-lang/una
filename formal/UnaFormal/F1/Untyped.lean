@@ -12,6 +12,7 @@ when its secret is not `public`:
 -/
 import UnaFormal.F1.LTyping
 import UnaFormal.F1.Order
+import UnaFormal.F1.Subst
 
 namespace Una.F1.Untyped
 
@@ -26,11 +27,12 @@ def s14 (aw au ar ac a₁ a₂ : LTy) : Expr :=
         (.letR "o" a₁ (.op (.text "yes")) (.atom (.var "o"))) "e"
         (.letR "o" a₂ (.op (.text "no")) (.atom (.var "o")))))
 
-/-- S-15's probe with every annotation given: send the secret as a request's body, and print
-whether it failed. -/
-def s15 (ar ac a₁ a₂ : LTy) : Expr :=
-  .letE "r" ar (.attempt (.letR "c" ac (.req "post" [.text "https://example.com", .var "x"])
-      (.atom (.var "c"))))
+/-- S-15's probe with every annotation given: send the secret as a request's body, with no
+header and no key name (M5c: `post(url, headers, body, key_name)`), and print whether it failed. -/
+def s15 (ar ah ak ac a₁ a₂ : LTy) : Expr :=
+  .letE "r" ar (.attempt (.letR "h" ah (.list []) (.letR "k" ak .none
+      (.letR "c" ac (.req "post" [.text "https://example.com", .var "h", .var "x", .var "k"])
+        (.atom (.var "c"))))))
     (.caseResult (.var "r") "v"
       (.letR "o" a₁ (.op (.text "yes")) (.atom (.var "o"))) "e"
       (.letR "o" a₂ (.op (.text "no")) (.atom (.var "o"))))
@@ -109,39 +111,49 @@ theorem s14_untyped (hold : P.oldHost = false) {lx : LExpr} (hx : ¬ P.le lx (.o
 
 /-- **S-15 under ADR 0085's rules has no typing**, for every annotation. -/
 theorem s15_untyped (hold : P.oldHost = false) {lx : LExpr} (hx : ¬ P.le lx (.ofLabel P.acceptsOp))
-    (ar ac a₁ a₂ : LTy) {E : List String} {t : LTy} {ε : Eff} :
-    ¬ LExprTy P E [("x", .text lx)] .bot (s15 ar ac a₁ a₂) t ε := by
+    (ar ah ak ac a₁ a₂ : LTy) {E : List String} {t : LTy} {ε : Eff} :
+    ¬ LExprTy P E [("x", .text lx)] .bot (s15 ar ah ak ac a₁ a₂) t ε := by
   intro h
   cases h with
   | letE hr hflow hb _ =>
-    -- The request: its failure carries the body's label.
-    obtain ⟨tc, t', ε', hrq, rfl⟩ := attempt_inv hr
     obtain ⟨te, ls, hl, hop⟩ := branch_bound hb
     simp [lctxLookup] at hl
     subst hl
-    cases hrq with
-    | req hts _ _ _ =>
-      cases hts with
-      | cons h₁ hts =>
-        cases h₁
-        cases hts with
-        | cons h₂ hts =>
-          cases h₂ with
-          | var hlx =>
-            simp [lctxLookup] at hlx
-            subst hlx
-            cases hts
-            rw [failLabel_some] at hflow
-            cases hflow with
-            | result _ hls =>
-              apply hx
-              refine LExpr.le_trans ?_ (LExpr.le_trans hls hop)
-              simp only [Program.reqFail, hold, Bool.false_eq_true, ite_false, List.map_cons,
-                List.map_nil, LExpr.joinAll]
-              refine LExpr.le_trans ?_ (LExpr.le_join_left _ _)
-              refine LExpr.le_trans ?_ (LExpr.le_join_right _ _)
-              refine LExpr.le_trans ?_ (LExpr.le_join_right _ _)
-              exact LExpr.le_trans (LExpr.le_refl _) (LExpr.le_join_left _ _)
+    -- The request, under the empty headers and no key name: its failure carries the body's label.
+    cases hr with
+    | attempt hb₁ =>
+      cases hb₁ with
+      | letR hrh _ hb₂ _ =>
+        cases hb₂ with
+        | letR hrk _ hb₃ _ =>
+          cases hb₃ with
+          | letR hrq _ hb₄ _ =>
+            cases hb₄ with
+            | atom _ =>
+              cases hrh
+              cases hrk
+              cases hrq with
+              | @req _ _ _ _ ts hts _ _ _ _ =>
+                cases hts with
+                | cons _ hts =>
+                  cases hts with
+                  | cons _ hts =>
+                    cases hts with
+                    | cons h₃ hts =>
+                      cases h₃ with
+                      | var hlx =>
+                        simp [lctxLookup] at hlx
+                        subst hlx
+                        simp only [Eff.union, Eff.none, Eff.failLabel] at hflow
+                        cases hflow with
+                        | result _ hls =>
+                          apply hx
+                          refine LExpr.le_trans ?_ (LExpr.le_trans hls hop)
+                          simp only [Program.reqFail, hold, Bool.false_eq_true, ite_false,
+                            Option.getD_some]
+                          refine LExpr.le_trans ?_ (LExpr.le_join_left _ _)
+                          refine LExpr.le_trans ?_ (LExpr.le_join_right _ _)
+                          exact LExpr.le_joinAll (List.mem_map.mpr ⟨LTy.text lx, by simp, rfl⟩)
 
 /-! ### More of ADR 0085's conformance shapes -/
 

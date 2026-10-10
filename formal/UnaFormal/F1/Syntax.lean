@@ -115,7 +115,8 @@ mutual
     content (ADR 0085 decision 3). -/
     | write (path content : Atom)
     /-- A request of `Http`, `get`, `post`, `put` or `delete` (`spec/24 §1`), with its
-    arguments: every one a sink at its `accepts`, and every one deciding its failure (S-15). -/
+    arguments, of the types `httpParams` fixes: every one a sink at its `accepts`, and every one
+    deciding its failure (S-15). Its response is a `Response` record. -/
     | req (method : String) (args : List Atom)
     | construct (record : String) (fields : List Atom)
     | field (value : Atom) (index : Nat)
@@ -238,5 +239,13 @@ def Program.find (p : Program) (f : String) : Option Fun :=
 /-- The policy `pol` of the program. -/
 def Program.policy (p : Program) (pol : String) : Option Policy :=
   p.policies.find? (fun po => po.name = pol)
+
+/-- **`Http`'s operations, as `spec/24 §1` fixes them** (M5c, #470): the structure of each
+method's parameters. `get` and `delete` take a URL, headers and an optional key name; `post` and
+`put` also take a body. The re-check takes them from here, not from the export. -/
+def httpParams : String → Option (List Ty)
+  | "get" | "delete" => some [.text, .list (.record "prelude.Header"), .option .text]
+  | "post" | "put" => some [.text, .list (.record "prelude.Header"), .text, .option .text]
+  | _ => none
 
 end Una.F1

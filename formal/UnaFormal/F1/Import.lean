@@ -152,8 +152,8 @@ structure Ctx where
   /-- The policies each function may release through (`Fun.rels`), computed over the document. -/
   rels : List (String × List String) := []
 
-/-- The effects a `uses` entry names: `Files`'s operations are host effects (M5b); every other
-operation is F1's one operation, gathered for G3. `Http`'s are outside F1 (M5c, #470). -/
+/-- The effects a `uses` entry names: `Files`'s operations (M5b) and `Http`'s (M5c) are host
+effects; every other operation is F1's one operation, gathered for G3. -/
 def usesEffects (uses : List J) : M (Bool × HostFx) := do
   let mut op := false
   let mut host : HostFx := {}
@@ -166,7 +166,10 @@ def usesEffects (uses : List J) : M (Bool × HostFx) := do
         else if o == "write" then host := { host with wr := true }
         else throw s!"the operation `Files.{o}`"
         modify fun s => { s with host := s.host.or host }
-      else if cap == "Http" then throw "`Http`, whose signature is outside F1 (M5c)"
+      else if cap == "Http" then
+        if ["get", "post", "put", "delete"].contains o then host := { host with rq := true }
+        else throw s!"the operation `Http.{o}`"
+        modify fun s => { s with host := s.host.or host }
       else
         op := true
         modify fun s => { s with ops := if s.ops.contains (cap, o) then s.ops else s.ops ++ [(cap, o)] }
@@ -297,8 +300,8 @@ mutual
         | .error _ => (false, Lean.Json.null)
       if pathName != Lean.Json.null && pathName != Lean.Json.str cap then
         throw s!"an operation whose capability `{cap}` is not its path's"
-      -- The host's stateful operations (M5b): `Files.read` and `Files.write` are the model's
-      -- `read` and `write`; `Http`'s real signature is outside the model's request (M5c, #470).
+      -- The host's stateful operations: `Files.read` and `Files.write` are the model's `read`
+      -- and `write` (M5b); a request of `Http` is its `req` (M5c), typed at `httpParams`.
       if std && cap == "Files" then
         match o, ← atoms (← field j "args") with
         | "read", [path] =>
@@ -308,7 +311,10 @@ mutual
           modify fun s => { s with host := { s.host with wr := true } }
           pure (.write path content)
         | _, _ => throw s!"the operation `Files.{o}`"
-      else if std && cap == "Http" then throw "a request of `Http`, whose signature is outside F1 (M5c)"
+      else if std && cap == "Http" then
+        if !["get", "post", "put", "delete"].contains o then throw s!"the operation `Http.{o}`"
+        modify fun s => { s with host := { s.host with rq := true } }
+        pure (.req o (← atoms (← field j "args")))
       else
       modify fun s => { s with ops := if s.ops.contains (cap, o) then s.ops else s.ops ++ [(cap, o)] }
       match ← atoms (← field j "args") with
@@ -850,6 +856,50 @@ def monoParts (members : List String) (isNested : String → Bool) (readFn : Str
 `t6_release_erasure_obs_hostFree`. -/
 def hostNote : String := "rests on a lawful host (H1 to H3): the program uses `Files`"
 
+/-- `Http`'s kinds as `spec/24 §1` fixes them (M5c): `Header(name: Text, value: internal Text)`
+and `Response(status: Int, headers: List[Header], body: Text)`, as the export names them. -/
+def headerRec : Record :=
+  ⟨"prelude.Header", [.text .bot, .text (.ofLabel ⟨.internal, []⟩)], ⟨.internal, []⟩⟩
+
+def responseRec : Record :=
+  ⟨"prelude.Response", [.int .bot, .list (.record "prelude.Header" .bot) .bot, .text .bot],
+    ⟨.internal, []⟩⟩
+
+/-- The document's records, with `Http`'s kinds the specification's: `none` when the document
+declares one of them otherwise (default-deny: the export does not define them). -/
+def withHttpRecords (recs : List Record) : Option (List Record) :=
+  let same := fun (a b : Record) =>
+    a.fields.map Check.fmtTy == b.fields.map Check.fmtTy &&
+      Check.labelLe a.deep b.deep && Check.labelLe b.deep a.deep
+  let ok := fun (fixed : Record) => match recs.find? (·.name == fixed.name) with
+    | some r => same r fixed
+    | none => true
+  if ok headerRec && ok responseRec then
+    some (recs.filter (fun r => r.name != headerRec.name && r.name != responseRec.name) ++
+      [headerRec, responseRec])
+  else none
+
+/-- The document's declarations of `Http`'s kinds agree with `spec/24 §1` (`headerRec`,
+`responseRec`): each `Header` or `Response` data declaration has one variant whose fields have the
+specification's types and labels. Default-deny: one that cannot be read, or differs, is `false`. -/
+def httpKindsOk (decls : List Decl) : Bool :=
+  let c : Ctx := { records := [headerRec.name, responseRec.name], funs := [] }
+  decls.all fun d =>
+    if d.kind != "data" then true
+    else match plainRun (do str (← field d.value "name")) with
+      | .ok "Header" | .ok "Response" =>
+        let fixed := if d.value.getObjValD "name" == Lean.Json.str "Header" then headerRec else responseRec
+        match plainRun (do
+            match ← arr (← field d.value "variants") with
+            | [v] => (← arr (← field v "fields")).mapM fun f => do
+                match ← arr f with
+                | [_, t] => ty c t
+                | _ => throw "a field"
+            | _ => throw "not one variant") with
+        | .ok ts => ts.map Check.fmtTy == fixed.fields.map Check.fmtTy
+        | .error _ => false
+      | _ => true
+
 /-- The functions `f` reaches in `P`, transitively, with every `via` function of `P`'s policies:
 what a run of `f` can call or reference (#472). -/
 def reachIn (P : Program) (f : String) : List String := Id.run do
@@ -873,12 +923,26 @@ def hostFreeAt (P : Program) (f : String) : Bool :=
           (g != f || fn.params.all (·.2.cf))
       | none => true
 
-/-- A verdict's note, with `hostNote` unless `f` reaches no host operation and cannot be handed
-one (`hostFreeAt`). A host-free certified program is not enough on its own: it may be a part of the
+/-- The note of a declaration certified in a program that uses the host's stateful capabilities:
+its theorem is `t6_release_erasure_obs` on a lawful host, H1 to H3 for `Files`, and H4 too when
+`Http` is used (M5c). -/
+def hostNoteFor (files http : Bool) : String :=
+  match files, http with
+  | true, true => "rests on a lawful host (H1 to H4): the program uses `Files` and `Http`"
+  | false, true => "rests on a lawful host (H1 to H4): the program uses `Http`"
+  | _, _ => hostNote
+
+/-- Whether a note says that the program uses `Files`: what the file-state label decides. -/
+def usesFilesNote (note : String) : Bool := (note.splitOn "uses `Files`").length > 1
+
+/-- A verdict's note, with the host's note unless `f` reaches no host operation and cannot be
+handed one (`hostFreeAt`). A host-free certified program is not enough on its own: it may be a part of the
 document, and a caller outside it may hand `f` a closure that writes a file (#472). -/
 def withHost (docFree : Bool) (P : Program) (f : String) (note : String) : String :=
+  let fx : HostFx := P.funs.foldl (fun (acc : HostFx) fn => acc.or fn.host) {}
+  let hn := hostNoteFor (fx.rd || fx.wr) fx.rq
   if docFree || hostFreeAt P f then note
-  else if note == "" then hostNote else note ++ "; " ++ hostNote
+  else if note == "" then hn else note ++ "; " ++ hn
 
 theorem withHost_ex (d : Bool) (P : Program) (f n : String) :
     (∃ n₀, withHost d P f n = withHost d P f n₀) ↔ True :=
@@ -1042,7 +1106,8 @@ checks it only against the writes of the programs it certifies. A write anywhere
 declaration rejected or not re-checked, in a handler, or in a node the reading cannot tell from
 one, never meets it, and a lowered label would let a read's failure reveal it (S-14). So unless
 every declaration that holds a write site (`writeSite`) is a function accepted in `out`, every
-declaration accepted on a lawful host, its note ending with `hostNote`, is not re-checked. -/
+declaration accepted on a lawful host whose note says its program uses `Files` (`usesFilesNote`) is
+not re-checked. A program that uses only `Http` does not read the file-state label. -/
 def guardFiles (sites : List (String × String × String)) (out : List (String × Outcome)) :
     List (String × Outcome) :=
   let unchecked := sites.find? fun (name, kind, _) =>
@@ -1054,8 +1119,8 @@ def guardFiles (sites : List (String × String × String)) (out : List (String �
   | some (name, _, what) =>
     let why := s!"the file-state label is not verified for the whole package ({what} in `{name}`)"
     out.map fun (f, o) => match o with
-      | .accepted note => if note.endsWith hostNote then (f, .notRechecked why) else (f, o)
-      | .acceptedIfA3 note => if note.endsWith hostNote then (f, .notRechecked why) else (f, o)
+      | .accepted note => if usesFilesNote note then (f, .notRechecked why) else (f, o)
+      | .acceptedIfA3 note => if usesFilesNote note then (f, .notRechecked why) else (f, o)
       | o => (f, o)
 
 /-- **The guard only demotes**: what it reports accepted, `finalize` reported accepted, with the
@@ -1121,7 +1186,11 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
   let hl := readHostLabels capDecls doc
   let cats := categories doc []
   let funNames := (decls.filter (·.kind == "fun")).map named
-  let recs := records decls funNames
+  -- `Http`'s kinds are the specification's (M5c): a document that declares them otherwise is not
+  -- re-checked.
+  let some recs := (if httpKindsOk decls then withHttpRecords (records decls funNames) else none)
+    | return code.map fun d =>
+        (named d, .notRechecked "`Header` or `Response`, declared otherwise than `spec/24 §1`")
   let vias := decls.filterMap fun e =>
     if e.kind == "policy" then
       match plainRun (do pure (← path (← field e.value "via"), s!"{e.module}.{← str (← field e.value "name")}")) with

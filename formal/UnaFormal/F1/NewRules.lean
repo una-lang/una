@@ -25,9 +25,10 @@ theorem s14_rejected (fs : Label) (aw au ar ac a₁ a₂ : LTy) {E : List String
   s14_untyped rfl (intl_not_public fs) aw au ar ac a₁ a₂
 
 /-- **S-15 is rejected**, for every file-state label and every annotation. -/
-theorem s15_rejected (fs : Label) (ar ac a₁ a₂ : LTy) {E : List String} {t : LTy} {ε : Eff} :
-    ¬ LExprTy (newProg fs) E [("x", .text intl)] .bot (s15 ar ac a₁ a₂) t ε :=
-  s15_untyped rfl (intl_not_public fs) ar ac a₁ a₂
+theorem s15_rejected (fs : Label) (ar ah ak ac a₁ a₂ : LTy) {E : List String} {t : LTy}
+    {ε : Eff} :
+    ¬ LExprTy (newProg fs) E [("x", .text intl)] .bot (s15 ar ah ak ac a₁ a₂) t ε :=
+  s15_untyped rfl (intl_not_public fs) ar ah ak ac a₁ a₂
 
 /-- The read before the write, and the write under a secret condition, are rejected too. -/
 theorem shapes_rejected (fs : Label) :
@@ -45,6 +46,7 @@ theorem s14_same_probe : OldLeaks.s14 =
       (.unit .bot) (.unit .bot) := rfl
 
 theorem s15_same_probe : OldLeaks.s15 =
-    s15 (.result (.text intl) .bot) (.text intl) (.unit .bot) (.unit .bot) := rfl
+    s15 (.result (.record "prelude.Response" intl) .bot) (.list (.record "prelude.Header" .bot) .bot)
+      (.option (.text .bot) .bot) (.record "prelude.Response" intl) (.unit .bot) (.unit .bot) := rfl
 
 end Una.F1.NewRules

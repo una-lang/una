@@ -311,7 +311,7 @@ def Allowed (p : Program) (pc : LExpr) (ε : Eff) : Event → Prop
   | .read _ => ε.host.rd = true ∧ p.le pc (.ofLabel p.acceptsRead)
   | .write _ _ => ε.host.wr = true ∧ p.le pc (.ofLabel p.acceptsWrite) ∧
       (p.oldHost = false → p.le pc (.ofLabel p.fileState))
-  | .req _ vs => ε.host.rq = true ∧ p.le pc (.ofLabel p.acceptsReq) ∧ ∀ v ∈ vs, ∃ s, v = .text s
+  | .req _ vs => ε.host.rq = true ∧ p.le pc (.ofLabel p.acceptsReq) ∧ Val.FirstOrderAll vs
   | .release pol v => pol ∈ ε.rels ∧ ∃ po, p.policy pol = some po ∧ p.le pc po.dst.top ∧
       ValTy p v po.dst.erase
 
@@ -390,7 +390,7 @@ def FnAllowed (o : Bool) (g : HostFx) : Event → Prop
   | .out _ => o = true
   | .read _ => g.rd = true
   | .write _ _ => g.wr = true
-  | .req _ vs => g.rq = true ∧ ∀ v ∈ vs, ∃ s, v = .text s
+  | .req _ vs => g.rq = true ∧ Val.FirstOrderAll vs
   | .release _ _ => False
 
 /-- At a call whose program counter `pc'` the function's bound allows (`pc ⊑ pc'`), its events

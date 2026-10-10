@@ -291,7 +291,7 @@ mutual
       ⟨rfl, fun _ h => by
         simp at h; subst h
         exact Program.fsFail_plainFree (LExpr.plainFree_join hpc (LTy.deep_plainFree _ (latom_inPlace hΓ hu)))⟩
-    | _, _, _, _, _, _, hΓ, hpc, .req (ts := ts) has _ _ _ =>
+    | _, _, _, _, _, _, hΓ, hpc, .req (ts := ts) has _ _ _ _ =>
       ⟨rfl, fun _ h => by
         simp at h; subst h
         have hts := latoms_inPlace hΓ has
