@@ -1165,9 +1165,25 @@ impl<'a> Checker<'_, 'a, '_> {
             self.findings.checked.push((self.module, span));
         }
         let ty = self.expr(value, None);
-        // The failure of `checked` reveals whether the predicate holds.
+        // The failure of `checked` reveals whether the predicate holds: it depends on the value
+        // and on every other value the predicate reads, each with every label of its type
+        // (S-17, ADR 0089).
+        let mut names = Vec::new();
+        reads(predicate, &|ident| self.name(ident).to_owned(), &mut names);
+        let mut read = una_core::Label::public();
+        for name in names {
+            if let Some(local) = self.local(&name) {
+                read = read.join(&self.deep(&local));
+            }
+        }
         let label = self.deep(&ty);
-        self.fail_under_pc(span, "`checked`", Some((&label, value.span)));
+        let both = label.join(&read);
+        if both == label {
+            // The predicate reads nothing the operand's labels do not already cover.
+            self.fail_under_pc(span, "`checked`", Some((&label, value.span)));
+        } else {
+            self.fail_under_pc(span, "`checked`", Some((&both, predicate.span)));
+        }
         let ctx = Ctx {
             it: Some(ty.clone()),
             rl: Rl::Clause,
@@ -1376,5 +1392,75 @@ fn return_paths(expr: &Expr) -> Vec<Span> {
         ExprKind::Paren(inner) => return_paths(inner),
         ExprKind::Fail(_) => Vec::new(),
         _ => vec![expr.span],
+    }
+}
+
+/// The names `expr` reads, in order, outside the bodies of lambdas that rebind them: what a
+/// `checked` predicate depends on besides `it` (S-17, ADR 0089).
+fn reads(expr: &Expr, resolve: &dyn Fn(&Ident) -> String, out: &mut Vec<String>) {
+    let each = |exprs: &mut dyn Iterator<Item = &Expr>, out: &mut Vec<String>| {
+        for e in exprs {
+            reads(e, resolve, out);
+        }
+    };
+    match &expr.kind {
+        ExprKind::Name(ident) => out.push(resolve(ident)),
+        ExprKind::Paren(inner)
+        | ExprKind::Attempt(inner)
+        | ExprKind::Unary { operand: inner, .. } => {
+            reads(inner, resolve, out);
+        }
+        ExprKind::Field { target, .. } | ExprKind::In { value: target, .. } => {
+            reads(target, resolve, out);
+        }
+        ExprKind::Is { value, .. } => reads(value, resolve, out),
+        ExprKind::Binary { left, right, .. } => {
+            reads(left, resolve, out);
+            reads(right, resolve, out);
+        }
+        ExprKind::IfLine {
+            condition,
+            then,
+            otherwise,
+        } => each(
+            &mut [condition.as_ref(), then.as_ref(), otherwise.as_ref()].into_iter(),
+            out,
+        ),
+        ExprKind::List(items) => each(&mut items.iter(), out),
+        ExprKind::Call { callee, args } => {
+            reads(callee, resolve, out);
+            each(&mut args.iter().map(|a| &a.value), out);
+        }
+        ExprKind::MethodCall { target, args, .. } => {
+            reads(target, resolve, out);
+            each(&mut args.iter().map(|a| &a.value), out);
+        }
+        ExprKind::CapOp { args, .. } => each(&mut args.iter().map(|a| &a.value), out),
+        ExprKind::Lambda { params, body } => {
+            let mut inner = Vec::new();
+            reads(body, resolve, &mut inner);
+            let bound: Vec<String> = params.iter().map(|p| resolve(&p.name)).collect();
+            out.extend(inner.into_iter().filter(|name| !bound.contains(name)));
+        }
+        ExprKind::Checked {
+            value, predicate, ..
+        } => {
+            reads(value, resolve, out);
+            reads(predicate, resolve, out);
+        }
+        ExprKind::Fail(variant) => each(&mut variant.args.iter().map(|a| &a.value), out),
+        ExprKind::Literal(Literal::Text(text)) => each(
+            &mut text.parts.iter().filter_map(|part| match part {
+                TextPart::Interpolation(expr) => Some(expr),
+                TextPart::Text(_) => None,
+            }),
+            out,
+        ),
+        ExprKind::Literal(_)
+        | ExprKind::UpperName(_)
+        | ExprKind::CapRef(_)
+        | ExprKind::Result
+        | ExprKind::It
+        | ExprKind::Error => {}
     }
 }

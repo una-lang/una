@@ -209,3 +209,15 @@ The rules of §3 to §8 act on Core IR; these rules fix what the surface syntax 
 11. **Predicates.** A cycle of calls that contains a predicate, through predicates or functions, reflect or opaque, is U2015 once per cycle; a predicate whose result type is not `Bool` is U2001.
 12. **Policies.** The `via` function takes the type of `from` and returns the type of `to`, except for labels and with the same refinements, and has no `requires` clause (U4005, `spec/07 §5` rule 4, ADR 0047). A policy call takes one argument without a label.
 13. **Argument counts.** Too many arguments, and a parameter that receives none, are U2001.
+
+## 13. Corrections
+
+### 13.1 A `checked` predicate's other reads (2026-10-10, ADR 0089, #488)
+
+Found by S-17. T-Checked (§7) labels the failure of `checked` by its operand alone, but the predicate φ may read other values, and its outcome then depends on them. T-Checked's premise and its failure's label take every label of every value φ reads:
+
+$$
+pc \sqcup \ell^{*}(a) \sqcup \bigsqcup_{x \in \mathrm{fv}(\varphi) \setminus \{\mathtt{it}\}} \ell^{*}(x) = \bot
+$$
+
+Otherwise the `checked` is U4002 at the `checked`, with the predicate as its related span when a value it reads raises the label, and the operand otherwise. $\ell^{*}(x)$ joins every label of the type of the local `x`, so a field path such as `limits.most` counts every label of `limits`. Names that are not locals, such as predicates and functions, are pure, and their arguments are reads. Where this section and §7 differ, this section wins.
