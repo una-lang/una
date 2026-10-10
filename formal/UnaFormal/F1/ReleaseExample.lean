@@ -4,7 +4,7 @@ policy releases whether a secret PIN is 1234, run on different secrets.
 
 - Different releases: the runs diverge at the release (`pin_diverges`).
 - A `via` that is not injective: two different secrets release the same value, and the
-  corollary gives the full conclusion of `t6` (`guesses_agree`). The theorem tracks the values
+  corollary gives the full conclusion of `t6_host` (`guesses_agree`). The theorem tracks the values
   released, not the secrets.
 - A hidden release, to `internal`: an observer at `public` sees none, and the runs are related
   although they release different values (`hidden_release_related`).
@@ -13,6 +13,7 @@ policy releases whether a secret PIN is 1234, run on different secrets.
 -/
 import UnaFormal.F1.Release
 import UnaFormal.F1.Examples
+import UnaFormal.F1.CheckProgramSound
 
 namespace Una.F1.ReleaseExample
 
@@ -29,7 +30,7 @@ def check : Fun where
   params := [("x", .int sec)]
   result := .bool .bot
   op := false
-  get := false
+  host := HostFx.none
   fails := false
   body := .letR "r" (.bool sec) (.eq (.var "x") (.int 1234)) (.atom (.var "r"))
 
@@ -42,8 +43,13 @@ def peek : Policy := ⟨"peek", .int sec, .bool intl, "check"⟩
 def prog : Program where
   categories := []
   acceptsOp := Label.bot
-  acceptsGet := Label.bot
-  getResult := Label.bot
+  acceptsRead := Label.bot
+  acceptsWrite := Label.bot
+  acceptsReq := Label.bot
+  readResult := ⟨.internal, []⟩
+  reqResult := ⟨.internal, []⟩
+  reqFloor := ⟨.internal, []⟩
+  fileState := Label.bot
   records := []
   policies := [reveal, peek]
   funs := [check]
@@ -65,9 +71,8 @@ theorem prog_wf : prog.LWellFormed where
     rcases h with rfl | rfl <;>
       exact ⟨fun _ => rfl, fun _ => rfl, check, rfl, rfl, rfl⟩
   categories := by
-    refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩ <;>
-      simp [prog, check, reveal, peek, sec, intl, Label.bot, LTy.CatsIn, LExpr.CatsIn, LExpr.bot,
-        LExpr.ofLabel]
+    simp [Program.CatsDeclared, prog, check, reveal, peek, sec, intl, Label.bot, LTy.CatsIn,
+      LExpr.CatsIn, LExpr.bot, LExpr.ofLabel]
   recordsGround _ h := by simp [prog] at h
   eqScoped := by simp [prog, check]
   sigsScoped := by
@@ -75,6 +80,9 @@ theorem prog_wf : prog.LWellFormed where
   inPlace := by
     refine ⟨?_, ?_, ?_⟩ <;>
       simp [prog, check, reveal, peek, sec, intl, LTy.InPlace, LExpr.bot, LExpr.ofLabel]
+
+/-- The program's host labels are those `t6_release_host` asks. -/
+theorem prog_host : prog.HostWF := Check.hostWfB_sound rfl
 
 /-- The program is within B1's restrictions. -/
 theorem prog_b1 : prog.B1WellFormed where
@@ -101,8 +109,8 @@ def body : Expr :=
 
 /-- What `body` does: it releases, and writes. -/
 def bodyEff : Eff :=
-  (Eff.ofFnR false false false ["reveal"]).union
-    ((⟨true, false, Option.none, []⟩ : Eff).union .none)
+  (Eff.ofFnR false HostFx.none false ["reveal"]).union
+    ((⟨true, HostFx.none, Option.none, []⟩ : Eff).union .none)
 
 theorem bot_le (e : LExpr) : LExpr.le prog.top LExpr.bot e :=
   .inr ⟨⟨Level.public_le _, fun _ h => by simp [LExpr.bot, LExpr.ofLabel, Label.bot] at h⟩,
@@ -118,7 +126,8 @@ theorem body_typed : LExprTy prog [] Γ .bot body (.unit .bot) bodyEff := by
     simp [Program.deep, LTy.deep, LExpr.join, LExpr.bot, LExpr.ofLabel, Label.join, Label.bot,
       Eff.failLabel, Eff.ofFnR, Eff.ofFn, prog, Level.join] <;> decide
 
-def w0 : World := ⟨fun _ => none⟩
+/-- The runs' world: the host without state, since the programs perform no host operation. -/
+def w0 : World Host.unit := ⟨(), ()⟩
 
 /-- The environment with the secret `s`. -/
 def env (n : Int) : Env := [("s", .int n)]
@@ -144,15 +153,15 @@ theorem Γ_inPlace : Γ.InPlace := fun q hq => by
 
 /-- **Different releases: the runs diverge.** PIN 1234 releases `true`, PIN 1 releases `false`;
 after the same (empty) prefix, the observer sees two different releases, the second case of
-`t6_release`. -/
+`t6_release_host`. -/
 theorem pin_diverges :
-    eval 6 prog w0 (env 1234) body = ([.release "reveal" (.bool true), .out "true"], .ok .unit) ∧
-    eval 6 prog w0 (env 1) body = ([.release "reveal" (.bool false), .out "false"], .ok .unit) ∧
-    Diverged prog Label.bot (eval 6 prog w0 (env 1234) body).1 (eval 6 prog w0 (env 1) body).1 := by
-  have r₁ : eval 6 prog w0 (env 1234) body =
-      ([.release "reveal" (.bool true), .out "true"], .ok .unit) := rfl
-  have r₂ : eval 6 prog w0 (env 1) body =
-      ([.release "reveal" (.bool false), .out "false"], .ok .unit) := rfl
+    eval Host.unit 6 prog w0 (env 1234) body = ([.release "reveal" (.bool true), .out "true"], .ok .unit, w0) ∧
+    eval Host.unit 6 prog w0 (env 1) body = ([.release "reveal" (.bool false), .out "false"], .ok .unit, w0) ∧
+    Diverged prog Label.bot (eval Host.unit 6 prog w0 (env 1234) body).1 (eval Host.unit 6 prog w0 (env 1) body).1 := by
+  have r₁ : eval Host.unit 6 prog w0 (env 1234) body =
+      ([.release "reveal" (.bool true), .out "true"], .ok .unit, w0) := rfl
+  have r₂ : eval Host.unit 6 prog w0 (env 1) body =
+      ([.release "reveal" (.bool false), .out "false"], .ok .unit, w0) := rfl
   refine ⟨r₁, r₂, ?_⟩
   rw [r₁, r₂]
   have hrv : ∀ v, EvVis prog Label.bot (Event.release "reveal" v) :=
@@ -172,44 +181,48 @@ theorem pin_diverges :
 `false`: the releases agree, so the corollary gives `t6`'s full conclusion. The theorem tracks the
 values released, not the secrets. -/
 theorem guesses_agree :
-    proj prog Label.bot (eval 6 prog w0 (env 1) body).1 = proj prog Label.bot (eval 6 prog w0 (env 2) body).1 ∧
+    proj prog Label.bot (eval Host.unit 6 prog w0 (env 1) body).1 = proj prog Label.bot (eval Host.unit 6 prog w0 (env 2) body).1 ∧
       OutRel (V prog Label.bot ((LTy.unit LExpr.bot).lsubst prog.recordDeep []))
         (Vis prog Label.bot (bodyEff.inst (prog.sd [])).failLabel)
-        (eval 6 prog w0 (env 1) body).2 (eval 6 prog w0 (env 2) body).2 := by
-  have r₁ : eval 6 prog w0 (env 1) body =
-      ([.release "reveal" (.bool false), .out "false"], .ok .unit) := rfl
-  have r₂ : eval 6 prog w0 (env 2) body =
-      ([.release "reveal" (.bool false), .out "false"], .ok .unit) := rfl
-  refine t6_release_agree prog Label.bot prog_wf prog_b1 (le_self _) w0 (σ := [])
-    (fun _ h => nomatch h) (fun _ h => by simp at h) Γ_inPlace rfl (envs_typed 1) (envs_typed 2)
-    (envs_rel 1 2) body_typed 6 (by rw [r₁]; trivial) (by rw [r₂]; trivial) (by rw [r₁, r₂])
+        (eval Host.unit 6 prog w0 (env 1) body).2.1 (eval Host.unit 6 prog w0 (env 2) body).2.1 := by
+  have r₁ : eval Host.unit 6 prog w0 (env 1) body =
+      ([.release "reveal" (.bool false), .out "false"], .ok .unit, w0) := rfl
+  have r₂ : eval Host.unit 6 prog w0 (env 2) body =
+      ([.release "reveal" (.bool false), .out "false"], .ok .unit, w0) := rfl
+  have h := t6_release_host_agree prog Label.bot Host.unit prog_wf prog_b1 prog_host
+    Host.unit_lawful (σ := []) (fun _ h => nomatch h) (fun _ h => by simp at h) Γ_inPlace rfl
+    (WorldRel.refl w0) (envs_typed 1) (envs_typed 2) (envs_rel 1 2) body_typed 6
+    (by rw [r₁]; trivial) (by rw [r₂]; trivial) (by rw [r₁, r₂])
+  exact ⟨h.1, h.2.1⟩
 
 /-- `let b: internal Bool = peek(s); b`: a release to `internal`. -/
 def peekBody : Expr := .letR "b" (.bool intl) (.declassify "peek" (.var "s")) (.atom (.var "b"))
 
 theorem peekBody_typed :
-    LExprTy prog [] Γ .bot peekBody (.bool intl) ((Eff.ofFnR false false false ["peek"]).union .none) :=
+    LExprTy prog [] Γ .bot peekBody (.bool intl) ((Eff.ofFnR false HostFx.none false ["peek"]).union .none) :=
   .letR (.declassify (po := peek) (fn := check) rfl rfl (.var rfl) (Flow.refl _) (bot_le _) ⟨rfl, rfl⟩)
     (Flow.refl _) (.atom (.var rfl)) (by simp [LTy.InPlace, intl, LExpr.ofLabel])
 
 /-- **A hidden release.** PIN 1234 and PIN 1 release different values to `internal`, which an
 observer at `public` does not see: it sees no release, so the runs do not diverge, and they are
-related as `t6` says, their values related at the hidden type. -/
+related as `t6_host` says, their values related at the hidden type. -/
 theorem hidden_release_related :
-    proj prog Label.bot (eval 6 prog w0 (env 1234) peekBody).1 =
-        proj prog Label.bot (eval 6 prog w0 (env 1) peekBody).1 ∧
+    proj prog Label.bot (eval Host.unit 6 prog w0 (env 1234) peekBody).1 =
+        proj prog Label.bot (eval Host.unit 6 prog w0 (env 1) peekBody).1 ∧
       OutRel (V prog Label.bot ((LTy.bool intl).lsubst prog.recordDeep []))
-        (Vis prog Label.bot (((Eff.ofFnR false false false ["peek"]).union .none).inst (prog.sd [])).failLabel)
-        (eval 6 prog w0 (env 1234) peekBody).2 (eval 6 prog w0 (env 1) peekBody).2 := by
-  have r₁ : eval 6 prog w0 (env 1234) peekBody = ([.release "peek" (.bool true)], .ok (.bool true)) := rfl
-  have r₂ : eval 6 prog w0 (env 1) peekBody = ([.release "peek" (.bool false)], .ok (.bool false)) := rfl
+        (Vis prog Label.bot (((Eff.ofFnR false HostFx.none false ["peek"]).union .none).inst (prog.sd [])).failLabel)
+        (eval Host.unit 6 prog w0 (env 1234) peekBody).2.1
+        (eval Host.unit 6 prog w0 (env 1) peekBody).2.1 := by
+  have r₁ : eval Host.unit 6 prog w0 (env 1234) peekBody = ([.release "peek" (.bool true)], .ok (.bool true), w0) := rfl
+  have r₂ : eval Host.unit 6 prog w0 (env 1) peekBody = ([.release "peek" (.bool false)], .ok (.bool false), w0) := rfl
   have hpk : ∀ v, ¬ EvVis prog Label.bot (Event.release "peek" v) := fun _ ⟨po, hpo, hv⟩ => by
     cases hpo
     exact intl_hidden hv
-  rcases t6_release prog Label.bot prog_wf prog_b1 (le_self _) w0 (σ := [])
-      (fun _ h => nomatch h) (fun _ h => by simp at h) Γ_inPlace rfl (envs_typed 1234) (envs_typed 1)
-      (envs_rel 1234 1) peekBody_typed 6 (by rw [r₁]; trivial) (by rw [r₂]; trivial) with h | h
-  · exact h
+  rcases t6_release_host prog Label.bot Host.unit prog_wf prog_b1 prog_host Host.unit_lawful
+      (σ := []) (fun _ h => nomatch h) (fun _ h => by simp at h) Γ_inPlace rfl (WorldRel.refl w0)
+      (envs_typed 1234) (envs_typed 1) (envs_rel 1234 1) peekBody_typed 6 (by rw [r₁]; trivial)
+      (by rw [r₂]; trivial) with h | h
+  · exact ⟨h.1, h.2.1⟩
   · exfalso
     obtain ⟨pre, _, _, _, _, _, _, h₁, _⟩ := h
     rw [r₁, proj_single_hidden (hpk _)] at h₁
@@ -223,7 +236,7 @@ def rev : Fun where
   params := [("s", .int sec)]
   result := .bool .bot
   op := false
-  get := false
+  host := HostFx.none
   fails := false
   body := .letR "b" (.bool .bot) (.declassify "reveal" (.var "s")) (.atom (.var "b"))
   rels := ["reveal"]

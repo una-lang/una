@@ -19,15 +19,20 @@ def pick : Fun where
   params := [("a", .var "T" lT), ("b", .var "T" lT), ("c", .bool .bot)]
   result := .var "T" lT
   op := false
-  get := false
+  host := HostFx.none
   fails := false
   body := .ite (.var "c") (.atom (.var "a")) (.atom (.var "b"))
 
 def prog : Program where
   categories := []
   acceptsOp := Label.bot
-  acceptsGet := Label.bot
-  getResult := Label.bot
+  acceptsRead := Label.bot
+  acceptsWrite := Label.bot
+  acceptsReq := Label.bot
+  readResult := ⟨.internal, []⟩
+  reqResult := ⟨.internal, []⟩
+  reqFloor := ⟨.internal, []⟩
+  fileState := Label.bot
   records := []
   policies := []
   funs := [pick]
@@ -49,8 +54,8 @@ theorem lT_join_le : LExpr.le prog.top (lT.join LExpr.bot) lT :=
 /-- The labeled typing accepts `pick`: its result is `T` with `ℓ_T`, which a call replaces by
 the type argument's own labels. -/
 theorem pick_ok : prog.FunOk pick := by
-  refine ⟨.var "T" (lT.join .bot), ⟨false || false, false || false, Option.none, [] ++ []⟩,
-    ?_, .var lT_join_le, by simp, by simp, by simp, ?_, by simp⟩
+  refine ⟨.var "T" (lT.join .bot), ⟨false || false, HostFx.none.or HostFx.none, Option.none, [] ++ []⟩,
+    ?_, .var lT_join_le, by simp, ⟨id, id, id⟩, by simp, ?_, by simp⟩
   · have hthen : LExprTy prog [] [("a", .var "T" lT), ("b", .var "T" lT), ("c", .bool .bot)]
         (LExpr.bot.join .bot) (.atom (.var "a")) (.var "T" lT) .none :=
       .atom (.var rfl)
@@ -96,29 +101,30 @@ def callPick : Expr :=
 
 /-- The labeled typing accepts the call at the public program counter. -/
 theorem callPick_typed :
-    LExprTy prog [] [] .bot callPick pickInt ((Eff.ofFn false false false).union .none) := by
+    LExprTy prog [] [] .bot callPick pickInt ((Eff.ofFn false HostFx.none false).union .none) := by
   refine .letR (t := pickInt) ?_ (.int (le_self _)) (.atom (.var rfl)) ?ip
   case ip => simp [pickInt, Program.lsub, LTy.lsubst, pick, lT, LTy.InPlace, LTy.raise, LExpr.join, LExpr.inst, LExpr.dropPlain, LExpr.joinAll, LExpr.bot, LExpr.ofLabel]
   refine LRhsTy.call (fn := pick) (targs := [.int .bot]) rfl ?_ rfl rfl ?_
     (by simp [LTy.GroundAll, LTy.Ground, LExpr.SymFree, LExpr.bot, LExpr.ofLabel]) (.cons .int (.cons .int (.cons .bool .nil)))
     (.cons (.int (bot_le _)) (.cons (.int (bot_le _)) (.cons (.bool (bot_le _)) .nil)))
-    ⟨fun h => (by cases h), fun h => (by cases h), fun h => (by cases h)⟩ (fun _ h => nomatch h)
+    ⟨fun h => (by cases h), fun h => (by cases h), fun h => (by cases h), fun h => (by cases h),
+      fun h => (by cases h)⟩ (fun _ h => nomatch h)
   · intro ⟨_, h, _⟩
     simp [prog] at h
   · intro q _ h
     simp [pick] at h
 
 /-- **T1, applied:** the run of the typed call never gets stuck, and its value is an integer. -/
-theorem callPick_safe (w : World) (n : Nat) :
-    (eval n prog w [] callPick).2 ≠ .stuck ∧
-      ∀ v, (eval n prog w [] callPick).2 = .ok v → ValTy prog v pickInt.erase :=
+theorem callPick_safe {H : Host} (w : World H) (n : Nat) :
+    (eval H n prog w [] callPick).2.1 ≠ .stuck ∧
+      ∀ v, (eval H n prog w [] callPick).2.1 = .ok v → ValTy prog v pickInt.erase :=
   t1_labeled prog_wf w .nil callPick_typed n
 
 /-- A run of `pick[Int](1, 2, true)` gives `1`. -/
 example :
-    (eval 10 prog ⟨fun _ => none⟩ []
+    (eval Host.unit 10 prog ⟨(), ()⟩ []
       (.letR "x" (.int .bot) (.call "pick" [.int .bot] [.int 1, .int 2, .bool true])
-        (.atom (.var "x")))).2 = .ok (.int 1) := by
+        (.atom (.var "x")))).2.1 = .ok (.int 1) := by
   rfl
 
 /-! ### A decision given to a function value -/
@@ -142,10 +148,10 @@ def choose : Fun where
   name := "choose"
   tparams := ["T"]
   eqParams := ["T"]
-  params := [("a", tT), ("b", tT), ("k", .fn [tT] (.int .bot) false false false .bot)]
+  params := [("a", tT), ("b", tT), ("k", .fn [tT] (.int .bot) false HostFx.none false .bot)]
   result := .int lsT
   op := false
-  get := false
+  host := HostFx.none
   fails := false
   body :=
     .letR "c" (.bool cLabel) (.eq (.var "a") (.var "b"))
@@ -164,7 +170,7 @@ theorem choose_le (a b : LExpr) (hb : a.base.level = .«public» ∧ a.base.cats
 
 /-- What `choose`'s body may do: nothing. -/
 def chooseEff : Eff :=
-  Eff.none.union ((Eff.none.union Eff.none).union ((Eff.ofFn false false false).union Eff.none))
+  Eff.none.union ((Eff.none.union Eff.none).union ((Eff.ofFn false HostFx.none false).union Eff.none))
 
 /-- The labeled typing accepts `choose`, `Eq` constraint, comparison, decision and all. -/
 theorem choose_ok : prog2.FunOk choose := by
@@ -178,11 +184,12 @@ theorem choose_ok : prog2.FunOk choose := by
     · exact .ite (.var rfl) (.atom (.var rfl)) (.atom (.var rfl)) (.var (le_self _))
         (.var (le_self _)) (by simp [LTy.InPlace, lT])
     refine .letR ?r3 (.int (le_self _)) (.atom (.var rfl)) (by simp [LTy.InPlace, rTy, LTy.raise, LExpr.join, LExpr.bot, LExpr.ofLabel, decision])
-    refine LRhsTy.apply (ps := [tT]) (r := .int .bot) (o := false) (g := false) (fl := false)
+    refine LRhsTy.apply (ps := [tT]) (r := .int .bot) (o := false) (g := HostFx.none) (fl := false)
       (lf := .bot) (ts := [xTy]) ?hf ?has ?fl ?bd
     case hf => exact .var rfl
     case has => exact .cons (.var rfl) .nil
-    case bd => exact ⟨fun h => (by cases h), fun h => (by cases h), fun h => (by cases h)⟩
+    case bd => exact ⟨fun h => (by cases h), fun h => (by cases h), fun h => (by cases h), fun h => (by cases h),
+      fun h => (by cases h)⟩
     case fl =>
       refine .cons (.var (choose_le _ _ ?_ ?_ ?_)) .nil
       all_goals simp [xTy, tT, lT, cLabel, LTy.raise, LTy.deep, LExpr.join, LExpr.promote,
@@ -190,7 +197,8 @@ theorem choose_ok : prog2.FunOk choose := by
       all_goals decide
   all_goals simp [xTy, rTy, tT, lT, lsT, cLabel, LTy.raise, LTy.deep, LExpr.join,
     LExpr.promote, LExpr.bot, LExpr.ofLabel, Label.join, Label.bot, decision,
-    Level.join, Level.rank, choose, chooseEff]
+    Level.join, Level.rank, choose, chooseEff, Eff.union, Eff.none, Eff.ofFn, HostFx.Le, HostFx.or,
+    HostFx.none]
   all_goals decide
 
 /-- **`==` needs `Eq`.** In a function that does not constrain `T` by `Eq`, such as

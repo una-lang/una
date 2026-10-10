@@ -77,6 +77,19 @@ structure Host.Lawful (H : Host) : Prop where
   write_shape : ∀ {a b : H.FS} (path c c' : String), H.shape a = H.shape b →
     (H.write path c a).map H.shape = (H.write path c' b).map H.shape
 
+/-- The host without state, on which every host operation fails: the host of the examples whose
+programs perform none. -/
+def Host.unit : Host where
+  FS := Unit
+  Srv := Unit
+  Shape := Unit
+  shape := fun _ => ()
+  read := fun _ _ => none
+  write := fun _ _ _ => none
+  request := fun _ _ s => (none, s)
+
+theorem Host.unit_lawful : Host.unit.Lawful := ⟨fun _ _ => Iff.rfl, fun _ _ _ _ => rfl⟩
+
 /-- The code of a failure of the host or of `parse`. -/
 def hostFailure : Nat := 0
 

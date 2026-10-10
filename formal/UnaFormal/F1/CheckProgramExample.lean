@@ -2,7 +2,7 @@
 Non-vacuity of M4 completion part A2 (`CheckProgramSound.lean`): a program of three functions,
 the `via` function `check`, `rev`, which declassifies through `reveal`, and `caller`, which calls
 `rev`, passes the whole-program check by evaluation, so it is accepted by the labeled typing and
-within B1, and everything `caller` reaches passes T-Fun. A `#guard` checks that the same program
+within B1, its host labels are as `t6_release_host` asks, and everything `caller` reaches passes T-Fun. A `#guard` checks that the same program
 fails it when the policy and its `via` function disagree (G1).
 -/
 import UnaFormal.F1.CheckProgramSound
@@ -20,7 +20,7 @@ def caller : Fun where
   params := [("s", .int sec)]
   result := .bool .bot
   op := false
-  get := false
+  host := HostFx.none
   fails := false
   body := .letR "b" (.bool .bot) (.call "rev" [] [.var "s"]) (.atom (.var "b"))
   rels := ["reveal"]
@@ -33,8 +33,7 @@ unseal flowB flowsB in
 /-- The whole-program check accepts `prog3`, with no function checked at its instances, so its
 soundness has no hypothesis left. -/
 theorem prog3_certified :
-    prog3.LWellFormed ∧ prog3.B1WellFormed ∧
-      prog3.le (.ofLabel prog3.acceptsGet) (.ofLabel prog3.getResult) :=
+    prog3.LWellFormed ∧ prog3.B1WellFormed ∧ prog3.HostWF :=
   progOk_sound_nil (by rfl)
 
 unseal flowB flowsB in
