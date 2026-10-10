@@ -122,7 +122,7 @@ theorem callPick_safe {H : Host} (h4 : H.RespTyped) (w : World H) (n : Nat) :
 
 /-- A run of `pick[Int](1, 2, true)` gives `1`. -/
 example :
-    (eval Host.unit 10 prog ⟨(), ()⟩ []
+    (eval Host.unit 10 prog ⟨(), (), fun _ => none⟩ []
       (.letR "x" (.int .bot) (.call "pick" [.int .bot] [.int 1, .int 2, .bool true])
         (.atom (.var "x")))).2.1 = .ok (.int 1) := by
   rfl

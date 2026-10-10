@@ -260,7 +260,7 @@ def envHigherOrder : String := r#"{"schema":"una.core/1","edition":"0.2","comple
 #guard run envHigherOrder "main.mark" == "rejected"
 #guard run envHigherOrder "main.apply_it" == "not re-checked"
 #guard hostNoteFor false false true ==
-  "rests on a lawful host (H1 to H3): a caller may hand it a closure that uses the host, and `Env`, with one environment in both runs"
+  "rests on a lawful host (H1 to H3): a caller may hand it a closure that uses the host, and `Env`, whose variables are the same in both runs: whether a variable exists is public configuration, so an operator must not encode a secret in which variables are set"
 #guard usesFilesNote (hostNoteFor false false true)
 
 /-! ### `Http`, with its real signature (M5c, #470) -/

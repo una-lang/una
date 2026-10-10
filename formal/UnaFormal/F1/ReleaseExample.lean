@@ -127,7 +127,7 @@ theorem body_typed : LExprTy prog [] Γ .bot body (.unit .bot) bodyEff := by
       Eff.failLabel, Eff.ofFnR, Eff.ofFn, prog, Level.join] <;> decide
 
 /-- The runs' world: the host without state, since the programs perform no host operation. -/
-def w0 : World Host.unit := ⟨(), ()⟩
+def w0 : World Host.unit := ⟨(), (), fun _ => none⟩
 
 /-- The environment with the secret `s`. -/
 def env (n : Int) : Env := [("s", .int n)]

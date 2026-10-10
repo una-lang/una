@@ -4,6 +4,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ## Unreleased
 
+- **T6 covers the environment's secrets** (#487, `docs/plan/formal-track-env.md`). The formal model's environment moves from the host into the world, so two runs may read different values from `Env.get`, and T6 relates them: a program that leaks a variable's value now has no typing, which a theorem shows, and one that keeps it `internal` is certified with runs from different environments. The premise is that the same variables exist in both runs, since whether a variable exists is `public` (`spec/14 §3`): it is public configuration, so an operator must not encode a secret in which variables are set. The note of a declaration that reads `Env` and the guide's `Env` section say so. Corpus: no verdict changes (756 accepted, none rejected).
 - **The replay covers S-05** (#498, `docs/reviews/formal-m2-replay/README.md`). S-05's five leaking shapes, dumped by v0.1.3, the last release before its fix, are read with `Files` and with the file-state label that v0.3.6 infers for the same repro, the one input not taken from the release. The re-check rejects 4 of them and accepts the secure control; the fifth branches on `FileError`'s variants, outside F1, and is not re-checked. On these repros S-05's rule and ADR 0085's file-state term cannot be separated, and the README says why neither fixed label is faithful. S-03 is documented as not replayable from any release: `Http` first shipped in v0.3.0, after its fix.
 
 ## v0.3.7

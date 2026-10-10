@@ -538,7 +538,7 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
           · rw [hpath (hacc ha)]
           · rw [proj_single_hidden (ev := .read s₁) ha, proj_single_hidden (ev := .read s₂) ha]
         by_cases hi : Vis p L (.ofLabel internalLabel)
-        · have hweq := hw.2 hi
+        · have hweq := hw.2.1 hi
           subst hweq
           have hs := hpath (hacc (Vis.of_le hh.read hi))
           subst hs
@@ -594,7 +594,7 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
           · rw [hpath (hacc ha).1, hcont (hacc ha).2]
           · rw [proj_single_hidden (ev := .write s₁ cs₁) ha, proj_single_hidden (ev := .write s₂ cs₂) ha]
         by_cases hi : Vis p L (.ofLabel internalLabel)
-        · have hweq := hw.2 hi
+        · have hweq := hw.2.1 hi
           subst hweq
           have ha := hacc (Vis.of_le hh.write hi)
           have hs := hpath ha.1
@@ -613,11 +613,11 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
               simp only [hr₁, hr₂, Option.map_none, Option.map_some, reduceCtorEq,
                 Option.some.injEq] at hlaw' ht₁ ht₂ ⊢
             · exact ⟨hev, fun _ => rfl, hw⟩
-            · exact ⟨hev, .unit, fun _ => hlaw', fun h => absurd h hi⟩
+            · exact ⟨hev, .unit, fun _ => hlaw', fun h => absurd h hi, hw.2.2⟩
           · have hnvf : ¬ Vis p L ((p.fsFail (pc.join (p.deep (.text l)))).inst (p.sd σ)) :=
               fun h => hfv (vis_fsFail hh h).2
-            have hw' : ∀ {u₁ u₂ : World H}, WorldRel p L u₁ u₂ :=
-              ⟨fun h => absurd h hfv, fun h => absurd h hi⟩
+            have hw' : ∀ {f₁ f₂ : H.FS}, WorldRel p L { w₁ with fs := f₁ } { w₂ with fs := f₂ } :=
+              ⟨fun h => absurd h hfv, fun h => absurd h hi, hw.2.2⟩
             cases hr₁ : H.write s₁ cs₁ w₁.fs <;> cases hr₂ : H.write s₂ cs₂ w₂.fs <;>
               simp only [hr₁, hr₂] at ht₁ ht₂ ⊢ <;> refine ⟨hev, ?_, hw'⟩ <;> simp only [OutRel]
             all_goals first
@@ -644,7 +644,7 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
           · rw [hargs ha]
           · rw [proj_single_hidden (ev := .req m vs₁) ha, proj_single_hidden (ev := .req m vs₂) ha]
         by_cases hi : Vis p L (.ofLabel internalLabel)
-        · have hweq := hw.2 hi
+        · have hweq := hw.2.1 hi
           subst hweq
           have hv := hargs (Vis.of_le hh.req hi)
           subst hv
@@ -661,7 +661,7 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
           rcases hq₁ : H.request m vs₁ w₁.srv with ⟨o₁, srv₁⟩
           rcases hq₂ : H.request m vs₂ w₂.srv with ⟨o₂, srv₂⟩
           have hw' : WorldRel p L { w₁ with srv := srv₁ } { w₂ with srv := srv₂ } :=
-            ⟨fun h => hw.1 h, fun h => absurd h hi⟩
+            ⟨fun h => hw.1 h, fun h => absurd h hi, hw.2.2⟩
           cases o₁ <;> cases o₂ <;> simp only [hq₁, hq₂] at ht₁ ht₂ ⊢ <;> refine ⟨hev, ?_, hw'⟩ <;>
             simp only [OutRel]
           all_goals first
@@ -1084,9 +1084,19 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
           simp only [evalRhs, hn₁, hn₂]
           refine brel_done hw ?_
           simp only [LTy.lsubst]
-          cases H.env s
+          have hex := hw.2.2 s
+          cases h₁ : w₁.env s <;> cases h₂ : w₂.env s <;>
+            simp only [h₁, h₂, Option.isSome, Bool.false_eq_true, Bool.true_eq_false] at hex ⊢
           · exact .none
-          · exact .some .text
+          · -- The variable exists in both runs (`WorldRel`'s third conjunct, #487): its values
+            -- are equal when the observer sees `internal`, and hidden otherwise.
+            by_cases hv : Vis p L (.ofLabel internalLabel)
+            · have hweq := hw.2.1 hv
+              subst hweq
+              rw [h₁] at h₂
+              cases h₂
+              exact .some .text
+            · exact .some (.hidden fun h => hv (vis_ofLabel_of_inst h))
       | tuple has =>
         refine BRelR.of_brel ?_
         obtain ⟨vs₁, vs₂, h₁, h₂, hvs, _, _⟩ := latoms_bothσ he₁ he₂ hrel has

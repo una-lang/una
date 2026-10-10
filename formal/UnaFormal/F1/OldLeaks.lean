@@ -45,7 +45,7 @@ theorem demo_lawful : demo.Lawful where
     simp [Val.IsResponse]
 
 /-- The empty world. -/
-def w₀ : World demo := ⟨[], ()⟩
+def w₀ : World demo := ⟨[], (), fun _ => none⟩
 
 /-- A program under the old rules: `Console` accepts `public`, `Files.read` `public`,
 `Files.write` and `Http` `internal`. -/

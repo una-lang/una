@@ -133,11 +133,11 @@ theorem eA_typed : ∃ t ε, LExprTy (prog .public) [] [] .bot eA t ε := by
   exact ⟨_, _, hall⟩
 
 /-- Two worlds with the same file, `log`, and different contents. -/
-def wA₁ : World files := ⟨([("log", "1")] : List (String × String)), ()⟩
-def wA₂ : World files := ⟨([("log", "2")] : List (String × String)), ()⟩
+def wA₁ : World files := ⟨([("log", "1")] : List (String × String)), (), fun _ => none⟩
+def wA₂ : World files := ⟨([("log", "2")] : List (String × String)), (), fun _ => none⟩
 
 theorem wA_rel : WorldRel (prog .public) Label.bot wA₁ wA₂ :=
-  ⟨fun _ => rfl, fun h => absurd h (intl_hidden _)⟩
+  ⟨fun _ => rfl, fun h => absurd h (intl_hidden _), fun _ => rfl⟩
 
 /-- **(A)**: `t6_host_ground` applies, so a public observer sees the same events of the two runs. -/
 theorem exA : proj (prog .public) Label.bot (eval files 12 (prog .public) wA₁ [] eA).1 =
@@ -189,11 +189,11 @@ theorem eB_typed : ∃ t ε, LExprTy (prog .internal) [] ΓB .bot eB t ε := by
   exact ⟨_, _, hall⟩
 
 /-- Two worlds with different files. -/
-def wB₁ : World files := ⟨([] : List (String × String)), ()⟩
-def wB₂ : World files := ⟨([("c.txt", "z")] : List (String × String)), ()⟩
+def wB₁ : World files := ⟨([] : List (String × String)), (), fun _ => none⟩
+def wB₂ : World files := ⟨([("c.txt", "z")] : List (String × String)), (), fun _ => none⟩
 
 theorem wB_rel : WorldRel (prog .internal) Label.bot wB₁ wB₂ :=
-  ⟨fun h => absurd (Vis.of_le (le_of rfl) h) (intl_hidden _), fun h => absurd h (intl_hidden _)⟩
+  ⟨fun h => absurd (Vis.of_le (le_of rfl) h) (intl_hidden _), fun h => absurd h (intl_hidden _), fun _ => rfl⟩
 
 def envB (s : String) : Env := [("x", .text s)]
 

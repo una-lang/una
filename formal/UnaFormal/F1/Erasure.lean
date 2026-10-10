@@ -653,7 +653,7 @@ theorem eval_anon (hH : H.AnonInvariant) (h4 : H.RespTyped) (hf : ∀ f, (P.find
           cases v with
           | text s =>
             simp only [Option.map_some, Val.anon]
-            cases H.env s <;> simp [runAnon_done, Val.anon]
+            cases w.env s <;> simp [runAnon_done, Val.anon]
           | _ => simp [Val.anon, runAnon_stuck]
       | set xs index item =>
         simp only [evalRhs, Rhs.anon, evalAtom_anon]

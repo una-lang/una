@@ -90,13 +90,13 @@ theorem internal_hidden : ¬ Vis prog Label.bot intl := by
 /-- **T6 for a loop** (M6): runs over `[1, 2]` and `[3, 4]`, whose elements a `public` observer
 does not see, show it the same events and related outcomes. -/
 theorem sum_runs : ∃ t ε, LExprTy prog [] [("xs", .list (.int intl) .bot)] .bot sumBody t ε ∧
-    ∀ n : Nat, Term (eval Host.unit n prog ⟨(), ()⟩ (env 1 2) sumBody).2.1 →
-      Term (eval Host.unit n prog ⟨(), ()⟩ (env 3 4) sumBody).2.1 →
-      proj prog Label.bot (eval Host.unit n prog ⟨(), ()⟩ (env 1 2) sumBody).1 =
-          proj prog Label.bot (eval Host.unit n prog ⟨(), ()⟩ (env 3 4) sumBody).1 ∧
+    ∀ n : Nat, Term (eval Host.unit n prog ⟨(), (), fun _ => none⟩ (env 1 2) sumBody).2.1 →
+      Term (eval Host.unit n prog ⟨(), (), fun _ => none⟩ (env 3 4) sumBody).2.1 →
+      proj prog Label.bot (eval Host.unit n prog ⟨(), (), fun _ => none⟩ (env 1 2) sumBody).1 =
+          proj prog Label.bot (eval Host.unit n prog ⟨(), (), fun _ => none⟩ (env 3 4) sumBody).1 ∧
         OutRel (V prog Label.bot t) (Vis prog Label.bot ε.failLabel)
-          (eval Host.unit n prog ⟨(), ()⟩ (env 1 2) sumBody).2.1
-          (eval Host.unit n prog ⟨(), ()⟩ (env 3 4) sumBody).2.1 := by
+          (eval Host.unit n prog ⟨(), (), fun _ => none⟩ (env 1 2) sumBody).2.1
+          (eval Host.unit n prog ⟨(), (), fun _ => none⟩ (env 3 4) sumBody).2.1 := by
   obtain ⟨hwf, _, hh⟩ := certified
   obtain ⟨ε, hc⟩ := sum_checked
   obtain ⟨t, ht, _⟩ := checkExpr_sound hc
@@ -111,11 +111,11 @@ theorem sum_runs : ∃ t ε, LExprTy prog [] [("xs", .list (.int intl) .bot)] .b
   exact ⟨hp, ho⟩
 
 /-- The runs end with different sums, 3 and 7. -/
-example : (eval Host.unit 10 prog ⟨(), ()⟩ (env 1 2) sumBody).2.1 = .ok (.int 3) ∧
-    (eval Host.unit 10 prog ⟨(), ()⟩ (env 3 4) sumBody).2.1 = .ok (.int 7) := ⟨rfl, rfl⟩
+example : (eval Host.unit 10 prog ⟨(), (), fun _ => none⟩ (env 1 2) sumBody).2.1 = .ok (.int 3) ∧
+    (eval Host.unit 10 prog ⟨(), (), fun _ => none⟩ (env 3 4) sumBody).2.1 = .ok (.int 7) := ⟨rfl, rfl⟩
 
 /-- `twice 5` is 7, through two `edit` calls. -/
-example : (eval Host.unit 10 prog ⟨(), ()⟩ [("n", .int 5)] twiceFn.body).2.1 = .ok (.int 7) := rfl
+example : (eval Host.unit 10 prog ⟨(), (), fun _ => none⟩ [("n", .int 5)] twiceFn.body).2.1 = .ok (.int 7) := rfl
 
 /-- A loop over a list of `internal` length, whose state is `public`, handed to a `public` binder. -/
 def countBody : Expr :=

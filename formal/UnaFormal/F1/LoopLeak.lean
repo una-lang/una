@@ -76,8 +76,8 @@ theorem draft_typed : ∃ t ε, LExprTy draftProg [] Γ .bot probe t ε := by
 def env : Env := [("xs", .list [.int 1, .int 2])]
 
 /-- Two worlds: without `a.txt`, and with it. -/
-def w₁ : World files := ⟨([] : List String), ()⟩
-def w₂ : World files := ⟨["a.txt"], ()⟩
+def w₁ : World files := ⟨([] : List String), (), fun _ => none⟩
+def w₂ : World files := ⟨["a.txt"], (), fun _ => none⟩
 
 theorem intl_hidden (P : Program) (hP : P.categories = []) : ¬ Vis P Label.bot intl := by
   rintro (h | ⟨h, _⟩) <;>
@@ -85,7 +85,7 @@ theorem intl_hidden (P : Program) (hP : P.categories = []) : ¬ Vis P Label.bot 
 
 /-- A `public` observer cannot tell the worlds apart: the file-state label is `internal`. -/
 theorem worlds_rel : WorldRel draftProg Label.bot w₁ w₂ :=
-  ⟨fun h => absurd h (intl_hidden _ rfl), fun h => absurd h (intl_hidden _ rfl)⟩
+  ⟨fun h => absurd h (intl_hidden _ rfl), fun h => absurd h (intl_hidden _ rfl), fun _ => rfl⟩
 
 /-- The runs: the first fails after one `hello`, the second ends after two. -/
 theorem runs :

@@ -182,6 +182,14 @@ import UnaFormal
 #print axioms Una.F1.HttpExample.counter_lawful
 #print axioms Una.F1.HttpExample.certified
 #print axioms Una.F1.HttpExample.request_runs
+#print axioms Una.F1.EnvExample.set_rel
+#print axioms Una.F1.EnvExample.exists_unrelated
+#print axioms Una.F1.EnvExample.leak_runs
+#print axioms Una.F1.EnvExample.certified
+#print axioms Una.F1.EnvExample.leak_untyped
+#print axioms Una.F1.EnvExample.read_runs
+#print axioms Una.F1.EnvExample.read_differ
+#print axioms Una.F1.EnvExample.exists_runs
 #print axioms Una.F1.walkLoop_good
 #print axioms Una.F1.walkLoop_uok
 #print axioms Una.F1.walkLoop_brelR

@@ -92,12 +92,15 @@ def internalLabel : Label := ⟨.internal, []⟩
 
 /-- **Two worlds the observer at `L` cannot tell apart** (M5, `docs/plan/formal-track-m5.md`
 §4): the same shape of the file system when it sees the file-state label, and the same world
-when it sees `internal`. That every stateful sink accepts at most `internal`
+when it sees `internal`, and, for every observer, the same environment variables (#487:
+`spec/14 §3` makes whether a variable exists `public`, so their values are the only secret the
+environment holds). That every stateful sink accepts at most `internal`
 (`Program.HostWF`) is what keeps the second conjunct from being a mere accident of the host
 table. -/
 def WorldRel {H : Host} (w₁ w₂ : World H) : Prop :=
   (Vis p L (.ofLabel p.fileState) → H.shape w₁.fs = H.shape w₂.fs) ∧
-  (Vis p L (.ofLabel internalLabel) → w₁ = w₂)
+  (Vis p L (.ofLabel internalLabel) → w₁ = w₂) ∧
+  (∀ x, (w₁.env x).isSome = (w₂.env x).isSome)
 
 /-- Two runs related, termination-insensitively: when both end, the observer sees the same
 events and related outcomes, and cannot tell their final worlds apart. -/
@@ -297,16 +300,18 @@ structure Program.HostWF (p : Program) : Prop where
 
 variable {H : Host}
 
-theorem WorldRel.refl (w : World H) : WorldRel p L w w := ⟨fun _ => rfl, fun _ => rfl⟩
+theorem WorldRel.refl (w : World H) : WorldRel p L w w := ⟨fun _ => rfl, fun _ => rfl, fun _ => rfl⟩
 
 theorem WorldRel.symm {w₁ w₂ : World H} (h : WorldRel p L w₁ w₂) : WorldRel p L w₂ w₁ :=
-  ⟨fun hv => (h.1 hv).symm, fun hv => (h.2 hv).symm⟩
+  ⟨fun hv => (h.1 hv).symm, fun hv => (h.2.1 hv).symm, fun x => (h.2.2 x).symm⟩
 
 theorem WorldRel.trans {w₁ w₂ w₃ : World H} (h₁ : WorldRel p L w₁ w₂) (h₂ : WorldRel p L w₂ w₃) :
     WorldRel p L w₁ w₃ :=
-  ⟨fun hv => (h₁.1 hv).trans (h₂.1 hv), fun hv => (h₁.2 hv).trans (h₂.2 hv)⟩
+  ⟨fun hv => (h₁.1 hv).trans (h₂.1 hv), fun hv => (h₁.2.1 hv).trans (h₂.2.1 hv),
+    fun x => (h₁.2.2 x).trans (h₂.2.2 x)⟩
 
-theorem World.ext' {w w' : World H} (hfs : w'.fs = w.fs) (hsrv : w'.srv = w.srv) : w = w' := by
+theorem World.ext' {w w' : World H} (hfs : w'.fs = w.fs) (hsrv : w'.srv = w.srv)
+    (henv : w'.env = w.env) : w = w' := by
   cases w; cases w'; simp_all
 
 /-- At a program counter the observer does not see, a run that keeps to its typing shows no
@@ -356,10 +361,11 @@ theorem confined {pc : LExpr} {ε : Eff} {P : Val → Prop} {w : World H} {run :
       cases ev with
       | req _ _ => exact hpc (Vis.of_le (h.1 _ hev).2.1 (Vis.of_le hwf.req hv))
       | _ => simp [Event.isReq] at hrq
-    refine ⟨fun hv => ?_, fun hv => ?_⟩
+    refine ⟨fun hv => ?_, fun hv => ?_, fun x => ?_⟩
     · simp only
       rw [hw.1 (nowr (.inl hv))]
-    · exact World.ext' (hw.1 (nowr (.inr hv))) (hw.2 (noreq hv))
+    · exact World.ext' (hw.1 (nowr (.inr hv))) (hw.2.1 (noreq hv)) hw.2.2
+    · simp only at hw ⊢; rw [hw.2.2]
 
 theorem OutRel.mono {R R' : Val → Val → Prop} {vf vf' : Prop} (hR : ∀ a b, R a b → R' a b)
     (hvf : vf' → vf) : ∀ {r₁ r₂ : Res}, OutRel R vf r₁ r₂ → OutRel R' vf' r₁ r₂

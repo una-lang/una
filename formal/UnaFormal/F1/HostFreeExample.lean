@@ -23,8 +23,8 @@ def s16 : Host where
   request := fun _ _ s => (.error 0, s)
 
 /-- A file system with one valid file, and one with the same file holding invalid text. -/
-def fsOk : World s16 := ⟨[("f", "ok")], ()⟩
-def fsBad : World s16 := ⟨[("f", "\xff")], ()⟩
+def fsOk : World s16 := ⟨[("f", "ok")], (), fun _ => none⟩
+def fsBad : World s16 := ⟨[("f", "\xff")], (), fun _ => none⟩
 
 /-- **`s16` breaks H1**: the two file systems have the same shape, and a read of `f` succeeds in
 one and fails in the other. -/
@@ -41,7 +41,7 @@ open ReleaseExample in
 /-- The two file systems are the same to an observer at `public`: the file-state label is
 `public`, and they have the same files. -/
 theorem worlds_rel : WorldRel prog Label.bot fsOk fsBad :=
-  ⟨fun _ => rfl, fun h => absurd h intl_hidden⟩
+  ⟨fun _ => rfl, fun h => absurd h intl_hidden, fun _ => rfl⟩
 
 open ReleaseExample in
 theorem env_hostFree (n : Int) : Val.HostFreeEnv (env n) := by
