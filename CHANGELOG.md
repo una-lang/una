@@ -2,6 +2,14 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
+## v0.1.8
+
+v0.1.7 with the S-17 fix: a `checked` predicate's other reads label its failure (#488, ADR 0089).
+
+### Security
+
+- **A `checked` predicate's other reads label its failure** (#488, S-17, ADR 0089). `checked(a, φ) else fail C` labeled its failure by `a` alone, but φ may read other values: `checked(raw, raw.len < limit)` with `limit: secret Int` failed publicly, and a caller that branched on it learned a comparison with the secret. Now the failure carries every label of every value φ reads, so such a `checked` is U4002. An operand-only `checked`, and one that reads only public values, are unchanged.
+
 ## v0.1.7
 
 v0.1.6 with the S-16 fix: host text that is not valid UTF-8 aborts the run (#460, ADR 0086).
