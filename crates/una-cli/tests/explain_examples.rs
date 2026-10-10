@@ -118,7 +118,7 @@ fn codes(code: Code, name: &str, example: &Example, fixed: bool) -> Vec<Code> {
             &mut stdout,
             &mut stderr,
             false,
-            &|_| None,
+            &|_| Ok(None),
             una_cli::Heap::unmeasured(),
         );
         let document: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
@@ -171,13 +171,13 @@ fn failing_examples_yield_their_code_and_fixed_examples_yield_nothing() {
         }
         checked.push(code.as_str());
     }
-    // Every code has its examples, but U8001, an internal error, which no
-    // program should cause.
+    // Every code has its examples, but U8001, an internal error, which no program should
+    // cause, and U6005, which the host's data causes and no program text does (ADR 0086).
     for code in Code::ALL {
-        if code == Code::U8001 {
+        if code == Code::U8001 || code == Code::U6005 {
             assert!(
                 !una_explain::text(code).contains("Stub explanation."),
-                "U8001 has its text"
+                "{code} has its text"
             );
             continue;
         }

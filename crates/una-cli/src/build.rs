@@ -335,7 +335,7 @@ fn missing_runtime(dir: &Path) -> String {
 /// beside the `una` binary, as a release archive ships it (ADR 0059), next to the binary, as a
 /// Cargo build leaves it, or in `../lib`.
 fn runtime_library(environment: crate::Environment<'_>) -> Result<PathBuf, String> {
-    if let Some(path) = environment("UNA_RT_LIB") {
+    if let Some(path) = crate::variable(environment, "UNA_RT_LIB") {
         return Ok(PathBuf::from(path));
     }
     // Through a symlink, macOS reports the link's path: the runtime is beside the binary the

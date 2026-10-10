@@ -1,0 +1,4 @@
+[package]
+name = "host_text_file_not_utf8"
+version = "0.1.0"
+edition = "0.2"

@@ -31,13 +31,13 @@ Status: Normative, v0.2 (ADR 0055).
 
 1. **Output contract.** The executable follows the human contract of `una run` (`spec/13 §5`):
    - the lines the program prints go to stdout as it prints them;
-   - U6001 (a failure of `main`), U6003 (call depth, stack or memory exhausted) and U6004 (a header value with a control character, `spec/24 §1`) go to stderr, with exit code 1;
+   - U6001 (a failure of `main`), U6003 (call depth, stack or memory exhausted), U6004 (a header value with a control character, `spec/24 §1`) and U6005 (host text that is not valid UTF-8, `spec/14 §3`) go to stderr, with exit code 1;
    - exit code 0 when `main` returns.
    - (v0.2, #259.) A failure to write output exits with code 2, as in `una run`. A closed stdout or stderr is not one: what the executable writes there is discarded, as `/dev/null` discards it, and the exit code is the one an open stream would give. A broken pipe (EPIPE), a reader that went away, is a failure to write.
 
    It has no `--json` output in v0.2.
 
-   Its rendering of U6001, U6003 and U6004 on stderr is compact: the first line, the code, the position and the failure are those of `una run`, followed by `  at <file>:<line>:<column>` and a `  note:` line instead of a source frame. The comparison of §5 covers stdout, the exit status, the failure and the trace, not that rendering.
+   Its rendering of U6001, U6003, U6004 and U6005 on stderr is compact: the first line, the code, the position and the failure are those of `una run`, followed by `  at <file>:<line>:<column>` and a `  note:` line instead of a source frame. The comparison of §5 covers stdout, the exit status, the failure and the trace, not that rendering.
 2. **Grants.** The executable has the grants model of `una run` (`spec/13 §5`):
    - Its grants are the `[run] grants` embedded at build time, together with its own `--grant <spec>` flags, which take the grant specs of `spec/13 §5`.
    - Before `main` starts, it checks every `uses` of `main` against those grants. A `uses` they do not grant is U3012 on stderr, with exit code 1, and nothing runs.
