@@ -24,7 +24,7 @@ assumption, stated in `docs/plan/formal-track-m2.md` §1.
 -/
 import Lean.Data.Json
 import UnaFormal.F1.CheckProgram
-import UnaFormal.F1.HostFree
+import UnaFormal.F1.HostFreeReach
 
 namespace Una.F1
 
@@ -850,11 +850,38 @@ def monoParts (members : List String) (isNested : String → Bool) (readFn : Str
 `t6_release_erasure_obs_hostFree`. -/
 def hostNote : String := "rests on a lawful host (H1 to H3): the program uses `Files`"
 
-/-- A verdict's note, with `hostNote` when the program it is certified in uses `Files`. -/
-def withHost (P : Program) (note : String) : String :=
-  if P.hostFreeB then note else if note == "" then hostNote else note ++ "; " ++ hostNote
+/-- The functions `f` reaches in `P`, transitively, with every `via` function of `P`'s policies:
+what a run of `f` can call or reference (#472). -/
+def reachIn (P : Program) (f : String) : List String := Id.run do
+  let mut s := f :: P.policies.map (·.via)
+  for _ in [0:P.funs.length + 1] do
+    s := (s ++ s.flatMap fun g => match P.find g with
+      | some fn => fn.body.callees
+      | none => []).eraseDups
+  pure s
 
-theorem withHost_ex (P : Program) (n : String) : (∃ n₀, withHost P n = withHost P n₀) ↔ True :=
+/-- **`f` reaches no host operation in `P`** (#472), as `t6_release_erasure_obs_reach` asks:
+its reach `S` is closed under the calls and references of the bodies in it, none of them performs
+a host operation, `S` holds every `via` function, every record of `P` is closure-free, and `f`'s
+own parameters have closure-free types (`LTy.cf`), so a caller cannot hand it a closure that
+writes a file. -/
+def hostFreeAt (P : Program) (f : String) : Bool :=
+  let S := reachIn P f
+  P.recordsCF && P.policies.all (fun po => S.contains po.via) &&
+    S.all fun g => match P.find g with
+      | some fn => fn.body.hostFree && fn.body.callees.all S.contains &&
+          (g != f || fn.params.all (·.2.cf))
+      | none => true
+
+/-- A verdict's note, with `hostNote` unless `f` reaches no host operation and cannot be handed
+one (`hostFreeAt`). A host-free certified program is not enough on its own: it may be a part of the
+document, and a caller outside it may hand `f` a closure that writes a file (#472). -/
+def withHost (P : Program) (f : String) (note : String) : String :=
+  if hostFreeAt P f then note
+  else if note == "" then hostNote else note ++ "; " ++ hostNote
+
+theorem withHost_ex (P : Program) (f n : String) :
+    (∃ n₀, withHost P f n = withHost P f n₀) ↔ True :=
   ⟨fun _ => trivial, fun _ => ⟨n, rfl⟩⟩
 
 /-- **The verdicts, from the certificates alone** (M4 completion, A2 and A3). Every declaration
@@ -881,9 +908,9 @@ def finalize (pAll pPlain : Program) (cond : List String) (mono : List Fun)
   let condOk := Check.progOk cond pAll
   outs.map fun (f, o) =>
     let verdict := fun (note : String) =>
-      if monoOk && pAll.funs.any (·.name == f) then Outcome.accepted (withHost pAll note)
-      else if plainOk && pPlain.funs.any (·.name == f) then .accepted (withHost pPlain note)
-      else if condOk && pAll.funs.any (·.name == f) then .acceptedIfA3 (withHost pAll note)
+      if monoOk && pAll.funs.any (·.name == f) then Outcome.accepted (withHost pAll f note)
+      else if plainOk && pPlain.funs.any (·.name == f) then .accepted (withHost pPlain f note)
+      else if condOk && pAll.funs.any (·.name == f) then .acceptedIfA3 (withHost pAll f note)
       else .notRechecked "whole program: no certificate"
     match o with
     | .accepted note => (f, verdict note)
@@ -900,13 +927,13 @@ theorem finalize_sound {pAll pPlain : Program} {cond : List String} {mono : List
     {ren : List (String × String)} {outs : List (String × Outcome)} {f note : String} :
     ((f, Outcome.accepted note) ∈ finalize pAll pPlain cond mono ren outs →
       (Check.progOk [] pPlain = true ∧ pPlain.funs.any (·.name == f) = true ∧
-        ∃ n₀, note = withHost pPlain n₀) ∨
+        ∃ n₀, note = withHost pPlain f n₀) ∨
       (Check.progOk [] { pAll with funs := mono } = true ∧
         progSim ren { pAll with funs := mono } pAll = true ∧
-        pAll.funs.any (·.name == f) = true ∧ ∃ n₀, note = withHost pAll n₀)) ∧
+        pAll.funs.any (·.name == f) = true ∧ ∃ n₀, note = withHost pAll f n₀)) ∧
     ((f, Outcome.acceptedIfA3 note) ∈ finalize pAll pPlain cond mono ren outs →
       Check.progOk cond pAll = true ∧ pAll.funs.any (·.name == f) = true ∧
-        ∃ n₀, note = withHost pAll n₀) := by
+        ∃ n₀, note = withHost pAll f n₀) := by
   constructor
   · intro h
     simp only [finalize, List.mem_map] at h
