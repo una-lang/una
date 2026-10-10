@@ -1,0 +1,7 @@
+[package]
+name = "s17_checked_reads_secret_0_1"
+version = "0.1.0"
+edition = "0.1"
+
+[escape_budget]
+checked_per_module = 2
