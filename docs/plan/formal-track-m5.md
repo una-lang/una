@@ -177,7 +177,9 @@ Everything is in `formal/UnaFormal/F1H/`. `scripts/formal.sh` passes with 140 st
 - `Eval.lean`: an abstract `Host` (file system, servers), with H1 and H2 as `Host.Lawful`, and an evaluation that threads the `World` and returns the world it leaves;
 - `LTyping.lean`: ADR 0085's rules. Failures go through `Program.fsFail` and `Program.reqFail`. `Bound` has a write case that asks `pc ⊑ fileState`. The switch `oldHost` states the rules before the ADR.
 
-Every proof of M3 and M4 is carried over (T1, the unary and binary halves, instances, B1). F1 itself is unchanged, and its 109 theorems still pass. Folding F1H into F1, so that one model remains, is a follow-up.
+Every proof of M3 and M4 is carried over (T1, the unary and binary halves, instances, B1). F1 itself is unchanged, and its 109 theorems still pass. Folding F1H into F1, so that one model remains, is #459.
+
+**What the re-checker's "accepted" rests on, until #459.** The re-checker (M2, M4 completion) is written over F1. An accepted declaration rests on F1's `t6_release`, whose host is stateless. That assumption does not touch any accepted declaration: none of the 638 reads `Files` or `Http`, since the import never reads them (§7). M5 proves the stateful theorem over F1H. #459 makes it the one the verdicts rest on, and M5b extends the re-check to `Files` and `Http`.
 
 | Part | Theorems |
 | --- | --- |
