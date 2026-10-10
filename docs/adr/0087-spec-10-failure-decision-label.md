@@ -1,6 +1,6 @@
 # 0087. `spec/10`'s rules carry the label that decides a failure
 
-- Status: Proposed
+- Status: Accepted (coordinator, 2026-10-10, for the owner's review)
 - Date: 2026-10-10
 - Deciders: coordinator, for the owner's review; written by Claude (Una-1)
 - Resolves: #479
