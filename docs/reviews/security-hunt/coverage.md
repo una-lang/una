@@ -38,7 +38,7 @@ The checker sites are under `crates/una-check/src/types/` unless another path is
 | §3.5 returns (U4001) | `expr.rs::returned_value`, `implicit_return`, `tail_expr` | ~40 | `Program.FunOk` | yes | covered |
 | §4 sinks | `flow.rs::sink` from `call.rs::cap_op` | ~64 | `op`, `read`, `write`, `req` | the operations above | partial (as §1) |
 | §4 interpolation | `expr.rs` (interpolation) | ~10 | `concat`, `toText` | yes | covered |
-| §4 `expect` lines exempt | the `Ctx.labels` flag | none found | none: examples are not in the model | no | exemption: no test |
+| §4 `expect` lines exempt | the `Ctx.labels` flag | 1 (`ifc_tour`, whose `expect` line reads no labeled value) | none: examples are not in the model | no | exemption: no case where an `expect` line reads a labeled value (#516) |
 
 ### §5. Policies
 
@@ -67,11 +67,11 @@ The model assumes every policy is lawful. That a policy can exist only in a trus
 | Rule | Checker | Tests | Model | Importer | Status |
 |---|---|---|---|---|---|
 | 1. structural labels | `unify.rs`, `ty.rs` | implicit | `LTy` | yes | covered |
-| 2. flows: covariance, contravariance (S-Fun) | `flow.rs::below` | ~55 errors, **no ok twins** | `Flow`, `Flows` | yes | covered |
+| 2. flows: covariance, contravariance (S-Fun) | `flow.rs::below` | ~55 files; most hold accepted declarations beside the rejected ones | `Flow`, `Flows` | yes | covered |
 | 2. flows: invariant kind parameters (ADR 0046), recursive kinds | `ty.rs::is_invariant`, `call.rs::expected_invariant` | 4 | none: records have no type parameters in F1 | "the type `q` with type arguments" | **blind** |
 | 2. a lambda's parameter that rises after its body | `flow.rs`, `call.rs` | few | none: T-Fun is per function | no | **blind** |
 | 2. `Unit` never fails a flow; one U4001 per construct in a return | `flow.rs` | not obvious | `unit` flows; sites not modeled | n/a | covered for `Unit` |
-| 3. labels of values: deep labels of kinds | `ty.rs::deep_label` | ~56 errors, **no ok twins** | `Record.deep`, `primLabel` | records: #509 (never recognized today) | partial |
+| 3. labels of values: deep labels of kinds | `ty.rs::deep_label` | ~56 files; most hold accepted declarations beside the rejected ones | `Record.deep`, `primLabel` | records: #509 (never recognized today) | partial |
 | 3. `.len`, `is`, `in` | `expr.rs::compare_with_is` | few | `len` only | `is` and `in` not as primitives | partial |
 | 4. operations: `ℓ⁺`, declared parameters as ⊤, inline lambdas | `flow.rs::sink`, `op_argument_flow` | ~14 | `op` with scalar arguments only (`deep` in place of `ℓ⁺`) | one operation, scalar to `Unit` | partial |
 | 4. the effect floor of handler bodies | `check.rs::handler` | 14 | none: handler bodies are outside the reach set | "a `handler` declaration" (84 in the corpus) | **blind** |
@@ -85,7 +85,7 @@ The model assumes every policy is lawful. That a policy can exist only in a trus
 | 8. type arguments carry labels | `generic.rs`, `unify.rs` | 173 (10 ok) | `lsubst`, ground instances | yes, one level, by instances | covered |
 | 8. symbolic labels `ℓ_T`, `ℓ*_T` | `flow.rs::below`, `check.rs::symbolic` | in the 173 | `LExpr` `plain`, `star` | yes | covered |
 | 8. `ℓ_T` only in place (#440) | by construction | none in conformance (Rust: `core_symbols.rs`) | `LTy.InPlace` | yes | covered in the model; no conformance case |
-| 8. comparisons on constrained parameters, `sort` (ADR 0066) | `call.rs` | ~1 | none | "the constraint `ord`" | **blind** |
+| 8. comparisons on constrained parameters, `sort` (ADR 0066) | `call.rs` | `constraint_labels` (tagged `spec/20 §4`) and `g67_l53` | none | "the constraint `ord`" | **blind** |
 | 8. result summaries (ADR 0067) | `summary.rs` (SCC fixpoint) | 6 + chains | read from the export as facts that may only raise a signature; the body, or each instance, is checked against the raised result, so a summary that is too small is a rejection (`formal-track-m2.md`, confirmed by the adversarial review of #454) | positions `element`, `arg 1`, `result` only | covered at those positions |
 | 8. edition 0.1's defense in depth | `call.rs` (T-App), `decided_callbacks` | 17 | the model follows edition 0.2 (`addStarAll` in the importer) | partial | partial |
 | 8. no effects or failures under a symbolic pc | `flow.rs` | in the 173 | `SymFree` premises | yes | covered |
@@ -130,12 +130,11 @@ The model has none of these, so every rule is blind on them:
    - the `of` rules for the prelude's four higher-order functions.
    Its mutators should stay inside the importer's vocabulary so that their programs are re-checked, not set aside.
 3. **Cheap model gains.** The arithmetic primitives `neg`, `div`, `mul`, `le`, `ge`, `mod` and `ne` are 294 uses in the corpus. They label like `add` (the join of their operands). Adding them to `Prim` and the importer is small, and moves many declarations into the re-check. `div` and `mod` need a nonzero divisor, which is a proof obligation (`spec/06`), never a run-time failure, so the model can take it as a premise that T5 discharges.
-4. **Test gaps in the checker's own suite:**
-   - the exemptions of rule 6 (`expect`, `do` at pc ⊥, `requires`/`ensures`);
-   - the file-state label inside a lambda and in an example;
-   - `sort`;
-   - expect-ok twins for the `sweep_variance` and `sweep_label` families, which have only rejected cases, so an over-strict checker would not show there.
-   These are conformance cases to add, under the rules they name.
+4. **Test gaps in the checker's own suite** (#516):
+   - the exemptions of rule 6: an `expect` line that reads a labeled value, `do` lines at pc ⊥, and `requires`, `ensures` and `where` clauses;
+   - the file-state label for a write inside a lambda, and for one reached only from an example;
+   - that `sort` raises the result list itself, not only its elements. `constraint_labels` covers the elements;
+   - accepted declarations in the 33 of the 111 `sweep_variance` and `sweep_label` files that hold only rejected ones. The other 78 already hold both, since a case's expected errors are a set, so a declaration without one is an accepted case.
 5. **The summaries of ADR 0067 are checked, not trusted.** The re-check reads them from the export, but only to raise a result type, and then checks each body or instance against it. So a summary that is too small is rejected, never accepted. The gap there is coverage: a summary at a position other than `element`, `arg 1` or `result` is not re-checked.
 
 ## 3. Sources
