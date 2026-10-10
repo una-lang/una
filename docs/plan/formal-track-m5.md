@@ -127,7 +127,7 @@ Non-vacuity, two examples:
 Each assumption is a hypothesis of the theorem or part of the model, stated where it is used:
 
 1. **(H1) and (H2)**, content-independence of failures and shapes. Una writes only UTF-8, so a read of invalid UTF-8 cannot follow a Una write (ADR 0085 decision 3). A file system where content decides a failure, such as a full disk, is resource consumption, outside the model (`spec/07 §1`).
-2. **No other writer.** During a run, and between runs, only the package's own writes change the file system. Other programs and people are outside the model (`spec/07 §1`, external systems; decision 4).
+2. **No other writer.** During a run, and between runs, only the package's own writes change the file system. Other programs and people are outside the model (`spec/07 §1`, external systems; decision 4). That includes a server the package talks to: the model's servers do not write the file system (§10).
 3. **One package.** The file-state label joins the writes of the whole program. That holds while a package imports no other package (decision 5); the ADR records what must change if that ever does.
 4. **The checker computes a sound file-state label.** The model states it declaratively, at each write and each call of a writing function. That the checker's fixpoint over the call graph, its probe pass and its caps (lambdas at `internal`, values at their bound) meet it is the re-check's to check, not the theorem's. See §6.
 5. **Timing, and the termination of the server**, are outside the model, as they are today. T6 is termination-insensitive.
@@ -194,6 +194,10 @@ Every proof of M3 and M4 is carried over (T1, the unary and binary halves, insta
 - what the host returns, a read's content and a response, and what decides a request's failure, are at least `internal`.
 
 `acceptsRead ⊑ internal` was added in the proof. Without it, a read's content could reveal a path the observer cannot see. `Files.read` accepts `public`, so it holds. The host must also be lawful: H1 and H2 (`Host.Lawful`).
+
+**What Una-1's review found about the real host** (2026-10-09):
+- **H1 does not hold of today's `Files.read` (S-16).** A read of a file that is not valid UTF-8 fails, so whether a read fails depends on content, not only on the path and the shape. `una check` accepts a program that prints, at `public`, whether an `internal` file is valid UTF-8 (v0.3.4). The fix is in the runtime, under its own ADR. Once it lands, H1 holds of the real host. The theorem needs no change: it assumes H1 and says so.
+- **The file system and the servers are disjoint.** The model keeps their states apart, so a request never changes the file system. A server on the same machine that writes into the granted directory would join them. A request at an `internal` program counter would then change the shape, and a later read whose failure is `public` would reveal it. This is outside the model, as races and other processes are (§5, assumption 2).
 
 **How the proof goes.**
 - The unary half records that a run changes the file system only if its trace holds a write, and the servers only if it holds a request. A write is allowed only at a program counter below the file-state label.
