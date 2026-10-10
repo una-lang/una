@@ -45,7 +45,7 @@ theorem worlds_rel : WorldRel prog Label.bot fsOk fsBad :=
 
 open ReleaseExample in
 theorem env_hostFree (n : Int) : Val.HostFreeEnv (env n) := by
-  simp [env, Val.HostFreeEnv, Val.HostFree]
+  simp [env, Val.HostFreeEnvIn, Val.HostFreeIn]
 
 open ReleaseExample in
 /-- **T6 with declassification on a host that breaks H1.** PINs 1 and 2, from the two file

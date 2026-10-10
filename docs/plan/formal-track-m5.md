@@ -280,3 +280,29 @@ Unless every declaration that holds one is a function accepted in a certified pr
 - none moves into rejected. Accepted: 638 → 642.
 
 The replay of S-01 to S-12 is unchanged.
+
+## 13. The any-host claim for one declaration (#472)
+
+Until #472, a declaration's note followed its certificate's whole program. A host-free declaration in a document that uses `Files` carried "rests on a lawful host". That was sound but imprecise (`import_std_host.greet`).
+
+**The theorem** (`HostFree.lean`, `HostFreeReach.lean`). `eval_hostFreeIn` generalizes `eval_hostFree` to a set `S` of functions:
+- `S` is closed under the calls and references of its bodies, `via` functions included;
+- every function in `S` is host-free;
+- the inputs' closures reach only `S`.
+
+Such a run is the run on the host without state, and leaves the world as it found it. `t6_release_hostFreeIn` and `t6_release_erasure_obs_hostFreeIn` follow. `t6_release_erasure_obs_reach` discharges the premise on the inputs by typing: when the declaration's parameter types are closure-free (`LTy.cf`: no function type, no type variable, records with closure-free fields), a typed input holds no closure (`LValTy.firstOrder_of_cf`), and erasure keeps that (`firstOrder_of_anonEnv`).
+
+**The note** (`Import.withHost`). A declaration keeps the plain note when it reaches no host operation and cannot be handed one (`hostFreeAt`):
+- its reach in the certified program, with the `via` functions, is closed and host-free;
+- the program's records are closure-free;
+- its own parameters are closure-free.
+
+The note is also plain when the document performs no host operation at all (`docFree`). That is the default-deny scan of `writeSite`, widened to every operation and grant of `Files` and `Http`, over every declaration of any kind, lambdas and handler bodies included, and with the `host` key equal to `std.host`.
+
+**Why the document-level flag is sound.** No package imports another (`spec/10 §4` rules 4 and 10, ADR 0085 decision 5). So every caller of a declaration, `pub` ones included, is in the document. In a document with no host operation, no caller can hand a declaration a closure that reads or writes a file. If packages may ever import other packages, the flag must go, and only `hostFreeAt` may decide.
+
+**A correction to `main`.** A host-free certified program is not enough on its own: it may be a part of a document that uses `Files`. Before #472, `apply_it(n, path, k: fn(Int, internal Text) -> Int)`, host-free, kept the plain note while a caller in its document handed it a closure that writes. When that caller's write was not verified, the whole-package guard did not demote it. `ImportTests.fsHigherOrder` reproduces it: with `file_state` lowered, `apply_it` is now not re-checked, and `double(x: Int)` stays accepted with the plain note. No corpus declaration was affected (correction: 0 accepts on `main` overstated).
+
+**Non-vacuity** (`FilesCertExample`). `dbl_any_host`: a call of `dbl`, which reaches no host operation, in a program whose `mark` writes a file. Its runs on secrets 1 and 2 are related on `s16`, the host that breaks H1, from the two file systems that break it, with no premise on the host.
+
+**The corpus.** Only `import_std_host.greet` changes: it stays accepted, with the plain note. No verdict changes. Accepted: 642. The replay is unchanged.

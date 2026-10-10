@@ -157,3 +157,14 @@ import UnaFormal
 #print axioms Una.F1.FilesCertExample.worlds_rel
 #print axioms Una.F1.FilesCertExample.mark_runs
 #print axioms Una.F1.Import.guardFiles_sub
+#print axioms Una.F1.eval_hostFreeIn
+#print axioms Una.F1.t6_release_hostFreeIn
+#print axioms Una.F1.t6_release_erasure_obs_hostFreeIn
+#print axioms Una.F1.Val.hostFreeIn_of_firstOrder
+#print axioms Una.F1.LValTy.firstOrder_of_cf
+#print axioms Una.F1.LTy.cf_lsubst
+#print axioms Una.F1.LEnvTy.firstOrder_of_cf
+#print axioms Una.F1.firstOrder_of_anonEnv
+#print axioms Una.F1.t6_release_erasure_obs_reach
+#print axioms Una.F1.FilesCertExample.dbl_reach
+#print axioms Una.F1.FilesCertExample.dbl_any_host

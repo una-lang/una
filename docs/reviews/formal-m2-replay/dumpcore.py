@@ -220,8 +220,11 @@ class Parser:
             head, _, tail = name.partition(".")
             if head in caps and tail:
                 cap = caps[head]
+                # A capability the document declares is its module's; any other is the host's,
+                # as `una core --json` writes it (#472: the re-check resolves every path).
+                home = self.module if cap in getattr(self, "capnames", set()) else "std.host"
                 return {"kind": "op", "cap": head, "capability": cap,
-                        "capability_path": {"module": self.module, "name": cap}, "op": tail,
+                        "capability_path": {"module": home, "name": cap}, "op": tail,
                         "args": self.args()}
             if "." in name:
                 mod, _, short = name.rpartition(".")
@@ -342,6 +345,7 @@ def convert(text, module, edition):
         elif head == "fun":
             toks = tokens(block)
             p = Parser(toks, module)
+            p.capnames = capnames
             p.take("fun")
             name = p.take()
             tps, cons = [], []
