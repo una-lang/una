@@ -6,17 +6,17 @@ module app.lookup
 import app.keys (phone_key)
 import app.types (Phone)
 
-pub kind LookupError = | Unavailable
-
 pub capability Directory
   op find(key: internal Hashed) -> Option[Text]
     accepts internal
 
-pub name_for(phone: secret[PII] Phone) -> Option[Text]
+pub name_for(phone: secret[PII] Phone) -> internal Option[Text]
   uses @directory: Directory[find]
   uses @keys: Keys[hmac]
-  fails LookupError
 =
-  let key = phone_key(phone)
-    if error fail Unavailable
-  @directory.find(key)
+  -- The policy's failure is decided by the phone, so it is released like the key, at
+  -- `internal` (ADR 0090): it is handled under that label, not failed publicly.
+  let key = attempt phone_key(phone)
+  when key
+    is Ok(hashed) -> @directory.find(hashed)
+    is Err -> None

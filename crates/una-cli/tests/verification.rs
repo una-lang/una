@@ -98,7 +98,7 @@ fn the_examples_verify_with_every_obligation_proven() {
     let document: Value = serde_json::from_str(stdout(&output)).unwrap();
     assert_eq!(document["schema"], "una.obligations/1");
     let obligations = document["obligations"].as_array().unwrap();
-    assert_eq!(obligations.len(), 11);
+    assert_eq!(obligations.len(), 13);
     assert!(obligations.iter().all(|o| o["status"] == "proven"));
     let postcondition = obligations
         .iter()
@@ -148,7 +148,7 @@ fn a_second_run_reports_every_obligation_as_cached() {
     let human = una(&["obligations", "examples/events"]);
     assert_eq!(human.status.code(), Some(0));
     let lines: Vec<&str> = stdout(&human).lines().collect();
-    assert_eq!(lines.len(), 11);
+    assert_eq!(lines.len(), 13);
     assert!(lines.iter().all(|line| line.starts_with("proven ")));
     assert!(lines.iter().all(|line| line.ends_with(" (cached)")));
     assert!(

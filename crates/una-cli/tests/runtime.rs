@@ -78,13 +78,14 @@ fn test_runs_the_examples_of_the_reference_example() {
     assert_eq!(
         stdout(&output),
         "example events.checkin \"a registered attendee is checked in and audited\" ... ok\n\
-         example events.checkin \"an unknown attendee fails and is not audited\" ... ok\n\
+         example events.checkin \"an unknown attendee is not checked in and is not audited\" ... ok\n\
+         example events.checkin \"an unknown event fails before the phone is used\" ... ok\n\
          example events.seating \"an event without seats is sold out\" ... ok\n\
          example events.seating \"an event with many seats is open\" ... ok\n\
          example events.seating \"raw seat counts are clamped\" ... ok\n\
          example events.types \"malformed input is rejected\" ... ok\n\
          \n\
-         6 examples: 6 passed, 0 failed\n"
+         7 examples: 7 passed, 0 failed\n"
     );
 }
 
@@ -136,7 +137,7 @@ fn json_documents_carry_the_tier() {
     let document = json(&output);
     assert_eq!(document["schema"], "una.test/1");
     assert_eq!(document["tier"], 1);
-    assert_eq!(document["passed"], 6);
+    assert_eq!(document["passed"], 7);
     assert_eq!(document["failed"], 0);
 }
 
