@@ -126,8 +126,7 @@ def g3OneOp : String := r#"{"schema": "una.core/1", "edition": "0.2", "complete"
 
 /-- An empty program. -/
 def emptyProg : Program :=
-  { categories := [], acceptsOp := Label.bot, acceptsGet := Label.bot, getResult := Label.bot,
-    records := [], policies := [], funs := [] }
+  Import.mkProgram [] Label.bot [] [] []
 
 -- `finalize` gives no verdict without a certificate: a declaration that is not a function of a
 -- certified program is not re-checked, whatever the steps before reported.

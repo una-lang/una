@@ -162,7 +162,7 @@ partial def ty (c : Ctx) (j : J) : M LTy := do
       for o in ← arr (← field u "ops") do
         let o ← str o
         modify fun s => { s with ops := if s.ops.contains (cap, o) then s.ops else s.ops ++ [(cap, o)] }
-    pure (.fn ps r (!uses.isEmpty) false (!isNull (← field j "fails")) l)
+    pure (.fn ps r (!uses.isEmpty) HostFx.none (!isNull (← field j "fails")) l)
   | "base" =>
     let b ← field j "base"
     match ← kind b with
@@ -428,7 +428,7 @@ def signature (c : Ctx) (module : String) (v : J) (body : Expr) : M Fun := do
       modify fun s => { s with ops := if s.ops.contains (cap, o) then s.ops else s.ops ++ [(cap, o)] }
   pure {
     name, tparams := tps, eqParams := eqs, params := ps, result,
-    op := !uses.isEmpty || !usesOf.isEmpty, get := false,
+    op := !uses.isEmpty || !usesOf.isEmpty, host := HostFx.none,
     fails := !isNull (← field v "fails") || failsOf.isSome, body,
     rels := (List.lookup name c.rels).getD [] }
 
@@ -582,12 +582,30 @@ def prepare (c : Ctx) (caps : List (String × J)) (decls : List Decl) (d : Decl)
     | _ => throw "several operations"
   pure { fn, callees, pols, acceptsOp, op := refs.ops.head?, nested := refs.nested }
 
+/-- The program the re-checker certifies, with the host's labels it gives every program: the
+strictest `Program.HostWF` allows, every stateful sink at `⊥` and every result and failure floor at
+`internal`. No function the importer reads performs a host operation, and the checker rejects
+them until M5b, so these labels decide no verdict; they make `t6_release_host`'s premise on the
+host hold by construction. -/
+def mkProgram (cats : List String) (acceptsOp : Label) (recs : List Record) (pols : List Policy)
+    (funs : List Fun) : Program where
+  categories := cats
+  acceptsOp := acceptsOp
+  acceptsRead := Label.bot
+  acceptsWrite := Label.bot
+  acceptsReq := Label.bot
+  readResult := ⟨.internal, []⟩
+  reqResult := ⟨.internal, []⟩
+  reqFloor := ⟨.internal, []⟩
+  fileState := Label.bot
+  records := recs
+  policies := pols
+  funs := funs
+
 /-- Checks `fn` (the prepared function, or one of its instances) in the program of `prep`. -/
 def checkWith (cats : List String) (recs : List Record) (prep : Prep) (fn : Fun) :
     Check.Result Unit := do
-  let p : Program := {
-    categories := cats, acceptsOp := prep.acceptsOp, acceptsGet := Label.bot,
-    getResult := Label.bot, records := recs, policies := prep.pols, funs := fn :: prep.callees }
+  let p := mkProgram cats prep.acceptsOp recs prep.pols (fn :: prep.callees)
   Check.checkDecls p
   Check.checkB1 p
   for f in p.funs do Check.checkSignature f
@@ -1035,35 +1053,14 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
       (readOf f).bind fun pr => pr.op.map fun _ => pr.acceptsOp with
     | some a => a
     | none => Label.bot
-  -- The host's labels: those of `Http.get`, the host operation F1 models, or `⊥` when the host
-  -- has none.
-  let httpGet := host.findSome? fun cj =>
-    match plainRun (do str (← field cj "name")) with
-    | .ok "Http" =>
-      match plainRun (do arr (← field cj "ops")) with
-      | .ok ops => ops.find? fun o => match plainRun (do str (← field o "name")) with
-        | .ok n => n == "get"
-        | .error _ => false
-      | .error _ => none
-    | _ => none
-  let hostLabels : Except String (Label × Label) := match httpGet with
-    | none => .ok (Label.bot, Label.bot)
-    | some o => plainRun do
-      pure ((← label (← field o "accepts")).base, (← label (← field (← field o "result") "label")).base)
   let some pr0 := (accepted final).findSome? readOf | pure final
-  let (acceptsGet, getResult) ← match hostLabels with
-    | .ok q => pure q
-    | .error why =>
-      return demote final ((accepted final).map fun f => (f, s!"the host's `Http.get` labels: {why}"))
   let viaFuns := pr0.callees.filter fun fn => isVia fn.name
-  let mkProg := fun (members : List String) => ({
-    categories := cats, acceptsOp, acceptsGet, getResult, records := recs, policies := pr0.pols,
-    funs := members.filterMap (fun f => (readOf f).map (·.fn)) ++ viaFuns } : Program)
+  let mkProg := fun (members : List String) =>
+    mkProgram cats acceptsOp recs pr0.pols (members.filterMap (fun f => (readOf f).map (·.fn)) ++ viaFuns)
   -- The functions checked at their instances: their T-Fun is part A3's hypothesis.
   let cond := (accepted final).filter isNested
   let docWhy := fun (P : Program) =>
-    if !Check.leB P.top (.ofLabel P.acceptsGet) (.ofLabel P.getResult) then
-      "the host's response is labeled below what `Http.get` accepts"
+    if !Check.hostWfB P then "the host's labels"
     else if !Check.b1Ok P then "B1 restriction"
     else if !Check.catsDeclared P then "a declared label names a category the document does not"
     else match P.policies.find? (!Check.policyOk P ·), P.records.find? (!Check.recordOk P ·) with
