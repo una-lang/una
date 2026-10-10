@@ -41,6 +41,9 @@ mutual
     | .fold xs i f => .fold xs i f
     | .parse s => .parse s
     | .eq a b => .eq a b
+    | .tuple items => .tuple items
+    | .append xs item => .append xs item
+    | .set xs i item => .set xs i item
 
   /-- A body with its annotations forgotten and its functions renamed by `ρ`. -/
   def Expr.anon (ρ : String → String) : Expr → Expr
@@ -53,6 +56,8 @@ mutual
     | .fail c => .fail c
     | .attempt b => .attempt (b.anon ρ)
     | .handle b x h => .handle (b.anon ρ) x (h.anon ρ)
+    | .letTuple bs v b => .letTuple (bs.map fun q => (q.1, anonTy)) v (b.anon ρ)
+    | .loop src x _ st init b => .loop src x anonTy (st.map fun q => (q.1, anonTy)) init (b.anon ρ)
 end
 
 /-- Parameters with their types forgotten. -/
@@ -72,6 +77,7 @@ mutual
     | .err c => .err c
     | .record r fs => .record r (Val.anons ρ fs)
     | .closure ps b env => .closure (anonParams ps) (b.anon ρ) (Val.anonEnv ρ env)
+    | .tuple items => .tuple (Val.anons ρ items)
 
   def Val.anons (ρ : String → String) : List Val → List Val
     | [] => []
@@ -206,7 +212,7 @@ mutual
       | record s ys => simp only [Val.anon, Val.beq]; rw [Val.beqs_anon xs ys]
       | _ => simp [Val.anon, Val.beq]
     | .int _, b | .bool _, b | .text _, b | .unit, b | .none, b | .err _, b
-    | .closure _ _ _, b => by
+    | .closure _ _ _, b | .tuple _, b => by
       cases b <;> simp [Val.anon, Val.beq]
 
   theorem Val.beqs_anon : ∀ xs ys : List Val, Val.beqs (Val.anons ρ xs) (Val.anons ρ ys) = Val.beqs xs ys
@@ -218,7 +224,7 @@ end
 
 theorem Val.line_anon : ∀ v : Val, (v.anon ρ).line = v.line
   | .int _ | .bool _ | .text _ | .unit | .list _ | .none | .some _ | .ok _ | .err _ | .record _ _
-  | .closure _ _ _ => by simp [Val.anon, Val.line]
+  | .closure _ _ _ | .tuple _ => by simp [Val.anon, Val.line]
 
 theorem zip_anon (xs : List String) : ∀ vs : List Val,
     (xs.zip vs).map (fun q => (q.1, q.2.anon ρ)) = xs.zip (vs.map (Val.anon ρ)) := by
@@ -319,6 +325,41 @@ theorem walkFold_anon {app app' : World H → Val → Val → Run H}
   | w, acc, v :: vs => by
     simp only [walkFold, List.map_cons]
     exact andThen_anon (h w acc v) fun w acc' => walkFold_anon h w acc' vs
+
+theorem walkLoop_anon {body body' : World H → Val → List Val → Run H}
+    (h : ∀ w v st, runAnon ρ (body w v st) = body' w (v.anon ρ) (st.map (Val.anon ρ))) :
+    ∀ (w : World H) (st vs : List Val),
+      runAnon ρ (walkLoop body w st vs) = walkLoop body' w (st.map (Val.anon ρ)) (vs.map (Val.anon ρ))
+  | w, st, [] => by simp [walkLoop, runAnon_done, Val.anon, Val.anons_eq]
+  | w, st, v :: vs => by
+    simp only [walkLoop, List.map_cons]
+    refine andThen_anon (h w v st) fun w r => ?_
+    cases r with
+    | tuple st' =>
+      simp only [Val.anon, Val.anons_eq, List.length_map]
+      split
+      · exact walkLoop_anon h w st' vs
+      · rfl
+    | _ => simp [Val.anon, runAnon_stuck]
+
+theorem rangeVals_anon (a b : Int) (i : Bool) : (rangeVals a b i).map (Val.anon ρ) = rangeVals a b i := by
+  simp [rangeVals, Val.anon]
+
+theorem sourceVals_anon (env : Env) : ∀ s : Source,
+    sourceVals (Val.anonEnv ρ env) s = (sourceVals env s).map (·.map (Val.anon ρ))
+  | .list xs => by
+    simp only [sourceVals, evalAtom_anon]
+    cases evalAtom env xs with
+    | none => rfl
+    | some v => cases v <;> simp [Val.anon, Val.anons_eq]
+  | .range lo hi i => by
+    simp only [sourceVals, evalAtom_anon]
+    cases evalAtom env lo with
+    | none => rfl
+    | some u =>
+      cases evalAtom env hi with
+      | none => cases u <;> rfl
+      | some v => cases u <;> cases v <;> simp [Val.anon, rangeVals_anon]
 
 theorem parseInt_anon (w : World H) (t : String) : runAnon ρ (parseInt w t) = parseInt w t := by
   unfold parseInt
@@ -548,6 +589,41 @@ theorem eval_anon (hH : H.AnonInvariant) (h4 : H.RespTyped) (hf : ∀ f, (P.find
           cases evalAtom env b with
           | none => simp [runAnon_stuck]
           | some vb => simp [runAnon_done, Val.anon, Val.beq_anon]
+      | tuple items =>
+        simp only [evalRhs, Rhs.anon, evalAtoms_anon]
+        cases evalAtoms env items <;> simp [runAnon, Res.anon, Val.anon, Val.anons_eq]
+      | append xs item =>
+        simp only [evalRhs, Rhs.anon, evalAtom_anon]
+        cases evalAtom env xs with
+        | none => simp [runAnon_stuck]
+        | some xv =>
+          cases evalAtom env item with
+          | none => cases xv <;> simp [runAnon_stuck, Val.anon]
+          | some v =>
+            cases xv with
+            | list items => simp [runAnon_done, Val.anon, Val.anons_eq]
+            | _ => simp [Val.anon, runAnon_stuck]
+      | set xs index item =>
+        simp only [evalRhs, Rhs.anon, evalAtom_anon]
+        cases evalAtom env xs with
+        | none => simp [runAnon_stuck]
+        | some xv =>
+          cases evalAtom env index with
+          | none => cases xv <;> simp [runAnon_stuck, Val.anon]
+          | some iv =>
+            cases evalAtom env item with
+            | none => cases xv <;> cases iv <;> simp [runAnon_stuck, Val.anon]
+            | some v =>
+              cases xv with
+              | list items =>
+                cases iv with
+                | int i =>
+                  simp only [Option.map_some, Val.anon, Val.anons_eq, List.length_map]
+                  split
+                  · simp [runAnon_done, Val.anon, Val.anons_eq, List.map_set]
+                  · rfl
+                | _ => simp [Val.anon, runAnon_stuck]
+              | _ => cases iv <;> simp [Val.anon, runAnon_stuck]
     · intro w env e
       cases e with
       | atom a =>
@@ -605,6 +681,33 @@ theorem eval_anon (hH : H.AnonInvariant) (h4 : H.RespTyped) (hf : ∀ f, (P.find
           obtain ⟨t', r', w''⟩ := res'
           cases r' <;> simp [runAnon, Res.anon]
         | _ => simp [runAnon, Res.anon]
+      | letTuple bs v b =>
+        simp only [eval, Expr.anon, evalAtom_anon]
+        cases evalAtom env v with
+        | none => simp [stuck, runAnon, Res.anon]
+        | some u =>
+          cases u with
+          | tuple vs =>
+            simp only [Option.map_some, Val.anon, Val.anons_eq, List.length_map]
+            split
+            · rw [ihE, bindParams_anon bs (anonParams bs) (anonParams_fst bs).symm]
+              rfl
+            · rfl
+          | _ => simp [Val.anon, stuck, runAnon, Res.anon]
+      | loop src x xt st init b =>
+        simp only [eval, Expr.anon, sourceVals_anon, evalAtoms_anon]
+        cases sourceVals env src with
+        | none => simp [stuck, runAnon, Res.anon]
+        | some items =>
+          cases evalAtoms env init with
+          | none => simp [stuck, runAnon, Res.anon]
+          | some stv =>
+            simp only [Option.map_some, List.length_map]
+            split
+            · refine walkLoop_anon (fun w v st' => ?_) w stv items
+              rw [ihE, Val.anonEnv, bindParams_anon st (anonParams st) (anonParams_fst st).symm]
+              rfl
+            · rfl
 
 /-- `find` in a forgotten program is `find`, forgotten. -/
 theorem Program.find_anon (p : Program) (f : String) :
@@ -665,6 +768,7 @@ mutual
   theorem Val.firstOrder_anon {ρ : String → String} : ∀ v : Val, (v.anon ρ).FirstOrder ↔ v.FirstOrder
     | .list items => by simp only [Val.anon, Val.FirstOrder]; exact Val.firstOrderAll_anon items
     | .record _ fs => by simp only [Val.anon, Val.FirstOrder]; exact Val.firstOrderAll_anon fs
+    | .tuple fs => by simp only [Val.anon, Val.FirstOrder]; exact Val.firstOrderAll_anon fs
     | .some v | .ok v => by simp only [Val.anon, Val.FirstOrder]; exact Val.firstOrder_anon v
     | .closure _ _ _ | .int _ | .bool _ | .text _ | .unit | .none | .err _ => by
       simp [Val.anon, Val.FirstOrder]
@@ -691,6 +795,12 @@ mutual
       | record s ys =>
         simp only [Val.anon, Val.record.injEq] at h
         rw [h.1, Val.anons_inj xs ys ha hb h.2]
+      | _ => simp [Val.anon] at h
+    | .tuple xs, b, ha, hb, h => by
+      cases b with
+      | tuple ys =>
+        simp only [Val.anon, Val.tuple.injEq] at h
+        rw [Val.anons_inj xs ys ha hb h]
       | _ => simp [Val.anon] at h
     | .some x, b, ha, hb, h => by
       cases b with
