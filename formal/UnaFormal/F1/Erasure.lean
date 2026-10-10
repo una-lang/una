@@ -40,6 +40,7 @@ mutual
     | .firstWhere xs k => .firstWhere xs k
     | .fold xs i f => .fold xs i f
     | .parse s => .parse s
+    | .checked a pred code => .checked a pred code
     | .eq a b => .eq a b
     | .tuple items => .tuple items
     | .append xs item => .append xs item
@@ -377,14 +378,15 @@ is the run of `Q` on the forgotten environment and body, from the same world, on
 responses read no annotation. -/
 theorem eval_anon (hH : H.AnonInvariant) (h4 : H.RespTyped) (hf : ∀ f, (P.find f).map (Fun.anon ρ) = Q.find (ρ f))
     (hp : ∀ pol, P.policy pol = Q.policy pol)
-    (hv : ∀ pol po, P.policy pol = some po → ρ po.via = po.via) : ∀ n : Nat,
+    (hv : ∀ pol po, P.policy pol = some po → ρ po.via = po.via)
+    (hps : P.predSem = Q.predSem) : ∀ n : Nat,
     (∀ w env r, runAnon ρ (evalRhs H n P w env r) =
       evalRhs H n Q w (Val.anonEnv ρ env) (r.anon ρ)) ∧
     (∀ w env e, runAnon ρ (eval H n P w env e) = eval H n Q w (Val.anonEnv ρ env) (e.anon ρ))
   | 0 => ⟨fun w env r => by simp [evalRhs, runAnon, Res.anon],
       fun w env e => by simp [eval, runAnon, Res.anon]⟩
   | n + 1 => by
-    obtain ⟨ihR, ihE⟩ := eval_anon hH h4 hf hp hv n
+    obtain ⟨ihR, ihE⟩ := eval_anon hH h4 hf hp hv hps n
     have happ : ∀ w fv vs, runAnon ρ (applyWith (eval H n P) w fv vs) =
         applyWith (eval H n Q) w (fv.anon ρ) (vs.map (Val.anon ρ)) := applyWith_anon ihE
     constructor
@@ -581,6 +583,16 @@ theorem eval_anon (hH : H.AnonInvariant) (h4 : H.RespTyped) (hf : ∀ f, (P.find
           cases v with
           | text t => simpa [Val.anon] using parseInt_anon w t
           | _ => simp [Val.anon, runAnon_stuck]
+      | checked a pred code =>
+        -- `checked` (#453): erasure keeps a scalar's text, and the two programs share `predSem`.
+        simp only [evalRhs, Rhs.anon, evalAtom_anon]
+        cases evalAtom env a with
+        | none => simp [runAnon_stuck]
+        | some v =>
+          simp only [Option.map_some, checkRun, Val.line_anon, hps]
+          split
+          · split <;> simp [runAnon, done, Res.anon]
+          · simp [runAnon_stuck]
       | eq a b =>
         simp only [evalRhs, Rhs.anon, evalAtom_anon]
         cases evalAtom env a with
@@ -721,6 +733,8 @@ structure Sim (ρ : String → String) (P₁ P₂ : Program) : Prop where
   funs : ∀ f, (P₁.find f).map (Fun.anon ρ) = (P₂.find (ρ f)).map (Fun.anon id)
   policies : P₁.policies = P₂.policies
   vias : ∀ po ∈ P₁.policies, ρ po.via = po.via
+  /-- The meaning of `checked`'s predicates is the same (#453). -/
+  predSem : P₁.predSem = P₂.predSem
 
 /-- **Evaluation erasure.** Two programs that agree up to annotations run the same, up to
 annotations, on bodies and environments that agree up to annotations. -/
@@ -735,10 +749,10 @@ theorem eval_erasure {ρ : String → String} {P₁ P₂ : Program} (h : Sim ρ 
     (fun f => by rw [Program.find_anon, h.funs f]) hpol
     (fun pol po hpo => h.vias po (by
       unfold Program.policy at hpo
-      exact List.mem_of_find?_eq_some hpo)) n).2 w env₁ e₁
+      exact List.mem_of_find?_eq_some hpo)) (by simp [Program.anon, h.predSem]) n).2 w env₁ e₁
   have h₂ := (eval_anon (P := P₂) (Q := P₂.anon) (ρ := id) hH h4
     (fun f => by rw [Program.find_anon]; rfl) (fun pol => by simp [Program.policy, Program.anon])
-    (fun _ _ _ => rfl) n).2 w env₂ e₂
+    (fun _ _ _ => rfl) (by simp [Program.anon]) n).2 w env₂ e₂
   rw [h₁, h₂, henv, he]
 
 /-- Erasure keeps whether a run ended. -/

@@ -199,3 +199,5 @@ import UnaFormal
 #print axioms Una.F1.LoopExample.certified
 #print axioms Una.F1.LoopExample.sum_runs
 #print axioms Una.F1.LoopExample.public_count_untyped
+#print axioms Una.F1.brel_checked
+#print axioms Una.F1.checkRun_same

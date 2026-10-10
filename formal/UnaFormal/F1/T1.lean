@@ -308,6 +308,10 @@ theorem sound (hwf : p.WellFormed) (h4 : H.RespTyped) : ∀ n : Nat,
         | @text s =>
           simp only [evalRhs, hv]
           exact parseInt_good w s
+      | checked ha hs =>
+        obtain ⟨v, hv, hvt⟩ := atom_typed henv ha
+        cases hvt <;> simp only [Ty.Scalar] at hs <;> simp only [evalRhs, hv, checkRun, Val.line] <;> split
+        all_goals first | (simp only [done, Good]; constructor) | trivial
       | eq ha hb =>
         obtain ⟨va, hva, _⟩ := atom_typed henv ha
         obtain ⟨vb, hvb, _⟩ := atom_typed henv hb

@@ -262,6 +262,17 @@ def binder (c : Ctx) (j : J) : M (String × LTy) := do
 /-- The name a pattern binds, or one nothing reads. -/
 def bindName (j : J) : M String := if isNull j then pure "%unread" else str j
 
+/-- The variables a refinement formula of the export reads (#453): its `var` nodes. -/
+partial def formulaVars (j : J) : List String :=
+  match j with
+  | .obj kvs =>
+    let here := match j.getObjValD "kind", j.getObjValD "value" with
+      | .str "var", .str x => [x]
+      | _, _ => []
+    here ++ kvs.toArray.toList.flatMap (fun kv => formulaVars kv.2)
+  | .arr items => items.toList.flatMap formulaVars
+  | _ => []
+
 mutual
   partial def rhs (c : Ctx) (j : J) : M Rhs := do
     match ← kind j with
@@ -355,6 +366,24 @@ mutual
       let pol ← path (← field j "policy")
       refPolicy pol
       pure (.declassify pol (← atom (← field j "arg")))
+    -- `checked(a, φ) else fail C` (#453): the predicate is abstract in F1, named by its
+    -- formula's text, so two `checked` of one formula are one predicate; its meaning is the
+    -- program's `predSem`, and the theorems hold whatever it is. A failure with a payload is
+    -- outside F1, as for `fail`.
+    | "checked" =>
+      if !(← arr (← field j "args")).isEmpty then throw "a failure with a payload"
+      -- The model's predicate reads its operand only (`Program.predSem`, on its text): a formula
+      -- that reads any other value, whose label would decide the failure too, is outside F1.
+      let value ← field j "value"
+      let own : List String := ["it"] ++ (match value.getObjValD "kind", value.getObjValD "value" with
+        | .str "var", .str x => [x]
+        | _, _ => [])
+      if (formulaVars (← field j "formula")).any (fun x => !own.contains x) then
+        throw "a `checked` predicate that reads a value other than its operand"
+      let code ← match (← field (← field j "ctor") "index").getNat? with
+        | .ok i => pure i
+        | .error _ => throw "a failure's index"
+      pure (.checked (← atom (← field j "value")) (← field j "formula").compress code)
     | k => throw s!"the form `{k}`"
 
   partial def expr (c : Ctx) (j : J) : M Expr := do
@@ -818,7 +847,12 @@ partial def rawCallees (j : J) : List String :=
         | .ok f => [f]
         | .error _ => []
       | _ => []
-    here ++ kvs.toArray.toList.flatMap (fun kv => rawCallees kv.2)
+    -- `checked`'s predicate (#453) is a term of the refinement language, pure, which the model
+    -- leaves abstract (`Program.predSem`): what it calls is not run by the model, so it is not
+    -- reached.
+    let skip := j.getObjValD "kind" == .str "checked"
+    here ++ (kvs.toArray.toList.filter (fun kv => !(skip && (kv.1 == "predicate" || kv.1 == "formula")))).flatMap
+      (fun kv => rawCallees kv.2)
   | .arr items => items.toList.flatMap rawCallees
   | _ => []
 

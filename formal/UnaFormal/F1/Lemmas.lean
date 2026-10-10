@@ -176,6 +176,9 @@ mutual
       simp only [Ty.subst, Ty.substs] at h1 h3 ⊢
       exact .fold h1 h2 h3
     | _, _, _, .parse h => .parse (atom_subst τ h)
+    | _, _, _, .checked (t := t) h hs => by
+      have h' := atom_subst τ h
+      cases t <;> simp only [Ty.Scalar] at hs <;> exact .checked h' (by simp [Ty.subst, Ty.Scalar])
     | _, _, _, .eq ha hb => .eq (atom_subst τ ha) (atom_subst τ hb)
     | _, _, _, .tuple has => by
       have h := atoms_subst τ has

@@ -73,6 +73,17 @@ theorem brel_same {R : Val → Val → Prop} {vf : Prop} {tr : Trace} {r : Res} 
   · exact h _ rfl
   · exact fun _ => trivial
 
+/-- Two runs of `checked` on the same value take the same branch (#453). -/
+theorem brel_checked {R : Val → Val → Prop} {vf : Prop} {w₁ w₂ : World H} {v : Val}
+    {pred : String} {code : Nat} (hw : WorldRel p L w₁ w₂) (hR : R v v) :
+    BRel p L R vf (checkRun p w₁ v pred code) (checkRun p w₂ v pred code) := by
+  unfold checkRun
+  split
+  · split
+    · exact brel_done hw hR
+    · exact brel_same hw (fun _ h => nomatch h)
+  · exact brel_same hw (fun _ h => nomatch h)
+
 /-- Two runs that show the observer the same events, end with values the relation always
 relates, fail only unseen, and leave worlds it cannot tell apart. -/
 theorem brel_quiet {R : Val → Val → Prop} {vf : Prop} {r₁ r₂ : Run H}
@@ -936,6 +947,32 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
             split <;> split <;> exact hw
           · unfold parseInt
             split <;> split <;> rfl
+      | @checked _ _ a t pred code ha hs hle hsf =>
+        -- T-Checked (#453): the operand is public, so the two runs check the same value and take
+        -- the same branch (`brel_checked`).
+        refine BRelR.of_brel ?_
+        obtain ⟨v₁, v₂, h₁, h₂, hv, hu₁, hu₂⟩ := latom_bothσ he₁ he₂ hrel ha
+        have hvis : Vis p L ((p.deep t).inst (p.sd σ)) :=
+          Vis.of_le (LExpr.inst_le_join_inst _ _ _)
+            (Vis.of_le (LExpr.le_of_le_inst_ofLabel (LExpr.le_inst _ hle)) Vis.bot)
+        simp only [evalRhs, h₁, h₂]
+        cases t with
+        | int l =>
+          simp only [LTy.lsubst] at hv hvis ⊢
+          cases hv with
+          | hidden hh => exact absurd hvis hh
+          | int => exact brel_checked hw .int
+        | bool l =>
+          simp only [LTy.lsubst] at hv hvis ⊢
+          cases hv with
+          | hidden hh => exact absurd hvis hh
+          | bool => exact brel_checked hw .bool
+        | text l =>
+          simp only [LTy.lsubst] at hv hvis ⊢
+          cases hv with
+          | hidden hh => exact absurd hvis hh
+          | text => exact brel_checked hw .text
+        | _ => simp [LTy.erase, Ty.Scalar] at hs
       | @eq _ _ a b t₁ t₂ tt ha hb hfa hfb heq =>
         refine BRelR.of_brel ?_
         obtain ⟨a₁, a₂, ha₁, ha₂, hav, hau₁, hau₂⟩ := latom_bothσ he₁ he₂ hrel ha

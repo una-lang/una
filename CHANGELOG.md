@@ -2,6 +2,10 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
+## Unreleased
+
+- **The re-check reads `checked`** (#453, Phase A). The formal model gains `checked(a, φ) else fail C`, with T-Checked's premise that the operand and the program counter are public, and an abstract predicate (`Program.predSem`), so the theorems hold whatever the refinement language makes it: T1, the unary and binary halves of T6, erasure and the host-free simulation cover it. The re-check reads `checked` from the export, and marks one whose predicate reads a value besides its operand not re-checked (S-17). On the corpus, 3 more declarations are accepted (719) and none is rejected. A `checked` in a `via` body, which needs failing releases, is Phase B.
+
 ## v0.3.6
 
 A security patch of the Beta: S-17 (a `checked` predicate could read an `internal` value whose label its failure did not carry) is fixed in both editions (ADR 0089), and native code now aborts on a `set` outside the list as the interpreter does (#480). It also carries what was validated on `main` since v0.3.5: the compact reference for agents (#430), `spec/10`'s failure-decision label (ADR 0087), and the formal track's re-check of `Files`, `Http`, loops and `edit` (M5b, M5c, M6), with one model and an any-host claim per declaration. Validation: `docs/releases/0.3.6-validation.md`.
