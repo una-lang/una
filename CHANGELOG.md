@@ -2,7 +2,9 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
-## Unreleased
+## v0.3.5
+
+A security patch of the Beta: S-16 (whether an `internal` file or environment variable is valid UTF-8 could reach a `public` branch) is fixed in both editions and both engines (ADR 0086): host text that is not valid UTF-8 now aborts the run with U6005. It also carries what was validated on `main` since v0.3.4: `una core --json` exports what inference adds (#443), a plain `ℓ_T` stays in place (#440), the guides close the gaps the compact-reference arms met (#449), and the formal track's M4 and M5: noninterference for generic functions, declassification and a stateful host, and a re-check of Core whose every accepted declaration carries a proof. Validation: `docs/releases/0.3.5-validation.md`.
 
 ### Security
 
