@@ -9,7 +9,8 @@ So T6 needs no premise on the host for such a program: `t6_release_hostFree` is
 `t6_release_host` on any host, lawful or not (H1 and H2 are about reads and writes, which such a
 run never performs), and `t6_release_erasure_obs_hostFree` carries it to the document's runs.
 Every program the re-checker certifies is one (`Import.finalize` checks `Program.hostFreeB`), so
-its "accepted" asks nothing of the real host, which does not meet H1 today (S-16).
+its "accepted" asks nothing of the host, not even H1, which the real host meets only from v0.3.5
+(S-16).
 -/
 import UnaFormal.F1.Monomorph
 
@@ -570,7 +571,7 @@ variable {p : Program} {L : Label}
 /-- **T6 with declassification on any host, for a program without host operations.** The
 conclusion of `t6_release_host`, without its premise that the host is lawful: a run of such a
 program never reads or writes a file, so H1 and H2 are never used, and the run is the one on the
-lawful host without state (`eval_hostFree`). The real host, which breaks H1 until S-16 is fixed,
+lawful host without state (`eval_hostFree`). The real host before v0.3.5, which broke H1 (S-16),
 is one such host. -/
 theorem t6_release_hostFree (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
     (hp : p.HostFree) {H : Host} {σ : List (String × LTy)} {w₁ w₂ : World H} {e₁ e₂ : Env}

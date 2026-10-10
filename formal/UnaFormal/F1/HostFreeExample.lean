@@ -1,6 +1,6 @@
 /-
 Non-vacuity of `HostFree.lean`: the re-checker's theorems on a host that breaks H1, as the real
-host does today (S-16). `s16` fails a read of a file whose content is not valid text, so two file
+host did before v0.3.5 (S-16). `s16` fails a read of a file whose content is not valid text, so two file
 systems with the same files, one of them holding such a file, are told apart by a read
 (`s16_unlawful`). `t6_release_hostFree` still applies to `ReleaseExample`'s program on `s16`,
 from exactly those two file systems (`s16_guesses`), and `t6_release_erasure_obs_hostFree` to
@@ -12,7 +12,7 @@ import UnaFormal.F1.MonomorphExample
 namespace Una.F1.HostFreeExample
 
 /-- A host whose read fails on a file whose content is not valid text, here `"\xff"`, as the real
-host's `Files.read` fails on content that is not valid UTF-8 (S-16). -/
+host's `Files.read` failed on content that is not valid UTF-8 before v0.3.5 (S-16). -/
 def s16 : Host where
   FS := List (String × String)
   Srv := Unit

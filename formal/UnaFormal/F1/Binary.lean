@@ -277,9 +277,9 @@ what decides a request's failure, is at least `internal`.
 
 `t6_host` also asks the host to be lawful (`Host.Lawful`, H1 and H2), and its model keeps the file
 system and the servers disjoint: a server that writes into the package's granted directory, on the
-same machine, is outside the model, as other writers are. The real host does not meet H1 today
-(S-16): `Files.read` fails on a file that is not valid UTF-8. Its fix makes invalid text abort the
-run, after which H1 holds (`docs/plan/formal-track-m5.md` §5). -/
+same machine, is outside the model, as other writers are. The real host meets H1 from v0.3.5: before
+it (S-16), `Files.read` failed on a file that is not valid UTF-8; since ADR 0086, invalid text aborts
+the run, which is outside the model (`docs/plan/formal-track-m5.md` §5). -/
 structure Program.HostWF (p : Program) : Prop where
   oldHost : p.oldHost = false
   read : p.le (.ofLabel p.acceptsRead) (.ofLabel internalLabel)

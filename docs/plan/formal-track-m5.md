@@ -196,7 +196,7 @@ Every proof of M3 and M4 is carried over (T1, the unary and binary halves, insta
 `acceptsRead ⊑ internal` was added in the proof. Without it, a read's content could reveal a path the observer cannot see. `Files.read` accepts `public`, so it holds. The host must also be lawful: H1 and H2 (`Host.Lawful`).
 
 **What Una-1's review found about the real host** (2026-10-09):
-- **H1 does not hold of today's `Files.read` (S-16).** A read of a file that is not valid UTF-8 fails, so whether a read fails depends on content, not only on the path and the shape. `una check` accepts a program that prints, at `public`, whether an `internal` file is valid UTF-8 (v0.3.4). The fix is in the runtime, under its own ADR. Once it lands, H1 holds of the real host. The theorem needs no change: it assumes H1 and says so.
+- **H1 does not hold of today's `Files.read` (S-16).** A read of a file that is not valid UTF-8 fails, so whether a read fails depends on content, not only on the path and the shape. `una check` accepts a program that prints, at `public`, whether an `internal` file is valid UTF-8 (v0.3.4). The fix is in the runtime, under its own ADR. Once it lands, H1 holds of the real host. The theorem needs no change: it assumes H1 and says so. **Fixed in v0.3.5** (ADR 0086): invalid text aborts the run with U6005, and H1 holds of the real host.
 - **The file system and the servers are disjoint.** The model keeps their states apart, so a request never changes the file system. A server on the same machine that writes into the granted directory would join them. A request at an `internal` program counter would then change the shape, and a later read whose failure is `public` would reveal it. This is outside the model, as races and other processes are (§5, assumption 2).
 
 **How the proof goes.**
@@ -213,7 +213,7 @@ F1H is folded into F1, so one model remains: `formal/UnaFormal/F1/`, with the ho
 
 **Binding on M5b** (the Coordinator, from Una-1's review, 2026-10-09). Once the importer reads host operations, the host's labels in `Import.mkProgram` MUST come from the document's host signatures (`Files.read`, `Files.write` and `Http`'s `accepts`, result labels and failure floor), not be fixed by construction. Otherwise the certificate would describe a host other than the document's. This is an acceptance criterion of M5b. The importer no longer reads `Http.get`'s labels from the document, so its demotion for them is gone; no declaration of the corpus had it.
 
-**On any host.** `t6_release_host` asks the host to be lawful, and the real host breaks H1 until S-16's fix ships. A run of a program without host operations never reads or writes a file, so the premise is never used:
+**On any host.** `t6_release_host` asks the host to be lawful, and the real host met H1 only from v0.3.5 (S-16). A run of a program without host operations never reads or writes a file, so the premise is never used:
 - `eval_hostFree` (`HostFree.lean`): a program none of whose functions performs a host operation, run on a body that performs none, from values whose closures perform none, runs on any host as on the host without state (`Host.unit`), and leaves the world as it found it.
 - `t6_release_hostFree`: `t6_release_host`'s conclusion on any host, lawful or not, for such a program.
 - `t6_release_erasure_obs_hostFree`: `t6_release_erasure_obs` on any host, for a document whose program, body and inputs perform no host operation.
@@ -221,7 +221,7 @@ F1H is folded into F1, so one model remains: `formal/UnaFormal/F1/`, with the ho
 
 So an "accepted" of the re-checker is a corollary of `t6_release_erasure_obs_hostFree`, and asks nothing of the real host. Its premises are the certificate's, the reading of `una.core/1` (`Import.lean`, the trusted base), and inputs whose closures perform no host operation.
 
-**Non-vacuity** (`HostFreeExample.lean`). `s16` is a host whose read fails on a file holding invalid text, as the real `Files.read` does (S-16). Two file systems with the same files, one of them holding such a file, are told apart by a read (`s16_unlawful`). `s16_guesses` applies `t6_release_hostFree` to `ReleaseExample`'s program from exactly those two file systems, and `s16_caller_obs` applies `t6_release_erasure_obs_hostFree` to `MonomorphExample`'s document.
+**Non-vacuity** (`HostFreeExample.lean`). `s16` is a host whose read fails on a file holding invalid text, as the real `Files.read` did before v0.3.5 (S-16). Two file systems with the same files, one of them holding such a file, are told apart by a read (`s16_unlawful`). `s16_guesses` applies `t6_release_hostFree` to `ReleaseExample`'s program from exactly those two file systems, and `s16_caller_obs` applies `t6_release_erasure_obs_hostFree` to `MonomorphExample`'s document.
 
 **Other changes.**
 - Fuel monotonicity (`eval_mono`, `t6_ended`) is ported, from `t6_host_ground`.
