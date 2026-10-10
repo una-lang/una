@@ -526,6 +526,8 @@ mutual
         need (state.all (fun q => inPlace q.2)) "`ℓ_T` off a position of type `T`"
         let ε ← checkExpr p E ((x, xty) :: (state ++ Γ)) (pc.join ls)
           (.tuple (state.map Prod.snd) .bot) body
+        need (p.oldLoop || leB p.top ε.failLabel (pc.join ls))
+          "an iteration's failure is decided above what decides whether it runs (U4002)"
         flowTo p (.tuple (state.map Prod.snd) ls) s
           "the value of a loop, raised by what decides its iterations,"
         pure ε
@@ -540,6 +542,8 @@ mutual
         need (state.all (fun q => inPlace q.2)) "`ℓ_T` off a position of type `T`"
         let ε ← checkExpr p E ((x, xty) :: (state ++ Γ)) (pc.join (l₁.join l₂))
           (.tuple (state.map Prod.snd) .bot) body
+        need (p.oldLoop || leB p.top ε.failLabel (pc.join (l₁.join l₂)))
+          "an iteration's failure is decided above what decides whether it runs (U4002)"
         flowTo p (.tuple (state.map Prod.snd) (l₁.join l₂)) s
           "the value of a loop, raised by what decides its iterations,"
         pure ε

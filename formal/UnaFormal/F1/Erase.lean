@@ -275,7 +275,7 @@ mutual
       rw [params_erase, he] at hb'
       simp only [LTy.erase, LTy.erases_eq] at h1
       exact .letTuple h1 (by simpa using (congrArg List.length he).symm) hb'
-    | _, _, _, _, _, .loopList (state := st) (ts := ts) hxs hx _ hi hflows _ hb hbt => by
+    | _, _, _, _, _, .loopList (state := st) (ts := ts) hxs hx _ hi hflows _ hb hbt _ => by
       have h1 := latom_erase hxs
       have hb' := LExprTy.toStruct hb
       have hi' := latoms_erase hi
@@ -288,7 +288,7 @@ mutual
       rw [he]
       rw [he] at hb'
       exact .loop (.list h1) hi' (by simpa using (congrArg List.length he).symm) hb'
-    | _, _, _, _, _, .loopRange (state := st) (ts := ts) hl hh hx _ hi hflows _ hb hbt => by
+    | _, _, _, _, _, .loopRange (state := st) (ts := ts) hl hh hx _ hi hflows _ hb hbt _ => by
       have hb' := LExprTy.toStruct hb
       have hi' := latoms_erase hi
       have he := flows_erase_binders hflows

@@ -464,12 +464,15 @@ mutual
     invariant. The initial values flow into them, and the body, run under the list's top label,
     which decides how many iterations run, maps the state at those types to a tuple that flows
     into them. The variable carries the elements' labels and the list's top label, and the
-    loop's value is the state raised by the list's top label. -/
+    loop's value is the state raised by the list's top label. An iteration's failure decides
+    whether the later iterations run, as a failure decides T-Let's continuation, so it is
+    decided by no more than what decides whether the iteration runs (M6, a finding of the
+    proof; `una check` gives U4002 to any failure a loop body passes on that is not public). -/
     | loopList {Γ pc xs x xty state init body te ls ts tb ε} :
         LAtomTy Γ xs (.list te ls) → Flow p.top (te.raise ls) xty → xty.InPlace →
         LAtomsTy Γ init ts → Flows p.top ts (state.map Prod.snd) → (∀ q ∈ state, q.2.InPlace) →
         LExprTy p E ((x, xty) :: (state ++ Γ)) (pc.join ls) body tb ε →
-        Flow p.top tb (.tuple (state.map Prod.snd) .bot) →
+        Flow p.top tb (.tuple (state.map Prod.snd) .bot) → (p.oldLoop = false → p.le ε.failLabel (pc.join ls)) →
         LExprTy p E Γ pc (.loop (.list xs) x xty state init body) (.tuple (state.map Prod.snd) ls) ε
     /-- T-Loop over a range: as over a list, with the bounds' labels, which decide the variable's
     values and how many iterations run. -/
@@ -478,7 +481,7 @@ mutual
         xty.InPlace →
         LAtomsTy Γ init ts → Flows p.top ts (state.map Prod.snd) → (∀ q ∈ state, q.2.InPlace) →
         LExprTy p E ((x, xty) :: (state ++ Γ)) (pc.join (l₁.join l₂)) body tb ε →
-        Flow p.top tb (.tuple (state.map Prod.snd) .bot) →
+        Flow p.top tb (.tuple (state.map Prod.snd) .bot) → (p.oldLoop = false → p.le ε.failLabel (pc.join (l₁.join l₂))) →
         LExprTy p E Γ pc (.loop (.range low high inclusive) x xty state init body)
           (.tuple (state.map Prod.snd) (l₁.join l₂)) ε
 end

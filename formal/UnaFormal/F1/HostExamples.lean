@@ -81,6 +81,7 @@ theorem hostWF (fs : Level) : (prog fs).HostWF where
   readResult := le_of rfl
   reqResult := le_of rfl
   reqFloor := le_of rfl
+  oldLoop := rfl
 
 theorem wf (fs : Level) : (prog fs).LWellFormed where
   funs := by simp [prog]

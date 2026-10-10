@@ -441,7 +441,7 @@ mutual
         · exact hbs q hq
         · exact hΓ q hq
       exact LExprTy.inPlace hwf hΓ' hpc hb
-    | _, Γ, _, _, _, _, hΓ, hpc, .loopList (x := x) (xty := xty) (state := st) hxs _ hx _ _ hst hb _ => by
+    | _, Γ, _, _, _, _, hΓ, hpc, .loopList (x := x) (xty := xty) (state := st) hxs _ hx _ _ hst hb _ _ => by
       have hl := latom_inPlace hΓ hxs
       simp only [LTy.InPlace] at hl
       have hΓ' : LCtx.InPlace ((x, xty) :: (st ++ Γ)) := fun q hq => by
@@ -454,7 +454,7 @@ mutual
         (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl.2) hb).2⟩
       obtain ⟨q, hq, rfl⟩ := List.mem_map.mp ht
       exact hst q hq
-    | _, Γ, _, _, _, _, hΓ, hpc, .loopRange (x := x) (xty := xty) (state := st) hlo hhi _ hx _ _ hst hb _ => by
+    | _, Γ, _, _, _, _, hΓ, hpc, .loopRange (x := x) (xty := xty) (state := st) hlo hhi _ hx _ _ hst hb _ _ => by
       have h₁ := latom_inPlace hΓ hlo
       have h₂ := latom_inPlace hΓ hhi
       simp only [LTy.InPlace] at h₁ h₂

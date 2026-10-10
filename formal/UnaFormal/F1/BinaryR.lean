@@ -161,7 +161,7 @@ theorem V.refl_scalar {r : Val} : ∀ {t : LTy}, t.erase.Scalar → ValTy p r t.
   | .int _, _, h | .bool _, _, h | .text _, _, h => by
     cases h <;> first | exact .int | exact .bool | exact .text
   | .unit _, hs, _ | .list _ _, hs, _ | .option _ _, hs, _ | .result _ _, hs, _ | .record _ _, hs, _
-  | .fn _ _ _ _ _ _, hs, _ | .var _ _, hs, _ => by simp [LTy.erase, Ty.Scalar] at hs
+  | .fn _ _ _ _ _ _, hs, _ | .var _ _, hs, _ | .tuple _ _, hs, _ => by simp [LTy.erase, Ty.Scalar] at hs
 
 /-- An instance of a ground type has its top label, up to `⊥`. -/
 theorem top_lsubst_of_ground {σ : List (String × LTy)} :
@@ -172,6 +172,8 @@ theorem top_lsubst_of_ground {σ : List (String × LTy)} :
     simp only [LTy.lsubst, LTy.top]; exact LExpr.inst_symFree _ h.2.1 h.2.2
   | .fn _ _ _ _ _ l, h => by
     simp only [LTy.lsubst, LTy.top]; exact LExpr.inst_symFree _ h.2.2.1 h.2.2.2
+  | .tuple _ l, h => by
+    simp only [LTy.lsubst, LTy.top]; exact LExpr.inst_symFree _ h.2.1 h.2.2
   | .var _ _, h => h.elim
 
 open Classical in

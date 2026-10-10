@@ -286,11 +286,12 @@ mutual
       obtain ⟨xt, hxt, h⟩ := h
       cases xt <;> try (simp at h; done)
       simp only [bind_ok, pure_ok, need_ok] at h
-      obtain ⟨_, hfx, _, hipx, ts, hts, _, hfl, _, hips, εb, hb, _, hf, rfl⟩ := h
+      obtain ⟨_, hfx, _, hipx, ts, hts, _, hfl, _, hips, εb, hb, _, hfe, _, hf, rfl⟩ := h
       obtain ⟨tb, htb, hftb⟩ := checkExpr_sound hb
       simp only [List.all_eq_true] at hips
       exact ⟨_, .loopList (atomTy_sound hxt) (flowTo_ok hfx) (inPlace_sound hipx)
-        (atomsTy_sound hts) (flowsB_sound _ _ hfl) (fun q hq => inPlace_sound (hips q hq)) htb hftb,
+        (atomsTy_sound hts) (flowsB_sound _ _ hfl) (fun q hq => inPlace_sound (hips q hq)) htb hftb
+        (fun ho => by simp only [ho, Bool.false_or] at hfe; exact leB_sound hfe),
         flowTo_ok hf⟩
     | .loop (.range low high inc) x xty st init body, ε, h => by
       simp only [checkExpr, bind_ok] at h
@@ -298,11 +299,12 @@ mutual
       cases lt <;> try (simp at h; done)
       cases ht <;> try (simp at h; done)
       simp only [bind_ok, pure_ok, need_ok] at h
-      obtain ⟨_, hfx, _, hipx, ts, hts, _, hfl, _, hips, εb, hb, _, hf, rfl⟩ := h
+      obtain ⟨_, hfx, _, hipx, ts, hts, _, hfl, _, hips, εb, hb, _, hfe, _, hf, rfl⟩ := h
       obtain ⟨tb, htb, hftb⟩ := checkExpr_sound hb
       simp only [List.all_eq_true] at hips
       exact ⟨_, .loopRange (atomTy_sound hlt) (atomTy_sound hht) (flowTo_ok hfx) (inPlace_sound hipx)
-        (atomsTy_sound hts) (flowsB_sound _ _ hfl) (fun q hq => inPlace_sound (hips q hq)) htb hftb,
+        (atomsTy_sound hts) (flowsB_sound _ _ hfl) (fun q hq => inPlace_sound (hips q hq)) htb hftb
+        (fun ho => by simp only [ho, Bool.false_or] at hfe; exact leB_sound hfe),
         flowTo_ok hf⟩
 end
 

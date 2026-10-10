@@ -239,6 +239,9 @@ structure Program where
   path alone, no condition on the file-state label at a write, and a request's failure labeled
   by its URL alone. `t6_host` requires it `false`. -/
   oldHost : Bool := false
+  /-- M6's draft rule for loops, for the counterexample only (`LoopLeak.lean`): an iteration's
+  failure not bounded by what decides whether the iteration runs. `t6_host` requires it `false`. -/
+  oldLoop : Bool := false
   records : List Record
   policies : List Policy
   funs : List Fun

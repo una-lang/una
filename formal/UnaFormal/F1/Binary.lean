@@ -45,6 +45,8 @@ mutual
         Flow p.top (tb.lsubst p.recordDeep σ) r →
         (ε.op = true → o = true) → HostFx.Le ε.host g → (ε.fails.isSome = true → f = true) →
         V (.fn ps r o g f l) (.closure params body env₁) (.closure params body env₂)
+    /-- Core's tuples, component by component. -/
+    | tuple {ts l xs ys} : VList ts xs ys → V (.tuple ts l) (.tuple xs) (.tuple ys)
 
   inductive VAll : LTy → List Val → List Val → Prop where
     | nil {t} : VAll t [] []
@@ -124,7 +126,7 @@ theorem Flow.top_le {t t' : LTy} (h : Flow p.top t t') (hu : ∀ l, t' ≠ .unit
   cases h with
   | unit => exact absurd rfl (hu _)
   | int h | bool h | text h | list _ h | option _ h | result _ h | record h | fn _ _ _ _ _ h
-  | var h => exact h
+  | var h | tuple _ h => exact h
 
 /-! ### The relation along flows -/
 
@@ -148,17 +150,18 @@ mutual
     | _, _, _, _, .closure hσ hE hΓ hrel h₁ h₂ hb hfl hrl hps hr ho hg hf, .fn fps fr fo fg ff _ =>
       .closure hσ hE hΓ hrel h₁ h₂ hb hfl hrl (Flows.trans fps hps) (Flow.trans hr fr) (fo ∘ ho) (hg.trans fg)
         (ff ∘ hf)
+    | _, _, _, _, .tuple h, .tuple fs _ => .tuple (VList.flows h fs)
 
   theorem VAll.flow : ∀ {t t' : LTy} {as bs : List Val}, VAll p L t as bs → Flow p.top t t' →
       VAll p L t' as bs
     | _, _, _, _, .nil, _ => .nil
     | _, _, _, _, .cons h hs, f => .cons (V.flow h f) (VAll.flow hs f)
-end
 
-theorem VList.flows : ∀ {ts ts' : List LTy} {as bs : List Val}, VList p L ts as bs →
-    Flows p.top ts ts' → VList p L ts' as bs
-  | _, _, _, _, .nil, .nil => .nil
-  | _, _, _, _, .cons h hs, .cons f fs => .cons (V.flow h f) (VList.flows hs fs)
+  theorem VList.flows : ∀ {ts ts' : List LTy} {as bs : List Val}, VList p L ts as bs →
+      Flows p.top ts ts' → VList p L ts' as bs
+    | _, _, _, _, .nil, .nil => .nil
+    | _, _, _, _, .cons h hs, .cons f fs => .cons (V.flow h f) (VList.flows hs fs)
+end
 
 theorem V.raise {t : LTy} {a b : Val} (e : LExpr) (h : V p L t a b) : V p L (t.raise e) a b :=
   V.flow h (Flow.raise e t)
@@ -177,6 +180,7 @@ theorem V.unraise {t : LTy} {e : LExpr} {a b : Val} (he : Vis p L e) (h : V p L 
       | exact .int | exact .bool | exact .text | exact .unit | exact .list ‹_› | exact .none
       | exact .some ‹_› | exact .ok ‹_› | exact .err | exact .record ‹_› ‹_›
       | exact .closure ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_›
+      | exact .tuple ‹_›
   · exact .hidden ht
 
 theorem VList.unraise : ∀ {ts : List LTy} {e : LExpr} {as bs : List Val}, Vis p L e →
@@ -288,6 +292,8 @@ structure Program.HostWF (p : Program) : Prop where
   readResult : p.le (.ofLabel internalLabel) (.ofLabel p.readResult)
   reqResult : p.le (.ofLabel internalLabel) (.ofLabel p.reqResult)
   reqFloor : p.le (.ofLabel internalLabel) (.ofLabel p.reqFloor)
+  /-- M6's rule for loops, not its draft (`LoopLeak.lean`). -/
+  oldLoop : p.oldLoop = false
 
 variable {H : Host}
 

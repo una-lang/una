@@ -943,7 +943,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
               (by rw [LCtx.lsub_snd]; exact hbs) henv
             simpa [bindParams, LCtx.lsub, List.map_map, Function.comp_def] using this
           exact ihE hσ henv' hb
-      | @loopList _ _ xs x xty st init body te ls ts tb ε hxs hx _ hi hflows _ hb hbt =>
+      | @loopList _ _ xs x xty st init body te ls ts tb ε hxs hx _ hi hflows _ hb hbt _ =>
         obtain ⟨xv, hxv, hxt⟩ := latom_ltypedσ henv hxs
         simp only [LTy.lsubst] at hxt
         cases hxt with
@@ -972,7 +972,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
             simp only [LTy.lsubst, LTy.lsubsts_eq] at this
             cases this with
             | tuple h => exact ⟨_, rfl, h⟩
-      | @loopRange _ _ low high inc x xty st init body l₁ l₂ ts tb ε hlo hhi hx _ hi hflows _ hb hbt =>
+      | @loopRange _ _ low high inc x xty st init body l₁ l₂ ts tb ε hlo hhi hx _ hi hflows _ hb hbt _ =>
         obtain ⟨lv, hlv, hlt⟩ := latom_ltypedσ henv hlo
         obtain ⟨hv₀, hhv, hht⟩ := latom_ltypedσ henv hhi
         simp only [LTy.lsubst] at hlt hht
