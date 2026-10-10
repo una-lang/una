@@ -79,8 +79,10 @@ end
 
 /-- `Program.CatsDeclared`. -/
 def catsDeclared (p : Program) : Bool :=
-  labelCats p.categories p.acceptsOp && labelCats p.categories p.acceptsGet &&
-    labelCats p.categories p.getResult &&
+  labelCats p.categories p.acceptsOp && labelCats p.categories p.acceptsRead &&
+    labelCats p.categories p.acceptsWrite && labelCats p.categories p.acceptsReq &&
+    labelCats p.categories p.readResult && labelCats p.categories p.reqResult &&
+    labelCats p.categories p.reqFloor && labelCats p.categories p.fileState &&
     p.funs.all (fun fn => fn.params.all (fun q => tyCats p.categories q.2) &&
       tyCats p.categories fn.result) &&
     p.records.all (fun rec => rec.fields.all (tyCats p.categories)) &&
@@ -100,10 +102,21 @@ def policyOk (p : Program) (po : Policy) : Bool :=
     | some fn => tysEq (fn.paramTys []) [po.src.erase] && tyEq fn.result.erase po.dst.erase
     | none => false
 
-/-- The parts of `Program.LWellFormed` that are not about one function: the host's labels
-(`hget` of `t6`), records, policies and categories. -/
+/-- `Program.HostWF`: ADR 0085's rules, the host's sinks at most `internal`, its results and the
+floor of a request's failure at least `internal` (`internalLabel`, `⟨.internal, []⟩`). -/
+def hostWfB (p : Program) : Bool :=
+  !p.oldHost &&
+  leB p.top (.ofLabel p.acceptsRead) (.ofLabel ⟨.internal, []⟩) &&
+  leB p.top (.ofLabel p.acceptsWrite) (.ofLabel ⟨.internal, []⟩) &&
+  leB p.top (.ofLabel p.acceptsReq) (.ofLabel ⟨.internal, []⟩) &&
+  leB p.top (.ofLabel ⟨.internal, []⟩) (.ofLabel p.readResult) &&
+  leB p.top (.ofLabel ⟨.internal, []⟩) (.ofLabel p.reqResult) &&
+  leB p.top (.ofLabel ⟨.internal, []⟩) (.ofLabel p.reqFloor)
+
+/-- The parts of `Program.LWellFormed` and the premises of `t6_release_host` that are not about
+one function: the host's labels (`Program.HostWF`), records, policies and categories. -/
 def progDocOk (p : Program) : Bool :=
-  leB p.top (.ofLabel p.acceptsGet) (.ofLabel p.getResult) &&
+  hostWfB p &&
   p.records.all (recordOk p) &&
   p.policies.all (policyOk p) &&
   catsDeclared p &&

@@ -19,11 +19,12 @@ def Diverged (t₁ t₂ : Trace) : Prop :=
 
 /-- Two runs related up to their first different release: when both end, the observer sees the
 same events and related outcomes (`BRel`), or the runs diverge at a release. -/
-def BRelR (R : Val → Val → Prop) (vf : Prop) (r₁ r₂ : Trace × Res) : Prop :=
-  Term r₁.2 → Term r₂.2 → (proj p L r₁.1 = proj p L r₂.1 ∧ OutRel R vf r₁.2 r₂.2) ∨
+def BRelR {H : Host} (R : Val → Val → Prop) (vf : Prop) (r₁ r₂ : Run H) : Prop :=
+  Term r₁.2.1 → Term r₂.2.1 →
+    (proj p L r₁.1 = proj p L r₂.1 ∧ OutRel R vf r₁.2.1 r₂.2.1 ∧ WorldRel p L r₁.2.2 r₂.2.2) ∨
     Diverged p L r₁.1 r₂.1
 
-variable {p L}
+variable {p L} {H : Host}
 
 /-- What follows a divergence keeps it. -/
 theorem Diverged.append {t₁ t₂ : Trace} (u₁ u₂ : Trace) (h : Diverged p L t₁ t₂) :
@@ -41,21 +42,21 @@ theorem Diverged.prepend {s₁ s₂ t₁ t₂ : Trace} (hs : proj p L s₁ = pro
   · rw [proj_append, h₁]; simp
   · rw [proj_append, h₂, hs]; simp
 
-theorem BRelR.of_brel {R : Val → Val → Prop} {vf : Prop} {r₁ r₂ : Trace × Res}
+theorem BRelR.of_brel {R : Val → Val → Prop} {vf : Prop} {r₁ r₂ : Run H}
     (h : BRel p L R vf r₁ r₂) : BRelR p L R vf r₁ r₂ :=
   fun t₁ t₂ => .inl (h t₁ t₂)
 
 theorem BRelR.mono {R R' : Val → Val → Prop} {vf vf' : Prop} (hR : ∀ a b, R a b → R' a b)
-    (hvf : vf' → vf) {r₁ r₂ : Trace × Res} (h : BRelR p L R vf r₁ r₂) : BRelR p L R' vf' r₁ r₂ :=
-  fun t₁ t₂ => (h t₁ t₂).imp (fun h => ⟨h.1, OutRel.mono hR hvf h.2⟩) id
+    (hvf : vf' → vf) {r₁ r₂ : Run H} (h : BRelR p L R vf r₁ r₂) : BRelR p L R' vf' r₁ r₂ :=
+  fun t₁ t₂ => (h t₁ t₂).imp (fun h => ⟨h.1, OutRel.mono hR hvf h.2.1, h.2.2⟩) id
 
-theorem andThen_fst (first : Trace × Res) (rest : Val → Trace × Res) :
+theorem andThen_fst (first : Run H) (rest : World H → Val → Run H) :
     ∃ u, (andThen first rest).1 = first.1 ++ u := by
-  obtain ⟨tr, r⟩ := first
+  obtain ⟨tr, r, w⟩ := first
   cases r with
   | ok v =>
     simp only [andThen]
-    rcases rest v with ⟨t', r'⟩
+    rcases rest w v with ⟨t', r', w'⟩
     exact ⟨t', rfl⟩
   | failed c => exact ⟨[], by simp [andThen]⟩
   | stuck => exact ⟨[], by simp [andThen]⟩
@@ -64,60 +65,60 @@ theorem andThen_fst (first : Trace × Res) (rest : Val → Trace × Res) :
 /-- **Sequencing keeps two runs related up to their first different release**: a divergence of
 the first parts is one of the whole, and so is a divergence of the second parts after first
 parts the observer cannot tell apart. -/
-theorem andThen_brelR {R₁ R₂ : Val → Val → Prop} {vf vf₁ : Prop} {f₁ f₂ : Trace × Res}
-    {k₁ k₂ : Val → Trace × Res} (h₁ : BRelR p L R₁ vf₁ f₁ f₂) (hvf : vf → vf₁)
-    (h₂ : ∀ v₁ v₂, f₁.2 = .ok v₁ → f₂.2 = .ok v₂ → R₁ v₁ v₂ → BRelR p L R₂ vf (k₁ v₁) (k₂ v₂))
-    (hc₁ : ¬ vf₁ → ∀ v, f₁.2 = .ok v → proj p L (k₁ v).1 = [] ∧
-      ∀ c, (k₁ v).2 = .failed c → ¬ vf)
-    (hc₂ : ¬ vf₁ → ∀ v, f₂.2 = .ok v → proj p L (k₂ v).1 = [] ∧
-      ∀ c, (k₂ v).2 = .failed c → ¬ vf) :
+theorem andThen_brelR {R₁ R₂ : Val → Val → Prop} {vf vf₁ : Prop} {f₁ f₂ : Run H}
+    {k₁ k₂ : World H → Val → Run H} (h₁ : BRelR p L R₁ vf₁ f₁ f₂) (hvf : vf → vf₁)
+    (h₂ : ∀ v₁ v₂, f₁.2.1 = .ok v₁ → f₂.2.1 = .ok v₂ → R₁ v₁ v₂ → WorldRel p L f₁.2.2 f₂.2.2 →
+      BRelR p L R₂ vf (k₁ f₁.2.2 v₁) (k₂ f₂.2.2 v₂))
+    (hc₁ : ¬ vf₁ → ∀ v, f₁.2.1 = .ok v → proj p L (k₁ f₁.2.2 v).1 = [] ∧
+      (∀ c, (k₁ f₁.2.2 v).2.1 = .failed c → ¬ vf) ∧ WorldRel p L f₁.2.2 (k₁ f₁.2.2 v).2.2)
+    (hc₂ : ¬ vf₁ → ∀ v, f₂.2.1 = .ok v → proj p L (k₂ f₂.2.2 v).1 = [] ∧
+      (∀ c, (k₂ f₂.2.2 v).2.1 = .failed c → ¬ vf) ∧ WorldRel p L f₂.2.2 (k₂ f₂.2.2 v).2.2) :
     BRelR p L R₂ vf (andThen f₁ k₁) (andThen f₂ k₂) := by
   intro ht₁ ht₂
   have hf₁ := andThen_term ht₁
   have hf₂ := andThen_term ht₂
-  rcases h₁ hf₁ hf₂ with ⟨hp, ho⟩ | hd
-  · obtain ⟨tr₁, r₁⟩ := f₁
-    obtain ⟨tr₂, r₂⟩ := f₂
+  rcases h₁ hf₁ hf₂ with ⟨hp, ho, hw⟩ | hd
+  · obtain ⟨tr₁, r₁, w₁⟩ := f₁
+    obtain ⟨tr₂, r₂, w₂⟩ := f₂
     cases r₁ <;> cases r₂ <;> simp only [Term] at hf₁ hf₂
     · -- both values
       rename_i v₁ v₂
-      have hk := h₂ v₁ v₂ rfl rfl ho
+      have hk := h₂ v₁ v₂ rfl rfl ho hw
       simp only [andThen] at ht₁ ht₂ ⊢
       revert ht₁ ht₂ hk
-      cases k₁ v₁
-      cases k₂ v₂
+      rcases k₁ w₁ v₁ with ⟨tk₁, rk₁, wk₁⟩
+      rcases k₂ w₂ v₂ with ⟨tk₂, rk₂, wk₂⟩
       intro ht₁ ht₂ hk
-      rcases hk ht₁ ht₂ with ⟨hp', ho'⟩ | hd'
-      · exact .inl ⟨by simp only [proj_append]; rw [hp, hp'], ho'⟩
+      rcases hk ht₁ ht₂ with ⟨hp', ho', hw'⟩ | hd'
+      · exact .inl ⟨by simp only [proj_append]; rw [hp, hp'], ho', hw'⟩
       · exact .inr (Diverged.prepend hp hd')
     · -- a value, then a failure
       rename_i v₁ c₂
       have hnv : ¬ vf₁ := ho
-      obtain ⟨hpk, hfk⟩ := hc₁ hnv v₁ rfl
+      obtain ⟨hpk, hfk, hwk⟩ := hc₁ hnv v₁ rfl
       simp only [andThen] at ht₁ ⊢
-      revert ht₁ hpk hfk
-      cases k₁ v₁ with
-      | mk tk rk =>
-        intro ht₁ hpk hfk
-        refine .inl ⟨by simp only [proj_append]; rw [hpk, List.append_nil]; exact hp, ?_⟩
-        cases rk <;> simp only [Term] at ht₁ <;> simp only [OutRel]
-        · exact fun hv => hnv (hvf hv)
-        · exact fun hv => absurd hv (hfk _ rfl)
+      revert ht₁ hpk hfk hwk
+      rcases k₁ w₁ v₁ with ⟨tk, rk, wk⟩
+      intro ht₁ hpk hfk hwk
+      refine .inl ⟨by simp only [proj_append]; rw [hpk, List.append_nil]; exact hp, ?_,
+        hwk.symm.trans hw⟩
+      cases rk <;> simp only [Term] at ht₁ <;> simp only [OutRel]
+      · exact fun hv => hnv (hvf hv)
+      · exact fun hv => absurd hv (hfk _ rfl)
     · -- a failure, then a value
       rename_i c₁ v₂
       have hnv : ¬ vf₁ := ho
-      obtain ⟨hpk, hfk⟩ := hc₂ hnv v₂ rfl
+      obtain ⟨hpk, hfk, hwk⟩ := hc₂ hnv v₂ rfl
       simp only [andThen] at ht₂ ⊢
-      revert ht₂ hpk hfk
-      cases k₂ v₂ with
-      | mk tk rk =>
-        intro ht₂ hpk hfk
-        refine .inl ⟨by simp only [proj_append]; rw [hpk, List.append_nil]; exact hp, ?_⟩
-        cases rk <;> simp only [Term] at ht₂ <;> simp only [OutRel]
-        · exact fun hv => hnv (hvf hv)
-        · exact fun hv => absurd hv (hfk _ rfl)
+      revert ht₂ hpk hfk hwk
+      rcases k₂ w₂ v₂ with ⟨tk, rk, wk⟩
+      intro ht₂ hpk hfk hwk
+      refine .inl ⟨by simp only [proj_append]; rw [hpk, List.append_nil]; exact hp, ?_, hw.trans hwk⟩
+      cases rk <;> simp only [Term] at ht₂ <;> simp only [OutRel]
+      · exact fun hv => hnv (hvf hv)
+      · exact fun hv => absurd hv (hfk _ rfl)
     · -- both failures
-      exact .inl ⟨hp, fun hv => ho (hvf hv)⟩
+      exact .inl ⟨hp, fun hv => ho (hvf hv), hw⟩
   · obtain ⟨u₁, hu₁⟩ := andThen_fst f₁ k₁
     obtain ⟨u₂, hu₂⟩ := andThen_fst f₂ k₂
     rw [hu₁, hu₂]
@@ -136,7 +137,7 @@ theorem Diverged.has_release {t₁ t₂ : Trace} (h : Diverged p L t₁ t₂) :
   exact ⟨_, (List.mem_filter.mp hm).1, rfl⟩
 
 /-- Runs without a release cannot diverge at one. -/
-theorem BRelR.to_brel {R : Val → Val → Prop} {vf : Prop} {r₁ r₂ : Trace × Res}
+theorem BRelR.to_brel {R : Val → Val → Prop} {vf : Prop} {r₁ r₂ : Run H}
     (hn : ∀ ev ∈ r₁.1, ev.isRelease = false) (h : BRelR p L R vf r₁ r₂) : BRel p L R vf r₁ r₂ :=
   fun t₁ t₂ => (h t₁ t₂).resolve_right fun hd => by
     obtain ⟨ev, hev, hr⟩ := hd.has_release
@@ -146,12 +147,12 @@ theorem BRelR.to_brel {R : Val → Val → Prop} {vf : Prop} {r₁ r₂ : Trace 
 /-- Effects without releases allow none. -/
 theorem allowed_noRelease {pc : LExpr} {ε : Eff} (hr : ε.rels = []) :
     ∀ ev, Allowed p pc ε ev → ev.isRelease = false
-  | .out _, _ | .get _, _ => rfl
+  | .out _, _ | .read _, _ | .write _ _, _ | .req _ _, _ => rfl
   | .release _ _, h => by have := h.1; rw [hr] at this; nomatch this
 
 /-- A run that keeps to a typing whose effects release nothing shows no release. -/
 theorem noRelease_of_ugood {pc : LExpr} {t : LTy} {ε : Eff} {s : List (String × LExpr)}
-    {run : Trace × Res} (h : UGood p pc t (ε.inst s) run) (hr : ε.rels = []) :
+    {w : World H} {run : Run H} (h : UGood p pc t (ε.inst s) w run) (hr : ε.rels = []) :
     ∀ ev ∈ run.1, ev.isRelease = false :=
   fun ev hev => allowed_noRelease (ε := ε.inst s) hr ev (h.1 ev hev)
 
@@ -175,7 +176,7 @@ theorem top_lsubst_of_ground {σ : List (String × LTy)} :
 
 open Classical in
 /-- Without policies, the observer sees no release, so runs cannot diverge at one. -/
-theorem BRelR.to_brel_nil {R : Val → Val → Prop} {vf : Prop} {r₁ r₂ : Trace × Res}
+theorem BRelR.to_brel_nil {R : Val → Val → Prop} {vf : Prop} {r₁ r₂ : Run H}
     (hpol : p.policies = []) (h : BRelR p L R vf r₁ r₂) : BRel p L R vf r₁ r₂ :=
   fun t₁ t₂ => (h t₁ t₂).resolve_right fun ⟨_, pol, v₁, _, _, _, _, h₁, _⟩ => by
     have hm : Event.release pol v₁ ∈ proj p L r₁.1 := by rw [h₁]; simp

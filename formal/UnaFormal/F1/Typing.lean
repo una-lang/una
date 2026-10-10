@@ -71,7 +71,10 @@ mutual
     | apply {ctx f args ts r} :
         AtomTy ctx f (.fn ts r) → AtomsTy ctx args ts → RhsTy p ctx (.apply f args) r
     | op {ctx line t} : AtomTy ctx line t → t.Scalar → RhsTy p ctx (.op line) .unit
-    | get {ctx url} : AtomTy ctx url .text → RhsTy p ctx (.get url) .text
+    | read {ctx path} : AtomTy ctx path .text → RhsTy p ctx (.read path) .text
+    | write {ctx path content} :
+        AtomTy ctx path .text → AtomTy ctx content .text → RhsTy p ctx (.write path content) .unit
+    | req {ctx m args ts} : AtomsTy ctx args ts → (∀ t ∈ ts, t = .text) → RhsTy p ctx (.req m args) .text
     | construct {ctx record fields rec} :
         p.record record = some rec → AtomsTy ctx fields rec.fieldTys →
         RhsTy p ctx (.construct record fields) (.record record)

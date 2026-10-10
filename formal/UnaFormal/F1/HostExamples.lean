@@ -10,12 +10,11 @@ hold contents:
   worlds with different files, and different secret paths, read `a.txt` with different outcomes,
   yet a `public` observer sees the same events.
 -/
-import UnaFormal.F1H.Runs
+import UnaFormal.F1.Runs
 import UnaFormal.F1.CheckSound
 
-namespace Una.F1H.HostExamples
+namespace Una.F1.HostExamples
 
-open Una.F1 (Label LExpr)
 open Una (Level)
 
 /-- `internal`. -/
@@ -214,4 +213,4 @@ which the observer cannot see: the outcomes differ, and the theorem still relate
 theorem exB_runs : (eval files 12 (prog .internal) wB₁ (envB "a.txt") eB).2.1 = .ok (.int 1) ∧
     (eval files 12 (prog .internal) wB₂ (envB "b.txt") eB).2.1 = .ok (.int 2) := ⟨rfl, rfl⟩
 
-end Una.F1H.HostExamples
+end Una.F1.HostExamples

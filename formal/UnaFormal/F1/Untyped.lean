@@ -10,12 +10,10 @@ when its secret is not `public`:
 - **S-15** (`s15_untyped`): the request's failure carries its body's label, so the branch on its
   result runs above `public`.
 -/
-import UnaFormal.F1H.LTyping
+import UnaFormal.F1.LTyping
 import UnaFormal.F1.Order
 
-namespace Una.F1H.Untyped
-
-open Una.F1 (Label LExpr)
+namespace Una.F1.Untyped
 
 variable {P : Program}
 
@@ -242,4 +240,4 @@ theorem s14cond_untyped (hold : P.oldHost = false) {lc : LExpr}
           simp only [Program.fsFail, hold, Bool.false_eq_true, ite_false]
           exact LExpr.le_join_right _ _
 
-end Una.F1H.Untyped
+end Una.F1.Untyped

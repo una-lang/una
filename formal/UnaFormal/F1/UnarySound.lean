@@ -7,61 +7,74 @@ import UnaFormal.F1.B1
 
 namespace Una.F1
 
-variable {p : Program}
+/-- A symbol-free label is the concrete label it holds. -/
+theorem LExpr.eq_ofLabel_of_symFree {e : LExpr} (h : e.SymFree) : e = .ofLabel e.base := by
+  obtain ⟨b, pl, st⟩ := e
+  obtain ⟨h1, h2⟩ := h
+  simp only at h1 h2
+  subst h1 h2
+  rfl
 
-theorem walkMap_uok {app : Val → Trace × Res} {A : Event → Prop} {F : Prop} {a b : LTy} (l : LExpr)
-    (happ : ∀ v, LValTy p v a → UOk A (fun r => LValTy p r b) F (app v)) :
-    ∀ {items : List Val}, LValsAll p items a →
-      UOk A (fun r => LValTy p r (.list b l)) F (walkMap app items)
-  | [], _ => uok_done (.list .nil)
-  | v :: vs, .cons hv hvs => by
+/-! ### At an instance -/
+
+variable {p : Program} {H : Host}
+
+theorem walkMap_uok {app : World H → Val → Run H} {A : Event → Prop} {F : Prop}
+    {a b : LTy} (l : LExpr)
+    (happ : ∀ w v, LValTy p v a → UOk A (fun r => LValTy p r b) F w (app w v)) :
+    ∀ {items : List Val} (w : World H), LValsAll p items a →
+      UOk A (fun r => LValTy p r (.list b l)) F w (walkMap app w items)
+  | [], _, _ => uok_done (.list .nil)
+  | v :: vs, w, .cons hv hvs => by
     simp only [walkMap]
-    refine andThen_uok (happ v hv) (fun r hr => ?_)
-    refine andThen_uok (walkMap_uok l happ hvs) (fun rest hrest => ?_)
+    refine andThen_uok (happ w v hv) (fun w r hr => ?_)
+    refine andThen_uok (walkMap_uok l happ w hvs) (fun w rest hrest => ?_)
     cases hrest with
     | list hrs => exact uok_done (.list (.cons hr hrs))
 
-theorem walkFilter_uok {app : Val → Trace × Res} {A : Event → Prop} {F : Prop} {a : LTy}
-    {lb : LExpr} (l : LExpr)
-    (happ : ∀ v, LValTy p v a → UOk A (fun r => LValTy p r (.bool lb)) F (app v)) :
-    ∀ {items : List Val}, LValsAll p items a →
-      UOk A (fun r => LValTy p r (.list a l)) F (walkFilter app items)
-  | [], _ => uok_done (.list .nil)
-  | v :: vs, .cons hv hvs => by
+theorem walkFilter_uok {app : World H → Val → Run H} {A : Event → Prop} {F : Prop}
+    {a : LTy} {lb : LExpr} (l : LExpr)
+    (happ : ∀ w v, LValTy p v a → UOk A (fun r => LValTy p r (.bool lb)) F w (app w v)) :
+    ∀ {items : List Val} (w : World H), LValsAll p items a →
+      UOk A (fun r => LValTy p r (.list a l)) F w (walkFilter app w items)
+  | [], _, _ => uok_done (.list .nil)
+  | v :: vs, w, .cons hv hvs => by
     simp only [walkFilter]
-    refine andThen_uok (happ v hv) (fun b hb => ?_)
+    refine andThen_uok (happ w v hv) (fun w b hb => ?_)
     cases hb with
     | @bool keep =>
-      refine andThen_uok (walkFilter_uok l happ hvs) (fun rest hrest => ?_)
+      refine andThen_uok (walkFilter_uok l happ w hvs) (fun w rest hrest => ?_)
       cases hrest with
       | list hrs =>
         cases keep
         · exact uok_done (.list hrs)
         · exact uok_done (.list (.cons hv hrs))
 
-theorem walkFirst_uok {app : Val → Trace × Res} {A : Event → Prop} {F : Prop} {a : LTy}
-    {lb : LExpr} (l : LExpr)
-    (happ : ∀ v, LValTy p v a → UOk A (fun r => LValTy p r (.bool lb)) F (app v)) :
-    ∀ {items : List Val}, LValsAll p items a →
-      UOk A (fun r => LValTy p r (.option a l)) F (walkFirst app items)
-  | [], _ => uok_done .none
-  | v :: vs, .cons hv hvs => by
+theorem walkFirst_uok {app : World H → Val → Run H} {A : Event → Prop} {F : Prop}
+    {a : LTy} {lb : LExpr} (l : LExpr)
+    (happ : ∀ w v, LValTy p v a → UOk A (fun r => LValTy p r (.bool lb)) F w (app w v)) :
+    ∀ {items : List Val} (w : World H), LValsAll p items a →
+      UOk A (fun r => LValTy p r (.option a l)) F w (walkFirst app w items)
+  | [], _, _ => uok_done .none
+  | v :: vs, w, .cons hv hvs => by
     simp only [walkFirst]
-    refine andThen_uok (happ v hv) (fun b hb => ?_)
+    refine andThen_uok (happ w v hv) (fun w b hb => ?_)
     cases hb with
     | @bool keep =>
       cases keep
-      · exact walkFirst_uok l happ hvs
+      · exact walkFirst_uok l happ w hvs
       · exact uok_done (.some hv)
 
-theorem walkFold_uok {app : Val → Val → Trace × Res} {A : Event → Prop} {F : Prop} {a b : LTy}
-    (happ : ∀ acc v, LValTy p acc b → LValTy p v a → UOk A (fun r => LValTy p r b) F (app acc v)) :
-    ∀ {items : List Val} {acc : Val}, LValTy p acc b → LValsAll p items a →
-      UOk A (fun r => LValTy p r b) F (walkFold app acc items)
-  | [], _, hacc, _ => uok_done hacc
-  | v :: vs, _, hacc, .cons hv hvs => by
+theorem walkFold_uok {app : World H → Val → Val → Run H} {A : Event → Prop} {F : Prop}
+    {a b : LTy}
+    (happ : ∀ w acc v, LValTy p acc b → LValTy p v a →
+      UOk A (fun r => LValTy p r b) F w (app w acc v)) :
+    ∀ {items : List Val} (w : World H) {acc : Val}, LValTy p acc b → LValsAll p items a →
+      UOk A (fun r => LValTy p r b) F w (walkFold app w acc items)
+  | [], _, _, hacc, _ => uok_done hacc
+  | v :: vs, w, _, hacc, .cons hv hvs => by
     simp only [walkFold]
-    exact andThen_uok (happ _ v hacc hv) (fun acc' hacc' => walkFold_uok happ hacc' hvs)
+    exact andThen_uok (happ w _ v hacc hv) (fun w acc' hacc' => walkFold_uok happ w hacc' hvs)
 
 /-- The generic-free part of F1: no function has type parameters, and there is no policy. -/
 structure Program.GenericFree (p : Program) : Prop where
@@ -87,16 +100,6 @@ theorem funOk_of_nvia (hwf : p.LWellFormed) {f : String} {fn : Fun} (hnv : ¬ p.
   rcases hwf.funs fn hmem with hok | ⟨hv, _⟩
   · exact hok
   · exact absurd (hname ▸ hv) hnv
-
-/-- A symbol-free label is the concrete label it holds. -/
-theorem LExpr.eq_ofLabel_of_symFree {e : LExpr} (h : e.SymFree) : e = .ofLabel e.base := by
-  obtain ⟨b, pl, st⟩ := e
-  obtain ⟨h1, h2⟩ := h
-  simp only at h1 h2
-  subst h1 h2
-  rfl
-
-/-! ### At an instance -/
 
 section
 variable {σ : List (String × LTy)}
@@ -169,47 +172,52 @@ theorem Fails.union_right_inst {pc pc' : LExpr} {s : List (String × LExpr)} {ε
 
 theorem allowed_union_left_inst {pc : LExpr} {s : List (String × LExpr)} {ε₁ ε₂ : Eff} :
     ∀ ev, Allowed p pc (ε₁.inst s) ev → Allowed p pc ((ε₁.union ε₂).inst s) ev :=
-  Allowed.mono (LExpr.le_refl pc) union_op_left union_get_left (fun x h => union_rels_left x h)
+  Allowed.mono (LExpr.le_refl pc) union_op_left union_host_left (fun x h => union_rels_left x h)
 
 theorem allowed_union_right_inst {pc pc' : LExpr} {s : List (String × LExpr)} {ε₁ ε₂ : Eff}
     (hpc : p.le pc pc') : ∀ ev, Allowed p pc' (ε₂.inst s) ev → Allowed p pc ((ε₁.union ε₂).inst s) ev :=
-  Allowed.mono hpc union_op_right union_get_right (fun x h => union_rels_right x h)
+  Allowed.mono hpc union_op_right union_host_right (fun x h => union_rels_right x h)
 
 /-- At a call whose program counter's instance the function's bound allows. -/
-theorem bound_allowed_inst {pc pc' : LExpr} {s : List (String × LExpr)} {o g f : Bool}
+theorem bound_allowed_inst {pc pc' : LExpr} {s : List (String × LExpr)} {o : Bool} {g : HostFx} {f : Bool}
     (hb : p.Bound pc' o g f) (hpc : p.le pc (pc'.inst s)) :
     ∀ ev, FnAllowed o g ev → Allowed p pc ((Eff.ofFn o g f).inst s) ev :=
   bound_allowed (hb.inst s) hpc
 
-theorem bound_fails_inst {pc pc' : LExpr} {s : List (String × LExpr)} {o g f : Bool}
+theorem bound_fails_inst {pc pc' : LExpr} {s : List (String × LExpr)} {o : Bool} {g : HostFx} {f : Bool}
     (hb : p.Bound pc' o g f) (hpc : p.le pc (pc'.inst s)) (hf : f = true) :
     Fails p pc ((Eff.ofFn o g f).inst s) := by
   refine ⟨LExpr.bot.inst s, by simp [Eff.ofFn, Eff.inst, hf], ?_⟩
-  exact LExpr.le_trans hpc (LExpr.le_trans ((hb.inst s).2.2 hf).1
+  exact LExpr.le_trans hpc (LExpr.le_trans ((hb.inst s).2.2.2.2 hf).1
     (by rw [show LExpr.bot = LExpr.ofLabel Label.bot from rfl, LExpr.inst_ofLabel]; exact LExpr.le_join_right _ _))
 
-theorem bound_fails_instR {pc pc' : LExpr} {s : List (String × LExpr)} {o g f : Bool}
+theorem bound_fails_instR {pc pc' : LExpr} {s : List (String × LExpr)} {o : Bool} {g : HostFx} {f : Bool}
     {rs : List String} (hb : p.Bound pc' o g f) (hpc : p.le pc (pc'.inst s)) (hf : f = true) :
     Fails p pc ((Eff.ofFnR o g f rs).inst s) :=
   bound_fails_inst hb hpc hf
 
-theorem fnAllowed_of {pc : LExpr} {s : List (String × LExpr)} {ε : Eff} {o g : Bool}
-    (ho : ε.op = true → o = true) (hg : ε.get = true → g = true) (hr : ε.rels = []) :
+theorem fnAllowed_of {pc : LExpr} {s : List (String × LExpr)} {ε : Eff} {o : Bool} {g : HostFx}
+    (ho : ε.op = true → o = true) (hg : HostFx.Le ε.host g) (hr : ε.rels = []) :
     ∀ ev, Allowed p pc (ε.inst s) ev → FnAllowed o g ev
   | .out _, h => ho h.1
-  | .get _, h => hg h.1
+  | .read _, h => hg.1 h.1
+  | .write _ _, h => hg.2.1 h.1
+  | .req _ _, h => hg.2.2 h.1
   | .release _ _, h => by have := h.1; simp [Eff.inst, hr] at this
 
 /-- **The events of a call** (option B1): the callee's operations, which its bound allows, and
 its releases, through policies it declares (`Fun.rels`), each above the program counter of the
 call (`Program.RelBound`). The policies' `to` labels are concrete. -/
 theorem call_allowed_inst {pc pc₀ pc' : LExpr} {s s' : List (String × LExpr)} {εb : Eff}
-    {o g f : Bool} {rs : List String} (hdst : ∀ po ∈ p.policies, po.dst.top.SymFree)
+    {o : Bool} {g : HostFx} {f : Bool} {rs : List String} (hdst : ∀ po ∈ p.policies, po.dst.top.SymFree)
     (hb : p.Bound pc' o g f) (hrb : p.RelBound pc' rs) (hpc : p.le pc (pc'.inst s))
-    (ho : εb.op = true → o = true) (hg : εb.get = true → g = true) (hr : ∀ x ∈ εb.rels, x ∈ rs) :
+    (ho : εb.op = true → o = true) (hg : HostFx.Le εb.host g) (hr : ∀ x ∈ εb.rels, x ∈ rs) :
     ∀ ev, Allowed p pc₀ (εb.inst s') ev → Allowed p pc ((Eff.ofFnR o g f rs).inst s) ev
   | .out _, h => ⟨ho h.1, LExpr.le_trans hpc ((hb.inst s).1 (ho h.1)).1⟩
-  | .get _, h => ⟨hg h.1, LExpr.le_trans hpc ((hb.inst s).2.1 (hg h.1)).1⟩
+  | .read _, h => ⟨hg.1 h.1, LExpr.le_trans hpc ((hb.inst s).2.1 (hg.1 h.1)).1⟩
+  | .write _ _, h => ⟨hg.2.1 h.1, LExpr.le_trans hpc ((hb.inst s).2.2.1 (hg.2.1 h.1)).1,
+      fun ho => LExpr.le_trans hpc (((hb.inst s).2.2.1 (hg.2.1 h.1)).2.1 ho)⟩
+  | .req _ _, h => ⟨hg.2.2 h.1, LExpr.le_trans hpc ((hb.inst s).2.2.2.1 (hg.2.2 h.1)).1⟩
   | .release pol _, ⟨hm, po, hpo, _⟩ => by
     obtain ⟨po', hpo', hle, _⟩ := hrb pol (hr pol hm)
     rw [hpo] at hpo'
@@ -258,36 +266,37 @@ theorem le_inst_of_symFree {pc d : LExpr} (s : List (String × LExpr)) (hd : d.S
 
 /-- **The unary half, at every ground instance.** A run of a body the labeled typing accepts,
 in an environment of the instance of its context, keeps to the instance of its typing. -/
-theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (w : World) : ∀ n : Nat,
-    (∀ {σ : List (String × LTy)} {env : Env} {Γ : LCtx} {E : List String} {pc : LExpr} {r : Rhs}
+theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) : ∀ n : Nat,
+    (∀ {σ : List (String × LTy)} {w : World H} {env : Env} {Γ : LCtx} {E : List String} {pc : LExpr} {r : Rhs}
       {t : LTy} {ε : Eff}, GroundSubst σ → LEnvTy p env (Γ.lsub p.recordDeep σ) →
       LRhsTy p E Γ pc r t ε →
-      UGood p (pc.inst (p.sd σ)) (t.lsubst p.recordDeep σ) (ε.inst (p.sd σ)) (evalRhs n p w env r)) ∧
-    (∀ {σ : List (String × LTy)} {env : Env} {Γ : LCtx} {E : List String} {pc : LExpr} {e : Expr}
+      UGood p (pc.inst (p.sd σ)) (t.lsubst p.recordDeep σ) (ε.inst (p.sd σ)) w (evalRhs H n p w env r)) ∧
+    (∀ {σ : List (String × LTy)} {w : World H} {env : Env} {Γ : LCtx} {E : List String} {pc : LExpr} {e : Expr}
       {t : LTy} {ε : Eff}, GroundSubst σ → LEnvTy p env (Γ.lsub p.recordDeep σ) →
       LExprTy p E Γ pc e t ε →
-      UGood p (pc.inst (p.sd σ)) (t.lsubst p.recordDeep σ) (ε.inst (p.sd σ)) (eval n p w env e))
-  | 0 => ⟨fun _ _ _ => by simp [evalRhs, UGood, UOk, URes],
-      fun _ _ _ => by simp [eval, UGood, UOk, URes]⟩
+      UGood p (pc.inst (p.sd σ)) (t.lsubst p.recordDeep σ) (ε.inst (p.sd σ)) w (eval H n p w env e))
+  | 0 => ⟨fun _ _ _ => by simp [evalRhs, UGood, UOk, URes, WEff],
+      fun _ _ _ => by simp [eval, UGood, UOk, URes, WEff]⟩
   | n + 1 => by
-    obtain ⟨ihR, ihE⟩ := unary_soundR hwf hb1 w n
+    obtain ⟨ihR, ihE⟩ := unary_soundR hwf hb1 n
     have hdst : ∀ po ∈ p.policies, po.dst.top.SymFree := fun po h => (hb1.dst po h).1.top_symFree
-    have hrun : ∀ {σ : List (String × LTy)} {env : Env} {Γ : LCtx} {E : List String} {e : Expr}
-        {t : LTy} {ε : Eff}, GroundSubst σ → LEnvTy p env (Γ.lsub p.recordDeep σ) →
+    have hrun : ∀ {σ : List (String × LTy)} {w : World H} {env : Env} {Γ : LCtx} {E : List String}
+        {e : Expr} {t : LTy} {ε : Eff}, GroundSubst σ → LEnvTy p env (Γ.lsub p.recordDeep σ) →
         LExprTy p E Γ .bot e t ε →
-        UGood p (LExpr.bot.inst (p.sd σ)) (t.lsubst p.recordDeep σ) (ε.inst (p.sd σ)) (eval n p w env e) :=
+        UGood p (LExpr.bot.inst (p.sd σ)) (t.lsubst p.recordDeep σ) (ε.inst (p.sd σ)) w
+          (eval H n p w env e) :=
       fun hσ henv he => ihE hσ henv he
     constructor
-    · intro σ env Γ E pc r t ε hσ henv hr
+    · intro σ w env Γ E pc r t ε hσ henv hr
       have hpc0 : ∀ x : LExpr, p.le (pc.inst (p.sd σ)) ((pc.join x).inst (p.sd σ)) :=
         fun x => le_inst_join_left _ pc x
       cases hr with
       | atom ha =>
         obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv ha
-        exact ⟨fun _ h => by simp [evalRhs] at h, by simpa [evalRhs, hv, URes] using hvt⟩
+        exact ⟨fun _ h => by simp [evalRhs] at h, by simpa [evalRhs, hv, URes] using hvt, WEff.self _ _⟩
       | prim has hp =>
         obtain ⟨vs, hvs, _⟩ := latoms_ltypedσ henv has
-        refine ⟨fun _ h => by simp [evalRhs] at h, ?_⟩
+        refine ⟨fun _ h => by simp [evalRhs] at h, ?_, WEff.self _ _⟩
         simp only [evalRhs, hvs, Option.bind_some]
         cases he : evalPrim _ vs with
         | none => trivial
@@ -329,7 +338,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (w : World) : 
         refine UOk.mono (bound_allowed_inst hb (le_inst_join_left _ pc _))
           (fun v hv => LValTy.lsubst_raise hv)
           (fun h => bound_fails_inst hb (le_inst_join_left _ pc _) h)
-          (applyWith_uok hrun hft hargs)
+          (applyWith_uok hrun hft hargs w)
       | @op _ _ line t hl ht hle _ =>
         obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv hl
         cases t <;> simp [LTy.erase, Ty.Scalar] at ht
@@ -337,33 +346,89 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (w : World) : 
           simp only [LTy.lsubst] at hvt
           cases hvt
           simp only [evalRhs, hv, Val.line]
-          refine ⟨fun ev hev => ?_, LValTy.unit⟩
+          refine ⟨fun ev hev => ?_, LValTy.unit, WEff.self _ _⟩
           simp only [List.mem_singleton] at hev
           subst hev
           exact ⟨rfl, LExpr.le_trans (hpc0 _) (LExpr.le_of_le_inst_ofLabel (LExpr.le_inst _ hle))⟩
-      | @get _ _ url t hu ht hle _ =>
+      | @read _ _ path t hu ht hle _ =>
         obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv hu
         cases t <;> simp [LTy.erase] at ht
         simp only [LTy.lsubst] at hvt
         cases hvt
         rename_i _ s
         simp only [evalRhs, hv]
-        cases w.get s with
+        cases H.read s w.fs with
         | some body =>
-          refine ⟨fun ev hev => ?_, LValTy.text⟩
+          refine ⟨fun ev hev => ?_, LValTy.text, WEff.self _ _⟩
           simp only [List.mem_singleton] at hev
           subst hev
           exact ⟨rfl, LExpr.le_trans (hpc0 _) (LExpr.le_of_le_inst_ofLabel (LExpr.le_inst _ hle))⟩
         | none =>
-          refine And.intro (fun ev hev => ?_) (Exists.intro _ ⟨rfl, hpc0 _⟩)
+          refine ⟨fun ev hev => ?_, ⟨_, rfl, ?_⟩, WEff.self _ _⟩
+          · simp only [List.mem_singleton] at hev
+            subst hev
+            exact ⟨rfl, LExpr.le_trans (hpc0 _) (LExpr.le_of_le_inst_ofLabel (LExpr.le_inst _ hle))⟩
+          · refine LExpr.le_inst _ ?_
+            unfold Program.fsFail
+            split
+            · exact LExpr.le_join_left _ _
+            · exact LExpr.le_trans (LExpr.le_join_left _ _) (LExpr.le_join_left _ _)
+      | @write _ _ path content t c hu ht hc hct hle hst _ =>
+        obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv hu
+        obtain ⟨cv, hcv, hcvt⟩ := latom_ltypedσ henv hc
+        cases t <;> simp [LTy.erase] at ht
+        cases c <;> simp [LTy.erase] at hct
+        simp only [LTy.lsubst] at hvt hcvt
+        cases hvt with
+        | @text s _ =>
+        cases hcvt with
+        | @text cs _ =>
+        simp only [evalRhs, hv, hcv]
+        cases H.write s cs w.fs with
+        | some fs' =>
+          refine ⟨fun ev hev => ?_, LValTy.unit, fun h => by simp [Event.isWrite] at h, fun _ => rfl⟩
+          simp only [List.mem_singleton] at hev
+          subst hev
+          exact ⟨rfl, LExpr.le_trans (hpc0 _) (LExpr.le_of_le_inst_ofLabel (LExpr.le_inst _
+            (LExpr.le_trans (LExpr.le_join_left _ _) hle))),
+            fun ho => LExpr.le_trans (hpc0 _) (LExpr.le_of_le_inst_ofLabel (LExpr.le_inst _ (hst ho)))⟩
+        | none =>
+          refine ⟨fun ev hev => ?_, ⟨_, rfl, ?_⟩, WEff.self _ _⟩
+          · simp only [List.mem_singleton] at hev
+            subst hev
+            exact ⟨rfl, LExpr.le_trans (hpc0 _) (LExpr.le_of_le_inst_ofLabel (LExpr.le_inst _
+            (LExpr.le_trans (LExpr.le_join_left _ _) hle))),
+            fun ho => LExpr.le_trans (hpc0 _) (LExpr.le_of_le_inst_ofLabel (LExpr.le_inst _ (hst ho)))⟩
+          · refine LExpr.le_inst _ ?_
+            unfold Program.fsFail
+            split
+            · exact LExpr.le_join_left _ _
+            · exact LExpr.le_trans (LExpr.le_join_left _ _) (LExpr.le_join_left _ _)
+      | @req _ _ m args ts has hts hle _ =>
+        obtain ⟨vs, hvs, _⟩ := latoms_ltypedσ henv has
+        simp only [evalRhs, hvs]
+        rcases H.request m vs w.srv with ⟨o, srv'⟩
+        cases o with
+        | some body =>
+          refine ⟨fun ev hev => ?_, LValTy.text, fun _ => rfl, fun h => by simp [Event.isReq] at h⟩
           simp only [List.mem_singleton] at hev
           subst hev
           exact ⟨rfl, LExpr.le_trans (hpc0 _) (LExpr.le_of_le_inst_ofLabel (LExpr.le_inst _ hle))⟩
+        | none =>
+          refine ⟨fun ev hev => ?_, ⟨_, rfl, ?_⟩, fun _ => rfl, fun h => by simp [Event.isReq] at h⟩
+          · simp only [List.mem_singleton] at hev
+            subst hev
+            exact ⟨rfl, LExpr.le_trans (hpc0 _) (LExpr.le_of_le_inst_ofLabel (LExpr.le_inst _ hle))⟩
+          · refine LExpr.le_inst _ ?_
+            unfold Program.reqFail
+            split
+            · exact LExpr.le_join_left _ _
+            · exact LExpr.le_trans (LExpr.le_join_left _ _) (LExpr.le_join_left _ _)
       | construct hrec has hfl =>
         obtain ⟨vs, hvs, hvst⟩ := latoms_ltypedσ henv has
         have := LValsTy.ground_lsubst (hwf.recordsGround _ (record_mem hrec)) (LValsTy.flowsσ hvst hfl)
         exact ⟨fun _ h => by simp [evalRhs] at h,
-          by simpa [evalRhs, hvs, URes, LTy.lsubst] using LValTy.record hrec this⟩
+          by simpa [evalRhs, hvs, URes, LTy.lsubst] using LValTy.record hrec this, WEff.self _ _⟩
       | field hv hrec hi =>
         obtain ⟨v, hv', hvt⟩ := latom_ltypedσ henv hv
         simp only [LTy.lsubst] at hvt
@@ -375,10 +440,11 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (w : World) : 
           have hg := hwf.recordsGround _ (record_mem hrec) _ (List.mem_of_getElem? hi)
           exact ⟨fun _ h => by simp [evalRhs, hv'] at h,
             by simpa [evalRhs, hv', hu, URes] using
-              LValTy.lsubst_raise ((LValTy.ground_lsubst hg).mpr hut)⟩
+              LValTy.lsubst_raise ((LValTy.ground_lsubst hg).mpr hut),
+            by simp only [evalRhs, hv', hu]; exact WEff.self _ _⟩
       | list has hfl _ =>
         obtain ⟨vs, hvs, hvst⟩ := latoms_ltypedσ henv has
-        refine ⟨fun _ h => by simp [evalRhs] at h, ?_⟩
+        refine ⟨fun _ h => by simp [evalRhs] at h, ?_, WEff.self _ _⟩
         simp only [evalRhs, hvs, Option.map, Option.elim, URes, LTy.lsubst]
         exact .list (LValsAll.of_flows hvst (fun u hu => by
           obtain ⟨u', hu', rfl⟩ := List.mem_map.mp hu
@@ -386,12 +452,13 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (w : World) : 
       | none _ => exact uok_done LValTy.none
       | some ha =>
         obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv ha
-        exact ⟨fun _ h => by simp [evalRhs] at h, by simpa [evalRhs, hv, URes, LTy.lsubst] using LValTy.some hvt⟩
+        exact ⟨fun _ h => by simp [evalRhs] at h, by simpa [evalRhs, hv, URes, LTy.lsubst] using LValTy.some hvt,
+          WEff.self _ _⟩
       | lambda hb hfl hrl _ =>
         refine uok_done ?_
         simp only [LTy.lsubst]
         exact .closure hσ henv hb hfl hrl (by rw [LTy.lsubsts_eq]; exact Flows.refl _) (Flow.refl _)
-          id id id
+          id (HostFx.Le.refl _) id
       | @funRef _ _ f targs fn hf hnv hlen _ _ hg hfr =>
         obtain ⟨tb, εb, hbody, hflow, ho, hgo, hfs, hfl, hrs⟩ := funOk_of_nvia hwf hnv hf
         have hrl : εb.rels = [] :=
@@ -441,19 +508,19 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (w : World) : 
         rw [List.append_nil] at henv'
         have hbody := body_typed hwf.wellFormed hfn []
         rw [Ty.subst_nil, hres] at hbody
-        have hgood := (sound hwf.wellFormed w n).2 henv' hbody
+        have hgood := (sound hwf.wellFormed n).2 (w := w) henv' hbody
         have hq := (pure_run p w n).2 (bindParams fn.params [v] []) fn.body hpure
         revert hgood hq
-        generalize eval n p w (bindParams fn.params [v] []) fn.body = run
-        obtain ⟨tr, res⟩ := run
+        generalize eval H n p w (bindParams fn.params [v] []) fn.body = run
+        obtain ⟨tr, res, w'⟩ := run
         intro hgood hq
-        obtain ⟨htr, hnf⟩ := hq
-        simp only at htr hnf
-        subst htr
+        obtain ⟨htr, hnf, hw⟩ := hq
+        simp only at htr hnf hw
+        subst htr hw
         cases res with
         | ok r =>
           simp only [Good] at hgood
-          refine ⟨fun ev hev => ?_, ?_⟩
+          refine ⟨fun ev hev => ?_, ?_, WEff.self _ _⟩
           · simp only [List.nil_append, List.mem_singleton] at hev
             subst hev
             exact ⟨by simp [Eff.ofFnR, Eff.ofFn, Eff.inst], po, hpo,
@@ -463,8 +530,8 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (w : World) : 
             · rw [LTy.erase_lsubst, Ty.Scalar.subst _ hds]; exact hds
             · rw [LTy.erase_lsubst, Ty.Scalar.subst _ hds]; exact hgood
         | failed c => exact absurd rfl (hnf c)
-        | stuck => exact ⟨fun _ h => (nomatch h), trivial⟩
-        | outOfFuel => exact ⟨fun _ h => (nomatch h), trivial⟩
+        | stuck => exact ⟨fun _ h => (nomatch h), trivial, WEff.self _ _⟩
+        | outOfFuel => exact ⟨fun _ h => (nomatch h), trivial, WEff.self _ _⟩
       | map hxs hf hte hb =>
         obtain ⟨xv, hxv, hxt⟩ := latom_ltypedσ henv hxs
         obtain ⟨fv, hfv, hft⟩ := latom_ltypedσ henv hf
@@ -476,8 +543,8 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (w : World) : 
             fun _ _ => LExpr.le_inst _ (LExpr.le_trans (LExpr.le_join_left _ _) (LExpr.le_join_left _ _))
           refine UOk.mono (bound_allowed_inst hb (hpc _ _)) (fun v hv => by simpa [LTy.lsubst] using hv)
             (bound_fails_inst hb (hpc _ _)) ?_
-          exact walkMap_uok _ (fun v hv => UOk.mono (fun _ h => h) (fun _ h => LValTy.lsubst_raise h) id
-            (applyWith_uok hrun hft (.cons (LValTy.flow hv (Flow.lsubst _ _ hte)) .nil))) hitems
+          exact walkMap_uok _ (fun w v hv => UOk.mono (fun _ h => h) (fun _ h => LValTy.lsubst_raise h) id
+            (applyWith_uok hrun hft (.cons (LValTy.flow hv (Flow.lsubst _ _ hte)) .nil) w)) w hitems
       | filter hxs hk hte hb =>
         obtain ⟨xv, hxv, hxt⟩ := latom_ltypedσ henv hxs
         obtain ⟨fv, hfv, hft⟩ := latom_ltypedσ henv hk
@@ -489,8 +556,8 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (w : World) : 
             fun _ _ => LExpr.le_inst _ (LExpr.le_trans (LExpr.le_join_left _ _) (LExpr.le_join_left _ _))
           refine UOk.mono (bound_allowed_inst hb (hpc _ _)) (fun v hv => by simpa [LTy.lsubst] using hv)
             (bound_fails_inst hb (hpc _ _)) ?_
-          exact walkFilter_uok _ (fun v hv =>
-            applyWith_uok hrun hft (.cons (LValTy.flow hv (Flow.lsubst _ _ hte)) .nil)) hitems
+          exact walkFilter_uok _ (fun w v hv =>
+            applyWith_uok hrun hft (.cons (LValTy.flow hv (Flow.lsubst _ _ hte)) .nil) w) w hitems
       | firstWhere hxs hk hte hb =>
         obtain ⟨xv, hxv, hxt⟩ := latom_ltypedσ henv hxs
         obtain ⟨fv, hfv, hft⟩ := latom_ltypedσ henv hk
@@ -504,8 +571,8 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (w : World) : 
               (LExpr.le_join_left _ _) (LExpr.le_trans (LExpr.le_join_left _ _) (LExpr.le_join_left _ _))))
           refine UOk.mono (bound_allowed_inst hb (hpc _ _ _ _)) (fun v hv => by simpa [LTy.lsubst] using hv)
             (bound_fails_inst hb (hpc _ _ _ _)) ?_
-          exact walkFirst_uok _ (fun v hv =>
-            applyWith_uok hrun hft (.cons (LValTy.flow hv (Flow.lsubst _ _ hte)) .nil)) hitems
+          exact walkFirst_uok _ (fun w v hv =>
+            applyWith_uok hrun hft (.cons (LValTy.flow hv (Flow.lsubst _ _ hte)) .nil) w) w hitems
       | fold hxs hi hf hte hinit hres hb =>
         obtain ⟨xv, hxv, hxt⟩ := latom_ltypedσ henv hxs
         obtain ⟨iv, hiv, hit⟩ := latom_ltypedσ henv hi
@@ -518,10 +585,10 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (w : World) : 
             fun _ _ => LExpr.le_inst _ (LExpr.le_trans (LExpr.le_join_left _ _) (LExpr.le_join_left _ _))
           refine UOk.mono (bound_allowed_inst hb (hpc _ _)) (fun v hv => LValTy.lsubst_raise hv)
             (bound_fails_inst hb (hpc _ _)) ?_
-          exact walkFold_uok (fun acc v hacc hv => UOk.mono (fun _ h => h)
+          exact walkFold_uok (fun w acc v hacc hv => UOk.mono (fun _ h => h)
             (fun _ h => LValTy.flow h (Flow.lsubst _ _ hres)) id
-            (applyWith_uok hrun hft (.cons hacc (.cons (LValTy.flow hv (Flow.lsubst _ _ hte)) .nil))))
-            (LValTy.flow hit (Flow.lsubst _ _ hinit)) hitems
+            (applyWith_uok hrun hft (.cons hacc (.cons (LValTy.flow hv (Flow.lsubst _ _ hte)) .nil)) w))
+            w (LValTy.flow hit (Flow.lsubst _ _ hinit)) hitems
       | @parse _ _ s₀ t hs ht =>
         obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv hs
         cases t <;> simp [LTy.erase] at ht
@@ -532,33 +599,33 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (w : World) : 
         unfold parseInt
         split
         · exact uok_done LValTy.int
-        · exact And.intro (fun _ h => nomatch h) (Exists.intro _ ⟨rfl, hpc0 _⟩)
+        · exact ⟨fun _ h => (nomatch h), ⟨_, rfl, hpc0 _⟩, WEff.self _ _⟩
       | eq ha hb _ _ _ =>
         obtain ⟨va, hva, _⟩ := latom_ltypedσ henv ha
         obtain ⟨vb, hvb, _⟩ := latom_ltypedσ henv hb
         simp only [evalRhs, hva, hvb, done]
         exact uok_done LValTy.bool
-    · intro σ env Γ E pc e t ε hσ henv he
+    · intro σ w env Γ E pc e t ε hσ henv he
       have hpc0 : ∀ x : LExpr, p.le (pc.inst (p.sd σ)) ((pc.join x).inst (p.sd σ)) :=
         fun x => le_inst_join_left _ pc x
       cases he with
       | atom ha =>
         obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv ha
-        exact ⟨fun _ h => by simp [eval] at h, by simpa [eval, hv, URes] using hvt⟩
+        exact ⟨fun _ h => by simp [eval] at h, by simpa [eval, hv, URes] using hvt, WEff.self _ _⟩
       | letR hr hflow hb _ =>
         simp only [eval]
         refine andThen_uok (UOk.mono allowed_union_left_inst
           (fun v hv => LValTy.flow hv (Flow.lsubst _ _ hflow)) Fails.union_left_inst
-          (ihR hσ henv hr)) (fun v hv => ?_)
+          (ihR hσ henv hr)) (fun w' v hv => ?_)
         exact UOk.mono (allowed_union_right_inst (hpc0 _)) (fun _ h => h)
-          (Fails.union_right_inst (hpc0 _)) (ihE hσ (.cons hv henv) hb)
+          (Fails.union_right_inst (hpc0 _)) (ihE (w := w') hσ (.cons hv henv) hb)
       | letE hv hflow hb _ =>
         simp only [eval]
         refine andThen_uok (UOk.mono allowed_union_left_inst
           (fun v hv => LValTy.flow hv (Flow.lsubst _ _ hflow)) Fails.union_left_inst
-          (ihE hσ henv hv)) (fun v hv => ?_)
+          (ihE hσ henv hv)) (fun w' v hv => ?_)
         exact UOk.mono (allowed_union_right_inst (hpc0 _)) (fun _ h => h)
-          (Fails.union_right_inst (hpc0 _)) (ihE hσ (.cons hv henv) hb)
+          (Fails.union_right_inst (hpc0 _)) (ihE (w := w') hσ (.cons hv henv) hb)
       | ite hc ht he h₁ h₂ _ =>
         obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv hc
         simp only [LTy.lsubst] at hvt
@@ -570,7 +637,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (w : World) : 
               (fun _ h => LValTy.lsubst_raise (LValTy.flow h (Flow.lsubst _ _ h₂)))
               (Fails.union_right_inst (hpc0 _)) (ihE hσ henv he)
           · simp only [eval, hv]
-            exact UOk.mono (Allowed.mono (hpc0 _) union_op_left union_get_left (fun x h => union_rels_left x h))
+            exact UOk.mono (Allowed.mono (hpc0 _) union_op_left union_host_left (fun x h => union_rels_left x h))
               (fun _ h => LValTy.lsubst_raise (LValTy.flow h (Flow.lsubst _ _ h₁)))
               (fun h => Fails.union_left_inst (Fails.mono (hpc0 _) (fun l hl => ⟨l, hl, LExpr.le_refl l⟩) h))
               (ihE hσ henv ht)
@@ -580,7 +647,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (w : World) : 
         cases hvt with
         | none =>
           simp only [eval, hv]
-          exact UOk.mono (Allowed.mono (hpc0 _) union_op_left union_get_left (fun x h => union_rels_left x h))
+          exact UOk.mono (Allowed.mono (hpc0 _) union_op_left union_host_left (fun x h => union_rels_left x h))
             (fun _ h => LValTy.lsubst_raise (LValTy.flow h (Flow.lsubst _ _ h₁)))
             (fun h => Fails.union_left_inst (Fails.mono (hpc0 _) (fun l hl => ⟨l, hl, LExpr.le_refl l⟩) h))
             (ihE hσ henv hn)
@@ -596,7 +663,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (w : World) : 
         cases hvt with
         | ok hw =>
           simp only [eval, hv]
-          exact UOk.mono (Allowed.mono (hpc0 _) union_op_left union_get_left (fun x h => union_rels_left x h))
+          exact UOk.mono (Allowed.mono (hpc0 _) union_op_left union_host_left (fun x h => union_rels_left x h))
             (fun _ h => LValTy.lsubst_raise (LValTy.flow h (Flow.lsubst _ _ h₁)))
             (fun h => Fails.union_left_inst (Fails.mono (hpc0 _) (fun l hl => ⟨l, hl, LExpr.le_refl l⟩) h))
             (ihE hσ (.cons (LValTy.lsubst_raise hw) henv) hok)
@@ -606,67 +673,65 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (w : World) : 
             (fun _ h => LValTy.lsubst_raise (LValTy.flow h (Flow.lsubst _ _ h₂)))
             (Fails.union_right_inst (hpc0 _)) (ihE hσ (.cons .int henv) herr)
       | fail hpc _ _ =>
-        exact ⟨fun _ h => by simp [eval] at h, _, rfl,
+        exact ⟨fun _ h => by simp [eval] at h, ⟨_, rfl,
           LExpr.le_trans (LExpr.le_inst _ hpc)
             (by rw [show LExpr.bot = LExpr.ofLabel Label.bot from rfl, LExpr.inst_ofLabel]
-                exact LExpr.join_le (LExpr.le_join_left _ _) (LExpr.le_join_right _ _))⟩
+                exact LExpr.join_le (LExpr.le_join_left _ _) (LExpr.le_join_right _ _))⟩, WEff.self _ _⟩
       | attempt hb =>
-        have h := ihE hσ henv hb
+        have h := ihE (w := w) hσ henv hb
         simp only [eval]
         revert h
-        cases eval n p w env _ with
-        | mk tr r =>
-          intro h
-          have hev : ∀ ev ∈ tr, Allowed p (pc.inst (p.sd σ)) ((⟨_, _, Option.none, _⟩ : Eff).inst (p.sd σ)) ev :=
-            fun ev hev => Allowed.mono (LExpr.le_refl _) id id (fun _ h => h) ev (h.1 ev hev)
-          cases r with
-          | ok v => exact ⟨hev, .ok h.2⟩
-          | failed c => exact ⟨hev, .err⟩
-          | stuck => exact ⟨hev, trivial⟩
-          | outOfFuel => exact ⟨hev, trivial⟩
+        rcases eval H n p w env _ with ⟨tr, r, w'⟩
+        intro h
+        have hev : ∀ ev ∈ tr, Allowed p (pc.inst (p.sd σ)) ((⟨_, _, Option.none, _⟩ : Eff).inst (p.sd σ)) ev :=
+          fun ev hev => Allowed.mono (LExpr.le_refl _) id (HostFx.Le.refl _) (fun _ h => h) ev (h.1 ev hev)
+        cases r with
+        | ok v => exact ⟨hev, .ok h.2.1, h.2.2⟩
+        | failed c => exact ⟨hev, .err, h.2.2⟩
+        | stuck => exact ⟨hev, trivial, h.2.2⟩
+        | outOfFuel => exact ⟨hev, trivial, h.2.2⟩
       | @handle _ _ body x handler _ _ _ ε₁ ε₂ hb hh h₁ h₂ _ =>
-        have h := ihE hσ henv hb
+        have h := ihE (w := w) hσ henv hb
         simp only [eval]
         revert h
-        cases eval n p w env _ with
-        | mk tr r =>
-          intro h
-          have hev : ∀ ev ∈ tr, Allowed p (pc.inst (p.sd σ))
-              ((⟨ε₁.op || ε₂.op, ε₁.get || ε₂.get, ε₂.fails, ε₁.rels ++ ε₂.rels⟩ : Eff).inst (p.sd σ)) ev :=
-            fun ev hev => Allowed.mono (LExpr.le_refl _) (fun h => by simp only [Eff.inst] at h ⊢; simp [h])
-              (fun h => by simp only [Eff.inst] at h ⊢; simp [h])
-              (fun x h => by simp only [Eff.inst] at h ⊢; simp [h]) ev (h.1 ev hev)
-          cases r with
-          | failed code =>
-            have hh' := ihE hσ (.cons (LValTy.int (n := (code : Int))) henv) hh
-            rcases hrh : eval n p w ((x, Val.int (code : Int)) :: env) handler with ⟨tr', r'⟩
-            rw [hrh] at hh'
-            simp only [hrh]
-            refine ⟨fun ev hev' => ?_, ?_⟩
-            · rcases List.mem_append.mp hev' with hev' | hev'
-              · exact hev ev hev'
-              · exact Allowed.mono (hpc0 _) (fun h => by simp only [Eff.inst] at h ⊢; simp [h])
-                  (fun h => by simp only [Eff.inst] at h ⊢; simp [h])
-                  (fun x h => by simp only [Eff.inst] at h ⊢; simp [h]) ev (hh'.1 ev hev')
-            · have h2 := hh'.2
-              cases r' <;> simp only [URes] at h2 ⊢
-              · exact LValTy.lsubst_raise (LValTy.flow h2 (Flow.lsubst _ _ h₂))
-              · exact Fails.mono (hpc0 _) (fun l hl => ⟨l, hl, LExpr.le_refl l⟩) h2
-          | ok v => exact ⟨hev, LValTy.lsubst_raise (LValTy.flow h.2 (Flow.lsubst _ _ h₁))⟩
-          | stuck => exact ⟨hev, trivial⟩
-          | outOfFuel => exact ⟨hev, trivial⟩
+        rcases eval H n p w env _ with ⟨tr, r, w₁⟩
+        intro h
+        have hmono : HostFx.Le ε₁.host (ε₁.host.or ε₂.host) := union_host_left (ε₂ := ε₂)
+        have hmono₂ : HostFx.Le ε₂.host (ε₁.host.or ε₂.host) := union_host_right (ε₁ := ε₁)
+        have hev : ∀ ev ∈ tr, Allowed p (pc.inst (p.sd σ))
+            ((⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels⟩ : Eff).inst (p.sd σ)) ev :=
+          fun ev hev => Allowed.mono (LExpr.le_refl _) (fun h => by simp only [Eff.inst] at h ⊢; simp [h])
+            hmono (fun x h => by simp only [Eff.inst] at h ⊢; simp [h]) ev (h.1 ev hev)
+        cases r with
+        | failed code =>
+          have hh' := ihE (w := w₁) hσ (.cons (LValTy.int (n := (code : Int))) henv) hh
+          rcases hrh : eval H n p w₁ ((x, Val.int (code : Int)) :: env) handler with ⟨tr', r', w₂⟩
+          rw [hrh] at hh'
+          simp only [hrh]
+          refine ⟨fun ev hev' => ?_, ?_, WEff.trans h.2.2 hh'.2.2⟩
+          · rcases List.mem_append.mp hev' with hev' | hev'
+            · exact hev ev hev'
+            · exact Allowed.mono (hpc0 _) (fun h => by simp only [Eff.inst] at h ⊢; simp [h])
+                hmono₂ (fun x h => by simp only [Eff.inst] at h ⊢; simp [h]) ev (hh'.1 ev hev')
+          · have h2 := hh'.2.1
+            cases r' <;> simp only [URes] at h2 ⊢
+            · exact LValTy.lsubst_raise (LValTy.flow h2 (Flow.lsubst _ _ h₂))
+            · exact Fails.mono (hpc0 _) (fun l hl => ⟨l, hl, LExpr.le_refl l⟩) h2
+        | ok v => exact ⟨hev, LValTy.lsubst_raise (LValTy.flow h.2.1 (Flow.lsubst _ _ h₁)), h.2.2⟩
+        | stuck => exact ⟨hev, trivial, h.2.2⟩
+        | outOfFuel => exact ⟨hev, trivial, h.2.2⟩
 
 /-- **The unary half without policies**, as M3 and M4 state it: `unary_soundR`, whose
 restrictions hold when there is no policy. -/
-theorem unary_sound (hwf : p.LWellFormed) (hpol : p.policies = []) (w : World) : ∀ n : Nat,
-    (∀ {σ : List (String × LTy)} {env : Env} {Γ : LCtx} {E : List String} {pc : LExpr} {r : Rhs}
+theorem unary_sound (hwf : p.LWellFormed) (hpol : p.policies = []) : ∀ n : Nat,
+    (∀ {σ : List (String × LTy)} {w : World H} {env : Env} {Γ : LCtx} {E : List String} {pc : LExpr} {r : Rhs}
       {t : LTy} {ε : Eff}, GroundSubst σ → LEnvTy p env (Γ.lsub p.recordDeep σ) →
       LRhsTy p E Γ pc r t ε →
-      UGood p (pc.inst (p.sd σ)) (t.lsubst p.recordDeep σ) (ε.inst (p.sd σ)) (evalRhs n p w env r)) ∧
-    (∀ {σ : List (String × LTy)} {env : Env} {Γ : LCtx} {E : List String} {pc : LExpr} {e : Expr}
+      UGood p (pc.inst (p.sd σ)) (t.lsubst p.recordDeep σ) (ε.inst (p.sd σ)) w (evalRhs H n p w env r)) ∧
+    (∀ {σ : List (String × LTy)} {w : World H} {env : Env} {Γ : LCtx} {E : List String} {pc : LExpr} {e : Expr}
       {t : LTy} {ε : Eff}, GroundSubst σ → LEnvTy p env (Γ.lsub p.recordDeep σ) →
       LExprTy p E Γ pc e t ε →
-      UGood p (pc.inst (p.sd σ)) (t.lsubst p.recordDeep σ) (ε.inst (p.sd σ)) (eval n p w env e)) :=
-  unary_soundR hwf (.of_nil hpol) w
+      UGood p (pc.inst (p.sd σ)) (t.lsubst p.recordDeep σ) (ε.inst (p.sd σ)) w (eval H n p w env e)) :=
+  unary_soundR hwf (.of_nil hpol)
 
 end Una.F1

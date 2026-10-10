@@ -1,4 +1,10 @@
 /-
+M5 (`docs/plan/formal-track-m5.md`): **F1 with a stateful host**, F1H. It is F1 with the host
+operation `get` replaced by the operations of the stateful capabilities, `Files.read`,
+`Files.write` and a request of `Http` (its four operations differ only in their method), and with
+an evaluation that threads the host's state. Until `t6_host` is proven over it, F1H is staged
+beside F1; this file is F1's `Syntax.lean` with those changes.
+
 The fragment F1 (`docs/plan/formal-track.md` §3): the part of Una Core IR (`spec/09`) in A-normal
 form, as `una.core/1` exports it (`spec/13 §8`), in which the findings S-01 to S-12 but S-04 can
 be written.
@@ -25,9 +31,34 @@ inductive Ty where
   | fn (params : List Ty) (result : Ty)
   | var (name : String)
 
+/-- The host effects a code may perform: read a file, write a file, send a request. -/
+structure HostFx where
+  rd : Bool := false
+  wr : Bool := false
+  rq : Bool := false
+
+/-- No host effect. -/
+def HostFx.none : HostFx := {}
+
+/-- Both codes' host effects. -/
+def HostFx.or (a b : HostFx) : HostFx := ⟨a.rd || b.rd, a.wr || b.wr, a.rq || b.rq⟩
+
+/-- `a`'s host effects are among `b`'s. -/
+def HostFx.Le (a b : HostFx) : Prop :=
+  (a.rd = true → b.rd = true) ∧ (a.wr = true → b.wr = true) ∧ (a.rq = true → b.rq = true)
+
+theorem HostFx.Le.refl (a : HostFx) : HostFx.Le a a := ⟨id, id, id⟩
+
+theorem HostFx.Le.trans {a b c : HostFx} (h₁ : HostFx.Le a b) (h₂ : HostFx.Le b c) :
+    HostFx.Le a c :=
+  ⟨h₂.1 ∘ h₁.1, h₂.2.1 ∘ h₁.2.1, h₂.2.2 ∘ h₁.2.2⟩
+
+/-- No host effect, as a Boolean. -/
+def HostFx.isNone (a : HostFx) : Bool := !a.rd && !a.wr && !a.rq
+
 /-- A type labeled at every position (`spec/07 §7` rule 1). A function type says which
 effects its function may perform, the operation `op` of the one capability and the host
-operation `get`, and whether it may fail (`spec/10 §5`, `uses` and `fails`). -/
+effects `host`, and whether it may fail (`spec/10 §5`, `uses` and `fails`). -/
 inductive LTy where
   | int (l : LExpr)
   | bool (l : LExpr)
@@ -37,7 +68,7 @@ inductive LTy where
   | option (element : LTy) (l : LExpr)
   | result (value : LTy) (l : LExpr)
   | record (name : String) (l : LExpr)
-  | fn (params : List LTy) (result : LTy) (op get fails : Bool) (l : LExpr)
+  | fn (params : List LTy) (result : LTy) (op : Bool) (host : HostFx) (fails : Bool) (l : LExpr)
   | var (name : String) (l : LExpr)
 
 /-- The scalar types, which the operation writes. -/
@@ -77,9 +108,16 @@ mutual
     trace (T-Op). Its argument is a scalar, an `Int`, a `Bool` or a `Text`, written as its
     text. -/
     | op (line : Atom)
-    /-- The host operation, `Http.get(url)`: a sink whose failure its argument decides
-    (`spec/07 §7` rule 4, N-39). -/
-    | get (url : Atom)
+    /-- `Files.read(path)`: a sink at its `accepts`, whose failure the path and the file system's
+    shape decide, and whose result is the file's content (`spec/14 §3`). -/
+    | read (path : Atom)
+    /-- `Files.write(path, content)`: a sink at its `accepts`, which changes the file system;
+    whether it fails, and the shape it leaves, depend on the path and the shape, not the
+    content (ADR 0085 decision 3). -/
+    | write (path content : Atom)
+    /-- A request of `Http`, `get`, `post`, `put` or `delete` (`spec/24 §1`), with its
+    arguments: every one a sink at its `accepts`, and every one deciding its failure (S-15). -/
+    | req (method : String) (args : List Atom)
     | construct (record : String) (fields : List Atom)
     | field (value : Atom) (index : Nat)
     | list (items : List Atom)
@@ -130,7 +168,7 @@ structure Fun where
   params : List (String × LTy)
   result : LTy
   op : Bool
-  get : Bool
+  host : HostFx
   fails : Bool
   body : Expr
   /-- The policies whose release a call may perform (option B1): its body's declassifications
@@ -152,13 +190,31 @@ structure Policy where
   dst : LTy
   via : String
 
-/-- A program: its declared categories, the `accepts` labels of the operation and of the host
-operation, the label of the host operation's result, its records, policies and functions. -/
+/-- A program: its declared categories, the `accepts` labels of the operation and of the host's
+stateful operations, the labels of their results and failures, its records, policies and
+functions. -/
 structure Program where
   categories : List String
   acceptsOp : Label
-  acceptsGet : Label
-  getResult : Label
+  /-- What `Files.read` accepts for its path (`public`, `spec/14 §3`). -/
+  acceptsRead : Label
+  /-- What `Files.write` accepts for its path and content (`internal`). -/
+  acceptsWrite : Label
+  /-- What a request of `Http` accepts for every argument (`internal`, `spec/24 §1`). -/
+  acceptsReq : Label
+  /-- The label of a read's content (`internal`). -/
+  readResult : Label
+  /-- The label of a request's response (`internal`). -/
+  reqResult : Label
+  /-- The least label of a request's failure: what its headers, whose value `Header` declares
+  `internal`, always add (S-15, ADR 0085 decision 7). -/
+  reqFloor : Label
+  /-- The file-state label of the package (S-14, ADR 0085 decision 1). -/
+  fileState : Label
+  /-- The rules before ADR 0085, for the counterexamples only: a `Files` failure labeled by its
+  path alone, no condition on the file-state label at a write, and a request's failure labeled
+  by its URL alone. `t6_host` requires it `false`. -/
+  oldHost : Bool := false
   records : List Record
   policies : List Policy
   funs : List Fun

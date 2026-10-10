@@ -62,6 +62,7 @@ theorem join_mono {a b c d : LExpr} (h₁ : LExpr.le top a c) (h₂ : LExpr.le t
 
 end LExpr
 
+
 mutual
   theorem Flow.refl {top : Label} : ∀ t : LTy, Flow top t t
     | .int l => .int (LExpr.le_refl l)
@@ -73,7 +74,7 @@ mutual
     | .result t l => .result (Flow.refl t) (LExpr.le_refl l)
     | .record _ l => .record (LExpr.le_refl l)
     | .fn ps r _ _ _ l =>
-      .fn (Flows.refl ps) (Flow.refl r) id id id (LExpr.le_refl l)
+      .fn (Flows.refl ps) (Flow.refl r) id (HostFx.Le.refl _) id (LExpr.le_refl l)
     | .var _ l => .var (LExpr.le_refl l)
 
   theorem Flows.refl {top : Label} : ∀ ts : List LTy, Flows top ts ts
@@ -93,7 +94,7 @@ mutual
     | _, _, _, .result f₁ h₁, .result f₂ h₂ => .result (Flow.trans f₁ f₂) (LExpr.le_trans h₁ h₂)
     | _, _, _, .record h₁, .record h₂ => .record (LExpr.le_trans h₁ h₂)
     | _, _, _, .fn ps₁ r₁ o₁ g₁ f₁ h₁, .fn ps₂ r₂ o₂ g₂ f₂ h₂ =>
-      .fn (Flows.trans ps₂ ps₁) (Flow.trans r₁ r₂) (o₂ ∘ o₁) (g₂ ∘ g₁) (f₂ ∘ f₁)
+      .fn (Flows.trans ps₂ ps₁) (Flow.trans r₁ r₂) (o₂ ∘ o₁) (g₁.trans g₂) (f₂ ∘ f₁)
         (LExpr.le_trans h₁ h₂)
     | _, _, _, .var h₁, .var h₂ => .var (LExpr.le_trans h₁ h₂)
 
@@ -113,7 +114,7 @@ theorem Flow.raise {top : Label} (e : LExpr) : ∀ t : LTy, Flow top t (t.raise 
   | .option t l => .option (Flow.refl t) (LExpr.le_join_left l e)
   | .result t l => .result (Flow.refl t) (LExpr.le_join_left l e)
   | .record _ l => .record (LExpr.le_join_left l e)
-  | .fn ps r _ _ _ l => .fn (Flows.refl ps) (Flow.refl r) id id id (LExpr.le_join_left l e)
+  | .fn ps r _ _ _ l => .fn (Flows.refl ps) (Flow.refl r) id (HostFx.Le.refl _) id (LExpr.le_join_left l e)
   | .var _ l => .var (LExpr.le_join_left l e)
 
 end Una.F1

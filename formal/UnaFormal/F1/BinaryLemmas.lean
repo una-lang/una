@@ -32,18 +32,20 @@ theorem Vis.union_right {ε₁ ε₂ : Eff} (h : Vis p L (ε₁.union ε₂).fai
   Vis.of_le (failLabel_union_right ε₁ ε₂) h
 
 /-- Two runs at a program counter the observer does not see, of a type whose values it does not
-see, are related. -/
-theorem brel_confined {R : Val → Val → Prop} {vf : Prop} {pc : LExpr} {ε₁ ε₂ : Eff}
-    {P₁ P₂ : Val → Prop} {r₁ r₂ : Trace × Res}
-    (h₁ : UOk (Allowed p pc ε₁) P₁ (Fails p pc ε₁) r₁) (h₂ : UOk (Allowed p pc ε₂) P₂ (Fails p pc ε₂) r₂)
+see, from worlds it cannot tell apart, are related. -/
+theorem brel_confined {H : Host} {R : Val → Val → Prop} {vf : Prop} {pc : LExpr} {ε₁ ε₂ : Eff}
+    {P₁ P₂ : Val → Prop} {w₁ w₂ : World H} {r₁ r₂ : Run H} (hwf : p.HostWF)
+    (hw : WorldRel p L w₁ w₂)
+    (h₁ : UOk (Allowed p pc ε₁) P₁ (Fails p pc ε₁) w₁ r₁)
+    (h₂ : UOk (Allowed p pc ε₂) P₂ (Fails p pc ε₂) w₂ r₂)
     (hpc : ¬ Vis p L pc) (hR : ∀ a b, R a b) (hvf₁ : vf → Vis p L ε₁.failLabel)
     (hvf₂ : vf → Vis p L ε₂.failLabel) : BRel p L R vf r₁ r₂ := by
   intro ht₁ ht₂
-  obtain ⟨hp₁, hf₁⟩ := confined (L := L) h₁ hpc
-  obtain ⟨hp₂, hf₂⟩ := confined (L := L) h₂ hpc
-  refine ⟨by rw [hp₁, hp₂], ?_⟩
-  obtain ⟨tr₁, o₁⟩ := r₁
-  obtain ⟨tr₂, o₂⟩ := r₂
+  obtain ⟨hp₁, hf₁, hw₁⟩ := confined (L := L) hwf h₁ hpc
+  obtain ⟨hp₂, hf₂, hw₂⟩ := confined (L := L) hwf h₂ hpc
+  refine ⟨by rw [hp₁, hp₂], ?_, hw₁.symm.trans (hw.trans hw₂)⟩
+  obtain ⟨tr₁, o₁, _⟩ := r₁
+  obtain ⟨tr₂, o₂, _⟩ := r₂
   cases o₁ <;> cases o₂ <;> simp only [Term] at ht₁ ht₂ <;> simp only [OutRel]
   · exact hR _ _
   · exact fun hv => hf₂ _ rfl (hvf₂ hv)
@@ -234,14 +236,17 @@ namespace Una.F1
 
 variable {p : Program} {L : Label}
 
-theorem brel_stuck_left {R : Val → Val → Prop} {vf : Prop} {r : Trace × Res} :
-    BRel p L R vf stuck r := fun h _ => by simp [stuck, Term] at h
+variable {H : Host}
 
-theorem brel_stuck_right {R : Val → Val → Prop} {vf : Prop} {r : Trace × Res} :
-    BRel p L R vf r stuck := fun _ h => by simp [stuck, Term] at h
+theorem brel_stuck_left {R : Val → Val → Prop} {vf : Prop} {w : World H} {r : Run H} :
+    BRel p L R vf (stuck w) r := fun h _ => by simp [stuck, Term] at h
 
-theorem brel_done {R : Val → Val → Prop} {vf : Prop} {a b : Val} (h : R a b) :
-    BRel p L R vf (done a) (done b) := fun _ _ => ⟨rfl, h⟩
+theorem brel_stuck_right {R : Val → Val → Prop} {vf : Prop} {w : World H} {r : Run H} :
+    BRel p L R vf r (stuck w) := fun _ h => by simp [stuck, Term] at h
+
+theorem brel_done {R : Val → Val → Prop} {vf : Prop} {w₁ w₂ : World H} {a b : Val}
+    (hw : WorldRel p L w₁ w₂) (h : R a b) : BRel p L R vf (done w₁ a) (done w₂ b) :=
+  fun _ _ => ⟨rfl, h, hw⟩
 
 theorem Flows.length' {top : Label} : ∀ {a b : List LTy}, Flows top a b → a.length = b.length
   | _, _, .nil => rfl
@@ -259,19 +264,21 @@ theorem vis_failLabel_inst {ε : Eff} (s : List (String × LExpr)) (h : p.le ε.
     rw [show LExpr.bot = LExpr.ofLabel Label.bot from rfl, LExpr.inst_ofLabel]
     exact LExpr.join_le (LExpr.le_refl _) (LExpr.le_refl _)
 
-/-- Related closures, at a function type the observer sees, called on related arguments, when
-every body keeps its runs related at every ground instance. -/
-theorem applyWith_brel {run : Env → Expr → Trace × Res}
-    (hrun : ∀ {σ : List (String × LTy)} {e₁ e₂ : Env} {Γ : LCtx} {E : List String} {body : Expr}
-      {t : LTy} {ε : Eff}, GroundSubst σ → p.EqArgsOK σ E → LCtx.InPlace Γ →
+/-- Related closures, at a function type the observer sees, called on related arguments from
+worlds it cannot tell apart, when every body keeps its runs related at every ground instance. -/
+theorem applyWith_brel {run : World H → Env → Expr → Run H}
+    (hrun : ∀ {σ : List (String × LTy)} {w₁ w₂ : World H} {e₁ e₂ : Env} {Γ : LCtx} {E : List String}
+      {body : Expr} {t : LTy} {ε : Eff}, GroundSubst σ → p.EqArgsOK σ E → LCtx.InPlace Γ →
+      WorldRel p L w₁ w₂ →
       LEnvTy p e₁ (Γ.lsub p.recordDeep σ) → LEnvTy p e₂ (Γ.lsub p.recordDeep σ) →
       EnvRel p L (Γ.lsub p.recordDeep σ) e₁ e₂ → LExprTy p E Γ .bot body t ε → ε.rels = [] →
       BRel p L (V p L (t.lsubst p.recordDeep σ)) (Vis p L (ε.inst (p.sd σ)).failLabel)
-        (run e₁ body) (run e₂ body))
-    {ps : List LTy} {r : LTy} {o g f : Bool} {l : LExpr} {c₁ c₂ : Val} {as₁ as₂ : List Val}
+        (run w₁ e₁ body) (run w₂ e₂ body))
+    {ps : List LTy} {r : LTy} {o : Bool} {g : HostFx} {f : Bool} {l : LExpr} {c₁ c₂ : Val}
+    {as₁ as₂ : List Val} {w₁ w₂ : World H} (hw : WorldRel p L w₁ w₂)
     (hc : V p L (.fn ps r o g f l) c₁ c₂) (hl : Vis p L l) (hvs : VList p L ps as₁ as₂)
     (hu₁ : LValsTy p as₁ ps) (hu₂ : LValsTy p as₂ ps) (vf : Prop) :
-    BRel p L (V p L r) vf (applyWith run c₁ as₁) (applyWith run c₂ as₂) := by
+    BRel p L (V p L r) vf (applyWith run w₁ c₁ as₁) (applyWith run w₂ c₂ as₂) := by
   cases hc with
   | hidden h => exact absurd hl h
   | @closure params _ cenv₁ cenv₂ Γc _ _ _ _ _ _ _ _ _ σc hσ hE hΓ hrel he₁ he₂ hb hfl hrl hps hr _ _ _ =>
@@ -294,54 +301,56 @@ theorem applyWith_brel {run : Env → Expr → Trace × Res}
         (by rw [LCtx.lsub_snd]; exact VList.flows hvs hps) hrel
       simpa [bindParams, LCtx.lsub, List.map_map, Function.comp_def] using this
     exact BRel.mono (fun _ _ h => V.flow h hr) (fun _ => vis_failLabel_inst _ hfl)
-      (hrun hσ hE hΓ (hen hu₁ he₁) (hen hu₂ he₂) hrel' hb hrl)
+      (hrun hσ hE hΓ hw (hen hu₁ he₁) (hen hu₂ he₂) hrel' hb hrl)
 
 /-- Two related lists, as values of a list type. -/
 def ListRel (p : Program) (L : Label) (t : LTy) (v₁ v₂ : Val) : Prop :=
   ∃ xs ys, v₁ = .list xs ∧ v₂ = .list ys ∧ VAll p L t xs ys
 
-theorem walkMap_brel {app₁ app₂ : Val → Trace × Res} {a b : LTy}
-    (happ : ∀ x y, V p L a x y → LValTy p x a → LValTy p y a →
-      BRel p L (V p L b) True (app₁ x) (app₂ y)) :
-    ∀ {xs ys : List Val}, VAll p L a xs ys → LValsAll p xs a → LValsAll p ys a →
-      BRel p L (ListRel p L b) True (walkMap app₁ xs) (walkMap app₂ ys)
-  | [], [], .nil, _, _ => brel_done ⟨[], [], rfl, rfl, .nil⟩
-  | _ :: _, _ :: _, .cons h hs, .cons hx hxs, .cons hy hys => by
+theorem walkMap_brel {app₁ app₂ : World H → Val → Run H} {a b : LTy}
+    (happ : ∀ w₁ w₂ x y, WorldRel p L w₁ w₂ → V p L a x y → LValTy p x a → LValTy p y a →
+      BRel p L (V p L b) True (app₁ w₁ x) (app₂ w₂ y)) :
+    ∀ {xs ys : List Val} {w₁ w₂ : World H}, WorldRel p L w₁ w₂ → VAll p L a xs ys →
+      LValsAll p xs a → LValsAll p ys a →
+      BRel p L (ListRel p L b) True (walkMap app₁ w₁ xs) (walkMap app₂ w₂ ys)
+  | [], [], _, _, hw, .nil, _, _ => brel_done hw ⟨[], [], rfl, rfl, .nil⟩
+  | _ :: _, _ :: _, _, _, hw, .cons h hs, .cons hx hxs, .cons hy hys => by
     simp only [walkMap]
-    refine andThen_brel (happ _ _ h hx hy) id (fun r₁ r₂ _ _ hr => ?_) (fun h => absurd trivial h)
-      (fun h => absurd trivial h)
-    refine andThen_brel (walkMap_brel happ hs hxs hys) id (fun k₁ k₂ _ _ hk => ?_)
+    refine andThen_brel (happ _ _ _ _ hw h hx hy) id (fun r₁ r₂ _ _ hr hw' => ?_)
+      (fun h => absurd trivial h) (fun h => absurd trivial h)
+    refine andThen_brel (walkMap_brel happ hw' hs hxs hys) id (fun k₁ k₂ _ _ hk hw'' => ?_)
       (fun h => absurd trivial h) (fun h => absurd trivial h)
     obtain ⟨zs₁, zs₂, rfl, rfl, hz⟩ := hk
-    exact brel_done ⟨_, _, rfl, rfl, .cons hr hz⟩
+    exact brel_done hw'' ⟨_, _, rfl, rfl, .cons hr hz⟩
 
 /-- The lists `filter` gives, related when the observer sees the predicate's results. -/
 def FilterRel (p : Program) (L : Label) (t : LTy) (lb : LExpr) (v₁ v₂ : Val) : Prop :=
   Vis p L lb → ListRel p L t v₁ v₂
 
-theorem walkFilter_brel {app₁ app₂ : Val → Trace × Res} {a : LTy} {lb : LExpr}
-    (happ : ∀ x y, V p L a x y → LValTy p x a → LValTy p y a →
-      BRel p L (V p L (.bool lb)) True (app₁ x) (app₂ y)) :
-    ∀ {xs ys : List Val}, VAll p L a xs ys → LValsAll p xs a → LValsAll p ys a →
-      BRel p L (FilterRel p L a lb) True (walkFilter app₁ xs) (walkFilter app₂ ys)
-  | [], [], .nil, _, _ => brel_done (fun _ => ⟨[], [], rfl, rfl, .nil⟩)
-  | _ :: _, _ :: _, .cons h hs, .cons hx hxs, .cons hy hys => by
+theorem walkFilter_brel {app₁ app₂ : World H → Val → Run H} {a : LTy} {lb : LExpr}
+    (happ : ∀ w₁ w₂ x y, WorldRel p L w₁ w₂ → V p L a x y → LValTy p x a → LValTy p y a →
+      BRel p L (V p L (.bool lb)) True (app₁ w₁ x) (app₂ w₂ y)) :
+    ∀ {xs ys : List Val} {w₁ w₂ : World H}, WorldRel p L w₁ w₂ → VAll p L a xs ys →
+      LValsAll p xs a → LValsAll p ys a →
+      BRel p L (FilterRel p L a lb) True (walkFilter app₁ w₁ xs) (walkFilter app₂ w₂ ys)
+  | [], [], _, _, hw, .nil, _, _ => brel_done hw (fun _ => ⟨[], [], rfl, rfl, .nil⟩)
+  | _ :: _, _ :: _, _, _, hw, .cons h hs, .cons hx hxs, .cons hy hys => by
     simp only [walkFilter]
-    refine andThen_brel (happ _ _ h hx hy) id (fun b₁ b₂ e₁ e₂ hb => ?_) (fun h => absurd trivial h)
-      (fun h => absurd trivial h)
+    refine andThen_brel (happ _ _ _ _ hw h hx hy) id (fun b₁ b₂ e₁ e₂ hb hw' => ?_)
+      (fun h => absurd trivial h) (fun h => absurd trivial h)
     clear e₁ e₂
     cases b₁ with
     | bool k₁ =>
       cases b₂ with
       | bool k₂ =>
-        refine andThen_brel (walkFilter_brel happ hs hxs hys) id (fun r₁ r₂ f₁ f₂ hk => ?_)
+        refine andThen_brel (walkFilter_brel happ hw' hs hxs hys) id (fun r₁ r₂ f₁ f₂ hk hw'' => ?_)
           (fun h => absurd trivial h) (fun h => absurd trivial h)
         clear f₁ f₂
         cases r₁ with
         | list zs₁ =>
           cases r₂ with
           | list zs₂ =>
-            refine brel_done (fun hv => ?_)
+            refine brel_done hw'' (fun hv => ?_)
             obtain ⟨_, _, h₁, h₂, hz⟩ := hk hv
             cases h₁
             cases h₂
@@ -359,44 +368,47 @@ theorem walkFilter_brel {app₁ app₂ : Val → Trace × Res} {a : LTy} {lb : L
 def FirstRel (p : Program) (L : Label) (t : LTy) (v₁ v₂ : Val) : Prop :=
   (v₁ = .none ∧ v₂ = .none) ∨ ∃ x y, v₁ = .some x ∧ v₂ = .some y ∧ V p L t x y
 
-theorem walkFirst_brel {app₁ app₂ : Val → Trace × Res} {a : LTy} {lb : LExpr} (hv : Vis p L lb)
-    (happ : ∀ x y, V p L a x y → LValTy p x a → LValTy p y a →
-      BRel p L (V p L (.bool lb)) True (app₁ x) (app₂ y)) :
-    ∀ {xs ys : List Val}, VAll p L a xs ys → LValsAll p xs a → LValsAll p ys a →
-      BRel p L (FirstRel p L a) True (walkFirst app₁ xs) (walkFirst app₂ ys)
-  | [], [], .nil, _, _ => brel_done (.inl ⟨rfl, rfl⟩)
-  | _ :: _, _ :: _, .cons h hs, .cons hx hxs, .cons hy hys => by
+theorem walkFirst_brel {app₁ app₂ : World H → Val → Run H} {a : LTy} {lb : LExpr}
+    (hv : Vis p L lb)
+    (happ : ∀ w₁ w₂ x y, WorldRel p L w₁ w₂ → V p L a x y → LValTy p x a → LValTy p y a →
+      BRel p L (V p L (.bool lb)) True (app₁ w₁ x) (app₂ w₂ y)) :
+    ∀ {xs ys : List Val} {w₁ w₂ : World H}, WorldRel p L w₁ w₂ → VAll p L a xs ys →
+      LValsAll p xs a → LValsAll p ys a →
+      BRel p L (FirstRel p L a) True (walkFirst app₁ w₁ xs) (walkFirst app₂ w₂ ys)
+  | [], [], _, _, hw, .nil, _, _ => brel_done hw (.inl ⟨rfl, rfl⟩)
+  | _ :: _, _ :: _, _, _, hw, .cons h hs, .cons hx hxs, .cons hy hys => by
     simp only [walkFirst]
-    refine andThen_brel (happ _ _ h hx hy) id (fun b₁ b₂ e₁ e₂ hb => ?_) (fun h => absurd trivial h)
-      (fun h => absurd trivial h)
+    refine andThen_brel (happ _ _ _ _ hw h hx hy) id (fun b₁ b₂ e₁ e₂ hb hw' => ?_)
+      (fun h => absurd trivial h) (fun h => absurd trivial h)
     clear e₁ e₂
     have := V.eq_bool hb hv
     subst this
     cases b₁ with
     | bool k =>
       cases k
-      · exact walkFirst_brel hv happ hs hxs hys
-      · exact brel_done (.inr ⟨_, _, rfl, rfl, h⟩)
+      · exact walkFirst_brel hv happ hw' hs hxs hys
+      · exact brel_done hw' (.inr ⟨_, _, rfl, rfl, h⟩)
     | _ => exact brel_stuck_left
 
-theorem walkFold_brel {app₁ app₂ : Val → Val → Trace × Res} {a b : LTy} {A : Event → Prop}
+theorem walkFold_brel {app₁ app₂ : World H → Val → Val → Run H} {a b : LTy} {A : Event → Prop}
     {F : Prop}
-    (happ : ∀ c₁ c₂ x y, V p L b c₁ c₂ → LValTy p c₁ b → LValTy p c₂ b → V p L a x y →
-      LValTy p x a → LValTy p y a → BRel p L (V p L b) True (app₁ c₁ x) (app₂ c₂ y))
-    (hu₁ : ∀ c x, LValTy p c b → LValTy p x a → UOk A (fun r => LValTy p r b) F (app₁ c x))
-    (hu₂ : ∀ c x, LValTy p c b → LValTy p x a → UOk A (fun r => LValTy p r b) F (app₂ c x)) :
-    ∀ {xs ys : List Val} {c₁ c₂ : Val}, V p L b c₁ c₂ → LValTy p c₁ b → LValTy p c₂ b →
-      VAll p L a xs ys → LValsAll p xs a → LValsAll p ys a →
-      BRel p L (V p L b) True (walkFold app₁ c₁ xs) (walkFold app₂ c₂ ys)
-  | [], [], _, _, hc, _, _, .nil, _, _ => brel_done hc
-  | _ :: _, _ :: _, _, _, hc, hc₁, hc₂, .cons h hs, .cons hx hxs, .cons hy hys => by
+    (happ : ∀ w₁ w₂ c₁ c₂ x y, WorldRel p L w₁ w₂ → V p L b c₁ c₂ → LValTy p c₁ b →
+      LValTy p c₂ b → V p L a x y → LValTy p x a → LValTy p y a →
+      BRel p L (V p L b) True (app₁ w₁ c₁ x) (app₂ w₂ c₂ y))
+    (hu₁ : ∀ w c x, LValTy p c b → LValTy p x a → UOk A (fun r => LValTy p r b) F w (app₁ w c x))
+    (hu₂ : ∀ w c x, LValTy p c b → LValTy p x a → UOk A (fun r => LValTy p r b) F w (app₂ w c x)) :
+    ∀ {xs ys : List Val} {c₁ c₂ : Val} {w₁ w₂ : World H}, WorldRel p L w₁ w₂ → V p L b c₁ c₂ →
+      LValTy p c₁ b → LValTy p c₂ b → VAll p L a xs ys → LValsAll p xs a → LValsAll p ys a →
+      BRel p L (V p L b) True (walkFold app₁ w₁ c₁ xs) (walkFold app₂ w₂ c₂ ys)
+  | [], [], _, _, _, _, hw, hc, _, _, .nil, _, _ => brel_done hw hc
+  | _ :: _, _ :: _, _, _, w₁, w₂, hw, hc, hc₁, hc₂, .cons h hs, .cons hx hxs, .cons hy hys => by
     simp only [walkFold]
-    refine andThen_brel (happ _ _ _ _ hc hc₁ hc₂ h hx hy) id (fun r₁ r₂ h₁ h₂ hr => ?_)
+    refine andThen_brel (happ _ _ _ _ _ _ hw hc hc₁ hc₂ h hx hy) id (fun r₁ r₂ h₁ h₂ hr hw' => ?_)
       (fun h => absurd trivial h) (fun h => absurd trivial h)
-    have hr₁ := (hu₁ _ _ hc₁ hx).2
-    have hr₂ := (hu₂ _ _ hc₂ hy).2
+    have hr₁ := (hu₁ w₁ _ _ hc₁ hx).2.1
+    have hr₂ := (hu₂ w₂ _ _ hc₂ hy).2.1
     rw [h₁] at hr₁
     rw [h₂] at hr₂
-    exact walkFold_brel happ hu₁ hu₂ hr hr₁ hr₂ hs hxs hys
+    exact walkFold_brel happ hu₁ hu₂ hw' hr hr₁ hr₂ hs hxs hys
 
 end Una.F1

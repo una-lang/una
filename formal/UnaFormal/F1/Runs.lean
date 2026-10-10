@@ -5,11 +5,9 @@ worlds two runs leave, so by induction a sequence of runs of a program, from wor
 cannot tell apart, keeps them so, and every run of it shows the observer the same events: an
 `internal` write of one run cannot be observed by a later run's public read.
 -/
-import UnaFormal.F1H.T6
+import UnaFormal.F1.T6
 
-namespace Una.F1H
-
-open Una.F1 (Label LExpr)
+namespace Una.F1
 
 variable {p : Program} {L : Label} {H : Host}
 
@@ -61,4 +59,4 @@ theorem across_runs_events (hwf : p.LWellFormed) (hpol : p.policies = []) (hh : 
   fun ht₁ ht₂ => (t6_host_ground (Γ := []) hwf hpol hh hlaw (fun _ h => nomatch h) rfl
     (across_runs hwf hpol hh hlaw he n k hw h₁ h₂) .nil .nil .nil he n ht₁ ht₂).1
 
-end Una.F1H
+end Una.F1
