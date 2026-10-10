@@ -17,7 +17,6 @@ A security patch of the Beta: S-16 (whether an `internal` file or environment va
 
 ### Documentation
 
-- **A compact reference for agents** (#430), `docs/guide/una-compact.md`, under 2,000 tokens. It covers the loop, the syntax rules agents miss, failures, capabilities, labels and policies, contracts and loops, the library and examples, with three checked snippets. It ships in the release archive beside the full guides, as a quick start that points to them, and a test holds it under its token budget. Measured in three arms (`docs/reviews/v0.3.4/compact-arms.md`): alone it costs about twice the check runs of the full guides, so it complements them and does not replace them.
 - **The guides close the gaps the compact-reference arms met** (#449, from #430's measurement). The agent guide now:
   - says that a `Files` path is relative to its grant's prefix (`files:data:read` reads `readings.txt`, not `data/readings.txt`), which every arm got wrong, the full-guide ones included;
   - states how imports work;
