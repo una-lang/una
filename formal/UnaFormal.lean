@@ -39,5 +39,6 @@ import UnaFormal.F1.NewRules
 import UnaFormal.F1.Runs
 import UnaFormal.F1.HostExamples
 import UnaFormal.F1.HostFree
+import UnaFormal.F1.HostFreeReach
 import UnaFormal.F1.HostFreeExample
 import UnaFormal.F1.FilesCertExample

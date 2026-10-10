@@ -130,7 +130,7 @@ def emptyProg : Program :=
 
 -- `finalize` gives no verdict without a certificate: a declaration that is not a function of a
 -- certified program is not re-checked, whatever the steps before reported.
-#guard match finalize emptyProg emptyProg [] [] [] [("m.f", .accepted ""), ("m.g", .acceptedIfA3 "")] with
+#guard match finalize false emptyProg emptyProg [] [] [] [("m.f", .accepted ""), ("m.g", .acceptedIfA3 "")] with
   | [(_, .notRechecked _), (_, .notRechecked _)] => true
   | _ => false
 

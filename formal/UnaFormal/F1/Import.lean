@@ -876,12 +876,12 @@ def hostFreeAt (P : Program) (f : String) : Bool :=
 /-- A verdict's note, with `hostNote` unless `f` reaches no host operation and cannot be handed
 one (`hostFreeAt`). A host-free certified program is not enough on its own: it may be a part of the
 document, and a caller outside it may hand `f` a closure that writes a file (#472). -/
-def withHost (P : Program) (f : String) (note : String) : String :=
-  if hostFreeAt P f then note
+def withHost (docFree : Bool) (P : Program) (f : String) (note : String) : String :=
+  if docFree || hostFreeAt P f then note
   else if note == "" then hostNote else note ++ "; " ++ hostNote
 
-theorem withHost_ex (P : Program) (f n : String) :
-    (∃ n₀, withHost P f n = withHost P f n₀) ↔ True :=
+theorem withHost_ex (d : Bool) (P : Program) (f n : String) :
+    (∃ n₀, withHost d P f n = withHost d P f n₀) ↔ True :=
   ⟨fun _ => trivial, fun _ => ⟨n, rfl⟩⟩
 
 /-- **The verdicts, from the certificates alone** (M4 completion, A2 and A3). Every declaration
@@ -900,7 +900,7 @@ program uses `Files` (M5b) has `t6_release_erasure_obs`, on a lawful host (H1 to
 verdict's note says so (`withHost`).
 
 `finalize_sound` states it. -/
-def finalize (pAll pPlain : Program) (cond : List String) (mono : List Fun)
+def finalize (docFree : Bool) (pAll pPlain : Program) (cond : List String) (mono : List Fun)
     (ren : List (String × String)) (outs : List (String × Outcome)) : List (String × Outcome) :=
   let p₁ : Program := { pAll with funs := mono }
   let monoOk := Check.progOk [] p₁ && progSim ren p₁ pAll
@@ -908,9 +908,9 @@ def finalize (pAll pPlain : Program) (cond : List String) (mono : List Fun)
   let condOk := Check.progOk cond pAll
   outs.map fun (f, o) =>
     let verdict := fun (note : String) =>
-      if monoOk && pAll.funs.any (·.name == f) then Outcome.accepted (withHost pAll f note)
-      else if plainOk && pPlain.funs.any (·.name == f) then .accepted (withHost pPlain f note)
-      else if condOk && pAll.funs.any (·.name == f) then .acceptedIfA3 (withHost pAll f note)
+      if monoOk && pAll.funs.any (·.name == f) then Outcome.accepted (withHost docFree pAll f note)
+      else if plainOk && pPlain.funs.any (·.name == f) then .accepted (withHost docFree pPlain f note)
+      else if condOk && pAll.funs.any (·.name == f) then .acceptedIfA3 (withHost docFree pAll f note)
       else .notRechecked "whole program: no certificate"
     match o with
     | .accepted note => (f, verdict note)
@@ -923,17 +923,17 @@ instances, or the document's program, which the program checked at instances agr
 annotations. One reported accepted on the condition of A3 is a function of a program that passes
 `progOk cond`. Its note says whether the program performs no host operation, whose theorem holds
 on any host, or uses `Files` and rests on a lawful host (`withHost`). -/
-theorem finalize_sound {pAll pPlain : Program} {cond : List String} {mono : List Fun}
+theorem finalize_sound {docFree : Bool} {pAll pPlain : Program} {cond : List String} {mono : List Fun}
     {ren : List (String × String)} {outs : List (String × Outcome)} {f note : String} :
-    ((f, Outcome.accepted note) ∈ finalize pAll pPlain cond mono ren outs →
+    ((f, Outcome.accepted note) ∈ finalize docFree pAll pPlain cond mono ren outs →
       (Check.progOk [] pPlain = true ∧ pPlain.funs.any (·.name == f) = true ∧
-        ∃ n₀, note = withHost pPlain f n₀) ∨
+        ∃ n₀, note = withHost docFree pPlain f n₀) ∨
       (Check.progOk [] { pAll with funs := mono } = true ∧
         progSim ren { pAll with funs := mono } pAll = true ∧
-        pAll.funs.any (·.name == f) = true ∧ ∃ n₀, note = withHost pAll f n₀)) ∧
-    ((f, Outcome.acceptedIfA3 note) ∈ finalize pAll pPlain cond mono ren outs →
+        pAll.funs.any (·.name == f) = true ∧ ∃ n₀, note = withHost docFree pAll f n₀)) ∧
+    ((f, Outcome.acceptedIfA3 note) ∈ finalize docFree pAll pPlain cond mono ren outs →
       Check.progOk cond pAll = true ∧ pAll.funs.any (·.name == f) = true ∧
-        ∃ n₀, note = withHost pAll f n₀) := by
+        ∃ n₀, note = withHost docFree pAll f n₀) := by
   constructor
   · intro h
     simp only [finalize, List.mem_map] at h
@@ -964,7 +964,7 @@ def stdHost : Caps' :=
 
 /-- A `uses` entry that may grant a file write: one that names no capability in `known`, grants an
 operation that capability does not declare, or grants `std.host`'s `Files.write`. -/
-def usesSite (known : Caps') (u : J) : Option String :=
+def usesSite (known : Caps') (u : J) (anyHost : Bool := false) : Option String :=
   match u.getObjValD "capability", u.getObjValD "ops" with
   | .str c, .arr grants =>
     match known.find? (fun (_, n', _) => n' == c) with
@@ -977,6 +977,8 @@ def usesSite (known : Caps') (u : J) : Option String :=
         some "a `uses` that grants an operation its capability does not declare"
       else if m == "std.host" && c == "Files" && gs.contains "write" then
         some "a `uses` that grants `Files.write`"
+      else if anyHost && m == "std.host" && (c == "Files" || c == "Http") then
+        some s!"a `uses` that grants `{c}`"
       else none
   | _, _ => some "a `uses` entry that cannot be read"
 
@@ -989,7 +991,7 @@ identified, and every other node counts as a site.
 - An element of a `uses` array is safe when `usesSite` finds nothing in it. Only `uses` arrays hold
   grants: a handler declaration's capability and operations are not read as one.
 `none` when the node and its children hold no site; otherwise what was found. -/
-partial def writeSite (known : Caps') (j : J) : Option String :=
+partial def writeSite (known : Caps') (j : J) (anyHost : Bool := false) : Option String :=
   match j with
   | .obj kvs =>
     let here : Option String :=
@@ -1004,16 +1006,18 @@ partial def writeSite (known : Caps') (j : J) : Option String :=
             if c != n then some "an operation whose capability is not its path's"
             else if !ops.contains o then some "an operation its capability does not declare"
             else if m == "std.host" && n == "Files" && o == "write" then some "a `Files.write`"
+            else if anyHost && m == "std.host" && (n == "Files" || n == "Http") then
+              some s!"an operation of `{n}`"
             else none
         | _, _, _, _ => some "an operation whose capability cannot be resolved"
       else match j.getObjValD "uses" with
-        | .arr us => us.foldl (fun acc u => acc <|> usesSite known u) none
+        | .arr us => us.foldl (fun acc u => acc <|> usesSite known u anyHost) none
         | .null => none
         | _ => some "a `uses` that cannot be read"
     match here with
     | some w => some w
-    | none => kvs.toArray.foldl (fun acc kv => acc <|> writeSite known kv.2) none
-  | .arr xs => xs.foldl (fun acc x => acc <|> writeSite known x) none
+    | none => kvs.toArray.foldl (fun acc kv => acc <|> writeSite known kv.2 anyHost) none
+  | .arr xs => xs.foldl (fun acc x => acc <|> writeSite known x anyHost) none
   | _ => none
 
 /-- The document's `host` entries that differ from `std.host` as `stdHost` fixes it: a capability it
@@ -1388,7 +1392,13 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
   let sites := decls.filterMap (fun d =>
       (writeSite known d.value).map fun w => (named d, d.kind, w)) ++
     (hostSites host).map fun w => ("std.host", "host", w)
-  pure (guardFiles sites (finalize (mkProg members) (mkProg plain) cond mono ren final))
+  -- The document performs no host operation (#472): no declaration of any kind, lambdas and
+  -- handler bodies included, holds an operation or a grant of `Files` or `Http`, or a node the scan
+  -- cannot identify, and its `host` key is `std.host`'s. Then no caller in it can hand a
+  -- declaration a closure that writes, and no package imports another (`spec/10 §4`), so every
+  -- accepted declaration keeps the any-host claim.
+  let docFree := sites.isEmpty && decls.all fun d => (writeSite known d.value true).isNone
+  pure (guardFiles sites (finalize docFree (mkProg members) (mkProg plain) cond mono ren final))
 
 /-- `checkDocumentWith` with labeled instantiation, `LTy.lsubst`. -/
 def checkDocument (doc : J) : Except String (List (String × Outcome)) :=

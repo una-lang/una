@@ -6,6 +6,7 @@ file-state label), so that `t6_host_ground` applies to its runs on a lawful host
 -/
 import UnaFormal.F1.Import
 import UnaFormal.F1.HostExamples
+import UnaFormal.F1.HostFreeExample
 
 namespace Una.F1.FilesCertExample
 
@@ -29,7 +30,21 @@ def labels : Import.HostLabels :=
   { acceptsRead := Label.bot, readResult := ⟨.internal, []⟩, acceptsWrite := ⟨.internal, []⟩,
     fileState := some Label.bot }
 
-def prog : Program := Import.mkProgram [] Label.bot labels [] [] [mark]
+def sec : LExpr := .ofLabel ⟨.secret, []⟩
+
+/-- `dbl(x: secret Int) -> secret Int = x + x`: it reaches no host operation (#472). -/
+def dbl : Fun where
+  name := "dbl"
+  tparams := []
+  eqParams := []
+  params := [("x", .int sec)]
+  result := .int sec
+  op := false
+  host := {}
+  fails := false
+  body := .letR "y" (.int sec) (.prim .add [.var "x", .var "x"]) (.atom (.var "y"))
+
+def prog : Program := Import.mkProgram [] Label.bot labels [] [] [mark, dbl]
 
 /-- `let x: Unit = mark() in x`. -/
 def callMark : Expr := .letR "x" (.unit .bot) (.call "mark" [] []) (.atom (.var "x"))
@@ -76,5 +91,59 @@ theorem mark_runs (n : Nat) (h₁ : Term (eval HostExamples.files n prog w₁ []
 /-- The runs end, write the file, and leave file systems that differ in its content only. -/
 example : (eval HostExamples.files 4 prog w₁ [] callMark).2.1 = .ok .unit ∧
     (eval HostExamples.files 4 prog w₁ [] callMark).1 = [.write "marker.txt" ""] := ⟨rfl, rfl⟩
+
+/-! ### A declaration that reaches no host operation, beside one that writes (#472) -/
+
+/-- `let z: Int = dbl(s) in z`, with `s` a `secret Int`. -/
+def callDbl : Expr := .letR "z" (.int sec) (.call "dbl" [] [.var "s"]) (.atom (.var "z"))
+
+/-- `dbl`'s reach, `{dbl}`, holds no host operation, though `prog` writes a file. -/
+theorem dbl_reach : ∀ f fn, prog.find f = some fn → f = "dbl" →
+    fn.body.hostFree = true ∧ ∀ g ∈ fn.body.callees, g = "dbl" := by
+  intro f fn hf hdbl
+  subst hdbl
+  simp only [prog, Import.mkProgram, Program.find, List.find?] at hf
+  cases hf
+  exact ⟨rfl, fun _ h => by simp [dbl, Expr.callees, Rhs.callees] at h⟩
+
+/-- Two file systems the host `s16` tells apart by a read, which breaks H1. -/
+def v₁ : World HostFreeExample.s16 := HostFreeExample.fsOk
+def v₂ : World HostFreeExample.s16 := HostFreeExample.fsBad
+
+theorem v_rel : WorldRel prog Label.bot v₁ v₂ := ⟨fun _ => rfl, fun h => absurd h internal_hidden⟩
+
+theorem sec_hidden : ¬ Vis prog Label.bot sec := by
+  rintro (⟨h, _⟩ | ⟨⟨h, _⟩, _, _⟩) <;>
+    simp [prog, Import.mkProgram, Program.top, sec, LExpr.ofLabel, Label.bot] at h <;>
+    revert h <;> decide
+
+unseal flowB flowsB in
+theorem callDbl_checked :
+    ∃ ε, checkExpr prog [] [("s", .int sec)] .bot (.int sec) callDbl = .ok ε := ⟨_, rfl⟩
+
+theorem sec_hidden' : ¬ Vis prog Label.bot (LExpr.bot.join sec) := by
+  rintro (⟨h, _⟩ | ⟨⟨h, _⟩, _, _⟩) <;>
+    simp [prog, Import.mkProgram, Program.top, sec, LExpr.ofLabel, LExpr.join, LExpr.bot, Label.bot,
+      Label.join, Level.join] at h <;> revert h <;> decide
+
+/-- **The reach theorem on a host that breaks H1** (#472): `dbl` reaches no host operation, so the
+runs of a call of it in `prog`, which writes a file elsewhere, on secrets 1 and 2, are related on
+`s16`, from the two file systems that break H1, with no premise on the host. -/
+theorem dbl_any_host : ∃ t ε, LExprTy prog [] [("s", .int sec)] .bot callDbl t ε ∧ ∀ n : Nat,
+    BRelR prog Label.bot (V prog Label.bot (t.lsubst prog.recordDeep []))
+      (Vis prog Label.bot (ε.inst (prog.sd [])).failLabel)
+      (eval HostFreeExample.s16 n prog v₁ [("s", .int 1)] callDbl)
+      (eval HostFreeExample.s16 n prog v₂ [("s", .int 2)] callDbl) := by
+  obtain ⟨hwf, hb1, hh⟩ := certified
+  obtain ⟨ε, hc⟩ := callDbl_checked
+  obtain ⟨t, ht, _⟩ := checkExpr_sound hc
+  refine ⟨t, ε, ht, fun n => ?_⟩
+  exact t6_release_hostFreeIn (S := (· = "dbl")) hwf hb1 hh dbl_reach
+    (fun _ _ h => by simp [prog, Import.mkProgram, Program.policy] at h) (σ := [])
+    (fun _ h => nomatch h) (fun _ h => by simp at h)
+    (fun q hq => by simp only [List.mem_singleton] at hq; subst hq; rfl) rfl v_rel
+    (.cons .int .nil) (.cons .int .nil) (.cons (.hidden sec_hidden') .nil) ht
+    (by simp [Val.HostFreeEnvIn, Val.HostFreeIn]) (by simp [Val.HostFreeEnvIn, Val.HostFreeIn])
+    rfl (fun g hg => by simpa [callDbl, Expr.callees, Rhs.callees] using hg) n
 
 end Una.F1.FilesCertExample
