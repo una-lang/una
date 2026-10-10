@@ -2,7 +2,7 @@
 -- spec: spec/14 §3
 -- grant: console
 -- grant: files:data:read
--- expect: run-output "plain: valid"
+-- expect: run-output "plain.txt: valid"
 -- expect: error U6005 at src/main.una:13:19
 module main
 

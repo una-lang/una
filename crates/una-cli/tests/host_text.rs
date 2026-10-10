@@ -31,7 +31,21 @@ fn runtime() {
     });
 }
 
-/// A package of edition 0.2 named `name`, with `files` and the bytes of `data`.
+/// The policy the tests print a read's `internal` text through, so that they can compare it.
+const RELEASE: &str = r#"trusted module release
+
+pub policy shown
+  from internal Text
+  to public Text
+  via as_text
+  purpose "show what a read returned, to compare it in a test"
+  owner tests
+
+as_text(t: internal Text) -> public Text = t
+"#;
+
+/// A package of edition 0.2 named `name`, with `src/main.una`, the trusted module `release`,
+/// and the bytes of `data`.
 fn package(name: &str, grants: &str, source: &str, data: &[(&str, &[u8])]) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("una-host-text-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -40,7 +54,7 @@ fn package(name: &str, grants: &str, source: &str, data: &[(&str, &[u8])]) -> Pa
     std::fs::write(
         dir.join("una.toml"),
         format!(
-            "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"0.2\"\n\n[run]\nentry = \"main\"\ngrants = [{grants}]\n"
+            "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"0.2\"\n\n[run]\nentry = \"main\"\ngrants = [{grants}]\n\n[trusted]\nmodules = [\"release\"]\n"
         ),
     )
     .unwrap();
@@ -50,6 +64,7 @@ fn package(name: &str, grants: &str, source: &str, data: &[(&str, &[u8])]) -> Pa
     )
     .unwrap();
     std::fs::write(dir.join("src/main.una"), source).unwrap();
+    std::fs::write(dir.join("src/release.una"), RELEASE).unwrap();
     for (path, bytes) in data {
         std::fs::write(dir.join("data").join(path), bytes).unwrap();
     }
@@ -115,13 +130,15 @@ fn both(
 
 const READ: &str = r#"module main
 
+import release (shown)
+
 show(name: Text) -> Unit
   uses @console: Console[print]
   uses @files: Files[read]
 =
   let r = attempt @files.read(name)
   when r
-    is Ok(t) -> @console.print("{name}: {t}")
+    is Ok(t) -> @console.print("{name}: {shown(t)}")
     is Err(e) -> @console.print("{name}: failed")
 
 pub main() -> Unit
@@ -182,11 +199,19 @@ fn valid_files_read_as_before_in_both_engines() {
         "valid",
         "\"console\", \"files:data:read\"",
         &source,
-        &[("plain.txt", b"hello"), ("accented.txt", "café ✓".as_bytes())],
+        &[
+            ("plain.txt", b"hello"),
+            ("accented.txt", "café ✓".as_bytes()),
+        ],
     );
     let (document, _, run, trace) = both(&dir, "valid", None);
     assert_eq!(document["status"], "ok", "{document}");
-    let lines = ["plain.txt: hello", "missing.txt: failed", "accented.txt: café ✓", "after"];
+    let lines = [
+        "plain.txt: hello",
+        "missing.txt: failed",
+        "accented.txt: café ✓",
+        "after",
+    ];
     assert_eq!(document["output"], serde_json::json!(lines), "{document}");
     assert_eq!(run.status.code(), Some(0), "{run:?}");
     assert_eq!(
@@ -218,7 +243,11 @@ fn an_environment_variable_that_is_not_utf_8_aborts_the_run_in_both_engines() {
     let dir = package("env", "\"console\", \"env\"", ENV, &[]);
     let (document, stderr, run, trace) = both(&dir, "env", Some(b"caf\xe9"));
     assert_eq!(document["status"], "aborted", "{document}");
-    assert_eq!(document["output"], serde_json::json!(["before"]), "{document}");
+    assert_eq!(
+        document["output"],
+        serde_json::json!(["before"]),
+        "{document}"
+    );
     assert_eq!(document["diagnostics"][0]["code"], "U6005", "{document}");
     assert!(
         stderr.contains("the value of this environment variable is not valid UTF-8"),
@@ -238,7 +267,10 @@ fn an_environment_variable_that_is_not_utf_8_aborts_the_run_in_both_engines() {
             serde_json::json!(["before", line]),
             "{document}"
         );
-        assert_eq!(String::from_utf8_lossy(&run.stdout), format!("before\n{line}\n"));
+        assert_eq!(
+            String::from_utf8_lossy(&run.stdout),
+            format!("before\n{line}\n")
+        );
         assert_eq!(document["trace"], trace);
     }
     let _ = std::fs::remove_dir_all(&dir);

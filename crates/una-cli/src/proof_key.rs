@@ -41,14 +41,15 @@ impl std::fmt::Debug for ProofKey {
 
 /// The key, read or made, or `None` when there is none to use.
 pub(crate) fn resolve(environment: Environment<'_>) -> Option<ProofKey> {
-    let (path, shown) = match crate::variable(environment, OVERRIDE).filter(|value| !value.is_empty()) {
-        Some(file) => (PathBuf::from(&file), file),
-        None => {
-            let home = crate::variable(environment, "HOME").filter(|home| !home.is_empty())?;
-            let path = Path::new(&home).join(".una").join("proof-cache.key");
-            (path, DEFAULT_SHOWN.to_owned())
-        }
-    };
+    let (path, shown) =
+        match crate::variable(environment, OVERRIDE).filter(|value| !value.is_empty()) {
+            Some(file) => (PathBuf::from(&file), file),
+            None => {
+                let home = crate::variable(environment, "HOME").filter(|home| !home.is_empty())?;
+                let path = Path::new(&home).join(".una").join("proof-cache.key");
+                (path, DEFAULT_SHOWN.to_owned())
+            }
+        };
     let secret = read_or_make(&path)?;
     (secret.len() >= MINIMUM).then_some(ProofKey { secret, shown })
 }

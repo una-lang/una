@@ -42,7 +42,10 @@ fn main() -> ExitCode {
 #[allow(clippy::disallowed_methods)]
 fn environment(name: &str) -> Result<Option<String>, una_interp::NotText> {
     match std::env::var_os(name) {
-        Some(value) => value.into_string().map(Some).map_err(|_| una_interp::NotText),
+        Some(value) => value
+            .into_string()
+            .map(Some)
+            .map_err(|_| una_interp::NotText),
         None => Ok(None),
     }
 }
