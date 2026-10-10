@@ -6,7 +6,7 @@
 # must catch both. It builds both executables first, so that it never runs stale ones.
 #
 # Usage: docs/reviews/formal-m2-replay/run.sh
-# Then S-04's shapes (M6, `dumps-0.2/`), in edition 0.2.
+# Then S-04's shapes (M6, `dumps-0.2/`), in edition 0.2, and S-05's (`dumps-s05/`), in edition 0.1.
 set -eu
 here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH='' cd -- "$here/../../.." && pwd)
@@ -28,4 +28,18 @@ for dump in "$here"/dumps-0.2/*.txt; do
     python3 -I "$here/dumpcore.py" "$dump" "$module" 0.2 > "$out/$name.json"
     echo "== $name"
     "$root/formal/.lake/build/bin/una-core-check" "$out/$name.json" | cut -f2- || true
+done
+# S-05: edition 0.1's shapes, dumped by v0.1.3, the release before the fix, read with the
+# file-state label that v0.3.6's `una core --json` infers for the same repro (dumps-s05/
+# file_state.tsv), the one input not taken from the release; then with each fixed label, which
+# the README shows is not faithful.
+for fs in inferred public internal; do
+    echo "== S-05, file_state $fs"
+    tail -n +2 "$here/dumps-s05/file_state.tsv" | while IFS="$(printf '\t')" read -r file level _; do
+        [ "$fs" = inferred ] || level=$fs
+        name=$(basename "$file" .txt)
+        python3 -I "$here/dumpcore.py" "$here/dumps-s05/$file" main 0.1 "$level" > "$out/$name.$fs.json"
+        echo "== $name"
+        "$root/formal/.lake/build/bin/una-core-check" "$out/$name.$fs.json" | cut -f2- || true
+    done
 done
