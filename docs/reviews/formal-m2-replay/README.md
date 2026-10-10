@@ -102,16 +102,14 @@ T1, the unary half and T6 carry both changes, and `scripts/formal.sh` passes wit
 
 `dumps-0.2/` holds each shape's `una check --dump-core main` output from that binary, edited by no one. `run.sh` reads them in edition 0.2 after S-01 to S-12.
 
-**Result: none is re-checked yet.** Each shape reads its secret with `Env.get` and prints it through interpolation, `to_text` then `concat`. The dumps show the leak at that interpolation. In `edit_order_loop_list`, for instance:
+**Result with M6b (#485): 6 of 8 rejected at the leak.** M6b models `to_text`, `concat` and `Env.get`.
+- **6 rejected**, each at the interpolation: "the primitive's result, `internal Text`, does not flow into `public Text`". These are `edit_order_loop_list`, `option`, `closure`, `edit_param`, `fold` and `generic_init`.
+- **2 not re-checked**, at "a value of `prelude.Result`": `result_ok` and `result_err` build a `Result` with `Ok` and `Err`, which F1 lacks.
+- **The other 8** are not re-checked, at "a call of `prelude.or_else`" (7) or "the form `together_for`" (1). `at`, `or_else` and `first` come in a later item.
 
-```
-let %t4: internal Text = to_text(xs%2) in
-let %t5: Text = concat(%t4) in
-```
+The helpers `edit_param`'s `push` and `generic_init`'s `same` are accepted, and neither prints.
 
-The `internal` text becomes a `public` one. M6 models loops, tuples, `append` and `set`, but not `concat`, `to_text` or `Env.get`. So the re-check reports every shape as not re-checked: 15 at "the primitive `concat`", and `edit_order_loop_together` at "the form `together_for`". It reports none as accepted. Two helper functions, `edit_param`'s `push` and `generic_init`'s `same`, are accepted, and neither prints.
-
-**Next: M6b.** It models `to_text`, `concat` and `Env.get` as proven primitives. The exit criterion is that the 8 shapes that use no other form (`list`, `option`, `result_ok`, `result_err`, `closure`, `edit_param`, `fold`, `generic_init`) are rejected, and their fixed versions are not. `prelude.at`, `or_else` and `first` come in a later item (the coordinator's decision N-82).
+**The controls** (the coordinator's answer: existing `*_accepted` programs only). `edit_order_list_of_lists_accepted` and `edit_order_option_of_list_accepted` are dumped by v0.3.0, which accepts them. The re-check does not reject either: both are not re-checked, at `or_else`, as are their leaking counterparts. The 8 loop shapes have no `*_accepted` counterpart, and are unpaired. The `Map` controls pair with no replayed shape, since the `Map` leaks do not check on v0.2.0.
 
 **The reader.** `dumpcore.py` reads M6's syntax:
 - tuple types `(T, ...)`;
@@ -119,5 +117,7 @@ The `internal` text becomes a `public` one. M6 models loops, tuples, `append` an
 - `let (x: T, ...) = a in e`;
 - `loop x: T in s with (b: T = a, ...) do e`, over a list or a range.
 
-It reports a body with `together` or `together_for` as that form, outside F1.
+It reports a body with `together` or `together_for` as that form, outside F1. Two changes came with M6b, each checked against a real `una core --json` export:
+- **The `host` key.** It lists `std.host`'s `Console` and `Env` when a declaration uses them, as the export writes them: the same `print(line: Text) -> Unit` and `get(name: Text) -> Option[internal Text]`, both accepting `public`. Before, `host` was empty, which S-01 to S-12 never needed, since their repros use their packages' own capabilities.
+- **`Ok(a)` and `Err(a)`** are read as constructs of `prelude.Result`, as the export writes them, not as calls of a variable.
 

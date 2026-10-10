@@ -3,7 +3,7 @@
 - Issue: #485, under #46
 - Previous step: `docs/plan/formal-track-m6.md` (M6, #478)
 - Date: 2026-10-10
-- Status: plan approved by the coordinator (2026-10-10), with the answers of §8; proofs in progress
+- Status: done. Proven with no `sorry` (§9). The labeled-loop cases found a gap in how M6 labels tuples, fixed here (§10)
 
 ## 1. Why
 
@@ -75,3 +75,60 @@ The accepted cases join the corpus, where the re-check must accept them. The rej
 3. **The replay pairs each leaking shape with an existing `*_accepted` control**, a real program that v0.3.0 accepts, not a newly written one. Each control must not be rejected by the re-check: it is accepted, or not re-checked at a stated form. A shape with no counterpart is listed as unpaired, not given an invented one. §5's proposal of a newly written fixed version is withdrawn.
 
 The labeled-loop pairs of §6 are approved. Their rejected halves carry their `expect` lines (U4001).
+
+## 9. What is proven
+
+`scripts/formal.sh` passes with 203 stated theorems, none depending on `sorry` (194 after M6). Every proof carries the three forms.
+- **`concat`:** `Prim.concat`, with `concatTexts_typed`. Its binary case is `VList.eq_texts_vis` (and `…σ`): texts whose every label the observer sees are equal.
+- **`to_text`:** `Rhs.toText`, rendered by `Val.render`, which reads no annotation (`Val.render_anon`). Its binary case is `==`'s, `V.eq_of_deep` at a type with equality.
+- **`Env.get`:** `Rhs.envGet`, from `Host.env`.
+  - Its name is `public`, so both runs read the same variable, and the environment is the host's, the same in both runs.
+  - It is not host-free (`Rhs.hostFree`), so a declaration that reaches it never gets the any-host note.
+  - A document that reads it counts in the whole-document scan of host operations.
+  - Its note names `Env` and its premise: "rests on a lawful host (H1 to H3) and one environment in both runs: the program uses `Env`".
+- **The importer** reads `prim concat`, `prim to_text` and `std.host`'s `Env.get`.
+
+**#475, folded in (the coordinator's decision).** A declaration whose certified program performs no host operation, but which takes a closure, now carries "rests on a lawful host (H1 to H3): a caller may hand it a closure that uses the host", not "the program uses `Files`". The file-state guard still applies to it (`usesFilesNote`).
+
+**A gap in the importer, found and fixed.** A lambda given to an `of` parameter performs its caller's effects (ADR 0062). The importer gave its type the caller's operation, but not the caller's host effects, so a lambda that calls a function reading a file failed its own type.
+- `s14_ok_count_public.probe`, which `una check` accepts, moved into rejected on a first run. Before M6b it stopped earlier, at `concat`.
+- Such a lambda now carries its enclosing function's declared host effects. That only widens its declared type, so every use site checks more.
+
+## 10. Tuples carry no label (a finding of the labeled-loop cases)
+
+M6 raised a tuple's own top label by what decides it:
+- the loop's value by `ℓs`;
+- an `if`, a `case` or a handler at tuple type, Core's join of the bindings it updates, by its condition, scrutinee or failure.
+
+T-LetTuple then pushed that label into the components. Rust labels the components only, and asks each updated binding to be at least the deciding label (U4001). So the re-check rejected two secure programs that `una check` accepts, the accepted halves of §6's pairs:
+- a count over a list of `internal` length;
+- a count decided by `internal` elements.
+
+M6's corpus had no labeled loop, so none of its 73 accepts met this.
+
+**The fix.** A tuple carries no label of its own. T-Loop's value is `tuple S ⊥`, and new rules `iteT`, `caseOptionT`, `caseResultT` and `handleT` give a join at tuple type the value `tuple ts ⊥`. Each asks `Flows (ts.map (raise ℓ)) ts`: every component is at least the deciding label `ℓ`. A `Unit` component meets it trivially, which is sound only because any two units are related (`V.unit`). In T6's hidden branches, the runs' typed tuples are related component by component, each hidden (`VList.hide_covσ`, `V.tuple_covσ`, `brel_confined_typed`, `brel_quiet_typed`). The checker checks the premise ("a component of the joined state is below …").
+
+**No laxer than Rust.**
+- `una check` 0.3.5 gives U4001 on four surface probes, each a `public` count updated under an `internal` decision: by `if`, by `when` on an option, by `when` on a result, and by a loop over a list of `internal` length.
+- Their `internal` versions, exported by `una core --json` and with the count's labels lowered to `public`, are each rejected by the re-check at the premise.
+- A handler's join is the model's only. Its deciding label is a function's failure, decided at `public` (T-Fun), so no surface program puts a component below it. `LoopExample`'s guards check its premise with a `parse` of `internal` text.
+
+**`Unit` components** (`LoopExample`, `#guard`): a loop over a list of `internal` length whose state is a `Unit` is accepted, and returns only a `Unit`. The same loop with a `public` count is rejected at the premise.
+
+**The pairs.** `loop_label_length_accepted` and `loop_label_elements_accepted` are accepted by the re-check. Their rejected halves carry `expect: error U4001`, at the positions `una check` reports.
+
+## 11. The corpus
+
+The 1,329 documents of M5b, against M6's checker:
+- 37 move from not re-checked to accepted, those whose first gap was `concat`, `to_text` or `Env.get`;
+- 39 stay not re-checked with another reason;
+- none moves into rejected. Accepted: 716 → 753.
+
+The tuple-label fix moves no verdict of the corpus. Two notes change, `hof_run_ok_user_hof_no_decision`'s `sw.apply_eff` and `sw.g`, to the closure note above.
+
+## 12. The replay
+
+S-01 to S-12's verdicts are unchanged. Five notes of S-08's documents change to the closure note: those documents read `Env.get` in `main`.
+
+S-04: 6 of the 8 shapes are rejected exactly at the leak, "the primitive's result, `internal Text`, does not flow into `public Text`": `loop_list`, `option`, `closure`, `edit_param`, `fold` and `generic_init`. `result_ok` and `result_err` build a `Result` with `Ok` and `Err`, which F1 lacks, and are not re-checked. The details and the controls are in `docs/reviews/formal-m2-replay/README.md`.
+
