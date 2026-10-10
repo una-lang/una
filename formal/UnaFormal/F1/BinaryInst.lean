@@ -293,6 +293,17 @@ theorem Vis.ofFn_failLabel {s : List (String × LExpr)} {o : Bool} {g : HostFx} 
     exact Vis.of_le (by rw [show LExpr.bot = LExpr.ofLabel Label.bot from rfl, LExpr.inst_ofLabel]
                         exact LExpr.join_le (LExpr.le_refl _) (LExpr.le_refl _)) Vis.bot
 
+/-- Texts whose every label's instance the observer sees are the same texts in both runs. -/
+theorem VList.eq_texts_visσ {σ : List (String × LTy)} : ∀ {ts : List LTy} {as bs : List Val},
+    VList p L (ts.map (LTy.lsubst p.recordDeep σ)) as bs →
+    (∀ u ∈ ts, u.erase = .text ∧ Vis p L ((p.deep u).inst (p.sd σ))) → as = bs
+  | [], [], [], .nil, _ => rfl
+  | u :: _, _ :: _, _ :: _, .cons h hs, hall => by
+    obtain ⟨he, hv⟩ := hall u List.mem_cons_self
+    cases u <;> simp [LTy.erase] at he
+    simp only [LTy.lsubst] at h
+    rw [V.eq_text h hv, VList.eq_texts_visσ hs (fun w hw => hall w (List.mem_cons_of_mem _ hw))]
+
 /-- A primitive gives the same result in both runs when the observer sees its label's instance. -/
 theorem prim_agreeσ {σ : List (String × LTy)} {pr : Prim} {ts : List LTy} {t : Ty}
     {vs₁ vs₂ : List Val} (hp : PrimTy pr (ts.map LTy.erase) t)
@@ -314,6 +325,9 @@ theorem prim_agreeσ {σ : List (String × LTy)} {pr : Prim} {ts : List LTy} {t 
     cases u <;> simp [LTy.erase] at he
     exact V.eq_bool h hd
   cases hp with
+  | concat hts =>
+    rw [VList.eq_texts_visσ hvs (fun u hu => ⟨hts _ (hes ▸ List.mem_map_of_mem hu),
+      hdeep (fun h => Prim.noConfusion h) u hu⟩)]
   | add | sub | lt | eqInt =>
     match ts, hvs, hes with
     | [_, _], .cons h₁ (.cons h₂ .nil), hes =>

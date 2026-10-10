@@ -154,6 +154,7 @@ def Program.RelBound (p : Program) (pc : LExpr) (rs : List String) : Prop :=
 def ofScalar (t : Ty) (l : LExpr) : LTy :=
   match t with
   | .bool => .bool l
+  | .text => .text l
   | _ => .int l
 
 /-- The label of a primitive's result (`spec/07 §7` rule 3): `.len` takes the top label of its
@@ -395,6 +396,15 @@ mutual
         LRhsTy p E Γ pc (.eq a b) (.bool ((p.deep t₁).join (p.deep t₂))) .none
     /-- A tuple of Core (`spec/17 §4`): the components' types. -/
     | tuple {Γ pc items ts} : LAtomsTy Γ items ts → LRhsTy p E Γ pc (.tuple items) (.tuple ts .bot) .none
+    /-- `to_text` (`spec/10 §5`, `spec/07 §7` rule 3): the text carries every label of the value,
+    at a type with equality, where related values the observer fully sees are equal (as `==`). -/
+    | toText {Γ pc a t} :
+        LAtomTy Γ a t → p.eqIn E t = true → LRhsTy p E Γ pc (.toText a) (.text (p.deep t)) .none
+    /-- `Env.get` (`spec/14 §3`): its name is `public`, its `accepts`; whether the variable exists
+    is `public`, and its value `internal`. The environment is the host's, the same in both runs. -/
+    | envGet {Γ pc name t} :
+        LAtomTy Γ name t → t.erase = .text → p.le (p.deep t) .bot →
+        LRhsTy p E Γ pc (.envGet name) (.option (.text (.ofLabel ⟨.internal, []⟩)) .bot) .none
     /-- `append`: the item flows into the element type; the list keeps its top label, its length's. -/
     | append {Γ pc xs item te lx t} :
         LAtomTy Γ xs (.list te lx) → LAtomTy Γ item t → Flow p.top t te →

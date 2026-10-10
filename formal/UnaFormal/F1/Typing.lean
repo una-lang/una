@@ -68,6 +68,7 @@ inductive PrimTy : Prim → List Ty → Ty → Prop where
   | lenList {t} : PrimTy .len [.list t] .int
   | lenText : PrimTy .len [.text] .int
   | sum : PrimTy .sum [.list .int] .int
+  | concat {ts} : (∀ t ∈ ts, t = .text) → PrimTy .concat ts .text
 
 /-- What a loop visits, and the type of its variable. -/
 inductive SourceTy : Ctx → Source → Ty → Prop where
@@ -123,6 +124,8 @@ mutual
     | parse {ctx s} : AtomTy ctx s .text → RhsTy p ctx (.parse s) .int
     | eq {ctx a b t} : AtomTy ctx a t → AtomTy ctx b t → RhsTy p ctx (.eq a b) .bool
     | tuple {ctx items ts} : AtomsTy ctx items ts → RhsTy p ctx (.tuple items) (.tuple ts)
+    | toText {ctx a t} : AtomTy ctx a t → RhsTy p ctx (.toText a) .text
+    | envGet {ctx name} : AtomTy ctx name .text → RhsTy p ctx (.envGet name) (.option .text)
     | append {ctx xs item t} :
         AtomTy ctx xs (.list t) → AtomTy ctx item t → RhsTy p ctx (.append xs item) (.list t)
     | set {ctx xs index item t} :

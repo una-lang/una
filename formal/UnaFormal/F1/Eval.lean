@@ -87,6 +87,10 @@ structure Host where
   read : String → FS → Option String
   write : String → String → FS → Option FS
   request : String → List Val → Srv → Except Nat Val × Srv
+  /-- The process environment `Env.get` reads (M6b): the host's, the same in both runs, and no
+  operation of the program changes it (M3's assumption 3). A variable that is not valid UTF-8
+  aborts the run (S-16, ADR 0086), which is termination, so the model gives texts. -/
+  env : String → Option String := fun _ => none
 
 /-- The host's state. -/
 structure World (H : Host) where
@@ -156,6 +160,34 @@ def evalAtoms (env : Env) : List Atom → Option (List Val)
     let vs ← evalAtoms env rest
     pure (v :: vs)
 
+/-- The join of a list of texts; `none` when an item is not one. -/
+def concatTexts : List Val → Option String
+  | [] => some ""
+  | .text s :: rest => (concatTexts rest).map (s ++ ·)
+  | _ => none
+
+mutual
+  /-- The text of a value, as interpolation writes it: total, and the same for a function value
+  whatever it captured, so that it reads no annotation. -/
+  def Val.render : Val → String
+    | .int n => toString n
+    | .bool b => toString b
+    | .text s => s
+    | .unit => "unit"
+    | .list items => "[" ++ Val.renders items ++ "]"
+    | .none => "None"
+    | .some v => "Some(" ++ v.render ++ ")"
+    | .ok v => "Ok(" ++ v.render ++ ")"
+    | .err c => "Err(" ++ toString c ++ ")"
+    | .record r fs => r ++ "(" ++ Val.renders fs ++ ")"
+    | .closure _ _ _ => "<fn>"
+    | .tuple items => "(" ++ Val.renders items ++ ")"
+
+  def Val.renders : List Val → String
+    | [] => ""
+    | v :: vs => v.render ++ ", " ++ Val.renders vs
+end
+
 /-- The sum of a list of integers; `none` when an item is not one. -/
 def sumInts : List Val → Option Int
   | [] => some 0
@@ -172,6 +204,7 @@ def evalPrim : Prim → List Val → Option Val
   | .len, [.list items] => some (.int items.length)
   | .len, [.text s] => some (.int s.length)
   | .sum, [.list items] => (sumInts items).map .int
+  | .concat, vs => (concatTexts vs).map .text
   | _, _ => none
 
 /-- The parameters bound to the arguments, in front of `env`. -/
@@ -406,6 +439,14 @@ mutual
         match evalAtom env xs, evalAtom env item with
         | some (.list items), some v => done w (.list (items ++ [v]))
         | _, _ => stuck w
+      | .toText a =>
+        match evalAtom env a with
+        | some v => done w (.text v.render)
+        | none => stuck w
+      | .envGet name =>
+        match evalAtom env name with
+        | some (.text s) => done w ((H.env s).elim .none (fun x => .some (.text x)))
+        | _ => stuck w
       | .set xs index item =>
         match evalAtom env xs, evalAtom env index, evalAtom env item with
         | some (.list items), some (.int i), some v =>

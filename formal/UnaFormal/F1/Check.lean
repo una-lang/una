@@ -156,6 +156,7 @@ def primTy : Prim → List Ty → Option Ty
   | .not, [.bool] => some .bool
   | .len, [.list _] | .len, [.text] => some .int
   | .sum, [.list .int] => some .int
+  | .concat, ts => if ts.all (tyEq · .text) then some .text else none
   | _, _ => none
 
 def atomTy (Γ : LCtx) : Atom → Result LTy
@@ -429,6 +430,17 @@ mutual
       pure .none
     | .tuple items => do
       flowTo p (.tuple (← atomsTy Γ items) .bot) ann "the tuple"
+      pure .none
+    | .toText a => do
+      let t ← atomTy Γ a
+      need (p.eqIn E t) "`to_text` of a value of a type without equality, outside F1"
+      flowTo p (.text (p.deep t)) ann "the text of a value"
+      pure .none
+    | .envGet name => do
+      let t ← atomTy Γ name
+      need (isText t) "`Env.get`'s name is not a text"
+      le p (p.deep t) .bot "`Env.get`'s name is above what it accepts, `public`"
+      flowTo p (.option (.text (.ofLabel ⟨.internal, []⟩)) .bot) ann "`Env.get`'s result"
       pure .none
     | .append xs item => do
       match ← atomTy Γ xs with

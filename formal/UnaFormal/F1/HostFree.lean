@@ -19,11 +19,12 @@ namespace Una.F1
 mutual
   /-- A right-hand side that performs no host operation, in its lambdas included. -/
   def Rhs.hostFree : Rhs → Bool
-    | .read _ | .write _ _ | .req _ _ => false
+    | .read _ | .write _ _ | .req _ _ | .envGet _ => false
     | .lambda _ b => b.hostFree
     | .atom _ | .prim _ _ | .call _ _ _ | .apply _ _ | .op _ | .construct _ _ | .field _ _
     | .list _ | .none | .some _ | .funRef _ _ | .declassify _ _ | .map _ _ | .filter _ _
-    | .firstWhere _ _ | .fold _ _ _ | .parse _ | .eq _ _ | .tuple _ | .append _ _ | .set _ _ _ => true
+    | .firstWhere _ _ | .fold _ _ _ | .parse _ | .eq _ _ | .tuple _ | .append _ _ | .set _ _ _
+    | .toText _ => true
 
   /-- A body that performs no host operation, in its lambdas included. -/
   def Expr.hostFree : Expr → Bool
@@ -507,6 +508,12 @@ theorem eval_hostFreeIn
           cases evalAtom env b with
           | none => exact SameOn.stuck w u
           | some vb => exact SameOn.done w u (by simp [Val.HostFreeIn])
+      | toText a =>
+        simp only [evalRhs]
+        cases evalAtom env a with
+        | none => exact SameOn.stuck w u
+        | some v => exact SameOn.done w u (by simp [Val.HostFreeIn])
+      | envGet _ => simp [Rhs.hostFree] at hr
       | tuple items =>
         refine SameOn.ret w u fun v hv => ?_
         cases ha : evalAtoms env items <;> simp [ha, Option.elim] at hv

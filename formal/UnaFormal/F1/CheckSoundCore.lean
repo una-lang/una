@@ -179,6 +179,14 @@ mutual
       obtain ⟨t₁, h₁, t₂, h₂, t, hj, _, heq, _, hf, rfl⟩ := h
       obtain ⟨f₁, f₂⟩ := joinTy_sound (top := p.top) hj
       exact ⟨_, .eq (atomTy_sound h₁) (atomTy_sound h₂) f₁ f₂ heq, flowTo_ok hf⟩
+    | .toText a, ε, h => by
+      simp only [checkRhs, bind_ok, pure_ok, need_ok] at h
+      obtain ⟨t, ht, _, heq, _, hf, rfl⟩ := h
+      exact ⟨_, .toText (atomTy_sound ht) heq, flowTo_ok hf⟩
+    | .envGet n, ε, h => by
+      simp only [checkRhs, bind_ok, pure_ok, need_ok] at h
+      obtain ⟨t, ht, _, hs, _, hle, _, hf, rfl⟩ := h
+      exact ⟨_, .envGet (atomTy_sound ht) (isText_sound hs) (le_ok hle), flowTo_ok hf⟩
     | .tuple items, ε, h => by
       simp only [checkRhs, bind_ok, pure_ok] at h
       obtain ⟨ts, hts, _, hf, rfl⟩ := h

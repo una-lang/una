@@ -171,6 +171,9 @@ def usesEffects (uses : List J) : M (Bool × HostFx) := do
         if ["get", "post", "put", "delete"].contains o then host := { host with rq := true }
         else throw s!"the operation `Http.{o}`"
         modify fun s => { s with host := s.host.or host }
+      else if cap == "Env" && o == "get" then
+        -- `Env.get` is the model's `envGet`, which performs no event (M6b).
+        pure ()
       else
         op := true
         modify fun s => { s with ops := if s.ops.contains (cap, o) then s.ops else s.ops ++ [(cap, o)] }
@@ -277,6 +280,8 @@ mutual
       | "not", _ => pure (.prim .not args)
       | "len", _ => pure (.prim .len args)
       | "eq", [a, b] => pure (.eq a b)
+      | "concat", _ => pure (.prim .concat args)
+      | "to_text", [a] => pure (.toText a)
       | k, _ => throw s!"the primitive `{k}`"
     | "call" =>
       let f ← path (← field j "function")
@@ -325,6 +330,11 @@ mutual
         if !["get", "post", "put", "delete"].contains o then throw s!"the operation `Http.{o}`"
         modify fun s => { s with host := { s.host with rq := true } }
         pure (.req o (← atoms (← field j "args")))
+      else if std && cap == "Env" && o == "get" then
+        -- `Env.get` reads the host's environment, the same in both runs (M6b).
+        match ← atoms (← field j "args") with
+        | [name] => pure (.envGet name)
+        | _ => throw "the operation `Env.get`, with other than one argument"
       else
       modify fun s => { s with ops := if s.ops.contains (cap, o) then s.ops else s.ops ++ [(cap, o)] }
       match ← atoms (← field j "args") with
@@ -954,11 +964,31 @@ def hostFreeAt (P : Program) (f : String) : Bool :=
 /-- The note of a declaration certified in a program that uses the host's stateful capabilities:
 its theorem is `t6_release_erasure_obs` on a lawful host, H1 to H3 for `Files`, and H4 too when
 `Http` is used (M5c). -/
-def hostNoteFor (files http : Bool) : String :=
-  match files, http with
-  | true, true => "rests on a lawful host (H1 to H4): the program uses `Files` and `Http`"
-  | false, true => "rests on a lawful host (H1 to H4): the program uses `Http`"
-  | _, _ => hostNote
+def hostNoteFor (files http : Bool) (env : Bool := false) : String :=
+  if env && !files && !http then
+    "rests on a lawful host (H1 to H3) and one environment in both runs: the program uses `Env`"
+  else
+    let base := match files, http with
+      | true, true => "rests on a lawful host (H1 to H4): the program uses `Files` and `Http`"
+      | false, true => "rests on a lawful host (H1 to H4): the program uses `Http`"
+      | _, _ => hostNote
+    if env then base ++ ", and `Env`, with one environment in both runs" else base
+
+mutual
+  /-- Whether a right-hand side reads the environment (`Env.get`, M6b), in its lambdas included. -/
+  def Rhs.usesEnv : Rhs → Bool
+    | .envGet _ => true
+    | .lambda _ b => Expr.usesEnv b
+    | _ => false
+
+  def Expr.usesEnv : Expr → Bool
+    | .atom _ | .fail _ => false
+    | .letR _ _ v b => Rhs.usesEnv v || Expr.usesEnv b
+    | .letE _ _ v b => Expr.usesEnv v || Expr.usesEnv b
+    | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e =>
+      Expr.usesEnv t || Expr.usesEnv e
+    | .attempt b | .letTuple _ _ b | .loop _ _ _ _ _ b => Expr.usesEnv b
+end
 
 /-- Whether a note says that the program uses `Files`: what the file-state label decides. -/
 def usesFilesNote (note : String) : Bool := (note.splitOn "uses `Files`").length > 1
@@ -968,7 +998,7 @@ handed one (`hostFreeAt`). A host-free certified program is not enough on its ow
 document, and a caller outside it may hand `f` a closure that writes a file (#472). -/
 def withHost (docFree : Bool) (P : Program) (f : String) (note : String) : String :=
   let fx : HostFx := P.funs.foldl (fun (acc : HostFx) fn => acc.or fn.host) {}
-  let hn := hostNoteFor (fx.rd || fx.wr) fx.rq
+  let hn := hostNoteFor (fx.rd || fx.wr) fx.rq (P.funs.any (fun fn => Expr.usesEnv fn.body))
   if docFree || hostFreeAt P f then note
   else if note == "" then hn else note ++ "; " ++ hn
 
@@ -1069,7 +1099,7 @@ def usesSite (known : Caps') (u : J) (anyHost : Bool := false) : Option String :
         some "a `uses` that grants an operation its capability does not declare"
       else if m == "std.host" && c == "Files" && gs.contains "write" then
         some "a `uses` that grants `Files.write`"
-      else if anyHost && m == "std.host" && (c == "Files" || c == "Http") then
+      else if anyHost && m == "std.host" && (c == "Files" || c == "Http" || c == "Env") then
         some s!"a `uses` that grants `{c}`"
       else none
   | _, _ => some "a `uses` entry that cannot be read"
@@ -1098,7 +1128,7 @@ partial def writeSite (known : Caps') (j : J) (anyHost : Bool := false) : Option
             if c != n then some "an operation whose capability is not its path's"
             else if !ops.contains o then some "an operation its capability does not declare"
             else if m == "std.host" && n == "Files" && o == "write" then some "a `Files.write`"
-            else if anyHost && m == "std.host" && (n == "Files" || n == "Http") then
+            else if anyHost && m == "std.host" && (n == "Files" || n == "Http" || n == "Env") then
               some s!"an operation of `{n}`"
             else none
         | _, _, _, _ => some "an operation whose capability cannot be resolved"

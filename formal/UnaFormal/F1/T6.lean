@@ -105,7 +105,7 @@ theorem not_vis_join_right {a b : LExpr} (h : ¬ Vis p L b) : ¬ Vis p L (a.join
 theorem V.ofScalar_refl {t : Ty} {l : LExpr} {u : Val} (h : LValTy p u (ofScalar t l)) :
     V p L (ofScalar t l) u u := by
   unfold ofScalar at h ⊢
-  split at h <;> cases h <;> first | exact .bool | exact .int
+  split at h <;> cases h <;> first | exact .bool | exact .text | exact .int
 
 theorem ofScalar_top (t : Ty) (l : LExpr) : (ofScalar t l).top = l := by
   unfold ofScalar
@@ -957,6 +957,35 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
             V.eq_of_deep hwf hbv hbu₁ hbu₂ (LTy.eqIn_lsub hE he₂') hd₂]
           exact .bool
         · exact .hidden hd
+      | @toText _ _ a t ha heq =>
+        refine BRelR.of_brel ?_
+        obtain ⟨a₁, a₂, ha₁, ha₂, hav, hau₁, hau₂⟩ := latom_bothσ he₁ he₂ hrel ha
+        simp only [evalRhs, ha₁, ha₂]
+        refine brel_done hw ?_
+        simp only [LTy.lsubst]
+        by_cases hd : Vis p L ((p.deep t).inst (p.sd σ))
+        · have hd₁ : Vis p L (p.deep (t.lsubst p.recordDeep σ)) :=
+            Vis.of_le (LTy.deep_lsub_le hσ hE (latom_inPlace hΓ ha) heq) hd
+          rw [V.eq_of_deep hwf hav hau₁ hau₂ (LTy.eqIn_lsub hE heq) hd₁]
+          exact .text
+        · exact .hidden hd
+      | @envGet _ _ name t ha ht hle =>
+        refine BRelR.of_brel ?_
+        obtain ⟨n₁, n₂, hn₁, hn₂, hnv, hnu₁, hnu₂⟩ := latom_bothσ he₁ he₂ hrel ha
+        cases t <;> simp [LTy.erase] at ht
+        rename_i l
+        simp only [LTy.lsubst] at hnv hnu₁ hnu₂
+        have hvl : Vis p L (l.inst (p.sd σ)) := Vis.of_le (LExpr.le_inst _ hle) (vis_bot_inst _)
+        have hnn := V.eq_text hnv hvl
+        subst hnn
+        cases hnu₁ with
+        | @text s _ =>
+          simp only [evalRhs, hn₁, hn₂]
+          refine brel_done hw ?_
+          simp only [LTy.lsubst]
+          cases H.env s
+          · exact .none
+          · exact .some .text
       | tuple has =>
         refine BRelR.of_brel ?_
         obtain ⟨vs₁, vs₂, h₁, h₂, hvs, _, _⟩ := latoms_bothσ he₁ he₂ hrel has

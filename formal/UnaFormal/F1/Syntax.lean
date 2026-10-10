@@ -97,6 +97,8 @@ inductive Prim where
   | len
   /-- The prelude's `sum` of a list of integers. -/
   | sum
+  /-- `concat` of texts, any number of them: what interpolation desugars to (`spec/09 §3`). -/
+  | concat
 
 /-- What a loop visits (`spec/17 §4`): the elements of a list, in order, or the integers from
 `low` to `high`, in increasing order, `high` included when `inclusive`. -/
@@ -156,6 +158,12 @@ mutual
     /-- The prelude's `set(edit xs, index, item)` (`spec/17 §8`), which returns the tuple of
     the new list and `unit`, as its `edit` parameter desugars. -/
     | set (xs index item : Atom)
+    /-- `to_text(a)`: the text of a value (`spec/09 §3`, interpolation), at a type with equality
+    (M6b). -/
+    | toText (a : Atom)
+    /-- `Env.get(name)` of `std.host` (`spec/14 §3`): the variable, as `Option[internal Text]`, from
+    the host's environment, which is the same in both runs (M6b). -/
+    | envGet (name : Atom)
 
   /-- A body in A-normal form. -/
   inductive Expr where

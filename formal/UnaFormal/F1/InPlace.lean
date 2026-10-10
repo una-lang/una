@@ -367,6 +367,9 @@ mutual
     | _, _, _, _, _, _, hΓ, _, .eq ha hb _ _ _ =>
       ⟨LExpr.plainFree_join (LTy.deep_plainFree _ (latom_inPlace hΓ ha))
         (LTy.deep_plainFree _ (latom_inPlace hΓ hb)), Eff.plainFree_none⟩
+    | _, _, _, _, _, _, hΓ, _, .toText ha _ =>
+      ⟨LTy.deep_plainFree _ (latom_inPlace hΓ ha), Eff.plainFree_none⟩
+    | _, _, _, _, _, _, _, _, .envGet _ _ _ => ⟨⟨rfl, rfl⟩, Eff.plainFree_none⟩
     | _, _, _, _, _, _, hΓ, _, .tuple has =>
       ⟨⟨inPlaceAll_of_mem (latoms_inPlace hΓ has), rfl⟩, Eff.plainFree_none⟩
     | _, _, _, _, _, _, hΓ, _, .append hxs _ _ => ⟨latom_inPlace hΓ hxs, Eff.plainFree_none⟩

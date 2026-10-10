@@ -786,6 +786,20 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         obtain ⟨vb, hvb, _⟩ := latom_ltypedσ henv hb
         simp only [evalRhs, hva, hvb, done]
         exact uok_done LValTy.bool
+      | toText ha _ =>
+        obtain ⟨v, hv, _⟩ := latom_ltypedσ henv ha
+        simp only [evalRhs, hv]
+        exact uok_done (by simp only [LTy.lsubst]; exact .text)
+      | @envGet _ _ name t ha ht _ =>
+        obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv ha
+        cases t <;> simp [LTy.erase] at ht
+        simp only [LTy.lsubst] at hvt
+        cases hvt with
+        | @text s _ =>
+          simp only [evalRhs, hv]
+          cases H.env s
+          · exact uok_done (by simp only [LTy.lsubst, Option.elim]; exact .none)
+          · exact uok_done (by simp only [LTy.lsubst, Option.elim]; exact .some .text)
       | tuple has =>
         obtain ⟨vs, hvs, hvst⟩ := latoms_ltypedσ henv has
         refine ⟨fun _ h => by simp [evalRhs] at h, ?_, WEff.self _ _⟩

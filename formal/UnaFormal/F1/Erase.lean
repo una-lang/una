@@ -198,6 +198,11 @@ mutual
       have h := latom_erase hs
       rw [ht] at h
       exact .parse h
+    | _, _, _, _, _, .toText ha _ => .toText (latom_erase ha)
+    | _, _, _, _, _, .envGet ha ht _ => by
+      have h := latom_erase ha
+      rw [ht] at h
+      exact .envGet h
     | _, _, _, _, _, .tuple has => by
       simp only [LTy.erase, LTy.erases_eq]
       exact .tuple (latoms_erase has)

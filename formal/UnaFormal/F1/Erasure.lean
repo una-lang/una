@@ -44,6 +44,8 @@ mutual
     | .tuple items => .tuple items
     | .append xs item => .append xs item
     | .set xs i item => .set xs i item
+    | .toText a => .toText a
+    | .envGet a => .envGet a
 
   /-- A body with its annotations forgotten and its functions renamed by `ρ`. -/
   def Expr.anon (ρ : String → String) : Expr → Expr
@@ -186,12 +188,35 @@ theorem sumInts_anon : ∀ vs : List Val, sumInts (vs.map (Val.anon ρ)) = sumIn
   | v :: vs => by
     cases v <;> simp [sumInts, Val.anon, sumInts_anon vs]
 
+theorem concatTexts_anon : ∀ vs : List Val, concatTexts (vs.map (Val.anon ρ)) = concatTexts vs
+  | [] => rfl
+  | v :: vs => by cases v <;> simp [concatTexts, Val.anon, concatTexts_anon vs]
+
+mutual
+  /-- The text of a value reads no annotation. -/
+  theorem Val.render_anon : ∀ v : Val, (v.anon ρ).render = v.render
+    | .list items | .tuple items => by
+      simp only [Val.anon, Val.render]; rw [Val.renders_anon items]
+    | .record r fs => by simp only [Val.anon, Val.render]; rw [Val.renders_anon fs]
+    | .some v | .ok v => by simp only [Val.anon, Val.render]; rw [Val.render_anon v]
+    | .int _ | .bool _ | .text _ | .unit | .none | .err _ | .closure _ _ _ => by
+      simp [Val.anon, Val.render]
+
+  theorem Val.renders_anon : ∀ vs : List Val, Val.renders (Val.anons ρ vs) = Val.renders vs
+    | [] => rfl
+    | v :: vs => by simp only [Val.anons, Val.renders]; rw [Val.render_anon v, Val.renders_anon vs]
+end
+
 theorem evalPrim_anon (pr : Prim) (vs : List Val) :
     evalPrim pr (vs.map (Val.anon ρ)) = (evalPrim pr vs).map (Val.anon ρ) := by
-  rcases vs with _ | ⟨a, _ | ⟨b, _ | ⟨c, rest⟩⟩⟩ <;> cases pr <;>
+  cases pr
+  case concat =>
+    simp only [evalPrim, concatTexts_anon]
+    cases concatTexts vs <;> simp [Val.anon]
+  all_goals (rcases vs with _ | ⟨a, _ | ⟨b, _ | ⟨c, rest⟩⟩⟩ <;>
     simp only [List.map_cons, List.map_nil] <;>
     (try cases a) <;> (try cases b) <;>
-    simp [evalPrim, Val.anon, Val.anons_eq, sumInts_anon, Function.comp_def]
+    simp [evalPrim, Val.anon, Val.anons_eq, sumInts_anon, Function.comp_def])
 
 mutual
   theorem Val.beq_anon : ∀ a b : Val, Val.beq (a.anon ρ) (b.anon ρ) = Val.beq a b
@@ -603,6 +628,21 @@ theorem eval_anon (hH : H.AnonInvariant) (h4 : H.RespTyped) (hf : ∀ f, (P.find
             cases xv with
             | list items => simp [runAnon_done, Val.anon, Val.anons_eq]
             | _ => simp [Val.anon, runAnon_stuck]
+      | toText a =>
+        simp only [evalRhs, Rhs.anon, evalAtom_anon]
+        cases evalAtom env a with
+        | none => simp [runAnon_stuck]
+        | some v => simp [runAnon_done, Val.anon, Val.render_anon]
+      | envGet a =>
+        simp only [evalRhs, Rhs.anon, evalAtom_anon]
+        cases evalAtom env a with
+        | none => simp [runAnon_stuck]
+        | some v =>
+          cases v with
+          | text s =>
+            simp only [Option.map_some, Val.anon]
+            cases H.env s <;> simp [runAnon_done, Val.anon]
+          | _ => simp [Val.anon, runAnon_stuck]
       | set xs index item =>
         simp only [evalRhs, Rhs.anon, evalAtom_anon]
         cases evalAtom env xs with
