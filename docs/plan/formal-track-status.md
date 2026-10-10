@@ -13,7 +13,7 @@ Now there is a proof in Lean, and a checker that applies it to real programs:
 - **The re-check.** A Lean program, `una-core-check`, reads what `una core --json` exports of a package and checks it again, by rules proven sound. It answers per declaration: accepted, rejected, or not re-checked.
 - **Accepted means proven.** Each accepted declaration is part of a whole program that the Lean checker certified, and a theorem gives that program T6. A form the model lacks gives "not re-checked", never "accepted".
 - **Replay.** The re-check rejects the leaking programs of 8 of the 12 findings (S-01 and S-06 to S-12), run on the Core that their pre-fix releases printed. The other 4 are not replayed: S-02 (JSON) and S-04 (`edit`) are outside F1, and S-03 and S-05, failures of `Http` and `Files.write` decided by an `internal` argument, have been in the model since M5, but the replay has no dumps of them.
-- **Corpus.** Every conformance case and example: 643 declarations accepted, 0 rejected.
+- **Corpus.** Every conformance case and example: 643 declarations accepted, 0 rejected. That is about 15% of the corpus's 4,208 declarations (36% of the 1,768 in complete documents). Most Una code is still outside F1: `pred` declarations, tuples, handlers, primitives such as `concat`, `div` and `mul`, `with` and `together`, and documents the export marks incomplete. So "0 rejected" means that no checked declaration disagrees with the proof, not that the whole corpus is proven.
 
 The track found three real leaks in released versions, S-14 to S-16, all fixed and released. Each total it reported was corrected whenever a review found a gap, and every correction lowered or held the count of accepts, except where a new theorem backed them.
 
