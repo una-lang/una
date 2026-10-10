@@ -50,8 +50,32 @@ inductive Event where
 
 abbrev Trace := List Event
 
+mutual
+  /-- A value without a closure in it. -/
+  def Val.FirstOrder : Val → Prop
+    | .closure _ _ _ => False
+    | .list items => Val.FirstOrderAll items
+    | .some v | .ok v => v.FirstOrder
+    | .record _ fs => Val.FirstOrderAll fs
+    | .int _ | .bool _ | .text _ | .unit | .none | .err _ => True
+
+  def Val.FirstOrderAll : List Val → Prop
+    | [] => True
+    | v :: vs => v.FirstOrder ∧ Val.FirstOrderAll vs
+end
+
+/-- A response of `Http` (`spec/24 §1`): `Response(status, headers, body)`, with each header a
+`Header(name, value)` of texts. -/
+def Val.IsResponse : Val → Prop
+  | .record "prelude.Response" [.int _, .list hs, .text _] =>
+    ∀ h ∈ hs, ∃ n x, h = .record "prelude.Header" [.text n, .text x]
+  | _ => False
+
 /-- The host: a file system and servers, abstract. `read` and `write` return `none` when they fail;
-a server answers a request, or fails, and may change its state. -/
+a server answers a request with a response, or fails with the code of its `HttpError` (its index in
+the declaration order of `spec/24 §1`), and may change its state. A request is deterministic in its
+method, its arguments and the server's state: the network's timing, and its other
+nondeterminism, are outside the model, as timing is elsewhere (`spec/07 §1`). -/
 structure Host where
   FS : Type
   Srv : Type
@@ -61,21 +85,28 @@ structure Host where
   shape : FS → Shape
   read : String → FS → Option String
   write : String → String → FS → Option FS
-  request : String → List Val → Srv → Option String × Srv
+  request : String → List Val → Srv → Except Nat Val × Srv
 
 /-- The host's state. -/
 structure World (H : Host) where
   fs : H.FS
   srv : H.Srv
 
-/-- What `Files` needs of a host (H1 and H2): whether a read fails depends on the path and the
-shape only, and whether a write fails, and the shape it leaves, on the path and the shape only,
-not on the content. -/
+/-- **H4**: every response of the host is a `Response` (M5c). -/
+def Host.RespTyped (H : Host) : Prop :=
+  ∀ (m : String) (vs : List Val) (s s' : H.Srv) (v : Val), H.request m vs s = (.ok v, s') → v.IsResponse
+
+/-- What the theorems need of a host. `Files` (H1 and H2): whether a read fails depends on the path
+and the shape only, and whether a write fails, and the shape it leaves, on the path and the shape
+only, not on the content. `Http` (H4, M5c): every response is a `Response`, as the real host
+builds it (`una-rt`'s `http`: digits for the status, UTF-8 for header names and the body, or
+`Protocol`, and header values decoded lossily). -/
 structure Host.Lawful (H : Host) : Prop where
   read_fails : ∀ {a b : H.FS} (path : String), H.shape a = H.shape b →
     ((H.read path a).isSome ↔ (H.read path b).isSome)
   write_shape : ∀ {a b : H.FS} (path c c' : String), H.shape a = H.shape b →
     (H.write path c a).map H.shape = (H.write path c' b).map H.shape
+  resp_typed : H.RespTyped
 
 /-- The host without state, on which every host operation fails: the host of the examples whose
 programs perform none. -/
@@ -86,9 +117,12 @@ def Host.unit : Host where
   shape := fun _ => ()
   read := fun _ _ => none
   write := fun _ _ _ => none
-  request := fun _ _ s => (none, s)
+  request := fun _ _ s => (.error 0, s)
 
-theorem Host.unit_lawful : Host.unit.Lawful := ⟨fun _ _ => Iff.rfl, fun _ _ _ _ => rfl⟩
+theorem Host.unit_respTyped : Host.unit.RespTyped := fun _ _ _ _ _ h => nomatch h
+
+theorem Host.unit_lawful : Host.unit.Lawful :=
+  ⟨fun _ _ => Iff.rfl, fun _ _ _ _ => rfl, Host.unit_respTyped⟩
 
 /-- The code of a failure of the host or of `parse`. -/
 def hostFailure : Nat := 0
@@ -278,8 +312,8 @@ mutual
         match evalAtoms env args with
         | some vs =>
           match H.request m vs w.srv with
-          | (some body, srv') => ([.req m vs], .ok (.text body), { w with srv := srv' })
-          | (none, srv') => ([.req m vs], .failed hostFailure, { w with srv := srv' })
+          | (.ok v, srv') => ([.req m vs], .ok v, { w with srv := srv' })
+          | (.error c, srv') => ([.req m vs], .failed c, { w with srv := srv' })
         | none => stuck w
       | .construct record fields =>
         ([], ((evalAtoms env fields).map (Val.record record)).elim .stuck .ok, w)

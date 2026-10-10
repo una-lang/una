@@ -25,6 +25,44 @@ theorem symFree_sound {e : LExpr} (h : symFree e = true) : e.SymFree := by
   simp only [symFree, Bool.and_eq_true, List.isEmpty_iff] at h
   exact h
 
+mutual
+  theorem tyEq_sound : ∀ (a b : Ty), tyEq a b = true → a = b
+    | .int, b, h | .bool, b, h | .text, b, h | .unit, b, h => by cases b <;> simp_all [tyEq]
+    | .record r, b, h | .var r, b, h => by cases b <;> simp_all [tyEq]
+    | .list a, b, h => by
+      cases b with
+      | list b => simp only [tyEq] at h; rw [tyEq_sound a b h]
+      | _ => simp [tyEq] at h
+    | .option a, b, h => by
+      cases b with
+      | option b => simp only [tyEq] at h; rw [tyEq_sound a b h]
+      | _ => simp [tyEq] at h
+    | .result a, b, h => by
+      cases b with
+      | result b => simp only [tyEq] at h; rw [tyEq_sound a b h]
+      | _ => simp [tyEq] at h
+    | .fn ps r, b, h => by
+      cases b with
+      | fn qs s =>
+        simp only [tyEq, Bool.and_eq_true] at h
+        rw [tysEq_sound ps qs h.1, tyEq_sound r s h.2]
+      | _ => simp [tyEq] at h
+
+  theorem tysEq_sound : ∀ (as bs : List Ty), tysEq as bs = true → as = bs
+    | [], [], _ => rfl
+    | a :: as, b :: bs, h => by
+      simp only [tysEq, Bool.and_eq_true] at h; rw [tyEq_sound a b h.1, tysEq_sound as bs h.2]
+    | [], _ :: _, h | _ :: _, [], h => by simp [tysEq] at h
+end
+
+theorem httpRecordsB_sound {p : Program} (h : httpRecordsB p = true) : p.HttpRecords := by
+  unfold httpRecordsB at h
+  split at h
+  · rename_i hr rr hh hrr
+    simp only [Bool.and_eq_true] at h
+    exact ⟨⟨hr, hh, tysEq_sound _ _ h.1⟩, ⟨rr, hrr, tysEq_sound _ _ h.2⟩⟩
+  · simp at h
+
 theorem hostLeB_sound {a b : HostFx} (h : hostLeB a b = true) : HostFx.Le a b := by
   simp only [hostLeB, Bool.and_eq_true, Bool.or_eq_true, Bool.not_eq_true'] at h
   obtain ⟨⟨h₁, h₂⟩, h₃⟩ := h

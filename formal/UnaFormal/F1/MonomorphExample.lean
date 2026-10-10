@@ -87,10 +87,10 @@ theorem certified :
   progOk_sound_nil (by rfl)
 
 /-- A run of `main` in the document's program is, up to annotations, its run in `P₁`. -/
-theorem runs_agree {H : Host} (hai : H.AnonInvariant) (w : World H) (n : Nat) :
+theorem runs_agree {H : Host} (hai : H.AnonInvariant) (h4 : H.RespTyped) (w : World H) (n : Nat) :
     runAnon (renOf ren) (eval H n { P₂ with funs := monoFuns } w [] mainMono.body) =
       runAnon id (eval H n P₂ w [] main.body) :=
-  eval_erasure sim hai w n rfl (by rfl)
+  eval_erasure sim hai h4 w n rfl (by rfl)
 
 /-- `main`'s runs in the document's program `P₂` itself are related as `t6_release_host` says,
 through `t6_release_erasure_obs`: its hypotheses hold of a real document. -/
@@ -219,7 +219,8 @@ events are first-order. -/
 theorem release_events_firstOrder :
     ∀ ev ∈ (eval Host.unit 6 ReleaseExample.prog ReleaseExample.w0 (env 1234)
       ReleaseExample.body).1, ev.FirstOrder :=
-  events_firstOrder ReleaseExample.prog_wf ReleaseExample.prog_b1 (σ := []) (fun _ h => nomatch h)
+  events_firstOrder ReleaseExample.prog_wf ReleaseExample.prog_b1 Host.unit_respTyped (σ := [])
+    (fun _ h => nomatch h)
     (ReleaseExample.envs_typed 1234) ReleaseExample.body_typed 6
 
 /-- The run does release: its first event is the release of `true`. -/

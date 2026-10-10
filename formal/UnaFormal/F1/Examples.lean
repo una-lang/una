@@ -115,10 +115,10 @@ theorem callPick_typed :
     simp [pick] at h
 
 /-- **T1, applied:** the run of the typed call never gets stuck, and its value is an integer. -/
-theorem callPick_safe {H : Host} (w : World H) (n : Nat) :
+theorem callPick_safe {H : Host} (h4 : H.RespTyped) (w : World H) (n : Nat) :
     (eval H n prog w [] callPick).2.1 ≠ .stuck ∧
       ∀ v, (eval H n prog w [] callPick).2.1 = .ok v → ValTy prog v pickInt.erase :=
-  t1_labeled prog_wf w .nil callPick_typed n
+  t1_labeled prog_wf h4 w .nil callPick_typed n
 
 /-- A run of `pick[Int](1, 2, true)` gives `1`. -/
 example :

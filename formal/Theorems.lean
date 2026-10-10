@@ -168,3 +168,17 @@ import UnaFormal
 #print axioms Una.F1.t6_release_erasure_obs_reach
 #print axioms Una.F1.FilesCertExample.dbl_reach
 #print axioms Una.F1.FilesCertExample.dbl_any_host
+#print axioms Una.F1.ValTy.response
+#print axioms Una.F1.LValTy.response
+#print axioms Una.F1.LValsTy.firstOrder_http
+#print axioms Una.F1.V.response_refl
+#print axioms Una.F1.VList.eq_http
+#print axioms Una.F1.httpArg_eqIn
+#print axioms Una.F1.Val.anon_response
+#print axioms Una.F1.Check.httpRecordsB_sound
+#print axioms Una.F1.httpParams_subst
+#print axioms Una.F1.httpParams_args
+#print axioms Una.F1.Host.unit_respTyped
+#print axioms Una.F1.HttpExample.counter_lawful
+#print axioms Una.F1.HttpExample.certified
+#print axioms Una.F1.HttpExample.request_runs

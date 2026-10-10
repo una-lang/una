@@ -20,7 +20,7 @@ def s16 : Host where
   shape := fun fs => fs.map Prod.fst
   read := fun path fs => (fs.lookup path).bind fun c => if c = "\xff" then none else some c
   write := fun path c fs => some ((path, c) :: fs)
-  request := fun _ _ s => (none, s)
+  request := fun _ _ s => (.error 0, s)
 
 /-- A file system with one valid file, and one with the same file holding invalid text. -/
 def fsOk : World s16 := ⟨[("f", "ok")], ()⟩

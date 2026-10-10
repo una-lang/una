@@ -306,3 +306,36 @@ The note is also plain when the document performs no host operation at all (`doc
 **Non-vacuity** (`FilesCertExample`). `dbl_any_host`: a call of `dbl`, which reaches no host operation, in a program whose `mark` writes a file. Its runs on secrets 1 and 2 are related on `s16`, the host that breaks H1, from the two file systems that break it, with no premise on the host.
 
 **The corpus.** Only `import_std_host.greet` changes: it stays accepted, with the plain note. No verdict changes. Accepted: 642. The replay is unchanged.
+
+## 14. M5c: `Http` with its real signature (#470)
+
+Until #470, the model's request took a list of values and returned one, so `Http`'s real signature (`spec/24 §1`) did not fit, and every declaration that reached `Http` was "not re-checked". M5c extends the model to the real signature.
+
+**The request in the model** (`Eval.lean`, `Syntax.lean`).
+- `httpParams` gives each method's parameter types, from `spec/24 §1`: `get` and `delete` take `Text`, `List[Header]` and `Option[Text]`; `post` and `put` also take a `Text` body. The re-check takes them from the model, not from the export.
+- `Host.request m args srv` returns `Except Nat Val` and the next server state. A failure carries an `HttpError` code: the variant's index in its declaration order (`Denied` 0, `BadUrl` 1, `BadRequest` 2, `Unreachable` 3, `TimedOut` 4, `TooLarge` 5, `Tls` 6, `Protocol` 7). The runtime returns the same indexes (`una-rt`'s `http_error_index`), and a test pins its order to the prelude's declaration of `HttpError`.
+- A request's arguments are first-order (`Val.FirstOrderAll` in `Allowed` and `FnAllowed`): a typed `Text`, `Option[Text]` or `List[Header]` holds no closure.
+- **The request is deterministic** in its URL, its arguments and the server's state. The real network's timing, and its other nondeterminism, are outside the model, as timing is elsewhere (`spec/07 §1`). A response the network chose differently is a different server state.
+
+**H4** (`Host.RespTyped`, a field of `Host.Lawful`). Every successful response is a `Response`: a record `prelude.Response` with an `Int` status, a list of `prelude.Header` records of two `Text`s, and a `Text` body (`Val.IsResponse`). T1 needs it to type the response (`ValTy.response`), the labeled typing likewise (`LValTy.response`), T6 to relate two responses at `internal` (`V.response_refl`), and erasure to keep them anonymous (`Val.anon_response`). The real host meets H4 by construction: `una-rt` builds the `Response` from the parsed status, headers and body, and returns `HttpError` otherwise.
+
+**The typing** (`LTyping.lean`, `Check.lean`). A request types when its arguments have `httpParams`' types, the program's `Header` and `Response` records are the ones `spec/24` declares (`Program.HttpRecords`), the program counter joined with the arguments' deep labels is at most `Http`'s `accepts`, and the program counter is free of symbols. Its result is `Response` at the result label; its failure is labeled `reqFail`: the program counter, every argument's deep label, and the headers' `internal` values (`reqFloor`, ADR 0085 decision 7).
+
+**The re-check** (`Import.lean`).
+- `Header` and `Response` are hard-coded from `spec/24 §1` (`headerRec`, `responseRec`). A document whose kind of either name differs is not re-checked: "`Header` or `Response`, declared otherwise than `spec/24 §1`" (`httpKindsOk`). A host `Http` entry that differs from `std.host` is a site, as in §12 (default-deny).
+- The note names the capabilities the certified program uses: "rests on a lawful host (H1 to H3): the program uses `Files`", "rests on a lawful host (H1 to H4): the program uses `Http`", or "... (H1 to H4): the program uses `Files` and `Http`". H4 appears only when `Http` is used.
+- The whole-package guard of §12 applies to the notes that name `Files` (`usesFilesNote`): only they rest on the file-state label.
+
+**Non-vacuity** (`HttpExample.lean`). A program certified by `progOk` evaluated (`certified`) sends `get` and catches its failure with `attempt`. The host `counter` answers each request with a status equal to the number of requests it has answered, and meets H1, H2 and H4 (`counter_lawful`). `t6_host_ground` relates the runs from servers that have answered 0 and 5 requests (`request_runs`), whose responses differ.
+
+**The corpus.** The 1,329 documents of §12, `main`'s checker against this one:
+- `s15_ok_http_attempt.send` moves from not re-checked to accepted, with "rests on a lawful host (H1 to H4): the program uses `Http`";
+- `import_std_host_http.status` stays not re-checked, with another reason: "a `case` that reads a failure's payload";
+- no other verdict changes, and none moves into rejected. Accepted: 642 → 643.
+
+**The tamper tests** (`ImportTests`, on `s15_ok_http_attempt`):
+- `Header`'s value exported at `public`, below `spec/24`'s `internal`: not re-checked;
+- `Http`'s `accepts` exported at `public`: `send` is rejected;
+- both lowered: not re-checked.
+
+The replay of S-01 to S-12 is unchanged.

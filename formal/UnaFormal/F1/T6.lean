@@ -126,6 +126,77 @@ theorem text_of_erase : ∀ {t : LTy}, t.erase = .text → ∃ l, t = .text l
   | .int _, h | .bool _, h | .unit _, h | .list _ _, h | .option _ _, h | .result _ _, h
   | .record _ _, h | .fn _ _ _ _ _ _, h | .var _ _, h => by simp [LTy.erase] at h
 
+/-- `Http`'s argument types have equality: `Header`'s fields are texts (M5c). -/
+theorem httpArg_eqIn (hr : p.HttpRecords) {E : List String} :
+    ∀ {t : LTy}, t.erase.HttpArg → t.eqIn E (p.recordEq 2) = true
+  | .text _, _ => rfl
+  | .option t' _, h => by
+    rcases h with h | h | h <;> simp [LTy.erase] at h
+    obtain ⟨l, rfl⟩ := text_of_erase h
+    rfl
+  | .list t' _, h => by
+    rcases h with h | h | h <;> simp [LTy.erase] at h
+    cases t' <;> simp [LTy.erase] at h
+    subst h
+    obtain ⟨⟨rec, hrec, hf⟩, _⟩ := hr
+    simp only [LTy.eqIn, Program.recordEq, hrec, List.all_eq_true]
+    intro f hf'
+    have := List.mem_map_of_mem (f := LTy.erase) hf'
+    simp only [Record.fieldTys] at hf
+    rw [hf] at this
+    simp at this
+    obtain ⟨l, rfl⟩ := text_of_erase this
+    rfl
+  | .int _, h | .bool _, h | .unit _, h | .result _ _, h | .record _ _, h | .fn _ _ _ _ _ _, h
+  | .var _ _, h => by rcases h with h | h | h <;> simp [LTy.erase] at h
+
+/-- Related values of `Http`'s argument types whose deep labels the observer sees are equal. -/
+theorem VList.eq_http (hwf : p.LWellFormed) (hr : p.HttpRecords) :
+    ∀ {ts : List LTy} {vs₁ vs₂ : List Val}, VList p L ts vs₁ vs₂ → LValsTy p vs₁ ts →
+      LValsTy p vs₂ ts → (∀ t ∈ ts, t.erase.HttpArg ∧ Vis p L (p.deep t)) → vs₁ = vs₂
+  | [], _, _, .nil, _, _, _ => rfl
+  | _ :: _, _, _, .cons h hs, .cons ha has, .cons hb hbs, ht => by
+    obtain ⟨hshape, hvis⟩ := ht _ List.mem_cons_self
+    rw [V.eq_of_deep hwf (E := []) (n := 2) h ha hb (httpArg_eqIn hr hshape) hvis,
+      VList.eq_http hwf hr hs has hbs (fun t ht' => ht t (List.mem_cons_of_mem _ ht'))]
+
+/-- **Equal responses are related** at `Response`, whatever its label (H4). -/
+theorem V.response_refl (hr : p.HttpRecords) {v : Val} (h : v.IsResponse) (l : LExpr) :
+    V p L (.record "prelude.Response" l) v v := by
+  obtain ⟨⟨hrec, hh, hhf⟩, ⟨rrec, hrr, hrf⟩⟩ := id hr
+  unfold Val.IsResponse at h
+  split at h
+  · rename_i st hs body
+    refine .record hrr ?_
+    simp only [Record.fieldTys] at hrf
+    rcases hfs : rrec.fields with _ | ⟨f₁, _ | ⟨f₂, _ | ⟨f₃, _ | ⟨f₄, rest⟩⟩⟩⟩ <;> rw [hfs] at hrf <;>
+      simp at hrf
+    obtain ⟨h₁, h₂, h₃⟩ := hrf
+    refine .cons ?_ (.cons ?_ (.cons ?_ .nil))
+    · cases f₁ <;> simp [LTy.erase] at h₁
+      exact .int
+    · cases f₂ <;> simp [LTy.erase] at h₂
+      rename_i fe fl
+      cases fe <;> simp [LTy.erase] at h₂
+      subst h₂
+      refine .list ?_
+      induction hs with
+      | nil => exact .nil
+      | cons x xs ih =>
+        obtain ⟨n, y, rfl⟩ := h x (by simp)
+        refine .cons ?_ (ih fun z hz => h z (by simp [hz]))
+        refine .record hh ?_
+        simp only [Record.fieldTys] at hhf
+        rcases hgs : hrec.fields with _ | ⟨g₁, _ | ⟨g₂, _ | ⟨g₃, rest⟩⟩⟩ <;> rw [hgs] at hhf <;>
+          simp at hhf
+        obtain ⟨k₁, k₂⟩ := hhf
+        obtain ⟨_, rfl⟩ := text_of_erase k₁
+        obtain ⟨_, rfl⟩ := text_of_erase k₂
+        exact .cons .text (.cons .text .nil)
+    · obtain ⟨_, rfl⟩ := text_of_erase h₃
+      exact .text
+  · exact h.elim
+
 /-- Related texts the observer sees are equal. -/
 theorem VList.eq_texts : ∀ {ts : List LTy} {vs₁ vs₂ : List Val}, VList p L ts vs₁ vs₂ →
     (∀ t ∈ ts, ∃ l, t = .text l ∧ Vis p L l) → vs₁ = vs₂
@@ -180,7 +251,7 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
       fun _ _ _ _ _ _ _ _ _ h => by simp [eval, Term] at h⟩
   | n + 1 => by
     obtain ⟨ihR, ihE⟩ := t6_soundR hwf hb1 hh hlaw n
-    obtain ⟨uR, uE⟩ := unary_soundR (H := H) hwf hb1 n
+    obtain ⟨uR, uE⟩ := unary_soundR (H := H) hwf hb1 hlaw.resp_typed n
     have hrunU : ∀ {σ : List (String × LTy)} {w : World H} {env : Env} {Γ : LCtx} {E : List String}
         {e : Expr} {t : LTy} {ε : Eff}, GroundSubst σ → LEnvTy p env (Γ.lsub p.recordDeep σ) →
         LExprTy p E Γ .bot e t ε →
@@ -409,15 +480,17 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
               | exact .unit
               | exact fun h => absurd (by simpa [Eff.inst, Eff.failLabel] using h) hnvf
               | exact fun _ => trivial
-      | @req _ _ m args ts has hts hle _ =>
+      | @req _ _ m args ts has hts hrec hle _ =>
         refine BRelR.of_brel ?_
-        obtain ⟨vs₁, vs₂, h₁, h₂, hvs, _, _⟩ := latoms_bothσ he₁ he₂ hrel has
+        obtain ⟨vs₁, vs₂, h₁, h₂, hvs, hty₁, hty₂⟩ := latoms_bothσ he₁ he₂ hrel has
         simp only [evalRhs, h₁, h₂]
         have hargs : Vis p L (.ofLabel p.acceptsReq) → vs₁ = vs₂ := fun ha => by
-          refine VList.eq_texts hvs (fun t ht => ?_)
+          refine VList.eq_http hwf hrec hvs hty₁ hty₂ (fun t ht => ?_)
           obtain ⟨u, hu, rfl⟩ := List.mem_map.mp ht
-          obtain ⟨l, rfl⟩ := text_of_erase (hts u hu)
-          refine ⟨_, rfl, ?_⟩
+          have hshape := httpParams_args hts _ (List.mem_map_of_mem hu)
+          refine ⟨by rw [LTy.erase_lsubst, hshape.subst]; exact hshape, ?_⟩
+          refine Vis.of_le (LTy.deep_lsub_le hσ hE (latoms_inPlace hΓ has u hu)
+            (httpArg_eqIn hrec hshape)) ?_
           refine Vis.of_le (LExpr.le_inst _ ?_) (Vis.of_le (LExpr.inst_le_join_inst _ _ _) (vis_of_le_accepts hle ha))
           exact LExpr.le_joinAll (List.mem_map.mpr ⟨_, hu, rfl⟩)
         have hev : proj p L [Event.req m vs₁] = proj p L [Event.req m vs₂] := by
@@ -430,9 +503,11 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
           have hv := hargs (Vis.of_le hh.req hi)
           subst hv
           refine brel_same (WorldRel.refl _) (fun v hv' => ?_)
-          split at hv' <;> simp at hv'
+          generalize hq : H.request m vs₁ w₁.srv = q at hv'
+          obtain ⟨o, srv'⟩ := q
+          cases o <;> simp at hv'
           subst hv'
-          exact .text
+          simpa [LTy.lsubst] using V.response_refl hrec (hlaw.resp_typed m vs₁ w₁.srv srv' _ hq) _
         · have hres : ¬ Vis p L ((LExpr.ofLabel p.reqResult).inst (p.sd σ)) := fun h =>
             hi (Vis.of_le hh.reqResult (vis_ofLabel_of_inst h))
           have hnvf : ¬ Vis p L ((p.reqFail pc ts).inst (p.sd σ)) := fun h => hi (vis_reqFail hh h)
@@ -568,7 +643,7 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
           have hbody := body_typed hwf.wellFormed hfn []
           rw [Ty.subst_nil, hres] at hbody
           refine ⟨(pure_run p w n).2 _ _ hpure, fun r hr => ?_⟩
-          have hg := (sound hwf.wellFormed n).2 (w := w) henv' hbody
+          have hg := (sound hwf.wellFormed hlaw.resp_typed n).2 (w := w) henv' hbody
           rw [hr] at hg
           exact hg
         have q₁ := hvia (w := w₁) hu₁

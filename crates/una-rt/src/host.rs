@@ -373,6 +373,24 @@ pub fn event_end(site: i64, slot: i64, value: i64, failed: i64) {
     });
 }
 
+/// The index of an `HttpError` variant in its declaration order (`spec/24 §1`), which the
+/// formal track's model uses as the failure's code (#470); a test pins it to the prelude.
+fn http_error_index(error: una_http::client::Error) -> i64 {
+    use una_http::client::Error;
+    match error {
+        Error::Denied => 0,
+        Error::BadUrl => 1,
+        Error::BadRequest => 2,
+        Error::Unreachable => 3,
+        Error::TimedOut => 4,
+        Error::TooLarge => 5,
+        Error::Tls => 6,
+        Error::Protocol => 7,
+        // Not a failure: `http` aborts before (N-40).
+        Error::HeaderValue => 2,
+    }
+}
+
 /// An operation of `Http` (`spec/24`), by the client that the interpreter shares: the response
 /// as a `Response` record, or an `HttpError`, which `una_rt_host_failed` then reports.
 fn http(
@@ -385,21 +403,7 @@ fn http(
 ) -> i64 {
     use una_http::client::{Error, Request, send};
     // The variants of `HttpError`, in declaration order, as words.
-    let variant = |error: Error| {
-        let index: i64 = match error {
-            Error::Denied => 0,
-            Error::BadUrl => 1,
-            Error::BadRequest => 2,
-            Error::Unreachable => 3,
-            Error::TimedOut => 4,
-            Error::TooLarge => 5,
-            Error::Tls => 6,
-            Error::Protocol => 7,
-            // Not a failure: `http` aborts before (N-40).
-            Error::HeaderValue => 2,
-        };
-        (index << 1) | 1
-    };
+    let variant = |error: Error| (http_error_index(error) << 1) | 1;
     let url = values::text_value(url);
     let headers: Vec<(String, String)> = values::list_items(headers)
         .into_iter()
@@ -519,4 +523,41 @@ pub fn http_delete(site: i64, url: i64, headers: i64, key_name: i64) -> i64 {
         None,
         key_name,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::http_error_index;
+    use una_http::client::Error;
+
+    #[test]
+    fn http_error_codes_follow_the_declaration_order() {
+        // #470: the formal track's model reads a request's failure as the index of its
+        // `HttpError` variant. The runtime's indices must be the prelude's declaration order,
+        // which `spec/24 §1` states, so that the two cannot drift apart silently.
+        let prelude = include_str!("../../una-check/src/std/prelude_0_2.una");
+        let line = prelude
+            .lines()
+            .find(|line| line.starts_with("pub kind HttpError ="))
+            .expect("the prelude declares HttpError");
+        let declared: Vec<&str> = line["pub kind HttpError =".len()..]
+            .split('|')
+            .map(str::trim)
+            .collect();
+        let cases = [
+            (Error::Denied, "Denied"),
+            (Error::BadUrl, "BadUrl"),
+            (Error::BadRequest, "BadRequest"),
+            (Error::Unreachable, "Unreachable"),
+            (Error::TimedOut, "TimedOut"),
+            (Error::TooLarge, "TooLarge"),
+            (Error::Tls, "Tls"),
+            (Error::Protocol, "Protocol"),
+        ];
+        assert_eq!(declared.len(), cases.len(), "{declared:?}");
+        for (error, name) in cases {
+            let index = usize::try_from(http_error_index(error)).expect("an index");
+            assert_eq!(declared[index], name, "{name} is at {index}");
+        }
+    }
 }

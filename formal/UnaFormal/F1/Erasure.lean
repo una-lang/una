@@ -86,6 +86,23 @@ theorem Val.anons_eq (ρ : String → String) : ∀ vs : List Val, Val.anons ρ 
   | [] => rfl
   | v :: vs => by simp [Val.anons, Val.anons_eq ρ vs]
 
+/-- **Erasure keeps a response** (H4): it holds no closure. -/
+theorem Val.anon_response {ρ : String → String} {v : Val} (h : v.IsResponse) : v.anon ρ = v := by
+  unfold Val.IsResponse at h
+  split at h
+  · rename_i st hs body
+    have hm : ∀ l : List Val, (∀ x ∈ l, ∃ n y, x = .record "prelude.Header" [.text n, .text y]) →
+        l.map (Val.anon ρ) = l := by
+      intro l hl
+      induction l with
+      | nil => rfl
+      | cons x xs ih =>
+        obtain ⟨n, y, rfl⟩ := hl x (by simp)
+        simp [Val.anon, Val.anons, ih fun z hz => hl z (by simp [hz])]
+    have hm := hm hs h
+    simp [Val.anon, Val.anons_eq, hm]
+  · exact h.elim
+
 theorem Val.anonEnv_eq (ρ : String → String) :
     ∀ env : Env, Val.anonEnv ρ env = env.map (fun q => (q.1, q.2.anon ρ))
   | [] => rfl
@@ -317,7 +334,7 @@ variable {P Q : Program} {ρ : String → String} {H : Host}
 the two programs have the same policies, whose `via` functions `ρ` keeps, a run of `P`, forgotten,
 is the run of `Q` on the forgotten environment and body, from the same world, on a host whose
 responses read no annotation. -/
-theorem eval_anon (hH : H.AnonInvariant) (hf : ∀ f, (P.find f).map (Fun.anon ρ) = Q.find (ρ f))
+theorem eval_anon (hH : H.AnonInvariant) (h4 : H.RespTyped) (hf : ∀ f, (P.find f).map (Fun.anon ρ) = Q.find (ρ f))
     (hp : ∀ pol, P.policy pol = Q.policy pol)
     (hv : ∀ pol po, P.policy pol = some po → ρ po.via = po.via) : ∀ n : Nat,
     (∀ w env r, runAnon ρ (evalRhs H n P w env r) =
@@ -326,7 +343,7 @@ theorem eval_anon (hH : H.AnonInvariant) (hf : ∀ f, (P.find f).map (Fun.anon �
   | 0 => ⟨fun w env r => by simp [evalRhs, runAnon, Res.anon],
       fun w env e => by simp [eval, runAnon, Res.anon]⟩
   | n + 1 => by
-    obtain ⟨ihR, ihE⟩ := eval_anon hH hf hp hv n
+    obtain ⟨ihR, ihE⟩ := eval_anon hH h4 hf hp hv n
     have happ : ∀ w fv vs, runAnon ρ (applyWith (eval H n P) w fv vs) =
         applyWith (eval H n Q) w (fv.anon ρ) (vs.map (Val.anon ρ)) := applyWith_anon ihE
     constructor
@@ -402,8 +419,12 @@ theorem eval_anon (hH : H.AnonInvariant) (hf : ∀ f, (P.find f).map (Fun.anon �
         | none => simp [runAnon_stuck]
         | some vs =>
           simp only [Option.map_some, ← Val.anons_eq, hH ρ m vs w.srv]
-          rcases H.request m vs w.srv with ⟨body, srv'⟩
-          cases body <;> simp [runAnon, Event.anon, Res.anon, Val.anon]
+          generalize hq : H.request m vs w.srv = q
+          obtain ⟨o, srv'⟩ := q
+          cases o with
+          | error c => simp [runAnon, Event.anon, Res.anon]
+          | ok v =>
+            simp [runAnon, Event.anon, Res.anon, Val.anon_response (h4 m vs w.srv srv' v hq)]
       | construct record fields =>
         simp only [evalRhs, Rhs.anon, evalAtoms_anon]
         cases evalAtoms env fields <;> simp [runAnon, Res.anon, Val.anon, Val.anons_eq]
@@ -601,18 +622,18 @@ structure Sim (ρ : String → String) (P₁ P₂ : Program) : Prop where
 /-- **Evaluation erasure.** Two programs that agree up to annotations run the same, up to
 annotations, on bodies and environments that agree up to annotations. -/
 theorem eval_erasure {ρ : String → String} {P₁ P₂ : Program} (h : Sim ρ P₁ P₂) {H : Host}
-    (hH : H.AnonInvariant) (w : World H) (n : Nat)
+    (hH : H.AnonInvariant) (h4 : H.RespTyped) (w : World H) (n : Nat)
     {env₁ env₂ : Env} {e₁ e₂ : Expr} (henv : Val.anonEnv ρ env₁ = Val.anonEnv id env₂)
     (he : e₁.anon ρ = e₂.anon id) :
     runAnon ρ (eval H n P₁ w env₁ e₁) = runAnon id (eval H n P₂ w env₂ e₂) := by
   have hpol : ∀ pol, P₁.policy pol = P₂.anon.policy pol := fun pol => by
     simp [Program.policy, Program.anon, h.policies]
-  have h₁ := (eval_anon (P := P₁) (Q := P₂.anon) (ρ := ρ) hH
+  have h₁ := (eval_anon (P := P₁) (Q := P₂.anon) (ρ := ρ) hH h4
     (fun f => by rw [Program.find_anon, h.funs f]) hpol
     (fun pol po hpo => h.vias po (by
       unfold Program.policy at hpo
       exact List.mem_of_find?_eq_some hpo)) n).2 w env₁ e₁
-  have h₂ := (eval_anon (P := P₂) (Q := P₂.anon) (ρ := id) hH
+  have h₂ := (eval_anon (P := P₂) (Q := P₂.anon) (ρ := id) hH h4
     (fun f => by rw [Program.find_anon]; rfl) (fun pol => by simp [Program.policy, Program.anon])
     (fun _ _ _ => rfl) n).2 w env₂ e₂
   rw [h₁, h₂, henv, he]
@@ -632,20 +653,6 @@ theorem proj_anon {ρ : String → String} (p : Program) (L : Label) (t : Trace)
   cases ev <;> simp only [Function.comp, Event.anon, EvVis] <;> exact decide_eq_decide.mpr Iff.rfl
 
 /-! ### Erasure is injective on first-order values -/
-
-mutual
-  /-- A value without a closure in it. -/
-  def Val.FirstOrder : Val → Prop
-    | .closure _ _ _ => False
-    | .list items => Val.FirstOrderAll items
-    | .some v | .ok v => v.FirstOrder
-    | .record _ fs => Val.FirstOrderAll fs
-    | .int _ | .bool _ | .text _ | .unit | .none | .err _ => True
-
-  def Val.FirstOrderAll : List Val → Prop
-    | [] => True
-    | v :: vs => v.FirstOrder ∧ Val.FirstOrderAll vs
-end
 
 /-- An event whose values, if any, are first-order. -/
 def Event.FirstOrder : Event → Prop

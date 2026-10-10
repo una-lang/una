@@ -39,6 +39,14 @@ def Fun.paramTys (fn : Fun) (σ : List (String × Ty)) : List Ty :=
 /-- The structural types of the fields of a record kind. -/
 def Record.fieldTys (rec : Record) : List Ty := rec.fields.map LTy.erase
 
+/-- **The program holds `Http`'s kinds as `spec/24 §1` fixes them** (M5c): `Header(name: Text,
+value: Text)` and `Response(status: Int, headers: List[Header], body: Text)`, up to labels. A
+request's typing asks it, so that its response has a type. -/
+def Program.HttpRecords (p : Program) : Prop :=
+  (∃ rec, p.record "prelude.Header" = some rec ∧ rec.fieldTys = [.text, .text]) ∧
+  (∃ rec, p.record "prelude.Response" = some rec ∧
+    rec.fieldTys = [.int, .list (.record "prelude.Header"), .text])
+
 inductive AtomTy : Ctx → Atom → Ty → Prop where
   | var {ctx x t} : ctxLookup ctx x = some t → AtomTy ctx (.var x) t
   | int {ctx n} : AtomTy ctx (.int n) .int
@@ -74,7 +82,8 @@ mutual
     | read {ctx path} : AtomTy ctx path .text → RhsTy p ctx (.read path) .text
     | write {ctx path content} :
         AtomTy ctx path .text → AtomTy ctx content .text → RhsTy p ctx (.write path content) .unit
-    | req {ctx m args ts} : AtomsTy ctx args ts → (∀ t ∈ ts, t = .text) → RhsTy p ctx (.req m args) .text
+    | req {ctx m args ts} : AtomsTy ctx args ts → httpParams m = some ts → p.HttpRecords →
+        RhsTy p ctx (.req m args) (.record "prelude.Response")
     | construct {ctx record fields rec} :
         p.record record = some rec → AtomsTy ctx fields rec.fieldTys →
         RhsTy p ctx (.construct record fields) (.record record)

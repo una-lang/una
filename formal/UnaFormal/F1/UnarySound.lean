@@ -129,17 +129,134 @@ theorem LValTy.text_of {v : Val} {t : LTy} (hv : LValTy p v t) (ht : t.erase = .
     ∃ s, v = .text s := by
   cases hv <;> simp_all [LTy.erase]
 
-/-- Values of types whose structure is `Text`, at an instance, are texts: a request's arguments
-(T-Request). -/
-theorem LValsTy.texts_lsubst : ∀ {vs : List Val} {ts : List LTy},
-    LValsTy p vs (ts.map (LTy.lsubst p.recordDeep σ)) → (∀ t ∈ ts, t.erase = .text) →
-    ∀ v ∈ vs, ∃ s, v = .text s
-  | [], _, _, _, _, h => nomatch h
-  | _ :: _, [], h, _, _, _ => nomatch h
-  | v :: vs, t :: ts, .cons hv hvs, ht, x, hx => by
-    rcases List.mem_cons.mp hx with rfl | hx
-    · exact hv.text_of (by rw [LTy.erase_lsubst, ht t (by simp)]; rfl)
-    · exact LValsTy.texts_lsubst hvs (fun u hu => ht u (by simp [hu])) x hx
+/-- Values of types that erase to `Text` are texts, so first-order. -/
+theorem LValsTy.firstOrder_texts : ∀ {vs : List Val} {ts : List LTy}, LValsTy p vs ts →
+    (∀ t ∈ ts, t.erase = .text) → Val.FirstOrderAll vs
+  | _, _, .nil, _ => by simp [Val.FirstOrderAll]
+  | _, _, .cons hv hvs, ht => by
+    simp only [Val.FirstOrderAll]
+    obtain ⟨s, rfl⟩ := hv.text_of (ht _ (by simp))
+    exact ⟨by simp [Val.FirstOrder], LValsTy.firstOrder_texts hvs fun t h => ht t (by simp [h])⟩
+
+/-- A value of a `Header` record type is first-order, in a program that holds `Http`'s kinds. -/
+theorem LValTy.firstOrder_header (hr : p.HttpRecords) {v : Val} {t : LTy} (hv : LValTy p v t)
+    (ht : t.erase = .record "prelude.Header") : v.FirstOrder := by
+  obtain ⟨⟨hrec, hh, hhf⟩, _⟩ := hr
+  cases hv with
+  | @record r fs rec' l hrec' hfs =>
+    simp only [LTy.erase, Ty.record.injEq] at ht
+    subst ht
+    rw [hh] at hrec'
+    cases hrec'
+    simp only [Val.FirstOrder]
+    refine LValsTy.firstOrder_texts hfs fun t ht => ?_
+    have := List.mem_map_of_mem (f := LTy.erase) ht
+    simp only [Record.fieldTys] at hhf
+    rw [hhf] at this
+    simpa using this
+  | _ => simp [LTy.erase] at ht
+
+/-- Values of a `Header` record type, in a list, are first-order. -/
+theorem LValsAll.firstOrder_header (hr : p.HttpRecords) : ∀ {vs : List Val} {t : LTy},
+    LValsAll p vs t → t.erase = .record "prelude.Header" → Val.FirstOrderAll vs
+  | _, _, .nil, _ => by simp [Val.FirstOrderAll]
+  | _, _, .cons hx hxs, ht => by
+    simp only [Val.FirstOrderAll]
+    exact ⟨LValTy.firstOrder_header hr hx ht, LValsAll.firstOrder_header hr hxs ht⟩
+
+/-- **A request's arguments are first-order** (M5c): values of `Http`'s parameter types, `Text`,
+`List[Header]` and `Option[Text]`, hold no closure. -/
+theorem LValTy.firstOrder_httpArg (hr : p.HttpRecords) {v : Val} {t : LTy} (hv : LValTy p v t)
+    (ht : t.erase = .text ∨ t.erase = .option .text ∨ t.erase = .list (.record "prelude.Header")) :
+    v.FirstOrder := by
+  rcases ht with ht | ht | ht
+  · obtain ⟨s, rfl⟩ := hv.text_of ht
+    simp [Val.FirstOrder]
+  · cases hv with
+    | none => simp [Val.FirstOrder]
+    | some hv' =>
+      simp only [LTy.erase, Ty.option.injEq] at ht
+      obtain ⟨s, rfl⟩ := hv'.text_of ht
+      simp [Val.FirstOrder]
+    | _ => simp [LTy.erase] at ht
+  · cases hv with
+    | @list items t' l hall =>
+      simp only [LTy.erase, Ty.list.injEq] at ht
+      simp only [Val.FirstOrder]
+      exact LValsAll.firstOrder_header hr hall ht
+    | _ => simp [LTy.erase] at ht
+
+theorem LValsTy.firstOrder_http (hr : p.HttpRecords) {m : String} :
+    ∀ {vs : List Val} {ts : List LTy}, LValsTy p vs (ts.map (LTy.lsubst p.recordDeep σ)) →
+      httpParams m = some (ts.map LTy.erase) → Val.FirstOrderAll vs := by
+  intro vs ts hvs hm
+  have hall : ∀ t ∈ ts, t.erase = .text ∨ t.erase = .option .text ∨
+      t.erase = .list (.record "prelude.Header") := by
+    intro t ht
+    have hmem := List.mem_map_of_mem (f := LTy.erase) ht
+    unfold httpParams at hm
+    split at hm
+    all_goals first
+      | (simp only [Option.some.injEq] at hm; rw [← hm] at hmem; simp at hmem
+         rcases hmem with h | h | h | h <;> simp [h])
+      | (simp only [Option.some.injEq] at hm; rw [← hm] at hmem; simp at hmem
+         rcases hmem with h | h | h <;> simp [h])
+      | (cases hm)
+  clear hm
+  induction ts generalizing vs with
+  | nil => cases hvs; simp [Val.FirstOrderAll]
+  | cons t ts ih =>
+    cases hvs with
+    | cons hv hvs =>
+      simp only [Val.FirstOrderAll]
+      refine ⟨LValTy.firstOrder_httpArg hr hv ?_, ih hvs fun u hu => hall u (by simp [hu])⟩
+      rw [LTy.erase_lsubst]
+      rcases hall t (by simp) with h | h | h <;> rw [h] <;> simp [Ty.subst]
+
+/-- A text, at any type that erases to `Text`. -/
+theorem LValTy.text_erase {s : String} : ∀ {t : LTy}, t.erase = .text → LValTy p (.text s) t
+  | .text _, _ => .text
+  | .int _, h | .bool _, h | .unit _, h | .list _ _, h | .option _ _, h | .result _ _, h
+  | .record _ _, h | .fn _ _ _ _ _ _, h | .var _ _, h => by simp [LTy.erase] at h
+
+/-- A `Header`, at any type that erases to `Header`. -/
+theorem LValTy.header_erase (hr : p.HttpRecords) {n x : String} :
+    ∀ {t : LTy}, t.erase = .record "prelude.Header" → LValTy p (.record "prelude.Header" [.text n, .text x]) t
+  | .record r _, h => by
+    simp only [LTy.erase, Ty.record.injEq] at h
+    subst h
+    obtain ⟨⟨rec, hrec, hf⟩, _⟩ := hr
+    refine .record hrec ?_
+    simp only [Record.fieldTys] at hf
+    rcases hfs : rec.fields with _ | ⟨g₁, _ | ⟨g₂, _ | ⟨g₃, rest⟩⟩⟩ <;> rw [hfs] at hf <;>
+      simp at hf
+    exact .cons (LValTy.text_erase hf.1) (.cons (LValTy.text_erase hf.2) .nil)
+  | .text _, h | .int _, h | .bool _, h | .unit _, h | .list _ _, h | .option _ _, h
+  | .result _ _, h | .fn _ _ _ _ _ _, h | .var _ _, h => by simp [LTy.erase] at h
+
+/-- **A response is labeled-typed at `Response`** (H4), whatever its label. -/
+theorem LValTy.response (hr : p.HttpRecords) {v : Val} (h : v.IsResponse) (l : LExpr) :
+    LValTy p v (.record "prelude.Response" l) := by
+  obtain ⟨_, ⟨rrec, hrr, hrf⟩⟩ := id hr
+  unfold Val.IsResponse at h
+  split at h
+  · rename_i st hs body
+    refine .record hrr ?_
+    simp only [Record.fieldTys] at hrf
+    rcases hfs : rrec.fields with _ | ⟨f₁, _ | ⟨f₂, _ | ⟨f₃, _ | ⟨f₄, rest⟩⟩⟩⟩ <;> rw [hfs] at hrf <;>
+      simp at hrf
+    obtain ⟨h₁, h₂, h₃⟩ := hrf
+    refine .cons ?_ (.cons ?_ (.cons (LValTy.text_erase h₃) .nil))
+    · cases f₁ <;> simp [LTy.erase] at h₁
+      exact .int
+    · cases f₂ <;> simp [LTy.erase] at h₂
+      refine .list ?_
+      induction hs with
+      | nil => exact .nil
+      | cons x xs ih =>
+        obtain ⟨n, y, rfl⟩ := h x (by simp)
+        exact .cons (LValTy.header_erase hr h₂) (ih fun z hz => h z (by simp [hz]))
+  · exact h.elim
 
 theorem LValsTy.flowsσ {vs : List Val} {ts us : List LTy} (h : LValsTy p vs (ts.map (LTy.lsubst p.recordDeep σ)))
     (hf : Flows p.top ts us) : LValsTy p vs (us.map (LTy.lsubst p.recordDeep σ)) := by
@@ -283,7 +400,7 @@ theorem le_inst_of_symFree {pc d : LExpr} (s : List (String × LExpr)) (hd : d.S
 
 /-- **The unary half, at every ground instance.** A run of a body the labeled typing accepts,
 in an environment of the instance of its context, keeps to the instance of its typing. -/
-theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) : ∀ n : Nat,
+theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTyped) : ∀ n : Nat,
     (∀ {σ : List (String × LTy)} {w : World H} {env : Env} {Γ : LCtx} {E : List String} {pc : LExpr} {r : Rhs}
       {t : LTy} {ε : Eff}, GroundSubst σ → LEnvTy p env (Γ.lsub p.recordDeep σ) →
       LRhsTy p E Γ pc r t ε →
@@ -295,7 +412,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) : ∀ n : Nat,
   | 0 => ⟨fun _ _ _ => by simp [evalRhs, UGood, UOk, URes, WEff],
       fun _ _ _ => by simp [eval, UGood, UOk, URes, WEff]⟩
   | n + 1 => by
-    obtain ⟨ihR, ihE⟩ := unary_soundR hwf hb1 n
+    obtain ⟨ihR, ihE⟩ := unary_soundR hwf hb1 h4 n
     have hdst : ∀ po ∈ p.policies, po.dst.top.SymFree := fun po h => (hb1.dst po h).1.top_symFree
     have hrun : ∀ {σ : List (String × LTy)} {w : World H} {env : Env} {Γ : LCtx} {E : List String}
         {e : Expr} {t : LTy} {ε : Eff}, GroundSubst σ → LEnvTy p env (Γ.lsub p.recordDeep σ) →
@@ -421,18 +538,21 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) : ∀ n : Nat,
             split
             · exact LExpr.le_join_left _ _
             · exact LExpr.le_trans (LExpr.le_join_left _ _) (LExpr.le_join_left _ _)
-      | @req _ _ m args ts has hts hle _ =>
+      | @req _ _ m args ts has hts hr hle _ =>
         obtain ⟨vs, hvs, hvt⟩ := latoms_ltypedσ henv has
-        have htx := LValsTy.texts_lsubst hvt hts
+        have htx := LValsTy.firstOrder_http hr hvt hts
         simp only [evalRhs, hvs]
-        rcases H.request m vs w.srv with ⟨o, srv'⟩
+        generalize hq : H.request m vs w.srv = q
+        obtain ⟨o, srv'⟩ := q
         cases o with
-        | some body =>
-          refine ⟨fun ev hev => ?_, LValTy.text, fun _ => rfl, fun h => by simp [Event.isReq] at h⟩
+        | ok body =>
+          refine ⟨fun ev hev => ?_, ?_, fun _ => rfl, fun h => by simp [Event.isReq] at h⟩
+          rotate_left
+          · simpa [LTy.lsubst] using LValTy.response hr (h4 m vs w.srv srv' body hq) _
           simp only [List.mem_singleton] at hev
           subst hev
           exact ⟨rfl, LExpr.le_trans (hpc0 _) (LExpr.le_of_le_inst_ofLabel (LExpr.le_inst _ hle)), htx⟩
-        | none =>
+        | error c =>
           refine ⟨fun ev hev => ?_, ⟨_, rfl, ?_⟩, fun _ => rfl, fun h => by simp [Event.isReq] at h⟩
           · simp only [List.mem_singleton] at hev
             subst hev
@@ -527,7 +647,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) : ∀ n : Nat,
         rw [List.append_nil] at henv'
         have hbody := body_typed hwf.wellFormed hfn []
         rw [Ty.subst_nil, hres] at hbody
-        have hgood := (sound hwf.wellFormed n).2 (w := w) henv' hbody
+        have hgood := (sound hwf.wellFormed h4 n).2 (w := w) henv' hbody
         have hq := (pure_run p w n).2 (bindParams fn.params [v] []) fn.body hpure
         revert hgood hq
         generalize eval H n p w (bindParams fn.params [v] []) fn.body = run
@@ -742,7 +862,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) : ∀ n : Nat,
 
 /-- **The unary half without policies**, as M3 and M4 state it: `unary_soundR`, whose
 restrictions hold when there is no policy. -/
-theorem unary_sound (hwf : p.LWellFormed) (hpol : p.policies = []) : ∀ n : Nat,
+theorem unary_sound (hwf : p.LWellFormed) (hpol : p.policies = []) (h4 : H.RespTyped) : ∀ n : Nat,
     (∀ {σ : List (String × LTy)} {w : World H} {env : Env} {Γ : LCtx} {E : List String} {pc : LExpr} {r : Rhs}
       {t : LTy} {ε : Eff}, GroundSubst σ → LEnvTy p env (Γ.lsub p.recordDeep σ) →
       LRhsTy p E Γ pc r t ε →
@@ -751,6 +871,6 @@ theorem unary_sound (hwf : p.LWellFormed) (hpol : p.policies = []) : ∀ n : Nat
       {t : LTy} {ε : Eff}, GroundSubst σ → LEnvTy p env (Γ.lsub p.recordDeep σ) →
       LExprTy p E Γ pc e t ε →
       UGood p (pc.inst (p.sd σ)) (t.lsubst p.recordDeep σ) (ε.inst (p.sd σ)) w (eval H n p w env e)) :=
-  unary_soundR hwf (.of_nil hpol)
+  unary_soundR hwf (.of_nil hpol) h4
 
 end Una.F1

@@ -28,7 +28,7 @@ def files : Host where
   shape := fun fs => fs.map Prod.fst
   read := fun path fs => fs.lookup path
   write := fun path c fs => some ((path, c) :: fs)
-  request := fun _ _ _ => (some "", ())
+  request := fun _ _ _ => (.error 0, ())
 
 theorem lookup_isSome {path : String} : ∀ fs : List (String × String),
     (fs.lookup path).isSome ↔ path ∈ fs.map Prod.fst
@@ -40,6 +40,7 @@ theorem lookup_isSome {path : String} : ∀ fs : List (String × String),
       simp [List.lookup, hb, lookup_isSome fs, hk]
 
 theorem files_lawful : files.Lawful where
+  resp_typed := fun _ _ _ _ _ h => by cases h
   read_fails := fun {a b} path h => by
     have h' : (a : List (String × String)).map Prod.fst = (b : List (String × String)).map Prod.fst := h
     have e₁ := lookup_isSome (path := path) a

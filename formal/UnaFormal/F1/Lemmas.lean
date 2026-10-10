@@ -71,6 +71,31 @@ theorem mem_of_getElem? {α : Type} {xs : List α} {i : Nat} {x : α} (h : xs[i]
   obtain ⟨hlt, heq⟩ := List.getElem?_eq_some_iff.mp h
   exact heq ▸ List.getElem_mem hlt
 
+/-- The shapes of `Http`'s parameters: `Text`, `Option[Text]` and `List[Header]`. -/
+def Ty.HttpArg (t : Ty) : Prop := t = .text ∨ t = .option .text ∨ t = .list (.record "prelude.Header")
+
+theorem httpParams_args {m : String} {ts : List Ty} (h : httpParams m = some ts) :
+    ∀ t ∈ ts, t.HttpArg := by
+  intro t ht
+  unfold httpParams at h
+  split at h
+  all_goals first
+    | (cases h; simp at ht; rcases ht with h | h | h | h <;> subst h <;> simp [Ty.HttpArg])
+    | (cases h; simp at ht; rcases ht with h | h | h <;> subst h <;> simp [Ty.HttpArg])
+    | (cases h)
+
+theorem Ty.HttpArg.subst {t : Ty} (h : t.HttpArg) (τ : List (String × Ty)) : t.subst τ = t := by
+  rcases h with rfl | rfl | rfl <;> simp [Ty.subst]
+
+/-- `Http`'s parameter types have no type variable: substitution keeps them. -/
+theorem httpParams_subst (τ : List (String × Ty)) {m : String} {ts : List Ty}
+    (h : httpParams m = some ts) : ts.map (Ty.subst τ) = ts := by
+  unfold httpParams at h
+  split at h
+  all_goals first
+    | (cases h; simp [Ty.subst])
+    | (cases h)
+
 mutual
   /-- A typing of a right-hand side is closed under substitution. -/
   theorem RhsTy.subst (hwf : p.WellFormed) (τ : List (String × Ty)) :
@@ -91,13 +116,10 @@ mutual
       cases t <;> simp only [Ty.Scalar] at hs <;> exact .op h' (by simp [Ty.subst, Ty.Scalar])
     | _, _, _, .read h => .read (atom_subst τ h)
     | _, _, _, .write h₁ h₂ => .write (atom_subst τ h₁) (atom_subst τ h₂)
-    | _, _, _, .req has hts => by
-      refine .req (atoms_subst τ has) ?_
-      intro t ht
-      simp only [List.mem_map] at ht
-      obtain ⟨u, hu, rfl⟩ := ht
-      rw [hts u hu]
-      rfl
+    | _, _, _, .req has hts hr => by
+      have h := atoms_subst τ has
+      rw [httpParams_subst τ hts] at h
+      exact .req h hts hr
     | _, _, _, .construct hr has => by
       have h := atoms_subst τ has
       rw [map_subst_closed τ (hwf.records _ (record_mem hr))] at h

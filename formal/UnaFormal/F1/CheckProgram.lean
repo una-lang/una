@@ -35,21 +35,6 @@ end Una.F1
 namespace Una.F1.Check
 
 mutual
-  /-- Equality of types, as a Boolean. -/
-  def tyEq : Ty → Ty → Bool
-    | .int, .int | .bool, .bool | .text, .text | .unit, .unit => true
-    | .list a, .list b | .option a, .option b | .result a, .result b => tyEq a b
-    | .record a, .record b | .var a, .var b => a == b
-    | .fn ps r, .fn qs s => tysEq ps qs && tyEq r s
-    | _, _ => false
-
-  def tysEq : List Ty → List Ty → Bool
-    | [], [] => true
-    | a :: as, b :: bs => tyEq a b && tysEq as bs
-    | _, _ => false
-end
-
-mutual
   /-- `Ty.Closed`: no type parameter. -/
   def tyClosed : Ty → Bool
     | .var _ => false

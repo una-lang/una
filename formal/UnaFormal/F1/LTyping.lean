@@ -314,9 +314,9 @@ mutual
     /-- A request of `Http`: every argument is a sink, and every argument, with the headers'
     `internal` values, decides its failure (S-15, ADR 0085 decision 7). -/
     | req {Γ pc m args ts} :
-        LAtomsTy Γ args ts → (∀ t ∈ ts, t.erase = .text) →
+        LAtomsTy Γ args ts → httpParams m = some (ts.map LTy.erase) → p.HttpRecords →
         p.le (pc.join (LExpr.joinAll (ts.map p.deep))) (.ofLabel p.acceptsReq) → pc.SymFree →
-        LRhsTy p E Γ pc (.req m args) (.text (.ofLabel p.reqResult))
+        LRhsTy p E Γ pc (.req m args) (.record "prelude.Response" (.ofLabel p.reqResult))
           ⟨false, { rq := true }, some (p.reqFail pc ts), []⟩
     | construct {Γ pc record fields rec ts} :
         p.record record = some rec → LAtomsTy Γ fields ts → Flows p.top ts rec.fields →

@@ -37,6 +37,28 @@ def leB (top : Label) (a b : LExpr) : Bool :=
 
 def symFree (e : LExpr) : Bool := e.plain.isEmpty && e.star.isEmpty
 
+mutual
+  /-- Equality of types, as a Boolean. -/
+  def tyEq : Ty → Ty → Bool
+    | .int, .int | .bool, .bool | .text, .text | .unit, .unit => true
+    | .list a, .list b | .option a, .option b | .result a, .result b => tyEq a b
+    | .record a, .record b | .var a, .var b => a == b
+    | .fn ps r, .fn qs s => tysEq ps qs && tyEq r s
+    | _, _ => false
+
+  def tysEq : List Ty → List Ty → Bool
+    | [], [] => true
+    | a :: as, b :: bs => tyEq a b && tysEq as bs
+    | _, _ => false
+end
+
+/-- `Program.HttpRecords`, as a Boolean. -/
+def httpRecordsB (p : Program) : Bool :=
+  match p.record "prelude.Header", p.record "prelude.Response" with
+  | some h, some r =>
+    tysEq h.fieldTys [.text, .text] && tysEq r.fieldTys [.int, .list (.record "prelude.Header"), .text]
+  | _, _ => false
+
 /-- `HostFx.Le`. -/
 def hostLeB (a b : HostFx) : Bool := (!a.rd || b.rd) && (!a.wr || b.wr) && (!a.rq || b.rq)
 
@@ -277,8 +299,18 @@ mutual
       need (symFree pc) "a host operation under a symbolic program counter"
       flowTo p (.unit .bot) ann "`Files.write`'s result"
       pure ⟨false, { wr := true }, some (p.fsFail (pc.join (p.deep t))), []⟩
-    -- `Http`'s real signature is outside the model's request (M5c, #470).
-    | .req _ _ => throw "a request of `Http`, whose signature is outside F1 (M5c)"
+    | .req m args => do
+      let ts ← atomsTy Γ args
+      need (match httpParams m with
+          | some ps => tysEq (ts.map LTy.erase) ps
+          | none => false)
+        s!"a request `{m}` whose arguments are not of `Http`'s parameter types (`spec/24 §1`)"
+      need (httpRecordsB p) "the program's `Header` and `Response` are not `spec/24`'s"
+      le p (pc.join (LExpr.joinAll (ts.map p.deep))) (.ofLabel p.acceptsReq)
+        "a request's arguments or program counter are above what it accepts"
+      need (symFree pc) "a host operation under a symbolic program counter"
+      flowTo p (.record "prelude.Response" (.ofLabel p.reqResult)) ann "the response"
+      pure ⟨false, { rq := true }, some (p.reqFail pc ts), []⟩
     | .construct record fields => do
       let rec ← some! (p.record record) s!"no record `{record}`"
       need (flowsB p.top (← atomsTy Γ fields) rec.fields)
