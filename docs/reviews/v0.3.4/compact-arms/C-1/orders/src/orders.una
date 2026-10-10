@@ -1,0 +1,56 @@
+module orders
+
+pub kind OrderError = | Malformed
+
+field(j: Json, name: Text) -> Option[Json]
+=
+  when j
+    is Object(fields) -> fields.get(key: name)
+    else -> None
+
+array_of(j: Json) -> Option[List[Json]]
+=
+  when j
+    is Array(items) -> Some(items)
+    else -> None
+
+number_of(j: Json) -> Option[Int]
+=
+  when j
+    is Number(value) -> Some(value)
+    else -> None
+
+--- Summarizes an order: how many lines, their names and the total quantity.
+pub summarize(input: Text) -> Text
+  fails OrderError
+=
+  let doc = input.parse_json()
+    if error fail Malformed
+  let field_lines = field(doc, name: "lines")
+    if none fail Malformed
+  let lines = array_of(field_lines)
+    if none fail Malformed
+  let edit names: List[Json] = []
+  let edit total = 0
+  for line in lines
+    let name = field(line, name: "name")
+      if none fail Malformed
+    let qty_field = field(line, name: "qty")
+      if none fail Malformed
+    let qty = number_of(qty_field)
+      if none fail Malformed
+    names = names.append(item: name)
+    total = total + qty
+  let edit out: Map[Text, Json] = empty_map()
+  edit out.set(key: "count", value: Number(names.len))
+  edit out.set(key: "names", value: Array(names))
+  edit out.set(key: "total", value: Number(total))
+  Object(out).to_json()
+
+example "two order lines"
+  do summarize("\{\"lines\": [\{\"name\": \"a\", \"qty\": 2\}, \{\"name\": \"b\", \"qty\": 3\}]\}")
+  expect result == "\{\"count\":2,\"names\":[\"a\",\"b\"],\"total\":5\}"
+
+example "a line without a quantity"
+  do summarize("\{\"lines\": [\{\"name\": \"a\"\}]\}")
+  expect fails Malformed

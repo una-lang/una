@@ -1,0 +1,11 @@
+trusted module release
+
+--- The API token goes only into the `X-Api-Token` header of a request to the inventory API.
+pub policy api_token
+  from secret Text
+  to internal Text
+  via as_header
+  purpose "send the inventory API token in the X-Api-Token header"
+  owner inventory_team
+
+as_header(token: secret Text) -> internal Text = token

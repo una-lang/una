@@ -1,0 +1,18 @@
+module greet
+
+import release (shown_name)
+
+--- The greeting line for a user name.
+pub greeting(name: Text) -> Text = "Hello, {name}!"
+
+pub main() -> Unit
+  uses @console: Console[print]
+  uses @env: Env[get]
+=
+  let name = @env.get("USER")
+    if none use "stranger"
+  @console.print(greeting(shown_name(name)))
+
+example "a user is greeted by name"
+  do greeting("ana")
+  expect result == "Hello, ana!"

@@ -1,0 +1,29 @@
+module tally
+
+--- Adds one vote for `name`: afterwards `name` is counted, and at most one new candidate appears.
+add_vote(edit counts: Map[Text, Int], name: Text) -> Unit
+  ensures counts.has(key: name)
+  ensures counts.len >= old(counts).len
+  ensures counts.len <= old(counts).len + 1
+=
+  let n = counts.get(key: name)
+    if none use 0
+  edit counts.set(key: name, value: n + 1)
+
+--- The number of votes of each candidate named in `votes`.
+pub tally(votes: List[Text]) -> Map[Text, Int]
+=
+  let edit counts: Map[Text, Int] = empty_map()
+  for name in votes
+    add_vote(edit counts, name: name)
+  counts
+
+example "three votes for two candidates"
+  do tally(["ana", "bo", "ana"])
+  expect result.get(key: "ana") == Some(2)
+  expect result.get(key: "bo") == Some(1)
+  expect result.len == 2
+
+example "no votes"
+  do tally([])
+  expect result.len == 0

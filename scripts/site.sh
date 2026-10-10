@@ -137,10 +137,11 @@ awk '
     echo
     echo "- [Getting started](docs/guide/getting-started.md)"
     echo "- [Una for agents](docs/guide/una-for-agents.md)"
+    echo "- [Una, compact](docs/guide/una-compact.md)"
     echo "- [Language guide](docs/guide/syntax-reference.md)"
     for guide in docs/guide/*.md; do
         case $guide in
-            */getting-started.md | */una-for-agents.md | */syntax-reference.md) ;;
+            */getting-started.md | */una-for-agents.md | */una-compact.md | */syntax-reference.md) ;;
             *) echo "- [$(title "$guide")]($guide)" ;;
         esac
     done

@@ -1,0 +1,34 @@
+module tally
+
+--- One vote counted: the candidate is in the map afterwards, and the map gained at most one key.
+pub add_vote(edit counts: Map[Text, Int], vote: Text) -> Unit
+  ensures counts.has(key: vote)
+  ensures counts.len <= old(counts).len + 1
+=
+  let n = counts.get(key: vote)
+    if none use 0
+  edit counts.set(key: vote, value: n + 1)
+
+--- The votes per candidate, in ascending order of the names.
+pub tally(votes: List[Text]) -> Map[Text, Int]
+=
+  let edit counts: Map[Text, Int] = empty_map()
+  for vote in votes
+    add_vote(edit counts, vote)
+  counts
+
+--- The votes counted with one last vote: that candidate is always in the result.
+pub tally_with(votes: List[Text], last: Text) -> Map[Text, Int]
+  ensures result.has(key: last)
+=
+  let edit counts = tally(votes)
+  add_vote(edit counts, vote: last)
+  counts
+
+example "votes are counted per candidate"
+  do tally(["ana", "bia", "ana", "caio", "ana"])
+  expect result == empty_map().with(key: "ana", value: 3).with(key: "bia", value: 1).with(key: "caio", value: 1)
+
+example "the last vote is counted too"
+  do tally_with(["ana"], last: "bia")
+  expect result.has(key: "bia")
