@@ -926,14 +926,41 @@ theorem finalize_sound {pAll pPlain : Program} {cond : List String} {mono : List
 /-- The capabilities a document declares, its own and the host's: module, name and operations. -/
 abbrev Caps' := List (String × String × List String)
 
+/-- **`std.host`, as the specification fixes it** (`spec/14 §3`; `spec/24` for edition 0.2's
+`Http`): its capabilities and their operations. The re-check does not take the export's word for
+what `std.host` is (Una-1's finding on #471): a document's `host` entry that differs from these is a
+write site (`hostSites`). Of these operations, only `Files.write` writes a file. -/
+def stdHost : Caps' :=
+  [("std.host", "Console", ["print"]), ("std.host", "Clock", ["now"]),
+   ("std.host", "Env", ["get"]), ("std.host", "Files", ["read", "write"]),
+   ("std.host", "Keys", ["hmac"]), ("std.host", "Http", ["get", "post", "put", "delete"])]
+
+/-- A `uses` entry that may grant a file write: one that names no capability in `known`, grants an
+operation that capability does not declare, or grants `std.host`'s `Files.write`. -/
+def usesSite (known : Caps') (u : J) : Option String :=
+  match u.getObjValD "capability", u.getObjValD "ops" with
+  | .str c, .arr grants =>
+    match known.find? (fun (_, n', _) => n' == c) with
+    | none => some "a `uses` that names a capability the document does not declare"
+    | some (m, _, ops) =>
+      let gs := grants.toList.filterMap fun g => match g with
+        | .str o => some o
+        | _ => none
+      if gs.length != grants.size || !gs.all ops.contains then
+        some "a `uses` that grants an operation its capability does not declare"
+      else if m == "std.host" && c == "Files" && gs.contains "write" then
+        some "a `uses` that grants `Files.write`"
+      else none
+  | _, _ => some "a `uses` entry that cannot be read"
+
 /-- **A node that may write a file**, found anywhere in a declaration (M5b; Una-1's findings on
 #471 and the coordinator's rule). Default-deny: a node is safe only when it is positively
 identified, and every other node counts as a site.
 - An operation is safe when its capability path resolves to a capability the document declares
-  (`known`: its own, or the host's), its `capability` field is that path's name, its operation is
-  one the capability declares, and it is not `std.host`'s `Files.write`.
-- A `uses` entry is safe when it names a capability the document declares, by name, every
-  operation it grants is one that capability declares, and it does not grant `Files.write`.
+  (`known`: its own, and `std.host` as `stdHost` fixes it), its `capability` field is that path's
+  name, its operation is one the capability declares, and it is not `std.host`'s `Files.write`.
+- An element of a `uses` array is safe when `usesSite` finds nothing in it. Only `uses` arrays hold
+  grants: a handler declaration's capability and operations are not read as one.
 `none` when the node and its children hold no site; otherwise what was found. -/
 partial def writeSite (known : Caps') (j : J) : Option String :=
   match j with
@@ -952,26 +979,31 @@ partial def writeSite (known : Caps') (j : J) : Option String :=
             else if m == "std.host" && n == "Files" && o == "write" then some "a `Files.write`"
             else none
         | _, _, _, _ => some "an operation whose capability cannot be resolved"
-      else match j.getObjValD "capability", j.getObjValD "ops" with
-        | .str c, .arr grants =>
-          match known.find? (fun (_, n', _) => n' == c) with
-          | none => some "a `uses` that names a capability the document does not declare"
-          | some (m, _, ops) =>
-            let gs := grants.toList.filterMap fun g => match g with
-              | .str o => some o
-              | _ => none
-            if gs.length != grants.size || !gs.all ops.contains then
-              some "a `uses` that grants an operation its capability does not declare"
-            else if m == "std.host" && c == "Files" && gs.contains "write" then
-              some "a `uses` that grants `Files.write`"
-            else none
-        | .str _, _ => some "a `uses` whose operations cannot be read"
-        | _, _ => none
+      else match j.getObjValD "uses" with
+        | .arr us => us.foldl (fun acc u => acc <|> usesSite known u) none
+        | .null => none
+        | _ => some "a `uses` that cannot be read"
     match here with
     | some w => some w
     | none => kvs.toArray.foldl (fun acc kv => acc <|> writeSite known kv.2) none
   | .arr xs => xs.foldl (fun acc x => acc <|> writeSite known x) none
   | _ => none
+
+/-- The document's `host` entries that differ from `std.host` as `stdHost` fixes it: a capability it
+does not have, or other operations. -/
+def hostSites (host : List J) : List String :=
+  host.filterMap fun cj =>
+    match cj.getObjValD "name", cj.getObjValD "ops" with
+    | .str n, .arr ops =>
+      let names := ops.toList.filterMap fun o => match o.getObjValD "name" with
+        | .str x => some x
+        | _ => none
+      match stdHost.find? (fun (_, n', _) => n' == n) with
+      | some (_, _, spec) =>
+        if names.length == ops.size && names.all spec.contains && spec.all names.contains then none
+        else some s!"a host capability `{n}` whose operations are not `std.host`'s"
+      | none => some s!"a host capability `{n}` that `std.host` does not declare"
+    | _, _ => some "a host capability that cannot be read"
 
 /-- **The file-state label is verified for the whole package**, or nothing that uses `Files` is
 accepted (M5b, Una-1's finding on #471). The exported `file_state` is untrusted, and the re-check
@@ -1325,12 +1357,10 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
     (decls.filter (·.kind == "cap")).filterMap (fun d =>
       match plainRun (do str (← field d.value "name")) with
       | .ok n => some (d.module, n, opNames d.value)
-      | .error _ => none) ++
-    host.filterMap fun cj => match plainRun (do str (← field cj "name")) with
-      | .ok n => some ("std.host", n, opNames cj)
-      | .error _ => none
-  let sites := decls.filterMap fun d =>
-    (writeSite known d.value).map fun w => (named d, d.kind, w)
+      | .error _ => none) ++ stdHost
+  let sites := decls.filterMap (fun d =>
+      (writeSite known d.value).map fun w => (named d, d.kind, w)) ++
+    (hostSites host).map fun w => ("std.host", "host", w)
   pure (guardFiles sites (finalize (mkProg members) (mkProg plain) cond mono ren final))
 
 /-- `checkDocumentWith` with labeled instantiation, `LTy.lsubst`. -/
