@@ -862,6 +862,7 @@ hmac_phone(phone: secret[PII] Phone) -> internal Hashed
 ```
 
 - **Callable.** The policy becomes a function: `attendee_key(phone)`. Its `uses` and `fails` are those of the `via` function.
+- **Its failure is released like its value.** The `via` function decides its failure from the `from` value, so the failure carries the `to` labels: with an `internal` `to`, `if error fail` and `if error pass` are U4002, and a branch on `attempt attendee_key(phone)` runs under `internal`. Handle it under that label, with `if error use` or `attempt`, or fail publicly on a public check before the call (ADR 0090).
 - **Only entry point.** The `via` function must be private (U4005), so the policy is the only way in. Flow checks are not performed inside it; it belongs to the trusted computing base.
 - **Where policies live.** Policies are allowed only in trusted modules (U4004). A trusted module is declared both with `trusted module` and in `una.toml` (U7005 if either is missing).
 - **Reported.** Every policy call site appears in the build report with its purpose and owner.
@@ -1332,11 +1333,13 @@ import events.seating (Availability, Event, Registration, availability)
 import events.types (Phone, parse_phone)
 import std.testing (fake_hash)
 
-pub kind CheckInError = NotRegistered | Unavailable
+pub kind CheckInError = NotRegistered | UnknownEvent | Unavailable(reason: Text)
 
 pub kind StoreError = Timeout | Corrupted
 
 pub capability Registrations
+  op event(name: Text) -> Option[Event]
+    fails StoreError
   op find(key: internal Hashed) -> Option[Registration]
     fails StoreError
     accepts internal
@@ -1346,28 +1349,62 @@ pub capability Audit
     fails StoreError
     accepts internal
 
---- Finds a registration by phone, reports the event's availability and audits the check-in.
---- The phone number never leaves this function: only its keyed hash does.
-pub check_in(phone: secret[PII] Phone) -> Availability
-  uses @registrations: Registrations[find]
+--- Checks an attendee in to an event by phone, shows its availability, and records it.
+--- The phone never leaves this function: only its keyed hash does.
+pub check_in(phone: secret[PII] Phone, event: Text) -> internal Result[Availability, CheckInError]
+  uses @registrations: Registrations[find, event]
   uses @audit: Audit[record]
   uses @keys: Keys[hmac]
   fails CheckInError
 =
-  let key = attendee_key(phone)
-    if error fail Unavailable
-  let registration = @registrations.find(key)
-    if error fail Unavailable
-    if none fail NotRegistered
-  let status = availability(registration.event)
-  @audit.record(key, status)
-    if error fail Unavailable
-  status
+  let found = @registrations.event(event)
+    if error fail Unavailable(reason: "registrations")
+    if none fail UnknownEvent
+  -- The key policy's failure is decided by the phone, so it is released like the key, at
+  -- `internal` (ADR 0090): from here on, every outcome is in the internal result.
+  let key = attempt attendee_key(phone)
+  when key
+    is Ok(hashed) -> check_in_key(hashed, event: found)
+    is Err -> Err(Unavailable(reason: "keys"))
+
+--- Checks in the attendee whose keyed hash is `key`. It runs under the key's label, so
+--- each outcome is in its result, not a failure of its own.
+check_in_key(key: internal Hashed, event: Event) -> Result[Availability, CheckInError]
+  uses @registrations: Registrations[find]
+  uses @audit: Audit[record]
+=
+  let registration = attempt @registrations.find(key)
+  when registration
+    is Err -> Err(Unavailable(reason: "registrations"))
+    is Ok(maybe) ->
+      when maybe
+        is None -> Err(NotRegistered)
+        is Some(r) ->
+          if r.event.name == event.name
+            let outcome = record_check_in(key, status: availability(event))
+            outcome
+          else
+            Err(NotRegistered)
+
+--- Records the check-in of `key` with `status`, and gives `status` back.
+record_check_in(key: internal Hashed, status: Availability) -> Result[Availability, CheckInError]
+  uses @audit: Audit[record]
+=
+  let recorded = attempt @audit.record(key, status)
+  when recorded
+    is Ok -> Ok(status)
+    is Err -> Err(Unavailable(reason: "audit"))
 
 handler one_registration(r: Registration) for Registrations
+  op event(name) = Some(r.event)
   op find(key) = Some(r)
 
-handler no_registrations() for Registrations
+handler no_registrations(e: Event) for Registrations
+  op event(name) = Some(e)
+  op find(key) = None
+
+handler no_events() for Registrations
+  op event(name) = None
   op find(key) = None
 
 handler audit_log() for Audit
@@ -1380,17 +1417,25 @@ example "a registered attendee is checked in and audited"
   given @registrations = one_registration(Registration(name: "Ana", event: Event(name: "Meetup", remaining: 120)))
   given @audit = audit_log()
   given @keys = fake_keys()
-  do check_in(parse_phone("11900000001"))
-  expect result is Open
+  do check_in(parse_phone("11900000001"), event: "Meetup")
+  expect result == Ok(Open)
   expect performed @audit.record
 
-example "an unknown attendee fails and is not audited"
-  given @registrations = no_registrations()
+example "an unknown attendee is not checked in and is not audited"
+  given @registrations = no_registrations(Event(name: "Meetup", remaining: 120))
   given @audit = audit_log()
   given @keys = fake_keys()
-  do check_in(parse_phone("11900000001"))
-  expect fails NotRegistered
+  do check_in(parse_phone("11900000001"), event: "Meetup")
+  expect result == Err(NotRegistered)
   expect not performed @audit.record
+
+example "an unknown event fails before the phone is used"
+  given @registrations = no_events()
+  given @audit = audit_log()
+  given @keys = fake_keys()
+  do check_in(parse_phone("11900000001"), event: "Gala")
+  expect fails UnknownEvent
+  expect not performed @keys.hmac
 ```
 
 **`src/events/main.una`**

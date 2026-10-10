@@ -2,6 +2,14 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
+## v0.1.9
+
+v0.1.8 with the S-18 fix: a policy call's failure is visible only where its release is (#496, ADR 0090).
+
+### Security
+
+- **A policy call's failure is visible only where its release is** (#496, S-18, ADR 0090). A `via` function that failed on its `from` value let the caller see the failure as public, whatever the policy's `to`: with `to internal Int`, a public branch on `attempt p(v)` revealed what the `via` function decided about a secret. The failure is now labeled `pc ⊔ ℓ(to)`, so such a branch is U4003 and passing it on publicly is U4002. A policy whose `to` is public keeps a public failure. `examples/events` and the guide's copy now look up the event first, with public failures, then handle the key policy's failure under `internal`: `check_in` takes the event's name and returns `internal Result[Availability, CheckInError]`. The declassification tour does the same with `attempt` and `when`, and its old shape is kept as a rejected case.
+
 ## v0.1.8
 
 v0.1.7 with the S-17 fix: a `checked` predicate's other reads label its failure (#488, ADR 0089).
