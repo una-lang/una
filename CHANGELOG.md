@@ -4,9 +4,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ## Unreleased
 
-### Security
-
-- **A `checked` predicate's other reads label its failure** (#488, S-17, ADR 0089). `checked(a, φ) else fail C` labeled its failure by `a` alone, but φ may read other values: `checked(raw, raw.len < limit)` with `limit: secret Int` failed publicly, and a caller that branched on it learned a comparison with the secret. Now the failure carries every label of every value φ reads, in both editions, so such a `checked` is U4002. An operand-only `checked`, and one that reads only public values, are unchanged; over the corpus, the only new diagnostics are the S-17 cases.
+- **Security: a `checked` predicate's other reads label its failure** (#488, S-17, ADR 0089). `checked(a, φ) else fail C` labeled its failure by `a` alone, but φ may read other values: `checked(raw, raw.len < limit)` with `limit: secret Int` failed publicly, and a caller that branched on it learned a comparison with the secret. Now the failure carries every label of every value φ reads, in both editions, so such a `checked` is U4002. An operand-only `checked`, and one that reads only public values, are unchanged; over the corpus, the only new diagnostics are the S-17 cases.
 
 - **One formal model, and the re-check on any host** (#459, `docs/plan/formal-track-m5.md` §11). The model with the stateful host is now the only one, and the re-check of Core is proven over it. A program without host operations runs on any host as on a host without state (`eval_hostFree`), so the re-check's theorem holds on any host, lawful or not: its "accepted" asks nothing of the real host, not even H1, which it meets only from v0.3.5. Every program the re-check certifies is checked to be without host operations. The corpus and the replay are unchanged.
 - **Release and request events are first-order** (#457). The re-check's theorem on the document's own runs no longer assumes that their events carry first-order values: `events_firstOrder` proves it of every typed run within B1, since a release's value is typed at its policy's scalar `to` and a request's arguments are texts.
