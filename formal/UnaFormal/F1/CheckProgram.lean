@@ -111,7 +111,10 @@ def hostWfB (p : Program) : Bool :=
   leB p.top (.ofLabel p.acceptsReq) (.ofLabel ⟨.internal, []⟩) &&
   leB p.top (.ofLabel ⟨.internal, []⟩) (.ofLabel p.readResult) &&
   leB p.top (.ofLabel ⟨.internal, []⟩) (.ofLabel p.reqResult) &&
-  leB p.top (.ofLabel ⟨.internal, []⟩) (.ofLabel p.reqFloor)
+  leB p.top (.ofLabel ⟨.internal, []⟩) (.ofLabel p.reqFloor) &&
+  -- The file-state label is capped at `internal` (ADR 0085 decision 1), which an exported value
+  -- must respect (M5b).
+  leB p.top (.ofLabel p.fileState) (.ofLabel ⟨.internal, []⟩)
 
 /-- The parts of `Program.LWellFormed` and the premises of `t6_release_host` that are not about
 one function: the host's labels (`Program.HostWF`), records, policies and categories. -/

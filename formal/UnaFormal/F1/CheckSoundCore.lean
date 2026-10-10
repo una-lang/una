@@ -46,7 +46,19 @@ mutual
       obtain ⟨t, ht, _, hs, _, hle, _, hsf, _, hf, rfl⟩ := h
       exact ⟨_, .op (atomTy_sound ht) (isScalar_sound hs) (le_ok hle) (symFree_sound hsf),
         flowTo_ok hf⟩
-    | .read _, _, h | .write _ _, _, h | .req _ _, _, h => by simp [checkRhs] at h
+    | .read path, ε, h => by
+      simp only [checkRhs, bind_ok, pure_ok, need_ok] at h
+      obtain ⟨t, ht, _, hs, _, hle, _, hsf, _, hf, rfl⟩ := h
+      exact ⟨_, .read (atomTy_sound ht) (isText_sound hs) (le_ok hle) (symFree_sound hsf),
+        flowTo_ok hf⟩
+    | .write path content, ε, h => by
+      simp only [checkRhs, bind_ok, pure_ok, need_ok] at h
+      obtain ⟨t, ht, _, hs, c, hc, _, hcs, _, hle, _, hfs, _, hsf, _, hf, rfl⟩ := h
+      refine ⟨_, .write (atomTy_sound ht) (isText_sound hs) (atomTy_sound hc) (isText_sound hcs)
+        (le_ok hle) (fun ho => ?_) (symFree_sound hsf), flowTo_ok hf⟩
+      simp only [ho, Bool.false_or] at hfs
+      exact leB_sound hfs
+    | .req _ _, _, h => by simp [checkRhs] at h
     | .construct record fields, ε, h => by
       simp only [checkRhs, bind_ok, pure_ok, need_ok, some_ok] at h
       obtain ⟨rec, hrec, ts, hts, _, hfl, _, hf, rfl⟩ := h

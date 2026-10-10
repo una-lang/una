@@ -67,7 +67,7 @@ def mainMono : Fun where
 
 /-- The document's program. -/
 def P₂ : Program :=
-  mkProgram [] Label.bot [] [] [g, main]
+  mkProgram [] Label.bot {} [] [] [g, main]
 
 /-- The program checked at instances: `main`'s call renamed, `g` replaced by its instance. -/
 def monoFuns : List Fun := [mainMono, gInt]

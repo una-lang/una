@@ -149,7 +149,7 @@ theorem policyOk_sound {p : Program} {po : Policy}
 
 theorem hostWfB_sound {p : Program} (h : hostWfB p = true) : p.HostWF := by
   simp only [hostWfB, Bool.and_eq_true, Bool.not_eq_true'] at h
-  obtain ⟨⟨⟨⟨⟨⟨ho, hr⟩, hw⟩, hq⟩, hrr⟩, hqr⟩, hqf⟩ := h
+  obtain ⟨⟨⟨⟨⟨⟨⟨ho, hr⟩, hw⟩, hq⟩, hrr⟩, hqr⟩, hqf⟩, _⟩ := h
   exact ⟨ho, leB_sound hr, leB_sound hw, leB_sound hq, leB_sound hrr, leB_sound hqr, leB_sound hqf⟩
 
 /-- **The whole-program check is sound.** A program that passes `progOk cond` is accepted by
