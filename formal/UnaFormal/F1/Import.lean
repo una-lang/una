@@ -24,7 +24,7 @@ assumption, stated in `docs/plan/formal-track-m2.md` §1.
 -/
 import Lean.Data.Json
 import UnaFormal.F1.CheckProgram
-import UnaFormal.F1.Monomorph
+import UnaFormal.F1.HostFree
 
 namespace Una.F1
 
@@ -768,13 +768,17 @@ the steps before report accepted gets its verdict here, and only from a certific
 - accepted, conditional on A3, when only `pAll` passes `progOk cond`;
 - not re-checked otherwise.
 
+Every certificate also asks the program it is about to perform no host operation
+(`Program.hostFreeB`), so that its theorem holds on any host (`t6_release_hostFree`,
+`t6_release_erasure_obs_hostFree`), the real one included.
+
 `finalize_sound` states it. -/
 def finalize (pAll pPlain : Program) (cond : List String) (mono : List Fun)
     (ren : List (String × String)) (outs : List (String × Outcome)) : List (String × Outcome) :=
   let p₁ : Program := { pAll with funs := mono }
-  let monoOk := Check.progOk [] p₁ && progSim ren p₁ pAll
-  let plainOk := Check.progOk [] pPlain
-  let condOk := Check.progOk cond pAll
+  let monoOk := Check.progOk [] p₁ && progSim ren p₁ pAll && pAll.hostFreeB
+  let plainOk := Check.progOk [] pPlain && pPlain.hostFreeB
+  let condOk := Check.progOk cond pAll && pAll.hostFreeB
   outs.map fun (f, o) =>
     let verdict := fun (note : String) =>
       if monoOk && pAll.funs.any (·.name == f) then Outcome.accepted note
@@ -790,15 +794,18 @@ def finalize (pAll pPlain : Program) (cond : List String) (mono : List Fun)
 passes `progOk []`, the program of the declarations that reach no function checked at its
 instances, or the document's program, which the program checked at instances agrees with up to
 annotations. One reported accepted on the condition of A3 is a function of a program that passes
-`progOk cond`. -/
+`progOk cond`. The program it is a function of performs no host operation. -/
 theorem finalize_sound {pAll pPlain : Program} {cond : List String} {mono : List Fun}
     {ren : List (String × String)} {outs : List (String × Outcome)} {f : String} :
     ((∃ note, (f, Outcome.accepted note) ∈ finalize pAll pPlain cond mono ren outs) →
-      (Check.progOk [] pPlain = true ∧ pPlain.funs.any (·.name == f) = true) ∨
+      (Check.progOk [] pPlain = true ∧ pPlain.hostFreeB = true ∧
+        pPlain.funs.any (·.name == f) = true) ∨
       (Check.progOk [] { pAll with funs := mono } = true ∧
-        progSim ren { pAll with funs := mono } pAll = true ∧ pAll.funs.any (·.name == f) = true)) ∧
+        progSim ren { pAll with funs := mono } pAll = true ∧ pAll.hostFreeB = true ∧
+        pAll.funs.any (·.name == f) = true)) ∧
     ((∃ note, (f, Outcome.acceptedIfA3 note) ∈ finalize pAll pPlain cond mono ren outs) →
-      Check.progOk cond pAll = true ∧ pAll.funs.any (·.name == f) = true) := by
+      Check.progOk cond pAll = true ∧ pAll.hostFreeB = true ∧
+        pAll.funs.any (·.name == f) = true) := by
   constructor
   · rintro ⟨note, h⟩
     simp only [finalize, List.mem_map] at h
