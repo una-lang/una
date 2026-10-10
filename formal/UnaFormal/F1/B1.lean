@@ -25,9 +25,29 @@ mutual
     | .fail _ | .letTuple _ _ _ | .loop _ _ _ _ _ _ => False
 end
 
+/-- A right-hand side that performs no event and calls nothing, but may fail: a pure one, or
+`checked` (#453 Phase B). -/
+def Rhs.PureOrFails : Rhs → Prop
+  | .checked _ _ _ => True
+  | r => r.Pure
+
+/-- A body that performs no event and calls nothing, but may fail: `Expr.Pure` with `fail` and
+`checked` (#453 Phase B). -/
+def Expr.PureOrFails : Expr → Prop
+  | .atom _ => True
+  | .letR _ _ v b => Rhs.PureOrFails v ∧ Expr.PureOrFails b
+  | .letE _ _ v b => Expr.PureOrFails v ∧ Expr.PureOrFails b
+  | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e =>
+    Expr.PureOrFails t ∧ Expr.PureOrFails e
+  | .attempt b => Expr.PureOrFails b
+  | .fail _ => True
+  | .letTuple _ _ _ | .loop _ _ _ _ _ _ => False
+
 /-- **The restrictions of option B1**, on the policies. Each `from` is a scalar type, each `to`
-is a scalar type with a concrete label, and each `via` function is pure: no operation, no
-failure, no call. `spec/07 §5` requires none of them (rule 1 gives a policy the `uses` and
+is a scalar type with a concrete label, and each `via` function performs no operation and
+calls nothing (`Expr.PureOrFails`). It may fail (#453 Phase B): its failure is released as its
+value is (T-Declassify, ADR 0090). One that does not declare `fails` is `Pure`, so its run
+cannot fail. `spec/07 §5` requires none of them (rule 1 gives a policy the `uses` and
 `fails` of its `via` function); they are the model's. Of the corpus's 120 policies, none has a
 `from` that is not a scalar, 3 have a `to` that is not a scalar (2.5%), and 4 have a `via`
 function that is not `Pure` as written here (3.3%). The scalar `from` is a candidate to lift: it
@@ -37,7 +57,7 @@ structure Program.B1WellFormed (p : Program) : Prop where
   src : ∀ po ∈ p.policies, po.src.erase.Scalar
   dst : ∀ po ∈ p.policies, po.dst.Ground ∧ po.dst.erase.Scalar
   via : ∀ po ∈ p.policies, ∃ fn, p.find po.via = some fn ∧ fn.op = false ∧ fn.host.isNone = true ∧
-    fn.fails = false ∧ fn.body.Pure
+    fn.body.PureOrFails ∧ (fn.fails = false → fn.body.Pure)
 
 /-- Without policies, the restrictions hold. -/
 theorem Program.B1WellFormed.of_nil {p : Program} (hnil : p.policies = []) : p.B1WellFormed where
@@ -135,6 +155,102 @@ theorem pure_run (p : Program) (w : World H) : ∀ n : Nat,
         | ok v => exact h
         | stuck => exact h
         | outOfFuel => exact h
+      | letTuple _ _ _ => exact (show False from he).elim
+      | loop _ _ _ _ _ _ => exact (show False from he).elim
+
+/-- A run from `w` with no event, that leaves the world as it was: it may fail. -/
+def Silent (w : World H) (r : Run H) : Prop := r.1 = [] ∧ r.2.2 = w
+
+theorem silent_andThen {w : World H} {first : Run H} {rest : World H → Val → Run H}
+    (h₁ : Silent w first) (h₂ : ∀ v, Silent w (rest w v)) : Silent w (andThen first rest) := by
+  obtain ⟨t, r, w'⟩ := first
+  obtain ⟨ht, hw⟩ := h₁
+  simp only at ht hw
+  subst ht hw
+  cases r with
+  | ok v =>
+    simp only [andThen]
+    have := h₂ v
+    rcases hq : rest w' v with ⟨t', r', w''⟩
+    rw [hq] at this
+    exact ⟨by simpa using this.1, this.2⟩
+  | failed c => exact ⟨rfl, rfl⟩
+  | stuck => exact ⟨rfl, rfl⟩
+  | outOfFuel => exact ⟨rfl, rfl⟩
+
+theorem Quiet.silent {w : World H} {r : Run H} (h : Quiet w r) : Silent w r := ⟨h.1, h.2.2⟩
+
+/-- **A body that may only fail** performs no event and leaves the world as it was, at any
+fuel (#453 Phase B). -/
+theorem silent_run (p : Program) (w : World H) : ∀ n : Nat,
+    (∀ (env : Env) (r : Rhs), r.PureOrFails → Silent w (evalRhs H n p w env r)) ∧
+    (∀ (env : Env) (e : Expr), e.PureOrFails → Silent w (eval H n p w env e))
+  | 0 => ⟨fun _ _ _ => ⟨rfl, rfl⟩, fun _ _ _ => ⟨rfl, rfl⟩⟩
+  | n + 1 => by
+    obtain ⟨ihR, ihE⟩ := silent_run p w n
+    constructor
+    · intro env r hr
+      cases r with
+      | checked a pred code =>
+        simp only [evalRhs]
+        split
+        · simp only [checkRun]
+          split
+          · split <;> exact ⟨rfl, rfl⟩
+          · exact ⟨rfl, rfl⟩
+        · exact ⟨rfl, rfl⟩
+      | _ =>
+        simp only [Rhs.PureOrFails] at hr
+        exact ((pure_run p w (n + 1)).1 env _ hr).silent
+    · intro env e he
+      cases e with
+      | atom a => exact ((pure_run p w (n + 1)).2 env (.atom a) trivial).silent
+      | letR x t v b =>
+        exact silent_andThen (ihR env v he.1) (fun _ => ihE _ b he.2)
+      | letE x t v b =>
+        exact silent_andThen (ihE env v he.1) (fun _ => ihE _ b he.2)
+      | ite c t e =>
+        simp only [eval]
+        split
+        · exact ihE env t he.1
+        · exact ihE env e he.2
+        · exact ⟨rfl, rfl⟩
+      | caseOption s nE x sE =>
+        simp only [eval]
+        split
+        · exact ihE env nE he.1
+        · exact ihE _ sE he.2
+        · exact ⟨rfl, rfl⟩
+      | caseResult s x oE y eE =>
+        simp only [eval]
+        split
+        · exact ihE _ oE he.1
+        · exact ihE _ eE he.2
+        · exact ⟨rfl, rfl⟩
+      | fail c => exact ⟨rfl, rfl⟩
+      | attempt b =>
+        have h := ihE env b he
+        simp only [eval]
+        revert h
+        rcases eval H n p w env b with ⟨t, r, w'⟩
+        intro h
+        cases r <;> exact h
+      | handle b x hd =>
+        have h := ihE env b he.1
+        simp only [eval]
+        revert h
+        rcases hb : eval H n p w env b with ⟨t, r, w'⟩
+        intro h
+        obtain ⟨ht, hw⟩ := h
+        simp only at ht hw
+        subst ht hw
+        cases r with
+        | failed c =>
+          have := ihE ((x, .int c) :: env) hd he.2
+          simpa using this
+        | ok v => exact ⟨rfl, rfl⟩
+        | stuck => exact ⟨rfl, rfl⟩
+        | outOfFuel => exact ⟨rfl, rfl⟩
       | letTuple _ _ _ => exact (show False from he).elim
       | loop _ _ _ _ _ _ => exact (show False from he).elim
 

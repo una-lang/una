@@ -320,7 +320,7 @@ def Allowed (p : Program) (pc : LExpr) (ε : Eff) : Event → Prop
       (p.oldHost = false → p.le pc (.ofLabel p.fileState))
   | .req _ vs => ε.host.rq = true ∧ p.le pc (.ofLabel p.acceptsReq) ∧ Val.FirstOrderAll vs
   | .release pol v => pol ∈ ε.rels ∧ ∃ po, p.policy pol = some po ∧ p.le pc po.dst.top ∧
-      ValTy p v po.dst.erase
+      (ValTy p v po.dst.erase ∨ ∃ c, v = .err c)
 
 /-- A failure, whose label is above `pc`. -/
 abbrev Fails (p : Program) (pc : LExpr) (ε : Eff) : Prop := ∃ l, ε.fails = some l ∧ p.le pc l

@@ -377,7 +377,7 @@ mutual
       le p pc po.dst.top s!"`{pol}` is called under a program counter above its `to`"
       need (symFree pc) s!"`{pol}` is called under a symbolic program counter"
       flowTo p po.dst ann s!"the result of `{pol}`"
-      pure (.ofFnR fn.op fn.host fn.fails [pol])
+      pure (.ofPolicy fn.op fn.host fn.fails pc po.dst.top pol)
     | .map xs f => do
       match ← atomTy Γ xs, ← atomTy Γ f with
       | .list te lx, .fn [tp] tr o g fl lf =>
@@ -644,11 +644,27 @@ mutual
     | .fail _ | .letTuple _ _ _ | .loop _ _ _ _ _ _ => false
 end
 
+/-- `Rhs.PureOrFails`. -/
+def rhsPureOrFails : Rhs → Bool
+  | .checked _ _ _ => true
+  | r => rhsPure r
+
+/-- `Expr.PureOrFails`. -/
+def exprPureOrFails : Expr → Bool
+  | .atom _ => true
+  | .letR _ _ v b => rhsPureOrFails v && exprPureOrFails b
+  | .letE _ _ v b => exprPureOrFails v && exprPureOrFails b
+  | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e =>
+    exprPureOrFails t && exprPureOrFails e
+  | .attempt b => exprPureOrFails b
+  | .fail _ => true
+  | .letTuple _ _ _ | .loop _ _ _ _ _ _ => false
+
 /-- The restrictions of option B1 on the policies, as one Boolean. -/
 def b1Ok (p : Program) : Bool :=
   p.policies.all fun po => isScalar po.src && ground po.dst && isScalar po.dst &&
     match p.find po.via with
-    | some fn => !fn.op && fn.host.isNone && !fn.fails && exprPure fn.body
+    | some fn => !fn.op && fn.host.isNone && exprPureOrFails fn.body && (fn.fails || exprPure fn.body)
     | none => false
 
 /-- `Program.B1WellFormed`: the restrictions of option B1 on the policies. A program outside them
@@ -659,7 +675,7 @@ def checkB1 (p : Program) : Result Unit := do
     need (ground po.dst && isScalar po.dst) s!"B1 restriction (non-scalar to): `{po.name}`"
     match p.find po.via with
     | some fn =>
-      need (!fn.op && fn.host.isNone && !fn.fails && exprPure fn.body)
+      need (!fn.op && fn.host.isNone && exprPureOrFails fn.body && (fn.fails || exprPure fn.body))
         s!"B1 restriction (impure via): `{po.via}`"
     | none => throw s!"no `via` function `{po.via}`"
   -- The same test as one Boolean, which the proof of soundness reads (`checkB1_sound`); the loop

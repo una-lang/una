@@ -10,6 +10,8 @@ policy releases whether a secret PIN is 1234, run on different secrets.
   although they release different values (`hidden_release_related`).
 - A call of a function that declassifies, under a `secret` condition, has no typing
   (`release_under_secret_untyped`).
+- A failing `via` (#453 Phase B): the call releases `Err(c)` and fails with `c`, and a
+  successful release is never `Err(c)` (`guard_ok_not_err`).
 -/
 import UnaFormal.F1.Release
 import UnaFormal.F1.Examples
@@ -96,7 +98,7 @@ theorem prog_b1 : prog.B1WellFormed where
   via po h := by
     simp only [prog, List.mem_cons, List.not_mem_nil, or_false] at h
     rcases h with rfl | rfl <;>
-      exact ⟨check, rfl, rfl, rfl, rfl, ⟨trivial, trivial⟩⟩
+      exact ⟨check, rfl, rfl, rfl, ⟨trivial, trivial⟩, fun _ => ⟨trivial, trivial⟩⟩
 
 /-- `s: secret Int`. -/
 def Γ : LCtx := [("s", .int sec)]
@@ -295,5 +297,37 @@ theorem release_under_secret_untyped {E : List String} {pc : LExpr} {t : LTy} {�
           simp only [prog2, prog, Program.policy, List.find?] at hpo
           cases hpo
           exact sec_not_le_bot hle
+
+/-! ### A failing release (#453 Phase B) -/
+
+/-- `gate(x: secret Int) -> Bool fails`: `fail 7` when `x` is 1234, the `via` function of a
+policy whose release is its failure or its value. -/
+def gate : Fun where
+  name := "gate"
+  tparams := []
+  eqParams := []
+  params := [("x", .int sec)]
+  result := .bool .bot
+  op := false
+  host := HostFx.none
+  fails := true
+  body := .letR "r" (.bool sec) (.eq (.var "x") (.int 1234))
+    (.ite (.var "r") (.fail 7) (.atom (.var "r")))
+
+def progF : Program := { prog with policies := [⟨"guard", .int sec, .bool .bot, "gate"⟩], funs := [gate] }
+
+-- On 1234 the `via` fails: the call releases `Err(7)` and fails with 7.
+#guard match evalRhs Host.unit 5 progF w0 (env 1234) (.declassify "guard" (.var "s")) with
+  | ([.release "guard" (.err 7)], .failed 7, _) => true
+  | _ => false
+
+-- On another value it releases `false`, its value.
+#guard match evalRhs Host.unit 5 progF w0 (env 5) (.declassify "guard" (.var "s")) with
+  | ([.release "guard" (.bool false)], .ok (.bool false), _) => true
+  | _ => false
+
+/-- A value of the scalar `to` is never `Err(c)`, so the two kinds of release never meet. -/
+theorem guard_ok_not_err : ∀ c, Val.bool false ≠ .err c :=
+  release_ok_not_err (p := progF) (t := .bool) trivial .bool
 
 end Una.F1.ReleaseExample

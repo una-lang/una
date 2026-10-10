@@ -61,9 +61,20 @@ The shape of `t6_release_host`, `BRelR` and `Diverged` stays. What changes is wh
 3. **The re-check:**
    - The importer stops rejecting `via` functions that fail.
    - `checkB1` gains `PureOrFails`.
-   - The corpus's `via_result_checked_opaque` (`release.copy`, `app.publish`) should move to accepted, and nothing into rejected.
+   - The corpus's `via_result_checked_opaque` (`app.publish`) should move to accepted, and nothing into rejected. `release.copy` stays not re-checked, as every `via` function is: B1 and its structural typing check it, no label rule does.
 
 ## 5. Decisions (the coordinator, 2026-10-10)
 
 1. **One event kind.** A failing release is `.release pol (.err c)`, not a separate `.releaseFail`, so `Diverged` and `EvVis` stay unchanged. A successful release never carries `.err`: `po.dst` is scalar (B1), and `ValTy p v po.dst.erase` holds of the released value, so a lemma, `release_ok_not_err`, shows that `ValTy p v t` for a scalar `t` excludes `.err c`, with a `#guard` on one instance. The two cases of `Allowed` (§2.4) are then disjoint.
 2. **The failure label is `pc ⊔ po.dst.top`.** It equals `po.dst.top` under the premise `pc ⊑ po.dst.top`, and is written as a join so the rule reads like T-Op's. It is the label that ADR 0090 gives the language's policy calls, so the model and the checker agree.
+
+## 6. Results (2026-10-10)
+
+- **The model.** `evalRhs`'s `declassify` emits `.release pol (.err c)` when the `via` function fails with `c`, and the call fails with `c` (`Eval.lean`). `Expr.PureOrFails` and `silent_run` (`B1.lean`): a body that may only fail performs no event and leaves the world as it was. B1's `via` asks `PureOrFails`, and `Pure` of a `via` that does not declare `fails`, so its run still cannot fail.
+- **T-Declassify** gives the call `Eff.ofPolicy`: the release, and a failure labeled `pc ⊔ po.dst.top` when the `via` declares `fails` (`LTyping.lean`, `Check.lean`).
+- **`Allowed`** of a release accepts `ValTy p v po.dst.erase ∨ ∃ c, v = .err c` (`Unary.lean`). `events_firstOrder` gains the `Err(c)` case.
+- **Proofs.** The unary case (`UnarySound.lean`) and the binary case (`T6.lean`) of `declassify` cover a failing `via`. In the binary case, two releases are equal when seen, or the runs diverge; a value against a failure always diverges when seen, by `release_ok_not_err` (a value of a scalar type is never `Err(c)`); when the release is hidden, so is the failure. `t6_release_host`, the erasure and host-free variants keep their statements.
+- **The re-check.** `checkB1` asks `exprPureOrFails`, and `viaTyped` retries a `via` body with its parameters' top labels at `⊥` when T-Checked's premise stops it: no label is checked in a `via` function (`spec/07 §5` rule 3), and the structural typing is the same (`viaTyped_sound`).
+- **Examples.** `ReleaseExample.lean` adds a failing `via` (`gate`), whose run releases `Err(7)` and fails with 7 (`#guard`), and `guard_ok_not_err`.
+- **Corpus** (the q5new export, against origin/main's re-check): `app.publish` moves from not re-checked (B1) to accepted, 752 to 753 accepted, none rejected, no other change.
+- `scripts/formal.sh`: PASS, 210 theorems, no `sorry`.
