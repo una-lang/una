@@ -267,26 +267,26 @@ pub policy length_band
 hundreds(text: confidential[Private] Text) -> public Nat = text.len / 100
 ```
 
-The same discipline keeps the phone number of `examples/events` inside `check_in`: only its keyed hash leaves, through the `attendee_key` policy.
+The same discipline keeps the phone number of `examples/events` inside `check_in`: only its keyed hash leaves, through the `attendee_key` policy. The policy's failure is released like the key, at `internal`, so `check_in` handles it under that label.
 
 ```una
---- Looks up a registration by phone, shows its availability, and records it.
+--- Checks an attendee in to an event by phone, shows its availability, and records it.
 --- The phone never leaves this function: only its keyed hash does.
-pub check_in(phone: secret[PII] Phone) -> Availability
-  uses @registrations: Registrations[find]
+pub check_in(phone: secret[PII] Phone, event: Text) -> internal Result[Availability, CheckInError]
+  uses @registrations: Registrations[find, event]
   uses @audit: Audit[record]
   uses @keys: Keys[hmac]
   fails CheckInError
 =
-  let key = attendee_key(phone)
-    if error fail Unavailable(reason: "keys")
-  let registration = @registrations.find(key)
+  let found = @registrations.event(event)
     if error fail Unavailable(reason: "registrations")
-    if none fail NotRegistered
-  let status = availability(registration.event)
-  @audit.record(key, status)
-    if error fail Unavailable(reason: "audit")
-  status
+    if none fail UnknownEvent
+  -- The key policy's failure is decided by the phone, so it is released like the key, at
+  -- `internal` (ADR 0090): from here on, every outcome is in the internal result.
+  let key = attempt attendee_key(phone)
+  when key
+    is Ok(hashed) -> check_in_key(hashed, event: found)
+    is Err -> Err(Unavailable(reason: "keys"))
 ```
 
 ### Requirements and examples
