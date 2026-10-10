@@ -42,6 +42,7 @@ def LTy.setTop (x : LExpr) : LTy → LTy
   | .record r _ => .record r x
   | .fn ps r o g f _ => .fn ps r o g f x
   | .var a _ => .var a x
+  | .tuple ts _ => .tuple ts x
 
 theorem LTy.raise_eq_setTop (e : LExpr) (u : LTy) : u.raise e = u.setTop (u.top.join e) := by
   cases u <;> rfl
@@ -73,6 +74,7 @@ theorem LValTy.setTop {v : Val} {t : LTy} (x : LExpr) (h : LValTy p v t) : LValT
     | exact .int | exact .bool | exact .text | exact .unit | exact .list ‹_› | exact .none
     | exact .some ‹_› | exact .ok ‹_› | exact .err | exact .record ‹_› ‹_›
     | exact .closure ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_›
+    | exact .tuple ‹_›
 
 theorem LValTy.of_setTop {v : Val} {t : LTy} {x : LExpr} (h : LValTy p v (t.setTop x)) :
     LValTy p v t := by
@@ -118,6 +120,9 @@ mutual
           (LExpr.le_inst_symFree _ h.2.2).1,
         .fn (Flows.lsubst_ground rd σ h.1).1 (Flow.lsubst_ground rd σ h.2.1).2 id (HostFx.Le.refl _) id
           (LExpr.le_inst_symFree _ h.2.2).2⟩
+    | .tuple _ _, h =>
+      ⟨.tuple (Flows.lsubst_ground rd σ h.1).1 (LExpr.le_inst_symFree _ h.2).1,
+        .tuple (Flows.lsubst_ground rd σ h.1).2 (LExpr.le_inst_symFree _ h.2).2⟩
 
   theorem Flows.lsubst_ground {top : Label} (rd : String → Label) (σ : List (String × LTy)) :
       ∀ {us : List LTy}, LTy.GroundAll us →
@@ -137,6 +142,7 @@ mutual
       LExpr.symFree_join h.2 (LTy.Ground.deep rd h.1)
     | .fn _ _ _ _ _ _, h =>
       LExpr.symFree_join h.2.2 (LExpr.symFree_join (LTy.GroundAll.deeps rd h.1) (LTy.Ground.deep rd h.2.1))
+    | .tuple _ _, h => LExpr.symFree_join h.2 (LTy.GroundAll.deeps rd h.1)
 
   theorem LTy.GroundAll.deeps (rd : String → Label) : ∀ {us : List LTy}, LTy.GroundAll us →
       (LTy.deeps rd us).SymFree
@@ -149,6 +155,7 @@ theorem LTy.Ground.raise {e : LExpr} (he : e.SymFree) : ∀ {u : LTy}, u.Ground 
   | .int _, h | .bool _, h | .text _, h | .unit _, h | .record _ _, h => LExpr.symFree_join h he
   | .list _ _, h | .option _ _, h | .result _ _, h => ⟨h.1, LExpr.symFree_join h.2 he⟩
   | .fn _ _ _ _ _ _, h => ⟨h.1, h.2.1, LExpr.symFree_join h.2.2 he⟩
+  | .tuple _ _, h => ⟨h.1, LExpr.symFree_join h.2 he⟩
 
 /-- A label whose symbols an instantiation all covers, by ground type arguments, has none left. -/
 theorem LExpr.inst_symFree_of_covered (rd : String → Label) {σ : List (String × LTy)}
@@ -191,6 +198,8 @@ mutual
     | .fn _ _ _ _ _ _, h =>
       ⟨LTy.lsubsts_ground rd hσ hcov h.1, LTy.lsubst_ground rd hσ hcov h.2.1,
         LExpr.inst_symFree_of_covered rd hσ hcov h.2.2⟩
+    | .tuple _ _, h =>
+      ⟨LTy.lsubsts_ground rd hσ hcov h.1, LExpr.inst_symFree_of_covered rd hσ hcov h.2⟩
     | .var a l, h => by
       obtain ⟨u, hu⟩ := hcov a h.1
       simp only [LTy.lsubst, hu]
