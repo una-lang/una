@@ -1082,7 +1082,16 @@ impl<'a> Checker<'_, 'a, '_> {
         let to = def.result.base.top_label();
         self.declassify_under_pc(span, callee, &to);
         if let Some(fails) = &def.fails {
-            self.call_fails.insert(span, fails.clone());
+            // A failure of the `via` function is released as its value is: it is decided by
+            // the `from` value inside the trusted body, so it is visible only where the release
+            // is, at `pc ⊔ ℓ(to)` (S-18, ADR 0090). A public `to` keeps a public failure.
+            let decided = self.ctx.pc.join(&to);
+            if decided.is_public() {
+                self.call_fails.insert(span, fails.clone());
+            } else {
+                self.call_fails.insert(span, fails.raise_deep(&decided));
+                self.decided_failures.insert(span, decided);
+            }
         }
         def.result.base.clone()
     }

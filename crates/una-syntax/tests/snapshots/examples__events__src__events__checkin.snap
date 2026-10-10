@@ -7,9 +7,10 @@ expression: "dump(&parsed.file, &interner, db.file(id).text())"
 (import events.seating Availability Event Registration availability)
 (import events.types Phone parse_phone)
 (import std.testing fake_hash)
-(kind pub CheckInError (sum NotRegistered (Unavailable (reason {Text}))))
+(kind pub CheckInError (sum NotRegistered UnknownEvent (Unavailable (reason {Text}))))
 (kind pub StoreError (sum Timeout Corrupted))
 (capability pub Registrations
+  (op event ((name {Text})) {Option[Event]} (fails StoreError))
   (op find ((key {internal Hashed})) {Option[Registration]} (fails StoreError) (accepts internal)))
 (capability pub Audit
   (op record
@@ -18,26 +19,70 @@ expression: "dump(&parsed.file, &interner, db.file(id).text())"
     (fails StoreError)
     (accepts internal)))
 (fn pub check_in
-  (doc "--- Looks up a registration by phone, shows its availability, and records it.")
+  (doc "--- Checks an attendee in to an event by phone, shows its availability, and records it.")
   (doc "--- The phone never leaves this function: only its keyed hash does.")
-  ((phone {secret[PII] Phone}))
-  {Availability}
-  (uses @registrations {Registrations[find]})
+  ((phone {secret[PII] Phone}) (event {Text}))
+  {internal Result[Availability, CheckInError]}
+  (uses @registrations {Registrations[find, event]})
   (uses @audit {Audit[record]})
   (uses @keys {Keys[hmac]})
   (fails CheckInError)
   (block
-    (let key (handled (call attendee_key phone) (if-error-fail (Unavailable (reason: "keys")))))
-    (let registration
+    (let found
       (handled
-        (@registrations.find key)
+        (@registrations.event event)
         (if-error-fail (Unavailable (reason: "registrations")))
-        (if-none-fail NotRegistered)))
-    (let status (call availability (. registration event)))
-    (handled (@audit.record key status) (if-error-fail (Unavailable (reason: "audit"))))
-    status))
-(handler one_registration ((r {Registration})) (for Registrations) (op find (key) (call Some r)))
-(handler no_registrations () (for Registrations) (op find (key) None))
+        (if-none-fail UnknownEvent)))
+    (let key (attempt (call attendee_key phone)))
+    (when key
+      (arm (is Ok hashed) (call check_in_key hashed (event: found)))
+      (arm (is Err) (call Err (call Unavailable (reason: "keys")))))))
+(fn check_in_key
+  (doc "--- Checks in the attendee whose keyed hash is `key`. It runs under the key's label, so")
+  (doc "--- each outcome is in its result, not a failure of its own.")
+  ((key {internal Hashed}) (event {Event}))
+  {Result[Availability, CheckInError]}
+  (uses @registrations {Registrations[find]})
+  (uses @audit {Audit[record]})
+  (block
+    (let registration (attempt (@registrations.find key)))
+    (when registration
+      (arm (is Err) (call Err (call Unavailable (reason: "registrations"))))
+      (arm
+        (is Ok maybe)
+        (block
+          (when maybe
+            (arm (is None) (call Err NotRegistered))
+            (arm
+              (is Some r)
+              (block
+                (if
+                  (== (. (. r event) name) (. event name))
+                  (block
+                    (let outcome (call record_check_in key (status: (call availability event))))
+                    outcome)
+                  (block (call Err NotRegistered)))))))))))
+(fn record_check_in
+  (doc "--- Records the check-in of `key` with `status`, and gives `status` back.")
+  ((key {internal Hashed}) (status {Availability}))
+  {Result[Availability, CheckInError]}
+  (uses @audit {Audit[record]})
+  (block
+    (let recorded (attempt (@audit.record key status)))
+    (when recorded
+      (arm (is Ok) (call Ok status))
+      (arm (is Err) (call Err (call Unavailable (reason: "audit")))))))
+(handler one_registration
+  ((r {Registration}))
+  (for Registrations)
+  (op event (name) (call Some (. r event)))
+  (op find (key) (call Some r)))
+(handler no_registrations
+  ((e {Event}))
+  (for Registrations)
+  (op event (name) (call Some e))
+  (op find (key) None))
+(handler no_events () (for Registrations) (op event (name) None) (op find (key) None))
 (handler audit_log () (for Audit) (op record (key status) unit))
 (handler fake_keys () (for Keys) (op hmac (key_name data) (call fake_hash 1)))
 (example "a registered attendee is checked in and audited"
@@ -46,13 +91,20 @@ expression: "dump(&parsed.file, &interner, db.file(id).text())"
       (call Registration (name: "Ana") (event: (call Event (name: "Launch") (remaining: 820))))))
   (given @audit (call audit_log))
   (given @keys (call fake_keys))
-  (do (call check_in (call parse_phone "12345678901")))
-  (expect (is result Open))
+  (do (call check_in (call parse_phone "12345678901") (event: "Launch")))
+  (expect (== result (call Ok Open)))
   (expect-performed @audit.record))
-(example "an unknown attendee fails and is not audited"
-  (given @registrations (call no_registrations))
+(example "an unknown attendee is not checked in and is not audited"
+  (given @registrations (call no_registrations (call Event (name: "Launch") (remaining: 820))))
   (given @audit (call audit_log))
   (given @keys (call fake_keys))
-  (do (call check_in (call parse_phone "12345678901")))
-  (expect-fails NotRegistered)
+  (do (call check_in (call parse_phone "12345678901") (event: "Launch")))
+  (expect (== result (call Err NotRegistered)))
   (expect-not-performed @audit.record))
+(example "an unknown event fails before the phone is used"
+  (given @registrations (call no_events))
+  (given @audit (call audit_log))
+  (given @keys (call fake_keys))
+  (do (call check_in (call parse_phone "12345678901") (event: "Gala")))
+  (expect-fails UnknownEvent)
+  (expect-not-performed @keys.hmac))

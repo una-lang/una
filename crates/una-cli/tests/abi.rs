@@ -61,11 +61,11 @@ fn the_report_of_the_events_example() {
     );
     assert_eq!(
         report["obligations"],
-        json!({"proven": 11, "refuted": 0, "unknown": 0, "cached": 11})
+        json!({"proven": 13, "refuted": 0, "unknown": 0, "cached": 13})
     );
     assert_eq!(
         report["proven"],
-        json!({"semantic": 11, "security": "by typing", "authority": "by typing"})
+        json!({"semantic": 13, "security": "by typing", "authority": "by typing"})
     );
     assert_eq!(
         report["information"]["policy_calls"][0],
@@ -73,7 +73,7 @@ fn the_report_of_the_events_example() {
             "policy": "events.keys.attendee_key",
             "purpose": "attendee lookup and audit correlation",
             "owner": "privacy",
-            "site": {"file": "src/events/checkin.una", "start": {"line": 30, "col": 13}}
+            "site": {"file": "src/events/checkin.una", "start": {"line": 37, "col": 21}}
         })
     );
     assert_eq!(
@@ -122,7 +122,7 @@ fn the_report_of_the_events_example() {
         stdout(&output)
     );
     assert!(
-        stdout(&output).contains("\nobligations: 11 proven, 0 refuted, 0 unknown; 11 cached\n"),
+        stdout(&output).contains("\nobligations: 13 proven, 0 refuted, 0 unknown; 13 cached\n"),
         "{}",
         stdout(&output)
     );
