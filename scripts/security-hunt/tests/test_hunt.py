@@ -63,6 +63,17 @@ class Generators(unittest.TestCase):
         self.assertGreaterEqual(len(seen["T4"]), 12)
         self.assertTrue(any("together" in v for v in seen["T4"]))
         self.assertEqual(len(seen["T8"]), 6)
+        self.assertEqual(len(seen["H1"]), 8)
+        self.assertEqual(len(seen["H4"]), 3)
+        self.assertEqual(len(seen["K2"]), 6)
+        self.assertEqual(len(seen["K4"]), 3)
+
+    def test_keys_programs_that_run_carry_their_key_file(self):
+        for p in every_program():
+            if p.op == "K4":
+                self.assertIn("keys.toml", p.files)
+                self.assertIn('"keys:keys.toml"', p.files["una.toml"])
+                self.assertIn('categories = ["PII"]', p.files["una.toml"])
 
     def test_together_only_in_edition_0_2(self):
         for p in every_program():
