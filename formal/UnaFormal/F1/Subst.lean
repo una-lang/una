@@ -96,16 +96,19 @@ theorem symFree_inst (σ : List (String × LExpr)) {e : LExpr} (h : e.SymFree) :
 
 end LExpr
 
+
+
 /-- The bound of a function's effects holds of the instance of the program counter. -/
-theorem Program.Bound.inst {p : Program} {pc : LExpr} {o g f : Bool} (σ : List (String × LExpr))
-    (h : p.Bound pc o g f) : p.Bound (pc.inst σ) o g f := by
-  refine ⟨fun ho => ?_, fun hg => ?_, fun hf => ?_⟩
-  · exact ⟨LExpr.le_of_le_inst_ofLabel (LExpr.le_inst σ (h.1 ho).1),
-      LExpr.symFree_inst σ (h.1 ho).2⟩
-  · exact ⟨LExpr.le_of_le_inst_ofLabel (LExpr.le_inst σ (h.2.1 hg).1),
-      LExpr.symFree_inst σ (h.2.1 hg).2⟩
-  · exact ⟨LExpr.le_bot_of_le_inst_bot (LExpr.le_inst σ (h.2.2 hf).1),
-      LExpr.symFree_inst σ (h.2.2 hf).2⟩
+theorem Program.Bound.inst {p : Program} {pc : LExpr} {o : Bool} {g : HostFx} {f : Bool}
+    (σ : List (String × LExpr)) (h : p.Bound pc o g f) : p.Bound (pc.inst σ) o g f := by
+  have lift : ∀ {l : Label}, p.le pc (.ofLabel l) → p.le (pc.inst σ) (.ofLabel l) :=
+    fun hl => LExpr.le_of_le_inst_ofLabel (LExpr.le_inst σ hl)
+  obtain ⟨ho, hr, hw, hq, hf⟩ := h
+  refine ⟨fun h' => ⟨lift (ho h').1, LExpr.symFree_inst σ (ho h').2⟩,
+    fun h' => ⟨lift (hr h').1, LExpr.symFree_inst σ (hr h').2⟩,
+    fun h' => ⟨lift (hw h').1, fun hold => lift ((hw h').2.1 hold), LExpr.symFree_inst σ (hw h').2.2⟩,
+    fun h' => ⟨lift (hq h').1, LExpr.symFree_inst σ (hq h').2⟩,
+    fun h' => ⟨LExpr.le_bot_of_le_inst_bot (LExpr.le_inst σ (hf h').1), LExpr.symFree_inst σ (hf h').2⟩⟩
 
 /-- Raising one type by two ordered labels gives two types that flow. -/
 theorem Flow.raise_mono {top : Label} {e₁ e₂ : LExpr} (h : LExpr.le top e₁ e₂) :
@@ -118,7 +121,7 @@ theorem Flow.raise_mono {top : Label} {e₁ e₂ : LExpr} (h : LExpr.le top e₁
   | .option t l => .option (Flow.refl t) (LExpr.join_mono (LExpr.le_refl l) h)
   | .result t l => .result (Flow.refl t) (LExpr.join_mono (LExpr.le_refl l) h)
   | .record _ l => .record (LExpr.join_mono (LExpr.le_refl l) h)
-  | .fn ps r _ _ _ l => .fn (Flows.refl ps) (Flow.refl r) id id id (LExpr.join_mono (LExpr.le_refl l) h)
+  | .fn ps r _ _ _ l => .fn (Flows.refl ps) (Flow.refl r) id (HostFx.Le.refl _) id (LExpr.join_mono (LExpr.le_refl l) h)
   | .var _ l => .var (LExpr.join_mono (LExpr.le_refl l) h)
 
 mutual

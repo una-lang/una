@@ -22,8 +22,6 @@ import UnaFormal.F1.LTyping
 
 namespace Una.F1
 
-/-! ### The static order is sound for every instantiation -/
-
 namespace Label
 
 theorem le_of_join_left {a b c : Label} (h : (a.join b).le c) : a.le c :=
@@ -85,6 +83,10 @@ theorem le_sound {top : Label} {ρ : String → Label} (hρ : ∀ x, (ρ x).le t
     · exact List.mem_append_right _ (hstar x hx)
 
 end LExpr
+
+/-! ### The static order is sound for every instantiation -/
+
+
 
 /-! ### The two-run relation, first-order -/
 

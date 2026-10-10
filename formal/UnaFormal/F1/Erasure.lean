@@ -5,7 +5,8 @@ parameter types of lambdas and closures) and renames the functions it names by `
 program, forgotten, is the run of the program's forgotten functions on the forgotten body and
 environment (`eval_anon`). So two programs whose functions agree once forgotten, up to `ρ`, run
 the same, up to annotations (`eval_erasure`): an instance of a generic function runs as the
-generic function does.
+generic function does. The host may be any whose responses read no annotation either
+(`Host.AnonInvariant`): a request is given values, and a real host is given their text.
 -/
 import UnaFormal.F1.Eval
 import UnaFormal.F1.Binary
@@ -25,7 +26,9 @@ mutual
     | .prim pr args => .prim pr args
     | .apply f args => .apply f args
     | .op a => .op a
-    | .get a => .get a
+    | .read a => .read a
+    | .write a c => .write a c
+    | .req m args => .req m args
     | .construct r fs => .construct r fs
     | .field v i => .field v i
     | .list items => .list items
@@ -91,7 +94,9 @@ theorem Val.anonEnv_eq (ρ : String → String) :
 /-- An event with its value forgotten. -/
 def Event.anon (ρ : String → String) : Event → Event
   | .out s => .out s
-  | .get u => .get u
+  | .read s => .read s
+  | .write s c => .write s c
+  | .req m vs => .req m (Val.anons ρ vs)
   | .release pol v => .release pol (v.anon ρ)
 
 /-- An outcome with its value forgotten. -/
@@ -102,8 +107,17 @@ def Res.anon (ρ : String → String) : Res → Res
   | .outOfFuel => .outOfFuel
 
 /-- A run with its values forgotten. -/
-def runAnon (ρ : String → String) (r : Trace × Res) : Trace × Res :=
-  (r.1.map (Event.anon ρ), r.2.anon ρ)
+def runAnon {H : Host} (ρ : String → String) (r : Run H) : Run H :=
+  (r.1.map (Event.anon ρ), r.2.1.anon ρ, r.2.2)
+
+/-- A host whose responses read no annotation: a request whose arguments are forgotten gets the
+same response, and leaves the servers as the request does. -/
+def Host.AnonInvariant (H : Host) : Prop :=
+  ∀ (ρ : String → String) (m : String) (vs : List Val) (s : H.Srv),
+    H.request m (Val.anons ρ vs) s = H.request m vs s
+
+/-- The host without state reads no annotation. -/
+theorem Host.unit_anonInvariant : Host.unit.AnonInvariant := fun _ _ _ _ => rfl
 
 /-- A function with everything but its parameters' names and its body forgotten, renamed by `ρ`. -/
 def Fun.anon (ρ : String → String) (fn : Fun) : Fun where
@@ -113,7 +127,7 @@ def Fun.anon (ρ : String → String) (fn : Fun) : Fun where
   params := anonParams fn.params
   result := anonTy
   op := false
-  get := false
+  host := HostFx.none
   fails := false
   body := fn.body.anon ρ
   rels := []
@@ -123,7 +137,7 @@ def Program.anon (p : Program) : Program := { p with funs := p.funs.map (Fun.ano
 
 section Lemmas
 
-variable {ρ : String → String}
+variable {ρ : String → String} {H : Host}
 
 theorem lookup_anon : ∀ (env : Env) (x : String),
     lookup (Val.anonEnv ρ env) x = (lookup env x).map (Val.anon ρ)
@@ -210,29 +224,29 @@ theorem anonParams_fst (ps : List (String × LTy)) : (anonParams ps).map Prod.fs
 theorem anonParams_length (ps : List (String × LTy)) : (anonParams ps).length = ps.length := by
   simp [anonParams]
 
-theorem runAnon_done (v : Val) : runAnon ρ (done v) = done (v.anon ρ) := rfl
+theorem runAnon_done (w : World H) (v : Val) : runAnon ρ (done w v) = done w (v.anon ρ) := rfl
 
-theorem runAnon_stuck : runAnon ρ stuck = stuck := rfl
+theorem runAnon_stuck (w : World H) : runAnon ρ (stuck w) = stuck w := rfl
 
-theorem andThen_anon {r r' : Trace × Res} {k k' : Val → Trace × Res} (hr : runAnon ρ r = r')
-    (hk : ∀ v, runAnon ρ (k v) = k' (v.anon ρ)) :
+theorem andThen_anon {r r' : Run H} {k k' : World H → Val → Run H} (hr : runAnon ρ r = r')
+    (hk : ∀ w v, runAnon ρ (k w v) = k' w (v.anon ρ)) :
     runAnon ρ (andThen r k) = andThen r' k' := by
   subst hr
-  obtain ⟨t, res⟩ := r
+  obtain ⟨t, res, w⟩ := r
   cases res with
   | ok v =>
     simp only [andThen, runAnon, Res.anon]
-    have := hk v
-    generalize k v = kv at this
-    obtain ⟨t', r'⟩ := kv
+    have := hk w v
+    generalize k w v = kv at this
+    obtain ⟨t', r', w'⟩ := kv
     rw [← this]
     cases r' <;> simp [runAnon, Res.anon]
   | failed _ | stuck | outOfFuel => simp [andThen, runAnon, Res.anon]
 
-theorem applyWith_anon {run run' : Env → Expr → Trace × Res}
-    (hrun : ∀ env e, runAnon ρ (run env e) = run' (Val.anonEnv ρ env) (e.anon ρ))
-    (fv : Val) (vs : List Val) :
-    runAnon ρ (applyWith run fv vs) = applyWith run' (fv.anon ρ) (vs.map (Val.anon ρ)) := by
+theorem applyWith_anon {run run' : World H → Env → Expr → Run H}
+    (hrun : ∀ w env e, runAnon ρ (run w env e) = run' w (Val.anonEnv ρ env) (e.anon ρ))
+    (w : World H) (fv : Val) (vs : List Val) :
+    runAnon ρ (applyWith run w fv vs) = applyWith run' w (fv.anon ρ) (vs.map (Val.anon ρ)) := by
   cases fv with
   | closure ps b cenv =>
     simp only [applyWith, Val.anon, List.length_map, anonParams_length]
@@ -241,52 +255,55 @@ theorem applyWith_anon {run run' : Env → Expr → Trace × Res}
     · rfl
   | _ => simp [applyWith, Val.anon, runAnon_stuck]
 
-theorem walkMap_anon {app app' : Val → Trace × Res} (h : ∀ v, runAnon ρ (app v) = app' (v.anon ρ)) :
-    ∀ vs : List Val, runAnon ρ (walkMap app vs) = walkMap app' (vs.map (Val.anon ρ))
-  | [] => by simp [walkMap, runAnon_done, Val.anon, Val.anons]
-  | v :: vs => by
+theorem walkMap_anon {app app' : World H → Val → Run H}
+    (h : ∀ w v, runAnon ρ (app w v) = app' w (v.anon ρ)) :
+    ∀ (w : World H) (vs : List Val), runAnon ρ (walkMap app w vs) = walkMap app' w (vs.map (Val.anon ρ))
+  | w, [] => by simp [walkMap, runAnon_done, Val.anon, Val.anons]
+  | w, v :: vs => by
     simp only [walkMap, List.map_cons]
-    refine andThen_anon (h v) fun r => andThen_anon (walkMap_anon h vs) fun rest => ?_
+    refine andThen_anon (h w v) fun w r => andThen_anon (walkMap_anon h w vs) fun w rest => ?_
     cases rest <;> simp [runAnon_done, runAnon_stuck, Val.anon, Val.anons]
 
-theorem walkFilter_anon {app app' : Val → Trace × Res}
-    (h : ∀ v, runAnon ρ (app v) = app' (v.anon ρ)) :
-    ∀ vs : List Val, runAnon ρ (walkFilter app vs) = walkFilter app' (vs.map (Val.anon ρ))
-  | [] => by simp [walkFilter, runAnon_done, Val.anon, Val.anons]
-  | v :: vs => by
+theorem walkFilter_anon {app app' : World H → Val → Run H}
+    (h : ∀ w v, runAnon ρ (app w v) = app' w (v.anon ρ)) :
+    ∀ (w : World H) (vs : List Val),
+      runAnon ρ (walkFilter app w vs) = walkFilter app' w (vs.map (Val.anon ρ))
+  | w, [] => by simp [walkFilter, runAnon_done, Val.anon, Val.anons]
+  | w, v :: vs => by
     simp only [walkFilter, List.map_cons]
-    refine andThen_anon (h v) fun b => ?_
+    refine andThen_anon (h w v) fun w b => ?_
     cases b with
     | bool keep =>
       simp only [Val.anon]
-      refine andThen_anon (walkFilter_anon h vs) fun rest => ?_
+      refine andThen_anon (walkFilter_anon h w vs) fun w rest => ?_
       cases rest <;> cases keep <;> simp [runAnon_done, runAnon_stuck, Val.anon, Val.anons]
     | _ => simp [Val.anon, runAnon_stuck]
 
-theorem walkFirst_anon {app app' : Val → Trace × Res}
-    (h : ∀ v, runAnon ρ (app v) = app' (v.anon ρ)) :
-    ∀ vs : List Val, runAnon ρ (walkFirst app vs) = walkFirst app' (vs.map (Val.anon ρ))
-  | [] => by simp [walkFirst, runAnon_done, Val.anon]
-  | v :: vs => by
+theorem walkFirst_anon {app app' : World H → Val → Run H}
+    (h : ∀ w v, runAnon ρ (app w v) = app' w (v.anon ρ)) :
+    ∀ (w : World H) (vs : List Val),
+      runAnon ρ (walkFirst app w vs) = walkFirst app' w (vs.map (Val.anon ρ))
+  | w, [] => by simp [walkFirst, runAnon_done, Val.anon]
+  | w, v :: vs => by
     simp only [walkFirst, List.map_cons]
-    refine andThen_anon (h v) fun b => ?_
+    refine andThen_anon (h w v) fun w b => ?_
     cases b with
     | bool keep =>
       cases keep
-      · simp only [Val.anon]; exact walkFirst_anon h vs
+      · simp only [Val.anon]; exact walkFirst_anon h w vs
       · simp [Val.anon, runAnon_done]
     | _ => simp [Val.anon, runAnon_stuck]
 
-theorem walkFold_anon {app app' : Val → Val → Trace × Res}
-    (h : ∀ a v, runAnon ρ (app a v) = app' (a.anon ρ) (v.anon ρ)) :
-    ∀ (acc : Val) (vs : List Val),
-      runAnon ρ (walkFold app acc vs) = walkFold app' (acc.anon ρ) (vs.map (Val.anon ρ))
-  | acc, [] => by simp [walkFold, runAnon_done]
-  | acc, v :: vs => by
+theorem walkFold_anon {app app' : World H → Val → Val → Run H}
+    (h : ∀ w a v, runAnon ρ (app w a v) = app' w (a.anon ρ) (v.anon ρ)) :
+    ∀ (w : World H) (acc : Val) (vs : List Val),
+      runAnon ρ (walkFold app w acc vs) = walkFold app' w (acc.anon ρ) (vs.map (Val.anon ρ))
+  | w, acc, [] => by simp [walkFold, runAnon_done]
+  | w, acc, v :: vs => by
     simp only [walkFold, List.map_cons]
-    exact andThen_anon (h acc v) fun acc' => walkFold_anon h acc' vs
+    exact andThen_anon (h w acc v) fun w acc' => walkFold_anon h w acc' vs
 
-theorem parseInt_anon (t : String) : runAnon ρ (parseInt t) = parseInt t := by
+theorem parseInt_anon (w : World H) (t : String) : runAnon ρ (parseInt w t) = parseInt w t := by
   unfold parseInt
   cases t.toInt? <;> simp [runAnon, done, Res.anon, Val.anon]
 
@@ -294,24 +311,26 @@ end Lemmas
 
 section Main
 
-variable {P Q : Program} {ρ : String → String}
+variable {P Q : Program} {ρ : String → String} {H : Host}
 
 /-- **Evaluation reads no annotation.** When `Q`'s functions are `P`'s forgotten, up to `ρ`, and
 the two programs have the same policies, whose `via` functions `ρ` keeps, a run of `P`, forgotten,
-is the run of `Q` on the forgotten environment and body. -/
-theorem eval_anon (hf : ∀ f, (P.find f).map (Fun.anon ρ) = Q.find (ρ f))
+is the run of `Q` on the forgotten environment and body, from the same world, on a host whose
+responses read no annotation. -/
+theorem eval_anon (hH : H.AnonInvariant) (hf : ∀ f, (P.find f).map (Fun.anon ρ) = Q.find (ρ f))
     (hp : ∀ pol, P.policy pol = Q.policy pol)
-    (hv : ∀ pol po, P.policy pol = some po → ρ po.via = po.via) (w : World) : ∀ n : Nat,
-    (∀ env r, runAnon ρ (evalRhs n P w env r) = evalRhs n Q w (Val.anonEnv ρ env) (r.anon ρ)) ∧
-    (∀ env e, runAnon ρ (eval n P w env e) = eval n Q w (Val.anonEnv ρ env) (e.anon ρ))
-  | 0 => ⟨fun env r => by simp [evalRhs, runAnon, Res.anon],
-      fun env e => by simp [eval, runAnon, Res.anon]⟩
+    (hv : ∀ pol po, P.policy pol = some po → ρ po.via = po.via) : ∀ n : Nat,
+    (∀ w env r, runAnon ρ (evalRhs H n P w env r) =
+      evalRhs H n Q w (Val.anonEnv ρ env) (r.anon ρ)) ∧
+    (∀ w env e, runAnon ρ (eval H n P w env e) = eval H n Q w (Val.anonEnv ρ env) (e.anon ρ))
+  | 0 => ⟨fun w env r => by simp [evalRhs, runAnon, Res.anon],
+      fun w env e => by simp [eval, runAnon, Res.anon]⟩
   | n + 1 => by
-    obtain ⟨ihR, ihE⟩ := eval_anon hf hp hv w n
-    have happ : ∀ fv vs, runAnon ρ (applyWith (eval n P w) fv vs) =
-        applyWith (eval n Q w) (fv.anon ρ) (vs.map (Val.anon ρ)) := applyWith_anon ihE
+    obtain ⟨ihR, ihE⟩ := eval_anon hH hf hp hv n
+    have happ : ∀ w fv vs, runAnon ρ (applyWith (eval H n P) w fv vs) =
+        applyWith (eval H n Q) w (fv.anon ρ) (vs.map (Val.anon ρ)) := applyWith_anon ihE
     constructor
-    · intro env r
+    · intro w env r
       cases r with
       | atom a =>
         simp only [evalRhs, Rhs.anon, evalAtom_anon]
@@ -343,7 +362,7 @@ theorem eval_anon (hf : ∀ f, (P.find f).map (Fun.anon ρ) = Q.find (ρ f))
         | some fv =>
           cases evalAtoms env args with
           | none => simp [runAnon_stuck]
-          | some vs => simpa using happ fv vs
+          | some vs => simpa using happ w fv vs
       | op line =>
         simp only [evalRhs, Rhs.anon, evalAtom_anon]
         cases evalAtom env line with
@@ -351,16 +370,40 @@ theorem eval_anon (hf : ∀ f, (P.find f).map (Fun.anon ρ) = Q.find (ρ f))
         | some v =>
           simp only [Option.map_some, Val.line_anon]
           cases v.line <;> simp [stuck, runAnon, Event.anon, Res.anon, Val.anon]
-      | get url =>
+      | read path =>
         simp only [evalRhs, Rhs.anon, evalAtom_anon]
-        cases evalAtom env url with
+        cases evalAtom env path with
         | none => simp [runAnon_stuck]
         | some v =>
           cases v with
           | text s =>
             simp only [Option.map_some, Val.anon]
-            cases w.get s <;> simp [runAnon, Event.anon, Res.anon, Val.anon]
+            cases H.read s w.fs <;> simp [runAnon, Event.anon, Res.anon, Val.anon]
           | _ => simp [Val.anon, runAnon_stuck]
+      | write path content =>
+        simp only [evalRhs, Rhs.anon, evalAtom_anon]
+        cases evalAtom env path with
+        | none => simp [runAnon_stuck]
+        | some v =>
+          cases evalAtom env content with
+          | none => cases v <;> simp [Val.anon, runAnon_stuck]
+          | some c =>
+            cases v with
+            | text s =>
+              cases c with
+              | text t =>
+                simp only [Option.map_some, Val.anon]
+                cases H.write s t w.fs <;> simp [runAnon, Event.anon, Res.anon, Val.anon]
+              | _ => simp [Val.anon, runAnon_stuck]
+            | _ => cases c <;> simp [Val.anon, runAnon_stuck]
+      | req m args =>
+        simp only [evalRhs, Rhs.anon, evalAtoms_anon]
+        cases evalAtoms env args with
+        | none => simp [runAnon_stuck]
+        | some vs =>
+          simp only [Option.map_some, ← Val.anons_eq, hH ρ m vs w.srv]
+          rcases H.request m vs w.srv with ⟨body, srv'⟩
+          cases body <;> simp [runAnon, Event.anon, Res.anon, Val.anon]
       | construct record fields =>
         simp only [evalRhs, Rhs.anon, evalAtoms_anon]
         cases evalAtoms env fields <;> simp [runAnon, Res.anon, Val.anon, Val.anons_eq]
@@ -405,12 +448,12 @@ theorem eval_anon (hf : ∀ f, (P.find f).map (Fun.anon ρ) = Q.find (ρ f))
             | some fn =>
               simp only [Option.map_some, Fun.anon, anonParams_length]
               split
-              · have hrun := ihE (bindParams fn.params [v] []) fn.body
+              · have hrun := ihE w (bindParams fn.params [v] []) fn.body
                 rw [bindParams_anon fn.params (anonParams fn.params) (anonParams_fst _).symm] at hrun
                 simp only [List.map_cons, List.map_nil, Val.anonEnv] at hrun
                 rw [← hrun]
-                generalize eval n P w (bindParams fn.params [v] []) fn.body = res
-                obtain ⟨t, r⟩ := res
+                generalize eval H n P w (bindParams fn.params [v] []) fn.body = res
+                obtain ⟨t, r, w'⟩ := res
                 cases r <;> simp [runAnon, Res.anon, Event.anon]
               · rfl
       | map xs f =>
@@ -424,7 +467,7 @@ theorem eval_anon (hf : ∀ f, (P.find f).map (Fun.anon ρ) = Q.find (ρ f))
             cases xv with
             | list items =>
               simp only [Option.map_some, Val.anon, Val.anons_eq]
-              exact walkMap_anon (fun v => by simpa using happ fv [v]) items
+              exact walkMap_anon (fun w v => by simpa using happ w fv [v]) w items
             | _ => simp [Val.anon, runAnon_stuck]
       | filter xs k =>
         simp only [evalRhs, Rhs.anon, evalAtom_anon]
@@ -437,7 +480,7 @@ theorem eval_anon (hf : ∀ f, (P.find f).map (Fun.anon ρ) = Q.find (ρ f))
             cases xv with
             | list items =>
               simp only [Option.map_some, Val.anon, Val.anons_eq]
-              exact walkFilter_anon (fun v => by simpa using happ fv [v]) items
+              exact walkFilter_anon (fun w v => by simpa using happ w fv [v]) w items
             | _ => simp [Val.anon, runAnon_stuck]
       | firstWhere xs k =>
         simp only [evalRhs, Rhs.anon, evalAtom_anon]
@@ -450,7 +493,7 @@ theorem eval_anon (hf : ∀ f, (P.find f).map (Fun.anon ρ) = Q.find (ρ f))
             cases xv with
             | list items =>
               simp only [Option.map_some, Val.anon, Val.anons_eq]
-              exact walkFirst_anon (fun v => by simpa using happ fv [v]) items
+              exact walkFirst_anon (fun w v => by simpa using happ w fv [v]) w items
             | _ => simp [Val.anon, runAnon_stuck]
       | fold xs i f =>
         simp only [evalRhs, Rhs.anon, evalAtom_anon]
@@ -466,7 +509,7 @@ theorem eval_anon (hf : ∀ f, (P.find f).map (Fun.anon ρ) = Q.find (ρ f))
               cases xv with
               | list items =>
                 simp only [Option.map_some, Val.anon, Val.anons_eq]
-                exact walkFold_anon (fun a v => by simpa using happ fv [a, v]) acc items
+                exact walkFold_anon (fun w a v => by simpa using happ w fv [a, v]) w acc items
               | _ => simp [Val.anon, runAnon_stuck]
       | parse a =>
         simp only [evalRhs, Rhs.anon, evalAtom_anon]
@@ -474,7 +517,7 @@ theorem eval_anon (hf : ∀ f, (P.find f).map (Fun.anon ρ) = Q.find (ρ f))
         | none => simp [runAnon_stuck]
         | some v =>
           cases v with
-          | text t => simpa [Val.anon] using parseInt_anon t
+          | text t => simpa [Val.anon] using parseInt_anon w t
           | _ => simp [Val.anon, runAnon_stuck]
       | eq a b =>
         simp only [evalRhs, Rhs.anon, evalAtom_anon]
@@ -484,17 +527,17 @@ theorem eval_anon (hf : ∀ f, (P.find f).map (Fun.anon ρ) = Q.find (ρ f))
           cases evalAtom env b with
           | none => simp [runAnon_stuck]
           | some vb => simp [runAnon_done, Val.anon, Val.beq_anon]
-    · intro env e
+    · intro w env e
       cases e with
       | atom a =>
         simp only [eval, Expr.anon, evalAtom_anon]
         cases evalAtom env a <;> simp [runAnon, Res.anon]
       | letR x ann v b =>
         simp only [eval, Expr.anon]
-        exact andThen_anon (ihR env v) fun u => by rw [ihE]; rfl
+        exact andThen_anon (ihR w env v) fun w u => by rw [ihE]; rfl
       | letE x ann v b =>
         simp only [eval, Expr.anon]
-        exact andThen_anon (ihE env v) fun u => by rw [ihE]; rfl
+        exact andThen_anon (ihE w env v) fun w u => by rw [ihE]; rfl
       | ite c t e =>
         simp only [eval, Expr.anon, evalAtom_anon]
         cases evalAtom env c with
@@ -524,21 +567,21 @@ theorem eval_anon (hf : ∀ f, (P.find f).map (Fun.anon ρ) = Q.find (ρ f))
       | fail c => simp [eval, Expr.anon, runAnon, Res.anon]
       | attempt b =>
         simp only [eval, Expr.anon, ← ihE]
-        generalize eval n P w env b = res
-        obtain ⟨t, r⟩ := res
+        generalize eval H n P w env b = res
+        obtain ⟨t, r, w'⟩ := res
         cases r <;> simp [runAnon, Res.anon, Val.anon]
       | handle b x h =>
         simp only [eval, Expr.anon, ← ihE]
-        generalize eval n P w env b = res
-        obtain ⟨t, r⟩ := res
+        generalize eval H n P w env b = res
+        obtain ⟨t, r, w'⟩ := res
         cases r with
         | failed c =>
           simp only [runAnon, Res.anon]
-          have hh := ihE ((x, .int c) :: env) h
+          have hh := ihE w' ((x, .int c) :: env) h
           simp only [Val.anonEnv, Val.anon] at hh
           rw [← hh]
-          generalize eval n P w ((x, .int c) :: env) h = res'
-          obtain ⟨t', r'⟩ := res'
+          generalize eval H n P w' ((x, .int c) :: env) h = res'
+          obtain ⟨t', r', w''⟩ := res'
           cases r' <;> simp [runAnon, Res.anon]
         | _ => simp [runAnon, Res.anon]
 
@@ -557,20 +600,21 @@ structure Sim (ρ : String → String) (P₁ P₂ : Program) : Prop where
 
 /-- **Evaluation erasure.** Two programs that agree up to annotations run the same, up to
 annotations, on bodies and environments that agree up to annotations. -/
-theorem eval_erasure {ρ : String → String} {P₁ P₂ : Program} (h : Sim ρ P₁ P₂) (w : World) (n : Nat)
+theorem eval_erasure {ρ : String → String} {P₁ P₂ : Program} (h : Sim ρ P₁ P₂) {H : Host}
+    (hH : H.AnonInvariant) (w : World H) (n : Nat)
     {env₁ env₂ : Env} {e₁ e₂ : Expr} (henv : Val.anonEnv ρ env₁ = Val.anonEnv id env₂)
     (he : e₁.anon ρ = e₂.anon id) :
-    runAnon ρ (eval n P₁ w env₁ e₁) = runAnon id (eval n P₂ w env₂ e₂) := by
+    runAnon ρ (eval H n P₁ w env₁ e₁) = runAnon id (eval H n P₂ w env₂ e₂) := by
   have hpol : ∀ pol, P₁.policy pol = P₂.anon.policy pol := fun pol => by
     simp [Program.policy, Program.anon, h.policies]
-  have h₁ := (eval_anon (P := P₁) (Q := P₂.anon) (ρ := ρ)
+  have h₁ := (eval_anon (P := P₁) (Q := P₂.anon) (ρ := ρ) hH
     (fun f => by rw [Program.find_anon, h.funs f]) hpol
     (fun pol po hpo => h.vias po (by
       unfold Program.policy at hpo
-      exact List.mem_of_find?_eq_some hpo)) w n).2 env₁ e₁
-  have h₂ := (eval_anon (P := P₂) (Q := P₂.anon) (ρ := id)
+      exact List.mem_of_find?_eq_some hpo)) n).2 w env₁ e₁
+  have h₂ := (eval_anon (P := P₂) (Q := P₂.anon) (ρ := id) hH
     (fun f => by rw [Program.find_anon]; rfl) (fun pol => by simp [Program.policy, Program.anon])
-    (fun _ _ _ => rfl) w n).2 env₂ e₂
+    (fun _ _ _ => rfl) n).2 w env₂ e₂
   rw [h₁, h₂, henv, he]
 
 /-- Erasure keeps whether a run ended. -/
@@ -603,9 +647,10 @@ mutual
     | v :: vs => v.FirstOrder ∧ Val.FirstOrderAll vs
 end
 
-/-- An event whose value, if any, is first-order. -/
+/-- An event whose values, if any, are first-order. -/
 def Event.FirstOrder : Event → Prop
   | .release _ v => v.FirstOrder
+  | .req _ vs => Val.FirstOrderAll vs
   | _ => True
 
 mutual
@@ -666,11 +711,12 @@ end
 theorem Event.anon_inj {ρ ρ' : String → String} {a b : Event} (ha : a.FirstOrder)
     (hb : b.FirstOrder) (h : a.anon ρ = b.anon ρ') : a = b := by
   cases a <;> cases b <;> simp_all [Event.anon, Event.FirstOrder]
-  exact Val.anon_inj _ _ ha hb h.2
+  · exact Val.anons_inj _ _ ha hb h.2
+  · exact Val.anon_inj _ _ ha hb h.2
 
 theorem Event.firstOrder_anon {ρ : String → String} (ev : Event) :
     (ev.anon ρ).FirstOrder ↔ ev.FirstOrder := by
-  cases ev <;> simp [Event.anon, Event.FirstOrder, Val.firstOrder_anon]
+  cases ev <;> simp [Event.anon, Event.FirstOrder, Val.firstOrder_anon, Val.firstOrderAll_anon]
 
 theorem trace_anon_inj {ρ ρ' : String → String} :
     ∀ {t u : Trace}, (∀ ev ∈ t, ev.FirstOrder) → (∀ ev ∈ u, ev.FirstOrder) →

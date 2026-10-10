@@ -37,6 +37,9 @@ def leB (top : Label) (a b : LExpr) : Bool :=
 
 def symFree (e : LExpr) : Bool := e.plain.isEmpty && e.star.isEmpty
 
+/-- `HostFx.Le`. -/
+def hostLeB (a b : HostFx) : Bool := (!a.rd || b.rd) && (!a.wr || b.wr) && (!a.rq || b.rq)
+
 mutual
   /-- `Flow`. -/
   def flowB (top : Label) (a b : LTy) : Bool :=
@@ -47,7 +50,7 @@ mutual
       flowB top t₁ t₂ && leB top l₁ l₂
     | .record r₁ l₁, .record r₂ l₂ => r₁ == r₂ && leB top l₁ l₂
     | .fn ps₁ r₁ o₁ g₁ f₁ l₁, .fn ps₂ r₂ o₂ g₂ f₂ l₂ =>
-      flowsB top ps₂ ps₁ && flowB top r₁ r₂ && (!o₁ || o₂) && (!g₁ || g₂) && (!f₁ || f₂) &&
+      flowsB top ps₂ ps₁ && flowB top r₁ r₂ && (!o₁ || o₂) && hostLeB g₁ g₂ && (!f₁ || f₂) &&
         leB top l₁ l₂
     | .var x l₁, .var y l₂ => x == y && leB top l₁ l₂
     | _, _ => false
@@ -103,9 +106,12 @@ mutual
 end
 
 /-- `Program.Bound`. -/
-def boundB (p : Program) (pc : LExpr) (o g f : Bool) : Bool :=
+def boundB (p : Program) (pc : LExpr) (o : Bool) (g : HostFx) (f : Bool) : Bool :=
   (!o || (leB p.top pc (.ofLabel p.acceptsOp) && symFree pc)) &&
-  (!g || (leB p.top pc (.ofLabel p.acceptsGet) && symFree pc)) &&
+  (!g.rd || (leB p.top pc (.ofLabel p.acceptsRead) && symFree pc)) &&
+  (!g.wr || (leB p.top pc (.ofLabel p.acceptsWrite) &&
+    (p.oldHost || leB p.top pc (.ofLabel p.fileState)) && symFree pc)) &&
+  (!g.rq || (leB p.top pc (.ofLabel p.acceptsReq) && symFree pc)) &&
   (!f || (leB p.top pc LExpr.bot && symFree pc))
 
 /-- `Program.RelBound`. -/
@@ -181,7 +187,8 @@ def fmtTy : LTy → String
   | .result t l => s!"{fmtLabel l} Result[{fmtTy t}]"
   | .record r l => s!"{fmtLabel l} {r}"
   | .fn ps r o g f l =>
-    let fx := (if o then " uses op" else "") ++ (if g then " uses get" else "") ++
+    let fx := (if o then " uses op" else "") ++ (if g.rd then " uses read" else "") ++
+      (if g.wr then " uses write" else "") ++ (if g.rq then " uses request" else "") ++
       (if f then " fails" else "")
     s!"{fmtLabel l} fn({", ".intercalate (ps.map fmtTy)}) -> {fmtTy r}{fx}"
   | .var a l => s!"{fmtLabel l} {a}"
@@ -224,12 +231,12 @@ mutual
       let σ := fn.tparams.zip targs
       need (flowsB p.top ts (fn.params.map (fun q => p.lsub σ q.2)))
         s!"an argument of `{f}` does not flow into its parameter"
-      need (boundB p pc fn.op fn.get fn.fails)
+      need (boundB p pc fn.op fn.host fn.fails)
         s!"`{f}` has effects or failures under a program counter above its bound"
       need (relBoundB p pc fn.rels)
         s!"B1 restriction (call of a declassifying function under a raised pc): `{f}`"
       flowTo p (p.lsub σ fn.result) ann s!"the result of `{f}`"
-      pure (.ofFnR fn.op fn.get fn.fails fn.rels)
+      pure (.ofFnR fn.op fn.host fn.fails fn.rels)
     | .apply f args => do
       match ← atomTy Γ f with
       | .fn ps r o g fl lf =>
@@ -249,15 +256,9 @@ mutual
         "the operation's argument or program counter is above what it accepts"
       need (symFree pc) "an operation under a symbolic program counter"
       flowTo p (.unit .bot) ann "the operation's result"
-      pure ⟨true, false, Option.none, []⟩
-    | .get url => do
-      let t ← atomTy Γ url
-      need (isText t) "the host operation's argument is not a text"
-      le p (pc.join (p.deep t)) (.ofLabel p.acceptsGet)
-        "the host operation's argument or program counter is above what it accepts"
-      need (symFree pc) "a host operation under a symbolic program counter"
-      flowTo p (.text (.ofLabel p.getResult)) ann "the host operation's result"
-      pure ⟨false, true, some (pc.join (p.deep t)), []⟩
+      pure ⟨true, HostFx.none, Option.none, []⟩
+    -- The host's operations are re-checked by M5b; until then the checker rejects them.
+    | .read _ | .write _ _ | .req _ _ => throw "a host operation (`Files` or `Http`, M5b)"
     | .construct record fields => do
       let rec ← some! (p.record record) s!"no record `{record}`"
       need (flowsB p.top (← atomsTy Γ fields) rec.fields)
@@ -299,7 +300,7 @@ mutual
         need ε.rels.isEmpty "B1 restriction (declassification in a lambda)"
         need (flowsB p.top ps (params.map Prod.snd))
           "the declared parameters do not flow into the lambda's"
-        need ((!ε.op || o) && (!ε.get || g) && (!ε.fails.isSome || fl))
+        need ((!ε.op || o) && hostLeB ε.host g && (!ε.fails.isSome || fl))
           "the lambda has effects or failures its declared type does not allow"
         pure .none
       | _ => throw "a lambda bound at a type that is not a function type"
@@ -308,7 +309,7 @@ mutual
       need fn.rels.isEmpty s!"B1 restriction (a declassifying function as a value): `{f}`"
       let σ := fn.tparams.zip targs
       flowTo p (.fn (fn.params.map (fun q => p.lsub σ q.2)) (p.lsub σ fn.result)
-        fn.op fn.get fn.fails .bot) ann s!"`{f}` as a value"
+        fn.op fn.host fn.fails .bot) ann s!"`{f}` as a value"
       pure .none
     | .declassify pol a => do
       let po ← some! (p.policy pol) s!"no policy `{pol}`"
@@ -317,7 +318,7 @@ mutual
       le p pc po.dst.top s!"`{pol}` is called under a program counter above its `to`"
       need (symFree pc) s!"`{pol}` is called under a symbolic program counter"
       flowTo p po.dst ann s!"the result of `{pol}`"
-      pure (.ofFnR fn.op fn.get fn.fails [pol])
+      pure (.ofFnR fn.op fn.host fn.fails [pol])
     | .map xs f => do
       match ← atomTy Γ xs, ← atomTy Γ f with
       | .list te lx, .fn [tp] tr o g fl lf =>
@@ -360,7 +361,7 @@ mutual
       let t ← atomTy Γ s
       need (isText t) "`parse_int` of a value that is not a text"
       flowTo p (.int (p.deep t)) ann "the result of `parse_int`"
-      pure ⟨false, false, some (pc.join (p.deep t)), []⟩
+      pure ⟨false, HostFx.none, some (pc.join (p.deep t)), []⟩
     | .eq a b => do
       let t₁ ← atomTy Γ a
       let t₂ ← atomTy Γ b
@@ -416,27 +417,27 @@ mutual
       le p pc .bot "a failure under a program counter above `public` (U4002)"
       need (symFree pc) "a failure under a symbolic program counter"
       need (inPlace s) "`ℓ_T` off a position of type `T`"
-      pure ⟨false, false, some .bot, []⟩
+      pure ⟨false, HostFx.none, some .bot, []⟩
     | .attempt body => do
       match s with
       | .result t l =>
         let ε ← checkExpr p E Γ pc t body
         le p ε.failLabel l "the result of `attempt` is below what decides the failure"
-        pure ⟨ε.op, ε.get, Option.none, ε.rels⟩
+        pure ⟨ε.op, ε.host, Option.none, ε.rels⟩
       | _ => throw "`attempt` at a type that is not a result"
     | .handle body x handler => do
       need (inPlace s) "`ℓ_T` off a position of type `T`"
       let ε₁ ← checkExpr p E Γ pc s body
       let ε₂ ← checkExpr p E ((x, .int ε₁.failLabel) :: Γ) (pc.join ε₁.failLabel) s handler
       flowTo p (s.raise ε₁.failLabel) s "the value of a handled expression, raised by its failure,"
-      pure ⟨ε₁.op || ε₂.op, ε₁.get || ε₂.get, ε₂.fails, ε₁.rels ++ ε₂.rels⟩
+      pure ⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels⟩
 end
 
 /-- T-Fun (`Program.FunOk`). -/
 def checkFun (p : Program) (fn : Fun) : Result Unit := do
   let ε ← checkExpr p fn.eqParams fn.params .bot fn.result fn.body
   need (!ε.op || fn.op) s!"`{fn.name}` performs an operation it does not declare"
-  need (!ε.get || fn.get) s!"`{fn.name}` performs a host operation it does not declare"
+  need (hostLeB ε.host fn.host) s!"`{fn.name}` performs a host operation it does not declare"
   need (!ε.fails.isSome || fn.fails) s!"`{fn.name}` may fail, and does not declare it"
   le p ε.failLabel .bot s!"a failure of `{fn.name}` is decided above `public` (U4002)"
   need (ε.rels.all (fn.rels.contains ·)) s!"`{fn.name}` declassifies through a policy it does not declare"
@@ -471,7 +472,7 @@ end
 def b1Ok (p : Program) : Bool :=
   p.policies.all fun po => isScalar po.src && ground po.dst && isScalar po.dst &&
     match p.find po.via with
-    | some fn => !fn.op && !fn.get && !fn.fails && exprPure fn.body
+    | some fn => !fn.op && fn.host.isNone && !fn.fails && exprPure fn.body
     | none => false
 
 /-- `Program.B1WellFormed`: the restrictions of option B1 on the policies. A program outside them
@@ -482,7 +483,7 @@ def checkB1 (p : Program) : Result Unit := do
     need (ground po.dst && isScalar po.dst) s!"B1 restriction (non-scalar to): `{po.name}`"
     match p.find po.via with
     | some fn =>
-      need (!fn.op && !fn.get && !fn.fails && exprPure fn.body)
+      need (!fn.op && fn.host.isNone && !fn.fails && exprPure fn.body)
         s!"B1 restriction (impure via): `{po.via}`"
     | none => throw s!"no `via` function `{po.via}`"
   -- The same test as one Boolean, which the proof of soundness reads (`checkB1_sound`); the loop
@@ -552,6 +553,6 @@ def instantiate (subst : List (String × LTy) → LTy → LTy) (fn : Fun) (targs
   let σ := fn.tparams.zip targs
   { name, tparams := [], eqParams := [],
     params := fn.params.map fun q => (q.1, subst σ q.2), result := subst σ fn.result,
-    op := fn.op, get := fn.get, fails := fn.fails, body := Expr.mapTypes (subst σ) fn.body }
+    op := fn.op, host := fn.host, fails := fn.fails, body := Expr.mapTypes (subst σ) fn.body }
 
 end Una.F1.Check

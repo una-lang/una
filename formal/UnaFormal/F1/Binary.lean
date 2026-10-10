@@ -43,7 +43,7 @@ mutual
         LExprTy p E (params ++ Γ) .bot body tb ε → p.le ε.failLabel .bot → ε.rels = [] →
         Flows p.top ps ((params.map Prod.snd).map (LTy.lsubst p.recordDeep σ)) →
         Flow p.top (tb.lsubst p.recordDeep σ) r →
-        (ε.op = true → o = true) → (ε.get = true → g = true) → (ε.fails.isSome = true → f = true) →
+        (ε.op = true → o = true) → HostFx.Le ε.host g → (ε.fails.isSome = true → f = true) →
         V (.fn ps r o g f l) (.closure params body env₁) (.closure params body env₂)
 
   inductive VAll : LTy → List Val → List Val → Prop where
@@ -63,7 +63,9 @@ end
 /-- The observer sees an event when it sees its sink's `accepts`. -/
 def EvVis : Event → Prop
   | .out _ => Vis p L (.ofLabel p.acceptsOp)
-  | .get _ => Vis p L (.ofLabel p.acceptsGet)
+  | .read _ => Vis p L (.ofLabel p.acceptsRead)
+  | .write _ _ => Vis p L (.ofLabel p.acceptsWrite)
+  | .req _ _ => Vis p L (.ofLabel p.acceptsReq)
   | .release pol _ => ∃ po, p.policy pol = some po ∧ Vis p L po.dst.top
 
 open Classical in
@@ -83,10 +85,23 @@ def OutRel (R : Val → Val → Prop) (vf : Prop) : Res → Res → Prop
   | .ok _, .failed _ | .failed _, .ok _ => ¬ vf
   | _, _ => True
 
+/-- `internal`. -/
+def internalLabel : Label := ⟨.internal, []⟩
+
+/-- **Two worlds the observer at `L` cannot tell apart** (M5, `docs/plan/formal-track-m5.md`
+§4): the same shape of the file system when it sees the file-state label, and the same world
+when it sees `internal`. That every stateful sink accepts at most `internal`
+(`Program.HostWF`) is what keeps the second conjunct from being a mere accident of the host
+table. -/
+def WorldRel {H : Host} (w₁ w₂ : World H) : Prop :=
+  (Vis p L (.ofLabel p.fileState) → H.shape w₁.fs = H.shape w₂.fs) ∧
+  (Vis p L (.ofLabel internalLabel) → w₁ = w₂)
+
 /-- Two runs related, termination-insensitively: when both end, the observer sees the same
-events and related outcomes. -/
-def BRel (R : Val → Val → Prop) (vf : Prop) (r₁ r₂ : Trace × Res) : Prop :=
-  Term r₁.2 → Term r₂.2 → proj p L r₁.1 = proj p L r₂.1 ∧ OutRel R vf r₁.2 r₂.2
+events and related outcomes, and cannot tell their final worlds apart. -/
+def BRel {H : Host} (R : Val → Val → Prop) (vf : Prop) (r₁ r₂ : Run H) : Prop :=
+  Term r₁.2.1 → Term r₂.2.1 →
+    proj p L r₁.1 = proj p L r₂.1 ∧ OutRel R vf r₁.2.1 r₂.2.1 ∧ WorldRel p L r₁.2.2 r₂.2.2
 
 variable {p L}
 
@@ -131,7 +146,7 @@ mutual
     | _, _, _, _, .err, .result _ _ => .err
     | _, _, _, _, .record hr hfs, .record _ => .record hr hfs
     | _, _, _, _, .closure hσ hE hΓ hrel h₁ h₂ hb hfl hrl hps hr ho hg hf, .fn fps fr fo fg ff _ =>
-      .closure hσ hE hΓ hrel h₁ h₂ hb hfl hrl (Flows.trans fps hps) (Flow.trans hr fr) (fo ∘ ho) (fg ∘ hg)
+      .closure hσ hE hΓ hrel h₁ h₂ hb hfl hrl (Flows.trans fps hps) (Flow.trans hr fr) (fo ∘ ho) (hg.trans fg)
         (ff ∘ hf)
 
   theorem VAll.flow : ∀ {t t' : LTy} {as bs : List Val}, VAll p L t as bs → Flow p.top t t' →
@@ -255,27 +270,90 @@ theorem proj_single_vis {ev : Event} (h : EvVis p L ev) : proj p L [ev] = [ev] :
 theorem proj_single_hidden {ev : Event} (h : ¬ EvVis p L ev) : proj p L [ev] = [] := by
   simp [proj, h]
 
+/-- **What M5 asks of a program's host operations** (`docs/plan/formal-track-m5.md` §4): the
+rules of ADR 0085; every sink of a stateful capability accepts at most `internal`, so no host
+state can receive data above it; and what the host returns, a read's content, a response, and
+what decides a request's failure, is at least `internal`.
+
+`t6_host` also asks the host to be lawful (`Host.Lawful`, H1 and H2), and its model keeps the file
+system and the servers disjoint: a server that writes into the package's granted directory, on the
+same machine, is outside the model, as other writers are. The real host meets H1 from v0.3.5: before
+it (S-16), `Files.read` failed on a file that is not valid UTF-8; since ADR 0086, invalid text aborts
+the run, which is outside the model (`docs/plan/formal-track-m5.md` §5). -/
+structure Program.HostWF (p : Program) : Prop where
+  oldHost : p.oldHost = false
+  read : p.le (.ofLabel p.acceptsRead) (.ofLabel internalLabel)
+  write : p.le (.ofLabel p.acceptsWrite) (.ofLabel internalLabel)
+  req : p.le (.ofLabel p.acceptsReq) (.ofLabel internalLabel)
+  readResult : p.le (.ofLabel internalLabel) (.ofLabel p.readResult)
+  reqResult : p.le (.ofLabel internalLabel) (.ofLabel p.reqResult)
+  reqFloor : p.le (.ofLabel internalLabel) (.ofLabel p.reqFloor)
+
+variable {H : Host}
+
+theorem WorldRel.refl (w : World H) : WorldRel p L w w := ⟨fun _ => rfl, fun _ => rfl⟩
+
+theorem WorldRel.symm {w₁ w₂ : World H} (h : WorldRel p L w₁ w₂) : WorldRel p L w₂ w₁ :=
+  ⟨fun hv => (h.1 hv).symm, fun hv => (h.2 hv).symm⟩
+
+theorem WorldRel.trans {w₁ w₂ w₃ : World H} (h₁ : WorldRel p L w₁ w₂) (h₂ : WorldRel p L w₂ w₃) :
+    WorldRel p L w₁ w₃ :=
+  ⟨fun hv => (h₁.1 hv).trans (h₂.1 hv), fun hv => (h₁.2 hv).trans (h₂.2 hv)⟩
+
+theorem World.ext' {w w' : World H} (hfs : w'.fs = w.fs) (hsrv : w'.srv = w.srv) : w = w' := by
+  cases w; cases w'; simp_all
+
 /-- At a program counter the observer does not see, a run that keeps to its typing shows no
-event, and a failure it ends with is decided above what the observer sees. -/
-theorem confined {pc : LExpr} {ε : Eff} {P : Val → Prop} {run : Trace × Res}
-    (h : UOk (Allowed p pc ε) P (Fails p pc ε) run) (hpc : ¬ Vis p L pc) :
-    proj p L run.1 = [] ∧ (∀ c, run.2 = .failed c → ¬ Vis p L ε.failLabel) := by
-  refine ⟨proj_hidden (fun ev hev hvis => ?_), fun c hc hvis => ?_⟩
+event, a failure it ends with is decided above what the observer sees, and the world it leaves
+is one the observer cannot tell from the one it started from. -/
+theorem confined {pc : LExpr} {ε : Eff} {P : Val → Prop} {w : World H} {run : Run H}
+    (hwf : p.HostWF) (h : UOk (Allowed p pc ε) P (Fails p pc ε) w run) (hpc : ¬ Vis p L pc) :
+    proj p L run.1 = [] ∧ (∀ c, run.2.1 = .failed c → ¬ Vis p L ε.failLabel) ∧
+      WorldRel p L w run.2.2 := by
+  obtain ⟨tr, r, w'⟩ := run
+  refine ⟨proj_hidden (fun ev hev hvis => ?_), fun c hc hvis => ?_, ?_⟩
   · have ha := h.1 ev hev
     cases ev with
     | out _ => exact hpc (Vis.of_le ha.2 hvis)
-    | get _ => exact hpc (Vis.of_le ha.2 hvis)
+    | read _ => exact hpc (Vis.of_le ha.2 hvis)
+    | write _ _ => exact hpc (Vis.of_le ha.2.1 hvis)
+    | req _ _ => exact hpc (Vis.of_le ha.2 hvis)
     | release _ _ =>
       obtain ⟨_, po, hpo, hle⟩ := ha
       obtain ⟨po', hpo', hv⟩ := hvis
       rw [hpo] at hpo'
       cases hpo'
       exact hpc (Vis.of_le hle hv)
-  · have hf := h.2
+  · have hf := h.2.1
+    simp only at hc
     rw [hc] at hf
     obtain ⟨l, hl, hle⟩ := hf
     simp only [Eff.failLabel, hl, Option.getD_some] at hvis
     exact hpc (Vis.of_le hle hvis)
+  · have hw := h.2.2
+    have nowr : (Vis p L (.ofLabel p.fileState) ∨ Vis p L (.ofLabel internalLabel)) →
+        tr.any Event.isWrite = false := by
+      intro hv
+      rw [List.any_eq_false]
+      intro ev hev hwr
+      cases ev with
+      | write _ _ =>
+        have ha := (h.1 _ hev).2
+        rcases hv with hv | hv
+        · exact hpc (Vis.of_le (ha.2 hwf.oldHost) hv)
+        · exact hpc (Vis.of_le ha.1 (Vis.of_le hwf.write hv))
+      | _ => simp [Event.isWrite] at hwr
+    have noreq : Vis p L (.ofLabel internalLabel) → tr.any Event.isReq = false := by
+      intro hv
+      rw [List.any_eq_false]
+      intro ev hev hrq
+      cases ev with
+      | req _ _ => exact hpc (Vis.of_le (h.1 _ hev).2 (Vis.of_le hwf.req hv))
+      | _ => simp [Event.isReq] at hrq
+    refine ⟨fun hv => ?_, fun hv => ?_⟩
+    · simp only
+      rw [hw.1 (nowr (.inl hv))]
+    · exact World.ext' (hw.1 (nowr (.inr hv))) (hw.2 (noreq hv))
 
 theorem OutRel.mono {R R' : Val → Val → Prop} {vf vf' : Prop} (hR : ∀ a b, R a b → R' a b)
     (hvf : vf' → vf) : ∀ {r₁ r₂ : Res}, OutRel R vf r₁ r₂ → OutRel R' vf' r₁ r₂
@@ -287,68 +365,69 @@ theorem OutRel.mono {R R' : Val → Val → Prop} {vf vf' : Prop} (hR : ∀ a b,
   | .stuck, _, _ | .outOfFuel, _, _ => trivial
 
 theorem BRel.mono {R R' : Val → Val → Prop} {vf vf' : Prop} (hR : ∀ a b, R a b → R' a b)
-    (hvf : vf' → vf) {r₁ r₂ : Trace × Res} (h : BRel p L R vf r₁ r₂) : BRel p L R' vf' r₁ r₂ :=
-  fun t₁ t₂ => ⟨(h t₁ t₂).1, OutRel.mono hR hvf (h t₁ t₂).2⟩
+    (hvf : vf' → vf) {r₁ r₂ : Run H} (h : BRel p L R vf r₁ r₂) : BRel p L R' vf' r₁ r₂ :=
+  fun t₁ t₂ => ⟨(h t₁ t₂).1, OutRel.mono hR hvf (h t₁ t₂).2.1, (h t₁ t₂).2.2⟩
 
-theorem andThen_term {first : Trace × Res} {rest : Val → Trace × Res}
-    (h : Term (andThen first rest).2) : Term first.2 := by
-  obtain ⟨tr, r⟩ := first
+theorem andThen_term {first : Run H} {rest : World H → Val → Run H}
+    (h : Term (andThen first rest).2.1) : Term first.2.1 := by
+  obtain ⟨tr, r, w⟩ := first
   cases r <;> simp_all [andThen, Term]
 
-/-- Sequencing keeps two runs related. When the observer does not see what decides the first
-part's failure, a run that went on must show nothing more and fail only unseen. -/
-theorem andThen_brel {R₁ R₂ : Val → Val → Prop} {vf vf₁ : Prop} {f₁ f₂ : Trace × Res}
-    {k₁ k₂ : Val → Trace × Res} (h₁ : BRel p L R₁ vf₁ f₁ f₂) (hvf : vf → vf₁)
-    (h₂ : ∀ v₁ v₂, f₁.2 = .ok v₁ → f₂.2 = .ok v₂ → R₁ v₁ v₂ → BRel p L R₂ vf (k₁ v₁) (k₂ v₂))
-    (hc₁ : ¬ vf₁ → ∀ v, f₁.2 = .ok v → proj p L (k₁ v).1 = [] ∧
-      ∀ c, (k₁ v).2 = .failed c → ¬ vf)
-    (hc₂ : ¬ vf₁ → ∀ v, f₂.2 = .ok v → proj p L (k₂ v).1 = [] ∧
-      ∀ c, (k₂ v).2 = .failed c → ¬ vf) :
+/-- Sequencing keeps two runs related, each part from the world the previous left. When the
+observer does not see what decides the first part's failure, a run that went on must show
+nothing more, fail only unseen, and leave a world the observer cannot tell from the one it
+started from. -/
+theorem andThen_brel {R₁ R₂ : Val → Val → Prop} {vf vf₁ : Prop} {f₁ f₂ : Run H}
+    {k₁ k₂ : World H → Val → Run H} (h₁ : BRel p L R₁ vf₁ f₁ f₂) (hvf : vf → vf₁)
+    (h₂ : ∀ v₁ v₂, f₁.2.1 = .ok v₁ → f₂.2.1 = .ok v₂ → R₁ v₁ v₂ → WorldRel p L f₁.2.2 f₂.2.2 →
+      BRel p L R₂ vf (k₁ f₁.2.2 v₁) (k₂ f₂.2.2 v₂))
+    (hc₁ : ¬ vf₁ → ∀ v, f₁.2.1 = .ok v → proj p L (k₁ f₁.2.2 v).1 = [] ∧
+      (∀ c, (k₁ f₁.2.2 v).2.1 = .failed c → ¬ vf) ∧ WorldRel p L f₁.2.2 (k₁ f₁.2.2 v).2.2)
+    (hc₂ : ¬ vf₁ → ∀ v, f₂.2.1 = .ok v → proj p L (k₂ f₂.2.2 v).1 = [] ∧
+      (∀ c, (k₂ f₂.2.2 v).2.1 = .failed c → ¬ vf) ∧ WorldRel p L f₂.2.2 (k₂ f₂.2.2 v).2.2) :
     BRel p L R₂ vf (andThen f₁ k₁) (andThen f₂ k₂) := by
   intro ht₁ ht₂
   have hf₁ := andThen_term ht₁
   have hf₂ := andThen_term ht₂
-  obtain ⟨hp, ho⟩ := h₁ hf₁ hf₂
-  obtain ⟨tr₁, r₁⟩ := f₁
-  obtain ⟨tr₂, r₂⟩ := f₂
+  obtain ⟨hp, ho, hw⟩ := h₁ hf₁ hf₂
+  obtain ⟨tr₁, r₁, w₁⟩ := f₁
+  obtain ⟨tr₂, r₂, w₂⟩ := f₂
   cases r₁ <;> cases r₂ <;> simp only [Term] at hf₁ hf₂
   · -- both values
     rename_i v₁ v₂
-    have hk := h₂ v₁ v₂ rfl rfl ho
+    have hk := h₂ v₁ v₂ rfl rfl ho hw
     simp only [andThen] at ht₁ ht₂ ⊢
     revert ht₁ ht₂ hk
-    cases k₁ v₁
-    cases k₂ v₂
+    rcases k₁ w₁ v₁ with ⟨tk₁, rk₁, wk₁⟩
+    rcases k₂ w₂ v₂ with ⟨tk₂, rk₂, wk₂⟩
     intro ht₁ ht₂ hk
-    obtain ⟨hp', ho'⟩ := hk ht₁ ht₂
-    exact ⟨by simp only [proj_append]; rw [hp, hp'], ho'⟩
+    obtain ⟨hp', ho', hw'⟩ := hk ht₁ ht₂
+    exact ⟨by simp only [proj_append]; rw [hp, hp'], ho', hw'⟩
   · -- a value, then a failure
     rename_i v₁ c₂
     have hnv : ¬ vf₁ := ho
-    obtain ⟨hpk, hfk⟩ := hc₁ hnv v₁ rfl
+    obtain ⟨hpk, hfk, hwk⟩ := hc₁ hnv v₁ rfl
     simp only [andThen] at ht₁ ⊢
-    revert ht₁ hpk hfk
-    cases k₁ v₁ with
-    | mk tk rk =>
-      intro ht₁ hpk hfk
-      refine ⟨by simp only [proj_append]; rw [hpk, List.append_nil]; exact hp, ?_⟩
-      cases rk <;> simp only [Term] at ht₁ <;> simp only [OutRel]
-      · exact fun hv => hnv (hvf hv)
-      · exact fun hv => absurd hv (hfk _ rfl)
+    revert ht₁ hpk hfk hwk
+    rcases k₁ w₁ v₁ with ⟨tk, rk, wk⟩
+    intro ht₁ hpk hfk hwk
+    refine ⟨by simp only [proj_append]; rw [hpk, List.append_nil]; exact hp, ?_, hwk.symm.trans hw⟩
+    cases rk <;> simp only [Term] at ht₁ <;> simp only [OutRel]
+    · exact fun hv => hnv (hvf hv)
+    · exact fun hv => absurd hv (hfk _ rfl)
   · -- a failure, then a value
     rename_i c₁ v₂
     have hnv : ¬ vf₁ := ho
-    obtain ⟨hpk, hfk⟩ := hc₂ hnv v₂ rfl
+    obtain ⟨hpk, hfk, hwk⟩ := hc₂ hnv v₂ rfl
     simp only [andThen] at ht₂ ⊢
-    revert ht₂ hpk hfk
-    cases k₂ v₂ with
-    | mk tk rk =>
-      intro ht₂ hpk hfk
-      refine ⟨by simp only [proj_append]; rw [hpk, List.append_nil]; exact hp, ?_⟩
-      cases rk <;> simp only [Term] at ht₂ <;> simp only [OutRel]
-      · exact fun hv => hnv (hvf hv)
-      · exact fun hv => absurd hv (hfk _ rfl)
+    revert ht₂ hpk hfk hwk
+    rcases k₂ w₂ v₂ with ⟨tk, rk, wk⟩
+    intro ht₂ hpk hfk hwk
+    refine ⟨by simp only [proj_append]; rw [hpk, List.append_nil]; exact hp, ?_, hw.trans hwk⟩
+    cases rk <;> simp only [Term] at ht₂ <;> simp only [OutRel]
+    · exact fun hv => hnv (hvf hv)
+    · exact fun hv => absurd hv (hfk _ rfl)
   · -- both failures
-    exact ⟨hp, fun hv => ho (hvf hv)⟩
+    exact ⟨hp, fun hv => ho (hvf hv), hw⟩
 
 end Una.F1

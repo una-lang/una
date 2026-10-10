@@ -12,6 +12,7 @@ program that passes T-Fun.
 import UnaFormal.F1.CheckProgram
 import UnaFormal.F1.CheckSoundCore
 import UnaFormal.F1.Erase
+import UnaFormal.F1.Binary
 
 namespace Una.F1.Check
 
@@ -87,8 +88,10 @@ end
 
 theorem catsDeclared_sound {p : Program} (h : catsDeclared p = true) : p.CatsDeclared := by
   simp only [catsDeclared, Bool.and_eq_true, List.all_eq_true] at h
-  obtain ⟨⟨⟨⟨⟨ho, hg⟩, hr⟩, hf⟩, hrec⟩, hpo⟩ := h
-  refine ⟨labelCats_sound ho, labelCats_sound hg, labelCats_sound hr, fun fn hfn => ?_,
+  obtain ⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨ho, hr⟩, hw⟩, hq⟩, hrr⟩, hqr⟩, hqf⟩, hfs⟩, hf⟩, hrec⟩, hpo⟩ := h
+  refine ⟨labelCats_sound ho, labelCats_sound hr, labelCats_sound hw, labelCats_sound hq,
+    labelCats_sound hrr, labelCats_sound hqr, labelCats_sound hqf, labelCats_sound hfs,
+    fun fn hfn => ?_,
     fun rec hrc t ht => tyCats_sound t (hrec rec hrc t ht), fun po hp => ?_⟩
   · obtain ⟨h₁, h₂⟩ := hf fn hfn
     exact ⟨fun q hq => tyCats_sound _ (h₁ q hq), tyCats_sound _ h₂⟩
@@ -144,15 +147,20 @@ theorem policyOk_sound {p : Program} {po : Policy}
     exact ⟨fn, hfn, tysEq_sound _ _ hv.1, tyEq_sound _ _ hv.2⟩
   · exact absurd hv (by simp)
 
+theorem hostWfB_sound {p : Program} (h : hostWfB p = true) : p.HostWF := by
+  simp only [hostWfB, Bool.and_eq_true, Bool.not_eq_true'] at h
+  obtain ⟨⟨⟨⟨⟨⟨ho, hr⟩, hw⟩, hq⟩, hrr⟩, hqr⟩, hqf⟩ := h
+  exact ⟨ho, leB_sound hr, leB_sound hw, leB_sound hq, leB_sound hrr, leB_sound hqr, leB_sound hqf⟩
+
 /-- **The whole-program check is sound.** A program that passes `progOk cond` is accepted by
-the labeled typing and is within B1's restrictions, and its host's response is labeled at least
-what the host operation accepts (`t6`'s `hget`). The functions named in `cond`, which are
+the labeled typing and is within B1's restrictions, and its host's labels are as
+`t6_release_host` asks (`Program.HostWF`). The functions named in `cond`, which are
 checked at their instances, enter by the named hypothesis `hA3`: their T-Fun is part A3's. -/
 theorem progOk_sound {cond : List String} {p : Program} (h : progOk cond p = true)
     (hA3 : ∀ fn ∈ p.funs, fn.name ∈ cond → ¬ p.IsVia fn.name → p.FunOk fn) :
-    p.LWellFormed ∧ p.B1WellFormed ∧ p.le (.ofLabel p.acceptsGet) (.ofLabel p.getResult) := by
+    p.LWellFormed ∧ p.B1WellFormed ∧ p.HostWF := by
   simp only [progOk, progDocOk, recordOk, policyOk, Bool.and_eq_true, List.all_eq_true] at h
-  obtain ⟨⟨⟨⟨⟨hget, hrec⟩, hpol⟩, hcats⟩, hb1⟩, hfuns⟩ := h
+  obtain ⟨⟨⟨⟨⟨hhost, hrec⟩, hpol⟩, hcats⟩, hb1⟩, hfuns⟩ := h
   have hfun := fun fn hfn => by
     have := hfuns fn hfn
     simp only [progFunOk, Bool.and_eq_true, List.all_eq_true] at this
@@ -160,7 +168,7 @@ theorem progOk_sound {cond : List String} {p : Program} (h : progOk cond p = tru
   -- The fields of `Program.LWellFormed`, in order: funs, records, recordDeep, policies,
   -- categories, recordsGround, eqScoped, sigsScoped, inPlace.
   refine ⟨⟨?_, ?_, ?_, ?_, catsDeclared_sound hcats, ?_, ?_, ?_, ⟨?_, ?_, ?_⟩⟩,
-    b1Ok_sound hb1, leB_sound hget⟩
+    b1Ok_sound hb1, hostWfB_sound hhost⟩
   · intro fn hfn
     obtain ⟨_, hv⟩ := hfun fn hfn
     by_cases hvia : isVia p fn.name = true
@@ -197,7 +205,7 @@ theorem progOk_sound {cond : List String} {p : Program} (h : progOk cond p = tru
 
 /-- With no function checked at its instances, the whole-program check needs no hypothesis. -/
 theorem progOk_sound_nil {p : Program} (h : progOk [] p = true) :
-    p.LWellFormed ∧ p.B1WellFormed ∧ p.le (.ofLabel p.acceptsGet) (.ofLabel p.getResult) :=
+    p.LWellFormed ∧ p.B1WellFormed ∧ p.HostWF :=
   progOk_sound h (fun _ _ hc => by simp at hc)
 
 end Una.F1.Check
@@ -241,7 +249,8 @@ mutual
       | lambda hb => exact expr_reach hwf b hb g hg
     | .atom _, _, _, _, _, _, _, hg | .prim _ _, _, _, _, _, _, _, hg
     | .apply _ _, _, _, _, _, _, _, hg | .op _, _, _, _, _, _, _, hg
-    | .get _, _, _, _, _, _, _, hg | .construct _ _, _, _, _, _, _, _, hg
+    | .read _, _, _, _, _, _, _, hg | .write _ _, _, _, _, _, _, _, hg
+    | .req _ _, _, _, _, _, _, _, hg | .construct _ _, _, _, _, _, _, _, hg
     | .field _ _, _, _, _, _, _, _, hg | .list _, _, _, _, _, _, _, hg
     | .none, _, _, _, _, _, _, hg | .some _, _, _, _, _, _, _, hg
     | .declassify _ _, _, _, _, _, _, _, hg | .map _ _, _, _, _, _, _, _, hg

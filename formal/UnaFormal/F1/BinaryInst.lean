@@ -65,6 +65,16 @@ theorem dropPlain_join_plainFree (a : String) (x : LExpr) {e : LExpr} (he : e.Pl
 
 end LExpr
 
+theorem LExpr.inst_le_inst_join {top : Label} (s : List (String × LExpr)) (a b : LExpr) :
+    LExpr.le top ((a.inst s).join (b.inst s)) ((a.join b).inst s) :=
+  LExpr.join_le (LExpr.le_inst s (LExpr.le_join_left a b)) (LExpr.le_inst s (LExpr.le_join_right a b))
+
+theorem LExpr.join_swap_le {top : Label} (a b c : LExpr) :
+    LExpr.le top ((a.join b).join c) ((a.join c).join b) :=
+  LExpr.join_le (LExpr.join_le (LExpr.le_trans (LExpr.le_join_left _ _) (LExpr.le_join_left _ _))
+    (LExpr.le_join_right _ _)) (LExpr.le_trans (LExpr.le_join_right _ _) (LExpr.le_join_left _ _))
+
+
 variable {p : Program} {L : Label}
 
 theorem LTy.top_setTop (x : LExpr) (u : LTy) : (u.setTop x).top = x := by cases u <;> rfl
@@ -187,15 +197,6 @@ end
 
 /-! ### `ℓ*` at instances -/
 
-theorem LExpr.inst_le_inst_join {top : Label} (s : List (String × LExpr)) (a b : LExpr) :
-    LExpr.le top ((a.inst s).join (b.inst s)) ((a.join b).inst s) :=
-  LExpr.join_le (LExpr.le_inst s (LExpr.le_join_left a b)) (LExpr.le_inst s (LExpr.le_join_right a b))
-
-theorem LExpr.join_swap_le {top : Label} (a b c : LExpr) :
-    LExpr.le top ((a.join b).join c) ((a.join c).join b) :=
-  LExpr.join_le (LExpr.join_le (LExpr.le_trans (LExpr.le_join_left _ _) (LExpr.le_join_left _ _))
-    (LExpr.le_join_right _ _)) (LExpr.le_trans (LExpr.le_join_right _ _) (LExpr.le_join_left _ _))
-
 theorem LTy.deep_raise_le (rd : String → Label) {top : Label} (e : LExpr) {u : LTy}
     (hu : ∀ a l, u ≠ .var a l) : LExpr.le top ((u.raise e).deep rd) ((u.deep rd).join e) := by
   cases u with
@@ -282,7 +283,7 @@ theorem Vis.failLabel_inst {s : List (String × LExpr)} {ε : Eff} :
     Vis p L (ε.inst s).failLabel ↔ Vis p L (ε.failLabel.inst s) :=
   ⟨fun h => Vis.of_le (failLabel_inst_le s ε).2 h, fun h => Vis.of_le (failLabel_inst_le s ε).1 h⟩
 
-theorem Vis.ofFn_failLabel {s : List (String × LExpr)} {o g f : Bool} :
+theorem Vis.ofFn_failLabel {s : List (String × LExpr)} {o : Bool} {g : HostFx} {f : Bool} :
     Vis p L ((Eff.ofFn o g f).inst s).failLabel := by
   rw [Vis.failLabel_inst]
   cases f <;> simp only [Eff.ofFn, Eff.failLabel, ite_true, Bool.false_eq_true, ite_false,
@@ -373,7 +374,7 @@ mutual
       simp only [LTy.eqIn]; exact LTy.Ground.eqIn h.1
 end
 
-theorem Vis.ofFn_plain {o g f : Bool} : Vis p L (Eff.ofFn o g f).failLabel := by
+theorem Vis.ofFn_plain {o : Bool} {g : HostFx} {f : Bool} : Vis p L (Eff.ofFn o g f).failLabel := by
   cases f <;> simp [Eff.ofFn, Eff.failLabel] <;> exact Vis.bot
 
 theorem V.ground_lsubst {σ : List (String × LTy)} {u : LTy} (hu : u.Ground) {a b : Val} :

@@ -13,6 +13,23 @@ import UnaFormal.F1.Erase
 
 namespace Una.F1
 
+theorem LExpr.inst_nil (e : LExpr) : e.inst [] = LExpr.bot.join e := by
+  have hf : ∀ l : List String,
+      l.filter (fun x => !(List.lookup x ([] : List (String × LExpr))).isSome) = l := by
+    intro l; induction l <;> simp_all [List.lookup, List.filter]
+  have hm : ∀ l : List String,
+      l.filterMap (fun x => List.lookup x ([] : List (String × LExpr))) = [] := by
+    intro l; induction l <;> simp_all [List.lookup, List.filterMap]
+  simp only [LExpr.inst, hf, hm, LExpr.joinAll]
+
+theorem LExpr.inst_nil_le {top : Label} (e : LExpr) : LExpr.le top (e.inst []) e := by
+  rw [LExpr.inst_nil]
+  exact LExpr.join_le (LExpr.bot_le e) (LExpr.le_refl e)
+
+theorem LExpr.le_inst_nil {top : Label} (e : LExpr) : LExpr.le top e (e.inst []) := by
+  rw [LExpr.inst_nil]
+  exact LExpr.le_join_right _ _
+
 /-! ### The labeled typing of values -/
 
 mutual
@@ -38,7 +55,7 @@ mutual
         p.le ε.failLabel .bot → ε.rels = [] →
         Flows p.top ps ((params.map Prod.snd).map (LTy.lsubst p.recordDeep σ)) →
         Flow p.top (t.lsubst p.recordDeep σ) r →
-        (ε.op = true → o = true) → (ε.get = true → g = true) → (ε.fails.isSome = true → f = true) →
+        (ε.op = true → o = true) → HostFx.Le ε.host g → (ε.fails.isSome = true → f = true) →
         LValTy p (.closure params body env) (.fn ps r o g f l)
 
   /-- Every value of a list has one type. -/
@@ -55,7 +72,7 @@ mutual
     | cons {x v t env Γ} : LValTy p v t → LEnvTy p env Γ → LEnvTy p ((x, v) :: env) ((x, t) :: Γ)
 end
 
-variable {p : Program}
+variable {p : Program} {H : Host}
 
 mutual
   /-- A value keeps its labeled type along a flow. -/
@@ -71,7 +88,7 @@ mutual
     | _, _, _, .err, .result _ _ => .err
     | _, _, _, .record hr hfs, .record _ => .record hr hfs
     | _, _, _, .closure hσ henv hb hfl hrl hps hr ho hg hf, .fn fps fr fo fg ff _ =>
-      .closure hσ henv hb hfl hrl (Flows.trans fps hps) (Flow.trans hr fr) (fo ∘ ho) (fg ∘ hg) (ff ∘ hf)
+      .closure hσ henv hb hfl hrl (Flows.trans fps hps) (Flow.trans hr fr) (fo ∘ ho) (hg.trans fg) (ff ∘ hf)
 
   theorem LValsAll.flow : ∀ {vs : List Val} {t t' : LTy}, LValsAll p vs t → Flow p.top t t' →
       LValsAll p vs t'
@@ -160,23 +177,6 @@ theorem prim_ltyped {pr : Prim} {ts : List Ty} {t : Ty} {vs : List Val} {v : Val
 
 /-! ### Instantiation with no type argument -/
 
-theorem LExpr.inst_nil (e : LExpr) : e.inst [] = LExpr.bot.join e := by
-  have hf : ∀ l : List String,
-      l.filter (fun x => !(List.lookup x ([] : List (String × LExpr))).isSome) = l := by
-    intro l; induction l <;> simp_all [List.lookup, List.filter]
-  have hm : ∀ l : List String,
-      l.filterMap (fun x => List.lookup x ([] : List (String × LExpr))) = [] := by
-    intro l; induction l <;> simp_all [List.lookup, List.filterMap]
-  simp only [LExpr.inst, hf, hm, LExpr.joinAll]
-
-theorem LExpr.inst_nil_le {top : Label} (e : LExpr) : LExpr.le top (e.inst []) e := by
-  rw [LExpr.inst_nil]
-  exact LExpr.join_le (LExpr.bot_le e) (LExpr.le_refl e)
-
-theorem LExpr.le_inst_nil {top : Label} (e : LExpr) : LExpr.le top e (e.inst []) := by
-  rw [LExpr.inst_nil]
-  exact LExpr.le_join_right _ _
-
 mutual
   /-- With no type argument, labeled instantiation flows both ways with the type. -/
   theorem Flow.lsubst_nil {top : Label} (rd : String → Label) :
@@ -196,8 +196,8 @@ mutual
         .result (Flow.lsubst_nil rd t).2 (LExpr.le_inst_nil l)⟩
     | .record _ l => ⟨.record (LExpr.inst_nil_le l), .record (LExpr.le_inst_nil l)⟩
     | .fn ps r _ _ _ l =>
-      ⟨.fn (Flows.lsubst_nil rd ps).2 (Flow.lsubst_nil rd r).1 id id id (LExpr.inst_nil_le l),
-        .fn (Flows.lsubst_nil rd ps).1 (Flow.lsubst_nil rd r).2 id id id (LExpr.le_inst_nil l)⟩
+      ⟨.fn (Flows.lsubst_nil rd ps).2 (Flow.lsubst_nil rd r).1 id (HostFx.Le.refl _) id (LExpr.inst_nil_le l),
+        .fn (Flows.lsubst_nil rd ps).1 (Flow.lsubst_nil rd r).2 id (HostFx.Le.refl _) id (LExpr.le_inst_nil l)⟩
     | .var _ l => ⟨.var (LExpr.inst_nil_le l), .var (LExpr.le_inst_nil l)⟩
 
   theorem Flows.lsubst_nil {top : Label} (rd : String → Label) :
@@ -237,35 +237,66 @@ abbrev URes (P : Val → Prop) (F : Prop) : Res → Prop
   | .stuck => True
   | .outOfFuel => True
 
-/-- A run whose events satisfy `A` and whose outcome satisfies `P` and `F`. -/
-abbrev UOk (A : Event → Prop) (P : Val → Prop) (F : Prop) (run : Trace × Res) : Prop :=
-  (∀ ev ∈ run.1, A ev) ∧ URes P F run.2
+/-- A write event. -/
+def Event.isWrite : Event → Bool
+  | .write _ _ => true
+  | _ => false
 
-theorem uok_done {A : Event → Prop} {P : Val → Prop} {F : Prop} {v : Val} (h : P v) :
-    UOk A P F (done v) :=
-  And.intro (fun _ h => nomatch h) h
+/-- A request event. -/
+def Event.isReq : Event → Bool
+  | .req _ _ => true
+  | _ => false
+
+/-- What a run with trace `tr` may do to the world it starts from, `w` (M5): change the file
+system only if it wrote, and the servers only if it sent a request. -/
+def WEff (tr : Trace) (w w' : World H) : Prop :=
+  (tr.any Event.isWrite = false → w'.fs = w.fs) ∧ (tr.any Event.isReq = false → w'.srv = w.srv)
+
+theorem WEff.self (tr : Trace) (w : World H) : WEff tr w w := ⟨fun _ => rfl, fun _ => rfl⟩
+
+theorem WEff.trans {t₁ t₂ : Trace} {w₁ w₂ w₃ : World H} (h₁ : WEff t₁ w₁ w₂) (h₂ : WEff t₂ w₂ w₃) :
+    WEff (t₁ ++ t₂) w₁ w₃ := by
+  refine ⟨fun h => ?_, fun h => ?_⟩
+  · simp only [List.any_append, Bool.or_eq_false_iff] at h
+    exact (h₂.1 h.2).trans (h₁.1 h.1)
+  · simp only [List.any_append, Bool.or_eq_false_iff] at h
+    exact (h₂.2 h.2).trans (h₁.2 h.1)
+
+/-- A run from `w` whose events satisfy `A`, whose outcome satisfies `P` and `F`, and whose
+changes to the world are those its events allow. -/
+abbrev UOk (A : Event → Prop) (P : Val → Prop) (F : Prop) (w : World H) (run : Run H) : Prop :=
+  (∀ ev ∈ run.1, A ev) ∧ URes P F run.2.1 ∧ WEff run.1 w run.2.2
+
+theorem uok_done {A : Event → Prop} {P : Val → Prop} {F : Prop} {w : World H}
+    {v : Val} (h : P v) : UOk A P F w (done w v) :=
+  ⟨fun _ h' => (nomatch h'), h, WEff.self _ w⟩
+
+theorem uok_stuck {A : Event → Prop} {P : Val → Prop} {F : Prop} {w : World H} :
+    UOk A P F w (stuck w) :=
+  ⟨fun _ h' => (nomatch h'), trivial, WEff.self _ w⟩
 
 theorem UOk.mono {A A' : Event → Prop} {P P' : Val → Prop} {F F' : Prop}
-    (hA : ∀ ev, A ev → A' ev) (hP : ∀ v, P v → P' v) (hF : F → F') {run : Trace × Res}
-    (h : UOk A P F run) : UOk A' P' F' run := by
-  obtain ⟨tr, r⟩ := run
-  refine ⟨fun ev hev => hA ev (h.1 ev hev), ?_⟩
-  have h2 := h.2
+    {w : World H} (hA : ∀ ev, A ev → A' ev) (hP : ∀ v, P v → P' v) (hF : F → F')
+    {run : Run H} (h : UOk A P F w run) : UOk A' P' F' w run := by
+  obtain ⟨tr, r, w'⟩ := run
+  refine ⟨fun ev hev => hA ev (h.1 ev hev), ?_, h.2.2⟩
+  have h2 := h.2.1
   cases r <;> simp only [URes] at h2 ⊢
   · exact hP _ h2
   · exact hF h2
 
-theorem andThen_uok {A : Event → Prop} {P Q : Val → Prop} {F : Prop} {first : Trace × Res}
-    {rest : Val → Trace × Res} (h1 : UOk A P F first) (h2 : ∀ v, P v → UOk A Q F (rest v)) :
-    UOk A Q F (andThen first rest) := by
-  obtain ⟨tr, r⟩ := first
+theorem andThen_uok {A : Event → Prop} {P Q : Val → Prop} {F : Prop} {w : World H}
+    {first : Run H} {rest : World H → Val → Run H} (h1 : UOk A P F w first)
+    (h2 : ∀ w' v, P v → UOk A Q F w' (rest w' v)) :
+    UOk A Q F w (andThen first rest) := by
+  obtain ⟨tr, r, w₁⟩ := first
   cases r with
   | ok v =>
-    have h := h2 v h1.2
+    have h := h2 w₁ v h1.2.1
     simp only [andThen]
-    generalize rest v = rv at h
-    obtain ⟨tr', r'⟩ := rv
-    refine ⟨fun ev hev => ?_, h.2⟩
+    generalize rest w₁ v = rv at h
+    obtain ⟨tr', r', w₂⟩ := rv
+    refine ⟨fun ev hev => ?_, h.2.1, WEff.trans h1.2.2 h.2.2⟩
     rcases List.mem_append.mp hev with hev | hev
     · exact h1.1 ev hev
     · exact h.1 ev hev
@@ -277,22 +308,27 @@ theorem andThen_uok {A : Event → Prop} {P Q : Val → Prop} {F : Prop} {first 
 is above `pc`. -/
 def Allowed (p : Program) (pc : LExpr) (ε : Eff) : Event → Prop
   | .out _ => ε.op = true ∧ p.le pc (.ofLabel p.acceptsOp)
-  | .get _ => ε.get = true ∧ p.le pc (.ofLabel p.acceptsGet)
+  | .read _ => ε.host.rd = true ∧ p.le pc (.ofLabel p.acceptsRead)
+  | .write _ _ => ε.host.wr = true ∧ p.le pc (.ofLabel p.acceptsWrite) ∧
+      (p.oldHost = false → p.le pc (.ofLabel p.fileState))
+  | .req _ _ => ε.host.rq = true ∧ p.le pc (.ofLabel p.acceptsReq)
   | .release pol _ => pol ∈ ε.rels ∧ ∃ po, p.policy pol = some po ∧ p.le pc po.dst.top
 
 /-- A failure, whose label is above `pc`. -/
 abbrev Fails (p : Program) (pc : LExpr) (ε : Eff) : Prop := ∃ l, ε.fails = some l ∧ p.le pc l
 
-/-- A run that keeps to a typing at `pc` with type `t` and effects `ε`. -/
-abbrev UGood (p : Program) (pc : LExpr) (t : LTy) (ε : Eff) (run : Trace × Res) : Prop :=
-  UOk (Allowed p pc ε) (fun v => LValTy p v t) (Fails p pc ε) run
+/-- A run from `w` that keeps to a typing at `pc` with type `t` and effects `ε`. -/
+abbrev UGood (p : Program) (pc : LExpr) (t : LTy) (ε : Eff) (w : World H) (run : Run H) : Prop :=
+  UOk (Allowed p pc ε) (fun v => LValTy p v t) (Fails p pc ε) w run
 
 theorem Allowed.mono {pc pc' : LExpr} {ε ε' : Eff} (hpc : p.le pc pc')
-    (ho : ε'.op = true → ε.op = true) (hg : ε'.get = true → ε.get = true)
+    (ho : ε'.op = true → ε.op = true) (hg : HostFx.Le ε'.host ε.host)
     (hr : ∀ x ∈ ε'.rels, x ∈ ε.rels) :
     ∀ ev, Allowed p pc' ε' ev → Allowed p pc ε ev
   | .out _, ⟨h1, h2⟩ => ⟨ho h1, LExpr.le_trans hpc h2⟩
-  | .get _, ⟨h1, h2⟩ => ⟨hg h1, LExpr.le_trans hpc h2⟩
+  | .read _, ⟨h1, h2⟩ => ⟨hg.1 h1, LExpr.le_trans hpc h2⟩
+  | .write _ _, ⟨h1, h2, h3⟩ => ⟨hg.2.1 h1, LExpr.le_trans hpc h2, fun h => LExpr.le_trans hpc (h3 h)⟩
+  | .req _ _, ⟨h1, h2⟩ => ⟨hg.2.2 h1, LExpr.le_trans hpc h2⟩
   | .release _ _, ⟨h1, po, hpo, h2⟩ => ⟨hr _ h1, po, hpo, LExpr.le_trans hpc h2⟩
 
 theorem Fails.mono {pc pc' : LExpr} {ε ε' : Eff} (hpc : p.le pc pc')
@@ -306,10 +342,12 @@ theorem union_op_left {ε₁ ε₂ : Eff} (h : ε₁.op = true) : (ε₁.union �
   simp [Eff.union, h]
 theorem union_op_right {ε₁ ε₂ : Eff} (h : ε₂.op = true) : (ε₁.union ε₂).op = true := by
   simp [Eff.union, h]
-theorem union_get_left {ε₁ ε₂ : Eff} (h : ε₁.get = true) : (ε₁.union ε₂).get = true := by
-  simp [Eff.union, h]
-theorem union_get_right {ε₁ ε₂ : Eff} (h : ε₂.get = true) : (ε₁.union ε₂).get = true := by
-  simp [Eff.union, h]
+theorem union_host_left {ε₁ ε₂ : Eff} : HostFx.Le ε₁.host (ε₁.union ε₂).host :=
+  ⟨fun h => by simp [Eff.union, HostFx.or, h], fun h => by simp [Eff.union, HostFx.or, h],
+    fun h => by simp [Eff.union, HostFx.or, h]⟩
+theorem union_host_right {ε₁ ε₂ : Eff} : HostFx.Le ε₂.host (ε₁.union ε₂).host :=
+  ⟨fun h => by simp [Eff.union, HostFx.or, h], fun h => by simp [Eff.union, HostFx.or, h],
+    fun h => by simp [Eff.union, HostFx.or, h]⟩
 
 theorem union_fails_left {ε₁ ε₂ : Eff} :
     ∀ l, ε₁.fails = some l → ∃ l', (ε₁.union ε₂).fails = some l' ∧ p.le l l' := by
@@ -333,11 +371,11 @@ theorem union_rels_right {ε₁ ε₂ : Eff} : ∀ x ∈ ε₂.rels, x ∈ (ε�
 /-- A union of effects allows what either allows. -/
 theorem allowed_union_left {pc : LExpr} {ε₁ ε₂ : Eff} :
     ∀ ev, Allowed p pc ε₁ ev → Allowed p pc (ε₁.union ε₂) ev :=
-  Allowed.mono (LExpr.le_refl pc) union_op_left union_get_left union_rels_left
+  Allowed.mono (LExpr.le_refl pc) union_op_left union_host_left union_rels_left
 
 theorem allowed_union_right {pc pc' : LExpr} {ε₁ ε₂ : Eff} (hpc : p.le pc pc') :
     ∀ ev, Allowed p pc' ε₂ ev → Allowed p pc (ε₁.union ε₂) ev :=
-  Allowed.mono hpc union_op_right union_get_right union_rels_right
+  Allowed.mono hpc union_op_right union_host_right union_rels_right
 
 theorem fails_union_left {pc : LExpr} {ε₁ ε₂ : Eff} : Fails p pc ε₁ → Fails p pc (ε₁.union ε₂) :=
   Fails.mono (LExpr.le_refl pc) union_fails_left
@@ -347,29 +385,33 @@ theorem fails_union_right {pc pc' : LExpr} {ε₁ ε₂ : Eff} (hpc : p.le pc pc
   Fails.mono hpc union_fails_right
 
 /-- The events a function value with these effects may perform, wherever it is called. -/
-def FnAllowed (o g : Bool) : Event → Prop
+def FnAllowed (o : Bool) (g : HostFx) : Event → Prop
   | .out _ => o = true
-  | .get _ => g = true
+  | .read _ => g.rd = true
+  | .write _ _ => g.wr = true
+  | .req _ _ => g.rq = true
   | .release _ _ => False
 
 /-- At a call whose program counter `pc'` the function's bound allows (`pc ⊑ pc'`), its events
 are allowed, and so is its failure. -/
-theorem bound_allowed {pc pc' : LExpr} {o g f : Bool} (hb : p.Bound pc' o g f)
+theorem bound_allowed {pc pc' : LExpr} {o : Bool} {g : HostFx} {f : Bool} (hb : p.Bound pc' o g f)
     (hpc : p.le pc pc') : ∀ ev, FnAllowed o g ev → Allowed p pc (Eff.ofFn o g f) ev
   | .out _, h => ⟨h, LExpr.le_trans hpc (hb.1 h).1⟩
-  | .get _, h => ⟨h, LExpr.le_trans hpc (hb.2.1 h).1⟩
+  | .read _, h => ⟨h, LExpr.le_trans hpc (hb.2.1 h).1⟩
+  | .write _ _, h => ⟨h, LExpr.le_trans hpc (hb.2.2.1 h).1, fun ho => LExpr.le_trans hpc ((hb.2.2.1 h).2.1 ho)⟩
+  | .req _ _, h => ⟨h, LExpr.le_trans hpc (hb.2.2.2.1 h).1⟩
   | .release _ _, h => h.elim
 
-theorem bound_fails {pc pc' : LExpr} {o g f : Bool} (hb : p.Bound pc' o g f)
+theorem bound_fails {pc pc' : LExpr} {o : Bool} {g : HostFx} {f : Bool} (hb : p.Bound pc' o g f)
     (hpc : p.le pc pc') (hf : f = true) : Fails p pc (Eff.ofFn o g f) :=
-  ⟨.bot, by simp [Eff.ofFn, hf], LExpr.le_trans hpc (hb.2.2 hf).1⟩
+  ⟨.bot, by simp [Eff.ofFn, hf], LExpr.le_trans hpc (hb.2.2.2.2 hf).1⟩
 
 /-- What instantiation by `σ` gives the symbolic labels: `ℓ*` of each type argument. -/
 def Program.sd (p : Program) (σ : List (String × LTy)) : List (String × LExpr) :=
   σ.map (fun q => (q.1, q.2.deep p.recordDeep))
 
 /-- Effects instantiated: the labels of failures. -/
-def Eff.inst (s : List (String × LExpr)) (ε : Eff) : Eff := ⟨ε.op, ε.get, ε.fails.map (·.inst s), ε.rels⟩
+def Eff.inst (s : List (String × LExpr)) (ε : Eff) : Eff := ⟨ε.op, ε.host, ε.fails.map (·.inst s), ε.rels⟩
 
 /-- A ground instantiation. -/
 abbrev GroundSubst (σ : List (String × LTy)) : Prop := ∀ q ∈ σ, q.2.Ground
@@ -383,14 +425,14 @@ theorem LCtx.lsub_snd (rd : String → Label) (σ : List (String × LTy)) (a : L
 
 /-- A call of a typed function value on typed arguments keeps to the function's type, when every
 body keeps to its typing at every ground instantiation. -/
-theorem applyWith_uok {run : Env → Expr → Trace × Res} {fv : Val} {vs : List Val}
-    {ps : List LTy} {r : LTy} {o g f : Bool} {lf : LExpr}
-    (hrun : ∀ {σ : List (String × LTy)} {env : Env} {Γ : LCtx} {E : List String} {e : Expr}
-      {t : LTy} {ε : Eff}, GroundSubst σ → LEnvTy p env (Γ.lsub p.recordDeep σ) →
+theorem applyWith_uok {run : World H → Env → Expr → Run H} {fv : Val} {vs : List Val}
+    {ps : List LTy} {r : LTy} {o : Bool} {g : HostFx} {f : Bool} {lf : LExpr}
+    (hrun : ∀ {σ : List (String × LTy)} {w : World H} {env : Env} {Γ : LCtx} {E : List String}
+      {e : Expr} {t : LTy} {ε : Eff}, GroundSubst σ → LEnvTy p env (Γ.lsub p.recordDeep σ) →
       LExprTy p E Γ .bot e t ε →
-      UGood p (LExpr.bot.inst (p.sd σ)) (t.lsubst p.recordDeep σ) (ε.inst (p.sd σ)) (run env e))
-    (hf : LValTy p fv (.fn ps r o g f lf)) (hvs : LValsTy p vs ps) :
-    UOk (FnAllowed o g) (fun v => LValTy p v r) (f = true) (applyWith run fv vs) := by
+      UGood p (LExpr.bot.inst (p.sd σ)) (t.lsubst p.recordDeep σ) (ε.inst (p.sd σ)) w (run w env e))
+    (hf : LValTy p fv (.fn ps r o g f lf)) (hvs : LValsTy p vs ps) (w : World H) :
+    UOk (FnAllowed o g) (fun v => LValTy p v r) (f = true) w (applyWith run w fv vs) := by
   cases hf with
   | @closure params _ cenv Γc _ _ _ _ _ _ _ _ _ σc hσ henv hb hfl hrl hps hr ho hg hfs =>
     have hvs' := LValsTy.flows hvs hps
@@ -400,11 +442,13 @@ theorem applyWith_uok {run : Env → Expr → Trace × Res} {fv : Val} {vs : Lis
       have := bindParams_ltyped (params := params.lsub p.recordDeep σc)
         (by rw [LCtx.lsub_snd]; exact hvs') henv
       simpa [bindParams, LCtx.lsub, List.map_map, Function.comp_def] using this
-    refine UOk.mono ?_ (fun v hv => LValTy.flow hv hr) ?_ (hrun hσ henv' hb)
+    refine UOk.mono ?_ (fun v hv => LValTy.flow hv hr) ?_ (hrun (w := w) hσ henv' hb)
     · intro ev hev
       cases ev with
       | out _ => exact ho hev.1
-      | get _ => exact hg hev.1
+      | read _ => exact hg.1 hev.1
+      | write _ _ => exact hg.2.1 hev.1
+      | req _ _ => exact hg.2.2 hev.1
       | release _ _ => have h := hev.1; simp [Eff.inst, hrl] at h
     · rintro ⟨l, hl, _⟩
       exact hfs (by simp [Eff.inst] at hl; obtain ⟨l', hl', _⟩ := hl; simp [hl'])

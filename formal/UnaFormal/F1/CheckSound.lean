@@ -25,6 +25,14 @@ theorem symFree_sound {e : LExpr} (h : symFree e = true) : e.SymFree := by
   simp only [symFree, Bool.and_eq_true, List.isEmpty_iff] at h
   exact h
 
+theorem hostLeB_sound {a b : HostFx} (h : hostLeB a b = true) : HostFx.Le a b := by
+  simp only [hostLeB, Bool.and_eq_true, Bool.or_eq_true, Bool.not_eq_true'] at h
+  obtain ⟨⟨h₁, h₂⟩, h₃⟩ := h
+  refine ⟨fun h => ?_, fun h => ?_, fun h => ?_⟩
+  · rcases h₁ with h' | h' <;> simp_all
+  · rcases h₂ with h' | h' <;> simp_all
+  · rcases h₃ with h' | h' <;> simp_all
+
 mutual
   theorem flowB_sound {top : Label} (a b : LTy) (h : flowB top a b = true) : Flow top a b := by
     rw [flowB.eq_def] at h
@@ -39,9 +47,9 @@ mutual
     · exact .result (flowB_sound _ _ h.1) (leB_sound h.2)
     · obtain ⟨rfl, h⟩ := h; exact .record (leB_sound h)
     · obtain ⟨⟨⟨⟨⟨hps, hr⟩, ho⟩, hg⟩, hf⟩, hl⟩ := h
-      refine .fn (flowsB_sound _ _ hps) (flowB_sound _ _ hr) ?_ ?_ ?_ (leB_sound hl)
+      refine .fn (flowsB_sound _ _ hps) (flowB_sound _ _ hr) ?_ (hostLeB_sound hg) ?_
+        (leB_sound hl)
       · intro h; cases ho with | inl h' => simp_all | inr h' => exact h'
-      · intro h; cases hg with | inl h' => simp_all | inr h' => exact h'
       · intro h; cases hf with | inl h' => simp_all | inr h' => exact h'
     · obtain ⟨rfl, h⟩ := h; exact .var (leB_sound h)
     · exact absurd h (by simp)
@@ -122,15 +130,24 @@ mutual
       exact ⟨scopedIn_sound h.1, scopedInAll_sound h.2⟩
 end
 
-theorem boundB_sound {p : Program} {pc : LExpr} {o g f : Bool} (h : boundB p pc o g f = true) :
-    p.Bound pc o g f := by
+theorem boundB_sound {p : Program} {pc : LExpr} {o : Bool} {g : HostFx} {f : Bool}
+    (h : boundB p pc o g f = true) : p.Bound pc o g f := by
   simp only [boundB, Bool.and_eq_true, Bool.or_eq_true, Bool.not_eq_true'] at h
-  obtain ⟨⟨ho, hg⟩, hf⟩ := h
-  refine ⟨fun h => ?_, fun h => ?_, fun h => ?_⟩
+  obtain ⟨⟨⟨⟨ho, hr⟩, hw⟩, hq⟩, hf⟩ := h
+  refine ⟨fun h => ?_, fun h => ?_, fun h => ?_, fun h => ?_, fun h => ?_⟩
   · rcases ho with h' | ⟨h₁, h₂⟩
     · simp_all
     · exact ⟨leB_sound h₁, symFree_sound h₂⟩
-  · rcases hg with h' | ⟨h₁, h₂⟩
+  · rcases hr with h' | ⟨h₁, h₂⟩
+    · simp_all
+    · exact ⟨leB_sound h₁, symFree_sound h₂⟩
+  · rcases hw with h' | ⟨⟨h₁, h₂⟩, h₃⟩
+    · simp_all
+    · refine ⟨leB_sound h₁, fun ho => ?_, symFree_sound h₃⟩
+      rcases h₂ with h₂ | h₂
+      · simp_all
+      · exact leB_sound h₂
+  · rcases hq with h' | ⟨h₁, h₂⟩
     · simp_all
     · exact ⟨leB_sound h₁, symFree_sound h₂⟩
   · rcases hf with h' | ⟨h₁, h₂⟩

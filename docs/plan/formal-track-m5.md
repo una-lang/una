@@ -68,7 +68,7 @@ Nothing constrains it. ADR 0085 decision 7 makes every request's failure, and it
 | `Http.put(url, headers, body, key_name)` | `req "put" args` | every argument, `internal` | `pc ⊔ ℓ(args) ⊔ internal` | `Response`, `internal` |
 | `Http.delete(url, headers, key_name)` | `req "delete" args` | every argument, `internal` | `pc ⊔ ℓ(args) ⊔ internal` | `Response`, `internal` |
 
-In F1H the request's arguments are texts, and its response is the body's text: the structure of `Header` and `Response` adds nothing the labels above do not cover.
+In the model the request's arguments are texts, and its response is the body's text: the structure of `Header` and `Response` adds nothing the labels above do not cover.
 
 **Evaluation** threads the world: `eval : Nat → Program → World → Env → Expr → Trace × Res × World`.
 
@@ -126,7 +126,7 @@ Non-vacuity, two examples:
 
 Each assumption is a hypothesis of the theorem or part of the model, stated where it is used:
 
-1. **(H1) and (H2)**, content-independence of failures and shapes. Una writes only UTF-8, so a read of invalid UTF-8 cannot follow a Una write (ADR 0085 decision 3). A file system where content decides a failure, such as a full disk, is resource consumption, outside the model (`spec/07 §1`). **The real host does not meet H1 today (S-16):** `Files.read` fails on a file that is not valid UTF-8, which a file written by another program can be. The fix (Una-1, ADR in progress) makes invalid text abort the run, outside the model as aborts are. After it ships, H1 holds of the real host.
+1. **(H1) and (H2)**, content-independence of failures and shapes; and, for the re-checker's erasure, **(H3)**: a response does not depend on annotations, which a host given text meets (§11). Una writes only UTF-8, so a read of invalid UTF-8 cannot follow a Una write (ADR 0085 decision 3). A file system where content decides a failure, such as a full disk, is resource consumption, outside the model (`spec/07 §1`). **The real host does not meet H1 today (S-16):** `Files.read` fails on a file that is not valid UTF-8, which a file written by another program can be. The fix (Una-1, ADR in progress) makes invalid text abort the run, outside the model as aborts are. After it ships, H1 holds of the real host.
 2. **No other writer.** During a run, and between runs, only the package's own writes change the file system. Other programs and people are outside the model (`spec/07 §1`, external systems; decision 4). That includes a server the package talks to: the model's servers do not write the file system (§10).
 3. **One package.** The file-state label joins the writes of the whole program. That holds while a package imports no other package (decision 5); the ADR records what must change if that ever does.
 4. **The checker computes a sound file-state label.** The model states it declaratively, at each write and each call of a writing function. That the checker's fixpoint over the call graph, its probe pass and its caps (lambdas at `internal`, values at their bound) meet it is the re-check's to check, not the theorem's. See §6.
@@ -170,16 +170,16 @@ Parts 1 and 2 go first. The counterexamples, `s14_old_leaks` and `s15_old_leaks`
 
 ## 10. What is proven
 
-Everything is in `formal/UnaFormal/F1H/`. `scripts/formal.sh` passes with 140 stated theorems, none of them depending on `sorry`.
+M5 staged the model in `formal/UnaFormal/F1H/`, where `scripts/formal.sh` passed with 140 stated theorems, none of them depending on `sorry`. #459 folded it into F1 (§11): the files below are now in `formal/UnaFormal/F1/`.
 
-**The model, F1H.** F1's core is staged beside F1 with the host as state:
+**The model.** M5 staged F1's core beside F1, as F1H, with the host as state, and #459 made it F1 itself:
 - `Syntax.lean`: the forms `read`, `write` and `req`, and host effects (`HostFx`: read, write, request) in function types;
 - `Eval.lean`: an abstract `Host` (file system, servers), with H1 and H2 as `Host.Lawful`, and an evaluation that threads the `World` and returns the world it leaves;
 - `LTyping.lean`: ADR 0085's rules. Failures go through `Program.fsFail` and `Program.reqFail`. `Bound` has a write case that asks `pc ⊑ fileState`. The switch `oldHost` states the rules before the ADR.
 
-Every proof of M3 and M4 is carried over (T1, the unary and binary halves, instances, B1). F1 itself is unchanged, and its 109 theorems still pass. Folding F1H into F1, so that one model remains, is #459.
+Every proof of M3 and M4 is carried over (T1, the unary and binary halves, instances, B1).
 
-**What the re-checker's "accepted" rests on, until #459.** The re-checker (M2, M4 completion) is written over F1. An accepted declaration rests on F1's `t6_release`, whose host is stateless. That assumption does not touch any accepted declaration: none of the 638 reads `Files` or `Http`, since the import never reads them (§7). M5 proves the stateful theorem over F1H. #459 makes it the one the verdicts rest on, and M5b extends the re-check to `Files` and `Http`.
+**What the re-checker's "accepted" rests on**: §11.
 
 | Part | Theorems |
 | --- | --- |
@@ -196,7 +196,7 @@ Every proof of M3 and M4 is carried over (T1, the unary and binary halves, insta
 `acceptsRead ⊑ internal` was added in the proof. Without it, a read's content could reveal a path the observer cannot see. `Files.read` accepts `public`, so it holds. The host must also be lawful: H1 and H2 (`Host.Lawful`).
 
 **What Una-1's review found about the real host** (2026-10-09):
-- **H1 does not hold of today's `Files.read` (S-16).** A read of a file that is not valid UTF-8 fails, so whether a read fails depends on content, not only on the path and the shape. `una check` accepts a program that prints, at `public`, whether an `internal` file is valid UTF-8 (v0.3.4). The fix is in the runtime, under its own ADR. Once it lands, H1 holds of the real host. The theorem needs no change: it assumes H1 and says so.
+- **H1 does not hold of today's `Files.read` (S-16).** A read of a file that is not valid UTF-8 fails, so whether a read fails depends on content, not only on the path and the shape. `una check` accepts a program that prints, at `public`, whether an `internal` file is valid UTF-8 (v0.3.4). The fix is in the runtime, under its own ADR. Once it lands, H1 holds of the real host. The theorem needs no change: it assumes H1 and says so. **Fixed in v0.3.5** (ADR 0086): invalid text aborts the run with U6005, and H1 holds of the real host.
 - **The file system and the servers are disjoint.** The model keeps their states apart, so a request never changes the file system. A server on the same machine that writes into the granted directory would join them. A request at an `internal` program counter would then change the shape, and a later read whose failure is `public` would reveal it. This is outside the model, as races and other processes are (§5, assumption 2).
 
 **How the proof goes.**
@@ -205,3 +205,31 @@ Every proof of M3 and M4 is carried over (T1, the unary and binary halves, insta
 - When the observer sees `internal`, the two worlds are equal and so are the sinks' arguments, so the host operations coincide.
 - Otherwise, contents and responses are hidden. Read and write failures agree by H1 and H2 when the observer sees the file-state label, and so the path. A request's failure is hidden.
 
+## 11. One model (#459)
+
+F1H is folded into F1, so one model remains: `formal/UnaFormal/F1/`, with the host forms, the threaded world and the host effects. F1's stateless operation `get` is gone; an `Http.get` is a request. The re-checker and its soundness theorems are ported to it.
+
+**The re-checker's labels for the host.** The importer reads no `Files` or `Http` operation, and the checker rejects the host forms until M5b. Every program the re-checker certifies gives the host the strictest labels `Program.HostWF` allows, every stateful sink at `⊥` and every result and failure floor at `internal` (`Import.mkProgram`). They decide no verdict, and they make `HostWF` hold by construction: `progOk` checks it (`Check.hostWfB`), so `progOk_sound` proves it.
+
+**Binding on M5b** (the Coordinator, from Una-1's review, 2026-10-09). Once the importer reads host operations, the host's labels in `Import.mkProgram` MUST come from the document's host signatures (`Files.read`, `Files.write` and `Http`'s `accepts`, result labels and failure floor), not be fixed by construction. Otherwise the certificate would describe a host other than the document's. This is an acceptance criterion of M5b. The importer no longer reads `Http.get`'s labels from the document, so its demotion for them is gone; no declaration of the corpus had it.
+
+**On any host.** `t6_release_host` asks the host to be lawful, and the real host met H1 only from v0.3.5 (S-16). A run of a program without host operations never reads or writes a file, so the premise is never used:
+- `eval_hostFree` (`HostFree.lean`): a program none of whose functions performs a host operation, run on a body that performs none, from values whose closures perform none, runs on any host as on the host without state (`Host.unit`), and leaves the world as it found it.
+- `t6_release_hostFree`: `t6_release_host`'s conclusion on any host, lawful or not, for such a program.
+- `t6_release_erasure_obs_hostFree`: `t6_release_erasure_obs` on any host, for a document whose program, body and inputs perform no host operation.
+- `Import.finalize` asks each certificate's program to be host-free (`Program.hostFreeB`), and `finalize_sound` states it.
+
+So an "accepted" of the re-checker is a corollary of `t6_release_erasure_obs_hostFree`, and asks nothing of the real host. Its premises are the certificate's, the reading of `una.core/1` (`Import.lean`, the trusted base), and inputs whose closures perform no host operation.
+
+**Non-vacuity** (`HostFreeExample.lean`). `s16` is a host whose read fails on a file holding invalid text, as the real `Files.read` did before v0.3.5 (S-16). Two file systems with the same files, one of them holding such a file, are told apart by a read (`s16_unlawful`). `s16_guesses` applies `t6_release_hostFree` to `ReleaseExample`'s program from exactly those two file systems, and `s16_caller_obs` applies `t6_release_erasure_obs_hostFree` to `MonomorphExample`'s document.
+
+**Other changes.**
+- Fuel monotonicity (`eval_mono`, `t6_ended`) is ported, from `t6_host_ground`.
+- Erasure (`eval_anon`, `eval_erasure`) asks a third property of the host, beside H1 and H2: **(H3) its responses read no annotation** (`Host.AnonInvariant`). A request whose arguments differ only in the annotations inside closures gets the same response. The model passes values to the host, and a real host is given their text, so it holds. `Host.unit` meets H1, H2 and H3, so the any-host theorems below ask none of them.
+- F1's examples run on any lawful host, or on `Host.unit`.
+- `t6_release_host_agree` is `t6_release_agree` with a stateful host.
+
+**Validation.**
+- `scripts/formal.sh`: **PASS**, 144 theorems, no `sorry`. F1's `t6`, `t6_ground` and `t6_release` are gone; `t6_host`, `t6_host_ground` and `t6_release_host` stand for them. The theorems M5 proved twice are listed once.
+- The corpus (`main`'s export with #443's keys, 1,327 documents) is unchanged: all 4,203 verdicts, with their reasons, are identical, and 638 declarations are accepted.
+- The replay of S-01 to S-12 is unchanged: identical to the replay at A3.

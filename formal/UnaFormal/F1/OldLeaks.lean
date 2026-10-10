@@ -10,12 +10,11 @@ stateless host, was needed by the old rules, and the host breaks it.
 - **S-15** (`s15_old_typed`, `s15_old_leaks`): a server decides a request's failure by its
   `internal` body.
 -/
-import UnaFormal.F1H.LTyping
+import UnaFormal.F1.LTyping
 import UnaFormal.F1.CheckSound
 
-namespace Una.F1H.OldLeaks
+namespace Una.F1.OldLeaks
 
-open Una.F1 (Label LExpr)
 open Una (Level)
 
 /-- `internal`. -/
@@ -149,4 +148,4 @@ theorem s15_old_leaks :
     (eval demo 10 oldProg w₀ (env "2") s15).1.filter (· matches .out _) = [.out "yes"] := by
   constructor <;> rfl
 
-end Una.F1H.OldLeaks
+end Una.F1.OldLeaks

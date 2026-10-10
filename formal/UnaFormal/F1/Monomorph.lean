@@ -5,7 +5,7 @@ instance they reach, and certifies the program it gets, `P₁`, with no hypothes
 (`Check.progOk_sound_nil`). `progSim` tests, as a Boolean, that `P₁` agrees with the document's
 program `P₂` up to annotations, an instance's name standing for its generic function's
 (`progSim_sound`), and `t6_release_erasure` carries T6 from `P₁` to the runs of `P₂`: they are,
-up to the annotations inside closures, runs `t6_release` relates.
+up to the annotations inside closures, runs `t6_release_host` relates.
 -/
 import UnaFormal.F1.Erasure
 import UnaFormal.F1.Release
@@ -26,7 +26,9 @@ mutual
     | .prim p a, .prim q b => p == q && a == b
     | .apply f a, .apply g b => f == g && a == b
     | .op a, .op b => a == b
-    | .get a, .get b => a == b
+    | .read a, .read b => a == b
+    | .write a c, .write b d => a == b && c == d
+    | .req m a, .req k b => m == k && a == b
     | .construct r a, .construct s b => r == s && a == b
     | .field v i, .field u j => v == u && i == j
     | .list a, .list b => a == b
@@ -79,7 +81,8 @@ mutual
             exact ⟨by rw [h1.1], ih qs h1.2⟩
       | _ => simp [rhsSim] at h
     | .call _ _ _, s, h | .funRef _ _, s, h | .atom _, s, h | .prim _ _, s, h
-    | .apply _ _, s, h | .op _, s, h | .get _, s, h | .construct _ _, s, h | .field _ _, s, h
+    | .apply _ _, s, h | .op _, s, h | .read _, s, h | .write _ _, s, h | .req _ _, s, h
+    | .construct _ _, s, h | .field _ _, s, h
     | .list _, s, h | .none, s, h | .some _, s, h | .declassify _ _, s, h | .map _ _, s, h
     | .filter _ _, s, h | .firstWhere _ _, s, h | .fold _ _ _, s, h | .parse _, s, h
     | .eq _ _, s, h => by
@@ -263,22 +266,23 @@ theorem progSim_sound {ren : List (String × String)} {P₂ : Program} {fs : Lis
 
 /-- **T6 for a program checked at its instances.** When `P₁`, a program the labeled typing accepts
 within B1, agrees with `P₂` up to annotations, two runs of a body of `P₂` are, up to the
-annotations inside closures, two runs of the corresponding body of `P₁` that `t6_release`
+annotations inside closures, two runs of the corresponding body of `P₁` that `t6_release_host`
 relates: equal to the observer, or diverging at a release. -/
 theorem t6_release_erasure {ρ : String → String} {P₁ P₂ : Program} (L : Label) (hsim : Sim ρ P₁ P₂)
-    (hwf : P₁.LWellFormed) (hb1 : P₁.B1WellFormed)
-    (hget : P₁.le (.ofLabel P₁.acceptsGet) (.ofLabel P₁.getResult)) (w : World)
+    (hwf : P₁.LWellFormed) (hb1 : P₁.B1WellFormed) (hh : P₁.HostWF) {H : Host} (hlaw : H.Lawful)
+    (hai : H.AnonInvariant) {w₁ w₂ : World H}
     {σ : List (String × LTy)} {e₁ e₂ : Env} {Γ : LCtx} {E : List String} {pc : LExpr} {e : Expr}
     {t : LTy} {ε : Eff} (hσ : GroundSubst σ) (hE : P₁.EqArgsOK σ E) (hΓ : Γ.InPlace)
-    (hpc : pc.PlainFree) (h₁ : LEnvTy P₁ e₁ (Γ.lsub P₁.recordDeep σ))
+    (hpc : pc.PlainFree) (hw : WorldRel P₁ L w₁ w₂) (h₁ : LEnvTy P₁ e₁ (Γ.lsub P₁.recordDeep σ))
     (h₂ : LEnvTy P₁ e₂ (Γ.lsub P₁.recordDeep σ)) (hrel : EnvRel P₁ L (Γ.lsub P₁.recordDeep σ) e₁ e₂)
     (he : LExprTy P₁ E Γ pc e t ε) {e' : Expr} {e₁' e₂' : Env} (hee : e.anon ρ = e'.anon id)
     (he₁ : Val.anonEnv ρ e₁ = Val.anonEnv id e₁') (he₂ : Val.anonEnv ρ e₂ = Val.anonEnv id e₂')
     (n : Nat) :
     ∃ r₁ r₂, BRelR P₁ L (V P₁ L (t.lsubst P₁.recordDeep σ)) (Vis P₁ L (ε.inst (P₁.sd σ)).failLabel) r₁ r₂ ∧
-      runAnon ρ r₁ = runAnon id (eval n P₂ w e₁' e') ∧ runAnon ρ r₂ = runAnon id (eval n P₂ w e₂' e') :=
-  ⟨_, _, t6_release P₁ L hwf hb1 hget w hσ hE hΓ hpc h₁ h₂ hrel he n,
-    eval_erasure hsim w n he₁ hee, eval_erasure hsim w n he₂ hee⟩
+      runAnon ρ r₁ = runAnon id (eval H n P₂ w₁ e₁' e') ∧
+      runAnon ρ r₂ = runAnon id (eval H n P₂ w₂ e₂' e') :=
+  ⟨_, _, t6_release_host P₁ L H hwf hb1 hh hlaw hσ hE hΓ hpc hw h₁ h₂ hrel he n,
+    eval_erasure hsim hai w₁ n he₁ hee, eval_erasure hsim hai w₂ n he₂ hee⟩
 
 /-- A release in an erased trace comes from a release, whose value erases to the same. -/
 theorem split_release {ρ : String → String} {t pre rest : Trace} {pol : String} {v : Val}
@@ -292,38 +296,38 @@ theorem split_release {ρ : String → String} {t pre rest : Trace} {pol : Strin
     simp only [Event.anon, Event.release.injEq] at hx
     obtain ⟨rfl, hv⟩ := hx
     exact ⟨A, v', C, rfl, hA, hv⟩
-  | out _ | get _ => simp [Event.anon] at hx
+  | out _ | read _ | write _ _ | req _ _ => simp [Event.anon] at hx
 
 /-- **What the observer sees of the document's runs.** With `P₁` as in `t6_release_erasure`, and
 `proj` the same in both programs (it reads no function), two runs of a body of `P₂` that end,
 whose events carry first-order values, are equal to the observer, or diverge at a release: what
-`t6_release` says of `P₁`, now of `P₂`'s own runs. -/
+`t6_release_host` says of `P₁`, now of `P₂`'s own runs. -/
 theorem t6_release_erasure_obs {ρ : String → String} {P₁ P₂ : Program} (L : Label)
     (hsim : Sim ρ P₁ P₂) (hproj : ∀ t, proj P₁ L t = proj P₂ L t)
-    (hwf : P₁.LWellFormed) (hb1 : P₁.B1WellFormed)
-    (hget : P₁.le (.ofLabel P₁.acceptsGet) (.ofLabel P₁.getResult)) (w : World)
+    (hwf : P₁.LWellFormed) (hb1 : P₁.B1WellFormed) (hh : P₁.HostWF) {H : Host} (hlaw : H.Lawful)
+    (hai : H.AnonInvariant) {w₁ w₂ : World H}
     {σ : List (String × LTy)} {e₁ e₂ : Env} {Γ : LCtx} {E : List String} {pc : LExpr} {e : Expr}
     {t : LTy} {ε : Eff} (hσ : GroundSubst σ) (hE : P₁.EqArgsOK σ E) (hΓ : Γ.InPlace)
-    (hpc : pc.PlainFree) (h₁ : LEnvTy P₁ e₁ (Γ.lsub P₁.recordDeep σ))
+    (hpc : pc.PlainFree) (hw : WorldRel P₁ L w₁ w₂) (h₁ : LEnvTy P₁ e₁ (Γ.lsub P₁.recordDeep σ))
     (h₂ : LEnvTy P₁ e₂ (Γ.lsub P₁.recordDeep σ)) (hrel : EnvRel P₁ L (Γ.lsub P₁.recordDeep σ) e₁ e₂)
     (he : LExprTy P₁ E Γ pc e t ε) {e' : Expr} {e₁' e₂' : Env} (hee : e.anon ρ = e'.anon id)
     (he₁ : Val.anonEnv ρ e₁ = Val.anonEnv id e₁') (he₂ : Val.anonEnv ρ e₂ = Val.anonEnv id e₂')
-    (n : Nat) (hT₁ : Term (eval n P₂ w e₁' e').2) (hT₂ : Term (eval n P₂ w e₂' e').2)
-    (hfo₁ : ∀ ev ∈ (eval n P₂ w e₁' e').1, ev.FirstOrder)
-    (hfo₂ : ∀ ev ∈ (eval n P₂ w e₂' e').1, ev.FirstOrder) :
-    proj P₂ L (eval n P₂ w e₁' e').1 = proj P₂ L (eval n P₂ w e₂' e').1 ∨
-      Diverged P₂ L (eval n P₂ w e₁' e').1 (eval n P₂ w e₂' e').1 := by
-  have hbr := t6_release P₁ L hwf hb1 hget w hσ hE hΓ hpc h₁ h₂ hrel he n
-  have ha := eval_erasure hsim w n he₁ hee
-  have hb := eval_erasure hsim w n he₂ hee
-  generalize eval n P₁ w e₁ e = r₁ at hbr ha
-  generalize eval n P₁ w e₂ e = r₂ at hbr hb
-  generalize eval n P₂ w e₁' e' = s₁ at ha hT₁ hfo₁ ⊢
-  generalize eval n P₂ w e₂' e' = s₂ at hb hT₂ hfo₂ ⊢
-  obtain ⟨t₁, o₁⟩ := r₁
-  obtain ⟨t₂, o₂⟩ := r₂
-  obtain ⟨u₁, q₁⟩ := s₁
-  obtain ⟨u₂, q₂⟩ := s₂
+    (n : Nat) (hT₁ : Term (eval H n P₂ w₁ e₁' e').2.1) (hT₂ : Term (eval H n P₂ w₂ e₂' e').2.1)
+    (hfo₁ : ∀ ev ∈ (eval H n P₂ w₁ e₁' e').1, ev.FirstOrder)
+    (hfo₂ : ∀ ev ∈ (eval H n P₂ w₂ e₂' e').1, ev.FirstOrder) :
+    proj P₂ L (eval H n P₂ w₁ e₁' e').1 = proj P₂ L (eval H n P₂ w₂ e₂' e').1 ∨
+      Diverged P₂ L (eval H n P₂ w₁ e₁' e').1 (eval H n P₂ w₂ e₂' e').1 := by
+  have hbr := t6_release_host P₁ L H hwf hb1 hh hlaw hσ hE hΓ hpc hw h₁ h₂ hrel he n
+  have ha := eval_erasure hsim hai w₁ n he₁ hee
+  have hb := eval_erasure hsim hai w₂ n he₂ hee
+  generalize eval H n P₁ w₁ e₁ e = r₁ at hbr ha
+  generalize eval H n P₁ w₂ e₂ e = r₂ at hbr hb
+  generalize eval H n P₂ w₁ e₁' e' = s₁ at ha hT₁ hfo₁ ⊢
+  generalize eval H n P₂ w₂ e₂' e' = s₂ at hb hT₂ hfo₂ ⊢
+  obtain ⟨t₁, o₁, x₁⟩ := r₁
+  obtain ⟨t₂, o₂, x₂⟩ := r₂
+  obtain ⟨u₁, q₁, y₁⟩ := s₁
+  obtain ⟨u₂, q₂, y₂⟩ := s₂
   simp only [runAnon, Prod.mk.injEq] at ha hb
   have hterm : ∀ {o : Res} {q : Res}, o.anon ρ = q.anon id → Term q → Term o := fun h hq => by
     rw [← Term_anon (ρ := ρ), h, Term_anon]; exact hq
@@ -333,7 +337,7 @@ theorem t6_release_erasure_obs {ρ : String → String} {P₁ P₂ : Program} (L
     rw [← proj_anon, ← h, ← hproj, proj_anon]
   have hfoP : ∀ {uu : Trace}, (∀ ev ∈ uu, ev.FirstOrder) → ∀ ev ∈ proj P₂ L uu, ev.FirstOrder :=
     fun h ev hev => h ev (List.mem_filter.mp hev).1
-  rcases hbr (hterm ha.2 hT₁) (hterm hb.2 hT₂) with ⟨hp, _⟩ | ⟨pre, pol, v₁, v₂, r₁, r₂, hne, hp₁, hp₂⟩
+  rcases hbr (hterm ha.2.1 hT₁) (hterm hb.2.1 hT₂) with ⟨hp, _⟩ | ⟨pre, pol, v₁, v₂, r₁, r₂, hne, hp₁, hp₂⟩
   · left
     apply trace_anon_inj (ρ := id) (ρ' := id) (hfoP hfo₁) (hfoP hfo₂)
     simp only at hp ⊢

@@ -106,6 +106,8 @@ theorem interp_inst (ρ : String → Label) (σ : List (String × LExpr)) (e : L
 
 end LExpr
 
+
+
 /-- At a position that is not a type parameter, labeled instantiation instantiates the label. -/
 theorem LTy.top_lsubst (rd : String → Label) (σ : List (String × LTy)) :
     ∀ t : LTy, (∀ a l, t ≠ .var a l) →

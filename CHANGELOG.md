@@ -2,6 +2,10 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
+## Unreleased
+
+- **One formal model, and the re-check on any host** (#459, `docs/plan/formal-track-m5.md` §11). The model with the stateful host is now the only one, and the re-check of Core is proven over it. A program without host operations runs on any host as on a host without state (`eval_hostFree`), so the re-check's theorem holds on any host, lawful or not: its "accepted" asks nothing of the real host, not even H1, which it meets only from v0.3.5. Every program the re-check certifies is checked to be without host operations. The corpus and the replay are unchanged.
+
 ## v0.3.5
 
 A security patch of the Beta: S-16 (whether an `internal` file or environment variable is valid UTF-8 could reach a `public` branch) is fixed in both editions and both engines (ADR 0086): host text that is not valid UTF-8 now aborts the run with U6005. It also carries what was validated on `main` since v0.3.4: `una core --json` exports what inference adds (#443), a plain `ℓ_T` stays in place (#440), the guides close the gaps the compact-reference arms met (#449), and the formal track's M4 and M5: noninterference for generic functions, declassification and a stateful host, and a re-check of Core whose every accepted declaration carries a proof. Validation: `docs/releases/0.3.5-validation.md`.

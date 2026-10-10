@@ -2,12 +2,11 @@
 M5, part 2: the probes of `OldLeaks.lean`, under ADR 0085's rules, have no typing in the demo
 program, whatever its file-state label: the hypotheses of `Untyped.lean` hold of it.
 -/
-import UnaFormal.F1H.OldLeaks
-import UnaFormal.F1H.Untyped
+import UnaFormal.F1.OldLeaks
+import UnaFormal.F1.Untyped
 
-namespace Una.F1H.NewRules
+namespace Una.F1.NewRules
 
-open Una.F1 (Label LExpr)
 open OldLeaks (oldProg intl)
 open Untyped
 
@@ -48,4 +47,4 @@ theorem s14_same_probe : OldLeaks.s14 =
 theorem s15_same_probe : OldLeaks.s15 =
     s15 (.result (.text intl) .bot) (.text intl) (.unit .bot) (.unit .bot) := rfl
 
-end Una.F1H.NewRules
+end Una.F1.NewRules

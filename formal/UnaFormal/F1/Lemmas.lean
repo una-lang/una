@@ -89,7 +89,15 @@ mutual
     | _, _, _, .op (t := t) h hs => by
       have h' := atom_subst τ h
       cases t <;> simp only [Ty.Scalar] at hs <;> exact .op h' (by simp [Ty.subst, Ty.Scalar])
-    | _, _, _, .get h => .get (atom_subst τ h)
+    | _, _, _, .read h => .read (atom_subst τ h)
+    | _, _, _, .write h₁ h₂ => .write (atom_subst τ h₁) (atom_subst τ h₂)
+    | _, _, _, .req has hts => by
+      refine .req (atoms_subst τ has) ?_
+      intro t ht
+      simp only [List.mem_map] at ht
+      obtain ⟨u, hu, rfl⟩ := ht
+      rw [hts u hu]
+      rfl
     | _, _, _, .construct hr has => by
       have h := atoms_subst τ has
       rw [map_subst_closed τ (hwf.records _ (record_mem hr))] at h

@@ -1,10 +1,12 @@
 /-
 A worked instance of T6: a typed body reads a secret and a public input, computes with the
 secret, prints a line to a public sink and returns the public input. Two runs whose secrets differ
-show a public observer the same events, and the same value, as `t6` says.
+show a public observer the same events, and the same value, as `t6_host` says, on any lawful
+host.
 -/
 import UnaFormal.F1.Mono
 import UnaFormal.F1.Examples
+import UnaFormal.F1.CheckProgramSound
 
 namespace Una.F1.T6Example
 
@@ -13,8 +15,13 @@ def sec : LExpr := .ofLabel ⟨.secret, []⟩
 def prog : Program where
   categories := []
   acceptsOp := Label.bot
-  acceptsGet := Label.bot
-  getResult := Label.bot
+  acceptsRead := Label.bot
+  acceptsWrite := Label.bot
+  acceptsReq := Label.bot
+  readResult := ⟨.internal, []⟩
+  reqResult := ⟨.internal, []⟩
+  reqFloor := ⟨.internal, []⟩
+  fileState := Label.bot
   records := []
   policies := []
   funs := []
@@ -27,7 +34,7 @@ def body : Expr :=
   .letR "y" (.int sec) (.prim .add [.var "s", .var "x"])
     (.letR "u" (.unit .bot) (.op (.text "hi")) (.atom (.var "x")))
 
-def eff : Eff := Eff.none.union ((⟨true, false, Option.none, []⟩ : Eff).union Eff.none)
+def eff : Eff := Eff.none.union ((⟨true, HostFx.none, Option.none, []⟩ : Eff).union Eff.none)
 
 theorem body_typed : LExprTy prog [] Γ .bot body (.int .bot) eff := by
   refine .letR (t := .int ((LExpr.joinAll [sec, LExpr.bot]))) ?_ (.int ?_) ?_ (by simp [LTy.InPlace, sec, LExpr.ofLabel])
@@ -46,8 +53,7 @@ theorem prog_wf : prog.LWellFormed where
   records _ h := nomatch h
   recordDeep _ h := nomatch h
   policies _ h := nomatch h
-  categories := by
-    refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩ <;> simp [prog, Label.bot]
+  categories := by simp [Program.CatsDeclared, prog, Label.bot]
   recordsGround _ h := nomatch h
   eqScoped _ h := nomatch h
   sigsScoped _ h := nomatch h
@@ -55,8 +61,10 @@ theorem prog_wf : prog.LWellFormed where
 
 theorem prog_gf : prog.GenericFree := ⟨(fun _ h => nomatch h), rfl⟩
 
-theorem prog_get : prog.le (.ofLabel prog.acceptsGet) (.ofLabel prog.getResult) :=
-  LExpr.le_refl _
+theorem prog_host : prog.HostWF := Check.hostWfB_sound rfl
+
+/-- `Examples.prog`'s host labels are those `t6_host` asks. -/
+theorem examples_host : Examples.prog.HostWF := Check.hostWfB_sound rfl
 
 /-- Two inputs with different secrets and the same public value. -/
 def env₁ : Env := [("s", .int 1), ("x", .int 5)]
@@ -72,20 +80,22 @@ theorem envs_rel : EnvRel prog Label.bot Γ env₁ env₂ :=
 
 /-- **T6, applied.** The two runs, at a fuel at which both end, show a public observer the same
 events and return the same public value, although their secrets differ. -/
-theorem body_noninterferent (w : World) (n : Nat)
-    (h₁ : Term (eval n prog w env₁ body).2) (h₂ : Term (eval n prog w env₂ body).2) :
-    proj prog Label.bot (eval n prog w env₁ body).1 = proj prog Label.bot (eval n prog w env₂ body).1 ∧
+theorem body_noninterferent {H : Host} (hlaw : H.Lawful) (w : World H) (n : Nat)
+    (h₁ : Term (eval H n prog w env₁ body).2.1) (h₂ : Term (eval H n prog w env₂ body).2.1) :
+    proj prog Label.bot (eval H n prog w env₁ body).1 =
+        proj prog Label.bot (eval H n prog w env₂ body).1 ∧
       OutRel (V prog Label.bot (.int .bot)) (Vis prog Label.bot eff.failLabel)
-        (eval n prog w env₁ body).2 (eval n prog w env₂ body).2 :=
-  t6_ground prog_wf rfl prog_get w
+        (eval H n prog w env₁ body).2.1 (eval H n prog w env₂ body).2.1 :=
+  let h := t6_host_ground prog_wf rfl prog_host hlaw
     (fun q hq => by simp only [List.mem_cons, List.not_mem_nil, or_false] at hq
-                    rcases hq with rfl | rfl <;> rfl) rfl
+                    rcases hq with rfl | rfl <;> rfl) rfl (WorldRel.refl w)
     (.cons .int (.cons .int .nil)) (.cons .int (.cons .int .nil)) envs_rel body_typed n h₁ h₂
+  ⟨h.1, h.2.1⟩
 
 /-- The runs do end, and both print the line and return 5. -/
-example (w : World) :
-    eval 3 prog w env₁ body = ([.out "hi"], .ok (.int 5)) ∧
-      eval 3 prog w env₂ body = ([.out "hi"], .ok (.int 5)) := ⟨rfl, rfl⟩
+example {H : Host} (w : World H) :
+    eval H 3 prog w env₁ body = ([.out "hi"], .ok (.int 5), w) ∧
+      eval H 3 prog w env₂ body = ([.out "hi"], .ok (.int 5), w) := ⟨rfl, rfl⟩
 
 /-! ### Branching on the secret -/
 
@@ -107,7 +117,7 @@ theorem le_sec {a : LExpr} (hb : a.base.level.rank ≤ 3) (hc : a.base.cats = []
     fun _ h => (by rw [hs] at h; nomatch h)⟩
 
 def brEff : Eff :=
-  Eff.none.union ((Eff.none.union Eff.none).union ((⟨true, false, Option.none, []⟩ : Eff).union Eff.none))
+  Eff.none.union ((Eff.none.union Eff.none).union ((⟨true, HostFx.none, Option.none, []⟩ : Eff).union Eff.none))
 
 theorem branching_typed : LExprTy prog [] Γb .bot branching (.int sec) brEff := by
   refine .letR (t := .bool cl) ?r1 (.bool ?l1) ?b1 (by simp [LTy.InPlace, sec, LExpr.ofLabel])
@@ -141,25 +151,25 @@ theorem branch_envs_rel : EnvRel prog Label.bot Γb envNeg envPos :=
   .cons (.hidden sec_hidden) (.cons .text .nil)
 
 /-- The runs take different branches and return different values, 1 and 2, after the same line. -/
-example (w : World) :
-    eval 4 prog w envNeg branching = ([.out "hi"], .ok (.int 1)) ∧
-      eval 4 prog w envPos branching = ([.out "hi"], .ok (.int 2)) := ⟨rfl, rfl⟩
+example {H : Host} (w : World H) :
+    eval H 4 prog w envNeg branching = ([.out "hi"], .ok (.int 1), w) ∧
+      eval H 4 prog w envPos branching = ([.out "hi"], .ok (.int 2), w) := ⟨rfl, rfl⟩
 
 /-- **T6 on a branch over the secret.** The public observer sees the same events from both runs,
 and their values, 1 and 2, are related at the type whose label it does not see. -/
-theorem branching_noninterferent (w : World) :
-    proj prog Label.bot (eval 4 prog w envNeg branching).1 =
-        proj prog Label.bot (eval 4 prog w envPos branching).1 ∧
+theorem branching_noninterferent {H : Host} (hlaw : H.Lawful) (w : World H) :
+    proj prog Label.bot (eval H 4 prog w envNeg branching).1 =
+        proj prog Label.bot (eval H 4 prog w envPos branching).1 ∧
       V prog Label.bot (.int sec) (.int 1) (.int 2) := by
-  have h := t6_ground (e₁ := envNeg) (e₂ := envPos) prog_wf rfl prog_get w
+  have r₁ : eval H 4 prog w envNeg branching = ([.out "hi"], .ok (.int 1), w) := rfl
+  have r₂ : eval H 4 prog w envPos branching = ([.out "hi"], .ok (.int 2), w) := rfl
+  have h := t6_host_ground (e₁ := envNeg) (e₂ := envPos) prog_wf rfl prog_host hlaw
     (fun q hq => by simp only [List.mem_cons, List.not_mem_nil, or_false] at hq
-                    rcases hq with rfl | rfl <;> rfl) rfl
+                    rcases hq with rfl | rfl <;> rfl) rfl (WorldRel.refl w)
     (.cons .int (.cons .text .nil)) (.cons .int (.cons .text .nil)) branch_envs_rel
-    branching_typed 4 trivial trivial
-  have r₁ : eval 4 prog w envNeg branching = ([.out "hi"], .ok (.int 1)) := rfl
-  have r₂ : eval 4 prog w envPos branching = ([.out "hi"], .ok (.int 2)) := rfl
+    branching_typed 4 (by rw [r₁]; trivial) (by rw [r₂]; trivial)
   rw [r₁, r₂] at h ⊢
-  exact h
+  exact ⟨h.1, h.2.1⟩
 
 /-- `c: secret Bool`. -/
 def Γc : LCtx := [("c", .bool sec)]
@@ -206,33 +216,39 @@ theorem ground_sec : GroundSubst [("T", LTy.int sec)] := by
 
 theorem genericCall_typed :
     LExprTy Examples.prog [] Γg .bot genericCall (.bool .bot)
-      ((Eff.ofFn false false false).union .none) := by
+      ((Eff.ofFn false HostFx.none false).union .none) := by
   refine .letR (t := pickSec) ?_ (Flow.refl _) (.atom (.var rfl))
     (LTy.lsubst_inPlace _ ground_sec (by simp [Examples.pick, LTy.InPlace, Examples.lT]))
   refine LRhsTy.call (fn := Examples.pick) (targs := [.int sec]) rfl ?_ rfl rfl ?_ ⟨⟨rfl, rfl⟩, trivial⟩
     (.cons (.var rfl) (.cons .int (.cons (.var rfl) .nil)))
     (.cons (.int (LExpr.le_join_left _ _)) (.cons (.int (LExpr.bot_le _)) (.cons (.bool (LExpr.bot_le _)) .nil)))
-    ⟨fun h => (by cases h), fun h => (by cases h), fun h => (by cases h)⟩ (fun _ h => nomatch h)
+    ⟨fun h => (by cases h), fun h => (by cases h), fun h => (by cases h), fun h => (by cases h),
+      fun h => (by cases h)⟩ (fun _ h => nomatch h)
   · intro ⟨_, h, _⟩; simp [Examples.prog] at h
   · intro q _ h; simp [Examples.pick] at h
 
 def genEnv₁ : Env := [("s", .int 1), ("c", .bool true)]
 def genEnv₂ : Env := [("s", .int 2), ("c", .bool true)]
 
-theorem genericCall_noninterferent (w : World) :
-    proj Examples.prog Label.bot (eval 5 Examples.prog w genEnv₁ genericCall).1 =
-        proj Examples.prog Label.bot (eval 5 Examples.prog w genEnv₂ genericCall).1 ∧
+theorem genericCall_noninterferent {H : Host} (hlaw : H.Lawful) (w : World H) :
+    proj Examples.prog Label.bot (eval H 5 Examples.prog w genEnv₁ genericCall).1 =
+        proj Examples.prog Label.bot (eval H 5 Examples.prog w genEnv₂ genericCall).1 ∧
       OutRel (V Examples.prog Label.bot (.bool .bot))
-        (Vis Examples.prog Label.bot ((Eff.ofFn false false false).union .none).failLabel)
-        (eval 5 Examples.prog w genEnv₁ genericCall).2 (eval 5 Examples.prog w genEnv₂ genericCall).2 := by
+        (Vis Examples.prog Label.bot ((Eff.ofFn false HostFx.none false).union .none).failLabel)
+        (eval H 5 Examples.prog w genEnv₁ genericCall).2.1
+        (eval H 5 Examples.prog w genEnv₂ genericCall).2.1 := by
   have hsec : ¬ Vis Examples.prog Label.bot sec := by
     rintro (⟨h, _⟩ | ⟨⟨h, _⟩, _, _⟩) <;>
       simp [Examples.prog, Program.top, sec, LExpr.ofLabel, Label.bot] at h <;> revert h <;> decide
-  exact t6_ground (e₁ := genEnv₁) (e₂ := genEnv₂) Examples.prog_wf rfl (LExpr.le_refl _) w
+  have r₁ : eval H 5 Examples.prog w genEnv₁ genericCall = ([], .ok (.bool true), w) := rfl
+  have r₂ : eval H 5 Examples.prog w genEnv₂ genericCall = ([], .ok (.bool true), w) := rfl
+  have h := t6_host_ground (e₁ := genEnv₁) (e₂ := genEnv₂) Examples.prog_wf rfl examples_host hlaw
     (fun q hq => by simp only [List.mem_cons, List.not_mem_nil, or_false] at hq
-                    rcases hq with rfl | rfl <;> rfl) rfl
+                    rcases hq with rfl | rfl <;> rfl) rfl (WorldRel.refl w)
     (.cons .int (.cons .bool .nil)) (.cons .int (.cons .bool .nil))
-    (.cons (.hidden hsec) (.cons .bool .nil)) genericCall_typed 5 trivial trivial
+    (.cons (.hidden hsec) (.cons .bool .nil)) genericCall_typed 5
+    (by rw [r₁]; trivial) (by rw [r₂]; trivial)
+  exact ⟨h.1, h.2.1⟩
 
 /-! ### The result of a generic call -/
 
@@ -242,7 +258,7 @@ def Γs : LCtx := [("s", .int sec)]
 /-- `pick[Int](1, 2, true)` typed with the secret in scope. -/
 theorem callPick_typedΓ :
     LExprTy Examples.prog [] Γs .bot Examples.callPick Examples.pickInt
-      ((Eff.ofFn false false false).union .none) := by
+      ((Eff.ofFn false HostFx.none false).union .none) := by
   refine .letR (t := Examples.pickInt) ?_ (.int (LExpr.le_refl _)) (.atom (.var rfl)) ?ip
   case ip => simp [Examples.pickInt, Program.lsub, LTy.lsubst, Examples.pick, Examples.lT,
     LTy.InPlace, LTy.raise, LExpr.join, LExpr.inst, LExpr.dropPlain, LExpr.joinAll, LExpr.bot,
@@ -251,7 +267,8 @@ theorem callPick_typedΓ :
     (by simp [LTy.GroundAll, LTy.Ground, LExpr.SymFree, LExpr.bot, LExpr.ofLabel])
     (.cons .int (.cons .int (.cons .bool .nil)))
     (.cons (.int (LExpr.bot_le _)) (.cons (.int (LExpr.bot_le _)) (.cons (.bool (LExpr.bot_le _)) .nil)))
-    ⟨fun h => (by cases h), fun h => (by cases h), fun h => (by cases h)⟩ (fun _ h => nomatch h)
+    ⟨fun h => (by cases h), fun h => (by cases h), fun h => (by cases h), fun h => (by cases h),
+      fun h => (by cases h)⟩ (fun _ h => nomatch h)
   · intro ⟨_, h, _⟩; simp [Examples.prog] at h
   · intro q _ h; simp [Examples.pick] at h
 
@@ -259,24 +276,25 @@ def sEnv₁ : Env := [("s", .int 1)]
 def sEnv₂ : Env := [("s", .int 2)]
 
 /-- The runs do return a value: `pick[Int](1, 2, true)` is 1. -/
-example (w : World) : (eval 5 Examples.prog w sEnv₁ Examples.callPick).2 = .ok (.int 1) := rfl
+example {H : Host} (w : World H) :
+    (eval H 5 Examples.prog w sEnv₁ Examples.callPick).2.1 = .ok (.int 1) := rfl
 
 /-- **T6 on the result of a generic call.** Two runs that differ in a secret return, when both
 return, equal values of `pick[public Int]`: the relation at the instance type `pickInt`, from
-`t6_ground` alone, makes them equal for a public observer, without computing either run. -/
-theorem pickPublic_result_equal (w : World) {v₁ v₂ : Val}
-    (h₁ : (eval 5 Examples.prog w sEnv₁ Examples.callPick).2 = .ok v₁)
-    (h₂ : (eval 5 Examples.prog w sEnv₂ Examples.callPick).2 = .ok v₂) : v₁ = v₂ := by
+`t6_host_ground` alone, makes them equal for a public observer, without computing either run. -/
+theorem pickPublic_result_equal {H : Host} (hlaw : H.Lawful) (w : World H) {v₁ v₂ : Val}
+    (h₁ : (eval H 5 Examples.prog w sEnv₁ Examples.callPick).2.1 = .ok v₁)
+    (h₂ : (eval H 5 Examples.prog w sEnv₂ Examples.callPick).2.1 = .ok v₂) : v₁ = v₂ := by
   have hsec : ¬ Vis Examples.prog Label.bot sec := by
     rintro (⟨h, _⟩ | ⟨⟨h, _⟩, _, _⟩) <;>
       simp [Examples.prog, Program.top, sec, LExpr.ofLabel, Label.bot] at h <;> revert h <;> decide
-  have h := t6_ground (e₁ := sEnv₁) (e₂ := sEnv₂) Examples.prog_wf rfl (LExpr.le_refl _) w
+  have h := t6_host_ground (e₁ := sEnv₁) (e₂ := sEnv₂) Examples.prog_wf rfl examples_host hlaw
     (fun q hq => by simp only [List.mem_cons, List.not_mem_nil, or_false] at hq
-                    subst hq; rfl) rfl
+                    subst hq; rfl) rfl (WorldRel.refl w)
     (.cons .int .nil) (.cons .int .nil) (.cons (.hidden hsec) .nil) callPick_typedΓ 5
     (by rw [h₁]; trivial) (by rw [h₂]; trivial)
   rw [h₁, h₂] at h
-  have hv : V Examples.prog Label.bot (.int _) v₁ v₂ := h.2
+  have hv : V Examples.prog Label.bot (.int _) v₁ v₂ := h.2.1
   refine V.eq_int hv ?_
   simp [Vis, Program.le, LExpr.le, Label.le, LExpr.join, LExpr.inst, LExpr.dropPlain,
     LExpr.joinAll, LExpr.bot, LExpr.ofLabel, Label.bot, Label.join, Examples.lT, Level.join]

@@ -9,6 +9,27 @@ import UnaFormal.F1.InPlace
 
 namespace Una.F1
 
+theorem LExpr.le_inst_symFree {top : Label} (σ : List (String × LExpr)) {l : LExpr} (h : l.SymFree) :
+    LExpr.le top (l.inst σ) l ∧ LExpr.le top l (l.inst σ) := by
+  rw [LExpr.inst_symFree σ h.1 h.2]
+  exact ⟨LExpr.join_le (LExpr.bot_le _) (LExpr.le_refl _), LExpr.le_join_right _ _⟩
+
+theorem LExpr.symFree_join {a b : LExpr} (ha : a.SymFree) (hb : b.SymFree) : (a.join b).SymFree := by
+  simp [LExpr.SymFree, LExpr.join, ha.1, ha.2, hb.1, hb.2]
+
+theorem LExpr.symFree_joinAll : ∀ {es : List LExpr}, (∀ e ∈ es, e.SymFree) → (LExpr.joinAll es).SymFree
+  | [], _ => ⟨rfl, rfl⟩
+  | e :: _, h => symFree_join (h e List.mem_cons_self)
+      (symFree_joinAll (fun x hx => h x (List.mem_cons_of_mem _ hx)))
+
+theorem LExpr.symsIn_dropPlain {xs : List String} (a : String) {l : LExpr} (h : l.SymsIn xs) :
+    (l.dropPlain a).SymsIn xs := by
+  intro x hx
+  simp only [LExpr.dropPlain, List.mem_append, List.mem_filter] at hx
+  rcases hx with ⟨hx, _⟩ | hx
+  · exact h x (List.mem_append_left _ hx)
+  · exact h x (List.mem_append_right _ hx)
+
 /-- The type with its top label replaced. -/
 def LTy.setTop (x : LExpr) : LTy → LTy
   | .int _ => .int x
@@ -73,11 +94,6 @@ theorem LValTy.lsubst_raise {σ : List (String × LTy)} {e : LExpr} {v : Val} {t
 
 /-! ### Ground types -/
 
-theorem LExpr.le_inst_symFree {top : Label} (σ : List (String × LExpr)) {l : LExpr} (h : l.SymFree) :
-    LExpr.le top (l.inst σ) l ∧ LExpr.le top l (l.inst σ) := by
-  rw [LExpr.inst_symFree σ h.1 h.2]
-  exact ⟨LExpr.join_le (LExpr.bot_le _) (LExpr.le_refl _), LExpr.le_join_right _ _⟩
-
 mutual
   /-- A ground type flows both ways with any of its instances. -/
   theorem Flow.lsubst_ground {top : Label} (rd : String → Label) (σ : List (String × LTy)) :
@@ -98,9 +114,9 @@ mutual
       ⟨.result (Flow.lsubst_ground rd σ h.1).1 (LExpr.le_inst_symFree _ h.2).1,
         .result (Flow.lsubst_ground rd σ h.1).2 (LExpr.le_inst_symFree _ h.2).2⟩
     | .fn _ _ _ _ _ _, h =>
-      ⟨.fn (Flows.lsubst_ground rd σ h.1).2 (Flow.lsubst_ground rd σ h.2.1).1 id id id
+      ⟨.fn (Flows.lsubst_ground rd σ h.1).2 (Flow.lsubst_ground rd σ h.2.1).1 id (HostFx.Le.refl _) id
           (LExpr.le_inst_symFree _ h.2.2).1,
-        .fn (Flows.lsubst_ground rd σ h.1).1 (Flow.lsubst_ground rd σ h.2.1).2 id id id
+        .fn (Flows.lsubst_ground rd σ h.1).1 (Flow.lsubst_ground rd σ h.2.1).2 id (HostFx.Le.refl _) id
           (LExpr.le_inst_symFree _ h.2.2).2⟩
 
   theorem Flows.lsubst_ground {top : Label} (rd : String → Label) (σ : List (String × LTy)) :
@@ -111,14 +127,6 @@ mutual
       ⟨.cons (Flow.lsubst_ground rd σ h.1).1 (Flows.lsubst_ground rd σ h.2).1,
         .cons (Flow.lsubst_ground rd σ h.1).2 (Flows.lsubst_ground rd σ h.2).2⟩
 end
-
-theorem LExpr.symFree_join {a b : LExpr} (ha : a.SymFree) (hb : b.SymFree) : (a.join b).SymFree := by
-  simp [LExpr.SymFree, LExpr.join, ha.1, ha.2, hb.1, hb.2]
-
-theorem LExpr.symFree_joinAll : ∀ {es : List LExpr}, (∀ e ∈ es, e.SymFree) → (LExpr.joinAll es).SymFree
-  | [], _ => ⟨rfl, rfl⟩
-  | e :: _, h => symFree_join (h e List.mem_cons_self)
-      (symFree_joinAll (fun x hx => h x (List.mem_cons_of_mem _ hx)))
 
 mutual
   theorem LTy.Ground.deep (rd : String → Label) : ∀ {u : LTy}, u.Ground → (u.deep rd).SymFree
@@ -169,14 +177,6 @@ theorem LExpr.inst_symFree_of_covered (rd : String → Label) {σ : List (String
     obtain ⟨hx, hnc⟩ := List.mem_filter.mp hx
     have := hcov' x (List.mem_append_right _ hx)
     simp_all
-
-theorem LExpr.symsIn_dropPlain {xs : List String} (a : String) {l : LExpr} (h : l.SymsIn xs) :
-    (l.dropPlain a).SymsIn xs := by
-  intro x hx
-  simp only [LExpr.dropPlain, List.mem_append, List.mem_filter] at hx
-  rcases hx with ⟨hx, _⟩ | hx
-  · exact h x (List.mem_append_left _ hx)
-  · exact h x (List.mem_append_right _ hx)
 
 mutual
   /-- **A signature's type, instantiated for all its type parameters by ground type arguments,

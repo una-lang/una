@@ -7,6 +7,19 @@ import UnaFormal.F1.Subst
 
 namespace Una.F1
 
+theorem mem_of_lookup {α β : Type} [BEq α] [LawfulBEq α] {x : α} {b : β} :
+    ∀ {σ : List (α × β)}, List.lookup x σ = some b → (x, b) ∈ σ
+  | [], h => by simp at h
+  | (k, v) :: σ, h => by
+    simp only [List.lookup] at h
+    split at h
+    · rename_i hk
+      cases h
+      have : x = k := by simpa using hk
+      subst this
+      exact List.mem_cons_self
+    · exact List.mem_cons_of_mem _ (mem_of_lookup h)
+
 /-- No plain symbol. -/
 abbrev LExpr.PlainFree (e : LExpr) : Prop := e.plain = []
 
@@ -25,6 +38,24 @@ theorem LExpr.plainFree_joinAll : ∀ {es : List LExpr}, (∀ e ∈ es, e.PlainF
   | [], _ => rfl
   | e :: _, h =>
     plainFree_join (h e List.mem_cons_self) (plainFree_joinAll (fun x hx => h x (List.mem_cons_of_mem _ hx)))
+
+/-- The plain symbols an instantiation leaves: those of `e` it does not cover, when the labels it
+gives have none. -/
+theorem LExpr.inst_plain {σ : List (String × LExpr)} (hσ : ∀ q ∈ σ, q.2.PlainFree) (e : LExpr) :
+    ∀ x ∈ (e.inst σ).plain, x ∈ e.plain := by
+  intro x hx
+  simp only [LExpr.inst, LExpr.join, List.mem_append] at hx
+  rcases hx with hx | hx
+  · have : (LExpr.joinAll ((e.plain ++ e.star).filterMap (fun x => List.lookup x σ))).PlainFree := by
+      apply LExpr.plainFree_joinAll
+      intro l hl
+      obtain ⟨y, _, hy⟩ := List.mem_filterMap.mp hl
+      exact hσ _ (mem_of_lookup hy)
+    rw [this] at hx; nomatch hx
+  · exact (List.mem_filter.mp hx).1
+
+theorem LExpr.plainFree_of {e : LExpr} (h : ∀ x ∈ e.plain, False) : e.PlainFree :=
+  List.eq_nil_iff_forall_not_mem.mpr h
 
 theorem LTy.raise_inPlace {e : LExpr} (he : e.PlainFree) :
     ∀ {t : LTy}, t.InPlace → (t.raise e).InPlace
@@ -70,37 +101,6 @@ mutual
     | [], _ => trivial
     | _ :: _, h => ⟨LTy.Ground.inPlace h.1, LTy.GroundAll.inPlace h.2⟩
 end
-
-theorem mem_of_lookup {α β : Type} [BEq α] [LawfulBEq α] {x : α} {b : β} :
-    ∀ {σ : List (α × β)}, List.lookup x σ = some b → (x, b) ∈ σ
-  | [], h => by simp at h
-  | (k, v) :: σ, h => by
-    simp only [List.lookup] at h
-    split at h
-    · rename_i hk
-      cases h
-      have : x = k := by simpa using hk
-      subst this
-      exact List.mem_cons_self
-    · exact List.mem_cons_of_mem _ (mem_of_lookup h)
-
-/-- The plain symbols an instantiation leaves: those of `e` it does not cover, when the labels it
-gives have none. -/
-theorem LExpr.inst_plain {σ : List (String × LExpr)} (hσ : ∀ q ∈ σ, q.2.PlainFree) (e : LExpr) :
-    ∀ x ∈ (e.inst σ).plain, x ∈ e.plain := by
-  intro x hx
-  simp only [LExpr.inst, LExpr.join, List.mem_append] at hx
-  rcases hx with hx | hx
-  · have : (LExpr.joinAll ((e.plain ++ e.star).filterMap (fun x => List.lookup x σ))).PlainFree := by
-      apply LExpr.plainFree_joinAll
-      intro l hl
-      obtain ⟨y, _, hy⟩ := List.mem_filterMap.mp hl
-      exact hσ _ (mem_of_lookup hy)
-    rw [this] at hx; nomatch hx
-  · exact (List.mem_filter.mp hx).1
-
-theorem LExpr.plainFree_of {e : LExpr} (h : ∀ x ∈ e.plain, False) : e.PlainFree :=
-  List.eq_nil_iff_forall_not_mem.mpr h
 
 theorem deeps_ground_plainFree (rd : String → Label) {σ : List (String × LTy)}
     (hσ : ∀ q ∈ σ, q.2.Ground) : ∀ q ∈ σ.map (fun q => (q.1, q.2.deep rd)), q.2.PlainFree := by
@@ -171,15 +171,23 @@ theorem Eff.plainFree_union {ε₁ ε₂ : Eff} (h₁ : ε₁.PlainFree) (h₂ :
   · exact h₁ _ hf₁
   · exact LExpr.plainFree_join (h₁ _ hf₁) (h₂ _ hf₂)
 
-theorem Eff.plainFree_ofFn (o g f : Bool) : (Eff.ofFn o g f).PlainFree := by
+theorem Eff.plainFree_ofFn (o : Bool) (g : HostFx) (f : Bool) : (Eff.ofFn o g f).PlainFree := by
   intro l hl
   cases f <;> simp [Eff.ofFn] at hl
   subst hl; rfl
 
-theorem Eff.plainFree_ofFnR (o g f : Bool) (rs : List String) : (Eff.ofFnR o g f rs).PlainFree :=
+theorem Eff.plainFree_ofFnR (o : Bool) (g : HostFx) (f : Bool) (rs : List String) :
+    (Eff.ofFnR o g f rs).PlainFree :=
   Eff.plainFree_ofFn o g f
 
 theorem Eff.plainFree_none : Eff.none.PlainFree := fun _ h => by simp [Eff.none] at h
+
+/-- A `Files` failure's label is plain-free when what decides it is. -/
+theorem Program.fsFail_plainFree {p : Program} {l : LExpr} (h : l.PlainFree) : (p.fsFail l).PlainFree := by
+  unfold Program.fsFail
+  split
+  · exact h
+  · exact LExpr.plainFree_join h (LExpr.plainFree_ofLabel _)
 
 theorem lctxLookup_mem {x : String} {t : LTy} : ∀ {Γ : LCtx}, lctxLookup Γ x = some t → (x, t) ∈ Γ
   | [], h => by simp [lctxLookup] at h
@@ -275,10 +283,28 @@ mutual
       simp only [LTy.InPlace] at h
       exact ⟨LTy.raise_inPlace (LExpr.plainFree_join h.2.2 rfl) h.2.1, Eff.plainFree_ofFn _ _ _⟩
     | _, _, _, _, _, _, _, _, .op _ _ _ _ => ⟨rfl, fun _ h => by simp at h⟩
-    | _, _, _, _, _, _, hΓ, hpc, .get hu _ _ _ =>
+    | _, _, _, _, _, _, hΓ, hpc, .read hu _ _ _ =>
       ⟨rfl, fun _ h => by
         simp at h; subst h
-        exact LExpr.plainFree_join hpc (LTy.deep_plainFree _ (latom_inPlace hΓ hu))⟩
+        exact Program.fsFail_plainFree (LExpr.plainFree_join hpc (LTy.deep_plainFree _ (latom_inPlace hΓ hu)))⟩
+    | _, _, _, _, _, _, hΓ, hpc, .write hu _ _ _ _ _ _ =>
+      ⟨rfl, fun _ h => by
+        simp at h; subst h
+        exact Program.fsFail_plainFree (LExpr.plainFree_join hpc (LTy.deep_plainFree _ (latom_inPlace hΓ hu)))⟩
+    | _, _, _, _, _, _, hΓ, hpc, .req (ts := ts) has _ _ _ =>
+      ⟨rfl, fun _ h => by
+        simp at h; subst h
+        have hts := latoms_inPlace hΓ has
+        unfold Program.reqFail
+        split
+        · refine LExpr.plainFree_join hpc ?_
+          split
+          · exact LTy.deep_plainFree _ (hts _ (by simp_all))
+          · exact LExpr.plainFree_bot
+        · refine LExpr.plainFree_join (LExpr.plainFree_join hpc ?_) (LExpr.plainFree_ofLabel _)
+          refine LExpr.plainFree_joinAll fun e he => ?_
+          obtain ⟨u, hu, rfl⟩ := List.mem_map.mp he
+          exact LTy.deep_plainFree _ (hts u hu)⟩
     | _, _, _, _, _, _, _, _, .construct _ _ _ => ⟨rfl, Eff.plainFree_none⟩
     | _, _, _, _, _, _, hΓ, _, .field hv hrec hi => by
       have h := latom_inPlace hΓ hv

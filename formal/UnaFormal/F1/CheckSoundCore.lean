@@ -46,11 +46,7 @@ mutual
       obtain ⟨t, ht, _, hs, _, hle, _, hsf, _, hf, rfl⟩ := h
       exact ⟨_, .op (atomTy_sound ht) (isScalar_sound hs) (le_ok hle) (symFree_sound hsf),
         flowTo_ok hf⟩
-    | .get url, ε, h => by
-      simp only [checkRhs, bind_ok, pure_ok, need_ok] at h
-      obtain ⟨t, ht, _, hs, _, hle, _, hsf, _, hf, rfl⟩ := h
-      exact ⟨_, .get (atomTy_sound ht) (isText_sound hs) (le_ok hle) (symFree_sound hsf),
-        flowTo_ok hf⟩
+    | .read _, _, h | .write _ _, _, h | .req _ _, _, h => by simp [checkRhs] at h
     | .construct record fields, ε, h => by
       simp only [checkRhs, bind_ok, pure_ok, need_ok, some_ok] at h
       obtain ⟨rec, hrec, ts, hts, _, hfl, _, hf, rfl⟩ := h
@@ -94,7 +90,7 @@ mutual
         obtain ⟨_, hip, εb, hb, _, hfail, _, hrl, _, hfl, _, ⟨⟨ho, hg⟩, hfs⟩, rfl⟩ := h
         obtain ⟨tb, htb, hflow⟩ := checkExpr_sound hb
         exact ⟨_, .lambda htb (le_ok hfail) hrl (fun q hq => inPlace_sound (hip q hq)),
-          .fn (flowsB_sound _ _ hfl) hflow (flags_of ho) (flags_of hg) (flags_of hfs)
+          .fn (flowsB_sound _ _ hfl) hflow (flags_of ho) (hostLeB_sound hg) (flags_of hfs)
             (LExpr.bot_le l)⟩
       | _ => simp at h
     | .funRef f targs, ε, h => by
@@ -241,7 +237,7 @@ theorem checkFun_sound {fn : Fun} (h : checkFun p fn = .ok ()) : p.FunOk fn := b
   simp only [checkFun, bind_ok, need_ok, List.all_eq_true, List.contains_iff_mem] at h
   obtain ⟨ε, hb, _, ho, _, hg, _, hf, _, hfail, hr⟩ := h
   obtain ⟨t, ht, hflow⟩ := checkExpr_sound hb
-  exact ⟨t, ε, ht, hflow, flags_of ho, flags_of hg, flags_of hf, le_ok hfail,
+  exact ⟨t, ε, ht, hflow, flags_of ho, hostLeB_sound hg, flags_of hf, le_ok hfail,
     fun x hx => by simpa using hr x hx⟩
 
 theorem exprPure_sound (e : Expr) (h : exprPure e = true) : e.Pure := by
