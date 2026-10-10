@@ -131,6 +131,8 @@ struct Analysis {
     index: una_check::Index,
     /// The lambdas given to `of` parameters, by span, with their effects and failure (#443).
     of_lambdas: Vec<(una_syntax::Span, bool, bool)>,
+    /// The package's file-state label (ADR 0085), which `una core` exports (#467).
+    file_state: una_core::Label,
 }
 
 /// Checks `package`; with `run_grants`, for `una run`, whose grants are final (U3012).
@@ -201,6 +203,7 @@ fn analyze(package: &Package, run_grants: Option<&[String]>) -> Analysis {
         references,
         index: types.index,
         of_lambdas: types.of_lambdas,
+        file_state: types.file_state,
     }
 }
 
@@ -789,13 +792,14 @@ fn core_command(
         }
     };
     let (manifest, _) = package::project(&package);
-    let (diagnostics, program, headers, of_lambdas) = on_large_stack(|| {
+    let (diagnostics, program, headers, of_lambdas, file_state) = on_large_stack(|| {
         let analysis = analyze(&package, None);
         (
             analysis.diagnostics,
             analysis.program,
             analysis.headers,
             analysis.of_lambdas,
+            analysis.file_state,
         )
     });
     let complete = diagnostics.is_empty();
@@ -805,6 +809,7 @@ fn core_command(
             &package.sources,
             &headers,
             &of_lambdas,
+            &file_state,
             manifest.edition,
             complete,
         ) {

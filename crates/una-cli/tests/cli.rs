@@ -1074,6 +1074,29 @@ fn core_exports_the_facts_inference_adds() {
 }
 
 #[test]
+fn core_exports_the_file_state_label() {
+    // #467, `spec/13 §8`: the package's file-state label (ADR 0085), after `host`. A package
+    // that writes no file has `public`; `journal` writes an `internal` path; a package whose
+    // writes are public has `public`.
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let file_state = |path: &str| {
+        let output = una(&["--json", "core", root.join(path).to_str().unwrap()]);
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        let text = stdout(&output).to_owned();
+        assert!(text.contains("],\"file_state\":{"), "{text}");
+        let document: Value = serde_json::from_str(&text).unwrap();
+        document["file_state"].clone()
+    };
+    let label = |level: &str| json!({ "level": level, "categories": [], "symbols": [] });
+    assert_eq!(file_state("examples/hello"), label("public"));
+    assert_eq!(file_state("examples/journal"), label("internal"));
+    assert_eq!(
+        file_state("tests/conformance/security/s14_ok_failing_writer"),
+        label("public")
+    );
+}
+
+#[test]
 fn core_of_a_package_with_errors_is_incomplete_and_still_one_document() {
     // ADR 0083: Core holds the declarations without diagnostics; `complete` says so, the
     // diagnostics go to stderr, and the exit code follows them.

@@ -159,7 +159,7 @@ pub struct Header {
 }
 
 /// The outcome of [`check_types`].
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct TypeCheck {
     /// The type diagnostics.
     pub diagnostics: Vec<Diagnostic>,
@@ -172,12 +172,33 @@ pub struct TypeCheck {
     /// effects and whether it can fail. Their function types in Core carry neither, since they
     /// are their caller's; `una core` exports them (#443).
     pub of_lambdas: Vec<(Span, bool, bool)>,
+    /// The package's file-state label (ADR 0085 decision 1): what decides its `Files.write`
+    /// calls, which labels the failure of every `Files` operation; `public` when it writes no
+    /// file. `una core` exports it (#467), and the formal track's re-check checks every write
+    /// against it.
+    pub file_state: una_core::Label,
     /// The headers of the functions of the modules checked, by module, then declaration.
     pub headers: Vec<Header>,
     /// The Core IR of the declarations without diagnostics (`spec/09`).
     pub program: una_core::Program,
     /// What the checker resolved, by span, for the language server (ADR 0063).
     pub index: Index,
+}
+
+impl Default for TypeCheck {
+    /// An empty outcome, whose file-state label is that of a package that writes no file.
+    fn default() -> Self {
+        TypeCheck {
+            diagnostics: Vec::new(),
+            obligations: Vec::new(),
+            selfified: Vec::new(),
+            of_lambdas: Vec::new(),
+            file_state: una_core::Label::public(),
+            headers: Vec::new(),
+            program: una_core::Program::default(),
+            index: Index::default(),
+        }
+    }
 }
 
 /// Type-checks the modules of `package` that have no syntax errors.
@@ -424,6 +445,7 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
             .map(|span| report.location(*span))
             .collect(),
         of_lambdas: findings.of_lambdas.clone(),
+        file_state: env.file_state.clone(),
         diagnostics: report.diagnostics,
     }
 }

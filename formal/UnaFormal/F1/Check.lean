@@ -257,8 +257,28 @@ mutual
       need (symFree pc) "an operation under a symbolic program counter"
       flowTo p (.unit .bot) ann "the operation's result"
       pure ⟨true, HostFx.none, Option.none, []⟩
-    -- The host's operations are re-checked by M5b; until then the checker rejects them.
-    | .read _ | .write _ _ | .req _ _ => throw "a host operation (`Files` or `Http`, M5b)"
+    | .read path => do
+      let t ← atomTy Γ path
+      need (isText t) "`Files.read`'s path is not a text"
+      le p (pc.join (p.deep t)) (.ofLabel p.acceptsRead)
+        "`Files.read`'s path or program counter is above what it accepts"
+      need (symFree pc) "a host operation under a symbolic program counter"
+      flowTo p (.text (.ofLabel p.readResult)) ann "`Files.read`'s result"
+      pure ⟨false, { rd := true }, some (p.fsFail (pc.join (p.deep t))), []⟩
+    | .write path content => do
+      let t ← atomTy Γ path
+      need (isText t) "`Files.write`'s path is not a text"
+      let c ← atomTy Γ content
+      need (isText c) "`Files.write`'s content is not a text"
+      le p ((pc.join (p.deep t)).join (p.deep c)) (.ofLabel p.acceptsWrite)
+        "`Files.write`'s path, content or program counter is above what it accepts"
+      need (p.oldHost || leB p.top (pc.join (p.deep t)) (.ofLabel p.fileState))
+        "a write whose path or program counter is above the file-state label (ADR 0085)"
+      need (symFree pc) "a host operation under a symbolic program counter"
+      flowTo p (.unit .bot) ann "`Files.write`'s result"
+      pure ⟨false, { wr := true }, some (p.fsFail (pc.join (p.deep t))), []⟩
+    -- `Http`'s real signature is outside the model's request (M5c, #470).
+    | .req _ _ => throw "a request of `Http`, whose signature is outside F1 (M5c)"
     | .construct record fields => do
       let rec ← some! (p.record record) s!"no record `{record}`"
       need (flowsB p.top (← atomsTy Γ fields) rec.fields)

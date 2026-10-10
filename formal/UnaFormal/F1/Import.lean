@@ -81,6 +81,8 @@ abbrev J := Lean.Json
 operation names, and the functions and policies it refers to. -/
 structure Refs where
   ops : List (String × String) := []
+  /-- The host effects it mentions: `Files.read` and `Files.write` (M5b). -/
+  host : HostFx := {}
   funs : List String := []
   policies : List String := []
   /-- Whether a call's type arguments mention type parameters: two levels of generics, which
@@ -150,19 +152,34 @@ structure Ctx where
   /-- The policies each function may release through (`Fun.rels`), computed over the document. -/
   rels : List (String × List String) := []
 
+/-- The effects a `uses` entry names: `Files`'s operations are host effects (M5b); every other
+operation is F1's one operation, gathered for G3. `Http`'s are outside F1 (M5c, #470). -/
+def usesEffects (uses : List J) : M (Bool × HostFx) := do
+  let mut op := false
+  let mut host : HostFx := {}
+  for u in uses do
+    let cap ← str (← field u "capability")
+    for o in ← arr (← field u "ops") do
+      let o ← str o
+      if cap == "Files" then
+        if o == "read" then host := { host with rd := true }
+        else if o == "write" then host := { host with wr := true }
+        else throw s!"the operation `Files.{o}`"
+        modify fun s => { s with host := s.host.or host }
+      else if cap == "Http" then throw "`Http`, whose signature is outside F1 (M5c)"
+      else
+        op := true
+        modify fun s => { s with ops := if s.ops.contains (cap, o) then s.ops else s.ops ++ [(cap, o)] }
+  pure (op, host)
+
 partial def ty (c : Ctx) (j : J) : M LTy := do
   let l ← label (← field j "label")
   match ← kind j with
   | "fn" =>
     let ps ← (← arr (← field j "params")).mapM (ty c)
     let r ← ty c (← field j "result")
-    let uses ← arr (← field j "uses")
-    for u in uses do
-      let cap ← str (← field u "capability")
-      for o in ← arr (← field u "ops") do
-        let o ← str o
-        modify fun s => { s with ops := if s.ops.contains (cap, o) then s.ops else s.ops ++ [(cap, o)] }
-    pure (.fn ps r (!uses.isEmpty) HostFx.none (!isNull (← field j "fails")) l)
+    let (op, host) ← usesEffects (← arr (← field j "uses"))
+    pure (.fn ps r op host (!isNull (← field j "fails")) l)
   | "base" =>
     let b ← field j "base"
     match ← kind b with
@@ -273,6 +290,26 @@ mutual
     | "op" =>
       let cap ← str (← field j "capability")
       let o ← str (← field j "op")
+      -- The host's capabilities are named by their path, and a node whose `capability` field
+      -- is not its path's name is not read (Una-1's finding on #471).
+      let (std, pathName) : Bool × J := match j.getObjVal? "capability_path" with
+        | .ok cp => (cp.getObjValD "module" == Lean.Json.str "std.host", cp.getObjValD "name")
+        | .error _ => (false, Lean.Json.null)
+      if pathName != Lean.Json.null && pathName != Lean.Json.str cap then
+        throw s!"an operation whose capability `{cap}` is not its path's"
+      -- The host's stateful operations (M5b): `Files.read` and `Files.write` are the model's
+      -- `read` and `write`; `Http`'s real signature is outside the model's request (M5c, #470).
+      if std && cap == "Files" then
+        match o, ← atoms (← field j "args") with
+        | "read", [path] =>
+          modify fun s => { s with host := { s.host with rd := true } }
+          pure (.read path)
+        | "write", [path, content] =>
+          modify fun s => { s with host := { s.host with wr := true } }
+          pure (.write path content)
+        | _, _ => throw s!"the operation `Files.{o}`"
+      else if std && cap == "Http" then throw "a request of `Http`, whose signature is outside F1 (M5c)"
+      else
       modify fun s => { s with ops := if s.ops.contains (cap, o) then s.ops else s.ops ++ [(cap, o)] }
       match ← atoms (← field j "args") with
       | [a] => pure (.op a)
@@ -420,15 +457,10 @@ def signature (c : Ctx) (module : String) (v : J) (body : Expr) : M Fun := do
           | some t => pure t
           | none => throw s!"a result summary at `{pos}`, outside F1") declared
       | .error _ => pure declared
-  let uses ← arr (← field v "uses")
-  for u in uses do
-    let cap ← str (← field u "capability")
-    for o in ← arr (← field u "ops") do
-      let o ← str o
-      modify fun s => { s with ops := if s.ops.contains (cap, o) then s.ops else s.ops ++ [(cap, o)] }
+  let (op, host) ← usesEffects (← arr (← field v "uses"))
   pure {
     name, tparams := tps, eqParams := eqs, params := ps, result,
-    op := !uses.isEmpty || !usesOf.isEmpty, host := HostFx.none,
+    op := op || !usesOf.isEmpty, host,
     fails := !isNull (← field v "fails") || failsOf.isSome, body,
     rels := (List.lookup name c.rels).getD [] }
 
@@ -502,6 +534,60 @@ inductive Outcome where
   | rejected (why : String)
   | notRechecked (why : String)
 
+/-- The host's labels the certificate describes (M5b; the binding rule of #467): `Files`'s and
+`Http`'s from the document's host signatures, and the file-state label from its `file_state` key,
+which the checker of ADR 0085 computes. The key is untrusted: the checker re-checks every write
+against it (`Check.checkRhs`) and its cap at `internal` (`Check.hostWfB`), so a value too low gives
+a rejection or a declaration not re-checked, never an accepted one, and a value too high only
+labels failures higher. A signature the document lacks leaves the strictest labels
+`Program.HostWF` allows. `Header`'s value label is not exported, so a request's failure floor stays
+`internal`, as `Header` declares (M5c, #470, reads it). -/
+structure HostLabels where
+  acceptsRead : Label := Label.bot
+  readResult : Label := ⟨.internal, []⟩
+  acceptsWrite : Label := Label.bot
+  acceptsReq : Label := Label.bot
+  reqResult : Label := ⟨.internal, []⟩
+  reqFloor : Label := ⟨.internal, []⟩
+  /-- `none` when the document has no `file_state` key. -/
+  fileState : Option Label := none
+  /-- Why the labels could not be read, if they could not. -/
+  why : Option String := none
+
+/-- A concrete label: no symbol. -/
+def concrete (j : J) : M Label := do
+  let l ← label j
+  if !l.plain.isEmpty || !l.star.isEmpty then throw "a host label with a symbol"
+  pure l.base
+
+/-- The host's labels of a document, from its capabilities `Files` and `Http` and its
+`file_state` key. -/
+def readHostLabels (capDecls : List (String × J)) (doc : J) : HostLabels :=
+  let read : M HostLabels := do
+    let mut h : HostLabels := {}
+    if let some (_, fj) := capDecls.find? (·.1 == "Files") then
+      for o in ← arr (← field fj "ops") do
+        let n ← str (← field o "name")
+        let acc ← concrete (← field o "accepts")
+        if n == "read" then
+          let res ← concrete (← field (← field o "result") "label")
+          h := { h with acceptsRead := acc, readResult := res }
+        else if n == "write" then h := { h with acceptsWrite := acc }
+    -- `Http`'s operations share their `accepts` and result labels (`spec/24 §1`).
+    if let some (_, hj) := capDecls.find? (·.1 == "Http") then
+      let ops ← arr (← field hj "ops")
+      if let o :: _ := ops then
+        let acc ← concrete (← field o "accepts")
+        let res ← concrete (← field (← field o "result") "label")
+        h := { h with acceptsReq := acc, reqResult := res }
+    if let .ok fs := doc.getObjVal? "file_state" then
+      let l ← concrete fs
+      h := { h with fileState := some l }
+    pure h
+  match plainRun read with
+  | .ok h => h
+  | .error why => { why := some why }
+
 /-- What checking a function declaration needs: the function as F1 reads it, the signatures of
 what it calls, its policies, the `accepts` of its operation, and whether it calls a generic
 function at its own type parameters. -/
@@ -519,7 +605,7 @@ mutant of it in the tests. -/
 abbrev Subst := (String → Label) → List (String × LTy) → LTy → LTy
 
 /-- Reads one function declaration of a document; the error is why it is outside F1. -/
-def prepare (c : Ctx) (caps : List (String × J)) (decls : List Decl) (d : Decl) :
+def prepare (c : Ctx) (hl : HostLabels) (caps : List (String × J)) (decls : List Decl) (d : Decl) :
     Except String Prep := do
   let findDecl := fun (q : String) => decls.find? fun e =>
     match plainRun (do pure s!"{e.module}.{← str (← field e.value "name")}") with
@@ -554,6 +640,10 @@ def prepare (c : Ctx) (caps : List (String × J)) (decls : List Decl) (d : Decl)
     pure (fn, callees, pols)
   let ((fn, callees, pols), refs) ← run read
   if (List.lookup fn.name c.vias).isSome then throw "a `via` function, which no label rule checks"
+  -- A declaration that reaches `Files` is re-checked against the document's host labels.
+  if !refs.host.isNone then
+    if let some why := hl.why then throw s!"the host's labels: {why}"
+    if hl.fileState.isNone then throw "the export lacks the file-state label (`file_state`)"
   let acceptsOp ← match refs.ops with
     | [] => pure Label.bot
     | [(cap, o)] => do
@@ -582,30 +672,27 @@ def prepare (c : Ctx) (caps : List (String × J)) (decls : List Decl) (d : Decl)
     | _ => throw "several operations"
   pure { fn, callees, pols, acceptsOp, op := refs.ops.head?, nested := refs.nested }
 
-/-- The program the re-checker certifies, with the host's labels it gives every program: the
-strictest `Program.HostWF` allows, every stateful sink at `⊥` and every result and failure floor at
-`internal`. No function the importer reads performs a host operation, and the checker rejects
-them until M5b, so these labels decide no verdict; they make `t6_release_host`'s premise on the
-host hold by construction. -/
-def mkProgram (cats : List String) (acceptsOp : Label) (recs : List Record) (pols : List Policy)
-    (funs : List Fun) : Program where
+/-- The program the re-checker certifies, with the document's host labels (`HostLabels`), which
+`Check.progOk` checks against `Program.HostWF`. -/
+def mkProgram (cats : List String) (acceptsOp : Label) (hl : HostLabels) (recs : List Record)
+    (pols : List Policy) (funs : List Fun) : Program where
   categories := cats
   acceptsOp := acceptsOp
-  acceptsRead := Label.bot
-  acceptsWrite := Label.bot
-  acceptsReq := Label.bot
-  readResult := ⟨.internal, []⟩
-  reqResult := ⟨.internal, []⟩
-  reqFloor := ⟨.internal, []⟩
-  fileState := Label.bot
+  acceptsRead := hl.acceptsRead
+  acceptsWrite := hl.acceptsWrite
+  acceptsReq := hl.acceptsReq
+  readResult := hl.readResult
+  reqResult := hl.reqResult
+  reqFloor := hl.reqFloor
+  fileState := hl.fileState.getD Label.bot
   records := recs
   policies := pols
   funs := funs
 
 /-- Checks `fn` (the prepared function, or one of its instances) in the program of `prep`. -/
-def checkWith (cats : List String) (recs : List Record) (prep : Prep) (fn : Fun) :
+def checkWith (cats : List String) (hl : HostLabels) (recs : List Record) (prep : Prep) (fn : Fun) :
     Check.Result Unit := do
-  let p := mkProgram cats prep.acceptsOp recs prep.pols (fn :: prep.callees)
+  let p := mkProgram cats prep.acceptsOp hl recs prep.pols (fn :: prep.callees)
   Check.checkDecls p
   Check.checkB1 p
   for f in p.funs do Check.checkSignature f
@@ -758,6 +845,18 @@ def monoParts (members : List String) (isNested : String → Bool) (readFn : Str
   let ren := insts.map (fun (g, inst) => (inst.name, g)) ++ cond.map (fun g => (g, s!"{g}[]"))
   (cond, mono, ren)
 
+/-- What an accepted declaration's note says when its program uses `Files`: its theorem is
+`t6_release_erasure_obs`, on a lawful host (H1 to H3), not the any-host
+`t6_release_erasure_obs_hostFree`. -/
+def hostNote : String := "rests on a lawful host (H1 to H3): the program uses `Files`"
+
+/-- A verdict's note, with `hostNote` when the program it is certified in uses `Files`. -/
+def withHost (P : Program) (note : String) : String :=
+  if P.hostFreeB then note else if note == "" then hostNote else note ++ "; " ++ hostNote
+
+theorem withHost_ex (P : Program) (n : String) : (∃ n₀, withHost P n = withHost P n₀) ↔ True :=
+  ⟨fun _ => trivial, fun _ => ⟨n, rfl⟩⟩
+
 /-- **The verdicts, from the certificates alone** (M4 completion, A2 and A3). Every declaration
 the steps before report accepted gets its verdict here, and only from a certificate:
 
@@ -768,22 +867,23 @@ the steps before report accepted gets its verdict here, and only from a certific
 - accepted, conditional on A3, when only `pAll` passes `progOk cond`;
 - not re-checked otherwise.
 
-Every certificate also asks the program it is about to perform no host operation
-(`Program.hostFreeB`), so that its theorem holds on any host (`t6_release_hostFree`,
-`t6_release_erasure_obs_hostFree`), the real one included.
+A certificate whose program performs no host operation (`Program.hostFreeB`) has a theorem on any
+host (`t6_release_hostFree`, `t6_release_erasure_obs_hostFree`), the real one included. One whose
+program uses `Files` (M5b) has `t6_release_erasure_obs`, on a lawful host (H1 to H3), and the
+verdict's note says so (`withHost`).
 
 `finalize_sound` states it. -/
 def finalize (pAll pPlain : Program) (cond : List String) (mono : List Fun)
     (ren : List (String × String)) (outs : List (String × Outcome)) : List (String × Outcome) :=
   let p₁ : Program := { pAll with funs := mono }
-  let monoOk := Check.progOk [] p₁ && progSim ren p₁ pAll && pAll.hostFreeB
-  let plainOk := Check.progOk [] pPlain && pPlain.hostFreeB
-  let condOk := Check.progOk cond pAll && pAll.hostFreeB
+  let monoOk := Check.progOk [] p₁ && progSim ren p₁ pAll
+  let plainOk := Check.progOk [] pPlain
+  let condOk := Check.progOk cond pAll
   outs.map fun (f, o) =>
     let verdict := fun (note : String) =>
-      if monoOk && pAll.funs.any (·.name == f) then Outcome.accepted note
-      else if plainOk && pPlain.funs.any (·.name == f) then .accepted note
-      else if condOk && pAll.funs.any (·.name == f) then .acceptedIfA3 note
+      if monoOk && pAll.funs.any (·.name == f) then Outcome.accepted (withHost pAll note)
+      else if plainOk && pPlain.funs.any (·.name == f) then .accepted (withHost pPlain note)
+      else if condOk && pAll.funs.any (·.name == f) then .acceptedIfA3 (withHost pAll note)
       else .notRechecked "whole program: no certificate"
     match o with
     | .accepted note => (f, verdict note)
@@ -794,31 +894,151 @@ def finalize (pAll pPlain : Program) (cond : List String) (mono : List Fun)
 passes `progOk []`, the program of the declarations that reach no function checked at its
 instances, or the document's program, which the program checked at instances agrees with up to
 annotations. One reported accepted on the condition of A3 is a function of a program that passes
-`progOk cond`. The program it is a function of performs no host operation. -/
+`progOk cond`. Its note says whether the program performs no host operation, whose theorem holds
+on any host, or uses `Files` and rests on a lawful host (`withHost`). -/
 theorem finalize_sound {pAll pPlain : Program} {cond : List String} {mono : List Fun}
-    {ren : List (String × String)} {outs : List (String × Outcome)} {f : String} :
-    ((∃ note, (f, Outcome.accepted note) ∈ finalize pAll pPlain cond mono ren outs) →
-      (Check.progOk [] pPlain = true ∧ pPlain.hostFreeB = true ∧
-        pPlain.funs.any (·.name == f) = true) ∨
+    {ren : List (String × String)} {outs : List (String × Outcome)} {f note : String} :
+    ((f, Outcome.accepted note) ∈ finalize pAll pPlain cond mono ren outs →
+      (Check.progOk [] pPlain = true ∧ pPlain.funs.any (·.name == f) = true ∧
+        ∃ n₀, note = withHost pPlain n₀) ∨
       (Check.progOk [] { pAll with funs := mono } = true ∧
-        progSim ren { pAll with funs := mono } pAll = true ∧ pAll.hostFreeB = true ∧
-        pAll.funs.any (·.name == f) = true)) ∧
-    ((∃ note, (f, Outcome.acceptedIfA3 note) ∈ finalize pAll pPlain cond mono ren outs) →
-      Check.progOk cond pAll = true ∧ pAll.hostFreeB = true ∧
-        pAll.funs.any (·.name == f) = true) := by
+        progSim ren { pAll with funs := mono } pAll = true ∧
+        pAll.funs.any (·.name == f) = true ∧ ∃ n₀, note = withHost pAll n₀)) ∧
+    ((f, Outcome.acceptedIfA3 note) ∈ finalize pAll pPlain cond mono ren outs →
+      Check.progOk cond pAll = true ∧ pAll.funs.any (·.name == f) = true ∧
+        ∃ n₀, note = withHost pAll n₀) := by
   constructor
-  · rintro ⟨note, h⟩
+  · intro h
     simp only [finalize, List.mem_map] at h
     obtain ⟨⟨g, o⟩, _, ho⟩ := h
     cases o <;> simp only [Prod.mk.injEq] at ho <;> obtain ⟨rfl, hv⟩ := ho <;>
       (try split at hv) <;> (try split at hv) <;> (try split at hv) <;>
-      simp_all [Bool.and_eq_true]
-  · rintro ⟨note, h⟩
+      (try (simp only [Outcome.accepted.injEq] at hv; subst hv)) <;>
+      simp_all [Bool.and_eq_true, withHost_ex]
+  · intro h
     simp only [finalize, List.mem_map] at h
     obtain ⟨⟨g, o⟩, _, ho⟩ := h
     cases o <;> simp only [Prod.mk.injEq] at ho <;> obtain ⟨rfl, hv⟩ := ho <;>
       (try split at hv) <;> (try split at hv) <;> (try split at hv) <;>
-      simp_all [Bool.and_eq_true]
+      (try (simp only [Outcome.acceptedIfA3.injEq] at hv; subst hv)) <;>
+      simp_all [Bool.and_eq_true, withHost_ex]
+
+/-- The capabilities a document declares, its own and the host's: module, name and operations. -/
+abbrev Caps' := List (String × String × List String)
+
+/-- **`std.host`, as the specification fixes it** (`spec/14 §3`; `spec/24` for edition 0.2's
+`Http`): its capabilities and their operations. The re-check does not take the export's word for
+what `std.host` is (Una-1's finding on #471): a document's `host` entry that differs from these is a
+write site (`hostSites`). Of these operations, only `Files.write` writes a file. -/
+def stdHost : Caps' :=
+  [("std.host", "Console", ["print"]), ("std.host", "Clock", ["now"]),
+   ("std.host", "Env", ["get"]), ("std.host", "Files", ["read", "write"]),
+   ("std.host", "Keys", ["hmac"]), ("std.host", "Http", ["get", "post", "put", "delete"])]
+
+/-- A `uses` entry that may grant a file write: one that names no capability in `known`, grants an
+operation that capability does not declare, or grants `std.host`'s `Files.write`. -/
+def usesSite (known : Caps') (u : J) : Option String :=
+  match u.getObjValD "capability", u.getObjValD "ops" with
+  | .str c, .arr grants =>
+    match known.find? (fun (_, n', _) => n' == c) with
+    | none => some "a `uses` that names a capability the document does not declare"
+    | some (m, _, ops) =>
+      let gs := grants.toList.filterMap fun g => match g with
+        | .str o => some o
+        | _ => none
+      if gs.length != grants.size || !gs.all ops.contains then
+        some "a `uses` that grants an operation its capability does not declare"
+      else if m == "std.host" && c == "Files" && gs.contains "write" then
+        some "a `uses` that grants `Files.write`"
+      else none
+  | _, _ => some "a `uses` entry that cannot be read"
+
+/-- **A node that may write a file**, found anywhere in a declaration (M5b; Una-1's findings on
+#471 and the coordinator's rule). Default-deny: a node is safe only when it is positively
+identified, and every other node counts as a site.
+- An operation is safe when its capability path resolves to a capability the document declares
+  (`known`: its own, and `std.host` as `stdHost` fixes it), its `capability` field is that path's
+  name, its operation is one the capability declares, and it is not `std.host`'s `Files.write`.
+- An element of a `uses` array is safe when `usesSite` finds nothing in it. Only `uses` arrays hold
+  grants: a handler declaration's capability and operations are not read as one.
+`none` when the node and its children hold no site; otherwise what was found. -/
+partial def writeSite (known : Caps') (j : J) : Option String :=
+  match j with
+  | .obj kvs =>
+    let here : Option String :=
+      if j.getObjValD "kind" == Lean.Json.str "op" then
+        let path := j.getObjValD "capability_path"
+        match j.getObjValD "capability", path.getObjValD "module", path.getObjValD "name",
+            j.getObjValD "op" with
+        | .str c, .str m, .str n, .str o =>
+          match known.find? (fun (m', n', _) => m' == m && n' == n) with
+          | none => some "an operation whose capability cannot be resolved"
+          | some (_, _, ops) =>
+            if c != n then some "an operation whose capability is not its path's"
+            else if !ops.contains o then some "an operation its capability does not declare"
+            else if m == "std.host" && n == "Files" && o == "write" then some "a `Files.write`"
+            else none
+        | _, _, _, _ => some "an operation whose capability cannot be resolved"
+      else match j.getObjValD "uses" with
+        | .arr us => us.foldl (fun acc u => acc <|> usesSite known u) none
+        | .null => none
+        | _ => some "a `uses` that cannot be read"
+    match here with
+    | some w => some w
+    | none => kvs.toArray.foldl (fun acc kv => acc <|> writeSite known kv.2) none
+  | .arr xs => xs.foldl (fun acc x => acc <|> writeSite known x) none
+  | _ => none
+
+/-- The document's `host` entries that differ from `std.host` as `stdHost` fixes it: a capability it
+does not have, or other operations. -/
+def hostSites (host : List J) : List String :=
+  host.filterMap fun cj =>
+    match cj.getObjValD "name", cj.getObjValD "ops" with
+    | .str n, .arr ops =>
+      let names := ops.toList.filterMap fun o => match o.getObjValD "name" with
+        | .str x => some x
+        | _ => none
+      match stdHost.find? (fun (_, n', _) => n' == n) with
+      | some (_, _, spec) =>
+        if names.length == ops.size && names.all spec.contains && spec.all names.contains then none
+        else some s!"a host capability `{n}` whose operations are not `std.host`'s"
+      | none => some s!"a host capability `{n}` that `std.host` does not declare"
+    | _, _ => some "a host capability that cannot be read"
+
+/-- **The file-state label is verified for the whole package**, or nothing that uses `Files` is
+accepted (M5b, Una-1's finding on #471). The exported `file_state` is untrusted, and the re-check
+checks it only against the writes of the programs it certifies. A write anywhere else, in a
+declaration rejected or not re-checked, in a handler, or in a node the reading cannot tell from
+one, never meets it, and a lowered label would let a read's failure reveal it (S-14). So unless
+every declaration that holds a write site (`writeSite`) is a function accepted in `out`, every
+declaration accepted on a lawful host, its note ending with `hostNote`, is not re-checked. -/
+def guardFiles (sites : List (String × String × String)) (out : List (String × Outcome)) :
+    List (String × Outcome) :=
+  let unchecked := sites.find? fun (name, kind, _) =>
+    !(kind == "fun" && match List.lookup name out with
+      | some (.accepted _) => true
+      | _ => false)
+  match unchecked with
+  | none => out
+  | some (name, _, what) =>
+    let why := s!"the file-state label is not verified for the whole package ({what} in `{name}`)"
+    out.map fun (f, o) => match o with
+      | .accepted note => if note.endsWith hostNote then (f, .notRechecked why) else (f, o)
+      | .acceptedIfA3 note => if note.endsWith hostNote then (f, .notRechecked why) else (f, o)
+      | o => (f, o)
+
+/-- **The guard only demotes**: what it reports accepted, `finalize` reported accepted, with the
+same note, so `finalize_sound` covers it. -/
+theorem guardFiles_sub {sites : List (String × String × String)} {out : List (String × Outcome)}
+    {f note : String} (h : (f, Outcome.accepted note) ∈ guardFiles sites out) :
+    (f, Outcome.accepted note) ∈ out := by
+  unfold guardFiles at h
+  dsimp only at h
+  split at h
+  · exact h
+  · simp only [List.mem_map] at h
+    obtain ⟨⟨g, o⟩, hm, ho⟩ := h
+    cases o <;> simp only at ho <;> (try split at ho) <;> simp_all
 
 /-- How far instances are followed: the depth of an instance chain, past which the function is
 in polymorphic recursion, the number of instances of a document, and the steps of the search,
@@ -861,6 +1081,13 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
     match plainRun (do str (← field cj "name")) with
     | .ok n => some (n, cj)
     | .error _ => none
+  -- `Files` and `Http` name the host's capabilities in `uses`, which carries no module: a
+  -- document that declares its own capability by either name is not re-checked.
+  if (decls.filter (·.kind == "cap")).any (fun d => match plainRun (do str (← field d.value "name")) with
+      | .ok n => n == "Files" || n == "Http"
+      | .error _ => true) then
+    return code.map fun d => (named d, .notRechecked "a capability named as one of the host's")
+  let hl := readHostLabels capDecls doc
   let cats := categories doc []
   let funNames := (decls.filter (·.kind == "fun")).map named
   let recs := records decls funNames
@@ -888,7 +1115,7 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
       (f, (ps ++ cs.flatMap fun g => (List.lookup g relMap).getD []).eraseDups)
   let c := { c with rels := relMap }
   let preps : List (String × Except String Prep) :=
-    (decls.filter (·.kind == "fun")).map fun d => (named d, prepare c capDecls decls d)
+    (decls.filter (·.kind == "fun")).map fun d => (named d, prepare c hl capDecls decls d)
   let prepOf := fun (f : String) => List.lookup f preps
   let isNested := fun (f : String) => match prepOf f with
     | some (.ok pr) => pr.nested && !pr.fn.tparams.isEmpty
@@ -955,7 +1182,7 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
       match prepOf f with
       | some (.ok pr) =>
         let inst := Check.instantiate (subst rd) pr.fn ts s!"{f}[{", ".intercalate key}]"
-        let outcome := match checkWith cats recs pr inst with
+        let outcome := match checkWith cats hl recs pr inst with
           | .ok () => Outcome.accepted ""
           | .error why => classify s!"at its instance `{inst.name}`, instantiated in `{origin}`: {why}"
         results := results ++ [(f, outcome)]
@@ -992,7 +1219,7 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
           if pr.nested then
             if pr.fn.tparams.isEmpty then .notRechecked "a call at type arguments that are not ground"
             else instanceOutcome (named d)
-          else match checkWith cats recs pr pr.fn with
+          else match checkWith cats hl recs pr pr.fn with
             | .ok () => .accepted ""
             | .error why => classify why
         | some (.error why) => .notRechecked why
@@ -1063,7 +1290,7 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
   let some pr0 := (accepted final).findSome? readOf | pure final
   let viaFuns := pr0.callees.filter fun fn => isVia fn.name
   let mkProg := fun (members : List String) =>
-    mkProgram cats acceptsOp recs pr0.pols (members.filterMap (fun f => (readOf f).map (·.fn)) ++ viaFuns)
+    mkProgram cats acceptsOp hl recs pr0.pols (members.filterMap (fun f => (readOf f).map (·.fn)) ++ viaFuns)
   -- The functions checked at their instances: their T-Fun is part A3's hypothesis.
   let cond := (accepted final).filter isNested
   let docWhy := fun (P : Program) =>
@@ -1121,7 +1348,20 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
         rc.contains f || ((List.lookup f reach).getD []).any rc.contains
     pure rc
   let plain := members.filter fun f => !reachesCond.contains f
-  pure (finalize (mkProg members) (mkProg plain) cond mono ren final)
+  -- Every write site of the document, in a declaration of any kind (Una-1's finding on #471).
+  let opNames := fun (cj : J) => match plainRun (do
+      (← arr (← field cj "ops")).mapM fun o => do str (← field o "name")) with
+    | .ok ns => ns
+    | .error _ => []
+  let known : Caps' :=
+    (decls.filter (·.kind == "cap")).filterMap (fun d =>
+      match plainRun (do str (← field d.value "name")) with
+      | .ok n => some (d.module, n, opNames d.value)
+      | .error _ => none) ++ stdHost
+  let sites := decls.filterMap (fun d =>
+      (writeSite known d.value).map fun w => (named d, d.kind, w)) ++
+    (hostSites host).map fun w => ("std.host", "host", w)
+  pure (guardFiles sites (finalize (mkProg members) (mkProg plain) cond mono ren final))
 
 /-- `checkDocumentWith` with labeled instantiation, `LTy.lsubst`. -/
 def checkDocument (doc : J) : Except String (List (String × Outcome)) :=
