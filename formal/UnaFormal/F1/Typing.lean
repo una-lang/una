@@ -69,6 +69,12 @@ inductive PrimTy : Prim → List Ty → Ty → Prop where
   | lenText : PrimTy .len [.text] .int
   | sum : PrimTy .sum [.list .int] .int
 
+/-- What a loop visits, and the type of its variable. -/
+inductive SourceTy : Ctx → Source → Ty → Prop where
+  | list {ctx xs t} : AtomTy ctx xs (.list t) → SourceTy ctx (.list xs) t
+  | range {ctx low high inclusive} :
+      AtomTy ctx low .int → AtomTy ctx high .int → SourceTy ctx (.range low high inclusive) .int
+
 mutual
   inductive RhsTy (p : Program) : Ctx → Rhs → Ty → Prop where
     | atom {ctx a t} : AtomTy ctx a t → RhsTy p ctx (.atom a) t
@@ -116,6 +122,12 @@ mutual
         RhsTy p ctx (.fold xs init f) b
     | parse {ctx s} : AtomTy ctx s .text → RhsTy p ctx (.parse s) .int
     | eq {ctx a b t} : AtomTy ctx a t → AtomTy ctx b t → RhsTy p ctx (.eq a b) .bool
+    | tuple {ctx items ts} : AtomsTy ctx items ts → RhsTy p ctx (.tuple items) (.tuple ts)
+    | append {ctx xs item t} :
+        AtomTy ctx xs (.list t) → AtomTy ctx item t → RhsTy p ctx (.append xs item) (.list t)
+    | set {ctx xs index item t} :
+        AtomTy ctx xs (.list t) → AtomTy ctx index .int → AtomTy ctx item t →
+        RhsTy p ctx (.set xs index item) (.tuple [.list t, .unit])
 
   inductive ExprTy (p : Program) : Ctx → Expr → Ty → Prop where
     | atom {ctx a t} : AtomTy ctx a t → ExprTy p ctx (.atom a) t
@@ -141,6 +153,14 @@ mutual
     | handle {ctx body x handler s} :
         ExprTy p ctx body s → ExprTy p ((x, .int) :: ctx) handler s →
         ExprTy p ctx (.handle body x handler) s
+    | letTuple {ctx binders value body ts s} :
+        AtomTy ctx value (.tuple ts) → ts.length = binders.length →
+        ExprTy p (bindTys binders ts ++ ctx) body s →
+        ExprTy p ctx (.letTuple binders value body) s
+    | loop {ctx source x xty state init body t ts} :
+        SourceTy ctx source t → AtomsTy ctx init ts → ts.length = state.length →
+        ExprTy p ((x, t) :: (bindTys state ts ++ ctx)) body (.tuple ts) →
+        ExprTy p ctx (.loop source x xty state init body) (.tuple ts)
 end
 
 /-- A program is well formed when each function's body has its declared result type under its
@@ -174,6 +194,7 @@ mutual
         EnvTy p env ctx → ts.length = params.length →
         ExprTy p (bindTys params ts ++ ctx) body r →
         ValTy p (.closure params body env) (.fn ts r)
+    | tuple {items ts} : ValsTy p items ts → ValTy p (.tuple items) (.tuple ts)
 
   inductive ValsTy (p : Program) : List Val → List Ty → Prop where
     | nil : ValsTy p [] []

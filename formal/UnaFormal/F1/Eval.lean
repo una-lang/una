@@ -26,6 +26,7 @@ inductive Val where
   | err (code : Nat)
   | record (name : String) (fields : List Val)
   | closure (params : List (String × LTy)) (body : Expr) (env : List (String × Val))
+  | tuple (items : List Val)
 
 /-- The line the operation writes for a scalar. -/
 def Val.line : Val → Option String
@@ -56,7 +57,7 @@ mutual
     | .closure _ _ _ => False
     | .list items => Val.FirstOrderAll items
     | .some v | .ok v => v.FirstOrder
-    | .record _ fs => Val.FirstOrderAll fs
+    | .record _ fs | .tuple fs => Val.FirstOrderAll fs
     | .int _ | .bool _ | .text _ | .unit | .none | .err _ => True
 
   def Val.FirstOrderAll : List Val → Prop
@@ -241,6 +242,37 @@ def walkFold (app : World H → Val → Val → Run H) (w : World H) (acc : Val)
   | [] => done w acc
   | v :: vs => andThen (app w acc v) fun w acc' => walkFold app w acc' vs
 
+/-- A loop (`spec/17 §4`), with `body` the run of its body on an element and the current state:
+each iteration's value must be a tuple of the state's length, the next state; the loop's value
+is the final state. A failure ends the loop, and the state is dropped (`spec/17 §7` rule 1). -/
+def walkLoop (body : World H → Val → List Val → Run H) (w : World H) (st : List Val) :
+    List Val → Run H
+  | [] => done w (.tuple st)
+  | v :: vs =>
+    andThen (body w v st) fun w r =>
+      match r with
+      | .tuple st' => if st'.length = st.length then walkLoop body w st' vs else stuck w
+      | _ => stuck w
+
+/-- The integers a range visits, in increasing order. -/
+def rangeVals (low high : Int) (inclusive : Bool) : List Val :=
+  (List.range (high - low + (if inclusive then 1 else 0)).toNat).map (fun i : Nat => .int (low + (i : Int)))
+
+/-- The elements a loop visits: `none` when the source is not a list or a pair of integers. -/
+def sourceVals (env : Env) : Source → Option (List Val)
+  | .list xs =>
+    match evalAtom env xs with
+    | some (.list items) => some items
+    | _ => none
+  | .range low high inclusive =>
+    match evalAtom env low, evalAtom env high with
+    | some (.int a), some (.int b) => some (rangeVals a b inclusive)
+    | _, _ => none
+
+/-- An abort of the run (`spec/07 §1`): a run that does not end, which the termination-insensitive
+T6 says nothing of. The UAM aborts at `set` out of its range (N-79). -/
+def abort (w : World H) : Run H := ([], .outOfFuel, w)
+
 mutual
   /-- Structural equality of values, the semantic function of `==`. Function values have no
   equality (`Eq` excludes them, `spec/20`), and compare unequal. -/
@@ -369,6 +401,17 @@ mutual
         match evalAtom env a, evalAtom env b with
         | some va, some vb => done w (.bool (Val.beq va vb))
         | _, _ => stuck w
+      | .tuple items => ([], ((evalAtoms env items).map Val.tuple).elim .stuck .ok, w)
+      | .append xs item =>
+        match evalAtom env xs, evalAtom env item with
+        | some (.list items), some v => done w (.list (items ++ [v]))
+        | _, _ => stuck w
+      | .set xs index item =>
+        match evalAtom env xs, evalAtom env index, evalAtom env item with
+        | some (.list items), some (.int i), some v =>
+          if 0 ≤ i ∧ i < items.length then done w (.tuple [.list (items.set i.toNat v), .unit])
+          else abort w
+        | _, _, _ => stuck w
 
   def eval (H : Host) : Nat → Program → World H → Env → Expr → Run H
     | 0, _, w, _, _ => ([], .outOfFuel, w)
@@ -406,6 +449,19 @@ mutual
           match eval H n p w' ((x, .int code) :: env) handler with
           | (t', r, w'') => (t ++ t', r, w'')
         | res => res
+      | .letTuple binders value body =>
+        match evalAtom env value with
+        | some (.tuple vs) =>
+          if vs.length = binders.length then eval H n p w (bindParams binders vs env) body
+          else stuck w
+        | _ => stuck w
+      | .loop source x _ state init body =>
+        match sourceVals env source, evalAtoms env init with
+        | some items, some st =>
+          if st.length = state.length then
+            walkLoop (fun w v st => eval H n p w ((x, v) :: bindParams state st env) body) w st items
+          else stuck w
+        | _, _ => stuck w
 end
 
 end Una.F1

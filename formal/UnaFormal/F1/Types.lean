@@ -42,6 +42,7 @@ mutual
     | .record r => .record r
     | .fn ps r => .fn (Ty.substs σ ps) (r.subst σ)
     | .var a => (List.lookup a σ).getD (.var a)
+    | .tuple ts => .tuple (Ty.substs σ ts)
 
   def Ty.substs (σ : List (String × Ty)) : List Ty → List Ty
     | [] => []
@@ -67,6 +68,12 @@ theorem Ty.subst_subst (σ τ : List (String × Ty)) :
   | .var a => by
     simp only [Ty.subst, lookup_append, lookup_map]
     cases List.lookup a σ <;> simp [Ty.subst]
+  | .tuple ts => by
+    simp only [Ty.subst, Ty.substs_eq, List.map_map]
+    congr 1
+    apply List.map_congr_left
+    intro t _
+    exact Ty.subst_subst σ τ t
 
 theorem Ty.subst_nil : ∀ t : Ty, t.subst [] = t
   | .int | .bool | .text | .unit | .record _ => rfl
@@ -79,6 +86,13 @@ theorem Ty.subst_nil : ∀ t : Ty, t.subst [] = t
     intro t _
     exact Ty.subst_nil t
   | .var a => rfl
+  | .tuple ts => by
+    simp only [Ty.subst, Ty.substs_eq]
+    congr 1
+    conv => rhs; rw [← List.map_id ts]
+    apply List.map_congr_left
+    intro t _
+    exact Ty.subst_nil t
 
 /-- A type without type parameters, which no substitution changes. -/
 def Ty.Closed (t : Ty) : Prop := ∀ σ, t.subst σ = t
@@ -96,6 +110,7 @@ mutual
     | .record r _ => .record r
     | .fn ps r _ _ _ _ => .fn (LTy.erases ps) r.erase
     | .var a _ => .var a
+    | .tuple ts _ => .tuple (LTy.erases ts)
 
   def LTy.erases : List LTy → List Ty
     | [] => []
@@ -109,7 +124,7 @@ theorem LTy.erases_eq : ∀ ts : List LTy, LTy.erases ts = ts.map LTy.erase
 /-- The top label of a labeled type. -/
 def LTy.top : LTy → LExpr
   | .int l | .bool l | .text l | .unit l | .list _ l | .option _ l | .result _ l
-  | .record _ l | .fn _ _ _ _ _ l | .var _ l => l
+  | .record _ l | .fn _ _ _ _ _ l | .var _ l | .tuple _ l => l
 
 /-- `τ ⊔ ℓ`: the type with its top label raised by `ℓ`. -/
 def LTy.raise (e : LExpr) : LTy → LTy
@@ -123,6 +138,7 @@ def LTy.raise (e : LExpr) : LTy → LTy
   | .record r l => .record r (l.join e)
   | .fn ps r o g f l => .fn ps r o g f (l.join e)
   | .var a l => .var a (l.join e)
+  | .tuple ts l => .tuple ts (l.join e)
 
 theorem LTy.erase_raise (e : LExpr) (t : LTy) : (t.raise e).erase = t.erase := by
   cases t <;> rfl
@@ -137,6 +153,7 @@ mutual
     | .list t l | .option t l | .result t l => l.join (t.deep rd)
     | .fn ps r _ _ _ l => l.join ((LTy.deeps rd ps).join (r.deep rd))
     | .var a l => l.promote.join ⟨Label.bot, [], [a]⟩
+    | .tuple ts l => l.join (LTy.deeps rd ts)
 
   def LTy.deeps (rd : String → Label) : List LTy → LExpr
     | [] => LExpr.bot
@@ -163,6 +180,7 @@ mutual
       match List.lookup a σ with
       | some t => t.raise ((l.dropPlain a).inst (σ.map (fun q => (q.1, q.2.deep rd))))
       | none => .var a (l.inst (σ.map (fun q => (q.1, q.2.deep rd))))
+    | .tuple ts l => .tuple (LTy.lsubsts rd σ ts) (l.inst (σ.map (fun q => (q.1, q.2.deep rd))))
 
   def LTy.lsubsts (rd : String → Label) (σ : List (String × LTy)) : List LTy → List LTy
     | [] => []
@@ -195,5 +213,12 @@ theorem LTy.erase_lsubst (rd : String → Label) (σ : List (String × LTy)) :
   | .var a _ => by
     simp only [LTy.lsubst, LTy.erase, Ty.subst, eraseSubst, lookup_map]
     cases List.lookup a σ <;> simp [LTy.erase_raise, LTy.erase]
+  | .tuple ts _ => by
+    simp only [LTy.lsubst, LTy.erase, Ty.subst, LTy.erases_eq, LTy.lsubsts_eq, Ty.substs_eq,
+      List.map_map]
+    congr 1
+    apply List.map_congr_left
+    intro t _
+    exact LTy.erase_lsubst rd σ t
 
 end Una.F1
