@@ -477,6 +477,16 @@ mutual
     | .ite cond thenE elseE => do
       match ← atomTy Γ cond with
       | .bool lc =>
+        match s with
+        | .tuple ts _ =>
+          -- Core's join of updated bindings (M6b): the condition's label goes into each component.
+          need (inPlaceAll ts) "`ℓ_T` off a position of type `T`"
+          let ε₁ ← checkExpr p E Γ (pc.join lc) (.tuple ts .bot) thenE
+          let ε₂ ← checkExpr p E Γ (pc.join lc) (.tuple ts .bot) elseE
+          need (flowsB p.top (ts.map (LTy.raise lc)) ts)
+            "a component of the joined state is below the condition's label (U4001)"
+          pure (ε₁.union ε₂)
+        | _ =>
         need (inPlace s) "`ℓ_T` off a position of type `T`"
         let ε₁ ← checkExpr p E Γ (pc.join lc) s thenE
         let ε₂ ← checkExpr p E Γ (pc.join lc) s elseE
@@ -486,6 +496,15 @@ mutual
     | .caseOption scrutinee noneE x someE => do
       match ← atomTy Γ scrutinee with
       | .option te ls =>
+        match s with
+        | .tuple ts _ =>
+          need (inPlaceAll ts) "`ℓ_T` off a position of type `T`"
+          let ε₁ ← checkExpr p E Γ (pc.join ls) (.tuple ts .bot) noneE
+          let ε₂ ← checkExpr p E ((x, te.raise ls) :: Γ) (pc.join ls) (.tuple ts .bot) someE
+          need (flowsB p.top (ts.map (LTy.raise ls)) ts)
+            "a component of the joined state is below the scrutinee's label (U4001)"
+          pure (ε₁.union ε₂)
+        | _ =>
         need (inPlace s) "`ℓ_T` off a position of type `T`"
         let ε₁ ← checkExpr p E Γ (pc.join ls) s noneE
         let ε₂ ← checkExpr p E ((x, te.raise ls) :: Γ) (pc.join ls) s someE
@@ -495,6 +514,15 @@ mutual
     | .caseResult scrutinee x okE y errE => do
       match ← atomTy Γ scrutinee with
       | .result te ls =>
+        match s with
+        | .tuple ts _ =>
+          need (inPlaceAll ts) "`ℓ_T` off a position of type `T`"
+          let ε₁ ← checkExpr p E ((x, te.raise ls) :: Γ) (pc.join ls) (.tuple ts .bot) okE
+          let ε₂ ← checkExpr p E ((y, .int ls) :: Γ) (pc.join ls) (.tuple ts .bot) errE
+          need (flowsB p.top (ts.map (LTy.raise ls)) ts)
+            "a component of the joined state is below the scrutinee's label (U4001)"
+          pure (ε₁.union ε₂)
+        | _ =>
         need (inPlace s) "`ℓ_T` off a position of type `T`"
         let ε₁ ← checkExpr p E ((x, te.raise ls) :: Γ) (pc.join ls) s okE
         let ε₂ ← checkExpr p E ((y, .int ls) :: Γ) (pc.join ls) s errE
@@ -514,6 +542,15 @@ mutual
         pure ⟨ε.op, ε.host, Option.none, ε.rels⟩
       | _ => throw "`attempt` at a type that is not a result"
     | .handle body x handler => do
+      match s with
+      | .tuple ts _ =>
+        need (inPlaceAll ts) "`ℓ_T` off a position of type `T`"
+        let ε₁ ← checkExpr p E Γ pc (.tuple ts .bot) body
+        let ε₂ ← checkExpr p E ((x, .int ε₁.failLabel) :: Γ) (pc.join ε₁.failLabel) (.tuple ts .bot) handler
+        need (flowsB p.top (ts.map (LTy.raise ε₁.failLabel)) ts)
+          "a component of the joined state is below what decides the failure (U4001)"
+        pure ⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels⟩
+      | _ =>
       need (inPlace s) "`ℓ_T` off a position of type `T`"
       let ε₁ ← checkExpr p E Γ pc s body
       let ε₂ ← checkExpr p E ((x, .int ε₁.failLabel) :: Γ) (pc.join ε₁.failLabel) s handler
@@ -540,8 +577,9 @@ mutual
           (.tuple (state.map Prod.snd) .bot) body
         need (p.oldLoop || leB p.top ε.failLabel (pc.join ls))
           "an iteration's failure is decided above what decides whether it runs (U4002)"
-        flowTo p (.tuple (state.map Prod.snd) ls) s
-          "the value of a loop, raised by what decides its iterations,"
+        need (flowsB p.top ((state.map Prod.snd).map (LTy.raise ls)) (state.map Prod.snd))
+          "a component of a loop's state is below what decides its iterations (U4001)"
+        flowTo p (.tuple (state.map Prod.snd) .bot) s "the value of a loop"
         pure ε
       | _ => throw "a loop over a value that is not a list"
     | .loop (.range low high _) x xty state init body => do
@@ -556,8 +594,9 @@ mutual
           (.tuple (state.map Prod.snd) .bot) body
         need (p.oldLoop || leB p.top ε.failLabel (pc.join (l₁.join l₂)))
           "an iteration's failure is decided above what decides whether it runs (U4002)"
-        flowTo p (.tuple (state.map Prod.snd) (l₁.join l₂)) s
-          "the value of a loop, raised by what decides its iterations,"
+        need (flowsB p.top ((state.map Prod.snd).map (LTy.raise (l₁.join l₂))) (state.map Prod.snd))
+          "a component of a loop's state is below what decides its iterations (U4001)"
+        flowTo p (.tuple (state.map Prod.snd) .bot) s "the value of a loop"
         pure ε
       | _, _ => throw "a range whose bounds are not integers"
 end

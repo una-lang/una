@@ -232,33 +232,60 @@ mutual
       obtain ⟨ct, hct, h⟩ := h
       cases ct with
       | bool lc =>
-        simp only [bind_ok, pure_ok, need_ok] at h
-        obtain ⟨_, hip, ε₁, h₁, ε₂, h₂, _, hf, rfl⟩ := h
-        obtain ⟨t₁, ht₁, f₁⟩ := checkExpr_sound h₁
-        obtain ⟨t₂, ht₂, f₂⟩ := checkExpr_sound h₂
-        exact ⟨_, .ite (atomTy_sound hct) ht₁ ht₂ f₁ f₂ (inPlace_sound hip), flowTo_ok hf⟩
+        cases s
+        case tuple ts l =>
+          simp only [bind_ok, pure_ok, need_ok] at h
+          obtain ⟨_, hip, ε₁, h₁, ε₂, h₂, _, hcov, rfl⟩ := h
+          obtain ⟨t₁, ht₁, f₁⟩ := checkExpr_sound h₁
+          obtain ⟨t₂, ht₂, f₂⟩ := checkExpr_sound h₂
+          exact ⟨_, .iteT (atomTy_sound hct) ht₁ ht₂ f₁ f₂ (inPlaceAll_sound hip) (flowsB_sound _ _ hcov),
+            .tuple (Flows.refl _) (LExpr.bot_le _)⟩
+        all_goals
+          simp only [bind_ok, pure_ok, need_ok] at h
+          obtain ⟨_, hip, ε₁, h₁, ε₂, h₂, _, hf, rfl⟩ := h
+          obtain ⟨t₁, ht₁, f₁⟩ := checkExpr_sound h₁
+          obtain ⟨t₂, ht₂, f₂⟩ := checkExpr_sound h₂
+          exact ⟨_, .ite (atomTy_sound hct) ht₁ ht₂ f₁ f₂ (inPlace_sound hip), flowTo_ok hf⟩
       | _ => simp at h
     | .caseOption scrutinee noneE x someE, ε, h => by
       simp only [checkExpr, bind_ok] at h
       obtain ⟨st, hst, h⟩ := h
       cases st with
       | option te ls =>
-        simp only [bind_ok, pure_ok, need_ok] at h
-        obtain ⟨_, hip, ε₁, h₁, ε₂, h₂, _, hf, rfl⟩ := h
-        obtain ⟨t₁, ht₁, f₁⟩ := checkExpr_sound h₁
-        obtain ⟨t₂, ht₂, f₂⟩ := checkExpr_sound h₂
-        exact ⟨_, .caseOption (atomTy_sound hst) ht₁ ht₂ f₁ f₂ (inPlace_sound hip), flowTo_ok hf⟩
+        cases s
+        case tuple ts l =>
+          simp only [bind_ok, pure_ok, need_ok] at h
+          obtain ⟨_, hip, ε₁, h₁, ε₂, h₂, _, hcov, rfl⟩ := h
+          obtain ⟨t₁, ht₁, f₁⟩ := checkExpr_sound h₁
+          obtain ⟨t₂, ht₂, f₂⟩ := checkExpr_sound h₂
+          exact ⟨_, .caseOptionT (atomTy_sound hst) ht₁ ht₂ f₁ f₂ (inPlaceAll_sound hip)
+            (flowsB_sound _ _ hcov), .tuple (Flows.refl _) (LExpr.bot_le _)⟩
+        all_goals
+          simp only [bind_ok, pure_ok, need_ok] at h
+          obtain ⟨_, hip, ε₁, h₁, ε₂, h₂, _, hf, rfl⟩ := h
+          obtain ⟨t₁, ht₁, f₁⟩ := checkExpr_sound h₁
+          obtain ⟨t₂, ht₂, f₂⟩ := checkExpr_sound h₂
+          exact ⟨_, .caseOption (atomTy_sound hst) ht₁ ht₂ f₁ f₂ (inPlace_sound hip), flowTo_ok hf⟩
       | _ => simp at h
     | .caseResult scrutinee x okE y errE, ε, h => by
       simp only [checkExpr, bind_ok] at h
       obtain ⟨st, hst, h⟩ := h
       cases st with
       | result te ls =>
-        simp only [bind_ok, pure_ok, need_ok] at h
-        obtain ⟨_, hip, ε₁, h₁, ε₂, h₂, _, hf, rfl⟩ := h
-        obtain ⟨t₁, ht₁, f₁⟩ := checkExpr_sound h₁
-        obtain ⟨t₂, ht₂, f₂⟩ := checkExpr_sound h₂
-        exact ⟨_, .caseResult (atomTy_sound hst) ht₁ ht₂ f₁ f₂ (inPlace_sound hip), flowTo_ok hf⟩
+        cases s
+        case tuple ts l =>
+          simp only [bind_ok, pure_ok, need_ok] at h
+          obtain ⟨_, hip, ε₁, h₁, ε₂, h₂, _, hcov, rfl⟩ := h
+          obtain ⟨t₁, ht₁, f₁⟩ := checkExpr_sound h₁
+          obtain ⟨t₂, ht₂, f₂⟩ := checkExpr_sound h₂
+          exact ⟨_, .caseResultT (atomTy_sound hst) ht₁ ht₂ f₁ f₂ (inPlaceAll_sound hip)
+            (flowsB_sound _ _ hcov), .tuple (Flows.refl _) (LExpr.bot_le _)⟩
+        all_goals
+          simp only [bind_ok, pure_ok, need_ok] at h
+          obtain ⟨_, hip, ε₁, h₁, ε₂, h₂, _, hf, rfl⟩ := h
+          obtain ⟨t₁, ht₁, f₁⟩ := checkExpr_sound h₁
+          obtain ⟨t₂, ht₂, f₂⟩ := checkExpr_sound h₂
+          exact ⟨_, .caseResult (atomTy_sound hst) ht₁ ht₂ f₁ f₂ (inPlace_sound hip), flowTo_ok hf⟩
       | _ => simp at h
     | .fail code, ε, h => by
       simp only [checkExpr, bind_ok, pure_ok, need_ok] at h
@@ -274,11 +301,20 @@ mutual
         exact ⟨_, .attempt htb, .result hflow (le_ok hle)⟩
       | _ => simp at h
     | .handle body x handler, ε, h => by
-      simp only [checkExpr, bind_ok, pure_ok, need_ok] at h
-      obtain ⟨_, hip, ε₁, h₁, ε₂, h₂, _, hf, rfl⟩ := h
-      obtain ⟨t₁, ht₁, f₁⟩ := checkExpr_sound h₁
-      obtain ⟨t₂, ht₂, f₂⟩ := checkExpr_sound h₂
-      exact ⟨_, .handle ht₁ ht₂ f₁ f₂ (inPlace_sound hip), flowTo_ok hf⟩
+      cases s
+      case tuple ts l =>
+        simp only [checkExpr, bind_ok, pure_ok, need_ok] at h
+        obtain ⟨_, hip, ε₁, h₁, ε₂, h₂, _, hcov, rfl⟩ := h
+        obtain ⟨t₁, ht₁, f₁⟩ := checkExpr_sound h₁
+        obtain ⟨t₂, ht₂, f₂⟩ := checkExpr_sound h₂
+        exact ⟨_, .handleT ht₁ ht₂ f₁ f₂ (inPlaceAll_sound hip) (flowsB_sound _ _ hcov),
+          .tuple (Flows.refl _) (LExpr.bot_le _)⟩
+      all_goals
+        simp only [checkExpr, bind_ok, pure_ok, need_ok] at h
+        obtain ⟨_, hip, ε₁, h₁, ε₂, h₂, _, hf, rfl⟩ := h
+        obtain ⟨t₁, ht₁, f₁⟩ := checkExpr_sound h₁
+        obtain ⟨t₂, ht₂, f₂⟩ := checkExpr_sound h₂
+        exact ⟨_, .handle ht₁ ht₂ f₁ f₂ (inPlace_sound hip), flowTo_ok hf⟩
     | .letTuple bs value body, ε, h => by
       simp only [checkExpr, bind_ok] at h
       obtain ⟨vt, hvt, h⟩ := h
@@ -294,12 +330,13 @@ mutual
       obtain ⟨xt, hxt, h⟩ := h
       cases xt <;> try (simp at h; done)
       simp only [bind_ok, pure_ok, need_ok] at h
-      obtain ⟨_, hfx, _, hipx, ts, hts, _, hfl, _, hips, εb, hb, _, hfe, _, hf, rfl⟩ := h
+      obtain ⟨_, hfx, _, hipx, ts, hts, _, hfl, _, hips, εb, hb, _, hfe, _, hcov, _, hf, rfl⟩ := h
       obtain ⟨tb, htb, hftb⟩ := checkExpr_sound hb
       simp only [List.all_eq_true] at hips
       exact ⟨_, .loopList (atomTy_sound hxt) (flowTo_ok hfx) (inPlace_sound hipx)
         (atomsTy_sound hts) (flowsB_sound _ _ hfl) (fun q hq => inPlace_sound (hips q hq)) htb hftb
-        (fun ho => by simp only [ho, Bool.false_or] at hfe; exact leB_sound hfe),
+        (fun ho => by simp only [ho, Bool.false_or] at hfe; exact leB_sound hfe)
+        (flowsB_sound _ _ hcov),
         flowTo_ok hf⟩
     | .loop (.range low high inc) x xty st init body, ε, h => by
       simp only [checkExpr, bind_ok] at h
@@ -307,12 +344,13 @@ mutual
       cases lt <;> try (simp at h; done)
       cases ht <;> try (simp at h; done)
       simp only [bind_ok, pure_ok, need_ok] at h
-      obtain ⟨_, hfx, _, hipx, ts, hts, _, hfl, _, hips, εb, hb, _, hfe, _, hf, rfl⟩ := h
+      obtain ⟨_, hfx, _, hipx, ts, hts, _, hfl, _, hips, εb, hb, _, hfe, _, hcov, _, hf, rfl⟩ := h
       obtain ⟨tb, htb, hftb⟩ := checkExpr_sound hb
       simp only [List.all_eq_true] at hips
       exact ⟨_, .loopRange (atomTy_sound hlt) (atomTy_sound hht) (flowTo_ok hfx) (inPlace_sound hipx)
         (atomsTy_sound hts) (flowsB_sound _ _ hfl) (fun q hq => inPlace_sound (hips q hq)) htb hftb
-        (fun ho => by simp only [ho, Bool.false_or] at hfe; exact leB_sound hfe),
+        (fun ho => by simp only [ho, Bool.false_or] at hfe; exact leB_sound hfe)
+        (flowsB_sound _ _ hcov),
         flowTo_ok hf⟩
 end
 

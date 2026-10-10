@@ -263,10 +263,18 @@ mutual
         rcases hg with hg | hg
         · exact expr_reach hwf t ht g hg
         · exact expr_reach hwf e he g hg
+      | iteT _ ht he =>
+        rcases hg with hg | hg
+        · exact expr_reach hwf t ht g hg
+        · exact expr_reach hwf e he g hg
     | .caseOption _ t _ e, _, _, _, _, h, g, hg => by
       simp only [Expr.callees, List.mem_append] at hg
       cases h with
       | caseOption _ ht he =>
+        rcases hg with hg | hg
+        · exact expr_reach hwf t ht g hg
+        · exact expr_reach hwf e he g hg
+      | caseOptionT _ ht he =>
         rcases hg with hg | hg
         · exact expr_reach hwf t ht g hg
         · exact expr_reach hwf e he g hg
@@ -277,10 +285,18 @@ mutual
         rcases hg with hg | hg
         · exact expr_reach hwf t ht g hg
         · exact expr_reach hwf e he g hg
+      | caseResultT _ ht he =>
+        rcases hg with hg | hg
+        · exact expr_reach hwf t ht g hg
+        · exact expr_reach hwf e he g hg
     | .handle t _ e, _, _, _, _, h, g, hg => by
       simp only [Expr.callees, List.mem_append] at hg
       cases h with
       | handle ht he =>
+        rcases hg with hg | hg
+        · exact expr_reach hwf t ht g hg
+        · exact expr_reach hwf e he g hg
+      | handleT ht he =>
         rcases hg with hg | hg
         · exact expr_reach hwf t ht g hg
         · exact expr_reach hwf e he g hg

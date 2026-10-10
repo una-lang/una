@@ -942,6 +942,82 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         | ok v => exact ⟨hev, LValTy.lsubst_raise (LValTy.flow h.2.1 (Flow.lsubst _ _ h₁)), h.2.2⟩
         | stuck => exact ⟨hev, trivial, h.2.2⟩
         | outOfFuel => exact ⟨hev, trivial, h.2.2⟩
+      | iteT hc ht he h₁ h₂ _ _ =>
+        obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv hc
+        simp only [LTy.lsubst] at hvt
+        cases hvt with
+        | @bool b _ =>
+          cases b
+          · simp only [eval, hv]
+            exact UOk.mono (allowed_union_right_inst (hpc0 _))
+              (fun _ h => LValTy.flow h (Flow.lsubst _ _ h₂))
+              (Fails.union_right_inst (hpc0 _)) (ihE hσ henv he)
+          · simp only [eval, hv]
+            exact UOk.mono (Allowed.mono (hpc0 _) union_op_left union_host_left (fun x h => union_rels_left x h))
+              (fun _ h => LValTy.flow h (Flow.lsubst _ _ h₁))
+              (fun h => Fails.union_left_inst (Fails.mono (hpc0 _) (fun l hl => ⟨l, hl, LExpr.le_refl l⟩) h))
+              (ihE hσ henv ht)
+      | caseOptionT hs hn hsome h₁ h₂ _ _ =>
+        obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv hs
+        simp only [LTy.lsubst] at hvt
+        cases hvt with
+        | none =>
+          simp only [eval, hv]
+          exact UOk.mono (Allowed.mono (hpc0 _) union_op_left union_host_left (fun x h => union_rels_left x h))
+            (fun _ h => LValTy.flow h (Flow.lsubst _ _ h₁))
+            (fun h => Fails.union_left_inst (Fails.mono (hpc0 _) (fun l hl => ⟨l, hl, LExpr.le_refl l⟩) h))
+            (ihE hσ henv hn)
+        | some hw =>
+          simp only [eval, hv]
+          exact UOk.mono (allowed_union_right_inst (hpc0 _))
+            (fun _ h => LValTy.flow h (Flow.lsubst _ _ h₂))
+            (Fails.union_right_inst (hpc0 _))
+            (ihE hσ (.cons (LValTy.lsubst_raise hw) henv) hsome)
+      | caseResultT hs hok herr h₁ h₂ _ _ =>
+        obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv hs
+        simp only [LTy.lsubst] at hvt
+        cases hvt with
+        | ok hw =>
+          simp only [eval, hv]
+          exact UOk.mono (Allowed.mono (hpc0 _) union_op_left union_host_left (fun x h => union_rels_left x h))
+            (fun _ h => LValTy.flow h (Flow.lsubst _ _ h₁))
+            (fun h => Fails.union_left_inst (Fails.mono (hpc0 _) (fun l hl => ⟨l, hl, LExpr.le_refl l⟩) h))
+            (ihE hσ (.cons (LValTy.lsubst_raise hw) henv) hok)
+        | err =>
+          simp only [eval, hv]
+          exact UOk.mono (allowed_union_right_inst (hpc0 _))
+            (fun _ h => LValTy.flow h (Flow.lsubst _ _ h₂))
+            (Fails.union_right_inst (hpc0 _)) (ihE hσ (.cons .int henv) herr)
+      | @handleT _ _ body x handler _ _ _ ε₁ ε₂ hb hh h₁ h₂ _ _ =>
+        have h := ihE (w := w) hσ henv hb
+        simp only [eval]
+        revert h
+        rcases eval H n p w env _ with ⟨tr, r, w₁⟩
+        intro h
+        have hmono : HostFx.Le ε₁.host (ε₁.host.or ε₂.host) := union_host_left (ε₂ := ε₂)
+        have hmono₂ : HostFx.Le ε₂.host (ε₁.host.or ε₂.host) := union_host_right (ε₁ := ε₁)
+        have hev : ∀ ev ∈ tr, Allowed p (pc.inst (p.sd σ))
+            ((⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels⟩ : Eff).inst (p.sd σ)) ev :=
+          fun ev hev => Allowed.mono (LExpr.le_refl _) (fun h => by simp only [Eff.inst] at h ⊢; simp [h])
+            hmono (fun x h => by simp only [Eff.inst] at h ⊢; simp [h]) ev (h.1 ev hev)
+        cases r with
+        | failed code =>
+          have hh' := ihE (w := w₁) hσ (.cons (LValTy.int (n := (code : Int))) henv) hh
+          rcases hrh : eval H n p w₁ ((x, Val.int (code : Int)) :: env) handler with ⟨tr', r', w₂⟩
+          rw [hrh] at hh'
+          simp only [hrh]
+          refine ⟨fun ev hev' => ?_, ?_, WEff.trans h.2.2 hh'.2.2⟩
+          · rcases List.mem_append.mp hev' with hev' | hev'
+            · exact hev ev hev'
+            · exact Allowed.mono (hpc0 _) (fun h => by simp only [Eff.inst] at h ⊢; simp [h])
+                hmono₂ (fun x h => by simp only [Eff.inst] at h ⊢; simp [h]) ev (hh'.1 ev hev')
+          · have h2 := hh'.2.1
+            cases r' <;> simp only [URes] at h2 ⊢
+            · exact LValTy.flow h2 (Flow.lsubst _ _ h₂)
+            · exact Fails.mono (hpc0 _) (fun l hl => ⟨l, hl, LExpr.le_refl l⟩) h2
+        | ok v => exact ⟨hev, LValTy.flow h.2.1 (Flow.lsubst _ _ h₁), h.2.2⟩
+        | stuck => exact ⟨hev, trivial, h.2.2⟩
+        | outOfFuel => exact ⟨hev, trivial, h.2.2⟩
       | @letTuple _ _ bs value body ts l _ _ hv hflows _ hb =>
         obtain ⟨v, hv', hvt⟩ := latom_ltypedσ henv hv
         simp only [LTy.lsubst] at hvt
