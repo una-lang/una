@@ -229,6 +229,77 @@ theorem vis_reqFail {s : List (String × LExpr)} (hh : p.HostWF) {pc : LExpr} {t
   simp only [Program.reqFail, hh.oldHost, Bool.false_eq_true, ite_false] at h
   exact Vis.of_le hh.reqFloor (vis_ofLabel_of_inst (Vis.of_le (LExpr.inst_le_join_inst _ _ _) h))
 
+/-! ### M6: tuples, `append`, `set` and loops -/
+
+theorem vis_bot_inst (s : List (String × LExpr)) : Vis p L (LExpr.bot.inst s) := by
+  rw [show LExpr.bot = LExpr.ofLabel Label.bot from rfl, LExpr.inst_ofLabel]
+  exact Vis.join Vis.bot Vis.bot
+
+theorem VAll.append_one {t : LTy} : ∀ {xs ys : List Val} {a b : Val}, VAll p L t xs ys →
+    V p L t a b → VAll p L t (xs ++ [a]) (ys ++ [b])
+  | _, _, _, _, .nil, h => .cons h .nil
+  | _, _, _, _, .cons h hs, hab => .cons h (VAll.append_one hs hab)
+
+theorem VAll.set {t : LTy} : ∀ {xs ys : List Val} {a b : Val} (i : Nat), VAll p L t xs ys →
+    V p L t a b → VAll p L t (xs.set i a) (ys.set i b)
+  | _, _, _, _, _, .nil, _ => .nil
+  | _, _, _, _, 0, .cons _ hs, hab => .cons hab hs
+  | _, _, _, _, i + 1, .cons h hs, hab => .cons h (VAll.set i hs hab)
+
+theorem VAll.refl_int {l : LExpr} : ∀ {xs : List Val}, (∀ x ∈ xs, ∃ k, x = .int k) →
+    VAll p L (.int l) xs xs
+  | [], _ => .nil
+  | _ :: _, h => by
+    obtain ⟨k, rfl⟩ := h _ List.mem_cons_self
+    exact .cons .int (VAll.refl_int (fun x hx => h x (List.mem_cons_of_mem _ hx)))
+
+theorem VAll.of_hidden {t : LTy} (ht : ¬ Vis p L t.top) :
+    ∀ {xs ys : List Val}, xs.length = ys.length → VAll p L t xs ys
+  | [], [], _ => .nil
+  | _ :: _, _ :: _, h => .cons (.hidden ht) (VAll.of_hidden ht (by simpa using h))
+  | [], _ :: _, h | _ :: _, [], h => by simp at h
+
+theorem brel_abort_left {R : Val → Val → Prop} {vf : Prop} {w : World H} {r : Run H} :
+    BRel p L R vf (abort w) r := fun h _ => by simp [abort, Term] at h
+
+theorem brel_abort_right {R : Val → Val → Prop} {vf : Prop} {w : World H} {r : Run H} :
+    BRel p L R vf r (abort w) := fun _ h => by simp [abort, Term] at h
+
+section
+variable {σ : List (String × LTy)}
+
+theorem VList.raiseσ (e : LExpr) : ∀ {ts : List LTy} {xs ys : List Val},
+    VList p L (ts.map (LTy.lsubst p.recordDeep σ)) xs ys →
+    VList p L ((ts.map (LTy.raise e)).map (LTy.lsubst p.recordDeep σ)) xs ys
+  | [], [], [], .nil => .nil
+  | _ :: _, _ :: _, _ :: _, .cons h hs => .cons (V.raiseσ e h) (VList.raiseσ e hs)
+
+theorem VList.hideσ {e : LExpr} (he : e.PlainFree) (hv : ¬ Vis p L (e.inst (p.sd σ))) :
+    ∀ {ts : List LTy} {xs ys : List Val}, xs.length = ts.length → ys.length = ts.length →
+      VList p L ((ts.map (LTy.raise e)).map (LTy.lsubst p.recordDeep σ)) xs ys
+  | [], [], [], _, _ => .nil
+  | _ :: _, _ :: _, _ :: _, h₁, h₂ =>
+    .cons (V.hideσ he _ _ hv) (VList.hideσ he hv (by simpa using h₁) (by simpa using h₂))
+  | [], _ :: _, _, h, _ | [], _, _ :: _, _, h | _ :: _, [], _, h, _ | _ :: _, _, [], _, h => by
+    simp at h
+
+/-- A body's tuple, at the type of a loop's state, is a related pair of states. -/
+theorem stRel_of {S : List LTy} {r₁ r₂ : Val}
+    (h : V p L ((LTy.tuple S .bot).lsubst p.recordDeep σ) r₁ r₂) :
+    StRel (p := p) (L := L) (S.map (LTy.lsubst p.recordDeep σ)) r₁ r₂ := by
+  simp only [LTy.lsubst, LTy.lsubsts_eq] at h
+  cases h with
+  | hidden h => exact absurd (vis_bot_inst _) h
+  | tuple h => exact ⟨_, _, rfl, rfl, h⟩
+
+theorem tupTy_of {S : List LTy} {r : Val} (h : LValTy p r ((LTy.tuple S .bot).lsubst p.recordDeep σ)) :
+    TupTy p (S.map (LTy.lsubst p.recordDeep σ)) r := by
+  simp only [LTy.lsubst, LTy.lsubsts_eq] at h
+  cases h with
+  | tuple h => exact ⟨_, rfl, h⟩
+
+end
+
 /-- **T6 for F1 with declassification (option B1), at every ground instance**: runs related up
 to their first different release. -/
 theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
@@ -886,6 +957,52 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
             V.eq_of_deep hwf hbv hbu₁ hbu₂ (LTy.eqIn_lsub hE he₂') hd₂]
           exact .bool
         · exact .hidden hd
+      | tuple has =>
+        refine BRelR.of_brel ?_
+        obtain ⟨vs₁, vs₂, h₁, h₂, hvs, _, _⟩ := latoms_bothσ he₁ he₂ hrel has
+        simp only [evalRhs, h₁, h₂, Option.map, Option.elim, LTy.lsubst, LTy.lsubsts_eq]
+        exact brel_done hw (.tuple hvs)
+      | append hxs hi hflow =>
+        refine BRelR.of_brel ?_
+        obtain ⟨x₁, x₂, hx₁, hx₂, hxv, hxu₁, hxu₂⟩ := latom_bothσ he₁ he₂ hrel hxs
+        obtain ⟨i₁, i₂, hi₁, hi₂, hiv, _, _⟩ := latom_bothσ he₁ he₂ hrel hi
+        simp only [LTy.lsubst] at hxv hxu₁ hxu₂
+        cases hxu₁ with
+        | list _ =>
+          cases hxu₂ with
+          | list _ =>
+            simp only [evalRhs, hx₁, hx₂, hi₁, hi₂]
+            simp only [LTy.lsubst]
+            cases hxv with
+            | hidden h => exact brel_done hw (.hidden h)
+            | list hall =>
+              exact brel_done hw (.list (VAll.append_one hall (V.flow hiv (Flow.lsubst _ _ hflow))))
+      | set hxs hi hle hv hflow =>
+        refine BRelR.of_brel ?_
+        obtain ⟨x₁, x₂, hx₁, hx₂, hxv, hxu₁, hxu₂⟩ := latom_bothσ he₁ he₂ hrel hxs
+        obtain ⟨i₁, i₂, hi₁, hi₂, hiv, hiu₁, hiu₂⟩ := latom_bothσ he₁ he₂ hrel hi
+        obtain ⟨v₁, v₂, hv₁, hv₂, hvv, _, _⟩ := latom_bothσ he₁ he₂ hrel hv
+        simp only [LTy.lsubst] at hxv hxu₁ hxu₂ hiv hiu₁ hiu₂
+        have hvi : Vis p L (_ : LExpr) := Vis.of_le (LExpr.le_inst _ hle) (vis_bot_inst (p.sd σ))
+        have hii := V.eq_int hiv hvi
+        subst hii
+        cases hxu₁ with
+        | list _ =>
+          cases hxu₂ with
+          | list _ =>
+            cases hiu₁ with
+            | int =>
+              simp only [evalRhs, hx₁, hx₂, hi₁, hi₂, hv₁, hv₂]
+              have hvv' := V.flow hvv (Flow.lsubst _ _ hflow)
+              split
+              · split
+                · simp only [LTy.lsubst, LTy.lsubsts]
+                  refine brel_done hw (.tuple (.cons ?_ (.cons .unit .nil)))
+                  cases hxv with
+                  | hidden h => exact .hidden h
+                  | list hall => exact .list (VAll.set _ hall hvv')
+                · exact brel_abort_right
+              · exact brel_abort_left
     · intro σ w₁ w₂ e₁ e₂ Γ E pc e t ε hσ hE hΓ hpc hw he₁ he₂ hrel he
       have hcons : ∀ {x : String} {u : LTy}, u.InPlace → LCtx.InPlace ((x, u) :: Γ) :=
         fun hu q hq => by
@@ -1181,6 +1298,263 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
           · exact .inl ⟨by simp only [proj_append]; rw [hp, hph],
               OutRel.mono (fun _ _ h => V.raiseσ _ (V.flow h (Flow.lsubst _ _ h₂))) id hoh, hwh⟩
           · exact .inr (Diverged.prepend hp hdh)
+      | @letTuple _ _ bs value body ts l s ε hv hflows hbs hb =>
+        obtain ⟨v₁, v₂, hv₁, hv₂, hvv, hvu₁, hvu₂⟩ := latom_bothσ he₁ he₂ hrel hv
+        have hli := latom_inPlace hΓ hv
+        simp only [LTy.InPlace] at hli
+        simp only [LTy.lsubst] at hvv hvu₁ hvu₂
+        cases hvu₁ with
+        | @tuple vs₁ _ _ hs₁ =>
+          cases hvu₂ with
+          | @tuple vs₂ _ _ hs₂ =>
+            rw [LTy.lsubsts_eq] at hs₁ hs₂
+            have hrv : VList p L ((ts.map (LTy.raise l)).map (LTy.lsubst p.recordDeep σ)) vs₁ vs₂ := by
+              by_cases hvl : Vis p L (l.inst (p.sd σ))
+              · cases hvv with
+                | hidden h => exact absurd hvl h
+                | tuple hvs =>
+                  rw [LTy.lsubsts_eq] at hvs
+                  exact VList.raiseσ l hvs
+              · exact VList.hideσ hli.2 hvl (by rw [LValsTy.length hs₁]; simp)
+                  (by rw [LValsTy.length hs₂]; simp)
+            have hbs₁ := LValsTy.flowsσ (LValsTy.lsubst_raise l hs₁) hflows
+            have hbs₂ := LValsTy.flowsσ (LValsTy.lsubst_raise l hs₂) hflows
+            have hbsv := VList.flowsσ hrv hflows
+            simp only [eval, hv₁, hv₂]
+            rw [ite_eq_left (by rw [LValsTy.length hbs₁]; simp),
+              ite_eq_left (by rw [LValsTy.length hbs₂]; simp)]
+            have mk : ∀ {env : Env} {vs : List Val}, LEnvTy p env (Γ.lsub p.recordDeep σ) →
+                LValsTy p vs ((bs.map Prod.snd).map (LTy.lsubst p.recordDeep σ)) →
+                LEnvTy p (bindParams bs vs env) (LCtx.lsub p.recordDeep σ (bs ++ Γ)) := by
+              intro env vs henv hvs
+              rw [LCtx.lsub_append]
+              have := bindParams_ltyped (params := LCtx.lsub p.recordDeep σ bs)
+                (by rw [LCtx.lsub_snd]; exact hvs) henv
+              simpa [bindParams, LCtx.lsub, List.map_map, Function.comp_def] using this
+            have hrel' : EnvRel p L (LCtx.lsub p.recordDeep σ (bs ++ Γ)) (bindParams bs vs₁ e₁)
+                (bindParams bs vs₂ e₂) := by
+              rw [LCtx.lsub_append]
+              have := bindParams_rel (params := LCtx.lsub p.recordDeep σ bs)
+                (by rw [LCtx.lsub_snd]; exact hbsv) hrel
+              simpa [bindParams, LCtx.lsub, List.map_map, Function.comp_def] using this
+            have hΓ' : LCtx.InPlace (bs ++ Γ) := fun q hq => by
+              rcases List.mem_append.mp hq with hq | hq
+              · exact hbs q hq
+              · exact hΓ q hq
+            exact ihE hσ hE hΓ' hpc hw (mk he₁ hbs₁) (mk he₂ hbs₂) hrel' hb
+      | @loopList _ _ xs x xty st init body te ls ts tb ε hxs hx hxi hi hflows hst hb hbt hfe =>
+        obtain ⟨x₁, x₂, hx₁, hx₂, hxv, hxu₁, hxu₂⟩ := latom_bothσ he₁ he₂ hrel hxs
+        obtain ⟨s₁, s₂, hs₁, hs₂, hsv, hsu₁, hsu₂⟩ := latoms_bothσ he₁ he₂ hrel hi
+        have hli := latom_inPlace hΓ hxs
+        simp only [LTy.InPlace] at hli
+        have hpc' : (pc.join ls).PlainFree := LExpr.plainFree_join hpc hli.2
+
+        -- The body's environments: the variable, the state, then the loop's.
+        have mkEnv : ∀ {env : Env} {v : Val} {stv : List Val},
+            LEnvTy p env (Γ.lsub p.recordDeep σ) → LValTy p v (xty.lsubst p.recordDeep σ) →
+            LValsTy p stv ((st.map Prod.snd).map (LTy.lsubst p.recordDeep σ)) →
+            LEnvTy p ((x, v) :: bindParams st stv env) (LCtx.lsub p.recordDeep σ ((x, xty) :: (st ++ Γ))) := by
+          intro env v stv henv hv hst
+          have hb' : LEnvTy p (bindParams st stv env) (LCtx.lsub p.recordDeep σ (st ++ Γ)) := by
+            rw [LCtx.lsub_append]
+            have := bindParams_ltyped (params := LCtx.lsub p.recordDeep σ st)
+              (by rw [LCtx.lsub_snd]; exact hst) henv
+            simpa [bindParams, LCtx.lsub, List.map_map, Function.comp_def] using this
+          exact .cons hv hb'
+        have mkRel : ∀ {v₁ v₂ : Val} {st₁ st₂ : List Val}, V p L (xty.lsubst p.recordDeep σ) v₁ v₂ →
+            VList p L ((st.map Prod.snd).map (LTy.lsubst p.recordDeep σ)) st₁ st₂ →
+            EnvRel p L (LCtx.lsub p.recordDeep σ ((x, xty) :: (st ++ Γ)))
+              ((x, v₁) :: bindParams st st₁ e₁) ((x, v₂) :: bindParams st st₂ e₂) := by
+          intro v₁ v₂ st₁ st₂ hv hst
+          have hb' : EnvRel p L (LCtx.lsub p.recordDeep σ (st ++ Γ)) (bindParams st st₁ e₁)
+              (bindParams st st₂ e₂) := by
+            rw [LCtx.lsub_append]
+            have := bindParams_rel (params := LCtx.lsub p.recordDeep σ st)
+              (by rw [LCtx.lsub_snd]; exact hst) hrel
+            simpa [bindParams, LCtx.lsub, List.map_map, Function.comp_def] using this
+          exact .cons hv hb'
+        have hΓ' : LCtx.InPlace ((x, xty) :: (st ++ Γ)) := fun q hq => by
+          rcases List.mem_cons.mp hq with rfl | hq
+          · exact hxi
+          · rcases List.mem_append.mp hq with hq | hq
+            · exact hst q hq
+            · exact hΓ q hq
+        -- One iteration, unary, at the program counter of the body.
+        have UB : ∀ {w : World H} {env : Env} {v : Val} {stv : List Val},
+            LEnvTy p env (Γ.lsub p.recordDeep σ) → LValTy p v (xty.lsubst p.recordDeep σ) →
+            LValsTy p stv ((st.map Prod.snd).map (LTy.lsubst p.recordDeep σ)) →
+            UOk (Allowed p ((pc.join ls).inst (p.sd σ)) (ε.inst (p.sd σ)))
+              (TupTy p ((st.map Prod.snd).map (LTy.lsubst p.recordDeep σ)))
+              (Fails p ((pc.join ls).inst (p.sd σ)) (ε.inst (p.sd σ))) w
+              (eval H n p w ((x, v) :: bindParams st stv env) body) :=
+          fun henv hv hst => UOk.mono (fun _ h => h)
+            (fun _ h => tupTy_of (LValTy.flow h (Flow.lsubst _ _ hbt))) id (uE hσ (mkEnv henv hv hst) hb)
+        -- What the iterations' failures decide (T-Loop's premise).
+        have hfe' := hfe hh.oldLoop
+        have hnf : ¬ Vis p L (ε.inst (p.sd σ)).failLabel → ¬ Vis p L ((pc.join ls).inst (p.sd σ)) :=
+          fun hn h => hn (Vis.failLabel_inst.mpr (Vis.of_le (LExpr.le_inst _ hfe') h))
+        have hst₁ := LValsTy.flowsσ hsu₁ hflows
+        have hst₂ := LValsTy.flowsσ hsu₂ hflows
+        have hstv := VList.flowsσ hsv hflows
+        have hvar : ∀ {v : Val}, LValTy p v (te.lsubst p.recordDeep σ) → LValTy p v (xty.lsubst p.recordDeep σ) :=
+          fun hv => LValTy.flow (LValTy.lsubst_raise hv) (Flow.lsubst _ _ hx)
+        have UL : ∀ {w : World H} {env : Env} {items : List Val} {stv : List Val},
+            LEnvTy p env (Γ.lsub p.recordDeep σ) → (∀ v ∈ items, LValTy p v (te.lsubst p.recordDeep σ)) →
+            LValsTy p stv ((st.map Prod.snd).map (LTy.lsubst p.recordDeep σ)) →
+            UOk (Allowed p ((pc.join ls).inst (p.sd σ)) (ε.inst (p.sd σ)))
+              (TupTy p ((st.map Prod.snd).map (LTy.lsubst p.recordDeep σ)))
+              (Fails p ((pc.join ls).inst (p.sd σ)) (ε.inst (p.sd σ))) w
+              (walkLoop (fun w v st' => eval H n p w ((x, v) :: bindParams st st' env) body) w stv items) :=
+          fun henv hitems hstv => walkLoop_uok (fun _ _ _ hv hst => UB henv (hvar hv) hst) _ hstv hitems
+        simp only [LTy.lsubst] at hxv hxu₁ hxu₂
+        cases hxu₁ with
+        | @list items₁ _ _ hl₁ =>
+          cases hxu₂ with
+          | @list items₂ _ _ hl₂ =>
+            simp only [eval, sourceVals, hx₁, hx₂, hs₁, hs₂]
+            rw [ite_eq_left (by rw [LValsTy.length hst₁]; simp),
+              ite_eq_left (by rw [LValsTy.length hst₂]; simp)]
+            by_cases hvl : Vis p L (ls.inst (p.sd σ))
+            · cases hxv with
+              | hidden h => exact absurd hvl h
+              | list hall =>
+                refine BRelR.mono (fun r₁ r₂ h => ?_) id (walkLoop_brelR (a := te.lsubst p.recordDeep σ)
+                  (fun w₁ w₂ v₁ v₂ st₁ st₂ hw' hv hv₁ hv₂ hsr hst₁' hst₂' => BRelR.mono
+                    (fun _ _ h => stRel_of (V.flow h (Flow.lsubst _ _ hbt))) id
+                    (ihE hσ hE hΓ' hpc' hw' (mkEnv he₁ (hvar hv₁) hst₁') (mkEnv he₂ (hvar hv₂) hst₂')
+                      (mkRel (V.flow (V.raiseσ ls hv) (Flow.lsubst _ _ hx)) hsr) hb))
+                  (fun _ _ _ hv hst => UB he₁ (hvar hv) hst) (fun _ _ _ hv hst => UB he₂ (hvar hv) hst)
+                  (fun hn w stv its hstv hits => confined (L := L) hh (UL he₁ hits hstv) (hnf hn))
+                  (fun hn w stv its hstv hits => confined (L := L) hh (UL he₂ hits hstv) (hnf hn))
+                  hw hstv hst₁ hst₂ hall hl₁ hl₂)
+                obtain ⟨_, _, rfl, rfl, h⟩ := h
+                simp only [LTy.lsubst, LTy.lsubsts_eq]
+                exact .tuple h
+            · exact .of_brel (brel_confined hh hw (UL he₁ (LValsAll.mem hl₁) hst₁)
+                (UL he₂ (LValsAll.mem hl₂) hst₂)
+                (fun h => hvl (Vis.of_le (LExpr.inst_le_join_inst _ _ _) h))
+                (fun _ _ => .hidden (by simp only [LTy.lsubst, LTy.top]; exact hvl)) id id)
+      | @loopRange _ _ low high inc x xty st init body l₁ l₂ ts tb ε hlo hhi hx hxi hi hflows hst hb hbt hfe =>
+        obtain ⟨a₁, a₂, ha₁, ha₂, hav, hau₁, hau₂⟩ := latom_bothσ he₁ he₂ hrel hlo
+        obtain ⟨b₁, b₂, hb₁, hb₂, hbv, hbu₁, hbu₂⟩ := latom_bothσ he₁ he₂ hrel hhi
+        obtain ⟨s₁, s₂, hs₁, hs₂, hsv, hsu₁, hsu₂⟩ := latoms_bothσ he₁ he₂ hrel hi
+        have hl₁i : l₁.PlainFree := latom_inPlace hΓ hlo
+        have hl₂i : l₂.PlainFree := latom_inPlace hΓ hhi
+        have hpc' : (pc.join (l₁.join l₂)).PlainFree :=
+          LExpr.plainFree_join hpc (LExpr.plainFree_join hl₁i hl₂i)
+
+        -- The body's environments: the variable, the state, then the loop's.
+        have mkEnv : ∀ {env : Env} {v : Val} {stv : List Val},
+            LEnvTy p env (Γ.lsub p.recordDeep σ) → LValTy p v (xty.lsubst p.recordDeep σ) →
+            LValsTy p stv ((st.map Prod.snd).map (LTy.lsubst p.recordDeep σ)) →
+            LEnvTy p ((x, v) :: bindParams st stv env) (LCtx.lsub p.recordDeep σ ((x, xty) :: (st ++ Γ))) := by
+          intro env v stv henv hv hst
+          have hb' : LEnvTy p (bindParams st stv env) (LCtx.lsub p.recordDeep σ (st ++ Γ)) := by
+            rw [LCtx.lsub_append]
+            have := bindParams_ltyped (params := LCtx.lsub p.recordDeep σ st)
+              (by rw [LCtx.lsub_snd]; exact hst) henv
+            simpa [bindParams, LCtx.lsub, List.map_map, Function.comp_def] using this
+          exact .cons hv hb'
+        have mkRel : ∀ {v₁ v₂ : Val} {st₁ st₂ : List Val}, V p L (xty.lsubst p.recordDeep σ) v₁ v₂ →
+            VList p L ((st.map Prod.snd).map (LTy.lsubst p.recordDeep σ)) st₁ st₂ →
+            EnvRel p L (LCtx.lsub p.recordDeep σ ((x, xty) :: (st ++ Γ)))
+              ((x, v₁) :: bindParams st st₁ e₁) ((x, v₂) :: bindParams st st₂ e₂) := by
+          intro v₁ v₂ st₁ st₂ hv hst
+          have hb' : EnvRel p L (LCtx.lsub p.recordDeep σ (st ++ Γ)) (bindParams st st₁ e₁)
+              (bindParams st st₂ e₂) := by
+            rw [LCtx.lsub_append]
+            have := bindParams_rel (params := LCtx.lsub p.recordDeep σ st)
+              (by rw [LCtx.lsub_snd]; exact hst) hrel
+            simpa [bindParams, LCtx.lsub, List.map_map, Function.comp_def] using this
+          exact .cons hv hb'
+        have hΓ' : LCtx.InPlace ((x, xty) :: (st ++ Γ)) := fun q hq => by
+          rcases List.mem_cons.mp hq with rfl | hq
+          · exact hxi
+          · rcases List.mem_append.mp hq with hq | hq
+            · exact hst q hq
+            · exact hΓ q hq
+        -- One iteration, unary, at the program counter of the body.
+        have UB : ∀ {w : World H} {env : Env} {v : Val} {stv : List Val},
+            LEnvTy p env (Γ.lsub p.recordDeep σ) → LValTy p v (xty.lsubst p.recordDeep σ) →
+            LValsTy p stv ((st.map Prod.snd).map (LTy.lsubst p.recordDeep σ)) →
+            UOk (Allowed p ((pc.join (l₁.join l₂)).inst (p.sd σ)) (ε.inst (p.sd σ)))
+              (TupTy p ((st.map Prod.snd).map (LTy.lsubst p.recordDeep σ)))
+              (Fails p ((pc.join (l₁.join l₂)).inst (p.sd σ)) (ε.inst (p.sd σ))) w
+              (eval H n p w ((x, v) :: bindParams st stv env) body) :=
+          fun henv hv hst => UOk.mono (fun _ h => h)
+            (fun _ h => tupTy_of (LValTy.flow h (Flow.lsubst _ _ hbt))) id (uE hσ (mkEnv henv hv hst) hb)
+        -- What the iterations' failures decide (T-Loop's premise).
+        have hfe' := hfe hh.oldLoop
+        have hnf : ¬ Vis p L (ε.inst (p.sd σ)).failLabel → ¬ Vis p L ((pc.join (l₁.join l₂)).inst (p.sd σ)) :=
+          fun hn h => hn (Vis.failLabel_inst.mpr (Vis.of_le (LExpr.le_inst _ hfe') h))
+        have hst₁ := LValsTy.flowsσ hsu₁ hflows
+        have hst₂ := LValsTy.flowsσ hsu₂ hflows
+        have hstv := VList.flowsσ hsv hflows
+        have hvar : ∀ {k : Int}, LValTy p (.int k) (xty.lsubst p.recordDeep σ) :=
+          LValTy.flow (.int (l := ((l₁.join l₂).inst (p.sd σ)))) (Flow.lsubst (t₁ := .int (l₁.join l₂)) _ _ hx)
+        have hints : ∀ {lo hi : Int} {i : Bool}, ∀ v ∈ rangeVals lo hi i, ∃ k, v = .int k := by
+          intro lo hi i v hv
+          simp only [rangeVals, List.mem_map] at hv
+          obtain ⟨_, _, rfl⟩ := hv
+          exact ⟨_, rfl⟩
+        have UL : ∀ {w : World H} {env : Env} {items : List Val} {stv : List Val},
+            LEnvTy p env (Γ.lsub p.recordDeep σ) → (∀ v ∈ items, ∃ k, v = .int k) →
+            LValsTy p stv ((st.map Prod.snd).map (LTy.lsubst p.recordDeep σ)) →
+            UOk (Allowed p ((pc.join (l₁.join l₂)).inst (p.sd σ)) (ε.inst (p.sd σ)))
+              (TupTy p ((st.map Prod.snd).map (LTy.lsubst p.recordDeep σ)))
+              (Fails p ((pc.join (l₁.join l₂)).inst (p.sd σ)) (ε.inst (p.sd σ))) w
+              (walkLoop (fun w v st' => eval H n p w ((x, v) :: bindParams st st' env) body) w stv items) :=
+          fun henv hitems hstv => walkLoop_uok (a := xty.lsubst p.recordDeep σ)
+            (fun _ _ _ hv hst => UB henv hv hst) _ hstv
+            (fun v hv => by obtain ⟨k, rfl⟩ := hitems v hv; exact hvar)
+        simp only [LTy.lsubst] at hav hau₁ hau₂ hbv hbu₁ hbu₂
+        cases hau₁ with
+        | @int lo₁ _ =>
+          cases hau₂ with
+          | @int lo₂ _ =>
+            cases hbu₁ with
+            | @int hi₁ _ =>
+              cases hbu₂ with
+              | @int hi₂ _ =>
+                simp only [eval, sourceVals, ha₁, ha₂, hb₁, hb₂, hs₁, hs₂]
+                rw [ite_eq_left (by rw [LValsTy.length hst₁]; simp),
+                  ite_eq_left (by rw [LValsTy.length hst₂]; simp)]
+                by_cases hvl : Vis p L ((l₁.join l₂).inst (p.sd σ))
+                · have e₁ := V.eq_int hav (Vis.of_le (LExpr.le_inst _ (LExpr.le_join_left _ _)) hvl)
+                  have e₂ := V.eq_int hbv (Vis.of_le (LExpr.inst_le_join_inst _ _ _) hvl)
+                  cases e₁
+                  cases e₂
+                  have hall : VAll p L (xty.lsubst p.recordDeep σ) (rangeVals lo₁ hi₁ inc)
+                      (rangeVals lo₁ hi₁ inc) := by
+                    have := VAll.refl_int (p := p) (L := L) (l := (l₁.join l₂).inst (p.sd σ))
+                      (xs := rangeVals lo₁ hi₁ inc) (hints (lo := lo₁) (hi := hi₁) (i := inc))
+                    exact VAll.flow this (Flow.lsubst (t₁ := .int (l₁.join l₂)) _ _ hx)
+                  have hlv : LValsAll p (rangeVals lo₁ hi₁ inc) (xty.lsubst p.recordDeep σ) := by
+                    have : ∀ (xs : List Val), (∀ v ∈ xs, ∃ k, v = .int k) →
+                        LValsAll p xs (xty.lsubst p.recordDeep σ) := by
+                      intro xs hxs
+                      induction xs with
+                      | nil => exact .nil
+                      | cons v vs ih =>
+                        obtain ⟨k, rfl⟩ := hxs _ List.mem_cons_self
+                        exact .cons hvar (ih (fun u hu => hxs u (List.mem_cons_of_mem _ hu)))
+                    exact this _ (hints (lo := lo₁) (hi := hi₁) (i := inc))
+                  refine BRelR.mono (fun r₁ r₂ h => ?_) id (walkLoop_brelR (a := xty.lsubst p.recordDeep σ)
+                    (fun w₁ w₂ v₁ v₂ st₁ st₂ hw' hv hv₁ hv₂ hsr hst₁' hst₂' => BRelR.mono
+                      (fun _ _ h => stRel_of (V.flow h (Flow.lsubst _ _ hbt))) id
+                      (ihE hσ hE hΓ' hpc' hw' (mkEnv he₁ hv₁ hst₁') (mkEnv he₂ hv₂ hst₂') (mkRel hv hsr) hb))
+                    (fun _ _ _ hv hst => UB he₁ hv hst) (fun _ _ _ hv hst => UB he₂ hv hst)
+                    (fun hn w stv its hstv hits => confined (L := L) hh
+                      (walkLoop_uok (fun _ _ _ hv hst => UB he₁ hv hst) _ hstv hits) (hnf hn))
+                    (fun hn w stv its hstv hits => confined (L := L) hh
+                      (walkLoop_uok (fun _ _ _ hv hst => UB he₂ hv hst) _ hstv hits) (hnf hn))
+                    hw hstv hst₁ hst₂ hall hlv hlv)
+                  obtain ⟨_, _, rfl, rfl, h⟩ := h
+                  simp only [LTy.lsubst, LTy.lsubsts_eq]
+                  exact .tuple h
+                · exact .of_brel (brel_confined hh hw (UL he₁ hints hst₁) (UL he₂ hints hst₂)
+                    (fun h => hvl (Vis.of_le (LExpr.inst_le_join_inst _ _ _) h))
+                    (fun _ _ => .hidden (by simp only [LTy.lsubst, LTy.top]; exact hvl)) id id)
 
 end Una.F1
 

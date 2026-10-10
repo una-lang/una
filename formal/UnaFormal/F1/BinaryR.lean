@@ -188,4 +188,70 @@ theorem BRelR.to_brel_nil {R : Val → Val → Prop} {vf : Prop} {r₁ r₂ : Ru
     rw [hpol] at this
     nomatch this
 
+/-! ### Loops (M6) -/
+
+/-- Two states of a loop, as tuples related component by component. -/
+def StRel (ts : List LTy) (r₁ r₂ : Val) : Prop :=
+  ∃ s₁ s₂, r₁ = .tuple s₁ ∧ r₂ = .tuple s₂ ∧ VList p L ts s₁ s₂
+
+/-- A state of a loop, as a tuple of values of its types. -/
+def TupTy (p : Program) (ts : List LTy) (r : Val) : Prop := ∃ s, r = .tuple s ∧ LValsTy p s ts
+
+theorem LValsTy.length' : ∀ {vs : List Val} {ts : List LTy}, LValsTy p vs ts → vs.length = ts.length
+  | _, _, .nil => rfl
+  | _, _, .cons _ hs => by simp [LValsTy.length' hs]
+
+/-- **Two loops over related elements, from related states, are related up to their first
+different release** (M6): by induction on the iterations, each related by `hbody`. When an
+iteration's failure is one the observer does not see (`¬ vf`), what the other run does after the
+iteration it completed shows the observer nothing (`hr₁`, `hr₂`): T-Loop's premise that an
+iteration's failure is decided by no more than what decides whether it runs. -/
+theorem walkLoop_brelR {body₁ body₂ : World H → Val → List Val → Run H} {a : LTy} {ts : List LTy}
+    {A₁ A₂ : Event → Prop} {F₁ F₂ : Prop} {vf : Prop}
+    (hbody : ∀ w₁ w₂ v₁ v₂ st₁ st₂, WorldRel p L w₁ w₂ → V p L a v₁ v₂ → LValTy p v₁ a →
+      LValTy p v₂ a → VList p L ts st₁ st₂ → LValsTy p st₁ ts → LValsTy p st₂ ts →
+      BRelR p L (StRel (p := p) (L := L) ts) vf (body₁ w₁ v₁ st₁) (body₂ w₂ v₂ st₂))
+    (hu₁ : ∀ w v st, LValTy p v a → LValsTy p st ts → UOk A₁ (TupTy p ts) F₁ w (body₁ w v st))
+    (hu₂ : ∀ w v st, LValTy p v a → LValsTy p st ts → UOk A₂ (TupTy p ts) F₂ w (body₂ w v st))
+    (hr₁ : ¬ vf → ∀ w st xs, LValsTy p st ts → (∀ x ∈ xs, LValTy p x a) →
+      proj p L (walkLoop body₁ w st xs).1 = [] ∧ (∀ c, (walkLoop body₁ w st xs).2.1 = .failed c → ¬ vf) ∧
+        WorldRel p L w (walkLoop body₁ w st xs).2.2)
+    (hr₂ : ¬ vf → ∀ w st xs, LValsTy p st ts → (∀ x ∈ xs, LValTy p x a) →
+      proj p L (walkLoop body₂ w st xs).1 = [] ∧ (∀ c, (walkLoop body₂ w st xs).2.1 = .failed c → ¬ vf) ∧
+        WorldRel p L w (walkLoop body₂ w st xs).2.2) :
+    ∀ {xs ys : List Val} {st₁ st₂ : List Val} {w₁ w₂ : World H}, WorldRel p L w₁ w₂ →
+      VList p L ts st₁ st₂ → LValsTy p st₁ ts → LValsTy p st₂ ts → VAll p L a xs ys →
+      LValsAll p xs a → LValsAll p ys a →
+      BRelR p L (StRel (p := p) (L := L) ts) vf (walkLoop body₁ w₁ st₁ xs) (walkLoop body₂ w₂ st₂ ys)
+  | [], [], _, _, _, _, hw, hst, _, _, .nil, _, _ => .of_brel (brel_done hw ⟨_, _, rfl, rfl, hst⟩)
+  | _ :: xs, _ :: ys, st₁, st₂, w₁, w₂, hw, hst, hs₁, hs₂, .cons h hs, .cons hx hxs, .cons hy hys => by
+    simp only [walkLoop]
+    refine andThen_brelR (hbody _ _ _ _ _ _ hw h hx hy hst hs₁ hs₂) id
+      (fun r₁ r₂ h₁ h₂ hr hw' => ?_) (fun hn v hv => ?_) (fun hn v hv => ?_)
+    · obtain ⟨s₁, s₂, rfl, rfl, hss⟩ := hr
+      have t₁ := (hu₁ w₁ _ _ hx hs₁).2.1
+      have t₂ := (hu₂ w₂ _ _ hy hs₂).2.1
+      rw [h₁] at t₁
+      rw [h₂] at t₂
+      obtain ⟨_, he₁, ht₁⟩ := t₁
+      obtain ⟨_, he₂, ht₂⟩ := t₂
+      cases he₁
+      cases he₂
+      simp only
+      rw [ite_eq_left (by rw [LValsTy.length' ht₁, LValsTy.length' hs₁]),
+        ite_eq_left (by rw [LValsTy.length' ht₂, LValsTy.length' hs₂])]
+      exact walkLoop_brelR hbody hu₁ hu₂ hr₁ hr₂ hw' hss ht₁ ht₂ hs hxs hys
+    · have t₁ := (hu₁ w₁ _ _ hx hs₁).2.1
+      rw [hv] at t₁
+      obtain ⟨s, rfl, hts⟩ := t₁
+      simp only
+      rw [ite_eq_left (by rw [LValsTy.length' hts, LValsTy.length' hs₁])]
+      exact hr₁ hn _ _ _ hts (LValsAll.mem hxs)
+    · have t₂ := (hu₂ w₂ _ _ hy hs₂).2.1
+      rw [hv] at t₂
+      obtain ⟨s, rfl, hts⟩ := t₂
+      simp only
+      rw [ite_eq_left (by rw [LValsTy.length' hts, LValsTy.length' hs₂])]
+      exact hr₂ hn _ _ _ hts (LValsAll.mem hys)
+
 end Una.F1
