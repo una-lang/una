@@ -1008,17 +1008,16 @@ def closureNote : String :=
 its theorem is `t6_release_erasure_obs` on a lawful host, H1 to H3 for `Files`, and H4 too when
 `Http` is used (M5c). -/
 def hostNoteFor (files http : Bool) (env : Bool := false) : String :=
-  if env && !files && !http then
-    "rests on a lawful host (H1 to H3) and one environment in both runs: the program uses `Env`"
-  else
-    let base := match files, http with
+  -- An `Env`-only program keeps the closure clause, which the file-state guard reads
+  -- (`usesFilesNote`): a declaration that takes a closure may be handed one that writes (#495).
+  let base := match files, http with
       | true, true => "rests on a lawful host (H1 to H4): the program uses `Files` and `Http`"
       | false, true => "rests on a lawful host (H1 to H4): the program uses `Http`"
       | true, false => hostNote
       -- The certified program performs no host operation, but `f` takes a closure, which a
       -- caller may make one that does (#475).
       | false, false => closureNote
-    if env then base ++ ", and `Env`, with one environment in both runs" else base
+  if env then base ++ ", and `Env`, with one environment in both runs" else base
 
 mutual
   /-- Whether a right-hand side reads the environment (`Env.get`, M6b), in its lambdas included. -/
