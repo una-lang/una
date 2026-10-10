@@ -13,7 +13,14 @@ pub enum FileFault {
     NotFound,
     /// Any other input or output error.
     Io,
+    /// The file's content is not valid UTF-8: the run aborts with U6005, since the content,
+    /// not the path or the file system's shape, would decide a failure (S-16, ADR 0086).
+    NotText,
 }
+
+/// A host value that is not valid UTF-8, which the run aborts on with U6005 (S-16, ADR 0086).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NotText;
 
 /// The world outside the program: the only place where host operations touch the machine
 /// they run on. `una-cli` implements it; tests implement it in memory.
@@ -23,8 +30,8 @@ pub trait World {
     /// `Clock.now`: milliseconds since the Unix epoch.
     fn now(&mut self) -> i64;
     /// `Env.get`: an environment variable.
-    fn env_var(&mut self, name: &str) -> Option<String>;
-    /// Reads a file as text.
+    fn env_var(&mut self, name: &str) -> Result<Option<String>, NotText>;
+    /// Reads a file as text: [`FileFault::NotText`] when its content is not valid UTF-8.
     fn read_file(&mut self, path: &Path) -> Result<String, FileFault>;
     /// Writes a file. It never creates a file through a symbolic link (`spec/14 §3`): a file
     /// that does not exist is created only as a new file at `path` itself.
@@ -47,8 +54,8 @@ impl World for NoWorld {
         0
     }
 
-    fn env_var(&mut self, _name: &str) -> Option<String> {
-        None
+    fn env_var(&mut self, _name: &str) -> Result<Option<String>, NotText> {
+        Ok(None)
     }
 
     fn read_file(&mut self, _path: &Path) -> Result<String, FileFault> {

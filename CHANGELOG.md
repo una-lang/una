@@ -2,6 +2,14 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
+## v0.1.7
+
+v0.1.6 with the S-16 fix: host text that is not valid UTF-8 aborts the run (#460, ADR 0086).
+
+### Security
+
+- **Host text that is not valid UTF-8 aborts the run** (#460, S-16, ADR 0086). `Files.read` failed with `Io` on a file whose content was not valid UTF-8, and `Env.get` returned `None` for such a variable. Both outcomes were decided by `internal` content, yet a `public` branch could see them: a package with no labeled write printed, to the console, whether an `internal` file was valid UTF-8. Now both operations abort with the new runtime code U6005 at the operation. An abort is outside the noninterference model, as U6003 is. Valid text reads unchanged, and `una check` is unchanged. `spec/14 §3` also states two more limits as out of the model: a write's failure on resource limits, and other processes that change the granted directory.
+
 ## v0.1.6
 
 v0.1.5 with the S-14 fix: a write to a labeled path no longer leaks through later file failures (#436, ADR 0085).

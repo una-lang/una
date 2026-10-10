@@ -15,7 +15,7 @@ use serde::ser::{SerializeMap, Serializer};
 use una_core::{Base, Decl, Fun, Program, Type};
 use una_diag::{Code, Diagnostic, Location, in_output_order, render_human};
 use una_interp::{
-    Abort, Completion, Event, EventOutcome, ExampleRun, FileFault, Grant, Host, World,
+    Abort, Completion, Event, EventOutcome, ExampleRun, FileFault, Grant, Host, NotText, World,
 };
 use una_syntax::{SourceDb, Span};
 
@@ -80,15 +80,18 @@ impl World for HostWorld<'_> {
             })
     }
 
-    fn env_var(&mut self, name: &str) -> Option<String> {
+    fn env_var(&mut self, name: &str) -> Result<Option<String>, NotText> {
         if name.is_empty() || name.contains(['=', '\0']) {
-            return None;
+            return Ok(None);
         }
         (self.environment)(name)
     }
 
     fn read_file(&mut self, path: &Path) -> Result<String, FileFault> {
-        std::fs::read_to_string(path).map_err(file_fault)
+        // Content that is not valid UTF-8 is `NotText`, which aborts the run, not `Io`, which
+        // the program could branch on (S-16, ADR 0086).
+        let bytes = std::fs::read(path).map_err(file_fault)?;
+        String::from_utf8(bytes).map_err(|_| FileFault::NotText)
     }
 
     fn write_file(&mut self, path: &Path, content: &str) -> Result<(), FileFault> {
@@ -272,7 +275,8 @@ pub(crate) fn run_command(
             .collect();
     let status = match &run.completion {
         Completion::Ok(_) => ExitStatus::Success,
-        Completion::Failed { .. } | Completion::Aborted(Abort::Depth { .. }) => ExitStatus::Errors,
+        Completion::Failed { .. }
+        | Completion::Aborted(Abort::Depth { .. } | Abort::NotText { .. }) => ExitStatus::Errors,
         Completion::Aborted(Abort::Fault { .. }) => ExitStatus::Internal,
     };
     let document = RunDocument {
@@ -403,7 +407,8 @@ fn root_location(package: &Package) -> Location {
     }
 }
 
-/// U6001 when `main` failed, U6003 when a call went too deep, U8001 on a fault.
+/// U6001 when `main` failed, U6003 when a call went too deep, U6005 for host text that is not
+/// valid UTF-8, U8001 on a fault.
 fn completion_diagnostic(
     completion: &Completion,
     main: Span,
@@ -442,6 +447,9 @@ fn abort_diagnostic(abort: &Abort, sources: &SourceDb, root: &Location) -> Diagn
             format!("this call exceeds the maximum call depth of {limit}"),
             sources.location(*span),
         ),
+        Abort::NotText { span, message } => {
+            Diagnostic::error(Code::U6005, *message, sources.location(*span))
+        }
         Abort::Fault { message, span } => Diagnostic::error(
             Code::U8001,
             format!("evaluation stopped: {message}"),

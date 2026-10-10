@@ -40,7 +40,7 @@ fn una(args: &[String]) -> String {
     let mut stderr = Vec::new();
     let mut all = vec!["una".to_owned()];
     all.extend(args.iter().cloned());
-    una_cli::run(all, &mut stdout, &mut stderr, false, &|_| None);
+    una_cli::run(all, &mut stdout, &mut stderr, false, &|_| Ok(None));
     String::from_utf8(stdout).unwrap()
 }
 
