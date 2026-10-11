@@ -26,6 +26,8 @@ inductive Val where
   /-- `Err(v)`: a failure's code, as `attempt` gives it, is `.err (.int c)` (#508). -/
   | err (value : Val)
   | record (name : String) (fields : List Val)
+  /-- A value of a sum kind (#512): its variant, by index, and its fields. -/
+  | variant (kind : String) (ctor : Nat) (fields : List Val)
   | closure (params : List (String × LTy)) (body : Expr) (env : List (String × Val))
   | tuple (items : List Val)
 
@@ -58,7 +60,7 @@ mutual
     | .closure _ _ _ => False
     | .list items => Val.FirstOrderAll items
     | .some v | .ok v | .err v => v.FirstOrder
-    | .record _ fs | .tuple fs => Val.FirstOrderAll fs
+    | .record _ fs | .variant _ _ fs | .tuple fs => Val.FirstOrderAll fs
     | .int _ | .bool _ | .text _ | .unit | .none => True
 
   def Val.FirstOrderAll : List Val → Prop
@@ -144,6 +146,9 @@ inductive Res where
   does not terminate normally, so T1 counts it good and T6's `Term` excludes it (`spec/07 §1`:
   aborts and termination are outside the model); unlike it, it is not an artifact of the fuel. -/
   | aborted
+  /-- A failure of a payload kind (#512): its kind, its variant's index and its payload. A failure
+  of a kind without fields is `failed`, its code. -/
+  | raised (kind : String) (code : Nat) (payload : List Val)
 
 /-- The value of variable `x` in `env`, the innermost binding. -/
 def lookup (env : Env) (x : String) : Option Val :=
@@ -185,6 +190,7 @@ mutual
     | .ok v => "Ok(" ++ v.render ++ ")"
     | .err v => "Err(" ++ v.render ++ ")"
     | .record r fs => r ++ "(" ++ Val.renders fs ++ ")"
+    | .variant k i fs => k ++ "#" ++ toString i ++ "(" ++ Val.renders fs ++ ")"
     | .closure _ _ _ => "<fn>"
     | .tuple items => "(" ++ Val.renders items ++ ")"
 
@@ -336,6 +342,7 @@ mutual
     | .ok a, .ok b => Val.beq a b
     | .err a, .err b => Val.beq a b
     | .record r xs, .record s ys => r == s && Val.beqs xs ys
+    | .variant k i xs, .variant k' i' ys => k == k' && i == i' && Val.beqs xs ys
     | _, _ => false
 
   def Val.beqs : List Val → List Val → Bool
@@ -407,6 +414,8 @@ mutual
         | none => stuck w
       | .construct record fields =>
         ([], ((evalAtoms env fields).map (Val.record record)).elim .stuck .ok, w)
+      | .variant kind ctor fields =>
+        ([], ((evalAtoms env fields).map (Val.variant kind ctor)).elim .stuck .ok, w)
       | .field value index =>
         match evalAtom env value with
         | some (.record _ fields) => ([], (fields[index]?).elim .stuck .ok, w)
@@ -513,16 +522,42 @@ mutual
         | some (.err v) => eval H n p w ((y, v) :: env) errE
         | _ => stuck w
       | .fail code => ([], .failed code, w)
+      | .raise kind code args =>
+        match evalAtoms env args with
+        | some vs => ([], .raised kind code vs, w)
+        | none => stuck w
+      | .caseSum scrutinee ctor binders thenE elseE =>
+        match evalAtom env scrutinee with
+        | some (.variant _ i fs) =>
+          if i = ctor then
+            if fs.length = binders.length then eval H n p w (binders.zip fs ++ env) thenE
+            else stuck w
+          else eval H n p w env elseE
+        | _ => stuck w
       | .attempt body =>
         match eval H n p w env body with
         | (t, .ok v, w') => (t, .ok (.ok v), w')
         | (t, .failed code, w') => (t, .ok (.err (.int code)), w')
+        | res => res
+      | .attemptK kind body =>
+        match eval H n p w env body with
+        | (t, .ok v, w') => (t, .ok (.ok v), w')
+        | (t, .raised k code vs, w') =>
+          if k = kind then (t, .ok (.err (.variant k code vs)), w') else (t, .raised k code vs, w')
         | res => res
       | .handle body x handler =>
         match eval H n p w env body with
         | (t, .failed code, w') =>
           match eval H n p w' ((x, .int code) :: env) handler with
           | (t', r, w'') => (t ++ t', r, w'')
+        | res => res
+      | .handleK kind body x handler =>
+        match eval H n p w env body with
+        | (t, .raised k code vs, w') =>
+          if k = kind then
+            match eval H n p w' ((x, .variant k code vs) :: env) handler with
+            | (t', r, w'') => (t ++ t', r, w'')
+          else (t, .raised k code vs, w')
         | res => res
       | .letTuple binders value body =>
         match evalAtom env value with

@@ -36,12 +36,16 @@ mutual
     | err {te ee l a b} : V ee a b → V (.result te ee l) (.err a) (.err b)
     | record {r l rec fs₁ fs₂} :
         p.record r = some rec → VList rec.fields fs₁ fs₂ → V (.record r l) (.record r fs₁) (.record r fs₂)
+    /-- Two values of a sum kind (#512): the same variant, with related fields. -/
+    | variant {k l sm i fs fs₁ fs₂} :
+        p.sum k = some sm → sm.variants[i]? = some fs → VList fs fs₁ fs₂ →
+        V (.record k l) (.variant k i fs₁) (.variant k i fs₂)
     | closure {params body env₁ env₂ Γ E tb ε ps r o g f l σ} :
         GroundSubst σ → p.EqArgsOK σ E → LCtx.InPlace (params ++ Γ) →
         EnvRel (Γ.lsub p.recordDeep σ) env₁ env₂ → LEnvTy p env₁ (Γ.lsub p.recordDeep σ) →
         LEnvTy p env₂ (Γ.lsub p.recordDeep σ) →
         LExprTy p E (params ++ Γ) .bot body tb ε → p.le ε.failLabel .bot → ε.rels = [] →
-        Flows p.top ps ((params.map Prod.snd).map (LTy.lsubst p.recordDeep σ)) →
+        ε.raises = [] → Flows p.top ps ((params.map Prod.snd).map (LTy.lsubst p.recordDeep σ)) →
         Flow p.top (tb.lsubst p.recordDeep σ) r →
         (ε.op = true → o = true) → HostFx.Le ε.host g → (ε.fails.isSome = true → f = true) →
         V (.fn ps r o g f l) (.closure params body env₁) (.closure params body env₂)
@@ -76,15 +80,24 @@ noncomputable def proj (tr : Trace) : Trace := tr.filter (fun ev => decide (EvVi
 
 /-- A run that ended, with a value or a failure. -/
 def Term : Res → Prop
-  | .ok _ | .failed _ => True
+  | .ok _ | .failed _ | .raised _ _ _ => True
   | .stuck | .outOfFuel | .aborted => False
 
+/-- Two payloads of the variant `c` of the sum kind `k` related field by field, at the fields'
+declared types (#512): a field the observer does not see may differ. -/
+def PayRel (k : String) (c : Nat) (ps₁ ps₂ : List Val) : Prop :=
+  ∃ sm fs, p.sum k = some sm ∧ sm.variants[c]? = some fs ∧ VList p L fs ps₁ ps₂
+
 /-- Two outcomes related: values by `R`, failures with the same code when the observer sees
-what decides them, and one value against one failure only when it does not. -/
+what decides them, failures with a payload (#512) of the same kind and variant with related
+payloads, and one outcome against a different one only when it does not. Every pair of
+terminating outcomes is listed: none is related by default. -/
 def OutRel (R : Val → Val → Prop) (vf : Prop) : Res → Res → Prop
   | .ok a, .ok b => R a b
   | .failed c₁, .failed c₂ => vf → c₁ = c₂
-  | .ok _, .failed _ | .failed _, .ok _ => ¬ vf
+  | .raised k₁ c₁ ps₁, .raised k₂ c₂ ps₂ => vf → k₁ = k₂ ∧ c₁ = c₂ ∧ PayRel p L k₁ c₁ ps₁ ps₂
+  | .ok _, .failed _ | .failed _, .ok _ | .ok _, .raised _ _ _ | .raised _ _ _, .ok _
+  | .failed _, .raised _ _ _ | .raised _ _ _, .failed _ => ¬ vf
   | _, _ => True
 
 /-- `internal`. -/
@@ -106,7 +119,7 @@ def WorldRel {H : Host} (w₁ w₂ : World H) : Prop :=
 events and related outcomes, and cannot tell their final worlds apart. -/
 def BRel {H : Host} (R : Val → Val → Prop) (vf : Prop) (r₁ r₂ : Run H) : Prop :=
   Term r₁.2.1 → Term r₂.2.1 →
-    proj p L r₁.1 = proj p L r₂.1 ∧ OutRel R vf r₁.2.1 r₂.2.1 ∧ WorldRel p L r₁.2.2 r₂.2.2
+    proj p L r₁.1 = proj p L r₂.1 ∧ OutRel p L R vf r₁.2.1 r₂.2.1 ∧ WorldRel p L r₁.2.2 r₂.2.2
 
 variable {p L}
 

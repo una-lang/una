@@ -39,6 +39,9 @@ def Fun.paramTys (fn : Fun) (σ : List (String × Ty)) : List Ty :=
 /-- The structural types of the fields of a record kind. -/
 def Record.fieldTys (rec : Record) : List Ty := rec.fields.map LTy.erase
 
+/-- The structural types of the fields of a sum kind's variant `i`, when it has one (#512). -/
+def Sum.fieldTys (s : Sum) (i : Nat) : Option (List Ty) := s.variants[i]?.map (·.map LTy.erase)
+
 /-- **The program holds `Http`'s kinds as `spec/24 §1` fixes them** (M5c): `Header(name: Text,
 value: Text)` and `Response(status: Int, headers: List[Header], body: Text)`, up to labels. A
 request's typing asks it, so that its response has a type. -/
@@ -97,6 +100,9 @@ mutual
     | construct {ctx record fields rec} :
         p.record record = some rec → AtomsTy ctx fields rec.fieldTys →
         RhsTy p ctx (.construct record fields) (.record record)
+    | variant {ctx kind ctor fields s ts} :
+        p.sum kind = some s → s.fieldTys ctor = some ts → AtomsTy ctx fields ts →
+        RhsTy p ctx (.variant kind ctor fields) (.record kind)
     | field {ctx value record index rec t} :
         AtomTy ctx value (.record record) → p.record record = some rec →
         rec.fieldTys[index]? = some t → RhsTy p ctx (.field value index) t
@@ -158,10 +164,22 @@ mutual
         ExprTy p ((y, e) :: ctx) errE s →
         ExprTy p ctx (.caseResult scrutinee x okE y errE) s
     | fail {ctx code s} : ExprTy p ctx (.fail code) s
+    | raise {ctx kind code args sm ts s} :
+        p.sum kind = some sm → sm.fieldTys code = some ts → AtomsTy ctx args ts →
+        ExprTy p ctx (.raise kind code args) s
+    | caseSum {ctx scrutinee kind ctor binders thenE elseE sm ts s} :
+        AtomTy ctx scrutinee (.record kind) → p.sum kind = some sm → sm.fieldTys ctor = some ts →
+        ts.length = binders.length → ExprTy p (binders.zip ts ++ ctx) thenE s →
+        ExprTy p ctx elseE s → ExprTy p ctx (.caseSum scrutinee ctor binders thenE elseE) s
     | attempt {ctx body t} : ExprTy p ctx body t → ExprTy p ctx (.attempt body) (.result t .int)
+    | attemptK {ctx kind body t} :
+        ExprTy p ctx body t → ExprTy p ctx (.attemptK kind body) (.result t (.record kind))
     | handle {ctx body x handler s} :
         ExprTy p ctx body s → ExprTy p ((x, .int) :: ctx) handler s →
         ExprTy p ctx (.handle body x handler) s
+    | handleK {ctx kind body x handler s} :
+        ExprTy p ctx body s → ExprTy p ((x, .record kind) :: ctx) handler s →
+        ExprTy p ctx (.handleK kind body x handler) s
     | letTuple {ctx binders value body ts s} :
         AtomTy ctx value (.tuple ts) → ts.length = binders.length →
         ExprTy p (bindTys binders ts ++ ctx) body s →
@@ -179,6 +197,10 @@ policy's structure. -/
 structure Program.WellFormed (p : Program) : Prop where
   funs : ∀ fn ∈ p.funs, ExprTy p (bindTys fn.params (fn.paramTys [])) fn.body fn.result.erase
   records : ∀ rec ∈ p.records, ∀ t ∈ rec.fieldTys, t.Closed
+  /-- The fields of sums have no type parameters, and no name is both a record's and a sum's
+  (#512): `.record k` types the values of one kind only. -/
+  sums : ∀ sm ∈ p.sums, ∀ fs ∈ sm.variants, ∀ t ∈ fs, t.erase.Closed
+  disjoint : ∀ k, p.record k = none ∨ p.sum k = none
   policies : ∀ po ∈ p.policies, po.src.erase.Closed ∧ po.dst.erase.Closed ∧
     ∃ fn, p.find po.via = some fn ∧ fn.paramTys [] = [po.src.erase] ∧
       fn.result.erase = po.dst.erase
@@ -199,6 +221,9 @@ mutual
     | record {record fields rec} :
         p.record record = some rec → ValsTy p fields rec.fieldTys →
         ValTy p (.record record fields) (.record record)
+    | variant {kind ctor fields s ts} :
+        p.sum kind = some s → s.fieldTys ctor = some ts → ValsTy p fields ts →
+        ValTy p (.variant kind ctor fields) (.record kind)
     | closure {params body env ctx ts r} :
         EnvTy p env ctx → ts.length = params.length →
         ExprTy p (bindTys params ts ++ ctx) body r →

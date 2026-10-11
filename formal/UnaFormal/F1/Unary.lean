@@ -49,10 +49,13 @@ mutual
     | record {record fields rec l} :
         p.record record = some rec → LValsTy p fields rec.fields →
         LValTy p (.record record fields) (.record record l)
+    | variant {kind ctor fields sm fs l} :
+        p.sum kind = some sm → sm.variants[ctor]? = some fs → LValsTy p fields fs →
+        LValTy p (.variant kind ctor fields) (.record kind l)
     | closure {params body env Γ E t ε ps r o g f l σ} :
         (∀ q ∈ σ, q.2.Ground) →
         LEnvTy p env (Γ.lsub p.recordDeep σ) → LExprTy p E (params ++ Γ) .bot body t ε →
-        p.le ε.failLabel .bot → ε.rels = [] →
+        p.le ε.failLabel .bot → ε.rels = [] → ε.raises = [] →
         Flows p.top ps ((params.map Prod.snd).map (LTy.lsubst p.recordDeep σ)) →
         Flow p.top (t.lsubst p.recordDeep σ) r →
         (ε.op = true → o = true) → HostFx.Le ε.host g → (ε.fails.isSome = true → f = true) →
@@ -234,11 +237,24 @@ theorem lfield_typed {t : LTy} :
 
 /-! ### Runs that keep to their typing -/
 
+/-- What a run's failure must satisfy (#512): a code failure `code`, and a failure with a
+payload `raised`, of its kind, variant and payload. -/
+structure FailCond where
+  code : Prop
+  raised : String → Nat → List Val → Prop
+
+/-- One condition on failures implies another, for both forms of failure. -/
+def FailCond.Le (F F' : FailCond) : Prop :=
+  (F.code → F'.code) ∧ ∀ k c ps, F.raised k c ps → F'.raised k c ps
+
+theorem FailCond.Le.refl (F : FailCond) : F.Le F := ⟨id, fun _ _ _ => id⟩
+
 /-- An outcome: `P` of a value, `F` of a failure. A stuck run is T1's, and a run out of fuel
 says nothing. -/
-abbrev URes (P : Val → Prop) (F : Prop) : Res → Prop
+abbrev URes (P : Val → Prop) (F : FailCond) : Res → Prop
   | .ok v => P v
-  | .failed _ => F
+  | .failed _ => F.code
+  | .raised k c ps => F.raised k c ps
   | .stuck => True
   | .outOfFuel | .aborted => True
 
@@ -325,9 +341,18 @@ def Allowed (p : Program) (pc : LExpr) (ε : Eff) : Event → Prop
 /-- A failure, whose label is above `pc`. -/
 abbrev Fails (p : Program) (pc : LExpr) (ε : Eff) : Prop := ∃ l, ε.fails = some l ∧ p.le pc l
 
+/-- A payload of the variant `c` of the sum kind `k`, at the fields' declared types (#512). -/
+def PayTy (p : Program) (k : String) (c : Nat) (ps : List Val) : Prop :=
+  ∃ sm fs, p.sum k = some sm ∧ sm.variants[c]? = some fs ∧ LValsTy p ps fs
+
+/-- The failures a typing with effects `ε` allows at `pc` (#512): above `pc`, a code only when
+`ε` may fail with one, and a payload only of a kind `ε` raises, typed by its variant. -/
+def FailsAs (p : Program) (pc : LExpr) (ε : Eff) : FailCond :=
+  ⟨Fails p pc ε ∧ ε.codes = true, fun k c ps => Fails p pc ε ∧ k ∈ ε.raises ∧ PayTy p k c ps⟩
+
 /-- A run from `w` that keeps to a typing at `pc` with type `t` and effects `ε`. -/
 abbrev UGood (p : Program) (pc : LExpr) (t : LTy) (ε : Eff) (w : World H) (run : Run H) : Prop :=
-  UOk (Allowed p pc ε) (fun v => LValTy p v t) (Fails p pc ε) w run
+  UOk (Allowed p pc ε) (fun v => LValTy p v t) (FailsAs p pc ε) w run
 
 theorem Allowed.mono {pc pc' : LExpr} {ε ε' : Eff} (hpc : p.le pc pc')
     (ho : ε'.op = true → ε.op = true) (hg : HostFx.Le ε'.host ε.host)

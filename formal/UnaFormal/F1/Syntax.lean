@@ -137,6 +137,8 @@ mutual
     deciding its failure (S-15). Its response is a `Response` record. -/
     | req (method : String) (args : List Atom)
     | construct (record : String) (fields : List Atom)
+    /-- `C(ā)` of a sum kind (#512): the variant `ctor` of `kind`, with the fields `ā`. -/
+    | variant (kind : String) (ctor : Nat) (fields : List Atom)
     | field (value : Atom) (index : Nat)
     | list (items : List Atom)
     | none
@@ -191,10 +193,23 @@ mutual
     | caseResult (scrutinee : Atom) (x : String) (ok : Expr) (y : String) (err : Expr)
     /-- `fail` with a failure, identified by its code. -/
     | fail (code : Nat)
+    /-- `fail C(ā)` of a payload kind (#512): the failure of kind `kind`, variant `code`, with
+    the payload `args`. A kind whose variants have no fields stays a code (`fail`). -/
+    | raise (kind : String) (code : Nat) (args : List Atom)
+    /-- `when a is C(x₁, ...) -> t else e` on a sum kind (#512): `t` with the fields bound when
+    `a` is the variant `ctor`, `e` otherwise. Una's `when` with several arms is a chain of them. -/
+    | caseSum (scrutinee : Atom) (ctor : Nat) (binders : List String) (thenE elseE : Expr)
     /-- `attempt e`: the value or the failure of `e`, as a result. -/
     | attempt (body : Expr)
     /-- `e if error x -> h`: `h` runs when `e` fails, with its code bound to `x`. -/
     | handle (body : Expr) (error : String) (handler : Expr)
+    /-- `attempt e` where `e` fails with the payload kind `kind` (#512): its failure, as the
+    value `Err(C(ā))`. A failure of another kind is not caught; the importer emits it only for
+    a body whose failures are of `kind`. -/
+    | attemptK (kind : String) (body : Expr)
+    /-- `e if error x -> h` where `e` fails with the payload kind `kind` (#512): `h` runs with
+    the failure's value bound to `x`. A failure of another kind is not caught. -/
+    | handleK (kind : String) (body : Expr) (error : String) (handler : Expr)
     /-- `let (x₁: S₁, ...) = a in e`: the components of a tuple (`spec/17 §4`). -/
     | letTuple (binders : List (String × LTy)) (value : Atom) (body : Expr)
     /-- `loop x: V in s with (b₁: S₁, ...) = (a₁, ...) do e` (`spec/17 §4`, ADR 0056): each
@@ -220,6 +235,9 @@ structure Fun where
   /-- The policies whose release a call may perform (option B1): its body's declassifications
   and those of the functions it calls. -/
   rels : List String := []
+  /-- The payload kinds its failures may have (#512): its `fails` kind when that is a kind with
+  a field, so that `attempt` and a handler know what they receive. -/
+  raises : List String := []
 
 /-- A record kind of the program: its field types, with their declared labels, in order, and
 the join of every label they declare, which the checker computes over nested records (the
@@ -227,6 +245,15 @@ least solution, `spec/07 §7` rule 2) and well-formedness checks. -/
 structure Record where
   name : String
   fields : List LTy
+  deep : Label
+
+/-- A sum kind of the program (#512): for each variant, in order, its field types with their
+declared labels, and the join of every label they declare (`spec/07 §7` rule 3, the least
+solution over nested kinds). Its values are typed by `LTy.record`, the type of a named kind,
+whose name the program's records and sums never share. -/
+structure Sum where
+  name : String
+  variants : List (List LTy)
   deep : Label
 
 /-- A declassification policy (`spec/07 §5`): `from`, `to` and its `via` function. -/
@@ -265,6 +292,8 @@ structure Program where
   failure not bounded by what decides whether the iteration runs. `t6_host` requires it `false`. -/
   oldLoop : Bool := false
   records : List Record
+  /-- The sum kinds (#512). -/
+  sums : List Sum := []
   policies : List Policy
   /-- The meaning of `checked`'s predicates (#453), by name, on the text of a scalar operand:
   any function, since the theorems quantify over the program. The refinement language that
@@ -279,11 +308,19 @@ def Program.top (p : Program) : Label := ⟨.restricted, p.categories⟩
 def Program.record (p : Program) (r : String) : Option Record :=
   p.records.find? (fun rec => rec.name = r)
 
-/-- The join of every label the fields of record kind `r` declare. -/
+/-- The sum kind `k` of the program (#512). -/
+def Program.sum (p : Program) (k : String) : Option Sum :=
+  p.sums.find? (fun s => s.name = k)
+
+/-- The join of every label the fields of the named kind `r` declare: a record's, or a sum's
+over all its variants (#512). -/
 def Program.recordDeep (p : Program) (r : String) : Label :=
   match p.record r with
   | some rec => rec.deep
-  | none => Label.bot
+  | none =>
+    match p.sum r with
+    | some s => s.deep
+    | none => Label.bot
 
 /-- The function `f` of the program. -/
 def Program.find (p : Program) (f : String) : Option Fun :=

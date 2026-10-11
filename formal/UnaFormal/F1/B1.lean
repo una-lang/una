@@ -11,7 +11,7 @@ mutual
   option B1. -/
   def Rhs.Pure : Rhs → Prop
     | .atom _ | .prim _ _ | .construct _ _ | .field _ _ | .list _ | .none | .some _ | .mkOk _
-    | .mkErr _ | .eq _ _
+    | .mkErr _ | .eq _ _ | .variant _ _ _
     | .lambda _ _ | .funRef _ _ => True
     | _ => False
 
@@ -20,10 +20,11 @@ mutual
     | .atom _ => True
     | .letR _ _ v b => Rhs.Pure v ∧ Expr.Pure b
     | .letE _ _ v b => Expr.Pure v ∧ Expr.Pure b
-    | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e =>
+    | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e
+    | .caseSum _ _ _ t e | .handleK _ t _ e =>
       Expr.Pure t ∧ Expr.Pure e
-    | .attempt b => Expr.Pure b
-    | .fail _ | .letTuple _ _ _ | .loop _ _ _ _ _ _ => False
+    | .attempt b | .attemptK _ b => Expr.Pure b
+    | .fail _ | .raise _ _ _ | .letTuple _ _ _ | .loop _ _ _ _ _ _ => False
 end
 
 /-- A right-hand side that performs no event and calls nothing, but may fail: a pure one, or
@@ -38,11 +39,14 @@ def Expr.PureOrFails : Expr → Prop
   | .atom _ => True
   | .letR _ _ v b => Rhs.PureOrFails v ∧ Expr.PureOrFails b
   | .letE _ _ v b => Expr.PureOrFails v ∧ Expr.PureOrFails b
-  | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e =>
+  | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e
+  | .caseSum _ _ _ t e | .handleK _ t _ e =>
     Expr.PureOrFails t ∧ Expr.PureOrFails e
-  | .attempt b => Expr.PureOrFails b
+  | .attempt b | .attemptK _ b => Expr.PureOrFails b
   | .fail _ => True
-  | .letTuple _ _ _ | .loop _ _ _ _ _ _ => False
+  -- A `via` function's failure is released as `Err(c)`, a code (ADR 0090): one with a payload
+  -- is not a `via` function's (#512).
+  | .raise _ _ _ | .letTuple _ _ _ | .loop _ _ _ _ _ _ => False
 
 /-- **The restrictions of option B1**, on the policies. Each `from` is a scalar type, each `to`
 is a scalar type with a concrete label, and each `via` function performs no operation and

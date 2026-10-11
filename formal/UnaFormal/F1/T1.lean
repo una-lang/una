@@ -16,6 +16,9 @@ of fuel; never a stuck evaluation. -/
 def Good (p : Program) (t : Ty) : Res → Prop
   | .ok v => ValTy p v t
   | .failed _ => True
+  -- A failure with a payload (#512): the payload has its variant's field types, which a
+  -- payload kind's `attempt` and handler give as a value.
+  | .raised k c vs => ∃ sm ts, p.sum k = some sm ∧ sm.fieldTys c = some ts ∧ ValsTy p vs ts
   | .stuck => False
   | .outOfFuel | .aborted => True
 
