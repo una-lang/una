@@ -248,3 +248,13 @@ import UnaFormal
 #print axioms Una.F1.RecordExample.public_card_checked
 #print axioms Una.F1.RecordExample.public_card_runs
 #print axioms Una.F1.RecordExample.card_rel_hidden
+#print axioms Una.F1.ArithExample.certified
+#print axioms Una.F1.ArithExample.same_lines
+#print axioms Una.F1.ArithExample.mul_rejected
+#print axioms Una.F1.ArithExample.mul_leaks
+#print axioms Una.F1.ArithExample.mul_untyped
+#print axioms Una.F1.ArithExample.public_mul_checked
+#print axioms Una.F1.ArithExample.public_mul_runs
+#print axioms Una.F1.ArithExample.div_euclid
+#print axioms Una.F1.ArithExample.mod_euclid
+#print axioms Una.F1.ArithExample.div_by_zero_aborts

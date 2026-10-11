@@ -167,7 +167,7 @@ theorem andThen_same {w : World H} {r : Run H} {r' : Run Host.unit} {k : World H
     generalize k' u v = kr at h₂
     obtain ⟨t', r'', u'⟩ := kr
     exact ⟨rfl, h₂⟩
-  | failed _ | stuck | outOfFuel => exact ⟨rfl, fun _ h => nomatch h⟩
+  | failed _ | stuck | outOfFuel | aborted => exact ⟨rfl, fun _ h => nomatch h⟩
 
 theorem applyWith_same {run : World H → Env → Expr → Run H}
     {run' : World Host.unit → Env → Expr → Run Host.unit} {w : World H}
@@ -326,16 +326,20 @@ theorem eval_hostFreeIn
         subst hv
         exact evalAtom_hostFree hf ha
       | prim pr args =>
-        refine SameOn.ret w u fun v hv => ?_
+        simp only [evalRhs]
         cases ha : evalAtoms env args with
-        | none => simp [ha, Option.elim] at hv
+        | none => exact SameOn.ret w u fun v hv => by simp [Option.elim] at hv
         | some vs =>
-          cases hpr : evalPrim pr vs with
-          | none => simp [ha, hpr, Option.elim] at hv
-          | some v' =>
-            simp [ha, hpr, Option.elim] at hv
-            subst hv
-            exact evalPrim_hostFree hpr
+          simp only [Option.map_some, Option.getD_some, Option.bind_some]
+          split
+          · exact SameOn.ret w u fun v hv => by simp at hv
+          · refine SameOn.ret w u fun v hv => ?_
+            cases hpr : evalPrim pr vs with
+            | none => simp [hpr, Option.elim] at hv
+            | some v' =>
+              simp [hpr, Option.elim] at hv
+              subst hv
+              exact evalPrim_hostFree hpr
       | call f targs args =>
         simp only [evalRhs]
         cases hfd : p.find f with
@@ -449,7 +453,7 @@ theorem eval_hostFreeIn
                 obtain ⟨t, r, u'⟩ := res
                 cases r with
                 | ok x => exact ⟨rfl, fun _ h => by cases h; exact h₂ x rfl⟩
-                | failed _ | stuck | outOfFuel => exact ⟨rfl, fun _ h => nomatch h⟩
+                | failed _ | stuck | outOfFuel | aborted => exact ⟨rfl, fun _ h => nomatch h⟩
               · exact SameOn.stuck w u
       | map xs f =>
         simp only [evalRhs]
@@ -667,7 +671,7 @@ theorem eval_hostFreeIn
         cases r with
         | ok x => exact ⟨rfl, fun _ h => by cases h; simp only [Val.HostFreeIn]; exact h₂ x rfl⟩
         | failed c => exact ⟨rfl, fun _ h => by cases h; simp [Val.HostFreeIn]⟩
-        | stuck | outOfFuel => exact ⟨rfl, fun _ h => nomatch h⟩
+        | stuck | outOfFuel | aborted => exact ⟨rfl, fun _ h => nomatch h⟩
       | handle b x h =>
         simp only [Expr.hostFree, Bool.and_eq_true] at he
         simp only [eval]
@@ -688,7 +692,7 @@ theorem eval_hostFreeIn
         | ok v =>
           have := (ihE w u env b hf he.1 (fun g hg => hc g (by simp [Expr.callees, hg]))).2 v (by rw [hres])
           exact ⟨rfl, fun _ h => by cases h; exact this⟩
-        | stuck | outOfFuel => exact ⟨rfl, fun _ h => nomatch h⟩
+        | stuck | outOfFuel | aborted => exact ⟨rfl, fun _ h => nomatch h⟩
       | letTuple bs v b =>
         simp only [Expr.hostFree] at he
         simp only [eval]

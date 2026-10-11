@@ -91,6 +91,12 @@ inductive Atom where
 inductive Prim where
   | add
   | sub
+  /-- `*` on integers (#526). -/
+  | mul
+  /-- Euclidean `div` and `mod` (`spec/11`: the remainder is non-negative, as SMT-LIB's), #526. A
+  zero divisor aborts the run (`Prim.aborts`). -/
+  | div
+  | mod
   | lt
   | eqInt
   | not

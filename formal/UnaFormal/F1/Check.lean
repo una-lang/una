@@ -156,7 +156,8 @@ def isVia (p : Program) (f : String) : Bool := p.policies.any (·.via == f)
 
 /-- The structural type of a primitive's result (`PrimTy`). -/
 def primTy : Prim → List Ty → Option Ty
-  | .add, [.int, .int] | .sub, [.int, .int] => some .int
+  | .add, [.int, .int] | .sub, [.int, .int] | .mul, [.int, .int] | .div, [.int, .int]
+  | .mod, [.int, .int] => some .int
   | .lt, [.int, .int] | .eqInt, [.int, .int] => some .bool
   | .not, [.bool] => some .bool
   | .len, [.list _] | .len, [.text] => some .int

@@ -240,7 +240,7 @@ abbrev URes (P : Val → Prop) (F : Prop) : Res → Prop
   | .ok v => P v
   | .failed _ => F
   | .stuck => True
-  | .outOfFuel => True
+  | .outOfFuel | .aborted => True
 
 /-- A write event. -/
 def Event.isWrite : Event → Bool
@@ -309,7 +309,7 @@ theorem andThen_uok {A : Event → Prop} {P Q : Val → Prop} {F : Prop} {w : Wo
     · exact h.1 ev hev
   | failed c => exact h1
   | stuck => exact h1
-  | outOfFuel => exact h1
+  | outOfFuel | aborted => exact h1
 
 /-- The events a code with these effects may perform under `pc`: each at a sink whose `accepts`
 is above `pc`. -/

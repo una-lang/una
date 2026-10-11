@@ -17,7 +17,7 @@ def Good (p : Program) (t : Ty) : Res → Prop
   | .ok v => ValTy p v t
   | .failed _ => True
   | .stuck => False
-  | .outOfFuel => True
+  | .outOfFuel | .aborted => True
 
 theorem andThen_good {first : Run H} {rest : World H → Val → Run H} {t s : Ty}
     (h1 : Good p t first.2.1) (h2 : ∀ w v, ValTy p v t → Good p s (rest w v).2.1) :
@@ -32,7 +32,7 @@ theorem andThen_good {first : Run H} {rest : World H → Val → Run H} {t s : T
     simp
   | failed code => simp [andThen, Good]
   | stuck => simp [Good] at h1
-  | outOfFuel => simp [andThen, Good]
+  | outOfFuel | aborted => simp [andThen, Good]
 
 /-- **A response has `Response`'s type** (H4), in a program that holds `Http`'s kinds. -/
 theorem ValTy.response (hr : p.HttpRecords) {v : Val} (h : v.IsResponse) :
@@ -186,7 +186,9 @@ theorem sound (hwf : p.WellFormed) (h4 : H.RespTyped) : ∀ n : Nat,
       | prim has hp =>
         obtain ⟨vs, hvs, hvst⟩ := atoms_typed henv has
         obtain ⟨v, hv, hvt⟩ := prim_typed hp hvst
-        simp [evalRhs, hvs, hv, Good, hvt]
+        simp only [evalRhs, hvs, hv, Option.map_some, Option.getD_some, Option.bind_some,
+          Option.elim]
+        split <;> simp [Good, hvt]
       | @call _ f _ _ fn σ hf has =>
         obtain ⟨vs, hvs, hvst⟩ := atoms_typed henv has
         have hlen := paramTys_length fn σ
@@ -419,7 +421,7 @@ theorem sound (hwf : p.WellFormed) (h4 : H.RespTyped) : ∀ n : Nat,
             simpa using hgood
           | ok v => simp
           | stuck => simp [Good]
-          | outOfFuel => simp [Good]
+          | outOfFuel | aborted => simp [Good]
       | letTuple hv hlen hb =>
         obtain ⟨v, hv', hvt⟩ := atom_typed henv hv
         cases hvt with

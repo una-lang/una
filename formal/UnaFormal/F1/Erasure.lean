@@ -133,6 +133,7 @@ def Res.anon (ρ : String → String) : Res → Res
   | .failed c => .failed c
   | .stuck => .stuck
   | .outOfFuel => .outOfFuel
+  | .aborted => .aborted
 
 /-- A run with its values forgotten. -/
 def runAnon {H : Host} (ρ : String → String) (r : Run H) : Run H :=
@@ -209,6 +210,14 @@ mutual
     | [] => rfl
     | v :: vs => by simp only [Val.anons, Val.renders]; rw [Val.render_anon v, Val.renders_anon vs]
 end
+
+/-- Whether a primitive aborts reads only integers, which erasure keeps (#526). -/
+theorem aborts_anon (pr : Prim) (vs : List Val) :
+    Prim.aborts pr (vs.map (Val.anon ρ)) = Prim.aborts pr vs := by
+  cases pr <;>
+    (rcases vs with _ | ⟨a, _ | ⟨b, _ | ⟨c, rest⟩⟩⟩ <;>
+      simp only [List.map_cons, List.map_nil] <;>
+      (try cases a) <;> (try cases b) <;> simp [Prim.aborts, Val.anon])
 
 theorem evalPrim_anon (pr : Prim) (vs : List Val) :
     evalPrim pr (vs.map (Val.anon ρ)) = (evalPrim pr vs).map (Val.anon ρ) := by
@@ -296,7 +305,7 @@ theorem andThen_anon {r r' : Run H} {k k' : World H → Val → Run H} (hr : run
     obtain ⟨t', r', w'⟩ := kv
     rw [← this]
     cases r' <;> simp [runAnon, Res.anon]
-  | failed _ | stuck | outOfFuel => simp [andThen, runAnon, Res.anon]
+  | failed _ | stuck | outOfFuel | aborted => simp [andThen, runAnon, Res.anon]
 
 theorem applyWith_anon {run run' : World H → Env → Expr → Run H}
     (hrun : ∀ w env e, runAnon ρ (run w env e) = run' w (Val.anonEnv ρ env) (e.anon ρ))
@@ -431,8 +440,11 @@ theorem eval_anon (hH : H.AnonInvariant) (h4 : H.RespTyped) (hf : ∀ f, (P.find
         cases evalAtoms env args with
         | none => simp [runAnon, Res.anon]
         | some vs =>
-          simp only [Option.map_some, Option.bind_some, evalPrim_anon]
-          cases evalPrim pr vs <;> simp [runAnon, Res.anon]
+          simp only [Option.map_some, Option.getD_some, Option.bind_some, evalPrim_anon,
+            aborts_anon]
+          split
+          · simp [runAnon, Res.anon]
+          · cases evalPrim pr vs <;> simp [runAnon, Res.anon]
       | call f targs args =>
         simp only [evalRhs, Rhs.anon, evalAtoms_anon, ← hf f]
         cases P.find f with

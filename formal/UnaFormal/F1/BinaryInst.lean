@@ -316,6 +316,33 @@ theorem VList.eq_texts_visσ {σ : List (String × LTy)} : ∀ {ts : List LTy} {
     simp only [LTy.lsubst] at h
     rw [V.eq_text h hv, VList.eq_texts_visσ hs (fun w hw => hall w (List.mem_cons_of_mem _ hw))]
 
+/-- **Whether a primitive aborts agrees in both runs when the observer sees its label's
+instance** (#526): only `div` and `mod` abort, on their divisor, an `Int` whose label the
+primitive's carries. -/
+theorem aborts_agreeσ {σ : List (String × LTy)} {pr : Prim} {ts : List LTy} {t : Ty}
+    {vs₁ vs₂ : List Val} (hp : PrimTy pr (ts.map LTy.erase) t)
+    (hvs : VList p L (ts.map (LTy.lsubst p.recordDeep σ)) vs₁ vs₂)
+    (hv : Vis p L ((p.primLabel pr ts).inst (p.sd σ))) : Prim.aborts pr vs₁ = Prim.aborts pr vs₂ := by
+  have hdeep : ∀ u ∈ ts, pr ≠ .len → Vis p L ((p.deep u).inst (p.sd σ)) := by
+    intro u hu hne
+    refine Vis.of_le (LExpr.le_inst _ (LExpr.le_joinAll (List.mem_map_of_mem hu))) ?_
+    cases pr <;> first | exact absurd rfl hne | (simpa [Program.primLabel] using hv)
+  have hint : ∀ {u : LTy} {a b : Val}, u.erase = .int → V p L (u.lsubst p.recordDeep σ) a b →
+      Vis p L ((p.deep u).inst (p.sd σ)) → a = b := by
+    intro u a b he h hd
+    cases u <;> simp [LTy.erase] at he
+    exact V.eq_int h hd
+  generalize hes : ts.map LTy.erase = es at hp
+  cases hp with
+  | div | mod =>
+    match ts, hvs, hes with
+    | [_, _], .cons h₁ (.cons h₂ .nil), hes =>
+      simp only [List.map_cons, List.map_nil, List.cons.injEq] at hes
+      rw [hint hes.1 h₁ (hdeep _ (by simp) (fun h => Prim.noConfusion h)),
+        hint hes.2.1 h₂ (hdeep _ (by simp) (fun h => Prim.noConfusion h))]
+    | [], _, hes | [_], _, hes | _ :: _ :: _ :: _, _, hes => simp at hes
+  | _ => simp [Prim.aborts]
+
 /-- A primitive gives the same result in both runs when the observer sees its label's instance. -/
 theorem prim_agreeσ {σ : List (String × LTy)} {pr : Prim} {ts : List LTy} {t : Ty}
     {vs₁ vs₂ : List Val} (hp : PrimTy pr (ts.map LTy.erase) t)
@@ -340,7 +367,7 @@ theorem prim_agreeσ {σ : List (String × LTy)} {pr : Prim} {ts : List LTy} {t 
   | concat hts =>
     rw [VList.eq_texts_visσ hvs (fun u hu => ⟨hts _ (hes ▸ List.mem_map_of_mem hu),
       hdeep (fun h => Prim.noConfusion h) u hu⟩)]
-  | add | sub | lt | eqInt =>
+  | add | sub | mul | div | mod | lt | eqInt =>
     match ts, hvs, hes with
     | [_, _], .cons h₁ (.cons h₂ .nil), hes =>
       simp only [List.map_cons, List.map_nil, List.cons.injEq] at hes

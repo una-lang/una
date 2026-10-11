@@ -473,14 +473,17 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         exact ⟨fun _ h => by simp [evalRhs] at h, by simpa [evalRhs, hv, URes] using hvt, WEff.self _ _⟩
       | prim has hp =>
         obtain ⟨vs, hvs, _⟩ := latoms_ltypedσ henv has
-        refine ⟨fun _ h => by simp [evalRhs] at h, ?_, WEff.self _ _⟩
-        simp only [evalRhs, hvs, Option.bind_some]
-        cases he : evalPrim _ vs with
-        | none => trivial
-        | some v =>
-          show LValTy p v _
-          rw [ofScalar_lsubst]
-          exact prim_ltyped _ hp he
+        simp only [evalRhs, hvs, Option.map_some, Option.getD_some, Option.bind_some]
+        split
+        · exact ⟨fun _ h => by simp at h, trivial, WEff.self _ _⟩
+        · refine ⟨fun _ h => by simp at h, ?_, WEff.self _ _⟩
+          cases he : evalPrim _ vs with
+          | none => simp [Option.elim, URes]
+          | some v =>
+            simp only [Option.elim]
+            show LValTy p v _
+            rw [ofScalar_lsubst]
+            exact prim_ltyped _ hp he
       | @call _ _ f targs args fn ts hf hnv hlen _ _ hg has hfl hb hrb =>
         obtain ⟨tb, εb, hbody, hflow, ho, hgo, hfs, _, hrs⟩ := funOk_of_nvia hwf hnv hf
         have hτ : GroundSubst (fn.tparams.zip targs) := zip_ground hg
@@ -736,7 +739,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
               exact ⟨(pc.join po.dst.top).inst (p.sd σ), by simp [Eff.ofPolicy, Eff.inst, hf],
                 LExpr.le_inst _ (LExpr.le_join_left pc po.dst.top)⟩
         | stuck => exact ⟨fun _ h => (nomatch h), trivial, WEff.self _ _⟩
-        | outOfFuel => exact ⟨fun _ h => (nomatch h), trivial, WEff.self _ _⟩
+        | outOfFuel | aborted => exact ⟨fun _ h => (nomatch h), trivial, WEff.self _ _⟩
       | map hxs hf hte hb =>
         obtain ⟨xv, hxv, hxt⟩ := latom_ltypedσ henv hxs
         obtain ⟨fv, hfv, hft⟩ := latom_ltypedσ henv hf
@@ -943,7 +946,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         | ok v => exact ⟨hev, .ok h.2.1, h.2.2⟩
         | failed c => exact ⟨hev, .err .int, h.2.2⟩
         | stuck => exact ⟨hev, trivial, h.2.2⟩
-        | outOfFuel => exact ⟨hev, trivial, h.2.2⟩
+        | outOfFuel | aborted => exact ⟨hev, trivial, h.2.2⟩
       | @handle _ _ body x handler _ _ _ ε₁ ε₂ hb hh h₁ h₂ _ =>
         have h := ihE (w := w) hσ henv hb
         simp only [eval]
@@ -973,7 +976,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
             · exact Fails.mono (hpc0 _) (fun l hl => ⟨l, hl, LExpr.le_refl l⟩) h2
         | ok v => exact ⟨hev, LValTy.lsubst_raise (LValTy.flow h.2.1 (Flow.lsubst _ _ h₁)), h.2.2⟩
         | stuck => exact ⟨hev, trivial, h.2.2⟩
-        | outOfFuel => exact ⟨hev, trivial, h.2.2⟩
+        | outOfFuel | aborted => exact ⟨hev, trivial, h.2.2⟩
       | iteT hc ht he h₁ h₂ _ _ =>
         obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv hc
         simp only [LTy.lsubst] at hvt
@@ -1049,7 +1052,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
             · exact Fails.mono (hpc0 _) (fun l hl => ⟨l, hl, LExpr.le_refl l⟩) h2
         | ok v => exact ⟨hev, LValTy.flow h.2.1 (Flow.lsubst _ _ h₁), h.2.2⟩
         | stuck => exact ⟨hev, trivial, h.2.2⟩
-        | outOfFuel => exact ⟨hev, trivial, h.2.2⟩
+        | outOfFuel | aborted => exact ⟨hev, trivial, h.2.2⟩
       | @letTuple _ _ bs value body ts l _ _ hv hflows _ hb =>
         obtain ⟨v, hv', hvt⟩ := latom_ltypedσ henv hv
         simp only [LTy.lsubst] at hvt

@@ -86,7 +86,7 @@ theorem quiet_andThen {w : World H} {first : Run H} {rest : World H → Val → 
     exact ⟨by simpa using this.1, this.2.1, this.2.2⟩
   | failed c => exact absurd rfl (hr c)
   | stuck => exact ⟨rfl, fun _ h => (nomatch h), rfl⟩
-  | outOfFuel => exact ⟨rfl, fun _ h => (nomatch h), rfl⟩
+  | outOfFuel | aborted => exact ⟨rfl, fun _ h => (nomatch h), rfl⟩
 
 theorem quiet_elim {w : World H} {o : Option Val} : Quiet w ([], o.elim .stuck .ok, w) := by
   cases o <;> exact ⟨rfl, fun _ h => (nomatch h), rfl⟩
@@ -101,13 +101,15 @@ theorem pure_run (p : Program) (w : World H) : ∀ n : Nat,
     obtain ⟨ihR, ihE⟩ := pure_run p w n
     have hstuck : Quiet w (stuck w) := ⟨rfl, fun _ h => (nomatch h), rfl⟩
     have hdone : ∀ v, Quiet w (done w v) := fun _ => ⟨rfl, fun _ h => (nomatch h), rfl⟩
+    have habort : Quiet w ([], Res.aborted, w) := ⟨rfl, fun _ h => (nomatch h), rfl⟩
     constructor
     · intro env r hr
       cases r <;> simp only [Rhs.Pure] at hr <;> simp only [evalRhs]
       all_goals first
         | exact quiet_elim
         | exact hdone _
-        | (split <;> first | exact quiet_elim | exact hstuck | exact hdone _)
+        | exact habort
+        | (split <;> first | exact quiet_elim | exact hstuck | exact hdone _ | exact habort)
     · intro env e he
       cases e with
       | atom a => exact quiet_elim
@@ -144,7 +146,7 @@ theorem pure_run (p : Program) (w : World H) : ∀ n : Nat,
         | ok v => exact ⟨h.1, fun _ h => (nomatch h), h.2.2⟩
         | failed c => exact absurd rfl (h.2.1 c)
         | stuck => exact ⟨h.1, fun _ h => (nomatch h), h.2.2⟩
-        | outOfFuel => exact ⟨h.1, fun _ h => (nomatch h), h.2.2⟩
+        | outOfFuel | aborted => exact ⟨h.1, fun _ h => (nomatch h), h.2.2⟩
       | handle b x hd =>
         have h := ihE env b he.1
         simp only [eval]
@@ -155,7 +157,7 @@ theorem pure_run (p : Program) (w : World H) : ∀ n : Nat,
         | failed c => exact absurd rfl (h.2.1 c)
         | ok v => exact h
         | stuck => exact h
-        | outOfFuel => exact h
+        | outOfFuel | aborted => exact h
       | letTuple _ _ _ => exact (show False from he).elim
       | loop _ _ _ _ _ _ => exact (show False from he).elim
 
@@ -177,7 +179,7 @@ theorem silent_andThen {w : World H} {first : Run H} {rest : World H → Val →
     exact ⟨by simpa using this.1, this.2⟩
   | failed c => exact ⟨rfl, rfl⟩
   | stuck => exact ⟨rfl, rfl⟩
-  | outOfFuel => exact ⟨rfl, rfl⟩
+  | outOfFuel | aborted => exact ⟨rfl, rfl⟩
 
 theorem Quiet.silent {w : World H} {r : Run H} (h : Quiet w r) : Silent w r := ⟨h.1, h.2.2⟩
 
@@ -251,7 +253,7 @@ theorem silent_run (p : Program) (w : World H) : ∀ n : Nat,
           simpa using this
         | ok v => exact ⟨rfl, rfl⟩
         | stuck => exact ⟨rfl, rfl⟩
-        | outOfFuel => exact ⟨rfl, rfl⟩
+        | outOfFuel | aborted => exact ⟨rfl, rfl⟩
       | letTuple _ _ _ => exact (show False from he).elim
       | loop _ _ _ _ _ _ => exact (show False from he).elim
 
