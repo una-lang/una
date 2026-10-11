@@ -79,8 +79,9 @@ class Generators(unittest.TestCase):
 
     def test_together_only_in_edition_0_2(self):
         for p in every_program():
-            # Family C uses `together` in 0.1 on purpose, as a must-reject check of the gate.
-            if p.edition == "0.1" and not p.op.startswith("C"):
+            # A program that uses `together` in 0.1 on purpose is a must-reject check of the
+            # gate (U0103): families C, CS, CP and TC.
+            if p.edition == "0.1" and p.expect != ["U0103"]:
                 self.assertFalse(any("together" in t for t in p.files.values()), p.name)
 
     def test_listing_of_t1_t2_t3(self):
@@ -295,6 +296,21 @@ class Generators(unittest.TestCase):
                 self.assertTrue(p.expect, p.variant)
         self.assertEqual({v for op, v in seen if op == "PG1"},
                          {"box-return", "box-print", "option-box-return", "sink-as-secret"})
+
+    def test_composed2_classes(self):
+        seen = set()
+        for p in every_program(60):
+            if p.op not in ("TC1", "TC2", "TC3", "CP1", "GS1"):
+                continue
+            seen.add(p.op)
+            if p.op != "GS1" and p.edition == "0.1":
+                self.assertEqual((p.cls, p.expect), (MUST_REJECT, ["U0103"]), p.name)
+            elif p.op == "TC3" or p.variant.endswith("-twin") or p.variant.startswith("to-public"):
+                self.assertEqual(p.cls, OPEN, p.variant)
+            else:
+                self.assertEqual(p.cls, MUST_REJECT, p.variant)
+                self.assertTrue(p.expect, p.variant)
+        self.assertEqual(seen, {"TC1", "TC2", "TC3", "CP1", "GS1"})
 
     def test_t11_class_follows_the_failure_label(self):
         for p in every_program(80):
