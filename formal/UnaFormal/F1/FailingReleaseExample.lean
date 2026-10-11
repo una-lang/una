@@ -30,6 +30,22 @@ def progG : Program := { prog with policies := [peekg], funs := [gate] }
 #guard viaTypedAt progG gate (gate.params.map fun q => (q.1, q.2.lowerTop)) = true
 #guard viaTyped progG gate = true
 
+/-- `gate` as `una core` exports it (#510): the temporary of the comparison keeps the parameter's
+`secret` label in its annotation, `let r: secret Bool = x == 1234`. -/
+def gateSBody : Expr :=
+  .letR "r" (.bool sec) (.eq (.var "x") (.int 1234)) (.ite (.var "r") (.fail 7) (.atom (.var "r")))
+
+def gateS : Fun := { gate with body := gateSBody }
+
+def progS : Program := { prog with policies := [⟨"peeks", .int sec, .bool intl, "gate"⟩], funs := [gateS] }
+
+-- Lowering the parameters alone is not enough: the annotation still says `secret`, so the body
+-- fails under a `secret` condition. Lowering the `let` annotations too types it (#510).
+#guard viaTypedAt progS gateS (gateS.params.map fun q => (q.1, q.2.lowerTop)) = false
+#guard viaTypedAt progS gateS (gateS.params.map fun q => (q.1, q.2.lowerTop)) gateS.body.lowerLets
+  = true
+#guard viaTyped progS gateS = true
+
 -- `flowB` is defined by well-founded recursion: it is unsealed for the kernel to evaluate it.
 unseal flowB flowsB in
 /-- The whole-program check accepts `progG`. -/
