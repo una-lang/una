@@ -304,6 +304,14 @@ import UnaFormal
 #print axioms Una.F1.HandlerExample.floor_direct
 #print axioms Una.F1.HandlerExample.floor_call
 #print axioms Una.F1.HandlerExample.floor_leaks
+#print axioms Una.F1.HandlerExample.handledPub_checked
+#print axioms Una.F1.HandlerExample.handledPub_runs
+#print axioms Una.F1.HandlerExample.parseThen_rejected
+#print axioms Una.F1.HandlerExample.branchDecides_rejected
+#print axioms Una.F1.HandlerExample.branchDecides_leaks
+#print axioms Una.F1.HandlerExample.branchDecides_untyped
+#print axioms Una.F1.HandlerExample.secretAtPublic_rejected
+#print axioms Una.F1.LExprTy.dl_le_failLabel
 #print axioms Una.F1.FirstExample.certified
 #print axioms Una.F1.FirstExample.same_lines
 #print axioms Una.F1.FirstExample.presence_checked
