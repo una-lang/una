@@ -279,6 +279,23 @@ class Generators(unittest.TestCase):
             self.assertEqual(j["kind"], "unknown", name)
             self.assertTrue(j["detail"], name)
 
+    def test_composed_families_classes(self):
+        seen = set()
+        for p in every_program(60):
+            if p.op not in ("CS1", "CS2", "PG1"):
+                continue
+            seen.add((p.op, p.variant.replace("-twin", "")))
+            if p.op.startswith("CS") and p.edition == "0.1":
+                self.assertEqual((p.cls, p.expect), (MUST_REJECT, ["U0103"]), p.name)
+            elif p.variant.endswith("-twin"):
+                self.assertEqual(p.cls, OPEN, p.variant)
+                self.assertNotIn("secret", p.files["src/app/main.una"], p.name)
+            else:
+                self.assertEqual(p.cls, MUST_REJECT, p.variant)
+                self.assertTrue(p.expect, p.variant)
+        self.assertEqual({v for op, v in seen if op == "PG1"},
+                         {"box-return", "box-print", "option-box-return", "sink-as-secret"})
+
     def test_t11_class_follows_the_failure_label(self):
         for p in every_program(80):
             if p.op != "T11":

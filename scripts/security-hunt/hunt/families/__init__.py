@@ -1,7 +1,7 @@
 """Operator families (docs/plan/security-hunt-generators.md §4). Each operator is a
 function `(seed, edition) -> Program`, registered in `OPERATORS` by its id."""
 
-from . import concurrency, fragment, generics, handlers, keys, ordering, payloads, sums, trusted
+from . import composed, concurrency, fragment, generics, handlers, keys, ordering, payloads, sums, trusted
 
 OPERATORS = {}
 OPERATORS.update(trusted.OPERATORS)
@@ -13,6 +13,7 @@ OPERATORS.update(concurrency.OPERATORS)
 OPERATORS.update(sums.OPERATORS)
 OPERATORS.update(ordering.OPERATORS)
 OPERATORS.update(fragment.OPERATORS)
+OPERATORS.update(composed.OPERATORS)
 
 
 def family_of(op):
