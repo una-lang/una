@@ -721,7 +721,8 @@ mutual
       pure (.loop source x xt st (← atoms (← field j "init")) (← expr c (← field j "body")))
     | "with" =>
       -- `with @c = h() do e` (#538): each operation of the capability, with `h`'s function for it.
-      let src ← field j "source"
+      -- A `with` node of an export before #538's reading, without `source`, keeps its reason.
+      let .ok src := j.getObjVal? "source" | throw "the form `with`"
       if (← kind src) != "handler" then throw "a `with` of a source other than a handler"
       if src.getObjValD "given" == .bool true then throw "`given`"
       if !(← arr (← field src "args")).isEmpty then throw "a `with` of a handler with arguments"
@@ -1721,8 +1722,9 @@ partial def withHandlersIn (j : J) : List String :=
         match (j.getObjValD "source").getObjValD "handler" with
         | .obj _ =>
           let h := (j.getObjValD "source").getObjValD "handler"
+          let given := (j.getObjValD "source").getObjValD "given" == .bool true
           match h.getObjValD "module", h.getObjValD "name" with
-          | .str m, .str n => [s!"{m}.{n}"]
+          | .str m, .str n => [(if given then "given:" else "") ++ s!"{m}.{n}"]
           | _, _ => []
         | _ => []
       else []
@@ -1800,7 +1802,7 @@ def synthHandlers (decls : List Decl) (dynCaps : List String := []) :
 
 /-- The outcome of every declaration with code, by qualified name; an error when the document is
 not one the checker reads. -/
-def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
+def checkDocumentRead (subst : Subst) (doc : J) (caps : Caps := {}) (scopes : Bool := true) :
     Except String (List (String × Outcome)) := do
   let edition := match doc.getObjValD "edition" with
     | .str e => e
@@ -1856,7 +1858,22 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
     let flags := (decls.filter fun d => d.kind == "handler" &&
       (plainRun (do str (← field d.value "capability"))).toOption == some cap).map usesOf
     flags.all (· == flags.head?.join) && flags.all Option.isSome
-  let dynCaps := ((withHandlersIn doc).filterMap capOfH).eraseDups.filter agreeCap
+  -- The capabilities read by scopes: declared by the document (not the host's), never installed
+  -- with `given`, and whose handlers invoke no capability read by scopes themselves (a handler that
+  -- forwards to an outer one, such as `uses @inner: Log`, keeps #524's reading).
+  let installs := withHandlersIn doc
+  let givenCaps := (installs.filter (·.startsWith "given:")).filterMap fun q => capOfH (q.drop 6).toString
+  let docCap := fun (cap : String) => decls.any fun d => d.kind == "cap" &&
+    (plainRun (do str (← field d.value "name"))).toOption == some cap
+  let cands := ((installs.filter (!·.startsWith "given:")).filterMap capOfH).eraseDups.filter
+    fun cap => docCap cap && !givenCaps.contains cap && agreeCap cap
+  let usesCaps := fun (d : Decl) => match plainRun (do
+      (← arr (← field d.value "uses")).mapM fun u => do str (← field u "capability")) with
+    | .ok cs => cs
+    | .error _ => ["?"]
+  let dynCaps := if !scopes then [] else cands.filter fun cap => decls.all fun d =>
+    d.kind != "handler" || (plainRun (do str (← field d.value "capability"))).toOption != some cap ||
+      (usesCaps d).all fun c => !cands.contains c && c != "?"
   let synth := synthHandlers decls dynCaps
   let dyn := synth.filter fun x => dynCaps.contains x.2.1.1
   let decls := decls ++ synth.map (·.1)
@@ -2198,6 +2215,29 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
   -- accepted declaration keeps the any-host claim.
   let docFree := sites.isEmpty && decls.all fun d => (writeSite known d.value true).isNone
   pure (guardFiles sites (finalize docFree (mkProg members) (mkProg plain) cond mono ren final))
+
+/-- Two readings of one document's outcomes, combined (#538): a declaration either rejects is
+rejected; otherwise one either accepts is accepted; otherwise the first's outcome stands. Each
+acceptance rests on its own reading's certificate. -/
+def combineOutcomes (a b : List (String × Outcome)) : List (String × Outcome) :=
+  let pick := fun (oa : Outcome) (ob : Option Outcome) => match oa, ob with
+    | .rejected w, _ => Outcome.rejected w
+    | _, some (.rejected w) => .rejected w
+    | .accepted n, _ => .accepted n
+    | _, some (.accepted n) => .accepted n
+    | .acceptedIfA3 n, _ => .acceptedIfA3 n
+    | _, some (.acceptedIfA3 n) => .acceptedIfA3 n
+    | o, _ => o
+  a.map (fun (f, o) => (f, pick o (List.lookup f b))) ++ b.filter (fun q => !(a.any (·.1 == q.1)))
+
+/-- The outcome of every declaration with code (#538): the document read with its `with` scopes,
+and read as #524 does, whose certificates hold for any lawful handler, combined. -/
+def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
+    Except String (List (String × Outcome)) := do
+  let a ← checkDocumentRead subst doc caps true
+  match checkDocumentRead subst doc caps false with
+  | .ok b => pure (combineOutcomes a b)
+  | .error _ => pure a
 
 /-- `checkDocumentWith` with labeled instantiation, `LTy.lsubst`. -/
 def checkDocument (doc : J) : Except String (List (String × Outcome)) :=

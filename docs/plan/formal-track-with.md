@@ -53,6 +53,12 @@ Non-vacuity of E (the coordinator's conditions):
 - **(b)** the same `with` at a public `pc`, the handler's events at its floor: certified;
 - **(c)** an invocation in a body whose operation no `with` installs and with no static handler: untyped, and not re-checked by the importer.
 
+## 4c. Which capabilities are read by scopes, and the combined reading
+
+The importer reads a capability by `with` scopes only when the document declares it (not one of the host's, `Files`, `Http`, `Keys`), never installs it with `given`, its handlers agree on whether they print, and none of its handlers invokes a capability read by scopes itself (a handler that forwards to an outer one, such as `uses @inner: Log`, keeps #524's reading). Any other capability is read as before #538.
+
+**The combined reading.** `una-core-check` reads each document twice: with its `with` scopes, and as #524 reads it, without them. A declaration either reading rejects is rejected; otherwise one either accepts is accepted; otherwise the scoped reading's outcome stands (`Import.combineOutcomes`). Each acceptance rests on its own reading's certificate, and #524's holds for any lawful handler, whoever installs it, so the union is sound; reading both keeps every declaration #524 accepted (an invocation inside a lambda or a `together` task, which no marker can reach, stays accepted by #524's reading).
+
 ## 5. Theorems
 
 No statement changes; T1 and T6 take the generalized Hu.
