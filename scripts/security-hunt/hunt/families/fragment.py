@@ -81,8 +81,9 @@ PRELUDE_CARRIERS = {
                  "  let t = when ts.at(index: s)\n    is Some(x) -> x\n    is None -> 0\n"),
     "or-else": "  let o = Some(s)\n  let t = o.or_else(default: 0)\n",
     "or-else-default": "  let o: Option[Int] = None\n  let t = o.or_else(default: s)\n",
-    "min": "  let t = min(s, 5)\n",
-    "max": "  let t = max(s, 5)\n",
+    # A call with two arguments labels the second (U2004, `spec/04 §3`).
+    "min": "  let t = min(s, b: 5)\n",
+    "max": "  let t = max(s, b: 5)\n",
     "abs": "  let t = abs(s)\n",
     # Structural: `is_ok` carries the result's top label only, so `t` is public here.
     "is-ok": ("  let r: Result[secret Int, Int] = Ok(s)\n"
@@ -94,14 +95,19 @@ PRELUDE_CARRIERS = {
     "slice": '  let tx = "{s}"\n  let t = tx.slice(start: 0, end: 0).len\n',
 }
 
+# Edition 0.1 has no `slice` (U1001): its text functions are edition 0.2's (`spec/22`).
+EDITION_02_ONLY = {"slice"}
+
 
 def f7(seed, edition):
     rng = rng_for(seed)
-    carrier = rng.choice(sorted(PRELUDE_CARRIERS))
+    carriers = [c for c in sorted(PRELUDE_CARRIERS) if edition != "0.1" or c not in EDITION_02_ONLY]
+    carrier = rng.choice(carriers)
     ending = rng.choice(sorted(ENDINGS))
     result, uses, tail = ENDINGS[ending]
     level = "internal" if ending == "write-internal" else "secret"
-    body = PRELUDE_CARRIERS[carrier].replace("secret Int", f"{level} Int")
+    body = (PRELUDE_CARRIERS[carrier].replace("secret Int", f"{level} Int")
+            .replace("secret Result", f"{level} Result"))
     fn = (f"pub run(s: {level} Int) -> {result}\n" + uses + "=\n" + body + tail)
     files = package("hunt", edition, {MOD: join_decls(header(MOD), fn)})
     return Program(op="F7", rule=RULE, edition=edition, seed=seed, cls=OPEN, files=files,
