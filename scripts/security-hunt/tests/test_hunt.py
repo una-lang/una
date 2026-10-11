@@ -157,6 +157,22 @@ class Generators(unittest.TestCase):
         self.assertTrue({"return-len-dep", "return-len-dep-top", "print-len-const"} <= seen["P2"])
         self.assertTrue(any(v.startswith("which-variant") for v in seen["P3"]))
 
+    def test_g_family_classes(self):
+        seen = {}
+        for p in every_program(60):
+            if p.op not in ("G1", "G2", "G3"):
+                continue
+            seen.setdefault(p.op, set()).add(p.variant)
+            text = p.files["src/app/main.una"]
+            if p.op == "G1" or (p.op == "G3" and not p.variant.endswith("-twin")):
+                self.assertEqual((p.cls, p.expect), (MUST_REJECT, ["U4001"]), p.variant)
+                self.assertIn("secret Int]", text)
+            else:
+                self.assertEqual(p.cls, OPEN, p.variant)
+            self.assertNotIn("use(", text.replace("feed_sink(", ""))
+        self.assertEqual(len(seen["G1"]), 16)
+        self.assertEqual(seen["G3"], {"chain", "pair", "chain-twin", "pair-twin"})
+
     def test_t11_class_follows_the_failure_label(self):
         for p in every_program(80):
             if p.op != "T11":
