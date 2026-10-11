@@ -123,7 +123,7 @@ mutual
       | _ => simp [rhsSim] at h
     | .call _ _ _, s, h | .funRef _ _, s, h | .atom _, s, h | .prim _ _, s, h
     | .apply _ _, s, h | .op _, s, h | .read _, s, h | .write _ _, s, h | .req _ _, s, h
-    | .construct _ _, s, h | .field _ _, s, h
+    | .construct _ _, s, h | .variant _ _ _, s, h | .field _ _, s, h
     | .list _, s, h | .none, s, h | .some _, s, h | .mkOk _, s, h | .mkErr _, s, h
     | .declassify _ _, s, h | .map _ _, s, h
     | .filter _ _, s, h | .firstWhere _ _, s, h | .fold _ _ _, s, h | .parse _, s, h
@@ -172,6 +172,27 @@ mutual
       | attempt c =>
         simp only [exprSim] at h
         simp only [Expr.anon, exprSim_sound b c h]
+      | _ => simp [exprSim] at h
+    | .raise _ _ _, f, h => by cases f <;> simp_all [exprSim, Expr.anon]
+    | .unreachable, f, h => by cases f <;> simp_all [exprSim, Expr.anon]
+    | .caseSum a i xs t e, f, h => by
+      cases f with
+      | caseSum b j ys u g =>
+        simp only [exprSim, Bool.and_eq_true, beq_iff_eq] at h
+        simp only [Expr.anon, h.1.1.1.1, h.1.1.1.2, h.1.1.2, exprSim_sound t u h.1.2,
+          exprSim_sound e g h.2]
+      | _ => simp [exprSim] at h
+    | .attemptK k b, f, h => by
+      cases f with
+      | attemptK k' c =>
+        simp only [exprSim, Bool.and_eq_true, beq_iff_eq] at h
+        simp only [Expr.anon, h.1, exprSim_sound b c h.2]
+      | _ => simp [exprSim] at h
+    | .handleK kd b x k, f, h => by
+      cases f with
+      | handleK kd' c y k' =>
+        simp only [exprSim, Bool.and_eq_true, beq_iff_eq] at h
+        simp only [Expr.anon, h.1.1.1, h.1.1.2, exprSim_sound b c h.1.2, exprSim_sound k k' h.2]
       | _ => simp [exprSim] at h
     | .handle b x k, f, h => by
       cases f with

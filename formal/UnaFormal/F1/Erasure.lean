@@ -87,6 +87,7 @@ mutual
     | .ok v => .ok (v.anon ρ)
     | .err v => .err (v.anon ρ)
     | .record r fs => .record r (Val.anons ρ fs)
+    | .variant k i fs => .variant k i (Val.anons ρ fs)
     | .closure ps b env => .closure (anonParams ps) (b.anon ρ) (Val.anonEnv ρ env)
     | .tuple items => .tuple (Val.anons ρ items)
 
@@ -137,6 +138,7 @@ def Event.anon (ρ : String → String) : Event → Event
 def Res.anon (ρ : String → String) : Res → Res
   | .ok v => .ok (v.anon ρ)
   | .failed c => .failed c
+  | .raised k c ps => .raised k c (Val.anons ρ ps)
   | .stuck => .stuck
   | .outOfFuel => .outOfFuel
   | .aborted => .aborted
@@ -208,6 +210,7 @@ mutual
     | .list items | .tuple items => by
       simp only [Val.anon, Val.render]; rw [Val.renders_anon items]
     | .record r fs => by simp only [Val.anon, Val.render]; rw [Val.renders_anon fs]
+    | .variant k i fs => by simp only [Val.anon, Val.render]; rw [Val.renders_anon fs]
     | .some v | .ok v | .err v => by simp only [Val.anon, Val.render]; rw [Val.render_anon v]
     | .int _ | .bool _ | .text _ | .unit | .none | .closure _ _ _ => by
       simp [Val.anon, Val.render]
@@ -258,6 +261,10 @@ mutual
       cases b with
       | record s ys => simp only [Val.anon, Val.beq]; rw [Val.beqs_anon xs ys]
       | _ => simp [Val.anon, Val.beq]
+    | .variant k i xs, b => by
+      cases b with
+      | variant k' i' ys => simp only [Val.anon, Val.beq]; rw [Val.beqs_anon xs ys]
+      | _ => simp [Val.anon, Val.beq]
     | .int _, b | .bool _, b | .text _, b | .unit, b | .none, b
     | .closure _ _ _, b | .tuple _, b => by
       cases b <;> simp [Val.anon, Val.beq]
@@ -271,7 +278,7 @@ end
 
 theorem Val.line_anon : ∀ v : Val, (v.anon ρ).line = v.line
   | .int _ | .bool _ | .text _ | .unit | .list _ | .none | .some _ | .ok _ | .err _ | .record _ _
-  | .closure _ _ _ | .tuple _ => by simp [Val.anon, Val.line]
+  | .variant _ _ _ | .closure _ _ _ | .tuple _ => by simp [Val.anon, Val.line]
 
 theorem zip_anon (xs : List String) : ∀ vs : List Val,
     (xs.zip vs).map (fun q => (q.1, q.2.anon ρ)) = xs.zip (vs.map (Val.anon ρ)) := by
@@ -311,7 +318,7 @@ theorem andThen_anon {r r' : Run H} {k k' : World H → Val → Run H} (hr : run
     obtain ⟨t', r', w'⟩ := kv
     rw [← this]
     cases r' <;> simp [runAnon, Res.anon]
-  | failed _ | stuck | outOfFuel | aborted => simp [andThen, runAnon, Res.anon]
+  | failed _ | raised _ _ _ | stuck | outOfFuel | aborted => simp [andThen, runAnon, Res.anon]
 
 theorem applyWith_anon {run run' : World H → Env → Expr → Run H}
     (hrun : ∀ w env e, runAnon ρ (run w env e) = run' w (Val.anonEnv ρ env) (e.anon ρ))
@@ -518,6 +525,9 @@ theorem eval_anon (hH : H.AnonInvariant) (h4 : H.RespTyped) (hf : ∀ f, (P.find
           | ok v =>
             simp [runAnon, Event.anon, Res.anon, Val.anon_response (h4 m vs w.srv srv' v hq)]
       | construct record fields =>
+        simp only [evalRhs, Rhs.anon, evalAtoms_anon]
+        cases evalAtoms env fields <;> simp [runAnon, Res.anon, Val.anon, Val.anons_eq]
+      | variant kind ctor fields =>
         simp only [evalRhs, Rhs.anon, evalAtoms_anon]
         cases evalAtoms env fields <;> simp [runAnon, Res.anon, Val.anon, Val.anons_eq]
       | field value index =>
@@ -744,6 +754,50 @@ theorem eval_anon (hH : H.AnonInvariant) (h4 : H.RespTyped) (hf : ∀ f, (P.find
           | err c => simp only [Option.map_some, Val.anon, ihE]; rfl
           | _ => simp [Val.anon, stuck, runAnon, Res.anon]
       | fail c => simp [eval, Expr.anon, runAnon, Res.anon]
+      | raise kind code args =>
+        simp only [eval, Expr.anon, evalAtoms_anon]
+        cases evalAtoms env args <;> simp [runAnon, Res.anon, stuck, Val.anons_eq]
+      | unreachable => simp [eval, Expr.anon, runAnon, Res.anon]
+      | caseSum sc i xs t e =>
+        simp only [eval, Expr.anon, evalAtom_anon]
+        cases evalAtom env sc with
+        | none => simp [stuck, runAnon, Res.anon]
+        | some v =>
+          cases v with
+          | variant k j fs =>
+            simp only [Option.map_some, Val.anon, Val.anons_eq, List.length_map]
+            by_cases hi : j = i
+            · by_cases hl : fs.length = xs.length
+              · simp only [if_pos hi, if_pos hl]
+                rw [ihE, Val.anonEnv_eq, List.map_append, zip_anon, ← Val.anonEnv_eq]
+              · simp [if_pos hi, if_neg hl, stuck, runAnon, Res.anon]
+            · simp only [if_neg hi]
+              exact ihE w env e
+          | _ => simp [Val.anon, stuck, runAnon, Res.anon]
+      | attemptK k b =>
+        simp only [eval, Expr.anon, ← ihE]
+        generalize eval H n P w env b = res
+        obtain ⟨t, r, w'⟩ := res
+        cases r with
+        | raised k' c ps => by_cases hk : k' = k <;> simp [hk, runAnon, Res.anon, Val.anon]
+        | _ => simp [runAnon, Res.anon, Val.anon]
+      | handleK k b x h =>
+        simp only [eval, Expr.anon, ← ihE]
+        generalize eval H n P w env b = res
+        obtain ⟨t, r, w'⟩ := res
+        cases r with
+        | raised k' c ps =>
+          by_cases hk : k' = k
+          · subst hk
+            simp only [runAnon, Res.anon, if_pos rfl]
+            have hh := ihE w' ((x, .variant k' c ps) :: env) h
+            simp only [Val.anonEnv, Val.anon] at hh
+            rw [← hh]
+            generalize eval H n P w' ((x, .variant k' c ps) :: env) h = res'
+            obtain ⟨t', r', w''⟩ := res'
+            cases r' <;> simp [runAnon, Res.anon]
+          · simp [hk, runAnon, Res.anon]
+        | _ => simp [runAnon, Res.anon]
       | attempt b =>
         simp only [eval, Expr.anon, ← ihE]
         generalize eval H n P w env b = res
@@ -852,6 +906,7 @@ mutual
   theorem Val.firstOrder_anon {ρ : String → String} : ∀ v : Val, (v.anon ρ).FirstOrder ↔ v.FirstOrder
     | .list items => by simp only [Val.anon, Val.FirstOrder]; exact Val.firstOrderAll_anon items
     | .record _ fs => by simp only [Val.anon, Val.FirstOrder]; exact Val.firstOrderAll_anon fs
+    | .variant _ _ fs => by simp only [Val.anon, Val.FirstOrder]; exact Val.firstOrderAll_anon fs
     | .tuple fs => by simp only [Val.anon, Val.FirstOrder]; exact Val.firstOrderAll_anon fs
     | .some v | .ok v | .err v => by simp only [Val.anon, Val.FirstOrder]; exact Val.firstOrder_anon v
     | .closure _ _ _ | .int _ | .bool _ | .text _ | .unit | .none => by
@@ -879,6 +934,12 @@ mutual
       | record s ys =>
         simp only [Val.anon, Val.record.injEq] at h
         rw [h.1, Val.anons_inj xs ys ha hb h.2]
+      | _ => simp [Val.anon] at h
+    | .variant k i xs, b, ha, hb, h => by
+      cases b with
+      | variant k' i' ys =>
+        simp only [Val.anon, Val.variant.injEq] at h
+        rw [h.1, h.2.1, Val.anons_inj xs ys ha hb h.2.2]
       | _ => simp [Val.anon] at h
     | .tuple xs, b, ha, hb, h => by
       cases b with

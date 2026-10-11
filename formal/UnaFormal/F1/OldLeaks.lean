@@ -111,8 +111,8 @@ theorem s14_old_typed : ∃ t ε, LExprTy oldProg [] Γ .bot s14 t ε := by
       (.letR "c" (.text intl) (.read (.text "a.txt")) (.atom (.var "c"))) _ _ :=
     .letR (.read .text rfl (le_of rfl) (sf rfl)) (.text (le_of rfl)) (.atom (.var rfl)) rfl
   have hall : LExprTy oldProg [] Γ .bot s14 _ _ :=
-    .letE (x := "w") (ann := .result (.unit .bot) (.int .bot) intl) (.attempt hw) (.result .unit (.int (le_of rfl)) (le_of rfl))
-      (.letE (x := "r") (ann := .result (.text intl) (.int .bot) .bot) (.attempt hr)
+    .letE (x := "w") (ann := .result (.unit .bot) (.int .bot) intl) (.attempt hw (by simp [Eff.union, Eff.none])) (.result .unit (.int (le_of rfl)) (le_of rfl))
+      (.letE (x := "r") (ann := .result (.text intl) (.int .bot) .bot) (.attempt hr (by simp [Eff.union, Eff.none]))
         (.result (.text (le_of rfl)) (.int (le_of rfl)) (le_of rfl))
         (.caseResult (s := .unit .bot) (.var rfl)
           (.letR (.op .text trivial (le_of rfl) (sf rfl)) .unit (.atom (.var rfl)) rfl)

@@ -202,7 +202,7 @@ out.append('''
 def thirdBody : String := r#"''' + third_body + '''"#
 
 /-- `Shape`, as the reading gives its shape: one field, none, one. -/
-def shapeCtx : Ctx := { records := [], funs := [], sums := [("m.Shape", [1, 0, 1])] }
+def shapeCtx : Import.Ctx := { records := [], funs := [], sums := [("m.Shape", [1, 0, 1])] }
 
 def shapeProg : Program :=
   mkProgram [] Label.bot {} [] [] [] [⟨"m.Shape", [[.int .bot], [], [.int .bot]], Label.bot⟩]

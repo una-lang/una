@@ -21,8 +21,9 @@ def LTy.cf : LTy → Bool
   | .result t e _ => t.cf && e.cf
   | .fn _ _ _ _ _ _ | .var _ _ | .tuple _ _ => false
 
-/-- Every record's fields are closure-free. -/
-def Program.recordsCF (p : Program) : Bool := p.records.all (·.fields.all LTy.cf)
+/-- Every record's fields, and every sum's (#512), are closure-free. -/
+def Program.recordsCF (p : Program) : Bool :=
+  p.records.all (·.fields.all LTy.cf) && p.sums.all (·.variants.all (·.all LTy.cf))
 
 mutual
   /-- **A first-order value reaches only `S`**, whatever `S`: it holds no closure. -/
@@ -31,7 +32,7 @@ mutual
     | .list items, h => by
       simp only [Val.FirstOrder] at h; simp only [Val.HostFreeIn]
       exact Val.hostFreeAllIn_of_firstOrder h
-    | .record _ fs, h | .tuple fs, h => by
+    | .record _ fs, h | .variant _ _ fs, h | .tuple fs, h => by
       simp only [Val.FirstOrder] at h; simp only [Val.HostFreeIn]
       exact Val.hostFreeAllIn_of_firstOrder h
     | .some v, h | .ok v, h | .err v, h => by
@@ -76,8 +77,17 @@ mutual
       have hmem : rec ∈ p.records := by
         unfold Program.record at hr
         exact List.mem_of_find?_eq_some hr
-      exact LValsTy.firstOrder_of_cf hrec hf
-        (fun t ht => List.all_eq_true.mp (List.all_eq_true.mp hrec rec hmem) t ht)
+      simp only [Program.recordsCF, Bool.and_eq_true] at hrec
+      exact LValsTy.firstOrder_of_cf (by simp [Program.recordsCF, hrec]) hf
+        (fun t ht => List.all_eq_true.mp (List.all_eq_true.mp hrec.1 rec hmem) t ht)
+    | _, _, .variant (sm := sm) (fs := fs) hs hfs hvals, _ => by
+      simp only [Val.FirstOrder]
+      have hmem : sm ∈ p.sums := List.mem_of_find?_eq_some hs
+      have hrec' := hrec
+      simp only [Program.recordsCF, Bool.and_eq_true] at hrec'
+      exact LValsTy.firstOrder_of_cf hrec hvals (fun t ht =>
+        List.all_eq_true.mp (List.all_eq_true.mp (List.all_eq_true.mp hrec'.2 sm hmem) fs
+          (List.mem_of_getElem? hfs)) t ht)
     | _, _, .closure .., hc | _, _, .tuple _, hc => by simp [LTy.cf] at hc
 
   theorem LValsAll.firstOrder_of_cf (hrec : p.recordsCF = true) :

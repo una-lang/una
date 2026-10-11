@@ -80,7 +80,7 @@ theorem request_runs : ∃ t ε, LExprTy prog [] [] .bot body t ε ∧ ∀ n : N
     Term (eval counter n prog w₁ [] body).2.1 → Term (eval counter n prog w₂ [] body).2.1 →
     proj prog Label.bot (eval counter n prog w₁ [] body).1 =
         proj prog Label.bot (eval counter n prog w₂ [] body).1 ∧
-      OutRel (V prog Label.bot t) (Vis prog Label.bot ε.failLabel)
+      OutRel prog Label.bot (V prog Label.bot t) (Vis prog Label.bot ε.failLabel)
         (eval counter n prog w₁ [] body).2.1 (eval counter n prog w₂ [] body).2.1 ∧
       WorldRel prog Label.bot (eval counter n prog w₁ [] body).2.2
         (eval counter n prog w₂ [] body).2.2 := by

@@ -39,7 +39,11 @@ def shapeSum : Sum := ⟨"m.Shape", [[.int .bot], []], Label.bot⟩
 /-- `boom(k: internal Text) -> Int fails Err = fail Oops(1, k)`. -/
 def boom : Fun where
   name := "m.boom"
+  tparams := []
+  eqParams := []
   params := [("k", .text intl)]
+  op := false
+  host := HostFx.none
   result := .int .bot
   fails := true
   raises := ["m.Err"]
@@ -235,7 +239,7 @@ theorem payload_related (R : Val → Val → Prop) (vf : Prop) :
     OutRel prog Label.bot R vf (.raised "m.Err" 0 [.int 1, .text "a"])
       (.raised "m.Err" 0 [.int 1, .text "b"]) := fun _ =>
   ⟨rfl, rfl, errSum, _, rfl, rfl,
-    .cons .int (.cons (.hidden (by simpa [LTy.top] using internal_hidden)) .nil)⟩
+    .cons .int (.cons (.hidden (by simpa [LTy.top, intl, internalLabel] using internal_hidden)) .nil)⟩
 
 /-- **Two whose public fields differ are not**, when the observer sees what decides them. -/
 theorem payload_public_differs (R : Val → Val → Prop) :
@@ -243,7 +247,7 @@ theorem payload_public_differs (R : Val → Val → Prop) :
       (.raised "m.Err" 0 [.int 2, .text "a"]) := by
   intro h
   obtain ⟨_, _, sm, fs, hs, hv, hl⟩ := h trivial
-  simp [prog, Import.mkProgram, Program.sum, List.find?, errSum, shapeSum] at hs
+  simp [prog, Import.mkProgram, Program.sum, errSum, shapeSum] at hs
   subst hs
   simp [errSum] at hv
   subst hv

@@ -153,15 +153,15 @@ checked at their instances, enter by the named hypothesis `hA3`: their T-Fun is 
 theorem progOk_sound {cond : List String} {p : Program} (h : progOk cond p = true)
     (hA3 : ∀ fn ∈ p.funs, fn.name ∈ cond → ¬ p.IsVia fn.name → p.FunOk fn) :
     p.LWellFormed ∧ p.B1WellFormed ∧ p.HostWF := by
-  simp only [progOk, progDocOk, recordOk, policyOk, Bool.and_eq_true, List.all_eq_true] at h
-  obtain ⟨⟨⟨⟨⟨hhost, hrec⟩, hpol⟩, hcats⟩, hb1⟩, hfuns⟩ := h
+  simp only [progOk, progDocOk, recordOk, sumOk, policyOk, Bool.and_eq_true, List.all_eq_true] at h
+  obtain ⟨⟨⟨⟨⟨⟨hhost, hrec⟩, hsum⟩, hpol⟩, hcats⟩, hb1⟩, hfuns⟩ := h
   have hfun := fun fn hfn => by
     have := hfuns fn hfn
     simp only [progFunOk, Bool.and_eq_true, List.all_eq_true] at this
     exact this
   -- The fields of `Program.LWellFormed`, in order: funs, records, recordDeep, policies,
-  -- categories, recordsGround, eqScoped, sigsScoped, inPlace.
-  refine ⟨⟨?_, ?_, ?_, ?_, catsDeclared_sound hcats, ?_, ?_, ?_, ⟨?_, ?_, ?_⟩⟩,
+  -- categories, recordsGround, eqScoped, sigsScoped, sums, disjoint, inPlace.
+  refine ⟨⟨?_, ?_, ?_, ?_, catsDeclared_sound hcats, ?_, ?_, ?_, ?_, ?_, ⟨?_, ?_, ?_⟩⟩,
     b1Ok_sound hb1, hostWfB_sound hhost⟩
   · intro fn hfn
     obtain ⟨_, hv⟩ := hfun fn hfn
@@ -189,6 +189,21 @@ theorem progOk_sound {cond : List String} {p : Program} (h : progOk cond p = tru
   · intro fn hfn
     have := (hfun fn hfn).1
     exact ⟨fun q hq => scopedIn_sound (this.1.1.1.2 q hq), scopedIn_sound this.1.1.2⟩
+  · -- Sums (#512): `sumOk` checks every field of every variant.
+    intro sm hsm fs hfs t ht
+    obtain ⟨⟨⟨⟨hg, hip⟩, hcl⟩, hcat⟩, hle⟩ := (hsum sm hsm).2 fs hfs t ht
+    exact ⟨ground_sound hg, inPlace_sound hip, tyCats_sound _ hcat, leB_sound hle, tyClosed_sound _ hcl⟩
+  · -- No record has a sum's name (`sumOk`), so a lookup of a name finds one kind at most.
+    intro k
+    cases hs : p.sum k with
+    | none => exact .inr rfl
+    | some sm =>
+      left
+      have hmem : sm ∈ p.sums := List.mem_of_find?_eq_some hs
+      have hname : sm.name = k := by simpa using List.find?_some hs
+      have := (hsum sm hmem).1
+      rw [hname] at this
+      simpa using this
   · intro fn hfn
     have := (hfun fn hfn).1
     exact ⟨fun q hq => inPlace_sound (this.1.2 q hq), inPlace_sound this.2⟩
@@ -241,6 +256,7 @@ mutual
       simp only [Rhs.callees] at hg
       cases h with
       | lambda hb => exact expr_reach hwf b hb g hg
+    | .variant _ _ _, _, _, _, _, _, _, hg
     | .atom _, _, _, _, _, _, _, hg | .prim _ _, _, _, _, _, _, _, hg
     | .apply _ _, _, _, _, _, _, _, hg | .op _, _, _, _, _, _, _, hg
     | .read _, _, _, _, _, _, _, hg | .write _ _, _, _, _, _, _, _, hg
@@ -260,7 +276,8 @@ mutual
   theorem expr_reach (hwf : p.LWellFormed) :
       ∀ (e : Expr) {Γ : LCtx} {pc : LExpr} {t : LTy} {ε : Eff}, LExprTy p E Γ pc e t ε →
         ∀ f ∈ e.callees, ∃ fn, p.find f = some fn ∧ p.FunOk fn
-    | .atom _, _, _, _, _, _, _, hg | .fail _, _, _, _, _, _, _, hg => by
+    | .atom _, _, _, _, _, _, _, hg | .fail _, _, _, _, _, _, _, hg
+    | .raise _ _ _, _, _, _, _, _, _, hg | .unreachable, _, _, _, _, _, _, hg => by
       simp [Expr.callees] at hg
     | .letR _ _ v b, _, _, _, _, h, g, hg => by
       simp only [Expr.callees, List.mem_append] at hg
@@ -312,11 +329,33 @@ mutual
     | .handle t _ e, _, _, _, _, h, g, hg => by
       simp only [Expr.callees, List.mem_append] at hg
       cases h with
-      | handle ht he =>
+      | handle ht _ he =>
         rcases hg with hg | hg
         · exact expr_reach hwf t ht g hg
         · exact expr_reach hwf e he g hg
-      | handleT ht he =>
+      | handleT ht _ he =>
+        rcases hg with hg | hg
+        · exact expr_reach hwf t ht g hg
+        · exact expr_reach hwf e he g hg
+    | .handleK _ t _ e, _, _, _, _, h, g, hg => by
+      simp only [Expr.callees, List.mem_append] at hg
+      cases h with
+      | handleK ht _ _ he =>
+        rcases hg with hg | hg
+        · exact expr_reach hwf t ht g hg
+        · exact expr_reach hwf e he g hg
+      | handleKT ht _ _ he =>
+        rcases hg with hg | hg
+        · exact expr_reach hwf t ht g hg
+        · exact expr_reach hwf e he g hg
+    | .caseSum _ _ _ t e, _, _, _, _, h, g, hg => by
+      simp only [Expr.callees, List.mem_append] at hg
+      cases h with
+      | caseSum _ _ _ _ ht he =>
+        rcases hg with hg | hg
+        · exact expr_reach hwf t ht g hg
+        · exact expr_reach hwf e he g hg
+      | caseSumT _ _ _ _ ht he =>
         rcases hg with hg | hg
         · exact expr_reach hwf t ht g hg
         · exact expr_reach hwf e he g hg
@@ -324,6 +363,10 @@ mutual
       simp only [Expr.callees] at hg
       cases h with
       | attempt hb => exact expr_reach hwf b hb g hg
+    | .attemptK _ b, _, _, _, _, h, g, hg => by
+      simp only [Expr.callees] at hg
+      cases h with
+      | attemptK hb => exact expr_reach hwf b hb g hg
     | .letTuple _ _ b, _, _, _, _, h, g, hg => by
       simp only [Expr.callees] at hg
       cases h with

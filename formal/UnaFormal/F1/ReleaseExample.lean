@@ -76,6 +76,8 @@ theorem prog_wf : prog.LWellFormed where
     simp [Program.CatsDeclared, prog, check, reveal, peek, sec, intl, Label.bot, LTy.CatsIn,
       LExpr.CatsIn, LExpr.bot, LExpr.ofLabel]
   recordsGround _ h := by simp [prog] at h
+  sums := by simp [prog]
+  disjoint _ := .inr (by simp [Program.sum, prog])
   eqScoped := by simp [prog, check]
   sigsScoped := by
     simp [prog, check, LTy.ScopedIn, LExpr.SymsIn, sec, LExpr.bot, LExpr.ofLabel]
@@ -98,7 +100,7 @@ theorem prog_b1 : prog.B1WellFormed where
   via po h := by
     simp only [prog, List.mem_cons, List.not_mem_nil, or_false] at h
     rcases h with rfl | rfl <;>
-      exact ⟨check, rfl, rfl, rfl, ⟨trivial, trivial⟩, fun _ => ⟨trivial, trivial⟩⟩
+      exact ⟨check, rfl, rfl, rfl, ⟨trivial, trivial⟩, fun _ => ⟨trivial, trivial⟩, rfl⟩
 
 /-- `s: secret Int`. -/
 def Γ : LCtx := [("s", .int sec)]
@@ -112,7 +114,7 @@ def body : Expr :=
 /-- What `body` does: it releases, and writes. -/
 def bodyEff : Eff :=
   (Eff.ofFnR false HostFx.none false ["reveal"]).union
-    ((⟨true, HostFx.none, Option.none, []⟩ : Eff).union .none)
+    ((⟨true, HostFx.none, Option.none, [], false, []⟩ : Eff).union .none)
 
 theorem bot_le (e : LExpr) : LExpr.le prog.top LExpr.bot e :=
   .inr ⟨⟨Level.public_le _, fun _ h => by simp [LExpr.bot, LExpr.ofLabel, Label.bot] at h⟩,
@@ -184,7 +186,7 @@ theorem pin_diverges :
 values released, not the secrets. -/
 theorem guesses_agree :
     proj prog Label.bot (eval Host.unit 6 prog w0 (env 1) body).1 = proj prog Label.bot (eval Host.unit 6 prog w0 (env 2) body).1 ∧
-      OutRel (V prog Label.bot ((LTy.unit LExpr.bot).lsubst prog.recordDeep []))
+      OutRel prog Label.bot (V prog Label.bot ((LTy.unit LExpr.bot).lsubst prog.recordDeep []))
         (Vis prog Label.bot (bodyEff.inst (prog.sd [])).failLabel)
         (eval Host.unit 6 prog w0 (env 1) body).2.1 (eval Host.unit 6 prog w0 (env 2) body).2.1 := by
   have r₁ : eval Host.unit 6 prog w0 (env 1) body =
@@ -211,7 +213,7 @@ related as `t6_host` says, their values related at the hidden type. -/
 theorem hidden_release_related :
     proj prog Label.bot (eval Host.unit 6 prog w0 (env 1234) peekBody).1 =
         proj prog Label.bot (eval Host.unit 6 prog w0 (env 1) peekBody).1 ∧
-      OutRel (V prog Label.bot ((LTy.bool intl).lsubst prog.recordDeep []))
+      OutRel prog Label.bot (V prog Label.bot ((LTy.bool intl).lsubst prog.recordDeep []))
         (Vis prog Label.bot (((Eff.ofFnR false HostFx.none false ["peek"]).union .none).inst (prog.sd [])).failLabel)
         (eval Host.unit 6 prog w0 (env 1234) peekBody).2.1
         (eval Host.unit 6 prog w0 (env 1) peekBody).2.1 := by

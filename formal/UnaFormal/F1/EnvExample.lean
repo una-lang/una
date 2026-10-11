@@ -99,7 +99,7 @@ theorem read_runs : ∃ t ε, LExprTy prog [] [] .bot read t ε ∧ ∀ n : Nat,
     Term (eval Host.unit n prog (wSet "2") [] read).2.1 →
     proj prog Label.bot (eval Host.unit n prog (wSet "1") [] read).1 =
         proj prog Label.bot (eval Host.unit n prog (wSet "2") [] read).1 ∧
-      OutRel (V prog Label.bot t) (Vis prog Label.bot ε.failLabel)
+      OutRel prog Label.bot (V prog Label.bot t) (Vis prog Label.bot ε.failLabel)
         (eval Host.unit n prog (wSet "1") [] read).2.1 (eval Host.unit n prog (wSet "2") [] read).2.1 ∧
       WorldRel prog Label.bot (eval Host.unit n prog (wSet "1") [] read).2.2
         (eval Host.unit n prog (wSet "2") [] read).2.2 := by

@@ -28,6 +28,7 @@ theorem andThen_mono {f f' : Run H} {k k' : World H → Val → Run H}
       exact id
     rw [hk v rfl hkt]
   | failed c => rfl
+  | raised _ _ _ => rfl
   | stuck => rfl
   | outOfFuel | aborted => rfl
 
@@ -185,6 +186,53 @@ theorem eval_mono : ∀ n m : Nat, n ≤ m →
         simp only [eval] at ht ⊢
         split at ht <;> first | exact ihE _ _ _ ht | rfl
       | fail code => rfl
+      | raise _ _ _ => rfl
+      | unreachable => rfl
+      | caseSum sc i xs t e =>
+        simp only [eval] at ht ⊢
+        cases hsc : evalAtom env sc with
+        | none => simp [hsc]
+        | some v =>
+          cases v with
+          | variant k j fs =>
+            simp only [hsc] at ht ⊢
+            by_cases hi : j = i
+            · by_cases hl : fs.length = xs.length
+              · simp only [if_pos hi, if_pos hl] at ht ⊢
+                exact ihE _ _ _ ht
+              · simp [if_pos hi, if_neg hl]
+            · simp only [if_neg hi] at ht ⊢
+              exact ihE _ _ _ ht
+          | _ => simp [hsc]
+      | attemptK kind body =>
+        simp only [eval] at ht ⊢
+        have hb : Term (eval H n p w env body).2.1 := by
+          revert ht
+          rcases eval H n p w env body with ⟨tr, r, w'⟩
+          cases r <;> dsimp only <;> (try split) <;> simp [Term]
+        rw [ihE w env body hb]
+      | handleK kind body x handler =>
+        simp only [eval] at ht ⊢
+        have hb : Term (eval H n p w env body).2.1 := by
+          revert ht
+          rcases eval H n p w env body with ⟨tr, r, w'⟩
+          cases r <;> dsimp only <;> (try split) <;> simp [Term]
+        rw [ihE w env body hb]
+        revert ht
+        rcases eval H n p w env body with ⟨tr, r, w'⟩
+        cases r with
+        | raised k c ps =>
+          intro ht
+          dsimp only at ht ⊢
+          by_cases hk : k = kind
+          · simp only [if_pos hk] at ht ⊢
+            have hh : Term (eval H n p w' ((x, .variant k c ps) :: env) handler).2.1 := by
+              revert ht
+              rcases eval H n p w' ((x, .variant k c ps) :: env) handler with ⟨_, _, _⟩
+              exact id
+            rw [ihE _ _ handler hh]
+          · simp only [if_neg hk]
+        | _ => intro _; rfl
       | attempt body =>
         simp only [eval] at ht ⊢
         have hb : Term (eval H n p w env body).2.1 := by
@@ -239,7 +287,7 @@ theorem t6_ended (hwf : p.LWellFormed) (hpol : p.policies = []) (hh : p.HostWF)
     (h₂ : LEnvTy p e₂ Γ) (hrel : EnvRel p L Γ e₁ e₂) (he : LExprTy p [] Γ pc e t ε)
     {n₁ n₂ : Nat} (ht₁ : Term (eval H n₁ p w₁ e₁ e).2.1) (ht₂ : Term (eval H n₂ p w₂ e₂ e).2.1) :
     proj p L (eval H n₁ p w₁ e₁ e).1 = proj p L (eval H n₂ p w₂ e₂ e).1 ∧
-      OutRel (V p L t) (Vis p L ε.failLabel) (eval H n₁ p w₁ e₁ e).2.1 (eval H n₂ p w₂ e₂ e).2.1 ∧
+      OutRel p L (V p L t) (Vis p L ε.failLabel) (eval H n₁ p w₁ e₁ e).2.1 (eval H n₂ p w₂ e₂ e).2.1 ∧
       WorldRel p L (eval H n₁ p w₁ e₁ e).2.2 (eval H n₂ p w₂ e₂ e).2.2 := by
   have m₁ := (eval_mono (H := H) (p := p) n₁ (max n₁ n₂) (Nat.le_max_left _ _)).2 w₁ e₁ e ht₁
   have m₂ := (eval_mono (H := H) (p := p) n₂ (max n₁ n₂) (Nat.le_max_right _ _)).2 w₂ e₂ e ht₂

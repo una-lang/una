@@ -475,7 +475,7 @@ mutual
       let t₂ ← atomTy Γ b
       let t ← some! (joinTy t₁ t₂) "`==` on values of different types"
       -- F1 has no `==` on sums (#512): a model restriction, not re-checked, never rejected.
-      need (p.eqIn E t || !sumIn p t) "`==` on a type without equality"
+      need (p.eqIn E t || sumIn p t) "`==` on a type without equality"
       need (p.eqIn E t) "F1 restriction (`==` on a sum)"
       flowTo p (.bool ((p.deep t₁).join (p.deep t₂))) ann "the result of `==`"
       pure .none
@@ -484,7 +484,7 @@ mutual
       pure .none
     | .toText a => do
       let t ← atomTy Γ a
-      need (p.eqIn E t || !sumIn p t) "`to_text` of a value of a type without equality, outside F1"
+      need (p.eqIn E t || sumIn p t) "`to_text` of a value of a type without equality, outside F1"
       need (p.eqIn E t) "F1 restriction (`to_text` of a sum)"
       flowTo p (.text (p.deep t)) ann "the text of a value"
       pure .none

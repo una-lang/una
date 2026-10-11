@@ -71,7 +71,7 @@ def viaPayload : String := r#"{"schema":"una.core/1","edition":"0.2","complete":
 def thirdBody : String := r#"{"kind":"case","scrutinee":{"kind":"var","value":"x"},"arms":[{"ctor":{"kind":{"module":"m","name":"Shape"},"name":"Circle","index":0},"binds":[null],"body":{"kind":"atom","atom":{"kind":"unit"}}},{"ctor":{"kind":{"module":"m","name":"Shape"},"name":"Square","index":1},"binds":[],"body":{"kind":"atom","atom":{"kind":"unit"}}},{"ctor":{"kind":{"module":"m","name":"Shape"},"name":"Tri","index":2},"binds":[null],"body":{"kind":"let","name":"%u","ty":{"kind":"base","base":{"kind":"unit"},"label":{"level":"public","categories":[],"symbols":[]}},"value":{"kind":"rhs","value":{"kind":"op","cap":"console","capability":"Console","capability_path":{"module":"std.host","name":"Console"},"op":"print","args":[{"kind":"text","value":"t"}],"labels":[{"level":"public","categories":[],"symbols":[]}]}},"body":{"kind":"atom","atom":{"kind":"unit"}},"written":false}}],"otherwise":null}"#
 
 /-- `Shape`, as the reading gives its shape: one field, none, one. -/
-def shapeCtx : Ctx := { records := [], funs := [], sums := [("m.Shape", [1, 0, 1])] }
+def shapeCtx : Import.Ctx := { records := [], funs := [], sums := [("m.Shape", [1, 0, 1])] }
 
 def shapeProg : Program :=
   mkProgram [] Label.bot {} [] [] [] [⟨"m.Shape", [[.int .bot], [], [.int .bot]], Label.bot⟩]
