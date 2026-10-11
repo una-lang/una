@@ -10,7 +10,7 @@ Una claims that a program `una check` accepts does not leak: for an observer at 
 
 Now there is a proof in Lean, and a checker that applies it to real programs:
 - **The proof.** For a model of Una's core language, F1, T6 is proven with no `sorry` and only Lean's standard axioms. F1 covers functions and closures, generics, failures, declassification, and the host's files and HTTP as state that runs share. Type safety (T1) is proven too.
-- **The re-check.** A Lean program, `una-core-check`, reads what `una core --json` exports of a package and checks it again, by rules proven sound. It answers per declaration: accepted, rejected, or not re-checked.
+- **The re-check.** A Lean program, `una-core-check`, reads what `una core --json` exports of a package and checks it again, by rules proven sound. It answers per declaration: accepted, rejected, not re-checked, or outside the flow model (a refinement predicate, #532).
 - **Accepted means proven.** Each accepted declaration is part of a whole program that the Lean checker certified, and a theorem gives that program T6. A form the model lacks gives "not re-checked", never "accepted".
 - **Replay.** The re-check rejects the leaking programs of 8 of the 12 findings (S-01 and S-06 to S-12), run on the Core that their pre-fix releases printed. The other 4 are not replayed: S-02 (JSON) and S-04 (`edit`) are outside F1, S-05 (`Files.write`) is replayed from v0.1.3's dumps, with the file-state label taken from v0.3.6: 4 of its 5 shapes are rejected and the fifth is not re-checked (#498). S-03 (`Http`) is not replayable from any release, since `Http` first shipped after its fix.
 - **Corpus.** Every conformance case and example: 643 declarations accepted, 0 rejected. That is about 15% of the corpus's 4,208 declarations (36% of the 1,768 in complete documents). Most Una code is still outside F1: `pred` declarations, tuples, handlers, primitives such as `concat`, `div` and `mul`, `with` and `together`, and documents the export marks incomplete. So "0 rejected" means that no checked declaration disagrees with the proof, not that the whole corpus is proven.
@@ -28,7 +28,9 @@ On 1,329 documents (every conformance case and example, exported by `main`):
 | Not re-checked, in complete documents | 1,125 |
 | Not re-checked: the document is not complete | 2,440 |
 
-"Not re-checked" is mostly forms outside F1: `pred` declarations, tuples, handlers, fixed-width integers, primitives F1 lacks (`concat`, `div`, `mul`), `with` and `together`. A declaration that reaches one of these is not re-checked either.
+"Not re-checked" is mostly forms outside F1: tuples, handlers, fixed-width integers, primitives F1 lacks (`concat`, `div`, `mul`), `with` and `together`. A declaration that reaches one of these is not re-checked either.
+
+A `pred` declaration is counted apart, as "outside the flow model" (#532): a refinement predicate is pure and its labels are erased (`spec/07 §7` rule 6), so it is outside the flow model by design. The count covers only the documents the re-check reads declaration by declaration. When a whole document falls back to one outcome (it is not complete, it declares a capability named as one of the host's, it declares `Header` or `Response` otherwise than `spec/24 §1`, or it has a policy F1 cannot read), every declaration with code is "not re-checked", its predicates included.
 
 History of "accepted":
 - M2 accepted 601, on v0.3.4's export of 1,276 documents. After #443's keys, `main` accepted 647, and #452 removed the 37 without a theorem: 610.
