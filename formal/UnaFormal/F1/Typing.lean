@@ -79,6 +79,7 @@ inductive PrimTy : Prim → List Ty → Ty → Prop where
   | min : PrimTy .min [.int, .int] .int
   | max : PrimTy .max [.int, .int] .int
   | slice : PrimTy .slice [.text, .int, .int] .text
+  | fit {lo hi} : PrimTy (.fit lo hi) [.int] .int
 
 /-- What a loop visits, and the type of its variable. -/
 inductive SourceTy : Ctx → Source → Ty → Prop where

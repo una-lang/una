@@ -166,13 +166,14 @@ def primTy : Prim → List Ty → Option Ty
   | .abs, [.int] => some .int
   | .min, [.int, .int] | .max, [.int, .int] => some .int
   | .slice, [.text, .int, .int] => some .text
+  | .fit _ _, [.int] => some .int
   | _, _ => none
 
 /-- A primitive's name, for the reason of a restriction. -/
 def primName : Prim → String
   | .add => "add" | .sub => "sub" | .mul => "mul" | .div => "div" | .mod => "mod" | .lt => "lt"
   | .eqInt => "eq_int" | .not => "not" | .len => "len" | .sum => "sum" | .concat => "concat"
-  | .abs => "abs" | .min => "min" | .max => "max" | .slice => "slice"
+  | .abs => "abs" | .min => "min" | .max => "max" | .slice => "slice" | .fit _ _ => "fit"
 
 /-- A type's head, for the reason of a restriction. -/
 def tyHead : Ty → String

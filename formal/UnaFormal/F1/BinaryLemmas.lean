@@ -141,7 +141,7 @@ theorem prim_agree {pr : Prim} {ts : List LTy} {t : Ty} {vs₁ vs₂ : List Val}
       simp only [List.map_cons, List.map_nil, List.cons.injEq] at hes
       rw [hbool hes.1 h₁ (hdeep (fun h => Prim.noConfusion h) _ (by simp))]
     | [], _, hes | _ :: _ :: _, _, hes => simp at hes
-  | abs =>
+  | abs | fit =>
     match ts, hvs, hes with
     | [_], .cons h₁ .nil, hes =>
       simp only [List.map_cons, List.map_nil, List.cons.injEq] at hes
