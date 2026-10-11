@@ -926,12 +926,19 @@ def sums (decls : List Decl) (funs : List String) (recs : List Record) (codes : 
 
 /-- The outcome of a declaration. `acceptedIfA3` is accepted on the condition of part A3 of M4
 completion (instance erasure): the declaration is, or reaches, a function checked at its
-instances, whose T-Fun the whole-program theorem takes as a named hypothesis. -/
+instances, whose T-Fun the whole-program theorem takes as a named hypothesis. `outsideFlow` is a
+declaration outside the flow model by design (#532): a refinement predicate, which is pure and
+whose labels are erased (`spec/07 §7` rule 6). It is reported in its own category, never
+dropped, and never accepted: a function that reaches one is not re-checked. -/
 inductive Outcome where
   | accepted (note : String)
   | acceptedIfA3 (note : String)
   | rejected (why : String)
   | notRechecked (why : String)
+  | outsideFlow (why : String)
+
+/-- The reason of a `pred` declaration's outcome (#532). -/
+def predOutside : String := "refinement predicate (`spec/07 §7` rule 6)"
 
 /-- The host's labels the certificate describes (M5b; the binding rule of #467): `Files`'s and
 `Http`'s from the document's host signatures, and the file-state label from its `file_state` key,
@@ -1891,7 +1898,8 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
           if mine.isEmpty then .notRechecked "never instantiated at a ground type"
           else .accepted s!"at {mine.length} instance(s)"
   let own : List (String × Outcome) := code.map fun d =>
-    (named d, if d.kind != "fun" then .notRechecked s!"a `{d.kind}` declaration"
+    (named d, if d.kind == "pred" then .outsideFlow predOutside
+      else if d.kind != "fun" then .notRechecked s!"a `{d.kind}` declaration"
       else match prepOf (named d) with
         | some (.ok pr) =>
           if pr.nested then
@@ -1929,6 +1937,7 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
                 else some s!"reaches `{g}`, outside the document"
               | some (.rejected _) => some s!"reaches `{g}`, which is rejected"
               | some (.notRechecked why) => some s!"reaches `{g}`, which is not re-checked ({why})"
+              | some (.outsideFlow why) => some s!"reaches `{g}`, outside the flow model ({why})"
           match bad with
           | why :: _ => (f, .notRechecked why)
           | [] => (f, .accepted note)
@@ -2114,6 +2123,7 @@ def checkRejected (doc : J) : Except String (List (String × ReverseOutcome)) :=
     else some (n, match o with
       | .accepted note | .acceptedIfA3 note => .modelAcceptsCandidate note
       | .rejected why => .modelRejects why
-      | .notRechecked why => .notRechecked why))
+      | .notRechecked why => .notRechecked why
+      | .outsideFlow why => .notRechecked s!"outside the flow model: {why}"))
 
 end Una.F1.Import

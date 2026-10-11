@@ -27,7 +27,8 @@ def main(src, out):
     assert '"#' not in text
     with open(out, "w", encoding="utf-8") as f:
         f.write(f'''/-
-Tests of the reading of `prelude.first` and of comparisons F1 does not model (#532), checked when the library builds. The document is
+Tests of the reading of `prelude.first`, of comparisons F1 does not model, and of the
+reporting of refinement predicates (#532), checked when the library builds. The document is
 written by `formal/gen/first_import_tests.py` from `una`'s own export of
 `formal/gen/first_import_tests.una`; each verdict matches what `una check` says of the function.
 -/
@@ -62,6 +63,10 @@ def firsts : String := r#"{text}"#
 #guard run firsts "m.text_ge" == "not re-checked"
 -- The same on `Int`: accepted.
 #guard run firsts "m.int_lt" == "accepted"
+
+-- The prelude's refinement predicate, which every export carries: outside the flow model, in its
+-- own category (`spec/07 §7` rule 6), reported and never dropped.
+#guard run firsts "prelude.is_json_number" == "outside the flow model"
 
 end Una.F1.FirstImportTests
 ''')

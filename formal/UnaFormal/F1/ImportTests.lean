@@ -14,6 +14,7 @@ def verdict : Outcome → String
   | .acceptedIfA3 _ => "accepted, conditional on A3"
   | .rejected _ => "rejected"
   | .notRechecked _ => "not re-checked"
+  | .outsideFlow _ => "outside the flow model"
 
 /-- The verdict of `decl` in `doc` under `caps`. -/
 def run (doc : String) (decl : String) (caps : Caps := {}) : String :=
