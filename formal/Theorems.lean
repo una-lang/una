@@ -90,6 +90,7 @@ import UnaFormal
 #print axioms Una.F1.Check.progOk_sound_nil
 #print axioms Una.F1.Check.viaTypedAt_sound
 #print axioms Una.F1.Check.viaTyped_sound
+#print axioms Una.F1.ExprTy.of_lowerLets
 #print axioms Una.F1.Check.policyOk_sound
 #print axioms Una.F1.Check.catsDeclared_sound
 #print axioms Una.F1.Check.tyEq_sound

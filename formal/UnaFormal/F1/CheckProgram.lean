@@ -139,9 +139,27 @@ def _root_.Una.F1.LTy.lowerTop : LTy → LTy
   | .var a _ => .var a .bot
   | .tuple ts _ => .tuple ts .bot
 
+/-- The expression with the top label of every `let` annotation lowered to `⊥` (#510), the
+same structure: a `via` body's temporaries, such as `let %t0: secret Bool = x > 3` before an `if`,
+keep the labels of the parameters they are computed from, which the retry below lowers. Only
+`let` annotations change; a right-hand side, a lambda included, is kept as it is. -/
+def _root_.Una.F1.Expr.lowerLets : Expr → Expr
+  | .letR x t v b => .letR x t.lowerTop v b.lowerLets
+  | .letE x t v b => .letE x t.lowerTop v.lowerLets b.lowerLets
+  | .ite c a b => .ite c a.lowerLets b.lowerLets
+  | .caseOption sc n x sm => .caseOption sc n.lowerLets x sm.lowerLets
+  | .caseResult sc x ok y er => .caseResult sc x ok.lowerLets y er.lowerLets
+  | .attempt b => .attempt b.lowerLets
+  | .handle b x h => .handle b.lowerLets x h.lowerLets
+  | .letTuple bs v b => .letTuple bs v b.lowerLets
+  | .loop src x xt st init b => .loop src x xt st init b.lowerLets
+  | .atom a => .atom a
+  | .fail c => .fail c
+
 /-- A body the labeled checker types under these parameters, against the result raised to `⊤`. -/
-def viaTypedAt (p : Program) (fn : Fun) (ps : List (String × LTy)) : Bool :=
-  match checkExpr p fn.eqParams ps .bot (fn.result.raise (.ofLabel p.top)) fn.body with
+def viaTypedAt (p : Program) (fn : Fun) (ps : List (String × LTy)) (body : Expr := fn.body) :
+    Bool :=
+  match checkExpr p fn.eqParams ps .bot (fn.result.raise (.ofLabel p.top)) body with
   | .ok _ => true
   | .error _ => false
 
@@ -149,9 +167,12 @@ def viaTypedAt (p : Program) (fn : Fun) (ps : List (String × LTy)) : Bool :=
 result raised to `⊤`, then erased (`LExprTy.toStruct`). No label is checked in a `via` function
 (`spec/07 §5` rule 3), so when its parameters' labels stop the check, as T-Checked's premise
 does on a `checked` of the `from` value (#453 Phase B), the body is checked again under the
-parameters with their top labels at `⊥`, which have the same structure. -/
+parameters with their top labels at `⊥`, which have the same structure; and then with the top
+labels of the body's `let` annotations at `⊥` too (#510), since a temporary computed from a
+parameter keeps its label. -/
 def viaTyped (p : Program) (fn : Fun) : Bool :=
-  viaTypedAt p fn fn.params || viaTypedAt p fn (fn.params.map fun q => (q.1, q.2.lowerTop))
+  viaTypedAt p fn fn.params || viaTypedAt p fn (fn.params.map fun q => (q.1, q.2.lowerTop)) ||
+    viaTypedAt p fn (fn.params.map fun q => (q.1, q.2.lowerTop)) fn.body.lowerLets
 
 /-- T-Fun by the checker. -/
 def funOk (p : Program) (fn : Fun) : Bool :=

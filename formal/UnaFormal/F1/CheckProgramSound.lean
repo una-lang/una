@@ -88,8 +88,42 @@ theorem isVia_true {p : Program} {f : String} (h : isVia p f = true) : p.IsVia f
 theorem _root_.Una.F1.LTy.erase_lowerTop (t : LTy) : t.lowerTop.erase = t.erase := by
   cases t <;> rfl
 
-theorem viaTypedAt_sound {p : Program} {fn : Fun} {ps : List (String × LTy)}
-    (h : viaTypedAt p fn ps = true) : ExprTy p (LCtx.erase ps) fn.body fn.result.erase := by
+/-- **Lowering `let` annotations keeps the structural typing** (#510): `ExprTy` reads no
+annotation of a `let`, and `lowerLets` changes nothing else. -/
+theorem _root_.Una.F1.ExprTy.of_lowerLets {p : Program} :
+    ∀ (e : Expr) {ctx : Ctx} {s : Ty}, ExprTy p ctx e.lowerLets s → ExprTy p ctx e s
+  | .letR x t v b, _, _, h => by
+    cases h with | letR hv hb => exact .letR hv (ExprTy.of_lowerLets b hb)
+  | .letE x t v b, _, _, h => by
+    cases h with
+    | letE hv hb => exact .letE (ExprTy.of_lowerLets v hv) (ExprTy.of_lowerLets b hb)
+  | .ite c a b, _, _, h => by
+    cases h with
+    | ite hc ha hb => exact .ite hc (ExprTy.of_lowerLets a ha) (ExprTy.of_lowerLets b hb)
+  | .caseOption sc n x sm, _, _, h => by
+    cases h with
+    | caseOption hs hn hm =>
+      exact .caseOption hs (ExprTy.of_lowerLets n hn) (ExprTy.of_lowerLets sm hm)
+  | .caseResult sc x ok y er, _, _, h => by
+    cases h with
+    | caseResult hs ho he =>
+      exact .caseResult hs (ExprTy.of_lowerLets ok ho) (ExprTy.of_lowerLets er he)
+  | .attempt b, _, _, h => by
+    cases h with | attempt hb => exact .attempt (ExprTy.of_lowerLets b hb)
+  | .handle b x hd, _, _, h => by
+    cases h with
+    | handle hb hh => exact .handle (ExprTy.of_lowerLets b hb) (ExprTy.of_lowerLets hd hh)
+  | .letTuple bs v b, _, _, h => by
+    cases h with
+    | letTuple hv hl hb => exact .letTuple hv hl (ExprTy.of_lowerLets b hb)
+  | .loop src x xt st init b, _, _, h => by
+    cases h with
+    | loop hs hi hl hb => exact .loop hs hi hl (ExprTy.of_lowerLets b hb)
+  | .atom a, _, _, h => h
+  | .fail c, _, _, h => h
+
+theorem viaTypedAt_sound {p : Program} {fn : Fun} {ps : List (String × LTy)} {body : Expr}
+    (h : viaTypedAt p fn ps body = true) : ExprTy p (LCtx.erase ps) body fn.result.erase := by
   unfold viaTypedAt at h
   split at h
   · rename_i ε hc
@@ -112,8 +146,10 @@ theorem viaTyped_sound {p : Program} {fn : Fun} (h : viaTyped p fn = true) :
     simp [LCtx.erase, LTy.erase_lowerTop]
   unfold viaTyped at h
   rcases Bool.or_eq_true_iff.mp h with h | h
-  · rw [← he]; exact viaTypedAt_sound h
-  · rw [← he, ← hl]; exact viaTypedAt_sound h
+  · rcases Bool.or_eq_true_iff.mp h with h | h
+    · rw [← he]; exact viaTypedAt_sound h
+    · rw [← he, ← hl]; exact viaTypedAt_sound h
+  · rw [← he, ← hl]; exact ExprTy.of_lowerLets _ (viaTypedAt_sound h)
 
 theorem funOk_sound {p : Program} {fn : Fun} (h : funOk p fn = true) : p.FunOk fn := by
   unfold funOk at h
