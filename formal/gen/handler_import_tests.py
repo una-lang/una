@@ -56,8 +56,9 @@ def handlers : String := r#"{text}"#
 #guard run handlers "m.ring_it" == "not re-checked"
 -- An operation that can fail, whose handler the document does not declare: not re-checked.
 #guard run handlers "m.through" == "not re-checked"
--- A declaration that installs a handler (`with`): not re-checked (#538).
-#guard run handlers "m.installs" == "not re-checked"
+-- A declaration that installs a handler (`with`), read since #538: accepted, as `una check` says;
+-- the effect-free handler it installs charges it nothing (ruling E).
+#guard run handlers "m.installs" == "accepted"
 
 end Una.F1.HandlerImportTests
 ''')

@@ -34,7 +34,7 @@ def body : Expr :=
   .letR "y" (.int sec) (.prim .add [.var "s", .var "x"])
     (.letR "u" (.unit .bot) (.op (.text "hi")) (.atom (.var "x")))
 
-def eff : Eff := Eff.none.union ((⟨true, HostFx.none, Option.none, [], false, [], LExpr.bot⟩ : Eff).union Eff.none)
+def eff : Eff := Eff.none.union ((⟨true, HostFx.none, Option.none, [], false, [], LExpr.bot, []⟩ : Eff).union Eff.none)
 
 theorem body_typed : LExprTy prog [] Γ .bot body (.int .bot) eff := by
   refine .letR (t := .int ((LExpr.joinAll [sec, LExpr.bot]))) ?_ (.int ?_) ?_ (by simp [LTy.InPlace, sec, LExpr.ofLabel])
@@ -58,6 +58,7 @@ theorem prog_wf : prog.LWellFormed where
   sums := by simp [prog]
   disjoint _ := .inr (by simp [Program.sum, prog])
   ops _ h := by simp [prog] at h
+  handlers _ _ h := by simp [prog] at h
   eqScoped _ h := nomatch h
   sigsScoped _ h := nomatch h
   inPlace := by refine ⟨?_, ?_, ?_⟩ <;> simp [prog]
@@ -120,7 +121,7 @@ theorem le_sec {a : LExpr} (hb : a.base.level.rank ≤ 3) (hc : a.base.cats = []
     fun _ h => (by rw [hs] at h; nomatch h)⟩
 
 def brEff : Eff :=
-  Eff.none.union ((Eff.none.union Eff.none).union ((⟨true, HostFx.none, Option.none, [], false, [], LExpr.bot⟩ : Eff).union Eff.none))
+  Eff.none.union ((Eff.none.union Eff.none).union ((⟨true, HostFx.none, Option.none, [], false, [], LExpr.bot, []⟩ : Eff).union Eff.none))
 
 theorem branching_typed : LExprTy prog [] Γb .bot branching (.int sec) brEff := by
   refine .letR (t := .bool cl) ?r1 (.bool ?l1) ?b1 (by simp [LTy.InPlace, sec, LExpr.ofLabel])

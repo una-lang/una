@@ -119,6 +119,14 @@ inductive Source where
   | list (xs : Atom)
   | range (low high : Atom) (inclusive : Bool)
 
+/-- The marker of an operation `o` (#538): the binding that holds the handler a `with` scope
+installed for it. `@` is not an identifier character in Una (`spec/01 §4`), and Core's
+temporaries start with `%`, so no binding of a program is named so. -/
+def markerName (o : String) : String := "@" ++ o
+
+/-- Whether a name is a marker's. -/
+def isMarker (x : String) : Bool := x.startsWith "@"
+
 mutual
   /-- What a `let` binds. -/
   inductive Rhs where
@@ -129,6 +137,9 @@ mutual
     /-- `@c.o(ā)`, an operation of a user capability whose handler the program holds (#524):
     its handler, the function `f`, runs on `ā`. -/
     | invoke (f : String) (args : List Atom)
+    /-- `@c.o(ā)`, an operation whose handler a `with` scope installs (#538): the handler the
+    marker `"@o"` holds runs on `ā`. -/
+    | invokeOp (o : String) (args : List Atom)
     /-- A call of a function value (T-App). -/
     | apply (f : Atom) (args : List Atom)
     /-- The one operation of the one capability, `@log.write(line)`: a sink, recorded in the
@@ -232,6 +243,9 @@ mutual
     The importer emits it there only, after checking the arms against the declared variants
     itself; a run that reached it would abort, an outcome T6 is insensitive to. -/
     | unreachable
+    /-- `with @c = h() do e`, for the operation `o` (#538): `e` with the marker `"@o"` bound to
+    the handler function `f`. -/
+    | withH (o f : String) (body : Expr)
     /-- `let (x₁: S₁, ...) = a in e`: the components of a tuple (`spec/17 §4`). -/
     | letTuple (binders : List (String × LTy)) (value : Atom) (body : Expr)
     /-- `loop x: V in s with (b₁: S₁, ...) = (a₁, ...) do e` (`spec/17 §4`, ADR 0056): each
@@ -260,6 +274,9 @@ structure Fun where
   /-- The payload kinds its failures may have (#512): its `fails` kind when that is a kind with
   a field, so that `attempt` and a handler know what they receive. -/
   raises : List String := []
+  /-- The operations of `with` scopes it may invoke (#538, ruling E): its callers install their
+  handlers, and each call is bounded by their `accepts`. -/
+  invokes : List String := []
 
 /-- A record kind of the program: its field types, with their declared labels, in order, and
 the join of every label they declare, which the checker computes over nested records (the
@@ -317,6 +334,10 @@ structure Program where
   /-- The operations of user capabilities with a handler (#524): each handler function's name,
   with the operation's `accepts` label. -/
   ops : List (String × Label) := []
+  /-- The operation each handler function implements (#538). -/
+  handlerOf : List (String × String) := []
+  /-- For each operation, a handler whose signature is the operation's (#538). -/
+  opRep : List (String × String) := []
   /-- The sum kinds (#512). -/
   sums : List Sum := []
   policies : List Policy

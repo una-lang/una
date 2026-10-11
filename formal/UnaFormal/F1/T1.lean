@@ -224,6 +224,17 @@ theorem sound (hwf : p.WellFormed) (h4 : H.RespTyped) : ∀ n : Nat,
         have henv' := bindParams_typed hvst hlen (EnvTy.nil (p := p))
         rw [List.append_nil] at henv'
         exact ihE henv' (body_typed hwf hf σ)
+      | @invokeOp _ o _ f fn σ _ hr hf has =>
+        obtain ⟨gn, hgn, hps, hres⟩ := handlerFor_typed hwf hr (lookup env (markerName o)) hf
+        obtain ⟨vs, hvs, hvst⟩ := atoms_typed henv has
+        rw [← hps σ] at hvst
+        have hlen := paramTys_length gn σ
+        simp only [evalRhs, hgn, hvs]
+        rw [ite_eq_left ((valsTy_length hvst).trans hlen)]
+        have henv' := bindParams_typed hvst hlen (EnvTy.nil (p := p))
+        rw [List.append_nil] at henv'
+        rw [← hres σ]
+        exact ihE henv' (body_typed hwf hgn σ)
       | apply hf has =>
         obtain ⟨fv, hv, hvt⟩ := atom_typed henv hf
         obtain ⟨vs, hvs, hvst⟩ := atoms_typed henv has
@@ -463,6 +474,9 @@ theorem sound (hwf : p.WellFormed) (h4 : H.RespTyped) : ∀ n : Nat,
         simp only [eval, hvs, Good]
         exact ⟨_, _, hs, hf, hvst⟩
       | unreachable => simp [eval, Good]
+      | withH hb =>
+        simp only [eval]
+        exact ihE (.cons .text henv) hb
       | @caseSum _ _ _ ctor _ _ _ _ _ _ hsc hs hf hlen hth hel =>
         obtain ⟨v, hv, hvt⟩ := atom_typed henv hsc
         cases hvt with

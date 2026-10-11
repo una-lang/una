@@ -409,7 +409,7 @@ theorem bound_fails_instR {pc pc' : LExpr} {s : List (String × LExpr)} {o : Boo
   bound_fails_inst hb hpc hf
 
 theorem fnAllowed_of {pc : LExpr} {s : List (String × LExpr)} {ε : Eff} {o : Bool} {g : HostFx}
-    (ho : ε.op = true → o = true) (hg : HostFx.Le ε.host g) (hr : ε.rels = []) :
+    (ho : ε.emits p = true → o = true) (hg : HostFx.Le ε.host g) (hr : ε.rels = []) :
     ∀ ev, Allowed p pc (ε.inst s) ev → FnAllowed o g ev
   | .out _, h => ho h.1
   | .read _, h => hg.1 h.1
@@ -419,18 +419,24 @@ theorem fnAllowed_of {pc : LExpr} {s : List (String × LExpr)} {ε : Eff} {o : B
 
 /-- **The events of a call** (option B1): the callee's operations, which its bound allows, and
 its releases, through policies it declares (`Fun.rels`), each above the program counter of the
-call (`Program.RelBound`). The policies' `to` labels are concrete. -/
-theorem call_allowed_inst {pc pc₀ pc' : LExpr} {s s' : List (String × LExpr)} {εb : Eff}
+call (`Program.RelBound`). The policies' `to` labels are concrete. The call's effects `ε'` are
+any that emit as `o`, with the host effects `g` and the policies `rs` (#538). -/
+theorem call_allowed_inst {pc pc₀ pc' : LExpr} {s s' : List (String × LExpr)} {εb ε' : Eff}
     {o : Bool} {g : HostFx} {f : Bool} {rs : List String} (hdst : ∀ po ∈ p.policies, po.dst.top.SymFree)
     (hb : p.Bound pc' o g f) (hrb : p.RelBound pc' rs) (hpc : p.le pc (pc'.inst s))
-    (ho : εb.op = true → o = true) (hg : HostFx.Le εb.host g) (hr : ∀ x ∈ εb.rels, x ∈ rs) :
-    ∀ ev, Allowed p pc₀ (εb.inst s') ev → Allowed p pc ((Eff.ofFnR o g f rs).inst s) ev
-  | .out _, h => ⟨ho h.1, LExpr.le_trans hpc ((hb.inst s).1 (ho h.1)).1⟩
-  | .read _, h => ⟨hg.1 h.1, LExpr.le_trans hpc ((hb.inst s).2.1 (hg.1 h.1)).1⟩
-  | .write _ _, h => ⟨hg.2.1 h.1, LExpr.le_trans hpc ((hb.inst s).2.2.1 (hg.2.1 h.1)).1,
+    (ho : εb.emits p = true → o = true) (hg : HostFx.Le εb.host g) (hr : ∀ x ∈ εb.rels, x ∈ rs)
+    (he : ε'.emits p = o) (hgh : ε'.host = g) (hrr : ε'.rels = rs) :
+    ∀ ev, Allowed p pc₀ (εb.inst s') ev → Allowed p pc (ε'.inst s) ev := by
+  subst he hgh hrr
+  intro ev h
+  cases ev with
+  | out _ => exact ⟨ho h.1, LExpr.le_trans hpc ((hb.inst s).1 (ho h.1)).1⟩
+  | read _ => exact ⟨hg.1 h.1, LExpr.le_trans hpc ((hb.inst s).2.1 (hg.1 h.1)).1⟩
+  | write _ _ => exact ⟨hg.2.1 h.1, LExpr.le_trans hpc ((hb.inst s).2.2.1 (hg.2.1 h.1)).1,
       fun ho => LExpr.le_trans hpc (((hb.inst s).2.2.1 (hg.2.1 h.1)).2.1 ho)⟩
-  | .req _ _, h => ⟨hg.2.2 h.1, LExpr.le_trans hpc ((hb.inst s).2.2.2.1 (hg.2.2 h.1)).1, h.2.2⟩
-  | .release pol _, ⟨hm, po, hpo, _, hv⟩ => by
+  | req _ _ => exact ⟨hg.2.2 h.1, LExpr.le_trans hpc ((hb.inst s).2.2.2.1 (hg.2.2 h.1)).1, h.2.2⟩
+  | release pol _ =>
+    obtain ⟨hm, po, hpo, _, hv⟩ := h
     obtain ⟨po', hpo', hle, _⟩ := hrb pol (hr pol hm)
     rw [hpo] at hpo'
     cases hpo'
@@ -478,7 +484,7 @@ theorem bound_failsAs_inst {pc pc' : LExpr} {s : List (String × LExpr)} {o : Bo
 /-- **A call fails as its callee declares**: with a code when it declares no payload kind, and with
 a payload of a kind it declares (`Eff.ofCall`, T-Fun). -/
 theorem call_failsAs_inst {pc pc₀ pc' : LExpr} {s s' : List (String × LExpr)} {fn : Fun} {εb : Eff}
-    (hb : p.Bound pc' fn.op fn.host fn.fails) (hpc : p.le pc (pc'.inst s))
+    {o : Bool} (hb : p.Bound pc' o fn.host fn.fails) (hpc : p.le pc (pc'.inst s))
     (hfs : εb.fails.isSome = true → fn.fails = true) (hcodes : εb.codes = true → fn.raises = [])
     (hraises : ∀ k ∈ εb.raises, k ∈ fn.raises) :
     (FailsAs p pc₀ (εb.inst s')).Le (FailsAs p pc ((Eff.ofCall fn).inst s)) := by
@@ -495,17 +501,22 @@ end
 /-- **The events of an invocation** (#524): its handler's, which the effect floor puts at sinks
 above the operation's `accepts`, so above the program counter; a handler performs no host
 operation and releases through no policy (`Program.LWellFormed.ops`). -/
-theorem invoke_allowed_inst {pc pc₀ P : LExpr} {s s' : List (String × LExpr)} {εb : Eff} {fn : Fun}
+theorem invoke_allowed_inst {pc₀ P : LExpr} {s s' : List (String × LExpr)} {εb ε' : Eff} {fn : Fun}
     {acc : Label} (hP : p.le P (.ofLabel acc))
     (hop : fn.op = true → p.le (.ofLabel acc) (.ofLabel p.acceptsOp))
-    (ho : εb.op = true → fn.op = true) (hg : HostFx.Le εb.host fn.host) (hhost : fn.host = HostFx.none)
-    (hr : ∀ x ∈ εb.rels, x ∈ fn.rels) (hrels : fn.rels = []) :
-    ∀ ev, Allowed p pc₀ (εb.inst s') ev → Allowed p P ((Eff.ofInvoke pc fn).inst s) ev
-  | .out _, h => ⟨by simp [Eff.ofInvoke, Eff.inst], LExpr.le_trans hP (hop (ho h.1))⟩
-  | .read _, h => by have := hg.1 h.1; simp [hhost, HostFx.none] at this
-  | .write _ _, h => by have := hg.2.1 h.1; simp [hhost, HostFx.none] at this
-  | .req _ _, h => by have := hg.2.2 h.1; simp [hhost, HostFx.none] at this
-  | .release pol _, h => by have := hr pol h.1; simp [hrels] at this
+    (ho : εb.emits p = true → fn.emits p = true) (hg : HostFx.Le εb.host fn.host) (hhost : fn.host = HostFx.none)
+    (hr : ∀ x ∈ εb.rels, x ∈ fn.rels) (hrels : fn.rels = []) (hinv : fn.invokes = [])
+    (he : fn.op = true → ε'.emits p = true) (hgh : ε'.host = HostFx.none) (hrr : ε'.rels = []) :
+    ∀ ev, Allowed p pc₀ (εb.inst s') ev → Allowed p P (ε'.inst s) ev := by
+  have hop' : εb.emits p = true → fn.op = true := fun h => by
+    simpa [Fun.emits, hinv] using ho h
+  intro ev h
+  cases ev with
+  | out _ => exact ⟨he (hop' h.1), LExpr.le_trans hP (hop (hop' h.1))⟩
+  | read _ => have := hg.1 h.1; simp [hhost, HostFx.none] at this
+  | write _ _ => have := hg.2.1 h.1; simp [hhost, HostFx.none] at this
+  | req _ _ => have := hg.2.2 h.1; simp [hhost, HostFx.none] at this
+  | release pol _ => have := hr pol h.1; simp [hrels] at this
 
 /-- **An invocation fails as its handler may**, labeled at the caller's program counter (#524),
 with a code when the handler declares no payload kind, and with a payload of a kind it declares. -/
@@ -521,6 +532,54 @@ theorem invoke_failsAs_inst {pc pc₀ : LExpr} {s s' : List (String × LExpr)} {
     have hr := hcodes (by simpa [Eff.inst] using hc)
     simp [Eff.ofInvoke, Eff.inst, hf, hr]
   · simpa [Eff.ofInvoke, Eff.inst] using hraises k (by simpa [Eff.inst] using hk)
+
+/-- **The handler an invocation runs** (#538): a handler of its operation, under the floor, with
+the representative's signature and at least its `accepts` (`LWellFormed.handlers`). -/
+theorem handlerFor_lawful (hwf : p.LWellFormed) {o f : String} {fn : Fun} {acc : Label}
+    (hr : List.lookup o p.opRep = some f) (hf : p.find f = some fn) (hacc : List.lookup f p.ops = some acc)
+    (m : Option Val) :
+    ∃ gn acc', p.find (p.handlerFor o m) = some gn ∧ List.lookup (p.handlerFor o m) p.ops = some acc' ∧
+      p.le (.ofLabel acc) (.ofLabel acc') ∧ Flows p.top (fn.params.map Prod.snd) (gn.params.map Prod.snd) ∧
+      Flow p.top gn.result fn.result ∧ gn.fails = fn.fails ∧ gn.raises = fn.raises ∧
+      gn.tparams = fn.tparams ∧ gn.op = fn.op := by
+  obtain ⟨hfo, fn', acc₀, hf', hacc₀, hall⟩ := hwf.handlers o f hr
+  rw [hf] at hf'
+  cases hf'
+  rw [hacc] at hacc₀
+  cases hacc₀
+  have hg : List.lookup (p.handlerFor o m) p.handlerOf = some o := by
+    unfold Program.handlerFor
+    split
+    · split
+      · assumption
+      · simpa [hr] using hfo
+    · simpa [hr] using hfo
+  exact hall _ hg
+
+/-- **A `with` scope charges the installed handler's event** (#538, ruling E): what the body may
+emit through the operation `o` its handlers emit, which every handler of `o` agrees on. -/
+theorem withOf_emits (hwf : p.LWellFormed) {o f : String} {fn : Fun} {ε : Eff}
+    {s : List (String × LExpr)} (hl : List.lookup f p.handlerOf = some o) (hfn : p.find f = some fn) :
+    (ε.inst s).emits p = true → ((Eff.withOf o fn ε).inst s).emits p = true := by
+  simp only [Eff.emits, Eff.inst, Eff.withOf, Bool.or_eq_true, List.any_eq_true, List.mem_filter,
+    bne_iff_ne, ne_eq, decide_eq_true_eq]
+  rintro (h | ⟨o', ho', hpr⟩)
+  · exact .inl (by simp [h])
+  · by_cases heq : o' = o
+    · subst heq
+      left
+      unfold Program.opPrintsB at hpr
+      split at hpr
+      · rename_i r hr
+        obtain ⟨_, rfn, racc, hrf, _, hall⟩ := hwf.handlers o' r hr
+        obtain ⟨gn, _, hgn, _, _, _, _, _, _, _, hop⟩ := hall f hl
+        rw [hfn] at hgn
+        cases hgn
+        rw [hrf] at hpr
+        simp at hpr
+        simp [hop, hpr]
+      · simp at hpr
+    · exact .inr ⟨o', ⟨ho', heq⟩, hpr⟩
 
 /-- A ground type's top label is concrete. -/
 theorem LTy.Ground.top_symFree : ∀ {t : LTy}, t.Ground → t.top.SymFree
@@ -630,14 +689,14 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         rw [List.append_nil] at henv'
         have henv'' : LEnvTy p (bindParams fn.params vs []) (LCtx.lsub p.recordDeep (fn.tparams.zip targs) fn.params) := by
           simpa [bindParams, LCtx.lsub, List.map_map, Function.comp_def] using henv'
-        refine UOk.mono (call_allowed_inst hdst hb hrb (LExpr.le_refl _) ho hgo hrs)
+        refine UOk.mono (call_allowed_inst hdst hb hrb (LExpr.le_refl _) ho hgo hrs rfl rfl rfl)
           (fun v hv => ?_)
           (call_failsAs_inst hb (LExpr.le_refl _) hfs hcd hra)
           (ihE hτ (by simpa using henv'') hbody)
         have hr := LTy.lsubst_ground p.recordDeep hτ hcov hres
         exact (LValTy.ground_lsubst hr).mpr (LValTy.flow hv (Flow.lsubst _ _ hflow))
       | @invoke _ _ f args fn ts acc hf hacc htp has hfl hle _ =>
-        obtain ⟨fn', hf', _, hrels, hhost, hop, _, hnv⟩ := hwf.ops _ (lookup_some_mem hacc)
+        obtain ⟨fn', hf', _, hrels, hhost, hop, _, hnv, hinv⟩ := hwf.ops _ (lookup_some_mem hacc)
         rw [hf] at hf'
         cases hf'
         obtain ⟨tb, εb, hbody, hflow, ho, hgo, hfs, _, hrs, hcd, hra⟩ := funOk_of_nvia hwf hnv hf
@@ -662,12 +721,53 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
           simpa [bindParams, LCtx.lsub, List.map_map, Function.comp_def] using henv'
         have hP : p.le (pc.inst (p.sd σ)) (.ofLabel acc) :=
           LExpr.le_of_le_inst_ofLabel (LExpr.le_inst _ (LExpr.le_of_join_left hle))
-        refine UOk.mono (invoke_allowed_inst hP hop ho hgo hhost hrs hrels) (fun v hv => ?_)
+        refine UOk.mono (invoke_allowed_inst hP hop ho hgo hhost hrs hrels hinv
+          (fun _ => by simp [Eff.emits, Eff.ofInvoke]) rfl rfl) (fun v hv => ?_)
           (invoke_failsAs_inst hfs hcd hra)
           (ihE hτ (by simpa using henv'') hbody)
         have hr := LTy.lsubst_ground p.recordDeep hτ hcov hres
         exact LValTy.flow ((LValTy.ground_lsubst hr).mpr (LValTy.flow hv (Flow.lsubst _ _ hflow)))
           (Flow.lsubst _ _ (Flow.lsubst_nil _ fn.result).1)
+      | @invokeOp _ _ o args f fn ts acc lm _ _ hr hf hacc htp has hfl hle _ =>
+        obtain ⟨gn, acc', hgn, hacc', hacc_le, hpfl, hres', hfails, hraises, htp', hop'⟩ :=
+          handlerFor_lawful hwf hr hf hacc (lookup env (markerName o))
+        have heff : Eff.ofInvokeOp pc fn o = Eff.ofInvokeOp pc gn o := by
+          simp [Eff.ofInvokeOp, Eff.ofInvoke, hfails, hraises]
+        rw [heff]
+        obtain ⟨gn', hgn', _, hrels, hhost, hop, _, hnv, hinv⟩ := hwf.ops _ (lookup_some_mem hacc')
+        rw [hgn] at hgn'
+        cases hgn'
+        obtain ⟨tb, εb, hbody, hflow, ho, hgo, hfs, _, hrs, hcd, hra⟩ := funOk_of_nvia hwf hnv hgn
+        have htpg : gn.tparams = [] := htp'.trans htp
+        have hτ : GroundSubst ([] : List (String × LTy)) := fun _ h => nomatch h
+        have hcov : ∀ x ∈ gn.tparams, ∃ u, List.lookup x ([] : List (String × LTy)) = some u := by
+          simp [htpg]
+        obtain ⟨hps, hres⟩ := hwf.sigsScoped gn (find_mem hgn)
+        have hpg : ∀ u ∈ gn.params.map (fun q => p.lsub [] q.2), u.Ground := by
+          intro u hu
+          obtain ⟨q, hq, rfl⟩ := List.mem_map.mp hu
+          exact LTy.lsubst_ground _ hτ hcov (hps q hq)
+        obtain ⟨vs, hvs, hvst⟩ := latoms_ltypedσ henv has
+        have ha := LValsTy.ground_lsubst hpg
+          (LValsTy.flowsσ (LValsTy.flowsσ hvst (Flows.trans hfl hpfl)) (flows_lsub_nil_params gn).2)
+        have ha' : LValsTy p vs ((LCtx.lsub p.recordDeep [] gn.params).map Prod.snd) := by
+          rw [LCtx.lsub_snd]; simpa [Program.lsub, List.map_map, Function.comp_def] using ha
+        simp only [evalRhs, hgn, hvs]
+        rw [ite_eq_left (by rw [LValsTy.length ha, List.length_map])]
+        have henv' := bindParams_ltyped ha' (LEnvTy.nil (p := p))
+        rw [List.append_nil] at henv'
+        have henv'' : LEnvTy p (bindParams gn.params vs []) (LCtx.lsub p.recordDeep [] gn.params) := by
+          simpa [bindParams, LCtx.lsub, List.map_map, Function.comp_def] using henv'
+        have hP : p.le (pc.inst (p.sd σ)) (.ofLabel acc') :=
+          LExpr.le_trans (LExpr.le_of_le_inst_ofLabel (LExpr.le_inst _ (LExpr.le_of_join_left hle))) hacc_le
+        refine UOk.mono (invoke_allowed_inst hP hop ho hgo hhost hrs hrels hinv
+          (fun hgop => by simp [Eff.emits, Eff.ofInvokeOp, Program.opPrintsB, hr, hf, ← hop', hgop])
+          rfl rfl) (fun v hv => ?_)
+          (invoke_failsAs_inst hfs hcd hra)
+          (ihE hτ (by simpa using henv'') hbody)
+        have hr := LTy.lsubst_ground p.recordDeep hτ hcov hres
+        exact LValTy.flow (LValTy.flow ((LValTy.ground_lsubst hr).mpr (LValTy.flow hv (Flow.lsubst _ _ hflow)))
+          (Flow.lsubst _ _ (Flow.lsubst_nil _ gn.result).1)) (Flow.lsubst _ _ hres')
       | apply hf has hfl hb =>
         obtain ⟨fv, hfv, hft⟩ := latom_ltypedσ henv hf
         obtain ⟨vs, hvs, hvst⟩ := latoms_ltypedσ henv has
@@ -1158,6 +1258,11 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
                 exact LExpr.join_le (LExpr.le_join_left _ _) (LExpr.le_join_right _ _))⟩,
           by simp [Eff.inst], _, _, hs, hf, hpay⟩, WEff.self _ _⟩
       | unreachable _ => exact ⟨fun _ h => by simp [eval] at h, by simp [eval, URes], WEff.self _ _⟩
+      | @withH _ _ o f fn body t ε hl hfn hb =>
+        simp only [eval]
+        exact UOk.mono (Allowed.mono (LExpr.le_refl _) (withOf_emits hwf hl hfn) (HostFx.Le.refl _)
+            (fun x h => by simp only [Eff.inst, Eff.withOf] at h ⊢; exact h)) (fun _ h => h)
+          (FailCond.Le.refl _) (ihE hσ (.cons .text henv) hb)
       | @caseSum _ _ scrutinee kind ctor binders thenE elseE ls sm fs t₁ t₂ s ε₁ ε₂ hsc hsm hf hlen hth hel h₁ h₂ _ =>
         apply UOk.of_decide
         obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv hsc
@@ -1214,14 +1319,14 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
             exact UOk.mono (allowed_union_right_inst (hpc0 _))
               (fun _ h => LValTy.flow h (Flow.lsubst _ _ h₂))
               (FailsAs.union_right_inst (hpc0 _)) (ihE hσ henv hel)
-      | attempt hb hr =>
+      | @attempt _ _ body t ε hb hr =>
         have h := ihE (w := w) hσ henv hb
         simp only [eval]
         revert h
         rcases eval H n p w env _ with ⟨tr, r, w'⟩
         intro h
         have hev : ∀ ev ∈ tr, Allowed p (pc.inst (p.sd σ))
-            ((⟨_, _, Option.none, _, false, [], LExpr.bot⟩ : Eff).inst (p.sd σ)) ev :=
+            ((Eff.attemptOf ε).inst (p.sd σ)) ev :=
           fun ev hev => Allowed.mono (LExpr.le_refl _) id (HostFx.Le.refl _) (fun _ h => h) ev (h.1 ev hev)
         cases r with
         | ok v => exact ⟨hev, .ok h.2.1, h.2.2⟩
@@ -1236,7 +1341,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         rcases eval H n p w env _ with ⟨tr, r, w'⟩
         intro h
         have hev : ∀ ev ∈ tr, Allowed p (pc.inst (p.sd σ))
-            ((⟨_, _, Option.none, _, false, [], LExpr.bot⟩ : Eff).inst (p.sd σ)) ev :=
+            ((Eff.attemptOf ε).inst (p.sd σ)) ev :=
           fun ev hev => Allowed.mono (LExpr.le_refl _) id (HostFx.Le.refl _) (fun _ h => h) ev (h.1 ev hev)
         cases r with
         | ok v => exact ⟨hev, .ok h.2.1, h.2.2⟩
@@ -1260,9 +1365,9 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         have hmono : HostFx.Le ε₁.host (ε₁.host.or ε₂.host) := union_host_left (ε₂ := ε₂)
         have hmono₂ : HostFx.Le ε₂.host (ε₁.host.or ε₂.host) := union_host_right (ε₁ := ε₁)
         have hev : ∀ ev ∈ tr, Allowed p (pc.inst (p.sd σ))
-            ((⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises, ε₂.dl⟩ : Eff).inst (p.sd σ)) ev :=
-          fun ev hev => Allowed.mono (LExpr.le_refl _) (fun h => by simp only [Eff.inst] at h ⊢; simp [h])
-            hmono (fun x h => by simp only [Eff.inst] at h ⊢; simp [h]) ev (h.1 ev hev)
+            ((⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises, ε₂.dl, ε₁.invokes ++ ε₂.invokes⟩ : Eff).inst (p.sd σ)) ev :=
+          fun ev hev => Allowed.mono (LExpr.le_refl _) (fun h => by simp only [Eff.emits, Eff.inst, Bool.or_eq_true, List.any_append] at h ⊢; rcases h with h | h <;> simp [h])
+            hmono (fun x h => by simp only [Eff.inst, List.mem_append] at h ⊢; simp [h]) ev (h.1 ev hev)
         cases r with
         | raised k c ps =>
           obtain ⟨_, hk, sm, fs, hs, hf, hps⟩ := h.2.1
@@ -1276,8 +1381,8 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
           refine ⟨fun ev hev' => ?_, ?_, WEff.trans h.2.2 hh'.2.2⟩
           · rcases List.mem_append.mp hev' with hev' | hev'
             · exact hev ev hev'
-            · exact Allowed.mono (hpc0 _) (fun h => by simp only [Eff.inst] at h ⊢; simp [h])
-                hmono₂ (fun x h => by simp only [Eff.inst] at h ⊢; simp [h]) ev (hh'.1 ev hev')
+            · exact Allowed.mono (hpc0 _) (fun h => by simp only [Eff.emits, Eff.inst, Bool.or_eq_true, List.any_append] at h ⊢; rcases h with h | h <;> simp [h])
+                hmono₂ (fun x h => by simp only [Eff.inst, List.mem_append] at h ⊢; simp [h]) ev (hh'.1 ev hev')
           · have h2 := hh'.2.1
             cases r' <;> simp only [URes] at h2 ⊢
             · exact LValTy.lsubst_raise (LValTy.flow h2 (Flow.lsubst _ _ h₂))
@@ -1297,9 +1402,9 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         have hmono : HostFx.Le ε₁.host (ε₁.host.or ε₂.host) := union_host_left (ε₂ := ε₂)
         have hmono₂ : HostFx.Le ε₂.host (ε₁.host.or ε₂.host) := union_host_right (ε₁ := ε₁)
         have hev : ∀ ev ∈ tr, Allowed p (pc.inst (p.sd σ))
-            ((⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises, ε₂.dl⟩ : Eff).inst (p.sd σ)) ev :=
-          fun ev hev => Allowed.mono (LExpr.le_refl _) (fun h => by simp only [Eff.inst] at h ⊢; simp [h])
-            hmono (fun x h => by simp only [Eff.inst] at h ⊢; simp [h]) ev (h.1 ev hev)
+            ((⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises, ε₂.dl, ε₁.invokes ++ ε₂.invokes⟩ : Eff).inst (p.sd σ)) ev :=
+          fun ev hev => Allowed.mono (LExpr.le_refl _) (fun h => by simp only [Eff.emits, Eff.inst, Bool.or_eq_true, List.any_append] at h ⊢; rcases h with h | h <;> simp [h])
+            hmono (fun x h => by simp only [Eff.inst, List.mem_append] at h ⊢; simp [h]) ev (h.1 ev hev)
         cases r with
         | raised k c ps =>
           obtain ⟨_, hk, sm, fs, hs, hf, hps⟩ := h.2.1
@@ -1313,8 +1418,8 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
           refine ⟨fun ev hev' => ?_, ?_, WEff.trans h.2.2 hh'.2.2⟩
           · rcases List.mem_append.mp hev' with hev' | hev'
             · exact hev ev hev'
-            · exact Allowed.mono (hpc0 _) (fun h => by simp only [Eff.inst] at h ⊢; simp [h])
-                hmono₂ (fun x h => by simp only [Eff.inst] at h ⊢; simp [h]) ev (hh'.1 ev hev')
+            · exact Allowed.mono (hpc0 _) (fun h => by simp only [Eff.emits, Eff.inst, Bool.or_eq_true, List.any_append] at h ⊢; rcases h with h | h <;> simp [h])
+                hmono₂ (fun x h => by simp only [Eff.inst, List.mem_append] at h ⊢; simp [h]) ev (hh'.1 ev hev')
           · have h2 := hh'.2.1
             cases r' <;> simp only [URes] at h2 ⊢
             · exact LValTy.flow h2 (Flow.lsubst _ _ h₂)
@@ -1334,9 +1439,9 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         have hmono : HostFx.Le ε₁.host (ε₁.host.or ε₂.host) := union_host_left (ε₂ := ε₂)
         have hmono₂ : HostFx.Le ε₂.host (ε₁.host.or ε₂.host) := union_host_right (ε₁ := ε₁)
         have hev : ∀ ev ∈ tr, Allowed p (pc.inst (p.sd σ))
-            ((⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises, ε₂.dl⟩ : Eff).inst (p.sd σ)) ev :=
-          fun ev hev => Allowed.mono (LExpr.le_refl _) (fun h => by simp only [Eff.inst] at h ⊢; simp [h])
-            hmono (fun x h => by simp only [Eff.inst] at h ⊢; simp [h]) ev (h.1 ev hev)
+            ((⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises, ε₂.dl, ε₁.invokes ++ ε₂.invokes⟩ : Eff).inst (p.sd σ)) ev :=
+          fun ev hev => Allowed.mono (LExpr.le_refl _) (fun h => by simp only [Eff.emits, Eff.inst, Bool.or_eq_true, List.any_append] at h ⊢; rcases h with h | h <;> simp [h])
+            hmono (fun x h => by simp only [Eff.inst, List.mem_append] at h ⊢; simp [h]) ev (h.1 ev hev)
         cases r with
         | failed code =>
           have hh' := ihE (w := w₁) hσ (.cons (LValTy.int (n := (code : Int))) henv) hh
@@ -1346,8 +1451,8 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
           refine ⟨fun ev hev' => ?_, ?_, WEff.trans h.2.2 hh'.2.2⟩
           · rcases List.mem_append.mp hev' with hev' | hev'
             · exact hev ev hev'
-            · exact Allowed.mono (hpc0 _) (fun h => by simp only [Eff.inst] at h ⊢; simp [h])
-                hmono₂ (fun x h => by simp only [Eff.inst] at h ⊢; simp [h]) ev (hh'.1 ev hev')
+            · exact Allowed.mono (hpc0 _) (fun h => by simp only [Eff.emits, Eff.inst, Bool.or_eq_true, List.any_append] at h ⊢; rcases h with h | h <;> simp [h])
+                hmono₂ (fun x h => by simp only [Eff.inst, List.mem_append] at h ⊢; simp [h]) ev (hh'.1 ev hev')
           · have h2 := hh'.2.1
             cases r' <;> simp only [URes] at h2 ⊢
             · exact LValTy.lsubst_raise (LValTy.flow h2 (Flow.lsubst _ _ h₂))
@@ -1416,9 +1521,9 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         have hmono : HostFx.Le ε₁.host (ε₁.host.or ε₂.host) := union_host_left (ε₂ := ε₂)
         have hmono₂ : HostFx.Le ε₂.host (ε₁.host.or ε₂.host) := union_host_right (ε₁ := ε₁)
         have hev : ∀ ev ∈ tr, Allowed p (pc.inst (p.sd σ))
-            ((⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises, ε₂.dl⟩ : Eff).inst (p.sd σ)) ev :=
-          fun ev hev => Allowed.mono (LExpr.le_refl _) (fun h => by simp only [Eff.inst] at h ⊢; simp [h])
-            hmono (fun x h => by simp only [Eff.inst] at h ⊢; simp [h]) ev (h.1 ev hev)
+            ((⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises, ε₂.dl, ε₁.invokes ++ ε₂.invokes⟩ : Eff).inst (p.sd σ)) ev :=
+          fun ev hev => Allowed.mono (LExpr.le_refl _) (fun h => by simp only [Eff.emits, Eff.inst, Bool.or_eq_true, List.any_append] at h ⊢; rcases h with h | h <;> simp [h])
+            hmono (fun x h => by simp only [Eff.inst, List.mem_append] at h ⊢; simp [h]) ev (h.1 ev hev)
         cases r with
         | failed code =>
           have hh' := ihE (w := w₁) hσ (.cons (LValTy.int (n := (code : Int))) henv) hh
@@ -1428,8 +1533,8 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
           refine ⟨fun ev hev' => ?_, ?_, WEff.trans h.2.2 hh'.2.2⟩
           · rcases List.mem_append.mp hev' with hev' | hev'
             · exact hev ev hev'
-            · exact Allowed.mono (hpc0 _) (fun h => by simp only [Eff.inst] at h ⊢; simp [h])
-                hmono₂ (fun x h => by simp only [Eff.inst] at h ⊢; simp [h]) ev (hh'.1 ev hev')
+            · exact Allowed.mono (hpc0 _) (fun h => by simp only [Eff.emits, Eff.inst, Bool.or_eq_true, List.any_append] at h ⊢; rcases h with h | h <;> simp [h])
+                hmono₂ (fun x h => by simp only [Eff.inst, List.mem_append] at h ⊢; simp [h]) ev (hh'.1 ev hev')
           · have h2 := hh'.2.1
             cases r' <;> simp only [URes] at h2 ⊢
             · exact LValTy.flow h2 (Flow.lsubst _ _ h₂)

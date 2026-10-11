@@ -47,7 +47,7 @@ mutual
         LExprTy p E (params ++ Γ) .bot body tb ε → p.le ε.failLabel .bot → ε.rels = [] →
         ε.raises = [] → Flows p.top ps ((params.map Prod.snd).map (LTy.lsubst p.recordDeep σ)) →
         Flow p.top (tb.lsubst p.recordDeep σ) r →
-        (ε.op = true → o = true) → HostFx.Le ε.host g → (ε.fails.isSome = true → f = true) →
+        (ε.emits p = true → o = true) → HostFx.Le ε.host g → (ε.fails.isSome = true → f = true) →
         V (.fn ps r o g f l) (.closure params body env₁) (.closure params body env₂)
     /-- Core's tuples, component by component. -/
     | tuple {ts l xs ys} : VList ts xs ys → V (.tuple ts l) (.tuple xs) (.tuple ys)

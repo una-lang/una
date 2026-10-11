@@ -58,7 +58,7 @@ theorem dlOk_ofPolicy {pc dst : LExpr} {o : Bool} {g : HostFx} {f : Bool} {pol :
 
 /-- A failure labeled `l`, with its decision label `d ⊑ l`, at `pc ⊑ l`. -/
 theorem dlOk_leaf {pc l d : LExpr} {o : Bool} {g : HostFx} {rs : List String} {c : Bool}
-    {ks : List String} (hpc : p.le pc l) (hd : p.le d l) : (⟨o, g, some l, rs, c, ks, d⟩ : Eff).DlOk p pc :=
+    {ks is : List String} (hpc : p.le pc l) (hd : p.le d l) : (⟨o, g, some l, rs, c, ks, d, is⟩ : Eff).DlOk p pc :=
   ⟨fun l' hl => by simp at hl; subst hl; exact hpc, by simpa [Eff.failLabel] using hd⟩
 
 theorem failLabel_le_union_left (a b : Eff) : p.le a.failLabel (a.union b).failLabel := by
@@ -101,7 +101,7 @@ theorem dlOk_attemptOf {pc : LExpr} (ε : Eff) : (Eff.attemptOf ε).DlOk p pc :=
 theorem DlOk.handleOf {pc : LExpr} {ε₁ ε₂ : Eff} (h₁ : ε₁.DlOk p pc)
     (h₂ : ε₂.DlOk p (pc.join ε₁.failLabel)) : (Eff.handleOf ε₁ ε₂).DlOk p pc := by
   have hi : (⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises,
-      ε₂.dl⟩ : Eff).DlOk p (pc.join ε₁.failLabel) := ⟨h₂.1, h₂.2⟩
+      ε₂.dl, ε₁.invokes ++ ε₂.invokes⟩ : Eff).DlOk p (pc.join ε₁.failLabel) := ⟨h₂.1, h₂.2⟩
   exact (DlOk.decide hi (LExpr.le_trans h₁.2 (LExpr.le_join_right _ _))).mono (LExpr.le_join_left _ _)
 
 end Eff
@@ -145,6 +145,7 @@ mutual
     | _, _, _, _, _, _, .prim _ _ => Eff.dlOk_none
     | _, _, _, _, _, _, .call _ _ _ _ _ _ _ _ hb _ => Eff.dlOk_ofCall hb.fails_bot
     | _, _, _, _, _, _, .invoke _ _ _ _ _ _ _ => Eff.dlOk_ofInvoke
+    | _, _, _, _, _, _, .invokeOp _ _ _ _ _ _ _ _ _ _ => Eff.dlOk_ofInvoke
     | _, _, _, _, _, _, .apply _ _ _ hb =>
       Eff.dlOk_ofFn fun hf => LExpr.le_trans (LExpr.le_join_left _ _) (hb.fails_bot hf)
     | _, _, _, _, _, _, .op _ _ _ _ => ⟨fun _ h => by simp at h, LExpr.bot_le _⟩
@@ -222,6 +223,7 @@ mutual
     | _, _, _, _, _, _, .fail hle _ _ => Eff.dlOk_leaf hle (LExpr.bot_le _)
     | _, _, _, _, _, _, .raise _ _ _ _ hle _ _ => Eff.dlOk_leaf hle (LExpr.bot_le _)
     | _, _, _, _, _, _, .unreachable _ => Eff.dlOk_none
+    | _, _, _, _, _, _, .withH _ _ hb => ⟨(LExprTy.dlOk hb).1, (LExprTy.dlOk hb).2⟩
     | _, _, _, _, _, _, .caseSum _ _ _ _ ht he _ _ _ =>
       (Eff.DlOk.decide (Eff.DlOk.union (LExprTy.dlOk ht) (LExprTy.dlOk he) (LExpr.le_refl _))
         (LExpr.le_join_right _ _)).mono (LExpr.le_join_left _ _)

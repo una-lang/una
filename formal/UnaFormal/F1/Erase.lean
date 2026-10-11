@@ -131,6 +131,13 @@ mutual
       have he : fn.result.erase = fn.result.erase.subst [] := (Ty.subst_nil _).symm
       rw [he]
       exact .invoke (σ := []) hf (by simpa [Fun.paramTys, Ty.subst_nil, Function.comp_def] using h)
+    | _, _, _, _, _, .invokeOp (fn := fn) hm _ hr hf _ _ has hflows _ _ => by
+      have h := latoms_erase has
+      rw [← Flows.erase hflows, List.map_map] at h
+      have he : fn.result.erase = fn.result.erase.subst [] := (Ty.subst_nil _).symm
+      rw [he]
+      exact .invokeOp (σ := []) (latom_erase hm) hr hf
+        (by simpa [Fun.paramTys, Ty.subst_nil, Function.comp_def] using h)
     | _, _, _, _, _, .apply hf has hflows _ => by
       have h := latoms_erase has
       rw [← Flows.erase hflows, List.map_map] at h
@@ -297,6 +304,7 @@ mutual
       rw [← Flows.erase hflows] at h
       exact .raise hs (by simp [Sum.fieldTys, hf]) h
     | _, _, _, _, _, .unreachable _ => .unreachable
+    | _, _, _, _, _, .withH _ _ hb => .withH (LExprTy.toStruct hb)
     | _, _, _, _, _, .caseSum hs hsm hf hlen hth hel h₁ h₂ _ => by
       have hth' := LExprTy.toStruct hth
       have hel' := LExprTy.toStruct hel
@@ -418,6 +426,13 @@ theorem Program.LWellFormed.wellFormed (hwf : p.LWellFormed) : p.WellFormed wher
   sums sm hsm fs hfs t ht := (hwf.sums sm hsm fs hfs t ht).2.2.2.2
   disjoint := hwf.disjoint
   policies := hwf.policies
+  handlers o f hr := by
+    obtain ⟨hfo, fn, acc, hf, _, hall⟩ := hwf.handlers o f hr
+    refine ⟨hfo, fn, hf, fun g hg => ?_⟩
+    obtain ⟨gn, _, hgn, _, _, hfl, hres, _, _, htp, _⟩ := hall g hg
+    refine ⟨gn, hgn, ?_, Flow.erase hres, htp⟩
+    have := Flows.erase hfl
+    simpa [List.map_map, Function.comp_def] using this
 
 /-- **T1 for the labeled typing of F1** (`spec/10 §10`): a body the labeled typing accepts, of a
 program it accepts, run in an environment of its context's types with any fuel and any host,

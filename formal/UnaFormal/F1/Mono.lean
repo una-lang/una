@@ -135,6 +135,15 @@ theorem eval_mono : ∀ n m : Nat, n ≤ m →
         · simp only [hl, ite_true] at ht ⊢
           exact ihE _ _ _ ht
         · simp only [hl, ite_false]
+      | invokeOp o args =>
+        simp only [evalRhs] at ht ⊢
+        cases hf : p.find (p.handlerFor o (lookup env (markerName o))) <;>
+          cases ha : evalAtoms env args <;> simp only [hf, ha] at ht ⊢
+        rename_i fn vs
+        by_cases hl : vs.length = fn.params.length
+        · simp only [hl, ite_true] at ht ⊢
+          exact ihE _ _ _ ht
+        · simp only [hl, ite_false]
       | apply f args =>
         simp only [evalRhs] at ht ⊢
         split at ht
@@ -196,6 +205,9 @@ theorem eval_mono : ∀ n m : Nat, n ≤ m →
       | fail code => rfl
       | raise _ _ _ => rfl
       | unreachable => rfl
+      | withH o f b =>
+        simp only [eval] at ht ⊢
+        exact ihE _ _ _ ht
       | caseSum sc i xs t e =>
         simp only [eval] at ht ⊢
         cases hsc : evalAtom env sc with

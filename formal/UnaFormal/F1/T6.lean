@@ -627,7 +627,7 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
         -- An invocation runs its handler as a call does (#524). The handler's body is related at
         -- `⊥`, its failure decided there; under a hidden program counter the run is confined by
         -- the unary half and the effect floor (`invoke_allowed_inst`).
-        obtain ⟨fn', hf', _, _, _, _, _, hnv⟩ := hwf.ops _ (lookup_some_mem hacc)
+        obtain ⟨fn', hf', _, _, _, _, _, hnv, _⟩ := hwf.ops _ (lookup_some_mem hacc)
         rw [hf] at hf'
         cases hf'
         obtain ⟨tb, εb, hbody, hflow, _, _, _, hfail, _⟩ := funOk_of_nvia hwf hnv hf
@@ -670,6 +670,65 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
         have hr := LTy.lsubst_ground p.recordDeep hτ hcov hres
         exact V.flow ((V.ground_lsubst hr).mpr (V.flow h (Flow.lsubst _ _ hflow)))
           (Flow.lsubst _ _ (Flow.lsubst_nil _ fn.result).1)
+      | @invokeOp _ _ o args f fn₀ ts acc lm hm hlm hr hf₀ hacc htp₀ has hfl₀ _ _ =>
+        -- An operation installed by a `with` scope (#538): the marker is public text, so both runs
+        -- hold the same one and run the same handler, which has the representative's signature.
+        obtain ⟨m₁, m₂, hm₁, hm₂, hmv, _, _⟩ := latom_bothσ he₁ he₂ hrel hm
+        simp only [LTy.lsubst] at hmv
+        have hvis : Vis p L (lm.inst (p.sd σ)) := Vis.of_le (LExpr.le_inst _ hlm) (vis_bot_inst _)
+        have heqm : m₁ = m₂ := V.eq_text hmv hvis
+        subst heqm
+        simp only [evalAtom] at hm₁ hm₂
+        obtain ⟨fn, acc', hf, hacc', _, hpfl, hres', hfails, hraises, htp', hop'⟩ :=
+          handlerFor_lawful hwf hr hf₀ hacc (some m₁)
+        have heff : Eff.ofInvokeOp pc fn₀ o = Eff.ofInvokeOp pc fn o := by
+          simp [Eff.ofInvokeOp, Eff.ofInvoke, hfails, hraises]
+        rw [heff]
+        have htp : fn.tparams = [] := htp'.trans htp₀
+        have hfl := Flows.trans hfl₀ hpfl
+        obtain ⟨fn', hf', _, _, _, _, _, hnv, _⟩ := hwf.ops _ (lookup_some_mem hacc')
+        rw [hf] at hf'
+        cases hf'
+        obtain ⟨tb, εb, hbody, hflow, _, _, _, hfail, _⟩ := funOk_of_nvia hwf hnv hf
+        have hτ : GroundSubst ([] : List (String × LTy)) := fun _ h => nomatch h
+        have hcov : ∀ x ∈ fn.tparams, ∃ u, List.lookup x ([] : List (String × LTy)) = some u := by
+          simp [htp]
+        have hEτ : p.EqArgsOK [] fn.eqParams := by
+          intro a ha
+          have := hwf.eqScoped fn (find_mem hf) a ha
+          simp [htp] at this
+        obtain ⟨hps, hres⟩ := hwf.sigsScoped fn (find_mem hf)
+        have hpg : ∀ u ∈ fn.params.map (fun q => p.lsub [] q.2), u.Ground := by
+          intro u hu
+          obtain ⟨q, hq, rfl⟩ := List.mem_map.mp hu
+          exact LTy.lsubst_ground _ hτ hcov (hps q hq)
+        have hfl' := Flows.trans hfl (flows_lsub_nil_params fn).2
+        obtain ⟨vs₁, vs₂, h₁, h₂, hvs, hu₁, hu₂⟩ := latoms_bothσ he₁ he₂ hrel has
+        have ha₁ := LValsTy.ground_lsubst hpg (LValsTy.flowsσ hu₁ hfl')
+        have ha₂ := LValsTy.ground_lsubst hpg (LValsTy.flowsσ hu₂ hfl')
+        have hva := VList.ground_lsubst hpg (VList.flowsσ hvs hfl')
+        simp only [evalRhs, hm₁, hm₂, hf, h₁, h₂]
+        rw [ite_eq_left (by rw [LValsTy.length ha₁, List.length_map]),
+          ite_eq_left (by rw [LValsTy.length ha₂, List.length_map])]
+        have hen : ∀ {vs : List Val}, LValsTy p vs (fn.params.map (fun q => p.lsub [] q.2)) →
+            LEnvTy p (bindParams fn.params vs []) (LCtx.lsub p.recordDeep [] fn.params) := by
+          intro vs hvs'
+          have := bindParams_ltyped (params := LCtx.lsub p.recordDeep [] fn.params)
+            (by rw [LCtx.lsub_snd]; simpa [Program.lsub, List.map_map, Function.comp_def] using hvs')
+            (LEnvTy.nil (p := p))
+          simpa [bindParams, LCtx.lsub, List.map_map, Function.comp_def] using this
+        have hrel' : EnvRel p L (LCtx.lsub p.recordDeep [] fn.params)
+            (bindParams fn.params vs₁ []) (bindParams fn.params vs₂ []) := by
+          have := bindParams_rel (params := LCtx.lsub p.recordDeep [] fn.params)
+            (by rw [LCtx.lsub_snd]; simpa [Program.lsub, List.map_map, Function.comp_def] using hva)
+            (EnvRel.nil (p := p) (L := L))
+          simpa [bindParams, LCtx.lsub, List.map_map, Function.comp_def] using this
+        have hΓf : LCtx.InPlace fn.params := fun q hq => (hwf.inPlace.1 fn (find_mem hf)).1 q hq
+        refine BRelR.mono (fun _ _ h => ?_) (fun _ => vis_dl_inst _ (LExprTy.dl_le_failLabel hbody) hfail)
+          (ihE hτ hEτ hΓf rfl hw (by simpa using hen ha₁) (by simpa using hen ha₂) (by simpa using hrel') hbody)
+        have hr := LTy.lsubst_ground p.recordDeep hτ hcov hres
+        exact V.flow (V.flow ((V.ground_lsubst hr).mpr (V.flow h (Flow.lsubst _ _ hflow)))
+          (Flow.lsubst _ _ (Flow.lsubst_nil _ fn.result).1)) (Flow.lsubst _ _ hres')
       | @apply _ _ f args ps r o g fl lf ts hf has hfl hb =>
         refine BRelR.of_brel ?_
         obtain ⟨fv₁, fv₂, hf₁, hf₂, hfv, hft₁, hft₂⟩ := latom_bothσ he₁ he₂ hrel hf
@@ -1347,7 +1406,7 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
           split
           · exact brel_done hw .int
           · exact brel_same hw (fun _ h => nomatch h)
-        · have hvf : ¬ Vis p L ((⟨false, HostFx.none, some (pc.join (p.deep (.text l))), [], true, [], p.deep (.text l)⟩ : Eff).inst (p.sd σ)).dl :=
+        · have hvf : ¬ Vis p L ((⟨false, HostFx.none, some (pc.join (p.deep (.text l))), [], true, [], p.deep (.text l), []⟩ : Eff).inst (p.sd σ)).dl :=
             fun h => hd h
           refine brel_quiet ?_ ?_ (fun _ _ => .hidden hd) (fun _ => hvf) (fun _ => hvf)
           · unfold parseInt
@@ -1705,6 +1764,13 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
         refine BRelR.of_brel ?_
         intro ht
         simp [eval, Term] at ht
+      | @withH _ _ o f fn body t ε _ _ hb =>
+        -- Both runs bind the same marker, the handler `f` (#538); the scope keeps the body's
+        -- decision label (`Eff.withOf`).
+        simp only [eval]
+        refine BRelR.mono (vf := Vis p L (ε.inst (p.sd σ)).dl) (fun _ _ h => h) id ?_
+        exact ihE hσ hE (hcons (u := .text .bot) rfl) hpc hw (.cons .text he₁) (.cons .text he₂)
+          (.cons .text hrel) hb
       | @caseSum _ _ scr kind ctor binders thenE elseE ls sm fs t₁ t₂ s ε₁ ε₂ hsc hsm hf hlen hth hel h₁ h₂ _ =>
         obtain ⟨c₁, c₂, hc₁, hc₂, hcv, hcu₁, hcu₂⟩ := latom_bothσ he₁ he₂ hrel hsc
         have hsi : ls.PlainFree := latom_inPlace hΓ hsc

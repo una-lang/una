@@ -299,7 +299,7 @@ mutual
       let σ := fn.tparams.zip targs
       need (flowsB p.top ts (fn.params.map (fun q => p.lsub σ q.2)))
         s!"an argument of `{f}` does not flow into its parameter"
-      need (boundB p pc fn.op fn.host fn.fails)
+      need (boundB p pc (fn.emits p) fn.host fn.fails)
         s!"`{f}` has effects or failures under a program counter above its bound"
       need (relBoundB p pc fn.rels)
         s!"B1 restriction (call of a declassifying function under a raised pc): `{f}`"
@@ -317,6 +317,23 @@ mutual
       need (symFree pc) s!"`{f}` is invoked under a symbolic program counter"
       flowTo p fn.result ann s!"the result of `{f}`"
       pure (.ofInvoke pc fn)
+    | .invokeOp o args => do
+      match ← atomTy Γ (.var (markerName o)) with
+      | .text lm =>
+        le p lm .bot s!"the marker of `{o}` is not public"
+        let f ← some! (List.lookup o p.opRep) s!"F1 restriction (no handler of the operation `{o}`)"
+        let fn ← some! (p.find f) s!"F1 restriction (no handler `{f}`, a lookup miss)"
+        let acc ← some! (List.lookup f p.ops) s!"F1 restriction (`{f}` is not an operation's handler)"
+        need fn.tparams.isEmpty s!"F1 restriction (a generic handler `{f}`)"
+        let ts ← atomsTy Γ args
+        need (flowsB p.top ts (fn.params.map Prod.snd))
+          s!"an argument of the operation `{o}` does not flow into its parameter"
+        le p (pc.join (LExpr.joinAll (ts.map p.deep))) (.ofLabel acc)
+          s!"the arguments or program counter of `{o}` are above what it accepts (U4003)"
+        need (symFree pc) s!"`{o}` is invoked under a symbolic program counter"
+        flowTo p fn.result ann s!"the result of `{o}`"
+        pure (.ofInvokeOp pc fn o)
+      | _ => throw s!"the marker of `{o}` is not a text"
     | .apply f args => do
       match ← atomTy Γ f with
       | .fn ps r o g fl lf =>
@@ -336,7 +353,7 @@ mutual
         "the operation's argument or program counter is above what it accepts"
       need (symFree pc) "an operation under a symbolic program counter"
       flowTo p (.unit .bot) ann "the operation's result"
-      pure ⟨true, HostFx.none, Option.none, [], false, [], LExpr.bot⟩
+      pure ⟨true, HostFx.none, Option.none, [], false, [], LExpr.bot, []⟩
     | .read path => do
       let t ← atomTy Γ path
       need (isText t) "`Files.read`'s path is not a text"
@@ -344,7 +361,7 @@ mutual
         "`Files.read`'s path or program counter is above what it accepts"
       need (symFree pc) "a host operation under a symbolic program counter"
       flowTo p (.text (.ofLabel p.readResult)) ann "`Files.read`'s result"
-      pure ⟨false, { rd := true }, some (p.fsFail (pc.join (p.deep t))), [], true, [], p.fsFail (p.deep t)⟩
+      pure ⟨false, { rd := true }, some (p.fsFail (pc.join (p.deep t))), [], true, [], p.fsFail (p.deep t), []⟩
     | .write path content => do
       let t ← atomTy Γ path
       need (isText t) "`Files.write`'s path is not a text"
@@ -356,7 +373,7 @@ mutual
         "a write whose path or program counter is above the file-state label (ADR 0085)"
       need (symFree pc) "a host operation under a symbolic program counter"
       flowTo p (.unit .bot) ann "`Files.write`'s result"
-      pure ⟨false, { wr := true }, some (p.fsFail (pc.join (p.deep t))), [], true, [], p.fsFail (p.deep t)⟩
+      pure ⟨false, { wr := true }, some (p.fsFail (pc.join (p.deep t))), [], true, [], p.fsFail (p.deep t), []⟩
     | .req m args => do
       let ts ← atomsTy Γ args
       need (match httpParams m with
@@ -368,7 +385,7 @@ mutual
         "a request's arguments or program counter are above what it accepts"
       need (symFree pc) "a host operation under a symbolic program counter"
       flowTo p (.record "prelude.Response" (.ofLabel p.reqResult)) ann "the response"
-      pure ⟨false, { rq := true }, some (p.reqFail pc ts), [], true, [], p.reqFail LExpr.bot ts⟩
+      pure ⟨false, { rq := true }, some (p.reqFail pc ts), [], true, [], p.reqFail LExpr.bot ts, []⟩
     | .construct record fields => do
       let rec ← some! (p.record record) s!"F1 restriction (no record `{record}`, a lookup miss)"
       need (flowsB p.top (← atomsTy Γ fields) rec.fields)
@@ -461,7 +478,7 @@ mutual
         need ε.raises.isEmpty "F1 restriction (a lambda that fails with a payload kind)"
         need (flowsB p.top ps (params.map Prod.snd))
           "the declared parameters do not flow into the lambda's"
-        need ((!ε.op || o) && hostLeB ε.host g && (!ε.fails.isSome || fl))
+        need ((!ε.emits p || o) && hostLeB ε.host g && (!ε.fails.isSome || fl))
           "the lambda has effects or failures its declared type does not allow"
         pure .none
       | _ => throw "a lambda bound at a type that is not a function type"
@@ -471,7 +488,7 @@ mutual
       need fn.raises.isEmpty s!"F1 restriction (a function that fails with a payload kind, as a value): `{f}`"
       let σ := fn.tparams.zip targs
       flowTo p (.fn (fn.params.map (fun q => p.lsub σ q.2)) (p.lsub σ fn.result)
-        fn.op fn.host fn.fails .bot) ann s!"`{f}` as a value"
+        (fn.emits p) fn.host fn.fails .bot) ann s!"`{f}` as a value"
       pure .none
     | .declassify pol a => do
       let po ← some! (p.policy pol) s!"no policy `{pol}`"
@@ -523,7 +540,7 @@ mutual
       let t ← atomTy Γ s
       need (isText t) "`parse_int` of a value that is not a text"
       flowTo p (.int (p.deep t)) ann "the result of `parse_int`"
-      pure ⟨false, HostFx.none, some (pc.join (p.deep t)), [], true, [], p.deep t⟩
+      pure ⟨false, HostFx.none, some (pc.join (p.deep t)), [], true, [], p.deep t, []⟩
     | .checked a _ _ => do
       let t ← atomTy Γ a
       need (isScalar t) "`checked` of a value that is not a scalar"
@@ -531,7 +548,7 @@ mutual
         "`checked` of a labeled value, or under a raised program counter (U4002)"
       need (symFree pc) "`checked` under a symbolic program counter"
       flowTo p t ann "the value `checked` gives"
-      pure ⟨false, HostFx.none, some (pc.join (p.deep t)), [], true, [], p.deep t⟩
+      pure ⟨false, HostFx.none, some (pc.join (p.deep t)), [], true, [], p.deep t, []⟩
     | .eq a b => do
       let t₁ ← atomTy Γ a
       let t₂ ← atomTy Γ b
@@ -649,7 +666,7 @@ mutual
       le p pc .bot "a failure under a program counter above `public` (U4002)"
       need (symFree pc) "a failure under a symbolic program counter"
       need (inPlace s) "`ℓ_T` off a position of type `T`"
-      pure ⟨false, HostFx.none, some .bot, [], true, [], LExpr.bot⟩
+      pure ⟨false, HostFx.none, some .bot, [], true, [], LExpr.bot, []⟩
     | .raise kind code args => do
       let sm ← some! (p.sum kind) s!"F1 restriction (no sum `{kind}`, a lookup miss)"
       let fs ← some! sm.variants[code]? s!"`{kind}` has no variant {code}"
@@ -658,7 +675,7 @@ mutual
       le p pc .bot "a failure under a program counter above `public` (U4002)"
       need (symFree pc) "a failure under a symbolic program counter"
       need (inPlace s) "`ℓ_T` off a position of type `T`"
-      pure ⟨false, HostFx.none, some .bot, [], false, [kind], LExpr.bot⟩
+      pure ⟨false, HostFx.none, some .bot, [], false, [kind], LExpr.bot, []⟩
     | .unreachable => do
       need (inPlace s) "`ℓ_T` off a position of type `T`"
       pure .none
@@ -740,6 +757,13 @@ mutual
       let ε₂ ← checkExpr p E ((x, .record kind ε₁.dl) :: Γ) (pc.join ε₁.failLabel) s handler
       flowTo p (s.raise ε₁.dl) s "the value of a handled expression, raised by its failure,"
       pure (Eff.handleOf ε₁ ε₂)
+    | .withH o f body => do
+      match List.lookup f p.handlerOf with
+      | some o' =>
+        need (o' == o) s!"`{f}` is not a handler of `{o}`"
+        let fn ← some! (p.find f) s!"F1 restriction (no handler `{f}`, a lookup miss)"
+        pure (Eff.withOf o fn (← checkExpr p E ((markerName o, .text .bot) :: Γ) pc s body))
+      | none => throw s!"F1 restriction (`{f}` is not a handler)"
     | .letTuple binders value body => do
       match ← atomTy Γ value with
       | .tuple ts l =>
@@ -788,7 +812,7 @@ end
 /-- T-Fun (`Program.FunOk`). -/
 def checkFun (p : Program) (fn : Fun) : Result Unit := do
   let ε ← checkExpr p fn.eqParams fn.params .bot fn.result fn.body
-  need (!ε.op || fn.op) s!"`{fn.name}` performs an operation it does not declare"
+  need (!ε.emits p || fn.emits p) s!"`{fn.name}` performs an operation it does not declare"
   need (hostLeB ε.host fn.host) s!"`{fn.name}` performs a host operation it does not declare"
   need (!ε.fails.isSome || fn.fails) s!"`{fn.name}` may fail, and does not declare it"
   le p ε.failLabel .bot s!"a failure of `{fn.name}` is decided above `public` (U4002)"
@@ -822,7 +846,7 @@ mutual
     | .caseSum _ _ _ t e | .handleK _ t _ e =>
       exprPure t && exprPure e
     | .attempt b | .attemptK _ b => exprPure b
-    | .fail _ | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ => false
+    | .fail _ | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ | .withH _ _ _ => false
 end
 
 /-- `Rhs.PureOrFails`. -/
@@ -840,7 +864,7 @@ def exprPureOrFails : Expr → Bool
     exprPureOrFails t && exprPureOrFails e
   | .attempt b | .attemptK _ b => exprPureOrFails b
   | .fail _ => true
-  | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ => false
+  | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ | .withH _ _ _ => false
 
 /-- The restrictions of option B1 on the policies, as one Boolean. -/
 def b1Ok (p : Program) : Bool :=
@@ -908,6 +932,7 @@ mutual
     | .raise k c args => .raise k c args
     | .caseSum s i xs t e => .caseSum s i xs (Expr.mapTypes f t) (Expr.mapTypes f e)
     | .unreachable => .unreachable
+    | .withH o g b => .withH o g (Expr.mapTypes f b)
     | .attempt b => .attempt (Expr.mapTypes f b)
     | .attemptK k b => .attemptK k (Expr.mapTypes f b)
     | .handle b x h => .handle (Expr.mapTypes f b) x (Expr.mapTypes f h)
@@ -931,7 +956,7 @@ mutual
     | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e
     | .caseSum _ _ _ t e | .handleK _ t _ e =>
       Expr.genericCalls t ++ Expr.genericCalls e
-    | .attempt b | .attemptK _ b | .letTuple _ _ b | .loop _ _ _ _ _ b => Expr.genericCalls b
+    | .attempt b | .attemptK _ b | .letTuple _ _ b | .loop _ _ _ _ _ b | .withH _ _ b => Expr.genericCalls b
     | .atom _ | .fail _ | .raise _ _ _ | .unreachable => []
 end
 

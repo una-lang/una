@@ -79,6 +79,7 @@ theorem prog_wf : prog.LWellFormed where
   sums := by simp [prog]
   disjoint _ := .inr (by simp [Program.sum, prog])
   ops _ h := by simp [prog] at h
+  handlers _ _ h := by simp [prog] at h
   eqScoped := by simp [prog, check]
   sigsScoped := by
     simp [prog, check, LTy.ScopedIn, LExpr.SymsIn, sec, LExpr.bot, LExpr.ofLabel]
@@ -115,7 +116,7 @@ def body : Expr :=
 /-- What `body` does: it releases, and writes. -/
 def bodyEff : Eff :=
   (Eff.ofFnR false HostFx.none false ["reveal"]).union
-    ((⟨true, HostFx.none, Option.none, [], false, [], LExpr.bot⟩ : Eff).union .none)
+    ((⟨true, HostFx.none, Option.none, [], false, [], LExpr.bot, []⟩ : Eff).union .none)
 
 theorem bot_le (e : LExpr) : LExpr.le prog.top LExpr.bot e :=
   .inr ⟨⟨Level.public_le _, fun _ h => by simp [LExpr.bot, LExpr.ofLabel, Label.bot] at h⟩,

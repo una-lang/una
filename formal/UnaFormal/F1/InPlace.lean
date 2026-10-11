@@ -232,7 +232,7 @@ theorem Eff.plainFree_attemptOf (ε : Eff) : (Eff.attemptOf ε).PlainFree :=
 theorem Eff.plainFree_handleOf {ε₁ ε₂ : Eff} (h₁ : ε₁.PlainFree) (h₂ : ε₂.PlainFree) :
     (Eff.handleOf ε₁ ε₂).PlainFree :=
   Eff.plainFree_decide (ε := ⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels,
-    ε₂.codes, ε₂.raises, ε₂.dl⟩) ⟨h₂.1, h₂.2⟩ h₁.2
+    ε₂.codes, ε₂.raises, ε₂.dl, ε₁.invokes ++ ε₂.invokes⟩) ⟨h₂.1, h₂.2⟩ h₁.2
 
 /-- A request's failure label is plain-free when the program counter and the arguments are. -/
 theorem Program.reqFail_plainFree {p : Program} {pc : LExpr} {ts : List LTy} (hpc : pc.PlainFree)
@@ -362,6 +362,8 @@ mutual
     | _, _, _, _, _, _, _, _, .call (fn := fn) hf _ _ _ _ hg _ _ _ _ =>
       ⟨(params_inPlace hwf hf _ (zip_ground hg)).2, Eff.plainFree_ofCall _⟩
     | _, _, _, _, _, _, _, hpc, .invoke (fn := fn) hf _ _ _ _ _ _ =>
+      ⟨(hwf.inPlace.1 fn (List.mem_of_find?_eq_some hf)).2, Eff.plainFree_ofInvoke hpc fn⟩
+    | _, _, _, _, _, _, _, hpc, .invokeOp (fn := fn) _ _ _ hf _ _ _ _ _ _ =>
       ⟨(hwf.inPlace.1 fn (List.mem_of_find?_eq_some hf)).2, Eff.plainFree_ofInvoke hpc fn⟩
     | _, _, _, _, _, _, hΓ, _, .apply hf _ _ _ => by
       have h := latom_inPlace hΓ hf
@@ -537,6 +539,12 @@ mutual
     | _, _, _, _, _, _, _, _, .fail _ _ hs => ⟨hs, fun _ h => by simp at h; subst h; rfl, LExpr.plainFree_bot⟩
     | _, _, _, _, _, _, _, _, .raise _ _ _ _ _ _ hs => ⟨hs, fun _ h => by simp at h; subst h; rfl, LExpr.plainFree_bot⟩
     | _, _, _, _, _, _, _, _, .unreachable hs => ⟨hs, Eff.plainFree_none⟩
+    | _, Γ, _, _, _, _, hΓ, hpc, .withH (o := o) _ _ hb => by
+      have h := LExprTy.inPlace hwf (Γ := (markerName o, .text .bot) :: Γ) (fun q hq => by
+          rcases List.mem_cons.mp hq with rfl | hq
+          · rfl
+          · exact hΓ q hq) hpc hb
+      exact ⟨h.1, h.2.1, h.2.2⟩
     | _, Γ, _, _, _, _, hΓ, hpc, .caseSum (binders := xs) (fs := fs) (ls := ls) hsc hsm hf _ hth hel _ _ hs => by
       have hl := latom_inPlace hΓ hsc
       simp only [LTy.InPlace] at hl

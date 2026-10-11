@@ -23,6 +23,7 @@ mutual
 
   def Expr.callees : Expr → List String
     | .atom _ | .fail _ | .raise _ _ _ | .unreachable => []
+    | .withH _ _ b => b.callees
     | .letR _ _ v b => v.callees ++ b.callees
     | .letE _ _ v b => v.callees ++ b.callees
     | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e
@@ -99,8 +100,26 @@ def opOk (p : Program) (q : String × Label) : Bool :=
   match p.find q.1 with
   | some fn => fn.tparams.isEmpty && fn.rels.isEmpty && fn.host.isNone &&
       (!fn.op || leB p.top (.ofLabel q.2) (.ofLabel p.acceptsOp)) &&
-      fn.params.all (fun r => isScalar r.2) && !isVia p q.1
+      fn.params.all (fun r => isScalar r.2) && !isVia p q.1 && fn.invokes.isEmpty
   | none => false
+
+/-- `Program.LWellFormed.handlers` (#538): each operation's representative is a handler of it,
+and every handler of it takes what the representative takes, gives what it gives, fails as it
+does, and accepts at least what it accepts. -/
+def handlersOk (p : Program) : Bool :=
+  p.opRep.all fun q =>
+    List.lookup q.2 p.handlerOf == some q.1 &&
+    match p.find q.2, List.lookup q.2 p.ops with
+    | some fn, some acc => p.handlerOf.all fun g =>
+        g.2 != q.1 ||
+        match p.find g.1, List.lookup g.1 p.ops with
+        | some gn, some acc' =>
+          leB p.top (.ofLabel acc) (.ofLabel acc') &&
+          flowsB p.top (fn.params.map Prod.snd) (gn.params.map Prod.snd) &&
+          flowB p.top gn.result fn.result && gn.fails == fn.fails && gn.raises == fn.raises &&
+          gn.tparams == fn.tparams && gn.op == fn.op
+        | _, _ => false
+    | _, _ => false
 
 /-- The parts of `Program.LWellFormed` about a policy: closed types with `ℓ_T` in place, and a
 `via` function whose structural signature is the policy's, `from` to `to`. -/
@@ -132,6 +151,7 @@ def progDocOk (p : Program) : Bool :=
   p.records.all (recordOk p) &&
   p.sums.all (sumOk p) &&
   p.ops.all (opOk p) &&
+  handlersOk p &&
   p.policies.all (policyOk p) &&
   catsDeclared p &&
   b1Ok p
@@ -171,6 +191,7 @@ def _root_.Una.F1.Expr.lowerLets : Expr → Expr
   | .fail c => .fail c
   | .raise k c args => .raise k c args
   | .unreachable => .unreachable
+  | .withH o f b => .withH o f b.lowerLets
 
 /-- A body the labeled checker types under these parameters, against the result raised to `⊤`. -/
 def viaTypedAt (p : Program) (fn : Fun) (ps : List (String × LTy)) (body : Expr := fn.body) :

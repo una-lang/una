@@ -31,6 +31,7 @@ mutual
     | .req m args => .req m args
     | .construct r fs => .construct r fs
     | .invoke f args => .invoke (ρ f) args
+    | .invokeOp o args => .invokeOp o args
     | .variant k i fs => .variant k i fs
     | .field v i => .field v i
     | .list items => .list items
@@ -68,6 +69,7 @@ mutual
     | .raise k c args => .raise k c args
     | .caseSum s i xs t e => .caseSum s i xs (t.anon ρ) (e.anon ρ)
     | .unreachable => .unreachable
+    | .withH o f b => .withH o f (b.anon ρ)
     | .attempt b => .attempt (b.anon ρ)
     | .attemptK k b => .attemptK k (b.anon ρ)
     | .handle b x h => .handle (b.anon ρ) x (h.anon ρ)
@@ -187,6 +189,14 @@ theorem lookup_anon : ∀ (env : Env) (x : String),
   | (y, v) :: env, x => by
     simp only [Val.anonEnv, lookup]
     split <;> simp [lookup_anon env x]
+
+/-- Forgetting annotations keeps the handler an invocation runs (#538): a marker's text is
+unchanged, and a value of another shape keeps its shape. -/
+theorem handlerFor_anon (p : Program) (o : String) (m : Option Val) :
+    p.handlerFor o (m.map (Val.anon ρ)) = p.handlerFor o m := by
+  cases m with
+  | none => rfl
+  | some v => cases v <;> rfl
 
 theorem evalAtom_anon (env : Env) : ∀ a : Atom,
     evalAtom (Val.anonEnv ρ env) a = (evalAtom env a).map (Val.anon ρ)
@@ -465,14 +475,14 @@ responses read no annotation. -/
 theorem eval_anon (hH : H.AnonInvariant) (h4 : H.RespTyped) (hf : ∀ f, (P.find f).map (Fun.anon ρ) = Q.find (ρ f))
     (hp : ∀ pol, P.policy pol = Q.policy pol)
     (hv : ∀ pol po, P.policy pol = some po → ρ po.via = po.via)
-    (hps : P.predSem = Q.predSem) : ∀ n : Nat,
+    (hps : P.predSem = Q.predSem) (hhf : ∀ o m, Q.handlerFor o m = ρ (P.handlerFor o m)) : ∀ n : Nat,
     (∀ w env r, runAnon ρ (evalRhs H n P w env r) =
       evalRhs H n Q w (Val.anonEnv ρ env) (r.anon ρ)) ∧
     (∀ w env e, runAnon ρ (eval H n P w env e) = eval H n Q w (Val.anonEnv ρ env) (e.anon ρ))
   | 0 => ⟨fun w env r => by simp [evalRhs, runAnon, Res.anon],
       fun w env e => by simp [eval, runAnon, Res.anon]⟩
   | n + 1 => by
-    obtain ⟨ihR, ihE⟩ := eval_anon hH h4 hf hp hv hps n
+    obtain ⟨ihR, ihE⟩ := eval_anon hH h4 hf hp hv hps hhf n
     have happ : ∀ w fv vs, runAnon ρ (applyWith (eval H n P) w fv vs) =
         applyWith (eval H n Q) w (fv.anon ρ) (vs.map (Val.anon ρ)) := applyWith_anon ihE
     constructor
@@ -507,6 +517,19 @@ theorem eval_anon (hH : H.AnonInvariant) (h4 : H.RespTyped) (hf : ∀ f, (P.find
       | invoke f args =>
         simp only [evalRhs, Rhs.anon, evalAtoms_anon, ← hf f]
         cases P.find f with
+        | none => simp [runAnon_stuck]
+        | some fn =>
+          cases evalAtoms env args with
+          | none => simp [runAnon_stuck]
+          | some vs =>
+            simp only [Option.map_some, Fun.anon, List.length_map, anonParams_length]
+            split
+            · rw [ihE, bindParams_anon fn.params (anonParams fn.params) (anonParams_fst _).symm]
+              rfl
+            · rfl
+      | invokeOp o args =>
+        simp only [evalRhs, Rhs.anon, evalAtoms_anon, lookup_anon, handlerFor_anon, hhf, ← hf]
+        cases P.find (P.handlerFor o (lookup env (markerName o))) with
         | none => simp [runAnon_stuck]
         | some fn =>
           cases evalAtoms env args with
@@ -841,6 +864,9 @@ theorem eval_anon (hH : H.AnonInvariant) (h4 : H.RespTyped) (hf : ∀ f, (P.find
         simp only [eval, Expr.anon, evalAtoms_anon]
         cases evalAtoms env args <;> simp [runAnon, Res.anon, stuck, Val.anons_eq]
       | unreachable => simp [eval, Expr.anon, runAnon, Res.anon]
+      | withH o f b =>
+        simp only [eval, Expr.anon]
+        exact ihE w _ b
       | caseSum sc i xs t e =>
         simp only [eval, Expr.anon, evalAtom_anon]
         cases evalAtom env sc with
@@ -942,6 +968,8 @@ structure Sim (ρ : String → String) (P₁ P₂ : Program) : Prop where
   vias : ∀ po ∈ P₁.policies, ρ po.via = po.via
   /-- The meaning of `checked`'s predicates is the same (#453). -/
   predSem : P₁.predSem = P₂.predSem
+  /-- An invocation of an operation runs the same handler, up to `ρ` (#538). -/
+  handlerFor : ∀ o m, P₂.handlerFor o m = ρ (P₁.handlerFor o m)
 
 /-- **Evaluation erasure.** Two programs that agree up to annotations run the same, up to
 annotations, on bodies and environments that agree up to annotations. -/
@@ -956,10 +984,11 @@ theorem eval_erasure {ρ : String → String} {P₁ P₂ : Program} (h : Sim ρ 
     (fun f => by rw [Program.find_anon, h.funs f]) hpol
     (fun pol po hpo => h.vias po (by
       unfold Program.policy at hpo
-      exact List.mem_of_find?_eq_some hpo)) (by simp [Program.anon, h.predSem]) n).2 w env₁ e₁
+      exact List.mem_of_find?_eq_some hpo)) (by simp [Program.anon, h.predSem])
+    (fun o m => h.handlerFor o m) n).2 w env₁ e₁
   have h₂ := (eval_anon (P := P₂) (Q := P₂.anon) (ρ := id) hH h4
     (fun f => by rw [Program.find_anon]; rfl) (fun pol => by simp [Program.policy, Program.anon])
-    (fun _ _ _ => rfl) (by simp [Program.anon]) n).2 w env₂ e₂
+    (fun _ _ _ => rfl) (by simp [Program.anon]) (fun _ _ => rfl) n).2 w env₂ e₂
   rw [h₁, h₂, henv, he]
 
 /-- Erasure keeps whether a run ended. -/

@@ -357,3 +357,17 @@ import UnaFormal
 #print axioms Una.F1.AtExample.index_leaks
 #print axioms Una.F1.AtExample.index_untyped
 #print axioms Una.F1.AtExample.at_out_of_range
+#print axioms Una.F1.WithExample.certified
+#print axioms Una.F1.WithExample.same_lines
+#print axioms Una.F1.WithExample.underSecret_rejected
+#print axioms Una.F1.WithExample.underSecret_leaks
+#print axioms Una.F1.WithExample.underSecret_untyped
+#print axioms Una.F1.WithExample.installed_checked
+#print axioms Una.F1.WithExample.installed_runs
+#print axioms Una.F1.WithExample.unbound_rejected
+#print axioms Una.F1.WithExample.unbound_untyped
+#print axioms Una.F1.WithExample.h3_checked
+#print axioms Una.F1.WithExample.h3_runs
+#print axioms Una.F1.WithExample.c5b_rejected
+#print axioms Una.F1.WithExample.c5b_leaks
+#print axioms Una.F1.WithExample.c5b_untyped

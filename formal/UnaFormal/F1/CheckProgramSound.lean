@@ -132,6 +132,8 @@ theorem _root_.Una.F1.ExprTy.of_lowerLets {p : Program} :
   | .fail c, _, _, h => h
   | .raise k c args, _, _, h => h
   | .unreachable, _, _, h => h
+  | .withH o f b, _, _, h => by
+    cases h with | withH hb => exact .withH (ExprTy.of_lowerLets b hb)
 
 theorem viaTypedAt_sound {p : Program} {fn : Fun} {ps : List (String × LTy)} {body : Expr}
     (h : viaTypedAt p fn ps body = true) : ExprTy p (LCtx.erase ps) body fn.result.erase := by
@@ -201,14 +203,14 @@ theorem progOk_sound {cond : List String} {p : Program} (h : progOk cond p = tru
     (hA3 : ∀ fn ∈ p.funs, fn.name ∈ cond → ¬ p.IsVia fn.name → p.FunOk fn) :
     p.LWellFormed ∧ p.B1WellFormed ∧ p.HostWF := by
   simp only [progOk, progDocOk, recordOk, sumOk, policyOk, Bool.and_eq_true, List.all_eq_true] at h
-  obtain ⟨⟨⟨⟨⟨⟨⟨hhost, hrec⟩, hsum⟩, hops⟩, hpol⟩, hcats⟩, hb1⟩, hfuns⟩ := h
+  obtain ⟨⟨⟨⟨⟨⟨⟨⟨hhost, hrec⟩, hsum⟩, hops⟩, hhand⟩, hpol⟩, hcats⟩, hb1⟩, hfuns⟩ := h
   have hfun := fun fn hfn => by
     have := hfuns fn hfn
     simp only [progFunOk, Bool.and_eq_true, List.all_eq_true] at this
     exact this
   -- The fields of `Program.LWellFormed`, in order: funs, records, recordDeep, policies,
-  -- categories, recordsGround, eqScoped, sigsScoped, sums, disjoint, ops, inPlace.
-  refine ⟨⟨?_, ?_, ?_, ?_, catsDeclared_sound hcats, ?_, ?_, ?_, ?_, ?_, ?_, ⟨?_, ?_, ?_⟩⟩,
+  -- categories, recordsGround, eqScoped, sigsScoped, sums, disjoint, ops, handlers, inPlace.
+  refine ⟨⟨?_, ?_, ?_, ?_, catsDeclared_sound hcats, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ⟨?_, ?_, ?_⟩⟩,
     b1Ok_sound hb1, hostWfB_sound hhost⟩
   · intro fn hfn
     obtain ⟨_, hv⟩ := hfun fn hfn
@@ -259,9 +261,9 @@ theorem progOk_sound {cond : List String} {p : Program} (h : progOk cond p = tru
     · rename_i fn hfn
       simp only [Bool.and_eq_true, List.isEmpty_iff, Bool.not_eq_true', List.all_eq_true,
         Bool.or_eq_true, HostFx.isNone] at h
-      obtain ⟨⟨⟨⟨⟨htp, hrels⟩, ⟨⟨hrd, hwr⟩, hrq⟩⟩, hop⟩, hsc⟩, hnv⟩ := h
+      obtain ⟨⟨⟨⟨⟨⟨htp, hrels⟩, ⟨⟨hrd, hwr⟩, hrq⟩⟩, hop⟩, hsc⟩, hnv⟩, hinv⟩ := h
       refine ⟨fn, hfn, htp, hrels, ?_, fun ho => ?_, fun r hr => isScalar_sound (hsc r hr),
-        isVia_false hnv⟩
+        isVia_false hnv, hinv⟩
       · have hn : ∀ g : HostFx, g.rd = false → g.wr = false → g.rq = false → g = HostFx.none := by
           rintro ⟨_, _, _⟩ h1 h2 h3
           simp only at h1 h2 h3
@@ -271,6 +273,26 @@ theorem progOk_sound {cond : List String} {p : Program} (h : progOk cond p = tru
       · rcases hop with h | h
         · simp [ho] at h
         · exact leB_sound h
+    · simp at h
+  · -- Handlers of `with` scopes (#538): `handlersOk`.
+    intro o f hr
+    unfold handlersOk at hhand
+    have h := (List.all_eq_true.mp hhand) (o, f) (lookup_some_mem hr)
+    simp only [Bool.and_eq_true, beq_iff_eq] at h
+    obtain ⟨hfo, h⟩ := h
+    refine ⟨hfo, ?_⟩
+    split at h
+    · rename_i fn acc hf hacc
+      refine ⟨fn, acc, hf, hacc, fun g hg => ?_⟩
+      have h' := (List.all_eq_true.mp h) (g, o) (lookup_some_mem hg)
+      simp only [bne_self_eq_false, Bool.false_or] at h'
+      split at h'
+      · rename_i gn acc' hgn hacc'
+        simp only [Bool.and_eq_true, beq_iff_eq] at h'
+        obtain ⟨⟨⟨⟨⟨⟨hle, hfl⟩, hres⟩, hfails⟩, hraises⟩, htp⟩, hop⟩ := h'
+        exact ⟨gn, acc', hgn, hacc', leB_sound hle, flowsB_sound _ _ hfl, flowB_sound _ _ hres,
+          hfails, hraises, htp, hop⟩
+      · simp at h'
     · simp at h
   · intro fn hfn
     have := (hfun fn hfn).1
@@ -325,7 +347,7 @@ mutual
       subst hg
       cases h with
       | invoke hf hacc =>
-        obtain ⟨fn', hf', _, _, _, _, _, hnv⟩ := hwf.ops _ (lookup_some_mem hacc)
+        obtain ⟨fn', hf', _, _, _, _, _, hnv, _⟩ := hwf.ops _ (lookup_some_mem hacc)
         exact ⟨_, hf, found_funOk hwf hf hnv⟩
     | .lambda _ b, _, _, _, _, h, g, hg => by
       simp only [Rhs.callees] at hg
@@ -340,6 +362,7 @@ mutual
     | .none, _, _, _, _, _, _, hg | .some _, _, _, _, _, _, _, hg
     | .first _, _, _, _, _, _, _, hg | .elemAt _ _, _, _, _, _, _, _, hg
     | .orElse _ _, _, _, _, _, _, _, hg | .isOk _, _, _, _, _, _, _, hg
+    | .invokeOp _ _, _, _, _, _, _, _, hg
     | .mkOk _, _, _, _, _, _, _, hg | .mkErr _, _, _, _, _, _, _, hg
     | .declassify _ _, _, _, _, _, _, _, hg | .map _ _, _, _, _, _, _, _, hg
     | .filter _ _, _, _, _, _, _, _, hg | .firstWhere _ _, _, _, _, _, _, _, hg
@@ -356,6 +379,10 @@ mutual
     | .atom _, _, _, _, _, _, _, hg | .fail _, _, _, _, _, _, _, hg
     | .raise _ _ _, _, _, _, _, _, _, hg | .unreachable, _, _, _, _, _, _, hg => by
       simp [Expr.callees] at hg
+    | .withH _ _ b, _, _, _, _, h, g, hg => by
+      simp only [Expr.callees] at hg
+      cases h with
+      | withH _ _ hb => exact expr_reach hwf b hb g hg
     | .letR _ _ v b, _, _, _, _, h, g, hg => by
       simp only [Expr.callees, List.mem_append] at hg
       cases h with

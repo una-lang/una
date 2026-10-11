@@ -25,7 +25,7 @@ mutual
     | .caseSum _ _ _ t e | .handleK _ t _ e =>
       Expr.Pure t ∧ Expr.Pure e
     | .attempt b | .attemptK _ b => Expr.Pure b
-    | .fail _ | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ => False
+    | .fail _ | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ | .withH _ _ _ => False
 end
 
 /-- A right-hand side that performs no event and calls nothing, but may fail: a pure one, or
@@ -47,7 +47,7 @@ def Expr.PureOrFails : Expr → Prop
   | .fail _ => True
   -- A `via` function's failure is released as `Err(c)`, a code (ADR 0090): one with a payload
   -- is not a `via` function's (#512).
-  | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ => False
+  | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ | .withH _ _ _ => False
 
 /-- **The restrictions of option B1**, on the policies. Each `from` is a scalar type, each `to`
 is a scalar type with a concrete label, and each `via` function performs no operation and
@@ -148,6 +148,7 @@ theorem pure_run (p : Program) (w : World H) : ∀ n : Nat,
       | fail c => exact absurd he (by simp [Expr.Pure])
       | raise _ _ _ => exact absurd he (by simp [Expr.Pure])
       | unreachable => exact absurd he (by simp [Expr.Pure])
+      | withH _ _ _ => exact absurd he (by simp [Expr.Pure])
       | caseSum s i xs t e =>
         simp only [eval]
         split
@@ -289,6 +290,7 @@ theorem silent_run (p : Program) (w : World H) : ∀ n : Nat,
       | fail c => exact ⟨rfl, rfl⟩
       | raise _ _ _ => exact (show False from he).elim
       | unreachable => exact (show False from he).elim
+      | withH _ _ _ => exact (show False from he).elim
       | caseSum s i xs t e =>
         simp only [eval]
         split
@@ -460,6 +462,7 @@ theorem noRaise_run (p : Program) (w : World H) : ∀ n : Nat,
     | fail _ => simp [eval]
     | raise _ _ _ => exact (show False from he).elim
     | unreachable => exact (show False from he).elim
+    | withH _ _ _ => exact (show False from he).elim
     | attempt b =>
       simp only [eval]
       have h := ihE env b he

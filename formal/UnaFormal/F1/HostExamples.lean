@@ -93,6 +93,7 @@ theorem wf (fs : Level) : (prog fs).LWellFormed where
   sums := by simp [prog]
   disjoint _ := .inr (by simp [Program.sum, prog])
   ops _ h := by simp [prog] at h
+  handlers _ _ h := by simp [prog] at h
   eqScoped := by simp [prog]
   sigsScoped := by simp [prog]
   inPlace := by simp [prog]
