@@ -654,7 +654,7 @@ mutual
   /-- `Rhs.Pure`. -/
   def rhsPure : Rhs → Bool
     | .atom _ | .prim _ _ | .construct _ _ | .field _ _ | .list _ | .none | .some _ | .mkOk _
-    | .mkErr _ | .eq _ _
+    | .mkErr _ | .eq _ _ | .variant _ _ _
     | .lambda _ _ | .funRef _ _ => true
     | _ => false
 
@@ -663,10 +663,11 @@ mutual
     | .atom _ => true
     | .letR _ _ v b => rhsPure v && exprPure b
     | .letE _ _ v b => exprPure v && exprPure b
-    | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e =>
+    | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e
+    | .caseSum _ _ _ t e | .handleK _ t _ e =>
       exprPure t && exprPure e
-    | .attempt b => exprPure b
-    | .fail _ | .letTuple _ _ _ | .loop _ _ _ _ _ _ => false
+    | .attempt b | .attemptK _ b => exprPure b
+    | .fail _ | .raise _ _ _ | .letTuple _ _ _ | .loop _ _ _ _ _ _ => false
 end
 
 /-- `Rhs.PureOrFails`. -/
@@ -679,17 +680,19 @@ def exprPureOrFails : Expr → Bool
   | .atom _ => true
   | .letR _ _ v b => rhsPureOrFails v && exprPureOrFails b
   | .letE _ _ v b => exprPureOrFails v && exprPureOrFails b
-  | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e =>
+  | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e
+  | .caseSum _ _ _ t e | .handleK _ t _ e =>
     exprPureOrFails t && exprPureOrFails e
-  | .attempt b => exprPureOrFails b
+  | .attempt b | .attemptK _ b => exprPureOrFails b
   | .fail _ => true
-  | .letTuple _ _ _ | .loop _ _ _ _ _ _ => false
+  | .raise _ _ _ | .letTuple _ _ _ | .loop _ _ _ _ _ _ => false
 
 /-- The restrictions of option B1 on the policies, as one Boolean. -/
 def b1Ok (p : Program) : Bool :=
   p.policies.all fun po => isScalar po.src && ground po.dst && isScalar po.dst &&
     match p.find po.via with
-    | some fn => !fn.op && fn.host.isNone && exprPureOrFails fn.body && (fn.fails || exprPure fn.body)
+    | some fn => !fn.op && fn.host.isNone && exprPureOrFails fn.body && (fn.fails || exprPure fn.body) &&
+        fn.raises.isEmpty
     | none => false
 
 /-- `Program.B1WellFormed`: the restrictions of option B1 on the policies. A program outside them
@@ -702,6 +705,7 @@ def checkB1 (p : Program) : Result Unit := do
     | some fn =>
       need (!fn.op && fn.host.isNone && exprPureOrFails fn.body && (fn.fails || exprPure fn.body))
         s!"B1 restriction (impure via): `{po.via}`"
+      need fn.raises.isEmpty s!"B1 restriction (via fails with a payload kind): `{po.via}`"
     | none => throw s!"no `via` function `{po.via}`"
   -- The same test as one Boolean, which the proof of soundness reads (`checkB1_sound`); the loop
   -- above gives each restriction its own message.
