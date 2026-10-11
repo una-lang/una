@@ -26,8 +26,8 @@
 # returns `.restriction` for a message it is given: rule 2 sees the alias's own line only. What
 # catches those is the corpus and the replay, which must stay byte-identical, and the review of
 # every new `.restriction` and every new tag. Of the same class (Una-1's recheck): a tagged throw
-# inside a lambda typed `Check.Result` within a definition of the importer's own monad, whose
-# signature does not name the checker's result.
+# inside a lambda or a `where` definition typed `Check.Result` within a definition of the
+# importer's own monad, whose signature does not name the checker's result.
 #
 # Usage: scripts/formal-restrictions.sh [dir]   (dir defaults to formal/UnaFormal/F1)
 set -eu
