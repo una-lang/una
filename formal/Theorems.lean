@@ -312,6 +312,14 @@ import UnaFormal
 #print axioms Una.F1.HandlerExample.branchDecides_untyped
 #print axioms Una.F1.HandlerExample.secretAtPublic_rejected
 #print axioms Una.F1.LExprTy.dl_le_failLabel
+#print axioms Una.F1.DecisionExample.certified
+#print axioms Una.F1.DecisionExample.secretAtPublic_rejected
+#print axioms Una.F1.DecisionExample.secretAtPublic_checked_internal
+#print axioms Una.F1.DecisionExample.secretAtPublic_leaks
+#print axioms Una.F1.DecisionExample.secretAtPublic_untyped
+#print axioms Una.F1.DecisionExample.readThen_rejected
+#print axioms Una.F1.DecisionExample.readThen_leaks
+#print axioms Una.F1.DecisionExample.readThen_untyped
 #print axioms Una.F1.FirstExample.certified
 #print axioms Una.F1.FirstExample.same_lines
 #print axioms Una.F1.FirstExample.presence_checked

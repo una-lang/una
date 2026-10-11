@@ -64,8 +64,7 @@ Non-vacuity, `HandlerExample`:
 - **H6** (`print-after`, `value-out`, `handler-effect`): rejected, leaks, no typing.
 - **The floor through a call:** a handler whose only public effect is in a function it calls is rejected.
 - **The branch decides** (§4a): rejected, it leaks, no typing. **H5, handled at a public annotation** (`knock_attempt`'s shape): certified, and it runs.
-- **Parse, then attempt** (§4a): rejected. Its leak needs a successful `parse` in both runs, which a proof cannot evaluate (`String.toInt?` does not reduce), so its run and its "no typing" theorem await a variant on a host whose reads succeed on a secret path.
-- **A secret failure at a public `pc`** (`attempt parse(s)`, annotated public): rejected; its run, as the previous item's.
+- **Parse, then attempt**, and **a secret failure at a public `pc`** (`attempt parse(s)`, annotated public): rejected (`HandlerExample`). Their leaks need a successful `parse` in a run, which a proof cannot evaluate (`String.toInt?` does not reduce), so both shapes are shown again with `Files.read`, whose failure the path decides as `parse`'s is decided by its text, on the lawful file host of `HostExamples` (`DecisionExample`): **read, then attempt** (`let y = read(s) in attempt read(t)`, `s` the same in both runs) and `attempt read(s)`, each annotated public: rejected, they leak (`Err` and `Ok` at a public type), no typing; and `attempt read(s)` at its decision label, `internal`, is certified.
 
 `ImportTests`: a handler that branches on its parameter and acts publicly (H1) is rejected, and what invokes it is not re-checked, never accepted; a lawful handler, and its invokers, are accepted; `with` is not re-checked; an operation whose handler the document does not declare is not re-checked.
 
