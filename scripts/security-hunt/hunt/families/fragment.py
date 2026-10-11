@@ -21,7 +21,9 @@ CARRIERS = {
             "  let t = when ts.first()\n    is Some(x) -> x\n    is None -> 0\n"),
     "filter": ("  let ts = [s, 1].filter(keep: fn(x) -> x > 0)\n"
                "  let t = when ts.first()\n    is Some(x) -> x\n    is None -> 0\n"),
-    "fold": "  let t = [s, 2].fold(initial: 0, step: fn(acc, x) -> acc + x)\n",
+    # The accumulator takes `initial`'s type: a public `0` would make `acc + x` U4001 (seed 5).
+    "fold": ("  let z: secret Int = 0\n"
+             "  let t = [s, 2].fold(initial: z, step: fn(acc, x) -> acc + x)\n"),
     "first-where": ("  let o = [s, 3].first_where(keep: fn(x) -> x > 1)\n"
                     "  let t = when o\n    is Some(x) -> x\n    is None -> 0\n"),
     "lambda": "  let f = fn(x: secret Int) -> x * 2\n  let t = f(s)\n",
