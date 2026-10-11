@@ -62,10 +62,10 @@ def mixed : String := r#"{"schema":"una.core/1","edition":"0.2","complete":true,
 -- neither reads `Gong.strike` as F1's event (fail closed).
 #guard run mixed "m.strike_it" == "not re-checked"
 -- (c): a call of a function that invokes an operation no scope installs there: not re-checked by
--- the scoped reading, nor by #524's, which does not read an operation of a capability `with`
--- scopes install.
+-- the scoped reading. #524's reading does not read `Vault.note` there, and rejects `reach`, which
+-- reaches an operation it does not declare, so the combined reading rejects it.
 #guard runScoped unbound "m.reach" == "not re-checked"
-#guard run unbound "m.reach" == "not re-checked"
+#guard run unbound "m.reach" == "rejected"
 -- A user name starting with `@`, as a marker's: the document is not read.
 #guard ["m.work", "m.guarded", "m.reach"].all (run forged · == "not re-checked")
 
