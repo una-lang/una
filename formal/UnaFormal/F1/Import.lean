@@ -209,6 +209,11 @@ structure Ctx where
   sums : List (String × List Nat) := []
   /-- The payload kind each function fails with, when it is a sum kind (#512). -/
   raisesOf : List (String × String) := []
+  /-- The binders of the function being read with their fixed-width kind (#548): `some k` for a
+  fixed-width type `k`, `none` for another type; a name bound at two kinds is left out. -/
+  binderKinds : List (String × Option String) := []
+  /-- Whether the function being read binds a fixed-width value (#548). -/
+  usesFixed : Bool := false
   /-- The operations whose handler the document declares (#524), by capability and operation,
   with the handler's function; and those capabilities, which are not F1's one event operation. -/
   invokes : List ((String × String) × String) := []
@@ -282,6 +287,9 @@ partial def ty (c : Ctx) (j : J) : M LTy := do
     let b ← field j "base"
     match ← kind b with
     | "int" => pure (.int l)
+    -- A fixed-width integer (#548, `spec/18`) is F1's `Int` at its label (§1.4): its range lives
+    -- in the reading of the arithmetic that produces it, a `fit` after each step (`expr`).
+    | "fixed" => pure (.int l)
     | "bool" => pure (.bool l)
     | "text" => pure (.text l)
     | "unit" => pure (.unit l)
@@ -398,6 +406,60 @@ partial def formulaVars (j : J) : List String :=
   | .arr items => items.toList.flatMap formulaVars
   | _ => []
 
+/-- The fixed-width kind of a type, `i8` to `u64`, when it is one (#548). -/
+def fixedOf (t : J) : Option String :=
+  match t.getObjValD "kind", (t.getObjValD "base").getObjValD "kind" with
+  | .str "base", .str "fixed" =>
+    match ((t.getObjValD "base").getObjValD "value").getObjValD "kind" with
+    | .str k => some k
+    | _ => none
+  | _, _ => none
+
+/-- The range of a fixed-width kind (`spec/18 §1`). -/
+def fixedRange : String → Option (Int × Int)
+  | "i8" => some (-128, 127)
+  | "i16" => some (-32768, 32767)
+  | "i32" => some (-2147483648, 2147483647)
+  | "i64" => some (-9223372036854775808, 9223372036854775807)
+  | "u8" => some (0, 255)
+  | "u16" => some (0, 65535)
+  | "u32" => some (0, 4294967295)
+  | "u64" => some (0, 18446744073709551615)
+  | _ => none
+
+/-- Every binder of a declaration's Core with its declared type (#548): `let`s, and the
+`[name, type]` pairs of parameters, lambda parameters, loop variables, loop state and tuple
+binders. A pattern's binders carry no type and are not here. -/
+partial def binderTys (j : J) : List (String × J) :=
+  match j with
+  | .obj kvs =>
+    let here := match j.getObjValD "kind", j.getObjValD "name", j.getObjVal? "ty" with
+      | .str "let", .str x, .ok t => [(x, t)]
+      | _, _, _ => []
+    here ++ kvs.toArray.toList.flatMap (fun kv => binderTys kv.2)
+  | .arr items =>
+    let here := match items.toList with
+      | [.str x, t] => if (t.getObjVal? "label").isOk then [(x, t)] else []
+      | _ => []
+    here ++ items.toList.flatMap binderTys
+  | _ => []
+
+/-- The context for reading a declaration whose Core is `v` (#548): its binders' kinds. -/
+def withBinders (c : Ctx) (v : J) : Ctx :=
+  let tys := binderTys v
+  let names := (tys.map Prod.fst).eraseDups
+  let kinds := names.filterMap fun x =>
+    match (tys.filter (·.1 == x)).map (fixedOf ·.2) with
+    | k :: ks => if ks.all (· == k) then some (x, k) else none
+    | [] => none
+  { c with binderKinds := kinds, usesFixed := kinds.any (·.2.isSome) }
+
+/-- The kind of an arithmetic operand, `annot`'s for a literal, which takes the type its context
+expects (`spec/18 §2.1`); `none` when the reading does not know it. -/
+def operandKind (c : Ctx) (annot : Option String) : Atom → Option (Option String)
+  | .var x => c.binderKinds.lookup x
+  | _ => some annot
+
 mutual
   partial def rhs (c : Ctx) (j : J) : M Rhs := do
     match ← kind j with
@@ -411,6 +473,18 @@ mutual
       | "mul", _ => pure (.prim .mul args)
       | "div", _ => pure (.prim .div args)
       | "mod", _ => pure (.prim .mod args)
+      -- A conversion (#548, `spec/18 §4`): to `Int` the value itself; to a fixed-width type the
+      -- value if it fits, else the run aborts, which `fit` is. A widening one always fits.
+      | "convert", [a] =>
+        -- The export writes a conversion to `Int` with no target (`"value": null`).
+        let target := (← field j "prim").getObjValD "value"
+        match if target.isNull then Lean.Json.str "int" else target.getObjValD "kind" with
+        | .str "int" => pure (.atom a)
+        | .str k =>
+          match fixedRange k with
+          | some (lo, hi) => pure (.prim (.fit lo hi) [a])
+          | none => throw s!"F1 restriction (a conversion to `{k}`)"
+        | _ => throw "a conversion's target"
       -- `-a` is `0 - a`: the literal is public, so the label is `a`'s, as Una's (#526).
       | "neg", [a] => pure (.prim .sub [.int 0, a])
       | "lt", _ => pure (.prim .lt args)
@@ -603,6 +677,22 @@ mutual
         if let some first := negated then
           let tmp := s!"%not-{x}"
           return .letR tmp t first (.letR x t (.prim .not [.var tmp]) body)
+        -- Arithmetic in a function with fixed-width values (#548, `spec/18 §3`): every operand,
+        -- and the `let`, of one known kind, and on a fixed-width kind, the exact `Int` result,
+        -- then `fit` to the kind's range, which aborts outside it, as Una does where the
+        -- `overflow` obligation is not proven. Anything else is not re-checked, never read as
+        -- unbounded `Int`.
+        if c.usesFixed && rv.getObjValD "kind" == .str "prim" then
+          let pk ← kind (← field rv "prim")
+          if ["add", "sub", "mul", "div", "mod", "neg"].contains pk then
+            let annot := fixedOf (← field j "ty")
+            let args ← atoms (← field rv "args")
+            if !args.all (fun a => operandKind c annot a == some annot) then
+              throw s!"F1 restriction (`{pk}` on operands of mixed or unknown integer types)"
+            if let some k := annot then
+              let some (lo, hi) := fixedRange k | throw s!"F1 restriction (the kind `{k}`)"
+              let tmp := s!"%fit-{x}"
+              return .letR tmp t (← rhs c rv) (.letR x t (.prim (.fit lo hi) [.var tmp]) body)
         let r ← rhs c rv
         -- A lambda's body gives the result of its function type (`Expr.resolveAt`).
         let r ← match r, t with
@@ -1083,7 +1173,8 @@ def prepare (c : Ctx) (hl : HostLabels) (caps : List (String × J)) (decls : Lis
     let (_, fnHost) ← usesEffects (← arr (← field d.value "uses")) c.invoked c.dynCaps
     let own := s!"{d.module}.{← str (← field d.value "name")}"
     let fn ← signature c d.module d.value
-      (← expr { c with host := fnHost, bound := (c.markersOf.lookup own).getD [] } (← field d.value "body"))
+      (← expr { withBinders c d.value with host := fnHost, bound := (c.markersOf.lookup own).getD [] }
+        (← field d.value "body"))
     -- The policies the function and its callees may release through, whose `to` labels bound
     -- the calls (`Program.RelBound`).
     for pol in fn.rels do refPolicy pol
@@ -1104,7 +1195,7 @@ def prepare (c : Ctx) (hl : HostLabels) (caps : List (String × J)) (decls : Lis
       let some e := findDecl f | throw s!"the function `{f}`"
       -- A `via` function's body is read: option B1 asks it to be pure (`Check.checkB1`).
       if (c.vias.find? (·.1 == f)).isSome then
-        match plainRun (do expr c (← field e.value "body")) with
+        match plainRun (do expr (withBinders c e.value) (← field e.value "body")) with
         | .ok b => signature c e.module e.value b
         | .error why => throw s!"the `via` function `{f}` is outside F1: {why}"
       else signature c e.module e.value (.atom .unit)

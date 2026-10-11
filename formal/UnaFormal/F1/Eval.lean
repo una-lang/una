@@ -229,6 +229,8 @@ def Prim.aborts : Prim → List Val → Bool
   -- `slice` outside `0 <= start <= end <= t.len` (#542): the precondition is an obligation at each
   -- call (`spec/12 §3`), so a run reaches here only where it is not proven.
   | .slice, [.text s, .int a, .int b] => !(decide (0 ≤ a ∧ a ≤ b ∧ b ≤ (s.length : Int)))
+  -- A fixed-width result outside its type's range (#548, ADR 0057's overflow abort).
+  | .fit lo hi, [.int a] => !(decide (lo ≤ a ∧ a ≤ hi))
   | _, _ => false
 
 /-- A primitive on the values of its arguments. -/
@@ -251,6 +253,7 @@ def evalPrim : Prim → List Val → Option Val
   | .min, [.int a, .int b] => some (.int (Min.min a b))
   | .max, [.int a, .int b] => some (.int (Max.max a b))
   | .slice, [.text s, .int a, .int b] => some (.text (sliceText s a b))
+  | .fit _ _, [.int a] => some (.int a)
   | _, _ => none
 
 /-- The parameters bound to the arguments, in front of `env`. -/

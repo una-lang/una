@@ -371,3 +371,15 @@ import UnaFormal
 #print axioms Una.F1.WithExample.c5b_rejected
 #print axioms Una.F1.WithExample.c5b_leaks
 #print axioms Una.F1.WithExample.c5b_untyped
+#print axioms Una.F1.FixedExample.certified
+#print axioms Una.F1.FixedExample.same_lines
+#print axioms Una.F1.FixedExample.public_sum_checked
+#print axioms Una.F1.FixedExample.public_sum_runs
+#print axioms Una.F1.FixedExample.sum_rejected
+#print axioms Una.F1.FixedExample.sum_leaks
+#print axioms Una.F1.FixedExample.sum_untyped
+#print axioms Una.F1.FixedExample.narrow_rejected
+#print axioms Una.F1.FixedExample.narrow_leaks
+#print axioms Una.F1.FixedExample.narrow_untyped
+#print axioms Una.F1.FixedExample.overflow_aborts
+#print axioms Una.F1.FixedExample.zero_div_aborts

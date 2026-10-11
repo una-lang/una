@@ -1,0 +1,41 @@
+module m
+
+pub add_public(a: U8, b: U8) -> U8
+  requires a < 100 and b < 100
+=
+  a + b
+
+pub add_secret(a: secret U8, b: U8) -> U8
+  requires a < 100 and b < 100
+=
+  a + b
+
+pub nested(a: U8, b: U8) -> Int
+  requires a < 100 and b < 100
+=
+  (a + b).to_int()
+
+pub narrow_public(x: Int) -> U8
+  requires 0 <= x and x <= 255
+=
+  x.to_u8()
+
+pub narrow_secret(x: secret Int) -> U8
+  requires 0 <= x and x <= 255
+=
+  x.to_u8()
+
+pub widen(x: U8) -> I32 = x.to_i32()
+
+pub div_public(a: U8, b: U8) -> U8
+  requires b > 0
+=
+  a / b
+
+pub wrap(a: U8, b: U8) -> U8 = a.wrapping_add(by: b)
+
+pub unknown_binder(o: Option[U8]) -> U8
+=
+  when o
+    is Some(x) -> x / 2
+    is None -> 0

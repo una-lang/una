@@ -235,6 +235,8 @@ mutual
     | v :: vs => by simp only [Val.anons, Val.renders]; rw [Val.render_anon v, Val.renders_anon vs]
 end
 
+-- `fit` (#548) takes this proof's case split past the default budget.
+set_option maxHeartbeats 1000000 in
 /-- Whether a primitive aborts reads only integers, which erasure keeps (#526). -/
 theorem aborts_anon (pr : Prim) (vs : List Val) :
     Prim.aborts pr (vs.map (Val.anon ρ)) = Prim.aborts pr vs := by
