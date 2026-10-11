@@ -62,7 +62,20 @@ def main(src, out):
     clock["name"] = "Clock"
     hm["decls"].append(clock)
     hostnamed_text = json.dumps(hostnamed, separators=(",", ":"), ensure_ascii=False)
-    for t in (text, unbound_text, forged_text, mixed_text, hostnamed_text):
+    # A `with` of a handler the document does not declare: the first `with` names `x.ext`.
+    external = copy.deepcopy(doc)
+    def name_ext(j):
+        if isinstance(j, dict):
+            if j.get("kind") == "with" and j.get("source", {}).get("kind") == "handler":
+                j["source"]["handler"] = {"module": "x", "name": "ext"}
+                return True
+            return any(name_ext(v) for v in j.values())
+        if isinstance(j, list):
+            return any(name_ext(v) for v in j)
+        return False
+    assert name_ext(external)
+    external_text = json.dumps(external, separators=(",", ":"), ensure_ascii=False)
+    for t in (text, unbound_text, forged_text, mixed_text, hostnamed_text, external_text):
         assert '"#' not in t
     with open(out, "w", encoding="utf-8") as f:
         f.write(f'''/-
@@ -105,6 +118,9 @@ def mixed : String := r#"{mixed_text}"#
 /-- The same as `withs`, with a capability of its own named `Clock`, one of the host's. -/
 def hostNamed : String := r#"{hostnamed_text}"#
 
+/-- The same as `withs`, with its first `with` naming `x.ext`, a handler it does not declare. -/
+def external : String := r#"{external_text}"#
+
 -- H3: a handler installed under a secret program counter, and one installed publicly and reached
 -- from a secret branch: accepted, as `una check` says. So is what they install and invoke.
 #guard run withs "m.guarded" == "accepted"
@@ -141,6 +157,13 @@ def hostNamed : String := r#"{hostnamed_text}"#
 #guard ["m.work", "m.guarded", "m.chime"].all (run hostNamed · == "not re-checked")
 -- A user name starting with `@`, as a marker's: the document is not read.
 #guard ["m.work", "m.guarded", "m.reach"].all (run forged · == "not re-checked")
+-- A `with` of a handler the document does not declare (`x.ext`): which capability it installs is
+-- unknown, so no declaration of the document is read (fail closed).
+#guard match Lean.Json.parse external with
+  | .ok j => match checkDocument j with
+    | .ok outs => !outs.isEmpty && outs.all (fun p => verdict p.2 == "not re-checked")
+    | .error _ => false
+  | .error _ => false
 
 end Una.F1.WithImportTests
 ''')

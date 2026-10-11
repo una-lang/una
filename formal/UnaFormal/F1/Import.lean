@@ -1719,19 +1719,21 @@ def raiseParamJ (accepts t : J) : Option J := do
   pure (t.setObjVal! "label" (Lean.Json.mkObj
     [("level", .str v), ("categories", .arr cs.toArray), ("symbols", .arr #[])]))
 
-/-- The handlers the `with` nodes of a JSON value install, by qualified name (#538). -/
+/-- The handlers the `with` nodes of a JSON value install, by qualified name (#538). A source
+other than a rebinding that does not name its handler gives `"?"`, which names no handler of the
+document (fail closed). -/
 partial def withHandlersIn (j : J) : List String :=
   match j with
   | .obj kvs =>
     let here := if j.getObjValD "kind" == .str "with" then
-        match (j.getObjValD "source").getObjValD "handler" with
-        | .obj _ =>
-          let h := (j.getObjValD "source").getObjValD "handler"
-          let given := (j.getObjValD "source").getObjValD "given" == .bool true
-          match h.getObjValD "module", h.getObjValD "name" with
-          | .str m, .str n => [(if given then "given:" else "") ++ s!"{m}.{n}"]
-          | _, _ => []
-        | _ => []
+        let src := j.getObjValD "source"
+        if src.getObjValD "kind" == .str "rebind" then []
+        else
+          let h := src.getObjValD "handler"
+          let given := src.getObjValD "given" == .bool true
+          match src.getObjValD "kind", h.getObjValD "module", h.getObjValD "name" with
+          | .str "handler", .str m, .str n => [(if given then "given:" else "") ++ s!"{m}.{n}"]
+          | _, _, _ => ["?"]
       else []
     here ++ kvs.toArray.toList.flatMap (fun kv => withHandlersIn kv.2)
   | .arr items => items.toList.flatMap withHandlersIn
@@ -1868,6 +1870,11 @@ def checkDocumentRead (subst : Subst) (doc : J) (caps : Caps := {}) (scopes : Bo
   -- with `given`, and whose handlers invoke no capability read by scopes themselves (a handler that
   -- forwards to an outer one, such as `uses @inner: Log`, keeps #524's reading).
   let installs := withHandlersIn doc
+  -- A `with` or `given` of a handler the document does not declare (Una-1's review of #538):
+  -- which capability it installs is unknown, so no declaration of the document is read.
+  if installs.any fun q =>
+      (capOfH (if q.startsWith "given:" then (q.drop 6).toString else q)).isNone then
+    return code.map fun d => (named d, .notRechecked "a `with` of a handler the document does not declare")
   let givenCaps := (installs.filter (·.startsWith "given:")).filterMap fun q => capOfH (q.drop 6).toString
   let docCap := fun (cap : String) => decls.any fun d => d.kind == "cap" &&
     (plainRun (do str (← field d.value "name"))).toOption == some cap
