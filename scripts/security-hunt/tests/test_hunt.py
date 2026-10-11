@@ -186,6 +186,22 @@ class Generators(unittest.TestCase):
             else:
                 self.assertEqual(p.cls, MUST_REJECT, p.variant)
 
+    def test_s_family_classes(self):
+        seen = set()
+        for p in every_program(60):
+            if p.op not in ("S1", "S2", "S3"):
+                continue
+            seen.add((p.op, p.variant))
+            text = p.files["src/app/main.una"]
+            self.assertNotIn(" in [", text, p.name)
+            if p.variant.endswith("-twin"):
+                self.assertEqual(p.cls, OPEN, p.variant)
+                self.assertNotIn("secret", text, p.name)
+            else:
+                self.assertEqual(p.cls, MUST_REJECT, p.variant)
+                self.assertTrue(p.expect, p.variant)
+        self.assertTrue(any(op == "S2" and v.startswith("is-") for op, v in seen))
+
     def test_t11_class_follows_the_failure_label(self):
         for p in every_program(80):
             if p.op != "T11":
