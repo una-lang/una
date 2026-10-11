@@ -2,6 +2,7 @@
 
 - Issue: #513, part (d) of `docs/plan/security-hunt.md`
 - Date: 2026-10-10, on main 286a7676 (the corpus counts are from main 56ce83ed's export)
+- Updated: 2026-10-11, on main b674910d, after #508, #509, #510, #512, #526, #532 and #514; the corpus counts in the rows are from #537's export of `main` cee87e3e (1,352 targets, 4,331 declarations, 1,800 of them in documents the export marks complete). Section 3 lists what changed.
 
 For every rule of `spec/07` §1 to §7, this table says where `una check` enforces it, how many conformance cases exercise it, which part of the formal model (F1, `formal/UnaFormal/F1/`) states it, and whether the re-check's importer reads it. Its status is:
 
@@ -21,7 +22,7 @@ The checker sites are under `crates/una-check/src/types/` unless another path is
 |---|---|---|
 | Return values | `Eval.lean` `Res`, `Val`; `T6.lean` `t6_sound` | covered |
 | Failures: which variant | `Res.failed`, `Val.err`: a failure is a code | covered |
-| Failures: payloads | no payloads; the importer gives "a failure with a payload" | **blind** |
+| Failures: payloads | `Rhs.variant`, `Expr.raise`, `attemptK`, `handleK`, `caseSum`; the runtime shows only the fields whose deep label is public (#512) | partial: a payload of a kind that is not a sum, a handler over failures of several kinds, a handler of a failure code that reads the failure, `==` on a sum, a function value that fails with a payload, and a policy whose `via` function does are not re-checked |
 | Arguments of capability operations | `Event` `out`, `read`, `write`, `req`, `release`; `Unary.lean` `Allowed` | partial: one abstract operation of one capability, `Files`, `Http`, `Env.get`; not `Keys.hmac`, `Clock.now`, a second operation, or a user capability |
 | The occurrence of effects | the same events | partial, as above |
 | Out of the model (timing, termination, aborts, races, hard links, other writers, task order) | the model is termination-insensitive; M5 and M6 state the host premises (`formal-track-m5.md`, `formal-track-m6.md` §8) | consistent with `spec/07 §1` |
@@ -31,9 +32,9 @@ The checker sites are under `crates/una-check/src/types/` unless another path is
 | Rule | Checker | Tests | Model | Importer | Status |
 |---|---|---|---|---|---|
 | §2 lattice, five levels, categories | `una-core/src/label.rs` | 2 (U4007 only); the lattice is used everywhere | `Labels.lean` `Label`, `LExpr` | yes | covered |
-| §3.1 explicit flows, fields | `expr.rs::binary`, `call.rs::field`, `ty.rs::deep_label` | ~60 | `LRhsTy.prim` with `primLabel`, `field` | yes for `add`, `sub`, `lt`, `gt`, `eq`, `not`, `len`, `concat`, `to_text`; **not** for `neg` (90 uses in the corpus), `div` (63), `le` (58), `mul` (57), `ge` (13), `mod` (7), `ne` (6), `fixed`, `convert` | partial |
-| §3.2 the pc, raised by branches | `flow.rs::raise_pc`; `stmt.rs` if, when, if-none | ~16 | `ite`, `caseOption`, `caseResult`, loops | yes for `Option` and `Result`; **not** `case` on a user sum type | partial |
-| §3.3 failures only at a public pc (U4002) | `flow.rs::fail_under_pc`, `stmt.rs::handled` | ~12 | `LExprTy.fail`, `handle`, `Program.Bound` | yes; a failure with a payload is not | partial (payloads) |
+| §3.1 explicit flows, fields | `expr.rs::binary`, `call.rs::field`, `ty.rs::deep_label` | ~60 | `LRhsTy.prim` with `primLabel`, `field` | yes for `add`, `sub`, `mul`, `div`, `mod`, `neg`, `lt`, `gt`, `le`, `ge`, `eq`, `ne`, `not`, `len`, `concat`, `to_text` (#526) on the operand types F1 models; an ordering of `Text` or of variants is an F1 restriction, not re-checked (#532); **not** `fixed` (38 declarations in the corpus) or `convert` (6) | partial |
+| §3.2 the pc, raised by branches | `flow.rs::raise_pc`; `stmt.rs` if, when, if-none | ~16 | `ite`, `caseOption`, `caseResult`, loops | yes for `Option`, `Result` and user sum types without type parameters (#512), whose `case` the importer checks against the declared variants | covered for kinds without type parameters |
+| §3.3 failures only at a public pc (U4002) | `flow.rs::fail_under_pc`, `stmt.rs::handled` | ~12 | `LExprTy.fail`, `handle`, `Program.Bound` | yes, payloads included (#512) | covered, as §1 |
 | §3.4 effects under the pc, `bound(f)`, T-App | `flow.rs::sink`, `call_under_pc`, `bound_of`; `call.rs::call_value` | ~30 | `call`, `apply`, `op`, `Program.Bound` | yes | covered (within one operation) |
 | §3.5 returns (U4001) | `expr.rs::returned_value`, `implicit_return`, `tail_expr` | ~40 | `Program.FunOk` | yes | covered |
 | §4 sinks | `flow.rs::sink` from `call.rs::cap_op` | ~64 | `op`, `read`, `write`, `req` | the operations above | partial (as §1) |
@@ -51,7 +52,7 @@ The checker sites are under `crates/una-check/src/types/` unless another path is
 | 5. the report's Information section | `una-cli/src/report.rs` | none in conformance (Rust tests in `una-cli/tests`) | none | no | outside the information-flow model |
 | 6. a policy call's failure is `pc ⊔ ℓ(To)` (S-18) | `call.rs` | 6 | `Eff.ofPolicy` (#453 Phase B) | yes | covered |
 | B1, the model's restriction | | | `B1.lean`: a scalar `from` and `to`, a pure or failing `via` | a policy outside B1 is not re-checked (3 of 120 in the corpus have a non-scalar `to`, 4 an impure `via`) | **blind** outside B1 |
-| `via` bodies that branch on a comparison | | | the retry of `viaTyped` | the compiler's temporary keeps the label (#453 Phase B's limit; backlog) | partial |
+| `via` bodies that branch on a comparison | | | the retry of `viaTyped` | the top labels of the body's `let` annotations are lowered too (#510): no `via` function in the corpus is left without a structural typing | covered |
 
 ### §6. Trusted modules
 
@@ -68,10 +69,10 @@ The model assumes every policy is lawful. That a policy can exist only in a trus
 |---|---|---|---|---|---|
 | 1. structural labels | `unify.rs`, `ty.rs` | implicit | `LTy` | yes | covered |
 | 2. flows: covariance, contravariance (S-Fun) | `flow.rs::below` | ~55 files; most hold accepted declarations beside the rejected ones | `Flow`, `Flows` | yes | covered |
-| 2. flows: invariant kind parameters (ADR 0046), recursive kinds | `ty.rs::is_invariant`, `call.rs::expected_invariant` | 4 | none: records have no type parameters in F1 | "the type `q` with type arguments" | **blind** |
+| 2. flows: invariant kind parameters (ADR 0046), recursive kinds | `ty.rs::is_invariant`, `call.rs::expected_invariant` | 4 | none: user kinds have no type parameters in F1 | "the type `q` with type arguments" (45 declarations) | **blind**; the hunt's family G and the composed PG and GS check it with `una check` alone |
 | 2. a lambda's parameter that rises after its body | `flow.rs`, `call.rs` | few | none: T-Fun is per function | no | **blind** |
 | 2. `Unit` never fails a flow; one U4001 per construct in a return | `flow.rs` | not obvious | `unit` flows; sites not modeled | n/a | covered for `Unit` |
-| 3. labels of values: deep labels of kinds | `ty.rs::deep_label` | ~56 files; most hold accepted declarations beside the rejected ones | `Record.deep`, `primLabel` | records: #509 (never recognized today) | partial |
+| 3. labels of values: deep labels of kinds | `ty.rs::deep_label` | ~56 files; most hold accepted declarations beside the rejected ones | `Record.deep`, `Sum`'s variants, `primLabel` | user records (#509) and sums (#512) without type parameters, when they do not reach themselves | partial: kinds with type parameters and recursive kinds are not re-checked |
 | 3. `.len`, `is`, `in` | `expr.rs::compare_with_is` | few | `len` only | `is` and `in` not as primitives | partial |
 | 4. operations: `ℓ⁺`, declared parameters as ⊤, inline lambdas | `flow.rs::sink`, `op_argument_flow` | ~14 | `op` with scalar arguments only (`deep` in place of `ℓ⁺`) | one operation, scalar to `Unit` | partial |
 | 4. the effect floor of handler bodies | `check.rs::handler` | 14 | none: handler bodies are outside the reach set | "a `handler` declaration" (84 in the corpus) | **blind** |
@@ -89,7 +90,7 @@ The model assumes every policy is lawful. That a policy can exist only in a trus
 | 8. result summaries (ADR 0067) | `summary.rs` (SCC fixpoint) | 6 + chains | read from the export as facts that may only raise a signature; the body, or each instance, is checked against the raised result, so a summary that is too small is a rejection (`formal-track-m2.md`, confirmed by the adversarial review of #454) | positions `element`, `arg 1`, `result` only | covered at those positions |
 | 8. edition 0.1's defense in depth | `call.rs` (T-App), `decided_callbacks` | 17 | the model follows edition 0.2 (`addStarAll` in the importer) | partial | partial |
 | 8. no effects or failures under a symbolic pc | `flow.rs` | in the 173 | `SymFree` premises | yes | covered |
-| 8. prelude results (ADR 0051) | `call.rs` | several | `map`, `filter`, `first_where`, `fold`, `parse`, `append`, `set`, `sum` | every other prelude function is "a call of `prelude.x`" | partial |
+| 8. prelude results (ADR 0051) | `call.rs` | several | `map`, `filter`, `first_where`, `first` (#532), `fold`, `parse`, `append`, `set`, `sum` | every other prelude function is "a call of `prelude.x`" (51 declarations; `or_else`, `min`, `max`, `is_ok`, `abs` and `slice` are 31 of them) | partial |
 | 9. `of` clauses: the callee, the call, the prelude's higher-order functions | `effects.rs` | ~225 | `LTy.fn` flags, `lambda`, `map`, `filter`, `fold`, `firstWhere` | yes; a non-empty `of_raises` is not | partial |
 | 10. sites | `flow.rs` | Rust tests only | not modeled | n/a | diagnostics, not security |
 
@@ -97,13 +98,13 @@ The model assumes every policy is lawful. That a policy can exist only in a trus
 
 The model has none of these, so every rule is blind on them:
 
-- `together` and `together_for` (26 declarations);
-- `with`, handlers and capability parameters (16 and 84);
-- `Map` (17), `Json`, fixed-width integers, `fixed`;
-- `pred` declarations (111);
-- sum types other than `Option` and `Result`;
-- kinds with type parameters;
-- two operations of one capability in a document ("several operations").
+- `together` and `together_for` (28 declarations);
+- `with`, handlers and capability parameters (18 and 86);
+- `Map` (17), `Json` (6), fixed-width integers, `fixed` (38);
+- kinds with type parameters other than `Option` and `Result` (45), and recursive kinds;
+- two operations of one capability in a document ("several operations", 7).
+
+Refinement predicates (113 `pred` declarations) are outside the flow model by design (`spec/07 §7` rule 6), and the re-check reports them in their own category, "outside the flow model" (#532), apart from these.
 
 ## 2. What it means for the hunt
 
@@ -129,15 +130,40 @@ The model has none of these, so every rule is blind on them:
    - generics with symbolic labels;
    - the `of` rules for the prelude's four higher-order functions.
    Its mutators should stay inside the importer's vocabulary so that their programs are re-checked, not set aside.
-3. **Cheap model gains.** The arithmetic primitives `neg`, `div`, `mul`, `le`, `ge`, `mod` and `ne` are 294 uses in the corpus. They label like `add` (the join of their operands). Adding them to `Prim` and the importer is small, and moves many declarations into the re-check. `div` and `mod` need a nonzero divisor, which is a proof obligation (`spec/06`), never a run-time failure, so the model can take it as a premise that T5 discharges.
-4. **Test gaps in the checker's own suite** (#516):
+3. **Cheap model gains.** Done for the arithmetic primitives (#526), `first` (#532), user records (#509) and sum kinds (#512). The next ones by corpus count: `handler` declarations (86), `fixed` (38), the forms `with`, `together` and `together_for` (46), kinds with type parameters (45), and the prelude functions `or_else`, `min`, `max`, `is_ok`, `abs` and `slice` (31).
+4. **Test gaps in the checker's own suite** (#516, closed by #518):
    - the exemptions of rule 6: an `expect` line that reads a labeled value, `do` lines at pc ⊥, and `requires`, `ensures` and `where` clauses;
    - the file-state label for a write inside a lambda, and for one reached only from an example;
    - that `sort` raises the result list itself, not only its elements. `constraint_labels` covers the elements;
    - accepted declarations in the 33 of the 111 `sweep_variance` and `sweep_label` files that hold only rejected ones. The other 78 already hold both, since a case's expected errors are a set, so a declaration without one is an accepted case.
 5. **The summaries of ADR 0067 are checked, not trusted.** The re-check reads them from the export, but only to raise a result type, and then checks each body or instance against it. So a summary that is too small is rejected, never accepted. The gap there is coverage: a summary at a position other than `element`, `arg 1` or `result` is not re-checked.
 
-## 3. Sources
+## 3. Changes since 2026-10-10
+
+| Row | Was | Now | By |
+|---|---|---|---|
+| §1 failures with a payload | blind | partial | #512 |
+| §3.1 explicit flows | 9 primitives | 16 primitives; other operand types an F1 restriction | #526, #532 |
+| §3.2 the pc, `case` on user sums | partial | covered for kinds without type parameters | #512 |
+| §3.3 failures at a public pc | partial (payloads) | covered | #512 |
+| §5 `via` bodies that branch on a comparison | partial | covered | #510 |
+| §7.3 deep labels of kinds | partial (records not read) | partial (records and sums read; kinds with type parameters not) | #509, #512 |
+| §7.8 prelude results | 8 functions | 9 functions, with `first` | #532 |
+| `Result`'s error type | dropped | kept, `Err(a)` labeled at `E` | #508 |
+| `pred` declarations | not re-checked | outside the flow model, counted apart | #532 |
+| the reverse comparison | none | `una core --with-rejected` and `una-core-check --rejected` | #514 |
+
+The rows that stay **blind**, the hunt's generators' targets, have each been run with `una check` alone against v0.3.7, with no finding:
+- trusted modules and policies outside B1: family T;
+- handler bodies and the effect floor: H;
+- `Keys.hmac`: K;
+- kinds with type parameters and invariance: G, and the composed PG and GS;
+- `together`: C, and the composed CS, TC and CP;
+- `Ord`-constrained comparisons and `sort`: O.
+
+The breadth runs, on seeds 6 and 11, together cover about 12,000 programs. The two-run oracle (`docs/plan/security-hunt-oracle.md`) remains the only differential check of these rows.
+
+## 4. Sources
 
 - Checker sites: `crates/una-check/src/types/` (`flow.rs`, `call.rs`, `expr.rs`, `stmt.rs`, `check.rs`, `effects.rs`, `summary.rs`, `env.rs`, `mod.rs`), `crates/una-core/src/label.rs`, `crates/una-check/src/names/mod.rs`, `crates/una-cli/src/report.rs`.
 - Model sites: `LTyping.lean`, `Syntax.lean`, `Eval.lean`, `Unary.lean`, `B1.lean`, `Import.lean` (its reasons for "not re-checked"), and the out-of-model sections of `docs/plan/formal-track*.md`.
