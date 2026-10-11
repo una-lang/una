@@ -1719,13 +1719,14 @@ def raiseParamJ (accepts t : J) : Option J := do
   pure (t.setObjVal! "label" (Lean.Json.mkObj
     [("level", .str v), ("categories", .arr cs.toArray), ("symbols", .arr #[])]))
 
-/-- The handlers the `with` nodes of a JSON value install, by qualified name (#538). A source
-other than a rebinding that does not name its handler gives `"?"`, which names no handler of the
-document (fail closed). -/
+/-- The handlers the `with` scopes of a JSON value install, by qualified name (#538). A scope is a
+`with` node with a field besides its kind (a map's `with` operation has none). A source other than
+a rebinding that does not name its handler gives `"?"`, which names no handler of the document
+(fail closed). -/
 partial def withHandlersIn (j : J) : List String :=
   match j with
   | .obj kvs =>
-    let here := if j.getObjValD "kind" == .str "with" then
+    let here := if j.getObjValD "kind" == .str "with" && kvs.size > 1 then
         let src := j.getObjValD "source"
         if src.getObjValD "kind" == .str "rebind" then []
         else
