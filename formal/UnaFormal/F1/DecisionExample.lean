@@ -15,6 +15,7 @@ program's `Files` accepts `internal`, and its file-state label is `public`.
   public annotation; the decision label rejects it, and it leaks, with `s` the same in both runs.
 -/
 import UnaFormal.F1.HostExamples
+import UnaFormal.F1.CheckProgramSound
 
 namespace Una.F1.DecisionExample
 
@@ -63,7 +64,7 @@ theorem env_rel (s t s' t' : String) : EnvRel prog Label.bot Γ (env s t) (env s
   .cons (.hidden intl_hidden) (.cons (.hidden intl_hidden) .nil)
 
 theorem Γ_inPlace : Γ.InPlace := fun q hq => by
-  simp only [Γ, List.mem_cons, List.mem_singleton, List.not_mem_nil, or_false] at hq
+  simp only [Γ, List.mem_cons, List.not_mem_nil, or_false] at hq
   rcases hq with rfl | rfl <;> rfl
 
 /-- The result of `attempt read(…)`, public. -/
@@ -99,8 +100,8 @@ unseal Check.flowB Check.flowsB in
 theorem secretAtPublic_rejected :
     ∃ msg, Check.checkExpr prog [] Γ .bot resPub secretAtPublic = .error msg := ⟨_, rfl⟩
 
-/-- Labeled by its decision label, `internal`, the same code is certified. -/
 unseal Check.flowB Check.flowsB in
+/-- Labeled by its decision label, `internal`, the same code is certified. -/
 theorem secretAtPublic_checked_internal :
     ∃ ε, Check.checkExpr prog [] Γ .bot (.result (.text intl) (.int .bot) intl) secretAtPublic = .ok ε :=
   ⟨_, rfl⟩
