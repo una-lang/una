@@ -155,14 +155,19 @@ def judge_differ(exp, core_text, rec):
     if doc.get("complete") is not True:
         out["detail"] = "the export is not complete"
         return out
+    outcomes = [r["outcome"] for r in rows]
+    if "rejected" in outcomes:
+        # A rejection the re-check printed is a finding even if it then timed out or crashed
+        # (Una-2's review of #527): the abnormal end goes into the detail, never hides it.
+        out["kind"] = "finding"
+        if rec is not None and (rec.timed_out or rec.code not in (0, 1)):
+            out["detail"] = ("a rejected declaration, then the re-check timed out" if rec.timed_out
+                             else f"a rejected declaration, then the re-check exited {rec.code}")
+        return out
     if rec is None or rec.timed_out or rec.code not in (0, 1):
         out["detail"] = ("the re-check did not run" if rec is None else
                          "the re-check timed out" if rec.timed_out else
                          f"the re-check exited {rec.code}")
-        return out
-    outcomes = [r["outcome"] for r in rows]
-    if "rejected" in outcomes:
-        out["kind"] = "finding"
         return out
     if "error" in outcomes or any(r["decl"] == "-" for r in rows):
         out["detail"] = "the re-check could not read the document"

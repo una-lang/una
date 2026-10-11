@@ -250,6 +250,13 @@ class Generators(unittest.TestCase):
         lines = self.LINES.replace("not re-checked\twhy", "rejected\ta flow")
         self.assertEqual(self.judge(rec=Run(1, lines, "", False, 0.1))["kind"], "finding")
 
+    def test_differ_rejection_before_a_timeout_or_crash_is_a_finding(self):
+        lines = self.LINES.replace("not re-checked\twhy", "rejected\ta flow")
+        for rec in (Run(None, lines, "", True, 9), Run(3, lines, "panic", False, 0.1)):
+            j = self.judge(rec=rec)
+            self.assertEqual(j["kind"], "finding")
+            self.assertTrue(j["detail"].startswith("a rejected declaration, then"), j["detail"])
+
     def test_differ_unknown_cases(self):
         rec_ok = Run(0, self.LINES, "", False, 0.1)
         incomplete = self.DOC.replace('"complete": true', '"complete": false')
