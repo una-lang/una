@@ -16,6 +16,9 @@ of fuel; never a stuck evaluation. -/
 def Good (p : Program) (t : Ty) : Res → Prop
   | .ok v => ValTy p v t
   | .failed _ => True
+  -- A failure with a payload (#512): the payload has its variant's field types, which a
+  -- payload kind's `attempt` and handler give as a value.
+  | .raised k c vs => ∃ sm ts, p.sum k = some sm ∧ sm.fieldTys c = some ts ∧ ValsTy p vs ts
   | .stuck => False
   | .outOfFuel | .aborted => True
 
@@ -31,6 +34,7 @@ theorem andThen_good {first : Run H} {rest : World H → Val → Run H} {t s : T
     cases rest w v
     simp
   | failed code => simp [andThen, Good]
+  | raised k c vs => simpa [andThen, Good] using h1
   | stuck => simp [Good] at h1
   | outOfFuel | aborted => simp [andThen, Good]
 
@@ -169,6 +173,21 @@ theorem parseInt_good (w : World H) (s : String) : Good p .int (parseInt w s).2.
   · exact .int
   · trivial
 
+/-- The bindings of a `case` on a sum (#512): its fields, typed, in front of the environment. -/
+theorem zip_typed {env : Env} {ctx : Ctx} (henv : EnvTy p env ctx) :
+    ∀ {xs : List String} {vs : List Val} {ts : List Ty}, ValsTy p vs ts → ts.length = xs.length →
+      EnvTy p (xs.zip vs ++ env) (xs.zip ts ++ ctx)
+  | [], _, _, _, _ => by simpa using henv
+  | _ :: _, _, _, .nil, h => by simp at h
+  | _ :: _, _, _, .cons hv hvs, h => by
+    simp only [List.zip_cons_cons, List.cons_append]
+    exact .cons hv (zip_typed henv hvs (by simpa using h))
+
+/-- A value typed by a sum's name is a variant (#512): no record has that name. -/
+theorem not_record_of_sum (hwf : p.WellFormed) {k : String} {sm : Sum} {rec : Record}
+    (hs : p.sum k = some sm) (hr : p.record k = some rec) : False := by
+  rcases hwf.disjoint k with h | h <;> simp_all
+
 theorem sound (hwf : p.WellFormed) (h4 : H.RespTyped) : ∀ n : Nat,
     (∀ {w : World H} {env : Env} {ctx : Ctx} {r : Rhs} {t : Ty},
       EnvTy p env ctx → RhsTy p ctx r t → Good p t (evalRhs H n p w env r).2.1) ∧
@@ -236,6 +255,10 @@ theorem sound (hwf : p.WellFormed) (h4 : H.RespTyped) : ∀ n : Nat,
         obtain ⟨vs, hvs, hvst⟩ := atoms_typed henv has
         simp [evalRhs, hvs, Good]
         exact .record hrec hvst
+      | variant hs hf has =>
+        obtain ⟨vs, hvs, hvst⟩ := atoms_typed henv has
+        simp [evalRhs, hvs, Good]
+        exact .variant hs hf hvst
       | field hv hrec hi =>
         obtain ⟨v, hv', hvt⟩ := atom_typed henv hv
         cases hvt with
@@ -244,6 +267,7 @@ theorem sound (hwf : p.WellFormed) (h4 : H.RespTyped) : ∀ n : Nat,
           cases hrec'
           obtain ⟨u, hu, hut⟩ := field_typed hvals hi
           simp [evalRhs, hv', hu, Good, hut]
+        | variant hs _ _ => exact (not_record_of_sum hwf hs hrec).elim
       | list has =>
         obtain ⟨vs, hvs, hvst⟩ := atoms_typed henv has
         simp [evalRhs, hvs, Good]
@@ -397,6 +421,70 @@ theorem sound (hwf : p.WellFormed) (h4 : H.RespTyped) : ∀ n : Nat,
         | ok hw => simp only [eval, hv]; exact ihE (.cons hw henv) hok
         | err hw => simp only [eval, hv]; exact ihE (.cons hw henv) herr
       | fail => simp [eval, Good]
+      | raise hs hf has =>
+        obtain ⟨vs, hvs, hvst⟩ := atoms_typed henv has
+        simp only [eval, hvs, Good]
+        exact ⟨_, _, hs, hf, hvst⟩
+      | unreachable => simp [eval, Good]
+      | @caseSum _ _ _ ctor _ _ _ _ _ _ hsc hs hf hlen hth hel =>
+        obtain ⟨v, hv, hvt⟩ := atom_typed henv hsc
+        cases hvt with
+        | record hrec _ => exact (not_record_of_sum hwf hs hrec).elim
+        | @variant _ i fs _ _ hs' hf' hvals =>
+          rw [hs] at hs'
+          cases hs'
+          simp only [eval, hv]
+          by_cases hi : i = ctor
+          · subst hi
+            rw [hf] at hf'
+            cases hf'
+            rw [if_pos rfl, if_pos ((valsTy_length hvals).trans hlen)]
+            exact ihE (zip_typed henv hvals hlen) hth
+          · rw [if_neg hi]
+            exact ihE henv hel
+      | attemptK hb =>
+        have h := ihE (w := w) henv hb
+        simp only [eval]
+        revert h
+        cases eval H n p w env _ with
+        | mk tr rw =>
+          obtain ⟨r, w'⟩ := rw
+          cases r with
+          | ok v => intro h; exact .ok h
+          | raised k c vs =>
+            intro h
+            dsimp only
+            split
+            · next hk =>
+              subst hk
+              obtain ⟨sm, ts, hs, hf, hvs⟩ := h
+              exact .err (.variant hs hf hvs)
+            · exact h
+          | failed _ => intro _; trivial
+          | stuck => intro h; exact h
+          | outOfFuel | aborted => intro _; trivial
+      | handleK hb hh =>
+        have h := ihE (w := w) henv hb
+        simp only [eval]
+        revert h
+        cases eval H n p w env _ with
+        | mk tr rw =>
+          obtain ⟨r, w'⟩ := rw
+          cases r with
+          | raised k c vs =>
+            intro h
+            dsimp only
+            split
+            · next hk =>
+              subst hk
+              obtain ⟨sm, ts, hs, hf, hvs⟩ := h
+              have hgood := ihE (w := w') (.cons (ValTy.variant hs hf hvs) henv) hh
+              simpa using hgood
+            · exact h
+          | failed _ => simp [Good]
+          | ok v => simp
+          | stuck => simp [Good]
+          | outOfFuel | aborted => simp [Good]
       | attempt hb =>
         have h := ihE (w := w) henv hb
         simp only [eval]
@@ -421,6 +509,7 @@ theorem sound (hwf : p.WellFormed) (h4 : H.RespTyped) : ∀ n : Nat,
             simpa using hgood
           | ok v => simp
           | stuck => simp [Good]
+          | raised _ _ _ => simp
           | outOfFuel | aborted => simp [Good]
       | letTuple hv hlen hb =>
         obtain ⟨v, hv', hvt⟩ := atom_typed henv hv

@@ -52,6 +52,7 @@ mutual
     | .write a c, .write b d => a == b && c == d
     | .req m a, .req k b => m == k && a == b
     | .construct r a, .construct s b => r == s && a == b
+    | .variant k i a, .variant k' i' b => k == k' && i == i' && a == b
     | .field v i, .field u j => v == u && i == j
     | .list a, .list b => a == b
     | .none, .none => true
@@ -84,8 +85,14 @@ mutual
     | .caseResult a x t y e, .caseResult b x' u y' f =>
       a == b && x == x' && y == y' && exprSim ρ t u && exprSim ρ e f
     | .fail c, .fail d => c == d
+    | .raise k c xs, .raise k' d ys => k == k' && c == d && xs == ys
+    | .caseSum a i xs t e, .caseSum b j ys u f =>
+      a == b && i == j && xs == ys && exprSim ρ t u && exprSim ρ e f
+    | .unreachable, .unreachable => true
     | .attempt b, .attempt c => exprSim ρ b c
+    | .attemptK k b, .attemptK k' c => k == k' && exprSim ρ b c
     | .handle b x h, .handle c y k => x == y && exprSim ρ b c && exprSim ρ h k
+    | .handleK kd b x h, .handleK kd' c y k => kd == kd' && x == y && exprSim ρ b c && exprSim ρ h k
     | .letTuple bs a b, .letTuple cs a' c =>
       bs.map Prod.fst == cs.map Prod.fst && a == a' && exprSim ρ b c
     | .loop s x _ st i b, .loop s' y _ st' j c =>
@@ -116,7 +123,7 @@ mutual
       | _ => simp [rhsSim] at h
     | .call _ _ _, s, h | .funRef _ _, s, h | .atom _, s, h | .prim _ _, s, h
     | .apply _ _, s, h | .op _, s, h | .read _, s, h | .write _ _, s, h | .req _ _, s, h
-    | .construct _ _, s, h | .field _ _, s, h
+    | .construct _ _, s, h | .variant _ _ _, s, h | .field _ _, s, h
     | .list _, s, h | .none, s, h | .some _, s, h | .mkOk _, s, h | .mkErr _, s, h
     | .declassify _ _, s, h | .map _ _, s, h
     | .filter _ _, s, h | .firstWhere _ _, s, h | .fold _ _ _, s, h | .parse _, s, h
@@ -165,6 +172,27 @@ mutual
       | attempt c =>
         simp only [exprSim] at h
         simp only [Expr.anon, exprSim_sound b c h]
+      | _ => simp [exprSim] at h
+    | .raise _ _ _, f, h => by cases f <;> simp_all [exprSim, Expr.anon]
+    | .unreachable, f, h => by cases f <;> simp_all [exprSim, Expr.anon]
+    | .caseSum a i xs t e, f, h => by
+      cases f with
+      | caseSum b j ys u g =>
+        simp only [exprSim, Bool.and_eq_true, beq_iff_eq] at h
+        simp only [Expr.anon, h.1.1.1.1, h.1.1.1.2, h.1.1.2, exprSim_sound t u h.1.2,
+          exprSim_sound e g h.2]
+      | _ => simp [exprSim] at h
+    | .attemptK k b, f, h => by
+      cases f with
+      | attemptK k' c =>
+        simp only [exprSim, Bool.and_eq_true, beq_iff_eq] at h
+        simp only [Expr.anon, h.1, exprSim_sound b c h.2]
+      | _ => simp [exprSim] at h
+    | .handleK kd b x k, f, h => by
+      cases f with
+      | handleK kd' c y k' =>
+        simp only [exprSim, Bool.and_eq_true, beq_iff_eq] at h
+        simp only [Expr.anon, h.1.1.1, h.1.1.2, exprSim_sound b c h.1.2, exprSim_sound k k' h.2]
       | _ => simp [exprSim] at h
     | .handle b x k, f, h => by
       cases f with

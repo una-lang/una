@@ -56,7 +56,7 @@ def T6ReleaseHostAgree : Prop :=
     (proj p L (eval H n p w₁ e₁ e).1).filter Event.isRelease =
       (proj p L (eval H n p w₂ e₂ e).1).filter Event.isRelease →
     proj p L (eval H n p w₁ e₁ e).1 = proj p L (eval H n p w₂ e₂ e).1 ∧
-      OutRel (V p L (t.lsubst p.recordDeep σ)) (Vis p L (ε.inst (p.sd σ)).failLabel)
+      OutRel p L (V p L (t.lsubst p.recordDeep σ)) (Vis p L (ε.inst (p.sd σ)).failLabel)
         (eval H n p w₁ e₁ e).2.1 (eval H n p w₂ e₂ e).2.1 ∧
       WorldRel p L (eval H n p w₁ e₁ e).2.2 (eval H n p w₂ e₂ e).2.2
 

@@ -90,6 +90,8 @@ theorem wf (fs : Level) : (prog fs).LWellFormed where
   policies := by simp [prog]
   categories := by simp [Program.CatsDeclared, prog, Label.bot]
   recordsGround := by simp [prog]
+  sums := by simp [prog]
+  disjoint _ := .inr (by simp [Program.sum, prog])
   eqScoped := by simp [prog]
   sigsScoped := by simp [prog]
   inPlace := by simp [prog]
@@ -122,9 +124,9 @@ theorem eA_typed : ∃ t ε, LExprTy (prog .public) [] [] .bot eA t ε := by
       (.letR "c" (.text intl) (.read (.text "log")) (.atom (.var "c"))) _ _ :=
     .letR (.read .text rfl (le_of rfl) (sf rfl)) (.text (le_of rfl)) (.atom (.var rfl)) rfl
   have hall : LExprTy (prog .public) [] [] .bot eA _ _ :=
-    .letE (x := "w") (ann := .result (.unit .bot) (.int .bot) .bot) (.attempt hw)
+    .letE (x := "w") (ann := .result (.unit .bot) (.int .bot) .bot) (.attempt hw (by simp [Eff.union, Eff.none]))
       (.result .unit (.int (le_of rfl)) (le_of rfl))
-      (.letE (x := "r") (ann := .result (.text intl) (.int .bot) .bot) (.attempt hr)
+      (.letE (x := "r") (ann := .result (.text intl) (.int .bot) .bot) (.attempt hr (by simp [Eff.union, Eff.none]))
         (.result (.text (le_of rfl)) (.int (le_of rfl)) (le_of rfl))
         (.caseResult (s := .unit .bot) (.var rfl)
           (.letR (.op .text trivial (le_of rfl) (sf rfl)) .unit (.atom (.var rfl)) rfl)
@@ -182,9 +184,9 @@ theorem eB_typed : ∃ t ε, LExprTy (prog .internal) [] ΓB .bot eB t ε := by
       (.letR "c" (.text intl) (.read (.text "a.txt")) (.atom (.var "c"))) _ _ :=
     .letR (.read .text rfl (le_of rfl) (sf rfl)) (.text (le_of rfl)) (.atom (.var rfl)) rfl
   have hall : LExprTy (prog .internal) [] ΓB .bot eB _ _ :=
-    .letE (x := "w") (ann := .result (.unit .bot) (.int .bot) intl) (.attempt hw)
+    .letE (x := "w") (ann := .result (.unit .bot) (.int .bot) intl) (.attempt hw (by simp [Eff.union, Eff.none]))
       (.result .unit (.int (le_of rfl)) (le_of rfl))
-      (.letE (x := "r") (ann := .result (.text intl) (.int .bot) intl) (.attempt hr)
+      (.letE (x := "r") (ann := .result (.text intl) (.int .bot) intl) (.attempt hr (by simp [Eff.union, Eff.none]))
         (.result (.text (le_of rfl)) (.int (le_of rfl)) (le_of rfl))
         (.caseResult (s := .int .bot) (.var rfl) (.atom .int) (.atom .int) (.int (le_of rfl))
           (.int (le_of rfl)) rfl)

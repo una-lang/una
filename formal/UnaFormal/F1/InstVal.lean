@@ -73,7 +73,8 @@ theorem LValTy.setTop {v : Val} {t : LTy} (x : LExpr) (h : LValTy p v t) : LValT
     first
     | exact .int | exact .bool | exact .text | exact .unit | exact .list ‹_› | exact .none
     | exact .some ‹_› | exact .ok ‹_› | exact .err ‹_› | exact .record ‹_› ‹_›
-    | exact .closure ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_›
+    | exact .variant ‹_› ‹_› ‹_›
+    | exact .closure ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_›
     | exact .tuple ‹_›
 
 theorem LValTy.of_setTop {v : Val} {t : LTy} {x : LExpr} (h : LValTy p v (t.setTop x)) :

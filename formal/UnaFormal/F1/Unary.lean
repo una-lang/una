@@ -49,10 +49,13 @@ mutual
     | record {record fields rec l} :
         p.record record = some rec → LValsTy p fields rec.fields →
         LValTy p (.record record fields) (.record record l)
+    | variant {kind ctor fields sm fs l} :
+        p.sum kind = some sm → sm.variants[ctor]? = some fs → LValsTy p fields fs →
+        LValTy p (.variant kind ctor fields) (.record kind l)
     | closure {params body env Γ E t ε ps r o g f l σ} :
         (∀ q ∈ σ, q.2.Ground) →
         LEnvTy p env (Γ.lsub p.recordDeep σ) → LExprTy p E (params ++ Γ) .bot body t ε →
-        p.le ε.failLabel .bot → ε.rels = [] →
+        p.le ε.failLabel .bot → ε.rels = [] → ε.raises = [] →
         Flows p.top ps ((params.map Prod.snd).map (LTy.lsubst p.recordDeep σ)) →
         Flow p.top (t.lsubst p.recordDeep σ) r →
         (ε.op = true → o = true) → HostFx.Le ε.host g → (ε.fails.isSome = true → f = true) →
@@ -88,8 +91,9 @@ mutual
     | _, _, _, .ok h, .result f _ _ => .ok (LValTy.flow h f)
     | _, _, _, .err h, .result _ f _ => .err (LValTy.flow h f)
     | _, _, _, .record hr hfs, .record _ => .record hr hfs
-    | _, _, _, .closure hσ henv hb hfl hrl hps hr ho hg hf, .fn fps fr fo fg ff _ =>
-      .closure hσ henv hb hfl hrl (Flows.trans fps hps) (Flow.trans hr fr) (fo ∘ ho) (hg.trans fg) (ff ∘ hf)
+    | _, _, _, .variant hs hf hfs, .record _ => .variant hs hf hfs
+    | _, _, _, .closure hσ henv hb hfl hrl hrs hps hr ho hg hf, .fn fps fr fo fg ff _ =>
+      .closure hσ henv hb hfl hrl hrs (Flows.trans fps hps) (Flow.trans hr fr) (fo ∘ ho) (hg.trans fg) (ff ∘ hf)
     | _, _, _, .tuple h, .tuple fs _ => .tuple (LValsTy.flows h fs)
 
   theorem LValsAll.flow : ∀ {vs : List Val} {t t' : LTy}, LValsAll p vs t → Flow p.top t t' →
@@ -234,11 +238,27 @@ theorem lfield_typed {t : LTy} :
 
 /-! ### Runs that keep to their typing -/
 
+/-- What a run's failure must satisfy (#512): a code failure `code`, and a failure with a
+payload `raised`, of its kind, variant and payload. -/
+structure FailCond where
+  code : Prop
+  raised : String → Nat → List Val → Prop
+
+/-- One condition on failures implies another, for both forms of failure. -/
+def FailCond.Le (F F' : FailCond) : Prop :=
+  (F.code → F'.code) ∧ ∀ k c ps, F.raised k c ps → F'.raised k c ps
+
+theorem FailCond.Le.refl (F : FailCond) : F.Le F := ⟨id, fun _ _ _ => id⟩
+
+theorem FailCond.Le.trans {F G K : FailCond} (h₁ : F.Le G) (h₂ : G.Le K) : F.Le K :=
+  ⟨fun h => h₂.1 (h₁.1 h), fun k c ps h => h₂.2 k c ps (h₁.2 k c ps h)⟩
+
 /-- An outcome: `P` of a value, `F` of a failure. A stuck run is T1's, and a run out of fuel
 says nothing. -/
-abbrev URes (P : Val → Prop) (F : Prop) : Res → Prop
+abbrev URes (P : Val → Prop) (F : FailCond) : Res → Prop
   | .ok v => P v
-  | .failed _ => F
+  | .failed _ => F.code
+  | .raised k c ps => F.raised k c ps
   | .stuck => True
   | .outOfFuel | .aborted => True
 
@@ -271,28 +291,29 @@ theorem WEff.trans {t₁ t₂ : Trace} {w₁ w₂ w₃ : World H} (h₁ : WEff t
 
 /-- A run from `w` whose events satisfy `A`, whose outcome satisfies `P` and `F`, and whose
 changes to the world are those its events allow. -/
-abbrev UOk (A : Event → Prop) (P : Val → Prop) (F : Prop) (w : World H) (run : Run H) : Prop :=
+abbrev UOk (A : Event → Prop) (P : Val → Prop) (F : FailCond) (w : World H) (run : Run H) : Prop :=
   (∀ ev ∈ run.1, A ev) ∧ URes P F run.2.1 ∧ WEff run.1 w run.2.2
 
-theorem uok_done {A : Event → Prop} {P : Val → Prop} {F : Prop} {w : World H}
+theorem uok_done {A : Event → Prop} {P : Val → Prop} {F : FailCond} {w : World H}
     {v : Val} (h : P v) : UOk A P F w (done w v) :=
   ⟨fun _ h' => (nomatch h'), h, WEff.self _ w⟩
 
-theorem uok_stuck {A : Event → Prop} {P : Val → Prop} {F : Prop} {w : World H} :
+theorem uok_stuck {A : Event → Prop} {P : Val → Prop} {F : FailCond} {w : World H} :
     UOk A P F w (stuck w) :=
   ⟨fun _ h' => (nomatch h'), trivial, WEff.self _ w⟩
 
-theorem UOk.mono {A A' : Event → Prop} {P P' : Val → Prop} {F F' : Prop}
-    {w : World H} (hA : ∀ ev, A ev → A' ev) (hP : ∀ v, P v → P' v) (hF : F → F')
+theorem UOk.mono {A A' : Event → Prop} {P P' : Val → Prop} {F F' : FailCond}
+    {w : World H} (hA : ∀ ev, A ev → A' ev) (hP : ∀ v, P v → P' v) (hF : F.Le F')
     {run : Run H} (h : UOk A P F w run) : UOk A' P' F' w run := by
   obtain ⟨tr, r, w'⟩ := run
   refine ⟨fun ev hev => hA ev (h.1 ev hev), ?_, h.2.2⟩
   have h2 := h.2.1
   cases r <;> simp only [URes] at h2 ⊢
   · exact hP _ h2
-  · exact hF h2
+  · exact hF.1 h2
+  · exact hF.2 _ _ _ h2
 
-theorem andThen_uok {A : Event → Prop} {P Q : Val → Prop} {F : Prop} {w : World H}
+theorem andThen_uok {A : Event → Prop} {P Q : Val → Prop} {F : FailCond} {w : World H}
     {first : Run H} {rest : World H → Val → Run H} (h1 : UOk A P F w first)
     (h2 : ∀ w' v, P v → UOk A Q F w' (rest w' v)) :
     UOk A Q F w (andThen first rest) := by
@@ -308,6 +329,7 @@ theorem andThen_uok {A : Event → Prop} {P Q : Val → Prop} {F : Prop} {w : Wo
     · exact h1.1 ev hev
     · exact h.1 ev hev
   | failed c => exact h1
+  | raised _ _ _ => exact h1
   | stuck => exact h1
   | outOfFuel | aborted => exact h1
 
@@ -325,9 +347,18 @@ def Allowed (p : Program) (pc : LExpr) (ε : Eff) : Event → Prop
 /-- A failure, whose label is above `pc`. -/
 abbrev Fails (p : Program) (pc : LExpr) (ε : Eff) : Prop := ∃ l, ε.fails = some l ∧ p.le pc l
 
+/-- A payload of the variant `c` of the sum kind `k`, at the fields' declared types (#512). -/
+def PayTy (p : Program) (k : String) (c : Nat) (ps : List Val) : Prop :=
+  ∃ sm fs, p.sum k = some sm ∧ sm.variants[c]? = some fs ∧ LValsTy p ps fs
+
+/-- The failures a typing with effects `ε` allows at `pc` (#512): above `pc`, a code only when
+`ε` may fail with one, and a payload only of a kind `ε` raises, typed by its variant. -/
+def FailsAs (p : Program) (pc : LExpr) (ε : Eff) : FailCond :=
+  ⟨Fails p pc ε ∧ ε.codes = true, fun k c ps => Fails p pc ε ∧ k ∈ ε.raises ∧ PayTy p k c ps⟩
+
 /-- A run from `w` that keeps to a typing at `pc` with type `t` and effects `ε`. -/
 abbrev UGood (p : Program) (pc : LExpr) (t : LTy) (ε : Eff) (w : World H) (run : Run H) : Prop :=
-  UOk (Allowed p pc ε) (fun v => LValTy p v t) (Fails p pc ε) w run
+  UOk (Allowed p pc ε) (fun v => LValTy p v t) (FailsAs p pc ε) w run
 
 theorem Allowed.mono {pc pc' : LExpr} {ε ε' : Eff} (hpc : p.le pc pc')
     (ho : ε'.op = true → ε.op = true) (hg : HostFx.Le ε'.host ε.host)
@@ -419,7 +450,8 @@ def Program.sd (p : Program) (σ : List (String × LTy)) : List (String × LExpr
   σ.map (fun q => (q.1, q.2.deep p.recordDeep))
 
 /-- Effects instantiated: the labels of failures. -/
-def Eff.inst (s : List (String × LExpr)) (ε : Eff) : Eff := ⟨ε.op, ε.host, ε.fails.map (·.inst s), ε.rels⟩
+def Eff.inst (s : List (String × LExpr)) (ε : Eff) : Eff :=
+  ⟨ε.op, ε.host, ε.fails.map (·.inst s), ε.rels, ε.codes, ε.raises⟩
 
 /-- A ground instantiation. -/
 abbrev GroundSubst (σ : List (String × LTy)) : Prop := ∀ q ∈ σ, q.2.Ground
@@ -440,9 +472,10 @@ theorem applyWith_uok {run : World H → Env → Expr → Run H} {fv : Val} {vs 
       LExprTy p E Γ .bot e t ε →
       UGood p (LExpr.bot.inst (p.sd σ)) (t.lsubst p.recordDeep σ) (ε.inst (p.sd σ)) w (run w env e))
     (hf : LValTy p fv (.fn ps r o g f lf)) (hvs : LValsTy p vs ps) (w : World H) :
-    UOk (FnAllowed o g) (fun v => LValTy p v r) (f = true) w (applyWith run w fv vs) := by
+    UOk (FnAllowed o g) (fun v => LValTy p v r) ⟨f = true, fun _ _ _ => False⟩ w
+      (applyWith run w fv vs) := by
   cases hf with
-  | @closure params _ cenv Γc _ _ _ _ _ _ _ _ _ σc hσ henv hb hfl hrl hps hr ho hg hfs =>
+  | @closure params _ cenv Γc _ _ _ _ _ _ _ _ _ σc hσ henv hb hfl hrl hrs hps hr ho hg hfs =>
     have hvs' := LValsTy.flows hvs hps
     rw [applyWith, ite_eq_left (by rw [LValsTy.length hvs', List.length_map, List.length_map])]
     have henv' : LEnvTy p (bindParams params vs cenv) ((params ++ Γc).lsub p.recordDeep σc) := by
@@ -458,7 +491,9 @@ theorem applyWith_uok {run : World H → Env → Expr → Run H} {fv : Val} {vs 
       | write _ _ => exact hg.2.1 hev.1
       | req _ _ => exact ⟨hg.2.2 hev.1, hev.2.2⟩
       | release _ _ => have h := hev.1; simp [Eff.inst, hrl] at h
-    · rintro ⟨l, hl, _⟩
-      exact hfs (by simp [Eff.inst] at hl; obtain ⟨l', hl', _⟩ := hl; simp [hl'])
+    · -- A function value fails with a code only (#512): its body raises no payload.
+      refine ⟨fun ⟨⟨l, hl, _⟩, _⟩ => hfs (by simp [Eff.inst] at hl; obtain ⟨l', hl', _⟩ := hl; simp [hl']),
+        fun _ _ _ ⟨_, hk, _⟩ => ?_⟩
+      simp [Eff.inst, hrs] at hk
 
 end Una.F1

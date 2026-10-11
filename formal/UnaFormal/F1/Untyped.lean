@@ -69,14 +69,14 @@ theorem attempt_inv {Γ : LCtx} {pc : LExpr} {E : List String} {x : String} {ann
     {t : LTy} {ε : Eff} (h : LExprTy P E Γ pc (.attempt (.letR x ann v (.atom (.var x)))) t ε) :
     ∃ tc t' ε', LRhsTy P E Γ pc v t' ε' ∧ t = .result tc (.int .bot) (ε'.union .none).failLabel := by
   cases h with
-  | attempt hb =>
+  | attempt hb _ =>
     cases hb with
     | letR hr _ hbody _ =>
       cases hbody with
       | atom _ => exact ⟨_, _, _, hr, rfl⟩
 
-theorem failLabel_some {o : Bool} {g : HostFx} {l : LExpr} {rs : List String} :
-    ((⟨o, g, some l, rs⟩ : Eff).union .none).failLabel = l := by
+theorem failLabel_some {o : Bool} {g : HostFx} {l : LExpr} {rs : List String} {cd : Bool}
+    {ra : List String} : ((⟨o, g, some l, rs, cd, ra⟩ : Eff).union .none).failLabel = l := by
   simp [Eff.union, Eff.failLabel, Eff.none]
 
 /-- **S-14 under ADR 0085's rules has no typing**, for every file-state label and every

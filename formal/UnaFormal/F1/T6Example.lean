@@ -34,7 +34,7 @@ def body : Expr :=
   .letR "y" (.int sec) (.prim .add [.var "s", .var "x"])
     (.letR "u" (.unit .bot) (.op (.text "hi")) (.atom (.var "x")))
 
-def eff : Eff := Eff.none.union ((⟨true, HostFx.none, Option.none, []⟩ : Eff).union Eff.none)
+def eff : Eff := Eff.none.union ((⟨true, HostFx.none, Option.none, [], false, []⟩ : Eff).union Eff.none)
 
 theorem body_typed : LExprTy prog [] Γ .bot body (.int .bot) eff := by
   refine .letR (t := .int ((LExpr.joinAll [sec, LExpr.bot]))) ?_ (.int ?_) ?_ (by simp [LTy.InPlace, sec, LExpr.ofLabel])
@@ -55,6 +55,8 @@ theorem prog_wf : prog.LWellFormed where
   policies _ h := nomatch h
   categories := by simp [Program.CatsDeclared, prog, Label.bot]
   recordsGround _ h := nomatch h
+  sums := by simp [prog]
+  disjoint _ := .inr (by simp [Program.sum, prog])
   eqScoped _ h := nomatch h
   sigsScoped _ h := nomatch h
   inPlace := by refine ⟨?_, ?_, ?_⟩ <;> simp [prog]
@@ -84,7 +86,7 @@ theorem body_noninterferent {H : Host} (hlaw : H.Lawful) (w : World H) (n : Nat)
     (h₁ : Term (eval H n prog w env₁ body).2.1) (h₂ : Term (eval H n prog w env₂ body).2.1) :
     proj prog Label.bot (eval H n prog w env₁ body).1 =
         proj prog Label.bot (eval H n prog w env₂ body).1 ∧
-      OutRel (V prog Label.bot (.int .bot)) (Vis prog Label.bot eff.failLabel)
+      OutRel prog Label.bot (V prog Label.bot (.int .bot)) (Vis prog Label.bot eff.failLabel)
         (eval H n prog w env₁ body).2.1 (eval H n prog w env₂ body).2.1 :=
   let h := t6_host_ground prog_wf rfl prog_host hlaw
     (fun q hq => by simp only [List.mem_cons, List.not_mem_nil, or_false] at hq
@@ -117,7 +119,7 @@ theorem le_sec {a : LExpr} (hb : a.base.level.rank ≤ 3) (hc : a.base.cats = []
     fun _ h => (by rw [hs] at h; nomatch h)⟩
 
 def brEff : Eff :=
-  Eff.none.union ((Eff.none.union Eff.none).union ((⟨true, HostFx.none, Option.none, []⟩ : Eff).union Eff.none))
+  Eff.none.union ((Eff.none.union Eff.none).union ((⟨true, HostFx.none, Option.none, [], false, []⟩ : Eff).union Eff.none))
 
 theorem branching_typed : LExprTy prog [] Γb .bot branching (.int sec) brEff := by
   refine .letR (t := .bool cl) ?r1 (.bool ?l1) ?b1 (by simp [LTy.InPlace, sec, LExpr.ofLabel])
@@ -243,7 +245,7 @@ def genEnv₂ : Env := [("s", .int 2), ("c", .bool true)]
 theorem genericCall_noninterferent {H : Host} (hlaw : H.Lawful) (w : World H) :
     proj Examples.prog Label.bot (eval H 5 Examples.prog w genEnv₁ genericCall).1 =
         proj Examples.prog Label.bot (eval H 5 Examples.prog w genEnv₂ genericCall).1 ∧
-      OutRel (V Examples.prog Label.bot (.bool .bot))
+      OutRel Examples.prog Label.bot (V Examples.prog Label.bot (.bool .bot))
         (Vis Examples.prog Label.bot ((Eff.ofFn false HostFx.none false).union .none).failLabel)
         (eval H 5 Examples.prog w genEnv₁ genericCall).2.1
         (eval H 5 Examples.prog w genEnv₂ genericCall).2.1 := by

@@ -98,34 +98,47 @@ structure Eff where
   fails : Option LExpr
   /-- The policies whose release the code may perform (option B1). -/
   rels : List String
+  /-- Whether it may fail with a code, a failure without a payload (#512). -/
+  codes : Bool
+  /-- The payload kinds it may fail with (#512): `attempt` and a handler of a code catch none,
+  and those of a payload kind catch that kind only. -/
+  raises : List String
 
 namespace Eff
 
-def none : Eff := ⟨false, HostFx.none, Option.none, []⟩
+def none : Eff := ⟨false, HostFx.none, Option.none, [], false, []⟩
 
 def union (a b : Eff) : Eff :=
   ⟨a.op || b.op, a.host.or b.host,
     match a.fails, b.fails with
     | some l₁, some l₂ => some (l₁.join l₂)
     | some l, Option.none | Option.none, some l => some l
-    | Option.none, Option.none => Option.none, a.rels ++ b.rels⟩
+    | Option.none, Option.none => Option.none, a.rels ++ b.rels, a.codes || b.codes,
+    a.raises ++ b.raises⟩
 
 /-- The label of what decides whether the code fails, `⊥` when it cannot. -/
 def failLabel (e : Eff) : LExpr := e.fails.getD LExpr.bot
 
 /-- The effects of a call of a function with these `uses` and `fails`. A function's failure is
 decided at its public program counter (T-Fail, T-Fun), so its label is `⊥`. -/
-def ofFn (o : Bool) (g : HostFx) (f : Bool) : Eff := ⟨o, g, if f then some LExpr.bot else Option.none, []⟩
+def ofFn (o : Bool) (g : HostFx) (f : Bool) : Eff :=
+  ⟨o, g, if f then some LExpr.bot else Option.none, [], f, []⟩
 
 /-- The effects of a call of a function that may also release through the policies `rs`. -/
 def ofFnR (o : Bool) (g : HostFx) (f : Bool) (rs : List String) : Eff := { ofFn o g f with rels := rs }
+
+/-- The effects of a call of `fn` (#512): those of `ofFnR`, with the payload kinds it raises; it
+fails with a code when it fails and raises none. -/
+def ofCall (fn : Fun) : Eff :=
+  { ofFnR fn.op fn.host fn.fails fn.rels with
+    codes := fn.fails && fn.raises.isEmpty, raises := fn.raises }
 
 /-- The effects of a call of the policy `pol`, whose `via` function has these `uses` and `fails`
 and whose `to` has the top label `dst` (T-Declassify): the release, and a failure the `via`
 function decides from the `from` value, so labeled where the release is visible, `pc ⊔ dst`
 (#453 Phase B, ADR 0090). -/
 def ofPolicy (o : Bool) (g : HostFx) (f : Bool) (pc dst : LExpr) (pol : String) : Eff :=
-  ⟨o, g, if f then some (pc.join dst) else Option.none, [pol]⟩
+  ⟨o, g, if f then some (pc.join dst) else Option.none, [pol], f, []⟩
 
 end Eff
 
@@ -296,7 +309,7 @@ mutual
         Flows p.top ts (fn.params.map (fun q => p.lsub (fn.tparams.zip targs) q.2)) →
         p.Bound pc fn.op fn.host fn.fails → p.RelBound pc fn.rels →
         LRhsTy p E Γ pc (.call f targs args) (p.lsub (fn.tparams.zip targs) fn.result)
-          (.ofFnR fn.op fn.host fn.fails fn.rels)
+          (.ofCall fn)
     /-- T-App. An argument that carries decisions `ℓ*_T` its parameter's type does not accept
     raises the call's result and program counter instead, as the value's label does
     (`spec/07 §7` rule 8, "decisions given to functions"). The decisions are those the
@@ -314,7 +327,7 @@ mutual
     | op {Γ pc line t} :
         LAtomTy Γ line t → t.erase.Scalar →
         p.le (pc.join (p.deep t)) (.ofLabel p.acceptsOp) → pc.SymFree →
-        LRhsTy p E Γ pc (.op line) (.unit .bot) ⟨true, HostFx.none, Option.none, []⟩
+        LRhsTy p E Γ pc (.op line) (.unit .bot) ⟨true, HostFx.none, Option.none, [], false, []⟩
     /-- `Files.read`: its path is a sink, and its failure is decided by the path, by the program
     counter, which decides whether it runs, and by the file system's shape, which the package's
     writes decide: the file-state label (ADR 0085 decision 2). -/
@@ -322,7 +335,7 @@ mutual
         LAtomTy Γ path t → t.erase = .text →
         p.le (pc.join (p.deep t)) (.ofLabel p.acceptsRead) → pc.SymFree →
         LRhsTy p E Γ pc (.read path) (.text (.ofLabel p.readResult))
-          ⟨false, { rd := true }, some (p.fsFail (pc.join (p.deep t))), []⟩
+          ⟨false, { rd := true }, some (p.fsFail (pc.join (p.deep t))), [], true, []⟩
     /-- `Files.write`: its path and content are sinks; where it lands, and whether it runs, are
     below the file-state label (decision 1); its failure is labeled as a read's. -/
     | write {Γ pc path content t c} :
@@ -330,17 +343,22 @@ mutual
         p.le ((pc.join (p.deep t)).join (p.deep c)) (.ofLabel p.acceptsWrite) →
         (p.oldHost = false → p.le (pc.join (p.deep t)) (.ofLabel p.fileState)) → pc.SymFree →
         LRhsTy p E Γ pc (.write path content) (.unit .bot)
-          ⟨false, { wr := true }, some (p.fsFail (pc.join (p.deep t))), []⟩
+          ⟨false, { wr := true }, some (p.fsFail (pc.join (p.deep t))), [], true, []⟩
     /-- A request of `Http`: every argument is a sink, and every argument, with the headers'
     `internal` values, decides its failure (S-15, ADR 0085 decision 7). -/
     | req {Γ pc m args ts} :
         LAtomsTy Γ args ts → httpParams m = some (ts.map LTy.erase) → p.HttpRecords →
         p.le (pc.join (LExpr.joinAll (ts.map p.deep))) (.ofLabel p.acceptsReq) → pc.SymFree →
         LRhsTy p E Γ pc (.req m args) (.record "prelude.Response" (.ofLabel p.reqResult))
-          ⟨false, { rq := true }, some (p.reqFail pc ts), []⟩
+          ⟨false, { rq := true }, some (p.reqFail pc ts), [], true, []⟩
     | construct {Γ pc record fields rec ts} :
         p.record record = some rec → LAtomsTy Γ fields ts → Flows p.top ts rec.fields →
         LRhsTy p E Γ pc (.construct record fields) (.record record .bot) .none
+    /-- T-Variant (#512): each argument flows into its field's declared type, and which variant
+    is built is decided by the program counter, which the rules of branches raise the value by. -/
+    | variant {Γ pc kind ctor fields sm fs ts} :
+        p.sum kind = some sm → sm.variants[ctor]? = some fs → LAtomsTy Γ fields ts → Flows p.top ts fs →
+        LRhsTy p E Γ pc (.variant kind ctor fields) (.record kind .bot) .none
     /-- A field takes its declared type, with its top label raised by the record's. -/
     | field {Γ pc value record index rec l t} :
         LAtomTy Γ value (.record record l) → p.record record = some rec →
@@ -360,12 +378,13 @@ mutual
     function's, its failures must be decided there. -/
     | lambda {Γ pc params body t ε} :
         LExprTy p E (params ++ Γ) .bot body t ε → p.le ε.failLabel .bot → ε.rels = [] →
-        (∀ q ∈ params, q.2.InPlace) →
+        ε.raises = [] → (∀ q ∈ params, q.2.InPlace) →
         LRhsTy p E Γ pc (.lambda params body)
           (.fn (params.map Prod.snd) t ε.op ε.host ε.fails.isSome .bot) .none
     | funRef {Γ pc f targs fn} :
         p.find f = some fn → ¬ p.IsVia f → targs.length = fn.tparams.length →
         LTy.firstClasses targs = true → fn.EqArgs p E targs → LTy.GroundAll targs → fn.rels = [] →
+        fn.raises = [] →
         LRhsTy p E Γ pc (.funRef f targs)
           (.fn (fn.params.map (fun q => p.lsub (fn.tparams.zip targs) q.2))
             (p.lsub (fn.tparams.zip targs) fn.result) fn.op fn.host fn.fails .bot) .none
@@ -406,13 +425,15 @@ mutual
     /-- The partial primitive: its result and its failure carry every label of its input. -/
     | parse {Γ pc s t} :
         LAtomTy Γ s t → t.erase = .text →
-        LRhsTy p E Γ pc (.parse s) (.int (p.deep t)) ⟨false, HostFx.none, some (pc.join (p.deep t)), []⟩
+        LRhsTy p E Γ pc (.parse s) (.int (p.deep t))
+          ⟨false, HostFx.none, some (pc.join (p.deep t)), [], true, []⟩
     /-- T-Checked (`spec/10 §7`, #453): the operand is a public scalar, under a public program
     counter (U4002 otherwise), so whether the predicate holds is public; the value keeps its type,
     and the failure is labeled as `parse`'s, which the premise makes `⊥`. -/
     | checked {Γ pc a t pred code} :
         LAtomTy Γ a t → t.erase.Scalar → p.le (pc.join (p.deep t)) .bot → pc.SymFree →
-        LRhsTy p E Γ pc (.checked a pred code) t ⟨false, HostFx.none, some (pc.join (p.deep t)), []⟩
+        LRhsTy p E Γ pc (.checked a pred code) t
+          ⟨false, HostFx.none, some (pc.join (p.deep t)), [], true, []⟩
     /-- `==` (`spec/07 §7` rule 3): both operands flow into one type with equality, and the
     result carries every label of both. Over values of `T`, that is `ℓ*_T`, the decision of
     rule 8. -/
@@ -501,29 +522,81 @@ mutual
         LExprTy p E Γ pc (.caseResult scrutinee x okE y errE) (.tuple ts .bot) (ε₁.union ε₂)
     /-- T-Fail: only at the public program counter (U4002). -/
     | fail {Γ pc code s} :
-        p.le pc .bot → pc.SymFree → s.InPlace → LExprTy p E Γ pc (.fail code) s ⟨false, HostFx.none, some .bot, []⟩
+        p.le pc .bot → pc.SymFree → s.InPlace →
+        LExprTy p E Γ pc (.fail code) s ⟨false, HostFx.none, some .bot, [], true, []⟩
+    /-- T-Fail with a payload (#512): only at the public program counter, and each argument flows
+    into its field's declared type. -/
+    | raise {Γ pc kind code args sm fs ts s} :
+        p.sum kind = some sm → sm.variants[code]? = some fs → LAtomsTy Γ args ts → Flows p.top ts fs →
+        p.le pc .bot → pc.SymFree → s.InPlace →
+        LExprTy p E Γ pc (.raise kind code args) s ⟨false, HostFx.none, some .bot, [], false, [kind]⟩
+    /-- T-Case on a sum (#512), one arm against the rest: both run under the scrutinee's top
+    label, which decides which runs, the bindings take their fields' declared types raised by it,
+    and the value is raised by it. A chain of them is the `when` of several arms: each later arm
+    is under every earlier test's label. -/
+    | caseSum {Γ pc scrutinee kind ctor binders thenE elseE ls sm fs t₁ t₂ s ε₁ ε₂} :
+        LAtomTy Γ scrutinee (.record kind ls) → p.sum kind = some sm → sm.variants[ctor]? = some fs →
+        fs.length = binders.length →
+        LExprTy p E (binders.zip (fs.map (LTy.raise ls)) ++ Γ) (pc.join ls) thenE t₁ ε₁ →
+        LExprTy p E Γ (pc.join ls) elseE t₂ ε₂ → Flow p.top t₁ s → Flow p.top t₂ s → s.InPlace →
+        LExprTy p E Γ pc (.caseSum scrutinee ctor binders thenE elseE) (s.raise ls) (ε₁.union ε₂)
+    /-- The `else` of an exhaustive `when` on a sum (#512): no effect, at any type. A run that
+    reached it aborts, which T6, termination-insensitive, does not observe. -/
+    | unreachable {Γ pc s} : s.InPlace → LExprTy p E Γ pc .unreachable s .none
+    /-- T-Case on a sum at a tuple type: as `iteT`. -/
+    | caseSumT {Γ pc scrutinee kind ctor binders thenE elseE ls sm fs t₁ t₂ ts ε₁ ε₂} :
+        LAtomTy Γ scrutinee (.record kind ls) → p.sum kind = some sm → sm.variants[ctor]? = some fs →
+        fs.length = binders.length →
+        LExprTy p E (binders.zip (fs.map (LTy.raise ls)) ++ Γ) (pc.join ls) thenE t₁ ε₁ →
+        LExprTy p E Γ (pc.join ls) elseE t₂ ε₂ →
+        Flow p.top t₁ (.tuple ts .bot) → Flow p.top t₂ (.tuple ts .bot) → LTy.InPlaceAll ts →
+        Flows p.top (ts.map (LTy.raise ls)) ts →
+        LExprTy p E Γ pc (.caseSum scrutinee ctor binders thenE elseE) (.tuple ts .bot) (ε₁.union ε₂)
     /-- T-Attempt: the result carries the label of what decides the failure, and its error is
     the failure's code, which that label decides too. -/
     | attempt {Γ pc body t ε} :
-        LExprTy p E Γ pc body t ε →
+        LExprTy p E Γ pc body t ε → ε.raises = [] →
         LExprTy p E Γ pc (.attempt body) (.result t (.int .bot) ε.failLabel)
-          ⟨ε.op, ε.host, Option.none, ε.rels⟩
+          ⟨ε.op, ε.host, Option.none, ε.rels, false, []⟩
+    /-- T-Attempt of a payload kind (#512): the body fails with `kind` only, and the error is the
+    failure's value, whose variant and fields that label decides. -/
+    | attemptK {Γ pc kind body t ε} :
+        LExprTy p E Γ pc body t ε → ε.codes = false → (∀ k ∈ ε.raises, k = kind) →
+        LExprTy p E Γ pc (.attemptK kind body) (.result t (.record kind .bot) ε.failLabel)
+          ⟨ε.op, ε.host, Option.none, ε.rels, false, []⟩
     /-- T-Handle: the handler runs under the label of what decides the failure, which binds its
     code, and the value is raised by it, since it decides which branch gives the value. -/
     | handle {Γ pc body x handler t₁ t₂ s ε₁ ε₂} :
-        LExprTy p E Γ pc body t₁ ε₁ →
+        LExprTy p E Γ pc body t₁ ε₁ → ε₁.raises = [] →
         LExprTy p E ((x, .int ε₁.failLabel) :: Γ) (pc.join ε₁.failLabel) handler t₂ ε₂ →
         Flow p.top t₁ s → Flow p.top t₂ s → s.InPlace →
         LExprTy p E Γ pc (.handle body x handler) (s.raise ε₁.failLabel)
-          ⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels⟩
+          ⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises⟩
+    /-- T-Handle of a payload kind (#512): the body fails with `kind` only, and the handler binds
+    the failure's value at the label of what decides it (`spec/10`), so every field read from it
+    is raised by that label. -/
+    | handleK {Γ pc kind body x handler t₁ t₂ s ε₁ ε₂} :
+        LExprTy p E Γ pc body t₁ ε₁ → ε₁.codes = false → (∀ k ∈ ε₁.raises, k = kind) →
+        LExprTy p E ((x, .record kind ε₁.failLabel) :: Γ) (pc.join ε₁.failLabel) handler t₂ ε₂ →
+        Flow p.top t₁ s → Flow p.top t₂ s → s.InPlace →
+        LExprTy p E Γ pc (.handleK kind body x handler) (s.raise ε₁.failLabel)
+          ⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises⟩
     /-- T-Handle at a tuple type: as `iteT`, with what decides the failure. -/
     | handleT {Γ pc body x handler t₁ t₂ ts ε₁ ε₂} :
-        LExprTy p E Γ pc body t₁ ε₁ →
+        LExprTy p E Γ pc body t₁ ε₁ → ε₁.raises = [] →
         LExprTy p E ((x, .int ε₁.failLabel) :: Γ) (pc.join ε₁.failLabel) handler t₂ ε₂ →
         Flow p.top t₁ (.tuple ts .bot) → Flow p.top t₂ (.tuple ts .bot) → LTy.InPlaceAll ts →
         Flows p.top (ts.map (LTy.raise ε₁.failLabel)) ts →
         LExprTy p E Γ pc (.handle body x handler) (.tuple ts .bot)
-          ⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels⟩
+          ⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises⟩
+    /-- T-Handle of a payload kind at a tuple type: as `iteT`, with what decides the failure. -/
+    | handleKT {Γ pc kind body x handler t₁ t₂ ts ε₁ ε₂} :
+        LExprTy p E Γ pc body t₁ ε₁ → ε₁.codes = false → (∀ k ∈ ε₁.raises, k = kind) →
+        LExprTy p E ((x, .record kind ε₁.failLabel) :: Γ) (pc.join ε₁.failLabel) handler t₂ ε₂ →
+        Flow p.top t₁ (.tuple ts .bot) → Flow p.top t₂ (.tuple ts .bot) → LTy.InPlaceAll ts →
+        Flows p.top (ts.map (LTy.raise ε₁.failLabel)) ts →
+        LExprTy p E Γ pc (.handleK kind body x handler) (.tuple ts .bot)
+          ⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises⟩
     /-- T-LetTuple: each component, raised by the tuple's top label, flows into its binder's
     declared type. -/
     | letTuple {Γ pc binders value body ts l s ε} :
@@ -567,7 +640,8 @@ declared, and its failures are decided at the public program counter (U4002). -/
 def Program.FunOk (p : Program) (fn : Fun) : Prop :=
   ∃ t ε, LExprTy p fn.eqParams fn.params .bot fn.body t ε ∧ Flow p.top t fn.result ∧
     (ε.op = true → fn.op = true) ∧ HostFx.Le ε.host fn.host ∧
-    (ε.fails.isSome = true → fn.fails = true) ∧ p.le ε.failLabel .bot ∧ (∀ x ∈ ε.rels, x ∈ fn.rels)
+    (ε.fails.isSome = true → fn.fails = true) ∧ p.le ε.failLabel .bot ∧ (∀ x ∈ ε.rels, x ∈ fn.rels) ∧
+    (ε.codes = true → fn.raises = []) ∧ (∀ k ∈ ε.raises, k ∈ fn.raises)
 
 -- (`LExpr`'s predicate is F1's, shared.)
 
@@ -617,6 +691,12 @@ structure Program.LWellFormed (p : Program) : Prop where
   /-- A signature mentions only its own type parameters. -/
   sigsScoped : ∀ fn ∈ p.funs, (∀ q ∈ fn.params, q.2.ScopedIn fn.tparams) ∧
     fn.result.ScopedIn fn.tparams
+  /-- Sums (#512): their fields are ground and keep `ℓ_T` in place, use the declared
+  categories, and the declared deep label bounds them; no name is both a record's and a sum's. -/
+  sums : ∀ sm ∈ p.sums, ∀ fs ∈ sm.variants, ∀ t ∈ fs,
+    t.Ground ∧ t.InPlace ∧ t.CatsIn p.categories ∧ p.le (p.deep t) (.ofLabel sm.deep) ∧
+      t.erase.Closed
+  disjoint : ∀ k, p.record k = none ∨ p.sum k = none
   /-- Signatures and declared types keep `ℓ_T` in place. -/
   inPlace : (∀ fn ∈ p.funs, (∀ q ∈ fn.params, q.2.InPlace) ∧ fn.result.InPlace) ∧
     (∀ rec ∈ p.records, ∀ t ∈ rec.fields, t.InPlace) ∧

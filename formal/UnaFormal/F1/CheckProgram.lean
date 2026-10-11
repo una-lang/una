@@ -22,12 +22,13 @@ mutual
     | _ => []
 
   def Expr.callees : Expr → List String
-    | .atom _ | .fail _ => []
+    | .atom _ | .fail _ | .raise _ _ _ | .unreachable => []
     | .letR _ _ v b => v.callees ++ b.callees
     | .letE _ _ v b => v.callees ++ b.callees
-    | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e =>
+    | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e
+    | .caseSum _ _ _ t e | .handleK _ t _ e =>
       t.callees ++ e.callees
-    | .attempt b | .letTuple _ _ b | .loop _ _ _ _ _ b => b.callees
+    | .attempt b | .attemptK _ b | .letTuple _ _ b | .loop _ _ _ _ _ b => b.callees
 end
 
 end Una.F1
@@ -83,6 +84,14 @@ def recordOk (p : Program) (rec : Record) : Bool :=
   rec.fields.all fun t =>
     ground t && inPlace t && tyClosed t.erase && leB p.top (p.deep t) (.ofLabel rec.deep)
 
+/-- The parts of `Program.LWellFormed` about a sum kind (#512): every variant's fields as a
+record's, with the declared categories, and no record of the same name. -/
+def sumOk (p : Program) (sm : Sum) : Bool :=
+  (p.record sm.name).isNone &&
+  sm.variants.all fun fs => fs.all fun t =>
+    ground t && inPlace t && tyClosed t.erase && tyCats p.categories t &&
+      leB p.top (p.deep t) (.ofLabel sm.deep)
+
 /-- The parts of `Program.LWellFormed` about a policy: closed types with `ℓ_T` in place, and a
 `via` function whose structural signature is the policy's, `from` to `to`. -/
 def policyOk (p : Program) (po : Policy) : Bool :=
@@ -111,6 +120,7 @@ one function: the host's labels (`Program.HostWF`), records, policies and catego
 def progDocOk (p : Program) : Bool :=
   hostWfB p &&
   p.records.all (recordOk p) &&
+  p.sums.all (sumOk p) &&
   p.policies.all (policyOk p) &&
   catsDeclared p &&
   b1Ok p

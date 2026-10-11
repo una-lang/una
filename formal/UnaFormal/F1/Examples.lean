@@ -54,8 +54,9 @@ theorem lT_join_le : LExpr.le prog.top (lT.join LExpr.bot) lT :=
 /-- The labeled typing accepts `pick`: its result is `T` with `ℓ_T`, which a call replaces by
 the type argument's own labels. -/
 theorem pick_ok : prog.FunOk pick := by
-  refine ⟨.var "T" (lT.join .bot), ⟨false || false, HostFx.none.or HostFx.none, Option.none, [] ++ []⟩,
-    ?_, .var lT_join_le, by simp, ⟨id, id, id⟩, by simp, ?_, by simp⟩
+  refine ⟨.var "T" (lT.join .bot),
+    ⟨false || false, HostFx.none.or HostFx.none, Option.none, [] ++ [], false || false, [] ++ []⟩,
+    ?_, .var lT_join_le, by simp, ⟨id, id, id⟩, by simp, ?_, by simp, by simp, by simp⟩
   · have hthen : LExprTy prog [] [("a", .var "T" lT), ("b", .var "T" lT), ("c", .bool .bot)]
         (LExpr.bot.join .bot) (.atom (.var "a")) (.var "T" lT) .none :=
       .atom (.var rfl)
@@ -79,6 +80,8 @@ theorem prog_wf : prog.LWellFormed where
       simp [prog, pick, lT, Label.bot, LTy.CatsIn, LExpr.CatsIn, LExpr.bot, LExpr.ofLabel]
     rintro _ _ (⟨_, rfl⟩ | ⟨_, rfl⟩ | ⟨_, rfl⟩) <;> simp [LTy.CatsIn, LExpr.CatsIn]
   recordsGround _ h := by simp [prog] at h
+  sums := by simp [prog]
+  disjoint _ := .inr (by simp [Program.sum, prog])
   eqScoped := by simp [prog, pick]
   sigsScoped := by
     simp only [prog, List.mem_singleton]
@@ -175,6 +178,8 @@ def chooseEff : Eff :=
 /-- The labeled typing accepts `choose`, `Eq` constraint, comparison, decision and all. -/
 theorem choose_ok : prog2.FunOk choose := by
   refine ⟨rTy, chooseEff, ?hty, .int (choose_le _ _ ?_ ?_ ?_), ?_, ?_, ?_, le_self _,
+    fun _ h => by simp [chooseEff, Eff.union, Eff.none, Eff.ofFn] at h,
+    fun h => by simp [chooseEff, Eff.union, Eff.none, Eff.ofFn] at h,
     fun _ h => by simp [chooseEff, Eff.union, Eff.none, Eff.ofFn] at h⟩
   case hty =>
     dsimp only [choose]

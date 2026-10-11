@@ -94,7 +94,7 @@ theorem sum_runs : ∃ t ε, LExprTy prog [] [("xs", .list (.int intl) .bot)] .b
       Term (eval Host.unit n prog ⟨(), (), fun _ => none⟩ (env 3 4) sumBody).2.1 →
       proj prog Label.bot (eval Host.unit n prog ⟨(), (), fun _ => none⟩ (env 1 2) sumBody).1 =
           proj prog Label.bot (eval Host.unit n prog ⟨(), (), fun _ => none⟩ (env 3 4) sumBody).1 ∧
-        OutRel (V prog Label.bot t) (Vis prog Label.bot ε.failLabel)
+        OutRel prog Label.bot (V prog Label.bot t) (Vis prog Label.bot ε.failLabel)
           (eval Host.unit n prog ⟨(), (), fun _ => none⟩ (env 1 2) sumBody).2.1
           (eval Host.unit n prog ⟨(), (), fun _ => none⟩ (env 3 4) sumBody).2.1 := by
   obtain ⟨hwf, _, hh⟩ := certified

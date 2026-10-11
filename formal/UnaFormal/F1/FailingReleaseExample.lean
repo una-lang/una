@@ -73,7 +73,7 @@ theorem hidden_failure_related :
     eval Host.unit 6 progG w0 (env 5) gBody = ([.release "peekg" (.bool false)], .ok (.bool false), w0) ∧
     proj progG Label.bot (eval Host.unit 6 progG w0 (env 1234) gBody).1 =
         proj progG Label.bot (eval Host.unit 6 progG w0 (env 5) gBody).1 ∧
-      OutRel (V progG Label.bot ((LTy.bool intl).lsubst progG.recordDeep []))
+      OutRel progG Label.bot (V progG Label.bot ((LTy.bool intl).lsubst progG.recordDeep []))
         (Vis progG Label.bot (gEff.inst (progG.sd [])).failLabel)
         (eval Host.unit 6 progG w0 (env 1234) gBody).2.1
         (eval Host.unit 6 progG w0 (env 5) gBody).2.1 := by

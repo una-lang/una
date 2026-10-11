@@ -36,12 +36,16 @@ mutual
     | err {te ee l a b} : V ee a b → V (.result te ee l) (.err a) (.err b)
     | record {r l rec fs₁ fs₂} :
         p.record r = some rec → VList rec.fields fs₁ fs₂ → V (.record r l) (.record r fs₁) (.record r fs₂)
+    /-- Two values of a sum kind (#512): the same variant, with related fields. -/
+    | variant {k l sm i fs fs₁ fs₂} :
+        p.sum k = some sm → sm.variants[i]? = some fs → VList fs fs₁ fs₂ →
+        V (.record k l) (.variant k i fs₁) (.variant k i fs₂)
     | closure {params body env₁ env₂ Γ E tb ε ps r o g f l σ} :
         GroundSubst σ → p.EqArgsOK σ E → LCtx.InPlace (params ++ Γ) →
         EnvRel (Γ.lsub p.recordDeep σ) env₁ env₂ → LEnvTy p env₁ (Γ.lsub p.recordDeep σ) →
         LEnvTy p env₂ (Γ.lsub p.recordDeep σ) →
         LExprTy p E (params ++ Γ) .bot body tb ε → p.le ε.failLabel .bot → ε.rels = [] →
-        Flows p.top ps ((params.map Prod.snd).map (LTy.lsubst p.recordDeep σ)) →
+        ε.raises = [] → Flows p.top ps ((params.map Prod.snd).map (LTy.lsubst p.recordDeep σ)) →
         Flow p.top (tb.lsubst p.recordDeep σ) r →
         (ε.op = true → o = true) → HostFx.Le ε.host g → (ε.fails.isSome = true → f = true) →
         V (.fn ps r o g f l) (.closure params body env₁) (.closure params body env₂)
@@ -74,18 +78,37 @@ open Classical in
 /-- The events the observer sees, in order. -/
 noncomputable def proj (tr : Trace) : Trace := tr.filter (fun ev => decide (EvVis p L ev))
 
+/-- A failure: with a code, or with a payload (#512). -/
+def Res.IsFail : Res → Prop
+  | .failed _ | .raised _ _ _ => True
+  | _ => False
+
 /-- A run that ended, with a value or a failure. -/
 def Term : Res → Prop
-  | .ok _ | .failed _ => True
+  | .ok _ | .failed _ | .raised _ _ _ => True
   | .stuck | .outOfFuel | .aborted => False
 
+/-- Two payloads of the variant `c` of the sum kind `k` related field by field, at the fields'
+declared types (#512): a field the observer does not see may differ. -/
+def PayRel (k : String) (c : Nat) (ps₁ ps₂ : List Val) : Prop :=
+  ∃ sm fs, p.sum k = some sm ∧ sm.variants[c]? = some fs ∧ VList p L fs ps₁ ps₂
+
 /-- Two outcomes related: values by `R`, failures with the same code when the observer sees
-what decides them, and one value against one failure only when it does not. -/
+what decides them, failures with a payload (#512) of the same kind and variant with related
+payloads, and one outcome against a different one only when it does not. Every pair of
+terminating outcomes is listed: none is related by default. -/
 def OutRel (R : Val → Val → Prop) (vf : Prop) : Res → Res → Prop
   | .ok a, .ok b => R a b
   | .failed c₁, .failed c₂ => vf → c₁ = c₂
-  | .ok _, .failed _ | .failed _, .ok _ => ¬ vf
-  | _, _ => True
+  | .raised k₁ c₁ ps₁, .raised k₂ c₂ ps₂ => vf → k₁ = k₂ ∧ c₁ = c₂ ∧ PayRel p L k₁ c₁ ps₁ ps₂
+  | .ok _, .failed _ | .failed _, .ok _ | .ok _, .raised _ _ _ | .raised _ _ _, .ok _
+  | .failed _, .raised _ _ _ | .raised _ _ _, .failed _ => ¬ vf
+  -- A run that did not end relates to anything: `BRel` asks both to end. Each such pair is
+  -- listed, with no wildcard, so an outcome added to `Res` must be placed here.
+  | .stuck, _ | .outOfFuel, _ | .aborted, _
+  | .ok _, .stuck | .ok _, .outOfFuel | .ok _, .aborted
+  | .failed _, .stuck | .failed _, .outOfFuel | .failed _, .aborted
+  | .raised _ _ _, .stuck | .raised _ _ _, .outOfFuel | .raised _ _ _, .aborted => True
 
 /-- `internal`. -/
 def internalLabel : Label := ⟨.internal, []⟩
@@ -106,7 +129,7 @@ def WorldRel {H : Host} (w₁ w₂ : World H) : Prop :=
 events and related outcomes, and cannot tell their final worlds apart. -/
 def BRel {H : Host} (R : Val → Val → Prop) (vf : Prop) (r₁ r₂ : Run H) : Prop :=
   Term r₁.2.1 → Term r₂.2.1 →
-    proj p L r₁.1 = proj p L r₂.1 ∧ OutRel R vf r₁.2.1 r₂.2.1 ∧ WorldRel p L r₁.2.2 r₂.2.2
+    proj p L r₁.1 = proj p L r₂.1 ∧ OutRel p L R vf r₁.2.1 r₂.2.1 ∧ WorldRel p L r₁.2.2 r₂.2.2
 
 variable {p L}
 
@@ -150,8 +173,9 @@ mutual
     | _, _, _, _, .ok h, .result f _ _ => .ok (V.flow h f)
     | _, _, _, _, .err h, .result _ f _ => .err (V.flow h f)
     | _, _, _, _, .record hr hfs, .record _ => .record hr hfs
-    | _, _, _, _, .closure hσ hE hΓ hrel h₁ h₂ hb hfl hrl hps hr ho hg hf, .fn fps fr fo fg ff _ =>
-      .closure hσ hE hΓ hrel h₁ h₂ hb hfl hrl (Flows.trans fps hps) (Flow.trans hr fr) (fo ∘ ho) (hg.trans fg)
+    | _, _, _, _, .variant hs hf hfs, .record _ => .variant hs hf hfs
+    | _, _, _, _, .closure hσ hE hΓ hrel h₁ h₂ hb hfl hrl hrs hps hr ho hg hf, .fn fps fr fo fg ff _ =>
+      .closure hσ hE hΓ hrel h₁ h₂ hb hfl hrl hrs (Flows.trans fps hps) (Flow.trans hr fr) (fo ∘ ho) (hg.trans fg)
         (ff ∘ hf)
     | _, _, _, _, .tuple h, .tuple fs _ => .tuple (VList.flows h fs)
 
@@ -182,7 +206,8 @@ theorem V.unraise {t : LTy} {e : LExpr} {a b : Val} (he : Vis p L e) (h : V p L 
       | (exfalso; rename_i hh; exact hh (by simp only [LTy.top] at ht ⊢; exact Vis.join ht he))
       | exact .int | exact .bool | exact .text | exact .unit | exact .list ‹_› | exact .none
       | exact .some ‹_› | exact .ok ‹_› | exact .err ‹_› | exact .record ‹_› ‹_›
-      | exact .closure ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_›
+      | exact .variant ‹_› ‹_› ‹_›
+      | exact .closure ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_›
       | exact .tuple ‹_›
   · exact .hidden ht
 
@@ -318,11 +343,11 @@ theorem World.ext' {w w' : World H} (hfs : w'.fs = w.fs) (hsrv : w'.srv = w.srv)
 event, a failure it ends with is decided above what the observer sees, and the world it leaves
 is one the observer cannot tell from the one it started from. -/
 theorem confined {pc : LExpr} {ε : Eff} {P : Val → Prop} {w : World H} {run : Run H}
-    (hwf : p.HostWF) (h : UOk (Allowed p pc ε) P (Fails p pc ε) w run) (hpc : ¬ Vis p L pc) :
-    proj p L run.1 = [] ∧ (∀ c, run.2.1 = .failed c → ¬ Vis p L ε.failLabel) ∧
+    (hwf : p.HostWF) (h : UOk (Allowed p pc ε) P (FailsAs p pc ε) w run) (hpc : ¬ Vis p L pc) :
+    proj p L run.1 = [] ∧ (run.2.1.IsFail → ¬ Vis p L ε.failLabel) ∧
       WorldRel p L w run.2.2 := by
   obtain ⟨tr, r, w'⟩ := run
-  refine ⟨proj_hidden (fun ev hev hvis => ?_), fun c hc hvis => ?_, ?_⟩
+  refine ⟨proj_hidden (fun ev hev hvis => ?_), fun hc hvis => ?_, ?_⟩
   · have ha := h.1 ev hev
     cases ev with
     | out _ => exact hpc (Vis.of_le ha.2 hvis)
@@ -335,9 +360,13 @@ theorem confined {pc : LExpr} {ε : Eff} {P : Val → Prop} {w : World H} {run :
       rw [hpo] at hpo'
       cases hpo'
       exact hpc (Vis.of_le hle hv)
-  · have hf := h.2.1
-    simp only at hc
-    rw [hc] at hf
+  · have hf : Fails p pc ε := by
+      have h2 := h.2.1
+      simp only at hc h2
+      cases r with
+      | failed _ => exact h2.1
+      | raised _ _ _ => exact h2.1
+      | _ => exact hc.elim
     obtain ⟨l, hl, hle⟩ := hf
     simp only [Eff.failLabel, hl, Option.getD_some] at hvis
     exact hpc (Vis.of_le hle hvis)
@@ -368,14 +397,21 @@ theorem confined {pc : LExpr} {ε : Eff} {P : Val → Prop} {w : World H} {run :
     · simp only at hw ⊢; rw [hw.2.2]
 
 theorem OutRel.mono {R R' : Val → Val → Prop} {vf vf' : Prop} (hR : ∀ a b, R a b → R' a b)
-    (hvf : vf' → vf) : ∀ {r₁ r₂ : Res}, OutRel R vf r₁ r₂ → OutRel R' vf' r₁ r₂
+    (hvf : vf' → vf) : ∀ {r₁ r₂ : Res}, OutRel p L R vf r₁ r₂ → OutRel p L R' vf' r₁ r₂
   | .ok _, .ok _, h => hR _ _ h
   | .failed _, .failed _, h => fun hv => h (hvf hv)
-  | .ok _, .failed _, h => fun hv => h (hvf hv)
-  | .failed _, .ok _, h => fun hv => h (hvf hv)
+  | .raised _ _ _, .raised _ _ _, h => fun hv => h (hvf hv)
+  | .ok _, .failed _, h | .failed _, .ok _, h | .ok _, .raised _ _ _, h | .raised _ _ _, .ok _, h
+  | .failed _, .raised _ _ _, h | .raised _ _ _, .failed _, h => fun hv => h (hvf hv)
   | .ok _, .stuck, _ | .ok _, .outOfFuel, _ | .ok _, .aborted, _ | .failed _, .stuck, _
-  | .failed _, .outOfFuel, _ | .failed _, .aborted, _
+  | .failed _, .outOfFuel, _ | .failed _, .aborted, _ | .raised _ _ _, .stuck, _
+  | .raised _ _ _, .outOfFuel, _ | .raised _ _ _, .aborted, _
   | .stuck, _, _ | .outOfFuel, _, _ | .aborted, _, _ => trivial
+
+/-- A run whose outcome is not a value is passed on by sequencing. -/
+theorem andThen_not_ok {tr : Trace} {r : Res} {w : World H} {k : World H → Val → Run H}
+    (h : ∀ v, r ≠ .ok v) : andThen (tr, r, w) k = (tr, r, w) := by
+  cases r <;> simp_all [andThen]
 
 theorem BRel.mono {R R' : Val → Val → Prop} {vf vf' : Prop} (hR : ∀ a b, R a b → R' a b)
     (hvf : vf' → vf) {r₁ r₂ : Run H} (h : BRel p L R vf r₁ r₂) : BRel p L R' vf' r₁ r₂ :=
@@ -395,9 +431,9 @@ theorem andThen_brel {R₁ R₂ : Val → Val → Prop} {vf vf₁ : Prop} {f₁ 
     (h₂ : ∀ v₁ v₂, f₁.2.1 = .ok v₁ → f₂.2.1 = .ok v₂ → R₁ v₁ v₂ → WorldRel p L f₁.2.2 f₂.2.2 →
       BRel p L R₂ vf (k₁ f₁.2.2 v₁) (k₂ f₂.2.2 v₂))
     (hc₁ : ¬ vf₁ → ∀ v, f₁.2.1 = .ok v → proj p L (k₁ f₁.2.2 v).1 = [] ∧
-      (∀ c, (k₁ f₁.2.2 v).2.1 = .failed c → ¬ vf) ∧ WorldRel p L f₁.2.2 (k₁ f₁.2.2 v).2.2)
+      ((k₁ f₁.2.2 v).2.1.IsFail → ¬ vf) ∧ WorldRel p L f₁.2.2 (k₁ f₁.2.2 v).2.2)
     (hc₂ : ¬ vf₁ → ∀ v, f₂.2.1 = .ok v → proj p L (k₂ f₂.2.2 v).1 = [] ∧
-      (∀ c, (k₂ f₂.2.2 v).2.1 = .failed c → ¬ vf) ∧ WorldRel p L f₂.2.2 (k₂ f₂.2.2 v).2.2) :
+      ((k₂ f₂.2.2 v).2.1.IsFail → ¬ vf) ∧ WorldRel p L f₂.2.2 (k₂ f₂.2.2 v).2.2) :
     BRel p L R₂ vf (andThen f₁ k₁) (andThen f₂ k₂) := by
   intro ht₁ ht₂
   have hf₁ := andThen_term ht₁
@@ -405,9 +441,14 @@ theorem andThen_brel {R₁ R₂ : Val → Val → Prop} {vf vf₁ : Prop} {f₁ 
   obtain ⟨hp, ho, hw⟩ := h₁ hf₁ hf₂
   obtain ⟨tr₁, r₁, w₁⟩ := f₁
   obtain ⟨tr₂, r₂, w₂⟩ := f₂
-  cases r₁ <;> cases r₂ <;> simp only [Term] at hf₁ hf₂
+  simp only at hf₁ hf₂ ho h₂ hc₁ hc₂ hp hw
+  -- A terminating outcome that is not a value is a failure.
+  have hfail : ∀ {r : Res}, Term r → (∀ v, r ≠ .ok v) → r.IsFail := by
+    intro r hr hn; cases r <;> simp_all [Term, Res.IsFail]
+  by_cases ok₁ : ∃ v, r₁ = .ok v <;> by_cases ok₂ : ∃ v, r₂ = .ok v
   · -- both values
-    rename_i v₁ v₂
+    obtain ⟨v₁, rfl⟩ := ok₁
+    obtain ⟨v₂, rfl⟩ := ok₂
     have hk := h₂ v₁ v₂ rfl rfl ho hw
     simp only [andThen] at ht₁ ht₂ ⊢
     revert ht₁ ht₂ hk
@@ -417,30 +458,43 @@ theorem andThen_brel {R₁ R₂ : Val → Val → Prop} {vf vf₁ : Prop} {f₁ 
     obtain ⟨hp', ho', hw'⟩ := hk ht₁ ht₂
     exact ⟨by simp only [proj_append]; rw [hp, hp'], ho', hw'⟩
   · -- a value, then a failure
-    rename_i v₁ c₂
-    have hnv : ¬ vf₁ := ho
+    obtain ⟨v₁, rfl⟩ := ok₁
+    have hn₂ : ∀ v, r₂ ≠ .ok v := fun v h => ok₂ ⟨v, h⟩
+    have hF₂ := hfail hf₂ hn₂
+    have hnv : ¬ vf₁ := by cases r₂ <;> simp_all [OutRel, Res.IsFail]
     obtain ⟨hpk, hfk, hwk⟩ := hc₁ hnv v₁ rfl
+    rw [andThen_not_ok hn₂]
     simp only [andThen] at ht₁ ⊢
     revert ht₁ hpk hfk hwk
     rcases k₁ w₁ v₁ with ⟨tk, rk, wk⟩
     intro ht₁ hpk hfk hwk
     refine ⟨by simp only [proj_append]; rw [hpk, List.append_nil]; exact hp, ?_, hwk.symm.trans hw⟩
-    cases rk <;> simp only [Term] at ht₁ <;> simp only [OutRel]
-    · exact fun hv => hnv (hvf hv)
-    · exact fun hv => absurd hv (hfk _ rfl)
+    simp only at ht₁ hfk ⊢
+    have hnvf : ¬ vf := fun hv => hnv (hvf hv)
+    cases rk <;> cases r₂ <;> simp_all [OutRel, Term, Res.IsFail]
   · -- a failure, then a value
-    rename_i c₁ v₂
-    have hnv : ¬ vf₁ := ho
+    obtain ⟨v₂, rfl⟩ := ok₂
+    have hn₁ : ∀ v, r₁ ≠ .ok v := fun v h => ok₁ ⟨v, h⟩
+    have hnv : ¬ vf₁ := by cases r₁ <;> simp_all [OutRel, Res.IsFail, Term]
     obtain ⟨hpk, hfk, hwk⟩ := hc₂ hnv v₂ rfl
+    rw [andThen_not_ok hn₁]
     simp only [andThen] at ht₂ ⊢
     revert ht₂ hpk hfk hwk
     rcases k₂ w₂ v₂ with ⟨tk, rk, wk⟩
     intro ht₂ hpk hfk hwk
     refine ⟨by simp only [proj_append]; rw [hpk, List.append_nil]; exact hp, ?_, hw.trans hwk⟩
-    cases rk <;> simp only [Term] at ht₂ <;> simp only [OutRel]
-    · exact fun hv => hnv (hvf hv)
-    · exact fun hv => absurd hv (hfk _ rfl)
+    simp only at ht₂ hfk ⊢
+    have hnvf : ¬ vf := fun hv => hnv (hvf hv)
+    cases rk <;> cases r₁ <;> simp_all [OutRel, Term, Res.IsFail]
   · -- both failures
-    exact ⟨hp, fun hv => ho (hvf hv), hw⟩
+    have hn₁ : ∀ v, r₁ ≠ .ok v := fun v h => ok₁ ⟨v, h⟩
+    have hn₂ : ∀ v, r₂ ≠ .ok v := fun v h => ok₂ ⟨v, h⟩
+    rw [andThen_not_ok hn₁, andThen_not_ok hn₂]
+    refine ⟨hp, ?_, hw⟩
+    cases r₁ <;> cases r₂ <;> simp only [Term] at hf₁ hf₂ <;>
+      first
+      | exact absurd rfl (hn₁ _)
+      | exact absurd rfl (hn₂ _)
+      | exact fun hv => ho (hvf hv)
 
 end Una.F1
