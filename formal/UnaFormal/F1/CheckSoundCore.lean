@@ -31,6 +31,11 @@ mutual
       obtain ⟨hfind, hnv, hlen, hfc, heq, hg⟩ := callable_sound hc
       exact ⟨_, .call hfind hnv hlen hfc heq hg (atomsTy_sound hts) (flowsB_sound _ _ hfl)
         (boundB_sound hb) (relBoundB_sound hrb), flowTo_ok hf⟩
+    | .invoke f args, ε, h => by
+      simp only [checkRhs, bind_ok, pure_ok, need_ok, some_ok, List.isEmpty_iff] at h
+      obtain ⟨fn, hfind, acc, hacc, _, htp, ts, hts, _, hfl, _, hle, _, hsf, _, hf, rfl⟩ := h
+      exact ⟨_, .invoke hfind hacc htp (atomsTy_sound hts) (flowsB_sound _ _ hfl) (le_ok hle)
+        (symFree_sound hsf), flowTo_ok hf⟩
     | .apply f args, ε, h => by
       simp only [checkRhs, bind_ok] at h
       obtain ⟨ft, hft, h⟩ := h

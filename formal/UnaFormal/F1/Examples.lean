@@ -55,7 +55,7 @@ theorem lT_join_le : LExpr.le prog.top (lT.join LExpr.bot) lT :=
 the type argument's own labels. -/
 theorem pick_ok : prog.FunOk pick := by
   refine ⟨.var "T" (lT.join .bot),
-    ⟨false || false, HostFx.none.or HostFx.none, Option.none, [] ++ [], false || false, [] ++ []⟩,
+    ⟨false || false, HostFx.none.or HostFx.none, Option.none, [] ++ [], false || false, [] ++ [], LExpr.bot.join LExpr.bot⟩,
     ?_, .var lT_join_le, by simp, ⟨id, id, id⟩, by simp, ?_, by simp, by simp, by simp⟩
   · have hthen : LExprTy prog [] [("a", .var "T" lT), ("b", .var "T" lT), ("c", .bool .bot)]
         (LExpr.bot.join .bot) (.atom (.var "a")) (.var "T" lT) .none :=
@@ -82,6 +82,7 @@ theorem prog_wf : prog.LWellFormed where
   recordsGround _ h := by simp [prog] at h
   sums := by simp [prog]
   disjoint _ := .inr (by simp [Program.sum, prog])
+  ops _ h := by simp [prog] at h
   eqScoped := by simp [prog, pick]
   sigsScoped := by
     simp only [prog, List.mem_singleton]

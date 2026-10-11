@@ -451,7 +451,7 @@ def Program.sd (p : Program) (σ : List (String × LTy)) : List (String × LExpr
 
 /-- Effects instantiated: the labels of failures. -/
 def Eff.inst (s : List (String × LExpr)) (ε : Eff) : Eff :=
-  ⟨ε.op, ε.host, ε.fails.map (·.inst s), ε.rels, ε.codes, ε.raises⟩
+  ⟨ε.op, ε.host, ε.fails.map (·.inst s), ε.rels, ε.codes, ε.raises, ε.dl.inst s⟩
 
 /-- A ground instantiation. -/
 abbrev GroundSubst (σ : List (String × LTy)) : Prop := ∀ q ∈ σ, q.2.Ground

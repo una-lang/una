@@ -17,7 +17,7 @@ mutual
   /-- The functions a right-hand side names: its calls and its function values, lambdas
   included. The typing finds each in the program (`reach_closed`). -/
   def Rhs.callees : Rhs → List String
-    | .call f _ _ | .funRef f _ => [f]
+    | .call f _ _ | .funRef f _ | .invoke f _ => [f]
     | .lambda _ b => b.callees
     | _ => []
 
@@ -92,6 +92,16 @@ def sumOk (p : Program) (sm : Sum) : Bool :=
     ground t && inPlace t && tyClosed t.erase && tyCats p.categories t &&
       leB p.top (p.deep t) (.ofLabel sm.deep)
 
+/-- The parts of `Program.LWellFormed` about an operation with a handler (#524, Hu): a function of
+the program, not generic, that releases nothing and performs no host operation, takes scalars, and
+whose operations are at or above the operation's `accepts` (the effect floor). -/
+def opOk (p : Program) (q : String × Label) : Bool :=
+  match p.find q.1 with
+  | some fn => fn.tparams.isEmpty && fn.rels.isEmpty && fn.host.isNone &&
+      (!fn.op || leB p.top (.ofLabel q.2) (.ofLabel p.acceptsOp)) &&
+      fn.params.all (fun r => isScalar r.2) && !isVia p q.1
+  | none => false
+
 /-- The parts of `Program.LWellFormed` about a policy: closed types with `ℓ_T` in place, and a
 `via` function whose structural signature is the policy's, `from` to `to`. -/
 def policyOk (p : Program) (po : Policy) : Bool :=
@@ -121,6 +131,7 @@ def progDocOk (p : Program) : Bool :=
   hostWfB p &&
   p.records.all (recordOk p) &&
   p.sums.all (sumOk p) &&
+  p.ops.all (opOk p) &&
   p.policies.all (policyOk p) &&
   catsDeclared p &&
   b1Ok p

@@ -21,7 +21,7 @@ mutual
   def Rhs.hostFree : Rhs → Bool
     | .read _ | .write _ _ | .req _ _ | .envGet _ => false
     | .lambda _ b => b.hostFree
-    | .atom _ | .prim _ _ | .call _ _ _ | .apply _ _ | .op _ | .construct _ _ | .variant _ _ _ | .field _ _
+    | .atom _ | .prim _ _ | .call _ _ _ | .invoke _ _ | .apply _ _ | .op _ | .construct _ _ | .variant _ _ _ | .field _ _
     | .list _ | .none | .some _ | .first _ | .mkOk _ | .mkErr _ | .funRef _ _ | .declassify _ _ | .map _ _ | .filter _ _
     | .firstWhere _ _ | .fold _ _ _ | .parse _ | .checked _ _ _ | .eq _ _ | .tuple _ | .append _ _ | .set _ _ _
     | .toText _ => true
@@ -362,6 +362,19 @@ theorem eval_hostFreeIn
               subst hv
               exact evalPrim_hostFree hpr
       | call f targs args =>
+        simp only [evalRhs]
+        cases hfd : p.find f with
+        | none => exact SameOn.stuck w u
+        | some fn =>
+          cases ha : evalAtoms env args with
+          | none => exact SameOn.stuck w u
+          | some vs =>
+            simp only []
+            split
+            · have hfn := hp f fn hfd (hc f (by simp [Rhs.callees]))
+              exact ihE w u _ _ (bindParams_hostFree _ (evalAtoms_hostFree hf ha) trivial) hfn.1 hfn.2
+            · exact SameOn.stuck w u
+      | invoke f args =>
         simp only [evalRhs]
         cases hfd : p.find f with
         | none => exact SameOn.stuck w u

@@ -201,14 +201,14 @@ theorem progOk_sound {cond : List String} {p : Program} (h : progOk cond p = tru
     (hA3 : ∀ fn ∈ p.funs, fn.name ∈ cond → ¬ p.IsVia fn.name → p.FunOk fn) :
     p.LWellFormed ∧ p.B1WellFormed ∧ p.HostWF := by
   simp only [progOk, progDocOk, recordOk, sumOk, policyOk, Bool.and_eq_true, List.all_eq_true] at h
-  obtain ⟨⟨⟨⟨⟨⟨hhost, hrec⟩, hsum⟩, hpol⟩, hcats⟩, hb1⟩, hfuns⟩ := h
+  obtain ⟨⟨⟨⟨⟨⟨⟨hhost, hrec⟩, hsum⟩, hops⟩, hpol⟩, hcats⟩, hb1⟩, hfuns⟩ := h
   have hfun := fun fn hfn => by
     have := hfuns fn hfn
     simp only [progFunOk, Bool.and_eq_true, List.all_eq_true] at this
     exact this
   -- The fields of `Program.LWellFormed`, in order: funs, records, recordDeep, policies,
-  -- categories, recordsGround, eqScoped, sigsScoped, sums, disjoint, inPlace.
-  refine ⟨⟨?_, ?_, ?_, ?_, catsDeclared_sound hcats, ?_, ?_, ?_, ?_, ?_, ⟨?_, ?_, ?_⟩⟩,
+  -- categories, recordsGround, eqScoped, sigsScoped, sums, disjoint, ops, inPlace.
+  refine ⟨⟨?_, ?_, ?_, ?_, catsDeclared_sound hcats, ?_, ?_, ?_, ?_, ?_, ?_, ⟨?_, ?_, ?_⟩⟩,
     b1Ok_sound hb1, hostWfB_sound hhost⟩
   · intro fn hfn
     obtain ⟨_, hv⟩ := hfun fn hfn
@@ -251,6 +251,27 @@ theorem progOk_sound {cond : List String} {p : Program} (h : progOk cond p = tru
       have := (hsum sm hmem).1
       rw [hname] at this
       simpa using this
+  · -- Handlers of operations (#524): `opOk` checks the effect floor and the restrictions.
+    intro q hq
+    have h := hops q hq
+    unfold opOk at h
+    split at h
+    · rename_i fn hfn
+      simp only [Bool.and_eq_true, List.isEmpty_iff, Bool.not_eq_true', List.all_eq_true,
+        Bool.or_eq_true, HostFx.isNone] at h
+      obtain ⟨⟨⟨⟨⟨htp, hrels⟩, ⟨⟨hrd, hwr⟩, hrq⟩⟩, hop⟩, hsc⟩, hnv⟩ := h
+      refine ⟨fn, hfn, htp, hrels, ?_, fun ho => ?_, fun r hr => isScalar_sound (hsc r hr),
+        isVia_false hnv⟩
+      · have hn : ∀ g : HostFx, g.rd = false → g.wr = false → g.rq = false → g = HostFx.none := by
+          rintro ⟨_, _, _⟩ h1 h2 h3
+          simp only at h1 h2 h3
+          subst h1 h2 h3
+          rfl
+        exact hn _ hrd hwr hrq
+      · rcases hop with h | h
+        · simp [ho] at h
+        · exact leB_sound h
+    · simp at h
   · intro fn hfn
     have := (hfun fn hfn).1
     exact ⟨fun q hq => inPlace_sound (this.1.2 q hq), inPlace_sound this.2⟩
@@ -299,6 +320,13 @@ mutual
       subst hg
       cases h with
       | funRef hf hnv => exact ⟨_, hf, found_funOk hwf hf hnv⟩
+    | .invoke f _, _, _, _, _, h, g, hg => by
+      simp only [Rhs.callees, List.mem_singleton] at hg
+      subst hg
+      cases h with
+      | invoke hf hacc =>
+        obtain ⟨fn', hf', _, _, _, _, _, hnv⟩ := hwf.ops _ (lookup_some_mem hacc)
+        exact ⟨_, hf, found_funOk hwf hf hnv⟩
     | .lambda _ b, _, _, _, _, h, g, hg => by
       simp only [Rhs.callees] at hg
       cases h with

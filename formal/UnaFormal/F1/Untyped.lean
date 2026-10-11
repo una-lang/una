@@ -67,7 +67,7 @@ theorem branch_bound {Γ : LCtx} {pc : LExpr} {a₁ a₂ s : LTy} {ε : Eff} {E 
 the value's failure. -/
 theorem attempt_inv {Γ : LCtx} {pc : LExpr} {E : List String} {x : String} {ann : LTy} {v : Rhs}
     {t : LTy} {ε : Eff} (h : LExprTy P E Γ pc (.attempt (.letR x ann v (.atom (.var x)))) t ε) :
-    ∃ tc t' ε', LRhsTy P E Γ pc v t' ε' ∧ t = .result tc (.int .bot) (ε'.union .none).failLabel := by
+    ∃ tc t' ε', LRhsTy P E Γ pc v t' ε' ∧ t = .result tc (.int .bot) (ε'.union .none).dl := by
   cases h with
   | attempt hb _ =>
     cases hb with
@@ -75,9 +75,9 @@ theorem attempt_inv {Γ : LCtx} {pc : LExpr} {E : List String} {x : String} {ann
       cases hbody with
       | atom _ => exact ⟨_, _, _, hr, rfl⟩
 
-theorem failLabel_some {o : Bool} {g : HostFx} {l : LExpr} {rs : List String} {cd : Bool}
-    {ra : List String} : ((⟨o, g, some l, rs, cd, ra⟩ : Eff).union .none).failLabel = l := by
-  simp [Eff.union, Eff.failLabel, Eff.none]
+theorem dl_some {o : Bool} {g : HostFx} {l : LExpr} {rs : List String} {cd : Bool}
+    {ra : List String} {d : LExpr} : ((⟨o, g, some l, rs, cd, ra, d⟩ : Eff).union .none).dl = d.join .bot := by
+  simp [Eff.union, Eff.none]
 
 /-- **S-14 under ADR 0085's rules has no typing**, for every file-state label and every
 annotation. -/
@@ -110,11 +110,12 @@ theorem s14_untyped (hold : P.oldHost = false) {lx : LExpr} (hx : ¬ P.le lx (.o
       cases hrd with
       | read hp _ _ _ =>
         cases hp
-        rw [failLabel_some] at hflow
+        rw [dl_some] at hflow
         cases hflow with
         | result _ _ hls =>
           apply hx
           refine LExpr.le_trans hfs (LExpr.le_trans ?_ (LExpr.le_trans hls hop))
+          refine LExpr.le_trans ?_ (LExpr.le_join_left _ _)
           simp only [Program.fsFail, hold, Bool.false_eq_true, ite_false]
           exact LExpr.le_join_right _ _
 
@@ -158,8 +159,10 @@ theorem s15_untyped (hold : P.oldHost = false) {lx : LExpr} (hx : ¬ P.le lx (.o
                         | result _ _ hls =>
                           apply hx
                           refine LExpr.le_trans ?_ (LExpr.le_trans hls hop)
-                          simp only [Program.reqFail, hold, Bool.false_eq_true, ite_false,
-                            Option.getD_some]
+                          refine LExpr.le_trans ?_ (LExpr.le_join_right _ _)
+                          refine LExpr.le_trans ?_ (LExpr.le_join_right _ _)
+                          refine LExpr.le_trans ?_ (LExpr.le_join_left _ _)
+                          simp only [Program.reqFail, hold, Bool.false_eq_true, ite_false]
                           refine LExpr.le_trans ?_ (LExpr.le_join_left _ _)
                           refine LExpr.le_trans ?_ (LExpr.le_join_right _ _)
                           exact LExpr.le_joinAll (List.mem_map.mpr ⟨LTy.text lx, by simp, rfl⟩)
@@ -206,12 +209,13 @@ theorem s14rbw_untyped (hold : P.oldHost = false) {lx : LExpr}
         cases hrd with
         | read hpath _ _ _ =>
           cases hpath
-          rw [failLabel_some] at hflow
+          rw [dl_some] at hflow
           cases hflow with
           | result _ _ hls =>
             apply hx
             refine LExpr.le_trans (LExpr.le_trans (LExpr.le_join_right _ _) hfs)
               (LExpr.le_trans ?_ (LExpr.le_trans hls hop))
+            refine LExpr.le_trans ?_ (LExpr.le_join_left _ _)
             simp only [Program.fsFail, hold, Bool.false_eq_true, ite_false]
             exact LExpr.le_join_right _ _
 
@@ -260,11 +264,12 @@ theorem s14cond_untyped (hold : P.oldHost = false) {lc : LExpr}
       cases hrd with
       | read hp _ _ _ =>
         cases hp
-        rw [failLabel_some] at hflow
+        rw [dl_some] at hflow
         cases hflow with
         | result _ _ hls =>
           apply hc
           refine LExpr.le_trans hfs (LExpr.le_trans ?_ (LExpr.le_trans hls hop))
+          refine LExpr.le_trans ?_ (LExpr.le_join_left _ _)
           simp only [Program.fsFail, hold, Bool.false_eq_true, ite_false]
           exact LExpr.le_join_right _ _
 

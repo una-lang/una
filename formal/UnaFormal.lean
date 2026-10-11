@@ -18,6 +18,7 @@ import UnaFormal.F1.Mono
 import UnaFormal.F1.T6Example
 import UnaFormal.F1.Subst
 import UnaFormal.F1.InPlace
+import UnaFormal.F1.Decision
 import UnaFormal.F1.Check
 import UnaFormal.F1.Import
 import UnaFormal.F1.CheckTests
@@ -51,6 +52,9 @@ import UnaFormal.F1.ResultExample
 import UnaFormal.F1.RecordExample
 import UnaFormal.F1.ArithExample
 import UnaFormal.F1.SumExample
+import UnaFormal.F1.HandlerExample
+import UnaFormal.F1.HandlerImportTests
+import UnaFormal.F1.DecisionExample
 import UnaFormal.F1.FirstExample
 import UnaFormal.F1.LoopLeak
 import UnaFormal.F1.LoopExample

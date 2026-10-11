@@ -30,6 +30,7 @@ mutual
     | .write a c => .write a c
     | .req m args => .req m args
     | .construct r fs => .construct r fs
+    | .invoke f args => .invoke (ρ f) args
     | .variant k i fs => .variant k i fs
     | .field v i => .field v i
     | .list items => .list items
@@ -460,6 +461,19 @@ theorem eval_anon (hH : H.AnonInvariant) (h4 : H.RespTyped) (hf : ∀ f, (P.find
           · simp [runAnon, Res.anon]
           · cases evalPrim pr vs <;> simp [runAnon, Res.anon]
       | call f targs args =>
+        simp only [evalRhs, Rhs.anon, evalAtoms_anon, ← hf f]
+        cases P.find f with
+        | none => simp [runAnon_stuck]
+        | some fn =>
+          cases evalAtoms env args with
+          | none => simp [runAnon_stuck]
+          | some vs =>
+            simp only [Option.map_some, Fun.anon, List.length_map, anonParams_length]
+            split
+            · rw [ihE, bindParams_anon fn.params (anonParams fn.params) (anonParams_fst _).symm]
+              rfl
+            · rfl
+      | invoke f args =>
         simp only [evalRhs, Rhs.anon, evalAtoms_anon, ← hf f]
         cases P.find f with
         | none => simp [runAnon_stuck]

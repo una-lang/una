@@ -380,6 +380,12 @@ mutual
           if vs.length = fn.params.length then eval H n p w (bindParams fn.params vs []) fn.body
           else stuck w
         | _, _ => stuck w
+      | .invoke f args =>
+        match p.find f, evalAtoms env args with
+        | some fn, some vs =>
+          if vs.length = fn.params.length then eval H n p w (bindParams fn.params vs []) fn.body
+          else stuck w
+        | _, _ => stuck w
       | .apply f args =>
         match evalAtom env f, evalAtoms env args with
         | some fv, some vs => applyWith (eval H n p) w fv vs

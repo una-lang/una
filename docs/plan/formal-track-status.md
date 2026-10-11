@@ -1,7 +1,7 @@
 # Formal track: status
 
 - Issue: #476, under #46
-- Date: 2026-10-10, on `main` 9714ec4c (after #474)
+- Date: 2026-10-11, on #524's tip 1abfcf7c (`main` b674910d with #524)
 - Plan: `docs/plan/formal-track.md`; details in the milestone documents `formal-track-m2.md` to `formal-track-m5.md`
 
 ## In plain language
@@ -9,32 +9,41 @@
 Una claims that a program `una check` accepts does not leak: for an observer at a label, two runs whose secrets differ look the same, except for what a declassification policy releases (T6, `spec/07 §1`). Until this track, that claim rested on tests, and 12 leaks (S-01 to S-12) were found in released versions.
 
 Now there is a proof in Lean, and a checker that applies it to real programs:
-- **The proof.** For a model of Una's core language, F1, T6 is proven with no `sorry` and only Lean's standard axioms. F1 covers functions and closures, generics, failures, declassification, and the host's files and HTTP as state that runs share. Type safety (T1) is proven too.
+- **The proof.** For a model of Una's core language, F1, T6 is proven with no `sorry` and only Lean's standard axioms. F1 covers functions and closures, generics, failures with codes and payloads, sum kinds, declassification, the handlers a document declares for its own capabilities (#524), and the host's files and HTTP as state that runs share. Type safety (T1) is proven too.
 - **The re-check.** A Lean program, `una-core-check`, reads what `una core --json` exports of a package and checks it again, by rules proven sound. It answers per declaration: accepted, rejected, not re-checked, or outside the flow model (a refinement predicate, #532).
 - **Accepted means proven.** Each accepted declaration is part of a whole program that the Lean checker certified, and a theorem gives that program T6. A form the model lacks gives "not re-checked", never "accepted".
 - **Replay.** The re-check rejects the leaking programs of 8 of the 12 findings (S-01 and S-06 to S-12), run on the Core that their pre-fix releases printed. The other 4 are not replayed: S-02 (JSON) and S-04 (`edit`) are outside F1, S-05 (`Files.write`) is replayed from v0.1.3's dumps, with the file-state label taken from v0.3.6: 4 of its 5 shapes are rejected and the fifth is not re-checked (#498). S-03 (`Http`) is not replayable from any release, since `Http` first shipped after its fix.
-- **Corpus.** Every conformance case and example: 643 declarations accepted, 0 rejected. That is about 15% of the corpus's 4,208 declarations (36% of the 1,768 in complete documents). Most Una code is still outside F1: `pred` declarations, tuples, handlers, primitives such as `concat`, `div` and `mul`, `with` and `together`, and documents the export marks incomplete. So "0 rejected" means that no checked declaration disagrees with the proof, not that the whole corpus is proven.
+- **Corpus.** Every conformance case and example: 1,176 declarations accepted, 0 rejected. That is about 27% of the corpus's 4,330 declarations (70% of the 1,687 in complete documents, `pred` declarations aside). Most of the rest is outside F1: tuples, primitives such as `div` and `mul`, handlers installed with `with` or from outside the document, `together`, and documents the export marks incomplete. So "0 rejected" means that no checked declaration disagrees with the proof, not that the whole corpus is proven.
 
 The track found three real leaks in released versions, S-14 to S-16, all fixed and released. Each total it reported was corrected whenever a review found a gap, and every correction lowered or held the count of accepts, except where a new theorem backed them.
 
 ## The corpus today
 
-On 1,329 documents (every conformance case and example, exported by `main`):
+On 1,352 documents (every conformance case and example, exported by #524's tip), source declarations only:
 
-| Outcome | Declarations |
-| --- | --- |
-| Accepted | 643 |
-| Rejected | 0 |
-| Not re-checked, in complete documents | 1,125 |
-| Not re-checked: the document is not complete | 2,440 |
+| Outcome | Declarations | In documents `una check` accepts | In documents with errors |
+| --- | --- | --- | --- |
+| Accepted | 1,176 | 643 | 533 |
+| Rejected | 0 | 0 | 0 |
+| Not re-checked, in complete documents | 511 | | |
+| Not re-checked: the document is not complete | 2,530 | | |
+| Not re-checked, in all | 3,041 | 336 | 2,705 |
+| Outside the flow model (`pred`) | 113 | 95 | 18 |
 
-"Not re-checked" is mostly forms outside F1: tuples, handlers, fixed-width integers, primitives F1 lacks (`concat`, `div`, `mul`), `with` and `together`. A declaration that reaches one of these is not re-checked either.
+A document "with errors" is one `una check` rejects for any reason, often a refinement it refutes (U5001), while its other declarations still check; an accepted declaration there is accepted on its own information flow. The table counts each declaration once (a conformance case that declares a name twice prints two lines).
+
+"Not re-checked" is mostly forms outside F1: tuples, fixed-width integers, primitives F1 lacks (`div`, `mul`), `with` and `together`. A declaration that reaches one of these is not re-checked either.
+
+**Synthesized handler lines** (#524), counted apart, outside the table: the re-check reads each handler operation a document declares for its own capability as a function, `module.handler.op`, and reports it on its own line. They are not source declarations, so the headline stays comparable with every earlier figure. On this export: 19 lines, 17 accepted and 2 not re-checked (a parameter of a type F1 does not read). A declaration that invokes a handler the re-check rejects, or does not read, is not re-checked.
+
+**The decision label** (#524, ruling D): `attempt` and a handler label what they give by what decides the failure, without the program counter, so an operation's failure handled inside a secret branch keeps a public result, as `una check` types it. T6's statement is unchanged; its proof relates failures where that label is seen (`docs/plan/formal-track-handlers.md` §4a).
 
 A `pred` declaration is counted apart, as "outside the flow model" (#532): a refinement predicate is pure and its labels are erased (`spec/07 §7` rule 6), so it is outside the flow model by design. The count covers only the documents the re-check reads declaration by declaration. When a whole document falls back to one outcome (it is not complete, it declares a capability named as one of the host's, it declares `Header` or `Response` otherwise than `spec/24 §1`, or it has a policy F1 cannot read), every declaration with code is "not re-checked", its predicates included.
 
 History of "accepted":
 - M2 accepted 601, on v0.3.4's export of 1,276 documents. After #443's keys, `main` accepted 647, and #452 removed the 37 without a theorem: 610.
 - On the re-export of 1,327 documents, the count was 641 before A2. Then: A2 556, plus 82 conditional; A3 638; M5b 642 (1,329 documents); M5c 643.
+- Later items widened F1, each with its own corpus delta: 1,173 on the 1,352-document export before #524, 1,176 after it (3 declarations that invoke handlers).
 
 ## Corrections to earlier totals
 
@@ -79,7 +88,7 @@ A declaration whose program uses no host operation, and whose parameters cannot 
 - timing, termination and resource limits: T6 is termination-insensitive, and an abort is termination;
 - other writers: the file system changes only by the package's own writes, during and between runs, and the servers do not write it;
 - the network's nondeterminism: the model's request is a function of the URL, the arguments and the server's state;
-- handler bodies: what a package's capability handler does is outside the reach set until M7 (F2, T4).
+- handler bodies the re-check does not read: a handler installed with `with`, or one from outside the document, is outside the reach set until M7 (F2, T4). A handler a document declares for its own capability is read and checked (#524); the theorems hold for every handler `una check` accepted (premise Hu), not for forged or unchecked Core.
 
 **The trusted base:**
 - elaboration from the surface language to Core;
@@ -89,7 +98,7 @@ A declaration whose program uses no host operation, and whose parameters cannot 
 ## What is left
 
 - **M6:** `edit` and loops (ADR 0071, ADR 0075), the memory model's label rules. This is the fragment where S-04 lives.
-- **M7:** F2 and T4: capabilities as parameters, `with` and handlers, which removes the handler assumption.
+- **M7:** F2 and T4: capabilities as parameters, `with` (#538) and handlers from outside the document, which removes the rest of the handler assumption.
 - **Small items:**
   - #475, an accurate note when only a function parameter blocks the any-host claim (cosmetic);
   - #453, the widening of `checked`;
