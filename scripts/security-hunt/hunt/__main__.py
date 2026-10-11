@@ -68,7 +68,8 @@ def cmd_run(a, which):
             tally = drivers.must_reject(rows, a.una, root, a.timeout, out)
         elif which == "differ":
             tally = drivers.differ(rows, a.una, os.path.realpath(a.core_check), root,
-                                   a.timeout, out)
+                                   a.timeout, out,
+                                   z3=os.path.realpath(a.z3) if a.z3 else None)
         else:
             tally = drivers.must_keep(rows, a.una, root, a.timeout, out,
                                       tuple(a.refactors.split(",")))
@@ -103,6 +104,8 @@ def main(argv=None):
         if name == "differ":
             c.add_argument("--core-check", required=True,
                            help="the una-core-check executable (formal/.lake/build/bin)")
+            c.add_argument("--z3", help="the solver for the residual class's full check "
+                           "(N-138); without it those rows are invalid")
     a = ap.parse_args(argv)
     if a.cmd == "gen":
         cmd_gen(a)

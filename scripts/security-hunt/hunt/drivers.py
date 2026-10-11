@@ -242,7 +242,7 @@ def judge_differ(exp, core_text, rec, main=None, expect_main=""):
     return out
 
 
-def differ(rows, una, core_check, root, timeout, out):
+def differ(rows, una, core_check, root, timeout, out, z3=None):
     """Part (b): for each program `una check` accepts, exports its Core and runs the re-check on
     it, and judges with `judge_differ`. A `finding` goes to the coordinator before any
     interpretation; an `unknown` blocks the campaign's "no finding" until it is understood.
@@ -268,14 +268,24 @@ def differ(rows, una, core_check, root, timeout, out):
             tally[(row["op"], MUST_ACCEPT, v.kind)] += 1
         elif prog.cls == RESIDUAL:
             # Descriptive (N-138): both tiers' verdicts are recorded. The full check is where the
-            # `overflow` and `division` obligations are decided, the guard of this channel. A
-            # public print that full check accepts goes to triage, never discarded.
-            full = sandbox.run([una, "--json", "check", "."], cwd=pkg, writable=root,
-                               timeout=timeout, env_extra=solver_path())
-            fv = parse_check(full)
-            result["full"] = fv.row()
-            result["triage"] = fv.kind == "accepted" and prog.variant.endswith("-print-after")
-            tally[(row["op"], RESIDUAL, "tier0 " + v.kind, "full " + fv.kind)] += 1
+            # `overflow` and `division` obligations are decided, the guard of this channel, so it
+            # needs the solver: without it, or with U5003, the row is invalid, never a rejection,
+            # and the batch is rerun. A public print either check accepts goes to triage.
+            result["triage_tier0"] = (v.kind == "accepted"
+                                      and prog.variant.endswith("-print-after"))
+            if not z3:
+                result["full"], fv_kind = None, "invalid (no solver)"
+            else:
+                full = sandbox.run([una, "--json", "check", "."], cwd=pkg, writable=root,
+                                   timeout=timeout, env_extra=solver_env(z3))
+                fv = parse_check(full)
+                result["full"] = fv.row()
+                fv_kind = fv.kind
+                if any(c[0] == "U5003" for c in fv.codes):
+                    fv_kind = "invalid (U5003)"
+            result["invalid"] = fv_kind.startswith("invalid")
+            result["triage"] = fv_kind == "accepted" and prog.variant.endswith("-print-after")
+            tally[(row["op"], RESIDUAL, "tier0 " + v.kind, "full " + fv_kind)] += 1
         if v.kind == "accepted":
             exp = sandbox.run([una, "--json", "core", "."], cwd=pkg, writable=root,
                               timeout=timeout)
@@ -309,12 +319,10 @@ def differ(rows, una, core_check, root, timeout, out):
     return tally
 
 
-def solver_path():
-    """The `PATH` for a full check: the solver's directory, if one is installed, before the
-    sandbox's own. Without it, the check reports U5003, which is recorded as it is."""
-    import shutil
-    z3 = shutil.which("z3")
-    return {"PATH": os.path.dirname(z3) + ":/usr/bin:/bin"} if z3 else None
+def solver_env(z3):
+    """The `PATH` for a full check: the directory of the solver `z3` first, then the sandbox's
+    own."""
+    return {"PATH": os.path.dirname(os.path.realpath(z3)) + ":/usr/bin:/bin"}
 
 
 def read_manifest(path):
