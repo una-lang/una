@@ -234,6 +234,44 @@ class Generators(unittest.TestCase):
         self.assertEqual([r["outcome"] for r in rows], ["accepted", "not re-checked"])
         self.assertEqual(rows[1]["note"], "the type `X`")
 
+    DOC = json.dumps({"schema": "una.core/1", "complete": True, "modules": [
+        {"path": "app.main", "decls": [{"kind": "fun", "value": {"name": "run"}},
+                                       {"kind": "fun", "value": {"name": "same"}}]}]})
+    LINES = "c.json\tapp.main.run\taccepted\t\nc.json\tapp.main.same\tnot re-checked\twhy\n"
+
+    def judge(self, exp=None, doc=None, rec=None):
+        exp = exp or Run(0, doc if doc is not None else self.DOC, "", False, 0.1)
+        return drivers.judge_differ(exp, exp.stdout, rec)
+
+    def test_differ_clean_needs_every_condition(self):
+        self.assertEqual(self.judge(rec=Run(0, self.LINES, "", False, 0.1))["kind"], "clean")
+
+    def test_differ_rejected_is_a_finding(self):
+        lines = self.LINES.replace("not re-checked\twhy", "rejected\ta flow")
+        self.assertEqual(self.judge(rec=Run(1, lines, "", False, 0.1))["kind"], "finding")
+
+    def test_differ_unknown_cases(self):
+        rec_ok = Run(0, self.LINES, "", False, 0.1)
+        incomplete = self.DOC.replace('"complete": true', '"complete": false')
+        cases = {
+            "export timeout": dict(exp=Run(None, "", "", True, 9), rec=None),
+            "export exit": dict(exp=Run(1, "", "boom", False, 0.1), rec=None),
+            "export not JSON": dict(doc="not json", rec=rec_ok),
+            "incomplete": dict(doc=incomplete, rec=rec_ok),
+            "re-check did not run": dict(rec=None),
+            "re-check timeout": dict(rec=Run(None, "", "", True, 9)),
+            "re-check crash": dict(rec=Run(3, self.LINES, "panic", False, 0.1)),
+            "error outcome": dict(rec=Run(1, "c.json\t-\terror\tbad\n", "", False, 0.1)),
+            "exit 1 without rejected": dict(rec=Run(1, self.LINES, "", False, 0.1)),
+            "missing declaration": dict(rec=Run(0, self.LINES.split("\n")[0] + "\n", "", False, 0.1)),
+            "no output": dict(rec=Run(0, "", "", False, 0.1)),
+            "odd outcome": dict(rec=Run(0, self.LINES.replace("accepted", "maybe"), "", False, 0.1)),
+        }
+        for name, kw in cases.items():
+            j = self.judge(**kw)
+            self.assertEqual(j["kind"], "unknown", name)
+            self.assertTrue(j["detail"], name)
+
     def test_t11_class_follows_the_failure_label(self):
         for p in every_program(80):
             if p.op != "T11":

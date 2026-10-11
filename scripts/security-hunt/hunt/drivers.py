@@ -133,10 +133,62 @@ def parse_recheck(stdout):
     return rows
 
 
+def judge_differ(exp, core_text, rec):
+    """Part (b)'s verdict on one program `una check` accepted, fail-closed (N-99's rule, Una-2's
+    review of #527): `finding` when the re-check rejects a declaration, `clean` only when the
+    export is complete and read, the re-check ran to its end, and every function of the export
+    has its line; anything else is `unknown`, with why, and blocks "no finding".
+
+    `exp` and `rec` are `sandbox.Run`s of `una --json core` and of `una-core-check`, whose exit
+    code is 0 when every document is read and no declaration is rejected, 1 otherwise
+    (`formal/Recheck.lean`)."""
+    rows = parse_recheck(rec.stdout) if rec is not None else []
+    out = {"kind": "unknown", "detail": "", "recheck": rows}
+    if exp.timed_out or exp.code != 0:
+        out["detail"] = "the export timed out" if exp.timed_out else f"the export exited {exp.code}"
+        return out
+    try:
+        doc = json.loads(core_text)
+    except ValueError:
+        out["detail"] = "the export is not JSON"
+        return out
+    if doc.get("complete") is not True:
+        out["detail"] = "the export is not complete"
+        return out
+    if rec is None or rec.timed_out or rec.code not in (0, 1):
+        out["detail"] = ("the re-check did not run" if rec is None else
+                         "the re-check timed out" if rec.timed_out else
+                         f"the re-check exited {rec.code}")
+        return out
+    outcomes = [r["outcome"] for r in rows]
+    if "rejected" in outcomes:
+        out["kind"] = "finding"
+        return out
+    if "error" in outcomes or any(r["decl"] == "-" for r in rows):
+        out["detail"] = "the re-check could not read the document"
+        return out
+    if rec.code != 0:
+        out["detail"] = "the re-check exited 1 without a rejected declaration"
+        return out
+    funs = {f"{m.get('path')}.{d['value']['name']}" for m in doc.get("modules", [])
+            for d in m.get("decls", []) if d.get("kind") == "fun"}
+    missing = sorted(funs - {r["decl"] for r in rows})
+    if missing:
+        out["detail"] = f"the re-check has no line for {', '.join(missing[:3])}"
+        return out
+    known = {"accepted", "accepted, conditional on A3", "not re-checked"}
+    odd = sorted(set(outcomes) - known)
+    if odd:
+        out["detail"] = f"the re-check printed the outcome {odd[0]!r}"
+        return out
+    out["kind"] = "clean"
+    return out
+
+
 def differ(rows, una, core_check, root, timeout, out):
     """Part (b): for each program `una check` accepts, exports its Core and runs the re-check on
-    it. A declaration the re-check rejects is a candidate (`finding`), for the coordinator before
-    any interpretation; `not re-checked` is recorded, and says which form the model lacks.
+    it, and judges with `judge_differ`. A `finding` goes to the coordinator before any
+    interpretation; an `unknown` blocks the campaign's "no finding" until it is understood.
     Programs `una check` rejects are recorded only: the reverse direction is #514's."""
     tally = Counter()
     for row in rows:
@@ -144,7 +196,7 @@ def differ(rows, una, core_check, root, timeout, out):
         pkg = prog.write(root)
         v = check(una, pkg, root, timeout)
         result = dict(row, **v.row())
-        result["recheck"] = []
+        result["differ"] = None
         result["finding"] = False
         if v.kind == "accepted":
             exp = sandbox.run([una, "--json", "core", "."], cwd=pkg, writable=root,
@@ -152,16 +204,20 @@ def differ(rows, una, core_check, root, timeout, out):
             core = os.path.join(pkg, "core.json")
             with open(core, "w", encoding="utf-8") as f:
                 f.write(exp.stdout)
-            r = sandbox.run([core_check, core], cwd=pkg, writable=root, timeout=timeout)
-            rc = parse_recheck(r.stdout)
-            result["recheck"] = rc
-            result["export_code"] = exp.code
-            outcomes = {x["outcome"] for x in rc}
-            result["finding"] = "rejected" in outcomes
-            if not rc:
-                result["bug"] = "no re-check output"
-            for x in rc:
-                tally[(row["op"], "una-accepted", x["outcome"].split(",")[0])] += 1
+            rec = None
+            if not exp.timed_out and exp.code == 0:
+                rec = sandbox.run([core_check, core], cwd=pkg, writable=root, timeout=timeout)
+            j = judge_differ(exp, exp.stdout, rec)
+            result.update(differ=j["kind"], differ_detail=j["detail"], recheck=j["recheck"],
+                          finding=j["kind"] == "finding",
+                          export_code=exp.code, export_timed_out=exp.timed_out,
+                          recheck_code=None if rec is None else rec.code,
+                          recheck_timed_out=None if rec is None else rec.timed_out)
+            if j["kind"] == "unknown":
+                result["bug"] = j["detail"]
+            tally[(row["op"], "una-accepted", j["kind"])] += 1
+            for x in j["recheck"]:
+                tally[(row["op"], "declaration", x["outcome"].split(",")[0])] += 1
         else:
             tally[(row["op"], v.kind)] += 1
         out.write(json.dumps(result, sort_keys=True) + "\n")
