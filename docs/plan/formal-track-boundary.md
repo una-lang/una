@@ -66,6 +66,8 @@ Each is "not re-checked", never accepted.
 - **R9. The export.** The Core export does not carry `una.toml`'s `[boundaries]` yet (edition `0.3`, not implemented). Until it does, the importer reads an optional `boundaries` field, tested on synthesized documents. The corpus delta is 0, and the replay is unchanged.
 - **R10. Handlers of an invoked operation.** An invocation of `o` may run any handler of `o` (`Program.handlerFor`), so all of them must be within the ceiling, not only the one installed at the call. This is stricter than the ADR, never weaker.
 
+- **R11. #524's reading of an operation.** Where a capability has one handler and an operation is read as a direct `invoke` of it, the operation is a call of the handler, confined by what the handler does, not by its name in the ceiling. A pure operation the ceiling does not name is accepted by F1 and refused by the checker: the checker is stricter, as in R7.
+
 ## 6. Gate
 
 - `scripts/formal.sh`: PASS, standard axioms, no `sorry`. T6's text unchanged: the diff of theorem statements against `main` shows only additions.
