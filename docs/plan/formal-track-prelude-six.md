@@ -2,7 +2,7 @@
 
 - Issue: #542, under #46
 - Date: 2026-10-11
-- Status: statement approved by the coordinator (2026-10-11); in progress
+- Status: statement approved by the coordinator (2026-10-11); implemented, in review
 
 ## 1. Why
 
@@ -63,3 +63,13 @@ Non-vacuity, in `PreludeExample`:
 - the hunt's F rerun;
 - local CI;
 - the review (Una-2).
+
+Result (2026-10-11, on `main` at `198e563c`, after #543):
+- `scripts/formal.sh`: PASS, 341 theorems, no `sorry`.
+- The replay: 42 rejected, 4 more S-04 shapes rejected at the leak (`edit_order_list_of_lists_leak`, `edit_order_list_of_options_leak`, and two through `or_else`'s option), and 3 more reaching the next form F1 lacks (`prelude.at`).
+- The corpus, a fresh export of the 1,352 targets: 1,193 to 1,213 accepted lines, none rejected before or after. The 17 synthesized handler lines (#524) are unchanged, so the source headline is 1,176 to 1,196.
+- The 20 flips, all from not re-checked to accepted:
+  - 15 in documents `una check` accepts: `wordfreq.initial`, `resolution_tour.largest`, `phones.main`, `edit_moves.main`, the two `main.f` of `edit_order_list_of_lists_accepted` and `edit_order_option_of_list_accepted`, `prelude_result_labels.magnitude` and `smallest`, `main.exists` and `main.probe` of `s14_ok_count_public`, `main.mark` and `main.probe` of `s14_ok_helper_public_call`, `shapesok.prelude_shapes`, `callee_ensures_proven.size`, `variants_share_field_name.measure`;
+  - 5 in documents whose only errors are refuted refinements (U5001): `constraint_facts.low`, `fn_type_annotated_let_any_source.by_prelude`, `sibling_scope_lets.f`, `contracts.cut` and `contracts.cut_bad`.
+- 13 declarations stay not re-checked, now for the next form: `with` (2), the constraint `ord` (4), `prelude.at` (2), `trim`, `starts_with`, `find`, a non-scalar operation, and `constraint_facts.low_text`, now "F1 restriction (`min` on Text, Text)".
+- Family F, seeds 5 to 7 and 11: no change, since its programs call none of the six; every program `una check` accepts is `clean`.
