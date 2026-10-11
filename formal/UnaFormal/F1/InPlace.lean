@@ -363,6 +363,8 @@ mutual
       ⟨(params_inPlace hwf hf _ (zip_ground hg)).2, Eff.plainFree_ofCall _⟩
     | _, _, _, _, _, _, _, hpc, .invoke (fn := fn) hf _ _ _ _ _ _ =>
       ⟨(hwf.inPlace.1 fn (List.mem_of_find?_eq_some hf)).2, Eff.plainFree_ofInvoke hpc fn⟩
+    | _, _, _, _, _, _, _, hpc, .invokeOp (fn := fn) _ _ _ hf _ _ _ _ _ _ =>
+      ⟨(hwf.inPlace.1 fn (List.mem_of_find?_eq_some hf)).2, Eff.plainFree_ofInvoke hpc fn⟩
     | _, _, _, _, _, _, hΓ, _, .apply hf _ _ _ => by
       have h := latom_inPlace hΓ hf
       simp only [LTy.InPlace] at h
@@ -525,6 +527,11 @@ mutual
     | _, _, _, _, _, _, _, _, .fail _ _ hs => ⟨hs, fun _ h => by simp at h; subst h; rfl, LExpr.plainFree_bot⟩
     | _, _, _, _, _, _, _, _, .raise _ _ _ _ _ _ hs => ⟨hs, fun _ h => by simp at h; subst h; rfl, LExpr.plainFree_bot⟩
     | _, _, _, _, _, _, _, _, .unreachable hs => ⟨hs, Eff.plainFree_none⟩
+    | _, Γ, _, _, _, _, hΓ, hpc, .withH (o := o) _ hb =>
+      LExprTy.inPlace hwf (Γ := (markerName o, .text .bot) :: Γ) (fun q hq => by
+          rcases List.mem_cons.mp hq with rfl | hq
+          · rfl
+          · exact hΓ q hq) hpc hb
     | _, Γ, _, _, _, _, hΓ, hpc, .caseSum (binders := xs) (fs := fs) (ls := ls) hsc hsm hf _ hth hel _ _ hs => by
       have hl := latom_inPlace hΓ hsc
       simp only [LTy.InPlace] at hl

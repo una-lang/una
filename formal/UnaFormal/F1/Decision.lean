@@ -145,6 +145,7 @@ mutual
     | _, _, _, _, _, _, .prim _ _ => Eff.dlOk_none
     | _, _, _, _, _, _, .call _ _ _ _ _ _ _ _ hb _ => Eff.dlOk_ofCall hb.fails_bot
     | _, _, _, _, _, _, .invoke _ _ _ _ _ _ _ => Eff.dlOk_ofInvoke
+    | _, _, _, _, _, _, .invokeOp _ _ _ _ _ _ _ _ _ _ => Eff.dlOk_ofInvoke
     | _, _, _, _, _, _, .apply _ _ _ hb =>
       Eff.dlOk_ofFn fun hf => LExpr.le_trans (LExpr.le_join_left _ _) (hb.fails_bot hf)
     | _, _, _, _, _, _, .op _ _ _ _ => ⟨fun _ h => by simp at h, LExpr.bot_le _⟩
@@ -219,6 +220,7 @@ mutual
     | _, _, _, _, _, _, .fail hle _ _ => Eff.dlOk_leaf hle (LExpr.bot_le _)
     | _, _, _, _, _, _, .raise _ _ _ _ hle _ _ => Eff.dlOk_leaf hle (LExpr.bot_le _)
     | _, _, _, _, _, _, .unreachable _ => Eff.dlOk_none
+    | _, _, _, _, _, _, .withH _ hb => LExprTy.dlOk hb
     | _, _, _, _, _, _, .caseSum _ _ _ _ ht he _ _ _ =>
       (Eff.DlOk.decide (Eff.DlOk.union (LExprTy.dlOk ht) (LExprTy.dlOk he) (LExpr.le_refl _))
         (LExpr.le_join_right _ _)).mono (LExpr.le_join_left _ _)

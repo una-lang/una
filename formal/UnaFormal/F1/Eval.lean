@@ -397,7 +397,7 @@ mutual
           else stuck w
         | _, _ => stuck w
       | .invokeOp o args =>
-        match p.find (p.handlerFor o (env.lookup (markerName o))), evalAtoms env args with
+        match p.find (p.handlerFor o (lookup env (markerName o))), evalAtoms env args with
         | some fn, some vs =>
           if vs.length = fn.params.length then eval H n p w (bindParams fn.params vs []) fn.body
           else stuck w

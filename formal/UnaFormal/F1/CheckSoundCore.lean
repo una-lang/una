@@ -36,6 +36,16 @@ mutual
       obtain ⟨fn, hfind, acc, hacc, _, htp, ts, hts, _, hfl, _, hle, _, hsf, _, hf, rfl⟩ := h
       exact ⟨_, .invoke hfind hacc htp (atomsTy_sound hts) (flowsB_sound _ _ hfl) (le_ok hle)
         (symFree_sound hsf), flowTo_ok hf⟩
+    | .invokeOp o args, ε, h => by
+      simp only [checkRhs, bind_ok] at h
+      obtain ⟨mt, hmt, h⟩ := h
+      cases mt with
+      | text lm =>
+        simp only [bind_ok, pure_ok, need_ok, some_ok, List.isEmpty_iff] at h
+        obtain ⟨_, hlm, f, hr, fn, hfind, acc, hacc, _, htp, ts, hts, _, hfl, _, hle, _, hsf, _, hf, rfl⟩ := h
+        exact ⟨_, .invokeOp (atomTy_sound hmt) (le_ok hlm) hr hfind hacc htp (atomsTy_sound hts)
+          (flowsB_sound _ _ hfl) (le_ok hle) (symFree_sound hsf), flowTo_ok hf⟩
+      | _ => simp at h
     | .apply f args, ε, h => by
       simp only [checkRhs, bind_ok] at h
       obtain ⟨ft, hft, h⟩ := h
@@ -337,6 +347,16 @@ mutual
       simp only [checkExpr, bind_ok, pure_ok, need_ok] at h
       obtain ⟨_, hip, rfl⟩ := h
       exact ⟨s, .unreachable (inPlace_sound hip), Flow.refl s⟩
+    | .withH o f body, ε, h => by
+      simp only [checkExpr] at h
+      split at h
+      · rename_i o' hl
+        simp only [bind_ok, need_ok, beq_iff_eq] at h
+        obtain ⟨_, heq, h⟩ := h
+        subst heq
+        obtain ⟨t, ht, hft⟩ := checkExpr_sound h
+        exact ⟨t, .withH hl ht, hft⟩
+      · simp at h
     | .caseSum scrutinee ctor binders thenE elseE, ε, h => by
       simp only [checkExpr, bind_ok] at h
       obtain ⟨st, hst, h⟩ := h

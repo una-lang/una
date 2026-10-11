@@ -23,7 +23,7 @@ mutual
 
   def Expr.callees : Expr → List String
     | .atom _ | .fail _ | .raise _ _ _ | .unreachable => []
-    | .withH _ f b => f :: b.callees
+    | .withH _ _ b => b.callees
     | .letR _ _ v b => v.callees ++ b.callees
     | .letE _ _ v b => v.callees ++ b.callees
     | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e
@@ -117,7 +117,7 @@ def handlersOk (p : Program) : Bool :=
           leB p.top (.ofLabel acc) (.ofLabel acc') &&
           flowsB p.top (fn.params.map Prod.snd) (gn.params.map Prod.snd) &&
           flowB p.top gn.result fn.result && gn.fails == fn.fails && gn.raises == fn.raises &&
-          gn.tparams == fn.tparams
+          gn.tparams == fn.tparams && gn.op == fn.op
         | _, _ => false
     | _, _ => false
 

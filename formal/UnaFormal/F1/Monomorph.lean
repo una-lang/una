@@ -125,7 +125,7 @@ mutual
             simp only [List.map_cons, List.cons.injEq] at h1 ⊢
             exact ⟨by rw [h1.1], ih qs h1.2⟩
       | _ => simp [rhsSim] at h
-    | .call _ _ _, s, h | .invoke _ _, s, h | .funRef _ _, s, h | .atom _, s, h | .prim _ _, s, h
+    | .call _ _ _, s, h | .invoke _ _, s, h | .invokeOp _ _, s, h | .funRef _ _, s, h | .atom _, s, h | .prim _ _, s, h
     | .apply _ _, s, h | .op _, s, h | .read _, s, h | .write _ _, s, h | .req _ _, s, h
     | .construct _ _, s, h | .variant _ _ _, s, h | .field _ _, s, h
     | .list _, s, h | .none, s, h | .some _, s, h | .first _, s, h | .mkOk _, s, h | .mkErr _, s, h
@@ -179,6 +179,13 @@ mutual
       | _ => simp [exprSim] at h
     | .raise _ _ _, f, h => by cases f <;> simp_all [exprSim, Expr.anon]
     | .unreachable, f, h => by cases f <;> simp_all [exprSim, Expr.anon]
+    | .withH o g b, f, h => by
+      cases f with
+      | withH o' g' c =>
+        simp only [exprSim, Bool.and_eq_true, beq_iff_eq] at h
+        obtain ⟨⟨rfl, rfl⟩, hb⟩ := h
+        simp only [Expr.anon, exprSim_sound b c hb]
+      | _ => simp [exprSim] at h
     | .caseSum a i xs t e, f, h => by
       cases f with
       | caseSum b j ys u g =>
@@ -279,7 +286,10 @@ def progSim (ren : List (String × String)) (P₁ P₂ : Program) : Bool :=
     | none => false) &&
   ren.all (fun kv => P₁.funs.any (·.name == kv.1) || !P₂.funs.any (·.name == kv.2)) &&
   P₂.funs.all (fun fn₂ => P₁.funs.any (·.name == fn₂.name) || ren.any (·.1 == fn₂.name)) &&
-  P₂.policies.all (fun po => renOf ren po.via == po.via)
+  P₂.policies.all (fun po => renOf ren po.via == po.via) &&
+  -- The handlers of `with` scopes keep their names (#538): an invocation runs the same handler.
+  P₂.handlerOf.all (fun q => renOf ren q.1 == q.1) && P₂.opRep.all (fun q => renOf ren q.2 == q.2) &&
+  renOf ren "" == ""
 
 theorem find_none_of {p : Program} {f : String} (h : p.funs.any (·.name == f) = false) :
     p.find f = none := by
@@ -299,9 +309,23 @@ its functions `fs`, agrees with it up to annotations. -/
 theorem progSim_sound {ren : List (String × String)} {P₂ : Program} {fs : List Fun}
     (h : progSim ren { P₂ with funs := fs } P₂ = true) :
     Sim (renOf ren) { P₂ with funs := fs } P₂ := by
-  simp only [progSim, Bool.and_eq_true, List.all_eq_true] at h
-  obtain ⟨⟨⟨hfuns, hren⟩, hcover⟩, hvia⟩ := h
-  refine ⟨fun f => ?_, rfl, fun po hpo => by simpa using hvia po hpo, rfl⟩
+  simp only [progSim, Bool.and_eq_true, List.all_eq_true, beq_iff_eq] at h
+  obtain ⟨⟨⟨⟨⟨⟨hfuns, hren⟩, hcover⟩, hvia⟩, hho⟩, hrep⟩, hnil⟩ := h
+  have hhf : ∀ o m, P₂.handlerFor o m = renOf ren ({ P₂ with funs := fs }.handlerFor o m) := by
+    intro o m
+    show P₂.handlerFor o m = renOf ren (P₂.handlerFor o m)
+    unfold Program.handlerFor
+    have hr : renOf ren ((List.lookup o P₂.opRep).getD "") = (List.lookup o P₂.opRep).getD "" := by
+      cases hl : List.lookup o P₂.opRep with
+      | none => simpa using hnil
+      | some r => simpa using hrep (o, r) (lookup_mem hl)
+    split
+    · split
+      · rename_i f hl
+        exact (hho (f, o) (lookup_mem hl)).symm
+      · exact hr.symm
+    · exact hr.symm
+  refine ⟨fun f => ?_, rfl, fun po hpo => by simpa using hvia po hpo, rfl, hhf⟩
   cases h₁ : Program.find { P₂ with funs := fs } f with
   | some fn₁ =>
     obtain ⟨hmem, hname⟩ := Program.find_some h₁

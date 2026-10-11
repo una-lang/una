@@ -142,6 +142,11 @@ mutual
       rw [paramTys_subst] at h
       rw [Ty.subst_subst]
       exact .invoke hf h
+    | _, _, _, .invokeOp (fn := fn) (σ := σ) hm hr hf has => by
+      have h := atoms_subst τ has
+      rw [paramTys_subst] at h
+      rw [Ty.subst_subst]
+      exact .invokeOp (atom_subst τ hm) hr hf h
     | _, _, _, .apply hf has => by
       have h := atom_subst τ hf
       simp only [Ty.subst, Ty.substs_eq] at h
@@ -256,6 +261,7 @@ mutual
       rw [zip_subst, map_subst_closed τ (sum_fieldTys_closed hwf hs hf)] at h
       exact .caseSum (atom_subst τ hsc) hs hf hlen h (ExprTy.subst hwf τ hel)
     | _, _, _, .unreachable => .unreachable
+    | _, _, _, .withH hb => .withH (ExprTy.subst hwf τ hb)
     | _, _, _, .attempt hb => .attempt (ExprTy.subst hwf τ hb)
     | _, _, _, .attemptK hb => .attemptK (ExprTy.subst hwf τ hb)
     | _, _, _, .handle hb hh => .handle (ExprTy.subst hwf τ hb) (ExprTy.subst hwf τ hh)
@@ -400,5 +406,26 @@ theorem body_typed {f : String} {fn : Fun} (hwf : p.WellFormed) (h : p.find f = 
   simp only [List.append_nil] at h1
   rw [h1, paramTys_subst] at h0
   simpa [Ctx.subst] using h0
+
+/-- **The handler an invocation runs** (#538) is a handler of its operation, with the
+representative's signature (`WellFormed.handlers`). -/
+theorem handlerFor_typed (hwf : p.WellFormed) {o f : String} (hr : List.lookup o p.opRep = some f)
+    (m : Option Val) {fn : Fun} (hf : p.find f = some fn) :
+    ∃ gn, p.find (p.handlerFor o m) = some gn ∧ (∀ σ, gn.paramTys σ = fn.paramTys σ) ∧
+      (∀ σ, gn.result.erase.subst σ = fn.result.erase.subst σ) := by
+  obtain ⟨hfo, fn', hf', hall⟩ := hwf.handlers o f hr
+  rw [hf] at hf'
+  cases hf'
+  have hg : List.lookup (p.handlerFor o m) p.handlerOf = some o := by
+    unfold Program.handlerFor
+    split
+    · split
+      · assumption
+      · simpa [hr] using hfo
+    · simpa [hr] using hfo
+  obtain ⟨gn, hgn, hp, hres, _⟩ := hall _ hg
+  refine ⟨gn, hgn, fun σ => ?_, fun σ => by rw [hres]⟩
+  have := congrArg (List.map (Ty.subst σ)) hp
+  simpa [Fun.paramTys, List.map_map, Function.comp_def] using this
 
 end Una.F1

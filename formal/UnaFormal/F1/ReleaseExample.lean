@@ -79,6 +79,7 @@ theorem prog_wf : prog.LWellFormed where
   sums := by simp [prog]
   disjoint _ := .inr (by simp [Program.sum, prog])
   ops _ h := by simp [prog] at h
+  handlers _ _ h := by simp [prog] at h
   eqScoped := by simp [prog, check]
   sigsScoped := by
     simp [prog, check, LTy.ScopedIn, LExpr.SymsIn, sec, LExpr.bot, LExpr.ofLabel]

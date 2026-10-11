@@ -20,8 +20,11 @@ mutual
   /-- A right-hand side that performs no host operation, in its lambdas included. -/
   def Rhs.hostFree : Rhs → Bool
     | .read _ | .write _ _ | .req _ _ | .envGet _ => false
+    -- The handler an invocation of a `with` scope runs is found at run time (#538), so no reach
+    -- set names it: such code is not host-free.
+    | .invokeOp _ _ => false
     | .lambda _ b => b.hostFree
-    | .atom _ | .prim _ _ | .call _ _ _ | .invoke _ _ | .invokeOp _ _ | .apply _ _ | .op _ | .construct _ _ | .variant _ _ _ | .field _ _
+    | .atom _ | .prim _ _ | .call _ _ _ | .invoke _ _ | .apply _ _ | .op _ | .construct _ _ | .variant _ _ _ | .field _ _
     | .list _ | .none | .some _ | .first _ | .mkOk _ | .mkErr _ | .funRef _ _ | .declassify _ _ | .map _ _ | .filter _ _
     | .firstWhere _ _ | .fold _ _ _ | .parse _ | .checked _ _ _ | .eq _ _ | .tuple _ | .append _ _ | .set _ _ _
     | .toText _ => true
@@ -388,6 +391,7 @@ theorem eval_hostFreeIn
             · have hfn := hp f fn hfd (hc f (by simp [Rhs.callees]))
               exact ihE w u _ _ (bindParams_hostFree _ (evalAtoms_hostFree hf ha) trivial) hfn.1 hfn.2
             · exact SameOn.stuck w u
+      | invokeOp o args => simp [Rhs.hostFree] at hr
       | apply f args =>
         simp only [evalRhs]
         cases hfa : evalAtom env f with
@@ -723,6 +727,11 @@ theorem eval_hostFreeIn
         | some vs =>
           exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => by cases h; exact evalAtoms_hostFree hf ha)⟩
       | unreachable => exact ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+      | withH o f b =>
+        simp only [Expr.hostFree] at he
+        simp only [eval]
+        exact ihE w u _ b (by simp only [Val.HostFreeEnvIn]; exact ⟨by simp [Val.HostFreeIn], hf⟩) he
+          (fun g hg => hc g (by simpa [Expr.callees] using hg))
       | caseSum sc i xs t e =>
         simp only [Expr.hostFree, Bool.and_eq_true] at he
         simp only [eval]

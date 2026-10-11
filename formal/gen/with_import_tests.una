@@ -10,14 +10,6 @@ handler quiet() for Vault
 handler tally() for Vault
   op note(x) = unit
 
-handler loud() for Vault
-  uses @console: Console[print]
-  op note(x) =
-    if x > 0
-      @console.print("pos")
-    else
-      unit
-
 pub kind Shut = | Closed
 
 pub capability Door
@@ -62,10 +54,6 @@ pub pick(flag: Bool) -> Unit
   else
     work(2) with @vault = tally()
 
-pub shout(n: Int) -> Unit
-=
-  work(n) with @vault = loud()
-
 open_door() -> Int
   uses @door: Door[open]
   fails Shut
@@ -74,7 +62,7 @@ open_door() -> Int
     if error pass
   v
 
-pub run(flag: secret Bool) -> Int
+pub run(flag: secret Bool) -> secret Int
   fails Shut
 =
   if flag

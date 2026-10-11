@@ -777,7 +777,7 @@ structure Program.LWellFormed (p : Program) : Prop where
         List.lookup g p.ops = some acc' ∧ p.le (.ofLabel acc) (.ofLabel acc') ∧
         Flows p.top (fn.params.map Prod.snd) (gn.params.map Prod.snd) ∧
         Flow p.top gn.result fn.result ∧ gn.fails = fn.fails ∧ gn.raises = fn.raises ∧
-        gn.tparams = fn.tparams
+        gn.tparams = fn.tparams ∧ gn.op = fn.op
   /-- Signatures and declared types keep `ℓ_T` in place. -/
   inPlace : (∀ fn ∈ p.funs, (∀ q ∈ fn.params, q.2.InPlace) ∧ fn.result.InPlace) ∧
     (∀ rec ∈ p.records, ∀ t ∈ rec.fields, t.InPlace) ∧

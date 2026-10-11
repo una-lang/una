@@ -58,6 +58,7 @@ theorem prog_wf : prog.LWellFormed where
   sums := by simp [prog]
   disjoint _ := .inr (by simp [Program.sum, prog])
   ops _ h := by simp [prog] at h
+  handlers _ _ h := by simp [prog] at h
   eqScoped _ h := nomatch h
   sigsScoped _ h := nomatch h
   inPlace := by refine ⟨?_, ?_, ?_⟩ <;> simp [prog]

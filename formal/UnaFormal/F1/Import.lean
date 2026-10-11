@@ -92,6 +92,7 @@ partial def Expr.resolveAt (sums : List String) (t : LTy) : Expr → Option Expr
   | .letR x a v b => (b.resolveAt sums t).map (.letR x a v)
   | .letE x a v b => (b.resolveAt sums t).map (.letE x a v)
   | .letTuple bs v b => (b.resolveAt sums t).map (.letTuple bs v)
+  | .withH o f b => (b.resolveAt sums t).map (.withH o f)
   | .ite c a b => do pure (.ite c (← a.resolveAt sums t) (← b.resolveAt sums t))
   | .caseOption sc a x b => do pure (.caseOption sc (← a.resolveAt sums t) x (← b.resolveAt sums t))
   | .caseResult sc x a y b =>
@@ -228,7 +229,8 @@ structure Ctx where
 
 /-- The effects a `uses` entry names: `Files`'s operations (M5b) and `Http`'s (M5c) are host
 effects; every other operation is F1's one operation, gathered for G3. -/
-def usesEffects (uses : List J) (invoked : List String := []) : M (Bool × HostFx) := do
+def usesEffects (uses : List J) (invoked : List String := []) (dyn : List String := []) :
+    M (Bool × HostFx) := do
   let mut op := false
   let mut host : HostFx := {}
   for u in uses do
@@ -237,7 +239,8 @@ def usesEffects (uses : List J) (invoked : List String := []) : M (Bool × HostF
       let o ← str o
       -- A capability whose handler the document declares (#524) is invoked, not an event: its
       -- handler's effects are its own, under the effect floor.
-      if invoked.contains cap then op := true
+      -- A capability a `with` installs (#538), whose handlers perform nothing: no effect.
+      if dyn.contains cap || invoked.contains cap then op := true
       else if cap == "Files" then
         if o == "read" then host := { host with rd := true }
         else if o == "write" then host := { host with wr := true }
@@ -261,7 +264,7 @@ partial def ty (c : Ctx) (j : J) : M LTy := do
   | "fn" =>
     let ps ← (← arr (← field j "params")).mapM (ty c)
     let r ← ty c (← field j "result")
-    let (op, host) ← usesEffects (← arr (← field j "uses")) c.invoked
+    let (op, host) ← usesEffects (← arr (← field j "uses")) c.invoked c.dynCaps
     -- A function value never fails with a payload in F1 (#512): a function type whose `fails`
     -- names a sum kind is outside it. The export names the kind without its module, so every sum
     -- of that name counts.
@@ -762,7 +765,7 @@ def signature (c : Ctx) (module : String) (v : J) (body : Expr) : M Fun := do
   -- The body gives the result (`Expr.resolveAt`).
   let some body := body.resolveAt (c.sums.map Prod.fst) result
     | throw "an `attempt` whose error type is not a failure's code or a sum"
-  let (op, host) ← usesEffects (← arr (← field v "uses")) c.invoked
+  let (op, host) ← usesEffects (← arr (← field v "uses")) c.invoked c.dynCaps
   -- Its markers (#538), after its parameters: public texts, the handlers its callers installed.
   let ps := ps ++ ((c.markersOf.lookup name).getD []).map fun m => (markerName m, LTy.text .bot)
   pure {
@@ -1056,7 +1059,7 @@ def prepare (c : Ctx) (hl : HostLabels) (caps : List (String × J)) (decls : Lis
     | .ok n => n == q && (e.kind == "fun" || e.kind == "policy")
     | .error _ => false
   let read : M (Fun × List Fun × List Policy) := do
-    let (_, fnHost) ← usesEffects (← arr (← field d.value "uses")) c.invoked
+    let (_, fnHost) ← usesEffects (← arr (← field d.value "uses")) c.invoked c.dynCaps
     let own := s!"{d.module}.{← str (← field d.value "name")}"
     let fn ← signature c d.module d.value
       (← expr { c with host := fnHost, bound := (c.markersOf.lookup own).getD [] } (← field d.value "body"))
@@ -1694,13 +1697,6 @@ def raiseParamJ (accepts t : J) : Option J := do
   pure (t.setObjVal! "label" (Lean.Json.mkObj
     [("level", .str v), ("categories", .arr cs.toArray), ("symbols", .arr #[])]))
 
-/-- **The handlers' operations as functions** (#524): for each capability the document declares
-with exactly one handler, without parameters, each operation of that handler becomes a function
-`module.handler.op` of the document: its parameters the operation's, scalar, raised by its
-`accepts`; its result, failure and error the operation's; its `uses` and body the handler's. It is
-then read, checked and reached as any function is, and an invocation of the operation is a call of
-it (`Rhs.invoke`), whose `accepts` the program's `ops` keeps. A handler this does not cover is
-read as before: its operations stay F1's event, or are not re-checked. -/
 /-- The handlers the `with` nodes of a JSON value install, by qualified name (#538). -/
 partial def withHandlersIn (j : J) : List String :=
   match j with
@@ -1734,6 +1730,13 @@ partial def namesMarker (j : J) : Bool :=
   | .arr items => items.any namesMarker
   | _ => false
 
+/-- **The handlers' operations as functions** (#524): for each capability the document declares
+with exactly one handler, without parameters, each operation of that handler becomes a function
+`module.handler.op` of the document: its parameters the operation's, scalar, raised by its
+`accepts`; its result, failure and error the operation's; its `uses` and body the handler's. It is
+then read, checked and reached as any function is, and an invocation of the operation is a call of
+it (`Rhs.invoke`), whose `accepts` the program's `ops` keeps. A handler this does not cover is
+read as before: its operations stay F1's event, or are not re-checked. -/
 def synthHandlers (decls : List Decl) (dynCaps : List String := []) :
     List (Decl × (String × String) × String × Label) := Id.run do
   let capOf := fun (d : Decl) => (plainRun (do str (← field d.value "capability"))).toOption
@@ -1828,7 +1831,14 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
   let capOfH := fun (q : String) => (decls.find? fun d => d.kind == "handler" &&
       (plainRun (do pure s!"{d.module}.{← str (← field d.value "name")}")).toOption == some q).bind
     fun d => (plainRun (do str (← field d.value "capability"))).toOption
-  let dynCaps := ((withHandlersIn doc).filterMap capOfH).eraseDups
+  -- Only a capability whose every handler performs nothing (#538): what a handler does is charged
+  -- to whoever installs it, which F1's per-function effects cannot follow, so another is not read.
+  let quietCap := fun (cap : String) => decls.all fun d =>
+    d.kind != "handler" || (plainRun (do str (← field d.value "capability"))).toOption != some cap ||
+      (match plainRun (do arr (← field d.value "uses")) with
+        | .ok us => us.isEmpty
+        | .error _ => false)
+  let dynCaps := ((withHandlersIn doc).filterMap capOfH).eraseDups.filter quietCap
   let synth := synthHandlers decls dynCaps
   let dyn := synth.filter fun x => dynCaps.contains x.2.1.1
   let decls := decls ++ synth.map (·.1)
