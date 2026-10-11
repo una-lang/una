@@ -202,6 +202,20 @@ class Generators(unittest.TestCase):
                 self.assertTrue(p.expect, p.variant)
         self.assertTrue(any(op == "S2" and v.startswith("is-") for op, v in seen))
 
+    def test_o_family_classes(self):
+        for p in every_program(60):
+            if p.op not in ("O1", "O2", "O3"):
+                continue
+            if p.edition == "0.1" and p.op in ("O1", "O3"):
+                self.assertEqual(p.cls, MUST_REJECT, p.name)
+                self.assertEqual(p.expect, ["U1001"] if p.op == "O1" else ["U0101"])
+            elif p.variant.endswith("-twin"):
+                self.assertEqual(p.cls, OPEN, p.variant)
+            else:
+                self.assertEqual(p.cls, MUST_REJECT, p.variant)
+            if p.op == "O3" and p.variant.startswith("to-int"):
+                self.assertIn("T: Integer", p.files["src/app/main.una"])
+
     def test_t11_class_follows_the_failure_label(self):
         for p in every_program(80):
             if p.op != "T11":
