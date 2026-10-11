@@ -400,6 +400,9 @@ theorem release_ok_not_err {r : Val} {t : Ty} (ht : t.Scalar) (h : ValTy p r t) 
   subst hc
   cases h <;> simp [Ty.Scalar] at ht
 
+-- One induction over every rule: with the rules of #512, its elaboration needs more than the
+-- default budget.
+set_option maxHeartbeats 800000 in
 /-- **T6 for F1 with declassification (option B1), at every ground instance**: runs related up
 to their first different release. -/
 theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
@@ -1456,13 +1459,20 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
       | fail _ _ _ =>
         simp only [eval]
         exact .of_brel (brel_same hw (fun _ h => nomatch h))
-      | @attempt _ _ body ty ε₀ hb =>
+      | @attempt _ _ body ty ε₀ hb hr0 =>
         have h := ihE hσ hE hΓ hpc hw he₁ he₂ hrel hb
+        have u₁ := uE (w := w₁) hσ he₁ hb
+        have u₂ := uE (w := w₂) hσ he₂ hb
         simp only [eval]
-        generalize eval H n p w₁ e₁ body = r₁ at h ⊢
-        generalize eval H n p w₂ e₂ body = r₂ at h ⊢
+        generalize eval H n p w₁ e₁ body = r₁ at h u₁ ⊢
+        generalize eval H n p w₂ e₂ body = r₂ at h u₂ ⊢
         obtain ⟨tr₁, o₁, w₁'⟩ := r₁
         obtain ⟨tr₂, o₂, w₂'⟩ := r₂
+        -- The body raises no payload (#512): `attempt` of a code asks `ε.raises = []`.
+        have nr₁ : ∀ k c ps, o₁ ≠ .raised k c ps := fun k c ps he => by
+          subst he; have := u₁.2.1.2.1; simp [Eff.inst, hr0] at this
+        have nr₂ : ∀ k c ps, o₂ ≠ .raised k c ps := fun k c ps he => by
+          subst he; have := u₂.2.1.2.1; simp [Eff.inst, hr0] at this
         by_cases hd : Diverged p L tr₁ tr₂
         · intro _ _
           right
@@ -1474,23 +1484,31 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
         cases o₁ <;> cases o₂ <;> simp only [Term] at ht₁ ht₂ <;>
           obtain ⟨hp, ho, hwr⟩ := h trivial trivial <;> refine ⟨hp, ?_, hwr⟩ <;>
           simp only [OutRel] at ho ⊢
+        all_goals (try (first | exact absurd rfl (nr₁ _ _ _) | exact absurd rfl (nr₂ _ _ _)))
         · exact .ok ho
         · exact .hidden (fun hv => ho (Vis.failLabel_inst.mpr hv))
         · exact .hidden (fun hv => ho (Vis.failLabel_inst.mpr hv))
         · by_cases hv : Vis p L (ε₀.failLabel.inst (p.sd σ))
           · rw [ho (Vis.failLabel_inst.mpr hv)]; exact .err .int
           · exact .hidden hv
-      | @handle _ _ body x handler t₁ t₂ s ε₁ ε₂ hb hh' h₁ h₂ _ =>
+      | @handle _ _ body x handler t₁ t₂ s ε₁ ε₂ hb hr0 hh' h₁ h₂ _ =>
         have h := ihE hσ hE hΓ hpc hw he₁ he₂ hrel hb
+        have u₁ := uE (w := w₁) hσ he₁ hb
+        have u₂ := uE (w := w₂) hσ he₂ hb
         have hε₁ := (LExprTy.inPlace hwf hΓ hpc hb).2
         have hlF := Eff.failLabel_plainFree hε₁
         have hpc' : (pc.join ε₁.failLabel).PlainFree := LExpr.plainFree_join hpc hlF
         have hΓ' : LCtx.InPlace ((x, .int ε₁.failLabel) :: Γ) := hcons hlF
         simp only [eval]
-        generalize eval H n p w₁ e₁ body = r₁ at h ⊢
-        generalize eval H n p w₂ e₂ body = r₂ at h ⊢
+        generalize eval H n p w₁ e₁ body = r₁ at h u₁ ⊢
+        generalize eval H n p w₂ e₂ body = r₂ at h u₂ ⊢
         obtain ⟨tr₁, o₁, w₁'⟩ := r₁
         obtain ⟨tr₂, o₂, w₂'⟩ := r₂
+        -- The body raises no payload (#512): a handler of a code asks `ε₁.raises = []`.
+        have nr₁ : ∀ k c ps, o₁ ≠ .raised k c ps := fun k c ps he => by
+          subst he; have := u₁.2.1.2.1; simp [Eff.inst, hr0] at this
+        have nr₂ : ∀ k c ps, o₂ ≠ .raised k c ps := fun k c ps he => by
+          subst he; have := u₂.2.1.2.1; simp [Eff.inst, hr0] at this
         by_cases hd : Diverged p L tr₁ tr₂
         · intro _ _
           right
@@ -1504,6 +1522,8 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
         cases o₁ <;> cases o₂
         all_goals first
           | (intro ht₁ ht₂; simp only [Term] at ht₁ ht₂; done)
+          | exact absurd rfl (nr₁ _ _ _)
+          | exact absurd rfl (nr₂ _ _ _)
           | skip
         · intro ht₁ ht₂
           obtain ⟨hp, ho, hwr⟩ := h trivial trivial
@@ -1520,7 +1540,7 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
             (fun hv => ho' (Vis.of_le (LExpr.inst_le_join_inst _ _ _) hv))
           refine .of_brel <| brel_quiet (hwr.trans hwh)
             (by simp only [proj_append]; rw [hph, List.append_nil]; exact hp)
-            (fun a b => V.hideσ hlF a b ho') (fun _ h => nomatch h) (fun c' hc' => hfh c' hc')
+            (fun a b => V.hideσ hlF a b ho') (fun h => by simp [Res.IsFail] at h) (fun hc' => hfh hc')
         · rename_i c b
           dsimp only
           obtain ⟨hp, ho, hwr⟩ := h trivial trivial
@@ -1533,7 +1553,7 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
             (fun hv => ho' (Vis.of_le (LExpr.inst_le_join_inst _ _ _) hv))
           refine .of_brel <| brel_quiet (hwh.symm.trans hwr)
             (by simp only [proj_append]; rw [hph, List.append_nil]; exact hp)
-            (fun a b => V.hideσ hlF a b ho') (fun c' hc' => hfh c' hc') (fun _ h => nomatch h)
+            (fun a b => V.hideσ hlF a b ho') (fun hc' => hfh hc') (fun h => by simp [Res.IsFail] at h)
         · rename_i c₁ c₂
           dsimp only
           obtain ⟨hp, ho, hwr⟩ := h trivial trivial
@@ -1682,7 +1702,7 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
         · exact .of_brel <| brel_confined_typed hh hw (U he₁ hc₁ hcu₁) (U he₂ hc₂ hcu₂)
             (fun h => hv (Vis.of_le (LExpr.inst_le_join_inst _ _ _) h))
             (fun a b ha hb => V.tuple_covσ hsi.2.2 hv hcov ha hb) id id
-      | @handleT _ _ body x handler t₁ t₂ ts ε₁ ε₂ hb hh' h₁ h₂ _ hcov =>
+      | @handleT _ _ body x handler t₁ t₂ ts ε₁ ε₂ hb hr0 hh' h₁ h₂ _ hcov =>
         have h := ihE hσ hE hΓ hpc hw he₁ he₂ hrel hb
         have hε₁ := (LExprTy.inPlace hwf hΓ hpc hb).2
         have hlF := Eff.failLabel_plainFree hε₁
@@ -1695,6 +1715,10 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
         generalize eval H n p w₂ e₂ body = r₂ at h ub₂ ⊢
         obtain ⟨tr₁, o₁, w₁'⟩ := r₁
         obtain ⟨tr₂, o₂, w₂'⟩ := r₂
+        have nr₁ : ∀ k c ps, o₁ ≠ .raised k c ps := fun k c ps he => by
+          subst he; have := ub₁.2.1.2.1; simp [Eff.inst, hr0] at this
+        have nr₂ : ∀ k c ps, o₂ ≠ .raised k c ps := fun k c ps he => by
+          subst he; have := ub₂.2.1.2.1; simp [Eff.inst, hr0] at this
         by_cases hd : Diverged p L tr₁ tr₂
         · intro _ _
           right
@@ -1708,6 +1732,8 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
         cases o₁ <;> cases o₂
         all_goals first
           | (intro ht₁ ht₂; simp only [Term] at ht₁ ht₂; done)
+          | exact absurd rfl (nr₁ _ _ _)
+          | exact absurd rfl (nr₂ _ _ _)
           | skip
         · intro ht₁ ht₂
           obtain ⟨hp, ho, hwr⟩ := h trivial trivial
@@ -1731,7 +1757,7 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
               subst ea eb
               exact V.tuple_covσ hlF ho' hcov (LValTy.flow ta (Flow.lsubst _ _ h₁))
                 (LValTy.flow tb (Flow.lsubst _ _ h₂)))
-            (fun _ h => nomatch h) (fun c' hc' => hfh c' hc')
+            (fun h => by simp [Res.IsFail] at h) (fun hc' => hfh hc')
         · rename_i c b
           dsimp only
           obtain ⟨hp, ho, hwr⟩ := h trivial trivial
@@ -1751,7 +1777,7 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
               subst ea eb
               exact V.tuple_covσ hlF ho' hcov (LValTy.flow ta (Flow.lsubst _ _ h₂))
                 (LValTy.flow tb (Flow.lsubst _ _ h₁)))
-            (fun c' hc' => hfh c' hc') (fun _ h => nomatch h)
+            (fun hc' => hfh hc') (fun h => by simp [Res.IsFail] at h)
         · rename_i c₁ c₂
           dsimp only
           obtain ⟨hp, ho, hwr⟩ := h trivial trivial
