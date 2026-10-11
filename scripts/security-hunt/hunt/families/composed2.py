@@ -56,12 +56,16 @@ def tc1(seed, edition):
 
 
 # TC2. A failing `via` in one task, whose failure is labeled by the policy's `to` (S-18): passed out
-# of the task, it cancels a sibling task, or skips code after the block, with a public effect. With
-# `to public` the failure is public and the program is open; above it, U4002.
+# of the task, it cancels a sibling task, or skips code after the block, with a public effect. Above
+# `public`, U4002, in both forms. With `to public` the failure is public and only the after-block
+# form is open: how far a cancelled sibling got is timing (`spec/19 §3` rule 3), so an open sibling
+# form would make the two-run oracle compare scheduling, not labels (Una-2's review of #533).
 def tc2(seed, edition):
     rng = rng_for(seed)
     to_level = rng.choice(["public", "internal", "secret"])
     form = rng.choice(["sibling", "after-block"])
+    if to_level == "public":
+        form = "after-block"
     s = Setup("Int", "secret", (), to_level)
     keys = join_decls(header(KEYS, trusted=True), "pub kind Gate = | TooBig",
                       policy("checkpin", "secret Int", s.to, "gate"),

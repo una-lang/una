@@ -311,6 +311,9 @@ class Generators(unittest.TestCase):
                 self.assertEqual(p.cls, MUST_REJECT, p.variant)
                 self.assertTrue(p.expect, p.variant)
         self.assertEqual(seen, {"TC1", "TC2", "TC3", "CP1", "GS1"})
+        for p in every_program(60):
+            if p.op == "TC2" and p.variant.startswith("to-public"):
+                self.assertEqual(p.variant, "to-public-after-block")
 
     def test_t11_class_follows_the_failure_label(self):
         for p in every_program(80):
