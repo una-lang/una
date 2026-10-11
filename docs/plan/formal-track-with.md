@@ -21,6 +21,8 @@
 3. **The handler environment `η`**, a list from operations to handler functions, is a parameter of evaluation, threaded through `eval`: a call's body runs under its caller's `η` (dynamic scope). Threading is linear in the program; specializing functions per `η` in the importer would be exponential in nested scopes, which the complexity rule excludes (the coordinator's ruling).
 4. **`Expr.withH o f body`** runs `body` under `η[o := f]`. A document whose capability has a lone handler and no `with` keeps #524's reading: that handler seeds `η` at the entry.
 5. **An invocation of an operation `η` does not bind** is stuck; T1 rules it out (§4, item 2).
+6. **Representation** (the coordinator's ruling, 2026-10-11): `η` is a field of the world, `w.hs`, which `eval` already threads through every step and every call, so a callee sees its caller's handlers. `withH` sets `hs[o := f]` for its body and restores the caller's `hs` on the world the body leaves, so every run leaves `hs` as it found it (`WEff` gains `w'.hs = w.hs`). An invocation looks up `w.hs o = some f`, and is stuck unless `Program.ops` maps `f` to `o`.
+7. **Markers.** The operations bound at a point, `I`, are bindings `("@o", Unit ⊥)` in `Γ` and in the environment: T-With pushes one; a call binds its callee's `Fun.installed` markers, fresh, after its parameters. A marker cannot collide with a user binding: `@` is not an identifier character in Una (`spec/01 §4`: `lower_ident` is `[a-z][A-Za-z0-9_]*`, and `@` starts only a capability reference, `cap_ref`), and Core's own temporaries start with `%`. The importer refuses any binder whose name starts with `@` (not re-checked), so a forged export cannot fake a marker.
 
 ## 4. The typing
 
@@ -32,7 +34,8 @@
    - T-Fun types the body under the function's declared set.
    So an invocation reached only through a call is bound at every call site, or the call is untyped: never stuck at run time.
 3. **T-With.** `f` is a handler of `o` in `Program.ops`, and its signature matches `opSigs o` (parameters raised by `accepts`, result, failure kind). The body is typed at the same `Γ` and `pc`, under `I ∪ {o}`; the effects are the body's. **No premise on `pc`**: the scope is lexical, every invocation inside it is checked against `accepts` by T-Invoke, and every installable handler is under the floor (Hu).
-4. **Hu, generalized**: every handler function in `Program.ops` passes T-Handler (#524's floor) and matches its operation's signature. It holds for every handler `una check` accepted, as #524 states, and not for forged or unchecked Core.
+4. **`HsBinds Γ w`**, the premise that every marker `"@o"` in `Γ` is bound in `w.hs`, which T1 needs so that an invocation is never stuck. It is discharged, not assumed, at every current use: a lemma states that `Γ` built from a function's parameters with `installed = []` has no marker, so `HsBinds` holds of any world; the entry points are the whole-program certificate's functions (T-Fun with `installed = []` for every function the importer does not mark), the examples (`Γ` without markers), and `t6_host_ground`'s and `t6_release_host`'s callers in the import and replay tests. T6 needs no new premise: `WorldRel` gains `w₁.hs = w₂.hs`, true of two runs from the same entry.
+5. **Hu, generalized**: every handler function in `Program.ops` passes T-Handler (#524's floor) and matches its operation's signature. It holds for every handler `una check` accepted, as #524 states, and not for forged or unchecked Core.
 
 ## 5. Theorems
 
