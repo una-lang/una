@@ -71,4 +71,42 @@ def f1(seed, edition):
                    note="the judge is the comparison of una check and the re-check")
 
 
-OPERATORS = {"F1": f1}
+# F7: carriers through the prelude functions F1 reads since #532, #542 and #545. A table of its
+# own, so that F1's carriers, and the programs old seeds rebuild to, stay unchanged.
+PRELUDE_CARRIERS = {
+    "at": ("  let ts = [s, 1]\n"
+           "  let t = when ts.at(index: 0)\n    is Some(x) -> x\n    is None -> 0\n"),
+    # The index decides whether there is an element (`spec/14 §1`).
+    "at-index": ("  let ts = [1, 2]\n"
+                 "  let t = when ts.at(index: s)\n    is Some(x) -> x\n    is None -> 0\n"),
+    "or-else": "  let o = Some(s)\n  let t = o.or_else(default: 0)\n",
+    "or-else-default": "  let o: Option[Int] = None\n  let t = o.or_else(default: s)\n",
+    "min": "  let t = min(s, 5)\n",
+    "max": "  let t = max(s, 5)\n",
+    "abs": "  let t = abs(s)\n",
+    # Structural: `is_ok` carries the result's top label only, so `t` is public here.
+    "is-ok": ("  let r: Result[secret Int, Int] = Ok(s)\n"
+              "  let t = if r.is_ok() then 1 else 0\n"),
+    # The coordinator's counterpart: a result chosen under a secret condition, so its top label,
+    # and `is_ok`'s `Bool`, are secret.
+    "is-ok-top": ("  let r: secret Result[Int, Int] = if s > 0 then Ok(1) else Err(0)\n"
+                  "  let t = if r.is_ok() then 1 else 0\n"),
+    "slice": '  let tx = "{s}"\n  let t = tx.slice(start: 0, end: 0).len\n',
+}
+
+
+def f7(seed, edition):
+    rng = rng_for(seed)
+    carrier = rng.choice(sorted(PRELUDE_CARRIERS))
+    ending = rng.choice(sorted(ENDINGS))
+    result, uses, tail = ENDINGS[ending]
+    level = "internal" if ending == "write-internal" else "secret"
+    body = PRELUDE_CARRIERS[carrier].replace("secret Int", f"{level} Int")
+    fn = (f"pub run(s: {level} Int) -> {result}\n" + uses + "=\n" + body + tail)
+    files = package("hunt", edition, {MOD: join_decls(header(MOD), fn)})
+    return Program(op="F7", rule=RULE, edition=edition, seed=seed, cls=OPEN, files=files,
+                   expect=[], variant=f"{carrier}-{ending}",
+                   note="the judge is the comparison of una check and the re-check")
+
+
+OPERATORS = {"F1": f1, "F7": f7}

@@ -133,6 +133,7 @@ These operators stay inside the importer's vocabulary, so their programs are re-
 - F4. Route a value through `map`, `filter`, `fold`, `first_where`, a lambda, a generic function, a record field, `Option`, `Result`, or a tuple.
 - F5. Put a `Files.write` or `Files.read` under a raised pc, in a lambda, in recursion, or as a value. S-14's shapes.
 - F6. Vary an `Http` call's URL, headers and body labels. S-15's shapes.
+- F7. Route a secret through the prelude functions the re-check reads since #532, #542 and #545: `at`, at a public and at a secret index, `or_else`, with a secret value and with a secret default, `min`, `max`, `abs`, `slice`, and `is_ok`, of a public result of a secret (structural, so public) and of a result chosen under a secret condition (so secret). A table of its own, so that F1's programs for earlier seeds rebuild unchanged.
 
 The class is open. The judge is the comparison: a declaration that `una check` accepts and the re-check rejects is a candidate.
 

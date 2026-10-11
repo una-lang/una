@@ -229,6 +229,19 @@ class Generators(unittest.TestCase):
         self.assertTrue({c.split("-")[0] for c in CARRIERS} <= carriers | {"first"})
         self.assertTrue(any(v.endswith("write-internal") for v in seen))
 
+    def test_f7_is_open_and_covers_every_prelude_carrier(self):
+        from hunt.families.fragment import PRELUDE_CARRIERS
+        seen = set()
+        for p in every_program(200):
+            if p.op != "F7":
+                continue
+            self.assertEqual((p.cls, p.expect), (OPEN, []))
+            seen.add(p.variant)
+        endings = ("secret-result", "secret-branch", "public-result", "print", "print-under",
+                   "write-internal")
+        carriers = {next(v[:-len(e) - 1] for e in endings if v.endswith("-" + e)) for v in seen}
+        self.assertEqual(carriers, set(PRELUDE_CARRIERS))
+
     def test_parse_recheck(self):
         out = "doc.json\tmain.run\taccepted\tany host\ndoc.json\tmain.g\tnot re-checked\tthe type `X`\n"
         rows = drivers.parse_recheck(out)
