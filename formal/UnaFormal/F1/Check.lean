@@ -337,13 +337,13 @@ mutual
       flowTo p (.record "prelude.Response" (.ofLabel p.reqResult)) ann "the response"
       pure ⟨false, { rq := true }, some (p.reqFail pc ts), [], true, []⟩
     | .construct record fields => do
-      let rec ← some! (p.record record) s!"no record `{record}`"
+      let rec ← some! (p.record record) s!"F1 restriction (no record `{record}`, a lookup miss)"
       need (flowsB p.top (← atomsTy Γ fields) rec.fields)
         s!"a field of `{record}` does not flow into its declared type"
       flowTo p (.record record .bot) ann s!"the `{record}` value"
       pure .none
     | .variant kind ctor fields => do
-      let sm ← some! (p.sum kind) s!"no sum `{kind}`"
+      let sm ← some! (p.sum kind) s!"F1 restriction (no sum `{kind}`, a lookup miss)"
       let fs ← some! sm.variants[ctor]? s!"`{kind}` has no variant {ctor}"
       need (flowsB p.top (← atomsTy Γ fields) fs)
         s!"a field of `{kind}` does not flow into its declared type"
@@ -352,7 +352,7 @@ mutual
     | .field value index => do
       match ← atomTy Γ value with
       | .record record l =>
-        let rec ← some! (p.record record) s!"no record `{record}`"
+        let rec ← some! (p.record record) s!"F1 restriction (no record `{record}`, a lookup miss)"
         let t ← some! rec.fields[index]? s!"`{record}` has no field {index}"
         flowTo p (t.raise l) ann "the field"
         pure .none
@@ -587,7 +587,7 @@ mutual
       need (inPlace s) "`ℓ_T` off a position of type `T`"
       pure ⟨false, HostFx.none, some .bot, [], true, []⟩
     | .raise kind code args => do
-      let sm ← some! (p.sum kind) s!"no sum `{kind}`"
+      let sm ← some! (p.sum kind) s!"F1 restriction (no sum `{kind}`, a lookup miss)"
       let fs ← some! sm.variants[code]? s!"`{kind}` has no variant {code}"
       need (flowsB p.top (← atomsTy Γ args) fs)
         s!"a field of the failure `{kind}` does not flow into its declared type"
@@ -601,7 +601,7 @@ mutual
     | .caseSum scrutinee ctor binders thenE elseE => do
       match ← atomTy Γ scrutinee with
       | .record kind ls =>
-        let sm ← some! (p.sum kind) s!"a `case` on variants of `{kind}`, which is not a sum"
+        let sm ← some! (p.sum kind) s!"F1 restriction (a `case` on variants of `{kind}`, which is not a sum: a lookup miss)"
         let fs ← some! sm.variants[ctor]? s!"`{kind}` has no variant {ctor}"
         need (fs.length == binders.length) s!"a pattern of `{kind}` with the wrong number of fields"
         let Γ' := binders.zip (fs.map (LTy.raise ls)) ++ Γ
