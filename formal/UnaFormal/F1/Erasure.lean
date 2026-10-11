@@ -30,6 +30,7 @@ mutual
     | .write a c => .write a c
     | .req m args => .req m args
     | .construct r fs => .construct r fs
+    | .variant k i fs => .variant k i fs
     | .field v i => .field v i
     | .list items => .list items
     | .none => .none
@@ -59,8 +60,13 @@ mutual
     | .caseOption s n x sm => .caseOption s (n.anon ρ) x (sm.anon ρ)
     | .caseResult s x o y er => .caseResult s x (o.anon ρ) y (er.anon ρ)
     | .fail c => .fail c
+    | .raise k c args => .raise k c args
+    | .caseSum s i xs t e => .caseSum s i xs (t.anon ρ) (e.anon ρ)
+    | .unreachable => .unreachable
     | .attempt b => .attempt (b.anon ρ)
+    | .attemptK k b => .attemptK k (b.anon ρ)
     | .handle b x h => .handle (b.anon ρ) x (h.anon ρ)
+    | .handleK k b x h => .handleK k (b.anon ρ) x (h.anon ρ)
     | .letTuple bs v b => .letTuple (bs.map fun q => (q.1, anonTy)) v (b.anon ρ)
     | .loop src x _ st init b => .loop src x anonTy (st.map fun q => (q.1, anonTy)) init (b.anon ρ)
 end

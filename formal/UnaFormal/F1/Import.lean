@@ -74,20 +74,48 @@ def LTy.withFlags (op fails : Bool) (host : HostFx := {}) : LTy → LTy
   | .fn ps r o g f l => .fn ps r (o || op) (g.or host) (f || fails) l
   | t => t
 
-/-- F1's failures are codes (#508): every `attempt` in a tail position of `e`, which gives `e`'s
-value, has a failure's code as its error type at `t`, the type `e` is checked at. A loop's body
-gives its state, a tuple, so an `attempt` there has none; an `attempt`'s body gives its result's
-value. An `attempt` whose error type is a kind with a payload, or a type the export leaves open,
-is not a shape F1 has (#512): its declaration is not re-checked, never rejected. -/
-partial def Expr.attemptsAt (t : LTy) : Expr → Bool
+/-- The `attempt`s in the tail positions of `e`, which give `e`'s value, read at `t`, the type
+`e` is checked at (#508, #512): one whose error type is a failure's code is F1's `attempt`, and
+one whose error type is a sum kind among `sums` is `attemptK` of that kind. A loop's body gives
+its state, a tuple, so an `attempt` there has none; an `attempt`'s body gives its result's value.
+An `attempt` whose error type is neither, such as a type the export leaves open, is not a shape
+F1 has: `none`, and its declaration is not re-checked, never rejected. -/
+partial def Expr.resolveAt (sums : List String) (t : LTy) : Expr → Option Expr
   | .attempt b => match t with
-    | .result v (.int _) _ => b.attemptsAt v
-    | _ => false
-  | .letR _ _ _ b | .letE _ _ _ b | .letTuple _ _ b => b.attemptsAt t
-  | .ite _ a b | .caseOption _ a _ b | .caseResult _ _ a _ b | .handle a _ b =>
-    a.attemptsAt t && b.attemptsAt t
-  | .loop _ _ _ st _ b => b.attemptsAt (.tuple (st.map Prod.snd) .bot)
-  | .atom _ | .fail _ => true
+    | .result v (.int _) _ => (b.resolveAt sums v).map .attempt
+    | .result v (.record k _) _ =>
+      if sums.contains k then (b.resolveAt sums v).map (.attemptK k) else none
+    | _ => none
+  | .attemptK k b => match t with
+    | .result v (.record k' _) _ => if k == k' then (b.resolveAt sums v).map (.attemptK k) else none
+    | _ => none
+  | .letR x a v b => (b.resolveAt sums t).map (.letR x a v)
+  | .letE x a v b => (b.resolveAt sums t).map (.letE x a v)
+  | .letTuple bs v b => (b.resolveAt sums t).map (.letTuple bs v)
+  | .ite c a b => do pure (.ite c (← a.resolveAt sums t) (← b.resolveAt sums t))
+  | .caseOption sc a x b => do pure (.caseOption sc (← a.resolveAt sums t) x (← b.resolveAt sums t))
+  | .caseResult sc x a y b =>
+    do pure (.caseResult sc x (← a.resolveAt sums t) y (← b.resolveAt sums t))
+  | .caseSum sc i xs a b => do pure (.caseSum sc i xs (← a.resolveAt sums t) (← b.resolveAt sums t))
+  | .handle a x b => do pure (.handle (← a.resolveAt sums t) x (← b.resolveAt sums t))
+  | .handleK k a x b => do pure (.handleK k (← a.resolveAt sums t) x (← b.resolveAt sums t))
+  | .loop src x xt st init b =>
+    (b.resolveAt sums (.tuple (st.map Prod.snd) .bot)).map (.loop src x xt st init)
+  | e@(.atom _) | e@(.fail _) | e@(.raise _ _ _) | e@.unreachable => some e
+
+/-- The payload kinds `e` may fail with (#512), with `raisesOf` giving those of each function:
+its `raise`s and calls, less what an `attempt` or handler of a kind catches. A lambda's body is a
+function value's, which F1 asks to raise none (`Check.checkRhs`), so it is not counted. -/
+partial def Expr.raisesIn (raisesOf : String → List String) : Expr → List String
+  | .raise k _ _ => [k]
+  | .letR _ _ (.call f _ _) b => raisesOf f ++ b.raisesIn raisesOf
+  | .letR _ _ _ b | .letTuple _ _ b | .loop _ _ _ _ _ b | .attempt b => b.raisesIn raisesOf
+  | .letE _ _ v b => v.raisesIn raisesOf ++ b.raisesIn raisesOf
+  | .ite _ a b | .caseOption _ a _ b | .caseResult _ _ a _ b | .caseSum _ _ _ a b | .handle a _ b =>
+    a.raisesIn raisesOf ++ b.raisesIn raisesOf
+  | .attemptK k b => (b.raisesIn raisesOf).filter (· != k)
+  | .handleK k a _ b => (a.raisesIn raisesOf).filter (· != k) ++ b.raisesIn raisesOf
+  | .atom _ | .fail _ | .unreachable => []
 
 end Una.F1
 
@@ -175,6 +203,11 @@ structure Ctx where
   /-- The kinds whose values F1's failure codes represent faithfully, by qualified name: kinds
   without type parameters whose variants carry no payload (#507). -/
   codes : List String := []
+  /-- The sum kinds F1 reads (#512), by qualified name, with the number of fields of each variant,
+  in order. -/
+  sums : List (String × List Nat) := []
+  /-- The payload kind each function fails with, when it is a sum kind (#512). -/
+  raisesOf : List (String × String) := []
 
 /-- The effects a `uses` entry names: `Files`'s operations (M5b) and `Http`'s (M5c) are host
 effects; every other operation is F1's one operation, gathered for G3. -/
@@ -209,6 +242,12 @@ partial def ty (c : Ctx) (j : J) : M LTy := do
     let ps ← (← arr (← field j "params")).mapM (ty c)
     let r ← ty c (← field j "result")
     let (op, host) ← usesEffects (← arr (← field j "uses"))
+    -- A function value never fails with a payload in F1 (#512): a function type whose `fails`
+    -- names a sum kind is outside it. The export names the kind without its module, so every sum
+    -- of that name counts.
+    if let .str fk := j.getObjValD "fails" then
+      if c.sums.any (fun q => q.1 == fk || q.1.endsWith s!".{fk}") then
+        throw s!"a function type that fails with the payload kind `{fk}`"
     pure (.fn ps r op host (!isNull (← field j "fails")) l)
   | "base" =>
     let b ← field j "base"
@@ -232,6 +271,10 @@ partial def ty (c : Ctx) (j : J) : M LTy := do
       -- both is not one F1 reads.
       if c.records.contains q && c.codes.contains q then
         throw s!"the kind `{q}`, both a record and a failure's code"
+      -- A sum is neither a record nor a code (#512); a name that is two of them is not read.
+      let isSum := (c.sums.lookup q).isSome
+      if isSum && (c.records.contains q || c.codes.contains q) then
+        throw s!"the kind `{q}`, both a sum and a record or a failure's code"
       let args ← arr (← field b "args")
       match q, args with
       | "prelude.List", [t] => pure (.list (← ty c t) l)
@@ -254,7 +297,10 @@ partial def ty (c : Ctx) (j : J) : M LTy := do
           | _ => pure false
         let et ← if code then pure (.int (← label (← field e "label"))) else ty c e
         pure (.result (← ty c t) et l)
-      | _, [] => if c.records.contains q then pure (.record q l) else throw s!"the type `{q}`"
+      | _, [] =>
+        -- `.record` types the values of a record or of a sum, which the program's lookups tell
+        -- apart; a name that is neither is never read as either.
+        if c.records.contains q || isSum then pure (.record q l) else throw s!"the type `{q}`"
       | _, _ => throw s!"the type `{q}` with type arguments"
     | "tuple" => pure (.tuple (← (← arr (← field b "value")).mapM (ty c)) l)
     | k => throw s!"the type `{k}`"
@@ -414,7 +460,14 @@ mutual
       | "prelude.Result", "Ok", [a] => pure (.mkOk a)
       | "prelude.Result", "Err", [a] => pure (.mkErr a)
       | _, _, _ =>
-        if c.records.contains q then pure (.construct q args) else throw s!"a value of `{q}`"
+        if c.records.contains q then pure (.construct q args)
+        else if let some shape := c.sums.lookup q then
+          let i ← match (← field ctor "index").getNat? with
+            | .ok i => pure i
+            | .error _ => throw "a variant's index"
+          if shape[i]? != some args.length then throw s!"a value of `{q}` with the wrong fields"
+          pure (.variant q i args)
+        else throw s!"a value of `{q}`"
     | "field" =>
       match (← field j "index").getNat? with
       | .ok i => pure (.field (← atom (← field j "value")) i)
@@ -437,6 +490,9 @@ mutual
     -- outside F1, as for `fail`.
     | "checked" =>
       if !(← arr (← field j "args")).isEmpty then throw "a failure with a payload"
+      -- `checked` fails with a code; one whose kind is a sum would read the kind two ways (#512).
+      if (c.sums.lookup (← path (← field (← field j "ctor") "kind"))).isSome then
+        throw "a `checked` whose failure is of a payload kind"
       -- The model's predicate reads its operand only (`Program.predSem`, on its text): a formula
       -- that reads any other value, whose label would decide the failure too, is outside F1.
       let value ← field j "value"
@@ -486,15 +542,18 @@ mutual
           let tmp := s!"%not-{x}"
           return .letR tmp t first (.letR x t (.prim .not [.var tmp]) body)
         let r ← rhs c rv
-        -- A lambda's body gives the result of its function type (`Expr.attemptsAt`).
-        match r, t with
-        | .lambda _ lb, .fn _ res _ _ _ _ =>
-          if !lb.attemptsAt res then throw "an `attempt` whose error type is not a failure's code"
-        | _, _ => pure ()
+        -- A lambda's body gives the result of its function type (`Expr.resolveAt`).
+        let r ← match r, t with
+          | .lambda ps lb, .fn _ res _ _ _ _ =>
+            match lb.resolveAt (c.sums.map Prod.fst) res with
+            | some lb' => pure (.lambda ps lb')
+            | none => throw "an `attempt` whose error type is not a failure's code or a sum"
+          | r, _ => pure r
         pure (.letR x t r body)
       | "expr" =>
         let e ← expr c (← field v "value")
-        if !e.attemptsAt t then throw "an `attempt` whose error type is not a failure's code"
+        let some e := e.resolveAt (c.sums.map Prod.fst) t
+          | throw "an `attempt` whose error type is not a failure's code or a sum"
         pure (.letE x t e body)
       | k => throw s!"the binding `{k}`"
     | "if" =>
@@ -534,18 +593,60 @@ mutual
           | [b] => bindName b
           | _ => pure "%unread"
         pure (.caseResult sc x (← expr c okB) y (← expr c errB))
-      | q => throw s!"a `case` on `{q}`"
+      | q =>
+        -- A `when` on a sum (#512): a chain of binary tests, one per arm, in the arms' order;
+        -- each later arm is under every earlier test's label (T-CaseSum). The arms are checked
+        -- against the declared variants here, without trusting `una check`: each of the kind,
+        -- at most once, with as many bindings as fields.
+        let some shape := c.sums.lookup q | throw s!"a `case` on `{q}`"
+        let mut seen : List Nat := []
+        let mut tests : List (Nat × List String × J) := []
+        for a in arms do
+          let ctor ← field a "ctor"
+          if (← path (← field ctor "kind")) != q then throw s!"a `case` on `{q}` with an arm of another kind"
+          let i ← match (← field ctor "index").getNat? with
+            | .ok i => pure i
+            | .error _ => throw "a variant's index"
+          if seen.contains i then throw s!"a `case` on `{q}` with a variant twice"
+          seen := seen ++ [i]
+          let binds ← (← arr (← field a "binds")).mapM bindName
+          if shape[i]? != some binds.length then throw s!"a pattern of `{q}` with the wrong fields"
+          tests := tests ++ [(i, binds, ← field a "body")]
+        -- The last `else`: the `otherwise`, or, when the arms cover every variant, `unreachable`.
+        -- This is the only place the reading emits `unreachable` (#512): a mistake in the check
+        -- above could add only an abort, a termination outcome outside T6, never accept a flow.
+        let last ← if !isNull other then expr c other
+          else if (List.range shape.length).all seen.contains then pure Expr.unreachable
+          else throw s!"a `case` on `{q}` whose arms do not cover its variants"
+        tests.foldrM (fun (i, binds, body) acc => do
+          pure (.caseSum sc i binds (← expr c body) acc)) last
     | "fail" =>
-      if !(← arr (← field j "args")).isEmpty then throw "a failure with a payload"
-      match (← field (← field j "ctor") "index").getNat? with
-      | .ok i => pure (.fail i)
-      | .error _ => throw "a failure's index"
+      let ctor ← field j "ctor"
+      let q ← path (← field ctor "kind")
+      let args ← atoms (← field j "args")
+      let i ← match (← field ctor "index").getNat? with
+        | .ok i => pure i
+        | .error _ => throw "a failure's index"
+      -- A failure of a sum kind is a `raise`, with or without fields, so a kind is read one way
+      -- at every site (#512); any other failure with a payload is outside F1.
+      if let some shape := c.sums.lookup q then
+        if shape[i]? != some args.length then throw s!"a failure of `{q}` with the wrong fields"
+        pure (.raise q i args)
+      else if !args.isEmpty then throw "a failure with a payload"
+      else pure (.fail i)
     | "attempt" => pure (.attempt (← expr c (← field j "body")))
     | "handle" =>
       let x ← str (← field j "error")
       let h ← field j "handler"
-      if reads x h then throw "a handler that reads the failure"
-      pure (.handle (← expr c (← field j "body")) "%unread" (← expr c h))
+      let body ← expr c (← field j "body")
+      -- A body that fails with a payload kind has a handler of that kind (#512), which binds the
+      -- failure's value; a handler of a code still may not read it.
+      match (body.raisesIn (fun f => (c.raisesOf.lookup f).toList)).eraseDups with
+      | [] =>
+        if reads x h then throw "a handler that reads the failure"
+        pure (.handle body "%unread" (← expr c h))
+      | [k] => pure (.handleK k body x (← expr c h))
+      | _ => throw "a handler over failures of several kinds"
     | "let_tuple" =>
       let bs ← (← arr (← field j "names")).mapM (binder c)
       pure (.letTuple bs (← atom (← field j "value")) (← expr c (← field j "body")))
@@ -607,14 +708,16 @@ def signature (c : Ctx) (module : String) (v : J) (body : Expr) : M Fun := do
           match acc.addStarAt from_ steps with
           | some t => pure t
           | none => throw s!"a result summary at `{pos}`, outside F1") declared
-  -- The body gives the result (`Expr.attemptsAt`).
-  if !body.attemptsAt result then throw "an `attempt` whose error type is not a failure's code"
+  -- The body gives the result (`Expr.resolveAt`).
+  let some body := body.resolveAt (c.sums.map Prod.fst) result
+    | throw "an `attempt` whose error type is not a failure's code or a sum"
   let (op, host) ← usesEffects (← arr (← field v "uses"))
   pure {
     name, tparams := tps, eqParams := eqs, params := ps, result,
     op := op || !usesOf.isEmpty, host,
     fails := !isNull (← field v "fails") || failsOf.isSome, body,
-    rels := (List.lookup name c.rels).getD [] }
+    rels := (List.lookup name c.rels).getD [],
+    raises := (c.raisesOf.lookup name).toList }
 
 /-- Every category a label of the document names. -/
 partial def categories (j : J) (acc : List String) : List String :=
@@ -740,6 +843,71 @@ def records (decls : List Decl) (funs : List String) : List Record := Id.run do
     let rd := fun r => (List.lookup r deep).getD Label.bot
     deep := out.map fun (q, ts) => (q, (LTy.deeps rd ts).base)
   pure (out.map fun (q, ts) => ⟨q, ts, (List.lookup q deep).getD Label.bot⟩)
+
+/-- The sum kinds (#512): kinds the export flags as not records (`record: false`, ADR 0083),
+without type parameters (`params`), that are not failures' codes (`codeKinds`, so some variant
+has a field), whose fields F1 reads, with the document's records `recs` and the sums themselves,
+and which do not reach themselves, until no more are dropped. A sum that reaches itself, such as
+a list of its own, has values of any depth, which F1's values do not bound, as for records (#509).
+The prelude's `ParseError` is not one: `parse_int` is F1's `parse`, whose failure is a code. A
+record whose field is a sum is not read as a record (`records` reads fields without sums), so it
+and what uses it are not re-checked. -/
+def sums (decls : List Decl) (funs : List String) (recs : List Record) (codes : List String) :
+    List Sum := Id.run do
+  let cands := decls.filterMap fun d =>
+    if d.kind != "data" then none
+    else
+      match plainRun (do
+          if !(← arr (← field d.value "params")).isEmpty then throw "generic"
+          match (← field d.value "record").getBool? with
+          | .ok false => pure ()
+          | _ => throw "a record, or no flag"
+          let q := s!"{d.module}.{← str (← field d.value "name")}"
+          if codes.contains q || q == "prelude.ParseError" || recs.any (·.name == q) then
+            throw "a code or a record"
+          let vs ← (← arr (← field d.value "variants")).mapM fun v => do arr (← field v "fields")
+          pure (q, vs)) with
+      | .ok r => some r
+      | .error _ => none
+  let mut names := cands.map Prod.fst
+  let mut out : List (String × List (List LTy)) := []
+  for _ in [0:cands.length + 1] do
+    let shapes := cands.filter (names.contains ·.1) |>.map fun (q, vs) => (q, vs.map (·.length))
+    let c : Ctx := { records := recs.map (·.name), sums := shapes, codes, funs }
+    out := cands.filterMap fun (q, vs) =>
+      if !names.contains q then none
+      else
+        match plainRun (vs.mapM fun fs => fs.mapM fun f => do
+            match ← arr f with
+            | [_, t] => ty c t
+            | _ => throw "a field") with
+        | .ok tss => some (q, tss)
+        | .error _ => none
+    -- A sum that reaches itself through its fields, or through another sum's, is dropped, as a
+    -- record is; each edge once.
+    let edges := out.map fun (q, tss) =>
+      (q, ((tss.flatten.flatMap LTy.recordNames).filter (names.contains ·)).eraseDups)
+    let reach := fun (q : String) => Id.run do
+      let mut seen : List String := []
+      let mut todo := (List.lookup q edges).getD []
+      for _ in [0:edges.length * edges.length + 1] do
+        match todo with
+        | [] => break
+        | r :: rest =>
+          todo := rest
+          if !seen.contains r then
+            seen := r :: seen
+            todo := todo ++ (List.lookup r edges).getD []
+      pure seen
+    out := out.filter fun (q, _) => !(reach q).contains q
+    names := out.map Prod.fst
+  -- The deep labels: the least solution over nested kinds (`spec/07 §7` rule 3).
+  let recDeep := fun r => (recs.find? (·.name == r)).map (·.deep)
+  let mut deep : List (String × Label) := out.map fun q => (q.1, Label.bot)
+  for _ in [0:out.length + 1] do
+    let rd := fun r => (recDeep r).getD ((List.lookup r deep).getD Label.bot)
+    deep := out.map fun (q, tss) => (q, (LTy.deeps rd tss.flatten).base)
+  pure (out.map fun (q, tss) => ⟨q, tss, (List.lookup q deep).getD Label.bot⟩)
 
 /-- The outcome of a declaration. `acceptedIfA3` is accepted on the condition of part A3 of M4
 completion (instance erasure): the declaration is, or reaches, a function checked at its
@@ -892,7 +1060,7 @@ def prepare (c : Ctx) (hl : HostLabels) (caps : List (String × J)) (decls : Lis
 /-- The program the re-checker certifies, with the document's host labels (`HostLabels`), which
 `Check.progOk` checks against `Program.HostWF`. -/
 def mkProgram (cats : List String) (acceptsOp : Label) (hl : HostLabels) (recs : List Record)
-    (pols : List Policy) (funs : List Fun) : Program where
+    (pols : List Policy) (funs : List Fun) (sums : List Sum := []) : Program where
   categories := cats
   acceptsOp := acceptsOp
   acceptsRead := hl.acceptsRead
@@ -903,13 +1071,14 @@ def mkProgram (cats : List String) (acceptsOp : Label) (hl : HostLabels) (recs :
   reqFloor := hl.reqFloor
   fileState := hl.fileState.getD Label.bot
   records := recs
+  sums := sums
   policies := pols
   funs := funs
 
 /-- Checks `fn` (the prepared function, or one of its instances) in the program of `prep`. -/
-def checkWith (cats : List String) (hl : HostLabels) (recs : List Record) (prep : Prep) (fn : Fun) :
-    Check.Result Unit := do
-  let p := mkProgram cats prep.acceptsOp hl recs prep.pols (fn :: prep.callees)
+def checkWith (cats : List String) (hl : HostLabels) (recs : List Record) (sums : List Sum)
+    (prep : Prep) (fn : Fun) : Check.Result Unit := do
+  let p := mkProgram cats prep.acceptsOp hl recs prep.pols (fn :: prep.callees) sums
   Check.checkDecls p
   Check.checkB1 p
   for f in p.funs do Check.checkSignature f
@@ -1039,9 +1208,12 @@ def preludeF1 : List String :=
     "prelude.sum", "prelude.append", "prelude.set"]
 
 /-- A rejection by a restriction of option B1 is not a flow the model forbids: the program is
-outside B1, so it is not re-checked (ADR 0008). -/
+outside B1, so it is not re-checked (ADR 0008). So is one by a form Una has and F1 does not
+model, marked `F1 restriction` (#512): `==` on a sum, a function value that fails with a payload. -/
 def classify (why : String) : Outcome :=
-  if (why.splitOn "B1 restriction").length > 1 then .notRechecked why else .rejected why
+  if (why.splitOn "B1 restriction").length > 1 || (why.splitOn "F1 restriction").length > 1 then
+    .notRechecked why
+  else .rejected why
 
 /-- The key of an instance: its type arguments, written. -/
 def instKey (ts : List LTy) : String := ", ".intercalate (ts.map Check.fmtTy)
@@ -1067,8 +1239,13 @@ mutual
     | .caseOption sc n x sm => .caseOption sc (Expr.toInst cond n) x (Expr.toInst cond sm)
     | .caseResult sc x o y er => .caseResult sc x (Expr.toInst cond o) y (Expr.toInst cond er)
     | .fail c => .fail c
+    | .raise k c args => .raise k c args
+    | .caseSum sc i xs t e => .caseSum sc i xs (Expr.toInst cond t) (Expr.toInst cond e)
+    | .unreachable => .unreachable
     | .attempt b => .attempt (Expr.toInst cond b)
+    | .attemptK k b => .attemptK k (Expr.toInst cond b)
     | .handle b x h => .handle (Expr.toInst cond b) x (Expr.toInst cond h)
+    | .handleK k b x h => .handleK k (Expr.toInst cond b) x (Expr.toInst cond h)
     | .letTuple bs v b => .letTuple bs v (Expr.toInst cond b)
     | .loop src x xt st init b => .loop src x xt st init (Expr.toInst cond b)
 end
@@ -1190,12 +1367,13 @@ mutual
     | _ => false
 
   def Expr.usesEnv : Expr → Bool
-    | .atom _ | .fail _ => false
+    | .atom _ | .fail _ | .raise _ _ _ | .unreachable => false
     | .letR _ _ v b => Rhs.usesEnv v || Expr.usesEnv b
     | .letE _ _ v b => Expr.usesEnv v || Expr.usesEnv b
-    | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e =>
+    | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e
+    | .caseSum _ _ _ t e | .handleK _ t _ e =>
       Expr.usesEnv t || Expr.usesEnv e
-    | .attempt b | .letTuple _ _ b | .loop _ _ _ _ _ b => Expr.usesEnv b
+    | .attempt b | .attemptK _ b | .letTuple _ _ b | .loop _ _ _ _ _ b => Expr.usesEnv b
 end
 
 /-- Whether a note's verdict may rest on the file-state label: the program uses `Files`, or a
@@ -1469,8 +1647,20 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
   -- document is then not re-checked, rather than a policy silently dropped.
   if (decls.filter (·.kind == "policy")).length != vias.length then
     return code.map fun d => (named d, .notRechecked "a policy F1 cannot read")
+  let sms := sums decls funNames recs (codeKinds decls)
+  -- The payload kind of each function whose `error` is a sum F1 reads (#512).
+  let raisesOf := decls.filterMap fun d =>
+    if d.kind != "fun" then none
+    else match plainRun (do
+        let e ← field d.value "error"
+        if isNull e then throw "no error"
+        let q ← path e
+        if sms.any (·.name == q) then pure (named d, q) else throw "not a sum") with
+      | .ok r => some r
+      | .error _ => none
   let c : Ctx := { records := recs.map (·.name), funs := funNames, vias, allEq := edition == "0.1",
-                   codes := codeKinds decls }
+                   codes := codeKinds decls, sums := sms.map fun sm => (sm.name, sm.variants.map (·.length)),
+                   raisesOf }
   let rd : String → Label := fun r => match recs.find? (·.name == r) with
     | some rec => rec.deep
     | none => Label.bot
@@ -1563,7 +1753,7 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
       match prepOf f with
       | some (.ok pr) =>
         let inst := Check.instantiate (subst rd) pr.fn ts s!"{f}[{", ".intercalate key}]"
-        let outcome := match checkWith cats hl recs pr inst with
+        let outcome := match checkWith cats hl recs sms pr inst with
           | .ok () => Outcome.accepted ""
           | .error why => classify s!"at its instance `{inst.name}`, instantiated in `{origin}`: {why}"
         results := results ++ [(f, outcome)]
@@ -1600,7 +1790,7 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
           if pr.nested then
             if pr.fn.tparams.isEmpty then .notRechecked "a call at type arguments that are not ground"
             else instanceOutcome (named d)
-          else match checkWith cats hl recs pr pr.fn with
+          else match checkWith cats hl recs sms pr pr.fn with
             | .ok () => .accepted ""
             | .error why => classify why
         | some (.error why) => .notRechecked why
@@ -1672,6 +1862,7 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
   let viaFuns := pr0.callees.filter fun fn => isVia fn.name
   let mkProg := fun (members : List String) =>
     mkProgram cats acceptsOp hl recs pr0.pols (members.filterMap (fun f => (readOf f).map (·.fn)) ++ viaFuns)
+      sms
   -- The functions checked at their instances: their T-Fun is part A3's hypothesis.
   let cond := (accepted final).filter isNested
   let docWhy := fun (P : Program) =>

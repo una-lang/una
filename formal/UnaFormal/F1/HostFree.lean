@@ -21,21 +21,22 @@ mutual
   def Rhs.hostFree : Rhs → Bool
     | .read _ | .write _ _ | .req _ _ | .envGet _ => false
     | .lambda _ b => b.hostFree
-    | .atom _ | .prim _ _ | .call _ _ _ | .apply _ _ | .op _ | .construct _ _ | .field _ _
+    | .atom _ | .prim _ _ | .call _ _ _ | .apply _ _ | .op _ | .construct _ _ | .variant _ _ _ | .field _ _
     | .list _ | .none | .some _ | .mkOk _ | .mkErr _ | .funRef _ _ | .declassify _ _ | .map _ _ | .filter _ _
     | .firstWhere _ _ | .fold _ _ _ | .parse _ | .checked _ _ _ | .eq _ _ | .tuple _ | .append _ _ | .set _ _ _
     | .toText _ => true
 
   /-- A body that performs no host operation, in its lambdas included. -/
   def Expr.hostFree : Expr → Bool
-    | .atom _ | .fail _ => true
+    | .atom _ | .fail _ | .raise _ _ _ | .unreachable => true
     | .letR _ _ v b => v.hostFree && b.hostFree
     | .letE _ _ v b => v.hostFree && b.hostFree
     | .ite _ t e => t.hostFree && e.hostFree
     | .caseOption _ n _ s => n.hostFree && s.hostFree
     | .caseResult _ _ o _ e => o.hostFree && e.hostFree
-    | .attempt b => b.hostFree
-    | .handle b _ h => b.hostFree && h.hostFree
+    | .caseSum _ _ _ t e => t.hostFree && e.hostFree
+    | .attempt b | .attemptK _ b => b.hostFree
+    | .handle b _ h | .handleK _ b _ h => b.hostFree && h.hostFree
     | .letTuple _ _ b | .loop _ _ _ _ _ b => b.hostFree
 end
 

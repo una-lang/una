@@ -540,6 +540,9 @@ mutual
         LExprTy p E (binders.zip (fs.map (LTy.raise ls)) ++ Γ) (pc.join ls) thenE t₁ ε₁ →
         LExprTy p E Γ (pc.join ls) elseE t₂ ε₂ → Flow p.top t₁ s → Flow p.top t₂ s → s.InPlace →
         LExprTy p E Γ pc (.caseSum scrutinee ctor binders thenE elseE) (s.raise ls) (ε₁.union ε₂)
+    /-- The `else` of an exhaustive `when` on a sum (#512): no effect, at any type. A run that
+    reached it aborts, which T6, termination-insensitive, does not observe. -/
+    | unreachable {Γ pc s} : s.InPlace → LExprTy p E Γ pc .unreachable s .none
     /-- T-Case on a sum at a tuple type: as `iteT`. -/
     | caseSumT {Γ pc scrutinee kind ctor binders thenE elseE ls sm fs t₁ t₂ ts ε₁ ε₂} :
         LAtomTy Γ scrutinee (.record kind ls) → p.sum kind = some sm → sm.variants[ctor]? = some fs →

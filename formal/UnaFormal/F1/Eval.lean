@@ -539,6 +539,7 @@ mutual
         | (t, .ok v, w') => (t, .ok (.ok v), w')
         | (t, .failed code, w') => (t, .ok (.err (.int code)), w')
         | res => res
+      | .unreachable => ([], .aborted, w)
       | .attemptK kind body =>
         match eval H n p w env body with
         | (t, .ok v, w') => (t, .ok (.ok v), w')

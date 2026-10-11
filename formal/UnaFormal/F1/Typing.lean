@@ -171,6 +171,7 @@ mutual
         AtomTy ctx scrutinee (.record kind) → p.sum kind = some sm → sm.fieldTys ctor = some ts →
         ts.length = binders.length → ExprTy p (binders.zip ts ++ ctx) thenE s →
         ExprTy p ctx elseE s → ExprTy p ctx (.caseSum scrutinee ctor binders thenE elseE) s
+    | unreachable {ctx s} : ExprTy p ctx .unreachable s
     | attempt {ctx body t} : ExprTy p ctx body t → ExprTy p ctx (.attempt body) (.result t .int)
     | attemptK {ctx kind body t} :
         ExprTy p ctx body t → ExprTy p ctx (.attemptK kind body) (.result t (.record kind))

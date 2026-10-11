@@ -52,6 +52,7 @@ mutual
     | .write a c, .write b d => a == b && c == d
     | .req m a, .req k b => m == k && a == b
     | .construct r a, .construct s b => r == s && a == b
+    | .variant k i a, .variant k' i' b => k == k' && i == i' && a == b
     | .field v i, .field u j => v == u && i == j
     | .list a, .list b => a == b
     | .none, .none => true
@@ -84,8 +85,14 @@ mutual
     | .caseResult a x t y e, .caseResult b x' u y' f =>
       a == b && x == x' && y == y' && exprSim ρ t u && exprSim ρ e f
     | .fail c, .fail d => c == d
+    | .raise k c xs, .raise k' d ys => k == k' && c == d && xs == ys
+    | .caseSum a i xs t e, .caseSum b j ys u f =>
+      a == b && i == j && xs == ys && exprSim ρ t u && exprSim ρ e f
+    | .unreachable, .unreachable => true
     | .attempt b, .attempt c => exprSim ρ b c
+    | .attemptK k b, .attemptK k' c => k == k' && exprSim ρ b c
     | .handle b x h, .handle c y k => x == y && exprSim ρ b c && exprSim ρ h k
+    | .handleK kd b x h, .handleK kd' c y k => kd == kd' && x == y && exprSim ρ b c && exprSim ρ h k
     | .letTuple bs a b, .letTuple cs a' c =>
       bs.map Prod.fst == cs.map Prod.fst && a == a' && exprSim ρ b c
     | .loop s x _ st i b, .loop s' y _ st' j c =>

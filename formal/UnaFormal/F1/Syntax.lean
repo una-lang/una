@@ -210,6 +210,10 @@ mutual
     /-- `e if error x -> h` where `e` fails with the payload kind `kind` (#512): `h` runs with
     the failure's value bound to `x`. A failure of another kind is not caught. -/
     | handleK (kind : String) (body : Expr) (error : String) (handler : Expr)
+    /-- The `else` of a `when` on a sum whose arms cover every variant (#512): never reached.
+    The importer emits it there only, after checking the arms against the declared variants
+    itself; a run that reached it would abort, an outcome T6 is insensitive to. -/
+    | unreachable
     /-- `let (x₁: S₁, ...) = a in e`: the components of a tuple (`spec/17 §4`). -/
     | letTuple (binders : List (String × LTy)) (value : Atom) (body : Expr)
     /-- `loop x: V in s with (b₁: S₁, ...) = (a₁, ...) do e` (`spec/17 §4`, ADR 0056): each

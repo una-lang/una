@@ -236,6 +236,15 @@ def eqArgs (p : Program) (E : List String) (fn : Fun) (targs : List LTy) : Bool 
   (fn.tparams.zip targs).all (fun q => !fn.eqParams.contains q.1 || p.eqIn E q.2)
 
 /-- The premises T-Call and a function reference share. -/
+/-- Whether a type holds a value of a sum kind at any position (#512). -/
+def sumIn (p : Program) : LTy → Bool
+  | .record k _ => (p.sum k).isSome
+  | .list t _ | .option t _ => sumIn p t
+  | .result t e _ => sumIn p t || sumIn p e
+  | .fn ps r _ _ _ _ => ps.attach.any (fun ⟨q, _⟩ => sumIn p q) || sumIn p r
+  | .tuple ts _ => ts.attach.any (fun ⟨q, _⟩ => sumIn p q)
+  | _ => false
+
 def callable (p : Program) (E : List String) (f : String) (targs : List LTy) : Result Fun := do
   let fn ← some! (p.find f) s!"no function `{f}`"
   need (!isVia p f) s!"`{f}` is the `via` function of a policy (U4005)"
@@ -274,7 +283,7 @@ mutual
       need (relBoundB p pc fn.rels)
         s!"B1 restriction (call of a declassifying function under a raised pc): `{f}`"
       flowTo p (p.lsub σ fn.result) ann s!"the result of `{f}`"
-      pure (.ofFnR fn.op fn.host fn.fails fn.rels)
+      pure (.ofCall fn)
     | .apply f args => do
       match ← atomTy Γ f with
       | .fn ps r o g fl lf =>
@@ -294,7 +303,7 @@ mutual
         "the operation's argument or program counter is above what it accepts"
       need (symFree pc) "an operation under a symbolic program counter"
       flowTo p (.unit .bot) ann "the operation's result"
-      pure ⟨true, HostFx.none, Option.none, []⟩
+      pure ⟨true, HostFx.none, Option.none, [], false, []⟩
     | .read path => do
       let t ← atomTy Γ path
       need (isText t) "`Files.read`'s path is not a text"
@@ -302,7 +311,7 @@ mutual
         "`Files.read`'s path or program counter is above what it accepts"
       need (symFree pc) "a host operation under a symbolic program counter"
       flowTo p (.text (.ofLabel p.readResult)) ann "`Files.read`'s result"
-      pure ⟨false, { rd := true }, some (p.fsFail (pc.join (p.deep t))), []⟩
+      pure ⟨false, { rd := true }, some (p.fsFail (pc.join (p.deep t))), [], true, []⟩
     | .write path content => do
       let t ← atomTy Γ path
       need (isText t) "`Files.write`'s path is not a text"
@@ -314,7 +323,7 @@ mutual
         "a write whose path or program counter is above the file-state label (ADR 0085)"
       need (symFree pc) "a host operation under a symbolic program counter"
       flowTo p (.unit .bot) ann "`Files.write`'s result"
-      pure ⟨false, { wr := true }, some (p.fsFail (pc.join (p.deep t))), []⟩
+      pure ⟨false, { wr := true }, some (p.fsFail (pc.join (p.deep t))), [], true, []⟩
     | .req m args => do
       let ts ← atomsTy Γ args
       need (match httpParams m with
@@ -326,12 +335,19 @@ mutual
         "a request's arguments or program counter are above what it accepts"
       need (symFree pc) "a host operation under a symbolic program counter"
       flowTo p (.record "prelude.Response" (.ofLabel p.reqResult)) ann "the response"
-      pure ⟨false, { rq := true }, some (p.reqFail pc ts), []⟩
+      pure ⟨false, { rq := true }, some (p.reqFail pc ts), [], true, []⟩
     | .construct record fields => do
       let rec ← some! (p.record record) s!"no record `{record}`"
       need (flowsB p.top (← atomsTy Γ fields) rec.fields)
         s!"a field of `{record}` does not flow into its declared type"
       flowTo p (.record record .bot) ann s!"the `{record}` value"
+      pure .none
+    | .variant kind ctor fields => do
+      let sm ← some! (p.sum kind) s!"no sum `{kind}`"
+      let fs ← some! sm.variants[ctor]? s!"`{kind}` has no variant {ctor}"
+      need (flowsB p.top (← atomsTy Γ fields) fs)
+        s!"a field of `{kind}` does not flow into its declared type"
+      flowTo p (.record kind .bot) ann s!"the `{kind}` value"
       pure .none
     | .field value index => do
       match ← atomTy Γ value with
@@ -380,6 +396,7 @@ mutual
         let ε ← checkExpr p E (params ++ Γ) .bot r body
         le p ε.failLabel .bot "a lambda's failure is decided above `public`"
         need ε.rels.isEmpty "B1 restriction (declassification in a lambda)"
+        need ε.raises.isEmpty "F1 restriction (a lambda that fails with a payload kind)"
         need (flowsB p.top ps (params.map Prod.snd))
           "the declared parameters do not flow into the lambda's"
         need ((!ε.op || o) && hostLeB ε.host g && (!ε.fails.isSome || fl))
@@ -389,6 +406,7 @@ mutual
     | .funRef f targs => do
       let fn ← callable p E f targs
       need fn.rels.isEmpty s!"B1 restriction (a declassifying function as a value): `{f}`"
+      need fn.raises.isEmpty s!"F1 restriction (a function that fails with a payload kind, as a value): `{f}`"
       let σ := fn.tparams.zip targs
       flowTo p (.fn (fn.params.map (fun q => p.lsub σ q.2)) (p.lsub σ fn.result)
         fn.op fn.host fn.fails .bot) ann s!"`{f}` as a value"
@@ -443,7 +461,7 @@ mutual
       let t ← atomTy Γ s
       need (isText t) "`parse_int` of a value that is not a text"
       flowTo p (.int (p.deep t)) ann "the result of `parse_int`"
-      pure ⟨false, HostFx.none, some (pc.join (p.deep t)), []⟩
+      pure ⟨false, HostFx.none, some (pc.join (p.deep t)), [], true, []⟩
     | .checked a _ _ => do
       let t ← atomTy Γ a
       need (isScalar t) "`checked` of a value that is not a scalar"
@@ -451,12 +469,14 @@ mutual
         "`checked` of a labeled value, or under a raised program counter (U4002)"
       need (symFree pc) "`checked` under a symbolic program counter"
       flowTo p t ann "the value `checked` gives"
-      pure ⟨false, HostFx.none, some (pc.join (p.deep t)), []⟩
+      pure ⟨false, HostFx.none, some (pc.join (p.deep t)), [], true, []⟩
     | .eq a b => do
       let t₁ ← atomTy Γ a
       let t₂ ← atomTy Γ b
       let t ← some! (joinTy t₁ t₂) "`==` on values of different types"
-      need (p.eqIn E t) "`==` on a type without equality"
+      -- F1 has no `==` on sums (#512): a model restriction, not re-checked, never rejected.
+      need (p.eqIn E t || !sumIn p t) "`==` on a type without equality"
+      need (p.eqIn E t) "F1 restriction (`==` on a sum)"
       flowTo p (.bool ((p.deep t₁).join (p.deep t₂))) ann "the result of `==`"
       pure .none
     | .tuple items => do
@@ -464,7 +484,8 @@ mutual
       pure .none
     | .toText a => do
       let t ← atomTy Γ a
-      need (p.eqIn E t) "`to_text` of a value of a type without equality, outside F1"
+      need (p.eqIn E t || !sumIn p t) "`to_text` of a value of a type without equality, outside F1"
+      need (p.eqIn E t) "F1 restriction (`to_text` of a sum)"
       flowTo p (.text (p.deep t)) ann "the text of a value"
       pure .none
     | .envGet name => do
@@ -564,30 +585,97 @@ mutual
       le p pc .bot "a failure under a program counter above `public` (U4002)"
       need (symFree pc) "a failure under a symbolic program counter"
       need (inPlace s) "`ℓ_T` off a position of type `T`"
-      pure ⟨false, HostFx.none, some .bot, []⟩
+      pure ⟨false, HostFx.none, some .bot, [], true, []⟩
+    | .raise kind code args => do
+      let sm ← some! (p.sum kind) s!"no sum `{kind}`"
+      let fs ← some! sm.variants[code]? s!"`{kind}` has no variant {code}"
+      need (flowsB p.top (← atomsTy Γ args) fs)
+        s!"a field of the failure `{kind}` does not flow into its declared type"
+      le p pc .bot "a failure under a program counter above `public` (U4002)"
+      need (symFree pc) "a failure under a symbolic program counter"
+      need (inPlace s) "`ℓ_T` off a position of type `T`"
+      pure ⟨false, HostFx.none, some .bot, [], false, [kind]⟩
+    | .unreachable => do
+      need (inPlace s) "`ℓ_T` off a position of type `T`"
+      pure .none
+    | .caseSum scrutinee ctor binders thenE elseE => do
+      match ← atomTy Γ scrutinee with
+      | .record kind ls =>
+        let sm ← some! (p.sum kind) s!"a `case` on variants of `{kind}`, which is not a sum"
+        let fs ← some! sm.variants[ctor]? s!"`{kind}` has no variant {ctor}"
+        need (fs.length == binders.length) s!"a pattern of `{kind}` with the wrong number of fields"
+        let Γ' := binders.zip (fs.map (LTy.raise ls)) ++ Γ
+        match s with
+        | .tuple ts _ =>
+          need (inPlaceAll ts) "`ℓ_T` off a position of type `T`"
+          let ε₁ ← checkExpr p E Γ' (pc.join ls) (.tuple ts .bot) thenE
+          let ε₂ ← checkExpr p E Γ (pc.join ls) (.tuple ts .bot) elseE
+          need (flowsB p.top (ts.map (LTy.raise ls)) ts)
+            "a component of the joined state is below the scrutinee's label (U4001)"
+          pure (ε₁.union ε₂)
+        | _ =>
+        need (inPlace s) "`ℓ_T` off a position of type `T`"
+        let ε₁ ← checkExpr p E Γ' (pc.join ls) s thenE
+        let ε₂ ← checkExpr p E Γ (pc.join ls) s elseE
+        flowTo p (s.raise ls) s "the value of a `case`, raised by its scrutinee,"
+        pure (ε₁.union ε₂)
+      | _ => throw "a `case` on variants of a value that is not of a sum"
     | .attempt body => do
       match s with
       | .result t e l =>
         let ε ← checkExpr p E Γ pc t body
+        need ε.raises.isEmpty "an `attempt` of a code over a failure with a payload"
         le p ε.failLabel l "the result of `attempt` is below what decides the failure"
         need (flowB p.top (.int .bot) e) "the error of `attempt` is not a failure's code"
-        pure ⟨ε.op, ε.host, Option.none, ε.rels⟩
+        pure ⟨ε.op, ε.host, Option.none, ε.rels, false, []⟩
+      | _ => throw "`attempt` at a type that is not a result"
+    | .attemptK kind body => do
+      match s with
+      | .result t e l =>
+        let ε ← checkExpr p E Γ pc t body
+        need (!ε.codes) s!"an `attempt` of `{kind}` over a failure with a code"
+        need (ε.raises.all (· == kind)) s!"an `attempt` of `{kind}` over a failure of another kind"
+        le p ε.failLabel l "the result of `attempt` is below what decides the failure"
+        need (flowB p.top (.record kind .bot) e) s!"the error of `attempt` is not `{kind}`"
+        pure ⟨ε.op, ε.host, Option.none, ε.rels, false, []⟩
       | _ => throw "`attempt` at a type that is not a result"
     | .handle body x handler => do
       match s with
       | .tuple ts _ =>
         need (inPlaceAll ts) "`ℓ_T` off a position of type `T`"
         let ε₁ ← checkExpr p E Γ pc (.tuple ts .bot) body
+        need ε₁.raises.isEmpty "a handler of a code over a failure with a payload"
         let ε₂ ← checkExpr p E ((x, .int ε₁.failLabel) :: Γ) (pc.join ε₁.failLabel) (.tuple ts .bot) handler
         need (flowsB p.top (ts.map (LTy.raise ε₁.failLabel)) ts)
           "a component of the joined state is below what decides the failure (U4001)"
-        pure ⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels⟩
+        pure ⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises⟩
       | _ =>
       need (inPlace s) "`ℓ_T` off a position of type `T`"
       let ε₁ ← checkExpr p E Γ pc s body
+      need ε₁.raises.isEmpty "a handler of a code over a failure with a payload"
       let ε₂ ← checkExpr p E ((x, .int ε₁.failLabel) :: Γ) (pc.join ε₁.failLabel) s handler
       flowTo p (s.raise ε₁.failLabel) s "the value of a handled expression, raised by its failure,"
-      pure ⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels⟩
+      pure ⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises⟩
+    | .handleK kind body x handler => do
+      match s with
+      | .tuple ts _ =>
+        need (inPlaceAll ts) "`ℓ_T` off a position of type `T`"
+        let ε₁ ← checkExpr p E Γ pc (.tuple ts .bot) body
+        need (!ε₁.codes) s!"a handler of `{kind}` over a failure with a code"
+        need (ε₁.raises.all (· == kind)) s!"a handler of `{kind}` over a failure of another kind"
+        let ε₂ ← checkExpr p E ((x, .record kind ε₁.failLabel) :: Γ) (pc.join ε₁.failLabel)
+          (.tuple ts .bot) handler
+        need (flowsB p.top (ts.map (LTy.raise ε₁.failLabel)) ts)
+          "a component of the joined state is below what decides the failure (U4001)"
+        pure ⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises⟩
+      | _ =>
+      need (inPlace s) "`ℓ_T` off a position of type `T`"
+      let ε₁ ← checkExpr p E Γ pc s body
+      need (!ε₁.codes) s!"a handler of `{kind}` over a failure with a code"
+      need (ε₁.raises.all (· == kind)) s!"a handler of `{kind}` over a failure of another kind"
+      let ε₂ ← checkExpr p E ((x, .record kind ε₁.failLabel) :: Γ) (pc.join ε₁.failLabel) s handler
+      flowTo p (s.raise ε₁.failLabel) s "the value of a handled expression, raised by its failure,"
+      pure ⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises⟩
     | .letTuple binders value body => do
       match ← atomTy Γ value with
       | .tuple ts l =>
@@ -641,6 +729,8 @@ def checkFun (p : Program) (fn : Fun) : Result Unit := do
   need (!ε.fails.isSome || fn.fails) s!"`{fn.name}` may fail, and does not declare it"
   le p ε.failLabel .bot s!"a failure of `{fn.name}` is decided above `public` (U4002)"
   need (ε.rels.all (fn.rels.contains ·)) s!"`{fn.name}` declassifies through a policy it does not declare"
+  need (!ε.codes || fn.raises.isEmpty) s!"`{fn.name}` fails with a code, and declares a payload kind"
+  need (ε.raises.all (fn.raises.contains ·)) s!"`{fn.name}` fails with a payload kind it does not declare"
 
 /-- The parts of `Program.LWellFormed` about one function's signature. -/
 def checkSignature (fn : Fun) : Result Unit := do
@@ -667,7 +757,7 @@ mutual
     | .caseSum _ _ _ t e | .handleK _ t _ e =>
       exprPure t && exprPure e
     | .attempt b | .attemptK _ b => exprPure b
-    | .fail _ | .raise _ _ _ | .letTuple _ _ _ | .loop _ _ _ _ _ _ => false
+    | .fail _ | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ => false
 end
 
 /-- `Rhs.PureOrFails`. -/
@@ -685,7 +775,7 @@ def exprPureOrFails : Expr → Bool
     exprPureOrFails t && exprPureOrFails e
   | .attempt b | .attemptK _ b => exprPureOrFails b
   | .fail _ => true
-  | .raise _ _ _ | .letTuple _ _ _ | .loop _ _ _ _ _ _ => false
+  | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ => false
 
 /-- The restrictions of option B1 on the policies, as one Boolean. -/
 def b1Ok (p : Program) : Bool :=
@@ -717,6 +807,12 @@ def checkDecls (p : Program) : Result Unit := do
     need (rec.fields.all ground) s!"a field of `{rec.name}` is not ground"
     need (rec.fields.all (fun t => leB p.top (p.deep t) (.ofLabel rec.deep)))
       s!"the deep label of `{rec.name}` is below a field's"
+  for sm in p.sums do
+    need (p.record sm.name).isNone s!"`{sm.name}` is both a record and a sum"
+    need (sm.variants.all (·.all ground)) s!"a field of `{sm.name}` is not ground"
+    need (sm.variants.all (·.all inPlace)) s!"`ℓ_T` in a field of `{sm.name}`"
+    need (sm.variants.all (·.all (fun t => leB p.top (p.deep t) (.ofLabel sm.deep))))
+      s!"the deep label of `{sm.name}` is below a field's"
   for po in p.policies do
     need (inPlace po.src && inPlace po.dst) s!"`ℓ_T` in the policy `{po.name}`"
     need (p.find po.via).isSome s!"no `via` function `{po.via}`"
@@ -744,8 +840,13 @@ mutual
     | .caseOption s n x so => .caseOption s (Expr.mapTypes f n) x (Expr.mapTypes f so)
     | .caseResult s x o y e => .caseResult s x (Expr.mapTypes f o) y (Expr.mapTypes f e)
     | .fail c => .fail c
+    | .raise k c args => .raise k c args
+    | .caseSum s i xs t e => .caseSum s i xs (Expr.mapTypes f t) (Expr.mapTypes f e)
+    | .unreachable => .unreachable
     | .attempt b => .attempt (Expr.mapTypes f b)
+    | .attemptK k b => .attemptK k (Expr.mapTypes f b)
     | .handle b x h => .handle (Expr.mapTypes f b) x (Expr.mapTypes f h)
+    | .handleK k b x h => .handleK k (Expr.mapTypes f b) x (Expr.mapTypes f h)
     | .letTuple bs v b => .letTuple (bs.map fun q => (q.1, f q.2)) v (Expr.mapTypes f b)
     | .loop src x xt st init b =>
       .loop src x (f xt) (st.map fun q => (q.1, f q.2)) init (Expr.mapTypes f b)
@@ -762,10 +863,11 @@ mutual
   def Expr.genericCalls : Expr → List (String × List LTy)
     | .letR _ _ v b => Rhs.genericCalls v ++ Expr.genericCalls b
     | .letE _ _ v b => Expr.genericCalls v ++ Expr.genericCalls b
-    | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e =>
+    | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e
+    | .caseSum _ _ _ t e | .handleK _ t _ e =>
       Expr.genericCalls t ++ Expr.genericCalls e
-    | .attempt b | .letTuple _ _ b | .loop _ _ _ _ _ b => Expr.genericCalls b
-    | _ => []
+    | .attempt b | .attemptK _ b | .letTuple _ _ b | .loop _ _ _ _ _ b => Expr.genericCalls b
+    | .atom _ | .fail _ | .raise _ _ _ | .unreachable => []
 end
 
 /-- The instance of a generic function at ground type arguments: its signature and body with
