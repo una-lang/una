@@ -57,5 +57,20 @@ expect continuation Check.lean 'string continuation on a line holding B1 or F1' 
     'def mutant : Result Unit := need false (.restriction s!"F1 \' \
     '  restriction (x)")'
 
+# The real case (Una-1's recheck of #555): a tagged throw inside `checkWith` itself, whose
+# signature has a default argument's `:=` before its result type.
+fresh
+awk '{ print } /^  Check\.checkFun p fn$/ && !done {
+    print "  throw s!\"F1 restriction (x)\" -- restriction-check: importer refusal"; done = 1 }' \
+    "$src/Import.lean" > "$work/m/Import.lean"
+if out=$("$check" "$work/m" 2>&1); then
+    echo "error: mutant checkWith passes the check" >&2
+    status=1
+elif ! printf '%s\n' "$out" | grep -qF 'inside a definition that returns the checker'; then
+    echo "error: mutant checkWith fails for another reason:" >&2
+    printf '%s\n' "$out" >&2
+    status=1
+fi
+
 if [ "$status" -ne 0 ]; then exit 1; fi
-echo "formal restrictions, mutants: PASS (8 mutants)"
+echo "formal restrictions, mutants: PASS (9 mutants)"

@@ -25,7 +25,9 @@
 # built through an alias of the constructor (Una-1's note on #555), such as a definition that
 # returns `.restriction` for a message it is given: rule 2 sees the alias's own line only. What
 # catches those is the corpus and the replay, which must stay byte-identical, and the review of
-# every new `.restriction` and every new tag.
+# every new `.restriction` and every new tag. Of the same class (Una-1's recheck): a tagged throw
+# inside a lambda typed `Check.Result` within a definition of the importer's own monad, whose
+# signature does not name the checker's result.
 #
 # Usage: scripts/formal-restrictions.sh [dir]   (dir defaults to formal/UnaFormal/F1)
 set -eu
@@ -61,12 +63,26 @@ bad=$(grep -nHE "$marker" Import.lean | grep -vE "$comment" |
     grep -vE 'restriction-check: (importer refusal|demoted)$' || true)
 report "a restriction message in the importer without its tag:" "$bad"
 
-# Rule 3's scope: the signature of the enclosing definition, from its first line to its `:=`.
+# Rule 3's scope: the signature of the enclosing definition, from its first line to the `:=` at
+# bracket depth 0 (a default argument's `:=` is inside its parentheses).
 bad=$(awk '
     /^[[:space:]]*((private|partial|protected|noncomputable) )*(def|theorem|instance|abbrev|structure|inductive) / {
-        sig = ""; insig = 1
+        sig = ""; insig = 1; depth = 0
     }
-    insig { sig = sig " " $0; if ($0 ~ /:=/) { insig = 0; result = (sig ~ /Check\.Result|Check\.Err|Except Err/) } }
+    insig {
+        n = length($0)
+        for (i = 1; i <= n && insig; i++) {
+            ch = substr($0, i, 1)
+            if (ch == "(" || ch == "[" || ch == "{") depth++
+            else if (ch == ")" || ch == "]" || ch == "}") depth--
+            else if (ch == ":" && substr($0, i + 1, 1) == "=" && depth == 0) {
+                insig = 0
+                sig = sig " " substr($0, 1, i)
+                result = (sig ~ /Check\.Result|Check\.Err|Except Err/)
+            }
+        }
+        if (insig) sig = sig " " $0
+    }
     /restriction-check: (importer refusal|demoted)$/ && result { print FILENAME ":" FNR ":" $0 }
 ' Import.lean)
 report "a tagged importer line inside a definition that returns the checker's result:" "$bad"
