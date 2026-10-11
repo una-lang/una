@@ -57,7 +57,7 @@ expect continuation Check.lean 'string continuation on a line holding B1 or F1' 
     'def mutant : Result Unit := need false (.restriction s!"F1 \' \
     '  restriction (x)")'
 
-# The real case (Una-1's recheck of #555): a tagged throw inside `checkWith` itself, whose
+# The real case (found in the recheck of #555): a tagged throw inside `checkWith` itself, whose
 # signature has a default argument's `:=` before its result type.
 fresh
 awk '{ print } /^  Check\.checkFun p fn$/ && !done {

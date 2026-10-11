@@ -22,10 +22,10 @@
 #
 # The limit of this check: it shows that a refusal's text and its constructor agree. It cannot tell
 # a genuine rejection turned into a `.restriction` with a marker in its text, nor a restriction
-# built through an alias of the constructor (Una-1's note on #555), such as a definition that
+# built through an alias of the constructor (a review note on #555), such as a definition that
 # returns `.restriction` for a message it is given: rule 2 sees the alias's own line only. What
 # catches those is the corpus and the replay, which must stay byte-identical, and the review of
-# every new `.restriction` and every new tag. Of the same class (Una-1's recheck): a tagged throw
+# every new `.restriction` and every new tag. Of the same class (found in review): a tagged throw
 # inside a lambda or a `where` definition typed `Check.Result` within a definition of the
 # importer's own monad, whose signature does not name the checker's result.
 #
