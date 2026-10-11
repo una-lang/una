@@ -6,7 +6,9 @@
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::unwrap_used)]
 
 use pretty_assertions::assert_eq;
-use una_check::{ModuleInput, PackageInput, TypeCheck, check_names, check_types};
+use una_check::{
+    ModuleInput, PackageInput, TypeCheck, check_names, check_types, check_types_with_rejected,
+};
 use una_diag::Diagnostic;
 use una_project::{Manifest, parse_manifest};
 use una_syntax::{Interner, SourceDb, lex, parse};
@@ -15,6 +17,17 @@ const MANIFEST: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = 
 
 /// Runs the name and type checks over `files`.
 fn run(files: &[(&str, &str)], single: bool) -> (Vec<Diagnostic>, TypeCheck) {
+    with_input(files, single, |input| {
+        (check_names(input), check_types(input))
+    })
+}
+
+/// Calls `f` with the package input of `files`.
+fn with_input<R>(
+    files: &[(&str, &str)],
+    single: bool,
+    f: impl FnOnce(&PackageInput<'_>) -> R,
+) -> R {
     let mut db = SourceDb::new();
     let mut interner = Interner::new();
     let mut manifest = None;
@@ -49,9 +62,7 @@ fn run(files: &[(&str, &str)], single: bool) -> (Vec<Diagnostic>, TypeCheck) {
         settings: &settings,
         run: None,
     };
-    let names = check_names(&input);
-    let types = check_types(&input);
-    (names, types)
+    f(&input)
 }
 
 /// Every diagnostic of `files`, as "code file:line:col message" in output order.
@@ -462,4 +473,58 @@ fn edition_0_1_names_a_decision_in_its_messages_as_edition_0_2_does() {
             "U4001 src/t.una:5:19 `picked` is `label(T) T`, and this value is `label(T) + label(T*) T`: a flow from `label(T) + label(T*)` to `label(T)`",
         ]
     );
+}
+
+#[test]
+fn exporting_rejected_declarations_changes_nothing_else() {
+    // ADR 0091 decision 5: the Core of the declarations rejected for information flow is
+    // elaborated apart, so the program every engine reads (the interpreter, the native backend,
+    // `una core` without the flag), the diagnostics, the headers, the obligations and the
+    // file-state label are those of `check_types`, on a package that mixes accepted and
+    // rejected declarations, and the rejected one has its Core.
+    let files = [
+        ("una.toml", MANIFEST),
+        (
+            "src/m.una",
+            "module m\n\npub ok() -> Int = 1\n\npub leak(s: secret Int) -> Int = s\n\npub twice(n: Int) -> Int = n + n\n",
+        ),
+    ];
+    with_input(&files, false, |input| {
+        let plain = check_types(input);
+        let (with, rejected) = check_types_with_rejected(input);
+        assert_eq!(
+            format!("{:?}", with.program),
+            format!("{:?}", plain.program)
+        );
+        assert_eq!(
+            format!("{:?}", with.diagnostics),
+            format!("{:?}", plain.diagnostics)
+        );
+        assert_eq!(
+            format!("{:?}", with.headers),
+            format!("{:?}", plain.headers)
+        );
+        assert_eq!(
+            format!("{:?}", with.obligations),
+            format!("{:?}", plain.obligations)
+        );
+        assert_eq!(
+            format!("{:?}", with.of_lambdas),
+            format!("{:?}", plain.of_lambdas)
+        );
+        assert_eq!(with.file_state, plain.file_state);
+        assert!(!plain.diagnostics.is_empty());
+        let names: Vec<String> = rejected
+            .iter()
+            .map(|r| match &r.decl {
+                una_core::Decl::Fun(fun) => fun.name.clone(),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(names, ["leak"]);
+        assert!(rejected.iter().all(|r| r.module == "m"));
+        // The rejected declaration is not in the program.
+        let program = format!("{:?}", plain.program);
+        assert!(!program.contains("\"leak\""), "{program}");
+    });
 }

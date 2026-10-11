@@ -1119,3 +1119,93 @@ fn core_of_a_package_with_errors_is_incomplete_and_still_one_document() {
         .collect();
     assert_eq!(names, ["ok"]);
 }
+
+/// A package of one file with an accepted declaration, one rejected for information flow only
+/// (U4001), and one rejected for a name (U1001).
+fn mixed_flow_package(name: &str) -> PathBuf {
+    let root = scratch(name);
+    std::fs::write(
+        root.join("m.una"),
+        "module m\n\npub ok() -> Int = 1\n\npub leak(s: secret Int) -> Int = s\n\npub broken() -> Int = missing\n",
+    )
+    .unwrap();
+    root.join("m.una")
+}
+
+fn decl_names(decls: &Value) -> Vec<&str> {
+    decls
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|decl| decl["value"]["name"].as_str())
+        .collect()
+}
+
+#[test]
+fn core_with_rejected_exports_flow_rejections_apart_and_leaves_core_unchanged() {
+    // ADR 0091: `rejected` holds the declarations whose every diagnostic is in the `security`
+    // domain, with their Core and diagnostics, apart from `modules`; the rest of the document,
+    // the diagnostics and the exit code are those of `una core` without the flag.
+    let file = mixed_flow_package("core-with-rejected");
+    let plain = una(&["--json", "core", file.to_str().unwrap()]);
+    let with = una(&["--json", "core", "--with-rejected", file.to_str().unwrap()]);
+    assert_eq!(plain.status.code(), Some(1));
+    assert_eq!(with.status.code(), plain.status.code());
+    assert_eq!(stderr(&with), stderr(&plain));
+    let plain_doc: Value = serde_json::from_str(stdout(&plain)).unwrap();
+    let mut with_doc: Value = serde_json::from_str(stdout(&with)).unwrap();
+    assert!(plain_doc.get("rejected").is_none(), "{plain_doc}");
+    let rejected = with_doc["rejected"].clone();
+    let entries = rejected.as_array().unwrap();
+    assert_eq!(entries.len(), 1, "{rejected}");
+    assert_eq!(entries[0]["module"], "m");
+    assert_eq!(entries[0]["decl"]["value"]["name"], "leak");
+    // A rejected function carries the keys an accepted one does (#514, N-99): the re-check
+    // reads a missing one as not re-checked, never as a default.
+    for key in ["uses_of", "fails_of", "result_labels", "of_raises"] {
+        assert!(
+            entries[0]["decl"]["value"].get(key).is_some(),
+            "a rejected function without `{key}`: {}",
+            entries[0]["decl"]
+        );
+        assert!(
+            plain_doc["modules"][0]["decls"][0]["value"]
+                .get(key)
+                .is_some(),
+            "an accepted function without `{key}`"
+        );
+    }
+    let codes: Vec<&str> = entries[0]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(codes, ["U4001"]);
+    // Never accepted Core: the rejected declaration is not in `modules`, and without the key
+    // the document is the one `una core` prints.
+    assert_eq!(decl_names(&with_doc["modules"][0]["decls"]), ["ok"]);
+    with_doc.as_object_mut().unwrap().remove("rejected");
+    assert_eq!(with_doc, plain_doc);
+    // The key is the last one, after `file_state`.
+    assert!(
+        stdout(&with).contains("},\"rejected\":["),
+        "{}",
+        stdout(&with)
+    );
+}
+
+#[test]
+fn core_with_rejected_needs_json() {
+    // ADR 0091 decision 1: the flag exports a `una.core/1` document, so it is a usage error
+    // without `--json`.
+    let file = mixed_flow_package("core-with-rejected-text");
+    let output = una(&["core", "--with-rejected", file.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        stderr(&output).contains("--with-rejected"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(stdout(&output).is_empty());
+}

@@ -99,6 +99,46 @@ pub(crate) fn program(
     )
 }
 
+/// The Core IR of the package's declarations that a diagnostic left out of [`program`], each
+/// with its module's path and its span, in path order, then declaration order (ADR 0091). A
+/// declaration whose elaboration is not complete, which lost a component of a checked type or
+/// has a resolution missing, is left out, and so are examples. Elaborating reads `findings` and
+/// records nothing, so [`program`] and every other pass are unaffected.
+pub(crate) fn rejected(
+    env: &Env<'_>,
+    findings: &Findings,
+    sources: &SourceDb,
+    standard: &SourceDb,
+) -> Vec<super::Rejected> {
+    let dbs = Dbs { sources, standard };
+    let mut out = Vec::new();
+    for module in (0..env.prelude).filter(|module| env.reports(*module)) {
+        let Some(m) = env.modules.get(module) else {
+            continue;
+        };
+        for (decl, entity) in m.tree.decls.iter().zip(m.decls.clone()) {
+            if !findings.failed.contains(&decl.span) || matches!(decl.kind, DeclKind::Example(_)) {
+                continue;
+            }
+            let Some(entity) = entity else {
+                continue;
+            };
+            let mut fx = Fx::new(env, findings, dbs, module);
+            if let Some(core) = fx.decl(&decl.kind, entity)
+                && fx.lost.take().is_empty()
+            {
+                out.push(super::Rejected {
+                    module: m.path.clone(),
+                    span: decl.span,
+                    decl: core,
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| a.module.cmp(&b.module));
+    out
+}
+
 /// The kinds of the prelude that Core IR declares, in the module `prelude`; the others are
 /// [`una_core::PRELUDE_ENGINE_KINDS`], which each engine knows itself (#407).
 pub(crate) const PRELUDE_CORE_KINDS: [&str; 5] =
