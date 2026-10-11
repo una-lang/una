@@ -293,6 +293,20 @@ class Generators(unittest.TestCase):
                 self.assertEqual(p.cls, MUST_ACCEPT, p.variant)
         self.assertEqual(seen, set(kinds))
 
+    def test_f8_lets_over_the_secret_are_annotated_secret(self):
+        # Seed 13's run: `let t: U8 = s + 1` is U4001 at the `let` itself, so a carrier that
+        # annotates a `let` over `s` with a public type tests nothing of fixed-width arithmetic.
+        import re
+        from hunt.families.fragment import FIXED_TABLES
+        for _, table in FIXED_TABLES:
+            for name, (_, _, body, _) in table.items():
+                for m in re.finditer(r"let (\w+): ([^=]+?) = ([^\n]*)", body):
+                    rhs = m.group(3)
+                    over_secret = re.search(r"\bs\b", rhs) or rhs.startswith("when ")
+                    if over_secret:
+                        # `Result[secret U8, U8]` labels the value it holds: that is enough.
+                        self.assertIn("secret", m.group(2), (name, m.group(0)))
+
     def test_f8_leaves_earlier_programs_unchanged(self):
         # F8 has tables of its own: F1's and F7's programs rebuild to the digests of seed 11.
         from hunt.families.fragment import f1

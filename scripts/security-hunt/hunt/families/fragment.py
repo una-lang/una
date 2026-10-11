@@ -138,15 +138,16 @@ def f7(seed, edition):
 # (`docs/plan/formal-track-fixed.md`); the coordinator's conditions are N-138's. Tables of their
 # own, so that F1's and F7's programs, and the ones old seeds rebuild to, stay unchanged.
 # Each carrier: the parameter's type, its `requires` (empty for none), the statements binding
-# `t`, and `t`'s type. A `requires` bounds the secret so that no step can abort.
+# `t`, and `t`'s type. A `requires` bounds the secret so that no step can abort. A `let` over `s`
+# is annotated `secret`: a public annotation is U4001 at the `let` itself (seed 13's run).
 FIXED_CARRIERS = {
-    "add": ("U8", "s < 100", "  let t: U8 = s + 1\n", "U8"),
-    "sub": ("U8", "s < 100", "  let t: U8 = 200 - s\n", "U8"),
-    "mul": ("U8", "s < 100", "  let t: U8 = s * 2\n", "U8"),
-    "div": ("U8", "", "  let t: U8 = s / 3\n", "U8"),
-    "mod": ("U8", "", "  let t: U8 = s mod 7\n", "U8"),
-    "neg": ("I32", "s > -100 and s < 100", "  let t: I32 = -s\n", "I32"),
-    "nested": ("U8", "s < 100", "  let t: U8 = (s + 1) * 2\n", "U8"),
+    "add": ("U8", "s < 100", "  let t: secret U8 = s + 1\n", "U8"),
+    "sub": ("U8", "s < 100", "  let t: secret U8 = 200 - s\n", "U8"),
+    "mul": ("U8", "s < 100", "  let t: secret U8 = s * 2\n", "U8"),
+    "div": ("U8", "", "  let t: secret U8 = s / 3\n", "U8"),
+    "mod": ("U8", "", "  let t: secret U8 = s mod 7\n", "U8"),
+    "neg": ("I32", "s > -100 and s < 100", "  let t: secret I32 = -s\n", "I32"),
+    "nested": ("U8", "s < 100", "  let t: secret U8 = (s + 1) * 2\n", "U8"),
     "narrow": ("Int", "0 <= s and s <= 255", "  let t = s.to_u8()\n", "U8"),
     "widen": ("U8", "", "  let t = s.to_i32()\n", "I32"),
     # `Int` arithmetic on a converted value, in a function with fixed-width values: read.
@@ -158,10 +159,10 @@ FIXED_CARRIERS = {
 # "not re-checked" (the fail-closed path of #548, condition 1), never "accepted".
 FIXED_UNKNOWN = {
     "binder-option": ("U8", "", ("  let o = Some(s)\n"
-                                  "  let t: U8 = when o\n    is Some(x) -> x / 2\n    is None -> 0\n"),
+                                  "  let t: secret U8 = when o\n    is Some(x) -> x / 2\n    is None -> 0\n"),
                       "U8"),
     "binder-result": ("U8", "", ("  let r: Result[secret U8, U8] = Ok(s)\n"
-                                  "  let t: U8 = when r\n    is Ok(x) -> x / 2\n    is Err(e) -> e\n"),
+                                  "  let t: secret U8 = when r\n    is Ok(x) -> x / 2\n    is Err(e) -> e\n"),
                       "U8"),
 }
 # The wrapping, saturating and bit methods (Core's `fixed` primitive): outside F1.
@@ -174,10 +175,10 @@ FIXED_OUTSIDE = {
 # The residual (N-132, N-138 condition 1): the secret decides whether a step aborts, a termination
 # channel T6 does not claim. No `requires`: the obligation is where Una guards it.
 FIXED_RESIDUAL = {
-    "overflow": ("U8", "", "  let t: U8 = s + 200\n", "U8"),
+    "overflow": ("U8", "", "  let t: secret U8 = s + 200\n", "U8"),
     "narrow-abort": ("Int", "", "  let t = s.to_u8()\n", "U8"),
-    "zero-div": ("U8", "", "  let t: U8 = 100 / s\n", "U8"),
-    "neg-abort": ("U8", "", "  let t: U8 = -s\n", "U8"),
+    "zero-div": ("U8", "", "  let t: secret U8 = 100 / s\n", "U8"),
+    "neg-abort": ("U8", "", "  let t: secret U8 = -s\n", "U8"),
 }
 FIXED_TABLES = (("read", FIXED_CARRIERS), ("not-rechecked", FIXED_UNKNOWN),
                 ("outside", FIXED_OUTSIDE), ("residual", FIXED_RESIDUAL))
