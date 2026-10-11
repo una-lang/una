@@ -11,9 +11,9 @@
 
 The evidence is ADR 0092's table. This ADR answers rows B10, B11 and B12, and the repair ranking of B09:
 
-- **B10.** A thumbnail function holds the user's read-write storage. It calls a vendored library's tiled mode, which declares `uses @storage: Storage[read, write]`. The library receives the binding by name, and nothing in the program says that it should only have read.
-- **B11.** A webhook delivery holds the service's HTTP client. It calls a customer-supplied plug-in's alert hook through a private helper. The helper's `uses` are inferred from its callers (`spec/05 §9` rule 2), so the plug-in gets the client with no declaration anywhere.
-- **B12.** An importer holds the writable record store. It hands it to a third-party rule pack's review. The checker reports U3002 at a helper with a narrower header, and its rank-1 repair widens that header, which produces the violation.
+- **B10.** `gallery.thumbnails` holds the user's `@files: Files[read, write]`. It calls the vendored library `gallery.thumbnailer`, whose tiled mode declares `pub thumbnail_tiled(path: Text, size: Nat) -> Image` with `uses @files: Files[read, write]`. The library receives the binding by name, and nothing in the program says that it should only read.
+- **B11.** `webhooks.delivery` holds the service's `@http: Http[post]`. It calls the customer-supplied plug-in `webhooks.template`, whose `render_alert` declares `uses @http: Http[post]`, through a private helper. The helper's `uses` are inferred from its callers (`spec/05 §9` rule 2), so the plug-in gets the client with no declaration anywhere.
+- **B12.** `intake.importer` holds `@records: Records[contains, insert, remove]` and `@reference: Reference[lookup]`. It hands the records to the third-party rule pack `intake.rules`, whose `review` declares `uses @records: Records[contains, insert, remove]`. The checker reports U3002 at a helper with a narrower header, and its rank-1 repair widens that header, which produces the violation. The pack's `check(row)` legitimately needs `Reference[lookup]`.
 - **B09.** The rank-1 repair of a U3002 widens the editable headers up the call chain, and the widened variant builds and violates.
 
 Three rules of today combine here:
@@ -32,9 +32,9 @@ Una has no package dependencies yet. A package is its own modules (`spec/13 §7`
 
    ```toml
    [boundaries]
-   "thumbs.vendor" = ["Storage[read]"]
-   "hooks.plugin" = []
-   "rules.pack" = ["Records[find]"]
+   "gallery.thumbnailer" = ["Files[read]"]                        # B10
+   "webhooks.template" = []                                       # B11
+   "intake.rules" = ["Records[contains]", "Reference[lookup]"]    # B12
    ```
 
    - The module itself never says it is a boundary. Code that wants authority would never mark itself.
@@ -46,31 +46,35 @@ Una has no package dependencies yet. A package is its own modules (`spec/13 §7`
 
 3. **No authority crosses a boundary by name.** A call from outside a boundary module to a function of it does not meet the callee's `uses` from the caller's bindings by name.
    - Every capability the callee needs is granted at the call with `with`: a rebinding, a narrowed rebinding (rule 4), or a handler.
-   - A missing grant is a new code, U3020: "the boundary module `thumbs.vendor` needs `@storage: Storage[read]`, which a call into it grants only with `with`". It is reported at the call, with the callee's requirement as the related span.
+   - A missing grant is a new code, U3020: "the boundary module `gallery.thumbnailer` needs `@files: Files[read, write]`, which a call into it grants only with `with`". It is reported at the call, with the callee's requirement as the related span.
+   - **A function value is a call.** A function of a boundary module used as a value outside it, as the argument of a higher-order function (`spec/05 §9` rules 6 and 7), is a call into the boundary at the point of the reference. Its `uses` are granted there, by the `with` of the statement that holds the reference, and checked against the ceiling there. The higher-order function that later calls the value supplies nothing by name.
+   - **Installing a handler is a call.** A handler declared in a boundary module and installed outside it (`with @x = h(args)` or `given @x = h(args)`) runs the boundary's code. So the installation is a call into the boundary: each of the handler's own `uses` is granted by a binding of the same `with` or `given` clause, not by the installer's context by name (`spec/05 §9` rule 4), and it is checked against the ceiling.
    - Inference (`spec/05 §9` rule 2) never takes a capability across a boundary: a private function of a boundary module takes its `uses` from callers inside the module only, and a private function outside takes none from inside.
 
 4. **A narrowed rebinding.** `with @x = @y[ops]` binds the callee's `@x` to the caller's `@y`, restricted to `ops`, which MUST be a subset of `@y`'s operations (U3002 otherwise):
 
    ```una
-   let tiles = render_tiled(photo) with @storage = @user_files[read]
+   let verdict = check(row) with @reference = @importer_reference[lookup]
    ```
 
    Next to the forms it extends:
 
    | Today | Edition `0.3` |
    | --- | --- |
-   | `uses @storage: Storage[read]` (`spec/05 §3`): the type `C[ops]` in a header | `@user_files[read]`: the same brackets on a binding, at a `with` |
-   | `with @storage = @user_files` (`spec/05 §4`): a rebinding with every operation | `with @storage = @user_files[read]`: a rebinding with the listed ones |
-   | `with @storage = read_only(of: @user_files)`: a handler adapter, written by hand | the same, still allowed; the narrowed form saves writing one |
+   | `uses @files: Files[read]` (`spec/05 §3`): the type `C[ops]` in a header | `@files[read]`: the same brackets on a binding, at a `with` |
+   | `with @files = @user_files` (`spec/05 §4`): a rebinding with every operation | `with @files = @user_files[read]`: a rebinding with the listed ones |
+   | `with @files = read_only_files()`: a handler adapter, written by hand (B10's reference) | the same, still allowed; the narrowed form saves writing one |
+
+   A narrowed binding lacks the other operations: a callee whose `uses` list one of them is U3002 at the call, as for any binding with too few operations. B10's library declares `Files[read, write]`, so a narrowed `@files[read]` does not satisfy it. The reference grants a handler, whose `write` fails, instead.
 
    The narrowed rebinding is allowed everywhere, not only at a boundary. Inside a boundary module's callers, it is the only way to grant less than a whole binding without writing a handler.
 
-5. **The ceiling.** At every call into a boundary module, the authority granted, every `C[ops]` of its `with` bindings, MUST be within the module's ceiling. Otherwise the call is U3021: "the call grants `@storage: Storage[read, write]` to `thumbs.vendor`, whose ceiling in `una.toml` is `Storage[read]`".
+5. **The ceiling.** At every call into a boundary module (rule 3, function values and handler installations included), the authority granted, every `C[ops]` of its `with` bindings, MUST be within the module's ceiling. Otherwise the call is U3021: "the call grants `@files: Files[read, write]` to `gallery.thumbnailer`, whose ceiling in `una.toml` is `Files[read]`".
    - A handler granted at a boundary counts with its own `uses`, since the handler runs with them on the boundary's behalf.
    - The ceiling is what turns B10, B11 and B12 into build failures. A grant written in plain sight would still violate the task's rule. The ceiling is where the consumer writes that rule.
 
 6. **Repairs never widen authority first** (Q1 direction 3; `spec/13 §3`, ADR 0084).
-   - **U3020:** rank 1 grants the callee's exact requirement, narrowed: `with @storage = @user_files[read]`, when the caller holds a binding of that capability with the operations. It is mechanical, so `una fix` may apply it. Without such a binding, the repair is a handler skeleton (not mechanical).
+   - **U3020:** rank 1 grants the callee's requirement narrowed to what it declares, `with @x = @y[ops]`, when the caller holds a binding `@y` of that capability with those operations, and only when the grant lies within the ceiling. `una fix` applies it only then: a grant beyond the ceiling is never applied, nor offered as rank 1, since it would widen the authority of code the consumer does not trust (ADR 0084). When the requirement exceeds the ceiling, rank 1 is a handler skeleton whose `uses` lie within the ceiling (not mechanical), and the diagnostic names the operations the ceiling withholds.
    - **U3021:** rank 1 narrows the grant to the ceiling. If the callee needs more than the ceiling, there is no repair that keeps both, and the diagnostic says so: the consumer decides between the library and the ceiling.
    - **U3001 and U3002 everywhere:**
      - first the narrowing repairs: pass a narrower binding, or rebind one the caller holds;
@@ -84,17 +88,17 @@ Una has no package dependencies yet. A package is its own modules (`spec/13 §7`
 ## Consequences
 
 - **B10, B11 and B12 fail at build** once the scaffold's `una.toml` declares the vendored library, the plug-in and the rule pack with their ceilings:
-  - B10 is U3021 (read-write granted, ceiling `Storage[read]`);
-  - B11 is U3020 or U3021 (the plug-in's ceiling is empty, and the inferred helper no longer carries the client into it);
-  - B12 is U3021.
+  - **B10:** the violation passes `@files` by name into `thumbnail_tiled`, which is U3020. Granting it as it is (`with @files = @files`) is U3021, since `Files[read, write]` exceeds `Files[read]`. The reference, `thumbnail_tiled(path, size: preset.size) with @files = read_only_files()`, grants a handler whose own `uses` are `Files[read]`, within the ceiling, and builds.
+  - **B11:** the violation's helper no longer infers `@http` across the boundary, and the call into `render_alert` is U3020. Any grant of `@http` is U3021, since the ceiling is empty. The reference, `render_alert(event, failed) with @http = no_requests()`, grants a handler with no `uses` and builds.
+  - **B12:** the violation grants the writable records to `review`, which is U3021. The reference, `review(inserted) with @records = records_read_only()`, grants a handler whose `uses` are `Records[contains]`. Its call of `check(row)` grants `with @reference = @reference[lookup]` (U3020 until written, and `una fix`'s rank 1, within the ceiling). Both are within `intake.rules`'s ceiling, so the reference builds.
   
-  Their secure variants grant within the ceiling and build. The rank-1 repairs lead to the secure variant, not away from it.
+  The rank-1 repairs lead to the secure variant, not away from it.
 - **B09's widening path** moves to the last rank, marked as an authority change.
 - **Agent cost.**
   - Two new codes (U3020, U3021), met only at calls into declared boundaries.
   - One new form: brackets on a binding at a `with`, the same brackets as in a header.
   - One new `una.toml` table, which the agent does not write in a scaffolded task.
-  - `una fix` applies the U3020 narrowing.
+  - `una fix` applies the U3020 narrowing within the ceiling, and nothing beyond it.
   - The reordered U3001 and U3002 repairs change which edit an agent sees first, not how many diagnostics it meets.
 - **Cost for existing packages.** None until a package writes `[boundaries]`. Once it does:
   - every call into a declared module needs explicit grants, which is about one `with` per capability per call site;
@@ -106,8 +110,9 @@ Una has no package dependencies yet. A package is its own modules (`spec/13 §7`
 
 ## Alternatives considered
 
-- **The module marks itself** (`boundary module thumbs.vendor`). Rejected: a malicious or careless module would not mark itself, and the protection would depend on the code it protects against.
+- **The module marks itself** (`boundary module gallery.thumbnailer`). Rejected: a malicious or careless module would not mark itself, and the protection would depend on the code it protects against.
 - **No ceiling, only explicit grants.** It makes every grant visible and removes B11's silent path. But B10 and B12 grant read-write in plain sight and still build, so the task's rule has no place to live. Rejected as insufficient on its own: it is rule 3 without rule 5.
+- **Forbidding boundary function values and handlers outside their module.** Simpler, but it rules out plain uses such as `photos.map(each: thumbnail)` of a pure library function. Treating them as calls (rule 3) keeps them with the same checks.
 - **Attenuation by default without a declaration:** every call into another module receives only the operations the callee declares. That is today's rule (`spec/05 §4`: the callee can use only its `ops`). It does not help, because the callee's header asks for read-write.
 - **A handler adapter only, no narrowed rebinding** (`with @storage = read_only(of: @user_files)`). Already possible, and it stays. But each capability needs its own adapter written by hand, and the full run showed that agents pay for every extra construct. The narrowed rebinding is the same brackets as a header.
 - **Inheritance by default for in-package modules, boundaries only for dependencies.** That is the default for unlisted in-package modules (rule 2), since a package's own modules are one author's code. The consumer lists the in-package modules it does not trust.
