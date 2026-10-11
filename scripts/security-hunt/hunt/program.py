@@ -61,7 +61,8 @@ class Program:
     # Where the oracle's varied literals are (una.Varied.place); empty when none.
     vary: list = field(default_factory=list)
     # What the re-check must say of the program's own declaration (F8): "read", "not-rechecked"
-    # or "outside"; empty for the other operators, which `differ` judges as before.
+    # or "outside"; empty for the other operators, which `differ` judges as before. The manifest
+    # writes it as `expect_recheck`: `differ`'s rows use `recheck` for the re-check's lines.
     recheck: str = ""
 
     def __post_init__(self):
@@ -96,7 +97,7 @@ class Program:
             "note": self.note,
             "variant": self.variant,
             "vary": self.vary,
-            **({"recheck": self.recheck} if self.recheck else {}),
+            **({"expect_recheck": self.recheck} if self.recheck else {}),
         }
 
     def digest(self):

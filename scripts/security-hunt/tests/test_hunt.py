@@ -3,6 +3,7 @@
     cd scripts/security-hunt && python3 -m unittest discover -s tests
 """
 
+import io
 import json
 import os
 import random
@@ -312,7 +313,7 @@ class Generators(unittest.TestCase):
         from hunt.families.fragment import f1
         p = f1(derive_seed(11, "F1", 0), "0.1")
         self.assertTrue(p.digest().startswith("d53a6d3c2efa7957"))
-        self.assertNotIn("recheck", p.manifest())
+        self.assertNotIn("expect_recheck", p.manifest())
 
     FIXED_DOC = json.dumps({"schema": "una.core/1", "complete": True, "modules": [
         {"path": "app.main", "decls": [{"kind": "fun", "value": {"name": "run"}}]}]})
@@ -330,6 +331,65 @@ class Generators(unittest.TestCase):
         self.assertEqual(j["kind"], "unknown")
         j = self.judge_fixed("c.json\tapp.main.run\taccepted\t\n", "not-rechecked")
         self.assertEqual(j["kind"], "finding")
+
+    def test_residual_is_invalid_unless_the_full_check_decides(self):
+        # N-138, N-146: only an acceptance, or a rejection by an obligation, with the solver.
+        V = drivers.Verdict
+        after = "overflow-print-after"
+        cases = [
+            (None, "invalid (no solver)"),
+            (V("rejected", [["U5003", "a", 1, 1]], 0.1), "invalid (U5003)"),
+            (V("timeout", [], 60.0), "invalid (timeout)"),
+            (V("ice", [], 0.1), "invalid (ice)"),
+            (V("inconsistent", [], 0.1), "invalid (inconsistent)"),
+            (V("rejected", [["U4001", "a", 1, 1]], 0.1), "invalid (rejected by U4001)"),
+        ]
+        for full, kind in cases:
+            r = drivers.judge_residual("accepted", full, after)
+            self.assertEqual((r["full_kind"], r["invalid"], r["triage"]), (kind, True, False), kind)
+        r = drivers.judge_residual("accepted", V("rejected", [["U5001", "a", 1, 1]], 0.1), after)
+        self.assertEqual((r["full_kind"], r["invalid"], r["triage"], r["triage_tier0"]),
+                         ("rejected", False, False, True))
+
+    def test_residual_triage_only_on_an_accepted_print_after(self):
+        V = drivers.Verdict
+        ok = V("accepted", [], 0.1)
+        self.assertTrue(drivers.judge_residual("accepted", ok, "zero-div-print-after")["triage"])
+        r = drivers.judge_residual("accepted", ok, "zero-div-secret-result")
+        self.assertEqual((r["triage"], r["triage_tier0"]), (False, False))
+        r = drivers.judge_residual("rejected", ok, "zero-div-print-after")
+        self.assertEqual((r["triage"], r["triage_tier0"]), (True, False))
+
+    def test_differ_residual_rows_never_say_clean(self):
+        # The residual path of `differ`, with the compiler and the re-check stubbed: the rows file
+        # carries `residual`, never `clean`, and no solver makes the row invalid.
+        from hunt.families.fragment import f8
+        from hunt.program import RESIDUAL
+        prog = next(p for p in (f8(derive_seed(13, "F8", i), "0.2") for i in range(200))
+                    if p.cls == RESIDUAL and p.variant.endswith("-print-after"))
+        row = dict(prog.manifest(), digest=prog.digest())
+        core = json.dumps({"schema": "una.core/1", "complete": True, "modules": [
+            {"path": "app.main", "decls": [{"kind": "fun", "value": {"name": "run"}}]}]})
+        ok = json.dumps({"schema": "una.diagnostics/1", "diagnostics": []})
+
+        def fake(argv, cwd, writable, timeout, env_extra=None, mock_port=None):
+            if "core" in argv:
+                return Run(0, core, "", False, 0.1)
+            if argv[0] == "/cc":
+                return Run(0, "c.json\tapp.main.run\taccepted\t\n", "", False, 0.1)
+            return Run(0, ok, "", False, 0.1)
+        real = sandbox.run
+        sandbox.run = fake
+        try:
+            with tempfile.TemporaryDirectory() as root:
+                out = io.StringIO()
+                drivers.differ([row], "/una", "/cc", root, 10, out)
+                r = json.loads(out.getvalue())
+        finally:
+            sandbox.run = real
+        self.assertEqual((r["differ"], r["differ_raw"]), ("residual", "clean"))
+        self.assertEqual((r["invalid"], r["full_kind"], r["triage"], r["triage_tier0"]),
+                         (True, "invalid (no solver)", False, True))
 
     def test_differ_f8_outside_is_expected_unknown(self):
         j = self.judge_fixed("c.json\tapp.main.run\tnot re-checked\tthe primitive `fixed`\n",
