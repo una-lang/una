@@ -54,4 +54,4 @@ Non-vacuity, `HandlerExample`:
 
 ## 6. Gate
 
-As #512's: `scripts/formal.sh`; the corpus delta, in which the synthesized `module.handler.op` lines are not source declarations: they are reported in a category of their own, listed separately, and kept out of the headline count, which stays comparable with every earlier figure (the same in the status page) (a fresh export, both checkers on the same files, every flip, the headline split by what `una check` says of the document); `docs/reviews/formal-m2-replay/check.sh`; local CI; the adversarial review.
+As #512's: `scripts/formal.sh`; the corpus delta (a fresh export, both checkers on the same files, every flip, the headline split by what `una check` says of the document), in which the synthesized `module.handler.op` lines, not source declarations, are a category of their own: listed separately and kept out of the headline count, which stays comparable with every earlier figure (the same in the status page); `docs/reviews/formal-m2-replay/check.sh`; local CI; the adversarial review.
