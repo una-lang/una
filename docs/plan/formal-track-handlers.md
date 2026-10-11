@@ -42,14 +42,15 @@ A failure handled by `attempt` or `if error use` inside the branch never leaves 
 
 An effect's failure has two labels. `failLabel` is **where** the failure happens: the program counter and the data at the failing site; T-Let runs the continuation under it, and T-Fun asks it `⊑ ⊥`. `dl`, the **decision label**, is **what decides** whether a step reached in both runs fails, and with which code: the data only, without `pc`. `dl ⊑ failLabel` always. T-Attempt and T-Handle (and their `K` and tuple forms) label the result, and the handler's binding, by `dl`; T-Let and T-Fun keep `failLabel`.
 
-- `fail` under `pc`: `failLabel = pc`, `dl = ⊥`. `parse(a)`: `failLabel = pc ⊔ ℓ(a)`, `dl = ℓ(a)`. A call: `⊥`, both. An invocation: `failLabel = pc`, `dl = ⊥` (Hu, §3 item 7).
+- `fail` (only at a public `pc`, U4002): `⊥`, both. `parse(a)`: `failLabel = pc ⊔ ℓ(a)`, `dl = ℓ(a)`; `checked`, `Files` and `Http` likewise, without `pc`. A policy: `dl = ℓ(to)`. A call or a function value: `⊥`, both. An invocation: `failLabel = pc`, `dl = ⊥` (Hu, §3 item 7). A handler that can fail: the body's `dl` joined with the handler's.
 - **An `ite` or `case` joins its condition's label into `dl`** whenever its branches can differ in outcome (either branch can fail): which branch runs decides the outcome. A sequence (`ε₁ ∪ ε₂`) joins both `dl`s.
 
 T6 then relates two runs' outcomes wherever `dl` is visible: if both runs reach the step, the outcome depends only on data at or below `dl`; where they do not both reach it, they split at an `ite` or `case`, which raises what leaves it. T6's statement is unchanged: its failure relation at `failLabel` follows, since `dl ⊑ failLabel`.
 
 Why the program counter alone cannot be used (ruling B, superseded): T-Let raises `pc` after a step whose failure is hidden, and there both runs continue, unconfined. Two examples, both non-vacuity cases:
 - **H5, handled** (`if c then attempt @door.open(1)`, `c` secret): the invocation's `dl` is `⊥`, so its result is public inside the branch, as `una check` types it. Accepted.
-- **Parse, then attempt** (`let y = parse(s) in attempt (if s == "1" then fail 1 else 0)`, `s` secret, the result annotated public): the `ite` joins `s == "1"`'s label into `dl`, so the result is secret, and the public annotation is rejected. It leaks if typed by `pc` alone (`Err(1)` and `Ok(0)` at a public type, for `s = "1"` and `s = "2"`), and has no typing.
+- **Parse, then attempt** (`let y = parse(s) in attempt parse(t)`, `s` and `t` secret, the result annotated public): `parse(t)`'s `dl` is `t`'s label, so the result is secret, and the public annotation is rejected. Typed by `pc` alone it would be accepted (`y`'s failure raises `pc` to secret), and it leaks: with `s = "1"`, `Err` and `Ok` at a public type for `t = "x"` and `t = "2"`. It has no typing.
+- **The branch decides** (`attempt (if c then @door.open(1) else 0)`, `c` secret, the result annotated public): the invocation's `dl` is `⊥`, but which branch runs decides the outcome, so the `ite` joins `c` into `dl`: rejected, it leaks, no typing.
 
 ## 5. Theorems
 
@@ -62,7 +63,7 @@ Non-vacuity, `HandlerExample`:
 - **H5, unhandled** (`pass`, and a bare `let`): rejected, it leaks through a public print after the branch, and it has no typing.
 - **H6** (`print-after`, `value-out`, `handler-effect`): rejected, leaks, no typing.
 - **The floor through a call:** a handler whose only public effect is in a function it calls is rejected.
-- **Parse, then attempt** (§4a): rejected, it leaks, no typing.
+- **Parse, then attempt**, and **the branch decides** (§4a): rejected, they leak, no typing.
 - **A secret failure at a public `pc`**: an `attempt` whose result is annotated public while what decides its failure is secret is rejected.
 
 `ImportTests`: a handler that branches on its parameter and acts publicly (H1) is rejected, and what invokes it is not re-checked, never accepted; a lawful handler, and its invokers, are accepted; `with` is not re-checked; an operation whose handler the document does not declare is not re-checked.
