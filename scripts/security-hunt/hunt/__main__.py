@@ -10,6 +10,7 @@ work: only in a machine slot (the coordinator's condition 3).
 """
 
 import argparse
+import os
 import sys
 from collections import Counter
 
@@ -65,6 +66,9 @@ def cmd_run(a, which):
     with open(out_path, "w", encoding="utf-8") as out:
         if which == "reject":
             tally = drivers.must_reject(rows, a.una, root, a.timeout, out)
+        elif which == "differ":
+            tally = drivers.differ(rows, a.una, os.path.realpath(a.core_check), root,
+                                   a.timeout, out)
         else:
             tally = drivers.must_keep(rows, a.una, root, a.timeout, out,
                                       tuple(a.refactors.split(",")))
@@ -87,7 +91,7 @@ def main(argv=None):
     r.add_argument("--seed", type=int, required=True)
     r.add_argument("--edition", required=True)
     r.add_argument("--out", required=True)
-    for name in ("reject", "keep"):
+    for name in ("reject", "keep", "differ"):
         c = sub.add_parser(name)
         c.add_argument("--manifest", required=True)
         c.add_argument("--una", required=True)
@@ -96,6 +100,9 @@ def main(argv=None):
         c.add_argument("--results")
         if name == "keep":
             c.add_argument("--refactors", default="R6,R9")
+        if name == "differ":
+            c.add_argument("--core-check", required=True,
+                           help="the una-core-check executable (formal/.lake/build/bin)")
     a = ap.parse_args(argv)
     if a.cmd == "gen":
         cmd_gen(a)

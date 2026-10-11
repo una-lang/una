@@ -79,7 +79,8 @@ class Generators(unittest.TestCase):
 
     def test_together_only_in_edition_0_2(self):
         for p in every_program():
-            if p.edition == "0.1":
+            # Family C uses `together` in 0.1 on purpose, as a must-reject check of the gate.
+            if p.edition == "0.1" and not p.op.startswith("C"):
                 self.assertFalse(any("together" in t for t in p.files.values()), p.name)
 
     def test_listing_of_t1_t2_t3(self):
@@ -140,6 +141,136 @@ class Generators(unittest.TestCase):
         for p in every_program(80):
             if p.op == "T11" and "-pc-internal-" in p.variant:
                 self.assertEqual(p.expect, ["U4002"], p.variant)
+
+    def test_p_family_classes(self):
+        seen = {}
+        for p in every_program(80):
+            if p.op not in ("P1", "P2", "P3"):
+                continue
+            seen.setdefault(p.op, set()).add(p.variant)
+            if p.op == "P1" or p.variant.endswith("-twin") or p.variant.endswith("len-const"):
+                self.assertEqual(p.cls, OPEN, p.variant)
+            else:
+                self.assertEqual(p.cls, MUST_REJECT, p.variant)
+                self.assertTrue(p.expect, p.variant)
+            if p.op == "P2" and "len-dep" in p.variant:
+                self.assertIn("if pin > 0 then [pin] else []", p.files["src/app/main.una"])
+        self.assertTrue({"return-len-dep", "return-len-dep-top", "print-len-const"} <= seen["P2"])
+        self.assertTrue(any(v.startswith("which-variant") for v in seen["P3"]))
+
+    def test_g_family_classes(self):
+        seen = {}
+        for p in every_program(60):
+            if p.op not in ("G1", "G2", "G3"):
+                continue
+            seen.setdefault(p.op, set()).add(p.variant)
+            text = p.files["src/app/main.una"]
+            if p.op == "G1" or (p.op == "G3" and not p.variant.endswith("-twin")):
+                self.assertEqual((p.cls, p.expect), (MUST_REJECT, ["U4001"]), p.variant)
+                self.assertIn("secret Int]", text)
+            else:
+                self.assertEqual(p.cls, OPEN, p.variant)
+            self.assertNotIn("use(", text.replace("feed_sink(", ""))
+        self.assertEqual(len(seen["G1"]), 16)
+        self.assertEqual(seen["G3"], {"chain", "pair", "chain-twin", "pair-twin"})
+
+    def test_c_family_is_edition_0_2_and_gated_in_0_1(self):
+        for p in every_program(40):
+            if p.op not in ("C1", "C2", "C3"):
+                continue
+            self.assertIn("together", p.files["src/app/main.una"])
+            if p.edition == "0.1":
+                self.assertEqual((p.cls, p.expect), (MUST_REJECT, ["U0103"]), p.name)
+            elif p.variant.endswith("twin") or p.variant == "twin-public-pc":
+                self.assertEqual(p.cls, OPEN, p.variant)
+            else:
+                self.assertEqual(p.cls, MUST_REJECT, p.variant)
+
+    def test_s_family_classes(self):
+        seen = set()
+        for p in every_program(60):
+            if p.op not in ("S1", "S2", "S3"):
+                continue
+            seen.add((p.op, p.variant))
+            text = p.files["src/app/main.una"]
+            self.assertNotIn(" in [", text, p.name)
+            if p.variant.endswith("-twin"):
+                self.assertEqual(p.cls, OPEN, p.variant)
+                self.assertNotIn("secret", text, p.name)
+            else:
+                self.assertEqual(p.cls, MUST_REJECT, p.variant)
+                self.assertTrue(p.expect, p.variant)
+        self.assertTrue(any(op == "S2" and v.startswith("is-") for op, v in seen))
+
+    def test_o_family_classes(self):
+        for p in every_program(60):
+            if p.op not in ("O1", "O2", "O3"):
+                continue
+            if p.edition == "0.1" and p.op in ("O1", "O3"):
+                self.assertEqual(p.cls, MUST_REJECT, p.name)
+                self.assertEqual(p.expect, ["U1001"] if p.op == "O1" else ["U0101"])
+            elif p.variant.endswith("-twin"):
+                self.assertEqual(p.cls, OPEN, p.variant)
+            else:
+                self.assertEqual(p.cls, MUST_REJECT, p.variant)
+            if p.op == "O3" and p.variant.startswith("to-int"):
+                self.assertIn("T: Integer", p.files["src/app/main.una"])
+
+    def test_f_family_is_open_and_covers_every_carrier(self):
+        from hunt.families.fragment import CARRIERS, ENDINGS
+        seen = set()
+        for p in every_program(120):
+            if p.op != "F1":
+                continue
+            self.assertEqual((p.cls, p.expect), (OPEN, []))
+            seen.add(p.variant)
+        carriers = {v.split("-", 1)[0] for v in seen}
+        self.assertTrue({c.split("-")[0] for c in CARRIERS} <= carriers | {"first"})
+        self.assertTrue(any(v.endswith("write-internal") for v in seen))
+
+    def test_parse_recheck(self):
+        out = "doc.json\tmain.run\taccepted\tany host\ndoc.json\tmain.g\tnot re-checked\tthe type `X`\n"
+        rows = drivers.parse_recheck(out)
+        self.assertEqual([r["outcome"] for r in rows], ["accepted", "not re-checked"])
+        self.assertEqual(rows[1]["note"], "the type `X`")
+
+    DOC = json.dumps({"schema": "una.core/1", "complete": True, "modules": [
+        {"path": "app.main", "decls": [{"kind": "fun", "value": {"name": "run"}},
+                                       {"kind": "fun", "value": {"name": "same"}}]}]})
+    LINES = "c.json\tapp.main.run\taccepted\t\nc.json\tapp.main.same\tnot re-checked\twhy\n"
+
+    def judge(self, exp=None, doc=None, rec=None):
+        exp = exp or Run(0, doc if doc is not None else self.DOC, "", False, 0.1)
+        return drivers.judge_differ(exp, exp.stdout, rec)
+
+    def test_differ_clean_needs_every_condition(self):
+        self.assertEqual(self.judge(rec=Run(0, self.LINES, "", False, 0.1))["kind"], "clean")
+
+    def test_differ_rejected_is_a_finding(self):
+        lines = self.LINES.replace("not re-checked\twhy", "rejected\ta flow")
+        self.assertEqual(self.judge(rec=Run(1, lines, "", False, 0.1))["kind"], "finding")
+
+    def test_differ_unknown_cases(self):
+        rec_ok = Run(0, self.LINES, "", False, 0.1)
+        incomplete = self.DOC.replace('"complete": true', '"complete": false')
+        cases = {
+            "export timeout": dict(exp=Run(None, "", "", True, 9), rec=None),
+            "export exit": dict(exp=Run(1, "", "boom", False, 0.1), rec=None),
+            "export not JSON": dict(doc="not json", rec=rec_ok),
+            "incomplete": dict(doc=incomplete, rec=rec_ok),
+            "re-check did not run": dict(rec=None),
+            "re-check timeout": dict(rec=Run(None, "", "", True, 9)),
+            "re-check crash": dict(rec=Run(3, self.LINES, "panic", False, 0.1)),
+            "error outcome": dict(rec=Run(1, "c.json\t-\terror\tbad\n", "", False, 0.1)),
+            "exit 1 without rejected": dict(rec=Run(1, self.LINES, "", False, 0.1)),
+            "missing declaration": dict(rec=Run(0, self.LINES.split("\n")[0] + "\n", "", False, 0.1)),
+            "no output": dict(rec=Run(0, "", "", False, 0.1)),
+            "odd outcome": dict(rec=Run(0, self.LINES.replace("accepted", "maybe"), "", False, 0.1)),
+        }
+        for name, kw in cases.items():
+            j = self.judge(**kw)
+            self.assertEqual(j["kind"], "unknown", name)
+            self.assertTrue(j["detail"], name)
 
     def test_t11_class_follows_the_failure_label(self):
         for p in every_program(80):
