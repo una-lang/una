@@ -247,6 +247,14 @@ class Generators(unittest.TestCase):
     def test_differ_clean_needs_every_condition(self):
         self.assertEqual(self.judge(rec=Run(0, self.LINES, "", False, 0.1))["kind"], "clean")
 
+    def test_differ_predicate_outside_the_flow_model_is_clean(self):
+        # #532: a refinement predicate has its own category, counted apart and never dropped.
+        lines = self.LINES + "c.json\tprelude.is_even\toutside the flow model\trefinement predicate\n"
+        self.assertEqual(self.judge(rec=Run(0, lines, "", False, 0.1))["kind"], "clean")
+        rows = drivers.parse_recheck(lines)
+        self.assertEqual([r["outcome"] for r in rows],
+                         ["accepted", "not re-checked", "outside the flow model"])
+
     def test_differ_rejected_is_a_finding(self):
         lines = self.LINES.replace("not re-checked\twhy", "rejected\ta flow")
         self.assertEqual(self.judge(rec=Run(1, lines, "", False, 0.1))["kind"], "finding")

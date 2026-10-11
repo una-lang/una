@@ -1,4 +1,4 @@
-# Formal track: `prelude.first`
+# Formal track: `prelude.first`, and refinement predicates
 
 - Issue: #532 (its `prelude.first` part), under #46
 - Date: 2026-10-11
@@ -65,3 +65,17 @@ Result (2026-10-11, una 0.3.7 from `main` at `cee87e3e`):
 - `scripts/formal.sh`: PASS, 291 theorems, no `sorry`; the replay: 38 rejected, as `expected.txt`.
 - The corpus, 1,352 documents: 1,162 to 1,173 accepted, none rejected before or after. The 11 flips are declarations that call `first`, from not re-checked to accepted, all in documents `una check` accepts: `print_values.firsts`, `c83.fine`, `n07e.leak`, `sw.g`, `sw.leak`, `ifc_tour.first_balance`, `prelude_result_labels.first_labeled` and `public_data`, `structural_prelude_labels.first_secret` and `head`, `callee_ensures_proven.first_or_zero`. `short_circuit_and_interpolation.main` stays not re-checked, now for `` F1 restriction (`lt` on Text, Text) ``.
 - Family F, seeds 5 to 7: 113, 62 and 423 to 126, 67 and 497 accepted declarations, the 92 that called `first`; every program `una check` accepts is `clean`.
+
+## 7. Refinement predicates (#532, part 2)
+
+Every document that exports the prelude carries its refinement predicates, and the re-check gave each one a line "not re-checked: a `pred` declaration": 346 lines over the hunt's seeds 5 to 7, all in module `prelude`, none blocking a user declaration. A refinement predicate is pure and its labels are erased (`spec/07 §7` rule 6), so it is outside the flow model by design, not a gap of the re-check.
+
+The coordinator's decision: such a declaration has its own outcome, `outside the flow model`, with the reason "refinement predicate (`spec/07 §7` rule 6)".
+- It is counted apart from `not re-checked`, and never dropped: the outcome list still has one line for every declaration with code.
+- It is never accepted. A function that reaches one is not re-checked ("reaches `p`, outside the flow model"), as for any callee without a certificate; the reverse comparison (ADR 0091) reports it as not re-checked.
+- `una-core-check`'s exit code is unchanged: only a rejection or an unreadable document makes it 1.
+- The hunt's `differ` knows the new outcome; any other outcome it does not know is still `unknown`.
+
+Tests: `FirstImportTests` expects `prelude.is_json_number`, which every export carries, to be outside the flow model, and the hunt's unit tests judge a document with such a line `clean`.
+
+Result (2026-10-11, `main` at `d61f1e7c`, on #537's exports of the 1,352 documents): 113 declarations move from `not re-checked` to `outside the flow model`, every one a `pred` declaration (92 in `prelude`, 21 in user modules); no other outcome or reason changes, so 1,173 stay accepted and none rejected. Family F, seeds 5 to 7: the 64, 33 and 249 declarations that were not re-checked are the 346 predicates, now outside the flow model; every program `una check` accepts is `clean`.

@@ -2,11 +2,13 @@
 `una-core-check`: the checker of M2 over `una.core/1` documents (`docs/plan/formal-track.md`
 §5). For each document given, one line per declaration with code:
 
-    <document> TAB <declaration> TAB accepted | rejected | not re-checked TAB <reason>
+    <document> TAB <declaration> TAB accepted | rejected | not re-checked | outside the flow model TAB <reason>
 
 `rejected` on a document `una check` accepted is a disagreement for triage: a potential
 soundness finding of the Rust checker, or a reading of the model to revisit. The exit code is 0
-when no declaration is rejected and every document is read, 1 otherwise.
+when no declaration is rejected and every document is read, 1 otherwise. `outside the flow model`
+is a declaration the flow model leaves out by design, a refinement predicate (`spec/07 §7` rule
+6), counted apart from `not re-checked` (#532).
 
 With `--rejected` first (ADR 0091), it reads the declarations of each document's `rejected` key,
 which `una --json core --with-rejected` exports, instead, one line each:
@@ -64,4 +66,5 @@ def main (args : List String) : IO UInt32 := do
             IO.println s!"{path}\t{decl}\trejected\t{why}"
             code := 1
           | .notRechecked why => IO.println s!"{path}\t{decl}\tnot re-checked\t{why}"
+          | .outsideFlow why => IO.println s!"{path}\t{decl}\toutside the flow model\t{why}"
   return code

@@ -17,6 +17,7 @@ def verdict : Outcome → String
   | .acceptedIfA3 _ => "accepted, conditional on A3"
   | .rejected _ => "rejected"
   | .notRechecked _ => "not re-checked"
+  | .outsideFlow _ => "outside the flow model"
 
 def main (args : List String) : IO UInt32 := do
   let mut caughtLabel := false
