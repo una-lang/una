@@ -62,6 +62,9 @@ inductive AtomsTy : Ctx → List Atom → List Ty → Prop where
 inductive PrimTy : Prim → List Ty → Ty → Prop where
   | add : PrimTy .add [.int, .int] .int
   | sub : PrimTy .sub [.int, .int] .int
+  | mul : PrimTy .mul [.int, .int] .int
+  | div : PrimTy .div [.int, .int] .int
+  | mod : PrimTy .mod [.int, .int] .int
   | lt : PrimTy .lt [.int, .int] .bool
   | eqInt : PrimTy .eqInt [.int, .int] .bool
   | not : PrimTy .not [.bool] .bool

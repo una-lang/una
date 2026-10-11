@@ -432,21 +432,31 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
       | @prim _ _ pr _ ts ty has hp =>
         refine BRelR.of_brel ?_
         obtain ⟨vs₁, vs₂, h₁, h₂, hvs, hu₁, hu₂⟩ := latoms_bothσ he₁ he₂ hrel has
-        simp only [evalRhs, h₁, h₂, Option.bind_some]
+        simp only [evalRhs, h₁, h₂, Option.bind_some, Option.map_some, Option.getD_some]
         rw [ofScalar_lsubst]
         by_cases hv : Vis p L ((p.primLabel pr ts).inst (p.sd σ))
-        · rw [prim_agreeσ hp hvs hv]
-          apply brel_same hw
-          intro v hv'
-          cases hev : evalPrim pr vs₂ with
-          | none => simp [hev] at hv'
-          | some u =>
-            simp only [hev, Option.elim] at hv'
-            cases hv'
-            exact V.ofScalar_refl (prim_ltyped (p := p) _ hp hev)
-        · refine brel_quiet hw rfl (fun a b => .hidden (by rw [ofScalar_top]; exact hv)) ?_ ?_
-          · intro c hc; cases h : evalPrim pr vs₁ <;> simp [h] at hc
-          · intro c hc; cases h : evalPrim pr vs₂ <;> simp [h] at hc
+        · -- Seen: the arguments agree, so both runs abort, or neither does.
+          rw [prim_agreeσ hp hvs hv, aborts_agreeσ hp hvs hv]
+          by_cases ha : Prim.aborts pr vs₂ = true <;> simp only [ha, if_true, if_false,
+            Bool.false_eq_true]
+          · apply brel_same hw
+            intro v hv'
+            simp at hv'
+          · apply brel_same hw
+            intro v hv'
+            cases hev : evalPrim pr vs₂ with
+            | none => simp [hev] at hv'
+            | some u =>
+              simp only [hev, Option.elim] at hv'
+              cases hv'
+              exact V.ofScalar_refl (prim_ltyped (p := p) _ hp hev)
+        · -- Hidden: either run may abort (#526); an abort is quiet, with no event and no failure.
+          rcases Bool.eq_false_or_eq_true (Prim.aborts pr vs₁) with ha₁ | ha₁ <;>
+          rcases Bool.eq_false_or_eq_true (Prim.aborts pr vs₂) with ha₂ | ha₂ <;>
+          simp only [ha₁, ha₂, ↓reduceIte, Bool.false_eq_true] <;>
+          refine brel_quiet hw rfl (fun a b => .hidden (by rw [ofScalar_top]; exact hv)) ?_ ?_ <;>
+          (intro c hc
+           cases h₁ : evalPrim pr vs₁ <;> cases h₂ : evalPrim pr vs₂ <;> simp [h₁, h₂] at hc)
       | @call _ _ f targs args fn ts hf hnv hlen _ heqa hg has hfl hb _ =>
         obtain ⟨tb, εb, hbody, hflow, _, _, _, hfail, _⟩ := funOk_of_nvia hwf hnv hf
         have hτ : GroundSubst (fn.tparams.zip targs) := zip_ground hg

@@ -77,7 +77,7 @@ noncomputable def proj (tr : Trace) : Trace := tr.filter (fun ev => decide (EvVi
 /-- A run that ended, with a value or a failure. -/
 def Term : Res → Prop
   | .ok _ | .failed _ => True
-  | .stuck | .outOfFuel => False
+  | .stuck | .outOfFuel | .aborted => False
 
 /-- Two outcomes related: values by `R`, failures with the same code when the observer sees
 what decides them, and one value against one failure only when it does not. -/
@@ -373,8 +373,9 @@ theorem OutRel.mono {R R' : Val → Val → Prop} {vf vf' : Prop} (hR : ∀ a b,
   | .failed _, .failed _, h => fun hv => h (hvf hv)
   | .ok _, .failed _, h => fun hv => h (hvf hv)
   | .failed _, .ok _, h => fun hv => h (hvf hv)
-  | .ok _, .stuck, _ | .ok _, .outOfFuel, _ | .failed _, .stuck, _ | .failed _, .outOfFuel, _
-  | .stuck, _, _ | .outOfFuel, _, _ => trivial
+  | .ok _, .stuck, _ | .ok _, .outOfFuel, _ | .ok _, .aborted, _ | .failed _, .stuck, _
+  | .failed _, .outOfFuel, _ | .failed _, .aborted, _
+  | .stuck, _, _ | .outOfFuel, _, _ | .aborted, _, _ => trivial
 
 theorem BRel.mono {R R' : Val → Val → Prop} {vf vf' : Prop} (hR : ∀ a b, R a b → R' a b)
     (hvf : vf' → vf) {r₁ r₂ : Run H} (h : BRel p L R vf r₁ r₂) : BRel p L R' vf' r₁ r₂ :=

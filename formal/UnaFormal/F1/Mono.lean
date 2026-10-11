@@ -29,7 +29,7 @@ theorem andThen_mono {f f' : Run H} {k k' : World H → Val → Run H}
     rw [hk v rfl hkt]
   | failed c => rfl
   | stuck => rfl
-  | outOfFuel => rfl
+  | outOfFuel | aborted => rfl
 
 theorem applyWith_mono {run run' : World H → Env → Expr → Run H} {w : World H} {fv : Val}
     {vs : List Val} (h : ∀ w env e, Term (run w env e).2.1 → run' w env e = run w env e)

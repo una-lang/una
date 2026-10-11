@@ -140,6 +140,10 @@ inductive Res where
   | failed (code : Nat)
   | stuck
   | outOfFuel
+  /-- A defined runtime abort of Una (#526): a zero divisor (`Prim.aborts`). Like `outOfFuel`, the run
+  does not terminate normally, so T1 counts it good and T6's `Term` excludes it (`spec/07 §1`:
+  aborts and termination are outside the model); unlike it, it is not an artifact of the fuel. -/
+  | aborted
 
 /-- The value of variable `x` in `env`, the innermost binding. -/
 def lookup (env : Env) (x : String) : Option Val :=
@@ -195,10 +199,21 @@ def sumInts : List Val → Option Int
   | .int n :: rest => (sumInts rest).map (n + ·)
   | _ => none
 
+/-- Whether a primitive aborts on its arguments: `div` or `mod` by zero (#526), which Una's
+runtime aborts on, and which the divisor obligation (U5001) rules out where it is proven. -/
+def Prim.aborts : Prim → List Val → Bool
+  | .div, [_, .int b] | .mod, [_, .int b] => b == 0
+  | _, _ => false
+
 /-- A primitive on the values of its arguments. -/
 def evalPrim : Prim → List Val → Option Val
   | .add, [.int a, .int b] => some (.int (a + b))
   | .sub, [.int a, .int b] => some (.int (a - b))
+  | .mul, [.int a, .int b] => some (.int (a * b))
+  -- A zero divisor never reaches here: `Prim.aborts` stops the run first. The value `0` only keeps
+  -- `evalPrim` total on typed arguments.
+  | .div, [.int a, .int b] => some (.int (if b = 0 then 0 else Int.ediv a b))
+  | .mod, [.int a, .int b] => some (.int (if b = 0 then 0 else Int.emod a b))
   | .lt, [.int a, .int b] => some (.bool (decide (a < b)))
   | .eqInt, [.int a, .int b] => some (.bool (decide (a = b)))
   | .not, [.bool b] => some (.bool (!b))
@@ -349,7 +364,9 @@ mutual
       match r with
       | .atom a => ([], (evalAtom env a).elim .stuck .ok, w)
       | .prim pr args =>
-        ([], ((evalAtoms env args).bind (evalPrim pr)).elim .stuck .ok, w)
+        -- A zero divisor aborts the run, the outcome `aborted` (#526): `spec/07 §1` puts aborts outside the model, with termination.
+        if ((evalAtoms env args).map (Prim.aborts pr)).getD false then ([], .aborted, w)
+        else ([], ((evalAtoms env args).bind (evalPrim pr)).elim .stuck .ok, w)
       | .call f _ args =>
         match p.find f, evalAtoms env args with
         | some fn, some vs =>

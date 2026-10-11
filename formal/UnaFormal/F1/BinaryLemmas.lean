@@ -122,7 +122,7 @@ theorem prim_agree {pr : Prim} {ts : List LTy} {t : Ty} {vs₁ vs₂ : List Val}
   | concat hts =>
     rw [VList.eq_texts_vis hvs (fun u hu => ⟨hts _ (hes ▸ List.mem_map_of_mem hu),
       hdeep (fun h => Prim.noConfusion h) u hu⟩)]
-  | add | sub | lt | eqInt =>
+  | add | sub | mul | div | mod | lt | eqInt =>
     match ts, hvs, hes with
     | [_, _], .cons h₁ (.cons h₂ .nil), hes =>
       simp only [List.map_cons, List.map_nil, List.cons.injEq] at hes

@@ -60,7 +60,7 @@ theorem andThen_fst (first : Run H) (rest : World H → Val → Run H) :
     exact ⟨t', rfl⟩
   | failed c => exact ⟨[], by simp [andThen]⟩
   | stuck => exact ⟨[], by simp [andThen]⟩
-  | outOfFuel => exact ⟨[], by simp [andThen]⟩
+  | outOfFuel | aborted => exact ⟨[], by simp [andThen]⟩
 
 /-- **Sequencing keeps two runs related up to their first different release**: a divergence of
 the first parts is one of the whole, and so is a divergence of the second parts after first

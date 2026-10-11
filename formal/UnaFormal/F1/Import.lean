@@ -333,6 +333,11 @@ mutual
       match pk, args with
       | "add", _ => pure (.prim .add args)
       | "sub", _ => pure (.prim .sub args)
+      | "mul", _ => pure (.prim .mul args)
+      | "div", _ => pure (.prim .div args)
+      | "mod", _ => pure (.prim .mod args)
+      -- `-a` is `0 - a`: the literal is public, so the label is `a`'s, as Una's (#526).
+      | "neg", [a] => pure (.prim .sub [.int 0, a])
       | "lt", _ => pure (.prim .lt args)
       | "gt", [a, b] => pure (.prim .lt [b, a])
       | "not", _ => pure (.prim .not args)
@@ -464,7 +469,23 @@ mutual
       let body ← expr c (← field j "body")
       match ← kind v with
       | "rhs" =>
-        let r ← rhs c (← field v "value")
+        -- `le`, `ge` and `ne` (#526): `x = not t` after a temporary `t` of `lt` with its operands
+        -- swapped, `lt`, or `==`, at `x`'s own annotation, so every flow is checked against the
+        -- declared type; `not` keeps its operand's label, which is Una's for each: the join of
+        -- the operands', and `ℓ*` for `!=` as for `==` (`spec/07 §7` rule 3).
+        let rv ← field v "value"
+        let negated : Option Rhs ←
+          if rv.getObjValD "kind" == .str "prim" then
+            match ← kind (← field rv "prim"), ← atoms (← field rv "args") with
+            | "le", [a, b] => pure (some (.prim .lt [b, a]))
+            | "ge", [a, b] => pure (some (.prim .lt [a, b]))
+            | "ne", [a, b] => pure (some (.eq a b))
+            | _, _ => pure none
+          else pure none
+        if let some first := negated then
+          let tmp := s!"%not-{x}"
+          return .letR tmp t first (.letR x t (.prim .not [.var tmp]) body)
+        let r ← rhs c rv
         -- A lambda's body gives the result of its function type (`Expr.attemptsAt`).
         match r, t with
         | .lambda _ lb, .fn _ res _ _ _ _ =>
