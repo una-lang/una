@@ -89,6 +89,11 @@ theorem flows_length {top : Label} : ∀ {ts₁ ts₂ : List LTy}, Flows top ts�
   | _, _, .nil => rfl
   | _, _, .cons _ hs => by simp [flows_length hs]
 
+/-- The bindings of a `case` on a sum (#512), erased: the fields' structural types. -/
+theorem LCtx.erase_zip_raise (xs : List String) (fs : List LTy) (l : LExpr) (Γ : LCtx) :
+    LCtx.erase (xs.zip (fs.map (LTy.raise l)) ++ Γ) = xs.zip (fs.map LTy.erase) ++ Γ.erase := by
+  simp [LCtx.erase, List.zip_map_right, List.map_map, Function.comp_def, LTy.erase_raise]
+
 theorem params_erase (params : List (String × LTy)) (Γ : LCtx) :
     LCtx.erase (params ++ Γ) = bindTys params (params.map (fun q => q.2.erase)) ++ Γ.erase := by
   induction params with
@@ -145,6 +150,10 @@ mutual
       have h := latoms_erase has
       rw [← Flows.erase hflows] at h
       exact .construct hrec h
+    | _, _, _, _, _, .variant hs hf has hflows => by
+      have h := latoms_erase has
+      rw [← Flows.erase hflows] at h
+      exact .variant hs (by simp [Sum.fieldTys, hf]) h
     | _, _, _, _, _, .field hv hrec hi => by
       rw [LTy.erase_raise]
       exact .field (latom_erase hv) hrec (by simp [Record.fieldTys, hi])
@@ -156,12 +165,12 @@ mutual
     | _, _, _, _, _, .some h => .some (latom_erase h)
     | _, _, _, _, _, .mkOk h _ => .mkOk (latom_erase h)
     | _, _, _, _, _, .mkErr h _ => .mkErr (latom_erase h)
-    | _, _, _, _, _, .lambda (params := params) hb _ _ _ => by
+    | _, _, _, _, _, .lambda (params := params) hb _ _ _ _ => by
       have h := LExprTy.toStruct hb
       rw [params_erase] at h
       simp only [LTy.erase, LTy.erases_eq, List.map_map]
       exact .lambda (by simp) h
-    | _, _, _, _, _, .funRef (fn := fn) (targs := targs) hf _ _ _ _ _ _ => by
+    | _, _, _, _, _, .funRef (fn := fn) (targs := targs) hf _ _ _ _ _ _ _ => by
       simp only [LTy.erase, LTy.erases_eq]
       rw [lsub_params_erase, Program.lsub, LTy.erase_lsubst]
       exact .funRef hf
@@ -267,8 +276,27 @@ mutual
       rw [LTy.erase_raise]
       exact .caseResult hs' hok' herr'
     | _, _, _, _, _, .fail _ _ _ => .fail
-    | _, _, _, _, _, .attempt hb => .attempt (LExprTy.toStruct hb)
-    | _, _, _, _, _, .handle hb hh h₁ h₂ _ => by
+    | _, _, _, _, _, .raise hs hf has hflows _ _ _ => by
+      have h := latoms_erase has
+      rw [← Flows.erase hflows] at h
+      exact .raise hs (by simp [Sum.fieldTys, hf]) h
+    | _, _, _, _, _, .unreachable _ => .unreachable
+    | _, _, _, _, _, .caseSum hs hsm hf hlen hth hel h₁ h₂ _ => by
+      have hth' := LExprTy.toStruct hth
+      have hel' := LExprTy.toStruct hel
+      rw [LCtx.erase_zip_raise, Flow.erase h₁] at hth'
+      rw [Flow.erase h₂] at hel'
+      rw [LTy.erase_raise]
+      exact .caseSum (latom_erase hs) hsm (by simp [Sum.fieldTys, hf]) (by simp [hlen]) hth' hel'
+    | _, _, _, _, _, .caseSumT hs hsm hf hlen hth hel h₁ h₂ _ _ => by
+      have hth' := LExprTy.toStruct hth
+      have hel' := LExprTy.toStruct hel
+      rw [LCtx.erase_zip_raise, Flow.erase h₁] at hth'
+      rw [Flow.erase h₂] at hel'
+      exact .caseSum (latom_erase hs) hsm (by simp [Sum.fieldTys, hf]) (by simp [hlen]) hth' hel'
+    | _, _, _, _, _, .attempt hb _ => .attempt (LExprTy.toStruct hb)
+    | _, _, _, _, _, .attemptK hb _ _ => .attemptK (LExprTy.toStruct hb)
+    | _, _, _, _, _, .handle hb _ hh h₁ h₂ _ => by
       have hb' := LExprTy.toStruct hb
       have hh' := LExprTy.toStruct hh
       simp only [LCtx.erase, List.map_cons] at hh'
@@ -276,6 +304,14 @@ mutual
       rw [Flow.erase h₂] at hh'
       rw [LTy.erase_raise]
       exact .handle hb' hh'
+    | _, _, _, _, _, .handleK hb _ _ hh h₁ h₂ _ => by
+      have hb' := LExprTy.toStruct hb
+      have hh' := LExprTy.toStruct hh
+      simp only [LCtx.erase, List.map_cons] at hh'
+      rw [Flow.erase h₁] at hb'
+      rw [Flow.erase h₂] at hh'
+      rw [LTy.erase_raise]
+      exact .handleK hb' hh'
     | _, _, _, _, _, .iteT hc ht he h₁ h₂ _ _ => by
       have hc' := latom_erase hc
       have ht' := LExprTy.toStruct ht
@@ -299,13 +335,20 @@ mutual
       rw [Flow.erase h₁] at hok'
       rw [Flow.erase h₂] at herr'
       exact .caseResult hs' hok' herr'
-    | _, _, _, _, _, .handleT hb hh h₁ h₂ _ _ => by
+    | _, _, _, _, _, .handleT hb _ hh h₁ h₂ _ _ => by
       have hb' := LExprTy.toStruct hb
       have hh' := LExprTy.toStruct hh
       simp only [LCtx.erase, List.map_cons] at hh'
       rw [Flow.erase h₁] at hb'
       rw [Flow.erase h₂] at hh'
       exact .handle hb' hh'
+    | _, _, _, _, _, .handleKT hb _ _ hh h₁ h₂ _ _ => by
+      have hb' := LExprTy.toStruct hb
+      have hh' := LExprTy.toStruct hh
+      simp only [LCtx.erase, List.map_cons] at hh'
+      rw [Flow.erase h₁] at hb'
+      rw [Flow.erase h₂] at hh'
+      exact .handleK hb' hh'
     | _, _, _, _, _, .letTuple (binders := bs) (ts := ts) hv hflows _ hb => by
       have h1 := latom_erase hv
       have hb' := LExprTy.toStruct hb
@@ -356,6 +399,8 @@ theorem Program.LWellFormed.wellFormed (hwf : p.LWellFormed) : p.WellFormed wher
       simpa [paramTys_nil, LCtx.erase] using h
     · exact h
   records := hwf.records
+  sums sm hsm fs hfs t ht := (hwf.sums sm hsm fs hfs t ht).2.2.2.2
+  disjoint := hwf.disjoint
   policies := hwf.policies
 
 /-- **T1 for the labeled typing of F1** (`spec/10 §10`): a body the labeled typing accepts, of a

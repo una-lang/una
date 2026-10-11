@@ -235,7 +235,6 @@ def fmtTy : LTy → String
 def eqArgs (p : Program) (E : List String) (fn : Fun) (targs : List LTy) : Bool :=
   (fn.tparams.zip targs).all (fun q => !fn.eqParams.contains q.1 || p.eqIn E q.2)
 
-/-- The premises T-Call and a function reference share. -/
 /-- Whether a type holds a value of a sum kind at any position (#512). -/
 def sumIn (p : Program) : LTy → Bool
   | .record k _ => (p.sum k).isSome
@@ -245,6 +244,7 @@ def sumIn (p : Program) : LTy → Bool
   | .tuple ts _ => ts.attach.any (fun ⟨q, _⟩ => sumIn p q)
   | _ => false
 
+/-- The premises T-Call and a function reference share. -/
 def callable (p : Program) (E : List String) (f : String) (targs : List LTy) : Result Fun := do
   let fn ← some! (p.find f) s!"no function `{f}`"
   need (!isVia p f) s!"`{f}` is the `via` function of a policy (U4005)"

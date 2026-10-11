@@ -56,6 +56,12 @@ theorem bindTys_subst {α : Type} (τ : List (String × Ty)) (params : List (Str
   simp only [Ctx.subst, bindTys, List.map_append, List.zip_map_right]
   rfl
 
+/-- The bindings of a `case` on a sum (#512), as `bindTys`. -/
+theorem zip_subst (τ : List (String × Ty)) (xs : List String) (ts : List Ty) (ctx : Ctx) :
+    Ctx.subst τ (xs.zip ts ++ ctx) = xs.zip (ts.map (Ty.subst τ)) ++ ctx.subst τ := by
+  simp only [Ctx.subst, List.map_append, List.zip_map_right]
+  rfl
+
 theorem paramTys_subst (fn : Fun) (σ τ : List (String × Ty)) :
     (fn.paramTys σ).map (Ty.subst τ) = fn.paramTys (σ.map (fun q => (q.1, q.2.subst τ)) ++ τ) := by
   simp only [Fun.paramTys, List.map_map]
@@ -73,6 +79,9 @@ theorem map_subst_closed (τ : List (String × Ty)) :
 theorem record_mem {r : String} {rec : Record} (h : p.record r = some rec) : rec ∈ p.records :=
   List.mem_of_find?_eq_some h
 
+theorem sum_mem {k : String} {sm : Sum} (h : p.sum k = some sm) : sm ∈ p.sums :=
+  List.mem_of_find?_eq_some h
+
 theorem policy_mem {pol : String} {po : Policy} (h : p.policy pol = some po) :
     po ∈ p.policies :=
   List.mem_of_find?_eq_some h
@@ -81,6 +90,16 @@ theorem mem_of_getElem? {α : Type} {xs : List α} {i : Nat} {x : α} (h : xs[i]
     x ∈ xs := by
   obtain ⟨hlt, heq⟩ := List.getElem?_eq_some_iff.mp h
   exact heq ▸ List.getElem_mem hlt
+
+/-- The fields of a sum's variant have no type parameter (#512). -/
+theorem sum_fieldTys_closed (hwf : p.WellFormed) {k : String} {sm : Sum} {i : Nat} {ts : List Ty}
+    (hs : p.sum k = some sm) (hf : sm.fieldTys i = some ts) : ∀ t ∈ ts, t.Closed := by
+  simp only [Sum.fieldTys, Option.map_eq_some_iff] at hf
+  obtain ⟨fs, hfs, rfl⟩ := hf
+  intro t ht
+  simp only [List.mem_map] at ht
+  obtain ⟨u, hu, rfl⟩ := ht
+  exact hwf.sums _ (sum_mem hs) _ (mem_of_getElem? hfs) _ hu
 
 /-- The shapes of `Http`'s parameters: `Text`, `Option[Text]` and `List[Header]`. -/
 def Ty.HttpArg (t : Ty) : Prop := t = .text ∨ t = .option .text ∨ t = .list (.record "prelude.Header")
@@ -135,6 +154,10 @@ mutual
       have h := atoms_subst τ has
       rw [map_subst_closed τ (hwf.records _ (record_mem hr))] at h
       exact .construct hr h
+    | _, _, _, .variant hs hf has => by
+      have h := atoms_subst τ has
+      rw [map_subst_closed τ (sum_fieldTys_closed hwf hs hf)] at h
+      exact .variant hs hf h
     | _, _, _, .field (rec := rec) hv hr hi => by
       have hc := hwf.records _ (record_mem hr) _ (mem_of_getElem? hi)
       rw [hc τ]
@@ -218,8 +241,19 @@ mutual
     | _, _, _, .caseResult hs hok herr =>
       .caseResult (atom_subst τ hs) (ExprTy.subst hwf τ hok) (ExprTy.subst hwf τ herr)
     | _, _, _, .fail => .fail
+    | _, _, _, .raise hs hf has => by
+      have h := atoms_subst τ has
+      rw [map_subst_closed τ (sum_fieldTys_closed hwf hs hf)] at h
+      exact .raise hs hf h
+    | _, _, _, .caseSum hsc hs hf hlen hth hel => by
+      have h := ExprTy.subst hwf τ hth
+      rw [zip_subst, map_subst_closed τ (sum_fieldTys_closed hwf hs hf)] at h
+      exact .caseSum (atom_subst τ hsc) hs hf hlen h (ExprTy.subst hwf τ hel)
+    | _, _, _, .unreachable => .unreachable
     | _, _, _, .attempt hb => .attempt (ExprTy.subst hwf τ hb)
+    | _, _, _, .attemptK hb => .attemptK (ExprTy.subst hwf τ hb)
     | _, _, _, .handle hb hh => .handle (ExprTy.subst hwf τ hb) (ExprTy.subst hwf τ hh)
+    | _, _, _, .handleK hb hh => .handleK (ExprTy.subst hwf τ hb) (ExprTy.subst hwf τ hh)
     | _, _, _, .letTuple hv hlen hb => by
       have h1 := atom_subst τ hv
       have h2 := ExprTy.subst hwf τ hb

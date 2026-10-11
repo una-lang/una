@@ -694,7 +694,8 @@ structure Program.LWellFormed (p : Program) : Prop where
   /-- Sums (#512): their fields are ground and keep `ℓ_T` in place, use the declared
   categories, and the declared deep label bounds them; no name is both a record's and a sum's. -/
   sums : ∀ sm ∈ p.sums, ∀ fs ∈ sm.variants, ∀ t ∈ fs,
-    t.Ground ∧ t.InPlace ∧ t.CatsIn p.categories ∧ p.le (p.deep t) (.ofLabel sm.deep)
+    t.Ground ∧ t.InPlace ∧ t.CatsIn p.categories ∧ p.le (p.deep t) (.ofLabel sm.deep) ∧
+      t.erase.Closed
   disjoint : ∀ k, p.record k = none ∨ p.sum k = none
   /-- Signatures and declared types keep `ℓ_T` in place. -/
   inPlace : (∀ fn ∈ p.funs, (∀ q ∈ fn.params, q.2.InPlace) ∧ fn.result.InPlace) ∧
