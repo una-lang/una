@@ -5,7 +5,7 @@
 - Deciders: Una project (pending acceptance)
 - Resolves: issue #520, part A ("when an allowed operation runs"). Parts B and C are ADR 0093 and ADR 0094.
 - Target: edition `0.3`. Editions `0.1` and `0.2` keep today's rules, and the Gate 1 pin (v0.1.9, edition `0.1`) does not move.
-- Amends, once accepted: `spec/02 §3`, `§4`, `spec/05 §3`, `§9`, `spec/12 §3`, `spec/13 §3`, `§4`, `§7`
+- Amends, once accepted: `spec/02 §3`, `§4`, `§8`, `spec/05 §3`, `§9`, `spec/12 §3`, `spec/13 §3`, `§4`, `§7`
 
 ## Context
 
@@ -55,7 +55,10 @@ A capability says which operations a function may perform (`spec/05 §3`). B06's
      fails UpdateError
    ```
 
-   - The condition is a `line_expr` of the refinement language (`spec/04 §2`) over the function's parameters, as in a `requires` clause. `result` is not in scope (U2012). It MUST be a `Bool` (U2001).
+   - The condition is in the refinement language RL (`spec/03 §3`), with the restrictions of a `requires` clause (`spec/04 §2`), over the function's parameters. It MUST be a `Bool` (U2001). In particular:
+     - an expression outside RL is U2014 at the outermost offending sub-expression, as in a `requires` clause. That includes `checked`, which would put an opaque fact in a header outside ADR 0042's place and escape budget, and also `attempt`, `fail`, a lambda, an operation and a call of a function with effects;
+     - a call of an opaque predicate is U2016, as in a function's clauses (ADR 0042);
+     - `result` is not in scope (U2012), and `it` is not in scope (U2013, rule 1's grammar).
    - An operation without `where` is unconditioned, as today.
    - `where` is a reserved keyword (`spec/01 §5`), already the word that bounds a refinement (`Int where it >= 0`, `spec/03`). It introduces no new keyword. Unlike a suffix `if`, it cannot be read as a handling clause (`if error pass`, `if none fail`).
    - Next to the forms it extends:
@@ -67,7 +70,10 @@ A capability says which operations a function may perform (`spec/05 §3`). B06's
      | `requires changes.len > 0` (`spec/04 §2`) | the condition is in the language of `requires` |
      | `expect not performed @catalog.journal` (`spec/08 §2`): a test of one run | a contract of every run |
 
-   - The same `where` is allowed in the `uses` of a handler (over the handler's parameters) and of a function type (over its parameters).
+   - The same `where` is allowed in the `uses` of a handler, over the handler's parameters.
+   - **Not in function types.** A function type's `uses` (`fn_type_clause`, `spec/02 §3`) keep the names-only form. A function type has no named parameters for a condition to speak of (its binders are `arg1` to `argN`, `spec/12 §3`), so `where` there is a parse error (U0101), and so is ADR 0094's `gives`.
+     - For the same reason, a named function whose `uses` carry a condition or a label MAY NOT be used as a function value (U3006, the code for a function value that may not flow there): the higher-order callee that would call it could not prove the condition or keep the label.
+     - A lambda needs neither: its effects are charged where it is defined (rule 3).
    - **Grammar** (`spec/02 §3`, with ADR 0094's `gives`):
 
      ```ebnf
@@ -77,7 +83,8 @@ A capability says which operations a function may perform (`spec/05 §3`). B06's
 
      `cap_type` holds no type, only operation names (`spec/02 §3`), and a refined type's `where` appears only in a `kind` alias (`alias_body`). So `where` inside the brackets is always an operation's condition and never a refinement.
      - **Delimiting.** A `cap_op` ends at the first `,` or `]` at bracket and parenthesis depth 0. Every nested `,`, `[ ]` or `( )` belongs to the label or the expression that holds it: a call `ok(a, b)`, a list literal `[1, 2]`, and a label `gives internal[A, B]`. An expression has no top-level comma.
-     - **`it` is out of scope** in an operation's condition, which speaks of the function's parameters and has no value to refine. Using it is U2013, the code for `it` outside a refinement, with the message "`it` names no value in an operation's condition".
+     - **`it` is out of scope** in an operation's condition, which speaks of the function's parameters and has no value to refine. Using it is U2013, the code for `it` outside a refinement, with the message "`it` names no value in an operation's condition". `spec/02 §8`'s row "`it` appears only in `where` clauses and the second argument of `checked`" is amended to "`it` appears only in the `where` of a `kind` and the second argument of `checked`; not in an operation's `where`".
+     - **Ceilings and locks.** The ceiling strings of ADR 0093's `[boundaries]` keep the names-only grammar of today's `cap_type`, so `where` or `gives` there is U7002. The `[contracts]` lock of rule 8 is the one place in `una.toml` where `cap_op` is written.
 
 2. **Meaning.** Every performance of a conditioned operation through the binding happens only where the condition holds of the function's arguments. Parameters are immutable, so the condition's value is fixed for the whole call.
 
