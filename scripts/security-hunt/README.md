@@ -12,12 +12,13 @@ They are Python 3 with the standard library only.
 - `hunt/families/trusted.py`: family T, operators T1 to T12. They target trusted modules and policies, the rules the formal model assumes and only the checker enforces.
 - `hunt/families/handlers.py` and `keys.py`: families H (handler bodies and the effect floor, H1 to H6) and K (`Keys.hmac`, K1 to K4).
 - `hunt/families/payloads.py`, `generics.py`, `concurrency.py`, `sums.py` and `ordering.py`: families P (failure payloads), G (kind parameters and invariance), C (`together`, edition 0.2), S (user sum types, `is` and `in`) and O (`Ord`, `sort`, `min`, `max`), the blind rows of `docs/reviews/security-hunt/coverage.md`.
+- `hunt/families/composed.py` and `composed2.py`: the composed families, two blind rows at once: CS (`together` over user sum types), PG (payloads of generic kinds), TC (policies in tasks), CP (payload failures in tasks) and GS (generic sums at secret instances).
 - `hunt/families/fragment.py`: family F, programs inside the formal re-check's vocabulary, for part (b).
 - `hunt/refactor.py`: family R, refactors that keep every label. R6 renames, interpolations included; R9 reorders declarations.
 - `hunt/drivers.py`: two judges that need only `una check --tier 0`:
   - **must-reject:** an accepted program is a finding;
   - **must-keep:** a refactor that changes the verdict is a finding;
-  - **differ** (part b), which also needs `una-core-check` (`formal/.lake/build/bin`): for a program `una check` accepts, a declaration the re-check rejects is a finding.
+  - **differ** (part b), which also needs `una-core-check` (`formal/.lake/build/bin`): for a program `una check` accepts, a declaration the re-check rejects is a finding, even when the re-check then times out or crashes. `clean` needs every condition: a complete export, a normal exit, a line for every function and every refinement predicate, each predicate's line `outside the flow model` (unless the whole document fell back to one reason), and only known outcomes. Anything else is `unknown`.
 - `hunt/sandbox.py`: every compiler run happens under `sandbox-exec`. The only writable directory is the campaign's root, there is no network, and the environment is clean. Without `sandbox-exec`, nothing runs.
 - `tests/`: tests that need no compiler.
 
