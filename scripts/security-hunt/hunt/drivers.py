@@ -181,7 +181,7 @@ def judge_differ(exp, core_text, rec):
     if missing:
         out["detail"] = f"the re-check has no line for {', '.join(missing[:3])}"
         return out
-    known = {"accepted", "accepted, conditional on A3", "not re-checked"}
+    known = {"accepted", "accepted, conditional on A3", "not re-checked", "outside the flow model"}
     odd = sorted(set(outcomes) - known)
     if odd:
         out["detail"] = f"the re-check printed the outcome {odd[0]!r}"
