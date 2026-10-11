@@ -115,7 +115,7 @@ def body : Expr :=
 /-- What `body` does: it releases, and writes. -/
 def bodyEff : Eff :=
   (Eff.ofFnR false HostFx.none false ["reveal"]).union
-    ((⟨true, HostFx.none, Option.none, [], false, []⟩ : Eff).union .none)
+    ((⟨true, HostFx.none, Option.none, [], false, [], LExpr.bot⟩ : Eff).union .none)
 
 theorem bot_le (e : LExpr) : LExpr.le prog.top LExpr.bot e :=
   .inr ⟨⟨Level.public_le _, fun _ h => by simp [LExpr.bot, LExpr.ofLabel, Label.bot] at h⟩,

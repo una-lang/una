@@ -175,25 +175,25 @@ end
 /-- Every type of a context keeps `ℓ_T` in place. -/
 def LCtx.InPlace (Γ : LCtx) : Prop := ∀ q ∈ Γ, q.2.InPlace
 
-/-- The labels of failures have no plain symbol. -/
-def Eff.PlainFree (ε : Eff) : Prop := ∀ l, ε.fails = some l → l.PlainFree
+/-- The labels of failures, and the decision label (#524), have no plain symbol. -/
+def Eff.PlainFree (ε : Eff) : Prop := (∀ l, ε.fails = some l → l.PlainFree) ∧ ε.dl.PlainFree
 
 theorem Eff.failLabel_plainFree {ε : Eff} (h : ε.PlainFree) : ε.failLabel.PlainFree := by
   cases hf : ε.fails with
   | none => simp [Eff.failLabel, hf]; rfl
-  | some l => simpa [Eff.failLabel, hf] using h l hf
+  | some l => simpa [Eff.failLabel, hf] using h.1 l hf
 
 theorem Eff.plainFree_union {ε₁ ε₂ : Eff} (h₁ : ε₁.PlainFree) (h₂ : ε₂.PlainFree) :
     (ε₁.union ε₂).PlainFree := by
-  intro l hl
+  refine ⟨fun l hl => ?_, LExpr.plainFree_join h₁.2 h₂.2⟩
   cases hf₁ : ε₁.fails <;> cases hf₂ : ε₂.fails <;> simp [Eff.union, hf₁, hf₂] at hl <;>
     subst hl
-  · exact h₂ _ hf₂
-  · exact h₁ _ hf₁
-  · exact LExpr.plainFree_join (h₁ _ hf₁) (h₂ _ hf₂)
+  · exact h₂.1 _ hf₂
+  · exact h₁.1 _ hf₁
+  · exact LExpr.plainFree_join (h₁.1 _ hf₁) (h₂.1 _ hf₂)
 
 theorem Eff.plainFree_ofFn (o : Bool) (g : HostFx) (f : Bool) : (Eff.ofFn o g f).PlainFree := by
-  intro l hl
+  refine ⟨fun l hl => ?_, LExpr.plainFree_bot⟩
   cases f <;> simp [Eff.ofFn] at hl
   subst hl; rfl
 
@@ -201,17 +201,52 @@ theorem Eff.plainFree_ofFnR (o : Bool) (g : HostFx) (f : Bool) (rs : List String
     (Eff.ofFnR o g f rs).PlainFree :=
   Eff.plainFree_ofFn o g f
 
-theorem Eff.plainFree_ofCall (fn : Fun) : (Eff.ofCall fn).PlainFree := fun l hl =>
-  Eff.plainFree_ofFn fn.op fn.host fn.fails l (by simpa [Eff.ofCall, Eff.ofFnR] using hl)
+theorem Eff.plainFree_ofCall (fn : Fun) : (Eff.ofCall fn).PlainFree :=
+  ⟨fun l hl => (Eff.plainFree_ofFn fn.op fn.host fn.fails).1 l
+    (by simpa [Eff.ofCall, Eff.ofFnR] using hl), LExpr.plainFree_bot⟩
 
 /-- An invocation's failure is labeled `pc` (#524): plain-free when `pc` is. -/
 theorem Eff.plainFree_ofInvoke {pc : LExpr} (h : pc.PlainFree) (fn : Fun) :
     (Eff.ofInvoke pc fn).PlainFree := by
-  intro l hl
+  refine ⟨fun l hl => ?_, LExpr.plainFree_bot⟩
   cases hf : fn.fails <;> simp [Eff.ofInvoke, hf] at hl
   subst hl; exact h
 
-theorem Eff.plainFree_none : Eff.none.PlainFree := fun _ h => by simp [Eff.none] at h
+theorem Eff.plainFree_none : Eff.none.PlainFree := ⟨fun _ h => by simp [Eff.none] at h, LExpr.plainFree_bot⟩
+
+/-- A choice decided at a plain-free label (#524). -/
+theorem Eff.plainFree_decide {c : LExpr} {ε : Eff} (h : ε.PlainFree) (hc : c.PlainFree) :
+    (ε.decide c).PlainFree := by
+  unfold Eff.decide
+  split
+  · exact ⟨h.1, LExpr.plainFree_join h.2 hc⟩
+  · exact h
+
+theorem Eff.plainFree_union_decide {c : LExpr} {ε₁ ε₂ : Eff} (hc : c.PlainFree) (h₁ : ε₁.PlainFree)
+    (h₂ : ε₂.PlainFree) : ((ε₁.union ε₂).decide c).PlainFree :=
+  Eff.plainFree_decide (Eff.plainFree_union h₁ h₂) hc
+
+theorem Eff.plainFree_attemptOf (ε : Eff) : (Eff.attemptOf ε).PlainFree :=
+  ⟨fun _ h => by simp [Eff.attemptOf] at h, LExpr.plainFree_bot⟩
+
+theorem Eff.plainFree_handleOf {ε₁ ε₂ : Eff} (h₁ : ε₁.PlainFree) (h₂ : ε₂.PlainFree) :
+    (Eff.handleOf ε₁ ε₂).PlainFree :=
+  Eff.plainFree_decide (ε := ⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels,
+    ε₂.codes, ε₂.raises, ε₂.dl⟩) ⟨h₂.1, h₂.2⟩ h₁.2
+
+/-- A request's failure label is plain-free when the program counter and the arguments are. -/
+theorem Program.reqFail_plainFree {p : Program} {pc : LExpr} {ts : List LTy} (hpc : pc.PlainFree)
+    (hd : ∀ u ∈ ts, (p.deep u).PlainFree) : (p.reqFail pc ts).PlainFree := by
+  unfold Program.reqFail
+  split
+  · refine LExpr.plainFree_join hpc ?_
+    split
+    · exact hd _ (by simp_all)
+    · exact LExpr.plainFree_bot
+  · refine LExpr.plainFree_join (LExpr.plainFree_join hpc ?_) (LExpr.plainFree_ofLabel _)
+    refine LExpr.plainFree_joinAll fun e he => ?_
+    obtain ⟨u, hu, rfl⟩ := List.mem_map.mp he
+    exact hd u hu
 
 /-- A `Files` failure's label is plain-free when what decides it is. -/
 theorem Program.fsFail_plainFree {p : Program} {l : LExpr} (h : l.PlainFree) : (p.fsFail l).PlainFree := by
@@ -332,29 +367,22 @@ mutual
       have h := latom_inPlace hΓ hf
       simp only [LTy.InPlace] at h
       exact ⟨LTy.raise_inPlace (LExpr.plainFree_join h.2.2 rfl) h.2.1, Eff.plainFree_ofFn _ _ _⟩
-    | _, _, _, _, _, _, _, _, .op _ _ _ _ => ⟨rfl, fun _ h => by simp at h⟩
+    | _, _, _, _, _, _, _, _, .op _ _ _ _ => ⟨rfl, fun _ h => by simp at h, LExpr.plainFree_bot⟩
     | _, _, _, _, _, _, hΓ, hpc, .read hu _ _ _ =>
       ⟨rfl, fun _ h => by
         simp at h; subst h
-        exact Program.fsFail_plainFree (LExpr.plainFree_join hpc (LTy.deep_plainFree _ (latom_inPlace hΓ hu)))⟩
+        exact Program.fsFail_plainFree (LExpr.plainFree_join hpc (LTy.deep_plainFree _ (latom_inPlace hΓ hu))),
+        Program.fsFail_plainFree (LTy.deep_plainFree _ (latom_inPlace hΓ hu))⟩
     | _, _, _, _, _, _, hΓ, hpc, .write hu _ _ _ _ _ _ =>
       ⟨rfl, fun _ h => by
         simp at h; subst h
-        exact Program.fsFail_plainFree (LExpr.plainFree_join hpc (LTy.deep_plainFree _ (latom_inPlace hΓ hu)))⟩
-    | _, _, _, _, _, _, hΓ, hpc, .req (ts := ts) has _ _ _ _ =>
-      ⟨rfl, fun _ h => by
-        simp at h; subst h
-        have hts := latoms_inPlace hΓ has
-        unfold Program.reqFail
-        split
-        · refine LExpr.plainFree_join hpc ?_
-          split
-          · exact LTy.deep_plainFree _ (hts _ (by simp_all))
-          · exact LExpr.plainFree_bot
-        · refine LExpr.plainFree_join (LExpr.plainFree_join hpc ?_) (LExpr.plainFree_ofLabel _)
-          refine LExpr.plainFree_joinAll fun e he => ?_
-          obtain ⟨u, hu, rfl⟩ := List.mem_map.mp he
-          exact LTy.deep_plainFree _ (hts u hu)⟩
+        exact Program.fsFail_plainFree (LExpr.plainFree_join hpc (LTy.deep_plainFree _ (latom_inPlace hΓ hu))),
+        Program.fsFail_plainFree (LTy.deep_plainFree _ (latom_inPlace hΓ hu))⟩
+    | _, _, _, _, _, _, hΓ, hpc, .req (ts := ts) has _ _ _ _ => by
+      have hts := latoms_inPlace hΓ has
+      have hd : ∀ u ∈ ts, (p.deep u).PlainFree := fun u hu => LTy.deep_plainFree _ (hts u hu)
+      exact ⟨rfl, fun _ h => by simp at h; subst h; exact Program.reqFail_plainFree hpc hd,
+        Program.reqFail_plainFree LExpr.plainFree_bot hd⟩
     | _, _, _, _, _, _, _, _, .construct _ _ _ => ⟨rfl, Eff.plainFree_none⟩
     | _, _, _, _, _, _, _, _, .variant _ _ _ _ => ⟨rfl, Eff.plainFree_none⟩
     | _, _, _, _, _, _, hΓ, _, .field hv hrec hi => by
@@ -386,15 +414,20 @@ mutual
       have hmem := List.mem_of_find?_eq_some hpo
       have hd := (hwf.inPlace.2.2 _ hmem).2
       have hcl := (hwf.policies _ hmem).2.1
-      refine ⟨hd, fun l hl => ?_⟩
-      simp only [Eff.ofPolicy] at hl
-      split at hl
-      · cases hl
-        exact LExpr.plainFree_join hpc (LTy.top_plainFree hd (fun a l' h => by
+      have htop := LTy.top_plainFree hd (fun a l' h => by
           rw [h] at hcl
           have hc := hcl [(a, .int)]
-          simp [LTy.erase, Ty.subst] at hc))
-      · cases hl
+          simp [LTy.erase, Ty.subst] at hc)
+      refine ⟨hd, fun l hl => ?_, ?_⟩
+      · simp only [Eff.ofPolicy] at hl
+        split at hl
+        · cases hl
+          exact LExpr.plainFree_join hpc htop
+        · cases hl
+      · simp only [Eff.ofPolicy]
+        split
+        · exact htop
+        · exact LExpr.plainFree_bot
     | _, _, _, _, _, _, hΓ, _, .map hxs hf _ _ => by
       have hx := latom_inPlace hΓ hxs
       have h := latom_inPlace hΓ hf
@@ -420,11 +453,13 @@ mutual
     | _, _, _, _, _, _, hΓ, hpc, .parse hs _ =>
       ⟨LTy.deep_plainFree _ (latom_inPlace hΓ hs), fun _ h => by
         simp at h; subst h
-        exact LExpr.plainFree_join hpc (LTy.deep_plainFree _ (latom_inPlace hΓ hs))⟩
+        exact LExpr.plainFree_join hpc (LTy.deep_plainFree _ (latom_inPlace hΓ hs)),
+        LTy.deep_plainFree _ (latom_inPlace hΓ hs)⟩
     | _, _, _, _, _, _, hΓ, hpc, .checked hs _ _ _ =>
       ⟨latom_inPlace hΓ hs, fun _ h => by
         simp at h; subst h
-        exact LExpr.plainFree_join hpc (LTy.deep_plainFree _ (latom_inPlace hΓ hs))⟩
+        exact LExpr.plainFree_join hpc (LTy.deep_plainFree _ (latom_inPlace hΓ hs)),
+        LTy.deep_plainFree _ (latom_inPlace hΓ hs)⟩
     | _, _, _, _, _, _, hΓ, _, .eq ha hb _ _ _ =>
       ⟨LExpr.plainFree_join (LTy.deep_plainFree _ (latom_inPlace hΓ ha))
         (LTy.deep_plainFree _ (latom_inPlace hΓ hb)), Eff.plainFree_none⟩
@@ -460,7 +495,7 @@ mutual
     | _, _, _, _, _, _, hΓ, hpc, .ite hc ht he _ _ hs => by
       have hl : _ := latom_inPlace hΓ hc
       simp only [LTy.InPlace] at hl
-      exact ⟨LTy.raise_inPlace hl hs, Eff.plainFree_union
+      exact ⟨LTy.raise_inPlace hl hs, Eff.plainFree_union_decide hl
         (LExprTy.inPlace hwf hΓ (LExpr.plainFree_join hpc hl) ht).2
         (LExprTy.inPlace hwf hΓ (LExpr.plainFree_join hpc hl) he).2⟩
     | _, Γ, _, _, _, _, hΓ, hpc, .caseOption (x := x) (te := te) (ls := ls) hsc hn hsome _ _ hs => by
@@ -470,7 +505,7 @@ mutual
         rcases List.mem_cons.mp hq with rfl | hq
         · exact LTy.raise_inPlace hl.2 hl.1
         · exact hΓ q hq
-      exact ⟨LTy.raise_inPlace hl.2 hs, Eff.plainFree_union
+      exact ⟨LTy.raise_inPlace hl.2 hs, Eff.plainFree_union_decide hl.2
         (LExprTy.inPlace hwf hΓ (LExpr.plainFree_join hpc hl.2) hn).2
         (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl.2) hsome).2⟩
     | _, Γ, _, _, _, _, hΓ, hpc, .caseResult (x := x) (y := y) (te := te) (ee := ee) (ls := ls) hsc hok herr _ _ hs => by
@@ -484,60 +519,63 @@ mutual
         rcases List.mem_cons.mp hq with rfl | hq
         · exact LTy.raise_inPlace hl.2.2 hl.2.1
         · exact hΓ q hq
-      exact ⟨LTy.raise_inPlace hl.2.2 hs, Eff.plainFree_union
+      exact ⟨LTy.raise_inPlace hl.2.2 hs, Eff.plainFree_union_decide hl.2.2
         (LExprTy.inPlace hwf hΓ₁ (LExpr.plainFree_join hpc hl.2.2) hok).2
         (LExprTy.inPlace hwf hΓ₂ (LExpr.plainFree_join hpc hl.2.2) herr).2⟩
-    | _, _, _, _, _, _, _, _, .fail _ _ hs => ⟨hs, fun _ h => by simp at h; subst h; rfl⟩
-    | _, _, _, _, _, _, _, _, .raise _ _ _ _ _ _ hs => ⟨hs, fun _ h => by simp at h; subst h; rfl⟩
+    | _, _, _, _, _, _, _, _, .fail _ _ hs => ⟨hs, fun _ h => by simp at h; subst h; rfl, LExpr.plainFree_bot⟩
+    | _, _, _, _, _, _, _, _, .raise _ _ _ _ _ _ hs => ⟨hs, fun _ h => by simp at h; subst h; rfl, LExpr.plainFree_bot⟩
     | _, _, _, _, _, _, _, _, .unreachable hs => ⟨hs, Eff.plainFree_none⟩
     | _, Γ, _, _, _, _, hΓ, hpc, .caseSum (binders := xs) (fs := fs) (ls := ls) hsc hsm hf _ hth hel _ _ hs => by
       have hl := latom_inPlace hΓ hsc
       simp only [LTy.InPlace] at hl
       have hΓ' := caseSum_ctx_inPlace hwf hΓ hl hsm hf (xs := xs)
-      exact ⟨LTy.raise_inPlace hl hs, Eff.plainFree_union
+      exact ⟨LTy.raise_inPlace hl hs, Eff.plainFree_union_decide hl
         (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl) hth).2
         (LExprTy.inPlace hwf hΓ (LExpr.plainFree_join hpc hl) hel).2⟩
     | _, Γ, _, _, _, _, hΓ, hpc, .caseSumT (binders := xs) (fs := fs) (ls := ls) hsc hsm hf _ hth hel _ _ hts _ => by
       have hl := latom_inPlace hΓ hsc
       simp only [LTy.InPlace] at hl
       have hΓ' := caseSum_ctx_inPlace hwf hΓ hl hsm hf (xs := xs)
-      exact ⟨⟨hts, rfl⟩, Eff.plainFree_union
+      exact ⟨⟨hts, rfl⟩, Eff.plainFree_union_decide hl
         (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl) hth).2
         (LExprTy.inPlace hwf hΓ (LExpr.plainFree_join hpc hl) hel).2⟩
     | _, _, _, _, _, _, hΓ, hpc, .attempt hb _ => by
       have h := LExprTy.inPlace hwf hΓ hpc hb
-      exact ⟨⟨h.1, rfl, Eff.failLabel_plainFree h.2⟩, fun _ h => by simp at h⟩
+      exact ⟨⟨h.1, rfl, h.2.2⟩, Eff.plainFree_attemptOf _⟩
     | _, _, _, _, _, _, hΓ, hpc, .attemptK hb _ _ => by
       have h := LExprTy.inPlace hwf hΓ hpc hb
-      exact ⟨⟨h.1, rfl, Eff.failLabel_plainFree h.2⟩, fun _ h => by simp at h⟩
+      exact ⟨⟨h.1, rfl, h.2.2⟩, Eff.plainFree_attemptOf _⟩
     | _, Γ, _, _, _, _, hΓ, hpc, .handleK (kind := kd) (x := x) (ε₁ := ε₁) hb _ _ hh _ _ hs => by
       have h₁ := LExprTy.inPlace hwf hΓ hpc hb
       have hl := Eff.failLabel_plainFree h₁.2
-      have hΓ' : LCtx.InPlace ((x, .record kd ε₁.failLabel) :: Γ) := fun q hq => by
+      have hΓ' : LCtx.InPlace ((x, .record kd ε₁.dl) :: Γ) := fun q hq => by
         rcases List.mem_cons.mp hq with rfl | hq
-        · exact hl
+        · exact h₁.2.2
         · exact hΓ q hq
-      exact ⟨LTy.raise_inPlace hl hs, (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl) hh).2⟩
+      exact ⟨LTy.raise_inPlace h₁.2.2 hs,
+        Eff.plainFree_handleOf h₁.2 (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl) hh).2⟩
     | _, Γ, _, _, _, _, hΓ, hpc, .handleKT (kind := kd) (x := x) (ε₁ := ε₁) hb _ _ hh _ _ hts _ => by
       have h₁ := LExprTy.inPlace hwf hΓ hpc hb
       have hl := Eff.failLabel_plainFree h₁.2
-      have hΓ' : LCtx.InPlace ((x, .record kd ε₁.failLabel) :: Γ) := fun q hq => by
+      have hΓ' : LCtx.InPlace ((x, .record kd ε₁.dl) :: Γ) := fun q hq => by
         rcases List.mem_cons.mp hq with rfl | hq
-        · exact hl
+        · exact h₁.2.2
         · exact hΓ q hq
-      exact ⟨⟨hts, rfl⟩, (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl) hh).2⟩
+      exact ⟨⟨hts, rfl⟩,
+        Eff.plainFree_handleOf h₁.2 (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl) hh).2⟩
     | _, Γ, _, _, _, _, hΓ, hpc, .handle (x := x) (ε₁ := ε₁) hb _ hh _ _ hs => by
       have h₁ := LExprTy.inPlace hwf hΓ hpc hb
       have hl := Eff.failLabel_plainFree h₁.2
-      have hΓ' : LCtx.InPlace ((x, .int ε₁.failLabel) :: Γ) := fun q hq => by
+      have hΓ' : LCtx.InPlace ((x, .int ε₁.dl) :: Γ) := fun q hq => by
         rcases List.mem_cons.mp hq with rfl | hq
-        · exact hl
+        · exact h₁.2.2
         · exact hΓ q hq
-      exact ⟨LTy.raise_inPlace hl hs, (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl) hh).2⟩
+      exact ⟨LTy.raise_inPlace h₁.2.2 hs,
+        Eff.plainFree_handleOf h₁.2 (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl) hh).2⟩
     | _, _, _, _, _, _, hΓ, hpc, .iteT hc ht he _ _ hts _ => by
       have hl : _ := latom_inPlace hΓ hc
       simp only [LTy.InPlace] at hl
-      exact ⟨⟨hts, rfl⟩, Eff.plainFree_union
+      exact ⟨⟨hts, rfl⟩, Eff.plainFree_union_decide hl
         (LExprTy.inPlace hwf hΓ (LExpr.plainFree_join hpc hl) ht).2
         (LExprTy.inPlace hwf hΓ (LExpr.plainFree_join hpc hl) he).2⟩
     | _, Γ, _, _, _, _, hΓ, hpc, .caseOptionT (x := x) (te := te) (ls := ls) hsc hn hsome _ _ hts _ => by
@@ -547,7 +585,7 @@ mutual
         rcases List.mem_cons.mp hq with rfl | hq
         · exact LTy.raise_inPlace hl.2 hl.1
         · exact hΓ q hq
-      exact ⟨⟨hts, rfl⟩, Eff.plainFree_union
+      exact ⟨⟨hts, rfl⟩, Eff.plainFree_union_decide hl.2
         (LExprTy.inPlace hwf hΓ (LExpr.plainFree_join hpc hl.2) hn).2
         (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl.2) hsome).2⟩
     | _, Γ, _, _, _, _, hΓ, hpc, .caseResultT (x := x) (y := y) (te := te) (ee := ee) (ls := ls) hsc hok herr _ _ hts _ => by
@@ -561,17 +599,18 @@ mutual
         rcases List.mem_cons.mp hq with rfl | hq
         · exact LTy.raise_inPlace hl.2.2 hl.2.1
         · exact hΓ q hq
-      exact ⟨⟨hts, rfl⟩, Eff.plainFree_union
+      exact ⟨⟨hts, rfl⟩, Eff.plainFree_union_decide hl.2.2
         (LExprTy.inPlace hwf hΓ₁ (LExpr.plainFree_join hpc hl.2.2) hok).2
         (LExprTy.inPlace hwf hΓ₂ (LExpr.plainFree_join hpc hl.2.2) herr).2⟩
     | _, Γ, _, _, _, _, hΓ, hpc, .handleT (x := x) (ε₁ := ε₁) hb _ hh _ _ hts _ => by
       have h₁ := LExprTy.inPlace hwf hΓ hpc hb
       have hl := Eff.failLabel_plainFree h₁.2
-      have hΓ' : LCtx.InPlace ((x, .int ε₁.failLabel) :: Γ) := fun q hq => by
+      have hΓ' : LCtx.InPlace ((x, .int ε₁.dl) :: Γ) := fun q hq => by
         rcases List.mem_cons.mp hq with rfl | hq
-        · exact hl
+        · exact h₁.2.2
         · exact hΓ q hq
-      exact ⟨⟨hts, rfl⟩, (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl) hh).2⟩
+      exact ⟨⟨hts, rfl⟩,
+        Eff.plainFree_handleOf h₁.2 (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl) hh).2⟩
     | _, Γ, _, _, _, _, hΓ, hpc, .letTuple (binders := bs) _ _ hbs hb => by
       have hΓ' : LCtx.InPlace (bs ++ Γ) := fun q hq => by
         rcases List.mem_append.mp hq with hq | hq
@@ -588,7 +627,7 @@ mutual
           · exact hst q hq
           · exact hΓ q hq
       refine ⟨⟨inPlaceAll_of_mem (fun t ht => ?_), rfl⟩,
-        (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl.2) hb).2⟩
+        Eff.plainFree_decide (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl.2) hb).2 hl.2⟩
       obtain ⟨q, hq, rfl⟩ := List.mem_map.mp ht
       exact hst q hq
     | _, Γ, _, _, _, _, hΓ, hpc, .loopRange (x := x) (xty := xty) (state := st) hlo hhi _ hx _ _ hst hb _ _ _ => by
@@ -603,7 +642,7 @@ mutual
           · exact hst q hq
           · exact hΓ q hq
       refine ⟨⟨inPlaceAll_of_mem (fun t ht => ?_), rfl⟩,
-        (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl) hb).2⟩
+        Eff.plainFree_decide (LExprTy.inPlace hwf hΓ' (LExpr.plainFree_join hpc hl) hb).2 hl⟩
       obtain ⟨q, hq, rfl⟩ := List.mem_map.mp ht
       exact hst q hq
 end

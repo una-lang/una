@@ -332,7 +332,7 @@ mutual
         "the operation's argument or program counter is above what it accepts"
       need (symFree pc) "an operation under a symbolic program counter"
       flowTo p (.unit .bot) ann "the operation's result"
-      pure ⟨true, HostFx.none, Option.none, [], false, []⟩
+      pure ⟨true, HostFx.none, Option.none, [], false, [], LExpr.bot⟩
     | .read path => do
       let t ← atomTy Γ path
       need (isText t) "`Files.read`'s path is not a text"
@@ -340,7 +340,7 @@ mutual
         "`Files.read`'s path or program counter is above what it accepts"
       need (symFree pc) "a host operation under a symbolic program counter"
       flowTo p (.text (.ofLabel p.readResult)) ann "`Files.read`'s result"
-      pure ⟨false, { rd := true }, some (p.fsFail (pc.join (p.deep t))), [], true, []⟩
+      pure ⟨false, { rd := true }, some (p.fsFail (pc.join (p.deep t))), [], true, [], p.fsFail (p.deep t)⟩
     | .write path content => do
       let t ← atomTy Γ path
       need (isText t) "`Files.write`'s path is not a text"
@@ -352,7 +352,7 @@ mutual
         "a write whose path or program counter is above the file-state label (ADR 0085)"
       need (symFree pc) "a host operation under a symbolic program counter"
       flowTo p (.unit .bot) ann "`Files.write`'s result"
-      pure ⟨false, { wr := true }, some (p.fsFail (pc.join (p.deep t))), [], true, []⟩
+      pure ⟨false, { wr := true }, some (p.fsFail (pc.join (p.deep t))), [], true, [], p.fsFail (p.deep t)⟩
     | .req m args => do
       let ts ← atomsTy Γ args
       need (match httpParams m with
@@ -364,7 +364,7 @@ mutual
         "a request's arguments or program counter are above what it accepts"
       need (symFree pc) "a host operation under a symbolic program counter"
       flowTo p (.record "prelude.Response" (.ofLabel p.reqResult)) ann "the response"
-      pure ⟨false, { rq := true }, some (p.reqFail pc ts), [], true, []⟩
+      pure ⟨false, { rq := true }, some (p.reqFail pc ts), [], true, [], p.reqFail LExpr.bot ts⟩
     | .construct record fields => do
       let rec ← some! (p.record record) s!"F1 restriction (no record `{record}`, a lookup miss)"
       need (flowsB p.top (← atomsTy Γ fields) rec.fields)
@@ -496,7 +496,7 @@ mutual
       let t ← atomTy Γ s
       need (isText t) "`parse_int` of a value that is not a text"
       flowTo p (.int (p.deep t)) ann "the result of `parse_int`"
-      pure ⟨false, HostFx.none, some (pc.join (p.deep t)), [], true, []⟩
+      pure ⟨false, HostFx.none, some (pc.join (p.deep t)), [], true, [], p.deep t⟩
     | .checked a _ _ => do
       let t ← atomTy Γ a
       need (isScalar t) "`checked` of a value that is not a scalar"
@@ -504,7 +504,7 @@ mutual
         "`checked` of a labeled value, or under a raised program counter (U4002)"
       need (symFree pc) "`checked` under a symbolic program counter"
       flowTo p t ann "the value `checked` gives"
-      pure ⟨false, HostFx.none, some (pc.join (p.deep t)), [], true, []⟩
+      pure ⟨false, HostFx.none, some (pc.join (p.deep t)), [], true, [], p.deep t⟩
     | .eq a b => do
       let t₁ ← atomTy Γ a
       let t₂ ← atomTy Γ b
@@ -574,13 +574,13 @@ mutual
           let ε₂ ← checkExpr p E Γ (pc.join lc) (.tuple ts .bot) elseE
           need (flowsB p.top (ts.map (LTy.raise lc)) ts)
             "a component of the joined state is below the condition's label (U4001)"
-          pure (ε₁.union ε₂)
+          pure ((ε₁.union ε₂).decide lc)
         | _ =>
         need (inPlace s) "`ℓ_T` off a position of type `T`"
         let ε₁ ← checkExpr p E Γ (pc.join lc) s thenE
         let ε₂ ← checkExpr p E Γ (pc.join lc) s elseE
         flowTo p (s.raise lc) s "the value of an `if`, raised by its condition,"
-        pure (ε₁.union ε₂)
+        pure ((ε₁.union ε₂).decide lc)
       | _ => throw "a condition that is not a `Bool`"
     | .caseOption scrutinee noneE x someE => do
       match ← atomTy Γ scrutinee with
@@ -592,13 +592,13 @@ mutual
           let ε₂ ← checkExpr p E ((x, te.raise ls) :: Γ) (pc.join ls) (.tuple ts .bot) someE
           need (flowsB p.top (ts.map (LTy.raise ls)) ts)
             "a component of the joined state is below the scrutinee's label (U4001)"
-          pure (ε₁.union ε₂)
+          pure ((ε₁.union ε₂).decide ls)
         | _ =>
         need (inPlace s) "`ℓ_T` off a position of type `T`"
         let ε₁ ← checkExpr p E Γ (pc.join ls) s noneE
         let ε₂ ← checkExpr p E ((x, te.raise ls) :: Γ) (pc.join ls) s someE
         flowTo p (s.raise ls) s "the value of a `case`, raised by its scrutinee,"
-        pure (ε₁.union ε₂)
+        pure ((ε₁.union ε₂).decide ls)
       | _ => throw "a `case` on options of a value that is not an option"
     | .caseResult scrutinee x okE y errE => do
       match ← atomTy Γ scrutinee with
@@ -610,19 +610,19 @@ mutual
           let ε₂ ← checkExpr p E ((y, ee.raise ls) :: Γ) (pc.join ls) (.tuple ts .bot) errE
           need (flowsB p.top (ts.map (LTy.raise ls)) ts)
             "a component of the joined state is below the scrutinee's label (U4001)"
-          pure (ε₁.union ε₂)
+          pure ((ε₁.union ε₂).decide ls)
         | _ =>
         need (inPlace s) "`ℓ_T` off a position of type `T`"
         let ε₁ ← checkExpr p E ((x, te.raise ls) :: Γ) (pc.join ls) s okE
         let ε₂ ← checkExpr p E ((y, ee.raise ls) :: Γ) (pc.join ls) s errE
         flowTo p (s.raise ls) s "the value of a `case`, raised by its scrutinee,"
-        pure (ε₁.union ε₂)
+        pure ((ε₁.union ε₂).decide ls)
       | _ => throw "a `case` on results of a value that is not a result"
     | .fail _ => do
       le p pc .bot "a failure under a program counter above `public` (U4002)"
       need (symFree pc) "a failure under a symbolic program counter"
       need (inPlace s) "`ℓ_T` off a position of type `T`"
-      pure ⟨false, HostFx.none, some .bot, [], true, []⟩
+      pure ⟨false, HostFx.none, some .bot, [], true, [], LExpr.bot⟩
     | .raise kind code args => do
       let sm ← some! (p.sum kind) s!"F1 restriction (no sum `{kind}`, a lookup miss)"
       let fs ← some! sm.variants[code]? s!"`{kind}` has no variant {code}"
@@ -631,7 +631,7 @@ mutual
       le p pc .bot "a failure under a program counter above `public` (U4002)"
       need (symFree pc) "a failure under a symbolic program counter"
       need (inPlace s) "`ℓ_T` off a position of type `T`"
-      pure ⟨false, HostFx.none, some .bot, [], false, [kind]⟩
+      pure ⟨false, HostFx.none, some .bot, [], false, [kind], LExpr.bot⟩
     | .unreachable => do
       need (inPlace s) "`ℓ_T` off a position of type `T`"
       pure .none
@@ -649,22 +649,22 @@ mutual
           let ε₂ ← checkExpr p E Γ (pc.join ls) (.tuple ts .bot) elseE
           need (flowsB p.top (ts.map (LTy.raise ls)) ts)
             "a component of the joined state is below the scrutinee's label (U4001)"
-          pure (ε₁.union ε₂)
+          pure ((ε₁.union ε₂).decide ls)
         | _ =>
         need (inPlace s) "`ℓ_T` off a position of type `T`"
         let ε₁ ← checkExpr p E Γ' (pc.join ls) s thenE
         let ε₂ ← checkExpr p E Γ (pc.join ls) s elseE
         flowTo p (s.raise ls) s "the value of a `case`, raised by its scrutinee,"
-        pure (ε₁.union ε₂)
+        pure ((ε₁.union ε₂).decide ls)
       | _ => throw "a `case` on variants of a value that is not of a sum"
     | .attempt body => do
       match s with
       | .result t e l =>
         let ε ← checkExpr p E Γ pc t body
         need ε.raises.isEmpty "an `attempt` of a code over a failure with a payload"
-        le p ε.failLabel l "the result of `attempt` is below what decides the failure"
+        le p ε.dl l "the result of `attempt` is below what decides the failure"
         need (flowB p.top (.int .bot) e) "the error of `attempt` is not a failure's code"
-        pure ⟨ε.op, ε.host, Option.none, ε.rels, false, []⟩
+        pure (Eff.attemptOf ε)
       | _ => throw "`attempt` at a type that is not a result"
     | .attemptK kind body => do
       match s with
@@ -672,9 +672,9 @@ mutual
         let ε ← checkExpr p E Γ pc t body
         need (!ε.codes) s!"an `attempt` of `{kind}` over a failure with a code"
         need (ε.raises.all (· == kind)) s!"an `attempt` of `{kind}` over a failure of another kind"
-        le p ε.failLabel l "the result of `attempt` is below what decides the failure"
+        le p ε.dl l "the result of `attempt` is below what decides the failure"
         need (flowB p.top (.record kind .bot) e) s!"the error of `attempt` is not `{kind}`"
-        pure ⟨ε.op, ε.host, Option.none, ε.rels, false, []⟩
+        pure (Eff.attemptOf ε)
       | _ => throw "`attempt` at a type that is not a result"
     | .handle body x handler => do
       match s with
@@ -682,17 +682,17 @@ mutual
         need (inPlaceAll ts) "`ℓ_T` off a position of type `T`"
         let ε₁ ← checkExpr p E Γ pc (.tuple ts .bot) body
         need ε₁.raises.isEmpty "a handler of a code over a failure with a payload"
-        let ε₂ ← checkExpr p E ((x, .int ε₁.failLabel) :: Γ) (pc.join ε₁.failLabel) (.tuple ts .bot) handler
-        need (flowsB p.top (ts.map (LTy.raise ε₁.failLabel)) ts)
+        let ε₂ ← checkExpr p E ((x, .int ε₁.dl) :: Γ) (pc.join ε₁.failLabel) (.tuple ts .bot) handler
+        need (flowsB p.top (ts.map (LTy.raise ε₁.dl)) ts)
           "a component of the joined state is below what decides the failure (U4001)"
-        pure ⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises⟩
+        pure (Eff.handleOf ε₁ ε₂)
       | _ =>
       need (inPlace s) "`ℓ_T` off a position of type `T`"
       let ε₁ ← checkExpr p E Γ pc s body
       need ε₁.raises.isEmpty "a handler of a code over a failure with a payload"
-      let ε₂ ← checkExpr p E ((x, .int ε₁.failLabel) :: Γ) (pc.join ε₁.failLabel) s handler
-      flowTo p (s.raise ε₁.failLabel) s "the value of a handled expression, raised by its failure,"
-      pure ⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises⟩
+      let ε₂ ← checkExpr p E ((x, .int ε₁.dl) :: Γ) (pc.join ε₁.failLabel) s handler
+      flowTo p (s.raise ε₁.dl) s "the value of a handled expression, raised by its failure,"
+      pure (Eff.handleOf ε₁ ε₂)
     | .handleK kind body x handler => do
       match s with
       | .tuple ts _ =>
@@ -700,19 +700,19 @@ mutual
         let ε₁ ← checkExpr p E Γ pc (.tuple ts .bot) body
         need (!ε₁.codes) s!"a handler of `{kind}` over a failure with a code"
         need (ε₁.raises.all (· == kind)) s!"a handler of `{kind}` over a failure of another kind"
-        let ε₂ ← checkExpr p E ((x, .record kind ε₁.failLabel) :: Γ) (pc.join ε₁.failLabel)
+        let ε₂ ← checkExpr p E ((x, .record kind ε₁.dl) :: Γ) (pc.join ε₁.failLabel)
           (.tuple ts .bot) handler
-        need (flowsB p.top (ts.map (LTy.raise ε₁.failLabel)) ts)
+        need (flowsB p.top (ts.map (LTy.raise ε₁.dl)) ts)
           "a component of the joined state is below what decides the failure (U4001)"
-        pure ⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises⟩
+        pure (Eff.handleOf ε₁ ε₂)
       | _ =>
       need (inPlace s) "`ℓ_T` off a position of type `T`"
       let ε₁ ← checkExpr p E Γ pc s body
       need (!ε₁.codes) s!"a handler of `{kind}` over a failure with a code"
       need (ε₁.raises.all (· == kind)) s!"a handler of `{kind}` over a failure of another kind"
-      let ε₂ ← checkExpr p E ((x, .record kind ε₁.failLabel) :: Γ) (pc.join ε₁.failLabel) s handler
-      flowTo p (s.raise ε₁.failLabel) s "the value of a handled expression, raised by its failure,"
-      pure ⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises⟩
+      let ε₂ ← checkExpr p E ((x, .record kind ε₁.dl) :: Γ) (pc.join ε₁.failLabel) s handler
+      flowTo p (s.raise ε₁.dl) s "the value of a handled expression, raised by its failure,"
+      pure (Eff.handleOf ε₁ ε₂)
     | .letTuple binders value body => do
       match ← atomTy Γ value with
       | .tuple ts l =>
@@ -737,7 +737,7 @@ mutual
         need (flowsB p.top ((state.map Prod.snd).map (LTy.raise ls)) (state.map Prod.snd))
           "a component of a loop's state is below what decides its iterations (U4001)"
         flowTo p (.tuple (state.map Prod.snd) .bot) s "the value of a loop"
-        pure ε
+        pure (ε.decide ls)
       | _ => throw "a loop over a value that is not a list"
     | .loop (.range low high _) x xty state init body => do
       match ← atomTy Γ low, ← atomTy Γ high with
@@ -754,7 +754,7 @@ mutual
         need (flowsB p.top ((state.map Prod.snd).map (LTy.raise (l₁.join l₂))) (state.map Prod.snd))
           "a component of a loop's state is below what decides its iterations (U4001)"
         flowTo p (.tuple (state.map Prod.snd) .bot) s "the value of a loop"
-        pure ε
+        pure (ε.decide (l₁.join l₂))
       | _, _ => throw "a range whose bounds are not integers"
 end
 
