@@ -255,6 +255,18 @@ class Generators(unittest.TestCase):
         self.assertEqual([r["outcome"] for r in rows],
                          ["accepted", "not re-checked", "outside the flow model"])
 
+    def test_differ_needs_a_line_for_each_predicate(self):
+        # Una-2's review of #539: a predicate's line is expected too, so dropping it is `unknown`.
+        doc = json.loads(self.DOC)
+        doc["modules"].append({"path": "prelude", "decls": [{"kind": "pred", "name": "is_even"}]})
+        doc = json.dumps(doc)
+        line = "c.json\tprelude.is_even\toutside the flow model\trefinement predicate\n"
+        self.assertEqual(self.judge(doc=doc, rec=Run(0, self.LINES + line, "", False, 0.1))["kind"],
+                         "clean")
+        j = self.judge(doc=doc, rec=Run(0, self.LINES, "", False, 0.1))
+        self.assertEqual(j["kind"], "unknown")
+        self.assertIn("prelude.is_even", j["detail"])
+
     def test_differ_rejected_is_a_finding(self):
         lines = self.LINES.replace("not re-checked\twhy", "rejected\ta flow")
         self.assertEqual(self.judge(rec=Run(1, lines, "", False, 0.1))["kind"], "finding")

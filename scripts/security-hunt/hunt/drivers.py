@@ -175,8 +175,12 @@ def judge_differ(exp, core_text, rec):
     if rec.code != 0:
         out["detail"] = "the re-check exited 1 without a rejected declaration"
         return out
+    # Every function and every refinement predicate has its line (#532): a predicate is reported
+    # outside the flow model, never dropped.
     funs = {f"{m.get('path')}.{d['value']['name']}" for m in doc.get("modules", [])
             for d in m.get("decls", []) if d.get("kind") == "fun"}
+    funs |= {f"{m.get('path')}.{d.get('name', '?')}" for m in doc.get("modules", [])
+             for d in m.get("decls", []) if d.get("kind") == "pred"}
     missing = sorted(funs - {r["decl"] for r in rows})
     if missing:
         out["detail"] = f"the re-check has no line for {', '.join(missing[:3])}"
