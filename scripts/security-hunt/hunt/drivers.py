@@ -179,12 +179,24 @@ def judge_differ(exp, core_text, rec):
     # outside the flow model, never dropped.
     funs = {f"{m.get('path')}.{d['value']['name']}" for m in doc.get("modules", [])
             for d in m.get("decls", []) if d.get("kind") == "fun"}
-    funs |= {f"{m.get('path')}.{d.get('name', '?')}" for m in doc.get("modules", [])
+    preds = {f"{m.get('path')}.{d.get('name', '?')}" for m in doc.get("modules", [])
              for d in m.get("decls", []) if d.get("kind") == "pred"}
+    funs |= preds
     missing = sorted(funs - {r["decl"] for r in rows})
     if missing:
         out["detail"] = f"the re-check has no line for {', '.join(missing[:3])}"
         return out
+    # A predicate's line says exactly "outside the flow model" (Una-2's review of #540), unless
+    # the whole document fell back to one outcome: every line "not re-checked" for one reason
+    # (`checkDocument`'s fallbacks, `docs/plan/formal-track-status.md`).
+    fallback = (bool(rows) and all(r["outcome"] == "not re-checked" for r in rows)
+                and len({r["note"] for r in rows}) == 1)
+    if not fallback:
+        odd_preds = sorted(r["decl"] for r in rows
+                           if r["decl"] in preds and r["outcome"] != "outside the flow model")
+        if odd_preds:
+            out["detail"] = f"the predicate {odd_preds[0]} is not outside the flow model"
+            return out
     known = {"accepted", "accepted, conditional on A3", "not re-checked", "outside the flow model"}
     odd = sorted(set(outcomes) - known)
     if odd:
