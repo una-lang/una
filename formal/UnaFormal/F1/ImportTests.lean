@@ -640,4 +640,19 @@ def primNeRecord : String := r#"{"schema":"una.core/1","edition":"0.2","complete
 
 #guard run primNeRecord "main.f" == "rejected"
 
+/-! ### A refusal is classified by its constructor (#535) -/
+
+-- A rejection whose message reads like a restriction stays a rejection, and a restriction is not
+-- re-checked whatever its message says.
+#guard verdict (classify (.reject "F1 restriction (a message that reads like one)")) == "rejected"
+#guard verdict (classify (.reject "B1 restriction")) == "rejected"
+#guard verdict (classify (.restriction "F1 restriction (`==` on a sum)")) == "not re-checked"
+-- The instance path's prefix keeps the constructor, both ways.
+#guard Check.Err.prefix "at its instance `f[Int]`: " (.restriction "F1 restriction (x)") ==
+  .restriction "at its instance `f[Int]`: F1 restriction (x)"
+#guard Check.Err.prefix "at its instance `f[Int]`: " (.reject "a flow") ==
+  .reject "at its instance `f[Int]`: a flow"
+-- An unmarked message is a rejection.
+#guard (("a flow" : String) : Check.Err) == .reject "a flow"
+
 end Una.F1.ImportTests

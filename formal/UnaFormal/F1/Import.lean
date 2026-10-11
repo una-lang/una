@@ -483,7 +483,7 @@ mutual
         | .str k =>
           match fixedRange k with
           | some (lo, hi) => pure (.prim (.fit lo hi) [a])
-          | none => throw s!"F1 restriction (a conversion to `{k}`)"
+          | none => throw s!"F1 restriction (a conversion to `{k}`)" -- restriction-check: importer refusal
         | _ => throw "a conversion's target"
       -- `-a` is `0 - a`: the literal is public, so the label is `a`'s, as Una's (#526).
       | "neg", [a] => pure (.prim .sub [.int 0, a])
@@ -688,9 +688,9 @@ mutual
             let annot := fixedOf (← field j "ty")
             let args ← atoms (← field rv "args")
             if !args.all (fun a => operandKind c annot a == some annot) then
-              throw s!"F1 restriction (`{pk}` on operands of mixed or unknown integer types)"
+              throw s!"F1 restriction (`{pk}` on operands of mixed or unknown integer types)" -- restriction-check: importer refusal
             if let some k := annot then
-              let some (lo, hi) := fixedRange k | throw s!"F1 restriction (the kind `{k}`)"
+              let some (lo, hi) := fixedRange k | throw s!"F1 restriction (the kind `{k}`)" -- restriction-check: importer refusal
               let tmp := s!"%fit-{x}"
               return .letR tmp t (← rhs c rv) (.letR x t (.prim (.fit lo hi) [.var tmp]) body)
         let r ← rhs c rv
@@ -1190,7 +1190,7 @@ def prepare (c : Ctx) (hl : HostLabels) (caps : List (String × J)) (decls : Lis
       let types : M (LTy × LTy) := do pure (← ty c (← field e.value "from"), ← ty c (← field e.value "to"))
       match plainRun types with
       | .ok (src, dst) => pure ({ name := pol, src, dst, via } : Policy)
-      | .error why => throw s!"B1 restriction (a policy outside F1): `{pol}`: {why}"
+      | .error why => throw s!"B1 restriction (a policy outside F1): `{pol}`: {why}" -- restriction-check: importer refusal
     let callees ← (← get).funs.mapM fun f => do
       let some e := findDecl f | throw s!"the function `{f}`"
       -- A `via` function's body is read: option B1 asks it to be pure (`Check.checkB1`).
@@ -1395,13 +1395,13 @@ def preludeF1 : List String :=
     "prelude.sum", "prelude.append", "prelude.set", "prelude.first", "prelude.or_else",
     "prelude.is_ok", "prelude.abs", "prelude.min", "prelude.max", "prelude.slice", "prelude.at"]
 
-/-- A rejection by a restriction of option B1 is not a flow the model forbids: the program is
-outside B1, so it is not re-checked (ADR 0008). So is one by a form Una has and F1 does not
-model, marked `F1 restriction` (#512): `==` on a sum, a function value that fails with a payload. -/
-def classify (why : String) : Outcome :=
-  if (why.splitOn "B1 restriction").length > 1 || (why.splitOn "F1 restriction").length > 1 then
-    .notRechecked why
-  else .rejected why
+/-- A refusal by a restriction of option B1 is not a flow the model forbids: the program is
+outside B1, so it is not re-checked (ADR 0008). So is one by a form Una has and F1 does not model
+(#512): `==` on a sum, a function value that fails with a payload. The checker says which by the
+constructor of its refusal (`Check.Err`, #535), never by its wording. -/
+def classify : Check.Err → Outcome
+  | .restriction why => .notRechecked why -- restriction-check: not a site
+  | .reject why => .rejected why
 
 /-- The key of an instance: its type arguments, written. -/
 def instKey (ts : List LTy) : String := ", ".intercalate (ts.map Check.fmtTy)
@@ -2147,7 +2147,8 @@ def checkDocumentRead (subst : Subst) (doc : J) (caps : Caps := {}) (scopes : Bo
         let inst := Check.instantiate (subst rd) pr.fn ts s!"{f}[{", ".intercalate key}]"
         let outcome := match checkWith cats hl recs sms opsAcc pr inst handlerOf opHandlers with
           | .ok () => Outcome.accepted ""
-          | .error why => classify s!"at its instance `{inst.name}`, instantiated in `{origin}`: {why}"
+          | .error why =>
+            classify (why.prefix s!"at its instance `{inst.name}`, instantiated in `{origin}`: ")
         results := results ++ [(f, outcome)]
         instFuns := instFuns ++ [(f, inst)]
         for (g, us) in Check.Expr.genericCalls inst.body do
@@ -2261,7 +2262,7 @@ def checkDocumentRead (subst : Subst) (doc : J) (caps : Caps := {}) (scopes : Bo
   let cond := (accepted final).filter isNested
   let docWhy := fun (P : Program) =>
     if !Check.hostWfB P then "the host's labels"
-    else if !Check.b1Ok P then "B1 restriction"
+    else if !Check.b1Ok P then "B1 restriction" -- restriction-check: demoted
     else if !Check.catsDeclared P then "a declared label names a category the document does not"
     else if let some q := P.ops.find? (!Check.opOk P ·) then
       s!"the handler `{q.1}`: outside the effect floor or the restrictions of #524"
@@ -2290,7 +2291,7 @@ def checkDocumentRead (subst : Subst) (doc : J) (caps : Caps := {}) (scopes : Bo
         if Check.progFunOk cond P pr.fn then none
         else
           let why := match Check.checkFun P pr.fn with
-            | .error e => e
+            | .error e => e.msg
             | .ok () => "its signature"
           some (f, s!"whole program: {why}")
       | none => some (f, "whole program: not read")
