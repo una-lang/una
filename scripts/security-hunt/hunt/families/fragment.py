@@ -8,7 +8,7 @@ and a declaration `una check` accepts that the re-check rejects is a candidate f
 coordinator, never interpreted before that.
 """
 
-from ..program import MUST_ACCEPT, MUST_REJECT, OPEN, Program, rng_for
+from ..program import MUST_ACCEPT, MUST_REJECT, OPEN, RESIDUAL, Program, rng_for
 from ..una import header, join_decls, package
 
 MOD = "app.main"
@@ -134,4 +134,97 @@ def f7(seed, edition):
                    note="the judge is the comparison of una check and the re-check")
 
 
-OPERATORS = {"F1": f1, "F7": f7}
+# F8: carriers through fixed-width integers, which F1 reads since #548
+# (`docs/plan/formal-track-fixed.md`); the coordinator's conditions are N-138's. Tables of their
+# own, so that F1's and F7's programs, and the ones old seeds rebuild to, stay unchanged.
+# Each carrier: the parameter's type, its `requires` (empty for none), the statements binding
+# `t`, and `t`'s type. A `requires` bounds the secret so that no step can abort.
+FIXED_CARRIERS = {
+    "add": ("U8", "s < 100", "  let t: U8 = s + 1\n", "U8"),
+    "sub": ("U8", "s < 100", "  let t: U8 = 200 - s\n", "U8"),
+    "mul": ("U8", "s < 100", "  let t: U8 = s * 2\n", "U8"),
+    "div": ("U8", "", "  let t: U8 = s / 3\n", "U8"),
+    "mod": ("U8", "", "  let t: U8 = s mod 7\n", "U8"),
+    "neg": ("I32", "s > -100 and s < 100", "  let t: I32 = -s\n", "I32"),
+    "nested": ("U8", "s < 100", "  let t: U8 = (s + 1) * 2\n", "U8"),
+    "narrow": ("Int", "0 <= s and s <= 255", "  let t = s.to_u8()\n", "U8"),
+    "widen": ("U8", "", "  let t = s.to_i32()\n", "I32"),
+    # `Int` arithmetic on a converted value, in a function with fixed-width values: read.
+    "to-int": ("U8", "", "  let t = s.to_int() + 1\n", "Int"),
+    # Structural: `t` does not depend on `s`, so a public ending is must-accept.
+    "public": ("U8", "", "  let k: U8 = 40\n  let t: U8 = k + 2\n", "U8"),
+}
+# Arithmetic on a pattern's binder, whose type Core does not write: the re-check must say
+# "not re-checked" (the fail-closed path of #548, condition 1), never "accepted".
+FIXED_UNKNOWN = {
+    "binder-option": ("U8", "", ("  let o = Some(s)\n"
+                                  "  let t: U8 = when o\n    is Some(x) -> x / 2\n    is None -> 0\n"),
+                      "U8"),
+    "binder-result": ("U8", "", ("  let r: Result[secret U8, U8] = Ok(s)\n"
+                                  "  let t: U8 = when r\n    is Ok(x) -> x / 2\n    is Err(e) -> e\n"),
+                      "U8"),
+}
+# The wrapping, saturating and bit methods (Core's `fixed` primitive): outside F1.
+FIXED_OUTSIDE = {
+    "wrapping": ("U8", "", "  let t = s.wrapping_add(by: 1)\n", "U8"),
+    "saturating": ("U8", "", "  let t = s.saturating_mul(by: 3)\n", "U8"),
+    "bit": ("U8", "", "  let t = s.bit_and(mask: 15)\n", "U8"),
+    "shift": ("U8", "", "  let t = s.shift_right(by: 1)\n", "U8"),
+}
+# The residual (N-132, N-138 condition 1): the secret decides whether a step aborts, a termination
+# channel T6 does not claim. No `requires`: the obligation is where Una guards it.
+FIXED_RESIDUAL = {
+    "overflow": ("U8", "", "  let t: U8 = s + 200\n", "U8"),
+    "narrow-abort": ("Int", "", "  let t = s.to_u8()\n", "U8"),
+    "zero-div": ("U8", "", "  let t: U8 = 100 / s\n", "U8"),
+    "neg-abort": ("U8", "", "  let t: U8 = -s\n", "U8"),
+}
+FIXED_TABLES = (("read", FIXED_CARRIERS), ("not-rechecked", FIXED_UNKNOWN),
+                ("outside", FIXED_OUTSIDE), ("residual", FIXED_RESIDUAL))
+
+CONSOLE = "  uses @console: Console[print]\n"
+
+
+def fixed_ending(name, ty):
+    """F8's endings, at `t`'s type `ty`: the result type, the `uses` line and the tail."""
+    return {
+        "secret-result": (f"secret {ty}", "", "  t"),
+        "secret-branch": ("secret Int", "", "  if t > 3 then 1 else 0"),
+        "public-result": (ty, "", "  t"),
+        "print": ("Unit", CONSOLE, '  @console.print("{t}")'),
+        "print-under": ("Unit", CONSOLE, '  if t > 3\n    @console.print("big")\n  else\n    unit'),
+        # The residual's own: a public print that runs only if the step before it did not abort.
+        "print-after": ("Unit", CONSOLE, '  @console.print("done")'),
+    }[name]
+
+
+FIXED_ENDINGS = ("secret-result", "secret-branch", "public-result", "print", "print-under")
+RESIDUAL_ENDINGS = ("secret-result", "print-after")
+
+
+def f8(seed, edition):
+    rng = rng_for(seed)
+    carriers = [(c, kind, table[c]) for kind, table in FIXED_TABLES for c in sorted(table)]
+    carrier, recheck, (param, requires, body, ty) = rng.choice(carriers)
+    ending = rng.choice(RESIDUAL_ENDINGS if recheck == "residual" else FIXED_ENDINGS)
+    result, uses, tail = fixed_ending(ending, ty)
+    clause = f"  requires {requires}\n" if requires else ""
+    fn = f"pub run(s: secret {param}) -> {result}\n" + clause + uses + "=\n" + body + tail
+    files = package("hunt", edition, {MOD: join_decls(header(MOD), fn)})
+    note = "the judge is the comparison of una check and the re-check"
+    if edition == "0.1":
+        # Edition 0.1 has no fixed-width types (`spec/18`): `U8` is an ordinary, undeclared name.
+        cls, expect, recheck = MUST_REJECT, ["U1001"], ""
+        note = "edition 0.1 has no fixed-width types"
+    elif recheck == "residual":
+        cls, expect = RESIDUAL, []
+        note = "a secret decides whether a step aborts: descriptive, never clean (N-138)"
+    elif ending in PUBLIC_ENDINGS and carrier != "public":
+        cls, expect = MUST_REJECT, list(LEAK_CODES)
+    else:
+        cls, expect = MUST_ACCEPT, []
+    return Program(op="F8", rule=RULE, edition=edition, seed=seed, cls=cls, files=files,
+                   expect=expect, variant=f"{carrier}-{ending}", note=note, recheck=recheck)
+
+
+OPERATORS = {"F1": f1, "F7": f7, "F8": f8}

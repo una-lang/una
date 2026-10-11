@@ -10,7 +10,7 @@ from collections import Counter
 
 from . import sandbox
 from .families import OPERATORS
-from .program import MUST_ACCEPT, MUST_REJECT, OPEN, Program, derive_seed, rng_for
+from .program import MUST_ACCEPT, MUST_REJECT, OPEN, RESIDUAL, Program, derive_seed, rng_for
 from .refactor import REFACTORS
 
 
@@ -71,7 +71,7 @@ def must_reject(rows, una, root, timeout, out):
     checked too, and their verdict is recorded for triage."""
     tally = Counter()
     for row in rows:
-        if row["class"] not in (MUST_REJECT, MUST_ACCEPT, OPEN):
+        if row["class"] not in (MUST_REJECT, MUST_ACCEPT, OPEN, RESIDUAL):
             continue
         prog = rebuild(row)
         v = check(una, prog.write(root), root, timeout)
@@ -136,7 +136,12 @@ def parse_recheck(stdout):
     return rows
 
 
-def judge_differ(exp, core_text, rec, main=None):
+# The re-check's note for F8's two expected outcomes other than "accepted" (#548).
+UNKNOWN_OPERANDS = "on operands of mixed or unknown integer types"
+FIXED_PRIMITIVE = "the primitive `fixed`"
+
+
+def judge_differ(exp, core_text, rec, main=None, expect_main=""):
     """Part (b)'s verdict on one program `una check` accepted, fail-closed (N-99's rule, Una-2's
     review of #527): `finding` when the re-check rejects a declaration, `clean` only when the
     export is complete and read, the re-check ran to its end, and every function of the export
@@ -205,6 +210,28 @@ def judge_differ(exp, core_text, rec, main=None):
     if odd:
         out["detail"] = f"the re-check printed the outcome {odd[0]!r}"
         return out
+    # F8 (N-138): what the re-check says of the program's own declaration is part of the verdict.
+    # "not-rechecked" is clean only when it is not re-checked for its operands' unknown types, and
+    # "outside" is `unknown`, out of F1, by design; either accepted is a finding (fail closed).
+    if main is not None and expect_main in ("not-rechecked", "outside"):
+        line = next((r for r in rows if r["decl"] == main), None)
+        if line is None:
+            out["detail"] = f"the re-check has no line for {main}"
+            return out
+        if line["outcome"] != "not re-checked":
+            out["kind"] = "finding"
+            out["detail"] = f"{main} is {line['outcome']!r}, but must not be re-checked ({expect_main})"
+            return out
+        want = UNKNOWN_OPERANDS if expect_main == "not-rechecked" else FIXED_PRIMITIVE
+        if want not in line["note"]:
+            out["detail"] = f"{main} is not re-checked for another reason: {line['note']}"
+            return out
+        if expect_main == "outside":
+            out["detail"] = f"out of F1 (expected): {line['note']}"
+            out["expected"] = True
+            return out
+        out["kind"] = "clean"
+        return out
     # Family F stays inside the re-check's vocabulary by design (Una-2's review of #547): its
     # program's own declaration not re-checked is not a comparison, so it is `unknown`.
     if main is not None and any(r["decl"] == main and r["outcome"] == "not re-checked"
@@ -239,6 +266,16 @@ def differ(rows, una, core_check, root, timeout, out):
         elif prog.cls == MUST_ACCEPT:
             result["over_strict"] = v.kind != "accepted"
             tally[(row["op"], MUST_ACCEPT, v.kind)] += 1
+        elif prog.cls == RESIDUAL:
+            # Descriptive (N-138): both tiers' verdicts are recorded. The full check is where the
+            # `overflow` and `division` obligations are decided, the guard of this channel. A
+            # public print that full check accepts goes to triage, never discarded.
+            full = sandbox.run([una, "--json", "check", "."], cwd=pkg, writable=root,
+                               timeout=timeout, env_extra=solver_path())
+            fv = parse_check(full)
+            result["full"] = fv.row()
+            result["triage"] = fv.kind == "accepted" and prog.variant.endswith("-print-after")
+            tally[(row["op"], RESIDUAL, "tier0 " + v.kind, "full " + fv.kind)] += 1
         if v.kind == "accepted":
             exp = sandbox.run([una, "--json", "core", "."], cwd=pkg, writable=root,
                               timeout=timeout)
@@ -249,15 +286,20 @@ def differ(rows, una, core_check, root, timeout, out):
             if not exp.timed_out and exp.code == 0:
                 rec = sandbox.run([core_check, core], cwd=pkg, writable=root, timeout=timeout)
             main = "app.main.run" if row["op"].startswith("F") else None
-            j = judge_differ(exp, exp.stdout, rec, main=main)
+            j = judge_differ(exp, exp.stdout, rec, main=main, expect_main=prog.recheck)
             result.update(differ=j["kind"], differ_detail=j["detail"], recheck=j["recheck"],
                           finding=result["finding"] or j["kind"] == "finding",
                           export_code=exp.code, export_timed_out=exp.timed_out,
                           recheck_code=None if rec is None else rec.code,
                           recheck_timed_out=None if rec is None else rec.timed_out)
-            if j["kind"] == "unknown":
+            if j["kind"] == "unknown" and not j.get("expected"):
                 result["bug"] = j["detail"]
-            tally[(row["op"], "una-accepted", j["kind"])] += 1
+            result["differ_expected"] = bool(j.get("expected"))
+            kind = j["kind"] + (" (expected)" if j.get("expected") else "")
+            if prog.cls == RESIDUAL:
+                # Never a clean must-accept: the comparison is recorded under its own class.
+                kind = "residual " + j["kind"]
+            tally[(row["op"], "una-accepted", kind)] += 1
             for x in j["recheck"]:
                 tally[(row["op"], "declaration", x["outcome"].split(",")[0])] += 1
         else:
@@ -265,6 +307,14 @@ def differ(rows, una, core_check, root, timeout, out):
         out.write(json.dumps(result, sort_keys=True) + "\n")
         out.flush()
     return tally
+
+
+def solver_path():
+    """The `PATH` for a full check: the solver's directory, if one is installed, before the
+    sandbox's own. Without it, the check reports U5003, which is recorded as it is."""
+    import shutil
+    z3 = shutil.which("z3")
+    return {"PATH": os.path.dirname(z3) + ":/usr/bin:/bin"} if z3 else None
 
 
 def read_manifest(path):

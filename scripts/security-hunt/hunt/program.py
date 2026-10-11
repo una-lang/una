@@ -12,7 +12,10 @@ MUST_KEEP = "must-keep"
 # A program `una check` must accept: a rejection is over-strictness, for triage (#513).
 MUST_ACCEPT = "must-accept"
 OPEN = "open"
-CLASSES = (MUST_REJECT, MUST_KEEP, MUST_ACCEPT, OPEN)
+# A program whose abort a secret decides, a termination channel T6 does not claim (N-132): its
+# verdicts are recorded, never judged clean (N-138).
+RESIDUAL = "residual"
+CLASSES = (MUST_REJECT, MUST_KEEP, MUST_ACCEPT, OPEN, RESIDUAL)
 
 LOCK = """encoding_version = "una-smt-1"
 solver           = "z3"
@@ -57,6 +60,9 @@ class Program:
     variant: str = ""
     # Where the oracle's varied literals are (una.Varied.place); empty when none.
     vary: list = field(default_factory=list)
+    # What the re-check must say of the program's own declaration (F8): "read", "not-rechecked"
+    # or "outside"; empty for the other operators, which `differ` judges as before.
+    recheck: str = ""
 
     def __post_init__(self):
         if self.cls not in CLASSES:
@@ -90,6 +96,7 @@ class Program:
             "note": self.note,
             "variant": self.variant,
             "vary": self.vary,
+            **({"recheck": self.recheck} if self.recheck else {}),
         }
 
     def digest(self):

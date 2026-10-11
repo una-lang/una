@@ -263,6 +263,71 @@ class Generators(unittest.TestCase):
         self.assertEqual(p.variant, "fold-print-under")
         self.assertTrue(p.digest().startswith("d53a6d3c2efa7957"))
 
+    def test_f8_classes_and_recheck_expectations(self):
+        # N-138: a public ending of a secret is must-reject; a secret ending, and the structural
+        # `public` carrier at any ending, must-accept; the residual is its own class, never clean.
+        from hunt.families.fragment import (FIXED_TABLES, LEAK_CODES, PUBLIC_ENDINGS,
+                                            RESIDUAL_ENDINGS)
+        from hunt.program import MUST_ACCEPT, MUST_REJECT, RESIDUAL
+        kinds = {c: k for k, table in FIXED_TABLES for c in table}
+        seen = set()
+        for p in every_program(300):
+            if p.op != "F8":
+                continue
+            carrier = next(c for c in sorted(kinds, key=len, reverse=True)
+                           if p.variant.startswith(c + "-"))
+            ending = p.variant[len(carrier) + 1:]
+            if p.edition == "0.1":
+                self.assertEqual((p.cls, p.expect, p.recheck), (MUST_REJECT, ["U1001"], ""))
+                continue
+            seen.add(carrier)
+            self.assertEqual(p.recheck, kinds[carrier])
+            if kinds[carrier] == "residual":
+                self.assertEqual(p.cls, RESIDUAL)
+                self.assertIn(ending, RESIDUAL_ENDINGS)
+                self.assertNotIn("requires", p.files["src/main.una"] if "src/main.una" in p.files
+                                 else "".join(p.files.values()))
+            elif ending in PUBLIC_ENDINGS and carrier != "public":
+                self.assertEqual((p.cls, p.expect), (MUST_REJECT, LEAK_CODES), p.variant)
+            else:
+                self.assertEqual(p.cls, MUST_ACCEPT, p.variant)
+        self.assertEqual(seen, set(kinds))
+
+    def test_f8_leaves_earlier_programs_unchanged(self):
+        # F8 has tables of its own: F1's and F7's programs rebuild to the digests of seed 11.
+        from hunt.families.fragment import f1
+        p = f1(derive_seed(11, "F1", 0), "0.1")
+        self.assertTrue(p.digest().startswith("d53a6d3c2efa7957"))
+        self.assertNotIn("recheck", p.manifest())
+
+    FIXED_DOC = json.dumps({"schema": "una.core/1", "complete": True, "modules": [
+        {"path": "app.main", "decls": [{"kind": "fun", "value": {"name": "run"}}]}]})
+
+    def judge_fixed(self, line, expect_main):
+        return drivers.judge_differ(Run(0, self.FIXED_DOC, "", False, 0.1), self.FIXED_DOC,
+                                    Run(0, line, "", False, 0.1), main="app.main.run",
+                                    expect_main=expect_main)
+
+    def test_differ_f8_not_rechecked_is_clean_only_for_its_reason(self):
+        why = "F1 restriction (`div` on operands of mixed or unknown integer types)"
+        j = self.judge_fixed(f"c.json\tapp.main.run\tnot re-checked\t{why}\n", "not-rechecked")
+        self.assertEqual(j["kind"], "clean")
+        j = self.judge_fixed("c.json\tapp.main.run\tnot re-checked\tthe form `x`\n", "not-rechecked")
+        self.assertEqual(j["kind"], "unknown")
+        j = self.judge_fixed("c.json\tapp.main.run\taccepted\t\n", "not-rechecked")
+        self.assertEqual(j["kind"], "finding")
+
+    def test_differ_f8_outside_is_expected_unknown(self):
+        j = self.judge_fixed("c.json\tapp.main.run\tnot re-checked\tthe primitive `fixed`\n",
+                             "outside")
+        self.assertEqual((j["kind"], j.get("expected")), ("unknown", True))
+        j = self.judge_fixed("c.json\tapp.main.run\taccepted\t\n", "outside")
+        self.assertEqual(j["kind"], "finding")
+        # A missing line fails closed, as for predicates.
+        j = self.judge_fixed("c.json\tapp.main.other\taccepted\t\n", "outside")
+        self.assertEqual(j["kind"], "unknown")
+        self.assertIn("no line", j["detail"])
+
     def test_differ_main_not_rechecked_is_unknown(self):
         # Family F stays in the re-check's vocabulary: its own declaration not re-checked is
         # `unknown`, never clean.
