@@ -27,6 +27,7 @@ assumption, stated in `docs/plan/formal-track-m2.md` §1.
 import Lean.Data.Json
 import UnaFormal.F1.CheckProgram
 import UnaFormal.F1.HostFreeReach
+import UnaFormal.F1.Confine
 
 namespace Una.F1
 
@@ -1902,6 +1903,64 @@ def synthHandlers (decls : List Decl) (dynCaps : List String := []) :
     | .error _ => pure ()
   pure out
 
+/-- A ceiling of `una.toml`'s `[boundaries]` (ADR 0093, #562), as F1 reads it: `Console[print]`
+is the operation, `Files[read]` and `Files[write]` the host's, any operation of `Http` a request,
+`Env[get]` the environment, and any other capability's operations user operations, `Cap.op`.
+Anything else is refused, so a ceiling is never read wider than it is written. -/
+def ceilingOf (entries : List String) : Except String Auth := do
+  let mut a : Auth := {}
+  for e in entries do
+    let some i := e.posOf '[' |> fun p => if p == e.endPos then none else some p
+      | throw s!"the ceiling entry `{e}`"
+    if !e.endsWith "]" then throw s!"the ceiling entry `{e}`"
+    let cap := (e.extract 0 i).trim
+    let body := ((e.extract (e.next i) e.endPos).dropRight 1).toString
+    let ops := (body.splitOn ",").map (·.trim) |>.filter (· != "")
+    if cap.isEmpty || ops.isEmpty then throw s!"the ceiling entry `{e}`"
+    for op in ops do
+      match cap, op with
+      | "Console", "print" => a := { a with out := true }
+      | "Files", "read" => a := { a with rd := true }
+      | "Files", "write" => a := { a with wr := true }
+      | "Http", _ => a := { a with rq := true }
+      | "Env", "get" => a := { a with env := true }
+      | "Console", _ | "Files", _ | "Env", _ => throw s!"the operation `{cap}.{op}`"
+      | _, _ => a := { a with ops := a.ops ++ [s!"{cap}.{op}"] }
+  pure a
+
+/-- The document's boundary modules and their ceilings (ADR 0093): its `boundaries` key, which
+the export does not write yet (#562, R9), so a document without it has none. -/
+def boundariesOf (doc : J) : Except String (List (String × Auth)) :=
+  match doc.getObjVal? "boundaries" with
+  | .error _ => pure []
+  | .ok (.obj kvs) => kvs.toArray.toList.mapM fun (m, v) => do
+    match v with
+    | .arr xs => pure (m, ← ceilingOf (← xs.toList.mapM fun x => match x with
+        | .str t => pure t
+        | _ => throw s!"the ceiling of `{m}`"))
+    | _ => throw s!"the ceiling of `{m}`"
+  | .ok _ => throw "the `boundaries` key"
+
+mutual
+  /-- Whether a type holds a function type, in a record's fields too (`fuel` bounds the records'
+  nesting; out of fuel, it answers yes, failing closed). -/
+  def LTy.holdsFn (recs : List Record) : Nat → LTy → Bool
+    | 0, _ => true
+    | _ + 1, .fn .. => true
+    | n + 1, .list t _ | n + 1, .option t _ => LTy.holdsFn recs n t
+    | n + 1, .result t e _ => LTy.holdsFn recs n t || LTy.holdsFn recs n e
+    | n + 1, .tuple ts _ => LTy.holdsFnAll recs n ts
+    | n + 1, .record r _ => match recs.find? (·.name == r) with
+      | some rec => LTy.holdsFnAll recs n rec.fields
+      | none => false
+    | _ + 1, .var _ _ => true
+    | _ + 1, .int _ | _ + 1, .bool _ | _ + 1, .text _ | _ + 1, .unit _ => false
+
+  def LTy.holdsFnAll (recs : List Record) : Nat → List LTy → Bool
+    | _, [] => false
+    | n, t :: ts => LTy.holdsFn recs n t || LTy.holdsFnAll recs n ts
+end
+
 /-- The outcome of every declaration with code, by qualified name; an error when the document is
 not one the checker reads. -/
 def checkDocumentRead (subst : Subst) (doc : J) (caps : Caps := {}) (scopes : Bool := true) :
@@ -2242,6 +2301,55 @@ def checkDocumentRead (subst : Subst) (doc : J) (caps : Caps := {}) (scopes : Bo
     close (outs.map fun (f, o) => match List.lookup f fs with
       | some why => (f, .notRechecked why)
       | none => (f, o))
+  -- **Boundaries (ADR 0093, #562).** A declaration that reaches a function of a boundary module
+  -- from outside it, by a call, a function value or a handler its invocations may dispatch to,
+  -- keeps its acceptance only if `confinedB` passes on what that entry reaches, under the
+  -- module's ceiling: `confinedB_sound` and `body_confined` then confine every event of those
+  -- runs. It is rejected when the check fails, and not re-checked when what the entry reaches is
+  -- not read, holds a release (N-155: never, R2), or a function value crosses the boundary (A1
+  -- and R4: a grant the importer does not read yet).
+  match boundariesOf doc with
+  | .error why =>
+    final := final.map fun (f, o) => match o with
+      | .accepted _ | .acceptedIfA3 _ => (f, .notRechecked s!"the document's boundaries: {why}")
+      | o => (f, o)
+  | .ok bs =>
+    if !bs.isEmpty then
+      let modOfF := fun (g : String) => (code.find? fun d => named d == g).map (·.module)
+      let readFuns := code.filterMap fun d => (readOf (named d)).map (·.fn)
+      let P := mkProgram cats Label.bot hl recs [] readFuns sms opsAcc handlerOf opHandlers
+      let edges := fun (g : String) => ((List.lookup g reach).getD []) ++
+        (((readOf g).map fun pr => pr.fn.invokes.flatMap P.handlersOf).getD [])
+      let closure := fun (start : List String) (next : String → List String) => Id.run do
+        let mut acc := start.eraseDups
+        for _ in [0:code.length + 2] do
+          acc := (acc ++ acc.flatMap next).eraseDups
+        pure acc
+      let allOps := (opHandlers.map (·.1) ++ readFuns.flatMap (·.invokes)).eraseDups
+      let top : Auth := { out := true, rd := true, wr := true, rq := true, env := true, ops := allOps }
+      let verdict := fun (f : String) => bs.findSome? fun (m, c) => Id.run do
+        let outside := (closure [f] edges).filter fun h => modOfF h != some m
+        let entries := ((outside.flatMap edges).filter fun g => modOfF g == some m).eraseDups
+        if entries.isEmpty then return none
+        let S := closure (entries ++ c.ops.flatMap P.handlersOf) fun g =>
+          (((P.find g).map (·.body.callees)).getD []) ++ c.ops.flatMap P.handlersOf
+        if let some g := S.find? fun g => (P.find g).isNone && g != "" then
+          return some (Outcome.notRechecked
+            s!"a call into the boundary module `{m}` reaches `{g}`, which is not read")
+        if S.any fun g => !(((P.find g).map (·.body.within top)).getD true) then
+          return some (.notRechecked
+            s!"a call into the boundary module `{m}` reaches a release or an operation without a handler (N-155)")
+        if entries.any fun g => ((P.find g).map fun fn =>
+            fn.params.any (fun q => q.2.holdsFn recs 8) || fn.result.holdsFn recs 8).getD true then
+          return some (.notRechecked
+            s!"a function value crosses the boundary of `{m}`, a grant F1 does not read yet")
+        if confinedB P c S then return none
+        return some (.rejected s!"a call into the boundary module `{m}` performs beyond its ceiling (ADR 0093)")
+      final := close (final.map fun (f, o) => match o with
+        | .accepted _ | .acceptedIfA3 _ => match verdict f with
+          | some v => (f, v)
+          | none => (f, o)
+        | o => (f, o))
   -- One operation: F1's program has one (G3).
   let ops := ((accepted final).filterMap fun f => (readOf f).bind (·.op)).eraseDups
   if ops.length > 1 then

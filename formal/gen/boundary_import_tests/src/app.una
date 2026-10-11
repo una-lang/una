@@ -1,0 +1,17 @@
+module app
+
+import vendor (tiled, thumbnail)
+
+--- Hands the files to the library's tiled mode, which writes.
+pub thumbs(path: Text) -> Unit
+  uses @files: Files[write]
+  fails FileError
+=
+  tiled(path)
+    if error pass
+
+--- Calls the library's plain mode only.
+pub plain(x: Text) -> Text = thumbnail(x)
+
+--- Calls nothing of the library.
+pub own(x: Text) -> Text = x
