@@ -917,15 +917,22 @@ impl Writer<'_> {
         ])
     }
 
+    /// A declaration of the module `module`: a function with what its header adds (`fun_in`).
+    /// `modules` and `rejected` (ADR 0091) both write declarations this way, so a rejected
+    /// function carries the same keys as an accepted one (#514).
+    fn decl_in(&self, module: &str, decl: &Decl) -> J {
+        match decl {
+            Decl::Fun(fun) => node!(Fun, "value" => self.fun_in(module, fun)),
+            d => self.decl(d),
+        }
+    }
+
     fn module(&self, module: &Module) -> J {
         J::Obj(vec![
             ("path", s(&module.path)),
             (
                 "decls",
-                list(&module.decls, |d| match d {
-                    Decl::Fun(fun) => node!(Fun, "value" => self.fun_in(&module.path, fun)),
-                    d => self.decl(d),
-                }),
+                list(&module.decls, |d| self.decl_in(&module.path, d)),
             ),
             ("examples", list(&module.examples, |e| self.example(e))),
         ])
@@ -944,9 +951,33 @@ fn level(label: &Label) -> &'static str {
     }
 }
 
+/// A location as a span is written (`spec/13 §8` rule 5).
+fn location(location: &una_diag::Location) -> J {
+    J::Obj(vec![
+        ("file", J::Str(location.file.clone())),
+        (
+            "start",
+            J::Arr(vec![
+                n(location.start.line as usize),
+                n(location.start.col as usize),
+            ]),
+        ),
+        (
+            "end",
+            J::Arr(vec![
+                n(location.end.line as usize),
+                n(location.end.col as usize),
+            ]),
+        ),
+    ])
+}
+
 /// The `una.core/1` document of `program` (ADR 0083): `complete` when the package checked clean,
 /// so that Core holds every declaration. `file_state` is the package's file-state label
-/// (ADR 0085), an additive key (#467).
+/// (ADR 0085), an additive key (#467). `rejected`, given by `--with-rejected` only, adds the
+/// declarations rejected for information flow, apart from Core (ADR 0091).
+// Each argument is one part of the document, in its key order (ADR 0083, 0085, 0091).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn document(
     program: &Program,
     sources: &SourceDb,
@@ -955,6 +986,7 @@ pub(crate) fn document(
     file_state: &Label,
     edition: Edition,
     complete: bool,
+    rejected: Option<&[(una_check::Rejected, Vec<&una_diag::Diagnostic>)]>,
 ) -> Result<String, serde_json::Error> {
     let of_lambdas: BTreeMap<Span, (bool, bool)> = of_lambdas
         .iter()
@@ -965,7 +997,7 @@ pub(crate) fn document(
         headers,
         of_lambdas: &of_lambdas,
     };
-    let document = J::Obj(vec![
+    let mut keys = vec![
         ("schema", s(SCHEMA)),
         ("edition", s(edition.name())),
         ("complete", J::Bool(complete)),
@@ -976,8 +1008,30 @@ pub(crate) fn document(
         ),
         ("host", list(&program.host, |d| writer.decl(d))),
         ("file_state", writer.label(file_state)),
-    ]);
-    serde_json::to_string(&document)
+    ];
+    // ADR 0091: the declarations rejected for information flow, apart from Core, only with
+    // `--with-rejected`; without it the document is unchanged.
+    if let Some(rejected) = rejected {
+        keys.push((
+            "rejected",
+            list(rejected, |(r, diagnostics)| {
+                J::Obj(vec![
+                    ("module", s(&r.module)),
+                    ("decl", writer.decl_in(&r.module, &r.decl)),
+                    (
+                        "diagnostics",
+                        list(diagnostics, |d| {
+                            J::Obj(vec![
+                                ("code", s(d.code.as_str())),
+                                ("span", location(&d.primary)),
+                            ])
+                        }),
+                    ),
+                ])
+            }),
+        ));
+    }
+    serde_json::to_string(&J::Obj(keys))
 }
 
 /// The `kind`s of each enum of `una_core::ir`, as the source declares its variants: what

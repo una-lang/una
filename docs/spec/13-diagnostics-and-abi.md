@@ -196,7 +196,7 @@ Codes are never reused. Retired codes stay in this table marked retired. Gaps in
 | `una obligations [path]` | List obligations with status |
 | `una contract <qualified.name>` | Print the full header, declared or inferred, with doc comments and requirements |
 | `una trace <REQUIREMENT_ID>` | Requirement to contract to obligation chain |
-| `una core [path]` | (v0.3, ADR 0083) Check at tier 0 and print the package's Core IR: with `--json`, one `una.core/1` document (§8); otherwise the text syntax of `spec/09`, every module in turn |
+| `una core [path]` | (v0.3, ADR 0083) Check at tier 0 and print the package's Core IR: with `--json`, one `una.core/1` document (§8); otherwise the text syntax of `spec/09`, every module in turn. `--with-rejected` (ADR 0091), with `--json` only, adds the declarations rejected for information flow, apart from Core (§8); without `--json` it is a usage error |
 | `una report [path]` | Build report (§6) |
 | `una explain <code>` | Explanation of a diagnostic code |
 | `una lsp` | (v0.2, ADR 0063) The language server: LSP 3.17 over stdin and stdout, for editors. It checks, formats and solves; it never runs programs |
@@ -362,6 +362,7 @@ Project errors do not stop checking: the modules are still checked, with the def
 
 - `complete` is `true` when the package checked clean at tier 0, so Core holds every declaration; otherwise Core holds only the declarations without diagnostics, which go to stderr, and the exit code follows them.
 - `modules` are in the order of Core IR; `library` holds the prelude's signatures and `host` the host capabilities' declarations.
+- (ADR 0091.) With `--with-rejected`, the document has one more key, `rejected`, after `file_state`: a list of `{"module": "app", "decl": { ... }, "diagnostics": [{"code": "U4003", "span": { ... }}]}`, in path order, then declaration order. It holds each declaration with at least one diagnostic, every one of which is in the `security` domain, and whose elaboration is complete; `decl` is its Core, encoded as `modules[].decls` are, and `diagnostics` are its diagnostics, each with its code and its primary location, which the declaration holds. These declarations are never in `modules`, and `complete` keeps its meaning. Without the flag, the key is absent and the document is unchanged; a consumer that ignores unknown keys reads the same document either way. No other command reads these declarations.
 
 **Encoding.** The document is a mechanical image of `una_core::ir`:
 1. A value of an enum is an object whose first key is `kind`, the name of its variant in snake case (`LetTuple` is `let_tuple`), followed by the variant's fields under their Rust names, in declaration order. A field named `kind` is written `kind_of`. A tuple variant's one field is `value`, and its several fields `values`, an array.

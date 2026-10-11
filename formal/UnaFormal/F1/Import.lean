@@ -342,6 +342,7 @@ mutual
       | "to_text", [a] => pure (.toText a)
       | k, _ => throw s!"the primitive `{k}`"
     | "call" =>
+      if (j.getObjVal? "predicate").toBool then throw "a call that names a predicate too"
       let f ← path (← field j "function")
       let args ← atoms (← field j "args")
       match f, args with
@@ -557,12 +558,13 @@ def signature (c : Ctx) (module : String) (v : J) (body : Expr) : M Fun := do
   let eqs := if c.allEq && comparesValues (v.getObjValD "body") then tps else eqs
   -- The parameters `uses of` and `fails of` name (ADR 0062, exported by #443): their function
   -- types perform the effects, and may fail, as the function itself does.
-  let usesOf ← match v.getObjVal? "uses_of" with
-    | .ok j => (← arr j).mapM str
-    | .error _ => pure []
-  let failsOf : Option String ← match v.getObjVal? "fails_of" with
-    | .ok (.str x) => pure (some x)
-    | _ => pure none
+  -- Each of the four keys #443 added is required (#514, N-99): a function without one is not
+  -- re-checked, never read with a permissive default (pure, unable to fail, no raise).
+  let usesOf ← (← arr (← field v "uses_of")).mapM str
+  let failsOf : Option String ← match ← field v "fails_of" with
+    | .str x => pure (some x)
+    | .null => pure none
+    | _ => throw "a `fails_of` that is neither a name nor null"
   let ps ← (← arr (← field v "params")).mapM fun q => do
     match ← arr q with
     | [x, t] => do
@@ -571,21 +573,19 @@ def signature (c : Ctx) (module : String) (v : J) (body : Expr) : M Fun := do
     | _ => throw "a parameter"
   -- The result summary (ADR 0067), exported by #443: the symbolic labels a call puts at each
   -- position of the result; in edition 0.1, every position by every type parameter (D-137).
-  match v.getObjVal? "of_raises" with
-  | .ok (.arr rs) => if !rs.isEmpty then throw "`of` raises (ADR 0067 amendment), outside F1"
-  | _ => pure ()
+  if !(← arr (← field v "of_raises")).isEmpty then
+    throw "`of` raises (ADR 0067 amendment), outside F1"
+  let resultLabels ← arr (← field v "result_labels")
   let declared ← ty c (← field v "result")
   let result ← if tps.isEmpty then pure declared
     else if c.allEq then pure (declared.addStarAll tps)
-    else match v.getObjVal? "result_labels" with
-      | .ok j => (← arr j).foldlM (fun acc rl => do
+    else resultLabels.foldlM (fun acc rl => do
           let pos ← str (← field rl "position")
           let from_ ← (← arr (← field rl "from")).mapM str
           let steps := if pos == "top" then [] else pos.splitOn "."
           match acc.addStarAt from_ steps with
           | some t => pure t
           | none => throw s!"a result summary at `{pos}`, outside F1") declared
-      | .error _ => pure declared
   -- The body gives the result (`Expr.attemptsAt`).
   if !body.attemptsAt result then throw "an `attempt` whose error type is not a failure's code"
   let (op, host) ← usesEffects (← arr (← field v "uses"))
@@ -894,26 +894,45 @@ def checkWith (cats : List String) (hl : HostLabels) (recs : List Record) (prep 
   for f in p.funs do Check.checkSignature f
   Check.checkFun p fn
 
+/-- What a call whose `function` F1 cannot read reaches (#514, N-99): no function of any document,
+so a declaration that holds one, and every declaration that reaches it, is not re-checked
+("reaches `%unread-call`, outside the document"), and its releases are never computed without the
+call's. A lambda without `function` is an ordinary lambda, not this. -/
+def unreadCall : String := "%unread-call"
+
+/-- A `call` node of the refinement language (`una_core::Term::Call`, `p(a, ...)` of a predicate),
+not of Core (`Rhs::Call`, which names a `function`). Refinements are pure and their labels erased
+(`spec/07 §7` rule 6): such a node is neither an instantiation nor a reach edge. A `call` with
+neither key is unknown, and the scans below fail closed on it. -/
+def predicateCall (j : J) : Bool :=
+  (j.getObjVal? "predicate").toBool && !(j.getObjVal? "function").toBool
+
+/-- The function a Core call names. A node that names both a function and a predicate is not a
+well-formed term of either kind: it reads as a call whose function F1 cannot read, so the scans
+fail closed on it. -/
+def callFunction (j : J) : Except String String :=
+  if (j.getObjVal? "predicate").toBool then .error "a call that names a predicate too"
+  else plainRun (do path (← field j "function"))
+
 /-- The calls of `j` with type arguments, as F1 reads them: the generic function, its type
 arguments (`none` when F1 does not read them), and whether they are ground. Every node is
 searched, inside every kind of declaration, so that a function value, a handler or `main` is an
 instantiation source too. -/
-partial def rawGenericCalls (c : Ctx) (j : J) : List (String × Option (List LTy)) :=
+partial def rawGenericCalls (c : Ctx) (j : J) : List (Option String × Option (List LTy)) :=
   match j with
   | .obj kvs =>
-    let here : List (String × Option (List LTy)) :=
-      if j.getObjValD "kind" != .str "call" then []
+    -- Every call is reported, fail-closed (#514, N-99): one whose `function` F1 cannot read
+    -- names no function (`none`), and one without readable `type_args` has unknown type
+    -- arguments (`none`); the search then makes the instances unknown, never skips the call.
+    let here : List (Option String × Option (List LTy)) :=
+      if j.getObjValD "kind" != .str "call" || predicateCall j then []
       else
-        match plainRun (do
-            let f ← path (← field j "function")
-            let targs ← arr (← field j "type_args")
-            pure (f, targs)) with
-        | .ok (f, targs) =>
-          if targs.isEmpty then []
-          else [(f, match plainRun (targs.mapM (ty c)) with
+        match callFunction j with
+        | .error _ => [(none, none)]
+        | .ok f =>
+          [(some f, match plainRun (do (← arr (← field j "type_args")).mapM (ty c)) with
             | .ok ts => some ts
             | .error _ => none)]
-        | .error _ => []
     here ++ kvs.toArray.toList.flatMap (fun kv => rawGenericCalls c kv.2)
   | .arr items => items.toList.flatMap (rawGenericCalls c)
   | _ => []
@@ -950,10 +969,10 @@ partial def rawRels (j : J) : List String × List String :=
       | .ok pol => ([pol], [])
       | .error _ => ([], [])
     | k =>
-      let here : List String := if k == .str "call" then
-          match plainRun (do path (← field j "function")) with
+      let here : List String := if k == .str "call" && !predicateCall j then
+          match callFunction j with
           | .ok f => if f.startsWith "prelude." then [] else [f]
-          | .error _ => []
+          | .error _ => [unreadCall]
         else []
       kvs.toArray.toList.foldl (fun acc kv =>
         let r := rawRels kv.2
@@ -974,9 +993,10 @@ partial def rawCallees (j : J) : List String :=
     let here : List String :=
       match j.getObjValD "kind" with
       | .str "call" =>
-        match plainRun (do path (← field j "function")) with
-        | .ok f => [f]
-        | .error _ => []
+        if predicateCall j then []
+        else match callFunction j with
+          | .ok f => [f]
+          | .error _ => [unreadCall]
       | .str "lambda" =>
         match plainRun (do path (← field j "function")) with
         | .ok f => [f]
@@ -1463,11 +1483,22 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
       | some f => incomplete := incomplete ++ [(f, s!"instantiated by a `{k}` node, which F1 does not read")]
       | none => incomplete := incomplete ++ nestedNames.map fun f =>
           (f, s!"a `{k}` node instantiates a function F1 cannot name")
-    for (f, targs) in rawGenericCalls c d.value do
+    for (f?, targs) in rawGenericCalls c d.value do
+      let some f := f?
+        | do
+            incomplete := incomplete ++ nestedNames.map fun g =>
+              (g, s!"a call in `{named d}` whose function F1 cannot read")
+            continue
       if isNested f then
+        let arity := match prepOf f with
+          | some (.ok pr) => pr.fn.tparams.length
+          | _ => 0
         match targs with
         | some ts =>
-          if Check.groundAll ts then
+          if ts.length != arity then
+            incomplete := incomplete ++
+              [(f, s!"called in `{named d}` with {ts.length} type arguments, of its {arity}")]
+          else if Check.groundAll ts then
             if !enqueued.contains (f, keyOf ts) then
               enqueued := enqueued ++ [(f, keyOf ts)]
               queue := queue ++ [(f, ts, named d, 0)]
@@ -1477,7 +1508,8 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
               if !(pr.nested && !pr.fn.tparams.isEmpty) then
                 incomplete := incomplete ++ [(f, s!"a call in `{named d}` at type parameters it does not instantiate")]
             | _ => incomplete := incomplete ++ [(f, s!"instantiated from `{named d}`, which is outside F1")]
-        | none => incomplete := incomplete ++ [(f, s!"instantiated in `{named d}` at types outside F1")]
+        | none => incomplete := incomplete ++
+            [(f, s!"instantiated in `{named d}` at type arguments F1 cannot read")]
   let mut done : List (String × List String) := []
   let mut results : List (String × Outcome) := []
   -- The instances checked, with their generic function, for the program of part A3.
@@ -1700,5 +1732,67 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
 /-- `checkDocumentWith` with labeled instantiation, `LTy.lsubst`. -/
 def checkDocument (doc : J) : Except String (List (String × Outcome)) :=
   checkDocumentWith (fun rd σ t => t.lsubst rd σ) doc
+
+/-- What the model says of a declaration the checker rejected for information flow (ADR 0091).
+Never "accepted": a rejected declaration is not certified Core. -/
+inductive ReverseOutcome where
+  /-- The model's checker accepts it: a candidate, either an over-strict checker or a channel
+  the model lacks (a blind spot of T6), for the coordinator's review before any conclusion. -/
+  | modelAcceptsCandidate (note : String)
+  /-- The model rejects it too. -/
+  | modelRejects (why : String)
+  /-- A form the model lacks. -/
+  | notRechecked (why : String)
+
+/-- The document `doc` with each declaration of its `rejected` key (ADR 0091) put back in its
+module, read as complete: the context the reverse comparison checks a rejected declaration in.
+Declarations that the export leaves out for other diagnostics stay out, so a rejected declaration
+that reaches one is not re-checked. -/
+def withRejected (doc : J) (rejected : List (String × J)) : Except String J := do
+  let modules ← plainRun (do arr (← field doc "modules"))
+  let paths := modules.filterMap fun m => match m.getObjValD "path" with
+    | .str p => some p
+    | _ => none
+  let extra := (rejected.map Prod.fst).eraseDups.filter (!paths.contains ·)
+  let modules := modules ++ extra.map fun p =>
+    Lean.Json.mkObj [("path", .str p), ("decls", .arr #[]), ("examples", .arr #[])]
+  let modules := modules.map fun m => match m.getObjValD "path", m.getObjValD "decls" with
+    | .str p, .arr ds =>
+      m.setObjVal! "decls" (.arr (ds ++ ((rejected.filter (·.1 == p)).map Prod.snd).toArray))
+    | _, _ => m
+  pure ((doc.setObjVal! "modules" (.arr modules.toArray)).setObjVal! "complete" (.bool true))
+
+/-- The reverse comparison (ADR 0091 decision 7): each declaration of `doc`'s `rejected` key,
+checked in the context of the document's declarations and the other rejected ones, with what the
+model says of it. The outcomes of the declarations of `modules` are not computed here: the default
+mode computes them without `rejected`.
+
+**Neither outcome certifies anything.** The context is read as complete although the export leaves
+out the declarations with other diagnostics, and whole-program inputs (the file-state label, the
+policies) come from the export or from what is present. A missing declaration or input can make a
+false `modelAcceptsCandidate`, and it can hide a real one as a false `modelRejects`. The outcomes
+are leads for review, never verdicts, and never enter the corpus figures. -/
+def checkRejected (doc : J) : Except String (List (String × ReverseOutcome)) := do
+  let entries ← match doc.getObjVal? "rejected" with
+    | .ok (.arr es) => pure es.toList
+    | .ok _ => throw "`rejected` is not a list"
+    | .error _ => pure []
+  let rejected ← entries.mapM fun e => plainRun (do
+    pure (← str (← field e "module"), ← field e "decl"))
+  if rejected.isEmpty then return []
+  let names := rejected.filterMap fun (m, dj) =>
+    let v := match dj.getObjVal? "value" with
+      | .ok v => v
+      | .error _ => dj
+    match v.getObjValD "name" with
+    | .str n => some s!"{m}.{n}"
+    | _ => none
+  let outcomes ← checkDocument (← withRejected doc rejected)
+  pure (outcomes.filterMap fun (n, o) =>
+    if !names.contains n then none
+    else some (n, match o with
+      | .accepted note | .acceptedIfA3 note => .modelAcceptsCandidate note
+      | .rejected why => .modelRejects why
+      | .notRechecked why => .notRechecked why))
 
 end Una.F1.Import

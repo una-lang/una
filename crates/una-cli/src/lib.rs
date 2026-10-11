@@ -25,7 +25,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use clap::Parser;
-use una_check::{Header, ModuleInput, PackageInput, PendingObligation, RunInput, check_types};
+use una_check::{
+    Header, ModuleInput, PackageInput, PendingObligation, Rejected, RunInput, check_types,
+    check_types_with_rejected,
+};
 use una_diag::{Code, Diagnostic, render_human, render_json};
 use una_syntax::ast::File;
 use una_syntax::{FileId, Interner, KeywordSet, Lexed, SourceDb, lex_in, parse};
@@ -137,6 +140,17 @@ struct Analysis {
 
 /// Checks `package`; with `run_grants`, for `una run`, whose grants are final (U3012).
 fn analyze(package: &Package, run_grants: Option<&[String]>) -> Analysis {
+    analyze_and(package, run_grants, false).0
+}
+
+/// [`analyze`], and with `with_rejected` the Core IR of the rejected declarations whose
+/// elaboration is complete (ADR 0091), for `una core --with-rejected` only. The [`Analysis`]
+/// is the one [`analyze`] returns.
+fn analyze_and(
+    package: &Package,
+    run_grants: Option<&[String]>,
+    with_rejected: bool,
+) -> (Analysis, Vec<Rejected>) {
     let (manifest, mut diagnostics) = package::project(package);
     let mut interner = Interner::new();
     let mut trees = Vec::new();
@@ -190,9 +204,13 @@ fn analyze(package: &Package, run_grants: Option<&[String]>) -> Analysis {
     };
     let (names, references) = una_check::check_names_indexed(&input);
     diagnostics.extend(names);
-    let types = check_types(&input);
+    let (types, rejected) = if with_rejected {
+        check_types_with_rejected(&input)
+    } else {
+        (check_types(&input), Vec::new())
+    };
     diagnostics.extend(types.diagnostics);
-    Analysis {
+    let analysis = Analysis {
         diagnostics,
         trees: trees.into_iter().map(|(id, tree, _)| (id, tree)).collect(),
         interner,
@@ -204,7 +222,8 @@ fn analyze(package: &Package, run_grants: Option<&[String]>) -> Analysis {
         index: types.index,
         of_lambdas: types.of_lambdas,
         file_state: types.file_state,
-    }
+    };
+    (analysis, rejected)
 }
 
 /// The syntax diagnostics of one file, its tree, and its canonical form when it has no
@@ -378,7 +397,7 @@ fn panic_location(command: Option<&Command>) -> una_diag::Location {
     let root = match command {
         Some(
             Command::Check { path, .. }
-            | Command::Core { path }
+            | Command::Core { path, .. }
             | Command::Report { path, .. }
             | Command::Obligations { path, .. }
             | Command::Fmt { path, .. }
@@ -543,9 +562,13 @@ fn run_command(
                 };
                 check_command(&path, options, dump_core.as_deref(), stdout, stderr)
             }
-            Command::Core { path } => core_command(
+            Command::Core {
+                path,
+                with_rejected,
+            } => core_command(
                 &path,
                 json,
+                with_rejected,
                 use_color(color, stderr_is_terminal),
                 stdout,
                 stderr,
@@ -780,10 +803,18 @@ fn check_command(
 fn core_command(
     path: &Path,
     json: bool,
+    with_rejected: bool,
     color: bool,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitStatus> {
+    if with_rejected && !json {
+        writeln!(
+            stderr,
+            "error: `--with-rejected` exports a `una.core/1` document, so it needs `--json`"
+        )?;
+        return Ok(ExitStatus::Usage);
+    }
     let package = match load(path) {
         Ok(package) => package,
         Err(error) => {
@@ -792,17 +823,19 @@ fn core_command(
         }
     };
     let (manifest, _) = package::project(&package);
-    let (diagnostics, program, headers, of_lambdas, file_state) = on_large_stack(|| {
-        let analysis = analyze(&package, None);
+    let (diagnostics, program, headers, of_lambdas, file_state, rejected) = on_large_stack(|| {
+        let (analysis, rejected) = analyze_and(&package, None, with_rejected);
         (
             analysis.diagnostics,
             analysis.program,
             analysis.headers,
             analysis.of_lambdas,
             analysis.file_state,
+            rejected,
         )
     });
     let complete = diagnostics.is_empty();
+    let rejected = with_rejected.then(|| flow_rejected(rejected, &diagnostics, &package.sources));
     if json {
         match core_json::document(
             &program,
@@ -812,6 +845,7 @@ fn core_command(
             &file_state,
             manifest.edition,
             complete,
+            rejected.as_deref(),
         ) {
             Ok(document) => writeln!(stdout, "{document}")?,
             Err(error) => {
@@ -828,6 +862,39 @@ fn core_command(
         }
     }
     report(&diagnostics, &package.sources, false, color, stdout, stderr)
+}
+
+/// The rejected declarations that `una core --with-rejected` exports (ADR 0091 decision 3):
+/// those with at least one diagnostic, every one of which, whatever pass reported it, is in the
+/// `security` domain. A diagnostic belongs to the declaration whose span holds its primary
+/// location. Each comes with its diagnostics, in output order.
+fn flow_rejected<'d>(
+    rejected: Vec<Rejected>,
+    diagnostics: &'d [Diagnostic],
+    sources: &SourceDb,
+) -> Vec<(Rejected, Vec<&'d Diagnostic>)> {
+    rejected
+        .into_iter()
+        .filter_map(|r| {
+            let at = sources.location(r.span);
+            let mut own: Vec<&Diagnostic> = diagnostics
+                .iter()
+                .filter(|d| {
+                    d.primary.file == at.file
+                        && d.primary.start >= at.start
+                        && d.primary.end <= at.end
+                })
+                .collect();
+            own.sort_by(|a, b| {
+                (a.primary.start, a.code.as_str()).cmp(&(b.primary.start, b.code.as_str()))
+            });
+            let flow_only = !own.is_empty()
+                && own
+                    .iter()
+                    .all(|d| d.code.domain() == una_diag::Domain::Security);
+            flow_only.then_some((r, own))
+        })
+        .collect()
 }
 
 /// Prints diagnostics as JSON on stdout (ADR 0012) or for people on stderr (ADR 0015 D1), and

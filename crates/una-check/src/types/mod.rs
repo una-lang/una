@@ -201,8 +201,33 @@ impl Default for TypeCheck {
     }
 }
 
+/// A declaration that the checker rejected, with its Core IR (ADR 0091): its type pass reported
+/// a diagnostic and its elaboration is complete. `una core --with-rejected` exports the ones
+/// whose every diagnostic is in the `security` domain, and nothing else reads them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Rejected {
+    /// The path of its module.
+    pub module: String,
+    /// The span of the declaration, which holds its diagnostics.
+    pub span: Span,
+    /// Its Core IR.
+    pub decl: una_core::Decl,
+}
+
 /// Type-checks the modules of `package` that have no syntax errors.
 pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
+    check_types_and(package, false).0
+}
+
+/// [`check_types`], and the Core IR of each rejected declaration whose elaboration is complete
+/// (ADR 0091), for `una core --with-rejected`. The [`TypeCheck`] is the one [`check_types`]
+/// returns: the rejected declarations are elaborated apart, after it, from what the checks
+/// recorded, and change nothing in it.
+pub fn check_types_with_rejected(package: &PackageInput<'_>) -> (TypeCheck, Vec<Rejected>) {
+    check_types_and(package, true)
+}
+
+fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeCheck, Vec<Rejected>) {
     let standard = Standard::load(package.settings.edition);
     let mut report = Report::new(package.sources);
     let sources = package
@@ -426,7 +451,14 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
         );
     }
     let index = index::build(&env, &findings);
-    TypeCheck {
+    // ADR 0091 decision 5: elaborated only on request, after the program, and read by nothing
+    // but `una core --with-rejected`.
+    let rejected = if with_rejected {
+        elab::rejected(&env, &findings, package.sources, &standard.sources)
+    } else {
+        Vec::new()
+    };
+    let check = TypeCheck {
         index,
         headers,
         program,
@@ -447,7 +479,8 @@ pub fn check_types(package: &PackageInput<'_>) -> TypeCheck {
         of_lambdas: findings.of_lambdas.clone(),
         file_state: env.file_state.clone(),
         diagnostics: report.diagnostics,
-    }
+    };
+    (check, rejected)
 }
 
 /// The headers of the functions of the modules that report, after inference.

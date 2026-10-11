@@ -81,6 +81,11 @@ pub(crate) enum Command {
         /// The package directory, or a single file
         #[arg(default_value = ".")]
         path: PathBuf,
+
+        /// With --json, also export the declarations rejected for information flow, under
+        /// `rejected`, apart from Core (ADR 0091)
+        #[arg(long)]
+        with_rejected: bool,
     },
     /// Print the build report: proofs, authority, information flow, trust and coverage
     Report {
