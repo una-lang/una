@@ -37,6 +37,8 @@ mutual
     | .none => .none
     | .some a => .some a
     | .first a => .first a
+    | .orElse o d => .orElse o d
+    | .isOk r => .isOk r
     | .mkOk a => .mkOk a
     | .mkErr a => .mkErr a
     | .declassify pol a => .declassify pol a
@@ -225,17 +227,37 @@ end
 /-- Whether a primitive aborts reads only integers, which erasure keeps (#526). -/
 theorem aborts_anon (pr : Prim) (vs : List Val) :
     Prim.aborts pr (vs.map (Val.anon ρ)) = Prim.aborts pr vs := by
-  cases pr <;>
+  cases pr
+  case slice =>
+    rcases vs with _ | ⟨a, _ | ⟨b, _ | ⟨c, _ | ⟨d, rest⟩⟩⟩⟩ <;>
+      simp only [List.map_cons, List.map_nil] <;>
+      (try cases a) <;> (try cases b) <;> (try cases c) <;> simp [Prim.aborts, Val.anon]
+  all_goals
     (rcases vs with _ | ⟨a, _ | ⟨b, _ | ⟨c, rest⟩⟩⟩ <;>
       simp only [List.map_cons, List.map_nil] <;>
       (try cases a) <;> (try cases b) <;> simp [Prim.aborts, Val.anon])
 
+-- Four more primitives (#542) take this proof's case split past the default budget.
+set_option maxHeartbeats 1000000 in
 theorem evalPrim_anon (pr : Prim) (vs : List Val) :
     evalPrim pr (vs.map (Val.anon ρ)) = (evalPrim pr vs).map (Val.anon ρ) := by
   cases pr
   case concat =>
     simp only [evalPrim, concatTexts_anon]
     cases concatTexts vs <;> simp [Val.anon]
+  case slice =>
+    rcases vs with _ | ⟨a, _ | ⟨b, _ | ⟨c, _ | ⟨d, rest⟩⟩⟩⟩ <;>
+      simp only [List.map_cons, List.map_nil] <;>
+      (try cases a) <;> (try cases b) <;> (try cases c) <;> simp [evalPrim, Val.anon]
+  case abs =>
+    rcases vs with _ | ⟨a, _ | ⟨b, rest⟩⟩ <;> simp only [List.map_cons, List.map_nil] <;>
+      (try cases a) <;> simp [evalPrim, Val.anon]
+  case min =>
+    rcases vs with _ | ⟨a, _ | ⟨b, _ | ⟨c, rest⟩⟩⟩ <;> simp only [List.map_cons, List.map_nil] <;>
+      (try cases a) <;> (try cases b) <;> simp [evalPrim, Val.anon]
+  case max =>
+    rcases vs with _ | ⟨a, _ | ⟨b, _ | ⟨c, rest⟩⟩⟩ <;> simp only [List.map_cons, List.map_nil] <;>
+      (try cases a) <;> (try cases b) <;> simp [evalPrim, Val.anon]
   all_goals (rcases vs with _ | ⟨a, _ | ⟨b, _ | ⟨c, rest⟩⟩⟩ <;>
     simp only [List.map_cons, List.map_nil] <;>
     (try cases a) <;> (try cases b) <;>
@@ -570,6 +592,19 @@ theorem eval_anon (hH : H.AnonInvariant) (h4 : H.RespTyped) (hf : ∀ f, (P.find
           cases v with
           | list items => cases items <;> rfl
           | _ => simp [Val.anon, runAnon_stuck]
+      | orElse o d =>
+        simp only [evalRhs, Rhs.anon, evalAtom_anon]
+        cases evalAtom env o with
+        | none => cases evalAtom env d <;> simp [runAnon_stuck]
+        | some v =>
+          cases evalAtom env d with
+          | none => cases v <;> simp [Val.anon, runAnon_stuck]
+          | some x => cases v <;> first | rfl | simp [Val.anon, runAnon_stuck]
+      | isOk r =>
+        simp only [evalRhs, Rhs.anon, evalAtom_anon]
+        cases evalAtom env r with
+        | none => simp [runAnon_stuck]
+        | some v => cases v <;> first | rfl | simp [Val.anon, runAnon_stuck]
       | mkOk a =>
         simp only [evalRhs, Rhs.anon, evalAtom_anon]
         cases evalAtom env a <;> simp [runAnon, Res.anon, Val.anon]

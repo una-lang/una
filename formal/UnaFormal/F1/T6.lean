@@ -924,6 +924,39 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
           cases hall with
           | nil => simp only [evalRhs, h₁, h₂, LTy.lsubst]; exact brel_done hw .none
           | cons hab _ => simp only [evalRhs, h₁, h₂, LTy.lsubst]; exact brel_done hw (.some hab)
+      | @orElse _ _ o d te lo td t ho hd hf₁ hf₂ _ =>
+        refine BRelR.of_brel ?_
+        obtain ⟨o₁, o₂, h₁, h₂, hov, hot₁, hot₂⟩ := latom_bothσ he₁ he₂ hrel ho
+        obtain ⟨d₁, d₂, hd₁, hd₂, hdv, _, _⟩ := latom_bothσ he₁ he₂ hrel hd
+        have hpf : ((p.deep (.option te lo)).join (p.deep td)).PlainFree :=
+          LExpr.plainFree_join (LTy.deep_plainFree _ (latom_inPlace hΓ ho))
+            (LTy.deep_plainFree _ (latom_inPlace hΓ hd))
+        simp only [LTy.lsubst] at hov hot₁ hot₂
+        by_cases hvis : Vis p L (((p.deep (.option te lo)).join (p.deep td)).inst (p.sd σ))
+        · have hlo : Vis p L (lo.inst (p.sd σ)) :=
+            Vis.of_le (LExpr.le_inst _ (LExpr.le_trans
+              (LTy.top_le_deep _ (.option te lo) (fun _ _ h => LTy.noConfusion h))
+              (LExpr.le_join_left _ _))) hvis
+          cases hov with
+          | hidden h => exact (h hlo).elim
+          | none =>
+            simp only [evalRhs, h₁, h₂, hd₁, hd₂]
+            exact brel_done hw (V.raiseσ _ (V.flow hdv (Flow.lsubst _ _ hf₂)))
+          | some hab =>
+            simp only [evalRhs, h₁, h₂, hd₁, hd₂]
+            exact brel_done hw (V.raiseσ _ (V.flow hab (Flow.lsubst _ _ hf₁)))
+        · cases hot₁ <;> cases hot₂ <;> simp only [evalRhs, h₁, h₂, hd₁, hd₂] <;>
+            exact brel_done hw (V.hideσ hpf _ _ hvis)
+      | isOk ha =>
+        refine BRelR.of_brel ?_
+        obtain ⟨v₁, v₂, h₁, h₂, hv, ht₁, ht₂⟩ := latom_bothσ he₁ he₂ hrel ha
+        simp only [LTy.lsubst] at hv ht₁ ht₂
+        cases hv with
+        | hidden h =>
+          cases ht₁ <;> cases ht₂ <;> simp only [evalRhs, h₁, h₂, LTy.lsubst] <;>
+            exact brel_done hw (.hidden (by simpa [LTy.top] using h))
+        | ok _ => simp only [evalRhs, h₁, h₂, LTy.lsubst]; exact brel_done hw .bool
+        | err _ => simp only [evalRhs, h₁, h₂, LTy.lsubst]; exact brel_done hw .bool
       | mkOk ha _ =>
         refine BRelR.of_brel ?_
         obtain ⟨v₁, v₂, h₁, h₂, hv, _, _⟩ := latom_bothσ he₁ he₂ hrel ha

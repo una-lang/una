@@ -411,6 +411,15 @@ mutual
       | "prelude.parse_int", [s] => pure (.parse s)
       -- `first(xs)` (#532): the head of a list, labeled by the list's top label only (`spec/14 §1`).
       | "prelude.first", [xs] => pure (.first xs)
+      | "prelude.or_else", [o, d] => pure (.orElse o d)
+      | "prelude.is_ok", [r] => pure (.isOk r)
+      -- `abs`, `min`, `max` and `slice` (#542) label like `add`: every label of their arguments.
+      -- Edition 0.2's `min` and `max` are generic over `Ord`; on another type than `Int` F1's
+      -- typing has no overload, an F1 restriction (#532).
+      | "prelude.abs", [x] => pure (.prim .abs [x])
+      | "prelude.min", [a, b] => pure (.prim .min [a, b])
+      | "prelude.max", [a, b] => pure (.prim .max [a, b])
+      | "prelude.slice", [t, a, b] => pure (.prim .slice [t, a, b])
       | "prelude.sum", [xs] => pure (.prim .sum [xs])
       | "prelude.append", [xs, x] => pure (.append xs x)
       | "prelude.set", [xs, i, x] => pure (.set xs i x)
@@ -1231,7 +1240,8 @@ partial def rawCallees (j : J) : List String :=
 declaration may reach and still be accepted. -/
 def preludeF1 : List String :=
   ["prelude.map", "prelude.filter", "prelude.first_where", "prelude.fold", "prelude.parse_int",
-    "prelude.sum", "prelude.append", "prelude.set", "prelude.first"]
+    "prelude.sum", "prelude.append", "prelude.set", "prelude.first", "prelude.or_else",
+    "prelude.is_ok", "prelude.abs", "prelude.min", "prelude.max", "prelude.slice"]
 
 /-- A rejection by a restriction of option B1 is not a flow the model forbids: the program is
 outside B1, so it is not re-checked (ADR 0008). So is one by a form Una has and F1 does not

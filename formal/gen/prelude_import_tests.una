@@ -1,0 +1,35 @@
+module m
+
+pub kind Oops = | Bad
+
+pub abs_public(x: Int) -> Int = abs(x)
+
+pub abs_secret(x: secret Int) -> Int = abs(x)
+
+pub min_public(a: Int, b: Int) -> Int = min(a, b)
+
+pub min_secret(a: secret Int, b: Int) -> Int = min(a, b)
+
+pub max_public(a: Int, b: Int) -> Int = max(a, b)
+
+pub max_secret(a: Int, b: secret Int) -> Int = max(a, b)
+
+pub min_text(a: Text, b: Text) -> Text = min(a, b)
+
+pub or_else_public(o: Option[Int]) -> Int = o.or_else(default: 0)
+
+pub or_else_secret(o: Option[secret Int]) -> Int = o.or_else(default: 0)
+
+pub is_ok_public(r: Result[secret Int, Oops]) -> Bool = r.is_ok()
+
+pub is_ok_secret(r: secret Result[Int, Oops]) -> Bool = r.is_ok()
+
+pub slice_public(t: Text) -> Text
+  requires t.len >= 2
+=
+  t.slice(start: 0, end: 1)
+
+pub slice_secret(t: secret Text) -> Text
+  requires t.len >= 2
+=
+  t.slice(start: 0, end: 1)

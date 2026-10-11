@@ -342,6 +342,19 @@ theorem aborts_agreeσ {σ : List (String × LTy)} {pr : Prim} {ts : List LTy} {
       rw [hint hes.1 h₁ (hdeep _ (by simp) (fun h => Prim.noConfusion h)),
         hint hes.2.1 h₂ (hdeep _ (by simp) (fun h => Prim.noConfusion h))]
     | [], _, hes | [_], _, hes | _ :: _ :: _ :: _, _, hes => simp at hes
+  | slice =>
+    have htext : ∀ {u : LTy} {a b : Val}, u.erase = .text → V p L (u.lsubst p.recordDeep σ) a b →
+        Vis p L ((p.deep u).inst (p.sd σ)) → a = b := by
+      intro u a b he h hd
+      cases u <;> simp [LTy.erase] at he
+      exact V.eq_text h hd
+    match ts, hvs, hes with
+    | [_, _, _], .cons h₁ (.cons h₂ (.cons h₃ .nil)), hes =>
+      simp only [List.map_cons, List.map_nil, List.cons.injEq] at hes
+      rw [htext hes.1 h₁ (hdeep _ (by simp) (fun h => Prim.noConfusion h)),
+        hint hes.2.1 h₂ (hdeep _ (by simp) (fun h => Prim.noConfusion h)),
+        hint hes.2.2.1 h₃ (hdeep _ (by simp) (fun h => Prim.noConfusion h))]
+    | [], _, hes | [_], _, hes | [_, _], _, hes | _ :: _ :: _ :: _ :: _, _, hes => simp at hes
   | _ => simp [Prim.aborts]
 
 /-- A primitive gives the same result in both runs when the observer sees its label's instance. -/
@@ -364,11 +377,16 @@ theorem prim_agreeσ {σ : List (String × LTy)} {pr : Prim} {ts : List LTy} {t 
     intro u a b he h hd
     cases u <;> simp [LTy.erase] at he
     exact V.eq_bool h hd
+  have htext : ∀ {u : LTy} {a b : Val}, u.erase = .text → V p L (u.lsubst p.recordDeep σ) a b →
+      Vis p L ((p.deep u).inst (p.sd σ)) → a = b := by
+    intro u a b he h hd
+    cases u <;> simp [LTy.erase] at he
+    exact V.eq_text h hd
   cases hp with
   | concat hts =>
     rw [VList.eq_texts_visσ hvs (fun u hu => ⟨hts _ (hes ▸ List.mem_map_of_mem hu),
       hdeep (fun h => Prim.noConfusion h) u hu⟩)]
-  | add | sub | mul | div | mod | lt | eqInt =>
+  | add | sub | mul | div | mod | lt | eqInt | min | max =>
     match ts, hvs, hes with
     | [_, _], .cons h₁ (.cons h₂ .nil), hes =>
       simp only [List.map_cons, List.map_nil, List.cons.injEq] at hes
@@ -381,6 +399,20 @@ theorem prim_agreeσ {σ : List (String × LTy)} {pr : Prim} {ts : List LTy} {t 
       simp only [List.map_cons, List.map_nil, List.cons.injEq] at hes
       rw [hbool hes.1 h₁ (hdeep (fun h => Prim.noConfusion h) _ (by simp))]
     | [], _, hes | _ :: _ :: _, _, hes => simp at hes
+  | abs =>
+    match ts, hvs, hes with
+    | [_], .cons h₁ .nil, hes =>
+      simp only [List.map_cons, List.map_nil, List.cons.injEq] at hes
+      rw [hint hes.1 h₁ (hdeep (fun h => Prim.noConfusion h) _ (by simp))]
+    | [], _, hes | _ :: _ :: _, _, hes => simp at hes
+  | slice =>
+    match ts, hvs, hes with
+    | [_, _, _], .cons h₁ (.cons h₂ (.cons h₃ .nil)), hes =>
+      simp only [List.map_cons, List.map_nil, List.cons.injEq] at hes
+      rw [htext hes.1 h₁ (hdeep (fun h => Prim.noConfusion h) _ (by simp)),
+        hint hes.2.1 h₂ (hdeep (fun h => Prim.noConfusion h) _ (by simp)),
+        hint hes.2.2.1 h₃ (hdeep (fun h => Prim.noConfusion h) _ (by simp))]
+    | [], _, hes | [_], _, hes | [_, _], _, hes | _ :: _ :: _ :: _ :: _, _, hes => simp at hes
   | lenList =>
     match ts, hvs, hes with
     | [u], .cons h₁ .nil, hes =>

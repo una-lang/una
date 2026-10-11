@@ -174,6 +174,8 @@ mutual
     | _, _, _, .none => .none
     | _, _, _, .some h => .some (atom_subst τ h)
     | _, _, _, .first h => .first (atom_subst τ h)
+    | _, _, _, .orElse ho hd => .orElse (atom_subst τ ho) (atom_subst τ hd)
+    | _, _, _, .isOk h => .isOk (atom_subst τ h)
     | _, _, _, .mkOk h => .mkOk (atom_subst τ h)
     | _, _, _, .mkErr h => .mkErr (atom_subst τ h)
     | _, _, _, .lambda (ts := ts) hlen hb => by
