@@ -369,6 +369,9 @@ mutual
         LRhsTy p E Γ pc (.list items) (.list t .bot) .none
     | none {Γ pc t} : t.InPlace → LRhsTy p E Γ pc .none (.option t .bot) .none
     | some {Γ pc a t} : LAtomTy Γ a t → LRhsTy p E Γ pc (.some a) (.option t .bot) .none
+    /-- T-First (#532): the head of a list, as an option labeled by the list's top label only,
+    since whether there is one is the list's length (`spec/14 §1`); the element keeps its own. -/
+    | first {Γ pc a t l} : LAtomTy Γ a (.list t l) → LRhsTy p E Γ pc (.first a) (.option t l) .none
     /-- `Ok(a)` and `Err(a)` (#508): the other side holds no value, so any type in place will
     do, and the flow into the declared type decides it. Which constructor is built is decided
     by the program counter, which the rules of branches raise the value by. -/

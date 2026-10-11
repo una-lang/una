@@ -106,6 +106,13 @@ mutual
       simp only [checkRhs, bind_ok, pure_ok] at h
       obtain ⟨t, ht, _, hf, rfl⟩ := h
       exact ⟨_, .some (atomTy_sound ht), flowTo_ok hf⟩
+    | .first a, ε, h => by
+      simp only [checkRhs, bind_ok] at h
+      obtain ⟨xt, hxt, h⟩ := h
+      cases xt <;> try (simp at h; done)
+      simp only [bind_ok, pure_ok] at h
+      obtain ⟨_, hf, rfl⟩ := h
+      exact ⟨_, .first (atomTy_sound hxt), flowTo_ok hf⟩
     | .mkOk a, ε, h => by
       simp only [checkRhs] at h
       cases ann with

@@ -163,6 +163,7 @@ mutual
       exact .list h
     | _, _, _, _, _, .none _ => .none
     | _, _, _, _, _, .some h => .some (latom_erase h)
+    | _, _, _, _, _, .first h => .first (latom_erase h)
     | _, _, _, _, _, .mkOk h _ => .mkOk (latom_erase h)
     | _, _, _, _, _, .mkErr h _ => .mkErr (latom_erase h)
     | _, _, _, _, _, .lambda (params := params) hb _ _ _ _ => by

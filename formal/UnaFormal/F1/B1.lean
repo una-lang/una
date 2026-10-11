@@ -10,7 +10,7 @@ mutual
   /-- A right-hand side that performs no event and cannot fail or call: the `via` functions of
   option B1. -/
   def Rhs.Pure : Rhs → Prop
-    | .atom _ | .prim _ _ | .construct _ _ | .field _ _ | .list _ | .none | .some _ | .mkOk _
+    | .atom _ | .prim _ _ | .construct _ _ | .field _ _ | .list _ | .none | .some _ | .first _ | .mkOk _
     | .mkErr _ | .eq _ _ | .variant _ _ _
     | .lambda _ _ | .funRef _ _ => True
     | _ => False
@@ -401,6 +401,7 @@ theorem noRaise_run (p : Program) (w : World H) : ∀ n : Nat,
       | list xs => simp only [evalRhs]; cases evalAtoms env xs <;> simp [Option.elim]
       | none => simp [evalRhs, done]
       | some a => simp only [evalRhs]; cases evalAtom env a <;> simp [Option.elim]
+      | first a => simp only [evalRhs]; split <;> simp [done, stuck]
       | mkOk a => simp only [evalRhs]; cases evalAtom env a <;> simp [Option.elim]
       | mkErr a => simp only [evalRhs]; cases evalAtom env a <;> simp [Option.elim]
       | eq a b => simp only [evalRhs]; split <;> simp [done, stuck]

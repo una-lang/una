@@ -35,6 +35,7 @@ mutual
     | .list items => .list items
     | .none => .none
     | .some a => .some a
+    | .first a => .first a
     | .mkOk a => .mkOk a
     | .mkErr a => .mkErr a
     | .declassify pol a => .declassify pol a
@@ -547,6 +548,14 @@ theorem eval_anon (hH : H.AnonInvariant) (h4 : H.RespTyped) (hf : ∀ f, (P.find
       | some a =>
         simp only [evalRhs, Rhs.anon, evalAtom_anon]
         cases evalAtom env a <;> simp [runAnon, Res.anon, Val.anon]
+      | first a =>
+        simp only [evalRhs, Rhs.anon, evalAtom_anon]
+        cases evalAtom env a with
+        | none => simp [runAnon_stuck]
+        | some v =>
+          cases v with
+          | list items => cases items <;> rfl
+          | _ => simp [Val.anon, runAnon_stuck]
       | mkOk a =>
         simp only [evalRhs, Rhs.anon, evalAtom_anon]
         cases evalAtom env a <;> simp [runAnon, Res.anon, Val.anon]

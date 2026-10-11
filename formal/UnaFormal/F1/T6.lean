@@ -789,6 +789,22 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
         obtain ⟨v₁, v₂, h₁, h₂, hv, _, _⟩ := latom_bothσ he₁ he₂ hrel ha
         simp only [evalRhs, h₁, h₂, Option.map, Option.elim, LTy.lsubst]
         exact brel_done hw (.some hv)
+      | first ha =>
+        refine BRelR.of_brel ?_
+        obtain ⟨v₁, v₂, h₁, h₂, hv, ht₁, ht₂⟩ := latom_bothσ he₁ he₂ hrel ha
+        simp only [LTy.lsubst] at hv ht₁ ht₂
+        cases hv with
+        | hidden h =>
+          cases ht₁ with
+          | @list xs _ _ _ =>
+          cases ht₂ with
+          | @list ys _ _ _ =>
+          cases xs <;> cases ys <;> simp only [evalRhs, h₁, h₂, LTy.lsubst] <;>
+            exact brel_done hw (.hidden (by simpa [LTy.top] using h))
+        | list hall =>
+          cases hall with
+          | nil => simp only [evalRhs, h₁, h₂, LTy.lsubst]; exact brel_done hw .none
+          | cons hab _ => simp only [evalRhs, h₁, h₂, LTy.lsubst]; exact brel_done hw (.some hab)
       | mkOk ha _ =>
         refine BRelR.of_brel ?_
         obtain ⟨v₁, v₂, h₁, h₂, hv, _, _⟩ := latom_bothσ he₁ he₂ hrel ha

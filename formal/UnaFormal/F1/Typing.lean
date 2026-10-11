@@ -110,6 +110,7 @@ mutual
         AtomsTy ctx items (items.map (fun _ => t)) → RhsTy p ctx (.list items) (.list t)
     | none {ctx t} : RhsTy p ctx .none (.option t)
     | some {ctx a t} : AtomTy ctx a t → RhsTy p ctx (.some a) (.option t)
+    | first {ctx a t} : AtomTy ctx a (.list t) → RhsTy p ctx (.first a) (.option t)
     | mkOk {ctx a t e} : AtomTy ctx a t → RhsTy p ctx (.mkOk a) (.result t e)
     | mkErr {ctx a t e} : AtomTy ctx a e → RhsTy p ctx (.mkErr a) (.result t e)
     | lambda {ctx params body ts r} :

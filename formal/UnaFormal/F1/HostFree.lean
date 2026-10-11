@@ -22,7 +22,7 @@ mutual
     | .read _ | .write _ _ | .req _ _ | .envGet _ => false
     | .lambda _ b => b.hostFree
     | .atom _ | .prim _ _ | .call _ _ _ | .apply _ _ | .op _ | .construct _ _ | .variant _ _ _ | .field _ _
-    | .list _ | .none | .some _ | .mkOk _ | .mkErr _ | .funRef _ _ | .declassify _ _ | .map _ _ | .filter _ _
+    | .list _ | .none | .some _ | .first _ | .mkOk _ | .mkErr _ | .funRef _ _ | .declassify _ _ | .map _ _ | .filter _ _
     | .firstWhere _ _ | .fold _ _ _ | .parse _ | .checked _ _ _ | .eq _ _ | .tuple _ | .append _ _ | .set _ _ _
     | .toText _ => true
 
@@ -432,6 +432,19 @@ theorem eval_hostFreeIn
         subst hv
         simp only [Val.HostFreeIn]
         exact evalAtom_hostFree hf ha
+      | first a =>
+        simp only [evalRhs]
+        cases hv : evalAtom env a with
+        | none => exact SameOn.stuck w u
+        | some v =>
+          cases v with
+          | list items =>
+            have his := evalAtom_hostFree hf hv
+            simp only [Val.HostFreeIn] at his
+            cases items with
+            | nil => exact SameOn.done w u (by simp [Val.HostFreeIn])
+            | cons x xs => exact SameOn.done w u ((Val.hostFreeAll_iff _).mp his x (by simp))
+          | _ => exact SameOn.stuck w u
       | mkOk a =>
         refine SameOn.ret w u fun v hv => ?_
         cases ha : evalAtom env a <;> simp [ha, Option.elim] at hv
