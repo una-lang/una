@@ -47,6 +47,10 @@ The evidence for R1, like H1 to H4's for the host:
 - the tests: `una-cli` `tests/runtime.rs`, `a_failing_main_is_u6001_and_shows_only_public_fields`, and `una-rt` `render.rs`, `a_failure_shows_its_public_fields_and_redacts_labeled_ones_inside`;
 - the hunt's P1 oracle, which runs `main` failing with a secret field on two inputs and compares the reports.
 
+### R2: `parse_int`'s failure is a code
+
+In edition 0.2, the prelude's `ParseError` is a payload kind, `Empty | NotADigit(at: Int) | NoDigits`, and F1 reads `parse_int` as its `parse`, whose failure is a code. **R2** is the premise that this is faithful: the field `at` is a function of the text, which also decides the failure, so it carries no more than the failure's own label, `pc ⊔ ℓ*(text)`, and two failures of the same code whose `at` differ come from texts the observer cannot tell apart. The importer never reads `ParseError` as a sum: the export does not declare the prelude's kinds, and `sums` excludes `prelude.ParseError` explicitly, so a document that declared one would not change how `parse` fails. If `ParseError` gained a field that the text does not decide, R2 would be false, and the exclusion would have to go, with `parse_int`'s failure read as a `raise`.
+
 ### A `via` function with a payload kind
 
 `spec/07 §5` rule 1 gives a policy the `fails` of its `via` function, of any kind, so a `via` function may fail with a payload kind in Una. F1 releases a `via` function's failure as `Err(c)`, a code (ADR 0090), so this is the model's restriction, not Una's: option B1 asks a `via` function to raise no payload (`B1WellFormed.via`, `Check.b1Ok`, and `raise` is not `PureOrFails`). Every program the importer builds holds every policy of the document, so such a policy makes every declaration of the document not re-checked, never rejected (`B1 restriction`, ADR 0008), which an `ImportTest` pins.
