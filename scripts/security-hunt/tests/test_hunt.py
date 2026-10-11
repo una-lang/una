@@ -216,6 +216,24 @@ class Generators(unittest.TestCase):
             if p.op == "O3" and p.variant.startswith("to-int"):
                 self.assertIn("T: Integer", p.files["src/app/main.una"])
 
+    def test_f_family_is_open_and_covers_every_carrier(self):
+        from hunt.families.fragment import CARRIERS, ENDINGS
+        seen = set()
+        for p in every_program(120):
+            if p.op != "F1":
+                continue
+            self.assertEqual((p.cls, p.expect), (OPEN, []))
+            seen.add(p.variant)
+        carriers = {v.split("-", 1)[0] for v in seen}
+        self.assertTrue({c.split("-")[0] for c in CARRIERS} <= carriers | {"first"})
+        self.assertTrue(any(v.endswith("write-internal") for v in seen))
+
+    def test_parse_recheck(self):
+        out = "doc.json\tmain.run\taccepted\tany host\ndoc.json\tmain.g\tnot re-checked\tthe type `X`\n"
+        rows = drivers.parse_recheck(out)
+        self.assertEqual([r["outcome"] for r in rows], ["accepted", "not re-checked"])
+        self.assertEqual(rows[1]["note"], "the type `X`")
+
     def test_t11_class_follows_the_failure_label(self):
         for p in every_program(80):
             if p.op != "T11":
