@@ -1,11 +1,12 @@
 # 0092. Conditions on allowed effects
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-11
-- Deciders: Una project (pending acceptance)
+- Deciders: Una project (accepted on 2026-10-11)
 - Resolves: issue #520, part A ("when an allowed operation runs"). Parts B and C are ADR 0093 and ADR 0094.
 - Target: edition `0.3`. Editions `0.1` and `0.2` keep today's rules, and the Gate 1 pin (v0.1.9, edition `0.1`) does not move.
-- Amends, once accepted: `spec/02 §3`, `§4`, `§8`, `spec/05 §3`, `§9`, `spec/12 §3`, `spec/13 §3`, `§4`, `§7`
+- Implementation: #564 (edition `0.3`), with its theorem #561. The spec amends below land with the implementation.
+- Amends: `spec/02 §3`, `§4`, `§8`, `spec/05 §3`, `§9`, `spec/12 §3`, `spec/13 §3`, `§4`, `§7`
 
 ## Context
 
@@ -227,7 +228,7 @@ The entry point's header is the scaffold's, so the chain always ends at a refute
 
 ## Open obligations
 
-- The trace-safety theorem in F1 (rule 7), a milestone of the formal track.
+- The trace-safety theorem in F1 (rule 7), a milestone of the formal track (#561).
 - The re-check's reading of conditioned operations, after the theorem.
 - The state form (B04, B05), a separate ADR (#558).
-- U3023 and the obligation kind `contract_lock` join `spec/13 §4` and `spec/12 §3` when this ADR is accepted.
+- Assigned on acceptance: U3023, and the obligation kinds `effect_condition` and `contract_lock`. They join `spec/13 §4` and `spec/12 §3` with the implementation (#564).

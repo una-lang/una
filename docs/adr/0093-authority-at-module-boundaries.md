@@ -1,11 +1,12 @@
 # 0093. Authority at module boundaries
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-11
-- Deciders: Una project (pending acceptance)
+- Deciders: Una project (accepted on 2026-10-11)
 - Resolves: issue #520, part B ("with which authority"). Part A is ADR 0092, part C ADR 0094. Related: #59 (attenuation by parameters), ADR 0084 (`una fix`).
 - Target: edition `0.3`. Editions `0.1` and `0.2` keep today's rules, and the Gate 1 pin does not move.
-- Amends, once accepted: `spec/02 §4`, `spec/05 §4`, `§9`, `spec/13 §3`, `§4`, `§7`
+- Implementation: #565 (edition `0.3`), with its theorem #562. The spec amends below land with the implementation.
+- Amends: `spec/02 §4`, `spec/05 §4`, `§9`, `spec/13 §3`, `§4`, `§7`
 
 ## Context
 
@@ -120,6 +121,6 @@ Una has no package dependencies yet. A package is its own modules (`spec/13 §7`
 
 ## Open obligations
 
-- The authority-confinement theorem in F1 (rule 7), a milestone of the formal track.
+- The authority-confinement theorem in F1 (rule 7), a milestone of the formal track (#562).
 - The `[inherit]` table's exact form, with the dependency ADR that introduces packages' dependencies.
-- U3020 and U3021 join `spec/13 §4`'s registry when this ADR is accepted (codes are assigned at acceptance).
+- Assigned on acceptance: U3020 and U3021. They join `spec/13 §4`'s registry with the implementation (#565).

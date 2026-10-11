@@ -1,11 +1,12 @@
 # 0094. On whose behalf an operation answers
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-11
-- Deciders: Una project (pending acceptance)
+- Deciders: Una project (accepted on 2026-10-11)
 - Resolves: issue #520, part C ("on whose behalf"), for B09. B07 is not covered: #560. Parts A and B are ADR 0092 and ADR 0093.
 - Target: edition `0.3`. Editions `0.1` and `0.2` keep today's rules, and the Gate 1 pin does not move.
-- Amends, once accepted: `spec/01 §5`, `spec/02 §3`, `spec/05 §3`, `§4`, `§9`, `spec/07 §2`, `§3`, `spec/13 §6`
+- Implementation: #566 (edition `0.3`), with its formal extension #563. The spec amends below land with the implementation.
+- Amends: `spec/01 §5`, `spec/02 §3`, `spec/05 §3`, `§4`, `§9`, `spec/07 §2`, `§3`, `spec/13 §6`
 
 ## Context
 
@@ -116,7 +117,7 @@ A capability says which operations, not on whose behalf they answer. Una already
 
 ## Open obligations
 
-- F1's extension with operation labels and labeled failure decisions, and T6's proof over it under H5 (rule 8), a milestone of the formal track.
+- F1's extension with operation labels and labeled failure decisions, and T6's proof over it under H5 (rule 8), a milestone of the formal track (#563).
 - H5 in the status page's list of host premises and in the build report's Assumed zone.
-- U3022 joins `spec/13 §4`'s registry when this ADR is accepted.
+- Assigned on acceptance: U3022. It joins `spec/13 §4`'s registry with the implementation (#566).
 - B07: #560.
