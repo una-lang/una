@@ -33,6 +33,7 @@ A capability says which operations, not on whose behalf they answer. Una already
 
    - The label is a label of `spec/07 §2`, so a principal is a category declared in `una.toml` under `[labels] categories`. An undeclared one is U4007.
    - An operation without `gives` answers at its declared result label, as today.
+   - It follows the grammar of ADR 0092 rule 1 (`cap_op`). It is not allowed in a function type's `uses` (U0101), nor in a `[boundaries]` ceiling (U7002). A named function whose `uses` carry a label may not be used as a function value (U3006).
    - It composes with ADR 0092's condition: `journal where not dry_run`, `owner gives internal[Service]`, and both, in that order, `owner gives internal[Service] where c`.
    - Next to the forms it extends:
 
