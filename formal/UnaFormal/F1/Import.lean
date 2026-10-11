@@ -228,6 +228,10 @@ partial def ty (c : Ctx) (j : J) : M LTy := do
       pure (.var a (l.dropPlain a))
     | "named" =>
       let q ← path b
+      -- A kind is a record or a failure's code, never both (#509); a document where one name is
+      -- both is not one F1 reads.
+      if c.records.contains q && c.codes.contains q then
+        throw s!"the kind `{q}`, both a record and a failure's code"
       let args ← arr (← field b "args")
       match q, args with
       | "prelude.List", [t] => pure (.list (← ty c t) l)
@@ -240,7 +244,11 @@ partial def ty (c : Ctx) (j : J) : M LTy := do
           | "base" =>
             let eb ← field e "base"
             if (← kind eb) == "named" then
-              if (← arr (← field eb "args")).isEmpty then pure (c.codes.contains (← path eb))
+              if (← arr (← field eb "args")).isEmpty then
+                let q ← path eb
+                if c.records.contains q && c.codes.contains q then
+                  throw s!"the kind `{q}`, both a record and a failure's code"
+                pure (c.codes.contains q)
               else pure false
             else pure false
           | _ => pure false
@@ -641,15 +649,30 @@ def codeKinds (decls : List Decl) : List String :=
   own ++ (["prelude.FileError", "prelude.KeyError", "prelude.HttpError"].filter
     fun q => !declared.contains q)
 
-/-- The record kinds: kinds with one variant and no type parameters, whose fields F1 reads,
-until no more are dropped. -/
+/-- The record kinds a type names, at any depth. -/
+partial def LTy.recordNames : LTy → List String
+  | .record r _ => [r]
+  | .list t _ | .option t _ => LTy.recordNames t
+  | .result t e _ => LTy.recordNames t ++ LTy.recordNames e
+  | .fn ps r _ _ _ _ => ps.flatMap LTy.recordNames ++ LTy.recordNames r
+  | .tuple ts _ => ts.flatMap LTy.recordNames
+  | _ => []
+
+/-- The record kinds: kinds the export flags as records (`record`, ADR 0083), without type
+parameters (`params`, #509), whose fields F1 reads and which do not reach themselves, until no
+more are dropped. The flag separates
+a record from a sum kind with one variant, such as `kind Bad = | Oops`, a failure's code
+(`codeKinds`). -/
 def records (decls : List Decl) (funs : List String) : List Record := Id.run do
   let cands := decls.filterMap fun d =>
     if d.kind != "data" then none
     else
       match plainRun (do
-          let tps ← arr (← field d.value "type_params")
+          let tps ← arr (← field d.value "params")
           if !tps.isEmpty then throw "generic"
+          match (← field d.value "record").getBool? with
+          | .ok true => pure ()
+          | _ => throw "not a record"
           match ← arr (← field d.value "variants") with
           | [v] => pure (s!"{d.module}.{← str (← field d.value "name")}", ← arr (← field v "fields"))
           | _ => throw "not a record") with
@@ -668,6 +691,27 @@ def records (decls : List Decl) (funs : List String) : List Record := Id.run do
             | _ => throw "a field") with
         | .ok ts => some (q, ts)
         | .error _ => none
+    -- A record that reaches itself through its fields, such as `kind Node` with
+    -- `next: Option[Node]`, is not one F1 reads (#509): its values are trees of any depth, and
+    -- F1's equality of records unfolds them only so far (`Program.recordEq`), so `==` over one
+    -- would be rejected where Una allows it. The records that reach it are dropped in turn.
+    -- Each edge once: a record with many fields of one record type would otherwise push that
+    -- type many times, past the bound below, and a cycle could go unseen.
+    let edges := out.map fun (q, ts) =>
+      (q, ((ts.flatMap LTy.recordNames).filter (names.contains ·)).eraseDups)
+    let reach := fun (q : String) => Id.run do
+      let mut seen : List String := []
+      let mut todo := (List.lookup q edges).getD []
+      for _ in [0:edges.length * edges.length + 1] do
+        match todo with
+        | [] => break
+        | r :: rest =>
+          todo := rest
+          if !seen.contains r then
+            seen := r :: seen
+            todo := todo ++ (List.lookup r edges).getD []
+      pure seen
+    out := out.filter fun (q, _) => !(reach q).contains q
     names := out.map Prod.fst
   -- The deep labels: the least solution over nested records (`spec/07 §7` rule 2).
   let mut deep : List (String × Label) := out.map fun q => (q.1, Label.bot)

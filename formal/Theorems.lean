@@ -240,3 +240,11 @@ import UnaFormal
 #print axioms Una.F1.ResultExample.public_checked
 #print axioms Una.F1.ResultExample.public_runs
 #print axioms Una.F1.ResultExample.err_rel_hidden
+#print axioms Una.F1.RecordExample.certified
+#print axioms Una.F1.RecordExample.same_lines
+#print axioms Una.F1.RecordExample.card_rejected
+#print axioms Una.F1.RecordExample.card_leaks
+#print axioms Una.F1.RecordExample.card_untyped
+#print axioms Una.F1.RecordExample.public_card_checked
+#print axioms Una.F1.RecordExample.public_card_runs
+#print axioms Una.F1.RecordExample.card_rel_hidden

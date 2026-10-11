@@ -49,6 +49,7 @@ Each one came from an adversarial review (Una-1) or from the proof itself.
 5. **M2's 7 rejections were not leaks.** Each one needed a fact the checker has and the export lacked. #443 added those facts to `una.core/1`, and the rejections went to 0.
 6. **#507: a `Result`'s error type was dropped.** The importer read `Result[T, E]` as F1's result of `T`, whose `Err` is a code. But `to_text` and `==` read an `Err` whole, payload included. On a Core that typed `to_text` of a `Result[Int, internal Int]` as `public Text`, the re-check said accepted, while the runtime would print the `internal` payload. `una check` rejects such a source (U4001), so no corpus declaration was a leak. Now the error type is dropped only when it is a kind without payload (the document's, or `FileError`, `KeyError` and `HttpError` of the specification) whose labels the result's top label carries; otherwise the declaration is not re-checked. 756 → 754: `relay.caught` (an error type the export leaves open, `?`) and `text.failure` (`ParseError`, whose `NotADigit` carries a position). `s15_ok_http_attempt.send` stays accepted: `internal HttpError` under an `internal` result.
 7. **#508: a `Result` keeps its error type.** `Result[T, E]` is F1's result of `T` and `E`, `Ok(a)` and `Err(a)` build one, and a `case` binds the `Err` arm's value at `E` raised by the scrutinee's label. `to_text` and `==` take every label of both positions, so F-R1 is closed by tracking labels instead of refusing the program. A kind without payload is still a failure's code, and a kind with a payload is not re-checked (#512). On a fresh export of `main` (1,344 documents), 759 → 765 accepted, 0 rejected: six declarations that read an `Err` arm's value (4) or use a `Result` whose error type is an ordinary type (`sw.g`, and `sw.leak`, which reaches it). An `attempt` whose error type the export leaves open (`relay.caught`, `?`) is not re-checked, never rejected.
+8. **#509: user record kinds were never read.** The importer looked for a record kind's type parameters under `type_params`, which the export never writes (`params`), so only `Http`'s `Header` and `Response` were records. A record is now read when the export flags it a record (`record`, which keeps a one-variant sum kind, a failure's code, out), it has no type parameters and it does not reach itself. Accepted, split by what `una check` says of the declaration's document: in documents it accepts, **506 → 529**; in documents it rejects, 259 → 499, every one for a proof or run-time diagnostic and none for information flow (U5001, an obligation refuted, 228 → 468; U5001 with U5002 20, U5002 4, U5003 2, U6003 1 and U6005 4, unchanged). In all, 765 → 1,028, 0 rejected, none lost. The re-check proves those declarations' flows, which is sound, but a document `una check` rejects does not count toward the headline.
 
 ## Findings the track produced
 
@@ -95,7 +96,7 @@ A declaration whose program uses no host operation, and whose parameters cannot 
 
 ## Theorem names
 
-`scripts/formal.sh` states 235 theorems, in `formal/Theorems.lean`.
+`scripts/formal.sh` states 243 theorems, in `formal/Theorems.lean`.
 
 | Claim | Theorems |
 | --- | --- |
