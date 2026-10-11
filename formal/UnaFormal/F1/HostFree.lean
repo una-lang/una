@@ -22,7 +22,7 @@ mutual
     | .read _ | .write _ _ | .req _ _ | .envGet _ => false
     | .lambda _ b => b.hostFree
     | .atom _ | .prim _ _ | .call _ _ _ | .apply _ _ | .op _ | .construct _ _ | .field _ _
-    | .list _ | .none | .some _ | .funRef _ _ | .declassify _ _ | .map _ _ | .filter _ _
+    | .list _ | .none | .some _ | .mkOk _ | .mkErr _ | .funRef _ _ | .declassify _ _ | .map _ _ | .filter _ _
     | .firstWhere _ _ | .fold _ _ _ | .parse _ | .checked _ _ _ | .eq _ _ | .tuple _ | .append _ _ | .set _ _ _
     | .toText _ => true
 
@@ -45,9 +45,10 @@ mutual
     | .list items => Val.HostFreeAllIn S items
     | .some v => Val.HostFreeIn S v
     | .ok v => Val.HostFreeIn S v
+    | .err v => Val.HostFreeIn S v
     | .record _ fs | .tuple fs => Val.HostFreeAllIn S fs
     | .closure _ b env => b.hostFree = true ∧ (∀ g ∈ b.callees, S g) ∧ Val.HostFreeEnvIn S env
-    | .int _ | .bool _ | .text _ | .unit | .none | .err _ => True
+    | .int _ | .bool _ | .text _ | .unit | .none => True
 
   def Val.HostFreeAllIn (S : String → Prop) : List Val → Prop
     | [] => True
@@ -400,6 +401,18 @@ theorem eval_hostFreeIn
         subst hv
         simp only [Val.HostFreeIn]
         exact evalAtom_hostFree hf ha
+      | mkOk a =>
+        refine SameOn.ret w u fun v hv => ?_
+        cases ha : evalAtom env a <;> simp [ha, Option.elim] at hv
+        subst hv
+        simp only [Val.HostFreeIn]
+        exact evalAtom_hostFree hf ha
+      | mkErr a =>
+        refine SameOn.ret w u fun v hv => ?_
+        cases ha : evalAtom env a <;> simp [ha, Option.elim] at hv
+        subst hv
+        simp only [Val.HostFreeIn]
+        exact evalAtom_hostFree hf ha
       | lambda params body =>
         refine SameOn.done w u ?_
         simp only [Val.HostFreeIn]
@@ -637,8 +650,10 @@ theorem eval_hostFreeIn
             have hz := evalAtom_hostFree hf hs
             simp only [Val.HostFreeIn] at hz
             exact ihE w u _ oe (by simp only [Val.HostFreeEnvIn]; exact ⟨hz, hf⟩) he.1 (fun g hg => hc g (by simp [Expr.callees, hg]))
-          | err c =>
-            exact ihE w u _ ee (by simp only [Val.HostFreeEnvIn, Val.HostFreeIn]; exact ⟨trivial, hf⟩)
+          | err z =>
+            have hz := evalAtom_hostFree hf hs
+            simp only [Val.HostFreeIn] at hz
+            exact ihE w u _ ee (by simp only [Val.HostFreeEnvIn]; exact ⟨hz, hf⟩)
               he.2 (fun g hg => hc g (by simp [Expr.callees, hg]))
           | _ => exact SameOn.stuck w u
       | fail c => exact ⟨rfl, fun _ h => nomatch h⟩

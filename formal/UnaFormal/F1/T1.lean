@@ -251,6 +251,14 @@ theorem sound (hwf : p.WellFormed) (h4 : H.RespTyped) : ∀ n : Nat,
         obtain ⟨v, hv, hvt⟩ := atom_typed henv ha
         simp [evalRhs, hv, Good]
         exact .some hvt
+      | mkOk ha =>
+        obtain ⟨v, hv, hvt⟩ := atom_typed henv ha
+        simp [evalRhs, hv, Good]
+        exact .ok hvt
+      | mkErr ha =>
+        obtain ⟨v, hv, hvt⟩ := atom_typed henv ha
+        simp [evalRhs, hv, Good]
+        exact .err hvt
       | lambda hlen hb => simp only [evalRhs, done, Good]; exact .closure henv hlen hb
       | @funRef _ f _ fn σ hf =>
         simp only [evalRhs, hf, done, Good]
@@ -385,7 +393,7 @@ theorem sound (hwf : p.WellFormed) (h4 : H.RespTyped) : ∀ n : Nat,
         obtain ⟨v, hv, hvt⟩ := atom_typed henv hs
         cases hvt with
         | ok hw => simp only [eval, hv]; exact ihE (.cons hw henv) hok
-        | err => simp only [eval, hv]; exact ihE (.cons .int henv) herr
+        | err hw => simp only [eval, hv]; exact ihE (.cons hw henv) herr
       | fail => simp [eval, Good]
       | attempt hb =>
         have h := ihE (w := w) henv hb
@@ -396,7 +404,7 @@ theorem sound (hwf : p.WellFormed) (h4 : H.RespTyped) : ∀ n : Nat,
           obtain ⟨r, w'⟩ := rw
           cases r <;> simp [Good]
           · exact .ok
-          · exact .err
+          · exact .err .int
       | handle hb hh =>
         have h := ihE (w := w) henv hb
         simp only [eval]

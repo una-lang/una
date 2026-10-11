@@ -8,11 +8,11 @@ rule 3). The reading is part of the trusted base of the re-check (`docs/plan/for
 
 - Core's `gt a b` is F1's `lt b a`, and Core's `eq` is F1's `==` on any type with equality;
 - the prelude's `map`, `filter`, `first_where`, `fold` and `parse_int` are F1's axioms of them;
-- `Option` and `Result` of the prelude are F1's options and results, the error type of a result
-  dropped: F1's failures are codes, so a failure with a payload, a `case` or a handler that reads
-  the failure, is outside F1. The error type is dropped only when it is a kind without payload
-  whose labels the result's top label carries (#507): `to_text` and `==` read an `Err` whole, so a
-  payload would be missing from the model;
+- `Option` and `Result` of the prelude are F1's options and results, with the result's error type
+  (#508). F1's failures are codes, so a failure with a payload, or a handler that reads the failure,
+  is outside F1 (#512): an error type that is a kind without payload is read as `Int`, its code,
+  with the kind's own labels (#507), and any other error type is read as a type, so a kind with a
+  payload is not re-checked;
 - a kind with one variant and no type parameters is a record;
 - F1 has one operation, from a scalar (`Int`, `Bool` or `Text`) to `Unit`, which never fails: a function is read only when its body,
   its types and the signatures of what it calls mention at most one operation, of that shape,
@@ -38,7 +38,7 @@ def LTy.addStarTop (xs : List String) : LTy → LTy
   | .unit l => .unit { l with star := l.star ++ xs }
   | .list t l => .list t { l with star := l.star ++ xs }
   | .option t l => .option t { l with star := l.star ++ xs }
-  | .result t l => .result t { l with star := l.star ++ xs }
+  | .result t e l => .result t e { l with star := l.star ++ xs }
   | .record r l => .record r { l with star := l.star ++ xs }
   | .fn ps r o g f l => .fn ps r o g f { l with star := l.star ++ xs }
   | .var a l => .var a { l with star := l.star ++ xs }
@@ -50,7 +50,7 @@ def LTy.addStarAt (xs : List String) : List String → LTy → Option LTy
   | [], t => some (t.addStarTop xs)
   | "element" :: rest, .list t l => (LTy.addStarAt xs rest t).map (.list · l)
   | "arg 1" :: rest, .option t l => (LTy.addStarAt xs rest t).map (.option · l)
-  | "arg 1" :: rest, .result t l => (LTy.addStarAt xs rest t).map (.result · l)
+  | "arg 1" :: rest, .result t e l => (LTy.addStarAt xs rest t).map (.result · e l)
   | "result" :: rest, .fn ps r o g f l => (LTy.addStarAt xs rest r).map (.fn ps · o g f l)
   | _, _ => none
 
@@ -60,7 +60,7 @@ mutual
   def LTy.addStarAll (xs : List String) : LTy → LTy
     | .list t l => (LTy.list (LTy.addStarAll xs t) l).addStarTop xs
     | .option t l => (LTy.option (LTy.addStarAll xs t) l).addStarTop xs
-    | .result t l => (LTy.result (LTy.addStarAll xs t) l).addStarTop xs
+    | .result t e l => (LTy.result (LTy.addStarAll xs t) (LTy.addStarAll xs e) l).addStarTop xs
     | .fn ps r o g f l => (LTy.fn (LTy.addStarAlls xs ps) (LTy.addStarAll xs r) o g f l).addStarTop xs
     | t => t.addStarTop xs
 
@@ -73,6 +73,21 @@ end
 def LTy.withFlags (op fails : Bool) (host : HostFx := {}) : LTy → LTy
   | .fn ps r o g f l => .fn ps r (o || op) (g.or host) (f || fails) l
   | t => t
+
+/-- F1's failures are codes (#508): every `attempt` in a tail position of `e`, which gives `e`'s
+value, has a failure's code as its error type at `t`, the type `e` is checked at. A loop's body
+gives its state, a tuple, so an `attempt` there has none; an `attempt`'s body gives its result's
+value. An `attempt` whose error type is a kind with a payload, or a type the export leaves open,
+is not a shape F1 has (#512): its declaration is not re-checked, never rejected. -/
+partial def Expr.attemptsAt (t : LTy) : Expr → Bool
+  | .attempt b => match t with
+    | .result v (.int _) _ => b.attemptsAt v
+    | _ => false
+  | .letR _ _ _ b | .letE _ _ _ b | .letTuple _ _ b => b.attemptsAt t
+  | .ite _ a b | .caseOption _ a _ b | .caseResult _ _ a _ b | .handle a _ b =>
+    a.attemptsAt t && b.attemptsAt t
+  | .loop _ _ _ st _ b => b.attemptsAt (.tuple (st.map Prod.snd) .bot)
+  | .atom _ | .fail _ => true
 
 end Una.F1
 
@@ -207,6 +222,9 @@ partial def ty (c : Ctx) (j : J) : M LTy := do
       -- Both are the same type at every instance, since instantiation drops `ℓ_T` at a position
       -- of type `T` (`LTy.lsubst`, `LExpr.dropPlain`), so the reading drops it.
       let a ← str (← field b "value")
+      -- `?` is a type the export leaves open (an inferred error type of `fails of`), not a type
+      -- parameter: no rule reads it (#508).
+      if a == "?" then throw "a type the export leaves open (`?`)"
       pure (.var a (l.dropPlain a))
     | "named" =>
       let q ← path b
@@ -215,11 +233,9 @@ partial def ty (c : Ctx) (j : J) : M LTy := do
       | "prelude.List", [t] => pure (.list (← ty c t) l)
       | "prelude.Option", [t] => pure (.option (← ty c t) l)
       | "prelude.Result", [t, e] =>
-        -- F1's `Err` is a code, which `to_text` and `==` read as the whole value: the error type
-        -- is dropped only when it is a kind without payload, a code, whose labels the result's
-        -- own top label already carries (#507). Otherwise a payload `to_text` renders would be
-        -- missing from the model.
-        let le ← label (← field e "label")
+        -- The error type is kept (#508), so `to_text` and `==` see its labels. A kind without
+        -- payload is a failure's code, F1's `Int`, with the kind's own labels (#507); any other
+        -- error type is read as a type, and a kind with a payload is not one F1 has (#512).
         let code ← match ← kind e with
           | "base" =>
             let eb ← field e "base"
@@ -228,11 +244,8 @@ partial def ty (c : Ctx) (j : J) : M LTy := do
               else pure false
             else pure false
           | _ => pure false
-        if !code then throw "a `Result` whose error type is not a kind without payload"
-        if !(le.plain.isEmpty && le.star.isEmpty && decide (le.base.level ≤ l.base.level) &&
-            le.base.cats.all (l.base.cats.contains ·)) then
-          throw "a `Result` whose error type is labeled above the result"
-        pure (.result (← ty c t) l)
+        let et ← if code then pure (.int (← label (← field e "label"))) else ty c e
+        pure (.result (← ty c t) et l)
       | _, [] => if c.records.contains q then pure (.record q l) else throw s!"the type `{q}`"
       | _, _ => throw s!"the type `{q}` with type arguments"
     | "tuple" => pure (.tuple (← (← arr (← field b "value")).mapM (ty c)) l)
@@ -384,6 +397,8 @@ mutual
       match q, ← str (← field ctor "name"), args with
       | "prelude.Option", "Some", [a] => pure (.some a)
       | "prelude.Option", "None", [] => pure .none
+      | "prelude.Result", "Ok", [a] => pure (.mkOk a)
+      | "prelude.Result", "Err", [a] => pure (.mkErr a)
       | _, _, _ =>
         if c.records.contains q then pure (.construct q args) else throw s!"a value of `{q}`"
     | "field" =>
@@ -439,8 +454,18 @@ mutual
       let v ← field j "value"
       let body ← expr c (← field j "body")
       match ← kind v with
-      | "rhs" => pure (.letR x t (← rhs c (← field v "value")) body)
-      | "expr" => pure (.letE x t (← expr c (← field v "value")) body)
+      | "rhs" =>
+        let r ← rhs c (← field v "value")
+        -- A lambda's body gives the result of its function type (`Expr.attemptsAt`).
+        match r, t with
+        | .lambda _ lb, .fn _ res _ _ _ _ =>
+          if !lb.attemptsAt res then throw "an `attempt` whose error type is not a failure's code"
+        | _, _ => pure ()
+        pure (.letR x t r body)
+      | "expr" =>
+        let e ← expr c (← field v "value")
+        if !e.attemptsAt t then throw "an `attempt` whose error type is not a failure's code"
+        pure (.letE x t e body)
       | k => throw s!"the binding `{k}`"
     | "if" =>
       pure (.ite (← atom (← field j "cond")) (← expr c (← field j "then"))
@@ -478,8 +503,7 @@ mutual
         let y ← match errBinds with
           | [b] => bindName b
           | _ => pure "%unread"
-        if y != "%unread" && reads y errB then throw "a `case` that reads a failure's payload"
-        pure (.caseResult sc x (← expr c okB) "%unread" (← expr c errB))
+        pure (.caseResult sc x (← expr c okB) y (← expr c errB))
       | q => throw s!"a `case` on `{q}`"
     | "fail" =>
       if !(← arr (← field j "args")).isEmpty then throw "a failure with a payload"
@@ -554,6 +578,8 @@ def signature (c : Ctx) (module : String) (v : J) (body : Expr) : M Fun := do
           | some t => pure t
           | none => throw s!"a result summary at `{pos}`, outside F1") declared
       | .error _ => pure declared
+  -- The body gives the result (`Expr.attemptsAt`).
+  if !body.attemptsAt result then throw "an `attempt` whose error type is not a failure's code"
   let (op, host) ← usesEffects (← arr (← field v "uses"))
   pure {
     name, tparams := tps, eqParams := eqs, params := ps, result,
@@ -591,7 +617,10 @@ def plainRun {α : Type} (m : M α) : Except String α := (run m).map Prod.fst
 variants have no fields, and the specification's error kinds, `FileError` and `KeyError`
 (`spec/14 §3`) and `HttpError` (`spec/24 §1`), when the document does not declare them, as the
 export does not declare the first two. A document that declares one of them otherwise has its own
-declaration read. -/
+declaration read. A code is read as its variant's index and renders as it (#508), which tells two
+values apart exactly when their variants differ only while no variant has a field: the test
+`the_prelude_error_kinds_the_formal_model_reads_as_codes_have_no_payload` (`una-check`) fails if
+one of the three gains a payload in either edition's prelude, and then this list must drop it. -/
 def codeKinds (decls : List Decl) : List String :=
   let declared := decls.filterMap fun d =>
     if d.kind != "data" then none

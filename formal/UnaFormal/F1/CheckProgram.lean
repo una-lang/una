@@ -39,7 +39,8 @@ mutual
   def tyClosed : Ty → Bool
     | .var _ => false
     | .int | .bool | .text | .unit | .record _ => true
-    | .list t | .option t | .result t => tyClosed t
+    | .list t | .option t => tyClosed t
+    | .result t e => tyClosed t && tyClosed e
     | .fn ps r => tysClosed ps && tyClosed r
     | .tuple ts => tysClosed ts
 
@@ -55,7 +56,8 @@ mutual
   /-- `LTy.CatsIn`. -/
   def tyCats (cats : List String) : LTy → Bool
     | .int l | .bool l | .text l | .unit l | .record _ l | .var _ l => labelCats cats l.base
-    | .list t l | .option t l | .result t l => tyCats cats t && labelCats cats l.base
+    | .list t l | .option t l => tyCats cats t && labelCats cats l.base
+    | .result t e l => tyCats cats t && tyCats cats e && labelCats cats l.base
     | .fn ps r _ _ _ l => tysCats cats ps && tyCats cats r && labelCats cats l.base
     | .tuple ts l => tysCats cats ts && labelCats cats l.base
 
@@ -121,7 +123,7 @@ def _root_.Una.F1.LTy.lowerTop : LTy → LTy
   | .unit _ => .unit .bot
   | .list t _ => .list t .bot
   | .option t _ => .option t .bot
-  | .result t _ => .result t .bot
+  | .result t e _ => .result t e .bot
   | .record r _ => .record r .bot
   | .fn ps r o g f _ => .fn ps r o g f .bot
   | .var a _ => .var a .bot

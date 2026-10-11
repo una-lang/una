@@ -107,6 +107,8 @@ T1, the unary half and T6 carry both changes, and `scripts/formal.sh` passes wit
 - **2 not re-checked**, `result_ok` and `result_err`: they build a `Result` with `Ok` and `Err`, which F1 lacks. Since #507 the reason is their type, `Result[internal Int, Int]` and `Result[Int, internal Int]`: an error type with a payload, which F1's codes cannot hold. The `Result` model with payloads is #508.
 - **The other 8** are not re-checked, at "a call of `prelude.or_else`" (6), "the form `together_for`" (1), or, for `nested_result`, its `Result` type (#507; before it, "a value of `prelude.Result`", which this list had counted under `or_else`). `at`, `or_else` and `first` come in a later item.
 
+**Result with #508: 8 of 8 rejected at the leak.** #508 gives F1's results an error type and builds them with `Ok` and `Err`. `result_ok` and `result_err` are now rejected at the interpolation, as the other six: "the primitive's result, `internal Text`, does not flow into `public Text`". The other 8 are unchanged; `nested_result` is not re-checked at "a call of `prelude.or_else`".
+
 The helpers `edit_param`'s `push` and `generic_init`'s `same` are accepted, and neither prints.
 
 **The controls** (the coordinator's answer: existing `*_accepted` programs only). `edit_order_list_of_lists_accepted` and `edit_order_option_of_list_accepted` are dumped by v0.3.0, which accepts them. The re-check does not reject either: both are not re-checked, at `or_else`, as are their leaking counterparts. The 8 loop shapes have no `*_accepted` counterpart, and are unpaired. The `Map` controls pair with no replayed shape, since the `Map` leaks do not check on v0.2.0.

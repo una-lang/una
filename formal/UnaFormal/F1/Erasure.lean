@@ -34,6 +34,8 @@ mutual
     | .list items => .list items
     | .none => .none
     | .some a => .some a
+    | .mkOk a => .mkOk a
+    | .mkErr a => .mkErr a
     | .declassify pol a => .declassify pol a
     | .map xs f => .map xs f
     | .filter xs k => .filter xs k
@@ -77,7 +79,7 @@ mutual
     | .none => .none
     | .some v => .some (v.anon ρ)
     | .ok v => .ok (v.anon ρ)
-    | .err c => .err c
+    | .err v => .err (v.anon ρ)
     | .record r fs => .record r (Val.anons ρ fs)
     | .closure ps b env => .closure (anonParams ps) (b.anon ρ) (Val.anonEnv ρ env)
     | .tuple items => .tuple (Val.anons ρ items)
@@ -199,8 +201,8 @@ mutual
     | .list items | .tuple items => by
       simp only [Val.anon, Val.render]; rw [Val.renders_anon items]
     | .record r fs => by simp only [Val.anon, Val.render]; rw [Val.renders_anon fs]
-    | .some v | .ok v => by simp only [Val.anon, Val.render]; rw [Val.render_anon v]
-    | .int _ | .bool _ | .text _ | .unit | .none | .err _ | .closure _ _ _ => by
+    | .some v | .ok v | .err v => by simp only [Val.anon, Val.render]; rw [Val.render_anon v]
+    | .int _ | .bool _ | .text _ | .unit | .none | .closure _ _ _ => by
       simp [Val.anon, Val.render]
 
   theorem Val.renders_anon : ∀ vs : List Val, Val.renders (Val.anons ρ vs) = Val.renders vs
@@ -233,11 +235,15 @@ mutual
       cases b with
       | ok b => simp only [Val.anon, Val.beq]; exact Val.beq_anon a b
       | _ => simp [Val.anon, Val.beq]
+    | .err a, b => by
+      cases b with
+      | err b => simp only [Val.anon, Val.beq]; exact Val.beq_anon a b
+      | _ => simp [Val.anon, Val.beq]
     | .record r xs, b => by
       cases b with
       | record s ys => simp only [Val.anon, Val.beq]; rw [Val.beqs_anon xs ys]
       | _ => simp [Val.anon, Val.beq]
-    | .int _, b | .bool _, b | .text _, b | .unit, b | .none, b | .err _, b
+    | .int _, b | .bool _, b | .text _, b | .unit, b | .none, b
     | .closure _ _ _, b | .tuple _, b => by
       cases b <;> simp [Val.anon, Val.beq]
 
@@ -511,6 +517,12 @@ theorem eval_anon (hH : H.AnonInvariant) (h4 : H.RespTyped) (hf : ∀ f, (P.find
         cases evalAtoms env items <;> simp [runAnon, Res.anon, Val.anon, Val.anons_eq]
       | none => simp [evalRhs, Rhs.anon, runAnon_done, Val.anon]
       | some a =>
+        simp only [evalRhs, Rhs.anon, evalAtom_anon]
+        cases evalAtom env a <;> simp [runAnon, Res.anon, Val.anon]
+      | mkOk a =>
+        simp only [evalRhs, Rhs.anon, evalAtom_anon]
+        cases evalAtom env a <;> simp [runAnon, Res.anon, Val.anon]
+      | mkErr a =>
         simp only [evalRhs, Rhs.anon, evalAtom_anon]
         cases evalAtom env a <;> simp [runAnon, Res.anon, Val.anon]
       | lambda ps b =>
@@ -823,8 +835,8 @@ mutual
     | .list items => by simp only [Val.anon, Val.FirstOrder]; exact Val.firstOrderAll_anon items
     | .record _ fs => by simp only [Val.anon, Val.FirstOrder]; exact Val.firstOrderAll_anon fs
     | .tuple fs => by simp only [Val.anon, Val.FirstOrder]; exact Val.firstOrderAll_anon fs
-    | .some v | .ok v => by simp only [Val.anon, Val.FirstOrder]; exact Val.firstOrder_anon v
-    | .closure _ _ _ | .int _ | .bool _ | .text _ | .unit | .none | .err _ => by
+    | .some v | .ok v | .err v => by simp only [Val.anon, Val.FirstOrder]; exact Val.firstOrder_anon v
+    | .closure _ _ _ | .int _ | .bool _ | .text _ | .unit | .none => by
       simp [Val.anon, Val.FirstOrder]
 
   theorem Val.firstOrderAll_anon {ρ : String → String} :
@@ -864,9 +876,13 @@ mutual
       cases b with
       | ok y => simp only [Val.anon, Val.ok.injEq] at h; rw [Val.anon_inj x y ha hb h]
       | _ => simp [Val.anon] at h
+    | .err x, b, ha, hb, h => by
+      cases b with
+      | err y => simp only [Val.anon, Val.err.injEq] at h; rw [Val.anon_inj x y ha hb h]
+      | _ => simp [Val.anon] at h
     | .closure _ _ _, _, ha, _, _ => absurd ha (by simp [Val.FirstOrder])
     | .int _, b, _, _, h | .bool _, b, _, _, h | .text _, b, _, _, h | .unit, b, _, _, h
-    | .none, b, _, _, h | .err _, b, _, _, h => by
+    | .none, b, _, _, h => by
       cases b <;> simp_all [Val.anon]
 
   theorem Val.anons_inj {ρ ρ' : String → String} :

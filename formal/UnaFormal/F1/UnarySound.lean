@@ -251,7 +251,7 @@ theorem LValsTy.firstOrder_http (hr : p.HttpRecords) {m : String} :
 /-- A text, at any type that erases to `Text`. -/
 theorem LValTy.text_erase {s : String} : ∀ {t : LTy}, t.erase = .text → LValTy p (.text s) t
   | .text _, _ => .text
-  | .int _, h | .bool _, h | .unit _, h | .list _ _, h | .option _ _, h | .result _ _, h
+  | .int _, h | .bool _, h | .unit _, h | .list _ _, h | .option _ _, h | .result _ _ _, h
   | .record _ _, h | .fn _ _ _ _ _ _, h | .var _ _, h => by simp [LTy.erase] at h
 
 /-- A `Header`, at any type that erases to `Header`. -/
@@ -267,7 +267,7 @@ theorem LValTy.header_erase (hr : p.HttpRecords) {n x : String} :
       simp at hf
     exact .cons (LValTy.text_erase hf.1) (.cons (LValTy.text_erase hf.2) .nil)
   | .text _, h | .int _, h | .bool _, h | .unit _, h | .list _ _, h | .option _ _, h
-  | .result _ _, h | .fn _ _ _ _ _ _, h | .var _ _, h => by simp [LTy.erase] at h
+  | .result _ _ _, h | .fn _ _ _ _ _ _, h | .var _ _, h => by simp [LTy.erase] at h
 
 /-- **A response is labeled-typed at `Response`** (H4), whatever its label. -/
 theorem LValTy.response (hr : p.HttpRecords) {v : Val} (h : v.IsResponse) (l : LExpr) :
@@ -415,7 +415,8 @@ end
 /-- A ground type's top label is concrete. -/
 theorem LTy.Ground.top_symFree : ∀ {t : LTy}, t.Ground → t.top.SymFree
   | .int _, h | .bool _, h | .text _, h | .unit _, h | .record _ _, h => h
-  | .list _ _, h | .option _ _, h | .result _ _, h => h.2
+  | .list _ _, h | .option _ _, h => h.2
+  | .result _ _ _, h => h.2.2
   | .fn _ _ _ _ _ _, h => h.2.2
   | .tuple _ _, h => h.2
   | .var _ _, h => h.elim
@@ -423,12 +424,12 @@ theorem LTy.Ground.top_symFree : ∀ {t : LTy}, t.Ground → t.top.SymFree
 /-- A value of a scalar type, labeled or not. -/
 theorem lvalTy_of_scalar {v : Val} : ∀ {t : LTy}, t.erase.Scalar → ValTy p v t.erase → LValTy p v t
   | .int _, _, h | .bool _, _, h | .text _, _, h => by cases h <;> constructor
-  | .unit _, hs, _ | .list _ _, hs, _ | .option _ _, hs, _ | .result _ _, hs, _ | .record _ _, hs, _
+  | .unit _, hs, _ | .list _ _, hs, _ | .option _ _, hs, _ | .result _ _ _, hs, _ | .record _ _, hs, _
   | .fn _ _ _ _ _ _, hs, _ | .var _ _, hs, _ | .tuple _ _, hs, _ => by simp [LTy.erase, Ty.Scalar] at hs
 
 theorem valTy_of_scalar {v : Val} : ∀ {t : LTy}, t.erase.Scalar → LValTy p v t → ValTy p v t.erase
   | .int _, _, h | .bool _, _, h | .text _, _, h => by cases h <;> constructor
-  | .unit _, hs, _ | .list _ _, hs, _ | .option _ _, hs, _ | .result _ _, hs, _ | .record _ _, hs, _
+  | .unit _, hs, _ | .list _ _, hs, _ | .option _ _, hs, _ | .result _ _ _, hs, _ | .record _ _, hs, _
   | .fn _ _ _ _ _ _, hs, _ | .var _ _, hs, _ | .tuple _ _, hs, _ => by simp [LTy.erase, Ty.Scalar] at hs
 
 theorem Ty.Scalar.subst {t : Ty} (σ : List (String × Ty)) (h : t.Scalar) : t.subst σ = t := by
@@ -634,6 +635,14 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
       | some ha =>
         obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv ha
         exact ⟨fun _ h => by simp [evalRhs] at h, by simpa [evalRhs, hv, URes, LTy.lsubst] using LValTy.some hvt,
+          WEff.self _ _⟩
+      | mkOk ha _ =>
+        obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv ha
+        exact ⟨fun _ h => by simp [evalRhs] at h, by simpa [evalRhs, hv, URes, LTy.lsubst] using LValTy.ok hvt,
+          WEff.self _ _⟩
+      | mkErr ha _ =>
+        obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv ha
+        exact ⟨fun _ h => by simp [evalRhs] at h, by simpa [evalRhs, hv, URes, LTy.lsubst] using LValTy.err hvt,
           WEff.self _ _⟩
       | lambda hb hfl hrl _ =>
         refine uok_done ?_
@@ -912,11 +921,11 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
             (fun _ h => LValTy.lsubst_raise (LValTy.flow h (Flow.lsubst _ _ h₁)))
             (fun h => Fails.union_left_inst (Fails.mono (hpc0 _) (fun l hl => ⟨l, hl, LExpr.le_refl l⟩) h))
             (ihE hσ (.cons (LValTy.lsubst_raise hw) henv) hok)
-        | err =>
+        | err hw =>
           simp only [eval, hv]
           exact UOk.mono (allowed_union_right_inst (hpc0 _))
             (fun _ h => LValTy.lsubst_raise (LValTy.flow h (Flow.lsubst _ _ h₂)))
-            (Fails.union_right_inst (hpc0 _)) (ihE hσ (.cons .int henv) herr)
+            (Fails.union_right_inst (hpc0 _)) (ihE hσ (.cons (LValTy.lsubst_raise hw) henv) herr)
       | fail hpc _ _ =>
         exact ⟨fun _ h => by simp [eval] at h, ⟨_, rfl,
           LExpr.le_trans (LExpr.le_inst _ hpc)
@@ -932,7 +941,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
           fun ev hev => Allowed.mono (LExpr.le_refl _) id (HostFx.Le.refl _) (fun _ h => h) ev (h.1 ev hev)
         cases r with
         | ok v => exact ⟨hev, .ok h.2.1, h.2.2⟩
-        | failed c => exact ⟨hev, .err, h.2.2⟩
+        | failed c => exact ⟨hev, .err .int, h.2.2⟩
         | stuck => exact ⟨hev, trivial, h.2.2⟩
         | outOfFuel => exact ⟨hev, trivial, h.2.2⟩
       | @handle _ _ body x handler _ _ _ ε₁ ε₂ hb hh h₁ h₂ _ =>
@@ -1006,11 +1015,11 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
             (fun _ h => LValTy.flow h (Flow.lsubst _ _ h₁))
             (fun h => Fails.union_left_inst (Fails.mono (hpc0 _) (fun l hl => ⟨l, hl, LExpr.le_refl l⟩) h))
             (ihE hσ (.cons (LValTy.lsubst_raise hw) henv) hok)
-        | err =>
+        | err hw =>
           simp only [eval, hv]
           exact UOk.mono (allowed_union_right_inst (hpc0 _))
             (fun _ h => LValTy.flow h (Flow.lsubst _ _ h₂))
-            (Fails.union_right_inst (hpc0 _)) (ihE hσ (.cons .int henv) herr)
+            (Fails.union_right_inst (hpc0 _)) (ihE hσ (.cons (LValTy.lsubst_raise hw) henv) herr)
       | @handleT _ _ body x handler _ _ _ ε₁ ε₂ hb hh h₁ h₂ _ _ =>
         have h := ihE (w := w) hσ henv hb
         simp only [eval]

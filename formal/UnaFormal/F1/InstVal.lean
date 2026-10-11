@@ -38,7 +38,7 @@ def LTy.setTop (x : LExpr) : LTy → LTy
   | .unit _ => .unit x
   | .list t _ => .list t x
   | .option t _ => .option t x
-  | .result t _ => .result t x
+  | .result t e _ => .result t e x
   | .record r _ => .record r x
   | .fn ps r o g f _ => .fn ps r o g f x
   | .var a _ => .var a x
@@ -72,7 +72,7 @@ theorem LValTy.setTop {v : Val} {t : LTy} (x : LExpr) (h : LValTy p v t) : LValT
   cases h <;> simp only [LTy.setTop] <;>
     first
     | exact .int | exact .bool | exact .text | exact .unit | exact .list ‹_› | exact .none
-    | exact .some ‹_› | exact .ok ‹_› | exact .err | exact .record ‹_› ‹_›
+    | exact .some ‹_› | exact .ok ‹_› | exact .err ‹_› | exact .record ‹_› ‹_›
     | exact .closure ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_›
     | exact .tuple ‹_›
 
@@ -112,9 +112,11 @@ mutual
     | .option _ _, h =>
       ⟨.option (Flow.lsubst_ground rd σ h.1).1 (LExpr.le_inst_symFree _ h.2).1,
         .option (Flow.lsubst_ground rd σ h.1).2 (LExpr.le_inst_symFree _ h.2).2⟩
-    | .result _ _, h =>
-      ⟨.result (Flow.lsubst_ground rd σ h.1).1 (LExpr.le_inst_symFree _ h.2).1,
-        .result (Flow.lsubst_ground rd σ h.1).2 (LExpr.le_inst_symFree _ h.2).2⟩
+    | .result _ _ _, h =>
+      ⟨.result (Flow.lsubst_ground rd σ h.1).1 (Flow.lsubst_ground rd σ h.2.1).1
+          (LExpr.le_inst_symFree _ h.2.2).1,
+        .result (Flow.lsubst_ground rd σ h.1).2 (Flow.lsubst_ground rd σ h.2.1).2
+          (LExpr.le_inst_symFree _ h.2.2).2⟩
     | .fn _ _ _ _ _ _, h =>
       ⟨.fn (Flows.lsubst_ground rd σ h.1).2 (Flow.lsubst_ground rd σ h.2.1).1 id (HostFx.Le.refl _) id
           (LExpr.le_inst_symFree _ h.2.2).1,
@@ -138,8 +140,10 @@ mutual
     | .var _ _, h => h.elim
     | .int _, h | .bool _, h | .text _, h | .unit _, h => h
     | .record _ _, h => LExpr.symFree_join h ⟨rfl, rfl⟩
-    | .list _ _, h | .option _ _, h | .result _ _, h =>
+    | .list _ _, h | .option _ _, h =>
       LExpr.symFree_join h.2 (LTy.Ground.deep rd h.1)
+    | .result _ _ _, h =>
+      LExpr.symFree_join h.2.2 (LExpr.symFree_join (LTy.Ground.deep rd h.1) (LTy.Ground.deep rd h.2.1))
     | .fn _ _ _ _ _ _, h =>
       LExpr.symFree_join h.2.2 (LExpr.symFree_join (LTy.GroundAll.deeps rd h.1) (LTy.Ground.deep rd h.2.1))
     | .tuple _ _, h => LExpr.symFree_join h.2 (LTy.GroundAll.deeps rd h.1)
@@ -153,7 +157,8 @@ end
 theorem LTy.Ground.raise {e : LExpr} (he : e.SymFree) : ∀ {u : LTy}, u.Ground → (u.raise e).Ground
   | .var _ _, h => h.elim
   | .int _, h | .bool _, h | .text _, h | .unit _, h | .record _ _, h => LExpr.symFree_join h he
-  | .list _ _, h | .option _ _, h | .result _ _, h => ⟨h.1, LExpr.symFree_join h.2 he⟩
+  | .list _ _, h | .option _ _, h => ⟨h.1, LExpr.symFree_join h.2 he⟩
+  | .result _ _ _, h => ⟨h.1, h.2.1, LExpr.symFree_join h.2.2 he⟩
   | .fn _ _ _ _ _ _, h => ⟨h.1, h.2.1, LExpr.symFree_join h.2.2 he⟩
   | .tuple _ _, h => ⟨h.1, LExpr.symFree_join h.2 he⟩
 
@@ -193,8 +198,11 @@ mutual
       ∀ {t : LTy}, t.ScopedIn xs → (t.lsubst rd σ).Ground
     | .int _, h | .bool _, h | .text _, h | .unit _, h | .record _ _, h =>
       LExpr.inst_symFree_of_covered rd hσ hcov h
-    | .list _ _, h | .option _ _, h | .result _ _, h =>
+    | .list _ _, h | .option _ _, h =>
       ⟨LTy.lsubst_ground rd hσ hcov h.1, LExpr.inst_symFree_of_covered rd hσ hcov h.2⟩
+    | .result _ _ _, h =>
+      ⟨LTy.lsubst_ground rd hσ hcov h.1, LTy.lsubst_ground rd hσ hcov h.2.1,
+        LExpr.inst_symFree_of_covered rd hσ hcov h.2.2⟩
     | .fn _ _ _ _ _ _, h =>
       ⟨LTy.lsubsts_ground rd hσ hcov h.1, LTy.lsubst_ground rd hσ hcov h.2.1,
         LExpr.inst_symFree_of_covered rd hσ hcov h.2.2⟩

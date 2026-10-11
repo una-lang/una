@@ -199,7 +199,7 @@ def joinHandle : Expr :=
     "e" (.letR "t" (.tuple [.int .bot] .bot) (.tuple [.int 2]) (.atom (.var "t")))
 
 def Γsec : LCtx := [("b", .bool intl), ("o", .option (.int .bot) intl),
-  ("q", .result (.int .bot) intl), ("s", .text intl)]
+  ("q", .result (.int .bot) (.int .bot) intl), ("s", .text intl)]
 
 unseal flowB flowsB in
 #guard [joinIf, joinOption, joinResult, joinHandle].all fun e =>

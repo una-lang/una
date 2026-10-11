@@ -32,8 +32,8 @@ mutual
     | list {te l xs ys} : VAll te xs ys → V (.list te l) (.list xs) (.list ys)
     | none {te l} : V (.option te l) .none .none
     | some {te l a b} : V te a b → V (.option te l) (.some a) (.some b)
-    | ok {te l a b} : V te a b → V (.result te l) (.ok a) (.ok b)
-    | err {te l c} : V (.result te l) (.err c) (.err c)
+    | ok {te ee l a b} : V te a b → V (.result te ee l) (.ok a) (.ok b)
+    | err {te ee l a b} : V ee a b → V (.result te ee l) (.err a) (.err b)
     | record {r l rec fs₁ fs₂} :
         p.record r = some rec → VList rec.fields fs₁ fs₂ → V (.record r l) (.record r fs₁) (.record r fs₂)
     | closure {params body env₁ env₂ Γ E tb ε ps r o g f l σ} :
@@ -128,7 +128,7 @@ theorem Flow.top_le {t t' : LTy} (h : Flow p.top t t') (hu : ∀ l, t' ≠ .unit
     p.le t.top t'.top := by
   cases h with
   | unit => exact absurd rfl (hu _)
-  | int h | bool h | text h | list _ h | option _ h | result _ h | record h | fn _ _ _ _ _ h
+  | int h | bool h | text h | list _ h | option _ h | result _ _ h | record h | fn _ _ _ _ _ h
   | var h | tuple _ h => exact h
 
 /-! ### The relation along flows -/
@@ -147,8 +147,8 @@ mutual
     | _, _, _, _, .list h, .list f _ => .list (VAll.flow h f)
     | _, _, _, _, .none, .option _ _ => .none
     | _, _, _, _, .some h, .option f _ => .some (V.flow h f)
-    | _, _, _, _, .ok h, .result f _ => .ok (V.flow h f)
-    | _, _, _, _, .err, .result _ _ => .err
+    | _, _, _, _, .ok h, .result f _ _ => .ok (V.flow h f)
+    | _, _, _, _, .err h, .result _ f _ => .err (V.flow h f)
     | _, _, _, _, .record hr hfs, .record _ => .record hr hfs
     | _, _, _, _, .closure hσ hE hΓ hrel h₁ h₂ hb hfl hrl hps hr ho hg hf, .fn fps fr fo fg ff _ =>
       .closure hσ hE hΓ hrel h₁ h₂ hb hfl hrl (Flows.trans fps hps) (Flow.trans hr fr) (fo ∘ ho) (hg.trans fg)
@@ -181,7 +181,7 @@ theorem V.unraise {t : LTy} {e : LExpr} {a b : Val} (he : Vis p L e) (h : V p L 
       first
       | (exfalso; rename_i hh; exact hh (by simp only [LTy.top] at ht ⊢; exact Vis.join ht he))
       | exact .int | exact .bool | exact .text | exact .unit | exact .list ‹_› | exact .none
-      | exact .some ‹_› | exact .ok ‹_› | exact .err | exact .record ‹_› ‹_›
+      | exact .some ‹_› | exact .ok ‹_› | exact .err ‹_› | exact .record ‹_› ‹_›
       | exact .closure ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_›
       | exact .tuple ‹_›
   · exact .hidden ht

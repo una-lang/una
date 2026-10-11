@@ -48,6 +48,7 @@ Each one came from an adversarial review (Una-1) or from the proof itself.
 4. **#472: a gap on `main`, N = 0.** A host-free declaration kept the any-host note even when a caller in its document handed it a closure that writes a file. No corpus declaration was affected, so the earlier statement that such accepts were overstated was itself corrected to 0. The note now follows the declaration's own reach (`hostFreeAt`).
 5. **M2's 7 rejections were not leaks.** Each one needed a fact the checker has and the export lacked. #443 added those facts to `una.core/1`, and the rejections went to 0.
 6. **#507: a `Result`'s error type was dropped.** The importer read `Result[T, E]` as F1's result of `T`, whose `Err` is a code. But `to_text` and `==` read an `Err` whole, payload included. On a Core that typed `to_text` of a `Result[Int, internal Int]` as `public Text`, the re-check said accepted, while the runtime would print the `internal` payload. `una check` rejects such a source (U4001), so no corpus declaration was a leak. Now the error type is dropped only when it is a kind without payload (the document's, or `FileError`, `KeyError` and `HttpError` of the specification) whose labels the result's top label carries; otherwise the declaration is not re-checked. 756 → 754: `relay.caught` (an error type the export leaves open, `?`) and `text.failure` (`ParseError`, whose `NotADigit` carries a position). `s15_ok_http_attempt.send` stays accepted: `internal HttpError` under an `internal` result.
+7. **#508: a `Result` keeps its error type.** `Result[T, E]` is F1's result of `T` and `E`, `Ok(a)` and `Err(a)` build one, and a `case` binds the `Err` arm's value at `E` raised by the scrutinee's label. `to_text` and `==` take every label of both positions, so F-R1 is closed by tracking labels instead of refusing the program. A kind without payload is still a failure's code, and a kind with a payload is not re-checked (#512). On a fresh export of `main` (1,344 documents), 759 → 765 accepted, 0 rejected: six declarations that read an `Err` arm's value (4) or use a `Result` whose error type is an ordinary type (`sw.g`, and `sw.leak`, which reaches it). An `attempt` whose error type the export leaves open (`relay.caught`, `?`) is not re-checked, never rejected.
 
 ## Findings the track produced
 
@@ -94,7 +95,7 @@ A declaration whose program uses no host operation, and whose parameters cannot 
 
 ## Theorem names
 
-`scripts/formal.sh` states 177 theorems, in `formal/Theorems.lean`.
+`scripts/formal.sh` states 235 theorems, in `formal/Theorems.lean`.
 
 | Claim | Theorems |
 | --- | --- |

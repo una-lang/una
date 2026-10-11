@@ -37,9 +37,11 @@ mutual
       cases b with
       | option b => simp only [tyEq] at h; rw [tyEq_sound a b h]
       | _ => simp [tyEq] at h
-    | .result a, b, h => by
+    | .result a e, b, h => by
       cases b with
-      | result b => simp only [tyEq] at h; rw [tyEq_sound a b h]
+      | result b f =>
+        simp only [tyEq, Bool.and_eq_true] at h
+        rw [tyEq_sound a b h.1, tyEq_sound e f h.2]
       | _ => simp [tyEq] at h
     | .fn ps r, b, h => by
       cases b with
@@ -86,7 +88,7 @@ mutual
     · exact .unit
     · exact .list (flowB_sound _ _ h.1) (leB_sound h.2)
     · exact .option (flowB_sound _ _ h.1) (leB_sound h.2)
-    · exact .result (flowB_sound _ _ h.1) (leB_sound h.2)
+    · exact .result (flowB_sound _ _ h.1.1) (flowB_sound _ _ h.1.2) (leB_sound h.2)
     · obtain ⟨rfl, h⟩ := h; exact .record (leB_sound h)
     · obtain ⟨⟨⟨⟨⟨hps, hr⟩, ho⟩, hg⟩, hf⟩, hl⟩ := h
       refine .fn (flowsB_sound _ _ hps) (flowB_sound _ _ hr) ?_ (hostLeB_sound hg) ?_
@@ -116,9 +118,12 @@ mutual
       exact h
     | .int _, h | .bool _, h | .text _, h | .unit _, h | .record _ _, h => by
       simpa [inPlace, LTy.InPlace] using h
-    | .list _ _, h | .option _ _, h | .result _ _, h => by
+    | .list _ _, h | .option _ _, h => by
       simp only [inPlace, Bool.and_eq_true, List.isEmpty_iff] at h
       exact ⟨inPlace_sound h.1, h.2⟩
+    | .result _ _ _, h => by
+      simp only [inPlace, Bool.and_eq_true, List.isEmpty_iff] at h
+      exact ⟨inPlace_sound h.1.1, inPlace_sound h.1.2, h.2⟩
     | .fn _ _ _ _ _ _, h => by
       simp only [inPlace, Bool.and_eq_true, List.isEmpty_iff] at h
       exact ⟨inPlaceAll_sound h.1.1, inPlace_sound h.1.2, h.2⟩
@@ -137,9 +142,12 @@ mutual
   theorem ground_sound : ∀ {t : LTy}, ground t = true → t.Ground
     | .var _ _, h => by simp [ground] at h
     | .int _, h | .bool _, h | .text _, h | .unit _, h | .record _ _, h => symFree_sound h
-    | .list _ _, h | .option _ _, h | .result _ _, h => by
+    | .list _ _, h | .option _ _, h => by
       simp only [ground, Bool.and_eq_true] at h
       exact ⟨ground_sound h.1, symFree_sound h.2⟩
+    | .result _ _ _, h => by
+      simp only [ground, Bool.and_eq_true] at h
+      exact ⟨ground_sound h.1.1, ground_sound h.1.2, symFree_sound h.2⟩
     | .fn _ _ _ _ _ _, h => by
       simp only [ground, Bool.and_eq_true] at h
       exact ⟨groundAll_sound h.1.1, ground_sound h.1.2, symFree_sound h.2⟩
@@ -164,9 +172,12 @@ mutual
       simp only [scopedIn, Bool.and_eq_true, List.contains_iff_mem] at h
       exact ⟨by simpa using h.1, symsIn_sound h.2⟩
     | .int _, h | .bool _, h | .text _, h | .unit _, h | .record _ _, h => symsIn_sound h
-    | .list _ _, h | .option _ _, h | .result _ _, h => by
+    | .list _ _, h | .option _ _, h => by
       simp only [scopedIn, Bool.and_eq_true] at h
       exact ⟨scopedIn_sound h.1, symsIn_sound h.2⟩
+    | .result _ _ _, h => by
+      simp only [scopedIn, Bool.and_eq_true] at h
+      exact ⟨scopedIn_sound h.1.1, scopedIn_sound h.1.2, symsIn_sound h.2⟩
     | .fn _ _ _ _ _ _, h => by
       simp only [scopedIn, Bool.and_eq_true] at h
       exact ⟨scopedInAll_sound h.1.1, scopedIn_sound h.1.2, symsIn_sound h.2⟩
@@ -272,14 +283,22 @@ theorem joinTy_sound {top : Label} : ∀ {t₁ t₂ t : LTy}, joinTy t₁ t₂ =
       | exact ⟨.bool (LExpr.le_join_left _ _), .bool (LExpr.le_join_right _ _)⟩
       | exact ⟨.text (LExpr.le_join_left _ _), .text (LExpr.le_join_right _ _)⟩
       | exact ⟨.unit, .unit⟩
-  | .list _ _, .list _ _, _, h | .option _ _, .option _ _, _, h | .result _ _, .result _ _, _, h => by
+  | .list _ _, .list _ _, _, h | .option _ _, .option _ _, _, h => by
     simp only [joinTy, Option.map_eq_some_iff] at h
     obtain ⟨u, hu, rfl⟩ := h
     obtain ⟨h₁, h₂⟩ := joinTy_sound hu
     first
       | exact ⟨.list h₁ (LExpr.le_join_left _ _), .list h₂ (LExpr.le_join_right _ _)⟩
       | exact ⟨.option h₁ (LExpr.le_join_left _ _), .option h₂ (LExpr.le_join_right _ _)⟩
-      | exact ⟨.result h₁ (LExpr.le_join_left _ _), .result h₂ (LExpr.le_join_right _ _)⟩
+  | .result t₁ e₁ _, .result t₂ e₂ _, _, h => by
+    simp only [joinTy] at h
+    split at h
+    · rename_i u v hu hv
+      cases h
+      obtain ⟨h₁, h₂⟩ := joinTy_sound hu
+      obtain ⟨g₁, g₂⟩ := joinTy_sound hv
+      exact ⟨.result h₁ g₁ (LExpr.le_join_left _ _), .result h₂ g₂ (LExpr.le_join_right _ _)⟩
+    · cases h
   | .record _ _, .record _ _, _, h => by
     simp only [joinTy] at h
     split at h
@@ -299,37 +318,37 @@ theorem joinTy_sound {top : Label} : ∀ {t₁ t₂ t : LTy}, joinTy t₁ t₂ =
       exact ⟨.var (LExpr.le_join_left _ _), .var (LExpr.le_join_right _ _)⟩
     · cases h
   | .int _, .bool _, _, h | .int _, .text _, _, h | .int _, .unit _, _, h | .int _, .list _ _, _, h
-  | .int _, .option _ _, _, h | .int _, .result _ _, _, h | .int _, .record _ _, _, h
+  | .int _, .option _ _, _, h | .int _, .result _ _ _, _, h | .int _, .record _ _, _, h
   | .int _, .fn _ _ _ _ _ _, _, h | .int _, .var _ _, _, h => by simp [joinTy] at h
   | .bool _, .int _, _, h | .bool _, .text _, _, h | .bool _, .unit _, _, h | .bool _, .list _ _, _, h
-  | .bool _, .option _ _, _, h | .bool _, .result _ _, _, h | .bool _, .record _ _, _, h
+  | .bool _, .option _ _, _, h | .bool _, .result _ _ _, _, h | .bool _, .record _ _, _, h
   | .bool _, .fn _ _ _ _ _ _, _, h | .bool _, .var _ _, _, h => by simp [joinTy] at h
   | .text _, .int _, _, h | .text _, .bool _, _, h | .text _, .unit _, _, h | .text _, .list _ _, _, h
-  | .text _, .option _ _, _, h | .text _, .result _ _, _, h | .text _, .record _ _, _, h
+  | .text _, .option _ _, _, h | .text _, .result _ _ _, _, h | .text _, .record _ _, _, h
   | .text _, .fn _ _ _ _ _ _, _, h | .text _, .var _ _, _, h => by simp [joinTy] at h
   | .unit _, .int _, _, h | .unit _, .bool _, _, h | .unit _, .text _, _, h | .unit _, .list _ _, _, h
-  | .unit _, .option _ _, _, h | .unit _, .result _ _, _, h | .unit _, .record _ _, _, h
+  | .unit _, .option _ _, _, h | .unit _, .result _ _ _, _, h | .unit _, .record _ _, _, h
   | .unit _, .fn _ _ _ _ _ _, _, h | .unit _, .var _ _, _, h => by simp [joinTy] at h
   | .list _ _, .int _, _, h | .list _ _, .bool _, _, h | .list _ _, .text _, _, h
-  | .list _ _, .unit _, _, h | .list _ _, .option _ _, _, h | .list _ _, .result _ _, _, h
+  | .list _ _, .unit _, _, h | .list _ _, .option _ _, _, h | .list _ _, .result _ _ _, _, h
   | .list _ _, .record _ _, _, h | .list _ _, .fn _ _ _ _ _ _, _, h | .list _ _, .var _ _, _, h => by
     simp [joinTy] at h
   | .option _ _, .int _, _, h | .option _ _, .bool _, _, h | .option _ _, .text _, _, h
-  | .option _ _, .unit _, _, h | .option _ _, .list _ _, _, h | .option _ _, .result _ _, _, h
+  | .option _ _, .unit _, _, h | .option _ _, .list _ _, _, h | .option _ _, .result _ _ _, _, h
   | .option _ _, .record _ _, _, h | .option _ _, .fn _ _ _ _ _ _, _, h
   | .option _ _, .var _ _, _, h => by simp [joinTy] at h
-  | .result _ _, .int _, _, h | .result _ _, .bool _, _, h | .result _ _, .text _, _, h
-  | .result _ _, .unit _, _, h | .result _ _, .list _ _, _, h | .result _ _, .option _ _, _, h
-  | .result _ _, .record _ _, _, h | .result _ _, .fn _ _ _ _ _ _, _, h
-  | .result _ _, .var _ _, _, h => by simp [joinTy] at h
+  | .result _ _ _, .int _, _, h | .result _ _ _, .bool _, _, h | .result _ _ _, .text _, _, h
+  | .result _ _ _, .unit _, _, h | .result _ _ _, .list _ _, _, h | .result _ _ _, .option _ _, _, h
+  | .result _ _ _, .record _ _, _, h | .result _ _ _, .fn _ _ _ _ _ _, _, h
+  | .result _ _ _, .var _ _, _, h => by simp [joinTy] at h
   | .record _ _, .int _, _, h | .record _ _, .bool _, _, h | .record _ _, .text _, _, h
   | .record _ _, .unit _, _, h | .record _ _, .list _ _, _, h | .record _ _, .option _ _, _, h
-  | .record _ _, .result _ _, _, h | .record _ _, .fn _ _ _ _ _ _, _, h
+  | .record _ _, .result _ _ _, _, h | .record _ _, .fn _ _ _ _ _ _, _, h
   | .record _ _, .var _ _, _, h => by simp [joinTy] at h
   | .fn _ _ _ _ _ _, _, _, h => by simp [joinTy] at h
   | .var _ _, .int _, _, h | .var _ _, .bool _, _, h | .var _ _, .text _, _, h
   | .var _ _, .unit _, _, h | .var _ _, .list _ _, _, h | .var _ _, .option _ _, _, h
-  | .var _ _, .result _ _, _, h | .var _ _, .record _ _, _, h
+  | .var _ _, .result _ _ _, _, h | .var _ _, .record _ _, _, h
   | .var _ _, .fn _ _ _ _ _ _, _, h => by simp [joinTy] at h
 
 theorem isScalar_sound {t : LTy} (h : isScalar t = true) : t.erase.Scalar := by

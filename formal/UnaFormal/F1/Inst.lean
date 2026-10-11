@@ -113,7 +113,7 @@ theorem LTy.top_lsubst (rd : String → Label) (σ : List (String × LTy)) :
     ∀ t : LTy, (∀ a l, t ≠ .var a l) →
       (t.lsubst rd σ).top = t.top.inst (σ.map (fun q => (q.1, q.2.deep rd)))
   | .int _, _ | .bool _, _ | .text _, _ | .unit _, _ | .list _ _, _ | .option _ _, _
-  | .result _ _, _ | .record _ _, _ | .fn _ _ _ _ _ _, _ | .tuple _ _, _ => by simp [LTy.lsubst, LTy.top]
+  | .result _ _ _, _ | .record _ _, _ | .fn _ _ _ _ _ _, _ | .tuple _ _, _ => by simp [LTy.lsubst, LTy.top]
   | .var a l, h => absurd rfl (h a l)
 
 /-- At a position of type `T` that `σ` covers, labeled instantiation puts `T`'s type argument,

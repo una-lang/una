@@ -94,7 +94,8 @@ end LExpr
 values M1's relation covers. -/
 def LTy.FirstOrder : LTy → Prop
   | .int _ | .bool _ | .text _ | .unit _ | .record _ _ => True
-  | .list t _ | .option t _ | .result t _ => t.FirstOrder
+  | .list t _ | .option t _ => t.FirstOrder
+  | .result t e _ => t.FirstOrder ∧ e.FirstOrder
   | .fn _ _ _ _ _ _ | .var _ _ | .tuple _ _ => False
 
 /-- Two lists related element by element. -/
@@ -115,8 +116,9 @@ def Rel (L : Label) (rd : String → Label) : LTy → Val → Val → Prop
     l.base.le L → ∃ xs ys, v₁ = .list xs ∧ v₂ = .list ys ∧ Forall2 (Rel L rd t) xs ys
   | .option t l, v₁, v₂ =>
     l.base.le L → (v₁ = .none ∧ v₂ = .none) ∨ ∃ a b, v₁ = .some a ∧ v₂ = .some b ∧ Rel L rd t a b
-  | .result t l, v₁, v₂ =>
-    l.base.le L → (∃ c, v₁ = .err c ∧ v₂ = .err c) ∨ ∃ a b, v₁ = .ok a ∧ v₂ = .ok b ∧ Rel L rd t a b
+  | .result t e l, v₁, v₂ =>
+    l.base.le L → (∃ a b, v₁ = .err a ∧ v₂ = .err b ∧ Rel L rd e a b) ∨
+      ∃ a b, v₁ = .ok a ∧ v₂ = .ok b ∧ Rel L rd t a b
   | .fn _ _ _ _ _ _, _, _ | .var _ _, _, _ | .tuple _ _, _, _ => True
 
 theorem forall₂_eq {xs ys : List Val} {R : Val → Val → Prop} (hR : ∀ a b, R a b → a = b) :
@@ -157,12 +159,13 @@ theorem Rel.eq_of_deep {L : Label} {rd : String → Label} :
     rcases h (Label.le_of_join_left hd) with ⟨h1, h2⟩ | ⟨a, b, h1, h2, hab⟩
     · rw [h1, h2]
     · rw [h1, h2, Rel.eq_of_deep t hfo (Label.le_of_join_right hd) a b hab]
-  | .result t l, hfo, hd, v₁, v₂, h => by
+  | .result t e l, hfo, hd, v₁, v₂, h => by
     simp only [Rel] at h
     simp only [LTy.deep, LExpr.join] at hd
-    rcases h (Label.le_of_join_left hd) with ⟨c, h1, h2⟩ | ⟨a, b, h1, h2, hab⟩
-    · rw [h1, h2]
-    · rw [h1, h2, Rel.eq_of_deep t hfo (Label.le_of_join_right hd) a b hab]
+    have hr := Label.le_of_join_right hd
+    rcases h (Label.le_of_join_left hd) with ⟨a, b, h1, h2, hab⟩ | ⟨a, b, h1, h2, hab⟩
+    · rw [h1, h2, Rel.eq_of_deep e hfo.2 (Label.le_of_join_right hr) a b hab]
+    · rw [h1, h2, Rel.eq_of_deep t hfo.1 (Label.le_of_join_left hr) a b hab]
 
 /-- **A result derived from values of `T` agrees in both runs when `ℓ*(σ(T))` is visible**,
 whatever the operation: the reading of rule 8's label for a comparison, an equality, a field

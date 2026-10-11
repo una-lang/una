@@ -58,8 +58,9 @@ mutual
     | list {t₁ t₂ l₁ l₂} : Flow top t₁ t₂ → LExpr.le top l₁ l₂ → Flow top (.list t₁ l₁) (.list t₂ l₂)
     | option {t₁ t₂ l₁ l₂} :
         Flow top t₁ t₂ → LExpr.le top l₁ l₂ → Flow top (.option t₁ l₁) (.option t₂ l₂)
-    | result {t₁ t₂ l₁ l₂} :
-        Flow top t₁ t₂ → LExpr.le top l₁ l₂ → Flow top (.result t₁ l₁) (.result t₂ l₂)
+    | result {t₁ t₂ e₁ e₂ l₁ l₂} :
+        Flow top t₁ t₂ → Flow top e₁ e₂ → LExpr.le top l₁ l₂ →
+        Flow top (.result t₁ e₁ l₁) (.result t₂ e₂ l₂)
     | record {r l₁ l₂} : LExpr.le top l₁ l₂ → Flow top (.record r l₁) (.record r l₂)
     | fn {ps₁ ps₂ r₁ r₂ o₁ o₂ g₁ g₂ f₁ f₂ l₁ l₂} :
         Flows top ps₂ ps₁ → Flow top r₁ r₂ → (o₁ = true → o₂ = true) →
@@ -78,7 +79,8 @@ mutual
   /-- A function type with effects or failures is second-class: no type argument is one or
   holds one (`spec/10 §5`, generic instantiation rule 1, U3016). -/
   def LTy.firstClass : LTy → Bool
-    | .list t _ | .option t _ | .result t _ => t.firstClass
+    | .list t _ | .option t _ => t.firstClass
+    | .result t e _ => t.firstClass && e.firstClass
     | .fn ps r o g f _ => !o && g.isNone && !f && LTy.firstClasses ps && r.firstClass
     | .tuple ts _ => LTy.firstClasses ts
     | _ => true
@@ -193,7 +195,8 @@ mutual
   def LTy.InPlace : LTy → Prop
     | .var a l => ∀ x ∈ l.plain, x = a
     | .int l | .bool l | .text l | .unit l | .record _ l => l.plain = []
-    | .list t l | .option t l | .result t l => t.InPlace ∧ l.plain = []
+    | .list t l | .option t l => t.InPlace ∧ l.plain = []
+    | .result t e l => t.InPlace ∧ e.InPlace ∧ l.plain = []
     | .fn ps r _ _ _ l => LTy.InPlaceAll ps ∧ r.InPlace ∧ l.plain = []
     | .tuple ts l => LTy.InPlaceAll ts ∧ l.plain = []
 
@@ -208,7 +211,8 @@ mutual
   def LTy.Ground : LTy → Prop
     | .var _ _ => False
     | .int l | .bool l | .text l | .unit l | .record _ l => l.SymFree
-    | .list t l | .option t l | .result t l => t.Ground ∧ l.SymFree
+    | .list t l | .option t l => t.Ground ∧ l.SymFree
+    | .result t e l => t.Ground ∧ e.Ground ∧ l.SymFree
     | .fn ps r _ _ _ l => LTy.GroundAll ps ∧ r.Ground ∧ l.SymFree
     | .tuple ts l => LTy.GroundAll ts ∧ l.SymFree
 
@@ -225,7 +229,8 @@ mutual
   def LTy.ScopedIn (xs : List String) : LTy → Prop
     | .var a l => a ∈ xs ∧ l.SymsIn xs
     | .int l | .bool l | .text l | .unit l | .record _ l => l.SymsIn xs
-    | .list t l | .option t l | .result t l => t.ScopedIn xs ∧ l.SymsIn xs
+    | .list t l | .option t l => t.ScopedIn xs ∧ l.SymsIn xs
+    | .result t e l => t.ScopedIn xs ∧ e.ScopedIn xs ∧ l.SymsIn xs
     | .fn ps r _ _ _ l => LTy.ScopedInAll xs ps ∧ r.ScopedIn xs ∧ l.SymsIn xs
     | .tuple ts l => LTy.ScopedInAll xs ts ∧ l.SymsIn xs
 
@@ -245,7 +250,8 @@ def decisionsOf (ts : List LTy) : List String := (ts.flatMap (fun t => t.top.sta
 only when it is among `E`, those the enclosing function constrains by `Eq` (U2026), and a record
 when `recEq` says so of its kind. -/
 def LTy.eqIn (E : List String) (recEq : String → Bool) : LTy → Bool
-  | .list t _ | .option t _ | .result t _ => t.eqIn E recEq
+  | .list t _ | .option t _ => t.eqIn E recEq
+  | .result t e _ => t.eqIn E recEq && e.eqIn E recEq
   | .fn _ _ _ _ _ _ | .tuple _ _ => false
   | .var a _ => E.contains a
   | .record r _ => recEq r
@@ -345,6 +351,11 @@ mutual
         LRhsTy p E Γ pc (.list items) (.list t .bot) .none
     | none {Γ pc t} : t.InPlace → LRhsTy p E Γ pc .none (.option t .bot) .none
     | some {Γ pc a t} : LAtomTy Γ a t → LRhsTy p E Γ pc (.some a) (.option t .bot) .none
+    /-- `Ok(a)` and `Err(a)` (#508): the other side holds no value, so any type in place will
+    do, and the flow into the declared type decides it. Which constructor is built is decided
+    by the program counter, which the rules of branches raise the value by. -/
+    | mkOk {Γ pc a t e} : LAtomTy Γ a t → e.InPlace → LRhsTy p E Γ pc (.mkOk a) (.result t e .bot) .none
+    | mkErr {Γ pc a t e} : LAtomTy Γ a e → t.InPlace → LRhsTy p E Γ pc (.mkErr a) (.result t e .bot) .none
     /-- A lambda's body is checked at the public program counter (ADR 0031 rule 4), and, as a
     function's, its failures must be decided there. -/
     | lambda {Γ pc params body t ε} :
@@ -474,27 +485,29 @@ mutual
         Flow p.top t₁ (.tuple ts .bot) → Flow p.top t₂ (.tuple ts .bot) → LTy.InPlaceAll ts →
         Flows p.top (ts.map (LTy.raise ls)) ts →
         LExprTy p E Γ pc (.caseOption scrutinee noneE x someE) (.tuple ts .bot) (ε₁.union ε₂)
-    | caseResult {Γ pc scrutinee x okE y errE te ls t₁ t₂ s ε₁ ε₂} :
-        LAtomTy Γ scrutinee (.result te ls) →
+    | caseResult {Γ pc scrutinee x okE y errE te ee ls t₁ t₂ s ε₁ ε₂} :
+        LAtomTy Γ scrutinee (.result te ee ls) →
         LExprTy p E ((x, te.raise ls) :: Γ) (pc.join ls) okE t₁ ε₁ →
-        LExprTy p E ((y, .int ls) :: Γ) (pc.join ls) errE t₂ ε₂ →
+        LExprTy p E ((y, ee.raise ls) :: Γ) (pc.join ls) errE t₂ ε₂ →
         Flow p.top t₁ s → Flow p.top t₂ s → s.InPlace →
         LExprTy p E Γ pc (.caseResult scrutinee x okE y errE) (s.raise ls) (ε₁.union ε₂)
     /-- T-Case on a result at a tuple type: as `iteT`. -/
-    | caseResultT {Γ pc scrutinee x okE y errE te ls t₁ t₂ ts ε₁ ε₂} :
-        LAtomTy Γ scrutinee (.result te ls) →
+    | caseResultT {Γ pc scrutinee x okE y errE te ee ls t₁ t₂ ts ε₁ ε₂} :
+        LAtomTy Γ scrutinee (.result te ee ls) →
         LExprTy p E ((x, te.raise ls) :: Γ) (pc.join ls) okE t₁ ε₁ →
-        LExprTy p E ((y, .int ls) :: Γ) (pc.join ls) errE t₂ ε₂ →
+        LExprTy p E ((y, ee.raise ls) :: Γ) (pc.join ls) errE t₂ ε₂ →
         Flow p.top t₁ (.tuple ts .bot) → Flow p.top t₂ (.tuple ts .bot) → LTy.InPlaceAll ts →
         Flows p.top (ts.map (LTy.raise ls)) ts →
         LExprTy p E Γ pc (.caseResult scrutinee x okE y errE) (.tuple ts .bot) (ε₁.union ε₂)
     /-- T-Fail: only at the public program counter (U4002). -/
     | fail {Γ pc code s} :
         p.le pc .bot → pc.SymFree → s.InPlace → LExprTy p E Γ pc (.fail code) s ⟨false, HostFx.none, some .bot, []⟩
-    /-- T-Attempt: the result carries the label of what decides the failure. -/
+    /-- T-Attempt: the result carries the label of what decides the failure, and its error is
+    the failure's code, which that label decides too. -/
     | attempt {Γ pc body t ε} :
         LExprTy p E Γ pc body t ε →
-        LExprTy p E Γ pc (.attempt body) (.result t ε.failLabel) ⟨ε.op, ε.host, Option.none, ε.rels⟩
+        LExprTy p E Γ pc (.attempt body) (.result t (.int .bot) ε.failLabel)
+          ⟨ε.op, ε.host, Option.none, ε.rels⟩
     /-- T-Handle: the handler runs under the label of what decides the failure, which binds its
     code, and the value is raised by it, since it decides which branch gives the value. -/
     | handle {Γ pc body x handler t₁ t₂ s ε₁ ε₂} :
@@ -562,7 +575,8 @@ mutual
   /-- Every label of a type uses only categories among `cats`. -/
   def LTy.CatsIn (cats : List String) : LTy → Prop
     | .int l | .bool l | .text l | .unit l | .record _ l | .var _ l => l.CatsIn cats
-    | .list t l | .option t l | .result t l => t.CatsIn cats ∧ l.CatsIn cats
+    | .list t l | .option t l => t.CatsIn cats ∧ l.CatsIn cats
+    | .result t e l => t.CatsIn cats ∧ e.CatsIn cats ∧ l.CatsIn cats
     | .fn ps r _ _ _ l => LTy.CatsInAll cats ps ∧ r.CatsIn cats ∧ l.CatsIn cats
     | .tuple ts l => LTy.CatsInAll cats ts ∧ l.CatsIn cats
 

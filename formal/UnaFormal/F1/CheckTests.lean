@@ -48,7 +48,9 @@ mutual
     | .unit l => .unit (l.inst (σ.map fun q => (q.1, img q.2)))
     | .list t l => .list (lsubstWith raise img σ t) (l.inst (σ.map fun q => (q.1, img q.2)))
     | .option t l => .option (lsubstWith raise img σ t) (l.inst (σ.map fun q => (q.1, img q.2)))
-    | .result t l => .result (lsubstWith raise img σ t) (l.inst (σ.map fun q => (q.1, img q.2)))
+    | .result t e l =>
+      .result (lsubstWith raise img σ t) (lsubstWith raise img σ e)
+        (l.inst (σ.map fun q => (q.1, img q.2)))
     | .record r l => .record r (l.inst (σ.map fun q => (q.1, img q.2)))
     | .fn ps r o g f l =>
       .fn (lsubstsWith raise img σ ps) (lsubstWith raise img σ r) o g f

@@ -38,7 +38,7 @@ mutual
     | .unit => .unit
     | .list t => .list (t.subst σ)
     | .option t => .option (t.subst σ)
-    | .result t => .result (t.subst σ)
+    | .result t e => .result (t.subst σ) (e.subst σ)
     | .record r => .record r
     | .fn ps r => .fn (Ty.substs σ ps) (r.subst σ)
     | .var a => (List.lookup a σ).getD (.var a)
@@ -58,7 +58,8 @@ theorem Ty.substs_eq (σ : List (String × Ty)) :
 theorem Ty.subst_subst (σ τ : List (String × Ty)) :
     ∀ t : Ty, (t.subst σ).subst τ = t.subst (σ.map (fun q => (q.1, q.2.subst τ)) ++ τ)
   | .int | .bool | .text | .unit | .record _ => by simp [Ty.subst]
-  | .list t | .option t | .result t => by simp [Ty.subst, Ty.subst_subst σ τ t]
+  | .list t | .option t => by simp [Ty.subst, Ty.subst_subst σ τ t]
+  | .result t e => by simp [Ty.subst, Ty.subst_subst σ τ t, Ty.subst_subst σ τ e]
   | .fn ps r => by
     simp only [Ty.subst, Ty.substs_eq, List.map_map, Ty.subst_subst σ τ r]
     congr 1
@@ -77,7 +78,8 @@ theorem Ty.subst_subst (σ τ : List (String × Ty)) :
 
 theorem Ty.subst_nil : ∀ t : Ty, t.subst [] = t
   | .int | .bool | .text | .unit | .record _ => rfl
-  | .list t | .option t | .result t => by simp [Ty.subst, Ty.subst_nil t]
+  | .list t | .option t => by simp [Ty.subst, Ty.subst_nil t]
+  | .result t e => by simp [Ty.subst, Ty.subst_nil t, Ty.subst_nil e]
   | .fn ps r => by
     simp only [Ty.subst, Ty.substs_eq, Ty.subst_nil r]
     congr 1
@@ -106,7 +108,7 @@ mutual
     | .unit _ => .unit
     | .list t _ => .list t.erase
     | .option t _ => .option t.erase
-    | .result t _ => .result t.erase
+    | .result t e _ => .result t.erase e.erase
     | .record r _ => .record r
     | .fn ps r _ _ _ _ => .fn (LTy.erases ps) r.erase
     | .var a _ => .var a
@@ -123,7 +125,7 @@ theorem LTy.erases_eq : ∀ ts : List LTy, LTy.erases ts = ts.map LTy.erase
 
 /-- The top label of a labeled type. -/
 def LTy.top : LTy → LExpr
-  | .int l | .bool l | .text l | .unit l | .list _ l | .option _ l | .result _ l
+  | .int l | .bool l | .text l | .unit l | .list _ l | .option _ l | .result _ _ l
   | .record _ l | .fn _ _ _ _ _ l | .var _ l | .tuple _ l => l
 
 /-- `τ ⊔ ℓ`: the type with its top label raised by `ℓ`. -/
@@ -134,7 +136,7 @@ def LTy.raise (e : LExpr) : LTy → LTy
   | .unit l => .unit (l.join e)
   | .list t l => .list t (l.join e)
   | .option t l => .option t (l.join e)
-  | .result t l => .result t (l.join e)
+  | .result t e' l => .result t e' (l.join e)
   | .record r l => .record r (l.join e)
   | .fn ps r o g f l => .fn ps r o g f (l.join e)
   | .var a l => .var a (l.join e)
@@ -150,7 +152,8 @@ mutual
   def LTy.deep (rd : String → Label) : LTy → LExpr
     | .int l | .bool l | .text l | .unit l => l
     | .record r l => l.join (.ofLabel (rd r))
-    | .list t l | .option t l | .result t l => l.join (t.deep rd)
+    | .list t l | .option t l => l.join (t.deep rd)
+    | .result t e l => l.join ((t.deep rd).join (e.deep rd))
     | .fn ps r _ _ _ l => l.join ((LTy.deeps rd ps).join (r.deep rd))
     | .var a l => l.promote.join ⟨Label.bot, [], [a]⟩
     | .tuple ts l => l.join (LTy.deeps rd ts)
@@ -172,7 +175,8 @@ mutual
     | .unit l => .unit (l.inst (σ.map (fun q => (q.1, q.2.deep rd))))
     | .list t l => .list (t.lsubst rd σ) (l.inst (σ.map (fun q => (q.1, q.2.deep rd))))
     | .option t l => .option (t.lsubst rd σ) (l.inst (σ.map (fun q => (q.1, q.2.deep rd))))
-    | .result t l => .result (t.lsubst rd σ) (l.inst (σ.map (fun q => (q.1, q.2.deep rd))))
+    | .result t e l =>
+      .result (t.lsubst rd σ) (e.lsubst rd σ) (l.inst (σ.map (fun q => (q.1, q.2.deep rd))))
     | .record r l => .record r (l.inst (σ.map (fun q => (q.1, q.2.deep rd))))
     | .fn ps r o g f l =>
       .fn (LTy.lsubsts rd σ ps) (r.lsubst rd σ) o g f (l.inst (σ.map (fun q => (q.1, q.2.deep rd))))
@@ -201,8 +205,10 @@ the structure. -/
 theorem LTy.erase_lsubst (rd : String → Label) (σ : List (String × LTy)) :
     ∀ t : LTy, (t.lsubst rd σ).erase = t.erase.subst (eraseSubst σ)
   | .int _ | .bool _ | .text _ | .unit _ | .record _ _ => by simp [LTy.lsubst, LTy.erase, Ty.subst]
-  | .list t _ | .option t _ | .result t _ => by
+  | .list t _ | .option t _ => by
     simp [LTy.lsubst, LTy.erase, Ty.subst, LTy.erase_lsubst rd σ t]
+  | .result t e _ => by
+    simp [LTy.lsubst, LTy.erase, Ty.subst, LTy.erase_lsubst rd σ t, LTy.erase_lsubst rd σ e]
   | .fn ps r _ _ _ _ => by
     simp only [LTy.lsubst, LTy.erase, Ty.subst, LTy.erases_eq, LTy.lsubsts_eq, Ty.substs_eq,
       List.map_map, LTy.erase_lsubst rd σ r]

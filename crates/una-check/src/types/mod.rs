@@ -993,6 +993,61 @@ mod tests {
     }
 
     #[test]
+    fn the_prelude_error_kinds_the_formal_model_reads_as_codes_have_no_payload() {
+        // #508: the formal re-check reads `FileError`, `KeyError` and `HttpError` as a
+        // failure's code, the index of the variant (`formal/UnaFormal/F1/Import.lean`,
+        // `codeKinds`), and renders such a value as that index. Both readings distinguish two
+        // values exactly when their variants differ, which holds only while no variant carries
+        // a field. Each kind must stay one line of bare variants, without type parameters, in
+        // each edition's prelude; if one gains a payload, `codeKinds` must drop it first.
+        let v0_2 = format!("{}\n{PRELUDE_0_2}", of_prelude());
+        for (edition, text, kinds) in [
+            ("0.1", PRELUDE, &["FileError", "KeyError"][..]),
+            (
+                "0.2",
+                v0_2.as_str(),
+                &["FileError", "KeyError", "HttpError"][..],
+            ),
+        ] {
+            for kind in kinds {
+                // Every declaration of the kind, in any form: `kind K =`, `kind K[T]`, or a
+                // record kind whose fields follow on their own lines.
+                let decl = format!("kind {kind}");
+                let lines: Vec<&str> = text
+                    .lines()
+                    .filter(|line| {
+                        line.match_indices(decl.as_str()).any(|(i, _)| {
+                            !line[i + decl.len()..]
+                                .starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+                        })
+                    })
+                    .collect();
+                assert_eq!(
+                    lines.len(),
+                    1,
+                    "{edition}: {kind} is declared once: {lines:?}"
+                );
+                let head = format!("pub kind {kind} =");
+                let variants = lines[0]
+                    .strip_prefix(head.as_str())
+                    .unwrap_or_else(|| panic!("{edition}: `{}` is not `{head} ...`", lines[0]));
+                let variants: Vec<&str> = variants
+                    .split('|')
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .collect();
+                assert!(!variants.is_empty(), "{edition}: {kind} has variants");
+                for v in variants {
+                    assert!(
+                        v.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+                        "{edition}: {kind}'s variant `{v}` carries a payload"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn every_kind_of_the_prelude_is_declared_in_core_or_known_to_every_engine() {
         // #407: the verifier and the native backend stop on a `Named` kind they cannot
         // resolve, so a sum or record of the prelude that Core does not declare must be one

@@ -42,11 +42,11 @@ theorem shapes_rejected (fs : Label) :
 /-- The probe of S-14 as `OldLeaks` writes it is one of the probes `s14_rejected` covers: the same
 program text, typed under the old rules and rejected under the new. -/
 theorem s14_same_probe : OldLeaks.s14 =
-    s14 (.result (.unit .bot) intl) (.unit .bot) (.result (.text intl) .bot) (.text intl)
+    s14 (.result (.unit .bot) (.int .bot) intl) (.unit .bot) (.result (.text intl) (.int .bot) .bot) (.text intl)
       (.unit .bot) (.unit .bot) := rfl
 
 theorem s15_same_probe : OldLeaks.s15 =
-    s15 (.result (.record "prelude.Response" intl) .bot) (.list (.record "prelude.Header" .bot) .bot)
+    s15 (.result (.record "prelude.Response" intl) (.int .bot) .bot) (.list (.record "prelude.Header" .bot) .bot)
       (.option (.text .bot) .bot) (.record "prelude.Response" intl) (.unit .bot) (.unit .bot) := rfl
 
 end Una.F1.NewRules

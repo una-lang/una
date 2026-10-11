@@ -41,7 +41,8 @@ mutual
   /-- Equality of types, as a Boolean. -/
   def tyEq : Ty → Ty → Bool
     | .int, .int | .bool, .bool | .text, .text | .unit, .unit => true
-    | .list a, .list b | .option a, .option b | .result a, .result b => tyEq a b
+    | .list a, .list b | .option a, .option b => tyEq a b
+    | .result a e, .result b f => tyEq a b && tyEq e f
     | .record a, .record b | .var a, .var b => a == b
     | .fn ps r, .fn qs s => tysEq ps qs && tyEq r s
     | .tuple ps, .tuple qs => tysEq ps qs
@@ -69,8 +70,9 @@ mutual
     match a, b with
     | .int l₁, .int l₂ | .bool l₁, .bool l₂ | .text l₁, .text l₂ => leB top l₁ l₂
     | .unit _, .unit _ => true
-    | .list t₁ l₁, .list t₂ l₂ | .option t₁ l₁, .option t₂ l₂ | .result t₁ l₁, .result t₂ l₂ =>
+    | .list t₁ l₁, .list t₂ l₂ | .option t₁ l₁, .option t₂ l₂ =>
       flowB top t₁ t₂ && leB top l₁ l₂
+    | .result t₁ e₁ l₁, .result t₂ e₂ l₂ => flowB top t₁ t₂ && flowB top e₁ e₂ && leB top l₁ l₂
     | .record r₁ l₁, .record r₂ l₂ => r₁ == r₂ && leB top l₁ l₂
     | .fn ps₁ r₁ o₁ g₁ f₁ l₁, .fn ps₂ r₂ o₂ g₂ f₂ l₂ =>
       flowsB top ps₂ ps₁ && flowB top r₁ r₂ && (!o₁ || o₂) && hostLeB g₁ g₂ && (!f₁ || f₂) &&
@@ -93,7 +95,8 @@ mutual
   def inPlace : LTy → Bool
     | .var a l => l.plain.all (· == a)
     | .int l | .bool l | .text l | .unit l | .record _ l => l.plain.isEmpty
-    | .list t l | .option t l | .result t l => inPlace t && l.plain.isEmpty
+    | .list t l | .option t l => inPlace t && l.plain.isEmpty
+    | .result t e l => inPlace t && inPlace e && l.plain.isEmpty
     | .fn ps r _ _ _ l => inPlaceAll ps && inPlace r && l.plain.isEmpty
     | .tuple ts l => inPlaceAll ts && l.plain.isEmpty
 
@@ -107,7 +110,8 @@ mutual
   def ground : LTy → Bool
     | .var _ _ => false
     | .int l | .bool l | .text l | .unit l | .record _ l => symFree l
-    | .list t l | .option t l | .result t l => ground t && symFree l
+    | .list t l | .option t l => ground t && symFree l
+    | .result t e l => ground t && ground e && symFree l
     | .fn ps r _ _ _ l => groundAll ps && ground r && symFree l
     | .tuple ts l => groundAll ts && symFree l
 
@@ -123,7 +127,8 @@ mutual
   def scopedIn (xs : List String) : LTy → Bool
     | .var a l => xs.contains a && symsIn xs l
     | .int l | .bool l | .text l | .unit l | .record _ l => symsIn xs l
-    | .list t l | .option t l | .result t l => scopedIn xs t && symsIn xs l
+    | .list t l | .option t l => scopedIn xs t && symsIn xs l
+    | .result t e l => scopedIn xs t && scopedIn xs e && symsIn xs l
     | .fn ps r _ _ _ l => scopedInAll xs ps && scopedIn xs r && symsIn xs l
     | .tuple ts l => scopedInAll xs ts && symsIn xs l
 
@@ -186,7 +191,10 @@ def joinTy : LTy → LTy → Option LTy
   | .unit l₁, .unit l₂ => some (.unit (l₁.join l₂))
   | .list t₁ l₁, .list t₂ l₂ => (joinTy t₁ t₂).map (.list · (l₁.join l₂))
   | .option t₁ l₁, .option t₂ l₂ => (joinTy t₁ t₂).map (.option · (l₁.join l₂))
-  | .result t₁ l₁, .result t₂ l₂ => (joinTy t₁ t₂).map (.result · (l₁.join l₂))
+  | .result t₁ e₁ l₁, .result t₂ e₂ l₂ =>
+    match joinTy t₁ t₂, joinTy e₁ e₂ with
+    | some t, some e => some (.result t e (l₁.join l₂))
+    | _, _ => none
   | .record r₁ l₁, .record r₂ l₂ => if r₁ == r₂ then some (.record r₁ (l₁.join l₂)) else none
   | .var a l₁, .var b l₂ => if a == b then some (.var a (l₁.join l₂)) else none
   | _, _ => none
@@ -212,7 +220,7 @@ def fmtTy : LTy → String
   | .unit l => s!"{fmtLabel l} Unit"
   | .list t l => s!"{fmtLabel l} List[{fmtTy t}]"
   | .option t l => s!"{fmtLabel l} Option[{fmtTy t}]"
-  | .result t l => s!"{fmtLabel l} Result[{fmtTy t}]"
+  | .result t e l => s!"{fmtLabel l} Result[{fmtTy t}, {fmtTy e}]"
   | .record r l => s!"{fmtLabel l} {r}"
   | .fn ps r o g f l =>
     let fx := (if o then " uses op" else "") ++ (if g.rd then " uses read" else "") ++
@@ -350,6 +358,20 @@ mutual
     | .some a => do
       flowTo p (.option (← atomTy Γ a) .bot) ann "the option"
       pure .none
+    | .mkOk a => do
+      match ann with
+      | .result _ e _ =>
+        need (inPlace e) "`ℓ_T` off a position of type `T`"
+        flowTo p (.result (← atomTy Γ a) e .bot) ann "the result"
+        pure .none
+      | _ => throw "`Ok` bound at a type that is not a result"
+    | .mkErr a => do
+      match ann with
+      | .result t _ _ =>
+        need (inPlace t) "`ℓ_T` off a position of type `T`"
+        flowTo p (.result t (← atomTy Γ a) .bot) ann "the result"
+        pure .none
+      | _ => throw "`Err` bound at a type that is not a result"
     | .lambda params body => do
       match ann with
       | .fn ps r o g fl _ =>
@@ -521,19 +543,19 @@ mutual
       | _ => throw "a `case` on options of a value that is not an option"
     | .caseResult scrutinee x okE y errE => do
       match ← atomTy Γ scrutinee with
-      | .result te ls =>
+      | .result te ee ls =>
         match s with
         | .tuple ts _ =>
           need (inPlaceAll ts) "`ℓ_T` off a position of type `T`"
           let ε₁ ← checkExpr p E ((x, te.raise ls) :: Γ) (pc.join ls) (.tuple ts .bot) okE
-          let ε₂ ← checkExpr p E ((y, .int ls) :: Γ) (pc.join ls) (.tuple ts .bot) errE
+          let ε₂ ← checkExpr p E ((y, ee.raise ls) :: Γ) (pc.join ls) (.tuple ts .bot) errE
           need (flowsB p.top (ts.map (LTy.raise ls)) ts)
             "a component of the joined state is below the scrutinee's label (U4001)"
           pure (ε₁.union ε₂)
         | _ =>
         need (inPlace s) "`ℓ_T` off a position of type `T`"
         let ε₁ ← checkExpr p E ((x, te.raise ls) :: Γ) (pc.join ls) s okE
-        let ε₂ ← checkExpr p E ((y, .int ls) :: Γ) (pc.join ls) s errE
+        let ε₂ ← checkExpr p E ((y, ee.raise ls) :: Γ) (pc.join ls) s errE
         flowTo p (s.raise ls) s "the value of a `case`, raised by its scrutinee,"
         pure (ε₁.union ε₂)
       | _ => throw "a `case` on results of a value that is not a result"
@@ -544,9 +566,10 @@ mutual
       pure ⟨false, HostFx.none, some .bot, []⟩
     | .attempt body => do
       match s with
-      | .result t l =>
+      | .result t e l =>
         let ε ← checkExpr p E Γ pc t body
         le p ε.failLabel l "the result of `attempt` is below what decides the failure"
+        need (flowB p.top (.int .bot) e) "the error of `attempt` is not a failure's code"
         pure ⟨ε.op, ε.host, Option.none, ε.rels⟩
       | _ => throw "`attempt` at a type that is not a result"
     | .handle body x handler => do
@@ -629,7 +652,8 @@ def checkSignature (fn : Fun) : Result Unit := do
 mutual
   /-- `Rhs.Pure`. -/
   def rhsPure : Rhs → Bool
-    | .atom _ | .prim _ _ | .construct _ _ | .field _ _ | .list _ | .none | .some _ | .eq _ _
+    | .atom _ | .prim _ _ | .construct _ _ | .field _ _ | .list _ | .none | .some _ | .mkOk _
+    | .mkErr _ | .eq _ _
     | .lambda _ _ | .funRef _ _ => true
     | _ => false
 

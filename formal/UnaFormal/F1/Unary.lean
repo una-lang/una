@@ -44,8 +44,8 @@ mutual
     | list {items t l} : LValsAll p items t → LValTy p (.list items) (.list t l)
     | none {t l} : LValTy p .none (.option t l)
     | some {v t l} : LValTy p v t → LValTy p (.some v) (.option t l)
-    | ok {v t l} : LValTy p v t → LValTy p (.ok v) (.result t l)
-    | err {code t l} : LValTy p (.err code) (.result t l)
+    | ok {v t e l} : LValTy p v t → LValTy p (.ok v) (.result t e l)
+    | err {v t e l} : LValTy p v e → LValTy p (.err v) (.result t e l)
     | record {record fields rec l} :
         p.record record = some rec → LValsTy p fields rec.fields →
         LValTy p (.record record fields) (.record record l)
@@ -85,8 +85,8 @@ mutual
     | _, _, _, .list h, .list f _ => .list (LValsAll.flow h f)
     | _, _, _, .none, .option _ _ => .none
     | _, _, _, .some h, .option f _ => .some (LValTy.flow h f)
-    | _, _, _, .ok h, .result f _ => .ok (LValTy.flow h f)
-    | _, _, _, .err, .result _ _ => .err
+    | _, _, _, .ok h, .result f _ _ => .ok (LValTy.flow h f)
+    | _, _, _, .err h, .result _ f _ => .err (LValTy.flow h f)
     | _, _, _, .record hr hfs, .record _ => .record hr hfs
     | _, _, _, .closure hσ henv hb hfl hrl hps hr ho hg hf, .fn fps fr fo fg ff _ =>
       .closure hσ henv hb hfl hrl (Flows.trans fps hps) (Flow.trans hr fr) (fo ∘ ho) (hg.trans fg) (ff ∘ hf)
@@ -193,9 +193,9 @@ mutual
     | .option t l =>
       ⟨.option (Flow.lsubst_nil rd t).1 (LExpr.inst_nil_le l),
         .option (Flow.lsubst_nil rd t).2 (LExpr.le_inst_nil l)⟩
-    | .result t l =>
-      ⟨.result (Flow.lsubst_nil rd t).1 (LExpr.inst_nil_le l),
-        .result (Flow.lsubst_nil rd t).2 (LExpr.le_inst_nil l)⟩
+    | .result t e l =>
+      ⟨.result (Flow.lsubst_nil rd t).1 (Flow.lsubst_nil rd e).1 (LExpr.inst_nil_le l),
+        .result (Flow.lsubst_nil rd t).2 (Flow.lsubst_nil rd e).2 (LExpr.le_inst_nil l)⟩
     | .record _ l => ⟨.record (LExpr.inst_nil_le l), .record (LExpr.le_inst_nil l)⟩
     | .fn ps r _ _ _ l =>
       ⟨.fn (Flows.lsubst_nil rd ps).2 (Flow.lsubst_nil rd r).1 id (HostFx.Le.refl _) id (LExpr.inst_nil_le l),
@@ -320,7 +320,7 @@ def Allowed (p : Program) (pc : LExpr) (ε : Eff) : Event → Prop
       (p.oldHost = false → p.le pc (.ofLabel p.fileState))
   | .req _ vs => ε.host.rq = true ∧ p.le pc (.ofLabel p.acceptsReq) ∧ Val.FirstOrderAll vs
   | .release pol v => pol ∈ ε.rels ∧ ∃ po, p.policy pol = some po ∧ p.le pc po.dst.top ∧
-      (ValTy p v po.dst.erase ∨ ∃ c, v = .err c)
+      (ValTy p v po.dst.erase ∨ ∃ c : Nat, v = .err (.int c))
 
 /-- A failure, whose label is above `pc`. -/
 abbrev Fails (p : Program) (pc : LExpr) (ε : Eff) : Prop := ∃ l, ε.fails = some l ∧ p.le pc l

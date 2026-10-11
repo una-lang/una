@@ -101,6 +101,8 @@ mutual
         AtomsTy ctx items (items.map (fun _ => t)) → RhsTy p ctx (.list items) (.list t)
     | none {ctx t} : RhsTy p ctx .none (.option t)
     | some {ctx a t} : AtomTy ctx a t → RhsTy p ctx (.some a) (.option t)
+    | mkOk {ctx a t e} : AtomTy ctx a t → RhsTy p ctx (.mkOk a) (.result t e)
+    | mkErr {ctx a t e} : AtomTy ctx a e → RhsTy p ctx (.mkErr a) (.result t e)
     | lambda {ctx params body ts r} :
         ts.length = params.length → ExprTy p (bindTys params ts ++ ctx) body r →
         RhsTy p ctx (.lambda params body) (.fn ts r)
@@ -148,12 +150,12 @@ mutual
         AtomTy ctx scrutinee (.option t) → ExprTy p ctx noneE s →
         ExprTy p ((x, t) :: ctx) someE s →
         ExprTy p ctx (.caseOption scrutinee noneE x someE) s
-    | caseResult {ctx scrutinee x okE y errE t s} :
-        AtomTy ctx scrutinee (.result t) → ExprTy p ((x, t) :: ctx) okE s →
-        ExprTy p ((y, .int) :: ctx) errE s →
+    | caseResult {ctx scrutinee x okE y errE t e s} :
+        AtomTy ctx scrutinee (.result t e) → ExprTy p ((x, t) :: ctx) okE s →
+        ExprTy p ((y, e) :: ctx) errE s →
         ExprTy p ctx (.caseResult scrutinee x okE y errE) s
     | fail {ctx code s} : ExprTy p ctx (.fail code) s
-    | attempt {ctx body t} : ExprTy p ctx body t → ExprTy p ctx (.attempt body) (.result t)
+    | attempt {ctx body t} : ExprTy p ctx body t → ExprTy p ctx (.attempt body) (.result t .int)
     | handle {ctx body x handler s} :
         ExprTy p ctx body s → ExprTy p ((x, .int) :: ctx) handler s →
         ExprTy p ctx (.handle body x handler) s
@@ -189,8 +191,8 @@ mutual
     | list {items t} : (∀ v ∈ items, ValTy p v t) → ValTy p (.list items) (.list t)
     | none {t} : ValTy p .none (.option t)
     | some {v t} : ValTy p v t → ValTy p (.some v) (.option t)
-    | ok {v t} : ValTy p v t → ValTy p (.ok v) (.result t)
-    | err {code t} : ValTy p (.err code) (.result t)
+    | ok {v t e} : ValTy p v t → ValTy p (.ok v) (.result t e)
+    | err {v t e} : ValTy p v e → ValTy p (.err v) (.result t e)
     | record {record fields rec} :
         p.record record = some rec → ValsTy p fields rec.fieldTys →
         ValTy p (.record record fields) (.record record)
