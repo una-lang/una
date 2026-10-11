@@ -376,11 +376,11 @@ theorem bind_ok {α β : Type} {x : Result α} {f : α → Result β} {b : β} :
     (x >>= f) = .ok b ↔ ∃ a, x = .ok a ∧ f a = .ok b := by
   cases x <;> simp [bind, Except.bind]
 
-theorem need_ok {c : Bool} {m : String} {u : Unit} : need c m = .ok u ↔ c = true := by
+theorem need_ok {c : Bool} {m : Err} {u : Unit} : need c m = .ok u ↔ c = true := by
   cases u
   cases c <;> simp [need, pure, Except.pure, throw, throwThe, MonadExceptOf.throw]
 
-theorem some_ok {α : Type} {o : Option α} {m : String} {a : α} :
+theorem some_ok {α : Type} {o : Option α} {m : Err} {a : α} :
     some! o m = .ok a ↔ o = some a := by
   cases o <;> simp [some!, pure, Except.pure, throw, throwThe, MonadExceptOf.throw]
 
@@ -394,7 +394,7 @@ theorem le_ok {p : Program} {a b : LExpr} {w : String} {u : Unit} (h : le p a b 
 theorem pure_ok {α : Type} {a b : α} : (pure a : Result α) = .ok b ↔ a = b := by
   simp [pure, Except.pure]
 
-@[simp] theorem throw_ok {α : Type} {m : String} {a : α} :
+@[simp] theorem throw_ok {α : Type} {m : Err} {a : α} :
     (throw m : Result α) = .ok a ↔ False := by
   simp [throw, throwThe, MonadExceptOf.throw]
 
