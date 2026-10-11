@@ -99,3 +99,27 @@ pub chime_public() -> Unit
   uses @console: Console[print]
 =
   chime() with @bell = noisy()
+
+pub capability Gong
+  op strike(n: Int) -> Unit
+    accepts public
+
+handler soft() for Gong
+  op strike(n) = unit
+
+handler hard() for Gong
+  uses @console: Console[print]
+  op strike(n) = @console.print("gong")
+
+strike_it() -> Unit
+  uses @gong: Gong[strike]
+=
+  @gong.strike(1)
+
+pub pick_gong(flag: Bool) -> Unit
+  uses @console: Console[print]
+=
+  if flag
+    strike_it() with @gong = soft()
+  else
+    strike_it() with @gong = hard()
