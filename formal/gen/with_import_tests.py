@@ -23,7 +23,8 @@ def main(src, out):
     rejected = [r["decl"] for r in doc.pop("rejected", []) if r["module"] == mod["path"]]
     src_order = ["Vault", "quiet", "tally", "Shut", "Door", "failing", "fine", "work", "guarded",
                  "branch", "reach", "pick", "open_door", "run", "Bell", "noisy", "chime",
-                 "chime_secret", "chime_public", "Gong", "soft", "hard", "strike_it", "pick_gong"]
+                 "chime_secret", "chime_public", "Gong", "soft", "hard", "strike_it", "pick_gong",
+                 "put_one"]
     decls = mod["decls"] + rejected
     assert sorted(map(name, decls)) == sorted(src_order), sorted(map(name, decls))
     mod["decls"] = sorted(decls, key=lambda d: src_order.index(name(d)))
@@ -75,20 +76,27 @@ def main(src, out):
         return False
     assert name_ext(external)
     external_text = json.dumps(external, separators=(",", ":"), ensure_ascii=False)
-    # A `with` node with `cap` and `body` but no `source`: the first scope's `source` removed.
-    partial_with = copy.deepcopy(doc)
-    def drop_source(j):
-        if isinstance(j, dict):
-            if j.get("kind") == "with" and "source" in j:
-                del j["source"]
-                return True
-            return any(drop_source(v) for v in j.values())
-        if isinstance(j, list):
-            return any(drop_source(v) for v in j)
-        return False
-    assert drop_source(partial_with)
-    partial_text = json.dumps(partial_with, separators=(",", ":"), ensure_ascii=False)
-    for t in (text, unbound_text, forged_text, mixed_text, hostnamed_text, external_text, partial_text):
+    # Malformed `with` nodes (#551): the first scope with `source`, `body` or `cap` removed, or with
+    # a field besides its four.
+    def malformed(change):
+        out = copy.deepcopy(doc)
+        def walk(j):
+            if isinstance(j, dict):
+                if j.get("kind") == "with" and "source" in j:
+                    change(j)
+                    return True
+                return any(walk(v) for v in j.values())
+            if isinstance(j, list):
+                return any(walk(v) for v in j)
+            return False
+        assert walk(out)
+        return json.dumps(out, separators=(",", ":"), ensure_ascii=False)
+    partial_text = malformed(lambda j: j.pop("source"))
+    nobody_text = malformed(lambda j: j.pop("body"))
+    nocap_text = malformed(lambda j: j.pop("cap"))
+    extra_text = malformed(lambda j: j.update(extra=None))
+    for t in (text, unbound_text, forged_text, mixed_text, hostnamed_text, external_text, partial_text,
+              nobody_text, nocap_text, extra_text):
         assert '"#' not in t
     with open(out, "w", encoding="utf-8") as f:
         f.write(f'''/-
@@ -114,6 +122,16 @@ def runScoped (doc : String) (decl : String) : String :=
       | some o => verdict o
       | none => "missing"
 
+/-- Whether every declaration of `doc` is not re-checked, for the reason `why`. -/
+def unreadAll (doc why : String) : Bool :=
+  match Lean.Json.parse doc with
+  | .error _ => false
+  | .ok j => match checkDocument j with
+    | .error _ => false
+    | .ok outs => !outs.isEmpty && outs.all fun p => match p.2 with
+      | .notRechecked w => w == why
+      | _ => false
+
 /-- `Vault.note` (accepts `secret`) with two quiet handlers, `quiet` and `tally`; `Door.open`
 (fails `Shut`, accepts `secret`) with `failing` and `fine`; `Bell.ring` (accepts `public`) with
 `noisy`, which prints. -/
@@ -134,8 +152,12 @@ def hostNamed : String := r#"{hostnamed_text}"#
 /-- The same as `withs`, with its first `with` naming `x.ext`, a handler it does not declare. -/
 def external : String := r#"{external_text}"#
 
-/-- The same as `withs`, with its first `with` node lacking its `source`. -/
+/-- The same as `withs`, with its first `with` node lacking its `source`, its `body` or its `cap`,
+or with a field besides its four (#551). -/
 def partialWith : String := r#"{partial_text}"#
+def noBody : String := r#"{nobody_text}"#
+def noCap : String := r#"{nocap_text}"#
+def extraKey : String := r#"{extra_text}"#
 
 -- H3: a handler installed under a secret program counter, and one installed publicly and reached
 -- from a secret branch: accepted, as `una check` says. So is what they install and invoke.
@@ -180,13 +202,11 @@ def partialWith : String := r#"{partial_text}"#
     | .ok outs => !outs.isEmpty && outs.all (fun p => verdict p.2 == "not re-checked")
     | .error _ => false
   | .error _ => false
--- A `with` node with `cap` and `body` but no `source`: neither a scope nor a map's `with`
--- operation, so no declaration of the document is read (fail closed).
-#guard match Lean.Json.parse partialWith with
-  | .ok j => match checkDocument j with
-    | .ok outs => !outs.isEmpty && outs.all (fun p => verdict p.2 == "not re-checked")
-    | .error _ => false
-  | .error _ => false
+-- A `with` node without `source`, `body` or `cap`, or with a field besides its four: neither a
+-- scope nor a map's `with` operation, so no declaration of the document is read (fail closed).
+#guard [partialWith, noBody, noCap, extraKey].all (unreadAll · "a `with` node this importer cannot read")
+-- A map's `with` operation is not a `with` node of a scope: the document is read.
+#guard run withs "m.put_one" == "accepted"
 
 end Una.F1.WithImportTests
 ''')

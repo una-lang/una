@@ -123,3 +123,5 @@ pub pick_gong(flag: Bool) -> Unit
     strike_it() with @gong = soft()
   else
     strike_it() with @gong = hard()
+
+pub put_one(m: Map[Int, Int]) -> Map[Int, Int] = m.with(key: 1, value: 2)
