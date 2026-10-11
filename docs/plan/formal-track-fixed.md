@@ -64,3 +64,5 @@ Result (2026-10-11, on `main` at `408e59d6`):
   - 10 in documents whose only errors are refuted obligations (U5001), which are the point of those tests: `constraint_facts.low_u8` and `natural_u8`, `fixedover.add`, `narrow` and `negate`, `fixedref.constant`, `divided` and `negated`, `for_over.below` and `successor`.
 - 20 declarations stay not re-checked, now for the next form: the wrapping, saturating and bit methods (Core's `fixed` primitive, 9), the constraint `integer` (4), `together_for` (2), and kinds, calls and prelude functions F1 lacks (5). None is read through the fail-closed path of mixed or unknown operands; `FixedImportTests` exercises it.
 - Family F, seeds 5 to 7, 11, 12 and F7: no change; every program `una check` accepts is `clean`.
+
+Rebased onto #538 (`main` at `0f5e6d50`, 2026-10-11): `fit` needed no case in #538's forms. `scripts/formal.sh`: PASS, 378 theorems; the replay: 45, unchanged. The corpus: 1,211 to 1,235 accepted lines, none rejected (the source headline 1,194 to 1,218), the same 24 flips as above; the F rerun, F7 included, unchanged and `clean`, every must-reject program rejected and every must-accept one accepted.
