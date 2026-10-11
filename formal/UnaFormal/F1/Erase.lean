@@ -170,6 +170,14 @@ mutual
     | _, _, _, _, _, .none _ => .none
     | _, _, _, _, _, .some h => .some (latom_erase h)
     | _, _, _, _, _, .first h => .first (latom_erase h)
+    | _, _, _, _, _, .orElse ho hd hf₁ hf₂ _ => by
+      have h₁ := latom_erase ho
+      have h₂ := latom_erase hd
+      simp only [LTy.erase, Flow.erase hf₁] at h₁
+      rw [Flow.erase hf₂] at h₂
+      rw [LTy.erase_raise]
+      exact .orElse h₁ h₂
+    | _, _, _, _, _, .isOk h => .isOk (latom_erase h)
     | _, _, _, _, _, .mkOk h _ => .mkOk (latom_erase h)
     | _, _, _, _, _, .mkErr h _ => .mkErr (latom_erase h)
     | _, _, _, _, _, .lambda (params := params) hb _ _ _ _ => by

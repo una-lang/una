@@ -814,6 +814,23 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
           cases hall with
           | nil => simp only [evalRhs, hv]; exact uok_done LValTy.none
           | cons hx _ => simp only [evalRhs, hv]; exact uok_done (LValTy.some hx)
+      | orElse ho hd hf₁ hf₂ _ =>
+        obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv ho
+        obtain ⟨x, hx, hxt⟩ := latom_ltypedσ henv hd
+        simp only [LTy.lsubst] at hvt
+        cases hvt with
+        | none =>
+          simp only [evalRhs, hv, hx]
+          exact uok_done (LValTy.flow hxt (Flow.lsubst _ _ (Flow.trans hf₂ (Flow.raise _ _))))
+        | some hs =>
+          simp only [evalRhs, hv, hx]
+          exact uok_done (LValTy.flow hs (Flow.lsubst _ _ (Flow.trans hf₁ (Flow.raise _ _))))
+      | isOk ha =>
+        obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv ha
+        simp only [LTy.lsubst] at hvt
+        cases hvt with
+        | ok _ => simp only [evalRhs, hv]; exact uok_done LValTy.bool
+        | err _ => simp only [evalRhs, hv]; exact uok_done LValTy.bool
       | mkOk ha _ =>
         obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv ha
         exact ⟨fun _ h => by simp [evalRhs] at h, by simpa [evalRhs, hv, URes, LTy.lsubst] using LValTy.ok hvt,

@@ -111,6 +111,21 @@ mutual
       simp only [checkRhs, bind_ok, pure_ok] at h
       obtain ⟨t, ht, _, hf, rfl⟩ := h
       exact ⟨_, .some (atomTy_sound ht), flowTo_ok hf⟩
+    | .orElse o d, ε, h => by
+      simp only [checkRhs, bind_ok] at h
+      obtain ⟨ot, hot, h⟩ := h
+      cases ot <;> try (simp at h; done)
+      simp only [bind_ok, pure_ok, need_ok] at h
+      obtain ⟨td, htd, _, hf₁, _, hf₂, _, hip, _, hf, rfl⟩ := h
+      exact ⟨_, .orElse (atomTy_sound hot) (atomTy_sound htd) (flowTo_ok hf₁) (flowTo_ok hf₂)
+        (inPlace_sound hip), flowTo_ok hf⟩
+    | .isOk r, ε, h => by
+      simp only [checkRhs, bind_ok] at h
+      obtain ⟨rt, hrt, h⟩ := h
+      cases rt <;> try (simp at h; done)
+      simp only [bind_ok, pure_ok] at h
+      obtain ⟨_, hf, rfl⟩ := h
+      exact ⟨_, .isOk (atomTy_sound hrt), flowTo_ok hf⟩
     | .first a, ε, h => by
       simp only [checkRhs, bind_ok] at h
       obtain ⟨xt, hxt, h⟩ := h
