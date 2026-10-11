@@ -141,6 +141,22 @@ class Generators(unittest.TestCase):
             if p.op == "T11" and "-pc-internal-" in p.variant:
                 self.assertEqual(p.expect, ["U4002"], p.variant)
 
+    def test_p_family_classes(self):
+        seen = {}
+        for p in every_program(80):
+            if p.op not in ("P1", "P2", "P3"):
+                continue
+            seen.setdefault(p.op, set()).add(p.variant)
+            if p.op == "P1" or p.variant.endswith("-twin") or p.variant.endswith("len-const"):
+                self.assertEqual(p.cls, OPEN, p.variant)
+            else:
+                self.assertEqual(p.cls, MUST_REJECT, p.variant)
+                self.assertTrue(p.expect, p.variant)
+            if p.op == "P2" and "len-dep" in p.variant:
+                self.assertIn("if pin > 0 then [pin] else []", p.files["src/app/main.una"])
+        self.assertTrue({"return-len-dep", "return-len-dep-top", "print-len-const"} <= seen["P2"])
+        self.assertTrue(any(v.startswith("which-variant") for v in seen["P3"]))
+
     def test_t11_class_follows_the_failure_label(self):
         for p in every_program(80):
             if p.op != "T11":
