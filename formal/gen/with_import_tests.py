@@ -122,6 +122,16 @@ def runScoped (doc : String) (decl : String) : String :=
       | some o => verdict o
       | none => "missing"
 
+/-- The reason `decl` of `doc` is not re-checked, when it is not. -/
+def reasonOf (doc decl : String) : Option String :=
+  match Lean.Json.parse doc with
+  | .error _ => none
+  | .ok j => match checkDocument j with
+    | .error _ => none
+    | .ok outs => match outs.lookup decl with
+      | some (.notRechecked w) => some w
+      | _ => none
+
 /-- Whether every declaration of `doc` is not re-checked, for the reason `why`. -/
 def unreadAll (doc why : String) : Bool :=
   match Lean.Json.parse doc with
@@ -205,8 +215,13 @@ def extraKey : String := r#"{extra_text}"#
 -- A `with` node without `source`, `body` or `cap`, or with a field besides its four: neither a
 -- scope nor a map's `with` operation, so no declaration of the document is read (fail closed).
 #guard [partialWith, noBody, noCap, extraKey].all (unreadAll · "a `with` node this importer cannot read")
--- A map's `with` operation is not a `with` node of a scope: the document is read.
-#guard run withs "m.put_one" == "accepted"
+-- A map's `with` operation is not a `with` node of a scope: the document is read (`work` above is
+-- accepted in it), and `put_one`, which uses one, is not re-checked for a reason of its own (F1
+-- has no `Map`), not for its `with`.
+#guard match reasonOf withs "m.put_one" with
+  | some w => w != "a `with` node this importer cannot read" &&
+      w != "a `with` of a handler the document does not declare"
+  | none => false
 
 end Una.F1.WithImportTests
 ''')
