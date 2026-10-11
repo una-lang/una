@@ -252,6 +252,16 @@ def done (w : World H) (v : Val) : Run H := ([], .ok v, w)
 
 def stuck (w : World H) : Run H := ([], .stuck, w)
 
+/-- The handler an invocation of `o` runs (#538): the one its marker holds, when that is a
+handler of `o`, and the operation's representative otherwise. A marker holds another value only in
+a forged export, which `una check` never produces and the importer refuses; the model still runs a
+handler of `o` there, so a typed program never gets stuck at an invocation. -/
+def Program.handlerFor (p : Program) (o : String) (m : Option Val) : String :=
+  match m with
+  | some (.text f) => if p.handlerOf.lookup f = some o then f else (p.opRep.lookup o).getD ""
+  | _ => (p.opRep.lookup o).getD ""
+
+
 /-- A call of the function value `fv` on `vs`, with `run` the evaluation of a body. -/
 def applyWith (run : World H → Env → Expr → Run H) (w : World H) (fv : Val) (vs : List Val) :
     Run H :=
@@ -382,6 +392,12 @@ mutual
         | _, _ => stuck w
       | .invoke f args =>
         match p.find f, evalAtoms env args with
+        | some fn, some vs =>
+          if vs.length = fn.params.length then eval H n p w (bindParams fn.params vs []) fn.body
+          else stuck w
+        | _, _ => stuck w
+      | .invokeOp o args =>
+        match p.find (p.handlerFor o (env.lookup (markerName o))), evalAtoms env args with
         | some fn, some vs =>
           if vs.length = fn.params.length then eval H n p w (bindParams fn.params vs []) fn.body
           else stuck w
@@ -551,6 +567,7 @@ mutual
         | (t, .failed code, w') => (t, .ok (.err (.int code)), w')
         | res => res
       | .unreachable => ([], .aborted, w)
+      | .withH o f body => eval H n p w ((markerName o, .text f) :: env) body
       | .attemptK kind body =>
         match eval H n p w env body with
         | (t, .ok v, w') => (t, .ok (.ok v), w')
