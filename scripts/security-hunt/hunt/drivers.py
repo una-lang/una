@@ -10,7 +10,7 @@ from collections import Counter
 
 from . import sandbox
 from .families import OPERATORS
-from .program import MUST_REJECT, OPEN, Program, derive_seed, rng_for
+from .program import MUST_ACCEPT, MUST_REJECT, OPEN, Program, derive_seed, rng_for
 from .refactor import REFACTORS
 
 
@@ -71,7 +71,7 @@ def must_reject(rows, una, root, timeout, out):
     checked too, and their verdict is recorded for triage."""
     tally = Counter()
     for row in rows:
-        if row["class"] not in (MUST_REJECT, OPEN):
+        if row["class"] not in (MUST_REJECT, MUST_ACCEPT, OPEN):
             continue
         prog = rebuild(row)
         v = check(una, prog.write(root), root, timeout)
@@ -80,6 +80,9 @@ def must_reject(rows, una, root, timeout, out):
             result["finding"] = v.kind == "accepted"
             got = {c[0] for c in v.codes}
             result["expect_seen"] = bool(got & set(row["expect"])) if row["expect"] else None
+        elif row["class"] == MUST_ACCEPT:
+            result["finding"] = False
+            result["over_strict"] = v.kind != "accepted"
         else:
             result["finding"] = False
         if v.kind in ("ice", "inconsistent", "unreadable"):
@@ -133,7 +136,7 @@ def parse_recheck(stdout):
     return rows
 
 
-def judge_differ(exp, core_text, rec):
+def judge_differ(exp, core_text, rec, main=None):
     """Part (b)'s verdict on one program `una check` accepted, fail-closed (N-99's rule, Una-2's
     review of #527): `finding` when the re-check rejects a declaration, `clean` only when the
     export is complete and read, the re-check ran to its end, and every function of the export
@@ -202,6 +205,12 @@ def judge_differ(exp, core_text, rec):
     if odd:
         out["detail"] = f"the re-check printed the outcome {odd[0]!r}"
         return out
+    # Family F stays inside the re-check's vocabulary by design (Una-2's review of #547): its
+    # program's own declaration not re-checked is not a comparison, so it is `unknown`.
+    if main is not None and any(r["decl"] == main and r["outcome"] == "not re-checked"
+                                for r in rows):
+        out["detail"] = f"the program's declaration {main} is not re-checked"
+        return out
     out["kind"] = "clean"
     return out
 
@@ -216,9 +225,20 @@ def differ(rows, una, core_check, root, timeout, out):
         prog = rebuild(row)
         pkg = prog.write(root)
         v = check(una, pkg, root, timeout)
-        result = dict(row, **v.row())
+        # The class is the generator's own, so a manifest written before a program was classified
+        # is judged by its class today (Una-2's review of #547).
+        result = dict(row, **v.row(), **{"class": prog.cls, "expect": prog.expect})
         result["differ"] = None
         result["finding"] = False
+        # `una check` alone decides a must-reject or must-accept program, whatever the re-check says.
+        if prog.cls == MUST_REJECT:
+            result["finding"] = v.kind == "accepted"
+            got = {c[0] for c in v.codes}
+            result["expect_seen"] = bool(got & set(prog.expect)) if prog.expect else None
+            tally[(row["op"], MUST_REJECT, v.kind)] += 1
+        elif prog.cls == MUST_ACCEPT:
+            result["over_strict"] = v.kind != "accepted"
+            tally[(row["op"], MUST_ACCEPT, v.kind)] += 1
         if v.kind == "accepted":
             exp = sandbox.run([una, "--json", "core", "."], cwd=pkg, writable=root,
                               timeout=timeout)
@@ -228,9 +248,10 @@ def differ(rows, una, core_check, root, timeout, out):
             rec = None
             if not exp.timed_out and exp.code == 0:
                 rec = sandbox.run([core_check, core], cwd=pkg, writable=root, timeout=timeout)
-            j = judge_differ(exp, exp.stdout, rec)
+            main = "app.main.run" if row["op"].startswith("F") else None
+            j = judge_differ(exp, exp.stdout, rec, main=main)
             result.update(differ=j["kind"], differ_detail=j["detail"], recheck=j["recheck"],
-                          finding=j["kind"] == "finding",
+                          finding=result["finding"] or j["kind"] == "finding",
                           export_code=exp.code, export_timed_out=exp.timed_out,
                           recheck_code=None if rec is None else rec.code,
                           recheck_timed_out=None if rec is None else rec.timed_out)

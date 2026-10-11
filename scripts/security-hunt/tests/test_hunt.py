@@ -217,30 +217,63 @@ class Generators(unittest.TestCase):
             if p.op == "O3" and p.variant.startswith("to-int"):
                 self.assertIn("T: Integer", p.files["src/app/main.una"])
 
-    def test_f_family_is_open_and_covers_every_carrier(self):
+    def test_f_family_covers_every_carrier(self):
         from hunt.families.fragment import CARRIERS, ENDINGS
         seen = set()
         for p in every_program(120):
             if p.op != "F1":
                 continue
-            self.assertEqual((p.cls, p.expect), (OPEN, []))
             seen.add(p.variant)
         carriers = {v.split("-", 1)[0] for v in seen}
         self.assertTrue({c.split("-")[0] for c in CARRIERS} <= carriers | {"first"})
         self.assertTrue(any(v.endswith("write-internal") for v in seen))
 
-    def test_f7_is_open_and_covers_every_prelude_carrier(self):
+    def test_f7_covers_every_prelude_carrier(self):
         from hunt.families.fragment import PRELUDE_CARRIERS
         seen = set()
         for p in every_program(200):
             if p.op != "F7":
                 continue
-            self.assertEqual((p.cls, p.expect), (OPEN, []))
             seen.add(p.variant)
         endings = ("secret-result", "secret-branch", "public-result", "print", "print-under",
                    "write-internal")
         carriers = {next(v[:-len(e) - 1] for e in endings if v.endswith("-" + e)) for v in seen}
         self.assertEqual(carriers, set(PRELUDE_CARRIERS))
+
+    def test_f_public_endings_are_classified_without_changing_programs(self):
+        # Una-2's review of #547: a public ending is must-reject for every carrier but the
+        # structural `is-ok`, which is must-accept; the programs' text is unchanged, so earlier
+        # seeds rebuild to their digests (seed 11's first F1 program, below).
+        from hunt.families.fragment import PUBLIC_ENDINGS, LEAK_CODES, f1
+        from hunt.program import MUST_ACCEPT, MUST_REJECT
+        for p in every_program(120):
+            if p.op not in ("F1", "F7"):
+                continue
+            ending = next(e for e in ("secret-result", "secret-branch", "public-result",
+                                      "print-under", "print", "write-internal")
+                          if p.variant.endswith("-" + e))
+            carrier = p.variant[:-len(ending) - 1]
+            if ending not in PUBLIC_ENDINGS:
+                self.assertEqual((p.cls, p.expect), (OPEN, []), p.variant)
+            elif p.op == "F7" and carrier == "is-ok":
+                self.assertEqual((p.cls, p.expect), (MUST_ACCEPT, []), p.variant)
+            else:
+                self.assertEqual((p.cls, p.expect), (MUST_REJECT, LEAK_CODES), p.variant)
+        p = f1(derive_seed(11, "F1", 0), "0.1")
+        self.assertEqual(p.variant, "fold-print-under")
+        self.assertTrue(p.digest().startswith("d53a6d3c2efa7957"))
+
+    def test_differ_main_not_rechecked_is_unknown(self):
+        # Family F stays in the re-check's vocabulary: its own declaration not re-checked is
+        # `unknown`, never clean.
+        lines = "c.json\tapp.main.run\tnot re-checked\twhy\nc.json\tapp.main.same\taccepted\t\n"
+        j = drivers.judge_differ(Run(0, self.DOC, "", False, 0.1), self.DOC,
+                                 Run(0, lines, "", False, 0.1), main="app.main.run")
+        self.assertEqual(j["kind"], "unknown")
+        self.assertIn("app.main.run", j["detail"])
+        j = drivers.judge_differ(Run(0, self.DOC, "", False, 0.1), self.DOC,
+                                 Run(0, lines, "", False, 0.1))
+        self.assertEqual(j["kind"], "clean")
 
     def test_parse_recheck(self):
         out = "doc.json\tmain.run\taccepted\tany host\ndoc.json\tmain.g\tnot re-checked\tthe type `X`\n"

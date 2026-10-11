@@ -8,7 +8,7 @@ and a declaration `una check` accepts that the re-check rejects is a candidate f
 coordinator, never interpreted before that.
 """
 
-from ..program import OPEN, Program, rng_for
+from ..program import MUST_ACCEPT, MUST_REJECT, OPEN, Program, rng_for
 from ..una import header, join_decls, package
 
 MOD = "app.main"
@@ -52,6 +52,23 @@ ENDINGS = {
 }
 
 
+# The endings that reveal `t` at `public` (Una-2's review of #547): a program whose `t` carries
+# the secret must be rejected there, by `una check` alone, whatever the re-check says.
+PUBLIC_ENDINGS = ("public-result", "print", "print-under")
+LEAK_CODES = ["U4001", "U4003"]
+
+
+def classify(carrier, ending, structural=()):
+    """The class of a carrier and an ending: a public ending is must-reject, unless the carrier
+    is structural, whose `t` is public, and then must-accept; any other ending is open. The
+    programs' text does not depend on it, so earlier seeds rebuild unchanged."""
+    if ending not in PUBLIC_ENDINGS:
+        return OPEN, []
+    if carrier in structural:
+        return MUST_ACCEPT, []
+    return MUST_REJECT, list(LEAK_CODES)
+
+
 # F1 to F4: a secret literal, a carrier and an ending.
 def f1(seed, edition):
     rng = rng_for(seed)
@@ -66,8 +83,9 @@ def f1(seed, edition):
         decls.append(SUPPORT[carrier].replace("secret Int", f"{level} Int"))
     decls.append(fn)
     files = package("hunt", edition, {MOD: join_decls(*decls)})
-    return Program(op="F1", rule=RULE, edition=edition, seed=seed, cls=OPEN, files=files,
-                   expect=[], variant=f"{carrier}-{ending}",
+    cls, expect = classify(carrier, ending)
+    return Program(op="F1", rule=RULE, edition=edition, seed=seed, cls=cls, files=files,
+                   expect=expect, variant=f"{carrier}-{ending}",
                    note="the judge is the comparison of una check and the re-check")
 
 
@@ -110,8 +128,9 @@ def f7(seed, edition):
             .replace("secret Result", f"{level} Result"))
     fn = (f"pub run(s: {level} Int) -> {result}\n" + uses + "=\n" + body + tail)
     files = package("hunt", edition, {MOD: join_decls(header(MOD), fn)})
-    return Program(op="F7", rule=RULE, edition=edition, seed=seed, cls=OPEN, files=files,
-                   expect=[], variant=f"{carrier}-{ending}",
+    cls, expect = classify(carrier, ending, structural=("is-ok",))
+    return Program(op="F7", rule=RULE, edition=edition, seed=seed, cls=cls, files=files,
+                   expect=expect, variant=f"{carrier}-{ending}",
                    note="the judge is the comparison of una check and the re-check")
 
 
