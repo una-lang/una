@@ -119,8 +119,19 @@ theorem _root_.Una.F1.ExprTy.of_lowerLets {p : Program} :
   | .loop src x xt st init b, _, _, h => by
     cases h with
     | loop hs hi hl hb => exact .loop hs hi hl (ExprTy.of_lowerLets b hb)
+  | .caseSum sc i xs a b, _, _, h => by
+    cases h with
+    | caseSum hs hsm hf hl ha hb =>
+      exact .caseSum hs hsm hf hl (ExprTy.of_lowerLets a ha) (ExprTy.of_lowerLets b hb)
+  | .attemptK k b, _, _, h => by
+    cases h with | attemptK hb => exact .attemptK (ExprTy.of_lowerLets b hb)
+  | .handleK k b x hd, _, _, h => by
+    cases h with
+    | handleK hb hh => exact .handleK (ExprTy.of_lowerLets b hb) (ExprTy.of_lowerLets hd hh)
   | .atom a, _, _, h => h
   | .fail c, _, _, h => h
+  | .raise k c args, _, _, h => h
+  | .unreachable, _, _, h => h
 
 theorem viaTypedAt_sound {p : Program} {fn : Fun} {ps : List (String × LTy)} {body : Expr}
     (h : viaTypedAt p fn ps body = true) : ExprTy p (LCtx.erase ps) body fn.result.erase := by

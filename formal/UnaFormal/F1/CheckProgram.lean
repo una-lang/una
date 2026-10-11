@@ -153,8 +153,13 @@ def _root_.Una.F1.Expr.lowerLets : Expr → Expr
   | .handle b x h => .handle b.lowerLets x h.lowerLets
   | .letTuple bs v b => .letTuple bs v b.lowerLets
   | .loop src x xt st init b => .loop src x xt st init b.lowerLets
+  | .caseSum sc i xs a b => .caseSum sc i xs a.lowerLets b.lowerLets
+  | .attemptK k b => .attemptK k b.lowerLets
+  | .handleK k b x h => .handleK k b.lowerLets x h.lowerLets
   | .atom a => .atom a
   | .fail c => .fail c
+  | .raise k c args => .raise k c args
+  | .unreachable => .unreachable
 
 /-- A body the labeled checker types under these parameters, against the result raised to `⊤`. -/
 def viaTypedAt (p : Program) (fn : Fun) (ps : List (String × LTy)) (body : Expr := fn.body) :
