@@ -9,8 +9,10 @@ from dataclasses import dataclass, field
 # The expected verdict classes of docs/plan/security-hunt-generators.md §1.
 MUST_REJECT = "must-reject"
 MUST_KEEP = "must-keep"
+# A program `una check` must accept: a rejection is over-strictness, for triage (#513).
+MUST_ACCEPT = "must-accept"
 OPEN = "open"
-CLASSES = (MUST_REJECT, MUST_KEEP, OPEN)
+CLASSES = (MUST_REJECT, MUST_KEEP, MUST_ACCEPT, OPEN)
 
 LOCK = """encoding_version = "una-smt-1"
 solver           = "z3"
