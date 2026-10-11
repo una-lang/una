@@ -75,7 +75,20 @@ def main(src, out):
         return False
     assert name_ext(external)
     external_text = json.dumps(external, separators=(",", ":"), ensure_ascii=False)
-    for t in (text, unbound_text, forged_text, mixed_text, hostnamed_text, external_text):
+    # A `with` node with `cap` and `body` but no `source`: the first scope's `source` removed.
+    partial_with = copy.deepcopy(doc)
+    def drop_source(j):
+        if isinstance(j, dict):
+            if j.get("kind") == "with" and "source" in j:
+                del j["source"]
+                return True
+            return any(drop_source(v) for v in j.values())
+        if isinstance(j, list):
+            return any(drop_source(v) for v in j)
+        return False
+    assert drop_source(partial_with)
+    partial_text = json.dumps(partial_with, separators=(",", ":"), ensure_ascii=False)
+    for t in (text, unbound_text, forged_text, mixed_text, hostnamed_text, external_text, partial_text):
         assert '"#' not in t
     with open(out, "w", encoding="utf-8") as f:
         f.write(f'''/-
@@ -121,6 +134,9 @@ def hostNamed : String := r#"{hostnamed_text}"#
 /-- The same as `withs`, with its first `with` naming `x.ext`, a handler it does not declare. -/
 def external : String := r#"{external_text}"#
 
+/-- The same as `withs`, with its first `with` node lacking its `source`. -/
+def partialWith : String := r#"{partial_text}"#
+
 -- H3: a handler installed under a secret program counter, and one installed publicly and reached
 -- from a secret branch: accepted, as `una check` says. So is what they install and invoke.
 #guard run withs "m.guarded" == "accepted"
@@ -160,6 +176,13 @@ def external : String := r#"{external_text}"#
 -- A `with` of a handler the document does not declare (`x.ext`): which capability it installs is
 -- unknown, so no declaration of the document is read (fail closed).
 #guard match Lean.Json.parse external with
+  | .ok j => match checkDocument j with
+    | .ok outs => !outs.isEmpty && outs.all (fun p => verdict p.2 == "not re-checked")
+    | .error _ => false
+  | .error _ => false
+-- A `with` node with `cap` and `body` but no `source`: neither a scope nor a map's `with`
+-- operation, so no declaration of the document is read (fail closed).
+#guard match Lean.Json.parse partialWith with
   | .ok j => match checkDocument j with
     | .ok outs => !outs.isEmpty && outs.all (fun p => verdict p.2 == "not re-checked")
     | .error _ => false

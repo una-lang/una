@@ -1719,14 +1719,17 @@ def raiseParamJ (accepts t : J) : Option J := do
   pure (t.setObjVal! "label" (Lean.Json.mkObj
     [("level", .str v), ("categories", .arr cs.toArray), ("symbols", .arr #[])]))
 
-/-- The handlers the `with` scopes of a JSON value install, by qualified name (#538). A scope is a
-`with` node with a field besides its kind (a map's `with` operation has none). A source other than
-a rebinding that does not name its handler gives `"?"`, which names no handler of the document
-(fail closed). -/
+/-- The handlers the `with` scopes of a JSON value install, by qualified name (#538). A `with` node
+with `cap`, `source` and `body` is a scope; one with its kind alone is a map's `with` operation;
+any other gives `"?"`, as does a scope's source other than a rebinding that does not name its
+handler: `"?"` names no handler of the document, so the document is not read (fail closed). -/
 partial def withHandlersIn (j : J) : List String :=
   match j with
   | .obj kvs =>
-    let here := if j.getObjValD "kind" == .str "with" && kvs.size > 1 then
+    let has := fun (k : String) => (j.getObjVal? k).isOk
+    let here := if j.getObjValD "kind" != .str "with" || kvs.size == 1 then []
+      else if !(has "cap" && has "source" && has "body") then ["?"]
+      else
         let src := j.getObjValD "source"
         if src.getObjValD "kind" == .str "rebind" then []
         else
@@ -1735,7 +1738,6 @@ partial def withHandlersIn (j : J) : List String :=
           match src.getObjValD "kind", h.getObjValD "module", h.getObjValD "name" with
           | .str "handler", .str m, .str n => [(if given then "given:" else "") ++ s!"{m}.{n}"]
           | _, _, _ => ["?"]
-      else []
     here ++ kvs.toArray.toList.flatMap (fun kv => withHandlersIn kv.2)
   | .arr items => items.toList.flatMap withHandlersIn
   | _ => []
