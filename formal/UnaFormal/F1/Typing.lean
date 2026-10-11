@@ -75,6 +75,10 @@ inductive PrimTy : Prim → List Ty → Ty → Prop where
   | lenText : PrimTy .len [.text] .int
   | sum : PrimTy .sum [.list .int] .int
   | concat {ts} : (∀ t ∈ ts, t = .text) → PrimTy .concat ts .text
+  | abs : PrimTy .abs [.int] .int
+  | min : PrimTy .min [.int, .int] .int
+  | max : PrimTy .max [.int, .int] .int
+  | slice : PrimTy .slice [.text, .int, .int] .text
 
 /-- What a loop visits, and the type of its variable. -/
 inductive SourceTy : Ctx → Source → Ty → Prop where
@@ -120,6 +124,9 @@ mutual
     | none {ctx t} : RhsTy p ctx .none (.option t)
     | some {ctx a t} : AtomTy ctx a t → RhsTy p ctx (.some a) (.option t)
     | first {ctx a t} : AtomTy ctx a (.list t) → RhsTy p ctx (.first a) (.option t)
+    | elemAt {ctx xs i t} : AtomTy ctx xs (.list t) → AtomTy ctx i .int → RhsTy p ctx (.elemAt xs i) (.option t)
+    | orElse {ctx o d t} : AtomTy ctx o (.option t) → AtomTy ctx d t → RhsTy p ctx (.orElse o d) t
+    | isOk {ctx r t e} : AtomTy ctx r (.result t e) → RhsTy p ctx (.isOk r) .bool
     | mkOk {ctx a t e} : AtomTy ctx a t → RhsTy p ctx (.mkOk a) (.result t e)
     | mkErr {ctx a t e} : AtomTy ctx a e → RhsTy p ctx (.mkErr a) (.result t e)
     | lambda {ctx params body ts r} :

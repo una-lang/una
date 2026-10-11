@@ -205,10 +205,30 @@ def sumInts : List Val → Option Int
   | .int n :: rest => (sumInts rest).map (n + ·)
   | _ => none
 
+/-- The element of `items` at `n`, as an option: `None` outside `0 <= n < items.len` (`spec/14 §1`). -/
+def atIndex (items : List Val) (n : Int) : Val :=
+  if n < 0 then .none else (items[n.toNat]?).elim .none .some
+
+theorem atIndex_cases (items : List Val) (n : Int) :
+    atIndex items n = .none ∨ ∃ v ∈ items, atIndex items n = .some v := by
+  unfold atIndex
+  split
+  · exact .inl rfl
+  · cases h : items[n.toNat]? with
+    | none => exact .inl rfl
+    | some v => exact .inr ⟨v, List.mem_of_getElem? h, rfl⟩
+
+/-- The scalar values of `s` from `a` up to, not including, `b` (`spec/22 §2`). -/
+def sliceText (s : String) (a b : Int) : String :=
+  String.ofList ((s.toList.drop a.toNat).take (b - a).toNat)
+
 /-- Whether a primitive aborts on its arguments: `div` or `mod` by zero (#526), which Una's
 runtime aborts on, and which the divisor obligation (U5001) rules out where it is proven. -/
 def Prim.aborts : Prim → List Val → Bool
   | .div, [_, .int b] | .mod, [_, .int b] => b == 0
+  -- `slice` outside `0 <= start <= end <= t.len` (#542): the precondition is an obligation at each
+  -- call (`spec/12 §3`), so a run reaches here only where it is not proven.
+  | .slice, [.text s, .int a, .int b] => !(decide (0 ≤ a ∧ a ≤ b ∧ b ≤ (s.length : Int)))
   | _, _ => false
 
 /-- A primitive on the values of its arguments. -/
@@ -227,6 +247,10 @@ def evalPrim : Prim → List Val → Option Val
   | .len, [.text s] => some (.int s.length)
   | .sum, [.list items] => (sumInts items).map .int
   | .concat, vs => (concatTexts vs).map .text
+  | .abs, [.int a] => some (.int (if a < 0 then -a else a))
+  | .min, [.int a, .int b] => some (.int (Min.min a b))
+  | .max, [.int a, .int b] => some (.int (Max.max a b))
+  | .slice, [.text s, .int a, .int b] => some (.text (sliceText s a b))
   | _, _ => none
 
 /-- The parameters bound to the arguments, in front of `env`. -/
@@ -449,6 +473,20 @@ mutual
         match evalAtom env a with
         | some (.list (v :: _)) => done w (.some v)
         | some (.list []) => done w .none
+        | _ => stuck w
+      | .elemAt xs i =>
+        match evalAtom env xs, evalAtom env i with
+        | some (.list items), some (.int n) => done w (atIndex items n)
+        | _, _ => stuck w
+      | .orElse o d =>
+        match evalAtom env o, evalAtom env d with
+        | some (.some v), some _ => done w v
+        | some .none, some x => done w x
+        | _, _ => stuck w
+      | .isOk r =>
+        match evalAtom env r with
+        | some (.ok _) => done w (.bool true)
+        | some (.err _) => done w (.bool false)
         | _ => stuck w
       | .mkOk a => ([], ((evalAtom env a).map Val.ok).elim .stuck .ok, w)
       | .mkErr a => ([], ((evalAtom env a).map Val.err).elim .stuck .ok, w)

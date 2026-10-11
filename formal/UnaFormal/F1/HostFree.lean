@@ -25,7 +25,8 @@ mutual
     | .invokeOp _ _ => false
     | .lambda _ b => b.hostFree
     | .atom _ | .prim _ _ | .call _ _ _ | .invoke _ _ | .apply _ _ | .op _ | .construct _ _ | .variant _ _ _ | .field _ _
-    | .list _ | .none | .some _ | .first _ | .mkOk _ | .mkErr _ | .funRef _ _ | .declassify _ _ | .map _ _ | .filter _ _
+    | .list _ | .none | .some _ | .first _ | .elemAt _ _ | .orElse _ _ | .isOk _ | .mkOk _ | .mkErr _ | .funRef _ _ | .declassify _ _
+    | .map _ _ | .filter _ _
     | .firstWhere _ _ | .fold _ _ _ | .parse _ | .checked _ _ _ | .eq _ _ | .tuple _ | .append _ _ | .set _ _ _
     | .toText _ => true
 
@@ -122,7 +123,11 @@ theorem evalAtoms_hostFree {env : Env} (hf : Val.HostFreeEnvIn S env) :
 
 theorem evalPrim_hostFree {pr : Prim} {vs : List Val} {v : Val} (h : evalPrim pr vs = some v) :
     Val.HostFreeIn S v := by
-  rcases vs with _ | ⟨a, _ | ⟨b, _ | ⟨c, rest⟩⟩⟩ <;> cases pr <;> (try cases a) <;> (try cases b) <;>
+  cases pr
+  case slice =>
+    rcases vs with _ | ⟨a, _ | ⟨b, _ | ⟨c, _ | ⟨d, rest⟩⟩⟩⟩ <;> (try cases a) <;> (try cases b) <;>
+      (try cases c) <;> simp [evalPrim] at h <;> (try subst h) <;> simp [Val.HostFreeIn]
+  all_goals rcases vs with _ | ⟨a, _ | ⟨b, _ | ⟨c, rest⟩⟩⟩ <;> (try cases a) <;> (try cases b) <;>
     simp [evalPrim] at h <;> (try obtain ⟨_, _, rfl⟩ := h) <;> (try subst h) <;> simp [Val.HostFreeIn]
 
 /-- The bindings of a `case` on a sum (#512): host-free fields keep the environment host-free. -/
@@ -462,6 +467,50 @@ theorem eval_hostFreeIn
             cases items with
             | nil => exact SameOn.done w u (by simp [Val.HostFreeIn])
             | cons x xs => exact SameOn.done w u ((Val.hostFreeAll_iff _).mp his x (by simp))
+          | _ => exact SameOn.stuck w u
+      | elemAt xs i =>
+        simp only [evalRhs]
+        cases hv : evalAtom env xs with
+        | none => cases evalAtom env i <;> exact SameOn.stuck w u
+        | some v =>
+          cases evalAtom env i with
+          | none => cases v <;> exact SameOn.stuck w u
+          | some k =>
+            cases v with
+            | list items =>
+              cases k with
+              | int n =>
+                have his := evalAtom_hostFree hf hv
+                simp only [Val.HostFreeIn] at his
+                refine SameOn.done w u ?_
+                rcases atIndex_cases items n with h | ⟨x, hx, h⟩
+                · rw [h]; simp [Val.HostFreeIn]
+                · rw [h]; exact (Val.hostFreeAll_iff _).mp his x hx
+              | _ => exact SameOn.stuck w u
+            | _ => cases k <;> exact SameOn.stuck w u
+      | orElse o d =>
+        simp only [evalRhs]
+        cases ho : evalAtom env o with
+        | none => cases evalAtom env d <;> exact SameOn.stuck w u
+        | some v =>
+          cases hd : evalAtom env d with
+          | none => cases v <;> exact SameOn.stuck w u
+          | some x =>
+            cases v with
+            | some y =>
+              have hy := evalAtom_hostFree hf ho
+              simp only [Val.HostFreeIn] at hy
+              exact SameOn.done w u hy
+            | none => exact SameOn.done w u (evalAtom_hostFree hf hd)
+            | _ => exact SameOn.stuck w u
+      | isOk r =>
+        simp only [evalRhs]
+        cases evalAtom env r with
+        | none => exact SameOn.stuck w u
+        | some v =>
+          cases v with
+          | ok _ => exact SameOn.done w u (by simp [Val.HostFreeIn])
+          | err _ => exact SameOn.done w u (by simp [Val.HostFreeIn])
           | _ => exact SameOn.stuck w u
       | mkOk a =>
         refine SameOn.ret w u fun v hv => ?_

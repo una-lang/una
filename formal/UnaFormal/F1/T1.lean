@@ -303,6 +303,28 @@ theorem sound (hwf : p.WellFormed) (h4 : H.RespTyped) : ∀ n : Nat,
           cases items with
           | nil => simp [evalRhs, hv, Good]; exact .none
           | cons x xs => simp [evalRhs, hv, Good]; exact .some (hall x (by simp))
+      | elemAt hxs hi =>
+        obtain ⟨v, hv, hvt⟩ := atom_typed henv hxs
+        obtain ⟨k, hk, hkt⟩ := atom_typed henv hi
+        cases hvt with
+        | @list items _ hall =>
+          cases hkt with
+          | @int n =>
+            simp only [evalRhs, hv, hk, done, Good]
+            rcases atIndex_cases items n with h | ⟨x, hx, h⟩
+            · rw [h]; exact .none
+            · rw [h]; exact .some (hall x hx)
+      | orElse ho hd =>
+        obtain ⟨v, hv, hvt⟩ := atom_typed henv ho
+        obtain ⟨x, hx, hxt⟩ := atom_typed henv hd
+        cases hvt with
+        | none => simp [evalRhs, hv, hx, Good]; exact hxt
+        | some hs => simp [evalRhs, hv, hx, Good]; exact hs
+      | isOk ha =>
+        obtain ⟨v, hv, hvt⟩ := atom_typed henv ha
+        cases hvt with
+        | ok _ => simp [evalRhs, hv, Good]; exact .bool
+        | err _ => simp [evalRhs, hv, Good]; exact .bool
       | mkOk ha =>
         obtain ⟨v, hv, hvt⟩ := atom_typed henv ha
         simp [evalRhs, hv, Good]

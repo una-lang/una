@@ -452,6 +452,20 @@ mutual
     /-- T-First (#532): the head of a list, as an option labeled by the list's top label only,
     since whether there is one is the list's length (`spec/14 §1`); the element keeps its own. -/
     | first {Γ pc a t l} : LAtomTy Γ a (.list t l) → LRhsTy p E Γ pc (.first a) (.option t l) .none
+    /-- T-At (#545): the element at an index, as an option labeled by the list's top label and the
+    index's label, which decide whether there is one (`spec/14 §1`); the element keeps its own. -/
+    | elemAt {Γ pc xs i t lx li} :
+        LAtomTy Γ xs (.list t lx) → LAtomTy Γ i (.int li) →
+        LRhsTy p E Γ pc (.elemAt xs i) (.option t (lx.join li)) .none
+    /-- T-OrElse (#542): the value or the default, both flowing into the result type, whose top
+    label carries every label of both arguments (`spec/14 §1`, "the other functions"). Raising the
+    top by the element type's labels over-approximates a structured `T`, as Una does. -/
+    | orElse {Γ pc o d te lo td t} :
+        LAtomTy Γ o (.option te lo) → LAtomTy Γ d td → Flow p.top te t → Flow p.top td t →
+        t.InPlace →
+        LRhsTy p E Γ pc (.orElse o d) (t.raise ((p.deep (.option te lo)).join (p.deep td))) .none
+    /-- T-IsOk (#542): structural, the result's top label only (`spec/14 §1`). -/
+    | isOk {Γ pc r te ee l} : LAtomTy Γ r (.result te ee l) → LRhsTy p E Γ pc (.isOk r) (.bool l) .none
     /-- `Ok(a)` and `Err(a)` (#508): the other side holds no value, so any type in place will
     do, and the flow into the declared type decides it. Which constructor is built is decided
     by the program counter, which the rules of branches raise the value by. -/

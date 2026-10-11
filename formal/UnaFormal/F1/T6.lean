@@ -405,6 +405,21 @@ theorem VAll.set {t : LTy} : ∀ {xs ys : List Val} {a b : Val} (i : Nat), VAll 
   | _, _, _, _, 0, .cons _ hs, hab => .cons hab hs
   | _, _, _, _, i + 1, .cons h hs, hab => .cons h (VAll.set i hs hab)
 
+/-- The elements at one position of two related lists, as options (#545). -/
+theorem VAll.getElem_opt {t : LTy} {l : LExpr} : ∀ {xs ys : List Val} (k : Nat), VAll p L t xs ys →
+    V p L (.option t l) ((xs[k]?).elim .none .some) ((ys[k]?).elim .none .some)
+  | _, _, _, .nil => by simp only [List.getElem?_nil, Option.elim]; exact .none
+  | _, _, 0, .cons h _ => by simp only [List.getElem?_cons_zero, Option.elim]; exact .some h
+  | _, _, k + 1, .cons _ hs => by simp only [List.getElem?_cons_succ]; exact VAll.getElem_opt k hs
+
+/-- `at` on two related lists at the same index (#545). -/
+theorem VAll.atIndexRel {t : LTy} {l : LExpr} {xs ys : List Val} (n : Int) (h : VAll p L t xs ys) :
+    V p L (.option t l) (atIndex xs n) (atIndex ys n) := by
+  unfold atIndex
+  split
+  · exact .none
+  · exact VAll.getElem_opt _ h
+
 theorem VAll.refl_int {l : LExpr} : ∀ {xs : List Val}, (∀ x ∈ xs, ∃ k, x = .int k) →
     VAll p L (.int l) xs xs
   | [], _ => .nil
@@ -983,6 +998,64 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
           cases hall with
           | nil => simp only [evalRhs, h₁, h₂, LTy.lsubst]; exact brel_done hw .none
           | cons hab _ => simp only [evalRhs, h₁, h₂, LTy.lsubst]; exact brel_done hw (.some hab)
+      | @elemAt _ _ xs i te lx li hxs hi =>
+        refine BRelR.of_brel ?_
+        obtain ⟨x₁, x₂, hx₁, hx₂, hxv, hxt₁, hxt₂⟩ := latom_bothσ he₁ he₂ hrel hxs
+        obtain ⟨i₁, i₂, hi₁, hi₂, hiv, hit₁, hit₂⟩ := latom_bothσ he₁ he₂ hrel hi
+        simp only [LTy.lsubst] at hxv hxt₁ hxt₂ hiv hit₁ hit₂
+        cases hxt₁ with
+        | @list xs₁ _ _ _ =>
+        cases hxt₂ with
+        | @list xs₂ _ _ _ =>
+        cases hit₁ with
+        | @int n₁ _ =>
+        cases hit₂ with
+        | @int n₂ _ =>
+        simp only [evalRhs, hx₁, hx₂, hi₁, hi₂, LTy.lsubst]
+        by_cases hvis : Vis p L ((lx.join li).inst (p.sd σ))
+        · have hvx : Vis p L (lx.inst (p.sd σ)) :=
+            Vis.of_le (LExpr.le_inst _ (LExpr.le_join_left _ _)) hvis
+          have hvi : Vis p L (li.inst (p.sd σ)) :=
+            Vis.of_le (LExpr.le_inst _ (LExpr.le_join_right _ _)) hvis
+          have hn := V.eq_int hiv hvi
+          cases hn
+          cases hxv with
+          | hidden h => exact (h hvx).elim
+          | list hall => exact brel_done hw (VAll.atIndexRel _ hall)
+        · exact brel_done hw (.hidden hvis)
+      | @orElse _ _ o d te lo td t ho hd hf₁ hf₂ _ =>
+        refine BRelR.of_brel ?_
+        obtain ⟨o₁, o₂, h₁, h₂, hov, hot₁, hot₂⟩ := latom_bothσ he₁ he₂ hrel ho
+        obtain ⟨d₁, d₂, hd₁, hd₂, hdv, _, _⟩ := latom_bothσ he₁ he₂ hrel hd
+        have hpf : ((p.deep (.option te lo)).join (p.deep td)).PlainFree :=
+          LExpr.plainFree_join (LTy.deep_plainFree _ (latom_inPlace hΓ ho))
+            (LTy.deep_plainFree _ (latom_inPlace hΓ hd))
+        simp only [LTy.lsubst] at hov hot₁ hot₂
+        by_cases hvis : Vis p L (((p.deep (.option te lo)).join (p.deep td)).inst (p.sd σ))
+        · have hlo : Vis p L (lo.inst (p.sd σ)) :=
+            Vis.of_le (LExpr.le_inst _ (LExpr.le_trans
+              (LTy.top_le_deep _ (.option te lo) (fun _ _ h => LTy.noConfusion h))
+              (LExpr.le_join_left _ _))) hvis
+          cases hov with
+          | hidden h => exact (h hlo).elim
+          | none =>
+            simp only [evalRhs, h₁, h₂, hd₁, hd₂]
+            exact brel_done hw (V.raiseσ _ (V.flow hdv (Flow.lsubst _ _ hf₂)))
+          | some hab =>
+            simp only [evalRhs, h₁, h₂, hd₁, hd₂]
+            exact brel_done hw (V.raiseσ _ (V.flow hab (Flow.lsubst _ _ hf₁)))
+        · cases hot₁ <;> cases hot₂ <;> simp only [evalRhs, h₁, h₂, hd₁, hd₂] <;>
+            exact brel_done hw (V.hideσ hpf _ _ hvis)
+      | isOk ha =>
+        refine BRelR.of_brel ?_
+        obtain ⟨v₁, v₂, h₁, h₂, hv, ht₁, ht₂⟩ := latom_bothσ he₁ he₂ hrel ha
+        simp only [LTy.lsubst] at hv ht₁ ht₂
+        cases hv with
+        | hidden h =>
+          cases ht₁ <;> cases ht₂ <;> simp only [evalRhs, h₁, h₂, LTy.lsubst] <;>
+            exact brel_done hw (.hidden (by simpa [LTy.top] using h))
+        | ok _ => simp only [evalRhs, h₁, h₂, LTy.lsubst]; exact brel_done hw .bool
+        | err _ => simp only [evalRhs, h₁, h₂, LTy.lsubst]; exact brel_done hw .bool
       | mkOk ha _ =>
         refine BRelR.of_brel ?_
         obtain ⟨v₁, v₂, h₁, h₂, hv, _, _⟩ := latom_bothσ he₁ he₂ hrel ha

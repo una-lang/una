@@ -394,6 +394,18 @@ mutual
     | _, _, _, _, _, _, _, _, .list _ _ ht => ⟨⟨ht, rfl⟩, Eff.plainFree_none⟩
     | _, _, _, _, _, _, _, _, .none ht => ⟨⟨ht, rfl⟩, Eff.plainFree_none⟩
     | _, _, _, _, _, _, hΓ, _, .some ha => ⟨⟨latom_inPlace hΓ ha, rfl⟩, Eff.plainFree_none⟩
+    | _, _, _, _, _, _, hΓ, _, .orElse ho hd _ _ ht => by
+      have h₁ := latom_inPlace hΓ ho
+      have h₂ := latom_inPlace hΓ hd
+      exact ⟨LTy.raise_inPlace (LExpr.plainFree_join (LTy.deep_plainFree _ h₁)
+        (LTy.deep_plainFree _ h₂)) ht, Eff.plainFree_none⟩
+    | _, _, _, _, _, _, hΓ, _, .isOk ha => by
+      have h := latom_inPlace hΓ ha
+      exact ⟨h.2.2, Eff.plainFree_none⟩
+    | _, _, _, _, _, _, hΓ, _, @LRhsTy.elemAt _ _ _ _ _ _ t lx li hxs hi => by
+      have h₁ : t.InPlace ∧ lx.plain = [] := latom_inPlace hΓ hxs
+      have h₂ : li.plain = [] := latom_inPlace hΓ hi
+      exact ⟨⟨h₁.1, LExpr.plainFree_join h₁.2 h₂⟩, Eff.plainFree_none⟩
     | _, _, _, _, _, _, hΓ, _, .first ha => by
       have h := latom_inPlace hΓ ha
       exact ⟨h, Eff.plainFree_none⟩

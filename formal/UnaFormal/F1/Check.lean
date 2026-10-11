@@ -163,12 +163,16 @@ def primTy : Prim → List Ty → Option Ty
   | .len, [.list _] | .len, [.text] => some .int
   | .sum, [.list .int] => some .int
   | .concat, ts => if ts.all (tyEq · .text) then some .text else none
+  | .abs, [.int] => some .int
+  | .min, [.int, .int] | .max, [.int, .int] => some .int
+  | .slice, [.text, .int, .int] => some .text
   | _, _ => none
 
 /-- A primitive's name, for the reason of a restriction. -/
 def primName : Prim → String
   | .add => "add" | .sub => "sub" | .mul => "mul" | .div => "div" | .mod => "mod" | .lt => "lt"
   | .eqInt => "eq_int" | .not => "not" | .len => "len" | .sum => "sum" | .concat => "concat"
+  | .abs => "abs" | .min => "min" | .max => "max" | .slice => "slice"
 
 /-- A type's head, for the reason of a restriction. -/
 def tyHead : Ty → String
@@ -421,6 +425,29 @@ mutual
     | .some a => do
       flowTo p (.option (← atomTy Γ a) .bot) ann "the option"
       pure .none
+    | .orElse o d => do
+      match ← atomTy Γ o with
+      | .option te lo =>
+        let td ← atomTy Γ d
+        flowTo p te ann "the value of `or_else`'s option"
+        flowTo p td ann "`or_else`'s default"
+        need (inPlace ann) "`ℓ_T` off a position of type `T`"
+        flowTo p (ann.raise ((p.deep (.option te lo)).join (p.deep td))) ann
+          "the result of `or_else`, which carries every label of its arguments"
+        pure .none
+      | _ => throw "`or_else` of a value that is not an option"
+    | .isOk r => do
+      match ← atomTy Γ r with
+      | .result _ _ l =>
+        flowTo p (.bool l) ann "the result of `is_ok`"
+        pure .none
+      | _ => throw "`is_ok` of a value that is not a result"
+    | .elemAt xs i => do
+      match ← atomTy Γ xs, ← atomTy Γ i with
+      | .list t lx, .int li =>
+        flowTo p (.option t (lx.join li)) ann "the element at an index"
+        pure .none
+      | _, _ => throw "`at` of a value that is not a list, or at an index that is not an integer"
     | .first a => do
       match ← atomTy Γ a with
       | .list t l =>
@@ -804,7 +831,8 @@ def checkSignature (fn : Fun) : Result Unit := do
 mutual
   /-- `Rhs.Pure`. -/
   def rhsPure : Rhs → Bool
-    | .atom _ | .prim _ _ | .construct _ _ | .field _ _ | .list _ | .none | .some _ | .first _ | .mkOk _
+    | .atom _ | .prim _ _ | .construct _ _ | .field _ _ | .list _ | .none | .some _ | .first _ | .elemAt _ _
+    | .orElse _ _ | .isOk _ | .mkOk _
     | .mkErr _ | .eq _ _ | .variant _ _ _
     | .lambda _ _ | .funRef _ _ => true
     | _ => false

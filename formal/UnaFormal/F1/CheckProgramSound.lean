@@ -360,7 +360,9 @@ mutual
     | .req _ _, _, _, _, _, _, _, hg | .construct _ _, _, _, _, _, _, _, hg
     | .field _ _, _, _, _, _, _, _, hg | .list _, _, _, _, _, _, _, hg
     | .none, _, _, _, _, _, _, hg | .some _, _, _, _, _, _, _, hg
-    | .first _, _, _, _, _, _, _, hg | .invokeOp _ _, _, _, _, _, _, _, hg
+    | .first _, _, _, _, _, _, _, hg | .elemAt _ _, _, _, _, _, _, _, hg
+    | .orElse _ _, _, _, _, _, _, _, hg | .isOk _, _, _, _, _, _, _, hg
+    | .invokeOp _ _, _, _, _, _, _, _, hg
     | .mkOk _, _, _, _, _, _, _, hg | .mkErr _, _, _, _, _, _, _, hg
     | .declassify _ _, _, _, _, _, _, _, hg | .map _ _, _, _, _, _, _, _, hg
     | .filter _ _, _, _, _, _, _, _, hg | .firstWhere _ _, _, _, _, _, _, _, hg

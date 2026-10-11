@@ -105,6 +105,13 @@ inductive Prim where
   | sum
   /-- `concat` of texts, any number of them: what interpolation desugars to (`spec/09 §3`). -/
   | concat
+  /-- The prelude's `abs`, `min` and `max` on integers (`spec/14 §1`), #542. -/
+  | abs
+  | min
+  | max
+  /-- `slice(t, start, end)` (`spec/22 §2`), #542: the scalar values of `t` from `start` up to, not
+  including, `end`. Outside its precondition the run aborts (`Prim.aborts`). -/
+  | slice
 
 /-- What a loop visits (`spec/17 §4`): the elements of a list, in order, or the integers from
 `low` to `high`, in increasing order, `high` included when `inclusive`. -/
@@ -159,6 +166,12 @@ mutual
     | some (value : Atom)
     /-- `first(xs)` (#532): the head of a list, as an option. -/
     | first (list : Atom)
+    /-- `at(xs, index)` (#545): the element at an index, as an option. -/
+    | elemAt (list index : Atom)
+    /-- `or_else(o, default)` (#542): the option's value, or the default. -/
+    | orElse (option default : Atom)
+    /-- `is_ok(r)` (#542): whether a result is `Ok`. -/
+    | isOk (result : Atom)
     /-- `Ok(a)` and `Err(a)`, a result built directly (#508). -/
     | mkOk (value : Atom)
     | mkErr (value : Atom)
