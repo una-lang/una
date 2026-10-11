@@ -118,6 +118,31 @@ theorem div_euclid : evalPrim .div [.int (-7), .int 2] = some (.int (-4)) := rfl
 
 theorem mod_euclid : evalPrim .mod [.int (-7), .int 2] = some (.int 1) := rfl
 
+/-- A negative divisor (Una-1's review of #526): Euclidean, so the remainder stays non-negative. -/
+theorem div_neg_divisor : evalPrim .div [.int 7, .int (-2)] = some (.int (-3)) := rfl
+
+theorem mod_neg_divisor : evalPrim .mod [.int 7, .int (-2)] = some (.int 1) := rfl
+
+/-- `le(a, b)` as the importer reads it: `not (lt b a)` (`Import.expr`, #526). -/
+def leRead (a b : Int) : Expr :=
+  .letR "t" (.bool .bot) (.prim .lt [.int b, .int a])
+    (.letR "x" (.bool .bot) (.prim .not [.var "t"]) (.atom (.var "x")))
+
+/-- `ge(a, b)` as the importer reads it: `not (lt a b)`. -/
+def geRead (a b : Int) : Expr :=
+  .letR "t" (.bool .bot) (.prim .lt [.int a, .int b])
+    (.letR "x" (.bool .bot) (.prim .not [.var "t"]) (.atom (.var "x")))
+
+/-- **The operand order** (Una-1's review of #526): `2 <= 3` and `!(2 >= 3)`. -/
+theorem le_two_three : (eval Host.unit 4 prog (wSet "1") [] (leRead 2 3)).2.1 = .ok (.bool true) := rfl
+
+theorem ge_two_three : (eval Host.unit 4 prog (wSet "1") [] (geRead 2 3)).2.1 = .ok (.bool false) :=
+  rfl
+
+/-- And the boundary: `3 <= 3` and `3 >= 3`. -/
+theorem le_ge_equal : (eval Host.unit 4 prog (wSet "1") [] (leRead 3 3)).2.1 = .ok (.bool true) ∧
+    (eval Host.unit 4 prog (wSet "1") [] (geRead 3 3)).2.1 = .ok (.bool true) := ⟨rfl, rfl⟩
+
 /-- `let q: Int = 7 div 0`, then `q`. -/
 def divZero : Expr := .letR "q" (.int .bot) (.prim .div [.int 7, .int 0]) (.atom (.var "q"))
 
