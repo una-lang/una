@@ -38,6 +38,20 @@
 4. **No new premise.** Since an invocation always runs a handler of its operation (§3 item 5), T1 needs no premise on the markers an environment holds, and neither does T6. (An earlier draft carried one, `HsBinds`, then `MarkersOk`; the fallback of §3 item 5 makes it unnecessary.)
 5. **Hu, generalized**: every handler function in `Program.ops` passes T-Handler (#524's floor) and matches its operation's signature. It holds for every handler `una check` accepted, as #524 states, and not for forged or unchecked Core.
 
+## 4b. Effects of a scoped invocation (the coordinator's ruling E, 2026-10-11)
+
+Una charges what a handler does to the code that installs it, at the `with`; F1's single event flag `op` cannot express that by itself (checkpoint `f973fa21`: an installer of an effect-free handler was rejected). So:
+
+1. **`Eff.invokes`**, the operations a code may invoke through a `with` scope, as `rels` lists the policies it may release through. A scoped invocation (`invokeOp o`) has `invokes = [o]`, `op = false`, no host effect, and its failure as T-Invoke's. A function declares the operations its callers must install (`Fun.invokes`, from its `uses`, the same as its markers); T-Fun asks the body's `invokes` among them; T-Call asks, for each, the call's `pc` below the operation's `accepts` (as `Program.RelBound` does for policies), and a call has the callee's `invokes`. A lambda's body invokes nothing (its markers would not follow it), and a function value names no function that invokes.
+2. **Events through an invocation.** `Allowed` lets an `out` event happen at `pc` when `ε.op` holds and `pc ⊑ acceptsOp`, as before, or when some `o ∈ ε.invokes` has handlers that print and `pc ⊑ accepts(o) ⊑ acceptsOp`. A handler that prints is under the floor (`accepts(o) ⊑ acceptsOp`), and every handler of `o` agrees on whether it prints (`LWellFormed.handlers`), so the representative says it.
+3. **T-With discharges.** The body's `invokes` less `o`, and the installed handler's own effects: `op` when `f` prints, with the premise `f.op → pc ⊑ acceptsOp` at the `with`'s `pc`. So installing a printing handler under a secret `pc` is rejected, and at a public `pc` its events are at its floor.
+4. **#524's argument survives.** A static invocation (`Rhs.invoke`, #524) keeps `op := true`, the operation's signature, so a caller's certificate holds for every lawful handler, whoever installs it. A scoped invocation is charged at the `with` that names the handler, which the certificate of the installer reads; a function whose marker its caller supplies declares `invokes`, which every call site bounds by the operation's `accepts`, whatever handler the caller installed.
+
+Non-vacuity of E (the coordinator's conditions):
+- **(a)** under a secret `pc`, `work() with @door = noisy()`, whose handler prints publicly: rejected, and it leaks;
+- **(b)** the same `with` at a public `pc`, the handler's events at its floor: certified;
+- **(c)** an invocation in a body whose operation no `with` installs and with no static handler: untyped, and not re-checked by the importer.
+
 ## 5. Theorems
 
 No statement changes; T1 and T6 take the generalized Hu.
