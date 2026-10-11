@@ -114,7 +114,7 @@ So B06's rule, "never journal in a dry run", has nowhere to live. The body can w
   - it needs a frame rule for which operations change which facts;
   - it needs facts that hold across loop iterations (B05's batch), which needs invariants.
   
-  Deferred to its own ADR. This one leaves room for it: a condition may later name such facts.
+  Deferred to its own ADR (#558). This one leaves room for it: a condition may later name such facts.
 - **Modes as narrowing** (rebind `@journal` to an absent or no-op binding in the dry-run branch). This is possible today with `with`. It protects only when the author chooses to write it, the same as a guard, and leaves nothing in the header. It stays available, and it is not a contract.
 - **A `dry_run` convention or other inferred conditions.** Rejected by rule 8.
 
@@ -122,4 +122,4 @@ So B06's rule, "never journal in a dry run", has nowhere to live. The body can w
 
 - The trace-safety theorem in F1 (rule 9), a milestone of the formal track.
 - The re-check's reading of conditioned `uses` clauses, after the theorem.
-- The state form (B04, B05), a separate ADR.
+- The state form (B04, B05), a separate ADR (#558).
