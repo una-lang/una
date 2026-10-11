@@ -297,6 +297,27 @@ theorem brel_quiet_typed {R : Val → Val → Prop} {vf : Prop} {r₁ r₂ : Run
     | exact hf₁ trivial
     | exact fun hv => absurd hv (hf₁ trivial)
 
+/-- Payloads related at their declared ground types are related at those types raised and
+instantiated (#512). -/
+theorem VList.raise_lsubst_ground {σ : List (String × LTy)} {l : LExpr} :
+    ∀ {fs : List LTy} {as bs : List Val}, (∀ f ∈ fs, f.Ground) → VList p L fs as bs →
+      VList p L ((fs.map (LTy.raise l)).map (LTy.lsubst p.recordDeep σ)) as bs
+  | [], [], [], _, .nil => .nil
+  | _ :: _, _ :: _, _ :: _, hg, .cons h hs =>
+    .cons (V.raiseσ _ ((V.ground_lsubst (hg _ List.mem_cons_self)).mpr h))
+      (VList.raise_lsubst_ground (fun f hf => hg f (List.mem_cons_of_mem _ hf)) hs)
+
+/-- The bindings of a `case` on a sum (#512): related fields, bound in front of related
+environments. -/
+theorem EnvRel.zip {Γ : LCtx} {e₁ e₂ : Env} (h : EnvRel p L Γ e₁ e₂) :
+    ∀ {xs : List String} {ts : List LTy} {vs₁ vs₂ : List Val}, VList p L ts vs₁ vs₂ →
+      ts.length = xs.length → EnvRel p L (xs.zip ts ++ Γ) (xs.zip vs₁ ++ e₁) (xs.zip vs₂ ++ e₂)
+  | [], _, _, _, _, _ => by simpa using h
+  | _ :: _, _, _, _, .nil, hl => by simp at hl
+  | _ :: _, _, _, _, .cons hv hs, hl => by
+    simp only [List.zip_cons_cons, List.cons_append]
+    exact .cons hv (EnvRel.zip h hs (by simpa using hl))
+
 theorem vis_bot_inst (s : List (String × LExpr)) : Vis p L (LExpr.bot.inst s) := by
   rw [show LExpr.bot = LExpr.ofLabel Label.bot from rfl, LExpr.inst_ofLabel]
   exact Vis.join Vis.bot Vis.bot
@@ -1459,6 +1480,167 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
       | fail _ _ _ =>
         simp only [eval]
         exact .of_brel (brel_same hw (fun _ h => nomatch h))
+      | raise hs hf has hfl _ _ _ =>
+        -- Both runs raise the same variant; its fields are related at their declared types, a
+        -- field the observer does not see may differ (#512).
+        refine BRelR.of_brel ?_
+        obtain ⟨vs₁, vs₂, h₁, h₂, hvs, _, _⟩ := latoms_bothσ he₁ he₂ hrel has
+        simp only [eval, h₁, h₂]
+        intro _ _
+        exact ⟨rfl, fun _ => ⟨rfl, rfl, _, _, hs, hf, VList.ground_lsubst
+          (fun u hu => (hwf.sums _ (sum_mem hs) _ (List.mem_of_getElem? hf) u hu).1)
+          (VList.flowsσ hvs hfl)⟩, hw⟩
+      | unreachable _ =>
+        -- Never reached in a run that ends: `aborted` is not `Term` (#512).
+        refine BRelR.of_brel ?_
+        intro ht
+        simp [eval, Term] at ht
+      | @caseSum _ _ scr kind ctor binders thenE elseE ls sm fs t₁ t₂ s ε₁ ε₂ hsc hsm hf hlen hth hel h₁ h₂ _ =>
+        obtain ⟨c₁, c₂, hc₁, hc₂, hcv, hcu₁, hcu₂⟩ := latom_bothσ he₁ he₂ hrel hsc
+        have hsi : ls.PlainFree := latom_inPlace hΓ hsc
+        have hpc' : (pc.join ls).PlainFree := LExpr.plainFree_join hpc hsi
+        have hg : ∀ f ∈ fs, f.Ground :=
+          fun u hu => (hwf.sums _ (sum_mem hsm) _ (List.mem_of_getElem? hf) u hu).1
+        have hΓ₁ := caseSum_ctx_inPlace hwf hΓ hsi hsm hf (xs := binders)
+        simp only [LTy.lsubst] at hcv hcu₁ hcu₂
+        have U : ∀ {w : World H} {env : Env} {v : Val}, LEnvTy p env (Γ.lsub p.recordDeep σ) →
+            evalAtom env scr = some v → LValTy p v (.record kind (ls.inst (p.sd σ))) →
+            UOk (Allowed p ((pc.join ls).inst (p.sd σ)) ((ε₁.union ε₂).inst (p.sd σ))) (fun _ => True)
+              (FailsAs p ((pc.join ls).inst (p.sd σ)) ((ε₁.union ε₂).inst (p.sd σ))) w
+              (eval H (n + 1) p w env (.caseSum scr ctor binders thenE elseE)) := by
+          intro w env v henv hcv' hvt
+          cases hvt with
+          | record hrec _ => exact (not_sum_of_record hwf hrec hsm).elim
+          | @variant _ i vs sm' fs' _ hsm' hf' hvals =>
+            rw [hsm] at hsm'
+            cases hsm'
+            simp only [eval, hcv']
+            by_cases hi : i = ctor
+            · subst hi
+              rw [hf] at hf'
+              cases hf'
+              rw [if_pos rfl, if_pos (by rw [LValsTy.length hvals]; exact hlen)]
+              have henv' := zip_ltyped (xs := binders) henv
+                (LValsTy.raise_lsubst_ground (l := ls) (σ := σ) hg hvals) (by simp [hlen])
+              rw [← LCtx.lsub_zip, ← LCtx.lsub_append] at henv'
+              exact UOk.mono allowed_union_left_inst (fun _ _ => trivial) FailsAs.union_left_inst
+                (uE hσ henv' hth)
+            · rw [if_neg hi]
+              exact UOk.mono (allowed_union_right_inst (LExpr.le_refl _)) (fun _ _ => trivial)
+                (FailsAs.union_right_inst (LExpr.le_refl _)) (uE hσ henv hel)
+        by_cases hv : Vis p L (ls.inst (p.sd σ))
+        · cases hcv with
+          | hidden h => exact absurd hv h
+          | record hrec _ => exact (not_sum_of_record hwf hrec hsm).elim
+          | @variant _ _ sm' i fs' vs₁ vs₂ hsm' hf' hvals =>
+            rw [hsm] at hsm'
+            cases hsm'
+            cases hcu₁ with
+            | variant hs₁ hf₁ hu₁ =>
+              cases hcu₂ with
+              | variant hs₂ hf₂ hu₂ =>
+                rw [hsm] at hs₁ hs₂
+                cases hs₁
+                cases hs₂
+                rw [hf'] at hf₁ hf₂
+                cases hf₁
+                cases hf₂
+                simp only [eval, hc₁, hc₂]
+                by_cases hi : i = ctor
+                · subst hi
+                  rw [hf] at hf'
+                  cases hf'
+                  rw [if_pos rfl, if_pos (by rw [LValsTy.length hu₁]; exact hlen), if_pos rfl,
+                    if_pos (by rw [LValsTy.length hu₂]; exact hlen)]
+                  have henv₁ := zip_ltyped (xs := binders) he₁
+                    (LValsTy.raise_lsubst_ground (l := ls) (σ := σ) hg hu₁) (by simp [hlen])
+                  have henv₂ := zip_ltyped (xs := binders) he₂
+                    (LValsTy.raise_lsubst_ground (l := ls) (σ := σ) hg hu₂) (by simp [hlen])
+                  have hrelz := EnvRel.zip (xs := binders) hrel
+                    (VList.raise_lsubst_ground (l := ls) (σ := σ) hg hvals) (by simp [hlen])
+                  rw [← LCtx.lsub_zip, ← LCtx.lsub_append] at henv₁ henv₂ hrelz
+                  exact BRelR.mono (fun _ _ h => V.raiseσ _ (V.flow h (Flow.lsubst _ _ h₁)))
+                    Vis.union_left_inst (ihE hσ hE hΓ₁ hpc' hw henv₁ henv₂ hrelz hth)
+                · rw [if_neg hi, if_neg hi]
+                  exact BRelR.mono (fun _ _ h => V.raiseσ _ (V.flow h (Flow.lsubst _ _ h₂)))
+                    Vis.union_right_inst (ihE hσ hE hΓ hpc' hw he₁ he₂ hrel hel)
+        · exact .of_brel <| brel_confined hh hw (U he₁ hc₁ hcu₁) (U he₂ hc₂ hcu₂)
+            (fun h => hv (Vis.of_le (LExpr.inst_le_join_inst _ _ _) h))
+            (fun a b => V.hideσ hsi a b hv) id id
+      | @caseSumT _ _ scr kind ctor binders thenE elseE ls sm fs t₁ t₂ ts ε₁ ε₂ hsc hsm hf hlen hth hel h₁ h₂ _ hcov =>
+        obtain ⟨c₁, c₂, hc₁, hc₂, hcv, hcu₁, hcu₂⟩ := latom_bothσ he₁ he₂ hrel hsc
+        have hsi : ls.PlainFree := latom_inPlace hΓ hsc
+        have hpc' : (pc.join ls).PlainFree := LExpr.plainFree_join hpc hsi
+        have hg : ∀ f ∈ fs, f.Ground :=
+          fun u hu => (hwf.sums _ (sum_mem hsm) _ (List.mem_of_getElem? hf) u hu).1
+        have hΓ₁ := caseSum_ctx_inPlace hwf hΓ hsi hsm hf (xs := binders)
+        simp only [LTy.lsubst] at hcv hcu₁ hcu₂
+        have U : ∀ {w : World H} {env : Env} {v : Val}, LEnvTy p env (Γ.lsub p.recordDeep σ) →
+            evalAtom env scr = some v → LValTy p v (.record kind (ls.inst (p.sd σ))) →
+            UOk (Allowed p ((pc.join ls).inst (p.sd σ)) ((ε₁.union ε₂).inst (p.sd σ)))
+              (fun v => LValTy p v ((LTy.tuple ts .bot).lsubst p.recordDeep σ))
+              (FailsAs p ((pc.join ls).inst (p.sd σ)) ((ε₁.union ε₂).inst (p.sd σ))) w
+              (eval H (n + 1) p w env (.caseSum scr ctor binders thenE elseE)) := by
+          intro w env v henv hcv' hvt
+          cases hvt with
+          | record hrec _ => exact (not_sum_of_record hwf hrec hsm).elim
+          | @variant _ i vs sm' fs' _ hsm' hf' hvals =>
+            rw [hsm] at hsm'
+            cases hsm'
+            simp only [eval, hcv']
+            by_cases hi : i = ctor
+            · subst hi
+              rw [hf] at hf'
+              cases hf'
+              rw [if_pos rfl, if_pos (by rw [LValsTy.length hvals]; exact hlen)]
+              have henv' := zip_ltyped (xs := binders) henv
+                (LValsTy.raise_lsubst_ground (l := ls) (σ := σ) hg hvals) (by simp [hlen])
+              rw [← LCtx.lsub_zip, ← LCtx.lsub_append] at henv'
+              exact UOk.mono allowed_union_left_inst (fun _ h => LValTy.flow h (Flow.lsubst _ _ h₁))
+                FailsAs.union_left_inst (uE hσ henv' hth)
+            · rw [if_neg hi]
+              exact UOk.mono (allowed_union_right_inst (LExpr.le_refl _))
+                (fun _ h => LValTy.flow h (Flow.lsubst _ _ h₂))
+                (FailsAs.union_right_inst (LExpr.le_refl _)) (uE hσ henv hel)
+        by_cases hv : Vis p L (ls.inst (p.sd σ))
+        · cases hcv with
+          | hidden h => exact absurd hv h
+          | record hrec _ => exact (not_sum_of_record hwf hrec hsm).elim
+          | @variant _ _ sm' i fs' vs₁ vs₂ hsm' hf' hvals =>
+            rw [hsm] at hsm'
+            cases hsm'
+            cases hcu₁ with
+            | variant hs₁ hf₁ hu₁ =>
+              cases hcu₂ with
+              | variant hs₂ hf₂ hu₂ =>
+                rw [hsm] at hs₁ hs₂
+                cases hs₁
+                cases hs₂
+                rw [hf'] at hf₁ hf₂
+                cases hf₁
+                cases hf₂
+                simp only [eval, hc₁, hc₂]
+                by_cases hi : i = ctor
+                · subst hi
+                  rw [hf] at hf'
+                  cases hf'
+                  rw [if_pos rfl, if_pos (by rw [LValsTy.length hu₁]; exact hlen), if_pos rfl,
+                    if_pos (by rw [LValsTy.length hu₂]; exact hlen)]
+                  have henv₁ := zip_ltyped (xs := binders) he₁
+                    (LValsTy.raise_lsubst_ground (l := ls) (σ := σ) hg hu₁) (by simp [hlen])
+                  have henv₂ := zip_ltyped (xs := binders) he₂
+                    (LValsTy.raise_lsubst_ground (l := ls) (σ := σ) hg hu₂) (by simp [hlen])
+                  have hrelz := EnvRel.zip (xs := binders) hrel
+                    (VList.raise_lsubst_ground (l := ls) (σ := σ) hg hvals) (by simp [hlen])
+                  rw [← LCtx.lsub_zip, ← LCtx.lsub_append] at henv₁ henv₂ hrelz
+                  exact BRelR.mono (fun _ _ h => V.flow h (Flow.lsubst _ _ h₁))
+                    Vis.union_left_inst (ihE hσ hE hΓ₁ hpc' hw henv₁ henv₂ hrelz hth)
+                · rw [if_neg hi, if_neg hi]
+                  exact BRelR.mono (fun _ _ h => V.flow h (Flow.lsubst _ _ h₂))
+                    Vis.union_right_inst (ihE hσ hE hΓ hpc' hw he₁ he₂ hrel hel)
+        · exact .of_brel <| brel_confined_typed hh hw (U he₁ hc₁ hcu₁) (U he₂ hc₂ hcu₂)
+            (fun h => hv (Vis.of_le (LExpr.inst_le_join_inst _ _ _) h))
+            (fun a b ha hb => V.tuple_covσ hsi hv hcov ha hb) id id
       | @attempt _ _ body ty ε₀ hb hr0 =>
         have h := ihE hσ hE hΓ hpc hw he₁ he₂ hrel hb
         have u₁ := uE (w := w₁) hσ he₁ hb
@@ -1491,6 +1673,76 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
         · by_cases hv : Vis p L (ε₀.failLabel.inst (p.sd σ))
           · rw [ho (Vis.failLabel_inst.mpr hv)]; exact .err .int
           · exact .hidden hv
+      | @attemptK _ _ kind body ty ε₀ hb hcd hra =>
+        have h := ihE hσ hE hΓ hpc hw he₁ he₂ hrel hb
+        have u₁ := uE (w := w₁) hσ he₁ hb
+        have u₂ := uE (w := w₂) hσ he₂ hb
+        simp only [eval]
+        generalize eval H n p w₁ e₁ body = r₁ at h u₁ ⊢
+        generalize eval H n p w₂ e₂ body = r₂ at h u₂ ⊢
+        obtain ⟨tr₁, o₁, w₁'⟩ := r₁
+        obtain ⟨tr₂, o₂, w₂'⟩ := r₂
+        -- The body fails only with `kind` (#512): no code, and no other payload kind.
+        have nf₁ : ∀ c, o₁ ≠ .failed c := fun c he => by
+          subst he; have := u₁.2.1.2; simp [Eff.inst, hcd] at this
+        have nf₂ : ∀ c, o₂ ≠ .failed c := fun c he => by
+          subst he; have := u₂.2.1.2; simp [Eff.inst, hcd] at this
+        have hk₁ : ∀ k c ps, o₁ = .raised k c ps → k = kind := fun k c ps he => by
+          subst he; exact hra k (by simpa [Eff.inst] using u₁.2.1.2.1)
+        have hk₂ : ∀ k c ps, o₂ = .raised k c ps → k = kind := fun k c ps he => by
+          subst he; exact hra k (by simpa [Eff.inst] using u₂.2.1.2.1)
+        by_cases hd : Diverged p L tr₁ tr₂
+        · intro _ _
+          right
+          cases o₁ <;> cases o₂ <;> dsimp only <;> (try split) <;> (try split) <;> exact hd
+        replace h : BRel p L _ _ (tr₁, o₁, w₁') (tr₂, o₂, w₂') := fun a b => (h a b).resolve_right hd
+        refine BRelR.of_brel ?_
+        cases o₁ <;> cases o₂
+        all_goals first
+          | exact absurd rfl (nf₁ _)
+          | exact absurd rfl (nf₂ _)
+          | (intro ht₁ ht₂; simp only [Term] at ht₁ ht₂; done)
+          | (intro ht₁ ht₂; dsimp only at ht₁ ht₂; split at ht₁ <;> simp only [Term] at ht₁ ht₂; done)
+          | (intro ht₁ ht₂; dsimp only at ht₁ ht₂; split at ht₂ <;> simp only [Term] at ht₁ ht₂; done)
+          | skip
+        · intro _ _
+          obtain ⟨hp, ho, hwr⟩ := h trivial trivial
+          exact ⟨hp, by simp only [LTy.lsubst]; exact .ok ho, hwr⟩
+        · rename_i v k c ps
+          obtain rfl := hk₂ k c ps rfl
+          intro _ _
+          dsimp only
+          rw [if_pos rfl]
+          obtain ⟨hp, ho, hwr⟩ := h trivial trivial
+          simp only [OutRel] at ho
+          refine ⟨hp, ?_, hwr⟩
+          exact .hidden (fun hv => ho (Vis.failLabel_inst.mpr hv))
+        · rename_i k c ps v
+          obtain rfl := hk₁ k c ps rfl
+          intro _ _
+          dsimp only
+          rw [if_pos rfl]
+          obtain ⟨hp, ho, hwr⟩ := h trivial trivial
+          simp only [OutRel] at ho
+          refine ⟨hp, ?_, hwr⟩
+          exact .hidden (fun hv => ho (Vis.failLabel_inst.mpr hv))
+        · rename_i k c ps k' c' ps'
+          obtain rfl := hk₁ k c ps rfl
+          obtain rfl := hk₂ k' c' ps' rfl
+          intro _ _
+          dsimp only
+          rw [if_pos rfl]
+          try rw [if_pos rfl]
+          obtain ⟨hp, ho, hwr⟩ := h trivial trivial
+          simp only [OutRel] at ho
+          refine ⟨hp, ?_, hwr⟩
+          by_cases hv : Vis p L (ε₀.failLabel.inst (p.sd σ))
+          · -- A seen failure: the same variant, with fields related at their declared types.
+            obtain ⟨-, rfl, sm, fs, hs, hf, hvl⟩ := ho (Vis.failLabel_inst.mpr hv)
+            simp only [OutRel, LTy.lsubst]
+            exact .err (.variant hs hf hvl)
+          · simp only [OutRel]
+            exact .hidden hv
       | @handle _ _ body x handler t₁ t₂ s ε₁ ε₂ hb hr0 hh' h₁ h₂ _ =>
         have h := ihE hσ hE hΓ hpc hw he₁ he₂ hrel hb
         have u₁ := uE (w := w₁) hσ he₁ hb
@@ -1567,6 +1819,112 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
             (.cons (LValTy.int (n := (c₂ : Int))) he₂) (.cons hcv hrel) hh'
           generalize eval H n p w₁' ((x, Val.int (c₁ : Int)) :: e₁) handler = rh₁ at hh'' ⊢
           generalize eval H n p w₂' ((x, Val.int (c₂ : Int)) :: e₂) handler = rh₂ at hh'' ⊢
+          obtain ⟨th₁, oh₁, wh₁⟩ := rh₁
+          obtain ⟨th₂, oh₂, wh₂⟩ := rh₂
+          intro ht₁ ht₂
+          rcases hh'' ht₁ ht₂ with ⟨hph, hoh, hwh⟩ | hdh
+          · exact .inl ⟨by simp only [proj_append]; rw [hp, hph],
+              OutRel.mono (fun _ _ h => V.raiseσ _ (V.flow h (Flow.lsubst _ _ h₂))) id hoh, hwh⟩
+          · exact .inr (Diverged.prepend hp hdh)
+      | @handleK _ _ kind body x handler t₁ t₂ s ε₁ ε₂ hb hcd hra hh' h₁ h₂ _ =>
+        -- A handler of a payload kind (#512): it binds the failure's value, at the label of what
+        -- decides the failure, so a field read from it is raised by that label.
+        have h := ihE hσ hE hΓ hpc hw he₁ he₂ hrel hb
+        have u₁ := uE (w := w₁) hσ he₁ hb
+        have u₂ := uE (w := w₂) hσ he₂ hb
+        have hε₁ := (LExprTy.inPlace hwf hΓ hpc hb).2
+        have hlF := Eff.failLabel_plainFree hε₁
+        have hpc' : (pc.join ε₁.failLabel).PlainFree := LExpr.plainFree_join hpc hlF
+        have hΓ' : LCtx.InPlace ((x, .record kind ε₁.failLabel) :: Γ) := hcons hlF
+        simp only [eval]
+        generalize eval H n p w₁ e₁ body = r₁ at h u₁ ⊢
+        generalize eval H n p w₂ e₂ body = r₂ at h u₂ ⊢
+        obtain ⟨tr₁, o₁, w₁'⟩ := r₁
+        obtain ⟨tr₂, o₂, w₂'⟩ := r₂
+        have nf₁ : ∀ c, o₁ ≠ .failed c := fun c he => by
+          subst he; have := u₁.2.1.2; simp [Eff.inst, hcd] at this
+        have nf₂ : ∀ c, o₂ ≠ .failed c := fun c he => by
+          subst he; have := u₂.2.1.2; simp [Eff.inst, hcd] at this
+        have hk₁ : ∀ k c ps, o₁ = .raised k c ps → k = kind := fun k c ps he => by
+          subst he; exact hra k (by simpa [Eff.inst] using u₁.2.1.2.1)
+        have hk₂ : ∀ k c ps, o₂ = .raised k c ps → k = kind := fun k c ps he => by
+          subst he; exact hra k (by simpa [Eff.inst] using u₂.2.1.2.1)
+        by_cases hd : Diverged p L tr₁ tr₂
+        · intro _ _
+          right
+          cases o₁ <;> cases o₂ <;> (try dsimp only) <;> (try split) <;> (try split) <;> (try dsimp only)
+          all_goals first
+            | exact hd
+            | exact hd.append _ _
+            | simpa using hd.append [] _
+            | simpa using hd.append _ []
+        replace h : BRel p L _ _ (tr₁, o₁, w₁') (tr₂, o₂, w₂') := fun a b => (h a b).resolve_right hd
+        cases o₁ <;> cases o₂
+        all_goals first
+          | exact absurd rfl (nf₁ _)
+          | exact absurd rfl (nf₂ _)
+          | (intro ht₁ ht₂; simp only [Term] at ht₁ ht₂; done)
+          | (intro ht₁ ht₂; dsimp only at ht₁ ht₂; split at ht₁ <;> simp only [Term] at ht₁ ht₂; done)
+          | (intro ht₁ ht₂; dsimp only at ht₁ ht₂; split at ht₂ <;> simp only [Term] at ht₁ ht₂; done)
+          | skip
+        · intro ht₁ ht₂
+          obtain ⟨hp, ho, hwr⟩ := h trivial trivial
+          exact .inl ⟨hp, V.raiseσ _ (V.flow ho (Flow.lsubst _ _ h₁)), hwr⟩
+        · rename_i a k c ps
+          obtain rfl := hk₂ k c ps rfl
+          dsimp only
+          rw [if_pos rfl]
+          obtain ⟨_, _, sm, fs, hs, hf, hps⟩ := u₂.2.1
+          obtain ⟨hp, ho, hwr⟩ := h trivial trivial
+          simp only [OutRel] at ho
+          have ho' : ¬ Vis p L (ε₁.failLabel.inst (p.sd σ)) := fun hv => ho (Vis.failLabel_inst.mpr hv)
+          have uh := uE (w := w₂') hσ (.cons (LValTy.variant (l := _) hs hf hps) he₂) hh'
+          generalize eval H n p w₂' ((x, Val.variant k c ps) :: e₂) handler = rh at uh ⊢
+          obtain ⟨th, oh, wh⟩ := rh
+          obtain ⟨hph, hfh, hwh⟩ := confined (L := L) hh uh
+            (fun hv => ho' (Vis.of_le (LExpr.inst_le_join_inst _ _ _) hv))
+          refine .of_brel <| brel_quiet (hwr.trans hwh)
+            (by simp only [proj_append]; rw [hph, List.append_nil]; exact hp)
+            (fun a b => V.hideσ hlF a b ho') (fun h => by simp [Res.IsFail] at h) (fun hc' => hfh hc')
+        · rename_i k c ps b
+          obtain rfl := hk₁ k c ps rfl
+          dsimp only
+          rw [if_pos rfl]
+          obtain ⟨_, _, sm, fs, hs, hf, hps⟩ := u₁.2.1
+          obtain ⟨hp, ho, hwr⟩ := h trivial trivial
+          simp only [OutRel] at ho
+          have ho' : ¬ Vis p L (ε₁.failLabel.inst (p.sd σ)) := fun hv => ho (Vis.failLabel_inst.mpr hv)
+          have uh := uE (w := w₁') hσ (.cons (LValTy.variant (l := _) hs hf hps) he₁) hh'
+          generalize eval H n p w₁' ((x, Val.variant k c ps) :: e₁) handler = rh at uh ⊢
+          obtain ⟨th, oh, wh⟩ := rh
+          obtain ⟨hph, hfh, hwh⟩ := confined (L := L) hh uh
+            (fun hv => ho' (Vis.of_le (LExpr.inst_le_join_inst _ _ _) hv))
+          refine .of_brel <| brel_quiet (hwh.symm.trans hwr)
+            (by simp only [proj_append]; rw [hph, List.append_nil]; exact hp)
+            (fun a b => V.hideσ hlF a b ho') (fun hc' => hfh hc') (fun h => by simp [Res.IsFail] at h)
+        · rename_i k₁ c₁ ps₁ k₂ c₂ ps₂
+          obtain rfl := hk₁ k₁ c₁ ps₁ rfl
+          obtain rfl := hk₂ k₂ c₂ ps₂ rfl
+          dsimp only
+          rw [if_pos rfl]
+          try rw [if_pos rfl]
+          obtain ⟨_, _, sm₁, fs₁, hs₁, hf₁, hps₁⟩ := u₁.2.1
+          obtain ⟨_, _, sm₂, fs₂, hs₂, hf₂, hps₂⟩ := u₂.2.1
+          obtain ⟨hp, ho, hwr⟩ := h trivial trivial
+          simp only [OutRel] at ho
+          -- The binder: the same variant with related fields when the observer sees what decides
+          -- the failure, and hidden otherwise.
+          have hcv : V p L ((LTy.record k₂ ε₁.failLabel).lsubst p.recordDeep σ)
+              (.variant k₂ c₁ ps₁) (.variant k₂ c₂ ps₂) := by
+            simp only [LTy.lsubst]
+            by_cases hv : Vis p L (ε₁.failLabel.inst (p.sd σ))
+            · obtain ⟨-, rfl, sm, fs, hs, hf, hvl⟩ := ho (Vis.failLabel_inst.mpr hv)
+              exact .variant hs hf hvl
+            · exact .hidden hv
+          have hh'' := ihE hσ hE hΓ' hpc' hwr (.cons (LValTy.variant (l := _) hs₁ hf₁ hps₁) he₁)
+            (.cons (LValTy.variant (l := _) hs₂ hf₂ hps₂) he₂) (.cons hcv hrel) hh'
+          generalize eval H n p w₁' ((x, Val.variant k₂ c₁ ps₁) :: e₁) handler = rh₁ at hh'' ⊢
+          generalize eval H n p w₂' ((x, Val.variant k₂ c₂ ps₂) :: e₂) handler = rh₂ at hh'' ⊢
           obtain ⟨th₁, oh₁, wh₁⟩ := rh₁
           obtain ⟨th₂, oh₂, wh₂⟩ := rh₂
           intro ht₁ ht₂
@@ -1791,6 +2149,122 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
             (.cons (LValTy.int (n := (c₂ : Int))) he₂) (.cons hcv hrel) hh'
           generalize eval H n p w₁' ((x, Val.int (c₁ : Int)) :: e₁) handler = rh₁ at hh'' ⊢
           generalize eval H n p w₂' ((x, Val.int (c₂ : Int)) :: e₂) handler = rh₂ at hh'' ⊢
+          obtain ⟨th₁, oh₁, wh₁⟩ := rh₁
+          obtain ⟨th₂, oh₂, wh₂⟩ := rh₂
+          intro ht₁ ht₂
+          rcases hh'' ht₁ ht₂ with ⟨hph, hoh, hwh⟩ | hdh
+          · exact .inl ⟨by simp only [proj_append]; rw [hp, hph],
+              OutRel.mono (fun _ _ h => V.flow h (Flow.lsubst _ _ h₂)) id hoh, hwh⟩
+          · exact .inr (Diverged.prepend hp hdh)
+      | @handleKT _ _ kind body x handler t₁ t₂ ts ε₁ ε₂ hb hcd hra hh' h₁ h₂ _ hcov =>
+        have h := ihE hσ hE hΓ hpc hw he₁ he₂ hrel hb
+        have hε₁ := (LExprTy.inPlace hwf hΓ hpc hb).2
+        have hlF := Eff.failLabel_plainFree hε₁
+        have hpc' : (pc.join ε₁.failLabel).PlainFree := LExpr.plainFree_join hpc hlF
+        have hΓ' : LCtx.InPlace ((x, .record kind ε₁.failLabel) :: Γ) := hcons hlF
+        simp only [eval]
+        have ub₁ := uE (w := w₁) hσ he₁ hb
+        have ub₂ := uE (w := w₂) hσ he₂ hb
+        generalize eval H n p w₁ e₁ body = r₁ at h ub₁ ⊢
+        generalize eval H n p w₂ e₂ body = r₂ at h ub₂ ⊢
+        obtain ⟨tr₁, o₁, w₁'⟩ := r₁
+        obtain ⟨tr₂, o₂, w₂'⟩ := r₂
+        have nf₁ : ∀ c, o₁ ≠ .failed c := fun c he => by
+          subst he; have := ub₁.2.1.2; simp [Eff.inst, hcd] at this
+        have nf₂ : ∀ c, o₂ ≠ .failed c := fun c he => by
+          subst he; have := ub₂.2.1.2; simp [Eff.inst, hcd] at this
+        have hk₁ : ∀ k c ps, o₁ = .raised k c ps → k = kind := fun k c ps he => by
+          subst he; exact hra k (by simpa [Eff.inst] using ub₁.2.1.2.1)
+        have hk₂ : ∀ k c ps, o₂ = .raised k c ps → k = kind := fun k c ps he => by
+          subst he; exact hra k (by simpa [Eff.inst] using ub₂.2.1.2.1)
+        by_cases hd : Diverged p L tr₁ tr₂
+        · intro _ _
+          right
+          cases o₁ <;> cases o₂ <;> (try dsimp only) <;> (try split) <;> (try split) <;> (try dsimp only)
+          all_goals first
+            | exact hd
+            | exact hd.append _ _
+            | simpa using hd.append [] _
+            | simpa using hd.append _ []
+        replace h : BRel p L _ _ (tr₁, o₁, w₁') (tr₂, o₂, w₂') := fun a b => (h a b).resolve_right hd
+        cases o₁ <;> cases o₂
+        all_goals first
+          | (intro ht₁ ht₂; simp only [Term] at ht₁ ht₂; done)
+          | exact absurd rfl (nf₁ _)
+          | exact absurd rfl (nf₂ _)
+          | (intro ht₁ ht₂; dsimp only at ht₁ ht₂; split at ht₁ <;> simp only [Term] at ht₁ ht₂; done)
+          | (intro ht₁ ht₂; dsimp only at ht₁ ht₂; split at ht₂ <;> simp only [Term] at ht₁ ht₂; done)
+          | skip
+        · intro ht₁ ht₂
+          obtain ⟨hp, ho, hwr⟩ := h trivial trivial
+          exact .inl ⟨hp, V.flow ho (Flow.lsubst _ _ h₁), hwr⟩
+        · rename_i a k c ps
+          obtain rfl := hk₂ k c ps rfl
+          dsimp only
+          rw [if_pos rfl]
+          obtain ⟨_, _, sm, fs, hs, hf, hps⟩ := ub₂.2.1
+          obtain ⟨hp, ho, hwr⟩ := h trivial trivial
+          simp only [OutRel] at ho
+          have ho' : ¬ Vis p L (ε₁.failLabel.inst (p.sd σ)) := fun hv => ho (Vis.failLabel_inst.mpr hv)
+          have uh := uE (w := w₂') hσ (.cons (LValTy.variant (l := _) hs hf hps) he₂) hh'
+          generalize eval H n p w₂' ((x, Val.variant k c ps) :: e₂) handler = rh at uh ⊢
+          obtain ⟨th, oh, wh⟩ := rh
+          obtain ⟨hph, hfh, hwh⟩ := confined (L := L) hh uh
+            (fun hv => ho' (Vis.of_le (LExpr.inst_le_join_inst _ _ _) hv))
+          have ta : LValTy p a (t₁.lsubst p.recordDeep σ) := ub₁.2.1
+          have tb := uh.2.1
+          refine .of_brel <| brel_quiet_typed (hwr.trans hwh)
+            (by simp only [proj_append]; rw [hph, List.append_nil]; exact hp)
+            (fun a' b' ea eb => by
+              simp only [Res.ok.injEq] at ea eb
+              subst ea eb
+              exact V.tuple_covσ hlF ho' hcov (LValTy.flow ta (Flow.lsubst _ _ h₁))
+                (LValTy.flow tb (Flow.lsubst _ _ h₂)))
+            (fun h => by simp [Res.IsFail] at h) (fun hc' => hfh hc')
+        · rename_i k c ps b
+          obtain rfl := hk₁ k c ps rfl
+          dsimp only
+          rw [if_pos rfl]
+          obtain ⟨_, _, sm, fs, hs, hf, hps⟩ := ub₁.2.1
+          obtain ⟨hp, ho, hwr⟩ := h trivial trivial
+          simp only [OutRel] at ho
+          have ho' : ¬ Vis p L (ε₁.failLabel.inst (p.sd σ)) := fun hv => ho (Vis.failLabel_inst.mpr hv)
+          have uh := uE (w := w₁') hσ (.cons (LValTy.variant (l := _) hs hf hps) he₁) hh'
+          generalize eval H n p w₁' ((x, Val.variant k c ps) :: e₁) handler = rh at uh ⊢
+          obtain ⟨th, oh, wh⟩ := rh
+          obtain ⟨hph, hfh, hwh⟩ := confined (L := L) hh uh
+            (fun hv => ho' (Vis.of_le (LExpr.inst_le_join_inst _ _ _) hv))
+          have tb : LValTy p b (t₁.lsubst p.recordDeep σ) := ub₂.2.1
+          have ta := uh.2.1
+          refine .of_brel <| brel_quiet_typed (hwh.symm.trans hwr)
+            (by simp only [proj_append]; rw [hph, List.append_nil]; exact hp)
+            (fun a' b' ea eb => by
+              simp only [Res.ok.injEq] at ea eb
+              subst ea eb
+              exact V.tuple_covσ hlF ho' hcov (LValTy.flow ta (Flow.lsubst _ _ h₂))
+                (LValTy.flow tb (Flow.lsubst _ _ h₁)))
+            (fun hc' => hfh hc') (fun h => by simp [Res.IsFail] at h)
+        · rename_i k₁ c₁ ps₁ k₂ c₂ ps₂
+          obtain rfl := hk₁ k₁ c₁ ps₁ rfl
+          obtain rfl := hk₂ k₂ c₂ ps₂ rfl
+          dsimp only
+          rw [if_pos rfl]
+          try rw [if_pos rfl]
+          obtain ⟨_, _, sm₁, fs₁, hs₁, hf₁, hps₁⟩ := ub₁.2.1
+          obtain ⟨_, _, sm₂, fs₂, hs₂, hf₂, hps₂⟩ := ub₂.2.1
+          obtain ⟨hp, ho, hwr⟩ := h trivial trivial
+          simp only [OutRel] at ho
+          have hcv : V p L ((LTy.record k₂ ε₁.failLabel).lsubst p.recordDeep σ)
+              (.variant k₂ c₁ ps₁) (.variant k₂ c₂ ps₂) := by
+            simp only [LTy.lsubst]
+            by_cases hv : Vis p L (ε₁.failLabel.inst (p.sd σ))
+            · obtain ⟨-, rfl, sm, fs, hs, hf, hvl⟩ := ho (Vis.failLabel_inst.mpr hv)
+              exact .variant hs hf hvl
+            · exact .hidden hv
+          have hh'' := ihE hσ hE hΓ' hpc' hwr (.cons (LValTy.variant (l := _) hs₁ hf₁ hps₁) he₁)
+            (.cons (LValTy.variant (l := _) hs₂ hf₂ hps₂) he₂) (.cons hcv hrel) hh'
+          generalize eval H n p w₁' ((x, Val.variant k₂ c₁ ps₁) :: e₁) handler = rh₁ at hh'' ⊢
+          generalize eval H n p w₂' ((x, Val.variant k₂ c₂ ps₂) :: e₂) handler = rh₂ at hh'' ⊢
           obtain ⟨th₁, oh₁, wh₁⟩ := rh₁
           obtain ⟨th₂, oh₂, wh₂⟩ := rh₂
           intro ht₁ ht₂
