@@ -14,9 +14,11 @@ fuel.
 - a lawful host (`Host.Lawful`, H1 and H2), whose file system and servers are disjoint, under
   ADR 0085's rules and `Program.HostWF`; a program without host operations needs no premise on
   the host (`HostFree.lean`);
-- failures are codes without payloads;
-- no sums but `Option` and `Result`, no `Map`, no `with` or handlers of capabilities, no
-  `together`;
+- failures are codes, or failures with a payload of a sum kind (#512), whose fields keep their
+  declared labels; that a failing `main`'s report shows only its `public` fields is the
+  runtime's premise R1 (`docs/plan/formal-track-sums.md` §4), outside the model;
+- sums: `Option`, `Result` and the program's sum kinds without type parameters (#512); no `Map`,
+  no `with` or handlers of capabilities, no `together`;
 - generic functions at ground instances only: the type arguments of a call are ground (the
   premise `LTy.GroundAll` of T-Call and of a function reference), so a generic body that calls a
   generic function at its own type parameters, two levels of generics, is outside the model;
@@ -26,7 +28,7 @@ fuel.
 
 **What "related" means** (`V`): at a position the observer sees, scalars and texts are equal,
 lists have the same length and related elements, options and results the same tag and related
-contents, records related fields; closures are related, not equal (the same code and related
+contents, records related fields, values of a sum kind the same variant and related fields; closures are related, not equal (the same code and related
 captured environments); a `Unit` position relates any two values, since it carries nothing.
 -/
 import UnaFormal.F1.BinaryInst
