@@ -417,6 +417,11 @@ def t11(seed, edition):
         fn = (f"pub probe(n: secret Int, flag: internal Bool) {sig}\n=\n"
               f"  if flag\n    {body}\n  else\n    unit")
     caller = caller_module(s, *pre, fn, imports=[(KEYS, ["Gate", "checkpin"])])
+    if pc == "internal":
+        # Under an internal program counter the policy call can fail, so it is U4002 first, at
+        # the call, whatever `to` and the wrapper are (Una-2's review of #517): these variants
+        # test that rule, and the failure's own label only adds to it.
+        expect = ["U4002"]
     cls = OPEN if fail_label_public else MUST_REJECT
     return make("T11", "spec/07 §5 rule 6", edition, seed, cls, {KEYS: keys, CALLER: caller},
                 s, [] if fail_label_public else expect,

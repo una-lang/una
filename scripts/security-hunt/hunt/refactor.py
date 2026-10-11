@@ -21,9 +21,10 @@ HEAD = re.compile(r"^(?:trusted module|module|import) ")
 
 def _split_code(text):
     """Splits `text` into (is_code, piece) pairs, so that rewrites skip string literals and
-    comments. Interpolations inside strings stay strings: R6 renames only declared
-    functions, and a rename that misses one inside an interpolation shows as a changed
-    verdict, which triage reads as a generator bug."""
+    comments. The interpolations `{...}` inside a string are code: a rename must reach a call
+    written there, or the twin refers to a name that no longer exists (U1001) and its verdict
+    says nothing (Una-2's review of #517). A text literal cannot nest in an interpolation
+    (U0006, `spec/02`), so an interpolation ends at its matching `}`."""
     out, i, n = [], 0, len(text)
     start = 0
     while i < n:
@@ -31,9 +32,22 @@ def _split_code(text):
         if c == '"':
             out.append((True, text[start:i]))
             j = i + 1
+            seg = i
             while j < n and text[j] != '"':
-                j += 2 if text[j] == "\\" else 1
-            out.append((False, text[i:j + 1]))
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == "{":
+                    out.append((False, text[seg:j + 1]))
+                    depth, k = 1, j + 1
+                    while k < n and depth:
+                        depth += {"{": 1, "}": -1}.get(text[k], 0)
+                        k += 1
+                    out.append((True, text[j + 1:k - 1]))
+                    seg = j = k - 1
+                    continue
+                j += 1
+            out.append((False, text[seg:j + 1]))
             i = start = j + 1
             continue
         if text.startswith("--", i):

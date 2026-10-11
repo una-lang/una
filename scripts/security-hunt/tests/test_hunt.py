@@ -136,6 +136,11 @@ class Generators(unittest.TestCase):
                 seen.add(p.variant)
         self.assertEqual(len(seen), 6)
 
+    def test_t11_internal_pc_expects_the_call_under_it(self):
+        for p in every_program(80):
+            if p.op == "T11" and "-pc-internal-" in p.variant:
+                self.assertEqual(p.expect, ["U4002"], p.variant)
+
     def test_t11_class_follows_the_failure_label(self):
         for p in every_program(80):
             if p.op != "T11":
@@ -160,6 +165,12 @@ class Refactors(unittest.TestCase):
         self.assertNotIn("pub f(", t)
         self.assertNotIn("= g(x)", t)
         self.assertEqual(out["una.toml"], "x")
+
+    def test_r6_renames_inside_interpolations(self):
+        text = 'module m\n\nmask(t: Int) -> Int = t\n\npub show(t: Int) -> Text = "{mask(t)} mask"\n'
+        out = r6_rename({"src/m.una": text}, random.Random(2))["src/m.una"]
+        self.assertNotIn("{mask(t)}", out)
+        self.assertIn('} mask"', out)
 
     def test_r9_keeps_every_declaration(self):
         head, decls = _blocks(self.TEXT)
