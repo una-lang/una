@@ -301,6 +301,18 @@ mutual
         s!"B1 restriction (call of a declassifying function under a raised pc): `{f}`"
       flowTo p (p.lsub σ fn.result) ann s!"the result of `{f}`"
       pure (.ofCall fn)
+    | .invoke f args => do
+      let fn ← some! (p.find f) s!"F1 restriction (no handler `{f}`, a lookup miss)"
+      let acc ← some! (List.lookup f p.ops) s!"F1 restriction (`{f}` is not an operation's handler)"
+      need fn.tparams.isEmpty s!"F1 restriction (a generic handler `{f}`)"
+      let ts ← atomsTy Γ args
+      need (flowsB p.top ts (fn.params.map Prod.snd))
+        s!"an argument of the operation `{f}` does not flow into its parameter"
+      le p (pc.join (LExpr.joinAll (ts.map p.deep))) (.ofLabel acc)
+        s!"the arguments or program counter of `{f}` are above what it accepts (U4003)"
+      need (symFree pc) s!"`{f}` is invoked under a symbolic program counter"
+      flowTo p fn.result ann s!"the result of `{f}`"
+      pure (.ofInvoke pc fn)
     | .apply f args => do
       match ← atomTy Γ f with
       | .fn ps r o g fl lf =>

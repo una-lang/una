@@ -119,6 +119,9 @@ mutual
     | prim (p : Prim) (args : List Atom)
     /-- A call of the program's function `f`, with its type arguments. -/
     | call (f : String) (targs : List LTy) (args : List Atom)
+    /-- `@c.o(ā)`, an operation of a user capability whose handler the program holds (#524):
+    its handler, the function `f`, runs on `ā`. -/
+    | invoke (f : String) (args : List Atom)
     /-- A call of a function value (T-App). -/
     | apply (f : Atom) (args : List Atom)
     /-- The one operation of the one capability, `@log.write(line)`: a sink, recorded in the
@@ -298,6 +301,9 @@ structure Program where
   failure not bounded by what decides whether the iteration runs. `t6_host` requires it `false`. -/
   oldLoop : Bool := false
   records : List Record
+  /-- The operations of user capabilities with a handler (#524): each handler function's name,
+  with the operation's `accepts` label. -/
+  ops : List (String × Label) := []
   /-- The sum kinds (#512). -/
   sums : List Sum := []
   policies : List Policy

@@ -1,0 +1,69 @@
+module m
+
+pub kind Shut = | Closed
+
+pub capability Door
+  op open(code: Int) -> Int
+    fails Shut
+    accepts secret
+
+handler door() for Door
+  op open(code) = fail Closed
+
+pub capability Bell
+  op ring(n: Int) -> Unit
+    accepts secret
+
+handler bell() for Bell
+  uses @console: Console[print]
+  op ring(n) = if n > 0 then @console.print("pos") else unit
+
+pub capability Gate
+  op pass_through(code: Int) -> Int
+    fails Shut
+    accepts public
+
+pub knock_attempt(flag: secret Bool) -> Unit
+  uses @door: Door[open]
+=
+  if flag
+    let r = attempt @door.open(1)
+    unit
+  else
+    unit
+
+pub knock_use(flag: secret Bool) -> Unit
+  uses @door: Door[open]
+=
+  if flag
+    let v = @door.open(1)
+      if error use 0
+    unit
+  else
+    unit
+
+pub knock_pass(flag: secret Bool) -> Unit
+  uses @door: Door[open]
+  fails Shut
+=
+  if flag
+    let v = @door.open(1)
+      if error pass
+    unit
+  else
+    unit
+
+pub ring_it(n: secret Int) -> Unit
+  uses @bell: Bell[ring]
+=
+  @bell.ring(n)
+
+pub through(n: Int) -> Int
+  uses @gate: Gate[pass_through]
+  fails Shut
+=
+  @gate.pass_through(n)
+
+pub installs(flag: secret Bool) -> Unit
+=
+  knock_attempt(flag) with @door = door()

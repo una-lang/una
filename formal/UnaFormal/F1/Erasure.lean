@@ -30,6 +30,7 @@ mutual
     | .write a c => .write a c
     | .req m args => .req m args
     | .construct r fs => .construct r fs
+    | .invoke f args => .invoke (ρ f) args
     | .variant k i fs => .variant k i fs
     | .field v i => .field v i
     | .list items => .list items

@@ -51,6 +51,7 @@ import UnaFormal.F1.ResultExample
 import UnaFormal.F1.RecordExample
 import UnaFormal.F1.ArithExample
 import UnaFormal.F1.SumExample
+import UnaFormal.F1.HandlerExample
 import UnaFormal.F1.FirstExample
 import UnaFormal.F1.LoopLeak
 import UnaFormal.F1.LoopExample

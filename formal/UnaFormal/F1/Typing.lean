@@ -89,6 +89,9 @@ mutual
     | call {ctx f targs args fn σ} :
         p.find f = some fn → AtomsTy ctx args (fn.paramTys σ) →
         RhsTy p ctx (.call f targs args) (fn.result.erase.subst σ)
+    | invoke {ctx f args fn} :
+        p.find f = some fn → fn.tparams = [] → AtomsTy ctx args (fn.paramTys []) →
+        RhsTy p ctx (.invoke f args) fn.result.erase
     | apply {ctx f args ts r} :
         AtomTy ctx f (.fn ts r) → AtomsTy ctx args ts → RhsTy p ctx (.apply f args) r
     | op {ctx line t} : AtomTy ctx line t → t.Scalar → RhsTy p ctx (.op line) .unit

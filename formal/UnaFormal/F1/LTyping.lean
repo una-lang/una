@@ -124,6 +124,13 @@ decided at its public program counter (T-Fail, T-Fun), so its label is `⊥`. -/
 def ofFn (o : Bool) (g : HostFx) (f : Bool) : Eff :=
   ⟨o, g, if f then some LExpr.bot else Option.none, [], f, []⟩
 
+/-- The effects of an invocation of an operation whose handler is `fn` (#524), at `pc`: the
+operation, and, when the handler can fail, a failure labeled `pc`, since a lawful handler decides
+it at its own public program counter (`spec/07 §7` rule 4). -/
+def ofInvoke (pc : LExpr) (fn : Fun) : Eff :=
+  ⟨true, HostFx.none, if fn.fails then some pc else Option.none, [], fn.fails && fn.raises.isEmpty,
+    fn.raises⟩
+
 /-- The effects of a call of a function that may also release through the policies `rs`. -/
 def ofFnR (o : Bool) (g : HostFx) (f : Bool) (rs : List String) : Eff := { ofFn o g f with rels := rs }
 
@@ -310,6 +317,16 @@ mutual
         p.Bound pc fn.op fn.host fn.fails → p.RelBound pc fn.rels →
         LRhsTy p E Γ pc (.call f targs args) (p.lsub (fn.tparams.zip targs) fn.result)
           (.ofCall fn)
+    /-- T-Invoke (#524): an operation of a user capability, whose handler is `f`. Each argument
+    flows into its parameter, and the arguments and the program counter are below the operation's
+    `accepts` (U4003). Its failure reaches the caller at the caller's program counter
+    (`spec/07 §7` rule 4), with no premise that it is public: T-Let and T-Fun bound it, as they do
+    `parse`'s. -/
+    | invoke {Γ pc f args fn ts acc} :
+        p.find f = some fn → List.lookup f p.ops = some acc → fn.tparams = [] →
+        LAtomsTy Γ args ts → Flows p.top ts (fn.params.map Prod.snd) →
+        p.le (pc.join (LExpr.joinAll (ts.map p.deep))) (.ofLabel acc) → pc.SymFree →
+        LRhsTy p E Γ pc (.invoke f args) fn.result (.ofInvoke pc fn)
     /-- T-App. An argument that carries decisions `ℓ*_T` its parameter's type does not accept
     raises the call's result and program counter instead, as the value's label does
     (`spec/07 §7` rule 8, "decisions given to functions"). The decisions are those the
@@ -700,6 +717,13 @@ structure Program.LWellFormed (p : Program) : Prop where
     t.Ground ∧ t.InPlace ∧ t.CatsIn p.categories ∧ p.le (p.deep t) (.ofLabel sm.deep) ∧
       t.erase.Closed
   disjoint : ∀ k, p.record k = none ∨ p.sum k = none
+  /-- **Lawful handlers** (Hu, #524): the handler of each operation is a function of the program,
+  not generic, that releases nothing and performs no host operation, takes scalars, and whose
+  operations are at or above the operation's `accepts` (the effect floor). Its T-Fun, under its
+  parameters raised by `accepts`, is `funs`'s. -/
+  ops : ∀ q ∈ p.ops, ∃ fn, p.find q.1 = some fn ∧ fn.tparams = [] ∧ fn.rels = [] ∧
+    fn.host = HostFx.none ∧ (fn.op = true → p.le (.ofLabel q.2) (.ofLabel p.acceptsOp)) ∧
+    ∀ r ∈ fn.params, r.2.erase.Scalar
   /-- Signatures and declared types keep `ℓ_T` in place. -/
   inPlace : (∀ fn ∈ p.funs, (∀ q ∈ fn.params, q.2.InPlace) ∧ fn.result.InPlace) ∧
     (∀ rec ∈ p.records, ∀ t ∈ rec.fields, t.InPlace) ∧

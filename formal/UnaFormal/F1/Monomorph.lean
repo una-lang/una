@@ -52,6 +52,7 @@ mutual
     | .write a c, .write b d => a == b && c == d
     | .req m a, .req k b => m == k && a == b
     | .construct r a, .construct s b => r == s && a == b
+    | .invoke f a, .invoke g b => ρ f == g && a == b
     | .variant k i a, .variant k' i' b => k == k' && i == i' && a == b
     | .field v i, .field u j => v == u && i == j
     | .list a, .list b => a == b
