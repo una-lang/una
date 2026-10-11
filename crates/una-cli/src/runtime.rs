@@ -178,7 +178,7 @@ impl Drop for Ceiling<'_> {
     }
 }
 
-/// `una run [path]`: checks the package at tier 0 with the grants of `[run] grants` and
+/// `una run [path]`: checks the package at tier 1 with the grants of `[run] grants` and
 /// `--grant` (U3012), then runs `main` of the entry module (`spec/04 §8`).
 pub(crate) fn run_command(
     path: &Path,
@@ -543,7 +543,7 @@ fn abort_diagnostic(abort: &Abort, sources: &SourceDb, root: &Location) -> Diagn
     }
 }
 
-/// `una test [path]`: checks the package at tier 0, then runs every example (`spec/08 §2`,
+/// `una test [path]`: checks the package at tier 1, then runs every example (`spec/08 §2`,
 /// `spec/11 §6`).
 pub(crate) fn test_command(
     path: &Path,
