@@ -140,11 +140,18 @@ A capability says which operations a function may perform (`spec/05 §3`). B06's
      "sharing.links.create_share_links" = { service_files = ["role gives internal[Service]", "owner gives internal[Service]"] }
      ```
 
-     Each entry is a `cap_op` (rule 1) over the function's parameters. A key that names no public function, or a binding or operation the function does not have, is U7002.
+     Each entry is a `cap_op` (rule 1) over the function's parameters. U7002 at the lock entry reports:
+     - a key that names no public function;
+     - an operation that the binding's capability does not declare.
+     
+     An operation that the capability declares but the header leaves out is not an error: it is the stronger case below.
+   - **The lock's conditions are checked against today's header.** A lock condition is type-checked against the function's current parameters. It is U7002 at the lock entry when it is not a `Bool` of RL over them, which includes a parameter that has been renamed, removed or retyped. The message names the parameter: "the lock of `update_prices` names `dry_run`, which is not a `Bool` parameter of it". A lock condition is never ignored, and never read as `true`.
    - **The check.** The source header MUST be at least as strong as the lock, for every locked entry:
-     - **the operation is absent from the header's binding:** stronger, since it grants less, so nothing is checked;
+     - **the operation, or the whole binding, is absent from the header:** stronger, since it grants less, so nothing is checked;
      - **present with a condition `C_src`:** the obligation `C_src ⇒ C_lock`, over the parameters, in QF_UFLIA, as a new obligation kind `contract_lock`. An operation without `where` has `C_src = true`;
      - **present with a label `l_src`** (ADR 0094): `l_lock ⊑ l_src`, a label comparison.
+     
+     - **a binding the lock does not name:** within a locked function, the lock covers each capability it names, not only each binding. So a binding of that capability that the lock does not name, such as a second `uses @shadow: Catalog[journal]` or the locked binding renamed, is U3023. Locking by capability costs nothing more, and it closes the path of moving an operation to an unlocked binding of the same capability.
      
      A header weaker than its lock is U3023: "the header of `update_prices` lets `@catalog.journal` run where `not dry_run` does not hold, which `una.toml` locks". The primary span is the header's `cap_op`, and the related span is the lock entry.
    - **Helpers are free.** Only the listed public functions are locked. Weakening a helper's condition moves the obligation to its callers (rule 3), and strengthening it moves it into its body, so either way the locked entry point's obligation still holds or is refuted.
