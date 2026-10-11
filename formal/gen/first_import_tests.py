@@ -10,7 +10,8 @@ Usage: una --json core --with-rejected <pkg> > export.json
 """
 import json, sys
 
-ORDER = ["Log", "head_public", "top_secret", "head_read", "presence"]
+ORDER = ["Log", "head_public", "top_secret", "head_read", "presence",
+         "text_lt", "text_gt", "text_le", "text_ge", "int_lt"]
 
 def name(d):
     return d["value"]["name"] if d["kind"] == "fun" else d["name"]
@@ -26,7 +27,7 @@ def main(src, out):
     assert '"#' not in text
     with open(out, "w", encoding="utf-8") as f:
         f.write(f'''/-
-Tests of the reading of `prelude.first` (#532), checked when the library builds. The document is
+Tests of the reading of `prelude.first` and of comparisons F1 does not model (#532), checked when the library builds. The document is
 written by `formal/gen/first_import_tests.py` from `una`'s own export of
 `formal/gen/first_import_tests.una`; each verdict matches what `una check` says of the function.
 -/
@@ -38,7 +39,8 @@ open Import ImportTests
 
 /-- `Log.write` accepts `public`. `head_public(xs: List[Int]) = xs.first()`; `top_secret` matches
 `first` of a `secret List[Text]` into a public print; `head_read` prints the head of a
-`List[secret Text]`; `presence` matches it only for `Some` or `None` into a public print. -/
+`List[secret Text]`; `presence` matches it only for `Some` or `None` into a public print;
+`text_lt`, `text_gt`, `text_le` and `text_ge` compare texts, and `int_lt` integers. -/
 def firsts : String := r#"{text}"#
 
 -- A public list: accepted.
@@ -51,6 +53,15 @@ def firsts : String := r#"{text}"#
 -- A list of secret elements matched only for `Some` or `None`: accepted. Reading `first` as
 -- `first_where(xs, fn(_) -> true)` would reject it.
 #guard run firsts "m.presence" == "accepted"
+
+-- `<`, `>`, `<=` and `>=` on `Text`, which Una orders and F1 does not: not re-checked, never
+-- rejected, and never read as the `Int` comparison.
+#guard run firsts "m.text_lt" == "not re-checked"
+#guard run firsts "m.text_gt" == "not re-checked"
+#guard run firsts "m.text_le" == "not re-checked"
+#guard run firsts "m.text_ge" == "not re-checked"
+-- The same on `Int`: accepted.
+#guard run firsts "m.int_lt" == "accepted"
 
 end Una.F1.FirstImportTests
 ''')

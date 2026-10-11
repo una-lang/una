@@ -165,6 +165,23 @@ def primTy : Prim → List Ty → Option Ty
   | .concat, ts => if ts.all (tyEq · .text) then some .text else none
   | _, _ => none
 
+/-- A primitive's name, for the reason of a restriction. -/
+def primName : Prim → String
+  | .add => "add" | .sub => "sub" | .mul => "mul" | .div => "div" | .mod => "mod" | .lt => "lt"
+  | .eqInt => "eq_int" | .not => "not" | .len => "len" | .sum => "sum" | .concat => "concat"
+
+/-- A type's head, for the reason of a restriction. -/
+def tyHead : Ty → String
+  | .int => "Int" | .bool => "Bool" | .text => "Text" | .unit => "Unit" | .list _ => "List"
+  | .option _ => "Option" | .result _ _ => "Result" | .record r => r | .fn _ _ => "a function"
+  | .var a => a | .tuple _ => "a tuple"
+
+/-- The reason a primitive's operands are outside F1 (#532). Una checked the operands' types, so
+a primitive F1 has no typing for is an overload F1 does not model, such as `<` on `Text`: a model
+restriction, not re-checked, never rejected, and never read as another overload. -/
+def primRestriction (pr : Prim) (ts : List Ty) : String :=
+  s!"F1 restriction (`{primName pr}` on {", ".intercalate (ts.map tyHead)})"
+
 def atomTy (Γ : LCtx) : Atom → Result LTy
   | .var x => some! (lctxLookup Γ x) s!"`{x}` is not in scope"
   | .int _ => pure (.int .bot)
@@ -269,7 +286,7 @@ mutual
       pure .none
     | .prim pr args => do
       let ts ← atomsTy Γ args
-      let rt ← some! (primTy pr (ts.map LTy.erase)) "a primitive is applied to the wrong types"
+      let rt ← some! (primTy pr (ts.map LTy.erase)) (primRestriction pr (ts.map LTy.erase))
       flowTo p (ofScalar rt (p.primLabel pr ts)) ann "the primitive's result"
       pure .none
     | .call f targs args => do
@@ -479,9 +496,11 @@ mutual
     | .eq a b => do
       let t₁ ← atomTy Γ a
       let t₂ ← atomTy Γ b
-      let t ← some! (joinTy t₁ t₂) "`==` on values of different types"
+      -- Una checked that both sides have one type with equality (#532): a pair F1 cannot join, or
+      -- a type F1 gives no equality, is a reading F1 does not model, not re-checked.
+      let t ← some! (joinTy t₁ t₂) "F1 restriction (`==` on values F1 reads at different types)"
       -- F1 has no `==` on sums (#512): a model restriction, not re-checked, never rejected.
-      need (p.eqIn E t || sumIn p t) "`==` on a type without equality"
+      need (p.eqIn E t || sumIn p t) "F1 restriction (`==` on a type without equality in F1)"
       need (p.eqIn E t) "F1 restriction (`==` on a sum)"
       flowTo p (.bool ((p.deep t₁).join (p.deep t₂))) ann "the result of `==`"
       pure .none
@@ -490,7 +509,7 @@ mutual
       pure .none
     | .toText a => do
       let t ← atomTy Γ a
-      need (p.eqIn E t || sumIn p t) "`to_text` of a value of a type without equality, outside F1"
+      need (p.eqIn E t || sumIn p t) "F1 restriction (`to_text` of a type without equality in F1)"
       need (p.eqIn E t) "F1 restriction (`to_text` of a sum)"
       flowTo p (.text (p.deep t)) ann "the text of a value"
       pure .none

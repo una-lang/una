@@ -28,3 +28,13 @@ pub presence(xs: List[secret Text]) -> Unit
   when h
     is Some(x) -> @log.write("some")
     is None -> unit
+
+pub text_lt(a: Text, b: Text) -> Bool = a < b
+
+pub text_gt(a: Text, b: Text) -> Bool = a > b
+
+pub text_le(a: Text, b: Text) -> Bool = a <= b
+
+pub text_ge(a: Text, b: Text) -> Bool = a >= b
+
+pub int_lt(a: Int, b: Int) -> Bool = a < b
