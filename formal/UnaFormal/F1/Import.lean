@@ -1810,14 +1810,18 @@ def raiseParamJ (accepts t : J) : Option J := do
   pure (t.setObjVal! "label" (Lean.Json.mkObj
     [("level", .str v), ("categories", .arr cs.toArray), ("symbols", .arr #[])]))
 
-/-- The handlers the `with` scopes of a JSON value install, by qualified name (#538). A scope is a
-`with` node with a field besides its kind (a map's `with` operation has none). A source other than
-a rebinding that does not name its handler gives `"?"`, which names no handler of the document
-(fail closed). -/
+/-- The handlers the `with` scopes of a JSON value install, by qualified name (#538). A `with` node
+with exactly `kind`, `cap`, `source` and `body` is a scope; one with its kind alone is a map's
+`with` operation; any other gives `"?"`, as does a scope's source other than a rebinding that does
+not name its handler: `"?"` names no handler of the document, so the document is not read (fail
+closed, #551). -/
 partial def withHandlersIn (j : J) : List String :=
   match j with
   | .obj kvs =>
-    let here := if j.getObjValD "kind" == .str "with" && kvs.size > 1 then
+    let has := fun (k : String) => (j.getObjVal? k).isOk
+    let here := if j.getObjValD "kind" != .str "with" || kvs.size == 1 then []
+      else if !(kvs.size == 4 && has "cap" && has "source" && has "body") then ["?"]
+      else
         let src := j.getObjValD "source"
         if src.getObjValD "kind" == .str "rebind" then []
         else
@@ -1826,7 +1830,6 @@ partial def withHandlersIn (j : J) : List String :=
           match src.getObjValD "kind", h.getObjValD "module", h.getObjValD "name" with
           | .str "handler", .str m, .str n => [(if given then "given:" else "") ++ s!"{m}.{n}"]
           | _, _, _ => ["?"]
-      else []
     here ++ kvs.toArray.toList.flatMap (fun kv => withHandlersIn kv.2)
   | .arr items => items.toList.flatMap withHandlersIn
   | _ => []
@@ -1962,6 +1965,9 @@ def checkDocumentRead (subst : Subst) (doc : J) (caps : Caps := {}) (scopes : Bo
   -- with `given`, and whose handlers invoke no capability read by scopes themselves (a handler that
   -- forwards to an outer one, such as `uses @inner: Log`, keeps #524's reading).
   let installs := withHandlersIn doc
+  -- A `with` node the importer cannot read (#551): no declaration of the document is read.
+  if installs.contains "?" then
+    return code.map fun d => (named d, .notRechecked "a `with` node this importer cannot read")
   -- A `with` or `given` of a handler the document does not declare (Una-1's review of #538):
   -- which capability it installs is unknown, so no declaration of the document is read.
   if installs.any fun q =>
