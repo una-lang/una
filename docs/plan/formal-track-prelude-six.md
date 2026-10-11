@@ -66,7 +66,10 @@ Non-vacuity, in `PreludeExample`:
 
 Result (2026-10-11, on `main` at `198e563c`, after #543):
 - `scripts/formal.sh`: PASS, 341 theorems, no `sorry`.
-- The replay: 42 rejected, 4 more S-04 shapes rejected at the leak (`edit_order_list_of_lists_leak`, `edit_order_list_of_options_leak`, and two through `or_else`'s option), and 3 more reaching the next form F1 lacks (`prelude.at`).
+- The replay: 42 rejected, 4 more S-04 shapes rejected at the leak (S-04: 6 to 10), each until now not re-checked for its call of `prelude.or_else`, approved by the coordinator (N-108):
+  - `edit_order_list_of_lists_leak` and `edit_order_list_of_options_leak`: at their `first`, whose annotation drops the elements' `internal` label, which the check now reaches;
+  - `edit_order_loop_nested_option` and `edit_order_option_of_list_leak`: at `or_else` itself, the option's value flowing into an annotation without the `internal` label;
+  - `edit_order_loop_nested_list`, `edit_order_loop_nested_list_of_options` and `edit_order_loop_nested_result` stay not re-checked, their reason now the next form F1 lacks, `prelude.at`.
 - The corpus, a fresh export of the 1,352 targets: 1,193 to 1,213 accepted lines, none rejected before or after. The 17 synthesized handler lines (#524) are unchanged, so the source headline is 1,176 to 1,196.
 - The 20 flips, all from not re-checked to accepted:
   - 15 in documents `una check` accepts: `wordfreq.initial`, `resolution_tour.largest`, `phones.main`, `edit_moves.main`, the two `main.f` of `edit_order_list_of_lists_accepted` and `edit_order_option_of_list_accepted`, `prelude_result_labels.magnitude` and `smallest`, `main.exists` and `main.probe` of `s14_ok_count_public`, `main.mark` and `main.probe` of `s14_ok_helper_public_call`, `shapesok.prelude_shapes`, `callee_ensures_proven.size`, `variants_share_field_name.measure`;
