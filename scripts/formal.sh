@@ -21,6 +21,9 @@ PATH="$lean_home/bin:$PATH"
 export PATH
 cd "$root/formal"
 
+echo "== restrictions by constructor (#535)"
+"$root/scripts/formal-restrictions.sh"
+
 echo "== lake build"
 lake build
 

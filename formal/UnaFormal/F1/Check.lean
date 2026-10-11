@@ -15,12 +15,32 @@ import UnaFormal.F1.LTyping
 
 namespace Una.F1.Check
 
-/-- A rejection: what failed, in a sentence. -/
-abbrev Result := Except String
+/-- Why the checker refuses (#535): a rejection, a flow the model forbids, or a restriction of
+the model (option B1, ADR 0008, or what F1 does not model, #512), which is not re-checked and never
+rejected. The constructor, not the message's wording, tells them apart (`Import.classify`). -/
+inductive Err where
+  | reject (msg : String)
+  | restriction (msg : String)
+  deriving Repr, BEq
 
-def need (b : Bool) (msg : String) : Result Unit := if b then pure () else throw msg
+/-- What the refusal says, in a sentence. -/
+def Err.msg : Err → String
+  | .reject m | .restriction m => m -- restriction-check: not a site
 
-def some! {α : Type} (o : Option α) (msg : String) : Result α :=
+/-- The same refusal, its message after `s`: a restriction stays one, and a rejection too. -/
+def Err.prefix (s : String) : Err → Err
+  | .reject m => .reject (s ++ m)
+  | .restriction m => .restriction (s ++ m) -- restriction-check: not a site
+
+/-- An unmarked message is a rejection: a restriction is always written as one. -/
+instance : Coe String Err := ⟨.reject⟩
+
+/-- A refusal, or its result. -/
+abbrev Result := Except Err
+
+def need (b : Bool) (msg : Err) : Result Unit := if b then pure () else throw msg
+
+def some! {α : Type} (o : Option α) (msg : Err) : Result α :=
   match o with
   | some a => pure a
   | none => throw msg
@@ -184,8 +204,8 @@ def tyHead : Ty → String
 /-- The reason a primitive's operands are outside F1 (#532). Una checked the operands' types, so
 a primitive F1 has no typing for is an overload F1 does not model, such as `<` on `Text`: a model
 restriction, not re-checked, never rejected, and never read as another overload. -/
-def primRestriction (pr : Prim) (ts : List Ty) : String :=
-  s!"F1 restriction (`{primName pr}` on {", ".intercalate (ts.map tyHead)})"
+def primRestriction (pr : Prim) (ts : List Ty) : Err :=
+  .restriction s!"F1 restriction (`{primName pr}` on {", ".intercalate (ts.map tyHead)})"
 
 def atomTy (Γ : LCtx) : Atom → Result LTy
   | .var x => some! (lctxLookup Γ x) s!"`{x}` is not in scope"
@@ -303,13 +323,14 @@ mutual
       need (boundB p pc (fn.emits p) fn.host fn.fails)
         s!"`{f}` has effects or failures under a program counter above its bound"
       need (relBoundB p pc fn.rels)
-        s!"B1 restriction (call of a declassifying function under a raised pc): `{f}`"
+        (.restriction s!"B1 restriction (call of a declassifying function under a raised pc): `{f}`")
       flowTo p (p.lsub σ fn.result) ann s!"the result of `{f}`"
       pure (.ofCall fn)
     | .invoke f args => do
-      let fn ← some! (p.find f) s!"F1 restriction (no handler `{f}`, a lookup miss)"
-      let acc ← some! (List.lookup f p.ops) s!"F1 restriction (`{f}` is not an operation's handler)"
-      need fn.tparams.isEmpty s!"F1 restriction (a generic handler `{f}`)"
+      let fn ← some! (p.find f) (.restriction s!"F1 restriction (no handler `{f}`, a lookup miss)")
+      let acc ← some! (List.lookup f p.ops)
+        (.restriction s!"F1 restriction (`{f}` is not an operation's handler)")
+      need fn.tparams.isEmpty (.restriction s!"F1 restriction (a generic handler `{f}`)")
       let ts ← atomsTy Γ args
       need (flowsB p.top ts (fn.params.map Prod.snd))
         s!"an argument of the operation `{f}` does not flow into its parameter"
@@ -322,10 +343,13 @@ mutual
       match ← atomTy Γ (.var (markerName o)) with
       | .text lm =>
         le p lm .bot s!"the marker of `{o}` is not public"
-        let f ← some! (List.lookup o p.opRep) s!"F1 restriction (no handler of the operation `{o}`)"
-        let fn ← some! (p.find f) s!"F1 restriction (no handler `{f}`, a lookup miss)"
-        let acc ← some! (List.lookup f p.ops) s!"F1 restriction (`{f}` is not an operation's handler)"
-        need fn.tparams.isEmpty s!"F1 restriction (a generic handler `{f}`)"
+        let f ← some! (List.lookup o p.opRep)
+          (.restriction s!"F1 restriction (no handler of the operation `{o}`)")
+        let fn ← some! (p.find f)
+          (.restriction s!"F1 restriction (no handler `{f}`, a lookup miss)")
+        let acc ← some! (List.lookup f p.ops)
+          (.restriction s!"F1 restriction (`{f}` is not an operation's handler)")
+        need fn.tparams.isEmpty (.restriction s!"F1 restriction (a generic handler `{f}`)")
         let ts ← atomsTy Γ args
         need (flowsB p.top ts (fn.params.map Prod.snd))
           s!"an argument of the operation `{o}` does not flow into its parameter"
@@ -388,13 +412,14 @@ mutual
       flowTo p (.record "prelude.Response" (.ofLabel p.reqResult)) ann "the response"
       pure ⟨false, { rq := true }, some (p.reqFail pc ts), [], true, [], p.reqFail LExpr.bot ts, []⟩
     | .construct record fields => do
-      let rec ← some! (p.record record) s!"F1 restriction (no record `{record}`, a lookup miss)"
+      let rec ← some! (p.record record)
+        (.restriction s!"F1 restriction (no record `{record}`, a lookup miss)")
       need (flowsB p.top (← atomsTy Γ fields) rec.fields)
         s!"a field of `{record}` does not flow into its declared type"
       flowTo p (.record record .bot) ann s!"the `{record}` value"
       pure .none
     | .variant kind ctor fields => do
-      let sm ← some! (p.sum kind) s!"F1 restriction (no sum `{kind}`, a lookup miss)"
+      let sm ← some! (p.sum kind) (.restriction s!"F1 restriction (no sum `{kind}`, a lookup miss)")
       let fs ← some! sm.variants[ctor]? s!"`{kind}` has no variant {ctor}"
       need (flowsB p.top (← atomsTy Γ fields) fs)
         s!"a field of `{kind}` does not flow into its declared type"
@@ -403,7 +428,8 @@ mutual
     | .field value index => do
       match ← atomTy Γ value with
       | .record record l =>
-        let rec ← some! (p.record record) s!"F1 restriction (no record `{record}`, a lookup miss)"
+        let rec ← some! (p.record record)
+          (.restriction s!"F1 restriction (no record `{record}`, a lookup miss)")
         let t ← some! rec.fields[index]? s!"`{record}` has no field {index}"
         flowTo p (t.raise l) ann "the field"
         pure .none
@@ -475,8 +501,9 @@ mutual
         need (params.all (fun q => inPlace q.2)) "`ℓ_T` off a position of type `T`"
         let ε ← checkExpr p E (params ++ Γ) .bot r body
         le p ε.failLabel .bot "a lambda's failure is decided above `public`"
-        need ε.rels.isEmpty "B1 restriction (declassification in a lambda)"
-        need ε.raises.isEmpty "F1 restriction (a lambda that fails with a payload kind)"
+        need ε.rels.isEmpty (.restriction "B1 restriction (declassification in a lambda)")
+        need ε.raises.isEmpty
+          (.restriction "F1 restriction (a lambda that fails with a payload kind)")
         need (flowsB p.top ps (params.map Prod.snd))
           "the declared parameters do not flow into the lambda's"
         need ((!ε.emits p || o) && hostLeB ε.host g && (!ε.fails.isSome || fl))
@@ -485,8 +512,10 @@ mutual
       | _ => throw "a lambda bound at a type that is not a function type"
     | .funRef f targs => do
       let fn ← callable p E f targs
-      need fn.rels.isEmpty s!"B1 restriction (a declassifying function as a value): `{f}`"
-      need fn.raises.isEmpty s!"F1 restriction (a function that fails with a payload kind, as a value): `{f}`"
+      need fn.rels.isEmpty
+        (.restriction s!"B1 restriction (a declassifying function as a value): `{f}`")
+      need fn.raises.isEmpty
+        (.restriction s!"F1 restriction (a function that fails with a payload kind, as a value): `{f}`")
       let σ := fn.tparams.zip targs
       flowTo p (.fn (fn.params.map (fun q => p.lsub σ q.2)) (p.lsub σ fn.result)
         (fn.emits p) fn.host fn.fails .bot) ann s!"`{f}` as a value"
@@ -555,10 +584,12 @@ mutual
       let t₂ ← atomTy Γ b
       -- Una checked that both sides have one type with equality (#532): a pair F1 cannot join, or
       -- a type F1 gives no equality, is a reading F1 does not model, not re-checked.
-      let t ← some! (joinTy t₁ t₂) "F1 restriction (`==` on values F1 reads at different types)"
+      let t ← some! (joinTy t₁ t₂)
+        (.restriction "F1 restriction (`==` on values F1 reads at different types)")
       -- F1 has no `==` on sums (#512): a model restriction, not re-checked, never rejected.
-      need (p.eqIn E t || sumIn p t) "F1 restriction (`==` on a type without equality in F1)"
-      need (p.eqIn E t) "F1 restriction (`==` on a sum)"
+      need (p.eqIn E t || sumIn p t)
+        (.restriction "F1 restriction (`==` on a type without equality in F1)")
+      need (p.eqIn E t) (.restriction "F1 restriction (`==` on a sum)")
       flowTo p (.bool ((p.deep t₁).join (p.deep t₂))) ann "the result of `==`"
       pure .none
     | .tuple items => do
@@ -566,8 +597,9 @@ mutual
       pure .none
     | .toText a => do
       let t ← atomTy Γ a
-      need (p.eqIn E t || sumIn p t) "F1 restriction (`to_text` of a type without equality in F1)"
-      need (p.eqIn E t) "F1 restriction (`to_text` of a sum)"
+      need (p.eqIn E t || sumIn p t)
+        (.restriction "F1 restriction (`to_text` of a type without equality in F1)")
+      need (p.eqIn E t) (.restriction "F1 restriction (`to_text` of a sum)")
       flowTo p (.text (p.deep t)) ann "the text of a value"
       pure .none
     | .envGet name => do
@@ -669,7 +701,7 @@ mutual
       need (inPlace s) "`ℓ_T` off a position of type `T`"
       pure ⟨false, HostFx.none, some .bot, [], true, [], LExpr.bot, []⟩
     | .raise kind code args => do
-      let sm ← some! (p.sum kind) s!"F1 restriction (no sum `{kind}`, a lookup miss)"
+      let sm ← some! (p.sum kind) (.restriction s!"F1 restriction (no sum `{kind}`, a lookup miss)")
       let fs ← some! sm.variants[code]? s!"`{kind}` has no variant {code}"
       need (flowsB p.top (← atomsTy Γ args) fs)
         s!"a field of the failure `{kind}` does not flow into its declared type"
@@ -683,7 +715,8 @@ mutual
     | .caseSum scrutinee ctor binders thenE elseE => do
       match ← atomTy Γ scrutinee with
       | .record kind ls =>
-        let sm ← some! (p.sum kind) s!"F1 restriction (a `case` on variants of `{kind}`, which is not a sum: a lookup miss)"
+        let sm ← some! (p.sum kind)
+          (.restriction s!"F1 restriction (a `case` on variants of `{kind}`, which is not a sum: a lookup miss)")
         let fs ← some! sm.variants[ctor]? s!"`{kind}` has no variant {ctor}"
         need (fs.length == binders.length) s!"a pattern of `{kind}` with the wrong number of fields"
         let Γ' := binders.zip (fs.map (LTy.raise ls)) ++ Γ
@@ -762,9 +795,10 @@ mutual
       match List.lookup f p.handlerOf with
       | some o' =>
         need (o' == o) s!"`{f}` is not a handler of `{o}`"
-        let fn ← some! (p.find f) s!"F1 restriction (no handler `{f}`, a lookup miss)"
+        let fn ← some! (p.find f)
+          (.restriction s!"F1 restriction (no handler `{f}`, a lookup miss)")
         pure (Eff.withOf o fn (← checkExpr p E ((markerName o, .text .bot) :: Γ) pc s body))
-      | none => throw s!"F1 restriction (`{f}` is not a handler)"
+      | none => throw (.restriction s!"F1 restriction (`{f}` is not a handler)")
     | .letTuple binders value body => do
       match ← atomTy Γ value with
       | .tuple ts l =>
@@ -879,17 +913,19 @@ def b1Ok (p : Program) : Bool :=
 is not re-checked, never rejected: `spec/07 §5` requires none of them. -/
 def checkB1 (p : Program) : Result Unit := do
   for po in p.policies do
-    need (isScalar po.src) s!"B1 restriction (non-scalar from): `{po.name}`"
-    need (ground po.dst && isScalar po.dst) s!"B1 restriction (non-scalar to): `{po.name}`"
+    need (isScalar po.src) (.restriction s!"B1 restriction (non-scalar from): `{po.name}`")
+    need (ground po.dst && isScalar po.dst)
+      (.restriction s!"B1 restriction (non-scalar to): `{po.name}`")
     match p.find po.via with
     | some fn =>
       need (!fn.op && fn.host.isNone && exprPureOrFails fn.body && (fn.fails || exprPure fn.body))
-        s!"B1 restriction (impure via): `{po.via}`"
-      need fn.raises.isEmpty s!"B1 restriction (via fails with a payload kind): `{po.via}`"
+        (.restriction s!"B1 restriction (impure via): `{po.via}`")
+      need fn.raises.isEmpty
+        (.restriction s!"B1 restriction (via fails with a payload kind): `{po.via}`")
     | none => throw s!"no `via` function `{po.via}`"
   -- The same test as one Boolean, which the proof of soundness reads (`checkB1_sound`); the loop
   -- above gives each restriction its own message.
-  need (b1Ok p) "B1 restriction"
+  need (b1Ok p) (.restriction "B1 restriction")
 
 /-- The parts of `Program.LWellFormed` about records and policies. -/
 def checkDecls (p : Program) : Result Unit := do

@@ -1395,13 +1395,13 @@ def preludeF1 : List String :=
     "prelude.sum", "prelude.append", "prelude.set", "prelude.first", "prelude.or_else",
     "prelude.is_ok", "prelude.abs", "prelude.min", "prelude.max", "prelude.slice", "prelude.at"]
 
-/-- A rejection by a restriction of option B1 is not a flow the model forbids: the program is
-outside B1, so it is not re-checked (ADR 0008). So is one by a form Una has and F1 does not
-model, marked `F1 restriction` (#512): `==` on a sum, a function value that fails with a payload. -/
-def classify (why : String) : Outcome :=
-  if (why.splitOn "B1 restriction").length > 1 || (why.splitOn "F1 restriction").length > 1 then
-    .notRechecked why
-  else .rejected why
+/-- A refusal by a restriction of option B1 is not a flow the model forbids: the program is
+outside B1, so it is not re-checked (ADR 0008). So is one by a form Una has and F1 does not model
+(#512): `==` on a sum, a function value that fails with a payload. The checker says which by the
+constructor of its refusal (`Check.Err`, #535), never by its wording. -/
+def classify : Check.Err → Outcome
+  | .restriction why => .notRechecked why -- restriction-check: not a site
+  | .reject why => .rejected why
 
 /-- The key of an instance: its type arguments, written. -/
 def instKey (ts : List LTy) : String := ", ".intercalate (ts.map Check.fmtTy)
@@ -2147,7 +2147,8 @@ def checkDocumentRead (subst : Subst) (doc : J) (caps : Caps := {}) (scopes : Bo
         let inst := Check.instantiate (subst rd) pr.fn ts s!"{f}[{", ".intercalate key}]"
         let outcome := match checkWith cats hl recs sms opsAcc pr inst handlerOf opHandlers with
           | .ok () => Outcome.accepted ""
-          | .error why => classify s!"at its instance `{inst.name}`, instantiated in `{origin}`: {why}"
+          | .error why =>
+            classify (why.prefix s!"at its instance `{inst.name}`, instantiated in `{origin}`: ")
         results := results ++ [(f, outcome)]
         instFuns := instFuns ++ [(f, inst)]
         for (g, us) in Check.Expr.genericCalls inst.body do
@@ -2290,7 +2291,7 @@ def checkDocumentRead (subst : Subst) (doc : J) (caps : Caps := {}) (scopes : Bo
         if Check.progFunOk cond P pr.fn then none
         else
           let why := match Check.checkFun P pr.fn with
-            | .error e => e
+            | .error e => e.msg
             | .ok () => "its signature"
           some (f, s!"whole program: {why}")
       | none => some (f, "whole program: not read")

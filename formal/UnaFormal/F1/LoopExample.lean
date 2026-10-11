@@ -147,7 +147,7 @@ theorem public_count_untyped {E : List String} {t : LTy} {ε : Eff} :
 
 def why : Check.Result Eff → String
   | .ok _ => "ok"
-  | .error m => m
+  | .error m => m.msg
 
 def okB : Check.Result Eff → Bool
   | .ok _ => true
