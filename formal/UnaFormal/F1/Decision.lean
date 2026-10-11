@@ -220,7 +220,7 @@ mutual
     | _, _, _, _, _, _, .fail hle _ _ => Eff.dlOk_leaf hle (LExpr.bot_le _)
     | _, _, _, _, _, _, .raise _ _ _ _ hle _ _ => Eff.dlOk_leaf hle (LExpr.bot_le _)
     | _, _, _, _, _, _, .unreachable _ => Eff.dlOk_none
-    | _, _, _, _, _, _, .withH _ hb => LExprTy.dlOk hb
+    | _, _, _, _, _, _, .withH _ _ hb => ⟨(LExprTy.dlOk hb).1, (LExprTy.dlOk hb).2⟩
     | _, _, _, _, _, _, .caseSum _ _ _ _ ht he _ _ _ =>
       (Eff.DlOk.decide (Eff.DlOk.union (LExprTy.dlOk ht) (LExprTy.dlOk he) (LExpr.le_refl _))
         (LExpr.le_join_right _ _)).mono (LExpr.le_join_left _ _)

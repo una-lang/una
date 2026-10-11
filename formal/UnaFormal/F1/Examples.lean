@@ -56,7 +56,7 @@ the type argument's own labels. -/
 theorem pick_ok : prog.FunOk pick := by
   refine ⟨.var "T" (lT.join .bot),
     ⟨false || false, HostFx.none.or HostFx.none, Option.none, [] ++ [], false || false, [] ++ [], LExpr.bot.join LExpr.bot, [] ++ []⟩,
-    ?_, .var lT_join_le, by simp, ⟨id, id, id⟩, by simp, ?_, by simp, by simp, by simp⟩
+    ?_, .var lT_join_le, by simp [Eff.emits], ⟨id, id, id⟩, by simp, ?_, by simp, by simp, by simp⟩
   · have hthen : LExprTy prog [] [("a", .var "T" lT), ("b", .var "T" lT), ("c", .bool .bot)]
         (LExpr.bot.join .bot) (.atom (.var "a")) (.var "T" lT) .none :=
       .atom (.var rfl)

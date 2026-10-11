@@ -58,7 +58,7 @@ mutual
         p.le ε.failLabel .bot → ε.rels = [] → ε.raises = [] →
         Flows p.top ps ((params.map Prod.snd).map (LTy.lsubst p.recordDeep σ)) →
         Flow p.top (t.lsubst p.recordDeep σ) r →
-        (ε.op = true → o = true) → HostFx.Le ε.host g → (ε.fails.isSome = true → f = true) →
+        (ε.emits p = true → o = true) → HostFx.Le ε.host g → (ε.fails.isSome = true → f = true) →
         LValTy p (.closure params body env) (.fn ps r o g f l)
     | tuple {items ts l} : LValsTy p items ts → LValTy p (.tuple items) (.tuple ts l)
 
@@ -437,7 +437,7 @@ def FnAllowed (o : Bool) (g : HostFx) : Event → Prop
 are allowed, and so is its failure. -/
 theorem bound_allowed {pc pc' : LExpr} {o : Bool} {g : HostFx} {f : Bool} (hb : p.Bound pc' o g f)
     (hpc : p.le pc pc') : ∀ ev, FnAllowed o g ev → Allowed p pc (Eff.ofFn o g f) ev
-  | .out _, h => ⟨h, LExpr.le_trans hpc (hb.1 h).1⟩
+  | .out _, h => ⟨by simpa [Eff.emits, Eff.ofFn, FnAllowed] using h, LExpr.le_trans hpc (hb.1 h).1⟩
   | .read _, h => ⟨h, LExpr.le_trans hpc (hb.2.1 h).1⟩
   | .write _ _, h => ⟨h, LExpr.le_trans hpc (hb.2.2.1 h).1, fun ho => LExpr.le_trans hpc ((hb.2.2.1 h).2.1 ho)⟩
   | .req _ _, h => ⟨h.1, LExpr.le_trans hpc (hb.2.2.2.1 h.1).1, h.2⟩

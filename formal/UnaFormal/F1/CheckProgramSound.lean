@@ -261,9 +261,9 @@ theorem progOk_sound {cond : List String} {p : Program} (h : progOk cond p = tru
     · rename_i fn hfn
       simp only [Bool.and_eq_true, List.isEmpty_iff, Bool.not_eq_true', List.all_eq_true,
         Bool.or_eq_true, HostFx.isNone] at h
-      obtain ⟨⟨⟨⟨⟨htp, hrels⟩, ⟨⟨hrd, hwr⟩, hrq⟩⟩, hop⟩, hsc⟩, hnv⟩ := h
+      obtain ⟨⟨⟨⟨⟨⟨htp, hrels⟩, ⟨⟨hrd, hwr⟩, hrq⟩⟩, hop⟩, hsc⟩, hnv⟩, hinv⟩ := h
       refine ⟨fn, hfn, htp, hrels, ?_, fun ho => ?_, fun r hr => isScalar_sound (hsc r hr),
-        isVia_false hnv⟩
+        isVia_false hnv, hinv⟩
       · have hn : ∀ g : HostFx, g.rd = false → g.wr = false → g.rq = false → g = HostFx.none := by
           rintro ⟨_, _, _⟩ h1 h2 h3
           simp only at h1 h2 h3
@@ -347,7 +347,7 @@ mutual
       subst hg
       cases h with
       | invoke hf hacc =>
-        obtain ⟨fn', hf', _, _, _, _, _, hnv⟩ := hwf.ops _ (lookup_some_mem hacc)
+        obtain ⟨fn', hf', _, _, _, _, _, hnv, _⟩ := hwf.ops _ (lookup_some_mem hacc)
         exact ⟨_, hf, found_funOk hwf hf hnv⟩
     | .lambda _ b, _, _, _, _, h, g, hg => by
       simp only [Rhs.callees] at hg
@@ -380,7 +380,7 @@ mutual
     | .withH _ _ b, _, _, _, _, h, g, hg => by
       simp only [Expr.callees] at hg
       cases h with
-      | withH _ hb => exact expr_reach hwf b hb g hg
+      | withH _ _ hb => exact expr_reach hwf b hb g hg
     | .letR _ _ v b, _, _, _, _, h, g, hg => by
       simp only [Expr.callees, List.mem_append] at hg
       cases h with

@@ -804,7 +804,7 @@ structure Program.LWellFormed (p : Program) : Prop where
   parameters raised by `accepts`, is `funs`'s. -/
   ops : ∀ q ∈ p.ops, ∃ fn, p.find q.1 = some fn ∧ fn.tparams = [] ∧ fn.rels = [] ∧
     fn.host = HostFx.none ∧ (fn.op = true → p.le (.ofLabel q.2) (.ofLabel p.acceptsOp)) ∧
-    (∀ r ∈ fn.params, r.2.erase.Scalar) ∧ ¬ p.IsVia q.1
+    (∀ r ∈ fn.params, r.2.erase.Scalar) ∧ ¬ p.IsVia q.1 ∧ fn.invokes = []
   /-- Every handler an invocation of an operation can run (#538) is a handler of the program
   (`ops`, so under the floor) with the operation's signature and `accepts`: its representative's. -/
   handlers : ∀ o f, List.lookup o p.opRep = some f → List.lookup f p.handlerOf = some o ∧

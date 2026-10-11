@@ -295,7 +295,7 @@ mutual
       rw [← Flows.erase hflows] at h
       exact .raise hs (by simp [Sum.fieldTys, hf]) h
     | _, _, _, _, _, .unreachable _ => .unreachable
-    | _, _, _, _, _, .withH _ hb => .withH (LExprTy.toStruct hb)
+    | _, _, _, _, _, .withH _ _ hb => .withH (LExprTy.toStruct hb)
     | _, _, _, _, _, .caseSum hs hsm hf hlen hth hel h₁ h₂ _ => by
       have hth' := LExprTy.toStruct hth
       have hel' := LExprTy.toStruct hel

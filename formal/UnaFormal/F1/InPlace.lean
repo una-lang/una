@@ -527,11 +527,12 @@ mutual
     | _, _, _, _, _, _, _, _, .fail _ _ hs => ⟨hs, fun _ h => by simp at h; subst h; rfl, LExpr.plainFree_bot⟩
     | _, _, _, _, _, _, _, _, .raise _ _ _ _ _ _ hs => ⟨hs, fun _ h => by simp at h; subst h; rfl, LExpr.plainFree_bot⟩
     | _, _, _, _, _, _, _, _, .unreachable hs => ⟨hs, Eff.plainFree_none⟩
-    | _, Γ, _, _, _, _, hΓ, hpc, .withH (o := o) _ hb =>
-      LExprTy.inPlace hwf (Γ := (markerName o, .text .bot) :: Γ) (fun q hq => by
+    | _, Γ, _, _, _, _, hΓ, hpc, .withH (o := o) _ _ hb => by
+      have h := LExprTy.inPlace hwf (Γ := (markerName o, .text .bot) :: Γ) (fun q hq => by
           rcases List.mem_cons.mp hq with rfl | hq
           · rfl
           · exact hΓ q hq) hpc hb
+      exact ⟨h.1, h.2.1, h.2.2⟩
     | _, Γ, _, _, _, _, hΓ, hpc, .caseSum (binders := xs) (fs := fs) (ls := ls) hsc hsm hf _ hth hel _ _ hs => by
       have hl := latom_inPlace hΓ hsc
       simp only [LTy.InPlace] at hl

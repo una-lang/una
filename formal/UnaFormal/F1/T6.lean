@@ -612,7 +612,7 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
         -- An invocation runs its handler as a call does (#524). The handler's body is related at
         -- `⊥`, its failure decided there; under a hidden program counter the run is confined by
         -- the unary half and the effect floor (`invoke_allowed_inst`).
-        obtain ⟨fn', hf', _, _, _, _, _, hnv⟩ := hwf.ops _ (lookup_some_mem hacc)
+        obtain ⟨fn', hf', _, _, _, _, _, hnv, _⟩ := hwf.ops _ (lookup_some_mem hacc)
         rw [hf] at hf'
         cases hf'
         obtain ⟨tb, εb, hbody, hflow, _, _, _, hfail, _⟩ := funOk_of_nvia hwf hnv hf
@@ -666,12 +666,12 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
         simp only [evalAtom] at hm₁ hm₂
         obtain ⟨fn, acc', hf, hacc', _, hpfl, hres', hfails, hraises, htp', hop'⟩ :=
           handlerFor_lawful hwf hr hf₀ hacc (some m₁)
-        have heff : Eff.ofInvoke pc fn₀ = Eff.ofInvoke pc fn := by
-          simp [Eff.ofInvoke, hfails, hraises, hop']
+        have heff : Eff.ofInvokeOp pc fn₀ o = Eff.ofInvokeOp pc fn o := by
+          simp [Eff.ofInvokeOp, Eff.ofInvoke, hfails, hraises]
         rw [heff]
         have htp : fn.tparams = [] := htp'.trans htp₀
         have hfl := Flows.trans hfl₀ hpfl
-        obtain ⟨fn', hf', _, _, _, _, _, hnv⟩ := hwf.ops _ (lookup_some_mem hacc')
+        obtain ⟨fn', hf', _, _, _, _, _, hnv, _⟩ := hwf.ops _ (lookup_some_mem hacc')
         rw [hf] at hf'
         cases hf'
         obtain ⟨tb, εb, hbody, hflow, _, _, _, hfail, _⟩ := funOk_of_nvia hwf hnv hf
@@ -1691,10 +1691,13 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
         refine BRelR.of_brel ?_
         intro ht
         simp [eval, Term] at ht
-      | withH _ hb =>
-        -- Both runs bind the same marker, the handler `f` (#538).
+      | @withH _ _ o f fn body t ε _ _ hb =>
+        -- Both runs bind the same marker, the handler `f` (#538); the scope keeps the body's
+        -- decision label (`Eff.withOf`).
         simp only [eval]
-        exact ihE hσ hE (hcons (u := .text .bot) rfl) hpc hw (.cons .text he₁) (.cons .text he₂) (.cons .text hrel) hb
+        refine BRelR.mono (vf := Vis p L (ε.inst (p.sd σ)).dl) (fun _ _ h => h) id ?_
+        exact ihE hσ hE (hcons (u := .text .bot) rfl) hpc hw (.cons .text he₁) (.cons .text he₂)
+          (.cons .text hrel) hb
       | @caseSum _ _ scr kind ctor binders thenE elseE ls sm fs t₁ t₂ s ε₁ ε₂ hsc hsm hf hlen hth hel h₁ h₂ _ =>
         obtain ⟨c₁, c₂, hc₁, hc₂, hcv, hcu₁, hcu₂⟩ := latom_bothσ he₁ he₂ hrel hsc
         have hsi : ls.PlainFree := latom_inPlace hΓ hsc

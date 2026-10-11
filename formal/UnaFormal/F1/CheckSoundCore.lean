@@ -351,11 +351,11 @@ mutual
       simp only [checkExpr] at h
       split at h
       · rename_i o' hl
-        simp only [bind_ok, need_ok, beq_iff_eq] at h
-        obtain ⟨_, heq, h⟩ := h
+        simp only [bind_ok, need_ok, beq_iff_eq, some_ok, pure_ok] at h
+        obtain ⟨_, heq, fn, hfn, ε', h, rfl⟩ := h
         subst heq
         obtain ⟨t, ht, hft⟩ := checkExpr_sound h
-        exact ⟨t, .withH hl ht, hft⟩
+        exact ⟨t, .withH hl hfn ht, hft⟩
       · simp at h
     | .caseSum scrutinee ctor binders thenE elseE, ε, h => by
       simp only [checkExpr, bind_ok] at h
