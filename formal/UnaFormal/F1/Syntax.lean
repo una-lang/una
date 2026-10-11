@@ -155,6 +155,8 @@ mutual
     | some (value : Atom)
     /-- `first(xs)` (#532): the head of a list, as an option. -/
     | first (list : Atom)
+    /-- `at(xs, index)` (#545): the element at an index, as an option. -/
+    | elemAt (list index : Atom)
     /-- `or_else(o, default)` (#542): the option's value, or the default. -/
     | orElse (option default : Atom)
     /-- `is_ok(r)` (#542): whether a result is `Ok`. -/

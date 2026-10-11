@@ -425,6 +425,12 @@ mutual
         flowTo p (.bool l) ann "the result of `is_ok`"
         pure .none
       | _ => throw "`is_ok` of a value that is not a result"
+    | .elemAt xs i => do
+      match ← atomTy Γ xs, ← atomTy Γ i with
+      | .list t lx, .int li =>
+        flowTo p (.option t (lx.join li)) ann "the element at an index"
+        pure .none
+      | _, _ => throw "`at` of a value that is not a list, or at an index that is not an integer"
     | .first a => do
       match ← atomTy Γ a with
       | .list t l =>
@@ -801,7 +807,7 @@ def checkSignature (fn : Fun) : Result Unit := do
 mutual
   /-- `Rhs.Pure`. -/
   def rhsPure : Rhs → Bool
-    | .atom _ | .prim _ _ | .construct _ _ | .field _ _ | .list _ | .none | .some _ | .first _
+    | .atom _ | .prim _ _ | .construct _ _ | .field _ _ | .list _ | .none | .some _ | .first _ | .elemAt _ _
     | .orElse _ _ | .isOk _ | .mkOk _
     | .mkErr _ | .eq _ _ | .variant _ _ _
     | .lambda _ _ | .funRef _ _ => true

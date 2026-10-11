@@ -118,6 +118,7 @@ mutual
     | none {ctx t} : RhsTy p ctx .none (.option t)
     | some {ctx a t} : AtomTy ctx a t → RhsTy p ctx (.some a) (.option t)
     | first {ctx a t} : AtomTy ctx a (.list t) → RhsTy p ctx (.first a) (.option t)
+    | elemAt {ctx xs i t} : AtomTy ctx xs (.list t) → AtomTy ctx i .int → RhsTy p ctx (.elemAt xs i) (.option t)
     | orElse {ctx o d t} : AtomTy ctx o (.option t) → AtomTy ctx d t → RhsTy p ctx (.orElse o d) t
     | isOk {ctx r t e} : AtomTy ctx r (.result t e) → RhsTy p ctx (.isOk r) .bool
     | mkOk {ctx a t e} : AtomTy ctx a t → RhsTy p ctx (.mkOk a) (.result t e)

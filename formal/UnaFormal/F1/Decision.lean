@@ -163,6 +163,7 @@ mutual
     | _, _, _, _, _, _, .none _ => Eff.dlOk_none
     | _, _, _, _, _, _, .some _ => Eff.dlOk_none
     | _, _, _, _, _, _, .first _ => Eff.dlOk_none
+    | _, _, _, _, _, _, .elemAt _ _ => Eff.dlOk_none
     | _, _, _, _, _, _, .orElse _ _ _ _ _ => Eff.dlOk_none
     | _, _, _, _, _, _, .isOk _ => Eff.dlOk_none
     | _, _, _, _, _, _, .mkOk _ _ => Eff.dlOk_none

@@ -346,3 +346,14 @@ import UnaFormal
 #print axioms Una.F1.PreludeExample.public_runs
 #print axioms Una.F1.PreludeExample.slice_out_of_range_aborts
 #print axioms Una.F1.PreludeExample.slice_scalars
+#print axioms Una.F1.AtExample.certified
+#print axioms Una.F1.AtExample.same_lines
+#print axioms Una.F1.AtExample.presence_checked
+#print axioms Una.F1.AtExample.presence_runs
+#print axioms Una.F1.AtExample.elem_rejected
+#print axioms Una.F1.AtExample.elem_leaks
+#print axioms Una.F1.AtExample.elem_untyped
+#print axioms Una.F1.AtExample.index_rejected
+#print axioms Una.F1.AtExample.index_leaks
+#print axioms Una.F1.AtExample.index_untyped
+#print axioms Una.F1.AtExample.at_out_of_range

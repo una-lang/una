@@ -170,6 +170,7 @@ mutual
     | _, _, _, _, _, .none _ => .none
     | _, _, _, _, _, .some h => .some (latom_erase h)
     | _, _, _, _, _, .first h => .first (latom_erase h)
+    | _, _, _, _, _, .elemAt h₁ h₂ => .elemAt (latom_erase h₁) (latom_erase h₂)
     | _, _, _, _, _, .orElse ho hd hf₁ hf₂ _ => by
       have h₁ := latom_erase ho
       have h₂ := latom_erase hd

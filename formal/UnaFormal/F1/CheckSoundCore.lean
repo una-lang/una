@@ -126,6 +126,14 @@ mutual
       simp only [bind_ok, pure_ok] at h
       obtain ⟨_, hf, rfl⟩ := h
       exact ⟨_, .isOk (atomTy_sound hrt), flowTo_ok hf⟩
+    | .elemAt xs i, ε, h => by
+      simp only [checkRhs, bind_ok] at h
+      obtain ⟨xt, hxt, it, hit, h⟩ := h
+      cases xt <;> try (simp at h; done)
+      cases it <;> try (simp at h; done)
+      simp only [bind_ok, pure_ok] at h
+      obtain ⟨_, hf, rfl⟩ := h
+      exact ⟨_, .elemAt (atomTy_sound hxt) (atomTy_sound hit), flowTo_ok hf⟩
     | .first a, ε, h => by
       simp only [checkRhs, bind_ok] at h
       obtain ⟨xt, hxt, h⟩ := h
