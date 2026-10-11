@@ -65,8 +65,9 @@ class Generators(unittest.TestCase):
         self.assertEqual(len(seen["T8"]), 6)
         self.assertEqual(len(seen["H1"]), 8)
         self.assertEqual(len(seen["H4"]), 3)
-        self.assertEqual(len(seen["K2"]), 6)
+        self.assertEqual(len(seen["K2"]), 5)
         self.assertEqual(len(seen["K4"]), 3)
+        self.assertFalse(any(p.edition == "0.1" and p.op == "K4" and p.variant == "record" for p in every_program()))
 
     def test_keys_programs_that_run_carry_their_key_file(self):
         for p in every_program():
@@ -107,6 +108,24 @@ class Generators(unittest.TestCase):
                                  pos["literal"])
                 self.assertIn("[run]", p.files["una.toml"])
         self.assertGreater(found, 0)
+
+    def test_h5_rejects_only_a_failure_passed_under_a_secret_pc(self):
+        # Campaign 2's triage: a failure handled inside the secret branch never leaves it.
+        for p in every_program(80):
+            if p.op != "H5":
+                continue
+            self.assertEqual(p.cls, MUST_REJECT if p.variant == "pc-secret-pass" else OPEN,
+                             p.variant)
+
+    def test_no_generator_writes_a_shape_campaign_2_found_ill_formed(self):
+        for p in every_program():
+            text = "\n".join(v for k, v in p.files.items() if k.endswith(".una"))
+            self.assertNotIn("to_text()", text, p.name)
+            self.assertNotIn('\\"', text, p.name)
+            for line in text.split("\n"):
+                if "@keys.hmac(" in line or "@inner.hmac(" in line:
+                    i = text.split("\n").index(line)
+                    self.assertIn("if error pass", text.split("\n")[i + 1], p.name)
 
     def test_t11_class_follows_the_failure_label(self):
         for p in every_program(80):

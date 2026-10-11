@@ -84,8 +84,10 @@ def h3(seed, edition):
     if form == "install-under-pc":
         main = ("pub main() -> Unit\n  uses @console: Console[print]\n=\n"
                 f"  let s: secret Bool = {lit}\n"
-                "  if s\n    work(1) with @vault = quiet()\n  else\n    unit\n"
+                "  guarded(s)\n"
                 '  @console.print("done")')
+        work += ("\n\nguarded(flag: secret Bool) -> Unit\n=\n"
+                 "  if flag\n    work(1) with @vault = quiet()\n  else\n    unit")
     else:
         main = ("pub main() -> Unit\n  uses @console: Console[print]\n=\n"
                 f"  let s: secret Bool = {lit}\n"
@@ -107,10 +109,9 @@ def h4(seed, edition):
         text = join_decls(
             header(MOD),
             "handler loud_keys() for Keys\n  uses @console: Console[print]\n"
-            "  uses @inner: Keys[hmac]\n  op hmac(key_name, data) = relay(key_name, data)",
-            "relay(k: Text, d: Text) -> internal Hashed\n  uses @console: Console[print]\n"
-            "  uses @inner: Keys[hmac]\n  fails KeyError\n=\n"
-            "  @console.print(d)\n  @inner.hmac(key_name: k, data: d)")
+            "  uses @inner: Keys[hmac]\n  op hmac(key_name, data) =\n"
+            "    @console.print(data)\n    @inner.hmac(key_name: key_name, data: data)\n"
+            "      if error pass")
         expect = ["U4003"]
     elif form == "keys-return-data-public":
         text = join_decls(
@@ -147,8 +148,13 @@ def h5(seed, edition):
     else:
         body = call.replace("\n", "\n  ")
         fn = (f"pub knock(flag: secret Bool) {sig}\n=\n  if flag\n    {body}\n  else\n    unit")
-        cls = MUST_REJECT
-        expect = ["U4002"]
+        # Only `pass` hands the failure to the caller under the secret program counter (U4002); a
+        # failure that `attempt` or `if error use` handles inside the branch never leaves it, and
+        # the call itself is allowed since the operation accepts `secret` (campaign 2's triage).
+        if clause == "pass":
+            cls, expect = MUST_REJECT, ["U4002"]
+        else:
+            cls, expect = OPEN, []
     text = join_decls(header(MOD), kinds, cap, handler, fn)
     return _make("H5", "spec/07 §3 rule 3, §7 rule 4", edition, seed, cls, text, expect,
                  variant=f"pc-{pc}-{clause}")
