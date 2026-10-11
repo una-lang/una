@@ -67,7 +67,8 @@ class Generators(unittest.TestCase):
         self.assertEqual(len(seen["H4"]), 3)
         self.assertEqual(len(seen["K2"]), 5)
         self.assertEqual(len(seen["K4"]), 3)
-        self.assertFalse(any(p.edition == "0.1" and p.op == "K4" and p.variant == "record" for p in every_program()))
+        self.assertFalse(any(p.edition == "0.1" and p.op == "K4" and p.variant != "text"
+                             for p in every_program()))
 
     def test_keys_programs_that_run_carry_their_key_file(self):
         for p in every_program():

@@ -92,8 +92,8 @@ def k3(seed, edition):
 # K4. Deep labels in `data`, run by the oracle with the key material varied (V-host).
 def k4(seed, edition):
     rng = rng_for(seed)
-    # Interpolating a record is edition 0.2 only (campaign 2 met U2001 in 0.1).
-    form = rng.choice(["record", "list", "text"] if edition == "0.2" else ["list", "text"])
+    # Edition 0.1 interpolates only `Int`, `Bool` and `Text` (U2001 in campaigns 2 and 3).
+    form = rng.choice(["record", "list", "text"] if edition == "0.2" else ["text"])
     v = Varied()
     lit = v.lit("Text", "secret[PII]", '"0612345678"')
     kinds = "kind Card\n  holder: Text\n  number: secret[PII] Text"
