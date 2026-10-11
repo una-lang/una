@@ -23,6 +23,7 @@ import UnaFormal.F1.Import
 import UnaFormal.F1.CheckTests
 import UnaFormal.F1.ImportTests
 import UnaFormal.F1.SumImportTests
+import UnaFormal.F1.FirstImportTests
 import UnaFormal.F1.Release
 import UnaFormal.F1.ReleaseExample
 import UnaFormal.F1.CheckSound
@@ -50,5 +51,6 @@ import UnaFormal.F1.ResultExample
 import UnaFormal.F1.RecordExample
 import UnaFormal.F1.ArithExample
 import UnaFormal.F1.SumExample
+import UnaFormal.F1.FirstExample
 import UnaFormal.F1.LoopLeak
 import UnaFormal.F1.LoopExample

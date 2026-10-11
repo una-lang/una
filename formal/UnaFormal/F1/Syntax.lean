@@ -143,6 +143,8 @@ mutual
     | list (items : List Atom)
     | none
     | some (value : Atom)
+    /-- `first(xs)` (#532): the head of a list, as an option. -/
+    | first (list : Atom)
     /-- `Ok(a)` and `Err(a)`, a result built directly (#508). -/
     | mkOk (value : Atom)
     | mkErr (value : Atom)

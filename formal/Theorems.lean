@@ -288,3 +288,11 @@ import UnaFormal
 #print axioms Una.F1.SumExample.exhaustive_runs
 #print axioms Una.F1.SumExample.payload_related
 #print axioms Una.F1.SumExample.payload_public_differs
+#print axioms Una.F1.FirstExample.certified
+#print axioms Una.F1.FirstExample.same_lines
+#print axioms Una.F1.FirstExample.presence_checked
+#print axioms Una.F1.FirstExample.presence_runs
+#print axioms Una.F1.FirstExample.head_rejected
+#print axioms Una.F1.FirstExample.head_leaks
+#print axioms Una.F1.FirstExample.head_untyped
+#print axioms Una.F1.FirstExample.first_empty

@@ -423,6 +423,11 @@ mutual
       | .list items => ([], ((evalAtoms env items).map Val.list).elim .stuck .ok, w)
       | .none => done w .none
       | .some a => ([], ((evalAtom env a).map Val.some).elim .stuck .ok, w)
+      | .first a =>
+        match evalAtom env a with
+        | some (.list (v :: _)) => done w (.some v)
+        | some (.list []) => done w .none
+        | _ => stuck w
       | .mkOk a => ([], ((evalAtom env a).map Val.ok).elim .stuck .ok, w)
       | .mkErr a => ([], ((evalAtom env a).map Val.err).elim .stuck .ok, w)
       | .lambda params body => done w (.closure params body env)

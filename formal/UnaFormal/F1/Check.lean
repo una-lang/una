@@ -375,6 +375,12 @@ mutual
     | .some a => do
       flowTo p (.option (← atomTy Γ a) .bot) ann "the option"
       pure .none
+    | .first a => do
+      match ← atomTy Γ a with
+      | .list t l =>
+        flowTo p (.option t l) ann "the first element"
+        pure .none
+      | _ => throw "`first` of a value that is not a list"
     | .mkOk a => do
       match ann with
       | .result _ e _ =>
@@ -743,7 +749,7 @@ def checkSignature (fn : Fun) : Result Unit := do
 mutual
   /-- `Rhs.Pure`. -/
   def rhsPure : Rhs → Bool
-    | .atom _ | .prim _ _ | .construct _ _ | .field _ _ | .list _ | .none | .some _ | .mkOk _
+    | .atom _ | .prim _ _ | .construct _ _ | .field _ _ | .list _ | .none | .some _ | .first _ | .mkOk _
     | .mkErr _ | .eq _ _ | .variant _ _ _
     | .lambda _ _ | .funRef _ _ => true
     | _ => false

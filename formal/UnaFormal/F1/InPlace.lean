@@ -355,6 +355,9 @@ mutual
     | _, _, _, _, _, _, _, _, .list _ _ ht => ⟨⟨ht, rfl⟩, Eff.plainFree_none⟩
     | _, _, _, _, _, _, _, _, .none ht => ⟨⟨ht, rfl⟩, Eff.plainFree_none⟩
     | _, _, _, _, _, _, hΓ, _, .some ha => ⟨⟨latom_inPlace hΓ ha, rfl⟩, Eff.plainFree_none⟩
+    | _, _, _, _, _, _, hΓ, _, .first ha => by
+      have h := latom_inPlace hΓ ha
+      exact ⟨h, Eff.plainFree_none⟩
     | _, _, _, _, _, _, hΓ, _, .mkOk ha he => ⟨⟨latom_inPlace hΓ ha, he, rfl⟩, Eff.plainFree_none⟩
     | _, _, _, _, _, _, hΓ, _, .mkErr ha ht => ⟨⟨ht, latom_inPlace hΓ ha, rfl⟩, Eff.plainFree_none⟩
     | _, Γ, _, _, _, _, hΓ, _, .lambda (params := params) hb _ _ _ hps => by

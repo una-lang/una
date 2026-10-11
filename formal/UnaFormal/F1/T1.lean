@@ -277,6 +277,13 @@ theorem sound (hwf : p.WellFormed) (h4 : H.RespTyped) : ∀ n : Nat,
         obtain ⟨v, hv, hvt⟩ := atom_typed henv ha
         simp [evalRhs, hv, Good]
         exact .some hvt
+      | first ha =>
+        obtain ⟨v, hv, hvt⟩ := atom_typed henv ha
+        cases hvt with
+        | @list items _ hall =>
+          cases items with
+          | nil => simp [evalRhs, hv, Good]; exact .none
+          | cons x xs => simp [evalRhs, hv, Good]; exact .some (hall x (by simp))
       | mkOk ha =>
         obtain ⟨v, hv, hvt⟩ := atom_typed henv ha
         simp [evalRhs, hv, Good]
