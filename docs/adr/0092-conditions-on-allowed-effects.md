@@ -5,7 +5,7 @@
 - Deciders: Una project (pending acceptance)
 - Resolves: issue #520, part A ("when an allowed operation runs"). Parts B and C are ADR 0093 and ADR 0094.
 - Target: edition `0.3`. Editions `0.1` and `0.2` keep today's rules, and the Gate 1 pin (v0.1.9, edition `0.1`) does not move.
-- Amends, once accepted: `spec/02 §3`, `§4`, `spec/05 §3`, `§9`, `spec/12 §3`, `spec/13 §3`
+- Amends, once accepted: `spec/02 §3`, `§4`, `spec/05 §3`, `§9`, `spec/12 §3`, `spec/13 §3`, `§4`, `§7`
 
 ## Context
 
@@ -75,7 +75,9 @@ A capability says which operations a function may perform (`spec/05 §3`). B06's
      cap_op   = lower_ident [ "gives" label ] [ "where" line_expr ] ;
      ```
 
-     `cap_type` holds no type, only operation names (`spec/02 §3`), and a refined type's `where` appears only in a `kind` alias (`alias_body`). So `where` inside the brackets is always an operation's condition and never a refinement. The condition ends at the first `,` or `]` at bracket depth 0. An expression has no top-level comma, and a list literal or call inside it nests its own brackets and parentheses.
+     `cap_type` holds no type, only operation names (`spec/02 §3`), and a refined type's `where` appears only in a `kind` alias (`alias_body`). So `where` inside the brackets is always an operation's condition and never a refinement.
+     - **Delimiting.** A `cap_op` ends at the first `,` or `]` at bracket and parenthesis depth 0. Every nested `,`, `[ ]` or `( )` belongs to the label or the expression that holds it: a call `ok(a, b)`, a list literal `[1, 2]`, and a label `gives internal[A, B]`. An expression has no top-level comma.
+     - **`it` is out of scope** in an operation's condition, which speaks of the function's parameters and has no value to refine. Using it is U2013, the code for `it` outside a refinement, with the message "`it` names no value in an operation's condition".
 
 2. **Meaning.** Every performance of a conditioned operation through the binding happens only where the condition holds of the function's arguments. Parameters are immutable, so the condition's value is fixed for the whole call.
 
@@ -122,6 +124,30 @@ A capability says which operations a function may perform (`spec/05 §3`). B06's
 
 7. **Formal model.** The theorem this ADR needs, *trace safety*, is an open obligation and a separate milestone of the formal track. It states: in every run of a checked function, every performance of a conditioned operation happens where its condition holds of the arguments of the function that declares it. Until the theorem lands, this ADR is "accepted, not proved", the formal-track status page lists it, and the re-check reads a conditioned operation as not re-checked.
 
+8. **Locked contracts of entry points.** A condition protects only while it stays in the header, and an agent can delete it from a public header. So the conditions of public functions can be locked in a place the agent does not edit.
+   - **The lock.** `una.toml` gains a table `[contracts]`. Each key is a public function's qualified name, and each value maps its bindings to their locked operations, with ADR 0094's labels:
+
+     ```toml
+     [contracts]
+     "pricing.update.update_prices" = { catalog = ["set_price where not dry_run", "journal where not dry_run"] }
+     "sharing.links.create_share_links" = { service_files = ["role gives internal[Service]", "owner gives internal[Service]"] }
+     ```
+
+     Each entry is a `cap_op` (rule 1) over the function's parameters. A key that names no public function, or a binding or operation the function does not have, is U7002.
+   - **The check.** The source header MUST be at least as strong as the lock, for every locked entry:
+     - **the operation is absent from the header's binding:** stronger, since it grants less, so nothing is checked;
+     - **present with a condition `C_src`:** the obligation `C_src ⇒ C_lock`, over the parameters, in QF_UFLIA, as a new obligation kind `contract_lock`. An operation without `where` has `C_src = true`;
+     - **present with a label `l_src`** (ADR 0094): `l_lock ⊑ l_src`, a label comparison.
+     
+     A header weaker than its lock is U3023: "the header of `update_prices` lets `@catalog.journal` run where `not dry_run` does not hold, which `una.toml` locks". The primary span is the header's `cap_op`, and the related span is the lock entry.
+   - **Helpers are free.** Only the listed public functions are locked. Weakening a helper's condition moves the obligation to its callers (rule 3), and strengthening it moves it into its body, so either way the locked entry point's obligation still holds or is refuted.
+   - **Protection.** `una.toml` is the consumer's file, like `[trusted]` (`spec/07 §6`) and ADR 0093's `[boundaries]`. A benchmark scaffold marks it protected, so a task's edits never reach it. A repository marks it with its owners' review rules.
+   - **Cost.**
+     - One `una.toml` entry per locked function.
+     - One `contract_lock` query per locked condition, and one label comparison per locked label. Both are cached like every obligation.
+     - No cost for a package that writes no `[contracts]`.
+     - The repair of U3023 is to restore the locked condition or label (rank 1, mechanical). Changing the lock is never a repair.
+
 ## B06's reference under this ADR
 
 B06's reference (una-bench `tasks/B06-dry-run-prices/una/reference/src/pricing/update.una`) builds with three header changes and no change to a body:
@@ -164,6 +190,7 @@ The entry point's header is the scaffold's, so the chain always ends at a refute
   - No new diagnostic code: an agent meets U5001 or U5002.
   - The rank-1 repairs are a guard, or the callee's header condition. Both are mechanical in the common case, and neither adds authority.
 - **Cost for existing code: none.** A `uses` clause without `where` means what it means today, and edition `0.1` and `0.2` packages do not change.
+- **A deleted condition cannot pass unnoticed** where the entry point is locked (rule 8). B06's scaffold locks `update_prices`, so removing its `where` is U3023 before any effect is checked.
 - **Verification cost:** one QF_UFLIA query per site of a conditioned operation, cached like every obligation (`spec/12 §9`).
 - **Deferred:** state conditions (#558), and the trace-safety theorem (rule 7).
 
@@ -179,6 +206,8 @@ The entry point's header is the scaffold's, so the chain always ends at a refute
   - over the whole trace they need a quantifier over events, or an encoding of the trace as a sequence, which leaves QF_UFLIA;
   - checked event by event they are this ADR's condition, written away from the binding they bound.
 - **State on capability declarations, for B04 and B05** (typestate). The precise answer for those two, but it needs ghost state, a frame rule and loop invariants. Deferred to its own ADR (#558). A condition may later name such facts.
+- **Contract protection by the diff only.** A deleted condition shows in the header's diff, but a diff is reviewed after the fact, and an agent working alone has no reviewer. Rejected in favor of the lock (rule 8).
+- **A separate lock file** (`contracts.lock` beside `verification.lock`) instead of a `una.toml` table. Equivalent in protection. `una.toml` is chosen because it already holds the consumer's other protected decisions (`[trusted]`, `[boundaries]`), so one file is protected, not two.
 - **Modes as narrowing** (rebind `@catalog` in the dry-run branch to a handler without `journal`). Possible today with `with`, but it protects only when the author chooses to write it, and it leaves nothing in the header. It stays available, and it is not a contract.
 - **A `dry_run` convention or other inferred conditions.** Rejected by rule 4.
 
@@ -187,3 +216,4 @@ The entry point's header is the scaffold's, so the chain always ends at a refute
 - The trace-safety theorem in F1 (rule 7), a milestone of the formal track.
 - The re-check's reading of conditioned operations, after the theorem.
 - The state form (B04, B05), a separate ADR (#558).
+- U3023 and the obligation kind `contract_lock` join `spec/13 §4` and `spec/12 §3` when this ADR is accepted.

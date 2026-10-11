@@ -25,7 +25,7 @@ A capability says which operations, not on whose behalf they answer. Una already
 1. **A label on an operation of a binding.** In edition `0.3`, an operation listed in the `[ops]` of a `uses` clause MAY carry `gives` and a label:
 
    ```una
-   pub share(request: ShareRequest) -> ShareSummary
+   pub create_share_links(request: ShareRequest) -> ShareSummary
      uses @service_files: Files[create_link, role gives internal[Service], owner gives internal[Service]]
      uses @requester_files: Files[role, owner]
      uses @mailer: Mailer[send]
@@ -47,6 +47,8 @@ A capability says which operations, not on whose behalf they answer. Una already
    - **whether it failed**, the occurrence of the failure and not only its payload: whether `owner` succeeded tells whether the file exists for the service, which is B09's question. As ADR 0090 did for a policy call's failure, the decision on the operation's outcome is labeled, so the `when` or `attempt` that branches on it runs under a program counter raised to the label;
    - the failure's payload.
 
+   **A labeled failure passed on** is a failure at the program counter joined with the label. That covers `if error pass`, a `fail` in a branch on the decision, and a function's own failure. So, as for any failure under a raised program counter (S-18, ADR 0090), it is U4002 where the function's failure is observed below the label.
+
    This is the only change to typing: T-Op (`spec/10`) joins one more label into the result and into the decision on its failure. Everything downstream is today's information flow. An answer given on the service's behalf, flowing to what the requester receives, is U4001 or U4003 at the flow, or U4002 for an effect under it, unless a policy declared in a trusted module releases it (`spec/07 §5`).
 
 3. **Passing a labeled binding.** A binding flows downward by name or with `with` (`spec/05 §4`), and its labels go with it:
@@ -57,10 +59,13 @@ A capability says which operations, not on whose behalf they answer. Una already
 
 4. **Handlers.** A handler installed at a binding answers through it, so its answers carry the binding's labels. A handler cannot lower them.
 
-5. **The host premise.** T6 needs one more hypothesis on the host, written next to H1 to H4 (`docs/plan/formal-track-status.md`, "What accepted rests on"):
-   - **H5: a labeled answer is not given lower.** What the host answers through an operation labeled `l` on one binding, and whether it fails, is not also answered through an operation of a binding labeled below `l`.
+5. **The host premise.** T6 needs one more hypothesis on the host, written in the shape of H1 to H4 (`docs/plan/formal-track-status.md`, "What accepted rests on"):
+   - **H5: an answer depends only on the host state at its label.** What an operation answers through a binding where it is labeled `l′`, and whether it fails, is a function only of the arguments and of the part of the host state at or below `l′`.
    
-   The same fact readable through two bindings at different labels would make the lower one a channel for the higher. H5 is a premise on how the deployment wires its bindings, as H1 to H4 are on the host. It is listed in the build report's Assumed zone (`spec/13 §6`) with every binding label it is used for, and named in the re-check's note where it is used.
+   This is the premise T6's proof uses. Two runs whose host states agree at or below an observer's label give equal answers through every operation labeled at or below that observer, so those answers are low-equivalent. An answer labeled above the observer may differ, and its label carries it.
+   - H5 does not forbid the same fact being readable through two bindings. In B09 an owner is answered through `@service_files.owner`, labeled `Service`, and through `@requester_files.owner`, at `⊥`. H5 requires that the unlabeled answer depend only on what the requester may see, the host's state at `⊥`. A file the requester cannot see answers there as `NotFound`, which is what the scaffold's requester handler does.
+   - H5 is a premise on how the deployment wires its bindings, as H1 to H4 are on the host.
+   - It is listed in the build report's Assumed zone (`spec/13 §6`) with every operation label it is used for, and named in the re-check's note where it is used.
 
 6. **Keyword.** `gives` is a contextual keyword, recognized only after an operation name inside the brackets of a `uses` clause in edition `0.3`, and an identifier elsewhere, as `of` is after `uses` (`spec/02 §3`, ADR 0062).
    - A program of edition `0.1` or `0.2` that writes `gives` there is a parse error, U0103, with the message "`gives` is a keyword of edition 0.3 (operation labels)".
@@ -89,6 +94,7 @@ A capability says which operations, not on whose behalf they answer. Una already
   - One new code, U3022, met only when a labeled operation is passed to code that reads it lower.
   - The flows themselves give today's U4001, U4002 and U4003, whose repairs agents already follow.
 - **Cost for existing code: none.** An operation without `gives` answers at its declared label, as today.
+- **Locked labels.** The labels of a public entry point can be locked in `una.toml` under `[contracts]` (ADR 0092 rule 8), so that an agent cannot drop the `gives` from the header. B09's scaffold locks `create_share_links`'s `role` and `owner` labels.
 - **Complexity.** One label join per operation answer, and one comparison per labeled operation passed at a call: linear in operation sites and call edges. The flow checks keep their cost.
 - **Deferred.**
   - Key-dependent answers (B07, #560).
