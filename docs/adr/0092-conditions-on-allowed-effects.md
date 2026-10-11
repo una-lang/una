@@ -68,6 +68,14 @@ A capability says which operations a function may perform (`spec/05 §3`). B06's
      | `expect not performed @catalog.journal` (`spec/08 §2`): a test of one run | a contract of every run |
 
    - The same `where` is allowed in the `uses` of a handler (over the handler's parameters) and of a function type (over its parameters).
+   - **Grammar** (`spec/02 §3`, with ADR 0094's `gives`):
+
+     ```ebnf
+     cap_type = upper_ident [ "[" cap_op { "," cap_op } "]" ] ;
+     cap_op   = lower_ident [ "gives" label ] [ "where" line_expr ] ;
+     ```
+
+     `cap_type` holds no type, only operation names (`spec/02 §3`), and a refined type's `where` appears only in a `kind` alias (`alias_body`). So `where` inside the brackets is always an operation's condition and never a refinement. The condition ends at the first `,` or `]` at bracket depth 0. An expression has no top-level comma, and a list literal or call inside it nests its own brackets and parentheses.
 
 2. **Meaning.** Every performance of a conditioned operation through the binding happens only where the condition holds of the function's arguments. Parameters are immutable, so the condition's value is fixed for the whole call.
 
