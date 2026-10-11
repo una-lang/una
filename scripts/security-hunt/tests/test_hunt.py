@@ -127,6 +127,14 @@ class Generators(unittest.TestCase):
                     i = text.split("\n").index(line)
                     self.assertIn("if error pass", text.split("\n")[i + 1], p.name)
 
+    def test_h6_probes_are_must_reject(self):
+        seen = set()
+        for p in every_program(60):
+            if p.op == "H6":
+                self.assertEqual(p.cls, MUST_REJECT)
+                seen.add(p.variant)
+        self.assertEqual(len(seen), 6)
+
     def test_t11_class_follows_the_failure_label(self):
         for p in every_program(80):
             if p.op != "T11":

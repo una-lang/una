@@ -160,4 +160,40 @@ def h5(seed, edition):
                  variant=f"pc-{pc}-{clause}")
 
 
-OPERATORS = {"H1": h1, "H2": h2, "H3": h3, "H4": h4, "H5": h5}
+# H6. What H5's open shapes must not allow (#524; probes by Una-2 in campaign 2's triage): the
+# failure is handled inside the secret branch, and then something public follows inside it, the
+# branch's value leaves it, or the handler itself has a public effect.
+def h6(seed, edition):
+    rng = rng_for(seed)
+    form = rng.choice(["print-after", "value-out", "handler-effect"])
+    clause = rng.choice(["attempt", "use"])
+    cap = ("capability Door\n  op open(code: Int) -> Int\n    fails Shut\n"
+           "    accepts secret")
+    kinds = "pub kind Shut = | Closed"
+    handler = "handler door() for Door\n  op open(code) = fail Closed"
+    call = {"attempt": "let r = attempt @door.open(1)",
+            "use": "let v = @door.open(1)\n      if error use 0"}[clause]
+    if form == "print-after":
+        fn = ("pub knock(flag: secret Bool) -> Unit\n  uses @door: Door[open]\n"
+              "  uses @console: Console[print]\n=\n"
+              f"  if flag\n    {call}\n    @console.print(\"after\")\n  else\n    unit")
+        expect = ["U4003"]
+    elif form == "value-out":
+        value = {"attempt": ("    let r = attempt @door.open(1)\n    when r\n"
+                             "      is Ok(n) -> n\n      is Err -> 0"),
+                 "use": "    @door.open(1)\n      if error use 0"}[clause]
+        fn = ("pub knock(flag: secret Bool) -> Int\n  uses @door: Door[open]\n=\n"
+              f"  if flag\n{value}\n  else\n    5")
+        expect = ["U4001"]
+    else:
+        handler = ("handler door() for Door\n  uses @console: Console[print]\n"
+                   "  op open(code) =\n    @console.print(\"opened\")\n    fail Closed")
+        fn = ("pub knock(flag: secret Bool) -> Unit\n  uses @door: Door[open]\n=\n"
+              f"  if flag\n    {call}\n    unit\n  else\n    unit")
+        expect = ["U4003"]
+    text = join_decls(header(MOD), kinds, cap, handler, fn)
+    return _make("H6", "spec/07 §7 rules 2 and 4", edition, seed, MUST_REJECT, text, expect,
+                 variant=f"{form}-{clause}")
+
+
+OPERATORS = {"H1": h1, "H2": h2, "H3": h3, "H4": h4, "H5": h5, "H6": h6}
