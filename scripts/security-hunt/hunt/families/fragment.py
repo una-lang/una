@@ -8,7 +8,7 @@ and a declaration `una check` accepts that the re-check rejects is a candidate f
 coordinator, never interpreted before that.
 """
 
-from ..program import OPEN, Program, rng_for
+from ..program import MUST_ACCEPT, MUST_REJECT, OPEN, Program, rng_for
 from ..una import header, join_decls, package
 
 MOD = "app.main"
@@ -52,6 +52,23 @@ ENDINGS = {
 }
 
 
+# The endings that reveal `t` at `public` (Una-2's review of #547): a program whose `t` carries
+# the secret must be rejected there, by `una check` alone, whatever the re-check says.
+PUBLIC_ENDINGS = ("public-result", "print", "print-under")
+LEAK_CODES = ["U4001", "U4003"]
+
+
+def classify(carrier, ending, structural=()):
+    """The class of a carrier and an ending: a public ending is must-reject, unless the carrier
+    is structural, whose `t` is public, and then must-accept; any other ending is open. The
+    programs' text does not depend on it, so earlier seeds rebuild unchanged."""
+    if ending not in PUBLIC_ENDINGS:
+        return OPEN, []
+    if carrier in structural:
+        return MUST_ACCEPT, []
+    return MUST_REJECT, list(LEAK_CODES)
+
+
 # F1 to F4: a secret literal, a carrier and an ending.
 def f1(seed, edition):
     rng = rng_for(seed)
@@ -66,9 +83,55 @@ def f1(seed, edition):
         decls.append(SUPPORT[carrier].replace("secret Int", f"{level} Int"))
     decls.append(fn)
     files = package("hunt", edition, {MOD: join_decls(*decls)})
-    return Program(op="F1", rule=RULE, edition=edition, seed=seed, cls=OPEN, files=files,
-                   expect=[], variant=f"{carrier}-{ending}",
+    cls, expect = classify(carrier, ending)
+    return Program(op="F1", rule=RULE, edition=edition, seed=seed, cls=cls, files=files,
+                   expect=expect, variant=f"{carrier}-{ending}",
                    note="the judge is the comparison of una check and the re-check")
 
 
-OPERATORS = {"F1": f1}
+# F7: carriers through the prelude functions F1 reads since #532, #542 and #545. A table of its
+# own, so that F1's carriers, and the programs old seeds rebuild to, stay unchanged.
+PRELUDE_CARRIERS = {
+    "at": ("  let ts = [s, 1]\n"
+           "  let t = when ts.at(index: 0)\n    is Some(x) -> x\n    is None -> 0\n"),
+    # The index decides whether there is an element (`spec/14 §1`).
+    "at-index": ("  let ts = [1, 2]\n"
+                 "  let t = when ts.at(index: s)\n    is Some(x) -> x\n    is None -> 0\n"),
+    "or-else": "  let o = Some(s)\n  let t = o.or_else(default: 0)\n",
+    "or-else-default": "  let o: Option[Int] = None\n  let t = o.or_else(default: s)\n",
+    # A call with two arguments labels the second (U2004, `spec/04 §3`).
+    "min": "  let t = min(s, b: 5)\n",
+    "max": "  let t = max(s, b: 5)\n",
+    "abs": "  let t = abs(s)\n",
+    # Structural: `is_ok` carries the result's top label only, so `t` is public here.
+    "is-ok": ("  let r: Result[secret Int, Int] = Ok(s)\n"
+              "  let t = if r.is_ok() then 1 else 0\n"),
+    # The coordinator's counterpart: a result chosen under a secret condition, so its top label,
+    # and `is_ok`'s `Bool`, are secret.
+    "is-ok-top": ("  let r: secret Result[Int, Int] = if s > 0 then Ok(1) else Err(0)\n"
+                  "  let t = if r.is_ok() then 1 else 0\n"),
+    "slice": '  let tx = "{s}"\n  let t = tx.slice(start: 0, end: 0).len\n',
+}
+
+# Edition 0.1 has no `slice` (U1001): its text functions are edition 0.2's (`spec/22`).
+EDITION_02_ONLY = {"slice"}
+
+
+def f7(seed, edition):
+    rng = rng_for(seed)
+    carriers = [c for c in sorted(PRELUDE_CARRIERS) if edition != "0.1" or c not in EDITION_02_ONLY]
+    carrier = rng.choice(carriers)
+    ending = rng.choice(sorted(ENDINGS))
+    result, uses, tail = ENDINGS[ending]
+    level = "internal" if ending == "write-internal" else "secret"
+    body = (PRELUDE_CARRIERS[carrier].replace("secret Int", f"{level} Int")
+            .replace("secret Result", f"{level} Result"))
+    fn = (f"pub run(s: {level} Int) -> {result}\n" + uses + "=\n" + body + tail)
+    files = package("hunt", edition, {MOD: join_decls(header(MOD), fn)})
+    cls, expect = classify(carrier, ending, structural=("is-ok",))
+    return Program(op="F7", rule=RULE, edition=edition, seed=seed, cls=cls, files=files,
+                   expect=expect, variant=f"{carrier}-{ending}",
+                   note="the judge is the comparison of una check and the re-check")
+
+
+OPERATORS = {"F1": f1, "F7": f7}
