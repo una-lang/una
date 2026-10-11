@@ -54,7 +54,15 @@ def main(src, out):
         if d["kind"] == "fun" and d["value"]["name"] == "work":
             d["value"]["params"][0][0] = "@Vault.note"
     forged_text = json.dumps(forged, separators=(",", ":"), ensure_ascii=False)
-    for t in (text, unbound_text, forged_text, mixed_text):
+    # A document capability named as one of the host's, `Clock`: the document is not read.
+    hostnamed = copy.deepcopy(doc)
+    (hm,) = [m for m in hostnamed["modules"] if m["path"] == "m"]
+    vault = next(d for d in hm["decls"] if d["kind"] == "cap" and d.get("name") == "Vault")
+    clock = copy.deepcopy(vault)
+    clock["name"] = "Clock"
+    hm["decls"].append(clock)
+    hostnamed_text = json.dumps(hostnamed, separators=(",", ":"), ensure_ascii=False)
+    for t in (text, unbound_text, forged_text, mixed_text, hostnamed_text):
         assert '"#' not in t
     with open(out, "w", encoding="utf-8") as f:
         f.write(f'''/-
@@ -94,6 +102,9 @@ def forged : String := r#"{forged_text}"#
 /-- `Gong.strike` with `soft`, quiet, and `hard`, which prints, chosen by two scopes. -/
 def mixed : String := r#"{mixed_text}"#
 
+/-- The same as `withs`, with a capability of its own named `Clock`, one of the host's. -/
+def hostNamed : String := r#"{hostnamed_text}"#
+
 -- H3: a handler installed under a secret program counter, and one installed publicly and reached
 -- from a secret branch: accepted, as `una check` says. So is what they install and invoke.
 #guard run withs "m.guarded" == "accepted"
@@ -121,6 +132,9 @@ def mixed : String := r#"{mixed_text}"#
 -- the scoped reading. (Combined with #524's, it is accepted there under M2's assumption: with two
 -- handlers, `Vault.note` is read as F1's one event, whose handler is not read.)
 #guard runScoped unbound "m.reach" == "not re-checked"
+-- A document capability named as one of the host's (`std.host`, here `Clock`): the document is not
+-- read, since `uses` names a capability without its module.
+#guard ["m.work", "m.guarded", "m.chime"].all (run hostNamed · == "not re-checked")
 -- A user name starting with `@`, as a marker's: the document is not read.
 #guard ["m.work", "m.guarded", "m.reach"].all (run forged · == "not re-checked")
 

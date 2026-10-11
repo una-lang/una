@@ -55,10 +55,69 @@ def chime : Fun where
   body := .letR "u" (.unit .bot) (.invokeOp "Bell.ring" [.int 1]) (.atom (.var "u"))
   invokes := ["Bell.ring"]
 
-/-- `Console` accepts `public`; `Bell.ring` accepts `public`, its one handler `noisy`. -/
+/-- The handler `quiet` of `Vault.note`, which accepts `internal`: it does nothing. -/
+def quiet : Fun where
+  name := "m.quiet.note"
+  tparams := []
+  eqParams := []
+  params := [("x", .int intl)]
+  op := false
+  host := HostFx.none
+  result := .unit .bot
+  fails := false
+  body := .atom .unit
+
+/-- `work()`: `@vault.note(1)`. -/
+def work : Fun where
+  name := "m.work"
+  tparams := []
+  eqParams := []
+  params := [(markerName "Vault.note", .text .bot)]
+  op := false
+  host := HostFx.none
+  result := .unit .bot
+  fails := false
+  body := .letR "u" (.unit .bot) (.invokeOp "Vault.note" [.int 1]) (.atom (.var "u"))
+  invokes := ["Vault.note"]
+
+/-- The handlers of `Door.open`, which accepts `public` and fails: `failing` fails, `fine` gives 0. -/
+def failing : Fun where
+  name := "m.failing.open"
+  tparams := []
+  eqParams := []
+  params := [("code", .int .bot)]
+  op := false
+  host := HostFx.none
+  result := .int .bot
+  fails := true
+  body := .fail 0
+
+def fine : Fun := { failing with name := "m.fine.open", body := .atom (.int 0) }
+
+/-- `open_door()`: `@door.open(1)`, its failure passed on. -/
+def openDoor : Fun where
+  name := "m.open_door"
+  tparams := []
+  eqParams := []
+  params := [(markerName "Door.open", .text .bot)]
+  op := false
+  host := HostFx.none
+  result := .int .bot
+  fails := true
+  body := .letR "v" (.int .bot) (.invokeOp "Door.open" [.int 1]) (.atom (.var "v"))
+  invokes := ["Door.open"]
+
+/-- `Console` accepts `public`; `Bell.ring` accepts `public`, its one handler `noisy`; `Vault.note`
+accepts `internal`, its handler `quiet`; `Door.open` accepts `public`, its handlers `failing` and
+`fine`. -/
 def prog : Program :=
-  Import.mkProgram [] Label.bot labels [] [] [noisy, chime] [] [("m.noisy.ring", Label.bot)]
-    [("m.noisy.ring", "Bell.ring")] [("Bell.ring", ["m.noisy.ring"])]
+  Import.mkProgram [] Label.bot labels [] [] [noisy, chime, quiet, work, failing, fine, openDoor] []
+    [("m.noisy.ring", Label.bot), ("m.quiet.note", ⟨.internal, []⟩), ("m.failing.open", Label.bot),
+      ("m.fine.open", Label.bot)]
+    [("m.noisy.ring", "Bell.ring"), ("m.quiet.note", "Vault.note"), ("m.failing.open", "Door.open"),
+      ("m.fine.open", "Door.open")]
+    [("Bell.ring", ["m.noisy.ring"]), ("Vault.note", ["m.quiet.note"]),
+      ("Door.open", ["m.failing.open", "m.fine.open"])]
 
 def wSet (v : String) : World Host.unit := ⟨(), (), fun x => if x = "SECRET" then some v else none⟩
 
@@ -139,5 +198,50 @@ theorem unbound_untyped {t : LTy} {ε : Eff} : ¬ LExprTy prog [] [] .bot callCh
       | cons ha _ =>
         cases ha with
         | var hl => simp [lctxLookup] at hl
+
+/-! ### H3: a handler installed under a secret program counter -/
+
+/-- `if c then (work() with @vault = quiet()) else ()`, then `print("done")`. -/
+def h3 : Expr :=
+  withFlag (.letE "b" (.unit .bot)
+    (.ite (.var "c")
+      (.withH "Vault.note" "m.quiet.note"
+        (.letR "w" (.unit .bot) (.call "m.work" [] [.var (markerName "Vault.note")]) (.atom .unit)))
+      (.atom .unit))
+    (printLit "done" (.atom .unit)))
+
+unseal flowB flowsB in
+theorem h3_checked : ∃ ε, checkExpr prog [] [] .bot (.unit .bot) h3 = .ok ε := ⟨_, rfl⟩
+
+/-- **The output does not depend on the secret**: both runs print `done`, and nothing else. -/
+theorem h3_runs : (eval Host.unit 20 prog (wSet "1") [] h3).1 = [.out "done"] ∧
+    (eval Host.unit 20 prog (wSet "22") [] h3).1 = [.out "done"] := ⟨rfl, rfl⟩
+
+/-! ### C5(b): a failing handler chosen under a secret program counter -/
+
+/-- `open_door()` under the installed handler. -/
+def callOpen : Expr :=
+  .letR "v" (.int .bot) (.call "m.open_door" [] [.var (markerName "Door.open")]) (.atom .unit)
+
+/-- `if c then (open_door() with @door = failing()) else (open_door() with @door = fine())`, its
+failure passed on, then `print("after")`. -/
+def c5b : Expr :=
+  withFlag (.letE "b" (.unit .bot)
+    (.ite (.var "c") (.withH "Door.open" "m.failing.open" callOpen)
+      (.withH "Door.open" "m.fine.open" callOpen))
+    (printLit "after" (.atom .unit)))
+
+unseal flowB flowsB in
+theorem c5b_rejected : ∃ msg, checkExpr prog [] [] .bot (.unit .bot) c5b = .error msg := ⟨_, rfl⟩
+
+/-- Which handler runs is secret, and it decides whether the run fails before `after`. -/
+theorem c5b_leaks : (eval Host.unit 20 prog (wSet "1") [] c5b).1 = [] ∧
+    (eval Host.unit 20 prog (wSet "22") [] c5b).1 = [.out "after"] := ⟨rfl, rfl⟩
+
+theorem c5b_untyped {t : LTy} {ε : Eff} : ¬ LExprTy prog [] [] .bot c5b t ε := by
+  intro ht
+  have h := same_lines ht 20 (by exact True.intro) (by exact True.intro)
+  rw [c5b_leaks.1, c5b_leaks.2, proj_single_vis (out_vis _)] at h
+  simp [proj] at h
 
 end Una.F1.WithExample

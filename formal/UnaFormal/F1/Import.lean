@@ -226,6 +226,9 @@ structure Ctx where
   markersOf : List (String × List String) := []
   /-- The markers bound where the reading is (#538). -/
   bound : List String := []
+  /-- In #524's reading of a document with `with` scopes (#538), the capabilities the scoped
+  reading reads: an operation of one is not read, so no acceptance rests on M2's event. -/
+  blocked : List String := []
 
 /-- The effects a `uses` entry names: `Files`'s operations (M5b) and `Http`'s (M5c) are host
 effects; every other operation is F1's one operation, gathered for G3. -/
@@ -470,6 +473,8 @@ mutual
         throw s!"an operation whose capability `{cap}` is not its path's"
       -- An operation of a capability a `with` of the document installs (#538): the handler its
       -- marker holds runs (`Rhs.invokeOp`); a marker no scope binds here is outside F1.
+      if !std && c.blocked.contains cap then
+        throw s!"an operation of `{cap}`, which `with` scopes install, read without them"
       if !std && c.dynCaps.contains cap then
         let oid := s!"{cap}.{o}"
         if !c.bound.contains oid then throw s!"the operation `{oid}`, whose handler no `with` scope installs here"
@@ -1837,10 +1842,11 @@ def checkDocumentRead (subst : Subst) (doc : J) (caps : Caps := {}) (scopes : Bo
     match plainRun (do str (← field cj "name")) with
     | .ok n => some (n, cj)
     | .error _ => none
-  -- `Files` and `Http` name the host's capabilities in `uses`, which carries no module: a
-  -- document that declares its own capability by either name is not re-checked.
+  -- The host's capabilities (`std.host`, `spec/14 §3`) are named in `uses`, which carries no
+  -- module: a document that declares its own capability by one of their names is not re-checked
+  -- (`Files` and `Http`; every other since #538, whose effects `usesEffects` reads by name).
   if (decls.filter (·.kind == "cap")).any (fun d => match plainRun (do str (← field d.value "name")) with
-      | .ok n => n == "Files" || n == "Http"
+      | .ok n => ["Console", "Clock", "Env", "Files", "Keys", "Http"].contains n
       | .error _ => true) then
     return code.map fun d => (named d, .notRechecked "a capability named as one of the host's")
   -- Handlers (#524): their operations become functions of the document (`synthHandlers`).
@@ -1871,9 +1877,12 @@ def checkDocumentRead (subst : Subst) (doc : J) (caps : Caps := {}) (scopes : Bo
       (← arr (← field d.value "uses")).mapM fun u => do str (← field u "capability")) with
     | .ok cs => cs
     | .error _ => ["?"]
-  let dynCaps := if !scopes then [] else cands.filter fun cap => decls.all fun d =>
+  let dynAll := cands.filter fun cap => decls.all fun d =>
     d.kind != "handler" || (plainRun (do str (← field d.value "capability"))).toOption != some cap ||
       (usesCaps d).all fun c => !cands.contains c && c != "?"
+  let dynCaps := if scopes then dynAll else []
+  -- #524's reading of such a document (#538): their operations are not read there.
+  let blocked := if scopes then [] else dynAll
   let synth := synthHandlers decls dynCaps
   let dyn := synth.filter fun x => dynCaps.contains x.2.1.1
   let decls := decls ++ synth.map (·.1)
@@ -1931,7 +1940,7 @@ def checkDocumentRead (subst : Subst) (doc : J) (caps : Caps := {}) (scopes : Bo
       | .error _ => none
   let c : Ctx := { records := recs.map (·.name), funs := funNames, vias, allEq := edition == "0.1",
                    codes := codeKinds decls, sums := sms.map fun sm => (sm.name, sm.variants.map (·.length)),
-                   raisesOf, invokes, invoked, dynCaps, withHs, opHandlers, markersOf }
+                   raisesOf, invokes, invoked, dynCaps, withHs, opHandlers, markersOf, blocked }
   let rd : String → Label := fun r => match recs.find? (·.name == r) with
     | some rec => rec.deep
     | none => Label.bot

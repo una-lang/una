@@ -57,7 +57,12 @@ Non-vacuity of E (the coordinator's conditions):
 
 The importer reads a capability by `with` scopes only when the document declares it (not one of the host's, `Files`, `Http`, `Keys`), never installs it with `given`, its handlers agree on whether they print, and none of its handlers invokes a capability read by scopes itself (a handler that forwards to an outer one, such as `uses @inner: Log`, keeps #524's reading). Any other capability is read as before #538.
 
-**The combined reading.** `una-core-check` reads each document twice: with its `with` scopes, and as #524 reads it, without them. A declaration either reading rejects is rejected; otherwise one either accepts is accepted; otherwise the scoped reading's outcome stands (`Import.combineOutcomes`). Each acceptance rests on its own reading's certificate, and #524's holds for any lawful handler, whoever installs it, so the union is sound; reading both keeps every declaration #524 accepted (an invocation inside a lambda or a `together` task, which no marker can reach, stays accepted by #524's reading).
+**The combined reading.** `una-core-check` reads each document twice: with its `with` scopes, and as #524 reads it, without them. A declaration either reading rejects is rejected; otherwise one either accepts is accepted; otherwise the scoped reading's outcome stands (`Import.combineOutcomes`). Which certificate each acceptance rests on (the coordinator's ruling on Una-1's review, the most secure option):
+- an acceptance of the scoped reading rests on #538's: T1 and T6 under Hu, for the handlers the document's scopes install;
+- an acceptance of #524's reading rests on #524's: T1 and T6 under Hu, for any lawful handler, whoever installs it;
+- #524's reading of a document reads no operation of a capability the scoped reading reads (`Ctx.blocked`): a declaration that reaches one is not re-checked there, so nothing in a document with `with` scopes rests on M2's assumption that an operation is an event whose handler is not read. A capability with two or more handlers, which #524 reads as F1's event, is such a capability whenever a `with` of the document installs it.
+
+Reading both keeps what #524 accepted where no scope is involved: an invocation inside a lambda or a `together` task, which no marker reaches, of a capability the scoped reading does not read (such as one whose handler forwards to an outer one).
 
 ## 5. Theorems
 
@@ -71,14 +76,12 @@ Not re-checked, failing closed: handlers with parameters (`with @c = h(x)`), han
 
 ## 7. Non-vacuity
 
-`WithExample`:
-- **H3, install under a secret `pc`**, and **reach under a secret `pc`**: certified, and they run, with the output independent of the secret.
-- **A handler below the floor installed by `with`**: rejected, and it leaks.
-- **Two handlers of one operation, chosen by scope**: both certified.
-- **An unbound invocation reached through a call** (a function that invokes `o`, called where no scope or default binds it): untyped, and not re-checked by the importer, never stuck.
-- **C5(b)** (`if flag: work(1) with @door = failing() if error pass else work(1) with @door = fine() if error pass`): rejected at T-Fun's `failLabel ⊑ ⊥`, as `una check` rejects it (U4002), and it leaks.
+`WithExample` (theorems):
+- **H3, a handler installed under a secret `pc`** (`h3`): checked, and it runs, printing `done` from both secrets: its output does not depend on the secret.
+- **C5(b)** (`c5b`, a failing and a quiet handler chosen by a secret condition, the failure passed out of the branch): rejected, it leaks (`after` is printed only when the quiet one runs), and it has no typing.
+- **Ruling E (a)**, a printing handler installed under a secret `pc`: rejected, it leaks, no typing; **(b)**, the same at a public `pc`: checked, and it runs; **(c)**, an invocation no scope installs: rejected, no typing.
 
-`ImportTests` from `una`'s own export: H3's two shapes accepted; a `with` over a host capability, a handler with parameters, and an unbound invocation through a call not re-checked.
+`WithImportTests` (verdicts on `una`'s own export): H3's two shapes (install under, and reach from, a secret branch), two handlers of one operation chosen by two scopes (a verdict guard only: a run theorem would add a second program for no new rule), C5(b), ruling E's (a), (b) and (c) (the last on the scoped reading, `runScoped`), a forged `@` name, a document capability named as one of the host's, and a quiet and a printing handler of one operation chosen by two scopes.
 
 ## 8. Gate
 

@@ -366,3 +366,8 @@ import UnaFormal
 #print axioms Una.F1.WithExample.installed_runs
 #print axioms Una.F1.WithExample.unbound_rejected
 #print axioms Una.F1.WithExample.unbound_untyped
+#print axioms Una.F1.WithExample.h3_checked
+#print axioms Una.F1.WithExample.h3_runs
+#print axioms Una.F1.WithExample.c5b_rejected
+#print axioms Una.F1.WithExample.c5b_leaks
+#print axioms Una.F1.WithExample.c5b_untyped
