@@ -267,6 +267,21 @@ class Generators(unittest.TestCase):
         self.assertEqual(j["kind"], "unknown")
         self.assertIn("prelude.is_even", j["detail"])
 
+    def test_differ_predicate_line_must_be_outside_the_flow_model(self):
+        # Una-2's review of #540: a predicate's line saying anything else is `unknown`.
+        doc = json.loads(self.DOC)
+        doc["modules"].append({"path": "prelude", "decls": [{"kind": "pred", "name": "is_even"}]})
+        doc = json.dumps(doc)
+        for outcome in ("not re-checked", "accepted"):
+            line = f"c.json\tprelude.is_even\t{outcome}\twhy\n"
+            j = self.judge(doc=doc, rec=Run(0, self.LINES + line, "", False, 0.1))
+            self.assertEqual(j["kind"], "unknown", outcome)
+            self.assertIn("prelude.is_even", j["detail"])
+        # A whole-document fallback reports every line not re-checked for one reason.
+        lines = "".join(f"c.json\t{d}\tnot re-checked\ta policy F1 cannot read\n"
+                        for d in ("app.main.run", "app.main.same", "prelude.is_even"))
+        self.assertEqual(self.judge(doc=doc, rec=Run(0, lines, "", False, 0.1))["kind"], "clean")
+
     def test_differ_rejected_is_a_finding(self):
         lines = self.LINES.replace("not re-checked\twhy", "rejected\ta flow")
         self.assertEqual(self.judge(rec=Run(1, lines, "", False, 0.1))["kind"], "finding")
