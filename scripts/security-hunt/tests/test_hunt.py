@@ -79,7 +79,8 @@ class Generators(unittest.TestCase):
 
     def test_together_only_in_edition_0_2(self):
         for p in every_program():
-            if p.edition == "0.1":
+            # Family C uses `together` in 0.1 on purpose, as a must-reject check of the gate.
+            if p.edition == "0.1" and not p.op.startswith("C"):
                 self.assertFalse(any("together" in t for t in p.files.values()), p.name)
 
     def test_listing_of_t1_t2_t3(self):
@@ -172,6 +173,18 @@ class Generators(unittest.TestCase):
             self.assertNotIn("use(", text.replace("feed_sink(", ""))
         self.assertEqual(len(seen["G1"]), 16)
         self.assertEqual(seen["G3"], {"chain", "pair", "chain-twin", "pair-twin"})
+
+    def test_c_family_is_edition_0_2_and_gated_in_0_1(self):
+        for p in every_program(40):
+            if p.op not in ("C1", "C2", "C3"):
+                continue
+            self.assertIn("together", p.files["src/app/main.una"])
+            if p.edition == "0.1":
+                self.assertEqual((p.cls, p.expect), (MUST_REJECT, ["U0103"]), p.name)
+            elif p.variant.endswith("twin") or p.variant == "twin-public-pc":
+                self.assertEqual(p.cls, OPEN, p.variant)
+            else:
+                self.assertEqual(p.cls, MUST_REJECT, p.variant)
 
     def test_t11_class_follows_the_failure_label(self):
         for p in every_program(80):
