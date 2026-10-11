@@ -145,6 +145,8 @@ mutual
       exact .list h
     | _, _, _, .none => .none
     | _, _, _, .some h => .some (atom_subst τ h)
+    | _, _, _, .mkOk h => .mkOk (atom_subst τ h)
+    | _, _, _, .mkErr h => .mkErr (atom_subst τ h)
     | _, _, _, .lambda (ts := ts) hlen hb => by
       have h := ExprTy.subst hwf τ hb
       rw [bindTys_subst] at h

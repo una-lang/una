@@ -16,7 +16,7 @@ import UnaFormal.F1.Labels
 
 namespace Una.F1
 
-/-- The structure of a type: scalars, lists, options, the results of `attempt`, the package's
+/-- The structure of a type: scalars, lists, options, results with their error type, the package's
 records by name, function types and type parameters. -/
 inductive Ty where
   | int
@@ -25,7 +25,7 @@ inductive Ty where
   | unit
   | list (element : Ty)
   | option (element : Ty)
-  | result (value : Ty)
+  | result (value err : Ty)
   | record (name : String)
   | fn (params : List Ty) (result : Ty)
   | var (name : String)
@@ -68,7 +68,7 @@ inductive LTy where
   | unit (l : LExpr)
   | list (element : LTy) (l : LExpr)
   | option (element : LTy) (l : LExpr)
-  | result (value : LTy) (l : LExpr)
+  | result (value err : LTy) (l : LExpr)
   | record (name : String) (l : LExpr)
   | fn (params : List LTy) (result : LTy) (op : Bool) (host : HostFx) (fails : Bool) (l : LExpr)
   | var (name : String) (l : LExpr)
@@ -135,6 +135,9 @@ mutual
     | list (items : List Atom)
     | none
     | some (value : Atom)
+    /-- `Ok(a)` and `Err(a)`, a result built directly (#508). -/
+    | mkOk (value : Atom)
+    | mkErr (value : Atom)
     | lambda (params : List (String × LTy)) (body : Expr)
     /-- The program's function `f` as a value. -/
     | funRef (f : String) (targs : List LTy)

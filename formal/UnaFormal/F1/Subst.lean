@@ -119,7 +119,7 @@ theorem Flow.raise_mono {top : Label} {e₁ e₂ : LExpr} (h : LExpr.le top e₁
   | .unit _ => .unit
   | .list t l => .list (Flow.refl t) (LExpr.join_mono (LExpr.le_refl l) h)
   | .option t l => .option (Flow.refl t) (LExpr.join_mono (LExpr.le_refl l) h)
-  | .result t l => .result (Flow.refl t) (LExpr.join_mono (LExpr.le_refl l) h)
+  | .result t e l => .result (Flow.refl t) (Flow.refl e) (LExpr.join_mono (LExpr.le_refl l) h)
   | .record _ l => .record (LExpr.join_mono (LExpr.le_refl l) h)
   | .fn ps r _ _ _ l => .fn (Flows.refl ps) (Flow.refl r) id (HostFx.Le.refl _) id (LExpr.join_mono (LExpr.le_refl l) h)
   | .var _ l => .var (LExpr.join_mono (LExpr.le_refl l) h)
@@ -136,7 +136,7 @@ mutual
     | _, _, .unit => .unit
     | _, _, .list f h => .list (Flow.lsubst rd σ f) (LExpr.le_inst _ h)
     | _, _, .option f h => .option (Flow.lsubst rd σ f) (LExpr.le_inst _ h)
-    | _, _, .result f h => .result (Flow.lsubst rd σ f) (LExpr.le_inst _ h)
+    | _, _, .result f g h => .result (Flow.lsubst rd σ f) (Flow.lsubst rd σ g) (LExpr.le_inst _ h)
     | _, _, .record h => .record (LExpr.le_inst _ h)
     | _, _, .fn fps fr fo fg ff h =>
       .fn (Flows.lsubst rd σ fps) (Flow.lsubst rd σ fr) fo fg ff (LExpr.le_inst _ h)

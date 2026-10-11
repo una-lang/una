@@ -69,7 +69,7 @@ theorem envs_relG (a b : Int) : EnvRel progG Label.bot (Γ.lsub progG.recordDeep
 with 7; on 5 it releases `false`. A public observer sees neither release, and the runs, a failure
 against a value, are related as `t6_host` says: their failure label `⊥ ⊔ internal` is hidden too. -/
 theorem hidden_failure_related :
-    eval Host.unit 6 progG w0 (env 1234) gBody = ([.release "peekg" (.err 7)], .failed 7, w0) ∧
+    eval Host.unit 6 progG w0 (env 1234) gBody = ([.release "peekg" (.err (.int 7))], .failed 7, w0) ∧
     eval Host.unit 6 progG w0 (env 5) gBody = ([.release "peekg" (.bool false)], .ok (.bool false), w0) ∧
     proj progG Label.bot (eval Host.unit 6 progG w0 (env 1234) gBody).1 =
         proj progG Label.bot (eval Host.unit 6 progG w0 (env 5) gBody).1 ∧
@@ -77,7 +77,7 @@ theorem hidden_failure_related :
         (Vis progG Label.bot (gEff.inst (progG.sd [])).failLabel)
         (eval Host.unit 6 progG w0 (env 1234) gBody).2.1
         (eval Host.unit 6 progG w0 (env 5) gBody).2.1 := by
-  have r₁ : eval Host.unit 6 progG w0 (env 1234) gBody = ([.release "peekg" (.err 7)], .failed 7, w0) := rfl
+  have r₁ : eval Host.unit 6 progG w0 (env 1234) gBody = ([.release "peekg" (.err (.int 7))], .failed 7, w0) := rfl
   have r₂ : eval Host.unit 6 progG w0 (env 5) gBody =
       ([.release "peekg" (.bool false)], .ok (.bool false), w0) := rfl
   have hpk : ∀ v, ¬ EvVis progG Label.bot (Event.release "peekg" v) := fun _ ⟨po, hpo, hv⟩ => by

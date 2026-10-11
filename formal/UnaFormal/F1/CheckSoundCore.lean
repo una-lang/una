@@ -102,6 +102,22 @@ mutual
       simp only [checkRhs, bind_ok, pure_ok] at h
       obtain ⟨t, ht, _, hf, rfl⟩ := h
       exact ⟨_, .some (atomTy_sound ht), flowTo_ok hf⟩
+    | .mkOk a, ε, h => by
+      simp only [checkRhs] at h
+      cases ann with
+      | result t e l =>
+        simp only [bind_ok, pure_ok, need_ok] at h
+        obtain ⟨_, hip, u, hu, _, hf, rfl⟩ := h
+        exact ⟨_, .mkOk (atomTy_sound hu) (inPlace_sound hip), flowTo_ok hf⟩
+      | _ => simp at h
+    | .mkErr a, ε, h => by
+      simp only [checkRhs] at h
+      cases ann with
+      | result t e l =>
+        simp only [bind_ok, pure_ok, need_ok] at h
+        obtain ⟨_, hip, u, hu, _, hf, rfl⟩ := h
+        exact ⟨_, .mkErr (atomTy_sound hu) (inPlace_sound hip), flowTo_ok hf⟩
+      | _ => simp at h
     | .lambda params body, ε, h => by
       simp only [checkRhs] at h
       cases ann with
@@ -299,11 +315,11 @@ mutual
     | .attempt body, ε, h => by
       simp only [checkExpr] at h
       cases s with
-      | result t l =>
-        simp only [bind_ok, pure_ok] at h
-        obtain ⟨εb, hb, _, hle, rfl⟩ := h
+      | result t e l =>
+        simp only [bind_ok, pure_ok, need_ok] at h
+        obtain ⟨εb, hb, _, hle, _, he, rfl⟩ := h
         obtain ⟨tb, htb, hflow⟩ := checkExpr_sound hb
-        exact ⟨_, .attempt htb, .result hflow (le_ok hle)⟩
+        exact ⟨_, .attempt htb, .result hflow (flowB_sound _ _ he) (le_ok hle)⟩
       | _ => simp at h
     | .handle body x handler, ε, h => by
       cases s

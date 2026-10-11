@@ -71,7 +71,7 @@ mutual
     | .unit _ => .unit
     | .list t l => .list (Flow.refl t) (LExpr.le_refl l)
     | .option t l => .option (Flow.refl t) (LExpr.le_refl l)
-    | .result t l => .result (Flow.refl t) (LExpr.le_refl l)
+    | .result t e l => .result (Flow.refl t) (Flow.refl e) (LExpr.le_refl l)
     | .record _ l => .record (LExpr.le_refl l)
     | .fn ps r _ _ _ l =>
       .fn (Flows.refl ps) (Flow.refl r) id (HostFx.Le.refl _) id (LExpr.le_refl l)
@@ -92,7 +92,8 @@ mutual
     | _, _, _, .unit, .unit => .unit
     | _, _, _, .list f₁ h₁, .list f₂ h₂ => .list (Flow.trans f₁ f₂) (LExpr.le_trans h₁ h₂)
     | _, _, _, .option f₁ h₁, .option f₂ h₂ => .option (Flow.trans f₁ f₂) (LExpr.le_trans h₁ h₂)
-    | _, _, _, .result f₁ h₁, .result f₂ h₂ => .result (Flow.trans f₁ f₂) (LExpr.le_trans h₁ h₂)
+    | _, _, _, .result f₁ g₁ h₁, .result f₂ g₂ h₂ =>
+      .result (Flow.trans f₁ f₂) (Flow.trans g₁ g₂) (LExpr.le_trans h₁ h₂)
     | _, _, _, .record h₁, .record h₂ => .record (LExpr.le_trans h₁ h₂)
     | _, _, _, .fn ps₁ r₁ o₁ g₁ f₁ h₁, .fn ps₂ r₂ o₂ g₂ f₂ h₂ =>
       .fn (Flows.trans ps₂ ps₁) (Flow.trans r₁ r₂) (o₂ ∘ o₁) (g₁.trans g₂) (f₂ ∘ f₁)
@@ -114,7 +115,7 @@ theorem Flow.raise {top : Label} (e : LExpr) : ∀ t : LTy, Flow top t (t.raise 
   | .unit _ => .unit
   | .list t l => .list (Flow.refl t) (LExpr.le_join_left l e)
   | .option t l => .option (Flow.refl t) (LExpr.le_join_left l e)
-  | .result t l => .result (Flow.refl t) (LExpr.le_join_left l e)
+  | .result t e' l => .result (Flow.refl t) (Flow.refl e') (LExpr.le_join_left l e)
   | .record _ l => .record (LExpr.le_join_left l e)
   | .fn ps r _ _ _ l => .fn (Flows.refl ps) (Flow.refl r) id (HostFx.Le.refl _) id (LExpr.le_join_left l e)
   | .var _ l => .var (LExpr.le_join_left l e)

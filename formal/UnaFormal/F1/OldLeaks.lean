@@ -76,16 +76,16 @@ def branch : Expr :=
 
 /-- **S-14's probe**: write to the secret path, then read `a.txt`, and print whether it exists. -/
 def s14 : Expr :=
-  .letE "w" (.result (.unit .bot) intl)
+  .letE "w" (.result (.unit .bot) (.int .bot) intl)
     (.attempt (.letR "u" (.unit .bot) (.write (.var "x") (.text "x")) (.atom (.var "u"))))
-    (.letE "r" (.result (.text intl) .bot)
+    (.letE "r" (.result (.text intl) (.int .bot) .bot)
       (.attempt (.letR "c" (.text intl) (.read (.text "a.txt")) (.atom (.var "c"))))
       branch)
 
 /-- **S-15's probe**: send the secret as a request's body, with no header and no key name, and
 print whether it failed. -/
 def s15 : Expr :=
-  .letE "r" (.result (.record "prelude.Response" intl) .bot)
+  .letE "r" (.result (.record "prelude.Response" intl) (.int .bot) .bot)
     (.attempt (.letR "h" (.list (.record "prelude.Header" .bot) .bot) (.list [])
       (.letR "k" (.option (.text .bot) .bot) .none
         (.letR "c" (.record "prelude.Response" intl)
@@ -107,13 +107,13 @@ theorem s14_old_typed : ∃ t ε, LExprTy oldProg [] Γ .bot s14 t ε := by
       (.letR "u" (.unit .bot) (.write (.var "x") (.text "x")) (.atom (.var "u"))) _ _ :=
     .letR (.write (.var rfl) rfl .text rfl (le_of rfl) (by simp [oldProg]) (sf rfl)) .unit
       (.atom (.var rfl)) rfl
-  have hr : LExprTy oldProg [] (("w", .result (.unit .bot) intl) :: Γ) (LExpr.bot.join LExpr.bot)
+  have hr : LExprTy oldProg [] (("w", .result (.unit .bot) (.int .bot) intl) :: Γ) (LExpr.bot.join LExpr.bot)
       (.letR "c" (.text intl) (.read (.text "a.txt")) (.atom (.var "c"))) _ _ :=
     .letR (.read .text rfl (le_of rfl) (sf rfl)) (.text (le_of rfl)) (.atom (.var rfl)) rfl
   have hall : LExprTy oldProg [] Γ .bot s14 _ _ :=
-    .letE (x := "w") (ann := .result (.unit .bot) intl) (.attempt hw) (.result .unit (le_of rfl))
-      (.letE (x := "r") (ann := .result (.text intl) .bot) (.attempt hr)
-        (.result (.text (le_of rfl)) (le_of rfl))
+    .letE (x := "w") (ann := .result (.unit .bot) (.int .bot) intl) (.attempt hw) (.result .unit (.int (le_of rfl)) (le_of rfl))
+      (.letE (x := "r") (ann := .result (.text intl) (.int .bot) .bot) (.attempt hr)
+        (.result (.text (le_of rfl)) (.int (le_of rfl)) (le_of rfl))
         (.caseResult (s := .unit .bot) (.var rfl)
           (.letR (.op .text trivial (le_of rfl) (sf rfl)) .unit (.atom (.var rfl)) rfl)
           (.letR (.op .text trivial (le_of rfl) (sf rfl)) .unit (.atom (.var rfl)) rfl)

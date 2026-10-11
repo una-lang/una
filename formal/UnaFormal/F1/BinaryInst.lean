@@ -115,7 +115,7 @@ theorem V.retop {u : LTy} {x y : LExpr} {a b : Val} (h : V p L (u.setTop x) a b)
     first
     | (apply V.hidden; rename_i hh; intro hv; exact hh (by simp only [LTy.top] at hv ⊢; exact hxy hv))
     | exact .int | exact .bool | exact .text | exact .unit | exact .list ‹_› | exact .none
-    | exact .some ‹_› | exact .ok ‹_› | exact .err | exact .record ‹_› ‹_›
+    | exact .some ‹_› | exact .ok ‹_› | exact .err ‹_› | exact .record ‹_› ‹_›
     | exact .closure ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_›
     | exact .tuple ‹_›
 
@@ -226,11 +226,20 @@ theorem LTy.deep_lsub_le {σ : List (String × LTy)} {E : List String} (hσ : Gr
     simp only [LTy.lsubst, LTy.deep]
     refine LExpr.join_le (LExpr.le_inst _ (LExpr.le_join_left _ _))
       (LExpr.le_trans (LExpr.le_inst_symFree _ ⟨rfl, rfl⟩).2 (LExpr.le_inst _ (LExpr.le_join_right _ _)))
-  | .list t _, hi, he | .option t _, hi, he | .result t _, hi, he => by
+  | .list t _, hi, he | .option t _, hi, he => by
     simp only [LTy.lsubst, LTy.deep]
     simp only [LTy.eqIn] at he
     exact LExpr.join_le (LExpr.le_inst _ (LExpr.le_join_left _ _))
       (LExpr.le_trans (LTy.deep_lsub_le hσ hE hi.1 he) (LExpr.le_inst _ (LExpr.le_join_right _ _)))
+  | .result t e _, hi, he => by
+    simp only [LTy.lsubst, LTy.deep]
+    simp only [LTy.eqIn, Bool.and_eq_true] at he
+    exact LExpr.join_le (LExpr.le_inst _ (LExpr.le_join_left _ _))
+      (LExpr.join_le
+        (LExpr.le_trans (LTy.deep_lsub_le hσ hE hi.1 he.1)
+          (LExpr.le_inst _ (LExpr.le_trans (LExpr.le_join_left _ _) (LExpr.le_join_right _ _))))
+        (LExpr.le_trans (LTy.deep_lsub_le hσ hE hi.2.1 he.2)
+          (LExpr.le_inst _ (LExpr.le_trans (LExpr.le_join_right _ _) (LExpr.le_join_right _ _)))))
   | .fn _ _ _ _ _ _, _, he | .tuple _ _, _, he => by simp [LTy.eqIn] at he
   | .var a l, hi, he => by
     simp only [LTy.eqIn, List.contains_iff_mem] at he
@@ -258,8 +267,11 @@ theorem LTy.eqIn_lsub {σ : List (String × LTy)} {E : List String} (hE : p.EqAr
       (t.lsubst p.recordDeep σ).eqIn [] (p.recordEq (p.records.length + 1)) = true
   | .int _, _ | .bool _, _ | .text _, _ | .unit _, _ | .record _ _, h => by
     first | rfl | exact h
-  | .list t _, h | .option t _, h | .result t _, h => by
+  | .list t _, h | .option t _, h => by
     simp only [LTy.eqIn, LTy.lsubst] at h ⊢; exact LTy.eqIn_lsub hE h
+  | .result t e _, h => by
+    simp only [LTy.eqIn, LTy.lsubst, Bool.and_eq_true] at h ⊢
+    exact ⟨LTy.eqIn_lsub hE h.1, LTy.eqIn_lsub hE h.2⟩
   | .fn _ _ _ _ _ _, h | .tuple _ _, h => by simp [LTy.eqIn] at h
   | .var a _, h => by
     simp only [LTy.eqIn, List.contains_iff_mem] at h
@@ -387,8 +399,10 @@ mutual
     | .var _ _, h => h.elim
     | .int _, _ | .bool _, _ | .text _, _ | .unit _, _ | .record _ _, _ | .fn _ _ _ _ _ _, _
     | .tuple _ _, _ => rfl
-    | .list _ _, h | .option _ _, h | .result _ _, h => by
+    | .list _ _, h | .option _ _, h => by
       simp only [LTy.eqIn]; exact LTy.Ground.eqIn h.1
+    | .result _ _ _, h => by
+      simp only [LTy.eqIn]; rw [LTy.Ground.eqIn h.1, LTy.Ground.eqIn h.2.1]
 end
 
 theorem Vis.ofFn_plain {o : Bool} {g : HostFx} {f : Bool} : Vis p L (Eff.ofFn o g f).failLabel := by

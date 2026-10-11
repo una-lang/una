@@ -23,7 +23,8 @@ inductive Val where
   | none
   | some (value : Val)
   | ok (value : Val)
-  | err (code : Nat)
+  /-- `Err(v)`: a failure's code, as `attempt` gives it, is `.err (.int c)` (#508). -/
+  | err (value : Val)
   | record (name : String) (fields : List Val)
   | closure (params : List (String × LTy)) (body : Expr) (env : List (String × Val))
   | tuple (items : List Val)
@@ -56,9 +57,9 @@ mutual
   def Val.FirstOrder : Val → Prop
     | .closure _ _ _ => False
     | .list items => Val.FirstOrderAll items
-    | .some v | .ok v => v.FirstOrder
+    | .some v | .ok v | .err v => v.FirstOrder
     | .record _ fs | .tuple fs => Val.FirstOrderAll fs
-    | .int _ | .bool _ | .text _ | .unit | .none | .err _ => True
+    | .int _ | .bool _ | .text _ | .unit | .none => True
 
   def Val.FirstOrderAll : List Val → Prop
     | [] => True
@@ -178,7 +179,7 @@ mutual
     | .none => "None"
     | .some v => "Some(" ++ v.render ++ ")"
     | .ok v => "Ok(" ++ v.render ++ ")"
-    | .err c => "Err(" ++ toString c ++ ")"
+    | .err v => "Err(" ++ v.render ++ ")"
     | .record r fs => r ++ "(" ++ Val.renders fs ++ ")"
     | .closure _ _ _ => "<fn>"
     | .tuple items => "(" ++ Val.renders items ++ ")"
@@ -318,7 +319,7 @@ mutual
     | .none, .none => true
     | .some a, .some b => Val.beq a b
     | .ok a, .ok b => Val.beq a b
-    | .err a, .err b => a == b
+    | .err a, .err b => Val.beq a b
     | .record r xs, .record s ys => r == s && Val.beqs xs ys
     | _, _ => false
 
@@ -396,6 +397,8 @@ mutual
       | .list items => ([], ((evalAtoms env items).map Val.list).elim .stuck .ok, w)
       | .none => done w .none
       | .some a => ([], ((evalAtom env a).map Val.some).elim .stuck .ok, w)
+      | .mkOk a => ([], ((evalAtom env a).map Val.ok).elim .stuck .ok, w)
+      | .mkErr a => ([], ((evalAtom env a).map Val.err).elim .stuck .ok, w)
       | .lambda params body => done w (.closure params body env)
       | .funRef f _ =>
         match p.find f with
@@ -411,7 +414,7 @@ mutual
               | (t, .ok r, w') => (t ++ [.release pol r], .ok r, w')
               -- A failure of the `via` function is released as its value is (#453 Phase B,
               -- ADR 0090): the release carries `Err(c)`, and the call fails with `c`.
-              | (t, .failed c, w') => (t ++ [.release pol (.err c)], .failed c, w')
+              | (t, .failed c, w') => (t ++ [.release pol (.err (.int c))], .failed c, w')
               | res => res
             else stuck w
           | none => stuck w
@@ -490,13 +493,13 @@ mutual
       | .caseResult scrutinee x okE y errE =>
         match evalAtom env scrutinee with
         | some (.ok v) => eval H n p w ((x, v) :: env) okE
-        | some (.err code) => eval H n p w ((y, .int code) :: env) errE
+        | some (.err v) => eval H n p w ((y, v) :: env) errE
         | _ => stuck w
       | .fail code => ([], .failed code, w)
       | .attempt body =>
         match eval H n p w env body with
         | (t, .ok v, w') => (t, .ok (.ok v), w')
-        | (t, .failed code, w') => (t, .ok (.err code), w')
+        | (t, .failed code, w') => (t, .ok (.err (.int code)), w')
         | res => res
       | .handle body x handler =>
         match eval H n p w env body with

@@ -42,12 +42,12 @@ theorem branch_bound {Γ : LCtx} {pc : LExpr} {a₁ a₂ s : LTy} {ε : Eff} {E 
     (h : LExprTy P E Γ pc (.caseResult (.var "r") "v"
       (.letR "o" a₁ (.op (.text "yes")) (.atom (.var "o"))) "e"
       (.letR "o" a₂ (.op (.text "no")) (.atom (.var "o")))) s ε) :
-    ∃ te ls, lctxLookup Γ "r" = some (.result te ls) ∧ P.le ls (.ofLabel P.acceptsOp) := by
+    ∃ te ee ls, lctxLookup Γ "r" = some (.result te ee ls) ∧ P.le ls (.ofLabel P.acceptsOp) := by
   cases h with
   | caseResult hs hok _ _ _ _ =>
     cases hs with
     | var hl =>
-      refine ⟨_, _, hl, ?_⟩
+      refine ⟨_, _, _, hl, ?_⟩
       cases hok with
       | letR hv _ _ _ =>
         cases hv with
@@ -56,7 +56,7 @@ theorem branch_bound {Γ : LCtx} {pc : LExpr} {a₁ a₂ s : LTy} {ε : Eff} {E 
   | caseResultT hs hok _ _ _ _ _ =>
     cases hs with
     | var hl =>
-      refine ⟨_, _, hl, ?_⟩
+      refine ⟨_, _, _, hl, ?_⟩
       cases hok with
       | letR hv _ _ _ =>
         cases hv with
@@ -67,7 +67,7 @@ theorem branch_bound {Γ : LCtx} {pc : LExpr} {a₁ a₂ s : LTy} {ε : Eff} {E 
 the value's failure. -/
 theorem attempt_inv {Γ : LCtx} {pc : LExpr} {E : List String} {x : String} {ann : LTy} {v : Rhs}
     {t : LTy} {ε : Eff} (h : LExprTy P E Γ pc (.attempt (.letR x ann v (.atom (.var x)))) t ε) :
-    ∃ tc t' ε', LRhsTy P E Γ pc v t' ε' ∧ t = .result tc (ε'.union .none).failLabel := by
+    ∃ tc t' ε', LRhsTy P E Γ pc v t' ε' ∧ t = .result tc (.int .bot) (ε'.union .none).failLabel := by
   cases h with
   | attempt hb =>
     cases hb with
@@ -104,7 +104,7 @@ theorem s14_untyped (hold : P.oldHost = false) {lx : LExpr} (hx : ¬ P.le lx (.o
     | letE hr hflow hb _ =>
       -- The read: its failure carries the file-state label, and so does `r`.
       obtain ⟨tc, t', ε', hrd, rfl⟩ := attempt_inv hr
-      obtain ⟨te, ls, hl, hop⟩ := branch_bound hb
+      obtain ⟨te, ee, ls, hl, hop⟩ := branch_bound hb
       simp [lctxLookup] at hl
       subst hl
       cases hrd with
@@ -112,7 +112,7 @@ theorem s14_untyped (hold : P.oldHost = false) {lx : LExpr} (hx : ¬ P.le lx (.o
         cases hp
         rw [failLabel_some] at hflow
         cases hflow with
-        | result _ hls =>
+        | result _ _ hls =>
           apply hx
           refine LExpr.le_trans hfs (LExpr.le_trans ?_ (LExpr.le_trans hls hop))
           simp only [Program.fsFail, hold, Bool.false_eq_true, ite_false]
@@ -125,7 +125,7 @@ theorem s15_untyped (hold : P.oldHost = false) {lx : LExpr} (hx : ¬ P.le lx (.o
   intro h
   cases h with
   | letE hr hflow hb _ =>
-    obtain ⟨te, ls, hl, hop⟩ := branch_bound hb
+    obtain ⟨te, ee, ls, hl, hop⟩ := branch_bound hb
     simp [lctxLookup] at hl
     subst hl
     -- The request, under the empty headers and no key name: its failure carries the body's label.
@@ -155,7 +155,7 @@ theorem s15_untyped (hold : P.oldHost = false) {lx : LExpr} (hx : ¬ P.le lx (.o
                         subst hlx
                         simp only [Eff.union, Eff.none, Eff.failLabel] at hflow
                         cases hflow with
-                        | result _ hls =>
+                        | result _ _ hls =>
                           apply hx
                           refine LExpr.le_trans ?_ (LExpr.le_trans hls hop)
                           simp only [Program.reqFail, hold, Bool.false_eq_true, ite_false,
@@ -200,7 +200,7 @@ theorem s14rbw_untyped (hold : P.oldHost = false) {lx : LExpr}
       | var hl =>
         simp [lctxLookup] at hl
         subst hl
-        obtain ⟨te, ls, hl, hop⟩ := branch_bound hb
+        obtain ⟨te, ee, ls, hl, hop⟩ := branch_bound hb
         simp [lctxLookup] at hl
         subst hl
         cases hrd with
@@ -208,7 +208,7 @@ theorem s14rbw_untyped (hold : P.oldHost = false) {lx : LExpr}
           cases hpath
           rw [failLabel_some] at hflow
           cases hflow with
-          | result _ hls =>
+          | result _ _ hls =>
             apply hx
             refine LExpr.le_trans (LExpr.le_trans (LExpr.le_join_right _ _) hfs)
               (LExpr.le_trans ?_ (LExpr.le_trans hls hop))
@@ -254,7 +254,7 @@ theorem s14cond_untyped (hold : P.oldHost = false) {lc : LExpr}
     cases hbody with
     | letE hr hflow hb _ =>
       obtain ⟨tc, t', ε', hrd, rfl⟩ := attempt_inv hr
-      obtain ⟨te, ls, hl, hop⟩ := branch_bound hb
+      obtain ⟨te, ee, ls, hl, hop⟩ := branch_bound hb
       simp [lctxLookup] at hl
       subst hl
       cases hrd with
@@ -262,7 +262,7 @@ theorem s14cond_untyped (hold : P.oldHost = false) {lc : LExpr}
         cases hp
         rw [failLabel_some] at hflow
         cases hflow with
-        | result _ hls =>
+        | result _ _ hls =>
           apply hc
           refine LExpr.le_trans hfs (LExpr.le_trans ?_ (LExpr.le_trans hls hop))
           simp only [Program.fsFail, hold, Bool.false_eq_true, ite_false]

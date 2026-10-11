@@ -15,8 +15,10 @@ mutual
   theorem Flow.erase {top : Label} : ∀ {t₁ t₂ : LTy}, Flow top t₁ t₂ → t₁.erase = t₂.erase
     | _, _, .int _ | _, _, .bool _ | _, _, .text _ | _, _, .unit | _, _, .record _
     | _, _, .var _ => rfl
-    | _, _, .list h _ | _, _, .option h _ | _, _, .result h _ => by
+    | _, _, .list h _ | _, _, .option h _ => by
       simp [LTy.erase, Flow.erase h]
+    | _, _, .result h g _ => by
+      simp [LTy.erase, Flow.erase h, Flow.erase g]
     | _, _, .fn hps hr _ _ _ _ => by
       simp only [LTy.erase, LTy.erases_eq, Flows.erase hps, Flow.erase hr]
     | _, _, .tuple hs _ => by
@@ -152,6 +154,8 @@ mutual
       exact .list h
     | _, _, _, _, _, .none _ => .none
     | _, _, _, _, _, .some h => .some (latom_erase h)
+    | _, _, _, _, _, .mkOk h _ => .mkOk (latom_erase h)
+    | _, _, _, _, _, .mkErr h _ => .mkErr (latom_erase h)
     | _, _, _, _, _, .lambda (params := params) hb _ _ _ => by
       have h := LExprTy.toStruct hb
       rw [params_erase] at h

@@ -47,7 +47,7 @@ def intl : LExpr := .ofLabel ⟨.internal, []⟩
 def body : Expr :=
   .letR "h" (.list (.record "prelude.Header" .bot) .bot) (.list [])
     (.letR "k" (.option (.text .bot) .bot) .none
-      (.letE "r" (.result (.record "prelude.Response" intl) intl)
+      (.letE "r" (.result (.record "prelude.Response" intl) (.int .bot) intl)
         (.attempt (.letR "c" (.record "prelude.Response" intl)
           (.req "get" [.text "https://example.com", .var "h", .var "k"]) (.atom (.var "c"))))
         (.atom (.var "r"))))
@@ -59,7 +59,7 @@ theorem certified : prog.LWellFormed ∧ prog.B1WellFormed ∧ prog.HostWF :=
 
 unseal flowB flowsB in
 theorem body_checked :
-    ∃ ε, checkExpr prog [] [] .bot (.result (.record "prelude.Response" intl) intl) body = .ok ε :=
+    ∃ ε, checkExpr prog [] [] .bot (.result (.record "prelude.Response" intl) (.int .bot) intl) body = .ok ε :=
   ⟨_, rfl⟩
 
 /-- Two worlds whose servers have answered 0 and 5 requests. -/

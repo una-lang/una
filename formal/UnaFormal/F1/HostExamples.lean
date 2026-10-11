@@ -104,9 +104,9 @@ theorem intl_hidden (fs : Level) : ¬ Vis (prog fs) Label.bot (.ofLabel internal
 
 /-- Write `log`, read it back, and print whether the read succeeded. -/
 def eA : Expr :=
-  .letE "w" (.result (.unit .bot) .bot)
+  .letE "w" (.result (.unit .bot) (.int .bot) .bot)
     (.attempt (.letR "u" (.unit .bot) (.write (.text "log") (.text "x")) (.atom (.var "u"))))
-    (.letE "r" (.result (.text intl) .bot)
+    (.letE "r" (.result (.text intl) (.int .bot) .bot)
       (.attempt (.letR "c" (.text intl) (.read (.text "log")) (.atom (.var "c"))))
       (.caseResult (.var "r") "v"
         (.letR "o" (.unit .bot) (.op (.text "yes")) (.atom (.var "o"))) "e"
@@ -117,13 +117,15 @@ theorem eA_typed : ∃ t ε, LExprTy (prog .public) [] [] .bot eA t ε := by
       (.letR "u" (.unit .bot) (.write (.text "log") (.text "x")) (.atom (.var "u"))) _ _ :=
     .letR (.write .text rfl .text rfl (le_of rfl) (fun _ => le_of rfl) (sf rfl)) .unit
       (.atom (.var rfl)) rfl
-  have hr : LExprTy (prog .public) [] [("w", .result (.unit .bot) .bot)] (LExpr.bot.join LExpr.bot)
+  have hr : LExprTy (prog .public) [] [("w", .result (.unit .bot) (.int .bot) .bot)]
+      (LExpr.bot.join LExpr.bot)
       (.letR "c" (.text intl) (.read (.text "log")) (.atom (.var "c"))) _ _ :=
     .letR (.read .text rfl (le_of rfl) (sf rfl)) (.text (le_of rfl)) (.atom (.var rfl)) rfl
   have hall : LExprTy (prog .public) [] [] .bot eA _ _ :=
-    .letE (x := "w") (ann := .result (.unit .bot) .bot) (.attempt hw) (.result .unit (le_of rfl))
-      (.letE (x := "r") (ann := .result (.text intl) .bot) (.attempt hr)
-        (.result (.text (le_of rfl)) (le_of rfl))
+    .letE (x := "w") (ann := .result (.unit .bot) (.int .bot) .bot) (.attempt hw)
+      (.result .unit (.int (le_of rfl)) (le_of rfl))
+      (.letE (x := "r") (ann := .result (.text intl) (.int .bot) .bot) (.attempt hr)
+        (.result (.text (le_of rfl)) (.int (le_of rfl)) (le_of rfl))
         (.caseResult (s := .unit .bot) (.var rfl)
           (.letR (.op .text trivial (le_of rfl) (sf rfl)) .unit (.atom (.var rfl)) rfl)
           (.letR (.op .text trivial (le_of rfl) (sf rfl)) .unit (.atom (.var rfl)) rfl)
@@ -162,9 +164,9 @@ theorem exA_runs : wA₁ ≠ wA₂ ∧
 /-- Write to the secret path `x`, read `a.txt`, and return 1 or 2 by whether the read succeeded:
 no print, since the read's failure is `internal`. -/
 def eB : Expr :=
-  .letE "w" (.result (.unit .bot) intl)
+  .letE "w" (.result (.unit .bot) (.int .bot) intl)
     (.attempt (.letR "u" (.unit .bot) (.write (.var "x") (.text "x")) (.atom (.var "u"))))
-    (.letE "r" (.result (.text intl) intl)
+    (.letE "r" (.result (.text intl) (.int .bot) intl)
       (.attempt (.letR "c" (.text intl) (.read (.text "a.txt")) (.atom (.var "c"))))
       (.caseResult (.var "r") "v" (.atom (.int 1)) "e" (.atom (.int 2))))
 
@@ -175,16 +177,18 @@ theorem eB_typed : ∃ t ε, LExprTy (prog .internal) [] ΓB .bot eB t ε := by
       (.letR "u" (.unit .bot) (.write (.var "x") (.text "x")) (.atom (.var "u"))) _ _ :=
     .letR (.write (.var rfl) rfl .text rfl (le_of rfl) (fun _ => le_of rfl) (sf rfl)) .unit
       (.atom (.var rfl)) rfl
-  have hr : LExprTy (prog .internal) [] (("w", .result (.unit .bot) intl) :: ΓB) (LExpr.bot.join LExpr.bot)
+  have hr : LExprTy (prog .internal) [] (("w", .result (.unit .bot) (.int .bot) intl) :: ΓB)
+      (LExpr.bot.join LExpr.bot)
       (.letR "c" (.text intl) (.read (.text "a.txt")) (.atom (.var "c"))) _ _ :=
     .letR (.read .text rfl (le_of rfl) (sf rfl)) (.text (le_of rfl)) (.atom (.var rfl)) rfl
   have hall : LExprTy (prog .internal) [] ΓB .bot eB _ _ :=
-    .letE (x := "w") (ann := .result (.unit .bot) intl) (.attempt hw) (.result .unit (le_of rfl))
-      (.letE (x := "r") (ann := .result (.text intl) intl) (.attempt hr)
-        (.result (.text (le_of rfl)) (le_of rfl))
+    .letE (x := "w") (ann := .result (.unit .bot) (.int .bot) intl) (.attempt hw)
+      (.result .unit (.int (le_of rfl)) (le_of rfl))
+      (.letE (x := "r") (ann := .result (.text intl) (.int .bot) intl) (.attempt hr)
+        (.result (.text (le_of rfl)) (.int (le_of rfl)) (le_of rfl))
         (.caseResult (s := .int .bot) (.var rfl) (.atom .int) (.atom .int) (.int (le_of rfl))
           (.int (le_of rfl)) rfl)
-        (by simp [LTy.InPlace, intl, LExpr.ofLabel]))
+        (by simp [LTy.InPlace, intl, LExpr.ofLabel, LExpr.bot]))
       (by simp [LTy.InPlace, intl, LExpr.ofLabel, LExpr.bot])
   exact ⟨_, _, hall⟩
 

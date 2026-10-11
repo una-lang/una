@@ -20,8 +20,11 @@ namespace Una.F1.Check
 mutual
   theorem tyClosed_sound : ∀ (t : Ty), tyClosed t = true → ∀ σ, t.subst σ = t
     | .int, _, _ | .bool, _, _ | .text, _, _ | .unit, _, _ | .record _, _, _ => rfl
-    | .list t, h, σ | .option t, h, σ | .result t, h, σ => by
+    | .list t, h, σ | .option t, h, σ => by
       simp only [tyClosed] at h; simp only [Ty.subst, tyClosed_sound t h σ]
+    | .result t e, h, σ => by
+      simp only [tyClosed, Bool.and_eq_true] at h
+      simp only [Ty.subst, tyClosed_sound t h.1 σ, tyClosed_sound e h.2 σ]
     | .fn ps r, h, σ => by
       simp only [tyClosed, Bool.and_eq_true] at h
       simp only [Ty.subst, tysClosed_sound ps h.1 σ, tyClosed_sound r h.2 σ]
@@ -44,9 +47,12 @@ mutual
   theorem tyCats_sound {cats : List String} : ∀ (t : LTy), tyCats cats t = true → t.CatsIn cats
     | .int _, h | .bool _, h | .text _, h | .unit _, h | .record _ _, h | .var _ _, h => by
       simp only [tyCats] at h; exact labelCats_sound h
-    | .list t _, h | .option t _, h | .result t _, h => by
+    | .list t _, h | .option t _, h => by
       simp only [tyCats, Bool.and_eq_true] at h
       exact ⟨tyCats_sound t h.1, labelCats_sound h.2⟩
+    | .result t e _, h => by
+      simp only [tyCats, Bool.and_eq_true] at h
+      exact ⟨tyCats_sound t h.1.1, tyCats_sound e h.1.2, labelCats_sound h.2⟩
     | .fn ps r _ _ _ _, h => by
       simp only [tyCats, Bool.and_eq_true] at h
       exact ⟨tysCats_sound ps h.1.1, tyCats_sound r h.1.2, labelCats_sound h.2⟩
@@ -241,6 +247,7 @@ mutual
     | .req _ _, _, _, _, _, _, _, hg | .construct _ _, _, _, _, _, _, _, hg
     | .field _ _, _, _, _, _, _, _, hg | .list _, _, _, _, _, _, _, hg
     | .none, _, _, _, _, _, _, hg | .some _, _, _, _, _, _, _, hg
+    | .mkOk _, _, _, _, _, _, _, hg | .mkErr _, _, _, _, _, _, _, hg
     | .declassify _ _, _, _, _, _, _, _, hg | .map _ _, _, _, _, _, _, _, hg
     | .filter _ _, _, _, _, _, _, _, hg | .firstWhere _ _, _, _, _, _, _, _, hg
     | .fold _ _ _, _, _, _, _, _, _, hg | .parse _, _, _, _, _, _, _, hg

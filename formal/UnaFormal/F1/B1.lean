@@ -10,7 +10,8 @@ mutual
   /-- A right-hand side that performs no event and cannot fail or call: the `via` functions of
   option B1. -/
   def Rhs.Pure : Rhs → Prop
-    | .atom _ | .prim _ _ | .construct _ _ | .field _ _ | .list _ | .none | .some _ | .eq _ _
+    | .atom _ | .prim _ _ | .construct _ _ | .field _ _ | .list _ | .none | .some _ | .mkOk _
+    | .mkErr _ | .eq _ _
     | .lambda _ _ | .funRef _ _ => True
     | _ => False
 

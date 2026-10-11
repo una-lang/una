@@ -77,7 +77,7 @@ theorem V.eq_text {l : LExpr} {a b : Val} (h : V p L (.text l) a b) (hv : Vis p 
 theorem LTy.top_le_deep (rd : String → Label) {top : Label} :
     ∀ t : LTy, (∀ a l, t ≠ .var a l) → LExpr.le top t.top (t.deep rd)
   | .int _, _ | .bool _, _ | .text _, _ | .unit _, _ => LExpr.le_refl _
-  | .record _ _, _ | .list _ _, _ | .option _ _, _ | .result _ _, _ | .fn _ _ _ _ _ _, _
+  | .record _ _, _ | .list _ _, _ | .option _ _, _ | .result _ _ _, _ | .fn _ _ _ _ _ _, _
   | .tuple _ _, _ => LExpr.le_join_left _ _
   | .var a l, h => absurd rfl (h a l)
 
@@ -171,8 +171,10 @@ theorem eqIn_flow {E : List String} {f : String → Bool} :
     ∀ {t₁ t₂ : LTy}, Flow p.top t₁ t₂ → t₁.eqIn E f = t₂.eqIn E f
   | _, _, .int _ | _, _, .bool _ | _, _, .text _ | _, _, .unit | _, _, .record _
   | _, _, .fn _ _ _ _ _ _ | _, _, .var _ | _, _, .tuple _ _ => rfl
-  | _, _, .list h _ | _, _, .option h _ | _, _, .result h _ => by
+  | _, _, .list h _ | _, _, .option h _ => by
     simp only [LTy.eqIn]; exact eqIn_flow h
+  | _, _, .result h g _ => by
+    simp only [LTy.eqIn]; rw [eqIn_flow h, eqIn_flow g]
 
 theorem recordDeep_of {r : String} {rec : Record} (h : p.record r = some rec) :
     p.recordDeep r = rec.deep := by
@@ -203,10 +205,13 @@ mutual
       simp only [Program.deep, LTy.deep] at hd
       rw [V.eq_of_deep hwf h ha hb he (Vis.right hd)]
     | _, _, _, _, _, .ok h, .ok ha, .ok hb, he, hd => by
-      simp only [LTy.eqIn] at he
+      simp only [LTy.eqIn, Bool.and_eq_true] at he
       simp only [Program.deep, LTy.deep] at hd
-      rw [V.eq_of_deep hwf h ha hb he (Vis.right hd)]
-    | _, _, _, _, _, .err, _, _, _, _ => rfl
+      rw [V.eq_of_deep hwf h ha hb he.1 (Vis.left (Vis.right hd))]
+    | _, _, _, _, _, .err h, .err ha, .err hb, he, hd => by
+      simp only [LTy.eqIn, Bool.and_eq_true] at he
+      simp only [Program.deep, LTy.deep] at hd
+      rw [V.eq_of_deep hwf h ha hb he.2 (Vis.right (Vis.right hd))]
     | _, n, _, _, _, .record (r := r) (rec := rec) hrec hfs, .record hra hfa, .record hrb hfb,
       he, hd => by
       rw [hrec] at hra hrb

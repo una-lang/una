@@ -45,5 +45,6 @@ import UnaFormal.F1.HostFreeExample
 import UnaFormal.F1.FilesCertExample
 import UnaFormal.F1.HttpExample
 import UnaFormal.F1.EnvExample
+import UnaFormal.F1.ResultExample
 import UnaFormal.F1.LoopLeak
 import UnaFormal.F1.LoopExample

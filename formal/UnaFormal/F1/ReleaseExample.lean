@@ -318,7 +318,7 @@ def progF : Program := { prog with policies := [⟨"guard", .int sec, .bool .bot
 
 -- On 1234 the `via` fails: the call releases `Err(7)` and fails with 7.
 #guard match evalRhs Host.unit 5 progF w0 (env 1234) (.declassify "guard" (.var "s")) with
-  | ([.release "guard" (.err 7)], .failed 7, _) => true
+  | ([.release "guard" (.err (.int 7))], .failed 7, _) => true
   | _ => false
 
 -- On another value it releases `false`, its value.
