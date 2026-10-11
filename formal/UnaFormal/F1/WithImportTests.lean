@@ -58,10 +58,14 @@ def mixed : String := r#"{"schema":"una.core/1","edition":"0.2","complete":true,
 -- A quiet and a printing handler of one operation, chosen by two scopes: not read by scopes, so
 -- the `with`s are not re-checked (fail closed).
 #guard run mixed "m.pick_gong" == "not re-checked"
+-- Its invoker, outside the scopes: `Gong` has two handlers and no reading fixes which one runs, so
+-- neither reads `Gong.strike` as F1's event (fail closed).
+#guard run mixed "m.strike_it" == "not re-checked"
 -- (c): a call of a function that invokes an operation no scope installs there: not re-checked by
--- the scoped reading. (Combined with #524's, it is accepted there under M2's assumption: with two
--- handlers, `Vault.note` is read as F1's one event, whose handler is not read.)
+-- the scoped reading, nor by #524's, which does not read an operation of a capability `with`
+-- scopes install.
 #guard runScoped unbound "m.reach" == "not re-checked"
+#guard run unbound "m.reach" == "not re-checked"
 -- A user name starting with `@`, as a marker's: the document is not read.
 #guard ["m.work", "m.guarded", "m.reach"].all (run forged · == "not re-checked")
 

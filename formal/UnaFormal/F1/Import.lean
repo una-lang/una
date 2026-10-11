@@ -1881,8 +1881,15 @@ def checkDocumentRead (subst : Subst) (doc : J) (caps : Caps := {}) (scopes : Bo
     d.kind != "handler" || (plainRun (do str (← field d.value "capability"))).toOption != some cap ||
       (usesCaps d).all fun c => !cands.contains c && c != "?"
   let dynCaps := if scopes then dynAll else []
-  -- #524's reading of such a document (#538): their operations are not read there.
-  let blocked := if scopes then [] else dynAll
+  -- #524's reading of such a document (#538): their operations are not read there. Nor, in either
+  -- reading, those of a capability a `with` or `given` installs that scopes do not read and that
+  -- has other than one handler in the document: no reading fixes which of them runs.
+  let handlerCount := fun (cap : String) => (decls.filter fun d => d.kind == "handler" &&
+    (plainRun (do str (← field d.value "capability"))).toOption == some cap).length
+  let installedCaps := (installs.filterMap fun q =>
+    capOfH (if q.startsWith "given:" then (q.drop 6).toString else q)).eraseDups
+  let unscoped := installedCaps.filter fun cap => !dynAll.contains cap && handlerCount cap != 1
+  let blocked := (if scopes then [] else dynAll) ++ unscoped
   let synth := synthHandlers decls dynCaps
   let dyn := synth.filter fun x => dynCaps.contains x.2.1.1
   let decls := decls ++ synth.map (·.1)
