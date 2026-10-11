@@ -261,6 +261,9 @@ structure Fun where
   /-- The payload kinds its failures may have (#512): its `fails` kind when that is a kind with
   a field, so that `attempt` and a handler know what they receive. -/
   raises : List String := []
+  /-- The operations of `with` scopes it may invoke (#538, ruling E): its callers install their
+  handlers, and each call is bounded by their `accepts`. -/
+  invokes : List String := []
 
 /-- A record kind of the program: its field types, with their declared labels, in order, and
 the join of every label they declare, which the checker computes over nested records (the

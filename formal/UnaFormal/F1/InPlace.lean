@@ -232,7 +232,7 @@ theorem Eff.plainFree_attemptOf (ε : Eff) : (Eff.attemptOf ε).PlainFree :=
 theorem Eff.plainFree_handleOf {ε₁ ε₂ : Eff} (h₁ : ε₁.PlainFree) (h₂ : ε₂.PlainFree) :
     (Eff.handleOf ε₁ ε₂).PlainFree :=
   Eff.plainFree_decide (ε := ⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels,
-    ε₂.codes, ε₂.raises, ε₂.dl⟩) ⟨h₂.1, h₂.2⟩ h₁.2
+    ε₂.codes, ε₂.raises, ε₂.dl, ε₁.invokes ++ ε₂.invokes⟩) ⟨h₂.1, h₂.2⟩ h₁.2
 
 /-- A request's failure label is plain-free when the program counter and the arguments are. -/
 theorem Program.reqFail_plainFree {p : Program} {pc : LExpr} {ts : List LTy} (hpc : pc.PlainFree)

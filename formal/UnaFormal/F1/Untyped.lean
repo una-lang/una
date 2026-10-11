@@ -76,7 +76,7 @@ theorem attempt_inv {Γ : LCtx} {pc : LExpr} {E : List String} {x : String} {ann
       | atom _ => exact ⟨_, _, _, hr, rfl⟩
 
 theorem dl_some {o : Bool} {g : HostFx} {l : LExpr} {rs : List String} {cd : Bool}
-    {ra : List String} {d : LExpr} : ((⟨o, g, some l, rs, cd, ra, d⟩ : Eff).union .none).dl = d.join .bot := by
+    {ra iv : List String} {d : LExpr} : ((⟨o, g, some l, rs, cd, ra, d, iv⟩ : Eff).union .none).dl = d.join .bot := by
   simp [Eff.union, Eff.none]
 
 /-- **S-14 under ADR 0085's rules has no typing**, for every file-state label and every

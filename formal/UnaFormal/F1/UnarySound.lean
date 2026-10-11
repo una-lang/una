@@ -1295,7 +1295,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         have hmono : HostFx.Le ε₁.host (ε₁.host.or ε₂.host) := union_host_left (ε₂ := ε₂)
         have hmono₂ : HostFx.Le ε₂.host (ε₁.host.or ε₂.host) := union_host_right (ε₁ := ε₁)
         have hev : ∀ ev ∈ tr, Allowed p (pc.inst (p.sd σ))
-            ((⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises, ε₂.dl⟩ : Eff).inst (p.sd σ)) ev :=
+            ((⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises, ε₂.dl, ε₁.invokes ++ ε₂.invokes⟩ : Eff).inst (p.sd σ)) ev :=
           fun ev hev => Allowed.mono (LExpr.le_refl _) (fun h => by simp only [Eff.inst] at h ⊢; simp [h])
             hmono (fun x h => by simp only [Eff.inst] at h ⊢; simp [h]) ev (h.1 ev hev)
         cases r with
@@ -1332,7 +1332,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         have hmono : HostFx.Le ε₁.host (ε₁.host.or ε₂.host) := union_host_left (ε₂ := ε₂)
         have hmono₂ : HostFx.Le ε₂.host (ε₁.host.or ε₂.host) := union_host_right (ε₁ := ε₁)
         have hev : ∀ ev ∈ tr, Allowed p (pc.inst (p.sd σ))
-            ((⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises, ε₂.dl⟩ : Eff).inst (p.sd σ)) ev :=
+            ((⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises, ε₂.dl, ε₁.invokes ++ ε₂.invokes⟩ : Eff).inst (p.sd σ)) ev :=
           fun ev hev => Allowed.mono (LExpr.le_refl _) (fun h => by simp only [Eff.inst] at h ⊢; simp [h])
             hmono (fun x h => by simp only [Eff.inst] at h ⊢; simp [h]) ev (h.1 ev hev)
         cases r with
@@ -1369,7 +1369,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         have hmono : HostFx.Le ε₁.host (ε₁.host.or ε₂.host) := union_host_left (ε₂ := ε₂)
         have hmono₂ : HostFx.Le ε₂.host (ε₁.host.or ε₂.host) := union_host_right (ε₁ := ε₁)
         have hev : ∀ ev ∈ tr, Allowed p (pc.inst (p.sd σ))
-            ((⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises, ε₂.dl⟩ : Eff).inst (p.sd σ)) ev :=
+            ((⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises, ε₂.dl, ε₁.invokes ++ ε₂.invokes⟩ : Eff).inst (p.sd σ)) ev :=
           fun ev hev => Allowed.mono (LExpr.le_refl _) (fun h => by simp only [Eff.inst] at h ⊢; simp [h])
             hmono (fun x h => by simp only [Eff.inst] at h ⊢; simp [h]) ev (h.1 ev hev)
         cases r with
@@ -1451,7 +1451,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         have hmono : HostFx.Le ε₁.host (ε₁.host.or ε₂.host) := union_host_left (ε₂ := ε₂)
         have hmono₂ : HostFx.Le ε₂.host (ε₁.host.or ε₂.host) := union_host_right (ε₁ := ε₁)
         have hev : ∀ ev ∈ tr, Allowed p (pc.inst (p.sd σ))
-            ((⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises, ε₂.dl⟩ : Eff).inst (p.sd σ)) ev :=
+            ((⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises, ε₂.dl, ε₁.invokes ++ ε₂.invokes⟩ : Eff).inst (p.sd σ)) ev :=
           fun ev hev => Allowed.mono (LExpr.le_refl _) (fun h => by simp only [Eff.inst] at h ⊢; simp [h])
             hmono (fun x h => by simp only [Eff.inst] at h ⊢; simp [h]) ev (h.1 ev hev)
         cases r with

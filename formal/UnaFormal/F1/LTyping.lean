@@ -107,10 +107,13 @@ structure Eff where
   fails, and how, the data only, without the program counter, which `fails` carries. It is at or
   below `failLabel` (`dl_le_failLabel`). `attempt` and a handler label what they give by it. -/
   dl : LExpr
+  /-- The operations a code may invoke through a `with` scope (#538, ruling E), as `rels` lists
+  the policies it may release through: the `with` that installs the handler discharges them. -/
+  invokes : List String
 
 namespace Eff
 
-def none : Eff := ⟨false, HostFx.none, Option.none, [], false, [], LExpr.bot⟩
+def none : Eff := ⟨false, HostFx.none, Option.none, [], false, [], LExpr.bot, []⟩
 
 def union (a b : Eff) : Eff :=
   ⟨a.op || b.op, a.host.or b.host,
@@ -118,7 +121,7 @@ def union (a b : Eff) : Eff :=
     | some l₁, some l₂ => some (l₁.join l₂)
     | some l, Option.none | Option.none, some l => some l
     | Option.none, Option.none => Option.none, a.rels ++ b.rels, a.codes || b.codes,
-    a.raises ++ b.raises, a.dl.join b.dl⟩
+    a.raises ++ b.raises, a.dl.join b.dl, a.invokes ++ b.invokes⟩
 
 /-- A choice decided at `c` (#524): when the code can fail, which branch runs, or how many
 iterations, decides its outcome, so `c` joins its decision label. -/
@@ -126,13 +129,13 @@ def decide (c : LExpr) (ε : Eff) : Eff :=
   if ε.fails.isSome then { ε with dl := ε.dl.join c } else ε
 
 /-- The effects of `attempt` around code with effects `ε`: it does not fail. -/
-def attemptOf (ε : Eff) : Eff := ⟨ε.op, ε.host, Option.none, ε.rels, false, [], LExpr.bot⟩
+def attemptOf (ε : Eff) : Eff := ⟨ε.op, ε.host, Option.none, ε.rels, false, [], LExpr.bot, ε.invokes⟩
 
 /-- The effects of a handled expression: the body's and the handler's, failing as the handler,
 which runs only when the body failed, so both decide its outcome. -/
 def handleOf (ε₁ ε₂ : Eff) : Eff :=
   decide ε₁.dl ⟨ε₁.op || ε₂.op, ε₁.host.or ε₂.host, ε₂.fails, ε₁.rels ++ ε₂.rels, ε₂.codes, ε₂.raises,
-    ε₂.dl⟩
+    ε₂.dl, ε₁.invokes ++ ε₂.invokes⟩
 
 /-- The label of what decides whether the code fails, `⊥` when it cannot. -/
 def failLabel (e : Eff) : LExpr := e.fails.getD LExpr.bot
@@ -140,14 +143,14 @@ def failLabel (e : Eff) : LExpr := e.fails.getD LExpr.bot
 /-- The effects of a call of a function with these `uses` and `fails`. A function's failure is
 decided at its public program counter (T-Fail, T-Fun), so its label is `⊥`. -/
 def ofFn (o : Bool) (g : HostFx) (f : Bool) : Eff :=
-  ⟨o, g, if f then some LExpr.bot else Option.none, [], f, [], LExpr.bot⟩
+  ⟨o, g, if f then some LExpr.bot else Option.none, [], f, [], LExpr.bot, []⟩
 
 /-- The effects of an invocation of an operation whose handler is `fn` (#524), at `pc`: the
 operation, and, when the handler can fail, a failure labeled `pc`, since a lawful handler decides
 it at its own public program counter (`spec/07 §7` rule 4). -/
 def ofInvoke (pc : LExpr) (fn : Fun) : Eff :=
   ⟨true, HostFx.none, if fn.fails then some pc else Option.none, [], fn.fails && fn.raises.isEmpty,
-    fn.raises, LExpr.bot⟩
+    fn.raises, LExpr.bot, []⟩
 
 /-- The effects of a call of a function that may also release through the policies `rs`. -/
 def ofFnR (o : Bool) (g : HostFx) (f : Bool) (rs : List String) : Eff := { ofFn o g f with rels := rs }
@@ -156,16 +159,49 @@ def ofFnR (o : Bool) (g : HostFx) (f : Bool) (rs : List String) : Eff := { ofFn 
 fails with a code when it fails and raises none. -/
 def ofCall (fn : Fun) : Eff :=
   { ofFnR fn.op fn.host fn.fails fn.rels with
-    codes := fn.fails && fn.raises.isEmpty, raises := fn.raises }
+    codes := fn.fails && fn.raises.isEmpty, raises := fn.raises, invokes := fn.invokes }
+
+/-- The effects of an invocation of the operation `o` of a `with` scope (#538, ruling E): its
+failure as an invocation's, and the operation, which the `with` discharges; no event of its own,
+since what the handler does is charged where it is installed. -/
+def ofInvokeOp (pc : LExpr) (fn : Fun) (o : String) : Eff :=
+  { ofInvoke pc fn with op := false, invokes := [o] }
+
+/-- The effects of a `with` scope of `o` installing the handler `fn` around a body with effects
+`ε` (#538, ruling E): the body's, less `o`, and the handler's own event. -/
+def withOf (o : String) (fn : Fun) (ε : Eff) : Eff :=
+  { ε with op := ε.op || fn.op, invokes := ε.invokes.filter (· != o) }
 
 /-- The effects of a call of the policy `pol`, whose `via` function has these `uses` and `fails`
 and whose `to` has the top label `dst` (T-Declassify): the release, and a failure the `via`
 function decides from the `from` value, so labeled where the release is visible, `pc ⊔ dst`
 (#453 Phase B, ADR 0090). -/
 def ofPolicy (o : Bool) (g : HostFx) (f : Bool) (pc dst : LExpr) (pol : String) : Eff :=
-  ⟨o, g, if f then some (pc.join dst) else Option.none, [pol], f, [], if f then dst else LExpr.bot⟩
+  ⟨o, g, if f then some (pc.join dst) else Option.none, [pol], f, [], if f then dst else LExpr.bot, []⟩
 
 end Eff
+
+/-- The `accepts` of an operation of a `with` scope (#538): its representative handler's. -/
+def Program.opAcc (p : Program) (o : String) : Option Label :=
+  (List.lookup o p.opRep).bind fun f => List.lookup f p.ops
+
+/-- Whether the handlers of the operation `o` print (#538): its representative's flag, which
+every handler of it shares (`LWellFormed.handlers`). -/
+def Program.opPrints (p : Program) (o : String) : Prop :=
+  ∃ f fn, List.lookup o p.opRep = some f ∧ p.find f = some fn ∧ fn.op = true
+
+/-- Whether the handlers of `o` print, as a Boolean (#538): its representative's flag. -/
+def Program.opPrintsB (p : Program) (o : String) : Bool :=
+  match List.lookup o p.opRep with
+  | some f => (p.find f).any (·.op)
+  | none => false
+
+/-- Whether code with these effects may perform the event (#538, ruling E): its own, or through
+the handlers of an operation it invokes. -/
+def Eff.emits (p : Program) (ε : Eff) : Bool := ε.op || ε.invokes.any p.opPrintsB
+
+/-- Whether a call of `fn` may perform the event (#538): its own, or through its operations. -/
+def Fun.emits (p : Program) (fn : Fun) : Bool := fn.op || fn.invokes.any p.opPrintsB
 
 /-- `pc ⊑ bound(f)` (`spec/07 §3` rule 4, `spec/10 §5`): the meet of the `accepts` labels of
 the effects, met with `⊥` when it can fail, written as one premise per effect. Effects and
@@ -332,7 +368,7 @@ mutual
         LTy.firstClasses targs = true → fn.EqArgs p E targs → LTy.GroundAll targs →
         LAtomsTy Γ args ts →
         Flows p.top ts (fn.params.map (fun q => p.lsub (fn.tparams.zip targs) q.2)) →
-        p.Bound pc fn.op fn.host fn.fails → p.RelBound pc fn.rels →
+        p.Bound pc (fn.emits p) fn.host fn.fails → p.RelBound pc fn.rels →
         LRhsTy p E Γ pc (.call f targs args) (p.lsub (fn.tparams.zip targs) fn.result)
           (.ofCall fn)
     /-- T-Invoke (#524): an operation of a user capability, whose handler is `f`. Each argument
@@ -353,7 +389,7 @@ mutual
         p.find f = some fn → List.lookup f p.ops = some acc → fn.tparams = [] →
         LAtomsTy Γ args ts → Flows p.top ts (fn.params.map Prod.snd) →
         p.le (pc.join (LExpr.joinAll (ts.map p.deep))) (.ofLabel acc) → pc.SymFree →
-        LRhsTy p E Γ pc (.invokeOp o args) fn.result (.ofInvoke pc fn)
+        LRhsTy p E Γ pc (.invokeOp o args) fn.result (.ofInvokeOp pc fn o)
     /-- T-App. An argument that carries decisions `ℓ*_T` its parameter's type does not accept
     raises the call's result and program counter instead, as the value's label does
     (`spec/07 §7` rule 8, "decisions given to functions"). The decisions are those the
@@ -371,7 +407,7 @@ mutual
     | op {Γ pc line t} :
         LAtomTy Γ line t → t.erase.Scalar →
         p.le (pc.join (p.deep t)) (.ofLabel p.acceptsOp) → pc.SymFree →
-        LRhsTy p E Γ pc (.op line) (.unit .bot) ⟨true, HostFx.none, Option.none, [], false, [], LExpr.bot⟩
+        LRhsTy p E Γ pc (.op line) (.unit .bot) ⟨true, HostFx.none, Option.none, [], false, [], LExpr.bot, []⟩
     /-- `Files.read`: its path is a sink, and its failure is decided by the path, by the program
     counter, which decides whether it runs, and by the file system's shape, which the package's
     writes decide: the file-state label (ADR 0085 decision 2). -/
@@ -379,7 +415,7 @@ mutual
         LAtomTy Γ path t → t.erase = .text →
         p.le (pc.join (p.deep t)) (.ofLabel p.acceptsRead) → pc.SymFree →
         LRhsTy p E Γ pc (.read path) (.text (.ofLabel p.readResult))
-          ⟨false, { rd := true }, some (p.fsFail (pc.join (p.deep t))), [], true, [], p.fsFail (p.deep t)⟩
+          ⟨false, { rd := true }, some (p.fsFail (pc.join (p.deep t))), [], true, [], p.fsFail (p.deep t), []⟩
     /-- `Files.write`: its path and content are sinks; where it lands, and whether it runs, are
     below the file-state label (decision 1); its failure is labeled as a read's. -/
     | write {Γ pc path content t c} :
@@ -387,14 +423,14 @@ mutual
         p.le ((pc.join (p.deep t)).join (p.deep c)) (.ofLabel p.acceptsWrite) →
         (p.oldHost = false → p.le (pc.join (p.deep t)) (.ofLabel p.fileState)) → pc.SymFree →
         LRhsTy p E Γ pc (.write path content) (.unit .bot)
-          ⟨false, { wr := true }, some (p.fsFail (pc.join (p.deep t))), [], true, [], p.fsFail (p.deep t)⟩
+          ⟨false, { wr := true }, some (p.fsFail (pc.join (p.deep t))), [], true, [], p.fsFail (p.deep t), []⟩
     /-- A request of `Http`: every argument is a sink, and every argument, with the headers'
     `internal` values, decides its failure (S-15, ADR 0085 decision 7). -/
     | req {Γ pc m args ts} :
         LAtomsTy Γ args ts → httpParams m = some (ts.map LTy.erase) → p.HttpRecords →
         p.le (pc.join (LExpr.joinAll (ts.map p.deep))) (.ofLabel p.acceptsReq) → pc.SymFree →
         LRhsTy p E Γ pc (.req m args) (.record "prelude.Response" (.ofLabel p.reqResult))
-          ⟨false, { rq := true }, some (p.reqFail pc ts), [], true, [], p.reqFail LExpr.bot ts⟩
+          ⟨false, { rq := true }, some (p.reqFail pc ts), [], true, [], p.reqFail LExpr.bot ts, []⟩
     | construct {Γ pc record fields rec ts} :
         p.record record = some rec → LAtomsTy Γ fields ts → Flows p.top ts rec.fields →
         LRhsTy p E Γ pc (.construct record fields) (.record record .bot) .none
@@ -427,14 +463,14 @@ mutual
         LExprTy p E (params ++ Γ) .bot body t ε → p.le ε.failLabel .bot → ε.rels = [] →
         ε.raises = [] → (∀ q ∈ params, q.2.InPlace) →
         LRhsTy p E Γ pc (.lambda params body)
-          (.fn (params.map Prod.snd) t ε.op ε.host ε.fails.isSome .bot) .none
+          (.fn (params.map Prod.snd) t (ε.emits p) ε.host ε.fails.isSome .bot) .none
     | funRef {Γ pc f targs fn} :
         p.find f = some fn → ¬ p.IsVia f → targs.length = fn.tparams.length →
         LTy.firstClasses targs = true → fn.EqArgs p E targs → LTy.GroundAll targs → fn.rels = [] →
         fn.raises = [] →
         LRhsTy p E Γ pc (.funRef f targs)
           (.fn (fn.params.map (fun q => p.lsub (fn.tparams.zip targs) q.2))
-            (p.lsub (fn.tparams.zip targs) fn.result) fn.op fn.host fn.fails .bot) .none
+            (p.lsub (fn.tparams.zip targs) fn.result) (fn.emits p) fn.host fn.fails .bot) .none
     /-- T-Declassify (`spec/07 §5` rule 2): the argument flows into `from`, and the program
     counter is below the label of `to`. The call releases its value through the policy (option
     B1), an effect a function that declassifies declares (`Fun.rels`). Its failure is the `via`
@@ -473,14 +509,14 @@ mutual
     | parse {Γ pc s t} :
         LAtomTy Γ s t → t.erase = .text →
         LRhsTy p E Γ pc (.parse s) (.int (p.deep t))
-          ⟨false, HostFx.none, some (pc.join (p.deep t)), [], true, [], p.deep t⟩
+          ⟨false, HostFx.none, some (pc.join (p.deep t)), [], true, [], p.deep t, []⟩
     /-- T-Checked (`spec/10 §7`, #453): the operand is a public scalar, under a public program
     counter (U4002 otherwise), so whether the predicate holds is public; the value keeps its type,
     and the failure is labeled as `parse`'s, which the premise makes `⊥`. -/
     | checked {Γ pc a t pred code} :
         LAtomTy Γ a t → t.erase.Scalar → p.le (pc.join (p.deep t)) .bot → pc.SymFree →
         LRhsTy p E Γ pc (.checked a pred code) t
-          ⟨false, HostFx.none, some (pc.join (p.deep t)), [], true, [], p.deep t⟩
+          ⟨false, HostFx.none, some (pc.join (p.deep t)), [], true, [], p.deep t, []⟩
     /-- `==` (`spec/07 §7` rule 3): both operands flow into one type with equality, and the
     result carries every label of both. Over values of `T`, that is `ℓ*_T`, the decision of
     rule 8. -/
@@ -570,13 +606,13 @@ mutual
     /-- T-Fail: only at the public program counter (U4002). -/
     | fail {Γ pc code s} :
         p.le pc .bot → pc.SymFree → s.InPlace →
-        LExprTy p E Γ pc (.fail code) s ⟨false, HostFx.none, some .bot, [], true, [], LExpr.bot⟩
+        LExprTy p E Γ pc (.fail code) s ⟨false, HostFx.none, some .bot, [], true, [], LExpr.bot, []⟩
     /-- T-Fail with a payload (#512): only at the public program counter, and each argument flows
     into its field's declared type. -/
     | raise {Γ pc kind code args sm fs ts s} :
         p.sum kind = some sm → sm.variants[code]? = some fs → LAtomsTy Γ args ts → Flows p.top ts fs →
         p.le pc .bot → pc.SymFree → s.InPlace →
-        LExprTy p E Γ pc (.raise kind code args) s ⟨false, HostFx.none, some .bot, [], false, [kind], LExpr.bot⟩
+        LExprTy p E Γ pc (.raise kind code args) s ⟨false, HostFx.none, some .bot, [], false, [kind], LExpr.bot, []⟩
     /-- T-Case on a sum (#512), one arm against the rest: both run under the scrutinee's top
     label, which decides which runs, the bindings take their fields' declared types raised by it,
     and the value is raised by it. A chain of them is the `when` of several arms: each later arm
@@ -593,10 +629,10 @@ mutual
     /-- T-With (#538): `f` is a handler of `o`, and the body runs with `o`'s marker bound to it,
     at the same program counter. No premise on `pc`: every invocation in the scope is checked
     against `accepts` (T-Invoke), and every handler is under the effect floor (Hu). -/
-    | withH {Γ pc o f body t ε} :
-        List.lookup f p.handlerOf = some o →
+    | withH {Γ pc o f fn body t ε} :
+        List.lookup f p.handlerOf = some o → p.find f = some fn →
         LExprTy p E ((markerName o, .text .bot) :: Γ) pc body t ε →
-        LExprTy p E Γ pc (.withH o f body) t ε
+        LExprTy p E Γ pc (.withH o f body) t (Eff.withOf o fn ε)
     /-- T-Case on a sum at a tuple type: as `iteT`. -/
     | caseSumT {Γ pc scrutinee kind ctor binders thenE elseE ls sm fs t₁ t₂ ts ε₁ ε₂} :
         LAtomTy Γ scrutinee (.record kind ls) → p.sum kind = some sm → sm.variants[ctor]? = some fs →
@@ -693,7 +729,7 @@ carry the symbolic labels of the type parameters (`spec/07 §7` rule 8); its eff
 declared, and its failures are decided at the public program counter (U4002). -/
 def Program.FunOk (p : Program) (fn : Fun) : Prop :=
   ∃ t ε, LExprTy p fn.eqParams fn.params .bot fn.body t ε ∧ Flow p.top t fn.result ∧
-    (ε.op = true → fn.op = true) ∧ HostFx.Le ε.host fn.host ∧
+    (ε.emits p = true → fn.emits p = true) ∧ HostFx.Le ε.host fn.host ∧
     (ε.fails.isSome = true → fn.fails = true) ∧ p.le ε.failLabel .bot ∧ (∀ x ∈ ε.rels, x ∈ fn.rels) ∧
     (ε.codes = true → fn.raises = []) ∧ (∀ k ∈ ε.raises, k ∈ fn.raises)
 

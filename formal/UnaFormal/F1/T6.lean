@@ -1333,7 +1333,7 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
           split
           · exact brel_done hw .int
           · exact brel_same hw (fun _ h => nomatch h)
-        · have hvf : ¬ Vis p L ((⟨false, HostFx.none, some (pc.join (p.deep (.text l))), [], true, [], p.deep (.text l)⟩ : Eff).inst (p.sd σ)).dl :=
+        · have hvf : ¬ Vis p L ((⟨false, HostFx.none, some (pc.join (p.deep (.text l))), [], true, [], p.deep (.text l), []⟩ : Eff).inst (p.sd σ)).dl :=
             fun h => hd h
           refine brel_quiet ?_ ?_ (fun _ _ => .hidden hd) (fun _ => hvf) (fun _ => hvf)
           · unfold parseInt

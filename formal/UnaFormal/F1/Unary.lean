@@ -336,7 +336,7 @@ theorem andThen_uok {A : Event → Prop} {P Q : Val → Prop} {F : FailCond} {w 
 /-- The events a code with these effects may perform under `pc`: each at a sink whose `accepts`
 is above `pc`. -/
 def Allowed (p : Program) (pc : LExpr) (ε : Eff) : Event → Prop
-  | .out _ => ε.op = true ∧ p.le pc (.ofLabel p.acceptsOp)
+  | .out _ => ε.emits p = true ∧ p.le pc (.ofLabel p.acceptsOp)
   | .read _ => ε.host.rd = true ∧ p.le pc (.ofLabel p.acceptsRead)
   | .write _ _ => ε.host.wr = true ∧ p.le pc (.ofLabel p.acceptsWrite) ∧
       (p.oldHost = false → p.le pc (.ofLabel p.fileState))
@@ -361,7 +361,7 @@ abbrev UGood (p : Program) (pc : LExpr) (t : LTy) (ε : Eff) (w : World H) (run 
   UOk (Allowed p pc ε) (fun v => LValTy p v t) (FailsAs p pc ε) w run
 
 theorem Allowed.mono {pc pc' : LExpr} {ε ε' : Eff} (hpc : p.le pc pc')
-    (ho : ε'.op = true → ε.op = true) (hg : HostFx.Le ε'.host ε.host)
+    (ho : ε'.emits p = true → ε.emits p = true) (hg : HostFx.Le ε'.host ε.host)
     (hr : ∀ x ∈ ε'.rels, x ∈ ε.rels) :
     ∀ ev, Allowed p pc' ε' ev → Allowed p pc ε ev
   | .out _, ⟨h1, h2⟩ => ⟨ho h1, LExpr.le_trans hpc h2⟩
@@ -377,10 +377,12 @@ theorem Fails.mono {pc pc' : LExpr} {ε ε' : Eff} (hpc : p.le pc pc')
     let ⟨l', hl', hle'⟩ := hf l hl
     ⟨l', hl', LExpr.le_trans hpc (LExpr.le_trans hle hle')⟩
 
-theorem union_op_left {ε₁ ε₂ : Eff} (h : ε₁.op = true) : (ε₁.union ε₂).op = true := by
-  simp [Eff.union, h]
-theorem union_op_right {ε₁ ε₂ : Eff} (h : ε₂.op = true) : (ε₁.union ε₂).op = true := by
-  simp [Eff.union, h]
+theorem union_op_left {ε₁ ε₂ : Eff} (h : ε₁.emits p = true) : (ε₁.union ε₂).emits p = true := by
+  simp only [Eff.emits, Eff.union, Bool.or_eq_true, List.any_append] at h ⊢
+  rcases h with h | h <;> simp [h]
+theorem union_op_right {ε₁ ε₂ : Eff} (h : ε₂.emits p = true) : (ε₁.union ε₂).emits p = true := by
+  simp only [Eff.emits, Eff.union, Bool.or_eq_true, List.any_append] at h ⊢
+  rcases h with h | h <;> simp [h]
 theorem union_host_left {ε₁ ε₂ : Eff} : HostFx.Le ε₁.host (ε₁.union ε₂).host :=
   ⟨fun h => by simp [Eff.union, HostFx.or, h], fun h => by simp [Eff.union, HostFx.or, h],
     fun h => by simp [Eff.union, HostFx.or, h]⟩
@@ -451,7 +453,7 @@ def Program.sd (p : Program) (σ : List (String × LTy)) : List (String × LExpr
 
 /-- Effects instantiated: the labels of failures. -/
 def Eff.inst (s : List (String × LExpr)) (ε : Eff) : Eff :=
-  ⟨ε.op, ε.host, ε.fails.map (·.inst s), ε.rels, ε.codes, ε.raises, ε.dl.inst s⟩
+  ⟨ε.op, ε.host, ε.fails.map (·.inst s), ε.rels, ε.codes, ε.raises, ε.dl.inst s, ε.invokes⟩
 
 /-- A ground instantiation. -/
 abbrev GroundSubst (σ : List (String × LTy)) : Prop := ∀ q ∈ σ, q.2.Ground

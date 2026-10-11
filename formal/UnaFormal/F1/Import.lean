@@ -240,7 +240,10 @@ def usesEffects (uses : List J) (invoked : List String := []) (dyn : List String
       -- A capability whose handler the document declares (#524) is invoked, not an event: its
       -- handler's effects are its own, under the effect floor.
       -- A capability a `with` installs (#538), whose handlers perform nothing: no effect.
-      if dyn.contains cap || invoked.contains cap then op := true
+      -- A capability a `with` installs (#538, ruling E): what its handler does is charged where it
+      -- is installed, so its invocations are not the event (`Fun.invokes` lists them).
+      if dyn.contains cap then pure ()
+      else if invoked.contains cap then op := true
       else if cap == "Files" then
         if o == "read" then host := { host with rd := true }
         else if o == "write" then host := { host with wr := true }
@@ -773,7 +776,8 @@ def signature (c : Ctx) (module : String) (v : J) (body : Expr) : M Fun := do
     op := op || !usesOf.isEmpty, host,
     fails := !isNull (← field v "fails") || failsOf.isSome, body,
     rels := (List.lookup name c.rels).getD [],
-    raises := (c.raisesOf.lookup name).toList }
+    raises := (c.raisesOf.lookup name).toList,
+    invokes := (c.markersOf.lookup name).getD [] }
 
 /-- Every category a label of the document names. -/
 partial def categories (j : J) (acc : List String) : List String :=
@@ -1831,14 +1835,16 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
   let capOfH := fun (q : String) => (decls.find? fun d => d.kind == "handler" &&
       (plainRun (do pure s!"{d.module}.{← str (← field d.value "name")}")).toOption == some q).bind
     fun d => (plainRun (do str (← field d.value "capability"))).toOption
-  -- Only a capability whose every handler performs nothing (#538): what a handler does is charged
-  -- to whoever installs it, which F1's per-function effects cannot follow, so another is not read.
-  let quietCap := fun (cap : String) => decls.all fun d =>
-    d.kind != "handler" || (plainRun (do str (← field d.value "capability"))).toOption != some cap ||
-      (match plainRun (do arr (← field d.value "uses")) with
-        | .ok us => us.isEmpty
-        | .error _ => false)
-  let dynCaps := ((withHandlersIn doc).filterMap capOfH).eraseDups.filter quietCap
+  -- Only a capability whose handlers agree on whether they perform the event (#538): what each
+  -- does is charged where it is installed, and the representative speaks for all of them.
+  let usesOf := fun (d : Decl) => match plainRun (do arr (← field d.value "uses")) with
+    | .ok us => some us.isEmpty
+    | .error _ => Option.none
+  let agreeCap := fun (cap : String) =>
+    let flags := (decls.filter fun d => d.kind == "handler" &&
+      (plainRun (do str (← field d.value "capability"))).toOption == some cap).map usesOf
+    flags.all (· == flags.head?.join) && flags.all Option.isSome
+  let dynCaps := ((withHandlersIn doc).filterMap capOfH).eraseDups.filter agreeCap
   let synth := synthHandlers decls dynCaps
   let dyn := synth.filter fun x => dynCaps.contains x.2.1.1
   let decls := decls ++ synth.map (·.1)

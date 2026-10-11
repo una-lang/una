@@ -73,3 +73,29 @@ pub run(flag: secret Bool) -> secret Int
     let b = open_door() with @door = fine()
       if error pass
     b
+
+pub capability Bell
+  op ring(n: Int) -> Unit
+    accepts public
+
+handler noisy() for Bell
+  uses @console: Console[print]
+  op ring(n) = @console.print("ring")
+
+chime() -> Unit
+  uses @bell: Bell[ring]
+=
+  @bell.ring(1)
+
+pub chime_secret(flag: secret Bool) -> Unit
+  uses @console: Console[print]
+=
+  if flag
+    chime() with @bell = noisy()
+  else
+    unit
+
+pub chime_public() -> Unit
+  uses @console: Console[print]
+=
+  chime() with @bell = noisy()
