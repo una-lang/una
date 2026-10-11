@@ -345,6 +345,15 @@ mutual
         LAtomsTy Γ args ts → Flows p.top ts (fn.params.map Prod.snd) →
         p.le (pc.join (LExpr.joinAll (ts.map p.deep))) (.ofLabel acc) → pc.SymFree →
         LRhsTy p E Γ pc (.invoke f args) fn.result (.ofInvoke pc fn)
+    /-- T-Invoke of an operation a `with` scope installs (#538): its marker is bound, and the
+    operation's signature is its representative handler's, which every handler of it shares
+    (`LWellFormed.handlers`); the rest is T-Invoke's. -/
+    | invokeOp {Γ pc o args f fn ts acc lm} :
+        LAtomTy Γ (.var (markerName o)) (.text lm) → p.le lm .bot → List.lookup o p.opRep = some f →
+        p.find f = some fn → List.lookup f p.ops = some acc → fn.tparams = [] →
+        LAtomsTy Γ args ts → Flows p.top ts (fn.params.map Prod.snd) →
+        p.le (pc.join (LExpr.joinAll (ts.map p.deep))) (.ofLabel acc) → pc.SymFree →
+        LRhsTy p E Γ pc (.invokeOp o args) fn.result (.ofInvoke pc fn)
     /-- T-App. An argument that carries decisions `ℓ*_T` its parameter's type does not accept
     raises the call's result and program counter instead, as the value's label does
     (`spec/07 §7` rule 8, "decisions given to functions"). The decisions are those the
@@ -581,6 +590,13 @@ mutual
     /-- The `else` of an exhaustive `when` on a sum (#512): no effect, at any type. A run that
     reached it aborts, which T6, termination-insensitive, does not observe. -/
     | unreachable {Γ pc s} : s.InPlace → LExprTy p E Γ pc .unreachable s .none
+    /-- T-With (#538): `f` is a handler of `o`, and the body runs with `o`'s marker bound to it,
+    at the same program counter. No premise on `pc`: every invocation in the scope is checked
+    against `accepts` (T-Invoke), and every handler is under the effect floor (Hu). -/
+    | withH {Γ pc o f body t ε} :
+        List.lookup f p.handlerOf = some o →
+        LExprTy p E ((markerName o, .text .bot) :: Γ) pc body t ε →
+        LExprTy p E Γ pc (.withH o f body) t ε
     /-- T-Case on a sum at a tuple type: as `iteT`. -/
     | caseSumT {Γ pc scrutinee kind ctor binders thenE elseE ls sm fs t₁ t₂ ts ε₁ ε₂} :
         LAtomTy Γ scrutinee (.record kind ls) → p.sum kind = some sm → sm.variants[ctor]? = some fs →
@@ -753,6 +769,15 @@ structure Program.LWellFormed (p : Program) : Prop where
   ops : ∀ q ∈ p.ops, ∃ fn, p.find q.1 = some fn ∧ fn.tparams = [] ∧ fn.rels = [] ∧
     fn.host = HostFx.none ∧ (fn.op = true → p.le (.ofLabel q.2) (.ofLabel p.acceptsOp)) ∧
     (∀ r ∈ fn.params, r.2.erase.Scalar) ∧ ¬ p.IsVia q.1
+  /-- Every handler an invocation of an operation can run (#538) is a handler of the program
+  (`ops`, so under the floor) with the operation's signature and `accepts`: its representative's. -/
+  handlers : ∀ o f, List.lookup o p.opRep = some f → List.lookup f p.handlerOf = some o ∧
+    ∃ fn acc, p.find f = some fn ∧ List.lookup f p.ops = some acc ∧
+      ∀ g, List.lookup g p.handlerOf = some o → ∃ gn acc', p.find g = some gn ∧
+        List.lookup g p.ops = some acc' ∧ p.le (.ofLabel acc) (.ofLabel acc') ∧
+        Flows p.top (fn.params.map Prod.snd) (gn.params.map Prod.snd) ∧
+        Flow p.top gn.result fn.result ∧ gn.fails = fn.fails ∧ gn.raises = fn.raises ∧
+        gn.tparams = fn.tparams
   /-- Signatures and declared types keep `ℓ_T` in place. -/
   inPlace : (∀ fn ∈ p.funs, (∀ q ∈ fn.params, q.2.InPlace) ∧ fn.result.InPlace) ∧
     (∀ rec ∈ p.records, ∀ t ∈ rec.fields, t.InPlace) ∧

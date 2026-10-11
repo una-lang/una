@@ -53,6 +53,7 @@ mutual
     | .req m a, .req k b => m == k && a == b
     | .construct r a, .construct s b => r == s && a == b
     | .invoke f a, .invoke g b => ρ f == g && a == b
+    | .invokeOp o a, .invokeOp o' b => o == o' && a == b
     | .variant k i a, .variant k' i' b => k == k' && i == i' && a == b
     | .field v i, .field u j => v == u && i == j
     | .list a, .list b => a == b
@@ -91,6 +92,7 @@ mutual
     | .caseSum a i xs t e, .caseSum b j ys u f =>
       a == b && i == j && xs == ys && exprSim ρ t u && exprSim ρ e f
     | .unreachable, .unreachable => true
+    | .withH o f b, .withH o' f' c => o == o' && f == f' && exprSim ρ b c
     | .attempt b, .attempt c => exprSim ρ b c
     | .attemptK k b, .attemptK k' c => k == k' && exprSim ρ b c
     | .handle b x h, .handle c y k => x == y && exprSim ρ b c && exprSim ρ h k

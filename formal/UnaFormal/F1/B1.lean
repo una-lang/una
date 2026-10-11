@@ -24,7 +24,7 @@ mutual
     | .caseSum _ _ _ t e | .handleK _ t _ e =>
       Expr.Pure t ∧ Expr.Pure e
     | .attempt b | .attemptK _ b => Expr.Pure b
-    | .fail _ | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ => False
+    | .fail _ | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ | .withH _ _ _ => False
 end
 
 /-- A right-hand side that performs no event and calls nothing, but may fail: a pure one, or
@@ -46,7 +46,7 @@ def Expr.PureOrFails : Expr → Prop
   | .fail _ => True
   -- A `via` function's failure is released as `Err(c)`, a code (ADR 0090): one with a payload
   -- is not a `via` function's (#512).
-  | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ => False
+  | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ | .withH _ _ _ => False
 
 /-- **The restrictions of option B1**, on the policies. Each `from` is a scalar type, each `to`
 is a scalar type with a concrete label, and each `via` function performs no operation and

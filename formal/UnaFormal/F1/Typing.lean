@@ -92,6 +92,12 @@ mutual
     | invoke {ctx f args fn σ} :
         p.find f = some fn → AtomsTy ctx args (fn.paramTys σ) →
         RhsTy p ctx (.invoke f args) (fn.result.erase.subst σ)
+    /-- An operation installed by a `with` scope (#538): typed by its representative handler,
+    whose signature every handler of the operation shares (`WellFormed.handlers`). -/
+    | invokeOp {ctx o args f fn σ} :
+        AtomTy ctx (.var (markerName o)) .text → List.lookup o p.opRep = some f →
+        p.find f = some fn → AtomsTy ctx args (fn.paramTys σ) →
+        RhsTy p ctx (.invokeOp o args) (fn.result.erase.subst σ)
     | apply {ctx f args ts r} :
         AtomTy ctx f (.fn ts r) → AtomsTy ctx args ts → RhsTy p ctx (.apply f args) r
     | op {ctx line t} : AtomTy ctx line t → t.Scalar → RhsTy p ctx (.op line) .unit
@@ -176,6 +182,8 @@ mutual
         ts.length = binders.length → ExprTy p (binders.zip ts ++ ctx) thenE s →
         ExprTy p ctx elseE s → ExprTy p ctx (.caseSum scrutinee ctor binders thenE elseE) s
     | unreachable {ctx s} : ExprTy p ctx .unreachable s
+    | withH {ctx o f body t} :
+        ExprTy p ((markerName o, .text) :: ctx) body t → ExprTy p ctx (.withH o f body) t
     | attempt {ctx body t} : ExprTy p ctx body t → ExprTy p ctx (.attempt body) (.result t .int)
     | attemptK {ctx kind body t} :
         ExprTy p ctx body t → ExprTy p ctx (.attemptK kind body) (.result t (.record kind))
@@ -206,6 +214,13 @@ structure Program.WellFormed (p : Program) : Prop where
   (#512): `.record k` types the values of one kind only. -/
   sums : ∀ sm ∈ p.sums, ∀ fs ∈ sm.variants, ∀ t ∈ fs, t.erase.Closed
   disjoint : ∀ k, p.record k = none ∨ p.sum k = none
+  /-- Every handler an invocation of an operation can run has the operation's signature: the
+  representative's, which is a handler of it (#538). -/
+  handlers : ∀ o f, List.lookup o p.opRep = some f →
+    List.lookup f p.handlerOf = some o ∧ ∃ fn, p.find f = some fn ∧
+      ∀ g, List.lookup g p.handlerOf = some o → ∃ gn, p.find g = some gn ∧
+        gn.params.map (·.2.erase) = fn.params.map (·.2.erase) ∧ gn.result.erase = fn.result.erase ∧
+        gn.tparams = fn.tparams
   policies : ∀ po ∈ p.policies, po.src.erase.Closed ∧ po.dst.erase.Closed ∧
     ∃ fn, p.find po.via = some fn ∧ fn.paramTys [] = [po.src.erase] ∧
       fn.result.erase = po.dst.erase

@@ -1,0 +1,87 @@
+module m
+
+pub capability Vault
+  op note(x: Int) -> Unit
+    accepts secret
+
+handler quiet() for Vault
+  op note(x) = unit
+
+handler tally() for Vault
+  op note(x) = unit
+
+handler loud() for Vault
+  uses @console: Console[print]
+  op note(x) =
+    if x > 0
+      @console.print("pos")
+    else
+      unit
+
+pub kind Shut = | Closed
+
+pub capability Door
+  op open(code: Int) -> Int
+    fails Shut
+    accepts secret
+
+handler failing() for Door
+  op open(code) = fail Closed
+
+handler fine() for Door
+  op open(code) = 0
+
+work(n: Int) -> Unit
+  uses @vault: Vault[note]
+=
+  @vault.note(n)
+
+pub guarded(flag: secret Bool) -> Unit
+=
+  if flag
+    work(1) with @vault = quiet()
+  else
+    unit
+
+branch(flag: secret Bool) -> Unit
+  uses @vault: Vault[note]
+=
+  if flag
+    @vault.note(1)
+  else
+    unit
+
+pub reach(flag: secret Bool) -> Unit
+=
+  branch(flag) with @vault = quiet()
+
+pub pick(flag: Bool) -> Unit
+=
+  if flag
+    work(1) with @vault = quiet()
+  else
+    work(2) with @vault = tally()
+
+pub shout(n: Int) -> Unit
+=
+  work(n) with @vault = loud()
+
+open_door() -> Int
+  uses @door: Door[open]
+  fails Shut
+=
+  let v = @door.open(1)
+    if error pass
+  v
+
+pub run(flag: secret Bool) -> Int
+  fails Shut
+=
+  if flag
+    let a = open_door() with @door = failing()
+      if error pass
+    a
+  else
+    let b = open_door() with @door = fine()
+      if error pass
+    b

@@ -313,6 +313,23 @@ mutual
       need (symFree pc) s!"`{f}` is invoked under a symbolic program counter"
       flowTo p fn.result ann s!"the result of `{f}`"
       pure (.ofInvoke pc fn)
+    | .invokeOp o args => do
+      match ← atomTy Γ (.var (markerName o)) with
+      | .text lm =>
+        le p lm .bot s!"the marker of `{o}` is not public"
+        let f ← some! (List.lookup o p.opRep) s!"F1 restriction (no handler of the operation `{o}`)"
+        let fn ← some! (p.find f) s!"F1 restriction (no handler `{f}`, a lookup miss)"
+        let acc ← some! (List.lookup f p.ops) s!"F1 restriction (`{f}` is not an operation's handler)"
+        need fn.tparams.isEmpty s!"F1 restriction (a generic handler `{f}`)"
+        let ts ← atomsTy Γ args
+        need (flowsB p.top ts (fn.params.map Prod.snd))
+          s!"an argument of the operation `{o}` does not flow into its parameter"
+        le p (pc.join (LExpr.joinAll (ts.map p.deep))) (.ofLabel acc)
+          s!"the arguments or program counter of `{o}` are above what it accepts (U4003)"
+        need (symFree pc) s!"`{o}` is invoked under a symbolic program counter"
+        flowTo p fn.result ann s!"the result of `{o}`"
+        pure (.ofInvoke pc fn)
+      | _ => throw s!"the marker of `{o}` is not a text"
     | .apply f args => do
       match ← atomTy Γ f with
       | .fn ps r o g fl lf =>
@@ -713,6 +730,12 @@ mutual
       let ε₂ ← checkExpr p E ((x, .record kind ε₁.dl) :: Γ) (pc.join ε₁.failLabel) s handler
       flowTo p (s.raise ε₁.dl) s "the value of a handled expression, raised by its failure,"
       pure (Eff.handleOf ε₁ ε₂)
+    | .withH o f body => do
+      match List.lookup f p.handlerOf with
+      | some o' =>
+        need (o' == o) s!"`{f}` is not a handler of `{o}`"
+        checkExpr p E ((markerName o, .text .bot) :: Γ) pc s body
+      | none => throw s!"F1 restriction (`{f}` is not a handler)"
     | .letTuple binders value body => do
       match ← atomTy Γ value with
       | .tuple ts l =>
@@ -794,7 +817,7 @@ mutual
     | .caseSum _ _ _ t e | .handleK _ t _ e =>
       exprPure t && exprPure e
     | .attempt b | .attemptK _ b => exprPure b
-    | .fail _ | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ => false
+    | .fail _ | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ | .withH _ _ _ => false
 end
 
 /-- `Rhs.PureOrFails`. -/
@@ -812,7 +835,7 @@ def exprPureOrFails : Expr → Bool
     exprPureOrFails t && exprPureOrFails e
   | .attempt b | .attemptK _ b => exprPureOrFails b
   | .fail _ => true
-  | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ => false
+  | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ | .withH _ _ _ => false
 
 /-- The restrictions of option B1 on the policies, as one Boolean. -/
 def b1Ok (p : Program) : Bool :=
@@ -880,6 +903,7 @@ mutual
     | .raise k c args => .raise k c args
     | .caseSum s i xs t e => .caseSum s i xs (Expr.mapTypes f t) (Expr.mapTypes f e)
     | .unreachable => .unreachable
+    | .withH o g b => .withH o g (Expr.mapTypes f b)
     | .attempt b => .attempt (Expr.mapTypes f b)
     | .attemptK k b => .attemptK k (Expr.mapTypes f b)
     | .handle b x h => .handle (Expr.mapTypes f b) x (Expr.mapTypes f h)
@@ -903,7 +927,7 @@ mutual
     | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e
     | .caseSum _ _ _ t e | .handleK _ t _ e =>
       Expr.genericCalls t ++ Expr.genericCalls e
-    | .attempt b | .attemptK _ b | .letTuple _ _ b | .loop _ _ _ _ _ b => Expr.genericCalls b
+    | .attempt b | .attemptK _ b | .letTuple _ _ b | .loop _ _ _ _ _ b | .withH _ _ b => Expr.genericCalls b
     | .atom _ | .fail _ | .raise _ _ _ | .unreachable => []
 end
 

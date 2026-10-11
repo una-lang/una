@@ -21,7 +21,7 @@ mutual
   def Rhs.hostFree : Rhs → Bool
     | .read _ | .write _ _ | .req _ _ | .envGet _ => false
     | .lambda _ b => b.hostFree
-    | .atom _ | .prim _ _ | .call _ _ _ | .invoke _ _ | .apply _ _ | .op _ | .construct _ _ | .variant _ _ _ | .field _ _
+    | .atom _ | .prim _ _ | .call _ _ _ | .invoke _ _ | .invokeOp _ _ | .apply _ _ | .op _ | .construct _ _ | .variant _ _ _ | .field _ _
     | .list _ | .none | .some _ | .first _ | .mkOk _ | .mkErr _ | .funRef _ _ | .declassify _ _ | .map _ _ | .filter _ _
     | .firstWhere _ _ | .fold _ _ _ | .parse _ | .checked _ _ _ | .eq _ _ | .tuple _ | .append _ _ | .set _ _ _
     | .toText _ => true
@@ -29,6 +29,7 @@ mutual
   /-- A body that performs no host operation, in its lambdas included. -/
   def Expr.hostFree : Expr → Bool
     | .atom _ | .fail _ | .raise _ _ _ | .unreachable => true
+    | .withH _ _ b => b.hostFree
     | .letR _ _ v b => v.hostFree && b.hostFree
     | .letE _ _ v b => v.hostFree && b.hostFree
     | .ite _ t e => t.hostFree && e.hostFree

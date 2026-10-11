@@ -31,6 +31,7 @@ mutual
     | .req m args => .req m args
     | .construct r fs => .construct r fs
     | .invoke f args => .invoke (ρ f) args
+    | .invokeOp o args => .invokeOp o args
     | .variant k i fs => .variant k i fs
     | .field v i => .field v i
     | .list items => .list items
@@ -65,6 +66,7 @@ mutual
     | .raise k c args => .raise k c args
     | .caseSum s i xs t e => .caseSum s i xs (t.anon ρ) (e.anon ρ)
     | .unreachable => .unreachable
+    | .withH o f b => .withH o f (b.anon ρ)
     | .attempt b => .attempt (b.anon ρ)
     | .attemptK k b => .attemptK k (b.anon ρ)
     | .handle b x h => .handle (b.anon ρ) x (h.anon ρ)
