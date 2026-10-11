@@ -103,7 +103,12 @@ def OutRel (R : Val → Val → Prop) (vf : Prop) : Res → Res → Prop
   | .raised k₁ c₁ ps₁, .raised k₂ c₂ ps₂ => vf → k₁ = k₂ ∧ c₁ = c₂ ∧ PayRel p L k₁ c₁ ps₁ ps₂
   | .ok _, .failed _ | .failed _, .ok _ | .ok _, .raised _ _ _ | .raised _ _ _, .ok _
   | .failed _, .raised _ _ _ | .raised _ _ _, .failed _ => ¬ vf
-  | _, _ => True
+  -- A run that did not end relates to anything: `BRel` asks both to end. Each such pair is
+  -- listed, with no wildcard, so an outcome added to `Res` must be placed here.
+  | .stuck, _ | .outOfFuel, _ | .aborted, _
+  | .ok _, .stuck | .ok _, .outOfFuel | .ok _, .aborted
+  | .failed _, .stuck | .failed _, .outOfFuel | .failed _, .aborted
+  | .raised _ _ _, .stuck | .raised _ _ _, .outOfFuel | .raised _ _ _, .aborted => True
 
 /-- `internal`. -/
 def internalLabel : Label := ⟨.internal, []⟩

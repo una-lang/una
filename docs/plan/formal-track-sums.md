@@ -38,7 +38,7 @@ The K forms lose nothing against Una. T-AttemptK and T-HandleK ask `ε.codes = f
 
 ### R1: the runtime redacts a failure's labeled fields
 
-A top-level failure of `main` is not an event of the model: T6 compares the outcome through `OutRel`. Una's runtime reports it, as U6001 `` `main` failed with `C(f: v, ...)` ``. **R1** is the premise that this report shows exactly the payload fields whose declared label is `public`, and redacts the others (`spec/04 §8`). Under R1, the report is a function of what `OutRel` relates for a `public` observer. If the runtime printed a field above `public`, R1 would be false, and T6 would say nothing about that report.
+A top-level failure of `main` is not an event of the model: T6 compares the outcome through `OutRel`. Una's runtime reports it, as U6001 `` `main` failed with `C(f: v, ...)` ``. **R1** is the premise that this report shows exactly the payload fields whose declared type is `public` at every position, its deep label `ℓ*` (`public_fields`: `ty.deep_label().is_public()`), and redacts the others (`spec/04 §8`): a field declared `List[internal Text]` is not shown, though its top label is `public`. That is stricter than `OutRel` needs: a field shown is one whose every label the observer sees, where related values are equal, so the premise holds. Under R1, the report is a function of what `OutRel` relates for a `public` observer. If the runtime printed a field above `public`, R1 would be false, and T6 would say nothing about that report.
 
 The evidence for R1, like H1 to H4's for the host:
 - the interpreter: `una-interp` `machine.rs`, `public_fields`, used by `harness.rs` for the completion;
