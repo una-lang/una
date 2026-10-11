@@ -121,6 +121,8 @@ theorem evalAtoms_hostFree {env : Env} (hf : Val.HostFreeEnvIn S env) :
     simp only [Val.HostFreeAllIn]
     exact ⟨evalAtom_hostFree hf ha, evalAtoms_hostFree hf has⟩
 
+-- `fit` (#548) takes this proof's case split past the default budget.
+set_option maxHeartbeats 1000000 in
 theorem evalPrim_hostFree {pr : Prim} {vs : List Val} {v : Val} (h : evalPrim pr vs = some v) :
     Val.HostFreeIn S v := by
   cases pr

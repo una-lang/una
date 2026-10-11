@@ -112,6 +112,10 @@ inductive Prim where
   /-- `slice(t, start, end)` (`spec/22 §2`), #542: the scalar values of `t` from `start` up to, not
   including, `end`. Outside its precondition the run aborts (`Prim.aborts`). -/
   | slice
+  /-- `fit lo hi` (#548): an integer in `lo..hi`, the range of a fixed-width type (`spec/18`). It
+  is the identity there, and the run aborts outside it, as Una's runtime does where an
+  `overflow` obligation is not proven (`Prim.aborts`). -/
+  | fit (lo hi : Int)
 
 /-- What a loop visits (`spec/17 §4`): the elements of a list, in order, or the integers from
 `low` to `high`, in increasing order, `high` included when `inclusive`. -/

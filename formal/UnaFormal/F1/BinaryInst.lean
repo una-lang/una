@@ -355,6 +355,12 @@ theorem aborts_agreeσ {σ : List (String × LTy)} {pr : Prim} {ts : List LTy} {
         hint hes.2.1 h₂ (hdeep _ (by simp) (fun h => Prim.noConfusion h)),
         hint hes.2.2.1 h₃ (hdeep _ (by simp) (fun h => Prim.noConfusion h))]
     | [], _, hes | [_], _, hes | [_, _], _, hes | _ :: _ :: _ :: _ :: _, _, hes => simp at hes
+  | fit =>
+    match ts, hvs, hes with
+    | [_], .cons h₁ .nil, hes =>
+      simp only [List.map_cons, List.map_nil, List.cons.injEq] at hes
+      rw [hint hes.1 h₁ (hdeep _ (by simp) (fun h => Prim.noConfusion h))]
+    | [], _, hes | _ :: _ :: _, _, hes => simp at hes
   | _ => simp [Prim.aborts]
 
 /-- A primitive gives the same result in both runs when the observer sees its label's instance. -/
@@ -399,7 +405,7 @@ theorem prim_agreeσ {σ : List (String × LTy)} {pr : Prim} {ts : List LTy} {t 
       simp only [List.map_cons, List.map_nil, List.cons.injEq] at hes
       rw [hbool hes.1 h₁ (hdeep (fun h => Prim.noConfusion h) _ (by simp))]
     | [], _, hes | _ :: _ :: _, _, hes => simp at hes
-  | abs =>
+  | abs | fit =>
     match ts, hvs, hes with
     | [_], .cons h₁ .nil, hes =>
       simp only [List.map_cons, List.map_nil, List.cons.injEq] at hes
