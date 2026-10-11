@@ -59,6 +59,7 @@ mutual
     | .none, .none => true
     | .some a, .some b => a == b
     | .first a, .first b => a == b
+    | .elemAt a c, .elemAt b d => a == b && c == d
     | .orElse a c, .orElse b d => a == b && c == d
     | .isOk a, .isOk b => a == b
     | .mkOk a, .mkOk b => a == b
@@ -128,7 +129,7 @@ mutual
     | .call _ _ _, s, h | .invoke _ _, s, h | .funRef _ _, s, h | .atom _, s, h | .prim _ _, s, h
     | .apply _ _, s, h | .op _, s, h | .read _, s, h | .write _ _, s, h | .req _ _, s, h
     | .construct _ _, s, h | .variant _ _ _, s, h | .field _ _, s, h
-    | .list _, s, h | .none, s, h | .some _, s, h | .first _, s, h | .orElse _ _, s, h | .isOk _, s, h | .mkOk _, s, h | .mkErr _, s, h
+    | .list _, s, h | .none, s, h | .some _, s, h | .first _, s, h | .elemAt _ _, s, h | .orElse _ _, s, h | .isOk _, s, h | .mkOk _, s, h | .mkErr _, s, h
     | .declassify _ _, s, h | .map _ _, s, h
     | .filter _ _, s, h | .firstWhere _ _, s, h | .fold _ _ _, s, h | .parse _, s, h
     | .checked _ _ _, s, h

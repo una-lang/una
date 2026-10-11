@@ -400,6 +400,10 @@ mutual
     | _, _, _, _, _, _, hΓ, _, .isOk ha => by
       have h := latom_inPlace hΓ ha
       exact ⟨h.2.2, Eff.plainFree_none⟩
+    | _, _, _, _, _, _, hΓ, _, @LRhsTy.elemAt _ _ _ _ _ _ t lx li hxs hi => by
+      have h₁ : t.InPlace ∧ lx.plain = [] := latom_inPlace hΓ hxs
+      have h₂ : li.plain = [] := latom_inPlace hΓ hi
+      exact ⟨⟨h₁.1, LExpr.plainFree_join h₁.2 h₂⟩, Eff.plainFree_none⟩
     | _, _, _, _, _, _, hΓ, _, .first ha => by
       have h := latom_inPlace hΓ ha
       exact ⟨h, Eff.plainFree_none⟩

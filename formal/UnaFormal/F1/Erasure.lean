@@ -37,6 +37,7 @@ mutual
     | .none => .none
     | .some a => .some a
     | .first a => .first a
+    | .elemAt xs i => .elemAt xs i
     | .orElse o d => .orElse o d
     | .isOk r => .isOk r
     | .mkOk a => .mkOk a
@@ -236,6 +237,14 @@ theorem aborts_anon (pr : Prim) (vs : List Val) :
     (rcases vs with _ | ⟨a, _ | ⟨b, _ | ⟨c, rest⟩⟩⟩ <;>
       simp only [List.map_cons, List.map_nil] <;>
       (try cases a) <;> (try cases b) <;> simp [Prim.aborts, Val.anon])
+
+/-- `at` commutes with erasure (#545). -/
+theorem atIndex_anon (items : List Val) (n : Int) :
+    (atIndex items n).anon ρ = atIndex (items.map (Val.anon ρ)) n := by
+  unfold atIndex
+  split
+  · rfl
+  · rw [List.getElem?_map]; cases items[n.toNat]? <;> rfl
 
 -- Four more primitives (#542) take this proof's case split past the default budget.
 set_option maxHeartbeats 1000000 in
@@ -592,6 +601,22 @@ theorem eval_anon (hH : H.AnonInvariant) (h4 : H.RespTyped) (hf : ∀ f, (P.find
           cases v with
           | list items => cases items <;> rfl
           | _ => simp [Val.anon, runAnon_stuck]
+      | elemAt xs i =>
+        simp only [evalRhs, Rhs.anon, evalAtom_anon]
+        cases evalAtom env xs with
+        | none => cases evalAtom env i <;> simp [runAnon_stuck]
+        | some v =>
+          cases evalAtom env i with
+          | none => cases v <;> simp [Val.anon, runAnon_stuck]
+          | some k =>
+            cases v with
+            | list items =>
+              cases k with
+              | int n =>
+                simp only [Option.map_some, Val.anon, Val.anons_eq]
+                rw [runAnon_done, atIndex_anon]
+              | _ => simp [Val.anon, runAnon_stuck]
+            | _ => cases k <;> simp [Val.anon, runAnon_stuck]
       | orElse o d =>
         simp only [evalRhs, Rhs.anon, evalAtom_anon]
         cases evalAtom env o with

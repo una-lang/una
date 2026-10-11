@@ -814,6 +814,18 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
           cases hall with
           | nil => simp only [evalRhs, hv]; exact uok_done LValTy.none
           | cons hx _ => simp only [evalRhs, hv]; exact uok_done (LValTy.some hx)
+      | elemAt hxs hi =>
+        obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv hxs
+        obtain ⟨k, hk, hkt⟩ := latom_ltypedσ henv hi
+        simp only [LTy.lsubst] at hvt hkt
+        cases hvt with
+        | @list items _ _ hall =>
+          cases hkt with
+          | @int n _ =>
+            simp only [evalRhs, hv, hk]
+            rcases atIndex_cases items n with h | ⟨x, hx, h⟩
+            · rw [h]; exact uok_done LValTy.none
+            · rw [h]; exact uok_done (LValTy.some (LValsAll.mem hall x hx))
       | orElse ho hd hf₁ hf₂ _ =>
         obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv ho
         obtain ⟨x, hx, hxt⟩ := latom_ltypedσ henv hd

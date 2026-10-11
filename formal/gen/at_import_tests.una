@@ -1,0 +1,19 @@
+module m
+
+pub at_public(xs: List[Int]) -> Option[Int] = xs.at(index: 0)
+
+pub at_elem_secret(xs: List[secret Int]) -> Option[Int] = xs.at(index: 0)
+
+pub at_presence(xs: List[secret Int]) -> Int
+=
+  let o = xs.at(index: 0)
+  when o
+    is Some(x) -> 1
+    is None -> 0
+
+pub at_index_secret(xs: List[Int], i: secret Int) -> Int
+=
+  let o = xs.at(index: i)
+  when o
+    is Some(x) -> 1
+    is None -> 0

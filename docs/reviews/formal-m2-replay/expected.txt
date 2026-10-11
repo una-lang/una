@@ -83,13 +83,13 @@ main.main	not re-checked	a node without `result_labels`
 == S-04.edit_order_loop_list.v0.2.0
 main.main	rejected	the primitive's result, `internal Text`, does not flow into `public Text`
 == S-04.edit_order_loop_nested_list.v0.2.0
-main.main	not re-checked	a call of `prelude.at`
+main.main	rejected	the element at an index, `public Option[public List[internal Int]]`, does not flow into `public Option[public List[public Int]]`
 == S-04.edit_order_loop_nested_list_of_options.v0.2.0
-main.main	not re-checked	a call of `prelude.at`
+main.main	rejected	the element at an index, `public Option[public Option[internal Int]]`, does not flow into `public Option[public Option[public Int]]`
 == S-04.edit_order_loop_nested_option.v0.2.0
 main.main	rejected	the value of `or_else`'s option, `public List[internal Int]`, does not flow into `public List[public Int]`
 == S-04.edit_order_loop_nested_result.v0.2.0
-main.main	not re-checked	a call of `prelude.at`
+main.main	rejected	the result of `or_else`, which carries every label of its arguments, `internal Result[public Int, internal Int]`, does not flow into `public Result[public Int, internal Int]`
 == S-04.edit_order_loop_option.v0.2.0
 main.main	rejected	the primitive's result, `internal Text`, does not flow into `public Text`
 == S-04.edit_order_loop_result_err.v0.2.0

@@ -205,6 +205,19 @@ def sumInts : List Val → Option Int
   | .int n :: rest => (sumInts rest).map (n + ·)
   | _ => none
 
+/-- The element of `items` at `n`, as an option: `None` outside `0 <= n < items.len` (`spec/14 §1`). -/
+def atIndex (items : List Val) (n : Int) : Val :=
+  if n < 0 then .none else (items[n.toNat]?).elim .none .some
+
+theorem atIndex_cases (items : List Val) (n : Int) :
+    atIndex items n = .none ∨ ∃ v ∈ items, atIndex items n = .some v := by
+  unfold atIndex
+  split
+  · exact .inl rfl
+  · cases h : items[n.toNat]? with
+    | none => exact .inl rfl
+    | some v => exact .inr ⟨v, List.mem_of_getElem? h, rfl⟩
+
 /-- The scalar values of `s` from `a` up to, not including, `b` (`spec/22 §2`). -/
 def sliceText (s : String) (a b : Int) : String :=
   String.ofList ((s.toList.drop a.toNat).take (b - a).toNat)
@@ -445,6 +458,10 @@ mutual
         | some (.list (v :: _)) => done w (.some v)
         | some (.list []) => done w .none
         | _ => stuck w
+      | .elemAt xs i =>
+        match evalAtom env xs, evalAtom env i with
+        | some (.list items), some (.int n) => done w (atIndex items n)
+        | _, _ => stuck w
       | .orElse o d =>
         match evalAtom env o, evalAtom env d with
         | some (.some v), some _ => done w v
