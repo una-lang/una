@@ -116,7 +116,8 @@ theorem V.retop {u : LTy} {x y : LExpr} {a b : Val} (h : V p L (u.setTop x) a b)
     | (apply V.hidden; rename_i hh; intro hv; exact hh (by simp only [LTy.top] at hv ⊢; exact hxy hv))
     | exact .int | exact .bool | exact .text | exact .unit | exact .list ‹_› | exact .none
     | exact .some ‹_› | exact .ok ‹_› | exact .err ‹_› | exact .record ‹_› ‹_›
-    | exact .closure ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_›
+    | exact .variant ‹_› ‹_› ‹_›
+    | exact .closure ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_› ‹_›
     | exact .tuple ‹_›
 
 section

@@ -36,8 +36,8 @@ see, from worlds it cannot tell apart, are related. -/
 theorem brel_confined {H : Host} {R : Val → Val → Prop} {vf : Prop} {pc : LExpr} {ε₁ ε₂ : Eff}
     {P₁ P₂ : Val → Prop} {w₁ w₂ : World H} {r₁ r₂ : Run H} (hwf : p.HostWF)
     (hw : WorldRel p L w₁ w₂)
-    (h₁ : UOk (Allowed p pc ε₁) P₁ (Fails p pc ε₁) w₁ r₁)
-    (h₂ : UOk (Allowed p pc ε₂) P₂ (Fails p pc ε₂) w₂ r₂)
+    (h₁ : UOk (Allowed p pc ε₁) P₁ (FailsAs p pc ε₁) w₁ r₁)
+    (h₂ : UOk (Allowed p pc ε₂) P₂ (FailsAs p pc ε₂) w₂ r₂)
     (hpc : ¬ Vis p L pc) (hR : ∀ a b, R a b) (hvf₁ : vf → Vis p L ε₁.failLabel)
     (hvf₂ : vf → Vis p L ε₂.failLabel) : BRel p L R vf r₁ r₂ := by
   intro ht₁ ht₂
@@ -46,11 +46,12 @@ theorem brel_confined {H : Host} {R : Val → Val → Prop} {vf : Prop} {pc : LE
   refine ⟨by rw [hp₁, hp₂], ?_, hw₁.symm.trans (hw.trans hw₂)⟩
   obtain ⟨tr₁, o₁, _⟩ := r₁
   obtain ⟨tr₂, o₂, _⟩ := r₂
-  cases o₁ <;> cases o₂ <;> simp only [Term] at ht₁ ht₂ <;> simp only [OutRel]
-  · exact hR _ _
-  · exact fun hv => hf₂ _ rfl (hvf₂ hv)
-  · exact fun hv => hf₁ _ rfl (hvf₁ hv)
-  · exact fun hv => absurd (hvf₁ hv) (hf₁ _ rfl)
+  simp only at hf₁ hf₂
+  cases o₁ <;> cases o₂ <;> simp only [Term] at ht₁ ht₂ <;> simp only [OutRel] <;>
+    first
+    | exact hR _ _
+    | exact fun hv => hf₂ trivial (hvf₂ hv)
+    | exact fun hv => absurd (hvf₁ hv) (hf₁ trivial)
 
 /-- Scalars the observer sees are equal. -/
 theorem V.eq_int {l : LExpr} {a b : Val} (h : V p L (.int l) a b) (hv : Vis p L l) : a = b := by
@@ -226,6 +227,10 @@ mutual
         have hall : ∀ u ∈ rec.fields, Vis p L (p.deep u) := fun u hu =>
           Vis.of_le (hwf.recordDeep rec (record_mem hrec) u hu) (Vis.right hd)
         rw [VList.eq_of_deep hwf hfs hfa hfb he hall]
+    | _, n, _, _, _, .variant (k := k) hs _ _, _, _, he, _ => by
+      -- F1 has no `==` on sums (#512): `recordEq` is false for a sum's name.
+      have hr : p.record k = none := by rcases hwf.disjoint k with h | h <;> simp_all
+      cases n <;> simp [LTy.eqIn, Program.recordEq, hr] at he
     | _, _, _, _, _, .closure .., _, _, he, _ => by simp [LTy.eqIn] at he
 
   theorem VAll.eq_of_deep (hwf : p.LWellFormed) :
@@ -298,7 +303,7 @@ theorem applyWith_brel {run : World H → Env → Expr → Run H}
     BRel p L (V p L r) vf (applyWith run w₁ c₁ as₁) (applyWith run w₂ c₂ as₂) := by
   cases hc with
   | hidden h => exact absurd hl h
-  | @closure params _ cenv₁ cenv₂ Γc _ _ _ _ _ _ _ _ _ σc hσ hE hΓ hrel he₁ he₂ hb hfl hrl hps hr _ _ _ =>
+  | @closure params _ cenv₁ cenv₂ Γc _ _ _ _ _ _ _ _ _ σc hσ hE hΓ hrel he₁ he₂ hb hfl hrl _ hps hr _ _ _ =>
     have hlen₁ : as₁.length = _ := (LValsTy.length hu₁).trans (Flows.length' hps)
     have hlen₂ : as₂.length = _ := (LValsTy.length hu₂).trans (Flows.length' hps)
     simp only [List.length_map] at hlen₁ hlen₂
@@ -408,7 +413,7 @@ theorem walkFirst_brel {app₁ app₂ : World H → Val → Run H} {a : LTy} {lb
     | _ => exact brel_stuck_left
 
 theorem walkFold_brel {app₁ app₂ : World H → Val → Val → Run H} {a b : LTy} {A : Event → Prop}
-    {F : Prop}
+    {F : FailCond}
     (happ : ∀ w₁ w₂ c₁ c₂ x y, WorldRel p L w₁ w₂ → V p L b c₁ c₂ → LValTy p c₁ b →
       LValTy p c₂ b → V p L a x y → LValTy p x a → LValTy p y a →
       BRel p L (V p L b) True (app₁ w₁ c₁ x) (app₂ w₂ c₂ y))

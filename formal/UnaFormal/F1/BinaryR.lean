@@ -21,7 +21,7 @@ def Diverged (t₁ t₂ : Trace) : Prop :=
 same events and related outcomes (`BRel`), or the runs diverge at a release. -/
 def BRelR {H : Host} (R : Val → Val → Prop) (vf : Prop) (r₁ r₂ : Run H) : Prop :=
   Term r₁.2.1 → Term r₂.2.1 →
-    (proj p L r₁.1 = proj p L r₂.1 ∧ OutRel R vf r₁.2.1 r₂.2.1 ∧ WorldRel p L r₁.2.2 r₂.2.2) ∨
+    (proj p L r₁.1 = proj p L r₂.1 ∧ OutRel p L R vf r₁.2.1 r₂.2.1 ∧ WorldRel p L r₁.2.2 r₂.2.2) ∨
     Diverged p L r₁.1 r₂.1
 
 variable {p L} {H : Host}
@@ -59,6 +59,7 @@ theorem andThen_fst (first : Run H) (rest : World H → Val → Run H) :
     rcases rest w v with ⟨t', r', w'⟩
     exact ⟨t', rfl⟩
   | failed c => exact ⟨[], by simp [andThen]⟩
+  | raised _ _ _ => exact ⟨[], by simp [andThen]⟩
   | stuck => exact ⟨[], by simp [andThen]⟩
   | outOfFuel | aborted => exact ⟨[], by simp [andThen]⟩
 
@@ -70,9 +71,9 @@ theorem andThen_brelR {R₁ R₂ : Val → Val → Prop} {vf vf₁ : Prop} {f₁
     (h₂ : ∀ v₁ v₂, f₁.2.1 = .ok v₁ → f₂.2.1 = .ok v₂ → R₁ v₁ v₂ → WorldRel p L f₁.2.2 f₂.2.2 →
       BRelR p L R₂ vf (k₁ f₁.2.2 v₁) (k₂ f₂.2.2 v₂))
     (hc₁ : ¬ vf₁ → ∀ v, f₁.2.1 = .ok v → proj p L (k₁ f₁.2.2 v).1 = [] ∧
-      (∀ c, (k₁ f₁.2.2 v).2.1 = .failed c → ¬ vf) ∧ WorldRel p L f₁.2.2 (k₁ f₁.2.2 v).2.2)
+      ((k₁ f₁.2.2 v).2.1.IsFail → ¬ vf) ∧ WorldRel p L f₁.2.2 (k₁ f₁.2.2 v).2.2)
     (hc₂ : ¬ vf₁ → ∀ v, f₂.2.1 = .ok v → proj p L (k₂ f₂.2.2 v).1 = [] ∧
-      (∀ c, (k₂ f₂.2.2 v).2.1 = .failed c → ¬ vf) ∧ WorldRel p L f₂.2.2 (k₂ f₂.2.2 v).2.2) :
+      ((k₂ f₂.2.2 v).2.1.IsFail → ¬ vf) ∧ WorldRel p L f₂.2.2 (k₂ f₂.2.2 v).2.2) :
     BRelR p L R₂ vf (andThen f₁ k₁) (andThen f₂ k₂) := by
   intro ht₁ ht₂
   have hf₁ := andThen_term ht₁
@@ -80,9 +81,13 @@ theorem andThen_brelR {R₁ R₂ : Val → Val → Prop} {vf vf₁ : Prop} {f₁
   rcases h₁ hf₁ hf₂ with ⟨hp, ho, hw⟩ | hd
   · obtain ⟨tr₁, r₁, w₁⟩ := f₁
     obtain ⟨tr₂, r₂, w₂⟩ := f₂
-    cases r₁ <;> cases r₂ <;> simp only [Term] at hf₁ hf₂
+    simp only at hf₁ hf₂ ho h₂ hc₁ hc₂ hp hw
+    have hfail : ∀ {r : Res}, Term r → (∀ v, r ≠ .ok v) → r.IsFail := by
+      intro r hr hn; cases r <;> simp_all [Term, Res.IsFail]
+    by_cases ok₁ : ∃ v, r₁ = .ok v <;> by_cases ok₂ : ∃ v, r₂ = .ok v
     · -- both values
-      rename_i v₁ v₂
+      obtain ⟨v₁, rfl⟩ := ok₁
+      obtain ⟨v₂, rfl⟩ := ok₂
       have hk := h₂ v₁ v₂ rfl rfl ho hw
       simp only [andThen] at ht₁ ht₂ ⊢
       revert ht₁ ht₂ hk
@@ -93,32 +98,45 @@ theorem andThen_brelR {R₁ R₂ : Val → Val → Prop} {vf vf₁ : Prop} {f₁
       · exact .inl ⟨by simp only [proj_append]; rw [hp, hp'], ho', hw'⟩
       · exact .inr (Diverged.prepend hp hd')
     · -- a value, then a failure
-      rename_i v₁ c₂
-      have hnv : ¬ vf₁ := ho
+      obtain ⟨v₁, rfl⟩ := ok₁
+      have hn₂ : ∀ v, r₂ ≠ .ok v := fun v h => ok₂ ⟨v, h⟩
+      have hF₂ := hfail hf₂ hn₂
+      have hnv : ¬ vf₁ := by cases r₂ <;> simp_all [OutRel, Res.IsFail]
       obtain ⟨hpk, hfk, hwk⟩ := hc₁ hnv v₁ rfl
+      rw [andThen_not_ok hn₂]
       simp only [andThen] at ht₁ ⊢
       revert ht₁ hpk hfk hwk
       rcases k₁ w₁ v₁ with ⟨tk, rk, wk⟩
       intro ht₁ hpk hfk hwk
       refine .inl ⟨by simp only [proj_append]; rw [hpk, List.append_nil]; exact hp, ?_,
         hwk.symm.trans hw⟩
-      cases rk <;> simp only [Term] at ht₁ <;> simp only [OutRel]
-      · exact fun hv => hnv (hvf hv)
-      · exact fun hv => absurd hv (hfk _ rfl)
+      simp only at ht₁ hfk ⊢
+      have hnvf : ¬ vf := fun hv => hnv (hvf hv)
+      cases rk <;> cases r₂ <;> simp_all [OutRel, Term, Res.IsFail]
     · -- a failure, then a value
-      rename_i c₁ v₂
-      have hnv : ¬ vf₁ := ho
+      obtain ⟨v₂, rfl⟩ := ok₂
+      have hn₁ : ∀ v, r₁ ≠ .ok v := fun v h => ok₁ ⟨v, h⟩
+      have hnv : ¬ vf₁ := by cases r₁ <;> simp_all [OutRel, Res.IsFail, Term]
       obtain ⟨hpk, hfk, hwk⟩ := hc₂ hnv v₂ rfl
+      rw [andThen_not_ok hn₁]
       simp only [andThen] at ht₂ ⊢
       revert ht₂ hpk hfk hwk
       rcases k₂ w₂ v₂ with ⟨tk, rk, wk⟩
       intro ht₂ hpk hfk hwk
       refine .inl ⟨by simp only [proj_append]; rw [hpk, List.append_nil]; exact hp, ?_, hw.trans hwk⟩
-      cases rk <;> simp only [Term] at ht₂ <;> simp only [OutRel]
-      · exact fun hv => hnv (hvf hv)
-      · exact fun hv => absurd hv (hfk _ rfl)
+      simp only at ht₂ hfk ⊢
+      have hnvf : ¬ vf := fun hv => hnv (hvf hv)
+      cases rk <;> cases r₁ <;> simp_all [OutRel, Term, Res.IsFail]
     · -- both failures
-      exact .inl ⟨hp, fun hv => ho (hvf hv), hw⟩
+      have hn₁ : ∀ v, r₁ ≠ .ok v := fun v h => ok₁ ⟨v, h⟩
+      have hn₂ : ∀ v, r₂ ≠ .ok v := fun v h => ok₂ ⟨v, h⟩
+      rw [andThen_not_ok hn₁, andThen_not_ok hn₂]
+      refine .inl ⟨hp, ?_, hw⟩
+      cases r₁ <;> cases r₂ <;> simp only [Term] at hf₁ hf₂ <;>
+        first
+        | exact absurd rfl (hn₁ _)
+        | exact absurd rfl (hn₂ _)
+        | exact fun hv => ho (hvf hv)
   · obtain ⟨u₁, hu₁⟩ := andThen_fst f₁ k₁
     obtain ⟨u₂, hu₂⟩ := andThen_fst f₂ k₂
     rw [hu₁, hu₂]
@@ -209,17 +227,17 @@ iteration's failure is one the observer does not see (`¬ vf`), what the other r
 iteration it completed shows the observer nothing (`hr₁`, `hr₂`): T-Loop's premise that an
 iteration's failure is decided by no more than what decides whether it runs. -/
 theorem walkLoop_brelR {body₁ body₂ : World H → Val → List Val → Run H} {a : LTy} {ts : List LTy}
-    {A₁ A₂ : Event → Prop} {F₁ F₂ : Prop} {vf : Prop}
+    {A₁ A₂ : Event → Prop} {F₁ F₂ : FailCond} {vf : Prop}
     (hbody : ∀ w₁ w₂ v₁ v₂ st₁ st₂, WorldRel p L w₁ w₂ → V p L a v₁ v₂ → LValTy p v₁ a →
       LValTy p v₂ a → VList p L ts st₁ st₂ → LValsTy p st₁ ts → LValsTy p st₂ ts →
       BRelR p L (StRel (p := p) (L := L) ts) vf (body₁ w₁ v₁ st₁) (body₂ w₂ v₂ st₂))
     (hu₁ : ∀ w v st, LValTy p v a → LValsTy p st ts → UOk A₁ (TupTy p ts) F₁ w (body₁ w v st))
     (hu₂ : ∀ w v st, LValTy p v a → LValsTy p st ts → UOk A₂ (TupTy p ts) F₂ w (body₂ w v st))
     (hr₁ : ¬ vf → ∀ w st xs, LValsTy p st ts → (∀ x ∈ xs, LValTy p x a) →
-      proj p L (walkLoop body₁ w st xs).1 = [] ∧ (∀ c, (walkLoop body₁ w st xs).2.1 = .failed c → ¬ vf) ∧
+      proj p L (walkLoop body₁ w st xs).1 = [] ∧ ((walkLoop body₁ w st xs).2.1.IsFail → ¬ vf) ∧
         WorldRel p L w (walkLoop body₁ w st xs).2.2)
     (hr₂ : ¬ vf → ∀ w st xs, LValsTy p st ts → (∀ x ∈ xs, LValTy p x a) →
-      proj p L (walkLoop body₂ w st xs).1 = [] ∧ (∀ c, (walkLoop body₂ w st xs).2.1 = .failed c → ¬ vf) ∧
+      proj p L (walkLoop body₂ w st xs).1 = [] ∧ ((walkLoop body₂ w st xs).2.1.IsFail → ¬ vf) ∧
         WorldRel p L w (walkLoop body₂ w st xs).2.2) :
     ∀ {xs ys : List Val} {st₁ st₂ : List Val} {w₁ w₂ : World H}, WorldRel p L w₁ w₂ →
       VList p L ts st₁ st₂ → LValsTy p st₁ ts → LValsTy p st₂ ts → VAll p L a xs ys →
