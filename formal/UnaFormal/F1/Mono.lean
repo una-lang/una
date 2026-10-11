@@ -127,6 +127,14 @@ theorem eval_mono : ∀ n m : Nat, n ≤ m →
         · simp only [hl, ite_true] at ht ⊢
           exact ihE _ _ _ ht
         · simp only [hl, ite_false]
+      | invoke f args =>
+        simp only [evalRhs] at ht ⊢
+        cases hf : p.find f <;> cases ha : evalAtoms env args <;> simp only [hf, ha] at ht ⊢
+        rename_i fn vs
+        by_cases hl : vs.length = fn.params.length
+        · simp only [hl, ite_true] at ht ⊢
+          exact ihE _ _ _ ht
+        · simp only [hl, ite_false]
       | apply f args =>
         simp only [evalRhs] at ht ⊢
         split at ht

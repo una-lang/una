@@ -99,7 +99,7 @@ def opOk (p : Program) (q : String × Label) : Bool :=
   match p.find q.1 with
   | some fn => fn.tparams.isEmpty && fn.rels.isEmpty && fn.host.isNone &&
       (!fn.op || leB p.top (.ofLabel q.2) (.ofLabel p.acceptsOp)) &&
-      fn.params.all (fun r => isScalar r.2)
+      fn.params.all (fun r => isScalar r.2) && !isVia p q.1
   | none => false
 
 /-- The parts of `Program.LWellFormed` about a policy: closed types with `ℓ_T` in place, and a

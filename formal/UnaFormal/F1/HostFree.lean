@@ -374,6 +374,19 @@ theorem eval_hostFreeIn
             · have hfn := hp f fn hfd (hc f (by simp [Rhs.callees]))
               exact ihE w u _ _ (bindParams_hostFree _ (evalAtoms_hostFree hf ha) trivial) hfn.1 hfn.2
             · exact SameOn.stuck w u
+      | invoke f args =>
+        simp only [evalRhs]
+        cases hfd : p.find f with
+        | none => exact SameOn.stuck w u
+        | some fn =>
+          cases ha : evalAtoms env args with
+          | none => exact SameOn.stuck w u
+          | some vs =>
+            simp only []
+            split
+            · have hfn := hp f fn hfd (hc f (by simp [Rhs.callees]))
+              exact ihE w u _ _ (bindParams_hostFree _ (evalAtoms_hostFree hf ha) trivial) hfn.1 hfn.2
+            · exact SameOn.stuck w u
       | apply f args =>
         simp only [evalRhs]
         cases hfa : evalAtom env f with

@@ -692,6 +692,17 @@ def Program.CatsDeclared (p : Program) : Prop :=
   (∀ rec ∈ p.records, ∀ t ∈ rec.fields, t.CatsIn p.categories) ∧
   (∀ po ∈ p.policies, po.src.CatsIn p.categories ∧ po.dst.CatsIn p.categories)
 
+/-- An entry `List.lookup` finds is in the list. -/
+theorem lookup_some_mem {α β : Type} [BEq α] [LawfulBEq α] {a : α} {b : β} :
+    ∀ {l : List (α × β)}, List.lookup a l = some b → (a, b) ∈ l
+  | [], h => by simp at h
+  | (a', b') :: l, h => by
+    by_cases ha : a = a'
+    · subst ha; simp at h; subst h; exact List.mem_cons_self
+    · have hb : (a == a') = false := by simpa using ha
+      simp only [List.lookup, hb] at h
+      exact List.mem_cons_of_mem _ (lookup_some_mem h)
+
 /-- A program the labeled typing accepts: every function but a `via` function passes T-Fun, a
 `via` function has its structural type, the declared deep labels of records bound their
 fields', and records and policies are as structural well-formedness requires. -/
@@ -723,7 +734,7 @@ structure Program.LWellFormed (p : Program) : Prop where
   parameters raised by `accepts`, is `funs`'s. -/
   ops : ∀ q ∈ p.ops, ∃ fn, p.find q.1 = some fn ∧ fn.tparams = [] ∧ fn.rels = [] ∧
     fn.host = HostFx.none ∧ (fn.op = true → p.le (.ofLabel q.2) (.ofLabel p.acceptsOp)) ∧
-    ∀ r ∈ fn.params, r.2.erase.Scalar
+    (∀ r ∈ fn.params, r.2.erase.Scalar) ∧ ¬ p.IsVia q.1
   /-- Signatures and declared types keep `ℓ_T` in place. -/
   inPlace : (∀ fn ∈ p.funs, (∀ q ∈ fn.params, q.2.InPlace) ∧ fn.result.InPlace) ∧
     (∀ rec ∈ p.records, ∀ t ∈ rec.fields, t.InPlace) ∧

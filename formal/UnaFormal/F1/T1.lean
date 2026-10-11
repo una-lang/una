@@ -216,6 +216,14 @@ theorem sound (hwf : p.WellFormed) (h4 : H.RespTyped) : ∀ n : Nat,
         have henv' := bindParams_typed hvst hlen (EnvTy.nil (p := p))
         rw [List.append_nil] at henv'
         exact ihE henv' (body_typed hwf hf σ)
+      | @invoke _ f _ fn σ hf has =>
+        obtain ⟨vs, hvs, hvst⟩ := atoms_typed henv has
+        have hlen := paramTys_length fn σ
+        simp only [evalRhs, hf, hvs]
+        rw [ite_eq_left ((valsTy_length hvst).trans hlen)]
+        have henv' := bindParams_typed hvst hlen (EnvTy.nil (p := p))
+        rw [List.append_nil] at henv'
+        exact ihE henv' (body_typed hwf hf σ)
       | apply hf has =>
         obtain ⟨fv, hv, hvt⟩ := atom_typed henv hf
         obtain ⟨vs, hvs, hvst⟩ := atoms_typed henv has

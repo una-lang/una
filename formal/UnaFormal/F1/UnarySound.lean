@@ -492,6 +492,36 @@ theorem call_failsAs_inst {pc pc₀ pc' : LExpr} {s s' : List (String × LExpr)}
 
 end
 
+/-- **The events of an invocation** (#524): its handler's, which the effect floor puts at sinks
+above the operation's `accepts`, so above the program counter; a handler performs no host
+operation and releases through no policy (`Program.LWellFormed.ops`). -/
+theorem invoke_allowed_inst {pc pc₀ P : LExpr} {s s' : List (String × LExpr)} {εb : Eff} {fn : Fun}
+    {acc : Label} (hP : p.le P (.ofLabel acc))
+    (hop : fn.op = true → p.le (.ofLabel acc) (.ofLabel p.acceptsOp))
+    (ho : εb.op = true → fn.op = true) (hg : HostFx.Le εb.host fn.host) (hhost : fn.host = HostFx.none)
+    (hr : ∀ x ∈ εb.rels, x ∈ fn.rels) (hrels : fn.rels = []) :
+    ∀ ev, Allowed p pc₀ (εb.inst s') ev → Allowed p P ((Eff.ofInvoke pc fn).inst s) ev
+  | .out _, h => ⟨by simp [Eff.ofInvoke, Eff.inst], LExpr.le_trans hP (hop (ho h.1))⟩
+  | .read _, h => by have := hg.1 h.1; simp [hhost, HostFx.none] at this
+  | .write _ _, h => by have := hg.2.1 h.1; simp [hhost, HostFx.none] at this
+  | .req _ _, h => by have := hg.2.2 h.1; simp [hhost, HostFx.none] at this
+  | .release pol _, h => by have := hr pol h.1; simp [hrels] at this
+
+/-- **An invocation fails as its handler may**, labeled at the caller's program counter (#524),
+with a code when the handler declares no payload kind, and with a payload of a kind it declares. -/
+theorem invoke_failsAs_inst {pc pc₀ : LExpr} {s s' : List (String × LExpr)} {fn : Fun} {εb : Eff}
+    (hfs : εb.fails.isSome = true → fn.fails = true) (hcodes : εb.codes = true → fn.raises = [])
+    (hraises : ∀ k ∈ εb.raises, k ∈ fn.raises) :
+    (FailsAs p pc₀ (εb.inst s')).Le (FailsAs p (pc.inst s) ((Eff.ofInvoke pc fn).inst s)) := by
+  have hfl : ∀ {pc₁ : LExpr}, Fails p pc₁ (εb.inst s') →
+      Fails p (pc.inst s) ((Eff.ofInvoke pc fn).inst s) :=
+    fun h => ⟨pc.inst s, by simp [Eff.ofInvoke, Eff.inst, flag_of_fails hfs h], LExpr.le_refl _⟩
+  refine ⟨fun ⟨h, hc⟩ => ⟨hfl h, ?_⟩, fun k _ _ ⟨h, hk, hp⟩ => ⟨hfl h, ?_, hp⟩⟩
+  · have hf := flag_of_fails hfs h
+    have hr := hcodes (by simpa [Eff.inst] using hc)
+    simp [Eff.ofInvoke, Eff.inst, hf, hr]
+  · simpa [Eff.ofInvoke, Eff.inst] using hraises k (by simpa [Eff.inst] using hk)
+
 /-- A ground type's top label is concrete. -/
 theorem LTy.Ground.top_symFree : ∀ {t : LTy}, t.Ground → t.top.SymFree
   | .int _, h | .bool _, h | .text _, h | .unit _, h | .record _ _, h => h
@@ -589,6 +619,38 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
           (ihE hτ (by simpa using henv'') hbody)
         have hr := LTy.lsubst_ground p.recordDeep hτ hcov hres
         exact (LValTy.ground_lsubst hr).mpr (LValTy.flow hv (Flow.lsubst _ _ hflow))
+      | @invoke _ _ f args fn ts acc hf hacc htp has hfl hle _ =>
+        obtain ⟨fn', hf', _, hrels, hhost, hop, _, hnv⟩ := hwf.ops _ (lookup_some_mem hacc)
+        rw [hf] at hf'
+        cases hf'
+        obtain ⟨tb, εb, hbody, hflow, ho, hgo, hfs, _, hrs, hcd, hra⟩ := funOk_of_nvia hwf hnv hf
+        have hτ : GroundSubst ([] : List (String × LTy)) := fun _ h => nomatch h
+        have hcov : ∀ x ∈ fn.tparams, ∃ u, List.lookup x ([] : List (String × LTy)) = some u := by
+          simp [htp]
+        obtain ⟨hps, hres⟩ := hwf.sigsScoped fn (find_mem hf)
+        have hpg : ∀ u ∈ fn.params.map (fun q => p.lsub [] q.2), u.Ground := by
+          intro u hu
+          obtain ⟨q, hq, rfl⟩ := List.mem_map.mp hu
+          exact LTy.lsubst_ground _ hτ hcov (hps q hq)
+        obtain ⟨vs, hvs, hvst⟩ := latoms_ltypedσ henv has
+        have ha := LValsTy.ground_lsubst hpg
+          (LValsTy.flowsσ (LValsTy.flowsσ hvst hfl) (flows_lsub_nil_params fn).2)
+        have ha' : LValsTy p vs ((LCtx.lsub p.recordDeep [] fn.params).map Prod.snd) := by
+          rw [LCtx.lsub_snd]; simpa [Program.lsub, List.map_map, Function.comp_def] using ha
+        simp only [evalRhs, hf, hvs]
+        rw [ite_eq_left (by rw [LValsTy.length ha, List.length_map])]
+        have henv' := bindParams_ltyped ha' (LEnvTy.nil (p := p))
+        rw [List.append_nil] at henv'
+        have henv'' : LEnvTy p (bindParams fn.params vs []) (LCtx.lsub p.recordDeep [] fn.params) := by
+          simpa [bindParams, LCtx.lsub, List.map_map, Function.comp_def] using henv'
+        have hP : p.le (pc.inst (p.sd σ)) (.ofLabel acc) :=
+          LExpr.le_of_le_inst_ofLabel (LExpr.le_inst _ (LExpr.le_of_join_left hle))
+        refine UOk.mono (invoke_allowed_inst hP hop ho hgo hhost hrs hrels) (fun v hv => ?_)
+          (invoke_failsAs_inst hfs hcd hra)
+          (ihE hτ (by simpa using henv'') hbody)
+        have hr := LTy.lsubst_ground p.recordDeep hτ hcov hres
+        exact LValTy.flow ((LValTy.ground_lsubst hr).mpr (LValTy.flow hv (Flow.lsubst _ _ hflow)))
+          (Flow.lsubst _ _ (Flow.lsubst_nil _ fn.result).1)
       | apply hf has hfl hb =>
         obtain ⟨fv, hfv, hft⟩ := latom_ltypedσ henv hf
         obtain ⟨vs, hvs, hvst⟩ := latoms_ltypedσ henv has

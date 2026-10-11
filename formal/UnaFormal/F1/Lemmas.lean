@@ -137,6 +137,11 @@ mutual
       rw [paramTys_subst] at h
       rw [Ty.subst_subst]
       exact .call hf h
+    | _, _, _, .invoke (fn := fn) (σ := σ) hf has => by
+      have h := atoms_subst τ has
+      rw [paramTys_subst] at h
+      rw [Ty.subst_subst]
+      exact .invoke hf h
     | _, _, _, .apply hf has => by
       have h := atom_subst τ hf
       simp only [Ty.subst, Ty.substs_eq] at h

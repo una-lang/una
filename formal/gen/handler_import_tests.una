@@ -16,7 +16,11 @@ pub capability Bell
 
 handler bell() for Bell
   uses @console: Console[print]
-  op ring(n) = if n > 0 then @console.print("pos") else unit
+  op ring(n) =
+    if n > 0
+      @console.print("pos")
+    else
+      unit
 
 pub capability Gate
   op pass_through(code: Int) -> Int
@@ -62,7 +66,9 @@ pub through(n: Int) -> Int
   uses @gate: Gate[pass_through]
   fails Shut
 =
-  @gate.pass_through(n)
+  let v = @gate.pass_through(n)
+    if error pass
+  v
 
 pub installs(flag: secret Bool) -> Unit
 =

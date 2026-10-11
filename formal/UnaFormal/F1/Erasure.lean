@@ -473,6 +473,19 @@ theorem eval_anon (hH : H.AnonInvariant) (h4 : H.RespTyped) (hf : ∀ f, (P.find
             · rw [ihE, bindParams_anon fn.params (anonParams fn.params) (anonParams_fst _).symm]
               rfl
             · rfl
+      | invoke f args =>
+        simp only [evalRhs, Rhs.anon, evalAtoms_anon, ← hf f]
+        cases P.find f with
+        | none => simp [runAnon_stuck]
+        | some fn =>
+          cases evalAtoms env args with
+          | none => simp [runAnon_stuck]
+          | some vs =>
+            simp only [Option.map_some, Fun.anon, List.length_map, anonParams_length]
+            split
+            · rw [ihE, bindParams_anon fn.params (anonParams fn.params) (anonParams_fst _).symm]
+              rfl
+            · rfl
       | apply f args =>
         simp only [evalRhs, Rhs.anon, evalAtom_anon, evalAtoms_anon]
         cases evalAtom env f with

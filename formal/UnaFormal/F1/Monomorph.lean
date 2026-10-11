@@ -123,7 +123,7 @@ mutual
             simp only [List.map_cons, List.cons.injEq] at h1 ⊢
             exact ⟨by rw [h1.1], ih qs h1.2⟩
       | _ => simp [rhsSim] at h
-    | .call _ _ _, s, h | .funRef _ _, s, h | .atom _, s, h | .prim _ _, s, h
+    | .call _ _ _, s, h | .invoke _ _, s, h | .funRef _ _, s, h | .atom _, s, h | .prim _ _, s, h
     | .apply _ _, s, h | .op _, s, h | .read _, s, h | .write _ _, s, h | .req _ _, s, h
     | .construct _ _, s, h | .variant _ _ _, s, h | .field _ _, s, h
     | .list _, s, h | .none, s, h | .some _, s, h | .first _, s, h | .mkOk _, s, h | .mkErr _, s, h

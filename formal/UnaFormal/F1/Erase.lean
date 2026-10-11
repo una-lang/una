@@ -125,6 +125,12 @@ mutual
       rw [← Flows.erase hflows, lsub_params_erase] at h
       rw [Program.lsub, LTy.erase_lsubst]
       exact .call hf h
+    | _, _, _, _, _, .invoke (fn := fn) hf _ _ has hflows _ _ => by
+      have h := latoms_erase has
+      rw [← Flows.erase hflows, List.map_map] at h
+      have he : fn.result.erase = fn.result.erase.subst [] := (Ty.subst_nil _).symm
+      rw [he]
+      exact .invoke (σ := []) hf (by simpa [Fun.paramTys, Ty.subst_nil, Function.comp_def] using h)
     | _, _, _, _, _, .apply hf has hflows _ => by
       have h := latoms_erase has
       rw [← Flows.erase hflows, List.map_map] at h

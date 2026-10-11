@@ -204,6 +204,13 @@ theorem Eff.plainFree_ofFnR (o : Bool) (g : HostFx) (f : Bool) (rs : List String
 theorem Eff.plainFree_ofCall (fn : Fun) : (Eff.ofCall fn).PlainFree := fun l hl =>
   Eff.plainFree_ofFn fn.op fn.host fn.fails l (by simpa [Eff.ofCall, Eff.ofFnR] using hl)
 
+/-- An invocation's failure is labeled `pc` (#524): plain-free when `pc` is. -/
+theorem Eff.plainFree_ofInvoke {pc : LExpr} (h : pc.PlainFree) (fn : Fun) :
+    (Eff.ofInvoke pc fn).PlainFree := by
+  intro l hl
+  cases hf : fn.fails <;> simp [Eff.ofInvoke, hf] at hl
+  subst hl; exact h
+
 theorem Eff.plainFree_none : Eff.none.PlainFree := fun _ h => by simp [Eff.none] at h
 
 /-- A `Files` failure's label is plain-free when what decides it is. -/
@@ -319,6 +326,8 @@ mutual
       ⟨prim_inPlace (latoms_inPlace hΓ has) hp, Eff.plainFree_none⟩
     | _, _, _, _, _, _, _, _, .call (fn := fn) hf _ _ _ _ hg _ _ _ _ =>
       ⟨(params_inPlace hwf hf _ (zip_ground hg)).2, Eff.plainFree_ofCall _⟩
+    | _, _, _, _, _, _, _, hpc, .invoke (fn := fn) hf _ _ _ _ _ _ =>
+      ⟨(hwf.inPlace.1 fn (List.mem_of_find?_eq_some hf)).2, Eff.plainFree_ofInvoke hpc fn⟩
     | _, _, _, _, _, _, hΓ, _, .apply hf _ _ _ => by
       have h := latom_inPlace hΓ hf
       simp only [LTy.InPlace] at h

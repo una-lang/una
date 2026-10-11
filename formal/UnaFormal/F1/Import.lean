@@ -1088,7 +1088,9 @@ def mkProgram (cats : List String) (acceptsOp : Label) (hl : HostLabels) (recs :
   fileState := hl.fileState.getD Label.bot
   records := recs
   sums := sums
-  ops := ops
+  -- Only the handlers of the program's functions: a handler rejected or not re-checked is not
+  -- one, and what invokes it is not re-checked (`p.find` misses).
+  ops := ops.filter fun q => funs.any (·.name == q.1)
   policies := pols
   funs := funs
 
@@ -1974,6 +1976,8 @@ def checkDocumentWith (subst : Subst) (doc : J) (caps : Caps := {}) :
     if !Check.hostWfB P then "the host's labels"
     else if !Check.b1Ok P then "B1 restriction"
     else if !Check.catsDeclared P then "a declared label names a category the document does not"
+    else if let some q := P.ops.find? (!Check.opOk P ·) then
+      s!"the handler `{q.1}`: outside the effect floor or the restrictions of #524"
     else match P.policies.find? (!Check.policyOk P ·), P.records.find? (!Check.recordOk P ·) with
       | some po, _ =>
         s!"the policy `{po.name}` and its `via` function `{po.via}` do not agree on its types, \

@@ -82,6 +82,7 @@ theorem prog_wf : prog.LWellFormed where
   recordsGround _ h := by simp [prog] at h
   sums := by simp [prog]
   disjoint _ := .inr (by simp [Program.sum, prog])
+  ops _ h := by simp [prog] at h
   eqScoped := by simp [prog, pick]
   sigsScoped := by
     simp only [prog, List.mem_singleton]
