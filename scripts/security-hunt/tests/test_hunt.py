@@ -3,6 +3,7 @@
     cd scripts/security-hunt && python3 -m unittest discover -s tests
 """
 
+import io
 import json
 import os
 import random
@@ -262,6 +263,144 @@ class Generators(unittest.TestCase):
         p = f1(derive_seed(11, "F1", 0), "0.1")
         self.assertEqual(p.variant, "fold-print-under")
         self.assertTrue(p.digest().startswith("d53a6d3c2efa7957"))
+
+    def test_f8_classes_and_recheck_expectations(self):
+        # N-138: a public ending of a secret is must-reject; a secret ending, and the structural
+        # `public` carrier at any ending, must-accept; the residual is its own class, never clean.
+        from hunt.families.fragment import (FIXED_TABLES, LEAK_CODES, PUBLIC_ENDINGS,
+                                            RESIDUAL_ENDINGS)
+        from hunt.program import MUST_ACCEPT, MUST_REJECT, RESIDUAL
+        kinds = {c: k for k, table in FIXED_TABLES for c in table}
+        seen = set()
+        for p in every_program(300):
+            if p.op != "F8":
+                continue
+            carrier = next(c for c in sorted(kinds, key=len, reverse=True)
+                           if p.variant.startswith(c + "-"))
+            ending = p.variant[len(carrier) + 1:]
+            if p.edition == "0.1":
+                self.assertEqual((p.cls, p.expect, p.recheck), (MUST_REJECT, ["U1001"], ""))
+                continue
+            seen.add(carrier)
+            self.assertEqual(p.recheck, kinds[carrier])
+            if kinds[carrier] == "residual":
+                self.assertEqual(p.cls, RESIDUAL)
+                self.assertIn(ending, RESIDUAL_ENDINGS)
+                self.assertNotIn("requires", p.files["src/main.una"] if "src/main.una" in p.files
+                                 else "".join(p.files.values()))
+            elif ending in PUBLIC_ENDINGS and carrier != "public":
+                self.assertEqual((p.cls, p.expect), (MUST_REJECT, LEAK_CODES), p.variant)
+            else:
+                self.assertEqual(p.cls, MUST_ACCEPT, p.variant)
+        self.assertEqual(seen, set(kinds))
+
+    def test_f8_lets_over_the_secret_are_annotated_secret(self):
+        # Seed 13's run: `let t: U8 = s + 1` is U4001 at the `let` itself, so a carrier that
+        # annotates a `let` over `s` with a public type tests nothing of fixed-width arithmetic.
+        import re
+        from hunt.families.fragment import FIXED_TABLES
+        for _, table in FIXED_TABLES:
+            for name, (_, _, body, _) in table.items():
+                for m in re.finditer(r"let (\w+): ([^=]+?) = ([^\n]*)", body):
+                    rhs = m.group(3)
+                    over_secret = re.search(r"\bs\b", rhs) or rhs.startswith("when ")
+                    if over_secret:
+                        # `Result[secret U8, U8]` labels the value it holds: that is enough.
+                        self.assertIn("secret", m.group(2), (name, m.group(0)))
+
+    def test_f8_leaves_earlier_programs_unchanged(self):
+        # F8 has tables of its own: F1's and F7's programs rebuild to the digests of seed 11.
+        from hunt.families.fragment import f1
+        p = f1(derive_seed(11, "F1", 0), "0.1")
+        self.assertTrue(p.digest().startswith("d53a6d3c2efa7957"))
+        self.assertNotIn("expect_recheck", p.manifest())
+
+    FIXED_DOC = json.dumps({"schema": "una.core/1", "complete": True, "modules": [
+        {"path": "app.main", "decls": [{"kind": "fun", "value": {"name": "run"}}]}]})
+
+    def judge_fixed(self, line, expect_main):
+        return drivers.judge_differ(Run(0, self.FIXED_DOC, "", False, 0.1), self.FIXED_DOC,
+                                    Run(0, line, "", False, 0.1), main="app.main.run",
+                                    expect_main=expect_main)
+
+    def test_differ_f8_not_rechecked_is_clean_only_for_its_reason(self):
+        why = "F1 restriction (`div` on operands of mixed or unknown integer types)"
+        j = self.judge_fixed(f"c.json\tapp.main.run\tnot re-checked\t{why}\n", "not-rechecked")
+        self.assertEqual(j["kind"], "clean")
+        j = self.judge_fixed("c.json\tapp.main.run\tnot re-checked\tthe form `x`\n", "not-rechecked")
+        self.assertEqual(j["kind"], "unknown")
+        j = self.judge_fixed("c.json\tapp.main.run\taccepted\t\n", "not-rechecked")
+        self.assertEqual(j["kind"], "finding")
+
+    def test_residual_is_invalid_unless_the_full_check_decides(self):
+        # N-138, N-146: only an acceptance, or a rejection by an obligation, with the solver.
+        V = drivers.Verdict
+        after = "overflow-print-after"
+        cases = [
+            (None, "invalid (no solver)"),
+            (V("rejected", [["U5003", "a", 1, 1]], 0.1), "invalid (U5003)"),
+            (V("timeout", [], 60.0), "invalid (timeout)"),
+            (V("ice", [], 0.1), "invalid (ice)"),
+            (V("inconsistent", [], 0.1), "invalid (inconsistent)"),
+            (V("rejected", [["U4001", "a", 1, 1]], 0.1), "invalid (rejected by U4001)"),
+        ]
+        for full, kind in cases:
+            r = drivers.judge_residual("accepted", full, after)
+            self.assertEqual((r["full_kind"], r["invalid"], r["triage"]), (kind, True, False), kind)
+        r = drivers.judge_residual("accepted", V("rejected", [["U5001", "a", 1, 1]], 0.1), after)
+        self.assertEqual((r["full_kind"], r["invalid"], r["triage"], r["triage_tier0"]),
+                         ("rejected", False, False, True))
+
+    def test_residual_triage_only_on_an_accepted_print_after(self):
+        V = drivers.Verdict
+        ok = V("accepted", [], 0.1)
+        self.assertTrue(drivers.judge_residual("accepted", ok, "zero-div-print-after")["triage"])
+        r = drivers.judge_residual("accepted", ok, "zero-div-secret-result")
+        self.assertEqual((r["triage"], r["triage_tier0"]), (False, False))
+        r = drivers.judge_residual("rejected", ok, "zero-div-print-after")
+        self.assertEqual((r["triage"], r["triage_tier0"]), (True, False))
+
+    def test_differ_residual_rows_never_say_clean(self):
+        # The residual path of `differ`, with the compiler and the re-check stubbed: the rows file
+        # carries `residual`, never `clean`, and no solver makes the row invalid.
+        from hunt.families.fragment import f8
+        from hunt.program import RESIDUAL
+        prog = next(p for p in (f8(derive_seed(13, "F8", i), "0.2") for i in range(200))
+                    if p.cls == RESIDUAL and p.variant.endswith("-print-after"))
+        row = dict(prog.manifest(), digest=prog.digest())
+        core = json.dumps({"schema": "una.core/1", "complete": True, "modules": [
+            {"path": "app.main", "decls": [{"kind": "fun", "value": {"name": "run"}}]}]})
+        ok = json.dumps({"schema": "una.diagnostics/1", "diagnostics": []})
+
+        def fake(argv, cwd, writable, timeout, env_extra=None, mock_port=None):
+            if "core" in argv:
+                return Run(0, core, "", False, 0.1)
+            if argv[0] == "/cc":
+                return Run(0, "c.json\tapp.main.run\taccepted\t\n", "", False, 0.1)
+            return Run(0, ok, "", False, 0.1)
+        real = sandbox.run
+        sandbox.run = fake
+        try:
+            with tempfile.TemporaryDirectory() as root:
+                out = io.StringIO()
+                drivers.differ([row], "/una", "/cc", root, 10, out)
+                r = json.loads(out.getvalue())
+        finally:
+            sandbox.run = real
+        self.assertEqual((r["differ"], r["differ_raw"]), ("residual", "clean"))
+        self.assertEqual((r["invalid"], r["full_kind"], r["triage"], r["triage_tier0"]),
+                         (True, "invalid (no solver)", False, True))
+
+    def test_differ_f8_outside_is_expected_unknown(self):
+        j = self.judge_fixed("c.json\tapp.main.run\tnot re-checked\tthe primitive `fixed`\n",
+                             "outside")
+        self.assertEqual((j["kind"], j.get("expected")), ("unknown", True))
+        j = self.judge_fixed("c.json\tapp.main.run\taccepted\t\n", "outside")
+        self.assertEqual(j["kind"], "finding")
+        # A missing line fails closed, as for predicates.
+        j = self.judge_fixed("c.json\tapp.main.other\taccepted\t\n", "outside")
+        self.assertEqual(j["kind"], "unknown")
+        self.assertIn("no line", j["detail"])
 
     def test_differ_main_not_rechecked_is_unknown(self):
         # Family F stays in the re-check's vocabulary: its own declaration not re-checked is
