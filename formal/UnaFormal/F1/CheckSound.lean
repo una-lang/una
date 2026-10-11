@@ -394,7 +394,7 @@ theorem le_ok {p : Program} {a b : LExpr} {w : String} {u : Unit} (h : le p a b 
 theorem pure_ok {α : Type} {a b : α} : (pure a : Result α) = .ok b ↔ a = b := by
   simp [pure, Except.pure]
 
-@[simp] theorem throw_ok {α : Type} {m : String} {a : α} :
+@[simp] theorem throw_ok {α : Type} {m : Err} {a : α} :
     (throw m : Result α) = .ok a ↔ False := by
   simp [throw, throwThe, MonadExceptOf.throw]
 

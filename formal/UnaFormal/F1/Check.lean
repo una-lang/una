@@ -358,7 +358,7 @@ mutual
         need (symFree pc) s!"`{o}` is invoked under a symbolic program counter"
         flowTo p fn.result ann s!"the result of `{o}`"
         pure (.ofInvokeOp pc fn o)
-      | _ => throw s!"the marker of `{o}` is not a text"
+      | _ => throw (.reject s!"the marker of `{o}` is not a text")
     | .apply f args => do
       match ← atomTy Γ f with
       | .fn ps r o g fl lf =>
@@ -370,7 +370,7 @@ mutual
           "a function value has effects or failures under a program counter above its bound"
         flowTo p (r.raise (lf.join d)) ann "the result of a function value"
         pure (.ofFn o g fl)
-      | _ => throw "a call of a value that is not a function"
+      | _ => throw (.reject "a call of a value that is not a function")
     | .op line => do
       let t ← atomTy Γ line
       need (isScalar t) "the operation's argument is not a scalar"
@@ -433,7 +433,7 @@ mutual
         let t ← some! rec.fields[index]? s!"`{record}` has no field {index}"
         flowTo p (t.raise l) ann "the field"
         pure .none
-      | _ => throw "a field of a value that is not a record"
+      | _ => throw (.reject "a field of a value that is not a record")
     | .list items => do
       match ann with
       | .list t _ =>
@@ -442,13 +442,13 @@ mutual
         need (inPlace t) "`ℓ_T` off a position of type `T`"
         flowTo p (.list t .bot) ann "the list"
         pure .none
-      | _ => throw "a list bound at a type that is not a list"
+      | _ => throw (.reject "a list bound at a type that is not a list")
     | .none => do
       match ann with
       | .option t _ =>
         need (inPlace t) "`ℓ_T` off a position of type `T`"
         pure .none
-      | _ => throw "`None` bound at a type that is not an option"
+      | _ => throw (.reject "`None` bound at a type that is not an option")
     | .some a => do
       flowTo p (.option (← atomTy Γ a) .bot) ann "the option"
       pure .none
@@ -462,39 +462,39 @@ mutual
         flowTo p (ann.raise ((p.deep (.option te lo)).join (p.deep td))) ann
           "the result of `or_else`, which carries every label of its arguments"
         pure .none
-      | _ => throw "`or_else` of a value that is not an option"
+      | _ => throw (.reject "`or_else` of a value that is not an option")
     | .isOk r => do
       match ← atomTy Γ r with
       | .result _ _ l =>
         flowTo p (.bool l) ann "the result of `is_ok`"
         pure .none
-      | _ => throw "`is_ok` of a value that is not a result"
+      | _ => throw (.reject "`is_ok` of a value that is not a result")
     | .elemAt xs i => do
       match ← atomTy Γ xs, ← atomTy Γ i with
       | .list t lx, .int li =>
         flowTo p (.option t (lx.join li)) ann "the element at an index"
         pure .none
-      | _, _ => throw "`at` of a value that is not a list, or at an index that is not an integer"
+      | _, _ => throw (.reject "`at` of a value that is not a list, or at an index that is not an integer")
     | .first a => do
       match ← atomTy Γ a with
       | .list t l =>
         flowTo p (.option t l) ann "the first element"
         pure .none
-      | _ => throw "`first` of a value that is not a list"
+      | _ => throw (.reject "`first` of a value that is not a list")
     | .mkOk a => do
       match ann with
       | .result _ e _ =>
         need (inPlace e) "`ℓ_T` off a position of type `T`"
         flowTo p (.result (← atomTy Γ a) e .bot) ann "the result"
         pure .none
-      | _ => throw "`Ok` bound at a type that is not a result"
+      | _ => throw (.reject "`Ok` bound at a type that is not a result")
     | .mkErr a => do
       match ann with
       | .result t _ _ =>
         need (inPlace t) "`ℓ_T` off a position of type `T`"
         flowTo p (.result t (← atomTy Γ a) .bot) ann "the result"
         pure .none
-      | _ => throw "`Err` bound at a type that is not a result"
+      | _ => throw (.reject "`Err` bound at a type that is not a result")
     | .lambda params body => do
       match ann with
       | .fn ps r o g fl _ =>
@@ -509,7 +509,7 @@ mutual
         need ((!ε.emits p || o) && hostLeB ε.host g && (!ε.fails.isSome || fl))
           "the lambda has effects or failures its declared type does not allow"
         pure .none
-      | _ => throw "a lambda bound at a type that is not a function type"
+      | _ => throw (.reject "a lambda bound at a type that is not a function type")
     | .funRef f targs => do
       let fn ← callable p E f targs
       need fn.rels.isEmpty
@@ -536,7 +536,7 @@ mutual
           "`map`'s function has effects or failures above its bound"
         flowTo p (.list (tr.raise lf) (lx.join lf)) ann "the result of `map`"
         pure (.ofFn o g fl)
-      | _, _ => throw "`map` on values of the wrong types"
+      | _, _ => throw (.reject "`map` on values of the wrong types")
     | .filter xs keep => do
       match ← atomTy Γ xs, ← atomTy Γ keep with
       | .list te lx, .fn [tp] (.bool lb) o g fl lf =>
@@ -545,7 +545,7 @@ mutual
           "`filter`'s predicate has effects or failures above its bound"
         flowTo p (.list te ((lx.join lf).join lb)) ann "the result of `filter`"
         pure (.ofFn o g fl)
-      | _, _ => throw "`filter` on values of the wrong types"
+      | _, _ => throw (.reject "`filter` on values of the wrong types")
     | .firstWhere xs keep => do
       match ← atomTy Γ xs, ← atomTy Γ keep with
       | .list te lx, .fn [tp] (.bool lb) o g fl lf =>
@@ -554,7 +554,7 @@ mutual
           "`first_where`'s predicate has effects or failures above its bound"
         flowTo p (.option te ((lx.join lf).join lb)) ann "the result of `first_where`"
         pure (.ofFn o g fl)
-      | _, _ => throw "`first_where` on values of the wrong types"
+      | _, _ => throw (.reject "`first_where` on values of the wrong types")
     | .fold xs init f => do
       match ← atomTy Γ xs, ← atomTy Γ init, ← atomTy Γ f with
       | .list te lx, ti, .fn [ta, tp] tr o g fl lf =>
@@ -565,7 +565,7 @@ mutual
           "`fold`'s function has effects or failures above its bound"
         flowTo p (ta.raise (lx.join lf)) ann "the result of `fold`"
         pure (.ofFn o g fl)
-      | _, _, _ => throw "`fold` on values of the wrong types"
+      | _, _, _ => throw (.reject "`fold` on values of the wrong types")
     | .parse s => do
       let t ← atomTy Γ s
       need (isText t) "`parse_int` of a value that is not a text"
@@ -614,7 +614,7 @@ mutual
         flowTo p (← atomTy Γ item) te "the item given to `append`"
         flowTo p (.list te lx) ann "the result of `append`"
         pure .none
-      | _ => throw "`append` to a value that is not a list"
+      | _ => throw (.reject "`append` to a value that is not a list")
     | .set xs index item => do
       match ← atomTy Γ xs, ← atomTy Γ index with
       | .list te lx, .int li =>
@@ -622,7 +622,7 @@ mutual
         flowTo p (← atomTy Γ item) te "the item given to `set`"
         flowTo p (.tuple [.list te lx, .unit .bot] .bot) ann "the result of `set`"
         pure .none
-      | _, _ => throw "`set` on values of the wrong types"
+      | _, _ => throw (.reject "`set` on values of the wrong types")
 
   /-- `LExprTy`, checked against the type `s` its value must flow into. -/
   def checkExpr (p : Program) (E : List String) (Γ : LCtx) (pc : LExpr) (s : LTy) :
@@ -658,7 +658,7 @@ mutual
         let ε₂ ← checkExpr p E Γ (pc.join lc) s elseE
         flowTo p (s.raise lc) s "the value of an `if`, raised by its condition,"
         pure ((ε₁.union ε₂).decide lc)
-      | _ => throw "a condition that is not a `Bool`"
+      | _ => throw (.reject "a condition that is not a `Bool`")
     | .caseOption scrutinee noneE x someE => do
       match ← atomTy Γ scrutinee with
       | .option te ls =>
@@ -676,7 +676,7 @@ mutual
         let ε₂ ← checkExpr p E ((x, te.raise ls) :: Γ) (pc.join ls) s someE
         flowTo p (s.raise ls) s "the value of a `case`, raised by its scrutinee,"
         pure ((ε₁.union ε₂).decide ls)
-      | _ => throw "a `case` on options of a value that is not an option"
+      | _ => throw (.reject "a `case` on options of a value that is not an option")
     | .caseResult scrutinee x okE y errE => do
       match ← atomTy Γ scrutinee with
       | .result te ee ls =>
@@ -694,7 +694,7 @@ mutual
         let ε₂ ← checkExpr p E ((y, ee.raise ls) :: Γ) (pc.join ls) s errE
         flowTo p (s.raise ls) s "the value of a `case`, raised by its scrutinee,"
         pure ((ε₁.union ε₂).decide ls)
-      | _ => throw "a `case` on results of a value that is not a result"
+      | _ => throw (.reject "a `case` on results of a value that is not a result")
     | .fail _ => do
       le p pc .bot "a failure under a program counter above `public` (U4002)"
       need (symFree pc) "a failure under a symbolic program counter"
@@ -734,7 +734,7 @@ mutual
         let ε₂ ← checkExpr p E Γ (pc.join ls) s elseE
         flowTo p (s.raise ls) s "the value of a `case`, raised by its scrutinee,"
         pure ((ε₁.union ε₂).decide ls)
-      | _ => throw "a `case` on variants of a value that is not of a sum"
+      | _ => throw (.reject "a `case` on variants of a value that is not of a sum")
     | .attempt body => do
       match s with
       | .result t e l =>
@@ -743,7 +743,7 @@ mutual
         le p ε.dl l "the result of `attempt` is below what decides the failure"
         need (flowB p.top (.int .bot) e) "the error of `attempt` is not a failure's code"
         pure (Eff.attemptOf ε)
-      | _ => throw "`attempt` at a type that is not a result"
+      | _ => throw (.reject "`attempt` at a type that is not a result")
     | .attemptK kind body => do
       match s with
       | .result t e l =>
@@ -753,7 +753,7 @@ mutual
         le p ε.dl l "the result of `attempt` is below what decides the failure"
         need (flowB p.top (.record kind .bot) e) s!"the error of `attempt` is not `{kind}`"
         pure (Eff.attemptOf ε)
-      | _ => throw "`attempt` at a type that is not a result"
+      | _ => throw (.reject "`attempt` at a type that is not a result")
     | .handle body x handler => do
       match s with
       | .tuple ts _ =>
@@ -806,7 +806,7 @@ mutual
           "a component of a tuple does not flow into its binder's type"
         need (binders.all (fun q => inPlace q.2)) "`ℓ_T` off a position of type `T`"
         checkExpr p E (binders ++ Γ) pc s body
-      | _ => throw "the components of a value that is not a tuple"
+      | _ => throw (.reject "the components of a value that is not a tuple")
     -- T-Loop: the declared state types are an invariant (ADR 0075), checked once.
     | .loop (.list xs) x xty state init body => do
       match ← atomTy Γ xs with
@@ -824,7 +824,7 @@ mutual
           "a component of a loop's state is below what decides its iterations (U4001)"
         flowTo p (.tuple (state.map Prod.snd) .bot) s "the value of a loop"
         pure (ε.decide ls)
-      | _ => throw "a loop over a value that is not a list"
+      | _ => throw (.reject "a loop over a value that is not a list")
     | .loop (.range low high _) x xty state init body => do
       match ← atomTy Γ low, ← atomTy Γ high with
       | .int l₁, .int l₂ =>
@@ -841,7 +841,7 @@ mutual
           "a component of a loop's state is below what decides its iterations (U4001)"
         flowTo p (.tuple (state.map Prod.snd) .bot) s "the value of a loop"
         pure (ε.decide (l₁.join l₂))
-      | _, _ => throw "a range whose bounds are not integers"
+      | _, _ => throw (.reject "a range whose bounds are not integers")
 end
 
 /-- T-Fun (`Program.FunOk`). -/
@@ -922,7 +922,7 @@ def checkB1 (p : Program) : Result Unit := do
         (.restriction s!"B1 restriction (impure via): `{po.via}`")
       need fn.raises.isEmpty
         (.restriction s!"B1 restriction (via fails with a payload kind): `{po.via}`")
-    | none => throw s!"no `via` function `{po.via}`"
+    | none => throw (.reject s!"no `via` function `{po.via}`")
   -- The same test as one Boolean, which the proof of soundness reads (`checkB1_sound`); the loop
   -- above gives each restriction its own message.
   need (b1Ok p) (.restriction "B1 restriction")
