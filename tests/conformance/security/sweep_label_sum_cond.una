@@ -41,3 +41,22 @@ pub matched(x: Guess) -> Unit
   when x == Hit(pin: 2)
     is true -> @console.print("hit")
     is false -> @console.print("miss")
+
+pub chosen_twin(x: Guess) -> secret Int = if x == Hit(pin: 2) then 1 else 0
+
+pub printed_twin(x: PubGuess) -> Unit
+  uses @console: Console[print]
+=
+  if x == PubHit(pin: 2)
+    @console.print("hit")
+  else
+    @console.print("miss")
+
+pub matched_twin(x: PubGuess) -> Unit
+  uses @console: Console[print]
+=
+  when x == PubHit(pin: 2)
+    is true -> @console.print("hit")
+    is false -> @console.print("miss")
+
+kind PubGuess = PubHit(pin: Int) | PubMiss

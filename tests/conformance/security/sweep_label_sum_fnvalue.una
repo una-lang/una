@@ -41,3 +41,18 @@ pub lambda_value(x: Guess) -> Bool
 =
   let h = fn(a: Guess) -> a == Hit(pin: 2)
   h(x)
+
+pub generic_value_twin(x: Guess) -> secret Bool
+=
+  let f = same
+  f(x, Hit(pin: 2))
+
+pub plain_value_twin(x: Guess) -> secret Bool
+=
+  let g = equal
+  g(x, Hit(pin: 2))
+
+pub lambda_value_twin(x: Guess) -> secret Bool
+=
+  let h = fn(a: Guess) -> a == Hit(pin: 2)
+  h(x)

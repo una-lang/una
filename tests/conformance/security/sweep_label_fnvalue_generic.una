@@ -26,3 +26,12 @@ pub generic_value(pin: secret Int) -> Int
 =
   let f = id
   f(pin)
+
+pub ided_twin(pin: secret Int) -> secret Int = id(pick(pin))(1)
+
+pub applied_twin(n: Int) -> Int = apply(low, x: n)
+
+pub generic_value_twin(n: Int) -> Int
+=
+  let f = id
+  f(n)

@@ -18,3 +18,7 @@ pub kinds(s: Src, t: Src) -> Bool = s == t
 pub results(s: Src) -> Bool = s.get() == 1
 
 pub generic(f: Feed[secret Int]) -> Bool = f.get() != 1
+
+pub results_twin(s: Src) -> secret Bool = s.get() == 1
+
+pub generic_twin(f: Feed[secret Int]) -> secret Bool = f.get() != 1

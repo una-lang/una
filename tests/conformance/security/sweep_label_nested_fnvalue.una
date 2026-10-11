@@ -85,3 +85,18 @@ pub lambda_value_wallet(x: Wallet) -> Bool
 =
   let h = fn(a: Wallet) -> a == Wallet(acct: Acct(id: 1, pin: 2))
   h(x)
+
+pub generic_value_boxed_list_twin(x: Box[List[secret Int]]) -> secret Bool
+=
+  let f = same_boxed_list
+  f(x, Box(value: [2]))
+
+pub plain_value_option_box_twin(x: Option[Box[secret Int]]) -> secret Bool
+=
+  let g = equal_option_box
+  g(x, Some(Box(value: 2)))
+
+pub lambda_value_wallet_twin(x: Wallet) -> secret Bool
+=
+  let h = fn(a: Wallet) -> a == Wallet(acct: Acct(id: 1, pin: 2))
+  h(x)

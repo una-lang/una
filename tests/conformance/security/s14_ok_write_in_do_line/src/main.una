@@ -1,0 +1,22 @@
+-- test: a write performed in an example's own `do` line is the package's only write, and enters the file-state label as `public`, so a read's failure stays public and may be passed on (S-14)
+-- spec: spec/07 §7
+-- expect: ok
+-- expect: test-pass
+module main
+
+pub load(p: Text) -> internal Text
+  uses @files: Files[read]
+  fails FileError
+=
+  let t = @files.read(p)
+    if error pass
+  t
+
+handler fake_files() for Files
+  op read(path) = ""
+  op write(path, content) = unit
+
+example "an example writes a file"
+  given @files = fake_files()
+  do @files.write("a.txt", content: "x")
+  expect performed @files.write

@@ -19,3 +19,7 @@ run[T](f: Feed[T]) -> T = f.get()
 pub ided(s: Src) -> Int = id(s).get()
 
 pub ran(f: Feed[secret Int]) -> Int = run(f)
+
+pub ided_twin(s: Src) -> secret Int = id(s).get()
+
+pub ran_twin(f: Feed[secret Int]) -> secret Int = run(f)

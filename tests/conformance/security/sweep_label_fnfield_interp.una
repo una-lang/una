@@ -21,3 +21,11 @@ pub results(s: Src) -> Unit
   uses @console: Console[print]
 =
   @console.print("{s.get()}")
+
+pub results_twin(s: PubSrc) -> Unit
+  uses @console: Console[print]
+=
+  @console.print("{s.get()}")
+
+kind PubSrc
+  get: fn() -> Int

@@ -22,3 +22,10 @@ pub ranged(pin: secret Int) -> Bool
 =
   let f = is_pin
   f(pin, 1) in 0..1
+
+pub ordered_twin(pin: secret Int) -> secret Bool = pick(pin)(1) < 5
+
+pub ranged_twin(pin: secret Int) -> secret Bool
+=
+  let f = is_pin
+  f(pin, 1) in 0..1

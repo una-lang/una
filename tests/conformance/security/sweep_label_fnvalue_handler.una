@@ -21,3 +21,10 @@ handler closing() for Maker
 
 handler choosing() for Maker
   op make(pin) = if pin > 0 then low else high
+
+capability MakerTwin
+  op make(pin: Int) -> secret fn(Int) -> secret Int
+    accepts secret
+
+handler closing_twin() for MakerTwin
+  op make(pin) = fn(x: Int) -> x + pin

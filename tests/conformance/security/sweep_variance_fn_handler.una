@@ -33,3 +33,15 @@ capability Give3
 
 handler giving3() for Give3
   op give(v) = v
+
+capability Give0Twin
+  op give(v: fn(Int) -> secret Int) -> fn(Int) -> secret Int
+
+handler giving0_twin() for Give0Twin
+  op give(v) = v
+
+capability Give2Twin
+  op give(v: fn(Int) -> Int) -> fn(Int) -> Int
+
+handler giving2_twin() for Give2Twin
+  op give(v) = v

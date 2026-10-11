@@ -22,3 +22,10 @@ pub captured(pin: secret Int) -> Bool
 =
   let f = fn(x: Int) -> x + pin
   f(1) != 1
+
+pub results_twin(pin: secret Int) -> secret Bool = pick(pin)(1) == 1
+
+pub captured_twin(pin: secret Int) -> secret Bool
+=
+  let f = fn(x: Int) -> x + pin
+  f(1) != 1

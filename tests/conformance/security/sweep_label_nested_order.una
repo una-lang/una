@@ -49,3 +49,11 @@ pub ordered_wallet(x: Wallet) -> Bool = grab_wallet(x) < 5
 pub ranged_wallet(x: Wallet) -> Bool = grab_wallet(x) in 0..10
 
 pub kind_ordered_wallet(x: Wallet) -> Bool = x < Wallet(acct: Acct(id: 1, pin: 2))
+
+pub ordered_boxed_list_twin(x: Box[List[secret Int]]) -> secret Bool = grab_boxed_list(x) < 5
+
+pub ranged_option_box_twin(x: Option[Box[secret Int]]) -> secret Bool = grab_option_box(x) in 0..10
+
+pub ordered_wallet_twin(x: Wallet) -> secret Bool = grab_wallet(x) < 5
+
+pub public_ordered_wallet_twin(x: Wallet) -> Bool = x.acct.id < 5

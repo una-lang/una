@@ -25,3 +25,9 @@ pub ordered(x: Acct) -> Bool = grab(x) < 5
 pub ranged(x: Acct) -> Bool = grab(x) in 0..10
 
 pub kind_ordered(x: Acct) -> Bool = x < Acct(id: 1, pin: 2)
+
+pub ordered_twin(x: Acct) -> secret Bool = grab(x) < 5
+
+pub ranged_twin(x: Acct) -> secret Bool = grab(x) in 0..10
+
+pub id_ordered_twin(x: Acct) -> Bool = x.id < 5

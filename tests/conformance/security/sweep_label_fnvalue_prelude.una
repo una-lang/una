@@ -35,3 +35,25 @@ pub or_else_value(pin: secret Int, o: Option[fn(Int) -> Int]) -> Int
 =
   let f = o.or_else(default: pick(pin))
   f(1)
+
+pub first_value_twin(pin: secret Int) -> secret Int
+=
+  let f = [pick(pin)].first()
+    if none use low
+  f(1)
+
+pub mapped_twin(n: Int) -> List[Int]
+=
+  let f = fn(x: Int) -> x + n
+  [f].map(each: fn(g) -> g(1))
+
+pub at_value_twin(pin: secret Int) -> secret Int
+=
+  let f = [low, high].at(index: pin)
+    if none use low
+  f(1)
+
+pub or_else_value_twin(pin: secret Int, o: Option[fn(Int) -> Int]) -> secret Int
+=
+  let f = o.or_else(default: pick(pin))
+  f(1)

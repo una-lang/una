@@ -37,3 +37,18 @@ pub lambda_value(x: Box[secret Int]) -> Bool
 =
   let h = fn(a: Box[secret Int]) -> a == Box(value: 2)
   h(x)
+
+pub generic_value_twin(x: Box[secret Int]) -> secret Bool
+=
+  let f = same
+  f(x, Box(value: 2))
+
+pub plain_value_twin(x: Box[secret Int]) -> secret Bool
+=
+  let g = equal
+  g(x, Box(value: 2))
+
+pub lambda_value_twin(x: Box[secret Int]) -> secret Bool
+=
+  let h = fn(a: Box[secret Int]) -> a == Box(value: 2)
+  h(x)

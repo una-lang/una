@@ -25,3 +25,8 @@ pub raised(pin: secret Int) -> Int
 =
   let s = leaky(fn(x: Int) -> x, u: pin)
   s.eat(pin)
+
+pub raised_twin(pin: secret Int) -> secret Int
+=
+  let s = leaky(fn(x: Int) -> x, u: pin)
+  s.eat(1)
