@@ -13,7 +13,7 @@ Now there is a proof in Lean, and a checker that applies it to real programs:
 - **The re-check.** A Lean program, `una-core-check`, reads what `una core --json` exports of a package and checks it again, by rules proven sound. It answers per declaration: accepted, rejected, not re-checked, or outside the flow model (a refinement predicate, #532).
 - **Accepted means proven.** Each accepted declaration is part of a whole program that the Lean checker certified, and a theorem gives that program T6. A form the model lacks gives "not re-checked", never "accepted".
 - **Replay.** The re-check rejects the leaking programs of 8 of the 12 findings (S-01 and S-06 to S-12), run on the Core that their pre-fix releases printed. The other 4 are not replayed: S-02 (JSON) and S-04 (`edit`) are outside F1, S-05 (`Files.write`) is replayed from v0.1.3's dumps, with the file-state label taken from v0.3.6: 4 of its 5 shapes are rejected and the fifth is not re-checked (#498). S-03 (`Http`) is not replayable from any release, since `Http` first shipped after its fix.
-- **Corpus.** Every conformance case and example: 1,200 declarations accepted, 0 rejected. That is about 27% of the corpus's 4,330 declarations (71% of the 1,687 in complete documents, `pred` declarations aside). Most of the rest is outside F1: tuples, primitives such as `div` and `mul`, handlers installed with `with` or from outside the document, `together`, and documents the export marks incomplete. So "0 rejected" means that no checked declaration disagrees with the proof, not that the whole corpus is proven.
+- **Corpus.** Every conformance case and example: 1,194 declarations accepted, 0 rejected. That is about 27% of the corpus's 4,330 declarations (71% of the 1,687 in complete documents, `pred` declarations aside). Most of the rest is outside F1: tuples, primitives such as `div` and `mul`, handlers installed with `with` or from outside the document, `together`, and documents the export marks incomplete. So "0 rejected" means that no checked declaration disagrees with the proof, not that the whole corpus is proven.
 
 The track found three real leaks in released versions, S-14 to S-16, all fixed and released. Each total it reported was corrected whenever a review found a gap, and every correction lowered or held the count of accepts, except where a new theorem backed them.
 
@@ -23,11 +23,11 @@ On 1,352 documents (every conformance case and example, exported by #524's tip),
 
 | Outcome | Declarations | In documents `una check` accepts | In documents with errors |
 | --- | --- | --- | --- |
-| Accepted | 1,200 | 662 | 538 |
+| Accepted | 1,194 | 656 | 538 |
 | Rejected | 0 | 0 | 0 |
-| Not re-checked, in complete documents | 487 | | |
+| Not re-checked, in complete documents | 493 | | |
 | Not re-checked: the document is not complete | 2,530 | | |
-| Not re-checked, in all | 3,017 | 317 | 2,700 |
+| Not re-checked, in all | 3,023 | 323 | 2,700 |
 | Outside the flow model (`pred`) | 113 | 95 | 18 |
 
 A document "with errors" is one `una check` rejects for any reason, often a refinement it refutes (U5001), while its other declarations still check; an accepted declaration there is accepted on its own information flow. The table counts each declaration once (a conformance case that declares a name twice prints two lines).
@@ -43,7 +43,7 @@ A `pred` declaration is counted apart, as "outside the flow model" (#532): a ref
 History of "accepted":
 - M2 accepted 601, on v0.3.4's export of 1,276 documents. After #443's keys, `main` accepted 647, and #452 removed the 37 without a theorem: 610.
 - On the re-export of 1,327 documents, the count was 641 before A2. Then: A2 556, plus 82 conditional; A3 638; M5b 642 (1,329 documents); M5c 643.
-- Later items widened F1, each with its own corpus delta: 1,173 on the 1,352-document export before #524, 1,176 after it (3 declarations that invoke handlers); 1,199 before #538 (after #532's predicates, #542's prelude functions and #545's `at`), 1,200 after it.
+- Later items widened F1, each with its own corpus delta: 1,173 on the 1,352-document export before #524, 1,176 after it (3 declarations that invoke handlers); 1,199 before #538 (after #532's predicates, #542's prelude functions and #545's `at`), 1,194 after it (1 gained, and 6 that reach an operation of a `with` scope outside the scopes no longer accepted).
 
 ## Corrections to earlier totals
 
