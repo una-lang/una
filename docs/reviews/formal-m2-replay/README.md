@@ -109,6 +109,14 @@ T1, the unary half and T6 carry both changes, and `scripts/formal.sh` passes wit
 
 **Result with #508: 8 of 8 rejected at the leak.** #508 gives F1's results an error type and builds them with `Ok` and `Err`. `result_ok` and `result_err` are now rejected at the interpolation, as the other six: "the primitive's result, `internal Text`, does not flow into `public Text`". The other 8 are unchanged; `nested_result` is not re-checked at "a call of `prelude.or_else`".
 
+**Result with #528: 6 of 8 rejected at the leak.** #514 made the re-check refuse a function without the keys #443 added to `una.core/1` (`uses_of`, `fails_of`, `result_labels`, `of_raises`; N-99). The dumps here come from releases that predate those keys, so after #514 the whole replay was read as not re-checked, 0 rejected. `dumpcore.py` now writes each key only where it is a fact of the dump (`header_keys`):
+- in edition 0.1, all four are empty: 0.1 has no `of` clauses (ADR 0062) and no result summaries or `of` raises (ADR 0067), and the re-check reads 0.1's generic results by raising every position (D-137);
+- in edition 0.2, `uses_of`, `fails_of` and `of_raises` are empty for a function without a parameter of function type, which an `of` clause would name; `result_labels` is empty for a function without type parameters.
+
+`edit_order_loop_edit_param`'s `push[T]` and `edit_order_loop_generic_init`'s `same[T]` are generic. v0.2.0, which postdates ADR 0067, inferred a summary for each, and its dump does not print it. Their `result_labels` is therefore not a fact here, and is left out: both helpers are not re-checked. So is the `main` that calls each, since its callees' signatures are part of its reading. Every other line is as with #508, byte for byte (`check.sh`, `expected.txt`).
+
+**The gate.** `check.sh` runs `run.sh` and compares its output with `expected.txt` byte for byte, and local CI runs it after the formal build. A change that loses or changes a verdict, a reason or a rejection fails there. An intended change updates `expected.txt` in the same commit, with its reason here.
+
 The helpers `edit_param`'s `push` and `generic_init`'s `same` are accepted, and neither prints.
 
 **The controls** (the coordinator's answer: existing `*_accepted` programs only). `edit_order_list_of_lists_accepted` and `edit_order_option_of_list_accepted` are dumped by v0.3.0, which accepts them. The re-check does not reject either: both are not re-checked, at `or_else`, as are their leaking counterparts. The 8 loop shapes have no `*_accepted` counterpart, and are unpaired. The `Map` controls pair with no replayed shape, since the `Map` leaks do not check on v0.2.0.
