@@ -95,11 +95,17 @@ Each family targets one row of `docs/reviews/security-hunt/coverage.md`. The fam
 
 ### C. `together` (`spec/19`)
 
+As built (`hunt/families/concurrency.py`); in edition 0.1 every program is must-reject U0103, which checks the edition gate.
+
 | Id | Program | Class |
 |---|---|---|
-| C1 | The number of tasks decided by a `secret` value; `together_for` over a `secret` list | must-reject when tasks have effects (U4002), else open |
-| C2 | A task that fails on a `secret` condition, and the block's outcome | must-reject (U4002) |
-| C3 | Writes from two tasks to one path, with the file-state label | open (task order is outside the model; the final state is not) |
+| C1 | The number of tasks decided by a `secret` value (a `secret` list, a range with a `secret` bound), with a sink, a failure, or the result's length in a public position | must-reject (U4003, U4002, U4001); twins over a public list of `secret` elements are open |
+| C2 | A task's own `secret` element decides a failure or a sink; a branch's binding keeps its label after the block | must-reject |
+| C3 | A block under a `secret` program counter whose branch calls a function with effects, or nests a `together for` with a sink | must-reject (U4002, U4003); a public-pc twin is open |
+| C4 | Cancellation seen by a sibling: one task's failure is decided by an `internal` value (`Http.get` on an `internal` URL) and passed out of the task, while a sibling task, or code after the block, has a public effect | must-reject (U4002); an `attempt` twin, where the block cannot fail, is open |
+| C5 | Probes of C4's premise that a user operation's failure cannot depend on a `secret` argument: a handler that reads its argument through `Http.get` or `Files.read` and fails on the result, and a handler that always or never fails chosen by `with` under a `secret` condition | must-reject |
+
+Not generated: the relative order of the effects of different tasks, and how far a cancelled task got, depend on timing, which is outside the model (`spec/07 §1`, `spec/19 §3` rule 3). The two-run oracle compares each task's events alone, never their interleaving.
 
 ### S. User sum types, and `is` / `in` (§3 rule 2, §7 rule 3)
 

@@ -18,6 +18,7 @@ RULE = "spec/19 §3"
 
 LOG = "pub capability Log\n  op write(line: Text) -> Unit"
 OOPS = "pub kind Oops = Bad | Worse"
+SHUT = "pub kind Shut = | Closed"
 LOG_ONE = 'log_one() -> Int\n  uses @log: Log[write]\n=\n  @log.write("branch")\n  1'
 
 
@@ -110,4 +111,84 @@ def c3(seed, edition):
     return _make("C3", edition, seed, cls, join_decls(*decls), expect, variant=form)
 
 
-OPERATORS = {"C1": c1, "C2": c2, "C3": c3}
+# C4. Cancellation seen by a sibling: one task's failure is decided by a value above `public`,
+# and a sibling task, or code after the block, has a public effect that the failure cancels or
+# skips. spec/19 §3 rule 2 keeps cancellation public by requiring that failures happen under
+# public labels, so passing such a failure out of its task is U4002; `attempt` keeps it in the
+# task, and the block cannot fail (open twin). The failure comes from `Http.get` with an
+# `internal` URL, whose failure every argument labels (spec/07 §7 rule 4, S-15). A user
+# capability cannot give one: its handler is checked at the operation's `accepts`, so it cannot
+# fail on its argument (campaign triage of C4's first draft).
+def c4(seed, edition):
+    rng = rng_for(seed)
+    form = rng.choice(["sibling", "after-block", "for-sibling", "attempt-twin"])
+    uses = ("  uses @http: Http[get]\n  uses @log: Log[write]\n  fails HttpError\n")
+    get = "@http.get({u}, headers: no_headers(), key_name: None)"
+    if form in ("sibling", "after-block"):
+        tail = '  @log.write("done")\n  b' if form == "after-block" else "  b"
+        fn = ("pub run(url: internal Text) -> Int\n" + uses + "=\n"
+              f"  together\n    let a = {get.format(u='url')}\n      if error pass\n"
+              "    let b = log_one()\n" + tail)
+        cls, expect = MUST_REJECT, ["U4002"]
+    elif form == "for-sibling":
+        fn = ("pub run(urls: List[internal Text]) -> List[Unit]\n" + uses + "=\n"
+              f"  together for u in urls\n    let r = {get.format(u='u')}\n"
+              '      if error pass\n    @log.write("one")')
+        cls, expect = MUST_REJECT, ["U4002"]
+    else:
+        fn = ("pub run(url: internal Text) -> Int\n" + uses + "=\n"
+              f"  together\n    let a = attempt {get.format(u='url')}\n    let b = log_one()\n"
+              '  @log.write("done")\n  b')
+        cls, expect = OPEN, []
+    headers = "no_headers() -> List[Header] = []"
+    text = join_decls("module app.main\n\nimport std.host (Http)", OOPS, LOG, LOG_ONE, headers, fn)
+    note = ("a leak candidate if accepted: an internal-decided failure cancels a public effect"
+            if cls == MUST_REJECT else "")
+    return _make("C4", edition, seed, cls, text, expect, variant=form, note=note)
+
+
+# C5. Probes of C4's triage (a user operation's failure cannot depend on a secret argument): the
+# handler itself reads its argument through a host operation and fails or not on the result, or
+# the handler that always fails or never fails is chosen by `with` under a secret condition, around
+# a `together` block whose sibling has a public effect. Both must be rejected.
+DOOR_HTTP = ("capability Door\n  op open(code: Text) -> Int\n    fails Shut\n    accepts internal\n\n"
+             "handler probing() for Door\n  uses @http: Http[get]\n  op open(code) =\n"
+             "    let r = attempt @http.get(code, headers: no_headers(), key_name: None)\n"
+             "    when r\n      is Ok -> 1\n      is Err -> fail Closed")
+DOOR_FILES = ("capability Door\n  op open(code: Text) -> Int\n    fails Shut\n    accepts internal\n\n"
+              "handler probing() for Door\n  uses @files: Files[read]\n  op open(code) =\n"
+              "    let r = attempt @files.read(code)\n"
+              "    when r\n      is Ok -> 1\n      is Err -> fail Closed")
+DOOR_PAIR = ("capability Door\n  op open(code: Int) -> Int\n    fails Shut\n    accepts secret\n\n"
+             "handler failing() for Door\n  op open(code) = fail Closed\n\n"
+             "handler fine() for Door\n  op open(code) = 1")
+
+
+def c5(seed, edition):
+    rng = rng_for(seed)
+    form = rng.choice(["handler-http", "handler-files", "with-under-pc"])
+    work = ("work(arg: {t}) -> Int\n  uses @door: Door[open]\n  uses @log: Log[write]\n"
+            "  fails Shut\n=\n  together\n    let a = @door.open(arg)\n      if error pass\n"
+            "    let b = log_one()\n  b")
+    decls = ["module app.main\n\nimport std.host (Http)", OOPS, SHUT, LOG, LOG_ONE,
+             "no_headers() -> List[Header] = []"]
+    if form in ("handler-http", "handler-files"):
+        decls += [DOOR_HTTP if form == "handler-http" else DOOR_FILES, work.format(t="internal Text")]
+        uses = "  uses @http: Http[get]\n" if form == "handler-http" else "  uses @files: Files[read]\n"
+        fn = ("pub run(url: internal Text) -> Int\n" + uses + "  uses @log: Log[write]\n"
+              "  fails Shut\n=\n  work(url) with @door = probing()\n    if error pass")
+        # The handler branches on what its argument decided: U4002 at its failure (Http), or
+        # U4003 at the read, whose path accepts only `public` (Files).
+        expect = ["U4002"] if form == "handler-http" else ["U4003"]
+    else:
+        decls += [DOOR_PAIR, work.format(t="Int")]
+        fn = ("pub run(flag: secret Bool) -> Int\n  uses @log: Log[write]\n  fails Shut\n=\n"
+              "  if flag\n    work(1) with @door = failing()\n      if error pass\n"
+              "  else\n    work(1) with @door = fine()\n      if error pass")
+        expect = ["U4002"]
+    decls.append(fn)
+    return _make("C5", edition, seed, MUST_REJECT, join_decls(*decls), expect, variant=form,
+                 note="a leak candidate if accepted: probes C4's triage")
+
+
+OPERATORS = {"C1": c1, "C2": c2, "C3": c3, "C4": c4, "C5": c5}
