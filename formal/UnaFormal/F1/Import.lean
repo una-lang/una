@@ -483,7 +483,7 @@ mutual
         | .str k =>
           match fixedRange k with
           | some (lo, hi) => pure (.prim (.fit lo hi) [a])
-          | none => throw s!"F1 restriction (a conversion to `{k}`)"
+          | none => throw s!"F1 restriction (a conversion to `{k}`)" -- restriction-check: importer refusal
         | _ => throw "a conversion's target"
       -- `-a` is `0 - a`: the literal is public, so the label is `a`'s, as Una's (#526).
       | "neg", [a] => pure (.prim .sub [.int 0, a])
@@ -688,9 +688,9 @@ mutual
             let annot := fixedOf (← field j "ty")
             let args ← atoms (← field rv "args")
             if !args.all (fun a => operandKind c annot a == some annot) then
-              throw s!"F1 restriction (`{pk}` on operands of mixed or unknown integer types)"
+              throw s!"F1 restriction (`{pk}` on operands of mixed or unknown integer types)" -- restriction-check: importer refusal
             if let some k := annot then
-              let some (lo, hi) := fixedRange k | throw s!"F1 restriction (the kind `{k}`)"
+              let some (lo, hi) := fixedRange k | throw s!"F1 restriction (the kind `{k}`)" -- restriction-check: importer refusal
               let tmp := s!"%fit-{x}"
               return .letR tmp t (← rhs c rv) (.letR x t (.prim (.fit lo hi) [.var tmp]) body)
         let r ← rhs c rv
@@ -1190,7 +1190,7 @@ def prepare (c : Ctx) (hl : HostLabels) (caps : List (String × J)) (decls : Lis
       let types : M (LTy × LTy) := do pure (← ty c (← field e.value "from"), ← ty c (← field e.value "to"))
       match plainRun types with
       | .ok (src, dst) => pure ({ name := pol, src, dst, via } : Policy)
-      | .error why => throw s!"B1 restriction (a policy outside F1): `{pol}`: {why}"
+      | .error why => throw s!"B1 restriction (a policy outside F1): `{pol}`: {why}" -- restriction-check: importer refusal
     let callees ← (← get).funs.mapM fun f => do
       let some e := findDecl f | throw s!"the function `{f}`"
       -- A `via` function's body is read: option B1 asks it to be pure (`Check.checkB1`).
@@ -2262,7 +2262,7 @@ def checkDocumentRead (subst : Subst) (doc : J) (caps : Caps := {}) (scopes : Bo
   let cond := (accepted final).filter isNested
   let docWhy := fun (P : Program) =>
     if !Check.hostWfB P then "the host's labels"
-    else if !Check.b1Ok P then "B1 restriction"
+    else if !Check.b1Ok P then "B1 restriction" -- restriction-check: demoted
     else if !Check.catsDeclared P then "a declared label names a category the document does not"
     else if let some q := P.ops.find? (!Check.opOk P ·) then
       s!"the handler `{q.1}`: outside the effect floor or the restrictions of #524"

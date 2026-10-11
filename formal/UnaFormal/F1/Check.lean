@@ -20,7 +20,7 @@ the model (option B1, ADR 0008, or what F1 does not model, #512), which is not r
 rejected. The constructor, not the message's wording, tells them apart (`Import.classify`). -/
 inductive Err where
   | reject (msg : String)
-  | restriction (msg : String)
+  | restriction (msg : String) -- restriction-check: not a site
   deriving Repr, BEq
 
 /-- What the refusal says, in a sentence. -/

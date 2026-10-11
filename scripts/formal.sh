@@ -23,6 +23,7 @@ cd "$root/formal"
 
 echo "== restrictions by constructor (#535)"
 "$root/scripts/formal-restrictions.sh"
+"$root/scripts/formal-restrictions-test.sh"
 
 echo "== lake build"
 lake build
