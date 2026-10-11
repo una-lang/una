@@ -450,6 +450,27 @@ def blocks(text):
     return out
 
 
+def header_keys(edition, tps, ps):
+    """The keys #443 added to a function (`uses_of`, `fails_of`, `of_raises`, `result_labels`),
+    which these releases' dumps do not print, written only where they are facts of the dump
+    (#528). The re-check refuses a function without one (N-99), so a key that is not a fact is
+    left out, and the function is not re-checked.
+
+    - Edition 0.1 has no `of` clauses (ADR 0062) and no result summaries or `of` raises
+      (ADR 0067): all four are empty there. The re-check reads 0.1's generic results by raising
+      every position by every type argument (D-137), never by `result_labels`.
+    - In edition 0.2, an `of` clause names a parameter of function type (`spec/07 §7` rule 9), so
+      a function with none has no `of` clause and no `of` raise; and a function without type
+      parameters has no result summary. A generic function's summary is not in the dump.
+    """
+    keys = {}
+    if edition == "0.1" or not any(t.get("kind") == "fn" for _, t in ps):
+        keys.update({"uses_of": [], "fails_of": None, "of_raises": []})
+    if edition == "0.1" or not tps:
+        keys["result_labels"] = []
+    return keys
+
+
 def convert(text, module, edition, file_state=None):
     caps, decls = {}, []
     for block in blocks(text):
@@ -512,10 +533,12 @@ def convert(text, module, edition, file_state=None):
                 p.i = len(p.t)
             if p.peek() is not None:
                 raise SyntaxError(f"{name}: unread {p.t[p.i:p.i + 10]}")
-            decls.append({"kind": "fun", "value": {
+            value = {
                 "name": name, "type_params": tps, "constraints": cons, "params": ps,
                 "result": result, "uses": uses, "fails": fails, "error": None,
-                "body": body}})
+                "body": body}
+            value.update(header_keys(edition, tps, ps))
+            decls.append({"kind": "fun", "value": value})
     # The host's capabilities a declaration uses, as `una core --json` writes them in `host`
     # (`spec/14 §3`), for those of them the re-check reads: `Console`, `Env` (M6b) and `Files` (S-05).
     used = {u["capability"] for d in decls if d["kind"] == "fun" for u in d["value"]["uses"]}

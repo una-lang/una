@@ -258,3 +258,8 @@ import UnaFormal
 #print axioms Una.F1.ArithExample.div_euclid
 #print axioms Una.F1.ArithExample.mod_euclid
 #print axioms Una.F1.ArithExample.div_by_zero_aborts
+#print axioms Una.F1.ArithExample.div_neg_divisor
+#print axioms Una.F1.ArithExample.mod_neg_divisor
+#print axioms Una.F1.ArithExample.le_two_three
+#print axioms Una.F1.ArithExample.ge_two_three
+#print axioms Una.F1.ArithExample.le_ge_equal

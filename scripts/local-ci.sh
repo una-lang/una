@@ -104,6 +104,10 @@ fi
 # pinned toolchain, and no stated theorem depends on `sorry`.
 step "Formal (Lean)" scripts/formal.sh
 
+# The replay of the findings through the re-check (#528): S-01 to S-12, S-04 and S-05 keep their
+# verdicts, compared byte for byte with the recorded output.
+step "Formal replay" docs/reviews/formal-m2-replay/check.sh
+
 # A release build never trusts the test certificate authority of una-http (ADR 0074, N-28).
 step "Test (release, TLS trust)" cargo test --release --locked -p una-http --test tls
 step "Pack the release archive of $target" scripts/release.sh "$target"
