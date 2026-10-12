@@ -1,0 +1,12 @@
+module vendor
+
+--- The tiled mode: it writes a tile at `path`.
+pub tiled(path: Text) -> Unit
+  uses @files: Files[write]
+  fails FileError
+=
+  @files.write(path, content: "tile")
+    if error pass
+
+--- The plain mode: pure.
+pub thumbnail(x: Text) -> Text = x
