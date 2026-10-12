@@ -69,3 +69,6 @@ import UnaFormal.F1.LoopExample
 import UnaFormal.F1.Confine
 import UnaFormal.F1.BoundaryExample
 import UnaFormal.F1.BoundaryImportTests
+import UnaFormal.F1.TraceSafety
+import UnaFormal.F1.TraceSafetyProof
+import UnaFormal.F1.TraceSafetyExample

@@ -86,6 +86,7 @@ inductive Atom where
   | bool (b : Bool)
   | text (s : String)
   | unit
+  deriving DecidableEq
 
 /-- The primitives of F1. -/
 inductive Prim where
@@ -259,6 +260,20 @@ mutual
         (init : List Atom) (body : Expr)
 end
 
+/-- A condition on an operation (ADR 0092, #561): the Boolean fragment of the refinement language
+over a function's parameters. A comparison of integers is an opaque atom of the decision procedure
+(`TraceSafety.lean`), identified by its syntax. -/
+inductive Cond where
+  | tt
+  | ff
+  | var (x : String)
+  | not (c : Cond)
+  | and (a b : Cond)
+  | or (a b : Cond)
+  | eqInt (a b : Atom)
+  | ltInt (a b : Atom)
+  deriving DecidableEq
+
 /-- A function of the program: its type parameters (one level of generics, `spec/07 §7`
 rule 8), those of them constrained by `Eq` (`spec/20`), its signature with its `uses` and
 `fails`, and its body. -/
@@ -281,6 +296,10 @@ structure Fun where
   /-- The operations of `with` scopes it may invoke (#538, ruling E): its callers install their
   handlers, and each call is bounded by their `accepts`. -/
   invokes : List String := []
+  /-- Its conditioned operations (ADR 0092, #561), each with its condition over its parameters:
+  `"Console.print"`, `"Files.read"`, `"Files.write"`, `"Http.<method>"`, a handler's function
+  (`Rhs.invoke`) or an operation (`Rhs.invokeOp`). -/
+  conds : List (String × Cond) := []
 
 /-- A record kind of the program: its field types, with their declared labels, in order, and
 the join of every label they declare, which the checker computes over nested records (the

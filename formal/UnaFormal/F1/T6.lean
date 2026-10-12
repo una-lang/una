@@ -666,7 +666,7 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
           simpa [bindParams, LCtx.lsub, List.map_map, Function.comp_def] using this
         have hΓf : LCtx.InPlace fn.params := fun q hq => (hwf.inPlace.1 fn (find_mem hf)).1 q hq
         refine BRelR.mono (fun _ _ h => ?_) (fun _ => vis_dl_inst _ (LExprTy.dl_le_failLabel hbody) hfail)
-          (ihE hτ hEτ hΓf rfl hw (by simpa using hen ha₁) (by simpa using hen ha₂) (by simpa using hrel') hbody)
+          (BRelR.ghost (fun h => h) (fun h => h) (ihE hτ hEτ hΓf rfl hw (by simpa using hen ha₁) (by simpa using hen ha₂) (by simpa using hrel') hbody))
         have hr := LTy.lsubst_ground p.recordDeep hτ hcov hres
         exact V.flow ((V.ground_lsubst hr).mpr (V.flow h (Flow.lsubst _ _ hflow)))
           (Flow.lsubst _ _ (Flow.lsubst_nil _ fn.result).1)
@@ -725,7 +725,7 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
           simpa [bindParams, LCtx.lsub, List.map_map, Function.comp_def] using this
         have hΓf : LCtx.InPlace fn.params := fun q hq => (hwf.inPlace.1 fn (find_mem hf)).1 q hq
         refine BRelR.mono (fun _ _ h => ?_) (fun _ => vis_dl_inst _ (LExprTy.dl_le_failLabel hbody) hfail)
-          (ihE hτ hEτ hΓf rfl hw (by simpa using hen ha₁) (by simpa using hen ha₂) (by simpa using hrel') hbody)
+          (BRelR.ghost (fun h => h) (fun h => h) (ihE hτ hEτ hΓf rfl hw (by simpa using hen ha₁) (by simpa using hen ha₂) (by simpa using hrel') hbody))
         have hr := LTy.lsubst_ground p.recordDeep hτ hcov hres
         exact V.flow (V.flow ((V.ground_lsubst hr).mpr (V.flow h (Flow.lsubst _ _ hflow)))
           (Flow.lsubst _ _ (Flow.lsubst_nil _ fn.result).1)) (Flow.lsubst _ _ hres')

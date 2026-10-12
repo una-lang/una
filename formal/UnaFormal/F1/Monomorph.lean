@@ -13,7 +13,6 @@ import UnaFormal.F1.CheckProgramSound
 
 namespace Una.F1
 
-deriving instance DecidableEq for Atom
 deriving instance DecidableEq for Prim
 
 /-- Two loop sources are the same. -/
@@ -431,7 +430,7 @@ theorem events_firstOrder {p : Program} {H : Host} (hwf : p.LWellFormed) (hb1 : 
   | req m vs =>
     simp only [Event.FirstOrder]
     exact ha.2.2
-  | out _ | read _ | write _ _ => trivial
+  | out _ | read _ | write _ _ | perf _ | perfFn _ => trivial
 
 /-- A release in an erased trace comes from a release, whose value erases to the same. -/
 theorem split_release {ρ : String → String} {t pre rest : Trace} {pol : String} {v : Val}
@@ -445,7 +444,7 @@ theorem split_release {ρ : String → String} {t pre rest : Trace} {pol : Strin
     simp only [Event.anon, Event.release.injEq] at hx
     obtain ⟨rfl, hv⟩ := hx
     exact ⟨A, v', C, rfl, hA, hv⟩
-  | out _ | read _ | write _ _ | req _ _ => simp [Event.anon] at hx
+  | out _ | read _ | write _ _ | req _ _ | perf _ | perfFn _ => simp [Event.anon] at hx
 
 /-- **What the observer sees of the document's runs.** With `P₁` as in `t6_release_erasure`, and
 `proj` the same in both programs (it reads no function), two runs of a body of `P₂` that end,
@@ -500,7 +499,7 @@ theorem t6_release_erasure_obs {ρ : String → String} {P₁ P₂ : Program} (L
     fun h ev hev => h ev (List.mem_filter.mp hev).1
   rcases hbr (hterm ha.2.1 hT₁) (hterm hb.2.1 hT₂) with ⟨hp, _⟩ | ⟨pre, pol, v₁, v₂, r₁, r₂, hne, hp₁, hp₂⟩
   · left
-    apply trace_anon_inj (ρ := id) (ρ' := id) (hfoP hfo₁) (hfoP hfo₂)
+    apply trace_anon_inj (ρ := id) (ρ' := id) (fun _ _ h => h) (hfoP hfo₁) (hfoP hfo₂)
     simp only at hp ⊢
     rw [hview ha.1, hview hb.1, hp]
   · right
@@ -513,7 +512,7 @@ theorem t6_release_erasure_obs {ρ : String → String} {P₁ P₂ : Program} (L
     obtain ⟨A', v₂', C', hA', hpre₂, hv₂⟩ := split_release h₂'
     have hfoA : ∀ ev ∈ A, ev.FirstOrder := fun ev hev => hfoP hfo₁ ev (by rw [hA]; simp [hev])
     have hfoA' : ∀ ev ∈ A', ev.FirstOrder := fun ev hev => hfoP hfo₂ ev (by rw [hA']; simp [hev])
-    have hAA : A = A' := trace_anon_inj (ρ := id) (ρ' := id) hfoA hfoA' (by rw [hpre₁, hpre₂])
+    have hAA : A = A' := trace_anon_inj (ρ := id) (ρ' := id) (fun _ _ h => h) hfoA hfoA' (by rw [hpre₁, hpre₂])
     have hfo₁' : v₁'.FirstOrder := by
       have := hfoP hfo₁ (Event.release pol v₁') (by rw [hA]; simp)
       simpa [Event.FirstOrder] using this

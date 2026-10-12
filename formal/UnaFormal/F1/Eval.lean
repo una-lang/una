@@ -51,6 +51,12 @@ inductive Event where
   | write (path content : String)
   | req (method : String) (args : List Val)
   | release (pol : String) (value : Val)
+  /-- A ghost (#561, ADR 0092): the performance of a user operation, by its handler's function
+  (`Rhs.invoke`) or its operation (`Rhs.invokeOp`). No observer sees it (`EvVis`), so it changes
+  nothing T6 states; trace safety reads it. -/
+  | perf (o : String)
+  /-- The same ghost for `Rhs.invoke`, by the handler's function, which erasure renames. -/
+  | perfFn (f : String)
 
 abbrev Trace := List Event
 
@@ -265,6 +271,9 @@ variable {H : Host}
 /-- A run: its trace, how it ended, and the world it leaves. -/
 abbrev Run (H : Host) := Trace × Res × World H
 
+/-- `r` after the event `ev`: a ghost of a performance, in front of its handler's run (#561). -/
+def Run.ghost {H : Host} (ev : Event) (r : Run H) : Run H := (ev :: r.1, r.2.1, r.2.2)
+
 /-- The result of a `let`: the body runs when the bound value is a value, in the world the bound
 code left; a failure, a stuck evaluation or the end of fuel ends the whole. -/
 def andThen (first : Run H) (rest : World H → Val → Run H) : Run H :=
@@ -420,13 +429,15 @@ mutual
       | .invoke f args =>
         match p.find f, evalAtoms env args with
         | some fn, some vs =>
-          if vs.length = fn.params.length then eval H n p w (bindParams fn.params vs []) fn.body
+          if vs.length = fn.params.length then
+            Run.ghost (.perfFn f) (eval H n p w (bindParams fn.params vs []) fn.body)
           else stuck w
         | _, _ => stuck w
       | .invokeOp o args =>
         match p.find (p.handlerFor o (lookup env (markerName o))), evalAtoms env args with
         | some fn, some vs =>
-          if vs.length = fn.params.length then eval H n p w (bindParams fn.params vs []) fn.body
+          if vs.length = fn.params.length then
+            Run.ghost (.perf o) (eval H n p w (bindParams fn.params vs []) fn.body)
           else stuck w
         | _, _ => stuck w
       | .apply f args =>

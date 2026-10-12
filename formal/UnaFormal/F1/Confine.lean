@@ -33,6 +33,13 @@ def Auth.allows (a : Auth) : Event → Prop
   | .write _ _ => a.wr = true
   | .req _ _ => a.rq = true
   | .release _ _ => False
+  -- The ghost of an invocation of a `with` scope's operation (#561): granted when the ceiling
+  -- names the operation, as `Rhs.within` asks of `invokeOp`.
+  | .perf o => o ∈ a.ops
+  -- The ghost of a #524 invocation, by the handler's function: confined by what the handler does,
+  -- not by the operation's name (R11 of `docs/plan/formal-track-boundary.md`); #572 ties it to
+  -- the handler's operation.
+  | .perfFn _ => True
 
 mutual
   /-- A right-hand side that performs only what `a` grants, in its lambdas included. -/
@@ -186,6 +193,16 @@ are values within `a`. -/
 def Conf (S : String → Prop) (a : Auth) (r : Run H) : Prop :=
   (∀ ev ∈ r.1, a.allows ev) ∧ (∀ v, r.2.1 = .ok v → Val.WithinIn S a v) ∧
     ∀ k c ps, r.2.1 = .raised k c ps → Val.WithinAllIn S a ps
+
+/-- A ghost the ceiling allows, in front of a confined run (#561). -/
+theorem Conf.ghost {r : Run H} {ev : Event} (hev : a.allows ev) (h : Conf S a r) :
+    Conf S a (Run.ghost ev r) := by
+  obtain ⟨tr, res, w⟩ := r
+  refine ⟨fun e he => ?_, h.2⟩
+  simp only [Run.ghost, List.mem_cons] at he
+  rcases he with rfl | he
+  · exact hev
+  · exact h.1 e he
 
 theorem Conf.stuck (w : World H) : Conf S a (stuck w) :=
   ⟨by simp [Una.F1.stuck], (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
@@ -413,7 +430,7 @@ theorem eval_confined (hH : H.RespTyped) (hp : p.ConfinedAt S a) : ∀ n : Nat,
           | some vs =>
             simp only []
             split
-            · exact hfun w f fn vs hfd (hc f (by simp [Rhs.callees])) (evalAtoms_within hf ha)
+            · exact Conf.ghost trivial (hfun w f fn vs hfd (hc f (by simp [Rhs.callees])) (evalAtoms_within hf ha))
             · exact Conf.stuck w
       | invokeOp o args =>
         simp only [Rhs.within] at hr
@@ -426,7 +443,7 @@ theorem eval_confined (hH : H.RespTyped) (hp : p.ConfinedAt S a) : ∀ n : Nat,
           | some vs =>
             simp only []
             split
-            · exact hfun w _ fn vs hfd (hp.handlers o hr _) (evalAtoms_within hf ha)
+            · exact Conf.ghost (by simpa [Auth.allows] using hr) (hfun w _ fn vs hfd (hp.handlers o hr _) (evalAtoms_within hf ha))
             · exact Conf.stuck w
       | apply f args =>
         simp only [evalRhs]

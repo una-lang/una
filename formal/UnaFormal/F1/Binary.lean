@@ -73,6 +73,9 @@ def EvVis : Event → Prop
   | .write _ _ => Vis p L (.ofLabel p.acceptsWrite)
   | .req _ _ => Vis p L (.ofLabel p.acceptsReq)
   | .release pol _ => ∃ po, p.policy pol = some po ∧ Vis p L po.dst.top
+  -- A ghost of a performance (#561): seen by no observer.
+  | .perf _ => False
+  | .perfFn _ => False
 
 open Classical in
 /-- The events the observer sees, in order. -/
@@ -360,6 +363,8 @@ theorem confined {pc : LExpr} {ε : Eff} {P : Val → Prop} {w : World H} {run :
       rw [hpo] at hpo'
       cases hpo'
       exact hpc (Vis.of_le hle hv)
+    | perf _ => exact hvis
+    | perfFn _ => exact hvis
   · have hf : Fails p pc ε := by
       have h2 := h.2.1
       simp only at hc h2

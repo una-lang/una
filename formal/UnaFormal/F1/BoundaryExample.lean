@@ -123,7 +123,7 @@ def go : Fun := fn "app.go" []
 
 def p5 : Program := mk [fire, go] [("vendor.fire", "Hook.fire")] [("Hook.fire", "vendor.fire")]
 
-theorem go_requests : (eval Host.unit 20 p5 w0 [] go.body).1 = [.req "POST" [.text "https://hook"]] :=
+theorem go_requests : (eval Host.unit 20 p5 w0 [] go.body).1 = [.perf "Hook.fire", .req "POST" [.text "https://hook"]] :=
   rfl
 
 theorem fire_requests : (eval Host.unit 20 p5 w0 (bindParams fire.params [] []) fire.body).1 =
@@ -174,7 +174,7 @@ def p12 : Program :=
 
 theorem adapter_accepted : confinedB p12 cRecords ["rules.review", "app.ro.contains"] = true := by decide
 
-theorem adapter_reads : (eval Host.unit 20 p12 w0 [] review.body).1 = [.read "records"] := rfl
+theorem adapter_reads : (eval Host.unit 20 p12 w0 [] review.body).1 = [.perf "Records.contains", .read "records"] := rfl
 
 theorem adapter_allowed : ∀ ev ∈ (eval Host.unit 20 p12 w0 [] review.body).1, cRecords.allows ev :=
   body_confined Host.unit_respTyped (confinedB_sound adapter_accepted) (f := "rules.review")
@@ -184,7 +184,7 @@ def p12w : Program :=
   mk [review, writable] [("app.rw.contains", "Records.contains")] [("Records.contains", "app.rw.contains")]
 
 theorem writable_writes : (eval Host.unit 20 p12w w0 (bindParams review.params [] []) review.body).1 =
-    [.write "records" "x"] := rfl
+    [.perf "Records.contains", .write "records" "x"] := rfl
 
 theorem writable_rejected (S : List String) (hS : "rules.review" ∈ S) :
     confinedB p12w cRecords S = false :=
@@ -209,14 +209,14 @@ def p11 : Program :=
 
 theorem quiet_accepted : confinedB p11 cPost ["tpl.render_alert", "app.none.post"] = true := by decide
 
-theorem quiet_runs : (eval Host.unit 20 p11 w0 [] renderAlert.body).1 = [] := rfl
+theorem quiet_runs : (eval Host.unit 20 p11 w0 [] renderAlert.body).1 = [.perf "Net.post"] := rfl
 
 def p11r : Program :=
   mk [renderAlert, posting] [("app.http.post", "Net.post")] [("Net.post", "app.http.post")]
 
 theorem posting_requests :
     (eval Host.unit 20 p11r w0 (bindParams renderAlert.params [] []) renderAlert.body).1 =
-      [.req "POST" [.text "https://customer"]] := rfl
+      [.perf "Net.post", .req "POST" [.text "https://customer"]] := rfl
 
 theorem posting_rejected (S : List String) (hS : "tpl.render_alert" ∈ S) :
     confinedB p11r cPost S = false :=

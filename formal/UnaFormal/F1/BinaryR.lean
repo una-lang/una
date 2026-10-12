@@ -26,6 +26,28 @@ def BRelR {H : Host} (R : Val → Val → Prop) (vf : Prop) (r₁ r₂ : Run H) 
 
 variable {p L} {H : Host}
 
+/-- An event no observer sees leaves the projection as it was (#561). -/
+theorem proj_ghost {ev : Event} (h : ¬ EvVis p L ev) (t : Trace) : proj p L (ev :: t) = proj p L t := by
+  simp [proj, List.filter_cons, h]
+
+/-- The ghosts of performances, dropped by every observer's projection (#561). -/
+theorem proj_perf (o : String) (t : Trace) : proj p L (.perf o :: t) = proj p L t :=
+  proj_ghost (ev := .perf o) (fun h => by simp [EvVis] at h) t
+
+theorem proj_perfFn (f : String) (t : Trace) : proj p L (.perfFn f :: t) = proj p L t :=
+  proj_ghost (ev := .perfFn f) (fun h => by simp [EvVis] at h) t
+
+/-- Ghosts in front of two related runs keep them related (#561). -/
+theorem BRelR.ghost {R : Val → Val → Prop} {vf : Prop} {r₁ r₂ : Run H} {ev₁ ev₂ : Event}
+    (h₁ : ¬ EvVis p L ev₁) (h₂ : ¬ EvVis p L ev₂) (h : BRelR p L R vf r₁ r₂) :
+    BRelR p L R vf (Run.ghost ev₁ r₁) (Run.ghost ev₂ r₂) := by
+  obtain ⟨tr₁, o₁, w₁⟩ := r₁
+  obtain ⟨tr₂, o₂, w₂⟩ := r₂
+  intro t₁ t₂
+  have hh := h t₁ t₂
+  simp only [Run.ghost, Diverged, proj_ghost h₁, proj_ghost h₂] at hh ⊢
+  exact hh
+
 /-- What follows a divergence keeps it. -/
 theorem Diverged.append {t₁ t₂ : Trace} (u₁ u₂ : Trace) (h : Diverged p L t₁ t₂) :
     Diverged p L (t₁ ++ u₁) (t₂ ++ u₂) := by
@@ -165,7 +187,7 @@ theorem BRelR.to_brel {R : Val → Val → Prop} {vf : Prop} {r₁ r₂ : Run H}
 /-- Effects without releases allow none. -/
 theorem allowed_noRelease {pc : LExpr} {ε : Eff} (hr : ε.rels = []) :
     ∀ ev, Allowed p pc ε ev → ev.isRelease = false
-  | .out _, _ | .read _, _ | .write _ _, _ | .req _ _, _ => rfl
+  | .out _, _ | .read _, _ | .write _ _, _ | .req _ _, _ | .perf _, _ | .perfFn _, _ => rfl
   | .release _ _, h => by have := h.1; rw [hr] at this; nomatch this
 
 /-- A run that keeps to a typing whose effects release nothing shows no release. -/

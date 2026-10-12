@@ -101,7 +101,7 @@ theorem handled_checked :
     ∃ ε, checkExpr prog [] [] .bot (.unit .bot) handled = .ok ε := ⟨_, rfl⟩
 
 /-- **A failure handled in the branch is certified**, and both runs print. -/
-theorem handled_runs : (eval Host.unit 20 prog (wSet "1") [] handled).1 = [.out "after"] ∧
+theorem handled_runs : (eval Host.unit 20 prog (wSet "1") [] handled).1 = [.perfFn "m.door.open", .out "after"] ∧
     (eval Host.unit 20 prog (wSet "22") [] handled).1 = [.out "after"] := ⟨rfl, rfl⟩
 
 /-! ### H5, unhandled under the secret -/
@@ -117,13 +117,13 @@ unseal flowB flowsB in
 theorem unhandled_rejected :
     ∃ msg, checkExpr prog [] [] .bot (.unit .bot) unhandled = .error msg := ⟨_, rfl⟩
 
-theorem unhandled_leaks : (eval Host.unit 20 prog (wSet "1") [] unhandled).1 = [] ∧
+theorem unhandled_leaks : (eval Host.unit 20 prog (wSet "1") [] unhandled).1 = [.perfFn "m.door.open"] ∧
     (eval Host.unit 20 prog (wSet "22") [] unhandled).1 = [.out "after"] := ⟨rfl, rfl⟩
 
 theorem unhandled_untyped {t : LTy} {ε : Eff} : ¬ LExprTy prog [] [] .bot unhandled t ε := by
   intro ht
   have h := same_lines ht 20 (by exact True.intro) (by exact True.intro)
-  rw [unhandled_leaks.1, unhandled_leaks.2, proj_single_vis (out_vis _)] at h
+  rw [unhandled_leaks.1, unhandled_leaks.2, proj_perfFn, proj_single_vis (out_vis _)] at h
   simp [proj] at h
 
 /-! ### H6 -/
@@ -137,13 +137,13 @@ unseal flowB flowsB in
 theorem printAfter_rejected :
     ∃ msg, checkExpr prog [] [] .bot (.unit .bot) printAfter = .error msg := ⟨_, rfl⟩
 
-theorem printAfter_leaks : (eval Host.unit 20 prog (wSet "1") [] printAfter).1 = [.out "after"] ∧
+theorem printAfter_leaks : (eval Host.unit 20 prog (wSet "1") [] printAfter).1 = [.perfFn "m.door.open", .out "after"] ∧
     (eval Host.unit 20 prog (wSet "22") [] printAfter).1 = [] := ⟨rfl, rfl⟩
 
 theorem printAfter_untyped {t : LTy} {ε : Eff} : ¬ LExprTy prog [] [] .bot printAfter t ε := by
   intro ht
   have h := same_lines ht 20 (by exact True.intro) (by exact True.intro)
-  rw [printAfter_leaks.1, printAfter_leaks.2, proj_single_vis (out_vis _)] at h
+  rw [printAfter_leaks.1, printAfter_leaks.2, proj_perfFn, proj_single_vis (out_vis _)] at h
   simp [proj] at h
 
 /-- `let x: Int = if c then (when attempt @door.open(1) is Ok(n) -> n is Err -> 0) else 5`, printed. -/
@@ -159,13 +159,13 @@ unseal flowB flowsB in
 theorem valueOut_rejected :
     ∃ msg, checkExpr prog [] [] .bot (.unit .bot) valueOut = .error msg := ⟨_, rfl⟩
 
-theorem valueOut_leaks : (eval Host.unit 20 prog (wSet "1") [] valueOut).1 = [.out "0"] ∧
+theorem valueOut_leaks : (eval Host.unit 20 prog (wSet "1") [] valueOut).1 = [.perfFn "m.door.open", .out "0"] ∧
     (eval Host.unit 20 prog (wSet "22") [] valueOut).1 = [.out "5"] := ⟨rfl, rfl⟩
 
 theorem valueOut_untyped {t : LTy} {ε : Eff} : ¬ LExprTy prog [] [] .bot valueOut t ε := by
   intro ht
   have h := same_lines ht 20 (by exact True.intro) (by exact True.intro)
-  rw [valueOut_leaks.1, valueOut_leaks.2, proj_single_vis (out_vis _), proj_single_vis (out_vis _)] at h
+  rw [valueOut_leaks.1, valueOut_leaks.2, proj_perfFn, proj_single_vis (out_vis _), proj_single_vis (out_vis _)] at h
   simp at h
 
 /-! ### The effect floor -/
@@ -204,7 +204,7 @@ declare the effect (T-Fun), and then fails the floor. -/
 theorem floor_call : progOk [] progC = false := by rfl
 
 /-- What the floor prevents: under the secret, the handler's print is seen only when `c` holds. -/
-theorem floor_leaks : (eval Host.unit 20 progE (wSet "1") [] handled).1 = [.out "opened", .out "after"] ∧
+theorem floor_leaks : (eval Host.unit 20 progE (wSet "1") [] handled).1 = [.perfFn "m.door.open", .out "opened", .out "after"] ∧
     (eval Host.unit 20 progE (wSet "22") [] handled).1 = [.out "after"] := ⟨rfl, rfl⟩
 
 /-! ### Ruling D: what decides a failure, apart from where it happens (§4a) -/
@@ -223,7 +223,7 @@ unseal flowB flowsB in
 theorem handledPub_checked :
     ∃ ε, checkExpr prog [] [] .bot (.unit .bot) handledPub = .ok ε := ⟨_, rfl⟩
 
-theorem handledPub_runs : (eval Host.unit 20 prog (wSet "1") [] handledPub).1 = [.out "after"] ∧
+theorem handledPub_runs : (eval Host.unit 20 prog (wSet "1") [] handledPub).1 = [.perfFn "m.door.open", .out "after"] ∧
     (eval Host.unit 20 prog (wSet "22") [] handledPub).1 = [.out "after"] := ⟨rfl, rfl⟩
 
 /-- `SECRET` and `TOKEN`, both `internal`. -/
