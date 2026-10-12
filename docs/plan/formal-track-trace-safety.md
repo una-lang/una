@@ -31,7 +31,7 @@ It holds for every outcome of the run: a normal result, a failure, `.aborted` (a
    - `"Files.read"`, `"Files.write"` and `"Http.<method>"` (the host operations);
    - `"Env.get"`;
    - a user operation `"Cap.op"`, by `Rhs.invoke` (#524, whose handler maps to it through `Program.handlerOf`) or `Rhs.invokeOp` (#538).
-2. **Ghost events in the trace** (the coordinator's ruling N-152, replacing a field of `World`). `Event` gains `perf (o : String)`, which `invoke` and `invokeOp` emit before their handler runs. No observer sees it: `EvVis (.perf _)` is `False`, so `proj` drops it, and T6, `BRel` and `WorldRel` keep their statements byte for byte.
+2. **Ghost events in the trace** (the coordinator's ruling N-152, replacing a field of `World`). `Event` gains `perf (o : String)`, which `invokeOp` emits before its handler runs; as built, `invoke` emits `perfFn f`, by the handler's function, which erasure renames (§8b). No observer sees it: `EvVis (.perf _)` is `False`, so `proj` drops it, and T6, `BRel` and `WorldRel` keep their statements byte for byte.
    - A field of `World` was the first choice. It fails because `WorldRel` asks `w₁ = w₂` when the observer sees `internal`, and two related runs may perform an operation under a pc the observer cannot see.
    - The operations F1 already has as events need no ghost: `Console.print` is `.out`, `Files.read` is `.read`, `Files.write` is `.write`, and a request is `.req`. `Performs o tr` reads a performance of `o` from either kind of event.
    - `Env.get` has no event, and giving it one would change the traces of every example that reads the environment. A condition on `Env.get` is not re-checked in this cut (§9).
@@ -113,7 +113,7 @@ B06's shape, with `Catalog.journal` a user operation whose handler prints:
 
 ## 8. The coordinator's ruling (2026-10-11, N-151)
 
-1. **The ghost log in `World`**, with `perf_irrelevant`: approved.
+1. **The ghost log in `World`**, with `perf_irrelevant`: approved, then superseded by ghost events in the trace (N-152, below).
 2. **`Cond`'s fragment**: approved, with opaque atoms identified by syntax after substitution (§4), and the non-vacuity case (e).
 3. **The bound of 12**: approved, as coverage only.
 4. **The lock** stays outside the theorem: approved, as a residual (§9), not silently out of scope.
@@ -148,7 +148,7 @@ B06's shape, with `Catalog.journal` a user operation whose handler prints:
 
 ## 10. The draft's open choices (resolved in §8)
 
-1. **The ghost log in `World`** (item 3.2), or a separate instrumented evaluator proven to agree with `eval`. The log touches every T6 proof that builds or destructs a world, but only mechanically: one more field. The evaluator would duplicate `eval`, and its agreement lemma is as long as `eval`. The draft recommends the log.
+1. **The ghost log in `World`** (item 3.2), or a separate instrumented evaluator proven to agree with `eval`. The log touches every T6 proof that builds or destructs a world, but only mechanically: one more field. The evaluator would duplicate `eval`, and its agreement lemma is as long as `eval`. The draft recommends the log. (Superseded by N-152: ghost events in the trace.)
 2. **`Cond`'s fragment** (item 3.3): Boolean structure, `Bool` parameters, and integer comparisons as opaque atoms. That covers B06 and every condition the ADR shows. Anything else is not re-checked.
 3. **The truth-table bound of 12** (§4), and its complexity statement.
 4. **The contract lock** (`[contracts]`, U3023) is a check on headers against `una.toml`, with no run to speak of, so it is outside this theorem. The re-check reads it as the implementation exports it.
