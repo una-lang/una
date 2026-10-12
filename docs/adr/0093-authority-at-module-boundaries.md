@@ -124,3 +124,16 @@ Una has no package dependencies yet. A package is its own modules (`spec/13 §7`
 - The authority-confinement theorem in F1 (rule 7), a milestone of the formal track (#562).
 - The `[inherit]` table's exact form, with the dependency ADR that introduces packages' dependencies.
 - Assigned on acceptance: U3020 and U3021. They join `spec/13 §4`'s registry with the implementation (#565).
+
+## Amendment (2026-10-11): no release across a boundary
+
+Stating the authority-confinement theorem (#562) found a gap. A ceiling bounds the operations a boundary module receives, but nothing in rules 3 to 5 stops a call into it from reaching a release: a `declassify`, or a call of a policy (`spec/07 §5`). A vendored library or a plug-in that lowers a label would release information with the consumer's authority, outside the trusted modules that are the TCB.
+
+8. **No release is reachable from a boundary call.** A call into a boundary module (rule 3, function values, functional arguments and handler installations included) from which a release is reachable is a build error, U3024: "the call into `gallery.thumbnailer` reaches a release through `<policy>`; a boundary module never declassifies".
+   - "Reachable" is over the call graph the effects already follow: the callee's body, its callees, the handlers it may run, and the functional arguments granted at the call.
+   - The primary span is the call, and the related span is the release.
+   - Releases stay in the trusted modules (`spec/07 §6`), and a boundary module is never one of them: a module listed in both `[trusted]` and `[boundaries]` is U7002.
+   - Nothing about this is ever a repair `una fix` applies. The diagnostic's help is to move the release into a trusted module of the consumer, before or after the boundary call.
+   - **Code.** U3024 is assigned with this amendment. It joins `spec/13 §4`'s registry with the implementation (#565).
+   - **Complexity.** One reachability check per call into a boundary module, over the call graph the effect inference already builds: linear in call edges.
+   - **Formal.** Authority confinement (#562) states that no release event occurs during a call into a boundary module.
