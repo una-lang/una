@@ -80,7 +80,7 @@ theorem tiled_writes :
 
 theorem tiled_rejected (S : List String) (hS : "vendor.tiled" ∈ S) : confinedB p10 cRead S = false :=
   confinedB_refutes Host.unit_respTyped (fn := tiled) rfl (vs := [.text "a.jpg"]) (n := 20) (w := w0)
-    (by rw [tiled_writes]; simp) (by simp [Auth.allows, cRead]) S hS (by simp [Val.WithinAllIn, Val.WithinIn])
+    (ev := .write "a.jpg" "tile") (by rw [tiled_writes]; simp) (by simp [Auth.allows, cRead]) S hS (by simp [Val.WithinAllIn, Val.WithinIn])
 
 theorem thumbnail_accepted : confinedB p10 cRead ["vendor.thumbnail"] = true := by decide
 
@@ -109,7 +109,7 @@ theorem value_rejected (S : List String) (hS : "vendor.tiled" ∈ S) : confinedB
   · have hv := funRef_within (confinedB_sound h) (f := "vendor.tiled") (fn := tiled) rfl hS [] trivial
     have := apply_confined Host.unit_respTyped (confinedB_sound h) hv
       (vs := [.text "a.jpg"]) (by simp [Val.WithinAllIn, Val.WithinIn]) 20 w0 (.write "a.jpg" "tile")
-      (by simp only [tiledValue] at applied_writes ⊢; rw [applied_writes]; simp)
+      (by have h := applied_writes; simp only [tiledValue] at h; rw [h]; simp)
     simp [Auth.allows, cRead] at this
 
 /-! ### 3. B5: a boundary handler installed outside -/
@@ -134,7 +134,7 @@ def cNone : Auth := {}
 
 theorem handler_rejected (S : List String) (hS : "vendor.fire" ∈ S) : confinedB p5 cNone S = false :=
   confinedB_refutes Host.unit_respTyped (fn := fire) rfl (vs := []) (n := 20) (w := w0)
-    (by rw [fire_requests]; simp) (by simp [Auth.allows, cNone]) S hS (by simp [Val.WithinAllIn])
+    (ev := .req "POST" [.text "https://hook"]) (by rw [fire_requests]; simp) (by simp [Auth.allows, cNone]) S hS (by simp [Val.WithinAllIn])
 
 /-! ### 4. A1: a lambda given to the boundary -/
 
@@ -189,7 +189,7 @@ theorem writable_writes : (eval Host.unit 20 p12w w0 (bindParams review.params [
 theorem writable_rejected (S : List String) (hS : "rules.review" ∈ S) :
     confinedB p12w cRecords S = false :=
   confinedB_refutes Host.unit_respTyped (fn := review) rfl (vs := []) (n := 20) (w := w0)
-    (by rw [writable_writes]; simp) (by simp [Auth.allows, cRecords]) S hS (by simp [Val.WithinAllIn])
+    (ev := .write "records" "x") (by rw [writable_writes]; simp) (by simp [Auth.allows, cRecords]) S hS (by simp [Val.WithinAllIn])
 
 /-! ### 6. B11: an empty ceiling -/
 
@@ -221,6 +221,6 @@ theorem posting_requests :
 theorem posting_rejected (S : List String) (hS : "tpl.render_alert" ∈ S) :
     confinedB p11r cPost S = false :=
   confinedB_refutes Host.unit_respTyped (fn := renderAlert) rfl (vs := []) (n := 20) (w := w0)
-    (by rw [posting_requests]; simp) (by simp [Auth.allows, cPost]) S hS (by simp [Val.WithinAllIn])
+    (ev := .req "POST" [.text "https://customer"]) (by rw [posting_requests]; simp) (by simp [Auth.allows, cPost]) S hS (by simp [Val.WithinAllIn])
 
 end Una.F1.BoundaryExample

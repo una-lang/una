@@ -1,6 +1,6 @@
 module app
 
-import vendor (tiled, thumbnail)
+import vendor (thumbnail, tiled)
 
 --- Hands the files to the library's tiled mode, which writes.
 pub thumbs(path: Text) -> Unit

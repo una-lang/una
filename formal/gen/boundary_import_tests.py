@@ -26,7 +26,7 @@ CEILINGS = {
 def main(src, out):
     doc = json.load(open(src, encoding="utf-8"))
     assert doc["complete"] is True
-    paths = sorted(m["path"] for m in doc["modules"])
+    paths = sorted(m["path"] for m in doc["modules"] if m["path"] != "prelude")
     assert paths == ["app", "vendor"], paths
     texts = {"none": json.dumps(doc, separators=(",", ":"), ensure_ascii=False)}
     for name, ceiling in CEILINGS.items():

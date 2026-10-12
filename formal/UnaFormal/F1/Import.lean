@@ -1908,15 +1908,17 @@ is the operation, `Files[read]` and `Files[write]` the host's, any operation of 
 `Env[get]` the environment, and any other capability's operations user operations, `Cap.op`.
 Anything else is refused, so a ceiling is never read wider than it is written. -/
 def ceilingOf (entries : List String) : Except String Auth := do
+  let strip (s : String) : String :=
+    String.ofList ((s.toList.dropWhile Char.isWhitespace).reverse.dropWhile Char.isWhitespace).reverse
   let mut a : Auth := {}
   for e in entries do
-    let some i := e.posOf '[' |> fun p => if p == e.endPos then none else some p
-      | throw s!"the ceiling entry `{e}`"
-    if !e.endsWith "]" then throw s!"the ceiling entry `{e}`"
-    let cap := (e.extract 0 i).trim
-    let body := ((e.extract (e.next i) e.endPos).dropRight 1).toString
-    let ops := (body.splitOn ",").map (·.trim) |>.filter (· != "")
-    if cap.isEmpty || ops.isEmpty then throw s!"the ceiling entry `{e}`"
+    let (cap, body) ← match e.splitOn "[" with
+      | [c, rest] => match rest.splitOn "]" with
+        | [b, t] => if strip t == "" then pure (strip c, b) else throw s!"the ceiling entry `{e}`"
+        | _ => throw s!"the ceiling entry `{e}`"
+      | _ => throw s!"the ceiling entry `{e}`"
+    let ops := (body.splitOn ",").map strip |>.filter (· != "")
+    if cap == "" || ops.isEmpty then throw s!"the ceiling entry `{e}`"
     for op in ops do
       match cap, op with
       | "Console", "print" => a := { a with out := true }
@@ -2340,7 +2342,7 @@ def checkDocumentRead (subst : Subst) (doc : J) (caps : Caps := {}) (scopes : Bo
           return some (.notRechecked
             s!"a call into the boundary module `{m}` reaches a release or an operation without a handler (N-155)")
         if entries.any fun g => ((P.find g).map fun fn =>
-            fn.params.any (fun q => q.2.holdsFn recs 8) || fn.result.holdsFn recs 8).getD true then
+            fn.params.any (fun q => LTy.holdsFn recs 8 q.2) || LTy.holdsFn recs 8 fn.result).getD true then
           return some (.notRechecked
             s!"a function value crosses the boundary of `{m}`, a grant F1 does not read yet")
         if confinedB P c S then return none

@@ -364,7 +364,7 @@ theorem eval_confined (hH : H.RespTyped) (hp : p.ConfinedAt S a) : ∀ n : Nat,
         Val.WithinAllIn S a vs →
         Conf S a (eval H n p w (bindParams fn.params vs []) fn.body) := fun w f fn vs hfd hS hvs =>
       have hfn := hp.funs f fn hfd hS
-      ihE w _ _ (bindParams_within _ hvs trivial) hfn.1 hfn.2
+      ihE w _ _ (bindParams_within (env := []) _ hvs trivial) hfn.1 hfn.2
     constructor
     · intro w env r hf hr hc
       have happ : ∀ (w' : World H) fv vs, Val.WithinIn S a fv → Val.WithinAllIn S a vs →
@@ -1025,7 +1025,7 @@ theorem body_confined (hH : H.RespTyped) (hp : p.ConfinedAt S a) {f : String} {f
     (n : Nat) (w : World H) :
     ∀ ev ∈ (eval H n p w (bindParams fn.params vs []) fn.body).1, a.allows ev :=
   have hfn := hp.funs f fn hfd hS
-  ((eval_confined hH hp n).2 w _ _ (bindParams_within _ hvs trivial) hfn.1 hfn.2).1
+  ((eval_confined hH hp n).2 w _ _ (bindParams_within (env := []) _ hvs trivial) hfn.1 hfn.2).1
 
 theorem funRef_within (hp : p.ConfinedAt S a) {f : String} {fn : Fun} (hfd : p.find f = some fn)
     (hS : S f) (cenv : Env) (hc : Val.WithinEnvIn S a cenv) :
@@ -1048,7 +1048,7 @@ representative, and every handler of `o`. -/
 def Program.handlersOf (p : Program) (o : String) : List String :=
   (p.opRep.lookup o).getD "" :: (p.handlerOf.filter (·.2 == o)).map (·.1)
 
-theorem lookup_mem {α β : Type} [BEq α] [LawfulBEq α] :
+theorem lookup_pair_mem {α β : Type} [BEq α] [LawfulBEq α] :
     ∀ {l : List (α × β)} {x : α} {y : β}, l.lookup x = some y → (x, y) ∈ l
   | [], _, _, h => by simp [List.lookup] at h
   | (k, v) :: l, x, y, h => by
@@ -1059,7 +1059,7 @@ theorem lookup_mem {α β : Type} [BEq α] [LawfulBEq α] :
       have : x = k := by simpa using hk
       subst this
       exact List.mem_cons_self
-    · exact List.mem_cons_of_mem _ (lookup_mem h)
+    · exact List.mem_cons_of_mem _ (lookup_pair_mem h)
 
 theorem handlerFor_mem (p : Program) (o : String) (m : Option Val) :
     p.handlerFor o m ∈ p.handlersOf o := by
@@ -1069,7 +1069,7 @@ theorem handlerFor_mem (p : Program) (o : String) (m : Option Val) :
     split
     · rename_i hf
       refine List.mem_cons_of_mem _ (List.mem_map.mpr ⟨(f, o), ?_, rfl⟩)
-      exact List.mem_filter.mpr ⟨lookup_mem hf, by simp⟩
+      exact List.mem_filter.mpr ⟨lookup_pair_mem hf, by simp⟩
     · exact List.mem_cons_self
   · exact List.mem_cons_self
 
@@ -1091,7 +1091,7 @@ theorem confinedB_sound {p : Program} {a : Auth} {S : List String} (h : confined
     simp only [hfd, Bool.and_eq_true, List.all_eq_true, List.contains_iff_mem] at this
     exact ⟨this.1, fun g hg => this.2 g hg⟩
   · have := ho o (by simpa using hoa)
-    simp only [List.all_eq_true, List.contains_iff_mem] at this
+    simp only [List.contains_iff_mem] at this
     exact this _ (handlerFor_mem p o m)
 
 /-- **Rejection by a run.** If some run of the callee from values within `a` performs an event the
