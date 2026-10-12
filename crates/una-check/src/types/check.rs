@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use una_diag::{Code, ObligationKind, Repair};
+use una_diag::{Code, Escape, ObligationKind, Repair};
 use una_project::Edition;
 use una_syntax::Span;
 use una_syntax::ast::{
@@ -1115,14 +1115,42 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 .modules
                 .get(self.module)
                 .map_or("", |m| m.path.as_str());
-            self.report.error(
+            let mut diagnostic = self.report.make(
                 Code::U4004,
                 policy.name.span,
                 format!(
-                    "policy `{}` is declared in module `{path}`, which is not trusted; declare `trusted module {path}` and list it under `[trusted] modules` in `una.toml`",
+                    "policy `{}` is declared in module `{path}`, which is not trusted",
                     def.name
                 ),
             );
+            // ADR 0095: moving the policy into a module that is already trusted keeps the
+            // trusted base; declaring this module trusted widens it, so it comes last. A
+            // module is trusted only in both places (`spec/07 §6`): one whose header alone
+            // says so is U7005, and would only move the error.
+            let trusted: Vec<String> = self
+                .env
+                .modules
+                .iter()
+                .take(self.env.prelude)
+                .filter(|m| {
+                    m.tree.module.as_ref().is_some_and(|header| header.trusted)
+                        && self.env.trusted_listed.contains(&m.path)
+                })
+                .map(|m| format!("`{}`", m.path))
+                .collect();
+            if !trusted.is_empty() {
+                diagnostic.repairs.push(super::Report::advice(format!(
+                    "move the policy and its `via` function into a module that is already trusted: {}",
+                    trusted.join(", ")
+                )));
+            }
+            diagnostic.repairs.push(super::Report::escape(
+                Escape::Trusted,
+                format!(
+                    "declare `trusted module {path}` in its header and list `{path}` under `[trusted] modules` in `una.toml`"
+                ),
+            ));
+            self.report.push(diagnostic);
         }
         let via = self.name(&policy.via);
         let Some(entity) = self.env.lower(self.module, via) else {

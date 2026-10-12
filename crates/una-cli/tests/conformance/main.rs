@@ -144,6 +144,92 @@ fn test_case(path: &Path) -> (TestResult, BTreeSet<ExpectedError>) {
     (TestResult { rejected, failed }, document_errors(&document))
 }
 
+/// The breaches of ADR 0095 rules 3 and 5 in the repairs of `diagnostics`, as `--json` prints
+/// them: ranks are 1 to n in output order, `escape` is present exactly when `escape_cost` is
+/// above 0, and no repair that keeps the guarantee follows an escape. Linear in the repairs.
+fn escape_ranking(diagnostics: &[una_diag::Diagnostic]) -> Vec<String> {
+    let mut breaches = Vec::new();
+    for diagnostic in diagnostics {
+        let document = serde_json::to_value(diagnostic).expect("a diagnostic serializes");
+        let at = format!(
+            "{} at {}:{}",
+            diagnostic.code, diagnostic.primary.start.line, diagnostic.primary.start.col
+        );
+        let mut escaped = false;
+        for (index, repair) in document["repairs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            if repair["rank"].as_u64() != u64::try_from(index + 1).ok() {
+                breaches.push(format!(
+                    "{at}: repair {} has rank {}",
+                    index + 1,
+                    repair["rank"]
+                ));
+            }
+            let cost = repair["escape_cost"].as_u64().unwrap_or(0);
+            let escape = repair.get("escape");
+            if (cost > 0) != escape.is_some() {
+                breaches.push(format!(
+                    "{at}: repair {} has escape_cost {cost} and escape {escape:?}",
+                    index + 1
+                ));
+            }
+            if let Some(escape) = escape
+                && (escape["kind"].as_str().is_none_or(str::is_empty)
+                    || escape["cost"].as_str().is_none_or(str::is_empty))
+            {
+                breaches.push(format!(
+                    "{at}: repair {} has an escape without kind or cost",
+                    index + 1
+                ));
+            }
+            if escape.is_none()
+                && let Some(description) = repair["description"].as_str()
+                && names_an_escape(diagnostic.code, description)
+            {
+                breaches.push(format!(
+                    "{at}: repair {} names an escape and is not marked: {description}",
+                    index + 1
+                ));
+            }
+            if cost > 0 {
+                escaped = true;
+            } else if escaped {
+                breaches.push(format!(
+                    "{at}: repair {} keeps the guarantee and follows an escape",
+                    index + 1
+                ));
+            }
+        }
+    }
+    breaches
+}
+
+/// The texts that name an escape hatch (ADR 0095 rule 2): a repair whose description has one
+/// is an escape, unless it is one of the named routes that keep the guarantee.
+const ESCAPE_TEXTS: [&str; 4] = [
+    "checked(",
+    "checked_per_module",
+    "declassify",
+    "[trusted] modules",
+];
+
+/// The routes that keep the guarantee although their text names an escape hatch, by code and
+/// the start of their description: U7005's narrowing removes a module from the listing.
+const NAMED_EXCEPTIONS: [(Code, &str); 1] = [(Code::U7005, "remove `")];
+
+/// Whether a repair of `code` described by `description` names an escape hatch and is not one
+/// of [`NAMED_EXCEPTIONS`] (the review of #574).
+fn names_an_escape(code: Code, description: &str) -> bool {
+    ESCAPE_TEXTS.iter().any(|text| description.contains(text))
+        && !NAMED_EXCEPTIONS
+            .iter()
+            .any(|(named, start)| *named == code && description.starts_with(start))
+}
+
 #[test]
 fn conformance_suite() {
     let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -177,6 +263,13 @@ fn conformance_suite() {
                 continue;
             }
         };
+        // ADR 0095 rule 8: the repairs of every diagnostic of every case, as `--json` prints
+        // them, keep escapes last and say what they cost.
+        let ranking = escape_ranking(&diagnostics);
+        if !ranking.is_empty() {
+            failures.push(format!("{}: {}", location.path, ranking.join("; ")));
+            continue;
+        }
         // `una run` and `una test` report the errors of the checks again, and their own.
         let mut errors = reported(&diagnostics);
         let run = needs_run(&case).then(|| {

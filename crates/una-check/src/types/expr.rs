@@ -4,7 +4,7 @@
 
 use std::collections::BTreeSet;
 
-use una_diag::{Code, ObligationKind};
+use una_diag::{Code, Escape, ObligationKind};
 use una_project::Edition;
 use una_syntax::Span;
 use una_syntax::ast::{
@@ -514,10 +514,21 @@ impl<'a> Checker<'_, 'a, '_> {
                     def.name
                 ),
             );
-            diagnostic.repairs.push(super::Report::advice(format!(
-                "call it inside `checked(value, {}(it)) else fail <Variant>` instead",
-                def.name
-            )));
+            // ADR 0095: a test that establishes no fact keeps the escape budget; `checked`,
+            // an escape, comes last.
+            if self.plain_test_route(id) {
+                diagnostic.repairs.push(super::Report::advice(format!(
+                    "if the code needs only the test and not the fact, pass a function, not a predicate, with the body of `{}`",
+                    def.name
+                )));
+            }
+            diagnostic.repairs.push(super::Report::escape(
+                Escape::Checked,
+                format!(
+                    "call it inside `checked(value, {}(it)) else fail <Variant>` instead",
+                    def.name
+                ),
+            ));
             self.report.push(diagnostic);
         }
         let args = self.instantiate(&def.type_params, def.name, span);
@@ -568,6 +579,15 @@ impl<'a> Checker<'_, 'a, '_> {
                 result: def.result.refinements.clone(),
             },
         }))
+    }
+
+    /// Whether U2016 at a use of opaque predicate `id` offers a function with its body (ADR
+    /// 0095, rule 6 conditions): only in code, where a call of a function is allowed, and only
+    /// when its body calls no other opaque predicate, which would be U2016 again in a function.
+    pub(crate) fn plain_test_route(&self, id: usize) -> bool {
+        matches!(self.base, Base::Declared | Base::Pure | Base::Inferring)
+            && matches!(self.ctx.rl, Rl::Off | Rl::Probe)
+            && self.env.opaque_plain.contains(&id)
     }
 
     /// Records that the body being checked calls or refers to function `callee`.

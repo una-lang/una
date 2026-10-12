@@ -3,8 +3,8 @@
 //! `spec/13 §1, §3`).
 
 use una_diag::{
-    Code, Counterexample, Diagnostic, ObligationKind, ObligationRef, ObligationStatus, Related,
-    Repair,
+    Code, Counterexample, Diagnostic, Escape, ObligationKind, ObligationRef, ObligationStatus,
+    Related, Repair,
 };
 use una_syntax::SourceDb;
 
@@ -127,18 +127,18 @@ fn repairs(obligation: &Obligation) -> Vec<Repair> {
         return vec![Repair {
             widens_authority: false,
             rank: 1,
-            escape_cost: 0,
+            escape: None,
             description: flow.clone(),
             edit: None,
         }];
     }
     let requires = site.over_parameters && site.within == Within::Function { public: false };
-    let mut candidates: Vec<(u32, String)> = Vec::new();
+    let mut candidates: Vec<(Option<Escape>, String)> = Vec::new();
     match obligation.kind {
         ObligationKind::Refinement | ObligationKind::Precondition => {
             if let Some(parameter) = &site.parameter {
                 candidates.push((
-                    0,
+                    None,
                     format!(
                         "strengthen the type of the parameter `{parameter}` to a refined kind that implies `{goal}`"
                     ),
@@ -146,51 +146,51 @@ fn repairs(obligation: &Obligation) -> Vec<Repair> {
             }
             if requires {
                 candidates.push((
-                    0,
+                    None,
                     format!(
                         "add `requires {goal}` to the enclosing function; its callers then prove it"
                     ),
                 ));
             }
             candidates.push((
-                0,
+                None,
                 format!(
                     "add a guard (`if` or a `when` arm) that handles the values where `{goal}` does not hold"
                 ),
             ));
             candidates.push((
-                1,
+                Some(Escape::Checked),
                 format!("check the value with `checked(value, {goal}) else fail <Variant>`"),
             ));
         }
         ObligationKind::Postcondition => {
             candidates.push((
-                0,
+                None,
                 format!(
                     "add a guard or an arm so that the failing path returns a value for which `{goal}` holds"
                 ),
             ));
-            candidates.push((0, "adjust the `ensures` clause".to_owned()));
+            candidates.push((None, "adjust the `ensures` clause".to_owned()));
         }
         // `spec/13 §3`: a `division` proposes a guard.
         ObligationKind::Division => {
-            candidates.push((0, format!("guard the division with `if {goal}`")));
+            candidates.push((None, format!("guard the division with `if {goal}`")));
         }
         ObligationKind::Exhaustive => candidates.push((
-            0,
+            None,
             "add an `else` arm, or arms for the values the others miss".to_owned(),
         )),
         // `spec/18 §3`: guard the operation, give the value a wider type, or name the
         // wrapping or saturating arithmetic that is meant.
         ObligationKind::Overflow => {
             let guard = site.guard.as_deref().unwrap_or(goal);
-            candidates.push((0, format!("guard the operation with `if {guard}`")));
+            candidates.push((None, format!("guard the operation with `if {guard}`")));
             candidates.push((
-                0,
+                None,
                 "give the values a wider type, converting them explicitly".to_owned(),
             ));
             candidates.push((
-                0,
+                None,
                 "if wrapping or saturating is meant, use `wrapping_add`, `saturating_add` or their siblings".to_owned(),
             ));
         }
@@ -198,10 +198,10 @@ fn repairs(obligation: &Obligation) -> Vec<Repair> {
     candidates
         .into_iter()
         .enumerate()
-        .map(|(rank, (escape_cost, description))| Repair {
+        .map(|(rank, (escape, description))| Repair {
             widens_authority: false,
             rank: u32::try_from(rank + 1).unwrap_or(u32::MAX),
-            escape_cost,
+            escape,
             description,
             edit: None,
         })

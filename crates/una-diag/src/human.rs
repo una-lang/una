@@ -6,7 +6,7 @@ use std::ops::Range;
 
 use ariadne::{Config, Label, Report, ReportKind};
 
-use crate::diagnostic::{Diagnostic, Location, Position, Severity, in_output_order};
+use crate::diagnostic::{Diagnostic, Location, Position, Ranked, Severity, in_output_order};
 
 /// A span in ariadne's terms: a file and a range of character offsets.
 type Span = (String, Range<usize>);
@@ -104,11 +104,17 @@ fn helps(diagnostic: &Diagnostic) -> Vec<String> {
     diagnostic
         .repairs_in_order()
         .into_iter()
-        .map(|repair| {
-            let mut help = format!(
-                "repair {} (escape cost {}): {}",
-                repair.rank, repair.escape_cost, repair.description
-            );
+        .map(|Ranked { rank, repair }| {
+            // ADR 0095 rule 5: an escape says its kind and what it costs.
+            let mut help = match repair.escape {
+                Some(escape) => format!(
+                    "repair {rank} (escape: {}; {}): {}",
+                    escape.kind(),
+                    escape.cost(),
+                    repair.description
+                ),
+                None => format!("repair {rank}: {}", repair.description),
+            };
             if let Some(edit) = &repair.edit {
                 let _ = write!(
                     help,

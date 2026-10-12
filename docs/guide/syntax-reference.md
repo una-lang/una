@@ -1840,6 +1840,8 @@ A U5001 or U5002 comes with the ranked repair candidates that apply at its site,
 | add a guard (`if` or a `when` arm) that handles the values where `G` does not hold | always | 0 |
 | check the value with `checked(value, G) else fail <Variant>` | always | 1 |
 
+`checked` is an escape: its repair carries `"escape": {"kind": "checked", "cost": ...}` in `--json`, and the human output says `escape: checked` with its cost. Escapes always come after the repairs that keep the proof, and so do the other escapes, a raised `checked_per_module` (U7003) and a trusted module or policy (U4003, U4004, U7005) (ADR 0095).
+
 Inside an example there is no parameter and no `requires`, so only the guard and `checked` remain. The other kinds have their own repairs, all with escape cost 0:
 
 - a `postcondition`: add a guard or an arm so that the failing path returns a value for which the `ensures` holds, or adjust the `ensures` clause;

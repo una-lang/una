@@ -284,7 +284,7 @@ fn operation_arguments_are_sinks_bounded_by_accepts() {
         ),
         [
             "U4003 t.una:12:21 `@log.write` accepts `public` data, and it runs in an operation body whose callers may pass `secret` data, which it would reveal",
-            "U4003 t.una:17:18 `@console.print` accepts `public` data, and this argument is `secret`; declassify it through a policy first",
+            "U4003 t.una:17:18 `@console.print` accepts `public` data, and this argument is `secret`",
             "U4003 t.una:28:5 `@log.write` accepts `public` data, and it runs under a `secret` condition, which it would reveal",
             // R-034: the article follows the label.
             "U4003 t.una:36:5 `@log.write` accepts `public` data, and it runs under an `internal` condition, which it would reveal",
@@ -365,7 +365,7 @@ fn policies_live_in_trusted_modules_and_own_their_via_functions() {
             "U4005 src/app/keys.una:20:7 the `via` function of a policy is private to its trusted module, and `exposed` is not; remove its `pub`, or declare it in this module",
             "U4005 src/app/keys.una:28:48 `masked` is the `via` function of policy `mask`, which is its only entry point; call `mask` instead",
             "U4005 src/app/keys.una:33:7 `via` function `pass_any` must have type `fn(Text) -> Text`, except for labels; it is `fn(T) -> T`",
-            "U4004 src/app/main.una:5:12 policy `outside` is declared in module `app.main`, which is not trusted; declare `trusted module app.main` and list it under `[trusted] modules` in `una.toml`",
+            "U4004 src/app/main.una:5:12 policy `outside` is declared in module `app.main`, which is not trusted",
             "U4002 src/app/main.una:19:5 policy `mask` lowers data to `internal`, and it is called under a `secret` condition, which its result would reveal",
         ]
     );

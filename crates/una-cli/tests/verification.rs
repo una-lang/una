@@ -636,6 +636,14 @@ pub run() -> Int = halve(4)
         .map(|repair| &repair["escape_cost"])
         .collect();
     assert_eq!(costs, [&json!(0), &json!(0), &json!(0), &json!(1)]);
+    // ADR 0095 rule 5: `checked` says what it costs; the others carry no `escape` key.
+    let escapes: Vec<Option<&Value>> = diagnostic["repairs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|repair| repair.get("escape").map(|escape| &escape["kind"]))
+        .collect();
+    assert_eq!(escapes, [None, None, None, Some(&json!("checked"))]);
 }
 
 #[test]
@@ -1575,9 +1583,13 @@ fn an_interpolation_names_what_it_cannot_write_and_the_constraint_it_needs() {
     assert_eq!(
         repair_descriptions(&secret),
         [
-            "field `pin` of `Account` is `secret`: interpolate the fields that `@console.print` accepts instead, or declassify `pin` through a policy"
+            "field `pin` of `Account` is `secret`: interpolate only the fields that `@console.print` accepts",
+            "declassify `pin` through a policy of a trusted module",
         ]
     );
+    // ADR 0095: the policy widens the trusted base, so it is the last repair, marked.
+    assert_eq!(secret["repairs"][1]["escape"]["kind"], "trusted");
+    assert!(secret["repairs"][0].get("escape").is_none());
 }
 
 #[test]

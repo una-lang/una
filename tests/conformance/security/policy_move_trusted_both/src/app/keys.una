@@ -1,0 +1,3 @@
+trusted module app.keys
+
+pub salt() -> Int = 3

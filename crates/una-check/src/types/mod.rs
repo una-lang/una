@@ -41,7 +41,7 @@ mod unify;
 
 pub use hover::{Hover, HoverStats, HoverType};
 pub use index::Index;
-use una_diag::{Code, Diagnostic, Edit, Location, ObligationKind, Related, Repair};
+use una_diag::{Code, Diagnostic, Edit, Escape, Location, ObligationKind, Related, Repair};
 use una_project::Edition;
 use una_syntax::ast::File;
 use una_syntax::{FileId, Interner, KeywordSet, SourceDb, Span, lex_in, parse};
@@ -253,6 +253,12 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         package.settings.edition,
         &mut report,
     );
+    env.trusted_listed = package
+        .settings
+        .trusted
+        .iter()
+        .map(|entry| entry.value.clone())
+        .collect();
     let facts = facts::KindFacts::new(&env);
     facts::kind_recursion(&env, &mut report);
     authority::stored_effects(&env, &mut report);
@@ -284,6 +290,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
                 .iter()
                 .map(|(caller, callee, _)| (*caller, *callee)),
         );
+        env.opaque_plain = opaque_plain(&env, &findings.edges);
     }
     if package.settings.edition >= Edition::V0_2 {
         summary_fixpoint(&mut env, &facts, package.sources, &edges);
@@ -828,7 +835,7 @@ impl<'s> Report<'s> {
         Repair {
             widens_authority: false,
             rank: 1,
-            escape_cost: 0,
+            escape: None,
             description: description.into(),
             edit: Some(Edit {
                 location: self.location(span),
@@ -842,9 +849,18 @@ impl<'s> Report<'s> {
         Repair {
             widens_authority: false,
             rank: 1,
-            escape_cost: 0,
+            escape: None,
             description: description.into(),
             edit: None,
+        }
+    }
+
+    /// A repair described in words that takes the escape hatch `escape`: output ranks it after
+    /// every repair that keeps the guarantee (ADR 0095).
+    pub(crate) fn escape(escape: Escape, description: impl Into<String>) -> Repair {
+        Repair {
+            escape: Some(escape),
+            ..Self::advice(description)
         }
     }
 
@@ -854,6 +870,31 @@ impl<'s> Report<'s> {
             message: message.into(),
         }
     }
+}
+
+/// The opaque predicates of the checked modules whose bodies call no other opaque predicate
+/// (ADR 0095): those of other packages, whose bodies were not checked, are left out. Linear in
+/// the functions and the call edges.
+fn opaque_plain(
+    env: &Env<'_>,
+    edges: &[(usize, usize, Span)],
+) -> std::collections::BTreeSet<usize> {
+    let opaque = |id: usize| {
+        env.functions
+            .get(id)
+            .is_some_and(|def| def.kind == (env::FnKind::Predicate { reflect: false }))
+    };
+    let composite: std::collections::BTreeSet<usize> = edges
+        .iter()
+        .filter(|(caller, callee, _)| opaque(*caller) && opaque(*callee))
+        .map(|(caller, _, _)| *caller)
+        .collect();
+    env.functions
+        .iter()
+        .enumerate()
+        .filter(|(id, def)| opaque(*id) && env.reports(def.module) && !composite.contains(id))
+        .map(|(id, _)| id)
+        .collect()
 }
 
 /// The candidate closest to `name` by edit distance, when it is close enough to be the
