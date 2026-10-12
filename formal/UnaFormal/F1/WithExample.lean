@@ -166,13 +166,13 @@ unseal flowB flowsB in
 theorem underSecret_rejected :
     ∃ msg, checkExpr prog [] [] .bot (.unit .bot) underSecret = .error msg := ⟨_, rfl⟩
 
-theorem underSecret_leaks : (eval Host.unit 20 prog (wSet "1") [] underSecret).1 = [.out "ring"] ∧
+theorem underSecret_leaks : (eval Host.unit 20 prog (wSet "1") [] underSecret).1 = [.perf "Bell.ring", .out "ring"] ∧
     (eval Host.unit 20 prog (wSet "22") [] underSecret).1 = [] := ⟨rfl, rfl⟩
 
 theorem underSecret_untyped {t : LTy} {ε : Eff} : ¬ LExprTy prog [] [] .bot underSecret t ε := by
   intro ht
   have h := same_lines ht 20 (by exact True.intro) (by exact True.intro)
-  rw [underSecret_leaks.1, underSecret_leaks.2, proj_single_vis (out_vis _)] at h
+  rw [underSecret_leaks.1, underSecret_leaks.2, proj_perf, proj_single_vis (out_vis _)] at h
   simp [proj] at h
 
 /-! ### (b) The same `with` at a public program counter -/
@@ -180,7 +180,7 @@ theorem underSecret_untyped {t : LTy} {ε : Eff} : ¬ LExprTy prog [] [] .bot un
 unseal flowB flowsB in
 theorem installed_checked : ∃ ε, checkExpr prog [] [] .bot (.unit .bot) installed = .ok ε := ⟨_, rfl⟩
 
-theorem installed_runs : (eval Host.unit 20 prog (wSet "1") [] installed).1 = [.out "ring"] := rfl
+theorem installed_runs : (eval Host.unit 20 prog (wSet "1") [] installed).1 = [.perf "Bell.ring", .out "ring"] := rfl
 
 /-! ### (c) An invocation no scope installs -/
 
@@ -213,8 +213,10 @@ def h3 : Expr :=
 unseal flowB flowsB in
 theorem h3_checked : ∃ ε, checkExpr prog [] [] .bot (.unit .bot) h3 = .ok ε := ⟨_, rfl⟩
 
-/-- **The output does not depend on the secret**: both runs print `done`, and nothing else. -/
-theorem h3_runs : (eval Host.unit 20 prog (wSet "1") [] h3).1 = [.out "done"] ∧
+/-- **The output does not depend on the secret**: both runs print `done`, and nothing else an
+observer sees. The first also performs `Vault.note` under the secret branch, a ghost (#561) that no
+observer sees: `h3_checked` certifies the program, and T6 holds of it. -/
+theorem h3_runs : (eval Host.unit 20 prog (wSet "1") [] h3).1 = [.perf "Vault.note", .out "done"] ∧
     (eval Host.unit 20 prog (wSet "22") [] h3).1 = [.out "done"] := ⟨rfl, rfl⟩
 
 /-! ### C5(b): a failing handler chosen under a secret program counter -/
@@ -235,13 +237,15 @@ unseal flowB flowsB in
 theorem c5b_rejected : ∃ msg, checkExpr prog [] [] .bot (.unit .bot) c5b = .error msg := ⟨_, rfl⟩
 
 /-- Which handler runs is secret, and it decides whether the run fails before `after`. -/
-theorem c5b_leaks : (eval Host.unit 20 prog (wSet "1") [] c5b).1 = [] ∧
-    (eval Host.unit 20 prog (wSet "22") [] c5b).1 = [.out "after"] := ⟨rfl, rfl⟩
+theorem c5b_leaks : (eval Host.unit 20 prog (wSet "1") [] c5b).1 = [.perf "Door.open"] ∧
+    (eval Host.unit 20 prog (wSet "22") [] c5b).1 = [.perf "Door.open", .out "after"] := ⟨rfl, rfl⟩
 
 theorem c5b_untyped {t : LTy} {ε : Eff} : ¬ LExprTy prog [] [] .bot c5b t ε := by
   intro ht
   have h := same_lines ht 20 (by exact True.intro) (by exact True.intro)
-  rw [c5b_leaks.1, c5b_leaks.2, proj_single_vis (out_vis _)] at h
+  rw [c5b_leaks.1, c5b_leaks.2] at h
+  simp only [proj_perf] at h
+  rw [proj_single_vis (out_vis _)] at h
   simp [proj] at h
 
 end Una.F1.WithExample

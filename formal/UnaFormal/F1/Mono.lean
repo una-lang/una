@@ -133,7 +133,8 @@ theorem eval_mono : ∀ n m : Nat, n ≤ m →
         rename_i fn vs
         by_cases hl : vs.length = fn.params.length
         · simp only [hl, ite_true] at ht ⊢
-          exact ihE _ _ _ ht
+          simp only [Run.ghost] at ht ⊢
+          rw [ihE _ _ _ ht]
         · simp only [hl, ite_false]
       | invokeOp o args =>
         simp only [evalRhs] at ht ⊢
@@ -142,7 +143,8 @@ theorem eval_mono : ∀ n m : Nat, n ≤ m →
         rename_i fn vs
         by_cases hl : vs.length = fn.params.length
         · simp only [hl, ite_true] at ht ⊢
-          exact ihE _ _ _ ht
+          simp only [Run.ghost] at ht ⊢
+          rw [ihE _ _ _ ht]
         · simp only [hl, ite_false]
       | apply f args =>
         simp only [evalRhs] at ht ⊢

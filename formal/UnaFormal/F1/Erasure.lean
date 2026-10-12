@@ -140,6 +140,8 @@ def Event.anon (ρ : String → String) : Event → Event
   | .write s c => .write s c
   | .req m vs => .req m (Val.anons ρ vs)
   | .release pol v => .release pol (v.anon ρ)
+  | .perf o => .perf o
+  | .perfFn f => .perfFn (ρ f)
 
 /-- An outcome with its value forgotten. -/
 def Res.anon (ρ : String → String) : Res → Res
@@ -153,6 +155,10 @@ def Res.anon (ρ : String → String) : Res → Res
 /-- A run with its values forgotten. -/
 def runAnon {H : Host} (ρ : String → String) (r : Run H) : Run H :=
   (r.1.map (Event.anon ρ), r.2.1.anon ρ, r.2.2)
+
+/-- A ghost in front of a run, with its values forgotten (#561). -/
+theorem runAnon_ghost {H : Host} (ρ : String → String) (ev : Event) (r : Run H) :
+    runAnon ρ (Run.ghost ev r) = Run.ghost (ev.anon ρ) (runAnon ρ r) := rfl
 
 /-- A host whose responses read no annotation: a request whose arguments are forgotten gets the
 same response, and leaves the servers as the request does. -/
@@ -526,7 +532,7 @@ theorem eval_anon (hH : H.AnonInvariant) (h4 : H.RespTyped) (hf : ∀ f, (P.find
           | some vs =>
             simp only [Option.map_some, Fun.anon, List.length_map, anonParams_length]
             split
-            · rw [ihE, bindParams_anon fn.params (anonParams fn.params) (anonParams_fst _).symm]
+            · rw [runAnon_ghost, ihE, bindParams_anon fn.params (anonParams fn.params) (anonParams_fst _).symm]
               rfl
             · rfl
       | invokeOp o args =>
@@ -539,7 +545,7 @@ theorem eval_anon (hH : H.AnonInvariant) (h4 : H.RespTyped) (hf : ∀ f, (P.find
           | some vs =>
             simp only [Option.map_some, Fun.anon, List.length_map, anonParams_length]
             split
-            · rw [ihE, bindParams_anon fn.params (anonParams fn.params) (anonParams_fst _).symm]
+            · rw [runAnon_ghost, ihE, bindParams_anon fn.params (anonParams fn.params) (anonParams_fst _).symm]
               rfl
             · rfl
       | apply f args =>
@@ -1005,7 +1011,8 @@ theorem proj_anon {ρ : String → String} (p : Program) (L : Label) (t : Trace)
   congr 1
   apply List.filter_congr
   intro ev _
-  cases ev <;> simp only [Function.comp, Event.anon, EvVis] <;> exact decide_eq_decide.mpr Iff.rfl
+  cases ev <;> simp only [Function.comp, Event.anon, EvVis] <;>
+    first | exact decide_eq_decide.mpr Iff.rfl | rfl
 
 /-! ### Erasure is injective on first-order values -/
 
@@ -1088,24 +1095,24 @@ mutual
     | [], _ :: _, _, _, h | _ :: _, [], _, _, h => by simp [Val.anons] at h
 end
 
-theorem Event.anon_inj {ρ ρ' : String → String} {a b : Event} (ha : a.FirstOrder)
-    (hb : b.FirstOrder) (h : a.anon ρ = b.anon ρ') : a = b := by
+/-- `hρ`: the two renamings tell function names apart, for the ghosts of invocations (#561). -/
+theorem Event.anon_inj {ρ ρ' : String → String} (hρ : ∀ x y, ρ x = ρ' y → x = y) {a b : Event}
+    (ha : a.FirstOrder) (hb : b.FirstOrder) (h : a.anon ρ = b.anon ρ') : a = b := by
   cases a <;> cases b <;> simp_all [Event.anon, Event.FirstOrder]
-  · exact Val.anons_inj _ _ ha hb h.2
-  · exact Val.anon_inj _ _ ha hb h.2
+  all_goals first | exact Val.anons_inj _ _ ha hb h.2 | exact Val.anon_inj _ _ ha hb h.2 | exact hρ _ _ h
 
 theorem Event.firstOrder_anon {ρ : String → String} (ev : Event) :
     (ev.anon ρ).FirstOrder ↔ ev.FirstOrder := by
   cases ev <;> simp [Event.anon, Event.FirstOrder, Val.firstOrder_anon, Val.firstOrderAll_anon]
 
-theorem trace_anon_inj {ρ ρ' : String → String} :
+theorem trace_anon_inj {ρ ρ' : String → String} (hρ : ∀ x y, ρ x = ρ' y → x = y) :
     ∀ {t u : Trace}, (∀ ev ∈ t, ev.FirstOrder) → (∀ ev ∈ u, ev.FirstOrder) →
       t.map (Event.anon ρ) = u.map (Event.anon ρ') → t = u
   | [], [], _, _, _ => rfl
   | a :: t, b :: u, ht, hu, h => by
     simp only [List.map_cons, List.cons.injEq] at h
-    rw [Event.anon_inj (ht a (by simp)) (hu b (by simp)) h.1,
-      trace_anon_inj (fun ev hev => ht ev (by simp [hev])) (fun ev hev => hu ev (by simp [hev])) h.2]
+    rw [Event.anon_inj hρ (ht a (by simp)) (hu b (by simp)) h.1,
+      trace_anon_inj hρ (fun ev hev => ht ev (by simp [hev])) (fun ev hev => hu ev (by simp [hev])) h.2]
   | [], _ :: _, _, _, h | _ :: _, [], _, _, h => by simp at h
 
 end Main

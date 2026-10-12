@@ -313,6 +313,20 @@ theorem UOk.mono {A A' : Event → Prop} {P P' : Val → Prop} {F F' : FailCond}
   · exact hF.1 h2
   · exact hF.2 _ _ _ h2
 
+/-- A ghost in front of a run that keeps to `A` (#561): the ghost is allowed, and it changes
+nothing in the world. -/
+theorem UOk.ghost {A : Event → Prop} {P : Val → Prop} {F : FailCond} {w : World H} {run : Run H}
+    {ev : Event} (hw : ev.isWrite = false) (hr : ev.isReq = false) (hA : A ev) (h : UOk A P F w run) :
+    UOk A P F w (Run.ghost ev run) := by
+  obtain ⟨tr, r, w'⟩ := run
+  refine ⟨fun ev hev => ?_, h.2.1, ?_⟩
+  · simp only [Run.ghost, List.mem_cons] at hev
+    rcases hev with rfl | hev
+    · exact hA
+    · exact h.1 ev hev
+  · have h3 := h.2.2
+    simpa [Run.ghost, WEff, List.any_cons, hw, hr] using h3
+
 theorem andThen_uok {A : Event → Prop} {P Q : Val → Prop} {F : FailCond} {w : World H}
     {first : Run H} {rest : World H → Val → Run H} (h1 : UOk A P F w first)
     (h2 : ∀ w' v, P v → UOk A Q F w' (rest w' v)) :
@@ -343,6 +357,9 @@ def Allowed (p : Program) (pc : LExpr) (ε : Eff) : Event → Prop
   | .req _ vs => ε.host.rq = true ∧ p.le pc (.ofLabel p.acceptsReq) ∧ Val.FirstOrderAll vs
   | .release pol v => pol ∈ ε.rels ∧ ∃ po, p.policy pol = some po ∧ p.le pc po.dst.top ∧
       (ValTy p v po.dst.erase ∨ ∃ c : Nat, v = .err (.int c))
+  -- A ghost of a performance (#561): no event of an observer, allowed everywhere.
+  | .perf _ => True
+  | .perfFn _ => True
 
 /-- A failure, whose label is above `pc`. -/
 abbrev Fails (p : Program) (pc : LExpr) (ε : Eff) : Prop := ∃ l, ε.fails = some l ∧ p.le pc l
@@ -369,6 +386,8 @@ theorem Allowed.mono {pc pc' : LExpr} {ε ε' : Eff} (hpc : p.le pc pc')
   | .write _ _, ⟨h1, h2, h3⟩ => ⟨hg.2.1 h1, LExpr.le_trans hpc h2, fun h => LExpr.le_trans hpc (h3 h)⟩
   | .req _ _, ⟨h1, h2, h3⟩ => ⟨hg.2.2 h1, LExpr.le_trans hpc h2, h3⟩
   | .release _ _, ⟨h1, po, hpo, h2, h3⟩ => ⟨hr _ h1, po, hpo, LExpr.le_trans hpc h2, h3⟩
+  | .perf _, _ => trivial
+  | .perfFn _, _ => trivial
 
 theorem Fails.mono {pc pc' : LExpr} {ε ε' : Eff} (hpc : p.le pc pc')
     (hf : ∀ l, ε'.fails = some l → ∃ l', ε.fails = some l' ∧ p.le l l') :
@@ -432,6 +451,8 @@ def FnAllowed (o : Bool) (g : HostFx) : Event → Prop
   | .write _ _ => g.wr = true
   | .req _ vs => g.rq = true ∧ Val.FirstOrderAll vs
   | .release _ _ => False
+  | .perf _ => True
+  | .perfFn _ => True
 
 /-- At a call whose program counter `pc'` the function's bound allows (`pc ⊑ pc'`), its events
 are allowed, and so is its failure. -/
@@ -442,6 +463,8 @@ theorem bound_allowed {pc pc' : LExpr} {o : Bool} {g : HostFx} {f : Bool} (hb : 
   | .write _ _, h => ⟨h, LExpr.le_trans hpc (hb.2.2.1 h).1, fun ho => LExpr.le_trans hpc ((hb.2.2.1 h).2.1 ho)⟩
   | .req _ _, h => ⟨h.1, LExpr.le_trans hpc (hb.2.2.2.1 h.1).1, h.2⟩
   | .release _ _, h => h.elim
+  | .perf _, _ => trivial
+  | .perfFn _, _ => trivial
 
 theorem bound_fails {pc pc' : LExpr} {o : Bool} {g : HostFx} {f : Bool} (hb : p.Bound pc' o g f)
     (hpc : p.le pc pc') (hf : f = true) : Fails p pc (Eff.ofFn o g f) :=
@@ -493,6 +516,8 @@ theorem applyWith_uok {run : World H → Env → Expr → Run H} {fv : Val} {vs 
       | write _ _ => exact hg.2.1 hev.1
       | req _ _ => exact ⟨hg.2.2 hev.1, hev.2.2⟩
       | release _ _ => have h := hev.1; simp [Eff.inst, hrl] at h
+      | perf _ => trivial
+      | perfFn _ => trivial
     · -- A function value fails with a code only (#512): its body raises no payload.
       refine ⟨fun ⟨⟨l, hl, _⟩, _⟩ => hfs (by simp [Eff.inst] at hl; obtain ⟨l', hl', _⟩ := hl; simp [hl']),
         fun _ _ _ ⟨_, hk, _⟩ => ?_⟩

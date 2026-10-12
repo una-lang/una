@@ -166,6 +166,13 @@ def SameOn (S : String → Prop) (w : World H) (r : Run H) (r' : Run Host.unit) 
     -- A failure's payload too (#512): a handler of its kind binds it.
     ∀ k c ps, r'.2.1 = .raised k c ps → Val.HostFreeAllIn S ps
 
+/-- The same ghost in front of two runs that agree keeps them agreeing (#561). -/
+theorem SameOn.ghost {w : World H} {r : Run H} {r' : Run Host.unit} (ev : Event) (h : SameOn S w r r') :
+    SameOn S w (Run.ghost ev r) (Run.ghost ev r') := by
+  obtain ⟨h1, h2, h3⟩ := h
+  refine ⟨?_, h2, h3⟩
+  rw [h1]; rfl
+
 theorem SameOn.stuck (w : World H) (u : World Host.unit) : SameOn S w (stuck w) (stuck u) :=
   ⟨rfl, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
 
@@ -396,7 +403,7 @@ theorem eval_hostFreeIn
             simp only []
             split
             · have hfn := hp f fn hfd (hc f (by simp [Rhs.callees]))
-              exact ihE w u _ _ (bindParams_hostFree _ (evalAtoms_hostFree hf ha) trivial) hfn.1 hfn.2
+              exact SameOn.ghost _ (ihE w u _ _ (bindParams_hostFree _ (evalAtoms_hostFree hf ha) trivial) hfn.1 hfn.2)
             · exact SameOn.stuck w u
       | invokeOp o args => simp [Rhs.hostFree] at hr
       | apply f args =>

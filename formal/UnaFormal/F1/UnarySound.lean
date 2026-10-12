@@ -416,6 +416,8 @@ theorem fnAllowed_of {pc : LExpr} {s : List (String × LExpr)} {ε : Eff} {o : B
   | .write _ _, h => hg.2.1 h.1
   | .req _ _, h => ⟨hg.2.2 h.1, h.2.2⟩
   | .release _ _, h => by have := h.1; simp [Eff.inst, hr] at this
+  | .perf _, _ => trivial
+  | .perfFn _, _ => trivial
 
 /-- **The events of a call** (option B1): the callee's operations, which its bound allows, and
 its releases, through policies it declares (`Fun.rels`), each above the program counter of the
@@ -444,6 +446,8 @@ theorem call_allowed_inst {pc pc₀ pc' : LExpr} {s s' : List (String × LExpr)}
     have hsf := hdst po (List.mem_of_find?_eq_some hpo)
     rw [LExpr.eq_ofLabel_of_symFree hsf] at hle ⊢
     exact LExpr.le_of_le_inst_ofLabel (LExpr.le_inst s hle)
+  | perf _ => trivial
+  | perfFn _ => trivial
 
 theorem flag_of_fails {pc : LExpr} {s : List (String × LExpr)} {ε : Eff} {f : Bool}
     (hf : ε.fails.isSome = true → f = true) : Fails p pc (ε.inst s) → f = true := by
@@ -517,6 +521,8 @@ theorem invoke_allowed_inst {pc₀ P : LExpr} {s s' : List (String × LExpr)} {�
   | write _ _ => have := hg.2.1 h.1; simp [hhost, HostFx.none] at this
   | req _ _ => have := hg.2.2 h.1; simp [hhost, HostFx.none] at this
   | release pol _ => have := hr pol h.1; simp [hrels] at this
+  | perf _ => trivial
+  | perfFn _ => trivial
 
 /-- **An invocation fails as its handler may**, labeled at the caller's program counter (#524),
 with a code when the handler declares no payload kind, and with a payload of a kind it declares. -/
@@ -724,7 +730,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         refine UOk.mono (invoke_allowed_inst hP hop ho hgo hhost hrs hrels hinv
           (fun _ => by simp [Eff.emits, Eff.ofInvoke]) rfl rfl) (fun v hv => ?_)
           (invoke_failsAs_inst hfs hcd hra)
-          (ihE hτ (by simpa using henv'') hbody)
+          (UOk.ghost rfl rfl trivial (ihE hτ (by simpa using henv'') hbody))
         have hr := LTy.lsubst_ground p.recordDeep hτ hcov hres
         exact LValTy.flow ((LValTy.ground_lsubst hr).mpr (LValTy.flow hv (Flow.lsubst _ _ hflow)))
           (Flow.lsubst _ _ (Flow.lsubst_nil _ fn.result).1)
@@ -764,7 +770,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
           (fun hgop => by simp [Eff.emits, Eff.ofInvokeOp, Program.opPrintsB, hr, hf, ← hop', hgop])
           rfl rfl) (fun v hv => ?_)
           (invoke_failsAs_inst hfs hcd hra)
-          (ihE hτ (by simpa using henv'') hbody)
+          (UOk.ghost rfl rfl trivial (ihE hτ (by simpa using henv'') hbody))
         have hr := LTy.lsubst_ground p.recordDeep hτ hcov hres
         exact LValTy.flow (LValTy.flow ((LValTy.ground_lsubst hr).mpr (LValTy.flow hv (Flow.lsubst _ _ hflow)))
           (Flow.lsubst _ _ (Flow.lsubst_nil _ gn.result).1)) (Flow.lsubst _ _ hres')
