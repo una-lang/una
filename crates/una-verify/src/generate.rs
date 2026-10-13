@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use sha2::{Digest, Sha256};
 use una_core::{
     Atom, Base, BinOp, Bound, CapOp, Clause, Ctor, DataVariant, Decl, Expr, FixedOp, Fun, IntType,
-    LoopSource, MapOp, Name, Path, Prim, Program, Refinement, Rhs, Source, Term, Type,
+    LoopSource, MapOp, Name, Path, Prim, Program, Refinement, Rhs, Source, Term, Type, Use,
     print_term_with,
 };
 use una_diag::ObligationKind;
@@ -114,6 +114,33 @@ pub struct Site {
     /// overflowing itself: the operand's range for a conversion, or the operation on `Int`
     /// (`spec/18 §3`).
     pub guard: Option<String>,
+    /// For an `effect_condition` obligation, the conditioned operation and where it is
+    /// charged, which decide its message and repairs (ADR 0092 rules 3 and 5).
+    pub effect: Option<Effect>,
+}
+
+/// The conditioned operation of an `effect_condition` obligation (ADR 0092 rule 3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Effect {
+    /// The operation through the caller's binding, as `@catalog.journal`.
+    pub operation: String,
+    /// The caller's condition on it, as written.
+    pub condition: String,
+    /// Where the obligation is charged.
+    pub at: EffectAt,
+}
+
+/// Where an `effect_condition` obligation is charged.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EffectAt {
+    /// The operation itself.
+    Operation,
+    /// A call of the named function, which receives the binding.
+    Call(String),
+    /// A `with` that installs the named handler, which uses the binding.
+    With(String),
+    /// A call of a function value, whose type has no conditions.
+    Value,
 }
 
 /// The kind of declaration that encloses an obligation.
@@ -171,12 +198,13 @@ pub fn obligations(program: &Program, sources: &SourceDb) -> Result<Vec<Obligati
                     params,
                     capability_path,
                     ops,
+                    uses,
                     ..
                 } => {
                     for op in ops {
                         walker.declaration = format!("{}.{name}.{}", module.path, op.name);
                         walker.lambdas.clear();
-                        walker.handler_op(params, capability_path, op);
+                        walker.handler_op(params, uses, capability_path, op);
                     }
                 }
                 Decl::Pred {
@@ -309,6 +337,14 @@ pub(crate) struct Index<'p> {
     /// Capabilities by qualified identity (`spec/10 §11` rule 8), the host ones included.
     capabilities: BTreeMap<(&'p str, &'p str), &'p [CapOp]>,
     handlers: BTreeMap<(&'p str, &'p str), &'p [(Name, Type)]>,
+    /// The `uses` of each function and handler, with the conditions on their operations
+    /// (ADR 0092).
+    uses: BTreeMap<(&'p str, &'p str), &'p [Use]>,
+    /// The `uses of` parameters of each function (ADR 0062).
+    uses_of: BTreeMap<(&'p str, &'p str), &'p [Name]>,
+    /// The functions of the standard library, native and without `uses` of their own: a
+    /// parameter of function type is the only way their calls perform effects.
+    library: BTreeSet<(&'p str, &'p str)>,
     kinds: BTreeMap<(&'p str, &'p str), Kind<'p>>,
     policies: BTreeMap<(&'p str, &'p str), (&'p Type, &'p Type)>,
     /// The `to` type of each policy, by its `via` function.
@@ -346,12 +382,18 @@ impl<'p> Index<'p> {
             predicates: BTreeMap::new(),
             capabilities: BTreeMap::new(),
             handlers: BTreeMap::new(),
+            uses: BTreeMap::new(),
+            uses_of: BTreeMap::new(),
+            library: BTreeSet::new(),
             kinds: BTreeMap::new(),
             policies: BTreeMap::new(),
             vias: BTreeMap::new(),
             unresolved: RefCell::new(BTreeSet::new()),
         };
         for signature in &program.library {
+            index
+                .library
+                .insert((signature.path.module.as_str(), signature.path.name.as_str()));
             index.contracts.insert(
                 (signature.path.module.as_str(), signature.path.name.as_str()),
                 Contract {
@@ -378,6 +420,10 @@ impl<'p> Index<'p> {
             for decl in &module.decls {
                 match decl {
                     Decl::Fun(fun) => {
+                        index.uses.insert((path, fun.name.as_str()), &fun.uses);
+                        index
+                            .uses_of
+                            .insert((path, fun.name.as_str()), &fun.uses_of);
                         index.contracts.insert(
                             (path, fun.name.as_str()),
                             Contract {
@@ -404,8 +450,11 @@ impl<'p> Index<'p> {
                     Decl::Cap { name, ops } => {
                         index.capabilities.insert((path, name.as_str()), ops);
                     }
-                    Decl::Handler { name, params, .. } => {
+                    Decl::Handler {
+                        name, params, uses, ..
+                    } => {
                         index.handlers.insert((path, name.as_str()), params);
+                        index.uses.insert((path, name.as_str()), uses);
                     }
                     Decl::Data {
                         name,
@@ -767,9 +816,22 @@ struct Ctx {
     /// The divisions by a value that is not a literal evaluated on this path, with their
     /// divisors (ADR 0054, amendment of 2026-10-08). Shared until changed, as `types`.
     divisions: std::rc::Rc<Vec<(F, Span)>>,
+    /// The capability references in scope, innermost last: the binding of the declaration
+    /// walked that each one holds, or `None` for one a `with` binds to a handler (ADR 0092
+    /// rule 3). Shared until changed, as `types`.
+    caps: std::rc::Rc<Vec<(Name, Option<Name>)>>,
 }
 
 impl Ctx {
+    /// The binding of the declaration walked that `cap` holds here, if any.
+    fn binding(&self, cap: &str) -> Option<Name> {
+        self.caps
+            .iter()
+            .rev()
+            .find(|(name, _)| name.as_str() == cap)
+            .and_then(|(_, binding)| binding.clone())
+    }
+
     fn assume(&mut self, f: F) {
         self.hyps.push(Hyp { f, shown: true });
     }
@@ -844,6 +906,13 @@ struct Walker<'p, 'i> {
     returned_unpinned: bool,
     /// The loop-fresh values that the paths of the return obligation being pushed return.
     returned_forgotten: Vec<(String, Collection)>,
+    /// The conditions on the operations of the bindings of the declaration walked, by binding
+    /// and operation (ADR 0092).
+    conditions: BTreeMap<(Name, String), &'p Clause>,
+    /// The `uses of` parameters of the function walked (ADR 0062).
+    uses_of: BTreeSet<Name>,
+    /// The binders bound to a lambda, which is charged where it is defined (ADR 0092 rule 3).
+    lambda_binders: BTreeSet<Name>,
 }
 
 /// How the obligations of a function value flowing into a function type name the value and
@@ -880,6 +949,9 @@ impl<'p, 'i> Walker<'p, 'i> {
             loop_collections: BTreeMap::new(),
             loop_results: BTreeMap::new(),
             returned_forgotten: Vec::new(),
+            conditions: BTreeMap::new(),
+            uses_of: BTreeSet::new(),
+            lambda_binders: BTreeSet::new(),
             unpinned: BTreeSet::new(),
             returned_unpinned: false,
         }
@@ -905,6 +977,9 @@ impl<'p, 'i> Walker<'p, 'i> {
         for (name, ty) in &fun.params {
             self.bind(&mut ctx, name, ty);
         }
+        self.own_bindings(&mut ctx, &fun.uses);
+        self.uses_of = fun.uses_of.iter().cloned().collect();
+        self.lambda_binders.clear();
         for clause in &fun.requires {
             let vars = |name: &str| Some(own(&ctx, name));
             let env = Env {
@@ -1014,6 +1089,7 @@ impl<'p, 'i> Walker<'p, 'i> {
     fn handler_op(
         &mut self,
         handler_params: &'p [(Name, Type)],
+        handler_uses: &'p [Use],
         capability: &una_core::Path,
         op: &'p una_core::HandlerOp,
     ) {
@@ -1021,6 +1097,9 @@ impl<'p, 'i> Walker<'p, 'i> {
         for (name, ty) in handler_params {
             self.bind(&mut ctx, name, ty);
         }
+        self.own_bindings(&mut ctx, handler_uses);
+        self.uses_of.clear();
+        self.lambda_binders.clear();
         let signature = self.index.operation(capability, &op.name);
         let mut renames: BTreeMap<&str, &str> = BTreeMap::new();
         if let Some(signature) = signature {
@@ -1599,20 +1678,36 @@ impl<'p, 'i> Walker<'p, 'i> {
                     });
                     return;
                 }
-                Expr::With { source, body, .. } => {
-                    if let Source::Handler {
-                        handler,
-                        args,
-                        arg_spans,
-                        ..
-                    } = source
-                        && let Some(params) = self
-                            .index
-                            .handlers
-                            .get(&(handler.module.as_str(), handler.name.as_str()))
-                    {
-                        self.arguments(params, args, arg_spans, &ctx);
-                    }
+                Expr::With { cap, source, body } => {
+                    let holds = match source {
+                        Source::Rebind(other) => ctx.binding(other),
+                        Source::Handler {
+                            handler,
+                            args,
+                            arg_spans,
+                            span,
+                            ..
+                        } => {
+                            let key = (handler.module.as_str(), handler.name.as_str());
+                            if let Some(params) = self.index.handlers.get(&key).copied() {
+                                self.arguments(params, args, arg_spans, &ctx);
+                                // ADR 0092 rule 3: the handler's bindings receive the
+                                // context's, and it is charged where it is installed.
+                                let values: Vec<Tv> =
+                                    args.iter().map(|a| self.atom(a, &ctx)).collect();
+                                self.effect_call(
+                                    &ctx,
+                                    key,
+                                    params,
+                                    &values,
+                                    *span,
+                                    &EffectAt::With(handler.name.clone()),
+                                );
+                            }
+                            None
+                        }
+                    };
+                    std::rc::Rc::make_mut(&mut ctx.caps).push((cap.clone(), holds));
                     expr = body;
                 }
             }
@@ -1811,6 +1906,30 @@ impl<'p, 'i> Walker<'p, 'i> {
             } => {
                 let values: Vec<Tv> = args.iter().map(|a| self.atom(a, ctx)).collect();
                 let key = (function.module.as_str(), function.name.as_str());
+                // ADR 0092 rule 3: the callee's bindings receive the caller's of the same
+                // name, and promise their own conditions.
+                if let Some(contract) = self.index.contracts.get(&key) {
+                    self.effect_call(
+                        ctx,
+                        key,
+                        contract.params,
+                        &values,
+                        *span,
+                        &EffectAt::Call(function.name.clone()),
+                    );
+                    let library = self.index.library.contains(&key);
+                    let of = self.index.uses_of.get(&key).copied().unwrap_or(&[]);
+                    for ((param, _), (atom, value)) in
+                        contract.params.iter().zip(args.iter().zip(&values))
+                    {
+                        // A `uses of` parameter of the function walked is charged wherever it
+                        // is passed, since its argument may run any of the bindings.
+                        let held = matches!(atom, Atom::Var(name) if self.uses_of.contains(name));
+                        if library || of.contains(param) || held {
+                            self.passed_function(ctx, atom, value, *span);
+                        }
+                    }
+                }
                 if let Some(contract) = self.index.contracts.get(&key) {
                     // A generic callee's parameters, at its type arguments, for the flows of
                     // function values (ADR 0037 rule 2).
@@ -1848,9 +1967,30 @@ impl<'p, 'i> Walker<'p, 'i> {
                 callee,
                 args,
                 arg_spans,
-                ..
+                span,
             } => {
+                let callee_atom = callee;
                 let callee = self.atom(callee, ctx);
+                // ADR 0092 rule 3, as amended: a call of a function value performs its type's
+                // `uses` through the caller's bindings, and a function type has no conditions.
+                // A `uses of` parameter's argument runs through any of the bindings.
+                if let Atom::Var(name) = callee_atom
+                    && self.uses_of.contains(name)
+                {
+                    self.every_condition(ctx, *span, &EffectAt::Value);
+                }
+                if let Type::Fn { uses, .. } = &callee.ty {
+                    for usage in uses {
+                        self.effect_sites(
+                            ctx,
+                            &usage.cap,
+                            &usage.ops,
+                            &|_, _| None,
+                            *span,
+                            &EffectAt::Value,
+                        );
+                    }
+                }
                 if let Type::Fn { params, result, .. } = &callee.ty {
                     for ((param, atom), arg_span) in params.iter().zip(args).zip(arg_spans) {
                         let value = self.atom(atom, ctx);
@@ -1864,6 +2004,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 }
             }
             Rhs::Op {
+                cap,
                 capability_path,
                 op,
                 args,
@@ -1872,6 +2013,15 @@ impl<'p, 'i> Walker<'p, 'i> {
                 ..
             } => {
                 let values: Vec<Tv> = args.iter().map(|a| self.atom(a, ctx)).collect();
+                // ADR 0092 rule 3: the operation runs where its binding's condition holds.
+                self.effect_sites(
+                    ctx,
+                    cap,
+                    std::slice::from_ref(op),
+                    &|_, _| None,
+                    *span,
+                    &EffectAt::Operation,
+                );
                 let signature = self.index.operation(capability_path, op);
                 if let Some(signature) = signature {
                     let contract = Contract {
@@ -1951,6 +2101,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 body,
                 function,
             } => {
+                self.lambda_binders.insert(name.to_owned());
                 let mut inner = ctx.clone();
                 for (param, ty) in params {
                     self.bind(&mut inner, param, ty);
@@ -2034,10 +2185,25 @@ impl<'p, 'i> Walker<'p, 'i> {
             }
             Rhs::Declassify {
                 policy,
+                via,
                 arg,
                 arg_span,
-                ..
+                span,
             } => {
+                // ADR 0092 rule 3: a policy uses as its `via` function does, so the call runs
+                // the `via` with the caller's bindings: a call of it that passes them.
+                let via_key = (via.module.as_str(), via.name.as_str());
+                if let Some(contract) = self.index.contracts.get(&via_key) {
+                    let value = self.atom(arg, ctx);
+                    self.effect_call(
+                        ctx,
+                        via_key,
+                        contract.params,
+                        std::slice::from_ref(&value),
+                        *span,
+                        &EffectAt::Call(via.name.clone()),
+                    );
+                }
                 let key = (policy.module.as_str(), policy.name.as_str());
                 if let Some((from, to)) = self.index.policies.get(&key) {
                     let value = self.atom(arg, ctx);
@@ -3408,6 +3574,179 @@ impl<'p, 'i> Walker<'p, 'i> {
         );
     }
 
+    /// Puts the bindings of the declaration walked in scope, each holding itself, and records
+    /// the conditions on their operations (ADR 0092).
+    fn own_bindings(&mut self, ctx: &mut Ctx, uses: &'p [Use]) {
+        self.conditions.clear();
+        let caps = std::rc::Rc::make_mut(&mut ctx.caps);
+        for usage in uses {
+            caps.push((usage.cap.clone(), Some(usage.cap.clone())));
+            for (op, clause) in &usage.conds {
+                self.conditions
+                    .insert((usage.cap.clone(), op.clone()), clause);
+            }
+        }
+    }
+
+    /// The `effect_condition` obligations of a site that may perform `ops` of the binding the
+    /// reference `cap` holds here (ADR 0092 rule 3): for each operation the declaration
+    /// walked conditions by `C` on that binding, the goal `C`, or `C′ ⇒ C` when `promised`
+    /// gives the condition `C′` the site's callee or handler writes on it.
+    fn effect_sites(
+        &mut self,
+        ctx: &Ctx,
+        cap: &str,
+        ops: &[String],
+        promised: &dyn Fn(&mut Self, &str) -> Option<Option<F>>,
+        span: Span,
+        at: &EffectAt,
+    ) {
+        let Some(binding) = ctx.binding(cap) else {
+            return;
+        };
+        for op in ops {
+            let Some(clause) = self.conditions.get(&(binding.clone(), op.clone())).copied() else {
+                continue;
+            };
+            let premise = promised(self, op);
+            self.condition_site(ctx, &binding, op, clause, premise, span, at);
+        }
+    }
+
+    /// The `effect_condition` obligation of `op` of the declaration's binding `binding`,
+    /// conditioned by `clause`, at `span`: the goal `C`, or `C′ ⇒ C` with `premise`.
+    #[allow(clippy::too_many_arguments)]
+    fn condition_site(
+        &mut self,
+        ctx: &Ctx,
+        binding: &str,
+        op: &str,
+        clause: &'p Clause,
+        premise: Option<Option<F>>,
+        span: Span,
+        at: &EffectAt,
+    ) {
+        let condition = {
+            let vars = |name: &str| Some(own(ctx, name));
+            let env = Env {
+                vars: &vars,
+                it: None,
+                result: None,
+            };
+            self.term(&clause.term, &env).map(|tv| tv.f)
+        };
+        // A caller's condition outside the encoding is no goal that holds: the query keeps
+        // `not false` and is refuted, never silently proven. A callee's outside it is
+        // dropped, which only strengthens the goal.
+        let goal = match premise {
+            None | Some(None) => condition,
+            Some(Some(premise)) => condition.map(|c| F::op("=>", vec![premise, c])),
+        };
+        let mut assertions: Vec<F> = ctx.hyps.iter().map(|h| h.f.clone()).collect();
+        let mut place = self.place(ObligationKind::EffectCondition, goal.as_ref());
+        place.effect = Some(Effect {
+            operation: format!("@{binding}.{op}"),
+            condition: clause.text.clone(),
+            at: at.clone(),
+        });
+        assertions.push(F::not(goal.unwrap_or(F::Bool(false))));
+        let hypotheses = self.shown_hypotheses(&ctx.hyps);
+        self.push(
+            ObligationKind::EffectCondition,
+            clause.text.clone(),
+            span,
+            clause.span.map(|span| (span, "condition")),
+            Vec::new(),
+            hypotheses,
+            assertions,
+            ctx,
+            place,
+            vec![ctx.divisions.to_vec()],
+        );
+    }
+
+    /// Every condition of the declaration walked, charged at `span` with no premise: for a
+    /// site whose effects cannot be bounded to some bindings, such as a call of a `uses of`
+    /// parameter, whose argument may run any of them (ADR 0092 rule 3, as amended).
+    fn every_condition(&mut self, ctx: &Ctx, span: Span, at: &EffectAt) {
+        let all: Vec<(Name, String, &'p Clause)> = self
+            .conditions
+            .iter()
+            .map(|((binding, op), clause)| (binding.clone(), op.clone(), *clause))
+            .collect();
+        for (binding, op, clause) in all {
+            self.condition_site(ctx, &binding, &op, clause, None, span, at);
+        }
+    }
+
+    /// A function value passed to a parameter whose effects run through the caller's
+    /// bindings, a `uses of` parameter or one of a standard function: it is charged at the
+    /// call like a call of it, unless it is a lambda, charged where it is defined (ADR 0092
+    /// rule 3, as amended).
+    fn passed_function(&mut self, ctx: &Ctx, atom: &Atom, value: &Tv, span: Span) {
+        if let Atom::Var(name) = atom {
+            if self.lambda_binders.contains(name) {
+                return;
+            }
+            if self.uses_of.contains(name) {
+                self.every_condition(ctx, span, &EffectAt::Value);
+                return;
+            }
+        }
+        if let Type::Fn { uses, .. } = &value.ty {
+            for usage in uses {
+                self.effect_sites(
+                    ctx,
+                    &usage.cap,
+                    &usage.ops,
+                    &|_, _| None,
+                    span,
+                    &EffectAt::Value,
+                );
+            }
+        }
+    }
+
+    /// The `effect_condition` obligations of a call of the function or handler `key` with
+    /// `values` for its parameters `params`: each of its bindings receives the caller's of the
+    /// same name, and promises the condition it writes on each operation, `true` when none.
+    fn effect_call(
+        &mut self,
+        ctx: &Ctx,
+        key: (&'p str, &'p str),
+        params: &'p [(Name, Type)],
+        values: &[Tv],
+        span: Span,
+        at: &EffectAt,
+    ) {
+        let Some(uses) = self.index.uses.get(&key).copied() else {
+            // A standard function has no `uses` of its own. Any other callee missing from the
+            // index is charged every condition: never a silent skip.
+            if !self.index.library.contains(&key) {
+                self.every_condition(ctx, span, at);
+            }
+            return;
+        };
+        let by_name: BTreeMap<&str, Tv> = params
+            .iter()
+            .zip(values)
+            .map(|((name, _), value)| (name.as_str(), value.clone()))
+            .collect();
+        for usage in uses {
+            let promised = |walker: &mut Self, op: &str| -> Option<Option<F>> {
+                let (_, clause) = usage.conds.iter().find(|(o, _)| o == op)?;
+                let vars = |name: &str| by_name.get(name).cloned();
+                let env = Env {
+                    vars: &vars,
+                    it: None,
+                    result: None,
+                };
+                Some(walker.term(&clause.term, &env).map(|tv| tv.f))
+            };
+            self.effect_sites(ctx, &usage.cap, &usage.ops, &promised, span, at);
+        }
+    }
+
     /// [`Walker::site`] for the precondition of the named function `name` passed as a function
     /// value, whose only repair is `repair` (issue #76).
     #[allow(clippy::too_many_arguments)]
@@ -3663,6 +4002,7 @@ impl<'p, 'i> Walker<'p, 'i> {
                 flow: None,
                 function_value: None,
                 guard: None,
+                effect: None,
             };
         };
         let direct = binders(goal);
@@ -3694,6 +4034,7 @@ impl<'p, 'i> Walker<'p, 'i> {
             ground: free.is_empty(),
             flow: None,
             function_value: None,
+            effect: None,
             guard: None,
         }
     }
@@ -4992,6 +5333,7 @@ mod tests {
             params,
             result: int(),
             uses: Vec::new(),
+            uses_of: Vec::new(),
             fails: None,
             error: None,
             requires: requires.into_iter().map(clause).collect(),

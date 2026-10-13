@@ -1,0 +1,41 @@
+-- test: a call of a function value performs its type's `uses` through the caller's bindings, and a function type has no conditions, so the call must be under the caller's condition, through a chain of calls and under a rebind too (ADR 0092 rule 3 and its amendment of 2026-10-13, spec/05 §3)
+-- spec: spec/05 §3
+-- expect: error U5001 at src/values.una:14:3
+-- expect: error U5001 at src/values.una:31:3
+-- expect: error U5001 at src/values.una:36:3
+module values
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub g(f: fn(Int) -> Unit uses @log: Log[write], dry: Bool) -> Unit
+  uses @log: Log[write where not dry]
+=
+  f(1)
+
+pub g_guarded(f: fn(Int) -> Unit uses @log: Log[write], dry: Bool) -> Unit
+  uses @log: Log[write where not dry]
+=
+  if not dry
+    f(1)
+  unit
+
+k(f: fn(Int) -> Unit uses @log: Log[write]) -> Unit
+  uses @log: Log[write]
+=
+  f(2)
+
+pub chain(f: fn(Int) -> Unit uses @log: Log[write], dry: Bool) -> Unit
+  uses @log: Log[write where not dry]
+=
+  k(f)
+
+pub rebound(f: fn(Int) -> Unit uses @log: Log[write], dry: Bool) -> Unit
+  uses @main: Log[write where not dry]
+=
+  f(3) with @log = @main
+
+pub h() -> Unit
+  uses @log: Log[write]
+=
+  g(fn(n) -> @log.write(n), dry: true)

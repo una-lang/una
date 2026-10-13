@@ -232,3 +232,49 @@ The entry point's header is the scaffold's, so the chain always ends at a refute
 - The re-check's reading of conditioned operations, after the theorem.
 - The state form (B04, B05), a separate ADR (#558).
 - Assigned on acceptance: U3023, and the obligation kinds `effect_condition` and `contract_lock`. They join `spec/13 §4` and `spec/12 §3` with the implementation (#564).
+
+## Amendment (2026-10-13): a call of a function value is a site
+
+Rule 3 said "A call of a function value is not a site." That leaves a hole. A call of a function value performs the value's effects, and they count for the caller like those of a named call (`spec/05 §9` rule 7), so they run through the caller's bindings. A parameter of function type with `uses` may be the callee (rule 6 of `spec/05 §9`):
+
+```una
+pub g(f: fn(Int) -> Unit uses @log: Log[write], dry: Bool) -> Unit
+  uses @log: Log[write where not dry]
+=
+  f(1)
+
+h() -> Unit
+  uses @log: Log[write]
+=
+  g((n) -> @log.write(n), dry: true)
+```
+
+As written, no obligation arises:
+
+- the lambda is charged at `h`, which conditions nothing;
+- the call `f(1)` in `g` is a call of a function value;
+- at `h`'s call of `g`, the caller has no condition.
+
+So `write` runs during `g` with `dry = true`, through `g`'s binding, which rule 2's meaning forbids.
+
+**The rule.** A call of a function value, held by a parameter, a local or a field, is a site of rule 3 for each operation that its type's `uses` list and that resolves to a conditioned binding of the caller. A function type carries no conditions (rule 1), so the callee's condition is `true`, and the goal is the caller's condition `C`, as for a private callee with inferred `uses` (rule 4). Lambdas keep their charge where they are defined: both charges are needed, since a lambda may also be called where it is defined.
+
+- **Stricter only.** The rule adds obligations and removes none, so it only rejects. Code that writes no condition gets none. `g` above is rejected with "`@log.write` may run where `not dry` is not proven" at `f(1)`, and accepted once the call is guarded: `if not dry then f(1)`.
+- **A chain.** When `g` passes `f` on to another function `k` that calls it, the call of `k` in `g` is a call that passes the binding, the second row of rule 3: its goal is `C_k[args] ⇒ C`, which is `C` when `k` writes no condition (rule 4). Inside `k`, the call of `f` is a site against `k`'s own conditions.
+- **Rebinds.** The binding a reference holds follows `with @x = @b`: under it, the call charges the condition on `@b`. Under `with @x = h(args)`, `@x` holds a handler, which conditions nothing; the `with` itself is the site of the third row.
+- **Cost.** One query per such site, linear in the calls of function values whose types use a conditioned binding.
+- **Repairs.** A guard, `if C`, around the call. A function type has no conditions, so no condition can move to the callee.
+- **The formal model.** The trace-safety theorem (rule 7) must cover this site: a performance under a call of a function value happens where the caller's condition holds. The theorem (#561) and the re-check's reading of conditioned operations (#601) state it with the other sites. Until then the re-check refuses a conditioned operation, so no claim rests on it.
+
+Conformance cases pin the counterexample (rejected), its guarded form (accepted), the chain through `k`, and a call under `with @x = @b`.
+
+## Amendment (2026-10-13, second): policies, `uses of` and functions passed on
+
+An adversarial review of the implementation found three more paths where an operation runs through a conditioned binding with no site. Each one is closed with the same rule: whatever runs through the caller's bindings is charged where the caller hands them over.
+
+- **A policy call.** A policy uses and fails as its `via` function does, so a call of the policy runs the `via` with the caller's bindings. It is a site of the second row of rule 3, as a call of the `via` would be: the goal is `C′[arg] ⇒ C`, with the `via`'s own condition, or `C` when it writes none.
+- **A call of a `uses of` parameter** (ADR 0062). Its type has no `uses`, yet its argument's effects run through the function's bindings, any of them. A call of such a parameter is therefore a site for every operation the function conditions, with goal `C`. This is conservative: the function cannot know which bindings the argument uses.
+- **A function value passed on.** A value passed to a parameter whose effects run through the caller's bindings, a `uses of` parameter of the callee or a parameter of a standard function such as `map`, is charged at the call as a call of it would be: for each operation its type's `uses` list, the goal is `C`. A `uses of` parameter of the caller passed anywhere is charged every condition. A lambda keeps its charge where it is defined, and is not charged again.
+- **`edit` parameters.** A condition reads the arguments as the caller passed them, whatever the body later assigns (rule 2). An `edit` parameter reassigned in the body does not change it: the condition is evaluated at the values on entry, which is what the caller sees and what the guard protects. Reassigning `dry = false` before `@log.write(n)` does not prove `not dry`.
+
+Each rule only adds obligations, so it only rejects, and code that writes no condition gets none. Conformance cases pin a rejected and an accepted form of each.

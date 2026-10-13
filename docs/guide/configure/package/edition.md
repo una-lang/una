@@ -37,7 +37,7 @@ edition = "0.1" | "0.2" | "0.3"
 
 - **Edition `0.1`** is the v0.1 language.
 - **Edition `0.2`** adds the constructs of `spec/17` (the memory model: `let edit`, `edit` and `take` parameters, `for`), `spec/18` (fixed-width integers), `spec/19` (`together`) and `spec/20` (constraints on generics), and the keywords that go with them (`spec/13 §7`).
-- **Edition `0.3`** has every construct, keyword and rule of edition `0.2`. It is a preview: the rules that target it join it as they land, so a later `0.3.x` release may add obligations or errors to an edition `0.3` package. It only gets stricter, never looser. Editions `0.1` and `0.2` keep their stability promise (`spec/13 §7`).
+- **Edition `0.3`** has every construct, keyword and rule of edition `0.2`. It is a preview: the rules that target it join it as they land, so a later `0.3.x` release may add obligations or errors to an edition `0.3` package. It only gets stricter for the programs that edition `0.2` can express. A construct that a rule targeting edition `0.3` adds, such as a condition on an operation (`uses @log: Log[write where not dry_run]`, ADR 0092), is a syntax error in earlier releases and may become accepted; it only narrows what a program may do, since erasing it gives a program that edition `0.2` accepts (ADR 0056, second amendment of 2026-10-13). Editions `0.1` and `0.2` keep their stability promise (`spec/13 §7`).
 - **A single file**, outside a package, has edition `"0.1"` (`spec/13 §7`).
 
 ## Examples

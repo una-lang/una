@@ -562,6 +562,7 @@ impl Writer<'_> {
                 args,
                 arg_spans,
                 given,
+                ..
             } => node!(Handler,
                 "handler" => self.path(handler),
                 "args" => self.atoms(args),

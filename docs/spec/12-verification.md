@@ -48,6 +48,8 @@ Obligations are generated from Core IR by a traversal that maintains a **path co
 
 (v0.2, ADR 0057.) The kind `overflow` joins this table. It is generated at each arithmetic operator on a fixed-width integer type and at each narrowing conversion, and its goal is that the exact result lies in the type's range (`spec/18 §3`).
 
+(v0.3, ADR 0092.) The kind `effect_condition` joins this table. It is generated where an operation conditioned by `where` (`spec/05 §3` rule 4) may run: at the operation, at a call of a named function or of a function value that receives the binding, and at a `with` that installs a handler using it. Its goal is ground: the condition, or the callee's condition implying it.
+
 Each obligation is `Π ⊢ goal`, sent to the solver as the satisfiability check of `Π ∧ ¬goal`. An `ensures` clause, and the refinement of a declared result type, give one obligation over every normal return path, `Π ∧ (path₁ ∨ … ∨ pathₙ) ∧ ¬goal`, whose diagnostic points at the returned expression of the path the model takes; every other obligation belongs to one site.
 
 Besides the hypotheses above, a query holds ground facts for every term in it: `len ≥ 0`; `0 ≤ tag < n`; and the refinement of a record field applied to the field's term, under the tag of its variant for a sum. Constructors add their tag and field equations, list literals their length, and text literals their length (ADR 0033).

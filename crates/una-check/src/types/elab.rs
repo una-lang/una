@@ -1065,6 +1065,11 @@ impl<'e, 'a> Fx<'e, 'a> {
                 let body = self.body(&function.body);
                 self.returning = None;
                 self.tail_wrap = None;
+                let uses_of = def
+                    .uses_of
+                    .iter()
+                    .filter_map(|&index| params.get(index).map(|(name, _)| name.clone()))
+                    .collect();
                 Decl::Fun(Box::new(Fun {
                     name: def.name.to_owned(),
                     type_params: def.type_params.iter().map(|p| (*p).to_owned()).collect(),
@@ -1072,6 +1077,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     params,
                     result,
                     uses,
+                    uses_of,
                     fails: def.fails.as_ref().map(|f| self.kind_name(f)),
                     error: def.fails.as_ref().and_then(|f| self.kind_path(f)),
                     requires,
@@ -1243,6 +1249,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     args,
                     arg_spans,
                     given: true,
+                    span: given.handler.span,
                 },
             ));
         }
@@ -1522,6 +1529,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                         args,
                         arg_spans,
                         given: false,
+                        span: call.span,
                     }
                 }
             };

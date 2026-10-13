@@ -787,6 +787,9 @@ pub enum Source {
         arg_spans: Vec<Span>,
         /// Whether a `given` line installs it (`spec/11 §5`).
         given: bool,
+        /// The handler call in the source, where what installing it requires is charged
+        /// (ADR 0092 rule 3).
+        span: Span,
     },
 }
 
@@ -1020,6 +1023,10 @@ pub struct Fun {
     pub result: Type,
     /// The capability context.
     pub uses: Vec<Use>,
+    /// The parameters of function type under `uses of` (ADR 0062), whose arguments' effects
+    /// run through the function's bindings: what the verifier charges where they are called
+    /// or passed on (ADR 0092 rule 3). Not exported: `una core` derives nothing from it.
+    pub uses_of: Vec<Name>,
     /// The error kind.
     pub fails: Option<String>,
     /// The error kind's declaration, by its qualified identity (`spec/09 §3`), when it is

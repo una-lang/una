@@ -1,8 +1,9 @@
 //! Editions are cumulative (`spec/13 §7`): every edition `0.2` package of the conformance suite,
 //! checked as edition `0.3`, reports byte-identical `una --json check` output and exit status.
-//! The rules that target edition `0.3` will change some of them; each such package is listed in
-//! `EXPECTED_DIFFERENCES`, and a listed package that does not differ fails the test, so the list
-//! stays exact.
+//! The rules that target edition `0.3` change some of them: a construct such a rule adds, which
+//! edition `0.2` rejects as a syntax error, or an error such a rule adds. Each such package is
+//! listed in `EXPECTED_DIFFERENCES` with the exact result of both editions, and a listed package
+//! that does not differ fails the test, so the list stays exact.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
 #![allow(
@@ -15,15 +16,79 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The edition `0.2` packages, relative to `tests/conformance`, whose output in edition `0.3`
-/// differs by design, each because of a rule that targets edition `0.3`.
-const EXPECTED_DIFFERENCES: &[&str] = &[];
+use serde_json::Value;
+
+/// An edition `0.2` package whose output in edition `0.3` differs by design, because of a rule
+/// that targets edition `0.3` (`spec/13 §7`).
+enum Difference {
+    /// The package writes a construct that the rule adds and edition `0.2` rejects as a syntax
+    /// error. The construct only narrows what a program may do, so erasing it gives a program
+    /// that edition `0.2` accepts: the twin.
+    Syntax {
+        /// The package, relative to `tests/conformance`.
+        case: &'static str,
+        /// The one diagnostic of edition `0.2`: its code and `file:line:col`.
+        edition_0_2: (&'static str, &'static str),
+        /// The `effect_condition` obligations of edition `0.3`, each `status at file:line:col`,
+        /// in order; the check itself reports nothing.
+        edition_0_3: &'static [&'static str],
+        /// The same package with the construct erased, relative to `tests/conformance`.
+        twin: &'static str,
+        /// The text whose removal from the case's source gives the twin's source.
+        erased: &'static str,
+    },
+    /// The rule only adds errors: the diagnostics document of edition `0.3` is that of edition
+    /// `0.2` with exactly these diagnostics added, each a code and `file:line:col`.
+    #[allow(
+        dead_code,
+        reason = "the first entries come with the error rules of edition 0.3 (ADR 0100)"
+    )]
+    Stricter {
+        /// The package, relative to `tests/conformance`.
+        case: &'static str,
+        /// The added diagnostics.
+        edition_0_3: &'static [(&'static str, &'static str)],
+    },
+}
+
+impl Difference {
+    /// The package, relative to `tests/conformance`.
+    fn case(&self) -> &'static str {
+        match self {
+            Difference::Syntax { case, .. } | Difference::Stricter { case, .. } => case,
+        }
+    }
+
+    /// The edition `0.2` packages the entry names.
+    fn packages(&self) -> Vec<&'static str> {
+        match self {
+            Difference::Syntax { case, twin, .. } => vec![*case, *twin],
+            Difference::Stricter { case, .. } => vec![*case],
+        }
+    }
+}
+
+/// The edition `0.2` packages whose output in edition `0.3` differs by design, with the exact
+/// result of each edition.
+const EXPECTED_DIFFERENCES: &[Difference] = &[
+    // ADR 0092 rule 1: a condition on an operation of a `uses`.
+    Difference::Syntax {
+        case: "authority/op_condition_edition_0_2",
+        edition_0_2: ("U0101", "src/main.una:10:24"),
+        edition_0_3: &["proven at src/main.una:13:5"],
+        twin: "authority/op_condition_edition_0_2_erased",
+        erased: " where not dry_run",
+    },
+];
 
 const EDITION_0_2: &str = "edition = \"0.2\"";
 const EDITION_0_3: &str = "edition = \"0.3\"";
 
 /// The start of every `una --json check` document (`spec/13 §5`).
 const DOCUMENT: &[u8] = b"{\"schema\":\"una.diagnostics/1\"";
+
+/// The start of every `una --json obligations` document.
+const OBLIGATIONS: &[u8] = b"{\"schema\":\"una.obligations/1\"";
 
 /// An edition `0.2` package that uses fixed-width integers, so it checks differently as edition
 /// `0.1`: the positive control that the copied manifest is the one read.
@@ -66,6 +131,18 @@ fn copy_dir(from: &Path, to: &Path) {
 /// The exit status and output of `una --json check .` on a fresh copy of `package` at `work`,
 /// with its manifest's edition line replaced by `edition`.
 fn check_as(package: &Path, work: &Path, edition: &str) -> (Option<i32>, Vec<u8>, Vec<u8>) {
+    run_as(package, work, edition, "check", DOCUMENT)
+}
+
+/// The exit status and output of `una --json <command> .` on a fresh copy of `package` at
+/// `work`, with its manifest's edition line replaced by `edition`; stdout starts with `document`.
+fn run_as(
+    package: &Path,
+    work: &Path,
+    edition: &str,
+    command: &str,
+    document: &[u8],
+) -> (Option<i32>, Vec<u8>, Vec<u8>) {
     if work.exists() {
         std::fs::remove_dir_all(work).unwrap();
     }
@@ -75,7 +152,7 @@ fn check_as(package: &Path, work: &Path, edition: &str) -> (Option<i32>, Vec<u8>
     std::fs::write(&manifest, text.replace(EDITION_0_2, edition)).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_una"))
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
-        .args(["--json", "check", "."])
+        .args(["--json", command, "."])
         .current_dir(work)
         .output()
         .unwrap();
@@ -83,7 +160,7 @@ fn check_as(package: &Path, work: &Path, edition: &str) -> (Option<i32>, Vec<u8>
     // A run that fails the same way in both editions, before it checks anything, must not count
     // as the same result: each run exits 0 or 1 with a diagnostics document.
     assert!(
-        matches!(output.status.code(), Some(0 | 1)) && output.stdout.starts_with(DOCUMENT),
+        matches!(output.status.code(), Some(0 | 1)) && output.stdout.starts_with(document),
         "{} as {edition}: status {:?}, stdout {:?}, stderr {:?}",
         package.display(),
         output.status.code(),
@@ -139,10 +216,12 @@ fn every_edition_0_2_package_checks_the_same_in_edition_0_3() {
         "{CONTROL} checks the same as edition 0.1"
     );
     for expected in EXPECTED_DIFFERENCES {
-        assert!(
-            cases.iter().any(|(name, _)| name == expected),
-            "{expected} is not an edition 0.2 package"
-        );
+        for name in expected.packages() {
+            assert!(
+                cases.iter().any(|(case, _)| case == name),
+                "{name} is not an edition 0.2 package"
+            );
+        }
     }
 
     // Linear in the packages: each one is checked twice, on its own copy.
@@ -175,7 +254,9 @@ fn every_edition_0_2_package_checks_the_same_in_edition_0_3() {
 
     let mut wrong = Vec::new();
     for (name, same) in &results {
-        let expected = EXPECTED_DIFFERENCES.contains(&name.as_str());
+        let expected = EXPECTED_DIFFERENCES
+            .iter()
+            .any(|difference| difference.case() == name);
         if *same == expected {
             wrong.push(if expected {
                 format!("{name}: listed as differing, but checks the same in edition 0.3")
@@ -186,4 +267,186 @@ fn every_edition_0_2_package_checks_the_same_in_edition_0_3() {
     }
     wrong.sort();
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// The `file:line:col` of a location of the JSON documents.
+fn location(at: &Value) -> String {
+    let file = at["file"].as_str().unwrap();
+    let start = &at["start"];
+    format!("{file}:{}:{}", start["line"], start["col"])
+}
+
+/// The source of a package's `src/main.una` without its leading comment lines.
+fn program(package: &Path) -> String {
+    std::fs::read_to_string(package.join("src/main.una"))
+        .unwrap()
+        .lines()
+        .skip_while(|line| line.starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The code and `file:line:col` of each diagnostic of a diagnostics document.
+fn sites(document: &Value) -> Vec<(String, String)> {
+    document["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| {
+            (
+                d["code"].as_str().unwrap().to_owned(),
+                location(&d["primary"]),
+            )
+        })
+        .collect()
+}
+
+/// Each expected difference is exactly the pinned one, so any other drift of its package still
+/// fails.
+#[test]
+fn every_expected_difference_is_exact() {
+    let root = conformance();
+    let scratch = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("editions/differences");
+    for expected in EXPECTED_DIFFERENCES {
+        match expected {
+            Difference::Syntax {
+                case,
+                edition_0_2,
+                edition_0_3,
+                twin,
+                erased,
+            } => syntax(
+                &root,
+                &scratch,
+                case,
+                *edition_0_2,
+                edition_0_3,
+                twin,
+                erased,
+            ),
+            Difference::Stricter { case, edition_0_3 } => {
+                stricter(&root, &scratch, case, edition_0_3);
+            }
+        }
+    }
+}
+
+/// A [`Difference::Syntax`]: the pinned syntax error in edition `0.2`, a clean check with
+/// exactly the pinned obligations in edition `0.3`, and an erasure twin that edition `0.2`
+/// accepts and edition `0.3` checks the same.
+fn syntax(
+    root: &Path,
+    scratch: &Path,
+    name: &str,
+    edition_0_2: (&str, &str),
+    edition_0_3: &[&str],
+    twin_name: &str,
+    erased: &str,
+) {
+    let case = root.join(name);
+    let twin = root.join(twin_name);
+
+    // Edition 0.2: exactly one diagnostic, the pinned syntax error.
+    let (status, stdout, _) = check_as(&case, scratch, EDITION_0_2);
+    let document: Value = serde_json::from_slice(&stdout).unwrap();
+    let (code, at) = edition_0_2;
+    assert_eq!(status, Some(1), "{name} as edition 0.2");
+    assert_eq!(
+        sites(&document),
+        vec![(code.to_owned(), at.to_owned())],
+        "{name} as edition 0.2"
+    );
+
+    // Edition 0.3: a clean check, and exactly the pinned obligations of the construct.
+    let (status, stdout, _) = check_as(&case, scratch, EDITION_0_3);
+    let document: Value = serde_json::from_slice(&stdout).unwrap();
+    assert_eq!(status, Some(0), "{name} as edition 0.3");
+    assert_eq!(sites(&document), Vec::new(), "{name} as edition 0.3");
+    let (_, stdout, _) = run_as(&case, scratch, EDITION_0_3, "obligations", OBLIGATIONS);
+    let document: Value = serde_json::from_slice(&stdout).unwrap();
+    let found: Vec<String> = document["obligations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|o| o["kind"] == "effect_condition")
+        .map(|o| {
+            format!(
+                "{} at {}",
+                o["status"].as_str().unwrap(),
+                location(&o["source"])
+            )
+        })
+        .collect();
+    assert_eq!(found, edition_0_3, "{name} as edition 0.3");
+
+    // The twin is the case with the construct erased.
+    assert!(
+        program(&case).contains(erased),
+        "{name}: `{erased}` is not in its source"
+    );
+    assert_eq!(
+        program(&case).replacen(erased, "", 1),
+        program(&twin),
+        "{twin_name} is not {name} with `{erased}` erased"
+    );
+
+    // Edition 0.2 accepts the twin, and edition 0.3 checks it the same, with no obligation of
+    // the construct.
+    let before = check_as(&twin, scratch, EDITION_0_2);
+    let document: Value = serde_json::from_slice(&before.1).unwrap();
+    assert_eq!(before.0, Some(0), "{twin_name} as edition 0.2");
+    assert_eq!(sites(&document), Vec::new(), "{twin_name} as edition 0.2");
+    assert_eq!(
+        check_as(&twin, scratch, EDITION_0_3),
+        before,
+        "{twin_name} as edition 0.3"
+    );
+    let (_, stdout, _) = run_as(&twin, scratch, EDITION_0_3, "obligations", OBLIGATIONS);
+    let document: Value = serde_json::from_slice(&stdout).unwrap();
+    assert!(
+        !document["obligations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|o| o["kind"] == "effect_condition"),
+        "{twin_name} as edition 0.3"
+    );
+}
+
+/// A [`Difference::Stricter`]: the whole diagnostics document of edition `0.3` is that of
+/// edition `0.2` with exactly the listed diagnostics added, nothing removed and the others in
+/// their order, and edition `0.3` exits 1.
+fn stricter(root: &Path, scratch: &Path, name: &str, added: &[(&str, &str)]) {
+    let case = root.join(name);
+    let (_, before, _) = check_as(&case, scratch, EDITION_0_2);
+    let (status, after, _) = check_as(&case, scratch, EDITION_0_3);
+    let before: Value = serde_json::from_slice(&before).unwrap();
+    let mut after: Value = serde_json::from_slice(&after).unwrap();
+    assert!(!added.is_empty(), "{name}: a stricter entry adds nothing");
+    assert_eq!(status, Some(1), "{name} as edition 0.3");
+    // Each listed diagnostic is taken out once, so a duplicate or a missing one fails, and
+    // `fixable` loses those that `una fix` applies (`spec/13 §5`).
+    let mut fixable = 0;
+    let diagnostics = after["diagnostics"].as_array_mut().unwrap();
+    for (code, at) in added {
+        let found = diagnostics
+            .iter()
+            .position(|d| d["code"] == *code && location(&d["primary"]) == *at);
+        let Some(index) = found else {
+            panic!("{name} as edition 0.3: no {code} at {at}");
+        };
+        let removed = diagnostics.remove(index);
+        let first = &removed["repairs"][0];
+        if !first["edit"].is_null()
+            && first["escape_cost"] == 0
+            && first.get("widens").is_none_or(Value::is_null)
+        {
+            fixable += 1;
+        }
+    }
+    after["fixable"] = Value::from(after["fixable"].as_u64().unwrap() - fixable);
+    assert_eq!(
+        after, before,
+        "{name}: edition 0.3 differs from edition 0.2 by more than the listed diagnostics"
+    );
 }

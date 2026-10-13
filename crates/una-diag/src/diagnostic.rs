@@ -83,6 +83,10 @@ pub enum ObligationKind {
     /// The exact result of an operation on a fixed-width integer type, or of a narrowing
     /// conversion, lies in the type's range (`spec/18 §3`).
     Overflow,
+    /// A conditioned operation of a binding runs only where its condition holds: at the
+    /// operation, at a call that passes the binding, and at a `with` that installs a handler
+    /// using it (ADR 0092 rule 3).
+    EffectCondition,
 }
 
 impl ObligationKind {
@@ -95,6 +99,7 @@ impl ObligationKind {
             ObligationKind::Division => "division",
             ObligationKind::Exhaustive => "exhaustive",
             ObligationKind::Overflow => "overflow",
+            ObligationKind::EffectCondition => "effect_condition",
         }
     }
 }

@@ -1,0 +1,25 @@
+-- test: a policy runs its `via` function with the caller's bindings, so a policy call is charged like a call of the `via`: under a condition on an operation the `via` performs, the call must be under the condition (ADR 0092 rule 3, spec/05 §3)
+-- spec: spec/05 §3
+-- expect: error U5001 at src/app/main.una:11:21
+module app.main
+
+import app.keys (text_key)
+
+pub keyed(text: secret[PII] Text, dry: Bool) -> internal Bool
+  uses @keys: Keys[hmac where not dry]
+=
+  let key = attempt text_key(text)
+  when key
+    is Ok -> true
+    is Err -> false
+
+pub keyed_guarded(text: secret[PII] Text, dry: Bool) -> internal Bool
+  uses @keys: Keys[hmac where not dry]
+=
+  if dry
+    false
+  else
+    let key = attempt text_key(text)
+    when key
+      is Ok -> true
+      is Err -> false

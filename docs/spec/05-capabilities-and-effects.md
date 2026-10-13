@@ -51,6 +51,18 @@ pub check_in(phone: secret[PII] Phone) -> Availability
    - The condition is in the refinement language (`spec/03 §3`), with the restrictions of a `requires` clause (`spec/04 §2`), over the parameters of the function or the handler. It MUST be a `Bool` (U2001). An expression outside the refinement language is U2014, including `checked`, `attempt`, `fail`, a lambda, an operation and a call of a function with effects; a call of an opaque predicate is U2016; `result` is U2012, and `it` is U2013.
    - **Meaning.** Every performance of the operation through the binding happens only where the condition holds of the function's arguments. Parameters are immutable, so the condition's value is fixed for the whole call. An operation without `where` is unconditioned.
    - **No inference.** A private function with inferred `uses` (§9 rule 2) has no condition on any operation, and no name gives one by convention.
+   - **Obligations.** The verifier proves the meaning with one `effect_condition` obligation (`spec/12 §3`) at each site where an operation of the binding may run, under the site's path context:
+     - an operation `@b.op(...)` conditioned by `C` on `@b`: the goal is `C`;
+     - a call of a named function that receives `@b` under the name of one of its bindings, by name or through `with @x = @b`, and lists `op` with condition `C′` (none: `true`): the goal is `C′ ⇒ C`, with `C′` instantiated at the call's arguments;
+     - a `with @x = h(args)` whose handler lists, in its own `uses`, `op` of a binding that receives `@b`, with condition `C′`: the goal is `C′ ⇒ C`, charged at the `with`;
+     - (ADR 0092 amendment of 2026-10-13.) a call of a function value whose type's `uses` list `op` of a binding that receives `@b`: the goal is `C`, since a function type has no conditions.
+     - (ADR 0092 second amendment of 2026-10-13.) a call of a policy, which runs its `via` function with the caller's bindings: as a call of the `via`;
+     - a call of a `uses of` parameter (§9 rule 9), whose argument may run any of the bindings: the goal is `C`, for every condition the function writes;
+     - a function value passed to a `uses of` parameter of the callee or to a parameter of a standard function: as a call of it; a `uses of` parameter passed anywhere, every condition. A lambda is charged where it is defined instead.
+
+     A condition is of the arguments the caller passed: reassigning an `edit` parameter does not change it.
+
+     An operation in a lambda is a site of the enclosing declaration, under the path context of the lambda's definition. A refuted or unknown obligation is U5001 or U5002, "`@catalog.journal` may run where `not dry_run` is not proven", at the site, with the condition as the related span. Its repairs, in order: at a call or a `with`, write the condition in the callee's or the handler's `uses`, then guard the site with `if C`; at an operation, guard it with `if C`, then add `requires C`; at a call of a function value, guard it. No repair removes or weakens a condition.
 
 ## 4. Passing capabilities
 

@@ -1,4 +1,4 @@
--- test: in edition 0.2 an operation of a `uses` takes no condition: `where` there is the parse error it always was (ADR 0092, spec/02 §3)
+-- test: in edition 0.2 an operation of a `uses` takes no condition: `where` there is the parse error it always was (ADR 0092, spec/02 §3); edition 0.3 accepts it with one proven `effect_condition` obligation, and its erasure twin is op_condition_edition_0_2_erased (spec/13 §7, crates/una-cli/tests/editions.rs)
 -- spec: spec/02 §3
 -- expect: error U0101 at src/main.una:10:24
 module main
@@ -9,4 +9,7 @@ pub capability Log
 pub run(dry_run: Bool) -> Unit
   uses @log: Log[write where not dry_run]
 =
-  unit
+  if not dry_run
+    @log.write(1)
+  else
+    unit
