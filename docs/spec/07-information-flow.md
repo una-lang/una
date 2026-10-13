@@ -61,8 +61,10 @@ pub policy attendee_key
 
 hmac_phone(phone: secret[PII] Phone) -> internal Hashed
   uses @keys: Keys[hmac]
+  fails KeyError
 =
   @keys.hmac(key_name: "phone_pepper", data: phone)
+    if error pass
 ```
 
 1. A policy `p` defines a callable `p(v: From) -> To` whose `uses` and `fails` are those of its `via` function.
