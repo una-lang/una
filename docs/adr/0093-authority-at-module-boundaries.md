@@ -137,3 +137,25 @@ Stating the authority-confinement theorem (#562) found a gap. A ceiling bounds t
    - **Code.** U3024 is assigned with this amendment. It joins `spec/13 §4`'s registry with the implementation (#565).
    - **Complexity.** One reachability check per call into a boundary module, over the call graph the effect inference already builds: linear in call edges.
    - **Formal.** Authority confinement (#562) states that no release event occurs during a call into a boundary module.
+
+## Amendment (2026-10-13): the extent of a boundary
+
+Planning the implementation (#565) found five places where rules 1 to 5 leave authority a path around the boundary. Each change below only rejects more programs.
+
+9. **A key covers its submodules.** A key of `[boundaries]` covers the module it names and every module below it, by whole path segments: `gallery.thumbnailer` covers `gallery.thumbnailer.tiles`, and not `gallery.thumbnailerx`. These modules are the key's **extent**. Otherwise a vendored library's submodules would sit outside the boundary, callable by name with full authority, and would inherit by inference. A key and a key below it in the same table are U7002, so every module has at most one ceiling. Where rules 3 to 8 say "the boundary module", they mean its extent: in particular, a private function of the extent takes its inferred `uses` from callers inside the extent only (rule 3), and a private function outside takes none from inside it.
+
+10. **No entry point inside a boundary.** The `[run]` entry receives its grants from the runtime, not from a call, so rules 3 and 5 never see them. An entry in a boundary module is U7002. The examples of a boundary module stay allowed, so that a library keeps its own tests. Their effects are authority granted to the module, and are checked against its ceiling: an example whose `given` lines grant more than the ceiling is U3021 at the example, where a `given` handler counts with its own `uses` (rule 5).
+
+    An example outside a boundary whose `do` line calls into one is a call like any other (rule 3). Its `given` bindings are the example's own context, as a header's bindings are a function's: they do not meet the callee's `uses` by name (U3020), and they reach the boundary only through the call's `with` bindings, which rule 5 and rule 13 check against the ceiling.
+
+11. **A boundary is outside every other boundary.** "A call from outside a boundary module" (rule 3) includes a call from another boundary's extent. So a call from `A` into `B` is granted with `with` and checked against `B`'s ceiling, and `A` cannot pass its own grants on to `B` by name. A call within one extent (rule 9) is not a crossing.
+
+12. **A call is identified by the declaration it resolves to.** A call is a call into the module that declares the function, whatever name reaches it: today an `import`, and any alias, qualified path or re-export a later edition adds (`spec/10 §11`, ADR 0023). The same holds for a function value, a handler, and a policy: a policy call is a call of its `via` (ADR 0092, second amendment), so it crosses a boundary when the policy or its `via` is declared in one.
+
+13. **A rebinding carries what it rebinds.** `with @x = @y[ops]` restricts `@y` to `ops` and keeps every condition that `@y` carries on them (ADR 0092 rules 1 and 3): a call through `@x` charges `@y`'s condition, as an unnarrowed rebinding does. Narrowing never removes a condition. ADR 0094's labels (`gives`) follow the same rule when that ADR is implemented.
+
+    At a call into a boundary, a rebinding, narrowed or not, of a binding that holds a handler installed in the caller's own body (by `with` or `given`, following `with @x = @b` chains) counts that handler's own `uses` against the ceiling, as rule 5 counts a handler granted directly. The boundary can run the handler's operations, and the handler runs them with its own `uses`. A binding of the caller's header is the caller's own authority, received without crossing this boundary, and counts as its capability and operations. At run time it may hold a handler that the caller's own callers installed. That handler is code outside this crossing, written by the consumer: the ceiling bounds the operations the boundary receives, and the handler behind them is the consumer's choice. Rule 5's count of a handler's `uses` covers only the handlers this check can see, those installed in the caller's body.
+
+- **Codes.** No new code: U7002 (rules 9 and 10), U3020 (rule 10) and U3021 (rules 10 and 13) are reused, with messages that name the case.
+- **Complexity.** Rule 9 is a lookup of a module's path prefixes, O(depth) per module, with the overlap check of the keys done by sorting them, O(k log k). Rules 10 to 13 add no pass: they change which edges count as crossings, and which bindings a grant contributes.
+- **Formal.** Authority confinement (#562) was proved before this amendment, so it does not cover rules 9 to 13. Their extension is an open obligation of the formal track, #629.
