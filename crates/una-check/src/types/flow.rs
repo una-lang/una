@@ -2,7 +2,7 @@
 //! calls under the program counter (U4002), sinks (U4003), following `spec/07`, the label
 //! premises of `spec/10` and ADR 0031.
 
-use una_diag::Code;
+use una_diag::{Code, Escape};
 use una_syntax::Span;
 
 use super::Report;
@@ -507,13 +507,13 @@ impl Checker<'_, '_, '_> {
                 let mut diagnostic = self.report.make(
                     Code::U4003,
                     *arg_span,
-                    format!(
-                        "{what} accepts `{accepts}` data, and this argument is `{label}`; declassify it through a policy first"
-                    ),
+                    format!("{what} accepts `{accepts}` data, and this argument is `{label}`"),
                 );
-                // An interpolated value with a labeled field: name the field (ADR 0068 D8).
+                // ADR 0095: sending only accepted data keeps the label; a policy, which
+                // widens the trusted base, comes last.
                 let top = self.top();
                 let distinct = self.env.kind_labels.deep_distinct;
+                // An interpolated value with a labeled field: name the field (ADR 0068 D8).
                 if let Some((_, field, kind, field_label)) =
                     self.written_fields
                         .iter()
@@ -522,8 +522,20 @@ impl Checker<'_, '_, '_> {
                         })
                 {
                     diagnostic.repairs.push(super::Report::advice(format!(
-                        "field `{field}` of `{kind}` is `{field_label}`: interpolate the fields that {what} accepts instead, or declassify `{field}` through a policy"
+                        "field `{field}` of `{kind}` is `{field_label}`: interpolate only the fields that {what} accepts"
                     )));
+                    diagnostic.repairs.push(super::Report::escape(
+                        Escape::Trusted,
+                        format!("declassify `{field}` through a policy of a trusted module"),
+                    ));
+                } else {
+                    diagnostic.repairs.push(super::Report::advice(format!(
+                        "send {what} only data labeled `{accepts}` or lower, or send this value to an operation that accepts `{label}`"
+                    )));
+                    diagnostic.repairs.push(super::Report::escape(
+                        Escape::Trusted,
+                        "declassify the value through a policy of a trusted module",
+                    ));
                 }
                 self.report.push(diagnostic);
             }

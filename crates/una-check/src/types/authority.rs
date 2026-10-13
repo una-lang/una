@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use una_diag::{Code, Repair};
+use una_diag::{Code, Escape, Repair};
 use una_project::Manifest;
 use una_syntax::Span;
 use una_syntax::ast::{Body, ClauseKind, Expr, ExprKind, Ident};
@@ -1541,8 +1541,16 @@ pub(crate) fn budget(
                 .related
                 .push(report.related(*later, "another use beyond the budget"));
         }
+        // ADR 0095: one route per repair, and raising the budget, an escape, comes last.
         diagnostic.repairs.push(Report::advice(
-            "prove the fact statically, or raise `checked_per_module` in `una.toml` and explain the escape in review",
+            "state the fact in a refined type or a `requires` clause, so that the solver proves it, and remove the `checked`",
+        ));
+        diagnostic.repairs.push(Report::advice(
+            "handle the values where the fact does not hold with a guard (`if` or a `when` arm), and remove the `checked`",
+        ));
+        diagnostic.repairs.push(Report::escape(
+            Escape::EscapeBudget,
+            "raise `checked_per_module` in `[escape_budget]` of `una.toml`",
         ));
         report.push(diagnostic);
     }

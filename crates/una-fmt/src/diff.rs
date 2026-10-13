@@ -25,7 +25,7 @@ pub fn differences(db: &SourceDb, id: FileId, canonical: &str) -> Vec<Diagnostic
         diagnostic.repairs.push(Repair {
             widens_authority: false,
             rank: 1,
-            escape_cost: 0,
+            escape: None,
             description: "convert every line break to a line feed with `una fmt`".to_owned(),
             edit: None,
         });
@@ -61,7 +61,7 @@ pub fn differences(db: &SourceDb, id: FileId, canonical: &str) -> Vec<Diagnostic
         diagnostic.repairs.push(Repair {
             widens_authority: false,
             rank: 1,
-            escape_cost: 0,
+            escape: None,
             description: "rewrite in canonical form, as `una fmt` does".to_owned(),
             edit: Some(Edit {
                 location: db.location(edit),

@@ -75,7 +75,7 @@ fn refuted() -> Diagnostic {
     diagnostic.repairs.push(Repair {
         widens_authority: false,
         rank: 1,
-        escape_cost: 0,
+        escape: None,
         description: "compare with 1 or adjust the ensures clause".to_owned(),
         edit: None,
     });

@@ -2,7 +2,7 @@
 //! function values, policies and capability operations, field access and method-call syntax
 //!, and constructors (U2009).
 
-use una_diag::{Code, ObligationKind};
+use una_diag::{Code, Escape, ObligationKind};
 use una_project::Edition;
 use una_syntax::Span;
 use una_syntax::ast::{Arg, Convention, Expr, ExprKind, Ident};
@@ -546,10 +546,21 @@ impl<'a> Checker<'_, 'a, '_> {
                     def.name
                 ),
             );
-            diagnostic.repairs.push(super::Report::advice(format!(
-                "check the value with `checked(value, {}(it)) else fail <Variant>`",
-                def.name
-            )));
+            // ADR 0095: a test that establishes no fact keeps the escape budget; `checked`,
+            // an escape, comes last.
+            if self.plain_test_route(id) {
+                diagnostic.repairs.push(super::Report::advice(format!(
+                    "if the code needs only the test and not the fact, test with a function, not a predicate, with the body of `{}`",
+                    def.name
+                )));
+            }
+            diagnostic.repairs.push(super::Report::escape(
+                Escape::Checked,
+                format!(
+                    "check the value with `checked(value, {}(it)) else fail <Variant>`",
+                    def.name
+                ),
+            ));
             self.report.push(diagnostic);
         }
         // A call with an `edit` or `take` argument changes a binding, so it is the whole

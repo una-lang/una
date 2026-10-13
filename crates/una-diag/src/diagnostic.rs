@@ -167,13 +167,54 @@ pub struct Binding {
     pub label: Option<String>,
 }
 
+/// The escape hatch a repair takes (`spec/13 §3`, ADR 0095 rule 2). A repair that takes none
+/// keeps the guarantee the diagnostic enforces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Escape {
+    /// A runtime test replaces a static proof (`spec/06 §6`).
+    Checked,
+    /// `[escape_budget] checked_per_module` is raised.
+    EscapeBudget,
+    /// A module is declared or listed as trusted, or a value is declassified through a policy
+    /// (`spec/07 §5, §6`).
+    Trusted,
+}
+
+impl Escape {
+    /// The kind in the `escape` key of a repair, for example `checked`.
+    pub fn kind(self) -> &'static str {
+        match self {
+            Escape::Checked => "checked",
+            Escape::EscapeBudget => "escape_budget",
+            Escape::Trusted => "trusted",
+        }
+    }
+
+    /// One sentence that says what the guarantee loses.
+    pub fn cost(self) -> &'static str {
+        match self {
+            Escape::Checked => {
+                "a runtime test replaces the static proof: the program fails at run time where the proof would have rejected it; it counts against [escape_budget] and is listed in the build report"
+            }
+            Escape::EscapeBudget => {
+                "the module may use more runtime tests in place of proofs; each one is listed in the build report and needs review"
+            }
+            Escape::Trusted => {
+                "the guarantee then rests on trusted code, whose labels are not checked: a policy releases the data, or a module joins the trusted base; it is listed in the build report and needs review"
+            }
+        }
+    }
+}
+
 /// A repair candidate (`spec/13 §3`).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Repair {
-    /// The rank among candidates; 1 is the best.
+    /// The rank among candidates; 1 is the best. Output renumbers the ranks in output order
+    /// (ADR 0095 rule 3).
     pub rank: u32,
-    /// The number of escape hatches the repair introduces (`spec/13 §3`).
-    pub escape_cost: u32,
+    /// The escape hatch the repair takes, if any. The `escape_cost` of the JSON shape is
+    /// derived from it, so the two cannot disagree (ADR 0095 rule 5).
+    pub escape: Option<Escape>,
     /// What the repair does.
     pub description: String,
     /// The mechanical edit, when the repair is mechanical.
@@ -181,8 +222,57 @@ pub struct Repair {
     /// Whether the edit widens authority or visibility: it adds operations or a `uses` clause,
     /// or makes a declaration `pub`. `una fix` never applies such an edit (ADR 0084). Not part
     /// of the JSON shape.
-    #[serde(skip)]
     pub widens_authority: bool,
+}
+
+impl Repair {
+    /// The number of escape hatches the repair introduces (`spec/13 §3`).
+    pub fn escape_cost(&self) -> u32 {
+        u32::from(self.escape.is_some())
+    }
+}
+
+/// A repair in output order, with the rank output gives it (ADR 0095 rule 3).
+#[derive(Clone, Copy, Debug)]
+pub struct Ranked<'a> {
+    /// The rank in output order: 1 to n, without gaps.
+    pub rank: u32,
+    /// The repair.
+    pub repair: &'a Repair,
+}
+
+impl Serialize for Ranked<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        RepairWire {
+            rank: self.rank,
+            escape_cost: self.repair.escape_cost(),
+            escape: self.repair.escape.map(|escape| EscapeWire {
+                kind: escape.kind(),
+                cost: escape.cost(),
+            }),
+            description: &self.repair.description,
+            edit: self.repair.edit.as_ref(),
+        }
+        .serialize(serializer)
+    }
+}
+
+/// The JSON shape of a repair, with fields in the order of `spec/13 §1`.
+#[derive(Serialize)]
+struct RepairWire<'a> {
+    rank: u32,
+    escape_cost: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    escape: Option<EscapeWire>,
+    description: &'a str,
+    edit: Option<&'a Edit>,
+}
+
+/// The `escape` key of a repair (ADR 0095 rule 5).
+#[derive(Serialize)]
+struct EscapeWire {
+    kind: &'static str,
+    cost: &'static str,
 }
 
 /// A mechanical edit: replace a range of a file with new text.
@@ -215,7 +305,8 @@ pub struct Diagnostic {
     pub obligation: Option<ObligationRef>,
     /// The counterexample, present only for U5001 and U5002.
     pub counterexample: Option<Counterexample>,
-    /// Repair candidates, in any order; output sorts them by escape cost, then rank.
+    /// Repair candidates, in any order; output sorts them by escape cost, then rank, and
+    /// renumbers the ranks in that order.
     pub repairs: Vec<Repair>,
 }
 
@@ -244,11 +335,18 @@ impl Diagnostic {
         format!("una explain {}", self.code)
     }
 
-    /// The repairs in output order: by escape cost, then rank (`spec/13 §1`).
-    pub(crate) fn repairs_in_order(&self) -> Vec<&Repair> {
+    /// The repairs in output order, by escape cost, then rank (`spec/13 §1`), each ranked by its
+    /// position: every escape comes after every repair that keeps the guarantee (ADR 0095
+    /// rule 3). The sort is stable, so equal keys keep their reporting order. O(r log r) in
+    /// the r repairs.
+    pub fn repairs_in_order(&self) -> Vec<Ranked<'_>> {
         let mut repairs: Vec<&Repair> = self.repairs.iter().collect();
-        repairs.sort_by_key(|repair| (repair.escape_cost, repair.rank));
+        repairs.sort_by_key(|repair| (repair.escape_cost(), repair.rank));
         repairs
+            .into_iter()
+            .zip(1u32..)
+            .map(|(repair, rank)| Ranked { rank, repair })
+            .collect()
     }
 }
 
@@ -285,7 +383,7 @@ struct Wire<'a> {
     obligation: Option<&'a ObligationRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     counterexample: Option<&'a Counterexample>,
-    repairs: Vec<&'a Repair>,
+    repairs: Vec<Ranked<'a>>,
     explain: String,
 }
 

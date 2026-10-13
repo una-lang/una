@@ -71,14 +71,14 @@ impl Workspace for Stub {
             Repair {
                 widens_authority: false,
                 rank: 2,
-                escape_cost: 0,
+                escape: None,
                 description: "declare `y`".to_owned(),
                 edit: None,
             },
             Repair {
                 widens_authority: false,
                 rank: 1,
-                escape_cost: 0,
+                escape: None,
                 description: "use `x`".to_owned(),
                 edit: Some(Edit {
                     location: location(3, 30, 31),

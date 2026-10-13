@@ -62,7 +62,7 @@ impl SyntaxError {
             .map(|(index, repair)| Repair {
                 widens_authority: false,
                 rank: u32::try_from(index + 1).unwrap_or(u32::MAX),
-                escape_cost: 0,
+                escape: None,
                 description: repair.description.clone(),
                 edit: repair.edit.as_ref().map(|(span, replacement)| Edit {
                     location: sources.location(*span),

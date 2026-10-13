@@ -9,7 +9,7 @@ mod resolve;
 use std::collections::{BTreeMap, BTreeSet};
 
 use una_core::IntType;
-use una_diag::{Code, Diagnostic, Edit, Related, Repair};
+use una_diag::{Code, Diagnostic, Edit, Escape, Related, Repair};
 use una_project::{Edition, Manifest, is_module_path};
 use una_syntax::ast::{DeclKind, File, Ident, KindBody, RequirementSource};
 use una_syntax::{FileId, Interner, SourceDb, Span};
@@ -182,9 +182,18 @@ impl<'p, 'a> Checker<'p, 'a> {
         Repair {
             widens_authority: false,
             rank: 1,
-            escape_cost: 0,
+            escape: None,
             description,
             edit: None,
+        }
+    }
+
+    /// A repair without an edit that takes the escape hatch `escape`: output ranks it after
+    /// every repair that keeps the guarantee (ADR 0095).
+    fn escape(escape: Escape, description: String) -> Repair {
+        Repair {
+            escape: Some(escape),
+            ..Self::advice(description)
         }
     }
 
@@ -193,7 +202,7 @@ impl<'p, 'a> Checker<'p, 'a> {
         Repair {
             widens_authority: false,
             rank: 1,
-            escape_cost: 0,
+            escape: None,
             description,
             edit: Some(Edit {
                 location: self.package.sources.location(span),
@@ -880,7 +889,20 @@ impl<'p, 'a> Checker<'p, 'a> {
                         "module `{path}` is `trusted` in its header but not listed in una.toml [trusted] modules"
                     )
                 };
-                self.error(Code::U7005, keyword, message);
+                // ADR 0095: removing `trusted` keeps the trusted base, since a policy outside
+                // a trusted module is U4004; listing the module widens it, so it comes last.
+                let mut diagnostic = self.make(Code::U7005, keyword, message);
+                diagnostic.repairs.push(Self::advice(format!(
+                    "remove `trusted` from the header of `{path}`{}",
+                    then_u4004(table)
+                )));
+                if !self.package.single {
+                    diagnostic.repairs.push(Self::escape(
+                        Escape::Trusted,
+                        format!("list `{path}` under `[trusted] modules` in `una.toml`"),
+                    ));
+                }
+                self.diagnostics.push(diagnostic);
             }
         }
         let Some(manifest) = self.package.manifest else {
@@ -897,15 +919,30 @@ impl<'p, 'a> Checker<'p, 'a> {
                         .as_ref()
                         .is_some_and(|header| header.trusted);
                     if !trusted {
-                        self.error(
+                        // ADR 0095: removing the entry keeps the trusted base; adding
+                        // `trusted` to the header widens it, so it comes last.
+                        let mut diagnostic = self.make(
                             Code::U7005,
                             span,
                             format!("[trusted] modules lists `{}`, whose header does not say `trusted module`", entry.value),
                         );
+                        diagnostic.repairs.push(Self::advice(format!(
+                            "remove `{}` from `[trusted] modules`{}",
+                            entry.value,
+                            then_u4004(table)
+                        )));
+                        diagnostic.repairs.push(Self::escape(
+                            Escape::Trusted,
+                            format!(
+                                "write `trusted module {}` in the header of `{}`",
+                                entry.value, entry.value
+                            ),
+                        ));
+                        self.diagnostics.push(diagnostic);
                     }
                 }
                 None => {
-                    self.error(
+                    let mut diagnostic = self.make(
                         Code::U7005,
                         span,
                         format!(
@@ -913,6 +950,11 @@ impl<'p, 'a> Checker<'p, 'a> {
                             entry.value
                         ),
                     );
+                    diagnostic.repairs.push(Self::advice(format!(
+                        "remove `{}` from `[trusted] modules`",
+                        entry.value
+                    )));
+                    self.diagnostics.push(diagnostic);
                 }
             }
         }
@@ -1026,4 +1068,20 @@ fn strongly_connected(tables: &[Table<'_>]) -> Vec<Vec<usize>> {
     }
     state.components.sort();
     state.components
+}
+
+/// What narrowing trust leaves to do when the module of `table` declares a policy: the policy is
+/// then U4004, so the repair does not close the problem alone (ADR 0095, rule 6).
+fn then_u4004(table: &Table<'_>) -> &'static str {
+    let policies = table
+        .module
+        .tree
+        .decls
+        .iter()
+        .any(|decl| matches!(decl.kind, DeclKind::Policy(_)));
+    if policies {
+        "; its policies are then U4004: move them into a trusted module"
+    } else {
+        ""
+    }
 }

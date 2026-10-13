@@ -389,6 +389,14 @@ pub(crate) struct Env<'a> {
     /// The key type of each map type written in the package, which must satisfy `Ord`
     /// (`spec/21 §1` rule 2, U2025).
     pub(crate) map_keys: Vec<MapKey>,
+    /// The opaque predicates of the checked modules whose bodies call no other opaque
+    /// predicate, set after pass 1: a function with such a body is not U2016 again, so U2016
+    /// offers it as a repair (ADR 0095).
+    pub(crate) opaque_plain: BTreeSet<usize>,
+    /// The module paths that `una.toml` lists under `[trusted] modules` (`spec/07 §6`): a
+    /// module is trusted only when its header says so and it is listed here. Empty for a file
+    /// checked on its own.
+    pub(crate) trusted_listed: BTreeSet<String>,
 }
 
 /// The key type of a written `Map[K, V]`, where it is written, and the function whose type
@@ -475,6 +483,8 @@ impl<'a> Env<'a> {
             of_raises: BTreeMap::new(),
             owner: None,
             map_keys: Vec::new(),
+            opaque_plain: BTreeSet::new(),
+            trusted_listed: BTreeSet::new(),
         };
         for source in package.into_iter().chain([prelude, testing]) {
             env.register(source);

@@ -297,7 +297,7 @@ fn first_repair(diagnostic: &Diagnostic) -> Option<&Repair> {
     diagnostic
         .repairs
         .iter()
-        .min_by_key(|repair| (repair.escape_cost, repair.rank))
+        .min_by_key(|repair| (repair.escape_cost(), repair.rank))
 }
 
 /// Why a first repair with an edit is not applied; `None` when it is a candidate.
@@ -307,7 +307,7 @@ fn ineligible(
     edit: &Edit,
     modules: &BTreeMap<String, Module>,
 ) -> Option<&'static str> {
-    if repair.escape_cost > 0 {
+    if repair.escape.is_some() {
         return Some("escape cost");
     }
     if repair.widens_authority {

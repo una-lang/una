@@ -8,8 +8,8 @@ use std::path::PathBuf;
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use una_diag::{
-    Binding, Code, Counterexample, Diagnostic, DiagnosticList, Edit, Location, ObligationKind,
-    ObligationRef, ObligationStatus, Position, Related, Repair, render_json,
+    Binding, Code, Counterexample, Diagnostic, DiagnosticList, Edit, Escape, Location,
+    ObligationKind, ObligationRef, ObligationStatus, Position, Related, Repair, render_json,
 };
 
 /// The JSON code blocks of `spec/13 §1`, in document order.
@@ -78,7 +78,7 @@ fn spec_example() -> Diagnostic {
     diagnostic.repairs.push(Repair {
         widens_authority: false,
         rank: 1,
-        escape_cost: 0,
+        escape: None,
         description:
             "add the arm 'in 0..0 -> SoldOut' before 'in 0..<20' or adjust the ensures clause"
                 .to_owned(),
@@ -143,7 +143,7 @@ fn edit_is_null_or_a_located_replacement() {
     diagnostic.repairs.push(Repair {
         widens_authority: false,
         rank: 2,
-        escape_cost: 0,
+        escape: None,
         description: "reindent the line".to_owned(),
         edit: Some(Edit {
             location: location("src/a.una", at(3, 1), at(3, 4)),
@@ -153,7 +153,7 @@ fn edit_is_null_or_a_located_replacement() {
     diagnostic.repairs.push(Repair {
         widens_authority: false,
         rank: 1,
-        escape_cost: 0,
+        escape: None,
         description: "run una fmt".to_owned(),
         edit: None,
     });
@@ -171,19 +171,26 @@ fn edit_is_null_or_a_located_replacement() {
 }
 
 #[test]
-fn repairs_are_ordered_by_escape_cost_then_rank() {
+fn repairs_are_ordered_by_escape_cost_then_rank_and_renumbered() {
+    // ADR 0095 rule 3: every escape after every repair that keeps the guarantee, ranks 1 to n
+    // in output order.
     let mut diagnostic = minimal(Code::U5002, "src/a.una", 1);
-    for (rank, escape_cost) in [(2, 1), (1, 1), (2, 0), (1, 0)] {
+    for (rank, escape) in [
+        (2, Some(Escape::Checked)),
+        (1, Some(Escape::Checked)),
+        (2, None),
+        (1, None),
+    ] {
         diagnostic.repairs.push(Repair {
             widens_authority: false,
             rank,
-            escape_cost,
-            description: format!("rank {rank}, cost {escape_cost}"),
+            escape,
+            description: format!("rank {rank}, escape {escape:?}"),
             edit: None,
         });
     }
     let value = serde_json::to_value(&diagnostic).unwrap();
-    let order: Vec<(u64, u64)> = value["repairs"]
+    let order: Vec<(u64, u64, &str)> = value["repairs"]
         .as_array()
         .unwrap()
         .iter()
@@ -191,10 +198,52 @@ fn repairs_are_ordered_by_escape_cost_then_rank() {
             (
                 repair["escape_cost"].as_u64().unwrap(),
                 repair["rank"].as_u64().unwrap(),
+                repair["description"].as_str().unwrap(),
             )
         })
         .collect();
-    assert_eq!(order, [(0, 1), (0, 2), (1, 1), (1, 2)]);
+    assert_eq!(
+        order,
+        [
+            (0, 1, "rank 1, escape None"),
+            (0, 2, "rank 2, escape None"),
+            (1, 3, "rank 1, escape Some(Checked)"),
+            (1, 4, "rank 2, escape Some(Checked)"),
+        ]
+    );
+}
+
+#[test]
+fn an_escape_carries_its_kind_and_cost_and_others_carry_no_escape_key() {
+    // ADR 0095 rule 5: `escape` is present exactly when `escape_cost` is above 0.
+    let mut diagnostic = minimal(Code::U7003, "src/a.una", 1);
+    for escape in [None, Some(Escape::EscapeBudget)] {
+        diagnostic.repairs.push(Repair {
+            widens_authority: false,
+            rank: 1,
+            escape,
+            description: "a route".to_owned(),
+            edit: None,
+        });
+    }
+    let value = serde_json::to_value(&diagnostic).unwrap();
+    let repairs = value["repairs"].as_array().unwrap();
+    assert!(repairs[0].get("escape").is_none());
+    assert_eq!(repairs[0]["escape_cost"], 0);
+    assert_eq!(repairs[1]["escape_cost"], 1);
+    assert_eq!(repairs[1]["escape"]["kind"], "escape_budget");
+    assert_eq!(
+        repairs[1]["escape"]["cost"],
+        Escape::EscapeBudget.cost(),
+        "the cost is one sentence of the diagnostic model"
+    );
+    // Printed order (ADR 0076 rule 1): `escape` right after `escape_cost`.
+    let text = serde_json::to_string(&diagnostic).unwrap();
+    let at = |key: &str| text.rfind(&format!("\"{key}\":")).unwrap();
+    assert!(at("rank") < at("escape_cost"));
+    assert!(at("escape_cost") < at("escape"));
+    assert!(at("escape") < at("description"));
+    assert!(at("description") < at("edit"));
 }
 
 #[test]
