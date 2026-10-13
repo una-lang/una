@@ -32,7 +32,7 @@ scripts/local-ci.sh           # solver check, formatting, clippy, every test, th
 scripts/local-ci.sh --linux   # the same steps in a Linux container
 ```
 
-Each run ends with `PASS`, or with `FAIL` and the step that failed. One step builds the website with `scripts/site.sh` when [mdBook](https://rust-lang.github.io/mdBook/) is installed at the version the script pins, and says it skipped it otherwise; the release gates require it. Install it with `cargo install mdbook --version 0.5.4 --locked`. The site is generated from the repository's documents into `target/site`; open `target/site/index.html` to read it. During development, the usual commands are:
+A pull request that changes `scripts/local-ci.sh`, its Docker image under `scripts/local-ci/`, or a script that one of its steps calls also needs `scripts/local-ci.sh --linux-arm64` to pass on its final commit, since a tool the image lacks fails only there (`docs/releases/validation.md` §1). Each run ends with `PASS`, or with `FAIL` and the step that failed. One step builds the website with `scripts/site.sh` when [mdBook](https://rust-lang.github.io/mdBook/) is installed at the version the script pins, and says it skipped it otherwise; the release gates require it. Install it with `cargo install mdbook --version 0.5.4 --locked`. The site is generated from the repository's documents into `target/site`; open `target/site/index.html` to read it. During development, the usual commands are:
 
 ```bash
 cargo fmt --all
