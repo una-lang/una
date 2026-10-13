@@ -82,3 +82,16 @@ Decided by the coordinator under the owner's delegation (N-42), pending Leonardo
 **Complexity.** Appending through any number of function values and higher-order layers is amortized O(1) per append, in both engines: O(n) for n appends, in O(n) space, copying nothing that no other name holds. A call through a function value whose target only borrows costs at most one retain at the caller and one release in the lambda, a constant per call; a call whose argument moves costs nothing more. A `fold` into a text that starts from a literal copies that literal once.
 
 IP-3, `acc = f(acc) if error use acc`, still copies at each call: the failure path reads `acc`, so it never moves (D1). The guide gives its linear form.
+
+## Implementation note (2026-10-13): the borrowed entry (#284)
+
+Implemented under #284. D2 left a cost: a call that still needs its argument retains it for an owned parameter, and the callee releases it, even when the path that consumes it never runs. `cons(xs, i) = if i < 0 then xs.append(item: i).len else xs.len`, called 10^7 times with `xs` live, took 28% longer than before this ADR.
+
+1. **Two entries.** A function with an owned parameter may have a second entry, compiled from the same body as if every parameter were borrowed. Each entry is compiled only when a call uses it, so a function has at most two, and the code stays linear in the size of the package.
+2. **The choice at a direct call.** When no argument of an owned parameter moves (each would be retained: a binding still live, a literal, a borrowed word, or a word given twice), the call takes the borrowed entry and gives nothing. Otherwise it takes the owned entry, and D2 applies unchanged: arguments at their last use move, the others are retained.
+3. **Why it costs nothing elsewhere.** On the borrowed entry, a path that consumes the parameter copies it, as the copying runtime entry does for any borrowed word. On the owned entry with a retained argument, that path copied too, since the caller's reference was still there. The copies are the same; only the retain and release of the calls that consume nothing are gone. A call that moves takes the owned entry, so appending through calls stays amortized O(1) per append. A value copied on the borrowed entry is owned, and moves into the calls after it.
+4. **Not affected.** Function values, the lambdas that wrap a named function (N-42), and the interpreter (D3), which counts no references.
+
+This is not the rejected "flag per call": nothing is decided at run time, and no callee branches on how it was called.
+
+**Complexity.** Choosing an entry costs O(parameters) per call site at compile time. Run time changes by a constant per call, and no copy is added.

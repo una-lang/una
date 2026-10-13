@@ -402,9 +402,6 @@ struct Callee {
     /// The constraint of each type parameter: each one but `None` takes a type descriptor
     /// after the parameters (`spec/20 §7`).
     constraints: Vec<Constraint>,
-    /// Which parameters the function owns (ADR 0072 D2): the caller gives up or retains a
-    /// reference for each of them. Empty when every parameter is borrowed.
-    owned: Vec<bool>,
 }
 
 /// A handler of the package.
@@ -476,8 +473,32 @@ impl<'p> Emitter<'p> {
     /// The function or predicate `path` of the package, declared now and compiled by
     /// [`Emitter::drain`].
     fn function(&mut self, path: &Path) -> Result<Callee, CodegenError> {
+        self.function_entry(path, false)
+    }
+
+    /// Which parameters of the function `path` are owned (ADR 0072 D2), without declaring it:
+    /// empty when every parameter is borrowed, or `path` is no function of the package.
+    fn owned(&self, path: &Path) -> Vec<bool> {
+        self.owned
+            .get(&format!("{}.{}", path.module, path.name))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// An entry of the function or predicate `path`, declared now and compiled by
+    /// [`Emitter::drain`]. With `borrowed`, the entry that borrows every parameter (#284): the
+    /// same body, compiled as if no parameter were owned, for the calls that would retain
+    /// every argument of an owned parameter. Each entry is compiled only when a call uses it,
+    /// so a function has at most two.
+    fn function_entry(&mut self, path: &Path, borrowed: bool) -> Result<Callee, CodegenError> {
         let qualified = format!("{}.{}", path.module, path.name);
-        if let Some(found) = self.functions.get(&qualified) {
+        // A space never occurs in a qualified name, so the key of a borrowed entry is apart.
+        let key = if borrowed {
+            format!("{qualified} borrowed")
+        } else {
+            qualified.clone()
+        };
+        if let Some(found) = self.functions.get(&key) {
             return Ok(found.clone());
         }
         let body = callee(self.program, &path.module, &path.name).ok_or_else(|| {
@@ -486,16 +507,19 @@ impl<'p> Emitter<'p> {
             ))
         })??;
         let mut body = body;
-        body.owned = self.owned.get(&qualified).cloned().unwrap_or_default();
+        body.owned = if borrowed {
+            Vec::new()
+        } else {
+            self.owned.get(&qualified).cloned().unwrap_or_default()
+        };
         let name = format!("una_fn_{}", self.functions.len());
         let id = self.declare(&name, body.params.len() + body.uses.len())?;
         let callee = Callee {
             id,
             uses: body.uses.clone(),
             constraints: body.constraints.clone(),
-            owned: body.owned.clone(),
         };
-        self.functions.insert(qualified, callee.clone());
+        self.functions.insert(key, callee.clone());
         self.pending.push((id, body));
         Ok(callee)
     }
@@ -611,7 +635,6 @@ impl<'p> Emitter<'p> {
                 id,
                 uses: Vec::new(),
                 constraints: Vec::new(),
-                owned: Vec::new(),
             },
         );
         self.pending.push((
