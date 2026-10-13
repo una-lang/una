@@ -1,0 +1,3 @@
+module gallery.thumbnailer.tiles
+
+pub tile(n: Int) -> Int = n

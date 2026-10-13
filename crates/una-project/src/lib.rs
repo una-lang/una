@@ -16,7 +16,10 @@ use std::ops::Range;
 use una_diag::Code;
 
 pub use lock::{DEFAULT_SOLVER_VERSION, Lock, parse_lock};
-pub use manifest::{Contract, Edition, Manifest, is_grant, is_module_path, parse_manifest};
+pub use manifest::{
+    Boundary, Ceiling, Contract, Edition, Extents, Manifest, is_grant, is_module_path,
+    parse_manifest,
+};
 pub use package::{LoadError, Loaded, LoadedFile, Role, discover};
 
 /// A problem in a project file, located by byte offsets into its text.

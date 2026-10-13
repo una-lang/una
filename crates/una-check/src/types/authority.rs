@@ -36,8 +36,12 @@ pub(crate) enum Bound {
         ops: Option<Vec<String>>,
         clause: Option<Span>,
     },
-    /// `with @x = @y`: `@y` of the enclosing frames.
-    Rebound { target: String },
+    /// `with @x = @y`: `@y` of the enclosing frames; `with @x = @y[ops]` restricts it to
+    /// `ops` (ADR 0093 rule 4).
+    Rebound {
+        target: String,
+        ops: Option<Vec<String>>,
+    },
     /// `with @x = h(args)` or `given @x = h(args)`: an installed handler, which implements
     /// every operation of its capability.
     Handler {
@@ -78,9 +82,11 @@ pub(crate) enum Resolved {
         ops: Option<Vec<String>>,
         clause: Option<Span>,
     },
+    /// An installed handler; `ops` restricts it when a narrowed rebinding leads to it.
     Handler {
         capability: Option<CapId>,
         span: Span,
+        ops: Option<Vec<String>>,
     },
     /// No frame binds the name that the rebindings lead to; `rebound` tells whether one led
     /// there, in which case the rebinding reports it (`rebind_site`).
@@ -160,10 +166,12 @@ fn merge(known: &mut Inferred, name: &str, capability: CapId) -> bool {
 }
 
 /// Resolves `@name` in `frames` below index `level`, innermost first; a rebinding continues
-/// below its own frame.
+/// below its own frame, and a narrowed one restricts what it leads to (ADR 0093 rule 4).
 pub(crate) fn resolve_in(frames: &[Frame], level: usize, name: &str) -> Resolved {
     let mut name = name.to_owned();
     let mut rebound = false;
+    // The operations every narrowed rebinding on the way allows, in the first one's order.
+    let mut narrow: Option<Vec<String>> = None;
     let mut level = level.min(frames.len());
     while level > 0 {
         level -= 1;
@@ -182,19 +190,37 @@ pub(crate) fn resolve_in(frames: &[Frame], level: usize, name: &str) -> Resolved
                 return Resolved::Cap {
                     name,
                     capability: *capability,
-                    ops: ops.clone(),
-                    clause: *clause,
+                    // A narrowed binding permits what both allow; widening the header would
+                    // not reach past the narrowing, so no clause is offered for it.
+                    ops: match (ops, &narrow) {
+                        (Some(ops), Some(narrow)) => Some(
+                            narrow
+                                .iter()
+                                .filter(|op| ops.contains(op))
+                                .cloned()
+                                .collect(),
+                        ),
+                        (ops, _) => ops.clone(),
+                    },
+                    clause: if narrow.is_some() { None } else { *clause },
                 };
             }
             Bound::Handler { capability, span } => {
                 return Resolved::Handler {
                     capability: *capability,
                     span: *span,
+                    ops: narrow,
                 };
             }
-            Bound::Rebound { target } => {
+            Bound::Rebound { target, ops } => {
                 name.clone_from(target);
                 rebound = true;
+                if let Some(ops) = ops {
+                    narrow = Some(match narrow {
+                        Some(inner) => inner.into_iter().filter(|op| ops.contains(op)).collect(),
+                        None => ops.clone(),
+                    });
+                }
             }
         }
     }
@@ -339,6 +365,28 @@ impl<'a> Checker<'_, 'a, '_> {
                         .repairs
                         .extend(self.widen(clause, &declared, capability, &ops, &extra));
                     self.report.push(diagnostic);
+                }
+                capability
+            }
+            Resolved::Handler {
+                capability,
+                ops: Some(ops),
+                ..
+            } => {
+                // A handler behind a narrowed rebinding permits only the listed operations.
+                if self.authority()
+                    && !ops.iter().any(|o| o == op_name)
+                    && self.capability_has(capability, op_name)
+                {
+                    let permitted: Vec<String> = ops.iter().map(|o| format!("`{o}`")).collect();
+                    self.report.error(
+                        Code::U3002,
+                        op.span,
+                        format!(
+                            "`@{name}` permits {}, not `{op_name}`",
+                            permitted.join(", ")
+                        ),
+                    );
                 }
                 capability
             }
@@ -496,7 +544,32 @@ impl<'a> Checker<'_, 'a, '_> {
                 Resolved::Handler {
                     capability,
                     span: handler,
+                    ops,
                 } => {
+                    if self.authority()
+                        && let Some(ops) = &ops
+                        && (need.capability.is_none() || capability == need.capability)
+                    {
+                        // A handler behind a narrowed rebinding permits only the listed
+                        // operations (ADR 0093 rule 4).
+                        let missing: Vec<String> = need
+                            .ops
+                            .iter()
+                            .filter(|op| !ops.contains(op))
+                            .map(|op| format!("`{op}`"))
+                            .collect();
+                        if !missing.is_empty() {
+                            self.report.error(
+                                Code::U3002,
+                                span,
+                                format!(
+                                    "{callee} needs `@{}` to permit {}, which it does not here",
+                                    need.name,
+                                    missing.join(", ")
+                                ),
+                            );
+                        }
+                    }
                     if self.authority()
                         && need.capability.is_some()
                         && capability.is_some()
@@ -777,6 +850,74 @@ impl<'a> Checker<'_, 'a, '_> {
         }
     }
 
+    /// `with @x = @y[ops]` (ADR 0093 rule 4): `@y` as [`Self::rebind_site`] checks it, and
+    /// `ops` a subset of what `@y` permits: U1001 for an operation its capability does not
+    /// declare, U3002 for one that `@y` does not permit. In pass 1, an inferring body needs
+    /// `ops` of `@y` itself. Returns the operations, for the binding.
+    pub(crate) fn narrowed_site(&mut self, target: &Ident, ops: &[Ident]) -> Vec<String> {
+        self.rebind_site(target);
+        let name = self.name(target).to_owned();
+        let names: Vec<String> = ops.iter().map(|op| self.name(op).to_owned()).collect();
+        let (capability, permitted) = match self.resolve_cap(&name) {
+            Resolved::Cap {
+                capability, ops, ..
+            } => (capability, ops),
+            Resolved::Handler {
+                capability, ops, ..
+            } => (capability, ops),
+            Resolved::Missing { name: target, .. } => {
+                if self.base == Base::Inferring
+                    && let (Some(function), 0) = (self.current, self.own_depth())
+                    && let Some(first) = ops.first()
+                {
+                    self.collected.own.push(Own {
+                        function,
+                        name: target,
+                        ops: names.clone(),
+                        capability: None,
+                        span: first.span,
+                    });
+                }
+                return names;
+            }
+        };
+        if !self.authority() || self.pass != Pass::Check {
+            return names;
+        }
+        let declared = capability.and_then(|id| self.env.capabilities.get(id));
+        for (op, op_name) in ops.iter().zip(&names) {
+            if let Some(declared) = declared
+                && !declared.ops.iter().any(|o| o.name == op_name.as_str())
+            {
+                self.report.error(
+                    Code::U1001,
+                    op.span,
+                    format!(
+                        "capability `{}` has no operation `{op_name}`",
+                        self.env.cap_def_name(declared)
+                    ),
+                );
+            } else if let Some(permitted) = &permitted
+                && !permitted.contains(op_name)
+            {
+                let listed: Vec<String> = permitted.iter().map(|o| format!("`{o}`")).collect();
+                let listed = if listed.is_empty() {
+                    "no operation".to_owned()
+                } else {
+                    listed.join(", ")
+                };
+                self.report.error(
+                    Code::U3002,
+                    op.span,
+                    format!(
+                        "`@{name}` permits {listed}, not `{op_name}`, so a narrowed rebinding of it cannot grant `{op_name}`"
+                    ),
+                );
+            }
+        }
+        names
+    }
+
     /// U3001 or U3004 for `@name`, which no `uses` clause declares, with `message`; its route
     /// is declaring the binding, which widens the header (ADR 0097 rules 6 and 7).
     fn undeclared(&mut self, code: Code, span: Span, name: &str, message: String) {
@@ -872,7 +1013,7 @@ impl<'a> Checker<'_, 'a, '_> {
                         .iter()
                         .map(|(name, bound)| {
                             let with = match bound {
-                                Bound::Rebound { target } => With::Rebound(target.clone()),
+                                Bound::Rebound { target, .. } => With::Rebound(target.clone()),
                                 Bound::Handler { capability, .. }
                                 | Bound::Cap { capability, .. } => With::Handler(*capability),
                             };
@@ -2193,6 +2334,114 @@ mod first_kind_tests {
             let (found, read) = kinds(&ring(n));
             assert!(found.iter().all(|kind| *kind == Some('A')));
             assert!(read <= 3 * n, "ring of {n}: {read} facts read");
+        }
+    }
+}
+
+#[cfg(test)]
+mod narrowing_tests {
+    //! ADR 0093 rule 4: a narrowed rebinding restricts what it leads to. No source narrows a
+    //! handler binding today (an example's `do` line takes no `with`, and a `with`'s right-hand
+    //! sides resolve outside it), so these build the frames directly: the guard must hold if
+    //! one ever does.
+
+    use una_syntax::{SourceDb, Span};
+
+    use super::{Bound, Frame, Resolved, resolve_in};
+
+    fn frame(bindings: Vec<(&str, Bound)>) -> Frame {
+        Frame {
+            bindings: bindings
+                .into_iter()
+                .map(|(name, bound)| (name.to_owned(), bound))
+                .collect(),
+        }
+    }
+
+    fn narrowed(target: &str, ops: &[&str]) -> Bound {
+        Bound::Rebound {
+            target: target.to_owned(),
+            ops: Some(ops.iter().map(|op| (*op).to_owned()).collect()),
+        }
+    }
+
+    fn handler_span() -> Span {
+        let mut sources = SourceDb::new();
+        let file = sources.add("src/m.una", b"given @y = memory()");
+        Span::new(file, 11, 17)
+    }
+
+    #[test]
+    fn a_handler_behind_a_narrowing_permits_only_the_listed_operations() {
+        // The U3002 checks of an operation and of a callee's need read `ops`: `None` would
+        // permit every operation of the handler's capability.
+        let frames = [
+            frame(vec![(
+                "y",
+                Bound::Handler {
+                    capability: Some(0),
+                    span: handler_span(),
+                },
+            )]),
+            frame(vec![("x", narrowed("y", &["read"]))]),
+        ];
+        match resolve_in(&frames, frames.len(), "x") {
+            Resolved::Handler {
+                capability, ops, ..
+            } => {
+                assert_eq!(capability, Some(0));
+                assert_eq!(ops, Some(vec!["read".to_owned()]));
+            }
+            other => panic!("expected the handler, got {other:?}"),
+        }
+        // The handler itself, not narrowed, permits every operation.
+        assert!(matches!(
+            resolve_in(&frames, frames.len(), "y"),
+            Resolved::Handler { ops: None, .. }
+        ));
+    }
+
+    #[test]
+    fn nested_narrowings_of_a_handler_permit_what_all_of_them_allow() {
+        let frames = [
+            frame(vec![(
+                "y",
+                Bound::Handler {
+                    capability: Some(0),
+                    span: handler_span(),
+                },
+            )]),
+            frame(vec![("x", narrowed("y", &["read", "write"]))]),
+            frame(vec![("z", narrowed("x", &["write", "remove"]))]),
+        ];
+        match resolve_in(&frames, frames.len(), "z") {
+            Resolved::Handler { ops, .. } => assert_eq!(ops, Some(vec!["write".to_owned()])),
+            other => panic!("expected the handler, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_narrowing_of_a_capability_permits_what_both_allow_and_offers_no_clause() {
+        let frames = [
+            frame(vec![(
+                "y",
+                Bound::Cap {
+                    capability: Some(0),
+                    ops: Some(vec!["read".to_owned(), "write".to_owned()]),
+                    clause: Some(handler_span()),
+                },
+            )]),
+            frame(vec![("x", narrowed("y", &["write", "remove"]))]),
+        ];
+        match resolve_in(&frames, frames.len(), "x") {
+            Resolved::Cap {
+                name, ops, clause, ..
+            } => {
+                assert_eq!(name, "y");
+                assert_eq!(ops, Some(vec!["write".to_owned()]));
+                assert_eq!(clause, None);
+            }
+            other => panic!("expected the capability, got {other:?}"),
         }
     }
 }

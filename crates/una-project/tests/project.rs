@@ -267,3 +267,44 @@ fn a_file_is_a_package_of_one_module() {
     assert_eq!(loaded.files[0].role, Role::Module);
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn boundaries_are_a_table_of_edition_0_3() {
+    // ADR 0093: editions 0.1 and 0.2 keep [boundaries] unknown, and keep no boundary.
+    let older = "[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"0.2\"\n\n[boundaries]\n\"a.b\" = [\"Files[read]\"]\n";
+    assert_eq!(
+        manifest_errors(older),
+        ["U7002 6:2 unknown table [boundaries] in una.toml"]
+    );
+    assert!(parse_manifest(older).0.boundaries.is_empty());
+
+    let text = "[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"0.3\"\n\n[boundaries]\n\"a.b\" = [\"Files[read, write]\", \"Clock[now]\"]\n\"c\" = []\n";
+    let (manifest, errors) = parse_manifest(text);
+    assert_eq!(located(text, &errors), Vec::<String>::new());
+    let ceilings: Vec<String> = manifest
+        .boundaries
+        .iter()
+        .map(|b| {
+            let ceiling: Vec<String> = b
+                .ceiling
+                .iter()
+                .map(|c| format!("{}[{}]", c.capability, c.ops.join(", ")))
+                .collect();
+            format!("{} = {}", b.module.value, ceiling.join(" "))
+        })
+        .collect();
+    assert_eq!(ceilings, ["a.b = Files[read, write] Clock[now]", "c = "]);
+    // ADR 0093 rule 9: a key covers its module and the modules below it, by whole segments.
+    let extents = manifest.extents();
+    let key = |module: &str| {
+        extents
+            .of(module)
+            .map(|i| manifest.boundaries[i].module.value.as_str())
+    };
+    assert_eq!(key("a.b.tiles"), Some("a.b"));
+    assert_eq!(key("a.b"), Some("a.b"));
+    assert_eq!(key("a.bx"), None);
+    assert_eq!(key("a"), None);
+    assert_eq!(key("c.d"), Some("c"));
+    assert_eq!(key("c"), Some("c"));
+}

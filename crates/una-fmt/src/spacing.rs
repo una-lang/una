@@ -86,6 +86,8 @@ impl Spacer {
                 T::LParen,
             ) => false,
             (T::LowerIdent(_) | T::UpperIdent(_) | T::Reserved(_), T::LBracket) => false,
+            // A narrowed rebinding, `@x = @y[ops]` (edition 0.3).
+            (T::CapRef(_), T::LBracket) => false,
             (level, T::LBracket) if is_level(level) => false,
             _ => true,
         }

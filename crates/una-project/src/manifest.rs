@@ -1,6 +1,6 @@
 //! `una.toml` (`spec/13 §7`, ADR 0021 rule 2).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use una_diag::Code;
 
@@ -29,6 +29,8 @@ pub struct Manifest {
     /// `[contracts]`, edition `0.3`: the locked `uses` clauses of public functions (ADR 0092
     /// rule 8, as amended).
     pub contracts: Vec<Contract>,
+    /// `[boundaries]`: the boundary modules and their ceilings, in edition `0.3` (ADR 0093).
+    pub boundaries: Vec<Boundary>,
 }
 
 /// A locked function of `[contracts]` (ADR 0092 rule 8, as amended): its qualified name and
@@ -39,6 +41,80 @@ pub struct Contract {
     pub function: Located,
     /// The `uses` clauses. A clause's `range` covers its string literal, quotes included.
     pub clauses: Vec<Located>,
+}
+
+/// One entry of `[boundaries]` (ADR 0093 rules 1 and 9): a module path, which covers the module
+/// and every module below it, and its ceiling.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Boundary {
+    /// The key: the module path.
+    pub module: Located,
+    /// The ceiling: the most authority a call into the boundary may grant.
+    pub ceiling: Vec<Ceiling>,
+}
+
+/// One `C[ops]` of a ceiling: a capability's name and the operations it allows, names only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ceiling {
+    /// The capability's name, as the boundary module would write it.
+    pub capability: String,
+    /// The operations, in the order written.
+    pub ops: Vec<String>,
+    /// The whole string.
+    pub at: Located,
+}
+
+impl Manifest {
+    /// The boundaries by key, to find the one whose extent holds a module (ADR 0093 rule 9).
+    /// Built once in O(b); each query is then O(depth) lookups.
+    pub fn extents(&self) -> Extents<'_> {
+        Extents {
+            by_key: self
+                .boundaries
+                .iter()
+                .enumerate()
+                .map(|(index, boundary)| (boundary.module.value.as_str(), index))
+                .collect(),
+        }
+    }
+}
+
+/// The boundaries of a manifest by key (ADR 0093 rule 9), from [`Manifest::extents`].
+#[derive(Clone, Debug)]
+pub struct Extents<'a> {
+    /// Each key, with its index in [`Manifest::boundaries`]. Only looked up, never iterated.
+    by_key: HashMap<&'a str, usize>,
+}
+
+impl Extents<'_> {
+    /// The index in [`Manifest::boundaries`] of the boundary whose extent holds `module`: the
+    /// longest key that is `module` or a prefix of it by whole path segments. Nested keys are
+    /// U7002, so a valid manifest has at most one. One lookup per segment, O(depth).
+    pub fn of(&self, module: &str) -> Option<usize> {
+        module_prefixes(module).find_map(|prefix| self.by_key.get(prefix).copied())
+    }
+}
+
+/// `module` and each module path it lies below, longest first: `a.b.c`, `a.b`, `a`.
+fn module_prefixes(module: &str) -> impl Iterator<Item = &str> {
+    std::iter::successors(Some(module), |path| {
+        path.rsplit_once('.').map(|(head, _)| head)
+    })
+}
+
+impl Boundary {
+    /// Whether the boundary's extent holds `module`: the key itself, or a module below it by
+    /// whole path segments (ADR 0093 rule 9).
+    pub fn covers(&self, module: &str) -> bool {
+        covers(&self.module.value, module)
+    }
+}
+
+/// Whether `key` is `module` or a prefix of it by whole path segments.
+fn covers(key: &str, module: &str) -> bool {
+    module
+        .strip_prefix(key)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
 }
 
 /// The language edition of a package (`spec/13 §7`, ADR 0056). A single file, and a package
@@ -102,9 +178,10 @@ pub fn parse_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
         return (manifest, errors);
     };
     let mut package = false;
-    // `[contracts]` is a table of edition 0.3 only (ADR 0092 rule 8, as amended): earlier
-    // editions report it as the unknown table it always was, so they do not change.
-    let locks = declared_edition(document.get_ref()) >= Edition::V0_3;
+    // `[contracts]` and `[boundaries]` are tables of edition 0.3 only (ADR 0092 rule 8, as
+    // amended, and ADR 0093): earlier editions report them as the unknown tables they always
+    // were, so their output does not change.
+    let edition_0_3 = declared_edition(document.get_ref()) >= Edition::V0_3;
     for (key, value) in document.get_ref().iter() {
         let Some(table) = Table::of(key, value, Code::U7002, &mut errors) else {
             continue;
@@ -118,7 +195,8 @@ pub fn parse_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
             "trusted" => trusted(&table, &mut manifest, &mut errors),
             "escape_budget" => escape_budget(&table, &mut manifest, &mut errors),
             "run" => run(&table, &mut manifest, &mut errors),
-            "contracts" if locks => contracts(&table, &mut manifest, &mut errors),
+            "contracts" if edition_0_3 => contracts(&table, &mut manifest, &mut errors),
+            "boundaries" if edition_0_3 => boundaries(&table, &mut manifest, &mut errors),
             other => errors.push(ProjectError::new(
                 Code::U7002,
                 key.span(),
@@ -132,6 +210,9 @@ pub fn parse_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
             0..0,
             "una.toml has no [package] table",
         ));
+    }
+    if !manifest.boundaries.is_empty() {
+        boundary_conflicts(&manifest, &mut errors);
     }
     (manifest, errors)
 }
@@ -319,6 +400,135 @@ fn run(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Vec<ProjectE
             }
             _ => errors.push(table.unknown(key, Code::U7002)),
         }
+    }
+}
+
+/// `[boundaries]`: each key a module path, each value an array of names-only `C[ops]`
+/// strings (ADR 0093 rule 1).
+fn boundaries(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Vec<ProjectError>) {
+    for (key, value) in table.entries.iter() {
+        let path = key.get_ref().as_ref();
+        let module = Located {
+            value: path.to_owned(),
+            range: key.span(),
+        };
+        if !is_module_path(path) {
+            errors.push(ProjectError::new(
+                Code::U7002,
+                module.range,
+                format!("`{path}` in [boundaries] is not a module path"),
+            ));
+            continue;
+        }
+        let mut ceiling: Vec<Ceiling> = Vec::new();
+        for entry in strings(path, value, Code::U7002, errors) {
+            match parse_ceiling(&entry.value) {
+                Some((capability, ops)) => {
+                    if ceiling.iter().any(|c| c.capability == capability) {
+                        errors.push(ProjectError::new(
+                            Code::U7002,
+                            entry.range,
+                            format!("the ceiling of `{path}` names `{capability}` twice"),
+                        ));
+                        continue;
+                    }
+                    ceiling.push(Ceiling {
+                        capability,
+                        ops,
+                        at: entry,
+                    });
+                }
+                None => errors.push(ProjectError::new(
+                    Code::U7002,
+                    entry.range.clone(),
+                    format!(
+                        "`{}` in the ceiling of `{path}` is not a capability with its operations, such as `Files[read]`: names only, each operation once",
+                        entry.value
+                    ),
+                )),
+            }
+        }
+        manifest.boundaries.push(Boundary { module, ceiling });
+    }
+}
+
+/// `Name[op, op]`, names only, with at least one operation and none twice; anything else, a
+/// condition or a label included, is `None`.
+fn parse_ceiling(text: &str) -> Option<(String, Vec<String>)> {
+    let (name, rest) = text.trim().split_once('[')?;
+    let inside = rest.strip_suffix(']')?;
+    if !is_upper_camel(name) {
+        return None;
+    }
+    let mut ops: Vec<String> = Vec::new();
+    for op in inside.split(',') {
+        let op = op.trim();
+        let mut chars = op.chars();
+        let ident = chars.next().is_some_and(|first| first.is_ascii_lowercase())
+            && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+        if !ident || ops.iter().any(|seen| seen == op) {
+            return None;
+        }
+        ops.push(op.to_owned());
+    }
+    Some((name.to_owned(), ops))
+}
+
+/// U7002 for keys whose extents overlap, a boundary that is also trusted, and a `[run]` entry
+/// inside a boundary (ADR 0093 rules 8 to 10). The keys are sorted, so a key and a key below it
+/// are found in one pass: O(k log k).
+fn boundary_conflicts(manifest: &Manifest, errors: &mut Vec<ProjectError>) {
+    let mut keys: Vec<&Boundary> = manifest.boundaries.iter().collect();
+    keys.sort_by(|a, b| a.module.value.cmp(&b.module.value));
+    let mut open: Vec<&Boundary> = Vec::new();
+    for boundary in keys {
+        while open
+            .last()
+            .is_some_and(|outer| !outer.covers(&boundary.module.value))
+        {
+            open.pop();
+        }
+        if let Some(outer) = open.last() {
+            errors.push(ProjectError::new(
+                Code::U7002,
+                boundary.module.range.clone(),
+                format!(
+                    "[boundaries] lists `{}` inside `{}`, which already covers it; a module has one ceiling",
+                    boundary.module.value, outer.module.value
+                ),
+            ));
+        }
+        open.push(boundary);
+    }
+    let extents = manifest.extents();
+    let boundary_of = |module: &str| {
+        extents
+            .of(module)
+            .and_then(|index| manifest.boundaries.get(index))
+    };
+    for trusted in &manifest.trusted {
+        if let Some(boundary) = boundary_of(&trusted.value) {
+            errors.push(ProjectError::new(
+                Code::U7002,
+                trusted.range.clone(),
+                format!(
+                    "`{}` is in [trusted] modules and inside the boundary `{}`; a boundary module never releases",
+                    trusted.value, boundary.module.value
+                ),
+            ));
+        }
+    }
+    if let Some(entry) = &manifest.entry
+        && let Some(boundary) = boundary_of(&entry.value)
+    {
+        errors.push(ProjectError::new(
+            Code::U7002,
+            entry.range.clone(),
+            format!(
+                "the [run] entry `{}` is inside the boundary `{}`, whose grants would bypass its ceiling",
+                entry.value, boundary.module.value
+            ),
+        ));
     }
 }
 

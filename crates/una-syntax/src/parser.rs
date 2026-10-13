@@ -2123,7 +2123,19 @@ impl<'a> Parser<'a> {
         let cap = self.cap_name()?;
         self.expect(&TokenKind::Eq, "`=` and a capability or handler")?;
         let value = if matches!(self.peek(), TokenKind::CapRef(_)) {
-            CapBindingValue::Cap(self.cap_name()?)
+            let target = self.cap_name()?;
+            // A narrowed rebinding, `@y[ops]`, in edition 0.3 (ADR 0093 rule 4). Before it, the
+            // `[` is the error it always was.
+            if self.v0_3 && self.eat(&TokenKind::LBracket) {
+                let mut ops = vec![self.lower_name("an operation name")?];
+                while self.eat(&TokenKind::Comma) {
+                    ops.push(self.lower_name("an operation name")?);
+                }
+                self.expect(&TokenKind::RBracket, "`,` or `]`")?;
+                CapBindingValue::Narrowed { target, ops }
+            } else {
+                CapBindingValue::Cap(target)
+            }
         } else {
             CapBindingValue::Handler(self.handler_call()?)
         };

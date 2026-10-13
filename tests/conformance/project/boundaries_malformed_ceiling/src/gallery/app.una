@@ -1,0 +1,16 @@
+-- test: a ceiling is names-only `C[ops]`, at least one operation, each once; a bare capability, a condition, a lower-case name and an empty list are U7002 (ADR 0093 rule 1, N-307)
+-- spec: spec/13 §7
+-- expect: error U7002 at una.toml:7:26
+-- expect: error U7002 at una.toml:7:35
+-- expect: error U7002 at una.toml:7:61
+-- expect: error U7002 at una.toml:7:76
+-- expect: error U7002 at una.toml:7:97
+module gallery.app
+
+import gallery.store (Files)
+import gallery.thumbnailer (thumbnail)
+
+pub show(path: Text) -> Text
+  uses @user_files: Files[read, write]
+=
+  thumbnail(path) with @files = @user_files[read]
