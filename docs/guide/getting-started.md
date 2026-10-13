@@ -254,12 +254,6 @@ The executable prints what `una run` prints, and traces the same events: the int
 
 ## 7. An editor
 
-The VS Code extension, `images/una-language-support-0.2.0.vsix` in the repository, colors Una source and gives `.una` files their icon and theme. Install it from that file:
-
-```sh
-code --install-extension una-language-support-0.2.0.vsix
-```
-
 `una lsp` is a language server (LSP 3.17 over stdin and stdout) for any editor that speaks the protocol: it checks, formats and solves as you type, and never runs programs.
 
 ## Where next
