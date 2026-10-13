@@ -1,7 +1,7 @@
 ---
 construct: fails
 editions: ["0.1", "0.2"]
-spec: ["spec/06 §1", "spec/06 §3", "spec/06 §4", "spec/04 §2", "spec/04 §5", "spec/02 §3", "spec/05 §9", "spec/10 §1"]
+spec: ["spec/06 §1", "spec/06 §3", "spec/06 §4", "spec/04 §2", "spec/04 §5", "spec/02 §3", "spec/05 §9", "spec/10 §1", "spec/06 §2"]
 codes: [U0101, U0102, U2002, U3007, U3008, U3009]
 ---
 

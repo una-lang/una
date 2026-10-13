@@ -1,7 +1,7 @@
 ---
 construct: checked
 editions: ["0.1", "0.2"]
-spec: ["spec/06 §6", "spec/02 §7", "spec/02 §8", "spec/03 §3", "spec/03 §4", "spec/13 §3", "spec/13 §6", "spec/13 §7", "spec/07 §3", "spec/10 §7", "spec/10 §13.2", "spec/18 §4"]
+spec: ["spec/06 §6", "spec/02 §7", "spec/02 §8", "spec/03 §3", "spec/03 §4", "spec/13 §3", "spec/13 §6", "spec/13 §7", "spec/07 §3", "spec/10 §7", "spec/10 §13.2", "spec/18 §4", "spec/06 §2"]
 codes: [U2013, U2014, U2016, U3009, U4002, U7003]
 ---
 

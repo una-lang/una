@@ -543,10 +543,45 @@ fn markdown_files(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// The specification sections `text` cites: `spec/NN`, and `spec/NN §M` for each section of a
+/// citation such as `spec/06 §3, §5`.
+fn spec_citations(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find("spec/") {
+        rest = &rest[at + 5..];
+        let chapter: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        if chapter.len() != 2 {
+            continue;
+        }
+        let mut tail = &rest[2..];
+        let mut sections = Vec::new();
+        while let Some(after) = tail.strip_prefix(" §").or_else(|| tail.strip_prefix(", §")) {
+            let section: String = after
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
+            let section = section.trim_end_matches('.').to_owned();
+            if section.is_empty() {
+                break;
+            }
+            tail = &after[section.len()..];
+            sections.push(section);
+        }
+        if sections.is_empty() {
+            out.push(format!("spec/{chapter}"));
+        }
+        for section in sections {
+            out.push(format!("spec/{chapter} §{section}"));
+        }
+    }
+    out
+}
+
 #[test]
 fn every_construct_page_follows_the_template_and_its_blocks_check() {
     // The construct and configuration pages (#585): front matter that names the page's
-    // diagnostic codes, the seven parts of the template in order, a Diagnostics part that lists
+    // diagnostic codes and every specification section its text cites, the seven parts of the template in order, a Diagnostics part that lists
     // exactly those codes, each with its explain text, a failing block only with one of them,
     // and every block checked as the guides' are.
     let root = repository();
@@ -581,6 +616,22 @@ fn every_construct_page_follows_the_template_and_its_blocks_check() {
             .filter(|code| !code.is_empty())
             .collect();
         codes.sort_unstable();
+        let listed_spec = front
+            .lines()
+            .find_map(|line| line.strip_prefix("spec: "))
+            .unwrap_or_else(|| panic!("{relative}: the front matter has no `spec`"));
+        let body = text
+            .split_once("\n---\n")
+            .map_or(text.as_str(), |(_, body)| body);
+        for cited in spec_citations(body) {
+            let quoted = format!("\"{cited}\"");
+            let chapter_only = !cited.contains('§');
+            assert!(
+                listed_spec.contains(&quoted)
+                    || (chapter_only && listed_spec.contains(&format!("\"{cited} §"))),
+                "{relative}: {cited} is cited but missing from the front matter's `spec`"
+            );
+        }
         let mut from = 0;
         for part in PARTS {
             let at = text[from..]
