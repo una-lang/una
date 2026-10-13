@@ -16,8 +16,12 @@
 #                twice, compared
 #   native       the interpreter against the native executable, on every runnable program of
 #                the repository (spec/16 §5): the equivalence test of crates/una-cli/tests/native.rs
-#   site         scripts/site.sh: the website builds and every link between its pages resolves;
-#                mdBook missing or at another version than the script pins is a FAIL (N-36)
+#   site         scripts/site.sh: the mdBook site builds and every link between its pages
+#                resolves; mdBook missing or at another version than the script pins is a FAIL
+#                (N-36). Then (#584) scripts/site-bundle.sh writes the docs bundle into OUT/site-bundle
+#                with the clone's release `una`, and scripts/site-website.sh builds the website that
+#                site/website.lock pins from it, with its budget and its code samples checked; a
+#                missing Node.js or npm, or no access to the website's repository, is a FAIL
 #   formal       scripts/formal.sh: the Lean development of the formal track builds with its pinned
 #                toolchain, and no stated theorem depends on `sorry` (#46)
 #
@@ -172,7 +176,13 @@ gate_native() {
     run native sh -c 'cargo test -p una-cli --test native every_runnable_program_runs_natively_as_in_the_interpreter -- --exact --nocapture'
 }
 
-gate_site() { run site scripts/site.sh; }
+gate_site() {
+    run site sh -c '
+        version=$(sed -n "s/^version = \"\(.*\)\"$/\1/p" Cargo.toml | head -n 1)
+        scripts/site.sh \
+            && UNA_BIN=target/release/una scripts/site-bundle.sh "'"$OUT"'/site-bundle" \
+            && UNA_BIN=target/release/una scripts/site-website.sh "'"$OUT"'/site-bundle/una-docs-$version" "'"$OUT"'/site-website"'
+}
 gate_formal() { run formal scripts/formal.sh; }
 
 for gate in "${GATES[@]}"; do
@@ -214,6 +224,21 @@ fi
         for archive in $archives; do
             echo "| \`$(basename "$archive")\` | \`$(digest "$archive")\` |"
         done
+    fi
+    echo
+    echo "## Docs bundle"
+    echo
+    bundles=$(ls "$OUT"/site-bundle/una-docs-*.tar.gz 2>/dev/null)
+    if [ -z "$bundles" ]; then
+        echo "None: the site gate did not run or did not write it."
+    else
+        echo "| Bundle | sha256 |"
+        echo "| --- | --- |"
+        for bundle in $bundles; do
+            echo "| \`$(basename "$bundle")\` | \`$(digest "$bundle")\` |"
+        done
+        echo
+        echo "Built into the website at \`$(sed -n 's/^commit = "\(.*\)"$/\1/p' "$CLONE/site/website.lock" 2>/dev/null)\` (\`site/website.lock\`)."
     fi
     echo
     failed=$(tail -n +2 "$RESULTS" | awk -F'\t' '$3 == "FAIL" { print $1 }' | sort -u | paste -sd ' ' - | sed 's/ /, /g')

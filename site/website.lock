@@ -1,0 +1,5 @@
+# The website build that the release gate `site` runs (#584): una-lang/website at this commit,
+# built from the docs bundle of the commit under validation (scripts/site-website.sh). A newer
+# website is pinned by changing this commit, in a pull request of its own.
+repository = "https://github.com/una-lang/website.git"
+commit = "47b4bf5cf57dbc351a20a4804934d5881133ef73"
