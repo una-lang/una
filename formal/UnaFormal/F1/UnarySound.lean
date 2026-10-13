@@ -4,6 +4,7 @@ The unary half's theorem for the generic-free part of F1: a run keeps to its lab
 -/
 import UnaFormal.F1.InstVal
 import UnaFormal.F1.B1
+import UnaFormal.F1.HmacVia
 
 namespace Una.F1
 
@@ -1017,7 +1018,7 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         obtain ⟨_, _, fn', hfn', hps, hres⟩ := hwf.wellFormed.policies _ hmem
         rw [hfn] at hfn'
         cases hfn'
-        obtain ⟨fnv, hfnv, _, _, hpof, hpure, _⟩ := hb1.via po hmem
+        obtain ⟨fnv, hfnv, _, hcase, _⟩ := hb1.via po hmem
         rw [hfn] at hfnv
         cases hfnv
         obtain ⟨hdg, hds⟩ := hb1.dst po hmem
@@ -1035,26 +1036,38 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         have hbody := body_typed hwf.wellFormed hfn []
         rw [Ty.subst_nil, hres] at hbody
         have hgood := (sound hwf.wellFormed h4 n).2 (w := w) henv' hbody
-        -- The `via` body performs no event; it fails only if it declares `fails` (B1).
-        have hq := (silent_run p w n).2 (bindParams fn.params [v] []) fn.body hpof
-        have hnf : fn.fails = false → ∀ c,
-            (eval H n p w (bindParams fn.params [v] []) fn.body).2.1 ≠ .failed c :=
-          fun hf => ((pure_run p w n).2 _ fn.body (hpure hf)).2.1
-        -- A `via` body never fails with a payload (#512): it has no `raise` and calls nothing.
-        have hnr := (noRaise_run p w n).2 (bindParams fn.params [v] []) fn.body hpof
+        -- The `via` body records at most `keyUse` ghosts and leaves the world as it was; it fails
+        -- only if it declares `fails`, and never with a payload (#512). B1's first case performs no
+        -- event at all; ADR 0098's shape records the ghosts of its hmac calls (#587).
+        have hfacts : Ghostly w (eval H n p w (bindParams fn.params [v] []) fn.body) ∧
+            (fn.fails = false → ∀ c,
+              (eval H n p w (bindParams fn.params [v] []) fn.body).2.1 ≠ .failed c) ∧
+            (∀ k c ps, (eval H n p w (bindParams fn.params [v] []) fn.body).2.1 ≠ .raised k c ps) := by
+          rcases hcase with ⟨_, hpof, hpure⟩ | hhv
+          · have hs := (silent_run p w n).2 (bindParams fn.params [v] []) fn.body hpof
+            exact ⟨⟨(fun ev h => by rw [hs.1] at h; nomatch h), hs.2⟩,
+              fun hf => ((pure_run p w n).2 _ fn.body (hpure hf)).2.1,
+              (noRaise_run p w n).2 (bindParams fn.params [v] []) fn.body hpof⟩
+          · obtain ⟨_, _, hfl, _, hsh⟩ := Fun.hmacVia_sound hhv
+            exact ⟨hmacOnly_ghostly p w n _ _ hsh, (fun hf => by rw [hfl] at hf; nomatch hf),
+              hmacOnly_noRaise p w n _ _ hsh⟩
+        obtain ⟨hq, hnf, hnr⟩ := hfacts
         revert hgood hq hnf hnr
         generalize eval H n p w (bindParams fn.params [v] []) fn.body = run
         obtain ⟨tr, res, w'⟩ := run
         intro hgood hq hnf hnr
         obtain ⟨htr, hw⟩ := hq
         simp only at htr hw hnf
-        subst htr hw
+        subst hw
         cases res with
         | ok r =>
           simp only [Good] at hgood
           refine ⟨fun ev hev => ?_, ?_, WEff.self _ _⟩
-          · simp only [List.nil_append, List.mem_singleton] at hev
-            subst hev
+          · rcases List.mem_append.mp hev with hg | hrel
+            · obtain ⟨k, rfl⟩ := htr ev hg
+              trivial
+            simp only [List.mem_singleton] at hrel
+            subst hrel
             exact ⟨by simp [Eff.ofPolicy, Eff.inst], po, hpo,
               le_inst_of_symFree _ hdg.top_symFree hle, .inl hgood⟩
           · show LValTy p r (po.dst.lsubst p.recordDeep σ)
@@ -1064,17 +1077,20 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
         | failed c =>
           -- A failing `via` releases `Err(c)`, and the call fails at `pc ⊔ ℓ(to)`.
           refine ⟨fun ev hev => ?_, ?_, WEff.self _ _⟩
-          · simp only [List.nil_append, List.mem_singleton] at hev
-            subst hev
+          · rcases List.mem_append.mp hev with hg | hrel
+            · obtain ⟨k, rfl⟩ := htr ev hg
+              trivial
+            simp only [List.mem_singleton] at hrel
+            subst hrel
             exact ⟨by simp [Eff.ofPolicy, Eff.inst], po, hpo,
               le_inst_of_symFree _ hdg.top_symFree hle, .inr ⟨c, rfl⟩⟩
           · cases hf : fn.fails with
             | false => exact absurd rfl (hnf hf c)
             | true =>
-              exact ⟨⟨(pc.join po.dst.top).inst (p.sd σ), by simp [Eff.ofPolicy, Eff.inst, hf],
-                LExpr.le_inst _ (LExpr.le_join_left pc po.dst.top)⟩, by simp [Eff.ofPolicy, Eff.inst, hf]⟩
-        | stuck => exact ⟨fun _ h => (nomatch h), trivial, WEff.self _ _⟩
-        | outOfFuel | aborted => exact ⟨fun _ h => (nomatch h), trivial, WEff.self _ _⟩
+              exact ⟨⟨(pc.join (fn.failTop po.dst.top)).inst (p.sd σ), by simp [Eff.ofPolicy, Eff.inst, hf],
+                LExpr.le_inst _ (LExpr.le_join_left pc _)⟩, by simp [Eff.ofPolicy, Eff.inst, hf]⟩
+        | stuck | outOfFuel | aborted =>
+          exact ⟨fun ev h => by obtain ⟨k, rfl⟩ := htr ev h; trivial, trivial, WEff.self _ _⟩
         | raised k c ps => exact absurd rfl (hnr k c ps)
       | map hxs hf hte hb =>
         obtain ⟨xv, hxv, hxt⟩ := latom_ltypedσ henv hxs

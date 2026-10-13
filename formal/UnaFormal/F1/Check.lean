@@ -539,7 +539,7 @@ mutual
       le p pc po.dst.top s!"`{pol}` is called under a program counter above its `to`"
       need (symFree pc) s!"`{pol}` is called under a symbolic program counter"
       flowTo p po.dst ann s!"the result of `{pol}`"
-      pure (.ofPolicy fn.op fn.host fn.fails pc po.dst.top pol)
+      pure (.ofPolicy fn.op fn.host fn.fails pc (fn.failTop po.dst.top) pol)
     | .map xs f => do
       match ← atomTy Γ xs, ← atomTy Γ f with
       | .list te lx, .fn [tp] tr o g fl lf =>
@@ -917,7 +917,9 @@ def exprPureOrFails : Expr → Bool
 def b1Ok (p : Program) : Bool :=
   p.policies.all fun po => isScalar po.src && ground po.dst && isScalar po.dst &&
     match p.find po.via with
-    | some fn => !fn.op && fn.host.isNone && exprPureOrFails fn.body && (fn.fails || exprPure fn.body) &&
+    | some fn => !fn.op &&
+        ((fn.host.isNone && exprPureOrFails fn.body && (fn.fails || exprPure fn.body)) ||
+          fn.hmacVia) &&
         fn.raises.isEmpty
     | none => false
 
@@ -930,7 +932,8 @@ def checkB1 (p : Program) : Result Unit := do
       (.restriction s!"B1 restriction (non-scalar to): `{po.name}`")
     match p.find po.via with
     | some fn =>
-      need (!fn.op && fn.host.isNone && exprPureOrFails fn.body && (fn.fails || exprPure fn.body))
+      need (!fn.op && ((fn.host.isNone && exprPureOrFails fn.body && (fn.fails || exprPure fn.body)) ||
+          fn.hmacVia))
         (.restriction s!"B1 restriction (impure via): `{po.via}`")
       need fn.raises.isEmpty
         (.restriction s!"B1 restriction (via fails with a payload kind): `{po.via}`")

@@ -62,8 +62,11 @@ only spares the proof a lemma from the labeled typing of values to their structu
 structure Program.B1WellFormed (p : Program) : Prop where
   src : ∀ po ∈ p.policies, po.src.erase.Scalar
   dst : ∀ po ∈ p.policies, po.dst.Ground ∧ po.dst.erase.Scalar
-  via : ∀ po ∈ p.policies, ∃ fn, p.find po.via = some fn ∧ fn.op = false ∧ fn.host.isNone = true ∧
-    fn.body.PureOrFails ∧ (fn.fails = false → fn.body.Pure) ∧
+  via : ∀ po ∈ p.policies, ∃ fn, p.find po.via = some fn ∧ fn.op = false ∧
+    -- Either the `via` performs no host operation and may only fail (#453 Phase B), or it is of
+    -- ADR 0098's shape: `Keys` only, its failure decided by literal key names (#587).
+    ((fn.host.isNone = true ∧ fn.body.PureOrFails ∧ (fn.fails = false → fn.body.Pure)) ∨
+      fn.hmacVia = true) ∧
     -- A `via` function that fails with a payload kind (#512) is the model's restriction, not
     -- Una's (`spec/07 §5` rule 1 gives the policy the `fails` of its `via` function, of any
     -- kind): F1 releases a `via` function's failure as `Err(c)`, a code (ADR 0090).

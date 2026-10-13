@@ -72,4 +72,6 @@ import UnaFormal.F1.BoundaryImportTests
 import UnaFormal.F1.TraceSafety
 import UnaFormal.F1.TraceSafetyProof
 import UnaFormal.F1.TraceSafetyExample
+import UnaFormal.F1.HmacVia
+import UnaFormal.F1.HmacViaExample
 import UnaFormal.F1.HmacImportTests

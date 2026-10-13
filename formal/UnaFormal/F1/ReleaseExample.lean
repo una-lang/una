@@ -102,7 +102,7 @@ theorem prog_b1 : prog.B1WellFormed where
   via po h := by
     simp only [prog, List.mem_cons, List.not_mem_nil, or_false] at h
     rcases h with rfl | rfl <;>
-      exact ⟨check, rfl, rfl, rfl, ⟨trivial, trivial⟩, fun _ => ⟨trivial, trivial⟩, rfl⟩
+      exact ⟨check, rfl, rfl, .inl ⟨rfl, ⟨trivial, trivial⟩, fun _ => ⟨trivial, trivial⟩⟩, rfl⟩
 
 /-- `s: secret Int`. -/
 def Γ : LCtx := [("s", .int sec)]

@@ -421,4 +421,46 @@ def httpParams : String → Option (List Ty)
   | "post" | "put" => some [.text, .list (.record "prelude.Header"), .text, .option .text]
   | _ => none
 
+/-! ### ADR 0098's shape of a `via` function, as a test (#587) -/
+
+mutual
+  /-- `Rhs.Pure`, as a test. -/
+  def Rhs.pureB : Rhs → Bool
+    | .atom _ | .prim _ _ | .construct _ _ | .field _ _ | .list _ | .none | .some _ | .first _
+    | .elemAt _ _ | .orElse _ _ | .isOk _ | .mkOk _ | .mkErr _ | .eq _ _ | .variant _ _ _
+    | .lambda _ _ | .funRef _ _ => true
+    | _ => false
+
+  /-- `Expr.Pure`, as a test. -/
+  def Expr.pureB : Expr → Bool
+    | .atom _ => true
+    | .letR _ _ v b => v.pureB && b.pureB
+    | .letE _ _ v b => v.pureB && b.pureB
+    | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .handle t _ e
+    | .caseSum _ _ _ t e | .handleK _ t _ e => t.pureB && e.pureB
+    | .attempt b | .attemptK _ b => b.pureB
+    | .fail _ | .raise _ _ _ | .unreachable | .letTuple _ _ _ | .loop _ _ _ _ _ _ | .withH _ _ _ => false
+end
+
+/-- `@k.hmac("literal", d)` (ADR 0098 rule 2), as a test. -/
+def Rhs.hmacLitB : Rhs → Bool
+  | .hmac (.text _) _ => true
+  | _ => false
+
+/-- ADR 0098's shape (`Expr.HmacOnly`), as a test. -/
+def Expr.hmacOnlyB : Expr → Bool
+  | .atom _ => true
+  | .letR _ _ v b => (v.pureB || v.hmacLitB) && b.hmacOnlyB
+  | .letE _ _ v b => v.pureB && b.hmacOnlyB
+  | .ite _ t e | .caseOption _ t _ e | .caseResult _ _ t _ e | .caseSum _ _ _ t e => t.pureB && e.pureB
+  | .attempt b => b.pureB
+  | _ => false
+
+/-- A `via` function of ADR 0098's shape (#587): no output, `Keys` only, no payload failure, and
+a body whose only failure points are top-level hmac calls with a literal key name. The failure
+of a call of its policy is the call's own, at `pc`. -/
+def Fun.hmacVia (fn : Fun) : Bool :=
+  !fn.op && !fn.host.rd && !fn.host.wr && !fn.host.rq && fn.host.ky && fn.fails &&
+    fn.raises.isEmpty && fn.body.hmacOnlyB
+
 end Una.F1

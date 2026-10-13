@@ -34,6 +34,7 @@ captured environments); a `Unit` position relates any two values, since it carri
 import UnaFormal.F1.BinaryInst
 import UnaFormal.F1.BinaryR
 import UnaFormal.F1.Decision
+import UnaFormal.F1.HmacVia
 
 namespace Una.F1
 
@@ -1152,9 +1153,101 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
         obtain ⟨_, _, fn', hfn', hps, hres⟩ := hwf.wellFormed.policies _ hmem
         rw [hfn] at hfn'
         cases hfn'
-        obtain ⟨fnv, hfnv, _, _, hpof, hpure⟩ := hb1.via po hmem
+        obtain ⟨fnv, hfnv, _, hcase, _⟩ := hb1.via po hmem
         rw [hfn] at hfnv
         cases hfnv
+        rcases hcase with ⟨hhost, hpof, hpure⟩ | hhv
+        rotate_left
+        · -- ADR 0098's shape (#587): each run of the `via` records only `keyUse` ghosts, which no
+          -- observer sees, leaves the world as it was, never fails with a payload, and, when both
+          -- runs end, both fail with the same code or both release a value (S2).
+          obtain ⟨_, _, _, _, hsh⟩ := Fun.hmacVia_sound hhv
+          have hft : fn.failTop po.dst.top = LExpr.bot := by simp [Fun.failTop, hhv]
+          simp only [hft]
+          obtain ⟨hdg, hds⟩ := hb1.dst po hmem
+          have hsrc : (t.lsubst p.recordDeep σ).erase = po.src.erase := by
+            rw [LTy.erase_lsubst, Flow.erase hflow, Ty.Scalar.subst _ (hb1.src po hmem)]
+          have hlen := paramTys_length fn []
+          rw [hps] at hlen
+          have hds' : (po.dst.lsubst p.recordDeep σ).erase = po.dst.erase := by
+            rw [LTy.erase_lsubst, Ty.Scalar.subst _ hds]
+          have hval : ∀ {w : World H} {v : Val}, LValTy p v (t.lsubst p.recordDeep σ) →
+              ∀ r, (eval H n p w (bindParams fn.params [v] []) fn.body).2.1 = .ok r →
+                ValTy p r po.dst.erase := by
+            intro w v hvt r hr
+            have hvs : ValsTy p [v] (fn.paramTys []) := by
+              rw [hps, ← hsrc]
+              exact .cons (valTy_of_scalar (by rw [hsrc]; exact hb1.src po hmem) hvt) .nil
+            have henv' := bindParams_typed hvs (paramTys_length fn []) (EnvTy.nil (p := p))
+            rw [List.append_nil] at henv'
+            have hbody := body_typed hwf.wellFormed hfn []
+            rw [Ty.subst_nil, hres] at hbody
+            have hg := (sound hwf.wellFormed hlaw.resp_typed n).2 (w := w) henv' hbody
+            rw [hr] at hg
+            exact hg
+          have hev : ∀ r, EvVis p L (Event.release pol r) ↔ Vis p L po.dst.top := fun r =>
+            ⟨fun ⟨po', hpo', hv⟩ => by rw [hpo] at hpo'; cases hpo'; exact hv, fun hv => ⟨po, hpo, hv⟩⟩
+          have hS2 := hmacOnly_failCode (H := H) p n w₁ w₂ (bindParams fn.params [v₁] [])
+            (bindParams fn.params [v₂] []) fn.body hsh
+          have hg₁ := hmacOnly_ghostly p w₁ n (bindParams fn.params [v₁] []) fn.body hsh
+          have hg₂ := hmacOnly_ghostly p w₂ n (bindParams fn.params [v₂] []) fn.body hsh
+          have hnr₁ := hmacOnly_noRaise p w₁ n (bindParams fn.params [v₁] []) fn.body hsh
+          have hnr₂ := hmacOnly_noRaise p w₂ n (bindParams fn.params [v₂] []) fn.body hsh
+          have hok₁ := hval (w := w₁) hu₁
+          have hok₂ := hval (w := w₂) hu₂
+          simp only [evalRhs, hpo, h₁, h₂, hfn]
+          have hl1 : 1 = fn.params.length := by simpa using hlen
+          rw [if_pos hl1, if_pos hl1]
+          rcases e₁r : eval H n p w₁ (bindParams fn.params [v₁] []) fn.body with ⟨t₁, o₁, w₁'⟩
+          rcases e₂r : eval H n p w₂ (bindParams fn.params [v₂] []) fn.body with ⟨t₂, o₂, w₂'⟩
+          rw [e₁r] at hg₁ hnr₁ hok₁
+          rw [e₂r] at hg₂ hnr₂ hok₂
+          rw [e₁r, e₂r] at hS2
+          obtain ⟨htr₁, hw₁⟩ := hg₁
+          obtain ⟨htr₂, hw₂⟩ := hg₂
+          simp only at htr₁ htr₂ hw₁ hw₂ hS2 hnr₁ hnr₂ hok₁ hok₂
+          subst hw₁ hw₂
+          have hp₁ : proj p L t₁ = [] :=
+            proj_hidden (fun ev h => by obtain ⟨k, rfl⟩ := htr₁ ev h; exact fun h => h)
+          have hp₂ : proj p L t₂ = [] :=
+            proj_hidden (fun ev h => by obtain ⟨k, rfl⟩ := htr₂ ev h; exact fun h => h)
+          intro ht₁ ht₂
+          cases o₁ <;> cases o₂ <;> simp only [Term] at ht₁ ht₂
+          all_goals (try (first | exact absurd rfl (hnr₁ _ _ _) | exact absurd rfl (hnr₂ _ _ _)))
+          · -- Both values: equal when the release is seen, or a divergence at it.
+            rename_i r₁ r₂
+            have hr₁ := hok₁ r₁ rfl
+            by_cases hvd : Vis p L po.dst.top
+            · by_cases heq : r₁ = r₂
+              · subst heq
+                exact .inl ⟨by rw [proj_append, proj_append, hp₁, hp₂],
+                  V.refl_scalar (by rw [hds']; exact hds) (by rw [hds']; exact hr₁), hw⟩
+              · refine .inr ⟨[], pol, r₁, r₂, [], [], heq, ?_, ?_⟩
+                · rw [proj_append, hp₁, List.nil_append, proj_single_vis ((hev r₁).mpr hvd)]; rfl
+                · rw [proj_append, hp₂, List.nil_append, proj_single_vis ((hev r₂).mpr hvd)]; rfl
+            · refine .inl ⟨?_, ?_, hw⟩
+              · rw [proj_append, proj_append, hp₁, hp₂,
+                  proj_single_hidden (fun h => hvd ((hev r₁).mp h)),
+                  proj_single_hidden (fun h => hvd ((hev r₂).mp h))]
+              · refine .hidden ?_
+                rw [top_lsubst_of_ground hdg]
+                exact fun h => hvd (Vis.of_le (LExpr.le_join_right _ _) h)
+          · -- A value against a failure: S2 rules it out.
+            exact absurd (hS2 trivial trivial) (by simp [Res.failCode])
+          · exact absurd (hS2 trivial trivial) (by simp [Res.failCode])
+          · -- Two failures: the same code (S2), so the same release.
+            rename_i c₁ c₂
+            have hc : c₁ = c₂ := by
+              have := hS2 trivial trivial
+              simpa [Res.failCode] using this
+            subst hc
+            exact .inl ⟨by rw [proj_append, proj_append, hp₁, hp₂], fun _ => rfl, hw⟩
+        -- A `via` function that performs no host operation is not of ADR 0098's shape, so its
+        -- policy's failure is released up to `to` (#587).
+        have hft : fn.failTop po.dst.top = po.dst.top := by
+          simp only [HostFx.isNone, Bool.and_eq_true, Bool.not_eq_true'] at hhost
+          simp [Fun.failTop, Fun.hmacVia, hhost.2]
+        simp only [hft]
         obtain ⟨hdg, hds⟩ := hb1.dst po hmem
         have hsrc : (t.lsubst p.recordDeep σ).erase = po.src.erase := by
           rw [LTy.erase_lsubst, Flow.erase hflow, Ty.Scalar.subst _ (hb1.src po hmem)]
@@ -1179,7 +1272,7 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
           have hbody := body_typed hwf.wellFormed hfn []
           rw [Ty.subst_nil, hres] at hbody
           refine ⟨(silent_run p w n).2 _ _ hpof,
-            fun hf => ((pure_run p w n).2 _ _ (hpure.1 hf)).2.1, fun r hr => ?_,
+            fun hf => ((pure_run p w n).2 _ _ (hpure hf)).2.1, fun r hr => ?_,
             (noRaise_run p w n).2 _ _ hpof⟩
           have hg := (sound hwf.wellFormed hlaw.resp_typed n).2 (w := w) henv' hbody
           rw [hr] at hg

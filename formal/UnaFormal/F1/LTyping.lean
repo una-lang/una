@@ -172,6 +172,12 @@ def ofInvokeOp (pc : LExpr) (fn : Fun) (o : String) : Eff :=
 def withOf (o : String) (fn : Fun) (ε : Eff) : Eff :=
   { ε with op := ε.op || fn.op, invokes := ε.invokes.filter (· != o) }
 
+/-- The label up to which a policy call's failure is released (ADR 0098 rule 3): the `to`
+label, or nothing for a `via` function of ADR 0098's shape, whose failure reveals nothing, so
+that the failure is labeled `pc` alone. -/
+def _root_.Una.F1.Fun.failTop (fn : Fun) (top : LExpr) : LExpr :=
+  if fn.hmacVia then LExpr.bot else top
+
 /-- The effects of a call of the policy `pol`, whose `via` function has these `uses` and `fails`
 and whose `to` has the top label `dst` (T-Declassify): the release, and a failure the `via`
 function decides from the `from` value, so labeled where the release is visible, `pc ⊔ dst`
@@ -500,7 +506,7 @@ mutual
     | declassify {Γ pc pol a po fn t} :
         p.policy pol = some po → p.find po.via = some fn → LAtomTy Γ a t → Flow p.top t po.src →
         p.le pc po.dst.top → pc.SymFree →
-        LRhsTy p E Γ pc (.declassify pol a) po.dst (.ofPolicy fn.op fn.host fn.fails pc po.dst.top pol)
+        LRhsTy p E Γ pc (.declassify pol a) po.dst (.ofPolicy fn.op fn.host fn.fails pc (fn.failTop po.dst.top) pol)
     /-- `map` (`spec/14 §1`, ADR 0051): the function runs under the top labels of `xs` and of
     itself (`spec/07 §7` rule 9); the result's top label is theirs, and each element is the
     function's result raised by its label (T-App). -/

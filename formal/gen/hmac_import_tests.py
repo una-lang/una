@@ -37,8 +37,8 @@ def main(plain, branch, interp, with_, out):
 Tests of the reading of `Keys.hmac` and of ADR 0098's `via` functions (#587), checked when the
 library builds. The documents are written by `formal/gen/hmac_import_tests.py` from `una`'s own
 export of `formal/gen/hmac_import_tests/`, with the declarations `una check` rejects put back. Each
-`via` function that calls `Keys.hmac` leaves the program outside B1, so nothing that calls its
-policy is re-checked, never accepted.
+verdict is ADR 0098's (#497): a `via` function of its shape fails at the program counter, and one
+outside it leaves the program outside B1, so nothing in it is re-checked.
 -/
 import UnaFormal.F1.ImportTests
 
@@ -47,9 +47,9 @@ namespace Una.F1.HmacImportTests
 open Import ImportTests
 
 {defs}
--- ADR 0098's shape: one hmac call with a literal key name, its failure passed on. Without ADR
--- 0098, a `via` function with a host effect is outside B1, so `passes` is not re-checked.
-#guard run plain "main.passes" == "not re-checked"
+-- ADR 0098's shape: one hmac call with a literal key name, its failure passed on. The policy's
+-- failure is public, so passing it on in `passes` is accepted, as #497 accepts it.
+#guard run plain "main.passes" == "accepted"
 -- A `via` function itself is not re-checked: no label rule checks it, B1 does.
 #guard run plain "release.hmac_it" == "not re-checked"
 
