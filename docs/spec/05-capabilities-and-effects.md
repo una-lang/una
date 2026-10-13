@@ -75,7 +75,7 @@ handler in_memory(rows: [Registration]) for Registrations
 1. A handler MUST implement every operation of its capability (U3011) with matching parameter count; parameter and result types come from the capability declaration (U3010).
 2. Operation bodies are ordinary Una code: fully type-checked, information-flow checked and verified. They MUST satisfy the operation's `ensures` (proof obligation) and MAY fail only with the operation's error kind.
 3. Handler parameters are captured values. Handlers MAY declare `uses` for capabilities they need themselves.
-4. Handlers are installed only with `with` or `given` (`spec/08 §3`). They are not values.
+4. Handlers are installed only with `with` or `given` (`spec/08 §2`). They are not values.
 5. **Worst caller** (ADR 0038 D4). An operation body is checked for the worst caller that T-Op allows (`spec/10 §5`): every parameter's type is raised to the operation's `accepts` label, and every capability operation and call with effects in the body stays within that label (the effect floor, `spec/07 §7` rule 4). Failures and the result follow ordinary data flow. A handler for an operation that accepts `internal` therefore cannot print that data or signal it to a public sink, while a fake store that fails or returns fixed values stays valid.
 
 ## 6. Second-class rule
