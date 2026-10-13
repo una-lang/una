@@ -173,6 +173,18 @@ The only way to prove it is a call's implication (§9's residual).
 - **Branches.** At `ite (.var x) t e`, the `then` branch learns `(.var x, true)` and, when `D` defines `x` as `c`, also `(c, true)`. The `else` branch learns the same with `false`.
 - **Forgetting.** Binding a name `y` drops every literal of `K` whose atom reads `y`, and every entry of `D` for `y` or whose atom reads `y`. That covers `let`, pattern binders, handlers, `with` markers, tuples and loops, as `forget` does today for `Bool` variables.
 
+**Every way a name can change** (the coordinator's check). F1's environment is a list that only grows by prepending. No construct updates a binding in place:
+- an `edit` call is `Rhs.set`, which returns the new value, and its results are bound again by `letTuple` (`spec/17 §4, §8`);
+- a `take` argument is a value passed to a call;
+- each loop iteration binds its variable and state afresh.
+
+So a name a literal or a definition reads changes only by a new binding of the same name. The constructors of `Expr` that bind are `letR x`, `letE x`, `caseOption … x …`, `caseResult … x … y …`, `caseSum … binders …`, `handle … error …`, `handleK … error …`, `withH o _ _` (its marker `markerName o`), `letTuple binders` and `loop … x … state …`. In each, `condOk` checks the scope with every literal and definition that reads a bound name forgotten. That is the same list `forget` follows today for `Bool` variables, and the induction's case for each constructor uses the same lemma.
+
+Scope exit needs no forgetting:
+- `K` and `D` are passed down into subexpressions and never flow out of one, so what a scope learned about a shadowing name is gone when the scope ends;
+- a call or an application runs its callee in the callee's own environment, under its own `K`;
+- a lambda's body is checked closure-free in stage 1 (§8b).
+
 **Why it is sound.** The invariant of `eval_good` grows from "`K` holds of the environment" to two parts:
 - (i) every literal `(c, b)` of `K` has `CAtom.eval env c = b`;
 - (ii) every entry `(x, c)` of `D` has `lookup env x = some (.bool (CAtom.eval env c))`.
