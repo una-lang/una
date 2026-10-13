@@ -4,6 +4,8 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ## Unreleased
 
+- **Construct pages: capabilities** (#585, fourth batch). `docs/guide/language/capabilities/` gains `capability` and `op`, `uses`, `@` bindings and `with`, `handler`, and host capabilities with their grants, each with the template's seven parts and every block checked.
+
 ## v0.3.9
 
 A patch of the Beta, with no security fix, that opens edition `0.3` as a preview. A package may now declare `edition = "0.3"`: for now it has every construct and rule of edition `0.2`, and the rules of ADRs 0092, 0093 and 0094 join it as they land, so a later `0.3.x` release may reject an edition `0.3` package that this one accepts. It only gets stricter, never looser. Editions `0.1` and `0.2` are unchanged, and are the editions to use for code that must keep checking. The release also carries the first construct pages of the guide (#585): error handling, types and contracts, and control flow, each checked against the specification by a test. The inferred error kind of a private function follows the body's source order (ADR 0099), so the site and code of a conflict no longer depend on where declarations stand. ADR 0100 is accepted: in edition `0.3`, a handling clause or an `attempt` on code that cannot fail will be an error, once it is implemented. A change to what the Linux local-ci runs now needs that run before it merges (#605). Validation: `docs/releases/0.3.9-validation.md`.
