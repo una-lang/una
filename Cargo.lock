@@ -1195,7 +1195,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "una-check"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "pretty_assertions",
  "una-core",
@@ -1206,7 +1206,7 @@ dependencies = [
 
 [[package]]
 name = "una-cli"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "cap",
  "clap",
@@ -1232,7 +1232,7 @@ dependencies = [
 
 [[package]]
 name = "una-codegen"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
@@ -1246,7 +1246,7 @@ dependencies = [
 
 [[package]]
 name = "una-core"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "una-diag",
  "una-syntax",
@@ -1254,7 +1254,7 @@ dependencies = [
 
 [[package]]
 name = "una-diag"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "ariadne",
  "insta",
@@ -1265,14 +1265,14 @@ dependencies = [
 
 [[package]]
 name = "una-explain"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "una-diag",
 ]
 
 [[package]]
 name = "una-fmt"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "pretty_assertions",
  "una-diag",
@@ -1281,7 +1281,7 @@ dependencies = [
 
 [[package]]
 name = "una-http"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "rcgen",
  "rustls",
@@ -1291,7 +1291,7 @@ dependencies = [
 
 [[package]]
 name = "una-interp"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "num-bigint",
  "serde",
@@ -1306,7 +1306,7 @@ dependencies = [
 
 [[package]]
 name = "una-lsp"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "pretty_assertions",
  "serde_json",
@@ -1315,7 +1315,7 @@ dependencies = [
 
 [[package]]
 name = "una-project"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "pretty_assertions",
  "toml",
@@ -1325,14 +1325,14 @@ dependencies = [
 
 [[package]]
 name = "una-report"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "una-diag",
 ]
 
 [[package]]
 name = "una-rt"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "cap",
  "num-bigint",
@@ -1345,7 +1345,7 @@ dependencies = [
 
 [[package]]
 name = "una-syntax"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "indexmap",
  "insta",
@@ -1355,7 +1355,7 @@ dependencies = [
 
 [[package]]
 name = "una-verify"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "insta",
  "pretty_assertions",

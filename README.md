@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v0.3.10%20Beta-7c5cff" alt="Version v0.3.10, Beta">
+  <img src="https://img.shields.io/badge/version-v0.3.11%20Beta-7c5cff" alt="Version v0.3.11, Beta">
   <img src="https://img.shields.io/badge/solver-Z3%205.1.0-4f46e5" alt="Solver: Z3 5.1.0">
   <img src="https://img.shields.io/badge/rust-1.98.1-3b3b58" alt="Rust 1.98.1">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-2e2e48" alt="License: Apache-2.0"></a>
@@ -32,7 +32,7 @@ Una is a verification-first programming language for software that AI agents wri
 
 ## Status
 
-**v0.3.0 is the Beta**, and v0.3.10, a patch of it, is the current release. It has:
+**v0.3.0 is the Beta**, and v0.3.11, a patch of it, is the current release. It has:
 - the verifier and the reference interpreter;
 - the native backend: `una build` compiles a program into an executable that behaves exactly like the interpreter;
 - in edition 0.2, a standard library for real programs: maps, text operations, JSON and an HTTP client, every result labeled;
@@ -42,7 +42,7 @@ Una is a verification-first programming language for software that AI agents wri
 - constraints on generics;
 - printing of structured values;
 - importable standard modules;
-- editions 0.1 and 0.2, and edition 0.3 as a preview: it has every rule of 0.2, conditions on the operations a function may perform, and errors for failure handling on code that cannot fail; later 0.3.x releases add the rest of its designs, so they may reject a package that this one accepts;
+- editions 0.1 and 0.2, and edition 0.3 as a preview: it has every rule of 0.2, conditions on the operations a function may perform, locked contracts of public functions, the first part of module boundaries, and errors for failure handling on code that cannot fail; later 0.3.x releases add the rest of its designs, so they may reject a package that this one accepts;
 - archives for macOS on arm64 and Linux on x86_64 and arm64.
 
 Before its tag, every area of v0.3.0 was reviewed by someone other than its author. Feedback on the Beta will shape the language: open an [issue](https://github.com/una-lang/una/issues/new/choose). Una is a research language: it is not ready for production use. The changes in each release, and the known limits, are in [`CHANGELOG.md`](CHANGELOG.md).
