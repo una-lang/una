@@ -809,6 +809,15 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             {
                 findings.failed.insert(span);
             }
+            // ADR 0100 rule 3: a function with a site of U3007, U3008 or U3009 is poisoned.
+            if let Some(current) = current
+                && report
+                    .diagnostics
+                    .get(started..)
+                    .is_some_and(|new| new.iter().any(|d| super::dead::poisoning(d.code)))
+            {
+                findings.family.insert(current);
+            }
         }
         for (callee, args, span) in instances {
             let args: Vec<Ty> = args.iter().map(|arg| vars.resolve(arg)).collect();

@@ -31,6 +31,18 @@ A statement whose expression can fail MUST be followed by an `if error` clause (
 
 Each clause appears at most once per statement, `if error` before `if none` (U0102).
 
+(v0.3, ADR 0100.) In edition `0.3`, an `if error` clause MUST NOT follow an expression that cannot fail (U3025): an expression whose failure type is absent once the inferred kinds are final (`spec/04 §5` rule 3), or one wrapped in `attempt`. The diagnostic is at `if`. Its repair deletes the clause, and `una fix` applies it. A dead clause never runs, so its own U3008 or U3009 is not reported: U3025 is. Its `fail V` still decides an inferred kind. A call stays live, and its clause is not U3025, when:
+- the callee is a parameter of function type that declares `fails`, or a parameter under `fails of`;
+- its type is already an error;
+- the callee is poisoned. A function is poisoned when it contains a reported U3007, U3008 or U3009, or when a failure of error type or an operation whose capability does not resolve reaches its inferred "cannot fail". It is also poisoned when it mentions a poisoned function in any way other than a direct call handled by `if error use`, `if error fail V` or `attempt`.
+
+U3025 and U3026 (§5) are judged:
+- not at all while the package has an error outside U3007, U3008, U3009, U3025 and U3026, nor are the U3008 and U3009 of dead clauses;
+- beside errors of those five codes only, at plain sites only: an expression with no call, or a direct call of a named function or an operation that is not poisoned, with no argument that is a function value or contains a site of those codes;
+- with no other error, at every site.
+
+U3025 and U3026 never suppress each other. Editions `0.1` and `0.2` accept these clauses.
+
 ```una
 let registration = @registrations.find(key)
   if error fail Unavailable(reason: "store")
@@ -53,6 +65,8 @@ when outcome
 ```
 
 The operand of `attempt` MUST be one call (U2001 otherwise). `attempt` counts as the handling site for U3007.
+
+(v0.3, ADR 0100.) In edition `0.3`, the operand of `attempt` MUST be a call that can fail (U3026), judged as U3025 is (§3). The repair describes how to remove `attempt` and unwrap the uses of the `Result`. It carries no edit. In editions `0.1` and `0.2`, the `Result` of an `attempt` of a call that cannot fail has an unconstrained error type.
 
 ## 6. `checked`
 

@@ -732,3 +732,81 @@ fn una_fix_dry_run_writes_nothing_and_reports_the_edits_0084() {
     assert!(repaired(&root).contains("requires not (p is Over)\n"));
     assert!(una(&root, &["check", "--tier", "0", "."]).status.success());
 }
+
+/// The codes of `una --json check`, sorted.
+fn codes_of(root: &Path) -> Vec<String> {
+    let mut codes: Vec<String> = diagnostics(root)
+        .iter()
+        .map(|d| d["code"].as_str().unwrap().to_owned())
+        .collect();
+    codes.sort();
+    codes
+}
+
+/// ADR 0100's sources for `una fix`: `E`, a function `risky` that fails with it, and `rest`.
+fn dead_package(name: &str, rest: &str) -> PathBuf {
+    package(
+        name,
+        "0.3",
+        &format!(
+            "module m\n\nkind E = | Bad\n\nrisky(n: Int) -> Int\n  fails E\n=\n  if n < 0 then fail Bad else n\n\n{rest}"
+        ),
+    )
+}
+
+#[test]
+fn una_fix_removes_a_dead_clause_and_the_failure_it_gave_the_callers_0100() {
+    // ADR 0100, the root case: the dead clause gives `helper` a kind, so `one` reports U3007.
+    // U3025 is reported with it, and once `una fix` deletes the clause, no U3007 remains.
+    let root = dead_package(
+        "dead-root",
+        "helper(n: Int) -> Int\n=\n  let x = n + 1\n    if error fail Bad\n  x\n\npub one(n: Int) -> Int = helper(n)\n",
+    );
+    assert_eq!(codes_of(&root), ["U3007", "U3025"]);
+    let output = una(&root, &["--json", "fix", "--tier", "0", "."]);
+    assert_eq!(output.status.code(), Some(0), "{}", repaired(&root));
+    assert_eq!(codes_of(&root), Vec::<String>::new());
+    assert!(!repaired(&root).contains("if error fail Bad"));
+}
+
+#[test]
+fn a_clause_on_a_callee_with_an_unhandled_failure_survives_una_fix_0100() {
+    // ADR 0100, shape (a): `c` leaves the failure of `risky` unhandled (U3007), so it infers
+    // no failure, and `user`'s clause on `c(n)` looks dead. `c` is poisoned: `una fix` leaves
+    // the clause, and once `c` passes the failure, `user` checks with its clause.
+    let root = dead_package(
+        "dead-shape-a",
+        "c(n: Int) -> Int\n=\n  let x = risky(n)\n  x\n\npub user(n: Int) -> Int\n  fails E\n=\n  let y = c(n)\n    if error use 0\n  y\n",
+    );
+    assert_eq!(codes_of(&root), ["U3007"]);
+    let _ = una(&root, &["--json", "fix", "--tier", "0", "."]);
+    let source = repaired(&root);
+    assert!(source.contains("    if error use 0\n"), "{source}");
+    let fixed = source.replace(
+        "  let x = risky(n)\n",
+        "  let x = risky(n)\n    if error pass\n",
+    );
+    std::fs::write(root.join("src/m.una"), fixed).unwrap();
+    assert_eq!(codes_of(&root), Vec::<String>::new());
+}
+
+#[test]
+fn a_clause_on_a_callee_that_fails_without_a_kind_survives_una_fix_0100() {
+    // ADR 0100, shape (b): `b` fails without `fails` (U3009), so a clause on its call looks
+    // dead. `b` is poisoned: `una fix` leaves the clause, and once `b` declares its kind,
+    // `user` checks with its clause.
+    let root = dead_package(
+        "dead-shape-b",
+        "pub b(n: Int) -> Int = if n < 0 then fail Bad else n\n\npub user(n: Int) -> Int\n  fails E\n=\n  let y = b(n)\n    if error use 0\n  y\n",
+    );
+    assert_eq!(codes_of(&root), ["U3009"]);
+    let _ = una(&root, &["--json", "fix", "--tier", "0", "."]);
+    let source = repaired(&root);
+    assert!(source.contains("    if error use 0\n"), "{source}");
+    let fixed = source.replace(
+        "pub b(n: Int) -> Int = if",
+        "pub b(n: Int) -> Int\n  fails E\n= if",
+    );
+    std::fs::write(root.join("src/m.una"), fixed).unwrap();
+    assert_eq!(codes_of(&root), Vec::<String>::new());
+}

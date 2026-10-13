@@ -39,10 +39,6 @@ enum Difference {
     },
     /// The rule only adds errors: the diagnostics document of edition `0.3` is that of edition
     /// `0.2` with exactly these diagnostics added, each a code and `file:line:col`.
-    #[allow(
-        dead_code,
-        reason = "the first entries come with the error rules of edition 0.3 (ADR 0100)"
-    )]
     Stricter {
         /// The package, relative to `tests/conformance`.
         case: &'static str,
@@ -78,6 +74,29 @@ const EXPECTED_DIFFERENCES: &[Difference] = &[
         edition_0_3: &["proven at src/main.una:13:5"],
         twin: "authority/op_condition_edition_0_2_erased",
         erased: " where not dry_run",
+    },
+    // ADR 0100 rule 2: `attempt` of a call that cannot fail.
+    Difference::Stricter {
+        case: "authority/dead_attempt_edition_0_2",
+        edition_0_3: &[("U3026", "src/main.una:8:42")],
+    },
+    // ADR 0100 rule 1: an `if error` clause on an expression that cannot fail.
+    Difference::Stricter {
+        case: "authority/dead_clause_edition_0_2",
+        edition_0_3: &[
+            ("U3025", "src/main.una:22:5"),
+            ("U3025", "src/main.una:24:5"),
+            ("U3025", "src/main.una:31:5"),
+            ("U3025", "src/main.una:37:5"),
+        ],
+    },
+    // ADR 0100 rule 2: `attempt` of a `fails of` call given a function that cannot fail.
+    Difference::Stricter {
+        case: "runtime/fails_of_relay",
+        edition_0_3: &[
+            ("U3026", "src/relay.una:81:12"),
+            ("U3026", "src/relay.una:83:12"),
+        ],
     },
 ];
 

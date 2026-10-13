@@ -572,8 +572,28 @@ impl<'a> Checker<'_, 'a, '_> {
             .decided_of(&handled.expr)
             .filter(|label| !label.is_public());
         let decided_by = decided.as_ref().map(|label| (label, handled.expr.span));
+        // Edition 0.3 (ADR 0100): the `if error` clauses of an expression with no failure type
+        // never run. Their own U3008 and U3009 are held with them until the package is judged.
+        let dead = self.pass == super::authority::Pass::Check
+            && self.env.edition >= una_project::Edition::V0_3
+            && self.fails_of(&handled.expr).is_none();
+        if self.pass == super::authority::Pass::Check
+            && handled.handlings.iter().any(|h| {
+                matches!(
+                    h.kind,
+                    HandlingKind::ErrorFail(_) | HandlingKind::ErrorUse(_)
+                )
+            })
+        {
+            // The failure of this call stops here (ADR 0100 rule 3).
+            self.findings
+                .contained
+                .insert(unparenthesized(&handled.expr).span);
+        }
+        let mut before_clause = end;
         let mut current = ty;
         for handling in &handled.handlings {
+            let mark = self.report.diagnostics.len();
             match &handling.kind {
                 HandlingKind::ErrorFail(variant) => {
                     self.impure(handling.span, || "`if error fail`".to_owned());
@@ -643,6 +663,36 @@ impl<'a> Checker<'_, 'a, '_> {
                     current = joined.with_label(&option);
                 }
             }
+            if dead
+                && matches!(
+                    handling.kind,
+                    HandlingKind::ErrorFail(_)
+                        | HandlingKind::ErrorPass
+                        | HandlingKind::ErrorUse(_)
+                )
+            {
+                let mut held = Vec::new();
+                let mut kept = Vec::new();
+                for diagnostic in self.report.diagnostics.split_off(mark) {
+                    if matches!(diagnostic.code, Code::U3008 | Code::U3009) {
+                        held.push(diagnostic);
+                    } else {
+                        kept.push(diagnostic);
+                    }
+                }
+                self.report.diagnostics.extend(kept);
+                let delete = Span::new(handling.span.file, before_clause, handling.span.end);
+                let site = self.dead_site(
+                    &handled.expr,
+                    super::dead::Dead::Clause {
+                        keyword: handling.keyword,
+                        delete,
+                    },
+                    held,
+                );
+                self.findings.dead.push(site);
+            }
+            before_clause = handling.span.end;
         }
         if framed {
             self.frames.pop();
@@ -656,6 +706,59 @@ impl<'a> Checker<'_, 'a, '_> {
         current
     }
 
+    /// A [`super::dead::Site`] for `expr`, a handled expression or the operand of `attempt`
+    /// (ADR 0100). A dead clause's held diagnostics count as sites of failure handling in its
+    /// function.
+    pub(crate) fn dead_site(
+        &mut self,
+        expr: &Expr,
+        dead: super::dead::Dead,
+        held: Vec<una_diag::Diagnostic>,
+    ) -> super::dead::Site {
+        let inner = unparenthesized(expr);
+        let (args, what): (Vec<Span>, String) = match &inner.kind {
+            ExprKind::Attempt(_) => (
+                Vec::new(),
+                "`attempt`, which already turns the failure into a value,".to_owned(),
+            ),
+            ExprKind::Call { args, .. } => {
+                let what = match self.call_targets.get(&inner.span) {
+                    Some(&id) => self.env.functions.get(id).map_or_else(
+                        || "this call".to_owned(),
+                        |f| format!("the call of `{}`", f.name),
+                    ),
+                    None => "this call".to_owned(),
+                };
+                (args.iter().map(|arg| arg.value.span).collect(), what)
+            }
+            ExprKind::MethodCall {
+                target, name, args, ..
+            } => (
+                std::iter::once(target.span)
+                    .chain(args.iter().map(|arg| arg.value.span))
+                    .collect(),
+                format!("the call of `{}`", self.name(name)),
+            ),
+            ExprKind::CapOp { cap, op, args } => (
+                args.iter().map(|arg| arg.value.span).collect(),
+                format!("`@{}.{}`", self.name(cap), self.name(op)),
+            ),
+            _ => (Vec::new(), "this expression".to_owned()),
+        };
+        if !held.is_empty()
+            && let Some(current) = self.current
+        {
+            self.findings.family.insert(current);
+        }
+        super::dead::Site {
+            dead,
+            expr: inner.span,
+            args,
+            what,
+            held,
+        }
+    }
+
     /// The label that decides the failure of the call that `expr` is, when its arguments'
     /// values decide it (N-27).
     fn decided_of(&self, expr: &Expr) -> Option<Label> {
@@ -667,7 +770,7 @@ impl<'a> Checker<'_, 'a, '_> {
     }
 
     /// The error kind of the call that `expr` is, when it declares one.
-    fn fails_of(&self, expr: &Expr) -> Option<Ty> {
+    pub(crate) fn fails_of(&self, expr: &Expr) -> Option<Ty> {
         let mut inner = expr;
         while let una_syntax::ast::ExprKind::Paren(next) = &inner.kind {
             inner = next;
@@ -1193,4 +1296,13 @@ fn literal_key(literal: &Literal) -> Option<String> {
             Some(key)
         }
     }
+}
+
+/// `expr` without its parentheses.
+pub(crate) fn unparenthesized(expr: &Expr) -> &Expr {
+    let mut inner = expr;
+    while let ExprKind::Paren(next) = &inner.kind {
+        inner = next;
+    }
+    inner
 }

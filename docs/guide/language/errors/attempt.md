@@ -2,7 +2,7 @@
 construct: attempt
 editions: ["0.1", "0.2"]
 spec: ["spec/06 §5", "spec/02 §7", "spec/02 §8", "spec/04 §4", "spec/12 §3", "spec/07 §3", "spec/07 §5", "spec/07 §7", "spec/06 §3"]
-codes: [U2001, U3007, U3013, U4002]
+codes: [U2001, U3007, U3013, U3026, U4002]
 ---
 
 # `attempt`
@@ -104,7 +104,7 @@ Further rules:
 
 - **One call, not a block.** `attempt` covers a single call; a sequence of fallible calls takes one `attempt` or one clause each (`spec/06 §3, §5`).
 - **Labeled failures.** When a failure is decided by labeled data, the `Result` carries that label. This holds for the requests of `Http` and the failure of a policy call whose `to` label is above `public` (`spec/07 §7` rule 4, `spec/07 §5` rule 6). Branching on it raises the program counter, under which a `fail` is U4002 (`spec/07 §3` rule 3).
-- **An operand that cannot fail.** In editions `0.1` and `0.2`, `attempt` of a call that cannot fail is accepted, and the error type of its `Result` is then not constrained. ADR 0100 makes it an error in edition `0.3`, once implemented; until then edition `0.3` accepts it too.
+- **An operand that cannot fail.** In edition `0.3`, `attempt` of a call that cannot fail is U3026: use the value of the call directly, and unwrap the uses of the `Result` (`spec/06 §5`, ADR 0100). Editions `0.1` and `0.2` accept it, and the error type of its `Result` is then not constrained.
 - **Alternative.** To convert, propagate or recover at the line itself, use a handling clause. See [`if error` and `if none`](if-error.md).
 
 ## Diagnostics
@@ -112,11 +112,12 @@ Further rules:
 - [U2001](../../../../crates/una-explain/explain/U2001.md): the operand of `attempt` is not one call.
 - [U3007](../../../../crates/una-explain/explain/U3007.md): a fallible call with neither a clause nor `attempt`.
 - [U3013](../../../../crates/una-explain/explain/U3013.md): `attempt` nested inside another expression.
+- [U3026](../../../../crates/una-explain/explain/U3026.md): in edition `0.3`, `attempt` of a call that cannot fail.
 - [U4002](../../../../crates/una-explain/explain/U4002.md): a failure decided under a labeled program counter, such as a `fail` in an arm that branches on a labeled `Result`.
 
 ## Edition
 
-`attempt` is the same in editions `0.1` and `0.2`.
+`attempt` is the same in editions `0.1` and `0.2`. Edition `0.3` adds U3026 for `attempt` of a call that cannot fail (ADR 0100).
 
 ## Normative source
 

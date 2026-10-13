@@ -2,7 +2,7 @@
 construct: if error and if none
 editions: ["0.1", "0.2"]
 spec: ["spec/06 §1", "spec/06 §3", "spec/06 §5", "spec/02 §6", "spec/02 §8", "spec/04 §4", "spec/07 §3", "spec/07 §7", "spec/06 §2"]
-codes: [U0101, U0102, U2001, U2013, U3007, U3008, U3009, U3013]
+codes: [U0101, U0102, U2001, U2013, U3007, U3008, U3009, U3013, U3025]
 ---
 
 # `if error` and `if none`
@@ -251,7 +251,7 @@ Further rules:
 - **One effect per line.** A fallible call is the whole expression of its statement, `let` or final expression, so that its clause has one site (`spec/04 §4`, U3013). Bind its result with `let` first.
 - **The `fail` of a clause** obeys the rules of `fail`: its variant belongs to the function's error kind (U3009, `spec/06 §2`), and it is allowed only under a `public` program counter (U4002, `spec/07 §3` rule 3).
 - **Labeled failures.** A failure decided by labeled data, such as an `Http` request's, carries that label. `if error use` then runs under it, and `if error pass` and `if error fail` are U4002 when it is above `public` (`spec/07 §7` rule 4).
-- **A clause on a statement that cannot fail.** In editions `0.1` and `0.2`, an `if error` clause after a statement that cannot fail, such as `let x = n + 1`, is accepted. ADR 0100 makes it an error in edition `0.3`, once implemented; until then edition `0.3` accepts it too.
+- **An `if error` clause on a statement that cannot fail.** In edition `0.3`, an `if error` clause after a statement that cannot fail, such as `let x = n + 1`, is U3025, and `una fix` deletes it (`spec/06 §3`, ADR 0100). An `if none` clause on the same statement is not affected. Editions `0.1` and `0.2` accept it.
 - **Alternative.** `attempt` handles a failure by turning it into a `Result` value instead (`spec/06 §5`). See [`attempt`](attempt.md).
 
 ## Diagnostics
@@ -264,10 +264,11 @@ Further rules:
 - [U3008](../../../../crates/una-explain/explain/U3008.md): `if error pass` across error kinds.
 - [U3009](../../../../crates/una-explain/explain/U3009.md): the variant of `if error fail` or `if none fail` outside the function's error kind.
 - [U3013](../../../../crates/una-explain/explain/U3013.md): a fallible call nested inside another expression.
+- [U3025](../../../../crates/una-explain/explain/U3025.md): in edition `0.3`, an `if error` clause on an expression that cannot fail.
 
 ## Edition
 
-The handling clauses are the same in editions `0.1` and `0.2`.
+The handling clauses are the same in editions `0.1` and `0.2`. Edition `0.3` adds U3025 for an `if error` clause on an expression that cannot fail (ADR 0100).
 
 ## Normative source
 

@@ -214,6 +214,7 @@ fn analyze_and(
         manifest: package.manifest,
         settings: &manifest,
         run,
+        earlier_errors: false,
     };
     let (names, references) = if poison.is_empty() {
         una_check::check_names_indexed(&input)
@@ -221,6 +222,13 @@ fn analyze_and(
         una_check::check_names_poisoned(&input, &poison)
     };
     diagnostics.extend(names);
+    // The syntax, manifest and name errors so far, which the type check does not see.
+    let input = PackageInput {
+        earlier_errors: diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == una_diag::Severity::Error),
+        ..input
+    };
     let (types, rejected) = if with_rejected {
         check_types_with_rejected(&input)
     } else {

@@ -1,0 +1,14 @@
+-- test: beside an error outside failure handling, neither U3025 nor a dead clause's own U3009 is reported (ADR 0100 rule 4)
+-- spec: spec/06 §3
+-- expect: error U2001 at src/main.una:14:24
+module main
+
+kind E = | Bad
+
+pub g(n: Int) -> Int
+=
+  let x = n + 1
+    if error fail Bad
+  x
+
+pub h(n: Int) -> Int = "text"

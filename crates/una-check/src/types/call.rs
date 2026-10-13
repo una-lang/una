@@ -606,6 +606,9 @@ impl<'a> Checker<'_, 'a, '_> {
         self.edge(id, span);
         self.call_targets.insert(span, id);
         if self.pass == super::authority::Pass::Check {
+            self.findings.named_calls.insert(span);
+        }
+        if self.pass == super::authority::Pass::Check {
             // In a body no label rule checks, the program counter is unknown: the call is
             // entered at the cap, `⊤` here, which `file_state` caps.
             let entry = self.entry();

@@ -61,6 +61,7 @@ fn with_input<R>(
         manifest,
         settings: &settings,
         run: None,
+        earlier_errors: false,
     };
     f(&input)
 }

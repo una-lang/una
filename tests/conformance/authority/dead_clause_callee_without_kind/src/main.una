@@ -1,0 +1,15 @@
+-- test: a callee that fails without `fails` (U3009) is poisoned, so a clause on its call is not U3025 (ADR 0100 rule 3, shape b)
+-- spec: spec/06 §3
+-- expect: error U3009 at src/main.una:8:43
+module main
+
+kind E = | Bad
+
+pub b(n: Int) -> Int = if n < 0 then fail Bad else n
+
+pub user(n: Int) -> Int
+  fails E
+=
+  let y = b(n)
+    if error use 0
+  y
