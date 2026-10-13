@@ -1337,6 +1337,31 @@ theorem eval_good
             | some c => exact ⟨hev, fun _ h => by cases h; simp [Val.OFree], (fun _ _ _ h => nomatch h)⟩
             | none => exact ⟨hev, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
           | _ => exact RunOk.stuck w
+      | hmac key data =>
+        simp only [evalRhs]
+        cases evalAtom env key with
+        | none => cases evalAtom env data <;> exact RunOk.stuck w
+        | some v =>
+          cases evalAtom env data with
+          | none => cases v <;> exact RunOk.stuck w
+          | some d =>
+            cases v with
+            | text k =>
+              have hev : ∀ ev ∈ [Event.keyUse k], PerfEv o ev → Q := by
+                intro ev hev hp
+                simp only [List.mem_singleton] at hev
+                subst hev
+                simp only [PerfEv] at hp
+                exact site_good hg (by simp [Rhs.reach]) (fun hc => by simpa [Rhs.condOk] using hc) hp.symm
+              dsimp only
+              cases d.line with
+              | none => exact RunOk.stuck w
+              | some s =>
+                dsimp only
+                cases H.key k with
+                | some m => exact ⟨hev, fun _ h => by cases h; simp [Val.OFree], (fun _ _ _ h => nomatch h)⟩
+                | none => exact ⟨hev, (fun _ h => nomatch h), (fun _ _ _ h => nomatch h)⟩
+            | _ => exact RunOk.stuck w
       | write path content =>
         simp only [evalRhs]
         cases evalAtom env path with

@@ -28,6 +28,7 @@ mutual
     | .op a => .op a
     | .read a => .read a
     | .write a c => .write a c
+    | .hmac k d => .hmac k d
     | .req m args => .req m args
     | .construct r fs => .construct r fs
     | .invoke f args => .invoke (ρ f) args
@@ -138,6 +139,7 @@ def Event.anon (ρ : String → String) : Event → Event
   | .out s => .out s
   | .read s => .read s
   | .write s c => .write s c
+  | .keyUse k => .keyUse k
   | .req m vs => .req m (Val.anons ρ vs)
   | .release pol v => .release pol (v.anon ρ)
   | .perf o => .perf o
@@ -573,6 +575,21 @@ theorem eval_anon (hH : H.AnonInvariant) (h4 : H.RespTyped) (hf : ∀ f, (P.find
             simp only [Option.map_some, Val.anon]
             cases H.read s w.fs <;> simp [runAnon, Event.anon, Res.anon, Val.anon]
           | _ => simp [Val.anon, runAnon_stuck]
+      | hmac key data =>
+        simp only [evalRhs, Rhs.anon, evalAtom_anon]
+        cases evalAtom env key with
+        | none => simp [runAnon_stuck]
+        | some v =>
+          cases evalAtom env data with
+          | none => cases v <;> simp [Val.anon, runAnon_stuck]
+          | some d =>
+            cases v with
+            | text k =>
+              simp only [Option.map_some, Val.anon, Val.line_anon]
+              cases d.line with
+              | none => simp [runAnon_stuck]
+              | some s => cases H.key k <;> simp [runAnon, Event.anon, Res.anon, Val.anon]
+            | _ => simp [Val.anon, runAnon_stuck]
       | write path content =>
         simp only [evalRhs, Rhs.anon, evalAtom_anon]
         cases evalAtom env path with

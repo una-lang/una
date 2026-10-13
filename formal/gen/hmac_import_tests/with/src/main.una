@@ -1,0 +1,31 @@
+module main
+
+import release (key_of)
+
+pub passes(t: secret Text) -> Unit
+  uses @keys: Keys[hmac]
+  fails KeyError
+=
+  let k = key_of(t)
+    if error pass
+  unit
+
+handler other_keys() for Keys
+  uses @keys: Keys[hmac]
+  op hmac(key_name, data) =
+    other(data)
+      if error pass
+
+other(d: restricted Text) -> restricted Hashed
+  uses @keys: Keys[hmac]
+  fails KeyError
+=
+  @keys.hmac(key_name: "other", data: d)
+    if error pass
+
+pub swapped(t: secret Text) -> Unit
+  uses @keys: Keys[hmac]
+  fails KeyError
+=
+  passes(t) with @keys = other_keys()
+    if error pass

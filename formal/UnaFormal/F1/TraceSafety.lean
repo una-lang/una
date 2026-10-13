@@ -117,6 +117,7 @@ mutual
   def Rhs.reach (p : Program) : Rhs → List String × List String
     | .op _ => (["Console.print"], [])
     | .read _ => (["Files.read"], [])
+    | .hmac _ _ => (["Keys.hmac"], [])
     | .write _ _ => (["Files.write"], [])
     | .req m _ => ([s!"Http.{m}"], [])
     | .call g _ _ | .funRef g _ => ([], [g])
@@ -283,6 +284,7 @@ mutual
       Rhs → Bool
     | .op _ => siteOk conds K "Console.print"
     | .read _ => siteOk conds K "Files.read"
+    | .hmac _ _ => siteOk conds K "Keys.hmac"
     | .write _ _ => siteOk conds K "Files.write"
     | .req m _ => siteOk conds K s!"Http.{m}"
     | .call g _ args => startOk p conds K g (some args)
@@ -336,6 +338,7 @@ def PerfEv (o : String) : Event → Prop
   | .read _ => o = "Files.read"
   | .write _ _ => o = "Files.write"
   | .req m _ => o = s!"Http.{m}"
+  | .keyUse _ => o = "Keys.hmac"
   | .release _ _ => False
 
 /-- `tr` performs `o`. -/

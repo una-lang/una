@@ -107,6 +107,9 @@ mutual
         AtomTy ctx f (.fn ts r) → AtomsTy ctx args ts → RhsTy p ctx (.apply f args) r
     | op {ctx line t} : AtomTy ctx line t → t.Scalar → RhsTy p ctx (.op line) .unit
     | read {ctx path} : AtomTy ctx path .text → RhsTy p ctx (.read path) .text
+    /-- `Keys.hmac` (#587): a key name and a scalar, giving a text. -/
+    | hmac {ctx key data d} : AtomTy ctx key .text → AtomTy ctx data d → d.Scalar →
+        RhsTy p ctx (.hmac key data) .text
     | write {ctx path content} :
         AtomTy ctx path .text → AtomTy ctx content .text → RhsTy p ctx (.write path content) .unit
     | req {ctx m args ts} : AtomsTy ctx args ts → httpParams m = some ts → p.HttpRecords →

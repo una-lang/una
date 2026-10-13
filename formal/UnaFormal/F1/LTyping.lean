@@ -416,6 +416,14 @@ mutual
         p.le (pc.join (p.deep t)) (.ofLabel p.acceptsRead) → pc.SymFree →
         LRhsTy p E Γ pc (.read path) (.text (.ofLabel p.readResult))
           ⟨false, { rd := true }, some (p.fsFail (pc.join (p.deep t))), [], true, [], p.fsFail (p.deep t), []⟩
+    /-- `Keys.hmac` (#587, ADR 0039, ADR 0098): its key name is a sink that accepts `public`, and
+    with the program counter it decides the failure, which is labeled `pc`; its data accepts every
+    label and decides only the value, labeled `internal ⊔ ℓ*(data)`. It records a ghost. -/
+    | hmac {Γ pc key data k d} :
+        LAtomTy Γ key k → k.erase = .text → LAtomTy Γ data d → d.erase.Scalar →
+        p.le (pc.join (p.deep k)) LExpr.bot → pc.SymFree →
+        LRhsTy p E Γ pc (.hmac key data) (.text ((LExpr.ofLabel ⟨.internal, []⟩).join (p.deep d)))
+          ⟨false, { ky := true }, some pc, [], true, [], LExpr.bot, []⟩
     /-- `Files.write`: its path and content are sinks; where it lands, and whether it runs, are
     below the file-state label (decision 1); its failure is labeled as a read's. -/
     | write {Γ pc path content t c} :

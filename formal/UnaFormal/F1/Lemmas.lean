@@ -155,6 +155,9 @@ mutual
       have h' := atom_subst τ h
       cases t <;> simp only [Ty.Scalar] at hs <;> exact .op h' (by simp [Ty.subst, Ty.Scalar])
     | _, _, _, .read h => .read (atom_subst τ h)
+    | _, _, _, .hmac (d := d) hk hd hs => by
+      have h' := atom_subst τ hd
+      cases d <;> simp only [Ty.Scalar] at hs <;> exact .hmac (atom_subst τ hk) h' (by simp [Ty.subst, Ty.Scalar])
     | _, _, _, .write h₁ h₂ => .write (atom_subst τ h₁) (atom_subst τ h₂)
     | _, _, _, .req has hts hr => by
       have h := atoms_subst τ has

@@ -33,30 +33,37 @@ inductive Ty where
   a loop's state and an `edit` call's results (`spec/17 §4`). -/
   | tuple (items : List Ty)
 
-/-- The host effects a code may perform: read a file, write a file, send a request. -/
+/-- The host effects a code may perform: read a file, write a file, send a request, and compute
+an HMAC under a granted key (`Keys.hmac`, #587). -/
 structure HostFx where
   rd : Bool := false
   wr : Bool := false
   rq : Bool := false
+  ky : Bool := false
 
 /-- No host effect. -/
 def HostFx.none : HostFx := {}
 
 /-- Both codes' host effects. -/
-def HostFx.or (a b : HostFx) : HostFx := ⟨a.rd || b.rd, a.wr || b.wr, a.rq || b.rq⟩
+def HostFx.or (a b : HostFx) : HostFx :=
+  ⟨a.rd || b.rd, a.wr || b.wr, a.rq || b.rq, a.ky || b.ky⟩
 
 /-- `a`'s host effects are among `b`'s. -/
 def HostFx.Le (a b : HostFx) : Prop :=
-  (a.rd = true → b.rd = true) ∧ (a.wr = true → b.wr = true) ∧ (a.rq = true → b.rq = true)
+  (a.rd = true → b.rd = true) ∧ (a.wr = true → b.wr = true) ∧ (a.rq = true → b.rq = true) ∧
+    (a.ky = true → b.ky = true)
 
-theorem HostFx.Le.refl (a : HostFx) : HostFx.Le a a := ⟨id, id, id⟩
+theorem HostFx.Le.refl (a : HostFx) : HostFx.Le a a := ⟨id, id, id, id⟩
 
 theorem HostFx.Le.trans {a b c : HostFx} (h₁ : HostFx.Le a b) (h₂ : HostFx.Le b c) :
     HostFx.Le a c :=
-  ⟨h₂.1 ∘ h₁.1, h₂.2.1 ∘ h₁.2.1, h₂.2.2 ∘ h₁.2.2⟩
+  ⟨h₂.1 ∘ h₁.1, h₂.2.1 ∘ h₁.2.1, h₂.2.2.1 ∘ h₁.2.2.1, h₂.2.2.2 ∘ h₁.2.2.2⟩
 
 /-- No host effect, as a Boolean. -/
-def HostFx.isNone (a : HostFx) : Bool := !a.rd && !a.wr && !a.rq
+def HostFx.isNone (a : HostFx) : Bool := !a.rd && !a.wr && !a.rq && !a.ky
+
+/-- `Keys` only: the host effect of a `via` function of ADR 0098's shape (#587). -/
+def HostFx.keys : HostFx := { ky := true }
 
 /-- A type labeled at every position (`spec/07 §7` rule 1). A function type says which
 effects its function may perform, the operation `op` of the one capability and the host
@@ -154,6 +161,10 @@ mutual
     /-- `Files.read(path)`: a sink at its `accepts`, whose failure the path and the file system's
     shape decide, and whose result is the file's content (`spec/14 §3`). -/
     | read (path : Atom)
+    /-- `Keys.hmac(key_name, data)` (#587, ADR 0098): the HMAC of `data` under the granted key
+    `key_name`. It fails exactly when the key is not granted, which the host fixes, and records
+    only a ghost event. -/
+    | hmac (key data : Atom)
     /-- `Files.write(path, content)`: a sink at its `accepts`, which changes the file system;
     whether it fails, and the shape it leaves, depend on the path and the shape, not the
     content (ADR 0085 decision 3). -/

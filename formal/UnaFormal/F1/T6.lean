@@ -774,6 +774,43 @@ theorem t6_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (hh : p.HostWF)
               exact brel_quiet hw
                 (by simp only [proj_single_hidden (ev := .out _) (fun h => hd (hacc h))])
                 (fun _ _ => .unit) (fun h => by simp [Res.IsFail] at h) (fun h => by simp [Res.IsFail] at h)
+      | @hmac _ _ key data k d hk hkt hd hds hle _ =>
+        -- `Keys.hmac` (#587): the key name is public, so both runs use the same one, reach the
+        -- same ghost, and fail alike; the values differ only where the data's label is hidden.
+        refine BRelR.of_brel ?_
+        cases k <;> simp [LTy.erase] at hkt
+        rename_i lk
+        obtain ⟨v₁, v₂, h₁, h₂, hv, hk₁, hk₂⟩ := latom_bothσ he₁ he₂ hrel hk
+        simp only [LTy.lsubst] at hv hk₁ hk₂
+        have hkvis : Vis p L (lk.inst (p.sd σ)) :=
+          Vis.of_le (LExpr.le_trans (LExpr.inst_le_join_inst _ _ _)
+            (LExpr.le_of_le_inst_ofLabel (LExpr.le_inst _ hle))) Vis.bot
+        have hkey : v₁ = v₂ := V.eq_text hv hkvis
+        subst hkey
+        cases hk₁
+        rename_i kn
+        obtain ⟨u₁, u₂, g₁, g₂, hvd, hd₁, hd₂⟩ := latom_bothσ he₁ he₂ hrel hd
+        cases d <;> simp [LTy.erase, Ty.Scalar] at hds
+        all_goals
+          rename_i ld
+          simp only [LTy.lsubst] at hvd hd₁ hd₂
+          cases hkm : H.key kn with
+          | none =>
+            -- Both runs fail with the same code, on the same ghost.
+            cases hd₁ <;> cases hd₂ <;> simp only [evalRhs, h₁, h₂, g₁, g₂, Val.line, hkm] <;>
+              (refine brel_same hw ?_; intro v h; cases h)
+          | some m =>
+            by_cases hres : Vis p L (ld.inst (p.sd σ))
+            · have hs : u₁ = u₂ := by
+                first | exact V.eq_int hvd hres | exact V.eq_bool hvd hres | exact V.eq_text hvd hres
+              subst hs
+              cases hd₁ <;> simp only [evalRhs, h₁, h₂, g₁, g₂, Val.line, hkm] <;>
+                (refine brel_same hw ?_; intro v h; cases h; exact .text)
+            · have hhid : ¬ Vis p L
+                  (((LExpr.ofLabel ⟨.internal, []⟩).join (p.deep (.text ld))).inst (p.sd σ)) := fun h =>
+                hres (Vis.of_le (LExpr.inst_le_join_inst _ _ _) h)
+              cases hd₁ <;> cases hd₂ <;> simp only [evalRhs, h₁, h₂, g₁, g₂, Val.line, hkm] <;>
+                intro _ _ <;> refine ⟨rfl, ?_, hw⟩ <;> simp only [OutRel] <;> exact .hidden hhid
       | @read _ _ path t hu ht hle _ =>
         refine BRelR.of_brel ?_
         cases t <;> simp [LTy.erase] at ht

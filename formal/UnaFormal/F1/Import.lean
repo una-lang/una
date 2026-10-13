@@ -235,6 +235,10 @@ structure Ctx where
   /-- In #524's reading of a document with `with` scopes (#538), the capabilities the scoped
   reading reads: an operation of one is not read, so no acceptance rests on M2's event. -/
   blocked : List String := []
+  /-- Whether the document declares a handler of the host's `Keys`, or of a capability it does not
+  declare (#587): its `Keys.hmac` calls are then not read as the host's, since a handler may run in
+  their place. -/
+  keysHandled : Bool := false
 
 /-- The effects a `uses` entry names: `Files`'s operations (M5b) and `Http`'s (M5c) are host
 effects; every other operation is F1's one operation, gathered for G3. -/
@@ -270,6 +274,10 @@ def usesEffects (uses : List J) (invoked : List String := []) (dyn : List String
       else if cap == "Env" && o == "get" then
         -- `Env.get` is the model's `envGet`, which performs no event (M6b).
         pure ()
+      else if cap == "Keys" && o == "hmac" then
+        -- `Keys.hmac` is the model's `hmac` (#587), whose event is a ghost.
+        host := { host with ky := true }
+        modify fun s => { s with host := s.host.or host }
       else
         op := true
         modify fun s => { s with ops := if s.ops.contains (cap, o) then s.ops else s.ops ++ [(cap, o)] }
@@ -299,6 +307,9 @@ partial def ty (c : Ctx) (j : J) : M LTy := do
     | "bool" => pure (.bool l)
     | "text" => pure (.text l)
     | "unit" => pure (.unit l)
+    -- `Hashed` (`spec/03`), which only `Keys.hmac` produces (#587): F1 reads a digest as a text
+    -- at its label, which T-Hmac gives it.
+    | "hashed" => pure (.text l)
     | "param" =>
       -- The checker labels a value of `T` with `ℓ_T`, in place; a signature writes `T` alone.
       -- Both are the same type at every instance, since instantiation drops `ℓ_T` at a position
@@ -586,6 +597,17 @@ mutual
         match ← atoms (← field j "args") with
         | [name] => pure (.envGet name)
         | _ => throw "the operation `Env.get`, with other than one argument"
+      else if std && cap == "Keys" then
+        -- A handler of `Keys` in the document may run in place of the host's (ADR 0098 rule 2's
+        -- premise): fail closed, the call is not read.
+        if c.keysHandled then throw "`Keys.hmac` in a document that declares a handler of `Keys`"
+        -- `Keys.hmac(key_name, data)` is the model's `hmac` (#587, ADR 0039); T-Hmac checks its
+        -- key name against `public` and its data as a scalar.
+        match o, ← atoms (← field j "args") with
+        | "hmac", [key, data] =>
+          modify fun s => { s with host := { s.host with ky := true } }
+          pure (.hmac key data)
+        | _, _ => throw s!"the operation `Keys.{o}`"
       else
       modify fun s => { s with ops := if s.ops.contains (cap, o) then s.ops else s.ops ++ [(cap, o)] }
       match ← atoms (← field j "args") with
@@ -1935,7 +1957,8 @@ def ceilingOf (entries : List String) : Except String Auth := do
       | "Files", "write" => a := { a with wr := true }
       | "Http", _ => a := { a with rq := true }
       | "Env", "get" => a := { a with env := true }
-      | "Console", _ | "Files", _ | "Env", _ => throw s!"the operation `{cap}.{op}`"
+      | "Keys", "hmac" => a := { a with keys := true }
+      | "Console", _ | "Files", _ | "Env", _ | "Keys", _ => throw s!"the operation `{cap}.{op}`"
       | _, _ => a := { a with ops := a.ops ++ [s!"{cap}.{op}"] }
   pure a
 
@@ -2120,9 +2143,16 @@ def checkDocumentRead (subst : Subst) (doc : J) (caps : Caps := {}) (scopes : Bo
         if sms.any (·.name == q) then pure (named d, q) else throw "not a sum") with
       | .ok r => some r
       | .error _ => none
+  -- A handler of the host's `Keys`, or of a capability the document does not declare (an alias
+  -- may name `Keys`, ADR 0098 rule 2): fail closed for `Keys.hmac` (#587).
+  let keysHandled := decls.any fun d => d.kind == "handler" &&
+    match (plainRun (do str (← field d.value "capability"))).toOption with
+    | some cap => cap == "Keys" || !docCap cap
+    | none => true
   let c : Ctx := { records := recs.map (·.name), funs := funNames, vias, allEq := edition == "0.1",
                    codes := codeKinds decls, sums := sms.map fun sm => (sm.name, sm.variants.map (·.length)),
-                   raisesOf, invokes, invoked, dynCaps, withHs, opHandlers, markersOf, blocked }
+                   raisesOf, invokes, invoked, dynCaps, withHs, opHandlers, markersOf, blocked,
+                   keysHandled }
   let rd : String → Label := fun r => match recs.find? (·.name == r) with
     | some rec => rec.deep
     | none => Label.bot

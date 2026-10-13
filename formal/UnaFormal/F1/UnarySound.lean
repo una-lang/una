@@ -414,10 +414,11 @@ theorem fnAllowed_of {pc : LExpr} {s : List (String × LExpr)} {ε : Eff} {o : B
   | .out _, h => ho h.1
   | .read _, h => hg.1 h.1
   | .write _ _, h => hg.2.1 h.1
-  | .req _ _, h => ⟨hg.2.2 h.1, h.2.2⟩
+  | .req _ _, h => ⟨hg.2.2.1 h.1, h.2.2⟩
   | .release _ _, h => by have := h.1; simp [Eff.inst, hr] at this
   | .perf _, _ => trivial
   | .perfFn _, _ => trivial
+  | .keyUse _, _ => trivial
 
 /-- **The events of a call** (option B1): the callee's operations, which its bound allows, and
 its releases, through policies it declares (`Fun.rels`), each above the program counter of the
@@ -436,7 +437,7 @@ theorem call_allowed_inst {pc pc₀ pc' : LExpr} {s s' : List (String × LExpr)}
   | read _ => exact ⟨hg.1 h.1, LExpr.le_trans hpc ((hb.inst s).2.1 (hg.1 h.1)).1⟩
   | write _ _ => exact ⟨hg.2.1 h.1, LExpr.le_trans hpc ((hb.inst s).2.2.1 (hg.2.1 h.1)).1,
       fun ho => LExpr.le_trans hpc (((hb.inst s).2.2.1 (hg.2.1 h.1)).2.1 ho)⟩
-  | req _ _ => exact ⟨hg.2.2 h.1, LExpr.le_trans hpc ((hb.inst s).2.2.2.1 (hg.2.2 h.1)).1, h.2.2⟩
+  | req _ _ => exact ⟨hg.2.2.1 h.1, LExpr.le_trans hpc ((hb.inst s).2.2.2.1 (hg.2.2.1 h.1)).1, h.2.2⟩
   | release pol _ =>
     obtain ⟨hm, po, hpo, _, hv⟩ := h
     obtain ⟨po', hpo', hle, _⟩ := hrb pol (hr pol hm)
@@ -448,6 +449,7 @@ theorem call_allowed_inst {pc pc₀ pc' : LExpr} {s s' : List (String × LExpr)}
     exact LExpr.le_of_le_inst_ofLabel (LExpr.le_inst s hle)
   | perf _ => trivial
   | perfFn _ => trivial
+  | keyUse _ => trivial
 
 theorem flag_of_fails {pc : LExpr} {s : List (String × LExpr)} {ε : Eff} {f : Bool}
     (hf : ε.fails.isSome = true → f = true) : Fails p pc (ε.inst s) → f = true := by
@@ -519,10 +521,11 @@ theorem invoke_allowed_inst {pc₀ P : LExpr} {s s' : List (String × LExpr)} {�
   | out _ => exact ⟨he (hop' h.1), LExpr.le_trans hP (hop (hop' h.1))⟩
   | read _ => have := hg.1 h.1; simp [hhost, HostFx.none] at this
   | write _ _ => have := hg.2.1 h.1; simp [hhost, HostFx.none] at this
-  | req _ _ => have := hg.2.2 h.1; simp [hhost, HostFx.none] at this
+  | req _ _ => have := hg.2.2.1 h.1; simp [hhost, HostFx.none] at this
   | release pol _ => have := hr pol h.1; simp [hrels] at this
   | perf _ => trivial
   | perfFn _ => trivial
+  | keyUse _ => trivial
 
 /-- **An invocation fails as its handler may**, labeled at the caller's program counter (#524),
 with a code when the handler declares no payload kind, and with a payload of a kind it declares. -/
@@ -795,6 +798,24 @@ theorem unary_soundR (hwf : p.LWellFormed) (hb1 : p.B1WellFormed) (h4 : H.RespTy
           simp only [List.mem_singleton] at hev
           subst hev
           exact ⟨rfl, LExpr.le_trans (hpc0 _) (LExpr.le_of_le_inst_ofLabel (LExpr.le_inst _ hle))⟩
+      | @hmac _ _ key data k d hk hkt hd hds _ _ =>
+        -- `Keys.hmac` (#587): its ghost is allowed everywhere; it returns a text, or fails at `pc`.
+        obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv hk
+        obtain ⟨u, hu, hut⟩ := latom_ltypedσ henv hd
+        cases k <;> simp [LTy.erase] at hkt
+        simp only [LTy.lsubst] at hvt
+        cases hvt
+        rename_i _ kn
+        cases d <;> simp [LTy.erase, Ty.Scalar] at hds <;> simp only [LTy.lsubst] at hut <;>
+          cases hut <;>
+          · simp only [evalRhs, hv, hu, Val.line]
+            cases H.key kn with
+            | some m =>
+              exact ⟨fun ev hev => by simp only [List.mem_singleton] at hev; subst hev; trivial,
+                LValTy.text, WEff.self _ _⟩
+            | none =>
+              exact ⟨fun ev hev => by simp only [List.mem_singleton] at hev; subst hev; trivial,
+                ⟨⟨_, rfl, LExpr.le_refl _⟩, rfl⟩, WEff.self _ _⟩
       | @read _ _ path t hu ht hle _ =>
         obtain ⟨v, hv, hvt⟩ := latom_ltypedσ henv hu
         cases t <;> simp [LTy.erase] at ht

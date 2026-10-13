@@ -370,6 +370,9 @@ mutual
       simp only [LTy.InPlace] at h
       exact ⟨LTy.raise_inPlace (LExpr.plainFree_join h.2.2 rfl) h.2.1, Eff.plainFree_ofFn _ _ _⟩
     | _, _, _, _, _, _, _, _, .op _ _ _ _ => ⟨rfl, fun _ h => by simp at h, LExpr.plainFree_bot⟩
+    | _, _, _, _, _, _, hΓ, hpc, .hmac _ _ hd _ _ _ =>
+      ⟨by simp only [LTy.InPlace]; exact LExpr.plainFree_join rfl (LTy.deep_plainFree _ (latom_inPlace hΓ hd)),
+        fun _ h => by simp at h; subst h; exact hpc, LExpr.plainFree_bot⟩
     | _, _, _, _, _, _, hΓ, hpc, .read hu _ _ _ =>
       ⟨rfl, fun _ h => by
         simp at h; subst h

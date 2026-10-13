@@ -148,6 +148,10 @@ mutual
       exact .apply hf' h
     | _, _, _, _, _, .op hl ht _ _ => .op (latom_erase hl) ht
     | _, _, _, _, _, .checked ha hs _ _ => .checked (latom_erase ha) hs
+    | _, _, _, _, _, .hmac hk hkt hd hds _ _ => by
+      have h := latom_erase hk
+      rw [hkt] at h
+      exact .hmac h (latom_erase hd) hds
     | _, _, _, _, _, .read hu ht _ _ => by
       have h := latom_erase hu
       rw [ht] at h

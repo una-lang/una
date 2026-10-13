@@ -5,6 +5,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 ## Unreleased
 
 - **`spec/11` states that a closure keeps the capabilities where it is made** (#674). A closure value is ⟨λ, ρ, H⟩, and two rules join §4: E-Lam makes it with the capability environment in scope, and E-App runs its body under that environment, whoever calls it. This is the semantics the interpreter and the native backend already implement, and the one that `spec/04 §6` rule 3 and the reference check of `spec/05 §6` rule 7 rely on. The citations in the checker and the native backend name the rules.
+- **The formal model reads `Keys.hmac`** (#587). F1 models a `Keys.hmac` call with a ghost event that no observer sees, and reads `Hashed` as a text at its label. T-Hmac asks for a `public` key name and program counter and labels the result `internal` joined with the data's labels; unary soundness and T6 cover it. The re-check reads `Keys.hmac` calls, except in a document that declares a handler of `Keys`, or of a capability it does not declare, where a handler may run in their place: such a call is not read (fail closed). A `via` function that calls `Keys.hmac` stays outside B1, so what calls its policy is not re-checked. 425 theorems, no `sorry`; the replay unchanged; corpus: 4 declarations from not re-checked to accepted (functions that call `Keys.hmac`), none rejected.
 
 ## v0.3.13
 

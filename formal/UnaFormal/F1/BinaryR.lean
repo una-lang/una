@@ -187,7 +187,7 @@ theorem BRelR.to_brel {R : Val → Val → Prop} {vf : Prop} {r₁ r₂ : Run H}
 /-- Effects without releases allow none. -/
 theorem allowed_noRelease {pc : LExpr} {ε : Eff} (hr : ε.rels = []) :
     ∀ ev, Allowed p pc ε ev → ev.isRelease = false
-  | .out _, _ | .read _, _ | .write _ _, _ | .req _ _, _ | .perf _, _ | .perfFn _, _ => rfl
+  | .out _, _ | .read _, _ | .write _ _, _ | .req _ _, _ | .perf _, _ | .perfFn _, _ | .keyUse _, _ => rfl
   | .release _ _, h => by have := h.1; rw [hr] at this; nomatch this
 
 /-- A run that keeps to a typing whose effects release nothing shows no release. -/

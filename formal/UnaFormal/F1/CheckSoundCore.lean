@@ -66,6 +66,11 @@ mutual
       obtain ⟨t, ht, _, hs, _, hle, _, hsf, _, hf, rfl⟩ := h
       exact ⟨_, .read (atomTy_sound ht) (isText_sound hs) (le_ok hle) (symFree_sound hsf),
         flowTo_ok hf⟩
+    | .hmac key data, ε, h => by
+      simp only [checkRhs, bind_ok, pure_ok, need_ok] at h
+      obtain ⟨k, hk, _, hks, d, hd, _, hds, _, hle, _, hsf, _, hf, rfl⟩ := h
+      exact ⟨_, .hmac (atomTy_sound hk) (isText_sound hks) (atomTy_sound hd) (isScalar_sound hds)
+        (le_ok hle) (symFree_sound hsf), flowTo_ok hf⟩
     | .write path content, ε, h => by
       simp only [checkRhs, bind_ok, pure_ok, need_ok] at h
       obtain ⟨t, ht, _, hs, c, hc, _, hcs, _, hle, _, hfs, _, hsf, _, hf, rfl⟩ := h

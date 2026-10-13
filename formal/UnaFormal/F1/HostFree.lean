@@ -19,7 +19,7 @@ namespace Una.F1
 mutual
   /-- A right-hand side that performs no host operation, in its lambdas included. -/
   def Rhs.hostFree : Rhs → Bool
-    | .read _ | .write _ _ | .req _ _ | .envGet _ => false
+    | .read _ | .write _ _ | .hmac _ _ | .req _ _ | .envGet _ => false
     -- The handler an invocation of a `with` scope runs is found at run time (#538), so no reach
     -- set names it: such code is not host-free.
     | .invokeOp _ _ => false
@@ -424,7 +424,7 @@ theorem eval_hostFreeIn
           cases v.line with
           | none => exact SameOn.stuck w u
           | some s => exact ⟨rfl, (fun _ h => by cases h; simp [Val.HostFreeIn]), (fun _ _ _ h => nomatch h)⟩
-      | read _ | write _ _ | req _ _ => simp [Rhs.hostFree] at hr
+      | read _ | write _ _ | hmac _ _ | req _ _ => simp [Rhs.hostFree] at hr
       | construct record fields =>
         refine SameOn.ret w u fun v hv => ?_
         cases ha : evalAtoms env fields <;> simp [ha, Option.elim] at hv

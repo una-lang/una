@@ -49,6 +49,7 @@ mutual
     | .op a, .op b => a == b
     | .read a, .read b => a == b
     | .write a c, .write b d => a == b && c == d
+    | .hmac a c, .hmac b d => a == b && c == d
     | .req m a, .req k b => m == k && a == b
     | .construct r a, .construct s b => r == s && a == b
     | .invoke f a, .invoke g b => ρ f == g && a == b
@@ -128,7 +129,7 @@ mutual
             exact ⟨by rw [h1.1], ih qs h1.2⟩
       | _ => simp [rhsSim] at h
     | .call _ _ _, s, h | .invoke _ _, s, h | .invokeOp _ _, s, h | .funRef _ _, s, h | .atom _, s, h | .prim _ _, s, h
-    | .apply _ _, s, h | .op _, s, h | .read _, s, h | .write _ _, s, h | .req _ _, s, h
+    | .apply _ _, s, h | .op _, s, h | .read _, s, h | .write _ _, s, h | .hmac _ _, s, h | .req _ _, s, h
     | .construct _ _, s, h | .variant _ _ _, s, h | .field _ _, s, h
     | .list _, s, h | .none, s, h | .some _, s, h | .first _, s, h | .elemAt _ _, s, h | .orElse _ _, s, h | .isOk _, s, h | .mkOk _, s, h | .mkErr _, s, h
     | .declassify _ _, s, h | .map _ _, s, h
@@ -430,7 +431,7 @@ theorem events_firstOrder {p : Program} {H : Host} (hwf : p.LWellFormed) (hb1 : 
   | req m vs =>
     simp only [Event.FirstOrder]
     exact ha.2.2
-  | out _ | read _ | write _ _ | perf _ | perfFn _ => trivial
+  | out _ | read _ | write _ _ | perf _ | perfFn _ | keyUse _ => trivial
 
 /-- A release in an erased trace comes from a release, whose value erases to the same. -/
 theorem split_release {ρ : String → String} {t pre rest : Trace} {pol : String} {v : Val}
@@ -444,7 +445,7 @@ theorem split_release {ρ : String → String} {t pre rest : Trace} {pol : Strin
     simp only [Event.anon, Event.release.injEq] at hx
     obtain ⟨rfl, hv⟩ := hx
     exact ⟨A, v', C, rfl, hA, hv⟩
-  | out _ | read _ | write _ _ | req _ _ | perf _ | perfFn _ => simp [Event.anon] at hx
+  | out _ | read _ | write _ _ | req _ _ | perf _ | perfFn _ | keyUse _ => simp [Event.anon] at hx
 
 /-- **What the observer sees of the document's runs.** With `P₁` as in `t6_release_erasure`, and
 `proj` the same in both programs (it reads no function), two runs of a body of `P₂` that end,
