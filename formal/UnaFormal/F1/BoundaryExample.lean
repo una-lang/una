@@ -254,7 +254,10 @@ theorem static_rejected (S : List String) (hS : "rules.check" ∈ S) :
     (ev := .perfFn "rules.lookup") (by rw [static_runs]; simp) (by simp [Auth.allows, cContains])
     S hS (by simp [Val.WithinAllIn])
 
-theorem static_accepted : confinedB p7 cLookup ["rules.check", "rules.lookup"] = true := by decide
+/-- The candidate set holds `""`, the name `Program.handlerFor` gives an operation that no `with`
+scope installs, as the importer's does: no function has it, so nothing runs under it. -/
+theorem static_accepted : confinedB p7 cLookup ["rules.check", "rules.lookup", ""] = true := by
+  decide
 
 /-- Within the ceiling, every ghost of the run names an operation of the program's map that the
 ceiling grants (`perfFn_names_op`). -/
