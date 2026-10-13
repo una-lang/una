@@ -823,7 +823,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let shown = self.show(&passed);
         match self.ctx.fails.clone().map(|f| self.resolve(&f)) {
             Some(declared)
-                if declared == passed || declared == Ty::Error || passed == Ty::Error => {}
+                if declared == passed || declared == Ty::error() || passed == Ty::error() => {}
             Some(declared) => {
                 let declared = self.show(&declared);
                 self.report.error(
@@ -1390,7 +1390,7 @@ fn infer_fails(env: &mut Env<'_>, collected: &Collected) {
             };
             if let (Some(kind), Some(slot)) = (kind, kinds.get_mut(*function))
                 && slot.is_none()
-                && kind != Ty::Error
+                && kind != Ty::error()
             {
                 *slot = Some(kind);
                 changed = true;

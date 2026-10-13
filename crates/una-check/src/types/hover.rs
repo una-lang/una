@@ -158,7 +158,7 @@ impl Snapshots {
             Ty::Hashed => self.leaf(Leaf::Hashed),
             Ty::Var(_) => self.leaf(Leaf::Var),
             Ty::Never => self.leaf(Leaf::Never),
-            Ty::Error => self.leaf(Leaf::Error),
+            Ty::Error(_) => self.leaf(Leaf::Error),
             Ty::Labeled(label, inner) => {
                 let inner = self.shared(inner);
                 self.node(Node::Labeled(label.clone(), inner))
@@ -293,7 +293,7 @@ mod tests {
             Ty::Hashed,
             Ty::Var(3),
             Ty::Never,
-            Ty::Error,
+            Ty::error(),
             Ty::Param(0),
             Ty::Param(7),
             labeled.clone(),

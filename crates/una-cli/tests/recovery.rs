@@ -315,9 +315,10 @@ fn a_module_that_cannot_reach_the_broken_one_keeps_its_diagnostics() {
     );
 }
 
-/// Rule 9: a module that imports the broken name is a dependent, up to its last line.
+/// Rules 8 and 9: a module that imports the broken name gets no U1001 at it, and keeps the
+/// type error of its last line, which the broken declaration does not cause (#581).
 #[test]
-fn an_importing_declaration_is_withheld_to_its_last_line() {
+fn an_importing_declaration_keeps_its_own_errors_only() {
     let root = package_of(
         "importing-module",
         &[
@@ -335,7 +336,13 @@ fn an_importing_declaration_is_withheld_to_its_last_line() {
     assert!(
         found
             .iter()
-            .all(|(code, file, _)| file != "src/b.una" || code.starts_with("U0")),
+            .any(|(code, file, line)| code == "U2001" && file == "src/b.una" && *line == 8),
+        "{found:?}"
+    );
+    assert!(
+        !found
+            .iter()
+            .any(|(code, file, _)| code == "U1001" && file == "src/b.una"),
         "{found:?}"
     );
 }

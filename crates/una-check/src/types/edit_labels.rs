@@ -75,7 +75,7 @@ impl Checker<'_, '_, '_> {
                 match self.env.edit_shapes.get(&name).cloned() {
                     // ADR 0075 rule 1: a position whose labels cannot all be variables is
                     // rejected, never decided by the order unification sees its uses in (N-45).
-                    Some(Ty::Error) => {
+                    Some(Ty::Error(_)) => {
                         if self.pass == Pass::Check {
                             let shown = self.report.text(span).to_owned();
                             self.report.error(
@@ -190,7 +190,7 @@ impl Checker<'_, '_, '_> {
             let shape = if closed(&resolved) {
                 resolved
             } else {
-                Ty::Error
+                Ty::error()
             };
             shapes.insert(name.clone(), shape);
             changed = true;
@@ -297,7 +297,7 @@ fn holds_function(ty: &Ty) -> bool {
 /// Whether `ty` holds no unification variable and no function type, so it can be a shape.
 fn closed(ty: &Ty) -> bool {
     match ty {
-        Ty::Var(_) | Ty::Fn(_) | Ty::Error | Ty::Never => false,
+        Ty::Var(_) | Ty::Fn(_) | Ty::Error(_) | Ty::Never => false,
         Ty::Labeled(_, inner) | Ty::List(inner) => closed(inner),
         Ty::Map(key, value) => closed(key) && closed(value),
         Ty::Kind(_, args) => args.iter().all(closed),

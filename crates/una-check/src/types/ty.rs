@@ -170,6 +170,33 @@ impl KindLabels {
     }
 }
 
+/// Where an error type comes from (#581).
+///
+/// `Unknown` is the type of a reference to a name that does not resolve: U1001 is reported at
+/// it by name resolution, or the name is one a broken declaration would have declared (ADR
+/// 0096 rule 8). A package that holds one is rejected already, so the diagnostics that would
+/// only follow from it are not reported: an inference variable it reaches, a lambda it gives
+/// no parameter type. Every other error type is `Other`, and absorbs nothing more than it did:
+/// a call of a `Never` value, for one, is not an unknown name, and its lambda argument still
+/// reports U2010.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ErrorOrigin {
+    /// A reference to a name that does not resolve.
+    Unknown,
+    /// Any other failure to type.
+    Other,
+}
+
+/// Two error types are the same type, whatever their origins: the origin decides only which
+/// diagnostics follow, never what types compare.
+impl PartialEq for ErrorOrigin {
+    fn eq(&self, _: &ErrorOrigin) -> bool {
+        true
+    }
+}
+
+impl Eq for ErrorOrigin {}
+
 /// A base type: what type checking compares (`spec/03 §2`). Refinements and labels are kept
 /// beside it, in [`Declared`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -195,8 +222,9 @@ pub(crate) enum Ty {
     /// The type of `fail`, below every type (ADR 0024 rule 2).
     Never,
     /// The type of something that failed to type; compatible with everything, so one mistake
-    /// yields one diagnostic.
-    Error,
+    /// yields one diagnostic. Its origin says whether it comes from a name that does not
+    /// resolve (#581); two error types are equal whatever their origins.
+    Error(ErrorOrigin),
     /// A type whose top position carries a label above `public` (`spec/03 §5`, `spec/09 §2`).
     /// Type equality ignores labels.
     Labeled(Label, Shared<Ty>),
@@ -305,7 +333,12 @@ impl Declared {
     }
 
     pub(crate) fn error() -> Declared {
-        Declared::plain(Ty::Error)
+        Declared::plain(Ty::error())
+    }
+
+    /// The declared type of a type name that does not resolve (#581).
+    pub(crate) fn unknown() -> Declared {
+        Declared::plain(Ty::unknown())
     }
 
     /// Whether a value flowing into this type is a refinement obligation (`spec/12 §3`).
@@ -400,7 +433,7 @@ impl Flagged for Ty {
                     label: true,
                     var_label: label.symbols.iter().any(|s| s.starts_with('?')),
                     normal: !label.is_public()
-                        && !matches!(**inner, Ty::Labeled(..) | Ty::Error | Ty::Never),
+                        && !matches!(**inner, Ty::Labeled(..) | Ty::Error(_) | Ty::Never),
                 };
                 own.and(inner.flags())
             }
@@ -412,7 +445,7 @@ impl Flagged for Ty {
             | Ty::Hashed
             | Ty::Param(_)
             | Ty::Never
-            | Ty::Error => Flags::LEAF,
+            | Ty::Error(_) => Flags::LEAF,
         }
     }
 }
@@ -437,6 +470,21 @@ impl Flagged for FnTy {
 }
 
 impl Ty {
+    /// The error type of a failure to type that is not an unknown name.
+    pub(crate) fn error() -> Ty {
+        Ty::Error(ErrorOrigin::Other)
+    }
+
+    /// The error type of a reference to a name that does not resolve (#581).
+    pub(crate) fn unknown() -> Ty {
+        Ty::Error(ErrorOrigin::Unknown)
+    }
+
+    /// Whether this is the error type of a name that does not resolve, under its labels.
+    pub(crate) fn is_unknown(&self) -> bool {
+        matches!(self.unlabeled(), Ty::Error(ErrorOrigin::Unknown))
+    }
+
     /// Whether `self` and `other` are the same value by identity: the same variant, with the
     /// same nodes as children and equal labels. Only ever a fast path to "unchanged" (ADR 0077
     /// stage 2b): `false` says nothing about equality.
@@ -453,7 +501,7 @@ impl Ty {
             | (Ty::Unit, Ty::Unit)
             | (Ty::Hashed, Ty::Hashed)
             | (Ty::Never, Ty::Never)
-            | (Ty::Error, Ty::Error) => true,
+            | (Ty::Error(_), Ty::Error(_)) => true,
             (Ty::Fixed(a), Ty::Fixed(b)) => a == b,
             (Ty::Param(a), Ty::Param(b)) | (Ty::Var(a), Ty::Var(b)) => a == b,
             _ => false,
@@ -479,7 +527,7 @@ impl Ty {
             if own == label
                 && inner.same(old)
                 && !own.is_public()
-                && !matches!(**old, Ty::Labeled(..) | Ty::Error | Ty::Never))
+                && !matches!(**old, Ty::Labeled(..) | Ty::Error(_) | Ty::Never))
     }
 
     /// `self` with its top label raised by `label`; `Error` and `Never` carry no label.
@@ -489,7 +537,7 @@ impl Ty {
         }
         match self {
             Ty::Labeled(own, inner) => Ty::Labeled(own.join(label), inner),
-            Ty::Error | Ty::Never => self,
+            Ty::Error(_) | Ty::Never => self,
             other => Ty::Labeled(label.clone(), Shared::new(other)),
         }
     }
@@ -692,7 +740,7 @@ impl Ty {
     pub(crate) fn substitute(&self, args: &[Ty]) -> Ty {
         match self {
             Ty::Labeled(label, inner) => self.relabeled(inner.substitute(args), label),
-            Ty::Param(index) => args.get(*index).cloned().unwrap_or(Ty::Error),
+            Ty::Param(index) => args.get(*index).cloned().unwrap_or(Ty::error()),
             Ty::List(element) => Ty::List(reuse(element, element.substitute(args))),
             Ty::Map(key, value) => Ty::Map(
                 reuse(key, key.substitute(args)),
@@ -858,7 +906,7 @@ impl TypeView for Ty {
             Ty::Fn(function) => View::Fn(&function.params, &function.result),
             Ty::Var(_) => View::Var,
             Ty::Never => View::Never,
-            Ty::Error => View::Error,
+            Ty::Error(_) => View::Error,
         }
     }
 }

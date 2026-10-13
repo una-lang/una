@@ -452,7 +452,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     .map_or_else(|| "?".to_owned(), |p| (*p).to_owned()),
             ),
             Ty::Labeled(_, inner) => self.base(inner),
-            Ty::Fn(_) | Ty::Var(_) | Ty::Never | Ty::Error => Base::Unknown,
+            Ty::Fn(_) | Ty::Var(_) | Ty::Never | Ty::Error(_) => Base::Unknown,
         }
     }
 
@@ -686,7 +686,7 @@ impl<'e, 'a> Fx<'e, 'a> {
             .types
             .get(&record)
             .cloned()
-            .unwrap_or(Ty::Error);
+            .unwrap_or(Ty::error());
         let args = match record.unlabeled() {
             Ty::Kind(_, args) => args.clone(),
             _ => Vec::new().into(),
@@ -3618,7 +3618,7 @@ fn lost(ty: &Ty, core: &Type) -> Option<String> {
     let label = match core {
         Type::Base { label, .. } | Type::Fn { label, .. } => label,
     };
-    if matches!(ty.unlabeled(), Ty::Var(_) | Ty::Never | Ty::Error) {
+    if matches!(ty.unlabeled(), Ty::Var(_) | Ty::Never | Ty::Error(_)) {
         return None;
     }
     if *label != ty.top_label() {

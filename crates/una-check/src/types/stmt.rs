@@ -565,7 +565,7 @@ impl<'a> Checker<'_, 'a, '_> {
         self.statement = saved;
         self.ctx.handled = false;
         self.ctx.top = false;
-        let error = self.fails_of(&handled.expr).unwrap_or(Ty::Error);
+        let error = self.fails_of(&handled.expr).unwrap_or(Ty::error());
         // The label that decides whether the call fails, when its arguments' values do (N-27):
         // a handling clause branches on it.
         let decided = self
@@ -678,12 +678,12 @@ impl<'a> Checker<'_, 'a, '_> {
     /// `if none`: the value is an `Option[T]`, and the result a `T` (`spec/06 §3`).
     fn unwrap_option(&mut self, ty: &Ty, span: Span) -> Ty {
         let Some(option) = self.env.prelude_kind("Option") else {
-            return Ty::Error;
+            return Ty::error();
         };
         let labeled = self.labeled(ty);
         match labeled.unlabeled().clone() {
-            Ty::Kind(id, args) if id == option => args.first().cloned().unwrap_or(Ty::Error),
-            Ty::Error | Ty::Never => Ty::Error,
+            Ty::Kind(id, args) if id == option => args.first().cloned().unwrap_or(Ty::error()),
+            Ty::Error(_) | Ty::Never => Ty::error(),
             Ty::Var(_) => {
                 let origin = Origin::Instance {
                     param: "T".to_owned(),
@@ -701,7 +701,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     span,
                     format!("`if none` applies to an `Option` value, and this one is `{shown}`"),
                 );
-                Ty::Error
+                Ty::error()
             }
         }
     }
@@ -884,7 +884,7 @@ impl<'a> Checker<'_, 'a, '_> {
                             for bind in binds {
                                 let local = bind.local.as_ref().unwrap_or(&bind.field);
                                 let local = self.name(local);
-                                self.bind(local, Ty::Error);
+                                self.bind(local, Ty::error());
                             }
                         }
                     }
@@ -1062,7 +1062,7 @@ impl<'a> Checker<'_, 'a, '_> {
             for bind in binds {
                 let local = bind.local.as_ref().unwrap_or(&bind.field);
                 let local = self.name(local);
-                self.bind(local, Ty::Error);
+                self.bind(local, Ty::error());
             }
             return;
         }
@@ -1110,12 +1110,11 @@ impl<'a> Checker<'_, 'a, '_> {
                     } else if let Some(slot) = bound.get_mut(found) {
                         *slot = Some(bind.field.span);
                     }
-                    variant
-                        .fields
-                        .get(found)
-                        .map_or(Ty::Error, |f| f.ty.base.substitute(targs).with_label(label))
+                    variant.fields.get(found).map_or(Ty::error(), |f| {
+                        f.ty.base.substitute(targs).with_label(label)
+                    })
                 }
-                None => Ty::Error,
+                None => Ty::error(),
             };
             order.push(found);
             let local_ident = bind.local.as_ref().unwrap_or(&bind.field);

@@ -765,7 +765,7 @@ fn satisfies(
             !facts.has_function(ty) && params.into_iter().all(|index| param_has(index, need))
         }
         Constraint::Ord | Constraint::Integer => match ty.unlabeled() {
-            Ty::Int | Ty::Fixed(_) | Ty::Error | Ty::Never | Ty::Var(_) => true,
+            Ty::Int | Ty::Fixed(_) | Ty::Error(_) | Ty::Never | Ty::Var(_) => true,
             Ty::Param(index) => param_has(*index, need),
             Ty::Text => need == Constraint::Ord,
             Ty::Kind(id, _) => {
