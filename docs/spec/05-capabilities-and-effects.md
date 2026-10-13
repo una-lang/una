@@ -84,6 +84,7 @@ let shown = check_in(phone) with @registrations = in_memory(rows: rows) -- handl
 1. `with @x = @y`: the callee's `@x` is the caller's `@y`. Both MUST have the same capability `C`, with the attenuation rule above.
 2. `with @x = h(args)`: `h` MUST be a handler for the capability the callee expects at `@x` (U3010). The handler's own `uses` MUST be satisfied by the caller's context.
 3. A `with` binding scopes over the evaluation of that statement's expression only.
+4. (v0.3, ADR 0093 rule 4.) `with @x = @y[ops]`: a **narrowed rebinding**. The callee's `@x` is the caller's `@y` restricted to `ops`, which MUST be operations that `@y` permits (U3002) and that its capability declares (U1001). The narrowed binding permits only `ops`: a callee that needs another operation of it is U3002 at the call, as for any binding with too few operations. It runs as `@y`, and every condition that `@y` carries on `ops` still applies (ADR 0093 rule 13). It is allowed at any call, not only at a module boundary. Editions `0.1` and `0.2` do not have it: the brackets there are a syntax error (U0101).
 
 ## 5. Handlers
 

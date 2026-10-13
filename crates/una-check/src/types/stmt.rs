@@ -492,6 +492,14 @@ impl<'a> Checker<'_, 'a, '_> {
                     self.rebind_site(other);
                     Bound::Rebound {
                         target: self.name(other).to_owned(),
+                        ops: None,
+                    }
+                }
+                CapBindingValue::Narrowed { target, ops } => {
+                    let ops = self.narrowed_site(target, ops);
+                    Bound::Rebound {
+                        target: self.name(target).to_owned(),
+                        ops: Some(ops),
                     }
                 }
                 CapBindingValue::Handler(call) => {

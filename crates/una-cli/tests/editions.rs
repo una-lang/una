@@ -34,8 +34,8 @@ enum Difference {
         edition_0_3: &'static [&'static str],
         /// The same package with the construct erased, relative to `tests/conformance`.
         twin: &'static str,
-        /// The file, relative to the package, and the text whose removal from it gives the
-        /// twin; every other file is the same.
+        /// The file of the package, relative to it, and the text, written there exactly once,
+        /// whose removal gives the twin; every other file is the twin's.
         erased: (&'static str, &'static str),
     },
     /// The rule only adds errors: the diagnostics document of edition `0.3` is that of edition
@@ -85,6 +85,25 @@ const EXPECTED_DIFFERENCES: &[Difference] = &[
         erased: (
             "una.toml",
             "\n[contracts]\n\"main.update\" = [\"@catalog: Catalog[price]\"]\n",
+        ),
+    },
+    // ADR 0093 rule 4: a narrowed rebinding, `with @x = @y[ops]`.
+    Difference::Syntax {
+        case: "authority/narrowed_rebinding_edition_0_2",
+        edition_0_2: ("U0101", "src/main.una:20:39"),
+        edition_0_3: &[],
+        twin: "authority/narrowed_rebinding_edition_0_2_erased",
+        erased: ("src/main.una", "[write, read]"),
+    },
+    // ADR 0093 rule 1: the `[boundaries]` table of `una.toml`.
+    Difference::Syntax {
+        case: "project/boundaries_edition_0_2",
+        edition_0_2: ("U7002", "una.toml:6:2"),
+        edition_0_3: &[],
+        twin: "project/boundaries_edition_0_2_erased",
+        erased: (
+            "una.toml",
+            "\n[boundaries]\n\"gallery.thumbnailer\" = [\"Files[read]\"]\n",
         ),
     },
     // ADR 0100 rule 2: `attempt` of a call that cannot fail.
@@ -432,18 +451,23 @@ fn syntax(
         .collect();
     assert_eq!(found, edition_0_3, "{name} as edition 0.3");
 
-    // The twin is the case with the construct erased, and every other file the same.
+    // The twin is the case with the construct erased: the same files, each the same, except
+    // the one that held the construct exactly once, without it.
     let (file, text) = erased;
-    let mut files = package_files(&case);
-    let Some(source) = files.get_mut(file) else {
-        panic!("{name} has no file {file}");
-    };
-    assert!(source.contains(text), "{name}: `{text}` is not in {file}");
-    *source = source.replacen(text, "", 1);
+    let mut expected = package_files(&case);
+    let held = expected
+        .get_mut(file)
+        .unwrap_or_else(|| panic!("{name}: no file `{file}`"));
     assert_eq!(
-        files,
+        held.matches(text).count(),
+        1,
+        "{name}: `{text}` is not written exactly once in `{file}`"
+    );
+    *held = held.replacen(text, "", 1);
+    assert_eq!(
+        expected,
         package_files(&twin),
-        "{twin_name} is not {name} with `{text}` erased from {file}"
+        "{twin_name} is not {name} with `{text}` erased from `{file}`"
     );
 
     // Edition 0.2 accepts the twin, and edition 0.3 checks it the same, with no obligation of

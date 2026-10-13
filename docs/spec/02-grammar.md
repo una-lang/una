@@ -154,7 +154,7 @@ final           = handled | block_expr ;
 let_stmt        = "let" lower_ident [ ":" type ] "=" ( handled | block_expr ) ;
 handled         = line_expr [ with_clause ] NEWLINE [ INDENT handling { handling } DEDENT ] ;
 with_clause     = "with" cap_binding { "," cap_binding } ;
-cap_binding     = cap_ref "=" ( cap_ref | handler_call ) ;
+cap_binding     = cap_ref "=" ( cap_ref [ "[" lower_ident { "," lower_ident } "]" ] | handler_call ) ;   (* the brackets: v0.3, ADR 0093 rule 4 *)
 handling        = "if" "error" ( "fail" variant_expr | "pass" | "use" line_expr ) NEWLINE
                 | "if" "none" ( "fail" variant_expr | "use" line_expr ) NEWLINE ;
 variant_expr    = upper_ident [ call_args ] ;

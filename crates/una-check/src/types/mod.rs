@@ -13,6 +13,7 @@
 //! rules of `spec/12 §3` create. They stay pending until the verifier (M8) discharges them.
 
 mod authority;
+mod boundary;
 mod call;
 mod check;
 mod dead;
@@ -261,6 +262,14 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         .iter()
         .map(|entry| entry.value.clone())
         .collect();
+    // Edition 0.3: the boundaries of `una.toml`, checked against the package (ADR 0093).
+    let _boundaries = boundary::resolve(
+        &env,
+        package.settings,
+        package.manifest,
+        package.modules.len(),
+        &mut report,
+    );
     let facts = facts::KindFacts::new(&env);
     facts::kind_recursion(&env, &mut report);
     authority::stored_effects(&env, &mut report);

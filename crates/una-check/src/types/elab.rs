@@ -1536,7 +1536,12 @@ impl<'e, 'a> Fx<'e, 'a> {
         for binding in &handled.with {
             let cap = self.name(&binding.cap).to_owned();
             let source = match &binding.value {
-                CapBindingValue::Cap(other) => Source::Rebind(self.name(other).to_owned()),
+                // A narrowed rebinding runs as the binding it narrows: the narrowing is checked
+                // statically, and the conditions of that binding still apply (ADR 0093 rules 4
+                // and 13).
+                CapBindingValue::Cap(other) | CapBindingValue::Narrowed { target: other, .. } => {
+                    Source::Rebind(self.name(other).to_owned())
+                }
                 CapBindingValue::Handler(call) => {
                     let handler = match self.res(call.span) {
                         Some(Res::Handler { id }) => id,

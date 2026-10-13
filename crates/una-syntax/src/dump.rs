@@ -547,6 +547,14 @@ impl Dumper<'_> {
     fn cap_binding(&self, binding: &CapBinding) -> Node {
         let value = match &binding.value {
             CapBindingValue::Cap(cap) => atom(format!("@{}", self.name(cap))),
+            CapBindingValue::Narrowed { target, ops } => atom(format!(
+                "@{}[{}]",
+                self.name(target),
+                ops.iter()
+                    .map(|op| self.name(op))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
             CapBindingValue::Handler(call) => self.handler_call(call),
         };
         list("=", [atom(format!("@{}", self.name(&binding.cap))), value])

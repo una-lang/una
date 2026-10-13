@@ -715,7 +715,8 @@ pub struct Handled {
     pub span: Span,
 }
 
-/// `cap_ref "=" ( cap_ref | handler_call )`.
+/// `cap_ref "=" ( cap_ref [ "[" lower_ident { "," lower_ident } "]" ] | handler_call )`; the
+/// brackets only in edition 0.3 (ADR 0093 rule 4).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CapBinding {
     /// The bound capability reference, without `@`.
@@ -731,6 +732,14 @@ pub struct CapBinding {
 pub enum CapBindingValue {
     /// Another capability reference, without `@`.
     Cap(Ident),
+    /// `@y[ops]`: another capability reference restricted to some of its operations, in
+    /// edition 0.3 (ADR 0093 rule 4).
+    Narrowed {
+        /// The capability reference, without `@`.
+        target: Ident,
+        /// The operations it is restricted to, at least one.
+        ops: Vec<Ident>,
+    },
     /// A handler instance.
     Handler(HandlerCall),
 }
