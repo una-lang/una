@@ -1775,6 +1775,186 @@ fn a_list_appended_through_calls_grows_in_linear_time() {
     }
 }
 
+/// Functions that consume their list parameter on one path only, and let it escape on the
+/// other: returned, stored in a record or a list, captured, or passed to an owned parameter
+/// of another function (#284).
+const BORROWED_ENTRY_FUNCTIONS: &str = "module rc\n\npub kind Box\n  items: List[Int]\n\ncons(xs: List[Int], i: Int) -> Int = if i < 0 then xs.append(item: i).len else xs.len\n\nkeep(xs: List[Int], i: Int) -> List[Int] = if i < 0 then xs.append(item: i) else xs\n\nboxed(xs: List[Int], i: Int) -> Box = if i < 0 then Box(items: xs.append(item: i)) else Box(items: xs)\n\nlisted(xs: List[Int], i: Int) -> List[List[Int]] = if i < 0 then [xs.append(item: i)] else [xs, xs]\n\nadder(xs: List[Int], i: Int) -> fn(Int) -> Int = if i < 0 then fn(n) -> xs.append(item: n).len else fn(n) -> xs.len + n\n\ngrown(xs: List[Int], i: Int) -> List[Int] = xs.append(item: i)\n\nnested(xs: List[Int], i: Int) -> Int = if i < 0 then grown(xs, i: i).len else xs.len\n\nboth(xs: List[Int], ys: List[Int], i: Int) -> Int = if i < 0 then xs.append(item: i).len + ys.append(item: i).len else xs.len + ys.len\n\ngo(acc: List[Int], i: Int, n: Int) -> List[Int] = if i == n then acc else go(acc.append(item: i), i: i + 1, n: n)\n\nfill(acc: List[Int], n: Int) -> List[Int]\n=\n  let edit a: List[Int] = acc\n  for i in 0..<n\n    a = grown(a, i: i)\n  a\n";
+
+/// Moves the package at `dir` to edition 0.2, whose `edit` bindings the programs use.
+fn edition_0_2(dir: &Path) {
+    let manifest = std::fs::read_to_string(dir.join("una.toml")).unwrap();
+    std::fs::write(
+        dir.join("una.toml"),
+        manifest.replace("edition = \"0.1\"", "edition = \"0.2\""),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_call_that_would_retain_every_owned_argument_takes_the_borrowed_entry() {
+    // #284: a call whose arguments of owned parameters all stay live takes the entry that
+    // borrows them, with no reference counting at the call; one where an argument moves takes
+    // the owned entry. Each case runs in its own executable, linked with the debug runtime,
+    // which fails with status 3 when a value is used after its release or still referenced
+    // once `main` returns: every reference that an escaping parameter takes is counted. The
+    // output is the interpreter's, and the copies are those the owned entry made before.
+    let cases: &[(&str, &str, &str, usize)] = &[
+        // Borrowed entry, both paths: the consuming one copies the list it borrows.
+        (
+            "borrowed",
+            "let a = cons(xs, i: 1)\n  let b = cons(xs, i: -1)\n  @console.print(\"{a} {b} {xs.len}\")",
+            "3 4 3",
+            1,
+        ),
+        // Owned entry: the list moves in and grows in place.
+        (
+            "owned",
+            "let fresh = [9]\n  let c = cons(fresh, i: -1)\n  @console.print(\"{c} {xs.len}\")",
+            "2 3",
+            0,
+        ),
+        // Mixed: `ys` moves, `xs` stays live, so the owned entry, retaining `xs`.
+        (
+            "mixed",
+            "let ys = [4]\n  let m = both(xs, ys: ys, i: -1)\n  @console.print(\"{m} {xs.len}\")",
+            "6 3",
+            1,
+        ),
+        // Recursion from the borrowed entry to the owned one after the first append.
+        (
+            "recursion",
+            "let r = go(xs, i: 0, n: 5)\n  @console.print(\"{r.len} {xs.len}\")",
+            "8 3",
+            1,
+        ),
+        (
+            "returned",
+            "let k = keep(xs, i: 1)\n  let k2 = keep(xs, i: -1)\n  @console.print(\"{k.len} {k2.len} {xs.len}\")",
+            "3 4 3",
+            1,
+        ),
+        (
+            "record",
+            "let bx = boxed(xs, i: 1)\n  let by = boxed(xs, i: -1)\n  @console.print(\"{bx.items.len} {by.items.len} {xs.len}\")",
+            "3 4 3",
+            1,
+        ),
+        (
+            "list",
+            "let ls = listed(xs, i: 1)\n  let lt = listed(xs, i: -1)\n  @console.print(\"{ls.len} {lt.len} {xs.len}\")",
+            "2 1 3",
+            1,
+        ),
+        (
+            "captured",
+            "let f = adder(xs, i: 1)\n  let g = adder(xs, i: -1)\n  @console.print(\"{f(1)} {g(1)} {g(2)} {xs.len}\")",
+            "4 4 4 3",
+            2,
+        ),
+        (
+            "nested",
+            "let d = nested(xs, i: -1)\n  let e = nested(xs, i: 1)\n  @console.print(\"{d} {e} {xs.len}\")",
+            "4 3 3",
+            1,
+        ),
+    ];
+    for &(case, body, expected, copies) in cases {
+        let program = format!(
+            "{BORROWED_ENTRY_FUNCTIONS}\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let xs = [1, 2, 3]\n  {body}\n"
+        );
+        let name = format!("borrowed-entry-{case}");
+        let dir = package(
+            &name,
+            "\n[run]\nentry = \"rc\"\ngrants = [\"console\"]\n",
+            &[("src/rc.una", &program)],
+        );
+        edition_0_2(&dir);
+        let interpreted = una(&dir, &["run"]);
+        assert_eq!(
+            interpreted.status.code(),
+            Some(0),
+            "{case}: {interpreted:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&interpreted.stdout),
+            format!("{expected}\n"),
+            "{case}"
+        );
+        let built = una(&dir, &["build"]);
+        assert_eq!(built.status.code(), Some(0), "{case}: {built:?}");
+        let output = Command::new(dir.join("target/una").join(&name))
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(0), "{case}: {output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("{expected}\n"),
+            "{case}"
+        );
+        let noted = if copies == 0 {
+            String::new()
+        } else {
+            format!("note: una-rt (debug build): lists, maps and texts copied: {copies}\n")
+        };
+        assert_eq!(String::from_utf8_lossy(&output.stderr), noted, "{case}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn a_list_given_while_live_then_appended_through_calls_grows_in_linear_time() {
+    // #284: `fill` owns its list, but the caller's `xs` stays live, so the call takes the
+    // borrowed entry. Its loop takes the list as its state, copied once at the first append;
+    // each later call of `grown` moves the state into the owned entry, which appends in
+    // place. One copy at every size is the primary check; the timing, each tenfold step under
+    // 30x, the secondary one (#341).
+    let sizes: &[usize] = &[10_000, 100_000, 1_000_000];
+    let dirs: Vec<PathBuf> = sizes
+        .iter()
+        .map(|&steps| {
+            let program = format!(
+                "{BORROWED_ENTRY_FUNCTIONS}\npub main() -> Unit\n  uses @console: Console[print]\n=\n  let xs = [1, 2, 3]\n  let r = fill(xs, n: {steps})\n  @console.print(\"{{r.len}} {{xs.len}}\")\n"
+            );
+            let dir = package(
+                &format!("live-then-owned-{steps}"),
+                "\n[run]\nentry = \"rc\"\ngrants = [\"console\"]\n",
+                &[("src/rc.una", &program)],
+            );
+            edition_0_2(&dir);
+            let built = una(&dir, &["build"]);
+            assert_eq!(built.status.code(), Some(0), "{built:?}");
+            dir
+        })
+        .collect();
+    let measure = |steps: usize| {
+        let dir = &dirs[sizes.iter().position(|&s| s == steps).unwrap()];
+        let (output, seconds) = timing::timed(|| {
+            Command::new(
+                dir.join("target/una")
+                    .join(format!("live-then-owned-{steps}")),
+            )
+            .current_dir(dir)
+            .output()
+            .unwrap()
+        });
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("{} 3\n", steps + 3)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "note: una-rt (debug build): lists, maps and texts copied: 1\n"
+        );
+        seconds
+    };
+    timing::assert_growth("live-then-owned", sizes, 0.0, 0.05, 30.0, measure);
+    for dir in &dirs {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
 #[test]
 fn json_parses_and_writes_in_linear_time_natively() {
     // ADR 0073 J6 (#238): natively, the debug runtime's count of copies is the same at every

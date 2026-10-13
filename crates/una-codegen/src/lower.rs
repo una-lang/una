@@ -1179,6 +1179,10 @@ impl<'p> Lowerer<'_, 'p, '_> {
     /// The references a call of `function` gives its owned parameters (ADR 0072 D2): an
     /// argument at its last use moves out of `scope`, unless its word is also another argument,
     /// which the callee borrows; any other argument is retained. The callee releases them.
+    /// Returns whether the call takes the function's borrowed entry instead (#284): when no
+    /// argument of an owned parameter would move, each would be retained only for the callee
+    /// to release it, so the call gives nothing, and the entry that borrows every parameter
+    /// copies a value only where it consumes it, as the owned entry would copy the retained one.
     #[allow(clippy::too_many_arguments)]
     fn give(
         &mut self,
@@ -1189,9 +1193,41 @@ impl<'p> Lowerer<'_, 'p, '_> {
         scope: &mut Scope,
         catch: &Catch,
         rest: &Expr,
-    ) -> Result<(), CodegenError> {
-        let owned = self.emitter.function(function)?.owned;
-        self.hand_over(&owned, args, values, env, scope, catch, rest)
+    ) -> Result<bool, CodegenError> {
+        let owned = self.emitter.owned(function);
+        if owned.contains(&true)
+            && !(0..args.len()).any(|index| {
+                owned.get(index).copied().unwrap_or(false)
+                    && self.moves(index, args, values, env, scope, catch, rest)
+            })
+        {
+            return Ok(true);
+        }
+        self.hand_over(&owned, args, values, env, scope, catch, rest)?;
+        Ok(false)
+    }
+
+    /// Whether the argument at `index` moves into the callee: it is at its last use in `scope`,
+    /// and its word is no other argument, which the callee borrows.
+    #[allow(clippy::too_many_arguments)]
+    fn moves(
+        &self,
+        index: usize,
+        args: &[Atom],
+        values: &[Value],
+        env: &Env,
+        scope: &Scope,
+        catch: &Catch,
+        rest: &Expr,
+    ) -> bool {
+        let (Some(arg), Some(value)) = (args.get(index), values.get(index)) else {
+            return false;
+        };
+        let shared = values
+            .iter()
+            .enumerate()
+            .any(|(other, word)| other != index && word == value);
+        !shared && self.moving(arg, env, scope, catch, rest).is_some()
     }
 
     /// [`Lowerer::give`] for the parameters `owned` says are owned, of a function or of a
@@ -1227,11 +1263,12 @@ impl<'p> Lowerer<'_, 'p, '_> {
     }
 
     /// The owned result of a call of the function or predicate `function` with `args` at
-    /// `span`; its failure goes to `catch`.
+    /// `span`, through its borrowed entry when `borrowed` (#284); its failure goes to `catch`.
     #[allow(clippy::too_many_arguments)]
     fn call_function(
         &mut self,
         function: &Path,
+        borrowed: bool,
         type_args: &[Type],
         args: &[Value],
         span: Span,
@@ -1239,7 +1276,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
         scope: &Scope,
         catch: &Catch,
     ) -> Result<Value, CodegenError> {
-        let callee = self.emitter.function(function)?;
+        let callee = self.emitter.function_entry(function, borrowed)?;
         let mut args = args.to_vec();
         // After the arguments, the type descriptor of each constrained type parameter: a
         // constant for a known type, the caller's own for its type parameter (`spec/20 §7`).
@@ -1754,8 +1791,10 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     }
                     return self.prelude(&function.name, &values, *span, scope, catch);
                 }
-                self.give(function, args, &values, env, scope, catch, rest)?;
-                self.call_function(function, type_args, &values, *span, env, scope, catch)
+                let borrowed = self.give(function, args, &values, env, scope, catch, rest)?;
+                self.call_function(
+                    function, borrowed, type_args, &values, *span, env, scope, catch,
+                )
             }
             Rhs::Apply {
                 callee, args, span, ..
@@ -1845,7 +1884,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
             }
             Rhs::Declassify { via, arg, span, .. } => {
                 let (value, _) = self.atom(arg, env)?;
-                self.give(
+                let borrowed = self.give(
                     via,
                     std::slice::from_ref(arg),
                     &[value],
@@ -1854,7 +1893,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                     catch,
                     rest,
                 )?;
-                self.call_function(via, &[], &[value], *span, env, scope, catch)
+                self.call_function(via, borrowed, &[], &[value], *span, env, scope, catch)
             }
         }
     }
