@@ -9,7 +9,7 @@ mod resolve;
 use std::collections::{BTreeMap, BTreeSet};
 
 use una_core::IntType;
-use una_diag::{Code, Diagnostic, Edit, Escape, Related, Repair};
+use una_diag::{Code, Diagnostic, Edit, Escape, Related, Repair, Widening};
 use una_project::{Edition, Manifest, is_module_path};
 use una_syntax::ast::{DeclKind, File, Ident, KindBody, RequirementSource};
 use una_syntax::{FileId, Interner, SourceDb, Span};
@@ -218,7 +218,7 @@ impl<'p, 'a> Checker<'p, 'a> {
     /// A repair without an edit.
     fn advice(description: String) -> Repair {
         Repair {
-            widens_authority: false,
+            widens: None,
             rank: 1,
             escape: None,
             description,
@@ -238,7 +238,7 @@ impl<'p, 'a> Checker<'p, 'a> {
     /// A repair that replaces `span` with `replacement`.
     fn edit(&self, description: String, span: Span, replacement: String) -> Repair {
         Repair {
-            widens_authority: false,
+            widens: None,
             rank: 1,
             escape: None,
             description,
@@ -826,7 +826,7 @@ impl<'p, 'a> Checker<'p, 'a> {
             Span::at(file, declared.start),
             "pub ".to_owned(),
         );
-        repair.widens_authority = true;
+        repair.widens = Some(Widening::Visibility);
         diagnostic.repairs.push(repair);
         self.diagnostics.push(diagnostic);
     }

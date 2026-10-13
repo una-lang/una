@@ -144,10 +144,13 @@ fn test_case(path: &Path) -> (TestResult, BTreeSet<ExpectedError>) {
     (TestResult { rejected, failed }, document_errors(&document))
 }
 
-/// The breaches of ADR 0095 rules 3 and 5 in the repairs of `diagnostics`, as `--json` prints
-/// them: ranks are 1 to n in output order, `escape` is present exactly when `escape_cost` is
-/// above 0, and no repair that keeps the guarantee follows an escape. Linear in the repairs.
-fn escape_ranking(diagnostics: &[una_diag::Diagnostic]) -> Vec<String> {
+/// The breaches of ADR 0095 rules 3 and 5 and ADR 0097 rules 3, 4 and 8 in the repairs of
+/// `diagnostics`, as `--json` prints them: ranks are 1 to n in output order, `escape` is
+/// present exactly when `escape_cost` is above 0, no repair that keeps the guarantee follows an
+/// escape, no repair that keeps authority follows a widening of equal escape cost, every
+/// marking has a kind and a cost, and no unmarked repair names an escape or a widening. Linear
+/// in the repairs.
+fn escape_ranking(diagnostics: &[una_diag::Diagnostic], root: &Path) -> Vec<String> {
     let mut breaches = Vec::new();
     for diagnostic in diagnostics {
         let document = serde_json::to_value(diagnostic).expect("a diagnostic serializes");
@@ -156,6 +159,7 @@ fn escape_ranking(diagnostics: &[una_diag::Diagnostic]) -> Vec<String> {
             diagnostic.code, diagnostic.primary.start.line, diagnostic.primary.start.col
         );
         let mut escaped = false;
+        let mut widened = false;
         for (index, repair) in document["repairs"]
             .as_array()
             .into_iter()
@@ -185,6 +189,42 @@ fn escape_ranking(diagnostics: &[una_diag::Diagnostic]) -> Vec<String> {
                     "{at}: repair {} has an escape without kind or cost",
                     index + 1
                 ));
+            }
+            let widens = repair.get("widens");
+            if let Some(widens) = widens
+                && (widens["kind"].as_str().is_none_or(str::is_empty)
+                    || widens["cost"].as_str().is_none_or(str::is_empty))
+            {
+                breaches.push(format!(
+                    "{at}: repair {} widens without kind or cost",
+                    index + 1
+                ));
+            }
+            if widens.is_none() && edit_widens(&repair["edit"], root) {
+                breaches.push(format!(
+                    "{at}: repair {} has an edit that widens and is not marked: {}",
+                    index + 1,
+                    repair["edit"]
+                ));
+            }
+            if widens.is_none()
+                && let Some(description) = repair["description"].as_str()
+                && names_a_widening(description)
+            {
+                breaches.push(format!(
+                    "{at}: repair {} widens and is not marked: {description}",
+                    index + 1
+                ));
+            }
+            if cost == 0 {
+                if widens.is_some() {
+                    widened = true;
+                } else if widened {
+                    breaches.push(format!(
+                        "{at}: repair {} keeps authority and follows a widening",
+                        index + 1
+                    ));
+                }
             }
             if escape.is_none()
                 && let Some(description) = repair["description"].as_str()
@@ -230,6 +270,70 @@ fn names_an_escape(code: Code, description: &str) -> bool {
             .any(|(named, start)| *named == code && description.starts_with(start))
 }
 
+/// The texts of a repair that widens authority, visibility or a grant (ADR 0097 rule 1).
+const WIDENING_TEXTS: [&str; 4] = [
+    "`uses` clause of",
+    "declare `uses",
+    "with `pub`",
+    "in `[run] grants`",
+];
+
+/// The routes whose text names a widening but which write down authority already held: U3001's
+/// inferred `uses`, which its callers are already charged for (the ruling on #579).
+const NOT_WIDENING: [&str; 1] = ["this states authority its callers are already charged for"];
+
+/// Whether a repair described by `description` widens authority, visibility or a grant (ADR
+/// 0097 rule 8), unless it is one of [`NOT_WIDENING`].
+fn names_a_widening(description: &str) -> bool {
+    WIDENING_TEXTS.iter().any(|text| description.contains(text))
+        && !NOT_WIDENING.iter().any(|text| description.contains(text))
+}
+
+/// Whether a repair's `edit` widens by what it writes, whatever its description says (ADR 0097
+/// rule 8, the review of #579): it introduces a `uses` binding, makes a declaration `pub`, or
+/// writes grants into `una.toml`.
+/// An edit that only re-prints what it replaces, as a canonical-form edit does, widens nothing:
+/// the edit widens when its replacement holds more of these than the text it replaces, read
+/// from the case's files under `root`.
+fn edit_widens(edit: &Value, root: &Path) -> bool {
+    if edit.is_null() {
+        return false;
+    }
+    let replacement = edit["replacement"].as_str().unwrap_or("");
+    let file = edit["file"].as_str().unwrap_or("");
+    let replaced = replaced_text(edit, &root.join(file)).unwrap_or_default();
+    let more =
+        |needle: &str| replacement.matches(needle).count() > replaced.matches(needle).count();
+    more("uses @")
+        || more("pub ")
+        || ((file == "una.toml" || file.ends_with("/una.toml")) && more("grants"))
+}
+
+/// The text an edit replaces: from its 1-based `start` to its exclusive `end`, columns counted
+/// in Unicode scalar values (`spec/13 §1`).
+fn replaced_text(edit: &Value, path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let offset = |position: &Value| -> Option<usize> {
+        let line = usize::try_from(position["line"].as_u64()?).ok()?;
+        let col = usize::try_from(position["col"].as_u64()?).ok()?;
+        let start: usize = text
+            .split_inclusive('\n')
+            .take(line.saturating_sub(1))
+            .map(str::len)
+            .sum();
+        let rest = text.get(start..)?;
+        Some(
+            start
+                + rest
+                    .char_indices()
+                    .nth(col.saturating_sub(1))
+                    .map_or(rest.len(), |(i, _)| i),
+        )
+    };
+    let (from, to) = (offset(&edit["start"])?, offset(&edit["end"])?);
+    text.get(from..to.max(from)).map(str::to_owned)
+}
+
 #[test]
 fn conformance_suite() {
     let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -265,7 +369,13 @@ fn conformance_suite() {
         };
         // ADR 0095 rule 8: the repairs of every diagnostic of every case, as `--json` prints
         // them, keep escapes last and say what they cost.
-        let ranking = escape_ranking(&diagnostics);
+        // A single-file case is its own package root (ADR 0015).
+        let package_root = if path.is_dir() {
+            path.clone()
+        } else {
+            path.parent().map(Path::to_path_buf).unwrap_or_default()
+        };
+        let ranking = escape_ranking(&diagnostics, &package_root);
         if !ranking.is_empty() {
             failures.push(format!("{}: {}", location.path, ranking.join("; ")));
             continue;

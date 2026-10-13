@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use una_diag::{Code, Escape, Repair};
+use una_diag::{Code, Escape, Repair, Widening};
 use una_project::Manifest;
 use una_syntax::Span;
 use una_syntax::ast::{Body, ClauseKind, Expr, ExprKind, Ident};
@@ -314,18 +314,12 @@ impl<'a> Checker<'_, 'a, '_> {
                     // attenuation the header states.
                     let other =
                         self.binding_permitting(&declared, capability, &[op_name.to_owned()]);
-                    let advice = match &other {
-                        Some(other) => format!(
-                            "use `@{other}`, which permits it, or add `{op_name}` to its `uses` clause"
-                        ),
-                        None => format!("add `{op_name}` to its `uses` clause"),
-                    };
+                    // ADR 0097 rule 6: the message states the problem; the routes are repairs.
                     let mut diagnostic = self.report.make(
                         Code::U3002,
                         op.span,
-                        format!("`@{name}` permits {permitted}, not `{op_name}`; {advice}"),
+                        format!("`@{name}` permits {permitted}, not `{op_name}`"),
                     );
-                    let ranked = other.is_some();
                     if let Some(other) = other {
                         let text = if cap.span.end - cap.span.start == name.len() {
                             other.clone()
@@ -338,17 +332,12 @@ impl<'a> Checker<'_, 'a, '_> {
                             text,
                         ));
                     }
+                    // ADR 0097 rule 4: the widening, marked, follows the route that keeps
+                    // authority.
                     let extra = [op_name.to_owned()];
-                    diagnostic.repairs.extend(
-                        self.widen(clause, &declared, capability, &ops, &extra).map(
-                            |mut repair| {
-                                if ranked {
-                                    repair.rank = 2;
-                                }
-                                repair
-                            },
-                        ),
-                    );
+                    diagnostic
+                        .repairs
+                        .extend(self.widen(clause, &declared, capability, &ops, &extra));
                     self.report.push(diagnostic);
                 }
                 capability
@@ -388,18 +377,20 @@ impl<'a> Checker<'_, 'a, '_> {
                     }
                     // Edition 0.1 keeps its message; the prelude's higher-order functions take
                     // only pure functions there (ADR 0062).
-                    Base::Pure if self.prelude_lambda => self.report.error(
+                    Base::Pure if self.prelude_lambda => self.undeclared(
                         Code::U3004,
                         cap.span,
+                        name,
                         format!(
-                            "`@{name}` is used here, but this code declares no `uses`, so it is pure; declare `uses @{name}: ...` in its header; a function passed to a prelude function such as `map`, `filter` or `fold` may use capabilities only in edition 0.2"
+                            "`@{name}` is used here, but this code declares no `uses`, so it is pure; a function passed to a prelude function such as `map`, `filter` or `fold` may use capabilities only in edition 0.2"
                         ),
                     ),
-                    Base::Pure => self.report.error(
+                    Base::Pure => self.undeclared(
                         Code::U3004,
                         cap.span,
+                        name,
                         format!(
-                            "`@{name}` is used here, but this code declares no `uses`, so it is pure; declare `uses @{name}: ...` in its header"
+                            "`@{name}` is used here, but this code declares no `uses`, so it is pure"
                         ),
                     ),
                     Base::Example => self.report.error(
@@ -407,10 +398,11 @@ impl<'a> Checker<'_, 'a, '_> {
                         cap.span,
                         format!("no `given` line binds `@{name}`"),
                     ),
-                    Base::Declared | Base::Quiet => self.report.error(
+                    Base::Declared | Base::Quiet => self.undeclared(
                         Code::U3001,
                         cap.span,
-                        format!("`@{name}` is not in scope; declare it with `uses` in the header"),
+                        name,
+                        format!("`@{name}` is not in scope"),
                     ),
                 }
                 None
@@ -490,17 +482,12 @@ impl<'a> Checker<'_, 'a, '_> {
                             // Issue #69 (UI-005, final review F-002): rebinding the callee's
                             // reference to a binding that already permits what it needs ranks
                             // before widening this one, which would undo its attenuation.
-                            let rebind = self.rebinding(span, need, &declared, capability);
-                            let ranked = rebind.is_some();
-                            diagnostic.repairs.extend(rebind);
+                            // ADR 0097 rule 4: output ranks the widening after it.
+                            diagnostic
+                                .repairs
+                                .extend(self.rebinding(span, need, &declared, capability));
                             diagnostic.repairs.extend(
-                                self.widen(clause, &declared, capability, &ops, &missing)
-                                    .map(|mut repair| {
-                                        if ranked {
-                                            repair.rank = 2;
-                                        }
-                                        repair
-                                    }),
+                                self.widen(clause, &declared, capability, &ops, &missing),
                             );
                             self.report.push(diagnostic);
                         }
@@ -584,7 +571,7 @@ impl<'a> Checker<'_, 'a, '_> {
                             Code::U3001,
                             span,
                             format!(
-                                "{callee} needs `{}`, which is not in scope here; declare it with `uses`",
+                                "{callee} needs `{}`, which is not in scope here",
                                 self.show_need(need)
                             ),
                         );
@@ -769,20 +756,35 @@ impl<'a> Checker<'_, 'a, '_> {
         {
             return;
         }
-        let message = match self.base {
-            Base::Pure => (
+        match self.base {
+            Base::Pure => self.undeclared(
                 Code::U3004,
-                format!(
-                    "`@{name}` is used here, but this code declares no `uses`, so it is pure; declare `uses @{name}: ...` in its header"
-                ),
+                other.span,
+                name,
+                format!("`@{name}` is used here, but this code declares no `uses`, so it is pure"),
             ),
-            Base::Example => (Code::U3001, format!("no `given` line binds `@{name}`")),
-            _ => (
+            Base::Example => self.report.error(
                 Code::U3001,
-                format!("`@{name}` is not in scope; declare it with `uses` in the header"),
+                other.span,
+                format!("no `given` line binds `@{name}`"),
             ),
-        };
-        self.report.error(message.0, other.span, message.1);
+            _ => self.undeclared(
+                Code::U3001,
+                other.span,
+                name,
+                format!("`@{name}` is not in scope"),
+            ),
+        }
+    }
+
+    /// U3001 or U3004 for `@name`, which no `uses` clause declares, with `message`; its route
+    /// is declaring the binding, which widens the header (ADR 0097 rules 6 and 7).
+    fn undeclared(&mut self, code: Code, span: Span, name: &str, message: String) {
+        let mut diagnostic = self.report.make(code, span, message);
+        diagnostic.repairs.push(widening(Report::advice(format!(
+            "declare `uses @{name}: ...` in the header, with the capability and the operations used"
+        ))));
+        self.report.push(diagnostic);
     }
 
     /// `if error pass` (`spec/06 §3`): the failure passes on unchanged, so its kind must be the
@@ -1198,33 +1200,46 @@ pub(crate) fn infer(env: &mut Env<'_>, collected: &Collected, report: &mut Repor
             let capability = match caps.get(id).and_then(|c| c.get(&name).copied()) {
                 Some(Ok(capability)) => Some(capability),
                 Some(Err((a, b))) => {
-                    let message = if from_headers {
-                        format!(
-                            "`{function_name}` calls code that needs `@{name}` to be `{}` and code that needs it to be `{}`; rebind one of them to another name with `with`",
-                            cap_label(env, a),
-                            cap_label(env, b)
+                    // ADR 0097 rule 6: the message states the problem; the route is a repair.
+                    let (message, route) = if from_headers {
+                        (
+                            format!(
+                                "`{function_name}` calls code that needs `@{name}` to be `{}` and code that needs it to be `{}`",
+                                cap_label(env, a),
+                                cap_label(env, b)
+                            ),
+                            "rebind one of them to another name with `with`".to_owned(),
                         )
                     } else {
-                        format!(
-                            "the callers of `{function_name}` bind `@{name}` to `{}` and to `{}`; declare its `uses` in the header",
-                            cap_label(env, a),
-                            cap_label(env, b)
+                        (
+                            format!(
+                                "the callers of `{function_name}` bind `@{name}` to `{}` and to `{}`",
+                                cap_label(env, a),
+                                cap_label(env, b)
+                            ),
+                            inferred_route(&name, &ops),
                         )
                     };
                     if reports && let Some(span) = span {
-                        report.error(Code::U3001, span, message);
+                        let mut diagnostic = report.make(Code::U3001, span, message);
+                        diagnostic.repairs.push(Report::advice(route));
+                        report.push(diagnostic);
                     }
                     None
                 }
                 None => {
                     if reports && let Some(span) = span {
-                        report.error(
+                        let mut diagnostic = report.make(
                             Code::U3001,
                             span,
                             format!(
-                                "no caller of `{function_name}` binds `@{name}`, so its capability cannot be inferred; declare `uses @{name}: ...` in the header"
+                                "no caller of `{function_name}` binds `@{name}`, so its capability cannot be inferred"
                             ),
                         );
+                        diagnostic
+                            .repairs
+                            .push(Report::advice(inferred_route(&name, &ops)));
+                        report.push(diagnostic);
                     }
                     None
                 }
@@ -1467,14 +1482,20 @@ pub(crate) fn grants(
             continue;
         };
         if capability.module != env.prelude {
-            report.error(
+            // ADR 0097 rule 6: a handler keeps authority, and it is the route.
+            let mut diagnostic = report.make(
                 Code::U3012,
                 need.span,
                 format!(
-                    "`main` uses `@{}: {}`, which is not a host capability, so no grant can provide it; install a handler for it with `with` inside `main`",
+                    "`main` uses `@{}: {}`, which is not a host capability, so no grant can provide it",
                     need.usage.name, capability.name
                 ),
             );
+            diagnostic.repairs.push(Report::advice(format!(
+                "install a handler of `{}` for `@{}` with `with` inside `main`",
+                capability.name, need.usage.name
+            )));
+            report.push(diagnostic);
             continue;
         }
         if run.is_none() && settings.grants.is_empty() {
@@ -1494,7 +1515,7 @@ pub(crate) fn grants(
             } else {
                 "`[run] grants` does not grant"
             };
-            report.error(
+            let mut diagnostic = report.make(
                 Code::U3012,
                 need.span,
                 format!(
@@ -1503,6 +1524,16 @@ pub(crate) fn grants(
                     capability.name
                 ),
             );
+            // ADR 0097 rule 7: granting is the route, and it widens what the program may do
+            // when it runs.
+            let mut grant = Report::advice(format!(
+                "grant {} of `{}` in `[run] grants` of `una.toml`, or with `--grant`",
+                missing.join(", "),
+                capability.name
+            ));
+            grant.widens = Some(Widening::Grant);
+            diagnostic.repairs.push(grant);
+            report.push(diagnostic);
         }
     }
 }
@@ -1614,8 +1645,20 @@ pub(crate) fn testing_installs(findings: &Findings, report: &mut Report<'_>) {
     }
 }
 
+/// The route of a U3001 whose capability inference cannot settle: declaring `uses @name` with
+/// the operations the body performs. It writes down authority that the function already
+/// exercises and its callers are already charged for, so it does not widen, and it carries no
+/// `widens` mark (ADR 0097 rule 6, ruling on #579).
+fn inferred_route(name: &str, ops: &std::collections::BTreeSet<String>) -> String {
+    let ops: Vec<&str> = ops.iter().map(String::as_str).collect();
+    format!(
+        "declare `uses @{name}: <capability>[{}]` in the header; this states authority its callers are already charged for",
+        ops.join(", ")
+    )
+}
+
 /// `repair`, marked as widening authority: `una fix` never applies it (ADR 0084).
 fn widening(mut repair: Repair) -> Repair {
-    repair.widens_authority = true;
+    repair.widens = Some(Widening::Authority);
     repair
 }

@@ -52,10 +52,10 @@ fn fixable_one(diagnostic: &Diagnostic) -> bool {
     diagnostic
         .repairs
         .iter()
-        .min_by_key(|repair| (repair.escape_cost(), repair.rank))
+        .min_by_key(|repair| repair.order_key())
         .is_some_and(|repair| {
             repair.escape.is_none()
-                && !repair.widens_authority
+                && !repair.widens()
                 && repair
                     .edit
                     .as_ref()
