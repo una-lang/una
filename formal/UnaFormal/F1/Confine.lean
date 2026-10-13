@@ -24,6 +24,9 @@ structure Auth where
   rq : Bool := false
   env : Bool := false
   ops : List String := []
+  /-- The operation each static handler function implements (#572), the program's
+  `staticOps`: a `Rhs.invoke` of the function performs that operation. -/
+  staticOps : List (String × String) := []
 
 /-- The events a ceiling allows. No ceiling grants a release (N-155): a policy belongs to the
 trusted modules, and a boundary module never reaches one. -/
@@ -36,10 +39,9 @@ def Auth.allows (a : Auth) : Event → Prop
   -- The ghost of an invocation of a `with` scope's operation (#561): granted when the ceiling
   -- names the operation, as `Rhs.within` asks of `invokeOp`.
   | .perf o => o ∈ a.ops
-  -- The ghost of a #524 invocation, by the handler's function: confined by what the handler does,
-  -- not by the operation's name (R11 of `docs/plan/formal-track-boundary.md`); #572 ties it to
-  -- the handler's operation.
-  | .perfFn _ => True
+  -- The ghost of a #524 invocation, by the handler's function: granted when the ceiling names
+  -- the operation the handler implements (#572, closing R11).
+  | .perfFn f => ∃ o, a.staticOps.lookup f = some o ∧ o ∈ a.ops
 
 mutual
   /-- A right-hand side that performs only what `a` grants, in its lambdas included. -/
@@ -50,9 +52,14 @@ mutual
     | .req _ _ => a.rq
     | .envGet _ => a.env
     | .invokeOp o _ => a.ops.contains o
+    -- A static handler's operation must be in the ceiling; a function no static operation names
+    -- is not invoked within one (#572).
+    | .invoke f _ => match a.staticOps.lookup f with
+      | some o => a.ops.contains o
+      | none => false
     | .declassify _ _ => false
     | .lambda _ b => b.within a
-    | .atom _ | .prim _ _ | .call _ _ _ | .invoke _ _ | .apply _ _ | .construct _ _ | .variant _ _ _ | .field _ _
+    | .atom _ | .prim _ _ | .call _ _ _ | .apply _ _ | .construct _ _ | .variant _ _ _ | .field _ _
     | .list _ | .none | .some _ | .first _ | .elemAt _ _ | .orElse _ _ | .isOk _ | .mkOk _ | .mkErr _ | .funRef _ _
     | .map _ _ | .filter _ _
     | .firstWhere _ _ | .fold _ _ _ | .parse _ | .checked _ _ _ | .eq _ _ | .tuple _ | .append _ _ | .set _ _ _
@@ -421,6 +428,14 @@ theorem eval_confined (hH : H.RespTyped) (hp : p.ConfinedAt S a) : ∀ n : Nat,
             · exact hfun w f fn vs hfd (hc f (by simp [Rhs.callees])) (evalAtoms_within hf ha)
             · exact Conf.stuck w
       | invoke f args =>
+        have hop : a.allows (.perfFn f) := by
+          simp only [Rhs.within] at hr
+          cases hl : a.staticOps.lookup f with
+          | none => simp [hl] at hr
+          | some o =>
+            simp [hl] at hr
+            simp only [Auth.allows]
+            exact ⟨o, hl, hr⟩
         simp only [evalRhs]
         cases hfd : p.find f with
         | none => exact Conf.stuck w
@@ -430,7 +445,7 @@ theorem eval_confined (hH : H.RespTyped) (hp : p.ConfinedAt S a) : ∀ n : Nat,
           | some vs =>
             simp only []
             split
-            · exact Conf.ghost trivial (hfun w f fn vs hfd (hc f (by simp [Rhs.callees])) (evalAtoms_within hf ha))
+            · exact Conf.ghost hop (hfun w f fn vs hfd (hc f (by simp [Rhs.callees])) (evalAtoms_within hf ha))
             · exact Conf.stuck w
       | invokeOp o args =>
         simp only [Rhs.within] at hr
@@ -1055,6 +1070,19 @@ theorem apply_confined (hH : H.RespTyped) (hp : p.ConfinedAt S a) {fv : Val} {vs
     (hfv : Val.WithinIn S a fv) (hvs : Val.WithinAllIn S a vs) (n : Nat) (w : World H) :
     ∀ ev ∈ (applyWith (eval H n p) w fv vs).1, a.allows ev :=
   (applyWith_conf (fun env e he hw hc => (eval_confined hH hp n).2 w env e he hw hc) hfv hvs).1
+
+/-- **#572, closing R11.** A #524 invocation during a call into the boundary performs an
+operation the ceiling names: each ghost `.perfFn g` of the run is of a static handler `g` that
+the program maps to an operation in the ceiling's `ops`, when the ceiling carries the program's
+map. -/
+theorem perfFn_names_op (hH : H.RespTyped) (hp : p.ConfinedAt S a)
+    (hst : a.staticOps = p.staticOps) {f : String} {fn : Fun} (hfd : p.find f = some fn) (hS : S f)
+    {vs : List Val} (hvs : Val.WithinAllIn S a vs) (n : Nat) (w : World H) (g : String)
+    (hg : Event.perfFn g ∈ (eval H n p w (bindParams fn.params vs []) fn.body).1) :
+    ∃ o, p.staticOps.lookup g = some o ∧ o ∈ a.ops := by
+  have := body_confined hH hp hfd hS hvs n w (.perfFn g) hg
+  simp only [Auth.allows, hst] at this
+  exact this
 
 end Runs
 

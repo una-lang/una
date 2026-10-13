@@ -223,4 +223,48 @@ theorem posting_rejected (S : List String) (hS : "tpl.render_alert" ∈ S) :
   confinedB_refutes Host.unit_respTyped (fn := renderAlert) rfl (vs := []) (n := 20) (w := w0)
     (ev := .req "POST" [.text "https://customer"]) (by rw [posting_requests]; simp) (by simp [Auth.allows, cPost]) S hS (by simp [Val.WithinAllIn])
 
+/-! ### 7. #572: the operation of a static handler -/
+
+/-- The rule pack's static handler of `Records.lookup` (#524): it reads. -/
+def lookupH : Fun := fn "rules.lookup" [] (seq (.read (.text "records")))
+
+/-- The rule pack's check, which performs `Records.lookup` through that handler. -/
+def checkS : Fun := fn "rules.check" [] (seq (.invoke "rules.lookup" []))
+
+def p7 : Program := { mk [checkS, lookupH] with staticOps := [("rules.lookup", "Records.lookup")] }
+
+/-- A ceiling that grants `Records.contains`, not `Records.lookup`. -/
+def cContains : Auth :=
+  { rd := true, ops := ["Records.contains"], staticOps := [("rules.lookup", "Records.lookup")] }
+
+/-- A ceiling that grants `Records.lookup`. -/
+def cLookup : Auth :=
+  { rd := true, ops := ["Records.lookup"], staticOps := [("rules.lookup", "Records.lookup")] }
+
+/-- The run invokes the static handler: its ghost names the handler, then the handler reads. -/
+theorem static_runs :
+    (eval Host.unit 20 p7 w0 (bindParams checkS.params [] []) checkS.body).1 =
+      [.perfFn "rules.lookup", .read "records"] := rfl
+
+/-- Outside the ceiling's operations, a static handler's invocation is refused, by the ghost of
+a concrete run: the read alone the ceiling would grant. -/
+theorem static_rejected (S : List String) (hS : "rules.check" ∈ S) :
+    confinedB p7 cContains S = false :=
+  confinedB_refutes Host.unit_respTyped (fn := checkS) rfl (vs := []) (n := 20) (w := w0)
+    (ev := .perfFn "rules.lookup") (by rw [static_runs]; simp) (by simp [Auth.allows, cContains])
+    S hS (by simp [Val.WithinAllIn])
+
+/-- The candidate set holds `""`, the name `Program.handlerFor` gives an operation that no `with`
+scope installs, as the importer's does: no function has it, so nothing runs under it. -/
+theorem static_accepted : confinedB p7 cLookup ["rules.check", "rules.lookup", ""] = true := by
+  decide
+
+/-- Within the ceiling, every ghost of the run names an operation of the program's map that the
+ceiling grants (`perfFn_names_op`). -/
+theorem static_names_op (g : String)
+    (hg : Event.perfFn g ∈ (eval Host.unit 20 p7 w0 (bindParams checkS.params [] []) checkS.body).1) :
+    ∃ o, p7.staticOps.lookup g = some o ∧ o ∈ cLookup.ops :=
+  perfFn_names_op Host.unit_respTyped (confinedB_sound static_accepted) rfl (f := "rules.check")
+    (fn := checkS) rfl (by simp) (vs := []) (by simp [Val.WithinAllIn]) 20 w0 g hg
+
 end Una.F1.BoundaryExample

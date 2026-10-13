@@ -1240,7 +1240,8 @@ def prepare (c : Ctx) (hl : HostLabels) (caps : List (String × J)) (decls : Lis
 def mkProgram (cats : List String) (acceptsOp : Label) (hl : HostLabels) (recs : List Record)
     (pols : List Policy) (funs : List Fun) (sums : List Sum := [])
     (ops : List (String × Label) := []) (handlerOf : List (String × String) := [])
-    (opHandlers : List (String × List String) := []) : Program where
+    (opHandlers : List (String × List String) := [])
+    (staticOps : List (String × String) := []) : Program where
   categories := cats
   acceptsOp := acceptsOp
   acceptsRead := hl.acceptsRead
@@ -1259,6 +1260,8 @@ def mkProgram (cats : List String) (acceptsOp : Label) (hl : HostLabels) (recs :
   -- representative is its first such handler.
   handlerOf := handlerOf.filter fun q => funs.any (·.name == q.1)
   opRep := opHandlers.filterMap fun (o, fs) => (fs.find? fun f => funs.any (·.name == f)).map (o, ·)
+  -- The operation of each static handler of the program's functions (#572).
+  staticOps := staticOps.filter fun q => funs.any (·.name == q.1)
   policies := pols
   funs := funs
 
@@ -2319,7 +2322,9 @@ def checkDocumentRead (subst : Subst) (doc : J) (caps : Caps := {}) (scopes : Bo
     if !bs.isEmpty then
       let modOfF := fun (g : String) => (code.find? fun d => named d == g).map (·.module)
       let readFuns := code.filterMap fun d => (readOf (named d)).map (·.fn)
-      let P := mkProgram cats Label.bot hl recs [] readFuns sms opsAcc handlerOf opHandlers
+      -- Each static handler function, with the operation it implements (#524, #572).
+      let staticOps := invokes.map fun ((cap, o), f) => (f, s!"{cap}.{o}")
+      let P := mkProgram cats Label.bot hl recs [] readFuns sms opsAcc handlerOf opHandlers staticOps
       let edges := fun (g : String) => ((List.lookup g reach).getD []) ++
         (((readOf g).map fun pr => pr.fn.invokes.flatMap P.handlersOf).getD [])
       let closure := fun (start : List String) (next : String → List String) => Id.run do
@@ -2327,8 +2332,9 @@ def checkDocumentRead (subst : Subst) (doc : J) (caps : Caps := {}) (scopes : Bo
         for _ in [0:code.length + 2] do
           acc := (acc ++ acc.flatMap next).eraseDups
         pure acc
-      let allOps := (opHandlers.map (·.1) ++ readFuns.flatMap (·.invokes)).eraseDups
-      let top : Auth := { out := true, rd := true, wr := true, rq := true, env := true, ops := allOps }
+      let allOps := (opHandlers.map (·.1) ++ readFuns.flatMap (·.invokes) ++ P.staticOps.map (·.2)).eraseDups
+      let top : Auth := { out := true, rd := true, wr := true, rq := true, env := true, ops := allOps,
+                          staticOps := P.staticOps }
       let verdict := fun (f : String) => bs.findSome? fun (m, c) => Id.run do
         let outside := (closure [f] edges).filter fun h => modOfF h != some m
         let entries := ((outside.flatMap edges).filter fun g => modOfF g == some m).eraseDups
@@ -2345,7 +2351,8 @@ def checkDocumentRead (subst : Subst) (doc : J) (caps : Caps := {}) (scopes : Bo
             fn.params.any (fun q => LTy.holdsFn recs 8 q.2) || LTy.holdsFn recs 8 fn.result).getD true then
           return some (.notRechecked
             s!"a function value crosses the boundary of `{m}`, a grant F1 does not read yet")
-        if confinedB P c S then return none
+        -- The ceiling carries the program's map of static handlers (#572).
+        if confinedB P { c with staticOps := P.staticOps } S then return none
         return some (.rejected s!"a call into the boundary module `{m}` performs beyond its ceiling (ADR 0093)")
       final := close (final.map fun (f, o) => match o with
         | .accepted _ | .acceptedIfA3 _ => match verdict f with

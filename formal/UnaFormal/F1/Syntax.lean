@@ -361,6 +361,9 @@ structure Program where
   handlerOf : List (String × String) := []
   /-- For each operation, a handler whose signature is the operation's (#538). -/
   opRep : List (String × String) := []
+  /-- The operation `Cap.op` each static handler function implements (#524), which a
+  `Rhs.invoke` of it performs (#572). -/
+  staticOps : List (String × String) := []
   /-- The sum kinds (#512). -/
   sums : List Sum := []
   policies : List Policy
