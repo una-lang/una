@@ -11,6 +11,9 @@ nothing. `Catalog.journal` is a user operation whose handler `m.log.journal` the
 - **(e)** One atom, two occurrences: a helper's condition `count < limit` at the caller's
   `count < limit` is one variable, so checked; written `limit > count`, it is another, and
   rejected (the coverage limit).
+- **(f)** A `let`-bound comparison (#573): `guarded` conditions the journal on `count < limit`,
+  binds `let ok = count < limit` and journals under `if ok`. Checked, and a run with
+  `count = limit` journals nothing; the same body journaling outside the `if` is rejected.
 - **The ghost under a secret program counter**: `WithExample.h3` invokes `Vault.note` only in its
   secret branch. The program is certified (T6) and passes trace safety's checks, and both runs
   project to the same `done`.
@@ -114,15 +117,47 @@ def outer (c : Cond) : Fun := mk "m.outer" [("count", .int .bot), ("limit", .int
 /-- The call's implication identifies the two occurrences: `startOk` holds at `outer`'s call. -/
 theorem same_atom_call :
     startOk (Import.mkProgram [] Label.bot {} [] [] [journal, helper, outer lim] [] [])
-      [("m.log.journal", lim)] [] "m.helper" (some [.var "count", .var "limit"]) = true := by
+      [("m.log.journal", lim)] {} "m.helper" (some [.var "count", .var "limit"]) = true := by
   decide
 
 /-- The same condition in other syntax is another atom: the call's implication is refuted. -/
 theorem other_syntax_call :
     startOk (Import.mkProgram [] Label.bot {} [] [] [journal, helper, outer (.ltInt (.var "limit") (.var "count"))] [] [])
-      [("m.log.journal", .ltInt (.var "limit") (.var "count"))] [] "m.helper"
+      [("m.log.journal", .ltInt (.var "limit") (.var "count"))] {} "m.helper"
       (some [.var "count", .var "limit"]) = false := by
   decide
+
+/-! ### (f) A `let`-bound comparison (#573) -/
+
+/-- `guarded(count, limit)`: `let ok = count < limit`, then the journal under `if ok`, or
+unguarded. -/
+def guarded (inside : Bool) : Fun := mk "m.guarded" [("count", .int .bot), ("limit", .int .bot)]
+  (.letR "ok" (.bool .bot) (.prim .lt [.var "count", .var "limit"])
+    (if inside then .ite (.var "ok") jcall (.atom .unit) else jcall))
+  [("m.log.journal", lim)]
+
+def progF (inside : Bool) : Program :=
+  Import.mkProgram [] Label.bot {} [] [] [journal, guarded inside] [] []
+
+/-- The branch on `ok` learns `count < limit`, which implies the journal's condition. -/
+theorem let_comparison_checked : (progF true).traceSafeB = true ∧ (progF true).stage1B = true :=
+  ⟨rfl, rfl⟩
+
+/-- Outside the `if`, nothing implies the condition. -/
+theorem let_comparison_outside_rejected : (progF false).traceSafeB = false := rfl
+
+/-- With `count = limit` the condition is false, and the run journals nothing. -/
+theorem let_comparison_safe :
+    ¬ Performs "m.log.journal"
+      (eval Host.unit 20 (progF true) w0 (bindParams (guarded true).params [.int 3, .int 3] [])
+        (guarded true).body).1 :=
+  trace_safety (f := guarded true) (C := lim) let_comparison_checked.1 Host.unit_respTyped
+    (by simp [progF, Import.mkProgram]) rfl w0 20 [.int 3, .int 3] ⟨trivial, trivial, trivial⟩ rfl
+
+/-- With `count < limit`, it journals: the check is not vacuous. -/
+theorem let_comparison_real :
+    (eval Host.unit 20 (progF true) w0 (bindParams (guarded true).params [.int 2, .int 3] [])
+      (guarded true).body).1 = [.perfFn "m.log.journal", .out "journal"] := rfl
 
 /-! ### A ghost under a secret program counter -/
 

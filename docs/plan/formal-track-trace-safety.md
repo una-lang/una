@@ -152,3 +152,60 @@ B06's shape, with `Catalog.journal` a user operation whose handler prints:
 2. **`Cond`'s fragment** (item 3.3): Boolean structure, `Bool` parameters, and integer comparisons as opaque atoms. That covers B06 and every condition the ADR shows. Anything else is not re-checked.
 3. **The truth-table bound of 12** (§4), and its complexity statement.
 4. **The contract lock** (`[contracts]`, U3023) is a check on headers against `una.toml`, with no run to speak of, so it is outside this theorem. The re-check reads it as the implementation exports it.
+
+## 11. #573: knowledge learned from a `let`-bound comparison
+
+**Why.** In stage 1 the path knowledge `K` learns only from a branch on a `Bool` variable (`ite (.var x)`). A function that conditions an operation on an integer comparison, `journal where count < limit`, cannot prove the site in its own body, as in:
+
+```una
+let ok = count < limit
+if ok
+  @catalog.journal(...)
+else
+  ...
+```
+
+The only way to prove it is a call's implication (§9's residual).
+
+**The change** (`TraceSafety.lean`, `TraceSafetyProof.lean`):
+- **Literals over atoms.** `K` becomes `List (CAtom × Bool)`, literals over the decision procedure's atoms: a `Bool` variable, `eq a b` or `lt a b`. `knowledge K` is their conjunction, with `.var`, `.eqInt` and `.ltInt`.
+- **Definitions.** `D : List (String × CAtom)` records the names a `let` binds to a comparison. For `letR x _ (.prim .lt [a, b]) body`, the body is checked with `(x, .lt a b)` in `D`, and the same for `.eqInt` with `.eq a b`. This applies only when neither `a` nor `b` is `x`, since the binding would change what the atom reads.
+- **Branches.** At `ite (.var x) t e`, the `then` branch learns `(.var x, true)` and, when `D` defines `x` as `c`, also `(c, true)`. The `else` branch learns the same with `false`.
+- **Forgetting.** Binding a name `y` drops every literal of `K` whose atom reads `y`, and every entry of `D` for `y` or whose atom reads `y`. That covers `let`, pattern binders, handlers, `with` markers, tuples and loops, as `forget` does today for `Bool` variables.
+
+**Every way a name can change** (the coordinator's check). F1's environment is a list that only grows by prepending. No construct updates a binding in place:
+- an `edit` call is `Rhs.set`, which returns the new value, and its results are bound again by `letTuple` (`spec/17 §4, §8`);
+- a `take` argument is a value passed to a call;
+- each loop iteration binds its variable and state afresh.
+
+So a name a literal or a definition reads changes only by a new binding of the same name. The constructors of `Expr` that bind are `letR x`, `letE x`, `caseOption … x …`, `caseResult … x … y …`, `caseSum … binders …`, `handle … error …`, `handleK … error …`, `withH o _ _` (its marker `markerName o`), `letTuple binders` and `loop … x … state …`. In each, `condOk` checks the scope with every literal and definition that reads a bound name forgotten. That is the same list `forget` follows today for `Bool` variables, and the induction's case for each constructor uses the same lemma.
+
+Scope exit needs no forgetting:
+- `K` and `D` are passed down into subexpressions and never flow out of one, so what a scope learned about a shadowing name is gone when the scope ends;
+- a call or an application runs its callee in the callee's own environment, under its own `K`;
+- a lambda's body is checked closure-free in stage 1 (§8b).
+
+**Why it is sound.** The invariant of `eval_good` grows from "`K` holds of the environment" to two parts:
+- (i) every literal `(c, b)` of `K` has `CAtom.eval env c = b`;
+- (ii) every entry `(x, c)` of `D` has `lookup env x = some (.bool (CAtom.eval env c))`.
+
+How each step keeps it:
+- **A comparison `let`.** `Prim.lt` and `Prim.eqInt` are defined on integers only (`evalPrim`). So `let x = lt a b` binds `x` to exactly `CAtom.eval env (.lt a b)` when it runs. With other arguments the run is stuck and the body is never reached, and `CAtom.eval` gives `false` there too.
+- **Another binding.** It changes only the name it binds, which `forget` removes from both lists.
+- **A branch.** It reads `x`'s value, which (ii) ties to `c`.
+
+The statement of `trace_safety` does not change. Only the invariant's lemmas (`KHolds`, `knowledge_eval`, `cons_lit`, `forget_cons`, `prepend`) and the induction's cases move.
+
+**Non-vacuity** (`TraceSafetyExample.lean`, case (f)):
+- A function conditions `journal where count < limit`, binds `let ok = count < limit`, and journals under `if ok`. It is checked (`traceSafeB = true`).
+- The same body journaling outside the `if` is rejected.
+- A run with `count = limit` performs no journal, by `trace_safety`.
+
+**Gate.** As §6 of the boundary plan:
+- `formal.sh` PASS, with no `sorry`;
+- `Theorems.lean` gets additions only, with `trace_safety`'s text unchanged;
+- the replay unchanged, at 45;
+- corpus delta 0, since the corpus has no edition-0.3 conditions;
+- local CI.
+
+**Coordination.** #587 (ADR 0098's formal statement) touches the ghost cases of the same proof files. Merge order: #592 (#572), then whichever of #573 and #587 is ready first, with the other rebasing.

@@ -68,36 +68,66 @@ theorem implies_sound {hyp goal : Cond} (h : implies hyp goal = true) (σ : CAto
   rw [ehyp, egoal, hh] at h1
   simpa using h1
 
-/-- `K` holds in `env`: each literal is the value of its variable. -/
-def KHolds (K : List (String × Bool)) (env : Env) : Prop :=
-  ∀ x b, (x, b) ∈ K → CAtom.eval env (.var x) = b
+/-- `K` holds in `env`: each literal is the value of its variable, and each variable a `let`
+bound to a comparison holds that comparison's value (#573). -/
+def KHolds (K : Know) (env : Env) : Prop :=
+  (∀ x b, (x, b) ∈ K.lits → CAtom.eval env (.var x) = b) ∧
+    ∀ x c, (x, c) ∈ K.defs → lookup env x = some (.bool (CAtom.eval env c))
 
-theorem knowledge_eval {K : List (String × Bool)} {env : Env} (h : KHolds K env) :
+theorem KHolds.empty {env : Env} : KHolds {} env :=
+  ⟨(fun _ _ h => nomatch h), (fun _ _ h => nomatch h)⟩
+
+theorem CAtom.lit_eval {env : Env} {a : CAtom} {b : Bool} (h : CAtom.eval env a = b) :
+    (CAtom.lit a b).eval env = true := by
+  cases a <;> cases b <;> simp_all [CAtom.lit, Cond.eval, Cond.under]
+
+theorem Cond.conj_eval {env : Env} :
+    ∀ {cs : List Cond}, (∀ c ∈ cs, c.eval env = true) → (Cond.conj cs).eval env = true
+  | [], _ => rfl
+  | c :: cs, h => by
+    have h1 := h c (by simp)
+    have h2 := Cond.conj_eval (cs := cs) fun d hd => h d (by simp [hd])
+    simp only [Cond.conj, List.foldr_cons] at h2 ⊢
+    simp only [Cond.eval, Cond.under] at h1 h2 ⊢
+    simp [h1, h2]
+
+theorem knowledge_eval {K : Know} {env : Env} (h : KHolds K env) :
     (knowledge K).eval env = true := by
-  induction K with
-  | nil => rfl
-  | cons q K ih =>
-    obtain ⟨x, b⟩ := q
-    simp only [knowledge, List.foldr_cons] at ih ⊢
-    have hx := h x b (by simp)
-    have hK : KHolds K env := fun y c hy => h y c (by simp [hy])
-    simp only [Cond.eval, Cond.under] at ih ⊢
-    cases b <;> simp_all [Cond.under]
+  unfold knowledge
+  apply Cond.conj_eval
+  intro c hc
+  rcases List.mem_append.mp hc with hc | hc
+  · obtain ⟨q, hq, rfl⟩ := List.mem_map.mp hc
+    exact CAtom.lit_eval (h.1 q.1 q.2 hq)
+  · obtain ⟨d, hd, hc⟩ := List.mem_flatMap.mp hc
+    obtain ⟨q, hq, rfl⟩ := List.mem_map.mp hc
+    obtain ⟨hq, hqd⟩ := List.mem_filter.mp hq
+    have hqd : q.1 = d.1 := by simpa using hqd
+    have hv := h.1 q.1 q.2 hq
+    have hdv := h.2 d.1 d.2 hd
+    rw [hqd] at hv
+    simp only [CAtom.eval, hdv] at hv
+    exact CAtom.lit_eval hv
 
-theorem KHolds.cons_lit {K : List (String × Bool)} {env : Env} {x : String} {b : Bool}
-    (h : KHolds K env) (hx : CAtom.eval env (.var x) = b) : KHolds ((x, b) :: K) env := by
-  intro y c hy
-  simp only [List.mem_cons, Prod.mk.injEq] at hy
+theorem KHolds.cons_lit {K : Know} {env : Env} {x : String} {b : Bool}
+    (h : KHolds K env) (hx : CAtom.eval env (.var x) = b) : KHolds (K.lit x b) env := by
+  refine ⟨fun y c hy => ?_, h.2⟩
+  simp only [Know.lit, List.mem_cons, Prod.mk.injEq] at hy
   rcases hy with ⟨rfl, rfl⟩ | hy
   · exact hx
-  · exact h y c hy
+  · exact h.1 y c hy
 
-theorem KHolds.forget_cons {K : List (String × Bool)} {env : Env} {x : String} (v : Val)
-    (h : KHolds K env) : KHolds (forget K x) ((x, v) :: env) := by
-  intro y c hy
-  simp only [forget, List.mem_filter, bne_iff_ne, ne_eq] at hy
-  have := h y c hy.1
-  simpa [CAtom.eval, lookup, hy.2] using this
+theorem KHolds.define {K : Know} {env : Env} {x : String} {c : CAtom}
+    (h : KHolds K env) (hx : lookup env x = some (.bool (CAtom.eval env c))) :
+    KHolds (K.define x c) env := by
+  unfold Know.define
+  split
+  · exact h
+  · refine ⟨h.1, fun y d hy => ?_⟩
+    simp only [List.mem_cons, Prod.mk.injEq] at hy
+    rcases hy with ⟨rfl, rfl⟩ | hy
+    · exact hx
+    · exact h.2 y d hy
 
 /-- An atom's value ignores a binding of a variable it does not name. -/
 theorem CAtom.eval_cons {x : String} {v : Val} {env : Env} :
@@ -111,6 +141,20 @@ theorem CAtom.eval_cons {x : String} {v : Val} {env : Env} :
     have hb : evalAtom ((x, v) :: env) b = evalAtom env b := by
       cases b <;> simp_all [evalAtom, lookup, CAtom.vars]
     simp [CAtom.eval, ha, hb]
+
+theorem KHolds.forget_cons {K : Know} {env : Env} {x : String} (v : Val)
+    (h : KHolds K env) : KHolds (forget K x) ((x, v) :: env) := by
+  refine ⟨fun y c hy => ?_, fun y c hy => ?_⟩
+  · simp only [forget, List.mem_filter, bne_iff_ne, ne_eq] at hy
+    have := h.1 y c hy.1
+    simpa [CAtom.eval, lookup, hy.2] using this
+  · simp only [forget, List.mem_filter, Bool.and_eq_true, bne_iff_ne, ne_eq, Bool.not_eq_true'] at hy
+    obtain ⟨hm, hyx, hcx⟩ := hy
+    have hnx : x ∉ c.vars := by simpa using hcx
+    have hc : CAtom.eval ((x, v) :: env) c = CAtom.eval env c :=
+      CAtom.eval_cons c fun z hz hzx => hnx (hzx ▸ hz)
+    rw [hc]
+    simpa [lookup, Ne.symm hyx, hyx] using h.2 y c hm
 
 /-- A condition's value ignores a binding of a variable it does not name. -/
 theorem Cond.eval_cons {x : String} {v : Val} {env : Env} (c : Cond) (h : x ∉ c.vars) :
@@ -440,13 +484,13 @@ theorem freshFor_lookup {cs : List (String × Cond)} {x o : String} (h : freshFo
     have := h (o, c) hmem
     exact this (by simpa using hx)
 
-theorem forget_mem {K : List (String × Bool)} {x y : String} {b : Bool} (h : (y, b) ∈ forget K x) :
-    (y, b) ∈ K ∧ y ≠ x := by
+theorem forget_mem {K : Know} {x y : String} {b : Bool} (h : (y, b) ∈ (forget K x).lits) :
+    (y, b) ∈ K.lits ∧ y ≠ x := by
   simp only [forget, List.mem_filter, bne_iff_ne, ne_eq] at h
   exact ⟨h.1, h.2⟩
 
-theorem forgetAll_mem : ∀ (xs : List String) {K : List (String × Bool)} {y : String} {b : Bool},
-    (y, b) ∈ xs.foldl forget K → (y, b) ∈ K ∧ y ∉ xs
+theorem forgetAll_mem : ∀ (xs : List String) {K : Know} {y : String} {b : Bool},
+    (y, b) ∈ (xs.foldl forget K).lits → (y, b) ∈ K.lits ∧ y ∉ xs
   | [], _, _, _, h => ⟨h, by simp⟩
   | x :: xs, K, y, b, h => by
     simp only [List.foldl_cons] at h
@@ -454,15 +498,39 @@ theorem forgetAll_mem : ∀ (xs : List String) {K : List (String × Bool)} {y : 
     obtain ⟨h3, h4⟩ := forget_mem h1
     exact ⟨h3, by simp [h4, h2]⟩
 
+/-- A definition that survives forgetting `x` names neither `x` nor reads it. -/
+theorem forget_defs_mem {K : Know} {x y : String} {c : CAtom} (h : (y, c) ∈ (forget K x).defs) :
+    (y, c) ∈ K.defs ∧ y ≠ x ∧ x ∉ c.vars := by
+  simp only [forget, List.mem_filter, Bool.and_eq_true, bne_iff_ne, ne_eq, Bool.not_eq_true'] at h
+  obtain ⟨hm, hyx, hcx⟩ := h
+  exact ⟨hm, hyx, by simpa using hcx⟩
+
+theorem forgetAll_defs_mem : ∀ (xs : List String) {K : Know} {y : String} {c : CAtom},
+    (y, c) ∈ (xs.foldl forget K).defs → (y, c) ∈ K.defs ∧ y ∉ xs ∧ ∀ z ∈ c.vars, z ∉ xs
+  | [], _, _, _, h => ⟨h, by simp, by simp⟩
+  | x :: xs, K, y, c, h => by
+    simp only [List.foldl_cons] at h
+    obtain ⟨h1, h2, h3⟩ := forgetAll_defs_mem xs h
+    obtain ⟨h4, h5, h6⟩ := forget_defs_mem h1
+    refine ⟨h4, by simp [h5, h2], fun z hz => ?_⟩
+    simp only [List.mem_cons, not_or]
+    exact ⟨fun hzx => h6 (hzx ▸ hz), h3 z hz⟩
+
 /-- Knowledge that forgets the names bound in front of the environment still holds there. -/
-theorem KHolds.prepend {K K' : List (String × Bool)} {env : Env} (pre : Env) (h : KHolds K env)
-    (hK : ∀ y b, (y, b) ∈ K' → (y, b) ∈ K ∧ y ∉ pre.map Prod.fst) : KHolds K' (pre ++ env) := by
-  intro y b hy
-  obtain ⟨hm, hn⟩ := hK y b hy
-  have := h y b hm
-  simp only [CAtom.eval] at this ⊢
-  rw [lookup_prepend_of_not_mem pre hn]
-  exact this
+theorem KHolds.prepend {K K' : Know} {env : Env} (pre : Env) (h : KHolds K env)
+    (hK : ∀ y b, (y, b) ∈ K'.lits → (y, b) ∈ K.lits ∧ y ∉ pre.map Prod.fst)
+    (hD : ∀ y c, (y, c) ∈ K'.defs →
+      (y, c) ∈ K.defs ∧ y ∉ pre.map Prod.fst ∧ ∀ z ∈ c.vars, z ∉ pre.map Prod.fst) :
+    KHolds K' (pre ++ env) := by
+  refine ⟨fun y b hy => ?_, fun y c hy => ?_⟩
+  · obtain ⟨hm, hn⟩ := hK y b hy
+    have := h.1 y b hm
+    simp only [CAtom.eval] at this ⊢
+    rw [lookup_prepend_of_not_mem pre hn]
+    exact this
+  · obtain ⟨hm, hn, hv⟩ := hD y c hy
+    rw [lookup_prepend_of_not_mem pre hn, CAtom.eval_prepend c hv]
+    exact h.2 y c hm
 
 /-! ### The invariant -/
 
@@ -486,12 +554,12 @@ theorem Link.prepend {cs : List (String × Cond)} {env : Env} (pre : Env)
 
 /-- Code a frame may run: free of `o`, or checked under `K` with its link. -/
 abbrev GoodE (p : Program) (o : String) (S : String → Prop) (Q : Prop) (cs : List (String × Cond))
-    (K : List (String × Bool)) (env : Env) (e : Expr) : Prop :=
+    (K : Know) (env : Env) (e : Expr) : Prop :=
   ((e.reach p).1.contains o = false ∧ ∀ g ∈ (e.reach p).2, S g) ∨
     (e.condOk p cs K = true ∧ KHolds K env ∧ Link p o Q cs env)
 
 abbrev GoodR (p : Program) (o : String) (S : String → Prop) (Q : Prop) (cs : List (String × Cond))
-    (K : List (String × Bool)) (env : Env) (r : Rhs) : Prop :=
+    (K : Know) (env : Env) (r : Rhs) : Prop :=
   ((r.reach p).1.contains o = false ∧ ∀ g ∈ (r.reach p).2, S g) ∨
     (r.condOk p cs K = true ∧ KHolds K env ∧ Link p o Q cs env)
 
@@ -514,12 +582,14 @@ theorem pairJoin_free {a b : List String × List String}
     ⟨hb, fun g hg => h2 g (List.mem_append_right _ hg)⟩⟩
 
 /-- A body run after binding `pre` in front of the environment, its names fresh and forgotten. -/
-theorem GoodE.bind {cs : List (String × Cond)} {K K' : List (String × Bool)} {env : Env} {b : Expr}
+theorem GoodE.bind {cs : List (String × Cond)} {K K' : Know} {env : Env} {b : Expr}
     (pre : Env) (hok : b.condOk p cs K' = true) (hK : KHolds K env) (hl : Link p o Q cs env)
     (hf : ∀ x ∈ pre.map Prod.fst, freshFor cs x = true)
-    (hK' : ∀ y c, (y, c) ∈ K' → (y, c) ∈ K ∧ y ∉ pre.map Prod.fst) :
+    (hK' : ∀ y c, (y, c) ∈ K'.lits → (y, c) ∈ K.lits ∧ y ∉ pre.map Prod.fst)
+    (hD' : ∀ y c, (y, c) ∈ K'.defs →
+      (y, c) ∈ K.defs ∧ y ∉ pre.map Prod.fst ∧ ∀ z ∈ c.vars, z ∉ pre.map Prod.fst) :
     GoodE p o S Q cs K' (pre ++ env) b :=
-  .inr ⟨hok, KHolds.prepend pre hK hK', Link.prepend pre hf hl⟩
+  .inr ⟨hok, KHolds.prepend pre hK hK' hD', Link.prepend pre hf hl⟩
 
 /-! ### A callee's condition at the call -/
 
@@ -607,16 +677,16 @@ or linked by the call's implication. -/
 theorem callee_good (hS : ∀ g fn, p.find g = some fn → S g →
       (fn.body.reach p).1.contains o = false ∧ ∀ h ∈ (fn.body.reach p).2, S h)
     (hSmay : ∀ g, mayPerform p g o = false → S g)
-    (hok : ∀ g fn, p.find g = some fn → fn.body.condOk p fn.conds [] = true)
-    {cs : List (String × Cond)} {K : List (String × Bool)} {env : Env} {g : String} {fn : Fun}
+    (hok : ∀ g fn, p.find g = some fn → fn.body.condOk p fn.conds {} = true)
+    {cs : List (String × Cond)} {K : Know} {env : Env} {g : String} {fn : Fun}
     {args : List Atom} {vs : List Val}
     (hst : startOk p cs K g (some args) = true) (hK : KHolds K env) (hl : Link p o Q cs env)
     (hfd : p.find g = some fn) (hvs : evalAtoms env args = some vs) (hlen : vs.length = fn.params.length) :
-    GoodE p o S Q fn.conds [] (bindParams fn.params vs []) fn.body := by
+    GoodE p o S Q fn.conds {} (bindParams fn.params vs []) fn.body := by
   cases hm : mayPerform p g o
   · have := hS g fn hfd (hSmay g hm)
     exact .inl this
-  · refine .inr ⟨hok g fn hfd, (fun _ _ h => nomatch h), fun hD => ?_⟩
+  · refine .inr ⟨hok g fn hfd, KHolds.empty, fun hD => ?_⟩
     cases hlo : cs.lookup o with
     | none => exact hl (by simp [hlo, Cond.eval, Cond.under])
     | some c =>
@@ -639,7 +709,7 @@ theorem callee_good (hS : ∀ g fn, p.find g = some fn → S g →
         exact hD')
 
 /-- A site that performs `x` directly, in a good frame: `x` is `o` only where `Q` holds. -/
-theorem site_good {cs : List (String × Cond)} {K : List (String × Bool)} {env : Env} {r : Rhs} {x : String}
+theorem site_good {cs : List (String × Cond)} {K : Know} {env : Env} {r : Rhs} {x : String}
     (hg : GoodR p o S Q cs K env r) (hreach : (r.reach p).1 = [x])
     (hsite : r.condOk p cs K = true → siteOk cs K x = true) : x = o → Q := by
   intro hx
@@ -665,8 +735,8 @@ theorem closureFree_sound {body : Expr} (ho : o ∈ p.condOps)
   exact ⟨h1, fun g hg => hSmay g (by simpa using h2 g hg)⟩
 
 /-- Knowledge after forgetting `x`, in front of which `x` is bound. -/
-theorem forget_one {K : List (String × Bool)} {x : String} :
-    ∀ y c, (y, c) ∈ forget K x → (y, c) ∈ K ∧ y ∉ [(x, (Val.unit : Val))].map Prod.fst := by
+theorem forget_one {K : Know} {x : String} :
+    ∀ y c, (y, c) ∈ (forget K x).lits → (y, c) ∈ K.lits ∧ y ∉ [(x, (Val.unit : Val))].map Prod.fst := by
   intro y c h
   obtain ⟨h1, h2⟩ := forget_mem h
   exact ⟨h1, by simp [h2]⟩
@@ -676,16 +746,79 @@ theorem fresh_one {cs : List (String × Cond)} {x : String} (h : freshFor cs x =
   intro y hy; simp at hy; subst hy; exact h
 
 /-- A body run with one more binding, in a good frame. -/
-theorem GoodE.one {cs : List (String × Cond)} {K : List (String × Bool)} {env : Env} {b : Expr}
+theorem GoodE.one {cs : List (String × Cond)} {K : Know} {env : Env} {b : Expr}
     {x : String} (v : Val) (hok : b.condOk p cs (forget K x) = true) (hK : KHolds K env)
     (hl : Link p o Q cs env) (hf : freshFor cs x = true) :
     GoodE p o S Q cs (forget K x) ((x, v) :: env) b := by
   have := GoodE.bind (p := p) (o := o) (S := S) (Q := Q) [(x, v)] hok hK hl (fresh_one hf v)
     (fun y c h => by obtain ⟨h1, h2⟩ := forget_mem h; exact ⟨h1, by simp [h2]⟩)
+    (fun y c h => by
+      obtain ⟨h1, h2, h3⟩ := forget_defs_mem h
+      refine ⟨h1, by simp [h2], fun z hz => ?_⟩
+      simp only [List.map_cons, List.map_nil, List.mem_cons, List.not_mem_nil, or_false]
+      exact fun hzx => h3 (hzx ▸ hz))
   simpa using this
 
+/-- What a comparison `let` binds is the comparison's value (#573): `lt` and `eqInt` give a
+value only on two integers, and never abort. -/
+theorem compares_value {n : Nat} {w : World H} {env : Env} {v : Rhs} {c : CAtom} {val : Val}
+    (hc : v.compares = some c) (hr : (evalRhs H n p w env v).2.1 = .ok val) :
+    val = .bool (CAtom.eval env c) := by
+  cases n with
+  | zero => simp [evalRhs] at hr
+  | succ n =>
+    unfold Rhs.compares at hc
+    split at hc
+    · rename_i a b
+      simp only [Option.some.injEq] at hc
+      subst hc
+      simp only [evalRhs] at hr
+      cases ha : evalAtom env a <;> cases hb : evalAtom env b <;>
+        simp [ha, hb, evalAtoms, Prim.aborts, Option.elim] at hr
+      rename_i va vb
+      cases va <;> cases vb <;> simp_all [evalPrim, CAtom.eval]
+    · rename_i a b
+      simp only [Option.some.injEq] at hc
+      subst hc
+      simp only [evalRhs] at hr
+      cases ha : evalAtom env a <;> cases hb : evalAtom env b <;>
+        simp [ha, hb, evalAtoms, Prim.aborts, Option.elim] at hr
+      rename_i va vb
+      cases va <;> cases vb <;> simp_all [evalPrim, CAtom.eval]
+      rw [← hr]
+      exact congrArg Val.bool (Bool.eq_iff_iff.mpr (by simp [beq_iff_eq]))
+    · simp at hc
+
+/-- The body of `let x = v` in a good frame, under what the `let` teaches (#573). -/
+theorem GoodE.after_let {cs : List (String × Cond)} {K : Know} {env : Env} {b : Expr} {x : String}
+    {v : Rhs} (val : Val) (hok : b.condOk p cs (afterLet K x v) = true) (hK : KHolds K env)
+    (hl : Link p o Q cs env) (hf : freshFor cs x = true)
+    (hval : ∀ c, v.compares = some c → val = .bool (CAtom.eval env c)) :
+    GoodE p o S Q cs (afterLet K x v) ((x, val) :: env) b := by
+  unfold afterLet at hok ⊢
+  cases hcv : v.compares with
+  | none =>
+    simp only [hcv] at hok ⊢
+    exact GoodE.one val hok hK hl hf
+  | some c =>
+    simp only [hcv] at hok ⊢
+    have hfk := KHolds.forget_cons (x := x) val hK
+    have hlink : Link p o Q cs ((x, val) :: env) := by
+      simpa using Link.prepend (p := p) (o := o) (Q := Q) [(x, val)] (fresh_one hf val) hl
+    refine .inr ⟨hok, ?_, hlink⟩
+    by_cases hcx : c.vars.contains x = true
+    · have : (forget K x).define x c = forget K x := by
+        unfold Know.define
+        rw [if_pos hcx]
+      rw [this]
+      exact hfk
+    · have hnx : x ∉ c.vars := fun hm => hcx (List.contains_iff_mem.mpr hm)
+      apply KHolds.define hfk
+      rw [CAtom.eval_cons c (fun z hz hzx => hnx (by rw [← hzx]; exact hz))]
+      simp [lookup, hval c hcv]
+
 /-- A branch of a good frame, under what the branch learns. -/
-theorem ite_good {cs : List (String × Cond)} {K : List (String × Bool)} {env : Env} {c : Atom}
+theorem ite_good {cs : List (String × Cond)} {K : Know} {env : Env} {c : Atom}
     {t e : Expr} {b : Bool} (hg : GoodE p o S Q cs K env (.ite c t e))
     (hc : evalAtom env c = some (.bool b)) : ∃ K', GoodE p o S Q cs K' env (if b then t else e) := by
   rcases hg with ⟨h1, h2⟩ | ⟨hok, hK, hl⟩
@@ -740,14 +873,16 @@ theorem eval_good_expr
     exact evalAtom_oFree hf ha
   | letR x ann v b =>
     simp only [eval]
-    have hv : GoodR p o S Q cs K env v ∧ ∀ val, ∃ K', GoodE p o S Q cs K' ((x, val) :: env) b := by
+    have hv : GoodR p o S Q cs K env v ∧ ∀ val,
+        (evalRhs H n p w env v).2.1 = .ok val → ∃ K', GoodE p o S Q cs K' ((x, val) :: env) b := by
       rcases hg with ⟨h1, h2⟩ | ⟨hok, hK, hl⟩
       · obtain ⟨hv, hb⟩ := split2 (by simpa [Expr.reach] using h1) (by simpa [Expr.reach] using h2)
-        exact ⟨.inl hv, fun _ => ⟨K, .inl hb⟩⟩
+        exact ⟨.inl hv, fun _ _ => ⟨K, .inl hb⟩⟩
       · simp only [Expr.condOk, Bool.and_eq_true] at hok
-        exact ⟨.inr ⟨hok.1.2, hK, hl⟩, fun val => ⟨_, GoodE.one val hok.2 hK hl hok.1.1⟩⟩
-    exact andThen_ok (ihR w env cs K v hf hv.1) fun w' val _ hval => by
-      obtain ⟨K', hb⟩ := hv.2 val
+        exact ⟨.inr ⟨hok.1.2, hK, hl⟩, fun val hres =>
+          ⟨_, GoodE.after_let val hok.2 hK hl hok.1.1 fun c hc => compares_value hc hres⟩⟩
+    exact andThen_ok (ihR w env cs K v hf hv.1) fun w' val hres hval => by
+      obtain ⟨K', hb⟩ := hv.2 val hres
       exact ihE w' _ cs K' b (by simp only [Val.OFreeEnv]; exact ⟨hval, hf⟩) hb
   | letE x ann v b =>
     simp only [eval]
@@ -858,9 +993,11 @@ theorem eval_good_expr
               · exact ⟨K, .inl (split2 (by simpa [Expr.reach] using h1) (by simpa [Expr.reach] using h2)).1⟩
               · simp only [Expr.condOk, Bool.and_eq_true, List.all_eq_true] at hok
                 refine ⟨_, GoodE.bind (xs.zip fs) hok.1.2 hK hl (fun y hy => hok.1.1 y (zip_fst_mem hy))
-                  (fun y c hyc => ?_)⟩
-                obtain ⟨h3, h4⟩ := forgetAll_mem xs hyc
-                exact ⟨h3, fun hm => h4 (zip_fst_mem hm)⟩
+                  (fun y c hyc => ?_) (fun y c hyc => ?_)⟩
+                · obtain ⟨h3, h4⟩ := forgetAll_mem xs hyc
+                  exact ⟨h3, fun hm => h4 (zip_fst_mem hm)⟩
+                · obtain ⟨h3, h4, h5⟩ := forgetAll_defs_mem xs hyc
+                  exact ⟨h3, fun hm => h4 (zip_fst_mem hm), fun z hz hm => h5 z hz (zip_fst_mem hm)⟩
             obtain ⟨K', ht⟩ := ht
             exact ihE w _ cs K' t (zip_oFree xs hfs hf) ht
           · exact RunOk.stuck w
@@ -973,12 +1110,15 @@ theorem eval_good_expr
             rcases hg with ⟨h1, h2⟩ | ⟨hok, hK, hl⟩
             · exact ⟨K, .inl ⟨by simpa [Expr.reach] using h1, by simpa [Expr.reach] using h2⟩⟩
             · simp only [Expr.condOk, Bool.and_eq_true, List.all_eq_true] at hok
-              refine ⟨_, GoodE.bind _ hok.2 hK hl (fun y hy => ?_) (fun y c hyc => ?_)⟩
+              refine ⟨_, GoodE.bind _ hok.2 hK hl (fun y hy => ?_) (fun y c hyc => ?_) (fun y c hyc => ?_)⟩
               · obtain ⟨q, hq, rfl⟩ := List.mem_map.mp (zip_fst_mem hy)
                 exact hok.1 q hq
               · rw [← List.foldl_map (f := Prod.fst) (g := forget)] at hyc
                 obtain ⟨h3, h4⟩ := forgetAll_mem _ hyc
                 exact ⟨h3, fun hm => h4 (zip_fst_mem hm)⟩
+              · rw [← List.foldl_map (f := Prod.fst) (g := forget)] at hyc
+                obtain ⟨h3, h4, h5⟩ := forgetAll_defs_mem _ hyc
+                exact ⟨h3, fun hm => h4 (zip_fst_mem hm), fun z hz hm => h5 z hz (zip_fst_mem hm)⟩
           obtain ⟨K', hb⟩ := hb
           exact ihE w _ cs K' b (bindParams_oFree bs hvs hf) hb
         · exact RunOk.stuck w
@@ -1019,7 +1159,7 @@ theorem eval_good_expr
             · exact ⟨K, .inl ⟨by simpa [Expr.reach] using h1, by simpa [Expr.reach] using h2⟩⟩
             · simp only [Expr.condOk, Bool.and_eq_true, List.all_eq_true] at hok
               have := GoodE.bind (p := p) (o := o) (S := S) (Q := Q) ((x, v) :: (st.map Prod.fst).zip st')
-                hok.2 hK hl (fun y hy => ?_) (fun y c hyc => ?_)
+                hok.2 hK hl (fun y hy => ?_) (fun y c hyc => ?_) (fun y c hyc => ?_)
               · exact ⟨_, by simpa [bindParams] using this⟩
               · simp only [List.map_cons, List.mem_cons] at hy
                 rcases hy with rfl | hy
@@ -1032,6 +1172,14 @@ theorem eval_good_expr
                 refine ⟨h5, ?_⟩
                 simp only [List.map_cons, List.mem_cons, not_or]
                 exact ⟨h6, fun hm => h4 (zip_fst_mem hm)⟩
+              · rw [← List.foldl_map (f := Prod.fst) (g := forget)] at hyc
+                obtain ⟨h3, h4, h5⟩ := forgetAll_defs_mem _ hyc
+                obtain ⟨h7, h8, h9⟩ := forget_defs_mem h3
+                refine ⟨h7, ?_, fun z hz => ?_⟩
+                · simp only [List.map_cons, List.mem_cons, not_or]
+                  exact ⟨h8, fun hm => h4 (zip_fst_mem hm)⟩
+                · simp only [List.map_cons, List.mem_cons, not_or]
+                  exact ⟨fun hzx => h9 (hzx ▸ hz), fun hm => h5 z hz (zip_fst_mem hm)⟩
           exact walkLoop_ok (fun w' v st' hv hst => by
               obtain ⟨K', hb'⟩ := hb v st'
               exact ihE w' _ cs K' b (by simp only [Val.OFreeEnv]; exact ⟨hv, bindParams_oFree st hst hf⟩) hb')
@@ -1044,7 +1192,7 @@ theorem eval_good
     (hS : ∀ g fn, p.find g = some fn → S g →
       (fn.body.reach p).1.contains o = false ∧ ∀ h ∈ (fn.body.reach p).2, S h)
     (hSmay : ∀ g, mayPerform p g o = false → S g)
-    (hok : ∀ g fn, p.find g = some fn → fn.body.condOk p fn.conds [] = true)
+    (hok : ∀ g fn, p.find g = some fn → fn.body.condOk p fn.conds {} = true)
     (hvia : ∀ pol po, p.policy pol = some po → S po.via) (ho : o ∈ p.condOps)
     (hresp : ∀ m vs s v s', H.request m vs s = (.ok v, s') → Val.OFree p o S v) : ∀ n : Nat,
     (∀ (w : World H) env cs K r, Val.OFreeEnv p o S env → GoodR p o S Q cs K env r →
@@ -1057,7 +1205,7 @@ theorem eval_good
     obtain ⟨ihR, ihE⟩ := eval_good hS hSmay hok hvia ho hresp n
     have hfree : ∀ (w : World H) env e, Val.OFreeEnv p o S env → (e.reach p).1.contains o = false →
         (∀ g ∈ (e.reach p).2, S g) → RunOk p o S Q (eval H n p w env e) :=
-      fun w env e hf h1 h2 => ihE w env [] [] e hf (.inl ⟨h1, h2⟩)
+      fun w env e hf h1 h2 => ihE w env [] {} e hf (.inl ⟨h1, h2⟩)
     have happ : ∀ (w : World H) fv vs, Val.OFree p o S fv → Val.OFreeAll p o S vs →
         RunOk p o S Q (applyWith (eval H n p) w fv vs) :=
       fun w _ _ hfv hvs => applyWith_ok hfree w hfv hvs
@@ -1072,7 +1220,7 @@ theorem eval_good
         (env := []) trivial
       rcases hg with ⟨_, h2⟩ | ⟨hc, hK, hl⟩
       · have hg' : S g := h2 g (by rcases hstart with h | h <;> simp_all)
-        exact ihE w _ [] [] fn.body hfv (.inl (hS g fn hfd hg'))
+        exact ihE w _ [] {} fn.body hfv (.inl (hS g fn hfd hg'))
       · exact ihE w _ _ _ fn.body hfv (callee_good hS hSmay hok (hst hc) hK hl hfd hvs hlen)
     constructor
     · intro w env cs K r hf hg
@@ -1607,7 +1755,7 @@ theorem trace_safety {H : Host} {p : Program} {f : Fun} {o : String} {C : Cond}
     rcases hcl fn hmem with h | ⟨h1, h2⟩
     · simp only [S] at hg; rw [hname] at h; rw [hg] at h; exact absurd h (by simp)
     · exact ⟨h1, fun h hh => by simpa [S] using h2 h hh⟩
-  have hok : ∀ g fn, p.find g = some fn → fn.body.condOk p fn.conds [] = true :=
+  have hok : ∀ g fn, p.find g = some fn → fn.body.condOk p fn.conds {} = true :=
     fun _ fn hfd => hchk fn (hfind hfd).1
   have hvia : ∀ pol po, p.policy pol = some po → S po.via := by
     intro pol po hpo
@@ -1618,9 +1766,9 @@ theorem trace_safety {H : Host} {p : Program} {f : Fun} {o : String} {C : Cond}
   have hresp : ∀ m vs s v s', H.request m vs s = (.ok v, s') → Val.OFree p o S v :=
     fun m vs s v s' h => isResponse_oFree (h4 m vs s s' v h)
   let Q : Prop := C.eval (bindParams f.params vs []) = true
-  have hgood : GoodE p o S Q f.conds [] (bindParams f.params vs []) f.body :=
-    .inr ⟨hchk f hf, (fun _ _ h => nomatch h), fun h => by simpa [Q, hc] using h⟩
-  have hrun := (eval_good (Q := Q) hS (fun _ h => h) hok hvia ho hresp n).2 w _ f.conds [] f.body
+  have hgood : GoodE p o S Q f.conds {} (bindParams f.params vs []) f.body :=
+    .inr ⟨hchk f hf, KHolds.empty, fun h => by simpa [Q, hc] using h⟩
+  have hrun := (eval_good (Q := Q) hS (fun _ h => h) hok hvia ho hresp n).2 w _ f.conds {} f.body
     (bindParams_oFree f.params (Val.oFreeAll_of_firstOrder vs hvs) (by simp [Val.OFreeEnv])) hgood
   rintro ⟨ev, hev, hp⟩
   have := hrun.1 ev hev hp

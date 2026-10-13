@@ -424,4 +424,9 @@ import UnaFormal
 #print axioms Una.F1.TraceSafetyExample.with_rejected
 #print axioms Una.F1.TraceSafetyExample.same_atom_call
 #print axioms Una.F1.TraceSafetyExample.other_syntax_call
+#print axioms Una.F1.TraceSafetyExample.let_comparison_checked
+#print axioms Una.F1.TraceSafetyExample.let_comparison_outside_rejected
+#print axioms Una.F1.TraceSafetyExample.let_comparison_safe
+#print axioms Una.F1.TraceSafetyExample.let_comparison_real
+#print axioms Una.F1.compares_value
 #print axioms Una.F1.TraceSafetyExample.h3_trace_safe
