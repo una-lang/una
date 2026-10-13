@@ -4,7 +4,7 @@ Status: Normative, v0.2 (ADR 0069).
 
 `Map[K, V]` is a built-in keyed collection: a finite set of keys, each mapped to one value, ordered by its keys. Maps are values, as lists are (`spec/17`).
 
-**Editions.** The constructs of this chapter exist only in packages of edition `0.2` (`spec/13 §7`). In edition `0.1`, `Map`, `Entry` and `empty_map` are ordinary names.
+**Editions.** The constructs of this chapter exist only in packages of edition `0.2` and later (`spec/13 §7`). In edition `0.1`, `Map`, `Entry` and `empty_map` are ordinary names.
 
 ## 1. The type
 

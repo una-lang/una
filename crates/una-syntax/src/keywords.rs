@@ -90,7 +90,7 @@ pub const RESERVED_IN_0_2: [(&str, &str); 13] = [
 
 /// The U0103 message text of `word` under the keyword set `set`, if it is reserved.
 pub fn reserved_in(word: &str, set: KeywordSet) -> Option<&'static str> {
-    if set == KeywordSet::V0_2 {
+    if set >= KeywordSet::V0_2 {
         if matches!(word, "edit" | "take" | "together") {
             return None;
         }

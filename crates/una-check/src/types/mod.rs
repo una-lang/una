@@ -1302,10 +1302,10 @@ mod tests {
     }
 
     #[test]
-    fn the_standard_modules_check_without_diagnostics_in_both_editions() {
+    fn the_standard_modules_check_without_diagnostics_in_every_edition() {
         // A type or label error in a standard module would drop or weaken what agents call,
         // without a word; checked as a package's, they report nothing.
-        for edition in [Edition::V0_1, Edition::V0_2] {
+        for edition in Edition::ALL {
             assert_eq!(
                 standard_diagnostics(edition),
                 Vec::<String>::new(),

@@ -282,7 +282,7 @@ impl Keyword {
     /// The keyword `word` is under the keyword set `set`.
     pub fn from_word_in(word: &str, set: KeywordSet) -> Option<Keyword> {
         Keyword::from_word(word).or_else(|| {
-            (set == KeywordSet::V0_2)
+            (set >= KeywordSet::V0_2)
                 .then(|| {
                     Keyword::EDITION_0_2
                         .into_iter()
@@ -294,7 +294,9 @@ impl Keyword {
 }
 
 /// The keywords and reserved words of a package's edition (`spec/01 §5`, `spec/17 §9`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Editions are cumulative (`spec/13 §7`): a later set holds every keyword of an earlier one,
+/// so the sets are ordered, oldest first.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum KeywordSet {
     /// Edition 0.1: the tables of `spec/01 §5`.
     #[default]
@@ -302,6 +304,8 @@ pub enum KeywordSet {
     /// Edition 0.2: `edit`, `take`, `old` and `together` are keywords, and the rows of
     /// `spec/17 §9` and `spec/19 §9` apply.
     V0_2,
+    /// Edition 0.3: the keywords of edition 0.2 (`spec/13 §7`).
+    V0_3,
 }
 
 /// The kind of a token.

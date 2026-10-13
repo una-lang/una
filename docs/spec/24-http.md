@@ -4,7 +4,7 @@ Status: Normative, v0.2 (ADR 0074 and its amendment of 2026-10-07).
 
 The host capability `Http` sends HTTP/1.1 requests to the origins that grants allow, and returns their responses.
 
-**Editions.** The constructs of this chapter exist only in packages of edition `0.2` (`spec/13 §7`). In edition `0.1`, `Http`, `Header`, `Response` and `HttpError` are ordinary names.
+**Editions.** The constructs of this chapter exist only in packages of edition `0.2` and later (`spec/13 §7`). In edition `0.1`, `Http`, `Header`, `Response` and `HttpError` are ordinary names.
 
 ## 1. The capability
 

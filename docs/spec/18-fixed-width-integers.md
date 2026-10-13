@@ -4,7 +4,7 @@ Status: Normative, v0.2 (ADR 0057).
 
 `Int` stays an unbounded mathematical integer everywhere (ADR 0004). Fixed-width integer types exist for the places where an exact width matters, such as bytes, protocols and hashing. Their overflow is a proof obligation, never a silent wrap.
 
-**Editions.** The rules of this chapter apply only to packages of edition `0.2` (`spec/13 §7`, ADR 0056). In edition `0.1`, `I8` to `U64` are ordinary names.
+**Editions.** The rules of this chapter apply only to packages of edition `0.2` and later (`spec/13 §7`, ADR 0056). In edition `0.1`, `I8` to `U64` are ordinary names.
 
 ## 1. Types
 

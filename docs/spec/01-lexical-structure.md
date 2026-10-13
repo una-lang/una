@@ -100,7 +100,7 @@ traced trait type unsafe var while
 - `shared` and `iso` move to v0.3, and `weak` joins them;
 - the messages of `region`, `var`, `while` and `loop` change.
 
-The new rows are in `spec/17 §9`. (v0.2, ADR 0065.) In edition `0.2`, `together` also becomes a keyword (`spec/19`), and the messages of `parallel`, `actor`, `async` and `await` change (`spec/19 §9`). (v0.2, ADR 0066.) The message of `trait` and `impl` changes too (`spec/20 §9`). (v0.2, ADR 0069.) In edition `0.2`, `with` right after `.` is an identifier, the name of a map's method (`spec/21 §2`), and a keyword everywhere else. The Gate 1 benchmark stays on edition `0.1`.
+The new rows are in `spec/17 §9`. (v0.2, ADR 0065.) In edition `0.2`, `together` also becomes a keyword (`spec/19`), and the messages of `parallel`, `actor`, `async` and `await` change (`spec/19 §9`). (v0.2, ADR 0066.) The message of `trait` and `impl` changes too (`spec/20 §9`). (v0.2, ADR 0069.) In edition `0.2`, `with` right after `.` is an identifier, the name of a map's method (`spec/21 §2`), and a keyword everywhere else. The Gate 1 benchmark stays on edition `0.1`. (v0.3, ADR 0056 amendment.) Edition `0.3` has the keyword tables of edition `0.2` (`spec/13 §7`): editions are cumulative.
 
 ## 6. Literals
 

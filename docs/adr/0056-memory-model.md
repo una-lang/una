@@ -88,3 +88,12 @@ A `for` loop lowers to a Core `Loop` node, equivalent to the generated recursive
 - **Ranges.** An inclusive range ends at its upper bound without computing its successor, so a range up to the greatest value of a fixed-width type does not overflow.
 
 The consequence above, "a loop is a recursive function", holds of the meaning: the node is that function, with iterations that are not calls.
+
+## Amendment (2026-10-13): edition `0.3`, cumulative editions
+
+ADRs 0092, 0093 and 0094 target edition `0.3`. This amendment adds that edition to rule 16 and states how editions relate, as recorded in `spec/13 §7` (#564):
+
+- **Edition `0.3`** is accepted in `una.toml` (`edition = "0.3"`). `una --version` lists it.
+- **Editions are cumulative.** Edition `0.3` has every construct, keyword and rule of edition `0.2`. A rule stated for edition `0.2` holds in every later edition, unless it says otherwise. The rules that target edition `0.3` apply only there.
+- **Edition `0.3` is a preview** until every rule that targets it has landed. Until then, a later `0.3.x` release may add obligations or errors to an edition `0.3` package. The edition only gets stricter, never looser.
+- **Editions `0.1` and `0.2` keep their promise.** A release changes what they accept or reject only to fix a soundness or security error, as the security patch releases have done. The Gate 1 pin (edition `0.1`) does not move.

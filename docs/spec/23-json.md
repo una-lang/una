@@ -4,7 +4,7 @@ Status: Normative, v0.2 (ADR 0073 and its amendments of 2026-10-07).
 
 The prelude reads and writes JSON (RFC 8259): a kind for JSON values, a parser that fails with a declared kind, and one canonical way of writing.
 
-**Editions.** The constructs of this chapter exist only in packages of edition `0.2` (`spec/13 §7`). In edition `0.1`, `Json`, `JsonNumber`, `JsonError`, `parse_json`, `to_json`, `quote_json` and `is_json_number` are ordinary names.
+**Editions.** The constructs of this chapter exist only in packages of edition `0.2` and later (`spec/13 §7`). In edition `0.1`, `Json`, `JsonNumber`, `JsonError`, `parse_json`, `to_json`, `quote_json` and `is_json_number` are ordinary names.
 
 ## 1. The kind
 

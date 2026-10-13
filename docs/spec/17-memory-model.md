@@ -4,7 +4,7 @@ Status: Normative, v0.2 (ADR 0056).
 
 Una has mutable value semantics. Values are immutable, and there are no references and no lifetimes. A binding declared editable can be rebound, and a parameter can be passed in and out (`edit`) or consumed (`take`). Every construct of this chapter desugars into Core IR (§4). The UAM, the verifier and the information-flow rules then apply to the desugared program unchanged.
 
-**Editions.** The constructs of this chapter exist only in packages of edition `0.2` (`edition = "0.2"` in `una.toml`, `spec/13 §7`).
+**Editions.** The constructs of this chapter exist only in packages of edition `0.2` and later (`edition = "0.2"` in `una.toml`, `spec/13 §7`).
 - In edition `0.1`, the parser keeps the keyword tables of v0.1 (`spec/01 §5`): `old` is an ordinary name, `weak` is not reserved, and `edit`, `take`, `region`, `shared` and `iso` give the U0103 messages of v0.1.
 - `for` stays limited to `handler h for K`, so a `for` loop is a syntax error (U0101).
 - A single file has the default settings, and so edition `0.1`.
