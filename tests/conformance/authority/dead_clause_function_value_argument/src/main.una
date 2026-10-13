@@ -1,0 +1,20 @@
+-- test: a call given a function value whose failure the expected type drops (U3009) is not judged dead (ADR 0100 rule 4)
+-- spec: spec/06 §3
+-- expect: error U3009 at src/main.una:18:20
+module main
+
+kind E = | Bad
+
+risky(n: Int) -> Int
+  fails E
+=
+  if n < 0 then fail Bad else n
+
+apply(f: fn(Int) -> Int, n: Int) -> Int = f(n)
+
+pub user(n: Int) -> Int
+  fails E
+=
+  let y = apply(f: risky, n: n)
+    if error use 0
+  y

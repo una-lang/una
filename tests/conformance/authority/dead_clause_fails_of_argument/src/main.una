@@ -1,0 +1,32 @@
+-- test: a call of a function whose `fails of` parameter is given a function that cannot fail cannot fail, so an `if error` clause on it is U3025; given a function that can fail, the clause stays live (ADR 0100 rules 1 and 3, ADR 0062)
+-- spec: spec/06 §3
+-- expect: error U3025 at src/main.una:24:5
+module main
+
+kind E = | Bad
+
+risky(n: Int) -> Int
+  fails E
+=
+  if n < 0 then fail Bad else n
+
+relay(n: Int, f: fn(Int) -> Int) -> Int
+  fails of f
+=
+  let r = f(n)
+    if error pass
+  r + 1
+
+pub safe(n: Int) -> Int
+  fails E
+=
+  let r = relay(n: n, f: fn(x) -> x)
+    if error fail Bad
+  r
+
+pub live(n: Int) -> Int
+  fails E
+=
+  let r = relay(n: n, f: risky)
+    if error fail Bad
+  r

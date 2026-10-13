@@ -69,6 +69,7 @@ fn made_checking(depth: usize, generic: bool, shape: Shape) -> (usize, usize, us
         manifest: Some(manifest),
         settings: &settings,
         run: None,
+        earlier_errors: false,
     };
     let before = una_core::label_counters::made();
     let nodes_before = una_core::label_counters::nodes_made();

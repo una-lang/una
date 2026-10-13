@@ -42,6 +42,9 @@ pub struct PackageInput<'a> {
     pub settings: &'a Manifest,
     /// The entry module and grants of `una run`, when the package is checked to run it.
     pub run: Option<RunInput<'a>>,
+    /// Whether the package has an error that the type check does not see: a syntax, manifest
+    /// or name error. Edition 0.3's U3025 and U3026 wait for them (ADR 0100 rule 4).
+    pub earlier_errors: bool,
 }
 
 /// What `una run` adds to a check: the module whose `main` runs, and the grants of

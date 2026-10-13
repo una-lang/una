@@ -15,6 +15,7 @@
 mod authority;
 mod call;
 mod check;
+mod dead;
 mod edit_labels;
 mod effects;
 mod elab;
@@ -356,6 +357,9 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         }
     }
     authority::infer(&mut env, &collected, &mut report);
+    // Edition 0.3 (ADR 0100 rule 3): the functions whose inferred failure rests on code in
+    // error, once the capabilities of their operations are inferred.
+    let in_error = dead::in_error(&env, &collected);
     // S-14 (ADR 0085): a package that writes files labels the failure of every `Files`
     // operation with what decides its writes. Pass 2 is probed first, its diagnostics dropped,
     // so that a read checked before a write has the label too. The probe's label is the least
@@ -439,6 +443,13 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     }
     authority::grants(&env, package.settings, package.run, &mut report);
     authority::budget(&env, &findings, package.settings, &mut report);
+    // Edition 0.3 (ADR 0100): last, once every other error of the package is known.
+    dead::judge(
+        &mut findings,
+        &in_error,
+        package.earlier_errors,
+        &mut report,
+    );
     // Pending obligations by position, then kind.
     findings
         .obligations
@@ -620,6 +631,16 @@ pub(crate) struct Findings {
     pub(crate) testing_handlers: std::collections::BTreeMap<usize, Span>,
     /// The handlers installed by `with` bindings, and the span of each binding (ADR 0043).
     pub(crate) with_installs: Vec<(usize, Span)>,
+    /// Edition 0.3: the `if error` clauses and `attempt`s on code that cannot fail (ADR 0100),
+    /// judged once the package is checked.
+    pub(crate) dead: Vec<dead::Site>,
+    /// The calls whose failure stops where they are: handled by `if error use`, by `if error
+    /// fail` or by `attempt` (ADR 0100 rule 3).
+    pub(crate) contained: std::collections::BTreeSet<Span>,
+    /// The spans of the calls of declared functions, apart from their mentions as values.
+    pub(crate) named_calls: std::collections::BTreeSet<Span>,
+    /// The functions whose bodies have a site of U3007, U3008 or U3009, held ones included.
+    pub(crate) family: std::collections::BTreeSet<usize>,
 }
 
 /// The parsed standard modules.

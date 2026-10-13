@@ -194,6 +194,10 @@ pub enum Code {
     U3018,
     /// An `of` clause that names a function type with its own `uses` or `fails`.
     U3019,
+    /// An `if error` clause on an expression that cannot fail (edition 0.3, ADR 0100).
+    U3025,
+    /// `attempt` of a call that cannot fail (edition 0.3, ADR 0100).
+    U3026,
     /// Flow to a lower label.
     U4001,
     /// Implicit flow through control, failure or call under raised pc.
@@ -236,7 +240,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 84] = [
+    pub const ALL: [Code; 86] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -302,6 +306,8 @@ impl Code {
         Code::U3017,
         Code::U3018,
         Code::U3019,
+        Code::U3025,
+        Code::U3026,
         Code::U4001,
         Code::U4002,
         Code::U4003,
@@ -664,6 +670,16 @@ impl Code {
                 code: "U3019",
                 domain: Domain::Authority,
                 meaning: "`of` clause that names a function type with its own `uses` or `fails`",
+            },
+            Code::U3025 => &Entry {
+                code: "U3025",
+                domain: Domain::Authority,
+                meaning: "`if error` clause on an expression that cannot fail",
+            },
+            Code::U3026 => &Entry {
+                code: "U3026",
+                domain: Domain::Authority,
+                meaning: "`attempt` of a call that cannot fail",
             },
             Code::U4001 => &Entry {
                 code: "U4001",

@@ -1,0 +1,8 @@
+-- test: edition 0.2 accepts `attempt` of a call that cannot fail, with an unconstrained error type (ADR 0100 rule 6)
+-- spec: spec/06 §5
+-- expect: ok
+module main
+
+double(n: Int) -> Int = n * 2
+
+pub tried(n: Int) -> Result[Int, Text] = attempt double(n)

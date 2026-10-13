@@ -54,6 +54,7 @@ fn run(files: &[(&str, &str)], single: bool) -> (Vec<Diagnostic>, TypeCheck) {
         manifest,
         settings: &settings,
         run: None,
+        earlier_errors: false,
     };
     let names = check_names(&input);
     let types = check_types(&input);

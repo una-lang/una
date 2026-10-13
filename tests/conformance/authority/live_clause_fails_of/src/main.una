@@ -1,0 +1,23 @@
+-- test: a call of a parameter under `fails of`, and a call of a function that declares `fails`, stay live (ADR 0100 rule 3)
+-- spec: spec/06 §3
+-- expect: ok
+module main
+
+kind E = | Bad
+
+double(n: Int) -> Int = n * 2
+
+pub retry(n: Int, act: fn(Int) -> Int) -> Int
+  fails E
+  fails of act
+=
+  let r = act(n)
+    if error pass
+  r
+
+pub twice(n: Int) -> Int
+  fails E
+=
+  let r = retry(n: n, act: double)
+    if error pass
+  r

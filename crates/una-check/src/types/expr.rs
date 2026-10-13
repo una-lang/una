@@ -1632,6 +1632,15 @@ impl<'a> Checker<'_, 'a, '_> {
             argument: false,
         });
         let ty = self.expr(operand, None);
+        if self.pass == super::authority::Pass::Check {
+            // The failure of this call stops here (ADR 0100 rule 3).
+            self.findings.contained.insert(inner.span);
+            // Edition 0.3: `attempt` of a call that cannot fail (ADR 0100, U3026).
+            if self.env.edition >= Edition::V0_3 && !self.call_fails.contains_key(&inner.span) {
+                let site = self.dead_site(operand, super::dead::Dead::Attempt { span }, Vec::new());
+                self.findings.dead.push(site);
+            }
+        }
         let error = self
             .call_fails
             .get(&inner.span)
