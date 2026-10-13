@@ -1,0 +1,177 @@
+---
+construct: let edit and edit parameters
+editions: ["0.2"]
+spec: ["spec/17 §1", "spec/17 §2", "spec/17 §3", "spec/17 §5", "spec/17 §6", "spec/17 §7", "spec/04 §2"]
+codes: [U0103, U2018, U2019, U2020, U2021]
+---
+
+# `let edit` and `edit` parameters
+
+## What it does
+
+In edition `0.2`, values stay values: there are no references and no lifetimes, and an editable binding can be rebound (`spec/17`).
+
+- **`let edit x = e`** declares a binding that assignments may rebind: `x = e`.
+- **A place**, a field path of an editable binding, can be assigned too: `t.last = value` rebuilds `t` with that field changed (`spec/17 §2`).
+- **An `edit` parameter** is passed in and out. The function receives the caller's value, and the caller's place receives its final value (`spec/17 §3`).
+
+```una
+module demo
+
+pub kind Tally
+  seen: Int
+  last: Int
+
+pub record(edit t: Tally, value: Int) -> Unit
+  ensures t.seen == old(t).seen + 1
+=
+  t.seen = t.seen + 1
+  t.last = value
+
+pub tally(xs: List[Int]) -> Tally
+=
+  let edit t = Tally(seen: 0, last: 0)
+  for x in xs
+    edit t.record(value: x)
+  t
+```
+
+## Forms
+
+```ebnf
+param           = [ "edit" | "take" ] lower_ident ":" type ;
+arg             = [ lower_ident ":" ] ( "edit" place | "take" lower_ident | line_expr ) ;
+place           = lower_ident { "." lower_ident } ;
+let_stmt        = "let" [ "edit" ] lower_ident [ ":" type ] "=" ( handled | block_expr ) ;
+assign_stmt     = place "=" ( handled | block_expr ) ;
+postfix         = [ "edit" ] primary { "." lower_ident [ call_args ] | call_args } ;
+```
+
+This is `spec/17 §1`.
+
+- **`let edit x = e`**, or `let edit x: T = e` with a type that fixes a refinement as an invariant.
+- **`p = e`**, where `p` is an editable binding or a field path of one.
+- **`edit x: T`** in a parameter list, and **`edit p`** at the matching argument. A method receiver is written `edit t.record(...)`.
+- **`old(x)`** in an `ensures` clause: the value of the `edit` parameter `x` on entry (`spec/17 §3` rule 6).
+
+## Examples
+
+A list's elements change through `set`, never by assignment (`spec/17 §2` rule 3):
+
+```una
+module demo
+
+pub reset_first(xs: List[Int]) -> List[Int]
+=
+  let edit ys = xs
+  if ys.len > 0
+    edit ys.set(index: 0, item: 0)
+  ys
+```
+
+Only an editable binding can be assigned (`spec/17 §2` rule 3):
+
+```una
+-- fails with U2019
+module demo
+
+pub bump(x: Int) -> Int
+=
+  let n = x
+  n = n + 1
+  n
+```
+
+The caller writes `edit` exactly where the parameter is declared `edit` (`spec/17 §3` rule 2):
+
+```una
+-- fails with U2020
+module demo
+
+pub kind Tally
+  seen: Int
+
+pub record(edit t: Tally) -> Unit
+=
+  t.seen = t.seen + 1
+
+pub caller(t: Tally) -> Tally
+=
+  let edit copy = t
+  record(copy)
+  copy
+```
+
+## Edge cases
+
+**Exclusivity.** An `edit p` argument excludes every other use of `p`'s root binding in the same call, even of a disjoint field (`spec/17 §3` rule 4):
+
+```una
+-- fails with U2018
+module demo
+
+pub kind Tally
+  seen: Int
+  last: Int
+
+pub record(edit t: Tally, value: Int) -> Unit
+=
+  t.seen = t.seen + 1
+  t.last = value
+
+pub both(edit t: Tally) -> Unit
+=
+  record(edit t, value: t.seen)
+```
+
+**Not a value.** A function with an `edit` or `take` parameter can only be called, not passed or returned (`spec/17 §3` rule 7):
+
+```una
+-- fails with U2021
+module demo
+
+pub finish(take xs: List[Int]) -> Int = xs.len
+
+pub as_value() -> fn(List[Int]) -> Int = finish
+```
+
+Further rules:
+
+- **Fixed type.** An editable binding keeps its declared type, refinement and label at every rebind. Each rebind carries the obligation of an annotated `let`. Without an annotation, its type is its initial value's without the refinement (`spec/17 §2` rule 4, `spec/17 §5` rule 2).
+- **Fields of records only.** A place's fields are fields of record kinds; a field of a variant payload is not a place (`spec/17 §2` rule 2).
+- **No compound assignment**, and no assignment to a list element: elements change through `set` (`spec/17 §2` rule 3).
+- **Lambdas capture values.** A lambda captures an editable binding's value when it is created, and cannot edit it (U2019, `spec/17 §5` rule 4).
+- **Transactional.** A call that fails leaves its `edit` arguments unchanged for the caller. Effects already performed stay performed (`spec/17 §7` rules 1 and 2).
+- **Labels are fixed.** A rebind under a program counter above the binding's label is U4001, never a silent raise (`spec/17 §6` rule 1).
+- **Not on operations.** Capability operations and handlers cannot declare `edit` or `take` parameters (U2020, `spec/17 §3` rule 8).
+- **One effect per line.** A call with an `edit` argument is the whole expression of a statement or `let` (U3013, `spec/17 §3` rule 5).
+
+## Diagnostics
+
+- [U0103](../../../../crates/una-explain/explain/U0103.md): `edit` in edition `0.1`, where it is reserved.
+- [U2018](../../../../crates/una-explain/explain/U2018.md): an `edit` argument used again in the same call.
+- [U2019](../../../../crates/una-explain/explain/U2019.md): an assignment to a binding that is not editable.
+- [U2020](../../../../crates/una-explain/explain/U2020.md): a missing or extra `edit` marker, or an `edit` argument that is not a place.
+- [U2021](../../../../crates/una-explain/explain/U2021.md): a function with conventions used as a value.
+
+## Edition
+
+`let edit`, assignments and `edit` parameters exist from edition `0.2` on (ADR 0056). In edition `0.1`, `edit` is reserved:
+
+```una
+-- edition 0.1
+-- fails with U0103
+module demo
+
+pub bump(x: Int) -> Int
+=
+  let edit n = x
+  n = n + 1
+  n
+```
+
+## Normative source
+
+- `spec/17 §1`: syntax; `spec/17 §2`: places and editable bindings; `spec/17 §3`: parameter conventions.
+- `spec/17 §5`: static semantics; `spec/17 §6`: information flow; `spec/17 §7`: dynamic semantics.
+- `spec/04 §2`: `old` in `ensures`.

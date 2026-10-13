@@ -135,7 +135,7 @@ Further rules:
 
 ## Edition
 
-Constraints exist only in edition `0.2` (`spec/20`). In edition `0.1`, type parameters are unconstrained, equality on them keeps an inferred bound, and a written constraint is a syntax error (`spec/03 §2` rule 4):
+Constraints exist from edition `0.2` on (`spec/20`). In edition `0.1`, type parameters are unconstrained, equality on them keeps an inferred bound, and a written constraint is a syntax error (`spec/03 §2` rule 4):
 
 ```una
 -- edition 0.1

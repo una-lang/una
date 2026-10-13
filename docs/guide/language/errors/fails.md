@@ -177,7 +177,7 @@ Further rules:
 
 ## Edition
 
-`fails E` is in editions `0.1` and `0.2`. `fails of p` is in edition `0.2` only (ADR 0062); in edition `0.1` the clause takes an error kind, so `fails of` is a syntax error (U0101):
+`fails E` is in editions `0.1` and `0.2`. `fails of p` is in edition `0.2` and later (ADR 0062); in edition `0.1` the clause takes an error kind, so `fails of` is a syntax error (U0101):
 
 ```una
 -- edition 0.1
