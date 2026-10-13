@@ -379,8 +379,9 @@ impl<'a> Checker<'_, 'a, '_> {
             // against that, so the decision raises the call's result and program counter
             // instead, as the value's own label does, and the argument flows without it.
             let stripped = self.without_decisions(&found, &mut decided);
-            // Edition 0.1 keeps every flow it checked before (#253): the decision only adds
-            // the raise below.
+            // Edition 0.1 keeps the decision in the flow as well (#253, #356): a function value
+            // whose parameter is `ℓ_T` rejects it (U4001), where edition 0.2 lets the raise
+            // below carry it. Stripping it here would accept programs that edition 0.1 rejects.
             let found = if self.env.edition >= Edition::V0_2 {
                 stripped
             } else {
@@ -859,7 +860,11 @@ impl<'a> Checker<'_, 'a, '_> {
     /// as #253 does for a call written in the body), and its failure is labeled by it, as
     /// N-39 labels a host operation's. A lambda whose parameter types are inferred takes
     /// `ℓ*_T` in them, and its own flows carry it. Edition 0.2 tells `ℓ*_T` from `ℓ_T` at
-    /// the function argument's flow (S-Fun) instead. Returns the label of the decision.
+    /// the function argument's flow (S-Fun) instead. S-Fun does not subsume this rule in
+    /// edition 0.1 (#356): when the decided argument goes to a parameter that no function value
+    /// sees, no flow carries the decision, and without summaries this raise is the only bound
+    /// on the callee's effects, as the `hof_rule_350__effect__two_params_unused` and
+    /// `hof_boundary__effect__*` conformance cases show. Returns the label of the decision.
     fn decided_callbacks(
         &mut self,
         callee: &str,

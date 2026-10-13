@@ -1,0 +1,11 @@
+-- test: a function value given an argument decided by values of a type parameter (#253, #356): reject: edition 0.1 keeps the decision in the argument's flow, so a parameter typed `label(T)` rejects it
+-- spec: spec/07 §7
+-- expect: error U4001 at src/sw.una:8:13
+module sw
+
+g[T](a: T, b: T, p: T, q: T, k: fn(T) -> Int) -> Int
+=
+  let n = k(if a == b then p else q)
+  0
+
+pub main(s: secret Int) -> secret Int = g(s, b: 0, p: 1, q: 2, k: fn(x) -> 0)

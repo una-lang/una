@@ -13,25 +13,9 @@ use super::ty::{FnUse, KindLabels, ShowLabeled, Ty};
 
 /// `from ⊑ to`, where a symbolic label is below `to` only if `to` contains it or is `⊤`
 /// (`spec/07 §7` rule 8, ADR 0038 D3.2).
-pub(crate) fn below(from: &Label, to: &Label, top: &Label, distinct: bool) -> bool {
-    // Edition 0.1 reads `ℓ*_T` as `ℓ_T`, as it did before the deep marks (#253).
-    let plain = |label: &Label| {
-        let mut plain = label.clone();
-        plain.symbols = label
-            .symbols
-            .iter()
-            .map(|s| s.trim_end_matches('*').to_owned())
-            .collect();
-        plain
-    };
-    let (from, to) = if distinct {
-        (from.clone(), to.clone())
-    } else {
-        (plain(from), plain(to))
-    };
-    let to = &to;
+pub(crate) fn below(from: &Label, to: &Label, top: &Label) -> bool {
     // `ℓ_T`, the label of a value of `T`, is below `ℓ*_T`, every label of its type argument.
-    let mut from = from;
+    let mut from = from.clone();
     from.symbols
         .retain(|s| s.ends_with('*') || !to.symbols.contains(&format!("{s}*")));
     let from = &from;
@@ -61,7 +45,7 @@ fn violation(
     } else {
         (expected.top_label(), found.top_label())
     };
-    if !below(&from, &to, top, kinds.deep_distinct) {
+    if !below(&from, &to, top) {
         return Some((from, to));
     }
     match (found.unlabeled(), expected.unlabeled()) {
@@ -231,12 +215,7 @@ impl Checker<'_, '_, '_> {
             return;
         }
         let allowed = expected.top_label();
-        if below(
-            label,
-            &allowed,
-            &self.top(),
-            self.env.kind_labels.deep_distinct,
-        ) {
+        if below(label, &allowed, &self.top()) {
             return;
         }
         self.report.error(
@@ -498,12 +477,7 @@ impl Checker<'_, '_, '_> {
         }
         for (arg_span, ty) in args {
             let label = self.labeled(ty).sent_label(true, &self.env.kind_labels);
-            if !below(
-                &label,
-                accepts,
-                &self.top(),
-                self.env.kind_labels.deep_distinct,
-            ) {
+            if !below(&label, accepts, &self.top()) {
                 let mut diagnostic = self.report.make(
                     Code::U4003,
                     *arg_span,
@@ -512,13 +486,12 @@ impl Checker<'_, '_, '_> {
                 // ADR 0095: sending only accepted data keeps the label; a policy, which
                 // widens the trusted base, comes last.
                 let top = self.top();
-                let distinct = self.env.kind_labels.deep_distinct;
                 // An interpolated value with a labeled field: name the field (ADR 0068 D8).
                 if let Some((_, field, kind, field_label)) =
                     self.written_fields
                         .iter()
                         .find(|(span, _, _, field_label)| {
-                            span == arg_span && !below(field_label, accepts, &top, distinct)
+                            span == arg_span && !below(field_label, accepts, &top)
                         })
                 {
                     diagnostic.repairs.push(super::Report::advice(format!(

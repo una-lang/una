@@ -36,9 +36,6 @@ pub(crate) struct KindLabels {
     /// apart from the label of a value of `T` itself, `ℓ_T` (ADR 0067 amendment): in edition
     /// 0.2, where result summaries tell them apart.
     pub(crate) deep_symbols: bool,
-    /// Whether flows tell `ℓ*_T` from `ℓ_T`: in both editions since #354 (edition 0.1 read
-    /// `T*` as `T` before, which let annotations drop a decision).
-    pub(crate) deep_distinct: bool,
 }
 
 /// `label` with each symbolic label of a type parameter `T` written as `T*`: the join of every
@@ -74,7 +71,6 @@ impl KindLabels {
             own: vec![Label::public(); fields.len()],
             invariant: params.iter().map(|count| vec![false; *count]).collect(),
             deep_symbols: false,
-            deep_distinct: false,
         };
         loop {
             let mut changed = false;
