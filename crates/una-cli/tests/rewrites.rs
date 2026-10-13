@@ -295,5 +295,8 @@ fn a_guard_that_does_not_fail_is_not_rewritten() {
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert_eq!(std::fs::read_to_string(root.join("src/m.una")).unwrap(), source);
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/m.una")).unwrap(),
+        source
+    );
 }

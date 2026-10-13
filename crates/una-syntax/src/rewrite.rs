@@ -285,9 +285,10 @@ fn if_construct(lines: &[Line<'_>], at: usize, end: usize) -> Option<Candidate> 
 /// Whether a branch written on one line leaves its block: `fail` of a variant.
 fn diverges(branch: &str) -> bool {
     let branch = branch.trim();
-    branch
-        .strip_prefix("fail ")
-        .is_some_and(|rest| rest.trim_start().starts_with(|c: char| c.is_ascii_uppercase()))
+    branch.strip_prefix("fail ").is_some_and(|rest| {
+        rest.trim_start()
+            .starts_with(|c: char| c.is_ascii_uppercase())
+    })
 }
 
 /// The length of what precedes `if` on a line that opens an `if`: nothing, or `let x = `.
@@ -1253,7 +1254,8 @@ mod tests {
 
     #[test]
     fn an_else_chain_on_the_next_lines_becomes_an_if_with_blocks() {
-        let source = "module m\n\nf(x: Int) -> Int\n=\n  if x > 0 then fail Broke else\n  let y = x\n  y\n";
+        let source =
+            "module m\n\nf(x: Int) -> Int\n=\n  if x > 0 then fail Broke else\n  let y = x\n  y\n";
         assert_eq!(
             rewrite(source).as_deref(),
             Some(

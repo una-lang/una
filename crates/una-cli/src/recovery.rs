@@ -276,6 +276,15 @@ pub(crate) fn withhold(diagnostics: &mut Vec<Diagnostic>, modules: &[ModuleText<
     if queue.is_empty() && unnamed.is_empty() {
         return;
     }
+    // The modules that may name a name of a module with an unnamed broken declaration: that
+    // module, and every module importing from it. One pass over the modules, not per node.
+    let reaches_unnamed: Vec<bool> = modules
+        .iter()
+        .zip(&visible)
+        .map(|(module, names)| {
+            unnamed.contains(module.module) || names.values().any(|from| unnamed.contains(from))
+        })
+        .collect();
     // Who refers to each visible name, by its declaring module.
     let mut mentions: BTreeMap<(&str, &str), Vec<usize>> = BTreeMap::new();
     let mut dependent = vec![false; nodes.len()];
@@ -291,8 +300,7 @@ pub(crate) fn withhold(diagnostics: &mut Vec<Diagnostic>, modules: &[ModuleText<
         }
         // A module with an unnamed broken declaration, or one importing from it, may name
         // any of its names: every declaration there is a dependent.
-        let imports_unnamed = names.values().any(|from| unnamed.contains(from));
-        if (unnamed.contains(own) || imports_unnamed)
+        if reaches_unnamed.get(*m).copied().unwrap_or(false)
             && let Some(slot) = dependent.get_mut(n)
         {
             *slot = true;

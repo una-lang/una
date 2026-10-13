@@ -1,6 +1,6 @@
 -- test: a lambda given to a call of a failing value still needs the type of its parameter
 -- spec: spec/03 §7
--- expect: error U2010 at 11:18
+-- expect: error U2010 at 11:19
 module lambda_on_failed_callee
 
 kind E = | Broke

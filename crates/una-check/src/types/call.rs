@@ -214,10 +214,19 @@ impl<'a> Checker<'_, 'a, '_> {
     /// Checks arguments that belong to no parameter, for the diagnostics inside them.
     fn unchecked(&mut self, args: &[Arg]) {
         for arg in args {
-            // A lambda given to an unknown callee takes the error type, so that its parameters
-            // report nothing the unknown name caused (ADR 0096 rule 8).
-            let expected = matches!(arg.value.kind, ExprKind::Lambda { .. }).then_some(&Ty::Error);
-            self.expr(&arg.value, expected);
+            self.expr(&arg.value, None);
+        }
+    }
+
+    /// The arguments of a call of a name that does not resolve: U1001 is reported there, or
+    /// the name is one a broken declaration would have declared. A lambda among them reports
+    /// nothing about its parameters, which only the missing callee could type (ADR 0096
+    /// rule 8). Every other unchecked call keeps U2010.
+    fn unchecked_unknown(&mut self, args: &[Arg]) {
+        for arg in args {
+            self.unknown_callee_argument = matches!(arg.value.kind, ExprKind::Lambda { .. });
+            self.expr(&arg.value, None);
+            self.unknown_callee_argument = false;
         }
     }
 
@@ -257,9 +266,9 @@ impl<'a> Checker<'_, 'a, '_> {
                         self.unchecked(args);
                         Ty::Error
                     }
-                    // An unknown name is U1001, reported by M3.
+                    // An unknown name is U1001, reported by M3, or a poisoned name.
                     _ => {
-                        self.unchecked(args);
+                        self.unchecked_unknown(args);
                         Ty::Error
                     }
                 }

@@ -184,6 +184,9 @@ pub(crate) struct Checker<'c, 'a, 's> {
     pub(crate) lambda_depth: usize,
     /// The argument about to be checked is one of a prelude function's.
     pub(crate) prelude_argument: bool,
+    /// Whether the lambda about to be checked is an argument of a call of a name that does
+    /// not resolve, whose parameters then report nothing (ADR 0096 rule 8).
+    pub(crate) unknown_callee_argument: bool,
     /// The innermost lambda is directly an argument of a prelude function, for the advice of
     /// U3004 in edition `0.1`.
     pub(crate) prelude_lambda: bool,
@@ -416,6 +419,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             of_found: Vec::new(),
             lambda_depth: 0,
             prelude_argument: false,
+            unknown_callee_argument: false,
             prelude_lambda: false,
             task_mark: None,
             call_targets: BTreeMap::new(),
