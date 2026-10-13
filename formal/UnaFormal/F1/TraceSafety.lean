@@ -193,20 +193,45 @@ def Program.stage1B (p : Program) : Bool := p.funs.all (·.body.closuresOk p)
 
 /-! ### The check -/
 
-/-- The knowledge of a path, as a condition: a conjunction of literals over `Bool` variables. -/
-def knowledge (K : List (String × Bool)) : Cond :=
-  K.foldr (fun (x, b) acc => .and (if b then .var x else .not (.var x)) acc) .tt
-
 /-- The variables an atom of a condition names. -/
 def CAtom.vars : CAtom → List String
   | .var x => [x]
   | .eq a b | .lt a b => [a, b].filterMap fun | .var x => some x | _ => none
 
+/-- What a path knows (#573): literals over `Bool` variables, the branches taken, and the
+comparisons that `let`s bound to some of those variables, so that a branch on such a variable
+also learns its comparison. -/
+structure Know where
+  lits : List (String × Bool) := []
+  defs : List (String × CAtom) := []
+
+/-- `K` after a branch on `x` with value `b`. -/
+def Know.lit (K : Know) (x : String) (b : Bool) : Know := { K with lits := (x, b) :: K.lits }
+
+/-- `K` after `x` is bound to the value of the comparison `c`, which must not read `x`. -/
+def Know.define (K : Know) (x : String) (c : CAtom) : Know :=
+  if c.vars.contains x then K else { K with defs := (x, c) :: K.defs }
+
+/-- The literal of an atom with value `b`, as a condition. -/
+def CAtom.lit : CAtom → Bool → Cond
+  | .var x, b => if b then .var x else .not (.var x)
+  | .eq a c, b => if b then .eqInt a c else .not (.eqInt a c)
+  | .lt a c, b => if b then .ltInt a c else .not (.ltInt a c)
+
+/-- The conjunction of a list of conditions. -/
+def Cond.conj (cs : List Cond) : Cond := cs.foldr .and .tt
+
+/-- The knowledge of a path, as a condition: each branch literal, and, for a variable a `let`
+bound to a comparison, the same literal of that comparison. -/
+def knowledge (K : Know) : Cond :=
+  Cond.conj (K.lits.map (fun q => CAtom.lit (.var q.1) q.2) ++
+    K.defs.flatMap fun d => (K.lits.filter (·.1 == d.1)).map fun q => CAtom.lit d.2 q.2)
+
 /-- The variables a condition names. -/
 def Cond.vars (c : Cond) : List String := c.atoms.flatMap CAtom.vars
 
 /-- A site performing `o` directly, under `K`: its condition, if any, is implied. -/
-def siteOk (conds : List (String × Cond)) (K : List (String × Bool)) (o : String) : Bool :=
+def siteOk (conds : List (String × Cond)) (K : Know) (o : String) : Bool :=
   match conds.lookup o with
   | some c => implies (knowledge K) c
   | none => true
@@ -214,7 +239,7 @@ def siteOk (conds : List (String × Cond)) (K : List (String × Bool)) (o : Stri
 /-- A site that starts a run of `g` on `args` (or, for a reference, on unknown arguments), under
 `K`: for each conditioned operation `g` may perform, `K` and `g`'s own condition at the
 arguments imply the caller's. -/
-def startOk (p : Program) (conds : List (String × Cond)) (K : List (String × Bool)) (g : String)
+def startOk (p : Program) (conds : List (String × Cond)) (K : Know) (g : String)
     (args : Option (List Atom)) : Bool :=
   conds.all fun (o, c) =>
     !mayPerform p g o ||
@@ -231,12 +256,28 @@ function's parameters, which keep their values for the whole call. -/
 def freshFor (conds : List (String × Cond)) (x : String) : Bool :=
   !(conds.any fun (_, c) => c.vars.contains x)
 
-/-- `K` after binding `x`: what it knew of an earlier `x` no longer holds. -/
-def forget (K : List (String × Bool)) (x : String) : List (String × Bool) :=
-  K.filter (·.1 != x)
+/-- `K` after binding `x`: what it knew of an earlier `x` no longer holds, and neither does a
+comparison that read it (#573). F1 changes a name only by binding it again: its environment
+only grows, an `edit` call returns its new value, and a loop binds its names afresh. -/
+def forget (K : Know) (x : String) : Know where
+  lits := K.lits.filter (·.1 != x)
+  defs := K.defs.filter fun d => d.1 != x && !d.2.vars.contains x
+
+/-- The comparison a right-hand side computes, if it is one of integers: `lt` or `eqInt` of two
+atoms (#573). -/
+def Rhs.compares : Rhs → Option CAtom
+  | .prim .lt [a, b] => some (.lt a b)
+  | .prim .eqInt [a, b] => some (.eq a b)
+  | _ => none
+
+/-- `K` after `let x = v`: `x` is forgotten, then defined when `v` is a comparison. -/
+def afterLet (K : Know) (x : String) (v : Rhs) : Know :=
+  match v.compares with
+  | some c => (forget K x).define x c
+  | none => forget K x
 
 mutual
-  def Rhs.condOk (p : Program) (conds : List (String × Cond)) (K : List (String × Bool)) :
+  def Rhs.condOk (p : Program) (conds : List (String × Cond)) (K : Know) :
       Rhs → Bool
     | .op _ => siteOk conds K "Console.print"
     | .read _ => siteOk conds K "Files.read"
@@ -251,12 +292,12 @@ mutual
     | .lambda _ body => closureFree p body
     | _ => true
 
-  def Expr.condOk (p : Program) (conds : List (String × Cond)) (K : List (String × Bool)) :
+  def Expr.condOk (p : Program) (conds : List (String × Cond)) (K : Know) :
       Expr → Bool
     | .atom _ | .fail _ | .raise _ _ _ | .unreachable => true
-    | .letR x _ v b => freshFor conds x && v.condOk p conds K && b.condOk p conds (forget K x)
+    | .letR x _ v b => freshFor conds x && v.condOk p conds K && b.condOk p conds (afterLet K x v)
     | .letE x _ v b => freshFor conds x && v.condOk p conds K && b.condOk p conds (forget K x)
-    | .ite (.var x) t e => t.condOk p conds ((x, true) :: K) && e.condOk p conds ((x, false) :: K)
+    | .ite (.var x) t e => t.condOk p conds (K.lit x true) && e.condOk p conds (K.lit x false)
     | .ite _ t e => t.condOk p conds K && e.condOk p conds K
     | .caseOption _ t x e => freshFor conds x && t.condOk p conds K && e.condOk p conds (forget K x)
     | .caseResult _ x t y e =>
@@ -275,7 +316,7 @@ mutual
 end
 
 /-- `f` passes the condition check: its body, with its own conditions, from no knowledge. -/
-def checkConds (p : Program) (f : Fun) : Bool := f.body.condOk p f.conds []
+def checkConds (p : Program) (f : Fun) : Bool := f.body.condOk p f.conds {}
 
 /-- `p` passes trace safety's checks: every function's conditions, the closedness of the
 functions that perform no conditioned operation, and the `via` functions of its policies, which
