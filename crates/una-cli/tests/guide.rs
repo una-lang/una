@@ -516,3 +516,115 @@ fn the_policy_example_of_the_information_flow_spec_checks_in_the_events_package(
         "spec/07 §5 is in canonical form"
     );
 }
+
+/// The parts of a construct or configuration page (#585), in order.
+const PARTS: [&str; 7] = [
+    "## What it does",
+    "## Forms",
+    "## Examples",
+    "## Edge cases",
+    "## Diagnostics",
+    "## Edition",
+    "## Normative source",
+];
+
+/// Every `.md` file under `dir`, sorted.
+fn markdown_files(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            out.extend(markdown_files(&path));
+        } else if path.extension().is_some_and(|e| e == "md") {
+            out.push(path);
+        }
+    }
+    out.sort();
+    out
+}
+
+#[test]
+fn every_construct_page_follows_the_template_and_its_blocks_check() {
+    // The construct and configuration pages (#585): front matter that names the page's
+    // diagnostic codes, the seven parts of the template in order, a Diagnostics part that lists
+    // exactly those codes, each with its explain text, a failing block only with one of them,
+    // and every block checked as the guides' are.
+    let root = repository();
+    let mut pages = Vec::new();
+    for dir in ["docs/guide/language", "docs/guide/configure"] {
+        let dir = root.join(dir);
+        if dir.is_dir() {
+            pages.extend(markdown_files(&dir));
+        }
+    }
+    assert!(!pages.is_empty(), "no construct pages");
+    for (index, page) in pages.iter().enumerate() {
+        let relative = page
+            .strip_prefix(&root)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .replace('\\', "/");
+        let text = std::fs::read_to_string(page).unwrap();
+        let front = text
+            .strip_prefix("---\n")
+            .and_then(|rest| rest.split_once("\n---\n"))
+            .map(|(front, _)| front)
+            .unwrap_or_else(|| panic!("{relative}: no front matter"));
+        let mut codes: Vec<&str> = front
+            .lines()
+            .find_map(|line| line.strip_prefix("codes: "))
+            .unwrap_or_else(|| panic!("{relative}: the front matter has no `codes`"))
+            .trim_matches(|c| c == '[' || c == ']')
+            .split(',')
+            .map(str::trim)
+            .filter(|code| !code.is_empty())
+            .collect();
+        codes.sort_unstable();
+        let mut from = 0;
+        for part in PARTS {
+            let at = text[from..]
+                .find(&format!("\n{part}\n"))
+                .unwrap_or_else(|| panic!("{relative}: `{part}` is missing or out of order"));
+            from += at + 1;
+        }
+        let diagnostics = text
+            .split("\n## Diagnostics\n")
+            .nth(1)
+            .and_then(|rest| rest.split("\n## ").next())
+            .unwrap();
+        let mut listed: Vec<&str> = diagnostics
+            .lines()
+            .filter_map(|line| line.strip_prefix("- ["))
+            .filter_map(|line| line.split(']').next())
+            .collect();
+        listed.sort_unstable();
+        assert_eq!(
+            listed, codes,
+            "{relative}: the Diagnostics part and the front matter's codes"
+        );
+        for code in &codes {
+            assert!(
+                root.join(format!("crates/una-explain/explain/{code}.md"))
+                    .is_file(),
+                "{relative}: {code} has no explain text"
+            );
+        }
+        for block in blocks(&text) {
+            if block.lang == "una" {
+                if let (Some(code), _) = directives(&block.body) {
+                    assert!(
+                        codes.contains(&code),
+                        "{relative}, block at line {}: {code} is not among the page's codes",
+                        block.line
+                    );
+                }
+            }
+        }
+        let checked = check_guide(&relative, 1_000_000 + index * 10_000);
+        assert!(
+            checked[0] + checked[3] > 0,
+            "{relative}: no checked Una code"
+        );
+    }
+}
