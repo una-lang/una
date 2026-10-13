@@ -3,7 +3,7 @@
 - Issue: #509, under #46
 - Previous step: #508 (a `Result` keeps its error type)
 - Date: 2026-10-10
-- Status: findings and plan approved by the coordinator (2026-10-10); implemented, in review
+- Status: findings and plan approved (2026-10-10); implemented, in review
 
 ## 1. Why
 
@@ -31,7 +31,7 @@ Injectivity of either rendering is not needed, and nothing here relies on it:
 
 ## 4. Theorems
 
-No theorem changes its statement. Non-vacuity, `RecordExample` (statement approved by the coordinator):
+No theorem changes its statement. Non-vacuity, `RecordExample` (statement approved):
 - **A record that holds a secret**, `Card(s)` with `Card`'s field an `internal Text`, printed at `Console`: `card_rejected`, `card_leaks` (the runs print `main.Card(1, )` and `main.Card(2, )`), `card_untyped` (T6 refutes every typing).
 - **A public record**, `Tag("x")`: `public_card_checked` (the check accepts it) and `public_card_runs` (typed, and it prints).
 - **The relation**: `card_rel_hidden`, two `Card` values with different fields related for a `public` observer.
@@ -53,6 +53,6 @@ The change accepts more programs, so before merge it needs:
 - **The flips and what `una check` says of them.** 240 come from `tests/conformance/verification/`, whose expected diagnostics are all U5001, a proof obligation refuted (a refinement, `requires` or `ensures`): the information flow of those declarations is sound, and Una rejects them for a refinement, which the re-check does not model. None of the flipped documents expects an information-flow diagnostic (U4xxx). The other 23 expect `ok`, `run-output` or `tier0-ok`, or are examples.
 - **A false rejection found and fixed.** The first run rejected `for_loop_deep_values`' `deep.main`, `==` over the recursive `deep.Node`, which Una allows. Recursive records are now not read (§2), with `ImportTests.recordRecursive`; five declarations of three documents stay not re-checked (four of them were accepted in the first run, one rejected).
 - **`Header` and `Response`.** The prelude's own declarations are not compared away: no document is not re-checked for "`Header` or `Response`, declared otherwise", before or after.
-- **The review (Una-1).** Records were never read from a real export before #509, so the field reader is new trusted base, and the corpus cannot exercise its reject side (a document with a record leak is one `una check` rejects, exported incomplete). `ImportTests` pin it, each rejected case with a `public` twin that is accepted: the field index against the declaration order (`recordFieldIndex`), a constructor's arguments into the fields' types (`recordConstructInto`), a field read raised by the record's label (`recordFieldRaise`), the deep label of a nested record (`recordNestedDeep`) and `==` over a record with an `internal` field (`recordEqInternal`). The search for records that reach themselves takes each edge once, since a record with many fields of one type could push it past the search's bound and miss a cycle (`recordCycleDupEdges`).
+- **The review.** Records were never read from a real export before #509, so the field reader is new trusted base, and the corpus cannot exercise its reject side (a document with a record leak is one `una check` rejects, exported incomplete). `ImportTests` pin it, each rejected case with a `public` twin that is accepted: the field index against the declaration order (`recordFieldIndex`), a constructor's arguments into the fields' types (`recordConstructInto`), a field read raised by the record's label (`recordFieldRaise`), the deep label of a nested record (`recordNestedDeep`) and `==` over a record with an `internal` field (`recordEqInternal`). The search for records that reach themselves takes each edge once, since a record with many fields of one type could push it past the search's bound and miss a cycle (`recordCycleDupEdges`).
 - **Replay.** Identical to #508's.
 

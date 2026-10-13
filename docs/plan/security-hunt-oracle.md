@@ -73,7 +73,7 @@ For every program and variation:
 
 The aborts and timeouts are counted, so that a program whose variants keep aborting does not hide the rest of its coverage.
 
-## 6. Sandbox (the coordinator's condition 1)
+## 6. Sandbox (condition 1 of the plan's approval)
 
 Every run happens inside a sandbox:
 
@@ -87,7 +87,7 @@ Every run happens inside a sandbox:
 
 1. **Minimize.** Delta debugging removes declarations, statements and expressions from the source. A step is kept while the program stays accepted, the variation still differs, and the difference stays in the same channel.
 2. **Classify:**
-   - a real leak, which goes to the coordinator first, with the minimized repro, before any fix;
+   - a real leak, which is reported privately first, with the minimized repro, before any fix;
    - a channel outside the model that the projection did not exempt, which is a fix to the projection, with a note;
    - a release that a policy explains, which is a fix to the generator.
 3. **Record.** Every candidate is kept with its seed, the program, the variation and both runs' evidence.
@@ -95,7 +95,7 @@ Every run happens inside a sandbox:
 
 ## 8. Cost
 
-The machine work is per program and variation: one check, then for each variant two determinism runs and one compared run (two when `Files.write` is used), and natively for the sample. With about four values per varied position, a program costs about 13 interpreter runs. Runs are small, so a round's cost is dominated by the number of runs, and is measured on the first 500 programs before any round is planned. All of it is heavy work (the coordinator's condition 3): only in a machine slot between benchmark runs.
+The machine work is per program and variation: one check, then for each variant two determinism runs and one compared run (two when `Files.write` is used), and natively for the sample. With about four values per varied position, a program costs about 13 interpreter runs. Runs are small, so a round's cost is dominated by the number of runs, and is measured on the first 500 programs before any round is planned. All of it is heavy work (condition 3 of its approval): only in a machine slot between benchmark runs.
 
 ## 9. Limits
 

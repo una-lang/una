@@ -11,7 +11,7 @@ Status: Informative.
 | v0.3 | Verification and review | Laws (tier 2) and property tests (tier 3); semantic diff; full escape governance; requirement approval workflow; obligations grouped by proof domain | Gate 3 |
 | v0.4 | Platform | External state semantics (idempotency, delivery guarantees, `observe`, durable effect journal); services and SLOs; typed data access; OpenAPI and TypeScript generation; infrastructure policy generation | Gate 4 |
 
-Each version starts only after the previous gate passes, with one exception: v0.2 runs in parallel with Gate 1 (owner's decision, 2026-10-01). The Gate 1 benchmark stays pinned to a v0.1.x release, so v0.2 work never changes what Gate 1 measures. Items and their target versions are in `backlog.md`.
+Each version starts only after the previous gate passes, with one exception: v0.2 runs in parallel with Gate 1 (decided 2026-10-01). The Gate 1 benchmark stays pinned to a v0.1.x release, so v0.2 work never changes what Gate 1 measures. Items and their target versions are in `backlog.md`.
 
 ## 2. Parallel tracks
 

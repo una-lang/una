@@ -3,7 +3,7 @@
 - Issue: #46
 - Plan: `docs/plan/formal-track.md` (M0 to M2 approved, 2026-10-08, with the go/no-go here)
 - Date: 2026-10-09
-- Status: for the owner's go/no-go on M3 and M4
+- Status: for the go/no-go decision on M3 and M4
 
 M1's exit criterion is met: T1 for F1 is proven without `sorry`, and `scripts/formal.sh` checks that each of the 28 stated theorems depends only on Lean's own three axioms. The plan asks the spike two questions: what the work really cost against the estimate, and whether `ℓ*_T` has a clean semantic reading. This review answers both.
 
@@ -46,7 +46,7 @@ The 30 minutes break down as follows:
 - **About 15 minutes:** extending the core to all of F1, then proving T1 again.
 - **About 10 minutes:** the labeled rules, erasure, the spike lemmas and the examples.
 
-The owner's conditions and Una-1's two re-read items (§5) took about 10 more minutes: 11:37 to 11:41 UTC, then 11:43 to 11:48 UTC.
+The approval's conditions and the review's two re-read items (§5) took about 10 more minutes: 11:37 to 11:41 UTC, then 11:43 to 11:48 UTC.
 
 There were about 20 compile iterations in M1 itself. Most errors were Lean API details, such as deprecated lemma names and `List.lookup`'s argument order. No error was a wrong statement.
 
@@ -126,15 +126,15 @@ The labeled rules follow `spec/07` and `spec/10`. In some places they choose a r
    - the syntactic placement of second-class lambdas (`spec/10 §9` rule 2); only type arguments are checked for being first-class;
    - generic records.
 
-## 5. The owner's conditions, met in this pull request
+## 5. The approval's conditions, met in this pull request
 
-Leonardo's decision on 2026-10-09 was "go, with 3 conditions". Two of them are met here, and the third opens M3.
+The decision on 2026-10-09 was "go, with 3 conditions". Two of them are met here, and the third opens M3.
 
 1. **A `via` function is callable only through its policy.** Before this change, a direct `call` of a `via` function, whose body no label rule checks, would launder (`let y = hundreds(secret)`), and T6 would be false. T-Call and the function-value rule now require `¬ p.IsVia f`, which is the model of U4005.
 2. **`==` on values with equality, `T` with `Eq` included.** F1 has `Rhs.eq`. The labeled judgment takes the enclosing function's `Eq` parameters (`Fun.eqParams`). `==` requires a type with equality: no function type at any position, a type parameter only when it is constrained by `Eq`, and a record only when its fields have equality. `eq_needs_Eq` proves that `same[T](a: T, b: T) -> Bool = a == b` with `T` unconstrained does not type (U2026). A call checks the same of the type arguments of `Eq` parameters. The result of `==` carries every label of both operands, which over `T` values is `ℓ*_T`. `choose_ok` types `choose[T: Eq](a: T, b: T, k: fn(T) -> Int) -> Int = let c = a == b; let x = if c then a else b; k(x)`, and `choose_decision` shows that the decision T-App raises the call by is `["T"]`, computed from the comparison.
 3. **The lemma that instantiation commutes with the reading** (`interp` after `lsubst`) is the first item of M3, before the relation at function types.
 
-Una-1's other points are also in this pull request:
+The review's other points are also in this pull request:
 
 - **A checked non-vacuity example.** `Examples.lean` types a call of a generic function with the labeled rules and applies `t1_labeled` to its run (`callPick_safe`), against a program proven well formed (`prog_wf`).
 - **Notes in §4** on sinks at `ℓ⁺` and on unchecked categories.

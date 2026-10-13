@@ -3,11 +3,11 @@
 - Issue: #487, under #46
 - Previous step: `docs/plan/formal-track-m6b.md` (M6b, #485), §3
 - Date: 2026-10-10
-- Status: statement approved by the coordinator (2026-10-10); proven
+- Status: statement approved (2026-10-10); proven
 
 ## 1. Why
 
-M6b models `Env.get` with the host's environment, `Host.env`, the same in both runs. So T6 says nothing about a program that leaks an environment variable's value: in the model, the two runs read the same value. The `internal` label that `spec/14 §3` gives the value is then conservative but not checked by any theorem. Una-1 flagged the gap in the review of #495.
+M6b models `Env.get` with the host's environment, `Host.env`, the same in both runs. So T6 says nothing about a program that leaks an environment variable's value: in the model, the two runs read the same value. The `internal` label that `spec/14 §3` gives the value is then conservative but not checked by any theorem. The review of #495 flagged the gap.
 
 `spec/14 §3` declares `Env.get(name: Text) -> Option[internal Text]`:
 - the name is `public`, its `accepts`;
@@ -72,7 +72,7 @@ So two runs from environments that differ in an `internal` value, a secret in `S
 
 ## 7. Decisions
 
-The coordinator approved the statement on 2026-10-10:
+The statement was approved on 2026-10-10:
 1. **Existence stays `public`**, as a premise, matching `spec/14 §3` and the checker. No ADR. The premise's consequence is stated in this document, in the note, and in the guide.
 2. **The note's text** as §4 gives it.
 

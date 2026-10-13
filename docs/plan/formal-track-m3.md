@@ -4,7 +4,7 @@
 - Plan: `docs/plan/formal-track.md` §7 (M3: T6 for F1 without generics)
 - Review of M1: `docs/plan/formal-track-m1-review.md`
 - Date: 2026-10-09
-- Status: the generic-free half is proven; the re-estimate below is for the owner
+- Status: the generic-free half is proven; the re-estimate below is for planning
 
 ## 1. What is proven
 
@@ -12,7 +12,7 @@ All of it is in `formal/UnaFormal/F1/`, and `scripts/formal.sh` passes with 46 s
 
 | File | Result |
 | --- | --- |
-| `Inst.lean` | The owner's condition 3, first in M3. Instantiation commutes with the semantic reading of labels (`LExpr.interp_inst`), with the top and in-place lemmas of labeled instantiation. |
+| `Inst.lean` | Condition 3 of the plan's approval, first in M3. Instantiation commutes with the semantic reading of labels (`LExpr.interp_inst`), with the top and in-place lemmas of labeled instantiation. |
 | `Order.lean` | The static order of labels and flows are preorders, and joins are least upper bounds. |
 | `Unary.lean`, `UnarySound.lean` | **The unary half** (`unary_sound`). A run of a body the labeled typing accepts does three things. It performs only the events its effects allow, each at a sink whose `accepts` is above the program counter: T2, with the program counter, which is confinement. It fails only with a failure labeled above the program counter: T3 with labels. It ends with a value of its labeled type. |
 | `Binary.lean`, `BinaryLemmas.lean` | The two-run relation for an observer at `L`, and its lemmas. |
@@ -64,7 +64,7 @@ T6 here assumes the following. Each assumption is a hypothesis of `t6` or part o
 
 **What M3 found.** Checking assumption 3 against the real host table found two violations:
 
-- **S-14:** a file's existence. A write to an `internal` path is observed by a read of a `public` path, whose failure is `public`. The Coordenador reproduced it on v0.3.3, in both editions, and on v0.1.5.
+- **S-14:** a file's existence. A write to an `internal` path is observed by a read of a `public` path, whose failure is `public`. It was reproduced on v0.3.3, in both editions, and on v0.1.5.
 - **S-15 (a candidate):** a server's failures. They can depend on a request's body and header values, which do not label them.
 
 Their fix, under way separately, discharges the assumption. The model can then drop it, or model state.
@@ -98,7 +98,7 @@ No rule of `spec/07` or `spec/10` had to change for the proof. The readings of t
 
 | | Estimate (plan §7) | Actual |
 | --- | --- | --- |
-| M1 | 5 to 8 agent-days | About 40 minutes, the owner's conditions included |
+| M1 | 5 to 8 agent-days | About 40 minutes, the approval's conditions included |
 | M3, generic-free half | Part of 8 to 12 agent-days | About 35 minutes of one session, 2026-10-09 from 11:42 to 12:16 UTC: `interp_inst`, the unary half, the relation and T6 |
 
 That time includes checking the host table, which found S-14 and S-15. About 45 compile iterations were needed, all of them Lean API and elaboration details.

@@ -2,7 +2,7 @@
 
 - Issue: #542, under #46
 - Date: 2026-10-11
-- Status: statement approved by the coordinator (2026-10-11); implemented, in review
+- Status: statement approved (2026-10-11); implemented, in review
 
 ## 1. Why
 
@@ -62,11 +62,11 @@ Non-vacuity, in `PreludeExample`:
 - the corpus delta, a fresh export of `main`, with every flip listed and 0 rejected expected;
 - the hunt's F rerun;
 - local CI;
-- the review (Una-2).
+- an adversarial review.
 
 Result (2026-10-11, on `main` at `198e563c`, after #543):
 - `scripts/formal.sh`: PASS, 341 theorems, no `sorry`.
-- The replay: 42 rejected, 4 more S-04 shapes rejected at the leak (S-04: 6 to 10), each until now not re-checked for its call of `prelude.or_else`, approved by the coordinator (N-108):
+- The replay: 42 rejected, 4 more S-04 shapes rejected at the leak (S-04: 6 to 10), each until now not re-checked for its call of `prelude.or_else`, approved:
   - `edit_order_list_of_lists_leak` and `edit_order_list_of_options_leak`: at their `first`, whose annotation drops the elements' `internal` label, which the check now reaches;
   - `edit_order_loop_nested_option` and `edit_order_option_of_list_leak`: at `or_else` itself, the option's value flowing into an annotation without the `internal` label;
   - `edit_order_loop_nested_list`, `edit_order_loop_nested_list_of_options` and `edit_order_loop_nested_result` stay not re-checked, their reason now the next form F1 lacks, `prelude.at`.

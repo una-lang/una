@@ -1,7 +1,7 @@
 # Formal track: M6, `edit` and loops
 
 - Issue: #478, under #46
-- Plan: `docs/plan/formal-track.md` §7 (M6, renumbered with the owner's approval of 2026-10-09)
+- Plan: `docs/plan/formal-track.md` §7 (M6, renumbered with the approval of 2026-10-09)
 - Previous step: `docs/plan/formal-track-m5.md`
 - Date: 2026-10-10
 - Status: done. Proven with no `sorry` (§11). The proof found a gap in the draft T-Loop, now fixed (§12). The S-04 replay waits for M6b (§13)
@@ -42,7 +42,7 @@ So M6 adds three forms to F1 and one prelude axiom, and no new kind of state. **
 - `letTuple` binds the components of a tuple value in order.
 - `loop` evaluates its source once, then runs the body for each element, or for each integer from `low` to `high` in increasing order. Each iteration starts from the environment of the loop, extended with the variable and the current state. A body that ends with a tuple of the state's length gives the next state. A body that fails makes the loop fail with that failure, and the state is dropped. The loop's value is the final state as a tuple.
 - Iterations recurse on the elements, not on the fuel. So a loop over a finite source ends whenever its body does, and fuel bounds the calls inside the body, as it does today.
-- `set xs i v` replaces element `i`. Its precondition `0 <= i < xs.len` is the verifier's (T5). At run time an index out of range is a fault: the interpreter, which is the UAM, aborts the run, and an abort is termination (`spec/07 §1`). So the model gives it no result, as it does for fuel that runs out, and the termination-insensitive T6 says nothing of that run (the coordinator's decision N-79). The native backend leaves the list unchanged instead, which is a conformance bug against the UAM (`spec/17 §7` rule 3), fixed in #480.
+- `set xs i v` replaces element `i`. Its precondition `0 <= i < xs.len` is the verifier's (T5). At run time an index out of range is a fault: the interpreter, which is the UAM, aborts the run, and an abort is termination (`spec/07 §1`). So the model gives it no result, as it does for fuel that runs out, and the termination-insensitive T6 says nothing of that run. The native backend leaves the list unchanged instead, which is a conformance bug against the UAM (`spec/17 §7` rule 3), fixed in #480.
 - `append xs v` adds `v` at the end of `xs`.
 
 ## 4. The label rules
@@ -109,7 +109,7 @@ The statement is `t6_host`'s, and its variants', over the larger syntax:
 
 `Check.lean` gains a case for each rule of §4, and `CheckSoundCore` gains its soundness case. As before, a form F1 still lacks gives "not re-checked".
 
-**Corpus.** At most 89 declarations of complete documents reach a tuple today. Many will still hit another gap after M6: `prelude.append`, `concat`, `div` and `Map` are common in loops. I will report the count, and any declaration that would move into rejected, before it lands. As before, nothing moves into rejected without the coordinator's review.
+**Corpus.** At most 89 declarations of complete documents reach a tuple today. Many will still hit another gap after M6: `prelude.append`, `concat`, `div` and `Map` are common in loops. I will report the count, and any declaration that would move into rejected, before it lands. As before, nothing moves into rejected without review.
 
 **The replay gains S-04.** The pre-fix binary is v0.2.0, which was never published. The release gates built it from commit `5361a0e3` (`coordination/releases/v0.2.0/record.md`), and its archive's sha256 is `ffb299c7…`, as recorded. With it, `una check` accepts 16 leaking shapes of `tests/conformance/security/`, and v0.3.0, the first release with the fix, rejects each one:
 - `edit_order_loop_` `list`, `option`, `result_ok`, `result_err`, `closure`, `edit_param`, `fold`, `generic_init`, `nested_list`, `nested_list_of_options`, `nested_option`, `nested_result` and `together`;
@@ -129,7 +129,7 @@ Each shape's Core, dumped by v0.2.0, goes to `docs/reviews/formal-m2-replay/`, w
 - **Backend freedom** (`spec/17 §7` rule 3, ADR 0072): updates in place, moves and reuse of memory are not observable. The model is the UAM's meaning. That the native backend agrees with the UAM is outside the formal track, and is guarded by the identity runs.
 - **Refinements:** the loop invariant, the length frame (ADR 0071) and `set`'s precondition are the verifier's (T5), not M6's.
 - **Termination:** loops are not checked to end (`spec/17 §5` rule 5). T6 is termination-insensitive.
-- **Aborts are termination** (`spec/07 §1`): running out of depth or memory (U6003), a header value with a control character (U6004), host text that is not valid UTF-8 (U6005), and, with M6, `set` at an index out of range, a fault of the UAM (N-79; the native backend's no-op is #480).
+- **Aborts are termination** (`spec/07 §1`): running out of depth or memory (U6003), a header value with a control character (U6004), host text that is not valid UTF-8 (U6005), and, with M6, `set` at an index out of range, a fault of the UAM (the native backend's no-op is #480).
 - **Only bounded loops exist.** `for` visits a list or a range (`LoopSource` is `List` or `Range`). `while` and `loop` are not keywords (`spec/17 §9`), there is no `break` or `continue`, and edition 0.1 has no `for` loop at all. Unbounded repetition is recursion, which is calls.
 - **Out of M6:** `together` and `together_for` (ADR 0065), fixed-width integers, `Map`, and handlers (M7).
 
@@ -140,12 +140,12 @@ Each shape's Core, dumped by v0.2.0, goes to `docs/reviews/formal-m2-replay/`, w
 - **S-04's shape** as the v0.2.0 binary exported it, with its binder at `public`. It has no typing, so `progOk` rejects it. The same program with the binder at `internal`, as ADR 0075 solves it, is certified.
 - **An `edit` parameter:** `bump(edit n: internal Int)`, called and bound through `let_tuple`, with its runs related.
 
-## 10. The coordinator's answers (2026-10-10)
+## 10. Answers (2026-10-10)
 
 1. **`prelude.append` is in M6**, as a modeled primitive whose rule is proven sound, never a Lean `axiom` (§3).
 2. **Order.** First the model and the rules. Then the cheap evidence before the big proof: S-04 untyped in the model, and the S-04 replay. Then the proof, then the corpus re-check.
 3. **Provenance of the replay:** the commit, and both binaries' verdicts, in the replay README (§7).
-4. **An out-of-range `set` aborts** in the model, as in the UAM (N-79). The native backend's no-op is #480.
+4. **An out-of-range `set` aborts** in the model, as in the UAM. The native backend's no-op is #480.
 5. **Only bounded loops** (§8).
 
 ## 11. What is proven
@@ -165,7 +165,7 @@ Each shape's Core, dumped by v0.2.0, goes to `docs/reviews/formal-m2-replay/`, w
 - `Expr.letTuple`;
 - `Expr.loop` over a list or an `Int` range.
 
-An out-of-range `set` aborts, as `abort`, a run that does not end (N-79).
+An out-of-range `set` aborts, as `abort`, a run that does not end.
 
 **Non-vacuity:**
 - `LoopExample.lean`:
@@ -183,7 +183,7 @@ The draft T-Loop typed the body under `pc ⊔ ℓs` only. But an iteration that 
 - Two runs from worlds a `public` observer cannot tell apart (`worlds_rel`), one without the file and one with it, print one and two lines (`draft_leaks`).
 - Under the fixed rule, the probe has no typing (`fixed_untyped`).
 
-The fix is a premise of T-Loop: `ε.failLabel ⊑ pc ⊔ ℓs`. The checker checks it, and `Program.HostWF` asks `oldLoop = false`. The coordinator approved it.
+The fix is a premise of T-Loop: `ε.failLabel ⊑ pc ⊔ ℓs`. The checker checks it, and `Program.HostWF` asks `oldLoop = false`. It was approved in review.
 
 **Not a language finding.** `una check` 0.3.5 rejects every surface shape tried, with U4002, on `parse_int(x) if error pass`, a user function that fails on `internal` data, and a nested loop. A loop's failure propagates to the function's boundary, since `for` is a statement and cannot be attempted or handled, and T-Fun asks it to be public there.
 
@@ -205,5 +205,5 @@ An `ImportTests` guard that used `append` as a prelude function F1 does not mode
 
 A first run left 2 declarations of `generic_result_summaries` "accepted, conditional on A3". The Boolean agreement of a program checked at its instances, `exprSim`, did not yet read loops, so a generic function with a loop failed it. It now reads them, with `exprSim_sound` extended.
 
-**The replay.** S-01 to S-12 are unchanged. S-04's 16 shapes, dumped by v0.2.0 (provenance in `docs/reviews/formal-m2-replay/README.md`), are all not re-checked. They read their secret with `Env.get` and print it through `to_text` and `concat`, which F1 lacks, and the dumps show the leak there. M6b (the coordinator's decision N-82) models those three and replays the 8 shapes they unlock. `dumpcore.py` reads M6's syntax.
+**The replay.** S-01 to S-12 are unchanged. S-04's 16 shapes, dumped by v0.2.0 (provenance in `docs/reviews/formal-m2-replay/README.md`), are all not re-checked. They read their secret with `Env.get` and print it through `to_text` and `concat`, which F1 lacks, and the dumps show the leak there. M6b models those three and replays the 8 shapes they unlock. `dumpcore.py` reads M6's syntax.
 

@@ -31,11 +31,11 @@ All of it is in `formal/UnaFormal/F1/`. `scripts/formal.sh` passes with 78 state
 
 **What A1 does not claim.** It says nothing about the reading of `una.core/1` into F1, which stays trusted, nor about the steps of `checkDocumentWith` that combine per-declaration verdicts: the reachability fixpoint and the instance search. A2 (§4) and A3 (§5) cover those.
 
-**No difference found between the algorithm and the typing.** Every case of the mutual induction closed against the rule it follows. Had one not, the rule of the track is to report it to the coordinator before changing either side.
+**No difference found between the algorithm and the typing.** Every case of the mutual induction closed against the rule it follows. Had one not, the rule of the track is to report it for review before changing either side.
 
 ## 3. What a declaration reaches
 
-A declaration is checked against its callees' signatures, and T6 needs every function of the program to pass T-Fun. So a declaration is accepted only when everything it reaches, transitively, is accepted too (#452, `formal-track-m4.md` §5). A1 adds two precisions to that rule, from Una-1's review.
+A declaration is checked against its callees' signatures, and T6 needs every function of the program to pass T-Fun. So a declaration is accepted only when everything it reaches, transitively, is accepted too (#452, `formal-track-m4.md` §5). A1 adds two precisions to that rule, from its review.
 
 **Functions outside the document.** A callee that is not a declaration of the document, a library function or a prelude function, has no verdict. Until now, the fixpoint read a missing verdict as no objection. Now:
 
@@ -125,9 +125,9 @@ The 3 moves to not re-checked are all G3, in `types/alias_effectful_fn`: `run` a
 
 `eval_erasure` is the README's "equivalence of runs up to the annotations inside closures" (`docs/reviews/formal-m2-replay/README.md`, "Why it is sound"), now proven. A closure keeps its parameters' types and its body's annotations. So the runs agree once those are forgotten, and the trace's events and the outcome's kind agree exactly (`proj_anon`, `Term_anon`).
 
-**Una-1's observation on #456.** "Accepted ⇒ the final certificate" held by the importer's code structure. Every final verdict now comes from one total function, `Import.finalize`, which `checkDocumentWith` calls last, and `finalize_sound` is a theorem about it. A `#guard` checks that `finalize` gives no verdict without a certificate. The reading of `una.core/1` into those inputs stays the trusted base.
+**An observation in the review of #456.** "Accepted ⇒ the final certificate" held by the importer's code structure. Every final verdict now comes from one total function, `Import.finalize`, which `checkDocumentWith` calls last, and `finalize_sound` is a theorem about it. A `#guard` checks that `finalize` gives no verdict without a certificate. The reading of `una.core/1` into those inputs stays the trusted base.
 
-**The functions checked at their instances are taken from the final members** (`Import.monoParts`, Una-1's note on A3). One demoted before the certificates leaves with its instances, so it cannot keep `P₁` from agreeing with `P₂` for the rest of the document. A `#guard` shows the agreement with the recomputed set, and its failure with the stale one.
+**The functions checked at their instances are taken from the final members** (`Import.monoParts`, a review note on A3). One demoted before the certificates leaves with its instances, so it cannot keep `P₁` from agreeing with `P₂` for the rest of the document. A `#guard` shows the agreement with the recomputed set, and its failure with the stale one.
 
 **Accepted, conditional on A3** remains only for a document where `P₁` fails its certificate and `P₂` passes `progOk cond`, tied to `progOk_sound`'s hypothesis by `finalize_sound`. The corpus has none.
 
@@ -139,4 +139,4 @@ The 3 moves to not re-checked are all G3, in `types/alias_effectful_fn`: `run` a
 
 ## 6. Next: M5, a stateful host
 
-The owner approved the renumbering on 2026-10-09: the stateful host model for `Files` and `Http` is M5, the former M5 (`edit` and loops) is M6, and the former M6 (F2 and T4) is M7 (`formal-track.md` §7). M4's completion stays M4. M5's statement draft goes to the coordinator before any proof. #453 holds the widening of `checked` (backlog).
+The renumbering was approved on 2026-10-09: the stateful host model for `Files` and `Http` is M5, the former M5 (`edit` and loops) is M6, and the former M6 (F2 and T4) is M7 (`formal-track.md` §7). M4's completion stays M4. M5's statement draft is reviewed before any proof. #453 holds the widening of `checked` (backlog).

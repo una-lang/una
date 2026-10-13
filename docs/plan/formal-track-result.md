@@ -4,7 +4,7 @@
 - Previous step: #507 (F-R1, the re-check reads a `Result`'s error type)
 - Follow-up: #512 (sum kinds and failures with a payload)
 - Date: 2026-10-10
-- Status: statement approved by the coordinator (2026-10-10); implemented, in review
+- Status: statement approved (2026-10-10); implemented, in review
 
 ## 1. Why
 

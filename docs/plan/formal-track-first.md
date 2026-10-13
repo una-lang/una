@@ -2,7 +2,7 @@
 
 - Issue: #532 (its `prelude.first` part), under #46
 - Date: 2026-10-11
-- Status: statement approved by the coordinator (2026-10-11); implemented, in review
+- Status: statement approved (2026-10-11); implemented, in review
 
 ## 1. Why
 
@@ -70,7 +70,7 @@ Result (2026-10-11, una 0.3.7 from `main` at `cee87e3e`):
 
 Every document that exports the prelude carries its refinement predicates, and the re-check gave each one a line "not re-checked: a `pred` declaration": 346 lines over the hunt's seeds 5 to 7, all in module `prelude`, none blocking a user declaration. A refinement predicate is pure and its labels are erased (`spec/07 §7` rule 6), so it is outside the flow model by design, not a gap of the re-check.
 
-The coordinator's decision: such a declaration has its own outcome, `outside the flow model`, with the reason "refinement predicate (`spec/07 §7` rule 6)".
+The decision: such a declaration has its own outcome, `outside the flow model`, with the reason "refinement predicate (`spec/07 §7` rule 6)".
 - It is counted apart from `not re-checked`, and never dropped: the outcome list still has one line for every declaration with code.
 - It is never accepted. A function that reaches one is not re-checked ("reaches `p`, outside the flow model"), as for any callee without a certificate; the reverse comparison (ADR 0091) reports it as not re-checked.
 - `una-core-check`'s exit code is unchanged: only a rejection or an unreadable document makes it 1.

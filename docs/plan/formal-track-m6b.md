@@ -42,7 +42,7 @@ A stronger reading is possible, with the environment's values differing between 
 
 - The importer reads `prim to_text` and `prim concat`, and `env.get` of `std.host`'s `Env`, instead of reporting them as not re-checked. `Env.get` stays a sink for the whole-package guard's purposes: it reads no file, so `writeSite` is unchanged.
 - No rule of the checker becomes laxer. Each form is checked by its own case, proven sound.
-- **The corpus:** declarations whose first gap is `concat`, `to_text` or `Env.get` may move. The diff goes in the PR. Nothing moves into rejected without the coordinator.
+- **The corpus:** declarations whose first gap is `concat`, `to_text` or `Env.get` may move. The diff goes in the PR. Nothing moves into rejected without approval in review.
 
 ## 5. The replay
 
@@ -50,7 +50,7 @@ The 8 shapes that use no other form are re-checked: `edit_order_loop_` `list`, `
 - **Each leaking shape**, dumped by v0.2.0, must be rejected, at the interpolation or wherever the checker meets the wrong label first.
 - **Its fixed version** must not be rejected. That needs a version a fixed checker accepts. A shape prints the binder, and its content is `internal`, so raising the binder's label, which is what ADR 0075 does, still leaves the print rejected. The fixed version is therefore the same loop with a `public` sink: it prints the loop index instead, and the `internal` binder is returned at `internal`. It is dumped by v0.3.0 and accepted by it (question 3).
 
-## 6. Labeled-loop conformance cases (the coordinator's request)
+## 6. Labeled-loop conformance cases (requested in review)
 
 The corpus has no loop whose source is labeled, so T-Loop's raise is exercised only by probes. M6b adds accepted and rejected pairs to `tests/conformance/security/`:
 - **An `internal`-length list:**
@@ -68,7 +68,7 @@ The accepted cases join the corpus, where the re-check must accept them. The rej
 2. `to_text`'s domain.
 3. The fixed versions of the replay.
 
-## 8. The coordinator's answers (2026-10-10)
+## 8. Answers (2026-10-10)
 
 1. **The one-environment premise**, stated and named as §3 writes it, with what it gives up. The stronger reading is its own issue, #487.
 2. **`to_text` only where the model matches the checker**, at types with equality. If the checker accepts `to_text` at a type without equality, such a declaration stays not re-checked, which is conservative.
@@ -88,7 +88,7 @@ The labeled-loop pairs of §6 are approved. Their rejected halves carry their `e
   - Its note names `Env` and its premise: "rests on a lawful host (H1 to H3) and one environment in both runs: the program uses `Env`".
 - **The importer** reads `prim concat`, `prim to_text` and `std.host`'s `Env.get`.
 
-**#475, folded in (the coordinator's decision).** A declaration whose certified program performs no host operation, but which takes a closure, now carries "rests on a lawful host (H1 to H3): a caller may hand it a closure that uses the host", not "the program uses `Files`". The file-state guard still applies to it (`usesFilesNote`).
+**#475, folded in (decided in review).** A declaration whose certified program performs no host operation, but which takes a closure, now carries "rests on a lawful host (H1 to H3): a caller may hand it a closure that uses the host", not "the program uses `Files`". The file-state guard still applies to it (`usesFilesNote`).
 
 **A gap in the importer, found and fixed.** A lambda given to an `of` parameter performs its caller's effects (ADR 0062). The importer gave its type the caller's operation, but not the caller's host effects, so a lambda that calls a function reading a file failed its own type.
 - `s14_ok_count_public.probe`, which `una check` accepts, moved into rejected on a first run. Before M6b it stopped earlier, at `concat`.

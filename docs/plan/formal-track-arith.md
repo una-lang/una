@@ -2,7 +2,7 @@
 
 - Issue: #526, under #46
 - Date: 2026-10-11
-- Status: statement approved by the coordinator (2026-10-11), with the abort as its own outcome; in progress
+- Status: statement approved (2026-10-11), with the abort as its own outcome; in progress
 
 ## 1. Why
 

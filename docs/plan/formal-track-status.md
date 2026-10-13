@@ -47,7 +47,7 @@ History of "accepted":
 
 ## Corrections to earlier totals
 
-Each one came from an adversarial review (Una-1) or from the proof itself.
+Each one came from an adversarial review or from the proof itself.
 
 1. **#452: 37 accepts without a theorem.** `main` accepted 647, and 37 of those had no theorem behind them:
    - 2 were in documents with a policy that B1 does not cover;
@@ -103,7 +103,7 @@ A declaration whose program uses no host operation, and whose parameters cannot 
   - #475, an accurate note when only a function parameter blocks the any-host claim (cosmetic);
   - #453, the widening of `checked`;
   - the append-only correction of `spec/10`.
-- **Later, by the owner's priority:** T5 relative to the solver, T6 with `together`, and edition 0.1's own rules.
+- **Later, by priority:** T5 relative to the solver, T6 with `together`, and edition 0.1's own rules.
 
 ## Theorem names
 

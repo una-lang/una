@@ -1,9 +1,9 @@
 # The formal track: a plan for mechanizing Una Core
 
-- Status: Approved: M0 to M2 (Leonardo, 2026-10-08, written), with the go/no-go at the spike review of M1; M3 and later are decided then
+- Status: Approved: M0 to M2 (2026-10-08, written), with the go/no-go at the spike review of M1; M3 and later are decided then
 - Date: 2026-10-08
 - Issue: #46, the Lean 4 mechanization of Una Core (`spec/10 §10`, theorems T1 to T7)
-- Author: Claude (Una-2), at the coordinator's request
+- Author: Claude
 
 ## 1. Why now
 
@@ -27,7 +27,7 @@ T6, noninterference, is the claim the language makes to its users (`spec/07 §1`
 | 5 | **T5, refinement soundness** | It depends on the solver. The statement is relative to Z3 at the pinned version, an assumption to state, not prove. Its value is lower than T6's until the encoding (`spec/12`) is modeled too. |
 | 6 | **T7, decidability** | For the fragment's checker it comes nearly for free: an executable Lean checker made of total functions decides typing by construction. Obligation decidability is a fact about the logic RL (`spec/12 §2`), which is a citation. |
 
-I agree with the coordinator's order, **T6, then T4**, with T1 for the same fragment as the first step of T6 rather than a separate goal.
+I agree with the proposed order, **T6, then T4**, with T1 for the same fragment as the first step of T6 rather than a separate goal.
 
 ## 3. The first fragment, F1
 
@@ -44,7 +44,7 @@ F1 is the smallest part of Core (`spec/09`) in which every one of S-01 to S-12 c
   - flows at annotations, fields, arguments and results, with covariance through `List` and `Option` and contravariance through function parameters.
 - **Effects:** one capability with one operation, whose argument is a sink with an `accepts` label (rule 4). A failure, with `fail`, `attempt` and `if error`, and U4002's rule.
 - **The prelude** as axioms: `map`, `filter`, `first_where` and `fold`, and one partial primitive, a parser whose outcome depends on its input. Each axiom is a typing signature together with a semantic function. Its soundness, that the result and the failure carry what decides them, is a proof obligation per primitive, discharged against that semantic function.
-- **Host failures:** one host operation whose failure is decided by an argument, as `Http.get`'s by its URL (rule 4, N-39).
+- **Host failures:** one host operation whose failure is decided by an argument, as `Http.get`'s by its URL (rule 4).
 - **Declassification:** one policy and its call (`Decl::Policy`, `Rhs::Declassify`), since T6 holds *up to declassification* (`spec/07 §1`, §5). Without it the theorem could not be stated as the specification states it, and the examples could not be re-checked.
 - **Semantics:** big-step with traces of events and an explicit outcome, a value or a failure. Termination-insensitive: the theorem speaks of two runs that both end.
 
@@ -53,7 +53,7 @@ F1 is the smallest part of Core (`spec/09`) in which every one of S-01 to S-12 c
 - `with`, handlers and capabilities as parameters: they are T4's, in F2;
 - the memory model (`edit`, loops): the next step, F1+, for S-04;
 - `together`, maps, fixed-width integers, text, JSON and HTTP: no finding lives only in them;
-- edition 0.1's defense-in-depth rules: the model follows edition 0.2, and since #354 edition 0.1 tells `ℓ*_T` from `ℓ_T` in its flows too. Edition 0.1's own rules can be a later variant, if the owner wants release/v0.1 covered.
+- edition 0.1's defense-in-depth rules: the model follows edition 0.2, and since #354 edition 0.1 tells `ℓ*_T` from `ℓ_T` in its flows too. Edition 0.1's own rules can be a later variant, if release/v0.1 is to be covered.
 
 ## 4. Measured against S-01 to S-12
 
@@ -135,7 +135,7 @@ Core IR's forms, and how many of them F1 needs:
 
 So `una.core/1` serializes about 1,800 lines' worth of Rust types (`ir.rs` and `label.rs`), of which F1 reads about two thirds of the forms. The schema can be complete from M0, while the Lean checker rejects, as "outside the fragment", every program that uses a form F1 lacks. Such a program is reported as not re-checked, never as accepted.
 
-**A as the first deliverable.** Before T6 is proven, the Lean checker can already be compared with `una check` on the corpus. Replaying the regression programs of S-01 to S-12 through it shows the "re-check" column of §4 on real programs, the evidence for the owner before the proof effort grows.
+**A as the first deliverable.** Before T6 is proven, the Lean checker can already be compared with `una check` on the corpus. Replaying the regression programs of S-01 to S-12 through it shows the "re-check" column of §4 on real programs, the evidence for the decision before the proof effort grows.
 
 ## 6. Toolchain, pinning and CI
 
@@ -162,12 +162,12 @@ Estimates are in agent-days of one session with the machine available for light 
 | M5 | A stateful host model for `Files` and `Http` | Stated first, with its statement draft reviewed before any proof | To be estimated with its statement |
 | M6 | F1+: `edit` and loops (ADR 0071, 0075), for S-04 | The re-check covers the memory model's label rules | 5 to 8 |
 | M7 | F2 and **T4**: capabilities as parameters, `with`, handlers, second-class function types | T4 for F2 | 8 to 12 |
-| Later | T5 relative to the solver; T6 with `together` (ADR 0065); edition 0.1's own rules | By the owner's priority | Not estimated |
+| Later | T5 relative to the solver; T6 with `together` (ADR 0065); edition 0.1's own rules | When prioritized | Not estimated |
 
 **Total to T6 with the re-check in the gate (M0 to M4): 27 to 44 agent-days.**
 **With F1+ and T4 (to M7): 40 to 64, plus M5.**
 
-**Renumbering** (the owner's approval, 2026-10-09): the stateful host model is the new M5; the former M5, `edit` and loops, is M6; the former M6, F2 and T4, is M7. M4's completion (parts A1 to A3, `formal-track-m4-completion.md`) stays M4.
+**Renumbering** (approved 2026-10-09): the stateful host model is the new M5; the former M5, `edit` and loops, is M6; the former M6, F2 and T4, is M7. M4's completion (parts A1 to A3, `formal-track-m4-completion.md`) stays M4.
 
 The value comes early:
 - M2 alone, in about two weeks, adds an independent checker on the whole corpus;
@@ -180,7 +180,7 @@ The value comes early:
 - **Rule churn.** Each change of `spec/07` or `spec/10` must update the model. Section 6 puts both in one pull request, and the gate fails if the proofs break. That is a cost on every rule change, intended.
 - **Machine time.** The gate adds a build and a differential run. Both are light next to the native gate, but they join the queue that one machine serves.
 
-## 9. Decisions for the owner
+## 9. Decisions requested
 
 1. Start the track now, with M0 to M2 as the first commitment, about 11 to 17 agent-days, and decide on M3 and M4 at the spike review.
 2. Option B, the proven re-check of Core in the gates, as the tie between Lean and Rust.

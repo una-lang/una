@@ -2,7 +2,7 @@
 
 - Issue: #524, under #46 (from the security hunt's family H, #513, #517)
 - Date: 2026-10-11
-- Status: statement approved by the coordinator (2026-10-11); in progress
+- Status: statement approved (2026-10-11); in progress
 
 ## 1. Why
 
@@ -38,7 +38,7 @@ The failure of `invoke` is labeled `pc`, with no premise `pc ⊑ ⊥`. This is h
 
 A failure handled by `attempt` or `if error use` inside the branch never leaves it, and the handled value is raised by the branch. A lawful handler's failure cannot depend on its arguments: T-Fun at `⊥` forces its failure label to `⊥`, and every label of its parameters is at least `l_o`.
 
-## 4a. Why `failLabel` and `dl` differ (the coordinator's ruling D, 2026-10-11)
+## 4a. Why `failLabel` and `dl` differ (ruling D, 2026-10-11)
 
 An effect's failure has two labels. `failLabel` is **where** the failure happens: the program counter and the data at the failing site; T-Let runs the continuation under it, and T-Fun asks it `⊑ ⊥`. `dl`, the **decision label**, is **what decides** whether a step reached in both runs fails, and with which code: the data only, without `pc`. `dl ⊑ failLabel` always. T-Attempt and T-Handle (and their `K` and tuple forms) label the result, and the handler's binding, by `dl`; T-Let and T-Fun keep `failLabel`.
 
