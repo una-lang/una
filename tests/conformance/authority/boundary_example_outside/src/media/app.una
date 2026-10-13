@@ -1,0 +1,16 @@
+-- test: an example outside a boundary whose `do` line calls into it grants nothing by name: its `given` lines are its own context, and a `do` line takes no `with`, so the call is U3020 (ADR 0093 rules 3 and 10)
+-- spec: spec/05 §9
+-- expect: error U3020 at src/media/app.una:15:6
+module media.app
+
+import media.resize (notify, shrink, size_of)
+import media.store (Files, Net)
+
+handler memory() for Files
+  op read(path) = path
+  op write(path, data) = unit
+
+example "a look into the boundary"
+  given @files = memory()
+  do shrink("a")
+  expect result == "a"

@@ -1,0 +1,58 @@
+-- test: a function value given to a handler installed outside a boundary runs when the boundary performs the handler's operations: a release through a named function or a lambda is U3024, and so is a function value whose code is not known at the installation; an installation in a function that a lambda given to a boundary calls counts for that call; a handler given a function that releases nothing is accepted (ADR 0093 rule 8)
+-- spec: spec/07 §6
+-- expect: error U3024 at src/media/app.una:39:3
+-- expect: error U3024 at src/media/app.una:43:3
+-- expect: error U3024 at src/media/app.una:48:3
+-- expect: error U3024 at src/media/app.una:58:29
+module media.app
+
+import media.log (Log)
+import media.release (reveal)
+import media.render (run, show)
+
+through(n: secret Int) -> Int = reveal(n)
+
+double(n: secret Int) -> Int = 2
+
+handler relay_named(g: fn(secret Int) -> Int) for Log
+  op write(n) = g(n)
+
+handler relay_lambda(g: fn(secret Int) -> Int) for Log
+  op write(n) = g(n)
+
+handler relay_local(g: fn(secret Int) -> Int) for Log
+  op write(n) = g(n)
+
+handler relay_fine(g: fn(secret Int) -> Int) for Log
+  op write(n) = g(n)
+
+handler relay_nested(g: fn(secret Int) -> Int) for Log
+  op write(n) = g(n)
+
+logged(n: Int) -> Int
+  uses @log: Log[write]
+=
+  @log.write(n)
+
+pub by_name(n: Int) -> Int
+=
+  show(n) with @log = relay_named(through)
+
+pub by_lambda(n: Int) -> Int
+=
+  show(n) with @log = relay_lambda(fn(m) -> reveal(m))
+
+pub by_local(n: Int) -> Int
+=
+  let g = double
+  show(n) with @log = relay_local(g)
+
+pub fine(n: Int) -> Int
+=
+  show(n) with @log = relay_fine(double)
+
+installed(m: Int) -> Int
+=
+  logged(m) with @log = relay_nested(through)
+
+pub nested(n: Int) -> Int = run(n, f: fn(m) -> installed(m))

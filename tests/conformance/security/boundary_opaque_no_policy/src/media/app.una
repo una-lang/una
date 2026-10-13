@@ -1,0 +1,15 @@
+-- test: with no policy in the package or the modules it imports, nothing releases, so a function value whose code is not known at a call into a boundary is accepted (ADR 0093 rule 8)
+-- spec: spec/07 §6
+-- expect: ok
+module media.app
+
+import media.render (apply)
+
+double(n: secret Int) -> Int = 2
+
+pub by_local(n: secret Int) -> Int
+=
+  let g = double
+  apply(n, f: g)
+
+pub by_param(n: secret Int, g: fn(secret Int) -> Int) -> Int = apply(n, f: g)

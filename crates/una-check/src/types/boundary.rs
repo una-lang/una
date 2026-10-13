@@ -19,10 +19,6 @@ use super::ty::CapId;
 
 /// A boundary of the package, resolved.
 #[derive(Clone, Debug)]
-#[allow(
-    dead_code,
-    reason = "the crossing and ceiling checks read it (ADR 0093 rules 3 and 5, #565 PR2)"
-)]
 pub(crate) struct Resolved {
     /// The key, as `una.toml` writes it.
     pub(crate) key: String,
@@ -32,14 +28,29 @@ pub(crate) struct Resolved {
 
 /// The boundaries of the package, and the boundary that holds each module, by index.
 #[derive(Clone, Debug, Default)]
-#[allow(
-    dead_code,
-    reason = "the crossing and ceiling checks read it (ADR 0093 rules 3 and 5, #565 PR2)"
-)]
 pub(crate) struct Boundaries {
     pub(crate) list: Vec<Resolved>,
     /// For each package module, the index in `list` of the boundary whose extent holds it.
     pub(crate) of_module: Vec<Option<usize>>,
+    /// Whether the package or a module it imports declares a policy: without one, nothing
+    /// releases, so a function value whose origin is not known cannot either (rule 8).
+    pub(crate) any_policy: bool,
+    /// For each kind, whether a value of it may hold a function value (rule 8).
+    pub(crate) function_kinds: Vec<bool>,
+}
+
+impl Boundaries {
+    /// The boundary whose extent holds module `module`, if any; none for a standard module.
+    pub(crate) fn extent(&self, module: usize) -> Option<usize> {
+        self.of_module.get(module).copied().flatten()
+    }
+
+    /// The boundary that a reference from module `from` to a declaration of module `into`
+    /// crosses into: the extent of `into`, unless `from` is in the same one (rules 3, 9 and 11).
+    pub(crate) fn crossing(&self, from: usize, into: usize) -> Option<usize> {
+        let boundary = self.extent(into)?;
+        (self.extent(from) != Some(boundary)).then_some(boundary)
+    }
 }
 
 /// Checks `[boundaries]` against the package's `modules` (indices `0..modules`) and maps each
@@ -56,6 +67,7 @@ pub(crate) fn resolve(
     let mut boundaries = Boundaries {
         list: Vec::new(),
         of_module: vec![None; modules],
+        ..Boundaries::default()
     };
     if settings.boundaries.is_empty() {
         return boundaries;

@@ -78,6 +78,8 @@ hmac_phone(phone: secret[PII] Phone) -> internal Hashed
 
 A module is trusted only if its header says `trusted module` **and** it is listed in `una.toml` under `[trusted] modules` (U7005 if either is missing). Policies are allowed only in trusted modules (U4004). All other code in a trusted module is checked normally. Trusted modules and their line counts are listed in the TCB section of the build report.
 
+(v0.3, ADR 0093 rule 8.) A boundary module (`spec/05 §4` rule 5) never releases: it is never trusted (U7002, `spec/13 §7`), and a call into a boundary from which a policy call is reachable is U3024 at the call, with the policy call as the related span. Reachability follows the call graph: the callee's body, the functions it calls, the handlers it installs or receives, and the function values and lambdas given to it. A function value given to the boundary whose code is not known at the call, from a parameter, a local, a computed value or a kind's field, either as an argument or captured by a lambda given to it, is U3024 at the call, with the value as the related span, unless no policy is declared in the package or the modules it imports: then nothing releases. A named function and a lambda are followed. What the arguments of a handler's installation give it, the handler may run wherever it is installed: the named functions and lambdas among them are followed from the handler, and a function value whose code is not known at the installation counts as above for every call into a boundary that may run the handler.
+
 ## 7. Checking
 
 These rules fix how the checker applies this chapter and `spec/10` (ADR 0031).

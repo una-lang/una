@@ -400,6 +400,9 @@ pub(crate) struct Env<'a> {
     /// module is trusted only when its header says so and it is listed here. Empty for a file
     /// checked on its own.
     pub(crate) trusted_listed: BTreeSet<String>,
+    /// The boundaries of `una.toml`, and the boundary whose extent holds each package module
+    /// (ADR 0093 rules 1 and 9); empty before edition 0.3.
+    pub(crate) boundaries: super::boundary::Boundaries,
 }
 
 /// The key type of a written `Map[K, V]`, where it is written, and the function whose type
@@ -489,6 +492,7 @@ impl<'a> Env<'a> {
             map_keys: Vec::new(),
             opaque_plain: BTreeSet::new(),
             trusted_listed: BTreeSet::new(),
+            boundaries: super::boundary::Boundaries::default(),
         };
         for source in package.into_iter().chain([prelude, testing]) {
             env.register(source);

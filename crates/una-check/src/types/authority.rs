@@ -47,6 +47,9 @@ pub(crate) enum Bound {
     Handler {
         capability: Option<CapId>,
         span: Span,
+        /// The handler, when its name resolved: a grant into a boundary counts its own `uses`
+        /// (ADR 0093 rules 5 and 13).
+        handler: Option<usize>,
     },
 }
 
@@ -87,6 +90,7 @@ pub(crate) enum Resolved {
         capability: Option<CapId>,
         span: Span,
         ops: Option<Vec<String>>,
+        handler: Option<usize>,
     },
     /// No frame binds the name that the rebindings lead to; `rebound` tells whether one led
     /// there, in which case the rebinding reports it (`rebind_site`).
@@ -205,11 +209,16 @@ pub(crate) fn resolve_in(frames: &[Frame], level: usize, name: &str) -> Resolved
                     clause: if narrow.is_some() { None } else { *clause },
                 };
             }
-            Bound::Handler { capability, span } => {
+            Bound::Handler {
+                capability,
+                span,
+                handler,
+            } => {
                 return Resolved::Handler {
                     capability: *capability,
                     span: *span,
                     ops: narrow,
+                    handler: *handler,
                 };
             }
             Bound::Rebound { target, ops } => {
@@ -317,7 +326,15 @@ impl<'a> Checker<'_, 'a, '_> {
         self.note_effect();
         let name = self.name(cap);
         let op_name = self.name(op);
-        match self.resolve_cap(name) {
+        let resolved = self.resolve_cap(name);
+        // ADR 0093 rule 5: an operation in an argument of a call into a boundary, as in a
+        // lambda run in its caller's context, is authority granted to the boundary.
+        let performed = match &resolved {
+            Resolved::Cap { capability, .. } | Resolved::Handler { capability, .. } => *capability,
+            Resolved::Missing { .. } => None,
+        };
+        self.granted_use(performed, &[op_name.to_owned()], &resolved);
+        match resolved {
             Resolved::Cap {
                 name: declared,
                 capability,
@@ -374,6 +391,9 @@ impl<'a> Checker<'_, 'a, '_> {
                 ..
             } => {
                 // A handler behind a narrowed rebinding permits only the listed operations.
+                // Unreachable from source today: no `with` can narrow a handler binding (an
+                // example's `do` line takes no `with`, and a `with`'s right-hand sides resolve
+                // outside it). Kept fail-closed; `narrowing_tests` pins what it reads.
                 if self.authority()
                     && !ops.iter().any(|o| o == op_name)
                     && self.capability_has(capability, op_name)
@@ -484,7 +504,11 @@ impl<'a> Checker<'_, 'a, '_> {
         // A requirement whose capability is unknown was reported where it is declared or
         // inferred (U1001, U3001).
         for need in needs.iter().filter(|need| need.capability.is_some()) {
-            match resolve_in(&self.frames, level, &need.name) {
+            let resolved = resolve_in(&self.frames, level, &need.name);
+            // ADR 0093 rule 5: a function or lambda in an argument of a call into a boundary
+            // grants the boundary what it uses.
+            self.granted_use(need.capability, &need.ops, &resolved);
+            match resolved {
                 Resolved::Cap {
                     name: declared,
                     capability,
@@ -545,13 +569,15 @@ impl<'a> Checker<'_, 'a, '_> {
                     capability,
                     span: handler,
                     ops,
+                    ..
                 } => {
                     if self.authority()
                         && let Some(ops) = &ops
                         && (need.capability.is_none() || capability == need.capability)
                     {
                         // A handler behind a narrowed rebinding permits only the listed
-                        // operations (ADR 0093 rule 4).
+                        // operations (ADR 0093 rule 4). Unreachable from source today, as in
+                        // `op_site`; kept fail-closed.
                         let missing: Vec<String> = need
                             .ops
                             .iter()
@@ -2381,6 +2407,7 @@ mod narrowing_tests {
                 Bound::Handler {
                     capability: Some(0),
                     span: handler_span(),
+                    handler: None,
                 },
             )]),
             frame(vec![("x", narrowed("y", &["read"]))]),
@@ -2409,6 +2436,7 @@ mod narrowing_tests {
                 Bound::Handler {
                     capability: Some(0),
                     span: handler_span(),
+                    handler: None,
                 },
             )]),
             frame(vec![("x", narrowed("y", &["read", "write"]))]),

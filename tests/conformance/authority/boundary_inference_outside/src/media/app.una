@@ -1,0 +1,14 @@
+-- test: a private function outside a boundary does not infer the boundary's requirement through a call into it: the call is U3020, and the helper infers nothing from it (ADR 0093 rule 3)
+-- spec: spec/05 §9
+-- expect: error U3020 at src/media/app.una:9:30
+module media.app
+
+import media.resize (notify, shrink, size_of)
+import media.store (Files, Net)
+
+helper(path: Text) -> Text = shrink(path)
+
+pub outer(path: Text) -> Text
+  uses @files: Files[read]
+=
+  helper(path)

@@ -16,6 +16,7 @@ mod authority;
 mod boundary;
 mod call;
 mod check;
+mod crossing;
 mod dead;
 mod edit_labels;
 mod effects;
@@ -263,13 +264,20 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         .map(|entry| entry.value.clone())
         .collect();
     // Edition 0.3: the boundaries of `una.toml`, checked against the package (ADR 0093).
-    let _boundaries = boundary::resolve(
+    env.boundaries = boundary::resolve(
         &env,
         package.settings,
         package.manifest,
         package.modules.len(),
         &mut report,
     );
+    if !env.boundaries.list.is_empty() {
+        env.boundaries.any_policy = env
+            .functions
+            .iter()
+            .any(|f| matches!(f.ast, env::FnAst::Policy(_)));
+        env.boundaries.function_kinds = crossing::function_kinds(&env);
+    }
     let facts = facts::KindFacts::new(&env);
     facts::kind_recursion(&env, &mut report);
     authority::stored_effects(&env, &mut report);
@@ -449,6 +457,15 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
         findings.standard_records = standard_findings.records;
     }
     authority::testing_installs(&findings, &mut report);
+    // Edition 0.3: no release is reachable from a call into a boundary (ADR 0093 rule 8).
+    crossing::releases(
+        &env,
+        &findings.graph,
+        &findings.releases,
+        &findings.opaque,
+        &findings.crossings,
+        &mut report,
+    );
     facts::predicate_recursion(&env, &findings, &mut report);
     if package.settings.edition >= Edition::V0_2 {
         facts::generic_constraints(&mut env, &facts, &findings, &mut report);
@@ -618,6 +635,15 @@ pub(crate) struct Findings {
     /// Calls of, and references to, functions and predicates, from the body of a function or
     /// predicate: caller, callee, and where.
     pub(crate) edges: Vec<(usize, usize, Span)>,
+    /// Edition 0.3 (ADR 0093 rule 8): what each function and handler may run, by named call,
+    /// function value or installation, for the releases reachable from a boundary call.
+    pub(crate) graph: Vec<(crossing::Node, crossing::Node)>,
+    /// The releases, `declassify` and policy calls, of each function and handler.
+    pub(crate) releases: Vec<(crossing::Node, Span)>,
+    /// The handlers given a function value whose code is not known where they are installed.
+    pub(crate) opaque: Vec<(crossing::Node, Span)>,
+    /// The calls into boundary modules.
+    pub(crate) crossings: Vec<crossing::Crossing>,
     /// Instantiations of generic functions: the caller when it is a function, the callee, its
     /// type arguments and where.
     pub(crate) instances: Vec<(Option<usize>, usize, Vec<ty::Ty>, Span)>,

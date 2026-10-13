@@ -159,3 +159,7 @@ Planning the implementation (#565) found five places where rules 1 to 5 leave au
 - **Codes.** No new code: U7002 (rules 9 and 10), U3020 (rule 10) and U3021 (rules 10 and 13) are reused, with messages that name the case.
 - **Complexity.** Rule 9 is a lookup of a module's path prefixes, O(depth) per module, with the overlap check of the keys done by sorting them, O(k log k). Rules 10 to 13 add no pass: they change which edges count as crossings, and which bindings a grant contributes.
 - **Formal.** Authority confinement (#562) was proved before this amendment, so it does not cover rules 9 to 13. Their extension is an open obligation of the formal track, #629.
+
+## Amendment (2026-10-14): known limitation
+
+The implementation of rules 3 to 13 (#565) leaves one path that a ceiling does not bound yet. A handler can be installed outside the crossing statement and reach the crossing as a capability of a function's header, granted on by name (`with @x = @x`, renamed or narrowed, through one or more calls). At the crossing it counts as a capability and its operations (rule 13). The handler's own `uses` are not yet counted against the ceiling (rule 5), and the releases it reaches are not yet counted for U3024 (rule 8). A handler installed in the caller's own body, and a handler installed in the crossing statement, are counted. #669 charges such a handler at the statement that installs it. Until then, the guarantee of rules 5 and 8 holds for the handlers a crossing's caller installs, and not for those a caller further up installs.
