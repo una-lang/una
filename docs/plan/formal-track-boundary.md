@@ -66,7 +66,7 @@ Each is "not re-checked", never accepted.
 - **R9. The export.** The Core export does not carry `una.toml`'s `[boundaries]` yet (edition `0.3`, not implemented). Until it does, the importer reads an optional `boundaries` field, tested on synthesized documents. The corpus delta is 0, and the replay is unchanged.
 - **R10. Handlers of an invoked operation.** An invocation of `o` may run any handler of `o` (`Program.handlerFor`), so all of them must be within the ceiling, not only the one installed at the call. This is stricter than the ADR, never weaker.
 
-- **R11. #524's reading of an operation.** Where a capability has one handler and an operation is read as a direct `invoke` of it, the operation is a call of the handler, confined by what the handler does, not by its name in the ceiling. A pure operation the ceiling does not name is accepted by F1 and refused by the checker: the checker is stricter, as in R7.
+- **R11. #524's reading of an operation.** (Closed by #572, §8.) Where a capability has one handler and an operation is read as a direct `invoke` of it, the operation is a call of the handler, confined by what the handler does, not by its name in the ceiling. A pure operation the ceiling does not name is accepted by F1 and refused by the checker: the checker is stricter, as in R7.
 
 ## 6. Gate
 
@@ -80,3 +80,27 @@ Each is "not re-checked", never accepted.
 
 - Host-capability rebinding in F1 (R1): `Files`, `Http` and the operation as capabilities a `with` can rebind to a handler, so that B10's reference is re-checked.
 - The marker invariant (R10): which handler a marker names, so that only the installed one counts.
+
+## 8. #572: the operation a static handler implements (closes R11)
+
+**Why.** R11 left a #524 invocation, `Rhs.invoke f`, confined only by what `f`'s body does: `Auth.allows (.perfFn f)` is `True`. Since #561, every `invoke f` leaves the ghost `.perfFn f`, so the trace says which handler ran. If the model also knows which operation `f` implements, the ceiling can name it, as ADR 0093 does and as `invokeOp` already is (`.perf o`, `o ∈ a.ops`).
+
+**What F1 lacks.** `Program.handlerOf` maps only the handlers of `with` scopes (#538). The importer keeps the static handlers of #524 in its own `invokes` table, `(capability, operation) ↦ function`, and the program never sees it.
+
+**The change.**
+- `Program.staticOps : List (String × String) := []`: each static handler function, with the operation `Cap.op` it implements. The importer fills it from `invokes`. A field with a default changes no existing program.
+- `Auth.staticOps : List (String × String) := []`: the same map, carried by the ceiling, so that `Rhs.within` stays a check of a body against a ceiling, with no program.
+- `Auth.allows (.perfFn f)` becomes `∃ o, a.staticOps.lookup f = some o ∧ o ∈ a.ops`.
+- `Rhs.within a (.invoke f _)` becomes `match a.staticOps.lookup f with | some o => a.ops.contains o | none => false`. A function that no static operation names cannot be invoked within a ceiling, which fails closed.
+
+**Statements.**
+- `eval_confined` keeps its text. Its `invoke` case now proves `a.allows (.perfFn f)` from `Rhs.within`, where it used `trivial`.
+- New: `perfFn_names_op`. Under `eval_confined`'s hypotheses and `a.staticOps = p.staticOps`, every `.perfFn f` event of a confined run has `p.staticOps.lookup f = some o` with `o ∈ a.ops`. This is the guarantee R11 lacked, stated against the program's own map.
+- `BoundaryExample`, case 7: a static handler `rules.lookup` of `Records.lookup`, invoked by `rules.review`, under a ceiling `{rd, ops := ["Records.contains"]}`.
+  - Rejected, by a concrete run whose trace holds `.perfFn "rules.lookup"`, not allowed since `Records.lookup ∉ ops`.
+  - The same with `"Records.lookup"` in `ops`: accepted by `decide`.
+- The importer: the boundary check builds each ceiling with `staticOps := P.staticOps`, and the import tests gain a static-handler document, which is rejected where its operation is outside the ceiling.
+
+**What does not change.** T6, trace safety (#561) and every statement outside `Confine.lean`: `Program` gains a field with a default, and `perfFn` events are already invisible to every observer (`EvVis`). `Theorems.lean`'s diff against `main` shows only additions.
+
+**Gate.** As §6: `formal.sh` PASS with standard axioms and no `sorry`, statements additions only, `BoundaryExample` case 7, import tests, corpus delta and replay unchanged, and local CI. R11 moves from the residuals to this section.
