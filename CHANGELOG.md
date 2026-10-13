@@ -2,6 +2,10 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
+## Unreleased
+
+- **Edition `0.3`, a preview** (#564, ADR 0056 amendment). `edition = "0.3"` is accepted in `una.toml`, and `una --version` lists it. It has every construct, keyword and rule of edition `0.2`, which `spec/13 §7` now states as a rule: editions are cumulative. The rules of ADRs 0092, 0093 and 0094 target it and join it as they land, so until then a later `0.3.x` release may add obligations or errors to an edition `0.3` package: it only gets stricter, never looser. Editions `0.1` and `0.2` are unchanged; the one message that changes is U7002's list of editions, for an edition that is not supported.
+
 ## v0.3.8
 
 A feature patch of the Beta, with no security fix: it carries what was validated on `main` since v0.3.7. Repairs rank by what they cost: escape repairs last (ADR 0095), widening repairs after the ones that keep authority (ADR 0097), foreign syntax gets its exact fix and one check reports past a broken declaration (ADR 0096), and an unknown name reports one diagnostic, at the reference (#581). `una core --with-rejected` (ADR 0091) exports rejected programs, `una run` and `una test` say which tier they check (#556), and a call that keeps its argument live no longer counts references for a parameter it may consume (#284). Edition 0.3's first three designs are accepted (ADR 0092, 0093 and 0094), and the formal model now states authority confinement at module boundaries and proves trace safety, stage 1. The formal track's re-check reads `Result` error types, user record and sum kinds, `with` scopes, handlers, fixed-width integers and more of the prelude; the differential security hunt (#513) runs its generator families with no new finding; and the docs bundle feeds a site gate. Validation: `docs/releases/0.3.8-validation.md`.

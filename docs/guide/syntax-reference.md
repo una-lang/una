@@ -2012,7 +2012,7 @@ events/
 | `[escape_budget]` `checked_per_module` | how many `checked` each module may use (default 0) |
 | `[run]` `entry`, `grants` | the module whose `main` runs, and the grants of `una run` and of the native executable |
 
-- **Editions.** The edition decides the language of the package: edition `0.2` has the memory model (§5.5, §5.6), fixed-width integers (§3.1), recursive kinds (§3.2), constraints (§3.3), effect polymorphism (§4.2) and `together` (§5.7). Edition `0.1` keeps the language of v0.1 in every version of the compiler. A single `.una` file has the default settings, and so edition `0.1`.
+- **Editions.** The edition decides the language of the package: edition `0.2` has the memory model (§5.5, §5.6), fixed-width integers (§3.1), recursive kinds (§3.2), constraints (§3.3), effect polymorphism (§4.2) and `together` (§5.7). Edition `0.1` keeps the language of v0.1 in every version of the compiler. A single `.una` file has the default settings, and so edition `0.1`. Edition `0.3` is a preview: it has everything of edition `0.2`, and the rules of ADRs 0092 to 0094 join it as they land, which only ever adds errors.
 - `verification.lock` pins the solver so that proofs are reproducible.
 - Unknown keys in `una.toml` are U7002. A missing or invalid lock is U7004.
 

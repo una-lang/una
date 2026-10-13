@@ -811,7 +811,7 @@ impl Lexer<'_> {
             .tokens
             .last()
             .is_some_and(|token| token.kind == TokenKind::Dot);
-        let kind = if word == "with" && after_dot && self.out.keywords == KeywordSet::V0_2 {
+        let kind = if word == "with" && after_dot && self.out.keywords >= KeywordSet::V0_2 {
             TokenKind::LowerIdent(self.interner.intern(&word))
         } else if let Some(keyword) = Keyword::from_word_in(&word, self.out.keywords) {
             TokenKind::Keyword(keyword)

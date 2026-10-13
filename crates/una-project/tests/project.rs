@@ -71,8 +71,10 @@ fn manifest_errors_are_located() {
         ["U7002 5:2 unknown table [tests] in una.toml"]
     );
     assert_eq!(
-        manifest_errors("[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"0.3\"\n"),
-        ["U7002 4:11 edition `0.3` is not supported; the editions are \"0.1\" and \"0.2\""]
+        manifest_errors("[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"0.4\"\n"),
+        [
+            "U7002 4:11 edition `0.4` is not supported; the editions are \"0.1\", \"0.2\" and \"0.3\""
+        ]
     );
     // Edition 0.2 opens the constructs of spec/17 and spec/18 (ADR 0056, ADR 0057).
     assert!(

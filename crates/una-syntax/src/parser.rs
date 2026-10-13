@@ -59,7 +59,7 @@ pub(crate) fn parse_plain(lexed: &Lexed, file: FileId, interner: &Interner) -> P
         unit_start: 0,
         nesting: 0,
         errors: Vec::new(),
-        v0_2: lexed.keywords == KeywordSet::V0_2,
+        v0_2: lexed.keywords >= KeywordSet::V0_2,
     };
     let tree = parser.file();
     Parsed {

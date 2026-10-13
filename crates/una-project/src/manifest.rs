@@ -37,17 +37,34 @@ pub enum Edition {
     V0_1,
     /// Edition `0.2`: adds the constructs of `spec/17` and `spec/18`.
     V0_2,
+    /// Edition `0.3`, a preview until ADRs 0092 to 0094 land: every construct of edition
+    /// `0.2`, and the rules that target edition `0.3` (`spec/13 §7`).
+    V0_3,
 }
 
 impl Edition {
     /// Every edition, oldest first.
-    pub const ALL: [Edition; 2] = [Edition::V0_1, Edition::V0_2];
+    pub const ALL: [Edition; 3] = [Edition::V0_1, Edition::V0_2, Edition::V0_3];
 
     /// The edition's name, as `una.toml` writes it.
     pub fn name(self) -> &'static str {
         match self {
             Edition::V0_1 => "0.1",
             Edition::V0_2 => "0.2",
+            Edition::V0_3 => "0.3",
+        }
+    }
+
+    /// Every edition's name, quoted, as a message lists them: `"0.1", "0.2" and "0.3"`.
+    fn listed() -> String {
+        let names: Vec<String> = Edition::ALL
+            .iter()
+            .map(|edition| format!("\"{}\"", edition.name()))
+            .collect();
+        match names.split_last() {
+            Some((last, [])) => last.clone(),
+            Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+            None => String::new(),
         }
     }
 
@@ -56,6 +73,7 @@ impl Edition {
         match text {
             "0.1" => Some(Edition::V0_1),
             "0.2" => Some(Edition::V0_2),
+            "0.3" => Some(Edition::V0_3),
             _ => None,
         }
     }
@@ -124,8 +142,9 @@ fn package_table(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Ve
                             Code::U7002,
                             located.range,
                             format!(
-                                "edition `{}` is not supported; the editions are \"0.1\" and \"0.2\"",
-                                located.value
+                                "edition `{}` is not supported; the editions are {}",
+                                located.value,
+                                Edition::listed()
                             ),
                         )),
                     }
