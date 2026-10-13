@@ -214,7 +214,10 @@ impl<'a> Checker<'_, 'a, '_> {
     /// Checks arguments that belong to no parameter, for the diagnostics inside them.
     fn unchecked(&mut self, args: &[Arg]) {
         for arg in args {
-            self.expr(&arg.value, None);
+            // A lambda given to an unknown callee takes the error type, so that its parameters
+            // report nothing the unknown name caused (ADR 0096 rule 8).
+            let expected = matches!(arg.value.kind, ExprKind::Lambda { .. }).then_some(&Ty::Error);
+            self.expr(&arg.value, expected);
         }
     }
 

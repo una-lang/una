@@ -1278,7 +1278,9 @@ impl<'a> Checker<'_, 'a, '_> {
             },
             _ => None,
         };
-        let mut mismatch = false;
+        // An expected error type comes from an unknown callee: its parameters are errors too,
+        // silently (ADR 0096 rule 8).
+        let mut mismatch = matches!(expected.map(|ty| self.vars.head(ty)), Some(Ty::Error));
         if let Some(function) = &shape
             && function.params.len() != params.len()
         {

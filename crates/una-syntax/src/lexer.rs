@@ -72,6 +72,9 @@ pub fn lex_in(
     let used = names(&lexer.out, lexer.interner);
     let chosen = choose(&lexer.out.renames, &used);
     apply(&mut lexer.out, &chosen);
+    let out = &mut lexer.out;
+    // The renames of names that start with `_` (ADR 0096 A).
+    crate::rewrite::underscore_renames(&out.text, file, &mut out.errors);
     lexer.out
 }
 
@@ -667,7 +670,53 @@ impl Lexer<'_> {
             }
         });
         self.error(Code::U0001, start, end, message);
+        if c == ';' {
+            self.semicolon_repair(start, end);
+        }
         self.pos = end;
+    }
+
+    /// The exact rewrite of a `;` (ADR 0096 A): deleted at the end of its line, with the spaces
+    /// after it, or a line break at the line's indentation between two statements.
+    fn semicolon_repair(&mut self, start: usize, end: usize) {
+        let line_rest = self
+            .text
+            .get(end..)
+            .and_then(|rest| rest.split('\n').next())
+            .unwrap_or("");
+        let line_start = self
+            .text
+            .get(..start)
+            .and_then(|before| before.rfind('\n'))
+            .map_or(0, |at| at + 1);
+        let indent: String = self
+            .text
+            .get(line_start..start)
+            .unwrap_or("")
+            .chars()
+            .take_while(|c| *c == ' ')
+            .collect();
+        let (stop, replacement, description) = if line_rest.trim().is_empty() {
+            (
+                end + line_rest.len(),
+                String::new(),
+                "delete the `;`: a statement ends at the end of its line",
+            )
+        } else {
+            let gap = line_rest.len() - line_rest.trim_start().len();
+            (
+                end + gap,
+                format!("\n{indent}"),
+                "put the next statement on a line of its own",
+            )
+        };
+        let span = self.span(start, stop);
+        if let Some(error) = self.out.errors.last_mut() {
+            error.repairs.push(SyntaxRepair {
+                description: description.to_owned(),
+                edit: Some((span, replacement)),
+            });
+        }
     }
 
     fn closer(&mut self, square: bool) {

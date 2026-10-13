@@ -27,16 +27,45 @@ impl Serialize for DiagnosticList<'_> {
         Wire {
             schema: DIAGNOSTICS_SCHEMA,
             diagnostics: &self.diagnostics,
+            fixable: self
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| fixable_one(diagnostic))
+                .count(),
         }
         .serialize(serializer)
     }
 }
 
-/// The JSON shape of a list of diagnostics (ADR 0012).
+/// The JSON shape of a list of diagnostics (ADR 0012), with the count of ADR 0096 rule 6.
 #[derive(Serialize)]
 struct Wire<'a> {
     schema: &'static str,
     diagnostics: &'a [&'a Diagnostic],
+    fixable: usize,
+}
+
+/// Whether `una fix` applies the first repair of `diagnostic` (ADR 0084): its edit is not
+/// `null`, its escape cost is 0, it widens nothing, and it edits a module. A U7001 counts too,
+/// since `una fix`'s format step applies it (ADR 0096 rule 6).
+fn fixable_one(diagnostic: &Diagnostic) -> bool {
+    diagnostic
+        .repairs
+        .iter()
+        .min_by_key(|repair| (repair.escape_cost(), repair.rank))
+        .is_some_and(|repair| {
+            repair.escape.is_none()
+                && !repair.widens_authority
+                && repair
+                    .edit
+                    .as_ref()
+                    .is_some_and(|edit| edit.location.file.ends_with(".una"))
+        })
+}
+
+/// How many of `diagnostics` have a first repair that `una fix` applies (ADR 0096 rule 6).
+pub fn fixable(diagnostics: &[Diagnostic]) -> usize {
+    diagnostics.iter().filter(|d| fixable_one(d)).count()
 }
 
 /// Renders diagnostics as the compact JSON document of `spec/13 §1`, without the final newline.
