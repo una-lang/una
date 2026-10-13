@@ -7,7 +7,8 @@
 //! 0, or with the code of its `# exit N`, from the repository root, the directory of its
 //! `# in <dir>`, or a fresh copy of the directory of a `# copy <dir>` earlier in the block.
 //! Each example package's `README.md` holds only such `sh` blocks and the output of `una run`
-//! (#586).
+//! (#586). Every repository path that a guide writes in inline code names a file or directory
+//! of the repository (#651).
 //! Tier 1 needs Z3 at the version of `verification.lock` on the path.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
@@ -797,4 +798,82 @@ fn every_example_has_a_readme_whose_commands_run() {
         );
         assert!(links > 0, "{relative}: no links");
     }
+}
+
+/// The repository paths that `text` writes in inline code outside fenced blocks (#651): a code
+/// span without spaces or placeholders (`<`, `>`, `*`, `{`, `}`, `$`, `|`) whose first segment
+/// is one of `top`, the repository's top-level directories, as in `images/logo.png` or
+/// `examples/hello/`. A `#` fragment or a `:line` suffix is dropped.
+fn repository_paths(text: &str, top: &[String]) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    let mut fence = false;
+    for (n, line) in text.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fence = !fence;
+            continue;
+        }
+        if fence {
+            continue;
+        }
+        for (i, span) in line.split('`').enumerate() {
+            let span = span.trim();
+            if i % 2 == 0
+                || !span.contains('/')
+                || span.contains(char::is_whitespace)
+                || span.contains(['<', '>', '*', '{', '}', '$', '|'])
+            {
+                continue;
+            }
+            let path = span.split(['#', ':']).next().unwrap();
+            if top
+                .iter()
+                .any(|t| path.split('/').next() == Some(t.as_str()))
+            {
+                out.push((n + 1, path.to_string()));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn every_repository_path_in_the_guides_exists() {
+    let root = repository();
+    let mut top: Vec<String> = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|e| e.unwrap())
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| !name.starts_with('.') && name != "target")
+        .collect();
+    top.sort();
+
+    // The case of #651: a missing file in inline code is found; a placeholder, a sentence, a
+    // path outside the repository's directories and a fenced block are not paths to check.
+    let case = "Install `images/missing-0.2.0.vsix`, see `examples/hello/`.\n\
+                Not paths: `examples/<name>/`, `a / b`, `src/app.una`.\n\
+                ```sh\nls `images/inside-a-fence`\n```\n";
+    let found = repository_paths(case, &["examples".into(), "images".into()]);
+    assert_eq!(
+        found,
+        vec![
+            (1, "images/missing-0.2.0.vsix".to_string()),
+            (1, "examples/hello/".to_string())
+        ]
+    );
+
+    let mut checked = 0;
+    for file in markdown_files(&root.join("docs/guide")) {
+        let text = std::fs::read_to_string(&file).unwrap();
+        let relative = file.strip_prefix(&root).unwrap().display().to_string();
+        for (line, path) in repository_paths(&text, &top) {
+            assert!(
+                root.join(&path).exists(),
+                "{relative}:{line}: `{path}` names no file or directory of the repository"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "no repository path found in docs/guide");
 }

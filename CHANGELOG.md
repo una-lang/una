@@ -4,6 +4,8 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ## Unreleased
 
+- **The tutorial no longer points to a missing editor extension file** (#651). `docs/guide/getting-started.md` §7 named `images/una-language-support-0.2.0.vsix`, which the repository does not hold, and an older version of the extension; the section now describes `una lsp` only. `crates/una-cli/tests/guide.rs` gains `every_repository_path_in_the_guides_exists`: a path written in inline code in `docs/guide/`, whose first segment is a top-level directory of the repository, such as `images/...` or `examples/...`, must name a file or directory. Markdown links were already checked by the site gate, inline code was not.
+
 ## v0.3.12
 
 A patch of the Beta, with no security fix in `una` and no change to the language, its editions or its diagnostics. Each package under `examples/` gains a `README.md` that says what the program does, what each file shows, what `una check` proves for it, its edition, and the commands to check, test, run and build it, with what they print; a test runs those commands in a fresh copy of each package. The website that the release gate builds renders each README as the prose of its example page, above the files, and fails its build when a code fence on a page is closed early or never. Validation: `docs/releases/0.3.12-validation.md`.
