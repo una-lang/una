@@ -6,6 +6,8 @@
 //! parses and names a schema the CLI prints. Each `una` or `./` line of a `sh` block exits with
 //! 0, or with the code of its `# exit N`, from the repository root, the directory of its
 //! `# in <dir>`, or a fresh copy of the directory of a `# copy <dir>` earlier in the block.
+//! Each example package's `README.md` holds only such `sh` blocks and the output of `una run`
+//! (#586).
 //! Tier 1 needs Z3 at the version of `verification.lock` on the path.
 
 // Tests may unwrap freely (compiler/conventions.md §1).
@@ -678,5 +680,121 @@ fn every_construct_page_follows_the_template_and_its_blocks_check() {
             checked[0] + checked[3] > 0,
             "{relative}: no checked Una code"
         );
+    }
+}
+
+#[test]
+fn every_example_has_a_readme_whose_commands_run() {
+    // #586: each package of `examples/` has a `README.md`. Its code is only `sh` blocks, whose
+    // commands run as the guides' do, and the `text` block after them, which is what `una run`
+    // prints. Its `Edition` part names the edition of the package's `una.toml`, and each of
+    // its relative links leads to a file of the repository.
+    let root = repository();
+    let mut names: Vec<String> = std::fs::read_dir(root.join("examples"))
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| entry.path().is_dir())
+        .map(|entry| entry.file_name().to_str().unwrap().to_owned())
+        .filter(|name| !name.starts_with('.'))
+        .collect();
+    names.sort();
+    assert!(!names.is_empty(), "no example packages");
+    for (index, name) in names.iter().enumerate() {
+        let package = root.join("examples").join(name);
+        let relative = format!("examples/{name}/README.md");
+        let text = std::fs::read_to_string(package.join("README.md"))
+            .unwrap_or_else(|_| panic!("{relative} is missing"));
+        let readme_blocks = blocks(&text);
+        for block in &readme_blocks {
+            assert!(
+                ["sh", "text"].contains(&block.lang.as_str()),
+                "{relative}, block at line {}: a `{}` block is not checked",
+                block.line,
+                block.lang
+            );
+        }
+        let checked = check_guide(&relative, 2_000_000 + index * 10_000);
+        assert!(checked[2] > 0, "{relative}: no commands");
+
+        let printed = readme_blocks
+            .iter()
+            .find(|block| block.lang == "text")
+            .unwrap_or_else(|| panic!("{relative}: no `text` block of what `una run` prints"));
+        // `[package]` requires `name` and `edition` (`spec/13 §7`).
+        let manifest = std::fs::read_to_string(package.join("una.toml")).unwrap();
+        let key = |wanted: &str| -> String {
+            manifest
+                .lines()
+                .filter_map(|line| line.split_once('='))
+                .find(|(key, _)| key.trim() == wanted)
+                .map(|(_, value)| value.trim().trim_matches('"').to_owned())
+                .unwrap_or_else(|| panic!("{relative}: its una.toml has no `{wanted}`"))
+        };
+        let edition = key("edition");
+
+        // `una run` and the native executable print the `text` block.
+        let copy = scratch(2_000_000 + index * 10_000 + 9_999).join(name);
+        copy_dir(&package, &copy);
+        let una = |args: &[&str]| {
+            Command::new(env!("CARGO_BIN_EXE_una"))
+                .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+                .args(args)
+                .current_dir(&copy)
+                .output()
+                .unwrap()
+        };
+        let output = una(&["run", "."]);
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            printed.body,
+            "{relative}: what `una run` prints"
+        );
+        runtime();
+        let built = una(&["build", "."]);
+        assert!(
+            built.status.success(),
+            "{relative}: `una build .`: {}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+        let output = Command::new(copy.join("target/una").join(key("name")))
+            .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+            .current_dir(&copy)
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            printed.body,
+            "{relative}: what the native executable prints"
+        );
+        let part = text
+            .split("\n## Edition\n")
+            .nth(1)
+            .unwrap_or_else(|| panic!("{relative}: no `## Edition` part"));
+        assert!(
+            part.trim_start()
+                .starts_with(&format!("Edition `{edition}`")),
+            "{relative}: the Edition part does not name edition {edition}"
+        );
+
+        let mut rest = text.as_str();
+        let mut links = 0;
+        while let Some(at) = rest.find("](") {
+            rest = &rest[at + 2..];
+            let target = rest.split(')').next().unwrap();
+            let file = target.split('#').next().unwrap();
+            if file.is_empty() || file.contains("://") {
+                continue;
+            }
+            assert!(
+                package.join(file).is_file(),
+                "{relative}: the link to {target} leads to no file"
+            );
+            links += 1;
+        }
+        assert!(
+            text.contains("](../../docs/guide/language/"),
+            "{relative}: no link to a construct page"
+        );
+        assert!(links > 0, "{relative}: no links");
     }
 }
