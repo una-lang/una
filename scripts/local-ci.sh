@@ -1,13 +1,14 @@
 #!/bin/sh
 # Runs what .github/workflows/ci.yml runs, in the same order, on this machine: the solver check,
-# fmt, clippy with warnings denied, the tests, then packing and checking the release archive of
-# the host's target. With --linux, it runs the same inside a linux/amd64 container of CI's
-# Ubuntu image (scripts/local-ci/Dockerfile), emulated on an arm64 Mac, so it is slow and runs
-# the tests one at a time (#286); with --linux-arm64, inside a linux/arm64 one, native on such a
-# Mac (#241), with the tests in parallel. The
-# target directory (one volume per checkout), the cargo registry and Z3 live in named volumes,
-# so later runs are incremental. It ends with PASS, or FAIL and the step that failed, and a non-zero exit on any
-# failure. While GitHub Actions is unavailable, this is the check before a merge (#156).
+# the released sections of CHANGELOG.md against their tags, fmt, clippy with warnings denied,
+# the tests, then packing and checking the release archive of the host's target. With --linux,
+# it runs the same inside a linux/amd64 container of CI's Ubuntu image
+# (scripts/local-ci/Dockerfile), emulated on an arm64 Mac, so it is slow and runs the tests one
+# at a time (#286); with --linux-arm64, inside a linux/arm64 one, native on such a Mac (#241),
+# with the tests in parallel. The target directory (one volume per checkout), the cargo registry
+# and Z3 live in named volumes, so later runs are incremental. It ends with PASS, or FAIL and
+# the step that failed, and a non-zero exit on any failure. While GitHub Actions is unavailable,
+# this is the check before a merge (#156).
 #
 # Usage: scripts/local-ci.sh [--linux | --linux-arm64]
 set -u
@@ -27,6 +28,12 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
         *) arch=arm64 target=aarch64-unknown-linux-gnu suffix=-arm64 serial="" ;;
     esac
     command -v docker >/dev/null 2>&1 || fail "docker not found; $1 needs Docker"
+    # The released sections of CHANGELOG.md need the repository's tags, which a worktree
+    # mounted alone into the container cannot reach: the check runs here, on the host, and the
+    # container's run skips it, visibly (#645).
+    echo "== Released sections of CHANGELOG.md (on the host)"
+    env -u UNA_SKIP_RELEASED_SECTIONS scripts/check-released-sections.sh \
+        || fail "Released sections of CHANGELOG.md"
     toolchain=$(sed -n 's/^channel *= *"\([^"]*\)"$/\1/p' rust-toolchain.toml)
     image="una-local-ci:$toolchain$suffix"
     echo "== building the image $image (linux/$arch)"
@@ -49,6 +56,7 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
         --volume "una-local-ci-lean$suffix:/opt/lean" \
         --env UNA_FORMAL_LEAN=/opt/lean \
         --env "UNA_LOCAL_CI_SERIAL=$serial" \
+        --env UNA_LOCAL_CI_RELEASED_SECTIONS_ON_HOST=1 \
         "$image" scripts/local-ci.sh || fail "the Linux run failed; its output is above"
     echo "local CI: PASS ($target, in the container)"
     exit 0
@@ -76,6 +84,17 @@ step() {
     "$@" || fail "$name"
 }
 step "Check the solver version" scripts/check-solver.sh
+# Every released section of CHANGELOG.md is the one its tag published (#645): an entry that a
+# rebase carried under a released heading fails here, before it merges. The run's evidence never
+# skips it: UNA_SKIP_RELEASED_SECTIONS from the caller is dropped, and only the container, whose
+# host checked the same tree before starting it, skips it, visibly.
+if [ -n "${UNA_LOCAL_CI_RELEASED_SECTIONS_ON_HOST:-}" ] && [ -f /.dockerenv ]; then
+    echo "== Released sections of CHANGELOG.md"
+    echo "skipped: checked on the host before the container"
+else
+    step "Released sections of CHANGELOG.md" \
+        env -u UNA_SKIP_RELEASED_SECTIONS scripts/check-released-sections.sh
+fi
 step "Format" cargo fmt --all --check
 step "Clippy" cargo clippy --workspace --all-targets --locked -- -D warnings
 # Under emulation (--linux on an arm64 Mac, through Rosetta), the tests run one at a time, on
