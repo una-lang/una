@@ -1,0 +1,16 @@
+-- test: an inferred `fails` is the kind of the first failure in source order; a later variant of another kind is U3009
+-- spec: spec/04 §5
+-- expect: error U3009 at 10:70
+module inferred_fails_first_fail
+
+kind First = Two | Three
+
+kind Second = | One
+
+pick(n: Int) -> Int = if n > 1 then fail Two else if n < 0 then fail One else n
+
+pub run(n: Int) -> Int
+  fails First
+=
+  pick(n)
+    if error pass

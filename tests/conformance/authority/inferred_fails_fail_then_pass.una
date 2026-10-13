@@ -1,0 +1,25 @@
+-- test: a raised variant decides the inferred kind; a later pass of another kind is U3008
+-- spec: spec/04 §5
+-- expect: error U3008 at 19:5
+module inferred_fails_fail_then_pass
+
+kind A = | Ay
+
+kind B = | Two
+
+raise_a(n: Int) -> Int
+  fails A
+=
+  if n > 9 then fail Ay else n
+
+pick(n: Int) -> Int
+=
+  let x = if n < 0 then fail Two else n
+  raise_a(x)
+    if error pass
+
+pub run(n: Int) -> Int
+  fails B
+=
+  pick(n)
+    if error pass

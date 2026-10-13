@@ -1,0 +1,25 @@
+-- test: a passed failure decides the inferred kind; a later variant of another kind is U3009
+-- spec: spec/04 §5
+-- expect: error U3009 at 19:22
+module inferred_fails_pass_then_fail
+
+kind A = | Ay
+
+kind B = | Two
+
+raise_a(n: Int) -> Int
+  fails A
+=
+  if n > 9 then fail Ay else n
+
+pick(n: Int) -> Int
+=
+  let x = raise_a(n)
+    if error pass
+  if x < 0 then fail Two else x
+
+pub run(n: Int) -> Int
+  fails A
+=
+  pick(n)
+    if error pass
