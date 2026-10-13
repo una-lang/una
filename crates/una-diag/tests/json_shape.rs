@@ -9,7 +9,8 @@ use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use una_diag::{
     Binding, Code, Counterexample, Diagnostic, DiagnosticList, Edit, Escape, Location,
-    ObligationKind, ObligationRef, ObligationStatus, Position, Related, Repair, render_json,
+    ObligationKind, ObligationRef, ObligationStatus, Position, Related, Repair, Widening,
+    render_json,
 };
 
 /// The JSON code blocks of `spec/13 §1`, in document order.
@@ -76,7 +77,7 @@ fn spec_example() -> Diagnostic {
         ],
     });
     diagnostic.repairs.push(Repair {
-        widens_authority: false,
+        widens: None,
         rank: 1,
         escape: None,
         description:
@@ -141,7 +142,7 @@ fn minimal_diagnostic_is_exact_and_omits_absent_fields() {
 fn edit_is_null_or_a_located_replacement() {
     let mut diagnostic = minimal(Code::U7001, "src/a.una", 3);
     diagnostic.repairs.push(Repair {
-        widens_authority: false,
+        widens: None,
         rank: 2,
         escape: None,
         description: "reindent the line".to_owned(),
@@ -151,7 +152,7 @@ fn edit_is_null_or_a_located_replacement() {
         }),
     });
     diagnostic.repairs.push(Repair {
-        widens_authority: false,
+        widens: None,
         rank: 1,
         escape: None,
         description: "run una fmt".to_owned(),
@@ -182,7 +183,7 @@ fn repairs_are_ordered_by_escape_cost_then_rank_and_renumbered() {
         (1, None),
     ] {
         diagnostic.repairs.push(Repair {
-            widens_authority: false,
+            widens: None,
             rank,
             escape,
             description: format!("rank {rank}, escape {escape:?}"),
@@ -214,12 +215,53 @@ fn repairs_are_ordered_by_escape_cost_then_rank_and_renumbered() {
 }
 
 #[test]
+fn a_widening_ranks_after_the_repairs_that_keep_authority_and_before_an_escape() {
+    // ADR 0097 rules 3 and 4: keep < widen < escape, renumbered, and `widens` carries its kind
+    // and cost while `escape_cost` stays 0.
+    let mut diagnostic = minimal(Code::U3002, "src/a.una", 1);
+    for (escape, widens, description) in [
+        (Some(Escape::Checked), None, "escape"),
+        (None, Some(Widening::Authority), "widen"),
+        (None, None, "keep"),
+    ] {
+        diagnostic.repairs.push(Repair {
+            widens,
+            rank: 1,
+            escape,
+            description: description.to_owned(),
+            edit: None,
+        });
+    }
+    let value = serde_json::to_value(&diagnostic).unwrap();
+    let repairs = value["repairs"].as_array().unwrap();
+    let order: Vec<(u64, &str)> = repairs
+        .iter()
+        .map(|r| {
+            (
+                r["rank"].as_u64().unwrap(),
+                r["description"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(order, [(1, "keep"), (2, "widen"), (3, "escape")]);
+    assert!(repairs[0].get("widens").is_none());
+    assert_eq!(repairs[1]["escape_cost"], 0);
+    assert_eq!(repairs[1]["widens"]["kind"], "authority");
+    assert_eq!(repairs[1]["widens"]["cost"], Widening::Authority.cost());
+    // Printed order: `widens` after `escape_cost`, before `description`.
+    let text = serde_json::to_string(&diagnostic).unwrap();
+    let widen_at = text.find("\"widens\":").unwrap();
+    assert!(text[..widen_at].contains("\"escape_cost\":"));
+    assert!(text[widen_at..].contains("\"description\":\"widen\""));
+}
+
+#[test]
 fn an_escape_carries_its_kind_and_cost_and_others_carry_no_escape_key() {
     // ADR 0095 rule 5: `escape` is present exactly when `escape_cost` is above 0.
     let mut diagnostic = minimal(Code::U7003, "src/a.una", 1);
     for escape in [None, Some(Escape::EscapeBudget)] {
         diagnostic.repairs.push(Repair {
-            widens_authority: false,
+            widens: None,
             rank: 1,
             escape,
             description: "a route".to_owned(),

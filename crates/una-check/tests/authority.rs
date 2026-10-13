@@ -9,7 +9,7 @@
 
 use pretty_assertions::assert_eq;
 use una_check::{ModuleInput, PackageInput, TypeCheck, check_names, check_types};
-use una_diag::{Code, Diagnostic};
+use una_diag::{Code, Diagnostic, Widening};
 use una_project::{Manifest, parse_manifest};
 use una_syntax::{Interner, SourceDb, lex, parse};
 
@@ -119,9 +119,9 @@ fn operations_need_a_binding_that_permits_them() {
              pub e() -> Unit = @log.write(\"x\")\n"
         ),
         [
-            "U3002 t.una:28:8 `@log` permits `write`, not `flush`; add `flush` to its `uses` clause",
-            "U3001 t.una:33:3 `@other` is not in scope; declare it with `uses` in the header",
-            "U3004 t.una:35:19 `@log` is used here, but this code declares no `uses`, so it is pure; declare `uses @log: ...` in its header",
+            "U3002 t.una:28:8 `@log` permits `write`, not `flush`",
+            "U3001 t.una:33:3 `@other` is not in scope",
+            "U3004 t.una:35:19 `@log` is used here, but this code declares no `uses`, so it is pure",
         ]
     );
 }
@@ -146,7 +146,7 @@ fn calls_need_sufficient_capabilities() {
         ),
         [
             "U3002 t.una:28:3 `write` needs `@log` to permit `write`, which it does not here",
-            "U3001 t.una:33:3 `write` needs `@log: Log[write]`, which is not in scope here; declare it with `uses`",
+            "U3001 t.una:33:3 `write` needs `@log: Log[write]`, which is not in scope here",
             "U3001 t.una:38:3 `write` needs `@log` to be `Log`, and here it is `Store`",
             "U3003 t.una:40:22 `write` uses `@log: Log[write]`, but this code declares no `uses`, so its effects would exceed its header",
         ]
@@ -184,11 +184,11 @@ fn with_rebinds_names_and_installs_handlers() {
              pub one_statement() -> Unit\n  uses @primary: Log[write]\n=\n  write(\"x\") with @log = @primary\n  write(\"y\")\n"
         ),
         [
-            "U3001 t.una:44:26 `@missing` is not in scope; declare it with `uses` in the header",
+            "U3001 t.una:44:26 `@missing` is not in scope",
             "U3010 t.una:48:26 this handler implements `Store`, and `write` needs `@log` to be `Log`",
             "U3010 t.una:52:26 `write` is not a handler; `with` and `given` install handlers",
             "U3003 t.una:56:26 handler `forwarding` uses `@out: Log[write]`, but this code declares no `uses`, so its effects would exceed its header",
-            "U3001 t.una:67:3 `write` needs `@log: Log[write]`, which is not in scope here; declare it with `uses`",
+            "U3001 t.una:67:3 `write` needs `@log: Log[write]`, which is not in scope here",
         ]
     );
 }
@@ -242,8 +242,8 @@ fn private_functions_infer_uses_from_their_callers() {
         [
             "U3002 t.una:35:3 `twice` needs `@log` to permit `flush`, which it does not here",
             "U3003 t.una:37:22 `helper` uses `@log: Log[write]`, but this code declares no `uses`, so its effects would exceed its header",
-            "U3001 t.una:39:20 no caller of `orphan` binds `@nobody`, so its capability cannot be inferred; declare `uses @nobody: ...` in the header",
-            "U3001 t.una:41:29 the callers of `split` bind `@sink` to `Log` and to `Store`; declare its `uses` in the header",
+            "U3001 t.una:39:20 no caller of `orphan` binds `@nobody`, so its capability cannot be inferred",
+            "U3001 t.una:41:29 the callers of `split` bind `@sink` to `Log` and to `Store`",
         ]
     );
 }
@@ -295,7 +295,7 @@ fn declared_requirements_decide_before_callers() {
              unknown(line: Text) -> Unit\n=\n  @log.shout(line)\n  wraps(line)\n"
         ),
         [
-            "U3001 t.una:25:3 `calls_both` calls code that needs `@log` to be `Log` and code that needs it to be `Audit`; rebind one of them to another name with `with`",
+            "U3001 t.una:25:3 `calls_both` calls code that needs `@log` to be `Log` and code that needs it to be `Audit`",
             "U3001 t.una:31:3 `wraps` needs `@log` to be `Log`, and here it is `Audit`",
             "U1001 t.una:35:8 capability `Log` has no operation `shout`",
         ]
@@ -374,8 +374,8 @@ fn handlers_implement_every_operation_of_their_capability() {
             "U3010 t.una:27:30 `StoreError` is not a capability; `for` names the capability that a handler implements",
             "U3009 t.una:31:23 `Missing` is a variant of `LookupError`, and this code fails with `StoreError`",
             "U3008 t.una:36:7 `if error pass` passes a `LookupError` failure, and this code fails with `StoreError`; use `if error fail` with a variant of `StoreError`",
-            "U3001 t.una:41:20 `@elsewhere` is not in scope; declare it with `uses` in the header",
-            "U3002 t.una:47:21 `@out` permits `write`, not `flush`; add `flush` to its `uses` clause",
+            "U3001 t.una:41:20 `@elsewhere` is not in scope",
+            "U3002 t.una:47:21 `@out` permits `write`, not `flush`",
         ]
     );
 }
@@ -498,7 +498,7 @@ fn effectful_functions_are_values_only_as_arguments() {
             "U3006 t.una:41:3 `write` uses capabilities or can fail, so as a value it may only be passed directly as an argument",
             "U3006 t.una:44:8 field `run` of `Holder` has a function type with `uses` or `fails`, which a kind cannot store",
             "U3003 t.una:49:16 this function uses `@log: Log[write]`, which the expected function type does not allow",
-            "U3004 t.una:54:25 `@log` is used here, but this code declares no `uses`, so it is pure; declare `uses @log: ...` in its header; a function passed to a prelude function such as `map`, `filter` or `fold` may use capabilities only in edition 0.2",
+            "U3004 t.una:54:25 `@log` is used here, but this code declares no `uses`, so it is pure; a function passed to a prelude function such as `map`, `filter` or `fold` may use capabilities only in edition 0.2",
             "U3009 t.una:58:51 this code declares no error kind, so it cannot fail with `Missing`; declare `fails` in its header",
         ]
     );
@@ -519,8 +519,8 @@ fn u3004_in_a_pure_lambda_keeps_the_message_of_its_edition() {
     assert_eq!(
         single(PURE_LAMBDAS.trim_start_matches("module t\n\n")),
         [
-            "U3004 t.una:11:25 `@log` is used here, but this code declares no `uses`, so it is pure; declare `uses @log: ...` in its header; a function passed to a prelude function such as `map`, `filter` or `fold` may use capabilities only in edition 0.2",
-            "U3004 t.una:16:24 `@log` is used here, but this code declares no `uses`, so it is pure; declare `uses @log: ...` in its header",
+            "U3004 t.una:11:25 `@log` is used here, but this code declares no `uses`, so it is pure; a function passed to a prelude function such as `map`, `filter` or `fold` may use capabilities only in edition 0.2",
+            "U3004 t.una:16:24 `@log` is used here, but this code declares no `uses`, so it is pure",
         ]
     );
     // Edition 0.2: `map` takes the effect through its `uses of` clause.
@@ -565,8 +565,8 @@ fn lambdas_capture_the_capabilities_their_type_declares() {
              pub not_held(xs: List[Text]) -> Unit\n  uses @other: Log\n=\n  each(xs, f: fn(t) -> @other.write(t)) with @log = @other\n"
         ),
         [
-            "U3002 t.una:28:29 `@log` permits `write`, not `flush`; add `flush` to its `uses` clause",
-            "U3001 t.una:33:24 `@other` is not in scope; declare it with `uses` in the header",
+            "U3002 t.una:28:29 `@log` permits `write`, not `flush`",
+            "U3001 t.una:33:24 `@other` is not in scope",
         ]
     );
 }
@@ -675,7 +675,7 @@ fn run_grants_cover_the_host_capabilities_of_main() {
             &[("src/app/main.una", custom)]
         ),
         [
-            "U3012 src/app/main.una:7:3 `main` uses `@store: Store`, which is not a host capability, so no grant can provide it; install a handler for it with `with` inside `main`",
+            "U3012 src/app/main.una:7:3 `main` uses `@store: Store`, which is not a host capability, so no grant can provide it",
         ]
     );
 }
@@ -821,16 +821,25 @@ fn an_operation_another_binding_permits_ranks_that_binding_first() {
         )],
         true,
     );
-    let ranked: Vec<(u32, String)> = types
+    // ADR 0097: the ranks are those of output order, and the widening is marked.
+    let ranked: Vec<(u32, String, Option<Widening>)> = types
         .diagnostics
         .iter()
-        .flat_map(|d| d.repairs.iter().map(|r| (r.rank, r.description.clone())))
+        .flat_map(|d| {
+            d.repairs_in_order()
+                .into_iter()
+                .map(|r| (r.rank, r.repair.description.clone(), r.repair.widens))
+        })
         .collect();
     assert_eq!(
         ranked,
         [
-            (1, "use `@agent`, which permits `refund`".to_owned()),
-            (2, "add `refund` to the `uses` clause of `@shop`".to_owned()),
+            (1, "use `@agent`, which permits `refund`".to_owned(), None),
+            (
+                2,
+                "add `refund` to the `uses` clause of `@shop`".to_owned(),
+                Some(Widening::Authority)
+            ),
         ]
     );
 }
@@ -887,11 +896,12 @@ fn a_call_another_binding_permits_ranks_the_rebinding_first() {
         .iter()
         .filter(|d| d.code == Code::U3002)
         .flat_map(|d| {
-            d.repairs.iter().map(|r| {
+            d.repairs_in_order().into_iter().map(|r| {
                 (
                     r.rank,
-                    r.description.clone(),
-                    r.edit
+                    r.repair.description.clone(),
+                    r.repair
+                        .edit
                         .as_ref()
                         .map_or(String::new(), |e| e.replacement.clone()),
                 )

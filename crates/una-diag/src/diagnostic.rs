@@ -206,6 +206,43 @@ impl Escape {
     }
 }
 
+/// What a repair widens (`spec/13 §3`, ADR 0097 rule 1). A widening is fully checked, so it
+/// is not an escape; output ranks it after every repair that keeps authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Widening {
+    /// Operations are added to a `uses` clause, or a `uses` clause is declared.
+    Authority,
+    /// A declaration is made `pub`.
+    Visibility,
+    /// A host capability's operations are granted to the program, in `[run] grants` or with
+    /// `--grant`.
+    Grant,
+}
+
+impl Widening {
+    /// The kind in the `widens` key of a repair, for example `authority`.
+    pub fn kind(self) -> &'static str {
+        match self {
+            Widening::Authority => "authority",
+            Widening::Visibility => "visibility",
+            Widening::Grant => "grant",
+        }
+    }
+
+    /// One sentence that says what the widening costs.
+    pub fn cost(self) -> &'static str {
+        match self {
+            Widening::Authority => {
+                "the function then holds this authority, and every caller must hold it too: check that the operation belongs to this function's job"
+            }
+            Widening::Visibility => {
+                "every module may then call it: check that it belongs to the module's interface"
+            }
+            Widening::Grant => "the program then gets this host authority when it runs",
+        }
+    }
+}
+
 /// A repair candidate (`spec/13 §3`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Repair {
@@ -219,16 +256,27 @@ pub struct Repair {
     pub description: String,
     /// The mechanical edit, when the repair is mechanical.
     pub edit: Option<Edit>,
-    /// Whether the edit widens authority or visibility: it adds operations or a `uses` clause,
-    /// or makes a declaration `pub`. `una fix` never applies such an edit (ADR 0084). Not part
-    /// of the JSON shape.
-    pub widens_authority: bool,
+    /// What the repair widens, if anything: authority, visibility or a host grant. `una fix`
+    /// never applies a widening edit (ADR 0084), and the `widens` key of the JSON shape is
+    /// derived from it (ADR 0097 rule 3).
+    pub widens: Option<Widening>,
 }
 
 impl Repair {
     /// The number of escape hatches the repair introduces (`spec/13 §3`).
     pub fn escape_cost(&self) -> u32 {
         u32::from(self.escape.is_some())
+    }
+
+    /// Whether the repair widens authority, visibility or a grant (ADR 0097).
+    pub fn widens(&self) -> bool {
+        self.widens.is_some()
+    }
+
+    /// The key that orders repairs for output: by escape cost, then whether they widen, then
+    /// rank (ADR 0095 rule 3, ADR 0097 rule 4).
+    pub fn order_key(&self) -> (u32, bool, u32) {
+        (self.escape_cost(), self.widens(), self.rank)
     }
 }
 
@@ -246,9 +294,13 @@ impl Serialize for Ranked<'_> {
         RepairWire {
             rank: self.rank,
             escape_cost: self.repair.escape_cost(),
-            escape: self.repair.escape.map(|escape| EscapeWire {
+            escape: self.repair.escape.map(|escape| KindCost {
                 kind: escape.kind(),
                 cost: escape.cost(),
+            }),
+            widens: self.repair.widens.map(|widening| KindCost {
+                kind: widening.kind(),
+                cost: widening.cost(),
             }),
             description: &self.repair.description,
             edit: self.repair.edit.as_ref(),
@@ -263,14 +315,16 @@ struct RepairWire<'a> {
     rank: u32,
     escape_cost: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    escape: Option<EscapeWire>,
+    escape: Option<KindCost>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    widens: Option<KindCost>,
     description: &'a str,
     edit: Option<&'a Edit>,
 }
 
-/// The `escape` key of a repair (ADR 0095 rule 5).
+/// The `escape` key (ADR 0095 rule 5) or the `widens` key (ADR 0097 rule 3) of a repair.
 #[derive(Serialize)]
-struct EscapeWire {
+struct KindCost {
     kind: &'static str,
     cost: &'static str,
 }
@@ -305,8 +359,8 @@ pub struct Diagnostic {
     pub obligation: Option<ObligationRef>,
     /// The counterexample, present only for U5001 and U5002.
     pub counterexample: Option<Counterexample>,
-    /// Repair candidates, in any order; output sorts them by escape cost, then rank, and
-    /// renumbers the ranks in that order.
+    /// Repair candidates, in any order; output sorts them by escape cost, then whether they
+    /// widen, then rank, and renumbers the ranks in that order.
     pub repairs: Vec<Repair>,
 }
 
@@ -335,13 +389,14 @@ impl Diagnostic {
         format!("una explain {}", self.code)
     }
 
-    /// The repairs in output order, by escape cost, then rank (`spec/13 §1`), each ranked by its
-    /// position: every escape comes after every repair that keeps the guarantee (ADR 0095
-    /// rule 3). The sort is stable, so equal keys keep their reporting order. O(r log r) in
-    /// the r repairs.
+    /// The repairs in output order, by escape cost, then whether they widen, then rank
+    /// (`spec/13 §1`), each ranked by its position: every escape comes after every repair that
+    /// keeps the guarantee (ADR 0095 rule 3), and every widening after every repair of equal
+    /// escape cost that keeps authority (ADR 0097 rule 4). The sort is stable, so equal keys
+    /// keep their reporting order. O(r log r) in the r repairs.
     pub fn repairs_in_order(&self) -> Vec<Ranked<'_>> {
         let mut repairs: Vec<&Repair> = self.repairs.iter().collect();
-        repairs.sort_by_key(|repair| (repair.escape_cost(), repair.rank));
+        repairs.sort_by_key(|repair| repair.order_key());
         repairs
             .into_iter()
             .zip(1u32..)

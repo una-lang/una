@@ -833,7 +833,7 @@ impl<'s> Report<'s> {
         replacement: impl Into<String>,
     ) -> Repair {
         Repair {
-            widens_authority: false,
+            widens: None,
             rank: 1,
             escape: None,
             description: description.into(),
@@ -847,7 +847,7 @@ impl<'s> Report<'s> {
     /// A repair described in words, without an edit.
     pub(crate) fn advice(description: impl Into<String>) -> Repair {
         Repair {
-            widens_authority: false,
+            widens: None,
             rank: 1,
             escape: None,
             description: description.into(),

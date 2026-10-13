@@ -572,7 +572,7 @@ impl<W: Workspace> Server<W> {
                 .iter()
                 .filter(|r| r.edit.is_some())
                 .collect();
-            repairs.sort_by_key(|r| (r.escape_cost(), r.rank));
+            repairs.sort_by_key(|r| r.order_key());
             for repair in repairs {
                 let Some(edit) = &repair.edit else {
                     continue;

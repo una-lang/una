@@ -1,6 +1,6 @@
 # 13. Diagnostics, Agent ABI and project files
 
-Status: Normative, v0.1. The JSON shapes in this file are the Agent ABI, schema version 1: agents consume them, so changes follow the ADR process and bump the version in the `schema` strings. Schema versions freeze at the `v0.1.0` tag: before it, the shapes of version 1 may still change. After it, versions follow ADR 0076. A key added to an object, at any position, keeps the version: consumers MUST ignore unknown keys and MUST NOT depend on the position of a key, and the order this file gives is the printed order. Removing or renaming a key, changing its type, or changing what a key or a value means bumps the version. Fields whose values come from a set of strings are closed, and adding a value to one bumps the version, except two open fields: the diagnostic `code` (§4), whose new codes have a `domain` and a `severity` from their closed sets, and the obligation `kind` (`spec/12 §3`), whose new kinds use the existing `status` values. Consumers MUST accept unknown values of these two fields, and decide what to do from `severity`, `domain` and `status`. (ADR 0095.) The `kind` of a repair's `escape` (§3) is open too: a consumer that meets an unknown kind still knows from `escape_cost` that the repair is an escape.
+Status: Normative, v0.1. The JSON shapes in this file are the Agent ABI, schema version 1: agents consume them, so changes follow the ADR process and bump the version in the `schema` strings. Schema versions freeze at the `v0.1.0` tag: before it, the shapes of version 1 may still change. After it, versions follow ADR 0076. A key added to an object, at any position, keeps the version: consumers MUST ignore unknown keys and MUST NOT depend on the position of a key, and the order this file gives is the printed order. Removing or renaming a key, changing its type, or changing what a key or a value means bumps the version. Fields whose values come from a set of strings are closed, and adding a value to one bumps the version, except two open fields: the diagnostic `code` (§4), whose new codes have a `domain` and a `severity` from their closed sets, and the obligation `kind` (`spec/12 §3`), whose new kinds use the existing `status` values. Consumers MUST accept unknown values of these two fields, and decide what to do from `severity`, `domain` and `status`. (ADR 0095.) The `kind` of a repair's `escape` (§3) is open too: a consumer that meets an unknown kind still knows from `escape_cost` that the repair is an escape. (ADR 0097.) So is the `kind` of a repair's `widens` (§3): the key's presence says the repair widens.
 
 ## 1. Diagnostic model
 
@@ -35,8 +35,9 @@ Every problem the toolchain reports is a diagnostic with a registered code (§4)
 | Positions | 1-based line, 1-based column counted in Unicode scalar values after decoding; `end` is exclusive. Each maximal ill-formed subsequence of invalid UTF-8 counts as one column (Unicode §3.9); a byte order mark and a tab count as one column each (ADR 0015) |
 | `obligation`, `counterexample` | Present only for U5001 and U5002 |
 | Counterexample binding | `{ "name", "value" }`, and (v0.2, ADR 0078) `"label"`, as `"secret"` or `"secret[PII]"`, when the label of the name's declared type is above `public` (`spec/11 §5`). The key is omitted for a public binding; it is additive, and the schema stays `una.diagnostic/1`. The human output prints the bindings without their labels |
-| `repairs` | Zero or more candidates, sorted by `escape_cost`, then `rank`. (ADR 0095.) `rank` is the position in that order, 1 to n without gaps |
+| `repairs` | Zero or more candidates, sorted by `escape_cost`, then `rank`. (ADR 0095.) `rank` is the position in that order, 1 to n without gaps. (ADR 0097.) Among repairs of equal `escape_cost`, those that widen come after the others |
 | `escape` | (ADR 0095.) Present exactly when `escape_cost` is above 0, after `escape_cost`: `{ "kind", "cost" }`, where `kind` is `checked`, `escape_budget` or `trusted` (§3) and `cost` is one sentence that says what the guarantee loses. It is additive, and the schema stays `una.diagnostic/1`. The human output prints a repair as `repair N: ...`, or `repair N (escape: <kind>; <cost>): ...` |
+| `widens` | (ADR 0097.) Present exactly when the repair widens, after `escape` when both are present: `{ "kind", "cost" }`, where `kind` is `authority`, `visibility` or `grant` (§3) and `cost` is one sentence that says what the widening costs. A widening keeps `escape_cost` 0. It is additive, and the schema stays `una.diagnostic/1`. The human output prints such a repair as `repair N (widens <kind>: <cost>): ...` |
 | `edit` | `null`, or `{ "file", "start", "end", "replacement" }` when the repair is mechanical |
 
 Diagnostics are sorted by file, start position, then code. Output is deterministic.
@@ -100,6 +101,17 @@ A `refinement` obligation of a function value flowing into a function type (`spe
 | U4003 | send only data, or interpolate only fields, at the accepted label, or send the value to an operation that accepts its label | declassify through a policy |
 | U4004 | move the policy and its `via` function into a module that is already trusted, when one exists | declare this module trusted in both places |
 | U7005 | remove `trusted` from the header, or the entry from `[trusted] modules`; when the module declares a policy, the repair says that its policies are then U4004 | complete the declaration in the other place |
+
+(ADR 0097.) **Widenings rank after the repairs that keep authority.** A repair widens when it adds operations to a `uses` clause or declares one (`authority`), makes a declaration `pub` (`visibility`), or grants a host capability's operations in `[run] grants` or with `--grant` (`grant`). A widening is fully checked, so it is not an escape and keeps `escape_cost` 0; it carries the `widens` key (§1), and output ranks it after every repair of equal `escape_cost` that keeps authority. `una fix` never applies a widening (§5, ADR 0084). A message states the problem, and the routes out of it are repairs:
+
+| Code | Repairs that keep authority | Widening, after them |
+| --- | --- | --- |
+| U3002 at an operation | use another binding in scope that permits the operation | add the operation to the `uses` clause |
+| U3002 at a call | rebind with `with @need = @other`, when it applies | add the operations to the `uses` clause |
+| U3001, U3003, U3004 | none | declare the binding with `uses` |
+| U1004 | none | declare the declaration `pub` |
+| U3012, host capability | none | grant the operations in `[run] grants` |
+| U3012, other capability | install a handler with `with` inside `main` | none |
 
 Other diagnostics MAY include repairs (for example, a missing label with its mechanical edit). `una check` and the other commands never apply repairs. (v0.2, ADR 0084.) `una fix` applies mechanical ones on request (§5). A repair whose edit widens authority or visibility, by adding operations to a `uses` clause, declaring a `uses` clause or making a declaration `pub`, is marked so where it is built, and `una fix` never applies it.
 

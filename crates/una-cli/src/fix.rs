@@ -297,7 +297,7 @@ fn first_repair(diagnostic: &Diagnostic) -> Option<&Repair> {
     diagnostic
         .repairs
         .iter()
-        .min_by_key(|repair| (repair.escape_cost(), repair.rank))
+        .min_by_key(|repair| repair.order_key())
 }
 
 /// Why a first repair with an edit is not applied; `None` when it is a candidate.
@@ -310,7 +310,7 @@ fn ineligible(
     if repair.escape.is_some() {
         return Some("escape cost");
     }
-    if repair.widens_authority {
+    if repair.widens() {
         return Some("widens authority");
     }
     match modules.get(&edit.location.file) {

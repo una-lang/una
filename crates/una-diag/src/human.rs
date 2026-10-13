@@ -105,15 +105,22 @@ fn helps(diagnostic: &Diagnostic) -> Vec<String> {
         .repairs_in_order()
         .into_iter()
         .map(|Ranked { rank, repair }| {
-            // ADR 0095 rule 5: an escape says its kind and what it costs.
-            let mut help = match repair.escape {
-                Some(escape) => format!(
+            // ADR 0095 rule 5 and ADR 0097 rule 3: an escape or a widening says its kind and
+            // what it costs.
+            let mut help = match (repair.escape, repair.widens) {
+                (Some(escape), _) => format!(
                     "repair {rank} (escape: {}; {}): {}",
                     escape.kind(),
                     escape.cost(),
                     repair.description
                 ),
-                None => format!("repair {rank}: {}", repair.description),
+                (None, Some(widening)) => format!(
+                    "repair {rank} (widens {}: {}): {}",
+                    widening.kind(),
+                    widening.cost(),
+                    repair.description
+                ),
+                (None, None) => format!("repair {rank}: {}", repair.description),
             };
             if let Some(edit) = &repair.edit {
                 let _ = write!(
