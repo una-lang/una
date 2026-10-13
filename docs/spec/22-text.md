@@ -4,7 +4,7 @@ Status: Normative, v0.2 (ADR 0070).
 
 These prelude functions take a text apart, search it, change it and parse it. Text stays a value of Unicode scalar values (`spec/03 §1`), and every function here is pure.
 
-**Editions.** The functions and the kind of this chapter exist only in packages of edition `0.2` (`spec/13 §7`). In edition `0.1`, their names are ordinary names, and §6 does not apply.
+**Editions.** The functions and the kind of this chapter exist only in packages of edition `0.2` and later (`spec/13 §7`). In edition `0.1`, their names are ordinary names, and §6 does not apply.
 
 ## 1. Positions
 

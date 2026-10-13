@@ -360,7 +360,7 @@ Commands take a file or a directory, `.` by default (ADR 0021):
 
 `una.toml` is a TOML document with these tables and keys, and no others (U7002):
 
-- `[package]`, required: `name`, `version` and `edition`, non-empty strings; `edition` is `"0.1"`. (v0.2, ADR 0056.) `edition` is `"0.1"` or `"0.2"`. The constructs of `spec/17`, `spec/18`, `spec/19` and `spec/20` and the keywords of edition `0.2` exist only in packages of edition `"0.2"`, and a single file has edition `"0.1"`.
+- `[package]`, required: `name`, `version` and `edition`, non-empty strings; `edition` is `"0.1"`. (v0.2, ADR 0056.) `edition` is `"0.1"` or `"0.2"`. The constructs of `spec/17`, `spec/18`, `spec/19` and `spec/20` and the keywords of edition `0.2` exist only in packages of edition `"0.2"` and later, and a single file has edition `"0.1"`.
   - (v0.3, ADR 0056 amendment of 2026-10-13.) `edition` is `"0.1"`, `"0.2"` or `"0.3"`. **Editions are cumulative.** Edition `"0.3"` has every construct, keyword and rule of edition `"0.2"`. A rule this specification states for edition `0.2` holds in every later edition, unless it says otherwise. The rules that target edition `0.3` (ADRs 0092, 0093 and 0094) apply only in packages of edition `"0.3"`.
   - **Edition `0.3` is a preview** until every rule that targets it has landed. Until then, a later `0.3.x` release MAY add obligations or errors to an edition `0.3` package: the edition only ever gets stricter, never looser. Editions `0.1` and `0.2` keep their stability promise: a later release MUST NOT change what they accept or reject, except to fix a soundness or security error.
 - `[labels]`: `categories`, an array of category names (UpperCamelCase, U1005; unique, U1002).

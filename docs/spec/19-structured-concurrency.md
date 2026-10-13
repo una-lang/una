@@ -4,7 +4,7 @@ Status: Normative, v0.2 (ADR 0065).
 
 A `together` block runs its branches as concurrent **tasks**, and `together for` runs one task per element of a list. Every task ends before its block does, so no task, capability or value outlives the scope that started it. A program's result, and the trace it reports, are those of a sequential run in branch order, so concurrency changes when effects happen but not what a program computes.
 
-**Editions.** The constructs of this chapter exist only in packages of edition `0.2` (`spec/13 §7`).
+**Editions.** The constructs of this chapter exist only in packages of edition `0.2` and later (`spec/13 §7`).
 - In edition `0.1`, `together` keeps its v0.1 reservation (`spec/01 §5`), so it is U0103.
 - A single file has the default settings, and so edition `0.1`.
 - The Gate 1 benchmark stays on edition `0.1`.
