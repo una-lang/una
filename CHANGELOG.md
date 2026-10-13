@@ -6,6 +6,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 - **Edition `0.3`, a preview** (#564, ADR 0056 amendment). `edition = "0.3"` is accepted in `una.toml`, and `una --version` lists it. It has every construct, keyword and rule of edition `0.2`, which `spec/13 §7` now states as a rule: editions are cumulative. The rules of ADRs 0092, 0093 and 0094 target it and join it as they land, so until then a later `0.3.x` release may add obligations or errors to an edition `0.3` package: it only gets stricter, never looser. A test rechecks every edition `0.2` package of the conformance suite as edition `0.3` and requires byte-identical output, with an explicit list for the differences the later rules bring. Editions `0.1` and `0.2` are unchanged; the one message that changes is U7002's list of editions, for an edition that is not supported.
 - **Construct pages: types and contracts** (#585, second batch). `docs/guide/language/types/` gains `kind`, `where` and refinements, `predicate` (`reflect` and `opaque`) and constraints on generics; `docs/guide/language/functions/` gains `requires` and `ensures`. Each page has the template's seven parts, and every block is checked.
+- **Construct pages follow cumulative editions** (#585). Since edition `0.3`, editions are cumulative (`spec/13 §7`), so the `fails` page says `fails of p` is in edition `0.2` and later, and the constraints page says constraints exist from edition `0.2` on, where both said "only" before.
 
 ## v0.3.8
 
