@@ -54,6 +54,7 @@ cargo run -p una-cli -- check examples/events        # end-to-end smoke test
 GitHub Actions is not used: never wait for it. Validation is local and recorded (#232, `docs/releases/validation.md`):
 
 - A pull request merges on a `scripts/local-ci.sh` PASS on its exact tip, on macOS. Linux is confirmed on `main` by the next gate run (`scripts/local-ci.sh --linux`, in Docker).
+- Except a pull request that changes what the Linux run runs (`scripts/local-ci.sh`, `scripts/local-ci/`, a script one of its steps calls, or a new tool a step needs): it also needs a `scripts/local-ci.sh --linux-arm64` PASS on its exact tip (#605, `docs/releases/validation.md` §1 rule 1).
 - A tag needs `scripts/release-gates.sh <sha> <out>` with every gate PASS on the tagged SHA, and its record committed as `docs/releases/<version>-validation.md` before the tag. The release archives come from `scripts/local-release.sh`.
 
 Tests that need the SMT solver require Z3 at the exact version in `verification.lock`. If it is missing or mismatched, those tests must fail with diagnostic U5003, never skip silently.
