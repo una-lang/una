@@ -4,6 +4,10 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ## Unreleased
 
+## v0.3.12
+
+A patch of the Beta, with no security fix in `una` and no change to the language, its editions or its diagnostics. Each package under `examples/` gains a `README.md` that says what the program does, what each file shows, what `una check` proves for it, its edition, and the commands to check, test, run and build it, with what they print; a test runs those commands in a fresh copy of each package. The website that the release gate builds renders each README as the prose of its example page, above the files, and fails its build when a code fence on a page is closed early or never. Validation: `docs/releases/0.3.12-validation.md`.
+
 - **A README for each example** (#586). Each package under `examples/` (`hello`, `wordfreq`, `pantry`, `greenhouse`, `journal`, `toolshelf`, `shortlinks` and `events`) gains a `README.md`: what the program does, what each file shows with links to the construct and configuration pages, what `una check` proves for it, its edition, and the commands to check, test, run and build it, with what it prints. `crates/una-cli/tests/guide.rs` requires a README in every example, runs its commands in a fresh copy of the package, compares what `una run` and the native executable print, checks that its Edition part names the edition of the package's `una.toml`, and checks that every relative link leads to a file. `site/website.lock` pins una-lang/website at the commit that renders each README as the prose of its example page, above the files, fences every file it shows by its longest run of backticks, and fails its build when a code fence on a page is closed early or never (website#16).
 
 ## v0.3.11
