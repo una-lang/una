@@ -5,6 +5,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 ## Unreleased
 
 - **Construct pages: capabilities** (#585, fourth batch). `docs/guide/language/capabilities/` gains `capability` and `op`, `uses`, `@` bindings and `with`, `handler`, and host capabilities with their grants, each with the template's seven parts and every block checked.
+- **Construct pages: information flow, requirements and examples** (#585, fifth batch). `docs/guide/language/information-flow/` gains labels, `policy` and `trusted` modules; `docs/guide/language/requirements/` gains `requirement` and `derived from`; `docs/guide/language/examples/` gains `example`. Each page has the template's seven parts, and every block is checked. The `attempt` and `if error` pages now say that ADR 0100 makes failure handling on code that cannot fail an error in edition `0.3`, once implemented; editions `0.1` and `0.2` accept it.
 
 ## v0.3.9
 
