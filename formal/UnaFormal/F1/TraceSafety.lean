@@ -259,16 +259,18 @@ def freshFor (conds : List (String × Cond)) (x : String) : Bool :=
 /-- `K` after binding `x`: what it knew of an earlier `x` no longer holds, and neither does a
 comparison that read it (#573). F1 changes a name only by binding it again: its environment
 only grows, an `edit` call returns its new value, and a loop binds its names afresh. -/
-def forget (K : Know) (x : String) : Know where
-  lits := K.lits.filter (·.1 != x)
-  defs := K.defs.filter fun d => d.1 != x && !d.2.vars.contains x
+def forget (K : Know) (x : String) : Know :=
+  { lits := K.lits.filter (·.1 != x),
+    defs := K.defs.filter fun d => d.1 != x && !d.2.vars.contains x }
 
 /-- The comparison a right-hand side computes, if it is one of integers: `lt` or `eqInt` of two
 atoms (#573). -/
-def Rhs.compares : Rhs → Option CAtom
-  | .prim .lt [a, b] => some (.lt a b)
-  | .prim .eqInt [a, b] => some (.eq a b)
-  | _ => none
+def Rhs.compares (r : Rhs) : Option CAtom :=
+  match r with
+  -- `Rhs` has constructors `some` and `none`: the option's are named in full.
+  | .prim Prim.lt [a, b] => Option.some (CAtom.lt a b)
+  | .prim Prim.eqInt [a, b] => Option.some (CAtom.eq a b)
+  | _ => Option.none
 
 /-- `K` after `let x = v`: `x` is forgotten, then defined when `v` is a comparison. -/
 def afterLet (K : Know) (x : String) (v : Rhs) : Know :=
