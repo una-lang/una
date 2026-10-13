@@ -181,7 +181,7 @@ impl<'a> Checker<'_, 'a, '_> {
                         ),
                     );
                 }
-                Ty::Error
+                Ty::error()
             }
             ExprKind::Old(inner) => self.old(inner, span),
             ExprKind::Result => match self.ctx.result.clone() {
@@ -192,7 +192,7 @@ impl<'a> Checker<'_, 'a, '_> {
                         span,
                         "`result` is allowed only in `ensures` clauses and `expect` lines",
                     );
-                    Ty::Error
+                    Ty::error()
                 }
             },
             ExprKind::It => match self.ctx.it.clone() {
@@ -203,7 +203,7 @@ impl<'a> Checker<'_, 'a, '_> {
                         span,
                         "`it` is allowed only in `where` clauses and the predicate of `checked`",
                     );
-                    Ty::Error
+                    Ty::error()
                 }
             },
             ExprKind::Error => {
@@ -216,7 +216,7 @@ impl<'a> Checker<'_, 'a, '_> {
                             span,
                             "`error` is allowed only in the `fail` or `use` part of an `if error` clause",
                         );
-                        Ty::Error
+                        Ty::error()
                     }
                 }
             }
@@ -263,7 +263,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 | Ty::Fixed(_)
                 | Ty::Bool
                 | Ty::Text
-                | Ty::Error
+                | Ty::Error(_)
                 | Ty::Never
                 | Ty::Var(_) => {}
                 other if self.env.edition >= Edition::V0_2 => {
@@ -476,17 +476,20 @@ impl<'a> Checker<'_, 'a, '_> {
                     ident.span,
                     format!("handler `{name}` is not a value; install it with `with` or `given`"),
                 );
-                Ty::Error
+                Ty::error()
             }
             // An unknown name is U1001, reported by M3.
-            _ => Ty::Error,
+            _ => {
+                self.vars.mark_unknown();
+                Ty::unknown()
+            }
         }
     }
 
     /// The function type of function `id`, instantiated at `span`.
     pub(crate) fn function_value(&mut self, id: usize, span: Span) -> Ty {
         let Some(def) = self.env.functions.get(id).cloned() else {
-            return Ty::Error;
+            return Ty::error();
         };
         if def.kind == FnKind::Policy {
             self.report.error(
@@ -497,7 +500,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     def.name, def.name
                 ),
             );
-            return Ty::Error;
+            return Ty::error();
         }
         // ADR 0042 rule 2: an opaque predicate used as a value would be called outside
         // `checked` (re-review N-008).
@@ -608,10 +611,12 @@ impl<'a> Checker<'_, 'a, '_> {
                 span,
                 format!("type parameter `{name}` is not a value"),
             );
-            return Ty::Error;
+            return Ty::error();
         }
+        // No candidate, or an ambiguous one: U1001 either way.
         let Some(entity) = self.choose_upper(ident, expected) else {
-            return Ty::Error;
+            self.vars.mark_unknown();
+            return Ty::unknown();
         };
         let problem = match entity {
             Entity::Variant(kind, index) => {
@@ -652,10 +657,10 @@ impl<'a> Checker<'_, 'a, '_> {
                 (Code::U2001, format!("`{name}` is a type, not a value"))
             }
             Entity::Capability(_) => (Code::U2001, format!("capability `{name}` is not a value")),
-            Entity::Function(_) | Entity::Handler(_) => return Ty::Error,
+            Entity::Function(_) | Entity::Handler(_) => return Ty::error(),
         };
         self.report.error(problem.0, span, problem.1);
-        Ty::Error
+        Ty::error()
     }
 
     /// The names of the fields of a variant, quoted, for messages.
@@ -819,7 +824,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
                 if self.same(span, &left_ty, &right_ty, symbol) {
                     match self.resolve(&left_ty) {
-                        Ty::Int | Ty::Fixed(_) | Ty::Error | Ty::Never | Ty::Var(_) => {}
+                        Ty::Int | Ty::Fixed(_) | Ty::Error(_) | Ty::Never | Ty::Var(_) => {}
                         // Ordering of text has no encoding in `spec/12 §4`.
                         Ty::Text => self.outside_rl(span, || "ordering of `Text`".to_owned()),
                         Ty::Kind(id, _) if self.fieldless_sum(id) => {}
@@ -827,6 +832,8 @@ impl<'a> Checker<'_, 'a, '_> {
                         Ty::Param(_) if self.env.edition >= Edition::V0_2 => {
                             self.needs.push((left_ty, Constraint::Ord, span));
                         }
+                        // A type that an unknown name left unsolved is not reported (#581).
+                        other if self.vars.saw_unknown() && self.show(&other).contains('?') => {}
                         other => {
                             let shown = self.show(&other);
                             self.report.error(
@@ -1112,7 +1119,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
                 _ => None,
             },
-            Ty::Error | Ty::Never => None,
+            Ty::Error(_) | Ty::Never => None,
             other => {
                 let shown = self.show(&other);
                 self.report.error(
@@ -1281,7 +1288,9 @@ impl<'a> Checker<'_, 'a, '_> {
         // A lambda given to a call of a name that does not resolve: its parameters are errors,
         // silently (ADR 0096 rule 8). Every other lambda without an expected type still
         // reports U2010.
-        let mut mismatch = std::mem::take(&mut self.unknown_callee_argument);
+        // Or a lambda whose expected type comes from a type name that does not resolve (#581).
+        let unknown_expected = expected.is_some_and(|ty| self.vars.head(ty).is_unknown());
+        let mut mismatch = std::mem::take(&mut self.unknown_callee_argument) || unknown_expected;
         if let Some(function) = &shape
             && function.params.len() != params.len()
         {
@@ -1375,7 +1384,7 @@ impl<'a> Checker<'_, 'a, '_> {
                             ),
                         );
                     }
-                    (Ty::Error, Ty::Error)
+                    (Ty::error(), Ty::error())
                 }
             };
             types.push(param_ty);
@@ -1468,7 +1477,7 @@ impl<'a> Checker<'_, 'a, '_> {
         self.frames = frames;
         self.locals.truncate(mark);
         if mismatch {
-            return Ty::Error;
+            return Ty::error();
         }
         let result = result.unwrap_or(body_ty);
         let lambda = Ty::Fn(Shared::new(FnTy {
@@ -1588,7 +1597,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 "`attempt` applies to one call of a function or capability operation",
             );
             self.expr(operand, None);
-            return Ty::Error;
+            return Ty::error();
         }
         self.pass_site(Site {
             top: site.top,
@@ -1600,7 +1609,7 @@ impl<'a> Checker<'_, 'a, '_> {
             .call_fails
             .get(&inner.span)
             .cloned()
-            .unwrap_or(Ty::Error);
+            .unwrap_or(Ty::error());
         let decided = self.decided_failures.get(&inner.span).cloned();
         match self.env.prelude_kind("Result") {
             // Whether the call failed, and how, is labeled like what decided it (N-27).
@@ -1610,7 +1619,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 }
                 _ => Ty::Kind(result, vec![ty, error].into()),
             },
-            None => Ty::Error,
+            None => Ty::error(),
         }
     }
 

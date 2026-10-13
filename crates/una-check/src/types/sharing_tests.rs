@@ -52,7 +52,7 @@ fn old_erase(ty: &Ty) -> Ty {
 fn old_substitute(ty: &Ty, args: &[Ty]) -> Ty {
     match ty {
         Ty::Labeled(label, inner) => old_substitute(inner, args).with_label(label),
-        Ty::Param(index) => args.get(*index).cloned().unwrap_or(Ty::Error),
+        Ty::Param(index) => args.get(*index).cloned().unwrap_or(Ty::error()),
         Ty::List(element) => Ty::List(Shared::new(old_substitute(element, args))),
         Ty::Map(key, value) => Ty::Map(
             Shared::new(old_substitute(key, args)),
@@ -175,7 +175,7 @@ fn old_combine(a: &Ty, b: &Ty, join: bool, kinds: &KindLabels) -> Ty {
     let label = if join { la.join(&lb) } else { la.meet(&lb) };
     let base = match (a.unlabeled(), b.unlabeled()) {
         (Ty::Never, other) | (other, Ty::Never) => return other.clone().with_label(&label),
-        (Ty::Error, _) | (_, Ty::Error) => return Ty::Error,
+        (Ty::Error(_), _) | (_, Ty::Error(_)) => return Ty::error(),
         (Ty::List(x), Ty::List(y)) => Ty::List(Shared::new(old_combine(x, y, join, kinds))),
         (Ty::Map(xk, xv), Ty::Map(yk, yv)) => Ty::Map(
             Shared::new(old_combine(xk, yk, join, kinds)),
@@ -268,7 +268,7 @@ fn some_type(random: &mut Random, depth: u32, pool: &mut Vec<Shared<Ty>>) -> Ty 
             3 => Ty::Param(1),
             4 => Ty::Var(random.below(3) as usize),
             5 => Ty::Never,
-            6 => Ty::Error,
+            6 => Ty::error(),
             7 => Ty::Bool,
             _ => Ty::Unit,
         };
@@ -559,7 +559,7 @@ fn walked_flags(ty: &Ty) -> Flags {
             label: true,
             var_label: label.symbols.iter().any(|s| s.starts_with('?')),
             normal: !label.is_public()
-                && !matches!(**inner, Ty::Labeled(..) | Ty::Error | Ty::Never),
+                && !matches!(**inner, Ty::Labeled(..) | Ty::Error(_) | Ty::Never),
         }
         .and(walked_flags(inner)),
         _ => Flags::LEAF,
@@ -597,7 +597,7 @@ fn adversarial() -> Vec<Ty> {
             Shared::new(Ty::Int.with_label(&Label::symbol("U"))),
         )),
         // A label on `Error` and on `Never`.
-        deep(Ty::Labeled(Label::symbol("T"), Shared::new(Ty::Error))),
+        deep(Ty::Labeled(Label::symbol("T"), Shared::new(Ty::error()))),
         // A failure kind with a variable, and with a label (#216).
         deep(function(Ty::Var(1))),
         deep(function(Ty::Text.with_label(&Label::symbol("T")))),

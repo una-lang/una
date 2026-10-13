@@ -160,7 +160,7 @@ impl Checker<'_, '_, '_> {
                     ),
                 );
                 self.unchecked_args(args);
-                return Some(Ty::Error);
+                return Some(Ty::error());
             }
             _ => return None,
         };
@@ -182,7 +182,7 @@ impl Checker<'_, '_, '_> {
             return Some(result.with_label(&label));
         }
         let (Ty::Fixed(int), Some(op)) = (int, op) else {
-            return Some(Ty::Error);
+            return Some(Ty::error());
         };
         if op.binary() {
             let operand = if op.shift() { Ty::Int } else { Ty::Fixed(int) };

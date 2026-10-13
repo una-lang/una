@@ -98,7 +98,7 @@ impl Checker<'_, '_, '_> {
                 format!("`{method}` {takes}, as in `{receiver}.{method}({shape})`"),
             );
             self.unchecked_args(args);
-            return Some(Ty::Error);
+            return Some(Ty::error());
         }
         let callee = format!("`{method}`");
         let mut found = Vec::new();
@@ -192,7 +192,7 @@ impl Checker<'_, '_, '_> {
     fn prelude_kind_of(&self, name: &str, args: Vec<Ty>) -> Ty {
         match self.env.prelude_kind(name) {
             Some(id) => Ty::Kind(id, args.into()),
-            None => Ty::Error,
+            None => Ty::error(),
         }
     }
 }

@@ -1,0 +1,16 @@
+-- test: an unknown handler installed with an empty list reports only the handler name
+-- spec: spec/10 §1
+-- expect: error U1001 at 16:27
+module unknown_handler_given_list
+
+capability Store
+  op count() -> Int
+
+pub counted() -> Int
+  uses @store: Store[count]
+=
+  @store.count()
+
+pub run() -> Int
+=
+  counted() with @store = rows(values: [])

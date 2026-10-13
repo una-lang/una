@@ -54,6 +54,10 @@ pub(crate) struct Vars {
     /// its address, and no freed node's address can come back to it (memo rule 1). Erasing
     /// reads no variable, so it stays valid as variables are solved.
     erased: RefCell<ErasedMemo>,
+    /// Whether a type of a name that does not resolve reached a variable or a unification
+    /// (#581): the declaration then reports no variable it left unsolved, which only the
+    /// missing name could have solved.
+    saw_unknown: bool,
 }
 
 impl Vars {
@@ -64,6 +68,7 @@ impl Vars {
             kinds,
             generation: 0,
             erased: RefCell::new(ErasedMemo::default()),
+            saw_unknown: false,
         }
     }
 
@@ -369,6 +374,9 @@ impl Vars {
     }
 
     fn bind(&mut self, var: usize, ty: Ty) {
+        if ty.is_unknown() {
+            self.saw_unknown = true;
+        }
         if let Some(slot) = self.slots.get_mut(var) {
             slot.value = Some(ty);
             self.generation += 1;
@@ -460,7 +468,12 @@ impl Vars {
         let (a, b) = (a_bare, b_bare);
         match (&a, &b) {
             (Ty::Never, _) | (_, Ty::Never) => true,
-            (Ty::Error, _) | (_, Ty::Error) => true,
+            (Ty::Error(_), _) | (_, Ty::Error(_)) => {
+                if a.is_unknown() || b.is_unknown() {
+                    self.saw_unknown = true;
+                }
+                true
+            }
             (Ty::Fixed(x), Ty::Fixed(y)) => x == y,
             (Ty::Int, Ty::Int)
             | (Ty::Bool, Ty::Bool)
@@ -498,6 +511,16 @@ impl Vars {
     }
 
     /// The variables still unsolved, each with its origin and span, in creation order.
+    /// Whether a type of a name that does not resolve reached a variable or a unification.
+    pub(crate) fn saw_unknown(&self) -> bool {
+        self.saw_unknown
+    }
+
+    /// Records that the declaration refers to a name that does not resolve (#581).
+    pub(crate) fn mark_unknown(&mut self) {
+        self.saw_unknown = true;
+    }
+
     pub(crate) fn unsolved(&self) -> Vec<(Origin, Span)> {
         self.slots
             .iter()
@@ -537,7 +560,7 @@ pub(super) fn combine(a: &Ty, b: &Ty, join: bool, kinds: &KindLabels) -> Ty {
     let label = if join { la.join(&lb) } else { la.meet(&lb) };
     let base = match (a.unlabeled(), b.unlabeled()) {
         (Ty::Never, other) | (other, Ty::Never) => return other.clone().with_label(&label),
-        (Ty::Error, _) | (_, Ty::Error) => return Ty::Error,
+        (Ty::Error(_), _) | (_, Ty::Error(_)) => return Ty::error(),
         // A child that comes out as either side's child is that child's node: a join often
         // gives back `b`, as when `a` is `b` without its labels (ADR 0077 stage 3a, R-1).
         (Ty::List(x), Ty::List(y)) => Ty::List(either(x, y, combine(x, y, join, kinds))),
@@ -685,8 +708,8 @@ mod tests {
         let a = vars.fresh(Origin::Element, span());
         assert!(vars.unify(&a, &Ty::Never));
         assert_eq!(vars.unsolved().len(), 1);
-        assert!(vars.unify(&Ty::Error, &Ty::Text));
-        assert!(vars.unify(&a, &Ty::Error));
+        assert!(vars.unify(&Ty::error(), &Ty::Text));
+        assert!(vars.unify(&a, &Ty::error()));
         assert!(vars.unsolved().is_empty());
     }
 

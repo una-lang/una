@@ -51,10 +51,10 @@ impl<'a> Checker<'_, 'a, '_> {
             return ty.with_label(&top);
         }
         match resolved {
-            Ty::Error | Ty::Never => return Ty::Error,
+            Ty::Error(_) | Ty::Never => return Ty::error(),
             Ty::Var(_) => {
                 self.unknown_type(target.span);
-                return Ty::Error;
+                return Ty::error();
             }
             _ => {}
         }
@@ -72,11 +72,11 @@ impl<'a> Checker<'_, 'a, '_> {
                         count(params, "argument")
                     ),
                 );
-                Ty::Error
+                Ty::error()
             }
             _ => {
                 self.unknown_member(&resolved, name, false);
-                Ty::Error
+                Ty::error()
             }
         }
     }
@@ -201,12 +201,12 @@ impl<'a> Checker<'_, 'a, '_> {
             }
             _ => {
                 match resolved {
-                    Ty::Error | Ty::Never => {}
+                    Ty::Error(_) | Ty::Never => {}
                     Ty::Var(_) => self.unknown_type(target.span),
                     _ => self.unknown_member(&resolved, name, true),
                 }
                 self.unchecked(args);
-                Ty::Error
+                Ty::error()
             }
         }
     }
@@ -223,6 +223,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// nothing about its parameters, which only the missing callee could type (ADR 0096
     /// rule 8). Every other unchecked call keeps U2010.
     fn unchecked_unknown(&mut self, args: &[Arg]) {
+        self.vars.mark_unknown();
         for arg in args {
             self.unknown_callee_argument = matches!(arg.value.kind, ExprKind::Lambda { .. });
             self.expr(&arg.value, None);
@@ -264,12 +265,12 @@ impl<'a> Checker<'_, 'a, '_> {
                             ),
                         );
                         self.unchecked(args);
-                        Ty::Error
+                        Ty::error()
                     }
                     // An unknown name is U1001, reported by M3, or a poisoned name.
                     _ => {
                         self.unchecked_unknown(args);
-                        Ty::Error
+                        Ty::unknown()
                     }
                 }
             }
@@ -305,16 +306,16 @@ impl<'a> Checker<'_, 'a, '_> {
             Ty::Fn(function) => (*function).clone(),
             Ty::Labeled(..) => {
                 self.unchecked(args);
-                return Ty::Error;
+                return Ty::error();
             }
-            Ty::Error | Ty::Never => {
+            Ty::Error(_) | Ty::Never => {
                 self.unchecked(args);
-                return Ty::Error;
+                return Ty::error();
             }
             Ty::Var(_) => {
                 self.unknown_type(span);
                 self.unchecked(args);
-                return Ty::Error;
+                return Ty::error();
             }
             other => {
                 let shown = self.show(&other);
@@ -324,7 +325,7 @@ impl<'a> Checker<'_, 'a, '_> {
                     format!("{what} is not a function; it has type `{shown}`"),
                 );
                 self.unchecked(args);
-                return Ty::Error;
+                return Ty::error();
             }
         };
         for arg in args {
@@ -522,7 +523,7 @@ impl<'a> Checker<'_, 'a, '_> {
         site: Site,
     ) -> Ty {
         let Some(def) = self.env.functions.get(id).cloned() else {
-            return Ty::Error;
+            return Ty::error();
         };
         let callee = match def.kind {
             FnKind::Function => format!("`{}`", def.name),
@@ -786,7 +787,7 @@ impl<'a> Checker<'_, 'a, '_> {
     /// somewhere (`spec/10 §5`, generic instantiation): raised as a call raises it.
     pub(crate) fn generic_value_result(&self, id: usize, args: &[Ty]) -> Ty {
         let Some(def) = self.env.functions.get(id) else {
-            return Ty::Error;
+            return Ty::error();
         };
         let result = def.result.base.substitute(args);
         self.generic_result(id, def, args, result)
@@ -1042,7 +1043,7 @@ impl<'a> Checker<'_, 'a, '_> {
         span: Span,
     ) -> Ty {
         let from = def.params.first().map(|p| p.ty.clone());
-        let expected = from.as_ref().map_or(Ty::Error, |from| from.base.clone());
+        let expected = from.as_ref().map_or(Ty::error(), |from| from.base.clone());
         // The one argument, or the receiver, is the `from` value.
         self.ordered(span, vec![Some(0)]);
         let origin = def
@@ -1145,8 +1146,11 @@ impl<'a> Checker<'_, 'a, '_> {
             {
                 self.pending_ops.insert(span, (name, op_name.to_owned()));
             }
-            self.unchecked(args);
-            return Ty::Error;
+            // The binding names a capability that does not resolve (U1001), or no binding
+            // holds `@cap` (U3001): either way the package is rejected, and what this unknown
+            // operation leaves unsolved is not reported (#581).
+            self.unchecked_unknown(args);
+            return Ty::unknown();
         };
         let Some(def) = capability.ops.iter().find(|o| o.name == op_name).cloned() else {
             let names: Vec<&str> = capability.ops.iter().map(|o| o.name).collect();
@@ -1167,7 +1171,7 @@ impl<'a> Checker<'_, 'a, '_> {
             }
             self.report.push(diagnostic);
             self.unchecked(args);
-            return Ty::Error;
+            return Ty::error();
         };
         if let Some((capability_id, _)) = self.op_index(cap_name, op_name) {
             self.resolved(
@@ -1686,7 +1690,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 format!("type parameter `{name}` is not a constructor"),
             );
             self.unchecked(args);
-            return Ty::Error;
+            return Ty::error();
         }
         let problem = match self.choose_upper(ident, expected) {
             Some(Entity::Variant(kind, index)) => {
@@ -1734,14 +1738,19 @@ impl<'a> Checker<'_, 'a, '_> {
                 format!("`{name}` is a type, not a constructor")
             }
             Some(Entity::Capability(_)) => format!("capability `{name}` is not a value"),
-            Some(Entity::Function(_) | Entity::Handler(_)) | None => {
+            Some(Entity::Function(_) | Entity::Handler(_)) => {
                 self.unchecked(args);
-                return Ty::Error;
+                return Ty::error();
+            }
+            // An unknown or ambiguous name: U1001 (#581).
+            None => {
+                self.unchecked_unknown(args);
+                return Ty::unknown();
             }
         };
         self.report.error(Code::U2001, ident.span, problem);
         self.unchecked(args);
-        Ty::Error
+        Ty::error()
     }
 
     /// The type arguments `targs` of a constructor of `kind` take the arguments of the
@@ -2170,10 +2179,10 @@ fn fn_problem(expected: &Ty, found: &Ty, flipped: bool) -> Option<(FnProblem, bo
                 return Some((FnProblem::Uses(need.clone()), flipped));
             }
             if let Some(kind) = &f.fails
-                && *kind != Ty::Error
+                && *kind != Ty::error()
                 && e.fails
                     .as_ref()
-                    .is_none_or(|allowed| allowed != kind && *allowed != Ty::Error)
+                    .is_none_or(|allowed| allowed != kind && *allowed != Ty::error())
             {
                 return Some((FnProblem::Fails(kind.clone()), flipped));
             }

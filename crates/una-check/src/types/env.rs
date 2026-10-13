@@ -1408,7 +1408,7 @@ impl<'a> Env<'a> {
         let name = self.text(module, ident.name);
         let problem = match self.upper(module, name).first() {
             // Unknown names are U1001, reported by M3.
-            None => return Ty::Error,
+            None => return Ty::unknown(),
             Some(Entity::Kind(id)) => match self.kinds.get(*id) {
                 Some(kind) if kind.is_sum() && kind.params.is_empty() => {
                     return Ty::Kind(*id, Vec::new().into());
@@ -1423,7 +1423,7 @@ impl<'a> Env<'a> {
         if self.reports(module) {
             report.error(Code::U2002, ident.span, problem);
         }
-        Ty::Error
+        Ty::error()
     }
 
     /// Lowers the base of an alias; an alias reached again while its own base is lowered is
@@ -1582,7 +1582,7 @@ impl<'a> Env<'a> {
             }
             if matches!(
                 declared.base.unlabeled(),
-                Ty::Int | Ty::Fixed(_) | Ty::Error
+                Ty::Int | Ty::Fixed(_) | Ty::Error(_)
             ) {
                 let bound = |i: &una_syntax::ast::SignedInt| {
                     format!("{}{}", if i.negative { "-" } else { "" }, i.digits)
@@ -1779,12 +1779,12 @@ impl<'a> Env<'a> {
                     Builtin::Unit => Ty::Unit,
                     Builtin::Hashed => Ty::Hashed,
                     Builtin::List => {
-                        Ty::List(Shared::new(bases.into_iter().next().unwrap_or(Ty::Error)))
+                        Ty::List(Shared::new(bases.into_iter().next().unwrap_or(Ty::error())))
                     }
                     Builtin::Map => {
                         let mut bases = bases.into_iter();
-                        let key = bases.next().unwrap_or(Ty::Error);
-                        let value = bases.next().unwrap_or(Ty::Error);
+                        let key = bases.next().unwrap_or(Ty::error());
+                        let value = bases.next().unwrap_or(Ty::error());
                         if reports {
                             self.map_keys.push(MapKey {
                                 key: key.clone(),
@@ -1821,7 +1821,8 @@ impl<'a> Env<'a> {
                 format!("`{name}` is a capability, not a type; capabilities are not values")
             }
             // Unknown names are U1001, reported by M3.
-            Some(Entity::Function(_) | Entity::Handler(_)) | None => return Declared::error(),
+            None => return Declared::unknown(),
+            Some(Entity::Function(_) | Entity::Handler(_)) => return Declared::error(),
         };
         if reports {
             report.error(Code::U2002, ident.span, problem);

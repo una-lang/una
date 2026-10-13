@@ -505,7 +505,7 @@ impl Checker<'_, '_, '_> {
                 };
                 self.report.error(Code::U2012, span, message.to_owned());
                 self.expr(inner, None);
-                Ty::Error
+                Ty::error()
             }
         }
     }

@@ -192,3 +192,7 @@ Two rows of rule 3's table are narrowed, since their rewrite can change what run
 - **`if c then x else` at the end of a line, the chain continued at the same indentation.** The rest of the block becomes the `else` branch only under the same condition, that `x` is `fail` of a variant. An `else` followed by a deeper indented block keeps its edit: the indentation already delimits the branch.
 
 The table's other rows were checked against the same question: can the edit change what the program does, when the result then checks clean? Their edits only move tokens into the layout Una reads, or rename a binding to a name visible nowhere it is written. This narrows the decision and needs no new acceptance.
+
+## Note (2026-10-13): dependents report their own name and type errors again
+
+The amendment "a dependent reports only its syntax" (2026-10-12) is relaxed. #581 closed the cascades it worked around at the source. An unresolved name now reports one diagnostic, at the reference: an inference variable, a lambda parameter or an ordering that only the missing name could have typed reports nothing (`compiler/architecture.md §5`). Rule 9 holds as first written: a dependent withholds its effect, flow and canonical-form diagnostics. It also withholds a U1001 or U1006 at a poisoned name, which type checking reports for a variant or a method-syntax call that name resolution leaves alone. The tests of rules 8 and 14 pass without the amendment. This widens what a rejected package reports, never what is accepted, so no new acceptance is needed.

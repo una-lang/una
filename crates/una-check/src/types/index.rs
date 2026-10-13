@@ -123,7 +123,7 @@ pub(crate) fn build(env: &Env<'_>, findings: &Findings) -> Index {
     });
     let mut snapshots = Snapshots::default();
     for (span, ty) in &records.types {
-        if matches!(ty, Ty::Error) {
+        if matches!(ty, Ty::Error(_)) {
             continue;
         }
         let hover = Hover::new(snapshots.of(ty), params_at(*span), Arc::clone(&names));

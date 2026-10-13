@@ -276,6 +276,8 @@ pub(crate) fn withhold(diagnostics: &mut Vec<Diagnostic>, modules: &[ModuleText<
     if queue.is_empty() && unnamed.is_empty() {
         return;
     }
+    // The names the broken declarations would have declared.
+    let poisoned: BTreeSet<&str> = queue.iter().map(|(_, name)| *name).collect();
     // The modules that may name a name of a module with an unnamed broken declaration: that
     // module, and every module importing from it. One pass over the modules, not per node.
     let reaches_unnamed: Vec<bool> = modules
@@ -336,10 +338,19 @@ pub(crate) fn withhold(diagnostics: &mut Vec<Diagnostic>, modules: &[ModuleText<
         })
         .collect();
     diagnostics.retain(|diagnostic| {
-        // ADR 0096 amendment (2026-10-12, dependents): a dependent keeps only its syntax
-        // diagnostics, since the error type does not absorb every cascade (a variant of a
-        // broken kind, a generic call whose argument is unknown).
-        if diagnostic.code.as_str().starts_with("U0") {
+        // Rule 9: a dependent withholds its effect, flow and canonical-form diagnostics, which
+        // read a header that the broken callee leaves incomplete. Its name and type
+        // diagnostics stay, since an unknown name reports nothing beyond U1001 (#581, which
+        // relaxes the ADR 0096 amendment of 2026-10-12).
+        let code = diagnostic.code.as_str();
+        // A U1001 at a poisoned name, which type checking reports for a variant or a
+        // method-syntax call where name resolution has none, and U1006 at a poisoned
+        // requirement, are withheld too (rule 8).
+        let at_poisoned = matches!(code, "U1001" | "U1006")
+            && poisoned
+                .iter()
+                .any(|name| diagnostic.message.contains(&format!("`{name}`")));
+        if !(code.starts_with("U3") || code.starts_with("U4") || code == "U7001" || at_poisoned) {
             return true;
         }
         // `last_line` is exclusive: just past the declaration's last line that is not blank.

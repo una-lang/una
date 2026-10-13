@@ -691,6 +691,9 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                         call.name.span,
                         format!("`{name}` is not a handler; `with` and `given` install handlers"),
                     );
+                } else if other.is_none() {
+                    // An unknown handler (#581): its arguments' inference is not reported.
+                    self.vars.mark_unknown();
                 }
                 for arg in &call.args {
                     self.expr(&arg.value, None);
@@ -877,7 +880,8 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 }
             }
         }
-        if report.count() != started {
+        // An unknown name (#581) leaves its variables unsolved: U1001 is its one diagnostic.
+        if report.count() != started || vars.saw_unknown() {
             return;
         }
         let mut seen: Vec<Span> = Vec::new();
@@ -1062,7 +1066,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         for param in &def.params {
             self.bind(param.name, param.ty.base.clone());
         }
-        if !matches!(def.result.base.unlabeled(), Ty::Bool | Ty::Error) {
+        if !matches!(def.result.base.unlabeled(), Ty::Bool | Ty::Error(_)) {
             // A predicate returns `Bool`.
             let found = self.show(&def.result.base);
             self.report.error(
@@ -1183,7 +1187,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         let from = def
             .params
             .first()
-            .map_or_else(|| Declared::plain(Ty::Error), |p| p.ty.clone());
+            .map_or_else(|| Declared::plain(Ty::error()), |p| p.ty.clone());
         let to = def.result.clone();
         let fits = target.kind == FnKind::Function
             && target.type_params.is_empty()
@@ -1323,6 +1327,11 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             .capability
             .and_then(|capability| self.env.capabilities.get(capability))
             .cloned();
+        // A handler `for` a name that does not resolve (#581): its operations' signatures are
+        // unknown, so what inference leaves unsolved in their bodies is not reported.
+        if capability.is_none() {
+            self.vars.mark_unknown();
+        }
         for op in &handler.ops {
             let mark = self.locals.len();
             for param in &def.params {
@@ -1346,7 +1355,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 let raise = if carried(index) { &top } else { &accepts };
                 let ty = op_def
                     .and_then(|o| o.params.get(index))
-                    .map_or(Ty::Error, |p| p.ty.base.raise_deep(raise));
+                    .map_or(Ty::error(), |p| p.ty.base.raise_deep(raise));
                 self.bind(self.name(param), ty);
             }
             let module = capability.as_ref().map_or(0, |c| c.module);
@@ -1611,7 +1620,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
     fn expected_failure(&mut self, variant: &Ident, fails: &[Ty], action: &Ty) {
         let name = self.name(variant);
         if fails.is_empty() {
-            if self.resolve(action) == Ty::Error {
+            if self.resolve(action) == Ty::error() {
                 return;
             }
             let mut diagnostic = self.report.make(
@@ -1629,7 +1638,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             Ty::Kind(id, _) => self.variant_index(id, name).is_some(),
             _ => false,
         });
-        if in_kind || fails.iter().any(|kind| self.resolve(kind) == Ty::Error) {
+        if in_kind || fails.iter().any(|kind| self.resolve(kind) == Ty::error()) {
             return;
         }
         let kinds: Vec<String> = fails
