@@ -104,6 +104,7 @@ Further rules:
 
 - **One call, not a block.** `attempt` covers a single call; a sequence of fallible calls takes one `attempt` or one clause each (`spec/06 §3, §5`).
 - **Labeled failures.** When a failure is decided by labeled data, the `Result` carries that label. This holds for the requests of `Http` and the failure of a policy call whose `to` label is above `public` (`spec/07 §7` rule 4, `spec/07 §5` rule 6). Branching on it raises the program counter, under which a `fail` is U4002 (`spec/07 §3` rule 3).
+- **An operand that cannot fail.** `attempt` of a call that cannot fail is currently accepted, and the error type of its `Result` is then not constrained. The specification does not yet decide this case (#602).
 - **Alternative.** To convert, propagate or recover at the line itself, use a handling clause. See [`if error` and `if none`](if-error.md).
 
 ## Diagnostics
