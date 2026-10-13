@@ -955,6 +955,59 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         }
     }
 
+    /// The conditions of a locked clause of `def` (ADR 0092 rule 8, as amended): each a `Bool`
+    /// in the refinement language over the function's current parameters, as a header's are,
+    /// or U7002 at the lock entry; a lock condition is never ignored. Each one on an operation
+    /// that the header grants is a `contract_lock` obligation there.
+    fn lock_conditions(&mut self, def: &super::env::FnDef<'a>, entry: &super::lock::Entry<'a>) {
+        let ops = &entry.clause.cap_type.ops;
+        for (op, condition) in ops.iter().zip(&entry.clause.cap_type.conditions) {
+            let Some(condition) = condition else {
+                continue;
+            };
+            let mark = self.report.count();
+            let seen = self.vars.swap_unknown(false);
+            let ctx = Ctx {
+                rl: Rl::Clause,
+                labels: false,
+                op_condition: true,
+                ..Ctx::plain()
+            };
+            self.within(ctx, |checker| {
+                checker.condition(condition, "an operation's condition")
+            });
+            let unknown = self.vars.swap_unknown(seen);
+            let found: Vec<una_diag::Diagnostic> = self.report.diagnostics.split_off(mark);
+            let op_name = self.name(op).to_owned();
+            if unknown || !found.is_empty() {
+                let reason = found.first().map_or_else(
+                    || {
+                        format!(
+                            "it names something that is not a parameter of `{}`",
+                            def.name
+                        )
+                    },
+                    |diagnostic| diagnostic.message.clone(),
+                );
+                self.report.error(
+                    Code::U7002,
+                    entry.span,
+                    format!(
+                        "the lock of `{}` conditions `{op_name}` by `{}`, which is not a `Bool` of the refinement language over its parameters: {reason}",
+                        def.name,
+                        self.report.text(condition.span)
+                    ),
+                );
+                continue;
+            }
+            if self.pass == Pass::Check
+                && let Some((at, _)) = super::lock::header_site(self.env, def, entry, &op_name)
+            {
+                self.obligation(ObligationKind::ContractLock, at, None);
+            }
+        }
+    }
+
     /// The `where` predicate of an alias kind: `Bool`, in the refinement language, over `it`.
     fn refinement(&mut self, id: usize) {
         let Some(alias) = self.env.aliases.get(id) else {
@@ -1033,6 +1086,11 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 | ClauseKind::UsesOf(_)
                 | ClauseKind::FailsOf(_)
                 | ClauseKind::DerivedFrom(_) => {}
+            }
+        }
+        if let Some(entries) = self.env.locks.get(&id).cloned() {
+            for entry in &entries {
+                self.lock_conditions(&def, entry);
             }
         }
         self.base = base;

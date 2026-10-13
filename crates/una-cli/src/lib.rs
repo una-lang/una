@@ -32,7 +32,7 @@ use una_check::{
 };
 use una_diag::{Code, Diagnostic, render_human, render_json};
 use una_syntax::ast::File;
-use una_syntax::{FileId, Interner, KeywordSet, Lexed, SourceDb, lex_in, parse};
+use una_syntax::{FileId, Interner, KeywordSet, Lexed, SourceDb, Span, lex_in, parse};
 
 use crate::args::{Cli, ColorChoice, Command, TierArg};
 pub use crate::package::{LoadError, Package, load};
@@ -199,6 +199,7 @@ fn analyze_and(
         (Some(grants), Some(entry)) => Some(RunInput { entry, grants }),
         _ => None,
     };
+    let locks = locks(package, &manifest, &mut interner);
     let input = PackageInput {
         sources: &package.sources,
         interner: &interner,
@@ -215,6 +216,7 @@ fn analyze_and(
         settings: &manifest,
         run,
         earlier_errors: false,
+        locks: &locks,
     };
     let (names, references) = if poison.is_empty() {
         una_check::check_names_indexed(&input)
@@ -257,6 +259,57 @@ fn analyze_and(
         file_state: types.file_state,
     };
     (analysis, rejected)
+}
+
+/// The locked functions of `[contracts]`, each clause parsed where its string is written
+/// (ADR 0092 rule 8, as amended). A string with escapes is parsed from its value, at the
+/// position of its first character.
+fn locks(
+    package: &Package,
+    manifest: &una_project::Manifest,
+    interner: &mut Interner,
+) -> Vec<una_check::Lock> {
+    let Some(file) = package.manifest else {
+        return Vec::new();
+    };
+    manifest
+        .contracts
+        .iter()
+        .map(|contract| una_check::Lock {
+            function: contract.function.value.clone(),
+            key: Span::new(
+                file,
+                contract.function.range.start,
+                contract.function.range.end,
+            ),
+            clauses: contract
+                .clauses
+                .iter()
+                .map(|clause| {
+                    // Past the opening quote of a basic or literal string.
+                    let offset = clause.range.start + 1;
+                    una_check::LockClause {
+                        span: Span::new(file, clause.range.start, clause.range.end),
+                        parsed: una_syntax::parse_uses_clause(
+                            &clause.value,
+                            file,
+                            offset,
+                            interner,
+                        )
+                        .map_err(|errors| {
+                            errors.into_iter().next().unwrap_or_else(|| {
+                                una_syntax::SyntaxError::new(
+                                    una_diag::Code::U0101,
+                                    Span::new(file, clause.range.start, clause.range.end),
+                                    "the clause does not parse",
+                                )
+                            })
+                        }),
+                    }
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 /// ADR 0096 rule 9, as amended: drops every diagnostic but syntax of the declarations that

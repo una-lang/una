@@ -21,8 +21,8 @@ use serde_json::Value;
 /// An edition `0.2` package whose output in edition `0.3` differs by design, because of a rule
 /// that targets edition `0.3` (`spec/13 §7`).
 enum Difference {
-    /// The package writes a construct that the rule adds and edition `0.2` rejects as a syntax
-    /// error. The construct only narrows what a program may do, so erasing it gives a program
+    /// The package writes a construct that the rule adds and edition `0.2` rejects, as a syntax
+    /// error or an unknown table of `una.toml`. The construct only narrows what a program may do, so erasing it gives a program
     /// that edition `0.2` accepts: the twin.
     Syntax {
         /// The package, relative to `tests/conformance`.
@@ -34,8 +34,9 @@ enum Difference {
         edition_0_3: &'static [&'static str],
         /// The same package with the construct erased, relative to `tests/conformance`.
         twin: &'static str,
-        /// The text whose removal from the case's source gives the twin's source.
-        erased: &'static str,
+        /// The file, relative to the package, and the text whose removal from it gives the
+        /// twin; every other file is the same.
+        erased: (&'static str, &'static str),
     },
     /// The rule only adds errors: the diagnostics document of edition `0.3` is that of edition
     /// `0.2` with exactly these diagnostics added, each a code and `file:line:col`.
@@ -73,7 +74,18 @@ const EXPECTED_DIFFERENCES: &[Difference] = &[
         edition_0_2: ("U0101", "src/main.una:10:24"),
         edition_0_3: &["proven at src/main.una:13:5"],
         twin: "authority/op_condition_edition_0_2_erased",
-        erased: " where not dry_run",
+        erased: ("src/main.una", " where not dry_run"),
+    },
+    // ADR 0092 rule 8: a lock of `[contracts]`, an unknown table before edition 0.3.
+    Difference::Syntax {
+        case: "authority/contracts_edition_0_2",
+        edition_0_2: ("U7002", "una.toml:6:2"),
+        edition_0_3: &[],
+        twin: "authority/contracts_edition_0_2_erased",
+        erased: (
+            "una.toml",
+            "\n[contracts]\n\"main.update\" = [\"@catalog: Catalog[price]\"]\n",
+        ),
     },
     // ADR 0100 rule 2: `attempt` of a call that cannot fail.
     Difference::Stricter {
@@ -295,14 +307,36 @@ fn location(at: &Value) -> String {
     format!("{file}:{}:{}", start["line"], start["col"])
 }
 
-/// The source of a package's `src/main.una` without its leading comment lines.
-fn program(package: &Path) -> String {
-    std::fs::read_to_string(package.join("src/main.una"))
-        .unwrap()
-        .lines()
-        .skip_while(|line| line.starts_with("--"))
-        .collect::<Vec<_>>()
-        .join("\n")
+/// Every file of a package by its path relative to the package, a module without its leading
+/// comment lines, which state the test.
+fn package_files(package: &Path) -> std::collections::BTreeMap<String, String> {
+    fn walk(root: &Path, dir: &Path, out: &mut std::collections::BTreeMap<String, String>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(root, &path, out);
+                continue;
+            }
+            let name = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            let text = std::fs::read_to_string(&path).unwrap();
+            let text = if name.ends_with(".una") {
+                text.lines()
+                    .skip_while(|line| line.starts_with("--"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            } else {
+                text
+            };
+            out.insert(name, text);
+        }
+    }
+    let mut out = std::collections::BTreeMap::new();
+    walk(package, package, &mut out);
+    out
 }
 
 /// The code and `file:line:col` of each diagnostic of a diagnostics document.
@@ -341,7 +375,7 @@ fn every_expected_difference_is_exact() {
                 *edition_0_2,
                 edition_0_3,
                 twin,
-                erased,
+                *erased,
             ),
             Difference::Stricter { case, edition_0_3 } => {
                 stricter(&root, &scratch, case, edition_0_3);
@@ -360,7 +394,7 @@ fn syntax(
     edition_0_2: (&str, &str),
     edition_0_3: &[&str],
     twin_name: &str,
-    erased: &str,
+    erased: (&str, &str),
 ) {
     let case = root.join(name);
     let twin = root.join(twin_name);
@@ -398,15 +432,18 @@ fn syntax(
         .collect();
     assert_eq!(found, edition_0_3, "{name} as edition 0.3");
 
-    // The twin is the case with the construct erased.
-    assert!(
-        program(&case).contains(erased),
-        "{name}: `{erased}` is not in its source"
-    );
+    // The twin is the case with the construct erased, and every other file the same.
+    let (file, text) = erased;
+    let mut files = package_files(&case);
+    let Some(source) = files.get_mut(file) else {
+        panic!("{name} has no file {file}");
+    };
+    assert!(source.contains(text), "{name}: `{text}` is not in {file}");
+    *source = source.replacen(text, "", 1);
     assert_eq!(
-        program(&case).replacen(erased, "", 1),
-        program(&twin),
-        "{twin_name} is not {name} with `{erased}` erased"
+        files,
+        package_files(&twin),
+        "{twin_name} is not {name} with `{text}` erased from {file}"
     );
 
     // Edition 0.2 accepts the twin, and edition 0.3 checks it the same, with no obligation of

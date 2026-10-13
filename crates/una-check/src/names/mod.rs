@@ -45,6 +45,29 @@ pub struct PackageInput<'a> {
     /// Whether the package has an error that the type check does not see: a syntax, manifest
     /// or name error. Edition 0.3's U3025 and U3026 wait for them (ADR 0100 rule 4).
     pub earlier_errors: bool,
+    /// The locked functions of `una.toml`'s `[contracts]`, edition 0.3 (ADR 0092 rule 8, as
+    /// amended), with their clauses parsed.
+    pub locks: &'a [Lock],
+}
+
+/// A locked function of `[contracts]` (ADR 0092 rule 8, as amended).
+#[derive(Clone, Debug)]
+pub struct Lock {
+    /// The function's qualified name, as the key writes it.
+    pub function: String,
+    /// Where the key is written in `una.toml`.
+    pub key: Span,
+    /// The locked `uses` clauses.
+    pub clauses: Vec<LockClause>,
+}
+
+/// A locked `uses` clause of `[contracts]`.
+#[derive(Clone, Debug)]
+pub struct LockClause {
+    /// Where its string is written in `una.toml`.
+    pub span: Span,
+    /// The clause, or the first syntax error of its text.
+    pub parsed: Result<una_syntax::ast::UsesClause, una_syntax::SyntaxError>,
 }
 
 /// What `una run` adds to a check: the module whose `main` runs, and the grants of

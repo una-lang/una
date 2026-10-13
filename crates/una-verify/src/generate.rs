@@ -141,6 +141,9 @@ pub enum EffectAt {
     With(String),
     /// A call of a function value, whose type has no conditions.
     Value,
+    /// A `contract_lock` obligation: the header of the named function against its lock in
+    /// `una.toml` (ADR 0092 rule 8, as amended).
+    Lock(String),
 }
 
 /// The kind of declaration that encloses an obligation.
@@ -990,6 +993,11 @@ impl<'p, 'i> Walker<'p, 'i> {
             if let Some(f) = self.term(&clause.term, &env) {
                 ctx.assume(f.f);
             }
+        }
+        // ADR 0092 rule 8, as amended: the header's condition on each locked operation implies
+        // the lock's, over the parameters on entry.
+        for lock in &fun.locks {
+            self.contract_lock(&ctx, &fun.name, lock);
         }
         let mut leaves = Vec::new();
         self.forget_loops();
@@ -3665,6 +3673,54 @@ impl<'p, 'i> Walker<'p, 'i> {
         );
     }
 
+    /// The `contract_lock` obligation of `lock` in the function `name`: `C_src ⇒ C_lock`, or
+    /// `C_lock` when the header writes no condition (ADR 0092 rule 8, as amended).
+    fn contract_lock(&mut self, ctx: &Ctx, name: &str, lock: &'p una_core::Lock) {
+        let (locked, header) = {
+            let vars = |name: &str| Some(own(ctx, name));
+            let env = Env {
+                vars: &vars,
+                it: None,
+                result: None,
+            };
+            let locked = self.term(&lock.lock.term, &env).map(|tv| tv.f);
+            let header = lock
+                .header
+                .as_ref()
+                .and_then(|clause| self.term(&clause.term, &env))
+                .map(|tv| tv.f);
+            (locked, header)
+        };
+        // A lock condition outside the encoding is no goal that holds: the query keeps `not
+        // false` and is refuted, never silently proven. A header condition outside it is
+        // dropped, which only strengthens the goal.
+        let goal = match header {
+            Some(premise) => locked.map(|c| F::op("=>", vec![premise, c])),
+            None => locked,
+        };
+        let mut assertions: Vec<F> = ctx.hyps.iter().map(|h| h.f.clone()).collect();
+        let mut place = self.place(ObligationKind::ContractLock, goal.as_ref());
+        place.effect = Some(Effect {
+            operation: format!("@{}.{}", lock.cap, lock.op),
+            condition: lock.lock.text.clone(),
+            at: EffectAt::Lock(name.to_owned()),
+        });
+        assertions.push(F::not(goal.unwrap_or(F::Bool(false))));
+        let hypotheses = self.shown_hypotheses(&ctx.hyps);
+        self.push(
+            ObligationKind::ContractLock,
+            lock.lock.text.clone(),
+            lock.at,
+            Some((lock.entry, "lock")),
+            Vec::new(),
+            hypotheses,
+            assertions,
+            ctx,
+            place,
+            vec![ctx.divisions.to_vec()],
+        );
+    }
+
     /// Every condition of the declaration walked, charged at `span` with no premise: for a
     /// site whose effects cannot be bounded to some bindings, such as a call of a `uses of`
     /// parameter, whose argument may run any of them (ADR 0092 rule 3, as amended).
@@ -5334,6 +5390,7 @@ mod tests {
             result: int(),
             uses: Vec::new(),
             uses_of: Vec::new(),
+            locks: Vec::new(),
             fails: None,
             error: None,
             requires: requires.into_iter().map(clause).collect(),

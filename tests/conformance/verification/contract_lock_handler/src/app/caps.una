@@ -1,0 +1,7 @@
+module app.caps
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub capability Store
+  op put(n: Int) -> Unit

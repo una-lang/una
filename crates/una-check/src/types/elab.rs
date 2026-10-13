@@ -20,7 +20,7 @@ use una_syntax::ast::{
 use una_syntax::{SourceDb, Span};
 
 use super::Findings;
-use super::env::{Constraint, Entity, Env, FnAst, FnKind, Need};
+use super::env::{Constraint, Entity, Env, FnAst, FnDef, FnKind, Need};
 use super::records::{Records, Res};
 use super::ty::{Declared, FnUse, Refinement, Ty};
 
@@ -633,6 +633,36 @@ impl<'e, 'a> Fx<'e, 'a> {
         uses
     }
 
+    /// The locked conditions of function `id` on the operations its header grants, lowered
+    /// over the parameters in scope, with the header's own (ADR 0092 rule 8, as amended).
+    fn locks(&mut self, id: usize, def: &FnDef<'a>) -> Vec<una_core::Lock> {
+        let Some(entries) = self.env.locks.get(&id).cloned() else {
+            return Vec::new();
+        };
+        let mut locks = Vec::new();
+        for entry in &entries {
+            let ops = &entry.clause.cap_type.ops;
+            for (op, condition) in ops.iter().zip(&entry.clause.cap_type.conditions) {
+                let Some(condition) = condition else {
+                    continue;
+                };
+                let op = self.name(op).to_owned();
+                let Some((at, header)) = super::lock::header_site(self.env, def, entry, &op) else {
+                    continue;
+                };
+                locks.push(una_core::Lock {
+                    cap: entry.binding.to_owned(),
+                    header: header.map(|header| self.clause(header)),
+                    lock: self.clause(condition),
+                    op,
+                    at,
+                    entry: entry.span,
+                });
+            }
+        }
+        locks
+    }
+
     fn needs(&self, needs: &[Need]) -> Vec<Use> {
         let uses: Vec<FnUse> = needs.iter().map(|n| n.usage.clone()).collect();
         self.uses_of(&uses)
@@ -1070,6 +1100,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     .iter()
                     .filter_map(|&index| params.get(index).map(|(name, _)| name.clone()))
                     .collect();
+                let locks = self.locks(id, def);
                 Decl::Fun(Box::new(Fun {
                     name: def.name.to_owned(),
                     type_params: def.type_params.iter().map(|p| (*p).to_owned()).collect(),
@@ -1078,6 +1109,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     result,
                     uses,
                     uses_of,
+                    locks,
                     fails: def.fails.as_ref().map(|f| self.kind_name(f)),
                     error: def.fails.as_ref().and_then(|f| self.kind_path(f)),
                     requires,

@@ -227,6 +227,24 @@ pub struct Use {
     pub conds: Vec<(String, Clause)>,
 }
 
+/// A locked condition of a function's operation (ADR 0092 rule 8, as amended): the header's
+/// condition on the operation must imply it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Lock {
+    /// The binding, without `@`.
+    pub cap: Name,
+    /// The operation.
+    pub op: String,
+    /// The condition the header writes on the operation, if any.
+    pub header: Option<Clause>,
+    /// The lock's condition.
+    pub lock: Clause,
+    /// Where the header grants the operation.
+    pub at: Span,
+    /// Where the lock entry is written in `una.toml`.
+    pub entry: Span,
+}
+
 /// A term of the refinement language (`spec/03 §3`): a tree over binders, `it` and
 /// `result`, since formulas are not A-normal.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1027,6 +1045,10 @@ pub struct Fun {
     /// run through the function's bindings: what the verifier charges where they are called
     /// or passed on (ADR 0092 rule 3). Not exported: `una core` derives nothing from it.
     pub uses_of: Vec<Name>,
+    /// The locked conditions of its operations, from `una.toml`'s `[contracts]` (ADR 0092
+    /// rule 8, as amended), each where the header grants the operation. Not exported: the lock
+    /// is the consumer's, not the function's.
+    pub locks: Vec<Lock>,
     /// The error kind.
     pub fails: Option<String>,
     /// The error kind's declaration, by its qualified identity (`spec/09 §3`), when it is

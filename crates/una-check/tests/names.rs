@@ -46,6 +46,7 @@ fn check(files: &[(&str, &str)], single: bool) -> Vec<String> {
         settings: &settings,
         run: None,
         earlier_errors: false,
+        locks: &[],
     };
     let mut diagnostics = check_names(&input);
     diagnostics.sort_by(|a, b| {

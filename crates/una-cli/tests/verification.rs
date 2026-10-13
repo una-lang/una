@@ -1959,6 +1959,70 @@ fn conditions_give_one_obligation_per_site_and_queries_linear_in_the_sites() {
     );
 }
 
+/// `n` locked public functions, each with one conditioned operation, and their `[contracts]`
+/// (ADR 0092 rule 8, as amended).
+fn locked_package(n: usize) -> PathBuf {
+    let mut source =
+        String::from("module locks\n\npub capability Log\n  op write(n: Int) -> Unit\n");
+    let mut contracts = String::from("\n[contracts]\n");
+    for i in 0..n {
+        source.push_str(&format!(
+            "\npub f{i}(dry: Bool) -> Unit\n  uses @log: Log[write where not dry]\n=\n  if not dry\n    @log.write({i})\n  unit\n"
+        ));
+        contracts.push_str(&format!(
+            "\"locks.f{i}\" = [\"@log: Log[write where not dry]\"]\n"
+        ));
+    }
+    let root = package_of_edition(&format!("locks-{n}"), "0.3", &[("src/locks.una", &source)]);
+    let manifest = root.join("una.toml");
+    let mut text = std::fs::read_to_string(&manifest).unwrap();
+    text.push_str(&contracts);
+    std::fs::write(&manifest, text).unwrap();
+    root
+}
+
+/// The `contract_lock` obligations of [`locked_package`] and the bytes of their queries.
+fn lock_obligations(n: usize) -> (usize, usize) {
+    let root = locked_package(n);
+    let (checked, obligations) = generated(&root);
+    assert_eq!(checked.diagnostics, [], "{n}");
+    let locks: Vec<&una_verify::Obligation> = obligations
+        .iter()
+        .filter(|o| o.kind == una_diag::ObligationKind::ContractLock)
+        .collect();
+    let text = std::fs::read_to_string(root.join("verification.lock")).unwrap();
+    let (lock, _) = una_project::parse_lock(&text);
+    let lock = una_verify::Lock {
+        text,
+        solver_version: lock.solver_version,
+        step_budget: lock.step_budget,
+        random_seed: lock.random_seed,
+    };
+    let owned: Vec<una_verify::Obligation> = locks.into_iter().cloned().collect();
+    let bytes = una_verify::queries(&owned, &lock)
+        .iter()
+        .map(String::len)
+        .sum();
+    let _ = std::fs::remove_dir_all(&root);
+    (owned.len(), bytes)
+}
+
+#[test]
+fn locks_give_one_obligation_per_locked_condition_and_grow_linearly() {
+    // ADR 0092 rule 8, as amended: one pass over the locks and the locked headers, and one
+    // `contract_lock` query per locked condition that the header grants. 8x the locked
+    // functions give exactly 8x the obligations and about 8x the query bytes.
+    let (small_locks, small) = lock_obligations(25);
+    let (large_locks, large) = lock_obligations(200);
+    assert_eq!((small_locks, large_locks), (25, 200));
+    let growth = large as f64 / small as f64;
+    eprintln!("8x the locked functions: {growth:.1}x the query bytes ({small}, {large})");
+    assert!(
+        growth < 12.0,
+        "8x the locked functions gave {growth:.1}x the query bytes"
+    );
+}
+
 /// Every `effect_condition` site of the conformance cases of ADR 0092, by case: the file, line
 /// and column of the site, and the conditioned operation. Proven sites are listed with refuted
 /// ones: the list is what the verifier must generate, no more and no less.

@@ -50,6 +50,7 @@ fn checked(n: usize) -> (Vec<String>, Duration) {
         settings: &settings,
         run: None,
         earlier_errors: false,
+        locks: &[],
     };
     assert!(check_names(&input).is_empty());
     let started = Instant::now();

@@ -341,6 +341,9 @@ pub(crate) struct Env<'a> {
     pub(crate) categories: Vec<String>,
     /// The `via` function of each policy, and the policy (`spec/07 §5`).
     pub(crate) vias: BTreeMap<usize, usize>,
+    /// The well-formed locked clauses of each locked function, by function (ADR 0092 rule 8,
+    /// as amended).
+    pub(crate) locks: BTreeMap<usize, Vec<super::lock::Entry<'a>>>,
     /// The labels that each kind's fields declare and the variance of its type parameters
     /// (re-review N-001, ADR 0046), computed once the signatures are lowered.
     pub(crate) kind_labels: Rc<KindLabels>,
@@ -463,6 +466,7 @@ impl<'a> Env<'a> {
             prelude: count,
             categories,
             vias: BTreeMap::new(),
+            locks: BTreeMap::new(),
             kind_labels: Rc::new(KindLabels::default()),
             edit_labels: BTreeMap::new(),
             edit_labels_seen: false,

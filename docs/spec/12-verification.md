@@ -50,6 +50,8 @@ Obligations are generated from Core IR by a traversal that maintains a **path co
 
 (v0.3, ADR 0092.) The kind `effect_condition` joins this table. It is generated where an operation conditioned by `where` (`spec/05 §3` rule 4) may run: at the operation, at a call of a named function or of a function value that receives the binding, and at a `with` that installs a handler using it. Its goal is ground: the condition, or the callee's condition implying it.
 
+(v0.3, ADR 0092 rule 8.) The kind `contract_lock` joins this table. It is generated for each operation that a function's lock in `una.toml` conditions by `C_lock` and that the header grants (`spec/05 §3` rule 5), at the operation in the header: its goal is `C_src ⇒ C_lock` over the parameters on entry, with `C_src` the header's condition, `true` when it writes none. Refuted, it is U3023; unknown, U5002.
+
 Each obligation is `Π ⊢ goal`, sent to the solver as the satisfiability check of `Π ∧ ¬goal`. An `ensures` clause, and the refinement of a declared result type, give one obligation over every normal return path, `Π ∧ (path₁ ∨ … ∨ pathₙ) ∧ ¬goal`, whose diagnostic points at the returned expression of the path the model takes; every other obligation belongs to one site.
 
 Besides the hypotheses above, a query holds ground facts for every term in it: `len ≥ 0`; `0 ≤ tag < n`; and the refinement of a record field applied to the field's term, under the tag of its variant for a sum. Constructors add their tag and field equations, list literals their length, and text literals their length (ADR 0033).

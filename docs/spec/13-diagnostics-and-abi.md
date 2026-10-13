@@ -188,6 +188,7 @@ Other diagnostics MAY include repairs (for example, a missing label with its mec
 | U3017 | authority | `of` clause that names no parameter |
 | U3018 | authority | `of` clause that names a parameter not of function type |
 | U3019 | authority | `of` clause that names a function type with its own `uses` or `fails` |
+| U3023 | authority | Header that grants more than its lock in `una.toml` |
 | U3025 | authority | `if error` clause on an expression that cannot fail |
 | U3026 | authority | `attempt` of a call that cannot fail |
 | U4001 | security | Flow to a lower label |
@@ -369,6 +370,7 @@ Commands take a file or a directory, `.` by default (ADR 0021):
 - `[trusted]`: `modules`, an array of module paths, each a module of the package whose header says `trusted module` (U7005).
 - `[escape_budget]`: `checked_per_module`, an integer of at least 0 (default 0).
 - `[run]`: `entry`, the path of a module of the package, and `grants`, an array of the grant specs of §5.
+- (v0.3, ADR 0092 rule 8 and its third amendment.) `[contracts]`, in edition `0.3` only: each key the qualified name of a public function of the package, each value an array of `uses` clauses written as a header writes them, operations listed in brackets, with `spec/05 §3` rule 4's conditions: `"pricing.update.update_prices" = ["@catalog: Catalog[price, set_price where not dry_run]"]`. A key that names no public function, an entry that does not parse or lists no operations, a binding locked twice, a capability that its name does not resolve to in the function's module, an operation the capability does not declare, and a condition that is not a `Bool` of the refinement language over the function's parameters are U7002 at the entry. `spec/05 §3` rule 5 checks the header against it. In editions `0.1` and `0.2`, `[contracts]` is an unknown table.
 
 A TOML syntax error, a missing required key, and a value of the wrong type or outside its range are U7002. The default settings are empty `[labels]`, `[trusted]` and `[run]` tables and a budget of 0.
 
