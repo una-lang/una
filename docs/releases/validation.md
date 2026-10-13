@@ -6,6 +6,7 @@ Status: Normative for the project's workflow (#232). GitHub Actions is not used.
 
 1. **A merge into `main`** needs a `scripts/local-ci.sh` PASS on macOS on the pull request's exact tip, written into the pull request body with the SHA.
    - Linux is not checked per pull request. The next gate run confirms it on `main` (`scripts/local-ci.sh --linux`, in Docker), and a Linux FAIL there is reported at once and fixed before anything else merges.
+   - Except when the pull request changes what the Linux run runs: `scripts/local-ci.sh`, `scripts/local-ci/` (its Docker image), or a script that a step of it calls, such as `scripts/formal.sh` or `docs/reviews/formal-m2-replay/check.sh`, or makes a step need a tool it did not need before. Such a pull request also needs a `scripts/local-ci.sh --linux-arm64` PASS (native, a few minutes) on its exact tip, written into its body with the SHA (#605). A step that needs a tool the image lacks passes on macOS, which has it, and fails only in the container: #528's replay needed `python3`, and the first gate run of v0.3.8 failed on it (#606).
 2. **A tag** `v<version>` needs a run of `scripts/release-gates.sh` in which every gate is PASS, on the gated SHA: the commit of `main` after the release pull request.
    - Its record is committed as `docs/releases/<version>-validation.md` before the tag is made.
    - **The tagged commit is the record commit**, not the gated SHA, since `install.sh` reads the record from the tag's tree, and gating the record commit again would be circular. So:
