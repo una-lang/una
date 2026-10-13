@@ -22,6 +22,13 @@ const EXPECTED_DIFFERENCES: &[&str] = &[];
 const EDITION_0_2: &str = "edition = \"0.2\"";
 const EDITION_0_3: &str = "edition = \"0.3\"";
 
+/// The start of every `una --json check` document (`spec/13 §5`).
+const DOCUMENT: &[u8] = b"{\"schema\":\"una.diagnostics/1\"";
+
+/// An edition `0.2` package that uses fixed-width integers, so it checks differently as edition
+/// `0.1`: the positive control that the copied manifest is the one read.
+const CONTROL: &str = "types/fixed_width_methods";
+
 fn conformance() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/conformance")
 }
@@ -73,6 +80,16 @@ fn check_as(package: &Path, work: &Path, edition: &str) -> (Option<i32>, Vec<u8>
         .output()
         .unwrap();
     std::fs::remove_dir_all(work).unwrap();
+    // A run that fails the same way in both editions, before it checks anything, must not count
+    // as the same result: each run exits 0 or 1 with a diagnostics document.
+    assert!(
+        matches!(output.status.code(), Some(0 | 1)) && output.stdout.starts_with(DOCUMENT),
+        "{} as {edition}: status {:?}, stdout {:?}, stderr {:?}",
+        package.display(),
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     (output.status.code(), output.stdout, output.stderr)
 }
 
@@ -81,6 +98,19 @@ fn every_edition_0_2_package_checks_the_same_in_edition_0_3() {
     let root = conformance();
     let mut all = Vec::new();
     packages(&root, &mut all);
+    // An edition line that names `0.2` in another spelling would drop its package from the test
+    // without a word.
+    for package in &all {
+        let text = std::fs::read_to_string(package.join("una.toml")).unwrap();
+        for line in text.lines() {
+            let line = line.trim();
+            assert!(
+                !(line.starts_with("edition") && line.contains("0.2")) || line == EDITION_0_2,
+                "{}: the edition line `{line}` is not `{EDITION_0_2}`",
+                package.display()
+            );
+        }
+    }
     let cases: Vec<(String, PathBuf)> = all
         .into_iter()
         .filter(|package| {
@@ -98,10 +128,15 @@ fn every_edition_0_2_package_checks_the_same_in_edition_0_3() {
             (name, package)
         })
         .collect();
-    assert!(
-        cases.len() > 300,
-        "only {} edition 0.2 packages",
-        cases.len()
+    let (_, control) = cases
+        .iter()
+        .find(|(name, _)| name == CONTROL)
+        .expect("the control is an edition 0.2 package");
+    let work = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("editions/control");
+    assert_ne!(
+        check_as(control, &work, EDITION_0_2),
+        check_as(control, &work, "edition = \"0.1\""),
+        "{CONTROL} checks the same as edition 0.1"
     );
     for expected in EXPECTED_DIFFERENCES {
         assert!(
