@@ -1362,51 +1362,370 @@ fn cap_label<'e>(env: &'e Env<'_>, id: CapId) -> &'e str {
     env.capabilities.get(id).map_or("?", |c| c.name)
 }
 
-/// Infers the error kind of private functions without `fails`: the kind of the first variant
-/// they raise or failure they pass (ADR 0006). Pass 2 reports every other
-/// kind where it is raised (U3009) or passed (U3008).
+/// Infers the error kind of private functions without `fails`: the kind of the first failure
+/// of the body in source order, a variant raised or a failure passed (ADR 0006, ADR 0099).
+/// Pass 2 reports every other kind where it is raised (U3009) or passed (U3008).
 fn infer_fails(env: &mut Env<'_>, collected: &Collected) {
     let count = env.functions.len();
     let infers = |env: &Env<'_>, id: usize| env.functions.get(id).is_some_and(|f| f.infer_fails);
-    let mut kinds: Vec<Option<Ty>> = vec![None; count];
-    loop {
-        let mut changed = false;
-        for (function, raised, _) in &collected.raised {
-            let kind = match raised {
-                Raised::Kind(kind) => Some(kind.clone()),
-                Raised::Pass(callee) if infers(env, *callee) => {
-                    kinds.get(*callee).cloned().flatten()
-                }
-                Raised::Pass(callee) => env.functions.get(*callee).and_then(|f| f.fails.clone()),
-                // The capability of `@cap` is inferred by now.
-                Raised::Op { cap, op } => env
-                    .functions
+    // The facts of each function, in source order, each with its kind when it does not wait
+    // for another inferred function.
+    let mut ordered: Vec<&(usize, Raised, Span)> = collected.raised.iter().collect();
+    ordered.sort_by_key(|(function, _, span)| (*function, span.file, span.start));
+    let mut facts: Vec<Vec<Fact<Ty>>> = vec![Vec::new(); count];
+    for (function, raised, _) in ordered {
+        let fact = match raised {
+            Raised::Kind(kind) => Fact::Known(Some(kind.clone())),
+            Raised::Pass(callee) if infers(env, *callee) => Fact::Pass(*callee),
+            Raised::Pass(callee) => {
+                Fact::Known(env.functions.get(*callee).and_then(|f| f.fails.clone()))
+            }
+            // The capability of `@cap` is inferred by now.
+            Raised::Op { cap, op } => Fact::Known(
+                env.functions
                     .get(*function)
                     .and_then(|f| f.uses.iter().find(|need| need.usage.name == *cap))
                     .and_then(|need| need.usage.capability)
                     .and_then(|capability| env.capabilities.get(capability))
                     .and_then(|capability| capability.ops.iter().find(|o| o.name == op))
                     .and_then(|op| op.fails.clone()),
-            };
-            if let (Some(kind), Some(slot)) = (kind, kinds.get_mut(*function))
-                && slot.is_none()
-                && kind != Ty::error()
-            {
-                *slot = Some(kind);
-                changed = true;
+            ),
+        };
+        if let Some(list) = facts.get_mut(*function) {
+            list.push(fact);
+        }
+    }
+    let infer: BTreeSet<usize> = (0..count).filter(|&id| infers(env, id)).collect();
+    // An error type is a kind already reported: it decides nothing.
+    let (kinds, _) = first_kinds(&facts, &infer, |kind| *kind == Ty::error());
+    for id in infer {
+        if let Some(def) = env.functions.get_mut(id) {
+            def.fails = kinds.get(id).cloned().flatten();
+        }
+    }
+}
+
+/// A failure of a body whose kind is inferred, for [`first_kinds`].
+#[derive(Clone, Debug)]
+enum Fact<K> {
+    /// A failure of this kind, or of none: a raised variant, or a pass of a function whose
+    /// kind is declared or of an operation.
+    Known(Option<K>),
+    /// A pass of the failure of this function, whose kind is inferred too.
+    Pass(usize),
+}
+
+/// The kind of each function of `infer` by ADR 0099: the kind of its first fact of a known
+/// kind, where a pass waits for its callee, and groups that pass each other's failures decide
+/// together (rule 3). `facts` are in source order; a kind that is `error` decides nothing.
+/// Also returns the number of facts read, for the scaling tests.
+///
+/// Without groups, each fact is read once and each waiting function is woken once: linear in
+/// the facts. Each round of groups adds a linear pass (Tarjan) over the facts still unread;
+/// there are at most as many rounds as nested groups.
+fn first_kinds<K: Clone>(
+    facts: &[Vec<Fact<K>>],
+    infer: &BTreeSet<usize>,
+    error: impl Fn(&K) -> bool,
+) -> (Vec<Option<K>>, usize) {
+    let count = facts.len();
+    let mut state = Inference {
+        kinds: vec![None; count],
+        next: vec![0; count],
+        waiting: vec![Vec::new(); count],
+        read: 0,
+    };
+    let mut queue: Vec<usize> = infer.iter().copied().filter(|&id| id < count).collect();
+    loop {
+        while let Some(function) = queue.pop() {
+            if state.decided(function) {
+                continue;
+            }
+            let mut at = state.next_of(function);
+            let found = state.scan(facts, infer, &error, function, &mut at, &BTreeSet::new());
+            if let Some(next) = state.next.get_mut(function) {
+                *next = at;
+            }
+            match found {
+                Scan::Kind(kind) => state.decide(function, Some(kind), &mut queue),
+                Scan::End => state.decide(function, None, &mut queue),
+                Scan::Waits(callee) => {
+                    if let Some(waiting) = state.waiting.get_mut(callee) {
+                        waiting.push(function);
+                    }
+                }
             }
         }
-        if !changed {
+        let undecided: Vec<usize> = infer
+            .iter()
+            .copied()
+            .filter(|&id| !state.decided(id))
+            .collect();
+        if undecided.is_empty() {
             break;
         }
+        // Every undecided function waits for another: the closed groups decide, all at once.
+        let mut decided = Vec::new();
+        for group in closed_groups(&state, facts, infer, &undecided) {
+            let mut found = Vec::new();
+            for &function in &group {
+                let mut at = state.next_of(function);
+                if let Scan::Kind(kind) =
+                    state.scan(facts, infer, &error, function, &mut at, &group)
+                {
+                    found.push((function, Some(kind)));
+                }
+            }
+            if found.is_empty() {
+                // No failure of a known kind reaches the group: none of it fails.
+                decided.extend(group.iter().map(|&function| (function, None)));
+            } else {
+                // The others go on by rules 1 and 2 once these are decided.
+                decided.extend(found);
+            }
+        }
+        // A closed group exists while any function is undecided, so each round decides one.
+        // Were none decided, the rest would take the first failure of a known kind that
+        // reaches them, so that no function that can fail is ever inferred not to (fail
+        // closed), and the loop ends.
+        if decided.is_empty() {
+            for function in undecided {
+                let kind = reached_kind(facts, infer, &error, function);
+                state.decide(function, kind, &mut queue);
+            }
+            break;
+        }
+        for (function, kind) in decided {
+            state.decide(function, kind, &mut queue);
+        }
+        queue.extend(undecided.into_iter().filter(|&id| !state.decided(id)));
     }
-    for (id, kind) in kinds.into_iter().enumerate() {
-        if infers(env, id)
-            && let Some(def) = env.functions.get_mut(id)
-        {
-            def.fails = kind;
+    let read = state.read;
+    let kinds = state.kinds.into_iter().map(Option::flatten).collect();
+    (kinds, read)
+}
+
+/// The progress of [`first_kinds`].
+struct Inference<K> {
+    /// `None` while the function is undecided; then its kind, if it fails at all.
+    kinds: Vec<Option<Option<K>>>,
+    /// The index of the next fact of each function to read.
+    next: Vec<usize>,
+    /// The functions that wait for each function.
+    waiting: Vec<Vec<usize>>,
+    /// The facts read so far.
+    read: usize,
+}
+
+/// What reading a function's facts found.
+enum Scan<K> {
+    /// The kind of its first failure of a known kind.
+    Kind(K),
+    /// It has no failure of a known kind.
+    End,
+    /// It passes the failure of this undecided function first.
+    Waits(usize),
+}
+
+impl<K: Clone> Inference<K> {
+    fn decided(&self, function: usize) -> bool {
+        self.kinds.get(function).is_none_or(Option::is_some)
+    }
+
+    fn next_of(&self, function: usize) -> usize {
+        self.next.get(function).copied().unwrap_or(0)
+    }
+
+    fn decide(&mut self, function: usize, kind: Option<K>, queue: &mut Vec<usize>) {
+        if let Some(slot) = self.kinds.get_mut(function) {
+            *slot = Some(kind);
+        }
+        if let Some(waiting) = self.waiting.get_mut(function) {
+            queue.append(waiting);
         }
     }
+
+    /// Reads `function`'s facts on from the index `at`, skipping passes of `skip`; `at` ends
+    /// past the fact that decided, or at the one that waits.
+    fn scan(
+        &mut self,
+        facts: &[Vec<Fact<K>>],
+        infer: &BTreeSet<usize>,
+        error: &impl Fn(&K) -> bool,
+        function: usize,
+        at: &mut usize,
+        skip: &BTreeSet<usize>,
+    ) -> Scan<K> {
+        let own = facts.get(function).map_or(&[][..], Vec::as_slice);
+        while let Some(fact) = own.get(*at) {
+            self.read += 1;
+            let kind = match fact {
+                Fact::Known(kind) => kind.clone(),
+                Fact::Pass(callee) if skip.contains(callee) || !infer.contains(callee) => None,
+                Fact::Pass(callee) => match self.kinds.get(*callee) {
+                    Some(Some(kind)) => kind.clone(),
+                    _ => return Scan::Waits(*callee),
+                },
+            };
+            *at += 1;
+            if let Some(kind) = kind
+                && !error(&kind)
+            {
+                return Scan::Kind(kind);
+            }
+        }
+        Scan::End
+    }
+}
+
+/// The first failure of a known kind that reaches `function` through its facts and its passes,
+/// in breadth-first order: the fallback of [`first_kinds`].
+fn reached_kind<K: Clone>(
+    facts: &[Vec<Fact<K>>],
+    infer: &BTreeSet<usize>,
+    error: &impl Fn(&K) -> bool,
+    function: usize,
+) -> Option<K> {
+    let mut seen = BTreeSet::from([function]);
+    let mut todo = std::collections::VecDeque::from([function]);
+    while let Some(at) = todo.pop_front() {
+        for fact in facts.get(at).map_or(&[][..], Vec::as_slice) {
+            match fact {
+                Fact::Known(Some(kind)) if !error(kind) => return Some(kind.clone()),
+                Fact::Pass(callee) if infer.contains(callee) && seen.insert(*callee) => {
+                    todo.push_back(*callee);
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+/// Tarjan's numbering of one function in [`closed_groups`].
+#[derive(Clone, Copy)]
+struct Visit {
+    index: usize,
+    low: usize,
+    on_stack: bool,
+}
+
+/// The groups of `undecided` that pass each other's failures (strongly connected, over the
+/// facts not yet read) and pass no failure of an undecided function outside the group. Each
+/// undecided function reaches one, so there is at least one. Linear in those facts (Tarjan).
+fn closed_groups<K: Clone>(
+    state: &Inference<K>,
+    facts: &[Vec<Fact<K>>],
+    infer: &BTreeSet<usize>,
+    undecided: &[usize],
+) -> Vec<BTreeSet<usize>> {
+    let edges = |function: usize| -> Vec<usize> {
+        let own = facts.get(function).map_or(&[][..], Vec::as_slice);
+        let mut out: Vec<usize> = own
+            .get(state.next_of(function)..)
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|fact| match fact {
+                Fact::Pass(callee) if infer.contains(callee) && !state.decided(*callee) => {
+                    Some(*callee)
+                }
+                _ => None,
+            })
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    };
+    let mut visits: Vec<Option<Visit>> = vec![None; facts.len()];
+    let visit = |visits: &[Option<Visit>], function: usize| visits.get(function).copied().flatten();
+    let mut stack = Vec::new();
+    let mut groups = Vec::new();
+    let mut counter = 0;
+    for &root in undecided {
+        if visit(&visits, root).is_some() {
+            continue;
+        }
+        let mut calls: Vec<(usize, Vec<usize>, usize)> = Vec::new();
+        let enter = |visits: &mut Vec<Option<Visit>>,
+                     stack: &mut Vec<usize>,
+                     calls: &mut Vec<(usize, Vec<usize>, usize)>,
+                     counter: &mut usize,
+                     function: usize| {
+            if let Some(slot) = visits.get_mut(function) {
+                *slot = Some(Visit {
+                    index: *counter,
+                    low: *counter,
+                    on_stack: true,
+                });
+            }
+            *counter += 1;
+            stack.push(function);
+            calls.push((function, edges(function), 0));
+        };
+        enter(&mut visits, &mut stack, &mut calls, &mut counter, root);
+        // An explicit call stack: a function, its edges and the next edge to follow.
+        while let Some((function, out, at)) = calls.last_mut() {
+            let function = *function;
+            let next = out.get(*at).copied();
+            if next.is_some() {
+                *at += 1;
+            }
+            if let Some(callee) = next {
+                match visit(&visits, callee) {
+                    None => enter(&mut visits, &mut stack, &mut calls, &mut counter, callee),
+                    Some(seen) if seen.on_stack => {
+                        if let Some(Some(own)) = visits.get_mut(function) {
+                            own.low = own.low.min(seen.index);
+                        }
+                    }
+                    Some(_) => {}
+                }
+                continue;
+            }
+            calls.pop();
+            let Some(done) = visit(&visits, function) else {
+                continue;
+            };
+            if let Some((caller, _, _)) = calls.last()
+                && let Some(Some(up)) = visits.get_mut(*caller)
+            {
+                up.low = up.low.min(done.low);
+            }
+            if done.low == done.index {
+                let mut group = BTreeSet::new();
+                while let Some(member) = stack.pop() {
+                    if let Some(Some(off)) = visits.get_mut(member) {
+                        off.on_stack = false;
+                    }
+                    group.insert(member);
+                    if member == function {
+                        break;
+                    }
+                }
+                groups.push(group);
+            }
+        }
+    }
+    let mut group_of = vec![usize::MAX; facts.len()];
+    for (at, group) in groups.iter().enumerate() {
+        for &member in group {
+            if let Some(slot) = group_of.get_mut(member) {
+                *slot = at;
+            }
+        }
+    }
+    groups
+        .iter()
+        .enumerate()
+        .filter(|(at, group)| {
+            group.iter().all(|&member| {
+                edges(member)
+                    .iter()
+                    .all(|callee| group_of.get(*callee) == Some(at))
+            })
+        })
+        .map(|(_, group)| group.clone())
+        .collect()
 }
 
 /// The operations that `[run] grants` give to each host capability. The
@@ -1661,4 +1980,219 @@ fn inferred_route(name: &str, ops: &std::collections::BTreeSet<String>) -> Strin
 fn widening(mut repair: Repair) -> Repair {
     repair.widens = Some(Widening::Authority);
     repair
+}
+
+#[cfg(test)]
+mod first_kind_tests {
+    //! ADR 0099: the inferred error kind follows the body's source order, whatever the order
+    //! of the declarations.
+
+    use std::collections::BTreeSet;
+
+    use super::{Fact, first_kinds, reached_kind};
+
+    fn kinds(facts: &[Vec<Fact<char>>]) -> (Vec<Option<char>>, usize) {
+        // `!` stands for the error type.
+        first_kinds(facts, &(0..facts.len()).collect(), |kind| *kind == '!')
+    }
+
+    const fn known(kind: char) -> Fact<char> {
+        Fact::Known(Some(kind))
+    }
+
+    #[test]
+    fn a_pass_waits_for_its_callee_in_either_order() {
+        // f passes g's failure, then raises A; g raises B.
+        let after = vec![vec![Fact::Pass(1), known('A')], vec![known('B')]];
+        let before = vec![vec![known('B')], vec![Fact::Pass(0), known('A')]];
+        assert_eq!(kinds(&after).0, [Some('B'), Some('B')]);
+        assert_eq!(kinds(&before).0, [Some('B'), Some('B')]);
+    }
+
+    #[test]
+    fn a_failure_of_no_kind_decides_nothing() {
+        let facts = vec![vec![Fact::Known(None), Fact::Pass(1), known('A')], vec![]];
+        assert_eq!(kinds(&facts).0, [Some('A'), None]);
+    }
+
+    #[test]
+    fn the_fallback_takes_the_first_kind_that_reaches_in_breadth_first_order() {
+        // f passes g's failure, then h's; g raises nothing of its own; h raises B; g passes
+        // k's, which raises A. Breadth first: g and h come before k.
+        let facts = vec![
+            vec![Fact::Pass(1), Fact::Pass(2)],
+            vec![known('!'), Fact::Pass(3)],
+            vec![known('B')],
+            vec![known('A')],
+        ];
+        let infer: BTreeSet<usize> = (0..4).collect();
+        let error = |kind: &char| *kind == '!';
+        assert_eq!(reached_kind(&facts, &infer, &error, 0), Some('B'));
+        assert_eq!(reached_kind(&facts, &infer, &error, 1), Some('A'));
+        assert_eq!(reached_kind(&[vec![known('!')]], &infer, &error, 0), None);
+    }
+
+    #[test]
+    fn an_error_type_decides_nothing() {
+        let facts = vec![
+            vec![known('!'), Fact::Pass(1), known('A')],
+            vec![known('!')],
+        ];
+        assert_eq!(kinds(&facts).0, [Some('A'), None]);
+    }
+
+    #[test]
+    fn a_group_decides_each_function_by_its_own_next_failure() {
+        let facts = vec![
+            vec![Fact::Pass(1), known('A')],
+            vec![Fact::Pass(0), known('B')],
+        ];
+        assert_eq!(kinds(&facts).0, [Some('A'), Some('B')]);
+    }
+
+    #[test]
+    fn a_function_waiting_for_a_group_takes_what_the_group_gives() {
+        // x waits for the group {g, h}; h raises B after passing g's failure.
+        let facts = vec![
+            vec![Fact::Pass(1), known('A')],
+            vec![Fact::Pass(2)],
+            vec![Fact::Pass(1), known('B')],
+        ];
+        assert_eq!(kinds(&facts).0, [Some('B'), Some('B'), Some('B')]);
+    }
+
+    #[test]
+    fn a_group_that_no_failure_reaches_cannot_fail() {
+        let facts = vec![
+            vec![Fact::Pass(1)],
+            vec![Fact::Pass(0)],
+            vec![Fact::Pass(0), known('A')],
+        ];
+        assert_eq!(kinds(&facts).0, [None, None, Some('A')]);
+    }
+
+    #[test]
+    fn a_group_member_passes_the_kind_of_one_that_waits_on_it() {
+        // a passes b, then x; b passes a; x passes a, then raises X. All three pass each
+        // other's failures, and only x has a failure of its own.
+        let facts = vec![
+            vec![Fact::Pass(1), Fact::Pass(2)],
+            vec![Fact::Pass(0)],
+            vec![Fact::Pass(0), known('X')],
+        ];
+        assert_eq!(kinds(&facts).0, [Some('X'), Some('X'), Some('X')]);
+    }
+
+    /// A deterministic generator of small programs (a linear congruential sequence).
+    struct Seq(u64);
+
+    impl Seq {
+        fn below(&mut self, n: usize) -> usize {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            usize::try_from((self.0 >> 33) % n as u64).unwrap_or(0)
+        }
+    }
+
+    fn program(seq: &mut Seq) -> Vec<Vec<Fact<char>>> {
+        let count = 1 + seq.below(6);
+        (0..count)
+            .map(|_| {
+                (0..seq.below(4))
+                    .map(|_| match seq.below(5) {
+                        0 => known(['A', 'B', 'C'][seq.below(3)]),
+                        1 => Fact::Known(None),
+                        // A failure whose kind is already in error (ADR 0099).
+                        2 => known('!'),
+                        _ => Fact::Pass(seq.below(count)),
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Whether a failure of a known kind reaches `function` through passes.
+    fn reached(facts: &[Vec<Fact<char>>], function: usize) -> bool {
+        let mut seen = BTreeSet::new();
+        let mut todo = vec![function];
+        while let Some(at) = todo.pop() {
+            if !seen.insert(at) {
+                continue;
+            }
+            for fact in &facts[at] {
+                match fact {
+                    Fact::Known(Some('!')) | Fact::Known(None) => {}
+                    Fact::Known(Some(_)) => return true,
+                    Fact::Pass(callee) => todo.push(*callee),
+                }
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn kinds_do_not_depend_on_the_order_of_the_declarations_and_none_only_when_nothing_reaches() {
+        let mut seq = Seq(609);
+        for _ in 0..2000 {
+            let facts = program(&mut seq);
+            let (found, _) = kinds(&facts);
+            // A function cannot fail only when no failure of a known kind reaches it, and an
+            // error type is never its kind.
+            for (function, kind) in found.iter().enumerate() {
+                assert_eq!(kind.is_some(), reached(&facts, function), "{facts:?}");
+                assert_ne!(*kind, Some('!'), "{facts:?}");
+            }
+            // Renumbering the functions, as reordering the declarations does, renumbers the
+            // result and changes nothing else.
+            let count = facts.len();
+            let shift = 1 + seq.below(count);
+            let moved = |id: usize| (id + shift) % count;
+            let mut renamed = vec![Vec::new(); count];
+            for (function, list) in facts.iter().enumerate() {
+                renamed[moved(function)] = list
+                    .iter()
+                    .map(|fact| match fact {
+                        Fact::Pass(callee) => Fact::Pass(moved(*callee)),
+                        other => other.clone(),
+                    })
+                    .collect();
+            }
+            let (again, _) = kinds(&renamed);
+            for function in 0..count {
+                assert_eq!(found[function], again[moved(function)], "{facts:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn facts_read_grow_linearly_with_chains_and_rings() {
+        // A chain in which each function passes the next one's failure before its own, the
+        // worst order for rounds over the declarations, and a ring that forms one group.
+        let chain = |n: usize| -> Vec<Vec<Fact<char>>> {
+            (0..n)
+                .map(|i| {
+                    if i + 1 < n {
+                        vec![Fact::Pass(i + 1), known('A')]
+                    } else {
+                        vec![known('B')]
+                    }
+                })
+                .collect()
+        };
+        let ring = |n: usize| -> Vec<Vec<Fact<char>>> {
+            (0..n)
+                .map(|i| vec![Fact::Pass((i + 1) % n), known('A')])
+                .collect()
+        };
+        for n in [100, 1_000, 10_000] {
+            let (found, read) = kinds(&chain(n));
+            assert!(found.iter().all(|kind| *kind == Some('B')));
+            assert!(read <= 3 * n, "chain of {n}: {read} facts read");
+            let (found, read) = kinds(&ring(n));
+            assert!(found.iter().all(|kind| *kind == Some('A')));
+            assert!(read <= 3 * n, "ring of {n}: {read} facts read");
+        }
+    }
 }

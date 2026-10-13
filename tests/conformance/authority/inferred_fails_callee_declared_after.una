@@ -1,0 +1,22 @@
+-- test: a pass of a callee whose kind is inferred waits for that kind, so the callee declared after the caller gives the same kind and the same U3009
+-- spec: spec/04 §5
+-- expect: error U3009 at 14:22
+module inferred_fails_callee_declared_after
+
+kind A = | A1
+
+kind B = | B1
+
+f(n: Int) -> Int
+=
+  let x = g(n)
+    if error pass
+  if x < 0 then fail A1 else x
+
+g(n: Int) -> Int = if n < 0 then fail B1 else n
+
+pub run(n: Int) -> Int
+  fails B
+=
+  f(n)
+    if error pass
