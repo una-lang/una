@@ -488,3 +488,31 @@ fn the_compact_reference_is_checked_and_within_its_token_budget() {
         "una-compact.md holds {chars} characters, over {COMPACT_MAX_CHARS} (about 2,000 tokens)"
     );
 }
+
+#[test]
+fn the_policy_example_of_the_information_flow_spec_checks_in_the_events_package() {
+    // #569: `spec/07 §5`'s `events.keys` module, put in place of the `events` example's own,
+    // checks clean at tier 1 in canonical form, so the spec's example cannot drift into one
+    // that fails (it once omitted `fails KeyError`, U3007).
+    let spec =
+        std::fs::read_to_string(repository().join("docs/spec/07-information-flow.md")).unwrap();
+    let block = blocks(&spec)
+        .into_iter()
+        .find(|b| b.lang == "una" && b.body.starts_with("trusted module events.keys"))
+        .expect("spec/07 has the events.keys policy example");
+    let dir = scratch(block.line).join("events");
+    copy_dir(&repository().join("examples/events"), &dir);
+    std::fs::write(dir.join("src/events/keys.una"), &block.body).unwrap();
+    let (output, codes) = check(&dir);
+    assert_eq!(
+        codes,
+        Vec::<String>::new(),
+        "spec/07 §5 at line {}",
+        block.line
+    );
+    assert!(output.status.success());
+    assert!(
+        canonical(&dir).status.success(),
+        "spec/07 §5 is in canonical form"
+    );
+}
