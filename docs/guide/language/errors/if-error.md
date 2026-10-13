@@ -1,7 +1,7 @@
 ---
 construct: if error and if none
 editions: ["0.1", "0.2"]
-spec: ["spec/06 §3", "spec/02 §6", "spec/02 §8", "spec/04 §4", "spec/07 §3", "spec/07 §7"]
+spec: ["spec/06 §1", "spec/06 §3", "spec/06 §5", "spec/02 §6", "spec/02 §8", "spec/04 §4", "spec/07 §3", "spec/07 §7"]
 codes: [U0101, U0102, U2001, U2013, U3007, U3008, U3009, U3013]
 ---
 

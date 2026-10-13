@@ -1,7 +1,7 @@
 ---
 construct: fails
 editions: ["0.1", "0.2"]
-spec: ["spec/06 §1", "spec/04 §2", "spec/04 §5", "spec/02 §3", "spec/05 §9"]
+spec: ["spec/06 §1", "spec/06 §3", "spec/06 §4", "spec/04 §2", "spec/04 §5", "spec/02 §3", "spec/05 §9", "spec/10 §1"]
 codes: [U0101, U0102, U2002, U3007, U3008, U3009]
 ---
 
@@ -128,7 +128,7 @@ pub f(n: Int) -> Int
   n
 ```
 
-**One kind for an inferred function too.** A private function without `fails` takes the kind of its first failure, and failing with a variant of another kind is U3009 at that failure (`spec/04 §5` rule 3):
+**One kind for an inferred function too.** A private function without `fails` still has one error kind: failing with variants of two kinds is U3009 (`spec/04 §5` rule 3, `spec/10 §1`):
 
 ```una
 -- fails with U3009
@@ -197,3 +197,4 @@ pub apply(x: Int, step: fn(Int) -> Int) -> Int
 - `spec/04 §2`: the clause and rule 4; `spec/04 §5`: visibility and inference.
 - `spec/02 §3`: the grammar and clause order.
 - `spec/05 §9` rule 9: `fails of`.
+- `spec/10 §1`: the join of error kinds.

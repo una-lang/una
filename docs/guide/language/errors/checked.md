@@ -1,7 +1,7 @@
 ---
 construct: checked
 editions: ["0.1", "0.2"]
-spec: ["spec/06 §6", "spec/02 §7", "spec/02 §8", "spec/03 §3", "spec/03 §4", "spec/13 §3", "spec/13 §6", "spec/13 §7", "spec/07 §3", "spec/18 §4"]
+spec: ["spec/06 §6", "spec/02 §7", "spec/02 §8", "spec/03 §3", "spec/03 §4", "spec/13 §3", "spec/13 §6", "spec/13 §7", "spec/07 §3", "spec/10 §7", "spec/10 §13.2", "spec/18 §4"]
 codes: [U2013, U2014, U2016, U3009, U4002, U7003]
 ---
 
@@ -179,7 +179,7 @@ pub positive(n: Int) -> Int
   checked(n, it >= 0) else fail Nope
 ```
 
-**No test that depends on labeled data.** `checked` can fail, so it is allowed only under a `public` program counter. A test of a `secret` value would reveal it by failing (`spec/07 §3` rule 3):
+**No test that depends on labeled data.** A failure of `checked` reveals whether the predicate holds. So `checked` is U4002 on a labeled value, on a predicate that reads a labeled value, or under a raised program counter (`spec/10 §7`, `spec/10 §13.2`):
 
 `una.toml`
 
@@ -207,6 +207,34 @@ pub positive(n: secret Int) -> secret Int
   checked(n, it >= 0) else fail Out
 ```
 
+The same holds when the operand is public but the predicate reads labeled data, here an `internal` bound (`spec/10 §13.2`, ADR 0089):
+
+`una.toml`
+
+```toml
+[package]
+name = "bounds"
+version = "0.1.0"
+edition = "0.2"
+
+[escape_budget]
+checked_per_module = 1
+```
+
+`src/bounds.una`
+
+```una
+-- fails with U4002
+module bounds
+
+pub kind Bad = | Out
+
+pub below(n: Int, limit: internal Int) -> Int
+  fails Bad
+=
+  checked(n, it < limit) else fail Out
+```
+
 Further rules:
 
 - **Counting.** The first use beyond the budget is U7003, with the later uses as related locations (`spec/06 §6`). The budget counts per module, not per package (`spec/06 §6`).
@@ -221,7 +249,7 @@ Further rules:
 - [U2014](../../../../crates/una-explain/explain/U2014.md): a predicate outside the refinement language.
 - [U2016](../../../../crates/una-explain/explain/U2016.md): an opaque predicate called outside `checked`.
 - [U3009](../../../../crates/una-explain/explain/U3009.md): the variant of `else fail` outside the function's error kind.
-- [U4002](../../../../crates/una-explain/explain/U4002.md): `checked` under a program counter above `public`.
+- [U4002](../../../../crates/una-explain/explain/U4002.md): `checked` of a labeled value, with a predicate that reads one, or under a raised program counter.
 - [U7003](../../../../crates/una-explain/explain/U7003.md): more uses in a module than its escape budget allows.
 
 ## Edition
@@ -234,5 +262,6 @@ Further rules:
 - `spec/02 §7`: the grammar; `spec/02 §8`: where `it` may appear.
 - `spec/03 §3`: the refinement language; `spec/03 §4`: opaque predicates.
 - `spec/13 §3`: repairs; `spec/13 §6`: the build report; `spec/13 §7`: `[escape_budget]`.
+- `spec/10 §7`: T-Checked and its label rule; `spec/10 §13.2`: the predicate's other reads.
 - `spec/07 §3` rule 3: failures under the program counter.
 - `spec/18 §4` rule 4: narrowing conversions.
