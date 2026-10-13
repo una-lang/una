@@ -63,6 +63,12 @@ pub check_in(phone: secret[PII] Phone) -> Availability
      A condition is of the arguments the caller passed: reassigning an `edit` parameter does not change it.
 
      An operation in a lambda is a site of the enclosing declaration, under the path context of the lambda's definition. A refuted or unknown obligation is U5001 or U5002, "`@catalog.journal` may run where `not dry_run` is not proven", at the site, with the condition as the related span. Its repairs, in order: at a call or a `with`, write the condition in the callee's or the handler's `uses`, then guard the site with `if C`; at an operation, guard it with `if C`, then add `requires C`; at a call of a function value, guard it. No repair removes or weakens a condition.
+5. (v0.3, ADR 0092 rule 8 and its third amendment.) **Locked contracts.** `una.toml` MAY lock the `uses` of public functions under `[contracts]` (`spec/13 §7`). For each binding of a locked function's header:
+   - no entry of the lock names this binding with this capability, by the declaration its name resolves to: U3023 at the binding;
+   - an operation of the binding that the entry does not list, every declared operation when the header writes no brackets: U3023 at the operation;
+   - an operation that the entry conditions by `C_lock`: a `contract_lock` obligation (`spec/12 §3`), `C_src ⇒ C_lock`, refuted U3023 and unknown U5002, "the header of `update_prices` lets `@catalog.journal` run where `not dry_run` does not hold, which `una.toml` locks".
+
+   A binding or an operation that the header leaves out grants less, and passes. A handler is not locked: its operations are charged against its own header, and where it is installed against the installing function's conditions (rule 4).
 
 ## 4. Passing capabilities
 

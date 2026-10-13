@@ -194,6 +194,8 @@ pub enum Code {
     U3018,
     /// An `of` clause that names a function type with its own `uses` or `fails`.
     U3019,
+    /// A locked function's header grants more than its lock.
+    U3023,
     /// An `if error` clause on an expression that cannot fail (edition 0.3, ADR 0100).
     U3025,
     /// `attempt` of a call that cannot fail (edition 0.3, ADR 0100).
@@ -240,7 +242,7 @@ pub enum Code {
 
 impl Code {
     /// Every registered code, in the order of `spec/13 §4`.
-    pub const ALL: [Code; 86] = [
+    pub const ALL: [Code; 87] = [
         Code::U0001,
         Code::U0002,
         Code::U0003,
@@ -306,6 +308,7 @@ impl Code {
         Code::U3017,
         Code::U3018,
         Code::U3019,
+        Code::U3023,
         Code::U3025,
         Code::U3026,
         Code::U4001,
@@ -670,6 +673,11 @@ impl Code {
                 code: "U3019",
                 domain: Domain::Authority,
                 meaning: "`of` clause that names a function type with its own `uses` or `fails`",
+            },
+            Code::U3023 => &Entry {
+                code: "U3023",
+                domain: Domain::Authority,
+                meaning: "Header that grants more than its lock in `una.toml`",
             },
             Code::U3025 => &Entry {
                 code: "U3025",

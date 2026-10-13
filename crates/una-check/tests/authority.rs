@@ -51,6 +51,7 @@ fn run(files: &[(&str, &str)], single: bool) -> (Vec<Diagnostic>, TypeCheck) {
         settings: &settings,
         run: None,
         earlier_errors: false,
+        locks: &[],
     };
     let names = check_names(&input);
     let types = check_types(&input);

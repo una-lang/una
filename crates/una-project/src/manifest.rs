@@ -26,6 +26,19 @@ pub struct Manifest {
     pub grants: Vec<Located>,
     /// `[package] edition`: `0.1`, the default, or `0.2` (`spec/13 §7`, ADR 0056).
     pub edition: Edition,
+    /// `[contracts]`, edition `0.3`: the locked `uses` clauses of public functions (ADR 0092
+    /// rule 8, as amended).
+    pub contracts: Vec<Contract>,
+}
+
+/// A locked function of `[contracts]` (ADR 0092 rule 8, as amended): its qualified name and
+/// its locked `uses` clauses, each as written.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Contract {
+    /// The function's qualified name, located at its key.
+    pub function: Located,
+    /// The `uses` clauses. A clause's `range` covers its string literal, quotes included.
+    pub clauses: Vec<Located>,
 }
 
 /// The language edition of a package (`spec/13 §7`, ADR 0056). A single file, and a package
@@ -89,6 +102,9 @@ pub fn parse_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
         return (manifest, errors);
     };
     let mut package = false;
+    // `[contracts]` is a table of edition 0.3 only (ADR 0092 rule 8, as amended): earlier
+    // editions report it as the unknown table it always was, so they do not change.
+    let locks = declared_edition(document.get_ref()) >= Edition::V0_3;
     for (key, value) in document.get_ref().iter() {
         let Some(table) = Table::of(key, value, Code::U7002, &mut errors) else {
             continue;
@@ -102,6 +118,7 @@ pub fn parse_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
             "trusted" => trusted(&table, &mut manifest, &mut errors),
             "escape_budget" => escape_budget(&table, &mut manifest, &mut errors),
             "run" => run(&table, &mut manifest, &mut errors),
+            "contracts" if locks => contracts(&table, &mut manifest, &mut errors),
             other => errors.push(ProjectError::new(
                 Code::U7002,
                 key.span(),
@@ -117,6 +134,37 @@ pub fn parse_manifest(text: &str) -> (Manifest, Vec<ProjectError>) {
         ));
     }
     (manifest, errors)
+}
+
+/// The edition that `[package] edition` names, or the default when it names none.
+fn declared_edition(document: &toml::de::DeTable<'_>) -> Edition {
+    document
+        .get("package")
+        .and_then(|package| match package.get_ref() {
+            toml::de::DeValue::Table(table) => table.get("edition"),
+            _ => None,
+        })
+        .and_then(|edition| match edition.get_ref() {
+            toml::de::DeValue::String(text) => Edition::parse(text),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+/// `[contracts]`: each key a function's qualified name, each value an array of `uses` clauses
+/// (ADR 0092 rule 8, as amended). The clauses are read by the checker, which reports them.
+fn contracts(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Vec<ProjectError>) {
+    for (key, value) in table.entries.iter() {
+        let name = key.get_ref().to_string();
+        let clauses = strings(&name, value, Code::U7002, errors);
+        manifest.contracts.push(Contract {
+            function: Located {
+                value: name,
+                range: key.span(),
+            },
+            clauses,
+        });
+    }
 }
 
 fn package_table(table: &Table<'_, '_>, manifest: &mut Manifest, errors: &mut Vec<ProjectError>) {

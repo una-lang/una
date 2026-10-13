@@ -278,3 +278,54 @@ An adversarial review of the implementation found three more paths where an oper
 - **`edit` parameters.** A condition reads the arguments as the caller passed them, whatever the body later assigns (rule 2). An `edit` parameter reassigned in the body does not change it: the condition is evaluated at the values on entry, which is what the caller sees and what the guard protects. Reassigning `dry = false` before `@log.write(n)` does not prove `not dry`.
 
 Each rule only adds obligations, so it only rejects, and code that writes no condition gets none. Conformance cases pin a rejected and an accepted form of each.
+
+## Amendment (2026-10-13, third): a lock entry is a whole `uses` clause
+
+Rule 8's lock maps a binding name to its operations, and the name alone does not say which capability the binding has. A header that renames the locked binding, `uses @shop: Catalog[journal]` for `@catalog`, would leave the lock's binding absent, which rule 8 reads as stronger, and no part of the lock would reach `@shop`. Rule 8 means the lock to cover each capability it names, so the lock must name it.
+
+**The form.** Each entry of `[contracts]` maps a public function's qualified name to an array of `uses` clauses, written as a header writes them, with rule 1's conditions:
+
+```toml
+[contracts]
+"pricing.update.update_prices" = ["@catalog: Catalog[price, set_price where not dry_run, journal where not dry_run]"]
+```
+
+A lock entry lists its operations: a clause without brackets, `@catalog: Catalog`, is U7002 in the lock. A header binding without brackets is checked against the listed operations, so if the capability later declares another operation, the header grants it, the entry does not list it, and it is U3023. The lock freezes the operation set, not only the binding.
+
+**Well-formed locks.** Each of these is U7002 at the lock entry, so a lock never stops checking without an error:
+
+- a key that names no public function of the package, for example because the function was renamed, moved or made private. A handler is not a key: its operations are charged against its own header, and where it is installed, against the conditions of the function that installs it (rule 3), so locking that function covers it;
+- an entry that does not parse as a `uses` clause, which includes ADR 0094's `gives` until that ADR is implemented;
+- an entry without brackets, which would not list its operations;
+- two entries for the same binding of one function;
+- a capability name that resolves to no capability in the function's module, for example because the capability was renamed;
+- an operation that the capability does not declare;
+- a condition that is not a `Bool` of RL over the function's current parameters (rule 8).
+
+**Capability identity.** A capability is the declaration its name resolves to in the function's module, by the rules of name resolution (`spec/10 §11`, ADR 0023). Today a capability reaches a module by its declaration or by an import (`spec/02 §1`), and an import names the same declaration. An alias, a qualified path or a re-export, if the language gains them, names the same capability too.
+
+**The check.** For each binding of a locked function's header:
+
+- **no entry names this binding with this capability:** U3023 at the binding. That covers a second binding beside a locked one, the locked binding renamed, and a binding of a capability that the lock does not name at all, such as a new `uses @net: Http[post]`. A locked function that needs a binding names it in the lock, with its operations;
+- **an operation of the binding that the entry does not list** (each operation when the header writes no brackets): U3023 at the operation, since the header grants more than the lock;
+- **an operation that the entry lists with a condition `C_lock`:** the obligation `C_src ⇒ C_lock` of rule 8, kind `contract_lock`, with `C_src = true` when the header writes no condition. Refuted, it is U3023 with rule 8's message; unknown, it is U5002. The primary span is the header's operation, and the related span is the lock entry;
+- **an operation that the entry lists without a condition:** nothing to check.
+
+An operation or a binding of the lock that the header leaves out is stronger, and nothing is checked, as rule 8 says: removing a locked binding entirely grants less.
+
+**What changes in rule 8.** Rule 8 left an operation that the lock does not list free, and a binding of a capability that the lock does not name unchecked. Both are now U3023: the lock freezes the bindings of a locked function and their operations, and a header may only drop or strengthen them. So a lock lists every operation its function uses, with or without a condition, as the example's `price` shows.
+
+**Entry values.** A lock condition reads the arguments as the caller passed them, as a header's condition does (the second amendment): an `edit` parameter that the body reassigns does not change it.
+
+**Editions.** `[contracts]` is a table of edition `0.3` only. In editions `0.1` and `0.2` it stays the unknown table that it is today (U7002), so those editions do not change.
+
+**Stricter only.** The form adds a capability name and the checks above. Each one only rejects, and a package without `[contracts]` gets none of them.
+
+**Cost.** One pass over the lock and one over the headers of the locked functions, with a map keyed by the resolved function and capability: O(n) on average in the size of the lock and of those headers. One `contract_lock` query per locked condition that the header has. A scaling test pins the linear growth.
+
+Conformance cases pin each check above:
+- the second binding, the rename, a binding of a capability the lock does not name, the added operation, and a weakened and a removed condition;
+- a capability imported from another module;
+- each U7002, including a renamed function, a renamed capability and an entry without brackets;
+- a handler from another module, and a handler whose `uses` are inferred, installed by a locked function;
+- the removal of a locked binding, which is accepted.

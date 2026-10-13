@@ -69,6 +69,56 @@ pub(crate) fn parse_plain(lexed: &Lexed, file: FileId, interner: &Interner) -> P
     }
 }
 
+/// One `uses` clause on its own, `@b: C[op where cond, ...]`, as a lock entry of `una.toml`
+/// writes it (ADR 0092 rule 8, as amended). `text` is the clause, and it starts at byte
+/// `offset` of the file `file`, so that every span is a span of that file. Its operations may
+/// carry conditions, as in edition `0.3`.
+pub fn parse_uses_clause(
+    text: &str,
+    file: FileId,
+    offset: usize,
+    interner: &mut Interner,
+) -> Result<UsesClause, Vec<SyntaxError>> {
+    let shift = |span: Span| Span::new(file, span.start + offset, span.end + offset);
+    let source = crate::source::SourceFile::new("una.toml", text.as_bytes());
+    let mut lexed = crate::lexer::lex_in(&source, file, interner, KeywordSet::V0_3);
+    if !lexed.errors.is_empty() {
+        return Err(lexed
+            .errors
+            .into_iter()
+            .map(|error| SyntaxError::new(error.code, shift(error.span), error.message))
+            .collect());
+    }
+    for token in &mut lexed.tokens {
+        token.span = shift(token.span);
+    }
+    // The parser reads the text of a span for some repairs, so the text keeps the offsets.
+    lexed.text = format!("{}{text}", " ".repeat(offset));
+    let mut parser = Parser {
+        tokens: &lexed.tokens,
+        text: &lexed.text,
+        comments: &lexed.comments,
+        interner: &*interner,
+        eof: lexed
+            .tokens
+            .last()
+            .map_or(Span::at(file, offset), |token| token.span),
+        lexical: Vec::new(),
+        pos: 0,
+        depth: 0,
+        last_end: None,
+        unit_start: 0,
+        nesting: 0,
+        errors: Vec::new(),
+        v0_2: true,
+        v0_3: true,
+    };
+    match parser.lone_uses_clause() {
+        Ok(clause) if parser.errors.is_empty() => Ok(clause),
+        _ => Err(parser.errors),
+    }
+}
+
 /// A U0101 has been handled; the current declaration stops parsing.
 struct Stop;
 
@@ -1266,6 +1316,22 @@ impl<'a> Parser<'a> {
             cap,
             cap_type,
             span: self.since(start),
+        })
+    }
+
+    /// A `uses` clause without its keyword, alone up to the end of the text.
+    fn lone_uses_clause(&mut self) -> Parse<UsesClause> {
+        let start = self.span();
+        let cap = self.cap_name()?;
+        self.expect(&TokenKind::Colon, "`:` and the capability type")?;
+        let cap_type = self.cap_type(true)?;
+        let span = self.since(start);
+        while self.eat(&TokenKind::Newline) {}
+        self.expect(&TokenKind::Eof, "the end of the clause")?;
+        Ok(UsesClause {
+            cap,
+            cap_type,
+            span,
         })
     }
 

@@ -521,6 +521,11 @@ impl Vars {
         self.saw_unknown = true;
     }
 
+    /// Whether a name that does not resolve has been met, which is now `value`.
+    pub(crate) fn swap_unknown(&mut self, value: bool) -> bool {
+        std::mem::replace(&mut self.saw_unknown, value)
+    }
+
     pub(crate) fn unsolved(&self) -> Vec<(Origin, Span)> {
         self.slots
             .iter()

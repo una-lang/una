@@ -87,6 +87,9 @@ pub enum ObligationKind {
     /// operation, at a call that passes the binding, and at a `with` that installs a handler
     /// using it (ADR 0092 rule 3).
     EffectCondition,
+    /// A locked function's header is at least as strong as its lock: the header's condition on
+    /// a locked operation implies the lock's (ADR 0092 rule 8).
+    ContractLock,
 }
 
 impl ObligationKind {
@@ -100,6 +103,7 @@ impl ObligationKind {
             ObligationKind::Exhaustive => "exhaustive",
             ObligationKind::Overflow => "overflow",
             ObligationKind::EffectCondition => "effect_condition",
+            ObligationKind::ContractLock => "contract_lock",
         }
     }
 }

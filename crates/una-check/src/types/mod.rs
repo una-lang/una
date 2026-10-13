@@ -29,6 +29,7 @@ mod hover;
 mod index;
 mod label;
 mod locals;
+mod lock;
 mod map;
 mod memory;
 mod records;
@@ -360,6 +361,10 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     // Edition 0.3 (ADR 0100 rule 3): the functions whose inferred failure rests on code in
     // error, once the capabilities of their operations are inferred.
     let in_error = dead::in_error(&env, &collected);
+    // Edition 0.3 (ADR 0092 rule 8, as amended): the locks of `[contracts]`, and the bindings
+    // and operations of the locked headers that they do not grant.
+    lock::resolve(&mut env, package.locks, &mut report);
+    lock::drift(&env, &mut report);
     // S-14 (ADR 0085): a package that writes files labels the failure of every `Files`
     // operation with what decides its writes. Pass 2 is probed first, its diagnostics dropped,
     // so that a read checked before a write has the label too. The probe's label is the least

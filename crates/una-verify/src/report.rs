@@ -21,6 +21,10 @@ pub fn diagnostics(
     for (obligation, outcome) in obligations.iter().zip(outcomes) {
         let code = match outcome.status {
             ObligationStatus::Proven => continue,
+            // ADR 0092 rule 8: a header weaker than its lock.
+            ObligationStatus::Refuted if obligation.kind == ObligationKind::ContractLock => {
+                Code::U3023
+            }
             ObligationStatus::Refuted => Code::U5001,
             ObligationStatus::Unknown => Code::U5002,
         };
@@ -80,6 +84,29 @@ fn message(obligation: &Obligation, outcome: &Outcome) -> String {
         .declaration
         .rsplit_once('.')
         .map_or(obligation.declaration.as_str(), |(_, name)| name);
+    // ADR 0092 rule 8: "the header of `update_prices` lets `@catalog.journal` run where `not
+    // dry_run` does not hold, which `una.toml` locks".
+    if let Some(Effect {
+        operation,
+        condition,
+        at: EffectAt::Lock(function),
+    }) = &obligation.site.effect
+    {
+        let base = format!(
+            "the header of `{function}` lets `{operation}` run where `{condition}` does not hold, which `una.toml` locks"
+        );
+        return match outcome.status {
+            ObligationStatus::Unknown => {
+                let reason = outcome
+                    .reason
+                    .as_deref()
+                    .unwrap_or("unknown")
+                    .trim_matches(|c| c == '(' || c == ')');
+                format!("{base} ({reason})")
+            }
+            _ => base,
+        };
+    }
     // ADR 0092 rule 3: "`@catalog.journal` may run where `not dry_run` is not proven".
     if let Some(effect) = &obligation.site.effect {
         let base = format!(
@@ -114,6 +141,7 @@ fn message(obligation: &Obligation, outcome: &Outcome) -> String {
         ObligationKind::EffectCondition => {
             format!("effect condition `{}`", obligation.goal)
         }
+        ObligationKind::ContractLock => format!("locked condition `{}`", obligation.goal),
         ObligationKind::Exhaustive => {
             format!("exhaustiveness of this `when`, `{}`,", obligation.goal)
         }
@@ -208,7 +236,7 @@ fn repairs(obligation: &Obligation) -> Vec<Repair> {
             ));
             candidates.push((None, "adjust the `ensures` clause".to_owned()));
         }
-        ObligationKind::EffectCondition => {}
+        ObligationKind::EffectCondition | ObligationKind::ContractLock => {}
         // `spec/13 §3`: a `division` proposes a guard.
         ObligationKind::Division => {
             candidates.push((None, format!("guard the division with `if {goal}`")));
@@ -277,5 +305,9 @@ fn effect_repairs(effect: &Effect) -> Vec<String> {
         // A function type has no conditions, so only a guard reaches the call (ADR 0092 rule
         // 3, as amended).
         EffectAt::Value => vec![format!("guard the call with `if {condition}`")],
+        // ADR 0092 rule 8: restore the locked condition; changing the lock is never a repair.
+        EffectAt::Lock(function) => vec![format!(
+            "restore the locked condition: write `{op} where {condition}` in the header of `{function}`, or a condition that implies it"
+        )],
     }
 }

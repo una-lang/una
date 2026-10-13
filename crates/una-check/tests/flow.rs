@@ -62,6 +62,7 @@ fn with_input<R>(
         settings: &settings,
         run: None,
         earlier_errors: false,
+        locks: &[],
     };
     f(&input)
 }
