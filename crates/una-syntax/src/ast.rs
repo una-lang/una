@@ -225,13 +225,17 @@ pub struct UsesClause {
     pub span: Span,
 }
 
-/// `upper_ident [ "[" lower_ident { "," lower_ident } "]" ]`.
+/// `upper_ident [ "[" cap_op { "," cap_op } "]" ]`, where `cap_op` is `lower_ident [ "where"
+/// line_expr ]` (ADR 0092).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CapType {
     /// The capability's name.
     pub name: Ident,
     /// The operations granted.
     pub ops: Vec<Ident>,
+    /// The condition of each operation in `ops`, in their order: `Some` after `where`, which
+    /// only the `uses` of a function or a handler in edition 0.3 may write (ADR 0092 rule 1).
+    pub conditions: Vec<Option<Expr>>,
     /// The whole capability type.
     pub span: Span,
 }

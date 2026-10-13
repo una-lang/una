@@ -15,7 +15,7 @@ use una_syntax::ast::{
     DeclKind, ElseBranch, ExampleDecl, ExpectationKind, Expr, ExprKind, ForSource, ForStmt,
     FunctionDecl, Handled, HandlingKind, IfBlock, IfThenStmt, IsTarget, LetValue, Literal,
     OpClauseKind, PatternKind, Range, SignedInt, Stmt, TextLit, TextPart, TogetherFor,
-    TogetherStmt, UnaryOp, VariantExpr, WhenExpr,
+    TogetherStmt, UnaryOp, UsesClause, VariantExpr, WhenExpr,
 };
 use una_syntax::{SourceDb, Span};
 
@@ -607,8 +607,30 @@ impl<'e, 'a> Fx<'e, 'a> {
                     .and_then(|c| self.env.capabilities.get(c))
                     .map_or_else(|| "?".to_owned(), |c| c.name.to_owned()),
                 ops: u.ops.clone(),
+                conds: Vec::new(),
             })
             .collect()
+    }
+
+    /// `uses` with the conditions that `clauses` write on their operations (ADR 0092), lowered
+    /// over the parameters in scope, as a `requires` clause is.
+    fn with_conditions(&mut self, mut uses: Vec<Use>, clauses: &[&UsesClause]) -> Vec<Use> {
+        for clause in clauses {
+            let cap = self.name(&clause.cap).to_owned();
+            let ops = &clause.cap_type.ops;
+            let conds: Vec<(String, CoreClause)> = ops
+                .iter()
+                .zip(&clause.cap_type.conditions)
+                .filter_map(|(op, condition)| {
+                    let condition = condition.as_ref()?;
+                    Some((self.name(op).to_owned(), self.clause(condition)))
+                })
+                .collect();
+            if let Some(entry) = uses.iter_mut().find(|u| u.cap == cap) {
+                entry.conds.extend(conds);
+            }
+        }
+        uses
     }
 
     fn needs(&self, needs: &[Need]) -> Vec<Use> {
@@ -1027,6 +1049,16 @@ impl<'e, 'a> Fx<'e, 'a> {
                 let declared_result = self.declared(&def.result);
                 let result = self.returning(&def.params, &params, declared_result);
                 let (requires, ensures) = self.contracts(&function.clauses);
+                let written: Vec<&UsesClause> = function
+                    .clauses
+                    .iter()
+                    .filter_map(|clause| match &clause.kind {
+                        ClauseKind::Uses(uses) => Some(uses),
+                        _ => None,
+                    })
+                    .collect();
+                let uses = self.needs(&def.uses);
+                let uses = self.with_conditions(uses, &written);
                 if self.returning.is_some() {
                     self.tail_wrap = Some(Wrap::Return);
                 }
@@ -1039,7 +1071,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     constraints: core_constraints(&def.constraints, def.type_params.len()),
                     params,
                     result,
-                    uses: self.needs(&def.uses),
+                    uses,
                     fails: def.fails.as_ref().map(|f| self.kind_name(f)),
                     error: def.fails.as_ref().and_then(|f| self.kind_path(f)),
                     requires,
@@ -1112,6 +1144,10 @@ impl<'e, 'a> Fx<'e, 'a> {
                 let def = self.env.handlers.get(id)?;
                 let params = self.params(&def.params);
                 let capability = def.capability.and_then(|c| self.env.capabilities.get(c));
+                // Conditions speak of the handler's parameters only (ADR 0092 rule 1).
+                let written: Vec<&UsesClause> = handler.uses.iter().collect();
+                let uses = self.needs(&def.uses);
+                let uses = self.with_conditions(uses, &written);
                 let mut ops = Vec::new();
                 for op in &handler.ops {
                     let mark = self.scope.len();
@@ -1136,7 +1172,7 @@ impl<'e, 'a> Fx<'e, 'a> {
                     params,
                     capability: capability.map_or_else(|| "?".to_owned(), |c| c.name.to_owned()),
                     capability_path: self.capability_path(def.capability),
-                    uses: self.needs(&def.uses),
+                    uses,
                     ops,
                 }
             }
@@ -3855,6 +3891,7 @@ mod tests {
                 cap: "log".to_owned(),
                 capability: "Log".to_owned(),
                 ops: vec!["write".to_owned()],
+                conds: Vec::new(),
             }],
             Some("Boom".to_owned()),
             Label::public(),
@@ -3867,6 +3904,7 @@ mod tests {
                 cap: "log".to_owned(),
                 capability: "Log".to_owned(),
                 ops: vec!["write".to_owned()],
+                conds: Vec::new(),
             }],
             None,
             Label::public(),

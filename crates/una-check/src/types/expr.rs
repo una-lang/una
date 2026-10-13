@@ -8,8 +8,8 @@ use una_diag::{Code, Escape, ObligationKind};
 use una_project::Edition;
 use una_syntax::Span;
 use una_syntax::ast::{
-    BinaryOp, Expr, ExprKind, Ident, IsTarget, LambdaParam, Literal, TextLit, TextPart, UnaryOp,
-    VariantExpr,
+    BinaryOp, ClauseKind, Expr, ExprKind, Ident, IsTarget, LambdaParam, Literal, TextLit, TextPart,
+    UnaryOp, VariantExpr,
 };
 
 use super::authority::{Base, Bound, Frame, Pass};
@@ -197,6 +197,14 @@ impl<'a> Checker<'_, 'a, '_> {
             },
             ExprKind::It => match self.ctx.it.clone() {
                 Some(ty) => ty,
+                None if self.ctx.op_condition => {
+                    self.report.error(
+                        Code::U2013,
+                        span,
+                        "`it` names no value in an operation's condition",
+                    );
+                    Ty::error()
+                }
                 None => {
                     self.report.error(
                         Code::U2013,
@@ -455,9 +463,28 @@ impl<'a> Checker<'_, 'a, '_> {
                         ),
                     );
                 }
-                // A function with effects or failures is a value only as an
-                // argument.
-                if effects && !site.argument && self.pass == Pass::Check && self.base != Base::Quiet
+                // A function whose `uses` carry a condition is not a value: the higher-order
+                // callee that would call it could not prove the condition (ADR 0092 rule 1).
+                let conditioned = self.env.functions.get(id).is_some_and(|f| match f.ast {
+                    super::env::FnAst::Function(decl) => decl.clauses.iter().any(|clause| {
+                        matches!(&clause.kind, ClauseKind::Uses(uses)
+                            if uses.cap_type.conditions.iter().any(Option::is_some))
+                    }),
+                    _ => false,
+                });
+                if conditioned && self.pass == Pass::Check && self.base != Base::Quiet {
+                    self.escaped.push(ident.span);
+                    self.report.error(
+                        Code::U3006,
+                        ident.span,
+                        format!(
+                            "`{name}` has a condition on an operation of its `uses`, so it is not a value; call it, or wrap the call in a lambda"
+                        ),
+                    );
+                } else if effects
+                    && !site.argument
+                    && self.pass == Pass::Check
+                    && self.base != Base::Quiet
                 {
                     self.escaped.push(ident.span);
                     self.report.error(

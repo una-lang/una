@@ -222,6 +222,9 @@ pub struct Use {
     pub capability: String,
     /// The operations.
     pub ops: Vec<String>,
+    /// The conditions written on its operations (ADR 0092), each with its operation, in the
+    /// order written; empty when none is written, as always before edition 0.3.
+    pub conds: Vec<(String, Clause)>,
 }
 
 /// A term of the refinement language (`spec/03 §3`): a tree over binders, `it` and

@@ -53,6 +53,15 @@ range           = signed_int ( ".." | "..<" ) signed_int ;
 signed_int      = [ "-" ] int_lit ;
 ```
 
+(v0.3, ADR 0092.) In edition `0.3`, the `uses` of a function's header and of a handler take a `cap_type` whose operations may carry a condition:
+
+```ebnf
+cap_type_cond   = upper_ident [ "[" cap_op { "," cap_op } "]" ] ;
+cap_op          = lower_ident [ "where" line_expr ] ;
+```
+
+A `cap_op` ends at the first `,` or `]` at bracket and parenthesis depth 0: every nested `,`, `[ ]` or `( )` belongs to the expression. A function type's `uses` (`fn_type_clause`) keep `cap_type`, so `where` there is U0101 in every edition, as it is in a header's `uses` in editions `0.1` and `0.2`. The condition's meaning is in `spec/05 §3`.
+
 After a `level`, `[` always starts the label's categories. A labeled list type is written with the named form, `secret List[Int]`, or after the categories, `secret[PII] [Int]`. A label with categories that is not followed by a type is U0101 (ADR 0018).
 
 ## 3. Predicates and functions
@@ -205,7 +214,7 @@ These rules are enforced after parsing and reported with the listed codes.
 | Rule | Code |
 | --- | --- |
 | `result` appears only in `ensures` clauses and `expect` lines | U2012 |
-| `it` appears only in `where` clauses and the second argument of `checked` | U2013 |
+| `it` appears only in `where` clauses and the second argument of `checked`. (v0.3, ADR 0092.) Only the `where` of a `kind`: not in an operation's `where` (`spec/05 §3`), where the message is "`it` names no value in an operation's condition" | U2013 |
 | `error` appears only inside the `fail` or `use` part of an `if error` handling clause | U2013 |
 | A capability operation, or a call to a function that uses capabilities or can fail, appears only as the whole `line_expr` of a `handled` statement, `let` or `final`, optionally wrapped in `attempt` (one effect per line). Example `do` lines are exempt (`spec/08 §2`) | U3013 |
 | A bare `cap_ref` (not followed by `.op(...)`) appears only on either side of a `with` binding or after `given @x =` | U3005 |

@@ -498,7 +498,7 @@ fn effectful_functions_are_values_only_as_arguments() {
             "U3006 t.una:41:3 `write` uses capabilities or can fail, so as a value it may only be passed directly as an argument",
             "U3006 t.una:44:8 field `run` of `Holder` has a function type with `uses` or `fails`, which a kind cannot store",
             "U3003 t.una:49:16 this function uses `@log: Log[write]`, which the expected function type does not allow",
-            "U3004 t.una:54:25 `@log` is used here, but this code declares no `uses`, so it is pure; a function passed to a prelude function such as `map`, `filter` or `fold` may use capabilities only in edition 0.2",
+            "U3004 t.una:54:25 `@log` is used here, but this code declares no `uses`, so it is pure; a function passed to a prelude function such as `map`, `filter` or `fold` may use capabilities only from edition 0.2",
             "U3009 t.una:58:51 this code declares no error kind, so it cannot fail with `Missing`; declare `fails` in its header",
         ]
     );
@@ -519,7 +519,7 @@ fn u3004_in_a_pure_lambda_keeps_the_message_of_its_edition() {
     assert_eq!(
         single(PURE_LAMBDAS.trim_start_matches("module t\n\n")),
         [
-            "U3004 t.una:11:25 `@log` is used here, but this code declares no `uses`, so it is pure; a function passed to a prelude function such as `map`, `filter` or `fold` may use capabilities only in edition 0.2",
+            "U3004 t.una:11:25 `@log` is used here, but this code declares no `uses`, so it is pure; a function passed to a prelude function such as `map`, `filter` or `fold` may use capabilities only from edition 0.2",
             "U3004 t.una:16:24 `@log` is used here, but this code declares no `uses`, so it is pure",
         ]
     );

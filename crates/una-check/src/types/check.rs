@@ -44,6 +44,9 @@ pub(crate) struct Ctx {
     pub(crate) ensures: bool,
     /// The type of `it`, where `it` is allowed (U2013).
     pub(crate) it: Option<Ty>,
+    /// In the condition of an operation of a `uses` clause (ADR 0092), where `it` names no
+    /// value.
+    pub(crate) op_condition: bool,
     /// The type of `error`, where `error` is allowed (U2013).
     pub(crate) error: Option<Ty>,
     /// The error kind in which `fail` finds its variant.
@@ -85,6 +88,7 @@ impl Ctx {
             result: None,
             ensures: false,
             it: None,
+            op_condition: false,
             error: None,
             fails: None,
             rl: Rl::Off,
@@ -925,6 +929,23 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         }
     }
 
+    /// The conditions of the operations of `uses` (ADR 0092 rule 1): each a `Bool` in the
+    /// refinement language over the parameters in scope, with the restrictions of a `requires`
+    /// clause (U2001, U2014, U2016, U2012), and no `it` (U2013).
+    fn op_conditions(&mut self, uses: &'a una_syntax::ast::UsesClause) {
+        for condition in uses.cap_type.conditions.iter().flatten() {
+            let ctx = Ctx {
+                rl: Rl::Clause,
+                labels: false,
+                op_condition: true,
+                ..Ctx::plain()
+            };
+            self.within(ctx, |checker| {
+                checker.condition(condition, "an operation's condition")
+            });
+        }
+    }
+
     /// The `where` predicate of an alias kind: `Bool`, in the refinement language, over `it`.
     fn refinement(&mut self, id: usize) {
         let Some(alias) = self.env.aliases.get(id) else {
@@ -998,8 +1019,8 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                         checker.condition(expr, "an `ensures` clause")
                     });
                 }
-                ClauseKind::Uses(_)
-                | ClauseKind::Fails(_)
+                ClauseKind::Uses(uses) => self.op_conditions(uses),
+                ClauseKind::Fails(_)
                 | ClauseKind::UsesOf(_)
                 | ClauseKind::FailsOf(_)
                 | ClauseKind::DerivedFrom(_) => {}
@@ -1331,6 +1352,23 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
         // unknown, so what inference leaves unsolved in their bodies is not reported.
         if capability.is_none() {
             self.vars.mark_unknown();
+        }
+        // The conditions of the handler's own `uses`, over its parameters (ADR 0092 rule 1).
+        if handler
+            .uses
+            .iter()
+            .any(|uses| uses.cap_type.conditions.iter().any(Option::is_some))
+        {
+            let mark = self.locals.len();
+            for param in &def.params {
+                self.bind(param.name, param.ty.base.clone());
+            }
+            let base = std::mem::replace(&mut self.base, Base::Quiet);
+            for uses in &handler.uses {
+                self.op_conditions(uses);
+            }
+            self.base = base;
+            self.locals.truncate(mark);
         }
         for op in &handler.ops {
             let mark = self.locals.len();
