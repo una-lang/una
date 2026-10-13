@@ -60,6 +60,7 @@ pub(crate) fn parse_plain(lexed: &Lexed, file: FileId, interner: &Interner) -> P
         nesting: 0,
         errors: Vec::new(),
         v0_2: lexed.keywords >= KeywordSet::V0_2,
+        v0_3: lexed.keywords >= KeywordSet::V0_3,
     };
     let tree = parser.file();
     Parsed {
@@ -150,6 +151,8 @@ struct Parser<'a> {
     errors: Vec<SyntaxError>,
     /// Whether the constructs of edition 0.2 parse (`spec/17 §1`).
     v0_2: bool,
+    /// Whether the constructs of edition 0.3 parse (`spec/13 §7`).
+    v0_3: bool,
 }
 
 fn is_layout(kind: &TokenKind) -> bool {
@@ -1196,7 +1199,7 @@ impl<'a> Parser<'a> {
                 let mut clauses = Vec::new();
                 loop {
                     if self.at_keyword(Keyword::Uses) {
-                        clauses.push(FnTypeClause::Uses(self.uses_clause()?));
+                        clauses.push(FnTypeClause::Uses(self.uses_clause(false)?));
                     } else if self.eat_keyword(Keyword::Fails) {
                         clauses.push(FnTypeClause::Fails(self.upper_name("an error kind")?));
                     } else {
@@ -1251,11 +1254,14 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn uses_clause(&mut self) -> Parse<UsesClause> {
+    /// A `uses` clause. `conditions`: whether its operations may carry `where` and a condition,
+    /// in the `uses` of a function or a handler in edition 0.3 (ADR 0092 rule 1). Elsewhere, and
+    /// in a function type, `where` there is the error it was before (U0101).
+    fn uses_clause(&mut self, conditions: bool) -> Parse<UsesClause> {
         let start = self.advance();
         let cap = self.cap_name()?;
         self.expect(&TokenKind::Colon, "`:` and the capability type")?;
-        let cap_type = self.cap_type()?;
+        let cap_type = self.cap_type(conditions && self.v0_3)?;
         Ok(UsesClause {
             cap,
             cap_type,
@@ -1263,20 +1269,36 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn cap_type(&mut self) -> Parse<CapType> {
+    fn cap_type(&mut self, conditions: bool) -> Parse<CapType> {
         let start = self.span();
         let name = self.upper_name("a capability name")?;
         let mut ops = Vec::new();
+        let mut written = Vec::new();
         if self.eat(&TokenKind::LBracket) {
-            ops.push(self.lower_name("an operation name")?);
-            while self.eat(&TokenKind::Comma) {
+            loop {
                 ops.push(self.lower_name("an operation name")?);
+                // An operation's condition ends at the first `,` or `]` outside brackets and
+                // parentheses, which no expression holds at its top level (ADR 0092 rule 1).
+                written.push(if conditions && self.eat_keyword(Keyword::Where) {
+                    Some(self.line_expr()?)
+                } else {
+                    None
+                });
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
             }
-            self.expect(&TokenKind::RBracket, "`,` or `]`")?;
+            let expected = if conditions {
+                "`,`, `where` or `]`"
+            } else {
+                "`,` or `]`"
+            };
+            self.expect(&TokenKind::RBracket, expected)?;
         }
         Ok(CapType {
             name,
             ops,
+            conditions: written,
             span: self.since(start),
         })
     }
@@ -1406,7 +1428,7 @@ impl<'a> Parser<'a> {
                 self.advance();
                 ClauseKind::UsesOf(self.lower_name("a parameter of function type")?)
             }
-            TokenKind::Keyword(Keyword::Uses) => ClauseKind::Uses(self.uses_clause()?),
+            TokenKind::Keyword(Keyword::Uses) => ClauseKind::Uses(self.uses_clause(true)?),
             TokenKind::Keyword(Keyword::Fails) if self.v0_2 && self.next_is_word("of") => {
                 self.advance();
                 self.advance();
@@ -1541,7 +1563,7 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::Indent, "the indented operations")?;
         let mut uses = Vec::new();
         while self.at_keyword(Keyword::Uses) {
-            uses.push(self.uses_clause()?);
+            uses.push(self.uses_clause(true)?);
             self.expect_line_end()?;
         }
         let mut ops = vec![self.handler_op()?];

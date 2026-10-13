@@ -382,7 +382,7 @@ impl<'a> Checker<'_, 'a, '_> {
                         cap.span,
                         name,
                         format!(
-                            "`@{name}` is used here, but this code declares no `uses`, so it is pure; a function passed to a prelude function such as `map`, `filter` or `fold` may use capabilities only in edition 0.2"
+                            "`@{name}` is used here, but this code declares no `uses`, so it is pure; a function passed to a prelude function such as `map`, `filter` or `fold` may use capabilities only from edition 0.2"
                         ),
                     ),
                     Base::Pure => self.undeclared(

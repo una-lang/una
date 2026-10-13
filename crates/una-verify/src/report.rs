@@ -8,7 +8,7 @@ use una_diag::{
 };
 use una_syntax::SourceDb;
 
-use crate::generate::{Obligation, Within};
+use crate::generate::{Effect, EffectAt, Obligation, Within};
 use crate::run::Outcome;
 
 /// The diagnostics of the obligations that are not proven.
@@ -80,6 +80,24 @@ fn message(obligation: &Obligation, outcome: &Outcome) -> String {
         .declaration
         .rsplit_once('.')
         .map_or(obligation.declaration.as_str(), |(_, name)| name);
+    // ADR 0092 rule 3: "`@catalog.journal` may run where `not dry_run` is not proven".
+    if let Some(effect) = &obligation.site.effect {
+        let base = format!(
+            "`{}` may run where `{}` is not proven",
+            effect.operation, effect.condition
+        );
+        return match outcome.status {
+            ObligationStatus::Unknown => {
+                let reason = outcome
+                    .reason
+                    .as_deref()
+                    .unwrap_or("unknown")
+                    .trim_matches(|c| c == '(' || c == ')');
+                format!("{base} ({reason})")
+            }
+            _ => base,
+        };
+    }
     let subject = match obligation.kind {
         ObligationKind::Postcondition => format!("postcondition of `{name}`"),
         ObligationKind::Precondition => match &obligation.site.function_value {
@@ -93,6 +111,9 @@ fn message(obligation: &Obligation, outcome: &Outcome) -> String {
         ObligationKind::Refinement => format!("refinement `{}`", obligation.goal),
         ObligationKind::Division => format!("division obligation `{}`", obligation.goal),
         ObligationKind::Overflow => format!("overflow obligation `{}`", obligation.goal),
+        ObligationKind::EffectCondition => {
+            format!("effect condition `{}`", obligation.goal)
+        }
         ObligationKind::Exhaustive => {
             format!("exhaustiveness of this `when`, `{}`,", obligation.goal)
         }
@@ -117,6 +138,21 @@ fn message(obligation: &Obligation, outcome: &Outcome) -> String {
 fn repairs(obligation: &Obligation) -> Vec<Repair> {
     let goal = &obligation.goal;
     let site = &obligation.site;
+    // ADR 0092 rule 5: the goal is ground, and the repairs are the condition's. None removes
+    // or weakens a condition, which would change authority.
+    if let Some(effect) = &site.effect {
+        return effect_repairs(effect)
+            .into_iter()
+            .enumerate()
+            .map(|(rank, description)| Repair {
+                widens: None,
+                rank: u32::try_from(rank + 1).unwrap_or(u32::MAX),
+                escape: None,
+                description,
+                edit: None,
+            })
+            .collect();
+    }
     if site.ground {
         return Vec::new();
     }
@@ -172,6 +208,7 @@ fn repairs(obligation: &Obligation) -> Vec<Repair> {
             ));
             candidates.push((None, "adjust the `ensures` clause".to_owned()));
         }
+        ObligationKind::EffectCondition => {}
         // `spec/13 §3`: a `division` proposes a guard.
         ObligationKind::Division => {
             candidates.push((None, format!("guard the division with `if {goal}`")));
@@ -206,4 +243,39 @@ fn repairs(obligation: &Obligation) -> Vec<Repair> {
             edit: None,
         })
         .collect()
+}
+
+/// The repairs of an `effect_condition` obligation, ranked (ADR 0092 rule 5).
+fn effect_repairs(effect: &Effect) -> Vec<String> {
+    let Effect {
+        operation,
+        condition,
+        at,
+    } = effect;
+    let op = operation
+        .rsplit_once('.')
+        .map_or(operation.as_str(), |(_, op)| op);
+    match at {
+        EffectAt::Call(callee) => vec![
+            format!(
+                "write the condition in the `uses` of `{callee}`, as `{op} where ...`: `{condition}` with each parameter of this function replaced by the parameter of `{callee}` it is passed as; `{callee}` then proves it where it runs `{op}`"
+            ),
+            format!("guard the call with `if {condition}`"),
+        ],
+        EffectAt::With(handler) => vec![
+            format!(
+                "write the condition in the `uses` of the handler `{handler}`, as `{op} where ...`: `{condition}` with each parameter of this function replaced by the parameter of `{handler}` it is passed as"
+            ),
+            format!("guard the `with` with `if {condition}`"),
+        ],
+        EffectAt::Operation => vec![
+            format!("guard the operation with `if {condition}`"),
+            format!(
+                "add `requires {condition}` to the enclosing function; its callers then prove it"
+            ),
+        ],
+        // A function type has no conditions, so only a guard reaches the call (ADR 0092 rule
+        // 3, as amended).
+        EffectAt::Value => vec![format!("guard the call with `if {condition}`")],
+    }
 }

@@ -97,3 +97,11 @@ ADRs 0092, 0093 and 0094 target edition `0.3`. This amendment adds that edition 
 - **Editions are cumulative.** Edition `0.3` has every construct, keyword and rule of edition `0.2`. A rule stated for edition `0.2` holds in every later edition, unless it says otherwise. The rules that target edition `0.3` apply only there.
 - **Edition `0.3` is a preview** until every rule that targets it has landed. Until then, a later `0.3.x` release may add obligations or errors to an edition `0.3` package. The edition only gets stricter, never looser.
 - **Editions `0.1` and `0.2` keep their promise.** A release changes what they accept or reject only to fix a soundness or security error, as the security patch releases have done. The Gate 1 pin (edition `0.1`) does not move.
+
+## Amendment (2026-10-13, second): what "stricter" means for edition `0.3`
+
+The preview promise that edition `0.3` only gets stricter concerns the programs that edition `0.2` can express: such a program keeps its result in a later `0.3.x` release, or gains obligations or errors (`spec/13 §7`).
+
+- **New constructs.** A later `0.3.x` release may also accept a construct that a rule targeting edition `0.3` adds and that earlier releases reject as a syntax error, such as the condition on an operation of ADR 0092 rule 1.
+- **Erasure.** Such a construct only narrows what a program may do: erasing it gives a program that edition `0.2` accepts, with no fewer allowed behaviors. The constructs of ADRs 0093 and 0094 must have the same property when they land.
+- **Test.** The edition test of the conformance suite lists each edition `0.2` package that writes such a construct, with the exact result of both editions and its erasure twin, and every other edition `0.2` package checks byte-identically in edition `0.3`.

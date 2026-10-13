@@ -1,0 +1,50 @@
+-- test: the argument of a `uses of` parameter runs through the function's own bindings, so a call of the parameter, and a function value passed to a standard function such as `map`, must be under every condition the function writes (ADR 0092 rule 3, as amended; ADR 0062)
+-- spec: spec/05 §3
+-- expect: error U5001 at src/main.una:15:3
+-- expect: error U5001 at src/main.una:29:12
+-- expect: error U5001 at src/main.una:35:12
+module main
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub g(f: fn(Int) -> Unit, dry: Bool) -> Unit
+  uses @log: Log[write where not dry]
+  uses of f
+=
+  f(1)
+
+pub g_guarded(f: fn(Int) -> Unit, dry: Bool) -> Unit
+  uses @log: Log[write where not dry]
+  uses of f
+=
+  if not dry
+    f(1)
+  unit
+
+pub g_map(f: fn(Int) -> Unit, xs: List[Int], dry: Bool) -> Int
+  uses @log: Log[write where not dry]
+  uses of f
+=
+  let ys = xs.map(each: f)
+  ys.len
+
+pub value_map(f: fn(Int) -> Unit uses @log: Log[write], xs: List[Int], dry: Bool) -> Int
+  uses @log: Log[write where not dry]
+=
+  let ys = xs.map(each: f)
+  ys.len
+
+pub lambda_map(xs: List[Int], dry: Bool) -> Int
+  uses @log: Log[write where not dry]
+=
+  if dry
+    0
+  else
+    let ys = xs.map(each: fn(n) -> @log.write(n))
+    ys.len
+
+pub h() -> Unit
+  uses @log: Log[write]
+=
+  g(fn(n) -> @log.write(n), dry: true)

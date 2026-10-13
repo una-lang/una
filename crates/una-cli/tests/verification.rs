@@ -502,7 +502,13 @@ fn the_verifier_generates_every_obligation_the_checker_found() {
             })
             .collect();
         let mut generated: Vec<String> = Vec::new();
-        for obligation in &obligations {
+        // The checker does not record `effect_condition` sites yet (#615), so the conformance
+        // cases of ADR 0092 pin them exactly instead:
+        // `effect_condition_sites_are_exactly_the_pinned_ones`.
+        for obligation in obligations
+            .iter()
+            .filter(|o| o.kind != una_diag::ObligationKind::EffectCondition)
+        {
             let spans = if obligation.paths.is_empty() {
                 vec![obligation.source]
             } else {
@@ -1886,4 +1892,168 @@ fn a_contract_across_a_loop_names_the_map_and_the_helper_pattern() {
             "U5002 postcondition of `tally` could not be proven (the loop forgets every fact about the map `counts` but the refinements of its type, so the counterexample sets `counts` freely; state what one iteration does as the `ensures` of a helper with an `edit` parameter, and call the helper in the loop)"
         ]
     );
+}
+
+/// A package of edition `0.3` with `n` functions, each conditioning an operation of its binding
+/// on a parameter and performing it under that condition, the next calling the previous one
+/// (ADR 0092).
+fn conditioned_source(n: usize) -> String {
+    let mut out = String::from("module chain\n\npub capability Log\n  op write(n: Int) -> Unit\n");
+    for i in 0..n {
+        out.push_str(&format!(
+            "\npub f{i}(n: Int, dry: Bool) -> Unit\n  uses @log: Log[write where not dry]\n=\n  if not dry\n"
+        ));
+        if i == 0 {
+            out.push_str("    @log.write(n)\n");
+        } else {
+            out.push_str(&format!("    f{}(n, dry: dry)\n", i - 1));
+        }
+        out.push_str("  unit\n");
+    }
+    out
+}
+
+/// The `effect_condition` obligations of [`conditioned_source`] and the bytes of all queries.
+fn conditioned_obligations(n: usize) -> (usize, usize) {
+    let root = package_of_edition(
+        &format!("chain-{n}"),
+        "0.3",
+        &[("src/chain.una", &conditioned_source(n))],
+    );
+    let (checked, obligations) = generated(&root);
+    assert_eq!(checked.diagnostics, [], "{n}");
+    let effects = obligations
+        .iter()
+        .filter(|o| o.kind == una_diag::ObligationKind::EffectCondition)
+        .count();
+    let text = std::fs::read_to_string(root.join("verification.lock")).unwrap();
+    let (lock, _) = una_project::parse_lock(&text);
+    let lock = una_verify::Lock {
+        text,
+        solver_version: lock.solver_version,
+        step_budget: lock.step_budget,
+        random_seed: lock.random_seed,
+    };
+    let bytes = una_verify::queries(&obligations, &lock)
+        .iter()
+        .map(String::len)
+        .sum();
+    let _ = std::fs::remove_dir_all(&root);
+    (effects, bytes)
+}
+
+#[test]
+fn conditions_give_one_obligation_per_site_and_queries_linear_in_the_sites() {
+    // ADR 0092 rule 3: one query per site of a conditioned operation. Each function has one
+    // site, its operation or its call of the previous function, so the count is exact; the
+    // query text of each site does not grow with the others, so 8x the functions give about
+    // 8x the bytes.
+    let (small_effects, small) = conditioned_obligations(25);
+    let (large_effects, large) = conditioned_obligations(200);
+    assert_eq!((small_effects, large_effects), (25, 200));
+    let growth = large as f64 / small as f64;
+    eprintln!("8x the conditioned functions: {growth:.1}x the query bytes ({small}, {large})");
+    assert!(
+        growth < 12.0,
+        "8x the conditioned functions gave {growth:.1}x the query bytes"
+    );
+}
+
+/// Every `effect_condition` site of the conformance cases of ADR 0092, by case: the file, line
+/// and column of the site, and the conditioned operation. Proven sites are listed with refuted
+/// ones: the list is what the verifier must generate, no more and no less.
+const EFFECT_SITES: &[(&str, &[&str])] = &[
+    (
+        "authority/op_condition_accepted",
+        &["src/pricing.una:15:5 @catalog.set_price"],
+    ),
+    (
+        "verification/effect_condition_call",
+        &[
+            "src/calls.una:17:5 @log.write",
+            "src/calls.una:23:3 @log.write",
+            "src/calls.una:29:5 @log.write",
+            "src/calls.una:35:3 @log.write",
+            "src/calls.una:40:3 @log.write",
+            "src/calls.una:45:3 @main.write",
+        ],
+    ),
+    (
+        "verification/effect_condition_operation",
+        &[
+            "src/ops.una:14:3 @log.write",
+            "src/ops.una:20:5 @log.write",
+            "src/ops.una:27:3 @log.write",
+            "src/ops.una:32:25 @log.write",
+            "src/ops.una:38:41 @log.write",
+            "src/ops.una:46:3 @log.write",
+            "src/ops.una:53:5 @log.write",
+        ],
+    ),
+    (
+        "verification/effect_condition_value",
+        &[
+            "src/values.una:14:3 @log.write",
+            "src/values.una:20:5 @log.write",
+            "src/values.una:31:3 @log.write",
+            "src/values.una:36:3 @main.write",
+        ],
+    ),
+    (
+        "verification/effect_condition_with",
+        &[
+            "src/installs.una:21:5 @log.write",
+            "src/installs.una:26:15 @log.write",
+            "src/installs.una:30:15 @log.write",
+            "src/installs.una:40:25 @log.write",
+            "src/installs.una:45:25 @log.write",
+        ],
+    ),
+    (
+        "verification/effect_condition_uses_of",
+        &[
+            "src/main.una:15:3 @log.write",
+            "src/main.una:22:5 @log.write",
+            "src/main.una:29:12 @log.write",
+            "src/main.una:35:12 @log.write",
+            "src/main.una:44:36 @log.write",
+        ],
+    ),
+    (
+        "verification/effect_condition_policy",
+        &[
+            "src/app/main.una:11:21 @keys.hmac",
+            "src/app/main.una:22:23 @keys.hmac",
+        ],
+    ),
+];
+
+#[test]
+fn effect_condition_sites_are_exactly_the_pinned_ones() {
+    // Until the checker records these sites (#615), this pins the verifier's list, so a site
+    // that goes missing fails here rather than proving nothing.
+    for (case, expected) in EFFECT_SITES {
+        let (checked, obligations) = generated(&repository().join("tests/conformance").join(case));
+        assert_eq!(checked.diagnostics, [], "{case}");
+        let mut found: Vec<String> = obligations
+            .iter()
+            .filter(|o| o.kind == una_diag::ObligationKind::EffectCondition)
+            .map(|o| {
+                let location = checked.sources.location(o.source);
+                let operation = o
+                    .site
+                    .effect
+                    .as_ref()
+                    .map_or("?", |effect| effect.operation.as_str());
+                format!(
+                    "{}:{}:{} {operation}",
+                    location.file, location.start.line, location.start.col
+                )
+            })
+            .collect();
+        found.sort();
+        let mut expected: Vec<String> = expected.iter().map(|s| (*s).to_owned()).collect();
+        expected.sort();
+        assert_eq!(found, expected, "{case}");
+    }
 }

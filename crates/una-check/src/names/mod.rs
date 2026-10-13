@@ -448,7 +448,7 @@ impl<'p, 'a> Checker<'p, 'a> {
                 Code::U1002,
                 ident.span,
                 format!(
-                    "`{name}` is a built-in fixed-width integer type in edition 0.2, so a {} cannot take its name",
+                    "`{name}` is a built-in fixed-width integer type from edition 0.2, so a {} cannot take its name",
                     what.word()
                 ),
             );
@@ -468,7 +468,7 @@ impl<'p, 'a> Checker<'p, 'a> {
                 Code::U1002,
                 ident.span,
                 format!(
-                    "`{name}` is a built-in type in edition 0.2, so a {} cannot take its name",
+                    "`{name}` is a built-in type from edition 0.2, so a {} cannot take its name",
                     what.word()
                 ),
             );
@@ -483,7 +483,7 @@ impl<'p, 'a> Checker<'p, 'a> {
                 Code::U1002,
                 ident.span,
                 format!(
-                    "`{name}` is a built-in type of maps in edition 0.2, so a {} cannot take its name",
+                    "`{name}` is a built-in type of maps from edition 0.2, so a {} cannot take its name",
                     what.word()
                 ),
             );
@@ -502,7 +502,7 @@ impl<'p, 'a> Checker<'p, 'a> {
                 Code::U1002,
                 ident.span,
                 format!(
-                    "`{name}` is a name of the prelude in edition 0.2, so a {} cannot take its name",
+                    "`{name}` is a name of the prelude from edition 0.2, so a {} cannot take its name",
                     what.word()
                 ),
             );
@@ -517,7 +517,7 @@ impl<'p, 'a> Checker<'p, 'a> {
                 Code::U1002,
                 ident.span,
                 format!(
-                    "`{name}` is a built-in constraint in edition 0.2, so a {} cannot take its name",
+                    "`{name}` is a built-in constraint from edition 0.2, so a {} cannot take its name",
                     what.word()
                 ),
             );

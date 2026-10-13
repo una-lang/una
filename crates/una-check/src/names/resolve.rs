@@ -511,6 +511,10 @@ impl<'a> Resolver<'_, '_, 'a> {
 
     fn cap_type(&mut self, cap_type: &CapType) {
         self.lookup(&cap_type.name, Space::Upper, "capability");
+        // The conditions of its operations, over the parameters in scope (ADR 0092 rule 1).
+        for condition in cap_type.conditions.iter().flatten() {
+            self.expr(condition);
+        }
     }
 
     /// A type (an unknown type name is U1001); label categories wait for M6.

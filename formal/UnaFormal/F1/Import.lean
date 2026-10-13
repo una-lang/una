@@ -243,6 +243,11 @@ def usesEffects (uses : List J) (invoked : List String := []) (dyn : List String
   let mut op := false
   let mut host : HostFx := {}
   for u in uses do
+    -- ADR 0092 rule 7: a condition on an operation is not re-checked until the importer reads
+    -- `Fun.conds` (#601), which fails closed.
+    match u.getObjValD "conds" with
+    | .arr cs => if cs.size > 0 then throw "a conditioned operation (ADR 0092)" else pure ()
+    | _ => pure ()
     let cap ← str (← field u "capability")
     for o in ← arr (← field u "ops") do
       let o ← str o

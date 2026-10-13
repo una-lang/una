@@ -226,11 +226,22 @@ impl Writer<'_> {
     }
 
     fn use_(&self, u: &Use) -> J {
-        J::Obj(vec![
+        let mut fields = vec![
             ("cap", s(&u.cap)),
             ("capability", s(&u.capability)),
             ("ops", strings(&u.ops)),
-        ])
+        ];
+        // ADR 0092: an additive key, present only when a condition is written (ADR 0076
+        // rule 1), so a document without one is unchanged.
+        if !u.conds.is_empty() {
+            fields.push((
+                "conds",
+                list(&u.conds, |(op, clause)| {
+                    J::Obj(vec![("op", s(op)), ("cond", self.clause(clause))])
+                }),
+            ));
+        }
+        J::Obj(fields)
     }
 
     fn ctor(&self, ctor: &Ctor) -> J {
@@ -551,6 +562,7 @@ impl Writer<'_> {
                 args,
                 arg_spans,
                 given,
+                ..
             } => node!(Handler,
                 "handler" => self.path(handler),
                 "args" => self.atoms(args),
