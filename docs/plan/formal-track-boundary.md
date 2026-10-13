@@ -2,7 +2,7 @@
 
 - Issue: #562, under #46
 - Date: 2026-10-11
-- Status: statement approved by the coordinator (2026-10-11, N-155); in progress
+- Status: statement approved (2026-10-11); in progress
 
 ## 1. Why
 
@@ -56,7 +56,7 @@ So confinement is stated about what runs during the call: the events it produces
 Each is "not re-checked", never accepted.
 
 - **R1. A handler granted for a host capability**, B10's adapter (`read_only_files` for `Files`). `Files`, `Http` and the operation are primitives of F1, not bindings a `with` rebinds. A call that grants a host capability's handler is not re-checked, so B10's reference is not re-checked in F1. This is a stated coverage gap; future work: host-capability rebinding in F1 (§7).
-- **R2. A release reachable from a boundary call.** The coordinator's ruling (N-155): never. A vendored or plugin module never reaches a policy, since a release belongs to the trusted modules. ADR 0093's amendment of 2026-10-11 (#567) makes it a build error, U3024, and `Auth.allows` never allows a release event. In F1 such a call is not re-checked.
+- **R2. A release reachable from a boundary call.** The ruling: never. A vendored or plugin module never reaches a policy, since a release belongs to the trusted modules. ADR 0093's amendment of 2026-10-11 (#567) makes it a build error, U3024, and `Auth.allows` never allows a release event. In F1 such a call is not re-checked.
 - **R3. `Env.get`.** The check asks the ceiling for `env`, but `envGet` has no event: the guarantee for `Env` is static only, as in #561.
 - **R4. An effectful closure that escapes** in a boundary function's result would run the boundary's code after the call. The ADR relies on second-class function values (U3006). F1 refuses: a result type with an effectful `LTy.fn` makes the call not re-checked.
 - **R5. `Keys.hmac`, `Clock` and other operations F1 lacks**: not re-checked, as today.

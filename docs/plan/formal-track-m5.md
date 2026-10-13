@@ -1,7 +1,7 @@
 # Formal track: M5, a stateful host
 
 - Issue: #46
-- Plan: `docs/plan/formal-track.md` §7 (M5, renumbered with the owner's approval of 2026-10-09)
+- Plan: `docs/plan/formal-track.md` §7 (M5, renumbered with the approval of 2026-10-09)
 - Previous step: `docs/plan/formal-track-m4-completion.md`
 - Date: 2026-10-09
 - Status: done. Parts 1 to 3 are proven, with no `sorry` (§10). The re-check of `Files` is M5b (§12, #467); `Http`'s is M5c (#470)
@@ -57,7 +57,7 @@ Nothing constrains it. ADR 0085 decision 7 makes every request's failure, and it
 
 **Events.** `out` (the console line), `req` (the request sent, a sink at `Http`'s `accepts`), `write` (a sink at `Files.write`'s `accepts`, path only), `read` (a sink at `Files.read`'s `accepts`, `public`: the path goes to the operating system, as the checker already requires), and `release`.
 
-**Every operation of the stateful capabilities is covered.** `spec/14 §3` gives `Files` two operations, `read` and `write`, and both are modeled. `spec/24 §1` gives `Http` four, `get`, `post`, `put` and `delete`. They differ only in their method and in whether they send a body, so one form covers them: `req m url headers body key`, with `m` the method and `body` absent for `get` and `delete`. All four accept `internal`, fail with `HttpError` and return an `internal` `Response`, so one rule types them. The abort of a header value with a control character (U6004, N-40) is outside the model, as aborts are (`spec/07 §1`).
+**Every operation of the stateful capabilities is covered.** `spec/14 §3` gives `Files` two operations, `read` and `write`, and both are modeled. `spec/24 §1` gives `Http` four, `get`, `post`, `put` and `delete`. They differ only in their method and in whether they send a body, so one form covers them: `req m url headers body key`, with `m` the method and `body` absent for `get` and `delete`. All four accept `internal`, fail with `HttpError` and return an `internal` `Response`, so one rule types them. The abort of a header value with a control character (U6004) is outside the model, as aborts are (`spec/07 §1`).
 
 | Operation (`spec/24 §1`, `spec/14 §3`) | Model form | Sinks, at `accepts` | Failure label | Result |
 | --- | --- | --- | --- | --- |
@@ -126,7 +126,7 @@ Non-vacuity, two examples:
 
 Each assumption is a hypothesis of the theorem or part of the model, stated where it is used:
 
-1. **(H1) and (H2)**, content-independence of failures and shapes; and, for the re-checker's erasure, **(H3)**: a response does not depend on annotations, which a host given text meets (§11). Una writes only UTF-8, so a read of invalid UTF-8 cannot follow a Una write (ADR 0085 decision 3). A file system where content decides a failure, such as a full disk, is resource consumption, outside the model (`spec/07 §1`). **The real host does not meet H1 today (S-16):** `Files.read` fails on a file that is not valid UTF-8, which a file written by another program can be. The fix (Una-1, ADR in progress) makes invalid text abort the run, outside the model as aborts are. After it ships, H1 holds of the real host.
+1. **(H1) and (H2)**, content-independence of failures and shapes; and, for the re-checker's erasure, **(H3)**: a response does not depend on annotations, which a host given text meets (§11). Una writes only UTF-8, so a read of invalid UTF-8 cannot follow a Una write (ADR 0085 decision 3). A file system where content decides a failure, such as a full disk, is resource consumption, outside the model (`spec/07 §1`). **The real host does not meet H1 today (S-16):** `Files.read` fails on a file that is not valid UTF-8, which a file written by another program can be. The fix (an ADR in progress) makes invalid text abort the run, outside the model as aborts are. After it ships, H1 holds of the real host.
 2. **No other writer.** During a run, and between runs, only the package's own writes change the file system. Other programs and people are outside the model (`spec/07 §1`, external systems; decision 4). That includes a server the package talks to: the model's servers do not write the file system (§10).
 3. **One package.** The file-state label joins the writes of the whole program. That holds while a package imports no other package (decision 5); the ADR records what must change if that ever does.
 4. **The checker computes a sound file-state label.** The model states it declaratively, at each write and each call of a writing function. That the checker's fixpoint over the call graph, its probe pass and its caps (lambdas at `internal`, values at their bound) meet it is the re-check's to check, not the theorem's. See §6.
@@ -152,7 +152,7 @@ None uses `Files`, `Http`, `Env` or `Keys`. F1's host operation `get` is never r
 
 A handler of a package's capability could itself call `Files` or `Http`. Its body is outside the reach set, as §3 of the completion plan states, and T4 and F2 (M7) model handlers.
 
-## 8. The coordinator's answers (2026-10-09)
+## 8. Answers (2026-10-09)
 
 1. **`WorldRel`:** the reading above, with the premise that every stateful sink accepts at most `internal` (§4).
 2. **A read's path is a sink:** yes, an event `read` at `Files.read`'s `accepts` (§2).
@@ -160,7 +160,7 @@ A handler of a package's capability could itself call `Files` or `Http`. Its bod
 4. **Every operation is covered:** `Files.read`, `Files.write`, and `Http`'s `get`, `post`, `put` and `delete` (§2).
 5. **Two non-vacuity examples:** public writes, and an internal write seen by a public observer (§4).
 
-Parts 1 and 2 go first. The counterexamples, `s14_old_leaks` and `s15_old_leaks`, go to the coordinator before `t6_host` starts.
+Parts 1 and 2 go first. The counterexamples, `s14_old_leaks` and `s15_old_leaks`, are reviewed before `t6_host` starts.
 
 ## 9. Questions asked (answered in §8)
 
@@ -195,7 +195,7 @@ Every proof of M3 and M4 is carried over (T1, the unary and binary halves, insta
 
 `acceptsRead ⊑ internal` was added in the proof. Without it, a read's content could reveal a path the observer cannot see. `Files.read` accepts `public`, so it holds. The host must also be lawful: H1 and H2 (`Host.Lawful`).
 
-**What Una-1's review found about the real host** (2026-10-09):
+**What the review found about the real host** (2026-10-09):
 - **H1 does not hold of today's `Files.read` (S-16).** A read of a file that is not valid UTF-8 fails, so whether a read fails depends on content, not only on the path and the shape. `una check` accepts a program that prints, at `public`, whether an `internal` file is valid UTF-8 (v0.3.4). The fix is in the runtime, under its own ADR. Once it lands, H1 holds of the real host. The theorem needs no change: it assumes H1 and says so. **Fixed in v0.3.5** (ADR 0086): invalid text aborts the run with U6005, and H1 holds of the real host.
 - **The file system and the servers are disjoint.** The model keeps their states apart, so a request never changes the file system. A server on the same machine that writes into the granted directory would join them. A request at an `internal` program counter would then change the shape, and a later read whose failure is `public` would reveal it. This is outside the model, as races and other processes are (§5, assumption 2).
 
@@ -211,7 +211,7 @@ F1H is folded into F1, so one model remains: `formal/UnaFormal/F1/`, with the ho
 
 **The re-checker's labels for the host** (as #459 left them; M5b replaces them, §12). The importer reads no `Files` or `Http` operation, and the checker rejects the host forms until M5b. Every program the re-checker certifies gives the host the strictest labels `Program.HostWF` allows, every stateful sink at `⊥` and every result and failure floor at `internal` (`Import.mkProgram`). They decide no verdict, and they make `HostWF` hold by construction: `progOk` checks it (`Check.hostWfB`), so `progOk_sound` proves it.
 
-**Binding on M5b** (the Coordinator, from Una-1's review, 2026-10-09). Once the importer reads host operations, the host's labels in `Import.mkProgram` MUST come from the document's host signatures (`Files.read`, `Files.write` and `Http`'s `accepts`, result labels and failure floor), not be fixed by construction. Otherwise the certificate would describe a host other than the document's. This is an acceptance criterion of M5b. The importer no longer reads `Http.get`'s labels from the document, so its demotion for them is gone; no declaration of the corpus had it.
+**Binding on M5b** (from the review, 2026-10-09). Once the importer reads host operations, the host's labels in `Import.mkProgram` MUST come from the document's host signatures (`Files.read`, `Files.write` and `Http`'s `accepts`, result labels and failure floor), not be fixed by construction. Otherwise the certificate would describe a host other than the document's. This is an acceptance criterion of M5b. The importer no longer reads `Http.get`'s labels from the document, so its demotion for them is gone; no declaration of the corpus had it.
 
 **On any host.** `t6_release_host` asks the host to be lawful, and the real host met H1 only from v0.3.5 (S-16). A run of a program without host operations never reads or writes a file, so the premise is never used:
 - `eval_hostFree` (`HostFree.lean`): a program none of whose functions performs a host operation, run on a body that performs none, from values whose closures perform none, runs on any host as on the host without state (`Host.unit`), and leaves the world as it found it.
@@ -242,7 +242,7 @@ The document's events erase to those of `P₁`'s typed run, so they are first-or
 
 ## 12. M5b: the re-check of `Files` (#467)
 
-The re-check reads `Files.read` and `Files.write` (Coordinator's decision N-74). `Http`'s real signature does not fit the model's request: it takes `List[Header]` and `Option[Text]` and returns a `Response` record. So it stays "not re-checked: Http's signature is outside F1", and the model's extension is M5c (#470).
+The re-check reads `Files.read` and `Files.write` (decided in review). `Http`'s real signature does not fit the model's request: it takes `List[Header]` and `Option[Text]` and returns a `Response` record. So it stays "not re-checked: Http's signature is outside F1", and the model's extension is M5c (#470).
 
 **The export.** `una core --json` gains a document-level key, `file_state`: the package's file-state label (ADR 0085 decision 1), which the checker computes (`spec/13 §8`).
 
@@ -255,14 +255,14 @@ The re-check reads `Files.read` and `Files.write` (Coordinator's decision N-74).
 
 **`file_state` is untrusted** (`spec/13 §8`, "may rely on"). The checker types `read` and `write` by the model's rules (`Program.fsFail`; the write's `pc ⊔ ℓ(path) ⊑ fileState`; its `accepts`), with their cases in `CheckSoundCore`. `progOk` caps the file-state label at `internal` (`Check.hostWfB`). So a value too low gives a rejection or a declaration not re-checked, never an accepted one. A value too high only labels failures higher.
 
-**The whole package** (Una-1's finding on #471, CONFIRMED). The re-check checks `file_state` only against the writes of the programs it certifies. A write elsewhere never meets it: in a declaration rejected or not re-checked, in a handler, or in a node the reading cannot tell from one. Under a lowered label, a reader that branches on a read's failure would then be accepted, which is S-14's shape. So `Import.guardFiles` looks for every write site of the document, in a declaration of any kind (`writeSite`). The test is default-deny (the coordinator's rule, after Una-1 found renamed nodes that escaped a list of names):
+**The whole package** (a review finding on #471, CONFIRMED). The re-check checks `file_state` only against the writes of the programs it certifies. A write elsewhere never meets it: in a declaration rejected or not re-checked, in a handler, or in a node the reading cannot tell from one. Under a lowered label, a reader that branches on a read's failure would then be accepted, which is S-14's shape. So `Import.guardFiles` looks for every write site of the document, in a declaration of any kind (`writeSite`). The test is default-deny (the rule, after a review found renamed nodes that escaped a list of names):
 - an operation is safe only when its capability path resolves to a capability the document declares (its own or the host's), its `capability` field is that path's name, its operation is one the capability declares, and it is not `std.host`'s `Files.write`;
 - a `uses` entry is safe only when it names a declared capability, grants only operations that capability declares, and does not grant `Files.write`;
 - every other node counts as a site, so a renamed, stripped or inconsistent node demotes instead of escaping.
-- `std.host` is what `spec/14 §3` and `spec/24` fix (`Import.stdHost`), not what the export's `host` key says: a `host` entry that differs from it is a site (`hostSites`), so a document cannot declare a capability of `std.host` to hide a write (Una-1's probe l);
+- `std.host` is what `spec/14 §3` and `spec/24` fix (`Import.stdHost`), not what the export's `host` key says: a `host` entry that differs from it is a site (`hostSites`), so a document cannot declare a capability of `std.host` to hide a write (the review's probe l);
 - only the elements of `uses` arrays are read as grants, so a handler declaration, which names a capability and its operations, is not one. A handler whose body writes a file is still a site, through its operation.
 
-Unless every declaration that holds one is a function accepted in a certified program, every declaration accepted on a lawful host is not re-checked: "the file-state label is not verified for the whole package". `guardFiles_sub` proves that the guard only demotes. `ImportTests` checks it on Una-1's repros, each leaving the reader not re-checked: a writer rejected, one not re-checked through `Http`, one with its capability path stripped, one whose capability and `uses` are renamed while its path stays `Files` (the h-shape), one whose capability and path disagree, one that writes through a capability the export adds to `std.host`, and a handler that writes. The honest control is still accepted, and so is a reader beside a user handler that writes nothing.
+Unless every declaration that holds one is a function accepted in a certified program, every declaration accepted on a lawful host is not re-checked: "the file-state label is not verified for the whole package". `guardFiles_sub` proves that the guard only demotes. `ImportTests` checks it on the review's repros, each leaving the reader not re-checked: a writer rejected, one not re-checked through `Http`, one with its capability path stripped, one whose capability and `uses` are renamed while its path stays `Files` (the h-shape), one whose capability and path disagree, one that writes through a capability the export adds to `std.host`, and a handler that writes. The honest control is still accepted, and so is a reader beside a user handler that writes nothing.
 
 **The tamper test** (`ImportTests`). `mark` writes an `internal` path, so the true label is `internal`, and the export claims `public`. `mark` is rejected ("a write whose path or program counter is above the file-state label"), and `probe`, whose read's failure the lowered label would make public, is not re-checked.
 

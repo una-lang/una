@@ -2,7 +2,7 @@
 
 - Issue: #545, under #46
 - Date: 2026-10-11
-- Status: statement approved by the coordinator (2026-10-11, N-125); implemented, in review
+- Status: statement approved (2026-10-11); implemented, in review
 
 ## 1. Why
 
@@ -38,11 +38,11 @@ Non-vacuity, `AtExample`:
 
 ## 5. Gate
 
-- `scripts/formal.sh` and `docs/reviews/formal-m2-replay/check.sh`, each changed line of `expected.txt` explained to the coordinator before merge (N-108);
+- `scripts/formal.sh` and `docs/reviews/formal-m2-replay/check.sh`, each changed line of `expected.txt` explained in review before merge;
 - the corpus delta, a fresh export, with every flip listed and none rejected;
 - the hunt's F rerun;
 - local CI;
-- the review (Una-2).
+- an adversarial review.
 
 Result (2026-10-11, on `main` at `97294021`):
 - `scripts/formal.sh`: PASS, 352 theorems, no `sorry`. The constructor is `Rhs.elemAt`, since `at` is a keyword of Lean's tactics.

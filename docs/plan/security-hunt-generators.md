@@ -135,7 +135,7 @@ These operators stay inside the importer's vocabulary, so their programs are re-
 - F6. Vary an `Http` call's URL, headers and body labels. S-15's shapes.
 - F7. Route a secret through the prelude functions the re-check reads since #532, #542 and #545: `at`, at a public and at a secret index, `or_else`, with a secret value and with a secret default, `min`, `max`, `abs`, `slice`, and `is_ok`, of a public result of a secret (structural, so public) and of a result chosen under a secret condition (so secret). A table of its own, so that F1's programs for earlier seeds rebuild unchanged.
 
-The class is open, but for F1's and F7's endings that reveal the secret at `public` (a public result, a print, a print under the secret): those are must-reject, so `una check` alone decides them whatever the re-check says, and F7's structural `is_ok`, whose result is public, is must-accept there (Una-2's review of #547). The judge of the rest is the comparison: a declaration that `una check` accepts and the re-check rejects is a candidate, and the program's own declaration not re-checked is `unknown`.
+The class is open, but for F1's and F7's endings that reveal the secret at `public` (a public result, a print, a print under the secret): those are must-reject, so `una check` alone decides them whatever the re-check says, and F7's structural `is_ok`, whose result is public, is must-accept there (the review of #547). The judge of the rest is the comparison: a declaration that `una check` accepts and the re-check rejects is a candidate, and the program's own declaration not re-checked is `unknown`.
 
 ### R. Refactors that keep every label (must-keep)
 
@@ -159,7 +159,7 @@ An exception is known in advance. Rule 8's edition 0.1 defense makes R3 and R4 c
 2. **Part (b)**, with the F family and the R family's accepted programs.
 3. **The two-run oracle** on everything accepted: first the open T8 to T12 programs, then the other families, then the examples under V-host.
 
-Each campaign is heavy work and takes a machine slot between benchmark runs (the coordinator's condition 3). The first slot measures the cost on 500 programs before a full round is planned.
+Each campaign is heavy work and takes a machine slot between benchmark runs (condition 3 of its approval). The first slot measures the cost on 500 programs before a full round is planned.
 
 ## 6. What is kept
 

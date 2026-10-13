@@ -37,7 +37,7 @@ Each assumption is a hypothesis of `t6` or a field of `Program.LWellFormed`.
 
 ## 3. What remains
 
-- **Declassification, option B1** (the coordinator's decision, 2026-10-09). A body's release becomes an effect at `ℓ(to)`, so a function that declassifies can be called only under a program counter at most `ℓ(to)`. The theorem: two runs agree on every observable event and outcome, or their first observable difference is a pair of releases at the same point with different values. "Runs whose releases agree" is a corollary.
+- **Declassification, option B1** (decided 2026-10-09). A body's release becomes an effect at `ℓ(to)`, so a function that declassifies can be called only under a program counter at most `ℓ(to)`. The theorem: two runs agree on every observable event and outcome, or their first observable difference is a pair of releases at the same point with different values. "Runs whose releases agree" is a corollary.
   - **Coverage gap, stated:** Una accepts a call of a declassifying function under a raised program counter, and that is sound, since the release is not observable and the result is raised. The theorem says nothing about those programs.
   - **Option B2**, gradual release in the knowledge style with no restriction, is later research.
 - **M2**, first: the Lean checker over `una core --json` and the replay of S-01 to S-12.
@@ -131,7 +131,7 @@ The exclusion is the model's, and it is needed because B1 makes the release an e
 - **What the corpus shows.** 35 declarations in 22 documents move from accepted to not re-checked:
   - 29 reach a function that is not re-checked. The most common causes are `div` (11), `prelude.append` (4) and generic records (4).
   - 6 reach a function that is rejected for want of #443's export keys.
-- **Release sets.** They now count the declarations inside lambdas too, so a caller is never checked against a set that misses one (Una-1's case).
+- **Release sets.** They now count the declarations inside lambdas too, so a caller is never checked against a set that misses one (a case found in review).
 - **Unreadable policies.** A policy F1 cannot read makes its document not re-checked.
 - **The proof to come.** The theorem of M4 completion part A2, "every declaration accepted ⇒ the whole program passes `LWellFormed`", will prove this rule.
 

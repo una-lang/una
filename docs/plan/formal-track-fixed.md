@@ -2,7 +2,7 @@
 
 - Issue: #548, under #46
 - Date: 2026-10-11
-- Status: statement approved by the coordinator (2026-10-11, N-127); implemented, in review
+- Status: statement approved (2026-10-11); implemented, in review
 
 ## 1. Why
 
@@ -23,7 +23,7 @@ After #545, "the type `fixed`" is the corpus's most frequent reason a declaratio
   - `/` and `mod` keep the zero divisor's abort, then `fit`'s.
   - Unary `-` is `0 - a`, then `fit`.
 - **Conversions.** To `Int`, the value itself. To a fixed-width type, `fit` to the target's range: a narrowing conversion aborts outside it, and a widening one always fits.
-- **Failing closed** (the coordinator's conditions 1 and 2).
+- **Failing closed** (conditions 1 and 2 of its approval).
   - The importer collects the declared type of every binder of the function: `let`s, parameters, lambda parameters, loop variables and state, and tuple binders. A name bound at two kinds is left out.
   - In a function that binds a fixed-width value, arithmetic is read only when every operand is of the `let`'s own kind: a literal takes that kind, as in Una (`spec/18 §2.1`).
   - Operands of mixed kinds, a fixed-width operand under an `Int` annotation, or an operand of unknown type (a pattern's binder, whose type Core does not write) give "F1 restriction (… on operands of mixed or unknown integer types)". The declaration is then not re-checked, never read as unbounded `Int`.
@@ -50,11 +50,11 @@ Non-vacuity, `FixedExample`:
 
 ## 5. Gate
 
-- `scripts/formal.sh` and `docs/reviews/formal-m2-replay/check.sh`. No replay change is expected; any change is explained to the coordinator (N-108).
+- `scripts/formal.sh` and `docs/reviews/formal-m2-replay/check.sh`. No replay change is expected; any change is explained in review.
 - The corpus delta, a fresh export, with every flip listed and none rejected.
 - The hunt's F rerun.
 - Local CI.
-- The review (Una-2).
+- An adversarial review.
 
 Result (2026-10-11, on `main` at `408e59d6`):
 - `scripts/formal.sh`: PASS, 364 theorems, no `sorry`. The replay: 45 rejected, unchanged.

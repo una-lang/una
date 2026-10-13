@@ -2,7 +2,7 @@
 
 - Issue: #512, under #46 (split from #508)
 - Date: 2026-10-11
-- Status: statement approved by the coordinator (2026-10-11), with the refinements of §2 to §4 approved the same day; in progress
+- Status: statement approved (2026-10-11), with the refinements of §2 to §4 approved the same day; in progress
 
 ## 1. Why
 
@@ -76,7 +76,7 @@ No theorem changes its statement. Non-vacuity, `SumExample`:
 ## 6. Gate
 
 - the corpus delta (a fresh export, both checkers on the same files, every flip by document, and the headline split by what `una check` says of the document);
-- `check.sh`: any change to `expected.txt` is explained line by line and approved by the coordinator before merge;
+- `check.sh`: any change to `expected.txt` is explained line by line and approved in review before merge;
 - `scripts/formal.sh`;
 - local CI;
 - the adversarial review.

@@ -2,7 +2,7 @@
 
 - Issue: #513 (part (c): #514)
 - Date: 2026-10-10
-- Status: approved by the coordinator (2026-10-10), with the conditions of §6
+- Status: approved (2026-10-10), with the conditions of §6
 
 ## 1. Why
 
@@ -88,12 +88,12 @@ Any difference outside §1's exemptions is a concrete leak witness, with no mode
 - For state that outlives a run, as S-15's file state does, each variant runs twice on the same file system.
 - The oracle finds only what its inputs exercise, so the generators also emit boundary literals: zero, negatives, empty and long text, and invalid UTF-8 for host inputs.
 - It sees every construct, including those F1 lacks.
-- **Targets, in order.** First, the rules no theorem covers (`docs/reviews/security-hunt/coverage.md` §2). Among them, trusted modules and policy shapes come first, since the model assumes every policy is lawful (the coordinator, 2026-10-10).
+- **Targets, in order.** First, the rules no theorem covers (`docs/reviews/security-hunt/coverage.md` §2). Among them, trusted modules and policy shapes come first, since the model assumes every policy is lawful (decided 2026-10-10).
 
 ## 4. Triage
 
 - Candidates are deduplicated by rule, construct and outcome, and each is kept with its seed and its minimized source.
-- A confirmed leak follows the S-xx process. It goes to the coordinator first, with the minimized repro, before any fix. Then come a repro in `tests/conformance/security`, an ADR when a rule changes, a fix in both editions, and patch releases.
+- A confirmed leak follows the S-xx process. It is reported privately first, with the minimized repro, before any fix. Then come a repro in `tests/conformance/security`, an ADR when a rule changes, a fix in both editions, and patch releases.
 - A bug of the model or the importer is an issue of the formal track.
 - A channel outside the model gets a note in `spec/07 §1`, or an ADR if it should enter the model.
 
@@ -117,9 +117,9 @@ Heavy work, only in machine slots between benchmark runs:
 | H3 | Campaigns: per round, about 10,000 programs, each checked, exported, re-checked and run twice on the interpreter; native on about 5% | 1 to 3 machine-hours per round, measured on the first 500 |
 | H4 | Triage and minimization | 0.5 to 2 hours per candidate |
 
-## 6. Conditions (the coordinator, 2026-10-10)
+## 6. Conditions (2026-10-10)
 
 1. The oracle runs only in a sandbox: temporary directories, no network but the mock Http server, and `Files` grants scoped to a fresh directory per run.
-2. Every confirmed leak goes to the coordinator first, with its minimized repro, before any fix.
+2. Every confirmed leak is reported privately first, with its minimized repro, before any fix.
 3. Campaigns, and any run of the compiler, take machine slots between benchmark runs, never during one, even at one job.
 4. (c)'s export mode is additive (ADR 0076), and rejected declarations are never presented as accepted Core.

@@ -1,7 +1,7 @@
 # Formal track: #453 Phase B, `checked` in `via` bodies, and failing releases
 
 - **Issue:** #453 (Phase A merged as #494).
-- **Status:** statement approved by the coordinator (2026-10-10), with the decisions of §5. The language side is S-18 (#496, ADR 0090).
+- **Status:** statement approved (2026-10-10), with the decisions of §5. The language side is S-18 (#496, ADR 0090).
 - **Author:** the builder session.
 
 ## 1. Why the statement changes
@@ -63,7 +63,7 @@ The shape of `t6_release_host`, `BRelR` and `Diverged` stays. What changes is wh
    - `checkB1` gains `PureOrFails`.
    - The corpus's `via_result_checked_opaque` (`app.publish`) should move to accepted, and nothing into rejected. `release.copy` stays not re-checked, as every `via` function is: B1 and its structural typing check it, no label rule does.
 
-## 5. Decisions (the coordinator, 2026-10-10)
+## 5. Decisions (2026-10-10)
 
 1. **One event kind.** A failing release is `.release pol (.err c)`, not a separate `.releaseFail`, so `Diverged` and `EvVis` stay unchanged. A successful release never carries `.err`: `po.dst` is scalar (B1), and `ValTy p v po.dst.erase` holds of the released value, so a lemma, `release_ok_not_err`, shows that `ValTy p v t` for a scalar `t` excludes `.err c`, with a `#guard` on one instance. The two cases of `Allowed` (§2.4) are then disjoint.
 2. **The failure label is `pc ⊔ po.dst.top`.** It equals `po.dst.top` under the premise `pc ⊑ po.dst.top`, and is written as a join so the rule reads like T-Op's. It is the label that ADR 0090 gives the language's policy calls, so the model and the checker agree.

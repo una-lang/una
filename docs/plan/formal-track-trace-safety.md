@@ -2,7 +2,7 @@
 
 - Issue: #561, under #46 (ADR 0092, accepted 2026-10-11; its implementation is #564)
 - Date: 2026-10-11
-- Status: statement approved (2026-10-11, N-151), with the conditions of §8; proofs in progress
+- Status: statement approved (2026-10-11), with the conditions of §8; proofs in progress
 
 ## 1. Why
 
@@ -31,7 +31,7 @@ It holds for every outcome of the run: a normal result, a failure, `.aborted` (a
    - `"Files.read"`, `"Files.write"` and `"Http.<method>"` (the host operations);
    - `"Env.get"`;
    - a user operation `"Cap.op"`, by `Rhs.invoke` (#524, whose handler maps to it through `Program.handlerOf`) or `Rhs.invokeOp` (#538).
-2. **Ghost events in the trace** (the coordinator's ruling N-152, replacing a field of `World`). `Event` gains `perf (o : String)`, which `invokeOp` emits before its handler runs; as built, `invoke` emits `perfFn f`, by the handler's function, which erasure renames (§8b). No observer sees it: `EvVis (.perf _)` is `False`, so `proj` drops it, and T6, `BRel` and `WorldRel` keep their statements byte for byte.
+2. **Ghost events in the trace** (the second ruling, §8b, replacing a field of `World`). `Event` gains `perf (o : String)`, which `invokeOp` emits before its handler runs; as built, `invoke` emits `perfFn f`, by the handler's function, which erasure renames (§8b). No observer sees it: `EvVis (.perf _)` is `False`, so `proj` drops it, and T6, `BRel` and `WorldRel` keep their statements byte for byte.
    - A field of `World` was the first choice. It fails because `WorldRel` asks `w₁ = w₂` when the observer sees `internal`, and two related runs may perform an operation under a pc the observer cannot see.
    - The operations F1 already has as events need no ghost: `Console.print` is `.out`, `Files.read` is `.read`, `Files.write` is `.write`, and a request is `.req`. `Performs o tr` reads a performance of `o` from either kind of event.
    - `Env.get` has no event, and giving it one would change the traces of every example that reads the environment. A condition on `Env.get` is not re-checked in this cut (§9).
@@ -107,20 +107,20 @@ B06's shape, with `Catalog.journal` a user operation whose handler prints:
 ## 7. The re-check
 
 - The importer reads the `where` of a `uses` line's operations into `Fun.conds` (the export gains them with #564). The checker runs `checkConds` beside today's checks.
-- A failed check is **rejected**: it is a performance the program allows where its header forbids it. This is a new kind of rejection, so it goes to the coordinator before any verdict moves into rejected.
+- A failed check is **rejected**: it is a performance the program allows where its header forbids it. This is a new kind of rejection, so it is reviewed before any verdict moves into rejected.
 - The corpus delta is expected to be empty until the corpus holds edition `0.3` programs.
 - The replay is unchanged.
 
-## 8. The coordinator's ruling (2026-10-11, N-151)
+## 8. The ruling (2026-10-11)
 
-1. **The ghost log in `World`**, with `perf_irrelevant`: approved, then superseded by ghost events in the trace (N-152, below).
+1. **The ghost log in `World`**, with `perf_irrelevant`: approved, then superseded by ghost events in the trace (below).
 2. **`Cond`'s fragment**: approved, with opaque atoms identified by syntax after substitution (§4), and the non-vacuity case (e).
 3. **The bound of 12**: approved, as coverage only.
 4. **The lock** stays outside the theorem: approved, as a residual (§9), not silently out of scope.
 5. **Every outcome**: the theorem's docstring names `.aborted` explicitly (§2).
-6. **The new rejection kind** goes to the coordinator with its first corpus line before any merge.
+6. **The new rejection kind** is reviewed with its first corpus line before any merge.
 
-## 8b. Stage 1 (the coordinator's ruling N-157), and the statement as built
+## 8b. Stage 1 (the third ruling), and the statement as built
 
 - **Closures.** A lambda, or a reference to a named function, that may perform an operation the program conditions anywhere makes the declarations involved not re-checked, for the reason "a closure that may perform a conditioned operation (stage 1)" (`Program.stage1B`, `Expr.closuresOk`). Then every closure of every run is free of the conditioned operations, and the proof needs only a value predicate on closure bodies (`Val.OFree`), not a relation. Stage 2 (#568) reads definition-site charging.
 - **The invariant** (`TraceSafetyProof.lean`). Every frame runs code that is either free of `o` (it performs `o` nowhere and starts only functions in a closed set, `closedB`), or linked (checked under `K`, `K` true, and its own condition implying the top one). One induction on fuel, `eval_good`, covers both.
@@ -140,7 +140,7 @@ B06's shape, with `Catalog.journal` a user operation whose handler prints:
 - **Integer comparisons in a frame's own sites**: the knowledge `K` learns only from branches on `Bool` variables, so a site whose condition compares integers is proven only through a call's implication, not in the body itself; learning from a branch on a let-bound comparison is #573.
 - **Closures that may perform a conditioned operation** (stage 1): not re-checked; case (c) of §6 is "not re-checked" in this stage, and stage 2 (#568) makes it accepted.
 
-**The coordinator's second ruling (N-152).** Ghost events in the trace are approved, with these conditions:
+**The second ruling.** Ghost events in the trace are approved, with these conditions:
 - the gate shows the textual diff of every theorem statement against main: T1, T6 and their friends unchanged, with only helper lemmas and example trace equalities changing, each listed;
 - every lemma that reasons about raw traces (equality, length, prefix), not `proj`, is audited for the new case, and the touched ones are listed;
 - `Env.get` conditions are not re-checked (§9);
@@ -148,7 +148,7 @@ B06's shape, with `Catalog.journal` a user operation whose handler prints:
 
 ## 10. The draft's open choices (resolved in §8)
 
-1. **The ghost log in `World`** (item 3.2), or a separate instrumented evaluator proven to agree with `eval`. The log touches every T6 proof that builds or destructs a world, but only mechanically: one more field. The evaluator would duplicate `eval`, and its agreement lemma is as long as `eval`. The draft recommends the log. (Superseded by N-152: ghost events in the trace.)
+1. **The ghost log in `World`** (item 3.2), or a separate instrumented evaluator proven to agree with `eval`. The log touches every T6 proof that builds or destructs a world, but only mechanically: one more field. The evaluator would duplicate `eval`, and its agreement lemma is as long as `eval`. The draft recommends the log. (Superseded by the second ruling: ghost events in the trace.)
 2. **`Cond`'s fragment** (item 3.3): Boolean structure, `Bool` parameters, and integer comparisons as opaque atoms. That covers B06 and every condition the ADR shows. Anything else is not re-checked.
 3. **The truth-table bound of 12** (§4), and its complexity statement.
 4. **The contract lock** (`[contracts]`, U3023) is a check on headers against `una.toml`, with no run to speak of, so it is outside this theorem. The re-check reads it as the implementation exports it.
@@ -173,7 +173,7 @@ The only way to prove it is a call's implication (§9's residual).
 - **Branches.** At `ite (.var x) t e`, the `then` branch learns `(.var x, true)` and, when `D` defines `x` as `c`, also `(c, true)`. The `else` branch learns the same with `false`.
 - **Forgetting.** Binding a name `y` drops every literal of `K` whose atom reads `y`, and every entry of `D` for `y` or whose atom reads `y`. That covers `let`, pattern binders, handlers, `with` markers, tuples and loops, as `forget` does today for `Bool` variables.
 
-**Every way a name can change** (the coordinator's check). F1's environment is a list that only grows by prepending. No construct updates a binding in place:
+**Every way a name can change** (a review check). F1's environment is a list that only grows by prepending. No construct updates a binding in place:
 - an `edit` call is `Rhs.set`, which returns the new value, and its results are bound again by `letTuple` (`spec/17 §4, §8`);
 - a `take` argument is a value passed to a call;
 - each loop iteration binds its variable and state afresh.

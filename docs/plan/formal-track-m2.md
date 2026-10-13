@@ -111,7 +111,7 @@ The re-check reads them as follows:
 
 **The rule.** Every fact the re-check reads from the export may only raise a signature: labels, effects, failures. The body is checked against the raised signature. A future key that could lower a label or drop an effect must not be added on this assumption. It needs its own soundness argument, or what depends on it stays not re-checked. The trusted base of the re-check is unchanged: the export's facts are checked, not trusted.
 
-Una-1's adversarial review of #454 confirmed it. Tampering with the facts gives rejections. Facts made as permissive as possible and injected into the eight S dumps lose no rejection, in either edition.
+An adversarial review of #454 confirmed it. Tampering with the facts gives rejections. Facts made as permissive as possible and injected into the eight S dumps lose no rejection, in either edition.
 
 ## 5. What comes next
 
