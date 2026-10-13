@@ -180,17 +180,19 @@ fn module_file(body: &str) -> PathBuf {
     Path::new("src").join(path)
 }
 
-/// Writes the lock of the repository into `dir`, and `una.toml` of `edition` unless the
-/// package has its own.
+/// Writes `una.toml` of `edition` and the lock of the repository into `dir`, each unless the
+/// package has its own: a page may show a lock, such as one naming another solver version.
 fn complete(dir: &Path, edition: &str) {
     if !dir.join("una.toml").exists() {
         std::fs::write(dir.join("una.toml"), manifest(edition)).unwrap();
     }
-    std::fs::copy(
-        repository().join("verification.lock"),
-        dir.join("verification.lock"),
-    )
-    .unwrap();
+    if !dir.join("verification.lock").exists() {
+        std::fs::copy(
+            repository().join("verification.lock"),
+            dir.join("verification.lock"),
+        )
+        .unwrap();
+    }
 }
 
 /// Whether `una fmt --check` accepts the package at `dir`.
