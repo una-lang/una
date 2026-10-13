@@ -610,15 +610,14 @@ fn every_construct_page_follows_the_template_and_its_blocks_check() {
                 "{relative}: {code} has no explain text"
             );
         }
-        for block in blocks(&text) {
-            if block.lang == "una" {
-                if let (Some(code), _) = directives(&block.body) {
-                    assert!(
-                        codes.contains(&code),
-                        "{relative}, block at line {}: {code} is not among the page's codes",
-                        block.line
-                    );
-                }
+        let page_blocks = blocks(&text);
+        for block in page_blocks.iter().filter(|block| block.lang == "una") {
+            if let (Some(code), _) = directives(&block.body) {
+                assert!(
+                    codes.contains(&code),
+                    "{relative}, block at line {}: {code} is not among the page's codes",
+                    block.line
+                );
             }
         }
         let checked = check_guide(&relative, 1_000_000 + index * 10_000);
