@@ -128,8 +128,8 @@ fn then_at_the_end_of_a_line() {
 fn an_else_chain_on_the_next_lines() {
     rewrites_to(
         "else-chain",
-        "module m\n\npub f(x: Int) -> Int\n=\n  if x > 0 then 1 else\n  let y = x\n  y\n",
-        "module m\n\npub f(x: Int) -> Int\n=\n  if x > 0\n    1\n  else\n    let y = x\n    y\n",
+        "module m\n\npub kind E = | Broke\n\npub f(x: Int) -> Int\n  fails E\n=\n  if x > 0 then fail Broke else\n  let y = x\n  y\n",
+        "module m\n\npub kind E = | Broke\n\npub f(x: Int) -> Int\n  fails E\n=\n  if x > 0\n    fail Broke\n  else\n    let y = x\n    y\n",
     );
 }
 
@@ -269,4 +269,31 @@ fn a_guard_with_nothing_after_it_has_no_edit() {
         "module m\n\npub kind E = Broke\n\npub f(x: Int) -> Int\n  fails E\n=\n  let y = x\n  if y < 0 then fail Broke\n",
     );
     assert!(repair["edit"].is_null(), "{diagnostic:#?}");
+}
+
+/// ADR 0096, amendment of 2026-10-13: a guard whose `then` branch does not fail keeps its
+/// description without an edit, and `una fix` leaves the file as it is; otherwise the print
+/// before the rest would run only when the condition is false.
+#[test]
+fn a_guard_that_does_not_fail_is_not_rewritten() {
+    let source = "module m\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  show(n: 5)\n\nshow(n: Int) -> Unit\n  uses @console: Console[print]\n=\n  if n > 0 then @console.print(\"positive\")\n  @console.print(\"done\")\n";
+    let root = package("guard-print", source);
+    let syntax: Vec<Value> = diagnostics(&root)
+        .into_iter()
+        .filter(|d| d["code"].as_str().unwrap().starts_with("U0"))
+        .collect();
+    assert!(!syntax.is_empty());
+    for diagnostic in &syntax {
+        for repair in diagnostic["repairs"].as_array().unwrap() {
+            assert!(repair["edit"].is_null(), "{diagnostic:#?}");
+        }
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_una"))
+        .env("HOME", env!("CARGO_TARGET_TMPDIR"))
+        .args(["fix", "."])
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert_eq!(std::fs::read_to_string(root.join("src/m.una")).unwrap(), source);
 }

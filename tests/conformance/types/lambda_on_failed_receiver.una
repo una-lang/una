@@ -1,0 +1,11 @@
+-- test: a lambda given to a method of a failing value still needs the type of its parameter
+-- spec: spec/03 §7
+-- expect: error U2010 at 11:22
+module lambda_on_failed_receiver
+
+kind E = | Broke
+
+pub f() -> Int
+  fails E
+=
+  (fail Broke).zzz(fn(x) -> x.len)

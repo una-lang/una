@@ -1,0 +1,10 @@
+-- test: an if with then and no else whose branch does not fail is an error with no rewrite
+-- spec: spec/02 §7
+-- expect: error U0101 at 9:43
+module guard_without_fail_not_rewritten
+
+show(n: Int) -> Unit
+  uses @console: Console[print]
+=
+  if n > 0 then @console.print("positive")
+  @console.print("done")

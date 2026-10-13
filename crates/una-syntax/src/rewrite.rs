@@ -282,6 +282,14 @@ fn if_construct(lines: &[Line<'_>], at: usize, end: usize) -> Option<Candidate> 
     None
 }
 
+/// Whether a branch written on one line leaves its block: `fail` of a variant.
+fn diverges(branch: &str) -> bool {
+    let branch = branch.trim();
+    branch
+        .strip_prefix("fail ")
+        .is_some_and(|rest| rest.trim_start().starts_with(|c: char| c.is_ascii_uppercase()))
+}
+
 /// The length of what precedes `if` on a line that opens an `if`: nothing, or `let x = `.
 fn if_prefix(content: &str) -> Option<usize> {
     if content.starts_with("if ") {
@@ -322,6 +330,13 @@ fn if_at(lines: &[Line<'_>], k: usize, end: usize) -> Option<Candidate> {
                     if block > k + 1 {
                         (Part::Lines(k + 1, block), block)
                     } else {
+                        // The rest of the block becomes the `else` branch only when the `then`
+                        // branch leaves the block: otherwise the rest may be meant to run after
+                        // the `if` either way, and the rewrite would change what runs (ADR
+                        // 0096, amendment of 2026-10-13).
+                        if prefix != 0 || !diverges(&then_text) {
+                            return None;
+                        }
                         let block = rest_of_block(lines, k + 1, end, ind);
                         if block == k + 1 {
                             return None;
@@ -354,6 +369,13 @@ fn if_at(lines: &[Line<'_>], k: usize, end: usize) -> Option<Candidate> {
                 {
                     (condition, then_part, k + 1, ind)
                 } else {
+                    // A guard: only a `then` branch that fails leaves the rest of the body to
+                    // the `else` branch with the same meaning (ADR 0096, amendment of
+                    // 2026-10-13). A statement there, such as a print, may be meant to run
+                    // before the rest either way.
+                    if prefix != 0 || !diverges(rest) {
+                        return None;
+                    }
                     let stop = rest_of_block(lines, k + 1, end, ind);
                     if stop == k + 1 {
                         return None;
@@ -473,7 +495,20 @@ fn one_line_when(lines: &[Line<'_>], at: usize, end: usize) -> Option<Candidate>
     let mut arms = Vec::new();
     for (index, key) in keys.iter().enumerate() {
         let stop = keys.get(index + 1).copied().unwrap_or(tail.len());
-        if arrows.iter().any(|a| key < a && *a < stop) {
+        let after = tail.get(*key..).unwrap_or("");
+        // An arm starts with a pattern: `else ->`, `is` and a variant or a literal, or `in`.
+        let pattern = if let Some(rest) = after.strip_prefix("else") {
+            rest.trim_start().starts_with("->")
+        } else if let Some(rest) = after.strip_prefix("is") {
+            rest.trim_start().starts_with(|c: char| {
+                c.is_ascii_uppercase() || c.is_ascii_digit() || c == '"' || c == '-'
+            }) || ["true", "false", "unit"]
+                .iter()
+                .any(|literal| rest.trim_start().starts_with(literal))
+        } else {
+            true
+        };
+        if pattern && arrows.iter().any(|a| key < a && *a < stop) {
             arms.push(*key);
         }
     }
@@ -1218,11 +1253,11 @@ mod tests {
 
     #[test]
     fn an_else_chain_on_the_next_lines_becomes_an_if_with_blocks() {
-        let source = "module m\n\nf(x: Int) -> Int\n=\n  if x > 0 then 1 else\n  let y = x\n  y\n";
+        let source = "module m\n\nf(x: Int) -> Int\n=\n  if x > 0 then fail Broke else\n  let y = x\n  y\n";
         assert_eq!(
             rewrite(source).as_deref(),
             Some(
-                "module m\n\nf(x: Int) -> Int\n=\n  if x > 0\n    1\n  else\n    let y = x\n    y\n"
+                "module m\n\nf(x: Int) -> Int\n=\n  if x > 0\n    fail Broke\n  else\n    let y = x\n    y\n"
             )
         );
     }
@@ -1245,6 +1280,20 @@ mod tests {
                 "module m\n\nkind E = Broke\n\nf(x: Int) -> Int\n  fails E\n=\n  if x < 0\n    fail Broke\n  else\n    x + 1\n"
             )
         );
+    }
+
+    #[test]
+    fn a_guard_that_does_not_fail_gets_no_edit() {
+        // ADR 0096, amendment of 2026-10-13: the print may be meant to run before the rest
+        // either way, so the rest does not become an `else` branch.
+        let source = "module m\n\nf(n: Int) -> Unit\n  uses @console: Console[print]\n=\n  if n > 0 then @console.print(\"positive\")\n  @console.print(\"done\")\n";
+        assert_eq!(rewrite(source), None);
+    }
+
+    #[test]
+    fn an_else_chain_after_a_value_gets_no_edit() {
+        let source = "module m\n\nf(x: Int) -> Int\n=\n  if x > 0 then 1 else\n  let y = x\n  y\n";
+        assert_eq!(rewrite(source), None);
     }
 
     #[test]

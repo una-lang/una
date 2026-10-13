@@ -183,3 +183,12 @@ The table's row for a reserved word used as a local or parameter name is narrowe
 ## Amendment (2026-10-12): a dependent reports only its syntax
 
 Rule 9 is narrowed. A dependent keeps only its syntax diagnostics: its name, type, effect, flow and canonical-form diagnostics are all withheld. The implementation's test of rule 8 found cascades that the error type does not absorb in a dependent. Examples are a variant of a broken kind (U1001), a function of a broken declaration called with method syntax (U1001), and a generic call or an empty list whose type comes from an unknown value (U2001). Withholding them keeps rule 8 and rule 14 exact. The cost is small: in the replay of `full-b` and `full-c`, 92% to 95% of what checking past a broken declaration adds lies outside dependents. This narrows the decision and needs no new acceptance.
+
+## Amendment (2026-10-13): the rest of a block becomes an `else` only after a `fail`
+
+Two rows of rule 3's table are narrowed, since their rewrite can change what runs once the result checks clean.
+
+- **`if c then X` with no `else`, followed by the rest `R` of its block.** The edit is given only when `X` is `fail` of a variant, and the `if` has nothing before it on its line. In any other case the repair keeps its description with `edit: null`. Example: `if n > 0 then @console.print("positive")` followed by `@console.print("done")` would become `done` printed only when `n <= 0`.
+- **`if c then x else` at the end of a line, the chain continued at the same indentation.** The rest of the block becomes the `else` branch only under the same condition, that `x` is `fail` of a variant. An `else` followed by a deeper indented block keeps its edit: the indentation already delimits the branch.
+
+The table's other rows were checked against the same question: can the edit change what the program does, when the result then checks clean? Their edits only move tokens into the layout Una reads, or rename a binding to a name visible nowhere it is written. This narrows the decision and needs no new acceptance.

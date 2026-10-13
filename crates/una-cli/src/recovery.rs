@@ -213,86 +213,107 @@ pub(crate) struct ModuleText<'a> {
     pub(crate) broken: &'a BTreeSet<usize>,
 }
 
-/// Drops every diagnostic but syntax of each dependent declaration (rule 9, as amended): one that names a poisoned name, or a dependent one, through
-/// a word of its text, which can only make more declarations dependent than reach one.
+/// Drops every diagnostic but syntax of each dependent declaration (rule 9, as amended): one
+/// that names a poisoned name, or a dependent one. A word of a declaration refers to a name
+/// only where the name is visible: declared in the declaration's own module, or imported by
+/// that module from the module that declares it. A word of another module that only spells
+/// the name, a parameter of a module that imports nothing from the broken one, refers to
+/// nothing. Linear in the words of the declarations.
 pub(crate) fn withhold(diagnostics: &mut Vec<Diagnostic>, modules: &[ModuleText<'_>]) {
     // The declarations that are neither broken nor a header or an import, by module.
     let mut nodes: Vec<(usize, &Declaration)> = Vec::new();
-    let mut poisoned: BTreeSet<&str> = BTreeSet::new();
-    let mut unnamed_modules: BTreeSet<String> = BTreeSet::new();
+    // The names each module declares or imports, and the module that declares them.
+    let mut visible: Vec<BTreeMap<&str, &str>> = vec![BTreeMap::new(); modules.len()];
+    // The names that are poisoned, or declared by a dependent, by declaring module.
+    let mut queue: Vec<(&str, &str)> = Vec::new();
+    // The modules with a broken declaration whose names cannot be read.
+    let mut unnamed: BTreeSet<&str> = BTreeSet::new();
     for (m, module) in modules.iter().enumerate() {
         for (i, declaration) in module.declarations.iter().enumerate() {
-            if module.broken.contains(&i) {
-                poisoned.extend(declaration.names.iter().map(String::as_str));
-                if declaration.what == DeclarationKind::Unnamed {
-                    unnamed_modules.insert(module.module.to_owned());
+            let names = declaration.names.iter().map(String::as_str);
+            match declaration.what {
+                DeclarationKind::Header => {}
+                // A broken import line poisons each name it lists, in its own module.
+                DeclarationKind::Import if module.broken.contains(&i) => {
+                    if let Some(slot) = visible.get_mut(m) {
+                        for name in names {
+                            slot.insert(name, module.module);
+                            queue.push((module.module, name));
+                        }
+                    }
                 }
-            } else if matches!(
-                declaration.what,
-                DeclarationKind::Named | DeclarationKind::Unnamed
-            ) {
-                nodes.push((m, declaration));
+                DeclarationKind::Import => {
+                    if let (Some(from), Some(slot)) =
+                        (declaration.module.as_deref(), visible.get_mut(m))
+                    {
+                        for name in names {
+                            slot.insert(name, from);
+                        }
+                    }
+                }
+                _ if module.broken.contains(&i) => {
+                    if declaration.what == DeclarationKind::Unnamed {
+                        unnamed.insert(module.module);
+                    }
+                    if let Some(slot) = visible.get_mut(m) {
+                        for name in names {
+                            slot.insert(name, module.module);
+                            queue.push((module.module, name));
+                        }
+                    }
+                }
+                _ => {
+                    if let Some(slot) = visible.get_mut(m) {
+                        for name in names {
+                            slot.insert(name, module.module);
+                        }
+                    }
+                    nodes.push((m, declaration));
+                }
             }
         }
     }
-    // A name imported from a module with an unnamed broken declaration may be one it would
-    // have declared.
-    for module in modules {
-        for declaration in module.declarations {
-            if declaration.what == DeclarationKind::Import
-                && unnamed_modules
-                    .iter()
-                    .any(|path| declaration.imports_from(path))
-            {
-                poisoned.extend(declaration.names.iter().map(String::as_str));
-            }
-        }
-    }
-    if poisoned.is_empty() && unnamed_modules.is_empty() {
+    if queue.is_empty() && unnamed.is_empty() {
         return;
     }
-    // Who mentions each name declared by a node.
-    let declared: BTreeSet<&str> = nodes
-        .iter()
-        .flat_map(|(_, d)| d.names.iter().map(String::as_str))
-        .chain(poisoned.iter().copied())
-        .collect();
-    let mut mentions: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
-    for (n, (_, declaration)) in nodes.iter().enumerate() {
+    // Who refers to each visible name, by its declaring module.
+    let mut mentions: BTreeMap<(&str, &str), Vec<usize>> = BTreeMap::new();
+    let mut dependent = vec![false; nodes.len()];
+    for (n, (m, declaration)) in nodes.iter().enumerate() {
+        let Some(names) = visible.get(*m) else {
+            continue;
+        };
+        let own = modules.get(*m).map_or("", |module| module.module);
         for word in &declaration.words {
-            if declared.contains(word.as_str()) {
-                mentions.entry(word.as_str()).or_default().push(n);
+            if let Some(&from) = names.get(word.as_str()) {
+                mentions.entry((from, word.as_str())).or_default().push(n);
             }
         }
-    }
-    let mut dependent = vec![false; nodes.len()];
-    let mut queue: Vec<&str> = poisoned.iter().copied().collect();
-    for (n, (m, _)) in nodes.iter().enumerate() {
-        if modules
-            .get(*m)
-            .is_some_and(|module| unnamed_modules.contains(module.module))
+        // A module with an unnamed broken declaration, or one importing from it, may name
+        // any of its names: every declaration there is a dependent.
+        let imports_unnamed = names.values().any(|from| unnamed.contains(from));
+        if (unnamed.contains(own) || imports_unnamed)
             && let Some(slot) = dependent.get_mut(n)
         {
             *slot = true;
-            if let Some((_, declaration)) = nodes.get(n) {
-                queue.extend(declaration.names.iter().map(String::as_str));
-            }
+            queue.extend(declaration.names.iter().map(|name| (own, name.as_str())));
         }
     }
-    let mut seen: BTreeSet<&str> = BTreeSet::new();
-    while let Some(name) = queue.pop() {
-        if !seen.insert(name) {
+    let mut seen: BTreeSet<(&str, &str)> = BTreeSet::new();
+    while let Some(key) = queue.pop() {
+        if !seen.insert(key) {
             continue;
         }
-        for &n in mentions.get(name).map_or(&[][..], Vec::as_slice) {
+        for &n in mentions.get(&key).map_or(&[][..], Vec::as_slice) {
             if dependent.get(n).copied().unwrap_or(true) {
                 continue;
             }
             if let Some(slot) = dependent.get_mut(n) {
                 *slot = true;
             }
-            if let Some((_, declaration)) = nodes.get(n) {
-                queue.extend(declaration.names.iter().map(String::as_str));
+            if let Some((m, declaration)) = nodes.get(n) {
+                let own = modules.get(*m).map_or("", |module| module.module);
+                queue.extend(declaration.names.iter().map(|name| (own, name.as_str())));
             }
         }
     }
@@ -307,12 +328,13 @@ pub(crate) fn withhold(diagnostics: &mut Vec<Diagnostic>, modules: &[ModuleText<
         })
         .collect();
     diagnostics.retain(|diagnostic| {
-        // ADR 0096 amendment (2026-10-12, dependents): a dependent keeps only its syntax diagnostics, since
-        // the error type does not absorb every cascade (a variant of a broken kind, a generic
-        // call whose argument is unknown).
+        // ADR 0096 amendment (2026-10-12, dependents): a dependent keeps only its syntax
+        // diagnostics, since the error type does not absorb every cascade (a variant of a
+        // broken kind, a generic call whose argument is unknown).
         if diagnostic.code.as_str().starts_with("U0") {
             return true;
         }
+        // `last_line` is exclusive: just past the declaration's last line that is not blank.
         let line = (diagnostic.primary.start.line as usize).saturating_sub(1);
         !ranges.iter().any(|(path, first, last)| {
             *path == diagnostic.primary.file && *first <= line && line < *last

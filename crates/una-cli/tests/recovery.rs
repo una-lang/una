@@ -244,3 +244,71 @@ fn checking_past_broken_declarations_scales_linearly() {
         );
     }
 }
+
+/// A package of `files`, by path under `src/`, in a fresh directory.
+fn package_of(name: &str, files: &[(&str, &str)]) -> PathBuf {
+    let root = scratch(name);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("una.toml"),
+        "[package]\nname = \"c\"\nversion = \"0.1.0\"\nedition = \"0.1\"\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../verification.lock"),
+        root.join("verification.lock"),
+    )
+    .unwrap();
+    for (path, text) in files {
+        std::fs::write(root.join("src").join(path), text).unwrap();
+    }
+    root
+}
+
+fn codes_at(root: &Path) -> Vec<(String, String, u32)> {
+    let mut out: Vec<(String, String, u32)> = una_cli::check(root, Tier::Zero)
+        .unwrap()
+        .diagnostics
+        .iter()
+        .map(|d| (d.code.as_str().to_owned(), d.primary.file.clone(), d.primary.start.line))
+        .collect();
+    out.sort();
+    out
+}
+
+/// Rule 9, by reference: a module that imports nothing from the broken one keeps its
+/// diagnostics, even where a parameter spells a poisoned name.
+#[test]
+fn a_module_that_cannot_reach_the_broken_one_keeps_its_diagnostics() {
+    let root = package_of(
+        "unrelated-module",
+        &[
+            ("a.una", "module a\n\npub parse(raw: Text) -> Int =\n  raw.len\n"),
+            ("b.una", "module b\n\npub total(parse: Int) -> Int = parse + \"x\"\n"),
+        ],
+    );
+    let found = codes_at(&root);
+    assert!(
+        found.iter().any(|(code, file, line)| code == "U2001" && file == "src/b.una" && *line == 3),
+        "{found:?}"
+    );
+    assert!(found.iter().any(|(code, file, _)| code == "U0101" && file == "src/a.una"), "{found:?}");
+}
+
+/// Rule 9: a module that imports the broken name is a dependent, up to its last line.
+#[test]
+fn an_importing_declaration_is_withheld_to_its_last_line() {
+    let root = package_of(
+        "importing-module",
+        &[
+            ("a.una", "module a\n\npub parse(raw: Text) -> Int =\n  raw.len\n"),
+            (
+                "b.una",
+                "module b\n\nimport a (parse)\n\npub total(raw: Text) -> Int\n=\n  let n = parse(raw)\n  n + \"x\"\n",
+            ),
+        ],
+    );
+    let found = codes_at(&root);
+    assert!(found.iter().all(|(code, file, _)| file != "src/b.una" || code.starts_with("U0")), "{found:?}");
+}
