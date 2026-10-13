@@ -66,7 +66,7 @@ Each is "not re-checked", never accepted.
 - **R9. The export.** The Core export does not carry `una.toml`'s `[boundaries]` yet (edition `0.3`, not implemented). Until it does, the importer reads an optional `boundaries` field, tested on synthesized documents. The corpus delta is 0, and the replay is unchanged.
 - **R10. Handlers of an invoked operation.** An invocation of `o` may run any handler of `o` (`Program.handlerFor`), so all of them must be within the ceiling, not only the one installed at the call. This is stricter than the ADR, never weaker.
 
-- **R11. #524's reading of an operation.** (Closed by #572, §8.) Where a capability has one handler and an operation is read as a direct `invoke` of it, the operation is a call of the handler, confined by what the handler does, not by its name in the ceiling. A pure operation the ceiling does not name is accepted by F1 and refused by the checker: the checker is stricter, as in R7.
+- **R11. #524's reading of an operation.** Closed by #572 (§8). A capability with one handler has its operations read as a direct `invoke` of the handler. Such an invocation is now confined by the operation's name, as `invokeOp` is: `Rhs.within` asks that the ceiling's `ops` hold the operation the handler implements, and `perfFn_names_op` proves that every ghost `.perfFn f` of a confined run names such an operation of the program's own map. A pure operation the ceiling does not name is now refused by F1 as it is by the checker. What R11 still leaves to the handler's body is what that body does, which `eval_confined` confines as before.
 
 ## 6. Gate
 

@@ -386,6 +386,7 @@ import UnaFormal
 #print axioms Una.F1.eval_confined
 #print axioms Una.F1.body_confined
 #print axioms Una.F1.apply_confined
+#print axioms Una.F1.perfFn_names_op
 #print axioms Una.F1.confinedB_sound
 #print axioms Una.F1.confinedB_refutes
 #print axioms Una.F1.BoundaryExample.tiled_writes
@@ -404,6 +405,10 @@ import UnaFormal
 #print axioms Una.F1.BoundaryExample.quiet_accepted
 #print axioms Una.F1.BoundaryExample.quiet_runs
 #print axioms Una.F1.BoundaryExample.posting_rejected
+#print axioms Una.F1.BoundaryExample.static_runs
+#print axioms Una.F1.BoundaryExample.static_rejected
+#print axioms Una.F1.BoundaryExample.static_accepted
+#print axioms Una.F1.BoundaryExample.static_names_op
 #print axioms Una.F1.implies_sound
 #print axioms Una.F1.callee_good
 #print axioms Una.F1.eval_good
