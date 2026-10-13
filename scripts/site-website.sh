@@ -4,9 +4,11 @@
 # page from the bundle and fails on a broken budget, and its sample check runs every code
 # sample of the site with this checkout's `una` (Z3 at the pinned version on PATH).
 #
-# It needs git access to the website's repository, and Node.js (>= 20.19) with npm. It writes
-# only under OUT. UNA_SITE_WEBSITE_SOURCE overrides where the website is cloned from, and
-# UNA_BIN which `una` checks the samples (default: target/release/una).
+# It needs git access to the website's repository, and Node.js (>= 20.19) with npm. It installs
+# the website's packages with `npm ci --ignore-scripts`, from its package-lock.json, so no
+# install script runs. It writes only under OUT. UNA_SITE_WEBSITE_SOURCE overrides where the
+# website is cloned from, and UNA_BIN which `una` checks the samples (default:
+# target/release/una).
 #
 # Usage: scripts/site-website.sh BUNDLE OUT
 #   BUNDLE  the bundle directory, OUT/una-docs-<version> of scripts/site-bundle.sh
@@ -51,7 +53,10 @@ git -C "$website" checkout --quiet --detach "$commit" || fail "the website has n
 echo "website: $commit"
 
 cd "$website"
-npm ci --no-audit --no-fund --loglevel=error || fail "npm ci"
+# Supply chain: only the exact packages of the pinned lockfile, under its integrity hashes,
+# and no package's install script runs on the release machine.
+[ -f package-lock.json ] || fail "the website has no package-lock.json at $commit"
+npm ci --ignore-scripts --no-audit --no-fund --loglevel=error || fail "npm ci"
 UNA_BUNDLE=$bundle npm run --silent build || fail "the website does not build from the bundle"
 UNA_BUNDLE=$bundle UNA_BIN=$una npm run --silent check:samples || fail "a code sample of the website does not check"
 [ -z "$(git status --porcelain --untracked-files=no)" ] || fail "the website build changed tracked files"
