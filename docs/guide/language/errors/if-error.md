@@ -251,7 +251,7 @@ Further rules:
 - **One effect per line.** A fallible call is the whole expression of its statement, `let` or final expression, so that its clause has one site (`spec/04 §4`, U3013). Bind its result with `let` first.
 - **The `fail` of a clause** obeys the rules of `fail`: its variant belongs to the function's error kind (U3009, `spec/06 §2`), and it is allowed only under a `public` program counter (U4002, `spec/07 §3` rule 3).
 - **Labeled failures.** A failure decided by labeled data, such as an `Http` request's, carries that label. `if error use` then runs under it, and `if error pass` and `if error fail` are U4002 when it is above `public` (`spec/07 §7` rule 4).
-- **A clause on a statement that cannot fail.** A handling clause after a statement that cannot fail, such as `let x = n + 1`, is currently accepted. The specification requires a clause on fallible statements and does not yet decide this case (#602).
+- **A clause on a statement that cannot fail.** In editions `0.1` and `0.2`, an `if error` clause after a statement that cannot fail, such as `let x = n + 1`, is accepted. ADR 0100 makes it an error in edition `0.3`, once implemented; until then edition `0.3` accepts it too.
 - **Alternative.** `attempt` handles a failure by turning it into a `Result` value instead (`spec/06 §5`). See [`attempt`](attempt.md).
 
 ## Diagnostics
