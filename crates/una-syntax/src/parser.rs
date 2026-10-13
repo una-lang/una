@@ -35,6 +35,14 @@ pub struct Parsed {
 /// The parser recurses at most [`MAX_NESTING`] levels deep, which in unoptimized builds needs
 /// up to about 10 MiB of stack; `una check` parses on a thread with a larger stack.
 pub fn parse(lexed: &Lexed, file: FileId, interner: &Interner) -> Parsed {
+    let mut parsed = parse_plain(lexed, file, interner);
+    // The exact rewrites of foreign syntax (ADR 0096 A).
+    crate::rewrite::attach(&lexed.text, file, lexed.keywords, &mut parsed.errors);
+    parsed
+}
+
+/// [`parse`] without the rewrites of ADR 0096, which check their candidates with it.
+pub(crate) fn parse_plain(lexed: &Lexed, file: FileId, interner: &Interner) -> Parsed {
     let mut parser = Parser {
         tokens: &lexed.tokens,
         text: &lexed.text,

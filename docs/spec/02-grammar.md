@@ -217,4 +217,6 @@ These rules are enforced after parsing and reported with the listed codes.
 
 An implementation MUST accept nesting up to 256 levels, and MUST reject deeper nesting with U0101 at the token where the limit is exceeded (ADR 0019). One level is each nested line expression (parentheses, arguments, list items, interpolations, branches, lambda bodies), each prefix `not` or `-`, each operator of a chain (`a + b + c` counts two), each call, field or method in a postfix chain, each nested type, and each nested block, including each `else if`. The rest of the declaration is skipped by the usual recovery.
 
+(ADR 0096.) After a syntax error, parsing resumes at the next declaration, and the later phases (names, types, canonical form) run on the declarations that parsed. A declaration that holds a syntax error is left out, and the names it would have declared are unknown, so no diagnostic cascades from it (`compiler/architecture.md §5`). A foreign shape, such as `if … then` at the end of a line or `=` at the end of a function header, stays a U0101: this grammar is the only accepted syntax, and the error's first repair rewrites the shape when the rewrite is exact (`spec/13 §3`).
+
 A text literal nested in an interpolation, which is U0006, has no interpolation of its own: `{` and `}` inside it are text.

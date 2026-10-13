@@ -44,10 +44,12 @@ Diagnostics are sorted by file, start position, then code. Output is determinist
 With `--json`, `una check` and `una fmt --check` print their diagnostics as one JSON object on stdout, followed by a newline (ADR 0012):
 
 ```json
-{ "schema": "una.diagnostics/1", "diagnostics": [] }
+{ "schema": "una.diagnostics/1", "diagnostics": [], "fixable": 0 }
 ```
 
 `diagnostics` holds the diagnostics in the order above, each with its own `"schema": "una.diagnostic/1"` field; a new version of the diagnostic shape also bumps the list version. The array is empty when there are no diagnostics, and exit codes do not depend on `--json` (§5). Whitespace is not significant; the reference implementation prints compact JSON with object keys in the order shown in this section.
+
+(ADR 0096.) `fixable` counts the diagnostics whose first repair `una fix` applies (§5): its `edit` is not `null`, its `escape_cost` is 0, it widens nothing, and it edits a module of the package. A U7001 with an edit counts too, since `una fix`'s format step applies it. The count is of the first round only: a file that parses after it reports its later phases. The key was added without a version change (ADR 0076 rule 1). In human mode, when the count is above 0, the last line on stderr is ``<n> of <m> diagnostics have an edit that `una fix` applies (`una fix --dry-run` lists them)``.
 
 ## 2. Obligation listing
 
@@ -100,6 +102,8 @@ A `refinement` obligation of a function value flowing into a function type (`spe
 | U7005 | remove `trusted` from the header, or the entry from `[trusted] modules`; when the module declares a policy, the repair says that its policies are then U4004 | complete the declaration in the other place |
 
 Other diagnostics MAY include repairs (for example, a missing label with its mechanical edit). `una check` and the other commands never apply repairs. (v0.2, ADR 0084.) `una fix` applies mechanical ones on request (§5). A repair whose edit widens authority or visibility, by adding operations to a `uses` clause, declaring a `uses` clause or making a declaration `pub`, is marked so where it is built, and `una fix` never applies it.
+
+(ADR 0096.) A syntax error (U0001, U0101) whose source has the shape of another language's form stays an error, since Una has one syntax (charter P4). Its first repair names Una's form, and carries an exact edit when rewriting is exact. Exact means four things: the edit changes only the declaration the error is reported in; once it is applied, the file has no syntax error in or before the edited range; the result is the stated reading in Una's form, token for token; and the edit is deterministic. The shapes and the condition of each edit are the table of ADR 0096 rule 3. Among them are an `if … then … else` wrapped across lines, `=` at the end of a function header, a name that starts with `_`, a `when` with its arms on one line, and a guard without `else`. A rename takes a name that is visible nowhere it would be written (ADR 0096 rule 3a).
 
 ## 4. Code registry
 

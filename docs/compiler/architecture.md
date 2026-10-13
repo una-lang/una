@@ -74,6 +74,7 @@ A declaration with tier 0 errors is not elaborated and produces no obligations. 
 - The lexer reports and skips invalid characters; indentation errors resynchronize at the next line.
 - The parser synchronizes at the next line with zero indentation that starts a declaration keyword, `pub`, or a lower identifier followed by `(`.
 - The checker isolates failures per declaration. An unresolved name gets an error type that suppresses cascading errors.
+- (ADR 0096.) A file with a syntax error is resolved and typed without its broken declarations, those that hold a syntax error. The names they would have declared are poisoned: a reference to one is unknown, with the error type, never U1001. When no name of a broken declaration can be read, every unresolved name of its module is unknown. A declaration that reaches a poisoned name is a dependent: it reports only its syntax diagnostics (ADR 0096, amended). Only a broken module header leaves the whole module out, as before.
 
 ## 6. Determinism rules
 

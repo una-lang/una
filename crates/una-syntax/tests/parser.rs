@@ -968,9 +968,22 @@ fn builder_mistakes_get_a_hint() {
         advice("f(o: Option[Int]) -> Int = when o\n  is Some(x) -> x\n  is None -> 0\n"),
         "`when` must start its own line: write the long form, with `=` on its own line and the `when` indented below it, or bind it with `let`"
     );
+    // ADR 0096: a guard with the rest of the body after it gets the exact rewrite first, and
+    // keeps the advice second.
+    let guard = repairs("f(x: Int) -> Int\n  fails Bad\n=\n  if x < 0 then fail Broke\n  x\n");
+    assert_eq!(guard.len(), 1, "{guard:?}");
     assert_eq!(
-        advice("f(x: Int) -> Int\n  fails Bad\n=\n  if x < 0 then fail Broke\n  x\n"),
-        "an `if` with `then` needs `else`; to fail early, make the rest of the body its `else` branch, as in `if x < 0 then fail Broke else x`, or use the block form, whose `else` block holds the rest"
+        guard[0].1,
+        vec![
+            (
+                "make the rest of the body the `else` branch of an `if` with blocks".to_owned(),
+                Some("  if x < 0\n    fail Broke\n  else\n    x\n".to_owned())
+            ),
+            (
+                "an `if` with `then` needs `else`; to fail early, make the rest of the body its `else` branch, as in `if x < 0 then fail Broke else x`, or use the block form, whose `else` block holds the rest".to_owned(),
+                None
+            ),
+        ]
     );
     // The shapes the hints describe parse.
     tree("f(o: Option[Int]) -> Int\n=\n  when o\n    is Some(x) -> x\n    is None -> 0\n");

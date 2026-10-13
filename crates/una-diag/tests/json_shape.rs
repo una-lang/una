@@ -108,7 +108,7 @@ fn empty_list_matches_spec_13_section_1() {
 fn empty_list_is_compact() {
     assert_eq!(
         render_json(&[]).unwrap(),
-        r#"{"schema":"una.diagnostics/1","diagnostics":[]}"#
+        r#"{"schema":"una.diagnostics/1","diagnostics":[],"fixable":0}"#
     );
 }
 

@@ -7,7 +7,10 @@
 pub mod names;
 pub mod types;
 
-pub use names::{ModuleInput, PackageInput, RunInput, check_names, check_names_indexed};
+pub use names::{
+    ModuleInput, PackageInput, Poison, RunInput, check_names, check_names_indexed,
+    check_names_poisoned,
+};
 pub use types::{
     Header, HeaderUse, Index, PendingObligation, Rejected, TypeCheck, check_types,
     check_types_with_rejected,

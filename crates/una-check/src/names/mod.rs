@@ -59,13 +59,41 @@ pub fn check_names(package: &PackageInput<'_>) -> Vec<Diagnostic> {
     check_names_indexed(package).0
 }
 
+/// The names that the broken declarations of a module would have declared, had they parsed
+/// (ADR 0096 rule 8). A reference to one of them is unknown, never U1001.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Poison {
+    /// The names read from the broken declarations' tokens.
+    pub names: BTreeSet<String>,
+    /// Whether a broken declaration has no name that can be read: then every name of the
+    /// module that does not resolve, and every name imported from it, is unknown.
+    pub unnamed: bool,
+}
+
+/// [`check_names`] for a package some of whose modules have broken declarations: the
+/// declarations that parsed are resolved, and the names in `poison`, by module, are unknown.
+pub fn check_names_poisoned(
+    package: &PackageInput<'_>,
+    poison: &BTreeMap<FileId, Poison>,
+) -> (Vec<Diagnostic>, Vec<(Span, Span)>) {
+    check_names_with(package, Some(poison))
+}
+
 /// [`check_names`], with each name that resolves to a declaration or a local of the package
 /// and the span of its declaration, for the language server (ADR 0063).
 pub fn check_names_indexed(package: &PackageInput<'_>) -> (Vec<Diagnostic>, Vec<(Span, Span)>) {
+    check_names_with(package, None)
+}
+
+fn check_names_with(
+    package: &PackageInput<'_>,
+    poison: Option<&BTreeMap<FileId, Poison>>,
+) -> (Vec<Diagnostic>, Vec<(Span, Span)>) {
     let mut checker = Checker {
         package,
         diagnostics: Vec::new(),
         references: Vec::new(),
+        poison,
     };
     let mut tables: Vec<Table<'_>> = package
         .modules
@@ -161,9 +189,19 @@ struct Checker<'p, 'a> {
     /// Each name that resolves to a declaration or a local of the package, and where that is
     /// declared (ADR 0063).
     references: Vec<(Span, Span)>,
+    /// The poisoned names of each module with broken declarations (ADR 0096 rule 8).
+    poison: Option<&'p BTreeMap<FileId, Poison>>,
 }
 
 impl<'p, 'a> Checker<'p, 'a> {
+    /// Whether `name` is unknown in the module `file`, since a broken declaration of it may
+    /// declare it (ADR 0096 rule 8).
+    fn poisoned(&self, file: FileId, name: &str) -> bool {
+        self.poison
+            .and_then(|poison| poison.get(&file))
+            .is_some_and(|poison| poison.unnamed || poison.names.contains(name))
+    }
+
     fn name(&self, ident: &Ident) -> &'a str {
         self.package.interner.resolve(ident.name)
     }
@@ -728,6 +766,7 @@ impl<'p, 'a> Checker<'p, 'a> {
                     Some(module) => match module.upper.get(name).or_else(|| module.lower.get(name))
                     {
                         Some(declared) => Found::Declared(declared.clone(), module.module.id),
+                        None if self.poisoned(module.module.id, name) => Found::Unknown,
                         None => Found::Missing,
                     },
                     None if standard.contains(&name) => Found::Standard,

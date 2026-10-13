@@ -14,6 +14,7 @@ mod fix;
 mod lsp;
 mod package;
 mod proof_key;
+mod recovery;
 mod report;
 mod runtime;
 mod trace;
@@ -155,8 +156,13 @@ fn analyze_and(
     let mut interner = Interner::new();
     let mut trees = Vec::new();
     let keywords = keyword_set(manifest.edition);
+    // ADR 0096 C: the poisoned names of each module with broken declarations, and those
+    // declarations.
+    let mut poison = std::collections::BTreeMap::new();
+    let mut broken_files = std::collections::BTreeMap::new();
     for checked in check_files(&package.sources, &package.modules, &mut interner, keywords) {
-        let broken = !checked.syntax.is_empty();
+        // A module is broken as a whole only when its header is (ADR 0096 rule 7).
+        let whole = checked.broken.as_ref().is_some_and(|broken| broken.whole);
         diagnostics.extend(checked.syntax);
         if let Some(canonical) = checked.canonical {
             diagnostics.extend(una_fmt::differences(
@@ -165,7 +171,14 @@ fn analyze_and(
                 &canonical,
             ));
         }
-        trees.push((checked.id, checked.tree, broken));
+        diagnostics.extend(checked.partial_canonical);
+        if let Some(broken) = checked.broken {
+            if !broken.whole {
+                poison.insert(checked.id, broken.poison());
+            }
+            broken_files.insert(checked.id, broken);
+        }
+        trees.push((checked.id, checked.tree, whole));
     }
     // The entry is `[run] entry`, or the module of a single file.
     let entry = if package.single {
@@ -202,7 +215,11 @@ fn analyze_and(
         settings: &manifest,
         run,
     };
-    let (names, references) = una_check::check_names_indexed(&input);
+    let (names, references) = if poison.is_empty() {
+        una_check::check_names_indexed(&input)
+    } else {
+        una_check::check_names_poisoned(&input, &poison)
+    };
     diagnostics.extend(names);
     let (types, rejected) = if with_rejected {
         check_types_with_rejected(&input)
@@ -210,6 +227,14 @@ fn analyze_and(
         (check_types(&input), Vec::new())
     };
     diagnostics.extend(types.diagnostics);
+    if !broken_files.is_empty() {
+        withhold_dependents(
+            &package.sources,
+            &package.modules,
+            &broken_files,
+            &mut diagnostics,
+        );
+    }
     let analysis = Analysis {
         diagnostics,
         trees: trees.into_iter().map(|(id, tree, _)| (id, tree)).collect(),
@@ -226,13 +251,69 @@ fn analyze_and(
     (analysis, rejected)
 }
 
+/// ADR 0096 rule 9, as amended: drops every diagnostic but syntax of the declarations that
+/// reach a broken one.
+fn withhold_dependents(
+    sources: &SourceDb,
+    modules: &[FileId],
+    broken_files: &std::collections::BTreeMap<FileId, recovery::BrokenFile>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let none = std::collections::BTreeSet::new();
+    let clean: Vec<(FileId, Vec<una_syntax::Declaration>)> = modules
+        .iter()
+        .filter(|id| !broken_files.contains_key(id))
+        .map(|&id| (id, una_syntax::declarations(sources.file(id).text())))
+        .collect();
+    let mut texts = Vec::new();
+    for &id in modules {
+        let (declarations, broken) = match broken_files.get(&id) {
+            Some(file) => (file.declarations.as_slice(), &file.broken),
+            None => match clean.iter().find(|(clean_id, _)| *clean_id == id) {
+                Some((_, declarations)) => (declarations.as_slice(), &none),
+                None => continue,
+            },
+        };
+        let module = declarations
+            .iter()
+            .find(|d| d.what == una_syntax::DeclarationKind::Header)
+            .and_then(|d| d.module.as_deref())
+            .unwrap_or("");
+        texts.push(recovery::ModuleText {
+            path: sources.file(id).path(),
+            module,
+            declarations,
+            broken,
+        });
+    }
+    recovery::withhold(diagnostics, &texts);
+}
+
 /// The syntax diagnostics of one file, its tree, and its canonical form when it has no
-/// syntax error.
+/// syntax error. A file with one has its broken declarations, its tree without them, and the
+/// canonical-form diagnostics of the declarations that parsed (ADR 0096 C).
 struct FileCheck {
     id: FileId,
     syntax: Vec<Diagnostic>,
     tree: File,
     canonical: Option<String>,
+    broken: Option<recovery::BrokenFile>,
+    partial_canonical: Vec<Diagnostic>,
+}
+
+/// A parsed file: its id, tokens, tree, syntax diagnostics, and the byte offsets of its syntax
+/// errors.
+type Parsed = (FileId, Lexed, File, Vec<Diagnostic>, Vec<usize>);
+
+/// A file with broken declarations, without them: its text, parsed, for the canonical form of
+/// the declarations that parsed (ADR 0096 rule 10).
+struct Partial {
+    sources: SourceDb,
+    id: FileId,
+    lexed: Lexed,
+    tree: File,
+    text: String,
+    kept: Vec<recovery::Kept>,
 }
 
 /// Lexes the files `modules` of a package, chooses their renames together (#125), parses
@@ -250,41 +331,112 @@ fn check_files(
         .collect();
     // A word renamed in one module is renamed alike in every module that names it (#125).
     una_syntax::rename_across(&mut lexed, interner);
-    let parsed: Vec<(FileId, Lexed, File, Vec<Diagnostic>)> = modules
+    let parsed: Vec<Parsed> = modules
         .iter()
         .zip(lexed)
         .map(|(&id, lexed)| {
             let parsed = parse(&lexed, id, interner);
+            let errors = lexed
+                .errors
+                .iter()
+                .chain(&parsed.errors)
+                .map(|error| error.span.start)
+                .collect();
             let syntax: Vec<Diagnostic> = lexed
                 .errors
                 .iter()
                 .chain(&parsed.errors)
                 .map(|error| error.to_diagnostic(sources))
                 .collect();
-            (id, lexed, parsed.file, syntax)
+            (id, lexed, parsed.file, syntax, errors)
         })
         .collect();
+    // ADR 0096 C: the broken declarations of each file with a syntax error, its tree without
+    // them, and its text without them, parsed again once.
+    let mut files = Vec::new();
+    for (id, lexed, mut tree, syntax, errors) in parsed {
+        let (broken, partial) = if syntax.is_empty() {
+            (None, None)
+        } else {
+            let text = sources.file(id).text();
+            let broken = recovery::BrokenFile::new(text, &errors);
+            tree.decls.retain(|decl| !broken.in_broken(decl.span.start));
+            tree.imports
+                .retain(|import| !broken.in_broken(import.span.start));
+            let partial = (!broken.whole)
+                .then(|| partial_of(sources.file(id).path(), text, &broken, interner, keywords))
+                .flatten();
+            (Some(broken), partial)
+        };
+        files.push((id, lexed, tree, syntax, broken, partial));
+    }
     let constructors = una_fmt::Constructors::new(
-        parsed
+        files
             .iter()
-            .filter(|(_, _, _, syntax)| syntax.is_empty())
-            .map(|(_, _, tree, _)| tree),
+            .filter(|(_, _, _, syntax, _, _)| syntax.is_empty())
+            .map(|(_, _, tree, _, _, _)| tree)
+            .chain(
+                files
+                    .iter()
+                    .filter_map(|(_, _, _, _, _, partial)| partial.as_ref().map(|p| &p.tree)),
+            ),
     );
-    parsed
+    files
         .into_iter()
-        .map(|(id, lexed, tree, syntax)| {
-            // A file with syntax errors has no canonical form.
+        .map(|(id, lexed, tree, syntax, broken, partial)| {
+            // A file with syntax errors has no canonical form as a whole.
             let canonical = syntax.is_empty().then(|| {
                 una_fmt::format_with(sources.file(id), &lexed, &tree, interner, &constructors)
+            });
+            let partial_canonical = partial.map_or_else(Vec::new, |partial| {
+                let canonical = una_fmt::format_with(
+                    partial.sources.file(partial.id),
+                    &partial.lexed,
+                    &partial.tree,
+                    interner,
+                    &constructors,
+                );
+                recovery::canonical_by_declaration(
+                    sources.file(id).path(),
+                    &partial.text,
+                    &canonical,
+                    &partial.kept,
+                )
             });
             FileCheck {
                 id,
                 syntax,
                 tree,
                 canonical,
+                broken,
+                partial_canonical,
             }
         })
         .collect()
+}
+
+/// The text of a file without its broken declarations, parsed; `None` when it does not parse,
+/// so that no canonical form is compared.
+fn partial_of(
+    path: &str,
+    text: &str,
+    broken: &recovery::BrokenFile,
+    interner: &mut Interner,
+    keywords: KeywordSet,
+) -> Option<Partial> {
+    let (kept_text, kept) = broken.kept(text);
+    let mut partial_sources = SourceDb::new();
+    let id = partial_sources.add(path, kept_text.as_bytes());
+    let lexed = lex_in(partial_sources.file(id), id, interner, keywords);
+    let parsed = parse(&lexed, id, interner);
+    (lexed.errors.is_empty() && parsed.errors.is_empty()).then_some(Partial {
+        sources: partial_sources,
+        id,
+        lexed,
+        tree: parsed.file,
+        text: kept_text,
+        kept,
+    })
 }
 
 /// The stack of the thread that checks a package. The passes recurse over the syntax tree,
@@ -933,6 +1085,15 @@ fn report(
             "{}",
             render_human(diagnostics, &sources.texts(), color)
         )?;
+        // ADR 0096 rule 6: how many diagnostics `una fix` would repair.
+        let fixable = una_diag::fixable(diagnostics);
+        if fixable > 0 {
+            writeln!(
+                stderr,
+                "{fixable} of {} diagnostics have an edit that `una fix` applies (`una fix --dry-run` lists them)",
+                diagnostics.len()
+            )?;
+        }
         stderr.flush()?;
     }
     Ok(status)
@@ -1264,14 +1425,14 @@ mod tests {
         let status = guard(true, "una.toml").run(&mut stdout, &mut stderr, |stdout, _| {
             let _ = writeln!(
                 stdout,
-                "{{\"schema\":\"una.diagnostics/1\",\"diagnostics\":[]}}"
+                "{{\"schema\":\"una.diagnostics/1\",\"diagnostics\":[],\"fixable\":0}}"
             );
             ExitStatus::Errors
         });
         assert_eq!(status.code(), 1);
         assert_eq!(
             String::from_utf8(stdout).unwrap(),
-            "{\"schema\":\"una.diagnostics/1\",\"diagnostics\":[]}\n"
+            "{\"schema\":\"una.diagnostics/1\",\"diagnostics\":[],\"fixable\":0}\n"
         );
         assert!(stderr.is_empty());
     }

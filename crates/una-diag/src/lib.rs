@@ -14,4 +14,4 @@ pub use diagnostic::{
     ObligationRef, ObligationStatus, Position, Ranked, Related, Repair, Severity, in_output_order,
 };
 pub use human::render_human;
-pub use json::{DIAGNOSTICS_SCHEMA, DiagnosticList, render_json};
+pub use json::{DIAGNOSTICS_SCHEMA, DiagnosticList, fixable, render_json};

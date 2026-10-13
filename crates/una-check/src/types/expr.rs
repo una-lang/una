@@ -1278,7 +1278,10 @@ impl<'a> Checker<'_, 'a, '_> {
             },
             _ => None,
         };
-        let mut mismatch = false;
+        // A lambda given to a call of a name that does not resolve: its parameters are errors,
+        // silently (ADR 0096 rule 8). Every other lambda without an expected type still
+        // reports U2010.
+        let mut mismatch = std::mem::take(&mut self.unknown_callee_argument);
         if let Some(function) = &shape
             && function.params.len() != params.len()
         {

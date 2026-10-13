@@ -64,5 +64,6 @@ expression: pretty
       ],
       "explain": "una explain U5001"
     }
-  ]
+  ],
+  "fixable": 0
 }

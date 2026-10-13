@@ -10,7 +10,7 @@ use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use una_diag::Code;
 
-const EMPTY_LIST: &str = "{\"schema\":\"una.diagnostics/1\",\"diagnostics\":[]}\n";
+const EMPTY_LIST: &str = "{\"schema\":\"una.diagnostics/1\",\"diagnostics\":[],\"fixable\":0}\n";
 
 /// Runs the `una` binary from the repository root.
 fn una(args: &[&str]) -> Output {

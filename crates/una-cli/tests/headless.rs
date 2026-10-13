@@ -123,7 +123,10 @@ example \"a second after midnight\"
     let (code, document) = una(&root, &["check"]);
     assert_eq!(
         (code, document),
-        (0, json!({"schema": "una.diagnostics/1", "diagnostics": []}))
+        (
+            0,
+            json!({"schema": "una.diagnostics/1", "diagnostics": [], "fixable": 0})
+        )
     );
 
     // 3. The examples pass, every obligation is proven, and the report sees no gap.

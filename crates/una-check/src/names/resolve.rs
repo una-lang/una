@@ -212,7 +212,7 @@ impl<'a> Resolver<'_, '_, 'a> {
         if let Some(declared) = declared {
             self.checker.references.push((ident.span, declared));
         }
-        if !self.visible(name, space) {
+        if !self.visible(name, space) && !self.checker.poisoned(self.table.module.id, name) {
             let mut diagnostic = self.checker.make(
                 Code::U1001,
                 ident.span,

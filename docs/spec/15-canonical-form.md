@@ -2,7 +2,7 @@
 
 Status: Normative, v0.1.
 
-Every source file has one canonical form (charter P4, ADR 0011). `una fmt` MUST rewrite a file into it, and `una check` MUST report every difference from it as U7001. This chapter defines the canonical form of a file that has no syntax error (ADR 0020). A file with a syntax error has no canonical form: it is neither formatted nor checked for U7001.
+Every source file has one canonical form (charter P4, ADR 0011). `una fmt` MUST rewrite a file into it, and `una check` MUST report every difference from it as U7001. This chapter defines the canonical form of a file that has no syntax error (ADR 0020). A file with a syntax error has no canonical form as a whole: it is not formatted, and only its declarations that parsed are checked for U7001, each against its canonical text (ADR 0096 rule 10). Its blank lines between declarations, the order of its imports and its final line break are checked once it parses.
 
 ## 1. File
 
