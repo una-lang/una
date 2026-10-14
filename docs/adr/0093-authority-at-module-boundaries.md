@@ -174,3 +174,13 @@ Checking the implementation found that a lambda or a function value given to a b
 - **Codes.** No new code.
 - **Complexity.** One resolution per `uses` entry of each lambda and function value among the arguments of a crossing or an installation, through the frames in scope: linear in those entries times the frames.
 - **Formal.** It is part of the obligation of #629.
+
+## Amendment (2026-10-14): a handler is charged where it is installed
+
+This closes the known limitation recorded earlier on 2026-10-14 (#669).
+
+15. **A handler is charged where it is installed.** A handler installed outside a call into a boundary, by `with` or by an example's `given`, and granted on to that call by name counts against the boundary as rule 5 counts a handler granted directly. Its own `uses`, and what its installation's arguments count by rule 14, lie within the ceiling (U3021). The releases it reaches count for U3024 (rule 8). Both are reported at the installation, with the call as the related span. The path by name runs through header bindings, rebindings, narrowed or not, calls, and function values: a lambda and a function named as a value carry the bindings where they are written (rule 14). The handlers that the installed handler's own `uses` resolve to where it is installed are granted on to the call too, and so are those that its operations grant on by name. A handler of one boundary installed outside it is a handler installed outside a call into another boundary too: its installation is a call into its own boundary (rule 3), and it is charged against any other boundary it is granted on to. A call that resolves a binding to the installation itself already charges the handler there, and is not reported again. A binding of an example's own context or of the `[run]` entry's is a host capability, which runs no code of the package. Rule 13's sentence that the handler behind a header binding is the consumer's choice no longer applies to boundaries: a consumer that installs a handler and grants it on to a boundary is checked at the installation.
+
+- **Codes.** No new code.
+- **Complexity.** A summary of (binding, boundary) pairs, closed by a worklist over its edges: one edge per `uses` entry resolved at each call, reference, lambda and installation, and each pair follows each edge out of its binding once. That is O(E × K) for E edges and K boundaries, linear in the program for a fixed `una.toml`. A scaling test runs a chain of forwarding functions at growing sizes.
+- **Formal.** It extends the obligation of #629.

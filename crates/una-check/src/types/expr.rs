@@ -15,7 +15,7 @@ use una_syntax::ast::{
 use super::authority::{Base, Bound, Frame, Pass};
 use super::check::{Checker, Ctx, Rl, Role, Site};
 use super::closest;
-use super::crossing::{Granting, Node};
+use super::crossing::{Granting, Node, Owner};
 use super::env::{Constraint, Entity, FnKind, KindDef};
 use super::fixed;
 use super::label::Label;
@@ -493,6 +493,9 @@ impl<'a> Checker<'_, 'a, '_> {
                     // A reference that is not a value at all is U3006 below instead.
                     self.needs_site(&callee, &needs, ident.span, level);
                 }
+                // ADR 0093 rule 15: a handler that those bindings hold runs wherever the value
+                // goes, a boundary it reaches included.
+                self.summary_needs(Owner::Node(Node::Function(id)), &needs, level);
                 // ADR 0093 rules 5 and 8: given to a boundary, it grants what those bindings hold.
                 self.captured_needs(&needs, ident.span);
                 // A function with conventions is not a value (`spec/17 §3` rule 7).
@@ -1477,6 +1480,7 @@ impl<'a> Checker<'_, 'a, '_> {
         // with effects or failures it may only be an argument.
         let level = self.frames.len();
         self.needs_site("this lambda", &uses, span, level);
+        self.summary_needs(Owner::Lambda(span), &uses, level);
         self.captured_needs(&uses, span);
         if let Some(argument) = inherit {
             return self.inherited_lambda(argument, params, body, span, types, result, mark);
@@ -1522,6 +1526,7 @@ impl<'a> Checker<'_, 'a, '_> {
         let prelude_lambda = std::mem::replace(&mut self.prelude_lambda, prelude);
         self.lambda_depth += 1;
         let frames_depth = std::mem::replace(&mut self.frames_depth, self.lambda_depth);
+        let frames_lambda = self.frames_lambda.replace(span);
         // A lambda's body starts at a `public` program counter (ADR 0031 rule 4).
         let ctx = Ctx {
             fails: fails.clone(),
@@ -1540,6 +1545,7 @@ impl<'a> Checker<'_, 'a, '_> {
         });
         self.lambda_depth -= 1;
         self.frames_depth = frames_depth;
+        self.frames_lambda = frames_lambda;
         self.prelude_lambda = prelude_lambda;
         self.base = base;
         self.frames = frames;

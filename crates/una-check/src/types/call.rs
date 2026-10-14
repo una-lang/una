@@ -10,7 +10,7 @@ use una_syntax::ast::{Arg, Convention, Expr, ExprKind, Ident};
 use super::Report;
 use super::check::{Checker, Role, Site};
 use super::closest;
-use super::crossing::{Granting, Node};
+use super::crossing::{Granting, Node, Owner};
 use super::env::{Entity, FieldDef, FnAst, FnDef, FnKind, ParamDef};
 use super::expr::count;
 use super::label::Label;
@@ -652,6 +652,9 @@ impl<'a> Checker<'_, 'a, '_> {
             None => needs.clone(),
         };
         self.needs_site(&callee, &granted, span, level);
+        // ADR 0093 rule 15: what the callee grants on by name, from its own bindings, reaches
+        // the bindings its `uses` resolve to here.
+        self.summary_needs(Owner::Node(Node::Function(id)), &granted, level);
         self.reach(Node::Function(id));
         self.call_fact(id, span);
         self.via_site(id, span);

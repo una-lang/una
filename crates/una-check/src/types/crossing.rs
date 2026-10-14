@@ -1,4 +1,4 @@
-//! Edition 0.3: calls into a boundary module (ADR 0093 rules 3, 5, 8, 10, 11 and 13).
+//! Edition 0.3: calls into a boundary module (ADR 0093 rules 3, 5, 8, 10, 11, 13 and 15).
 //!
 //! A call is a crossing when the declaration it resolves to lies in a boundary's extent and
 //! the code that calls it does not (rules 3, 9, 11 and 12). Function values, handler
@@ -11,10 +11,13 @@
 //!   binding that the callee's needs do not name is not counted: the callee can neither name it
 //!   nor perform an operation outside its declared `uses`;
 //! - no release is reachable (U3024, rule 8), which [`releases`] decides once the call graph of
-//!   the package is complete.
+//!   the package is complete;
+//! - a handler installed outside the call and granted on to it by name is charged where it is
+//!   installed (rule 15), once a summary of what each binding leads to is closed.
 //!
-//! Each check is linear in the needs and grants of the call, and [`releases`] is one reverse
-//! breadth-first search over the call graph: linear in its nodes and edges.
+//! Each check is linear in the needs and grants of the call, [`releases`] is one reverse
+//! breadth-first search over the call graph, linear in its nodes and edges, and the summary is
+//! closed in O(E x K) for E edges and K boundaries.
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -22,11 +25,11 @@ use una_diag::Code;
 use una_syntax::Span;
 use una_syntax::ast::{Expr, ExprKind};
 
-use super::Report;
 use super::authority::{Pass, Resolved, resolve_in};
 use super::check::Checker;
 use super::env::{Entity, Env, Need};
 use super::ty::{CapId, FnUse, Ty};
+use super::{Findings, Report};
 
 /// A node of the call graph that releases follow: a function, or a handler whose operations
 /// may run.
@@ -61,6 +64,41 @@ pub(crate) struct Granting {
     /// A lambda or function value given to the boundary that runs on a binding the check does
     /// not follow to where it was captured: what it holds is not bounded (rule 5, fail closed).
     pub(crate) unseen: Option<(Span, String)>,
+    /// What the bindings that the functions and lambdas among them run on lead to where they
+    /// are written (rule 15).
+    pub(crate) sources: Vec<Source>,
+}
+
+/// Whose own bindings a binding of a header is: a function's or a handler's, or those of a
+/// lambda whose expected type has `uses`, by where the lambda is written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Owner {
+    Node(Node),
+    Lambda(Span),
+}
+
+/// What a capability reference leads to once its rebindings are followed (rule 15): a binding
+/// of its body's own `uses`, or a handler installed by `with` or `given`, by the span its
+/// binding records.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Source {
+    Header(Owner, String),
+    Install(Span),
+}
+
+/// A handler installed outside every boundary, by `with` or `given` (rule 15): a call into a
+/// boundary that it reaches through bindings granted on by name charges it here.
+#[derive(Clone, Debug)]
+pub(crate) struct InstallSite {
+    /// The span its binding records.
+    pub(crate) at: Span,
+    /// The installation.
+    pub(crate) span: Span,
+    pub(crate) handler: usize,
+    pub(crate) name: String,
+    /// The boundary that declares the handler, if any: its installation is a call into that
+    /// boundary, which charges it there.
+    pub(crate) own: Option<usize>,
 }
 
 /// What the arguments of one installation of a handler grant it: the capabilities that the
@@ -95,6 +133,9 @@ pub(crate) struct Install {
     /// The module that declares the handler.
     pub(crate) module: usize,
     pub(crate) callee: String,
+    /// The handler's name, and the span its binding records (rule 15).
+    pub(crate) name: String,
+    pub(crate) at: Span,
     pub(crate) uses: Vec<Need>,
     pub(crate) span: Span,
     pub(crate) granting: Granting,
@@ -106,6 +147,83 @@ impl Checker<'_, '_, '_> {
         self.handler
             .map(Node::Handler)
             .or(self.current.map(Node::Function))
+    }
+
+    /// Whose own bindings `frames` holds: the lambda whose body is checked, if its expected
+    /// type has `uses`, or the function or handler.
+    fn owner(&self) -> Option<Owner> {
+        self.frames_lambda
+            .map(Owner::Lambda)
+            .or_else(|| self.node().map(Owner::Node))
+    }
+
+    /// What `resolved` leads to, for the summary of rule 15. A binding of an example's or a
+    /// `[run]` entry's own context is a host capability, which runs no code of the package.
+    fn source(&self, resolved: &Resolved) -> Option<Source> {
+        match resolved {
+            Resolved::Cap { name, .. } => self
+                .owner()
+                .map(|owner| Source::Header(owner, name.clone())),
+            Resolved::Handler { span, .. } => Some(Source::Install(*span)),
+            Resolved::Missing { .. } => None,
+        }
+    }
+
+    /// Rule 15: `callee`, a function, a handler or a lambda, runs on what its `needs` resolve to
+    /// below `level`, so a call into a boundary that one of its bindings reaches reaches what
+    /// that binding resolves to here. Each is an edge of the summary that [`releases`] closes.
+    pub(crate) fn summary_needs(&mut self, callee: Owner, needs: &[FnUse], level: usize) {
+        if self.pass != Pass::Check {
+            return;
+        }
+        for need in needs.iter().filter(|need| need.capability.is_some()) {
+            let resolved = resolve_in(&self.frames, level, &need.name);
+            if let Some(to) = self.source(&resolved) {
+                self.findings
+                    .summary_edges
+                    .push((Source::Header(callee, need.name.clone()), to));
+            }
+        }
+    }
+
+    /// Rule 15: handler `handler`, installed at `span` and bound at `at`, runs on what its
+    /// `uses` resolve to below `level`, the level its own check resolves them at: a call into a
+    /// boundary that reaches the installation, or that its operations make with those bindings,
+    /// reaches what they resolve to here. The installation is checked once the summary is
+    /// closed, except against `own`, the boundary that declares the handler, whose call the
+    /// installation itself is.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn installed_needs(
+        &mut self,
+        handler: usize,
+        name: String,
+        span: Span,
+        at: Span,
+        uses: &[FnUse],
+        level: usize,
+        own: Option<usize>,
+    ) {
+        if self.pass != Pass::Check {
+            return;
+        }
+        // The standard modules report nothing here, as for any call into a boundary.
+        if self.reports_authority() {
+            self.findings.install_sites.push(InstallSite {
+                at,
+                span,
+                handler,
+                name,
+                own,
+            });
+        }
+        for need in uses.iter().filter(|need| need.capability.is_some()) {
+            let resolved = resolve_in(&self.frames, level, &need.name);
+            if let Some(to) = self.source(&resolved) {
+                let own = Source::Header(Owner::Node(Node::Handler(handler)), need.name.clone());
+                self.findings.summary_edges.push((own, to.clone()));
+                self.findings.summary_edges.push((Source::Install(at), to));
+            }
+        }
     }
 
     /// The boundary that a reference from this module to a declaration of `module` crosses
@@ -158,6 +276,21 @@ impl Checker<'_, '_, '_> {
         if self.pass != Pass::Check {
             return;
         }
+        self.record_installed(handler, at, &given);
+        if let Some(outer) = self.granting_now() {
+            outer.uses.extend(given.uses);
+            outer.sources.extend(given.sources);
+        }
+    }
+
+    /// What the arguments of an installation of handler `handler`, bound at `at`, gave it, kept
+    /// for every call into a boundary that may run the handler: by [`Self::handler_arguments`]
+    /// for a handler outside every boundary, and for a handler of a boundary installed outside
+    /// it, which another boundary may receive by name (rule 15).
+    pub(crate) fn record_installed(&mut self, handler: usize, at: Span, given: &Granting) {
+        if self.pass != Pass::Check {
+            return;
+        }
         self.findings.installed.insert(
             at,
             Installed {
@@ -165,8 +298,14 @@ impl Checker<'_, '_, '_> {
                 unseen: given.unseen.clone(),
             },
         );
+        // Rule 15: a boundary that runs the handler runs what was given to it.
+        for source in &given.sources {
+            self.findings
+                .summary_edges
+                .push((Source::Install(at), source.clone()));
+        }
         let node = Node::Handler(handler);
-        for target in given.targets {
+        for &target in &given.targets {
             self.findings.graph.push((node, target));
         }
         if let Some(span) = given.release {
@@ -174,9 +313,6 @@ impl Checker<'_, '_, '_> {
         }
         if let Some(span) = given.opaque {
             self.findings.opaque.push((node, span));
-        }
-        if let Some(outer) = self.granting_now() {
-            outer.uses.extend(given.uses);
         }
     }
 
@@ -396,9 +532,11 @@ impl Checker<'_, '_, '_> {
             }
             target = Some(Node::Handler(*handler));
         }
+        let source = self.source(resolved);
         if let Some(granting) = self.granting_now() {
             granting.uses.extend(uses);
             granting.targets.extend(target);
+            granting.sources.extend(source);
             if granting.unseen.is_none() {
                 granting.unseen = unseen;
             }
@@ -407,16 +545,7 @@ impl Checker<'_, '_, '_> {
 
     /// The `uses` of handler `handler`, each as its capability and operations.
     fn handler_uses(&self, handler: usize) -> Vec<(CapId, Vec<String>)> {
-        self.env.handlers.get(handler).map_or_else(Vec::new, |h| {
-            h.uses
-                .iter()
-                .filter_map(|need| {
-                    need.usage
-                        .capability
-                        .map(|capability| (capability, need.usage.ops.clone()))
-                })
-                .collect()
-        })
+        handler_uses(&*self.env, handler)
     }
 
     /// Whether `@name` resolves first in a `with` frame below `level`, rather than in the
@@ -502,8 +631,12 @@ impl Checker<'_, '_, '_> {
         let mut unseen = granting.unseen;
         let mut targets = vec![target];
         targets.extend(granting.targets);
+        // Rule 15: what the call grants, it reaches where those bindings lead, by name through
+        // rebindings, header bindings and calls, up to the installation of their handler.
+        let mut sources = granting.sources;
         for need in needs {
             let resolved = resolve_in(&self.frames, level, &need.name);
+            sources.extend(self.source(&resolved));
             match &resolved {
                 Resolved::Cap {
                     capability: Some(capability),
@@ -547,6 +680,9 @@ impl Checker<'_, '_, '_> {
             }
         }
         self.ceiling_site(boundary, what, &grants, span);
+        for source in sources {
+            self.findings.summary_seeds.push((source, boundary, span));
+        }
         if let Some((given, name)) = granting.opaque_uses {
             let key = self.boundary_key(boundary);
             let mut diagnostic = self.report.make(
@@ -596,72 +732,15 @@ impl Checker<'_, '_, '_> {
         if !self.reports_authority() {
             return;
         }
-        // Merged by capability, so each is reported once, its operations in declaration order.
-        let mut merged: BTreeMap<CapId, Vec<String>> = BTreeMap::new();
-        for (capability, ops) in grants {
-            let entry = merged.entry(*capability).or_default();
-            for op in ops {
-                if !entry.contains(op) {
-                    entry.push(op.clone());
-                }
-            }
+        for message in excess(&*self.env, boundary, grants) {
+            self.report
+                .error(Code::U3021, span, format!("{what} {message}"));
         }
-        let Some(resolved) = self.env.boundaries.list.get(boundary) else {
-            return;
-        };
-        let key = resolved.key.clone();
-        let ceiling = resolved.ceiling.clone();
-        for (capability, ops) in merged {
-            let allowed = ceiling.get(&capability);
-            let excess: Vec<&String> = ops
-                .iter()
-                .filter(|op| !allowed.is_some_and(|allowed| allowed.contains(op)))
-                .collect();
-            if excess.is_empty() {
-                continue;
-            }
-            let name = self.cap_name(Some(capability));
-            let ordered = self.in_order(capability, &ops);
-            let allows = match allowed {
-                Some(allowed) if !allowed.is_empty() => {
-                    format!(
-                        "`{name}[{}]`",
-                        self.in_order(capability, allowed).join(", ")
-                    )
-                }
-                _ => format!("no operation of `{name}`"),
-            };
-            self.report.error(
-                Code::U3021,
-                span,
-                format!(
-                    "{what} grants `{name}[{}]` to `{key}`, whose ceiling in `una.toml` allows {allows}",
-                    ordered.join(", ")
-                ),
-            );
-        }
-    }
-
-    /// `ops` in the order capability `capability` declares them, then any others.
-    fn in_order(&self, capability: CapId, ops: &[String]) -> Vec<String> {
-        let declared = self.all_ops(capability);
-        let mut ordered: Vec<String> = declared
-            .iter()
-            .filter(|op| ops.contains(op))
-            .cloned()
-            .collect();
-        ordered.extend(ops.iter().filter(|op| !declared.contains(op)).cloned());
-        ordered
     }
 
     /// Every operation of capability `capability`.
     fn all_ops(&self, capability: CapId) -> Vec<String> {
-        self.env
-            .capabilities
-            .get(capability)
-            .map_or_else(Vec::new, |c| {
-                c.ops.iter().map(|op| op.name.to_owned()).collect()
-            })
+        all_ops(&*self.env, capability)
     }
 
     /// The key of boundary `boundary`, for messages.
@@ -686,6 +765,18 @@ impl Checker<'_, '_, '_> {
         let needs: Vec<FnUse> = install.uses.iter().map(|n| n.usage.clone()).collect();
         self.frames.push(frame);
         let level = self.frames.len();
+        // Rule 15: another boundary may receive the handler by name, so it is charged at this
+        // installation too, its `uses` resolved where rule 3 resolves them, in the clause.
+        self.record_installed(install.handler, install.at, &install.granting);
+        self.installed_needs(
+            install.handler,
+            install.name.clone(),
+            install.span,
+            install.at,
+            &needs,
+            level,
+            Some(install.boundary),
+        );
         // Only the clause's own frame grants: the frames below it are the installer's.
         let mut granted = Vec::with_capacity(needs.len());
         let mut by_name = Vec::new();
@@ -760,15 +851,15 @@ impl Checker<'_, '_, '_> {
 /// a handler it may run. A reverse breadth-first search from the sites over the call graph
 /// marks every node that reaches one, with the first site that reaches it, in O(nodes + edges),
 /// once for the releases and once for the unknown function values; each crossing is then one
-/// lookup per node it may run.
-pub(crate) fn releases(
-    env: &Env<'_>,
-    graph: &[(Node, Node)],
-    releases: &[(Node, Span)],
-    opaque: &[(Node, Span)],
-    crossings: &[Crossing],
-    report: &mut Report<'_>,
-) {
+/// lookup per node it may run. Then the handlers installed outside the calls that reach them by
+/// name are charged where they are installed ([`installations`], rule 15).
+pub(crate) fn releases(env: &Env<'_>, findings: &Findings, report: &mut Report<'_>) {
+    let (graph, releases, opaque, crossings) = (
+        &findings.graph,
+        &findings.releases,
+        &findings.opaque,
+        &findings.crossings,
+    );
     if crossings.is_empty() {
         return;
     }
@@ -873,6 +964,279 @@ pub(crate) fn releases(
             report.push(diagnostic);
         }
     }
+    let reaches = |node: Node| Reaches {
+        release: released.get(index(node)).copied().flatten(),
+        unknown: unknown.get(index(node)).copied().flatten(),
+    };
+    installations(env, findings, &reaches, report);
+}
+
+/// The number of `source` among the bindings of the summary, numbered on first sight.
+fn intern<'f>(ids: &mut BTreeMap<&'f Source, usize>, source: &'f Source) -> usize {
+    let next = ids.len();
+    *ids.entry(source).or_insert(next)
+}
+
+/// What running a node may reach: the first release, and the first function value whose code is
+/// not known, when any policy exists.
+struct Reaches {
+    release: Option<Span>,
+    unknown: Option<Span>,
+}
+
+/// Rule 15: a handler installed outside a call into a boundary, and granted on to it by name,
+/// through header bindings, rebindings, calls, lambdas and function values, counts there as a
+/// handler granted directly counts (rule 5): its `uses` and what its installation's arguments
+/// grant against the ceiling (U3021), and its reachable releases (U3024, rule 8), reported at
+/// the installation with the call as related. A call that resolves a binding to the
+/// installation itself already charged it there.
+///
+/// The summary is closed by a worklist over its edges: each pair of a binding and a boundary
+/// enters once and follows each edge out of its binding once, so O(E x K) for E edges and K
+/// boundaries, linear in the program for a fixed `una.toml`.
+fn installations(
+    env: &Env<'_>,
+    findings: &Findings,
+    reaches: &dyn Fn(Node) -> Reaches,
+    report: &mut Report<'_>,
+) {
+    if findings.install_sites.is_empty() || findings.summary_seeds.is_empty() {
+        return;
+    }
+    let boundaries = env.boundaries.list.len();
+    // Every binding of the summary, by number.
+    let mut ids: BTreeMap<&Source, usize> = BTreeMap::new();
+    let mut edges: Vec<(usize, usize)> = Vec::with_capacity(findings.summary_edges.len());
+    for (from, to) in &findings.summary_edges {
+        let from = intern(&mut ids, from);
+        let to = intern(&mut ids, to);
+        edges.push((from, to));
+    }
+    // A call that resolves a binding to an installation charged the handler there itself.
+    let seeds: Vec<(usize, usize, Span, bool)> = findings
+        .summary_seeds
+        .iter()
+        .map(|(source, boundary, span)| {
+            let direct = matches!(source, Source::Install(_));
+            (intern(&mut ids, source), *boundary, *span, direct)
+        })
+        .collect();
+    let count = ids.len();
+    let mut out: Vec<Vec<usize>> = vec![Vec::new(); count];
+    for &(from, to) in &edges {
+        if let Some(list) = out.get_mut(from) {
+            list.push(to);
+        }
+    }
+    // For each binding and boundary, the first call into the boundary that reaches it.
+    let mut reached: Vec<Option<Span>> = vec![None; count * boundaries];
+    // The installations that a call resolves to directly, which it charged itself.
+    let mut direct: Vec<bool> = vec![false; count * boundaries];
+    let mut queue = VecDeque::new();
+    for &(id, boundary, span, own) in &seeds {
+        if boundary >= boundaries {
+            continue;
+        }
+        let slot = id * boundaries + boundary;
+        if own && let Some(flag) = direct.get_mut(slot) {
+            *flag = true;
+        }
+        if let Some(entry) = reached.get_mut(slot)
+            && entry.is_none()
+        {
+            *entry = Some(span);
+            queue.push_back((id, boundary));
+        }
+    }
+    while let Some((id, boundary)) = queue.pop_front() {
+        let Some(span) = reached.get(id * boundaries + boundary).copied().flatten() else {
+            continue;
+        };
+        for &to in out.get(id).map_or(&[][..], Vec::as_slice) {
+            if let Some(entry) = reached.get_mut(to * boundaries + boundary)
+                && entry.is_none()
+            {
+                *entry = Some(span);
+                queue.push_back((to, boundary));
+            }
+        }
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for site in &findings.install_sites {
+        // An installation is charged once, however often its body is checked.
+        if !seen.insert(site.at) {
+            continue;
+        }
+        let Some(&id) = ids.get(&Source::Install(site.at)) else {
+            continue;
+        };
+        let installed = findings.installed.get(&site.at);
+        let mut grants = handler_uses(env, site.handler);
+        if let Some(installed) = installed {
+            grants.extend(installed.uses.iter().cloned());
+        }
+        for boundary in 0..boundaries {
+            let slot = id * boundaries + boundary;
+            if direct.get(slot).copied().unwrap_or(false) || site.own == Some(boundary) {
+                continue;
+            }
+            let Some(crossing) = reached.get(slot).copied().flatten() else {
+                continue;
+            };
+            let key = env
+                .boundaries
+                .list
+                .get(boundary)
+                .map_or("", |b| b.key.as_str());
+            let what = format!(
+                "handler `{}`, granted on by name to a call into a boundary,",
+                site.name
+            );
+            let into = format!(
+                "handler `{}`, granted on by name to a call into `{key}`,",
+                site.name
+            );
+            for message in excess(env, boundary, &grants) {
+                let mut diagnostic =
+                    report.make(Code::U3021, site.span, format!("{what} {message}"));
+                diagnostic
+                    .related
+                    .push(report.related(crossing, "the call into the boundary"));
+                report.push(diagnostic);
+            }
+            if let Some((given, name)) = installed.and_then(|i| i.unseen.clone()) {
+                let mut diagnostic = report.make(
+                    Code::U3021,
+                    site.span,
+                    format!(
+                        "{into} gives the boundary a function value that runs on `@{name}`, a binding captured where this check does not follow it, so the ceiling in `una.toml` cannot bound what it holds"
+                    ),
+                );
+                diagnostic
+                    .related
+                    .push(report.related(given, "the function value"));
+                diagnostic
+                    .related
+                    .push(report.related(crossing, "the call into the boundary"));
+                report.push(diagnostic);
+            }
+            let runs = reaches(Node::Handler(site.handler));
+            if let Some(release) = runs.release {
+                let mut diagnostic = report.make(
+                    Code::U3024,
+                    site.span,
+                    format!("{into} reaches a release; a boundary module never declassifies"),
+                );
+                diagnostic
+                    .related
+                    .push(report.related(release, "the release"));
+                diagnostic
+                    .related
+                    .push(report.related(crossing, "the call into the boundary"));
+                diagnostic.repairs.push(Report::advice(
+                    "install a handler that releases nothing, or move the release into a trusted module of the consumer, outside what the boundary runs".to_owned(),
+                ));
+                report.push(diagnostic);
+            } else if env.boundaries.any_policy
+                && let Some(given) = runs.unknown
+            {
+                let mut diagnostic = report.make(
+                    Code::U3024,
+                    site.span,
+                    format!(
+                        "{into} runs a function value whose releases cannot be known here; a boundary module never declassifies"
+                    ),
+                );
+                diagnostic
+                    .related
+                    .push(report.related(given, "the function value"));
+                diagnostic
+                    .related
+                    .push(report.related(crossing, "the call into the boundary"));
+                diagnostic.repairs.push(Report::advice(
+                    "pass a named function or a lambda, whose code the check can follow".to_owned(),
+                ));
+                report.push(diagnostic);
+            }
+        }
+    }
+}
+
+/// The `uses` of handler `handler`, each as its capability and operations.
+fn handler_uses(env: &Env<'_>, handler: usize) -> Vec<(CapId, Vec<String>)> {
+    env.handlers.get(handler).map_or_else(Vec::new, |h| {
+        h.uses
+            .iter()
+            .filter_map(|need| {
+                need.usage
+                    .capability
+                    .map(|capability| (capability, need.usage.ops.clone()))
+            })
+            .collect()
+    })
+}
+
+/// For each capability of `grants` with an operation outside the ceiling of `boundary`, the
+/// end of a message: "grants `C[ops]` to `key`, whose ceiling in `una.toml` allows ...". Merged
+/// by capability, so each is reported once, its operations in declaration order.
+fn excess(env: &Env<'_>, boundary: usize, grants: &[(CapId, Vec<String>)]) -> Vec<String> {
+    let mut merged: BTreeMap<CapId, Vec<String>> = BTreeMap::new();
+    for (capability, ops) in grants {
+        let entry = merged.entry(*capability).or_default();
+        for op in ops {
+            if !entry.contains(op) {
+                entry.push(op.clone());
+            }
+        }
+    }
+    let Some(resolved) = env.boundaries.list.get(boundary) else {
+        return Vec::new();
+    };
+    let mut messages = Vec::new();
+    for (capability, ops) in merged {
+        let allowed = resolved.ceiling.get(&capability);
+        let over = ops
+            .iter()
+            .any(|op| !allowed.is_some_and(|allowed| allowed.contains(op)));
+        if !over {
+            continue;
+        }
+        let name = env.cap_display(capability);
+        let allows = match allowed {
+            Some(allowed) if !allowed.is_empty() => {
+                format!(
+                    "`{name}[{}]`",
+                    in_order(env, capability, allowed).join(", ")
+                )
+            }
+            _ => format!("no operation of `{name}`"),
+        };
+        messages.push(format!(
+            "grants `{name}[{}]` to `{}`, whose ceiling in `una.toml` allows {allows}",
+            in_order(env, capability, &ops).join(", "),
+            resolved.key
+        ));
+    }
+    messages
+}
+
+/// `ops` in the order capability `capability` declares them, then any others.
+fn in_order(env: &Env<'_>, capability: CapId, ops: &[String]) -> Vec<String> {
+    let declared = all_ops(env, capability);
+    let mut ordered: Vec<String> = declared
+        .iter()
+        .filter(|op| ops.contains(op))
+        .cloned()
+        .collect();
+    ordered.extend(ops.iter().filter(|op| !declared.contains(op)).cloned());
+    ordered
+}
+
+/// Every operation of capability `capability`.
+fn all_ops(env: &Env<'_>, capability: CapId) -> Vec<String> {
+    env.capabilities.get(capability).map_or_else(Vec::new, |c| {
+        c.ops.iter().map(|op| op.name.to_owned()).collect()
+    })
 }
 
 /// For each kind, whether a value of it may hold a function value: a field of a function type,

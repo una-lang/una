@@ -1,0 +1,7 @@
+module media.vendor
+
+import media.log (Log, Net)
+
+pub handler posting() for Log
+  uses @net: Net[post]
+  op write(n) = @net.post(n)
