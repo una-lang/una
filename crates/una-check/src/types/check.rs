@@ -263,6 +263,9 @@ pub(crate) struct Checker<'c, 'a, 's> {
     /// The lambda depth of the body whose own frames `frames` are: 0 for a function's or a
     /// handler's, or a lambda's whose expected type has `uses` (ADR 0093 rule 5).
     pub(crate) frames_depth: usize,
+    /// The lambda written at this span whose own frames `frames` are, if any: a binding of its
+    /// `uses` is the lambda's, not the enclosing body's (ADR 0093 rule 15).
+    pub(crate) frames_lambda: Option<Span>,
     /// Instantiations of generic functions: callee, type arguments and where.
     pub(crate) instances: Vec<(usize, Vec<Ty>, Span)>,
     /// What the operators on values of type parameters need: the operand type, the
@@ -455,6 +458,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             granting: Vec::new(),
             granting_direct: false,
             frames_depth: 0,
+            frames_lambda: None,
             instances: Vec::new(),
             needs: Vec::new(),
             interpolations: Vec::new(),
@@ -710,6 +714,8 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                         handler: id,
                         module,
                         callee: callee.clone(),
+                        name: name.to_owned(),
+                        at: call.name.span,
                         uses: needs,
                         span: call.span,
                         granting: given,
@@ -719,6 +725,11 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                         // The handler's own `uses` are held where it is installed.
                         let level = self.frames.len();
                         self.needs_site(&callee, &uses, call.span, level);
+                        // ADR 0093 rule 15: the handler runs on those bindings wherever it is
+                        // run, a boundary it reaches included.
+                        let at = call.name.span;
+                        let name = name.to_owned();
+                        self.installed_needs(id, name, call.span, at, &uses, level, None);
                         None
                     }
                 };
@@ -1551,6 +1562,17 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                 let level = self.frames.len();
                 let needs: Vec<FnUse> = install.uses.iter().map(|n| n.usage.clone()).collect();
                 self.needs_site(&install.callee, &needs, install.span, level);
+                // ADR 0093 rule 15: another boundary may receive it by name from here.
+                self.record_installed(install.handler, install.at, &install.granting);
+                self.installed_needs(
+                    install.handler,
+                    install.name.clone(),
+                    install.span,
+                    install.at,
+                    &needs,
+                    level,
+                    Some(install.boundary),
+                );
                 let (boundary, callee, span) =
                     (install.boundary, install.callee.clone(), install.span);
                 self.cross(

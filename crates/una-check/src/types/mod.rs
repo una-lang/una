@@ -458,14 +458,7 @@ fn check_types_and(package: &PackageInput<'_>, with_rejected: bool) -> (TypeChec
     }
     authority::testing_installs(&findings, &mut report);
     // Edition 0.3: no release is reachable from a call into a boundary (ADR 0093 rule 8).
-    crossing::releases(
-        &env,
-        &findings.graph,
-        &findings.releases,
-        &findings.opaque,
-        &findings.crossings,
-        &mut report,
-    );
+    crossing::releases(&env, &findings, &mut report);
     facts::predicate_recursion(&env, &findings, &mut report);
     if package.settings.edition >= Edition::V0_2 {
         facts::generic_constraints(&mut env, &facts, &findings, &mut report);
@@ -647,6 +640,13 @@ pub(crate) struct Findings {
     pub(crate) installed: std::collections::BTreeMap<Span, crossing::Installed>,
     /// The calls into boundary modules.
     pub(crate) crossings: Vec<crossing::Crossing>,
+    /// Edition 0.3 (ADR 0093 rule 15): the summary of what each binding leads to. An edge
+    /// `(from, to)` says that a call into a boundary that reaches `from` reaches `to`.
+    pub(crate) summary_edges: Vec<(crossing::Source, crossing::Source)>,
+    /// What each call into a boundary grants by name: the binding, the boundary and the call.
+    pub(crate) summary_seeds: Vec<(crossing::Source, usize, Span)>,
+    /// The handlers installed outside every boundary, checked once the summary is closed.
+    pub(crate) install_sites: Vec<crossing::InstallSite>,
     /// Instantiations of generic functions: the caller when it is a function, the callee, its
     /// type arguments and where.
     pub(crate) instances: Vec<(Option<usize>, usize, Vec<ty::Ty>, Span)>,
