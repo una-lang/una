@@ -64,3 +64,40 @@ The first three widen authority or visibility: the checker reports that a body d
 - **Fall through to the next mechanical repair** when the first is skipped. That would apply a fix the checker ranked lower, without the agent seeing the first. Declined.
 - **One round only.** Overlapping edits (for example, a label and a name in one argument) would need a second `una fix` run. Bounded rounds converge in one command.
 - **Apply U7001 edits in the rounds.** A U7001 edit spans whole declarations and conflicts with every other edit in them. Formatting once at the end is equivalent and simpler.
+
+## Amendment (2026-10-14): tier-1 rounds for refuted effect conditions
+
+- Status: Accepted
+- Deciders: Una project (accepted on 2026-10-14)
+
+Rule 3 checks each round at tier 0, "where every mechanical edit comes from". ADR 0092's amendment of the same date gives one tier-1 diagnostic an edit: a refuted `effect_condition` obligation at a call or a `with`, whose first repair writes the condition in the callee's or handler's `uses`. A tier-0 round never sees that diagnostic, so this amendment adds where `una fix` looks for it.
+
+**Rounds.**
+
+- A round checks the package at tier 0, as today. When that check reports no diagnostic, and the requested tier is 1, the round also checks the package at tier 1. Its candidates are then the tier-1 diagnostics that rule 2 admits.
+- With `--tier 0`, no round runs tier 1, so no tier-1 edit is ever applied.
+- When the tier-0 check reports a diagnostic, the round takes only tier-0 candidates, as today. The package's tier-1 diagnostics wait until tier 0 is clean, as they do in `una check`.
+- **An unknown obligation stops the tier-1 edits.** While any obligation of the package is unknown (U5002), even one unrelated to the sites, no `effect_condition` repair carries an edit (ADR 0092's amendment, condition (h)). So such a round has no tier-1 candidate, and when it has no tier-0 edit either, it takes no edit and the rounds stop as `done`, as rule 3 says. The repairs without an edit are not candidates, so they are not reported as skipped, and the U5002 stays among the remaining diagnostics. Whether a query is unknown can depend on the solver's time (`wallclock`, which the proof cache never stores, ADR 0033 rule 7). Two sites refuted in different rounds could otherwise be taken in another order, and leave another text. With this rule, timing can only stop the rounds earlier: a slower run applies a prefix of the rounds of a faster one.
+- **The output schema is unchanged.** No `reason` of `skipped` and no value of `stopped` is added, so `una.fix/1` and `spec/13 §5` keep their closed sets (ADR 0076 rule 3).
+- The rest of rule 3 is unchanged: conflicts, merges, ordering, the stop conditions and the limit of 16 rounds.
+
+**Which tier-1 edits.** Rule 2 holds unchanged, with one more condition for a diagnostic of tier 1: it MUST be refuted (U5001). An unknown obligation (U5002) never yields an edit, whatever its repairs say. Only the `effect_condition` repairs of ADR 0092's amendment are tier-1 candidates. Today no other tier-1 repair carries an edit. A future kind that does needs its own amendment, which states its determinism as (h) does, before `una fix` applies it. The edit's text depends on the source alone (ADR 0092's amendment: "solver timing can only withhold an edit, never change it").
+
+**An edit outside the reported declaration.** The edit can change a declaration other than the one its diagnostic is reported in: the callee or handler, which must be in the same module. Rule 2's conditions apply to it as written. Its effect on other declarations is stated in ADR 0092's amendment, and the next round's check sees it. The report gives the edit's own file and position, as for every applied edit.
+
+**The count** (ADR 0096 rule 6). `"fixable"` counts these diagnostics too, when their first repair carries an edit. As rule 6 says, it counts the candidates of the first round, not the edits that round applies. Two sites that ask the same callee for different conditions count 2, while the first round applies 1 of them (rule 3, conflicts). `una check` reports tier-1 diagnostics only when tier 0 is clean, which is when the first round of `una fix` looks at them too.
+
+**Complexity** (rule 8). Write T0 and T1 for the costs of a tier-0 and a tier-1 check.
+- Today `una fix` costs at most 16 × T0 for the rounds, plus the final check at the requested tier, T0 + T1.
+- With this amendment, a round whose tier-0 check is clean also costs T1, so the bound is 16 × (T0 + T1) + (T0 + T1).
+- With a proof cache (ADR 0064, which the command uses when it can read or make the user's key), a round's queries that an earlier round already solved are answered from the cache, so a round solves again only the queries its edits change. Without a key there is no cache (ADR 0064 rule 3), and every tier-1 round solves every query again.
+- A package that writes no conditioned operation generates no `effect_condition` obligation. Its first tier-1 round finds no candidate and ends the rounds, as a round that takes no edit does today.
+
+**Stricter only.** No rule of acceptance changes, and no edit that widens authority or costs an escape becomes applicable. The one new kind of edit adds a condition.
+
+A conformance case pins each point:
+- `--tier 0`, which applies no tier-1 edit;
+- a package with a tier-0 diagnostic and a refuted `effect_condition`, where only the tier-0 edit is applied in the first round and the condition in a later one;
+- an obligation made unknown by `step_budget = 1`, with no applied edit, no skipped entry, `stopped` `done`, the source unchanged, and the repair's description saying why (ADR 0092's amendment, (h));
+- the run-twice comparison of ADR 0092's amendment;
+- the `fixable` count of two sites asking one callee.
