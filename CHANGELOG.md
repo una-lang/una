@@ -4,6 +4,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ## Unreleased
 
+- **The Linux runs of `scripts/local-ci.sh` size their build to the VM's memory** (#701). The containers built with one job per CPU of the Docker VM, which could run it out of memory and kill the linker before any test ran. The build now runs one job per 2 GiB of the VM's memory, at most one per CPU. A `CARGO_BUILD_JOBS` set on the host can lower that count but not raise it, and a `RUST_TEST_THREADS` set on the host is passed in. The run prints the job count and the container's peak memory (`docs/releases/validation.md`).
 - **Neutral attributions in code and test comments** (#688). Comments under `crates/` and `tests/` no longer name a person or cite an internal ruling number. Each keeps its date, ADR, issue and review finding. Only comment lines change.
 - **`slice` and `replace` abort outside their preconditions in both backends** (#693, `spec/22 §2`). A checked program cannot call them there, but if one did, the two backends behaved differently:
   - the interpreter stopped only on a negative `slice` position;

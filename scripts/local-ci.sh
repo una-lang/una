@@ -39,6 +39,20 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
     echo "== building the image $image (linux/$arch)"
     docker build --platform "linux/$arch" --build-arg "TOOLCHAIN=$toolchain" \
         --tag "$image" scripts/local-ci || fail "the container image did not build"
+    # The job count of the container's build (#701). Cargo uses every CPU of the Docker VM by
+    # default, and that many rustc and linker processes at once can run the VM out of memory:
+    # its kernel kills the linker (signal 9) and no test runs. The build runs one job per 2 GiB
+    # of the VM's memory, at most one per CPU and at least one, and a CARGO_BUILD_JOBS set here
+    # can lower that and never raise it (scripts/container-jobs.sh,
+    # docs/releases/validation.md). RUST_TEST_THREADS, when set here, is passed in too. Neither
+    # changes what is built or tested, only the peak memory and the time.
+    memory=$(docker info --format '{{.MemTotal}}' 2>/dev/null)
+    cpus=$(docker info --format '{{.NCPU}}' 2>/dev/null)
+    sized=$(scripts/container-jobs.sh "$memory" "$cpus" "${CARGO_BUILD_JOBS:-}") \
+        || fail "the container's job count, from docker info and CARGO_BUILD_JOBS"
+    jobs=$(printf '%s\n' "$sized" | sed -n 1p)
+    why=$(printf '%s\n' "$sized" | sed -n 2p)
+    echo "== the container's build runs $jobs jobs ($why)${RUST_TEST_THREADS:+, RUST_TEST_THREADS=$RUST_TEST_THREADS}"
     # The target directory is a volume of this checkout and architecture, named from its path,
     # so runs from two checkouts never share or overwrite one; Z3 has one volume per
     # architecture, and the cargo registry, which holds sources, one for both.
@@ -58,6 +72,8 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
         --volume "una-local-ci-lean$suffix:/opt/lean" \
         --env UNA_FORMAL_LEAN=/opt/lean \
         --env "UNA_LOCAL_CI_SERIAL=$serial" \
+        --env "CARGO_BUILD_JOBS=$jobs" \
+        --env RUST_TEST_THREADS \
         --env UNA_LOCAL_CI_RELEASED_SECTIONS_ON_HOST=1 \
         --env "SOURCE_DATE_EPOCH=$(git -C "$root" log -1 --format=%ct HEAD)" \
         "$image" scripts/local-ci.sh || fail "the Linux run failed; its output is above"
@@ -134,4 +150,8 @@ step "Formal replay" docs/reviews/formal-m2-replay/check.sh
 step "Test (release, TLS trust)" cargo test --release --locked -p una-http --test tls
 step "Pack the release archive of $target" scripts/release.sh "$target"
 step "Check the release archive of $target" scripts/check-release.sh "$target"
+# In a container, the most memory the run used, which sizes the job count (#701).
+if [ -n "${UNA_LOCAL_CI_Z3:-}" ] && [ -r /sys/fs/cgroup/memory.peak ]; then
+    echo "== peak memory of the container: $(($(cat /sys/fs/cgroup/memory.peak) / 1048576)) MiB, with CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-unset}"
+fi
 echo "local CI: PASS ($target)"
