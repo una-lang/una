@@ -97,6 +97,8 @@ theorem wf (fs : Level) : (prog fs).LWellFormed where
   eqScoped := by simp [prog]
   sigsScoped := by simp [prog]
   inPlace := by simp [prog]
+  markers fn h := Fun.markersOk_sound
+    (List.all_eq_true.mp (by rfl : (prog fs).funs.all Fun.markersOk = true) fn h)
 
 /-- `internal` is not seen by a `public` observer. -/
 theorem intl_hidden (fs : Level) : ¬ Vis (prog fs) Label.bot (.ofLabel internalLabel) := by

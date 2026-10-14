@@ -86,6 +86,8 @@ theorem prog_wf : prog.LWellFormed where
   inPlace := by
     refine ⟨?_, ?_, ?_⟩ <;>
       simp [prog, check, reveal, peek, sec, intl, LTy.InPlace, LExpr.bot, LExpr.ofLabel]
+  markers fn h := Fun.markersOk_sound
+    (List.all_eq_true.mp (by rfl : prog.funs.all Fun.markersOk = true) fn h)
 
 /-- The program's host labels are those `t6_release_host` asks. -/
 theorem prog_host : prog.HostWF := Check.hostWfB_sound rfl

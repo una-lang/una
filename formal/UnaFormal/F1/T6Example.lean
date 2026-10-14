@@ -62,6 +62,8 @@ theorem prog_wf : prog.LWellFormed where
   eqScoped _ h := nomatch h
   sigsScoped _ h := nomatch h
   inPlace := by refine ⟨?_, ?_, ?_⟩ <;> simp [prog]
+  markers fn h := Fun.markersOk_sound
+    (List.all_eq_true.mp (by rfl : prog.funs.all Fun.markersOk = true) fn h)
 
 theorem prog_gf : prog.GenericFree := ⟨(fun _ h => nomatch h), rfl⟩
 

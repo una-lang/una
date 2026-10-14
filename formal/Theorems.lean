@@ -88,6 +88,7 @@ import UnaFormal
 #print axioms Una.F1.CheckSoundExample.prog_b1_checked
 #print axioms Una.F1.Check.progOk_sound
 #print axioms Una.F1.Check.progOk_sound_nil
+#print axioms Una.F1.Fun.markersOk_sound
 #print axioms Una.F1.Check.viaTypedAt_sound
 #print axioms Una.F1.Check.viaTyped_sound
 #print axioms Una.F1.ExprTy.of_lowerLets
