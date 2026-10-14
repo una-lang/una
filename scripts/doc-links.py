@@ -6,10 +6,12 @@ The documents are the tracked README.md, SECURITY.md, CONTRIBUTING.md, CODE_OF_C
 CHANGELOG.md, the charter, the documentation map, the guides, the specification, the release
 records, the ADRs and the security advisories: the set that scripts/site.sh staged, and the
 documents that the website publishes besides. In each,
-outside code blocks and inline code, every link that is not a URL:
+outside code blocks and inline code, every link that is not a URL, inline or in a reference
+definition `[ref]: target` (#719):
 - names a file or directory that git tracks (#305), so it exists on GitHub; an image included;
 - with a `#fragment`, names a heading of its target document, or of the document itself, when
   the target is one of these documents.
+A percent-encoded path or fragment is decoded first, and a malformed escape is refused.
 
 A heading's fragment is the id the website gives it (una-lang/website,
 scripts/preview/markdown.mjs, the "anchors" rule): the words of the heading, lowercased, without
@@ -33,6 +35,7 @@ import subprocess
 import sys
 import tempfile
 import unicodedata
+from urllib.parse import unquote
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 FIXTURE = "scripts/doc-links/anchors.md"
@@ -78,8 +81,8 @@ FENCE = re.compile(r"^\s*```")
 
 
 def prose(text):
-    """Each line outside code blocks, with its number, as (number, [stretches outside inline
-    code])."""
+    """Each line outside code blocks, with its number, as (number, line, [stretches outside
+    inline code])."""
     fence = False
     for number, line in enumerate(text.split("\n"), 1):
         if FENCE.match(line):
@@ -87,7 +90,7 @@ def prose(text):
             continue
         if fence:
             continue
-        yield number, line.split("`")[0::2]
+        yield number, line, line.split("`")[0::2]
 
 
 def slug(text):
@@ -156,6 +159,12 @@ def is_spec(path):
 
 
 TARGET = re.compile(r"\]\(([^)\s]+)\)|(?:src|href)=\"([^\"]+)\"")
+# A reference definition, `[ref]: target` or `[ref]: <target>`, with an optional title.
+REFERENCE = re.compile(
+    r"^ {0,3}\[[^\]]+\]:[ \t]*(?:<([^>\s]*)>|(\S+))"
+    r"(?:[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?[ \t]*$"
+)
+MALFORMED_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 
 
 def resolve(page, target):
@@ -178,24 +187,37 @@ def problems(root, docs, files, dirs):
     texts = {d: open(os.path.join(root, d), encoding="utf-8").read() for d in docs}
     ids = {d: set(anchors(t, is_spec(d))) for d, t in texts.items()}
     found = []
+
+    def target_problem(page, target):
+        if re.match(r"^[a-z]+:", target) or target.startswith("//"):
+            return None
+        if MALFORMED_ESCAPE.search(target):
+            return "has a malformed percent escape"
+        path, _, fragment = target.partition("#")
+        path, fragment = unquote(path, errors="strict"), unquote(fragment, errors="strict")
+        if path:
+            resolved = resolve(page, path)
+            if resolved is None or (resolved not in files and resolved not in dirs):
+                return "names no tracked file or directory"
+        else:
+            resolved = page
+        if fragment and resolved in ids and fragment not in ids[resolved]:
+            return f"{resolved} has no heading with the id {fragment}"
+        return None
+
     for page, text in texts.items():
-        for number, stretches in prose(text):
-            for stretch in stretches:
-                for m in TARGET.finditer(stretch):
-                    target = m.group(1) or m.group(2)
-                    if re.match(r"^[a-z]+:", target) or target.startswith("//"):
-                        continue
-                    path, _, fragment = target.partition("#")
-                    where = f"{page}:{number}: {target}"
-                    if path:
-                        resolved = resolve(page, path)
-                        if resolved is None or (resolved not in files and resolved not in dirs):
-                            found.append(f"{where}: names no tracked file or directory")
-                            continue
-                    else:
-                        resolved = page
-                    if fragment and resolved in ids and fragment not in ids[resolved]:
-                        found.append(f"{where}: {resolved} has no heading with the id {fragment}")
+        for number, line, stretches in prose(text):
+            targets = [m.group(1) or m.group(2) for s in stretches for m in TARGET.finditer(s)]
+            definition = REFERENCE.match(line)
+            if definition:
+                targets.append(definition.group(1) or definition.group(2))
+            for target in targets:
+                try:
+                    problem = target_problem(page, target)
+                except UnicodeDecodeError:
+                    problem = "has a percent escape that is not UTF-8"
+                if problem:
+                    found.append(f"{page}:{number}: {target}: {problem}")
     return found
 
 
@@ -217,7 +239,12 @@ def self_test():
     good = (
         "# Title\n\nSee [b](b.md#part-two), [self](#title), [dir](sub), [img](sub/i.png),\n"
         '<img src="sub/i.png">, [web](https://example.org/x#y) and `[code](nowhere.md)`.\n\n'
-        "```\n[fenced](nowhere.md)\n```\n"
+        "```\n[fenced](nowhere.md)\n[def]: nowhere.md\n```\n\n"
+        "See [ref][] and [space](sub/a%20b.png).\n\n"
+        "[ref]: b.md#part-two\n"
+        '[angle]: <sub/i.png> "A title"\n'
+        "[web]: https://example.org/x\n"
+        "[encoded]: b.md#part%2Dtwo\n"
     )
     bad = {
         "a repository link to an untracked file": "[x](missing.md)",
@@ -225,8 +252,17 @@ def self_test():
         "a fragment that names no heading": "[x](b.md#part-three)",
         "a fragment of the page itself that names no heading": "[x](#nothing)",
         "an image that is not tracked": '<img src="sub/missing.png">',
+        "a reference definition to an untracked file": "[r]: missing.md",
+        "a reference definition in angle brackets to an untracked file": "[r]: <missing.md>",
+        "a reference definition with a title to an untracked file": '[r]: missing.md "Title"',
+        "a reference definition whose fragment names no heading": "[r]: b.md#part-three",
+        "a percent-encoded path to an untracked file": "[x](sub/i%2Emissing)",
+        "a percent-encoded fragment that names no heading": "[x](b.md#part%2Dthree)",
+        "a malformed percent escape": "[x](sub/i%zz.png)",
+        "a percent escape that is not UTF-8": "[x](sub/%FF.png)",
     }
-    files = {"docs/a.md", "docs/b.md", "docs/sub/i.png"}
+    # `i%zz.png` is tracked, so the malformed escape that names it is refused for the escape alone.
+    files = {"docs/a.md", "docs/b.md", "docs/sub/i.png", "docs/sub/a b.png", "docs/sub/i%zz.png"}
     dirs = {"docs", "docs/sub"}
     with tempfile.TemporaryDirectory() as tmp:
         os.makedirs(os.path.join(tmp, "docs"))
