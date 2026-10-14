@@ -104,7 +104,7 @@ The constraints:
     - `spec/08 §2` is titled "Tests", writes its sample with `test`, and states that editions `0.1` and `0.2` write `example`. The chapter's title becomes "Requirements and tests".
     - The other chapters' rules about examples say "test", with the same note once per chapter where the word first appears.
     - The guide writes `test` in its edition `0.3` pages and keeps `example` where a page is about editions `0.1` or `0.2`. `docs/guide/language/examples/example.md` becomes `test.md`, with a redirect note at the old path.
-    - **Una by Example** (#733) keeps its title. Its chapter on testing teaches `test`, the edition `0.3` form, and says in one sentence that editions `0.1` and `0.2` write `example`. The title names the learning format (a sequence of examples, as Rust by Example), not the declaration.
+    - **Una by Example** (#733) keeps its title. Its chapters default to edition `0.2`, so its chapter on testing shows `test` with the edition `0.3` preview badge, beside the `example` form of edition `0.2`. The title names the learning format (a sequence of examples, as Rust by Example), not the declaration.
 
 11. **Diagnostic codes.** None is added. U0103 gains a row for `example` in the edition `0.3` table (rule 3), and U0101 covers a name `test` (rule 4). The registry's meaning of U0103, "Reserved keyword not available in v0.1", has also covered the keywords of other editions since ADR 0056. It becomes "Reserved keyword not available in the package's edition". Only the description changes, not the code's use.
 
