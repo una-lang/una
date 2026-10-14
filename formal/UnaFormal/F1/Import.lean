@@ -620,7 +620,8 @@ mutual
         match ← arr q with
         | [x, t] => pure (← str x, ← ty c t)
         | _ => throw "a parameter"
-      -- A lambda's body runs where it is applied, so no marker of its creation reaches it (#538).
+      -- A lambda captures the markers of its creation (E-Lam, `spec/11 §4`); the importer does not
+      -- read lambdas that reach one yet, so none is bound in its body (fail closed, #538).
       pure (.lambda ps (← expr { c with bound := [] } (← field j "body")))
     | "declassify" =>
       let pol ← path (← field j "policy")

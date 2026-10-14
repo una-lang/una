@@ -472,7 +472,7 @@ impl<'a> Checker<'_, 'a, '_> {
                 let level = self.frames.len();
                 let callee = format!("`{name}`, used as a value,");
                 // A function value runs on the bindings its `uses` resolve to where it is named,
-                // whoever calls it (`spec/11 §4`), so they are needed here, as a lambda's are
+                // whoever calls it (E-App, `spec/11 §4`), so they are needed here, as a lambda's are
                 // where it is written; the call of the value still needs its type's `uses`.
                 if let Some(boundary) = self.crossing(module) {
                     let in_package = self.env.in_package(module);

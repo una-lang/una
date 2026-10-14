@@ -1000,7 +1000,7 @@ impl<'p> Lowerer<'_, 'p, '_> {
                 Some((name, ty))
             })
             .collect();
-        // A lambda keeps the capabilities in scope where it is made (`spec/11 §4`).
+        // A lambda keeps the capabilities in scope where it is made (E-Lam, `spec/11 §4`).
         let caps: Vec<Name> = env
             .keys()
             .filter_map(|key| key.strip_prefix('@'))

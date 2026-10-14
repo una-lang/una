@@ -11,7 +11,7 @@ Labels, refinements and contracts are static. The UAM carries no labels at runti
 ## 2. Runtime objects
 
 ```text
-values        v  ::= n | true | false | "text" | unit | C(v, ...) | [v, ...] | ⟨λ, ρ⟩ | hashed(bytes)
+values        v  ::= n | true | false | "text" | unit | C(v, ...) | [v, ...] | ⟨λ, ρ, H⟩ | hashed(bytes)
 results       r  ::= ok(v) | fail(C(v, ...))
 environment   ρ  ::= variable ↦ value
 cap env       H  ::= binding ↦ instance
@@ -21,6 +21,8 @@ world         W  host state (stdout, clock, environment, files, keys)
 ```
 
 Every instance has a stable `id`. Rebinding (`with c = d`) shares the instance, so events are attributed to the instance regardless of the name used at the call site.
+
+A closure ⟨λ, ρ, H⟩ keeps both the environment and the capability environment in scope where it is made (E-Lam, §4), and its body runs under them wherever it is called (E-App): the bindings around the call do not reach it. A function named as a value is elaborated into a lambda that calls it, made where it is named, so its `uses` resolve there (`spec/05 §6` rule 7).
 
 ## 3. Judgment
 
@@ -47,6 +49,15 @@ $$
 $$
 \frac{\mathtt{fun}\; f(\bar x) \;\mathtt{uses}\; K_f = e \in \Sigma \qquad [\bar x \mapsto \rho(\bar a)];\; H|_{\mathrm{dom}(K_f)} \vdash \langle e, W\rangle \Downarrow \langle r, W', t\rangle}
      {\rho;H \vdash \langle f(\bar a), W\rangle \Downarrow \langle r, W', t\rangle}\;(\textsf{E-Call})
+$$
+
+$$
+\frac{}{\rho;H \vdash \langle \lambda(\bar x).\, e, W\rangle \Downarrow \langle \mathit{ok}(\langle \lambda(\bar x).\, e,\, \rho,\, H \rangle), W, [\,] \rangle}\;(\textsf{E-Lam})
+$$
+
+$$
+\frac{\rho(a) = \langle \lambda(\bar x).\, e,\, \rho_c,\, H_c \rangle \qquad \rho_c[\bar x \mapsto \rho(\bar b)];\; H_c \vdash \langle e, W\rangle \Downarrow \langle r, W', t\rangle}
+     {\rho;H \vdash \langle a(\bar b), W\rangle \Downarrow \langle r, W', t\rangle}\;(\textsf{E-App})
 $$
 
 $$
