@@ -75,7 +75,10 @@ jobs:
         os: ${{ fromJSON(needs.runners.outputs.os) }}
     runs-on: ${{ matrix.os }}
     steps:
+      # The whole history, with the tags, which the released sections of CHANGELOG.md need.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Install the Rust toolchain pinned in rust-toolchain.toml
         run: |
@@ -106,6 +109,9 @@ jobs:
 
       - name: Check the solver version
         run: scripts/check-solver.sh
+
+      - name: Released sections of CHANGELOG.md
+        run: scripts/check-released-sections.sh
 
       - name: Format
         run: cargo fmt --all --check
