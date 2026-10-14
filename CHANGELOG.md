@@ -2,6 +2,14 @@
 
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
+## v0.1.10
+
+v0.1.9 with the S-20 fix: a function named as a value needs its `uses` where it is named (#673).
+
+### Security
+
+- **A function named as a value needs its `uses` where it is named** (#673, S-20, `spec/05 §6` rule 7). A lambda keeps the capabilities in scope where it is written, and a function named as a value keeps those where it is named (`spec/04 §6` rule 3). The checker took a named value's `uses` only from the code that called it: a reference with no binding of a name its function uses was accepted and stopped the run (U8001), and a reference under one handler that was called under another was checked against the second and ran on the first. A reference now needs the function's `uses` where it is written, U3001 there, or U3003 in code whose `uses` are declared empty, as a lambda's definition does; the call of the value still needs its type's `uses`. A reference that is already U3006 is not reported again.
+
 ## v0.1.9
 
 v0.1.8 with the S-18 fix: a policy call's failure is visible only where its release is (#496, ADR 0090).
