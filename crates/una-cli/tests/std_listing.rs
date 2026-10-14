@@ -2,6 +2,8 @@
 //!
 //! - it is the listing that the standard modules give now (`UNA_BLESS=1` rewrites it);
 //! - every item has doc comments in every edition, and they cite spec sections that exist;
+//! - the doc comments hold no `<` or `&` outside code spans, and no list or fence lines, which
+//!   the website would render as HTML or flatten (#695);
 //! - each item's editions are the editions in which `una check` resolves its name: one probe
 //!   package per item and edition, linear in their number.
 
@@ -97,6 +99,71 @@ fn every_item_has_doc_comments_that_cite_spec_sections_that_exist() {
         }
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// What in the doc comment `lines` the website could not render as written (#695): it joins
+/// the lines into one Markdown paragraph that may hold HTML, so a `<` or `&` outside a code
+/// span, or a line that starts a list item or a code fence, is refused.
+fn doc_problems(lines: &[String]) -> Vec<String> {
+    let mut problems = Vec::new();
+    let text = lines.join(" ");
+    // Outside code spans: the even segments between backticks.
+    for (index, segment) in text.split('`').enumerate() {
+        if index % 2 == 0 && segment.contains(['<', '&']) {
+            problems.push(format!("`<` or `&` outside a code span: {segment:?}"));
+        }
+    }
+    for line in lines {
+        let line = line.trim_start();
+        let numbered = line
+            .split_once(". ")
+            .is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+        if ["- ", "* ", "+ ", "```", "~~~"]
+            .iter()
+            .any(|start| line.starts_with(start))
+            || numbered
+        {
+            problems.push(format!("a line that starts a list or a fence: {line:?}"));
+        }
+    }
+    problems
+}
+
+#[test]
+fn doc_comments_hold_no_raw_html_lists_or_fences() {
+    let mut problems = Vec::new();
+    for item in std_items() {
+        for variant in &item.variants {
+            for problem in doc_problems(&variant.docs) {
+                problems.push(format!("{} `{}`: {problem}", item.module, item.name));
+            }
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+#[test]
+fn the_doc_comment_rules_refuse_each_case() {
+    let lines = |text: &[&str]| text.iter().map(|l| (*l).to_owned()).collect::<Vec<_>>();
+    assert!(
+        doc_problems(&lines(&[
+            "Whether `a < b` holds, as `x & y` (`spec/14 §1`)."
+        ]))
+        .is_empty()
+    );
+    for bad in [
+        &["Whether a < b."][..],
+        &["Both a & b."],
+        &["Spans `a` < `b`."],
+        &["Items:", "- one"],
+        &["* one"],
+        &["+ one"],
+        &["1. one"],
+        &["```", "code", "```"],
+        &["~~~"],
+    ] {
+        assert!(!doc_problems(&lines(bad)).is_empty(), "accepted {bad:?}");
+    }
 }
 
 /// A package of edition `edition` whose one module refers to `item` by name, in a position
