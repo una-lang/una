@@ -4,6 +4,7 @@ All notable changes to Una are recorded here. Versions follow the milestones and
 
 ## Unreleased
 
+- **Neutral attributions in code and test comments** (#688). Comments under `crates/` and `tests/` no longer name a person or cite an internal ruling number. Each keeps its date, ADR, issue and review finding. Only comment lines change.
 - **`slice` and `replace` abort outside their preconditions in both backends** (#693, `spec/22 §2`). A checked program cannot call them there, but if one did, the two backends behaved differently:
   - the interpreter stopped only on a negative `slice` position;
   - native code mapped such a position to 0;

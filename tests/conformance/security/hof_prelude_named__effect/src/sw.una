@@ -1,4 +1,4 @@
--- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, Una-2's matrix): rule: an effectful callback of the prelude is U3003 in edition 0.1
+-- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, the review matrix): rule: an effectful callback of the prelude is U3003 in edition 0.1
 -- spec: spec/07 §7
 -- expect: error U4002 at src/sw.una:28:15
 -- expect: error U3003 at src/sw.una:28:51

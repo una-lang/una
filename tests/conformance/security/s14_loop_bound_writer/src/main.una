@@ -1,4 +1,4 @@
--- test: a write in a loop whose bound is `internal` runs under that label, which labels the reads (S-14, from Una-2's review)
+-- test: a write in a loop whose bound is `internal` runs under that label, which labels the reads (S-14, from a review)
 -- spec: spec/07 §7
 -- expect: error U4001 at src/main.una:13:3
 module main

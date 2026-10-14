@@ -1,4 +1,4 @@
--- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, Una-2's matrix): U4002 (control): an inferred lambda takes `T*`, and its call of k is raised
+-- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, the review matrix): U4002 (control): an inferred lambda takes `T*`, and its call of k is raised
 -- spec: spec/07 §7
 -- expect: error U4002 at src/sw.una:22:50
 -- expect: error U4001 at src/sw.una:22:52

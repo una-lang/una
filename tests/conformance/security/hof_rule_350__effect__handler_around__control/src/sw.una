@@ -1,4 +1,4 @@
--- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, Una-2's matrix): accept: control: a handler installed around the call
+-- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, the review matrix): accept: control: a handler installed around the call
 -- spec: spec/07 §7
 -- expect: ok
 module sw

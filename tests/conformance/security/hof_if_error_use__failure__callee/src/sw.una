@@ -1,4 +1,4 @@
--- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, Una-2's matrix): reject: failer(decided, f: k) if error use 7, then a write
+-- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, the review matrix): reject: failer(decided, f: k) if error use 7, then a write
 -- spec: spec/07 §7
 -- expect: error U4002 at src/sw.una:31:11
 -- expect: error U4001 at src/sw.una:31:46

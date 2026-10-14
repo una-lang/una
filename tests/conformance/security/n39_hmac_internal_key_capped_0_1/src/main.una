@@ -1,4 +1,4 @@
--- test: in edition 0.1, a host operation's failure is labeled by the arguments that decide it, capped at what it accepts (N-39, review of #343): U4003 only, at key_name (Keys.hmac accepts public for it): no extra U4002
+-- test: in edition 0.1, a host operation's failure is labeled by the arguments that decide it, capped at what it accepts (review of #343): U4003 only, at key_name (Keys.hmac accepts public for it): no extra U4002
 -- spec: spec/07 §7
 -- expect: error U4003 at src/main.una:10:24
 module main

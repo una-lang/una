@@ -1,4 +1,4 @@
--- test: in edition 0.1 too, whether Files.write fails is labeled by its path, which accepts internal data, and not by its content: if error pass on an internal path is U4002, attempt gives an internal Result, and a public path keeps every handling unless the package writes to a labeled path: this one does, so the file-state label makes every Files failure internal, the public-path write's included (spec/14 §3, spec/07 §7 rule 4, N-39, S-14, ADR 0085)
+-- test: in edition 0.1 too, whether Files.write fails is labeled by its path, which accepts internal data, and not by its content: if error pass on an internal path is U4002, attempt gives an internal Result, and a public path keeps every handling unless the package writes to a labeled path: this one does, so the file-state label makes every Files failure internal, the public-path write's included (spec/14 §3, spec/07 §7 rule 4, S-14, ADR 0085)
 -- spec: spec/14 §3
 -- expect: error U4001 at src/files_path_failure.una:19:3
 -- expect: error U4002 at src/files_path_failure.una:13:5

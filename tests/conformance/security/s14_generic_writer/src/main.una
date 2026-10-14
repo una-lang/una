@@ -1,4 +1,4 @@
--- test: a generic writer called under an `internal` condition labels the reads like any other (S-14, from Una-2's review)
+-- test: a generic writer called under an `internal` condition labels the reads like any other (S-14, from a review)
 -- spec: spec/07 §7
 -- expect: error U4001 at src/main.una:19:3
 module main

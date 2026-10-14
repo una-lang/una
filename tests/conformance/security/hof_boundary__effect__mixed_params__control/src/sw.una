@@ -1,4 +1,4 @@
--- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, Una-2's matrix): rejected by design: a lambda with an annotated parameter accepts no decision, a documented over-approximation (H-5, rule (A)); was: accept: control: a lambda with an inferred parameter that takes the decision and an annotated one that drops it
+-- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, the review matrix): rejected by design: a lambda with an annotated parameter accepts no decision, a documented over-approximation (H-5, rule (A)); was: accept: control: a lambda with an inferred parameter that takes the decision and an annotated one that drops it
 -- spec: spec/07 §7
 -- expect: error U4002 at src/sw.una:30:3
 module sw

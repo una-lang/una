@@ -1,4 +1,4 @@
--- test: the text functions' contracts are hypotheses after each call, slice's precondition is an obligation, find is Some exactly when contains_text holds of the same texts (N-19), and a position it returns lies in the text with the match after it, and no further (N-21) (spec/22 §7)
+-- test: the text functions' contracts are hypotheses after each call, slice's precondition is an obligation, find is Some exactly when contains_text holds of the same texts, and a position it returns lies in the text with the match after it, and no further (spec/22 §7)
 -- spec: spec/22 §7
 -- expect: error U5001 at src/contracts.una:21:32
 -- expect: error U5001 at src/contracts.una:43:3
@@ -25,7 +25,7 @@ pub words(t: Text) -> Int
 =
   t.split(on: " ").len
 
---- A position `find` returns lies in the text, with the match after it (N-21).
+--- A position `find` returns lies in the text, with the match after it.
 pub first_word(t: Text) -> Text
 =
   let space = " "

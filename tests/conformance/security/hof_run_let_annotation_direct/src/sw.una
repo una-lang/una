@@ -1,4 +1,4 @@
--- test: a decision on values of a type parameter given to function values or to annotations (#346, #350, #354, Una-2's matrix): leak (U4003 expected): run form; a let with the annotation `T` drops the decision, then k(y) is written
+-- test: a decision on values of a type parameter given to function values or to annotations (#346, #350, #354, the review matrix): leak (U4003 expected): run form; a let with the annotation `T` drops the decision, then k(y) is written
 -- spec: spec/07 §7
 -- expect: error U4001 at src/sw.una:16:14
 module sw

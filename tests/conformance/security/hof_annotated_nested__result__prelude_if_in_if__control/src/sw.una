@@ -1,4 +1,4 @@
--- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, Una-2's matrix): accept: control: map with an annotated lambda through if_in_if
+-- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, the review matrix): accept: control: map with an annotated lambda through if_in_if
 -- spec: spec/07 §7
 -- expect: ok
 module sw

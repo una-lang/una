@@ -1,4 +1,4 @@
--- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, Una-2's matrix): accept: control: the callee calls an annotated lambda through let_when and writes it
+-- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, the review matrix): accept: control: the callee calls an annotated lambda through let_when and writes it
 -- spec: spec/07 §7
 -- expect: ok
 module sw

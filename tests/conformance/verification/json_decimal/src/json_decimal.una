@@ -1,4 +1,4 @@
--- test: a Decimal holds a JsonNumber, whose refinement is an obligation at the constructor: a text that checked has tested proves it, any other text, a literal included, is refuted; and a JsonNumber in a signature is its refinement, never false, so nothing about it holds vacuously (spec/23 §1, §7, N-27)
+-- test: a Decimal holds a JsonNumber, whose refinement is an obligation at the constructor: a text that checked has tested proves it, any other text, a literal included, is refuted; and a JsonNumber in a signature is its refinement, never false, so nothing about it holds vacuously (spec/23 §1, §7)
 -- spec: spec/23 §7
 -- expect: error U5001 at src/json_decimal.una:8:42
 -- expect: error U5001 at src/json_decimal.una:18:32

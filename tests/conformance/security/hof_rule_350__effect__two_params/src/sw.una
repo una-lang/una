@@ -1,4 +1,4 @@
--- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, Una-2's matrix): reject: two type parameters: a decision on T selects a V value given to a V callback
+-- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, the review matrix): reject: two type parameters: a decision on T selects a V value given to a V callback
 -- spec: spec/07 §7
 -- expect: error U4002 at src/sw.una:18:3
 -- expect: error U4001 at src/sw.una:18:41

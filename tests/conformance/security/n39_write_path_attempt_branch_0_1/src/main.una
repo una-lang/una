@@ -1,4 +1,4 @@
--- test: in edition 0.1, a host operation's failure is labeled by the arguments that decide it, capped at what it accepts (N-39, review of #343): U4003: whether a write to an internal path fails, branched on and printed
+-- test: in edition 0.1, a host operation's failure is labeled by the arguments that decide it, capped at what it accepts (review of #343): U4003: whether a write to an internal path fails, branched on and printed
 -- spec: spec/07 §7
 -- expect: error U4003 at src/main.una:13:17
 -- expect: error U4003 at src/main.una:14:18

@@ -1,4 +1,4 @@
--- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, Una-2's matrix): reject: the decision in a list of records of lists
+-- test: a function value given data decided by values of a type parameter, through the prelude or a generic function (#346, #350, the review matrix): reject: the decision in a list of records of lists
 -- spec: spec/07 §7
 -- expect: error U4002 at src/sw.una:31:3
 -- expect: error U4001 at src/sw.una:31:53
