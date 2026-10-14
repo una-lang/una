@@ -12,6 +12,8 @@
 #   linux-arm64  scripts/local-ci.sh --linux-arm64 (Docker, linux/arm64, #241)
 #   release      scripts/local-release.sh for the three archives, each checked with
 #                scripts/check-release.sh (Docker for the Linux ones)
+#   reproducible scripts/local-release.sh a second time, from cold, in a new checkout and new
+#                Docker volumes, and each archive's digest compared with the release gate's (#679)
 #   determinism  the conformance suite twice, and `una --json check` of every case and example
 #                twice, compared
 #   native       the interpreter against the native executable, on every runnable program of
@@ -36,7 +38,7 @@
 # Usage: scripts/release-gates.sh SHA OUT [GATE...]
 set -u
 
-ALL=(clone build mac linux linux-arm64 release determinism native site formal)
+ALL=(clone build mac linux linux-arm64 release reproducible determinism native site formal)
 
 usage() {
     echo "usage: scripts/release-gates.sh SHA OUT [GATE...]; SHA is a full 40-digit commit, GATE is one of: ${ALL[*]}" >&2
@@ -145,6 +147,43 @@ gate_release() {
     version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$CLONE/Cargo.toml" 2>/dev/null | head -1)
     tag=v$version
     run release sh -c "git tag -f '$tag' '$SHA' >/dev/null && git status --porcelain && scripts/local-release.sh '$tag'"
+}
+
+gate_reproducible() {
+    # The release gate's archives, kept aside, against a second build of the same commit: a new
+    # checkout (local-release.sh makes one per run, at a new path) and new Docker volumes for
+    # the Linux target directories, so every artifact is built again from cold (#679). Its cost
+    # is one more release gate. The release gate's archives are put back at the end, so the
+    # record lists the ones the release gate built.
+    local version tag
+    version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$CLONE/Cargo.toml" 2>/dev/null | head -1)
+    tag=v$version
+    run reproducible bash -c '
+        set -u
+        tag='"'$tag'"'
+        first='"'$OUT'"'/reproducible-first
+        again=una-local-release-again
+        built=target/local-release/$tag
+        ls "$built"/*.tar.gz > /dev/null 2>&1 || { echo "no archives in $built; run the release gate first"; exit 1; }
+        rm -rf "${first:?}"
+        cp -R "$built" "$first" || exit 1
+        docker volume rm "$again" "$again-arm64" > /dev/null 2>&1
+        git tag -f "$tag" '"'$SHA'"' > /dev/null || exit 1
+        UNA_LOCAL_RELEASE_VOLUME=$again scripts/local-release.sh "$tag"
+        status=$?
+        for archive in "$first"/*.tar.gz; do
+            name=$(basename "$archive")
+            one=$(shasum -a 256 "$archive" | cut -d" " -f1)
+            two=$(shasum -a 256 "$built/$name" 2> /dev/null | cut -d" " -f1)
+            echo "$name: first $one, second ${two:-missing}"
+            [ "$one" = "$two" ] || status=1
+        done
+        docker volume rm "$again" "$again-arm64" > /dev/null 2>&1
+        rm -rf "${built:?}"
+        cp -R "$first" "$built"
+        rm -rf "${first:?}"
+        [ $status -eq 0 ] && echo "the archives are reproducible"
+        exit $status'
 }
 
 gate_determinism() {

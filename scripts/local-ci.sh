@@ -46,7 +46,9 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
     volume="una-local-ci-target-$checkout$suffix"
     echo "== running scripts/local-ci.sh in $image, with the target directory in $volume"
     # The checkout is mounted read-write, as CI checks it out; the target directory, the cargo
-    # registry and Z3 are volumes, which keep the container's builds apart from the host's.
+    # registry and Z3 are volumes, which keep the container's builds apart from the host's. The
+    # release archive's entries take the commit's time (#679), which the container cannot read
+    # when the checkout is a worktree, whose .git links outside the mount.
     docker run --rm --platform "linux/$arch" \
         --volume "$root:/work" \
         --volume "$volume:/work/target" \
@@ -57,6 +59,7 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
         --env UNA_FORMAL_LEAN=/opt/lean \
         --env "UNA_LOCAL_CI_SERIAL=$serial" \
         --env UNA_LOCAL_CI_RELEASED_SECTIONS_ON_HOST=1 \
+        --env "SOURCE_DATE_EPOCH=$(git -C "$root" log -1 --format=%ct HEAD)" \
         "$image" scripts/local-ci.sh || fail "the Linux run failed; its output is above"
     echo "local CI: PASS ($target, in the container)"
     exit 0
