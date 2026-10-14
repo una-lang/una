@@ -164,8 +164,8 @@ exported! {
     una_rt_ends_with => values::ends_with, (t, suffix);
     una_rt_contains_text => values::contains_text, (t, part);
     una_rt_find => values::find, (t, text);
-    una_rt_replace => values::replace, (t, pattern, by);
-    una_rt_slice => values::slice, (t, start, end);
+    una_rt_replace => values::replace, (site, t, pattern, by);
+    una_rt_slice => values::slice, (site, t, start, end);
     una_rt_to_upper => values::to_upper, (t);
     una_rt_to_lower => values::to_lower, (t);
     una_rt_chars => values::chars, (t);
@@ -527,6 +527,120 @@ mod tests {
             values::release(closures);
             value
         });
+    }
+
+    /// The scenarios of [`a_text_call_outside_its_precondition_aborts_the_run`], each run in a
+    /// process of its own since an abort ends the process, with the message each aborts with.
+    const TEXT_SCENARIOS: [(&str, &str); 4] = [
+        (
+            "ffi::tests::a_slice_before_the_text_scenario",
+            values::SLICE_OUTSIDE,
+        ),
+        (
+            "ffi::tests::a_slice_past_the_text_scenario",
+            values::SLICE_OUTSIDE,
+        ),
+        (
+            "ffi::tests::a_slice_ending_before_it_starts_scenario",
+            values::SLICE_OUTSIDE,
+        ),
+        (
+            "ffi::tests::a_replace_of_an_empty_pattern_scenario",
+            values::REPLACE_EMPTY,
+        ),
+    ];
+
+    /// `slice(t, start, end)` of "abc" in a scenario: it aborts, so the mark never prints.
+    fn slice_scenario(start: i64, end: i64) {
+        runtime::start(&[], SET_META, move || {
+            let t = values::text_word("abc".to_owned());
+            let taken = values::slice(
+                0,
+                t,
+                values::int_word(&start.into()),
+                values::int_word(&end.into()),
+            );
+            eprintln!("{MARK}: slice returned {taken}");
+            0
+        });
+    }
+
+    #[test]
+    #[ignore = "run by `a_text_call_outside_its_precondition_aborts_the_run`, in a process of its own"]
+    fn a_slice_before_the_text_scenario() {
+        slice_scenario(-1, 1);
+    }
+
+    #[test]
+    #[ignore = "run by `a_text_call_outside_its_precondition_aborts_the_run`, in a process of its own"]
+    fn a_slice_past_the_text_scenario() {
+        slice_scenario(0, 4);
+    }
+
+    #[test]
+    #[ignore = "run by `a_text_call_outside_its_precondition_aborts_the_run`, in a process of its own"]
+    fn a_slice_ending_before_it_starts_scenario() {
+        slice_scenario(2, 1);
+    }
+
+    #[test]
+    #[ignore = "run by `a_text_call_outside_its_precondition_aborts_the_run`, in a process of its own"]
+    fn a_replace_of_an_empty_pattern_scenario() {
+        runtime::start(&[], SET_META, || {
+            let t = values::text_word("abc".to_owned());
+            let pattern = values::text_word(String::new());
+            let by = values::text_word("x".to_owned());
+            let replaced = values::replace(0, t, pattern, by);
+            eprintln!("{MARK}: replace returned {replaced}");
+            0
+        });
+    }
+
+    #[test]
+    fn a_text_call_outside_its_precondition_aborts_the_run() {
+        // #693: `slice` outside `0 <= start <= end <= t.len` and `replace` with an empty pattern
+        // abort at the call with U8001, the interpreter's message and exit code 3, as `set` does
+        // (#480); native code used to clamp the positions and replace the empty pattern.
+        for (scenario, message) in TEXT_SCENARIOS {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--ignored",
+                    "--exact",
+                    scenario,
+                    "--nocapture",
+                    "--test-threads",
+                    "1",
+                ])
+                .output()
+                .unwrap();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(output.status.code(), Some(3), "{scenario}: {stderr}");
+            assert!(stderr.contains("U8001"), "{scenario}: {stderr}");
+            assert!(stderr.contains("src/s.una"), "{scenario}: {stderr}");
+            assert!(stderr.contains(message), "{scenario}: {stderr}");
+            assert!(!stderr.contains(MARK), "{scenario}: it returned: {stderr}");
+        }
+    }
+
+    #[test]
+    fn slice_and_replace_inside_their_preconditions_compute() {
+        let t = values::text_word("abc".to_owned());
+        let at = |n: i64| values::int_word(&n.into());
+        assert_eq!(values::text_value(values::slice(0, t, at(1), at(3))), "bc");
+        assert_eq!(values::text_value(values::slice(0, t, at(3), at(3))), "");
+        assert_eq!(values::text_value(values::slice(0, t, at(0), at(0))), "");
+        // Positions count scalars: the end of "a\u{e9}" is 2, inside a text of three bytes.
+        let accented = values::text_word("a\u{e9}".to_owned());
+        assert_eq!(
+            values::text_value(values::slice(0, accented, at(1), at(2))),
+            "\u{e9}"
+        );
+        let pattern = values::text_word("b".to_owned());
+        let by = values::text_word("x".to_owned());
+        assert_eq!(
+            values::text_value(values::replace(0, t, pattern, by)),
+            "axc"
+        );
     }
 
     /// The names of [`a_set_outside_the_list_aborts_the_run`]'s scenarios, each run in a process

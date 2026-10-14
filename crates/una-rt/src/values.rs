@@ -1091,16 +1091,32 @@ pub fn find(t: i64, text: i64) -> i64 {
 }
 
 /// `replace(t, pattern, by)` of the prelude (`spec/22 §2` rule 3).
-pub fn replace(t: i64, pattern: i64, by: i64) -> i64 {
+pub fn replace(site: i64, t: i64, pattern: i64, by: i64) -> i64 {
     let (pattern, by) = (text_value(pattern), text_value(by));
+    // Its `requires` excludes an empty pattern: the run aborts at the call, as in the
+    // interpreter (#693).
+    if pattern.is_empty() {
+        return precondition_outside(site, REPLACE_EMPTY);
+    }
     text_word(text_value(t).replace(pattern.as_str(), &by))
 }
 
-/// `slice(t, start, end)` of the prelude: the scalar values from `start` up to `end`, which its
-/// precondition keeps in range.
-pub fn slice(t: i64, start: i64, end: i64) -> i64 {
-    let position = |word: i64| usize::try_from(&int_value(word)).unwrap_or(0);
-    let (start, end) = (position(start), position(end));
+/// `slice(t, start, end)` of the prelude, at the call `site`: the scalar values from `start` up
+/// to `end`. Its precondition keeps `0 <= start <= end <= t.len`; outside it, the run aborts at
+/// the call with U8001, as in the interpreter (#693).
+pub fn slice(site: i64, t: i64, start: i64, end: i64) -> i64 {
+    let position = |word: i64| usize::try_from(&int_value(word)).ok();
+    let len = with(t, |object| match object {
+        Object::Text(t) => t.scalars(),
+        _ => 0,
+    })
+    .unwrap_or(0);
+    let (Some(start), Some(end)) = (position(start), position(end)) else {
+        return precondition_outside(site, SLICE_OUTSIDE);
+    };
+    if start > end || end > len {
+        return precondition_outside(site, SLICE_OUTSIDE);
+    }
     // O(result) once the text's index is built (`spec/22 §6` rule 1).
     let taken = with(t, |object| match object {
         Object::Text(t) => t.slice(start, end).to_owned(),
@@ -1242,6 +1258,27 @@ pub fn append_owned(xs: i64, item: i64) -> i64 {
 pub(crate) const SET_OUT_OF_RANGE: &str =
     "evaluation stopped: `set` at an index outside the list, which its precondition excludes";
 
+/// The message of a `slice` outside the text, the interpreter's fault (#693).
+pub(crate) const SLICE_OUTSIDE: &str =
+    "evaluation stopped: `slice` outside the text, which its precondition excludes";
+
+/// The message of a `replace` with an empty pattern, the interpreter's fault (#693).
+pub(crate) const REPLACE_EMPTY: &str =
+    "evaluation stopped: `replace` with an empty pattern, which its precondition excludes";
+
+/// Aborts the run, or the task, at the call `site` with U8001 and `message`, as the
+/// interpreter's fault does when a prelude call's `requires` does not hold (#480, #693): a
+/// checked program never gets here. Returns 0, the value the caller drops: a task stops, and its
+/// block reports the abort.
+fn precondition_outside(site: i64, message: &str) -> i64 {
+    fault();
+    crate::runtime::abort_at(
+        usize::try_from(site).unwrap_or(usize::MAX),
+        una_diag::Code::U8001,
+        message.to_owned(),
+    )
+}
+
 /// The position `index` names in `xs`, or `None` outside it: O(1), from the list's length.
 fn set_position(xs: i64, index: i64) -> Option<usize> {
     let len = with(xs, |object| object.cells().len()).unwrap_or(0);
@@ -1254,12 +1291,7 @@ fn set_position(xs: i64, index: i64) -> Option<usize> {
 /// does: the precondition `0 <= index < xs.len` was not met (#480, `spec/17 §7.3`). Returns 0,
 /// the value the caller drops: a task stops, and its block reports the abort.
 fn set_outside(site: i64) -> i64 {
-    fault();
-    crate::runtime::abort_at(
-        usize::try_from(site).unwrap_or(usize::MAX),
-        una_diag::Code::U8001,
-        SET_OUT_OF_RANGE.to_owned(),
-    )
+    precondition_outside(site, SET_OUT_OF_RANGE)
 }
 
 /// `set(edit xs, index, item)` of the prelude (`spec/14 §1`, v0.2), at the call `site`: a call
