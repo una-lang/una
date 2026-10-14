@@ -347,6 +347,23 @@ fn solver_errors(checked: &una_cli::Checked) -> Vec<String> {
         .collect()
 }
 
+/// The `contract_lock` obligations whose locked condition is outside the encoding: the
+/// checker rejects such a lock as U7002, so one here means the two disagree (#638).
+fn unencodable_locks(checked: &una_cli::Checked) -> Vec<String> {
+    checked
+        .verification
+        .iter()
+        .flat_map(|verification| &verification.obligations)
+        .filter_map(|obligation| {
+            let condition = obligation.unencodable.as_ref()?;
+            Some(format!(
+                "{} ({}): `{condition}`",
+                obligation.id, obligation.declaration
+            ))
+        })
+        .collect()
+}
+
 #[test]
 fn conformance_suite() {
     let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -373,10 +390,11 @@ fn conformance_suite() {
             _ => Tier::One,
         };
         let path = root.join(&location.path);
-        let (diagnostics, solver_errors) = match una_cli::check(&path, tier) {
+        let (diagnostics, solver_errors, unencodable) = match una_cli::check(&path, tier) {
             Ok(checked) => {
                 let errors = solver_errors(&checked);
-                (checked.diagnostics, errors)
+                let unencodable = unencodable_locks(&checked);
+                (checked.diagnostics, errors, unencodable)
             }
             Err(error) => {
                 failures.push(format!("{}: {error}", location.path));
@@ -403,6 +421,16 @@ fn conformance_suite() {
                 "{}: the solver gave no values: {}",
                 location.path,
                 solver_errors.join("; ")
+            ));
+            continue;
+        }
+        // #638: the checker rejects a locked condition outside the encoding as U7002, so no
+        // case may reach the verifier with one.
+        if !unencodable.is_empty() {
+            failures.push(format!(
+                "{}: the checker admitted a locked condition the verifier does not encode: {}",
+                location.path,
+                unencodable.join("; ")
             ));
             continue;
         }

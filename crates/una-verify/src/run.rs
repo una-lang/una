@@ -217,6 +217,10 @@ fn forgotten(items: &[(String, Collection)], kind: ObligationKind) -> String {
     )
 }
 
+/// The reason of a `contract_lock` whose locked condition is outside the encoding (#638).
+pub(crate) const UNENCODABLE_LOCK: &str =
+    "the locked condition is outside what the verifier encodes (`spec/12 §2`)";
+
 pub(crate) const UNINTERPRETED: &str = "the refutation depends on a product, quotient or remainder of two values, which the encoding of `spec/12 §2` leaves uninterpreted";
 
 /// Whether the model agrees with real arithmetic at every application of uninterpreted
@@ -561,6 +565,20 @@ fn outcome(
         Status::Refuted => ObligationStatus::Refuted,
         Status::Unknown => ObligationStatus::Unknown,
     };
+    // #638: a locked condition outside the encoding is no goal, so its refutation says
+    // nothing about the header: the obligation is unknown, at the lock. A vacuous proof, from
+    // hypotheses that cannot hold, stays proven, as for any other obligation.
+    if answer.status == Status::Refuted && obligation.unencodable.is_some() {
+        return Outcome {
+            status: ObligationStatus::Unknown,
+            reason: Some(UNENCODABLE_LOCK.to_owned()),
+            cached,
+            path: None,
+            bindings: Vec::new(),
+            division: None,
+            values_error,
+        };
+    }
     // ADR 0053: a refutation whose model disagrees with real arithmetic at an application of
     // uninterpreted arithmetic is no execution, so the obligation is unknown, with no
     // counterexample.
@@ -803,8 +821,8 @@ mod missing_values_tests {
     use una_diag::{ObligationKind, ObligationStatus};
     use una_syntax::{SourceDb, Span};
 
-    use super::{Answer, Status, outcome, shown_bindings};
-    use crate::generate::{Obligation, Show, Shown, Site, Within};
+    use super::{Answer, Status, UNENCODABLE_LOCK, outcome, shown_bindings};
+    use crate::generate::{Effect, EffectAt, Obligation, Show, Shown, Site, Within};
     use crate::smt::{Const, ConstRole, F, Fun, FunRole, Query};
 
     fn constant(name: &str, sort: &str) -> F {
@@ -921,6 +939,7 @@ mod missing_values_tests {
             forgotten: Vec::new(),
             entry: Vec::new(),
             divisions: Vec::new(),
+            unencodable: None,
         };
         let error = refuted(&[], Some("unknown constant"));
         let plain = outcome(
@@ -952,5 +971,92 @@ mod missing_values_tests {
         assert_eq!(second.values_error.as_deref(), Some("unknown constant"));
         let values: Vec<&serde_json::Value> = second.bindings.iter().map(|b| &b.value).collect();
         assert_eq!(values, [&serde_json::json!(2)]);
+    }
+
+    #[test]
+    fn an_unencodable_lock_is_unknown_at_its_entry() {
+        // #638: the checker rejects a locked condition outside the encoding as U7002, so this
+        // obligation is synthetic. Its refutation is unknown, U5002 at the lock's entry in
+        // `una.toml` naming the condition, with the header's operation related; a vacuous
+        // proof stays proven, as for any other obligation.
+        let mut sources = SourceDb::new();
+        let source = sources.add("src/shop.una", b"pub update(mode: Unit) -> Unit\n");
+        let manifest = sources.add("una.toml", b"[contracts]\n");
+        let obligation = Obligation {
+            id: "ob-test".to_owned(),
+            kind: ObligationKind::ContractLock,
+            module: "shop".to_owned(),
+            declaration: "shop.update".to_owned(),
+            goal: "mode == unit".to_owned(),
+            source: Span::new(source, 0, 3),
+            related: Some((Span::new(manifest, 0, 11), "lock")),
+            paths: Vec::new(),
+            hypotheses: Vec::new(),
+            query: Query {
+                assertions: vec![F::not(F::Bool(false))],
+                ..Query::default()
+            },
+            shown: Vec::new(),
+            site: Site {
+                within: Within::Other,
+                parameter: None,
+                over_parameters: false,
+                ground: false,
+                flow: None,
+                function_value: None,
+                guard: None,
+                effect: Some(Effect {
+                    operation: "@catalog.set_price".to_owned(),
+                    condition: "mode == unit".to_owned(),
+                    at: EffectAt::Lock("update".to_owned()),
+                }),
+            },
+            forgotten: Vec::new(),
+            entry: Vec::new(),
+            divisions: Vec::new(),
+            unencodable: Some("mode == unit".to_owned()),
+        };
+        let refutation = outcome(&obligation, &[], &refuted(&[], None), None, false);
+        assert_eq!(refutation.status, ObligationStatus::Unknown);
+        assert_eq!(refutation.reason.as_deref(), Some(UNENCODABLE_LOCK));
+        assert_eq!(refutation.bindings, []);
+        let diagnostics = crate::report::diagnostics(
+            std::slice::from_ref(&obligation),
+            std::slice::from_ref(&refutation),
+            &sources,
+        );
+        assert_eq!(diagnostics.len(), 1);
+        let diagnostic = &diagnostics[0];
+        assert_eq!(diagnostic.code, una_diag::Code::U5002);
+        assert_eq!(
+            diagnostic.message,
+            "the condition `mode == unit` that `una.toml` locks on `@catalog.set_price` in `update` is outside what the verifier encodes"
+        );
+        assert_eq!(diagnostic.primary.file, "una.toml");
+        let related: Vec<(&str, &str)> = diagnostic
+            .related
+            .iter()
+            .map(|r| (r.location.file.as_str(), r.message.as_str()))
+            .collect();
+        assert_eq!(related, [("src/shop.una", "locked operation")]);
+        let repairs: Vec<&str> = diagnostic
+            .repairs
+            .iter()
+            .map(|r| r.description.as_str())
+            .collect();
+        assert_eq!(
+            repairs,
+            [
+                "write the locked condition in `una.toml` with terms the verifier encodes (`spec/12 §2`)"
+            ]
+        );
+        let proof = Answer {
+            status: Status::Proven,
+            reason: None,
+            values: Vec::new(),
+            values_error: None,
+        };
+        let vacuous = outcome(&obligation, &[], &proof, None, false);
+        assert_eq!(vacuous.status, ObligationStatus::Proven);
     }
 }

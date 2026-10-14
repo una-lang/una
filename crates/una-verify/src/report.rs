@@ -28,6 +28,11 @@ pub fn diagnostics(
             ObligationStatus::Refuted => Code::U5001,
             ObligationStatus::Unknown => Code::U5002,
         };
+        // #638: a locked condition outside the encoding is reported at its lock entry in
+        // `una.toml`, with the header as the related location: the cause is the lock.
+        let unencodable_lock = outcome.status == ObligationStatus::Unknown
+            && obligation.unencodable.is_some()
+            && obligation.related.is_some();
         // A return obligation points at the returned expression of the path
         // that the model takes.
         let primary = outcome
@@ -35,12 +40,16 @@ pub fn diagnostics(
             .and_then(|path| obligation.paths.get(path))
             .copied()
             .unwrap_or(obligation.source);
+        let (primary, related) = match obligation.related {
+            Some((lock, _)) if unencodable_lock => (lock, Some((primary, "locked operation"))),
+            related => (primary, related),
+        };
         let mut diagnostic = Diagnostic::error(
             code,
             message(obligation, outcome),
             sources.location(primary),
         );
-        if let Some((span, what)) = obligation.related {
+        if let Some((span, what)) = related {
             diagnostic.related.push(Related {
                 location: sources.location(span),
                 message: what.to_owned(),
@@ -81,6 +90,15 @@ pub fn diagnostics(
                 location: sources.location(division),
                 message: "the refuting path divides by zero here, so it is no run: fix this division, whose own obligation reports it".to_owned(),
             });
+        } else if unencodable_lock {
+            // Restoring the header cannot help: the lock's own condition is the cause.
+            diagnostic.repairs = vec![Repair {
+                widens: None,
+                rank: 1,
+                escape: None,
+                description: "write the locked condition in `una.toml` with terms the verifier encodes (`spec/12 §2`)".to_owned(),
+                edit: None,
+            }];
         } else {
             diagnostic.repairs = repairs(obligation);
         }
@@ -103,6 +121,13 @@ fn message(obligation: &Obligation, outcome: &Outcome) -> String {
         at: EffectAt::Lock(function),
     }) = &obligation.site.effect
     {
+        // #638: "the condition `C` that `una.toml` locks on `@b.op` in `f` is outside what the
+        // verifier encodes".
+        if outcome.status == ObligationStatus::Unknown && obligation.unencodable.is_some() {
+            return format!(
+                "the condition `{condition}` that `una.toml` locks on `{operation}` in `{function}` is outside what the verifier encodes"
+            );
+        }
         let base = format!(
             "the header of `{function}` lets `{operation}` run where `{condition}` does not hold, which `una.toml` locks"
         );

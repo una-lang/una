@@ -548,6 +548,16 @@ fn the_verifier_generates_every_obligation_the_checker_found() {
             })
             .collect();
         assert_eq!(solver_errors, Vec::<String>::new(), "{}", target.display());
+        // #638: the checker rejects a locked condition outside the encoding as U7002, so no
+        // obligation the checker admits may carry one.
+        let unencodable: Vec<String> = obligations
+            .iter()
+            .filter_map(|obligation| {
+                let condition = obligation.unencodable.as_ref()?;
+                Some(format!("{}: `{condition}`", obligation.id))
+            })
+            .collect();
+        assert_eq!(unencodable, Vec::<String>::new(), "{}", target.display());
         compared += 1;
     }
     assert!(compared > 30, "{compared}");
