@@ -662,6 +662,17 @@ impl<'a> Checker<'_, 'a, '_> {
         self.needs_site(&callee, &granted, span, level);
         // ADR 0092 rule 3: the callee's bindings receive the caller's (#615).
         self.condition_needs(&granted, span, level);
+        // ADR 0092, amendment of 2026-10-14: the edit that writes the caller's condition on the
+        // callee. A call into a boundary grants nothing by name, so it gets none.
+        if crossing.is_none() {
+            self.condition_edits(
+                super::conditions::EditTarget::Function(id),
+                args,
+                receiver.is_some(),
+                span,
+                level,
+            );
+        }
         // ADR 0093 rule 15: what the callee grants on by name, from its own bindings, reaches
         // the bindings its `uses` resolve to here.
         self.summary_needs(Owner::Node(Node::Function(id)), &granted, level);
