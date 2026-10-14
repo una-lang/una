@@ -18,12 +18,13 @@
 #                twice, compared
 #   native       the interpreter against the native executable, on every runnable program of
 #                the repository (spec/16 §5): the equivalence test of crates/una-cli/tests/native.rs
-#   site         scripts/site.sh: the mdBook site builds and every link between its pages
-#                resolves; mdBook missing or at another version than the script pins is a FAIL
-#                (N-36). Then (#584) scripts/site-bundle.sh writes the docs bundle into OUT/site-bundle
-#                with the clone's release `una`, and scripts/site-website.sh builds the website that
-#                site/website.lock pins from it, with its budget and its code samples checked; a
-#                missing Node.js or npm, or no access to the website's repository, is a FAIL
+#   site         scripts/doc-links.py: its self-test, then every link of the repository's
+#                documents names a tracked file and every fragment a heading (#708). Then (#584)
+#                scripts/site-bundle.sh writes the docs bundle into OUT/site-bundle with the
+#                clone's release `una`, and scripts/site-website.sh compares the heading ids with
+#                the website's and builds the website that site/website.lock pins from the
+#                bundle, with its budget and its code samples checked; a missing Python 3,
+#                Node.js or npm, or no access to the website's repository, is a FAIL
 #   formal       scripts/formal.sh: the Lean development of the formal track builds with its pinned
 #                toolchain, and no stated theorem depends on `sorry` (#46)
 #
@@ -77,9 +78,10 @@ export PATH="$Z3/bin:$PATH"
 # A gated commit may be a past release's, older than tags that exist now: its released sections
 # of CHANGELOG.md are checked against the tags it contains only (#645).
 export UNA_RELEASED_SECTIONS_SCOPE=ancestors
-# A gate's evidence never skips that check, nor the advisories' releases (#715), whatever the
-# caller's shell exports.
-unset UNA_SKIP_RELEASED_SECTIONS UNA_LOCAL_CI_RELEASED_SECTIONS_ON_HOST UNA_LOCAL_CI_ADVISORIES_ON_HOST
+# A gate's evidence never skips that check, nor the advisories' releases (#715), nor the
+# documents' links (#708), whatever the caller's shell exports.
+unset UNA_SKIP_RELEASED_SECTIONS UNA_LOCAL_CI_RELEASED_SECTIONS_ON_HOST UNA_LOCAL_CI_ADVISORIES_ON_HOST \
+    UNA_LOCAL_CI_DOC_LINKS_ON_HOST
 
 digest() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
@@ -224,7 +226,8 @@ gate_native() {
 gate_site() {
     run site sh -c '
         version=$(sed -n "s/^version = \"\(.*\)\"$/\1/p" Cargo.toml | head -n 1)
-        scripts/site.sh \
+        scripts/doc-links.py --self-test \
+            && scripts/doc-links.py \
             && UNA_BIN=target/release/una scripts/site-bundle.sh "'"$OUT"'/site-bundle" \
             && UNA_BIN=target/release/una scripts/site-website.sh "'"$OUT"'/site-bundle/una-docs-$version" "'"$OUT"'/site-website"'
 }

@@ -2,9 +2,11 @@
 # Builds the website, una-lang/website at the commit that site/website.lock pins, from a docs
 # bundle of scripts/site-bundle.sh (#584), and checks it: the website's build renders every
 # page from the bundle and fails on a broken budget, and its sample check runs every code
-# sample of the site with this checkout's `una` (Z3 at the pinned version on PATH).
+# sample of the site with this checkout's `una` (Z3 at the pinned version on PATH). Before the
+# build, the heading ids that scripts/doc-links.py checks fragments against are compared with
+# the ones the website gives the same documents (#708).
 #
-# It needs git access to the website's repository, and Node.js (>= 20.19) with npm. It installs
+# It needs git access to the website's repository, Node.js (>= 20.19) with npm, and Python 3. It installs
 # the website's packages with `npm ci --ignore-scripts`, from its package-lock.json, so no
 # install script runs. It writes only under OUT. UNA_SITE_WEBSITE_SOURCE overrides where the
 # website is cloned from, and UNA_BIN which `una` checks the samples (default:
@@ -44,6 +46,8 @@ node -e 'const [a, b] = process.versions.node.split(".").map(Number); process.ex
 una=${UNA_BIN:-target/release/una}
 [ -x "$una" ] || fail "no una binary at $una: build it, or set UNA_BIN"
 una=$(CDPATH='' cd -- "$(dirname -- "$una")" && pwd)/$(basename -- "$una")
+mkdir -p "$out/anchors"
+python3 scripts/doc-links.py --anchors >"$out/anchors/ids.json" || fail "scripts/doc-links.py --anchors"
 
 website=$out/website
 rm -rf "${website:?}"
@@ -57,6 +61,8 @@ cd "$website"
 # and no package's install script runs on the release machine.
 [ -f package-lock.json ] || fail "the website has no package-lock.json at $commit"
 npm ci --ignore-scripts --no-audit --no-fund --loglevel=error || fail "npm ci"
+node "$root/scripts/doc-links/website-anchors.mjs" "$out/anchors/ids.json" "$root" \
+    || fail "the heading ids of scripts/doc-links.py are not the website's"
 UNA_BUNDLE=$bundle npm run --silent build || fail "the website does not build from the bundle"
 UNA_BUNDLE=$bundle UNA_BIN=$una npm run --silent check:samples || fail "a code sample of the website does not check"
 [ -z "$(git status --porcelain --untracked-files=no)" ] || fail "the website build changed tracked files"

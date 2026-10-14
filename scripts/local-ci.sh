@@ -40,6 +40,11 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
     echo "== Security advisories' releases (on the host)"
     cargo test --locked -p una-cli --test advisories the_advisories_match_the_releases -- --exact \
         || fail "Security advisories' releases (on the host)"
+    # The documents' links (#708) need the files git tracks, which git cannot list there either:
+    # they are checked here too, and only once they pass is the container told so, in
+    # UNA_LOCAL_CI_DOC_LINKS_ON_HOST.
+    echo "== Document links (on the host)"
+    scripts/doc-links.py --self-test && scripts/doc-links.py || fail "Document links (on the host)"
     toolchain=$(sed -n 's/^channel *= *"\([^"]*\)"$/\1/p' rust-toolchain.toml)
     image="una-local-ci:$toolchain$suffix"
     echo "== building the image $image (linux/$arch)"
@@ -82,6 +87,7 @@ if [ "${1:-}" = --linux ] || [ "${1:-}" = --linux-arm64 ]; then
         --env RUST_TEST_THREADS \
         --env UNA_LOCAL_CI_RELEASED_SECTIONS_ON_HOST=1 \
         --env UNA_LOCAL_CI_ADVISORIES_ON_HOST=1 \
+        --env UNA_LOCAL_CI_DOC_LINKS_ON_HOST=1 \
         --env "SOURCE_DATE_EPOCH=$(git -C "$root" log -1 --format=%ct HEAD)" \
         "$image" scripts/local-ci.sh || fail "the Linux run failed; its output is above"
     echo "local CI: PASS ($target, in the container)"
@@ -138,18 +144,17 @@ if [ -n "${UNA_LOCAL_CI_SERIAL:-}" ]; then
 else
     step "Test" cargo test --workspace --locked
 fi
-# The website (#244): every page builds and every link between pages resolves. It runs when
-# mdBook is installed at the version scripts/site.sh pins, and is skipped, visibly, otherwise
-# (N-36); the `site` gate of scripts/release-gates.sh requires it. The container runs skip it,
-# since the site is the same on every platform.
-if [ -z "${UNA_LOCAL_CI_Z3:-}" ]; then
-    mdbook_version=$(sed -n 's/^MDBOOK_VERSION=//p' scripts/site.sh)
-    if [ "$(mdbook --version 2>/dev/null)" = "mdbook v$mdbook_version" ]; then
-        step "Website" scripts/site.sh
-    else
-        echo "== Website"
-        echo "skipped: mdbook $mdbook_version not installed (cargo install mdbook --version $mdbook_version --locked)"
-    fi
+# The documents' links (#708): every link of the documents names a tracked file or directory,
+# and every fragment a heading of its document; the check's own test refuses each kind of
+# broken link first. It needs only Python 3 and git, so it runs everywhere, the containers
+# included. In a container whose checkout git cannot read, a worktree's, only the self-test runs,
+# and the documents are the host's check, said here.
+if [ -n "${UNA_LOCAL_CI_DOC_LINKS_ON_HOST:-}" ] && [ -f /.dockerenv ] \
+    && ! git ls-files --error-unmatch README.md >/dev/null 2>&1; then
+    step "Document links (self-test)" scripts/doc-links.py --self-test
+    echo "skipped: the documents, which git cannot list here; checked on the host before the container"
+else
+    step "Document links" sh -c 'scripts/doc-links.py --self-test && scripts/doc-links.py'
 fi
 
 # The formal track (docs/plan/formal-track.md §6, #46): the Lean development builds with the

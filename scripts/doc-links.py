@@ -1,0 +1,284 @@
+#!/usr/bin/env python3
+"""Checks the links of the repository's documents (#708), where scripts/site.sh checked them
+with mdBook before the website replaced its book.
+
+The documents are the tracked README.md, SECURITY.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md,
+CHANGELOG.md, the charter, the documentation map, the guides, the specification, the release
+records, the ADRs and the security advisories: the set that scripts/site.sh staged, and the
+documents that the website publishes besides. In each,
+outside code blocks and inline code, every link that is not a URL:
+- names a file or directory that git tracks (#305), so it exists on GitHub; an image included;
+- with a `#fragment`, names a heading of its target document, or of the document itself, when
+  the target is one of these documents.
+
+A heading's fragment is the id the website gives it (una-lang/website,
+scripts/preview/markdown.mjs, the "anchors" rule): the words of the heading, lowercased, without
+backticks or any character but a letter, a digit, a space or a hyphen, with spaces made hyphens,
+and `-1` added while the id is taken; in a specification chapter, a numbered heading `N.M.` is
+`sN-M`. scripts/site-website.sh compares these ids with the ones the pinned website renders,
+for every document here and for scripts/doc-links/anchors.md.
+
+Usage:
+  scripts/doc-links.py              check the documents of this checkout
+  scripts/doc-links.py --self-test  check that each kind of broken link is refused
+  scripts/doc-links.py --anchors    print every document's heading ids, as JSON, for the
+                                    comparison with the website
+"""
+
+import html
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import unicodedata
+
+ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+FIXTURE = "scripts/doc-links/anchors.md"
+
+
+ROOT_DOCUMENTS = [
+    "README.md",
+    "SECURITY.md",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md",
+    "CHANGELOG.md",
+    "docs/00-charter.md",
+    "docs/README.md",
+]
+DIRECTORIES = ["docs/guide", "docs/spec", "docs/releases", "docs/adr", "docs/security"]
+
+
+def documents(files):
+    """The documents whose links are checked, among the tracked `files`, sorted."""
+    docs = [d for d in ROOT_DOCUMENTS if d in files]
+    for f in files:
+        directory, _, name = f.rpartition("/")
+        if directory in DIRECTORIES and name.endswith(".md") and f != "docs/adr/0000-template.md":
+            docs.append(f)
+    return sorted(docs)
+
+
+def tracked(root):
+    """The files that git tracks, and the directories that hold them."""
+    out = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=root, check=True, capture_output=True
+    ).stdout.decode()
+    files = set(f for f in out.split("\0") if f)
+    dirs = set()
+    for f in files:
+        parts = f.split("/")
+        for i in range(1, len(parts)):
+            dirs.add("/".join(parts[:i]))
+    return files, dirs
+
+
+FENCE = re.compile(r"^\s*```")
+
+
+def prose(text):
+    """Each line outside code blocks, with its number, as (number, [stretches outside inline
+    code])."""
+    fence = False
+    for number, line in enumerate(text.split("\n"), 1):
+        if FENCE.match(line):
+            fence = not fence
+            continue
+        if fence:
+            continue
+        yield number, line.split("`")[0::2]
+
+
+def slug(text):
+    """The website's `slug`: lowercased, backticks and every character but a letter, a digit,
+    a space or a hyphen dropped, trimmed, and runs of spaces made one hyphen."""
+    text = text.lower().replace("`", "")
+    kept = "".join(
+        c
+        for c in text
+        if unicodedata.category(c)[0] in "LN" or c.isspace() or c == "-"
+    )
+    return re.sub(r"\s+", "-", kept.strip())
+
+
+HEADING = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$")
+LINK = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
+
+
+def heading_text(raw):
+    """The text of a heading as the website reads it: its text and inline code, without the
+    marks of emphasis, links, escapes and entities."""
+    parts = raw.split("`")
+    out = []
+    for i, part in enumerate(parts):
+        if i % 2 == 1 and i < len(parts) - 1:
+            out.append(part.strip() if part.strip() else part)
+            continue
+        if i % 2 == 1:
+            part = "`" + part
+        part = LINK.sub(r"\1", part)
+        part = re.sub(r"\\([!-/:-@\[-`{-~])", r"\1", part)
+        part = re.sub(r"(\*+|(?<!\w)_+|_+(?!\w))", "", part)
+        out.append(html.unescape(part))
+    return "".join(out)
+
+
+SPEC_NUMBER = re.compile(r"^(\d+(?:\.\d+)*)\.?\s")
+
+
+def anchors(text, spec):
+    """The ids of the headings of a document, in order."""
+    used = set()
+    ids = []
+    fence = False
+    for line in text.split("\n"):
+        if FENCE.match(line):
+            fence = not fence
+            continue
+        if fence:
+            continue
+        m = HEADING.match(line)
+        if not m:
+            continue
+        words = heading_text(m.group(2) or "")
+        numbered = SPEC_NUMBER.match(words)
+        name = "s" + numbered.group(1).replace(".", "-") if spec and numbered else slug(words)
+        while name in used:
+            name += "-1"
+        used.add(name)
+        ids.append(name)
+    return ids
+
+
+def is_spec(path):
+    return path.startswith("docs/spec/")
+
+
+TARGET = re.compile(r"\]\(([^)\s]+)\)|(?:src|href)=\"([^\"]+)\"")
+
+
+def resolve(page, target):
+    """The repository path that `target`, written in `page`, names, or None outside it."""
+    segments = []
+    for seg in (os.path.dirname(page) + "/" + target).split("/"):
+        if seg in ("", "."):
+            continue
+        if seg == "..":
+            if not segments:
+                return None
+            segments.pop()
+            continue
+        segments.append(seg)
+    return "/".join(segments)
+
+
+def problems(root, docs, files, dirs):
+    """Every broken link of `docs`, as `path:line: target: reason`."""
+    texts = {d: open(os.path.join(root, d), encoding="utf-8").read() for d in docs}
+    ids = {d: set(anchors(t, is_spec(d))) for d, t in texts.items()}
+    found = []
+    for page, text in texts.items():
+        for number, stretches in prose(text):
+            for stretch in stretches:
+                for m in TARGET.finditer(stretch):
+                    target = m.group(1) or m.group(2)
+                    if re.match(r"^[a-z]+:", target) or target.startswith("//"):
+                        continue
+                    path, _, fragment = target.partition("#")
+                    where = f"{page}:{number}: {target}"
+                    if path:
+                        resolved = resolve(page, path)
+                        if resolved is None or (resolved not in files and resolved not in dirs):
+                            found.append(f"{where}: names no tracked file or directory")
+                            continue
+                    else:
+                        resolved = page
+                    if fragment and resolved in ids and fragment not in ids[resolved]:
+                        found.append(f"{where}: {resolved} has no heading with the id {fragment}")
+    return found
+
+
+def check(root):
+    files, dirs = tracked(root)
+    docs = documents(files)
+    found = problems(root, docs, files, dirs)
+    if found:
+        print("\n".join(found), file=sys.stderr)
+        print(f"doc-links: FAIL ({len(found)} broken links)", file=sys.stderr)
+        return 1
+    print(f"doc-links: PASS ({len(docs)} documents)")
+    return 0
+
+
+def self_test():
+    """Each kind of broken link is refused, and the fixture's ids are the expected ones."""
+    failures = []
+    good = (
+        "# Title\n\nSee [b](b.md#part-two), [self](#title), [dir](sub), [img](sub/i.png),\n"
+        '<img src="sub/i.png">, [web](https://example.org/x#y) and `[code](nowhere.md)`.\n\n'
+        "```\n[fenced](nowhere.md)\n```\n"
+    )
+    bad = {
+        "a repository link to an untracked file": "[x](missing.md)",
+        "a relative link out of the repository": "[x](../../outside.md)",
+        "a fragment that names no heading": "[x](b.md#part-three)",
+        "a fragment of the page itself that names no heading": "[x](#nothing)",
+        "an image that is not tracked": '<img src="sub/missing.png">',
+    }
+    files = {"docs/a.md", "docs/b.md", "docs/sub/i.png"}
+    dirs = {"docs", "docs/sub"}
+    with tempfile.TemporaryDirectory() as tmp:
+        os.makedirs(os.path.join(tmp, "docs"))
+        with open(os.path.join(tmp, "docs/b.md"), "w", encoding="utf-8") as f:
+            f.write("# B\n\n## Part two\n")
+
+        def run(body):
+            with open(os.path.join(tmp, "docs/a.md"), "w", encoding="utf-8") as f:
+                f.write(body)
+            return problems(tmp, ["docs/a.md", "docs/b.md"], files, dirs)
+
+        found = run(good)
+        if found:
+            failures.append(f"a page with good links was refused: {found}")
+        for name, link in bad.items():
+            if not run(good + "\n" + link + "\n"):
+                failures.append(f"accepted {name}: {link}")
+
+    fixture = open(os.path.join(ROOT, FIXTURE), encoding="utf-8").read()
+    expected = [
+        line.split(" ", 2)[2]
+        for line in fixture.split("\n")
+        if line.startswith("<!-- id ")
+    ]
+    expected = [e.removesuffix(" -->") for e in expected]
+    got = anchors(fixture, False)
+    if got != expected:
+        failures.append(f"the fixture's ids are {got}, expected {expected}")
+    if failures:
+        print("\n".join(failures), file=sys.stderr)
+        print(f"doc-links: self-test FAIL ({len(failures)})", file=sys.stderr)
+        return 1
+    print(f"doc-links: self-test PASS ({len(bad)} broken links refused, {len(got)} fixture ids)")
+    return 0
+
+
+def main(args):
+    if args == ["--self-test"]:
+        return self_test()
+    if args == ["--anchors"]:
+        docs = documents(tracked(ROOT)[0]) + [FIXTURE]
+        out = {}
+        for d in docs:
+            text = open(os.path.join(ROOT, d), encoding="utf-8").read()
+            out[d] = {"spec": is_spec(d), "ids": anchors(text, is_spec(d))}
+        print(json.dumps(out, ensure_ascii=False, indent=1))
+        return 0
+    if args:
+        print(__doc__, file=sys.stderr)
+        return 2
+    return check(ROOT)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
