@@ -329,3 +329,64 @@ Conformance cases pin each check above:
 - each U7002, including a renamed function, a renamed capability and an entry without brackets;
 - a handler from another module, and a handler whose `uses` are inferred, installed by a locked function;
 - the removal of a locked binding, which is accepted.
+
+## Amendment (2026-10-14): when `una fix` applies the condition on the callee
+
+- Status: Accepted
+- Deciders: Una project (accepted on 2026-10-14)
+
+Rule 5 says the first repair at a call or a `with` "is mechanical when every parameter `C` names is passed unchanged as an argument, so `una fix` may apply it". It left the edit's text and its limits open, and every `effect_condition` repair has carried `edit: null` so far. This amendment settles which repairs carry an edit, and when. ADR 0084's amendment of the same date settles when `una fix` sees them.
+
+**Which repairs carry an edit.** Only the first repair at a call or a `with`: the condition written in the callee's or the handler's `uses`. The others keep a description only:
+
+- **a guard `if C`**, at an operation, a call, a `with` or a call of a function value. It changes what the program does: where `C` is false, the effect no longer runs, and nothing says so. That can hide the mistake the diagnostic found, such as a payment that should have failed instead. When the guarded expression's value is used, a guard also needs an `else` value that no rule gives;
+- **`requires C`** on the enclosing function. It changes the function's contract for each of its callers, in other packages too for a public function.
+
+Rule 5 calls the guard at an operation "mechanical". This amendment withdraws that word: the guard is a description, and `una fix` never applies it. At an operation, the first repair is the guard, so `una fix` applies nothing there (ADR 0084 rule 2: a later repair is never applied in place of the first).
+
+**The target.** The edit goes on the binding entry of the callee's or handler's `uses` whose condition was the premise `C′` of the refuted obligation (rule 3): the binding that the caller's binding `@b` becomes, whether it is passed by name, renamed with `with @x = @b`, or narrowed with `@b[ops]`. When the entry writes no condition, `C′` is `true`.
+
+**The edit.** At a site where the caller conditions `op` on `@b` by `C`, the edit writes `C″` on `op` in the target. `C″` is `C` with each occurrence of a caller's parameter replaced by the callee's parameter it is passed to:
+
+- the replacement is simultaneous, so the call `f(b, a)` with `C = a and not b` gives `C″ = y and not x` for `f(x, y)`. Only occurrences that resolve to a parameter are replaced: never a field name, a text literal or another binder;
+- when the target writes no condition, the edit writes `op where C″`;
+- when it writes `op where C′`, the edit writes `op where (C′) and (C″)`, with both operands in parentheses whatever their operators (`and`, `or`, `=>`), so the result is always their conjunction. The condition already written stays, word for word;
+- when the operation carries a label (ADR 0094), the condition follows it: `op gives L where …`, as `cap_op` writes them (rule 1).
+
+**When the repair carries the edit.** All of these must hold. Otherwise the repair carries the same description with `edit: null`:
+
+- (a) **Arguments, at their entry values.** Every parameter of the caller that `C` names is passed to a parameter of the callee or the handler, as an argument that is exactly a reference to that parameter. The parameter is not an `edit` parameter. `C` reads the arguments as the caller received them (the second amendment of 2026-10-13), while the call passes the parameter's current value, and the two are the same only for a parameter the body cannot assign. A parameter passed to several parameters is replaced by the first of them, in argument order.
+- (b) **An explicit operation.** The callee or handler is declared in the same module as the site, and its `uses` writes the target binding with `op` listed by name. An inferred `uses` (`spec/05 §9` rule 2), or a binding written without brackets, would need a clause written or an operation list spelled out. ADR 0084 never applies an edit that declares `uses`, so neither gets an edit.
+- (c) **Names.** Each name of `C` other than the replaced parameters resolves, in the callee's or handler's header, to the declaration it resolves to in the caller's header, where `C` was written. In particular, no parameter of the callee or handler has the name of such a name. This is ADR 0096 rule 3a's hygiene: the edit never changes what a name of the condition refers to.
+- (d) **Not public, and not a value.** The callee or handler is not `pub`. A function is also not used as a function value anywhere in the package. A named function whose `uses` carry a condition may not be a function value (U3006, rule 1), and a public function's uses in other packages cannot be seen from this one.
+- (e) **A module of the package.** The callee or handler is declared in a module of the package, never in a dependency (ADR 0084 rule 2).
+- (f) **Within the encoding.** `C`, and `C′` when the target writes one, are inside the verifier's encoding (`spec/12 §4`). A caller's condition outside it is refuted at every site (rule 3 keeps the goal `not false`), and a callee's is dropped from the premise, so a conjunction with it would be dropped too. In both cases the edit could never discharge the obligation.
+- (g) **Not already written.** `C″` is not already a conjunct of the target's condition. The conjuncts of a condition are its operands after its top-level `and` is flattened, with the parentheses that enclose each one removed, so `((C′) and (C″₁)) and (C″₂)` has the conjuncts `C′`, `C″₁` and `C″₂`. Each is compared with `C″` token for token. An edit whose conjunct is already there is known not to help, and writing it again would only grow the text.
+- (h) **No unknown obligation.** No obligation of the package's tier-1 check is unknown (U5002). Whether a query is unknown can depend on the solver's time, and an edit taken in one run and not in another could leave another text. So while any obligation is unknown, even one unrelated to the site, every `effect_condition` repair carries a description only, in `una check` as in `una fix`. The reason is not silent: a first repair at a call or a `with` that meets (a) to (g), at a site whose obligation is unknown or refuted, ends its description with "; not applied while an obligation of this package is unknown (U5002)". The description is free text in `una.diagnostic/1`, so the schema does not change.
+
+(a) and (f) make the edit discharge the obligation it repairs. (h) keeps solver timing from choosing edits. (g) is the backstop: whatever a later rule changes, `una fix` never writes the same conjunct twice, so a round cannot repeat an edit until the round limit.
+
+**What the edit does to authority.** It adds a condition and removes none, so the callee or handler may perform `op` in fewer states than before. It never widens a `uses`, a visibility or a grant. A `[contracts]` lock on the callee still holds, since `C′ and C″ ⇒ C_lock` whenever `C′ ⇒ C_lock` (rule 8). Every caller, lock and body is checked again by the next round and by the final check.
+
+**What the edit does to other declarations.** It edits a declaration other than the one the diagnostic is reported in, so its effect is stated here:
+
+- **at the site,** the obligation becomes `(C′ and C″)[args] ⇒ C`. By (a), `C″[args]` reads the same values as `C`, and by (f) both are encoded, so the obligation holds;
+- **at the callee's other call sites,** the callee's condition only gains a conjunct. That makes their obligations `C′[args] ⇒ C` no harder;
+- **in the callee's body,** each performance of `op` through the binding, each call that passes it on and each `with` it reaches now has an `effect_condition` obligation under `C′ and C″`. One may be refuted. The diagnostic then moves into the callee, at its own site, where it is either repaired the same way one call further down in a later round of `una fix`, or guarded by hand. ADR 0084's round limit bounds the chain;
+- **two sites** that ask the same callee for different conditions give edits with the same range. ADR 0084 rule 3 takes the first by position and diagnostic order. The next round checks the other site again against the conjunction, and if its obligation is still refuted, it adds its own conjunct.
+
+**Determinism.** The edit's text is computed from the source alone: the site, `C`, the arguments and the callee's header. It needs no solver result. The same source gives the same edit whenever it gives one. Solver timing can only withhold an edit, never change it: only a refuted obligation (U5001) carries the edit, and by (h), none does while an obligation is unknown (U5002). A refuted obligation stays refuted and a proven one stays proven whatever the timing, so every check with no unknown obligation gives the same edits. For a whole run, a round of ADR 0084 in which an obligation is unknown takes no tier-1 edit, so the rounds stop there. Timing can then only stop the rounds earlier: a slower run applies a prefix of the rounds of a faster one, and never other edits or the same edits in another order.
+
+A test runs `una fix` twice on the same package and compares the outputs and the written sources byte for byte. A second case, with `step_budget = 1` in its `verification.lock` so that every obligation is unknown, shows no applied edit, the source unchanged, and the repair's description ending with the sentence of (h), on both runs.
+
+**Stricter only.** The amendment changes no rule of acceptance: a program that checks today still checks, and one that is rejected is still rejected. It only lets `una fix` write a condition that the checker already offers as the first repair.
+
+Conformance cases, with the source before and after and a check of the fixed source:
+- one case for each of (a) to (h) where the repair stays a description. They include an `edit` parameter assigned before the call, a condition outside the encoding, an unrelated obligation made unknown, and a conjunct already written, in the parenthesized form that `una fix` writes, at a site that stays refuted, so that the next round is refused by (g);
+- the simultaneous replacement, with the arguments swapped;
+- a call and a `with` where the edit applies, the second through a renamed binding (`with @x = @b`);
+- a target that already writes a condition containing `or`, and a `C″` containing `or`, where the parentheses keep the conjunction;
+- an operation with a label (`op gives L`);
+- a diagnostic that moves into the callee and is repaired one call further down in the next round;
+- two sites asking the same callee for different conditions;
+- `--tier 0`, which applies nothing.
