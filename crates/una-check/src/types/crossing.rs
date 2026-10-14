@@ -58,6 +58,18 @@ pub(crate) struct Granting {
     /// A parameter that an `of` clause names given to the boundary: it runs the effects its
     /// caller chooses, which no ceiling bounds (rule 5, fail closed).
     pub(crate) opaque_uses: Option<(Span, String)>,
+    /// A lambda or function value given to the boundary that runs on a binding the check does
+    /// not follow to where it was captured: what it holds is not bounded (rule 5, fail closed).
+    pub(crate) unseen: Option<(Span, String)>,
+}
+
+/// What the arguments of one installation of a handler grant it: the capabilities that the
+/// functions and lambdas among them run on, and one that runs on a binding the check does not
+/// follow (rule 5, fail closed).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Installed {
+    pub(crate) uses: Vec<(CapId, Vec<String>)>,
+    pub(crate) unseen: Option<(Span, String)>,
 }
 
 /// A call into a boundary, kept for [`releases`].
@@ -138,10 +150,21 @@ impl Checker<'_, '_, '_> {
     /// lambda among them uses inside a lambda given to a boundary stays granted to it:
     /// unreachable from source today, since a lambda's body is an expression and `with` and
     /// `given` are statements; kept fail-closed.
-    pub(crate) fn handler_arguments(&mut self, handler: usize, given: Granting) {
+    ///
+    /// What they grant is kept for the installation, by `at`, the span its binding records: a
+    /// call into a boundary granted that binding counts it with the handler's own `uses`, since
+    /// the handler may call the functions and lambdas it was given under bindings of its own.
+    pub(crate) fn handler_arguments(&mut self, handler: usize, at: Span, given: Granting) {
         if self.pass != Pass::Check {
             return;
         }
+        self.findings.installed.insert(
+            at,
+            Installed {
+                uses: given.uses.clone(),
+                unseen: given.unseen.clone(),
+            },
+        );
         let node = Node::Handler(handler);
         for target in given.targets {
             self.findings.graph.push((node, target));
@@ -266,6 +289,40 @@ impl Checker<'_, '_, '_> {
         }
     }
 
+    /// A lambda written at `span`, or a function named there as a value, runs on the bindings
+    /// that its `uses`, `needs`, resolve to where it is written, whoever calls it (`spec/11 §4`).
+    /// Among the arguments of a call into a boundary, or of a handler's installation, it grants
+    /// what they hold, a handler with its own `uses` and as a node it may run (rules 5 and 8),
+    /// even when the boundary calls it under its own bindings. A binding of the frames of a
+    /// lambda written outside those arguments was captured where that lambda was written, and a
+    /// name those frames do not bind may still be held by its closure: neither is followed
+    /// here, so the value is opaque (fail closed).
+    pub(crate) fn captured_needs(&mut self, needs: &[FnUse], span: Span) {
+        if self.pass != Pass::Check || needs.is_empty() {
+            return;
+        }
+        let direct = std::mem::replace(&mut self.granting_direct, true);
+        let depth = self.granting_now().map(|g| g.depth);
+        if let Some(depth) = depth {
+            for need in needs.iter().filter(|need| need.capability.is_some()) {
+                let resolved = self.resolve_cap(&need.name);
+                let unseen = match resolved {
+                    Resolved::Handler { .. } => false,
+                    Resolved::Cap { .. } => self.frames_depth > 0 && self.frames_depth <= depth,
+                    Resolved::Missing { .. } => self.frames_depth > 0,
+                };
+                if unseen {
+                    self.opaque_value(span, None);
+                    if let Some(granting) = self.granting.last_mut() {
+                        granting.unseen.get_or_insert((span, need.name.clone()));
+                    }
+                }
+                self.granted_use(need.capability, &need.ops, &resolved);
+            }
+        }
+        self.granting_direct = direct;
+    }
+
     /// Records a release at `span`, a policy call (`spec/07 §5`): in the node being checked,
     /// and in a lambda given to a boundary, which the boundary may run.
     pub(crate) fn release_site(&mut self, span: Span) {
@@ -297,17 +354,26 @@ impl Checker<'_, '_, '_> {
             .into_iter()
             .collect();
         let mut target = None;
+        let mut unseen = None;
         if let Resolved::Handler {
             handler: Some(handler),
+            span,
             ..
         } = resolved
         {
             uses.extend(self.handler_uses(*handler));
+            if let Some(installed) = self.findings.installed.get(span) {
+                uses.extend(installed.uses.iter().cloned());
+                unseen.clone_from(&installed.unseen);
+            }
             target = Some(Node::Handler(*handler));
         }
         if let Some(granting) = self.granting_now() {
             granting.uses.extend(uses);
             granting.targets.extend(target);
+            if granting.unseen.is_none() {
+                granting.unseen = unseen;
+            }
         }
     }
 
@@ -405,6 +471,7 @@ impl Checker<'_, '_, '_> {
             return;
         }
         let mut grants = granting.uses;
+        let mut unseen = granting.unseen;
         let mut targets = vec![target];
         targets.extend(granting.targets);
         for need in needs {
@@ -421,11 +488,19 @@ impl Checker<'_, '_, '_> {
                 Resolved::Handler {
                     handler,
                     capability,
+                    span: installed_at,
                     ..
                 } => match handler {
                     // Rule 5: a handler counts with its own `uses`, and the boundary may run it.
+                    // What its installation's arguments granted it, it may run too.
                     Some(handler) => {
                         grants.extend(self.handler_uses(*handler));
+                        if let Some(installed) = self.findings.installed.get(installed_at) {
+                            grants.extend(installed.uses.iter().cloned());
+                            if unseen.is_none() {
+                                unseen.clone_from(&installed.unseen);
+                            }
+                        }
                         targets.push(Node::Handler(*handler));
                     }
                     // Fail closed: a handler not known counts as its whole capability.
@@ -451,6 +526,20 @@ impl Checker<'_, '_, '_> {
                 span,
                 format!(
                     "{what} gives `{key}` `{name}`, which runs the effects that its caller chooses, so the ceiling in `una.toml` cannot bound them"
+                ),
+            );
+            diagnostic
+                .related
+                .push(self.report.related(given, "the function value"));
+            self.report.push(diagnostic);
+        }
+        if let Some((given, name)) = unseen {
+            let key = self.boundary_key(boundary);
+            let mut diagnostic = self.report.make(
+                Code::U3021,
+                span,
+                format!(
+                    "{what} gives `{key}` a function value that runs on `@{name}`, a binding captured where this check does not follow it, so the ceiling in `una.toml` cannot bound what it holds"
                 ),
             );
             diagnostic

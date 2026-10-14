@@ -260,6 +260,9 @@ pub(crate) struct Checker<'c, 'a, 's> {
     /// While a named function given as an argument of a call into a boundary is checked: what
     /// it uses and runs is granted to the boundary (ADR 0093 rule 5).
     pub(crate) granting_direct: bool,
+    /// The lambda depth of the body whose own frames `frames` are: 0 for a function's or a
+    /// handler's, or a lambda's whose expected type has `uses` (ADR 0093 rule 5).
+    pub(crate) frames_depth: usize,
     /// Instantiations of generic functions: callee, type arguments and where.
     pub(crate) instances: Vec<(usize, Vec<Ty>, Span)>,
     /// What the operators on values of type parameters need: the operand type, the
@@ -451,6 +454,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             handler: None,
             granting: Vec::new(),
             granting_direct: false,
+            frames_depth: 0,
             instances: Vec::new(),
             needs: Vec::new(),
             interpolations: Vec::new(),
@@ -711,7 +715,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                         granting: given,
                     }),
                     None => {
-                        self.handler_arguments(id, given);
+                        self.handler_arguments(id, call.name.span, given);
                         // The handler's own `uses` are held where it is installed.
                         let level = self.frames.len();
                         self.needs_site(&callee, &uses, call.span, level);

@@ -1641,9 +1641,11 @@ impl<'a> Checker<'_, 'a, '_> {
                 // Not consumed by a lambda or a parameter passed on: a function value, whose
                 // effects and failures the callee performs at this argument.
                 if self.of_argument.take().is_some() {
+                    let named_value = self.named_function(&arg.value);
                     found = self.of_function_value(
                         arg.value.span,
                         &found,
+                        named_value,
                         of_uses,
                         of_fails,
                         of_kind.as_ref(),

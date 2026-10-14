@@ -453,30 +453,48 @@ impl<'a> Checker<'_, 'a, '_> {
                 // ADR 0093 rule 3: a function of a boundary used as a value outside it is a
                 // call into the boundary here, granted by this statement's `with` bindings.
                 self.reach_value(id);
+                // A function whose `uses` carry a condition is not a value: the higher-order
+                // callee that would call it could not prove the condition (ADR 0092 rule 1).
+                let conditioned = self.env.functions.get(id).is_some_and(|f| match f.ast {
+                    super::env::FnAst::Function(decl) => decl.clauses.iter().any(|clause| {
+                        matches!(&clause.kind, ClauseKind::Uses(uses)
+                            if uses.cap_type.conditions.iter().any(Option::is_some))
+                    }),
+                    _ => false,
+                });
+                let declared = self
+                    .env
+                    .functions
+                    .get(id)
+                    .map(|f| f.uses.clone())
+                    .unwrap_or_default();
+                let needs: Vec<FnUse> = declared.iter().map(|n| n.usage.clone()).collect();
+                let level = self.frames.len();
+                let callee = format!("`{name}`, used as a value,");
+                // A function value runs on the bindings its `uses` resolve to where it is named,
+                // whoever calls it (`spec/11 §4`), so they are needed here, as a lambda's are
+                // where it is written; the call of the value still needs its type's `uses`.
                 if let Some(boundary) = self.crossing(module) {
-                    let declared = self
-                        .env
-                        .functions
-                        .get(id)
-                        .map(|f| f.uses.clone())
-                        .unwrap_or_default();
-                    let needs: Vec<FnUse> = declared.iter().map(|n| n.usage.clone()).collect();
-                    let level = self.frames.len();
-                    let callee = format!("`{name}`");
                     let in_package = self.env.in_package(module);
                     let granted = self.crossing_needs(
                         boundary, &callee, &needs, &declared, in_package, ident.span, level,
                     );
+                    self.needs_site(&callee, &granted, ident.span, level);
                     self.cross(
                         boundary,
-                        &format!("the reference to {callee}"),
+                        &format!("the reference to `{name}`"),
                         Node::Function(id),
                         &granted,
                         level,
                         Granting::default(),
                         ident.span,
                     );
+                } else if !conditioned && (site.argument || !effects) {
+                    // A reference that is not a value at all is U3006 below instead.
+                    self.needs_site(&callee, &needs, ident.span, level);
                 }
+                // ADR 0093 rules 5 and 8: given to a boundary, it grants what those bindings hold.
+                self.captured_needs(&needs, ident.span);
                 // A function with conventions is not a value (`spec/17 §3` rule 7).
                 let conventions = self
                     .env
@@ -492,15 +510,6 @@ impl<'a> Checker<'_, 'a, '_> {
                         ),
                     );
                 }
-                // A function whose `uses` carry a condition is not a value: the higher-order
-                // callee that would call it could not prove the condition (ADR 0092 rule 1).
-                let conditioned = self.env.functions.get(id).is_some_and(|f| match f.ast {
-                    super::env::FnAst::Function(decl) => decl.clauses.iter().any(|clause| {
-                        matches!(&clause.kind, ClauseKind::Uses(uses)
-                            if uses.cap_type.conditions.iter().any(Option::is_some))
-                    }),
-                    _ => false,
-                });
                 if conditioned && self.pass == Pass::Check && self.base != Base::Quiet {
                     self.escaped.push(ident.span);
                     self.report.error(
@@ -1468,6 +1477,7 @@ impl<'a> Checker<'_, 'a, '_> {
         // with effects or failures it may only be an argument.
         let level = self.frames.len();
         self.needs_site("this lambda", &uses, span, level);
+        self.captured_needs(&uses, span);
         if let Some(argument) = inherit {
             return self.inherited_lambda(argument, params, body, span, types, result, mark);
         }
@@ -1511,6 +1521,7 @@ impl<'a> Checker<'_, 'a, '_> {
         }
         let prelude_lambda = std::mem::replace(&mut self.prelude_lambda, prelude);
         self.lambda_depth += 1;
+        let frames_depth = std::mem::replace(&mut self.frames_depth, self.lambda_depth);
         // A lambda's body starts at a `public` program counter (ADR 0031 rule 4).
         let ctx = Ctx {
             fails: fails.clone(),
@@ -1528,6 +1539,7 @@ impl<'a> Checker<'_, 'a, '_> {
             found
         });
         self.lambda_depth -= 1;
+        self.frames_depth = frames_depth;
         self.prelude_lambda = prelude_lambda;
         self.base = base;
         self.frames = frames;

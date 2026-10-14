@@ -1,0 +1,8 @@
+module media.render
+
+import media.log (Log)
+
+pub show(n: Int) -> Int
+  uses @log: Log[write]
+=
+  @log.write(n)

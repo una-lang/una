@@ -585,6 +585,34 @@ fn una_build_rejects_a_package_that_does_not_check() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A function named as a value runs on the bindings where it is named (`spec/11 §4`). Named
+/// where no `@log` is bound, and called under a handler of the callee's own, it once checked
+/// and stopped `una build` with an internal error; it is U3001 at the name now.
+#[test]
+fn una_build_rejects_a_function_value_named_without_its_bindings() {
+    let dir = package(
+        "noref",
+        "\n[run]\nentry = \"noref\"\ngrants = [\"console\"]\n",
+        &[(
+            "src/noref.una",
+            "module noref\n\ncapability Log\n  op write(n: Int) -> Unit\n\nhandler quiet() for Log\n  op write(n) = unit\n\nrunner(f: fn(Int) -> Unit uses @log: Log[write]) -> Unit\n=\n  f(1) with @log = quiet()\n\nwrite_it(n: Int) -> Unit\n  uses @log: Log[write]\n=\n  @log.write(n)\n\npub main() -> Unit\n  uses @console: Console[print]\n=\n  runner(f: write_it)\n  @console.print(\"ran\")\n",
+        )],
+    );
+    let output = una(&dir, &["--json", "build"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(document["status"], "rejected");
+    let codes: Vec<&Value> = document["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| &d["code"])
+        .collect();
+    assert_eq!(codes, [&Value::from("U3001")], "{document}");
+    assert!(!dir.join("target/una/noref").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_failure_of_main_shows_what_una_run_shows() {
     let dir = package(
