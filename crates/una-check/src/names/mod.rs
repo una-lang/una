@@ -68,6 +68,22 @@ pub struct LockClause {
     pub span: Span,
     /// The clause, or the first syntax error of its text.
     pub parsed: Result<una_syntax::ast::UsesClause, una_syntax::SyntaxError>,
+    /// The clause as its string reads, with its escapes decoded.
+    pub value: String,
+    /// Where each byte boundary of `value` is written, from the start of `span`; `None` when
+    /// the string could not be read back, and `parsed` is then an error (#727).
+    pub offsets: Option<una_project::literal::Offsets>,
+}
+
+impl LockClause {
+    /// The text at `span`, a span of the parsed clause, as the string reads: a condition
+    /// written `name == \"a\"` in `una.toml` reads `name == "a"` (#727).
+    pub fn text(&self, span: Span) -> Option<&str> {
+        let start = span.start.checked_sub(self.span.start)?;
+        let end = span.end.checked_sub(self.span.start)?;
+        let range = self.offsets.as_ref()?.value_range(start, end)?;
+        self.value.get(range)
+    }
 }
 
 /// What `una run` adds to a check: the module whose `main` runs, and the grants of

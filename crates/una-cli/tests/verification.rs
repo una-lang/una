@@ -2215,3 +2215,86 @@ fn effect_condition_sites_are_exactly_the_pinned_ones() {
         assert_eq!(found, expected, "{case}");
     }
 }
+
+/// A package whose `update` is locked by `lock`, a TOML string as `una.toml` writes it: the
+/// header leaves `set_price` without the lock's condition `cents > 0`.
+fn escaped_lock_package(name: &str, lock: &str) -> PathBuf {
+    let source = "module shop\n\npub capability Catalog\n  op set_price(sku: Int, cents: Int) -> Unit\n  op set_name(sku: Int, name: Text) -> Unit\n  op set_rate(sku: Int, rate: Int) -> Unit\n\nvalid(sku: Int) -> Bool = sku > 0\n\npub update(sku: Int, cents: Int, name: Text) -> Unit\n  uses @catalog: Catalog[set_price, set_name where name == \"a\", set_rate]\n=\n  @catalog.set_price(sku, cents)\n  if name == \"a\"\n    @catalog.set_name(sku, name)\n  unit\n";
+    let root = package_of_edition(name, "0.3", &[("src/shop.una", source)]);
+    let manifest = root.join("una.toml");
+    let mut text = std::fs::read_to_string(&manifest).unwrap();
+    text.push_str(&format!("\n[contracts]\n\"shop.update\" = [{lock}]\n"));
+    std::fs::write(&manifest, text).unwrap();
+    root
+}
+
+#[test]
+fn a_lock_string_with_escapes_reads_as_its_value() {
+    // #727: the conditions of a lock whose string has escapes, or is a multi-line string, are
+    // quoted as the string reads, in the diagnostics and in the goals, and their obligations
+    // have the ids of the same lock written without escapes. Before, every position after an
+    // escape was placed too early in the file, so a condition was quoted from the wrong bytes.
+    let forms = [
+        (
+            "escaped",
+            r#""@catalog: Catalog[set_name where name == \"a\", set_price where cents\u0020> 0, set_rate]""#,
+        ),
+        (
+            "literal",
+            r#"'@catalog: Catalog[set_name where name == "a", set_price where cents > 0, set_rate]'"#,
+        ),
+        (
+            "multi-line",
+            "\"\"\"\n@catalog: Catalog[set_name where name == \"a\", \\\n    set_price where cents > 0, set_rate]\"\"\"",
+        ),
+    ];
+    let mut seen = Vec::new();
+    for (form, lock) in forms {
+        let root = escaped_lock_package(&format!("escaped-lock-{form}"), lock);
+        let checked = una_cli::check(&root, Tier::One).unwrap();
+        let messages: Vec<(&str, &str)> = checked
+            .diagnostics
+            .iter()
+            .map(|d| (d.code.as_str(), d.message.as_str()))
+            .collect();
+        assert_eq!(
+            messages,
+            [(
+                "U3023",
+                "the header of `update` lets `@catalog.set_price` run where `cents > 0` does not hold, which `una.toml` locks"
+            )],
+            "{form}"
+        );
+        let (_, obligations) = generated(&root);
+        let mut locks: Vec<(String, String)> = obligations
+            .iter()
+            .filter(|o| o.kind == una_diag::ObligationKind::ContractLock)
+            .map(|o| (o.goal.clone(), o.id.clone()))
+            .collect();
+        locks.sort();
+        let goals: Vec<&str> = locks.iter().map(|(goal, _)| goal.as_str()).collect();
+        assert_eq!(goals, ["cents > 0", "name == \"a\""], "{form}");
+        seen.push(locks);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+    assert!(seen.windows(2).all(|pair| pair[0] == pair[1]), "{seen:?}");
+    // A condition after an escape that the checker rejects is quoted as written.
+    let root = escaped_lock_package(
+        "escaped-lock-rejected",
+        r#""@catalog: Catalog[set_name where name == \"a\", set_rate where valid(sku)]""#,
+    );
+    let checked = una_cli::check(&root, Tier::Zero).unwrap();
+    let messages: Vec<&str> = checked
+        .diagnostics
+        .iter()
+        .filter(|d| d.code.as_str() == "U7002")
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        messages,
+        [
+            "the lock of `update` conditions `set_rate` by `valid(sku)`, which is not a `Bool` of the refinement language over its parameters: the call of function `valid` is outside the refinement language; the refinement language calls only predicates"
+        ]
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

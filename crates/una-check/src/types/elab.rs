@@ -650,10 +650,15 @@ impl<'e, 'a> Fx<'e, 'a> {
                 let Some((at, header)) = super::lock::header_site(self.env, def, entry, &op) else {
                     continue;
                 };
+                // The condition as its string reads, its escapes decoded (#727).
+                let mut lock = self.clause(condition);
+                if let Some(text) = entry.source.text(condition.span) {
+                    text.clone_into(&mut lock.text);
+                }
                 locks.push(una_core::Lock {
                     cap: entry.binding.to_owned(),
                     header: header.map(|header| self.clause(header)),
-                    lock: self.clause(condition),
+                    lock,
                     op,
                     at,
                     entry: entry.span,
