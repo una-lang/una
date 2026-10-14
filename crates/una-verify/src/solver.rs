@@ -26,6 +26,11 @@ pub(crate) struct Answer {
     pub(crate) reason: Option<String>,
     /// The values of the requested terms, in the order they were requested, when refuted.
     pub(crate) values: Vec<String>,
+    /// Why a refuted answer has no values: the solver's error after `sat`, which means the
+    /// script asked for something it cannot answer (#668). Serialized even when absent, so a
+    /// proof cache entry written before the field fails its tag and is solved again.
+    #[serde(default)]
+    pub(crate) values_error: Option<String>,
 }
 
 /// Why the solver could not answer: the query is not valid SMT-LIB for it, which is a bug of
@@ -103,6 +108,7 @@ pub(crate) fn run(
             status: Status::Unknown,
             reason: Some("cancelled".to_owned()),
             values: Vec::new(),
+            values_error: None,
         });
     }
     if timed_out {
@@ -110,6 +116,7 @@ pub(crate) fn run(
             status: Status::Unknown,
             reason: Some("wallclock".to_owned()),
             values: Vec::new(),
+            values_error: None,
         });
     }
     parse(&output, values)
@@ -262,6 +269,7 @@ fn parse(output: &str, values: usize) -> Result<Answer, Failure> {
     let mut status = None;
     let mut reason = None;
     let mut found = Vec::new();
+    let mut values_error = None;
     for item in &items {
         match (status, item) {
             (None, Sexp::Atom(atom)) => {
@@ -277,6 +285,20 @@ fn parse(output: &str, values: usize) -> Result<Answer, Failure> {
                     "the solver rejected the query: {}",
                     list.text()
                 )));
+            }
+            // After `sat`, an error answers the model or the values: the script is wrong, and
+            // what the solver said is kept, so that no partial model shows (#668).
+            (Some(Status::Refuted), list @ Sexp::List(parts))
+                if list.head() == Some("error") && values_error.is_none() =>
+            {
+                values_error = Some(
+                    parts
+                        .get(1)
+                        .map_or_else(|| list.text(), Sexp::text)
+                        .trim_matches('"')
+                        .trim()
+                        .to_owned(),
+                );
             }
             (Some(_), list) if list.head() == Some(":reason-unknown") => {
                 if let Sexp::List(parts) = list {
@@ -310,8 +332,17 @@ fn parse(output: &str, values: usize) -> Result<Answer, Failure> {
             output.trim()
         )));
     };
-    if status == Status::Refuted && found.len() != values {
-        found.resize(values, String::new());
+    // A refutation whose values do not answer every requested term, or that the solver
+    // followed with an error, has no model to show: none is kept, never empty values (#668).
+    // The other statuses keep no values at all.
+    if status == Status::Refuted && (found.len() != values || values_error.is_some()) {
+        if values_error.is_none() {
+            values_error = Some(format!(
+                "{} values for {values} requested terms",
+                found.len()
+            ));
+        }
+        found.clear();
     }
     Ok(Answer {
         status,
@@ -325,6 +356,7 @@ fn parse(output: &str, values: usize) -> Result<Answer, Failure> {
         } else {
             Vec::new()
         },
+        values_error: values_error.filter(|_| status == Status::Refuted),
     })
 }
 
@@ -366,6 +398,7 @@ mod tests {
                     "(- 1)".to_owned(),
                     "true".to_owned()
                 ],
+                values_error: None,
             })
         );
         let proven =
@@ -376,6 +409,27 @@ mod tests {
                 status: Status::Proven,
                 reason: None,
                 values: Vec::new(),
+                values_error: None,
+            })
+        );
+        let rejected_values = "sat\n(\n  (define-fun |e| () Int\n    0)\n)\n(error \"line 12 column 14: unknown constant\")\n(:reason-unknown \"\")\n";
+        assert_eq!(
+            parse(rejected_values, 2),
+            Ok(Answer {
+                status: Status::Refuted,
+                reason: None,
+                values: Vec::new(),
+                values_error: Some("line 12 column 14: unknown constant".to_owned()),
+            })
+        );
+        // Fewer values than requested terms are no model either.
+        assert_eq!(
+            parse("sat\n((|e| 1))\n", 2),
+            Ok(Answer {
+                status: Status::Refuted,
+                reason: None,
+                values: Vec::new(),
+                values_error: Some("1 values for 2 requested terms".to_owned()),
             })
         );
         let unknown = "unknown\n(error \"model is not available\")\n(:reason-unknown \"(resource limits reached)\")\n";

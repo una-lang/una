@@ -535,6 +535,19 @@ fn the_verifier_generates_every_obligation_the_checker_found() {
         generated.sort();
         generated.dedup();
         assert_eq!(generated, pending, "{}", target.display());
+        // ADR 0101: solved, the same obligations get every value they request; an error of
+        // the solver after `sat`, in any outcome, means a wrong script (#668).
+        let solved = una_cli::check(&target, Tier::One).unwrap();
+        let solver_errors: Vec<String> = solved
+            .verification
+            .iter()
+            .flat_map(|verification| verification.obligations.iter().zip(&verification.outcomes))
+            .filter_map(|(obligation, outcome)| {
+                let error = outcome.values_error.as_ref()?;
+                Some(format!("{}: {error}", obligation.id))
+            })
+            .collect();
+        assert_eq!(solver_errors, Vec::<String>::new(), "{}", target.display());
         compared += 1;
     }
     assert!(compared > 30, "{compared}");
@@ -738,6 +751,68 @@ example \"half of a smaller number\"
     assert!(
         repairs[1].starts_with("check the value with"),
         "{repairs:?}"
+    );
+}
+
+#[test]
+fn a_counterexample_at_a_call_site_shows_the_refuting_values() {
+    // ADR 0092 rule 3: an `effect_condition` refuted at a call, whose callee drops the
+    // condition, shows the solver's values in the text and the JSON output (#668).
+    let source = "module main
+
+pub capability C
+  op emit(n: Int) -> Unit
+
+pub kind S
+  field: Text
+
+g(x: Int, flag: Bool) -> Unit
+  uses @c: C[emit]
+=
+  @c.emit(x)
+
+pub f(x: Int, y: Int, s: S, flag: Bool) -> Unit
+  uses @c: C[emit where not flag]
+=
+  g(x + y, flag: flag)
+";
+    let root = package_of_edition(
+        "counterexample-call-site",
+        "0.3",
+        &[("src/main.una", source)],
+    );
+    let output = una(&["--json", "check", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let document: Value = serde_json::from_str(stdout(&output)).unwrap();
+    let diagnostic = &document["diagnostics"][0];
+    assert_eq!(diagnostic["code"], "U5001", "{diagnostic}");
+    let bindings: Vec<(String, Value)> = diagnostic["counterexample"]["bindings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| (b["name"].as_str().unwrap().to_owned(), b["value"].clone()))
+        .collect();
+    assert!(
+        bindings.contains(&("flag".to_owned(), json!(true))),
+        "{bindings:?}"
+    );
+    assert!(
+        bindings
+            .iter()
+            .all(|(_, value)| value != &json!("")
+                && !value.as_str().is_some_and(|v| v.ends_with('#'))),
+        "{bindings:?}"
+    );
+    let output = una(&["check", root.to_str().unwrap()]);
+    let text = stderr(&output);
+    let line = text
+        .lines()
+        .find(|line| line.contains("counterexample:"))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(line.contains("flag = true"), "{line}");
+    assert!(
+        !line.contains("= ,") && !line.contains("#,") && !line.ends_with('#'),
+        "{line}"
     );
 }
 

@@ -54,13 +54,24 @@ pub fn diagnostics(
         });
         // R-021: a ground goal has no binder to show; N-009: nor has a model without
         // bindings, as for a closed goal that is not a literal (`zero(1) > 0`).
-        if outcome.status == ObligationStatus::Refuted
-            && !obligation.site.ground
-            && !outcome.bindings.is_empty()
-        {
-            diagnostic.counterexample = Some(Counterexample {
-                bindings: outcome.bindings.clone(),
-            });
+        // #668: a refutation whose solver gave no values says so, rather than show a model
+        // that is not one.
+        if outcome.status == ObligationStatus::Refuted && !obligation.site.ground {
+            if let Some(error) = outcome
+                .values_error
+                .as_ref()
+                .filter(|_| outcome.bindings.is_empty())
+            {
+                diagnostic.counterexample = Some(Counterexample {
+                    bindings: Vec::new(),
+                    unavailable: Some(error.clone()),
+                });
+            } else if !outcome.bindings.is_empty() {
+                diagnostic.counterexample = Some(Counterexample {
+                    bindings: outcome.bindings.clone(),
+                    unavailable: None,
+                });
+            }
         }
         // ADR 0054, amendment of 2026-10-08: a model that divides by zero on its path is no
         // run, so the diagnostic points at that division, whose own obligation reports it, and

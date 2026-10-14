@@ -158,7 +158,12 @@ fn notes(diagnostic: &Diagnostic) -> Vec<String> {
                 value => format!("{} = {value}", binding.name),
             })
             .collect();
-        notes.push(format!("counterexample: {}", bindings.join(", ")));
+        match &counterexample.unavailable {
+            Some(error) => notes.push(format!(
+                "counterexample: not available (the solver gave no values: {error})"
+            )),
+            None => notes.push(format!("counterexample: {}", bindings.join(", "))),
+        }
     }
     notes.push(format!(
         "run `{}` for an explanation",

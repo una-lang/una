@@ -75,6 +75,7 @@ fn spec_example() -> Diagnostic {
                 label: None,
             },
         ],
+        unavailable: None,
     });
     diagnostic.repairs.push(Repair {
         widens: None,
