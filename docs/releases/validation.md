@@ -15,7 +15,7 @@ Status: Normative for the project's workflow (#232). GitHub Actions is not used.
      - Anything else that merges in between, such as a change of code, needs a new gate run, and the gated SHA becomes that commit.
    - A tag whose record has a FAIL or is INCOMPLETE is not made.
    - Every tag and release also needs an explicit approval, recorded in the release issue before the tag.
-3. **A release** publishes the archives that the `release` gate built (`OUT/clone/target/local-release/v<version>/`), whose digests the record lists. A build is not assumed to be byte-reproducible, so the archives are not rebuilt after the record. The record and the published `.sha256` files MUST agree.
+3. **A release** publishes the archives that the `release` gate built (`OUT/clone/target/local-release/v<version>/`), whose digests the record lists. The archives are reproducible (#679): two builds of one commit give the same bytes for each target, which the `reproducible` gate checks with a second build from cold. A published archive can therefore be rebuilt from its commit and checked against the record's digest. The record and the published `.sha256` files MUST agree.
 4. **`.github/workflows` is not a gate.** The files stay in the repository, but no merge, tag or release waits for them or reads their results.
 
 ## 2. The gates
@@ -34,6 +34,7 @@ Status: Normative for the project's workflow (#232). GitHub Actions is not used.
 | `linux` | `scripts/local-ci.sh --linux`: the same steps in a `linux/amd64` container of CI's Ubuntu image, emulated on an arm64 Mac; its tests run one at a time on one thread (`RAYON_NUM_THREADS=1`, `--test-threads=1`), since processes spawned from many threads at once can hang under the emulation (#286). It checks the amd64 build, tests and archive. The released sections of `CHANGELOG.md` are checked on the host before the container starts, since a worktree mounted alone has no tags there, and the container's run skips them, visibly | Docker |
 | `linux-arm64` | `scripts/local-ci.sh --linux-arm64`: the same steps in a `linux/arm64` container, native on an arm64 Mac (#241), with the tests at full parallelism: the primary evidence of the tests on Linux (#286) | Docker |
 | `release` | `scripts/local-release.sh v<version>` on a tag made in the clone only (never pushed): the three archives (`aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`), each checked with `scripts/check-release.sh` | macOS, Docker |
+| `reproducible` | `scripts/local-release.sh v<version>` a second time, from cold: in a new checkout at a new path, with new Docker volumes for the Linux target directories. Each archive's sha256 is compared with the one the `release` gate built, and every pair must be equal (#679). Its cost is a second `release` gate: three release builds, one of them emulated | macOS, Docker |
 | `determinism` | The conformance suite twice with equal summaries and no failure; `una --json check` of every conformance case and example twice, the outputs hashed and compared; the tracked files unchanged | Rust, Z3 |
 | `native` | The equivalence test of `spec/16 §5`, `every_runnable_program_runs_natively_as_in_the_interpreter`: every runnable program of the repository (the examples, the conformance cases that run, the review corpora), in the interpreter and as a native executable, compared by status, output and trace | Rust, Z3 |
 | `site` | `scripts/site.sh`: the website builds with mdBook from the repository's documents, every page exists and every link between pages, or to an image, resolves (#244). Unlike `scripts/local-ci.sh`, which skips the site when mdBook is missing, the gate fails when mdBook is missing or at another version than the script pins. Then (#584): `scripts/site-bundle.sh` writes the docs bundle, the documents with a manifest and the release binary's help texts, and the record lists its digest; `scripts/site-website.sh` builds the website pinned by `site/website.lock` from that bundle, and fails on a page that does not build, a broken budget or a code sample that does not check | mdBook 0.5.4; Node.js 20.19 or later with npm; access to the website's repository |
@@ -42,6 +43,14 @@ Status: Normative for the project's workflow (#232). GitHub Actions is not used.
 The pinned Z3 comes from `UNA_GATES_Z3`, else this checkout's `target/z3`, else the clone's `target/z3`. If none is there, the `build` gate installs it with `scripts/install-z3.sh`.
 
 At the end, the script removes the Docker volumes that `--linux` and `--linux-arm64` made for the clone's target directory, so volumes do not pile up.
+
+**Reproducible archives** (#679). The binaries were already reproducible: `scripts/release.sh` remaps the build's paths (#382), and the linkers derive the macOS binary's `LC_UUID` and the Linux binary's build ID from its content, so both are equal when the inputs are. Two builds of one commit, from fresh clones at different paths and cold target directories, gave byte-identical binaries on `aarch64-apple-darwin` and, in Docker, on `aarch64-unknown-linux-gnu`. Three things made two archives of one commit differ, and `scripts/release.sh` now fixes each:
+
+- each tar entry had the time the files were copied, so every entry now takes the commit's time, `SOURCE_DATE_EPOCH` when it is set, else `git log -1 --format=%ct`. A build that finds neither stops;
+- each entry named the account and group that built it, so every entry is now owned by `0:0` with no user or group name, which `scripts/check-release.sh` checks;
+- the gzip header had the packing time, so `gzip -n` now stores none.
+
+The entries are also packed in byte order of their paths, with modes 755 for directories and `una` and 644 for the other files, so the order of a directory listing and the umask do not matter. On macOS, extended attributes, ACLs and resource forks are left out. The containers of the Linux builds cannot read the commit's time when the checkout is a worktree, so `scripts/local-release.sh` and `scripts/local-ci.sh` pass `SOURCE_DATE_EPOCH` in. The `reproducible` gate costs a second `release` gate, so a full run of the gates takes about that much longer.
 
 ## 3. The record
 

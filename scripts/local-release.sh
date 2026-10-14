@@ -56,6 +56,13 @@ fi
 out="$root/target/local-release/$tag"
 rm -rf "${out:?}"
 mkdir -p "$out"
+# The archives' entries take the commit's time (#679), which the containers cannot read: the
+# checkout's .git is a worktree link to this repository, outside their mount.
+SOURCE_DATE_EPOCH=$(git log -1 --format=%ct "$commit") || fail "reading the time of $commit"
+export SOURCE_DATE_EPOCH
+# The Linux builds' target directories, volumes kept between releases; the reproducible gate
+# builds a second time in volumes of its own, from cold (#679).
+volume=${UNA_LOCAL_RELEASE_VOLUME:-una-local-release-target}
 
 # Z3, which check-release.sh needs, as scripts/local-ci.sh installs it.
 z3="$root/target/z3"
@@ -89,7 +96,8 @@ linux_archive() {
     name="una-$version-$target.tar.gz"
     docker run --rm --platform "linux/$arch" \
         --volume "$checkout:/work" \
-        --volume "una-local-release-target$suffix:/work/target" \
+        --volume "$volume$suffix:/work/target" \
+        --env "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
         --volume una-local-ci-registry:/opt/cargo/registry \
         --volume "una-local-ci-z3$suffix:/opt/z3" \
         --volume "$out:/out" \

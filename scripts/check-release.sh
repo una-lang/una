@@ -28,6 +28,19 @@ out="$root/target/release-archives"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 tar -xzf "$out/$name.tar.gz" -C "$tmp"
+# Every entry is owned by 0:0 with no user or group name, so the archive does not carry the
+# account that built it (#679). The listing's owner columns differ between the two tars.
+if tar --version 2>/dev/null | grep -q 'GNU tar'; then
+    owners=$(tar -tvzf "$out/$name.tar.gz" | awk '{ print $2 }' | LC_ALL=C sort -u | tr '\n' ' ')
+    expected="0/0 "
+else
+    owners=$(tar -tvzf "$out/$name.tar.gz" | awk '{ print $3 "/" $4 }' | LC_ALL=C sort -u | tr '\n' ' ')
+    expected="0/0 "
+fi
+if [ "$owners" != "$expected" ]; then
+    echo "error: $name.tar.gz has entries owned by $owners; expected only 0/0 with no names" >&2
+    exit 1
+fi
 contents=$(cd "$tmp/$name" && LC_ALL=C ls | tr '\n' ' ')
 if [ "$contents" != "LICENSE README.md docs lib una " ]; then
     echo "error: $name.tar.gz holds $contents; expected LICENSE README.md docs lib una" >&2
