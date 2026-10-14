@@ -122,6 +122,34 @@ pub struct StandardSource {
     pub keywords: KeywordSet,
 }
 
+/// The built-in methods and properties that the checker resolves by the type of their
+/// receiver, as `(receiver, name)`: `.len` on `Text`, `List` and `Map` (`spec/14 §2`), the
+/// methods of maps (`spec/21 §2`), the conversions (`spec/18 §4`), and the wrapping,
+/// saturating and bit operations of the fixed-width integers (`spec/18 §5`). The receivers are
+/// `"len"`, `"Map"`, `"conversion"` and `"fixed"`. Read-only: it is built from the tables the
+/// checker resolves them with, for the standard library reference (#690).
+pub fn builtin_methods() -> Vec<(&'static str, String)> {
+    let mut methods = vec![("len", "len".to_owned())];
+    methods.extend(
+        map::MAP_METHODS
+            .iter()
+            .map(|(name, ..)| ("Map", (*name).to_owned())),
+    );
+    methods.extend(una_core::IntType::ALL.iter().map(|t| {
+        (
+            "conversion",
+            format!("to_{}", t.as_str().to_ascii_lowercase()),
+        )
+    }));
+    methods.push(("conversion", "to_int".to_owned()));
+    methods.extend(
+        una_core::FixedOp::ALL
+            .iter()
+            .map(|op| ("fixed", op.as_str().to_owned())),
+    );
+    methods
+}
+
 /// The standard modules' source in `edition`, as [`Standard::load`] parses it.
 pub fn standard_source(edition: Edition) -> StandardSource {
     let (prelude, keywords) = if edition >= Edition::V0_2 {

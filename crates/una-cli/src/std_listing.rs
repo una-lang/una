@@ -5,8 +5,8 @@
 //! `una.std-listing/1`, is unstable and not part of the specification (`docs/std/README.md`).
 //!
 //! An item whose declaration or doc comments differ between editions has one variant per
-//! run of editions where they are the same. Built-in operations (`spec/14 §2`) have no
-//! declaration and are not listed. Generating it is linear in the size of the standard
+//! run of editions where they are the same. Built-in methods have no declaration: they are
+//! listed in `docs/std/builtins.json` (`std_builtins`), and operators are not listed. Generating it is linear in the size of the standard
 //! modules, once per edition.
 
 use std::collections::BTreeMap;
@@ -109,7 +109,7 @@ pub fn std_items() -> Vec<Item> {
 pub fn std_listing() -> String {
     let listing = Listing {
         schema: STD_LISTING_SCHEMA,
-        note: "Unstable, not part of the specification: see docs/std/README.md. Built-in operations are in spec/14 §2.",
+        note: "Unstable, not part of the specification: see docs/std/README.md. Built-in methods are in docs/std/builtins.json, operators in spec/14 §2.",
         items: std_items(),
     };
     match serde_json::to_string_pretty(&listing) {
@@ -189,7 +189,7 @@ fn docs(decl: &Decl, text: &str) -> Vec<String> {
 
 /// The spec sections that the doc comments of `variants` cite, as `spec/NN §M`, in order of
 /// first mention.
-fn cited(variants: &[Variant]) -> Vec<String> {
+pub(crate) fn cited(variants: &[Variant]) -> Vec<String> {
     let mut cited: Vec<String> = Vec::new();
     for variant in variants {
         let text = variant.docs.join(" ");

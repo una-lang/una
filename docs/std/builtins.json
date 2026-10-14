@@ -1,0 +1,682 @@
+{
+  "schema": "una.std-builtins/1",
+  "note": "Unstable, not part of the specification: see docs/std/README.md. Operators and interpolation are in spec/14 §2.",
+  "items": [
+    {
+      "name": "len",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/14 §2",
+        "spec/21 §2",
+        "spec/14 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.1"
+          ],
+          "declaration": "t.len -> Int\n  where t: Text\nxs.len -> Int\n  where xs: List[T]",
+          "docs": [
+            "Built in on `Text` and `List` and, from edition 0.2 on, on `Map` (`spec/14 §2`,",
+            "`spec/21 §2`). On a `Text` it counts Unicode scalar values (`spec/14 §1`); a map's is",
+            "never negative (`spec/21 §2`)."
+          ]
+        },
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "t.len -> Int\n  where t: Text\nxs.len -> Int\n  where xs: List[T]\nm.len -> Int\n  where m: Map[K, V]",
+          "docs": [
+            "Built in on `Text` and `List` and, from edition 0.2 on, on `Map` (`spec/14 §2`,",
+            "`spec/21 §2`). On a `Text` it counts Unicode scalar values (`spec/14 §1`); a map's is",
+            "never negative (`spec/21 §2`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "has",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/21 §2",
+        "spec/21 §4"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "m.has(key: K) -> Bool\n  where m: Map[K, V]",
+          "docs": [
+            "Whether `m` has `key`. Like `m.len`, it may appear in `requires`, `ensures`, `where`",
+            "and predicates (`spec/21 §2`, `spec/21 §4`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "get",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/21 §2"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "m.get(key: K) -> Option[V]\n  where m: Map[K, V]",
+          "docs": [
+            "`Some` exactly when `m.has(key: k)`. A missing key gives `None`, not a failure",
+            "(`spec/21 §2`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "set",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/21 §2"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "edit m.set(key: K, value: V) -> Unit\n  where m: Map[K, V]",
+          "docs": [
+            "Updates `m` in place, written `edit m.set(...)`: afterwards `m.has(key: k)` and",
+            "`m.get(key: k) == Some(v)`, and `m.len` grows by one when the key was not there",
+            "(`spec/21 §2`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "remove",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/21 §2"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "edit m.remove(key: K) -> Unit\n  where m: Map[K, V]",
+          "docs": [
+            "Updates `m` in place, written `edit m.remove(...)`: afterwards `not m.has(key: k)`,",
+            "and `m.len` shrinks by one when the key was there (`spec/21 §2`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "with",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/21 §2"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "m.with(key: K, value: V) -> Map[K, V]\n  where m: Map[K, V]",
+          "docs": [
+            "A map with the contract of `set`, for the result (`spec/21 §2`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "without",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/21 §2"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "m.without(key: K) -> Map[K, V]\n  where m: Map[K, V]",
+          "docs": [
+            "A map with the contract of `remove`, for the result (`spec/21 §2`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "keys",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/21 §2"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "m.keys() -> List[K]\n  where m: Map[K, V]",
+          "docs": [
+            "The keys of `m`, in key order, as many as `m.len` (`spec/21 §2`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "values",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/21 §2"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "m.values() -> List[V]\n  where m: Map[K, V]",
+          "docs": [
+            "The values of `m`, in the order of their keys, as many as `m.len` (`spec/21 §2`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "entries",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/21 §2"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "m.entries() -> List[Entry[K, V]]\n  where m: Map[K, V]",
+          "docs": [
+            "The entries of `m` as `Entry` values, in key order, as many as `m.len`",
+            "(`spec/21 §2`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "to_i8",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/18 §4"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "x.to_i8() -> I8\n  where x: Int\nx.to_i8() -> I8\n  where x: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+          "docs": [
+            "Converts `x` to that type. A widening conversion, where every value of the source type",
+            "fits the target, always succeeds; a narrowing one carries an `overflow` obligation that",
+            "the value fits, or goes through `checked`, which counts against the escape budget",
+            "(`spec/18 §4`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "to_i16",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/18 §4"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "x.to_i16() -> I16\n  where x: Int\nx.to_i16() -> I16\n  where x: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+          "docs": [
+            "Converts `x` to that type. A widening conversion, where every value of the source type",
+            "fits the target, always succeeds; a narrowing one carries an `overflow` obligation that",
+            "the value fits, or goes through `checked`, which counts against the escape budget",
+            "(`spec/18 §4`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "to_i32",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/18 §4"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "x.to_i32() -> I32\n  where x: Int\nx.to_i32() -> I32\n  where x: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+          "docs": [
+            "Converts `x` to that type. A widening conversion, where every value of the source type",
+            "fits the target, always succeeds; a narrowing one carries an `overflow` obligation that",
+            "the value fits, or goes through `checked`, which counts against the escape budget",
+            "(`spec/18 §4`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "to_i64",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/18 §4"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "x.to_i64() -> I64\n  where x: Int\nx.to_i64() -> I64\n  where x: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+          "docs": [
+            "Converts `x` to that type. A widening conversion, where every value of the source type",
+            "fits the target, always succeeds; a narrowing one carries an `overflow` obligation that",
+            "the value fits, or goes through `checked`, which counts against the escape budget",
+            "(`spec/18 §4`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "to_u8",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/18 §4"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "x.to_u8() -> U8\n  where x: Int\nx.to_u8() -> U8\n  where x: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+          "docs": [
+            "Converts `x` to that type. A widening conversion, where every value of the source type",
+            "fits the target, always succeeds; a narrowing one carries an `overflow` obligation that",
+            "the value fits, or goes through `checked`, which counts against the escape budget",
+            "(`spec/18 §4`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "to_u16",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/18 §4"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "x.to_u16() -> U16\n  where x: Int\nx.to_u16() -> U16\n  where x: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+          "docs": [
+            "Converts `x` to that type. A widening conversion, where every value of the source type",
+            "fits the target, always succeeds; a narrowing one carries an `overflow` obligation that",
+            "the value fits, or goes through `checked`, which counts against the escape budget",
+            "(`spec/18 §4`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "to_u32",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/18 §4"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "x.to_u32() -> U32\n  where x: Int\nx.to_u32() -> U32\n  where x: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+          "docs": [
+            "Converts `x` to that type. A widening conversion, where every value of the source type",
+            "fits the target, always succeeds; a narrowing one carries an `overflow` obligation that",
+            "the value fits, or goes through `checked`, which counts against the escape budget",
+            "(`spec/18 §4`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "to_u64",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/18 §4"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "x.to_u64() -> U64\n  where x: Int\nx.to_u64() -> U64\n  where x: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+          "docs": [
+            "Converts `x` to that type. A widening conversion, where every value of the source type",
+            "fits the target, always succeeds; a narrowing one carries an `overflow` obligation that",
+            "the value fits, or goes through `checked`, which counts against the escape budget",
+            "(`spec/18 §4`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "to_int",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/18 §4",
+        "spec/14 §1"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "x.to_int() -> Int\n  where x: Int\nx.to_int() -> Int\n  where x: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+          "docs": [
+            "Converts `x` to `Int`, which every value of a fixed-width type fits, so it always",
+            "succeeds (`spec/18 §4`). On a `Text`, `to_int` is the prelude function (`spec/14 §1`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "wrapping_add",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/18 §5"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "a.wrapping_add(by: F) -> F\n  where a: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+          "docs": [
+            "Total: the exact result reduced into the type's range modulo `2^w`, where `w` is",
+            "its width (`spec/18 §5`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "wrapping_sub",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/18 §5"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "a.wrapping_sub(by: F) -> F\n  where a: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+          "docs": [
+            "Total: the exact result reduced into the type's range modulo `2^w`, where `w` is",
+            "its width (`spec/18 §5`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "wrapping_mul",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/18 §5"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "a.wrapping_mul(by: F) -> F\n  where a: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+          "docs": [
+            "Total: the exact result reduced into the type's range modulo `2^w`, where `w` is",
+            "its width (`spec/18 §5`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "saturating_add",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/18 §5"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "a.saturating_add(by: F) -> F\n  where a: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+          "docs": [
+            "Total: the exact result clamped to the type's range (`spec/18 §5`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "saturating_sub",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/18 §5"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "a.saturating_sub(by: F) -> F\n  where a: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+          "docs": [
+            "Total: the exact result clamped to the type's range (`spec/18 §5`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "saturating_mul",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/18 §5"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "a.saturating_mul(by: F) -> F\n  where a: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+          "docs": [
+            "Total: the exact result clamped to the type's range (`spec/18 §5`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "bit_and",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/18 §5"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "a.bit_and(mask: F) -> F\n  where a: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+          "docs": [
+            "Total; on an unsigned type the result is at most `a` and at most `mask`",
+            "(`spec/18 §5`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "bit_or",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/18 §5"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "a.bit_or(mask: F) -> F\n  where a: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+          "docs": [
+            "Total; on an unsigned type the result is at least `a` and at least `mask`",
+            "(`spec/18 §5`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "bit_xor",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/18 §5"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "a.bit_xor(mask: F) -> F\n  where a: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+          "docs": [
+            "Total; its result is only known to be in the type's range (`spec/18 §5`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "bit_not",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/18 §5"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "a.bit_not() -> F\n  where a: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+          "docs": [
+            "Total; its result is only known to be in the type's range (`spec/18 §5`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "shift_right",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/18 §5"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "a.shift_right(by: Int) -> F\n  where a: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+          "docs": [
+            "Requires `0 <= by` and `by` below the width; on an unsigned type the result is at",
+            "most `a`. On a signed type it divides by `2^by`, rounding toward negative infinity",
+            "(`spec/18 §5`)."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "wrapping_shift_left",
+      "module": "builtin",
+      "kind": "method",
+      "spec": [
+        "spec/18 §5"
+      ],
+      "variants": [
+        {
+          "editions": [
+            "0.2",
+            "0.3"
+          ],
+          "declaration": "a.wrapping_shift_left(by: Int) -> F\n  where a: F, one of I8, I16, I32, I64, U8, U16, U32, U64",
+          "docs": [
+            "Requires `0 <= by` and `by` below the width: `a * 2^by` reduced into the type's",
+            "range modulo `2^w`. There is no checked left shift (`spec/18 §5`)."
+          ]
+        }
+      ]
+    }
+  ]
+}

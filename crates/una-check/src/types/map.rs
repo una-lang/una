@@ -10,6 +10,22 @@ use super::check::{Checker, Role};
 use super::records::Res;
 use super::ty::{Shared, Ty};
 
+/// The built-in methods of maps (`spec/21 §2`), in the order of its table: each name, the
+/// operation, whether it updates the receiver in place (`edit m.set(...)`), and the labels of
+/// its arguments. `map_method` resolves exactly these; `super::builtin_methods` lists them for
+/// the standard library reference (#690).
+pub(crate) const MAP_METHODS: [(&str, MapOp, bool, &[&str]); 9] = [
+    ("has", MapOp::Has, false, &["key"]),
+    ("get", MapOp::Get, false, &["key"]),
+    ("set", MapOp::With, true, &["key", "value"]),
+    ("remove", MapOp::Without, true, &["key"]),
+    ("with", MapOp::With, false, &["key", "value"]),
+    ("without", MapOp::Without, false, &["key"]),
+    ("keys", MapOp::Keys, false, &[]),
+    ("values", MapOp::Values, false, &[]),
+    ("entries", MapOp::Entries, false, &[]),
+];
+
 impl Checker<'_, '_, '_> {
     /// `m.op(args)` when `m` is a map in edition 0.2 and `op` is one of its built-in methods
     /// (`spec/21 §2`); `None` otherwise, so the call resolves as before. `place` is the type
@@ -32,18 +48,10 @@ impl Checker<'_, '_, '_> {
         let Ty::Map(key, value) = labeled.unlabeled().clone() else {
             return None;
         };
-        let (op, update, params): (MapOp, bool, &[&str]) = match method {
-            "has" => (MapOp::Has, false, &["key"]),
-            "get" => (MapOp::Get, false, &["key"]),
-            "with" => (MapOp::With, false, &["key", "value"]),
-            "without" => (MapOp::Without, false, &["key"]),
-            "set" => (MapOp::With, true, &["key", "value"]),
-            "remove" => (MapOp::Without, true, &["key"]),
-            "keys" => (MapOp::Keys, false, &[]),
-            "values" => (MapOp::Values, false, &[]),
-            "entries" => (MapOp::Entries, false, &[]),
-            _ => return None,
-        };
+        let (op, update, params) = MAP_METHODS
+            .iter()
+            .find(|(name, ..)| *name == method)
+            .map(|(_, op, update, params)| (*op, *update, *params))?;
         // `m.has(key: k)` is in the refinement language, as `m.len` is (`spec/21 §4` rule 4).
         if op != MapOp::Has {
             self.outside_rl(span, || format!("the method `{method}`"));
