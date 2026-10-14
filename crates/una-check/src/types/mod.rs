@@ -58,44 +58,48 @@ const PRELUDE: &str = include_str!("../std/prelude.una");
 /// The declarations that edition 0.2 adds to the prelude (`spec/17 §8`), appended to it.
 const PRELUDE_0_2: &str = include_str!("../std/prelude_0_2.una");
 
-/// The prelude of edition 0.2: `map`, `filter`, `first_where` and `fold` take effectful and
-/// failing functions (ADR 0062, `spec/14 §1`), and `min`, `max`, `contains` and `sum` are
-/// generic over constrained types (ADR 0066, `spec/20 §6`).
+/// The rewrites of the prelude in edition 0.2, each a text of `PRELUDE` and its replacement:
+/// `map`, `filter`, `first_where` and `fold` take effectful and failing functions (ADR 0062,
+/// `spec/14 §1`), and `min`, `max`, `contains` and `sum` are generic over constrained types
+/// (ADR 0066, `spec/20 §6`). Each text occurs exactly once in `PRELUDE` (a test checks it), so
+/// an edit of the prelude can never turn a rewrite off silently.
+const OF: [(&str, &str); 8] = [
+    (
+        "pub min(a: Int, b: Int) -> Int",
+        "pub min[T: Ord](a: T, b: T) -> T",
+    ),
+    (
+        "pub max(a: Int, b: Int) -> Int",
+        "pub max[T: Ord](a: T, b: T) -> T",
+    ),
+    (
+        "pub contains[T](xs: List[T], item: T) -> Bool",
+        "pub contains[T: Eq](xs: List[T], item: T) -> Bool",
+    ),
+    (
+        "pub sum(xs: List[Int]) -> Int = 0",
+        "pub sum[T: Integer](xs: List[T]) -> Int = 0",
+    ),
+    (
+        "  ensures result.len == xs.len\n=\n  []",
+        "  ensures result.len == xs.len\n  uses of each\n  fails of each\n=\n  []",
+    ),
+    (
+        "  ensures result.len <= xs.len\n=\n  xs",
+        "  ensures result.len <= xs.len\n  uses of keep\n  fails of keep\n=\n  xs",
+    ),
+    (
+        "keep: fn(T) -> Bool) -> Option[T] = None",
+        "keep: fn(T) -> Bool) -> Option[T]\n  uses of keep\n  fails of keep\n=\n  None",
+    ),
+    (
+        "step: fn(U, T) -> U) -> U = initial",
+        "step: fn(U, T) -> U) -> U\n  uses of step\n  fails of step\n=\n  initial",
+    ),
+];
+
+/// The prelude of edition 0.2: `PRELUDE` with the rewrites of `OF`.
 fn of_prelude() -> String {
-    const OF: [(&str, &str); 8] = [
-        (
-            "pub min(a: Int, b: Int) -> Int",
-            "pub min[T: Ord](a: T, b: T) -> T",
-        ),
-        (
-            "pub max(a: Int, b: Int) -> Int",
-            "pub max[T: Ord](a: T, b: T) -> T",
-        ),
-        (
-            "pub contains[T](xs: List[T], item: T) -> Bool",
-            "pub contains[T: Eq](xs: List[T], item: T) -> Bool",
-        ),
-        (
-            "pub sum(xs: List[Int]) -> Int = 0",
-            "pub sum[T: Integer](xs: List[T]) -> Int = 0",
-        ),
-        (
-            "  ensures result.len == xs.len\n=\n  []",
-            "  ensures result.len == xs.len\n  uses of each\n  fails of each\n=\n  []",
-        ),
-        (
-            "  ensures result.len <= xs.len\n=\n  xs",
-            "  ensures result.len <= xs.len\n  uses of keep\n  fails of keep\n=\n  xs",
-        ),
-        (
-            "keep: fn(T) -> Bool) -> Option[T] = None",
-            "keep: fn(T) -> Bool) -> Option[T]\n  uses of keep\n  fails of keep\n=\n  None",
-        ),
-        (
-            "step: fn(U, T) -> U) -> U = initial",
-            "step: fn(U, T) -> U) -> U\n  uses of step\n  fails of step\n=\n  initial",
-        ),
-    ];
     OF.iter().fold(PRELUDE.to_owned(), |text, (from, to)| {
         text.replace(from, to)
     })
@@ -103,6 +107,34 @@ fn of_prelude() -> String {
 
 /// `std.testing` (`spec/14 §4`) as Una source.
 const TESTING: &str = include_str!("../std/testing.una");
+
+/// The standard modules as the checker reads them in one edition: the prelude's source, with
+/// the declarations edition 0.2 rewrites and adds, `std.testing`'s source, and the keyword
+/// set the prelude is lexed with (`spec/14`). Read-only: the checker loads exactly this text
+/// (#648, the standard library reference).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StandardSource {
+    /// The prelude's source in this edition.
+    pub prelude: String,
+    /// `std.testing`'s source, the same in every edition.
+    pub testing: &'static str,
+    /// The keywords the prelude is lexed with; `std.testing` is lexed with those of 0.1.
+    pub keywords: KeywordSet,
+}
+
+/// The standard modules' source in `edition`, as [`Standard::load`] parses it.
+pub fn standard_source(edition: Edition) -> StandardSource {
+    let (prelude, keywords) = if edition >= Edition::V0_2 {
+        (format!("{}\n{PRELUDE_0_2}", of_prelude()), KeywordSet::V0_2)
+    } else {
+        (PRELUDE.to_owned(), KeywordSet::V0_1)
+    };
+    StandardSource {
+        prelude,
+        testing: TESTING,
+        keywords,
+    }
+}
 
 /// A proof obligation that the type checker found (`spec/12 §3`). It stays pending until the
 /// verifier generates it over Core IR and discharges it (M8).
@@ -701,13 +733,13 @@ impl Standard {
     fn load(edition: Edition) -> Standard {
         let mut sources = SourceDb::new();
         let mut interner = Interner::new();
-        let (text, keywords) = if edition >= Edition::V0_2 {
-            (format!("{}\n{PRELUDE_0_2}", of_prelude()), KeywordSet::V0_2)
-        } else {
-            (PRELUDE.to_owned(), KeywordSet::V0_1)
-        };
+        let StandardSource {
+            prelude: text,
+            testing,
+            keywords,
+        } = standard_source(edition);
         let prelude = sources.add("std/prelude.una", text.as_bytes());
-        let testing = sources.add("std/testing.una", TESTING.as_bytes());
+        let testing = sources.add("std/testing.una", testing.as_bytes());
         let prelude = parse_standard(&sources, prelude, &mut interner, keywords);
         let testing = parse_standard(&sources, testing, &mut interner, KeywordSet::V0_1);
         Standard {
@@ -1109,6 +1141,50 @@ fn file_state(env: &env::Env<'_>) -> (label::Label, Option<Span>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_rewrite_of_the_prelude_applies_exactly_once() {
+        // `str::replace` does nothing when its text is missing, so an edit of the prelude could
+        // turn a rewrite of edition 0.2 off without a word (#648).
+        let rewritten = of_prelude();
+        for (from, to) in OF {
+            assert_eq!(
+                PRELUDE.matches(from).count(),
+                1,
+                "the prelude holds {from:?}"
+            );
+            assert_eq!(rewritten.matches(to).count(), 1, "edition 0.2 holds {to:?}");
+            assert_eq!(
+                rewritten.matches(from).count(),
+                0,
+                "edition 0.2 still holds {from:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_standard_source_is_the_text_the_checker_loads() {
+        // #648: the reference listing reads `standard_source`; it must be exactly the text
+        // `Standard::load` parses, for every edition.
+        for edition in &Edition::ALL {
+            let source = standard_source(*edition);
+            let (prelude, keywords) = if *edition >= Edition::V0_2 {
+                (format!("{}\n{PRELUDE_0_2}", of_prelude()), KeywordSet::V0_2)
+            } else {
+                (PRELUDE.to_owned(), KeywordSet::V0_1)
+            };
+            assert_eq!(source.prelude, prelude, "{edition:?}");
+            assert_eq!(source.testing, TESTING, "{edition:?}");
+            assert_eq!(source.keywords, keywords, "{edition:?}");
+            let texts = Standard::load(*edition).sources.texts();
+            assert_eq!(texts.get("std/prelude.una"), Some(&prelude), "{edition:?}");
+            assert_eq!(
+                texts.get("std/testing.una").map(String::as_str),
+                Some(TESTING),
+                "{edition:?}"
+            );
+        }
+    }
 
     #[test]
     fn the_standard_modules_parse_in_their_editions() {

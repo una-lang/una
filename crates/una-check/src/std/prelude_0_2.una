@@ -66,23 +66,25 @@ pub split(t: Text, on: Text) -> List[Text]
 --- The parts joined, with `separator` between each two (`spec/22 §2`).
 pub join(parts: List[Text], separator: Text) -> Text = separator
 
---- Whether `t` ends with `suffix`.
+--- Whether `t` ends with `suffix` (`spec/22 §2`).
 pub ends_with(t: Text, suffix: Text) -> Bool = true
 
---- Whether `part` occurs in `t`.
+--- Whether `part` occurs in `t` (`spec/22 §2`).
 pub contains_text(t: Text, part: Text) -> Bool = true
 
 --- The position of the first occurrence of `text` in `t`, `Some(0)` for an empty `text`; it
 --- is `Some` exactly when `contains_text(t, part: text)` (`spec/22 §2` rule 2).
 pub find(t: Text, text: Text) -> Option[Int] = None
 
---- `t` with every non-overlapping occurrence of `pattern` replaced by `by`, left to right.
+--- `t` with every non-overlapping occurrence of `pattern` replaced by `by`, left to right
+--- (`spec/22 §2`).
 pub replace(t: Text, pattern: Text, by: Text) -> Text
   requires pattern.len > 0
 =
   t
 
---- The scalar values of `t` from position `start` up to, not including, `end`.
+--- The scalar values of `t` from position `start` up to, not including, `end`
+--- (`spec/22 §2`).
 pub slice(t: Text, start: Int, end: Int) -> Text
   requires 0 <= start and start <= end and end <= t.len
   ensures result.len == end - start
@@ -95,13 +97,13 @@ pub to_upper(t: Text) -> Text
 =
   t
 
---- `t` with the ASCII letters `A` to `Z` in lower case.
+--- `t` with the ASCII letters `A` to `Z` in lower case (`spec/22 §3`).
 pub to_lower(t: Text) -> Text
   ensures result.len == t.len
 =
   t
 
---- One text of length 1 per scalar value of `t`, in order.
+--- One text of length 1 per scalar value of `t`, in order (`spec/22 §2`).
 pub chars(t: Text) -> List[Text]
   ensures result.len == t.len
 =
@@ -113,19 +115,19 @@ pub parse_int(t: Text) -> Int
 =
   fail Empty
 
---- `t` without Unicode white space at its start.
+--- `t` without Unicode white space at its start (`spec/22 §2`).
 pub trim_start(t: Text) -> Text
   ensures result.len <= t.len
 =
   t
 
---- `t` without Unicode white space at its end.
+--- `t` without Unicode white space at its end (`spec/22 §2`).
 pub trim_end(t: Text) -> Text
   ensures result.len <= t.len
 =
   t
 
---- The UTF-8 encoding of `t`.
+--- The UTF-8 encoding of `t` (`spec/22 §2`).
 pub bytes(t: Text) -> List[U8]
   ensures result.len >= t.len
 =
@@ -146,7 +148,7 @@ pub kind Response
 --- Why an HTTP request got no response it may return (`spec/24 §1` rule 3).
 pub kind HttpError = Denied | BadUrl | BadRequest | Unreachable | TimedOut | TooLarge | Tls | Protocol
 
---- HTTP/1.1 to the origins that `http:` grants allow (`spec/24`). `key_name` sends the key of
+--- HTTP/1.1 to the origins that `http:` grants allow (`spec/24 §1`). `key_name` sends the key of
 --- that name from the `keys:` grants as a bearer token, which the program never sees.
 pub capability Http
   op get(url: Text, headers: List[Header], key_name: Option[Text]) -> internal Response
