@@ -17,7 +17,7 @@ use una_syntax::ast::{ClauseKind, UsesClause};
 use super::Report;
 use super::env::{Entity, Env, FnAst, FnKind};
 use super::ty::CapId;
-use crate::names::Lock;
+use crate::names::{Lock, LockClause};
 
 /// A well-formed locked clause of a function.
 #[derive(Clone, Debug)]
@@ -32,6 +32,8 @@ pub(crate) struct Entry<'a> {
     pub(crate) ops: Vec<&'a str>,
     /// Where its string is written in `una.toml`.
     pub(crate) span: Span,
+    /// The locked clause, for the text of its parts as its string reads (#727).
+    pub(crate) source: &'a LockClause,
 }
 
 /// Resolves each lock of `locks` into `env.locks`, reporting U7002 for each part that does not
@@ -140,6 +142,7 @@ pub(crate) fn resolve<'a>(env: &mut Env<'a>, locks: &'a [Lock], report: &mut Rep
                 capability,
                 ops,
                 span: clause.span,
+                source: clause,
             });
         }
         env.locks.insert(id, entries);

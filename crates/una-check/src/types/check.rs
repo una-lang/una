@@ -1065,7 +1065,10 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
                     format!(
                         "the lock of `{}` conditions `{op_name}` by `{}`, which is not a `Bool` of the refinement language over its parameters: {reason}",
                         def.name,
-                        self.report.text(condition.span)
+                        entry
+                            .source
+                            .text(condition.span)
+                            .unwrap_or_else(|| self.report.text(condition.span))
                     ),
                 );
                 continue;

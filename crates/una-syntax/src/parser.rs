@@ -70,16 +70,21 @@ pub(crate) fn parse_plain(lexed: &Lexed, file: FileId, interner: &Interner) -> P
 }
 
 /// One `uses` clause on its own, `@b: C[op where cond, ...]`, as a lock entry of `una.toml`
-/// writes it (ADR 0092 rule 8, as amended). `text` is the clause, and it starts at byte
-/// `offset` of the file `file`, so that every span is a span of that file. Its operations may
+/// writes it (ADR 0092 rule 8, as amended). `text` is the clause, and `place` gives where its
+/// bytes `start..end` are written in `file`, whose text is `written`, so that every span is a
+/// span of that file even where the clause's string has escapes (#727). Its operations may
 /// carry conditions, as in edition `0.3`.
 pub fn parse_uses_clause(
     text: &str,
     file: FileId,
-    offset: usize,
+    place: &dyn Fn(usize, usize) -> (usize, usize),
+    written: &str,
     interner: &mut Interner,
 ) -> Result<UsesClause, Vec<SyntaxError>> {
-    let shift = |span: Span| Span::new(file, span.start + offset, span.end + offset);
+    let shift = |span: Span| {
+        let (start, end) = place(span.start, span.end);
+        Span::new(file, start, end)
+    };
     let source = crate::source::SourceFile::new("una.toml", text.as_bytes());
     let mut lexed = crate::lexer::lex_in(&source, file, interner, KeywordSet::V0_3);
     if !lexed.errors.is_empty() {
@@ -92,8 +97,8 @@ pub fn parse_uses_clause(
     for token in &mut lexed.tokens {
         token.span = shift(token.span);
     }
-    // The parser reads the text of a span for some repairs, so the text keeps the offsets.
-    lexed.text = format!("{}{text}", " ".repeat(offset));
+    // The parser reads the text of a span for some messages and repairs, so it reads the file.
+    lexed.text = written.to_owned();
     let mut parser = Parser {
         tokens: &lexed.tokens,
         text: &lexed.text,
@@ -102,7 +107,7 @@ pub fn parse_uses_clause(
         eof: lexed
             .tokens
             .last()
-            .map_or(Span::at(file, offset), |token| token.span),
+            .map_or(shift(Span::at(file, 0)), |token| token.span),
         lexical: Vec::new(),
         pos: 0,
         depth: 0,

@@ -268,8 +268,9 @@ fn analyze_and(
 }
 
 /// The locked functions of `[contracts]`, each clause parsed where its string is written
-/// (ADR 0092 rule 8, as amended). A string with escapes is parsed from its value, at the
-/// position of its first character.
+/// (ADR 0092 rule 8, as amended). A string with escapes, or a multi-line one, is parsed from
+/// its value, and each span is placed where its bytes are written (#727). A string that cannot
+/// be read back to its value is a syntax error of the clause, never a lock left out.
 fn locks(
     package: &Package,
     manifest: &una_project::Manifest,
@@ -278,6 +279,7 @@ fn locks(
     let Some(file) = package.manifest else {
         return Vec::new();
     };
+    let written = package.sources.file(file).text();
     manifest
         .contracts
         .iter()
@@ -292,25 +294,45 @@ fn locks(
                 .clauses
                 .iter()
                 .map(|clause| {
-                    // Past the opening quote of a basic or literal string.
-                    let offset = clause.range.start + 1;
-                    una_check::LockClause {
-                        span: Span::new(file, clause.range.start, clause.range.end),
-                        parsed: una_syntax::parse_uses_clause(
-                            &clause.value,
-                            file,
-                            offset,
-                            interner,
-                        )
-                        .map_err(|errors| {
-                            errors.into_iter().next().unwrap_or_else(|| {
-                                una_syntax::SyntaxError::new(
-                                    una_diag::Code::U0101,
-                                    Span::new(file, clause.range.start, clause.range.end),
-                                    "the clause does not parse",
-                                )
+                    let span = Span::new(file, clause.range.start, clause.range.end);
+                    let offsets = written
+                        .get(clause.range.clone())
+                        .and_then(|literal| una_project::literal::offsets(literal, &clause.value));
+                    let parsed = match &offsets {
+                        Some(offsets) => {
+                            let base = clause.range.start;
+                            let place = |start: usize, end: usize| {
+                                let (start, end) = offsets.place(start, end);
+                                (base + start, base + end)
+                            };
+                            una_syntax::parse_uses_clause(
+                                &clause.value,
+                                file,
+                                &place,
+                                written,
+                                interner,
+                            )
+                            .map_err(|errors| {
+                                errors.into_iter().next().unwrap_or_else(|| {
+                                    una_syntax::SyntaxError::new(
+                                        una_diag::Code::U0101,
+                                        span,
+                                        "the clause does not parse",
+                                    )
+                                })
                             })
-                        }),
+                        }
+                        None => Err(una_syntax::SyntaxError::new(
+                            una_diag::Code::U0101,
+                            span,
+                            "its string could not be read back to the positions it is written at",
+                        )),
+                    };
+                    una_check::LockClause {
+                        span,
+                        parsed,
+                        value: clause.value.clone(),
+                        offsets,
                     }
                 })
                 .collect(),

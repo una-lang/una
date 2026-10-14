@@ -7,6 +7,7 @@
 #![deny(missing_docs)]
 
 mod document;
+pub mod literal;
 mod lock;
 mod manifest;
 mod package;
