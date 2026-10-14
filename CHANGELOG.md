@@ -3,6 +3,7 @@
 All notable changes to Una are recorded here. Versions follow the milestones and gates of `docs/plan/roadmap.md`.
 
 ## Unreleased
+- **Security advisories** (#649). `docs/security/advisories.md` lists every security fix of a published release that affected an earlier published release, newest first: its severity on a stated scale, the releases affected as `CHANGELOG.md` names them, the release of each line that fixed it, a summary and its references, and the cases left out with their reasons. `crates/una-cli/tests/advisories.rs` checks that every entry has its fields and a severity of the scale, that every release in "Fixed in" is a tag, and that every published release whose `CHANGELOG.md` section fixes a security issue, on `main` and on the v0.1 line, has an advisory or is named under "Not advisories". `scripts/site-bundle.sh` adds the page to the docs bundle, with the kind `security`, so the website can publish it.
 
 ## v0.3.14
 
