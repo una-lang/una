@@ -318,12 +318,7 @@ if [ -n "$version" ] && python3 -B "$REPO/scripts/release-summary.py" "$version"
         { cat "$OUT/summary.md"; echo; cat "$built/notes.md"; } > "$OUT/release-notes.md"
         if grep -qx 'Verdict: PASS (every gate)' "$OUT/summary.md" && [ -n "${UNA_PRIVACY_PATTERN:-}" ]; then
             cp "$OUT/summary.md" "$OUT/una-$version-validation.md"
-            echo "publish, once the record commit is tagged v$version (docs/release-gates.md §4):"
-            echo "  gh release create v$version --verify-tag --title \"Una v$version\" --notes-file $OUT/release-notes.md \\"
-            for archive in "$built"/*.tar.gz; do
-                echo "    $archive $archive.sha256 \\"
-            done
-            echo "    $OUT/una-$version-validation.md"
+            sh "$REPO/scripts/release-publish.sh" "$version" "$OUT" "$built"
         fi
     fi
 fi

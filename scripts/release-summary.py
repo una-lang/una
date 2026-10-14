@@ -20,7 +20,8 @@ import re
 import subprocess
 import sys
 
-VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
+# A release, or a pre-release such as 0.4.0-alpha.1 (SemVer: dot-separated alphanumerics).
+VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?")
 COMMIT = re.compile(r"- Commit: `([0-9a-f]{40})`")
 # The run line of record.md: date, `uname -sm`, `rustc --version`, `docker --version`.
 RUN = re.compile(
@@ -32,7 +33,9 @@ RUN = re.compile(
 GATES = ["clone", "build", "mac", "linux", "linux-arm64", "release", "reproducible",
          "determinism", "native", "site", "formal"]
 GATE_ROW = re.compile(r"\| ([a-z0-9-]+) \| (PASS|FAIL) \| ([0-9]+) \| `[0-9a-f]{64}` \|")
-ARCHIVE_ROW = re.compile(r"\| `(una-[0-9.]+-[a-z0-9_]+(?:-[a-z0-9_]+)*\.tar\.gz)` \| `([0-9a-f]{64})` \|")
+ARCHIVE_ROW = re.compile(r"\| `(una-[0-9A-Za-z._-]+\.tar\.gz)` \| `([0-9a-f]{64})` \|")
+# The target part of an archive's name, after `una-<version>-`.
+TARGET = re.compile(r"[a-z0-9_]+(?:-[a-z0-9_]+)*")
 VERDICT = re.compile(r"Verdict: (PASS \(every gate\)|FAIL \([a-z0-9, -]+\)|INCOMPLETE \(not run: [a-z0-9, -]+\))")
 
 
@@ -94,7 +97,8 @@ def main():
             m = ARCHIVE_ROW.fullmatch(line)
             if not m:
                 fail(f"an archive row out of shape: {line[:40]!r}")
-            if not m.group(1).startswith(f"una-{version}-"):
+            prefix, suffix = f"una-{version}-", ".tar.gz"
+            if not m.group(1).startswith(prefix) or not TARGET.fullmatch(m.group(1)[len(prefix):-len(suffix)]):
                 fail(f"{m.group(1)} is not an archive of {version}")
             archives.append(m.groups())
 

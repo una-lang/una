@@ -145,9 +145,14 @@ fn usage_errors_exit_with_2() {
     );
 }
 
-/// Runs `scripts/release-summary.py` on `record`, with `pattern` as UNA_PRIVACY_PATTERN when
-/// given, and returns its exit code and the summary it wrote.
-fn summary(dir: &Path, record: &str, pattern: Option<&str>) -> (Option<i32>, String) {
+/// Runs `scripts/release-summary.py` for `version` on `record`, with `pattern` as
+/// UNA_PRIVACY_PATTERN when given, and returns its exit code and the summary it wrote.
+fn summary(
+    dir: &Path,
+    version: &str,
+    record: &str,
+    pattern: Option<&str>,
+) -> (Option<i32>, String) {
     let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(dir.join("record.md"), record).unwrap();
@@ -155,7 +160,7 @@ fn summary(dir: &Path, record: &str, pattern: Option<&str>) -> (Option<i32>, Str
     command
         .arg("-B")
         .arg(root().join("scripts/release-summary.py"))
-        .arg("9.9.9")
+        .arg(version)
         .arg(dir.join("record.md"))
         .arg(dir.join("summary.md"))
         .env_remove("UNA_PRIVACY_PATTERN");
@@ -176,7 +181,7 @@ fn the_summary_is_the_template_of_the_record_and_nothing_else() {
         "# Validation record\n\n- Commit: `{commit}`\n- Subject: a subject that is not copied\n- Run: 2026-10-14T13:12:34Z, Darwin arm64, rustc 1.98.1 (48a229cea 2026-09-01), Docker version 24.0.7, build afdd53b4e3\n- Script: `scripts/release-gates.sh` at `{commit}`\n\n| Gate | Result | Seconds | Log sha256 |\n| --- | --- | --- | --- |\n| clone | PASS | 2 | `{log}` |\n| build | PASS | 398 | `{log}` |\n\n## Archives\n\n| Archive | sha256 |\n| --- | --- |\n| `una-9.9.9-aarch64-apple-darwin.tar.gz` | `{digest}` |\n\n## Docs bundle\n\n| Bundle | sha256 |\n| --- | --- |\n| `una-docs-9.9.9.tar.gz` | `{digest}` |\n\nVerdict: PASS (every gate)\n\n## Notes\n\nFree text that is not copied.\n",
         commit = "c".repeat(40),
     );
-    let (code, written) = summary(&dir, &record, Some("not-in-the-summary"));
+    let (code, written) = summary(&dir, "9.9.9", &record, Some("not-in-the-summary"));
     assert_eq!(code, Some(0));
     assert_eq!(
         written,
@@ -186,7 +191,7 @@ fn the_summary_is_the_template_of_the_record_and_nothing_else() {
         )
     );
     // A summary that matches the privacy pattern is not written.
-    let (code, written) = summary(&dir, &record, Some("darwin"));
+    let (code, written) = summary(&dir, "9.9.9", &record, Some("darwin"));
     assert_eq!(code, Some(1));
     assert!(written.is_empty());
     // A field out of its shape stops the summary: free text in the run line, or a gate the
@@ -195,9 +200,93 @@ fn the_summary_is_the_template_of_the_record_and_nothing_else() {
         ("Darwin arm64", "Darwin arm64 on a named host"),
         ("| build | PASS |", "| deploy | PASS |"),
     ] {
-        let (code, written) = summary(&dir, &record.replace(from, to), None);
+        let (code, written) = summary(&dir, "9.9.9", &record.replace(from, to), None);
         assert_eq!(code, Some(1), "{to}");
         assert!(written.is_empty(), "{to}");
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_pre_release_has_a_summary_and_is_published_as_a_pre_release() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("release-pre");
+    let digest = "a".repeat(64);
+    let record = |archive: &str| {
+        format!(
+            "# Validation record\n\n- Commit: `{commit}`\n- Run: 2026-10-14T13:12:34Z, Darwin arm64, rustc 1.98.1 (48a229cea 2026-09-01), Docker version 24.0.7, build afdd53b4e3\n\n| Gate | Result | Seconds | Log sha256 |\n| --- | --- | --- | --- |\n| clone | PASS | 2 | `{digest}` |\n\n## Archives\n\n| Archive | sha256 |\n| --- | --- |\n| `{archive}` | `{digest}` |\n\nVerdict: PASS (every gate)\n",
+            commit = "c".repeat(40),
+        )
+    };
+    let (code, written) = summary(
+        &dir,
+        "0.4.0-alpha.1",
+        &record("una-0.4.0-alpha.1-aarch64-apple-darwin.tar.gz"),
+        None,
+    );
+    assert_eq!(code, Some(0));
+    assert!(
+        written.starts_with("# Una v0.4.0-alpha.1: release validation\n"),
+        "{written}"
+    );
+    assert!(
+        written.contains(&format!(
+            "| `una-0.4.0-alpha.1-aarch64-apple-darwin.tar.gz` | `{digest}` |"
+        )),
+        "{written}"
+    );
+    // An archive of another version, or a version out of shape, stops the summary.
+    for (version, archive) in [
+        (
+            "0.4.0-alpha.1",
+            "una-0.4.0-alpha.2-aarch64-apple-darwin.tar.gz",
+        ),
+        ("0.4.0-alpha.1", "una-0.4.0-alpha.1-Darwin Arm.tar.gz"),
+        (
+            "0.4.0-alpha..1",
+            "una-0.4.0-alpha..1-aarch64-apple-darwin.tar.gz",
+        ),
+    ] {
+        let (code, written) = summary(&dir, version, &record(archive), None);
+        assert_eq!(code, Some(1), "{version} {archive}");
+        assert!(written.is_empty(), "{version} {archive}");
+    }
+    // The printed command: a pre-release is published as one, a release is not.
+    let built = dir.join("built");
+    std::fs::create_dir_all(&built).unwrap();
+    let publish = |version: &str| {
+        let output = Command::new("sh")
+            .arg(root().join("scripts/release-publish.sh"))
+            .arg(version)
+            .arg("/out")
+            .arg(&built)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap()
+    };
+    std::fs::write(
+        built.join("una-0.4.0-alpha.1-aarch64-apple-darwin.tar.gz"),
+        "",
+    )
+    .unwrap();
+    let command = publish("0.4.0-alpha.1");
+    assert!(
+        command.contains(
+            "gh release create v0.4.0-alpha.1 --verify-tag --title \"Una v0.4.0-alpha.1\" --notes-file /out/release-notes.md --prerelease --latest=false \\\n"
+        ),
+        "{command}"
+    );
+    assert!(
+        command.ends_with("    /out/una-0.4.0-alpha.1-validation.md\n"),
+        "{command}"
+    );
+    std::fs::remove_file(built.join("una-0.4.0-alpha.1-aarch64-apple-darwin.tar.gz")).unwrap();
+    std::fs::write(built.join("una-0.4.0-aarch64-apple-darwin.tar.gz"), "").unwrap();
+    let command = publish("0.4.0");
+    assert!(!command.contains("--prerelease"), "{command}");
+    assert!(
+        command.contains("--notes-file /out/release-notes.md \\\n"),
+        "{command}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
