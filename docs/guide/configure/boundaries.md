@@ -184,6 +184,69 @@ pub preview(path: Text) -> Text
   shrink(path) with @files = @files
 ```
 
+An example outside a boundary cannot grant at its `do` line, which takes no `with`. To exercise a boundary function that needs a capability, the example calls a function of its own module that grants it. The example's `given` handler reaches that function by name, since it is not in the boundary, and is checked where it is installed, at the `given` line, as any handler granted on to a boundary is:
+
+`una.toml`
+
+```toml
+[package]
+name = "demo"
+version = "0.1.0"
+edition = "0.3"
+
+[boundaries]
+"demo.resize" = ["Files[read]"]
+```
+
+`src/demo/store.una`
+
+```una
+module demo.store
+
+pub capability Files
+  op read(path: Text) -> Text
+  op write(path: Text, data: Text) -> Unit
+```
+
+`src/demo/resize.una`
+
+```una
+module demo.resize
+
+import demo.store (Files)
+
+pub shrink(path: Text) -> Text
+  uses @files: Files[read]
+=
+  @files.read(path)
+```
+
+`src/demo/app.una`
+
+```una
+module demo.app
+
+import demo.resize (shrink)
+import demo.store (Files)
+
+handler fixed(text: Text) for Files
+  op read(path) = text
+  op write(path, data) = unit
+
+pub preview(path: Text) -> Text
+  uses @files: Files[read, write]
+=
+  shrink(path) with @files = @files[read]
+
+example "a preview reads through the boundary"
+  given @files = fixed("pixels")
+  do preview("a.png")
+  expect result == "pixels"
+  expect performed @files.read
+```
+
+Written as `do shrink("a.png")`, the same example is U3020: its `given` binding does not reach the boundary by name.
+
 A boundary never releases a label. A call into a boundary from which a policy call is reachable, through its body or the functions it calls, is U3024 (`spec/07 §6`):
 
 `una.toml`
@@ -251,7 +314,7 @@ Further rules (`spec/05 §4` rule 5, `spec/05 §9`):
 - **Effect parameters.** A parameter that an `of` clause names, given to the boundary or called in a lambda given to it, runs the effects its caller chooses, which no ceiling bounds: U3021 at the call.
 - **Unknown function values.** For U3024, a named function and a lambda given to the boundary are followed. A function value whose code is not known at the call, from a parameter, a local, a computed value or a kind's field, given as an argument or captured by a lambda given to the boundary, is U3024 at the call, unless no policy is declared in the package or the modules it imports. A function value given to a handler's installation counts the same way for every call into a boundary that may run the handler.
 - **Handlers.** A handler counts with its own `uses`. A handler of a boundary installed outside it with `with` takes its own `uses` from the other bindings of the same `with` clause, not from the caller's context.
-- **Examples.** The `given` handlers of an example of a boundary module count against its ceiling, at the `given` line. A `do` line takes no `with`, so an example outside a boundary can call into it only for functions with no `uses`.
+- **Examples.** The `given` handlers of an example of a boundary module count against its ceiling, at the `given` line. A `do` line takes no `with`, so an example outside a boundary can call into it directly only for functions with no `uses`. Otherwise it calls a function of its own module that grants the boundary with `with`, as in the example above, and a `given` handler granted on that way is checked at its `given` line.
 - **Inference.** A call into a boundary adds to a private caller's inferred `uses` only through its `with` bindings (`spec/05 §9` rule 2).
 - **Invalid tables.** Each of these is U7002: a key that is not a module of the package, a key inside another key's extent, a malformed ceiling string, a capability named twice in one ceiling, an unknown capability or operation, a module of `[trusted] modules` inside a boundary, and a `[run] entry` inside a boundary. A malformed or unknown ceiling entry permits nothing.
 - **A handler granted on by name.** A handler installed by a caller further up, by `with` or by an example's `given`, and granted on by name through header bindings, rebindings and calls until it reaches the call into the boundary, is checked where it is installed. Its own `uses`, and what its installation's arguments grant, must lie within the ceiling (U3021), and a release it reaches is U3024. Each is reported at the installation, with the call as the related span. The handlers that its own `uses` lead to are checked the same way, and so is a handler of another boundary installed outside it (ADR 0093 rule 15).
