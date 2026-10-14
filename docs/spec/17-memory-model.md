@@ -135,7 +135,7 @@ Core IR gains tuple types `(τ, ...)`, tuple construction `(a, ...)`, and the bi
    ```
 
    If `check_quota` fails, the caller's `sent` keeps its old value, but the mail was sent and the trace shows it.
-3. **Backend freedom.** The meaning of every construct is that of its desugared form in the UAM (`spec/11 §1`). A backend MAY update a uniquely held value in place, reuse the memory of a value passed by `take`, move an argument into a call, a call through a function value included, at its last use (ADR 0072, N-42), and choose where values live. None of these is observable.
+3. **Backend freedom.** The meaning of every construct is that of its desugared form in the UAM (`spec/11 §1`). A backend MAY update a uniquely held value in place, reuse the memory of a value passed by `take`, move an argument into a call, a call through a function value included, at its last use (ADR 0072), and choose where values live. None of these is observable.
    - (v0.2, ADR 0072.) A binding passed to a call gives its value up to the callee when nothing that runs after the call reads it, on success or on failure. The callee may then update that value in place. A binding that the code after a failure reads keeps its value, as rule 1 requires (`spec/16 §4` rule 7).
 
 ## 8. Standard library

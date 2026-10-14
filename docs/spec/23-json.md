@@ -24,7 +24,7 @@ The prelude reads and writes JSON (RFC 8259): a kind for JSON values, a parser t
    pub kind JsonNumber = Text where is_json_number(it)
    ```
 
-   `is_json_number(t: Text) -> Bool` is an opaque prelude predicate. It is true exactly when `t` matches the `number` production of RFC 8259 §6 and has a fraction or an exponent, so `Number` and `Decimal` never hold the same number (ADR 0073, amendment N-27).
+   `is_json_number(t: Text) -> Bool` is an opaque prelude predicate. It is true exactly when `t` matches the `number` production of RFC 8259 §6 and has a fraction or an exponent, so `Number` and `Decimal` never hold the same number (ADR 0073 amendment).
 2. **Names.** A user kind named `Json`, `JsonNumber` or `JsonError` is U1002, as for `Map` (`spec/21 §1`). A user variant named like a variant of `Json` or `JsonError` shadows it in its module, as a user `Some` shadows `Option`'s (ADR 0073, amendment of 2026-10-07).
 3. **Numbers.** A JSON number with neither a fraction nor an exponent is `Number`, exact at any size. Every other number is `Decimal`, whose `text` is the number as written in the input.
 4. **Objects** are maps ordered by their keys (`spec/21 §1` rule 3), so the order of the input is not kept.
@@ -57,7 +57,7 @@ They are prelude functions, called with method syntax as those of `spec/22 §2` 
    - `at` is a position in scalar values, as in `spec/22 §1`.
    - The failure is the first error in reading order: `Syntax` at the first scalar value where no valid JSON text can continue, or at the end of `t` when it ends early. In a `\u` escape, that is the first character that cannot continue a valid escape: `"\uD800` fails at 7, `"\uDC00` at 4, the `C` that makes it a lone low surrogate.
    - `NumberTooLong` at the first character of an integer of more than 4300 digits. A number with a fraction or an exponent has no such limit.
-6. **Size.** There is no limit beyond the memory budget (`spec/11 §7`). `parse_json` and `to_json` check the budget as they go, every 4096 values and every 4096 scalar values of a string, so a run over its budget ends with U6003 at the call (N-41, #314).
+6. **Size.** There is no limit beyond the memory budget (`spec/11 §7`). `parse_json` and `to_json` check the budget as they go, every 4096 values and every 4096 scalar values of a string, so a run over its budget ends with U6003 at the call (#314).
 
 ## 4. Writing
 
