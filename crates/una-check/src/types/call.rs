@@ -1508,6 +1508,7 @@ impl<'a> Checker<'_, 'a, '_> {
             if self.crossing_arguments(span)
                 && (self.holds_function(&expected) || self.holds_function(receiver_ty))
             {
+                self.effectful_value(*receiver_span, &[&expected, receiver_ty]);
                 self.opaque_value(*receiver_span, None);
             }
             checked.push((*receiver_span, receiver_ty.clone(), expected, first.name));
@@ -1669,6 +1670,9 @@ impl<'a> Checker<'_, 'a, '_> {
                     }
                     _ => None,
                 };
+                if of_param.is_none() {
+                    self.effectful_value(arg.value.span, &[&expected, &found]);
+                }
                 self.opaque_value(arg.value.span, of_param);
             }
             flow_backs.extend(self.convention_arg(callee, param, arg, &found, &expected));
