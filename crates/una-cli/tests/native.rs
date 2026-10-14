@@ -585,7 +585,7 @@ fn una_build_rejects_a_package_that_does_not_check() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A function named as a value runs on the bindings where it is named (`spec/11 §4`). Named
+/// A function named as a value runs on the bindings where it is named (E-Lam, `spec/11 §4`). Named
 /// where no `@log` is bound, and called under a handler of the callee's own, it once checked
 /// and stopped `una build` with an internal error; it is U3001 at the name now.
 #[test]

@@ -318,7 +318,7 @@ impl Checker<'_, '_, '_> {
     }
 
     /// A lambda written at `span`, or a function named there as a value, runs on the bindings
-    /// that its `uses`, `needs`, resolve to where it is written, whoever calls it (`spec/11 §4`).
+    /// that its `uses`, `needs`, resolve to where it is written, whoever calls it (E-Lam, `spec/11 §4`).
     /// Among the arguments of a call into a boundary, or of a handler's installation, it grants
     /// what they hold, a handler with its own `uses` and as a node it may run (rules 5 and 8),
     /// even when the boundary calls it under its own bindings. A binding of the frames of a
