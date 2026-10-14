@@ -474,8 +474,8 @@ fn a_heading_inside_a_fenced_block_does_not_end_a_section() {
 
 /// The evidence of scripts/local-ci.sh and of scripts/release-gates.sh never skips the check
 /// because the caller's shell exports the skip variable: local-ci drops it, and skips only in its
-/// container, after the host checked; the gates unset it, and the one that lets the advisories'
-/// test skip its releases (#715). Running them takes the whole build, so this reads the scripts.
+/// container, after the host checked; the gates unset it, and the ones that let the advisories'
+/// test skip its releases (#715) and local-ci skip the documents' links (#708). Running them takes the whole build, so this reads the scripts.
 #[test]
 fn local_ci_and_the_gates_never_take_the_skip_from_the_caller() {
     let scripts = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts");
@@ -496,6 +496,6 @@ fn local_ci_and_the_gates_never_take_the_skip_from_the_caller() {
     ));
     let gates = std::fs::read_to_string(scripts.join("release-gates.sh")).unwrap();
     assert!(gates.contains(
-        "unset UNA_SKIP_RELEASED_SECTIONS UNA_LOCAL_CI_RELEASED_SECTIONS_ON_HOST UNA_LOCAL_CI_ADVISORIES_ON_HOST"
+        "unset UNA_SKIP_RELEASED_SECTIONS UNA_LOCAL_CI_RELEASED_SECTIONS_ON_HOST UNA_LOCAL_CI_ADVISORIES_ON_HOST \\\n    UNA_LOCAL_CI_DOC_LINKS_ON_HOST\n"
     ));
 }

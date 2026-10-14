@@ -72,9 +72,9 @@ for command in $commands; do
     NO_COLOR=1 "$una" "$command" --help >"$bundle/help/$command.txt" || fail "una $command --help"
 done
 
-# --- The documents: what scripts/site.sh publishes, the explain pages, the examples and the
-# standard library listing (docs/std/, #648), and the security advisories (#649), each with its
-# kind. Only files that git tracks.
+# --- The documents: the root documents, the guides, the specification, the ADRs, the release's
+# validation record, the security advisories (#649), the explain pages, the examples and the
+# standard library listing (docs/std/, #648), each with its kind. Only files that git tracks.
 files=$(
     {
         for f in README.md SECURITY.md CONTRIBUTING.md CODE_OF_CONDUCT.md CHANGELOG.md docs/00-charter.md; do
