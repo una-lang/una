@@ -252,6 +252,25 @@ impl<'a> Checker<'_, 'a, '_> {
                 });
                 self.testing_value_site(module, name, ident.span);
                 self.via_site(id, ident.span);
+                // A function value runs on the bindings its `uses` resolve to where it is named,
+                // whoever calls it (`spec/04 §6` rule 3), so they are needed here, as a lambda's are
+                // where it is written; the call of the value still needs its type's `uses`. A
+                // reference that is not a value at all is U3006 below instead.
+                if site.argument || !effects {
+                    let needs: Vec<FnUse> = self
+                        .env
+                        .functions
+                        .get(id)
+                        .map(|f| f.uses.iter().map(|n| n.usage.clone()).collect())
+                        .unwrap_or_default();
+                    let level = self.frames.len();
+                    self.needs_site(
+                        &format!("`{name}`, used as a value,"),
+                        &needs,
+                        ident.span,
+                        level,
+                    );
+                }
                 // A function with effects or failures is a value only as an
                 // argument.
                 if effects && !site.argument && self.pass == Pass::Check && self.base != Base::Quiet
