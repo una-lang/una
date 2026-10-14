@@ -2,10 +2,10 @@
 source: crates/una-cli/tests/cli.rs
 expression: stdout(&output)
 ---
---- Checks an attendee in to an event by phone, shows its availability, and records it.
+--- Looks up a registration by phone, shows its availability, and records it.
 --- The phone never leaves this function: only its keyed hash does.
-pub check_in(phone: secret[PII] Phone, event: Text) -> internal Result[Availability, CheckInError]
-  uses @registrations: Registrations[find, event]
+pub check_in(phone: secret[PII] Phone) -> Availability
+  uses @registrations: Registrations[find]
   uses @audit: Audit[record]
   uses @keys: Keys[hmac]
   fails CheckInError

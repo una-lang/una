@@ -270,3 +270,16 @@ Otherwise the `checked` is U4002 at the `checked`, with the predicate as its rel
 ### 13.3 A policy call's failure (2026-10-10, ADR 0090, #496)
 
 Found by S-18. A policy's `via` function is not label-checked (`spec/07 §5` rule 3), and its failure is decided by the `from` value. The failure of a policy call $p(a)$ is labeled $pc \sqcup \ell(\mathit{to})$, the top label of `to`, where its release is visible: T-Declassify (§7) gives the call the failure $F_f^{\,pc \sqcup \ell(\tau_{\mathit{to}})}$ in the notation of §13.1. So `attempt` gives a `Result` with that label, `if error use` runs under it, and `if error pass` and `if error fail` are U4002 when it is above `public`. A policy whose `to` is `public` keeps a public failure. Where this section and §7 differ, this section wins.
+
+### 13.4 A `via` function whose failure reveals nothing (2026-10-13, ADR 0098, #497)
+
+Each `via` function `f` has a failure-decision label $\ell_f$: `public` when its body has the shape below, and $\top$ otherwise. The failure of a policy call $p(a)$ of `p : from ⇝ to via f` is labeled $pc \sqcup \lambda$, where $\lambda = \ell_f$ if $\ell_f \sqsubseteq \ell(\mathit{to})$, and $\lambda = \ell(\mathit{to})$ otherwise. So a `via` function of the shape fails at $pc$, and every other keeps §13.3's label.
+
+`f` has the shape when all of these hold:
+
+- No handler of `Keys` that the package declares is named outside its own declaration and examples, counted as words over the package's declarations and comments, examples excepted; a handler whose capability does not resolve counts as a handler of `Keys`.
+- Its body has no `with`.
+- Every failure point of its body is a call `@k.hmac(key_name: L, data: e)` in the body's top-level sequence, as a statement or the value of a `let`, where `@k` is a `Keys` binding of its header, `L` is a plain text literal as written, and the failure is handled by `if error pass` or by `if error fail V` with no argument.
+- The words `fail` and `pass` in its body are exactly those handling clauses.
+
+The check fails closed: anything it cannot read as the shape gives $\ell_f = \top$. `with` and `given` are the only ways to install a handler at this edition; a construct that installs or rebinds one must extend the shape. Where this section and §13.3 differ, this section wins.

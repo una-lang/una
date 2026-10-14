@@ -1,0 +1,31 @@
+trusted module release
+
+pub kind ViaError = Broke(detail: Text) | Gone
+
+pub policy key_of
+  from secret Text
+  to internal Hashed
+  via hmac_it
+  purpose "a keyed hash of the text"
+  owner privacy
+
+pub policy inner_key
+  from secret Text
+  to internal Hashed
+  via inner_hmac
+  purpose "an inner keyed hash"
+  owner privacy
+
+inner_hmac(t: secret Text) -> internal Hashed
+  uses @keys: Keys[hmac]
+  fails KeyError
+=
+  @keys.hmac(key_name: "inner", data: t)
+    if error pass
+
+hmac_it(t: secret Text) -> internal Hashed
+  uses @keys: Keys[hmac]
+  fails KeyError
+=
+  inner_key(t)
+    if error pass

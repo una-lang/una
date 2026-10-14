@@ -1,0 +1,24 @@
+trusted module release
+
+pub kind ViaError = Broke(detail: Text) | Gone
+
+pub policy key_of
+  from secret Text
+  to internal Hashed
+  via hmac_it
+  purpose "a keyed hash of the text"
+  owner privacy
+
+short(t: secret Text, limit: Int) -> secret Text
+  fails ViaError
+=
+  if limit > 0 then t else fail Gone
+
+hmac_it(t: secret Text) -> internal Hashed
+  uses @keys: Keys[hmac]
+  fails ViaError
+=
+  let s = t.short(limit: 20)
+    if error pass
+  @keys.hmac(key_name: "pepper", data: s)
+    if error fail Gone

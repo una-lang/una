@@ -239,6 +239,10 @@ pub(crate) struct Checker<'c, 'a, 's> {
     /// on their arguments' values, as `parse_json` (`spec/23 §5`, `spec/07 §3`), by the span of
     /// the call: handling such a failure branches on them.
     pub(crate) decided_failures: BTreeMap<Span, Label>,
+    /// The policy calls whose `via` function has ADR 0098's shape but a `Keys` handler named
+    /// elsewhere keeps from it, by the span of the call: where the handler is named, and why
+    /// it matters, for the U4002 that handling the failure gives.
+    pub(crate) via_notes: BTreeMap<Span, (Span, String)>,
     /// For each lambda, by its span, which of its parameters are annotated: the body assumes
     /// the annotation, whatever the lambda's type unifies with (#350).
     pub(crate) annotated_lambdas: BTreeMap<Span, Vec<bool>>,
@@ -449,6 +453,7 @@ impl<'c, 'a, 's> Checker<'c, 'a, 's> {
             returning: None,
             call_fails: BTreeMap::new(),
             decided_failures: BTreeMap::new(),
+            via_notes: BTreeMap::new(),
             annotated_lambdas: BTreeMap::new(),
             edit_bounds: BTreeMap::new(),
             edit_open: Vec::new(),

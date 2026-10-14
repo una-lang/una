@@ -276,6 +276,15 @@ impl Checker<'_, '_, '_> {
                 .related
                 .push(self.report.related(from, "the labeled condition"));
         }
+        // ADR 0098: a policy call whose `via` would fail publicly but for a `Keys` handler
+        // named elsewhere says where, so the reason is not hidden.
+        if let Some((_, call)) = extra
+            && let Some((at, note)) = self.via_notes.get(&call)
+        {
+            diagnostic
+                .related
+                .push(self.report.related(*at, note.clone()));
+        }
         self.report.push(diagnostic);
     }
 

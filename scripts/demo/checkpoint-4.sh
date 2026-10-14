@@ -109,7 +109,7 @@ echo "-- The same listing for agents"
 run 0 '"schema":"una.obligations/1"' '"status":"proven"' --json obligations examples/events
 
 echo "-- The build report: proofs, authority, information flow, trust and coverage"
-run 0 "events.keys.attendee_key at src/events/checkin.una:37:21" \
+run 0 "events.keys.attendee_key at src/events/checkin.una:30:13" \
     "coverage: 5 pub functions, 1 with ensures, 1 with derived from, 0 trivial ensures" \
     report examples/events
 

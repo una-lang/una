@@ -1209,3 +1209,38 @@ fn core_with_rejected_needs_json() {
     );
     assert!(stdout(&output).is_empty());
 }
+
+#[test]
+fn a_keys_handler_named_outside_its_declaration_says_why_the_via_fails_closed() {
+    // ADR 0098: `hmac_it` has the shape, but `fake_keys` is named in a doc comment outside its
+    // declaration and examples, so its policy's failure keeps the `to` label. The U4002 at the
+    // `if error pass` names the handler and where it is named.
+    let output = una(&[
+        "--json",
+        "check",
+        "tests/conformance/security/via_hmac_handler_in_comment",
+    ]);
+    assert_eq!(output.status.code(), Some(1));
+    let document: Value = serde_json::from_str(stdout(&output)).unwrap();
+    let diagnostics = document["diagnostics"].as_array().unwrap();
+    assert_eq!(diagnostics.len(), 1, "{document}");
+    assert_eq!(diagnostics[0]["code"], "U4002");
+    assert_eq!(diagnostics[0]["primary"]["start"]["line"], 14);
+    let related = diagnostics[0]["related"].as_array().unwrap();
+    assert_eq!(related.len(), 2, "{document}");
+    assert_eq!(related[1]["file"], "src/main.una");
+    assert_eq!(related[1]["start"]["line"], 20);
+    assert_eq!(related[1]["start"]["col"], 15);
+    assert_eq!(
+        related[1]["message"],
+        "the `via` `hmac_it` would have a public failure (ADR 0098), but the `Keys` handler `fake_keys` is named here, outside its declaration and examples"
+    );
+
+    // The same shape with no stray mention has no such note: it is accepted.
+    let accepted = una(&[
+        "--json",
+        "check",
+        "tests/conformance/security/via_hmac_events_shape",
+    ]);
+    assert_eq!(accepted.status.code(), Some(0), "{}", stdout(&accepted));
+}

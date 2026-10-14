@@ -1185,7 +1185,38 @@ impl<'a> Checker<'_, 'a, '_> {
             // A failure of the `via` function is released as its value is: it is decided by
             // the `from` value inside the trusted body, so it is visible only where the release
             // is, at `pc ⊔ ℓ(to)` (S-18, ADR 0090). A public `to` keeps a public failure.
-            let decided = self.ctx.pc.join(&to);
+            // ADR 0098: when the `via` function's failure reveals nothing (its failure-decision
+            // label is public, which is below every `to`), the failure is the call's own, at
+            // `pc`. The label is one of the two sound ones, never their meet.
+            let target = match def.ast {
+                FnAst::Policy(policy) => {
+                    let via = self.env.text(def.module, policy.via.name);
+                    match self.env.lower(def.module, via) {
+                        Some(Entity::Function(target)) => Some((target, via)),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            let plain = target.is_some_and(|(id, _)| self.env.plain_vias.contains(&id));
+            if let Some((id, via)) = target
+                && let Some((handler, at)) = self.env.blocked_vias.get(&id)
+            {
+                self.via_notes.insert(
+                    span,
+                    (
+                        *at,
+                        format!(
+                            "the `via` `{via}` would have a public failure (ADR 0098), but the `Keys` handler `{handler}` is named here, outside its declaration and examples"
+                        ),
+                    ),
+                );
+            }
+            let decided = if plain {
+                self.ctx.pc.clone()
+            } else {
+                self.ctx.pc.join(&to)
+            };
             if decided.is_public() {
                 self.call_fails.insert(span, fails.clone());
             } else {
