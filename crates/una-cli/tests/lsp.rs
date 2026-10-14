@@ -24,6 +24,11 @@ fn repository() -> PathBuf {
 /// A fresh package named `name`, with `src/app.una` holding `text` and the repository's
 /// lock, so that its proof cache starts empty.
 fn package(name: &str, text: &str) -> PathBuf {
+    package_in(name, "0.1", text)
+}
+
+/// [`package`] at `edition`.
+fn package_in(name: &str, edition: &str, text: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("una-lsp-{name}-{}", std::process::id()));
     if dir.exists() {
         std::fs::remove_dir_all(&dir).unwrap();
@@ -31,7 +36,7 @@ fn package(name: &str, text: &str) -> PathBuf {
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
         dir.join("una.toml"),
-        format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"0.1\"\n"),
+        format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"{edition}\"\n"),
     )
     .unwrap();
     std::fs::copy(
@@ -432,4 +437,99 @@ fn a_newer_change_cancels_tier_1_and_leaves_no_solver_behind() {
     for pid in std::fs::read_to_string(&pids).unwrap().lines() {
         assert!(!alive(pid), "solver {pid} outlived the server");
     }
+}
+
+/// A package whose `uses` condition an operation, with one site of each kind that a tier-1
+/// `effect_condition` obligation has: an operation, a named call, a `with` installing a handler
+/// that takes the binding, an operation in a lambda, a call of a `uses of` parameter and a call
+/// of a function value (ADR 0092 rule 3, #615). The policy call is pinned by the conformance case
+/// `verification/effect_condition_policy` and the corpus cross-check of `verification.rs`.
+const CONDITIONED: &str = "module app
+
+pub capability Log
+  op write(n: Int) -> Unit
+
+pub capability Store
+  op put(n: Int) -> Unit
+
+handler forwarding() for Store
+  uses @log: Log[write]
+  op put(n) = @log.write(n)
+
+write_one(n: Int) -> Unit
+  uses @log: Log[write]
+=
+  @log.write(n)
+
+save(n: Int) -> Unit
+  uses @store: Store[put]
+=
+  @store.put(n)
+
+pub sites(n: Int, xs: List[Int], dry: Bool) -> Int
+  uses @log: Log[write where not dry]
+=
+  @log.write(n)
+  write_one(n)
+  save(n) with @store = forwarding()
+  let ys = xs.map(each: fn(m) -> @log.write(m))
+  ys.len
+
+pub through(f: fn(Int) -> Unit, dry: Bool) -> Unit
+  uses @log: Log[write where not dry]
+  uses of f
+=
+  f(1)
+
+pub valued(f: fn(Int) -> Unit uses @log: Log[write], dry: Bool) -> Unit
+  uses @log: Log[write where not dry]
+=
+  f(1)
+";
+
+#[test]
+fn tier_0_hints_name_each_kind_of_effect_condition_site() {
+    let dir = package_in("conditions", "0.3", CONDITIONED);
+    let file = dir.join("src/app.una");
+    let mut session = Session::start(None);
+    session.open(&file, CONDITIONED);
+    let _ = session.published(&file);
+    // An unsaved change: the server checks the buffer at tier 0, whose hints are the pending
+    // obligations the checker records.
+    session.change(&file, 2, CONDITIONED);
+    let _ = session.published(&file);
+    // Each site: the n-th line that holds `site`, hovered at the parenthesis after `before`.
+    let sites = [
+        ("  @log.write(n)", "@log.write", 1),
+        ("  write_one(n)", "write_one", 0),
+        ("= forwarding()", "forwarding", 0),
+        ("@log.write(m)", "@log.write", 0),
+        ("  f(1)", "f", 0),
+        ("  f(1)", "f", 1),
+    ];
+    for (site, before, nth) in sites {
+        let (line, text) = CONDITIONED
+            .lines()
+            .enumerate()
+            .filter(|(_, text)| text.contains(site))
+            .nth(nth)
+            .unwrap();
+        let column = text.find(site).unwrap() + site.find(before).unwrap() + before.len();
+        let hover = session.request(
+            "textDocument/hover",
+            json!({
+                "textDocument": { "uri": uri(&file) },
+                "position": position(line as u64, column as u64),
+            }),
+        );
+        let shown = hover["contents"]["value"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        assert!(
+            shown.contains("effect_condition obligation, proven on save"),
+            "`{text}`: {shown}"
+        );
+    }
+    session.finish();
 }

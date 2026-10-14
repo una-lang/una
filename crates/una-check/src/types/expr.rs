@@ -496,6 +496,9 @@ impl<'a> Checker<'_, 'a, '_> {
                 // ADR 0093 rule 15: a handler that those bindings hold runs wherever the value
                 // goes, a boundary it reaches included.
                 self.summary_needs(Owner::Node(Node::Function(id)), &needs, level);
+                // ADR 0092 rule 3: the value runs the function on those bindings, charged where
+                // it is named, as a lambda is where it is written (#615).
+                self.condition_needs(&needs, ident.span, level);
                 // ADR 0093 rules 5 and 8: given to a boundary, it grants what those bindings hold.
                 self.captured_needs(&needs, ident.span);
                 // A function with conventions is not a value (`spec/17 §3` rule 7).
@@ -1527,6 +1530,9 @@ impl<'a> Checker<'_, 'a, '_> {
         self.lambda_depth += 1;
         let frames_depth = std::mem::replace(&mut self.frames_depth, self.lambda_depth);
         let frames_lambda = self.frames_lambda.replace(span);
+        // The frames where the lambda is written, which its frame's bindings resolve to
+        // (ADR 0092 rule 3, #615).
+        self.outer_frames.push(frames);
         // A lambda's body starts at a `public` program counter (ADR 0031 rule 4).
         let ctx = Ctx {
             fails: fails.clone(),
@@ -1548,7 +1554,9 @@ impl<'a> Checker<'_, 'a, '_> {
         self.frames_lambda = frames_lambda;
         self.prelude_lambda = prelude_lambda;
         self.base = base;
-        self.frames = frames;
+        if let Some(frames) = self.outer_frames.pop() {
+            self.frames = frames;
+        }
         self.locals.truncate(mark);
         if mismatch {
             return Ty::error();

@@ -818,6 +818,8 @@ impl Checker<'_, '_, '_> {
             }
         }
         self.needs_site(&install.callee, &granted, install.span, level);
+        // ADR 0092 rule 3: charged where it is installed, as any handler (#615).
+        self.condition_needs(&needs, install.span, level);
         self.cross(
             install.boundary,
             &format!("the installation of {}", install.callee),
